@@ -77,3 +77,37 @@ test('plan mode: ExitPlanMode emits a plan_request enriched with the plan file c
     await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
   }
 });
+
+test('plan-approve flow: WS mode switch from plan → bypassPermissions is accepted by setMode', async () => {
+  // The actual real-claude flow: after the plan_request auto-interrupt
+  // the user clicks Approve, the UI sends {t:"mode", mode:"bypassPermissions"}
+  // over WS, then the prompt. Verify that path works end-to-end (the
+  // existing test only covered the parser→event side, not the response).
+  const ctx = await bootServer({ scenarioPath: path.join(__dirname, 'fixtures', 'scenario-plan.json') });
+  try {
+    const transcriptPath = `${ctx.tmpHome}/transcript.log`;
+    process.env.FAKE_CLAUDE_TRANSCRIPT = transcriptPath;
+    process.env.FAKE_PLAN_FILE = '/tmp/never-read.md'; // not used by this test path
+
+    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'pa' });
+    const r = await api(ctx.baseUrl, 'POST', '/api/instances', { project: 'pa', mode: 'plan' });
+    const id = r.body.id;
+    await waitFor(() => ctx.instances.get(id).status === 'idle');
+    assert.equal(ctx.instances.get(id).mode, 'plan', 'starts in plan mode');
+
+    const inst = ctx.instances.get(id);
+    await inst.setMode('bypassPermissions');
+    assert.equal(inst.mode, 'bypassPermissions', 'setMode flipped the orchestrator-tracked mode');
+
+    const fsp = (await import('node:fs')).promises;
+    await waitFor(async () => { try { await fsp.stat(transcriptPath); return true; } catch { return false; } });
+    const lines = (await fsp.readFile(transcriptPath, 'utf8')).split('\n').filter(Boolean).map(l => JSON.parse(l));
+    const modeReq = lines.find(l => l.type === 'control_request' && l.request?.subtype === 'set_permission_mode');
+    assert.ok(modeReq, 'set_permission_mode control_request must have been sent');
+    assert.equal(modeReq.request.mode, 'bypassPermissions');
+  } finally {
+    delete process.env.FAKE_CLAUDE_TRANSCRIPT;
+    delete process.env.FAKE_PLAN_FILE;
+    await ctx.close();
+  }
+});

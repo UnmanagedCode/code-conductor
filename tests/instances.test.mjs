@@ -249,6 +249,15 @@ test('default spawn passes --effort high and --thinking adaptive', async () => {
     const t = argv.indexOf('--thinking');
     assert.ok(t >= 0, `--thinking not passed; argv was: ${argv.join(' ')}`);
     assert.equal(argv[t + 1], 'adaptive');
+
+    // Required so the plan-approve flow's mid-session `set_permission_mode
+    // bypassPermissions` is accepted at runtime. Without this flag the CLI
+    // rejects the switch with "session was not launched with
+    // --dangerously-skip-permissions" and the instance stays stuck in plan.
+    assert.ok(
+      argv.includes('--allow-dangerously-skip-permissions'),
+      `--allow-dangerously-skip-permissions missing; argv was: ${argv.join(' ')}`,
+    );
   } finally {
     delete process.env.FAKE_CLAUDE_ARGV_DUMP;
     await close();

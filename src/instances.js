@@ -188,6 +188,12 @@ export class Instance extends EventEmitter {
       '--verbose',
       '--include-partial-messages',
       '--include-hook-events',
+      // Required so a mid-session `set_permission_mode bypassPermissions`
+      // control_request is accepted — without it the CLI rejects the
+      // switch with "session was not launched with
+      // --dangerously-skip-permissions" and the plan-approve flow can't
+      // leave plan mode.
+      '--allow-dangerously-skip-permissions',
       '--permission-mode', this.mode,
       '--effort', this.effort,
       '--thinking', this.thinking,

@@ -92,10 +92,13 @@ Each Instance spawns:
 claude -p \
   --input-format=stream-json --output-format=stream-json \
   --verbose --include-partial-messages --include-hook-events \
-  --permission-mode <mode> --effort <effort> --thinking <thinking> \
+  --allow-dangerously-skip-permissions \
+  --permission-mode <plan|bypassPermissions> --effort <effort> --thinking <thinking> \
   [--model <name>] \
   --session-id <fresh-uuid> | --resume <existing-uuid>
 ```
+
+`--allow-dangerously-skip-permissions` is passed at spawn even when the instance starts in `plan` mode — without it the CLI rejects any later runtime `set_permission_mode bypassPermissions` (the plan-approve flow) with *"session was not launched with --dangerously-skip-permissions"*. The flag only *permits* the switch; it doesn't activate bypass by itself.
 
 The CLI then reads JSON lines on stdin and emits JSON lines on stdout. Inbound message types we send:
 
