@@ -88,6 +88,42 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
 
 .instance-name { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-family: ui-monospace, monospace; }
 
+/* Worktree subnode: collapsed by default; nested under each project. */
+.worktree-group { margin: 2px 0 4px 12px; }
+.worktree-group > .worktree-summary {
+  list-style: none; cursor: pointer; padding: 4px 6px;
+  font-size: 11px; color: var(--muted); border-radius: 4px;
+  user-select: none;
+}
+.worktree-group > .worktree-summary::-webkit-details-marker { display: none; }
+.worktree-group > .worktree-summary::before { content: '▸ '; }
+.worktree-group[open] > .worktree-summary::before { content: '▾ '; }
+.worktree-group > .worktree-summary:hover { background: var(--panel-2); }
+.worktree-list { list-style: none; padding: 0 0 0 8px; margin: 4px 0 0 0; }
+.worktree-item { margin-bottom: 4px; }
+.worktree-row {
+  display: flex; align-items: center; gap: 6px;
+  padding: 3px 6px; font-size: 11px; color: var(--muted);
+  border-radius: 4px; background: var(--panel-2);
+}
+.worktree-name { font-family: ui-monospace, monospace; color: var(--text); flex: 0 0 auto; }
+.worktree-base { color: var(--muted); flex: 1 1 auto; min-width: 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.worktree-row button { background: none; border: none; color: var(--muted); cursor: pointer; padding: 0 4px; }
+.worktree-row button:hover { color: var(--text); }
+.worktree-row .wt-remove:hover { color: var(--red); }
+.worktree-item .instance-list { padding-left: 14px; }
+
+/* Worktree row in the new-instance dialog. */
+.ni-worktree-row { display: flex !important; flex-direction: row !important; align-items: center; gap: 8px; }
+.ni-worktree-row input[type="checkbox"] { width: auto !important; margin: 0; }
+.ni-worktree-row span { font-size: 13px; }
+.ni-worktree-row input:disabled + span { opacity: .5; }
+#ni-worktree-hint { margin: -8px 0 6px 0; font-size: 11px; color: var(--muted); }
+
+/* Worktree chip in the instance header. */
+.ih-chip.ih-worktree { background: rgba(132, 90, 223, .25); color: #c7b3ff; }
+
 #main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 #instance-header {
   display: flex; align-items: center; justify-content: space-between;

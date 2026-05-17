@@ -34,6 +34,8 @@
           <button id="interrupt-btn" disabled>Interrupt</button>
           <button id="kill-btn" disabled>Kill</button>
           <button id="resume-btn" hidden>Resume</button>
+          <button id="rebase-btn" hidden title="Ask the agent to rebase its branch onto the captured base">Rebase</button>
+          <button id="ff-btn" hidden title="Fast-forward the parent repo onto this worktree's branch">FF parent</button>
         </div>
       </header>
       <div id="conversation" class="conversation"></div>
@@ -99,6 +101,11 @@
           <option value="">— fresh session —</option>
         </select>
       </label>
+      <label class="ni-worktree-row">
+        <input type="checkbox" id="ni-worktree" />
+        <span>Run in isolated git worktree</span>
+      </label>
+      <p class="hint" id="ni-worktree-hint"></p>
       <p class="error" id="ni-error"></p>
       <menu>
         <button value="cancel">Cancel</button>

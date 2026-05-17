@@ -27,7 +27,11 @@ Designed to run on a Termux phone (single user, localhost-only), but works on an
 
 ### What it does
 
-- **Project list** — sidebar shows every directory under `~/project/`. A `+ New project` button creates a directory and drops a `CLAUDE.md` that imports the workspace-wide one at `~/project/CLAUDE.md`.
+- **Project list** — sidebar shows every directory under `~/project/`. A `+ New project` button creates a directory and drops a `CLAUDE.md` that imports the workspace-wide one at `~/project/CLAUDE.md`. Worktree-owned directories (those carrying a `.claude-orch-worktree.json` marker — see "Isolated worktrees" below) are hidden from the project list and surfaced under their parent project instead.
+- **Isolated worktrees** — for any project that's a git repo, the new-instance dialog has a "Run in isolated git worktree" checkbox. Ticking it triggers `git worktree add ../<project>_worktree_<short-id> -b claude-orch/<short-id> <currentSha>` against the parent repo and spawns the Claude instance with `cwd` pointing at that fresh worktree. The orchestrator captures **the parent's current branch + SHA at creation time** as the rebase-back target, so you can spawn an experiment off any branch (not just `main`) and have a defined place to land it later. Each project has a default-collapsed **"Worktrees (N)"** subnode in the sidebar; from there you can spawn / resume agents into existing worktrees or remove them (refused if there's a live instance or uncommitted work, with a `force=1` override). Worktrees survive instance death — the same worktree can host multiple sequential agent runs.
+  - **Rebase back into the parent** — when the agent in a worktree has finished, two header buttons drive the merge-back:
+    - **Rebase** sends the agent a templated prompt asking it to commit any work, run `git rebase <baseBranch>` inside the worktree, ask the user (via `AskUserQuestion`) before making non-trivial conflict resolutions, and finally reply with the line `REBASE_DONE`. The orchestrator never runs `git rebase` itself — leaving conflict-resolution decisions to a Claude instance + the human in the loop avoids silent wrong choices.
+    - **FF parent** runs `git merge --ff-only <worktreeBranch>` on the parent repo. Refused (with an inline reason rather than a server error) if the parent is on a different branch than the captured base, has uncommitted changes, or has diverged. On success the parent's HEAD jumps to the worktree's tip — no merge commit, no rebase ambiguity.
 - **Spawn instances** — for any project, click `+` to launch a fresh Claude instance, or pick a prior session from the resume dropdown. The new-instance dialog lets you choose:
   - **Mode** — three options:
     - **`plan`** (default) — read-only planning. The CLI's plan mode denies destructive tools; the model proposes a plan and exits via `ExitPlanMode` so you can Approve / Reject.
@@ -161,6 +165,16 @@ claude-orch-app/
 │   ├── routes.js             REST handlers; thin shell over instances + projects.
 │   │                         Hosts POST /instances/:id/hook-callback — the
 │   │                         PreToolUse http hook endpoint the CLI calls into.
+│   │                         Worktree surface: list/delete worktrees per project,
+│   │                         POST rebase-prompt + fast-forward-parent.
+│   ├── worktrees.js          Git worktree operations. createWorktree captures
+│   │                         {baseBranch, baseSha, branch} at HEAD, writes a
+│   │                         .claude-orch-worktree.json marker so listProjects
+│   │                         can filter the dir out, and runs `git worktree add`
+│   │                         off the captured SHA. fastForwardParent does the
+│   │                         merge-back with safety checks (parent on
+│   │                         baseBranch + clean tree). buildRebasePrompt is the
+│   │                         templated prompt sent to the agent.
 │   └── wsHub.js              Per-socket subscriptions; snapshot replay; fan-out;
 │                             prompt/mode/interrupt/kill/hook_decision via WS;
 │                             broadcasts turn_notification to every client on
@@ -217,6 +231,11 @@ claude-orch-app/
     │                         non-ask modes; in ask mode emits permission_request
     │                         over WS and resolves on hook_decision allow/deny;
     │                         instance exit resolves pending callbacks deny.
+    ├── worktrees.test.mjs    End-to-end worktree feature against a real `git`:
+    │                         create / list / delete worktrees, listProjects
+    │                         hides them, spawn-into-existing reuses metadata,
+    │                         fast-forward-parent happy + sad paths, rebase
+    │                         prompt content.
     ├── question.test.mjs     AskUserQuestion → user_question UI event end-to-end;
     │                         scenario emits the hook-deny tool_result + a normal
     │                         result/success and the orchestrator must NOT issue an
@@ -284,6 +303,11 @@ Every event carries a `parentToolUseId` (or `null`) — the conversation view ro
 | `GET` | `/api/instances` | `[{id, project, sessionId, status, mode, effort, thinking, model, pid}]` |
 | `POST` | `/api/instances/:id/respawn` | `{id, sessionId}` — uses `--resume lastSessionId` |
 | `DELETE` | `/api/instances/:id` | `{ok: true}` — SIGTERM + remove |
+| `POST` | `/api/instances/:id/rebase-prompt` | Sends the templated rebase prompt to a worktree-attached instance. 400 if the instance has no worktree. |
+| `POST` | `/api/instances/:id/fast-forward-parent` | Runs `git merge --ff-only <worktreeBranch>` on the parent repo. Returns `{ok:true, newSha}` or `{ok:false, reason}` (non-FF reasons are returned 200 with `ok:false` so the UI can render the reason inline). |
+| `GET` | `/api/projects/:name/worktrees` | `[{worktreeName, branch, baseBranch, baseSha, parentPath, createdAt, instanceIds}]` |
+| `GET` | `/api/projects/:name/worktrees/:wt/sessions` | Same shape as the project-level session list, but scoped to the worktree's encoded cwd. |
+| `DELETE` | `/api/projects/:name/worktrees/:wt[?force=1]` | Removes the worktree dir + branch. 409 if there's a running instance or uncommitted changes; `force=1` kills attached instances and ignores dirt. |
 | `POST` | `/api/instances/:id/hook-callback` | PreToolUse http hook endpoint the CLI calls. Body = full hook envelope. Always responds 200 with `{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow"|"deny"}}`. Auto-allows in non-ask modes; in ask mode the response stays open up to 540 s until a WS `hook_decision` arrives. |
 
 ### Instance lifecycle

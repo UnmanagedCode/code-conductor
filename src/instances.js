@@ -6,6 +6,7 @@ import path from 'node:path';
 import { promises as fs, readFileSync } from 'node:fs';
 import { Parser } from './parser.js';
 import { getProject, encodeCwd, claudeProjectsRoot } from './projects.js';
+import { createWorktree, getWorktree } from './worktrees.js';
 
 // Static deny used for AskUserQuestion / ExitPlanMode. The CLI receives an
 // is_error tool_result with this reason and the model typically wraps up
@@ -131,7 +132,7 @@ class Ring {
 }
 
 export class Instance extends EventEmitter {
-  constructor({ id, project, cwd, mode, effort, thinking, model, hookCallbackUrl = null }) {
+  constructor({ id, project, cwd, mode, effort, thinking, model, hookCallbackUrl = null, worktree = null }) {
     super();
     this.id = id;
     this.project = project;
@@ -141,6 +142,10 @@ export class Instance extends EventEmitter {
     this.thinking = thinking;
     this.model = model;
     this.hookCallbackUrl = hookCallbackUrl;
+    // null for a normal instance; otherwise the worktree metadata object
+    // (parentProject, worktreeName, worktreePath, branch, baseBranch,
+    // baseSha) so the UI can show a chip and the rebase/ff buttons.
+    this.worktree = worktree;
     this.sessionId = null;
     this.pid = null;
     this.status = 'idle';
@@ -170,6 +175,14 @@ export class Instance extends EventEmitter {
       sessionId: this.sessionId,
       status: this.status,
       pid: this.pid,
+      worktree: this.worktree
+        ? {
+            worktreeName: this.worktree.worktreeName,
+            branch: this.worktree.branch,
+            baseBranch: this.worktree.baseBranch,
+            baseSha: this.worktree.baseSha,
+          }
+        : null,
     };
   }
 
@@ -607,8 +620,13 @@ export class InstanceManager extends EventEmitter {
   idsForProject(name) {
     return [...this.byId.values()].filter(i => i.project === name).map(i => i.id);
   }
+  idsForWorktree(project, worktreeName) {
+    return [...this.byId.values()]
+      .filter(i => i.project === project && i.worktree?.worktreeName === worktreeName)
+      .map(i => i.id);
+  }
 
-  async create({ project, resume, mode, effort, thinking, model } = {}) {
+  async create({ project, resume, mode, effort, thinking, model, worktree } = {}) {
     if (!project) {
       throw Object.assign(new Error('project required'), { statusCode: 400 });
     }
@@ -626,11 +644,30 @@ export class InstanceManager extends EventEmitter {
       throw Object.assign(new Error('invalid thinking'), { statusCode: 400 });
     }
     const finalModel = (typeof model === 'string' && model.trim()) ? model.trim() : null;
+
+    // Optional worktree attachment:
+    //   worktree === true  → create a fresh worktree off the parent's HEAD
+    //   worktree === '<existingName>' → spawn into the named existing worktree
+    //   omitted/null/false → normal spawn at proj.path
+    let worktreeMeta = null;
+    let cwd = proj.path;
+    if (worktree === true) {
+      worktreeMeta = await createWorktree(project);
+      cwd = worktreeMeta.worktreePath;
+    } else if (typeof worktree === 'string' && worktree.trim()) {
+      worktreeMeta = await getWorktree(project, worktree.trim());
+      if (!worktreeMeta) {
+        throw Object.assign(new Error(`worktree '${worktree}' not found under project '${project}'`), { statusCode: 404 });
+      }
+      cwd = worktreeMeta.worktreePath;
+    }
+
     const id = randomUUID();
     const inst = new Instance({
-      id, project, cwd: proj.path,
+      id, project, cwd,
       mode: finalMode, effort: finalEffort, thinking: finalThinking, model: finalModel,
       hookCallbackUrl: this.hookCallbackUrl(id),
+      worktree: worktreeMeta,
     });
 
     inst.on('event', (ev) => this.emit('event', { id, ev }));

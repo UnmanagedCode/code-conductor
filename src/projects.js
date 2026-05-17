@@ -3,6 +3,11 @@ import path from 'node:path';
 import os from 'node:os';
 
 const NAME_RE = /^[a-zA-Z0-9._-]+$/;
+// Directories owned by the orchestrator's worktree feature carry this
+// marker file at their root (see src/worktrees.js). Top-level project
+// listing filters them out so they aren't presented as standalone
+// projects — they appear as a child node under the parent instead.
+const WORKTREE_MARKER = '.claude-orch-worktree.json';
 
 export function projectsRoot() {
   return process.env.PROJECTS_ROOT ?? path.join(os.homedir(), 'project');
@@ -38,7 +43,14 @@ export async function listProjects() {
   const out = [];
   for (const e of entries) {
     if (!e.isDirectory()) continue;
-    out.push({ name: e.name, path: path.join(root, e.name) });
+    const full = path.join(root, e.name);
+    // Skip orchestrator-owned worktree dirs — they're surfaced under
+    // their parent project, not as top-level projects.
+    try {
+      await fs.access(path.join(full, WORKTREE_MARKER));
+      continue;
+    } catch { /* not a worktree — keep it */ }
+    out.push({ name: e.name, path: full });
   }
   out.sort((a, b) => a.name.localeCompare(b.name));
   return out;
@@ -119,9 +131,8 @@ async function readFirstPrompt(jsonlPath) {
   }
 }
 
-export async function listSessions(projectName) {
-  const proj = await getProject(projectName);
-  const encoded = encodeCwd(proj.path);
+export async function listSessionsForCwd(absCwd) {
+  const encoded = encodeCwd(absCwd);
   const dir = path.join(claudeProjectsRoot(), encoded);
   let entries;
   try {
@@ -148,4 +159,9 @@ export async function listSessions(projectName) {
   }
   out.sort((a, b) => b.mtime - a.mtime);
   return out;
+}
+
+export async function listSessions(projectName) {
+  const proj = await getProject(projectName);
+  return listSessionsForCwd(proj.path);
 }

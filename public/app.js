@@ -42,7 +42,11 @@ const dom = {
   niThinking: document.getElementById('ni-thinking'),
   niModel: document.getElementById('ni-model'),
   niResume: document.getElementById('ni-resume'),
+  niWorktree: document.getElementById('ni-worktree'),
+  niWorktreeHint: document.getElementById('ni-worktree-hint'),
   niError: document.getElementById('ni-error'),
+  rebaseBtn: document.getElementById('rebase-btn'),
+  ffBtn: document.getElementById('ff-btn'),
   sidebarToggle: document.getElementById('sidebar-toggle'),
   sidebar: document.getElementById('sidebar'),
   sidebarScrim: document.getElementById('sidebar-scrim'),
@@ -118,6 +122,7 @@ const sidebar = new Sidebar({
   rootList: dom.projectList,
   onSelectInstance: selectInstance,
   onCreateInstanceClick: openNewInstanceDialog,
+  onRemoveWorktree: removeWorktree,
 });
 
 const composer = attachComposer({
@@ -140,6 +145,29 @@ dom.interruptBtn.addEventListener('click', () => {
 
 dom.killBtn.addEventListener('click', () => {
   if (state.activeId && confirm('Kill this instance?')) send('kill', { id: state.activeId });
+});
+
+dom.rebaseBtn.addEventListener('click', async () => {
+  if (!state.activeId) return;
+  try {
+    const r = await fetch(`/api/instances/${state.activeId}/rebase-prompt`, { method: 'POST' });
+    if (!r.ok) throw new Error((await r.json()).error);
+  } catch (e) { alert(`rebase prompt failed: ${e.message}`); }
+});
+dom.ffBtn.addEventListener('click', async () => {
+  if (!state.activeId) return;
+  if (!confirm('Fast-forward the parent repo onto this worktree\'s branch?')) return;
+  try {
+    const r = await fetch(`/api/instances/${state.activeId}/fast-forward-parent`, { method: 'POST' });
+    if (!r.ok) throw new Error((await r.json()).error);
+    const result = await r.json();
+    if (result.ok) {
+      alert(`Fast-forwarded parent → ${result.newSha?.slice(0, 12) ?? '?'}`);
+      await refreshProjects();
+    } else {
+      alert(`Cannot fast-forward:\n${result.reason}`);
+    }
+  } catch (e) { alert(`fast-forward failed: ${e.message}`); }
 });
 
 dom.resumeBtn.addEventListener('click', async () => {
@@ -218,8 +246,15 @@ renderNotifyToggle();
 dom.sidebarScrim.addEventListener('click', () => setSidebarOpen(false));
 
 let pendingNewInstanceProject = null;
-async function openNewInstanceDialog(projectName) {
+// Worktree intent for the new-instance dialog:
+//   null              — normal spawn at the project root
+//   true              — create a fresh worktree and spawn into it
+//   '<worktreeName>'  — spawn into an existing worktree
+let pendingWorktreeIntent = null;
+
+async function openNewInstanceDialog(projectName, opts = {}) {
   pendingNewInstanceProject = projectName;
+  pendingWorktreeIntent = opts.worktreeName ?? null;
   dom.niProject.textContent = projectName;
   dom.niMode.value = 'plan';
   dom.niEffort.value = 'high';
@@ -227,14 +262,40 @@ async function openNewInstanceDialog(projectName) {
   dom.niModel.value = '';
   dom.niError.textContent = '';
   dom.niResume.innerHTML = '<option value="">— fresh session —</option>';
+
+  // Worktree row: checkbox + status line. Greyed out if the project
+  // isn't a git repo; pre-locked if the caller passed an existing
+  // worktree name (e.g. from the Worktrees sidebar subnode).
+  const proj = state.projects.find(p => p.name === projectName);
+  const isGit = !!proj?.isGitRepo;
+  if (pendingWorktreeIntent) {
+    dom.niWorktree.checked = true;
+    dom.niWorktree.disabled = true;
+    dom.niWorktreeHint.textContent = `will spawn into existing worktree: ${pendingWorktreeIntent}`;
+  } else {
+    dom.niWorktree.checked = false;
+    dom.niWorktree.disabled = !isGit;
+    dom.niWorktreeHint.textContent = isGit
+      ? 'creates a sibling worktree under ~/project/, branched off current HEAD'
+      : 'project is not a git repo — `git init` first to use worktrees';
+  }
+
+  // Sessions list — for an existing-worktree spawn this should reflect
+  // that worktree's own session history, not the parent project's.
   try {
-    const sessions = await (await fetch(`/api/projects/${encodeURIComponent(projectName)}/sessions`)).json();
-    for (const s of sessions) {
-      const opt = document.createElement('option');
-      opt.value = s.sessionId;
-      const preview = (s.firstPrompt ?? '').slice(0, 60).replace(/\s+/g, ' ');
-      opt.textContent = `${s.sessionId.slice(0, 8)} · ${preview}`;
-      dom.niResume.appendChild(opt);
+    const url = pendingWorktreeIntent
+      ? `/api/projects/${encodeURIComponent(projectName)}/worktrees/${encodeURIComponent(pendingWorktreeIntent)}/sessions`
+      : `/api/projects/${encodeURIComponent(projectName)}/sessions`;
+    const r = await fetch(url);
+    if (r.ok) {
+      const sessions = await r.json();
+      for (const s of sessions) {
+        const opt = document.createElement('option');
+        opt.value = s.sessionId;
+        const preview = (s.firstPrompt ?? '').slice(0, 60).replace(/\s+/g, ' ');
+        opt.textContent = `${s.sessionId.slice(0, 8)} · ${preview}`;
+        dom.niResume.appendChild(opt);
+      }
     }
   } catch { /* ignore */ }
   dom.newInstanceDialog.showModal();
@@ -247,14 +308,19 @@ dom.newInstanceDialog.addEventListener('close', async () => {
   const thinking = dom.niThinking.value;
   const model = dom.niModel.value || undefined;
   const resume = dom.niResume.value || undefined;
+  // Worktree intent: pre-locked name (existing) > checkbox (fresh) > omitted.
+  let worktree;
+  if (typeof pendingWorktreeIntent === 'string') worktree = pendingWorktreeIntent;
+  else if (dom.niWorktree.checked) worktree = true;
   try {
     const r = await fetch('/api/instances', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ project, mode, effort, thinking, model, resume }),
+      body: JSON.stringify({ project, mode, effort, thinking, model, resume, worktree }),
     });
     if (!r.ok) throw new Error((await r.json()).error);
     const inst = await r.json();
+    await refreshProjects();
     await refreshInstances();
     selectInstance(inst.id);
   } catch (e) {
@@ -262,6 +328,24 @@ dom.newInstanceDialog.addEventListener('close', async () => {
     dom.newInstanceDialog.showModal();
   }
 });
+
+async function removeWorktree(project, worktreeName) {
+  if (!confirm(`Remove worktree '${worktreeName}'?\nThis will delete the directory and branch.`)) return;
+  try {
+    let r = await fetch(`/api/projects/${encodeURIComponent(project)}/worktrees/${encodeURIComponent(worktreeName)}`, { method: 'DELETE' });
+    if (r.status === 409) {
+      // Either a running instance or uncommitted changes — offer force.
+      const { error } = await r.json();
+      if (!confirm(`${error}\n\nForce remove anyway?`)) return;
+      r = await fetch(`/api/projects/${encodeURIComponent(project)}/worktrees/${encodeURIComponent(worktreeName)}?force=1`, { method: 'DELETE' });
+    }
+    if (!r.ok) throw new Error((await r.json()).error);
+    await refreshProjects();
+    await refreshInstances();
+  } catch (e) {
+    alert(`remove worktree failed: ${e.message}`);
+  }
+}
 
 async function refreshProjects() {
   state.projects = await (await fetch('/api/projects')).json();
@@ -308,6 +392,11 @@ function updateActiveHeader() {
     return e;
   };
   dom.instanceTitle.appendChild(chip('ih-project', inst.project));
+  if (inst.worktree?.worktreeName) {
+    const wtShort = inst.worktree.worktreeName.replace(`${inst.project}_worktree_`, 'wt:');
+    dom.instanceTitle.appendChild(chip('ih-worktree',
+      `${wtShort} (← ${inst.worktree.baseBranch})`));
+  }
   dom.instanceTitle.appendChild(chip('ih-sid', inst.sessionId?.slice(0, 8) ?? '?'));
   dom.instanceTitle.appendChild(chip(`ih-status ih-status-${inst.status}`, inst.status));
   dom.instanceTitle.appendChild(chip('ih-mode', inst.mode === 'bypassPermissions' ? 'code' : inst.mode));
@@ -316,6 +405,10 @@ function updateActiveHeader() {
   dom.interruptBtn.disabled = inst.status !== 'turn';
   dom.killBtn.disabled = !['idle', 'turn', 'spawning'].includes(inst.status);
   dom.resumeBtn.hidden = !(inst.status === 'crashed' || inst.status === 'exited');
+  const hasWorktree = !!inst.worktree?.worktreeName;
+  dom.rebaseBtn.hidden = !hasWorktree;
+  dom.rebaseBtn.disabled = !hasWorktree || !(inst.status === 'idle' || inst.status === 'turn');
+  dom.ffBtn.hidden = !hasWorktree;
   const canType = ['idle', 'turn', 'spawning'].includes(inst.status);
   const canSend = ['idle', 'turn'].includes(inst.status);
   composer.set({ canType, canSend });

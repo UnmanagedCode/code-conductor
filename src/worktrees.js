@@ -1,0 +1,305 @@
+// Git worktree operations for isolated agent runs. Each worktree lives as
+// a sibling directory at `<projectsRoot>/<project>_worktree_<short-id>/`
+// with a `.claude-orch-worktree.json` metadata file at its root. The
+// metadata records the parent project + the branch / SHA that HEAD was
+// on at creation time, so a later rebase-back targets the right base.
+
+import { execFile } from 'node:child_process';
+import { promises as fs } from 'node:fs';
+import path from 'node:path';
+import { randomBytes } from 'node:crypto';
+import { projectsRoot, getProject } from './projects.js';
+
+// Manual execFile wrapper. `promisify(execFile)` would be tempting but
+// this Node build (Termux's android port) doesn't ship the
+// util.promisify.custom symbol on execFile, so the promisified version
+// resolves to just stdout (a string) instead of {stdout, stderr}.
+// Wrap it ourselves so the shape is reliable across runtimes.
+function execFileP(file, args, options = {}) {
+  return new Promise((resolve, reject) => {
+    execFile(file, args, options, (err, stdout, stderr) => {
+      if (err) {
+        err.stdout = stdout;
+        err.stderr = stderr;
+        reject(err);
+      } else {
+        resolve({ stdout, stderr });
+      }
+    });
+  });
+}
+
+export const WORKTREE_META_FILENAME = '.claude-orch-worktree.json';
+
+// Shorter-than-uuid identifier — 6 hex chars is plenty for collision
+// avoidance across a handful of worktrees per project.
+function shortId() {
+  return randomBytes(3).toString('hex');
+}
+
+function worktreeBranchName(id) {
+  return `claude-orch/${id}`;
+}
+
+function worktreeDirName(project, id) {
+  return `${project}_worktree_${id}`;
+}
+
+async function runGit(cwd, args) {
+  try {
+    const { stdout, stderr } = await execFileP('git', ['-C', cwd, ...args], {
+      encoding: 'utf8',
+      maxBuffer: 16 * 1024 * 1024,
+    });
+    return { stdout, stderr, code: 0 };
+  } catch (e) {
+    // execFile rejects with an error that carries stdout/stderr/code.
+    return {
+      stdout: e.stdout ?? '',
+      stderr: e.stderr ?? e.message ?? '',
+      code: typeof e.code === 'number' ? e.code : 1,
+    };
+  }
+}
+
+export async function isGitRepo(projectPath) {
+  const r = await runGit(projectPath, ['rev-parse', '--git-dir']);
+  return r.code === 0;
+}
+
+// Look up the parent repo's current branch + commit. Detached HEAD is
+// allowed (we record null for `branch`) — the rebase-back path will
+// require a named branch, but creation itself shouldn't be blocked.
+export async function getHeadBranchAndSha(projectPath) {
+  const head = await runGit(projectPath, ['symbolic-ref', '--quiet', '--short', 'HEAD']);
+  const branch = head.code === 0 ? head.stdout.trim() || null : null;
+  const sha = await runGit(projectPath, ['rev-parse', 'HEAD']);
+  if (sha.code !== 0) {
+    const err = new Error(`unable to resolve HEAD in ${projectPath}: ${sha.stderr.trim()}`);
+    err.statusCode = 400;
+    throw err;
+  }
+  return { branch, sha: sha.stdout.trim() };
+}
+
+async function writeMeta(worktreePath, meta) {
+  const file = path.join(worktreePath, WORKTREE_META_FILENAME);
+  await fs.writeFile(file, JSON.stringify(meta, null, 2) + '\n', 'utf8');
+}
+
+export async function readMeta(worktreePath) {
+  const file = path.join(worktreePath, WORKTREE_META_FILENAME);
+  let text;
+  try { text = await fs.readFile(file, 'utf8'); }
+  catch (e) { if (e.code === 'ENOENT') return null; throw e; }
+  try { return JSON.parse(text); } catch { return null; }
+}
+
+export async function isWorktreeDir(absDir) {
+  const meta = await readMeta(absDir).catch(() => null);
+  return meta != null;
+}
+
+// Create a fresh worktree off the parent repo's current HEAD. Returns
+// the metadata that was written to disk.
+export async function createWorktree(projectName) {
+  const proj = await getProject(projectName);
+  if (!(await isGitRepo(proj.path))) {
+    const err = new Error(`project '${projectName}' is not a git repository`);
+    err.statusCode = 400;
+    throw err;
+  }
+  const head = await getHeadBranchAndSha(proj.path);
+  if (!head.branch) {
+    // git worktree add can work off a detached HEAD, but tracking down
+    // "what was the base" later is messy. Refuse cleanly instead.
+    const err = new Error(`project '${projectName}' is on a detached HEAD; check out a branch before creating a worktree`);
+    err.statusCode = 400;
+    throw err;
+  }
+  const id = shortId();
+  const dirName = worktreeDirName(projectName, id);
+  const worktreePath = path.join(projectsRoot(), dirName);
+  const branch = worktreeBranchName(id);
+
+  // `git worktree add <path> -b <branch> <start-point>` creates the
+  // branch off the captured SHA so subsequent activity on the parent
+  // branch can't drift our base.
+  const add = await runGit(proj.path, ['worktree', 'add', worktreePath, '-b', branch, head.sha]);
+  if (add.code !== 0) {
+    const err = new Error(`git worktree add failed: ${add.stderr.trim() || add.stdout.trim()}`);
+    err.statusCode = 500;
+    throw err;
+  }
+
+  const meta = {
+    parentProject: projectName,
+    parentPath: proj.path,
+    worktreeName: dirName,
+    worktreePath,
+    branch,
+    baseBranch: head.branch,
+    baseSha: head.sha,
+    createdAt: new Date().toISOString(),
+  };
+  await writeMeta(worktreePath, meta);
+  return meta;
+}
+
+// List every worktree on disk that we own for a given project. Reads
+// the parent repo's `git worktree list --porcelain` and filters down to
+// entries whose dir carries our metadata file. (We use git's view rather
+// than scanning `projectsRoot` so stale orphaned directories don't show
+// up if they were already deregistered from git.)
+export async function listWorktrees(projectName) {
+  const proj = await getProject(projectName);
+  if (!(await isGitRepo(proj.path))) return [];
+  const r = await runGit(proj.path, ['worktree', 'list', '--porcelain']);
+  if (r.code !== 0) return [];
+  const out = [];
+  let cur = null;
+  for (const line of r.stdout.split('\n')) {
+    if (line.startsWith('worktree ')) {
+      if (cur) {
+        // Skip the parent repo itself (no metadata, no relevance).
+        const meta = await readMeta(cur.path).catch(() => null);
+        if (meta && meta.parentProject === projectName) out.push(meta);
+      }
+      cur = { path: line.slice('worktree '.length) };
+    }
+  }
+  if (cur) {
+    const meta = await readMeta(cur.path).catch(() => null);
+    if (meta && meta.parentProject === projectName) out.push(meta);
+  }
+  out.sort((a, b) => (a.createdAt ?? '').localeCompare(b.createdAt ?? ''));
+  return out;
+}
+
+export async function getWorktree(projectName, worktreeName) {
+  const all = await listWorktrees(projectName);
+  return all.find(w => w.worktreeName === worktreeName) ?? null;
+}
+
+// Remove a worktree: deregister it via git, drop the directory, delete
+// the branch. We refuse if the working tree has uncommitted changes so
+// the user can't silently throw away in-progress agent work.
+export async function removeWorktree(projectName, worktreeName, { force = false } = {}) {
+  const meta = await getWorktree(projectName, worktreeName);
+  if (!meta) {
+    const err = new Error(`worktree '${worktreeName}' not found under project '${projectName}'`);
+    err.statusCode = 404;
+    throw err;
+  }
+  const parentPath = meta.parentPath;
+
+  if (!force) {
+    const dirty = await runGit(meta.worktreePath, ['status', '--porcelain']);
+    // Ignore our own metadata marker — it lives at the worktree root as
+    // an untracked file by design and shouldn't count as user-authored
+    // dirt.
+    const dirtyLines = (dirty.stdout || '').split('\n').filter(l => {
+      const t = l.trim();
+      if (!t) return false;
+      if (t.endsWith(WORKTREE_META_FILENAME)) return false;
+      return true;
+    });
+    if (dirty.code === 0 && dirtyLines.length > 0) {
+      const err = new Error(
+        `worktree '${worktreeName}' has uncommitted changes — commit / discard them, or pass force=true`,
+      );
+      err.statusCode = 409;
+      throw err;
+    }
+  }
+
+  // Always pass --force to `git worktree remove`: the only thing we
+  // tolerate in the working tree is our own (untracked) metadata file,
+  // and we've already validated that above. Without --force, git would
+  // refuse on that untracked file alone.
+  const rm = await runGit(parentPath, ['worktree', 'remove', '--force', meta.worktreePath]);
+  if (rm.code !== 0) {
+    const err = new Error(`git worktree remove failed: ${rm.stderr.trim() || rm.stdout.trim()}`);
+    err.statusCode = 500;
+    throw err;
+  }
+  // Branch deletion is best-effort — if the rebase-back already
+  // fast-forwarded the base onto the worktree branch then `-d` will
+  // succeed; otherwise the branch may be ahead and we use `-D`.
+  const delArgs = ['branch', force ? '-D' : '-d', meta.branch];
+  await runGit(parentPath, delArgs);
+  return meta;
+}
+
+// Run `git merge --ff-only <branch>` on the parent repo. Returns
+// {ok:true} on success or {ok:false, reason} when not fast-forwardable
+// (uncommitted changes, divergent history, etc.) — caller surfaces the
+// reason to the UI rather than throwing.
+export async function fastForwardParent(projectName, worktreeName) {
+  const meta = await getWorktree(projectName, worktreeName);
+  if (!meta) {
+    const err = new Error(`worktree '${worktreeName}' not found under project '${projectName}'`);
+    err.statusCode = 404;
+    throw err;
+  }
+  // 1. Parent must currently be on the captured base branch — otherwise
+  //    a fast-forward would land work somewhere unexpected.
+  const head = await getHeadBranchAndSha(meta.parentPath);
+  if (head.branch !== meta.baseBranch) {
+    return {
+      ok: false,
+      reason: `parent repo is on '${head.branch}', but this worktree was branched from '${meta.baseBranch}'. ` +
+        `Switch the parent back to '${meta.baseBranch}' before fast-forwarding.`,
+    };
+  }
+  // 2. Parent's working tree must be clean — `git merge` refuses
+  //    otherwise, but the error message is friendlier from us.
+  const dirty = await runGit(meta.parentPath, ['status', '--porcelain']);
+  if (dirty.code === 0 && dirty.stdout.trim().length > 0) {
+    return {
+      ok: false,
+      reason: `parent repo has uncommitted changes — commit or stash them before fast-forwarding`,
+    };
+  }
+  // 3. Attempt the fast-forward.
+  const merge = await runGit(meta.parentPath, ['merge', '--ff-only', meta.branch]);
+  if (merge.code !== 0) {
+    return {
+      ok: false,
+      reason: (merge.stderr.trim() || merge.stdout.trim() ||
+        `git merge --ff-only ${meta.branch} failed`),
+    };
+  }
+  // Capture the new SHA — useful for the UI to confirm what landed.
+  const newHead = await runGit(meta.parentPath, ['rev-parse', 'HEAD']);
+  return {
+    ok: true,
+    output: merge.stdout.trim() || merge.stderr.trim(),
+    newSha: newHead.stdout.trim(),
+  };
+}
+
+// Build the prompt text the orchestrator sends to the agent when the
+// user clicks "Ask agent to rebase". Kept in this module so the on-disk
+// metadata and the prompt phrasing stay consistent.
+export function buildRebasePrompt(meta) {
+  return [
+    `You are running in an isolated git worktree.`,
+    `Worktree branch: ${meta.branch}`,
+    `Originally branched from: ${meta.baseBranch} at ${meta.baseSha.slice(0, 12)}`,
+    ``,
+    `Please:`,
+    `1. Commit any meaningful uncommitted changes in the worktree (ignore noise).`,
+    `2. Run \`git rebase ${meta.baseBranch}\` inside this worktree so the work sits on top of the parent's current ${meta.baseBranch}.`,
+    `3. If you hit conflicts you can't resolve with high confidence, STOP and use AskUserQuestion to consult the user before continuing.`,
+    `4. When the rebase is clean, run \`git status\` to confirm, then reply with the line "REBASE_DONE" on its own so I can fast-forward the parent.`,
+  ].join('\n');
+}
+
+// Re-exported for tests / route handlers.
+export const _internal = {
+  worktreeBranchName,
+  worktreeDirName,
+  runGit,
+  shortId,
+};
