@@ -170,6 +170,24 @@ export class Instance extends EventEmitter {
         } else if (b.type === 'tool_use') {
           this._emitUi({ kind: 'tool_use_start', msgId, blockIdx: i, toolUseId: b.id ?? null, name: b.name ?? null });
           this._emitUi({ kind: 'tool_use', msgId, blockIdx: i, toolUseId: b.id ?? null, name: b.name ?? null, input: b.input ?? {} });
+          // Mirror the parser's structured event emission for the live path —
+          // a replayed AskUserQuestion / ExitPlanMode should render as a
+          // question / plan card, not just a collapsed generic tool block.
+          if (b.name === 'AskUserQuestion' && Array.isArray(b.input?.questions)) {
+            this._emitUi({
+              kind: 'user_question',
+              toolUseId: b.id ?? null,
+              questions: b.input.questions,
+            });
+          }
+          if (b.name === 'ExitPlanMode') {
+            this._emitUi({
+              kind: 'plan_request',
+              toolUseId: b.id ?? null,
+              plan: typeof b.input?.plan === 'string' ? b.input.plan : null,
+              planPath: null,
+            });
+          }
           any = true;
         }
       }

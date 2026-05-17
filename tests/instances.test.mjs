@@ -342,6 +342,69 @@ test('resuming an existing session replays the persisted transcript into the rin
   } finally { await ctx.close(); }
 });
 
+test('resume: AskUserQuestion and ExitPlanMode tool calls from history replay as their structured cards', async () => {
+  // Regression: the live parser emits `user_question` (and `plan_request`)
+  // alongside the tool_use for AskUserQuestion / ExitPlanMode at
+  // content_block_stop time. The replay path only re-emitted
+  // tool_use_start + tool_use, so resumed sessions showed those tool
+  // calls as plain collapsed tool blocks — no question card, no
+  // plan-approval card.
+  const ctx = await bootServer({ scenarioPath: path.join(__dirname, 'fixtures', 'scenario-resume.json') });
+  const fsp = (await import('node:fs')).promises;
+  try {
+    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'with-cards' });
+    const projectPath = path.join(ctx.projectsRoot, 'with-cards');
+    const sid = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+    const sessionDir = path.join(ctx.claudeProjectsRoot, encodeCwd(projectPath));
+    await fsp.mkdir(sessionDir, { recursive: true });
+
+    const lines = [
+      { type: 'user', uuid: 'u1', message: { role: 'user', content: 'plan something then ask me' } },
+      { type: 'assistant', uuid: 'a1', message: { id: 'm_a1', role: 'assistant', content: [
+        { type: 'tool_use', id: 'tu_q_replay', name: 'AskUserQuestion', input: {
+          questions: [{
+            question: 'What colour?',
+            header: 'Color',
+            multiSelect: false,
+            options: [{ label: 'Red' }, { label: 'Blue' }],
+          }],
+        } },
+      ] } },
+      { type: 'user', uuid: 'u2', message: { role: 'user', content: 'Answer to "What colour?": Red' } },
+      { type: 'assistant', uuid: 'a2', message: { id: 'm_a2', role: 'assistant', content: [
+        { type: 'tool_use', id: 'tu_plan_replay', name: 'ExitPlanMode', input: {
+          plan: '# Plan\n- Step 1\n- Step 2',
+        } },
+      ] } },
+    ];
+    await fsp.writeFile(
+      path.join(sessionDir, `${sid}.jsonl`),
+      lines.map(l => JSON.stringify(l)).join('\n') + '\n',
+    );
+
+    const events = collectEvents(ctx.instances);
+    const r = await api(ctx.baseUrl, 'POST', '/api/instances', {
+      project: 'with-cards', mode: 'plan', resume: sid,
+    });
+    const id = r.body.id;
+    await waitFor(() => ctx.instances.get(id).status === 'idle');
+
+    const mine = events.filter(e => e.id === id).map(e => e.ev);
+
+    // AskUserQuestion: both the generic tool_use and the structured
+    // user_question should be replayed.
+    const uq = mine.find(e => e.kind === 'user_question' && e.toolUseId === 'tu_q_replay');
+    assert.ok(uq, `user_question for replayed AskUserQuestion missing — kinds: ${mine.map(e=>e.kind).join(',')}`);
+    assert.equal(uq.questions[0].question, 'What colour?');
+    assert.deepEqual(uq.questions[0].options.map(o => o.label), ['Red', 'Blue']);
+
+    // ExitPlanMode: same — should emit plan_request with the plan text.
+    const pr = mine.find(e => e.kind === 'plan_request' && e.toolUseId === 'tu_plan_replay');
+    assert.ok(pr, 'plan_request for replayed ExitPlanMode missing');
+    assert.match(pr.plan, /Step 1/);
+  } finally { await ctx.close(); }
+});
+
 test('resuming when no jsonl exists is a no-op (still reaches idle)', async () => {
   const ctx = await bootServer({ scenarioPath: path.join(__dirname, 'fixtures', 'scenario-resume.json') });
   try {
