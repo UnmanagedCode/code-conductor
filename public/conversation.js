@@ -90,7 +90,6 @@ export class Conversation {
       case 'user_echo':      this._renderUserEcho(ev); break;
       case 'text_delta':     this._appendStreamingBlock(ev, 'text', TextBlock, ev.text); break;
       case 'text_end':       this._finalizeBlock(ev); break;
-      case 'text_strip':     this._stripTextBlock(ev); break;
       case 'thinking_start': this._renderThinkingStart(ev); break;
       case 'thinking_delta': this._appendStreamingBlock(ev, 'thinking', ThinkingBlock, ev.text); break;
       case 'thinking_end':   this._finalizeBlock(ev); break;
@@ -236,24 +235,6 @@ export class Conversation {
     this.userQuestionBlocks.set(ev.toolUseId, block);
     this.root.appendChild(block.node);
     this._maybeScroll();
-  }
-
-  _stripTextBlock(ev) {
-    // Removes a text block we already rendered — used to scrub the
-    // `[Request interrupted by user]` marker the CLI inserts on interrupt.
-    const key = `${ev.msgId ?? '?'}:${ev.blockIdx ?? 0}:text`;
-    const block = this.blocksByKey.get(key);
-    if (block) {
-      block.node.remove();
-      this.blocksByKey.delete(key);
-    }
-    // If the surrounding message wrap is now empty, remove it too so we
-    // don't leave a lone "ASSISTANT" header floating in the conversation.
-    const wrap = this.messageWraps.get(ev.msgId);
-    if (wrap && wrap.body.children.length === 0) {
-      wrap.node.remove();
-      this.messageWraps.delete(ev.msgId);
-    }
   }
 
   _renderHistoryDivider(ev) {

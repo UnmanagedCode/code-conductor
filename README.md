@@ -39,9 +39,8 @@ Designed to run on a Termux phone (single user, localhost-only), but works on an
   - **Tool use** — block is collapsed by default; the smart one-line summary like `🔧 Bash · ls -la · done` shows the command/key argument inline, and a custom disclosure caret rotates when you tap to expand. Per-tool summary picks the most useful argument (command for Bash, file_path for Edit/Read/Write, pattern for Glob/Grep, url for WebFetch, etc.). **Edit / Write / NotebookEdit** tool calls render as a syntax-coloured **unified diff** (green/red gutters, ±counts header, sticky file-path) once expanded; Write shows a numbered preview of the new file.
   - **Tool result** — truncated at 4 KB with a "show full" button, attached under its matching tool_use.
   - **Sub-agent drill-down** — when Claude uses the `Task` tool, the sub-agent's events stream into a nested mini-conversation rendered inside the outer tool block, with a dashed left border and `↳ sub-agent` label. Tap the Task tool to expand and inspect what the sub-agent did.
-  - **Plan mode (`ExitPlanMode`)** — when the model finishes a plan and calls `ExitPlanMode` (the CLI auto-errors it in stream-json mode with `"Exit plan mode?"`), the orchestrator auto-interrupts the turn and renders a green-bordered card titled "Plan ready for approval". The plan body comes from `input.plan` directly, or — when the model wrote the plan to a file under `~/.claude/plans/*.md` first and called `ExitPlanMode` with empty input — the orchestrator reads the most-recent such file and shows its content. The body is rendered as **Markdown** (`public/markdown.js`) with headings, lists, fenced code blocks, inline code, bold/italic, blockquotes, links, and horizontal rules — no `innerHTML` is ever used, links must use safe schemes, and raw HTML in the source is shown as literal text. The card has Approve and Reject buttons plus an optional feedback textarea. **Approve** switches the instance to `code` mode (CLI's `bypassPermissions`) so the model can actually execute the tools the plan calls for, and sends `"I approve the plan. Please proceed with the implementation."` (plus your feedback if provided). **Reject** keeps plan mode active and sends `"I'd like to revise the plan. Refinement notes:\n<feedback>"` so the model can refine.
-  - **Interrupt marker scrubbing** — the CLI inserts a trailing `[Request interrupted by user]` (or `…by user for tool use]`) assistant text block whenever a turn is interrupted. When the orchestrator triggered the interrupt itself as part of a flow (`AskUserQuestion`, `ExitPlanMode`), that marker is *stripped* from the conversation so the inline approval / question card stays the conversation's tail. When the user clicks the Interrupt button manually, the marker stays visible as confirmation. The parser tags the block (`isInterruptMarker: true` on the `text_end` event) and the `Instance` decides at emit time based on a `_autoInterruptedThisTurn` flag that's only set when the orchestrator fires the interrupt.
-  - **AskUserQuestion** — when the model invokes the `AskUserQuestion` tool, the structured questions/options render as a blue card. The orchestrator immediately sends a `control_request interrupt` so the model can't follow the CLI's auto-error with a confused "the question was dismissed, want me to just ask in plain text?" text response — the question card becomes the conversation's blocking tail. **Multiple questions** render as a tab strip across the top; the active tab's pane shows its options. Each pane has the model's options as buttons plus an **Other:** text field for typing a custom answer (always available, overrides any option pick). A single **Send all answers** button at the bottom enables once every question has an answer and submits them as one consolidated prompt; if the instance somehow isn't idle yet, the answer is queued locally and flushed automatically on the next `status=idle` event.
+  - **Plan mode (`ExitPlanMode`)** — when the model finishes a plan and calls `ExitPlanMode`, a `PreToolUse` hook registered via `--settings` cleanly denies the tool with a "wait for the user" reason. The model receives that as an `is_error: true` tool_result and ends the turn naturally — no interrupt, no `[Request interrupted by user]` marker. The orchestrator renders a green-bordered card titled "Plan ready for approval". The plan body comes from `input.plan` directly, or — when the model wrote the plan to a file under `~/.claude/plans/*.md` first and called `ExitPlanMode` with empty input — the orchestrator reads the most-recent such file and shows its content. The body is rendered as **Markdown** (`public/markdown.js`) with headings, lists, fenced code blocks, inline code, bold/italic, blockquotes, links, and horizontal rules — no `innerHTML` is ever used, links must use safe schemes, and raw HTML in the source is shown as literal text. The card has Approve and Reject buttons plus an optional feedback textarea. **Approve** switches the instance to `code` mode (CLI's `bypassPermissions`) so the model can actually execute the tools the plan calls for, and sends `"I approve the plan. Please proceed with the implementation."` (plus your feedback if provided). **Reject** keeps plan mode active and sends `"I'd like to revise the plan. Refinement notes:\n<feedback>"` so the model can refine.
+  - **AskUserQuestion** — when the model invokes the `AskUserQuestion` tool, the same `PreToolUse` hook denies it cleanly. The model receives an `is_error: true` tool_result with the deny reason and ends the turn naturally — no interrupt, no marker. The orchestrator renders a blue card with the structured questions/options. **Multiple questions** render as a tab strip across the top; the active tab's pane shows its options. Each pane has the model's options as buttons plus an **Other:** text field for typing a custom answer (always available, overrides any option pick). A single **Send all answers** button at the bottom enables once every question has an answer and submits them as one consolidated prompt; if the instance somehow isn't idle yet, the answer is queued locally and flushed automatically on the next `status=idle` event.
   - **System notes** — most diagnostic events (per-turn `status:"requesting"`, `rate_limit_event:"allowed"`, hook lifecycle pings, task progress) are filtered out. The ones that remain (`init`, `stderr`, `exit`, `permission_denied`, `compacting`, `spawn_error`, `crashed`, `history_load_error`, non-allowed `rate_limit_event`) render as compact one-line notes inline where they actually occurred — no more shared "SYSTEM" box that silently extends itself across turns.
   - **Turn end** — small footer line with duration / cost / tokens.
 - **Composer** — textarea at the bottom. Enter sends, Shift+Enter inserts a newline. The placeholder explains the current state ("turn running — your message will queue", "click Resume", etc.). The text input stays focusable during a running turn so you can queue a follow-up.
@@ -131,16 +130,15 @@ claude-orch-app/
 │   │                         ring buffer (last 500 UI events), control_request
 │   │                         round-trip, history replay, session-metadata write,
 │   │                         mode validation (plan / bypassPermissions only),
-│   │                         auto-interrupt on user_question / plan_request.
+│   │                         spawns with a `--settings` PreToolUse deny hook for
+│   │                         AskUserQuestion + ExitPlanMode.
 │   ├── parser.js             stream-json line → UI event normalization. Merges
 │   │                         deltas by (msgId, blockIdx); emits thinking_redacted
 │   │                         when a thinking block closes with only signature_delta;
 │   │                         attaches parentToolUseId so sub-agent events can be
 │   │                         routed to nested views; emits structured user_question
 │   │                         events for AskUserQuestion and plan_request events for
-│   │                         ExitPlanMode; flags `[Request interrupted by user]`
-│   │                         text blocks via isInterruptMarker for orchestrator-
-│   │                         driven scrubbing.
+│   │                         ExitPlanMode.
 │   ├── projects.js           FS ops on ~/project; cwd encoding for ~/.claude/projects;
 │   │                         seeds CLAUDE.md on new projects.
 │   ├── routes.js             REST handlers; thin shell over instances + projects.
@@ -194,14 +192,13 @@ claude-orch-app/
     ├── ws.test.mjs           Subscribe + snapshot + live fan-out; reconnect dedup;
     │                         two-instance concurrency; mode/interrupt over WS;
     │                         turn_notification fan-out to non-subscribers.
-    ├── question.test.mjs     AskUserQuestion → user_question UI event end-to-end +
-    │                         the orchestrator's auto-interrupt is verified via the
-    │                         scenario only completing on interrupt control_request.
+    ├── question.test.mjs     AskUserQuestion → user_question UI event end-to-end;
+    │                         scenario emits the hook-deny tool_result + a normal
+    │                         result/success and the orchestrator must NOT issue an
+    │                         interrupt control_request.
     ├── plan.test.mjs         ExitPlanMode → plan_request enriched from ~/.claude/
-    │                         plans/*.md → auto-interrupt → result(interrupted).
-    ├── interrupt-marker.test.mjs  Confirms [Request interrupted by user] is stripped
-    │                         only on auto-interrupt (AskUserQuestion / ExitPlanMode)
-    │                         and stays visible when the user clicks Interrupt.
+    │                         plans/*.md; same hook-deny shape; no interrupt; the
+    │                         plan-approve setMode → bypassPermissions WS path.
     ├── notifications.test.mjs Pure-unit shouldNotify() decision table.
     ├── diff.test.mjs         Myers' diff: identity, pure add/del, replacement,
     │                         empties, round-trip both sides, stats.
@@ -246,7 +243,7 @@ One persistent connection at `ws://127.0.0.1:8787/ws`, multiplexed across instan
 
 Every event carries a `parentToolUseId` (or `null`) — the conversation view routes non-null events into a nested mini-conversation under the matching outer tool block, enabling sub-agent drill-down for `Task`.
 
-`text_delta`, `text_end` (carries `isInterruptMarker:true` when the block content matches the CLI's interrupt-by-user marker), `text_strip` (rewritten from `text_end` by Instance when the orchestrator triggered the interrupt itself, so the marker disappears), `thinking_start`, `thinking_delta`, `thinking_end`, `thinking_redacted`, `tool_use_start`, `tool_use_input_delta`, `tool_use`, `tool_result`, `user_echo`, `system` (with `subtype` — includes `history_replayed` marker), `hook`, `turn_end`, `assistant_message`, `control_response`, `user_question` (`toolUseId`, `questions[]`), `plan_request` (`toolUseId`, `plan`, `planPath`), `raw`. Each event in the ring has a monotonic `_seq` so snapshot + live merge is idempotent.
+`text_delta`, `text_end`, `thinking_start`, `thinking_delta`, `thinking_end`, `thinking_redacted`, `tool_use_start`, `tool_use_input_delta`, `tool_use`, `tool_result`, `user_echo`, `system` (with `subtype` — includes `history_replayed` marker), `hook`, `turn_end`, `assistant_message`, `control_response`, `user_question` (`toolUseId`, `questions[]`), `plan_request` (`toolUseId`, `plan`, `planPath`), `raw`. Each event in the ring has a monotonic `_seq` so snapshot + live merge is idempotent.
 
 ### REST endpoints
 
@@ -309,7 +306,7 @@ The opt-in real-claude smoke (`tests/smoke.real.test.mjs`, gated by `RUN_REAL_CL
 ### Known limitations
 
 - **Opus 4.7 thinking is redacted.** The model emits a thinking block but only a `signature_delta`, never the content. The UI shows a `(thinking redacted by model)` placeholder for those blocks. Pick `claude-sonnet-4-6` from the model dropdown if you want to see the thinking stream.
-- **AskUserQuestion is answered via the next prompt, not as a real tool result.** In `stream-json --print` mode the CLI auto-errors the AskUserQuestion tool execution before the host can answer it (there's no SDK callback registered). The orchestrator works around this by (a) auto-interrupting the turn the moment the AskUserQuestion tool_use is parsed, so the option card is the conversation's tail and the model can't ramble below it, and (b) rendering the structured options as buttons and feeding the picked answer in as a normal user prompt on the next turn. Functionally fine, but the original tool_result is still an `is_error` and the interrupted turn ends with `stop_reason: "interrupted"`.
+- **AskUserQuestion is answered via the next prompt, not as a real tool result.** A `PreToolUse` hook (registered via `--settings`) denies the tool, the model receives an `is_error: true` tool_result with a "wait for the user" reason and ends the turn naturally. The orchestrator renders the structured options as buttons; the picked answer is fed in as a normal user prompt on the next turn. Functionally fine, but the original tool_result is still an `is_error` for diagnostic purposes.
 - **`--effort` and `--thinking` are spawn-time only.** Switching them mid-session would require respawn + resume. Mode is the only knob that's live-switchable (via `control_request set_permission_mode`).
 - **No auth.** Bound to 127.0.0.1 — anyone with shell access on the device can drive it.
 - **Best-effort metadata writes.** If the orchestrator crashes between a turn ending and the metadata append, the session jsonl may lack the `last-prompt` line and won't show up in `claude --resume`'s picker. The transcript is still intact and resumable by `claude --resume <sid>`.

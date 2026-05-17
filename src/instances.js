@@ -4,8 +4,39 @@ import { randomUUID } from 'node:crypto';
 import readline from 'node:readline';
 import path from 'node:path';
 import { promises as fs, readFileSync } from 'node:fs';
-import { Parser, INTERRUPT_MARKER_RE } from './parser.js';
+import { Parser } from './parser.js';
 import { getProject, encodeCwd, claudeProjectsRoot } from './projects.js';
+
+// Static deny used for AskUserQuestion / ExitPlanMode. The CLI receives an
+// is_error tool_result with this reason and the model typically wraps up
+// with a brief "waiting for your response" and ends the turn cleanly — no
+// control_request interrupt is needed, no `[Request interrupted by user]`
+// marker is inserted.
+const HOOK_DENY_REASON_BLOCKING_TOOL =
+  'Awaiting user input via the orchestrator UI — please stop and wait for the next user message.';
+
+// printf-friendly literal: single-quote the JSON so the shell doesn't
+// interpolate, escape internal double-quotes via JSON.stringify on the
+// REASON above.
+function buildBlockingToolHookCommand() {
+  const reason = HOOK_DENY_REASON_BLOCKING_TOOL.replace(/"/g, '\\"');
+  return `printf '%s' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"${reason}"}}'`;
+}
+
+function buildSettingsJSON() {
+  return JSON.stringify({
+    hooks: {
+      PreToolUse: [{
+        matcher: 'AskUserQuestion|ExitPlanMode',
+        hooks: [{
+          type: 'command',
+          timeout: 5,
+          command: buildBlockingToolHookCommand(),
+        }],
+      }],
+    },
+  });
+}
 
 const RING_SIZE = 500;
 // Only two modes are exposed: `plan` (read-only planning) and
@@ -62,7 +93,6 @@ export class Instance extends EventEmitter {
     this._stderr = '';
     this._lastLeafUuid = null;     // for last-prompt jsonl marker
     this._lastPlanFilePath = null; // last Write to ~/.claude/plans/*.md, used to enrich ExitPlanMode
-    this._autoInterruptedThisTurn = false; // true while orchestrator-driven interrupt is in flight
   }
 
   summary() {
@@ -137,14 +167,7 @@ export class Instance extends EventEmitter {
             });
             any = true;
           } else if (block.type === 'text') {
-            const text = block.text ?? '';
-            // Replay-side scrub: synthetic-user messages that contain the
-            // interrupt marker were noise in the original session and stay
-            // noise on replay. Skip them entirely so the resumed
-            // conversation doesn't show a [Request interrupted by user]
-            // USER box where there shouldn't be one.
-            if (INTERRUPT_MARKER_RE.test(text)) continue;
-            this._emitUi({ kind: 'user_echo', text });
+            this._emitUi({ kind: 'user_echo', text: block.text ?? '' });
             any = true;
           }
         }
@@ -161,12 +184,7 @@ export class Instance extends EventEmitter {
         const b = blocks[i];
         if (!b || typeof b !== 'object') continue;
         if (b.type === 'text') {
-          const text = b.text ?? '';
-          // Same scrub on the assistant side — the live path strips text
-          // blocks whose content contains the interrupt marker, and the
-          // replay path should match.
-          if (INTERRUPT_MARKER_RE.test(text)) continue;
-          this._emitUi({ kind: 'text_delta', msgId, blockIdx: i, text });
+          this._emitUi({ kind: 'text_delta', msgId, blockIdx: i, text: b.text ?? '' });
           this._emitUi({ kind: 'text_end', msgId, blockIdx: i });
           any = true;
         } else if (b.type === 'thinking') {
@@ -230,6 +248,12 @@ export class Instance extends EventEmitter {
       '--permission-mode', this.mode,
       '--effort', this.effort,
       '--thinking', this.thinking,
+      // PreToolUse hook that statically denies AskUserQuestion +
+      // ExitPlanMode. Replaces the old auto-interrupt + marker-scrub
+      // plumbing — the model receives an is_error tool_result with the
+      // deny reason and ends the turn cleanly. No [Request interrupted by
+      // user] marker is ever inserted.
+      '--settings', buildSettingsJSON(),
     ];
     if (this.model) args.push('--model', this.model);
     if (resume) args.push('--resume', this.sessionId);
@@ -327,42 +351,7 @@ export class Instance extends EventEmitter {
         try { ev.plan = readFileSync(this._lastPlanFilePath, 'utf8'); }
         catch { /* best-effort — UI will just show "(no plan content)" */ }
       }
-      // Only strip the `[Request interrupted by user]` marker when WE
-      // triggered the interrupt as part of the AskUserQuestion / ExitPlanMode
-      // flow. If the user manually clicked Interrupt the marker should
-      // still appear in the conversation as visible confirmation.
-      if (ev.kind === 'text_end' && ev.isInterruptMarker) {
-        if (this._autoInterruptedThisTurn) {
-          ev.kind = 'text_strip';
-        }
-        delete ev.isInterruptMarker;
-      }
-      // The CLI also injects the marker as a SYNTHETIC user message
-      // sometimes — suppress that USER box on auto-interrupts.
-      if (ev.kind === 'user_echo' && ev.isInterruptMarker) {
-        delete ev.isInterruptMarker;
-        if (this._autoInterruptedThisTurn) continue;
-      }
-      // The deliberate auto-interrupt arrives at turn_end with
-      // stop_reason="interrupted" + is_error=true, which the UI normally
-      // paints as ❌. Override to a non-error finish so the conversation
-      // shows ✓ turn ended (interrupted) — the action was intentional.
-      if (ev.kind === 'turn_end') {
-        if (this._autoInterruptedThisTurn) {
-          ev.isError = false;
-        }
-        this._autoInterruptedThisTurn = false;
-      }
       this._emitUi(ev);
-      // Pre-empt the model's follow-up after AskUserQuestion or
-      // ExitPlanMode. In stream-json mode the CLI auto-errors both tools
-      // ("Answer questions?" / "Exit plan mode?"), and without an
-      // interrupt the model would compose a confused follow-up that
-      // makes the inline approval / question card feel ignorable.
-      if (ev.kind === 'user_question' || ev.kind === 'plan_request') {
-        this._autoInterruptedThisTurn = true;
-        this.interrupt().catch(() => {});
-      }
     }
   }
 

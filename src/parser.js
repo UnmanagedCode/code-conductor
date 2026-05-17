@@ -23,16 +23,6 @@
 
 import { randomUUID } from 'node:crypto';
 
-// Matches both `[Request interrupted by user]` and the tool-use variant.
-// The CLI inserts these strings as part of an assistant text block when the
-// turn is interrupted — sometimes as the entire block, sometimes appended
-// after a partial model response. We accept the marker anywhere in the
-// block and let Instance decide whether to strip the whole block (only on
-// orchestrator-driven auto-interrupts, never on user-clicked interrupts).
-// Exported so the history-replay path in Instance can use the same regex
-// for scrubbing persisted transcripts.
-export const INTERRUPT_MARKER_RE = /\[Request interrupted by user(?:\s+for[^\]]*)?\]/;
-
 export class Parser {
   constructor() {
     this.currentMsgId = null;
@@ -176,9 +166,7 @@ export class Parser {
         const block = this.blocks.get(idx);
         if (!block) return [];
         if (block.type === 'text') {
-          const ev = { kind: 'text_end', msgId: this.currentMsgId, blockIdx: idx };
-          if (INTERRUPT_MARKER_RE.test(block.accumText)) ev.isInterruptMarker = true;
-          return [ev];
+          return [{ kind: 'text_end', msgId: this.currentMsgId, blockIdx: idx }];
         }
         if (block.type === 'thinking') {
           if (!block.gotThinkingDelta) {
@@ -270,14 +258,7 @@ export class Parser {
           isError: !!block.is_error,
         });
       } else if (block.type === 'text') {
-        const text = block.text ?? '';
-        const userEv = { kind: 'user_echo', text };
-        // The CLI sometimes injects the interrupt marker as a SYNTHETIC
-        // user message after interrupting (in addition to or instead of
-        // appending it to an assistant text block). Flag it the same way
-        // so Instance can suppress it on orchestrator-driven interrupts.
-        if (INTERRUPT_MARKER_RE.test(text)) userEv.isInterruptMarker = true;
-        out.push(userEv);
+        out.push({ kind: 'user_echo', text: block.text ?? '' });
       }
     }
     return out;

@@ -14,14 +14,9 @@
         { "type": "stream_event", "event": { "type": "content_block_start", "index": 1, "content_block": { "type": "tool_use", "id": "tu_exit", "name": "ExitPlanMode", "input": {} } } },
         { "type": "stream_event", "event": { "type": "content_block_delta", "index": 1, "delta": { "type": "input_json_delta", "partial_json": "{}" } } },
         { "type": "stream_event", "event": { "type": "content_block_stop", "index": 1 } },
-        { "type": "user", "message": { "role": "user", "content": [ { "type": "tool_result", "tool_use_id": "tu_exit", "content": "Exit plan mode?", "is_error": true } ] } },
-        { "type": "stream_event", "event": { "type": "message_stop" } }
-      ]
-    },
-    {
-      "on": { "type": "control", "subtype": "interrupt" },
-      "emit": [
-        { "type": "result", "subtype": "error_during_execution", "stop_reason": "interrupted", "duration_ms": 5, "total_cost_usd": 0.0, "is_error": true }
+        { "type": "user", "message": { "role": "user", "content": [ { "type": "tool_result", "tool_use_id": "tu_exit", "content": "Awaiting user input via the orchestrator UI — please stop and wait for the next user message.", "is_error": true } ] } },
+        { "type": "stream_event", "event": { "type": "message_stop" } },
+        { "type": "result", "subtype": "success", "stop_reason": "end_turn", "duration_ms": 5, "total_cost_usd": 0.0, "is_error": false }
       ]
     }
   ]

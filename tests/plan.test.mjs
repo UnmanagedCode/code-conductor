@@ -24,7 +24,7 @@ function wsClient(url) {
   });
 }
 
-test('plan mode: ExitPlanMode emits a plan_request enriched with the plan file content + orchestrator auto-interrupts', async () => {
+test('plan mode: ExitPlanMode emits a plan_request enriched with the plan file content; turn ends cleanly without auto-interrupt', async () => {
   // Seed the plan file at the path the scenario references via $PLANFILE.
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'plan-'));
   const planDir = path.join(tmpDir, '.claude', 'plans');
@@ -58,16 +58,17 @@ test('plan mode: ExitPlanMode emits a plan_request enriched with the plan file c
     assert.match(planEv.ev.plan, /# Plan/);
     assert.match(planEv.ev.plan, /Make X/);
 
-    // Auto-interrupt ended the turn cleanly so the plan card is the tail.
+    // The CLI's PreToolUse hook denied ExitPlanMode and the model ended
+    // the turn cleanly — no auto-interrupt needed.
     const turn = await c.wait(m => m.t === 'event' && m.ev.kind === 'turn_end');
-    assert.equal(turn.ev.stopReason, 'interrupted');
+    assert.equal(turn.ev.isError, false);
+    assert.equal(turn.ev.stopReason, 'end_turn');
 
-    // Verify the orchestrator's stdin transcript actually contains the
-    // interrupt control_request.
+    // No interrupt control_request should have been issued.
     await waitFor(async () => { try { await fsp.stat(transcriptPath); return true; } catch { return false; } });
     const lines = (await fsp.readFile(transcriptPath, 'utf8')).split('\n').filter(Boolean).map(l => JSON.parse(l));
     const interrupt = lines.find(l => l.type === 'control_request' && l.request?.subtype === 'interrupt');
-    assert.ok(interrupt, 'expected an interrupt control_request after ExitPlanMode');
+    assert.equal(interrupt, undefined, `no interrupt should have been sent; transcript: ${JSON.stringify(lines)}`);
 
     await c.close();
   } finally {
