@@ -147,6 +147,74 @@ test('DOM: AskUserQuestion renders an option-button card with the questions and 
   for (const btn of buttons) assert.ok(btn.disabled, 'all option buttons should be disabled post-pick');
 });
 
+test('DOM: noisy system events (status, rate_limit_event:allowed) are dropped from the conversation', async () => {
+  const { document, root, Parser, Conversation } = await setupDOM();
+  const conv = new Conversation(root);
+  const p = new Parser();
+  const events = [
+    { type: 'system', subtype: 'status', status: 'requesting', uuid: 'u1', session_id: 's' },
+    { type: 'system', subtype: 'status', status: 'requesting', uuid: 'u2', session_id: 's' },
+    { type: 'rate_limit_event', rate_limit_info: { status: 'allowed' }, uuid: 'u3', session_id: 's' },
+    { type: 'hook_event', event: 'PreToolUse', uuid: 'u4' },
+  ];
+  for (const e of events) for (const ev of p.handleObject(e)) conv.apply(ev);
+
+  // None of the noisy events should leave a SystemBlock in the DOM.
+  const systems = root.querySelectorAll('.block.system');
+  assert.equal(systems.length, 0, `expected no system blocks, got ${systems.length}`);
+});
+
+test('DOM: kept system events render inline in chronological order (no shared __system__ wrap)', async () => {
+  const { document, root, Parser, Conversation } = await setupDOM();
+  const conv = new Conversation(root);
+  const p = new Parser();
+  // Simulate two turns: each emits an init, and we want them at their
+  // chronological positions, NOT both bunched into one box at the top.
+  const stream1 = [
+    { type: 'system', subtype: 'init', session_id: 'sid', model: 'claude-opus-4-7', uuid: 'i1' },
+    { type: 'stream_event', event: { type: 'message_start', message: { id: 'm1', role: 'assistant' } } },
+    { type: 'stream_event', event: { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } } },
+    { type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'first' } } },
+    { type: 'stream_event', event: { type: 'content_block_stop', index: 0 } },
+    { type: 'stream_event', event: { type: 'message_stop' } },
+    { type: 'result', subtype: 'success', stop_reason: 'end_turn', duration_ms: 1, total_cost_usd: 0 },
+  ];
+  const stream2 = [
+    { type: 'system', subtype: 'init', session_id: 'sid', model: 'claude-opus-4-7', uuid: 'i2' },
+    { type: 'stream_event', event: { type: 'message_start', message: { id: 'm2', role: 'assistant' } } },
+    { type: 'stream_event', event: { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } } },
+    { type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'second' } } },
+    { type: 'stream_event', event: { type: 'content_block_stop', index: 0 } },
+    { type: 'stream_event', event: { type: 'message_stop' } },
+    { type: 'result', subtype: 'success', stop_reason: 'end_turn', duration_ms: 1, total_cost_usd: 0 },
+  ];
+  for (const e of stream1) for (const ev of p.handleObject(e)) conv.apply(ev);
+  for (const e of stream2) for (const ev of p.handleObject(e)) conv.apply(ev);
+
+  // We expect exactly TWO init blocks (one per turn), each at its own
+  // chronological position in the DOM.
+  const inits = [...root.querySelectorAll('.block.system')].filter(n => n.textContent.includes('init'));
+  assert.equal(inits.length, 2, `expected one init block per turn, got ${inits.length}`);
+
+  // Each init should be a direct child of the conversation root, not nested
+  // inside a shared '__system__' message wrap.
+  for (const init of inits) {
+    assert.equal(init.parentElement, root, 'system block must be a top-level conversation child');
+  }
+
+  // The first init must come BEFORE the first assistant message in DOM
+  // order, and the second init must come BEFORE the second assistant.
+  const all = [...root.children];
+  const firstInitIdx = all.indexOf(inits[0]);
+  const secondInitIdx = all.indexOf(inits[1]);
+  assert.ok(firstInitIdx < secondInitIdx, 'inits must appear in chronological order');
+  const assistants = all.filter(n => n.classList?.contains('msg') && n.classList?.contains('assistant'));
+  assert.equal(assistants.length, 2, 'two assistant messages expected');
+  assert.ok(firstInitIdx < all.indexOf(assistants[0]), 'first init renders before first assistant');
+  assert.ok(secondInitIdx < all.indexOf(assistants[1]), 'second init renders before second assistant');
+  assert.ok(secondInitIdx > all.indexOf(assistants[0]), 'second init renders AFTER first assistant — no shared wrap drift');
+});
+
 test('DOM: tool block always shows its command in the summary even while streaming', async () => {
   // Specifically a regression guard — the user-facing complaint was that
   // the command wasn't visible. We feed the stream up to (but not past) the

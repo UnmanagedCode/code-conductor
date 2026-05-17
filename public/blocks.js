@@ -356,17 +356,39 @@ export class ToolResultBlock {
   }
 }
 
+// Subtypes the conversation view will render. Everything else (including the
+// per-turn `status:"requesting"` and `rate_limit_event:"allowed"` noise that
+// previously dumped raw JSON into the chat) is dropped at the dispatcher.
+const SHOWN_SYSTEM_SUBTYPES = new Set([
+  'init', 'stderr', 'exit', 'spawn_error', 'crashed',
+  'permission_denied', 'compacting', 'history_load_error',
+]);
+
+export function shouldRenderSystem(ev) {
+  const sub = ev.subtype;
+  if (sub === 'rate_limit_event') {
+    return ev.data?.rate_limit_info?.status && ev.data.rate_limit_info.status !== 'allowed';
+  }
+  if (sub === 'status') return false; // per-turn `requesting`/`complete` chatter
+  if (sub === 'task_progress' || sub === 'task_started' || sub === 'task_updated') return false;
+  return SHOWN_SYSTEM_SUBTYPES.has(sub);
+}
+
 export class SystemBlock {
   constructor({ subtype, data }) {
     const detail = (() => {
       if (subtype === 'init') return `model=${data?.model ?? '?'} sid=${data?.session_id?.slice(0,8) ?? '?'}`;
       if (subtype === 'stderr') return data?.line ?? '';
       if (subtype === 'exit') return `code=${data?.code} signal=${data?.signal ?? '-'}`;
+      if (subtype === 'spawn_error' || subtype === 'crashed') return data?.message ?? '';
+      if (subtype === 'history_load_error') return `couldn't replay history: ${data?.message ?? ''}`;
+      if (subtype === 'permission_denied') return data?.message ?? data?.reason ?? '';
+      if (subtype === 'compacting') return 'auto-compacting context…';
       try { return JSON.stringify(data).slice(0, 200); } catch { return ''; }
     })();
     this.node = el('div', { class: 'block system' },
       el('span', { class: 'subtype' }, subtype),
-      ` ${detail}`,
+      detail ? ` ${detail}` : '',
     );
   }
 }

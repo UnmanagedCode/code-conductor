@@ -3,7 +3,7 @@
 // replays don't duplicate prior content.
 
 import { TextBlock, ThinkingBlock, ToolUseBlock, ToolResultBlock, SystemBlock, TurnEndBlock,
-  PermissionRequestBlock, UserQuestionBlock, el } from './blocks.js';
+  PermissionRequestBlock, UserQuestionBlock, shouldRenderSystem, el } from './blocks.js';
 
 export class Conversation {
   constructor(rootEl, { isSub = false, onPermissionDecision = null, onUserQuestionAnswer = null } = {}) {
@@ -92,8 +92,9 @@ export class Conversation {
       case 'tool_result':    this._renderToolResult(ev); break;
       case 'system':
         if (ev.subtype === 'history_replayed') { this._renderHistoryDivider(ev); break; }
+        if (!shouldRenderSystem(ev)) break; // drop status/rate_limit/etc. noise
         this._renderSystem(ev); break;
-      case 'hook':           this._renderSystem({ ...ev, subtype: 'hook:' + ev.event, data: ev.data }); break;
+      case 'hook':           /* dimmed hook lines dropped from the conversation */ break;
       case 'turn_end':       this._renderTurnEnd(ev); break;
       case 'assistant_message': break; // reconciled via deltas already
       case 'control_response': break; // hidden from UI
@@ -241,8 +242,12 @@ export class Conversation {
   }
 
   _renderSystem(ev) {
-    const wrap = this._ensureMessageWrap('__system__', 'system');
-    wrap.body.appendChild(new SystemBlock(ev).node);
+    // Render each kept system event INLINE at its chronological position
+    // rather than into a shared '__system__' wrap. The old shared-wrap
+    // approach caused later turns' system events to silently extend the
+    // single SYSTEM box at the top of the conversation, drifting out of
+    // sync with where they actually occurred in the stream.
+    this.root.appendChild(new SystemBlock(ev).node);
   }
 
   _renderTurnEnd(ev) {

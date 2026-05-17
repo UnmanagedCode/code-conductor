@@ -251,8 +251,15 @@ input:focus, textarea:focus, select:focus { outline: 2px solid var(--accent); ou
 .block.tool-result summary { font-family: ui-monospace, monospace; font-size: 11px; color: var(--muted); }
 .block.tool-result.error summary { color: var(--red); }
 
-.block.system { font-size: 11px; color: var(--muted); font-family: ui-monospace, monospace; }
-.block.system .subtype { color: var(--amber); }
+.block.system {
+  font-size: 11px; color: var(--muted); font-family: ui-monospace, monospace;
+  padding: 4px 8px; margin: 6px 0;
+  border-left: 2px solid var(--border);
+  background: transparent;
+  word-break: break-word;
+}
+.block.system .subtype { color: var(--amber); margin-right: 4px; }
+.block.system { display: block; }
 
 .history-divider {
   text-align: center;
