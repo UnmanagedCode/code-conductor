@@ -456,6 +456,65 @@ export function formatUserQuestionAnswers(questions, answers) {
   return `My answers:\n${lines.join('\n')}`;
 }
 
+// Renders the plan the model produced in plan mode + Approve/Reject
+// controls. Approve switches the instance out of plan mode and tells the
+// model to implement. Reject keeps plan mode active and forwards user
+// feedback so the model can refine.
+export class PlanRequestBlock {
+  constructor(ev, onDecision) {
+    this.toolUseId = ev.toolUseId;
+    this.onDecision = onDecision;
+    this.submitted = false;
+
+    this.statusNode = el('span', { class: 'pr-status' }, 'awaiting your decision');
+
+    const planText = (typeof ev.plan === 'string' && ev.plan.trim().length > 0)
+      ? ev.plan
+      : '(plan content not provided inline — see the recent assistant output above)';
+    const pathLine = ev.planPath
+      ? el('div', { class: 'pr-path' }, `saved to ${ev.planPath}`)
+      : null;
+
+    this.feedbackInput = el('textarea', {
+      class: 'pr-feedback', rows: '2',
+      placeholder: 'Optional feedback / refinement notes (used when rejecting)',
+    });
+
+    this.approveBtn = el('button', { class: 'pr-approve', type: 'button' }, 'Approve & implement');
+    this.rejectBtn = el('button', { class: 'pr-reject', type: 'button' }, 'Reject & refine');
+    this.approveBtn.addEventListener('click', () => this._click('approve'));
+    this.rejectBtn.addEventListener('click', () => this._click('reject'));
+
+    this.node = el('div', { class: 'block plan-request' },
+      el('div', { class: 'pr-head' },
+        el('span', { class: 'pr-title' }, '📋 Plan ready for approval'),
+        this.statusNode,
+      ),
+      pathLine,
+      el('pre', { class: 'pr-body' }, planText),
+      el('div', { class: 'pr-feedback-wrap' }, this.feedbackInput),
+      el('div', { class: 'pr-actions' }, this.approveBtn, this.rejectBtn),
+    );
+  }
+
+  _click(decision) {
+    if (this.submitted) return;
+    this.submitted = true;
+    this.approveBtn.disabled = true;
+    this.rejectBtn.disabled = true;
+    this.feedbackInput.disabled = true;
+    this.statusNode.textContent = decision === 'approve' ? 'approving…' : 'sending refinement…';
+    this.node.classList.add(decision === 'approve' ? 'approved' : 'rejected');
+    if (this.onDecision) {
+      this.onDecision({
+        toolUseId: this.toolUseId,
+        decision,
+        feedback: this.feedbackInput.value.trim(),
+      });
+    }
+  }
+}
+
 export class PermissionRequestBlock {
   constructor(ev, onDecision) {
     this.requestId = ev.requestId;

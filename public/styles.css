@@ -306,6 +306,44 @@ input:focus, textarea:focus, select:focus { outline: 2px solid var(--accent); ou
 }
 .uq-submit:hover:not(:disabled) { background: #8cb9ff; border-color: #8cb9ff; }
 .uq-submit:disabled { background: var(--panel-2); color: var(--muted); border-color: var(--border); font-weight: 400; }
+
+.block.plan-request {
+  background: #182230;
+  border: 1px solid var(--green);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin: 10px 0;
+}
+.block.plan-request.approved { border-color: var(--green); }
+.block.plan-request.rejected { border-color: var(--amber); }
+.pr-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin-bottom: 6px; }
+.pr-title { font-weight: 600; color: var(--green); }
+.block.plan-request.rejected .pr-title { color: var(--amber); }
+.pr-status { font-size: 11px; color: var(--muted); }
+.pr-path { font-family: ui-monospace, monospace; font-size: 10px; color: var(--muted); margin-bottom: 8px; word-break: break-all; }
+.pr-body {
+  background: #0a0c12; border-radius: 4px; padding: 10px;
+  white-space: pre-wrap; word-break: break-word;
+  max-height: 360px; overflow-y: auto;
+  font-family: ui-monospace, monospace; font-size: 12px;
+  margin: 0 0 10px 0;
+}
+.pr-feedback-wrap { margin: 0 0 10px 0; }
+.pr-feedback {
+  width: 100%; resize: vertical; min-height: 40px;
+  padding: 6px 8px; font-size: 12px; font-family: inherit;
+}
+.pr-actions { display: flex; gap: 8px; }
+.pr-approve {
+  flex: 1; padding: 10px; font-weight: 600;
+  background: rgba(74,222,128,.20); color: var(--green); border-color: var(--green);
+}
+.pr-approve:hover:not(:disabled) { background: rgba(74,222,128,.30); }
+.pr-reject {
+  flex: 1; padding: 10px;
+  background: rgba(245,158,11,.15); color: var(--amber); border-color: var(--amber);
+}
+.pr-reject:hover:not(:disabled) { background: rgba(245,158,11,.25); }
 .block.tool-result { margin-left: 18px; }
 .block.tool-result summary { font-family: ui-monospace, monospace; font-size: 11px; color: var(--muted); }
 .block.tool-result.error summary { color: var(--red); }

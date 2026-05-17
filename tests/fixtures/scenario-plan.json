@@ -1,0 +1,28 @@
+{
+  "events": [
+    { "type": "system", "subtype": "init", "session_id": "$SID", "cwd": "$CWD", "permissionMode": "plan" }
+  ],
+  "turns": [
+    {
+      "on": { "type": "prompt" },
+      "emit": [
+        { "type": "stream_event", "event": { "type": "message_start", "message": { "id": "msg_p1", "role": "assistant" } } },
+        { "type": "stream_event", "event": { "type": "content_block_start", "index": 0, "content_block": { "type": "tool_use", "id": "tu_write", "name": "Write", "input": {} } } },
+        { "type": "stream_event", "event": { "type": "content_block_delta", "index": 0, "delta": { "type": "input_json_delta", "partial_json": "{\"file_path\":\"$PLANFILE\",\"content\":\"# Plan\\n- Make X\\n- Then Y\"}" } } },
+        { "type": "stream_event", "event": { "type": "content_block_stop", "index": 0 } },
+        { "type": "user", "message": { "role": "user", "content": [ { "type": "tool_result", "tool_use_id": "tu_write", "content": "File written", "is_error": false } ] } },
+        { "type": "stream_event", "event": { "type": "content_block_start", "index": 1, "content_block": { "type": "tool_use", "id": "tu_exit", "name": "ExitPlanMode", "input": {} } } },
+        { "type": "stream_event", "event": { "type": "content_block_delta", "index": 1, "delta": { "type": "input_json_delta", "partial_json": "{}" } } },
+        { "type": "stream_event", "event": { "type": "content_block_stop", "index": 1 } },
+        { "type": "user", "message": { "role": "user", "content": [ { "type": "tool_result", "tool_use_id": "tu_exit", "content": "Exit plan mode?", "is_error": true } ] } },
+        { "type": "stream_event", "event": { "type": "message_stop" } }
+      ]
+    },
+    {
+      "on": { "type": "control", "subtype": "interrupt" },
+      "emit": [
+        { "type": "result", "subtype": "error_during_execution", "stop_reason": "interrupted", "duration_ms": 5, "total_cost_usd": 0.0, "is_error": true }
+      ]
+    }
+  ]
+}

@@ -373,6 +373,64 @@ test('DOM: kept system events render inline in chronological order (no shared __
   assert.ok(secondInitIdx > all.indexOf(assistants[0]), 'second init renders AFTER first assistant — no shared wrap drift');
 });
 
+test('DOM: ExitPlanMode renders an approve/reject card with the plan + feedback box', async () => {
+  const { document, root, Parser, Conversation } = await setupDOM();
+  const decisions = [];
+  const conversation = new Conversation(root, { onPlanDecision: (d) => decisions.push(d) });
+  const planMarkdown = '# Plan\n- Step 1\n- Step 2';
+  const stream = [
+    { type: 'stream_event', event: { type: 'message_start', message: { id: 'm', role: 'assistant' } } },
+    { type: 'stream_event', event: { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'tu_plan', name: 'ExitPlanMode', input: {} } } },
+    { type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: JSON.stringify({ plan: planMarkdown }) } } },
+    { type: 'stream_event', event: { type: 'content_block_stop', index: 0 } },
+  ];
+  feed(new Parser(), conversation, stream);
+
+  const card = root.querySelector('.block.plan-request');
+  assert.ok(card, 'plan card rendered');
+  assert.match(card.textContent, /Plan ready for approval/);
+  assert.match(card.querySelector('.pr-body').textContent, /Step 1/);
+
+  // Approve fires onPlanDecision with the right shape.
+  const approve = card.querySelector('.pr-approve');
+  const reject = card.querySelector('.pr-reject');
+  const feedback = card.querySelector('.pr-feedback');
+  assert.ok(approve && reject && feedback);
+
+  feedback.value = 'looks good';
+  approve.click();
+  assert.equal(decisions.length, 1);
+  assert.equal(decisions[0].toolUseId, 'tu_plan');
+  assert.equal(decisions[0].decision, 'approve');
+  assert.equal(decisions[0].feedback, 'looks good');
+  assert.ok(card.classList.contains('approved'));
+  assert.ok(approve.disabled && reject.disabled, 'both buttons disabled after click');
+
+  // Second click is a no-op.
+  reject.click();
+  assert.equal(decisions.length, 1);
+});
+
+test('DOM: ExitPlanMode rejection carries the feedback text', async () => {
+  const { document, root, Parser, Conversation } = await setupDOM();
+  const decisions = [];
+  const conversation = new Conversation(root, { onPlanDecision: (d) => decisions.push(d) });
+  const stream = [
+    { type: 'stream_event', event: { type: 'message_start', message: { id: 'm', role: 'assistant' } } },
+    { type: 'stream_event', event: { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'tu_p2', name: 'ExitPlanMode', input: {} } } },
+    { type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '{"plan":"do thing"}' } } },
+    { type: 'stream_event', event: { type: 'content_block_stop', index: 0 } },
+  ];
+  feed(new Parser(), conversation, stream);
+
+  const card = root.querySelector('.block.plan-request');
+  card.querySelector('.pr-feedback').value = 'add a security review step';
+  card.querySelector('.pr-reject').click();
+  assert.equal(decisions[0].decision, 'reject');
+  assert.equal(decisions[0].feedback, 'add a security review step');
+  assert.ok(card.classList.contains('rejected'));
+});
+
 test('DOM: tool block always shows its command in the summary even while streaming', async () => {
   // Specifically a regression guard — the user-facing complaint was that
   // the command wasn't visible. We feed the stream up to (but not past) the

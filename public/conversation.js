@@ -3,16 +3,24 @@
 // replays don't duplicate prior content.
 
 import { TextBlock, ThinkingBlock, ToolUseBlock, ToolResultBlock, SystemBlock, TurnEndBlock,
-  PermissionRequestBlock, UserQuestionBlock, shouldRenderSystem, el } from './blocks.js';
+  PermissionRequestBlock, UserQuestionBlock, PlanRequestBlock,
+  shouldRenderSystem, el } from './blocks.js';
 
 export class Conversation {
-  constructor(rootEl, { isSub = false, onPermissionDecision = null, onUserQuestionSubmit = null } = {}) {
+  constructor(rootEl, {
+    isSub = false,
+    onPermissionDecision = null,
+    onUserQuestionSubmit = null,
+    onPlanDecision = null,
+  } = {}) {
     this.root = rootEl;
     this.isSub = isSub;
     this.onPermissionDecision = onPermissionDecision;
     this.onUserQuestionSubmit = onUserQuestionSubmit;
+    this.onPlanDecision = onPlanDecision;
     this.permissionBlocks = new Map(); // requestId -> PermissionRequestBlock
     this.userQuestionBlocks = new Map(); // toolUseId -> UserQuestionBlock
+    this.planBlocks = new Map(); // toolUseId -> PlanRequestBlock
     this.blocksByKey = new Map();   // `${msgId}:${blockIdx}` -> block instance
     this.toolBlocks = new Map();    // toolUseId -> ToolUseBlock
     this.seenSeq = new Set();
@@ -70,6 +78,7 @@ export class Conversation {
             isSub: true,
             onPermissionDecision: this.onPermissionDecision,
             onUserQuestionSubmit: this.onUserQuestionSubmit,
+            onPlanDecision: this.onPlanDecision,
           });
           this.subConvs.set(ev.parentToolUseId, sub);
         }
@@ -81,6 +90,7 @@ export class Conversation {
     if (ev.kind === 'permission_request') { this._renderPermissionRequest(ev); return; }
     if (ev.kind === 'permission_resolved') { this._resolvePermissionRequest(ev); return; }
     if (ev.kind === 'user_question') { this._renderUserQuestion(ev); return; }
+    if (ev.kind === 'plan_request') { this._renderPlanRequest(ev); return; }
     this._ensureNotEmpty();
     switch (ev.kind) {
       case 'user_echo':      this._renderUserEcho(ev); break;
@@ -209,6 +219,17 @@ export class Conversation {
       const wrap = this._ensureMessageWrap(null, 'assistant');
       wrap.body.appendChild(result.node);
     }
+  }
+
+  _renderPlanRequest(ev) {
+    this._ensureNotEmpty();
+    if (this.planBlocks.has(ev.toolUseId)) return;
+    const block = new PlanRequestBlock(ev, (decision) => {
+      if (this.onPlanDecision) this.onPlanDecision(decision);
+    });
+    this.planBlocks.set(ev.toolUseId, block);
+    this.root.appendChild(block.node);
+    this._maybeScroll();
   }
 
   _renderUserQuestion(ev) {

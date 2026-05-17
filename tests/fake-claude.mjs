@@ -61,9 +61,20 @@ let transcriptHandle = null;
 if (transcriptPath) transcriptHandle = await fs.open(transcriptPath, 'a');
 
 function substitute(obj) {
-  if (obj === '$SID') return SID;
-  if (obj === '$CWD') return CWD;
-  if (obj === '$MODE') return MODE;
+  if (typeof obj === 'string') {
+    // Whole-string sentinels keep working for backwards compat, but we
+    // also do substring replacement so placeholders inside an
+    // `input_json_delta` partial_json (which is itself a JSON-string)
+    // get resolved.
+    if (obj === '$SID') return SID;
+    if (obj === '$CWD') return CWD;
+    if (obj === '$MODE') return MODE;
+    return obj
+      .replaceAll('$SID', SID)
+      .replaceAll('$CWD', CWD)
+      .replaceAll('$MODE', MODE)
+      .replaceAll('$PLANFILE', process.env.FAKE_PLAN_FILE ?? '');
+  }
   if (Array.isArray(obj)) return obj.map(substitute);
   if (obj && typeof obj === 'object') {
     const out = {};

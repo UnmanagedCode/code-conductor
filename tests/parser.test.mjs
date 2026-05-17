@@ -208,6 +208,41 @@ test('parser: parent_tool_use_id is propagated onto every emitted UI event (sub-
   assert.equal(subDelta[0].parentToolUseId, 'task_id_xyz');
 });
 
+test('parser: ExitPlanMode tool_use emits a plan_request event with plan text when provided', () => {
+  const p = new Parser();
+  p.handleObject({ type: 'stream_event', event: { type: 'message_start', message: { id: 'm', role: 'assistant' } } });
+  p.handleObject({
+    type: 'stream_event',
+    event: { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'tu_plan', name: 'ExitPlanMode', input: {} } },
+  });
+  p.handleObject({
+    type: 'stream_event',
+    event: { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '{"plan":"# Plan\\n- step 1\\n- step 2"}' } },
+  });
+  const out = p.handleObject({ type: 'stream_event', event: { type: 'content_block_stop', index: 0 } });
+  const tool = out.find(e => e.kind === 'tool_use');
+  const plan = out.find(e => e.kind === 'plan_request');
+  assert.ok(tool);
+  assert.equal(tool.name, 'ExitPlanMode');
+  assert.ok(plan);
+  assert.equal(plan.toolUseId, 'tu_plan');
+  assert.match(plan.plan, /step 1/);
+  assert.equal(plan.planPath, null);
+});
+
+test('parser: ExitPlanMode with empty input still emits plan_request (plan=null) for orchestrator to enrich', () => {
+  const p = new Parser();
+  p.handleObject({ type: 'stream_event', event: { type: 'message_start', message: { id: 'm', role: 'assistant' } } });
+  p.handleObject({
+    type: 'stream_event',
+    event: { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'tu_x', name: 'ExitPlanMode', input: {} } },
+  });
+  const out = p.handleObject({ type: 'stream_event', event: { type: 'content_block_stop', index: 0 } });
+  const plan = out.find(e => e.kind === 'plan_request');
+  assert.ok(plan);
+  assert.equal(plan.plan, null);
+});
+
 test('parser: AskUserQuestion tool_use also emits a structured user_question event', () => {
   const p = new Parser();
   p.handleObject({ type: 'stream_event', event: { type: 'message_start', message: { id: 'm', role: 'assistant' } } });

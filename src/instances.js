@@ -3,7 +3,7 @@ import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import readline from 'node:readline';
 import path from 'node:path';
-import { promises as fs } from 'node:fs';
+import { promises as fs, readFileSync } from 'node:fs';
 import { Parser } from './parser.js';
 import { getProject, encodeCwd, claudeProjectsRoot } from './projects.js';
 
@@ -52,6 +52,7 @@ export class Instance extends EventEmitter {
     this._pendingPermissions = new Map(); // request_id -> { toolName, input, ... }
     this._stderr = '';
     this._lastLeafUuid = null;     // for last-prompt jsonl marker
+    this._lastPlanFilePath = null; // last Write to ~/.claude/plans/*.md, used to enrich ExitPlanMode
   }
 
   summary() {
@@ -275,15 +276,27 @@ export class Instance extends EventEmitter {
           displayName: ev.displayName,
         });
       }
+      // Track the most recent plan file the model wrote, so we can enrich
+      // an upcoming ExitPlanMode plan_request with the saved plan text
+      // when the model omits `plan` from the tool input.
+      if (ev.kind === 'tool_use' && ev.name === 'Write' && typeof ev.input?.file_path === 'string') {
+        const fp = ev.input.file_path;
+        if (fp.includes('/.claude/plans/') && fp.endsWith('.md')) {
+          this._lastPlanFilePath = fp;
+        }
+      }
+      if (ev.kind === 'plan_request' && !ev.plan && this._lastPlanFilePath) {
+        ev.planPath = this._lastPlanFilePath;
+        try { ev.plan = readFileSync(this._lastPlanFilePath, 'utf8'); }
+        catch { /* best-effort — UI will just show "(no plan content)" */ }
+      }
       this._emitUi(ev);
-      // Pre-empt the model's follow-up after AskUserQuestion. In stream-json
-      // mode the CLI auto-errors the tool with "Answer questions?", and
-      // without an interrupt the model proceeds to compose a confused
-      // "the question was dismissed, want me to just ask in plain text?"
-      // response — which renders below the option card and makes the
-      // question feel ignorable / non-blocking. Interrupting here aborts
-      // that follow-up so the option card is the conversation's tail.
-      if (ev.kind === 'user_question') {
+      // Pre-empt the model's follow-up after AskUserQuestion or
+      // ExitPlanMode. In stream-json mode the CLI auto-errors both tools
+      // ("Answer questions?" / "Exit plan mode?"), and without an
+      // interrupt the model would compose a confused follow-up that
+      // makes the inline approval / question card feel ignorable.
+      if (ev.kind === 'user_question' || ev.kind === 'plan_request') {
         this.interrupt().catch(() => {});
       }
     }

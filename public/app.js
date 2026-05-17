@@ -63,6 +63,17 @@ function flushPendingAnswers(instanceId) {
   pendingAnswersByInstance.delete(instanceId);
 }
 
+function sendOrQueuePrompt(instanceId, text) {
+  const inst = state.instances.find(i => i.id === instanceId);
+  if (inst && inst.status === 'idle') {
+    send('prompt', { id: instanceId, text });
+  } else {
+    const queue = pendingAnswersByInstance.get(instanceId) ?? [];
+    queue.push(text);
+    pendingAnswersByInstance.set(instanceId, queue);
+  }
+}
+
 const conversation = new Conversation(dom.conversation, {
   onPermissionDecision: (requestId, { allow, updatedInput, feedback }) => {
     if (!state.activeId) return;
@@ -74,15 +85,27 @@ const conversation = new Conversation(dom.conversation, {
     // deliver the consolidated answers back as a single normal prompt on
     // the next turn. If a turn is still in flight, queue and flush on
     // status=idle.
-    const text = formatUserQuestionAnswers(questions, answers);
+    sendOrQueuePrompt(state.activeId, formatUserQuestionAnswers(questions, answers));
+  },
+  onPlanDecision: async ({ decision, feedback }) => {
+    if (!state.activeId) return;
     const activeId = state.activeId;
-    const inst = state.instances.find(i => i.id === activeId);
-    if (inst && inst.status === 'idle') {
-      send('prompt', { id: activeId, text });
+    if (decision === 'approve') {
+      // Switch out of plan mode so the model can actually implement what
+      // it just got approval for. Best-effort — if the mode switch fails
+      // (e.g. instance just crashed), still send the approval prompt and
+      // let the user adjust mode manually.
+      try { await send('mode', { id: activeId, mode: 'default' }, { ack: true }); }
+      catch (e) { console.warn('plan-approve mode switch failed', e); }
+      const text = feedback
+        ? `I approve the plan. Additional notes: ${feedback}\n\nPlease proceed with the implementation.`
+        : 'I approve the plan. Please proceed with the implementation.';
+      sendOrQueuePrompt(activeId, text);
     } else {
-      const queue = pendingAnswersByInstance.get(activeId) ?? [];
-      queue.push(text);
-      pendingAnswersByInstance.set(activeId, queue);
+      const text = feedback
+        ? `I'd like to revise the plan. Refinement notes:\n${feedback}`
+        : `I'd like to revise the plan. Please refine it.`;
+      sendOrQueuePrompt(activeId, text);
     }
   },
 });

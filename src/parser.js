@@ -221,6 +221,20 @@ export class Parser {
               questions: input.questions,
             });
           }
+          // ExitPlanMode is similar: the CLI auto-errors it in stream-json
+          // ("Exit plan mode?"). We surface a plan_request UI event so the
+          // user can approve / reject the plan inline. The plan text may be
+          // in `input.plan` directly or omitted when the model wrote it to
+          // a file first — Instance enriches the event with the file path
+          // and content in the latter case.
+          if (block.name === 'ExitPlanMode') {
+            out.push({
+              kind: 'plan_request',
+              toolUseId: block.toolUseId,
+              plan: typeof input?.plan === 'string' ? input.plan : null,
+              planPath: null,
+            });
+          }
           return out;
         }
         return [];
