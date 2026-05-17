@@ -53,6 +53,7 @@ export class Instance extends EventEmitter {
     this._stderr = '';
     this._lastLeafUuid = null;     // for last-prompt jsonl marker
     this._lastPlanFilePath = null; // last Write to ~/.claude/plans/*.md, used to enrich ExitPlanMode
+    this._autoInterruptedThisTurn = false; // true while orchestrator-driven interrupt is in flight
   }
 
   summary() {
@@ -290,6 +291,19 @@ export class Instance extends EventEmitter {
         try { ev.plan = readFileSync(this._lastPlanFilePath, 'utf8'); }
         catch { /* best-effort — UI will just show "(no plan content)" */ }
       }
+      // Only strip the `[Request interrupted by user]` marker when WE
+      // triggered the interrupt as part of the AskUserQuestion / ExitPlanMode
+      // flow. If the user manually clicked Interrupt the marker should
+      // still appear in the conversation as visible confirmation.
+      if (ev.kind === 'text_end' && ev.isInterruptMarker) {
+        if (this._autoInterruptedThisTurn) {
+          ev.kind = 'text_strip';
+        }
+        delete ev.isInterruptMarker;
+      }
+      if (ev.kind === 'turn_end') {
+        this._autoInterruptedThisTurn = false;
+      }
       this._emitUi(ev);
       // Pre-empt the model's follow-up after AskUserQuestion or
       // ExitPlanMode. In stream-json mode the CLI auto-errors both tools
@@ -297,6 +311,7 @@ export class Instance extends EventEmitter {
       // interrupt the model would compose a confused follow-up that
       // makes the inline approval / question card feel ignorable.
       if (ev.kind === 'user_question' || ev.kind === 'plan_request') {
+        this._autoInterruptedThisTurn = true;
         this.interrupt().catch(() => {});
       }
     }

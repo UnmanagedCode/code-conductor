@@ -1,0 +1,81 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { WebSocket } from 'ws';
+import { bootServer, api, waitFor } from './helpers.mjs';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const QUESTION_SCENARIO = path.join(__dirname, 'fixtures', 'scenario-question.json');
+const MANUAL_SCENARIO = path.join(__dirname, 'fixtures', 'scenario-manual-interrupt.json');
+
+function wsClient(url) {
+  return new Promise((resolve) => {
+    const ws = new WebSocket(url);
+    const messages = [];
+    ws.on('message', (raw) => { try { messages.push(JSON.parse(raw.toString())); } catch {} });
+    ws.once('open', () => resolve({
+      ws, messages,
+      send(obj) { ws.send(JSON.stringify(obj)); },
+      close() { return new Promise(r => { ws.once('close', r); ws.close(); }); },
+      wait(p, timeout = 4000) { return waitFor(() => messages.find(p), { timeout }); },
+    }));
+  });
+}
+
+test('auto-interrupt (AskUserQuestion flow): the [Request interrupted by user] marker is stripped', async () => {
+  const ctx = await bootServer({ scenarioPath: QUESTION_SCENARIO });
+  try {
+    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'q' });
+    const r = await api(ctx.baseUrl, 'POST', '/api/instances', { project: 'q', mode: 'default' });
+    const id = r.body.id;
+    await waitFor(() => ctx.instances.get(id).status === 'idle');
+
+    const c = await wsClient(ctx.wsUrl);
+    c.send({ t: 'subscribe', id });
+    await c.wait(m => m.t === 'snapshot');
+    c.send({ t: 'prompt', id, text: 'go' });
+    await c.wait(m => m.t === 'event' && m.ev.kind === 'turn_end');
+
+    const events = c.messages.filter(m => m.t === 'event').map(m => m.ev);
+    const textEnds = events.filter(e => e.kind === 'text_end');
+    const textStrips = events.filter(e => e.kind === 'text_strip');
+    assert.equal(textEnds.length, 0, 'no text_end carrying the marker (it was rewritten)');
+    assert.equal(textStrips.length, 1, 'exactly one text_strip delivered for the marker');
+
+    await c.close();
+  } finally { await ctx.close(); }
+});
+
+test('manual interrupt (user clicks Interrupt): the [Request interrupted by user] marker stays visible', async () => {
+  const ctx = await bootServer({ scenarioPath: MANUAL_SCENARIO });
+  try {
+    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'p' });
+    const r = await api(ctx.baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'default' });
+    const id = r.body.id;
+    await waitFor(() => ctx.instances.get(id).status === 'idle');
+
+    const c = await wsClient(ctx.wsUrl);
+    c.send({ t: 'subscribe', id });
+    await c.wait(m => m.t === 'snapshot');
+    c.send({ t: 'prompt', id, text: 'long task' });
+    // Wait until we've seen at least one text_delta so we know the model
+    // has begun streaming.
+    await c.wait(m => m.t === 'event' && m.ev.kind === 'text_delta');
+    // Manually interrupt — NOT via auto-interrupt.
+    c.send({ t: 'interrupt', id });
+    await c.wait(m => m.t === 'event' && m.ev.kind === 'turn_end');
+
+    const events = c.messages.filter(m => m.t === 'event').map(m => m.ev);
+    const textEnds = events.filter(e => e.kind === 'text_end');
+    const textStrips = events.filter(e => e.kind === 'text_strip');
+    assert.equal(textStrips.length, 0, 'no text_strip — manual interrupt leaves the marker visible');
+    // The marker text block was finalized via text_end; the deltas for it
+    // remain in the stream so the UI renders it as confirmation.
+    const markerDeltas = events.filter(e => e.kind === 'text_delta' && /Request interrupted by user/.test(e.text));
+    assert.equal(markerDeltas.length, 1, 'marker text streamed through to the UI');
+    assert.ok(textEnds.length >= 1, 'text_end fires normally on manual interrupt');
+
+    await c.close();
+  } finally { await ctx.close(); }
+});

@@ -431,6 +431,35 @@ test('DOM: ExitPlanMode rejection carries the feedback text', async () => {
   assert.ok(card.classList.contains('rejected'));
 });
 
+test('DOM: text_strip removes the block and (if empty) its surrounding assistant wrap', async () => {
+  // Direct DOM-level test of the conversation's text_strip handler — the
+  // Instance is responsible for deciding when to emit text_strip; here we
+  // just verify the renderer reacts correctly when it does.
+  const { document, root, Parser, Conversation } = await setupDOM();
+  const conv = new Conversation(root);
+  const p = new Parser();
+  const stream = [
+    { type: 'stream_event', event: { type: 'message_start', message: { id: 'm_first', role: 'assistant' } } },
+    { type: 'stream_event', event: { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } } },
+    { type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'real reply' } } },
+    { type: 'stream_event', event: { type: 'content_block_stop', index: 0 } },
+    { type: 'stream_event', event: { type: 'message_stop' } },
+    { type: 'stream_event', event: { type: 'message_start', message: { id: 'm_marker', role: 'assistant' } } },
+    { type: 'stream_event', event: { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } } },
+    { type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: '[Request interrupted by user]' } } },
+    { type: 'stream_event', event: { type: 'message_stop' } },
+  ];
+  for (const e of stream) for (const ev of p.handleObject(e)) conv.apply(ev);
+  // The parser only flags the block — feed an explicit text_strip in to
+  // simulate what Instance does in the auto-interrupt case.
+  conv.apply({ kind: 'text_strip', msgId: 'm_marker', blockIdx: 0 });
+
+  assert.match(root.textContent, /real reply/);
+  assert.doesNotMatch(root.textContent, /Request interrupted by user/);
+  const assistants = [...root.querySelectorAll('.msg.assistant')];
+  assert.equal(assistants.length, 1, 'only the non-marker assistant message remains');
+});
+
 test('DOM: tool block always shows its command in the summary even while streaming', async () => {
   // Specifically a regression guard — the user-facing complaint was that
   // the command wasn't visible. We feed the stream up to (but not past) the

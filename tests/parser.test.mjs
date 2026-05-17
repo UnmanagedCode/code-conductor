@@ -243,6 +243,45 @@ test('parser: ExitPlanMode with empty input still emits plan_request (plan=null)
   assert.equal(plan.plan, null);
 });
 
+test('parser: tags the [Request interrupted by user] marker block with isInterruptMarker=true', () => {
+  // The parser only TAGS the block; Instance decides whether to convert
+  // it into a text_strip based on whether the orchestrator triggered the
+  // interrupt itself (AskUserQuestion / ExitPlanMode flow) or the user
+  // pressed Interrupt manually.
+  for (const variant of ['[Request interrupted by user]', '[Request interrupted by user for tool use]']) {
+    const p = new Parser();
+    p.handleObject({ type: 'stream_event', event: { type: 'message_start', message: { id: 'm', role: 'assistant' } } });
+    p.handleObject({
+      type: 'stream_event',
+      event: { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
+    });
+    p.handleObject({
+      type: 'stream_event',
+      event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: variant } },
+    });
+    const out = p.handleObject({ type: 'stream_event', event: { type: 'content_block_stop', index: 0 } });
+    assert.equal(out.length, 1, `one event expected for variant: ${variant}`);
+    assert.equal(out[0].kind, 'text_end', `parser emits text_end, not text_strip — gating happens in Instance`);
+    assert.equal(out[0].isInterruptMarker, true, `block flagged as marker for variant: ${variant}`);
+  }
+});
+
+test('parser: a normal text block emits text_end without isInterruptMarker', () => {
+  const p = new Parser();
+  p.handleObject({ type: 'stream_event', event: { type: 'message_start', message: { id: 'm', role: 'assistant' } } });
+  p.handleObject({
+    type: 'stream_event',
+    event: { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
+  });
+  p.handleObject({
+    type: 'stream_event',
+    event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: '[Reminder] check the docs' } },
+  });
+  const out = p.handleObject({ type: 'stream_event', event: { type: 'content_block_stop', index: 0 } });
+  assert.equal(out[0].kind, 'text_end');
+  assert.equal(out[0].isInterruptMarker, undefined);
+});
+
 test('parser: AskUserQuestion tool_use also emits a structured user_question event', () => {
   const p = new Parser();
   p.handleObject({ type: 'stream_event', event: { type: 'message_start', message: { id: 'm', role: 'assistant' } } });
