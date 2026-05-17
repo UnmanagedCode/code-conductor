@@ -139,6 +139,33 @@ input:focus, textarea:focus, select:focus { outline: 2px solid var(--accent); ou
   white-space: pre-wrap; word-break: break-word; max-height: 360px; overflow-y: auto;
   font-family: ui-monospace, monospace; font-size: 11px; margin: 4px 0 0 0;
 }
+.diff {
+  background: #0a0c12; border-radius: 4px; margin: 4px 0 0 0;
+  font-family: ui-monospace, monospace; font-size: 11px;
+  max-height: 480px; overflow-y: auto;
+}
+.diff-head {
+  display: flex; justify-content: space-between; align-items: baseline;
+  padding: 6px 10px; border-bottom: 1px solid var(--border);
+  color: var(--muted); background: #11141d;
+  position: sticky; top: 0; z-index: 1;
+}
+.diff-path { color: var(--text); word-break: break-all; }
+.diff-stats { font-size: 10px; white-space: nowrap; padding-left: 8px; }
+.diff-body { padding: 4px 0; }
+.diff-line {
+  display: flex; align-items: baseline; padding: 0 8px;
+  white-space: pre-wrap; word-break: break-word;
+}
+.diff-line.add { background: rgba(74, 222, 128, 0.10); }
+.diff-line.del { background: rgba(248, 113, 113, 0.10); }
+.diff-line .diff-marker {
+  flex: 0 0 auto; width: 22px; color: var(--muted); user-select: none;
+  text-align: right; padding-right: 6px;
+}
+.diff-line.add .diff-marker { color: var(--green); }
+.diff-line.del .diff-marker { color: var(--red); }
+.diff-line .diff-text { flex: 1 1 auto; }
 .block.tool-result { margin-left: 18px; }
 .block.tool-result summary { font-family: ui-monospace, monospace; font-size: 11px; color: var(--muted); }
 .block.tool-result.error summary { color: var(--red); }

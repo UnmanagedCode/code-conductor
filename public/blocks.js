@@ -44,6 +44,8 @@ export class ThinkingBlock {
   }
 }
 
+import { lineDiff, diffStats } from './diff.js';
+
 // Per-tool one-line description for the collapsed summary.
 // Returns a short string with the most-useful argument for the tool.
 export function describeToolInput(name, input) {
@@ -90,38 +92,37 @@ export class ToolUseBlock {
     this.status = 'streaming…';
 
     this.summary = el('summary', {});
-    this.pre = el('pre', {}, '');
+    this.body = el('div', { class: 'tool-body' });
     // Collapsed by default so the conversation stays scannable; the summary
     // line always carries the tool name + key argument so the user knows
     // what's running without expanding.
-    this.node = el('details', { class: 'block tool' }, this.summary, this.pre);
+    this.node = el('details', { class: 'block tool' }, this.summary, this.body);
     this._renderSummary();
+    this._renderBody();
   }
 
   setName(name) {
     if (name) this.name = name;
     this._renderSummary();
+    this._renderBody();
   }
 
   appendInputDelta(partial) {
     this.partialJson += partial;
-    this.pre.textContent = this.partialJson;
-    // Best-effort parse of the partial JSON so the summary preview can
-    // start showing useful content before the block finalizes.
     let parsed = null;
     try { parsed = JSON.parse(this.partialJson); } catch { /* not yet complete */ }
     if (parsed && typeof parsed === 'object') {
       this.input = parsed;
       this._renderSummary();
     }
+    this._renderBody();
   }
 
   finalizeInput(input) {
     this.input = input;
-    try { this.pre.textContent = JSON.stringify(input, null, 2); }
-    catch { this.pre.textContent = this.partialJson; }
     this.status = 'ready';
     this._renderSummary();
+    this._renderBody();
   }
 
   attachResult(resultBlock) {
@@ -137,7 +138,94 @@ export class ToolUseBlock {
     if (desc) this.summary.append(' · ', el('span', { class: 'tool-arg' }, desc));
     this.summary.append(el('span', { class: 'tool-status' }, ` · ${this.status}`));
   }
+
+  _renderBody() {
+    this.body.textContent = '';
+    const input = this.input;
+    if (!input) {
+      // While streaming the JSON, show what we have raw.
+      if (this.partialJson) this.body.appendChild(el('pre', {}, this.partialJson));
+      return;
+    }
+    // Specialty renderers per tool. Fall back to pretty-printed JSON.
+    if (this.name === 'Edit' && typeof input.old_string === 'string' && typeof input.new_string === 'string') {
+      this.body.appendChild(renderEditDiff(input));
+      return;
+    }
+    if (this.name === 'Write' && typeof input.content === 'string') {
+      this.body.appendChild(renderWritePreview(input));
+      return;
+    }
+    if (this.name === 'NotebookEdit' && typeof input.new_source === 'string') {
+      this.body.appendChild(renderNotebookEdit(input));
+      return;
+    }
+    try { this.body.appendChild(el('pre', {}, JSON.stringify(input, null, 2))); }
+    catch { this.body.appendChild(el('pre', {}, this.partialJson)); }
+  }
 }
+
+function renderEditDiff(input) {
+  const ops = lineDiff(input.old_string, input.new_string);
+  const { adds, dels } = diffStats(ops);
+  const wrap = el('div', { class: 'diff' },
+    el('div', { class: 'diff-head' },
+      el('span', { class: 'diff-path' }, input.file_path ?? ''),
+      el('span', { class: 'diff-stats' }, `+${adds} −${dels}`),
+    ));
+  const body = el('div', { class: 'diff-body' });
+  for (const o of ops) {
+    body.appendChild(el('div', { class: `diff-line ${o.op === '+' ? 'add' : o.op === '-' ? 'del' : 'ctx'}` },
+      el('span', { class: 'diff-marker' }, o.op === '+' ? '+' : o.op === '-' ? '-' : ' '),
+      el('span', { class: 'diff-text' }, o.text),
+    ));
+  }
+  wrap.appendChild(body);
+  return wrap;
+}
+
+function renderWritePreview(input) {
+  const lines = (input.content ?? '').split('\n');
+  if (lines.length && lines[lines.length - 1] === '') lines.pop();
+  const wrap = el('div', { class: 'diff' },
+    el('div', { class: 'diff-head' },
+      el('span', { class: 'diff-path' }, input.file_path ?? ''),
+      el('span', { class: 'diff-stats' }, `${lines.length} line${lines.length === 1 ? '' : 's'}`),
+    ));
+  const body = el('div', { class: 'diff-body' });
+  for (let i = 0; i < lines.length; i++) {
+    body.appendChild(el('div', { class: 'diff-line ctx' },
+      el('span', { class: 'diff-marker' }, String(i + 1).padStart(3, ' ')),
+      el('span', { class: 'diff-text' }, lines[i]),
+    ));
+  }
+  wrap.appendChild(body);
+  return wrap;
+}
+
+function renderNotebookEdit(input) {
+  const oldSrc = input.old_source ?? '';
+  const newSrc = input.new_source ?? '';
+  const ops = lineDiff(oldSrc, newSrc);
+  const { adds, dels } = diffStats(ops);
+  const label = `${input.notebook_path ?? ''}${input.cell_id ? ` · cell ${input.cell_id}` : ''}${input.edit_mode ? ` · ${input.edit_mode}` : ''}`;
+  const wrap = el('div', { class: 'diff' },
+    el('div', { class: 'diff-head' },
+      el('span', { class: 'diff-path' }, label),
+      el('span', { class: 'diff-stats' }, `+${adds} −${dels}`),
+    ));
+  const body = el('div', { class: 'diff-body' });
+  for (const o of ops) {
+    body.appendChild(el('div', { class: `diff-line ${o.op === '+' ? 'add' : o.op === '-' ? 'del' : 'ctx'}` },
+      el('span', { class: 'diff-marker' }, o.op === '+' ? '+' : o.op === '-' ? '-' : ' '),
+      el('span', { class: 'diff-text' }, o.text),
+    ));
+  }
+  wrap.appendChild(body);
+  return wrap;
+}
+
+export const _internalRenderers = { renderEditDiff, renderWritePreview, renderNotebookEdit };
 
 export class ToolResultBlock {
   constructor({ content, isError, toolUseId }) {
