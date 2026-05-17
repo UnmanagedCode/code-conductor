@@ -276,6 +276,16 @@ export class Instance extends EventEmitter {
         });
       }
       this._emitUi(ev);
+      // Pre-empt the model's follow-up after AskUserQuestion. In stream-json
+      // mode the CLI auto-errors the tool with "Answer questions?", and
+      // without an interrupt the model proceeds to compose a confused
+      // "the question was dismissed, want me to just ask in plain text?"
+      // response — which renders below the option card and makes the
+      // question feel ignorable / non-blocking. Interrupting here aborts
+      // that follow-up so the option card is the conversation's tail.
+      if (ev.kind === 'user_question') {
+        this.interrupt().catch(() => {});
+      }
     }
   }
 
