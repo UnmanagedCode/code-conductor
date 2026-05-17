@@ -630,6 +630,18 @@ export class InstanceManager extends EventEmitter {
     if (!project) {
       throw Object.assign(new Error('project required'), { statusCode: 400 });
     }
+    // Refuse to spawn a second live instance against the same session id.
+    // `claude --resume <sid>` would otherwise race two subprocesses
+    // writing the same jsonl, with predictable corruption.
+    if (resume) {
+      const conflict = [...this.byId.values()].find(i => i.sessionId === resume && i.proc);
+      if (conflict) {
+        throw Object.assign(
+          new Error(`session ${resume} is already attached to a running instance (${conflict.id.slice(0, 8)}…)`),
+          { statusCode: 409 },
+        );
+      }
+    }
     const proj = await getProject(project);
     const finalMode = mode ?? DEFAULT_MODE;
     if (!VALID_MODES.has(finalMode)) {

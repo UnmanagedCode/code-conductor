@@ -1,5 +1,8 @@
 import express from 'express';
-import { listProjects, createProject, listSessions, listSessionsForCwd, deleteProject, getProject } from './projects.js';
+import {
+  listProjects, createProject, listSessions, listSessionsForCwd,
+  summarizeSessions, deleteProject, getProject,
+} from './projects.js';
 import {
   isGitRepo, listWorktrees, removeWorktree, fastForwardParent,
   buildRebasePrompt, getWorktree, removeAllWorktreesForProject,
@@ -12,12 +15,23 @@ export function buildRoutes({ instances } = {}) {
   r.get('/projects', async (req, res, next) => {
     try {
       const projects = await listProjects();
-      const enriched = await Promise.all(projects.map(async (p) => ({
-        ...p,
-        instanceIds: instances ? instances.idsForProject(p.name) : [],
-        isGitRepo: await isGitRepo(p.path),
-        worktrees: await listWorktrees(p.name).catch(() => []),
-      })));
+      const enriched = await Promise.all(projects.map(async (p) => {
+        const worktrees = await listWorktrees(p.name).catch(() => []);
+        // Attach a lightweight session count + last-active mtime to
+        // each worktree too, so the sidebar can decide whether to show
+        // its "Sessions (N)" subnode without an extra fetch.
+        const worktreesWithSessions = await Promise.all(worktrees.map(async (w) => ({
+          ...w,
+          sessions: await summarizeSessions(w.worktreePath).catch(() => ({ count: 0, lastMtime: 0 })),
+        })));
+        return {
+          ...p,
+          instanceIds: instances ? instances.idsForProject(p.name) : [],
+          isGitRepo: await isGitRepo(p.path),
+          worktrees: worktreesWithSessions,
+          sessions: await summarizeSessions(p.path).catch(() => ({ count: 0, lastMtime: 0 })),
+        };
+      }));
       res.json(enriched);
     } catch (e) { next(e); }
   });

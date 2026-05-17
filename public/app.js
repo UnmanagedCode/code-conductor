@@ -41,7 +41,6 @@ const dom = {
   niEffort: document.getElementById('ni-effort'),
   niThinking: document.getElementById('ni-thinking'),
   niModel: document.getElementById('ni-model'),
-  niResume: document.getElementById('ni-resume'),
   niWorktree: document.getElementById('ni-worktree'),
   niWorktreeHint: document.getElementById('ni-worktree-hint'),
   niError: document.getElementById('ni-error'),
@@ -124,6 +123,8 @@ const sidebar = new Sidebar({
   onCreateInstanceClick: openNewInstanceDialog,
   onRemoveWorktree: removeWorktree,
   onDeleteProject: deleteProject,
+  onResumeSession: resumeSession,
+  onLoadSessions: loadSessions,
 });
 
 const composer = attachComposer({
@@ -262,7 +263,6 @@ async function openNewInstanceDialog(projectName, opts = {}) {
   dom.niThinking.value = 'adaptive';
   dom.niModel.value = '';
   dom.niError.textContent = '';
-  dom.niResume.innerHTML = '<option value="">— fresh session —</option>';
 
   // Worktree row: checkbox + status line. Greyed out if the project
   // isn't a git repo; pre-locked if the caller passed an existing
@@ -281,24 +281,9 @@ async function openNewInstanceDialog(projectName, opts = {}) {
       : 'project is not a git repo — `git init` first to use worktrees';
   }
 
-  // Sessions list — for an existing-worktree spawn this should reflect
-  // that worktree's own session history, not the parent project's.
-  try {
-    const url = pendingWorktreeIntent
-      ? `/api/projects/${encodeURIComponent(projectName)}/worktrees/${encodeURIComponent(pendingWorktreeIntent)}/sessions`
-      : `/api/projects/${encodeURIComponent(projectName)}/sessions`;
-    const r = await fetch(url);
-    if (r.ok) {
-      const sessions = await r.json();
-      for (const s of sessions) {
-        const opt = document.createElement('option');
-        opt.value = s.sessionId;
-        const preview = (s.firstPrompt ?? '').slice(0, 60).replace(/\s+/g, ' ');
-        opt.textContent = `${s.sessionId.slice(0, 8)} · ${preview}`;
-        dom.niResume.appendChild(opt);
-      }
-    }
-  } catch { /* ignore */ }
+  // Resume is no longer driven from this dialog — the sidebar's
+  // "Sessions" subnode handles that with one-click resume. The dialog
+  // only spawns FRESH sessions.
   dom.newInstanceDialog.showModal();
 }
 dom.newInstanceDialog.addEventListener('close', async () => {
@@ -308,7 +293,6 @@ dom.newInstanceDialog.addEventListener('close', async () => {
   const effort = dom.niEffort.value;
   const thinking = dom.niThinking.value;
   const model = dom.niModel.value || undefined;
-  const resume = dom.niResume.value || undefined;
   // Worktree intent: pre-locked name (existing) > checkbox (fresh) > omitted.
   let worktree;
   if (typeof pendingWorktreeIntent === 'string') worktree = pendingWorktreeIntent;
@@ -317,7 +301,7 @@ dom.newInstanceDialog.addEventListener('close', async () => {
     const r = await fetch('/api/instances', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ project, mode, effort, thinking, model, resume, worktree }),
+      body: JSON.stringify({ project, mode, effort, thinking, model, worktree }),
     });
     if (!r.ok) throw new Error((await r.json()).error);
     const inst = await r.json();
@@ -329,6 +313,42 @@ dom.newInstanceDialog.addEventListener('close', async () => {
     dom.newInstanceDialog.showModal();
   }
 });
+
+// Fetches sessions for a project (or for a specific worktree under it).
+// Called by the sidebar when the user expands the "Sessions" subnode.
+async function loadSessions(projectName, worktreeName) {
+  const url = worktreeName
+    ? `/api/projects/${encodeURIComponent(projectName)}/worktrees/${encodeURIComponent(worktreeName)}/sessions`
+    : `/api/projects/${encodeURIComponent(projectName)}/sessions`;
+  const r = await fetch(url);
+  if (!r.ok) throw new Error((await r.json()).error);
+  return r.json();
+}
+
+// One-click resume from the sidebar. We POST with worktree carried
+// through (so resuming a worktree session lands in the same worktree
+// cwd) and use orchestrator defaults for mode/effort/thinking — the
+// user can adjust mode in the header dropdown after the resume lands.
+async function resumeSession({ projectName, worktreeName, sessionId }) {
+  try {
+    const r = await fetch('/api/instances', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        project: projectName,
+        resume: sessionId,
+        worktree: worktreeName || undefined,
+      }),
+    });
+    if (!r.ok) throw new Error((await r.json()).error);
+    const inst = await r.json();
+    await refreshProjects();
+    await refreshInstances();
+    selectInstance(inst.id);
+  } catch (e) {
+    alert(`resume failed: ${e.message}`);
+  }
+}
 
 async function deleteProject(project) {
   const insts = state.instances.filter(i => i.project === project.name);

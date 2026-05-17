@@ -119,6 +119,36 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
 .worktree-row .wt-remove:hover { color: var(--red); }
 .worktree-item .instance-list { padding-left: 14px; }
 
+/* Sessions subnode: parallel structure to .worktree-group. */
+.sessions-group { margin: 2px 0 4px 12px; }
+.sessions-group > .sessions-summary {
+  list-style: none; cursor: pointer; padding: 4px 6px;
+  font-size: 11px; color: var(--muted); border-radius: 4px;
+  user-select: none;
+}
+.sessions-group > .sessions-summary::-webkit-details-marker { display: none; }
+.sessions-group > .sessions-summary::before { content: '▸ '; }
+.sessions-group[open] > .sessions-summary::before { content: '▾ '; }
+.sessions-group > .sessions-summary:hover { background: var(--panel-2); }
+.sessions-list { list-style: none; padding: 0 0 0 8px; margin: 4px 0 0 0; }
+.sessions-empty { font-size: 11px; color: var(--muted); padding: 4px 6px; font-style: italic; }
+.session-row {
+  display: flex; gap: 8px; align-items: baseline;
+  padding: 4px 6px; cursor: pointer; border-radius: 4px;
+  font-size: 11px; color: var(--muted);
+}
+.session-row:hover { background: var(--panel-2); color: var(--text); }
+.session-ago {
+  font-family: ui-monospace, monospace; flex: 0 0 auto;
+  color: var(--accent); min-width: 48px;
+}
+.session-preview {
+  flex: 1 1 auto; min-width: 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+/* Inside a worktree row, indent the Sessions subnode a bit more. */
+.worktree-item .sessions-group { margin-left: 14px; }
+
 /* Worktree row in the new-instance dialog. */
 .ni-worktree-row { display: flex !important; flex-direction: row !important; align-items: center; gap: 8px; }
 .ni-worktree-row input[type="checkbox"] { width: auto !important; margin: 0; }

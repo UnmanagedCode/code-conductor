@@ -184,3 +184,25 @@ export async function listSessions(projectName) {
   const proj = await getProject(projectName);
   return listSessionsForCwd(proj.path);
 }
+
+// Lightweight session summary — used by /api/projects to show a count +
+// "last active" stamp in the sidebar without paying the file-read cost
+// of listSessionsForCwd (which extracts firstPrompt from every jsonl).
+// Just readdir + stat, no opens.
+export async function summarizeSessions(absCwd) {
+  const dir = path.join(claudeProjectsRoot(), encodeCwd(absCwd));
+  let entries;
+  try { entries = await fs.readdir(dir); }
+  catch (e) { if (e.code === 'ENOENT') return { count: 0, lastMtime: 0 }; throw e; }
+  let count = 0;
+  let lastMtime = 0;
+  for (const name of entries) {
+    if (!name.endsWith('.jsonl')) continue;
+    let stat;
+    try { stat = await fs.stat(path.join(dir, name)); } catch { continue; }
+    if (!stat.isFile()) continue;
+    count++;
+    if (stat.mtimeMs > lastMtime) lastMtime = stat.mtimeMs;
+  }
+  return { count, lastMtime };
+}
