@@ -227,20 +227,25 @@ test('rejects invalid mode and unknown project', async () => {
   } finally { await close(); }
 });
 
-test('default spawn passes --effort high and --thinking adaptive', async () => {
+test('default spawn passes --permission-mode plan, --effort high, --thinking adaptive', async () => {
   const { baseUrl, instances, tmpHome, close } = await setupWithProject();
   const fsp = (await import('node:fs')).promises;
   try {
     const argvPath = `${tmpHome}/argv.txt`;
     process.env.FAKE_CLAUDE_ARGV_DUMP = argvPath;
-    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'demo' }); // no effort / thinking
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'demo' }); // no mode / effort / thinking
     const id = r.body.id;
     await waitFor(() => instances.get(id).status === 'idle');
+    assert.equal(instances.get(id).mode, 'plan', 'default mode defaults to plan');
     assert.equal(instances.get(id).effort, 'high', 'default effort defaults to high');
     assert.equal(instances.get(id).thinking, 'adaptive', 'default thinking defaults to adaptive');
 
     await waitFor(async () => { try { await fsp.stat(argvPath); return true; } catch { return false; } });
     const argv = (await fsp.readFile(argvPath, 'utf8')).split('\n').filter(Boolean);
+
+    const pm = argv.indexOf('--permission-mode');
+    assert.ok(pm >= 0, `--permission-mode not passed; argv was: ${argv.join(' ')}`);
+    assert.equal(argv[pm + 1], 'plan');
 
     const e = argv.indexOf('--effort');
     assert.ok(e >= 0, `--effort not passed; argv was: ${argv.join(' ')}`);

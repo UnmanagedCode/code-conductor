@@ -293,7 +293,7 @@ When a **turn ends** or the **mode changes**, two metadata lines are appended to
 ### Defaults
 
 - Bind: `127.0.0.1:8787` (override with `HOST` / `PORT` env vars).
-- New instance: `--permission-mode bypassPermissions` (labelled `code` in the UI), `--effort high`, `--thinking adaptive`, no `--model` flag (uses account default).
+- New instance: `--permission-mode plan` (the safer default — read-only; the user can pick `code` in the dialog or approve a plan mid-session to flip to `bypassPermissions`), `--effort high`, `--thinking adaptive`, no `--model` flag (uses account default).
 - Ring buffer: 500 events per instance.
 - Control-request timeout: 5 s.
 - Kill grace: stdin closed → 2 s → SIGTERM → 5 s → SIGKILL.

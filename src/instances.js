@@ -15,7 +15,10 @@ const RING_SIZE = 500;
 // model re-emit the entire tool input — expensive for anything with a
 // large `content` field. We force the choice up front instead.
 const VALID_MODES = new Set(['plan', 'bypassPermissions']);
-const DEFAULT_MODE = 'bypassPermissions';
+// Start new instances in read-only plan mode by default. The user can pick
+// `code` (= bypassPermissions) in the new-instance dialog, or approve a
+// plan to flip the running instance to bypassPermissions mid-session.
+const DEFAULT_MODE = 'plan';
 const VALID_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
 const DEFAULT_EFFORT = 'high';
 const VALID_THINKING = new Set(['adaptive', 'enabled', 'disabled']);

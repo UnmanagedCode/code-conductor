@@ -214,7 +214,7 @@ let pendingNewInstanceProject = null;
 async function openNewInstanceDialog(projectName) {
   pendingNewInstanceProject = projectName;
   dom.niProject.textContent = projectName;
-  dom.niMode.value = 'bypassPermissions';
+  dom.niMode.value = 'plan';
   dom.niEffort.value = 'high';
   dom.niThinking.value = 'adaptive';
   dom.niModel.value = '';
