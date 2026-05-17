@@ -48,7 +48,12 @@ const dom = {
   notifyToggle: document.getElementById('notify-toggle'),
 };
 
-const conversation = new Conversation(dom.conversation);
+const conversation = new Conversation(dom.conversation, {
+  onPermissionDecision: (requestId, { allow, updatedInput, feedback }) => {
+    if (!state.activeId) return;
+    send('permission', { id: state.activeId, requestId, allow, updatedInput, feedback });
+  },
+});
 
 const sidebar = new Sidebar({
   rootList: dom.projectList,

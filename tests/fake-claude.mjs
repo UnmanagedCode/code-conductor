@@ -104,6 +104,17 @@ function matchTurn(input) {
         return t;
       }
     }
+    if (on.type === 'control_response' && input.type === 'control_response') {
+      const inner = input.response ?? {};
+      // Filter by request_id if specified; behavior (allow/deny) routes via
+      // different scenario steps if the user wants to model both branches.
+      const idOk = !on.request_id || on.request_id === inner.request_id;
+      const behaviorOk = !on.behavior || on.behavior === inner.response?.behavior;
+      if (idOk && behaviorOk) {
+        turns.splice(i, 1);
+        return t;
+      }
+    }
   }
   return null;
 }
@@ -127,6 +138,10 @@ rl.on('line', async (line) => {
     await emitMany(scenario.events ?? []);
   }
 
+  // Auto-ack inbound control_requests from the parent (set_permission_mode,
+  // interrupt, etc.). control_responses are FROM the parent in response to a
+  // control_request we (fake-claude) emitted via a scenario step — don't
+  // ack those, they're routed to matchTurn instead.
   if (obj.type === 'control_request') {
     const ack = {
       type: 'control_response',

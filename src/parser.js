@@ -66,7 +66,7 @@ export class Parser {
       case 'result':       return this._handleResult(obj);
       case 'hook_event':   return [{ kind: 'hook', event: obj.event ?? obj.subtype ?? 'unknown', data: obj }];
       case 'control_response': return this._handleControlResponse(obj);
-      case 'control_request':  return [{ kind: 'system', subtype: 'control_request', data: obj }];
+      case 'control_request':  return this._handleControlRequest(obj);
       case 'keep_alive':       return [];
       default:
         return [{ kind: 'system', subtype: obj.type ?? 'unknown', data: obj }];
@@ -75,6 +75,26 @@ export class Parser {
 
   _handleSystem(obj) {
     return [{ kind: 'system', subtype: obj.subtype ?? 'unknown', data: obj }];
+  }
+
+  _handleControlRequest(obj) {
+    const req = obj.request ?? {};
+    const requestId = obj.request_id ?? null;
+    if (req.subtype === 'can_use_tool') {
+      return [{
+        kind: 'permission_request',
+        requestId,
+        toolName: req.tool_name ?? null,
+        input: req.input ?? {},
+        title: req.title ?? null,
+        displayName: req.displayName ?? null,
+        description: req.description ?? null,
+        permissionSuggestions: req.permission_suggestions ?? null,
+        blockedPath: req.blocked_path ?? null,
+        decisionReason: req.decision_reason ?? null,
+      }];
+    }
+    return [{ kind: 'system', subtype: 'control_request', data: obj }];
   }
 
   _handleControlResponse(obj) {

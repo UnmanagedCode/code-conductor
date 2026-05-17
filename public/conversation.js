@@ -2,12 +2,15 @@
 // and renders them into the DOM. Idempotent by event _seq so that snapshot
 // replays don't duplicate prior content.
 
-import { TextBlock, ThinkingBlock, ToolUseBlock, ToolResultBlock, SystemBlock, TurnEndBlock, el } from './blocks.js';
+import { TextBlock, ThinkingBlock, ToolUseBlock, ToolResultBlock, SystemBlock, TurnEndBlock,
+  PermissionRequestBlock, el } from './blocks.js';
 
 export class Conversation {
-  constructor(rootEl, { isSub = false } = {}) {
+  constructor(rootEl, { isSub = false, onPermissionDecision = null } = {}) {
     this.root = rootEl;
     this.isSub = isSub;
+    this.onPermissionDecision = onPermissionDecision;
+    this.permissionBlocks = new Map(); // requestId -> PermissionRequestBlock
     this.blocksByKey = new Map();   // `${msgId}:${blockIdx}` -> block instance
     this.toolBlocks = new Map();    // toolUseId -> ToolUseBlock
     this.seenSeq = new Set();
@@ -61,7 +64,7 @@ export class Conversation {
       if (parent) {
         let sub = this.subConvs.get(ev.parentToolUseId);
         if (!sub) {
-          sub = new Conversation(parent.subRoot, { isSub: true });
+          sub = new Conversation(parent.subRoot, { isSub: true, onPermissionDecision: this.onPermissionDecision });
           this.subConvs.set(ev.parentToolUseId, sub);
         }
         parent.revealSubRoot();
@@ -69,6 +72,8 @@ export class Conversation {
         return;
       }
     }
+    if (ev.kind === 'permission_request') { this._renderPermissionRequest(ev); return; }
+    if (ev.kind === 'permission_resolved') { this._resolvePermissionRequest(ev); return; }
     this._ensureNotEmpty();
     switch (ev.kind) {
       case 'user_echo':      this._renderUserEcho(ev); break;
@@ -196,6 +201,22 @@ export class Conversation {
       const wrap = this._ensureMessageWrap(null, 'assistant');
       wrap.body.appendChild(result.node);
     }
+  }
+
+  _renderPermissionRequest(ev) {
+    this._ensureNotEmpty();
+    if (this.permissionBlocks.has(ev.requestId)) return;
+    const block = new PermissionRequestBlock(ev, (decision) => {
+      if (this.onPermissionDecision) this.onPermissionDecision(ev.requestId, decision);
+    });
+    this.permissionBlocks.set(ev.requestId, block);
+    this.root.appendChild(block.node);
+    this._maybeScroll();
+  }
+
+  _resolvePermissionRequest(ev) {
+    const block = this.permissionBlocks.get(ev.requestId);
+    if (block) block.markResolved(!!ev.allow);
   }
 
   _renderHistoryDivider(ev) {

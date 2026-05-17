@@ -49,6 +49,7 @@ export class Instance extends EventEmitter {
     this.parser = new Parser();
     this.ring = new Ring(RING_SIZE);
     this._pending = new Map(); // request_id -> { resolve, reject, timer }
+    this._pendingPermissions = new Map(); // request_id -> { toolName, input, ... }
     this._stderr = '';
     this._lastLeafUuid = null;     // for last-prompt jsonl marker
   }
@@ -265,8 +266,40 @@ export class Instance extends EventEmitter {
         this._setStatus('idle');
         this._writeSessionMetadata().catch(() => {});
       }
+      if (ev.kind === 'permission_request' && ev.requestId) {
+        this._pendingPermissions.set(ev.requestId, {
+          requestId: ev.requestId,
+          toolName: ev.toolName,
+          input: ev.input,
+          title: ev.title,
+          displayName: ev.displayName,
+        });
+      }
       this._emitUi(ev);
     }
+  }
+
+  /**
+   * Respond to a can_use_tool control_request with allow / deny.
+   * Throws if the requestId is unknown.
+   */
+  respondPermission(requestId, { allow, updatedInput, feedback } = {}) {
+    if (!this._pendingPermissions.has(requestId)) {
+      throw Object.assign(new Error('unknown permission request'), { statusCode: 404 });
+    }
+    const innerResponse = allow
+      ? { behavior: 'allow', updatedInput: updatedInput ?? this._pendingPermissions.get(requestId).input ?? {} }
+      : { behavior: 'deny', feedback: feedback ?? 'denied by user' };
+    this._sendRaw({
+      type: 'control_response',
+      response: { subtype: 'success', request_id: requestId, response: innerResponse },
+    });
+    this._pendingPermissions.delete(requestId);
+    this._emitUi({
+      kind: 'permission_resolved',
+      requestId,
+      allow: !!allow,
+    });
   }
 
   async _writeSessionMetadata() {

@@ -234,6 +234,59 @@ function renderNotebookEdit(input) {
 
 export const _internalRenderers = { renderEditDiff, renderWritePreview, renderNotebookEdit };
 
+export class PermissionRequestBlock {
+  constructor(ev, onDecision) {
+    this.requestId = ev.requestId;
+    this.onDecision = onDecision;
+    const title = ev.title || `Allow tool: ${ev.toolName ?? 'unknown'}?`;
+    const desc = ev.displayName || ev.description || '';
+    const argLine = describeToolInput(ev.toolName, ev.input);
+
+    this.statusNode = el('span', { class: 'perm-status' }, 'awaiting decision');
+    this.allowBtn = el('button', { class: 'perm-allow' }, 'Allow');
+    this.denyBtn = el('button', { class: 'perm-deny' }, 'Deny');
+
+    this.allowBtn.addEventListener('click', () => this._click(true));
+    this.denyBtn.addEventListener('click', () => this._click(false));
+
+    let argsNode;
+    if (ev.toolName === 'Edit' && typeof ev.input?.old_string === 'string' && typeof ev.input?.new_string === 'string') {
+      argsNode = renderEditDiff(ev.input);
+    } else if (ev.toolName === 'Write' && typeof ev.input?.content === 'string') {
+      argsNode = renderWritePreview(ev.input);
+    } else if (ev.toolName === 'NotebookEdit' && typeof ev.input?.new_source === 'string') {
+      argsNode = renderNotebookEdit(ev.input);
+    } else {
+      let json = '';
+      try { json = JSON.stringify(ev.input ?? {}, null, 2); } catch { json = String(ev.input); }
+      argsNode = el('pre', {}, json);
+    }
+
+    this.node = el('div', { class: 'block permission' },
+      el('div', { class: 'perm-head' },
+        el('span', { class: 'perm-title' }, title),
+        this.statusNode,
+      ),
+      desc ? el('div', { class: 'perm-desc' }, desc) : null,
+      argLine ? el('div', { class: 'perm-arg' }, argLine) : null,
+      argsNode,
+      el('div', { class: 'perm-actions' }, this.allowBtn, this.denyBtn),
+    );
+  }
+  _click(allow) {
+    this.allowBtn.disabled = true;
+    this.denyBtn.disabled = true;
+    this.statusNode.textContent = 'sending…';
+    if (this.onDecision) this.onDecision({ allow });
+  }
+  markResolved(allow) {
+    this.node.classList.add(allow ? 'allowed' : 'denied');
+    this.statusNode.textContent = allow ? '✓ allowed' : '✗ denied';
+    this.allowBtn.disabled = true;
+    this.denyBtn.disabled = true;
+  }
+}
+
 export class ToolResultBlock {
   constructor({ content, isError, toolUseId }) {
     this.toolUseId = toolUseId; this.isError = isError;
