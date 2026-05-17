@@ -296,6 +296,30 @@ export function buildRebasePrompt(meta) {
   ].join('\n');
 }
 
+// Best-effort sweep: remove every orchestrator-owned worktree under a
+// project, plus any orphan sibling dirs that carry our metadata marker
+// but aren't registered with git (left behind by manual filesystem
+// mucking). Used by the project-delete cascade — failures are
+// swallowed because the caller is about to `rm -rf` the parent anyway.
+export async function removeAllWorktreesForProject(projectName) {
+  let known = [];
+  try { known = await listWorktrees(projectName); } catch { /* repo may be gone */ }
+  for (const wt of known) {
+    try { await removeWorktree(projectName, wt.worktreeName, { force: true }); } catch { /* ignore */ }
+  }
+  // Sweep the projects root for orphan dirs that point at this project.
+  let entries = [];
+  try { entries = await fs.readdir(projectsRoot(), { withFileTypes: true }); } catch { return; }
+  for (const e of entries) {
+    if (!e.isDirectory()) continue;
+    const full = path.join(projectsRoot(), e.name);
+    const meta = await readMeta(full).catch(() => null);
+    if (meta && meta.parentProject === projectName) {
+      try { await fs.rm(full, { recursive: true, force: true }); } catch { /* ignore */ }
+    }
+  }
+}
+
 // Re-exported for tests / route handlers.
 export const _internal = {
   worktreeBranchName,

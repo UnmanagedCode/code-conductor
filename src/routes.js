@@ -1,8 +1,8 @@
 import express from 'express';
-import { listProjects, createProject, listSessions, listSessionsForCwd } from './projects.js';
+import { listProjects, createProject, listSessions, listSessionsForCwd, deleteProject, getProject } from './projects.js';
 import {
   isGitRepo, listWorktrees, removeWorktree, fastForwardParent,
-  buildRebasePrompt, getWorktree,
+  buildRebasePrompt, getWorktree, removeAllWorktreesForProject,
 } from './worktrees.js';
 
 export function buildRoutes({ instances } = {}) {
@@ -27,6 +27,27 @@ export function buildRoutes({ instances } = {}) {
       const { name } = req.body ?? {};
       const created = await createProject(name);
       res.status(201).json(created);
+    } catch (e) { next(e); }
+  });
+
+  // Delete a project + all attached state. Cascade:
+  //   1. validate the project exists,
+  //   2. kill every running instance attached to it (including any
+  //      inside worktrees of this project),
+  //   3. remove every worktree (git worktree remove --force + branch
+  //      delete + dir sweep for orphans),
+  //   4. rm -rf the project directory itself.
+  // Sessions under ~/.claude/projects/<encoded>/ are intentionally
+  // left alone — they belong to the user's claude CLI history and
+  // may still be referenced outside the orchestrator.
+  r.delete('/projects/:name', async (req, res, next) => {
+    try {
+      const proj = await getProject(req.params.name);
+      let killed = 0;
+      if (instances) killed = await instances.removeAllForProject(proj.name);
+      await removeAllWorktreesForProject(proj.name);
+      await deleteProject(proj.name);
+      res.json({ ok: true, project: proj.name, killedInstances: killed });
     } catch (e) { next(e); }
   });
 

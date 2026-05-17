@@ -705,6 +705,20 @@ export class InstanceManager extends EventEmitter {
     this.emit('list_changed');
   }
 
+  // Cascade-kill every instance attached to a project (including any
+  // running inside worktrees of that project). Used by the
+  // project-delete endpoint. Failures are swallowed — we're tearing
+  // everything down anyway.
+  async removeAllForProject(projectName) {
+    const victims = [...this.byId.values()].filter(i => i.project === projectName);
+    await Promise.all(victims.map(async (i) => {
+      try { if (i.proc) await i.kill({ graceMs: 200 }); } catch { /* ignore */ }
+      this.byId.delete(i.id);
+    }));
+    if (victims.length > 0) this.emit('list_changed');
+    return victims.length;
+  }
+
   async shutdown() {
     const all = [...this.byId.values()];
     this.byId.clear();

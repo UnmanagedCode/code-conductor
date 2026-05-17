@@ -1,11 +1,12 @@
 import { el } from './blocks.js';
 
 export class Sidebar {
-  constructor({ rootList, onSelectInstance, onCreateInstanceClick, onRemoveWorktree }) {
+  constructor({ rootList, onSelectInstance, onCreateInstanceClick, onRemoveWorktree, onDeleteProject }) {
     this.list = rootList;
     this.onSelectInstance = onSelectInstance;
     this.onCreateInstanceClick = onCreateInstanceClick;
     this.onRemoveWorktree = onRemoveWorktree;
+    this.onDeleteProject = onDeleteProject;
     this.projects = [];
     this.instances = [];
     this.activeInstanceId = null;
@@ -87,6 +88,10 @@ export class Sidebar {
           class: 'add-instance', title: 'new instance',
           onclick: () => this.onCreateInstanceClick(p.name),
         }, '+'),
+        el('button', {
+          class: 'delete-project', title: 'delete project',
+          onclick: (e) => { e.stopPropagation(); this.onDeleteProject(p); },
+        }, '×'),
       ));
 
       const ul = el('ul', { class: 'instance-list' });

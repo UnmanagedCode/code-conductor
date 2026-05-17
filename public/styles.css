@@ -65,6 +65,11 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
 }
 .project-row:hover { background: var(--panel-2); }
 .project-name { flex: 1; font-weight: 600; font-size: 13px; }
+.project-row .delete-project {
+  background: none; border: none; color: var(--muted);
+  cursor: pointer; padding: 0 6px; font-size: 14px; line-height: 1;
+}
+.project-row .delete-project:hover { color: var(--red); }
 .project-row .add-instance {
   background: transparent; color: var(--muted); border: none;
   cursor: pointer; padding: 2px 6px; font-size: 16px; line-height: 1;

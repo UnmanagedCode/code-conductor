@@ -123,6 +123,7 @@ const sidebar = new Sidebar({
   onSelectInstance: selectInstance,
   onCreateInstanceClick: openNewInstanceDialog,
   onRemoveWorktree: removeWorktree,
+  onDeleteProject: deleteProject,
 });
 
 const composer = attachComposer({
@@ -328,6 +329,39 @@ dom.newInstanceDialog.addEventListener('close', async () => {
     dom.newInstanceDialog.showModal();
   }
 });
+
+async function deleteProject(project) {
+  const insts = state.instances.filter(i => i.project === project.name);
+  const wts = project.worktrees ?? [];
+  const summary = [
+    `Delete project '${project.name}'?`,
+    `Path: ${project.path}`,
+    ``,
+    `This will:`,
+    `  • kill ${insts.length} running instance${insts.length === 1 ? '' : 's'}`,
+    `  • remove ${wts.length} worktree${wts.length === 1 ? '' : 's'} (dir + branch)`,
+    `  • rm -rf the project directory itself`,
+    ``,
+    `(Your ~/.claude/projects/ session history is left in place.)`,
+    `Type the project name to confirm:`,
+  ].join('\n');
+  const typed = window.prompt(summary, '');
+  if (typed !== project.name) {
+    if (typed !== null) alert(`Name mismatch — nothing deleted.`);
+    return;
+  }
+  try {
+    const r = await fetch(`/api/projects/${encodeURIComponent(project.name)}`, { method: 'DELETE' });
+    if (!r.ok) throw new Error((await r.json()).error);
+    if (state.activeId && insts.some(i => i.id === state.activeId)) {
+      state.activeId = null;
+    }
+    await refreshProjects();
+    await refreshInstances();
+  } catch (e) {
+    alert(`delete project failed: ${e.message}`);
+  }
+}
 
 async function removeWorktree(project, worktreeName) {
   if (!confirm(`Remove worktree '${worktreeName}'?\nThis will delete the directory and branch.`)) return;

@@ -82,6 +82,25 @@ export async function createProject(name) {
   return { name, path: full };
 }
 
+// Delete the entire project directory. Caller is responsible for first
+// killing any running instances and removing worktree registrations
+// (the cascade is orchestrated in src/routes.js). Sessions under
+// ~/.claude/projects/<encoded>/ are deliberately left in place — they
+// might still be referenced by `claude --resume` outside the
+// orchestrator.
+export async function deleteProject(name) {
+  validateName(name);
+  const full = path.join(projectsRoot(), name);
+  try {
+    await fs.rm(full, { recursive: true, force: true });
+  } catch (e) {
+    const err = new Error(`failed to delete project '${name}': ${e.message}`);
+    err.statusCode = 500;
+    throw err;
+  }
+  return { name, path: full };
+}
+
 export async function getProject(name) {
   validateName(name);
   const full = path.join(projectsRoot(), name);

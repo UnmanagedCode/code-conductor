@@ -118,3 +118,73 @@ test('GET /api/projects/:name/sessions 404s unknown project', async () => {
     assert.equal(r.status, 404);
   } finally { await close(); }
 });
+
+test('DELETE /api/projects/:name removes the directory + drops from the list', async () => {
+  const { baseUrl, projectsRoot, close } = await bootServer();
+  try {
+    await api(baseUrl, 'POST', '/api/projects', { name: 'goner' });
+    const dir = path.join(projectsRoot, 'goner');
+    await fs.stat(dir);
+
+    const r = await api(baseUrl, 'DELETE', '/api/projects/goner');
+    assert.equal(r.status, 200);
+    assert.equal(r.body.ok, true);
+    assert.equal(r.body.killedInstances, 0);
+
+    await assert.rejects(fs.stat(dir), { code: 'ENOENT' });
+    const list = await api(baseUrl, 'GET', '/api/projects');
+    assert.deepEqual(list.body, []);
+  } finally { await close(); }
+});
+
+test('DELETE /api/projects/:name cascades through running instances + worktrees', async () => {
+  // Real git repo so we can stand up a worktree, and a fake-claude
+  // scenario for the running instance.
+  const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-instance.json');
+  const { execFile } = await import('node:child_process');
+  const git = (cwd, ...args) => new Promise((resolve, reject) => {
+    execFile('git', ['-C', cwd, ...args], { encoding: 'utf8' }, (err, stdout, stderr) => {
+      if (err) { err.stdout = stdout; err.stderr = stderr; reject(err); } else resolve({ stdout, stderr });
+    });
+  });
+  const { baseUrl, projectsRoot, instances, close } = await bootServer({ scenarioPath: SCENARIO });
+  try {
+    // Init a real repo at projectsRoot/demo so worktree creation works.
+    const repoPath = path.join(projectsRoot, 'demo');
+    await fs.mkdir(repoPath, { recursive: true });
+    await git(repoPath, 'init', '-q', '-b', 'main');
+    await git(repoPath, 'config', 'user.email', 't@t');
+    await git(repoPath, 'config', 'user.name', 't');
+    await git(repoPath, 'config', 'commit.gpgsign', 'false');
+    await fs.writeFile(path.join(repoPath, 'r.md'), 'x');
+    await git(repoPath, 'add', '.');
+    await git(repoPath, 'commit', '-q', '-m', 'i');
+
+    // Spawn one direct instance + one worktree-attached instance.
+    const direct = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', mode: 'bypassPermissions' });
+    const wtSpawn = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', mode: 'bypassPermissions', worktree: true });
+    const wtName = wtSpawn.body.worktree.worktreeName;
+    const wtPath = path.join(projectsRoot, wtName);
+    await fs.stat(wtPath);
+    assert.equal(instances.list().length, 2);
+
+    const r = await api(baseUrl, 'DELETE', '/api/projects/demo');
+    assert.equal(r.status, 200);
+    assert.equal(r.body.killedInstances, 2);
+
+    // Project dir, worktree dir, and both instances are gone.
+    await assert.rejects(fs.stat(repoPath), { code: 'ENOENT' });
+    await assert.rejects(fs.stat(wtPath), { code: 'ENOENT' });
+    assert.equal(instances.list().length, 0);
+    assert.equal(instances.get(direct.body.id), undefined);
+    assert.equal(instances.get(wtSpawn.body.id), undefined);
+  } finally { await close(); }
+});
+
+test('DELETE /api/projects/:name 404s unknown project', async () => {
+  const { baseUrl, close } = await bootServer();
+  try {
+    const r = await api(baseUrl, 'DELETE', '/api/projects/nope');
+    assert.equal(r.status, 404);
+  } finally { await close(); }
+});
