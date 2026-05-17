@@ -29,7 +29,9 @@ import { randomUUID } from 'node:crypto';
 // after a partial model response. We accept the marker anywhere in the
 // block and let Instance decide whether to strip the whole block (only on
 // orchestrator-driven auto-interrupts, never on user-clicked interrupts).
-const INTERRUPT_MARKER_RE = /\[Request interrupted by user(?:\s+for[^\]]*)?\]/;
+// Exported so the history-replay path in Instance can use the same regex
+// for scrubbing persisted transcripts.
+export const INTERRUPT_MARKER_RE = /\[Request interrupted by user(?:\s+for[^\]]*)?\]/;
 
 export class Parser {
   constructor() {

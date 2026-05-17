@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import readline from 'node:readline';
 import path from 'node:path';
 import { promises as fs, readFileSync } from 'node:fs';
-import { Parser } from './parser.js';
+import { Parser, INTERRUPT_MARKER_RE } from './parser.js';
 import { getProject, encodeCwd, claudeProjectsRoot } from './projects.js';
 
 const RING_SIZE = 500;
@@ -137,7 +137,14 @@ export class Instance extends EventEmitter {
             });
             any = true;
           } else if (block.type === 'text') {
-            this._emitUi({ kind: 'user_echo', text: block.text ?? '' });
+            const text = block.text ?? '';
+            // Replay-side scrub: synthetic-user messages that contain the
+            // interrupt marker were noise in the original session and stay
+            // noise on replay. Skip them entirely so the resumed
+            // conversation doesn't show a [Request interrupted by user]
+            // USER box where there shouldn't be one.
+            if (INTERRUPT_MARKER_RE.test(text)) continue;
+            this._emitUi({ kind: 'user_echo', text });
             any = true;
           }
         }
@@ -154,7 +161,12 @@ export class Instance extends EventEmitter {
         const b = blocks[i];
         if (!b || typeof b !== 'object') continue;
         if (b.type === 'text') {
-          this._emitUi({ kind: 'text_delta', msgId, blockIdx: i, text: b.text ?? '' });
+          const text = b.text ?? '';
+          // Same scrub on the assistant side — the live path strips text
+          // blocks whose content contains the interrupt marker, and the
+          // replay path should match.
+          if (INTERRUPT_MARKER_RE.test(text)) continue;
+          this._emitUi({ kind: 'text_delta', msgId, blockIdx: i, text });
           this._emitUi({ kind: 'text_end', msgId, blockIdx: i });
           any = true;
         } else if (b.type === 'thinking') {

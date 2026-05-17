@@ -342,6 +342,68 @@ test('resuming an existing session replays the persisted transcript into the rin
   } finally { await ctx.close(); }
 });
 
+test('resume: [Request interrupted by user] markers in the persisted transcript are scrubbed on replay', async () => {
+  // Regression: the live path strips assistant/user blocks whose content
+  // contains the interrupt marker, but the history-replay path was
+  // emitting them straight through — so on resume the conversation
+  // showed the [Request interrupted by user] noise that the user had
+  // already not-wanted-to-see when it happened live.
+  const ctx = await bootServer({ scenarioPath: path.join(__dirname, 'fixtures', 'scenario-resume.json') });
+  const fsp = (await import('node:fs')).promises;
+  try {
+    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'scrub' });
+    const projectPath = path.join(ctx.projectsRoot, 'scrub');
+    const sid = '99999999-8888-7777-6666-555555555555';
+    const sessionDir = path.join(ctx.claudeProjectsRoot, encodeCwd(projectPath));
+    await fsp.mkdir(sessionDir, { recursive: true });
+
+    const lines = [
+      { type: 'user', uuid: 'u1', message: { role: 'user', content: 'go' } },
+      // Assistant block that's purely the marker — should be skipped.
+      { type: 'assistant', uuid: 'a1', message: { id: 'm1', role: 'assistant', content: [
+        { type: 'text', text: '[Request interrupted by user]' },
+      ] } },
+      // Synthetic user block carrying the marker — should also be skipped.
+      { type: 'user', uuid: 'u2', message: { role: 'user', content: [
+        { type: 'text', text: '[Request interrupted by user]' },
+      ] } },
+      // Assistant block with prose AND the marker appended — also skipped
+      // (matches the live-path "mixed block" behaviour).
+      { type: 'assistant', uuid: 'a2', message: { id: 'm2', role: 'assistant', content: [
+        { type: 'text', text: 'Let me try answering [Request interrupted by user]' },
+      ] } },
+      // A normal assistant block — should be preserved.
+      { type: 'assistant', uuid: 'a3', message: { id: 'm3', role: 'assistant', content: [
+        { type: 'text', text: 'Real reply' },
+      ] } },
+    ];
+    await fsp.writeFile(
+      path.join(sessionDir, `${sid}.jsonl`),
+      lines.map(l => JSON.stringify(l)).join('\n') + '\n',
+    );
+
+    const events = collectEvents(ctx.instances);
+    const r = await api(ctx.baseUrl, 'POST', '/api/instances', {
+      project: 'scrub', mode: 'plan', resume: sid,
+    });
+    const id = r.body.id;
+    await waitFor(() => ctx.instances.get(id).status === 'idle');
+
+    const mine = events.filter(e => e.id === id).map(e => e.ev);
+    // None of the marker text should have made it through.
+    for (const ev of mine) {
+      const probe = ev.text ?? ev.content ?? '';
+      if (typeof probe === 'string') {
+        assert.ok(!/Request interrupted by user/.test(probe), `replayed event still contains marker: kind=${ev.kind} text=${probe}`);
+      }
+    }
+    // The real assistant reply made it through unaffected.
+    assert.ok(mine.some(e => e.kind === 'text_delta' && e.text === 'Real reply'));
+    // The initial "go" user_echo made it through too (no marker).
+    assert.ok(mine.some(e => e.kind === 'user_echo' && e.text === 'go'));
+  } finally { await ctx.close(); }
+});
+
 test('resume: AskUserQuestion and ExitPlanMode tool calls from history replay as their structured cards', async () => {
   // Regression: the live parser emits `user_question` (and `plan_request`)
   // alongside the tool_use for AskUserQuestion / ExitPlanMode at
