@@ -1,0 +1,3 @@
+{"type":"summary","summary":"sample session","leafUuid":"00000000-0000-0000-0000-000000000001"}
+{"type":"user","uuid":"u1","sessionId":"00000000-0000-0000-0000-000000000001","message":{"role":"user","content":"hello from fixture, please summarize this codebase"}}
+{"type":"assistant","uuid":"a1","sessionId":"00000000-0000-0000-0000-000000000001","message":{"role":"assistant","content":[{"type":"text","text":"sure thing"}]}}

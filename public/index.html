@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <title>claude-orch</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div id="app">
+    <button id="sidebar-toggle" aria-label="toggle sidebar" aria-controls="sidebar" aria-expanded="false">≡</button>
+    <div id="sidebar-scrim"></div>
+    <aside id="sidebar">
+      <header>
+        <h1>claude-orch</h1>
+      </header>
+      <div id="sidebar-body">
+        <div class="sidebar-actions">
+          <button id="new-project-btn">+ New project</button>
+        </div>
+        <ul id="project-list" class="project-list"></ul>
+      </div>
+    </aside>
+    <main id="main">
+      <header id="instance-header">
+        <div id="instance-title">no instance selected</div>
+        <div id="instance-controls">
+          <select id="mode-select" disabled>
+            <option value="default">default</option>
+            <option value="acceptEdits">acceptEdits</option>
+            <option value="bypassPermissions">bypassPermissions</option>
+            <option value="plan">plan</option>
+          </select>
+          <button id="interrupt-btn" disabled>Interrupt</button>
+          <button id="kill-btn" disabled>Kill</button>
+          <button id="resume-btn" hidden>Resume</button>
+        </div>
+      </header>
+      <div id="conversation" class="conversation"></div>
+      <form id="composer" autocomplete="off">
+        <textarea id="composer-input" placeholder="Send a message — Enter to send, Shift+Enter for newline" rows="2" disabled></textarea>
+        <button id="composer-send" type="submit" disabled>Send</button>
+      </form>
+    </main>
+  </div>
+
+  <dialog id="new-project-dialog">
+    <form method="dialog">
+      <h3>New project</h3>
+      <label>Name <input id="np-name" pattern="[a-zA-Z0-9._-]+" required autofocus /></label>
+      <p class="hint">Creates <code id="np-preview">~/project/&lt;name&gt;</code></p>
+      <p class="error" id="np-error"></p>
+      <menu>
+        <button value="cancel">Cancel</button>
+        <button id="np-create" value="create">Create</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <dialog id="new-instance-dialog">
+    <form method="dialog">
+      <h3>New instance in <span id="ni-project"></span></h3>
+      <label>Mode
+        <select id="ni-mode">
+          <option value="default">default</option>
+          <option value="acceptEdits">acceptEdits</option>
+          <option value="bypassPermissions" selected>bypassPermissions</option>
+          <option value="plan">plan</option>
+        </select>
+      </label>
+      <label>Effort (controls thinking budget)
+        <select id="ni-effort">
+          <option value="low">low</option>
+          <option value="medium">medium</option>
+          <option value="high" selected>high</option>
+          <option value="xhigh">xhigh</option>
+          <option value="max">max</option>
+        </select>
+      </label>
+      <label>Thinking
+        <select id="ni-thinking">
+          <option value="adaptive" selected>adaptive (Claude decides)</option>
+          <option value="enabled">enabled</option>
+          <option value="disabled">disabled</option>
+        </select>
+      </label>
+      <label>Model
+        <select id="ni-model">
+          <option value="" selected>(default)</option>
+          <option value="claude-sonnet-4-6">claude-sonnet-4-6 (visible thinking)</option>
+          <option value="claude-opus-4-7">claude-opus-4-7 (thinking is internal/redacted)</option>
+          <option value="claude-haiku-4-5">claude-haiku-4-5</option>
+          <option value="sonnet">sonnet (alias)</option>
+          <option value="opus">opus (alias)</option>
+          <option value="haiku">haiku (alias)</option>
+        </select>
+      </label>
+      <label>Resume session
+        <select id="ni-resume">
+          <option value="">— fresh session —</option>
+        </select>
+      </label>
+      <p class="error" id="ni-error"></p>
+      <menu>
+        <button value="cancel">Cancel</button>
+        <button id="ni-create" value="create">Spawn</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

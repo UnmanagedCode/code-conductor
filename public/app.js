@@ -1,0 +1,253 @@
+// Frontend bootstrap. Loads projects + instances over REST, subscribes to
+// instance updates over WebSocket, and wires the sidebar/composer to actions.
+
+import { bus, connect, send } from './ws.js';
+import { Sidebar } from './sidebar.js';
+import { Conversation } from './conversation.js';
+import { attachComposer } from './composer.js';
+
+const state = {
+  projects: [],
+  instances: [],
+  activeId: null,
+  activeStatus: null,
+  activeMode: null,
+};
+
+const dom = {
+  projectList: document.getElementById('project-list'),
+  conversation: document.getElementById('conversation'),
+  composerForm: document.getElementById('composer'),
+  composerInput: document.getElementById('composer-input'),
+  composerSend: document.getElementById('composer-send'),
+  modeSelect: document.getElementById('mode-select'),
+  interruptBtn: document.getElementById('interrupt-btn'),
+  killBtn: document.getElementById('kill-btn'),
+  resumeBtn: document.getElementById('resume-btn'),
+  instanceTitle: document.getElementById('instance-title'),
+  newProjectBtn: document.getElementById('new-project-btn'),
+  newProjectDialog: document.getElementById('new-project-dialog'),
+  npName: document.getElementById('np-name'),
+  npError: document.getElementById('np-error'),
+  npPreview: document.getElementById('np-preview'),
+  newInstanceDialog: document.getElementById('new-instance-dialog'),
+  niProject: document.getElementById('ni-project'),
+  niMode: document.getElementById('ni-mode'),
+  niEffort: document.getElementById('ni-effort'),
+  niThinking: document.getElementById('ni-thinking'),
+  niModel: document.getElementById('ni-model'),
+  niResume: document.getElementById('ni-resume'),
+  niError: document.getElementById('ni-error'),
+  sidebarToggle: document.getElementById('sidebar-toggle'),
+  sidebar: document.getElementById('sidebar'),
+  sidebarScrim: document.getElementById('sidebar-scrim'),
+};
+
+const conversation = new Conversation(dom.conversation);
+
+const sidebar = new Sidebar({
+  rootList: dom.projectList,
+  onSelectInstance: selectInstance,
+  onCreateInstanceClick: openNewInstanceDialog,
+});
+
+const composer = attachComposer({
+  form: dom.composerForm,
+  textarea: dom.composerInput,
+  sendBtn: dom.composerSend,
+  onSubmit: (text) => { if (state.activeId) send('prompt', { id: state.activeId, text }); },
+});
+
+dom.modeSelect.addEventListener('change', async () => {
+  if (!state.activeId) return;
+  const mode = dom.modeSelect.value;
+  try { await send('mode', { id: state.activeId, mode }, { ack: true }); }
+  catch (e) { alert(`mode change failed: ${e.message}`); }
+});
+
+dom.interruptBtn.addEventListener('click', () => {
+  if (state.activeId) send('interrupt', { id: state.activeId });
+});
+
+dom.killBtn.addEventListener('click', () => {
+  if (state.activeId && confirm('Kill this instance?')) send('kill', { id: state.activeId });
+});
+
+dom.resumeBtn.addEventListener('click', async () => {
+  if (!state.activeId) return;
+  try {
+    const r = await fetch(`/api/instances/${state.activeId}/respawn`, { method: 'POST' });
+    if (!r.ok) throw new Error((await r.json()).error);
+    await refreshInstances();
+    if (state.activeId) send('subscribe', { id: state.activeId });
+  } catch (e) { alert(`resume failed: ${e.message}`); }
+});
+
+dom.newProjectBtn.addEventListener('click', () => {
+  dom.npName.value = '';
+  dom.npError.textContent = '';
+  dom.npPreview.textContent = '~/project/<name>';
+  dom.newProjectDialog.showModal();
+});
+dom.npName.addEventListener('input', () => {
+  dom.npPreview.textContent = `~/project/${dom.npName.value || '<name>'}`;
+});
+dom.newProjectDialog.addEventListener('close', async () => {
+  if (dom.newProjectDialog.returnValue !== 'create') return;
+  const name = dom.npName.value.trim();
+  if (!name) return;
+  try {
+    const r = await fetch('/api/projects', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name }) });
+    if (!r.ok) throw new Error((await r.json()).error);
+    await refreshProjects();
+  } catch (e) {
+    dom.npError.textContent = e.message;
+    dom.newProjectDialog.showModal();
+  }
+});
+
+function setSidebarOpen(open) {
+  dom.sidebar.classList.toggle('open', open);
+  dom.sidebarScrim.classList.toggle('open', open);
+  dom.sidebarToggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+}
+dom.sidebarToggle.addEventListener('click', () => {
+  setSidebarOpen(!dom.sidebar.classList.contains('open'));
+});
+dom.sidebarScrim.addEventListener('click', () => setSidebarOpen(false));
+
+let pendingNewInstanceProject = null;
+async function openNewInstanceDialog(projectName) {
+  pendingNewInstanceProject = projectName;
+  dom.niProject.textContent = projectName;
+  dom.niMode.value = 'bypassPermissions';
+  dom.niEffort.value = 'high';
+  dom.niThinking.value = 'adaptive';
+  dom.niModel.value = '';
+  dom.niError.textContent = '';
+  dom.niResume.innerHTML = '<option value="">— fresh session —</option>';
+  try {
+    const sessions = await (await fetch(`/api/projects/${encodeURIComponent(projectName)}/sessions`)).json();
+    for (const s of sessions) {
+      const opt = document.createElement('option');
+      opt.value = s.sessionId;
+      const preview = (s.firstPrompt ?? '').slice(0, 60).replace(/\s+/g, ' ');
+      opt.textContent = `${s.sessionId.slice(0, 8)} · ${preview}`;
+      dom.niResume.appendChild(opt);
+    }
+  } catch { /* ignore */ }
+  dom.newInstanceDialog.showModal();
+}
+dom.newInstanceDialog.addEventListener('close', async () => {
+  if (dom.newInstanceDialog.returnValue !== 'create') return;
+  const project = pendingNewInstanceProject;
+  const mode = dom.niMode.value;
+  const effort = dom.niEffort.value;
+  const thinking = dom.niThinking.value;
+  const model = dom.niModel.value || undefined;
+  const resume = dom.niResume.value || undefined;
+  try {
+    const r = await fetch('/api/instances', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ project, mode, effort, thinking, model, resume }),
+    });
+    if (!r.ok) throw new Error((await r.json()).error);
+    const inst = await r.json();
+    await refreshInstances();
+    selectInstance(inst.id);
+  } catch (e) {
+    dom.niError.textContent = e.message;
+    dom.newInstanceDialog.showModal();
+  }
+});
+
+async function refreshProjects() {
+  state.projects = await (await fetch('/api/projects')).json();
+  sidebar.setProjects(state.projects);
+}
+async function refreshInstances() {
+  state.instances = await (await fetch('/api/instances')).json();
+  sidebar.setInstances(state.instances);
+  updateActiveHeader();
+}
+
+function selectInstance(id) {
+  if (state.activeId && state.activeId !== id) send('unsubscribe', { id: state.activeId });
+  state.activeId = id;
+  sidebar.setActive(id);
+  conversation.clear();
+  updateActiveHeader();
+  send('subscribe', { id });
+  if (window.matchMedia('(max-width: 720px)').matches) setSidebarOpen(false);
+}
+
+function updateActiveHeader() {
+  const inst = state.instances.find(i => i.id === state.activeId);
+  if (!inst) {
+    dom.instanceTitle.textContent = 'no instance selected';
+    dom.modeSelect.disabled = true;
+    dom.interruptBtn.disabled = true;
+    dom.killBtn.disabled = true;
+    dom.resumeBtn.hidden = true;
+    composer.disable();
+    dom.composerInput.placeholder = 'select or spawn an instance to start chatting';
+    return;
+  }
+  state.activeStatus = inst.status;
+  state.activeMode = inst.mode;
+  dom.instanceTitle.innerHTML = `<strong>${inst.project}</strong> · ${inst.sessionId?.slice(0,8) ?? '?'} · <span class="status">${inst.status}</span> · mode=<code>${inst.mode}</code>`;
+  dom.modeSelect.value = inst.mode;
+  dom.modeSelect.disabled = inst.status === 'turn' || inst.status === 'crashed' || inst.status === 'exited';
+  dom.interruptBtn.disabled = inst.status !== 'turn';
+  dom.killBtn.disabled = !['idle', 'turn', 'spawning'].includes(inst.status);
+  dom.resumeBtn.hidden = !(inst.status === 'crashed' || inst.status === 'exited');
+  const canType = ['idle', 'turn', 'spawning'].includes(inst.status);
+  const canSend = ['idle', 'turn'].includes(inst.status);
+  composer.set({ canType, canSend });
+  dom.composerInput.placeholder = inst.status === 'turn'
+    ? 'turn running — your message will queue'
+    : inst.status === 'spawning'
+      ? 'instance is starting…'
+      : inst.status === 'crashed' || inst.status === 'exited'
+        ? 'instance is not running — click Resume'
+        : 'Send a message — Enter to send, Shift+Enter for newline';
+}
+
+bus.addEventListener('snapshot', (e) => {
+  const m = e.detail;
+  if (m.id !== state.activeId) return;
+  conversation.clear();
+  conversation.applyEvents(m.events ?? []);
+});
+
+bus.addEventListener('event', (e) => {
+  const m = e.detail;
+  if (m.id !== state.activeId) return;
+  conversation.apply(m.ev);
+});
+
+bus.addEventListener('status', (e) => {
+  const m = e.detail;
+  const inst = state.instances.find(i => i.id === m.id);
+  if (inst) {
+    inst.status = m.status;
+    inst.mode = m.mode;
+    inst.sessionId = m.sessionId;
+    sidebar.setInstances(state.instances);
+    if (m.id === state.activeId) updateActiveHeader();
+  }
+});
+
+bus.addEventListener('instances', () => { refreshInstances(); });
+bus.addEventListener('projects', () => { refreshProjects(); });
+
+bus.addEventListener('open', async () => {
+  await refreshProjects();
+  await refreshInstances();
+  if (state.activeId && state.instances.some(i => i.id === state.activeId)) {
+    send('subscribe', { id: state.activeId });
+  }
+});
+
+connect();
