@@ -36,11 +36,11 @@ Designed to run on a Termux phone (single user, localhost-only), but works on an
 - **Live conversation view** — streams the assistant's response as it arrives. Renders:
   - **Text** — plain markdown-ish prose, deltas merged in place.
   - **Thinking** — collapsible block. Shows full content from Sonnet/Haiku, or `(thinking redacted by model)` placeholder for Opus 4.7 (which only emits a signature).
-  - **Tool use** — collapsible block with a smart one-line summary like `🔧 Bash · ls -la · done`. Per-tool summary picks the most useful argument (command for Bash, file_path for Edit/Read/Write, pattern for Glob/Grep, url for WebFetch, etc.). **Edit / Write / NotebookEdit** tool calls render as a syntax-coloured **unified diff** (green/red gutters, ±counts header, sticky file-path) instead of raw JSON; Write shows a numbered preview of the new file.
+  - **Tool use** — block opens by default (collapse it with the disclosure header) with a smart one-line summary like `🔧 Bash · ls -la · done`. Per-tool summary picks the most useful argument (command for Bash, file_path for Edit/Read/Write, pattern for Glob/Grep, url for WebFetch, etc.). **Edit / Write / NotebookEdit** tool calls render as a syntax-coloured **unified diff** (green/red gutters, ±counts header, sticky file-path) instead of raw JSON; Write shows a numbered preview of the new file.
   - **Tool result** — truncated at 4 KB with a "show full" button, attached under its matching tool_use.
   - **Sub-agent drill-down** — when Claude uses the `Task` tool, the sub-agent's events stream into a nested mini-conversation rendered inside the outer tool block, with a dashed left border and `↳ sub-agent` label. Tap the Task tool to expand and inspect what the sub-agent did.
   - **Tool-approval prompts** — in `default` / `acceptEdits` / `plan` permission modes, Claude requests permission before each tool call. Those arrive as an inline amber card showing the tool name, key arguments (Edit/Write previews show their diff), and **Approve / Deny** buttons. Approved cards turn green, denied turn red and Claude receives an `is_error` tool result.
-  - **AskUserQuestion** — when the model invokes the `AskUserQuestion` tool, the structured questions/options render as a blue card with one-tap option buttons. Picking an option sends the chosen label back as the next user prompt (the CLI auto-errors the tool itself in stream-json mode — the workaround feeds the answer in via the next turn).
+  - **AskUserQuestion** — when the model invokes the `AskUserQuestion` tool, the structured questions/options render as a blue card with one-tap option buttons. Picking an option sends the chosen label back as the next user prompt (the CLI auto-errors the tool itself in stream-json mode — the workaround feeds the answer in via the next turn). If the previous turn is still in flight when you pick, the answer is queued locally and flushed automatically when the instance reaches `idle`, so it never races with the in-flight stream.
   - **Turn end** — small footer line with duration / cost / tokens.
 - **Composer** — textarea at the bottom. Enter sends, Shift+Enter inserts a newline. The placeholder explains the current state ("turn running — your message will queue", "click Resume", etc.). The text input stays focusable during a running turn so you can queue a follow-up.
 - **Controls** — header bar has a 🔔/🔕 notification toggle, a mode dropdown (live switching via `control_request`), Interrupt, and Kill / Resume buttons.
@@ -79,6 +79,7 @@ Open `http://127.0.0.1:8787` in a browser on the same device. Bound to localhost
 - **`express`** for the small REST surface and static asset serving.
 - **`ws`** for a single `/ws` WebSocket multiplexed across all instance subscriptions.
 - **Vanilla HTML/CSS/JS** in `public/` — no build step. Modules load via native `<script type="module">`.
+- **`happy-dom`** (dev-only) — used by `tests/rendering.test.mjs` to run the actual conversation renderer against simulated streams and assert what lands in the DOM.
 - **No DB** — projects live as directories under `~/project/`, sessions live as `~/.claude/projects/<encoded-cwd>/*.jsonl`.
 
 ### Subprocess protocol
@@ -193,7 +194,13 @@ claude-orch-app/
     │                         empties, round-trip both sides, stats.
     ├── static.test.mjs       Static asset serving + DOM-free module import.
     ├── blocks.test.mjs       describeToolInput() per-tool summaries.
-    └── smoke.real.test.mjs   Opt-in real-claude end-to-end (RUN_REAL_CLAUDE=1).
+    ├── rendering.test.mjs    happy-dom-backed DOM tests over the parser →
+    │                         conversation rendering pipeline. Catches
+    │                         user-visible regressions the parser tests miss
+    │                         (e.g. "is the tool command actually visible?").
+    └── smoke.real.test.mjs   Opt-in real-claude end-to-end (RUN_REAL_CLAUDE=1) —
+                              text reply, Bash tool call shape, AskUserQuestion
+                              user_question event shape.
 ```
 
 ### WebSocket protocol

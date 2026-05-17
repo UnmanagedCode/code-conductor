@@ -18,6 +18,100 @@ import { bootServer, api, waitFor } from './helpers.mjs';
 const ENABLED = !!process.env.RUN_REAL_CLAUDE;
 const t = ENABLED ? test : test.skip.bind(test);
 
+t('real claude: Bash tool call emits tool_use_start, tool_use with command, tool_result', async () => {
+  const ctx = await bootServer({ useRealClaude: true });
+  let sessionId = null, projectPath = null;
+  try {
+    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'tool-smoke' });
+    projectPath = path.join(ctx.projectsRoot, 'tool-smoke');
+
+    const collected = [];
+    ctx.instances.on('event', ({ id, ev }) => collected.push({ id, ev }));
+
+    const created = await api(ctx.baseUrl, 'POST', '/api/instances', {
+      project: 'tool-smoke', mode: 'bypassPermissions', model: 'claude-sonnet-4-6',
+    });
+    const id = created.body.id;
+    sessionId = created.body.sessionId;
+    await waitFor(() => ctx.instances.get(id)?.status === 'idle', { timeout: 5_000 });
+
+    ctx.instances.get(id).prompt('Run "echo hello-from-smoke" and tell me what it printed.');
+    await waitFor(
+      () => collected.some(e => e.id === id && e.ev.kind === 'turn_end'),
+      { timeout: 60_000, interval: 100 },
+    );
+
+    const mine = collected.filter(e => e.id === id).map(e => e.ev);
+    const kinds = mine.map(e => e.kind);
+
+    const start = mine.find(e => e.kind === 'tool_use_start');
+    assert.ok(start, `no tool_use_start emitted — kinds: ${kinds.join(',')}`);
+
+    const toolUse = mine.find(e => e.kind === 'tool_use');
+    assert.ok(toolUse, 'no tool_use event emitted');
+    assert.ok(toolUse.input && typeof toolUse.input === 'object', 'tool_use.input must be an object');
+    assert.ok(
+      typeof toolUse.input.command === 'string' && toolUse.input.command.length > 0,
+      `tool_use.input.command must be non-empty, got: ${JSON.stringify(toolUse.input)}`,
+    );
+
+    const toolResult = mine.find(e => e.kind === 'tool_result');
+    assert.ok(toolResult, 'no tool_result emitted');
+  } finally {
+    await ctx.close();
+    if (sessionId && projectPath) {
+      const encoded = projectPath.replaceAll('/', '-');
+      const jsonl = path.join(os.homedir(), '.claude', 'projects', encoded, `${sessionId}.jsonl`);
+      await fs.rm(jsonl, { force: true }).catch(() => {});
+      await fs.rmdir(path.dirname(jsonl)).catch(() => {});
+    }
+  }
+});
+
+t('real claude: AskUserQuestion emits a user_question event with parsed questions/options', async () => {
+  const ctx = await bootServer({ useRealClaude: true });
+  let sessionId = null, projectPath = null;
+  try {
+    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'ask-smoke' });
+    projectPath = path.join(ctx.projectsRoot, 'ask-smoke');
+
+    const collected = [];
+    ctx.instances.on('event', ({ id, ev }) => collected.push({ id, ev }));
+
+    const created = await api(ctx.baseUrl, 'POST', '/api/instances', {
+      project: 'ask-smoke', mode: 'bypassPermissions', model: 'claude-sonnet-4-6',
+    });
+    const id = created.body.id;
+    sessionId = created.body.sessionId;
+    await waitFor(() => ctx.instances.get(id)?.status === 'idle', { timeout: 5_000 });
+
+    ctx.instances.get(id).prompt('Use the AskUserQuestion tool to ask me to pick between cat and dog as a favourite pet.');
+    await waitFor(
+      () => collected.some(e => e.id === id && e.ev.kind === 'turn_end'),
+      { timeout: 60_000, interval: 100 },
+    );
+
+    const mine = collected.filter(e => e.id === id).map(e => e.ev);
+    const uq = mine.find(e => e.kind === 'user_question');
+    assert.ok(uq, `no user_question emitted — kinds: ${mine.map(e => e.kind).join(',')}`);
+    assert.ok(Array.isArray(uq.questions) && uq.questions.length >= 1, 'user_question must carry a questions array');
+    const q0 = uq.questions[0];
+    assert.ok(typeof q0.question === 'string' && q0.question.length > 0, 'question text must be present');
+    assert.ok(Array.isArray(q0.options) && q0.options.length >= 2, 'must offer at least two options');
+    for (const opt of q0.options) {
+      assert.ok(typeof opt.label === 'string' && opt.label.length > 0, 'each option must have a non-empty label');
+    }
+  } finally {
+    await ctx.close();
+    if (sessionId && projectPath) {
+      const encoded = projectPath.replaceAll('/', '-');
+      const jsonl = path.join(os.homedir(), '.claude', 'projects', encoded, `${sessionId}.jsonl`);
+      await fs.rm(jsonl, { force: true }).catch(() => {});
+      await fs.rmdir(path.dirname(jsonl)).catch(() => {});
+    }
+  }
+});
+
 t('real claude: spawn → prompt → text_delta + turn_end', async () => {
   const ctx = await bootServer({ useRealClaude: true });
   let sessionId = null;

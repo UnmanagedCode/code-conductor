@@ -48,6 +48,20 @@ const dom = {
   notifyToggle: document.getElementById('notify-toggle'),
 };
 
+// Pending user-question answers waiting for the active instance to reach
+// idle. If the user picks an option while a turn is still running, the
+// answer prompt would race with the in-flight stream — claude's stdin can
+// accept queued messages but the timing was producing dropped or misordered
+// responses. We hold the answer here and flush it when status flips to idle.
+const pendingAnswersByInstance = new Map();
+
+function flushPendingAnswers(instanceId) {
+  const queue = pendingAnswersByInstance.get(instanceId);
+  if (!queue || queue.length === 0) return;
+  for (const text of queue) send('prompt', { id: instanceId, text });
+  pendingAnswersByInstance.delete(instanceId);
+}
+
 const conversation = new Conversation(dom.conversation, {
   onPermissionDecision: (requestId, { allow, updatedInput, feedback }) => {
     if (!state.activeId) return;
@@ -59,8 +73,18 @@ const conversation = new Conversation(dom.conversation, {
     const qText = q?.question ?? `Question ${questionIndex + 1}`;
     // The CLI auto-errors the AskUserQuestion tool in stream-json mode, so
     // we deliver the answer back as a normal user prompt — the model picks
-    // it up on the next turn.
-    send('prompt', { id: state.activeId, text: `Answer to "${qText}": ${label}` });
+    // it up on the next turn. If a turn is still in flight, queue the
+    // answer until status flips to idle, otherwise send immediately.
+    const text = `Answer to "${qText}": ${label}`;
+    const activeId = state.activeId;
+    const inst = state.instances.find(i => i.id === activeId);
+    if (inst && inst.status === 'idle') {
+      send('prompt', { id: activeId, text });
+    } else {
+      const queue = pendingAnswersByInstance.get(activeId) ?? [];
+      queue.push(text);
+      pendingAnswersByInstance.set(activeId, queue);
+    }
   },
 });
 
@@ -291,6 +315,9 @@ bus.addEventListener('status', (e) => {
     sidebar.setInstances(state.instances);
     if (m.id === state.activeId) updateActiveHeader();
   }
+  // Now that this instance is idle again, drain any queued user-question
+  // answers that came in while a turn was running.
+  if (m.status === 'idle') flushPendingAnswers(m.id);
 });
 
 bus.addEventListener('instances', () => { refreshInstances(); });
