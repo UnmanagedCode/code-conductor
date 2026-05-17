@@ -91,11 +91,12 @@ const conversation = new Conversation(dom.conversation, {
     if (!state.activeId) return;
     const activeId = state.activeId;
     if (decision === 'approve') {
-      // Switch out of plan mode so the model can actually implement what
-      // it just got approval for. Best-effort — if the mode switch fails
-      // (e.g. instance just crashed), still send the approval prompt and
-      // let the user adjust mode manually.
-      try { await send('mode', { id: activeId, mode: 'default' }, { ack: true }); }
+      // Switch the instance to bypassPermissions so the model can actually
+      // implement what was just approved without every tool call hitting
+      // the "Claude requested permission" auto-deny. Best-effort — if the
+      // mode switch fails (e.g. instance just crashed), still send the
+      // approval prompt and let the user adjust mode manually.
+      try { await send('mode', { id: activeId, mode: 'bypassPermissions' }, { ack: true }); }
       catch (e) { console.warn('plan-approve mode switch failed', e); }
       const text = feedback
         ? `I approve the plan. Additional notes: ${feedback}\n\nPlease proceed with the implementation.`
@@ -105,6 +106,26 @@ const conversation = new Conversation(dom.conversation, {
       const text = feedback
         ? `I'd like to revise the plan. Refinement notes:\n${feedback}`
         : `I'd like to revise the plan. Please refine it.`;
+      sendOrQueuePrompt(activeId, text);
+    }
+  },
+  onPermissionDeniedDecision: async ({ allow, toolName }) => {
+    if (!state.activeId) return;
+    const activeId = state.activeId;
+    if (allow) {
+      // Promote the instance to bypassPermissions so future tool calls in
+      // this turn don't keep hitting the same auto-deny. The mode dropdown
+      // updates to reflect this; the user can switch back later.
+      try { await send('mode', { id: activeId, mode: 'bypassPermissions' }, { ack: true }); }
+      catch (e) { console.warn('permission-allow mode switch failed', e); }
+      const text = toolName
+        ? `I've granted permission. Please retry the ${toolName} call.`
+        : `I've granted permission. Please retry.`;
+      sendOrQueuePrompt(activeId, text);
+    } else {
+      const text = toolName
+        ? `Permission denied for ${toolName}. Please proceed without using that tool.`
+        : `Permission denied. Please proceed without that operation.`;
       sendOrQueuePrompt(activeId, text);
     }
   },

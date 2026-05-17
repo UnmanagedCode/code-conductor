@@ -305,12 +305,12 @@ export class Instance extends EventEmitter {
         this._autoInterruptedThisTurn = false;
       }
       this._emitUi(ev);
-      // Pre-empt the model's follow-up after AskUserQuestion or
-      // ExitPlanMode. In stream-json mode the CLI auto-errors both tools
-      // ("Answer questions?" / "Exit plan mode?"), and without an
-      // interrupt the model would compose a confused follow-up that
-      // makes the inline approval / question card feel ignorable.
-      if (ev.kind === 'user_question' || ev.kind === 'plan_request') {
+      // Pre-empt the model's follow-up after AskUserQuestion, ExitPlanMode,
+      // or a CLI-auto-denied tool (`default`/`acceptEdits` modes in
+      // stream-json --print). Without the interrupt the model would
+      // compose a confused follow-up that makes the inline approval card
+      // feel ignorable.
+      if (ev.kind === 'user_question' || ev.kind === 'plan_request' || ev.kind === 'permission_denied') {
         this._autoInterruptedThisTurn = true;
         this.interrupt().catch(() => {});
       }

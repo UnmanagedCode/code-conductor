@@ -524,6 +524,65 @@ export class PlanRequestBlock {
   }
 }
 
+// Rendered when the CLI auto-denied a tool in default/acceptEdits mode.
+// Offers Allow/Deny — Allow flips the instance to bypassPermissions and
+// asks the model to retry; Deny tells the model to proceed without that
+// tool. The card body shows whichever specialty renderer matches the tool
+// (Edit/Write diff, generic JSON, etc.).
+export class PermissionDeniedBlock {
+  constructor(ev, onDecision) {
+    this.toolUseId = ev.toolUseId;
+    this.onDecision = onDecision;
+    this.submitted = false;
+
+    this.statusNode = el('span', { class: 'perm-status' }, 'awaiting your decision');
+
+    const summary = describeToolInput(ev.toolName, ev.input);
+
+    let argsNode;
+    if (ev.toolName === 'Edit' && typeof ev.input?.old_string === 'string' && typeof ev.input?.new_string === 'string') {
+      argsNode = renderEditDiff(ev.input);
+    } else if (ev.toolName === 'Write' && typeof ev.input?.content === 'string') {
+      argsNode = renderWritePreview(ev.input);
+    } else if (ev.toolName === 'NotebookEdit' && typeof ev.input?.new_source === 'string') {
+      argsNode = renderNotebookEdit(ev.input);
+    } else {
+      let json = '';
+      try { json = JSON.stringify(ev.input ?? {}, null, 2); } catch { json = String(ev.input); }
+      argsNode = el('pre', {}, json);
+    }
+
+    this.allowBtn = el('button', { class: 'perm-allow', type: 'button' }, 'Allow & retry');
+    this.denyBtn = el('button', { class: 'perm-deny', type: 'button' }, "Don't allow");
+    this.allowBtn.addEventListener('click', () => this._click(true));
+    this.denyBtn.addEventListener('click', () => this._click(false));
+
+    this.node = el('div', { class: 'block permission' },
+      el('div', { class: 'perm-head' },
+        el('span', { class: 'perm-title' }, `Allow tool: ${ev.toolName ?? 'unknown'}?`),
+        this.statusNode,
+      ),
+      summary ? el('div', { class: 'perm-arg' }, summary) : null,
+      argsNode,
+      el('div', { class: 'perm-actions' }, this.allowBtn, this.denyBtn),
+    );
+  }
+  _click(allow) {
+    if (this.submitted) return;
+    this.submitted = true;
+    this.allowBtn.disabled = true;
+    this.denyBtn.disabled = true;
+    this.statusNode.textContent = allow ? 'allowing…' : 'denying…';
+    this.node.classList.add(allow ? 'allowed' : 'denied');
+    if (this.onDecision) {
+      this.onDecision({
+        toolUseId: this.toolUseId,
+        allow,
+      });
+    }
+  }
+}
+
 export class PermissionRequestBlock {
   constructor(ev, onDecision) {
     this.requestId = ev.requestId;

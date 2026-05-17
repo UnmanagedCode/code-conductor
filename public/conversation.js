@@ -3,22 +3,25 @@
 // replays don't duplicate prior content.
 
 import { TextBlock, ThinkingBlock, ToolUseBlock, ToolResultBlock, SystemBlock, TurnEndBlock,
-  PermissionRequestBlock, UserQuestionBlock, PlanRequestBlock,
+  PermissionRequestBlock, PermissionDeniedBlock, UserQuestionBlock, PlanRequestBlock,
   shouldRenderSystem, el } from './blocks.js';
 
 export class Conversation {
   constructor(rootEl, {
     isSub = false,
     onPermissionDecision = null,
+    onPermissionDeniedDecision = null,
     onUserQuestionSubmit = null,
     onPlanDecision = null,
   } = {}) {
     this.root = rootEl;
     this.isSub = isSub;
     this.onPermissionDecision = onPermissionDecision;
+    this.onPermissionDeniedDecision = onPermissionDeniedDecision;
     this.onUserQuestionSubmit = onUserQuestionSubmit;
     this.onPlanDecision = onPlanDecision;
     this.permissionBlocks = new Map(); // requestId -> PermissionRequestBlock
+    this.permissionDeniedBlocks = new Map(); // toolUseId -> PermissionDeniedBlock
     this.userQuestionBlocks = new Map(); // toolUseId -> UserQuestionBlock
     this.planBlocks = new Map(); // toolUseId -> PlanRequestBlock
     this.blocksByKey = new Map();   // `${msgId}:${blockIdx}` -> block instance
@@ -77,6 +80,7 @@ export class Conversation {
           sub = new Conversation(parent.subRoot, {
             isSub: true,
             onPermissionDecision: this.onPermissionDecision,
+            onPermissionDeniedDecision: this.onPermissionDeniedDecision,
             onUserQuestionSubmit: this.onUserQuestionSubmit,
             onPlanDecision: this.onPlanDecision,
           });
@@ -89,6 +93,7 @@ export class Conversation {
     }
     if (ev.kind === 'permission_request') { this._renderPermissionRequest(ev); return; }
     if (ev.kind === 'permission_resolved') { this._resolvePermissionRequest(ev); return; }
+    if (ev.kind === 'permission_denied') { this._renderPermissionDenied(ev); return; }
     if (ev.kind === 'user_question') { this._renderUserQuestion(ev); return; }
     if (ev.kind === 'plan_request') { this._renderPlanRequest(ev); return; }
     this._ensureNotEmpty();
@@ -220,6 +225,17 @@ export class Conversation {
       const wrap = this._ensureMessageWrap(null, 'assistant');
       wrap.body.appendChild(result.node);
     }
+  }
+
+  _renderPermissionDenied(ev) {
+    this._ensureNotEmpty();
+    if (this.permissionDeniedBlocks.has(ev.toolUseId)) return;
+    const block = new PermissionDeniedBlock(ev, (decision) => {
+      if (this.onPermissionDeniedDecision) this.onPermissionDeniedDecision({ ...decision, toolName: ev.toolName });
+    });
+    this.permissionDeniedBlocks.set(ev.toolUseId, block);
+    this.root.appendChild(block.node);
+    this._maybeScroll();
   }
 
   _renderPlanRequest(ev) {
