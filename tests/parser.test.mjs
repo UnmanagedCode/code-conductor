@@ -161,3 +161,68 @@ test('parser: keep_alive emits nothing', () => {
   const p = new Parser();
   assert.deepEqual(p.handleObject({ type: 'keep_alive' }), []);
 });
+
+test('parser: parent_tool_use_id is propagated onto every emitted UI event (sub-agent routing)', () => {
+  // Outer Task tool_use registers itself; its events have no parent.
+  // Sub-agent events arrive on the same stream with parent_tool_use_id set,
+  // so the conversation view can route them into a nested area under the
+  // matching tool block.
+  const p = new Parser();
+  const outer = p.handleObject({
+    type: 'stream_event',
+    event: { type: 'message_start', message: { id: 'msg_outer', role: 'assistant' } },
+  });
+  assert.equal(outer.length, 0);
+
+  const start = p.handleObject({
+    type: 'stream_event',
+    event: { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'task_id_xyz', name: 'Task', input: {} } },
+  });
+  const startEv = start[0];
+  assert.equal(startEv.kind, 'tool_use_start');
+  assert.equal(startEv.parentToolUseId, null, 'outer Task block has no parent');
+
+  // Sub-agent text streams in, wrapped in stream_event with parent_tool_use_id set.
+  const subText = p.handleObject({
+    type: 'stream_event',
+    parent_tool_use_id: 'task_id_xyz',
+    event: { type: 'message_start', message: { id: 'msg_sub', role: 'assistant' } },
+  });
+  // message_start emits nothing user-facing
+  assert.equal(subText.length, 0);
+
+  const subStart = p.handleObject({
+    type: 'stream_event',
+    parent_tool_use_id: 'task_id_xyz',
+    event: { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
+  });
+  assert.equal(subStart.length, 0);
+
+  const subDelta = p.handleObject({
+    type: 'stream_event',
+    parent_tool_use_id: 'task_id_xyz',
+    event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'sub thinking' } },
+  });
+  assert.equal(subDelta.length, 1);
+  assert.equal(subDelta[0].kind, 'text_delta');
+  assert.equal(subDelta[0].parentToolUseId, 'task_id_xyz');
+});
+
+test('parser: parentToolUseId is null when envelope omits parent_tool_use_id', () => {
+  const p = new Parser();
+  const out = p.handleObject({
+    type: 'stream_event',
+    event: { type: 'message_start', message: { id: 'm', role: 'assistant' } },
+  });
+  // Nothing emitted for message_start, but verify on a delta:
+  const d = p.handleObject({
+    type: 'stream_event',
+    event: { type: 'content_block_start', index: 0, content_block: { type: 'text' } },
+  });
+  // text content_block_start emits nothing — verify on the delta itself
+  const td = p.handleObject({
+    type: 'stream_event',
+    event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'hi' } },
+  });
+  assert.equal(td[0].parentToolUseId, null);
+});

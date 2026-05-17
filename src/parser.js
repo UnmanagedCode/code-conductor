@@ -45,6 +45,19 @@ export class Parser {
 
   handleObject(obj) {
     if (!obj || typeof obj !== 'object') return [];
+    const events = this._dispatch(obj);
+    // Tag every emitted UI event with the parent_tool_use_id (or null) from
+    // the wrapping stream-json envelope. The conversation view uses this to
+    // route sub-agent events into a nested area under the matching outer
+    // Task tool_use block.
+    const parentToolUseId = obj.parent_tool_use_id ?? null;
+    for (const ev of events) {
+      if (!('parentToolUseId' in ev)) ev.parentToolUseId = parentToolUseId;
+    }
+    return events;
+  }
+
+  _dispatch(obj) {
     switch (obj.type) {
       case 'system':       return this._handleSystem(obj);
       case 'stream_event': return this._handleStreamEvent(obj);

@@ -5,22 +5,28 @@
 import { TextBlock, ThinkingBlock, ToolUseBlock, ToolResultBlock, SystemBlock, TurnEndBlock, el } from './blocks.js';
 
 export class Conversation {
-  constructor(rootEl) {
+  constructor(rootEl, { isSub = false } = {}) {
     this.root = rootEl;
+    this.isSub = isSub;
     this.blocksByKey = new Map();   // `${msgId}:${blockIdx}` -> block instance
     this.toolBlocks = new Map();    // toolUseId -> ToolUseBlock
     this.seenSeq = new Set();
     this.messageWraps = new Map();  // msgId -> { node, body }
+    // Per-parent-tool-use-id sub-conversations for routing sub-agent events.
+    this.subConvs = new Map();
     this.stickyBottom = true;
-    this.root.addEventListener('scroll', () => {
-      const nearBottom = this.root.scrollHeight - this.root.scrollTop - this.root.clientHeight < 50;
-      this.stickyBottom = nearBottom;
-    });
+    if (!this.isSub) {
+      this.root.addEventListener('scroll', () => {
+        const nearBottom = this.root.scrollHeight - this.root.scrollTop - this.root.clientHeight < 50;
+        this.stickyBottom = nearBottom;
+      });
+    }
     this._setEmpty();
   }
 
   _setEmpty() {
     this.root.innerHTML = '';
+    if (this.isSub) { this.emptyNode = null; return; }
     const empty = el('div', { class: 'empty' }, 'no messages yet — send a prompt to start.');
     this.root.appendChild(empty);
     this.emptyNode = empty;
@@ -35,6 +41,7 @@ export class Conversation {
     this.toolBlocks.clear();
     this.seenSeq.clear();
     this.messageWraps.clear();
+    this.subConvs.clear();
     this._setEmpty();
   }
 
@@ -46,6 +53,21 @@ export class Conversation {
     if (ev._seq != null) {
       if (this.seenSeq.has(ev._seq)) return;
       this.seenSeq.add(ev._seq);
+    }
+    // Route sub-agent events into a nested mini-conversation hosted inside
+    // the matching outer tool_use block (typically a Task call).
+    if (ev.parentToolUseId) {
+      const parent = this.toolBlocks.get(ev.parentToolUseId);
+      if (parent) {
+        let sub = this.subConvs.get(ev.parentToolUseId);
+        if (!sub) {
+          sub = new Conversation(parent.subRoot, { isSub: true });
+          this.subConvs.set(ev.parentToolUseId, sub);
+        }
+        parent.revealSubRoot();
+        sub.apply(ev);
+        return;
+      }
     }
     this._ensureNotEmpty();
     switch (ev.kind) {

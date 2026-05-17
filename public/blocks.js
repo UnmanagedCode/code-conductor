@@ -93,12 +93,19 @@ export class ToolUseBlock {
 
     this.summary = el('summary', {});
     this.body = el('div', { class: 'tool-body' });
+    // Sub-agents (Task tool) stream their own events into here under
+    // parent_tool_use_id — rendered as a nested mini-conversation.
+    this.subRoot = el('div', { class: 'sub-conversation', hidden: true });
     // Collapsed by default so the conversation stays scannable; the summary
     // line always carries the tool name + key argument so the user knows
     // what's running without expanding.
-    this.node = el('details', { class: 'block tool' }, this.summary, this.body);
+    this.node = el('details', { class: 'block tool' }, this.summary, this.body, this.subRoot);
     this._renderSummary();
     this._renderBody();
+  }
+  revealSubRoot() {
+    if (this.subRoot.hasAttribute('hidden')) this.subRoot.removeAttribute('hidden');
+    if (!this.node.open) this.node.open = true;
   }
 
   setName(name) {

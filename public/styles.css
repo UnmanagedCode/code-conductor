@@ -166,6 +166,25 @@ input:focus, textarea:focus, select:focus { outline: 2px solid var(--accent); ou
 .diff-line.add .diff-marker { color: var(--green); }
 .diff-line.del .diff-marker { color: var(--red); }
 .diff-line .diff-text { flex: 1 1 auto; }
+
+.sub-conversation {
+  margin-top: 8px;
+  padding: 6px 8px;
+  border-left: 2px dashed var(--tool);
+  background: rgba(122, 213, 211, 0.04);
+  border-radius: 0 4px 4px 0;
+}
+.sub-conversation::before {
+  content: "↳ sub-agent";
+  display: block;
+  font-size: 10px;
+  color: var(--tool);
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  margin-bottom: 4px;
+}
+.sub-conversation .msg { background: transparent; border: none; padding: 4px 0; margin-bottom: 8px; }
+.sub-conversation .block.tool { padding-left: 4px; }
 .block.tool-result { margin-left: 18px; }
 .block.tool-result summary { font-family: ui-monospace, monospace; font-size: 11px; color: var(--muted); }
 .block.tool-result.error summary { color: var(--red); }
