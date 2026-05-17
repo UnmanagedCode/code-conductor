@@ -13,7 +13,13 @@ export function claudeProjectsRoot() {
 }
 
 export function encodeCwd(abs) {
-  return abs.replaceAll('/', '-');
+  // Mirror Claude Code's own encoding: every char that isn't alphanumeric,
+  // hyphen, or underscore becomes `-`. This is critical for finding the
+  // session jsonls — on this device every project path contains
+  // `com.termux`, and previously we only replaced `/`, so the orchestrator
+  // looked at `…com.termux…` while real claude wrote to `…com-termux…`,
+  // silently returning empty history on resume.
+  return abs.replace(/[^A-Za-z0-9_-]/g, '-');
 }
 
 export function validateName(name) {

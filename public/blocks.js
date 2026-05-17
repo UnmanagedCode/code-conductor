@@ -96,12 +96,10 @@ export class ToolUseBlock {
     // Sub-agents (Task tool) stream their own events into here under
     // parent_tool_use_id — rendered as a nested mini-conversation.
     this.subRoot = el('div', { class: 'sub-conversation', hidden: true });
-    // Open by default so the user can see the tool input (command, file
-    // path + diff, etc.) without needing to tap to expand. The disclosure
-    // triangle is hidden by our flex-summary styling on mobile, which made
-    // the previous collapsed-by-default behavior feel like "no command at
-    // all" to users.
-    this.node = el('details', { class: 'block tool', open: true }, this.summary, this.body, this.subRoot);
+    // Collapsed by default — the smart summary already shows the command
+    // and the disclosure caret (rendered in CSS since display:flex hides
+    // the native triangle on summary) tells the user the body is hidden.
+    this.node = el('details', { class: 'block tool' }, this.summary, this.body, this.subRoot);
     this._renderSummary();
     this._renderBody();
   }

@@ -130,7 +130,18 @@ input:focus, textarea:focus, select:focus { outline: 2px solid var(--accent); ou
   font-family: ui-monospace, monospace; font-size: 12px; cursor: pointer;
   display: flex; flex-wrap: wrap; align-items: baseline; gap: 0;
   word-break: break-all;
+  list-style: none; /* remove native marker on browsers that still show it */
 }
+.block.tool summary::-webkit-details-marker { display: none; }
+.block.tool summary::before {
+  /* Custom disclosure caret because display:flex strips the native triangle. */
+  content: "▸";
+  display: inline-block;
+  color: var(--tool);
+  margin-right: 6px;
+  transition: transform .12s;
+}
+.block.tool[open] > summary::before { transform: rotate(90deg); }
 .block.tool .tool-name { color: var(--tool); font-weight: 600; }
 .block.tool .tool-arg { color: var(--text); }
 .block.tool .tool-status { color: var(--muted); margin-left: auto; padding-left: 8px; font-size: 11px; }

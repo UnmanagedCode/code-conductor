@@ -67,6 +67,21 @@ test('POST /api/projects conflict on duplicate', async () => {
   } finally { await close(); }
 });
 
+test('encodeCwd replaces every non-alphanumeric char (including dots) with `-`', () => {
+  // Regression: real claude writes session jsonls under
+  //   ~/.claude/projects/<encoded-cwd>/<sid>.jsonl
+  // where every char outside [A-Za-z0-9_-] is replaced with `-`. Previously
+  // we only replaced `/`, so cwds like `/data/data/com.termux/...` looked
+  // up `…com.termux…` while real claude wrote to `…com-termux…`, and
+  // loadHistory/listSessions silently returned empty.
+  assert.equal(
+    encodeCwd('/data/data/com.termux/files/home/project/Testapp'),
+    '-data-data-com-termux-files-home-project-Testapp',
+  );
+  assert.equal(encodeCwd('/foo bar/baz'), '-foo-bar-baz');
+  assert.equal(encodeCwd('/a/b_c-d/e.f'), '-a-b_c-d-e-f');
+});
+
 test('GET /api/projects/:name/sessions reads jsonl headers', async () => {
   const { baseUrl, projectsRoot, claudeProjectsRoot, close } = await bootServer();
   try {

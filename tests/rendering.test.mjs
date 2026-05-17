@@ -75,11 +75,11 @@ test('DOM: a Bash tool call renders a tool block with the command visible', asyn
   assert.ok(body, 'tool block must have a .tool-body');
   assert.match(body.textContent, /ls -la/, 'body should contain the command');
 
-  // The tool block should be expanded by default so the user can SEE the
-  // command without having to click. This is the actual bug the user
-  // reported — a collapsed default leaves the user staring at just a
-  // summary line on mobile.
-  assert.ok(tool.hasAttribute('open') || tool.open, 'tool block should be open by default');
+  // Tool block is collapsed by default — the smart summary shows the
+  // command and clicking the disclosure caret expands the body. The body
+  // text is still in the DOM (hidden by the closed <details>) so the
+  // markup test below still passes.
+  assert.equal(tool.hasAttribute('open') || tool.open, false, 'tool block should be collapsed by default');
 
   // The matching tool_result should be attached UNDER the tool_use block.
   const result = tool.querySelector('.block.tool-result');

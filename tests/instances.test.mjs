@@ -5,6 +5,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor } from './helpers.mjs';
+import { encodeCwd } from '../src/projects.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-instance.json');
@@ -265,7 +266,7 @@ test('resuming an existing session replays the persisted transcript into the rin
     await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'resume-me' });
     const projectPath = path.join(ctx.projectsRoot, 'resume-me');
     const sid = '11111111-2222-3333-4444-555555555555';
-    const sessionDir = path.join(ctx.claudeProjectsRoot, projectPath.replaceAll('/', '-'));
+    const sessionDir = path.join(ctx.claudeProjectsRoot, encodeCwd(projectPath));
     await fsp.mkdir(sessionDir, { recursive: true });
 
     const lines = [
@@ -356,12 +357,12 @@ test('writes last-prompt + permission-mode jsonl markers after each turn (so cla
     await waitFor(() => events.some(e => e.id === id && e.ev.kind === 'turn_end'));
     // give the appendFile a tick to settle
     await waitFor(async () => {
-      const dir = path.join(ctx.claudeProjectsRoot, inst.cwd.replaceAll('/', '-'));
+      const dir = path.join(ctx.claudeProjectsRoot, encodeCwd(inst.cwd));
       const file = path.join(dir, `${inst.sessionId}.jsonl`);
       try { const txt = await fsp.readFile(file, 'utf8'); return txt.includes('"type":"last-prompt"'); }
       catch { return false; }
     });
-    const dir = path.join(ctx.claudeProjectsRoot, inst.cwd.replaceAll('/', '-'));
+    const dir = path.join(ctx.claudeProjectsRoot, encodeCwd(inst.cwd));
     const file = path.join(dir, `${inst.sessionId}.jsonl`);
     const lines = (await fsp.readFile(file, 'utf8')).split('\n').filter(Boolean).map(l => JSON.parse(l));
     const last = lines.find(l => l.type === 'last-prompt');
