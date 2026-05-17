@@ -111,40 +111,151 @@ function askUserQuestionStream() {
   ];
 }
 
-test('DOM: AskUserQuestion renders an option-button card with the questions and labels', async () => {
+test('DOM: AskUserQuestion renders options + custom input + submit button (single question)', async () => {
   const { document, root, Parser, Conversation } = await setupDOM();
-  const answers = [];
+  const submissions = [];
   const conversation = new Conversation(root, {
-    onUserQuestionAnswer: (payload) => answers.push(payload),
+    onUserQuestionSubmit: (s) => submissions.push(s),
   });
   feed(new Parser(), conversation, askUserQuestionStream());
 
-  // A user-question card should be rendered.
   const cards = root.querySelectorAll('.block.user-question');
   assert.equal(cards.length, 1, 'expected exactly one user-question card');
   const card = cards[0];
 
-  // The question text should be visible.
   assert.match(card.textContent, /Which fruit\?/, 'question text must be visible');
 
-  // Each option should be a clickable button with its label visible.
+  // Two options + the always-present custom input.
   const buttons = card.querySelectorAll('button.uq-opt');
-  assert.equal(buttons.length, 2, `expected 2 option buttons, got ${buttons.length}`);
-  assert.match(buttons[0].textContent, /Apple/);
-  assert.match(buttons[1].textContent, /Banana/);
+  assert.equal(buttons.length, 2);
+  assert.ok(card.querySelector('.uq-custom-input'), 'custom input must always be present');
 
-  // Tapping a button must fire the onUserQuestionAnswer callback with the
-  // correct label, question index, and toolUseId.
+  // Tabs are hidden when there's only one question.
+  const tabs = card.querySelectorAll('.uq-tab');
+  assert.equal(tabs.length, 0, 'no tab strip for a single question');
+
+  // Submit button starts disabled.
+  const submit = card.querySelector('.uq-submit');
+  assert.ok(submit);
+  assert.ok(submit.disabled, 'submit disabled until an answer is provided');
+
+  // Picking an option enables submit but does NOT fire onSubmit yet.
   buttons[0].click();
-  assert.equal(answers.length, 1, 'click should fire onUserQuestionAnswer once');
-  assert.equal(answers[0].label, 'Apple');
-  assert.equal(answers[0].questionIndex, 0);
-  assert.equal(answers[0].toolUseId, 'tu_q');
-  assert.ok(Array.isArray(answers[0].questions), 'questions array forwarded for prompt formatting');
+  assert.equal(submissions.length, 0, 'option click must not submit immediately');
+  assert.ok(buttons[0].classList.contains('picked'), 'picked option is highlighted');
+  assert.equal(submit.disabled, false, 'submit enabled once an answer is filled');
 
-  // After a pick, the card should be marked answered (buttons disabled).
-  assert.ok(card.classList.contains('answered'), 'card should be marked answered');
-  for (const btn of buttons) assert.ok(btn.disabled, 'all option buttons should be disabled post-pick');
+  // Tap submit → callback fires once with the consolidated answers.
+  submit.click();
+  assert.equal(submissions.length, 1, 'submit click fires onUserQuestionSubmit once');
+  assert.equal(submissions[0].toolUseId, 'tu_q');
+  assert.equal(submissions[0].answers.length, 1);
+  assert.deepEqual(submissions[0].answers[0], { kind: 'option', label: 'Apple' });
+  assert.ok(card.classList.contains('answered'));
+});
+
+test('DOM: custom typed answer overrides option selection', async () => {
+  const { document, root, Parser, Conversation } = await setupDOM();
+  const submissions = [];
+  const conversation = new Conversation(root, {
+    onUserQuestionSubmit: (s) => submissions.push(s),
+  });
+  feed(new Parser(), conversation, askUserQuestionStream());
+
+  const card = root.querySelector('.block.user-question');
+  const input = card.querySelector('.uq-custom-input');
+  const submit = card.querySelector('.uq-submit');
+
+  // Type a custom answer.
+  input.value = 'Mango';
+  input.dispatchEvent(new window.Event('input'));
+  assert.equal(submit.disabled, false);
+  assert.ok(input.classList.contains('active'), 'custom input highlighted when active');
+
+  submit.click();
+  assert.deepEqual(submissions[0].answers[0], { kind: 'custom', text: 'Mango' });
+});
+
+test('DOM: multiple questions render a tab strip; submit requires all answered; consolidated submission', async () => {
+  const { document, root, Parser, Conversation } = await setupDOM();
+  const submissions = [];
+  const conversation = new Conversation(root, {
+    onUserQuestionSubmit: (s) => submissions.push(s),
+  });
+
+  // Stream a multi-question AskUserQuestion (two questions).
+  const inputObj = {
+    questions: [
+      { question: 'Pick a fruit', header: 'Fruit', multiSelect: false, options: [{ label: 'Apple' }, { label: 'Banana' }] },
+      { question: 'Pick an animal', header: 'Animal', multiSelect: false, options: [{ label: 'Cat' }, { label: 'Dog' }] },
+    ],
+  };
+  const stream = [
+    { type: 'stream_event', event: { type: 'message_start', message: { id: 'm', role: 'assistant' } } },
+    { type: 'stream_event', event: { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'tu_multi', name: 'AskUserQuestion', input: {} } } },
+    { type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: JSON.stringify(inputObj) } } },
+    { type: 'stream_event', event: { type: 'content_block_stop', index: 0 } },
+  ];
+  feed(new Parser(), conversation, stream);
+
+  const card = root.querySelector('.block.user-question');
+  const tabs = card.querySelectorAll('.uq-tab');
+  assert.equal(tabs.length, 2, 'tab strip renders one tab per question');
+  assert.ok(tabs[0].classList.contains('active'), 'first tab is active by default');
+
+  // Submit is disabled until BOTH questions are answered.
+  const submit = card.querySelector('.uq-submit');
+  assert.ok(submit.disabled);
+
+  // Answer Q1.
+  const panes = card.querySelectorAll('.uq-pane');
+  assert.equal(panes.length, 2);
+  panes[0].querySelectorAll('button.uq-opt')[0].click();
+  assert.ok(submit.disabled, 'still disabled — only one of two answered');
+  assert.ok(tabs[0].classList.contains('answered'));
+
+  // Switch to Q2 via the tab.
+  tabs[1].click();
+  assert.ok(tabs[1].classList.contains('active'));
+  // Only the active pane should be visible.
+  assert.notEqual(panes[1].style.display, 'none', 'q2 pane visible after tab click');
+  assert.equal(panes[0].style.display, 'none', 'q1 pane hidden when q2 active');
+
+  // Answer Q2 via custom input.
+  const q2input = panes[1].querySelector('.uq-custom-input');
+  q2input.value = 'Penguin';
+  q2input.dispatchEvent(new window.Event('input'));
+
+  assert.equal(submit.disabled, false, 'both answered now');
+  submit.click();
+
+  assert.equal(submissions.length, 1);
+  const s = submissions[0];
+  assert.equal(s.toolUseId, 'tu_multi');
+  assert.equal(s.answers.length, 2);
+  assert.deepEqual(s.answers[0], { kind: 'option', label: 'Apple' });
+  assert.deepEqual(s.answers[1], { kind: 'custom', text: 'Penguin' });
+});
+
+test('formatUserQuestionAnswers: single-question short form, multi-question bulleted form, multi-select join', async () => {
+  const { formatUserQuestionAnswers } = await import(
+    new URL('../public/blocks.js', import.meta.url).href
+  );
+  assert.equal(
+    formatUserQuestionAnswers([{ question: 'Pick a fruit' }], [{ kind: 'option', label: 'Apple' }]),
+    'Answer to "Pick a fruit": Apple',
+  );
+  const multi = formatUserQuestionAnswers(
+    [{ question: 'Pick a fruit' }, { question: 'Pick animal' }],
+    [{ kind: 'option', label: 'Apple' }, { kind: 'custom', text: 'Penguin' }],
+  );
+  assert.match(multi, /My answers:/);
+  assert.match(multi, /- Pick a fruit: Apple/);
+  assert.match(multi, /- Pick animal: Penguin/);
+  assert.match(
+    formatUserQuestionAnswers([{ question: 'Pick features' }], [{ kind: 'multi', labels: ['Auth', 'Search'] }]),
+    /Auth, Search/,
+  );
 });
 
 test('DOM: noisy system events (status, rate_limit_event:allowed) are dropped from the conversation', async () => {

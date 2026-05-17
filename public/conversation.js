@@ -6,11 +6,11 @@ import { TextBlock, ThinkingBlock, ToolUseBlock, ToolResultBlock, SystemBlock, T
   PermissionRequestBlock, UserQuestionBlock, shouldRenderSystem, el } from './blocks.js';
 
 export class Conversation {
-  constructor(rootEl, { isSub = false, onPermissionDecision = null, onUserQuestionAnswer = null } = {}) {
+  constructor(rootEl, { isSub = false, onPermissionDecision = null, onUserQuestionSubmit = null } = {}) {
     this.root = rootEl;
     this.isSub = isSub;
     this.onPermissionDecision = onPermissionDecision;
-    this.onUserQuestionAnswer = onUserQuestionAnswer;
+    this.onUserQuestionSubmit = onUserQuestionSubmit;
     this.permissionBlocks = new Map(); // requestId -> PermissionRequestBlock
     this.userQuestionBlocks = new Map(); // toolUseId -> UserQuestionBlock
     this.blocksByKey = new Map();   // `${msgId}:${blockIdx}` -> block instance
@@ -66,7 +66,11 @@ export class Conversation {
       if (parent) {
         let sub = this.subConvs.get(ev.parentToolUseId);
         if (!sub) {
-          sub = new Conversation(parent.subRoot, { isSub: true, onPermissionDecision: this.onPermissionDecision });
+          sub = new Conversation(parent.subRoot, {
+            isSub: true,
+            onPermissionDecision: this.onPermissionDecision,
+            onUserQuestionSubmit: this.onUserQuestionSubmit,
+          });
           this.subConvs.set(ev.parentToolUseId, sub);
         }
         parent.revealSubRoot();
@@ -210,8 +214,8 @@ export class Conversation {
   _renderUserQuestion(ev) {
     this._ensureNotEmpty();
     if (this.userQuestionBlocks.has(ev.toolUseId)) return;
-    const block = new UserQuestionBlock(ev, ({ questionIndex, label }) => {
-      if (this.onUserQuestionAnswer) this.onUserQuestionAnswer({ toolUseId: ev.toolUseId, questionIndex, label, questions: ev.questions });
+    const block = new UserQuestionBlock(ev, (submission) => {
+      if (this.onUserQuestionSubmit) this.onUserQuestionSubmit(submission);
     });
     this.userQuestionBlocks.set(ev.toolUseId, block);
     this.root.appendChild(block.node);

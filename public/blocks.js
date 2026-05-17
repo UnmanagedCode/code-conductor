@@ -234,50 +234,219 @@ function renderNotebookEdit(input) {
 
 export const _internalRenderers = { renderEditDiff, renderWritePreview, renderNotebookEdit };
 
+// Renders one or more questions as tabbed panes, each with its options +
+// an always-present "Other / custom typed answer" input. The user fills in
+// every question first, then taps a single Submit button that hands the
+// consolidated answers off to the caller — no per-click prompt sending.
+//
+// Internal answer states per question:
+//   { kind: 'none' }
+//   { kind: 'option', label }          (single-select pick)
+//   { kind: 'multi', labels: [...] }   (multi-select picks)
+//   { kind: 'custom', text }           (user typed answer in the "Other" field)
 export class UserQuestionBlock {
-  constructor(ev, onAnswer) {
+  constructor(ev, onSubmit) {
     this.toolUseId = ev.toolUseId;
-    this.onAnswer = onAnswer;
-    this.statusNode = el('span', { class: 'uq-status' }, 'waiting for your answer');
-    const body = el('div', { class: 'uq-body' });
-    this.questionNodes = [];
-    for (let q = 0; q < (ev.questions ?? []).length; q++) {
-      const question = ev.questions[q];
-      const qNode = el('div', { class: 'uq-question' });
-      qNode.appendChild(el('div', { class: 'uq-q-text' }, question.question ?? ''));
-      if (question.header) qNode.appendChild(el('div', { class: 'uq-q-header' }, question.header));
-      const opts = el('div', { class: 'uq-options' });
-      for (let i = 0; i < (question.options ?? []).length; i++) {
-        const opt = question.options[i];
-        const btn = el('button', { class: 'uq-opt', type: 'button' },
-          el('span', { class: 'uq-opt-label' }, opt.label ?? `Option ${i + 1}`),
-          opt.description ? el('span', { class: 'uq-opt-desc' }, opt.description) : null,
-        );
-        btn.addEventListener('click', () => this._pick(q, opt.label, btn));
-        opts.appendChild(btn);
-      }
-      qNode.appendChild(opts);
-      this.questionNodes.push(qNode);
-      body.appendChild(qNode);
-    }
+    this.onSubmit = onSubmit;
+    this.questions = Array.isArray(ev.questions) ? ev.questions : [];
+    this.answers = this.questions.map(() => ({ kind: 'none' }));
+    this.activeIdx = 0;
+    this.submitted = false;
+
+    this.statusNode = el('span', { class: 'uq-status' }, '');
+    this.tabs = el('div', { class: 'uq-tabs' });
+    this.panes = el('div', { class: 'uq-panes' });
+    this.submitBtn = el('button', { class: 'uq-submit', type: 'button' },
+      this.questions.length > 1 ? 'Send all answers' : 'Send answer');
+    this.submitBtn.disabled = true;
+    this.submitBtn.addEventListener('click', () => this._submit());
+
     this.node = el('div', { class: 'block user-question' },
       el('div', { class: 'uq-head' },
         el('span', { class: 'uq-title' }, '❓ The model asks…'),
         this.statusNode,
       ),
-      body,
+      this.tabs,
+      this.panes,
+      this.submitBtn,
     );
+
+    this._build();
+    this._render();
   }
-  _pick(qIdx, label, btn) {
-    const qNode = this.questionNodes[qIdx];
-    if (!qNode || qNode.dataset.answered) return;
-    qNode.dataset.answered = 'true';
-    qNode.querySelectorAll('button.uq-opt').forEach(b => { b.disabled = true; });
-    btn.classList.add('picked');
-    this.statusNode.textContent = `picked: ${label}`;
+
+  _build() {
+    // Tab strip only if there's >1 question.
+    if (this.questions.length > 1) {
+      for (let i = 0; i < this.questions.length; i++) {
+        const q = this.questions[i];
+        const tab = el('button', { class: 'uq-tab', type: 'button' },
+          el('span', { class: 'uq-tab-num' }, String(i + 1)),
+          el('span', { class: 'uq-tab-label' }, q.header || (q.question?.slice(0, 24) ?? `Q${i + 1}`)),
+        );
+        tab.addEventListener('click', () => { this.activeIdx = i; this._render(); });
+        this.tabs.appendChild(tab);
+      }
+    } else {
+      this.tabs.style.display = 'none';
+    }
+    for (let i = 0; i < this.questions.length; i++) {
+      this.panes.appendChild(this._buildPane(i));
+    }
+  }
+
+  _buildPane(idx) {
+    const q = this.questions[idx];
+    const pane = el('div', { class: 'uq-pane' });
+    pane.dataset.idx = String(idx);
+    pane.appendChild(el('div', { class: 'uq-q-text' }, q.question ?? ''));
+    if (q.header) pane.appendChild(el('div', { class: 'uq-q-header' }, q.header + (q.multiSelect ? ' · select multiple' : '')));
+
+    const opts = el('div', { class: 'uq-options' });
+    for (let oi = 0; oi < (q.options ?? []).length; oi++) {
+      const opt = q.options[oi];
+      const btn = el('button', { class: 'uq-opt', type: 'button' },
+        el('span', { class: 'uq-opt-label' }, opt.label ?? `Option ${oi + 1}`),
+        opt.description ? el('span', { class: 'uq-opt-desc' }, opt.description) : null,
+      );
+      btn.dataset.label = opt.label ?? '';
+      btn.addEventListener('click', () => this._pickOption(idx, opt.label ?? ''));
+      opts.appendChild(btn);
+    }
+    pane.appendChild(opts);
+
+    // Always-present "Other" custom input.
+    const customInput = el('input', {
+      type: 'text', class: 'uq-custom-input',
+      placeholder: 'Or type your own answer…',
+      autocomplete: 'off',
+    });
+    customInput.addEventListener('input', () => this._setCustom(idx, customInput.value));
+    pane.appendChild(el('div', { class: 'uq-custom' },
+      el('span', { class: 'uq-custom-label' }, 'Other:'),
+      customInput,
+    ));
+    return pane;
+  }
+
+  _pickOption(idx, label) {
+    if (this.submitted) return;
+    const q = this.questions[idx];
+    const current = this.answers[idx];
+    if (q.multiSelect) {
+      const labels = current.kind === 'multi' ? [...current.labels] : [];
+      const at = labels.indexOf(label);
+      if (at >= 0) labels.splice(at, 1);
+      else labels.push(label);
+      this.answers[idx] = labels.length ? { kind: 'multi', labels } : { kind: 'none' };
+    } else {
+      if (current.kind === 'option' && current.label === label) {
+        this.answers[idx] = { kind: 'none' };
+      } else {
+        this.answers[idx] = { kind: 'option', label };
+      }
+    }
+    this._render();
+  }
+
+  _setCustom(idx, text) {
+    if (this.submitted) return;
+    const trimmed = text.trim();
+    if (!trimmed) {
+      this.answers[idx] = { kind: 'none' };
+    } else {
+      this.answers[idx] = { kind: 'custom', text: trimmed };
+    }
+    this._render();
+  }
+
+  _render() {
+    // Tab states.
+    [...this.tabs.children].forEach((t, i) => {
+      t.classList.toggle('active', i === this.activeIdx);
+      t.classList.toggle('answered', this.answers[i]?.kind !== 'none');
+    });
+    // Pane visibility.
+    [...this.panes.children].forEach((p, i) => {
+      p.style.display = i === this.activeIdx ? '' : 'none';
+    });
+    // Highlight picks in the active pane.
+    const activePane = this.panes.children[this.activeIdx];
+    if (activePane) {
+      const answer = this.answers[this.activeIdx];
+      activePane.querySelectorAll('button.uq-opt').forEach((btn) => {
+        const label = btn.dataset.label || '';
+        const picked =
+          (answer.kind === 'option' && answer.label === label) ||
+          (answer.kind === 'multi' && answer.labels.includes(label));
+        btn.classList.toggle('picked', picked);
+      });
+      const input = activePane.querySelector('.uq-custom-input');
+      if (input) {
+        const want = answer.kind === 'custom' ? answer.text : '';
+        if (input.value !== want) input.value = want;
+        input.classList.toggle('active', answer.kind === 'custom');
+      }
+    }
+    // Submit gating: every question must have a non-`none` answer.
+    const allAnswered = this.answers.length > 0 && this.answers.every(a => a.kind !== 'none');
+    this.submitBtn.disabled = !allAnswered;
+    // Status line summary.
+    if (this.questions.length <= 1) {
+      this.statusNode.textContent = allAnswered ? 'ready to send' : 'pick an option or type your own';
+    } else {
+      const n = this.answers.filter(a => a.kind !== 'none').length;
+      this.statusNode.textContent = `${n}/${this.questions.length} answered`;
+    }
+  }
+
+  _submit() {
+    if (this.submitBtn.disabled || this.submitted) return;
+    this.submitted = true;
+    this.submitBtn.disabled = true;
+    this.statusNode.textContent = 'sending…';
     this.node.classList.add('answered');
-    if (this.onAnswer) this.onAnswer({ questionIndex: qIdx, label });
+    // Lock all inputs.
+    this.panes.querySelectorAll('button.uq-opt').forEach(b => { b.disabled = true; });
+    this.panes.querySelectorAll('.uq-custom-input').forEach(i => { i.disabled = true; });
+    if (this.onSubmit) {
+      this.onSubmit({
+        toolUseId: this.toolUseId,
+        questions: this.questions,
+        answers: this.answers.slice(),
+      });
+    }
   }
+}
+
+// Format the per-question answer into the text we send to the model.
+// Exported so app.js (and tests) can use the same canonical formatting.
+export function formatUserQuestionAnswers(questions, answers) {
+  const lines = [];
+  for (let i = 0; i < questions.length; i++) {
+    const q = questions[i];
+    const a = answers[i];
+    const qText = (q?.question ?? `Question ${i + 1}`).replace(/\s+/g, ' ').trim();
+    let answerText;
+    if (a?.kind === 'option') answerText = a.label;
+    else if (a?.kind === 'multi') answerText = a.labels.join(', ');
+    else if (a?.kind === 'custom') answerText = a.text;
+    else answerText = '(no answer)';
+    lines.push(`- ${qText}: ${answerText}`);
+  }
+  if (lines.length === 1) {
+    // single-question short form
+    const q = questions[0];
+    const a = answers[0];
+    const qText = (q?.question ?? 'Question').replace(/\s+/g, ' ').trim();
+    let answerText;
+    if (a?.kind === 'option') answerText = a.label;
+    else if (a?.kind === 'multi') answerText = a.labels.join(', ');
+    else if (a?.kind === 'custom') answerText = a.text;
+    else answerText = '(no answer)';
+    return `Answer to "${qText}": ${answerText}`;
+  }
+  return `My answers:\n${lines.join('\n')}`;
 }
 
 export class PermissionRequestBlock {

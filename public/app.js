@@ -5,6 +5,7 @@ import { bus, connect, send } from './ws.js';
 import { Sidebar } from './sidebar.js';
 import { Conversation } from './conversation.js';
 import { attachComposer } from './composer.js';
+import { formatUserQuestionAnswers } from './blocks.js';
 import {
   NotificationState, ensurePermission, setGlobalEnabled,
   maybeNotifyTurnEnd, isNotificationAPIAvailable,
@@ -67,15 +68,13 @@ const conversation = new Conversation(dom.conversation, {
     if (!state.activeId) return;
     send('permission', { id: state.activeId, requestId, allow, updatedInput, feedback });
   },
-  onUserQuestionAnswer: ({ toolUseId, label, questionIndex, questions }) => {
+  onUserQuestionSubmit: ({ questions, answers }) => {
     if (!state.activeId) return;
-    const q = questions?.[questionIndex];
-    const qText = q?.question ?? `Question ${questionIndex + 1}`;
-    // The CLI auto-errors the AskUserQuestion tool in stream-json mode, so
-    // we deliver the answer back as a normal user prompt — the model picks
-    // it up on the next turn. If a turn is still in flight, queue the
-    // answer until status flips to idle, otherwise send immediately.
-    const text = `Answer to "${qText}": ${label}`;
+    // The CLI auto-errors AskUserQuestion in stream-json mode, so we
+    // deliver the consolidated answers back as a single normal prompt on
+    // the next turn. If a turn is still in flight, queue and flush on
+    // status=idle.
+    const text = formatUserQuestionAnswers(questions, answers);
     const activeId = state.activeId;
     const inst = state.instances.find(i => i.id === activeId);
     if (inst && inst.status === 'idle') {

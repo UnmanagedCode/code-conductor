@@ -250,8 +250,32 @@ input:focus, textarea:focus, select:focus { outline: 2px solid var(--accent); ou
 .uq-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin-bottom: 8px; }
 .uq-title { font-weight: 600; color: var(--accent); }
 .uq-status { font-size: 11px; color: var(--muted); }
-.uq-question { margin-bottom: 12px; }
-.uq-question:last-child { margin-bottom: 0; }
+.uq-tabs {
+  display: flex; gap: 4px; overflow-x: auto;
+  margin: 0 -4px 8px -4px; padding: 0 4px 4px 4px;
+  border-bottom: 1px solid var(--border);
+}
+.uq-tab {
+  display: flex; align-items: center; gap: 6px;
+  flex: 0 0 auto;
+  padding: 6px 10px;
+  background: transparent; border: 1px solid transparent; border-bottom: none;
+  border-radius: 6px 6px 0 0;
+  color: var(--muted); font-size: 12px;
+  white-space: nowrap;
+}
+.uq-tab .uq-tab-num {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px; border-radius: 50%;
+  background: var(--panel-2); color: var(--muted); font-size: 10px;
+}
+.uq-tab.answered .uq-tab-num { background: var(--green); color: #0a0c12; font-weight: 700; }
+.uq-tab.active {
+  background: var(--panel); border-color: var(--border);
+  color: var(--text);
+}
+.uq-panes { /* no extra styling needed — panes hide via display:none */ }
+.uq-pane { padding: 4px 0; }
 .uq-q-text { font-size: 13px; margin-bottom: 4px; }
 .uq-q-header { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 6px; }
 .uq-options { display: flex; flex-direction: column; gap: 6px; }
@@ -261,9 +285,27 @@ input:focus, textarea:focus, select:focus { outline: 2px solid var(--accent); ou
   background: var(--panel-2); border-color: var(--border);
 }
 .uq-opt:hover:not(:disabled) { background: #2a3548; border-color: var(--accent); }
-.uq-opt.picked { background: rgba(110, 168, 255, 0.15); border-color: var(--accent); }
+.uq-opt.picked { background: rgba(110, 168, 255, 0.20); border-color: var(--accent); }
 .uq-opt-label { font-weight: 600; }
 .uq-opt-desc { font-size: 11px; color: var(--muted); }
+.uq-custom {
+  display: flex; gap: 8px; align-items: center;
+  margin-top: 8px;
+}
+.uq-custom-label { font-size: 11px; color: var(--muted); flex: 0 0 auto; }
+.uq-custom-input {
+  flex: 1; min-width: 0;
+  padding: 6px 8px; font-size: 12px;
+  font-family: inherit;
+}
+.uq-custom-input.active { border-color: var(--accent); background: rgba(110, 168, 255, 0.10); }
+.uq-submit {
+  margin-top: 10px; width: 100%;
+  background: var(--accent); color: #0a0c12; font-weight: 600;
+  border-color: var(--accent); padding: 10px;
+}
+.uq-submit:hover:not(:disabled) { background: #8cb9ff; border-color: #8cb9ff; }
+.uq-submit:disabled { background: var(--panel-2); color: var(--muted); border-color: var(--border); font-weight: 400; }
 .block.tool-result { margin-left: 18px; }
 .block.tool-result summary { font-family: ui-monospace, monospace; font-size: 11px; color: var(--muted); }
 .block.tool-result.error summary { color: var(--red); }
