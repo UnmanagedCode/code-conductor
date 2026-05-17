@@ -76,22 +76,12 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
 }
 .project-row .add-instance:hover { color: var(--text); }
 
-.instance-list { list-style: none; padding-left: 16px; margin: 2px 0 0 0; }
-.instance-row {
-  display: flex; align-items: center; gap: 8px;
-  padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 12px;
-  color: var(--muted);
-}
-.instance-row:hover { background: var(--panel-2); }
-.instance-row.active { background: var(--panel-2); color: var(--text); }
 .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; background: var(--muted); }
 .dot.idle { background: var(--muted); }
 .dot.turn { background: var(--green); animation: pulse 1s infinite alternate; }
 .dot.spawning { background: var(--amber); }
 .dot.crashed, .dot.exited { background: var(--red); }
 @keyframes pulse { from { opacity: .4 } to { opacity: 1 } }
-
-.instance-name { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-family: ui-monospace, monospace; }
 
 /* Worktree subnode: collapsed by default; nested under each project. */
 .worktree-group { margin: 2px 0 4px 12px; }
@@ -117,7 +107,6 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
 .worktree-row button { background: none; border: none; color: var(--muted); cursor: pointer; padding: 0 4px; }
 .worktree-row button:hover { color: var(--text); }
 .worktree-row .wt-remove:hover { color: var(--red); }
-.worktree-item .instance-list { padding-left: 14px; }
 
 /* Sessions subnode: parallel structure to .worktree-group. */
 .sessions-group { margin: 2px 0 4px 12px; }
@@ -133,11 +122,14 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
 .sessions-list { list-style: none; padding: 0 0 0 8px; margin: 4px 0 0 0; }
 .sessions-empty { font-size: 11px; color: var(--muted); padding: 4px 6px; font-style: italic; }
 .session-row {
-  display: flex; gap: 8px; align-items: baseline;
+  display: flex; gap: 8px; align-items: center;
   padding: 4px 6px; cursor: pointer; border-radius: 4px;
   font-size: 11px; color: var(--muted);
 }
 .session-row:hover { background: var(--panel-2); color: var(--text); }
+.session-row.active { background: var(--panel-2); color: var(--text); }
+.session-row.live .session-preview { color: var(--text); font-weight: 500; }
+.session-row .dot.offline { background: transparent; border: 1px solid var(--border); }
 .session-ago {
   font-family: ui-monospace, monospace; flex: 0 0 auto;
   color: var(--accent); min-width: 48px;
@@ -146,8 +138,13 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
   flex: 1 1 auto; min-width: 0;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+.empty-project-hint {
+  font-size: 11px; color: var(--muted); font-style: italic;
+  padding: 4px 14px;
+}
 /* Inside a worktree row, indent the Sessions subnode a bit more. */
 .worktree-item .sessions-group { margin-left: 14px; }
+.worktree-item { list-style: none; }
 
 /* Worktree row in the new-instance dialog. */
 .ni-worktree-row { display: flex !important; flex-direction: row !important; align-items: center; gap: 8px; }
