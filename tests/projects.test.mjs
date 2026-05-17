@@ -67,19 +67,29 @@ test('POST /api/projects conflict on duplicate', async () => {
   } finally { await close(); }
 });
 
-test('encodeCwd replaces every non-alphanumeric char (including dots) with `-`', () => {
+test('encodeCwd replaces every non-alphanumeric char (including dots AND underscores) with `-`', () => {
   // Regression: real claude writes session jsonls under
   //   ~/.claude/projects/<encoded-cwd>/<sid>.jsonl
-  // where every char outside [A-Za-z0-9_-] is replaced with `-`. Previously
-  // we only replaced `/`, so cwds like `/data/data/com.termux/...` looked
-  // up `…com.termux…` while real claude wrote to `…com-termux…`, and
-  // loadHistory/listSessions silently returned empty.
+  // where every char outside [A-Za-z0-9-] is replaced with `-`.
+  // Notably this INCLUDES underscores — observed directly against the
+  // installed claude CLI: a cwd of `~/project/Test5_worktree_1f5dd7`
+  // produced a session dir named `…-Test5-worktree-1f5dd7`, NOT
+  // `…-Test5_worktree_1f5dd7`. An earlier version of this helper kept
+  // underscores, which silently broke any project path with a `_` —
+  // the orchestrator's metadata appends ended up at one dir while
+  // claude's actual session was at another, and history-replay /
+  // resume both ran against an empty file.
   assert.equal(
     encodeCwd('/data/data/com.termux/files/home/project/Testapp'),
     '-data-data-com-termux-files-home-project-Testapp',
   );
   assert.equal(encodeCwd('/foo bar/baz'), '-foo-bar-baz');
-  assert.equal(encodeCwd('/a/b_c-d/e.f'), '-a-b_c-d-e-f');
+  // Underscores get rewritten too — this is the worktree bug.
+  assert.equal(encodeCwd('/a/b_c-d/e.f'), '-a-b-c-d-e-f');
+  assert.equal(
+    encodeCwd('/data/data/com.termux/files/home/project/Test5_worktree_1f5dd7'),
+    '-data-data-com-termux-files-home-project-Test5-worktree-1f5dd7',
+  );
 });
 
 test('GET /api/projects/:name/sessions reads jsonl headers', async () => {
@@ -235,8 +245,7 @@ test('GET /api/projects exposes a sessions summary on each worktree too', async 
     await api(baseUrl, 'DELETE', `/api/instances/${r.body.id}`);
 
     // Drop a session jsonl into the worktree's own encoded dir.
-    const wtEncoded = wtPath.replace(/[^A-Za-z0-9_-]/g, '-');
-    const wtDir = path.join(claudeProjectsRoot, wtEncoded);
+    const wtDir = path.join(claudeProjectsRoot, encodeCwd(wtPath));
     await fs.mkdir(wtDir, { recursive: true });
     await fs.copyFile(FIXTURE_JSONL, path.join(wtDir, '00000000-0000-0000-0000-000000000001.jsonl'));
 

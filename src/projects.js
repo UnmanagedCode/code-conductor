@@ -18,13 +18,15 @@ export function claudeProjectsRoot() {
 }
 
 export function encodeCwd(abs) {
-  // Mirror Claude Code's own encoding: every char that isn't alphanumeric,
-  // hyphen, or underscore becomes `-`. This is critical for finding the
-  // session jsonls — on this device every project path contains
-  // `com.termux`, and previously we only replaced `/`, so the orchestrator
-  // looked at `…com.termux…` while real claude wrote to `…com-termux…`,
-  // silently returning empty history on resume.
-  return abs.replace(/[^A-Za-z0-9_-]/g, '-');
+  // Mirror Claude Code's own encoding: every char that isn't
+  // alphanumeric or a hyphen becomes `-`. This includes underscores!
+  // Previously we kept underscores, which silently broke any project
+  // path containing `_` (notably the worktree dirs we create at
+  // `<project>_worktree_<id>`): the orchestrator's metadata appends
+  // landed at `<…>_worktree_<…>` while real claude wrote the actual
+  // session to `<…>-worktree-<…>`. Two separate dirs, both half-empty,
+  // and resume / history-replay both broke.
+  return abs.replace(/[^A-Za-z0-9-]/g, '-');
 }
 
 export function validateName(name) {

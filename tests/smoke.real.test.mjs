@@ -75,7 +75,9 @@ t('real claude: Bash tool call emits tool_use_start, tool_use with command, tool
   } finally {
     await ctx.close();
     if (sessionId && projectPath) {
-      const encoded = projectPath.replaceAll('/', '-');
+      // Same encoding the orchestrator + real claude use — every non
+      // [A-Za-z0-9-] becomes `-` (including dots and underscores).
+      const encoded = projectPath.replace(/[^A-Za-z0-9-]/g, '-');
       const jsonl = path.join(os.homedir(), '.claude', 'projects', encoded, `${sessionId}.jsonl`);
       await fs.rm(jsonl, { force: true }).catch(() => {});
       await fs.rmdir(path.dirname(jsonl)).catch(() => {});
@@ -119,7 +121,9 @@ t('real claude: AskUserQuestion emits a user_question event with parsed question
   } finally {
     await ctx.close();
     if (sessionId && projectPath) {
-      const encoded = projectPath.replaceAll('/', '-');
+      // Same encoding the orchestrator + real claude use — every non
+      // [A-Za-z0-9-] becomes `-` (including dots and underscores).
+      const encoded = projectPath.replace(/[^A-Za-z0-9-]/g, '-');
       const jsonl = path.join(os.homedir(), '.claude', 'projects', encoded, `${sessionId}.jsonl`);
       await fs.rm(jsonl, { force: true }).catch(() => {});
       await fs.rmdir(path.dirname(jsonl)).catch(() => {});
@@ -197,7 +201,9 @@ t('real claude: ask mode gates Write via the PreToolUse hook — Allow lets the 
   } finally {
     await ctx.close();
     if (sessionId && projectPath) {
-      const encoded = projectPath.replaceAll('/', '-');
+      // Same encoding the orchestrator + real claude use — every non
+      // [A-Za-z0-9-] becomes `-` (including dots and underscores).
+      const encoded = projectPath.replace(/[^A-Za-z0-9-]/g, '-');
       const jsonl = path.join(os.homedir(), '.claude', 'projects', encoded, `${sessionId}.jsonl`);
       await fs.rm(jsonl, { force: true }).catch(() => {});
       await fs.rmdir(path.dirname(jsonl)).catch(() => {});
@@ -262,7 +268,9 @@ t('real claude: spawn → prompt → text_delta + turn_end', async () => {
     await ctx.close();
     // Best-effort cleanup of the persisted session transcript.
     if (sessionId && projectPath) {
-      const encoded = projectPath.replaceAll('/', '-');
+      // Same encoding the orchestrator + real claude use — every non
+      // [A-Za-z0-9-] becomes `-` (including dots and underscores).
+      const encoded = projectPath.replace(/[^A-Za-z0-9-]/g, '-');
       const jsonl = path.join(os.homedir(), '.claude', 'projects', encoded, `${sessionId}.jsonl`);
       await fs.rm(jsonl, { force: true }).catch(() => {});
       const dir = path.dirname(jsonl);
