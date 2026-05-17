@@ -160,6 +160,42 @@ test('mode switch via WS updates instance.mode and acks', async () => {
   } finally { await close(); }
 });
 
+test('turn_notification is broadcast to every connected client (not just subscribers)', async () => {
+  // Background instances should still ping the user (via the
+  // turn_notification channel) even if the foreground tab is subscribed to a
+  // different instance.
+  const { baseUrl, wsUrl, instances, close } = await setup();
+  try {
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'a', mode: 'default' });
+    const id = r.body.id;
+    await waitFor(() => instances.get(id).status === 'idle');
+
+    const subscriber = await wsClient(wsUrl);
+    subscriber.send({ t: 'subscribe', id });
+    await subscriber.wait(m => m.t === 'snapshot' && m.id === id);
+
+    const bystander = await wsClient(wsUrl); // never subscribes
+
+    subscriber.send({ t: 'prompt', id, text: 'go' });
+    await subscriber.wait(m => m.t === 'event' && m.ev.kind === 'turn_end');
+    await waitFor(() => bystander.messages.some(m => m.t === 'turn_notification' && m.id === id));
+
+    const subNote = subscriber.messages.find(m => m.t === 'turn_notification' && m.id === id);
+    const byNote = bystander.messages.find(m => m.t === 'turn_notification' && m.id === id);
+    assert.ok(subNote, 'subscriber received turn_notification');
+    assert.ok(byNote, 'bystander received turn_notification');
+    assert.equal(byNote.project, 'a');
+    assert.equal(byNote.isError, false);
+
+    // The bystander stays quiet on the per-instance event channel.
+    const byEvents = bystander.messages.filter(m => m.t === 'event');
+    assert.equal(byEvents.length, 0);
+
+    await subscriber.close();
+    await bystander.close();
+  } finally { await close(); }
+});
+
 test('interrupt via WS returns instance to idle', async () => {
   const { baseUrl, wsUrl, instances, close } = await setup(SCENARIO_INTERRUPT);
   try {

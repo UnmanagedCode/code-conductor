@@ -31,9 +31,25 @@ export function attachWsHub({ wss, instances }) {
 
   instances.on('event', ({ id, ev }) => {
     const subs = subscribers.get(id);
-    if (!subs) return;
-    const msg = JSON.stringify({ t: 'event', id, ev });
-    for (const ws of subs) safeSend(ws, msg);
+    if (subs) {
+      const msg = JSON.stringify({ t: 'event', id, ev });
+      for (const ws of subs) safeSend(ws, msg);
+    }
+    // Turn-end notifications go to every connected client (not just
+    // subscribers), so users get pings for background instances they aren't
+    // currently viewing in the foreground tab.
+    if (ev?.kind === 'turn_end') {
+      const inst = instances.get(id);
+      const note = JSON.stringify({
+        t: 'turn_notification',
+        id,
+        project: inst?.project ?? null,
+        isError: !!ev.isError,
+        stopReason: ev.stopReason ?? null,
+        cost: ev.cost ?? null,
+      });
+      broadcastAll(note);
+    }
   });
 
   instances.on('status', (summary) => {

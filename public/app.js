@@ -5,6 +5,10 @@ import { bus, connect, send } from './ws.js';
 import { Sidebar } from './sidebar.js';
 import { Conversation } from './conversation.js';
 import { attachComposer } from './composer.js';
+import {
+  NotificationState, ensurePermission, setGlobalEnabled,
+  maybeNotifyTurnEnd, isNotificationAPIAvailable,
+} from './notifications.js';
 
 const state = {
   projects: [],
@@ -41,6 +45,7 @@ const dom = {
   sidebarToggle: document.getElementById('sidebar-toggle'),
   sidebar: document.getElementById('sidebar'),
   sidebarScrim: document.getElementById('sidebar-scrim'),
+  notifyToggle: document.getElementById('notify-toggle'),
 };
 
 const conversation = new Conversation(dom.conversation);
@@ -114,6 +119,32 @@ function setSidebarOpen(open) {
 dom.sidebarToggle.addEventListener('click', () => {
   setSidebarOpen(!dom.sidebar.classList.contains('open'));
 });
+
+function renderNotifyToggle() {
+  const on = NotificationState.globalEnabled && NotificationState.permission === 'granted';
+  dom.notifyToggle.textContent = on ? '🔔' : '🔕';
+  dom.notifyToggle.setAttribute('aria-pressed', on ? 'true' : 'false');
+  dom.notifyToggle.title = !isNotificationAPIAvailable()
+    ? 'Notifications unsupported in this browser'
+    : NotificationState.permission === 'denied'
+      ? 'Notifications blocked — change in browser site settings'
+      : on
+        ? 'Notifications on — tap to mute'
+        : 'Notifications off — tap to enable';
+}
+dom.notifyToggle.addEventListener('click', async () => {
+  if (!isNotificationAPIAvailable()) { renderNotifyToggle(); return; }
+  if (NotificationState.globalEnabled) {
+    setGlobalEnabled(false);
+    renderNotifyToggle();
+    return;
+  }
+  const perm = await ensurePermission();
+  if (perm === 'granted') setGlobalEnabled(true);
+  renderNotifyToggle();
+});
+NotificationState.permission = isNotificationAPIAvailable() ? Notification.permission : 'unsupported';
+renderNotifyToggle();
 dom.sidebarScrim.addEventListener('click', () => setSidebarOpen(false));
 
 let pendingNewInstanceProject = null;
@@ -225,6 +256,15 @@ bus.addEventListener('event', (e) => {
   const m = e.detail;
   if (m.id !== state.activeId) return;
   conversation.apply(m.ev);
+});
+
+bus.addEventListener('turn_notification', (e) => {
+  const m = e.detail;
+  maybeNotifyTurnEnd({
+    instanceId: m.id,
+    projectName: m.project ?? 'instance',
+    turnEvent: { isError: m.isError, stopReason: m.stopReason, cost: m.cost },
+  });
 });
 
 bus.addEventListener('status', (e) => {

@@ -98,6 +98,8 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
 #instance-title strong { color: var(--text); }
 #instance-controls { display: flex; gap: 6px; align-items: center; }
 #instance-controls select, #instance-controls button { font-size: 12px; }
+#notify-toggle { padding: 4px 8px; line-height: 1; }
+#notify-toggle[aria-pressed="true"] { background: #2a3548; }
 
 button, select, textarea, input {
   background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
