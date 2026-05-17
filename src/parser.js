@@ -24,11 +24,12 @@
 import { randomUUID } from 'node:crypto';
 
 // Matches both `[Request interrupted by user]` and the tool-use variant.
-// The CLI inserts these strings as the body of an assistant text block when
-// the turn is interrupted — including when the orchestrator auto-interrupts
-// after AskUserQuestion or ExitPlanMode. We strip them so the inline card
-// stays the conversation's tail, instead of getting trailing noise.
-const INTERRUPT_MARKER_RE = /^\s*\[Request interrupted by user(?:\s+for[^\]]*)?\]\s*$/;
+// The CLI inserts these strings as part of an assistant text block when the
+// turn is interrupted — sometimes as the entire block, sometimes appended
+// after a partial model response. We accept the marker anywhere in the
+// block and let Instance decide whether to strip the whole block (only on
+// orchestrator-driven auto-interrupts, never on user-clicked interrupts).
+const INTERRUPT_MARKER_RE = /\[Request interrupted by user(?:\s+for[^\]]*)?\]/;
 
 export class Parser {
   constructor() {

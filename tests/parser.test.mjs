@@ -282,6 +282,29 @@ test('parser: a normal text block emits text_end without isInterruptMarker', () 
   assert.equal(out[0].isInterruptMarker, undefined);
 });
 
+test('parser: marker mixed with surrounding model text still flags the block as isInterruptMarker', () => {
+  // Real claude sometimes emits the marker appended to the end of a
+  // partial model response in the same text block — the strict
+  // anchored regex missed those.
+  const p = new Parser();
+  p.handleObject({ type: 'stream_event', event: { type: 'message_start', message: { id: 'm', role: 'assistant' } } });
+  p.handleObject({
+    type: 'stream_event',
+    event: { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
+  });
+  p.handleObject({
+    type: 'stream_event',
+    event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'I will continue with' } },
+  });
+  p.handleObject({
+    type: 'stream_event',
+    event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: ' [Request interrupted by user]' } },
+  });
+  const out = p.handleObject({ type: 'stream_event', event: { type: 'content_block_stop', index: 0 } });
+  assert.equal(out[0].kind, 'text_end');
+  assert.equal(out[0].isInterruptMarker, true);
+});
+
 test('parser: AskUserQuestion tool_use also emits a structured user_question event', () => {
   const p = new Parser();
   p.handleObject({ type: 'stream_event', event: { type: 'message_start', message: { id: 'm', role: 'assistant' } } });

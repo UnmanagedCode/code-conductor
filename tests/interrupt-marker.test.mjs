@@ -7,6 +7,7 @@ import { bootServer, api, waitFor } from './helpers.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const QUESTION_SCENARIO = path.join(__dirname, 'fixtures', 'scenario-question.json');
+const QUESTION_MIXED_SCENARIO = path.join(__dirname, 'fixtures', 'scenario-question-mixed.json');
 const MANUAL_SCENARIO = path.join(__dirname, 'fixtures', 'scenario-manual-interrupt.json');
 
 function wsClient(url) {
@@ -42,6 +43,32 @@ test('auto-interrupt (AskUserQuestion flow): the [Request interrupted by user] m
     const textStrips = events.filter(e => e.kind === 'text_strip');
     assert.equal(textEnds.length, 0, 'no text_end carrying the marker (it was rewritten)');
     assert.equal(textStrips.length, 1, 'exactly one text_strip delivered for the marker');
+
+    await c.close();
+  } finally { await ctx.close(); }
+});
+
+test('auto-interrupt: marker mixed with surrounding model text in the same block is still stripped', async () => {
+  // Real claude sometimes emits the marker appended to a partial model
+  // response in the same text block rather than as a standalone block.
+  // The whole block must still be stripped on auto-interrupt.
+  const ctx = await bootServer({ scenarioPath: QUESTION_MIXED_SCENARIO });
+  try {
+    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'qm' });
+    const r = await api(ctx.baseUrl, 'POST', '/api/instances', { project: 'qm', mode: 'bypassPermissions' });
+    const id = r.body.id;
+    await waitFor(() => ctx.instances.get(id).status === 'idle');
+    const c = await wsClient(ctx.wsUrl);
+    c.send({ t: 'subscribe', id });
+    await c.wait(m => m.t === 'snapshot');
+    c.send({ t: 'prompt', id, text: 'go' });
+    await c.wait(m => m.t === 'event' && m.ev.kind === 'turn_end');
+
+    const events = c.messages.filter(m => m.t === 'event').map(m => m.ev);
+    const textStrips = events.filter(e => e.kind === 'text_strip');
+    const textEnds = events.filter(e => e.kind === 'text_end');
+    assert.equal(textStrips.length, 1, 'whole mixed block stripped (the marker contaminated it)');
+    assert.equal(textEnds.length, 0, 'no plain text_end for the marker-containing block');
 
     await c.close();
   } finally { await ctx.close(); }
