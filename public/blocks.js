@@ -45,6 +45,7 @@ export class ThinkingBlock {
 }
 
 import { lineDiff, diffStats } from './diff.js';
+import { renderMarkdownInto } from './markdown.js';
 
 // Per-tool one-line description for the collapsed summary.
 // Returns a short string with the most-useful argument for the tool.
@@ -468,12 +469,20 @@ export class PlanRequestBlock {
 
     this.statusNode = el('span', { class: 'pr-status' }, 'awaiting your decision');
 
-    const planText = (typeof ev.plan === 'string' && ev.plan.trim().length > 0)
-      ? ev.plan
-      : '(plan content not provided inline — see the recent assistant output above)';
+    const hasPlanText = typeof ev.plan === 'string' && ev.plan.trim().length > 0;
     const pathLine = ev.planPath
       ? el('div', { class: 'pr-path' }, `saved to ${ev.planPath}`)
       : null;
+
+    // Plan body rendered as Markdown — headings, lists, code blocks, etc.
+    this.planBody = el('div', { class: 'pr-body md' });
+    if (hasPlanText) {
+      renderMarkdownInto(this.planBody, ev.plan);
+    } else {
+      this.planBody.appendChild(
+        el('p', { class: 'pr-empty' }, '(plan content not provided inline — see the recent assistant output above)'),
+      );
+    }
 
     this.feedbackInput = el('textarea', {
       class: 'pr-feedback', rows: '2',
@@ -491,7 +500,7 @@ export class PlanRequestBlock {
         this.statusNode,
       ),
       pathLine,
-      el('pre', { class: 'pr-body' }, planText),
+      this.planBody,
       el('div', { class: 'pr-feedback-wrap' }, this.feedbackInput),
       el('div', { class: 'pr-actions' }, this.approveBtn, this.rejectBtn),
     );
