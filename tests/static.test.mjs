@@ -17,7 +17,7 @@ test('serves index.html with module entry', async () => {
 test('serves each public asset', async () => {
   const { baseUrl, close } = await bootServer();
   try {
-    for (const asset of ['/app.js', '/ws.js', '/sidebar.js', '/conversation.js', '/blocks.js', '/composer.js', '/styles.css']) {
+    for (const asset of ['/app.js', '/ws.js', '/sidebar.js', '/conversation.js', '/blocks.js', '/composer.js', '/styles.css', '/sw.js', '/notifications.js', '/diff.js']) {
       const r = await fetch(baseUrl + asset);
       assert.equal(r.status, 200, `expected 200 for ${asset}`);
       const len = Number(r.headers.get('content-length') ?? 0);

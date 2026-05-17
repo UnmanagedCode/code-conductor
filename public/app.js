@@ -182,6 +182,12 @@ dom.notifyToggle.addEventListener('click', async () => {
   renderNotifyToggle();
 });
 NotificationState.permission = isNotificationAPIAvailable() ? Notification.permission : 'unsupported';
+if (NotificationState.permission === 'granted') {
+  // User previously granted permission. Auto-enable + register the SW so
+  // notifications actually fire on mobile (which requires SW transport).
+  setGlobalEnabled(true);
+  ensurePermission().catch(() => {});
+}
 renderNotifyToggle();
 dom.sidebarScrim.addEventListener('click', () => setSidebarOpen(false));
 
@@ -265,7 +271,20 @@ function updateActiveHeader() {
   }
   state.activeStatus = inst.status;
   state.activeMode = inst.mode;
-  dom.instanceTitle.innerHTML = `<strong>${inst.project}</strong> · ${inst.sessionId?.slice(0,8) ?? '?'} · <span class="status">${inst.status}</span> · mode=<code>${inst.mode}</code>`;
+  // Build the title as discrete chips so it wraps cleanly on mobile —
+  // a single text string was wrapping at the `·` separators and landing
+  // them alone on lines.
+  dom.instanceTitle.textContent = '';
+  const chip = (cls, text) => {
+    const e = document.createElement('span');
+    e.className = `ih-chip ${cls}`;
+    e.textContent = text;
+    return e;
+  };
+  dom.instanceTitle.appendChild(chip('ih-project', inst.project));
+  dom.instanceTitle.appendChild(chip('ih-sid', inst.sessionId?.slice(0, 8) ?? '?'));
+  dom.instanceTitle.appendChild(chip(`ih-status ih-status-${inst.status}`, inst.status));
+  dom.instanceTitle.appendChild(chip('ih-mode', inst.mode));
   dom.modeSelect.value = inst.mode;
   dom.modeSelect.disabled = inst.status === 'turn' || inst.status === 'crashed' || inst.status === 'exited';
   dom.interruptBtn.disabled = inst.status !== 'turn';

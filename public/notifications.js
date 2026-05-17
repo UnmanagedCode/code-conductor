@@ -8,6 +8,7 @@ export const NotificationState = {
   permission: 'default',          // mirrors Notification.permission
   globalEnabled: false,           // user toggled the bell on
   mutedInstances: new Set(),      // per-instance mute
+  swRegistration: null,           // ServiceWorkerRegistration, once registered
 };
 
 /**
@@ -28,14 +29,33 @@ export function isNotificationAPIAvailable() {
   return typeof window !== 'undefined' && 'Notification' in window;
 }
 
+async function ensureServiceWorker() {
+  if (NotificationState.swRegistration) return NotificationState.swRegistration;
+  if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return null;
+  try {
+    const reg = await navigator.serviceWorker.register('/sw.js');
+    // Wait for the SW to be ready so showNotification() works on first call.
+    await navigator.serviceWorker.ready;
+    NotificationState.swRegistration = reg;
+    return reg;
+  } catch {
+    return null;
+  }
+}
+
 export async function ensurePermission() {
   if (!isNotificationAPIAvailable()) return 'unsupported';
+  let result;
   if (Notification.permission === 'granted' || Notification.permission === 'denied') {
-    NotificationState.permission = Notification.permission;
-    return Notification.permission;
+    result = Notification.permission;
+  } else {
+    result = await Notification.requestPermission();
   }
-  const result = await Notification.requestPermission();
   NotificationState.permission = result;
+  // Pre-register the Service Worker as soon as we have permission. Mobile
+  // Chrome only fires notifications via `registration.showNotification()`;
+  // page-level `new Notification(...)` throws "Illegal constructor" there.
+  if (result === 'granted') await ensureServiceWorker();
   return result;
 }
 
@@ -46,13 +66,21 @@ export function muteInstance(id, mute) {
   else NotificationState.mutedInstances.delete(id);
 }
 
-export function fire({ title, body, tag, onClick }) {
+export function fire({ title, body, tag }) {
   if (!isNotificationAPIAvailable()) return null;
   if (Notification.permission !== 'granted') return null;
+  const opts = { body, tag, icon: '/favicon.ico' };
+  // Mobile Chrome only allows notifications via the Service Worker
+  // registration. Try that first; fall back to the page-level constructor
+  // for desktop browsers where it still works.
+  if (NotificationState.swRegistration) {
+    try {
+      NotificationState.swRegistration.showNotification(title, opts);
+      return true;
+    } catch { /* fall through to page-level */ }
+  }
   try {
-    const n = new Notification(title, { body, tag, icon: '/favicon.ico' });
-    if (onClick) n.onclick = () => { try { window.focus(); } catch {} onClick(); n.close(); };
-    return n;
+    return new Notification(title, opts);
   } catch {
     return null;
   }
