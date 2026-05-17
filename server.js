@@ -30,6 +30,10 @@ export async function start({ port = 8787, host = '127.0.0.1' } = {}) {
     server.listen(port, host, () => resolve());
   });
   const addr = server.address();
+  // Instance subprocesses need the actual bound port to construct the
+  // PreToolUse http hook URL — feed it back into the manager now that
+  // listen has resolved (port may have been auto-assigned via 0).
+  if (instances) instances.setServerPort(addr.port);
   return { server, instances, port: addr.port, host: addr.address };
 }
 

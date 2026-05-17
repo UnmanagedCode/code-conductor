@@ -29,7 +29,11 @@ Designed to run on a Termux phone (single user, localhost-only), but works on an
 
 - **Project list** — sidebar shows every directory under `~/project/`. A `+ New project` button creates a directory and drops a `CLAUDE.md` that imports the workspace-wide one at `~/project/CLAUDE.md`.
 - **Spawn instances** — for any project, click `+` to launch a fresh Claude instance, or pick a prior session from the resume dropdown. The new-instance dialog lets you choose:
-  - **Mode** — only two modes are exposed: `code` (the CLI's `bypassPermissions` — full power, no per-tool prompts) and `plan` (read-only planning). The CLI's `default` / `acceptEdits` modes auto-deny tool calls in stream-json `--print` (no SDK `canUseTool` callback is registered), and the only way to recover would be to make the model re-emit the entire tool input — pointlessly expensive for anything with a large `content`. We force the choice up front.
+  - **Mode** — three options:
+    - **`plan`** (default) — read-only planning. The CLI's plan mode denies destructive tools; the model proposes a plan and exits via `ExitPlanMode` so you can Approve / Reject.
+    - **`ask`** — full power but every destructive tool (`Edit` / `Write` / `NotebookEdit` / `Bash`) goes through an interactive **Allow / Deny** card before it runs. Implemented via a `PreToolUse` HTTP hook registered through `--settings` at spawn — the hook POSTs the envelope back to the orchestrator, which holds the response open while the UI shows the card. The user's click resolves the response with `permissionDecision: "allow"` or `"deny"`, and the CLI then either runs the tool with the original `tool_use_id` (no regeneration of large `content` fields) or auto-denies it. Reads (`Read` / `Glob` / `Grep` / `WebFetch` / `WebSearch`) are not gated.
+    - **`code`** — full power, no per-tool prompts. CLI's `bypassPermissions`.
+    The CLI's `default` / `acceptEdits` modes are not exposed because in stream-json `--print` (no SDK `canUseTool` callback) they auto-deny tool calls and the only way to recover would be to make the model re-emit the entire tool input.
   - **Effort** — `low` / `medium` / `high` (default) / `xhigh` / `max`.
   - **Thinking** — `adaptive` (default, model decides) / `enabled` / `disabled`.
   - **Model** — empty for account default, or pick `claude-sonnet-4-6` / `claude-opus-4-7` / `claude-haiku-4-5`.
@@ -41,6 +45,7 @@ Designed to run on a Termux phone (single user, localhost-only), but works on an
   - **Sub-agent drill-down** — when Claude uses the `Task` tool, the sub-agent's events stream into a nested mini-conversation rendered inside the outer tool block, with a dashed left border and `↳ sub-agent` label. Tap the Task tool to expand and inspect what the sub-agent did.
   - **Plan mode (`ExitPlanMode`)** — when the model finishes a plan and calls `ExitPlanMode`, a `PreToolUse` hook registered via `--settings` cleanly denies the tool with a "wait for the user" reason. The model receives that as an `is_error: true` tool_result and ends the turn naturally — no interrupt, no `[Request interrupted by user]` marker. The orchestrator renders a green-bordered card titled "Plan ready for approval". The plan body comes from `input.plan` directly, or — when the model wrote the plan to a file under `~/.claude/plans/*.md` first and called `ExitPlanMode` with empty input — the orchestrator reads the most-recent such file and shows its content. The body is rendered as **Markdown** (`public/markdown.js`) with headings, lists, fenced code blocks, inline code, bold/italic, blockquotes, links, and horizontal rules — no `innerHTML` is ever used, links must use safe schemes, and raw HTML in the source is shown as literal text. The card has Approve and Reject buttons plus an optional feedback textarea. **Approve** switches the instance to `code` mode (CLI's `bypassPermissions`) so the model can actually execute the tools the plan calls for, and sends `"I approve the plan. Please proceed with the implementation."` (plus your feedback if provided). **Reject** keeps plan mode active and sends `"I'd like to revise the plan. Refinement notes:\n<feedback>"` so the model can refine.
   - **AskUserQuestion** — when the model invokes the `AskUserQuestion` tool, the same `PreToolUse` hook denies it cleanly. The model receives an `is_error: true` tool_result with the deny reason and ends the turn naturally — no interrupt, no marker. The orchestrator renders a blue card with the structured questions/options. **Multiple questions** render as a tab strip across the top; the active tab's pane shows its options. Each pane has the model's options as buttons plus an **Other:** text field for typing a custom answer (always available, overrides any option pick). A single **Send all answers** button at the bottom enables once every question has an answer and submits them as one consolidated prompt; if the instance somehow isn't idle yet, the answer is queued locally and flushed automatically on the next `status=idle` event.
+  - **Ask mode (`permission_request`)** — in `ask` mode the CLI hits the orchestrator's `POST /api/instances/:id/hook-callback` before every `Edit` / `Write` / `NotebookEdit` / `Bash`. The orchestrator surfaces a `permission_request` UI event over WS; the frontend renders a purple-bordered card with the tool name, a one-line argument summary, and a full **diff / Write preview / NotebookEdit body** of what's about to run. **Allow** sends `{t:"hook_decision", id, toolUseId, allow:true}` over WS, which resolves the held-open HTTP response with `permissionDecision:"allow"` — the CLI proceeds with the same `tool_use_id`, no model regeneration. **Deny** does the inverse with `permissionDecision:"deny"`. A `permission_resolved` follow-up event flips the card to ✓ allowed / ✗ denied for any tab subscribed to the same instance. Server holds the response open for up to 540 s; on timeout the response resolves deny with reason "user did not respond in time".
   - **System notes** — most diagnostic events (per-turn `status:"requesting"`, `rate_limit_event:"allowed"`, hook lifecycle pings, task progress) are filtered out. The ones that remain (`init`, `stderr`, `exit`, `permission_denied`, `compacting`, `spawn_error`, `crashed`, `history_load_error`, non-allowed `rate_limit_event`) render as compact one-line notes inline where they actually occurred — no more shared "SYSTEM" box that silently extends itself across turns.
   - **Turn end** — small footer line with duration / cost / tokens.
 - **Composer** — textarea at the bottom. Enter sends, Shift+Enter inserts a newline. The placeholder explains the current state ("turn running — your message will queue", "click Resume", etc.). The text input stays focusable during a running turn so you can queue a follow-up.
@@ -93,11 +98,19 @@ claude -p \
   --verbose --include-partial-messages --include-hook-events \
   --allow-dangerously-skip-permissions \
   --permission-mode <plan|bypassPermissions> --effort <effort> --thinking <thinking> \
+  --settings '{"hooks":{"PreToolUse":[…]}}' \
   [--model <name>] \
   --session-id <fresh-uuid> | --resume <existing-uuid>
 ```
 
 `--allow-dangerously-skip-permissions` is passed at spawn even when the instance starts in `plan` mode — without it the CLI rejects any later runtime `set_permission_mode bypassPermissions` (the plan-approve flow) with *"session was not launched with --dangerously-skip-permissions"*. The flag only *permits* the switch; it doesn't activate bypass by itself.
+
+`--settings` carries an inline JSON object (a single CLI string, no settings file on disk) that registers two `PreToolUse` hooks per instance:
+
+1. **`AskUserQuestion|ExitPlanMode`** — a `command` hook running `printf` that returns a static deny with reason *"Awaiting user input via the orchestrator UI"*. Replaces the older auto-interrupt + marker-scrub plumbing: the model receives an `is_error: true` tool_result, emits a short "Waiting for your response." text block, and ends the turn naturally — no `control_request interrupt`, no `[Request interrupted by user]` marker.
+2. **`Edit|Write|NotebookEdit|Bash`** — an `http` hook pointing at `http://127.0.0.1:<port>/api/instances/<id>/hook-callback` with a 660 s timeout. The orchestrator-side endpoint auto-allows when the instance is not in `ask` mode (so the hook is harmless in plan/code), or otherwise holds the response open and surfaces a `permission_request` UI event. A WS `hook_decision` from the user resolves the response with the matching `permissionDecision`. Server-side internal timeout is 540 s — safely under the CLI-side 660 s, because an HTTP timeout would make the CLI treat the hook as a non-blocking error and the tool would proceed (the opposite of what we want).
+
+The orchestrator-tracked `ask` mode maps to `bypassPermissions` at the CLI level (the CLI itself doesn't know about ask). `setMode("ask")` issues `control_request set_permission_mode bypassPermissions` and tracks `ask` locally; the hook callback inspects the orchestrator's mode to decide whether to prompt or auto-allow.
 
 The CLI then reads JSON lines on stdin and emits JSON lines on stdout. Inbound message types we send:
 
@@ -129,9 +142,13 @@ claude-orch-app/
 │   ├── instances.js          Instance class + InstanceManager. Subprocess lifecycle,
 │   │                         ring buffer (last 500 UI events), control_request
 │   │                         round-trip, history replay, session-metadata write,
-│   │                         mode validation (plan / bypassPermissions only),
-│   │                         spawns with a `--settings` PreToolUse deny hook for
-│   │                         AskUserQuestion + ExitPlanMode.
+│   │                         mode validation (plan / ask / bypassPermissions),
+│   │                         spawns with two `--settings` PreToolUse hooks: a static
+│   │                         deny for AskUserQuestion + ExitPlanMode, plus an http
+│   │                         callback for destructive tools (Edit / Write /
+│   │                         NotebookEdit / Bash) used by ask-mode permission gating.
+│   │                         Holds open hook HTTP responses in a per-instance
+│   │                         pending map keyed by tool_use_id.
 │   ├── parser.js             stream-json line → UI event normalization. Merges
 │   │                         deltas by (msgId, blockIdx); emits thinking_redacted
 │   │                         when a thinking block closes with only signature_delta;
@@ -142,9 +159,12 @@ claude-orch-app/
 │   ├── projects.js           FS ops on ~/project; cwd encoding for ~/.claude/projects;
 │   │                         seeds CLAUDE.md on new projects.
 │   ├── routes.js             REST handlers; thin shell over instances + projects.
+│   │                         Hosts POST /instances/:id/hook-callback — the
+│   │                         PreToolUse http hook endpoint the CLI calls into.
 │   └── wsHub.js              Per-socket subscriptions; snapshot replay; fan-out;
-│                             prompt/mode/interrupt/kill via WS; broadcasts
-│                             turn_notification to every client on turn_end.
+│                             prompt/mode/interrupt/kill/hook_decision via WS;
+│                             broadcasts turn_notification to every client on
+│                             turn_end.
 ├── public/
 │   ├── index.html            Shell layout + new-project / new-instance dialogs +
 │   │                         🔔 notification toggle.
@@ -157,13 +177,14 @@ claude-orch-app/
 │   ├── sidebar.js            Project ▸ instance list with status dots.
 │   ├── conversation.js       Ordered message list; sticky-scroll; idempotent by _seq;
 │   │                         routes events with parentToolUseId into nested
-│   │                         sub-Conversations; dispatches user_question and
-│   │                         plan_request to inline card renderers; strips
-│   │                         orchestrator-flagged interrupt-marker text blocks.
+│   │                         sub-Conversations; dispatches user_question,
+│   │                         plan_request, permission_request, and the
+│   │                         permission_resolved follow-up to inline card renderers.
 │   ├── blocks.js             Renderers for text/thinking/tool_use/tool_result/
-│   │                         user-question/plan-request; describeToolInput() for
-│   │                         collapsed summaries; per-tool body renderers for
-│   │                         Edit/Write/NotebookEdit using the diff module.
+│   │                         user-question/plan-request/permission-request;
+│   │                         describeToolInput() for collapsed summaries; per-tool
+│   │                         body renderers for Edit/Write/NotebookEdit using the
+│   │                         diff module (reused inside the Allow/Deny card).
 │   ├── diff.js               Pure-JS Myers' line-diff + diffStats().
 │   ├── notifications.js      Notification API wrapper + pure shouldNotify()
 │   │                         decision used by both runtime and tests.
@@ -192,6 +213,10 @@ claude-orch-app/
     ├── ws.test.mjs           Subscribe + snapshot + live fan-out; reconnect dedup;
     │                         two-instance concurrency; mode/interrupt over WS;
     │                         turn_notification fan-out to non-subscribers.
+    ├── hook-callback.test.mjs PreToolUse http hook endpoint: auto-allows in
+    │                         non-ask modes; in ask mode emits permission_request
+    │                         over WS and resolves on hook_decision allow/deny;
+    │                         instance exit resolves pending callbacks deny.
     ├── question.test.mjs     AskUserQuestion → user_question UI event end-to-end;
     │                         scenario emits the hook-deny tool_result + a normal
     │                         result/success and the orchestrator must NOT issue an
@@ -210,7 +235,9 @@ claude-orch-app/
     │                         (e.g. "is the tool command actually visible?").
     └── smoke.real.test.mjs   Opt-in real-claude end-to-end (RUN_REAL_CLAUDE=1) —
                               text reply, Bash tool call shape, AskUserQuestion
-                              user_question event shape.
+                              user_question event shape, and ask-mode Write
+                              gated by the PreToolUse hook (proves Allow lets
+                              the same tool_use_id proceed, no regeneration).
 ```
 
 ### WebSocket protocol
@@ -224,9 +251,10 @@ One persistent connection at `ws://127.0.0.1:8787/ws`, multiplexed across instan
 | `subscribe` | `id`, optional `reqId` | Subscribe to live events for an instance. Triggers a `snapshot` message followed by live `event`s. |
 | `unsubscribe` | `id` | Stop receiving events. |
 | `prompt` | `id`, `text` | Send a user message. |
-| `mode` | `id`, `mode` | Switch permission mode via `control_request set_permission_mode` (only `plan` and `bypassPermissions` are accepted). |
+| `mode` | `id`, `mode` | Switch permission mode via `control_request set_permission_mode` (`plan` / `ask` / `bypassPermissions`; `ask` maps to `bypassPermissions` at the CLI level). |
 | `interrupt` | `id` | Abort current turn via `control_request interrupt`. |
 | `kill` | `id` | SIGTERM the subprocess. |
+| `hook_decision` | `id`, `toolUseId`, `allow` | Resolves a pending ask-mode `PreToolUse` hook callback. Allow → CLI runs the tool with the original `tool_use_id`; deny → CLI auto-denies. |
 
 **Server → client**
 
@@ -243,7 +271,7 @@ One persistent connection at `ws://127.0.0.1:8787/ws`, multiplexed across instan
 
 Every event carries a `parentToolUseId` (or `null`) — the conversation view routes non-null events into a nested mini-conversation under the matching outer tool block, enabling sub-agent drill-down for `Task`.
 
-`text_delta`, `text_end`, `thinking_start`, `thinking_delta`, `thinking_end`, `thinking_redacted`, `tool_use_start`, `tool_use_input_delta`, `tool_use`, `tool_result`, `user_echo`, `system` (with `subtype` — includes `history_replayed` marker), `hook`, `turn_end`, `assistant_message`, `control_response`, `user_question` (`toolUseId`, `questions[]`), `plan_request` (`toolUseId`, `plan`, `planPath`), `raw`. Each event in the ring has a monotonic `_seq` so snapshot + live merge is idempotent.
+`text_delta`, `text_end`, `thinking_start`, `thinking_delta`, `thinking_end`, `thinking_redacted`, `tool_use_start`, `tool_use_input_delta`, `tool_use`, `tool_result`, `user_echo`, `system` (with `subtype` — includes `history_replayed` marker), `hook`, `turn_end`, `assistant_message`, `control_response`, `user_question` (`toolUseId`, `questions[]`), `plan_request` (`toolUseId`, `plan`, `planPath`), `permission_request` (`toolUseId`, `toolName`, `toolInput`), `permission_resolved` (`toolUseId`, `allow`), `raw`. Each event in the ring has a monotonic `_seq` so snapshot + live merge is idempotent.
 
 ### REST endpoints
 
@@ -256,6 +284,7 @@ Every event carries a `parentToolUseId` (or `null`) — the conversation view ro
 | `GET` | `/api/instances` | `[{id, project, sessionId, status, mode, effort, thinking, model, pid}]` |
 | `POST` | `/api/instances/:id/respawn` | `{id, sessionId}` — uses `--resume lastSessionId` |
 | `DELETE` | `/api/instances/:id` | `{ok: true}` — SIGTERM + remove |
+| `POST` | `/api/instances/:id/hook-callback` | PreToolUse http hook endpoint the CLI calls. Body = full hook envelope. Always responds 200 with `{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow"|"deny"}}`. Auto-allows in non-ask modes; in ask mode the response stays open up to 540 s until a WS `hook_decision` arrives. |
 
 ### Instance lifecycle
 

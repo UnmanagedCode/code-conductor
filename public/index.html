@@ -28,6 +28,7 @@
           <button id="notify-toggle" title="Browser notifications when a turn finishes" aria-pressed="false">🔕</button>
           <select id="mode-select" disabled>
             <option value="bypassPermissions">code</option>
+            <option value="ask">ask</option>
             <option value="plan">plan</option>
           </select>
           <button id="interrupt-btn" disabled>Interrupt</button>
@@ -61,8 +62,9 @@
       <h3>New instance in <span id="ni-project"></span></h3>
       <label>Mode
         <select id="ni-mode">
-          <option value="plan" selected>plan</option>
-          <option value="bypassPermissions">code</option>
+          <option value="plan" selected>plan (read-only — propose a plan first)</option>
+          <option value="ask">ask (prompt before destructive tools)</option>
+          <option value="bypassPermissions">code (full power, no prompts)</option>
         </select>
       </label>
       <label>Effort (controls thinking budget)

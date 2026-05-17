@@ -83,6 +83,13 @@ const conversation = new Conversation(dom.conversation, {
     // status=idle.
     sendOrQueuePrompt(state.activeId, formatUserQuestionAnswers(questions, answers));
   },
+  onPermissionDecision: ({ toolUseId, allow }) => {
+    if (!state.activeId) return;
+    // Forward the Allow/Deny click to the orchestrator over WS. The
+    // server resolves the held-open PreToolUse hook HTTP response and
+    // the CLI then either runs the tool or auto-denies it.
+    send('hook_decision', { id: state.activeId, toolUseId, allow });
+  },
   onPlanDecision: async ({ decision, feedback }) => {
     if (!state.activeId) return;
     const activeId = state.activeId;

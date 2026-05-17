@@ -3,7 +3,7 @@
 // replays don't duplicate prior content.
 
 import { TextBlock, ThinkingBlock, ToolUseBlock, ToolResultBlock, SystemBlock, TurnEndBlock,
-  UserQuestionBlock, PlanRequestBlock,
+  UserQuestionBlock, PlanRequestBlock, PermissionRequestBlock,
   shouldRenderSystem, el } from './blocks.js';
 
 export class Conversation {
@@ -11,13 +11,16 @@ export class Conversation {
     isSub = false,
     onUserQuestionSubmit = null,
     onPlanDecision = null,
+    onPermissionDecision = null,
   } = {}) {
     this.root = rootEl;
     this.isSub = isSub;
     this.onUserQuestionSubmit = onUserQuestionSubmit;
     this.onPlanDecision = onPlanDecision;
+    this.onPermissionDecision = onPermissionDecision;
     this.userQuestionBlocks = new Map(); // toolUseId -> UserQuestionBlock
     this.planBlocks = new Map(); // toolUseId -> PlanRequestBlock
+    this.permissionBlocks = new Map(); // toolUseId -> PermissionRequestBlock
     this.blocksByKey = new Map();   // `${msgId}:${blockIdx}` -> block instance
     this.toolBlocks = new Map();    // toolUseId -> ToolUseBlock
     this.seenSeq = new Set();
@@ -52,6 +55,9 @@ export class Conversation {
     this.seenSeq.clear();
     this.messageWraps.clear();
     this.subConvs.clear();
+    this.userQuestionBlocks.clear();
+    this.planBlocks.clear();
+    this.permissionBlocks.clear();
     this._setEmpty();
   }
 
@@ -75,6 +81,7 @@ export class Conversation {
             isSub: true,
             onUserQuestionSubmit: this.onUserQuestionSubmit,
             onPlanDecision: this.onPlanDecision,
+            onPermissionDecision: this.onPermissionDecision,
           });
           this.subConvs.set(ev.parentToolUseId, sub);
         }
@@ -85,6 +92,8 @@ export class Conversation {
     }
     if (ev.kind === 'user_question') { this._renderUserQuestion(ev); return; }
     if (ev.kind === 'plan_request') { this._renderPlanRequest(ev); return; }
+    if (ev.kind === 'permission_request') { this._renderPermissionRequest(ev); return; }
+    if (ev.kind === 'permission_resolved') { this._resolvePermissionRequest(ev); return; }
     this._ensureNotEmpty();
     switch (ev.kind) {
       case 'user_echo':      this._renderUserEcho(ev); break;
@@ -235,6 +244,22 @@ export class Conversation {
     this.userQuestionBlocks.set(ev.toolUseId, block);
     this.root.appendChild(block.node);
     this._maybeScroll();
+  }
+
+  _renderPermissionRequest(ev) {
+    this._ensureNotEmpty();
+    if (this.permissionBlocks.has(ev.toolUseId)) return;
+    const block = new PermissionRequestBlock(ev, (decision) => {
+      if (this.onPermissionDecision) this.onPermissionDecision(decision);
+    });
+    this.permissionBlocks.set(ev.toolUseId, block);
+    this.root.appendChild(block.node);
+    this._maybeScroll();
+  }
+
+  _resolvePermissionRequest(ev) {
+    const block = this.permissionBlocks.get(ev.toolUseId);
+    if (block) block.markResolved(!!ev.allow);
   }
 
   _renderHistoryDivider(ev) {

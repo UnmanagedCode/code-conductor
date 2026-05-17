@@ -3,10 +3,11 @@
 // Client → server:
 //   { t: "subscribe",   id }
 //   { t: "unsubscribe", id }
-//   { t: "prompt",      id, text }
-//   { t: "mode",        id, mode }
-//   { t: "interrupt",   id }
-//   { t: "kill",        id }
+//   { t: "prompt",         id, text }
+//   { t: "mode",           id, mode }
+//   { t: "interrupt",      id }
+//   { t: "kill",           id }
+//   { t: "hook_decision",  id, toolUseId, allow }
 //
 // Server → client:
 //   { t: "snapshot",  id, status, mode, sessionId, project, events: [...] }
@@ -131,6 +132,15 @@ export function attachWsHub({ wss, instances }) {
           case 'kill': {
             if (!inst) { reply(false, 'unknown instance'); return; }
             await inst.kill();
+            reply(true);
+            return;
+          }
+          case 'hook_decision': {
+            if (!inst) { reply(false, 'unknown instance'); return; }
+            const toolUseId = msg.toolUseId;
+            if (!toolUseId) { reply(false, 'missing toolUseId'); return; }
+            const resolved = inst.resolveHookCallback(toolUseId, !!msg.allow);
+            if (!resolved) { reply(false, 'no pending permission request for that toolUseId'); return; }
             reply(true);
             return;
           }

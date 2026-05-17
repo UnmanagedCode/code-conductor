@@ -278,8 +278,72 @@ test('default spawn passes --permission-mode plan, --effort high, --thinking ada
     assert.equal(cmd.type, 'command');
     assert.match(cmd.command, /printf/);
     assert.match(cmd.command, /permissionDecision.*deny/);
+
+    // The interactive PreToolUse http hook is also registered so that a
+    // plan→ask runtime switch starts gating destructive tools without
+    // requiring a respawn. The hook targets the orchestrator's REST
+    // callback for this specific instance.
+    const httpRow = preToolUse.find(h => /Edit/.test(h.matcher) && /Write/.test(h.matcher) && /Bash/.test(h.matcher));
+    assert.ok(httpRow, 'PreToolUse matcher covers destructive tools (Edit|Write|NotebookEdit|Bash)');
+    const httpHook = httpRow.hooks?.[0];
+    assert.equal(httpHook.type, 'http');
+    assert.match(httpHook.url, /^http:\/\/127\.0\.0\.1:\d+\/api\/instances\/[^/]+\/hook-callback$/,
+      `http hook url should target the orchestrator endpoint, got: ${httpHook.url}`);
+    assert.ok(httpHook.url.includes(`/api/instances/${id}/hook-callback`),
+      `http hook url should embed the instance id`);
+    assert.ok(typeof httpHook.timeout === 'number' && httpHook.timeout >= 60,
+      `http hook timeout should leave room for a human (>= 60s), got ${httpHook.timeout}`);
   } finally {
     delete process.env.FAKE_CLAUDE_ARGV_DUMP;
+    await close();
+  }
+});
+
+test('ask mode: --permission-mode is bypassPermissions at the CLI level, orchestrator-tracked mode stays "ask"', async () => {
+  const { baseUrl, instances, tmpHome, close } = await setupWithProject();
+  const fsp = (await import('node:fs')).promises;
+  try {
+    const argvPath = `${tmpHome}/argv.txt`;
+    process.env.FAKE_CLAUDE_ARGV_DUMP = argvPath;
+
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', mode: 'ask' });
+    const id = r.body.id;
+    await waitFor(() => instances.get(id).status === 'idle');
+    assert.equal(instances.get(id).mode, 'ask', 'orchestrator tracks ask separately from the CLI mode');
+
+    await waitFor(async () => { try { await fsp.stat(argvPath); return true; } catch { return false; } });
+    const argv = (await fsp.readFile(argvPath, 'utf8')).split('\n').filter(Boolean);
+    const pm = argv.indexOf('--permission-mode');
+    assert.equal(argv[pm + 1], 'bypassPermissions',
+      `ask maps to CLI bypassPermissions (CLI doesn't know about ask); argv was: ${argv.join(' ')}`);
+  } finally {
+    delete process.env.FAKE_CLAUDE_ARGV_DUMP;
+    await close();
+  }
+});
+
+test('setMode("ask") flips orchestrator mode to ask while sending bypassPermissions to the CLI', async () => {
+  const { baseUrl, instances, tmpHome, close } = await setupWithProject();
+  try {
+    const transcriptPath = `${tmpHome}/transcript.log`;
+    process.env.FAKE_CLAUDE_TRANSCRIPT = transcriptPath;
+
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', mode: 'plan' });
+    const id = r.body.id;
+    const inst = instances.get(id);
+    await waitFor(() => inst.status === 'idle' && inst.sessionId);
+
+    await inst.setMode('ask');
+    assert.equal(inst.mode, 'ask', 'orchestrator-tracked mode is ask');
+
+    const fsp = (await import('node:fs')).promises;
+    const lines = (await fsp.readFile(transcriptPath, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse);
+    const modeReq = lines.find(p => p.type === 'control_request' && p.request?.subtype === 'set_permission_mode');
+    assert.ok(modeReq, 'set_permission_mode control_request was written');
+    assert.equal(modeReq.request.mode, 'bypassPermissions',
+      'CLI receives the bypassPermissions equivalent — it doesn\'t know about ask');
+  } finally {
+    delete process.env.FAKE_CLAUDE_TRANSCRIPT;
     await close();
   }
 });

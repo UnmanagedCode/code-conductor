@@ -15,6 +15,23 @@ import { getProject, encodeCwd, claudeProjectsRoot } from './projects.js';
 const HOOK_DENY_REASON_BLOCKING_TOOL =
   'Awaiting user input via the orchestrator UI — please stop and wait for the next user message.';
 
+// Destructive tools gated by the interactive PreToolUse http hook in ask
+// mode. Reads (Read|Glob|Grep|LS|WebFetch|WebSearch) are NOT gated so the
+// model can explore freely without a prompt per call.
+const ASK_GATED_TOOL_MATCHER = 'Edit|Write|NotebookEdit|Bash';
+
+// Per-hook timeout (seconds) for the interactive http hook. Generous — the
+// CLI waits this long for the user to click Allow/Deny in the UI. Server
+// resolves with a synthesised deny well before this fires; the headroom is
+// just there to avoid the CLI cutting off a slow human.
+const HOOK_HTTP_TIMEOUT_S = 660;
+
+// Server-side timeout for a pending interactive hook callback. Must be
+// safely under HOOK_HTTP_TIMEOUT_S so we always respond before the CLI
+// gives up (an HTTP timeout = non-blocking error = tool proceeds, which is
+// the opposite of what we want here).
+const HOOK_PENDING_TIMEOUT_MS = 540_000;
+
 // printf-friendly literal: single-quote the JSON so the shell doesn't
 // interpolate, escape internal double-quotes via JSON.stringify on the
 // REASON above.
@@ -23,33 +40,57 @@ function buildBlockingToolHookCommand() {
   return `printf '%s' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"${reason}"}}'`;
 }
 
-function buildSettingsJSON() {
-  return JSON.stringify({
-    hooks: {
-      PreToolUse: [{
-        matcher: 'AskUserQuestion|ExitPlanMode',
-        hooks: [{
-          type: 'command',
-          timeout: 5,
-          command: buildBlockingToolHookCommand(),
-        }],
+function buildSettingsJSON({ hookCallbackUrl } = {}) {
+  const preToolUse = [{
+    matcher: 'AskUserQuestion|ExitPlanMode',
+    hooks: [{
+      type: 'command',
+      timeout: 5,
+      command: buildBlockingToolHookCommand(),
+    }],
+  }];
+  if (hookCallbackUrl) {
+    // Interactive permission gating for destructive tools. Always
+    // registered when a callback URL is available so plan→ask runtime
+    // switches gate correctly without a respawn. The orchestrator-side
+    // callback auto-allows when the instance is NOT in ask mode, so the
+    // overhead in plan/code is just a localhost round-trip.
+    preToolUse.push({
+      matcher: ASK_GATED_TOOL_MATCHER,
+      hooks: [{
+        type: 'http',
+        url: hookCallbackUrl,
+        timeout: HOOK_HTTP_TIMEOUT_S,
       }],
-    },
-  });
+    });
+  }
+  return JSON.stringify({ hooks: { PreToolUse: preToolUse } });
 }
 
 const RING_SIZE = 500;
-// Only two modes are exposed: `plan` (read-only planning) and
-// `bypassPermissions` (full power). The CLI's `default`/`acceptEdits`
-// modes auto-deny tool calls in stream-json --print (no SDK canUseTool
-// callback registered), and the only way to recover would be to make the
-// model re-emit the entire tool input — expensive for anything with a
-// large `content` field. We force the choice up front instead.
-const VALID_MODES = new Set(['plan', 'bypassPermissions']);
+// Three user-facing modes:
+//   - `plan`              — read-only planning; CLI is in plan mode
+//   - `ask`               — full power but every destructive tool is gated
+//                           by an interactive PreToolUse hook; CLI is in
+//                           bypassPermissions
+//   - `bypassPermissions` — full power, no gating; CLI is in bypassPermissions
+// The CLI's `default`/`acceptEdits` modes are unusable in stream-json
+// --print (no SDK canUseTool callback), so we don't expose them.
+const VALID_MODES = new Set(['plan', 'ask', 'bypassPermissions']);
 // Start new instances in read-only plan mode by default. The user can pick
-// `code` (= bypassPermissions) in the new-instance dialog, or approve a
-// plan to flip the running instance to bypassPermissions mid-session.
+// `ask` or `code` (= bypassPermissions) in the new-instance dialog, or
+// approve a plan to flip the running instance to bypassPermissions
+// mid-session.
 const DEFAULT_MODE = 'plan';
+
+// `ask` is orchestrator-only — the CLI itself doesn't know about it. At
+// spawn / set_permission_mode time the CLI receives the equivalent
+// bypassPermissions value; the orchestrator tracks `ask` separately and
+// uses it to decide whether the interactive hook callback should prompt
+// the user or auto-allow.
+function cliPermissionMode(mode) {
+  return mode === 'ask' ? 'bypassPermissions' : mode;
+}
 const VALID_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
 const DEFAULT_EFFORT = 'high';
 const VALID_THINKING = new Set(['adaptive', 'enabled', 'disabled']);
@@ -63,6 +104,22 @@ function resolveClaudeBin() {
   return { command: parts[0], prefixArgs: parts.slice(1) };
 }
 
+function hookResponseBody(decision, reason) {
+  const out = { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: decision } };
+  if (reason) out.hookSpecificOutput.permissionDecisionReason = reason;
+  return out;
+}
+
+function respondHookAllow(res) {
+  if (!res || res.headersSent) return;
+  res.status(200).json(hookResponseBody('allow'));
+}
+
+function respondHookDeny(res, reason) {
+  if (!res || res.headersSent) return;
+  res.status(200).json(hookResponseBody('deny', reason));
+}
+
 class Ring {
   constructor(cap) { this.cap = cap; this.buf = []; }
   push(v) {
@@ -74,7 +131,7 @@ class Ring {
 }
 
 export class Instance extends EventEmitter {
-  constructor({ id, project, cwd, mode, effort, thinking, model }) {
+  constructor({ id, project, cwd, mode, effort, thinking, model, hookCallbackUrl = null }) {
     super();
     this.id = id;
     this.project = project;
@@ -83,6 +140,7 @@ export class Instance extends EventEmitter {
     this.effort = effort;
     this.thinking = thinking;
     this.model = model;
+    this.hookCallbackUrl = hookCallbackUrl;
     this.sessionId = null;
     this.pid = null;
     this.status = 'idle';
@@ -90,6 +148,11 @@ export class Instance extends EventEmitter {
     this.parser = new Parser();
     this.ring = new Ring(RING_SIZE);
     this._pending = new Map(); // request_id -> { resolve, reject, timer }
+    // Pending interactive PreToolUse http hook callbacks. Keyed by
+    // tool_use_id (the CLI sends a fresh one per tool call). Each entry
+    // holds the Express response object — held open until either a WS
+    // hook_decision arrives or HOOK_PENDING_TIMEOUT_MS fires.
+    this._pendingHookCalls = new Map(); // toolUseId -> { res, timer, toolName }
     this._stderr = '';
     this._lastLeafUuid = null;     // for last-prompt jsonl marker
     this._lastPlanFilePath = null; // last Write to ~/.claude/plans/*.md, used to enrich ExitPlanMode
@@ -245,15 +308,16 @@ export class Instance extends EventEmitter {
       // --dangerously-skip-permissions" and the plan-approve flow can't
       // leave plan mode.
       '--allow-dangerously-skip-permissions',
-      '--permission-mode', this.mode,
+      '--permission-mode', cliPermissionMode(this.mode),
       '--effort', this.effort,
       '--thinking', this.thinking,
-      // PreToolUse hook that statically denies AskUserQuestion +
-      // ExitPlanMode. Replaces the old auto-interrupt + marker-scrub
-      // plumbing — the model receives an is_error tool_result with the
-      // deny reason and ends the turn cleanly. No [Request interrupted by
-      // user] marker is ever inserted.
-      '--settings', buildSettingsJSON(),
+      // PreToolUse hooks. The static `command` deny on
+      // AskUserQuestion|ExitPlanMode replaces the old auto-interrupt +
+      // marker-scrub plumbing. When a hookCallbackUrl is supplied, an
+      // interactive `http` hook is ALSO registered for the destructive
+      // tools — its behaviour at callback time depends on the
+      // orchestrator-tracked mode (ask = prompt user, otherwise = allow).
+      '--settings', buildSettingsJSON({ hookCallbackUrl: this.hookCallbackUrl }),
     ];
     if (this.model) args.push('--model', this.model);
     if (resume) args.push('--resume', this.sessionId);
@@ -322,7 +386,15 @@ export class Instance extends EventEmitter {
         const sid = ev.data?.session_id;
         if (sid) this.sessionId = sid;
         const mode = ev.data?.permissionMode;
-        if (mode && VALID_MODES.has(mode)) this.mode = mode;
+        if (mode && VALID_MODES.has(mode)) {
+          // The CLI reports its own mode value ('plan' or
+          // 'bypassPermissions'). Don't clobber the orchestrator-only
+          // 'ask' label when the CLI says bypassPermissions — they're
+          // CLI-equivalent and we own the higher-level distinction.
+          if (!(mode === 'bypassPermissions' && this.mode === 'ask')) {
+            this.mode = mode;
+          }
+        }
       }
       if (ev.kind === 'control_response') {
         const p = this._pending.get(ev.requestId);
@@ -360,9 +432,13 @@ export class Instance extends EventEmitter {
     if (!this.sessionId || !this._lastLeafUuid) return;
     const dir = path.join(claudeProjectsRoot(), encodeCwd(this.cwd));
     const file = path.join(dir, `${this.sessionId}.jsonl`);
+    // Persist the CLI-level permission mode (not the orchestrator's 'ask'
+    // label) so `claude --resume` from the shell can pick up a valid
+    // value. The 'ask' nuance is orchestrator-only and doesn't survive a
+    // shell-side resume — that's deliberate.
     const lines =
       JSON.stringify({ type: 'last-prompt', leafUuid: this._lastLeafUuid, sessionId: this.sessionId }) + '\n' +
-      JSON.stringify({ type: 'permission-mode', permissionMode: this.mode, sessionId: this.sessionId }) + '\n';
+      JSON.stringify({ type: 'permission-mode', permissionMode: cliPermissionMode(this.mode), sessionId: this.sessionId }) + '\n';
     try {
       await fs.mkdir(dir, { recursive: true });
       await fs.appendFile(file, lines);
@@ -380,6 +456,15 @@ export class Instance extends EventEmitter {
       p.reject(new Error('subprocess exited'));
     }
     this._pending.clear();
+    // Resolve any in-flight permission prompts with deny — the CLI is
+    // gone, so the tool won't run anyway, but we still need to free the
+    // held-open HTTP responses.
+    for (const [toolUseId, pending] of this._pendingHookCalls) {
+      clearTimeout(pending.timer);
+      respondHookDeny(pending.res, 'instance exited before user responded');
+      this._emitUi({ kind: 'permission_resolved', toolUseId, allow: false, reason: 'exited' });
+    }
+    this._pendingHookCalls.clear();
   }
 
   _sendRaw(obj) {
@@ -416,11 +501,62 @@ export class Instance extends EventEmitter {
 
   async setMode(mode) {
     if (!VALID_MODES.has(mode)) throw new Error('invalid mode');
-    await this._controlRequest({ subtype: 'set_permission_mode', mode });
+    await this._controlRequest({ subtype: 'set_permission_mode', mode: cliPermissionMode(mode) });
     this.mode = mode;
     this.emit('status', this.summary());
     this._writeSessionMetadata().catch(() => {});
     return this.mode;
+  }
+
+  // Invoked by the REST hook callback endpoint. Either auto-allows
+  // (non-ask modes) or suspends the Express response until the user
+  // clicks Allow/Deny in the UI and a WS hook_decision message comes
+  // back. The response body is the JSON the CLI reads to decide whether
+  // the tool runs.
+  handleHookCallback(envelope, res) {
+    const toolUseId = envelope?.tool_use_id;
+    const toolName = envelope?.tool_name;
+    if (this.mode !== 'ask') {
+      respondHookAllow(res);
+      return;
+    }
+    if (!toolUseId) {
+      // Defensive — without a tool_use_id we can't correlate a later
+      // decision back to this pending response. Auto-allow so the user
+      // isn't silently blocked by a malformed hook envelope.
+      respondHookAllow(res);
+      return;
+    }
+    // Surface the request to the UI so the user sees the Allow/Deny card.
+    this._emitUi({
+      kind: 'permission_request',
+      toolUseId,
+      toolName,
+      toolInput: envelope?.tool_input ?? {},
+    });
+    const timer = setTimeout(() => {
+      const pending = this._pendingHookCalls.get(toolUseId);
+      if (!pending) return;
+      this._pendingHookCalls.delete(toolUseId);
+      respondHookDeny(pending.res, 'user did not respond in time');
+      this._emitUi({ kind: 'permission_resolved', toolUseId, allow: false, reason: 'timeout' });
+    }, HOOK_PENDING_TIMEOUT_MS);
+    // Don't keep the event loop alive just for this timer — server
+    // shutdown should be able to finish even if a permission card is
+    // sitting idle.
+    if (typeof timer.unref === 'function') timer.unref();
+    this._pendingHookCalls.set(toolUseId, { res, timer, toolName });
+  }
+
+  resolveHookCallback(toolUseId, allow) {
+    const pending = this._pendingHookCalls.get(toolUseId);
+    if (!pending) return false;
+    clearTimeout(pending.timer);
+    this._pendingHookCalls.delete(toolUseId);
+    if (allow) respondHookAllow(pending.res);
+    else respondHookDeny(pending.res, 'user denied via orchestrator UI');
+    this._emitUi({ kind: 'permission_resolved', toolUseId, allow: !!allow });
+    return true;
   }
 
   async interrupt() {
@@ -451,6 +587,19 @@ export class InstanceManager extends EventEmitter {
   constructor() {
     super();
     this.byId = new Map();
+    // Set by the server after `server.listen()` resolves. New instances
+    // spawned without a port set get null hookCallbackUrl, which disables
+    // the interactive http hook (ask mode falls back to auto-allow).
+    this.serverPort = null;
+  }
+
+  setServerPort(port) {
+    this.serverPort = port;
+  }
+
+  hookCallbackUrl(id) {
+    if (!this.serverPort) return null;
+    return `http://127.0.0.1:${this.serverPort}/api/instances/${id}/hook-callback`;
   }
 
   list() { return [...this.byId.values()].map(i => i.summary()); }
@@ -466,7 +615,7 @@ export class InstanceManager extends EventEmitter {
     const proj = await getProject(project);
     const finalMode = mode ?? DEFAULT_MODE;
     if (!VALID_MODES.has(finalMode)) {
-      throw Object.assign(new Error('invalid mode (must be plan or bypassPermissions)'), { statusCode: 400 });
+      throw Object.assign(new Error('invalid mode (must be plan, ask, or bypassPermissions)'), { statusCode: 400 });
     }
     const finalEffort = effort ?? DEFAULT_EFFORT;
     if (!VALID_EFFORTS.has(finalEffort)) {
@@ -481,6 +630,7 @@ export class InstanceManager extends EventEmitter {
     const inst = new Instance({
       id, project, cwd: proj.path,
       mode: finalMode, effort: finalEffort, thinking: finalThinking, model: finalModel,
+      hookCallbackUrl: this.hookCallbackUrl(id),
     });
 
     inst.on('event', (ev) => this.emit('event', { id, ev }));

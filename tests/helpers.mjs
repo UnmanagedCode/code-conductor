@@ -46,6 +46,9 @@ export async function bootServer({ scenarioPath, useRealClaude = false } = {}) {
     server.listen(0, '127.0.0.1', resolve);
   });
   const { port } = server.address();
+  // Mirror server.js's start() flow — instances need the bound port to
+  // construct the PreToolUse http hook callback URL.
+  if (instances) instances.setServerPort(port);
   const baseUrl = `http://127.0.0.1:${port}`;
   const wsUrl = `ws://127.0.0.1:${port}/ws`;
 

@@ -13,10 +13,25 @@ import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { WebSocket } from 'ws';
 import { bootServer, api, waitFor } from './helpers.mjs';
 
 const ENABLED = !!process.env.RUN_REAL_CLAUDE;
 const t = ENABLED ? test : test.skip.bind(test);
+
+function wsClient(url) {
+  return new Promise((resolve) => {
+    const ws = new WebSocket(url);
+    const messages = [];
+    ws.on('message', (raw) => { try { messages.push(JSON.parse(raw.toString())); } catch {} });
+    ws.once('open', () => resolve({
+      ws, messages,
+      send(obj) { ws.send(JSON.stringify(obj)); },
+      close() { return new Promise(r => { ws.once('close', r); ws.close(); }); },
+      wait(p, timeout = 60_000) { return waitFor(() => messages.find(p), { timeout }); },
+    }));
+  });
+}
 
 t('real claude: Bash tool call emits tool_use_start, tool_use with command, tool_result', async () => {
   const ctx = await bootServer({ useRealClaude: true });
@@ -101,6 +116,84 @@ t('real claude: AskUserQuestion emits a user_question event with parsed question
     for (const opt of q0.options) {
       assert.ok(typeof opt.label === 'string' && opt.label.length > 0, 'each option must have a non-empty label');
     }
+  } finally {
+    await ctx.close();
+    if (sessionId && projectPath) {
+      const encoded = projectPath.replaceAll('/', '-');
+      const jsonl = path.join(os.homedir(), '.claude', 'projects', encoded, `${sessionId}.jsonl`);
+      await fs.rm(jsonl, { force: true }).catch(() => {});
+      await fs.rmdir(path.dirname(jsonl)).catch(() => {});
+    }
+  }
+});
+
+t('real claude: ask mode gates Write via the PreToolUse hook — Allow lets the same tool_use_id proceed, no regeneration', async () => {
+  const ctx = await bootServer({ useRealClaude: true });
+  let sessionId = null, projectPath = null;
+  try {
+    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'ask-hook-smoke' });
+    projectPath = path.join(ctx.projectsRoot, 'ask-hook-smoke');
+
+    const collected = [];
+    ctx.instances.on('event', ({ id, ev }) => collected.push({ id, ev }));
+
+    const created = await api(ctx.baseUrl, 'POST', '/api/instances', {
+      project: 'ask-hook-smoke', mode: 'ask', model: 'claude-sonnet-4-6',
+    });
+    const id = created.body.id;
+    sessionId = created.body.sessionId;
+    await waitFor(() => ctx.instances.get(id)?.status === 'idle', { timeout: 5_000 });
+
+    const c = await wsClient(ctx.wsUrl);
+    c.send({ t: 'subscribe', id });
+    await c.wait(m => m.t === 'snapshot');
+
+    // Auto-allow the permission prompt as soon as it arrives. We don't
+    // care about the UI flow here — only that the gating round-trip works
+    // and the CLI proceeds with the SAME tool_use_id.
+    const events = collected.filter(e => e.id === id);
+    const seenPerm = new Promise((resolve) => {
+      ctx.instances.on('event', ({ id: eid, ev }) => {
+        if (eid === id && ev.kind === 'permission_request') {
+          c.send({ t: 'hook_decision', id, toolUseId: ev.toolUseId, allow: true });
+          resolve(ev);
+        }
+      });
+    });
+
+    ctx.instances.get(id).prompt(
+      `Create a file at "${projectPath}/hello-from-hook.txt" containing exactly the word "hello". Use the Write tool.`,
+    );
+
+    const permEv = await seenPerm;
+    await waitFor(
+      () => collected.some(e => e.id === id && e.ev.kind === 'turn_end'),
+      { timeout: 60_000, interval: 100 },
+    );
+
+    const mine = collected.filter(e => e.id === id).map(e => e.ev);
+    const turn = mine.find(e => e.kind === 'turn_end');
+    assert.ok(turn, 'turn_end missing');
+    assert.equal(turn.isError, false, `turn ended with error: ${JSON.stringify(turn)}`);
+
+    // The tool_use that the permission_request corresponds to should NOT
+    // have a duplicate (regeneration would show up as a second tool_use
+    // with a fresh id). We assert one tool_use per matched toolUseId.
+    const writeUses = mine.filter(e => e.kind === 'tool_use' && e.name === 'Write');
+    assert.ok(writeUses.length >= 1, 'at least one Write tool_use');
+    const matched = writeUses.filter(e => e.toolUseId === permEv.toolUseId);
+    assert.equal(matched.length, 1, 'exactly one Write tool_use carries the gated tool_use_id (no regeneration)');
+
+    // The resulting tool_result should also carry the same id and not be an error.
+    const matchedResult = mine.find(e => e.kind === 'tool_result' && e.toolUseId === permEv.toolUseId);
+    assert.ok(matchedResult, 'tool_result for the gated Write must exist');
+    assert.equal(matchedResult.isError, false, 'Write tool_result must not be an error after Allow');
+
+    // File actually exists on disk.
+    const written = await fs.readFile(path.join(projectPath, 'hello-from-hook.txt'), 'utf8');
+    assert.match(written, /hello/);
+
+    await c.close();
   } finally {
     await ctx.close();
     if (sessionId && projectPath) {

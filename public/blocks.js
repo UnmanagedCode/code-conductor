@@ -525,6 +525,74 @@ export class PlanRequestBlock {
 }
 
 
+// Interactive PreToolUse hook card. Rendered when the orchestrator
+// receives a hook callback for a destructive tool while in ask mode. The
+// user picks Allow or Deny; the choice is forwarded over WS as a
+// hook_decision message, which resolves the held-open hook HTTP response
+// and lets the CLI either proceed or auto-deny the tool.
+export class PermissionRequestBlock {
+  constructor(ev, onDecision) {
+    this.toolUseId = ev.toolUseId;
+    this.toolName = ev.toolName;
+    this.onDecision = onDecision;
+    this.submitted = false;
+
+    const argLine = describeToolInput(ev.toolName, ev.toolInput);
+
+    this.statusNode = el('span', { class: 'perm-status' }, 'awaiting decision');
+    this.allowBtn = el('button', { class: 'perm-allow', type: 'button' }, 'Allow');
+    this.denyBtn = el('button', { class: 'perm-deny', type: 'button' }, 'Deny');
+    this.allowBtn.addEventListener('click', () => this._click(true));
+    this.denyBtn.addEventListener('click', () => this._click(false));
+
+    let argsNode;
+    const input = ev.toolInput ?? {};
+    if (ev.toolName === 'Edit' && typeof input.old_string === 'string' && typeof input.new_string === 'string') {
+      argsNode = renderEditDiff(input);
+    } else if (ev.toolName === 'Write' && typeof input.content === 'string') {
+      argsNode = renderWritePreview(input);
+    } else if (ev.toolName === 'NotebookEdit' && typeof input.new_source === 'string') {
+      argsNode = renderNotebookEdit(input);
+    } else {
+      let json = '';
+      try { json = JSON.stringify(input, null, 2); } catch { json = String(input); }
+      argsNode = el('pre', {}, json);
+    }
+
+    this.node = el('div', { class: 'block permission' },
+      el('div', { class: 'perm-head' },
+        el('span', { class: 'perm-title' }, `🔐 Allow ${ev.toolName ?? 'tool'}?`),
+        this.statusNode,
+      ),
+      argLine ? el('div', { class: 'perm-arg' }, argLine) : null,
+      argsNode,
+      el('div', { class: 'perm-actions' }, this.allowBtn, this.denyBtn),
+    );
+  }
+
+  _click(allow) {
+    if (this.submitted) return;
+    this.submitted = true;
+    this.allowBtn.disabled = true;
+    this.denyBtn.disabled = true;
+    this.statusNode.textContent = allow ? 'allowing…' : 'denying…';
+    this.node.classList.add(allow ? 'allow-pending' : 'deny-pending');
+    if (this.onDecision) this.onDecision({ toolUseId: this.toolUseId, allow });
+  }
+
+  // Called by Conversation when a permission_resolved event arrives. Lets
+  // a second tab subscribed to the same instance reflect a decision made
+  // elsewhere, and updates the status when our own click round-trips back.
+  markResolved(allow) {
+    this.allowBtn.disabled = true;
+    this.denyBtn.disabled = true;
+    this.node.classList.remove('allow-pending', 'deny-pending');
+    this.node.classList.add(allow ? 'allowed' : 'denied');
+    this.statusNode.textContent = allow ? '✓ allowed' : '✗ denied';
+  }
+}
+
+
 export class ToolResultBlock {
   constructor({ content, isError, toolUseId }) {
     this.toolUseId = toolUseId; this.isError = isError;

@@ -57,6 +57,30 @@ export function buildRoutes({ instances } = {}) {
         res.json({ ok: true });
       } catch (e) { next(e); }
     });
+
+    // PreToolUse http hook callback. The Claude Code CLI POSTs the hook
+    // envelope here when a gated tool is about to run; we either
+    // auto-allow (non-ask mode) or hold the response open and surface a
+    // permission_request to the UI (ask mode) — the user's Allow/Deny
+    // click eventually resolves the response. Response shape mirrors the
+    // CLI's expected hookSpecificOutput JSON.
+    r.post('/instances/:id/hook-callback', (req, res) => {
+      const inst = instances.get(req.params.id);
+      if (!inst) {
+        // The CLI is the instance's own subprocess so this branch is
+        // theoretical, but reply deterministically: 200 + deny body so
+        // the CLI doesn't fall into its non-blocking-error path.
+        res.status(200).json({
+          hookSpecificOutput: {
+            hookEventName: 'PreToolUse',
+            permissionDecision: 'deny',
+            permissionDecisionReason: 'orchestrator: instance not found',
+          },
+        });
+        return;
+      }
+      inst.handleHookCallback(req.body ?? {}, res);
+    });
   }
 
   r.use((err, req, res, _next) => {

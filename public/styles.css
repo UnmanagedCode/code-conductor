@@ -358,6 +358,34 @@ input:focus, textarea:focus, select:focus { outline: 2px solid var(--accent); ou
   background: rgba(245,158,11,.15); color: var(--amber); border-color: var(--amber);
 }
 .pr-reject:hover:not(:disabled) { background: rgba(245,158,11,.25); }
+.block.permission {
+  background: #1c1830;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin: 10px 0;
+}
+.block.permission.allow-pending { border-color: var(--green); }
+.block.permission.deny-pending { border-color: var(--amber); }
+.block.permission.allowed { border-color: var(--green); opacity: .85; }
+.block.permission.denied { border-color: var(--amber); opacity: .85; }
+.perm-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin-bottom: 6px; }
+.perm-title { font-weight: 600; color: var(--accent); }
+.block.permission.allowed .perm-title { color: var(--green); }
+.block.permission.denied .perm-title { color: var(--amber); }
+.perm-status { font-size: 11px; color: var(--muted); }
+.perm-arg { font-family: ui-monospace, monospace; font-size: 11px; color: var(--muted); margin: 0 0 8px 0; word-break: break-all; }
+.perm-actions { display: flex; gap: 8px; margin-top: 8px; }
+.perm-allow {
+  flex: 1; padding: 10px; font-weight: 600;
+  background: rgba(74,222,128,.20); color: var(--green); border-color: var(--green);
+}
+.perm-allow:hover:not(:disabled) { background: rgba(74,222,128,.30); }
+.perm-deny {
+  flex: 1; padding: 10px;
+  background: rgba(245,158,11,.15); color: var(--amber); border-color: var(--amber);
+}
+.perm-deny:hover:not(:disabled) { background: rgba(245,158,11,.25); }
 .block.tool-result { margin-left: 18px; }
 .block.tool-result summary { font-family: ui-monospace, monospace; font-size: 11px; color: var(--muted); }
 .block.tool-result.error summary { color: var(--red); }

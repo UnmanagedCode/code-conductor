@@ -431,6 +431,52 @@ test('DOM: ExitPlanMode rejection carries the feedback text', async () => {
   assert.ok(card.classList.contains('rejected'));
 });
 
+test('DOM: permission_request renders an Allow/Deny card with the tool preview; click sends a hook_decision', async () => {
+  const { document, root, Conversation } = await setupDOM();
+  const decisions = [];
+  const conversation = new Conversation(root, { onPermissionDecision: (d) => decisions.push(d) });
+  conversation.apply({
+    kind: 'permission_request',
+    toolUseId: 'tu_perm_1',
+    toolName: 'Write',
+    toolInput: { file_path: '/tmp/foo.txt', content: 'hello\nworld\n' },
+  });
+  const card = root.querySelector('.block.permission');
+  assert.ok(card, 'permission card rendered');
+  assert.match(card.textContent, /Allow Write/);
+  assert.match(card.textContent, /foo\.txt/);
+
+  const allow = card.querySelector('.perm-allow');
+  const deny = card.querySelector('.perm-deny');
+  assert.ok(allow && deny);
+
+  allow.click();
+  assert.equal(decisions.length, 1);
+  assert.equal(decisions[0].toolUseId, 'tu_perm_1');
+  assert.equal(decisions[0].allow, true);
+  assert.ok(allow.disabled && deny.disabled, 'both buttons disabled after click');
+
+  // Server confirms with permission_resolved → card flips to "allowed".
+  conversation.apply({ kind: 'permission_resolved', toolUseId: 'tu_perm_1', allow: true });
+  assert.ok(card.classList.contains('allowed'));
+  assert.match(card.querySelector('.perm-status').textContent, /allowed/i);
+});
+
+test('DOM: permission_request for Edit renders the inline diff body', async () => {
+  const { document, root, Conversation } = await setupDOM();
+  const conversation = new Conversation(root);
+  conversation.apply({
+    kind: 'permission_request',
+    toolUseId: 'tu_perm_edit',
+    toolName: 'Edit',
+    toolInput: { file_path: '/tmp/code.js', old_string: 'old line', new_string: 'new line' },
+  });
+  const card = root.querySelector('.block.permission');
+  assert.ok(card.querySelector('.diff'), 'Edit permission card renders a diff');
+  assert.match(card.textContent, /old line/);
+  assert.match(card.textContent, /new line/);
+});
+
 test('DOM: tool block always shows its command in the summary even while streaming', async () => {
   // Specifically a regression guard — the user-facing complaint was that
   // the command wasn't visible. We feed the stream up to (but not past) the
