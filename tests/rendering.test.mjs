@@ -154,6 +154,53 @@ test('DOM: AskUserQuestion renders options + custom input + submit button (singl
   assert.ok(card.classList.contains('answered'));
 });
 
+test('DOM: typing spaces in the custom answer input is preserved (regression)', async () => {
+  // Regression: _setCustom previously trimmed the stored text, then
+  // _render wrote it back into input.value — swallowing every space the
+  // user typed.
+  const { document, root, Parser, Conversation } = await setupDOM();
+  const submissions = [];
+  const conversation = new Conversation(root, {
+    onUserQuestionSubmit: (s) => submissions.push(s),
+  });
+  feed(new Parser(), conversation, askUserQuestionStream());
+
+  const card = root.querySelector('.block.user-question');
+  const input = card.querySelector('.uq-custom-input');
+
+  // Simulate the user typing "hello there friend" character by character.
+  // After every keystroke we re-read input.value to make sure nothing got
+  // stripped behind our back.
+  const target = 'hello there friend';
+  for (let i = 1; i <= target.length; i++) {
+    const next = target.slice(0, i);
+    input.value = next;
+    input.dispatchEvent(new window.Event('input'));
+    assert.equal(input.value, next, `after keystroke ${i} input.value must still equal "${next}", got "${input.value}"`);
+  }
+
+  // Final submission carries the exact spaced text (trimmed only for output).
+  const submit = card.querySelector('.uq-submit');
+  assert.equal(submit.disabled, false);
+  submit.click();
+  assert.equal(submissions.length, 1);
+  assert.deepEqual(submissions[0].answers[0], { kind: 'custom', text: 'hello there friend' });
+});
+
+test('DOM: whitespace-only custom answer does not enable the submit button', async () => {
+  const { document, root, Parser, Conversation } = await setupDOM();
+  const conversation = new Conversation(root, { onUserQuestionSubmit: () => {} });
+  feed(new Parser(), conversation, askUserQuestionStream());
+  const card = root.querySelector('.block.user-question');
+  const input = card.querySelector('.uq-custom-input');
+  const submit = card.querySelector('.uq-submit');
+
+  input.value = '   ';
+  input.dispatchEvent(new window.Event('input'));
+  assert.equal(input.value, '   ', 'whitespace input is preserved in the field');
+  assert.equal(submit.disabled, true, 'submit stays disabled for whitespace-only answer');
+});
+
 test('DOM: custom typed answer overrides option selection', async () => {
   const { document, root, Parser, Conversation } = await setupDOM();
   const submissions = [];

@@ -351,11 +351,13 @@ export class UserQuestionBlock {
 
   _setCustom(idx, text) {
     if (this.submitted) return;
-    const trimmed = text.trim();
-    if (!trimmed) {
+    // Preserve the text exactly as typed — including spaces. Previously
+    // we trimmed here, then _render wrote the trimmed value back into
+    // input.value, which silently swallowed every space the user typed.
+    if (text.length === 0) {
       this.answers[idx] = { kind: 'none' };
     } else {
-      this.answers[idx] = { kind: 'custom', text: trimmed };
+      this.answers[idx] = { kind: 'custom', text };
     }
     this._render();
   }
@@ -388,8 +390,13 @@ export class UserQuestionBlock {
         input.classList.toggle('active', answer.kind === 'custom');
       }
     }
-    // Submit gating: every question must have a non-`none` answer.
-    const allAnswered = this.answers.length > 0 && this.answers.every(a => a.kind !== 'none');
+    // Submit gating: every question must have a non-`none` answer, and
+    // any custom answer must have at least one non-whitespace character.
+    const allAnswered = this.answers.length > 0 && this.answers.every(a => {
+      if (a.kind === 'none') return false;
+      if (a.kind === 'custom') return a.text.trim().length > 0;
+      return true;
+    });
     this.submitBtn.disabled = !allAnswered;
     // Status line summary.
     if (this.questions.length <= 1) {
@@ -430,7 +437,7 @@ export function formatUserQuestionAnswers(questions, answers) {
     let answerText;
     if (a?.kind === 'option') answerText = a.label;
     else if (a?.kind === 'multi') answerText = a.labels.join(', ');
-    else if (a?.kind === 'custom') answerText = a.text;
+    else if (a?.kind === 'custom') answerText = a.text.trim();
     else answerText = '(no answer)';
     lines.push(`- ${qText}: ${answerText}`);
   }
@@ -442,7 +449,7 @@ export function formatUserQuestionAnswers(questions, answers) {
     let answerText;
     if (a?.kind === 'option') answerText = a.label;
     else if (a?.kind === 'multi') answerText = a.labels.join(', ');
-    else if (a?.kind === 'custom') answerText = a.text;
+    else if (a?.kind === 'custom') answerText = a.text.trim();
     else answerText = '(no answer)';
     return `Answer to "${qText}": ${answerText}`;
   }
