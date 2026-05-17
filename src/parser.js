@@ -268,7 +268,14 @@ export class Parser {
           isError: !!block.is_error,
         });
       } else if (block.type === 'text') {
-        out.push({ kind: 'user_echo', text: block.text ?? '' });
+        const text = block.text ?? '';
+        const userEv = { kind: 'user_echo', text };
+        // The CLI sometimes injects the interrupt marker as a SYNTHETIC
+        // user message after interrupting (in addition to or instead of
+        // appending it to an assistant text block). Flag it the same way
+        // so Instance can suppress it on orchestrator-driven interrupts.
+        if (INTERRUPT_MARKER_RE.test(text)) userEv.isInterruptMarker = true;
+        out.push(userEv);
       }
     }
     return out;

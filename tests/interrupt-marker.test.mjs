@@ -24,7 +24,7 @@ function wsClient(url) {
   });
 }
 
-test('auto-interrupt (AskUserQuestion flow): the [Request interrupted by user] marker is stripped', async () => {
+test('auto-interrupt (AskUserQuestion flow): assistant marker stripped, synthetic user marker suppressed, turn_end non-error', async () => {
   const ctx = await bootServer({ scenarioPath: QUESTION_SCENARIO });
   try {
     await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'q' });
@@ -36,13 +36,24 @@ test('auto-interrupt (AskUserQuestion flow): the [Request interrupted by user] m
     c.send({ t: 'subscribe', id });
     await c.wait(m => m.t === 'snapshot');
     c.send({ t: 'prompt', id, text: 'go' });
-    await c.wait(m => m.t === 'event' && m.ev.kind === 'turn_end');
+    const turn = await c.wait(m => m.t === 'event' && m.ev.kind === 'turn_end');
 
     const events = c.messages.filter(m => m.t === 'event').map(m => m.ev);
+
+    // Assistant text block with the marker → text_strip (no text_end).
     const textEnds = events.filter(e => e.kind === 'text_end');
     const textStrips = events.filter(e => e.kind === 'text_strip');
-    assert.equal(textEnds.length, 0, 'no text_end carrying the marker (it was rewritten)');
-    assert.equal(textStrips.length, 1, 'exactly one text_strip delivered for the marker');
+    assert.equal(textEnds.length, 0, 'no text_end carrying the marker (it was rewritten to text_strip)');
+    assert.equal(textStrips.length, 1, 'exactly one text_strip delivered for the assistant-side marker');
+
+    // Synthetic user message carrying the marker → suppressed entirely.
+    const markerUserEchoes = events.filter(e => e.kind === 'user_echo' && /Request interrupted by user/.test(e.text ?? ''));
+    assert.equal(markerUserEchoes.length, 0, 'synthetic user_echo carrying the marker must not reach the UI');
+
+    // turn_end fires non-error so the footer paints ✓ instead of ❌.
+    assert.equal(turn.ev.isError, false, 'auto-interrupt turn_end must be marked non-error');
+    // stopReason is preserved for honesty.
+    assert.equal(turn.ev.stopReason, 'interrupted');
 
     await c.close();
   } finally { await ctx.close(); }

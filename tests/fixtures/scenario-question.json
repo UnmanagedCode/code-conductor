@@ -22,6 +22,7 @@
         { "type": "stream_event", "event": { "type": "content_block_delta", "index": 0, "delta": { "type": "text_delta", "text": "[Request interrupted by user]" } } },
         { "type": "stream_event", "event": { "type": "content_block_stop", "index": 0 } },
         { "type": "stream_event", "event": { "type": "message_stop" } },
+        { "type": "user", "message": { "role": "user", "content": [ { "type": "text", "text": "[Request interrupted by user]" } ] } },
         { "type": "result", "subtype": "error_during_execution", "stop_reason": "interrupted", "duration_ms": 5, "total_cost_usd": 0.0, "is_error": true }
       ]
     },

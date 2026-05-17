@@ -325,7 +325,20 @@ export class Instance extends EventEmitter {
         }
         delete ev.isInterruptMarker;
       }
+      // The CLI also injects the marker as a SYNTHETIC user message
+      // sometimes — suppress that USER box on auto-interrupts.
+      if (ev.kind === 'user_echo' && ev.isInterruptMarker) {
+        delete ev.isInterruptMarker;
+        if (this._autoInterruptedThisTurn) continue;
+      }
+      // The deliberate auto-interrupt arrives at turn_end with
+      // stop_reason="interrupted" + is_error=true, which the UI normally
+      // paints as ❌. Override to a non-error finish so the conversation
+      // shows ✓ turn ended (interrupted) — the action was intentional.
       if (ev.kind === 'turn_end') {
+        if (this._autoInterruptedThisTurn) {
+          ev.isError = false;
+        }
         this._autoInterruptedThisTurn = false;
       }
       this._emitUi(ev);

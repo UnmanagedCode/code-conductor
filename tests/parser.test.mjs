@@ -282,6 +282,31 @@ test('parser: a normal text block emits text_end without isInterruptMarker', () 
   assert.equal(out[0].isInterruptMarker, undefined);
 });
 
+test('parser: an inbound synthetic user message containing the marker is flagged on user_echo too', () => {
+  // The CLI sometimes injects the [Request interrupted by user] marker as
+  // a synthetic `type:"user"` message. The parser flags those user_echo
+  // events the same way so Instance can suppress them on auto-interrupts.
+  const p = new Parser();
+  const out = p.handleObject({
+    type: 'user',
+    message: { role: 'user', content: [{ type: 'text', text: '[Request interrupted by user]' }] },
+  });
+  assert.equal(out.length, 1);
+  assert.equal(out[0].kind, 'user_echo');
+  assert.equal(out[0].text, '[Request interrupted by user]');
+  assert.equal(out[0].isInterruptMarker, true);
+});
+
+test('parser: an ordinary user_echo (not the marker) is NOT flagged', () => {
+  const p = new Parser();
+  const out = p.handleObject({
+    type: 'user',
+    message: { role: 'user', content: [{ type: 'text', text: 'I changed my mind' }] },
+  });
+  assert.equal(out[0].kind, 'user_echo');
+  assert.equal(out[0].isInterruptMarker, undefined);
+});
+
 test('parser: marker mixed with surrounding model text still flags the block as isInterruptMarker', () => {
   // Real claude sometimes emits the marker appended to the end of a
   // partial model response in the same text block — the strict
