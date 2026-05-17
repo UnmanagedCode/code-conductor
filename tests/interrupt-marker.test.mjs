@@ -27,7 +27,7 @@ test('auto-interrupt (AskUserQuestion flow): the [Request interrupted by user] m
   const ctx = await bootServer({ scenarioPath: QUESTION_SCENARIO });
   try {
     await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'q' });
-    const r = await api(ctx.baseUrl, 'POST', '/api/instances', { project: 'q', mode: 'default' });
+    const r = await api(ctx.baseUrl, 'POST', '/api/instances', { project: 'q', mode: 'bypassPermissions' });
     const id = r.body.id;
     await waitFor(() => ctx.instances.get(id).status === 'idle');
 
@@ -51,7 +51,7 @@ test('manual interrupt (user clicks Interrupt): the [Request interrupted by user
   const ctx = await bootServer({ scenarioPath: MANUAL_SCENARIO });
   try {
     await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'p' });
-    const r = await api(ctx.baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'default' });
+    const r = await api(ctx.baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions' });
     const id = r.body.id;
     await waitFor(() => ctx.instances.get(id).status === 'idle');
 

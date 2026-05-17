@@ -30,27 +30,15 @@ import { randomUUID } from 'node:crypto';
 // stays the conversation's tail, instead of getting trailing noise.
 const INTERRUPT_MARKER_RE = /^\s*\[Request interrupted by user(?:\s+for[^\]]*)?\]\s*$/;
 
-// Pattern the CLI uses when it auto-denies a tool in `default`/`acceptEdits`
-// permission mode (stream-json --print without a registered canUseTool
-// callback). When a tool_result starts with this we surface a
-// permission_denied UI event so the orchestrator can offer the user an
-// Allow/Deny decision and then retry.
-const PERMISSION_DENIED_RE = /^Claude requested permissions? /i;
-
 export class Parser {
   constructor() {
     this.currentMsgId = null;
     this.blocks = new Map(); // blockIdx -> { type, accumText, accumJson, toolUseId, name }
-    // Remembers tool_use blocks by id so we can re-attach the original
-    // tool name + input to a follow-up tool_result event (the result
-    // itself only carries tool_use_id).
-    this._toolUseRegistry = new Map(); // toolUseId -> { name, input }
   }
 
   reset() {
     this.currentMsgId = null;
     this.blocks.clear();
-    this._toolUseRegistry.clear();
   }
 
   handleLine(line) {
@@ -97,22 +85,6 @@ export class Parser {
   }
 
   _handleControlRequest(obj) {
-    const req = obj.request ?? {};
-    const requestId = obj.request_id ?? null;
-    if (req.subtype === 'can_use_tool') {
-      return [{
-        kind: 'permission_request',
-        requestId,
-        toolName: req.tool_name ?? null,
-        input: req.input ?? {},
-        title: req.title ?? null,
-        displayName: req.displayName ?? null,
-        description: req.description ?? null,
-        permissionSuggestions: req.permission_suggestions ?? null,
-        blockedPath: req.blocked_path ?? null,
-        decisionReason: req.decision_reason ?? null,
-      }];
-    }
     return [{ kind: 'system', subtype: 'control_request', data: obj }];
   }
 
@@ -223,9 +195,6 @@ export class Parser {
             try { input = JSON.parse(block.accumJson); }
             catch { input = { _raw: block.accumJson }; }
           }
-          if (block.toolUseId) {
-            this._toolUseRegistry.set(block.toolUseId, { name: block.name, input });
-          }
           const out = [{
             kind: 'tool_use',
             msgId: this.currentMsgId,
@@ -297,27 +266,6 @@ export class Parser {
           content: block.content ?? '',
           isError: !!block.is_error,
         });
-        // In `default` / `acceptEdits` permission modes the CLI auto-denies
-        // tools that need permission and returns this stock string. Surface
-        // it as a structured permission_denied event so the orchestrator
-        // can auto-interrupt and offer an Allow/Deny decision.
-        if (block.is_error) {
-          const contentText = typeof block.content === 'string'
-            ? block.content
-            : Array.isArray(block.content)
-              ? block.content.map(b => (typeof b === 'string' ? b : (b?.text ?? ''))).join('\n')
-              : '';
-          if (PERMISSION_DENIED_RE.test(contentText)) {
-            const orig = this._toolUseRegistry.get(block.tool_use_id);
-            out.push({
-              kind: 'permission_denied',
-              toolUseId: block.tool_use_id ?? null,
-              toolName: orig?.name ?? null,
-              input: orig?.input ?? null,
-              message: contentText,
-            });
-          }
-        }
       } else if (block.type === 'text') {
         out.push({ kind: 'user_echo', text: block.text ?? '' });
       }

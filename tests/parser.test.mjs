@@ -243,61 +243,6 @@ test('parser: ExitPlanMode with empty input still emits plan_request (plan=null)
   assert.equal(plan.plan, null);
 });
 
-test('parser: a permission-denied tool_result emits a permission_denied event with the original tool name + input', () => {
-  // In `default`/`acceptEdits` mode the CLI auto-denies tools and returns
-  // a stock string. We surface that as a structured event so the
-  // orchestrator can prompt the user for permission.
-  const p = new Parser();
-  p.handleObject({ type: 'stream_event', event: { type: 'message_start', message: { id: 'm', role: 'assistant' } } });
-  p.handleObject({
-    type: 'stream_event',
-    event: { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'tu_w', name: 'Write', input: {} } },
-  });
-  p.handleObject({
-    type: 'stream_event',
-    event: { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '{"file_path":"/tmp/x","content":"Hello"}' } },
-  });
-  p.handleObject({ type: 'stream_event', event: { type: 'content_block_stop', index: 0 } });
-
-  // Now the user-event with the auto-deny tool_result:
-  const out = p.handleObject({
-    type: 'user',
-    message: { role: 'user', content: [
-      { type: 'tool_result', tool_use_id: 'tu_w', content: "Claude requested permissions to write to /tmp/x, but you haven't granted it yet.", is_error: true },
-    ] },
-  });
-  const denied = out.find(e => e.kind === 'permission_denied');
-  assert.ok(denied, `permission_denied expected; got: ${out.map(e=>e.kind).join(',')}`);
-  assert.equal(denied.toolUseId, 'tu_w');
-  assert.equal(denied.toolName, 'Write', 'parser looks up the original tool name from the tool_use registry');
-  assert.deepEqual(denied.input, { file_path: '/tmp/x', content: 'Hello' });
-  // The normal tool_result is also still emitted for the conversation render.
-  const tr = out.find(e => e.kind === 'tool_result');
-  assert.ok(tr);
-  assert.equal(tr.isError, true);
-});
-
-test('parser: a normal tool_result error (not the auto-deny pattern) does NOT emit permission_denied', () => {
-  const p = new Parser();
-  p.handleObject({ type: 'stream_event', event: { type: 'message_start', message: { id: 'm', role: 'assistant' } } });
-  p.handleObject({
-    type: 'stream_event',
-    event: { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'tu_b', name: 'Bash', input: {} } },
-  });
-  p.handleObject({
-    type: 'stream_event',
-    event: { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '{"command":"ls /nope"}' } },
-  });
-  p.handleObject({ type: 'stream_event', event: { type: 'content_block_stop', index: 0 } });
-  const out = p.handleObject({
-    type: 'user',
-    message: { role: 'user', content: [
-      { type: 'tool_result', tool_use_id: 'tu_b', content: 'ls: cannot access /nope: No such file or directory', is_error: true },
-    ] },
-  });
-  assert.equal(out.filter(e => e.kind === 'permission_denied').length, 0);
-});
-
 test('parser: tags the [Request interrupted by user] marker block with isInterruptMarker=true', () => {
   // The parser only TAGS the block; Instance decides whether to convert
   // it into a text_strip based on whether the orchestrator triggered the

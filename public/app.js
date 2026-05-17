@@ -75,10 +75,6 @@ function sendOrQueuePrompt(instanceId, text) {
 }
 
 const conversation = new Conversation(dom.conversation, {
-  onPermissionDecision: (requestId, { allow, updatedInput, feedback }) => {
-    if (!state.activeId) return;
-    send('permission', { id: state.activeId, requestId, allow, updatedInput, feedback });
-  },
   onUserQuestionSubmit: ({ questions, answers }) => {
     if (!state.activeId) return;
     // The CLI auto-errors AskUserQuestion in stream-json mode, so we
@@ -106,26 +102,6 @@ const conversation = new Conversation(dom.conversation, {
       const text = feedback
         ? `I'd like to revise the plan. Refinement notes:\n${feedback}`
         : `I'd like to revise the plan. Please refine it.`;
-      sendOrQueuePrompt(activeId, text);
-    }
-  },
-  onPermissionDeniedDecision: async ({ allow, toolName }) => {
-    if (!state.activeId) return;
-    const activeId = state.activeId;
-    if (allow) {
-      // Promote the instance to bypassPermissions so future tool calls in
-      // this turn don't keep hitting the same auto-deny. The mode dropdown
-      // updates to reflect this; the user can switch back later.
-      try { await send('mode', { id: activeId, mode: 'bypassPermissions' }, { ack: true }); }
-      catch (e) { console.warn('permission-allow mode switch failed', e); }
-      const text = toolName
-        ? `I've granted permission. Please retry the ${toolName} call.`
-        : `I've granted permission. Please retry.`;
-      sendOrQueuePrompt(activeId, text);
-    } else {
-      const text = toolName
-        ? `Permission denied for ${toolName}. Please proceed without using that tool.`
-        : `Permission denied. Please proceed without that operation.`;
       sendOrQueuePrompt(activeId, text);
     }
   },
@@ -327,7 +303,7 @@ function updateActiveHeader() {
   dom.instanceTitle.appendChild(chip('ih-project', inst.project));
   dom.instanceTitle.appendChild(chip('ih-sid', inst.sessionId?.slice(0, 8) ?? '?'));
   dom.instanceTitle.appendChild(chip(`ih-status ih-status-${inst.status}`, inst.status));
-  dom.instanceTitle.appendChild(chip('ih-mode', inst.mode));
+  dom.instanceTitle.appendChild(chip('ih-mode', inst.mode === 'bypassPermissions' ? 'code' : inst.mode));
   dom.modeSelect.value = inst.mode;
   dom.modeSelect.disabled = inst.status === 'turn' || inst.status === 'crashed' || inst.status === 'exited';
   dom.interruptBtn.disabled = inst.status !== 'turn';

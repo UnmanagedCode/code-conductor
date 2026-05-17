@@ -373,42 +373,6 @@ test('DOM: kept system events render inline in chronological order (no shared __
   assert.ok(secondInitIdx > all.indexOf(assistants[0]), 'second init renders AFTER first assistant — no shared wrap drift');
 });
 
-test('DOM: permission_denied renders an Allow/Deny card with the tool details + fires the callback', async () => {
-  const { document, root, Parser, Conversation } = await setupDOM();
-  const decisions = [];
-  const conv = new Conversation(root, {
-    onPermissionDeniedDecision: (d) => decisions.push(d),
-  });
-  const p = new Parser();
-  const stream = [
-    { type: 'stream_event', event: { type: 'message_start', message: { id: 'm', role: 'assistant' } } },
-    { type: 'stream_event', event: { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'tu_pd', name: 'Write', input: {} } } },
-    { type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '{"file_path":"/tmp/x.txt","content":"hi"}' } } },
-    { type: 'stream_event', event: { type: 'content_block_stop', index: 0 } },
-    { type: 'user', message: { role: 'user', content: [
-      { type: 'tool_result', tool_use_id: 'tu_pd', content: "Claude requested permissions to write to /tmp/x.txt, but you haven't granted it yet.", is_error: true },
-    ] } },
-  ];
-  for (const e of stream) for (const ev of p.handleObject(e)) conv.apply(ev);
-
-  const cards = root.querySelectorAll('.block.permission');
-  assert.equal(cards.length, 1);
-  const card = cards[0];
-  assert.match(card.textContent, /Allow tool: Write/);
-  assert.match(card.textContent, /\/tmp\/x\.txt/);
-
-  // Allow button click → decision payload includes toolName + allow:true.
-  card.querySelector('.perm-allow').click();
-  assert.equal(decisions.length, 1);
-  assert.equal(decisions[0].allow, true);
-  assert.equal(decisions[0].toolName, 'Write');
-  assert.equal(decisions[0].toolUseId, 'tu_pd');
-  assert.ok(card.classList.contains('allowed'));
-  // Second click does nothing.
-  card.querySelector('.perm-deny').click();
-  assert.equal(decisions.length, 1);
-});
-
 test('DOM: ExitPlanMode renders an approve/reject card with the plan + feedback box', async () => {
   const { document, root, Parser, Conversation } = await setupDOM();
   const decisions = [];

@@ -214,31 +214,6 @@ input:focus, textarea:focus, select:focus { outline: 2px solid var(--accent); ou
 .sub-conversation .msg { background: transparent; border: none; padding: 4px 0; margin-bottom: 8px; }
 .sub-conversation .block.tool { padding-left: 4px; }
 
-.block.permission {
-  background: #1e2030;
-  border: 1px solid var(--amber);
-  border-radius: 8px;
-  padding: 10px 12px;
-  margin: 10px 0;
-}
-.block.permission.allowed { border-color: var(--green); }
-.block.permission.denied { border-color: var(--red); opacity: .7; }
-.perm-head {
-  display: flex; align-items: baseline; justify-content: space-between;
-  margin-bottom: 6px; gap: 8px;
-}
-.perm-title { font-weight: 600; color: var(--amber); flex: 1; }
-.block.permission.allowed .perm-title { color: var(--green); }
-.block.permission.denied .perm-title { color: var(--red); }
-.perm-status { font-size: 11px; color: var(--muted); white-space: nowrap; }
-.perm-desc { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
-.perm-arg { font-family: ui-monospace, monospace; font-size: 12px; word-break: break-all; margin-bottom: 6px; color: var(--text); }
-.perm-actions { display: flex; gap: 8px; margin-top: 10px; }
-.perm-allow { background: rgba(74,222,128,.15); border-color: var(--green); color: var(--green); }
-.perm-allow:hover:not(:disabled) { background: rgba(74,222,128,.25); }
-.perm-deny { background: rgba(248,113,113,.10); border-color: var(--red); color: var(--red); }
-.perm-deny:hover:not(:disabled) { background: rgba(248,113,113,.20); }
-
 .block.user-question {
   background: #1a2030;
   border: 1px solid var(--accent);

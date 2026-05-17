@@ -29,7 +29,7 @@ Designed to run on a Termux phone (single user, localhost-only), but works on an
 
 - **Project list** — sidebar shows every directory under `~/project/`. A `+ New project` button creates a directory and drops a `CLAUDE.md` that imports the workspace-wide one at `~/project/CLAUDE.md`.
 - **Spawn instances** — for any project, click `+` to launch a fresh Claude instance, or pick a prior session from the resume dropdown. The new-instance dialog lets you choose:
-  - **Mode** — permission mode: `default` / `acceptEdits` / `bypassPermissions` / `plan`.
+  - **Mode** — only two modes are exposed: `code` (the CLI's `bypassPermissions` — full power, no per-tool prompts) and `plan` (read-only planning). The CLI's `default` / `acceptEdits` modes auto-deny tool calls in stream-json `--print` (no SDK `canUseTool` callback is registered), and the only way to recover would be to make the model re-emit the entire tool input — pointlessly expensive for anything with a large `content`. We force the choice up front.
   - **Effort** — `low` / `medium` / `high` (default) / `xhigh` / `max`.
   - **Thinking** — `adaptive` (default, model decides) / `enabled` / `disabled`.
   - **Model** — empty for account default, or pick `claude-sonnet-4-6` / `claude-opus-4-7` / `claude-haiku-4-5`.
@@ -39,8 +39,7 @@ Designed to run on a Termux phone (single user, localhost-only), but works on an
   - **Tool use** — block is collapsed by default; the smart one-line summary like `🔧 Bash · ls -la · done` shows the command/key argument inline, and a custom disclosure caret rotates when you tap to expand. Per-tool summary picks the most useful argument (command for Bash, file_path for Edit/Read/Write, pattern for Glob/Grep, url for WebFetch, etc.). **Edit / Write / NotebookEdit** tool calls render as a syntax-coloured **unified diff** (green/red gutters, ±counts header, sticky file-path) once expanded; Write shows a numbered preview of the new file.
   - **Tool result** — truncated at 4 KB with a "show full" button, attached under its matching tool_use.
   - **Sub-agent drill-down** — when Claude uses the `Task` tool, the sub-agent's events stream into a nested mini-conversation rendered inside the outer tool block, with a dashed left border and `↳ sub-agent` label. Tap the Task tool to expand and inspect what the sub-agent did.
-  - **Tool-approval prompts** — in `default` / `acceptEdits` permission modes the CLI in stream-json `--print` mode auto-denies tools that need permission (it would need a registered `canUseTool` SDK callback, which isn't available without an SDK consumer). The orchestrator detects the auto-deny tool_result pattern (`"Claude requested permission…"`) and surfaces an **amber Allow/Deny card** showing the tool name, key arguments (Edit/Write previews include the full diff), and the original tool input. The orchestrator auto-interrupts the turn immediately so the model doesn't keep going past the failure. **Allow** flips the instance to `bypassPermissions` (so subsequent tool calls in the turn don't keep tripping the same auto-deny) and tells the model to retry. **Deny** keeps the current mode and tells the model to proceed without using that tool.
-  - **Plan mode (`ExitPlanMode`)** — when the model finishes a plan and calls `ExitPlanMode` (the CLI auto-errors it in stream-json mode with `"Exit plan mode?"`), the orchestrator auto-interrupts the turn and renders a green-bordered card titled "Plan ready for approval". The plan body comes from `input.plan` directly, or — when the model wrote the plan to a file under `~/.claude/plans/*.md` first and called `ExitPlanMode` with empty input — the orchestrator reads the most-recent such file and shows its content. The body is rendered as **Markdown** (`public/markdown.js`) with headings, lists, fenced code blocks, inline code, bold/italic, blockquotes, links, and horizontal rules — no `innerHTML` is ever used, links must use safe schemes, and raw HTML in the source is shown as literal text. The card has Approve and Reject buttons plus an optional feedback textarea. **Approve** switches the instance to `bypassPermissions` (so the model can actually execute the tools the plan calls for without immediately hitting the auto-deny in default/acceptEdits) and sends `"I approve the plan. Please proceed with the implementation."` (plus your feedback if provided). **Reject** keeps plan mode active and sends `"I'd like to revise the plan. Refinement notes:\n<feedback>"` so the model can refine.
+  - **Plan mode (`ExitPlanMode`)** — when the model finishes a plan and calls `ExitPlanMode` (the CLI auto-errors it in stream-json mode with `"Exit plan mode?"`), the orchestrator auto-interrupts the turn and renders a green-bordered card titled "Plan ready for approval". The plan body comes from `input.plan` directly, or — when the model wrote the plan to a file under `~/.claude/plans/*.md` first and called `ExitPlanMode` with empty input — the orchestrator reads the most-recent such file and shows its content. The body is rendered as **Markdown** (`public/markdown.js`) with headings, lists, fenced code blocks, inline code, bold/italic, blockquotes, links, and horizontal rules — no `innerHTML` is ever used, links must use safe schemes, and raw HTML in the source is shown as literal text. The card has Approve and Reject buttons plus an optional feedback textarea. **Approve** switches the instance to `code` mode (CLI's `bypassPermissions`) so the model can actually execute the tools the plan calls for, and sends `"I approve the plan. Please proceed with the implementation."` (plus your feedback if provided). **Reject** keeps plan mode active and sends `"I'd like to revise the plan. Refinement notes:\n<feedback>"` so the model can refine.
   - **Interrupt marker scrubbing** — the CLI inserts a trailing `[Request interrupted by user]` (or `…by user for tool use]`) assistant text block whenever a turn is interrupted. When the orchestrator triggered the interrupt itself as part of a flow (`AskUserQuestion`, `ExitPlanMode`), that marker is *stripped* from the conversation so the inline approval / question card stays the conversation's tail. When the user clicks the Interrupt button manually, the marker stays visible as confirmation. The parser tags the block (`isInterruptMarker: true` on the `text_end` event) and the `Instance` decides at emit time based on a `_autoInterruptedThisTurn` flag that's only set when the orchestrator fires the interrupt.
   - **AskUserQuestion** — when the model invokes the `AskUserQuestion` tool, the structured questions/options render as a blue card. The orchestrator immediately sends a `control_request interrupt` so the model can't follow the CLI's auto-error with a confused "the question was dismissed, want me to just ask in plain text?" text response — the question card becomes the conversation's blocking tail. **Multiple questions** render as a tab strip across the top; the active tab's pane shows its options. Each pane has the model's options as buttons plus an **Other:** text field for typing a custom answer (always available, overrides any option pick). A single **Send all answers** button at the bottom enables once every question has an answer and submits them as one consolidated prompt; if the instance somehow isn't idle yet, the answer is queued locally and flushed automatically on the next `status=idle` event.
   - **System notes** — most diagnostic events (per-turn `status:"requesting"`, `rate_limit_event:"allowed"`, hook lifecycle pings, task progress) are filtered out. The ones that remain (`init`, `stderr`, `exit`, `permission_denied`, `compacting`, `spawn_error`, `crashed`, `history_load_error`, non-allowed `rate_limit_event`) render as compact one-line notes inline where they actually occurred — no more shared "SYSTEM" box that silently extends itself across turns.
@@ -101,7 +100,7 @@ claude -p \
 The CLI then reads JSON lines on stdin and emits JSON lines on stdout. Inbound message types we send:
 
 - `{"type":"user","message":{"role":"user","content":"..."},"parent_tool_use_id":null}` — new user turn.
-- `{"type":"control_request","request_id":"<uuid>","request":{"subtype":"set_permission_mode","mode":"acceptEdits"}}` — switch mode without restarting.
+- `{"type":"control_request","request_id":"<uuid>","request":{"subtype":"set_permission_mode","mode":"plan"}}` — switch mode without restarting (e.g. flipping between `plan` and `bypassPermissions`).
 - `{"type":"control_request","request_id":"<uuid>","request":{"subtype":"interrupt"}}` — abort the current turn.
 - `{"type":"keep_alive"}` — heartbeat.
 
@@ -116,7 +115,6 @@ Outbound message types we parse:
 | `result` | Turn-end marker with `duration_ms`, `usage`, `total_cost_usd`, `stop_reason`, `is_error`. |
 | `hook_event` | Lifecycle hooks (PreToolUse, PostToolUse, etc.) — rendered as small dimmed lines. |
 | `control_response` | Our reply to control_requests we issued. |
-| `control_request` (inbound) | Claude asking us for something — currently `subtype:"can_use_tool"` is recognized and surfaced as a `permission_request` UI event. We answer back via a `control_response` carrying `{behavior:"allow"|"deny", updatedInput?, feedback?}`. |
 
 ### Component layout
 
@@ -129,36 +127,40 @@ claude-orch-app/
 │   ├── instances.js          Instance class + InstanceManager. Subprocess lifecycle,
 │   │                         ring buffer (last 500 UI events), control_request
 │   │                         round-trip, history replay, session-metadata write,
-│   │                         pending-permission tracking + respondPermission().
+│   │                         mode validation (plan / bypassPermissions only),
+│   │                         auto-interrupt on user_question / plan_request.
 │   ├── parser.js             stream-json line → UI event normalization. Merges
 │   │                         deltas by (msgId, blockIdx); emits thinking_redacted
 │   │                         when a thinking block closes with only signature_delta;
 │   │                         attaches parentToolUseId so sub-agent events can be
-│   │                         routed to nested views; extracts permission_request
-│   │                         from can_use_tool inbound control_requests; emits a
-│   │                         structured user_question event for AskUserQuestion.
+│   │                         routed to nested views; emits structured user_question
+│   │                         events for AskUserQuestion and plan_request events for
+│   │                         ExitPlanMode; flags `[Request interrupted by user]`
+│   │                         text blocks via isInterruptMarker for orchestrator-
+│   │                         driven scrubbing.
 │   ├── projects.js           FS ops on ~/project; cwd encoding for ~/.claude/projects;
 │   │                         seeds CLAUDE.md on new projects.
 │   ├── routes.js             REST handlers; thin shell over instances + projects.
 │   └── wsHub.js              Per-socket subscriptions; snapshot replay; fan-out;
-│                             prompt/mode/interrupt/kill/permission via WS; broadcasts
+│                             prompt/mode/interrupt/kill via WS; broadcasts
 │                             turn_notification to every client on turn_end.
 ├── public/
 │   ├── index.html            Shell layout + new-project / new-instance dialogs +
 │   │                         🔔 notification toggle.
-│   ├── styles.css            Mobile-friendly dark theme; diff/sub-agent/permission/
-│   │                         user-question card styling.
+│   ├── styles.css            Mobile-friendly dark theme; diff/sub-agent/
+│   │                         user-question/plan card styling.
 │   ├── app.js                Bootstraps; reactive store; reconnect on WS open;
-│   │                         wires notification toggle, permission decisions, and
-│   │                         user-question answers back over WS.
+│   │                         wires notification toggle, user-question submissions,
+│   │                         and plan-mode decisions back over WS.
 │   ├── ws.js                 Reconnecting WebSocket client with ack-based requests.
 │   ├── sidebar.js            Project ▸ instance list with status dots.
 │   ├── conversation.js       Ordered message list; sticky-scroll; idempotent by _seq;
 │   │                         routes events with parentToolUseId into nested
-│   │                         sub-Conversations; dispatches permission_request and
-│   │                         user_question to inline card renderers.
+│   │                         sub-Conversations; dispatches user_question and
+│   │                         plan_request to inline card renderers; strips
+│   │                         orchestrator-flagged interrupt-marker text blocks.
 │   ├── blocks.js             Renderers for text/thinking/tool_use/tool_result/
-│   │                         permission/user-question; describeToolInput() for
+│   │                         user-question/plan-request; describeToolInput() for
 │   │                         collapsed summaries; per-tool body renderers for
 │   │                         Edit/Write/NotebookEdit using the diff module.
 │   ├── diff.js               Pure-JS Myers' line-diff + diffStats().
@@ -189,9 +191,14 @@ claude-orch-app/
     ├── ws.test.mjs           Subscribe + snapshot + live fan-out; reconnect dedup;
     │                         two-instance concurrency; mode/interrupt over WS;
     │                         turn_notification fan-out to non-subscribers.
-    ├── permission.test.mjs   can_use_tool inbound: request shape, allow path,
-    │                         deny path, unknown-requestId guard.
-    ├── question.test.mjs     AskUserQuestion → user_question UI event end-to-end.
+    ├── question.test.mjs     AskUserQuestion → user_question UI event end-to-end +
+    │                         the orchestrator's auto-interrupt is verified via the
+    │                         scenario only completing on interrupt control_request.
+    ├── plan.test.mjs         ExitPlanMode → plan_request enriched from ~/.claude/
+    │                         plans/*.md → auto-interrupt → result(interrupted).
+    ├── interrupt-marker.test.mjs  Confirms [Request interrupted by user] is stripped
+    │                         only on auto-interrupt (AskUserQuestion / ExitPlanMode)
+    │                         and stays visible when the user clicks Interrupt.
     ├── notifications.test.mjs Pure-unit shouldNotify() decision table.
     ├── diff.test.mjs         Myers' diff: identity, pure add/del, replacement,
     │                         empties, round-trip both sides, stats.
@@ -217,10 +224,9 @@ One persistent connection at `ws://127.0.0.1:8787/ws`, multiplexed across instan
 | `subscribe` | `id`, optional `reqId` | Subscribe to live events for an instance. Triggers a `snapshot` message followed by live `event`s. |
 | `unsubscribe` | `id` | Stop receiving events. |
 | `prompt` | `id`, `text` | Send a user message. |
-| `mode` | `id`, `mode` | Switch permission mode via `control_request set_permission_mode`. |
+| `mode` | `id`, `mode` | Switch permission mode via `control_request set_permission_mode` (only `plan` and `bypassPermissions` are accepted). |
 | `interrupt` | `id` | Abort current turn via `control_request interrupt`. |
 | `kill` | `id` | SIGTERM the subprocess. |
-| `permission` | `id`, `requestId`, `allow`, `updatedInput?`, `feedback?` | Answer an inbound `can_use_tool` request. Orchestrator emits a matching `control_response` on stdin with `{behavior:"allow"|"deny", ...}`. |
 
 **Server → client**
 
@@ -237,7 +243,7 @@ One persistent connection at `ws://127.0.0.1:8787/ws`, multiplexed across instan
 
 Every event carries a `parentToolUseId` (or `null`) — the conversation view routes non-null events into a nested mini-conversation under the matching outer tool block, enabling sub-agent drill-down for `Task`.
 
-`text_delta`, `text_end`, `thinking_start`, `thinking_delta`, `thinking_end`, `thinking_redacted`, `tool_use_start`, `tool_use_input_delta`, `tool_use`, `tool_result`, `user_echo`, `system` (with `subtype` — includes `history_replayed` marker), `hook`, `turn_end`, `assistant_message`, `control_response`, `permission_request` (`requestId`, `toolName`, `input`, `title?`, `displayName?`), `permission_resolved` (`requestId`, `allow`), `user_question` (`toolUseId`, `questions[]`), `raw`. Each event in the ring has a monotonic `_seq` so snapshot + live merge is idempotent.
+`text_delta`, `text_end` (carries `isInterruptMarker:true` when the block content matches the CLI's interrupt-by-user marker), `text_strip` (rewritten from `text_end` by Instance when the orchestrator triggered the interrupt itself, so the marker disappears), `thinking_start`, `thinking_delta`, `thinking_end`, `thinking_redacted`, `tool_use_start`, `tool_use_input_delta`, `tool_use`, `tool_result`, `user_echo`, `system` (with `subtype` — includes `history_replayed` marker), `hook`, `turn_end`, `assistant_message`, `control_response`, `user_question` (`toolUseId`, `questions[]`), `plan_request` (`toolUseId`, `plan`, `planPath`), `raw`. Each event in the ring has a monotonic `_seq` so snapshot + live merge is idempotent.
 
 ### REST endpoints
 
@@ -284,7 +290,7 @@ When a **turn ends** or the **mode changes**, two metadata lines are appended to
 ### Defaults
 
 - Bind: `127.0.0.1:8787` (override with `HOST` / `PORT` env vars).
-- New instance: `--permission-mode default` (UI defaults the dialog to `bypassPermissions`), `--effort high`, `--thinking adaptive`, no `--model` flag (uses account default).
+- New instance: `--permission-mode bypassPermissions` (labelled `code` in the UI), `--effort high`, `--thinking adaptive`, no `--model` flag (uses account default).
 - Ring buffer: 500 events per instance.
 - Control-request timeout: 5 s.
 - Kill grace: stdin closed → 2 s → SIGTERM → 5 s → SIGKILL.

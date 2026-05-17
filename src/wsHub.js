@@ -134,16 +134,6 @@ export function attachWsHub({ wss, instances }) {
             reply(true);
             return;
           }
-          case 'permission': {
-            if (!inst) { reply(false, 'unknown instance'); return; }
-            inst.respondPermission(String(msg.requestId), {
-              allow: !!msg.allow,
-              updatedInput: msg.updatedInput,
-              feedback: msg.feedback,
-            });
-            reply(true);
-            return;
-          }
           default:
             reply(false, `unknown message type: ${msg.t}`);
         }

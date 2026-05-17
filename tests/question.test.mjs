@@ -26,7 +26,7 @@ test('AskUserQuestion: user_question UI event is emitted with parsed questions/o
   const ctx = await bootServer({ scenarioPath: SCENARIO });
   try {
     await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'q' });
-    const r = await api(ctx.baseUrl, 'POST', '/api/instances', { project: 'q', mode: 'default' });
+    const r = await api(ctx.baseUrl, 'POST', '/api/instances', { project: 'q', mode: 'bypassPermissions' });
     const id = r.body.id;
     await waitFor(() => ctx.instances.get(id).status === 'idle');
 
@@ -62,7 +62,7 @@ test('AskUserQuestion: orchestrator auto-interrupts so the model cannot generate
     process.env.FAKE_CLAUDE_TRANSCRIPT = transcriptPath;
 
     await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'q' });
-    const r = await api(ctx.baseUrl, 'POST', '/api/instances', { project: 'q', mode: 'default' });
+    const r = await api(ctx.baseUrl, 'POST', '/api/instances', { project: 'q', mode: 'bypassPermissions' });
     const id = r.body.id;
     const inst = ctx.instances.get(id);
     await waitFor(() => inst.status === 'idle');

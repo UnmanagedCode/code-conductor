@@ -8,7 +8,14 @@ import { Parser } from './parser.js';
 import { getProject, encodeCwd, claudeProjectsRoot } from './projects.js';
 
 const RING_SIZE = 500;
-const VALID_MODES = new Set(['default', 'acceptEdits', 'bypassPermissions', 'plan', 'dontAsk', 'auto']);
+// Only two modes are exposed: `plan` (read-only planning) and
+// `bypassPermissions` (full power). The CLI's `default`/`acceptEdits`
+// modes auto-deny tool calls in stream-json --print (no SDK canUseTool
+// callback registered), and the only way to recover would be to make the
+// model re-emit the entire tool input — expensive for anything with a
+// large `content` field. We force the choice up front instead.
+const VALID_MODES = new Set(['plan', 'bypassPermissions']);
+const DEFAULT_MODE = 'bypassPermissions';
 const VALID_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
 const DEFAULT_EFFORT = 'high';
 const VALID_THINKING = new Set(['adaptive', 'enabled', 'disabled']);
@@ -49,7 +56,6 @@ export class Instance extends EventEmitter {
     this.parser = new Parser();
     this.ring = new Ring(RING_SIZE);
     this._pending = new Map(); // request_id -> { resolve, reject, timer }
-    this._pendingPermissions = new Map(); // request_id -> { toolName, input, ... }
     this._stderr = '';
     this._lastLeafUuid = null;     // for last-prompt jsonl marker
     this._lastPlanFilePath = null; // last Write to ~/.claude/plans/*.md, used to enrich ExitPlanMode
@@ -268,15 +274,6 @@ export class Instance extends EventEmitter {
         this._setStatus('idle');
         this._writeSessionMetadata().catch(() => {});
       }
-      if (ev.kind === 'permission_request' && ev.requestId) {
-        this._pendingPermissions.set(ev.requestId, {
-          requestId: ev.requestId,
-          toolName: ev.toolName,
-          input: ev.input,
-          title: ev.title,
-          displayName: ev.displayName,
-        });
-      }
       // Track the most recent plan file the model wrote, so we can enrich
       // an upcoming ExitPlanMode plan_request with the saved plan text
       // when the model omits `plan` from the tool input.
@@ -305,40 +302,18 @@ export class Instance extends EventEmitter {
         this._autoInterruptedThisTurn = false;
       }
       this._emitUi(ev);
-      // Pre-empt the model's follow-up after AskUserQuestion, ExitPlanMode,
-      // or a CLI-auto-denied tool (`default`/`acceptEdits` modes in
-      // stream-json --print). Without the interrupt the model would
-      // compose a confused follow-up that makes the inline approval card
-      // feel ignorable.
-      if (ev.kind === 'user_question' || ev.kind === 'plan_request' || ev.kind === 'permission_denied') {
+      // Pre-empt the model's follow-up after AskUserQuestion or
+      // ExitPlanMode. In stream-json mode the CLI auto-errors both tools
+      // ("Answer questions?" / "Exit plan mode?"), and without an
+      // interrupt the model would compose a confused follow-up that
+      // makes the inline approval / question card feel ignorable.
+      if (ev.kind === 'user_question' || ev.kind === 'plan_request') {
         this._autoInterruptedThisTurn = true;
         this.interrupt().catch(() => {});
       }
     }
   }
 
-  /**
-   * Respond to a can_use_tool control_request with allow / deny.
-   * Throws if the requestId is unknown.
-   */
-  respondPermission(requestId, { allow, updatedInput, feedback } = {}) {
-    if (!this._pendingPermissions.has(requestId)) {
-      throw Object.assign(new Error('unknown permission request'), { statusCode: 404 });
-    }
-    const innerResponse = allow
-      ? { behavior: 'allow', updatedInput: updatedInput ?? this._pendingPermissions.get(requestId).input ?? {} }
-      : { behavior: 'deny', feedback: feedback ?? 'denied by user' };
-    this._sendRaw({
-      type: 'control_response',
-      response: { subtype: 'success', request_id: requestId, response: innerResponse },
-    });
-    this._pendingPermissions.delete(requestId);
-    this._emitUi({
-      kind: 'permission_resolved',
-      requestId,
-      allow: !!allow,
-    });
-  }
 
   async _writeSessionMetadata() {
     if (!this.sessionId || !this._lastLeafUuid) return;
@@ -448,9 +423,9 @@ export class InstanceManager extends EventEmitter {
       throw Object.assign(new Error('project required'), { statusCode: 400 });
     }
     const proj = await getProject(project);
-    const finalMode = mode ?? 'default';
+    const finalMode = mode ?? DEFAULT_MODE;
     if (!VALID_MODES.has(finalMode)) {
-      throw Object.assign(new Error('invalid mode'), { statusCode: 400 });
+      throw Object.assign(new Error('invalid mode (must be plan or bypassPermissions)'), { statusCode: 400 });
     }
     const finalEffort = effort ?? DEFAULT_EFFORT;
     if (!VALID_EFFORTS.has(finalEffort)) {

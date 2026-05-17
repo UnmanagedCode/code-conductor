@@ -58,7 +58,7 @@ test('init event arrives bundled with first turn response', async () => {
   const { baseUrl, instances, close } = await setupWithProject();
   try {
     const events = collectEvents(instances);
-    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', mode: 'default' });
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', mode: 'bypassPermissions' });
     const id = r.body.id;
     await waitFor(() => instances.get(id).status === 'idle');
 
@@ -76,7 +76,7 @@ test('prompt round-trip emits ordered ui events and returns to idle', async () =
   const { baseUrl, instances, close } = await setupWithProject();
   try {
     const events = collectEvents(instances);
-    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', mode: 'default' });
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', mode: 'bypassPermissions' });
     const id = r.body.id;
     await waitFor(() => instances.get(id).status === 'idle' && instances.get(id).sessionId);
 
@@ -117,19 +117,19 @@ test('setMode writes control_request and resolves on control_response', async ()
     const transcriptPath = path.join(tmpHome, 'transcript.log');
     process.env.FAKE_CLAUDE_TRANSCRIPT = transcriptPath;
 
-    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', mode: 'default' });
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', mode: 'bypassPermissions' });
     const id = r.body.id;
     const inst = instances.get(id);
     await waitFor(() => inst.status === 'idle' && inst.sessionId);
 
-    await inst.setMode('acceptEdits');
-    assert.equal(inst.mode, 'acceptEdits');
+    await inst.setMode('plan');
+    assert.equal(inst.mode, 'plan');
 
     const lines = (await fs.readFile(transcriptPath, 'utf8')).trim().split('\n').filter(Boolean);
     const parsed = lines.map(l => JSON.parse(l));
     const modeReq = parsed.find(p => p.type === 'control_request' && p.request?.subtype === 'set_permission_mode');
     assert.ok(modeReq, 'control_request written to fake-claude stdin');
-    assert.equal(modeReq.request.mode, 'acceptEdits');
+    assert.equal(modeReq.request.mode, 'plan');
     assert.ok(modeReq.request_id, 'request_id present');
   } finally {
     delete process.env.FAKE_CLAUDE_TRANSCRIPT;
@@ -141,7 +141,7 @@ test('interrupt mid-turn emits turn_end and returns to idle', async () => {
   const { baseUrl, instances, close } = await setupWithProject();
   try {
     const events = collectEvents(instances);
-    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', mode: 'default' });
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', mode: 'bypassPermissions' });
     const id = r.body.id;
     const inst = instances.get(id);
     await waitFor(() => inst.status === 'idle' && inst.sessionId);
@@ -169,7 +169,7 @@ test('crash + respawn preserves sessionId, ring buffer, and uses --resume', asyn
     const transcriptPath = path.join(tmpHome, 'transcript.log');
     process.env.FAKE_CLAUDE_TRANSCRIPT = transcriptPath;
 
-    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', mode: 'default' });
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', mode: 'bypassPermissions' });
     const id = r.body.id;
     const inst = instances.get(id);
     await waitFor(() => inst.status === 'idle' && inst.sessionId);
@@ -205,7 +205,7 @@ test('crash + respawn preserves sessionId, ring buffer, and uses --resume', asyn
 test('DELETE /api/instances/:id kills subprocess and removes it', async () => {
   const { baseUrl, instances, close } = await setupWithProject();
   try {
-    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', mode: 'default' });
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', mode: 'bypassPermissions' });
     const id = r.body.id;
     await waitFor(() => instances.get(id)?.sessionId);
 
@@ -220,7 +220,7 @@ test('rejects invalid mode and unknown project', async () => {
   try {
     const r1 = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', mode: 'wat' });
     assert.equal(r1.status, 400);
-    const r2 = await api(baseUrl, 'POST', '/api/instances', { project: 'missing', mode: 'default' });
+    const r2 = await api(baseUrl, 'POST', '/api/instances', { project: 'missing', mode: 'bypassPermissions' });
     assert.equal(r2.status, 404);
     const r3 = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', effort: 'bogus' });
     assert.equal(r3.status, 400);
@@ -293,7 +293,7 @@ test('resuming an existing session replays the persisted transcript into the rin
 
     const events = collectEvents(ctx.instances);
     const r = await api(ctx.baseUrl, 'POST', '/api/instances', {
-      project: 'resume-me', mode: 'default', resume: sid,
+      project: 'resume-me', mode: 'bypassPermissions', resume: sid,
     });
     const id = r.body.id;
     const inst = ctx.instances.get(id);
@@ -334,7 +334,7 @@ test('resuming when no jsonl exists is a no-op (still reaches idle)', async () =
     await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'nope' });
     const sid = 'deadbeef-0000-0000-0000-000000000000';
     const r = await api(ctx.baseUrl, 'POST', '/api/instances', {
-      project: 'nope', mode: 'default', resume: sid,
+      project: 'nope', mode: 'bypassPermissions', resume: sid,
     });
     const id = r.body.id;
     await waitFor(() => ctx.instances.get(id).status === 'idle');
@@ -396,7 +396,7 @@ test('sending a prompt emits exactly one user_echo (no duplicate from --replay)'
     process.env.FAKE_CLAUDE_ARGV_DUMP = argvPath;
 
     const events = collectEvents(instances);
-    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', mode: 'default' });
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', mode: 'bypassPermissions' });
     const id = r.body.id;
     await waitFor(() => instances.get(id).status === 'idle');
 

@@ -40,7 +40,7 @@ async function setup(scenario = SCENARIO_NORMAL) {
 test('subscribe sends snapshot then live events', async () => {
   const { baseUrl, wsUrl, instances, close } = await setup();
   try {
-    const created = await api(baseUrl, 'POST', '/api/instances', { project: 'a', mode: 'default' });
+    const created = await api(baseUrl, 'POST', '/api/instances', { project: 'a', mode: 'bypassPermissions' });
     const id = created.body.id;
     await waitFor(() => instances.get(id).status === 'idle' && instances.get(id).sessionId);
 
@@ -71,7 +71,7 @@ test('subscribe sends snapshot then live events', async () => {
 test('reconnect mid-stream replays snapshot without duplicating events', async () => {
   const { baseUrl, wsUrl, instances, close } = await setup();
   try {
-    const created = await api(baseUrl, 'POST', '/api/instances', { project: 'a', mode: 'default' });
+    const created = await api(baseUrl, 'POST', '/api/instances', { project: 'a', mode: 'bypassPermissions' });
     const id = created.body.id;
     await waitFor(() => instances.get(id).status === 'idle' && instances.get(id).sessionId);
 
@@ -112,8 +112,8 @@ test('reconnect mid-stream replays snapshot without duplicating events', async (
 test('two clients on two instances stream concurrently and independently', async () => {
   const { baseUrl, wsUrl, instances, close } = await setup();
   try {
-    const a = await api(baseUrl, 'POST', '/api/instances', { project: 'a', mode: 'default' });
-    const b = await api(baseUrl, 'POST', '/api/instances', { project: 'b', mode: 'default' });
+    const a = await api(baseUrl, 'POST', '/api/instances', { project: 'a', mode: 'bypassPermissions' });
+    const b = await api(baseUrl, 'POST', '/api/instances', { project: 'b', mode: 'bypassPermissions' });
     const idA = a.body.id, idB = b.body.id;
     await waitFor(() => instances.get(idA).sessionId && instances.get(idB).sessionId);
 
@@ -145,17 +145,17 @@ test('two clients on two instances stream concurrently and independently', async
 test('mode switch via WS updates instance.mode and acks', async () => {
   const { baseUrl, wsUrl, instances, close } = await setup();
   try {
-    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'a', mode: 'default' });
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'a', mode: 'bypassPermissions' });
     const id = r.body.id;
     await waitFor(() => instances.get(id).sessionId);
 
     const c = await wsClient(wsUrl);
     c.send({ t: 'subscribe', id });
     await c.wait(m => m.t === 'snapshot');
-    c.send({ t: 'mode', id, mode: 'acceptEdits', reqId: 'm1' });
+    c.send({ t: 'mode', id, mode: 'plan', reqId: 'm1' });
     const ack = await c.wait(m => m.t === 'ack' && m.reqId === 'm1');
     assert.equal(ack.ok, true);
-    assert.equal(instances.get(id).mode, 'acceptEdits');
+    assert.equal(instances.get(id).mode, 'plan');
     await c.close();
   } finally { await close(); }
 });
@@ -166,7 +166,7 @@ test('turn_notification is broadcast to every connected client (not just subscri
   // different instance.
   const { baseUrl, wsUrl, instances, close } = await setup();
   try {
-    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'a', mode: 'default' });
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'a', mode: 'bypassPermissions' });
     const id = r.body.id;
     await waitFor(() => instances.get(id).status === 'idle');
 
@@ -199,7 +199,7 @@ test('turn_notification is broadcast to every connected client (not just subscri
 test('interrupt via WS returns instance to idle', async () => {
   const { baseUrl, wsUrl, instances, close } = await setup(SCENARIO_INTERRUPT);
   try {
-    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'a', mode: 'default' });
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'a', mode: 'bypassPermissions' });
     const id = r.body.id;
     await waitFor(() => instances.get(id).sessionId);
     const c = await wsClient(wsUrl);
