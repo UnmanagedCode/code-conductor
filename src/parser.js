@@ -202,7 +202,7 @@ export class Parser {
             try { input = JSON.parse(block.accumJson); }
             catch { input = { _raw: block.accumJson }; }
           }
-          return [{
+          const out = [{
             kind: 'tool_use',
             msgId: this.currentMsgId,
             blockIdx: idx,
@@ -210,6 +210,18 @@ export class Parser {
             name: block.name,
             input,
           }];
+          // AskUserQuestion gets a structured UI event so the conversation
+          // view can render the questions as buttons. The CLI in stream-json
+          // mode immediately errors out the actual tool execution, so the
+          // user_question event is what makes this tool usable here.
+          if (block.name === 'AskUserQuestion' && Array.isArray(input?.questions)) {
+            out.push({
+              kind: 'user_question',
+              toolUseId: block.toolUseId,
+              questions: input.questions,
+            });
+          }
+          return out;
         }
         return [];
       }

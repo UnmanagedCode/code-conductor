@@ -234,6 +234,52 @@ function renderNotebookEdit(input) {
 
 export const _internalRenderers = { renderEditDiff, renderWritePreview, renderNotebookEdit };
 
+export class UserQuestionBlock {
+  constructor(ev, onAnswer) {
+    this.toolUseId = ev.toolUseId;
+    this.onAnswer = onAnswer;
+    this.statusNode = el('span', { class: 'uq-status' }, 'waiting for your answer');
+    const body = el('div', { class: 'uq-body' });
+    this.questionNodes = [];
+    for (let q = 0; q < (ev.questions ?? []).length; q++) {
+      const question = ev.questions[q];
+      const qNode = el('div', { class: 'uq-question' });
+      qNode.appendChild(el('div', { class: 'uq-q-text' }, question.question ?? ''));
+      if (question.header) qNode.appendChild(el('div', { class: 'uq-q-header' }, question.header));
+      const opts = el('div', { class: 'uq-options' });
+      for (let i = 0; i < (question.options ?? []).length; i++) {
+        const opt = question.options[i];
+        const btn = el('button', { class: 'uq-opt', type: 'button' },
+          el('span', { class: 'uq-opt-label' }, opt.label ?? `Option ${i + 1}`),
+          opt.description ? el('span', { class: 'uq-opt-desc' }, opt.description) : null,
+        );
+        btn.addEventListener('click', () => this._pick(q, opt.label, btn));
+        opts.appendChild(btn);
+      }
+      qNode.appendChild(opts);
+      this.questionNodes.push(qNode);
+      body.appendChild(qNode);
+    }
+    this.node = el('div', { class: 'block user-question' },
+      el('div', { class: 'uq-head' },
+        el('span', { class: 'uq-title' }, '❓ The model asks…'),
+        this.statusNode,
+      ),
+      body,
+    );
+  }
+  _pick(qIdx, label, btn) {
+    const qNode = this.questionNodes[qIdx];
+    if (!qNode || qNode.dataset.answered) return;
+    qNode.dataset.answered = 'true';
+    qNode.querySelectorAll('button.uq-opt').forEach(b => { b.disabled = true; });
+    btn.classList.add('picked');
+    this.statusNode.textContent = `picked: ${label}`;
+    this.node.classList.add('answered');
+    if (this.onAnswer) this.onAnswer({ questionIndex: qIdx, label });
+  }
+}
+
 export class PermissionRequestBlock {
   constructor(ev, onDecision) {
     this.requestId = ev.requestId;

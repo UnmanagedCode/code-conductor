@@ -53,6 +53,15 @@ const conversation = new Conversation(dom.conversation, {
     if (!state.activeId) return;
     send('permission', { id: state.activeId, requestId, allow, updatedInput, feedback });
   },
+  onUserQuestionAnswer: ({ toolUseId, label, questionIndex, questions }) => {
+    if (!state.activeId) return;
+    const q = questions?.[questionIndex];
+    const qText = q?.question ?? `Question ${questionIndex + 1}`;
+    // The CLI auto-errors the AskUserQuestion tool in stream-json mode, so
+    // we deliver the answer back as a normal user prompt — the model picks
+    // it up on the next turn.
+    send('prompt', { id: state.activeId, text: `Answer to "${qText}": ${label}` });
+  },
 });
 
 const sidebar = new Sidebar({

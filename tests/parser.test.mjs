@@ -208,6 +208,48 @@ test('parser: parent_tool_use_id is propagated onto every emitted UI event (sub-
   assert.equal(subDelta[0].parentToolUseId, 'task_id_xyz');
 });
 
+test('parser: AskUserQuestion tool_use also emits a structured user_question event', () => {
+  const p = new Parser();
+  p.handleObject({ type: 'stream_event', event: { type: 'message_start', message: { id: 'm', role: 'assistant' } } });
+  p.handleObject({
+    type: 'stream_event',
+    event: { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'tu_q', name: 'AskUserQuestion', input: {} } },
+  });
+  p.handleObject({
+    type: 'stream_event',
+    event: {
+      type: 'content_block_delta', index: 0,
+      delta: { type: 'input_json_delta', partial_json: '{"questions":[{"question":"What color?","header":"Color","multiSelect":false,"options":[{"label":"Red","description":"bold"},{"label":"Blue"}]}]}' },
+    },
+  });
+  const stopEvs = p.handleObject({ type: 'stream_event', event: { type: 'content_block_stop', index: 0 } });
+  const tool = stopEvs.find(e => e.kind === 'tool_use');
+  assert.ok(tool);
+  assert.equal(tool.name, 'AskUserQuestion');
+
+  const uq = stopEvs.find(e => e.kind === 'user_question');
+  assert.ok(uq, 'user_question emitted alongside tool_use');
+  assert.equal(uq.toolUseId, 'tu_q');
+  assert.equal(uq.questions.length, 1);
+  assert.equal(uq.questions[0].question, 'What color?');
+  assert.equal(uq.questions[0].options[0].label, 'Red');
+});
+
+test('parser: tool_use for other tools does NOT emit user_question', () => {
+  const p = new Parser();
+  p.handleObject({ type: 'stream_event', event: { type: 'message_start', message: { id: 'm', role: 'assistant' } } });
+  p.handleObject({
+    type: 'stream_event',
+    event: { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'tu_b', name: 'Bash', input: {} } },
+  });
+  p.handleObject({
+    type: 'stream_event',
+    event: { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '{"command":"ls"}' } },
+  });
+  const out = p.handleObject({ type: 'stream_event', event: { type: 'content_block_stop', index: 0 } });
+  assert.equal(out.filter(e => e.kind === 'user_question').length, 0);
+});
+
 test('parser: parentToolUseId is null when envelope omits parent_tool_use_id', () => {
   const p = new Parser();
   const out = p.handleObject({

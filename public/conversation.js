@@ -3,14 +3,16 @@
 // replays don't duplicate prior content.
 
 import { TextBlock, ThinkingBlock, ToolUseBlock, ToolResultBlock, SystemBlock, TurnEndBlock,
-  PermissionRequestBlock, el } from './blocks.js';
+  PermissionRequestBlock, UserQuestionBlock, el } from './blocks.js';
 
 export class Conversation {
-  constructor(rootEl, { isSub = false, onPermissionDecision = null } = {}) {
+  constructor(rootEl, { isSub = false, onPermissionDecision = null, onUserQuestionAnswer = null } = {}) {
     this.root = rootEl;
     this.isSub = isSub;
     this.onPermissionDecision = onPermissionDecision;
+    this.onUserQuestionAnswer = onUserQuestionAnswer;
     this.permissionBlocks = new Map(); // requestId -> PermissionRequestBlock
+    this.userQuestionBlocks = new Map(); // toolUseId -> UserQuestionBlock
     this.blocksByKey = new Map();   // `${msgId}:${blockIdx}` -> block instance
     this.toolBlocks = new Map();    // toolUseId -> ToolUseBlock
     this.seenSeq = new Set();
@@ -74,6 +76,7 @@ export class Conversation {
     }
     if (ev.kind === 'permission_request') { this._renderPermissionRequest(ev); return; }
     if (ev.kind === 'permission_resolved') { this._resolvePermissionRequest(ev); return; }
+    if (ev.kind === 'user_question') { this._renderUserQuestion(ev); return; }
     this._ensureNotEmpty();
     switch (ev.kind) {
       case 'user_echo':      this._renderUserEcho(ev); break;
@@ -201,6 +204,17 @@ export class Conversation {
       const wrap = this._ensureMessageWrap(null, 'assistant');
       wrap.body.appendChild(result.node);
     }
+  }
+
+  _renderUserQuestion(ev) {
+    this._ensureNotEmpty();
+    if (this.userQuestionBlocks.has(ev.toolUseId)) return;
+    const block = new UserQuestionBlock(ev, ({ questionIndex, label }) => {
+      if (this.onUserQuestionAnswer) this.onUserQuestionAnswer({ toolUseId: ev.toolUseId, questionIndex, label, questions: ev.questions });
+    });
+    this.userQuestionBlocks.set(ev.toolUseId, block);
+    this.root.appendChild(block.node);
+    this._maybeScroll();
   }
 
   _renderPermissionRequest(ev) {
