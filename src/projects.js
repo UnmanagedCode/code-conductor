@@ -3,22 +3,19 @@ import path from 'node:path';
 import os from 'node:os';
 
 const NAME_RE = /^[a-zA-Z0-9._-]+$/;
-// Directories owned by the orchestrator's worktree feature carry one of
-// these marker paths (see src/worktrees.js). New worktrees use the
-// `.claude-orch-app/worktree.json` dotfolder layout; older ones still
-// have the single `.claude-orch-worktree.json` file at the root. Top-
-// level project listing filters them out so they aren't presented as
-// standalone projects — they appear as a child node under the parent.
-const WORKTREE_MARKERS = ['.claude-orch-app/worktree.json', '.claude-orch-worktree.json'];
+// Directories owned by the orchestrator's worktree feature carry this
+// marker path (see src/worktrees.js). Top-level project listing filters
+// them out so they aren't presented as standalone projects — they appear
+// as a child node under the parent.
+const WORKTREE_MARKER = '.claude-orch-app/worktree.json';
 
 async function isWorktreeMarkerPresent(dir) {
-  for (const marker of WORKTREE_MARKERS) {
-    try {
-      await fs.access(path.join(dir, marker));
-      return true;
-    } catch { /* try next */ }
+  try {
+    await fs.access(path.join(dir, WORKTREE_MARKER));
+    return true;
+  } catch {
+    return false;
   }
-  return false;
 }
 
 export function projectsRoot() {

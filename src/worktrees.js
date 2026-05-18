@@ -30,14 +30,11 @@ function execFileP(file, args, options = {}) {
   });
 }
 
-// New per-worktree dotfolder layout: `<worktree>/.claude-orch-app/worktree.json`
+// Per-worktree dotfolder layout: `<worktree>/.claude-orch-app/worktree.json`
 // for metadata, `<worktree>/.claude-orch-app/attachments/` for files attached
-// to user messages. The legacy single-file layout (`.claude-orch-worktree.json`
-// at the worktree root) is still readable as a fallback so existing worktrees
-// keep working without a one-shot migration.
+// to user messages.
 export const ORCH_DOTDIR = '.claude-orch-app';
 export const WORKTREE_META_FILENAME = 'worktree.json';
-export const LEGACY_WORKTREE_META_FILENAME = '.claude-orch-worktree.json';
 
 export function orchDotdir(worktreePath) {
   return path.join(worktreePath, ORCH_DOTDIR);
@@ -49,10 +46,6 @@ export function attachmentsDir(worktreePath) {
 
 function metaPath(worktreePath) {
   return path.join(orchDotdir(worktreePath), WORKTREE_META_FILENAME);
-}
-
-function legacyMetaPath(worktreePath) {
-  return path.join(worktreePath, LEGACY_WORKTREE_META_FILENAME);
 }
 
 // Shorter-than-uuid identifier — 6 hex chars is plenty for collision
@@ -112,15 +105,10 @@ async function writeMeta(worktreePath, meta) {
 }
 
 export async function readMeta(worktreePath) {
-  // Try the new location first; fall back to the legacy single-file
-  // path so worktrees created before the dotfolder reorg still resolve.
-  for (const file of [metaPath(worktreePath), legacyMetaPath(worktreePath)]) {
-    let text;
-    try { text = await fs.readFile(file, 'utf8'); }
-    catch (e) { if (e.code === 'ENOENT') continue; throw e; }
-    try { return JSON.parse(text); } catch { return null; }
-  }
-  return null;
+  let text;
+  try { text = await fs.readFile(metaPath(worktreePath), 'utf8'); }
+  catch (e) { if (e.code === 'ENOENT') return null; throw e; }
+  try { return JSON.parse(text); } catch { return null; }
 }
 
 // One-line append to <worktree>/.git/info/exclude so the dotdir doesn't
@@ -248,16 +236,14 @@ export async function removeWorktree(projectName, worktreeName, { force = false 
 
   if (!force) {
     const dirty = await runGit(meta.worktreePath, ['status', '--porcelain']);
-    // Ignore our own orchestrator-owned dirfile — `.claude-orch-app/` (or
-    // the legacy single metadata file on older worktrees) is untracked by
-    // design and shouldn't count as user-authored dirt.
+    // Ignore our own orchestrator-owned dotdir — `.claude-orch-app/` is
+    // untracked by design and shouldn't count as user-authored dirt.
     const dirtyLines = (dirty.stdout || '').split('\n').filter(l => {
       const t = l.trim();
       if (!t) return false;
       // Porcelain "?? <path>" → grab the path and check the prefix.
       const m = t.match(/^..\s+(.*)$/);
       const p = m ? m[1] : t;
-      if (p === LEGACY_WORKTREE_META_FILENAME) return false;
       if (p === ORCH_DOTDIR || p.startsWith(`${ORCH_DOTDIR}/`)) return false;
       return true;
     });
