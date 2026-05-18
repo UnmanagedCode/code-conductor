@@ -6,6 +6,14 @@ import { TextBlock, ThinkingBlock, ToolUseBlock, ToolResultBlock, SystemBlock, T
   UserQuestionBlock, PlanRequestBlock, PermissionRequestBlock, ImageBlock,
   shouldRenderSystem, el } from './blocks.js';
 
+function renderFileChip(a) {
+  return el('div', { class: 'block file-attachment' },
+    el('span', { class: 'fa-icon' }, '📎'),
+    el('span', { class: 'fa-name' }, a.name ?? a.path ?? 'file'),
+    a.path ? el('span', { class: 'fa-path' }, ` (${a.path})`) : null,
+  );
+}
+
 export class Conversation {
   constructor(rootEl, {
     isSub = false,
@@ -13,12 +21,17 @@ export class Conversation {
     onPlanDecision = null,
     onPermissionDecision = null,
     describeToolCtx = {},
+    // (filename) -> URL string used to source attachment thumbnails on
+    // transcript replay (when the live user_echo's dataBase64 is gone).
+    // Returns null when no instance is active.
+    resolveAttachmentUrl = null,
   } = {}) {
     this.root = rootEl;
     this.isSub = isSub;
     this.onUserQuestionSubmit = onUserQuestionSubmit;
     this.onPlanDecision = onPlanDecision;
     this.onPermissionDecision = onPermissionDecision;
+    this.resolveAttachmentUrl = resolveAttachmentUrl;
     // Resolver-style context passed to describeToolInput so a
     // TaskUpdate tool block (whose input only carries taskId) can
     // surface the task's actual subject + description.
@@ -88,6 +101,7 @@ export class Conversation {
             onPlanDecision: this.onPlanDecision,
             onPermissionDecision: this.onPermissionDecision,
             describeToolCtx: this.describeToolCtx,
+            resolveAttachmentUrl: this.resolveAttachmentUrl,
           });
           this.subConvs.set(ev.parentToolUseId, sub);
         }
@@ -170,14 +184,20 @@ export class Conversation {
     const text = ev.text ?? '';
     if (text.length) blocks.appendChild(el('div', { class: 'block text' }, text));
     for (const a of (ev.attachments ?? [])) {
-      if (a?.kind === 'image' && typeof a.dataBase64 === 'string') {
-        blocks.appendChild(new ImageBlock(a).node);
-      } else if (a?.kind === 'file' && typeof a.path === 'string') {
-        blocks.appendChild(el('div', { class: 'block file-attachment' },
-          el('span', { class: 'fa-icon' }, '📎'),
-          el('span', { class: 'fa-name' }, a.name ?? a.path),
-          el('span', { class: 'fa-path' }, ` (${a.path})`),
-        ));
+      if (a?.kind === 'image') {
+        if (typeof a.dataBase64 === 'string') {
+          // Live echo — bytes are in memory, render immediately.
+          blocks.appendChild(new ImageBlock(a).node);
+        } else if (a.filename && this.resolveAttachmentUrl) {
+          // Replay path — fetch from the orchestrator's attachments endpoint.
+          const src = this.resolveAttachmentUrl(a.filename);
+          if (src) blocks.appendChild(new ImageBlock({ name: a.name, src }).node);
+          else blocks.appendChild(renderFileChip(a));
+        } else {
+          blocks.appendChild(renderFileChip(a));
+        }
+      } else if (a?.kind === 'file') {
+        blocks.appendChild(renderFileChip(a));
       }
     }
     if (!blocks.childNodes.length) {

@@ -62,7 +62,7 @@ test('prompt() with text-only sends a single text block in the content array', a
   } finally { await close(); }
 });
 
-test('prompt() with an image attachment writes a vision image block and saves the file', async () => {
+test('prompt() with an image attachment appends a path-reference text block (no inline vision block) and saves the file', async () => {
   const { baseUrl, instances, close } = await setupWithProject();
   try {
     const r = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', mode: 'bypassPermissions' });
@@ -76,16 +76,18 @@ test('prompt() with an image attachment writes a vision image block and saves th
       { name: 'tiny.png', mediaType: 'image/png', dataBase64: PNG_1PX },
     ]);
 
-    // stdin: content[0] is text, content[1] is image with the same base64
+    // stdin: only text blocks — no inline image block. Image bytes are
+    // not re-sent on every turn; Claude reads the file path on demand.
     const user = stdinLines.map(l => JSON.parse(l)).find(o => o.type === 'user');
     assert.ok(user, 'user message written');
     assert.equal(user.message.content.length, 2);
     assert.equal(user.message.content[0].type, 'text');
     assert.equal(user.message.content[0].text, 'look at this');
-    assert.equal(user.message.content[1].type, 'image');
-    assert.equal(user.message.content[1].source.type, 'base64');
-    assert.equal(user.message.content[1].source.media_type, 'image/png');
-    assert.equal(user.message.content[1].source.data, PNG_1PX);
+    assert.equal(user.message.content[1].type, 'text');
+    assert.match(user.message.content[1].text, /^Attached file: `\.claude-orch-app\/attachments\/.*tiny\.png`$/);
+    // Belt and braces: no `image` content block of any kind.
+    assert.ok(!user.message.content.some(b => b.type === 'image'),
+      'no inline vision blocks should be sent to the CLI');
 
     // Disk: file landed under .claude-orch-app/attachments/.
     const attDir = path.join(inst.cwd, '.claude-orch-app', 'attachments');
@@ -93,13 +95,17 @@ test('prompt() with an image attachment writes a vision image block and saves th
     assert.equal(entries.length, 1);
     assert.match(entries[0], /tiny\.png$/);
 
-    // user_echo: carries the image attachment metadata for the live bubble.
+    // user_echo: carries image attachment metadata for the live bubble
+    // — including dataBase64 so the frontend can render the thumbnail
+    // immediately without a round-trip.
     const echo = events.map(e => e.ev).find(e => e.kind === 'user_echo');
     assert.ok(echo, 'user_echo emitted');
     assert.equal(echo.text, 'look at this');
     assert.equal(echo.attachments.length, 1);
     assert.equal(echo.attachments[0].kind, 'image');
     assert.equal(echo.attachments[0].mediaType, 'image/png');
+    assert.equal(echo.attachments[0].dataBase64, PNG_1PX);
+    assert.match(echo.attachments[0].filename, /tiny\.png$/);
   } finally { await close(); }
 });
 
@@ -137,7 +143,7 @@ test('prompt() with a non-image attachment appends a path-reference text block',
   } finally { await close(); }
 });
 
-test('prompt() with no text but one attachment still sends (content array led by the attachment)', async () => {
+test('prompt() with no text but one attachment still sends (content array led by the attachment path)', async () => {
   const { baseUrl, instances, close } = await setupWithProject();
   try {
     const r = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', mode: 'bypassPermissions' });
@@ -152,7 +158,8 @@ test('prompt() with no text but one attachment still sends (content array led by
 
     const user = stdinLines.map(l => JSON.parse(l)).find(o => o.type === 'user');
     assert.equal(user.message.content.length, 1);
-    assert.equal(user.message.content[0].type, 'image');
+    assert.equal(user.message.content[0].type, 'text');
+    assert.match(user.message.content[0].text, /^Attached file: `\.claude-orch-app\/attachments\/.*snap\.png`$/);
   } finally { await close(); }
 });
 
@@ -166,7 +173,7 @@ test('prompt() with neither text nor attachments throws', async () => {
   } finally { await close(); }
 });
 
-test('parser emits a single user_echo with attachments when replaying a user message with text + image blocks', async () => {
+test('parser replay: text block with `Attached file:` marker becomes an attachment entry', async () => {
   const { Parser } = await import('../src/parser.js');
   const p = new Parser();
   const events = p.handleObject({
@@ -174,17 +181,38 @@ test('parser emits a single user_echo with attachments when replaying a user mes
     message: {
       role: 'user',
       content: [
-        { type: 'text', text: 'look' },
-        { type: 'image', source: { type: 'base64', media_type: 'image/png', data: PNG_1PX } },
+        { type: 'text', text: 'look at this' },
+        { type: 'text', text: 'Attached file: `.claude-orch-app/attachments/2026-01-01T00-00-00-000Z-pic.png`' },
       ],
     },
   });
   const echoes = events.filter(e => e.kind === 'user_echo');
   assert.equal(echoes.length, 1, 'one user_echo per user message');
-  assert.equal(echoes[0].text, 'look');
+  assert.equal(echoes[0].text, 'look at this');
   assert.equal(echoes[0].attachments.length, 1);
   assert.equal(echoes[0].attachments[0].kind, 'image');
-  assert.equal(echoes[0].attachments[0].dataBase64, PNG_1PX);
+  assert.equal(echoes[0].attachments[0].filename, '2026-01-01T00-00-00-000Z-pic.png');
+  // No dataBase64 — replay path expects the frontend to fetch via the
+  // attachments endpoint.
+  assert.equal(echoes[0].attachments[0].dataBase64, undefined);
+});
+
+test('parser replay: non-image extension yields kind: file', async () => {
+  const { Parser } = await import('../src/parser.js');
+  const p = new Parser();
+  const events = p.handleObject({
+    type: 'user',
+    message: {
+      role: 'user',
+      content: [
+        { type: 'text', text: 'parse this csv' },
+        { type: 'text', text: 'Attached file: `.claude-orch-app/attachments/2026-01-01T00-00-00-000Z-data.csv`' },
+      ],
+    },
+  });
+  const echoes = events.filter(e => e.kind === 'user_echo');
+  assert.equal(echoes[0].attachments[0].kind, 'file');
+  assert.equal(echoes[0].attachments[0].filename, '2026-01-01T00-00-00-000Z-data.csv');
 });
 
 test('wsHub prompt: malformed attachment entries are dropped, valid ones are kept', async () => {
@@ -216,9 +244,48 @@ test('wsHub prompt: malformed attachment entries are dropped, valid ones are kep
     ws.close();
 
     const user = stdinLines.map(l => JSON.parse(l)).find(o => o.type === 'user');
-    // text + one valid image only.
+    // text + one Attached-file text block for the single valid image.
     assert.equal(user.message.content.length, 2);
     assert.equal(user.message.content[0].type, 'text');
-    assert.equal(user.message.content[1].type, 'image');
+    assert.equal(user.message.content[0].text, 'hi');
+    assert.equal(user.message.content[1].type, 'text');
+    assert.match(user.message.content[1].text, /^Attached file: `\.claude-orch-app\/attachments\/.*good\.png`$/);
+  } finally { await close(); }
+});
+
+test('GET /api/instances/:id/attachments/:filename serves saved bytes; rejects traversal + missing', async () => {
+  const { baseUrl, instances, close } = await setupWithProject();
+  try {
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', mode: 'bypassPermissions' });
+    const id = r.body.id;
+    await waitFor(() => instances.get(id).status === 'idle');
+    const inst = instances.get(id);
+
+    // Drop a known file into the per-instance attachments dir.
+    const attDir = path.join(inst.cwd, '.claude-orch-app', 'attachments');
+    await fs.mkdir(attDir, { recursive: true });
+    const filename = 'stamp-hello.png';
+    const bytes = Buffer.from(PNG_1PX, 'base64');
+    await fs.writeFile(path.join(attDir, filename), bytes);
+
+    // 200 + bytes round-trip.
+    const ok = await fetch(`${baseUrl}/api/instances/${id}/attachments/${filename}`);
+    assert.equal(ok.status, 200);
+    assert.equal(ok.headers.get('content-type'), 'image/png');
+    const got = Buffer.from(await ok.arrayBuffer());
+    assert.equal(got.equals(bytes), true);
+
+    // 404 for missing file.
+    const miss = await fetch(`${baseUrl}/api/instances/${id}/attachments/does-not-exist.png`);
+    assert.equal(miss.status, 404);
+
+    // 400 for path traversal attempts. URL-encoded `..` is decoded by
+    // express before our handler sees it, so the basename check rejects it.
+    const trav = await fetch(`${baseUrl}/api/instances/${id}/attachments/${encodeURIComponent('../../passwd')}`);
+    assert.equal(trav.status, 400);
+
+    // 404 for unknown instance.
+    const noinst = await fetch(`${baseUrl}/api/instances/bogus/attachments/${filename}`);
+    assert.equal(noinst.status, 404);
   } finally { await close(); }
 });

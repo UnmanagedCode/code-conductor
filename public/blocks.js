@@ -27,11 +27,13 @@ export class TextBlock {
   finalize() {}
 }
 
-// Renders an inline base64 image (no streaming — user attachments arrive
-// whole). The thumbnail is clickable so the user can open the original.
+// Renders an image attachment, sourced from either inline base64 (live
+// echo for an attachment just sent) or an HTTP URL pointing at the
+// /api/instances/:id/attachments/<file> endpoint (replay / refresh).
+// The thumbnail is clickable so the user can open the original.
 export class ImageBlock {
-  constructor({ mediaType, dataBase64, name } = {}) {
-    const url = `data:${mediaType || 'image/png'};base64,${dataBase64 || ''}`;
+  constructor({ mediaType, dataBase64, src, name } = {}) {
+    const url = src || `data:${mediaType || 'image/png'};base64,${dataBase64 || ''}`;
     const img = el('img', { class: 'block-image-img', src: url, alt: name || 'attached image' });
     const link = el('a', { href: url, target: '_blank', rel: 'noopener' }, img);
     this.node = el('div', { class: 'block image' }, link);

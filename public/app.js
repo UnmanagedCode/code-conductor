@@ -95,6 +95,14 @@ function sendOrQueuePrompt(instanceId, text) {
 }
 
 const conversation = new Conversation(dom.conversation, {
+  // Source thumbnails for attachment chips on transcript replay. The
+  // live echo carries dataBase64; the replay path falls through to
+  // this resolver, which builds an HTTP URL into the per-instance
+  // attachments endpoint. Returns null when nothing is active.
+  resolveAttachmentUrl: (filename) => {
+    if (!state.activeId || !filename) return null;
+    return `/api/instances/${encodeURIComponent(state.activeId)}/attachments/${encodeURIComponent(filename)}`;
+  },
   // Lookups for TaskUpdate's summary line — see describeToolInput.
   // Always reads through whichever tracker the active instance owns,
   // so the tool block can resolve the task's subject + description by

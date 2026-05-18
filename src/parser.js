@@ -248,11 +248,12 @@ export class Parser {
     }
     if (!Array.isArray(content)) return [];
     const out = [];
-    // Group text + image blocks of a single user message into one
-    // user_echo so the bubble renders text and attachments together.
-    // Tool_result blocks remain their own events — they're how the CLI
-    // delivers tool output back to the model and never coexist with
-    // user-authored text/images in the same message.
+    // Group text blocks of a single user message into one user_echo so
+    // the bubble renders text and attachments together. Text blocks may
+    // contain `Attached file:` marker lines that we wrote at send time
+    // — extract those into attachment entries so the replayed bubble
+    // shows a thumbnail / file chip instead of the raw path text.
+    // Tool_result blocks remain their own events.
     const echoTexts = [];
     const echoAttachments = [];
     for (const block of content) {
@@ -265,16 +266,10 @@ export class Parser {
           isError: !!block.is_error,
         });
       } else if (block.type === 'text') {
-        if (typeof block.text === 'string') echoTexts.push(block.text);
-      } else if (block.type === 'image') {
-        const src = block.source ?? {};
-        if (src.type === 'base64' && typeof src.data === 'string') {
-          echoAttachments.push({
-            kind: 'image',
-            mediaType: src.media_type ?? 'image/png',
-            dataBase64: src.data,
-          });
-        }
+        if (typeof block.text !== 'string') continue;
+        const { text: leftover, attachments } = extractAttachedMarkers(block.text);
+        if (leftover.length) echoTexts.push(leftover);
+        for (const a of attachments) echoAttachments.push(a);
       }
     }
     if (echoTexts.length || echoAttachments.length) {
@@ -298,6 +293,33 @@ export class Parser {
       isError: !!obj.is_error,
     }];
   }
+}
+
+// Detect "Attached file: `<path>`" marker lines in a text block (the
+// shape we write in instances.js prompt()) and split them out as
+// attachment entries. Path must live under .claude-orch-app/attachments/
+// to be recognized — anchors the match so unrelated prose mentioning
+// "Attached file:" isn't accidentally promoted.
+const IMG_EXT = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp']);
+const ATT_LINE_RE = /^Attached file:\s*`((?:[^`]*\/)?\.claude-orch-app\/attachments\/[^`]+)`\s*$/;
+
+export function extractAttachedMarkers(text) {
+  const lines = text.split('\n');
+  const keptLines = [];
+  const attachments = [];
+  for (const line of lines) {
+    const m = line.match(ATT_LINE_RE);
+    if (!m) { keptLines.push(line); continue; }
+    const relPath = m[1];
+    const filename = relPath.split('/').pop();
+    const ext = (filename.split('.').pop() || '').toLowerCase();
+    const kind = IMG_EXT.has(ext) ? 'image' : 'file';
+    attachments.push({ kind, path: relPath, filename, name: filename });
+  }
+  // Trim any trailing blank lines that the marker(s) leave behind, but
+  // preserve interior structure so leading prose stays intact.
+  while (keptLines.length && keptLines[keptLines.length - 1].trim() === '') keptLines.pop();
+  return { text: keptLines.join('\n'), attachments };
 }
 
 export default Parser;

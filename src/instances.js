@@ -327,12 +327,13 @@ export class Instance extends EventEmitter {
   }
 
   // Send a user turn to the CLI. `attachments` is an optional list of
-  // {name, mediaType, dataBase64} objects produced by the composer:
-  //   - images → embedded inline as a vision image block AND saved to
-  //     <cwd>/.claude-orch-app/attachments/ for later browsing
-  //   - non-images → saved to attachments/ and appended to the prompt
-  //     as a text block pointing at the relative path so the model can
-  //     `Read` it
+  // {name, mediaType, dataBase64} objects produced by the composer.
+  // Every attachment is saved to <cwd>/.claude-orch-app/attachments/
+  // and a single "Attached file: `<relPath>`" text block is appended
+  // to the message — Claude's Read tool handles both image files
+  // (returns vision content) and arbitrary file bytes on demand.
+  // This avoids re-paying the base64 token cost on every subsequent
+  // turn and keeps the prompt-cache prefix stable.
   async prompt(text, attachments = []) {
     if (!this.proc) throw new Error('not running');
     const safeText = typeof text === 'string' ? text : '';
@@ -354,16 +355,19 @@ export class Instance extends EventEmitter {
         this._emitUi({ kind: 'system', subtype: 'stderr', data: { line: `attachment save failed (${a.name}): ${e.message}` } });
         continue;
       }
-      if (isImageType(mediaType)) {
-        content.push({
-          type: 'image',
-          source: { type: 'base64', media_type: mediaType, data: a.dataBase64 },
-        });
-        echoAttachments.push({ kind: 'image', name: a.name, mediaType, dataBase64: a.dataBase64, path: saved.relPath });
-      } else {
-        content.push({ type: 'text', text: `Attached file: \`${saved.relPath}\`` });
-        echoAttachments.push({ kind: 'file', name: a.name, mediaType, path: saved.relPath });
-      }
+      content.push({ type: 'text', text: `Attached file: \`${saved.relPath}\`` });
+      echoAttachments.push({
+        kind: isImageType(mediaType) ? 'image' : 'file',
+        name: a.name,
+        mediaType,
+        path: saved.relPath,
+        filename: saved.filename,
+        // For the live user_echo bubble only — lets the frontend show
+        // the thumbnail without a round-trip. Not written to the CLI's
+        // stdin or the session jsonl. On replay/refresh the frontend
+        // fetches the bytes from /api/instances/:id/attachments/<file>.
+        dataBase64: isImageType(mediaType) ? a.dataBase64 : undefined,
+      });
     }
 
     if (content.length === 0) {

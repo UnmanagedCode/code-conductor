@@ -1,4 +1,6 @@
 import express from 'express';
+import path from 'node:path';
+import { promises as fs, createReadStream } from 'node:fs';
 import {
   listProjects, createProject, listSessions, listSessionsForCwd,
   summarizeSessions, deleteProject, deleteSessionForCwd, getProject,
@@ -6,7 +8,16 @@ import {
 import {
   isGitRepo, listWorktrees, removeWorktree, fastForwardParent,
   buildRebasePrompt, getWorktree, removeAllWorktreesForProject,
+  attachmentsDir,
 } from './worktrees.js';
+
+const CONTENT_TYPE_BY_EXT = {
+  png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg',
+  gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml',
+  pdf: 'application/pdf', txt: 'text/plain; charset=utf-8',
+  json: 'application/json; charset=utf-8',
+  csv: 'text/csv; charset=utf-8', md: 'text/markdown; charset=utf-8',
+};
 
 export function buildRoutes({ instances } = {}) {
   const r = express.Router();
@@ -226,6 +237,40 @@ export function buildRoutes({ instances } = {}) {
     // permission_request to the UI (ask mode) — the user's Allow/Deny
     // click eventually resolves the response. Response shape mirrors the
     // CLI's expected hookSpecificOutput JSON.
+    // Serve a previously-saved attachment from an instance's per-worktree
+    // attachments dir. The frontend uses this to populate user-bubble
+    // thumbnails on transcript replay (the bytes aren't echoed back via
+    // the WS user_echo on a fresh page load because they were never
+    // written to the session jsonl).
+    r.get('/instances/:id/attachments/:filename', async (req, res, next) => {
+      try {
+        const inst = instances.get(req.params.id);
+        if (!inst) throw Object.assign(new Error('instance not found'), { statusCode: 404 });
+        const raw = String(req.params.filename || '');
+        // Path-traversal guard: reject anything that isn't a plain basename.
+        if (!raw || raw.includes('/') || raw.includes('\\') || raw.includes('..') || raw !== path.basename(raw)) {
+          throw Object.assign(new Error('invalid attachment filename'), { statusCode: 400 });
+        }
+        const abs = path.join(attachmentsDir(inst.cwd), raw);
+        let stat;
+        try { stat = await fs.stat(abs); }
+        catch (e) {
+          if (e.code === 'ENOENT') throw Object.assign(new Error('attachment not found'), { statusCode: 404 });
+          throw e;
+        }
+        if (!stat.isFile()) throw Object.assign(new Error('attachment not found'), { statusCode: 404 });
+        const ext = (raw.split('.').pop() || '').toLowerCase();
+        const ctype = CONTENT_TYPE_BY_EXT[ext] ?? 'application/octet-stream';
+        res.setHeader('Content-Type', ctype);
+        res.setHeader('Content-Length', String(stat.size));
+        // Cache aggressively — the filename includes a timestamp so it's
+        // effectively immutable. Saves a re-fetch on every conversation
+        // re-render.
+        res.setHeader('Cache-Control', 'private, max-age=3600');
+        createReadStream(abs).pipe(res);
+      } catch (e) { next(e); }
+    });
+
     r.post('/instances/:id/hook-callback', (req, res) => {
       const inst = instances.get(req.params.id);
       if (!inst) {
