@@ -9,6 +9,7 @@ import { createWorktree, getWorktree } from './worktrees.js';
 import { buildSettingsJSON } from './settings.js';
 import { HookBroker } from './hookBroker.js';
 import { loadPersistedTranscript, writeSessionMetadata } from './transcript.js';
+import { saveAttachment, isImageType } from './attachments.js';
 
 const RING_SIZE = 500;
 // Three user-facing modes:
@@ -324,13 +325,54 @@ export class Instance extends EventEmitter {
     this.proc.stdin.write(JSON.stringify(obj) + '\n');
   }
 
-  prompt(text) {
-    if (typeof text !== 'string' || !text.length) throw new Error('prompt requires non-empty text');
+  // Send a user turn to the CLI. `attachments` is an optional list of
+  // {name, mediaType, dataBase64} objects produced by the composer:
+  //   - images → embedded inline as a vision image block AND saved to
+  //     <cwd>/.claude-orch-app/attachments/ for later browsing
+  //   - non-images → saved to attachments/ and appended to the prompt
+  //     as a text block pointing at the relative path so the model can
+  //     `Read` it
+  async prompt(text, attachments = []) {
     if (!this.proc) throw new Error('not running');
-    this._emitUi({ kind: 'user_echo', text });
+    const safeText = typeof text === 'string' ? text : '';
+    const atts = Array.isArray(attachments) ? attachments : [];
+    if (!safeText.length && atts.length === 0) {
+      throw new Error('prompt requires non-empty text or at least one attachment');
+    }
+
+    const content = [];
+    const echoAttachments = [];
+    if (safeText.length) content.push({ type: 'text', text: safeText });
+
+    for (const a of atts) {
+      if (!a || typeof a.name !== 'string' || typeof a.dataBase64 !== 'string') continue;
+      const mediaType = typeof a.mediaType === 'string' ? a.mediaType : 'application/octet-stream';
+      let saved;
+      try { saved = await saveAttachment(this.cwd, a); }
+      catch (e) {
+        this._emitUi({ kind: 'system', subtype: 'stderr', data: { line: `attachment save failed (${a.name}): ${e.message}` } });
+        continue;
+      }
+      if (isImageType(mediaType)) {
+        content.push({
+          type: 'image',
+          source: { type: 'base64', media_type: mediaType, data: a.dataBase64 },
+        });
+        echoAttachments.push({ kind: 'image', name: a.name, mediaType, dataBase64: a.dataBase64, path: saved.relPath });
+      } else {
+        content.push({ type: 'text', text: `Attached file: \`${saved.relPath}\`` });
+        echoAttachments.push({ kind: 'file', name: a.name, mediaType, path: saved.relPath });
+      }
+    }
+
+    if (content.length === 0) {
+      throw new Error('prompt requires non-empty text or at least one valid attachment');
+    }
+
+    this._emitUi({ kind: 'user_echo', text: safeText, attachments: echoAttachments });
     this._sendRaw({
       type: 'user',
-      message: { role: 'user', content: text },
+      message: { role: 'user', content },
       parent_tool_use_id: null,
     });
     this._setStatus('turn');

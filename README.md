@@ -27,7 +27,7 @@ Designed to run on a Termux phone (single user, localhost-only), but works on an
 
 ### What it does
 
-- **Project list** — sidebar shows every directory under `~/project/`. A `+ New project` button creates a directory and drops a `CLAUDE.md` that imports the workspace-wide one at `~/project/CLAUDE.md`. Worktree-owned directories (those carrying a `.claude-orch-worktree.json` marker — see "Isolated worktrees" below) are hidden from the project list and surfaced under their parent project instead. The `×` next to each project row deletes the entire project (after a typed-name confirmation prompt) — cascades through every attached instance + worktree (kills + removes them) and then `rm -rf`s the project directory itself; `~/.claude/projects/<encoded>/` session jsonls are left in place since they may still be referenced by the standalone `claude` CLI.
+- **Project list** — sidebar shows every directory under `~/project/`. A `+ New project` button creates a directory and drops a `CLAUDE.md` that imports the workspace-wide one at `~/project/CLAUDE.md`. Worktree-owned directories (those carrying a `.claude-orch-app/` dotfolder — or the legacy `.claude-orch-worktree.json` marker for worktrees created before the dotfolder reorg; see "Isolated worktrees" below) are hidden from the project list and surfaced under their parent project instead. The `×` next to each project row deletes the entire project (after a typed-name confirmation prompt) — cascades through every attached instance + worktree (kills + removes them) and then `rm -rf`s the project directory itself; `~/.claude/projects/<encoded>/` session jsonls are left in place since they may still be referenced by the standalone `claude` CLI.
 - **Isolated worktrees** — for any project that's a git repo, the new-instance dialog has a "Run in isolated git worktree" checkbox. Ticking it triggers `git worktree add ../<project>_worktree_<short-id> -b claude-orch/<short-id> <currentSha>` against the parent repo and spawns the Claude instance with `cwd` pointing at that fresh worktree. The orchestrator captures **the parent's current branch + SHA at creation time** as the rebase-back target, so you can spawn an experiment off any branch (not just `main`) and have a defined place to land it later. Each project has a default-collapsed **"Worktrees (N)"** subnode in the sidebar; from there you can spawn / resume agents into existing worktrees or remove them (refused if there's a live instance or uncommitted work, with a `force=1` override). Worktrees survive instance death — the same worktree can host multiple sequential agent runs.
   - **Rebase back into the parent** — when the agent in a worktree has finished, two header buttons drive the merge-back:
     - **Rebase** sends the agent a templated prompt asking it to commit any work, run `git rebase <baseBranch>` inside the worktree, ask the user (via `AskUserQuestion`) before making non-trivial conflict resolutions, and finally reply with the line `REBASE_DONE`. The orchestrator never runs `git rebase` itself — leaving conflict-resolution decisions to a Claude instance + the human in the loop avoids silent wrong choices.
@@ -54,7 +54,7 @@ Designed to run on a Termux phone (single user, localhost-only), but works on an
   - **System notes** — most diagnostic events (per-turn `status:"requesting"`, `rate_limit_event:"allowed"`, hook lifecycle pings, task progress) are filtered out. The ones that remain (`init`, `stderr`, `exit`, `permission_denied`, `compacting`, `spawn_error`, `crashed`, `history_load_error`, non-allowed `rate_limit_event`) render as compact one-line notes inline where they actually occurred — no more shared "SYSTEM" box that silently extends itself across turns.
   - **Turn end** — small footer line with duration / cost / tokens.
 - **Task panel** — a compact strip just above the composer that mirrors the agent's `TaskCreate` / `TaskUpdate` tool calls. Each row shows a marker (`○` pending, `▶` in progress, `✓` completed), the task subject (or the present-continuous `activeForm` while in progress — "Refactoring X"), and a `Tasks · K/N done` header. The panel is per-active-instance; switching sessions swaps in that session's tracker. It hides itself once **every** task is in `completed` state (or none exist). Tasks are grouped into **batches**: as long as at least one is still pending or in progress, the whole group (including its completed members) stays visible. When the model creates a *new* task after a previous batch finished, the historical ✓s are dropped and the panel comes back fresh — only the new in-flight batch is shown. Snapshot replay rebuilds the state deterministically, so reconnecting in the middle of a long task run shows the live progress, not an empty panel.
-- **Composer** — textarea at the bottom. Enter sends, Shift+Enter inserts a newline. The placeholder explains the current state ("turn running — your message will queue", "click Resume", etc.). The text input stays focusable during a running turn so you can queue a follow-up.
+- **Composer** — textarea at the bottom. Enter sends, Shift+Enter inserts a newline. The placeholder explains the current state ("turn running — your message will queue", "click Resume", etc.). The text input stays focusable during a running turn so you can queue a follow-up. **Attachments**: a `+` button next to Send opens a file picker; you can also paste (handy for clipboard screenshots) or drag-and-drop files onto the composer. Each attachment shows as a chip with a thumbnail (images) or filename + size (other files); the `×` removes it. Files are capped at 10 MB each; sent on submit. **Images** (png/jpeg/gif/webp) are sent as a Claude vision block so the model can actually *see* them; **other files** are saved to disk and referenced in the prompt text so Claude reads them with its `Read` tool. Either way the file lands in `<worktree>/.claude-orch-app/attachments/<timestamp>-<name>` so you can browse or reference it again later. The dotfolder is auto-added to the worktree's local `.git/info/exclude` so it doesn't surface as untracked clutter.
 - **Controls** — header bar has a 🔔/🔕 notification toggle, a mode dropdown (live switching via `control_request`), Interrupt, and Kill / Resume buttons.
 - **Browser notifications** — the 🔔 toggle requests notification permission, then fires a desktop / Android notification whenever any instance's turn finishes while the tab is hidden (errors notify even when visible). On page reload the bell auto-enables itself if permission was already granted in a previous session. Notifications are dispatched through a tiny Service Worker (`public/sw.js`) because mobile Chrome refuses the page-level `new Notification(...)` constructor; tapping a ping focuses the existing tab via `notificationclick` in the SW. Works for background instances you aren't currently viewing — the orchestrator broadcasts a `turn_notification` to all connected WS clients regardless of which instance they're subscribed to.
 - **Resume** — same Sessions subnode as above. Clicking a non-live row spawns an instance with `--resume <sessionId>` against the matching cwd (orchestrator defaults for mode/effort/thinking — adjustable from the header dropdown after the resume lands). The orchestrator refuses to resume into a session already attached to a running instance (`409 "session … already attached"`). On resume the persisted transcript from `~/.claude/projects/<encoded-cwd>/<sid>.jsonl` is replayed into the conversation view before the live stream takes over, with a `── N prior messages replayed ──` divider separating history from the new turn.
@@ -121,7 +121,7 @@ The orchestrator-tracked `ask` mode maps to `bypassPermissions` at the CLI level
 
 The CLI then reads JSON lines on stdin and emits JSON lines on stdout. Inbound message types we send:
 
-- `{"type":"user","message":{"role":"user","content":"..."},"parent_tool_use_id":null}` — new user turn.
+- `{"type":"user","message":{"role":"user","content":"..."},"parent_tool_use_id":null}` — new user turn. `content` is either a plain string (text-only prompts) or an array of blocks (`{type:"text",text}`, `{type:"image",source:{type:"base64",media_type,data}}`) when the prompt carries attachments.
 - `{"type":"control_request","request_id":"<uuid>","request":{"subtype":"set_permission_mode","mode":"plan"}}` — switch mode without restarting (e.g. flipping between `plan` and `bypassPermissions`).
 - `{"type":"control_request","request_id":"<uuid>","request":{"subtype":"interrupt"}}` — abort the current turn.
 - `{"type":"keep_alive"}` — heartbeat.
@@ -172,12 +172,24 @@ claude-orch-app/
 │   │                         POST rebase-prompt + fast-forward-parent.
 │   ├── worktrees.js          Git worktree operations. createWorktree captures
 │   │                         {baseBranch, baseSha, branch} at HEAD, writes a
-│   │                         .claude-orch-worktree.json marker so listProjects
+│   │                         .claude-orch-app/worktree.json marker so listProjects
 │   │                         can filter the dir out, and runs `git worktree add`
-│   │                         off the captured SHA. fastForwardParent does the
-│   │                         merge-back with safety checks (parent on
-│   │                         baseBranch + clean tree). buildRebasePrompt is the
-│   │                         templated prompt sent to the agent.
+│   │                         off the captured SHA. Also adds the dotfolder to the
+│   │                         worktree's local .git/info/exclude so the orchestrator's
+│   │                         own state doesn't pollute git status. Read path falls
+│   │                         back to the legacy .claude-orch-worktree.json filename
+│   │                         so worktrees from before the reorg keep working.
+│   │                         fastForwardParent does the merge-back with safety
+│   │                         checks (parent on baseBranch + clean tree).
+│   │                         buildRebasePrompt is the templated prompt sent to
+│   │                         the agent.
+│   ├── attachments.js        Per-worktree attachment storage. saveAttachment(cwd,
+│   │                         {name, dataBase64}) decodes the base64 payload into
+│   │                         .claude-orch-app/attachments/<stamp>-<safe-name>
+│   │                         and returns both abs + relative paths. isImageType()
+│   │                         classifies images vs. non-images so prompt() can build
+│   │                         a vision block (image) or a path-reference text block
+│   │                         (non-image).
 │   └── wsHub.js              Per-socket subscriptions; snapshot replay; fan-out;
 │                             prompt/mode/interrupt/kill/hook_decision via WS;
 │                             broadcasts turn_notification to every client on
@@ -210,7 +222,10 @@ claude-orch-app/
 │   ├── diff.js               Pure-JS Myers' line-diff + diffStats().
 │   ├── notifications.js      Notification API wrapper + pure shouldNotify()
 │   │                         decision used by both runtime and tests.
-│   └── composer.js           Textarea (Enter→send / Shift+Enter→newline).
+│   └── composer.js           Textarea (Enter→send / Shift+Enter→newline) plus
+│                              the `+` attach button, file picker, chip strip with
+│                              image previews, paste + drag-and-drop handlers, and
+│                              base64 encoding of each attachment for the WS payload.
 └── tests/
     ├── run.mjs               Programmatic node:test runner (the Termux node wrapper
     │                         hoists leading --flags into NODE_OPTIONS, which forbids
@@ -277,7 +292,7 @@ One persistent connection at `ws://127.0.0.1:8787/ws`, multiplexed across instan
 |---|---|---|
 | `subscribe` | `id`, optional `reqId` | Subscribe to live events for an instance. Triggers a `snapshot` message followed by live `event`s. |
 | `unsubscribe` | `id` | Stop receiving events. |
-| `prompt` | `id`, `text` | Send a user message. |
+| `prompt` | `id`, `text`, `attachments?` | Send a user message. `attachments` is an optional list of `{name, mediaType, dataBase64}` objects — images become vision blocks, other files are saved to `<cwd>/.claude-orch-app/attachments/` and referenced by path in the prompt. |
 | `mode` | `id`, `mode` | Switch permission mode via `control_request set_permission_mode` (`plan` / `ask` / `bypassPermissions`; `ask` maps to `bypassPermissions` at the CLI level). |
 | `interrupt` | `id` | Abort current turn via `control_request interrupt`. |
 | `kill` | `id` | SIGTERM the subprocess. |

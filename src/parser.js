@@ -13,7 +13,7 @@
 //   tool_use_input_delta    { msgId, blockIdx, toolUseId, partialJson }
 //   tool_use                { msgId, blockIdx, toolUseId, name, input }
 //   tool_result             { toolUseId, content, isError }
-//   user_echo               { text }
+//   user_echo               { text, attachments?: [{kind:'image'|'file', ...}] }
 //   system                  { subtype, data }
 //   hook                    { event, data }
 //   assistant_message       { msgId, message }              // final reconciled message
@@ -248,6 +248,13 @@ export class Parser {
     }
     if (!Array.isArray(content)) return [];
     const out = [];
+    // Group text + image blocks of a single user message into one
+    // user_echo so the bubble renders text and attachments together.
+    // Tool_result blocks remain their own events — they're how the CLI
+    // delivers tool output back to the model and never coexist with
+    // user-authored text/images in the same message.
+    const echoTexts = [];
+    const echoAttachments = [];
     for (const block of content) {
       if (!block || typeof block !== 'object') continue;
       if (block.type === 'tool_result') {
@@ -258,8 +265,24 @@ export class Parser {
           isError: !!block.is_error,
         });
       } else if (block.type === 'text') {
-        out.push({ kind: 'user_echo', text: block.text ?? '' });
+        if (typeof block.text === 'string') echoTexts.push(block.text);
+      } else if (block.type === 'image') {
+        const src = block.source ?? {};
+        if (src.type === 'base64' && typeof src.data === 'string') {
+          echoAttachments.push({
+            kind: 'image',
+            mediaType: src.media_type ?? 'image/png',
+            dataBase64: src.data,
+          });
+        }
       }
+    }
+    if (echoTexts.length || echoAttachments.length) {
+      out.push({
+        kind: 'user_echo',
+        text: echoTexts.join('\n'),
+        attachments: echoAttachments,
+      });
     }
     return out;
   }

@@ -26,6 +26,9 @@ const dom = {
   composerForm: document.getElementById('composer'),
   composerInput: document.getElementById('composer-input'),
   composerSend: document.getElementById('composer-send'),
+  composerAttach: document.getElementById('composer-attach'),
+  composerFile: document.getElementById('composer-file'),
+  composerAttachments: document.getElementById('composer-attachments'),
   modeSelect: document.getElementById('mode-select'),
   interruptBtn: document.getElementById('interrupt-btn'),
   killBtn: document.getElementById('kill-btn'),
@@ -160,7 +163,15 @@ const composer = attachComposer({
   form: dom.composerForm,
   textarea: dom.composerInput,
   sendBtn: dom.composerSend,
-  onSubmit: (text) => { if (state.activeId) send('prompt', { id: state.activeId, text }); },
+  attachBtn: dom.composerAttach,
+  fileInput: dom.composerFile,
+  chipsContainer: dom.composerAttachments,
+  onSubmit: ({ text, attachments }) => {
+    if (!state.activeId) return;
+    const payload = { id: state.activeId, text };
+    if (Array.isArray(attachments) && attachments.length) payload.attachments = attachments;
+    send('prompt', payload);
+  },
 });
 
 dom.modeSelect.addEventListener('change', async () => {

@@ -27,6 +27,19 @@ export class TextBlock {
   finalize() {}
 }
 
+// Renders an inline base64 image (no streaming — user attachments arrive
+// whole). The thumbnail is clickable so the user can open the original.
+export class ImageBlock {
+  constructor({ mediaType, dataBase64, name } = {}) {
+    const url = `data:${mediaType || 'image/png'};base64,${dataBase64 || ''}`;
+    const img = el('img', { class: 'block-image-img', src: url, alt: name || 'attached image' });
+    const link = el('a', { href: url, target: '_blank', rel: 'noopener' }, img);
+    this.node = el('div', { class: 'block image' }, link);
+  }
+  appendDelta() {}
+  finalize() {}
+}
+
 export class ThinkingBlock {
   constructor() {
     this.body = el('div', { class: 'body' });

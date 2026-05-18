@@ -63,10 +63,48 @@ test('createWorktree creates a sibling directory with metadata and a fresh branc
     const wtBranch = (await git(wt.worktreePath, 'symbolic-ref', '--short', 'HEAD')).stdout.trim();
     assert.equal(wtBranch, wt.branch);
 
-    // Metadata file is at the worktree root and round-trips.
-    const meta = JSON.parse(await fs.readFile(path.join(wt.worktreePath, '.claude-orch-worktree.json'), 'utf8'));
+    // Metadata file is inside the per-worktree dotfolder and round-trips.
+    const meta = JSON.parse(await fs.readFile(path.join(wt.worktreePath, '.claude-orch-app', 'worktree.json'), 'utf8'));
     assert.equal(meta.parentProject, 'demo');
     assert.equal(meta.baseBranch, 'main');
+    // The dotfolder is added to the worktree's local exclude file so `git
+    // status` inside the worktree doesn't surface it as untracked clutter.
+    const gitDir = (await git(wt.worktreePath, 'rev-parse', '--git-path', 'info/exclude')).stdout.trim();
+    const excludeAbs = path.isAbsolute(gitDir) ? gitDir : path.join(wt.worktreePath, gitDir);
+    const exclude = await fs.readFile(excludeAbs, 'utf8');
+    assert.match(exclude, /\/\.claude-orch-app\//);
+  } finally { await ctx.close(); }
+});
+
+test('readMeta falls back to the legacy `.claude-orch-worktree.json` path', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO });
+  try {
+    const repoPath = await makeRealRepo(ctx.projectsRoot, 'legacy');
+    // Build a worktree the new way, then move the metadata back to the
+    // legacy filename so we simulate a worktree created before the reorg.
+    const r = await api(ctx.baseUrl, 'POST', '/api/instances', {
+      project: 'legacy', mode: 'bypassPermissions', worktree: true,
+    });
+    assert.equal(r.status, 201);
+    const id = r.body.id;
+    await api(ctx.baseUrl, 'DELETE', `/api/instances/${id}`);
+    const wt = (await listWorktrees('legacy'))[0];
+    await fs.rename(
+      path.join(wt.worktreePath, '.claude-orch-app', 'worktree.json'),
+      path.join(wt.worktreePath, '.claude-orch-worktree.json'),
+    );
+    await fs.rm(path.join(wt.worktreePath, '.claude-orch-app'), { recursive: true, force: true });
+
+    // listWorktrees should still discover it via the legacy filename.
+    const found = await listWorktrees('legacy');
+    assert.equal(found.length, 1, 'worktree must be discoverable via legacy marker');
+    assert.equal(found[0].parentProject, 'legacy');
+
+    // listProjects must still skip the worktree dir even though only the
+    // legacy marker is present.
+    const projects = await api(ctx.baseUrl, 'GET', '/api/projects');
+    const names = projects.body.map(p => p.name);
+    assert.deepEqual(names, ['legacy'], 'projects list must not leak legacy-marker worktrees');
   } finally { await ctx.close(); }
 });
 

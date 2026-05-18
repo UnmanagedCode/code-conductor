@@ -523,12 +523,19 @@ input:focus, textarea:focus, select:focus { outline: 2px solid var(--accent); ou
 .task-row.task-in_progress .task-text { font-weight: 500; }
 
 #composer {
-  display: flex; gap: 6px; padding: 10px 14px; border-top: 1px solid var(--border);
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 10px 14px; border-top: 1px solid var(--border);
   background: var(--panel);
 }
+#composer.drag-over { background: rgba(110, 168, 255, 0.08); }
+#composer .composer-row { display: flex; gap: 6px; align-items: stretch; }
 #composer textarea {
   flex: 1; resize: none; min-height: 40px; max-height: 240px;
   font-family: ui-monospace, monospace; font-size: 13px;
+}
+#composer-attach {
+  min-width: 36px; padding: 0 10px;
+  font-size: 18px; line-height: 1;
 }
 #composer-send {
   align-self: stretch; min-width: 80px;
@@ -537,6 +544,48 @@ input:focus, textarea:focus, select:focus { outline: 2px solid var(--accent); ou
 }
 #composer-send:hover:not(:disabled) { background: #8cb9ff; border-color: #8cb9ff; }
 #composer-send:disabled { background: var(--panel-2); color: var(--muted); border-color: var(--border); font-weight: 400; }
+
+.composer-attachments {
+  display: flex; flex-wrap: wrap; gap: 6px;
+}
+.composer-attachment-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 4px 6px 4px 4px;
+  background: var(--panel-2, #1a1d28); border: 1px solid var(--border);
+  border-radius: 8px; font-size: 11px; color: var(--text);
+  max-width: 100%;
+}
+.composer-attachment-chip.has-error { border-color: var(--red); color: var(--red); }
+.composer-attachment-chip img {
+  width: 28px; height: 28px; object-fit: cover; border-radius: 4px;
+  display: block;
+}
+.composer-attachment-chip .cac-icon { font-size: 14px; }
+.composer-attachment-chip .cac-meta {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  max-width: 220px;
+}
+.composer-attachment-chip .cac-remove {
+  background: transparent; border: none; color: var(--muted);
+  cursor: pointer; padding: 0 4px; font-size: 14px; line-height: 1;
+}
+.composer-attachment-chip .cac-remove:hover { color: var(--red); }
+
+.block.image {
+  margin: 4px 0;
+}
+.block.image .block-image-img {
+  max-width: 280px; max-height: 280px;
+  border-radius: 6px; border: 1px solid var(--border);
+  display: block;
+}
+.block.file-attachment {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 4px 8px; margin: 4px 0;
+  background: var(--panel-2, #1a1d28); border: 1px solid var(--border);
+  border-radius: 6px; font-size: 12px;
+}
+.block.file-attachment .fa-path { color: var(--muted); font-family: ui-monospace, monospace; font-size: 11px; }
 
 dialog {
   border: 1px solid var(--border); background: var(--panel); color: var(--text);

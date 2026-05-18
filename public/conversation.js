@@ -3,7 +3,7 @@
 // replays don't duplicate prior content.
 
 import { TextBlock, ThinkingBlock, ToolUseBlock, ToolResultBlock, SystemBlock, TurnEndBlock,
-  UserQuestionBlock, PlanRequestBlock, PermissionRequestBlock,
+  UserQuestionBlock, PlanRequestBlock, PermissionRequestBlock, ImageBlock,
   shouldRenderSystem, el } from './blocks.js';
 
 export class Conversation {
@@ -166,9 +166,27 @@ export class Conversation {
   }
 
   _renderUserEcho(ev) {
+    const blocks = el('div', { class: 'blocks' });
+    const text = ev.text ?? '';
+    if (text.length) blocks.appendChild(el('div', { class: 'block text' }, text));
+    for (const a of (ev.attachments ?? [])) {
+      if (a?.kind === 'image' && typeof a.dataBase64 === 'string') {
+        blocks.appendChild(new ImageBlock(a).node);
+      } else if (a?.kind === 'file' && typeof a.path === 'string') {
+        blocks.appendChild(el('div', { class: 'block file-attachment' },
+          el('span', { class: 'fa-icon' }, '📎'),
+          el('span', { class: 'fa-name' }, a.name ?? a.path),
+          el('span', { class: 'fa-path' }, ` (${a.path})`),
+        ));
+      }
+    }
+    if (!blocks.childNodes.length) {
+      // Defensive — never produce an empty user bubble.
+      blocks.appendChild(el('div', { class: 'block text' }, ''));
+    }
     const wrap = el('div', { class: 'msg user' },
       el('div', { class: 'role' }, 'user'),
-      el('div', { class: 'blocks' }, el('div', { class: 'block text' }, ev.text ?? '')),
+      blocks,
     );
     this.root.appendChild(wrap);
   }

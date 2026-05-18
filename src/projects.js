@@ -3,11 +3,23 @@ import path from 'node:path';
 import os from 'node:os';
 
 const NAME_RE = /^[a-zA-Z0-9._-]+$/;
-// Directories owned by the orchestrator's worktree feature carry this
-// marker file at their root (see src/worktrees.js). Top-level project
-// listing filters them out so they aren't presented as standalone
-// projects — they appear as a child node under the parent instead.
-const WORKTREE_MARKER = '.claude-orch-worktree.json';
+// Directories owned by the orchestrator's worktree feature carry one of
+// these marker paths (see src/worktrees.js). New worktrees use the
+// `.claude-orch-app/worktree.json` dotfolder layout; older ones still
+// have the single `.claude-orch-worktree.json` file at the root. Top-
+// level project listing filters them out so they aren't presented as
+// standalone projects — they appear as a child node under the parent.
+const WORKTREE_MARKERS = ['.claude-orch-app/worktree.json', '.claude-orch-worktree.json'];
+
+async function isWorktreeMarkerPresent(dir) {
+  for (const marker of WORKTREE_MARKERS) {
+    try {
+      await fs.access(path.join(dir, marker));
+      return true;
+    } catch { /* try next */ }
+  }
+  return false;
+}
 
 export function projectsRoot() {
   return process.env.PROJECTS_ROOT ?? path.join(os.homedir(), 'project');
@@ -48,10 +60,7 @@ export async function listProjects() {
     const full = path.join(root, e.name);
     // Skip orchestrator-owned worktree dirs — they're surfaced under
     // their parent project, not as top-level projects.
-    try {
-      await fs.access(path.join(full, WORKTREE_MARKER));
-      continue;
-    } catch { /* not a worktree — keep it */ }
+    if (await isWorktreeMarkerPresent(full)) continue;
     out.push({ name: e.name, path: full });
   }
   out.sort((a, b) => a.name.localeCompare(b.name));

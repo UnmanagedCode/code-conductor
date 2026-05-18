@@ -41,8 +41,13 @@
       <div id="conversation" class="conversation"></div>
       <div id="task-panel" hidden></div>
       <form id="composer" autocomplete="off">
-        <textarea id="composer-input" placeholder="Send a message — Enter to send, Shift+Enter for newline" rows="2" disabled></textarea>
-        <button id="composer-send" type="submit" disabled>Send</button>
+        <div id="composer-attachments" class="composer-attachments" hidden></div>
+        <div class="composer-row">
+          <textarea id="composer-input" placeholder="Send a message — Enter to send, Shift+Enter for newline" rows="2" disabled></textarea>
+          <input id="composer-file" type="file" multiple hidden />
+          <button id="composer-attach" type="button" class="composer-attach" title="Attach files (images or any file)" disabled>+</button>
+          <button id="composer-send" type="submit" disabled>Send</button>
+        </div>
       </form>
     </main>
   </div>

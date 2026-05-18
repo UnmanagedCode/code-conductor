@@ -73,7 +73,7 @@ export function buildRoutes({ instances } = {}) {
   });
 
   // List worktrees that belong to a project. Returns the same metadata
-  // shape that's stored in each worktree's .claude-orch-worktree.json,
+  // shape that's stored in each worktree's .claude-orch-app/worktree.json,
   // augmented with the currently-running instance id (if any).
   r.get('/projects/:name/worktrees', async (req, res, next) => {
     try {
@@ -202,7 +202,7 @@ export function buildRoutes({ instances } = {}) {
         if (!inst.worktree) throw Object.assign(new Error('instance is not attached to a worktree'), { statusCode: 400 });
         if (!inst.proc) throw Object.assign(new Error('instance is not running'), { statusCode: 409 });
         const prompt = buildRebasePrompt(inst.worktree);
-        inst.prompt(prompt);
+        await inst.prompt(prompt);
         res.json({ ok: true });
       } catch (e) { next(e); }
     });

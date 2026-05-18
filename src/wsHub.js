@@ -3,7 +3,7 @@
 // Client → server:
 //   { t: "subscribe",   id }
 //   { t: "unsubscribe", id }
-//   { t: "prompt",         id, text }
+//   { t: "prompt",         id, text, attachments?: [{name, mediaType, dataBase64}] }
 //   { t: "mode",           id, mode }
 //   { t: "interrupt",      id }
 //   { t: "kill",           id }
@@ -113,7 +113,15 @@ export function attachWsHub({ wss, instances }) {
           }
           case 'prompt': {
             if (!inst) { reply(false, 'unknown instance'); return; }
-            inst.prompt(String(msg.text ?? ''));
+            const atts = Array.isArray(msg.attachments)
+              ? msg.attachments.filter(a =>
+                  a && typeof a === 'object' &&
+                  typeof a.name === 'string' &&
+                  typeof a.dataBase64 === 'string' &&
+                  typeof a.mediaType === 'string',
+                )
+              : [];
+            await inst.prompt(String(msg.text ?? ''), atts);
             reply(true);
             return;
           }
