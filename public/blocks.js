@@ -286,15 +286,24 @@ export const _internalRenderers = { renderEditDiff, renderWritePreview, renderNo
 //
 // Internal answer states per question:
 //   { kind: 'none' }
-//   { kind: 'option', label }          (single-select pick)
-//   { kind: 'multi', labels: [...] }   (multi-select picks)
-//   { kind: 'custom', text }           (user typed answer in the "Other" field)
+//   { kind: 'option', label, note? }   (single-select pick + optional note)
+//   { kind: 'multi', labels, note? }   (multi-select picks + optional note)
+//   { kind: 'custom', text }           (user typed answer in the "Other" field, no pick)
+//
+// The text input plays two roles: before any option is picked it is the
+// "Other" free-form answer; once an option is picked it becomes the
+// "Add a note (optional)" field attached to that pick. Typed text persists
+// in `this.drafts[idx]` across that role flip.
 export class UserQuestionBlock {
   constructor(ev, onSubmit) {
     this.toolUseId = ev.toolUseId;
     this.onSubmit = onSubmit;
     this.questions = Array.isArray(ev.questions) ? ev.questions : [];
     this.answers = this.questions.map(() => ({ kind: 'none' }));
+    // Per-question text typed into the input. Persists across role flips
+    // between "Other answer" (no pick) and "note on a pick" so the user
+    // never loses what they wrote when they tap an option.
+    this.drafts = this.questions.map(() => '');
     this.activeIdx = 0;
     this.submitted = false;
 
@@ -378,18 +387,33 @@ export class UserQuestionBlock {
     if (this.submitted) return;
     const q = this.questions[idx];
     const current = this.answers[idx];
+    const draft = this.drafts[idx];
+
+    let labels;
     if (q.multiSelect) {
-      const labels = current.kind === 'multi' ? [...current.labels] : [];
+      labels = current.kind === 'multi' ? [...current.labels] : [];
       const at = labels.indexOf(label);
       if (at >= 0) labels.splice(at, 1);
       else labels.push(label);
-      this.answers[idx] = labels.length ? { kind: 'multi', labels } : { kind: 'none' };
     } else {
-      if (current.kind === 'option' && current.label === label) {
-        this.answers[idx] = { kind: 'none' };
-      } else {
-        this.answers[idx] = { kind: 'option', label };
-      }
+      const same = current.kind === 'option' && current.label === label;
+      labels = same ? [] : [label];
+    }
+
+    if (labels.length === 0) {
+      // No picks left — fall back to the draft text as a free-form
+      // "Other" answer, or to `none` when there's nothing typed.
+      this.answers[idx] = draft.length > 0
+        ? { kind: 'custom', text: draft }
+        : { kind: 'none' };
+    } else if (q.multiSelect) {
+      this.answers[idx] = draft.length > 0
+        ? { kind: 'multi', labels, note: draft }
+        : { kind: 'multi', labels };
+    } else {
+      this.answers[idx] = draft.length > 0
+        ? { kind: 'option', label: labels[0], note: draft }
+        : { kind: 'option', label: labels[0] };
     }
     this._render();
   }
@@ -399,10 +423,17 @@ export class UserQuestionBlock {
     // Preserve the text exactly as typed — including spaces. Previously
     // we trimmed here, then _render wrote the trimmed value back into
     // input.value, which silently swallowed every space the user typed.
-    if (text.length === 0) {
-      this.answers[idx] = { kind: 'none' };
+    this.drafts[idx] = text;
+    const current = this.answers[idx];
+    const hasPick = current.kind === 'option' || current.kind === 'multi';
+    if (hasPick) {
+      const next = { ...current };
+      if (text.length > 0) next.note = text; else delete next.note;
+      this.answers[idx] = next;
     } else {
-      this.answers[idx] = { kind: 'custom', text };
+      this.answers[idx] = text.length === 0
+        ? { kind: 'none' }
+        : { kind: 'custom', text };
     }
     this._render();
   }
@@ -429,8 +460,12 @@ export class UserQuestionBlock {
         btn.classList.toggle('picked', picked);
       });
       const input = activePane.querySelector('.uq-custom-input');
+      const labelSpan = activePane.querySelector('.uq-custom-label');
       if (input) {
-        const want = answer.kind === 'custom' ? answer.text : '';
+        const isNoteMode = answer.kind === 'option' || answer.kind === 'multi';
+        if (labelSpan) labelSpan.textContent = isNoteMode ? 'Add a note (optional)' : 'Other:';
+        input.placeholder = isNoteMode ? 'Add a note (optional)…' : 'Or type your own answer…';
+        const want = this.drafts[this.activeIdx] || '';
         if (input.value !== want) input.value = want;
         input.classList.toggle('active', answer.kind === 'custom');
       }
@@ -474,29 +509,30 @@ export class UserQuestionBlock {
 // Format the per-question answer into the text we send to the model.
 // Exported so app.js (and tests) can use the same canonical formatting.
 export function formatUserQuestionAnswers(questions, answers) {
+  const renderAnswer = (a) => {
+    if (a?.kind === 'option') {
+      const note = a.note?.trim();
+      return note ? `${a.label} — ${note}` : a.label;
+    }
+    if (a?.kind === 'multi') {
+      const joined = a.labels.join(', ');
+      const note = a.note?.trim();
+      return note ? `${joined} — ${note}` : joined;
+    }
+    if (a?.kind === 'custom') return a.text.trim();
+    return '(no answer)';
+  };
   const lines = [];
   for (let i = 0; i < questions.length; i++) {
     const q = questions[i];
-    const a = answers[i];
     const qText = (q?.question ?? `Question ${i + 1}`).replace(/\s+/g, ' ').trim();
-    let answerText;
-    if (a?.kind === 'option') answerText = a.label;
-    else if (a?.kind === 'multi') answerText = a.labels.join(', ');
-    else if (a?.kind === 'custom') answerText = a.text.trim();
-    else answerText = '(no answer)';
-    lines.push(`- ${qText}: ${answerText}`);
+    lines.push(`- ${qText}: ${renderAnswer(answers[i])}`);
   }
   if (lines.length === 1) {
     // single-question short form
     const q = questions[0];
-    const a = answers[0];
     const qText = (q?.question ?? 'Question').replace(/\s+/g, ' ').trim();
-    let answerText;
-    if (a?.kind === 'option') answerText = a.label;
-    else if (a?.kind === 'multi') answerText = a.labels.join(', ');
-    else if (a?.kind === 'custom') answerText = a.text.trim();
-    else answerText = '(no answer)';
-    return `Answer to "${qText}": ${answerText}`;
+    return `Answer to "${qText}": ${renderAnswer(answers[0])}`;
   }
   return `My answers:\n${lines.join('\n')}`;
 }

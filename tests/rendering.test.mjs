@@ -305,6 +305,207 @@ test('formatUserQuestionAnswers: single-question short form, multi-question bull
   );
 });
 
+test('DOM: picking an option flips the custom input into a "note" field and attaches the note to the answer', async () => {
+  const { root, Parser, Conversation } = await setupDOM();
+  const submissions = [];
+  const conversation = new Conversation(root, {
+    onUserQuestionSubmit: (s) => submissions.push(s),
+  });
+  feed(new Parser(), conversation, askUserQuestionStream());
+
+  const card = root.querySelector('.block.user-question');
+  const buttons = card.querySelectorAll('button.uq-opt');
+  const input = card.querySelector('.uq-custom-input');
+  const labelSpan = card.querySelector('.uq-custom-label');
+  const submit = card.querySelector('.uq-submit');
+
+  // Pre-selection: label is "Other:", input is not the active highlight.
+  assert.equal(labelSpan.textContent, 'Other:');
+  assert.ok(!input.classList.contains('active'));
+
+  // Pick Apple → label/placeholder swap to note mode; input not highlighted.
+  buttons[0].click();
+  assert.equal(labelSpan.textContent, 'Add a note (optional)');
+  assert.match(input.placeholder, /optional/);
+  assert.ok(!input.classList.contains('active'), 'note-mode input is not the "custom" highlight');
+
+  // Type a note. Submit. The note must travel with the option in the answer.
+  input.value = "it's in season";
+  input.dispatchEvent(new window.Event('input'));
+  assert.equal(submit.disabled, false);
+  submit.click();
+  assert.deepEqual(submissions[0].answers[0], { kind: 'option', label: 'Apple', note: "it's in season" });
+});
+
+test('DOM: option with no note submits without a `note` field (clean shape)', async () => {
+  const { root, Parser, Conversation } = await setupDOM();
+  const submissions = [];
+  const conversation = new Conversation(root, {
+    onUserQuestionSubmit: (s) => submissions.push(s),
+  });
+  feed(new Parser(), conversation, askUserQuestionStream());
+
+  const card = root.querySelector('.block.user-question');
+  card.querySelectorAll('button.uq-opt')[0].click();
+  card.querySelector('.uq-submit').click();
+  assert.deepEqual(submissions[0].answers[0], { kind: 'option', label: 'Apple' });
+});
+
+test('DOM: typed draft persists across pick → un-pick, flipping between note and custom', async () => {
+  const { root, Parser, Conversation } = await setupDOM();
+  const submissions = [];
+  const conversation = new Conversation(root, {
+    onUserQuestionSubmit: (s) => submissions.push(s),
+  });
+  feed(new Parser(), conversation, askUserQuestionStream());
+
+  const card = root.querySelector('.block.user-question');
+  const apple = card.querySelectorAll('button.uq-opt')[0];
+  const input = card.querySelector('.uq-custom-input');
+
+  // Type Mango (acts as custom answer pre-selection).
+  input.value = 'Mango';
+  input.dispatchEvent(new window.Event('input'));
+  assert.ok(input.classList.contains('active'), 'custom highlight while no pick');
+
+  // Pick Apple — text persists; role flips to note.
+  apple.click();
+  assert.equal(input.value, 'Mango', 'typed text must survive role flip');
+  assert.ok(!input.classList.contains('active'), 'no custom highlight in note mode');
+
+  // Un-pick Apple — falls back to a custom answer carrying the same draft.
+  apple.click();
+  assert.equal(input.value, 'Mango', 'typed text must survive un-pick');
+  assert.ok(input.classList.contains('active'), 'custom highlight restored after un-pick');
+
+  // Submit the custom fallback.
+  card.querySelector('.uq-submit').click();
+  assert.deepEqual(submissions[0].answers[0], { kind: 'custom', text: 'Mango' });
+});
+
+test('DOM: custom-input label and placeholder swap to "Add a note (optional)" once an option is picked', async () => {
+  const { root, Parser, Conversation } = await setupDOM();
+  const conversation = new Conversation(root, { onUserQuestionSubmit: () => {} });
+  feed(new Parser(), conversation, askUserQuestionStream());
+
+  const card = root.querySelector('.block.user-question');
+  const labelSpan = card.querySelector('.uq-custom-label');
+  const input = card.querySelector('.uq-custom-input');
+  const apple = card.querySelectorAll('button.uq-opt')[0];
+
+  assert.equal(labelSpan.textContent, 'Other:');
+  assert.match(input.placeholder, /type your own/);
+
+  apple.click();
+  assert.equal(labelSpan.textContent, 'Add a note (optional)');
+  assert.match(input.placeholder, /optional/);
+
+  apple.click(); // un-pick
+  assert.equal(labelSpan.textContent, 'Other:');
+  assert.match(input.placeholder, /type your own/);
+});
+
+test('DOM: multi-select shares one note across all picked labels', async () => {
+  const { root, Parser, Conversation } = await setupDOM();
+  const submissions = [];
+  const conversation = new Conversation(root, {
+    onUserQuestionSubmit: (s) => submissions.push(s),
+  });
+  const inputObj = {
+    questions: [
+      { question: 'Pick fruits', header: 'Fruits', multiSelect: true, options: [{ label: 'Apple' }, { label: 'Banana' }] },
+    ],
+  };
+  feed(new Parser(), conversation, [
+    { type: 'stream_event', event: { type: 'message_start', message: { id: 'm', role: 'assistant' } } },
+    { type: 'stream_event', event: { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'tu_multi_note', name: 'AskUserQuestion', input: {} } } },
+    { type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: JSON.stringify(inputObj) } } },
+    { type: 'stream_event', event: { type: 'content_block_stop', index: 0 } },
+  ]);
+
+  const card = root.querySelector('.block.user-question');
+  const opts = card.querySelectorAll('button.uq-opt');
+  const input = card.querySelector('.uq-custom-input');
+
+  opts[0].click();
+  opts[1].click();
+  input.value = 'for v2';
+  input.dispatchEvent(new window.Event('input'));
+  card.querySelector('.uq-submit').click();
+  assert.deepEqual(submissions[0].answers[0], { kind: 'multi', labels: ['Apple', 'Banana'], note: 'for v2' });
+});
+
+test('DOM: multi-select — un-picking all options with a draft reverts to custom answer', async () => {
+  const { root, Parser, Conversation } = await setupDOM();
+  const submissions = [];
+  const conversation = new Conversation(root, {
+    onUserQuestionSubmit: (s) => submissions.push(s),
+  });
+  const inputObj = {
+    questions: [
+      { question: 'Pick fruits', header: 'Fruits', multiSelect: true, options: [{ label: 'Apple' }, { label: 'Banana' }] },
+    ],
+  };
+  feed(new Parser(), conversation, [
+    { type: 'stream_event', event: { type: 'message_start', message: { id: 'm', role: 'assistant' } } },
+    { type: 'stream_event', event: { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'tu_multi_fb', name: 'AskUserQuestion', input: {} } } },
+    { type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: JSON.stringify(inputObj) } } },
+    { type: 'stream_event', event: { type: 'content_block_stop', index: 0 } },
+  ]);
+
+  const card = root.querySelector('.block.user-question');
+  const apple = card.querySelectorAll('button.uq-opt')[0];
+  const input = card.querySelector('.uq-custom-input');
+  const submit = card.querySelector('.uq-submit');
+
+  input.value = 'Mango';
+  input.dispatchEvent(new window.Event('input'));
+  apple.click(); // pick → note mode
+  apple.click(); // un-pick → no labels left, draft falls back to custom
+
+  assert.equal(submit.disabled, false);
+  submit.click();
+  assert.deepEqual(submissions[0].answers[0], { kind: 'custom', text: 'Mango' });
+});
+
+test('formatUserQuestionAnswers: notes are appended with an em dash; whitespace-only notes are suppressed', async () => {
+  const { formatUserQuestionAnswers } = await import(
+    new URL('../public/blocks.js', import.meta.url).href
+  );
+
+  // Option with note.
+  assert.equal(
+    formatUserQuestionAnswers(
+      [{ question: 'Pick a fruit' }],
+      [{ kind: 'option', label: 'Apple', note: "it's in season" }],
+    ),
+    'Answer to "Pick a fruit": Apple — it\'s in season',
+  );
+
+  // Multi with note.
+  assert.match(
+    formatUserQuestionAnswers(
+      [{ question: 'Pick features' }],
+      [{ kind: 'multi', labels: ['Auth', 'Search'], note: 'needed for v2' }],
+    ),
+    /Auth, Search — needed for v2/,
+  );
+
+  // Regression: option without note must still produce today's exact short form.
+  assert.equal(
+    formatUserQuestionAnswers([{ question: 'Pick a fruit' }], [{ kind: 'option', label: 'Apple' }]),
+    'Answer to "Pick a fruit": Apple',
+  );
+
+  // Whitespace-only note: no em dash in the output.
+  const ws = formatUserQuestionAnswers(
+    [{ question: 'Pick a fruit' }],
+    [{ kind: 'option', label: 'Apple', note: '   ' }],
+  );
+  assert.equal(ws, 'Answer to "Pick a fruit": Apple');
+  assert.ok(!ws.includes('—'), 'whitespace-only note must not produce an em dash');
+});
+
 test('DOM: noisy system events (status, rate_limit_event:allowed) are dropped from the conversation', async () => {
   const { document, root, Parser, Conversation } = await setupDOM();
   const conv = new Conversation(root);
