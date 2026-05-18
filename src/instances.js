@@ -2,71 +2,13 @@ import { spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import readline from 'node:readline';
-import path from 'node:path';
-import { promises as fs, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { Parser } from './parser.js';
-import { getProject, encodeCwd, claudeProjectsRoot } from './projects.js';
+import { getProject } from './projects.js';
 import { createWorktree, getWorktree } from './worktrees.js';
-
-// Static deny used for AskUserQuestion / ExitPlanMode. The CLI receives an
-// is_error tool_result with this reason and the model typically wraps up
-// with a brief "waiting for your response" and ends the turn cleanly — no
-// control_request interrupt is needed, no `[Request interrupted by user]`
-// marker is inserted.
-const HOOK_DENY_REASON_BLOCKING_TOOL =
-  'Awaiting user input via the orchestrator UI — please stop and wait for the next user message.';
-
-// Destructive tools gated by the interactive PreToolUse http hook in ask
-// mode. Reads (Read|Glob|Grep|LS|WebFetch|WebSearch) are NOT gated so the
-// model can explore freely without a prompt per call.
-const ASK_GATED_TOOL_MATCHER = 'Edit|Write|NotebookEdit|Bash';
-
-// Per-hook timeout (seconds) for the interactive http hook. Generous — the
-// CLI waits this long for the user to click Allow/Deny in the UI. Server
-// resolves with a synthesised deny well before this fires; the headroom is
-// just there to avoid the CLI cutting off a slow human.
-const HOOK_HTTP_TIMEOUT_S = 660;
-
-// Server-side timeout for a pending interactive hook callback. Must be
-// safely under HOOK_HTTP_TIMEOUT_S so we always respond before the CLI
-// gives up (an HTTP timeout = non-blocking error = tool proceeds, which is
-// the opposite of what we want here).
-const HOOK_PENDING_TIMEOUT_MS = 540_000;
-
-// printf-friendly literal: single-quote the JSON so the shell doesn't
-// interpolate, escape internal double-quotes via JSON.stringify on the
-// REASON above.
-function buildBlockingToolHookCommand() {
-  const reason = HOOK_DENY_REASON_BLOCKING_TOOL.replace(/"/g, '\\"');
-  return `printf '%s' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"${reason}"}}'`;
-}
-
-function buildSettingsJSON({ hookCallbackUrl } = {}) {
-  const preToolUse = [{
-    matcher: 'AskUserQuestion|ExitPlanMode',
-    hooks: [{
-      type: 'command',
-      timeout: 5,
-      command: buildBlockingToolHookCommand(),
-    }],
-  }];
-  if (hookCallbackUrl) {
-    // Interactive permission gating for destructive tools. Always
-    // registered when a callback URL is available so plan→ask runtime
-    // switches gate correctly without a respawn. The orchestrator-side
-    // callback auto-allows when the instance is NOT in ask mode, so the
-    // overhead in plan/code is just a localhost round-trip.
-    preToolUse.push({
-      matcher: ASK_GATED_TOOL_MATCHER,
-      hooks: [{
-        type: 'http',
-        url: hookCallbackUrl,
-        timeout: HOOK_HTTP_TIMEOUT_S,
-      }],
-    });
-  }
-  return JSON.stringify({ hooks: { PreToolUse: preToolUse } });
-}
+import { buildSettingsJSON } from './settings.js';
+import { HookBroker } from './hookBroker.js';
+import { loadPersistedTranscript, writeSessionMetadata } from './transcript.js';
 
 const RING_SIZE = 500;
 // Three user-facing modes:
@@ -105,22 +47,6 @@ function resolveClaudeBin() {
   return { command: parts[0], prefixArgs: parts.slice(1) };
 }
 
-function hookResponseBody(decision, reason) {
-  const out = { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: decision } };
-  if (reason) out.hookSpecificOutput.permissionDecisionReason = reason;
-  return out;
-}
-
-function respondHookAllow(res) {
-  if (!res || res.headersSent) return;
-  res.status(200).json(hookResponseBody('allow'));
-}
-
-function respondHookDeny(res, reason) {
-  if (!res || res.headersSent) return;
-  res.status(200).json(hookResponseBody('deny', reason));
-}
-
 class Ring {
   constructor(cap) { this.cap = cap; this.buf = []; }
   push(v) {
@@ -153,11 +79,13 @@ export class Instance extends EventEmitter {
     this.parser = new Parser();
     this.ring = new Ring(RING_SIZE);
     this._pending = new Map(); // request_id -> { resolve, reject, timer }
-    // Pending interactive PreToolUse http hook callbacks. Keyed by
-    // tool_use_id (the CLI sends a fresh one per tool call). Each entry
-    // holds the Express response object — held open until either a WS
-    // hook_decision arrives or HOOK_PENDING_TIMEOUT_MS fires.
-    this._pendingHookCalls = new Map(); // toolUseId -> { res, timer, toolName }
+    // Per-instance PreToolUse hook callback broker (held-open
+    // responses + timeout fallbacks + the ask-mode permission_request
+    // emission). See src/hookBroker.js.
+    this._hooks = new HookBroker({
+      getMode: () => this.mode,
+      emit: (ev) => this._emitUi(ev),
+    });
     this._stderr = '';
     this._lastLeafUuid = null;     // for last-prompt jsonl marker
     this._lastPlanFilePath = null; // last Write to ~/.claude/plans/*.md, used to enrich ExitPlanMode
@@ -201,105 +129,20 @@ export class Instance extends EventEmitter {
   }
 
   async loadHistory(sessionId) {
-    if (!sessionId) return;
-    const file = path.join(claudeProjectsRoot(), encodeCwd(this.cwd), `${sessionId}.jsonl`);
-    let text;
-    try { text = await fs.readFile(file, 'utf8'); }
-    catch (e) { if (e.code === 'ENOENT') return; throw e; }
-    let replayed = 0;
-    for (const line of text.split('\n')) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-      let obj;
-      try { obj = JSON.parse(trimmed); } catch { continue; }
-      if (this._replayPersisted(obj)) replayed++;
-      if (typeof obj.uuid === 'string') this._lastLeafUuid = obj.uuid;
+    const result = await loadPersistedTranscript({
+      cwd: this.cwd, sessionId, seqHint: this.ring.buf.length,
+    });
+    if (!result) return; // ENOENT or no sessionId — silent no-op.
+    for (const line of result.lines) {
+      for (const ev of line.events) this._emitUi(ev);
     }
-    if (replayed > 0) {
-      this._emitUi({ kind: 'system', subtype: 'history_replayed', data: { sessionId, count: replayed } });
+    if (result.lastLeafUuid) this._lastLeafUuid = result.lastLeafUuid;
+    if (result.replayedCount > 0) {
+      this._emitUi({
+        kind: 'system', subtype: 'history_replayed',
+        data: { sessionId, count: result.replayedCount },
+      });
     }
-  }
-
-  _replayPersisted(obj) {
-    if (!obj || typeof obj !== 'object') return false;
-    if (obj.isSidechain) return false; // skip sidechain/subagent traces — they're noisy
-    if (obj.type === 'user') {
-      const msg = obj.message ?? {};
-      const content = msg.content;
-      if (typeof content === 'string') {
-        this._emitUi({ kind: 'user_echo', text: content });
-        return true;
-      }
-      if (Array.isArray(content)) {
-        let any = false;
-        for (const block of content) {
-          if (!block || typeof block !== 'object') continue;
-          if (block.type === 'tool_result') {
-            this._emitUi({
-              kind: 'tool_result',
-              toolUseId: block.tool_use_id ?? null,
-              content: block.content ?? '',
-              isError: !!block.is_error,
-            });
-            any = true;
-          } else if (block.type === 'text') {
-            this._emitUi({ kind: 'user_echo', text: block.text ?? '' });
-            any = true;
-          }
-        }
-        return any;
-      }
-      return false;
-    }
-    if (obj.type === 'assistant') {
-      const msg = obj.message ?? {};
-      const msgId = msg.id ?? obj.uuid ?? `replay-${this.ring.buf.length}`;
-      const blocks = Array.isArray(msg.content) ? msg.content : [];
-      let any = false;
-      for (let i = 0; i < blocks.length; i++) {
-        const b = blocks[i];
-        if (!b || typeof b !== 'object') continue;
-        if (b.type === 'text') {
-          this._emitUi({ kind: 'text_delta', msgId, blockIdx: i, text: b.text ?? '' });
-          this._emitUi({ kind: 'text_end', msgId, blockIdx: i });
-          any = true;
-        } else if (b.type === 'thinking') {
-          const text = b.thinking ?? b.text ?? '';
-          this._emitUi({ kind: 'thinking_start', msgId, blockIdx: i });
-          if (text) {
-            this._emitUi({ kind: 'thinking_delta', msgId, blockIdx: i, text });
-          } else {
-            this._emitUi({ kind: 'thinking_redacted', msgId, blockIdx: i });
-          }
-          this._emitUi({ kind: 'thinking_end', msgId, blockIdx: i });
-          any = true;
-        } else if (b.type === 'tool_use') {
-          this._emitUi({ kind: 'tool_use_start', msgId, blockIdx: i, toolUseId: b.id ?? null, name: b.name ?? null });
-          this._emitUi({ kind: 'tool_use', msgId, blockIdx: i, toolUseId: b.id ?? null, name: b.name ?? null, input: b.input ?? {} });
-          // Mirror the parser's structured event emission for the live path —
-          // a replayed AskUserQuestion / ExitPlanMode should render as a
-          // question / plan card, not just a collapsed generic tool block.
-          if (b.name === 'AskUserQuestion' && Array.isArray(b.input?.questions)) {
-            this._emitUi({
-              kind: 'user_question',
-              toolUseId: b.id ?? null,
-              questions: b.input.questions,
-            });
-          }
-          if (b.name === 'ExitPlanMode') {
-            this._emitUi({
-              kind: 'plan_request',
-              toolUseId: b.id ?? null,
-              plan: typeof b.input?.plan === 'string' ? b.input.plan : null,
-              planPath: null,
-            });
-          }
-          any = true;
-        }
-      }
-      return any;
-    }
-    return false;
   }
 
   spawn({ resume } = {}) {
@@ -443,18 +286,17 @@ export class Instance extends EventEmitter {
 
   async _writeSessionMetadata() {
     if (!this.sessionId || !this._lastLeafUuid) return;
-    const dir = path.join(claudeProjectsRoot(), encodeCwd(this.cwd));
-    const file = path.join(dir, `${this.sessionId}.jsonl`);
-    // Persist the CLI-level permission mode (not the orchestrator's 'ask'
-    // label) so `claude --resume` from the shell can pick up a valid
-    // value. The 'ask' nuance is orchestrator-only and doesn't survive a
-    // shell-side resume — that's deliberate.
-    const lines =
-      JSON.stringify({ type: 'last-prompt', leafUuid: this._lastLeafUuid, sessionId: this.sessionId }) + '\n' +
-      JSON.stringify({ type: 'permission-mode', permissionMode: cliPermissionMode(this.mode), sessionId: this.sessionId }) + '\n';
     try {
-      await fs.mkdir(dir, { recursive: true });
-      await fs.appendFile(file, lines);
+      // Persist the CLI-level permission mode (not the orchestrator's
+      // 'ask' label) so `claude --resume` from the shell can pick up
+      // a valid value. The 'ask' nuance is orchestrator-only and
+      // doesn't survive a shell-side resume — deliberate.
+      await writeSessionMetadata({
+        cwd: this.cwd,
+        sessionId: this.sessionId,
+        leafUuid: this._lastLeafUuid,
+        permissionMode: cliPermissionMode(this.mode),
+      });
     } catch { /* best effort */ }
   }
 
@@ -470,14 +312,9 @@ export class Instance extends EventEmitter {
     }
     this._pending.clear();
     // Resolve any in-flight permission prompts with deny — the CLI is
-    // gone, so the tool won't run anyway, but we still need to free the
-    // held-open HTTP responses.
-    for (const [toolUseId, pending] of this._pendingHookCalls) {
-      clearTimeout(pending.timer);
-      respondHookDeny(pending.res, 'instance exited before user responded');
-      this._emitUi({ kind: 'permission_resolved', toolUseId, allow: false, reason: 'exited' });
-    }
-    this._pendingHookCalls.clear();
+    // gone, so the tool won't run anyway, but we still need to free
+    // the held-open HTTP responses.
+    this._hooks.discardAll();
   }
 
   _sendRaw(obj) {
@@ -521,56 +358,10 @@ export class Instance extends EventEmitter {
     return this.mode;
   }
 
-  // Invoked by the REST hook callback endpoint. Either auto-allows
-  // (non-ask modes) or suspends the Express response until the user
-  // clicks Allow/Deny in the UI and a WS hook_decision message comes
-  // back. The response body is the JSON the CLI reads to decide whether
-  // the tool runs.
-  handleHookCallback(envelope, res) {
-    const toolUseId = envelope?.tool_use_id;
-    const toolName = envelope?.tool_name;
-    if (this.mode !== 'ask') {
-      respondHookAllow(res);
-      return;
-    }
-    if (!toolUseId) {
-      // Defensive — without a tool_use_id we can't correlate a later
-      // decision back to this pending response. Auto-allow so the user
-      // isn't silently blocked by a malformed hook envelope.
-      respondHookAllow(res);
-      return;
-    }
-    // Surface the request to the UI so the user sees the Allow/Deny card.
-    this._emitUi({
-      kind: 'permission_request',
-      toolUseId,
-      toolName,
-      toolInput: envelope?.tool_input ?? {},
-    });
-    const timer = setTimeout(() => {
-      const pending = this._pendingHookCalls.get(toolUseId);
-      if (!pending) return;
-      this._pendingHookCalls.delete(toolUseId);
-      respondHookDeny(pending.res, 'user did not respond in time');
-      this._emitUi({ kind: 'permission_resolved', toolUseId, allow: false, reason: 'timeout' });
-    }, HOOK_PENDING_TIMEOUT_MS);
-    // Don't keep the event loop alive just for this timer — server
-    // shutdown should be able to finish even if a permission card is
-    // sitting idle.
-    if (typeof timer.unref === 'function') timer.unref();
-    this._pendingHookCalls.set(toolUseId, { res, timer, toolName });
-  }
-
-  resolveHookCallback(toolUseId, allow) {
-    const pending = this._pendingHookCalls.get(toolUseId);
-    if (!pending) return false;
-    clearTimeout(pending.timer);
-    this._pendingHookCalls.delete(toolUseId);
-    if (allow) respondHookAllow(pending.res);
-    else respondHookDeny(pending.res, 'user denied via orchestrator UI');
-    this._emitUi({ kind: 'permission_resolved', toolUseId, allow: !!allow });
-    return true;
-  }
+  // Thin delegate so callers (routes.js / wsHub.js) keep talking to
+  // the Instance — the broker holds the actual state.
+  handleHookCallback(envelope, res) { this._hooks.handle(envelope, res); }
+  resolveHookCallback(toolUseId, allow) { return this._hooks.resolve(toolUseId, allow); }
 
   async interrupt() {
     if (this.status !== 'turn') return;

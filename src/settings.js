@@ -1,0 +1,68 @@
+// Builds the inline `--settings` JSON the orchestrator passes to every
+// claude subprocess. Two PreToolUse hooks are registered:
+//
+//   1. A static `command` deny on AskUserQuestion|ExitPlanMode that
+//      tells the model to stop and wait for the user. Replaces the old
+//      auto-interrupt + marker-scrub plumbing — the model receives an
+//      is_error tool_result with the deny reason and ends the turn
+//      naturally. No `[Request interrupted by user]` marker is inserted.
+//
+//   2. (Optional, when hookCallbackUrl is provided) An interactive
+//      `http` hook on the destructive tools that POSTs back to the
+//      orchestrator's hook-callback endpoint. The endpoint auto-allows
+//      in non-ask modes, or surfaces a permission_request to the UI in
+//      ask mode and holds the response open until the user clicks.
+//
+// All inputs are pure JS values — no Instance state involved.
+
+const HOOK_DENY_REASON_BLOCKING_TOOL =
+  'Awaiting user input via the orchestrator UI — please stop and wait for the next user message.';
+
+// Destructive tools gated by the interactive PreToolUse http hook in
+// ask mode. Reads (Read|Glob|Grep|LS|WebFetch|WebSearch) are NOT gated
+// so the model can explore freely without a prompt per call.
+const ASK_GATED_TOOL_MATCHER = 'Edit|Write|NotebookEdit|Bash';
+
+// Per-hook timeout (seconds) for the interactive http hook. Generous —
+// the CLI waits this long for the user to click Allow/Deny in the UI.
+// The orchestrator's pending timeout (see hookBroker.js) resolves with
+// a synthesised deny well before this fires; the headroom is just
+// there to avoid the CLI cutting off a slow human.
+export const HOOK_HTTP_TIMEOUT_S = 660;
+
+// printf-friendly literal: single-quote the outer JSON so the shell
+// doesn't interpolate, escape internal double-quotes by hand.
+function buildBlockingToolHookCommand() {
+  const reason = HOOK_DENY_REASON_BLOCKING_TOOL.replace(/"/g, '\\"');
+  return `printf '%s' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"${reason}"}}'`;
+}
+
+export function buildSettingsJSON({ hookCallbackUrl } = {}) {
+  const preToolUse = [{
+    matcher: 'AskUserQuestion|ExitPlanMode',
+    hooks: [{
+      type: 'command',
+      timeout: 5,
+      command: buildBlockingToolHookCommand(),
+    }],
+  }];
+  if (hookCallbackUrl) {
+    preToolUse.push({
+      matcher: ASK_GATED_TOOL_MATCHER,
+      hooks: [{
+        type: 'http',
+        url: hookCallbackUrl,
+        timeout: HOOK_HTTP_TIMEOUT_S,
+      }],
+    });
+  }
+  return JSON.stringify({ hooks: { PreToolUse: preToolUse } });
+}
+
+// Exported for tests that want to assert the deny reason makes it
+// into the rendered hookSpecificOutput.
+export const _internal = {
+  HOOK_DENY_REASON_BLOCKING_TOOL,
+  ASK_GATED_TOOL_MATCHER,
+  buildBlockingToolHookCommand,
+};
