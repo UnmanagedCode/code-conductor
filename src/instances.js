@@ -11,7 +11,6 @@ import { HookBroker } from './hookBroker.js';
 import { loadPersistedTranscript, writeSessionMetadata } from './transcript.js';
 import { saveAttachment, isImageType } from './attachments.js';
 
-const RING_SIZE = 500;
 // Three user-facing modes:
 //   - `plan`              — read-only planning; CLI is in plan mode
 //   - `ask`               — full power but every destructive tool is gated
@@ -48,12 +47,14 @@ function resolveClaudeBin() {
   return { command: parts[0], prefixArgs: parts.slice(1) };
 }
 
-class Ring {
-  constructor(cap) { this.cap = cap; this.buf = []; }
-  push(v) {
-    this.buf.push(v);
-    if (this.buf.length > this.cap) this.buf.splice(0, this.buf.length - this.cap);
-  }
+// Unbounded append-only event log per instance. Grows for the lifetime of
+// the Instance object — no cap, so a resumed session whose persisted
+// transcript expands to thousands of UI events keeps every one of them in
+// the snapshot. Memory cost is one event per UI delta (~1 KB-ish), so a
+// multi-hour session is still well under tens of MB.
+class EventLog {
+  constructor() { this.buf = []; }
+  push(v) { this.buf.push(v); }
   toArray() { return this.buf.slice(); }
   clear() { this.buf.length = 0; }
 }
@@ -78,7 +79,7 @@ export class Instance extends EventEmitter {
     this.status = 'idle';
     this.proc = null;
     this.parser = new Parser();
-    this.ring = new Ring(RING_SIZE);
+    this.ring = new EventLog();
     this._pending = new Map(); // request_id -> { resolve, reject, timer }
     // Per-instance PreToolUse hook callback broker (held-open
     // responses + timeout fallbacks + the ask-mode permission_request
