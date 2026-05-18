@@ -49,12 +49,22 @@ import { renderMarkdownInto } from './markdown.js';
 
 // Per-tool one-line description for the collapsed summary.
 // Returns a short string with the most-useful argument for the tool.
-export function describeToolInput(name, input) {
+export function describeToolInput(name, input, ctx = {}) {
   if (!input || typeof input !== 'object') return '';
   const trunc = (s, n = 120) => {
     if (typeof s !== 'string') return '';
     const oneLine = s.replace(/\s+/g, ' ').trim();
     return oneLine.length > n ? oneLine.slice(0, n) + '…' : oneLine;
+  };
+  // Join subject + description on a separator, truncating each piece
+  // individually so the description never crowds the subject out.
+  const join = (subject, description, statusSuffix) => {
+    const subj = trunc(subject, 80);
+    const desc = trunc(description, 100);
+    let out = subj;
+    if (desc && desc !== subj) out = subj ? `${subj} — ${desc}` : desc;
+    if (statusSuffix) out = out ? `${out} · ${statusSuffix}` : statusSuffix;
+    return trunc(out, 160);
   };
   switch (name) {
     case 'Bash':       return trunc(input.command);
@@ -73,7 +83,25 @@ export function describeToolInput(name, input) {
     case 'Task':       return trunc(input.subagent_type ? `[${input.subagent_type}] ${input.description ?? input.prompt ?? ''}` : (input.description ?? input.prompt ?? ''));
     case 'Skill':      return trunc(input.skill ?? input.name);
     case 'TaskCreate':
-    case 'TaskUpdate': return trunc(input.subject ?? input.description ?? input.taskId);
+      return join(input.subject, input.description);
+    case 'TaskUpdate': {
+      // The model usually only sends taskId + status here. Resolve the
+      // task's subject + description from the tracker so the user sees
+      // WHICH task is being updated, not just its numeric id.
+      const id = input.taskId != null ? String(input.taskId) : null;
+      const subject = (typeof input.subject === 'string' && input.subject) ||
+        ctx.resolveTaskSubject?.(id) || null;
+      const description = (typeof input.description === 'string' && input.description) ||
+        ctx.resolveTaskDescription?.(id) || null;
+      const status = typeof input.status === 'string' ? input.status : null;
+      const statusSuffix = status ? `→ ${status}` : null;
+      const idPrefix = id ? `#${id}` : null;
+      const head = idPrefix && subject ? `${idPrefix} ${subject}`
+        : subject ? subject
+        : idPrefix ? idPrefix
+        : '';
+      return join(head, description, statusSuffix);
+    }
     case 'AskUserQuestion': return trunc(input.questions?.[0]?.question);
     case 'TodoWrite':
     case 'Write':      return trunc(input.file_path ?? '');
@@ -86,8 +114,9 @@ export function describeToolInput(name, input) {
 }
 
 export class ToolUseBlock {
-  constructor({ name, toolUseId }) {
+  constructor({ name, toolUseId, describeCtx = {} }) {
     this.name = name; this.toolUseId = toolUseId;
+    this.describeCtx = describeCtx;
     this.partialJson = '';
     this.input = null;
     this.status = 'streaming…';
@@ -140,7 +169,7 @@ export class ToolUseBlock {
   }
 
   _renderSummary() {
-    const desc = this.input ? describeToolInput(this.name, this.input) : '';
+    const desc = this.input ? describeToolInput(this.name, this.input, this.describeCtx) : '';
     this.summary.textContent = '';
     this.summary.append('🔧 ', el('span', { class: 'tool-name' }, this.name ?? 'tool'));
     if (desc) this.summary.append(' · ', el('span', { class: 'tool-arg' }, desc));

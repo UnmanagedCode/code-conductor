@@ -17,7 +17,25 @@ export class TaskTracker {
     // toolUseId -> { input } awaiting the matching tool_result that
     // carries the freshly-allocated task id.
     this._pendingCreates = new Map();
+    // Persistent id → { subject, description } map. Outlives batch
+    // rollovers so that scrolling back to an OLD TaskUpdate tool block
+    // (whose batch has since been cleared from `this.tasks`) can still
+    // resolve the task's title + description for the summary line.
+    // Renames + description edits are recorded too.
+    this._infoHistory = new Map();
     this._listeners = new Set();
+  }
+
+  // Public lookups for the tool-block renderer. Returns the most
+  // recently-known subject / description for a task id, or null if
+  // we've never seen one.
+  getSubject(taskId) {
+    if (taskId == null) return null;
+    return this._infoHistory.get(String(taskId))?.subject ?? null;
+  }
+  getDescription(taskId) {
+    if (taskId == null) return null;
+    return this._infoHistory.get(String(taskId))?.description ?? null;
   }
 
   onChange(fn) { this._listeners.add(fn); return () => this._listeners.delete(fn); }
@@ -27,6 +45,7 @@ export class TaskTracker {
   reset() {
     this.tasks.clear();
     this._pendingCreates.clear();
+    this._infoHistory.clear();
     this._notify();
   }
 
@@ -46,6 +65,15 @@ export class TaskTracker {
         const input = ev.input ?? {};
         const id = input.taskId != null ? String(input.taskId) : null;
         if (!id) return;
+        // Persistent history follows renames + description edits even
+        // when the task isn't in the current batch anymore.
+        if (typeof input.subject === 'string' || typeof input.description === 'string') {
+          const prev = this._infoHistory.get(id) ?? { subject: null, description: null };
+          this._infoHistory.set(id, {
+            subject: typeof input.subject === 'string' ? input.subject : prev.subject,
+            description: typeof input.description === 'string' ? input.description : prev.description,
+          });
+        }
         const t = this.tasks.get(id);
         if (input.status === 'deleted') {
           if (t) { this.tasks.delete(id); this._notify(); }
@@ -86,6 +114,10 @@ export class TaskTracker {
         description: pending.description,
         activeForm: pending.activeForm,
         status: 'pending',
+      });
+      this._infoHistory.set(id, {
+        subject: pending.subject,
+        description: pending.description,
       });
       this._notify();
     }

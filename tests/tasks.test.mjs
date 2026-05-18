@@ -124,6 +124,33 @@ test('a new TaskCreate while at least one task is still pending JOINS the curren
   assert.equal(t.completedCount(), 1);
 });
 
+test('getSubject + getDescription survive a batch rollover', () => {
+  const t = new TaskTracker();
+  feedCreate(t, { toolUseId: 'tu1', taskId: '1', subject: 'Old A', description: 'longer desc A' });
+  feedCreate(t, { toolUseId: 'tu2', taskId: '2', subject: 'Old B', description: 'longer desc B' });
+  // Complete the batch.
+  t.apply({ kind: 'tool_use', name: 'TaskUpdate', toolUseId: 'u1', input: { taskId: '1', status: 'completed' } });
+  t.apply({ kind: 'tool_use', name: 'TaskUpdate', toolUseId: 'u2', input: { taskId: '2', status: 'completed' } });
+  // Open a fresh batch — drops the old completed entries from `tasks`.
+  feedCreate(t, { toolUseId: 'tu3', taskId: '3', subject: 'Fresh', description: 'new work' });
+  assert.equal(t.list().map(x => x.id).join(','), '3');
+  // ... but the renderer must still be able to resolve old subjects /
+  // descriptions when the user scrolls back to those old TaskUpdate
+  // tool blocks in the conversation.
+  assert.equal(t.getSubject('1'), 'Old A');
+  assert.equal(t.getDescription('1'), 'longer desc A');
+  assert.equal(t.getSubject('2'), 'Old B');
+  assert.equal(t.getSubject('3'), 'Fresh');
+});
+
+test('reset() clears the persistent subject history too', () => {
+  const t = new TaskTracker();
+  feedCreate(t, { toolUseId: 'tu1', taskId: '1', subject: 'A', description: 'A desc' });
+  t.reset();
+  assert.equal(t.getSubject('1'), null);
+  assert.equal(t.getDescription('1'), null);
+});
+
 test('tool_use events for unrelated tools are ignored', () => {
   const t = new TaskTracker();
   t.apply({ kind: 'tool_use', name: 'Bash', toolUseId: 'b1', input: { command: 'ls' } });

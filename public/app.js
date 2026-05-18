@@ -92,6 +92,20 @@ function sendOrQueuePrompt(instanceId, text) {
 }
 
 const conversation = new Conversation(dom.conversation, {
+  // Lookups for TaskUpdate's summary line — see describeToolInput.
+  // Always reads through whichever tracker the active instance owns,
+  // so the tool block can resolve the task's subject + description by
+  // its numeric id (the input only carries `taskId`).
+  describeToolCtx: {
+    resolveTaskSubject: (id) => {
+      const t = state.activeId ? taskTrackersByInstance.get(state.activeId) : null;
+      return t ? t.getSubject(id) : null;
+    },
+    resolveTaskDescription: (id) => {
+      const t = state.activeId ? taskTrackersByInstance.get(state.activeId) : null;
+      return t ? t.getDescription(id) : null;
+    },
+  },
   onUserQuestionSubmit: ({ questions, answers }) => {
     if (!state.activeId) return;
     // The CLI auto-errors AskUserQuestion in stream-json mode, so we

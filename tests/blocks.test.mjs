@@ -55,6 +55,45 @@ test('describeToolInput: unknown tool → first stringy field as key=value', () 
   assert.equal(s, 'mode=auto');
 });
 
+test('describeToolInput: TaskCreate shows subject + description', () => {
+  const s = describeToolInput('TaskCreate', {
+    subject: 'Refactor X',
+    description: 'Pull out the hook plumbing into its own module',
+  });
+  assert.match(s, /Refactor X/);
+  assert.match(s, /hook plumbing/);
+});
+
+test('describeToolInput: TaskUpdate resolves subject + description via ctx, shows status', () => {
+  const ctx = {
+    resolveTaskSubject: (id) => id === '4' ? 'Refactor X' : null,
+    resolveTaskDescription: (id) => id === '4' ? 'Pull out the hook plumbing' : null,
+  };
+  const s = describeToolInput('TaskUpdate', { taskId: '4', status: 'completed' }, ctx);
+  assert.match(s, /#4/);
+  assert.match(s, /Refactor X/);
+  assert.match(s, /hook plumbing/);
+  assert.match(s, /→ completed/);
+});
+
+test('describeToolInput: TaskUpdate without resolver falls back to taskId + status', () => {
+  const s = describeToolInput('TaskUpdate', { taskId: '7', status: 'in_progress' });
+  assert.match(s, /#7/);
+  assert.match(s, /→ in_progress/);
+});
+
+test('describeToolInput: TaskUpdate prefers its own subject over the resolver', () => {
+  // If the model passes subject in the TaskUpdate input itself, that
+  // wins over whatever the tracker currently knows — the model is
+  // expressing intent to rename right now.
+  const s = describeToolInput('TaskUpdate',
+    { taskId: '4', subject: 'New name', status: 'completed' },
+    { resolveTaskSubject: () => 'Old name' },
+  );
+  assert.match(s, /New name/);
+  assert.equal(s.includes('Old name'), false);
+});
+
 test('describeToolInput: empty input → empty string', () => {
   assert.equal(describeToolInput('Bash', {}), '');
   assert.equal(describeToolInput('Bash', null), '');

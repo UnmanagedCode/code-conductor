@@ -12,12 +12,17 @@ export class Conversation {
     onUserQuestionSubmit = null,
     onPlanDecision = null,
     onPermissionDecision = null,
+    describeToolCtx = {},
   } = {}) {
     this.root = rootEl;
     this.isSub = isSub;
     this.onUserQuestionSubmit = onUserQuestionSubmit;
     this.onPlanDecision = onPlanDecision;
     this.onPermissionDecision = onPermissionDecision;
+    // Resolver-style context passed to describeToolInput so a
+    // TaskUpdate tool block (whose input only carries taskId) can
+    // surface the task's actual subject + description.
+    this.describeToolCtx = describeToolCtx;
     this.userQuestionBlocks = new Map(); // toolUseId -> UserQuestionBlock
     this.planBlocks = new Map(); // toolUseId -> PlanRequestBlock
     this.permissionBlocks = new Map(); // toolUseId -> PermissionRequestBlock
@@ -82,6 +87,7 @@ export class Conversation {
             onUserQuestionSubmit: this.onUserQuestionSubmit,
             onPlanDecision: this.onPlanDecision,
             onPermissionDecision: this.onPermissionDecision,
+            describeToolCtx: this.describeToolCtx,
           });
           this.subConvs.set(ev.parentToolUseId, sub);
         }
@@ -190,7 +196,10 @@ export class Conversation {
     const key = `${ev.msgId ?? '?'}:${ev.blockIdx ?? 0}:tool`;
     let block = this.blocksByKey.get(key);
     if (block) return;
-    block = new ToolUseBlock({ name: ev.name, toolUseId: ev.toolUseId });
+    block = new ToolUseBlock({
+      name: ev.name, toolUseId: ev.toolUseId,
+      describeCtx: this.describeToolCtx,
+    });
     this.blocksByKey.set(key, block);
     if (ev.toolUseId) this.toolBlocks.set(ev.toolUseId, block);
     const wrap = this._ensureMessageWrap(ev.msgId, 'assistant');
