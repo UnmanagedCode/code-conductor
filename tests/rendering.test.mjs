@@ -477,6 +477,96 @@ test('DOM: permission_request for Edit renders the inline diff body', async () =
   assert.match(card.textContent, /new line/);
 });
 
+test('DOM: a sub-agent tool_use (no streaming deltas) renders its tool block + attached result', async () => {
+  // Sub-agent assistant turns arrive on the same stream as the outer turn
+  // but only as a complete `assistant` envelope tagged with
+  // parent_tool_use_id — no per-block stream_event deltas. Before the
+  // reconciliation pass was added, the tool_use content blocks never reached
+  // the DOM and the matching tool_result landed as a floating block in the
+  // sub-conversation.
+  const { document, root, Parser, Conversation } = await setupDOM();
+  const conversation = new Conversation(root);
+  const p = new Parser();
+  // Outer Task tool_use streams in via stream_event chunks so the parent
+  // ToolUseBlock exists in outer.toolBlocks for sub-event routing to land.
+  feed(p, conversation, [
+    { type: 'stream_event', event: { type: 'message_start', message: { id: 'msg_outer', role: 'assistant' } } },
+    { type: 'stream_event', event: { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'task_xyz', name: 'Task', input: {} } } },
+    { type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '{"description":"search","prompt":"go"}' } } },
+    { type: 'stream_event', event: { type: 'content_block_stop', index: 0 } },
+    // Sub-agent assistant turn — only the complete envelope, no deltas.
+    {
+      type: 'assistant',
+      parent_tool_use_id: 'task_xyz',
+      message: {
+        id: 'msg_sub',
+        role: 'assistant',
+        content: [
+          { type: 'tool_use', id: 'tu_grep', name: 'Grep', input: { pattern: 'foo' } },
+        ],
+      },
+    },
+    // Sub-agent tool_result for the Grep call.
+    {
+      type: 'user',
+      parent_tool_use_id: 'task_xyz',
+      message: {
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: 'tu_grep', content: 'No matches found', is_error: false }],
+      },
+    },
+  ]);
+
+  const sub = root.querySelector('.sub-conversation');
+  assert.ok(sub, 'sub-conversation container must exist under the Task tool block');
+
+  // The Grep tool_use block must be rendered inside the sub-conversation.
+  const subToolBlocks = sub.querySelectorAll('.block.tool');
+  assert.equal(subToolBlocks.length, 1, 'expected exactly one sub-agent tool block');
+  const grep = subToolBlocks[0];
+  const summary = grep.querySelector('summary');
+  assert.ok(summary);
+  assert.match(summary.textContent, /Grep/, `summary should mention Grep (got: ${summary.textContent})`);
+  assert.match(summary.textContent, /foo/, `summary should mention the pattern (got: ${summary.textContent})`);
+
+  // The tool_result must be attached UNDER the Grep block, not floating.
+  const attached = grep.querySelector('.block.tool-result');
+  assert.ok(attached, 'tool_result must be attached under the sub-agent tool block');
+  assert.match(attached.textContent, /No matches found/);
+
+  // Defensive: no floating tool_result siblings of the Grep block inside the sub.
+  const floating = sub.querySelectorAll('.msg > .blocks > .block.tool-result');
+  assert.equal(floating.length, 0, 'no tool_result should float at the sub-conversation msg level');
+});
+
+test('DOM: streamed tool_use is not double-rendered when assistant_message arrives at the end', async () => {
+  // Idempotency guard: the outer turn streams deltas and ALSO ends with a
+  // complete `assistant` envelope. The reconciliation pass must skip blocks
+  // already in blocksByKey so finalizeInput can't regress an already-done
+  // tool block back to 'ready' after its result was attached.
+  const { document, root, Parser, Conversation } = await setupDOM();
+  const conversation = new Conversation(root);
+  feed(new Parser(), conversation, [
+    ...bashToolCallStream(),
+    {
+      type: 'assistant',
+      message: {
+        id: 'msg_test_bash',
+        role: 'assistant',
+        content: [
+          { type: 'tool_use', id: 'tu_bash', name: 'Bash', input: { command: 'ls -la', description: 'List files' } },
+        ],
+      },
+    },
+  ]);
+
+  const toolBlocks = root.querySelectorAll('.block.tool');
+  assert.equal(toolBlocks.length, 1, 'streamed + reconciled must not duplicate the tool block');
+  const status = toolBlocks[0].querySelector('.tool-status');
+  assert.ok(status);
+  assert.match(status.textContent, /done/, `status must stay 'done' after attached result (got: ${status.textContent})`);
+});
+
 test('DOM: tool block always shows its command in the summary even while streaming', async () => {
   // Specifically a regression guard — the user-facing complaint was that
   // the command wasn't visible. We feed the stream up to (but not past) the

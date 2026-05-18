@@ -133,7 +133,7 @@ export class Conversation {
         this._renderSystem(ev); break;
       case 'hook':           /* dimmed hook lines dropped from the conversation */ break;
       case 'turn_end':       this._renderTurnEnd(ev); break;
-      case 'assistant_message': break; // reconciled via deltas already
+      case 'assistant_message': this._reconcileAssistantMessage(ev); break;
       case 'control_response': break; // hidden from UI
       case 'raw':            this._renderSystem({ subtype: 'raw', data: { line: ev.line } }); break;
       default: break;
@@ -268,6 +268,44 @@ export class Conversation {
     else {
       const wrap = this._ensureMessageWrap(null, 'assistant');
       wrap.body.appendChild(result.node);
+    }
+  }
+
+  // Sub-agent assistant turns arrive on the same stream as the outer turn but
+  // only as a complete `assistant` envelope (tagged with parent_tool_use_id);
+  // no per-block `stream_event` deltas are emitted for them. Without this
+  // reconciliation pass the sub-agent's tool_use content blocks never reach
+  // the DOM and the matching tool_result lands as a floating block.
+  //
+  // Idempotent: when stream-event deltas DID populate blocksByKey (the outer
+  // turn), the per-block existence check skips re-rendering, so a second
+  // finalizeInput can't clobber a tool block whose status was already flipped
+  // to 'done' by an attached result.
+  _reconcileAssistantMessage(ev) {
+    const msgId = ev.msgId;
+    const blocks = Array.isArray(ev.message?.content) ? ev.message.content : [];
+    for (let i = 0; i < blocks.length; i++) {
+      const b = blocks[i];
+      if (!b || typeof b !== 'object') continue;
+      if (b.type === 'tool_use') {
+        const key = `${msgId ?? '?'}:${i}:tool`;
+        if (this.blocksByKey.has(key)) continue;
+        this._renderToolStart({ msgId, blockIdx: i, toolUseId: b.id, name: b.name });
+        this._renderToolFinal({ msgId, blockIdx: i, toolUseId: b.id, name: b.name, input: b.input ?? {} });
+      } else if (b.type === 'text') {
+        const key = `${msgId ?? '?'}:${i}:text`;
+        if (this.blocksByKey.has(key)) continue;
+        this._appendStreamingBlock({ msgId, blockIdx: i }, 'text', TextBlock, b.text ?? '');
+        this._finalizeBlock({ kind: 'text_end', msgId, blockIdx: i });
+      } else if (b.type === 'thinking') {
+        const key = `${msgId ?? '?'}:${i}:thinking`;
+        if (this.blocksByKey.has(key)) continue;
+        const txt = b.thinking ?? b.text ?? '';
+        this._renderThinkingStart({ msgId, blockIdx: i });
+        if (txt) this._appendStreamingBlock({ msgId, blockIdx: i }, 'thinking', ThinkingBlock, txt);
+        else this._renderThinkingRedacted({ msgId, blockIdx: i });
+        this._finalizeBlock({ kind: 'thinking_end', msgId, blockIdx: i });
+      }
     }
   }
 
