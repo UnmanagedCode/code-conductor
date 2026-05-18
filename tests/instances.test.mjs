@@ -573,3 +573,41 @@ test('sending a prompt emits exactly one user_echo (no duplicate from --replay)'
     await close();
   }
 });
+
+test('resume defaults to bypassPermissions (code) mode; fresh spawn still defaults to plan', async () => {
+  // A resume is almost always continuing real work, so plan mode would be
+  // the wrong starting point. Fresh spawns keep plan as the safer default.
+  const ctx = await bootServer({ scenarioPath: path.join(__dirname, 'fixtures', 'scenario-resume.json') });
+  const fsp = (await import('node:fs')).promises;
+  try {
+    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'resume-default' });
+    const projectPath = path.join(ctx.projectsRoot, 'resume-default');
+    const sid = '99999999-8888-7777-6666-555555555555';
+    const sessionDir = path.join(ctx.claudeProjectsRoot, encodeCwd(projectPath));
+    await fsp.mkdir(sessionDir, { recursive: true });
+    const lines = [
+      { type: 'user', uuid: 'u1', message: { role: 'user', content: 'hi' } },
+      { type: 'assistant', uuid: 'a1', message: { id: 'm_a1', role: 'assistant', content: [{ type: 'text', text: 'hello' }] } },
+    ];
+    await fsp.writeFile(
+      path.join(sessionDir, `${sid}.jsonl`),
+      lines.map(l => JSON.stringify(l)).join('\n') + '\n',
+    );
+
+    const resumed = await api(ctx.baseUrl, 'POST', '/api/instances', {
+      project: 'resume-default', resume: sid,
+    });
+    assert.equal(resumed.status, 201);
+    const resumedInst = ctx.instances.get(resumed.body.id);
+    await waitFor(() => resumedInst.status === 'idle');
+    assert.equal(resumedInst.mode, 'bypassPermissions', 'resume default is code mode, not plan');
+
+    const fresh = await api(ctx.baseUrl, 'POST', '/api/instances', {
+      project: 'resume-default',
+    });
+    assert.equal(fresh.status, 201);
+    const freshInst = ctx.instances.get(fresh.body.id);
+    await waitFor(() => freshInst.status === 'idle');
+    assert.equal(freshInst.mode, 'plan', 'fresh spawn default is still plan mode');
+  } finally { await ctx.close(); }
+});

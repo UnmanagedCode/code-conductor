@@ -20,11 +20,14 @@ import { saveAttachment, isImageType } from './attachments.js';
 // The CLI's `default`/`acceptEdits` modes are unusable in stream-json
 // --print (no SDK canUseTool callback), so we don't expose them.
 const VALID_MODES = new Set(['plan', 'ask', 'bypassPermissions']);
-// Start new instances in read-only plan mode by default. The user can pick
+// Start fresh instances in read-only plan mode by default. The user can pick
 // `ask` or `code` (= bypassPermissions) in the new-instance dialog, or
 // approve a plan to flip the running instance to bypassPermissions
-// mid-session.
+// mid-session. **Resumes** default to `bypassPermissions` instead — a
+// resume is almost always continuing real work rather than re-planning,
+// so plan mode would be the wrong starting point.
 const DEFAULT_MODE = 'plan';
+const DEFAULT_RESUME_MODE = 'bypassPermissions';
 
 // `ask` is orchestrator-only — the CLI itself doesn't know about it. At
 // spawn / set_permission_mode time the CLI receives the equivalent
@@ -486,7 +489,7 @@ export class InstanceManager extends EventEmitter {
       }
     }
     const proj = await getProject(project);
-    const finalMode = mode ?? DEFAULT_MODE;
+    const finalMode = mode ?? (resume ? DEFAULT_RESUME_MODE : DEFAULT_MODE);
     if (!VALID_MODES.has(finalMode)) {
       throw Object.assign(new Error('invalid mode (must be plan, ask, or bypassPermissions)'), { statusCode: 400 });
     }

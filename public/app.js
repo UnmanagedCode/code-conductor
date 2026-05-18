@@ -375,8 +375,10 @@ async function loadSessions(projectName, worktreeName) {
 
 // One-click resume from the sidebar. We POST with worktree carried
 // through (so resuming a worktree session lands in the same worktree
-// cwd) and use orchestrator defaults for mode/effort/thinking — the
-// user can adjust mode in the header dropdown after the resume lands.
+// cwd) and use orchestrator defaults for mode/effort/thinking. The
+// orchestrator's resume default is `code` (bypassPermissions) — fresh
+// spawns default to plan, but a resume is almost always continuing
+// real work. Switch via the header mode dropdown if needed.
 async function resumeSession({ projectName, worktreeName, sessionId }) {
   try {
     const r = await fetch('/api/instances', {
