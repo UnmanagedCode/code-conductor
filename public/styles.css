@@ -474,8 +474,10 @@ input:focus, textarea:focus, select:focus { outline: 2px solid var(--accent); ou
   background: rgba(245,158,11,.15); color: var(--amber); border-color: var(--amber);
 }
 .perm-deny:hover:not(:disabled) { background: rgba(245,158,11,.25); }
-.block.tool-result { margin-left: 18px; }
-.block.tool-result summary { font-family: ui-monospace, monospace; font-size: 11px; color: var(--muted); }
+.block.tool-result,
+.block.tool-input { margin-left: 18px; }
+.block.tool-result summary,
+.block.tool-input summary { font-family: ui-monospace, monospace; font-size: 11px; color: var(--muted); }
 .block.tool-result.error summary { color: var(--red); }
 
 .block.system {

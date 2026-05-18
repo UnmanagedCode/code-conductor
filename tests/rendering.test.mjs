@@ -85,6 +85,39 @@ test('DOM: a Bash tool call renders a tool block with the command visible', asyn
   const result = tool.querySelector('.block.tool-result');
   assert.ok(result, 'tool_result must be attached under the tool_use block');
   assert.match(result.textContent, /file1/);
+
+  // The raw-JSON input is wrapped in its own collapsible <details>, mirroring
+  // the tool_result pattern. Default-closed.
+  const input = tool.querySelector('.block.tool-input');
+  assert.ok(input, 'raw-JSON input must be wrapped in a .block.tool-input details');
+  assert.equal(input.hasAttribute('open') || input.open, false, 'tool_input should be collapsed by default');
+  assert.match(input.querySelector('summary')?.textContent ?? '', /tool_input/);
+  assert.match(input.textContent, /ls -la/, 'tool_input body still contains the JSON-rendered command');
+});
+
+function editToolCallStream() {
+  const msgId = 'msg_test_edit';
+  const input = { file_path: '/x/y.js', old_string: 'foo', new_string: 'bar' };
+  return [
+    { type: 'stream_event', event: { type: 'message_start', message: { id: msgId, role: 'assistant' } } },
+    { type: 'stream_event', event: { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'tu_edit', name: 'Edit', input: {} } } },
+    { type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: JSON.stringify(input) } } },
+    { type: 'stream_event', event: { type: 'content_block_stop', index: 0 } },
+    { type: 'stream_event', event: { type: 'message_stop' } },
+  ];
+}
+
+test('DOM: Edit tool call still renders as a diff (no tool_input wrapper for specialty renderers)', async () => {
+  const { root, Parser, Conversation } = await setupDOM();
+  const conversation = new Conversation(root);
+  feed(new Parser(), conversation, editToolCallStream());
+
+  const tool = root.querySelector('.block.tool');
+  assert.ok(tool, 'Edit tool block must be present');
+  // Specialty renderer wins — diff is rendered flush in the body.
+  assert.ok(tool.querySelector('.diff'), 'Edit should render as a .diff');
+  assert.equal(tool.querySelector('.block.tool-input'), null,
+    'specialty diff renderer must NOT be wrapped in tool_input');
 });
 
 function askUserQuestionStream() {

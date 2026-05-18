@@ -196,7 +196,7 @@ export class ToolUseBlock {
     const input = this.input;
     if (!input) {
       // While streaming the JSON, show what we have raw.
-      if (this.partialJson) this.body.appendChild(el('pre', {}, this.partialJson));
+      if (this.partialJson) this.body.appendChild(wrapToolInputPre(el('pre', {}, this.partialJson)));
       return;
     }
     // Specialty renderers per tool. Fall back to pretty-printed JSON.
@@ -212,9 +212,18 @@ export class ToolUseBlock {
       this.body.appendChild(renderNotebookEdit(input));
       return;
     }
-    try { this.body.appendChild(el('pre', {}, JSON.stringify(input, null, 2))); }
-    catch { this.body.appendChild(el('pre', {}, this.partialJson)); }
+    let pre;
+    try { pre = el('pre', {}, JSON.stringify(input, null, 2)); }
+    catch { pre = el('pre', {}, this.partialJson); }
+    this.body.appendChild(wrapToolInputPre(pre));
   }
+}
+
+function wrapToolInputPre(pre) {
+  return el('details', { class: 'block tool-input' },
+    el('summary', {}, '↪ tool_input'),
+    pre,
+  );
 }
 
 function renderEditDiff(input) {
