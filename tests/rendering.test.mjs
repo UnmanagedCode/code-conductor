@@ -740,11 +740,12 @@ test('DOM: a sub-agent tool_use (no streaming deltas) renders its tool block + a
   assert.equal(floating.length, 0, 'no tool_result should float at the sub-conversation msg level');
 });
 
-test('DOM: streamed tool_use is not double-rendered when assistant_message arrives at the end', async () => {
-  // Idempotency guard: the outer turn streams deltas and ALSO ends with a
-  // complete `assistant` envelope. The reconciliation pass must skip blocks
-  // already in blocksByKey so finalizeInput can't regress an already-done
-  // tool block back to 'ready' after its result was attached.
+test('DOM: outer-turn assistant envelope is a no-op — streamed tool block stays single + done', async () => {
+  // The outer turn's UI is driven entirely by stream_event deltas. The
+  // trailing `assistant` envelope must NOT cause a second tool block to
+  // be rendered next to the streamed one — that was the regression where
+  // the streamed block stuck at status 'streaming…' while a reconciler-
+  // built block reported 'done' (same toolUseId, two DOM nodes).
   const { document, root, Parser, Conversation } = await setupDOM();
   const conversation = new Conversation(root);
   feed(new Parser(), conversation, [
@@ -762,10 +763,62 @@ test('DOM: streamed tool_use is not double-rendered when assistant_message arriv
   ]);
 
   const toolBlocks = root.querySelectorAll('.block.tool');
-  assert.equal(toolBlocks.length, 1, 'streamed + reconciled must not duplicate the tool block');
+  assert.equal(toolBlocks.length, 1, 'outer-turn assistant envelope must not produce a second tool block');
   const status = toolBlocks[0].querySelector('.tool-status');
   assert.ok(status);
   assert.match(status.textContent, /done/, `status must stay 'done' after attached result (got: ${status.textContent})`);
+});
+
+test('DOM: outer-turn assistant envelope does not duplicate text or tool blocks when its content shape differs from the streamed indices', async () => {
+  // Reproduces the user-reported bug: an outer-turn assistant envelope
+  // whose content[] array is in a different shape/order than the
+  // streamed content_block_* indices would, under the old reconcile
+  // path, create a SECOND copy of each text/tool block next to the
+  // streamed one (key mismatch made the dedup check miss). With the
+  // outer reconcile gated off, the trailing envelope is a no-op and the
+  // DOM keeps exactly one block per streamed entry.
+  const { document, root, Parser, Conversation } = await setupDOM();
+  const conversation = new Conversation(root);
+  const msgId = 'msg_dup_repro';
+  feed(new Parser(), conversation, [
+    { type: 'stream_event', event: { type: 'message_start', message: { id: msgId, role: 'assistant' } } },
+    // Thinking @ index 0 — content streams in.
+    { type: 'stream_event', event: { type: 'content_block_start', index: 0, content_block: { type: 'thinking' } } },
+    { type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'planning the write' } } },
+    { type: 'stream_event', event: { type: 'content_block_stop', index: 0 } },
+    // Text @ index 1.
+    { type: 'stream_event', event: { type: 'content_block_start', index: 1, content_block: { type: 'text' } } },
+    { type: 'stream_event', event: { type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: 'Now I have enough context to plan. Let me write the plan file.' } } },
+    { type: 'stream_event', event: { type: 'content_block_stop', index: 1 } },
+    // Write tool_use @ index 2.
+    { type: 'stream_event', event: { type: 'content_block_start', index: 2, content_block: { type: 'tool_use', id: 'tu_write', name: 'Write', input: {} } } },
+    { type: 'stream_event', event: { type: 'content_block_delta', index: 2, delta: { type: 'input_json_delta', partial_json: '{"file_path":"/tmp/plan.md","content":"hi"}' } } },
+    { type: 'stream_event', event: { type: 'content_block_stop', index: 2 } },
+    { type: 'stream_event', event: { type: 'message_stop' } },
+    // Trailing assistant envelope. Same msgId; the content array shape
+    // would, under the old code, drive reconcile to re-render every
+    // block. We assert the DOM keeps exactly the streamed blocks.
+    {
+      type: 'assistant',
+      message: {
+        id: msgId,
+        role: 'assistant',
+        content: [
+          { type: 'thinking', thinking: 'planning the write' },
+          { type: 'text', text: 'Now I have enough context to plan. Let me write the plan file.' },
+          { type: 'tool_use', id: 'tu_write', name: 'Write', input: { file_path: '/tmp/plan.md', content: 'hi' } },
+        ],
+      },
+    },
+  ]);
+
+  assert.equal(root.querySelectorAll('.block.tool').length, 1, 'outer tool block must not be duplicated by reconcile');
+  assert.equal(root.querySelectorAll('.block.text').length, 1, 'outer text block must not be duplicated by reconcile');
+  assert.equal(root.querySelectorAll('.block.thinking').length, 1, 'outer thinking block must not be duplicated by reconcile');
+  // And the streamed tool block reached 'ready' via the content_block_stop tool_use event.
+  const status = root.querySelector('.block.tool .tool-status');
+  assert.ok(status);
+  assert.match(status.textContent, /ready/, `streamed tool block reaches 'ready' on its own content_block_stop (got: ${status.textContent})`);
 });
 
 test('DOM: tool block always shows its command in the summary even while streaming', async () => {

@@ -133,7 +133,17 @@ export class Conversation {
         this._renderSystem(ev); break;
       case 'hook':           /* dimmed hook lines dropped from the conversation */ break;
       case 'turn_end':       this._renderTurnEnd(ev); break;
-      case 'assistant_message': this._reconcileAssistantMessage(ev); break;
+      case 'assistant_message':
+        // Outer turns are driven entirely by stream_event deltas; the
+        // trailing assistant envelope adds nothing the UI didn't already
+        // have, and running reconcile here regressed into double-rendered
+        // blocks when the (msgId, blockIdx) dedup key failed to match the
+        // streamed entry. Sub-agent assistant turns have no deltas, so
+        // they still need the reconciliation pass — and the
+        // parentToolUseId routing above has already forwarded them into
+        // a sub-Conversation by the time we get here.
+        if (this.isSub) this._reconcileAssistantMessage(ev);
+        break;
       case 'control_response': break; // hidden from UI
       case 'raw':            this._renderSystem({ subtype: 'raw', data: { line: ev.line } }); break;
       default: break;
