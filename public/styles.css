@@ -483,6 +483,35 @@ input:focus, textarea:focus, select:focus { outline: 2px solid var(--accent); ou
   font-size: 11px; color: var(--muted); font-family: ui-monospace, monospace;
 }
 
+#task-panel {
+  border-top: 1px solid var(--border);
+  background: var(--panel);
+  padding: 8px 14px;
+  max-height: 30vh; overflow-y: auto;
+}
+#task-panel[hidden] { display: none; }
+.task-panel-head {
+  font-size: 11px; color: var(--muted);
+  text-transform: uppercase; letter-spacing: 0.05em;
+  margin-bottom: 6px;
+}
+.task-panel-list { list-style: none; padding: 0; margin: 0; }
+.task-row {
+  display: flex; gap: 8px; align-items: baseline;
+  padding: 2px 0; font-size: 12px;
+}
+.task-marker {
+  flex: 0 0 14px; font-family: ui-monospace, monospace;
+  color: var(--muted);
+}
+.task-row.task-in_progress .task-marker { color: var(--green); }
+.task-row.task-completed .task-marker { color: var(--accent); }
+.task-text { flex: 1 1 auto; color: var(--text); }
+.task-row.task-completed .task-text {
+  color: var(--muted); text-decoration: line-through;
+}
+.task-row.task-in_progress .task-text { font-weight: 500; }
+
 #composer {
   display: flex; gap: 6px; padding: 10px 14px; border-top: 1px solid var(--border);
   background: var(--panel);

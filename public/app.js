@@ -6,6 +6,7 @@ import { Sidebar } from './sidebar.js';
 import { Conversation } from './conversation.js';
 import { attachComposer } from './composer.js';
 import { formatUserQuestionAnswers } from './blocks.js';
+import { TaskTracker, TaskPanel } from './tasks.js';
 import {
   NotificationState, ensurePermission, setGlobalEnabled,
   maybeNotifyTurnEnd, isNotificationAPIAvailable,
@@ -30,6 +31,7 @@ const dom = {
   killBtn: document.getElementById('kill-btn'),
   resumeBtn: document.getElementById('resume-btn'),
   instanceTitle: document.getElementById('instance-title'),
+  taskPanel: document.getElementById('task-panel'),
   newProjectBtn: document.getElementById('new-project-btn'),
   newProjectDialog: document.getElementById('new-project-dialog'),
   npName: document.getElementById('np-name'),
@@ -51,6 +53,18 @@ const dom = {
   sidebarScrim: document.getElementById('sidebar-scrim'),
   notifyToggle: document.getElementById('notify-toggle'),
 };
+
+// Per-instance task trackers — one TaskTracker is kept alive per
+// observed instance so switching tabs and back doesn't lose the
+// running list. The panel mounts the tracker for whichever instance
+// is currently active.
+const taskTrackersByInstance = new Map();
+function getTracker(instanceId) {
+  let t = taskTrackersByInstance.get(instanceId);
+  if (!t) { t = new TaskTracker(); taskTrackersByInstance.set(instanceId, t); }
+  return t;
+}
+const taskPanel = new TaskPanel(dom.taskPanel);
 
 // Pending user-question answers waiting for the active instance to reach
 // idle. If the user picks an option while a turn is still running, the
@@ -417,6 +431,8 @@ function selectInstance(id) {
   sidebar.setActive(id);
   conversation.clear();
   updateActiveHeader();
+  // Swap the task panel onto whichever instance just became active.
+  taskPanel.attach(id ? getTracker(id) : null);
   send('subscribe', { id });
   if (window.matchMedia('(max-width: 720px)').matches) setSidebarOpen(false);
 }
@@ -477,6 +493,12 @@ function updateActiveHeader() {
 
 bus.addEventListener('snapshot', (e) => {
   const m = e.detail;
+  // Rebuild task tracker from the snapshot for any instance we observe
+  // — not just the active one — so the panel is correct the moment
+  // the user flips to it.
+  const tracker = getTracker(m.id);
+  tracker.reset();
+  for (const ev of m.events ?? []) tracker.apply(ev);
   if (m.id !== state.activeId) return;
   conversation.clear();
   conversation.applyEvents(m.events ?? []);
@@ -484,6 +506,7 @@ bus.addEventListener('snapshot', (e) => {
 
 bus.addEventListener('event', (e) => {
   const m = e.detail;
+  getTracker(m.id).apply(m.ev);
   if (m.id !== state.activeId) return;
   conversation.apply(m.ev);
 });
