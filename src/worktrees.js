@@ -274,6 +274,35 @@ export async function removeWorktree(projectName, worktreeName, { force = false 
   return meta;
 }
 
+// Compare the worktree branch to its captured base branch from inside
+// the parent repo (worktrees share the same gitdir, so the branch is
+// visible from there). Returns:
+//   ahead  = commits on worktreeBranch not yet on baseBranch (= work
+//            that hasn't been fast-forwarded into the parent yet)
+//   behind = commits on baseBranch not yet on worktreeBranch (= parent
+//            moved on since the worktree was branched)
+// Returns { ahead: null, behind: null } when the comparison fails (base
+// branch renamed/deleted, ref missing, etc.) — callers treat null as
+// "unknown" and render no indicator.
+export async function getWorktreeMergeStatus(meta) {
+  if (!meta?.parentPath || !meta?.baseBranch || !meta?.branch) {
+    return { ahead: null, behind: null };
+  }
+  const r = await runGit(meta.parentPath, [
+    'rev-list', '--left-right', '--count',
+    `${meta.baseBranch}...${meta.branch}`,
+  ]);
+  if (r.code !== 0) return { ahead: null, behind: null };
+  const parts = r.stdout.trim().split(/\s+/);
+  if (parts.length !== 2) return { ahead: null, behind: null };
+  const behind = Number.parseInt(parts[0], 10);
+  const ahead = Number.parseInt(parts[1], 10);
+  if (!Number.isFinite(ahead) || !Number.isFinite(behind)) {
+    return { ahead: null, behind: null };
+  }
+  return { ahead, behind };
+}
+
 // Run `git merge --ff-only <branch>` on the parent repo. Returns
 // {ok:true} on success or {ok:false, reason} when not fast-forwardable
 // (uncommitted changes, divergent history, etc.) — caller surfaces the

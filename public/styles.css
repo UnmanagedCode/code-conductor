@@ -107,6 +107,16 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
 .worktree-row button { background: none; border: none; color: var(--muted); cursor: pointer; padding: 0 4px; }
 .worktree-row button:hover { color: var(--text); }
 .worktree-row .wt-remove:hover { color: var(--red); }
+.wt-unmerged {
+  font-family: ui-monospace, monospace;
+  font-size: 10px;
+  color: var(--amber);
+  padding: 0 5px;
+  border: 1px solid var(--amber);
+  border-radius: 8px;
+  flex: 0 0 auto;
+  line-height: 1.4;
+}
 
 /* Sessions subnode: parallel structure to .worktree-group. */
 .sessions-group { margin: 2px 0 4px 12px; }

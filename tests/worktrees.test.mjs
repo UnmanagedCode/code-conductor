@@ -278,6 +278,54 @@ test('rebase-prompt endpoint sends the templated prompt to the agent', async () 
   } finally { await ctx.close(); }
 });
 
+test('GET /api/projects exposes mergeStatus tracking ahead/behind for each worktree', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO });
+  try {
+    const repoPath = await makeRealRepo(ctx.projectsRoot, 'demo');
+    const created = await api(ctx.baseUrl, 'POST', '/api/instances', {
+      project: 'demo', mode: 'bypassPermissions', worktree: true,
+    });
+    const wtName = created.body.worktree.worktreeName;
+    const id = created.body.id;
+    const wt = await getWorktree('demo', wtName);
+    // Kill the instance so we can mutate the worktree from the test
+    // without racing the (silent) subprocess.
+    await api(ctx.baseUrl, 'DELETE', `/api/instances/${id}`);
+
+    // Fresh worktree: no commits on either side.
+    let r = await api(ctx.baseUrl, 'GET', '/api/projects');
+    let demo = r.body.find(p => p.name === 'demo');
+    let me = demo.worktrees.find(w => w.worktreeName === wtName);
+    assert.deepEqual(me.mergeStatus, { ahead: 0, behind: 0 });
+
+    // Add a commit inside the worktree — it's now ahead of main.
+    await fs.writeFile(path.join(wt.worktreePath, 'agent.txt'), 'agent work\n');
+    await git(wt.worktreePath, 'config', 'user.email', 'agent@example.com');
+    await git(wt.worktreePath, 'config', 'user.name', 'agent');
+    await git(wt.worktreePath, 'config', 'commit.gpgsign', 'false');
+    await git(wt.worktreePath, 'add', '.');
+    await git(wt.worktreePath, 'commit', '-q', '-m', 'agent work');
+
+    r = await api(ctx.baseUrl, 'GET', '/api/projects');
+    demo = r.body.find(p => p.name === 'demo');
+    me = demo.worktrees.find(w => w.worktreeName === wtName);
+    assert.equal(me.mergeStatus.ahead, 1, 'one unmerged commit in worktree');
+    assert.equal(me.mergeStatus.behind, 0);
+
+    // Advance the parent's main by an independent commit — now both sides
+    // have diverged so we are ahead 1 / behind 1.
+    await fs.writeFile(path.join(repoPath, 'parent.txt'), 'parent work\n');
+    await git(repoPath, 'add', '.');
+    await git(repoPath, 'commit', '-q', '-m', 'parent work');
+
+    r = await api(ctx.baseUrl, 'GET', '/api/projects');
+    demo = r.body.find(p => p.name === 'demo');
+    me = demo.worktrees.find(w => w.worktreeName === wtName);
+    assert.equal(me.mergeStatus.ahead, 1);
+    assert.equal(me.mergeStatus.behind, 1);
+  } finally { await ctx.close(); }
+});
+
 test('rebase-prompt rejects non-worktree instances', async () => {
   const ctx = await bootServer({ scenarioPath: SCENARIO });
   try {

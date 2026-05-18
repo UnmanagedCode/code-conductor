@@ -8,7 +8,7 @@ import {
 import {
   isGitRepo, listWorktrees, removeWorktree, fastForwardParent,
   buildRebasePrompt, getWorktree, removeAllWorktreesForProject,
-  attachmentsDir,
+  attachmentsDir, getWorktreeMergeStatus,
 } from './worktrees.js';
 
 const CONTENT_TYPE_BY_EXT = {
@@ -34,6 +34,7 @@ export function buildRoutes({ instances } = {}) {
         const worktreesWithSessions = await Promise.all(worktrees.map(async (w) => ({
           ...w,
           sessions: await summarizeSessions(w.worktreePath).catch(() => ({ count: 0, lastMtime: 0 })),
+          mergeStatus: await getWorktreeMergeStatus(w).catch(() => ({ ahead: null, behind: null })),
         })));
         return {
           ...p,

@@ -251,16 +251,26 @@ export class Sidebar {
       el('span', { class: 'worktree-name', title: `${wt.branch}\nfrom ${wt.baseBranch} @ ${wt.baseSha?.slice(0, 12) ?? '?'}` },
         wt.worktreeName.replace(`${project.name}_worktree_`, ''),
       ),
-      el('span', { class: 'worktree-base' }, `← ${wt.baseBranch}`),
-      el('button', {
-        class: 'wt-spawn', title: 'new session in this worktree',
-        onclick: (e) => { e.stopPropagation(); this.onCreateInstanceClick(project.name, { worktreeName: wt.worktreeName }); },
-      }, '+'),
-      el('button', {
-        class: 'wt-remove', title: 'remove worktree',
-        onclick: (e) => { e.stopPropagation(); this.onRemoveWorktree(project.name, wt.worktreeName); },
-      }, '×'),
     );
+    const status = wt.mergeStatus;
+    if (status && status.ahead > 0) {
+      const label = status.behind > 0
+        ? `↑${status.ahead} ↓${status.behind}`
+        : `↑${status.ahead}`;
+      const title = status.behind > 0
+        ? `${status.ahead} commit(s) ahead of ${wt.baseBranch}, ${status.behind} behind — rebase, then fast-forward`
+        : `${status.ahead} commit(s) ahead of ${wt.baseBranch} — fast-forward parent to land them`;
+      head.appendChild(el('span', { class: 'wt-unmerged', title }, label));
+    }
+    head.appendChild(el('span', { class: 'worktree-base' }, `← ${wt.baseBranch}`));
+    head.appendChild(el('button', {
+      class: 'wt-spawn', title: 'new session in this worktree',
+      onclick: (e) => { e.stopPropagation(); this.onCreateInstanceClick(project.name, { worktreeName: wt.worktreeName }); },
+    }, '+'));
+    head.appendChild(el('button', {
+      class: 'wt-remove', title: 'remove worktree',
+      onclick: (e) => { e.stopPropagation(); this.onRemoveWorktree(project.name, wt.worktreeName); },
+    }, '×'));
     const sessions = this._sessionsNode({
       project,
       worktreeName: wt.worktreeName,
