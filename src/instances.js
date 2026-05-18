@@ -158,7 +158,6 @@ export class Instance extends EventEmitter {
       '--verbose',
       '--include-partial-messages',
       '--include-hook-events',
-      '--remote-control',
       // Required so a mid-session `set_permission_mode bypassPermissions`
       // control_request is accepted — without it the CLI rejects the
       // switch with "session was not launched with
