@@ -145,6 +145,9 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
 }
 .session-row:hover .session-delete { opacity: 1; }
 .session-delete:hover { color: var(--red); }
+@media (hover: none) {
+  .session-delete { opacity: 1; }
+}
 .empty-project-hint {
   font-size: 11px; color: var(--muted); font-style: italic;
   padding: 4px 14px;
