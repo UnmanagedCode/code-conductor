@@ -187,6 +187,21 @@ export async function listSessions(projectName) {
   return listSessionsForCwd(proj.path);
 }
 
+// Remove the persisted session jsonl at the conventional path.
+// Returns true on success, false if the file didn't exist (404 path
+// from the route). Caller is responsible for killing any running
+// instance attached to this sessionId first.
+export async function deleteSessionForCwd(absCwd, sessionId) {
+  const file = path.join(claudeProjectsRoot(), encodeCwd(absCwd), `${sessionId}.jsonl`);
+  try {
+    await fs.unlink(file);
+    return true;
+  } catch (e) {
+    if (e.code === 'ENOENT') return false;
+    throw e;
+  }
+}
+
 // Lightweight session summary — used by /api/projects to show a count +
 // "last active" stamp in the sidebar without paying the file-read cost
 // of listSessionsForCwd (which extracts firstPrompt from every jsonl).

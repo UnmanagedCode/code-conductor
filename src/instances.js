@@ -416,6 +416,11 @@ export class InstanceManager extends EventEmitter {
       .filter(i => i.project === project && i.worktree?.worktreeName === worktreeName)
       .map(i => i.id);
   }
+  idsForSession(sessionId) {
+    return [...this.byId.values()]
+      .filter(i => i.sessionId === sessionId)
+      .map(i => i.id);
+  }
 
   async create({ project, resume, mode, effort, thinking, model, worktree } = {}) {
     if (!project) {

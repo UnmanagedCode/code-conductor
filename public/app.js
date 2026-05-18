@@ -153,6 +153,7 @@ const sidebar = new Sidebar({
   onDeleteProject: deleteProject,
   onResumeSession: resumeSession,
   onLoadSessions: loadSessions,
+  onDeleteSession: deleteSession,
 });
 
 const composer = attachComposer({
@@ -408,6 +409,38 @@ async function deleteProject(project) {
     await refreshInstances();
   } catch (e) {
     alert(`delete project failed: ${e.message}`);
+  }
+}
+
+async function deleteSession({ projectName, worktreeName, sessionId, preview }) {
+  const label = preview && preview !== '(new session)' && preview !== `${sessionId.slice(0, 8)}…`
+    ? `"${preview}"`
+    : sessionId.slice(0, 8) + '…';
+  if (!confirm(`Delete session ${label}?\nThis removes the persisted transcript jsonl.`)) return;
+  const base = worktreeName
+    ? `/api/projects/${encodeURIComponent(projectName)}/worktrees/${encodeURIComponent(worktreeName)}/sessions/${encodeURIComponent(sessionId)}`
+    : `/api/projects/${encodeURIComponent(projectName)}/sessions/${encodeURIComponent(sessionId)}`;
+  try {
+    let r = await fetch(base, { method: 'DELETE' });
+    if (r.status === 409) {
+      const { error } = await r.json();
+      if (!confirm(`${error}\n\nKill the running instance and delete anyway?`)) return;
+      r = await fetch(`${base}?force=1`, { method: 'DELETE' });
+    }
+    if (!r.ok) throw new Error((await r.json()).error);
+    // If we were focused on this session's instance, drop the focus.
+    const inst = state.instances.find(i => i.sessionId === sessionId);
+    if (inst && state.activeId === inst.id) state.activeId = null;
+    // Drop any cached sessions for the affected scope so the
+    // subnode re-fetches on next render.
+    if (sidebar.sessionsCache) {
+      const key = worktreeName ? `${projectName}:${worktreeName}` : projectName;
+      sidebar.sessionsCache.delete(key);
+    }
+    await refreshProjects();
+    await refreshInstances();
+  } catch (e) {
+    alert(`delete session failed: ${e.message}`);
   }
 }
 

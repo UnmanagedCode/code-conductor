@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { bootServer, api } from './helpers.mjs';
+import { bootServer, api, waitFor } from './helpers.mjs';
 import { encodeCwd } from '../src/projects.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -254,6 +254,99 @@ test('GET /api/projects exposes a sessions summary on each worktree too', async 
     assert.equal(proj.worktrees.length, 1);
     assert.equal(proj.worktrees[0].sessions.count, 1);
     assert.ok(proj.worktrees[0].sessions.lastMtime > 0);
+  } finally { await close(); }
+});
+
+test('DELETE /api/projects/:name/sessions/:sid removes the jsonl', async () => {
+  const { baseUrl, projectsRoot, claudeProjectsRoot, close } = await bootServer();
+  try {
+    await api(baseUrl, 'POST', '/api/projects', { name: 'sess' });
+    const dir = path.join(claudeProjectsRoot, encodeCwd(path.join(projectsRoot, 'sess')));
+    await fs.mkdir(dir, { recursive: true });
+    const sid = 'deadbeef-0000-1111-2222-333333333333';
+    const file = path.join(dir, `${sid}.jsonl`);
+    await fs.copyFile(FIXTURE_JSONL, file);
+    await fs.stat(file);
+
+    const r = await api(baseUrl, 'DELETE', `/api/projects/sess/sessions/${sid}`);
+    assert.equal(r.status, 200);
+    assert.equal(r.body.ok, true);
+    await assert.rejects(fs.stat(file), { code: 'ENOENT' });
+  } finally { await close(); }
+});
+
+test('DELETE session 404s when the jsonl is missing', async () => {
+  const { baseUrl, close } = await bootServer();
+  try {
+    await api(baseUrl, 'POST', '/api/projects', { name: 'sess' });
+    const r = await api(baseUrl, 'DELETE', '/api/projects/sess/sessions/00000000-0000-0000-0000-000000000000');
+    assert.equal(r.status, 404);
+  } finally { await close(); }
+});
+
+test('DELETE session refuses (409) when a running instance is attached; force=1 kills + deletes', async () => {
+  const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-instance.json');
+  const { baseUrl, projectsRoot, claudeProjectsRoot, instances, close } = await bootServer({ scenarioPath: SCENARIO });
+  try {
+    await api(baseUrl, 'POST', '/api/projects', { name: 'sess' });
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'sess', mode: 'bypassPermissions' });
+    const id = r.body.id;
+    const sid = r.body.sessionId;
+    await waitFor(() => instances.get(id)?.proc);
+
+    // Pre-create the on-disk jsonl so the route's `removed` check passes.
+    const dir = path.join(claudeProjectsRoot, encodeCwd(path.join(projectsRoot, 'sess')));
+    await fs.mkdir(dir, { recursive: true });
+    await fs.copyFile(FIXTURE_JSONL, path.join(dir, `${sid}.jsonl`));
+
+    const blocked = await api(baseUrl, 'DELETE', `/api/projects/sess/sessions/${sid}`);
+    assert.equal(blocked.status, 409);
+    assert.match(blocked.body.error, /running instance/i);
+    assert.ok(instances.get(id), 'instance untouched by the refused delete');
+
+    const forced = await api(baseUrl, 'DELETE', `/api/projects/sess/sessions/${sid}?force=1`);
+    assert.equal(forced.status, 200);
+    // Instance killed; jsonl gone.
+    await waitFor(() => instances.get(id) === undefined);
+    await assert.rejects(fs.stat(path.join(dir, `${sid}.jsonl`)), { code: 'ENOENT' });
+  } finally { await close(); }
+});
+
+test('DELETE worktree session removes from the worktree-encoded dir (not the parent project)', async () => {
+  const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-instance.json');
+  const { execFile } = await import('node:child_process');
+  const git = (cwd, ...args) => new Promise((resolve, reject) => {
+    execFile('git', ['-C', cwd, ...args], { encoding: 'utf8' }, (err, stdout, stderr) => {
+      if (err) { err.stdout = stdout; err.stderr = stderr; reject(err); } else resolve({ stdout, stderr });
+    });
+  });
+  const { baseUrl, projectsRoot, claudeProjectsRoot, close } = await bootServer({ scenarioPath: SCENARIO });
+  try {
+    const repoPath = path.join(projectsRoot, 'demo');
+    await fs.mkdir(repoPath, { recursive: true });
+    await git(repoPath, 'init', '-q', '-b', 'main');
+    await git(repoPath, 'config', 'user.email', 't@t');
+    await git(repoPath, 'config', 'user.name', 't');
+    await git(repoPath, 'config', 'commit.gpgsign', 'false');
+    await fs.writeFile(path.join(repoPath, 'r.md'), 'x');
+    await git(repoPath, 'add', '.');
+    await git(repoPath, 'commit', '-q', '-m', 'i');
+
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', worktree: true });
+    const wtName = r.body.worktree.worktreeName;
+    const wtPath = r.body.cwd;
+    await api(baseUrl, 'DELETE', `/api/instances/${r.body.id}`);
+
+    const wtDir = path.join(claudeProjectsRoot, encodeCwd(wtPath));
+    await fs.mkdir(wtDir, { recursive: true });
+    const sid = 'aaaa1111-bbbb-2222-cccc-333333333333';
+    const file = path.join(wtDir, `${sid}.jsonl`);
+    await fs.copyFile(FIXTURE_JSONL, file);
+
+    const del = await api(baseUrl, 'DELETE',
+      `/api/projects/demo/worktrees/${encodeURIComponent(wtName)}/sessions/${sid}`);
+    assert.equal(del.status, 200);
+    await assert.rejects(fs.stat(file), { code: 'ENOENT' });
   } finally { await close(); }
 });
 

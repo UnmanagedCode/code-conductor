@@ -138,6 +138,13 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
   flex: 1 1 auto; min-width: 0;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+.session-delete {
+  background: none; border: none; color: var(--muted);
+  cursor: pointer; padding: 0 4px; font-size: 13px; line-height: 1;
+  flex: 0 0 auto; opacity: 0;
+}
+.session-row:hover .session-delete { opacity: 1; }
+.session-delete:hover { color: var(--red); }
 .empty-project-hint {
   font-size: 11px; color: var(--muted); font-style: italic;
   padding: 4px 14px;

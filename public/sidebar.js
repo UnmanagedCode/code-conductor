@@ -54,6 +54,7 @@ export class Sidebar {
   constructor({
     rootList, onSelectInstance, onCreateInstanceClick,
     onRemoveWorktree, onDeleteProject, onResumeSession, onLoadSessions,
+    onDeleteSession,
   }) {
     this.list = rootList;
     this.onSelectInstance = onSelectInstance;
@@ -62,6 +63,7 @@ export class Sidebar {
     this.onDeleteProject = onDeleteProject;
     this.onResumeSession = onResumeSession;
     this.onLoadSessions = onLoadSessions;
+    this.onDeleteSession = onDeleteSession;
     this.projects = [];
     this.instances = [];
     this.activeInstanceId = null;
@@ -116,6 +118,16 @@ export class Sidebar {
       el('span', { class: `dot ${status}`, title: status }),
       el('span', { class: 'session-ago' }, formatAgo(session.mtime)),
       el('span', { class: 'session-preview' }, liveLabel),
+      el('button', {
+        class: 'session-delete', title: 'delete session',
+        onclick: (e) => {
+          e.stopPropagation();
+          if (this.onDeleteSession) this.onDeleteSession({
+            projectName, worktreeName, sessionId: session.sessionId,
+            preview: liveLabel,
+          });
+        },
+      }, '×'),
     );
     return row;
   }
