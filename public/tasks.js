@@ -73,6 +73,14 @@ export class TaskTracker {
       const m = content.match(CREATE_ID_RE);
       if (!m) return;
       const id = m[1];
+      // If every existing task is already completed, the previous
+      // batch is "done" — drop those rows before the new task lands,
+      // so a fresh panel doesn't drag a wall of historical ✓s in
+      // with it. As long as at least one task is still pending or
+      // in_progress, the new task joins the current batch.
+      if (this.tasks.size > 0 && this._allCompleted()) {
+        this.tasks.clear();
+      }
       this.tasks.set(id, {
         subject: pending.subject,
         description: pending.description,
@@ -81,6 +89,13 @@ export class TaskTracker {
       });
       this._notify();
     }
+  }
+
+  _allCompleted() {
+    for (const t of this.tasks.values()) {
+      if (t.status !== 'completed') return false;
+    }
+    return true;
   }
 
   // True when the panel should render — there's at least one task and

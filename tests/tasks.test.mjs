@@ -95,6 +95,35 @@ test('completedCount + isVisible track the running totals', () => {
   assert.equal(t.isVisible(), true);
 });
 
+test('a new TaskCreate after every task is completed starts a fresh batch (drops the historical ✓s)', () => {
+  const t = new TaskTracker();
+  feedCreate(t, { toolUseId: 'tu1', taskId: '1', subject: 'A' });
+  feedCreate(t, { toolUseId: 'tu2', taskId: '2', subject: 'B' });
+  // Finish the first batch.
+  t.apply({ kind: 'tool_use', name: 'TaskUpdate', toolUseId: 'u1', input: { taskId: '1', status: 'completed' } });
+  t.apply({ kind: 'tool_use', name: 'TaskUpdate', toolUseId: 'u2', input: { taskId: '2', status: 'completed' } });
+  assert.equal(t.isVisible(), false, 'panel hidden after batch completes');
+
+  // Next TaskCreate should clear the old completed rows and start fresh.
+  feedCreate(t, { toolUseId: 'tu3', taskId: '3', subject: 'C' });
+  assert.deepEqual(t.list().map(x => x.id), ['3'],
+    `batch should contain only the new task; got: ${JSON.stringify(t.list().map(x => x.id))}`);
+  assert.equal(t.isVisible(), true);
+  assert.equal(t.completedCount(), 0, 'completedCount also resets with the batch');
+});
+
+test('a new TaskCreate while at least one task is still pending JOINS the current batch', () => {
+  const t = new TaskTracker();
+  feedCreate(t, { toolUseId: 'tu1', taskId: '1', subject: 'A' });
+  feedCreate(t, { toolUseId: 'tu2', taskId: '2', subject: 'B' });
+  // Complete only one — the other is still pending.
+  t.apply({ kind: 'tool_use', name: 'TaskUpdate', toolUseId: 'u1', input: { taskId: '1', status: 'completed' } });
+  feedCreate(t, { toolUseId: 'tu3', taskId: '3', subject: 'C' });
+  // All three should be visible — the partially-completed batch stays.
+  assert.deepEqual(t.list().map(x => x.id), ['1', '2', '3']);
+  assert.equal(t.completedCount(), 1);
+});
+
 test('tool_use events for unrelated tools are ignored', () => {
   const t = new TaskTracker();
   t.apply({ kind: 'tool_use', name: 'Bash', toolUseId: 'b1', input: { command: 'ls' } });
