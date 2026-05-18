@@ -102,7 +102,7 @@ Each Instance spawns:
 ```bash
 claude -p \
   --input-format=stream-json --output-format=stream-json \
-  --verbose --include-partial-messages --include-hook-events \
+  --verbose --include-partial-messages --include-hook-events --remote-control \
   --allow-dangerously-skip-permissions \
   --permission-mode <plan|bypassPermissions> --effort <effort> --thinking <thinking> \
   --settings '{"hooks":{"PreToolUse":[…]}}' \
