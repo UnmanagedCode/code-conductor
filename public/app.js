@@ -49,6 +49,7 @@ const dom = {
   niModel: document.getElementById('ni-model'),
   niWorktree: document.getElementById('ni-worktree'),
   niWorktreeHint: document.getElementById('ni-worktree-hint'),
+  niTemp: document.getElementById('ni-temp'),
   niError: document.getElementById('ni-error'),
   syncBtn: document.getElementById('sync-btn'),
   mergeBtn: document.getElementById('merge-btn'),
@@ -340,11 +341,19 @@ async function openNewInstanceDialog(projectName, opts = {}) {
       : 'project is not a git repo — `git init` first to use worktrees';
   }
 
+  dom.niTemp.checked = false;
   // Resume is no longer driven from this dialog — the sidebar's
   // "Sessions" subnode handles that with one-click resume. The dialog
   // only spawns FRESH sessions.
   dom.newInstanceDialog.showModal();
 }
+
+// Ticking "Temp session" nudges the mode dropdown to code, since a
+// temp session is almost always for *doing*, not planning. The user
+// can still override.
+dom.niTemp.addEventListener('change', () => {
+  if (dom.niTemp.checked) dom.niMode.value = 'bypassPermissions';
+});
 dom.newInstanceDialog.addEventListener('close', async () => {
   if (dom.newInstanceDialog.returnValue !== 'create') return;
   const project = pendingNewInstanceProject;
@@ -352,6 +361,7 @@ dom.newInstanceDialog.addEventListener('close', async () => {
   const effort = dom.niEffort.value;
   const thinking = dom.niThinking.value;
   const model = dom.niModel.value || undefined;
+  const temp = dom.niTemp.checked || undefined;
   // Worktree intent: pre-locked name (existing) > checkbox (fresh) > omitted.
   let worktree;
   if (typeof pendingWorktreeIntent === 'string') worktree = pendingWorktreeIntent;
@@ -360,7 +370,7 @@ dom.newInstanceDialog.addEventListener('close', async () => {
     const r = await fetch('/api/instances', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ project, mode, effort, thinking, model, worktree }),
+      body: JSON.stringify({ project, mode, effort, thinking, model, worktree, temp }),
     });
     if (!r.ok) throw new Error((await r.json()).error);
     const inst = await r.json();
@@ -550,6 +560,7 @@ function updateActiveHeader() {
   dom.instanceTitle.appendChild(chip('ih-sid', inst.sessionId?.slice(0, 8) ?? '?'));
   dom.instanceTitle.appendChild(chip(`ih-status ih-status-${inst.status}`, inst.status));
   dom.instanceTitle.appendChild(chip('ih-mode', inst.mode === 'bypassPermissions' ? 'code' : inst.mode));
+  if (inst.temp) dom.instanceTitle.appendChild(chip('ih-temp', 'temp'));
   dom.modeSelect.value = inst.mode;
   dom.modeSelect.disabled = inst.status === 'turn' || inst.status === 'crashed' || inst.status === 'exited';
   dom.interruptBtn.disabled = inst.status !== 'turn';

@@ -201,6 +201,7 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
 .ih-chip.ih-status-turn { color: var(--green); }
 .ih-chip.ih-status-spawning { color: var(--amber); }
 .ih-chip.ih-status-crashed, .ih-chip.ih-status-exited { color: var(--red); }
+.ih-chip.ih-temp { background: rgba(223, 132, 90, .25); color: #ffc7a3; text-transform: uppercase; font-size: 10px; letter-spacing: .5px; }
 #instance-controls { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 #instance-controls select, #instance-controls button { font-size: 12px; }
 #notify-toggle { padding: 4px 8px; line-height: 1; }

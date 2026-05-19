@@ -722,3 +722,99 @@ test('resume defaults to bypassPermissions (code) mode; fresh spawn still defaul
     assert.equal(freshInst.mode, 'plan', 'fresh spawn default is still plan mode');
   } finally { await ctx.close(); }
 });
+
+test('temp: spawn defaults mode to bypassPermissions but explicit mode wins', async () => {
+  const { baseUrl, instances, close } = await setupWithProject();
+  try {
+    const r1 = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', temp: true });
+    assert.equal(r1.status, 201);
+    const inst1 = instances.get(r1.body.id);
+    assert.equal(inst1.mode, 'bypassPermissions', 'temp default is code mode');
+    assert.equal(inst1.temp, true);
+    assert.equal(r1.body.temp, true, 'summary.temp round-trips through REST');
+
+    const r2 = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', temp: true, mode: 'plan' });
+    assert.equal(r2.status, 201);
+    const inst2 = instances.get(r2.body.id);
+    assert.equal(inst2.mode, 'plan', 'explicit mode overrides the temp default');
+    assert.equal(inst2.temp, true);
+  } finally { await close(); }
+});
+
+test('temp: skips last-prompt / permission-mode metadata writes after a turn', async () => {
+  const scenario = path.join(__dirname, 'fixtures', 'scenario-resume.json');
+  const ctx = await bootServer({ scenarioPath: scenario });
+  const fsp = (await import('node:fs')).promises;
+  try {
+    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'tmp' });
+    const events = collectEvents(ctx.instances);
+    const r = await api(ctx.baseUrl, 'POST', '/api/instances', { project: 'tmp', temp: true });
+    const id = r.body.id;
+    const inst = ctx.instances.get(id);
+    await waitFor(() => inst.status === 'idle');
+    inst.prompt('hi');
+    await waitFor(() => events.some(e => e.id === id && e.ev.kind === 'turn_end'));
+
+    // Wait a tick to let any (unwanted) appendFile settle, then assert nothing was written.
+    await new Promise(r => setTimeout(r, 50));
+    const dir = path.join(ctx.claudeProjectsRoot, encodeCwd(inst.cwd));
+    const file = path.join(dir, `${inst.sessionId}.jsonl`);
+    let exists = true;
+    try { await fsp.access(file); } catch { exists = false; }
+    if (exists) {
+      const txt = await fsp.readFile(file, 'utf8');
+      assert.equal(txt.includes('"type":"last-prompt"'), false, 'no last-prompt for temp');
+      assert.equal(txt.includes('"type":"permission-mode"'), false, 'no permission-mode for temp');
+    }
+  } finally { await ctx.close(); }
+});
+
+test('temp: deletes session jsonl + sibling subagents dir on subprocess exit', async () => {
+  const { baseUrl, instances, claudeProjectsRoot, close } = await setupWithProject();
+  const fsp = (await import('node:fs')).promises;
+  try {
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', temp: true });
+    const id = r.body.id;
+    const inst = instances.get(id);
+    await waitFor(() => inst.status === 'idle' && inst.sessionId);
+
+    // Simulate the CLI having written its transcript + a sub-agent dir.
+    const dir = path.join(claudeProjectsRoot, encodeCwd(inst.cwd));
+    const file = path.join(dir, `${inst.sessionId}.jsonl`);
+    const subDir = path.join(dir, inst.sessionId, 'subagents');
+    await fsp.mkdir(subDir, { recursive: true });
+    await fsp.writeFile(file, '{"type":"user","uuid":"u1"}\n');
+    await fsp.writeFile(path.join(subDir, 'agent-x.jsonl'), '{}\n');
+
+    const del = await api(baseUrl, 'DELETE', `/api/instances/${id}`);
+    assert.equal(del.status, 200);
+    await waitFor(async () => {
+      try { await fsp.access(file); return false; } catch { return true; }
+    });
+    let subStillThere = true;
+    try { await fsp.access(path.join(dir, inst.sessionId)); } catch { subStillThere = false; }
+    assert.equal(subStillThere, false, 'sub-agent dir for the session was removed');
+  } finally { await close(); }
+});
+
+test('non-temp: jsonl is left in place on exit', async () => {
+  const { baseUrl, instances, claudeProjectsRoot, close } = await setupWithProject();
+  const fsp = (await import('node:fs')).promises;
+  try {
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', mode: 'bypassPermissions' });
+    const id = r.body.id;
+    const inst = instances.get(id);
+    await waitFor(() => inst.status === 'idle' && inst.sessionId);
+
+    const dir = path.join(claudeProjectsRoot, encodeCwd(inst.cwd));
+    const file = path.join(dir, `${inst.sessionId}.jsonl`);
+    await fsp.mkdir(dir, { recursive: true });
+    await fsp.writeFile(file, '{"type":"user","uuid":"u1"}\n');
+
+    const del = await api(baseUrl, 'DELETE', `/api/instances/${id}`);
+    assert.equal(del.status, 200);
+    // Give exit handlers a tick; then assert the jsonl is still there.
+    await new Promise(r => setTimeout(r, 50));
+    await fsp.access(file); // throws if missing
+  } finally { await close(); }
+});

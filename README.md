@@ -42,6 +42,7 @@ Designed to run on a Termux phone (single user, localhost-only), but works on an
   - **Effort** — `low` / `medium` / `high` (default) / `xhigh` / `max`.
   - **Thinking** — `adaptive` (default, model decides) / `enabled` / `disabled`.
   - **Model** — empty for account default, or pick `claude-sonnet-4-6` / `claude-opus-4-7` / `claude-haiku-4-5`.
+  - **Temp session** — checkbox. When ticked, the session's persisted jsonl (and any sibling `subagents/` dir) is deleted from `~/.claude/projects/<encoded-cwd>/` when the subprocess exits, and the orchestrator skips its `last-prompt` / `permission-mode` metadata appends during the run. The mode dropdown auto-flips to `code` (still re-pickable). The conversation header shows a small `TEMP` pill so it's obvious the session won't be saved. Worktrees are untouched — only the jsonl is cleaned up.
 - **Live conversation view** — streams the assistant's response as it arrives. Consecutive assistant activity (multiple tool calls, each technically its own CLI-level turn with its own `msgId`) is grouped into a single bordered "assistant" envelope with one role label, rather than minting a new box per action; the envelope closes when a real user action lands (user echo, structured-question card, plan-request card, permission-request card, or history-replay divider). The same grouping applies inside the sub-agent drill-down. Renders:
   - **Text** — plain markdown-ish prose, deltas merged in place.
   - **Thinking** — collapsible block when the model streams thinking content (Sonnet/Haiku). When the model emits only a signature (Opus 4.7), renders as a single non-expandable `thinking (redacted)` line instead — no disclosure caret, since there's nothing to reveal.
@@ -330,7 +331,7 @@ Every event carries a `parentToolUseId` (or `null`) — the conversation view ro
 | `POST` | `/api/projects` | `{name}` → `{name, path}`. Validates `^[a-zA-Z0-9._-]+$`. Writes `CLAUDE.md` with `@../CLAUDE.md`. |
 | `DELETE` | `/api/projects/:name` | `{ok:true, project, killedInstances}` — cascades: kill all attached instances → remove all worktrees → `rm -rf` the project dir. Sessions under `~/.claude/projects/` are left in place. |
 | `GET` | `/api/projects/:name/sessions` | `[{sessionId, firstPrompt, mtime, size}]` |
-| `POST` | `/api/instances` | `{project, mode?, effort?, thinking?, model?, resume?}` → instance summary |
+| `POST` | `/api/instances` | `{project, mode?, effort?, thinking?, model?, resume?, worktree?, temp?}` → instance summary (includes `temp: bool`). When `temp:true` and `mode` is omitted, defaults to `bypassPermissions`; on exit the session jsonl + sub-agent dir under `~/.claude/projects/<encoded-cwd>/` are removed and no `last-prompt`/`permission-mode` metadata is appended during the run. |
 | `GET` | `/api/instances` | `[{id, project, sessionId, status, mode, effort, thinking, model, pid}]` |
 | `POST` | `/api/instances/:id/respawn` | `{id, sessionId}` — uses `--resume lastSessionId` |
 | `DELETE` | `/api/instances/:id` | `{ok: true}` — SIGTERM + remove |
@@ -377,7 +378,7 @@ When a **turn ends** or the **mode changes**, two metadata lines are appended to
 ### Defaults
 
 - Bind: `127.0.0.1:8787` (override with `HOST` / `PORT` env vars).
-- New instance: `--permission-mode plan` (the safer default — read-only; the user can pick `code` in the dialog or approve a plan mid-session to flip to `bypassPermissions`), `--effort high`, `--thinking adaptive`, no `--model` flag (uses account default).
+- New instance: `--permission-mode plan` (the safer default — read-only; the user can pick `code` in the dialog or approve a plan mid-session to flip to `bypassPermissions`), `--effort high`, `--thinking adaptive`, no `--model` flag (uses account default). When the **Temp session** checkbox is ticked, the mode default flips to `bypassPermissions` instead.
 - Resumed instance (sidebar one-click resume): `--permission-mode bypassPermissions` (i.e. `code`), same effort/thinking defaults as above. Crash-recovery respawn preserves whatever mode the instance was already running.
 - Ring buffer: 500 events per instance.
 - Control-request timeout: 5 s.

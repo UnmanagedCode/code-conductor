@@ -2,9 +2,10 @@ import { spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import readline from 'node:readline';
-import { readFileSync } from 'node:fs';
+import { promises as fsp, readFileSync } from 'node:fs';
+import path from 'node:path';
 import { Parser } from './parser.js';
-import { getProject } from './projects.js';
+import { getProject, claudeProjectsRoot, encodeCwd } from './projects.js';
 import { createWorktree, getWorktree } from './worktrees.js';
 import { buildSettingsJSON } from './settings.js';
 import { HookBroker } from './hookBroker.js';
@@ -63,7 +64,7 @@ class EventLog {
 }
 
 export class Instance extends EventEmitter {
-  constructor({ id, project, cwd, mode, effort, thinking, model, hookCallbackUrl = null, worktree = null }) {
+  constructor({ id, project, cwd, mode, effort, thinking, model, hookCallbackUrl = null, worktree = null, temp = false }) {
     super();
     this.id = id;
     this.project = project;
@@ -77,6 +78,11 @@ export class Instance extends EventEmitter {
     // (parentProject, worktreeName, worktreePath, branch, baseBranch,
     // baseSha) so the UI can show a chip and the rebase/ff buttons.
     this.worktree = worktree;
+    // When true, the session jsonl + sibling subagents/ directory are
+    // deleted from ~/.claude/projects/<encoded-cwd>/ on subprocess exit,
+    // and the orchestrator skips its last-prompt / permission-mode
+    // metadata appends during the run.
+    this.temp = !!temp;
     this.sessionId = null;
     this.pid = null;
     this.status = 'idle';
@@ -116,6 +122,7 @@ export class Instance extends EventEmitter {
             baseSha: this.worktree.baseSha,
           }
         : null,
+      temp: this.temp,
     };
   }
 
@@ -290,6 +297,7 @@ export class Instance extends EventEmitter {
 
 
   async _writeSessionMetadata() {
+    if (this.temp) return;
     if (!this.sessionId || !this._lastLeafUuid) return;
     try {
       // Persist the CLI-level permission mode (not the orchestrator's
@@ -320,6 +328,18 @@ export class Instance extends EventEmitter {
     // gone, so the tool won't run anyway, but we still need to free
     // the held-open HTTP responses.
     this._hooks.discardAll();
+    if (this.temp) this._deleteTempArtifacts().catch(() => {});
+  }
+
+  // Best-effort removal of the CLI's persisted jsonl + sub-agent dir for
+  // a temp session. Called after the subprocess exits.
+  async _deleteTempArtifacts() {
+    if (!this.sessionId) return;
+    const dir = path.join(claudeProjectsRoot(), encodeCwd(this.cwd));
+    const file = path.join(dir, `${this.sessionId}.jsonl`);
+    const subagents = path.join(dir, this.sessionId);
+    await fsp.rm(file, { force: true });
+    await fsp.rm(subagents, { recursive: true, force: true });
   }
 
   _sendRaw(obj) {
@@ -472,7 +492,7 @@ export class InstanceManager extends EventEmitter {
       .map(i => i.id);
   }
 
-  async create({ project, resume, mode, effort, thinking, model, worktree } = {}) {
+  async create({ project, resume, mode, effort, thinking, model, worktree, temp } = {}) {
     if (!project) {
       throw Object.assign(new Error('project required'), { statusCode: 400 });
     }
@@ -489,7 +509,14 @@ export class InstanceManager extends EventEmitter {
       }
     }
     const proj = await getProject(project);
-    const finalMode = mode ?? (resume ? DEFAULT_RESUME_MODE : DEFAULT_MODE);
+    // Temp sessions default to bypassPermissions instead of plan — a
+    // disposable session is almost always for *doing*, not planning. The
+    // user can still pick a different mode explicitly.
+    const tempFlag = !!temp;
+    const defaultMode = resume
+      ? DEFAULT_RESUME_MODE
+      : (tempFlag ? 'bypassPermissions' : DEFAULT_MODE);
+    const finalMode = mode ?? defaultMode;
     if (!VALID_MODES.has(finalMode)) {
       throw Object.assign(new Error('invalid mode (must be plan, ask, or bypassPermissions)'), { statusCode: 400 });
     }
@@ -526,6 +553,7 @@ export class InstanceManager extends EventEmitter {
       mode: finalMode, effort: finalEffort, thinking: finalThinking, model: finalModel,
       hookCallbackUrl: this.hookCallbackUrl(id),
       worktree: worktreeMeta,
+      temp: tempFlag,
     });
 
     inst.on('event', (ev) => this.emit('event', { id, ev }));
