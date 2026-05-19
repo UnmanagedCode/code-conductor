@@ -1075,9 +1075,23 @@ test('DOM: #turn-indicator is present, hidden by default, and toggles on status=
   globalThis.HTMLElement = window.HTMLElement;
   document.documentElement.innerHTML = html.replace(/^[\s\S]*?<html[^>]*>/, '').replace(/<\/html>[\s\S]*$/, '');
 
+  // Inject the actual stylesheet so [hidden] vs. visible can be tested
+  // via computed style — the `hidden` attribute alone isn't enough,
+  // because an author `display: flex` rule overrides the UA's
+  // `[hidden] { display: none }`. That mismatch is the bug this test
+  // exists to catch.
+  const css = await fs.readFile(path.join(PUB, 'styles.css'), 'utf8');
+  const styleTag = document.createElement('style');
+  styleTag.textContent = css;
+  document.head.appendChild(styleTag);
+
   const indicator = document.getElementById('turn-indicator');
   assert.ok(indicator, '#turn-indicator must exist in index.html');
-  assert.equal(indicator.hidden, true, 'indicator is hidden by default');
+  assert.equal(indicator.hidden, true, 'indicator carries the hidden attribute by default');
+  assert.equal(
+    window.getComputedStyle(indicator).display, 'none',
+    'indicator must be display:none while the hidden attribute is set — author CSS must not override the UA [hidden] rule',
+  );
   assert.ok(indicator.querySelector('.ti-dot'), 'indicator contains a .ti-dot');
   assert.match(indicator.textContent, /Claude is working/, 'indicator has the working label');
 
@@ -1089,17 +1103,19 @@ test('DOM: #turn-indicator is present, hidden by default, and toggles on status=
   assert.equal(taskPanel.nextElementSibling, indicator, '#turn-indicator follows #task-panel');
   assert.equal(indicator.nextElementSibling, composer, '#turn-indicator immediately precedes #composer');
 
-  // Reproduce the toggle rule used in app.js:updateActiveHeader.
+  // Reproduce the toggle rule used in app.js:updateActiveHeader and
+  // assert against the computed display each time — the bug we're
+  // guarding against was that `hidden = true` left display=flex.
   const applyStatus = (status) => { indicator.hidden = status !== 'turn'; };
-  applyStatus('idle'); assert.equal(indicator.hidden, true);
-  applyStatus('turn'); assert.equal(indicator.hidden, false, 'shown while turn is running');
-  applyStatus('idle'); assert.equal(indicator.hidden, true, 'hidden again after turn ends');
-  applyStatus('spawning'); assert.equal(indicator.hidden, true, 'hidden during spawn');
-  applyStatus('crashed'); assert.equal(indicator.hidden, true, 'hidden when crashed');
+  const displayFor = () => window.getComputedStyle(indicator).display;
+  applyStatus('idle'); assert.equal(displayFor(), 'none', 'idle → display:none');
+  applyStatus('turn'); assert.notEqual(displayFor(), 'none', 'turn → visible (display != none)');
+  applyStatus('idle'); assert.equal(displayFor(), 'none', 'idle → display:none after turn ends');
+  applyStatus('spawning'); assert.equal(displayFor(), 'none', 'spawning → display:none');
+  applyStatus('crashed'); assert.equal(displayFor(), 'none', 'crashed → display:none');
 
   // The CSS rule that styles it must reference --green (the working colour)
   // and reuse the existing `pulse` animation defined for the sidebar dot.
-  const css = await fs.readFile(path.join(PUB, 'styles.css'), 'utf8');
   assert.match(css, /\.turn-indicator\b/, 'styles.css defines .turn-indicator');
   assert.match(css, /\.turn-indicator\s+\.ti-dot[\s\S]*?--green/, '.ti-dot uses --green');
   assert.match(css, /\.turn-indicator\s+\.ti-dot[\s\S]*?animation:\s*pulse/, '.ti-dot reuses the pulse keyframe');

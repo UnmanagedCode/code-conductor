@@ -639,6 +639,10 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
   font-size: 12px;
   background: var(--panel);
 }
+/* Author `display: flex` above outranks the UA's `[hidden] { display: none }`,
+   which is why the bar was visible despite the `hidden` attribute. Restore
+   the expected behaviour explicitly. */
+.turn-indicator[hidden] { display: none; }
 .turn-indicator .ti-dot {
   display: inline-block;
   width: 8px; height: 8px;
