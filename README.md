@@ -86,6 +86,8 @@ RUN_REAL_CLAUDE=1 npm test   # also runs the opt-in real-claude smoke test
 
 Open `http://127.0.0.1:8787` in a browser on the same device. Bound to localhost only — no auth.
 
+For headless visual debugging via Playwright + Termux Chromium, see [`debug/README.md`](./debug/README.md). It's a separate, opt-in setup with its own `package.json`, not wired into the main test suite.
+
 ## Technical detail
 
 ### Stack
