@@ -9,6 +9,24 @@ Kept deliberately separate from the main `package.json` so:
 
 This directory holds **only generic infrastructure**. Feature-specific scripts go elsewhere (or stay as throwaway one-liners in the shell); the goal is reusable pieces for any current or future feature.
 
+## Growing the harness while debugging
+
+Every debug session is also a chance to make the *next* one cheaper. While you're driving the harness for a specific feature, watch for code with a high probability of being useful across unrelated future debug sessions — and lift it into the harness rather than letting it live in a throwaway script.
+
+Good signals that something belongs here:
+
+- You found yourself **copy-pasting it from a previous session** (mkdtemp + ephemeral roots, REST helper, waiting for a status, killing a subprocess by pid).
+- It's **state setup that any feature would need**, not just yours (sandboxing, pre-populating disk fixtures, snapshotting WS traffic, dumping the page console).
+- It would be **annoying to rediscover** the next time (CLI flags, env vars, encoding rules like `encodeCwd`, selectors for stable UI landmarks).
+
+Anti-signals — keep these *out* of `debug/`:
+
+- Specific to one bug, ticket, or PR (`verify-session-delete.mjs`, `repro-issue-42.mjs`).
+- Hard-coded against a particular fixture, project name, scenario, or selector tied to one feature's markup.
+- Single-use scripts whose value is the *session*, not the *tool* — those belong in `$TMPDIR/` (or your shell history).
+
+When in doubt, ask: *"Would a teammate debugging a totally different feature next month want this?"* If yes, generalise the API, drop the feature-specific bits, document briefly, and commit it. If no, leave it ephemeral.
+
 ## Prereqs
 
 - **Termux Chromium** (provides both the browser binary and the launcher):
