@@ -22,9 +22,17 @@ export class TextBlock {
   constructor() {
     this.body = el('div', { class: 'block text' });
     this.node = this.body;
+    this.buffer = '';
   }
-  appendDelta(text) { this.body.appendChild(document.createTextNode(text)); }
-  finalize() {}
+  appendDelta(text) {
+    this.buffer += text;
+    this.body.appendChild(document.createTextNode(text));
+  }
+  finalize() {
+    if (!this.buffer.trim()) return;
+    this.body.classList.add('md');
+    renderMarkdownInto(this.body, this.buffer);
+  }
 }
 
 // Renders an image attachment, sourced from either inline base64 (live

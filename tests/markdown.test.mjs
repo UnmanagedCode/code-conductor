@@ -149,6 +149,71 @@ test('markdown: empty / whitespace input renders nothing', async () => {
   assert.equal(render(md, '   \n\n  \n').children.length, 0);
 });
 
+test('markdown: bare URL becomes a safe anchor', async () => {
+  setupDOM();
+  const md = await loadMarkdown();
+  const root = render(md, 'Check https://example.com/x for more info.');
+  const anchors = root.querySelectorAll('a');
+  assert.equal(anchors.length, 1);
+  assert.equal(anchors[0].getAttribute('href'), 'https://example.com/x');
+  assert.equal(anchors[0].getAttribute('target'), '_blank');
+  assert.equal(anchors[0].getAttribute('rel'), 'noopener noreferrer');
+  assert.equal(anchors[0].textContent, 'https://example.com/x');
+});
+
+test('markdown: trailing sentence punctuation stays outside the autolink', async () => {
+  setupDOM();
+  const md = await loadMarkdown();
+  const root = render(md, 'see https://example.com.');
+  const a = root.querySelector('a');
+  assert.ok(a);
+  assert.equal(a.getAttribute('href'), 'https://example.com');
+  assert.equal(a.textContent, 'https://example.com');
+  // The period must be rendered as text, not inside the anchor.
+  assert.match(root.textContent, /https:\/\/example\.com\.$/);
+});
+
+test('markdown: URL inside **bold** gets wrapped by <strong> and is clickable', async () => {
+  setupDOM();
+  const md = await loadMarkdown();
+  const root = render(md, '**https://example.com**');
+  const strong = root.querySelector('strong');
+  assert.ok(strong, 'expected <strong>');
+  const a = strong.querySelector('a');
+  assert.ok(a, 'expected anchor inside <strong>');
+  assert.equal(a.getAttribute('href'), 'https://example.com');
+});
+
+test('markdown: explicit [label](url) link wins over bare-URL autolink', async () => {
+  setupDOM();
+  const md = await loadMarkdown();
+  const root = render(md, '[docs](https://example.com/x)');
+  const anchors = root.querySelectorAll('a');
+  assert.equal(anchors.length, 1, 'only one anchor, no nested autolink');
+  assert.equal(anchors[0].getAttribute('href'), 'https://example.com/x');
+  assert.equal(anchors[0].textContent, 'docs');
+});
+
+test('markdown: multiple bare URLs in one paragraph all autolink', async () => {
+  setupDOM();
+  const md = await loadMarkdown();
+  const root = render(md, 'Compare http://a.example.com and https://b.example.com here.');
+  const anchors = root.querySelectorAll('a');
+  assert.equal(anchors.length, 2);
+  assert.equal(anchors[0].getAttribute('href'), 'http://a.example.com');
+  assert.equal(anchors[1].getAttribute('href'), 'https://b.example.com');
+});
+
+test('markdown: non-http schemes are not autolinked', async () => {
+  setupDOM();
+  const md = await loadMarkdown();
+  // The bare-URL alternative only matches http(s); other schemes stay literal.
+  const root = render(md, 'try javascript:alert(1) or ftp://files.example.com');
+  assert.equal(root.querySelector('a'), null);
+  assert.match(root.textContent, /javascript:alert\(1\)/);
+  assert.match(root.textContent, /ftp:\/\/files\.example\.com/);
+});
+
 test('markdown: real plan-shaped input — headings, lists, code, bold', async () => {
   setupDOM();
   const md = await loadMarkdown();

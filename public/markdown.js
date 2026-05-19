@@ -30,12 +30,19 @@ const SAFE_URL = /^(https?:\/\/|\/|#|mailto:)/i;
 
 // Inline construct pattern — order matters: try **bold** before *italic*
 // (bold appears as the first alternative so it wins for "**...**").
+// The explicit [text](url) link alternative comes before the bare-URL
+// autolink so an explicit Markdown link still wins when its URL would
+// also match the autolink regex.
 // We instantiate a fresh `RegExp` per renderInline call because the global
 // /g lastIndex is shared, and renderInline recurses — a single shared
 // regex causes the recursion to repeatedly re-match the same outer span
 // (infinite loop / heap OOM).
 const INLINE_PATTERN =
-  '(\\*\\*[^*\\n]+?\\*\\*)|(\\*[^*\\n]+?\\*)|((?:^|\\s)_[^_\\n]+?_(?=\\s|[.,;:!?)\\]]|$))|(`[^`\\n]+?`)|(\\[[^\\]\\n]+?\\]\\([^)\\n]+?\\))';
+  '(\\*\\*[^*\\n]+?\\*\\*)|(\\*[^*\\n]+?\\*)|((?:^|\\s)_[^_\\n]+?_(?=\\s|[.,;:!?)\\]]|$))|(`[^`\\n]+?`)|(\\[[^\\]\\n]+?\\]\\([^)\\n]+?\\))|(\\bhttps?:\\/\\/[^\\s<>()\\[\\]]+)';
+
+// Trailing punctuation that should not be part of an autolinked URL
+// (e.g. the period in "see https://example.com.").
+const URL_TRAILING_PUNCT = /[.,;:!?'")\]]+$/;
 
 export function renderInline(text) {
   const out = [];
@@ -67,6 +74,25 @@ export function renderInline(text) {
       } else {
         out.push(m[5]); // unsafe URL — render as literal text
       }
+    } else if (m[6]) {
+      let url = m[6];
+      let trailing = '';
+      const tm = url.match(URL_TRAILING_PUNCT);
+      if (tm) { trailing = tm[0]; url = url.slice(0, -trailing.length); }
+      if (SAFE_URL.test(url)) {
+        const a = el('a', url);
+        a.setAttribute('href', url);
+        a.setAttribute('target', '_blank');
+        a.setAttribute('rel', 'noopener noreferrer');
+        out.push(a);
+      } else {
+        out.push(url);
+      }
+      // Rewind lastIndex so the trimmed trailing punctuation is included
+      // in the leading-text slice on the next iteration (or the final
+      // tail push after the loop). Avoids both losing it and emitting it
+      // twice.
+      re.lastIndex -= trailing.length;
     }
     cursor = re.lastIndex;
   }

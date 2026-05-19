@@ -1176,3 +1176,38 @@ test('DOM: #turn-indicator is present, hidden by default, and toggles on status=
   assert.match(css, /\.turn-indicator\s+\.ti-dot[\s\S]*?--green/, '.ti-dot uses --green');
   assert.match(css, /\.turn-indicator\s+\.ti-dot[\s\S]*?animation:\s*pulse/, '.ti-dot reuses the pulse keyframe');
 });
+
+test('DOM: assistant text re-renders as Markdown + autolinks on text_end', async () => {
+  const { root, Parser, Conversation } = await setupDOM();
+  const conv = new Conversation(root);
+  const p = new Parser();
+  const stream = [
+    { type: 'stream_event', event: { type: 'message_start', message: { id: 'm_md', role: 'assistant' } } },
+    { type: 'stream_event', event: { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } } },
+    { type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'See **bold** and ' } } },
+    { type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'https://example.com here.' } } },
+  ];
+  for (const e of stream) for (const ev of p.handleObject(e)) conv.apply(ev);
+
+  // Mid-stream: text is plain (no markdown re-render yet).
+  const textBlock = root.querySelector('.block.text');
+  assert.ok(textBlock, 'a .block.text must exist while streaming');
+  assert.equal(textBlock.querySelector('a'), null, 'no anchor before text_end');
+  assert.equal(textBlock.querySelector('strong'), null, 'no <strong> before text_end');
+  assert.match(textBlock.textContent, /See \*\*bold\*\* and https:\/\/example\.com here\./);
+
+  // Close the block — finalize() should re-render as Markdown with the URL autolinked.
+  for (const ev of p.handleObject({ type: 'stream_event', event: { type: 'content_block_stop', index: 0 } })) conv.apply(ev);
+
+  assert.ok(textBlock.classList.contains('md'), 'finalize adds the md class for shared markdown CSS');
+  const strong = textBlock.querySelector('strong');
+  assert.ok(strong, 'bold renders as <strong> after finalize');
+  assert.equal(strong.textContent, 'bold');
+  const a = textBlock.querySelector('a');
+  assert.ok(a, 'bare URL becomes an anchor after finalize');
+  assert.equal(a.getAttribute('href'), 'https://example.com');
+  assert.equal(a.getAttribute('target'), '_blank');
+  assert.equal(a.getAttribute('rel'), 'noopener noreferrer');
+  // Trailing sentence punctuation must remain outside the anchor.
+  assert.match(textBlock.textContent, /here\.$/);
+});
