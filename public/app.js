@@ -30,7 +30,6 @@ const dom = {
   composerFile: document.getElementById('composer-file'),
   composerAttachments: document.getElementById('composer-attachments'),
   modeSelect: document.getElementById('mode-select'),
-  interruptBtn: document.getElementById('interrupt-btn'),
   killBtn: document.getElementById('kill-btn'),
   resumeBtn: document.getElementById('resume-btn'),
   instanceTitle: document.getElementById('instance-title'),
@@ -191,12 +190,13 @@ dom.modeSelect.addEventListener('change', async () => {
   catch (e) { alert(`mode change failed: ${e.message}`); }
 });
 
-dom.interruptBtn.addEventListener('click', () => {
-  if (state.activeId) send('interrupt', { id: state.activeId });
-});
-
 dom.killBtn.addEventListener('click', () => {
-  if (state.activeId && confirm('Kill this instance?')) send('kill', { id: state.activeId });
+  if (!state.activeId) return;
+  if (state.activeStatus === 'turn') {
+    send('interrupt', { id: state.activeId });
+  } else if (confirm('Kill this instance?')) {
+    send('kill', { id: state.activeId });
+  }
 });
 
 dom.syncBtn.addEventListener('click', async () => {
@@ -531,7 +531,7 @@ function updateActiveHeader() {
   if (!inst) {
     dom.instanceTitle.textContent = 'no instance selected';
     dom.modeSelect.disabled = true;
-    dom.interruptBtn.disabled = true;
+    dom.killBtn.textContent = 'Interrupt';
     dom.killBtn.disabled = true;
     dom.resumeBtn.hidden = true;
     composer.disable();
@@ -563,7 +563,7 @@ function updateActiveHeader() {
   if (inst.temp) dom.instanceTitle.appendChild(chip('ih-temp', 'temp'));
   dom.modeSelect.value = inst.mode;
   dom.modeSelect.disabled = inst.status === 'turn' || inst.status === 'crashed' || inst.status === 'exited';
-  dom.interruptBtn.disabled = inst.status !== 'turn';
+  dom.killBtn.textContent = inst.status === 'turn' ? 'Interrupt' : 'Kill';
   dom.killBtn.disabled = !['idle', 'turn', 'spawning'].includes(inst.status);
   dom.resumeBtn.hidden = !(inst.status === 'crashed' || inst.status === 'exited');
   dom.turnIndicator.hidden = inst.status !== 'turn';
