@@ -1,0 +1,222 @@
+// Tests for the per-instance context-usage tracker that drives the
+// `ctx N%` header chip + session-totals popover.
+//
+// Two layers:
+//   1. Pure unit tests over UsageTracker + the format helpers (no DOM).
+//   2. happy-dom assertions that the chip lands in the rendered header
+//      with the right class transition across the 50% / 80% thresholds.
+
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import path from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { Window } from 'happy-dom';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const PUB = path.resolve(__dirname, '..', 'public');
+const USAGE_URL = pathToFileURL(path.join(PUB, 'usage.js')).href;
+
+test('UsageTracker: initial state has no current size or totals', async () => {
+  const { UsageTracker } = await import(USAGE_URL);
+  const t = new UsageTracker();
+  assert.equal(t.currentContextSize(), null);
+  assert.equal(t.currentFillPct(), null);
+  assert.deepEqual(t.cum, {
+    inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0,
+    cost: 0, turns: 0, durationMs: 0,
+  });
+});
+
+test('UsageTracker: system/init captures model authoritatively', async () => {
+  const { UsageTracker } = await import(USAGE_URL);
+  const t = new UsageTracker();
+  t.apply({ kind: 'system', subtype: 'init', data: { model: 'claude-opus-4-7[1m]' } });
+  assert.equal(t.effectiveModel(), 'claude-opus-4-7[1m]');
+});
+
+test('UsageTracker: turn_end accumulates cum + tracks current size', async () => {
+  const { UsageTracker, contextWindowFor } = await import(USAGE_URL);
+  const t = new UsageTracker();
+  t.apply({ kind: 'system', subtype: 'init', data: { model: 'claude-opus-4-7[1m]' } });
+  t.apply({
+    kind: 'turn_end',
+    durationMs: 1200,
+    cost: 0.01,
+    usage: {
+      input_tokens: 100,
+      output_tokens: 50,
+      cache_read_input_tokens: 1_000,
+      cache_creation_input_tokens: 500,
+    },
+  });
+  // Current = last turn's input + cache_read + cache_creation = 1600.
+  assert.equal(t.currentContextSize(), 1600);
+  // 1M window via [1m] variant.
+  assert.equal(contextWindowFor('claude-opus-4-7[1m]'), 1_000_000);
+  assert.equal(t.currentFillPct(), 1600 / 1_000_000);
+  assert.deepEqual(t.cum, {
+    inputTokens: 100, outputTokens: 50,
+    cacheRead: 1000, cacheCreation: 500,
+    cost: 0.01, turns: 1, durationMs: 1200,
+  });
+
+  // Second turn replaces "current" but cum sums.
+  t.apply({
+    kind: 'turn_end',
+    durationMs: 800,
+    cost: 0.02,
+    usage: {
+      input_tokens: 200,
+      output_tokens: 70,
+      cache_read_input_tokens: 2000,
+      cache_creation_input_tokens: 100,
+    },
+  });
+  assert.equal(t.currentContextSize(), 2300);
+  assert.deepEqual(t.cum, {
+    inputTokens: 300, outputTokens: 120,
+    cacheRead: 3000, cacheCreation: 600,
+    cost: 0.03, turns: 2, durationMs: 2000,
+  });
+});
+
+test('UsageTracker: missing usage fields default to 0', async () => {
+  const { UsageTracker } = await import(USAGE_URL);
+  const t = new UsageTracker();
+  t.apply({ kind: 'turn_end', usage: { input_tokens: 100 } });
+  assert.equal(t.currentContextSize(), 100);
+  assert.equal(t.cum.cacheRead, 0);
+  assert.equal(t.cum.cacheCreation, 0);
+  assert.equal(t.cum.outputTokens, 0);
+});
+
+test('UsageTracker: reset clears everything', async () => {
+  const { UsageTracker } = await import(USAGE_URL);
+  const t = new UsageTracker();
+  t.apply({ kind: 'system', subtype: 'init', data: { model: 'claude-opus-4-7' } });
+  t.apply({ kind: 'turn_end', cost: 1, usage: { input_tokens: 42 } });
+  t.reset();
+  assert.equal(t.currentContextSize(), null);
+  assert.equal(t.cum.turns, 0);
+  assert.equal(t.cum.cost, 0);
+  // Note: model is *also* cleared, since a snapshot replay re-feeds
+  // the init event before any turn_end.
+  assert.equal(t.effectiveModel(), null);
+});
+
+test('UsageTracker: ignores unrelated event kinds', async () => {
+  const { UsageTracker } = await import(USAGE_URL);
+  const t = new UsageTracker();
+  t.apply({ kind: 'text_delta', text: 'hello' });
+  t.apply({ kind: 'tool_use', name: 'Bash', input: {} });
+  t.apply({ kind: 'turn_end' /* no usage */ });
+  assert.equal(t.currentContextSize(), null);
+  assert.equal(t.cum.turns, 0);
+});
+
+test('contextWindowFor: known models and unknown fallback', async () => {
+  const { contextWindowFor } = await import(USAGE_URL);
+  assert.equal(contextWindowFor('claude-opus-4-7[1m]'), 1_000_000);
+  assert.equal(contextWindowFor('claude-opus-4-7'), 200_000);
+  assert.equal(contextWindowFor('claude-sonnet-4-6'), 200_000);
+  assert.equal(contextWindowFor('claude-haiku-4-5'), 200_000);
+  // Unknown model → default.
+  assert.equal(contextWindowFor('some-future-model'), 200_000);
+  // Empty/null → default.
+  assert.equal(contextWindowFor(''), 200_000);
+  assert.equal(contextWindowFor(null), 200_000);
+  assert.equal(contextWindowFor(undefined), 200_000);
+});
+
+test('fillClass: thresholds at 50% and 80%', async () => {
+  const { fillClass } = await import(USAGE_URL);
+  assert.equal(fillClass(null), 'ih-usage-empty');
+  assert.equal(fillClass(0), 'ih-usage-low');
+  assert.equal(fillClass(0.49), 'ih-usage-low');
+  assert.equal(fillClass(0.5), 'ih-usage-mid');
+  assert.equal(fillClass(0.79), 'ih-usage-mid');
+  assert.equal(fillClass(0.8), 'ih-usage-high');
+  assert.equal(fillClass(1.5), 'ih-usage-high');
+});
+
+test('formatTokens: scales to k / M with sensible precision', async () => {
+  const { formatTokens } = await import(USAGE_URL);
+  assert.equal(formatTokens(null), '—');
+  assert.equal(formatTokens(0), '0');
+  assert.equal(formatTokens(42), '42');
+  assert.equal(formatTokens(999), '999');
+  assert.equal(formatTokens(1_000), '1.0k');
+  assert.equal(formatTokens(9_900), '9.9k');
+  assert.equal(formatTokens(12_345), '12k');
+  assert.equal(formatTokens(200_000), '200k');
+  assert.equal(formatTokens(1_000_000), '1.0M');
+  assert.equal(formatTokens(10_000_000), '10M');
+});
+
+test('formatPct: rounds + handles tiny non-zero', async () => {
+  const { formatPct } = await import(USAGE_URL);
+  assert.equal(formatPct(null), '—');
+  assert.equal(formatPct(0), '0%');
+  assert.equal(formatPct(0.001), '<1%');
+  assert.equal(formatPct(0.5), '50%');
+  assert.equal(formatPct(0.797), '80%');
+  assert.equal(formatPct(1), '100%');
+});
+
+test('formatDuration: seconds / minutes / hours', async () => {
+  const { formatDuration } = await import(USAGE_URL);
+  assert.equal(formatDuration(null), '—');
+  assert.equal(formatDuration(-1), '—');
+  assert.equal(formatDuration(500), '1s');
+  assert.equal(formatDuration(30_000), '30s');
+  assert.equal(formatDuration(90_000), '1m 30s');
+  assert.equal(formatDuration(3_660_000), '1h 1m');
+});
+
+// --- DOM-level test: chip threshold transitions ---
+
+async function setupDOM() {
+  const window = new Window({ url: 'http://localhost/' });
+  globalThis.window = window;
+  globalThis.document = window.document;
+  globalThis.HTMLElement = window.HTMLElement;
+  globalThis.Element = window.Element;
+  globalThis.Node = window.Node;
+  // Fresh module cache by appending a cache-buster to the URL is
+  // overkill — happy-dom + dynamic imports give us idempotent loads.
+  const mod = await import(USAGE_URL);
+  document.body.innerHTML = '';
+  return { document, ...mod };
+}
+
+test('DOM: tracker drives chip-class transitions across thresholds', async () => {
+  const { document, UsageTracker, fillClass, formatPct } = await setupDOM();
+  const tracker = new UsageTracker();
+  tracker.apply({ kind: 'system', subtype: 'init', data: { model: 'claude-opus-4-7[1m]' } });
+  const model = 'claude-opus-4-7[1m]'; // 1M context
+
+  function chipClassNow() {
+    return fillClass(tracker.currentFillPct(model));
+  }
+  function chipPctNow() {
+    return formatPct(tracker.currentFillPct(model));
+  }
+
+  // No turns yet → empty class.
+  assert.equal(chipClassNow(), 'ih-usage-empty');
+
+  // 30% of 1M = 300k → low.
+  tracker.apply({ kind: 'turn_end', usage: { input_tokens: 300_000 } });
+  assert.equal(chipClassNow(), 'ih-usage-low');
+  assert.equal(chipPctNow(), '30%');
+
+  // 60% → mid.
+  tracker.apply({ kind: 'turn_end', usage: { input_tokens: 600_000 } });
+  assert.equal(chipClassNow(), 'ih-usage-mid');
+  assert.equal(chipPctNow(), '60%');
+
+  // 85% → high.
+  tracker.apply({ kind: 'turn_end', usage: { input_tokens: 850_000 } });
+  assert.equal(chipClassNow(), 'ih-usage-high');
+  assert.equal(chipPctNow(), '85%');
+});

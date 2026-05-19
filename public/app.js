@@ -8,6 +8,10 @@ import { attachComposer } from './composer.js';
 import { formatUserQuestionAnswers } from './blocks.js';
 import { TaskTracker, TaskPanel } from './tasks.js';
 import {
+  UsageTracker, contextWindowFor,
+  formatTokens, formatPct, formatDuration, fillClass,
+} from './usage.js';
+import {
   NotificationState, ensurePermission, setGlobalEnabled,
   maybeNotifyTurnEnd, isNotificationAPIAvailable,
 } from './notifications.js';
@@ -69,6 +73,17 @@ function getTracker(instanceId) {
   return t;
 }
 const taskPanel = new TaskPanel(dom.taskPanel);
+
+// Per-instance context-usage trackers. Same lifecycle as the task
+// trackers: reset()+replay on snapshot, apply(ev) on each live event.
+// The active instance's tracker drives the `ctx N%` header chip and the
+// session-totals popover.
+const usageTrackersByInstance = new Map();
+function getUsage(instanceId) {
+  let u = usageTrackersByInstance.get(instanceId);
+  if (!u) { u = new UsageTracker(); usageTrackersByInstance.set(instanceId, u); }
+  return u;
+}
 
 // Pending user-question answers waiting for the active instance to reach
 // idle. If the user picks an option while a turn is still running, the
@@ -527,6 +542,10 @@ function selectInstance(id) {
 }
 
 function updateActiveHeader() {
+  // The header gets rebuilt from scratch on every call, which discards
+  // the existing chip nodes. Close any open popover first so it's not
+  // left hanging off a detached anchor.
+  closeUsagePopover();
   const inst = state.instances.find(i => i.id === state.activeId);
   if (!inst) {
     dom.instanceTitle.textContent = 'no instance selected';
@@ -560,6 +579,7 @@ function updateActiveHeader() {
   dom.instanceTitle.appendChild(chip('ih-sid', inst.sessionId?.slice(0, 8) ?? '?'));
   dom.instanceTitle.appendChild(chip(`ih-status ih-status-${inst.status}`, inst.status));
   dom.instanceTitle.appendChild(chip('ih-mode', inst.mode === 'bypassPermissions' ? 'code' : inst.mode));
+  dom.instanceTitle.appendChild(renderUsageChip(inst));
   if (inst.temp) dom.instanceTitle.appendChild(chip('ih-temp', 'temp'));
   dom.modeSelect.value = inst.mode;
   dom.modeSelect.disabled = inst.status === 'turn' || inst.status === 'crashed' || inst.status === 'exited';
@@ -584,24 +604,148 @@ function updateActiveHeader() {
         : 'Send a message — Enter to send, Shift+Enter for newline';
 }
 
+// Build the `ctx N%` header chip for the given instance. Click toggles
+// the session-totals popover. When no turn has landed yet the chip
+// reads `ctx —` so it doesn't pop into existence after the first turn.
+function renderUsageChip(inst) {
+  const usage = getUsage(inst.id);
+  const frac = usage.currentFillPct(inst.model);
+  const used = usage.currentContextSize();
+  const window = contextWindowFor(usage.effectiveModel(inst.model));
+  const el = document.createElement('button');
+  el.type = 'button';
+  el.className = `ih-chip ih-usage ${fillClass(frac)}`;
+  el.setAttribute('aria-haspopup', 'dialog');
+  el.setAttribute('aria-expanded', 'false');
+  if (used == null) {
+    el.textContent = 'ctx —';
+    el.title = 'Context usage will appear after the first turn ends.';
+  } else {
+    el.textContent = `ctx ${formatPct(frac)} · ${formatTokens(used)}/${formatTokens(window)}`;
+    el.title = `Last turn used ${used.toLocaleString()} of ${window.toLocaleString()} context tokens. Tap for session totals.`;
+  }
+  el.addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleUsagePopover(el, inst);
+  });
+  return el;
+}
+
+let openUsagePopover = null;
+function closeUsagePopover() {
+  if (!openUsagePopover) return;
+  const { node, anchor, dismiss } = openUsagePopover;
+  node.remove();
+  anchor.setAttribute('aria-expanded', 'false');
+  document.removeEventListener('pointerdown', dismiss, true);
+  document.removeEventListener('keydown', dismiss, true);
+  openUsagePopover = null;
+}
+function toggleUsagePopover(anchor, inst) {
+  if (openUsagePopover && openUsagePopover.anchor === anchor) {
+    closeUsagePopover();
+    return;
+  }
+  closeUsagePopover();
+  const node = buildUsagePopover(inst);
+  document.body.appendChild(node);
+  // Position under the chip, right-aligned so it doesn't run off mobile screens.
+  const r = anchor.getBoundingClientRect();
+  node.style.top = `${Math.round(r.bottom + 6)}px`;
+  // Clamp left edge so the popover stays on-screen.
+  const desiredLeft = r.left;
+  const maxLeft = window.innerWidth - node.offsetWidth - 8;
+  node.style.left = `${Math.max(8, Math.min(desiredLeft, maxLeft))}px`;
+  anchor.setAttribute('aria-expanded', 'true');
+  const dismiss = (ev) => {
+    if (ev.type === 'keydown') {
+      if (ev.key === 'Escape') closeUsagePopover();
+      return;
+    }
+    if (node.contains(ev.target) || anchor.contains(ev.target)) return;
+    closeUsagePopover();
+  };
+  document.addEventListener('pointerdown', dismiss, true);
+  document.addEventListener('keydown', dismiss, true);
+  openUsagePopover = { node, anchor, dismiss };
+}
+function buildUsagePopover(inst) {
+  const usage = getUsage(inst.id);
+  const c = usage.cum;
+  const window = contextWindowFor(usage.effectiveModel(inst.model));
+  const modelLabel = usage.effectiveModel(inst.model) ?? '(default)';
+  const totalCacheIn = c.cacheRead + c.cacheCreation;
+  const totalIn = c.inputTokens + totalCacheIn;
+  const cacheHit = totalIn > 0 ? c.cacheRead / totalIn : 0;
+  const node = document.createElement('div');
+  node.className = 'ih-usage-popover';
+  node.setAttribute('role', 'dialog');
+  node.setAttribute('aria-label', 'Session usage totals');
+  const row = (label, value) => {
+    const r = document.createElement('div');
+    r.className = 'ih-usage-row';
+    const k = document.createElement('span'); k.className = 'ih-usage-k'; k.textContent = label;
+    const v = document.createElement('span'); v.className = 'ih-usage-v'; v.textContent = value;
+    r.appendChild(k); r.appendChild(v);
+    return r;
+  };
+  const header = document.createElement('div');
+  header.className = 'ih-usage-popover-header';
+  header.textContent = 'Session totals';
+  node.appendChild(header);
+  const meta = document.createElement('div');
+  meta.className = 'ih-usage-meta';
+  meta.textContent = `${modelLabel} · ${formatTokens(window)} context`;
+  node.appendChild(meta);
+  if (c.turns === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'ih-usage-empty-msg';
+    empty.textContent = 'No turns have completed yet.';
+    node.appendChild(empty);
+    return node;
+  }
+  node.appendChild(row('Turns', String(c.turns)));
+  node.appendChild(row('Duration', formatDuration(c.durationMs)));
+  node.appendChild(row('Cost', `$${c.cost.toFixed(4)}`));
+  node.appendChild(row('Input (uncached)', formatTokens(c.inputTokens)));
+  node.appendChild(row('Output', formatTokens(c.outputTokens)));
+  node.appendChild(row('Cache reads', `${formatTokens(c.cacheRead)} (${formatPct(cacheHit)} hit)`));
+  node.appendChild(row('Cache creation', formatTokens(c.cacheCreation)));
+  return node;
+}
+
 bus.addEventListener('snapshot', (e) => {
   const m = e.detail;
   // Rebuild task tracker from the snapshot for any instance we observe
   // — not just the active one — so the panel is correct the moment
-  // the user flips to it.
+  // the user flips to it. Same shape for the usage tracker so the
+  // header chip lands populated when resuming a long historical session.
   const tracker = getTracker(m.id);
   tracker.reset();
-  for (const ev of m.events ?? []) tracker.apply(ev);
+  const usage = getUsage(m.id);
+  usage.reset();
+  for (const ev of m.events ?? []) {
+    tracker.apply(ev);
+    usage.apply(ev);
+  }
   if (m.id !== state.activeId) return;
   conversation.clear();
   conversation.applyEvents(m.events ?? []);
+  updateActiveHeader();
 });
 
 bus.addEventListener('event', (e) => {
   const m = e.detail;
   getTracker(m.id).apply(m.ev);
+  getUsage(m.id).apply(m.ev);
   if (m.id !== state.activeId) return;
   conversation.apply(m.ev);
+  // Refresh the header chip whenever data that affects it lands. init
+  // sets the model, turn_end updates current + cumulative totals.
+  if (m.ev?.kind === 'turn_end'
+      || (m.ev?.kind === 'system' && m.ev?.subtype === 'init')) {
+    updateActiveHeader();
+  }
 });
 
 bus.addEventListener('turn_notification', (e) => {

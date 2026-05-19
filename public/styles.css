@@ -202,6 +202,51 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
 .ih-chip.ih-status-spawning { color: var(--amber); }
 .ih-chip.ih-status-crashed, .ih-chip.ih-status-exited { color: var(--red); }
 .ih-chip.ih-temp { background: rgba(223, 132, 90, .25); color: #ffc7a3; text-transform: uppercase; font-size: 10px; letter-spacing: .5px; }
+
+/* Context-usage chip — `ctx N%` toggleable button. Color-graded by
+ * fill: green under 50%, amber 50-80%, red over 80%. Empty state
+ * (no turn yet) is muted grey. */
+.ih-chip.ih-usage {
+  border: 0; cursor: pointer; padding: 2px 6px; line-height: inherit;
+  font-family: ui-monospace, monospace; font-size: 11px;
+}
+.ih-chip.ih-usage:hover { filter: brightness(1.15); }
+.ih-chip.ih-usage[aria-expanded="true"] { outline: 1px solid var(--border); }
+.ih-chip.ih-usage.ih-usage-empty { background: var(--panel-2); color: var(--muted); }
+.ih-chip.ih-usage.ih-usage-low { background: rgba(74, 222, 128, .18); color: var(--green); }
+.ih-chip.ih-usage.ih-usage-mid { background: rgba(245, 158, 11, .22); color: var(--amber); }
+.ih-chip.ih-usage.ih-usage-high { background: rgba(248, 113, 113, .22); color: var(--red); }
+
+.ih-usage-popover {
+  position: fixed; z-index: 50;
+  min-width: 240px; max-width: 320px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  box-shadow: 0 4px 12px rgba(0,0,0,.4);
+  font-size: 12px;
+  color: var(--text);
+}
+.ih-usage-popover-header {
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+.ih-usage-meta {
+  color: var(--muted);
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  margin-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 6px;
+}
+.ih-usage-row {
+  display: flex; justify-content: space-between; gap: 12px;
+  padding: 2px 0;
+}
+.ih-usage-row .ih-usage-k { color: var(--muted); }
+.ih-usage-row .ih-usage-v { font-family: ui-monospace, monospace; }
+.ih-usage-empty-msg { color: var(--muted); font-style: italic; }
 #instance-controls { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 #instance-controls select, #instance-controls button { font-size: 12px; }
 #notify-toggle { padding: 4px 8px; line-height: 1; }
