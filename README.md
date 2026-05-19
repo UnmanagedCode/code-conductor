@@ -290,6 +290,15 @@ claude-orch-app/
                               user_question event shape, and ask-mode Write
                               gated by the PreToolUse hook (proves Allow lets
                               the same tool_use_id proceed, no regeneration).
+
+debug/                        Opt-in Playwright + Termux-Chromium harness for
+├── README.md                 visual verification of UI changes. Separate
+├── package.json              package.json (so playwright-core doesn't bleed
+├── browser.mjs               into the main deps), bootServer() spawns the
+└── snap.mjs                  orchestrator on a free ephemeral port with an
+                              optional sandboxed PROJECTS_ROOT + fake-claude,
+                              snap.mjs is a generic CLI screenshotter. See
+                              debug/README.md for the full workflow.
 ```
 
 ### WebSocket protocol
