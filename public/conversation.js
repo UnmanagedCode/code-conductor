@@ -43,6 +43,13 @@ export class Conversation {
     this.toolBlocks = new Map();    // toolUseId -> ToolUseBlock
     this.seenSeq = new Set();
     this.messageWraps = new Map();  // msgId -> { node, body }
+    // Per-msgId reconcile cursor. The CLI splits a single logical assistant
+    // message into one `assistant` envelope per content block when the
+    // message contains parallel tool_uses — all those envelopes share the
+    // same msgId but each puts its lone block at array iteration index 0.
+    // We bump this cursor per envelope so reconciled blocks get unique
+    // (msgId, idx) keys instead of all colliding at 0.
+    this.reconcileCounts = new Map(); // msgId -> next idx
     // Per-parent-tool-use-id sub-conversations for routing sub-agent events.
     this.subConvs = new Map();
     this.stickyBottom = true;
@@ -72,6 +79,7 @@ export class Conversation {
     this.toolBlocks.clear();
     this.seenSeq.clear();
     this.messageWraps.clear();
+    this.reconcileCounts.clear();
     this.subConvs.clear();
     this.userQuestionBlocks.clear();
     this.planBlocks.clear();
@@ -241,6 +249,11 @@ export class Conversation {
   }
 
   _renderToolStart(ev) {
+    // toolUseId is globally unique per session — when present, it's the
+    // authoritative dedup key. Parallel tool_use blocks reach reconcile via
+    // separate envelopes that all carry iteration index 0, so a (msgId, idx)
+    // check would drop every block past the first.
+    if (ev.toolUseId && this.toolBlocks.has(ev.toolUseId)) return;
     const key = `${ev.msgId ?? '?'}:${ev.blockIdx ?? 0}:tool`;
     let block = this.blocksByKey.get(key);
     if (block) return;
@@ -294,29 +307,31 @@ export class Conversation {
   _reconcileAssistantMessage(ev) {
     const msgId = ev.msgId;
     const blocks = Array.isArray(ev.message?.content) ? ev.message.content : [];
+    const base = this.reconcileCounts.get(msgId) ?? 0;
     for (let i = 0; i < blocks.length; i++) {
       const b = blocks[i];
       if (!b || typeof b !== 'object') continue;
+      const idx = base + i;
       if (b.type === 'tool_use') {
-        const key = `${msgId ?? '?'}:${i}:tool`;
-        if (this.blocksByKey.has(key)) continue;
-        this._renderToolStart({ msgId, blockIdx: i, toolUseId: b.id, name: b.name });
-        this._renderToolFinal({ msgId, blockIdx: i, toolUseId: b.id, name: b.name, input: b.input ?? {} });
+        if (b.id && this.toolBlocks.has(b.id)) continue;
+        this._renderToolStart({ msgId, blockIdx: idx, toolUseId: b.id, name: b.name });
+        this._renderToolFinal({ msgId, blockIdx: idx, toolUseId: b.id, name: b.name, input: b.input ?? {} });
       } else if (b.type === 'text') {
-        const key = `${msgId ?? '?'}:${i}:text`;
+        const key = `${msgId ?? '?'}:${idx}:text`;
         if (this.blocksByKey.has(key)) continue;
-        this._appendStreamingBlock({ msgId, blockIdx: i }, 'text', TextBlock, b.text ?? '');
-        this._finalizeBlock({ kind: 'text_end', msgId, blockIdx: i });
+        this._appendStreamingBlock({ msgId, blockIdx: idx }, 'text', TextBlock, b.text ?? '');
+        this._finalizeBlock({ kind: 'text_end', msgId, blockIdx: idx });
       } else if (b.type === 'thinking') {
-        const key = `${msgId ?? '?'}:${i}:thinking`;
+        const key = `${msgId ?? '?'}:${idx}:thinking`;
         if (this.blocksByKey.has(key)) continue;
         const txt = b.thinking ?? b.text ?? '';
-        this._renderThinkingStart({ msgId, blockIdx: i });
-        if (txt) this._appendStreamingBlock({ msgId, blockIdx: i }, 'thinking', ThinkingBlock, txt);
-        else this._renderThinkingRedacted({ msgId, blockIdx: i });
-        this._finalizeBlock({ kind: 'thinking_end', msgId, blockIdx: i });
+        this._renderThinkingStart({ msgId, blockIdx: idx });
+        if (txt) this._appendStreamingBlock({ msgId, blockIdx: idx }, 'thinking', ThinkingBlock, txt);
+        else this._renderThinkingRedacted({ msgId, blockIdx: idx });
+        this._finalizeBlock({ kind: 'thinking_end', msgId, blockIdx: idx });
       }
     }
+    this.reconcileCounts.set(msgId, base + blocks.length);
   }
 
   _renderPlanRequest(ev) {

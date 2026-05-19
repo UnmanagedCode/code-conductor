@@ -773,6 +773,73 @@ test('DOM: a sub-agent tool_use (no streaming deltas) renders its tool block + a
   assert.equal(floating.length, 0, 'no tool_result should float at the sub-conversation msg level');
 });
 
+test('DOM: parallel sub-agent tool_uses split across same-msgId envelopes both render with their results attached', async () => {
+  // Production bug shape from session 7c452875: a sub-agent that issues two
+  // parallel Bash tool_uses in one logical assistant message emits them as
+  // TWO separate `assistant` envelopes that share the same msgId, each
+  // carrying its lone content block at iteration index 0. The old reconcile
+  // dedup keyed by `${msgId}:${i}:tool` made the second envelope a no-op,
+  // its tool_use never reached the DOM, and the matching tool_result
+  // dropped into a floating "__floating__" wrap.
+  const { document, root, Parser, Conversation } = await setupDOM();
+  const conversation = new Conversation(root);
+  feed(new Parser(), conversation, [
+    // Outer Task tool_use streamed normally so subA gets a registered parent.
+    { type: 'stream_event', event: { type: 'message_start', message: { id: 'msg_outer', role: 'assistant' } } },
+    { type: 'stream_event', event: { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'task_xyz', name: 'Task', input: {} } } },
+    { type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '{"description":"x"}' } } },
+    { type: 'stream_event', event: { type: 'content_block_stop', index: 0 } },
+    // Two separate sub-agent assistant envelopes, SAME msgId, each one
+    // tool_use at the envelope's iteration index 0 — the bug shape.
+    {
+      type: 'assistant',
+      parent_tool_use_id: 'task_xyz',
+      message: {
+        id: 'msg_sub_shared',
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: 'tu_a', name: 'Bash', input: { command: 'ls /a' } }],
+      },
+    },
+    {
+      type: 'assistant',
+      parent_tool_use_id: 'task_xyz',
+      message: {
+        id: 'msg_sub_shared',
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: 'tu_b', name: 'Bash', input: { command: 'ls /b' } }],
+      },
+    },
+    {
+      type: 'user',
+      parent_tool_use_id: 'task_xyz',
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu_a', content: 'A out' }] },
+    },
+    {
+      type: 'user',
+      parent_tool_use_id: 'task_xyz',
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu_b', content: 'B out' }] },
+    },
+  ]);
+
+  const sub = root.querySelector('.sub-conversation');
+  assert.ok(sub, 'sub-conversation container must exist under the Task tool block');
+
+  const subToolBlocks = sub.querySelectorAll('.block.tool');
+  assert.equal(subToolBlocks.length, 2, 'both parallel sub-agent tool_use blocks must render');
+
+  // No orphan tool_result at the sub-conversation msg level — both must be
+  // attached under their matching tool_use block.
+  const orphans = sub.querySelectorAll('.msg > .blocks > .block.tool-result');
+  assert.equal(orphans.length, 0, 'no tool_result should float at the sub-conversation msg level');
+
+  const attachedA = subToolBlocks[0].querySelector('.block.tool-result');
+  const attachedB = subToolBlocks[1].querySelector('.block.tool-result');
+  assert.ok(attachedA, 'first tool_use must have its tool_result attached');
+  assert.ok(attachedB, 'second tool_use must have its tool_result attached');
+  assert.match(attachedA.textContent, /A out/);
+  assert.match(attachedB.textContent, /B out/);
+});
+
 test('DOM: outer-turn assistant envelope is a no-op — streamed tool block stays single + done', async () => {
   // The outer turn's UI is driven entirely by stream_event deltas. The
   // trailing `assistant` envelope must NOT cause a second tool block to
