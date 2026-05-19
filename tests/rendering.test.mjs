@@ -581,6 +581,10 @@ test('DOM: kept system events render inline in chronological order (no shared __
     { type: 'result', subtype: 'success', stop_reason: 'end_turn', duration_ms: 1, total_cost_usd: 0 },
   ];
   for (const e of stream1) for (const ev of p.handleObject(e)) conv.apply(ev);
+  // Simulate the user sending a follow-up between turns so the second turn
+  // starts a fresh assistant envelope (consecutive assistant msgIds without a
+  // user echo are grouped into a single envelope — see grouping tests above).
+  conv.apply({ kind: 'user_echo', text: 'go again', attachments: [] });
   for (const e of stream2) for (const ev of p.handleObject(e)) conv.apply(ev);
 
   // We expect exactly TWO init blocks (one per turn), each at its own
@@ -937,4 +941,92 @@ test('DOM: tool block always shows its command in the summary even while streami
   const summary = root.querySelector('.block.tool summary');
   assert.ok(summary, 'tool block must have a summary even before content_block_stop');
   assert.match(summary.textContent, /echo hi/, 'summary should already include the command via partial-JSON parse');
+});
+
+// Two distinct msgIds back-to-back. Each is a fresh assistant envelope on the
+// wire (sequential tool calls split into per-msgId message_start/_stop pairs
+// because every tool_use → tool_result cycle is a separate CLI-level turn).
+// The renderer must NOT mint a new .msg.assistant box for the second msgId —
+// both should land in a single grouped envelope.
+function twoSequentialAssistantTurns() {
+  return [
+    { type: 'stream_event', event: { type: 'message_start', message: { id: 'msg_one', role: 'assistant' } } },
+    { type: 'stream_event', event: { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'tu_one', name: 'Bash', input: {} } } },
+    { type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '{"command":"ls"}' } } },
+    { type: 'stream_event', event: { type: 'content_block_stop', index: 0 } },
+    { type: 'stream_event', event: { type: 'message_stop' } },
+    { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu_one', content: 'a\nb\n', is_error: false }] } },
+    { type: 'stream_event', event: { type: 'message_start', message: { id: 'msg_two', role: 'assistant' } } },
+    { type: 'stream_event', event: { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'tu_two', name: 'Bash', input: {} } } },
+    { type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '{"command":"pwd"}' } } },
+    { type: 'stream_event', event: { type: 'content_block_stop', index: 0 } },
+    { type: 'stream_event', event: { type: 'message_stop' } },
+    { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu_two', content: '/tmp\n', is_error: false }] } },
+  ];
+}
+
+test('DOM: consecutive assistant turns (different msgIds) render in a single grouped envelope', async () => {
+  const { root, Parser, Conversation } = await setupDOM();
+  const conversation = new Conversation(root);
+  feed(new Parser(), conversation, twoSequentialAssistantTurns());
+
+  const wraps = root.querySelectorAll('.msg.assistant');
+  assert.equal(wraps.length, 1, 'two consecutive assistant msgIds must group into one .msg.assistant');
+  const tools = wraps[0].querySelectorAll('.block.tool');
+  assert.equal(tools.length, 2, 'both tool blocks land inside the single grouped envelope');
+  const roles = wraps[0].querySelectorAll('.role');
+  assert.equal(roles.length, 1, 'only one "assistant" role label is rendered');
+});
+
+test('DOM: a user_echo between two assistant turns reopens the envelope', async () => {
+  const { root, Parser, Conversation } = await setupDOM();
+  const conversation = new Conversation(root);
+  const parser = new Parser();
+  feed(parser, conversation, twoSequentialAssistantTurns());
+  // Simulate a user echo (composer-submitted message) then a third turn.
+  conversation.apply({ kind: 'user_echo', text: 'hi again', attachments: [] });
+  feed(parser, conversation, [
+    { type: 'stream_event', event: { type: 'message_start', message: { id: 'msg_three', role: 'assistant' } } },
+    { type: 'stream_event', event: { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'tu_three', name: 'Bash', input: {} } } },
+    { type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '{"command":"date"}' } } },
+    { type: 'stream_event', event: { type: 'content_block_stop', index: 0 } },
+    { type: 'stream_event', event: { type: 'message_stop' } },
+  ]);
+
+  const assistantWraps = root.querySelectorAll('.msg.assistant');
+  assert.equal(assistantWraps.length, 2, 'user echo must close the open assistant envelope so the next turn starts a new one');
+  const userWraps = root.querySelectorAll('.msg.user');
+  assert.equal(userWraps.length, 1);
+});
+
+test('DOM: sub-agent (Task) drill-down groups its own consecutive assistant turns', async () => {
+  const { root, Parser, Conversation } = await setupDOM();
+  const conversation = new Conversation(root);
+  const parser = new Parser();
+  // Outer turn: assistant invokes the Task tool.
+  feed(parser, conversation, [
+    { type: 'stream_event', event: { type: 'message_start', message: { id: 'msg_outer', role: 'assistant' } } },
+    { type: 'stream_event', event: { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'tu_task', name: 'Task', input: {} } } },
+    { type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '{"description":"go","prompt":"do it","subagent_type":"general-purpose"}' } } },
+    { type: 'stream_event', event: { type: 'content_block_stop', index: 0 } },
+    { type: 'stream_event', event: { type: 'message_stop' } },
+  ]);
+  // Two sub-agent assistant envelopes (different msgIds) routed via parent_tool_use_id.
+  // Sub-agent turns only arrive as `assistant` envelopes (no stream_event deltas);
+  // the reconciliation pass renders them.
+  feed(parser, conversation, [
+    { type: 'assistant', parent_tool_use_id: 'tu_task', message: { id: 'sub_msg_one', role: 'assistant', content: [
+      { type: 'tool_use', id: 'sub_tu_one', name: 'Bash', input: { command: 'ls' } },
+    ] } },
+    { type: 'assistant', parent_tool_use_id: 'tu_task', message: { id: 'sub_msg_two', role: 'assistant', content: [
+      { type: 'tool_use', id: 'sub_tu_two', name: 'Bash', input: { command: 'pwd' } },
+    ] } },
+  ]);
+
+  const subConv = root.querySelector('.sub-conversation');
+  assert.ok(subConv, 'sub-agent drill-down area should be rendered');
+  const subAssistantWraps = subConv.querySelectorAll('.msg.assistant');
+  assert.equal(subAssistantWraps.length, 1, 'sub-agent consecutive msgIds must group into a single envelope');
+  const subTools = subAssistantWraps[0].querySelectorAll('.block.tool');
+  assert.equal(subTools.length, 2, 'both sub-agent tool blocks land in the single envelope');
 });

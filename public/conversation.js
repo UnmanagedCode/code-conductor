@@ -52,6 +52,12 @@ export class Conversation {
     this.reconcileCounts = new Map(); // msgId -> next idx
     // Per-parent-tool-use-id sub-conversations for routing sub-agent events.
     this.subConvs = new Map();
+    // The currently-open `.msg.assistant` wrap. New assistant msgIds register
+    // against this wrap until a user action (echo / question / plan /
+    // permission / history divider) closes the segment, so a streak of
+    // sequential tool calls renders as one bordered envelope with one label
+    // instead of a new box per action.
+    this._activeAssistantWrap = null;
     this.stickyBottom = true;
     if (!this.isSub) {
       this.root.addEventListener('scroll', () => {
@@ -84,7 +90,12 @@ export class Conversation {
     this.userQuestionBlocks.clear();
     this.planBlocks.clear();
     this.permissionBlocks.clear();
+    this._activeAssistantWrap = null;
     this._setEmpty();
+  }
+
+  _closeAssistantSegment() {
+    this._activeAssistantWrap = null;
   }
 
   applyEvents(events) {
@@ -163,6 +174,10 @@ export class Conversation {
     if (!msgId) msgId = '__floating__';
     let w = this.messageWraps.get(msgId);
     if (w) return w;
+    if (role === 'assistant' && this._activeAssistantWrap) {
+      this.messageWraps.set(msgId, this._activeAssistantWrap);
+      return this._activeAssistantWrap;
+    }
     const body = el('div', { class: 'blocks' });
     const node = el('div', { class: `msg ${role}` },
       el('div', { class: 'role' }, role),
@@ -171,6 +186,7 @@ export class Conversation {
     this.root.appendChild(node);
     w = { node, body };
     this.messageWraps.set(msgId, w);
+    if (role === 'assistant') this._activeAssistantWrap = w;
     return w;
   }
 
@@ -227,6 +243,7 @@ export class Conversation {
       blocks,
     );
     this.root.appendChild(wrap);
+    this._closeAssistantSegment();
   }
 
   _appendStreamingBlock(ev, type, BlockClass, deltaText) {
@@ -342,6 +359,7 @@ export class Conversation {
     });
     this.planBlocks.set(ev.toolUseId, block);
     this.root.appendChild(block.node);
+    this._closeAssistantSegment();
     this._maybeScroll();
   }
 
@@ -353,6 +371,7 @@ export class Conversation {
     });
     this.userQuestionBlocks.set(ev.toolUseId, block);
     this.root.appendChild(block.node);
+    this._closeAssistantSegment();
     this._maybeScroll();
   }
 
@@ -364,6 +383,7 @@ export class Conversation {
     });
     this.permissionBlocks.set(ev.toolUseId, block);
     this.root.appendChild(block.node);
+    this._closeAssistantSegment();
     this._maybeScroll();
   }
 
@@ -377,6 +397,7 @@ export class Conversation {
     const node = el('div', { class: 'history-divider' },
       el('span', {}, `── ${count} prior message${count === 1 ? '' : 's'} replayed — new turn below ──`));
     this.root.appendChild(node);
+    this._closeAssistantSegment();
   }
 
   _renderSystem(ev) {
