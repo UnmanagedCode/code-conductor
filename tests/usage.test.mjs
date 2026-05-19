@@ -34,10 +34,14 @@ test('UsageTracker: system/init captures model authoritatively', async () => {
   assert.equal(t.effectiveModel(), 'claude-opus-4-7[1m]');
 });
 
-test('UsageTracker: turn_end accumulates cum + tracks current size', async () => {
-  const { UsageTracker, contextWindowFor } = await import(USAGE_URL);
+test('UsageTracker: turn_end accumulates cum but does NOT touch lastUsage', async () => {
+  const { UsageTracker } = await import(USAGE_URL);
   const t = new UsageTracker();
   t.apply({ kind: 'system', subtype: 'init', data: { model: 'claude-opus-4-7[1m]' } });
+  // turn_end.usage is the per-turn SUM across every agent-loop LLM
+  // call (e.g. 100 tool calls each reading 74k cached → 7.4M). Feeding
+  // it as "current context size" inflates the chip wildly. Verify the
+  // tracker now treats it as cum-only.
   t.apply({
     kind: 'turn_end',
     durationMs: 1200,
@@ -45,22 +49,19 @@ test('UsageTracker: turn_end accumulates cum + tracks current size', async () =>
     usage: {
       input_tokens: 100,
       output_tokens: 50,
-      cache_read_input_tokens: 1_000,
-      cache_creation_input_tokens: 500,
+      cache_read_input_tokens: 7_400_000,
+      cache_creation_input_tokens: 73_000,
     },
   });
-  // Current = last turn's input + cache_read + cache_creation = 1600.
-  assert.equal(t.currentContextSize(), 1600);
-  // 1M window via [1m] variant.
-  assert.equal(contextWindowFor('claude-opus-4-7[1m]'), 1_000_000);
-  assert.equal(t.currentFillPct(), 1600 / 1_000_000);
+  assert.equal(t.currentContextSize(), null,
+    'no message_start has fired yet → current size is unknown, not the inflated sum');
   assert.deepEqual(t.cum, {
     inputTokens: 100, outputTokens: 50,
-    cacheRead: 1000, cacheCreation: 500,
+    cacheRead: 7_400_000, cacheCreation: 73_000,
     cost: 0.01, turns: 1, durationMs: 1200,
   });
 
-  // Second turn replaces "current" but cum sums.
+  // A second turn keeps summing into cum, still no effect on lastUsage.
   t.apply({
     kind: 'turn_end',
     durationMs: 800,
@@ -72,12 +73,29 @@ test('UsageTracker: turn_end accumulates cum + tracks current size', async () =>
       cache_creation_input_tokens: 100,
     },
   });
-  assert.equal(t.currentContextSize(), 2300);
+  assert.equal(t.currentContextSize(), null);
   assert.deepEqual(t.cum, {
     inputTokens: 300, outputTokens: 120,
-    cacheRead: 3000, cacheCreation: 600,
+    cacheRead: 7_402_000, cacheCreation: 73_100,
     cost: 0.03, turns: 2, durationMs: 2000,
   });
+});
+
+test('UsageTracker: message_start is the only source of currentContextSize', async () => {
+  const { UsageTracker } = await import(USAGE_URL);
+  const t = new UsageTracker();
+  t.apply({ kind: 'message_start', usage: {
+    input_tokens: 100, output_tokens: 0,
+    cache_read_input_tokens: 50_000, cache_creation_input_tokens: 0,
+  }});
+  assert.equal(t.currentContextSize(), 50_100);
+  // turn_end with WILDLY larger summed values must NOT clobber the chip.
+  t.apply({ kind: 'turn_end', cost: 0.5, durationMs: 60_000, usage: {
+    input_tokens: 500, output_tokens: 10_000,
+    cache_read_input_tokens: 5_000_000, cache_creation_input_tokens: 200_000,
+  }});
+  assert.equal(t.currentContextSize(), 50_100,
+    'currentContextSize stays anchored to last message_start, ignoring summed turn_end');
 });
 
 test('UsageTracker: message_start updates current size mid-turn without inflating cum', async () => {
@@ -106,22 +124,28 @@ test('UsageTracker: message_start updates current size mid-turn without inflatin
     kind: 'turn_end',
     durationMs: 4000,
     cost: 0.05,
-    usage: { input_tokens: 300, output_tokens: 800, cache_read_input_tokens: 5000, cache_creation_input_tokens: 200 },
+    usage: { input_tokens: 300, output_tokens: 800, cache_read_input_tokens: 10_000, cache_creation_input_tokens: 200 },
   });
   assert.equal(t.cum.turns, 1);
   assert.equal(t.cum.inputTokens, 300, 'cum reflects turn_end only, not the prior message_starts');
-  assert.equal(t.cum.cacheRead, 5000);
-  assert.equal(t.currentContextSize(), 5500);
+  assert.equal(t.cum.cacheRead, 10_000, 'cum sums the turn_end value (which is itself a per-turn aggregate)');
+  // currentContextSize must NOT jump to turn_end's summed cache_read.
+  // It stays anchored to the last message_start (5000 + 200).
+  assert.equal(t.currentContextSize(), 5200);
 });
 
 test('UsageTracker: missing usage fields default to 0', async () => {
   const { UsageTracker } = await import(USAGE_URL);
   const t = new UsageTracker();
-  t.apply({ kind: 'turn_end', usage: { input_tokens: 100 } });
+  // Use message_start since that's the source of currentContextSize now.
+  t.apply({ kind: 'message_start', usage: { input_tokens: 100 } });
   assert.equal(t.currentContextSize(), 100);
+  // turn_end with partial usage still accumulates correctly.
+  t.apply({ kind: 'turn_end', usage: { input_tokens: 50 } });
   assert.equal(t.cum.cacheRead, 0);
   assert.equal(t.cum.cacheCreation, 0);
   assert.equal(t.cum.outputTokens, 0);
+  assert.equal(t.cum.inputTokens, 50);
 });
 
 test('UsageTracker: reset clears everything', async () => {
@@ -236,21 +260,22 @@ test('DOM: tracker drives chip-class transitions across thresholds', async () =>
     return formatPct(tracker.currentFillPct(model));
   }
 
-  // No turns yet → empty class.
+  // No message_start yet → empty class.
   assert.equal(chipClassNow(), 'ih-usage-empty');
 
-  // 30% of 1M = 300k → low.
-  tracker.apply({ kind: 'turn_end', usage: { input_tokens: 300_000 } });
+  // 30% of 1M = 300k → low. Driven by message_start (per-call prompt
+  // size), which is what actually drives the chip live mid-turn.
+  tracker.apply({ kind: 'message_start', usage: { input_tokens: 300_000 } });
   assert.equal(chipClassNow(), 'ih-usage-low');
   assert.equal(chipPctNow(), '30%');
 
   // 60% → mid.
-  tracker.apply({ kind: 'turn_end', usage: { input_tokens: 600_000 } });
+  tracker.apply({ kind: 'message_start', usage: { input_tokens: 600_000 } });
   assert.equal(chipClassNow(), 'ih-usage-mid');
   assert.equal(chipPctNow(), '60%');
 
   // 85% → high.
-  tracker.apply({ kind: 'turn_end', usage: { input_tokens: 850_000 } });
+  tracker.apply({ kind: 'message_start', usage: { input_tokens: 850_000 } });
   assert.equal(chipClassNow(), 'ih-usage-high');
   assert.equal(chipPctNow(), '85%');
 });

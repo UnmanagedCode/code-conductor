@@ -49,19 +49,24 @@ export class UsageTracker {
       if (m) this.model = m;
       return;
     }
-    // message_start lands at the START of each agent-loop step within a
-    // turn (a long turn with N tool calls fires N+1 message_starts), and
-    // each one carries the cumulative input-side counts as known so far.
-    // We update lastUsage but DO NOT touch cum here — the final `result`
-    // (turn_end) is authoritative for the per-turn aggregate, and double
-    // counting message_start + turn_end would inflate the totals.
+    // message_start is the AUTHORITATIVE source for "current context
+    // size" — it fires once per agent-loop LLM call and its `usage`
+    // carries that single call's prompt size (input + cache_read +
+    // cache_creation). Each step within a long multi-tool turn sends
+    // its own, so currentContextSize tracks the growing prompt live.
     if (ev.kind === 'message_start' && ev.usage) {
       this.lastUsage = ev.usage;
       return;
     }
+    // turn_end's `usage`, by contrast, is the per-turn SUM across every
+    // agent-loop LLM call in that turn. A turn with 100 tool calls each
+    // reading 74k from cache lands here as cache_read=7.4M — that's
+    // total tokens billed for the turn, not the current context size.
+    // So we MUST NOT update lastUsage from turn_end (that's the bug
+    // that produced ctx 743% on a 1M window). turn_end only contributes
+    // to cum.*, which is genuinely cumulative work over the session.
     if (ev.kind === 'turn_end' && ev.usage) {
       const u = ev.usage;
-      this.lastUsage = u;
       this.cum.inputTokens   += u.input_tokens ?? 0;
       this.cum.outputTokens  += u.output_tokens ?? 0;
       this.cum.cacheRead     += u.cache_read_input_tokens ?? 0;
