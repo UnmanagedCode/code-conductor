@@ -167,10 +167,10 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
 .worktree-item { list-style: none; }
 
 /* Worktree row in the new-instance dialog. */
-.ni-worktree-row { display: flex !important; flex-direction: row !important; align-items: center; gap: 8px; }
-.ni-worktree-row input[type="checkbox"] { width: auto !important; margin: 0; }
-.ni-worktree-row span { font-size: 13px; }
-.ni-worktree-row input:disabled + span { opacity: .5; }
+.ni-worktree-row, .ni-temp-row { display: flex !important; flex-direction: row !important; align-items: center; gap: 8px; }
+.ni-worktree-row input[type="checkbox"], .ni-temp-row input[type="checkbox"] { width: auto !important; margin: 0; }
+.ni-worktree-row span, .ni-temp-row span { font-size: 13px; }
+.ni-worktree-row input:disabled + span, .ni-temp-row input:disabled + span { opacity: .5; }
 #ni-worktree-hint { margin: -8px 0 6px 0; font-size: 11px; color: var(--muted); }
 
 /* Worktree chip in the instance header. */
