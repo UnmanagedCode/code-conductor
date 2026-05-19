@@ -208,9 +208,7 @@ export class Conversation {
       const wrap = this._ensureMessageWrap(ev.msgId, 'assistant');
       wrap.body.appendChild(block.node);
     }
-    block.body.textContent = '(thinking content is internal to this model — only the signature is streamed)';
-    const summary = block.node.querySelector('summary');
-    if (summary) summary.textContent = 'thinking (redacted by model)';
+    block.markRedacted();
   }
 
   _renderUserEcho(ev) {

@@ -1030,3 +1030,35 @@ test('DOM: sub-agent (Task) drill-down groups its own consecutive assistant turn
   const subTools = subAssistantWraps[0].querySelectorAll('.block.tool');
   assert.equal(subTools.length, 2, 'both sub-agent tool blocks land in the single envelope');
 });
+
+test('DOM: redacted thinking renders as a non-expandable "thinking (redacted)" line', async () => {
+  // Opus 4.7 emits a thinking block carrying only a signature_delta — no
+  // thinking content. The parser emits thinking_redacted followed by
+  // thinking_end. The UI must show a single static line, NOT a collapsible
+  // <details> that opens to reveal the placeholder sentence (the previous
+  // bug, where thinking_end's finalize() overwrote the redacted label with
+  // "thinking (77 chars)" based on the placeholder body length).
+  const { root, Parser, Conversation } = await setupDOM();
+  const conversation = new Conversation(root);
+  const msgId = 'msg_redacted';
+  feed(new Parser(), conversation, [
+    { type: 'stream_event', event: { type: 'message_start', message: { id: msgId, role: 'assistant' } } },
+    { type: 'stream_event', event: { type: 'content_block_start', index: 0, content_block: { type: 'thinking' } } },
+    { type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'signature_delta', signature: 'sig_abc' } } },
+    { type: 'stream_event', event: { type: 'content_block_stop', index: 0 } },
+    { type: 'stream_event', event: { type: 'content_block_start', index: 1, content_block: { type: 'text' } } },
+    { type: 'stream_event', event: { type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: 'ok' } } },
+    { type: 'stream_event', event: { type: 'content_block_stop', index: 1 } },
+    { type: 'stream_event', event: { type: 'message_stop' } },
+  ]);
+
+  const thinkings = root.querySelectorAll('.block.thinking');
+  assert.equal(thinkings.length, 1, 'exactly one thinking block in the DOM');
+  const node = thinkings[0];
+  assert.equal(node.tagName, 'DIV', 'redacted thinking must NOT be a <details> — no expansion affordance');
+  assert.equal(node.querySelector('summary'), null, 'redacted thinking must have no <summary>');
+  assert.equal(node.textContent.trim(), 'thinking (redacted)', `label must be "thinking (redacted)" (got: ${node.textContent})`);
+  assert.ok(node.classList.contains('redacted'), 'redacted thinking carries .redacted class for styling hooks');
+  assert.doesNotMatch(root.textContent, /\d+ chars/, 'no "(NN chars)" leak from finalize() onto the redacted block');
+  assert.doesNotMatch(root.textContent, /signature is streamed/, 'placeholder sentence is no longer in the DOM');
+});

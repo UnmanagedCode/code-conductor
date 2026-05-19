@@ -50,9 +50,18 @@ export class ThinkingBlock {
       this.body,
     );
     this.node = det;
+    this.redacted = false;
   }
   appendDelta(text) { this.body.appendChild(document.createTextNode(text)); }
+  markRedacted() {
+    const flat = el('div', { class: 'block thinking redacted' }, 'thinking (redacted)');
+    this.node.replaceWith(flat);
+    this.node = flat;
+    this.body = flat;
+    this.redacted = true;
+  }
   finalize() {
+    if (this.redacted) return;
     const len = this.body.textContent.length;
     const summary = this.node.querySelector('summary');
     summary.textContent = `thinking (${len} chars)`;
