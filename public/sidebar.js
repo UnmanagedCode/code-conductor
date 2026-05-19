@@ -278,13 +278,18 @@ export class Sidebar {
       ),
     );
     const status = wt.mergeStatus;
-    if (status && status.ahead > 0) {
-      const label = status.behind > 0
-        ? `↑${status.ahead} ↓${status.behind}`
-        : `↑${status.ahead}`;
-      const title = status.behind > 0
-        ? `${status.ahead} commit(s) ahead of ${wt.baseBranch}, ${status.behind} behind — rebase, then fast-forward`
-        : `${status.ahead} commit(s) ahead of ${wt.baseBranch} — fast-forward parent to land them`;
+    if (status && (status.ahead > 0 || status.behind > 0)) {
+      let label, title;
+      if (status.ahead > 0 && status.behind > 0) {
+        label = `↑${status.ahead} ↓${status.behind}`;
+        title = `${status.ahead} commit(s) ahead of ${wt.baseBranch}, ${status.behind} behind — rebase, then fast-forward`;
+      } else if (status.ahead > 0) {
+        label = `↑${status.ahead}`;
+        title = `${status.ahead} commit(s) ahead of ${wt.baseBranch} — fast-forward parent to land them`;
+      } else {
+        label = `↓${status.behind}`;
+        title = `${status.behind} commit(s) behind ${wt.baseBranch} — click Sync to catch up`;
+      }
       head.appendChild(el('span', { class: 'wt-unmerged', title }, label));
     }
     head.appendChild(el('span', { class: 'worktree-base' }, `← ${wt.baseBranch}`));
