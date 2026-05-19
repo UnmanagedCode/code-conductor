@@ -180,6 +180,116 @@ test('Worktree row carries its own Sessions subnode, scoped to its own live inst
   assert.equal(calls.resume[0].sessionId, 'wt-sid');
 });
 
+test('Synthetic "(new session)" row refreshes to the real firstPrompt once the jsonl is written (turn ends)', async () => {
+  let call = 0;
+  const onLoadSessions = async () => {
+    call++;
+    if (call === 1) return []; // jsonl doesn't exist yet — fresh spawn
+    return [{ sessionId: 'sid-fresh', firstPrompt: 'hello world', mtime: Date.now(), size: 1024 }];
+  };
+  const { root, sidebar } = await setupSidebar({ onLoadSessions });
+
+  sidebar.setProjects([{
+    name: 'demo', path: '/p/demo', instanceIds: [], isGitRepo: false, worktrees: [],
+    sessions: { count: 0, lastMtime: 0 },
+  }]);
+  sidebar.setInstances([
+    { id: 'inst', project: 'demo', sessionId: 'sid-fresh', status: 'spawning', mode: 'plan', worktree: null },
+  ]);
+  await new Promise(r => setTimeout(r, 0));
+  assert.equal(root.querySelector('.session-preview').textContent, '(new session)');
+  assert.equal(call, 1);
+
+  // spawn → idle happens before the first prompt; the jsonl may or may
+  // not exist yet. Either way, we invalidate the cache so the next
+  // render reflects whatever is on disk now.
+  sidebar.setInstances([
+    { id: 'inst', project: 'demo', sessionId: 'sid-fresh', status: 'idle', mode: 'plan', worktree: null },
+  ]);
+  await new Promise(r => setTimeout(r, 0));
+  assert.equal(call, 2, 'turn→idle (or spawning→idle) must invalidate and refetch');
+  assert.equal(root.querySelector('.session-preview').textContent, 'hello world');
+});
+
+test('idle → turn does not invalidate the sessions cache; turn → idle does', async () => {
+  let call = 0;
+  const onLoadSessions = async () => {
+    call++;
+    return [{ sessionId: 'sid', firstPrompt: 'preview', mtime: call * 1000, size: 100 }];
+  };
+  const { sidebar } = await setupSidebar({ onLoadSessions });
+
+  sidebar.setProjects([{
+    name: 'demo', path: '/p/demo', instanceIds: [], isGitRepo: false, worktrees: [],
+    sessions: { count: 1, lastMtime: 1000 },
+  }]);
+  sidebar.setInstances([{ id: 'i', project: 'demo', sessionId: 'sid', status: 'idle', mode: 'plan', worktree: null }]);
+  await new Promise(r => setTimeout(r, 0));
+  const baseline = call;
+  assert.ok(baseline >= 1, 'initial load happened');
+
+  sidebar.setInstances([{ id: 'i', project: 'demo', sessionId: 'sid', status: 'turn', mode: 'plan', worktree: null }]);
+  await new Promise(r => setTimeout(r, 0));
+  assert.equal(call, baseline, 'idle→turn must not invalidate');
+
+  sidebar.setInstances([{ id: 'i', project: 'demo', sessionId: 'sid', status: 'idle', mode: 'plan', worktree: null }]);
+  await new Promise(r => setTimeout(r, 0));
+  assert.equal(call, baseline + 1, 'turn→idle must invalidate and refetch');
+});
+
+test('Cache invalidation on turn→idle is scoped to the instance\'s worktree key, not the project root', async () => {
+  const calls = [];
+  const onLoadSessions = async (projectName, worktreeName) => {
+    calls.push({ projectName, worktreeName });
+    if (worktreeName) {
+      return calls.filter(c => c.worktreeName === worktreeName).length >= 2
+        ? [{ sessionId: 'wt-sid', firstPrompt: 'fresh-prompt', mtime: Date.now(), size: 100 }]
+        : [];
+    }
+    return [{ sessionId: 'root-sid', firstPrompt: 'root-prompt', mtime: Date.now() - 60_000, size: 100 }];
+  };
+  const { root, sidebar } = await setupSidebar({ onLoadSessions });
+
+  sidebar.setProjects([{
+    name: 'demo', path: '/p/demo', instanceIds: [], isGitRepo: true,
+    sessions: { count: 1, lastMtime: Date.now() - 60_000 },
+    worktrees: [{
+      worktreeName: 'demo_worktree_xyz', branch: 'claude-orch/xyz',
+      baseBranch: 'main', baseSha: 'cafef00d', parentProject: 'demo',
+      sessions: { count: 0, lastMtime: 0 },
+    }],
+  }]);
+  sidebar.expandedWorktrees.add('demo');
+  sidebar.setInstances([
+    { id: 'inst-wt', project: 'demo', sessionId: 'wt-sid', status: 'turn', mode: 'plan',
+      worktree: { worktreeName: 'demo_worktree_xyz', branch: 'claude-orch/xyz', baseBranch: 'main', baseSha: 'cafef00d' } },
+  ]);
+  await new Promise(r => setTimeout(r, 0));
+
+  const rootCallsBefore = calls.filter(c => c.worktreeName == null).length;
+  const wtCallsBefore = calls.filter(c => c.worktreeName === 'demo_worktree_xyz').length;
+  assert.ok(rootCallsBefore >= 1 && wtCallsBefore >= 1, 'both subnodes loaded initially');
+
+  // turn→idle on the worktree-scoped instance. The root subnode's
+  // cache must NOT be invalidated — only the worktree's.
+  sidebar.setInstances([
+    { id: 'inst-wt', project: 'demo', sessionId: 'wt-sid', status: 'idle', mode: 'plan',
+      worktree: { worktreeName: 'demo_worktree_xyz', branch: 'claude-orch/xyz', baseBranch: 'main', baseSha: 'cafef00d' } },
+  ]);
+  await new Promise(r => setTimeout(r, 0));
+
+  const rootCallsAfter = calls.filter(c => c.worktreeName == null).length;
+  const wtCallsAfter = calls.filter(c => c.worktreeName === 'demo_worktree_xyz').length;
+  assert.equal(rootCallsAfter, rootCallsBefore, 'project-root cache was NOT invalidated');
+  assert.equal(wtCallsAfter, wtCallsBefore + 1, 'worktree-scoped cache WAS invalidated and refetched');
+
+  // And the worktree's preview now shows the refreshed firstPrompt.
+  const wtGroup = root.querySelector('.worktree-item details.sessions-group');
+  const wtRows = wtGroup.querySelectorAll('.session-row .session-preview');
+  assert.equal(wtRows.length, 1);
+  assert.equal(wtRows[0].textContent, 'fresh-prompt');
+});
+
 test('Sessions subnode is default-expanded; manual collapse persists across re-renders', async () => {
   const { root, sidebar } = await setupSidebar({
     onLoadSessions: async () => [

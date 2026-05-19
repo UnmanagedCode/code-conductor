@@ -77,6 +77,11 @@ export class Sidebar {
     // instances are merged in fresh on every render so status dots
     // stay up to date.
     this.sessionsCache = new Map();       // key → array
+    // Previous status per known instance id. setInstances uses this to
+    // detect "turn just ended" transitions, which imply the session's
+    // jsonl was just written and the matching subnode's cache is now
+    // stale (firstPrompt may have just appeared, mtime advanced, etc.).
+    this._prevStatusById = new Map();
   }
 
   setProjects(projects) { this.projects = projects; this.render(); }
@@ -91,6 +96,26 @@ export class Sidebar {
     for (const s of oldSids) if (!newSids.has(s)) { changed = true; break; }
     if (!changed) for (const s of newSids) if (!oldSids.has(s)) { changed = true; break; }
     if (changed) this.sessionsCache.clear();
+
+    // Per-instance: when status transitions to `idle` (a turn just
+    // ended → CLI flushed user/assistant lines and the orchestrator
+    // appended last-prompt metadata), invalidate that instance's
+    // subnode cache so the next render reloads the on-disk list and
+    // picks up the real firstPrompt / mtime in place of the synthetic
+    // "(new session)" placeholder.
+    const nextStatus = new Map();
+    for (const inst of instances) {
+      nextStatus.set(inst.id, inst.status);
+      const prev = this._prevStatusById.get(inst.id);
+      if (prev && prev !== 'idle' && inst.status === 'idle') {
+        const key = inst.worktree?.worktreeName
+          ? `${inst.project}:${inst.worktree.worktreeName}`
+          : inst.project;
+        this.sessionsCache.delete(key);
+      }
+    }
+    this._prevStatusById = nextStatus;
+
     this.instances = instances;
     this.render();
   }
