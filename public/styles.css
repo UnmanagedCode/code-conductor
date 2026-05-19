@@ -624,3 +624,40 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
   #sidebar-toggle { display: block; }
   #instance-header { padding-left: 56px; }
 }
+
+/* In-progress marker pinned to the bottom of the chat pane while a
+   turn is running. Sits between #task-panel and #composer; reuses the
+   existing `pulse` keyframe (defined near the sidebar status dot) for
+   the green circle. */
+.turn-indicator {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 6px 14px;
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 12px;
+  background: var(--panel);
+}
+.turn-indicator .ti-dot {
+  display: inline-block;
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: var(--green);
+  animation: pulse 1s infinite alternate;
+  align-self: center;
+}
+.turn-indicator .ti-ellipsis span {
+  display: inline-block;
+  animation: ti-blink 1.2s infinite both;
+}
+.turn-indicator .ti-ellipsis span:nth-child(2) { animation-delay: 0.2s; }
+.turn-indicator .ti-ellipsis span:nth-child(3) { animation-delay: 0.4s; }
+@keyframes ti-blink {
+  0%, 80%, 100% { opacity: 0.2; }
+  40% { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .turn-indicator .ti-dot { animation: none; opacity: 1; }
+  .turn-indicator .ti-ellipsis span { animation: none; opacity: 1; }
+}

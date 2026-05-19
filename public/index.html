@@ -40,6 +40,11 @@
       </header>
       <div id="conversation" class="conversation"></div>
       <div id="task-panel" hidden></div>
+      <div id="turn-indicator" class="turn-indicator" hidden aria-live="polite">
+        <span class="ti-dot" aria-hidden="true"></span>
+        <span class="ti-label">Claude is working</span>
+        <span class="ti-ellipsis" aria-hidden="true"><span>.</span><span>.</span><span>.</span></span>
+      </div>
       <form id="composer" autocomplete="off">
         <div id="composer-attachments" class="composer-attachments" hidden></div>
         <div class="composer-row">

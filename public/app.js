@@ -35,6 +35,7 @@ const dom = {
   resumeBtn: document.getElementById('resume-btn'),
   instanceTitle: document.getElementById('instance-title'),
   taskPanel: document.getElementById('task-panel'),
+  turnIndicator: document.getElementById('turn-indicator'),
   newProjectBtn: document.getElementById('new-project-btn'),
   newProjectDialog: document.getElementById('new-project-dialog'),
   npName: document.getElementById('np-name'),
@@ -525,6 +526,7 @@ function updateActiveHeader() {
     dom.resumeBtn.hidden = true;
     composer.disable();
     dom.composerInput.placeholder = 'select or spawn an instance to start chatting';
+    dom.turnIndicator.hidden = true;
     return;
   }
   state.activeStatus = inst.status;
@@ -553,6 +555,7 @@ function updateActiveHeader() {
   dom.interruptBtn.disabled = inst.status !== 'turn';
   dom.killBtn.disabled = !['idle', 'turn', 'spawning'].includes(inst.status);
   dom.resumeBtn.hidden = !(inst.status === 'crashed' || inst.status === 'exited');
+  dom.turnIndicator.hidden = inst.status !== 'turn';
   const hasWorktree = !!inst.worktree?.worktreeName;
   dom.syncBtn.hidden = !hasWorktree;
   dom.syncBtn.disabled = !hasWorktree;

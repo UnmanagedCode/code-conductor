@@ -1062,3 +1062,45 @@ test('DOM: redacted thinking renders as a non-expandable "thinking (redacted)" l
   assert.doesNotMatch(root.textContent, /\d+ chars/, 'no "(NN chars)" leak from finalize() onto the redacted block');
   assert.doesNotMatch(root.textContent, /signature is streamed/, 'placeholder sentence is no longer in the DOM');
 });
+
+// Working/in-progress indicator: must exist in the static markup, default
+// hidden, and react to status === 'turn' the same way updateActiveHeader()
+// drives it (one-liner: dom.turnIndicator.hidden = inst.status !== 'turn').
+test('DOM: #turn-indicator is present, hidden by default, and toggles on status==="turn"', async () => {
+  const fs = await import('node:fs/promises');
+  const html = await fs.readFile(path.join(PUB, 'index.html'), 'utf8');
+  const window = new Window({ url: 'http://localhost/' });
+  globalThis.window = window;
+  globalThis.document = window.document;
+  globalThis.HTMLElement = window.HTMLElement;
+  document.documentElement.innerHTML = html.replace(/^[\s\S]*?<html[^>]*>/, '').replace(/<\/html>[\s\S]*$/, '');
+
+  const indicator = document.getElementById('turn-indicator');
+  assert.ok(indicator, '#turn-indicator must exist in index.html');
+  assert.equal(indicator.hidden, true, 'indicator is hidden by default');
+  assert.ok(indicator.querySelector('.ti-dot'), 'indicator contains a .ti-dot');
+  assert.match(indicator.textContent, /Claude is working/, 'indicator has the working label');
+
+  // It must sit between #task-panel and #composer — i.e. directly above
+  // the composer at the bottom of the chat pane.
+  const taskPanel = document.getElementById('task-panel');
+  const composer = document.getElementById('composer');
+  assert.ok(taskPanel && composer);
+  assert.equal(taskPanel.nextElementSibling, indicator, '#turn-indicator follows #task-panel');
+  assert.equal(indicator.nextElementSibling, composer, '#turn-indicator immediately precedes #composer');
+
+  // Reproduce the toggle rule used in app.js:updateActiveHeader.
+  const applyStatus = (status) => { indicator.hidden = status !== 'turn'; };
+  applyStatus('idle'); assert.equal(indicator.hidden, true);
+  applyStatus('turn'); assert.equal(indicator.hidden, false, 'shown while turn is running');
+  applyStatus('idle'); assert.equal(indicator.hidden, true, 'hidden again after turn ends');
+  applyStatus('spawning'); assert.equal(indicator.hidden, true, 'hidden during spawn');
+  applyStatus('crashed'); assert.equal(indicator.hidden, true, 'hidden when crashed');
+
+  // The CSS rule that styles it must reference --green (the working colour)
+  // and reuse the existing `pulse` animation defined for the sidebar dot.
+  const css = await fs.readFile(path.join(PUB, 'styles.css'), 'utf8');
+  assert.match(css, /\.turn-indicator\b/, 'styles.css defines .turn-indicator');
+  assert.match(css, /\.turn-indicator\s+\.ti-dot[\s\S]*?--green/, '.ti-dot uses --green');
+  assert.match(css, /\.turn-indicator\s+\.ti-dot[\s\S]*?animation:\s*pulse/, '.ti-dot reuses the pulse keyframe');
+});
