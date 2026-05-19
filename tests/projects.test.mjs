@@ -312,6 +312,34 @@ test('DELETE session refuses (409) when a running instance is attached; force=1 
   } finally { await close(); }
 });
 
+test('DELETE session also drops the stale Instance record when the proc was already killed', async () => {
+  const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-instance.json');
+  const { baseUrl, projectsRoot, claudeProjectsRoot, instances, close } = await bootServer({ scenarioPath: SCENARIO });
+  try {
+    await api(baseUrl, 'POST', '/api/projects', { name: 'sess' });
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'sess', mode: 'bypassPermissions' });
+    const id = r.body.id;
+    const sid = r.body.sessionId;
+    await waitFor(() => instances.get(id)?.proc);
+
+    // Kill the subprocess but keep the Instance in byId — mirrors the
+    // header "Kill" button flow (so Resume stays available).
+    await instances.get(id).kill({ graceMs: 100 });
+    await waitFor(() => instances.get(id) && !instances.get(id).proc);
+
+    const dir = path.join(claudeProjectsRoot, encodeCwd(path.join(projectsRoot, 'sess')));
+    await fs.mkdir(dir, { recursive: true });
+    await fs.copyFile(FIXTURE_JSONL, path.join(dir, `${sid}.jsonl`));
+
+    // No 409 — the instance has no live proc — and the stale record
+    // should be cleaned up so the sidebar doesn't render a ghost row.
+    const del = await api(baseUrl, 'DELETE', `/api/projects/sess/sessions/${sid}`);
+    assert.equal(del.status, 200);
+    assert.equal(instances.get(id), undefined, 'stale exited instance removed alongside the session');
+    await assert.rejects(fs.stat(path.join(dir, `${sid}.jsonl`)), { code: 'ENOENT' });
+  } finally { await close(); }
+});
+
 test('DELETE worktree session removes from the worktree-encoded dir (not the parent project)', async () => {
   const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-instance.json');
   const { execFile } = await import('node:child_process');

@@ -104,9 +104,10 @@ export function buildRoutes({ instances } = {}) {
   // kills attached instances first, then deletes.
   async function deleteSessionAtCwd({ cwd, sessionId, force }) {
     if (instances) {
-      const running = instances.idsForSession(sessionId)
+      const attached = instances.idsForSession(sessionId)
         .map(id => instances.get(id))
-        .filter(i => i && i.proc);
+        .filter(Boolean);
+      const running = attached.filter(i => i.proc);
       if (running.length > 0 && !force) {
         throw Object.assign(new Error(
           `session ${sessionId} is attached to a running instance — kill it first or pass force=1`,
@@ -115,6 +116,11 @@ export function buildRoutes({ instances } = {}) {
       if (force) {
         await Promise.all(running.map(i => instances.remove(i.id).catch(() => {})));
       }
+      // Also drop exited/crashed instances pointing at this sessionId:
+      // the jsonl is about to be removed so Resume would no longer work,
+      // and leaving them in byId surfaces as a ghost row in the sidebar.
+      const stale = attached.filter(i => !i.proc);
+      await Promise.all(stale.map(i => instances.remove(i.id).catch(() => {})));
     }
     const removed = await deleteSessionForCwd(cwd, sessionId);
     if (!removed) {
