@@ -49,8 +49,8 @@ const dom = {
   niWorktree: document.getElementById('ni-worktree'),
   niWorktreeHint: document.getElementById('ni-worktree-hint'),
   niError: document.getElementById('ni-error'),
-  rebaseBtn: document.getElementById('rebase-btn'),
-  ffBtn: document.getElementById('ff-btn'),
+  syncBtn: document.getElementById('sync-btn'),
+  mergeBtn: document.getElementById('merge-btn'),
   sidebarToggle: document.getElementById('sidebar-toggle'),
   sidebar: document.getElementById('sidebar'),
   sidebarScrim: document.getElementById('sidebar-scrim'),
@@ -197,27 +197,37 @@ dom.killBtn.addEventListener('click', () => {
   if (state.activeId && confirm('Kill this instance?')) send('kill', { id: state.activeId });
 });
 
-dom.rebaseBtn.addEventListener('click', async () => {
+dom.syncBtn.addEventListener('click', async () => {
   if (!state.activeId) return;
   try {
-    const r = await fetch(`/api/instances/${state.activeId}/rebase-prompt`, { method: 'POST' });
+    const r = await fetch(`/api/instances/${state.activeId}/sync`, { method: 'POST' });
     if (!r.ok) throw new Error((await r.json()).error);
-  } catch (e) { alert(`rebase prompt failed: ${e.message}`); }
+    const result = await r.json();
+    if (!result.ok) { alert(`Cannot sync:\n${result.reason}`); return; }
+    if (result.action === 'already-in-sync') {
+      alert('Worktree is already up to date with its parent branch.');
+    } else if (result.action === 'fast-forwarded') {
+      alert(`Synced worktree → ${result.newSha?.slice(0, 12) ?? '?'}`);
+    } else if (result.action === 'rebase-prompt-sent') {
+      alert('Rebase prompt sent to the agent — watch the conversation for REBASE_DONE, then click Merge.');
+    }
+    await refreshProjects();
+  } catch (e) { alert(`sync failed: ${e.message}`); }
 });
-dom.ffBtn.addEventListener('click', async () => {
+dom.mergeBtn.addEventListener('click', async () => {
   if (!state.activeId) return;
-  if (!confirm('Fast-forward the parent repo onto this worktree\'s branch?')) return;
+  if (!confirm('Fast-forward the parent branch onto this worktree\'s tip?')) return;
   try {
-    const r = await fetch(`/api/instances/${state.activeId}/fast-forward-parent`, { method: 'POST' });
+    const r = await fetch(`/api/instances/${state.activeId}/merge`, { method: 'POST' });
     if (!r.ok) throw new Error((await r.json()).error);
     const result = await r.json();
     if (result.ok) {
-      alert(`Fast-forwarded parent → ${result.newSha?.slice(0, 12) ?? '?'}`);
+      alert(`Merged into parent → ${result.newSha?.slice(0, 12) ?? '?'}`);
       await refreshProjects();
     } else {
-      alert(`Cannot fast-forward:\n${result.reason}`);
+      alert(`Cannot merge:\n${result.reason}`);
     }
-  } catch (e) { alert(`fast-forward failed: ${e.message}`); }
+  } catch (e) { alert(`merge failed: ${e.message}`); }
 });
 
 dom.resumeBtn.addEventListener('click', async () => {
@@ -544,9 +554,10 @@ function updateActiveHeader() {
   dom.killBtn.disabled = !['idle', 'turn', 'spawning'].includes(inst.status);
   dom.resumeBtn.hidden = !(inst.status === 'crashed' || inst.status === 'exited');
   const hasWorktree = !!inst.worktree?.worktreeName;
-  dom.rebaseBtn.hidden = !hasWorktree;
-  dom.rebaseBtn.disabled = !hasWorktree || !(inst.status === 'idle' || inst.status === 'turn');
-  dom.ffBtn.hidden = !hasWorktree;
+  dom.syncBtn.hidden = !hasWorktree;
+  dom.syncBtn.disabled = !hasWorktree;
+  dom.mergeBtn.hidden = !hasWorktree;
+  dom.mergeBtn.disabled = !hasWorktree;
   const canType = ['idle', 'turn', 'spawning'].includes(inst.status);
   const canSend = ['idle', 'turn'].includes(inst.status);
   composer.set({ canType, canSend });

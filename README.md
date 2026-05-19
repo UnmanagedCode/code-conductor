@@ -29,9 +29,9 @@ Designed to run on a Termux phone (single user, localhost-only), but works on an
 
 - **Project list** — sidebar shows every directory under `~/project/`. A `+ New project` button creates a directory and drops a `CLAUDE.md` that imports the workspace-wide one at `~/project/CLAUDE.md`. Worktree-owned directories (those carrying a `.claude-orch-app/` dotfolder — or the legacy `.claude-orch-worktree.json` marker for worktrees created before the dotfolder reorg; see "Isolated worktrees" below) are hidden from the project list and surfaced under their parent project instead. The `×` next to each project row deletes the entire project (after a typed-name confirmation prompt) — cascades through every attached instance + worktree (kills + removes them) and then `rm -rf`s the project directory itself; `~/.claude/projects/<encoded>/` session jsonls are left in place since they may still be referenced by the standalone `claude` CLI.
 - **Isolated worktrees** — for any project that's a git repo, the new-instance dialog has a "Run in isolated git worktree" checkbox. Ticking it triggers `git worktree add ../<project>_worktree_<short-id> -b claude-orch/<short-id> <currentSha>` against the parent repo and spawns the Claude instance with `cwd` pointing at that fresh worktree. The orchestrator captures **the parent's current branch + SHA at creation time** as the rebase-back target, so you can spawn an experiment off any branch (not just `main`) and have a defined place to land it later. Each project has a default-collapsed **"Worktrees (N)"** subnode in the sidebar; from there you can spawn / resume agents into existing worktrees or remove them (refused if there's a live instance or uncommitted work, with a `force=1` override). Worktrees with commits that haven't been fast-forwarded into the parent show an amber `↑N` pill next to the worktree id (with `↓M` added when the parent has also moved on, signalling that a rebase is needed before the FF can land cleanly). Worktrees survive instance death — the same worktree can host multiple sequential agent runs.
-  - **Rebase back into the parent** — when the agent in a worktree has finished, two header buttons drive the merge-back:
-    - **Rebase** sends the agent a templated prompt asking it to commit any work, run `git rebase <baseBranch>` inside the worktree, ask the user (via `AskUserQuestion`) before making non-trivial conflict resolutions, and finally reply with the line `REBASE_DONE`. The orchestrator never runs `git rebase` itself — leaving conflict-resolution decisions to a Claude instance + the human in the loop avoids silent wrong choices.
-    - **FF parent** runs `git merge --ff-only <worktreeBranch>` on the parent repo. Refused (with an inline reason rather than a server error) if the parent is on a different branch than the captured base, has uncommitted changes, or has diverged. On success the parent's HEAD jumps to the worktree's tip — no merge commit, no rebase ambiguity.
+  - **Rebase back into the parent** — when the agent in a worktree has finished, two header buttons drive the merge-back as two distinct clicks:
+    - **Sync** brings the worktree's branch up to date with its parent's base branch, picking the cheapest path. Already in sync → no-op. Purely behind with a clean tree → server-side `git merge --ff-only <baseBranch>` inside the worktree. Diverged, or purely behind but dirty → sends the agent a templated prompt asking it to commit any work, run `git rebase <baseBranch>`, ask the user (via `AskUserQuestion`) before non-trivial conflict resolutions, and reply with the line `REBASE_DONE` so you can click Merge next. The orchestrator never runs `git rebase` itself — leaving conflict-resolution decisions to a Claude instance + the human in the loop avoids silent wrong choices.
+    - **Merge** runs `git merge --ff-only <worktreeBranch>` on the parent repo. Refuses (with an inline reason rather than a server error) if the worktree is still behind the parent ("click Sync first"), the parent is on a different branch than the captured base, or has uncommitted changes. On success the parent's HEAD jumps to the worktree's tip — no merge commit, no rebase ambiguity.
 - **Sessions are the canonical thing** — instances and persisted sessions are unified into a single "Sessions" list per project (and per worktree). Each row shows a status dot (live → idle/turn/spawning/crashed colour, otherwise a dim outlined `○`), a "time ago" stamp, and the session's first-prompt snippet — sorted newest-first. **Click a row**: if a live instance is attached → focus it; otherwise → resume it (`POST /api/instances` with `--resume <sid>`, into the matching cwd including worktree). Live instances whose `.jsonl` doesn't exist yet (just spawned, no first turn) appear as synthetic `(new session)` rows. The subnode header is `"Sessions (N) · K live · last <ago>"` and defaults to expanded; manual collapse sticks per-subnode.
 - **Spawn a new session** — for any project, click `+` to launch a fresh Claude subprocess and a new sessionId. Worktrees get their own `+` button that spawns into the worktree. The new-session dialog lets you choose:
   - **Mode** — three options:
@@ -172,7 +172,7 @@ claude-orch-app/
 │   │                         saved attachments back to the UI for replay
 │   │                         thumbnails (path-traversal guarded).
 │   │                         Worktree surface: list/delete worktrees per project,
-│   │                         POST rebase-prompt + fast-forward-parent.
+│   │                         POST sync + merge.
 │   ├── worktrees.js          Git worktree operations. createWorktree captures
 │   │                         {baseBranch, baseSha, branch} at HEAD, writes a
 │   │                         .claude-orch-app/worktree.json marker so listProjects
@@ -182,10 +182,12 @@ claude-orch-app/
 │   │                         own state doesn't pollute git status. Read path falls
 │   │                         back to the legacy .claude-orch-worktree.json filename
 │   │                         so worktrees from before the reorg keep working.
-│   │                         fastForwardParent does the merge-back with safety
-│   │                         checks (parent on baseBranch + clean tree).
-│   │                         buildRebasePrompt is the templated prompt sent to
-│   │                         the agent.
+│   │                         syncWorktree picks the cheapest update path
+│   │                         (no-op / FF inside worktree / "rebase
+│   │                         required" → caller sends buildRebasePrompt
+│   │                         to the agent). fastForwardParent does the
+│   │                         parent-side merge-back with safety checks
+│   │                         (parent on baseBranch + clean tree).
 │   ├── attachments.js        Per-worktree attachment storage. saveAttachment(cwd,
 │   │                         {name, dataBase64}) decodes the base64 payload into
 │   │                         .claude-orch-app/attachments/<stamp>-<safe-name>
@@ -260,8 +262,9 @@ claude-orch-app/
     ├── worktrees.test.mjs    End-to-end worktree feature against a real `git`:
     │                         create / list / delete worktrees, listProjects
     │                         hides them, spawn-into-existing reuses metadata,
-    │                         fast-forward-parent happy + sad paths, rebase
-    │                         prompt content.
+    │                         sync (already-in-sync / FF / rebase-prompt-sent /
+    │                         instance-not-running) and merge (happy path +
+    │                         "click Sync first" + parent-on-wrong-branch).
     ├── question.test.mjs     AskUserQuestion → user_question UI event end-to-end;
     │                         scenario emits the hook-deny tool_result + a normal
     │                         result/success and the orchestrator must NOT issue an
@@ -330,8 +333,8 @@ Every event carries a `parentToolUseId` (or `null`) — the conversation view ro
 | `GET` | `/api/instances` | `[{id, project, sessionId, status, mode, effort, thinking, model, pid}]` |
 | `POST` | `/api/instances/:id/respawn` | `{id, sessionId}` — uses `--resume lastSessionId` |
 | `DELETE` | `/api/instances/:id` | `{ok: true}` — SIGTERM + remove |
-| `POST` | `/api/instances/:id/rebase-prompt` | Sends the templated rebase prompt to a worktree-attached instance. 400 if the instance has no worktree. |
-| `POST` | `/api/instances/:id/fast-forward-parent` | Runs `git merge --ff-only <worktreeBranch>` on the parent repo. Returns `{ok:true, newSha}` or `{ok:false, reason}` (non-FF reasons are returned 200 with `ok:false` so the UI can render the reason inline). |
+| `POST` | `/api/instances/:id/sync` | Brings the worktree up to date with its base branch. Returns `{ok:true, action:"already-in-sync"\|"fast-forwarded"\|"rebase-prompt-sent", ...}` or `{ok:false, reason}`. The FF case runs `git merge --ff-only <baseBranch>` inside the worktree server-side; the rebase case sends the templated rebase prompt to the worktree's live instance (refused with `{ok:false, reason:"…not running…"}` if the instance has been stopped). 400 if the instance has no worktree. |
+| `POST` | `/api/instances/:id/merge` | Runs `git merge --ff-only <worktreeBranch>` on the parent repo. Returns `{ok:true, newSha}` or `{ok:false, reason}` (non-FF reasons are returned 200 with `ok:false` so the UI can render the reason inline). If the worktree is still behind the parent, refuses with a "click Sync first" reason rather than letting `fastForwardParent` surface git's stderr. |
 | `GET` | `/api/projects/:name/worktrees` | `[{worktreeName, branch, baseBranch, baseSha, parentPath, createdAt, instanceIds}]` |
 | `GET` | `/api/projects/:name/worktrees/:wt/sessions` | Same shape as the project-level session list, but scoped to the worktree's encoded cwd. |
 | `DELETE` | `/api/projects/:name/worktrees/:wt[?force=1]` | Removes the worktree dir + branch. 409 if there's a running instance or uncommitted changes; `force=1` kills attached instances and ignores dirt. |

@@ -84,6 +84,25 @@ export async function isGitRepo(projectPath) {
   return r.code === 0;
 }
 
+// `git status --porcelain` for a worktree path, with our orchestrator-
+// owned dotdir filtered out (it's untracked by design). Returns
+// { ok: boolean, lines: string[] }. Callers can decide whether a
+// non-empty `lines` means "refuse" or "fall back to the agent flow".
+export async function worktreeDirtyLines(worktreePath) {
+  const dirty = await runGit(worktreePath, ['status', '--porcelain']);
+  if (dirty.code !== 0) return { ok: false, lines: [] };
+  const lines = (dirty.stdout || '').split('\n').filter(l => {
+    const t = l.trim();
+    if (!t) return false;
+    // Porcelain "XY <path>" → grab the path and check the prefix.
+    const m = t.match(/^..\s+(.*)$/);
+    const p = m ? m[1] : t;
+    if (p === ORCH_DOTDIR || p.startsWith(`${ORCH_DOTDIR}/`)) return false;
+    return true;
+  });
+  return { ok: true, lines };
+}
+
 // Look up the parent repo's current branch + commit. Detached HEAD is
 // allowed (we record null for `branch`) — the rebase-back path will
 // require a named branch, but creation itself shouldn't be blocked.
@@ -235,19 +254,8 @@ export async function removeWorktree(projectName, worktreeName, { force = false 
   const parentPath = meta.parentPath;
 
   if (!force) {
-    const dirty = await runGit(meta.worktreePath, ['status', '--porcelain']);
-    // Ignore our own orchestrator-owned dotdir — `.claude-orch-app/` is
-    // untracked by design and shouldn't count as user-authored dirt.
-    const dirtyLines = (dirty.stdout || '').split('\n').filter(l => {
-      const t = l.trim();
-      if (!t) return false;
-      // Porcelain "?? <path>" → grab the path and check the prefix.
-      const m = t.match(/^..\s+(.*)$/);
-      const p = m ? m[1] : t;
-      if (p === ORCH_DOTDIR || p.startsWith(`${ORCH_DOTDIR}/`)) return false;
-      return true;
-    });
-    if (dirty.code === 0 && dirtyLines.length > 0) {
+    const dirty = await worktreeDirtyLines(meta.worktreePath);
+    if (dirty.ok && dirty.lines.length > 0) {
       const err = new Error(
         `worktree '${worktreeName}' has uncommitted changes — commit / discard them, or pass force=true`,
       );
@@ -347,6 +355,69 @@ export async function fastForwardParent(projectName, worktreeName) {
   return {
     ok: true,
     output: merge.stdout.trim() || merge.stderr.trim(),
+    newSha: newHead.stdout.trim(),
+  };
+}
+
+// Bring a worktree's branch up to date with the parent's baseBranch.
+// Picks the cheapest path:
+//   - behind == 0                                 → already in sync (no-op).
+//   - behind > 0, ahead == 0, worktree tree clean → server-side `git
+//     merge --ff-only <baseBranch>` inside the worktree.
+//   - anything else (diverged, or pure-behind but dirty)
+//                                                 → caller must send
+//     buildRebasePrompt(meta) to the worktree's agent (the rebase is
+//     async + interactive, so we don't drive `git rebase` ourselves).
+// Returns one of:
+//   { ok:true,  action:"already-in-sync",  ahead, behind }
+//   { ok:true,  action:"fast-forwarded",   ahead:0, behind:0, newSha }
+//   { ok:true,  action:"rebase-required",  ahead, behind }
+//   { ok:false, reason: "..." }
+export async function syncWorktree(projectName, worktreeName) {
+  const meta = await getWorktree(projectName, worktreeName);
+  if (!meta) {
+    const err = new Error(`worktree '${worktreeName}' not found under project '${projectName}'`);
+    err.statusCode = 404;
+    throw err;
+  }
+  const { ahead, behind } = await getWorktreeMergeStatus(meta);
+  if (ahead == null || behind == null) {
+    return {
+      ok: false,
+      reason: `couldn't compare worktree branch '${meta.branch}' to '${meta.baseBranch}' (base branch may have been deleted or renamed)`,
+    };
+  }
+  if (behind === 0) {
+    return { ok: true, action: 'already-in-sync', ahead, behind };
+  }
+  // Diverged → agent must rebase interactively.
+  if (ahead > 0) {
+    return { ok: true, action: 'rebase-required', ahead, behind };
+  }
+  // Pure-behind: try a clean fast-forward inside the worktree. Fall
+  // back to the rebase path if the working tree is dirty (the agent
+  // will commit / discard before rebasing).
+  const dirty = await worktreeDirtyLines(meta.worktreePath);
+  if (!dirty.ok) {
+    return { ok: false, reason: `git status failed inside worktree '${meta.worktreePath}'` };
+  }
+  if (dirty.lines.length > 0) {
+    return { ok: true, action: 'rebase-required', ahead, behind };
+  }
+  const merge = await runGit(meta.worktreePath, ['merge', '--ff-only', meta.baseBranch]);
+  if (merge.code !== 0) {
+    return {
+      ok: false,
+      reason: (merge.stderr.trim() || merge.stdout.trim() ||
+        `git merge --ff-only ${meta.baseBranch} failed inside worktree`),
+    };
+  }
+  const newHead = await runGit(meta.worktreePath, ['rev-parse', 'HEAD']);
+  return {
+    ok: true,
+    action: 'fast-forwarded',
+    ahead: 0,
+    behind: 0,
     newSha: newHead.stdout.trim(),
   };
 }

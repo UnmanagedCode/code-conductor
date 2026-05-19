@@ -8,7 +8,7 @@ import {
 import {
   isGitRepo, listWorktrees, removeWorktree, fastForwardParent,
   buildRebasePrompt, getWorktree, removeAllWorktreesForProject,
-  attachmentsDir, getWorktreeMergeStatus,
+  attachmentsDir, getWorktreeMergeStatus, syncWorktree,
 } from './worktrees.js';
 
 const CONTENT_TYPE_BY_EXT = {
@@ -203,30 +203,51 @@ export function buildRoutes({ instances } = {}) {
       } catch (e) { next(e); }
     });
 
-    // Send the templated rebase-back prompt to a worktree-attached
-    // instance. The agent runs `git rebase <baseBranch>` inside the
-    // worktree, asks the user about conflicts if needed, and replies
-    // REBASE_DONE so the user can click "Fast-forward parent" next.
-    r.post('/instances/:id/rebase-prompt', async (req, res, next) => {
+    // Sync a worktree from its parent's baseBranch. Server-side FF
+    // when possible; otherwise sends the templated rebase prompt to
+    // the worktree's agent. Returns {ok:true, action} on success
+    // (action ∈ already-in-sync | fast-forwarded | rebase-prompt-sent)
+    // or {ok:false, reason} when neither path is available.
+    r.post('/instances/:id/sync', async (req, res, next) => {
       try {
         const inst = instances.get(req.params.id);
         if (!inst) throw Object.assign(new Error('instance not found'), { statusCode: 404 });
         if (!inst.worktree) throw Object.assign(new Error('instance is not attached to a worktree'), { statusCode: 400 });
-        if (!inst.proc) throw Object.assign(new Error('instance is not running'), { statusCode: 409 });
-        const prompt = buildRebasePrompt(inst.worktree);
-        await inst.prompt(prompt);
-        res.json({ ok: true });
+        const result = await syncWorktree(inst.project, inst.worktree.worktreeName);
+        if (result.ok && result.action === 'rebase-required') {
+          if (!inst.proc) {
+            res.json({
+              ok: false,
+              reason: 'instance is not running — Resume it before clicking Sync so the agent can rebase',
+            });
+            return;
+          }
+          await inst.prompt(buildRebasePrompt(inst.worktree));
+          res.json({ ok: true, action: 'rebase-prompt-sent', ahead: result.ahead, behind: result.behind });
+          return;
+        }
+        res.json(result);
       } catch (e) { next(e); }
     });
 
-    // Fast-forward the parent repo onto the worktree's branch. Returns
+    // Fast-forward the parent repo onto the worktree's branch. Refuses
+    // with a friendly reason if the worktree hasn't been synced yet
+    // (parent has commits the worktree branch doesn't carry). Returns
     // {ok:true, newSha} or {ok:false, reason} — callers render the
     // reason inline rather than treating non-ff as a server error.
-    r.post('/instances/:id/fast-forward-parent', async (req, res, next) => {
+    r.post('/instances/:id/merge', async (req, res, next) => {
       try {
         const inst = instances.get(req.params.id);
         if (!inst) throw Object.assign(new Error('instance not found'), { statusCode: 404 });
         if (!inst.worktree) throw Object.assign(new Error('instance is not attached to a worktree'), { statusCode: 400 });
+        const status = await getWorktreeMergeStatus(inst.worktree);
+        if (status.behind != null && status.behind > 0) {
+          res.json({
+            ok: false,
+            reason: `worktree is behind '${inst.worktree.baseBranch}' by ${status.behind} commit(s) — click Sync first to fast-forward / rebase`,
+          });
+          return;
+        }
         const result = await fastForwardParent(inst.project, inst.worktree.worktreeName);
         res.json(result);
       } catch (e) { next(e); }

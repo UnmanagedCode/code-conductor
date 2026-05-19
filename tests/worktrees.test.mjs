@@ -187,72 +187,33 @@ test('DELETE worktree refuses (409) when an instance is still attached, then suc
   } finally { await ctx.close(); }
 });
 
-test('fastForwardParent fast-forwards parent main onto worktree branch after the worktree gets a new commit', async () => {
-  const ctx = await bootServer({ scenarioPath: SCENARIO });
-  try {
-    const repoPath = await makeRealRepo(ctx.projectsRoot, 'demo');
-    const created = await api(ctx.baseUrl, 'POST', '/api/instances', {
-      project: 'demo', mode: 'bypassPermissions', worktree: true,
-    });
-    const wtName = created.body.worktree.worktreeName;
-    const id = created.body.id;
-    const wt = await getWorktree('demo', wtName);
+// Configure the worktree's git identity so commits made by the test
+// against the worktree path succeed even on hosts where no global
+// user.email is set.
+async function configureWorktreeIdentity(worktreePath) {
+  await git(worktreePath, 'config', 'user.email', 'agent@example.com');
+  await git(worktreePath, 'config', 'user.name', 'agent');
+  await git(worktreePath, 'config', 'commit.gpgsign', 'false');
+}
 
-    // Kill the instance so it doesn't hold any file handles in the
-    // worktree while we mutate it directly via git from the test.
-    await api(ctx.baseUrl, 'DELETE', `/api/instances/${id}`);
+// Add a commit inside the worktree — mirrors what the agent would do
+// during a real turn. Returns the new HEAD SHA.
+async function commitInWorktree(worktreePath, filename, content, message) {
+  await fs.writeFile(path.join(worktreePath, filename), content);
+  await configureWorktreeIdentity(worktreePath);
+  await git(worktreePath, 'add', '.');
+  await git(worktreePath, 'commit', '-q', '-m', message);
+  return (await git(worktreePath, 'rev-parse', 'HEAD')).stdout.trim();
+}
 
-    // Add a commit inside the worktree — this is what the agent would
-    // normally do during its turn.
-    await fs.writeFile(path.join(wt.worktreePath, 'agent.txt'), 'agent work\n');
-    await git(wt.worktreePath, 'config', 'user.email', 'agent@example.com');
-    await git(wt.worktreePath, 'config', 'user.name', 'agent');
-    await git(wt.worktreePath, 'config', 'commit.gpgsign', 'false');
-    await git(wt.worktreePath, 'add', '.');
-    await git(wt.worktreePath, 'commit', '-q', '-m', 'agent work');
-    const wtSha = (await git(wt.worktreePath, 'rev-parse', 'HEAD')).stdout.trim();
+async function commitInParent(repoPath, filename, content, message) {
+  await fs.writeFile(path.join(repoPath, filename), content);
+  await git(repoPath, 'add', '.');
+  await git(repoPath, 'commit', '-q', '-m', message);
+  return (await git(repoPath, 'rev-parse', 'HEAD')).stdout.trim();
+}
 
-    // Spawn a new instance into the worktree just so the FF endpoint
-    // has something to route through (it looks up the instance to find
-    // the worktree metadata).
-    const second = await api(ctx.baseUrl, 'POST', '/api/instances', {
-      project: 'demo', mode: 'bypassPermissions', worktree: wtName,
-    });
-    const id2 = second.body.id;
-    await waitFor(() => ctx.instances.get(id2)?.status === 'idle');
-
-    const ff = await api(ctx.baseUrl, 'POST', `/api/instances/${id2}/fast-forward-parent`);
-    assert.equal(ff.status, 200);
-    assert.equal(ff.body.ok, true, `ff failed: ${ff.body.reason}`);
-    assert.equal(ff.body.newSha, wtSha, 'parent main now points at the worktree-branch tip');
-
-    // Confirm by reading the parent repo's HEAD directly.
-    const parentSha = (await git(repoPath, 'rev-parse', 'HEAD')).stdout.trim();
-    assert.equal(parentSha, wtSha);
-  } finally { await ctx.close(); }
-});
-
-test('fastForwardParent refuses (returns reason) when parent has switched off the baseBranch', async () => {
-  const ctx = await bootServer({ scenarioPath: SCENARIO });
-  try {
-    const repoPath = await makeRealRepo(ctx.projectsRoot, 'demo');
-    const created = await api(ctx.baseUrl, 'POST', '/api/instances', {
-      project: 'demo', mode: 'bypassPermissions', worktree: true,
-    });
-    const id = created.body.id;
-    await waitFor(() => ctx.instances.get(id)?.status === 'idle');
-
-    // Switch the parent off main to a new branch.
-    await git(repoPath, 'switch', '-q', '-c', 'experimental');
-
-    const ff = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/fast-forward-parent`);
-    assert.equal(ff.status, 200);
-    assert.equal(ff.body.ok, false);
-    assert.match(ff.body.reason, /parent repo is on 'experimental'/);
-  } finally { await ctx.close(); }
-});
-
-test('rebase-prompt endpoint sends the templated prompt to the agent', async () => {
+test('POST /sync returns already-in-sync when worktree matches parent', async () => {
   const ctx = await bootServer({ scenarioPath: SCENARIO });
   try {
     await makeRealRepo(ctx.projectsRoot, 'demo');
@@ -262,19 +223,217 @@ test('rebase-prompt endpoint sends the templated prompt to the agent', async () 
     const id = created.body.id;
     await waitFor(() => ctx.instances.get(id)?.status === 'idle');
 
+    const r = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/sync`);
+    assert.equal(r.status, 200);
+    assert.equal(r.body.ok, true);
+    assert.equal(r.body.action, 'already-in-sync');
+    assert.equal(r.body.ahead, 0);
+    assert.equal(r.body.behind, 0);
+  } finally { await ctx.close(); }
+});
+
+test('POST /sync fast-forwards the worktree when it is purely behind a clean parent', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO });
+  try {
+    const repoPath = await makeRealRepo(ctx.projectsRoot, 'demo');
+    const created = await api(ctx.baseUrl, 'POST', '/api/instances', {
+      project: 'demo', mode: 'bypassPermissions', worktree: true,
+    });
+    const wtName = created.body.worktree.worktreeName;
+    const id = created.body.id;
+    const wt = await getWorktree('demo', wtName);
+    await waitFor(() => ctx.instances.get(id)?.status === 'idle');
+
+    // Parent advances; worktree's branch tip stays where it was — so the
+    // worktree is purely behind. With a clean tree, sync must FF.
+    const parentSha = await commitInParent(repoPath, 'parent.txt', 'parent work\n', 'parent work');
+
+    const r = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/sync`);
+    assert.equal(r.status, 200);
+    assert.equal(r.body.ok, true, `sync failed: ${r.body.reason}`);
+    assert.equal(r.body.action, 'fast-forwarded');
+    assert.equal(r.body.newSha, parentSha);
+
+    // Worktree HEAD now points at the parent's new tip.
+    const wtSha = (await git(wt.worktreePath, 'rev-parse', 'HEAD')).stdout.trim();
+    assert.equal(wtSha, parentSha);
+  } finally { await ctx.close(); }
+});
+
+test('POST /sync falls back to the rebase prompt when the pure-behind worktree has uncommitted changes', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO });
+  try {
+    const repoPath = await makeRealRepo(ctx.projectsRoot, 'demo');
+    const created = await api(ctx.baseUrl, 'POST', '/api/instances', {
+      project: 'demo', mode: 'bypassPermissions', worktree: true,
+    });
+    const wtName = created.body.worktree.worktreeName;
+    const id = created.body.id;
+    const wt = await getWorktree('demo', wtName);
+    await waitFor(() => ctx.instances.get(id)?.status === 'idle');
+
+    // Parent advances; worktree has an uncommitted file.
+    await commitInParent(repoPath, 'parent.txt', 'parent work\n', 'parent work');
+    await fs.writeFile(path.join(wt.worktreePath, 'wip.txt'), 'uncommitted\n');
+
     const events = [];
     ctx.instances.on('event', ({ id: eid, ev }) => { if (eid === id) events.push(ev); });
 
-    const r = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/rebase-prompt`);
+    const r = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/sync`);
     assert.equal(r.status, 200);
     assert.equal(r.body.ok, true);
+    assert.equal(r.body.action, 'rebase-prompt-sent');
 
-    // The orchestrator emits a user_echo with the rebase prompt text.
     await waitFor(() => events.some(e => e.kind === 'user_echo'));
     const echo = events.find(e => e.kind === 'user_echo');
     assert.match(echo.text, /isolated git worktree/);
     assert.match(echo.text, /git rebase main/);
     assert.match(echo.text, /REBASE_DONE/);
+  } finally { await ctx.close(); }
+});
+
+test('POST /sync sends the rebase prompt when the worktree has diverged from the parent', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO });
+  try {
+    const repoPath = await makeRealRepo(ctx.projectsRoot, 'demo');
+    const created = await api(ctx.baseUrl, 'POST', '/api/instances', {
+      project: 'demo', mode: 'bypassPermissions', worktree: true,
+    });
+    const wtName = created.body.worktree.worktreeName;
+    const id = created.body.id;
+    const wt = await getWorktree('demo', wtName);
+    await waitFor(() => ctx.instances.get(id)?.status === 'idle');
+
+    // Both sides commit different files → diverged.
+    await commitInParent(repoPath, 'parent.txt', 'parent work\n', 'parent work');
+    // Kill the proc briefly so the worktree's index isn't racing the
+    // (silent) subprocess while we run git commands. Use the instance's
+    // own kill() — that leaves the Instance in the manager but clears
+    // `proc`, so we then need to re-attach an instance for the route.
+    await ctx.instances.get(id).kill({ graceMs: 200 });
+    await commitInWorktree(wt.worktreePath, 'agent.txt', 'agent work\n', 'agent work');
+    // Re-spawn into the same worktree so the sync endpoint has a live
+    // instance whose `inst.prompt(...)` can route the rebase prompt.
+    const second = await api(ctx.baseUrl, 'POST', '/api/instances', {
+      project: 'demo', mode: 'bypassPermissions', worktree: wtName,
+    });
+    const id2 = second.body.id;
+    await waitFor(() => ctx.instances.get(id2)?.status === 'idle');
+
+    const events = [];
+    ctx.instances.on('event', ({ id: eid, ev }) => { if (eid === id2) events.push(ev); });
+
+    const r = await api(ctx.baseUrl, 'POST', `/api/instances/${id2}/sync`);
+    assert.equal(r.status, 200);
+    assert.equal(r.body.ok, true);
+    assert.equal(r.body.action, 'rebase-prompt-sent');
+    assert.equal(r.body.ahead, 1);
+    assert.equal(r.body.behind, 1);
+
+    await waitFor(() => events.some(e => e.kind === 'user_echo'));
+    const echo = events.find(e => e.kind === 'user_echo');
+    assert.match(echo.text, /git rebase main/);
+  } finally { await ctx.close(); }
+});
+
+test('POST /sync refuses the rebase path when the instance is not running', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO });
+  try {
+    const repoPath = await makeRealRepo(ctx.projectsRoot, 'demo');
+    const created = await api(ctx.baseUrl, 'POST', '/api/instances', {
+      project: 'demo', mode: 'bypassPermissions', worktree: true,
+    });
+    const wtName = created.body.worktree.worktreeName;
+    const id = created.body.id;
+    const wt = await getWorktree('demo', wtName);
+    await waitFor(() => ctx.instances.get(id)?.status === 'idle');
+
+    // Set up the diverged state, then stop the proc (without removing
+    // the Instance from the manager — the route still needs to look it
+    // up by id).
+    await commitInParent(repoPath, 'parent.txt', 'parent work\n', 'parent work');
+    await ctx.instances.get(id).kill({ graceMs: 200 });
+    await commitInWorktree(wt.worktreePath, 'agent.txt', 'agent work\n', 'agent work');
+    await waitFor(() => !ctx.instances.get(id)?.proc);
+
+    const r = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/sync`);
+    assert.equal(r.status, 200);
+    assert.equal(r.body.ok, false);
+    assert.match(r.body.reason, /not running/i);
+  } finally { await ctx.close(); }
+});
+
+test('POST /merge fast-forwards the parent onto the worktree branch when worktree is ahead', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO });
+  try {
+    const repoPath = await makeRealRepo(ctx.projectsRoot, 'demo');
+    const created = await api(ctx.baseUrl, 'POST', '/api/instances', {
+      project: 'demo', mode: 'bypassPermissions', worktree: true,
+    });
+    const wtName = created.body.worktree.worktreeName;
+    const id = created.body.id;
+    const wt = await getWorktree('demo', wtName);
+    await waitFor(() => ctx.instances.get(id)?.status === 'idle');
+
+    // Stop the live proc, add a commit on the worktree branch, then
+    // re-attach an instance so the route can find one.
+    await ctx.instances.get(id).kill({ graceMs: 200 });
+    const wtSha = await commitInWorktree(wt.worktreePath, 'agent.txt', 'agent work\n', 'agent work');
+    const second = await api(ctx.baseUrl, 'POST', '/api/instances', {
+      project: 'demo', mode: 'bypassPermissions', worktree: wtName,
+    });
+    const id2 = second.body.id;
+    await waitFor(() => ctx.instances.get(id2)?.status === 'idle');
+
+    const r = await api(ctx.baseUrl, 'POST', `/api/instances/${id2}/merge`);
+    assert.equal(r.status, 200);
+    assert.equal(r.body.ok, true, `merge failed: ${r.body.reason}`);
+    assert.equal(r.body.newSha, wtSha);
+
+    const parentSha = (await git(repoPath, 'rev-parse', 'HEAD')).stdout.trim();
+    assert.equal(parentSha, wtSha);
+  } finally { await ctx.close(); }
+});
+
+test('POST /merge refuses with a Sync-first hint when the worktree is behind the parent', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO });
+  try {
+    const repoPath = await makeRealRepo(ctx.projectsRoot, 'demo');
+    const created = await api(ctx.baseUrl, 'POST', '/api/instances', {
+      project: 'demo', mode: 'bypassPermissions', worktree: true,
+    });
+    const id = created.body.id;
+    await waitFor(() => ctx.instances.get(id)?.status === 'idle');
+
+    // Parent advances → worktree is now behind.
+    await commitInParent(repoPath, 'parent.txt', 'parent work\n', 'parent work');
+
+    const r = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/merge`);
+    assert.equal(r.status, 200);
+    assert.equal(r.body.ok, false);
+    assert.match(r.body.reason, /click Sync first/);
+  } finally { await ctx.close(); }
+});
+
+test('POST /merge surfaces fastForwardParent\'s own refusal when parent has switched branches', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO });
+  try {
+    const repoPath = await makeRealRepo(ctx.projectsRoot, 'demo');
+    const created = await api(ctx.baseUrl, 'POST', '/api/instances', {
+      project: 'demo', mode: 'bypassPermissions', worktree: true,
+    });
+    const id = created.body.id;
+    await waitFor(() => ctx.instances.get(id)?.status === 'idle');
+
+    // Switch the parent to a different branch — the worktree is still
+    // up to date with main, so the Sync-first gate doesn't trip, but
+    // fastForwardParent will refuse on the "parent is on '<other>'" path.
+    await git(repoPath, 'switch', '-q', '-c', 'experimental');
+
+    const r = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/merge`);
+    assert.equal(r.status, 200);
+    assert.equal(r.body.ok, false);
+    assert.match(r.body.reason, /parent repo is on 'experimental'/);
   } finally { await ctx.close(); }
 });
 
@@ -326,7 +485,7 @@ test('GET /api/projects exposes mergeStatus tracking ahead/behind for each workt
   } finally { await ctx.close(); }
 });
 
-test('rebase-prompt rejects non-worktree instances', async () => {
+test('sync and merge reject non-worktree instances', async () => {
   const ctx = await bootServer({ scenarioPath: SCENARIO });
   try {
     await makeRealRepo(ctx.projectsRoot, 'demo');
@@ -336,8 +495,12 @@ test('rebase-prompt rejects non-worktree instances', async () => {
     const id = created.body.id;
     await waitFor(() => ctx.instances.get(id)?.status === 'idle');
 
-    const r = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/rebase-prompt`);
-    assert.equal(r.status, 400);
-    assert.match(r.body.error, /not attached to a worktree/);
+    const s = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/sync`);
+    assert.equal(s.status, 400);
+    assert.match(s.body.error, /not attached to a worktree/);
+
+    const m = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/merge`);
+    assert.equal(m.status, 400);
+    assert.match(m.body.error, /not attached to a worktree/);
   } finally { await ctx.close(); }
 });
