@@ -10,14 +10,16 @@
 //   });
 
 import { chromium } from 'playwright-core';
-import { existsSync } from 'node:fs';
+import { existsSync, promises as fsp } from 'node:fs';
 import { spawn } from 'node:child_process';
 import net from 'node:net';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ORCH_ROOT = path.resolve(__dirname, '..');
+const FAKE_CLAUDE = path.join(ORCH_ROOT, 'tests', 'fake-claude.mjs');
 
 // Default to the Termux chromium-browser launcher. Override with
 // PLAYWRIGHT_CHROMIUM_BIN if you've installed Chrome elsewhere.
@@ -125,9 +127,30 @@ async function findFreePort() {
 //     });
 //   } finally { await orch.close(); }
 //
-// Pass `env` to override PROJECTS_ROOT / CLAUDE_PROJECTS_ROOT for
-// fully-sandboxed runs (the integration test suite's pattern).
-export async function bootServer({ port, env = {}, silent = false } = {}) {
+// Pass `env` to override PROJECTS_ROOT / CLAUDE_PROJECTS_ROOT manually,
+// or use `sandbox: true` / `sandbox: { scenario }` for the common pattern:
+// ephemeral tmp dirs for PROJECTS_ROOT + CLAUDE_PROJECTS_ROOT, plus
+// CLAUDE_BIN pointing at tests/fake-claude.mjs (with optional scenario
+// file). The tmp dirs are exposed on the returned object and wiped by
+// `.close()`.
+export async function bootServer({ port, env = {}, sandbox, silent = false } = {}) {
+  let sandboxPaths = null;
+  if (sandbox) {
+    const tmpHome = await fsp.mkdtemp(path.join(os.tmpdir(), 'orch-debug-'));
+    const projectsRoot = path.join(tmpHome, 'project');
+    const claudeProjectsRoot = path.join(tmpHome, '.claude', 'projects');
+    await fsp.mkdir(projectsRoot, { recursive: true });
+    await fsp.mkdir(claudeProjectsRoot, { recursive: true });
+    sandboxPaths = { tmpHome, projectsRoot, claudeProjectsRoot };
+    env = {
+      PROJECTS_ROOT: projectsRoot,
+      CLAUDE_PROJECTS_ROOT: claudeProjectsRoot,
+      CLAUDE_BIN: `${process.execPath} ${FAKE_CLAUDE}`,
+      ...(sandbox.scenario ? { FAKE_CLAUDE_SCENARIO: sandbox.scenario } : {}),
+      ...env, // explicit env still wins
+    };
+  }
+
   const chosenPort = port ?? await findFreePort();
   const child = spawn(process.execPath, ['server.js'], {
     cwd: ORCH_ROOT,
@@ -166,16 +189,21 @@ export async function bootServer({ port, env = {}, silent = false } = {}) {
     url,
     port: chosenPort,
     child,
+    ...(sandboxPaths ?? {}),
     async close() {
-      if (child.killed || child.exitCode !== null) return;
-      child.kill('SIGTERM');
-      await new Promise((resolve) => {
-        const t = setTimeout(() => {
-          if (child.exitCode === null) child.kill('SIGKILL');
-          resolve();
-        }, 3000);
-        child.once('exit', () => { clearTimeout(t); resolve(); });
-      });
+      if (!child.killed && child.exitCode === null) {
+        child.kill('SIGTERM');
+        await new Promise((resolve) => {
+          const t = setTimeout(() => {
+            if (child.exitCode === null) child.kill('SIGKILL');
+            resolve();
+          }, 3000);
+          child.once('exit', () => { clearTimeout(t); resolve(); });
+        });
+      }
+      if (sandboxPaths) {
+        await fsp.rm(sandboxPaths.tmpHome, { recursive: true, force: true });
+      }
     },
   };
 }

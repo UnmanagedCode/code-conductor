@@ -73,7 +73,7 @@ await withPage(async (page) => {
 - `withPage(fn, opts)` — boots browser + context + page, pipes page console errors/warnings to the terminal, runs `fn(page, { browser, context })`, tears down on return or throw.
 - `launchBrowser(opts)` — lower-level: returns the `Browser` directly if you need multi-context / multi-page setups.
 - `waitForServer(url, { timeoutMs })` — polls until the URL responds (any non-5xx). Handy when you've just spawned a server in another shell.
-- `bootServer({ port?, env?, silent? })` — spawns the orchestrator as a child process on a free ephemeral port (override with `port`), waits for it to bind, and returns `{ url, port, child, close() }`. Cleanup is wired to parent `exit` / `SIGINT` / `SIGTERM` so a Ctrl+C'd script never leaks a server.
+- `bootServer({ port?, env?, sandbox?, silent? })` — spawns the orchestrator as a child process on a free ephemeral port (override with `port`), waits for it to bind, and returns `{ url, port, child, close() }`. Cleanup is wired to parent `exit` / `SIGINT` / `SIGTERM` so a Ctrl+C'd script never leaks a server.
 
 ```js
 import { bootServer, withPage } from './browser.mjs';
@@ -88,6 +88,24 @@ try {
   await orch.close();
 }
 ```
+
+**`sandbox: true` / `sandbox: { scenario }`** — most debug sessions want isolated state, not the real `~/project/`. Pass `sandbox: true` and `bootServer`:
+
+- creates a tmp home with `project/` and `.claude/projects/` subdirs;
+- sets `PROJECTS_ROOT`, `CLAUDE_PROJECTS_ROOT`, and `CLAUDE_BIN` (→ `tests/fake-claude.mjs`);
+- exposes the paths on the returned object as `tmpHome` / `projectsRoot` / `claudeProjectsRoot`;
+- wipes the tmp home in `.close()`.
+
+Add `scenario: '<absolute path>'` to point fake-claude at a scenario file (the same `tests/fixtures/scenario-*.json` the test suite uses):
+
+```js
+const orch = await bootServer({
+  sandbox: { scenario: '/path/to/tests/fixtures/scenario-instance.json' },
+});
+// orch.projectsRoot, orch.claudeProjectsRoot — pre-populate state here
+```
+
+Multiple concurrent debug scripts can each call `bootServer({ sandbox: true })` safely — both the port and the tmp dir are fresh per call.
 
 Override the chromium path with `PLAYWRIGHT_CHROMIUM_BIN=/some/path` if your install lives elsewhere.
 
