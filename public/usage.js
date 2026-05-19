@@ -49,6 +49,16 @@ export class UsageTracker {
       if (m) this.model = m;
       return;
     }
+    // message_start lands at the START of each agent-loop step within a
+    // turn (a long turn with N tool calls fires N+1 message_starts), and
+    // each one carries the cumulative input-side counts as known so far.
+    // We update lastUsage but DO NOT touch cum here — the final `result`
+    // (turn_end) is authoritative for the per-turn aggregate, and double
+    // counting message_start + turn_end would inflate the totals.
+    if (ev.kind === 'message_start' && ev.usage) {
+      this.lastUsage = ev.usage;
+      return;
+    }
     if (ev.kind === 'turn_end' && ev.usage) {
       const u = ev.usage;
       this.lastUsage = u;

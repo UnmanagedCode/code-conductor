@@ -303,3 +303,38 @@ test('parser: parentToolUseId is null when envelope omits parent_tool_use_id', (
   });
   assert.equal(td[0].parentToolUseId, null);
 });
+
+test('parser: message_start with usage emits a message_start UI event', () => {
+  const p = new Parser();
+  const out = p.handleObject({
+    type: 'stream_event',
+    event: {
+      type: 'message_start',
+      message: {
+        id: 'msg_with_usage',
+        role: 'assistant',
+        usage: {
+          input_tokens: 42,
+          output_tokens: 0,
+          cache_read_input_tokens: 50_000,
+          cache_creation_input_tokens: 1_000,
+        },
+      },
+    },
+  });
+  assert.equal(out.length, 1);
+  assert.equal(out[0].kind, 'message_start');
+  assert.equal(out[0].msgId, 'msg_with_usage');
+  assert.equal(out[0].usage.input_tokens, 42);
+  assert.equal(out[0].usage.cache_read_input_tokens, 50_000);
+  assert.equal(out[0].parentToolUseId, null);
+});
+
+test('parser: message_start without usage stays silent (legacy fixtures)', () => {
+  const p = new Parser();
+  const out = p.handleObject({
+    type: 'stream_event',
+    event: { type: 'message_start', message: { id: 'm', role: 'assistant' } },
+  });
+  assert.equal(out.length, 0);
+});

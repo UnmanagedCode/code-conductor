@@ -6,6 +6,7 @@
 // stream_event chunks before the matching content_block_stop arrives.
 //
 // Emitted UI event kinds:
+//   message_start           { msgId, usage }                // live context-size signal
 //   text_delta              { msgId, blockIdx, text }
 //   text_end                { msgId, blockIdx }
 //   thinking_delta          { msgId, blockIdx, text }
@@ -99,7 +100,16 @@ export class Parser {
       case 'message_start': {
         this.currentMsgId = ev.message?.id ?? `msg_${randomUUID()}`;
         this.blocks.clear();
-        return [];
+        // Surface the usage block. Each agent-loop step within a turn
+        // fires its own message_start with cumulative input-side counts
+        // (input_tokens + cache_read + cache_creation), so this is the
+        // signal that lets the context-usage chip update mid-turn rather
+        // than only when the final `result` lands. Skip emission when
+        // there's no usage payload (defensive — keeps DOM tests stable
+        // for fixtures that omit it).
+        const usage = ev.message?.usage ?? null;
+        if (!usage) return [];
+        return [{ kind: 'message_start', msgId: this.currentMsgId, usage }];
       }
       case 'content_block_start': {
         const idx = ev.index ?? 0;

@@ -80,6 +80,40 @@ test('UsageTracker: turn_end accumulates cum + tracks current size', async () =>
   });
 });
 
+test('UsageTracker: message_start updates current size mid-turn without inflating cum', async () => {
+  const { UsageTracker } = await import(USAGE_URL);
+  const t = new UsageTracker();
+  // Long-running turn: three agent-loop steps within one turn, each
+  // fires its own message_start with growing input-side counts as tool
+  // results stack up in context.
+  t.apply({
+    kind: 'message_start',
+    usage: { input_tokens: 100, output_tokens: 0, cache_read_input_tokens: 1000, cache_creation_input_tokens: 0 },
+  });
+  assert.equal(t.currentContextSize(), 1100);
+  assert.equal(t.cum.turns, 0, 'message_start must not bump turns');
+  assert.equal(t.cum.inputTokens, 0, 'message_start must not bump cum.inputTokens');
+
+  t.apply({
+    kind: 'message_start',
+    usage: { input_tokens: 200, output_tokens: 0, cache_read_input_tokens: 5000, cache_creation_input_tokens: 0 },
+  });
+  assert.equal(t.currentContextSize(), 5200);
+  assert.equal(t.cum.turns, 0);
+
+  // Final result lands — cum gets the authoritative per-turn aggregate.
+  t.apply({
+    kind: 'turn_end',
+    durationMs: 4000,
+    cost: 0.05,
+    usage: { input_tokens: 300, output_tokens: 800, cache_read_input_tokens: 5000, cache_creation_input_tokens: 200 },
+  });
+  assert.equal(t.cum.turns, 1);
+  assert.equal(t.cum.inputTokens, 300, 'cum reflects turn_end only, not the prior message_starts');
+  assert.equal(t.cum.cacheRead, 5000);
+  assert.equal(t.currentContextSize(), 5500);
+});
+
 test('UsageTracker: missing usage fields default to 0', async () => {
   const { UsageTracker } = await import(USAGE_URL);
   const t = new UsageTracker();

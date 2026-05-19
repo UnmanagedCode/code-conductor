@@ -789,8 +789,11 @@ bus.addEventListener('event', (e) => {
   if (m.id !== state.activeId) return;
   conversation.apply(m.ev);
   // Refresh the header chip whenever data that affects it lands. init
-  // sets the model, turn_end updates current + cumulative totals.
+  // sets the model, message_start gives a live mid-turn context-size
+  // update (each agent-loop step fires its own with cumulative counts),
+  // turn_end finalizes both current + cumulative totals.
   if (m.ev?.kind === 'turn_end'
+      || m.ev?.kind === 'message_start'
       || (m.ev?.kind === 'system' && m.ev?.subtype === 'init')) {
     updateActiveHeader();
   }
