@@ -844,6 +844,62 @@ test('DOM: parallel sub-agent tool_uses split across same-msgId envelopes both r
   assert.match(attachedB.textContent, /B out/);
 });
 
+test('DOM: sequential outer-turn tool_uses sharing one msgId all render with their results attached', async () => {
+  // Production bug shape from session ea7b99b2: the model issued a Bash
+  // followed by two Greps as three sequential outer-turn tool_uses. The
+  // CLI labeled all three with the same `message.id` and emitted each as
+  // its own message_start → content_block_start(index=0, tool_use) →
+  // content_block_stop → message_stop cycle. The persisted jsonl shows
+  // the same shape: three `type:"assistant"` records sharing msg.id,
+  // each carrying one tool_use at content[0]. Under the old code the
+  // (msgId, blockIdx)-keyed blocksByKey dedup dropped the 2nd and 3rd
+  // tool blocks and their tool_results landed as floating siblings of
+  // the rendered Bash block.
+  const { document, root, Parser, Conversation } = await setupDOM();
+  const conversation = new Conversation(root);
+  const sharedMsgId = 'msg_013jopDt19FniiiaB18H161f';
+  feed(new Parser(), conversation, [
+    // Bash tool_use — its own message_start/stop cycle.
+    { type: 'stream_event', event: { type: 'message_start', message: { id: sharedMsgId, role: 'assistant' } } },
+    { type: 'stream_event', event: { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'tu_bash', name: 'Bash', input: {} } } },
+    { type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '{"command":"ls /tests/fixtures/"}' } } },
+    { type: 'stream_event', event: { type: 'content_block_stop', index: 0 } },
+    { type: 'stream_event', event: { type: 'message_stop' } },
+    { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu_bash', content: 'scenario-basic.json\nscenario-tool.json', is_error: false }] } },
+    // First Grep — fresh message_start, same msg.id, index 0 again.
+    { type: 'stream_event', event: { type: 'message_start', message: { id: sharedMsgId, role: 'assistant' } } },
+    { type: 'stream_event', event: { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'tu_grep_a', name: 'Grep', input: {} } } },
+    { type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '{"pattern":"parent_tool_use_id"}' } } },
+    { type: 'stream_event', event: { type: 'content_block_stop', index: 0 } },
+    { type: 'stream_event', event: { type: 'message_stop' } },
+    { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu_grep_a', content: 'No files found', is_error: false }] } },
+    // Second Grep — same again.
+    { type: 'stream_event', event: { type: 'message_start', message: { id: sharedMsgId, role: 'assistant' } } },
+    { type: 'stream_event', event: { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'tu_grep_b', name: 'Grep', input: {} } } },
+    { type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '{"pattern":"parentToolUseId"}' } } },
+    { type: 'stream_event', event: { type: 'content_block_stop', index: 0 } },
+    { type: 'stream_event', event: { type: 'message_stop' } },
+    { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu_grep_b', content: 'No files found', is_error: false }] } },
+  ]);
+
+  // All three tool blocks must render at the outer (assistant) level.
+  const toolBlocks = root.querySelectorAll('.msg.assistant > .blocks > .block.tool');
+  assert.equal(toolBlocks.length, 3, 'all three sequential tool_use blocks must render');
+
+  // No orphan tool_result floating at the assistant body level.
+  const orphans = root.querySelectorAll('.msg.assistant > .blocks > .block.tool-result');
+  assert.equal(orphans.length, 0, 'no tool_result should float at the assistant body level');
+
+  // Each tool block carries its own attached result with the right content.
+  const [bash, grepA, grepB] = toolBlocks;
+  assert.match(bash.querySelector('summary').textContent, /Bash/);
+  assert.match(bash.querySelector('.block.tool-result').textContent, /scenario-basic/);
+  assert.match(grepA.querySelector('summary').textContent, /Grep/);
+  assert.match(grepA.querySelector('.block.tool-result').textContent, /No files found/);
+  assert.match(grepB.querySelector('summary').textContent, /Grep/);
+  assert.match(grepB.querySelector('.block.tool-result').textContent, /No files found/);
+});
+
 test('DOM: outer-turn assistant envelope is a no-op — streamed tool block stays single + done', async () => {
   // The outer turn's UI is driven entirely by stream_event deltas. The
   // trailing `assistant` envelope must NOT cause a second tool block to

@@ -265,17 +265,23 @@ export class Conversation {
 
   _renderToolStart(ev) {
     // toolUseId is globally unique per session — when present, it's the
-    // authoritative dedup key. Parallel tool_use blocks reach reconcile via
-    // separate envelopes that all carry iteration index 0, so a (msgId, idx)
-    // check would drop every block past the first.
-    if (ev.toolUseId && this.toolBlocks.has(ev.toolUseId)) return;
-    const key = `${ev.msgId ?? '?'}:${ev.blockIdx ?? 0}:tool`;
-    let block = this.blocksByKey.get(key);
-    if (block) return;
-    block = new ToolUseBlock({
+    // authoritative dedup key. Sequential tool_use blocks within the same
+    // logical assistant msgId (the CLI emits them as separate envelopes each
+    // at index 0, both in the live stream_event path and in the persisted-
+    // jsonl replay path) all share (msgId, blockIdx) but carry distinct
+    // toolUseIds — a (msgId, idx) check would drop every block past the
+    // first and orphan their tool_results into a floating wrap.
+    if (ev.toolUseId) {
+      if (this.toolBlocks.has(ev.toolUseId)) return;
+    } else {
+      const key = `${ev.msgId ?? '?'}:${ev.blockIdx ?? 0}:tool`;
+      if (this.blocksByKey.has(key)) return;
+    }
+    const block = new ToolUseBlock({
       name: ev.name, toolUseId: ev.toolUseId,
       describeCtx: this.describeToolCtx,
     });
+    const key = `${ev.msgId ?? '?'}:${ev.blockIdx ?? 0}:tool`;
     this.blocksByKey.set(key, block);
     if (ev.toolUseId) this.toolBlocks.set(ev.toolUseId, block);
     const wrap = this._ensureMessageWrap(ev.msgId, 'assistant');
