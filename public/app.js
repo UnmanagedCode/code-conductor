@@ -60,6 +60,8 @@ const dom = {
   sidebar: document.getElementById('sidebar'),
   sidebarScrim: document.getElementById('sidebar-scrim'),
   notifyToggle: document.getElementById('notify-toggle'),
+  restartBtn: document.getElementById('restart-server-btn'),
+  sidebarStatus: document.getElementById('sidebar-status'),
 };
 
 // Per-instance task trackers — one TaskTracker is kept alive per
@@ -321,6 +323,52 @@ if (NotificationState.permission === 'granted') {
 }
 renderNotifyToggle();
 dom.sidebarScrim.addEventListener('click', () => setSidebarOpen(false));
+
+// Restart-server button. Self-respawn happens server-side: POST kicks
+// the orchestrator which spawns a detached replacement and exits.
+// Frontend's existing ws.js auto-reconnect handles the brief downtime.
+let restartInProgress = false;
+function setSidebarStatus(text, { warn = false } = {}) {
+  if (!dom.sidebarStatus) return;
+  dom.sidebarStatus.textContent = text;
+  dom.sidebarStatus.classList.toggle('warn', !!warn && !!text);
+}
+dom.restartBtn.addEventListener('click', async () => {
+  if (restartInProgress) return;
+  restartInProgress = true;
+  dom.restartBtn.disabled = true;
+  setSidebarStatus('restarting…', { warn: true });
+  try {
+    // Fire-and-forget — server responds 202 and then exits.
+    // We may not see the response if the socket is torn down first,
+    // which is fine; the WS 'close' handler will pick up shortly.
+    await fetch('/api/admin/restart', { method: 'POST' }).catch(() => {});
+  } catch { /* ignored */ }
+});
+// Drive the status line off connection-state events. We only flip out
+// of the initial blank state once we've seen a 'close' (or the user
+// kicked off a restart), so a normal page load doesn't briefly flash
+// "connected" before settling.
+let everConnected = false;
+let everDropped = false;
+bus.addEventListener('open', () => {
+  everConnected = true;
+  if (restartInProgress || everDropped) {
+    setSidebarStatus('');
+    restartInProgress = false;
+    dom.restartBtn.disabled = false;
+    everDropped = false;
+  }
+});
+bus.addEventListener('close', () => {
+  if (!everConnected) return; // initial-load close storms can be ignored
+  everDropped = true;
+  setSidebarStatus(restartInProgress ? 'restarting…' : 'reconnecting…', { warn: true });
+});
+bus.addEventListener('reconnecting', () => {
+  if (!everConnected) return;
+  setSidebarStatus(restartInProgress ? 'restarting…' : 'reconnecting…', { warn: true });
+});
 
 let pendingNewInstanceProject = null;
 // Worktree intent for the new-instance dialog:

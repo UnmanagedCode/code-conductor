@@ -64,6 +64,7 @@ Designed to run on a Termux phone (single user, localhost-only), but works on an
 - **Delete a session** — each session row has an `×` (revealed on hover) that deletes the persisted `*.jsonl` after a confirm. Refused with a `409` if a live instance is still attached; the dialog then offers to kill the instance and delete anyway (`?force=1`). The worktree-scoped variant deletes from the worktree's own encoded session dir, not the parent project's.
 - **Crash recovery** — if a subprocess dies, status flips to `crashed`. The Resume button respawns the same Instance with `--resume <sid>`, preserving the in-memory event ring and conversation.
 - **Concurrent sessions** — multiple subprocesses run in parallel across projects + worktrees. The sidebar's Sessions subnodes show a status dot per row.
+- **Restart server button** — a `⟲ Restart server` button pinned at the bottom of the sidebar self-respawns the orchestrator process. POSTs `/api/admin/restart`; the server immediately responds `202`, spawns a detached replacement (`process.execPath` + same argv/env/cwd), and exits. The new process retries the `listen` on `EADDRINUSE` while the kernel releases the old socket. The frontend's existing 1 s WebSocket auto-reconnect handles the brief downtime, with a small "restarting… / reconnecting…" status line in the same footer driving the visual feedback. Convenient for picking up source-code changes without `ctrl+C`-then-`npm start`. Live instance subprocesses are independent of the orchestrator's PID, so they survive a restart and re-attach on reconnect.
 
 ### CLAUDE.md conventions
 
@@ -176,8 +177,15 @@ claude-orch-app/
 │   │                         GET /instances/:id/attachments/:filename streams
 │   │                         saved attachments back to the UI for replay
 │   │                         thumbnails (path-traversal guarded).
+│   │                         POST /admin/restart triggers self-respawn via
+│   │                         src/restart.js.
 │   │                         Worktree surface: list/delete worktrees per project,
 │   │                         POST sync + merge.
+│   ├── restart.js            scheduleRestart(): closes the WSS + http server,
+│   │                         spawns a detached node child with the same argv/
+│   │                         env/cwd, and exits. The child's listen-with-retry
+│   │                         loop in server.js handles the EADDRINUSE window
+│   │                         while the kernel releases the old socket.
 │   ├── worktrees.js          Git worktree operations. createWorktree captures
 │   │                         {baseBranch, baseSha, branch} at HEAD, writes a
 │   │                         .claude-orch-app/worktree.json marker so listProjects
@@ -295,6 +303,10 @@ claude-orch-app/
     │                         conversation rendering pipeline. Catches
     │                         user-visible regressions the parser tests miss
     │                         (e.g. "is the tool command actually visible?").
+    ├── server-restart.test.mjs Live subprocess test for POST /api/admin/restart.
+    │                         Spawns `node server.js`, hits the endpoint,
+    │                         asserts the original PID exits cleanly and a
+    │                         new PID is serving the same port.
     └── smoke.real.test.mjs   Opt-in real-claude end-to-end (RUN_REAL_CLAUDE=1) —
                               text reply, Bash tool call shape, AskUserQuestion
                               user_question event shape, and ask-mode Write
@@ -365,6 +377,7 @@ Every event carries a `parentToolUseId` (or `null`) — the conversation view ro
 | `DELETE` | `/api/projects/:name/worktrees/:wt/sessions/:sid[?force=1]` | Same, scoped to a worktree's own session dir. |
 | `POST` | `/api/instances/:id/hook-callback` | PreToolUse http hook endpoint the CLI calls. Body = full hook envelope. Always responds 200 with `{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow"|"deny"}}`. Auto-allows in non-ask modes; in ask mode the response stays open up to 540 s until a WS `hook_decision` arrives. |
 | `GET` | `/api/instances/:id/attachments/:filename` | Streams a previously-saved attachment from the instance's `<cwd>/.claude-orch-app/attachments/`. Used by the frontend to paint user-bubble thumbnails on transcript replay (when the live `user_echo`'s `dataBase64` is gone). Rejects path traversal (400), missing files (404), unknown instances (404). |
+| `POST` | `/api/admin/restart` | Self-respawn the orchestrator. Responds `202 {ok:true}` immediately, then spawns a detached child node process with the same argv/env/cwd and exits. The child retries `listen` on `EADDRINUSE` while the kernel releases the old socket. Drives the sidebar's `⟲ Restart server` button. |
 
 ### Instance lifecycle
 

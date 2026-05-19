@@ -10,6 +10,7 @@ import {
   buildRebasePrompt, getWorktree, removeAllWorktreesForProject,
   attachmentsDir, getWorktreeMergeStatus, syncWorktree,
 } from './worktrees.js';
+import { scheduleRestart } from './restart.js';
 
 const CONTENT_TYPE_BY_EXT = {
   png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg',
@@ -19,9 +20,23 @@ const CONTENT_TYPE_BY_EXT = {
   csv: 'text/csv; charset=utf-8', md: 'text/markdown; charset=utf-8',
 };
 
-export function buildRoutes({ instances } = {}) {
+export function buildRoutes({ instances, serverCtx } = {}) {
   const r = express.Router();
   r.use(express.json({ limit: '1mb' }));
+
+  // Self-respawn the orchestrator. Sends 202 immediately, then spawns
+  // a detached replacement node process and exits. Frontend's existing
+  // 1s WS reconnect loop handles the brief downtime. No-op if the
+  // server context wasn't wired (in-process test boot).
+  r.post('/admin/restart', (req, res) => {
+    res.status(202).json({ ok: true });
+    if (!serverCtx) return;
+    scheduleRestart({
+      server: serverCtx.server,
+      wss: serverCtx.wss,
+      instances,
+    });
+  });
 
   r.get('/projects', async (req, res, next) => {
     try {

@@ -57,6 +57,24 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
 .sidebar-actions { margin-bottom: 10px; }
 .sidebar-actions button { width: 100%; }
 
+/* Sidebar footer: pinned at the bottom of the column-flex sidebar.
+   Hosts the "Restart server" button + a small connection-status line
+   driven by the ws.js 'open' / 'close' / 'reconnecting' bus events. */
+#sidebar-footer {
+  border-top: 1px solid var(--border);
+  padding: 8px 10px;
+  display: flex; flex-direction: column;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+.sidebar-footer-btn { width: 100%; font-size: 12px; }
+.sidebar-status {
+  font-size: 11px; color: var(--muted);
+  min-height: 14px;
+  font-family: ui-monospace, monospace;
+}
+.sidebar-status.warn { color: var(--amber); }
+
 .project-list { list-style: none; padding: 0; margin: 0; }
 .project-list > li { margin-bottom: 6px; }
 .project-row {
