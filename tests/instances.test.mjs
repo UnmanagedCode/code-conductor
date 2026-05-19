@@ -485,6 +485,117 @@ test('resume: AskUserQuestion and ExitPlanMode tool calls from history replay as
   } finally { await ctx.close(); }
 });
 
+test('resume: an Agent tool_use replays its sub-agent transcript from subagents/agent-<id>.jsonl, tagged with parent_tool_use_id', async () => {
+  // Real-CLI shape (validated against session ea7b99b2 + CLI 2.1.143): the
+  // parent jsonl contains only the outer Agent tool_use + its tool_result;
+  // the user line that holds that tool_result carries a `toolUseResult`
+  // envelope with `agentId`. The sub-agent's own assistant/user transcript
+  // lives in <sid>/subagents/agent-<agentId>.jsonl with isSidechain:true and
+  // parent_tool_use_id:null. Live streams those events over stdout with
+  // parent_tool_use_id set (parser tags them, conversation nests them under
+  // the Agent block) — replay needs to load + tag them explicitly.
+  const ctx = await bootServer({ scenarioPath: path.join(__dirname, 'fixtures', 'scenario-resume.json') });
+  const fsp = (await import('node:fs')).promises;
+  try {
+    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'agent-replay' });
+    const projectPath = path.join(ctx.projectsRoot, 'agent-replay');
+    const sid = 'cccccccc-1111-2222-3333-444444444444';
+    const sessionDir = path.join(ctx.claudeProjectsRoot, encodeCwd(projectPath));
+    await fsp.mkdir(sessionDir, { recursive: true });
+
+    const agentToolUseId = 'toolu_agent_outer';
+    const agentId = 'af3e0c57b12f03981';
+
+    const parentLines = [
+      { type: 'user', uuid: 'u1', message: { role: 'user', content: 'investigate the project' } },
+      { type: 'assistant', uuid: 'a1', message: { id: 'm_a1', role: 'assistant', content: [
+        { type: 'tool_use', id: agentToolUseId, name: 'Agent', input: { description: 'Investigate', subagent_type: 'Explore', prompt: 'go look at things' } },
+      ] } },
+      // The user line that closes the Agent call: tool_result block PLUS
+      // the toolUseResult envelope carrying agentId — the link to subagents/.
+      {
+        type: 'user', uuid: 'u2',
+        toolUseResult: { agentId, agentType: 'Explore', status: 'completed' },
+        message: { role: 'user', content: [
+          { type: 'tool_result', tool_use_id: agentToolUseId, content: 'all done', is_error: false },
+        ] },
+      },
+    ];
+    await fsp.writeFile(
+      path.join(sessionDir, `${sid}.jsonl`),
+      parentLines.map(l => JSON.stringify(l)).join('\n') + '\n',
+    );
+
+    // Sub-agent file lives at <sid>/subagents/agent-<agentId>.jsonl. Mirror
+    // the real shape: isSidechain:true, parent_tool_use_id absent, a few
+    // assistant tool_uses interleaved with their user tool_results.
+    const subDir = path.join(sessionDir, sid, 'subagents');
+    await fsp.mkdir(subDir, { recursive: true });
+    const subLines = [
+      { type: 'user', isSidechain: true, message: { role: 'user', content: 'go look at things' } },
+      { type: 'assistant', isSidechain: true, uuid: 'sa1', message: { id: 'm_sub_1', role: 'assistant', content: [
+        { type: 'tool_use', id: 'tu_sub_bash', name: 'Bash', input: { command: 'ls -la' } },
+      ] } },
+      { type: 'user', isSidechain: true, message: { role: 'user', content: [
+        { type: 'tool_result', tool_use_id: 'tu_sub_bash', content: 'total 0\n', is_error: false },
+      ] } },
+      { type: 'assistant', isSidechain: true, uuid: 'sa2', message: { id: 'm_sub_2', role: 'assistant', content: [
+        { type: 'tool_use', id: 'tu_sub_read', name: 'Read', input: { file_path: '/x' } },
+      ] } },
+      { type: 'user', isSidechain: true, message: { role: 'user', content: [
+        { type: 'tool_result', tool_use_id: 'tu_sub_read', content: 'file body', is_error: false },
+      ] } },
+    ];
+    await fsp.writeFile(
+      path.join(subDir, `agent-${agentId}.jsonl`),
+      subLines.map(l => JSON.stringify(l)).join('\n') + '\n',
+    );
+
+    const events = collectEvents(ctx.instances);
+    const r = await api(ctx.baseUrl, 'POST', '/api/instances', {
+      project: 'agent-replay', mode: 'bypassPermissions', resume: sid,
+    });
+    const id = r.body.id;
+    await waitFor(() => ctx.instances.get(id).status === 'idle');
+
+    const mine = events.filter(e => e.id === id).map(e => e.ev);
+
+    // Outer Agent tool_use must replay at the top level (no parent).
+    const outerAgent = mine.find(e => e.kind === 'tool_use' && e.toolUseId === agentToolUseId);
+    assert.ok(outerAgent, 'outer Agent tool_use replayed');
+    assert.equal(outerAgent.parentToolUseId, null, 'outer Agent tool_use has no parent');
+    assert.equal(outerAgent.name, 'Agent');
+
+    // Sub-agent tool_uses must replay and carry parentToolUseId = agentToolUseId
+    // so the conversation view nests them under the Agent block.
+    const subBash = mine.find(e => e.kind === 'tool_use' && e.toolUseId === 'tu_sub_bash');
+    const subRead = mine.find(e => e.kind === 'tool_use' && e.toolUseId === 'tu_sub_read');
+    assert.ok(subBash, 'sub-agent Bash tool_use replayed');
+    assert.ok(subRead, 'sub-agent Read tool_use replayed');
+    assert.equal(subBash.parentToolUseId, agentToolUseId, 'sub Bash carries parentToolUseId');
+    assert.equal(subRead.parentToolUseId, agentToolUseId, 'sub Read carries parentToolUseId');
+
+    // Sub-agent tool_results must replay and carry the same parentToolUseId.
+    const subResults = mine.filter(e => e.kind === 'tool_result' && (e.toolUseId === 'tu_sub_bash' || e.toolUseId === 'tu_sub_read'));
+    assert.equal(subResults.length, 2, 'both sub-agent tool_results replayed');
+    for (const r of subResults) {
+      assert.equal(r.parentToolUseId, agentToolUseId, `${r.toolUseId} result must be tagged with the Agent's tool_use_id`);
+    }
+
+    // Outer Agent's own tool_result must NOT be tagged (it attaches to the
+    // outer-level Agent block, not the nested sub-conversation).
+    const outerResult = mine.find(e => e.kind === 'tool_result' && e.toolUseId === agentToolUseId);
+    assert.ok(outerResult, 'outer Agent tool_result replayed');
+    assert.equal(outerResult.parentToolUseId, null, 'outer Agent tool_result has no parent');
+
+    // Ordering: sub-agent events must come BEFORE the outer Agent's
+    // tool_result (mirrors the live wire ordering).
+    const idxSubBash = mine.indexOf(subBash);
+    const idxOuterResult = mine.indexOf(outerResult);
+    assert.ok(idxSubBash < idxOuterResult, 'sub-agent events come before the outer Agent tool_result');
+  } finally { await ctx.close(); }
+});
+
 test('resuming when no jsonl exists is a no-op (still reaches idle)', async () => {
   const ctx = await bootServer({ scenarioPath: path.join(__dirname, 'fixtures', 'scenario-resume.json') });
   try {
