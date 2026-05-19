@@ -30,21 +30,28 @@ npm install
 
 ## Quick smoke test
 
-In one shell, start the orchestrator (the live one is fine, or boot a scratch one on a non-default port so you don't disturb your existing instances):
-
-```bash
-PORT=8799 node server.js
-```
-
-In another shell, snap the home page:
+The fastest path — boot a scratch orchestrator on a free ephemeral port, snap, tear down, all in one process:
 
 ```bash
 cd debug
-node snap.mjs http://127.0.0.1:8799 ./home.png
-# → ./home.png   (PNG, headless, viewport 1280×800)
+node snap.mjs --boot ./home.png
+# [boot] http://127.0.0.1:<ephemeral>
+# ./home.png   (PNG, headless, viewport 1280×800)
+```
+
+Or, if you already have a server running (`npm start`, or `PORT=8799 node server.js` in another shell), point at it explicitly:
+
+```bash
+node snap.mjs http://127.0.0.1:8787 ./home.png
 ```
 
 Open `home.png` to confirm the sidebar + chat shell rendered. If you see a blank or chrome-error image, see [Troubleshooting](#troubleshooting).
+
+### Multi-agent / multi-worktree safe
+
+Every `--boot` (and every `bootServer()` call) asks the kernel for a free ephemeral port via `net.createServer().listen(0)` — there's no fixed port to collide on, so several agents debugging in parallel from their own worktrees can each boot a scratch server without coordinating.
+
+The orchestrator still reads/writes shared state under `~/project/` and `~/.claude/projects/`. That's read-mostly for visual debugging, but if you want full isolation pass an `env` override into `bootServer({ env: { PROJECTS_ROOT: '/tmp/...' , CLAUDE_PROJECTS_ROOT: '/tmp/...' } })`.
 
 ## Building blocks
 
@@ -66,6 +73,21 @@ await withPage(async (page) => {
 - `withPage(fn, opts)` — boots browser + context + page, pipes page console errors/warnings to the terminal, runs `fn(page, { browser, context })`, tears down on return or throw.
 - `launchBrowser(opts)` — lower-level: returns the `Browser` directly if you need multi-context / multi-page setups.
 - `waitForServer(url, { timeoutMs })` — polls until the URL responds (any non-5xx). Handy when you've just spawned a server in another shell.
+- `bootServer({ port?, env?, silent? })` — spawns the orchestrator as a child process on a free ephemeral port (override with `port`), waits for it to bind, and returns `{ url, port, child, close() }`. Cleanup is wired to parent `exit` / `SIGINT` / `SIGTERM` so a Ctrl+C'd script never leaks a server.
+
+```js
+import { bootServer, withPage } from './browser.mjs';
+
+const orch = await bootServer();          // ephemeral port, ~/project/ as-is
+try {
+  await withPage(async (page) => {
+    await page.goto(orch.url);
+    await page.screenshot({ path: 'home.png' });
+  });
+} finally {
+  await orch.close();
+}
+```
 
 Override the chromium path with `PLAYWRIGHT_CHROMIUM_BIN=/some/path` if your install lives elsewhere.
 
@@ -74,11 +96,13 @@ Override the chromium path with `PLAYWRIGHT_CHROMIUM_BIN=/some/path` if your ins
 CLI: load a URL, save a PNG.
 
 ```bash
-node snap.mjs <url> [outputPath]
+node snap.mjs <url> [outputPath]      # snap an already-running server
+node snap.mjs --boot [outputPath]     # boot a scratch server, snap, tear down
 ```
 
 - Default output: `screenshots/<ISO-timestamp>.png` (the directory is gitignored).
-- Waits up to 5s for the URL to be reachable before navigating.
+- `--boot` mode picks a free ephemeral port, so it's safe to run concurrently from multiple agent worktrees.
+- Without `--boot`, waits up to 5s for the URL to be reachable before navigating.
 - Useful env vars:
   | Var | Effect | Example |
   |---|---|---|

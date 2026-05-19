@@ -11,6 +11,13 @@
 
 import { chromium } from 'playwright-core';
 import { existsSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import net from 'node:net';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const ORCH_ROOT = path.resolve(__dirname, '..');
 
 // Default to the Termux chromium-browser launcher. Override with
 // PLAYWRIGHT_CHROMIUM_BIN if you've installed Chrome elsewhere.
@@ -85,4 +92,90 @@ export async function waitForServer(url, { timeoutMs = 10_000 } = {}) {
     await new Promise((r) => setTimeout(r, 200));
   }
   throw new Error(`server at ${url} did not respond within ${timeoutMs}ms`);
+}
+
+// Ask the kernel for an unused TCP port on the loopback. Concurrent
+// debug sessions (one per agent worktree) each get their own — no
+// shared fixed port to collide on. There's a tiny TOCTOU between
+// releasing here and the orchestrator binding, but in practice the
+// kernel doesn't recycle that fast.
+async function findFreePort() {
+  return new Promise((resolve, reject) => {
+    const srv = net.createServer();
+    srv.unref();
+    srv.once('error', reject);
+    srv.listen(0, '127.0.0.1', () => {
+      const { port } = srv.address();
+      srv.close(() => resolve(port));
+    });
+  });
+}
+
+// Boot the orchestrator as a child process on a free ephemeral port and
+// wait for it to start serving. Returns `{ url, port, child, close() }`.
+// Cleanup is wired to parent exit / SIGINT so a Ctrl+C'd debug script
+// doesn't leave a stray server running.
+//
+//   import { bootServer, withPage } from './browser.mjs';
+//   const orch = await bootServer();
+//   try {
+//     await withPage(async (page) => {
+//       await page.goto(orch.url);
+//       // ...
+//     });
+//   } finally { await orch.close(); }
+//
+// Pass `env` to override PROJECTS_ROOT / CLAUDE_PROJECTS_ROOT for
+// fully-sandboxed runs (the integration test suite's pattern).
+export async function bootServer({ port, env = {}, silent = false } = {}) {
+  const chosenPort = port ?? await findFreePort();
+  const child = spawn(process.execPath, ['server.js'], {
+    cwd: ORCH_ROOT,
+    env: { ...process.env, ...env, PORT: String(chosenPort) },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  if (!silent) {
+    child.stdout.on('data', (b) => process.stdout.write(`[server] ${b}`));
+    child.stderr.on('data', (b) => process.stderr.write(`[server] ${b}`));
+  }
+  const url = `http://127.0.0.1:${chosenPort}`;
+
+  let exitedEarly = null;
+  child.once('exit', (code, signal) => {
+    exitedEarly = { code, signal };
+  });
+
+  try {
+    await waitForServer(url, { timeoutMs: 15_000 });
+  } catch (e) {
+    if (exitedEarly) {
+      throw new Error(
+        `orchestrator exited before binding (code=${exitedEarly.code} signal=${exitedEarly.signal})`,
+      );
+    }
+    child.kill('SIGTERM');
+    throw e;
+  }
+
+  const cleanup = () => { if (!child.killed) child.kill('SIGTERM'); };
+  process.once('exit', cleanup);
+  process.once('SIGINT', () => { cleanup(); process.exit(130); });
+  process.once('SIGTERM', () => { cleanup(); process.exit(143); });
+
+  return {
+    url,
+    port: chosenPort,
+    child,
+    async close() {
+      if (child.killed || child.exitCode !== null) return;
+      child.kill('SIGTERM');
+      await new Promise((resolve) => {
+        const t = setTimeout(() => {
+          if (child.exitCode === null) child.kill('SIGKILL');
+          resolve();
+        }, 3000);
+        child.once('exit', () => { clearTimeout(t); resolve(); });
+      });
+    },
+  };
 }

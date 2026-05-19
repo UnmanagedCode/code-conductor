@@ -6,6 +6,10 @@
 //   node snap.mjs http://127.0.0.1:8787              # → screenshots/<timestamp>.png
 //   node snap.mjs http://127.0.0.1:8787 home.png     # → home.png
 //
+// Or boot a scratch orchestrator on a free ephemeral port, snap, tear down:
+//   node snap.mjs --boot                             # → screenshots/<timestamp>.png
+//   node snap.mjs --boot home.png
+//
 // Useful env vars:
 //   PLAYWRIGHT_CHROMIUM_BIN  — override chromium path (default: termux chromium-browser)
 //   SNAP_VIEWPORT            — "<w>x<h>" (default 1280x800)
@@ -14,11 +18,19 @@
 
 import path from 'node:path';
 import { mkdir } from 'node:fs/promises';
-import { withPage, waitForServer } from './browser.mjs';
+import { withPage, waitForServer, bootServer } from './browser.mjs';
 
-const [url, outArg] = process.argv.slice(2);
-if (!url) {
+const args = process.argv.slice(2);
+const bootMode = args[0] === '--boot';
+if (bootMode) args.shift();
+
+const [maybeUrl, maybeOut] = args;
+let url = bootMode ? null : maybeUrl;
+const outArg = bootMode ? maybeUrl : maybeOut;
+
+if (!bootMode && !url) {
   console.error('usage: node snap.mjs <url> [outputPath]');
+  console.error('       node snap.mjs --boot [outputPath]');
   process.exit(2);
 }
 
@@ -36,18 +48,29 @@ const outPath = outArg
 
 await mkdir(path.dirname(outPath), { recursive: true });
 
-// Give the server a moment to come up if it was just started.
-try { await waitForServer(url, { timeoutMs: 5000 }); }
-catch (e) { console.warn(`[warn] ${e.message} — continuing anyway`); }
+let orch = null;
+if (bootMode) {
+  orch = await bootServer({ silent: true });
+  url = orch.url;
+  console.error(`[boot] ${url}`);
+} else {
+  // Give the server a moment to come up if it was just started.
+  try { await waitForServer(url, { timeoutMs: 5000 }); }
+  catch (e) { console.warn(`[warn] ${e.message} — continuing anyway`); }
+}
 
-await withPage(async (page) => {
-  await page.goto(url, { waitUntil: 'networkidle' });
-  if (process.env.SNAP_WAIT) {
-    await page.waitForSelector(process.env.SNAP_WAIT, { timeout: 10_000 });
-  }
-  await page.screenshot({
-    path: outPath,
-    fullPage: process.env.SNAP_FULL_PAGE === '1',
-  });
-  console.log(outPath);
-}, { viewport });
+try {
+  await withPage(async (page) => {
+    await page.goto(url, { waitUntil: 'networkidle' });
+    if (process.env.SNAP_WAIT) {
+      await page.waitForSelector(process.env.SNAP_WAIT, { timeout: 10_000 });
+    }
+    await page.screenshot({
+      path: outPath,
+      fullPage: process.env.SNAP_FULL_PAGE === '1',
+    });
+    console.log(outPath);
+  }, { viewport });
+} finally {
+  if (orch) await orch.close();
+}
