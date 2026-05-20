@@ -354,8 +354,12 @@ dom.sidebarScrim.addEventListener('click', () => setSidebarOpen(false));
 
 // Restart-server button. Self-respawn happens server-side: POST kicks
 // the orchestrator which spawns a detached replacement and exits.
-// Frontend's existing ws.js auto-reconnect handles the brief downtime.
+// After the new server is up and the WS reconnects, we trigger a full
+// `location.reload()` so any frontend assets (HTML/CSS/JS) the user
+// just edited get re-fetched too — otherwise the page would stay
+// stuck on the pre-restart cached code.
 let restartInProgress = false;
+let restartReloadTimer = null;
 function setSidebarStatus(text, { warn = false } = {}) {
   if (!dom.sidebarStatus) return;
   dom.sidebarStatus.textContent = text;
@@ -372,6 +376,16 @@ dom.restartBtn.addEventListener('click', async () => {
     // which is fine; the WS 'close' handler will pick up shortly.
     await fetch('/api/admin/restart', { method: 'POST' }).catch(() => {});
   } catch { /* ignored */ }
+  // Safety net: if the WS never went down (server died before getting
+  // to spawn, or the user is on a flaky network), still reload after a
+  // generous delay so we don't hang on "restarting…" forever.
+  if (restartReloadTimer) clearTimeout(restartReloadTimer);
+  restartReloadTimer = setTimeout(() => {
+    if (restartInProgress) {
+      setSidebarStatus('reloading…', { warn: true });
+      location.reload();
+    }
+  }, 8_000);
 });
 // Drive the status line off connection-state events. We only flip out
 // of the initial blank state once we've seen a 'close' (or the user
@@ -381,10 +395,17 @@ let everConnected = false;
 let everDropped = false;
 bus.addEventListener('open', () => {
   everConnected = true;
-  if (restartInProgress || everDropped) {
+  if (restartInProgress) {
+    // Server is back — give the user a brief moment to see the status
+    // change, then do a hard reload to pick up any frontend-asset
+    // changes (HTML/CSS/JS) the restart was meant to deploy.
+    if (restartReloadTimer) { clearTimeout(restartReloadTimer); restartReloadTimer = null; }
+    setSidebarStatus('reloading…', { warn: true });
+    setTimeout(() => location.reload(), 600);
+    return;
+  }
+  if (everDropped) {
     setSidebarStatus('');
-    restartInProgress = false;
-    dom.restartBtn.disabled = false;
     everDropped = false;
   }
 });
