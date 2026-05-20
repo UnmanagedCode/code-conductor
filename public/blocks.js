@@ -568,12 +568,13 @@ export function formatUserQuestionAnswers(questions, answers) {
 // model to implement. Reject keeps plan mode active and forwards user
 // feedback so the model can refine.
 export class PlanRequestBlock {
-  constructor(ev, onDecision) {
+  constructor(ev, onDecision, { autoApproved = false } = {}) {
     this.toolUseId = ev.toolUseId;
     this.onDecision = onDecision;
     this.submitted = false;
 
-    this.statusNode = el('span', { class: 'pr-status' }, 'awaiting your decision');
+    const initialStatus = autoApproved ? 'auto-approved' : 'awaiting your decision';
+    this.statusNode = el('span', { class: 'pr-status' }, initialStatus);
 
     const hasPlanText = typeof ev.plan === 'string' && ev.plan.trim().length > 0;
     const pathLine = ev.planPath
@@ -590,26 +591,33 @@ export class PlanRequestBlock {
       );
     }
 
-    this.feedbackInput = el('textarea', {
-      class: 'pr-feedback', rows: '2',
-      placeholder: 'Optional feedback / refinement notes (used when rejecting)',
-    });
-
-    this.approveBtn = el('button', { class: 'pr-approve', type: 'button' }, 'Approve & implement');
-    this.rejectBtn = el('button', { class: 'pr-reject', type: 'button' }, 'Reject & refine');
-    this.approveBtn.addEventListener('click', () => this._click('approve'));
-    this.rejectBtn.addEventListener('click', () => this._click('reject'));
-
-    this.node = el('div', { class: 'block plan-request' },
+    const children = [
       el('div', { class: 'pr-head' },
         el('span', { class: 'pr-title' }, '📋 Plan ready for approval'),
         this.statusNode,
       ),
       pathLine,
       this.planBody,
-      el('div', { class: 'pr-feedback-wrap' }, this.feedbackInput),
-      el('div', { class: 'pr-actions' }, this.approveBtn, this.rejectBtn),
-    );
+    ];
+
+    if (!autoApproved) {
+      this.feedbackInput = el('textarea', {
+        class: 'pr-feedback', rows: '2',
+        placeholder: 'Optional feedback / refinement notes (used when rejecting)',
+      });
+      this.approveBtn = el('button', { class: 'pr-approve', type: 'button' }, 'Approve & implement');
+      this.rejectBtn = el('button', { class: 'pr-reject', type: 'button' }, 'Reject & refine');
+      this.approveBtn.addEventListener('click', () => this._click('approve'));
+      this.rejectBtn.addEventListener('click', () => this._click('reject'));
+
+      children.push(
+        el('div', { class: 'pr-feedback-wrap' }, this.feedbackInput),
+        el('div', { class: 'pr-actions' }, this.approveBtn, this.rejectBtn),
+      );
+    }
+
+    this.node = el('div', { class: 'block plan-request' }, ...children);
+    if (autoApproved) this.node.classList.add('approved');
   }
 
   _click(decision) {

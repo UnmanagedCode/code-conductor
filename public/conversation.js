@@ -20,6 +20,7 @@ export class Conversation {
     onUserQuestionSubmit = null,
     onPlanDecision = null,
     onPermissionDecision = null,
+    isAutoApprovePlanEnabled = null,
     describeToolCtx = {},
     // (filename) -> URL string used to source attachment thumbnails on
     // transcript replay (when the live user_echo's dataBase64 is gone).
@@ -31,6 +32,7 @@ export class Conversation {
     this.onUserQuestionSubmit = onUserQuestionSubmit;
     this.onPlanDecision = onPlanDecision;
     this.onPermissionDecision = onPermissionDecision;
+    this.isAutoApprovePlanEnabled = isAutoApprovePlanEnabled;
     this.resolveAttachmentUrl = resolveAttachmentUrl;
     // Resolver-style context passed to describeToolInput so a
     // TaskUpdate tool block (whose input only carries taskId) can
@@ -358,13 +360,21 @@ export class Conversation {
   _renderPlanRequest(ev) {
     this._ensureNotEmpty();
     if (this.planBlocks.has(ev.toolUseId)) return;
+    const autoApproved = !!(this.isAutoApprovePlanEnabled && this.isAutoApprovePlanEnabled());
     const block = new PlanRequestBlock(ev, (decision) => {
       if (this.onPlanDecision) this.onPlanDecision(decision);
-    });
+    }, { autoApproved });
     this.planBlocks.set(ev.toolUseId, block);
     this.root.appendChild(block.node);
     this._closeAssistantSegment();
     this._maybeScroll();
+    if (autoApproved && this.onPlanDecision) {
+      this.onPlanDecision({
+        toolUseId: ev.toolUseId,
+        decision: 'approve',
+        feedback: '',
+      });
+    }
   }
 
   _renderUserQuestion(ev) {

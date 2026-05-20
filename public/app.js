@@ -61,6 +61,7 @@ const dom = {
   syncBtn: document.getElementById('sync-btn'),
   mergeBtn: document.getElementById('merge-btn'),
   debugBtn: document.getElementById('debug-btn'),
+  autoApprovePlanBtn: document.getElementById('auto-approve-plan-btn'),
   overflowMenu: document.getElementById('overflow-menu'),
   overflowToggle: document.getElementById('overflow-toggle'),
   overflowPanel: document.getElementById('overflow-panel'),
@@ -101,6 +102,12 @@ function getUsage(instanceId) {
 // accept queued messages but the timing was producing dropped or misordered
 // responses. We hold the answer here and flush it when status flips to idle.
 const pendingAnswersByInstance = new Map();
+
+// Per-instance "auto-approve plans" flag, toggled from the ⋮ overflow
+// menu. While set, plan_request events for that instance render a
+// display-only "auto-approved" card and fire approve automatically.
+// Session-local; cleared on full page reload.
+const autoApprovePlansByInstance = new Set();
 
 function flushPendingAnswers(instanceId) {
   const queue = pendingAnswersByInstance.get(instanceId);
@@ -151,6 +158,7 @@ const conversation = new Conversation(dom.conversation, {
     // status=idle.
     sendOrQueuePrompt(state.activeId, formatUserQuestionAnswers(questions, answers));
   },
+  isAutoApprovePlanEnabled: () => !!(state.activeId && autoApprovePlansByInstance.has(state.activeId)),
   onPermissionDecision: ({ toolUseId, allow }) => {
     if (!state.activeId) return;
     // Forward the Allow/Deny click to the orchestrator over WS. The
@@ -222,6 +230,17 @@ dom.killBtn.addEventListener('click', () => {
   } else if (confirm('Kill this instance?')) {
     send('kill', { id: state.activeId });
   }
+});
+
+dom.autoApprovePlanBtn.addEventListener('click', () => {
+  if (!state.activeId) return;
+  if (autoApprovePlansByInstance.has(state.activeId)) {
+    autoApprovePlansByInstance.delete(state.activeId);
+  } else {
+    autoApprovePlansByInstance.add(state.activeId);
+  }
+  closeOverflow();
+  updateActiveHeader();
 });
 
 dom.debugBtn.addEventListener('click', async () => {
@@ -711,13 +730,17 @@ function updateActiveHeader() {
   dom.syncBtn.disabled = !hasWorktree;
   dom.mergeBtn.hidden = !hasWorktree;
   dom.mergeBtn.disabled = !hasWorktree;
-  // Debug button (lives in the overflow menu): shown while the instance is
-  // alive. Once enabled it flips to a disabled '🐛 capturing' indicator —
-  // there's no off path (the CLI stays mirrored for the rest of its life).
-  // The whole ⋮ trigger is hidden when no overflow items are available.
-  const canDebug = ['idle', 'turn', 'spawning'].includes(inst.status);
-  dom.debugBtn.hidden = !canDebug;
-  dom.overflowMenu.hidden = !canDebug;
+  // Overflow menu (⋮) hosts secondary actions: Debug capture + Auto-approve
+  // plans toggle. The whole trigger is hidden when no items apply (i.e.
+  // the instance isn't alive). Debug button: shown while alive; once
+  // enabled it flips to a disabled '🐛 capturing' indicator — there's no
+  // off path (the CLI stays mirrored for the rest of its life).
+  // Auto-approve plans: per-instance, session-local toggle; label
+  // reflects current state.
+  const canMenu = ['idle', 'turn', 'spawning'].includes(inst.status);
+  dom.debugBtn.hidden = !canMenu;
+  dom.autoApprovePlanBtn.hidden = !canMenu;
+  dom.overflowMenu.hidden = !canMenu;
   if (inst.debug) {
     dom.debugBtn.textContent = '🐛 capturing';
     dom.debugBtn.disabled = true;
@@ -727,6 +750,11 @@ function updateActiveHeader() {
     dom.debugBtn.disabled = false;
     dom.debugBtn.title = 'Start mirroring CLI stdin/stdout/stderr to .claude-orch-app/debug/<id>/';
   }
+  const autoApproveOn = autoApprovePlansByInstance.has(inst.id);
+  dom.autoApprovePlanBtn.textContent = autoApproveOn
+    ? '📋 Auto-approve plans: on'
+    : '📋 Auto-approve plans: off';
+  dom.autoApprovePlanBtn.setAttribute('aria-checked', autoApproveOn ? 'true' : 'false');
   const canType = ['idle', 'turn', 'spawning'].includes(inst.status);
   const canSend = ['idle', 'turn'].includes(inst.status);
   composer.set({ canType, canSend });

@@ -649,6 +649,55 @@ test('DOM: ExitPlanMode renders an approve/reject card with the plan + feedback 
   assert.equal(decisions.length, 1);
 });
 
+test('DOM: ExitPlanMode auto-approve — when isAutoApprovePlanEnabled returns true, the card renders display-only and onPlanDecision auto-fires approve', async () => {
+  const { root, Parser, Conversation } = await setupDOM();
+  const decisions = [];
+  const conversation = new Conversation(root, {
+    onPlanDecision: (d) => decisions.push(d),
+    isAutoApprovePlanEnabled: () => true,
+  });
+
+  feed(new Parser(), conversation, [
+    { type: 'stream_event', event: { type: 'message_start', message: { id: 'm', role: 'assistant' } } },
+    { type: 'stream_event', event: { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'tu_auto', name: 'ExitPlanMode', input: {} } } },
+    { type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '{"plan":"auto plan"}' } } },
+    { type: 'stream_event', event: { type: 'content_block_stop', index: 0 } },
+  ]);
+
+  const card = root.querySelector('.block.plan-request');
+  assert.ok(card, 'plan card still renders so the user can see what was auto-approved');
+  assert.ok(card.classList.contains('approved'), 'auto-approved card carries the .approved class');
+  assert.equal(card.querySelector('.pr-approve'), null, 'no Approve button');
+  assert.equal(card.querySelector('.pr-reject'), null, 'no Reject button');
+  assert.equal(card.querySelector('.pr-feedback'), null, 'no feedback textarea');
+  assert.match(card.querySelector('.pr-status').textContent, /auto-approved/i);
+  assert.match(card.querySelector('.pr-body').textContent, /auto plan/);
+
+  assert.equal(decisions.length, 1, 'onPlanDecision fires automatically');
+  assert.equal(decisions[0].toolUseId, 'tu_auto');
+  assert.equal(decisions[0].decision, 'approve');
+  assert.equal(decisions[0].feedback, '', 'auto-approved decision carries empty feedback');
+});
+
+test('DOM: ExitPlanMode — when isAutoApprovePlanEnabled returns false, the card is interactive (no auto-fire)', async () => {
+  const { root, Parser, Conversation } = await setupDOM();
+  const decisions = [];
+  const conversation = new Conversation(root, {
+    onPlanDecision: (d) => decisions.push(d),
+    isAutoApprovePlanEnabled: () => false,
+  });
+  feed(new Parser(), conversation, [
+    { type: 'stream_event', event: { type: 'message_start', message: { id: 'm', role: 'assistant' } } },
+    { type: 'stream_event', event: { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'tu_manual', name: 'ExitPlanMode', input: {} } } },
+    { type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '{"plan":"manual plan"}' } } },
+    { type: 'stream_event', event: { type: 'content_block_stop', index: 0 } },
+  ]);
+  const card = root.querySelector('.block.plan-request');
+  assert.ok(card.querySelector('.pr-approve'), 'Approve button is present when toggle is off');
+  assert.ok(card.querySelector('.pr-reject'), 'Reject button is present when toggle is off');
+  assert.equal(decisions.length, 0, 'no auto-fire when toggle is off');
+});
+
 test('DOM: ExitPlanMode rejection carries the feedback text', async () => {
   const { document, root, Parser, Conversation } = await setupDOM();
   const decisions = [];
