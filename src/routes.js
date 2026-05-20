@@ -204,8 +204,8 @@ export function buildRoutes({ instances, serverCtx } = {}) {
 
     r.post('/instances', async (req, res, next) => {
       try {
-        const { project, resume, mode, effort, thinking, model, worktree, temp } = req.body ?? {};
-        const inst = await instances.create({ project, resume, mode, effort, thinking, model, worktree, temp });
+        const { project, resume, mode, effort, thinking, model, worktree, temp, debug } = req.body ?? {};
+        const inst = await instances.create({ project, resume, mode, effort, thinking, model, worktree, temp, debug });
         res.status(201).json(inst.summary());
       } catch (e) { next(e); }
     });

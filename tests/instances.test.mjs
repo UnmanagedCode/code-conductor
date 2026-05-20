@@ -818,3 +818,73 @@ test('non-temp: jsonl is left in place on exit', async () => {
     await fsp.access(file); // throws if missing
   } finally { await close(); }
 });
+
+test('debug: enabling debug mode writes stdin/stdout/stderr + meta.json under .claude-orch-app/debug/<id>/', async () => {
+  const { baseUrl, instances, close } = await setupWithProject();
+  const fsp = (await import('node:fs')).promises;
+  try {
+    const r = await api(baseUrl, 'POST', '/api/instances', {
+      project: 'demo',
+      mode: 'bypassPermissions',
+      debug: true,
+    });
+    assert.equal(r.status, 201);
+    assert.equal(r.body.debug, true, 'summary echoes debug=true');
+    const id = r.body.id;
+    const inst = instances.get(id);
+    await waitFor(() => inst.status === 'idle' && inst.debugDir);
+
+    // The debug dir exists where we promised: <cwd>/.claude-orch-app/debug/<id>/
+    const debugDir = inst.debugDir;
+    assert.ok(debugDir.endsWith(path.join('.claude-orch-app', 'debug', id)),
+      `debugDir should end with .claude-orch-app/debug/${id}, got ${debugDir}`);
+
+    // meta.json captures the spawn shape — useful when sharing debug bundles
+    // back to a maintainer who didn't observe the spawn-time options.
+    const meta = JSON.parse(await fsp.readFile(path.join(debugDir, 'meta.json'), 'utf8'));
+    assert.equal(meta.instanceId, id);
+    assert.equal(meta.mode, 'bypassPermissions');
+    assert.ok(Array.isArray(meta.cliArgs) && meta.cliArgs.length > 0);
+
+    // Send a prompt so the fake claude produces stdout and we exercise stdin
+    // capture too.
+    await api(baseUrl, 'POST', `/api/instances/${id}/respawn` /* no-op route presence check */)
+      .catch(() => {}); // ignore; we only care about prompt() below
+    await inst.prompt('hello debug');
+    await waitFor(() => inst.status === 'idle', 5000);
+
+    // stdin contains the JSON-line user message we sent to the CLI.
+    const stdinTxt = await fsp.readFile(path.join(debugDir, 'claude-stdin.jsonl'), 'utf8');
+    assert.ok(stdinTxt.includes('"hello debug"'), 'stdin log captured the user message');
+    assert.ok(stdinTxt.trim().split('\n').every(l => { try { JSON.parse(l); return true; } catch { return false; } }),
+      'every stdin line is valid JSON');
+
+    // stdout contains at least one line from the fake CLI's scenario.
+    const stdoutTxt = await fsp.readFile(path.join(debugDir, 'claude-stdout.jsonl'), 'utf8');
+    assert.ok(stdoutTxt.trim().length > 0, 'stdout log captured at least one line');
+
+    // stderr file exists even when there's no stderr — debug mode opens
+    // all three streams unconditionally so the bundle is self-describing.
+    await fsp.access(path.join(debugDir, 'claude-stderr.log'));
+  } finally { await close(); }
+});
+
+test('debug: omitting the flag leaves debug=false and writes nothing', async () => {
+  const { baseUrl, instances, close } = await setupWithProject();
+  const fsp = (await import('node:fs')).promises;
+  try {
+    const r = await api(baseUrl, 'POST', '/api/instances', {
+      project: 'demo', mode: 'bypassPermissions',
+    });
+    const id = r.body.id;
+    const inst = instances.get(id);
+    await waitFor(() => inst.status === 'idle');
+    assert.equal(inst.debug, false);
+    assert.equal(inst.debugDir, null);
+    // No debug dir created.
+    const debugDirGuess = path.join(inst.cwd, '.claude-orch-app', 'debug');
+    let exists = true;
+    try { await fsp.access(debugDirGuess); } catch { exists = false; }
+    assert.equal(exists, false, 'debug dir is not created when the flag is omitted');
+  } finally { await close(); }
+});

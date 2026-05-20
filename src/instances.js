@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import readline from 'node:readline';
-import { promises as fsp, readFileSync } from 'node:fs';
+import { promises as fsp, readFileSync, mkdirSync, createWriteStream, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { Parser } from './parser.js';
 import { getProject, claudeProjectsRoot, encodeCwd } from './projects.js';
@@ -64,7 +64,7 @@ class EventLog {
 }
 
 export class Instance extends EventEmitter {
-  constructor({ id, project, cwd, mode, effort, thinking, model, hookCallbackUrl = null, worktree = null, temp = false }) {
+  constructor({ id, project, cwd, mode, effort, thinking, model, hookCallbackUrl = null, worktree = null, temp = false, debug = false }) {
     super();
     this.id = id;
     this.project = project;
@@ -83,6 +83,12 @@ export class Instance extends EventEmitter {
     // and the orchestrator skips its last-prompt / permission-mode
     // metadata appends during the run.
     this.temp = !!temp;
+    // When true, raw CLI stdin/stdout/stderr is mirrored to
+    // <cwd>/.claude-orch-app/debug/<id>/ for offline inspection.
+    // Streams + the debug dir path are populated at spawn time.
+    this.debug = !!debug;
+    this.debugDir = null;
+    this._debugStreams = null;
     this.sessionId = null;
     this.pid = null;
     this.status = 'idle';
@@ -123,10 +129,67 @@ export class Instance extends EventEmitter {
           }
         : null,
       temp: this.temp,
+      debug: this.debug,
+      debugDir: this.debugDir,
     };
   }
 
   ringSnapshot() { return this.ring.toArray(); }
+
+  // Open log files for the raw CLI streams when debug mode is on. Called
+  // exactly once at the top of spawn(), before any data flows. Best-effort:
+  // a failure here demotes the instance to non-debug rather than blocking
+  // the spawn — the user is debugging, not depending on the logs.
+  _openDebugStreams(args) {
+    if (!this.debug) return;
+    try {
+      const dir = path.join(this.cwd, '.claude-orch-app', 'debug', this.id);
+      mkdirSync(dir, { recursive: true });
+      const meta = {
+        instanceId: this.id,
+        sessionId: this.sessionId,
+        project: this.project,
+        cwd: this.cwd,
+        mode: this.mode,
+        effort: this.effort,
+        thinking: this.thinking,
+        model: this.model,
+        temp: this.temp,
+        worktree: this.worktree,
+        spawnedAt: new Date().toISOString(),
+        cliArgs: args,
+      };
+      writeFileSync(path.join(dir, 'meta.json'), JSON.stringify(meta, null, 2) + '\n');
+      this.debugDir = dir;
+      this._debugStreams = {
+        stdin:  createWriteStream(path.join(dir, 'claude-stdin.jsonl'),  { flags: 'a' }),
+        stdout: createWriteStream(path.join(dir, 'claude-stdout.jsonl'), { flags: 'a' }),
+        stderr: createWriteStream(path.join(dir, 'claude-stderr.log'),   { flags: 'a' }),
+      };
+    } catch (e) {
+      // Surface but don't fail the spawn — debug is opportunistic.
+      this._emitUi({ kind: 'system', subtype: 'stderr',
+        data: { line: `debug-mode setup failed: ${e.message}` } });
+      this.debug = false;
+      this.debugDir = null;
+      this._debugStreams = null;
+    }
+  }
+
+  _closeDebugStreams() {
+    if (!this._debugStreams) return;
+    for (const s of Object.values(this._debugStreams)) {
+      try { s.end(); } catch { /* ignore */ }
+    }
+    this._debugStreams = null;
+  }
+
+  _debugLog(kind, line) {
+    const s = this._debugStreams?.[kind];
+    if (!s) return;
+    try { s.write(line.endsWith('\n') ? line : line + '\n'); }
+    catch { /* ignore — best-effort */ }
+  }
 
   _setStatus(next) {
     if (this.status === next) return;
@@ -193,6 +256,7 @@ export class Instance extends EventEmitter {
 
     this._setStatus('spawning');
     this.parser.reset();
+    this._openDebugStreams([command, ...args]);
 
     this.proc = spawn(command, args, {
       cwd: this.cwd,
@@ -202,10 +266,14 @@ export class Instance extends EventEmitter {
     this.pid = this.proc.pid;
 
     const outRl = readline.createInterface({ input: this.proc.stdout, crlfDelay: Infinity });
-    outRl.on('line', (line) => this._handleStdoutLine(line));
+    outRl.on('line', (line) => {
+      this._debugLog('stdout', line);
+      this._handleStdoutLine(line);
+    });
 
     const errRl = readline.createInterface({ input: this.proc.stderr, crlfDelay: Infinity });
     errRl.on('line', (line) => {
+      this._debugLog('stderr', line);
       this._stderr += line + '\n';
       this._emitUi({ kind: 'system', subtype: 'stderr', data: { line } });
     });
@@ -328,6 +396,7 @@ export class Instance extends EventEmitter {
     // gone, so the tool won't run anyway, but we still need to free
     // the held-open HTTP responses.
     this._hooks.discardAll();
+    this._closeDebugStreams();
     if (this.temp) this._deleteTempArtifacts().catch(() => {});
   }
 
@@ -346,7 +415,9 @@ export class Instance extends EventEmitter {
     if (!this.proc || !this.proc.stdin.writable) {
       throw new Error('subprocess not writable');
     }
-    this.proc.stdin.write(JSON.stringify(obj) + '\n');
+    const line = JSON.stringify(obj);
+    this._debugLog('stdin', line);
+    this.proc.stdin.write(line + '\n');
   }
 
   // Send a user turn to the CLI. `attachments` is an optional list of
@@ -492,7 +563,7 @@ export class InstanceManager extends EventEmitter {
       .map(i => i.id);
   }
 
-  async create({ project, resume, mode, effort, thinking, model, worktree, temp } = {}) {
+  async create({ project, resume, mode, effort, thinking, model, worktree, temp, debug } = {}) {
     if (!project) {
       throw Object.assign(new Error('project required'), { statusCode: 400 });
     }
@@ -554,6 +625,7 @@ export class InstanceManager extends EventEmitter {
       hookCallbackUrl: this.hookCallbackUrl(id),
       worktree: worktreeMeta,
       temp: tempFlag,
+      debug: !!debug,
     });
 
     inst.on('event', (ev) => this.emit('event', { id, ev }));

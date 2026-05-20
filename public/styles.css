@@ -220,6 +220,7 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
 .ih-chip.ih-status-spawning { color: var(--amber); }
 .ih-chip.ih-status-crashed, .ih-chip.ih-status-exited { color: var(--red); }
 .ih-chip.ih-temp { background: rgba(223, 132, 90, .25); color: #ffc7a3; text-transform: uppercase; font-size: 10px; letter-spacing: .5px; }
+.ih-chip.ih-debug { background: rgba(110, 168, 255, .25); color: #b6d1ff; text-transform: uppercase; font-size: 10px; letter-spacing: .5px; }
 
 /* Context-usage chip — `ctx N%` toggleable button. Color-graded by
  * fill: green under 50%, amber 50-80%, red over 80%. Empty state

@@ -126,6 +126,11 @@
         <span>Temp session (don't persist transcript)</span>
       </label>
       <p class="hint">defaults mode to code; jsonl is removed when the session ends</p>
+      <label class="ni-temp-row">
+        <input type="checkbox" id="ni-debug" />
+        <span>Debug mode (capture stdin/stdout/stderr to disk)</span>
+      </label>
+      <p class="hint">writes to <code>&lt;cwd&gt;/.claude-orch-app/debug/&lt;instance-id&gt;/</code> for sharing back to a maintainer</p>
       <p class="error" id="ni-error"></p>
       <menu>
         <button value="cancel">Cancel</button>

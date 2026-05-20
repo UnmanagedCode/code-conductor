@@ -55,6 +55,7 @@ const dom = {
   niWorktree: document.getElementById('ni-worktree'),
   niWorktreeHint: document.getElementById('ni-worktree-hint'),
   niTemp: document.getElementById('ni-temp'),
+  niDebug: document.getElementById('ni-debug'),
   niError: document.getElementById('ni-error'),
   syncBtn: document.getElementById('sync-btn'),
   mergeBtn: document.getElementById('merge-btn'),
@@ -407,6 +408,7 @@ async function openNewInstanceDialog(projectName, opts = {}) {
   }
 
   dom.niTemp.checked = false;
+  dom.niDebug.checked = false;
   // Resume is no longer driven from this dialog — the sidebar's
   // "Sessions" subnode handles that with one-click resume. The dialog
   // only spawns FRESH sessions.
@@ -427,6 +429,7 @@ dom.newInstanceDialog.addEventListener('close', async () => {
   const thinking = dom.niThinking.value;
   const model = dom.niModel.value || undefined;
   const temp = dom.niTemp.checked || undefined;
+  const debug = dom.niDebug.checked || undefined;
   // Worktree intent: pre-locked name (existing) > checkbox (fresh) > omitted.
   let worktree;
   if (typeof pendingWorktreeIntent === 'string') worktree = pendingWorktreeIntent;
@@ -435,7 +438,7 @@ dom.newInstanceDialog.addEventListener('close', async () => {
     const r = await fetch('/api/instances', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ project, mode, effort, thinking, model, worktree, temp }),
+      body: JSON.stringify({ project, mode, effort, thinking, model, worktree, temp, debug }),
     });
     if (!r.ok) throw new Error((await r.json()).error);
     const inst = await r.json();
@@ -632,6 +635,7 @@ function updateActiveHeader() {
   dom.instanceTitle.appendChild(chip(`ih-status ih-status-${inst.status}`, inst.status));
   dom.instanceTitle.appendChild(chip('ih-mode', inst.mode === 'bypassPermissions' ? 'code' : inst.mode));
   if (inst.temp) dom.instanceTitle.appendChild(chip('ih-temp', 'temp'));
+  if (inst.debug) dom.instanceTitle.appendChild(chip('ih-debug', 'debug'));
   // The ctx chip lives in the bottom bar's right slot rather than the header,
   // so a filled `ctx 6% · 62k/1.0M` readout doesn't push the right-side
   // controls onto a third row on mobile.
