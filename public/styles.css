@@ -268,6 +268,21 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
 .ih-usage-empty-msg { color: var(--muted); font-style: italic; }
 #instance-controls { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 #instance-controls select, #instance-controls button { font-size: 12px; }
+
+/* Header ⋮ overflow menu: relative wrapper for absolute-positioned panel
+ * so the dropdown sits directly under the toggle without recomputing on
+ * resize the way the fixed-positioned usage popover does. */
+.overflow-menu { position: relative; }
+.overflow-panel {
+  position: absolute; right: 0; top: calc(100% + 4px);
+  background: var(--panel-2); border: 1px solid var(--border);
+  border-radius: 6px; padding: 4px;
+  display: flex; flex-direction: column; gap: 4px;
+  min-width: 140px; z-index: 40;
+  box-shadow: 0 4px 12px rgba(0,0,0,.4);
+}
+.overflow-panel[hidden] { display: none; }
+.overflow-panel button { width: 100%; text-align: left; }
 #notify-toggle { padding: 4px 8px; line-height: 1; }
 #notify-toggle[aria-pressed="true"] { background: #2a3548; }
 

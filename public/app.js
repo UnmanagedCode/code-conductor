@@ -61,6 +61,9 @@ const dom = {
   syncBtn: document.getElementById('sync-btn'),
   mergeBtn: document.getElementById('merge-btn'),
   debugBtn: document.getElementById('debug-btn'),
+  overflowMenu: document.getElementById('overflow-menu'),
+  overflowToggle: document.getElementById('overflow-toggle'),
+  overflowPanel: document.getElementById('overflow-panel'),
   sidebarToggle: document.getElementById('sidebar-toggle'),
   sidebar: document.getElementById('sidebar'),
   sidebarScrim: document.getElementById('sidebar-scrim'),
@@ -223,6 +226,7 @@ dom.killBtn.addEventListener('click', () => {
 
 dom.debugBtn.addEventListener('click', async () => {
   if (!state.activeId) return;
+  closeOverflow();
   dom.debugBtn.disabled = true;
   dom.debugBtn.textContent = '🐛 starting…';
   try {
@@ -646,6 +650,7 @@ function updateActiveHeader() {
   // the existing chip nodes. Close any open popover first so it's not
   // left hanging off a detached anchor.
   closeUsagePopover();
+  closeOverflow();
   const inst = state.instances.find(i => i.id === state.activeId);
   if (!inst) {
     dom.instanceTitle.textContent = 'no instance selected';
@@ -672,15 +677,21 @@ function updateActiveHeader() {
     e.textContent = text;
     return e;
   };
-  dom.instanceTitle.appendChild(chip('ih-project', inst.project));
+  // Project chip carries the full session id as a tooltip — long-press on
+  // mobile / hover on desktop — instead of taking a dedicated header chip.
+  const projectChip = chip('ih-project', inst.project);
+  projectChip.title = `session ${inst.sessionId ?? '?'}`;
+  dom.instanceTitle.appendChild(projectChip);
   if (inst.worktree?.worktreeName) {
     const wtShort = inst.worktree.worktreeName.replace(`${inst.project}_worktree_`, 'wt:');
     dom.instanceTitle.appendChild(chip('ih-worktree',
       `${wtShort} (← ${inst.worktree.baseBranch})`));
   }
-  dom.instanceTitle.appendChild(chip('ih-sid', inst.sessionId?.slice(0, 8) ?? '?'));
-  dom.instanceTitle.appendChild(chip(`ih-status ih-status-${inst.status}`, inst.status));
-  dom.instanceTitle.appendChild(chip('ih-mode', inst.mode === 'bypassPermissions' ? 'code' : inst.mode));
+  // Status chip only when it's signalling something actionable. `idle` is
+  // the no-op state; turn / spawning / crashed / exited still surface.
+  if (inst.status !== 'idle') {
+    dom.instanceTitle.appendChild(chip(`ih-status ih-status-${inst.status}`, inst.status));
+  }
   if (inst.temp) dom.instanceTitle.appendChild(chip('ih-temp', 'temp'));
   if (inst.debug) dom.instanceTitle.appendChild(chip('ih-debug', 'debug'));
   // The ctx chip lives in the bottom bar's right slot rather than the header,
@@ -700,11 +711,13 @@ function updateActiveHeader() {
   dom.syncBtn.disabled = !hasWorktree;
   dom.mergeBtn.hidden = !hasWorktree;
   dom.mergeBtn.disabled = !hasWorktree;
-  // Debug button: shown while the instance is alive and debug isn't on
-  // yet. Once enabled it flips to a disabled '🐛 capturing' indicator —
+  // Debug button (lives in the overflow menu): shown while the instance is
+  // alive. Once enabled it flips to a disabled '🐛 capturing' indicator —
   // there's no off path (the CLI stays mirrored for the rest of its life).
+  // The whole ⋮ trigger is hidden when no overflow items are available.
   const canDebug = ['idle', 'turn', 'spawning'].includes(inst.status);
   dom.debugBtn.hidden = !canDebug;
+  dom.overflowMenu.hidden = !canDebug;
   if (inst.debug) {
     dom.debugBtn.textContent = '🐛 capturing';
     dom.debugBtn.disabled = true;
@@ -794,6 +807,38 @@ function toggleUsagePopover(anchor, inst) {
   document.addEventListener('keydown', dismiss, true);
   openUsagePopover = { node, anchor, dismiss };
 }
+
+// Header ⋮ overflow menu — currently hosts the Debug button so it doesn't
+// occupy primary-control real estate. Mirrors the usage popover's dismiss
+// behavior (click outside / Escape).
+let openOverflow = null;
+function closeOverflow() {
+  if (!openOverflow) return;
+  const { dismiss } = openOverflow;
+  dom.overflowPanel.hidden = true;
+  dom.overflowToggle.setAttribute('aria-expanded', 'false');
+  document.removeEventListener('pointerdown', dismiss, true);
+  document.removeEventListener('keydown', dismiss, true);
+  openOverflow = null;
+}
+function toggleOverflow() {
+  if (openOverflow) { closeOverflow(); return; }
+  dom.overflowPanel.hidden = false;
+  dom.overflowToggle.setAttribute('aria-expanded', 'true');
+  const dismiss = (ev) => {
+    if (ev.type === 'keydown') {
+      if (ev.key === 'Escape') closeOverflow();
+      return;
+    }
+    if (dom.overflowPanel.contains(ev.target) || dom.overflowToggle.contains(ev.target)) return;
+    closeOverflow();
+  };
+  document.addEventListener('pointerdown', dismiss, true);
+  document.addEventListener('keydown', dismiss, true);
+  openOverflow = { dismiss };
+}
+dom.overflowToggle.addEventListener('click', toggleOverflow);
+
 function buildUsagePopover(inst) {
   const usage = getUsage(inst.id);
   const c = usage.cum;
