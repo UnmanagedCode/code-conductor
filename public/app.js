@@ -710,11 +710,14 @@ function toggleUsagePopover(anchor, inst) {
   closeUsagePopover();
   const node = buildUsagePopover(inst);
   document.body.appendChild(node);
-  // Position under the chip, right-aligned so it doesn't run off mobile screens.
+  // Position above the chip (popover lives in the bottom footer bar, so
+  // popping down would run off the viewport). Right-align so the panel
+  // doesn't run off mobile screens.
   const r = anchor.getBoundingClientRect();
-  node.style.top = `${Math.round(r.bottom + 6)}px`;
-  // Clamp left edge so the popover stays on-screen.
-  const desiredLeft = r.left;
+  node.style.top = `${Math.round(r.top - node.offsetHeight - 6)}px`;
+  // Clamp left edge so the popover stays on-screen — anchor on the chip's
+  // right edge so the panel grows to the left instead of clipping off-screen.
+  const desiredLeft = r.right - node.offsetWidth;
   const maxLeft = window.innerWidth - node.offsetWidth - 8;
   node.style.left = `${Math.max(8, Math.min(desiredLeft, maxLeft))}px`;
   anchor.setAttribute('aria-expanded', 'true');
