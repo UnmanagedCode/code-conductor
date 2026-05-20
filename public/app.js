@@ -15,6 +15,7 @@ import {
   NotificationState, ensurePermission, setGlobalEnabled,
   maybeNotifyTurnEnd, isNotificationAPIAvailable,
 } from './notifications.js';
+import { readSessionAnchor, writeSessionAnchor } from './anchor.js';
 
 const state = {
   projects: [],
@@ -633,6 +634,10 @@ function selectInstance(id) {
   // Swap the task panel onto whichever instance just became active.
   taskPanel.attach(id ? getTracker(id) : null);
   send('subscribe', { id });
+  // Anchor the active session in the URL so a page refresh restores it.
+  // Uses sessionId (stable across crash/resume), not the transient instance id.
+  const inst = id ? state.instances.find(i => i.id === id) : null;
+  writeSessionAnchor(inst?.sessionId || null);
   if (window.matchMedia('(max-width: 720px)').matches) setSidebarOpen(false);
 }
 
@@ -898,9 +903,27 @@ bus.addEventListener('status', (e) => {
 bus.addEventListener('instances', () => { refreshInstances(); });
 bus.addEventListener('projects', () => { refreshProjects(); });
 
+let firstConnect = true;
 bus.addEventListener('open', async () => {
   await refreshProjects();
   await refreshInstances();
+  // On the first WS open after page load, try to restore the session named
+  // in the URL hash so a refresh keeps the user on the same conversation.
+  // Guarded by firstConnect so a mid-session reconnect doesn't snap focus
+  // back if the user has since navigated elsewhere or closed the instance.
+  if (firstConnect) {
+    firstConnect = false;
+    if (!state.activeId) {
+      const anchor = readSessionAnchor();
+      if (anchor) {
+        const inst = state.instances.find(i => i.sessionId === anchor);
+        if (inst) {
+          selectInstance(inst.id);
+          return;
+        }
+      }
+    }
+  }
   if (state.activeId && state.instances.some(i => i.id === state.activeId)) {
     send('subscribe', { id: state.activeId });
   }
