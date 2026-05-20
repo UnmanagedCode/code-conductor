@@ -363,10 +363,14 @@ test('POST /sync refuses the rebase path when the instance is not running', asyn
   } finally { await ctx.close(); }
 });
 
-test('POST /merge fast-forwards the parent onto the worktree branch when worktree is ahead', async () => {
+test('POST /merge creates a merge commit on the parent when worktree is ahead (--no-ff)', async () => {
   const ctx = await bootServer({ scenarioPath: SCENARIO });
   try {
     const repoPath = await makeRealRepo(ctx.projectsRoot, 'demo');
+    // Capture the parent's tip before any worktree work so we can later
+    // assert the merge commit has the right first parent.
+    const parentBeforeSha = (await git(repoPath, 'rev-parse', 'HEAD')).stdout.trim();
+
     const created = await api(ctx.baseUrl, 'POST', '/api/instances', {
       project: 'demo', mode: 'bypassPermissions', worktree: true,
     });
@@ -388,10 +392,25 @@ test('POST /merge fast-forwards the parent onto the worktree branch when worktre
     const r = await api(ctx.baseUrl, 'POST', `/api/instances/${id2}/merge`);
     assert.equal(r.status, 200);
     assert.equal(r.body.ok, true, `merge failed: ${r.body.reason}`);
-    assert.equal(r.body.newSha, wtSha);
+    // --no-ff means the parent's new tip is a brand-new merge commit, not
+    // the worktree's tip.
+    assert.notEqual(r.body.newSha, wtSha, 'merge commit should be distinct from worktree tip');
 
     const parentSha = (await git(repoPath, 'rev-parse', 'HEAD')).stdout.trim();
-    assert.equal(parentSha, wtSha);
+    assert.equal(parentSha, r.body.newSha);
+
+    // The new commit must be a true merge: two parents, first is the old
+    // parent tip, second is the worktree's tip.
+    const parents = (await git(repoPath, 'rev-list', '--parents', '-n', '1', parentSha))
+      .stdout.trim().split(/\s+/);
+    assert.equal(parents.length, 3, `expected merge commit (3 fields), got: ${parents.join(' ')}`);
+    assert.equal(parents[0], parentSha);
+    assert.equal(parents[1], parentBeforeSha);
+    assert.equal(parents[2], wtSha);
+
+    // Git's default merge message — we explicitly didn't customize it.
+    const msg = (await git(repoPath, 'log', '-1', '--format=%s', parentSha)).stdout.trim();
+    assert.match(msg, /^Merge branch 'claude-orch\//);
   } finally { await ctx.close(); }
 });
 
@@ -415,7 +434,7 @@ test('POST /merge refuses with a Sync-first hint when the worktree is behind the
   } finally { await ctx.close(); }
 });
 
-test('POST /merge surfaces fastForwardParent\'s own refusal when parent has switched branches', async () => {
+test('POST /merge surfaces mergeWorktreeIntoParent\'s own refusal when parent has switched branches', async () => {
   const ctx = await bootServer({ scenarioPath: SCENARIO });
   try {
     const repoPath = await makeRealRepo(ctx.projectsRoot, 'demo');

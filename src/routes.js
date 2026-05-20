@@ -6,7 +6,7 @@ import {
   summarizeSessions, deleteProject, deleteSessionForCwd, getProject,
 } from './projects.js';
 import {
-  isGitRepo, listWorktrees, removeWorktree, fastForwardParent,
+  isGitRepo, listWorktrees, removeWorktree, mergeWorktreeIntoParent,
   buildRebasePrompt, getWorktree, removeAllWorktreesForProject,
   attachmentsDir, getWorktreeMergeStatus, syncWorktree,
 } from './worktrees.js';
@@ -271,11 +271,14 @@ export function buildRoutes({ instances, serverCtx } = {}) {
       } catch (e) { next(e); }
     });
 
-    // Fast-forward the parent repo onto the worktree's branch. Refuses
-    // with a friendly reason if the worktree hasn't been synced yet
-    // (parent has commits the worktree branch doesn't carry). Returns
-    // {ok:true, newSha} or {ok:false, reason} — callers render the
-    // reason inline rather than treating non-ff as a server error.
+    // Merge the worktree's branch into the parent repo with a real merge
+    // commit (--no-ff). Refuses with a friendly reason if the worktree
+    // hasn't been synced yet (parent has commits the worktree branch
+    // doesn't carry — the merge would still work, but conflicts would
+    // pop on the parent side instead of being resolved inside the worktree
+    // where the agent can help). Returns {ok:true, newSha} or
+    // {ok:false, reason} — callers render the reason inline rather than
+    // treating non-mergeable states as a server error.
     r.post('/instances/:id/merge', async (req, res, next) => {
       try {
         const inst = instances.get(req.params.id);
@@ -289,7 +292,7 @@ export function buildRoutes({ instances, serverCtx } = {}) {
           });
           return;
         }
-        const result = await fastForwardParent(inst.project, inst.worktree.worktreeName);
+        const result = await mergeWorktreeIntoParent(inst.project, inst.worktree.worktreeName);
         res.json(result);
       } catch (e) { next(e); }
     });

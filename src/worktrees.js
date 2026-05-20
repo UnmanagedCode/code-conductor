@@ -311,11 +311,16 @@ export async function getWorktreeMergeStatus(meta) {
   return { ahead, behind };
 }
 
-// Run `git merge --ff-only <branch>` on the parent repo. Returns
-// {ok:true} on success or {ok:false, reason} when not fast-forwardable
-// (uncommitted changes, divergent history, etc.) — caller surfaces the
+// Run `git merge --no-ff --no-edit <branch>` on the parent repo. Always
+// produces a merge commit (even when a fast-forward would be possible)
+// so each worktree's contribution is a visible branch in the parent's
+// history — easy to spot in `git log --graph` and revertable as a single
+// commit via `git revert -m 1 <mergeSha>`. The commit message uses git's
+// default ("Merge branch 'claude-orch/<id>'"). Returns {ok:true, newSha}
+// on success or {ok:false, reason} when the merge can't proceed (parent
+// on wrong branch, dirty parent, conflicts, etc.) — caller surfaces the
 // reason to the UI rather than throwing.
-export async function fastForwardParent(projectName, worktreeName) {
+export async function mergeWorktreeIntoParent(projectName, worktreeName) {
   const meta = await getWorktree(projectName, worktreeName);
   if (!meta) {
     const err = new Error(`worktree '${worktreeName}' not found under project '${projectName}'`);
@@ -323,13 +328,13 @@ export async function fastForwardParent(projectName, worktreeName) {
     throw err;
   }
   // 1. Parent must currently be on the captured base branch — otherwise
-  //    a fast-forward would land work somewhere unexpected.
+  //    the merge would land work somewhere unexpected.
   const head = await getHeadBranchAndSha(meta.parentPath);
   if (head.branch !== meta.baseBranch) {
     return {
       ok: false,
       reason: `parent repo is on '${head.branch}', but this worktree was branched from '${meta.baseBranch}'. ` +
-        `Switch the parent back to '${meta.baseBranch}' before fast-forwarding.`,
+        `Switch the parent back to '${meta.baseBranch}' before merging.`,
     };
   }
   // 2. Parent's working tree must be clean — `git merge` refuses
@@ -338,19 +343,20 @@ export async function fastForwardParent(projectName, worktreeName) {
   if (dirty.code === 0 && dirty.stdout.trim().length > 0) {
     return {
       ok: false,
-      reason: `parent repo has uncommitted changes — commit or stash them before fast-forwarding`,
+      reason: `parent repo has uncommitted changes — commit or stash them before merging`,
     };
   }
-  // 3. Attempt the fast-forward.
-  const merge = await runGit(meta.parentPath, ['merge', '--ff-only', meta.branch]);
+  // 3. Attempt the merge. --no-ff forces a merge commit even when FF would
+  //    be possible; --no-edit makes git use its default message non-
+  //    interactively (we'd hang otherwise waiting on an editor).
+  const merge = await runGit(meta.parentPath, ['merge', '--no-ff', '--no-edit', meta.branch]);
   if (merge.code !== 0) {
     return {
       ok: false,
       reason: (merge.stderr.trim() || merge.stdout.trim() ||
-        `git merge --ff-only ${meta.branch} failed`),
+        `git merge --no-ff ${meta.branch} failed`),
     };
   }
-  // Capture the new SHA — useful for the UI to confirm what landed.
   const newHead = await runGit(meta.parentPath, ['rev-parse', 'HEAD']);
   return {
     ok: true,

@@ -287,7 +287,7 @@ dom.syncBtn.addEventListener('click', async () => {
 });
 dom.mergeBtn.addEventListener('click', async () => {
   if (!state.activeId) return;
-  if (!confirm('Fast-forward the parent branch onto this worktree\'s tip?')) return;
+  if (!confirm('Merge this worktree\'s branch into the parent? A merge commit will be created on the parent.')) return;
   try {
     const r = await fetch(`/api/instances/${state.activeId}/merge`, { method: 'POST' });
     if (!r.ok) throw new Error((await r.json()).error);
