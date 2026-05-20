@@ -37,7 +37,7 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
 #sidebar-toggle {
   display: none;
   position: fixed;
-  top: 8px; left: 8px;
+  top: 8px; right: 8px;
   z-index: 30;
   width: 40px; height: 40px;
   padding: 0; font-size: 20px; line-height: 1;
@@ -266,7 +266,13 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
 .ih-usage-row .ih-usage-k { color: var(--muted); }
 .ih-usage-row .ih-usage-v { font-family: ui-monospace, monospace; }
 .ih-usage-empty-msg { color: var(--muted); font-style: italic; }
-#instance-controls { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+#instance-controls {
+  display: flex; gap: 6px; align-items: center; flex-wrap: wrap;
+  /* Stay right-aligned even when the controls row wraps below the title
+   * — justify-content: space-between on the parent only right-aligns the
+   * single-line case. */
+  margin-left: auto;
+}
 #instance-controls select, #instance-controls button { font-size: 12px; }
 
 /* Header ⋮ overflow menu: relative wrapper for absolute-positioned panel
@@ -703,7 +709,7 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
   #sidebar.open { transform: translateX(0); }
   #sidebar-toggle { display: block; }
   #sidebar-toggle[aria-expanded="true"] { display: none; }
-  #instance-header { padding-left: 56px; }
+  #instance-header { padding-right: 56px; }
 }
 
 /* In-progress marker pinned to the bottom of the chat pane while a
