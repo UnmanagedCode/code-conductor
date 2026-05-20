@@ -354,69 +354,65 @@ dom.sidebarScrim.addEventListener('click', () => setSidebarOpen(false));
 
 // Restart-server button. Self-respawn happens server-side: POST kicks
 // the orchestrator which spawns a detached replacement and exits.
-// After the new server is up and the WS reconnects, we trigger a full
-// `location.reload()` so any frontend assets (HTML/CSS/JS) the user
-// just edited get re-fetched too — otherwise the page would stay
-// stuck on the pre-restart cached code.
+// Once the new server is responding to HTTP again we trigger a full
+// `location.reload()` so frontend assets (HTML/CSS/JS) get re-fetched
+// too — otherwise the open tab keeps its pre-restart code in memory.
 let restartInProgress = false;
-let restartReloadTimer = null;
 function setSidebarStatus(text, { warn = false } = {}) {
   if (!dom.sidebarStatus) return;
   dom.sidebarStatus.textContent = text;
   dom.sidebarStatus.classList.toggle('warn', !!warn && !!text);
+}
+async function waitForServerBack({ tries = 60, delayMs = 250 } = {}) {
+  // Poll a cheap endpoint until it answers. cache:'no-store' is
+  // important — without it the SW or HTTP cache could serve a stale
+  // 200 from before the restart and we'd reload too early.
+  for (let i = 0; i < tries; i++) {
+    try {
+      const r = await fetch('/api/projects', { cache: 'no-store' });
+      if (r.ok) return true;
+    } catch { /* server still down */ }
+    await new Promise(r => setTimeout(r, delayMs));
+  }
+  return false;
 }
 dom.restartBtn.addEventListener('click', async () => {
   if (restartInProgress) return;
   restartInProgress = true;
   dom.restartBtn.disabled = true;
   setSidebarStatus('restarting…', { warn: true });
-  try {
-    // Fire-and-forget — server responds 202 and then exits.
-    // We may not see the response if the socket is torn down first,
-    // which is fine; the WS 'close' handler will pick up shortly.
-    await fetch('/api/admin/restart', { method: 'POST' }).catch(() => {});
-  } catch { /* ignored */ }
-  // Safety net: if the WS never went down (server died before getting
-  // to spawn, or the user is on a flaky network), still reload after a
-  // generous delay so we don't hang on "restarting…" forever.
-  if (restartReloadTimer) clearTimeout(restartReloadTimer);
-  restartReloadTimer = setTimeout(() => {
-    if (restartInProgress) {
-      setSidebarStatus('reloading…', { warn: true });
-      location.reload();
-    }
-  }, 8_000);
+  // Fire the restart. The server replies 202 then exits; the fetch
+  // may either resolve or be aborted mid-flight — both are fine.
+  await fetch('/api/admin/restart', { method: 'POST' }).catch(() => {});
+  // Give the server a moment to actually exit + spawn the replacement
+  // before we start probing, so the first probe doesn't hit the
+  // still-alive old server and reload prematurely.
+  await new Promise(r => setTimeout(r, 800));
+  setSidebarStatus('waiting for server…', { warn: true });
+  await waitForServerBack();
+  setSidebarStatus('reloading…', { warn: true });
+  // Full reload so the new HTML/CSS/JS replace what's in memory.
+  location.reload();
 });
-// Drive the status line off connection-state events. We only flip out
-// of the initial blank state once we've seen a 'close' (or the user
-// kicked off a restart), so a normal page load doesn't briefly flash
-// "connected" before settling.
+// Background connection status (unrelated to manual restart): show
+// "reconnecting…" if the WS drops on its own, clear it on reconnect.
 let everConnected = false;
 let everDropped = false;
 bus.addEventListener('open', () => {
   everConnected = true;
-  if (restartInProgress) {
-    // Server is back — give the user a brief moment to see the status
-    // change, then do a hard reload to pick up any frontend-asset
-    // changes (HTML/CSS/JS) the restart was meant to deploy.
-    if (restartReloadTimer) { clearTimeout(restartReloadTimer); restartReloadTimer = null; }
-    setSidebarStatus('reloading…', { warn: true });
-    setTimeout(() => location.reload(), 600);
-    return;
-  }
-  if (everDropped) {
+  if (everDropped && !restartInProgress) {
     setSidebarStatus('');
     everDropped = false;
   }
 });
 bus.addEventListener('close', () => {
-  if (!everConnected) return; // initial-load close storms can be ignored
+  if (!everConnected || restartInProgress) return;
   everDropped = true;
-  setSidebarStatus(restartInProgress ? 'restarting…' : 'reconnecting…', { warn: true });
+  setSidebarStatus('reconnecting…', { warn: true });
 });
 bus.addEventListener('reconnecting', () => {
-  if (!everConnected) return;
-  setSidebarStatus(restartInProgress ? 'restarting…' : 'reconnecting…', { warn: true });
+  if (!everConnected || restartInProgress) return;
+  setSidebarStatus('reconnecting…', { warn: true });
 });
 
 let pendingNewInstanceProject = null;
