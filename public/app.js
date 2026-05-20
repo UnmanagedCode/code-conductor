@@ -39,6 +39,8 @@ const dom = {
   instanceTitle: document.getElementById('instance-title'),
   taskPanel: document.getElementById('task-panel'),
   turnIndicator: document.getElementById('turn-indicator'),
+  tiLeft: document.getElementById('ti-left'),
+  tiUsageSlot: document.getElementById('ti-usage-slot'),
   newProjectBtn: document.getElementById('new-project-btn'),
   newProjectDialog: document.getElementById('new-project-dialog'),
   npName: document.getElementById('np-name'),
@@ -604,6 +606,8 @@ function updateActiveHeader() {
     composer.disable();
     dom.composerInput.placeholder = 'select or spawn an instance to start chatting';
     dom.turnIndicator.hidden = true;
+    dom.tiLeft.hidden = true;
+    dom.tiUsageSlot.textContent = '';
     return;
   }
   state.activeStatus = inst.status;
@@ -627,14 +631,19 @@ function updateActiveHeader() {
   dom.instanceTitle.appendChild(chip('ih-sid', inst.sessionId?.slice(0, 8) ?? '?'));
   dom.instanceTitle.appendChild(chip(`ih-status ih-status-${inst.status}`, inst.status));
   dom.instanceTitle.appendChild(chip('ih-mode', inst.mode === 'bypassPermissions' ? 'code' : inst.mode));
-  dom.instanceTitle.appendChild(renderUsageChip(inst));
   if (inst.temp) dom.instanceTitle.appendChild(chip('ih-temp', 'temp'));
+  // The ctx chip lives in the bottom bar's right slot rather than the header,
+  // so a filled `ctx 6% · 62k/1.0M` readout doesn't push the right-side
+  // controls onto a third row on mobile.
+  dom.tiUsageSlot.textContent = '';
+  dom.tiUsageSlot.appendChild(renderUsageChip(inst));
   dom.modeSelect.value = inst.mode;
   dom.modeSelect.disabled = inst.status === 'turn' || inst.status === 'crashed' || inst.status === 'exited';
   dom.killBtn.textContent = inst.status === 'turn' ? 'Interrupt' : 'Kill';
   dom.killBtn.disabled = !['idle', 'turn', 'spawning'].includes(inst.status);
   dom.resumeBtn.hidden = !(inst.status === 'crashed' || inst.status === 'exited');
-  dom.turnIndicator.hidden = inst.status !== 'turn';
+  dom.turnIndicator.hidden = false;
+  dom.tiLeft.hidden = inst.status !== 'turn';
   const hasWorktree = !!inst.worktree?.worktreeName;
   dom.syncBtn.hidden = !hasWorktree;
   dom.syncBtn.disabled = !hasWorktree;

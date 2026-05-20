@@ -695,18 +695,28 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
    the green circle. */
 .turn-indicator {
   display: flex;
-  align-items: baseline;
+  align-items: center;
+  justify-content: space-between;
   gap: 8px;
   padding: 6px 14px;
   border-top: 1px solid var(--border);
   color: var(--muted);
   font-size: 12px;
   background: var(--panel);
+  min-height: 28px;
 }
 /* Author `display: flex` above outranks the UA's `[hidden] { display: none }`,
    which is why the bar was visible despite the `hidden` attribute. Restore
    the expected behaviour explicitly. */
 .turn-indicator[hidden] { display: none; }
+.turn-indicator .ti-left {
+  display: flex; align-items: baseline; gap: 8px;
+}
+.turn-indicator .ti-left[hidden] { display: none; }
+.turn-indicator .ti-right {
+  display: flex; align-items: center;
+  margin-left: auto;
+}
 .turn-indicator .ti-dot {
   display: inline-block;
   width: 8px; height: 8px;

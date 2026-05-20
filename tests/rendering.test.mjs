@@ -1120,9 +1120,10 @@ test('DOM: redacted thinking renders as a non-expandable "thinking (redacted)" l
 });
 
 // Working/in-progress indicator: must exist in the static markup, default
-// hidden, and react to status === 'turn' the same way updateActiveHeader()
-// drives it (one-liner: dom.turnIndicator.hidden = inst.status !== 'turn').
-test('DOM: #turn-indicator is present, hidden by default, and toggles on status==="turn"', async () => {
+// hidden, and only show the "Claude is working" sub-row while status==='turn'.
+// The outer bar is now a persistent footer (visible whenever an instance is
+// selected) hosting the ctx chip on the right — see updateActiveHeader().
+test('DOM: #turn-indicator is the persistent footer; .ti-left tracks status==="turn"', async () => {
   const fs = await import('node:fs/promises');
   const html = await fs.readFile(path.join(PUB, 'index.html'), 'utf8');
   const window = new Window({ url: 'http://localhost/' });
@@ -1143,13 +1144,19 @@ test('DOM: #turn-indicator is present, hidden by default, and toggles on status=
 
   const indicator = document.getElementById('turn-indicator');
   assert.ok(indicator, '#turn-indicator must exist in index.html');
-  assert.equal(indicator.hidden, true, 'indicator carries the hidden attribute by default');
+  assert.equal(indicator.hidden, true, 'indicator carries the hidden attribute by default (no instance selected)');
   assert.equal(
     window.getComputedStyle(indicator).display, 'none',
     'indicator must be display:none while the hidden attribute is set — author CSS must not override the UA [hidden] rule',
   );
-  assert.ok(indicator.querySelector('.ti-dot'), 'indicator contains a .ti-dot');
-  assert.match(indicator.textContent, /Claude is working/, 'indicator has the working label');
+
+  const tiLeft = document.getElementById('ti-left');
+  const tiRight = document.getElementById('ti-usage-slot');
+  assert.ok(tiLeft, '#ti-left must exist for the working-indicator content');
+  assert.ok(tiRight, '#ti-usage-slot must exist for the ctx chip');
+  assert.ok(tiLeft.querySelector('.ti-dot'), '.ti-left contains the .ti-dot');
+  assert.match(tiLeft.textContent, /Claude is working/, '.ti-left has the working label');
+  assert.equal(tiLeft.hidden, true, '.ti-left starts hidden (no turn yet)');
 
   // It must sit between #task-panel and #composer — i.e. directly above
   // the composer at the bottom of the chat pane.
@@ -1159,16 +1166,25 @@ test('DOM: #turn-indicator is present, hidden by default, and toggles on status=
   assert.equal(taskPanel.nextElementSibling, indicator, '#turn-indicator follows #task-panel');
   assert.equal(indicator.nextElementSibling, composer, '#turn-indicator immediately precedes #composer');
 
-  // Reproduce the toggle rule used in app.js:updateActiveHeader and
-  // assert against the computed display each time — the bug we're
-  // guarding against was that `hidden = true` left display=flex.
-  const applyStatus = (status) => { indicator.hidden = status !== 'turn'; };
-  const displayFor = () => window.getComputedStyle(indicator).display;
-  applyStatus('idle'); assert.equal(displayFor(), 'none', 'idle → display:none');
-  applyStatus('turn'); assert.notEqual(displayFor(), 'none', 'turn → visible (display != none)');
-  applyStatus('idle'); assert.equal(displayFor(), 'none', 'idle → display:none after turn ends');
-  applyStatus('spawning'); assert.equal(displayFor(), 'none', 'spawning → display:none');
-  applyStatus('crashed'); assert.equal(displayFor(), 'none', 'crashed → display:none');
+  // Reproduce the toggle rules used in app.js:updateActiveHeader:
+  //   - outer indicator: visible whenever there is a selected instance
+  //   - .ti-left: visible only while status === 'turn'
+  const applyStatus = (status) => {
+    indicator.hidden = false;
+    tiLeft.hidden = status !== 'turn';
+  };
+  const displayFor = (el) => window.getComputedStyle(el).display;
+  applyStatus('idle');
+  assert.notEqual(displayFor(indicator), 'none', 'idle → bar visible (ctx chip stays mounted)');
+  assert.equal(displayFor(tiLeft), 'none', 'idle → .ti-left display:none');
+  applyStatus('turn');
+  assert.notEqual(displayFor(indicator), 'none', 'turn → bar visible');
+  assert.notEqual(displayFor(tiLeft), 'none', 'turn → .ti-left visible (working dot animates)');
+  applyStatus('spawning'); assert.equal(displayFor(tiLeft), 'none', 'spawning → .ti-left display:none');
+  applyStatus('crashed'); assert.equal(displayFor(tiLeft), 'none', 'crashed → .ti-left display:none');
+  // No-instance case: outer bar collapses back.
+  indicator.hidden = true;
+  assert.equal(displayFor(indicator), 'none', 'no-instance → bar display:none');
 
   // The CSS rule that styles it must reference --green (the working colour)
   // and reuse the existing `pulse` animation defined for the sidebar dot.
