@@ -888,3 +888,50 @@ test('debug: omitting the flag leaves debug=false and writes nothing', async () 
     assert.equal(exists, false, 'debug dir is not created when the flag is omitted');
   } finally { await close(); }
 });
+
+test('debug: POST /api/instances/:id/debug enables capture on a running instance', async () => {
+  const { baseUrl, instances, close } = await setupWithProject();
+  const fsp = (await import('node:fs')).promises;
+  try {
+    // Spawn WITHOUT debug.
+    const r = await api(baseUrl, 'POST', '/api/instances', {
+      project: 'demo', mode: 'bypassPermissions',
+    });
+    const id = r.body.id;
+    const inst = instances.get(id);
+    await waitFor(() => inst.status === 'idle');
+    assert.equal(inst.debug, false);
+
+    // Flip debug on at runtime.
+    const enable = await api(baseUrl, 'POST', `/api/instances/${id}/debug`);
+    assert.equal(enable.status, 200);
+    assert.equal(enable.body.ok, true);
+    assert.equal(enable.body.alreadyOn, false);
+    assert.ok(enable.body.debugDir.endsWith(path.join('.claude-orch-app', 'debug', id)));
+    assert.equal(inst.debug, true);
+
+    // Future prompts get mirrored even though spawn was non-debug.
+    await inst.prompt('after debug enable');
+    await waitFor(() => inst.status === 'idle', 5000);
+    const stdinTxt = await fsp.readFile(path.join(enable.body.debugDir, 'claude-stdin.jsonl'), 'utf8');
+    assert.ok(stdinTxt.includes('"after debug enable"'),
+      'lines after the toggle are captured');
+
+    // meta.json shows the spawn argv we cached.
+    const meta = JSON.parse(await fsp.readFile(path.join(enable.body.debugDir, 'meta.json'), 'utf8'));
+    assert.ok(Array.isArray(meta.cliArgs) && meta.cliArgs.length > 0);
+
+    // Calling it a second time is idempotent.
+    const second = await api(baseUrl, 'POST', `/api/instances/${id}/debug`);
+    assert.equal(second.status, 200);
+    assert.equal(second.body.alreadyOn, true);
+  } finally { await close(); }
+});
+
+test('debug: POST /api/instances/:id/debug 404s for unknown instance', async () => {
+  const { baseUrl, close } = await setupWithProject();
+  try {
+    const r = await api(baseUrl, 'POST', '/api/instances/does-not-exist/debug');
+    assert.equal(r.status, 404);
+  } finally { await close(); }
+});

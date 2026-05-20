@@ -59,6 +59,7 @@ const dom = {
   niError: document.getElementById('ni-error'),
   syncBtn: document.getElementById('sync-btn'),
   mergeBtn: document.getElementById('merge-btn'),
+  debugBtn: document.getElementById('debug-btn'),
   sidebarToggle: document.getElementById('sidebar-toggle'),
   sidebar: document.getElementById('sidebar'),
   sidebarScrim: document.getElementById('sidebar-scrim'),
@@ -216,6 +217,30 @@ dom.killBtn.addEventListener('click', () => {
     send('interrupt', { id: state.activeId });
   } else if (confirm('Kill this instance?')) {
     send('kill', { id: state.activeId });
+  }
+});
+
+dom.debugBtn.addEventListener('click', async () => {
+  if (!state.activeId) return;
+  dom.debugBtn.disabled = true;
+  dom.debugBtn.textContent = '🐛 starting…';
+  try {
+    const r = await fetch(`/api/instances/${state.activeId}/debug`, { method: 'POST' });
+    const result = await r.json();
+    if (!r.ok || !result.ok) {
+      throw new Error(result.error ?? result.reason ?? 'failed to enable debug');
+    }
+    // Reflect the new state locally so updateActiveHeader can flip the
+    // button label immediately. A status event will follow anyway and
+    // overwrite this with the authoritative summary.
+    const inst = state.instances.find(i => i.id === state.activeId);
+    if (inst) { inst.debug = true; inst.debugDir = result.debugDir; }
+    updateActiveHeader();
+    alert(`Debug capture started. Writing to:\n${result.debugDir}`);
+  } catch (e) {
+    alert('Failed to enable debug: ' + e.message);
+    dom.debugBtn.disabled = false;
+    dom.debugBtn.textContent = '🐛 Debug';
   }
 });
 
@@ -653,6 +678,20 @@ function updateActiveHeader() {
   dom.syncBtn.disabled = !hasWorktree;
   dom.mergeBtn.hidden = !hasWorktree;
   dom.mergeBtn.disabled = !hasWorktree;
+  // Debug button: shown while the instance is alive and debug isn't on
+  // yet. Once enabled it flips to a disabled '🐛 capturing' indicator —
+  // there's no off path (the CLI stays mirrored for the rest of its life).
+  const canDebug = ['idle', 'turn', 'spawning'].includes(inst.status);
+  dom.debugBtn.hidden = !canDebug;
+  if (inst.debug) {
+    dom.debugBtn.textContent = '🐛 capturing';
+    dom.debugBtn.disabled = true;
+    dom.debugBtn.title = `mirroring to ${inst.debugDir ?? '(unknown path)'}`;
+  } else {
+    dom.debugBtn.textContent = '🐛 Debug';
+    dom.debugBtn.disabled = false;
+    dom.debugBtn.title = 'Start mirroring CLI stdin/stdout/stderr to .claude-orch-app/debug/<id>/';
+  }
   const canType = ['idle', 'turn', 'spawning'].includes(inst.status);
   const canSend = ['idle', 'turn'].includes(inst.status);
   composer.set({ canType, canSend });

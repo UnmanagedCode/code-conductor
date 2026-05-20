@@ -142,6 +142,7 @@ export class Instance extends EventEmitter {
   // the spawn — the user is debugging, not depending on the logs.
   _openDebugStreams(args) {
     if (!this.debug) return;
+    if (this._debugStreams) return; // idempotent — already capturing.
     try {
       const dir = path.join(this.cwd, '.claude-orch-app', 'debug', this.id);
       mkdirSync(dir, { recursive: true });
@@ -189,6 +190,26 @@ export class Instance extends EventEmitter {
     if (!s) return;
     try { s.write(line.endsWith('\n') ? line : line + '\n'); }
     catch { /* ignore — best-effort */ }
+  }
+
+  // Flip debug ON for an already-running instance. Future stdin/stdout/
+  // stderr lines are mirrored to .claude-orch-app/debug/<id>/. Lines from
+  // before the toggle are NOT recoverable — they were never tee'd. Emits a
+  // status event so the UI can refresh the DEBUG pill + button label.
+  // Idempotent: a second call is a no-op.
+  enableDebug() {
+    if (this.debug && this._debugStreams) {
+      return { ok: true, debugDir: this.debugDir, alreadyOn: true };
+    }
+    this.debug = true;
+    this._openDebugStreams(this._spawnArgv ?? []);
+    // If _openDebugStreams hit an fs error it will have reset this.debug
+    // back to false — propagate that to the caller.
+    if (!this.debug || !this._debugStreams) {
+      return { ok: false, reason: 'failed to open debug streams' };
+    }
+    this.emit('status', this.summary());
+    return { ok: true, debugDir: this.debugDir, alreadyOn: false };
   }
 
   _setStatus(next) {
@@ -256,7 +277,10 @@ export class Instance extends EventEmitter {
 
     this._setStatus('spawning');
     this.parser.reset();
-    this._openDebugStreams([command, ...args]);
+    // Remember the full launch argv so a later runtime enableDebug()
+    // call can still write an accurate meta.json bundle.
+    this._spawnArgv = [command, ...args];
+    this._openDebugStreams(this._spawnArgv);
 
     this.proc = spawn(command, args, {
       cwd: this.cwd,

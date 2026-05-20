@@ -224,6 +224,26 @@ export function buildRoutes({ instances, serverCtx } = {}) {
       } catch (e) { next(e); }
     });
 
+    // Flip debug capture ON for a running instance. No matching "off"
+    // endpoint — append-mode logs are best-effort and live for the rest
+    // of the subprocess's life; to stop capturing, kill the instance.
+    r.post('/instances/:id/debug', (req, res, next) => {
+      try {
+        const inst = instances.get(req.params.id);
+        if (!inst) {
+          return res.status(404).json({ error: 'instance not found' });
+        }
+        const result = inst.enableDebug();
+        if (!result.ok) return res.status(500).json(result);
+        res.json({
+          ok: true,
+          debug: inst.debug,
+          debugDir: inst.debugDir,
+          alreadyOn: !!result.alreadyOn,
+        });
+      } catch (e) { next(e); }
+    });
+
     // Sync a worktree from its parent's baseBranch. Server-side FF
     // when possible; otherwise sends the templated rebase prompt to
     // the worktree's agent. Returns {ok:true, action} on success
