@@ -687,6 +687,7 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
   }
   #sidebar.open { transform: translateX(0); }
   #sidebar-toggle { display: block; }
+  #sidebar-toggle[aria-expanded="true"] { display: none; }
   #instance-header { padding-left: 56px; }
 }
 
