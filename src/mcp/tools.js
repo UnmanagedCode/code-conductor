@@ -123,7 +123,7 @@ export function buildTools() {
         type: 'object',
         properties: {
           id: { type: 'string' },
-          timeoutMs: { type: 'integer', description: 'Default 120000 (2 min).' },
+          timeoutMs: { type: 'integer', description: 'Default 600000 (10 min) — matches send_prompt\'s wait cap.' },
         },
         required: ['id'],
       },
@@ -221,13 +221,84 @@ export function buildTools() {
       name: 'merge_worktree',
       description:
         'Merge a worktree\'s branch into its parent repo with a real merge commit (--no-ff). ' +
-        'Refuses with a friendly reason if the worktree hasn\'t been synced first.',
+        'Refuses with a friendly reason if the worktree hasn\'t been synced first. ' +
+        'Pass either {instanceId} or {project, worktreeName} — the latter form lets you ' +
+        'merge a worktree whose instance has already been killed.',
       inputSchema: {
         type: 'object',
-        properties: { instanceId: { type: 'string' } },
-        required: ['instanceId'],
+        properties: {
+          instanceId: { type: 'string', description: 'Live or dead instance attached to the worktree.' },
+          project: { type: 'string', description: 'Parent project — required if instanceId is omitted.' },
+          worktreeName: { type: 'string', description: 'Worktree dir name — required if instanceId is omitted.' },
+        },
       },
       handler: h.mergeWorktree,
+    },
+    {
+      name: 'create_project',
+      description:
+        'Create a new empty project under ~/project/<name>. Seeds CLAUDE.md with @../CLAUDE.md ' +
+        'so workspace-wide conventions are inherited. Optionally runs `git init` in the new dir.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', description: 'Project name. Must match ^[a-zA-Z0-9._-]+$.' },
+          gitInit: { type: 'boolean', description: 'If true, run `git init` in the new project dir. Default false.' },
+        },
+        required: ['name'],
+      },
+      handler: h.createProject,
+    },
+    {
+      name: 'get_last_message',
+      description:
+        'Return the most recent assistant message from an instance as a single joined string, ' +
+        'plus its structured blocks (text / tool_use / thinking). Convenient when you just want ' +
+        'to read what the agent said without parsing the full event ring. Empty text if no ' +
+        'assistant content has arrived yet.',
+      inputSchema: {
+        type: 'object',
+        properties: { id: { type: 'string', description: 'Instance id.' } },
+        required: ['id'],
+      },
+      handler: h.getLastMessage,
+    },
+    {
+      name: 'project_status',
+      description:
+        'Read-only introspection for a project (or one of its worktrees): top-level file ' +
+        'listing, git branch + HEAD subject, uncommitted lines (`git status --porcelain`), ' +
+        'recent commits (`git log`), and — for worktrees — mergeStatus (ahead/behind) plus a ' +
+        'diff-stat against the base branch. Useful for reviewing what an agent did without ' +
+        'leaving MCP.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          project: { type: 'string' },
+          worktree: { type: 'string', description: 'Optional worktree name to scope into.' },
+          logLimit: { type: 'integer', description: 'Number of recent commits to include. Default 20. 0 disables.' },
+        },
+        required: ['project'],
+      },
+      handler: h.projectStatus,
+    },
+    {
+      name: 'read_file',
+      description:
+        'Read a file from a project or worktree by its project-relative path. Path-traversal ' +
+        'guarded. UTF-8 text returned inline; binary files come back base64-encoded. Truncated ' +
+        'at maxBytes (default 256 KB) — the `truncated` flag tells you when that happened.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          project: { type: 'string' },
+          worktree: { type: 'string', description: 'Optional worktree name to scope into.' },
+          relativePath: { type: 'string', description: 'Path relative to the project / worktree root.' },
+          maxBytes: { type: 'integer', description: 'Cap on bytes read. Default 262144 (256 KB).' },
+        },
+        required: ['project', 'relativePath'],
+      },
+      handler: h.readFile,
     },
   ];
 }

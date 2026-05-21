@@ -97,12 +97,14 @@ test('tools/list returns the full expected tool catalog', async () => {
     assert.ok(Array.isArray(body.result.tools));
     const names = body.result.tools.map(t => t.name).sort();
     const expected = [
-      'create_worktree', 'delete_worktree',
-      'get_transcript',
+      'create_project', 'create_worktree', 'delete_worktree',
+      'get_last_message', 'get_transcript',
       'interrupt_turn',
       'kill_instance',
       'list_instances', 'list_projects', 'list_sessions', 'list_worktrees',
       'merge_worktree',
+      'project_status',
+      'read_file',
       'respawn_instance',
       'send_prompt', 'set_mode',
       'spawn_instance', 'sync_worktree',
@@ -280,5 +282,232 @@ test('merge_worktree refuses with friendly reason when the worktree is behind', 
     const mergeRes = unwrap(await callTool(ctx.baseUrl, 'merge_worktree', { instanceId: spawn.id }));
     assert.equal(mergeRes.ok, false);
     assert.match(mergeRes.reason, /behind .* click Sync first|call sync_worktree first/i);
+  } finally { await ctx.close(); }
+});
+
+test('merge_worktree accepts {project, worktreeName} when the instance is gone', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO_WS });
+  try {
+    await makeRealRepo(ctx.projectsRoot, 'demo');
+    // Create a worktree, attach an instance, kill the instance — the
+    // worktree itself stays around.
+    const spawn = unwrap(await callTool(ctx.baseUrl, 'spawn_instance', {
+      project: 'demo', mode: 'bypassPermissions', worktree: true,
+    }));
+    await waitFor(() => ctx.instances.get(spawn.id).sessionId);
+    const wtName = ctx.instances.get(spawn.id).worktree.worktreeName;
+    await callTool(ctx.baseUrl, 'kill_instance', { id: spawn.id });
+    assert.equal(ctx.instances.get(spawn.id), undefined);
+
+    // The worktree is up-to-date with main (no commits yet on either side),
+    // so a merge with --no-ff produces an empty-but-valid merge commit.
+    const mergeRes = unwrap(await callTool(ctx.baseUrl, 'merge_worktree', {
+      project: 'demo', worktreeName: wtName,
+    }));
+    assert.equal(mergeRes.ok, true);
+    assert.ok(mergeRes.newSha, 'merge produced a new HEAD sha');
+  } finally { await ctx.close(); }
+});
+
+test('merge_worktree rejects calls without instanceId or {project, worktreeName}', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO_WS });
+  try {
+    const { body } = await rpc(ctx.baseUrl, 'tools/call', {
+      name: 'merge_worktree', arguments: {},
+    });
+    assert.equal(body.result.isError, true);
+    assert.match(body.result.content[0].text, /requires either instanceId or both/);
+  } finally { await ctx.close(); }
+});
+
+test('create_project creates the directory, seeds CLAUDE.md, and optionally inits git', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO_WS });
+  try {
+    // Plain create — no git.
+    const plain = unwrap(await callTool(ctx.baseUrl, 'create_project', { name: 'plain' }));
+    assert.equal(plain.name, 'plain');
+    assert.equal(plain.gitInit, false);
+    const claudeMd = await fs.readFile(path.join(ctx.projectsRoot, 'plain', 'CLAUDE.md'), 'utf8');
+    assert.match(claudeMd, /@\.\.\/CLAUDE\.md/);
+    // No .git dir.
+    await assert.rejects(fs.stat(path.join(ctx.projectsRoot, 'plain', '.git')));
+
+    // With git init.
+    const repo = unwrap(await callTool(ctx.baseUrl, 'create_project', { name: 'with-git', gitInit: true }));
+    assert.equal(repo.gitInit, true);
+    const gitStat = await fs.stat(path.join(ctx.projectsRoot, 'with-git', '.git'));
+    assert.ok(gitStat.isDirectory());
+
+    // Name validation flows through to MCP isError.
+    const { body } = await rpc(ctx.baseUrl, 'tools/call', {
+      name: 'create_project', arguments: { name: 'bad name with spaces' },
+    });
+    assert.equal(body.result.isError, true);
+    assert.match(body.result.content[0].text, /invalid project name/);
+
+    // EEXIST surfaces as isError too.
+    const { body: dup } = await rpc(ctx.baseUrl, 'tools/call', {
+      name: 'create_project', arguments: { name: 'plain' },
+    });
+    assert.equal(dup.result.isError, true);
+    assert.match(dup.result.content[0].text, /already exists/);
+  } finally { await ctx.close(); }
+});
+
+test('get_last_message reads the most recent assistant text from the ring', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO_WS });
+  try {
+    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'a' });
+    const spawn = unwrap(await callTool(ctx.baseUrl, 'spawn_instance', {
+      project: 'a', mode: 'bypassPermissions',
+    }));
+    await waitFor(() => ctx.instances.get(spawn.id).status === 'idle' && ctx.instances.get(spawn.id).sessionId);
+
+    // Before any turn — no assistant content yet.
+    const before = unwrap(await callTool(ctx.baseUrl, 'get_last_message', { id: spawn.id }));
+    assert.equal(before.text, '');
+    assert.equal(before.msgId, null);
+
+    // First turn: text "First " + Bash tool_use.
+    await callTool(ctx.baseUrl, 'send_prompt', { id: spawn.id, text: 'one', wait: true, waitTimeoutMs: 5000 });
+    const first = unwrap(await callTool(ctx.baseUrl, 'get_last_message', { id: spawn.id }));
+    assert.equal(first.text, 'First ');
+    assert.equal(first.hasToolUse, true);
+    assert.ok(first.blocks.some(b => b.type === 'tool_use' && b.name === 'Bash'));
+
+    // Second turn: just text "Second!" — should now be the latest.
+    await callTool(ctx.baseUrl, 'send_prompt', { id: spawn.id, text: 'two', wait: true, waitTimeoutMs: 5000 });
+    const second = unwrap(await callTool(ctx.baseUrl, 'get_last_message', { id: spawn.id }));
+    assert.equal(second.text, 'Second!');
+    assert.notEqual(second.msgId, first.msgId);
+  } finally { await ctx.close(); }
+});
+
+test('project_status returns branch + HEAD + recent commits + top-level files', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO_WS });
+  try {
+    const repoPath = await makeRealRepo(ctx.projectsRoot, 'demo');
+    // Add an untracked file + a tracked change so dirty has content.
+    await fs.writeFile(path.join(repoPath, 'untracked.txt'), 'u\n');
+    await fs.writeFile(path.join(repoPath, 'README.md'), '# changed\n');
+
+    const st = unwrap(await callTool(ctx.baseUrl, 'project_status', { project: 'demo' }));
+    assert.equal(st.project, 'demo');
+    assert.equal(st.worktree, null);
+    assert.equal(st.isGitRepo, true);
+    assert.equal(st.branch, 'main');
+    assert.ok(st.head && st.head.sha && st.head.subject === 'initial');
+    assert.ok(Array.isArray(st.recentCommits) && st.recentCommits[0].includes('initial'));
+    assert.ok(Array.isArray(st.files));
+    const fileNames = st.files.map(f => f.name);
+    assert.ok(fileNames.includes('README.md'));
+    assert.ok(fileNames.includes('untracked.txt'));
+    // Dirty lines should include both the modified and untracked files.
+    assert.ok(st.dirty.some(l => l.includes('README.md')));
+    assert.ok(st.dirty.some(l => l.includes('untracked.txt')));
+  } finally { await ctx.close(); }
+});
+
+test('project_status scoped to a worktree returns mergeStatus + diffStat vs base', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO_WS });
+  try {
+    const repoPath = await makeRealRepo(ctx.projectsRoot, 'demo');
+    const wt = unwrap(await callTool(ctx.baseUrl, 'create_worktree', { project: 'demo' }));
+    // Commit a change inside the worktree so it's `ahead` of main.
+    const wtPath = path.join(ctx.projectsRoot, wt.worktreeName);
+    await fs.writeFile(path.join(wtPath, 'new.txt'), 'fresh\n');
+    await git(wtPath, 'add', '.');
+    await git(wtPath, 'commit', '-q', '-m', 'add new.txt');
+
+    const st = unwrap(await callTool(ctx.baseUrl, 'project_status', {
+      project: 'demo', worktree: wt.worktreeName,
+    }));
+    assert.equal(st.worktree, wt.worktreeName);
+    assert.equal(st.baseBranch, 'main');
+    assert.equal(st.mergeStatus.ahead, 1);
+    assert.equal(st.mergeStatus.behind, 0);
+    assert.match(st.diffStat, /new\.txt/);
+    // logLimit:0 disables recentCommits.
+    const noLog = unwrap(await callTool(ctx.baseUrl, 'project_status', {
+      project: 'demo', worktree: wt.worktreeName, logLimit: 0,
+    }));
+    assert.equal(noLog.recentCommits, undefined);
+  } finally { await ctx.close(); }
+});
+
+test('project_status on a non-git project returns isGitRepo:false but still lists files', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO_WS });
+  try {
+    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'a' });
+    const st = unwrap(await callTool(ctx.baseUrl, 'project_status', { project: 'a' }));
+    assert.equal(st.isGitRepo, false);
+    // The CLAUDE.md seeded by createProject should be there.
+    assert.ok(st.files.some(f => f.name === 'CLAUDE.md' && f.kind === 'file'));
+    assert.equal(st.branch, undefined); // git fields omitted on non-repo
+  } finally { await ctx.close(); }
+});
+
+test('read_file reads UTF-8 by relative path, rejects traversal, caps at maxBytes', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO_WS });
+  try {
+    const repoPath = await makeRealRepo(ctx.projectsRoot, 'demo');
+    await fs.writeFile(path.join(repoPath, 'hello.txt'), 'hello world\n');
+
+    const ok = unwrap(await callTool(ctx.baseUrl, 'read_file', {
+      project: 'demo', relativePath: 'hello.txt',
+    }));
+    assert.equal(ok.encoding, 'utf8');
+    assert.equal(ok.content, 'hello world\n');
+    assert.equal(ok.truncated, false);
+
+    // Truncation: maxBytes:5 caps to "hello".
+    const cut = unwrap(await callTool(ctx.baseUrl, 'read_file', {
+      project: 'demo', relativePath: 'hello.txt', maxBytes: 5,
+    }));
+    assert.equal(cut.content, 'hello');
+    assert.equal(cut.truncated, true);
+
+    // Traversal: blocked.
+    const { body: trav } = await rpc(ctx.baseUrl, 'tools/call', {
+      name: 'read_file', arguments: { project: 'demo', relativePath: '../../etc/hostname' },
+    });
+    assert.equal(trav.result.isError, true);
+    assert.match(trav.result.content[0].text, /escapes project root/);
+
+    // Absolute path: blocked.
+    const { body: abs } = await rpc(ctx.baseUrl, 'tools/call', {
+      name: 'read_file', arguments: { project: 'demo', relativePath: '/etc/hostname' },
+    });
+    assert.equal(abs.result.isError, true);
+    assert.match(abs.result.content[0].text, /project-relative/);
+
+    // Missing file → isError 404.
+    const { body: miss } = await rpc(ctx.baseUrl, 'tools/call', {
+      name: 'read_file', arguments: { project: 'demo', relativePath: 'nope.txt' },
+    });
+    assert.equal(miss.result.isError, true);
+    assert.match(miss.result.content[0].text, /file not found/);
+  } finally { await ctx.close(); }
+});
+
+test('read_file scoped to a worktree reads from the worktree root, not the parent', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO_WS });
+  try {
+    const repoPath = await makeRealRepo(ctx.projectsRoot, 'demo');
+    const wt = unwrap(await callTool(ctx.baseUrl, 'create_worktree', { project: 'demo' }));
+    // Same filename on both sides, different content.
+    await fs.writeFile(path.join(repoPath, 'shared.txt'), 'parent\n');
+    const wtPath = path.join(ctx.projectsRoot, wt.worktreeName);
+    await fs.writeFile(path.join(wtPath, 'shared.txt'), 'worktree\n');
+
+    const fromWt = unwrap(await callTool(ctx.baseUrl, 'read_file', {
+      project: 'demo', worktree: wt.worktreeName, relativePath: 'shared.txt',
+    }));
+    assert.equal(fromWt.content, 'worktree\n');
+
+    const fromParent = unwrap(await callTool(ctx.baseUrl, 'read_file', {
+      project: 'demo', relativePath: 'shared.txt',
+    }));
+    assert.equal(fromParent.content, 'parent\n');
   } finally { await ctx.close(); }
 });

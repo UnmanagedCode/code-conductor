@@ -90,9 +90,10 @@ claude mcp add --transport http claude-orch http://127.0.0.1:8787/mcp
 
 Available tools:
 
-- **Read:** `list_projects`, `list_instances`, `list_sessions`, `list_worktrees`, `get_transcript`
-- **Spawn / drive:** `spawn_instance`, `send_prompt` (optional `wait:true` blocks until `turn_end`), `wait_for_idle`, `set_mode`, `interrupt_turn`, `kill_instance`, `respawn_instance`
-- **Worktrees:** `create_worktree`, `delete_worktree`, `sync_worktree`, `merge_worktree`
+- **Read:** `list_projects`, `list_instances`, `list_sessions`, `list_worktrees`, `get_transcript`, `get_last_message` (joined text of the most recent assistant message, plus structured blocks), `project_status` (branch, HEAD, dirty lines, recent commits, top-level files, and — for worktrees — mergeStatus + diffStat vs base), `read_file` (path-traversal-guarded read of a project- or worktree-relative file).
+- **Create:** `create_project` (`{name, gitInit?}` — seeds `CLAUDE.md` with `@../CLAUDE.md`).
+- **Spawn / drive:** `spawn_instance`, `send_prompt` (optional `wait:true` blocks until `turn_end`), `wait_for_idle` (default 10 min, matching `send_prompt`'s wait cap), `set_mode`, `interrupt_turn`, `kill_instance`, `respawn_instance`
+- **Worktrees:** `create_worktree`, `delete_worktree`, `sync_worktree`, `merge_worktree` (takes either `instanceId` *or* `{project, worktreeName}` — the latter form works after the attached instance has been killed)
 
 No auth — same localhost-only posture as the REST surface. See [Known limitations](#known-limitations) for the Claude-spawning-Claude recursion caveat.
 

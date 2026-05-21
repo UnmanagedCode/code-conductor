@@ -2,17 +2,22 @@
 // (InstanceManager, projects.js, worktrees.js) — never duplicate business
 // logic, never self-HTTP. Each handler receives (args, { instances }).
 
+import path from 'node:path';
+import { promises as fs } from 'node:fs';
+import { execFile } from 'node:child_process';
 import {
   listProjects as fsListProjects,
   listSessions as fsListSessions,
   listSessionsForCwd,
   summarizeSessions,
+  createProject as fsCreateProject,
   getProject,
 } from '../projects.js';
 import {
   isGitRepo, listWorktrees as fsListWorktrees, getWorktreeMergeStatus,
   createWorktree as fsCreateWorktree, removeWorktree, getWorktree,
   syncWorktree as fsSyncWorktree, mergeWorktreeIntoParent, buildRebasePrompt,
+  worktreeDirtyLines, ORCH_DOTDIR,
 } from '../worktrees.js';
 
 // ---------- helpers ----------
@@ -178,7 +183,7 @@ export async function sendPrompt({ id, text, wait = false, waitTimeoutMs = 600_0
   return { ok: true, id, sessionId: inst.sessionId, status: inst.status };
 }
 
-export async function waitForIdle({ id, timeoutMs = 120_000 }, { instances }) {
+export async function waitForIdle({ id, timeoutMs = 600_000 }, { instances }) {
   const inst = getInst(instances, id);
   const { status } = await waitForStatus(
     inst,
@@ -256,15 +261,273 @@ export async function syncWorktree({ instanceId }, { instances }) {
   return result;
 }
 
-export async function mergeWorktree({ instanceId }, { instances }) {
-  const inst = getInst(instances, instanceId);
-  if (!inst.worktree) throw new Error(`instance ${instanceId} is not attached to a worktree`);
-  const status = await getWorktreeMergeStatus(inst.worktree);
+export async function mergeWorktree({ instanceId, project, worktreeName }, { instances }) {
+  let projectName, wtName, meta;
+  if (instanceId) {
+    const inst = getInst(instances, instanceId);
+    if (!inst.worktree) throw new Error(`instance ${instanceId} is not attached to a worktree`);
+    projectName = inst.project;
+    wtName = inst.worktree.worktreeName;
+    meta = inst.worktree;
+  } else {
+    if (!project || !worktreeName) {
+      throw new Error('merge_worktree requires either instanceId or both {project, worktreeName}');
+    }
+    projectName = project;
+    wtName = worktreeName;
+    meta = await getWorktree(projectName, wtName);
+    if (!meta) throw new Error(`worktree '${wtName}' not found under project '${projectName}'`);
+  }
+  const status = await getWorktreeMergeStatus(meta);
   if (status.behind != null && status.behind > 0) {
     return {
       ok: false,
-      reason: `worktree is behind '${inst.worktree.baseBranch}' by ${status.behind} commit(s) — call sync_worktree first to fast-forward / rebase`,
+      reason: `worktree is behind '${meta.baseBranch}' by ${status.behind} commit(s) — call sync_worktree first to fast-forward / rebase`,
     };
   }
-  return mergeWorktreeIntoParent(inst.project, inst.worktree.worktreeName);
+  return mergeWorktreeIntoParent(projectName, wtName);
+}
+
+// ---------- create / introspect ----------
+
+export async function createProject({ name, gitInit = false }) {
+  const created = await fsCreateProject(name);
+  if (gitInit) {
+    const r = await runGitInDir(created.path, ['init', '-q']);
+    if (r.code !== 0) {
+      throw new Error(`git init failed in ${created.path}: ${r.stderr.trim() || r.stdout.trim()}`);
+    }
+  }
+  return { ...created, gitInit: !!gitInit };
+}
+
+// Walk the event ring backward, find the most recent assistant message,
+// and return its joined text (concatenation of all text blocks in the
+// latest msgId, in stream order). Useful when a coordinating agent just
+// wants to read what the spawned agent said without parsing the raw
+// event stream. Returns `text:""` if no assistant content has arrived yet.
+export async function getLastMessage({ id }, { instances }) {
+  const inst = getInst(instances, id);
+  const ring = inst.ringSnapshot();
+  // Find the latest msgId that has any text content. We look at both
+  // text_delta and text_end so a turn that ended cleanly is still
+  // considered, and so is a turn that's mid-stream.
+  let latestMsgId = null;
+  for (let i = ring.length - 1; i >= 0; i--) {
+    const ev = ring[i];
+    if (ev.parentToolUseId) continue; // ignore sub-agent text
+    if (ev.kind === 'text_delta' || ev.kind === 'text_end' || ev.kind === 'assistant_message') {
+      latestMsgId = ev.msgId;
+      break;
+    }
+  }
+  if (!latestMsgId) {
+    return { id, msgId: null, text: '', blocks: [] };
+  }
+  // Collect text by blockIdx in stream order.
+  const byBlock = new Map();
+  const blockOrder = [];
+  const otherBlocks = []; // tool_use blocks etc, for context
+  let hasToolUse = false;
+  let assistantMessage = null;
+  for (const ev of ring) {
+    if (ev.parentToolUseId) continue;
+    if (ev.msgId !== latestMsgId) continue;
+    if (ev.kind === 'text_delta') {
+      if (!byBlock.has(ev.blockIdx)) {
+        byBlock.set(ev.blockIdx, '');
+        blockOrder.push(ev.blockIdx);
+      }
+      byBlock.set(ev.blockIdx, byBlock.get(ev.blockIdx) + (ev.text ?? ''));
+    } else if (ev.kind === 'tool_use') {
+      hasToolUse = true;
+      otherBlocks.push({ type: 'tool_use', name: ev.name, input: ev.input, toolUseId: ev.toolUseId });
+    } else if (ev.kind === 'assistant_message') {
+      assistantMessage = ev.message ?? null;
+    }
+  }
+  // If a reconciled assistant_message arrived (real CLI), it's the
+  // authoritative source — extract text blocks from it instead of the
+  // delta accumulation (handles edge cases like deltas trimmed by the ring).
+  if (assistantMessage && Array.isArray(assistantMessage.content)) {
+    const textParts = [];
+    const blocks = [];
+    for (const block of assistantMessage.content) {
+      if (block?.type === 'text' && typeof block.text === 'string') {
+        textParts.push(block.text);
+        blocks.push({ type: 'text', text: block.text });
+      } else if (block?.type === 'tool_use') {
+        hasToolUse = true;
+        blocks.push({ type: 'tool_use', name: block.name, input: block.input, toolUseId: block.id });
+      } else if (block?.type === 'thinking') {
+        blocks.push({ type: 'thinking', text: block.thinking ?? '' });
+      }
+    }
+    return { id, msgId: latestMsgId, text: textParts.join(''), blocks, hasToolUse };
+  }
+  const text = blockOrder.map(idx => byBlock.get(idx)).join('');
+  const blocks = blockOrder.map(idx => ({ type: 'text', text: byBlock.get(idx) }));
+  blocks.push(...otherBlocks);
+  return { id, msgId: latestMsgId, text, blocks, hasToolUse };
+}
+
+// Resolve { project, worktree? } to an absolute cwd, throwing with a
+// useful message if either is missing.
+async function resolveProjectCwd(projectName, worktreeName) {
+  const proj = await getProject(projectName);
+  if (worktreeName) {
+    const wt = await getWorktree(projectName, worktreeName);
+    if (!wt) throw new Error(`worktree '${worktreeName}' not found under project '${projectName}'`);
+    return { cwd: wt.worktreePath, worktreeMeta: wt, projectPath: proj.path };
+  }
+  return { cwd: proj.path, worktreeMeta: null, projectPath: proj.path };
+}
+
+// Run `git` with the standard execFile wrapper, never throwing — always
+// returns {stdout, stderr, code}. Mirrors src/worktrees.js's runGit.
+function runGitInDir(cwd, args) {
+  return new Promise((resolve) => {
+    execFile('git', ['-C', cwd, ...args], {
+      encoding: 'utf8', maxBuffer: 16 * 1024 * 1024,
+    }, (err, stdout, stderr) => {
+      if (err) {
+        resolve({ stdout: stdout ?? '', stderr: stderr ?? err.message ?? '', code: typeof err.code === 'number' ? err.code : 1 });
+      } else {
+        resolve({ stdout, stderr, code: 0 });
+      }
+    });
+  });
+}
+
+// Read the top-level directory listing, hiding our own dotdir + dotfiles
+// by default. Used by project_status for a quick "what's in this dir?"
+// snapshot. Errors return an empty list.
+async function listTopLevelEntries(cwd) {
+  try {
+    const entries = await fs.readdir(cwd, { withFileTypes: true });
+    return entries
+      .filter(e => e.name !== ORCH_DOTDIR && !e.name.startsWith('.'))
+      .map(e => ({ name: e.name, kind: e.isDirectory() ? 'dir' : (e.isFile() ? 'file' : 'other') }))
+      .sort((a, b) => {
+        if (a.kind !== b.kind) return a.kind === 'dir' ? -1 : 1;
+        return a.name.localeCompare(b.name);
+      });
+  } catch {
+    return [];
+  }
+}
+
+// Read-only project / worktree introspection. Returns the cwd, git state
+// (branch + head + dirty + recent commits), top-level files, and — for
+// worktrees — the mergeStatus + a diff stat vs the base branch.
+export async function projectStatus({ project, worktree, logLimit = 20 }) {
+  const { cwd, worktreeMeta } = await resolveProjectCwd(project, worktree);
+  const out = {
+    project,
+    worktree: worktree ?? null,
+    cwd,
+    files: await listTopLevelEntries(cwd),
+    isGitRepo: false,
+  };
+  if (!(await isGitRepo(cwd))) {
+    return out;
+  }
+  out.isGitRepo = true;
+  // Branch (may be null on detached HEAD).
+  const branchR = await runGitInDir(cwd, ['symbolic-ref', '--quiet', '--short', 'HEAD']);
+  out.branch = branchR.code === 0 ? branchR.stdout.trim() || null : null;
+  // HEAD sha + subject.
+  const headR = await runGitInDir(cwd, ['log', '-1', '--pretty=%H%n%s']);
+  if (headR.code === 0) {
+    const [sha, ...subj] = headR.stdout.trim().split('\n');
+    out.head = { sha: sha ?? null, subject: subj.join('\n') || null };
+  } else {
+    out.head = null;
+  }
+  // Dirty lines (porcelain). For worktrees, filter out our own dotdir.
+  if (worktreeMeta) {
+    const d = await worktreeDirtyLines(cwd);
+    out.dirty = d.ok ? d.lines : [];
+  } else {
+    const d = await runGitInDir(cwd, ['status', '--porcelain']);
+    out.dirty = d.code === 0
+      ? d.stdout.split('\n').map(s => s.trim()).filter(Boolean)
+      : [];
+  }
+  // Recent commits (oneline). Negative or 0 logLimit → skip.
+  if (Number.isInteger(logLimit) && logLimit > 0) {
+    const logR = await runGitInDir(cwd, ['log', `-${logLimit}`, '--pretty=%h %s']);
+    out.recentCommits = logR.code === 0
+      ? logR.stdout.split('\n').map(s => s.trim()).filter(Boolean)
+      : [];
+  }
+  // Worktree-only: mergeStatus + diff stat vs base.
+  if (worktreeMeta) {
+    out.baseBranch = worktreeMeta.baseBranch;
+    out.baseSha = worktreeMeta.baseSha;
+    out.mergeStatus = await getWorktreeMergeStatus(worktreeMeta).catch(() => ({ ahead: null, behind: null }));
+    const diffR = await runGitInDir(cwd, ['diff', '--stat', `${worktreeMeta.baseBranch}...HEAD`]);
+    out.diffStat = diffR.code === 0 ? diffR.stdout.trim() : '';
+  }
+  return out;
+}
+
+// Path-traversal-guarded file read. Path is project-relative; absolute
+// paths or `..` segments that escape the project / worktree root are
+// rejected. Caps at maxBytes (default 256 KB) so this stays cheap to
+// call from an LLM loop. Returns text content; binary files are
+// reported as base64.
+export async function readFile({ project, worktree, relativePath, maxBytes = 256 * 1024 }) {
+  if (typeof relativePath !== 'string' || !relativePath) {
+    throw new Error('relativePath required');
+  }
+  if (path.isAbsolute(relativePath)) {
+    throw new Error('relativePath must be project-relative (no absolute paths)');
+  }
+  const { cwd } = await resolveProjectCwd(project, worktree);
+  const resolved = path.resolve(cwd, relativePath);
+  // Path-traversal guard: resolved must stay under cwd.
+  const rel = path.relative(cwd, resolved);
+  if (rel.startsWith('..') || path.isAbsolute(rel)) {
+    throw new Error(`relativePath escapes project root: ${relativePath}`);
+  }
+  let stat;
+  try { stat = await fs.stat(resolved); }
+  catch (e) {
+    if (e.code === 'ENOENT') {
+      const err = new Error(`file not found: ${relativePath}`);
+      err.statusCode = 404;
+      throw err;
+    }
+    throw e;
+  }
+  if (stat.isDirectory()) {
+    throw new Error(`'${relativePath}' is a directory — use project_status to list it`);
+  }
+  if (!stat.isFile()) {
+    throw new Error(`'${relativePath}' is not a regular file`);
+  }
+  const cap = Number.isInteger(maxBytes) && maxBytes > 0 ? maxBytes : 256 * 1024;
+  const fh = await fs.open(resolved, 'r');
+  try {
+    const len = Math.min(stat.size, cap);
+    const buf = Buffer.alloc(len);
+    await fh.read(buf, 0, len, 0);
+    const truncated = stat.size > cap;
+    // Best-effort text detection: probe for NULs in the first 4 KB.
+    const probe = buf.slice(0, Math.min(4096, buf.length));
+    const isBinary = probe.includes(0);
+    if (isBinary) {
+      return {
+        path: relativePath, size: stat.size, truncated, encoding: 'base64',
+        content: buf.toString('base64'),
+      };
+    }
+    return {
+      path: relativePath, size: stat.size, truncated, encoding: 'utf8',
+      content: buf.toString('utf8'),
+    };
+  } finally {
+    await fh.close();
+  }
 }
