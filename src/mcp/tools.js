@@ -1,0 +1,233 @@
+// MCP tool registry. Each entry is { name, description, inputSchema,
+// handler }. Schemas are inline JSON-Schema objects (shallow-validated
+// by ../mcp/server.js). Handlers live in ./handlers.js and reach into
+// the orchestrator's existing modules — no business logic here.
+
+import * as h from './handlers.js';
+
+const VALID_MODES = ['plan', 'ask', 'bypassPermissions'];
+const VALID_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
+const VALID_THINKING = ['adaptive', 'enabled', 'disabled'];
+
+export function buildTools() {
+  return [
+    {
+      name: 'list_projects',
+      description:
+        'List every project under ~/project/, with each project\'s git status, worktrees, ' +
+        'live instance ids, and a session-count summary.',
+      inputSchema: { type: 'object', properties: {}, required: [] },
+      handler: h.listProjects,
+    },
+    {
+      name: 'list_instances',
+      description:
+        'List every live or recently-exited orchestrator instance. Each entry carries ' +
+        '{id, project, sessionId, status, mode, effort, thinking, model, pid, worktree, temp, debug}.',
+      inputSchema: { type: 'object', properties: {}, required: [] },
+      handler: h.listInstances,
+    },
+    {
+      name: 'list_sessions',
+      description:
+        'List persisted Claude sessions for a project, or for a specific worktree inside it. ' +
+        'Returns [{sessionId, firstPrompt, mtime, size}] newest-first.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          project: { type: 'string', description: 'Project name under ~/project/.' },
+          worktree: { type: 'string', description: 'Optional worktree name (the sibling dir, e.g. "demo_worktree_abc123").' },
+        },
+        required: ['project'],
+      },
+      handler: h.listSessions,
+    },
+    {
+      name: 'list_worktrees',
+      description:
+        'List orchestrator-owned git worktrees for a project. Each entry includes ' +
+        '{worktreeName, branch, baseBranch, baseSha, parentPath, createdAt}.',
+      inputSchema: {
+        type: 'object',
+        properties: { project: { type: 'string' } },
+        required: ['project'],
+      },
+      handler: h.listWorktrees,
+    },
+    {
+      name: 'get_transcript',
+      description:
+        'Return the orchestrator UI-event ring for an instance. Each event carries _seq so ' +
+        'you can poll incrementally with sinceSeq. Events include text_delta, tool_use, ' +
+        'tool_result, turn_end, etc. — same shape as the WebSocket snapshot.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          id: { type: 'string', description: 'Instance id.' },
+          sinceSeq: { type: 'integer', description: 'Return only events with _seq > sinceSeq. Default -1 (all).' },
+          limit: { type: 'integer', description: 'Cap on number of events returned. Default 200.' },
+        },
+        required: ['id'],
+      },
+      handler: h.getTranscript,
+    },
+    {
+      name: 'spawn_instance',
+      description:
+        'Spawn a new Claude subprocess inside a project (optionally inside a new or existing git worktree of it). ' +
+        'Returns the instance summary. CAUTION: an instance with the claude-orch MCP registered can in turn spawn ' +
+        'further instances — guard against runaway recursion by defaulting child agents to plan mode.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          project: { type: 'string' },
+          mode: { type: 'string', enum: VALID_MODES, description: 'plan / ask / bypassPermissions. Defaults to plan (or bypassPermissions when temp:true).' },
+          effort: { type: 'string', enum: VALID_EFFORTS },
+          thinking: { type: 'string', enum: VALID_THINKING },
+          model: { type: 'string', description: 'e.g. claude-sonnet-4-6 / claude-opus-4-7 / claude-haiku-4-5. Empty/omitted uses account default.' },
+          resume: { type: 'string', description: 'Optional sessionId to resume (vs. spawning a fresh session).' },
+          worktree: {
+            type: ['boolean', 'string'],
+            description: 'true → create a fresh worktree off the project\'s HEAD. <name> → spawn into an existing worktree.',
+          },
+          temp: { type: 'boolean', description: 'If true, the session jsonl is removed on subprocess exit.' },
+          debug: { type: 'boolean', description: 'If true, raw CLI traffic is mirrored to .claude-orch-app/debug/<id>/.' },
+        },
+        required: ['project'],
+      },
+      handler: h.spawnInstance,
+    },
+    {
+      name: 'send_prompt',
+      description:
+        'Send a user turn to a running instance. Defaults to wait:false (returns immediately). ' +
+        'Pass wait:true to block until the turn ends and return the turn_end event inline.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          id: { type: 'string' },
+          text: { type: 'string' },
+          wait: { type: 'boolean', description: 'Block until turn_end. Default false.' },
+          waitTimeoutMs: { type: 'integer', description: 'Per-call wait cap (default 600000 = 10 min).' },
+        },
+        required: ['id', 'text'],
+      },
+      handler: h.sendPrompt,
+    },
+    {
+      name: 'wait_for_idle',
+      description:
+        'Block until an instance returns to status idle, exited, or crashed. Returns the resolved ' +
+        'status. Useful between send_prompt({wait:false}) and get_transcript.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          id: { type: 'string' },
+          timeoutMs: { type: 'integer', description: 'Default 120000 (2 min).' },
+        },
+        required: ['id'],
+      },
+      handler: h.waitForIdle,
+    },
+    {
+      name: 'set_mode',
+      description:
+        'Switch a running instance\'s permission mode at runtime via control_request. ' +
+        'plan / ask / bypassPermissions.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          id: { type: 'string' },
+          mode: { type: 'string', enum: VALID_MODES },
+        },
+        required: ['id', 'mode'],
+      },
+      handler: h.setMode,
+    },
+    {
+      name: 'interrupt_turn',
+      description: 'Abort the current turn of a running instance (control_request interrupt).',
+      inputSchema: {
+        type: 'object',
+        properties: { id: { type: 'string' } },
+        required: ['id'],
+      },
+      handler: h.interruptTurn,
+    },
+    {
+      name: 'kill_instance',
+      description: 'Terminate an instance subprocess and remove it from the manager.',
+      inputSchema: {
+        type: 'object',
+        properties: { id: { type: 'string' } },
+        required: ['id'],
+      },
+      handler: h.killInstance,
+    },
+    {
+      name: 'respawn_instance',
+      description:
+        'Respawn an exited/crashed instance against its last sessionId (--resume). The in-memory ' +
+        'event ring is preserved across the respawn.',
+      inputSchema: {
+        type: 'object',
+        properties: { id: { type: 'string' } },
+        required: ['id'],
+      },
+      handler: h.respawnInstance,
+    },
+    {
+      name: 'create_worktree',
+      description:
+        'Create a fresh git worktree off the project\'s current HEAD without spawning an instance. ' +
+        'Use spawn_instance({worktree:<name>}) afterwards to attach an agent to it.',
+      inputSchema: {
+        type: 'object',
+        properties: { project: { type: 'string' } },
+        required: ['project'],
+      },
+      handler: h.createWorktree,
+    },
+    {
+      name: 'delete_worktree',
+      description:
+        'Remove a worktree (git deregister + branch delete + dir sweep). Refuses if a live instance ' +
+        'is attached or the working tree is dirty unless force:true.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          project: { type: 'string' },
+          worktreeName: { type: 'string' },
+          force: { type: 'boolean' },
+        },
+        required: ['project', 'worktreeName'],
+      },
+      handler: h.deleteWorktree,
+    },
+    {
+      name: 'sync_worktree',
+      description:
+        'Bring a worktree up to date with its base branch — server-side fast-forward when possible, ' +
+        'otherwise sends a rebase prompt to the worktree\'s live agent. Caller passes the worktree\'s ' +
+        'attached instance id.',
+      inputSchema: {
+        type: 'object',
+        properties: { instanceId: { type: 'string' } },
+        required: ['instanceId'],
+      },
+      handler: h.syncWorktree,
+    },
+    {
+      name: 'merge_worktree',
+      description:
+        'Merge a worktree\'s branch into its parent repo with a real merge commit (--no-ff). ' +
+        'Refuses with a friendly reason if the worktree hasn\'t been synced first.',
+      inputSchema: {
+        type: 'object',
+        properties: { instanceId: { type: 'string' } },
+        required: ['instanceId'],
+      },
+      handler: h.mergeWorktree,
+    },
+  ];
+}

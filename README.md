@@ -78,6 +78,24 @@ Each project gets a one-line `CLAUDE.md`:
 
 …which imports the workspace-wide `~/project/CLAUDE.md`. That file currently encodes git hygiene rules — init a repo if missing, commit after every changeful turn with a concise subject + short *why* summary, maintain `.gitignore`, never push or bypass hooks.
 
+### MCP interface
+
+The orchestrator's verbs are also exposed as an [MCP](https://modelcontextprotocol.io/) server mounted on the same port at `POST /mcp` (Streamable HTTP, JSON-RPC 2.0). Once registered, any Claude session can drive the orchestrator directly — list / spawn / kill instances, send prompts to other live sessions, read their transcripts, create and merge worktrees, etc. Useful for letting one agent supervise or fan out work across several others.
+
+Register it once with the `claude` CLI:
+
+```bash
+claude mcp add --transport http claude-orch http://127.0.0.1:8787/mcp
+```
+
+Available tools:
+
+- **Read:** `list_projects`, `list_instances`, `list_sessions`, `list_worktrees`, `get_transcript`
+- **Spawn / drive:** `spawn_instance`, `send_prompt` (optional `wait:true` blocks until `turn_end`), `wait_for_idle`, `set_mode`, `interrupt_turn`, `kill_instance`, `respawn_instance`
+- **Worktrees:** `create_worktree`, `delete_worktree`, `sync_worktree`, `merge_worktree`
+
+No auth — same localhost-only posture as the REST surface. See [Known limitations](#known-limitations) for the Claude-spawning-Claude recursion caveat.
+
 ## Quick start
 
 ```bash
@@ -218,6 +236,13 @@ claude-orch-app/
 │   │                         with safety checks (parent on baseBranch +
 │   │                         clean tree) — always produces a merge commit
 │   │                         so the worktree stays visible in history.
+│   ├── mcp/                  MCP server mounted at /mcp. server.js handles the
+│   │   ├── server.js         JSON-RPC 2.0 dispatch (initialize / tools/list /
+│   │   ├── tools.js          tools/call) over Streamable HTTP. tools.js is the
+│   │   └── handlers.js       static tool registry (schema + name + description);
+│   │                         handlers.js implements them as thin shells over
+│   │                         InstanceManager + projects.js + worktrees.js. No
+│   │                         business logic duplicated here.
 │   ├── attachments.js        Per-worktree attachment storage. saveAttachment(cwd,
 │   │                         {name, dataBase64}) decodes the base64 payload into
 │   │                         .claude-orch-app/attachments/<stamp>-<safe-name>
@@ -342,6 +367,14 @@ claude-orch-app/
     │                         conversation rendering pipeline. Catches
     │                         user-visible regressions the parser tests miss
     │                         (e.g. "is the tool command actually visible?").
+    ├── mcp.test.mjs          MCP server end-to-end via fetch /mcp:
+    │                         initialize/tools-list handshake, unknown-method
+    │                         error envelope, unknown-tool isError, list_projects,
+    │                         spawn_instance → send_prompt(wait:true) →
+    │                         get_transcript round-trip, wait_for_idle,
+    │                         set_mode, kill_instance, argument validation,
+    │                         create/list/delete_worktree against a real git
+    │                         repo, merge_worktree "behind" refusal.
     ├── server-restart.test.mjs Live subprocess test for POST /api/admin/restart.
     │                         Spawns `node server.js`, hits the endpoint,
     │                         asserts the original PID exits cleanly and a
@@ -475,4 +508,5 @@ The opt-in real-claude smoke (`tests/smoke.real.test.mjs`, gated by `RUN_REAL_CL
 - **`--effort` and `--thinking` are spawn-time only.** Switching them mid-session would require respawn + resume. Mode is the only knob that's live-switchable (via `control_request set_permission_mode`).
 - **No auth.** Bound to 127.0.0.1 — anyone with shell access on the device can drive it.
 - **Best-effort metadata writes.** If the orchestrator crashes between a turn ending and the metadata append, the session jsonl may lack the `last-prompt` line and won't show up in `claude --resume`'s picker. The transcript is still intact and resumable by `claude --resume <sid>`.
+- **MCP: Claude-spawning-Claude recursion.** A session that has the orchestrator MCP registered (see [MCP interface](#mcp-interface)) can call `spawn_instance` to launch further sessions, which can in turn register the same MCP and spawn more — ad infinitum if you set up an autonomous loop. There is no orchestrator-side depth guard. Recommended mitigations: spawn child agents in `plan` mode by default (they then can't `claude mcp add` because `Bash` is denied), and register the MCP per-project rather than into the workspace-wide `~/.claude.json` so children inherit a clean config.
 - **Notifications need user permission.** The 🔔 toggle works on browsers that expose the Notification API. On mobile Chrome notifications require the Service Worker at `/sw.js` (registered automatically once permission is granted). iOS Safari requires installing the page as a PWA. The toggle reports the current permission state in its tooltip when unavailable.
