@@ -12,6 +12,7 @@ import {
   summarizeSessions,
   createProject as fsCreateProject,
   getProject,
+  findSessionLocation,
 } from '../projects.js';
 import {
   isGitRepo, listWorktrees as fsListWorktrees, getWorktreeMergeStatus,
@@ -131,6 +132,19 @@ export async function listSessions({ project, worktree }) {
 
 export async function listWorktrees({ project }) {
   return fsListWorktrees(project);
+}
+
+export async function locateSession({ sessionId }) {
+  if (typeof sessionId !== 'string' || !sessionId) {
+    throw new Error('sessionId required');
+  }
+  const hit = await findSessionLocation(sessionId);
+  if (!hit) {
+    const err = new Error(`session not found: ${sessionId}`);
+    err.statusCode = 404;
+    throw err;
+  }
+  return hit;
 }
 
 export async function getTranscript({ id, sinceSeq = -1, limit = 200 }, { instances }) {

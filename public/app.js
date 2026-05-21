@@ -989,10 +989,35 @@ bus.addEventListener('open', async () => {
     if (!state.activeId) {
       const anchor = readSessionAnchor();
       if (anchor) {
-        const inst = state.instances.find(i => i.sessionId === anchor);
-        if (inst) {
-          selectInstance(inst.id);
+        const live = state.instances.find(i => i.sessionId === anchor);
+        if (live) {
+          selectInstance(live.id);
           return;
+        }
+        // No live instance owns this anchor — locate the session on disk
+        // and auto-resume it. Covers refreshes after a server restart (all
+        // instances gone) and refreshes after the user killed the instance
+        // but is still anchored to the same conversation. A --resume spawn
+        // costs zero API tokens (the model isn't called until the user
+        // sends a prompt), so this is always free except for the
+        // subprocess itself.
+        try {
+          const r = await fetch(`/api/sessions/${encodeURIComponent(anchor)}/locate`);
+          if (r.ok) {
+            const { project, worktreeName } = await r.json();
+            setSidebarStatus('resuming session…', { warn: true });
+            try {
+              await resumeSession({ projectName: project, worktreeName, sessionId: anchor });
+            } finally { setSidebarStatus(''); }
+            return;
+          }
+          // 404 / other — session jsonl no longer on disk. Clear the stale
+          // anchor so a follow-up refresh doesn't re-attempt and let the
+          // user fall through to the empty placeholder.
+          writeSessionAnchor(null);
+        } catch (e) {
+          console.warn('auto-resume from anchor failed', e);
+          writeSessionAnchor(null);
         }
       }
     }

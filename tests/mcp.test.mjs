@@ -102,6 +102,7 @@ test('tools/list returns the full expected tool catalog', async () => {
       'interrupt_turn',
       'kill_instance',
       'list_instances', 'list_projects', 'list_sessions', 'list_worktrees',
+      'locate_session',
       'merge_worktree',
       'project_status',
       'read_file',
@@ -241,6 +242,33 @@ test('argument validation rejects a missing required field via isError', async (
     assert.equal(body.result.isError, true);
     assert.match(body.result.content[0].text, /missing required argument: project/);
   } finally { await close(); }
+});
+
+test('locate_session finds an on-disk session by id, 404s when missing', async () => {
+  const { encodeCwd } = await import('../src/projects.js');
+  const FIXTURE_JSONL = path.join(__dirname, 'fixtures', 'session-sample.jsonl');
+  const ctx = await bootServer({ scenarioPath: SCENARIO_WS });
+  try {
+    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'host' });
+    const dir = path.join(ctx.claudeProjectsRoot, encodeCwd(path.join(ctx.projectsRoot, 'host')));
+    await fs.mkdir(dir, { recursive: true });
+    const sid = 'cccccccc-1111-2222-3333-444444444444';
+    await fs.copyFile(FIXTURE_JSONL, path.join(dir, `${sid}.jsonl`));
+
+    const hit = unwrap(await callTool(ctx.baseUrl, 'locate_session', { sessionId: sid }));
+    assert.deepEqual(hit, { project: 'host', worktreeName: null });
+
+    const { body: miss } = await rpc(ctx.baseUrl, 'tools/call', {
+      name: 'locate_session', arguments: { sessionId: '00000000-0000-0000-0000-000000000000' },
+    });
+    assert.equal(miss.result.isError, true);
+    assert.match(miss.result.content[0].text, /session not found/);
+
+    const { body: bad } = await rpc(ctx.baseUrl, 'tools/call', {
+      name: 'locate_session', arguments: {},
+    });
+    assert.equal(bad.result.isError, true);
+  } finally { await ctx.close(); }
 });
 
 test('create_worktree + list_worktrees + delete_worktree against a real git repo', async () => {

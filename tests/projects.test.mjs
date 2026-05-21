@@ -4,7 +4,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor } from './helpers.mjs';
-import { encodeCwd } from '../src/projects.js';
+import { encodeCwd, findSessionLocation } from '../src/projects.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURE_JSONL = path.join(__dirname, 'fixtures', 'session-sample.jsonl');
@@ -375,6 +375,107 @@ test('DELETE worktree session removes from the worktree-encoded dir (not the par
       `/api/projects/demo/worktrees/${encodeURIComponent(wtName)}/sessions/${sid}`);
     assert.equal(del.status, 200);
     await assert.rejects(fs.stat(file), { code: 'ENOENT' });
+  } finally { await close(); }
+});
+
+test('findSessionLocation returns {project, worktreeName:null} for project-root sessions', async () => {
+  const { baseUrl, projectsRoot, claudeProjectsRoot, close } = await bootServer();
+  try {
+    await api(baseUrl, 'POST', '/api/projects', { name: 'host' });
+    const dir = path.join(claudeProjectsRoot, encodeCwd(path.join(projectsRoot, 'host')));
+    await fs.mkdir(dir, { recursive: true });
+    const sid = '11111111-2222-3333-4444-555555555555';
+    await fs.copyFile(FIXTURE_JSONL, path.join(dir, `${sid}.jsonl`));
+    const hit = await findSessionLocation(sid);
+    assert.deepEqual(hit, { project: 'host', worktreeName: null });
+  } finally { await close(); }
+});
+
+test('findSessionLocation finds sessions inside a worktree', async () => {
+  const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-instance.json');
+  const { execFile } = await import('node:child_process');
+  const git = (cwd, ...args) => new Promise((resolve, reject) => {
+    execFile('git', ['-C', cwd, ...args], { encoding: 'utf8' }, (err, stdout, stderr) => {
+      if (err) { err.stdout = stdout; err.stderr = stderr; reject(err); } else resolve({ stdout, stderr });
+    });
+  });
+  const { baseUrl, projectsRoot, claudeProjectsRoot, close } = await bootServer({ scenarioPath: SCENARIO });
+  try {
+    const repoPath = path.join(projectsRoot, 'wtproj');
+    await fs.mkdir(repoPath, { recursive: true });
+    await git(repoPath, 'init', '-q', '-b', 'main');
+    await git(repoPath, 'config', 'user.email', 't@t');
+    await git(repoPath, 'config', 'user.name', 't');
+    await git(repoPath, 'config', 'commit.gpgsign', 'false');
+    await fs.writeFile(path.join(repoPath, 'r.md'), 'x');
+    await git(repoPath, 'add', '.');
+    await git(repoPath, 'commit', '-q', '-m', 'i');
+
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'wtproj', worktree: true });
+    const wtName = r.body.worktree.worktreeName;
+    const wtPath = r.body.cwd;
+    await api(baseUrl, 'DELETE', `/api/instances/${r.body.id}`);
+
+    const wtDir = path.join(claudeProjectsRoot, encodeCwd(wtPath));
+    await fs.mkdir(wtDir, { recursive: true });
+    const sid = 'aaaa1111-bbbb-2222-cccc-dddddddddddd';
+    await fs.copyFile(FIXTURE_JSONL, path.join(wtDir, `${sid}.jsonl`));
+
+    const hit = await findSessionLocation(sid);
+    assert.deepEqual(hit, { project: 'wtproj', worktreeName: wtName });
+  } finally { await close(); }
+});
+
+test('findSessionLocation returns null for unknown sessionId', async () => {
+  const { baseUrl, close } = await bootServer();
+  try {
+    await api(baseUrl, 'POST', '/api/projects', { name: 'host' });
+    const hit = await findSessionLocation('99999999-0000-0000-0000-000000000000');
+    assert.equal(hit, null);
+  } finally { await close(); }
+});
+
+test('findSessionLocation rejects path-traversal-shaped ids without touching the filesystem', async () => {
+  // No bootServer needed — input validation happens before any FS access.
+  for (const bad of ['../etc/passwd', 'foo/bar', '', null, undefined, 'has space', '..']) {
+    const hit = await findSessionLocation(bad);
+    assert.equal(hit, null, `expected null for ${JSON.stringify(bad)}`);
+  }
+});
+
+test('GET /api/sessions/:sid/locate returns the owning project (project-root)', async () => {
+  const { baseUrl, projectsRoot, claudeProjectsRoot, close } = await bootServer();
+  try {
+    await api(baseUrl, 'POST', '/api/projects', { name: 'host' });
+    const dir = path.join(claudeProjectsRoot, encodeCwd(path.join(projectsRoot, 'host')));
+    await fs.mkdir(dir, { recursive: true });
+    const sid = '22222222-3333-4444-5555-666666666666';
+    await fs.copyFile(FIXTURE_JSONL, path.join(dir, `${sid}.jsonl`));
+    const r = await api(baseUrl, 'GET', `/api/sessions/${sid}/locate`);
+    assert.equal(r.status, 200);
+    assert.deepEqual(r.body, { project: 'host', worktreeName: null });
+  } finally { await close(); }
+});
+
+test('GET /api/sessions/:sid/locate 404s when nothing matches', async () => {
+  const { baseUrl, close } = await bootServer();
+  try {
+    await api(baseUrl, 'POST', '/api/projects', { name: 'host' });
+    const r = await api(baseUrl, 'GET', '/api/sessions/00000000-1111-2222-3333-444444444444/locate');
+    assert.equal(r.status, 404);
+    assert.match(r.body.error, /session not found/);
+  } finally { await close(); }
+});
+
+test('GET /api/sessions/:sid/locate 400s on malformed id', async () => {
+  const { baseUrl, close } = await bootServer();
+  try {
+    // Express normalizes %2F → /, so a literal slash 404s at the router
+    // layer before our handler runs. Use a chars-only payload that *our*
+    // validator rejects (`.` is disallowed) to exercise the 400 branch.
+    const r = await api(baseUrl, 'GET', '/api/sessions/has.dots/locate');
+    assert.equal(r.status, 400);
+    assert.match(r.body.error, /invalid sessionId/);
   } finally { await close(); }
 });
 

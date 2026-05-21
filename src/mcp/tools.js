@@ -43,6 +43,22 @@ export function buildTools() {
       handler: h.listSessions,
     },
     {
+      name: 'locate_session',
+      description:
+        'Find which project (and optionally which worktree) owns a given sessionId, by ' +
+        'probing the conventional ~/.claude/projects/<encoded-cwd>/<sid>.jsonl path against ' +
+        'every known project + worktree. Returns {project, worktreeName: string|null}. ' +
+        'Errors with "session not found" when nothing matches.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          sessionId: { type: 'string', description: 'Session UUID to locate.' },
+        },
+        required: ['sessionId'],
+      },
+      handler: h.locateSession,
+    },
+    {
       name: 'list_worktrees',
       description:
         'List orchestrator-owned git worktrees for a project. Each entry includes ' +

@@ -4,6 +4,7 @@ import { promises as fs, createReadStream } from 'node:fs';
 import {
   listProjects, createProject, listSessions, listSessionsForCwd,
   summarizeSessions, deleteProject, deleteSessionForCwd, getProject,
+  findSessionLocation,
 } from './projects.js';
 import {
   isGitRepo, listWorktrees, removeWorktree, mergeWorktreeIntoParent,
@@ -194,6 +195,23 @@ export function buildRoutes({ instances, serverCtx } = {}) {
       }
       await removeWorktree(req.params.name, req.params.wt, { force });
       res.json({ ok: true });
+    } catch (e) { next(e); }
+  });
+
+  // Locate which project / worktree owns a given sessionId. Used by the
+  // frontend's auto-resume-from-URL-anchor flow: a refresh that lands on a
+  // page anchored to a session whose live instance is gone (server restart,
+  // killed instance, etc.) hits this endpoint to find the right cwd to
+  // resume into.
+  r.get('/sessions/:sessionId/locate', async (req, res, next) => {
+    try {
+      const sid = String(req.params.sessionId || '');
+      if (!/^[A-Za-z0-9_-]+$/.test(sid)) {
+        throw Object.assign(new Error('invalid sessionId'), { statusCode: 400 });
+      }
+      const hit = await findSessionLocation(sid);
+      if (!hit) throw Object.assign(new Error('session not found'), { statusCode: 404 });
+      res.json(hit);
     } catch (e) { next(e); }
   });
 

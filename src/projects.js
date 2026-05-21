@@ -208,6 +208,45 @@ export async function deleteSessionForCwd(absCwd, sessionId) {
   }
 }
 
+// Look up which project (and optionally which worktree) owns a given
+// sessionId by probing the conventional `~/.claude/projects/<encoded-cwd>/
+// <sid>.jsonl` path against every known project + worktree. Returns
+// { project, worktreeName: string|null } on hit, null when nothing matches.
+// `encodeCwd` is one-way (lossy: '_' and '/' both collapse to '-'), so
+// we can't reverse-map a directory name back to a project — enumerating
+// known paths and probing is the only correct approach.
+export async function findSessionLocation(sessionId) {
+  // Permissive validation: sessionIds are UUIDs in practice but we accept
+  // anything that's safe to interpolate into a filename. The point is to
+  // reject path-traversal payloads before they touch the filesystem.
+  if (typeof sessionId !== 'string' || !/^[A-Za-z0-9_-]+$/.test(sessionId)) return null;
+  // Lazy import to avoid the projects.js ↔ worktrees.js circular dep
+  // worktrees.js already imports from projects.js (encodeCwd, etc.).
+  const { listWorktrees } = await import('./worktrees.js');
+  const projects = await listProjects();
+  for (const proj of projects) {
+    const file = path.join(claudeProjectsRoot(), encodeCwd(proj.path), `${sessionId}.jsonl`);
+    try {
+      const stat = await fs.stat(file);
+      if (stat.isFile()) return { project: proj.name, worktreeName: null };
+    } catch (e) {
+      if (e.code !== 'ENOENT') throw e;
+    }
+    let wts = [];
+    try { wts = await listWorktrees(proj.name); } catch { /* project may not be a git repo, skip */ }
+    for (const wt of wts) {
+      const wtFile = path.join(claudeProjectsRoot(), encodeCwd(wt.worktreePath), `${sessionId}.jsonl`);
+      try {
+        const stat = await fs.stat(wtFile);
+        if (stat.isFile()) return { project: proj.name, worktreeName: wt.worktreeName };
+      } catch (e) {
+        if (e.code !== 'ENOENT') throw e;
+      }
+    }
+  }
+  return null;
+}
+
 // Lightweight session summary — used by /api/projects to show a count +
 // "last active" stamp in the sidebar without paying the file-read cost
 // of listSessionsForCwd (which extracts firstPrompt from every jsonl).
