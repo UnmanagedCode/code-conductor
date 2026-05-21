@@ -156,14 +156,27 @@ claude-orch-app/
 ├── src/
 │   ├── instances.js          Instance class + InstanceManager. Subprocess lifecycle,
 │   │                         ring buffer (last 500 UI events), control_request
-│   │                         round-trip, history replay, session-metadata write,
-│   │                         mode validation (plan / ask / bypassPermissions),
-│   │                         spawns with two `--settings` PreToolUse hooks: a static
-│   │                         deny for AskUserQuestion + ExitPlanMode, plus an http
-│   │                         callback for destructive tools (Edit / Write /
-│   │                         NotebookEdit / Bash) used by ask-mode permission gating.
-│   │                         Holds open hook HTTP responses in a per-instance
-│   │                         pending map keyed by tool_use_id.
+│   │                         round-trip, mode validation (plan / ask /
+│   │                         bypassPermissions). Delegates hook callbacks to
+│   │                         hookBroker.js, `--settings` JSON to settings.js, and
+│   │                         persisted-session replay + metadata appends to
+│   │                         transcript.js.
+│   ├── hookBroker.js         Per-instance broker for the PreToolUse http hook
+│   │                         callback. Holds open hook HTTP responses in a pending
+│   │                         map keyed by tool_use_id, applies the 540 s timeout,
+│   │                         and reaches back into the Instance through two
+│   │                         injected callbacks only (getMode + emit).
+│   ├── settings.js           Builds the inline `--settings` JSON passed to every
+│   │                         claude spawn — registers the static-deny PreToolUse
+│   │                         hook on AskUserQuestion|ExitPlanMode and (optionally)
+│   │                         the interactive http hook on Edit|Write|NotebookEdit|Bash.
+│   │                         Pure values in, JSON string out — no Instance state.
+│   ├── transcript.js         Persisted-session helpers. Replays
+│   │                         `~/.claude/projects/<encoded-cwd>/<sid>.jsonl` into the
+│   │                         orchestrator's UI-event shape on resume, and
+│   │                         best-effort appends the `last-prompt` +
+│   │                         `permission-mode` metadata lines that
+│   │                         `claude --resume`'s interactive picker reads.
 │   ├── parser.js             stream-json line → UI event normalization. Merges
 │   │                         deltas by (msgId, blockIdx); emits thinking_redacted
 │   │                         when a thinking block closes with only signature_delta;
@@ -242,8 +255,17 @@ claude-orch-app/
 │   │                         body renderers for Edit/Write/NotebookEdit using the
 │   │                         diff module (reused inside the Allow/Deny card).
 │   ├── diff.js               Pure-JS Myers' line-diff + diffStats().
+│   ├── markdown.js           Tiny safe Markdown → DOM renderer (textContent only,
+│   │                         no innerHTML). Used for plan bodies and for the
+│   │                         `text_end` re-render of assistant text blocks; link
+│   │                         schemes restricted to http(s)/relative/fragment/mailto.
 │   ├── notifications.js      Notification API wrapper + pure shouldNotify()
 │   │                         decision used by both runtime and tests.
+│   ├── tasks.js              TaskTracker — observes the UI event stream for
+│   │                         TaskCreate / TaskUpdate tool calls, binds the
+│   │                         tool-allocated task IDs by reading the matching
+│   │                         tool_result text, and drives the TaskPanel above
+│   │                         the composer. Pure state; DOM rendering is separate.
 │   ├── usage.js              Per-instance UsageTracker that consumes the UI
 │   │                         event stream (system/init + turn_end) and
 │   │                         exposes currentContextSize / currentFillPct
@@ -303,6 +325,16 @@ claude-orch-app/
     │                         empties, round-trip both sides, stats.
     ├── static.test.mjs       Static asset serving + DOM-free module import.
     ├── blocks.test.mjs       describeToolInput() per-tool summaries.
+    ├── anchor.test.mjs       URL-hash readSessionAnchor / writeSessionAnchor.
+    ├── attachments.test.mjs  saveAttachment() round-trip + isImageType()
+    │                         classification + prompt-block assembly.
+    ├── markdown.test.mjs     Markdown → DOM renderer: heading/list/code/inline
+    │                         coverage plus link-scheme rejection (no
+    │                         javascript:, no raw HTML passthrough).
+    ├── sidebar.test.mjs      Sidebar renderer: project ▸ Sessions ▸ Worktrees
+    │                         subnode wiring, status-dot merge, collapse state.
+    ├── tasks.test.mjs        TaskTracker state machine: create/update batching,
+    │                         tool_result id binding, completed-batch hiding.
     ├── usage.test.mjs        UsageTracker math + format helpers + DOM
     │                         assertions for the header chip class
     │                         transitions across the 50% / 80% thresholds.
@@ -354,8 +386,10 @@ One persistent connection at `ws://127.0.0.1:8787/ws`, multiplexed across instan
 | `event` | `id`, `ev` | Live UI event. See "UI event kinds" below. |
 | `status` | `id`, `status`, `sessionId`, `mode` | Status transition (`spawning|idle|turn|exited|crashed`). |
 | `ack` | `reqId`, `ok`, `error?` | Reply to a client request that included `reqId`. |
+| `hello` | — | Sent immediately on connect; lets the client confirm the socket is live before issuing requests. |
+| `error` | `message` | Server-side parse-time rejection (e.g. malformed JSON frame). Not tied to a `reqId` — unparseable frames have no `reqId` to ack against. |
 | `turn_notification` | `id`, `project`, `isError`, `stopReason`, `cost` | Lean notification fan-out — broadcast to **every** connected client (not just per-instance subscribers) whenever a turn ends. Lets background-tab listeners ping the OS notification system for instances they aren't currently watching. |
-| `instances` / `projects` | — | Hint to re-fetch REST list (no payload). |
+| `instances` | — | Hint to re-fetch `/api/instances` (no payload). Broadcast on every instance create / remove / status flip. |
 
 **UI event kinds** (`ev.kind`)
 
@@ -371,10 +405,11 @@ Every event carries a `parentToolUseId` (or `null`) — the conversation view ro
 | `POST` | `/api/projects` | `{name}` → `{name, path}`. Validates `^[a-zA-Z0-9._-]+$`. Writes `CLAUDE.md` with `@../CLAUDE.md`. |
 | `DELETE` | `/api/projects/:name` | `{ok:true, project, killedInstances}` — cascades: kill all attached instances → remove all worktrees → `rm -rf` the project dir. Sessions under `~/.claude/projects/` are left in place. |
 | `GET` | `/api/projects/:name/sessions` | `[{sessionId, firstPrompt, mtime, size}]` |
-| `POST` | `/api/instances` | `{project, mode?, effort?, thinking?, model?, resume?, worktree?, temp?}` → instance summary (includes `temp: bool`). When `temp:true` and `mode` is omitted, defaults to `bypassPermissions`; on exit the session jsonl + sub-agent dir under `~/.claude/projects/<encoded-cwd>/` are removed and no `last-prompt`/`permission-mode` metadata is appended during the run. |
+| `POST` | `/api/instances` | `{project, mode?, effort?, thinking?, model?, resume?, worktree?, temp?, debug?}` → instance summary (includes `temp: bool`). When `temp:true` and `mode` is omitted, defaults to `bypassPermissions`; on exit the session jsonl + sub-agent dir under `~/.claude/projects/<encoded-cwd>/` are removed and no `last-prompt`/`permission-mode` metadata is appended during the run. `debug:true` mirrors raw CLI traffic to `<cwd>/.claude-orch-app/debug/<instance-id>/`. |
 | `GET` | `/api/instances` | `[{id, project, sessionId, status, mode, effort, thinking, model, pid}]` |
 | `POST` | `/api/instances/:id/respawn` | `{id, sessionId}` — uses `--resume lastSessionId` |
 | `DELETE` | `/api/instances/:id` | `{ok: true}` — SIGTERM + remove |
+| `POST` | `/api/instances/:id/debug` | Flip debug capture ON for a running instance (idempotent — `alreadyOn:true` if it was already capturing). Returns `{ok:true, debug, debugDir, alreadyOn}`. No matching "off" endpoint: kill the instance to stop. 404 on unknown id. |
 | `POST` | `/api/instances/:id/sync` | Brings the worktree up to date with its base branch. Returns `{ok:true, action:"already-in-sync"\|"fast-forwarded"\|"rebase-prompt-sent", ...}` or `{ok:false, reason}`. The FF case runs `git merge --ff-only <baseBranch>` inside the worktree server-side; the rebase case sends the templated rebase prompt to the worktree's live instance (refused with `{ok:false, reason:"…not running…"}` if the instance has been stopped). 400 if the instance has no worktree. |
 | `POST` | `/api/instances/:id/merge` | Runs `git merge --no-ff --no-edit <worktreeBranch>` on the parent repo — always creates a merge commit (git's default message). Returns `{ok:true, newSha}` or `{ok:false, reason}` (refusals are returned 200 with `ok:false` so the UI can render the reason inline). If the worktree is still behind the parent, refuses with a "click Sync first" reason — conflict resolution belongs inside the worktree where the agent can help, not on the parent. |
 | `GET` | `/api/projects/:name/worktrees` | `[{worktreeName, branch, baseBranch, baseSha, parentPath, createdAt, instanceIds}]` |
