@@ -4,6 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
 import { buildRoutes } from './src/routes.js';
+import { buildMcpRouter } from './src/mcp/server.js';
 import { InstanceManager } from './src/instances.js';
 import { attachWsHub } from './src/wsHub.js';
 
@@ -18,6 +19,7 @@ export function createServer({ withInstances = true } = {}) {
   // existing at route-build time. Populated below once they do.
   const serverCtx = {};
   app.use('/api', buildRoutes({ instances, serverCtx }));
+  app.use('/mcp', buildMcpRouter({ instances }));
   app.use(express.static(path.join(__dirname, 'public')));
 
   const server = http.createServer(app);
