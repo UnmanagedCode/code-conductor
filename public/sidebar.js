@@ -82,9 +82,15 @@ export class Sidebar {
     // jsonl was just written and the matching subnode's cache is now
     // stale (firstPrompt may have just appeared, mtime advanced, etc.).
     this._prevStatusById = new Map();
+    // Per-sessionId count of turn_notifications that landed while the
+    // user wasn't viewing this session. Driven from app.js; cleared on
+    // selectInstance. Keyed by sessionId so it survives crash + resume
+    // (a new instance id for the same session).
+    this.unreadBySessionId = new Map();
   }
 
   setProjects(projects) { this.projects = projects; this.render(); }
+  setUnread(map) { this.unreadBySessionId = map ?? new Map(); this.render(); }
   setInstances(instances) {
     // Detect new sessionIds appearing/disappearing — when they do, the
     // affected subnodes' cached lists are stale (a synthetic row was
@@ -130,8 +136,9 @@ export class Sidebar {
     const isLive = !!session.instanceId;
     const status = session.instanceStatus ?? 'offline';
     const isActive = session.instanceId === this.activeInstanceId;
+    const unread = this.unreadBySessionId.get(session.sessionId) ?? 0;
     const row = el('div', {
-      class: 'session-row' + (isActive ? ' active' : '') + (isLive ? ' live' : ''),
+      class: 'session-row' + (isActive ? ' active' : '') + (isLive ? ' live' : '') + (unread > 0 ? ' has-unread' : ''),
       title: `${session.sessionId}${preview ? '\n' + preview : ''}`,
       onclick: () => {
         if (session.instanceId) this.onSelectInstance(session.instanceId);
@@ -143,17 +150,23 @@ export class Sidebar {
       el('span', { class: `dot ${status}`, title: status }),
       el('span', { class: 'session-ago' }, formatAgo(session.mtime)),
       el('span', { class: 'session-preview' }, liveLabel),
-      el('button', {
-        class: 'session-delete', title: 'delete session',
-        onclick: (e) => {
-          e.stopPropagation();
-          if (this.onDeleteSession) this.onDeleteSession({
-            projectName, worktreeName, sessionId: session.sessionId,
-            preview: liveLabel,
-          });
-        },
-      }, '×'),
     );
+    if (unread > 0) {
+      row.appendChild(el('span', {
+        class: 'session-unread',
+        title: `${unread} new turn${unread === 1 ? '' : 's'} since you last viewed this session`,
+      }, String(unread)));
+    }
+    row.appendChild(el('button', {
+      class: 'session-delete', title: 'delete session',
+      onclick: (e) => {
+        e.stopPropagation();
+        if (this.onDeleteSession) this.onDeleteSession({
+          projectName, worktreeName, sessionId: session.sessionId,
+          preview: liveLabel,
+        });
+      },
+    }, '×'));
     return row;
   }
 

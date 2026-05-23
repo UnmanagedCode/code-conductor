@@ -290,6 +290,44 @@ test('Cache invalidation on turn→idle is scoped to the instance\'s worktree ke
   assert.equal(wtRows[0].textContent, 'fresh-prompt');
 });
 
+test('setUnread renders a numeric pill on the matching session row; clearing the entry removes it', async () => {
+  const now = Date.now();
+  const { root, sidebar } = await setupSidebar({
+    onLoadSessions: async () => [
+      { sessionId: 'sid-a', firstPrompt: 'aaa', mtime: now - 60_000, size: 10 },
+      { sessionId: 'sid-b', firstPrompt: 'bbb', mtime: now - 30_000, size: 10 },
+    ],
+  });
+  sidebar.setProjects([{
+    name: 'demo', path: '/p/demo', instanceIds: [], isGitRepo: false, worktrees: [],
+    sessions: { count: 2, lastMtime: now - 30_000 },
+  }]);
+  sidebar.setInstances([
+    { id: 'inst-a', project: 'demo', sessionId: 'sid-a', status: 'idle', mode: 'plan', worktree: null },
+    { id: 'inst-b', project: 'demo', sessionId: 'sid-b', status: 'idle', mode: 'plan', worktree: null },
+  ]);
+  await new Promise(r => setTimeout(r, 0));
+
+  // Initially no pills.
+  assert.equal(root.querySelectorAll('.session-unread').length, 0);
+
+  sidebar.setUnread(new Map([['sid-b', 3]]));
+  await new Promise(r => setTimeout(r, 0));
+  const pills = root.querySelectorAll('.session-unread');
+  assert.equal(pills.length, 1, 'one pill renders for the unread session');
+  assert.equal(pills[0].textContent, '3');
+  // The row carrying the pill has the has-unread class.
+  const unreadRow = pills[0].closest('.session-row');
+  assert.ok(unreadRow.classList.contains('has-unread'));
+  // The 'sid-a' row gets no pill.
+  const sidARow = [...root.querySelectorAll('.session-row')].find(r => r.title.startsWith('sid-a'));
+  assert.ok(!sidARow.querySelector('.session-unread'));
+
+  sidebar.setUnread(new Map());
+  await new Promise(r => setTimeout(r, 0));
+  assert.equal(root.querySelectorAll('.session-unread').length, 0, 'pill gone after clearing');
+});
+
 test('Sessions subnode is default-expanded; manual collapse persists across re-renders', async () => {
   const { root, sidebar } = await setupSidebar({
     onLoadSessions: async () => [

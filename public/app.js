@@ -109,6 +109,23 @@ const pendingAnswersByInstance = new Map();
 // Session-local; cleared on full page reload.
 const autoApprovePlansByInstance = new Set();
 
+// Per-sessionId unread count. Incremented when a turn_notification lands
+// for a session the user isn't currently viewing; cleared on
+// selectInstance. Keyed by sessionId (not instance id) so the count
+// survives a crash + resume cycle that mints a new instance id for the
+// same session.
+const unreadBySessionId = new Map();
+function bumpUnread(sessionId) {
+  if (!sessionId) return;
+  unreadBySessionId.set(sessionId, (unreadBySessionId.get(sessionId) ?? 0) + 1);
+  sidebar.setUnread(unreadBySessionId);
+}
+function clearUnread(sessionId) {
+  if (!sessionId) return;
+  if (!unreadBySessionId.delete(sessionId)) return;
+  sidebar.setUnread(unreadBySessionId);
+}
+
 function flushPendingAnswers(instanceId) {
   const queue = pendingAnswersByInstance.get(instanceId);
   if (!queue || queue.length === 0) return;
@@ -661,6 +678,9 @@ function selectInstance(id) {
   // Uses sessionId (stable across crash/resume), not the transient instance id.
   const inst = id ? state.instances.find(i => i.id === id) : null;
   writeSessionAnchor(inst?.sessionId || null);
+  // Now that the user is viewing this session, any backlog of unread
+  // turn-end pings for it is by definition read.
+  clearUnread(inst?.sessionId);
   if (window.matchMedia('(max-width: 720px)').matches) setSidebarOpen(false);
 }
 
@@ -956,6 +976,12 @@ bus.addEventListener('turn_notification', (e) => {
     projectName: m.project ?? 'instance',
     turnEvent: { isError: m.isError, stopReason: m.stopReason, cost: m.cost },
   });
+  // Mark the session unread in the sidebar — unless the user is already
+  // looking at it, in which case the activity is by definition seen.
+  if (m.id !== state.activeId) {
+    const inst = state.instances.find(i => i.id === m.id);
+    bumpUnread(inst?.sessionId);
+  }
 });
 
 bus.addEventListener('status', (e) => {
