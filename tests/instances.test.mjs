@@ -293,8 +293,42 @@ test('default spawn passes --permission-mode plan, --effort high, --thinking ada
       `http hook url should embed the instance id`);
     assert.ok(typeof httpHook.timeout === 'number' && httpHook.timeout >= 60,
       `http hook timeout should leave room for a human (>= 60s), got ${httpHook.timeout}`);
+
+    // The orchestrator auto-registers its own MCP server on every spawn
+    // so the session can drive `mcp__claude-orch__*` tools without a
+    // prior `claude mcp add` step. Server name must stay `claude-orch`
+    // — the tool-name prefix is bound to it.
+    const mcp = argv.indexOf('--mcp-config');
+    assert.ok(mcp >= 0, `--mcp-config not passed; argv was: ${argv.join(' ')}`);
+    const mcpCfg = JSON.parse(argv[mcp + 1]);
+    assert.ok(mcpCfg.mcpServers?.['claude-orch'], 'mcp-config registers a `claude-orch` server');
+    assert.equal(mcpCfg.mcpServers['claude-orch'].type, 'http');
+    assert.match(mcpCfg.mcpServers['claude-orch'].url, /^http:\/\/127\.0\.0\.1:\d+\/mcp$/);
   } finally {
     delete process.env.FAKE_CLAUDE_ARGV_DUMP;
+    await close();
+  }
+});
+
+test('ORCH_DISABLE_MCP_AUTOREGISTER=1 omits --mcp-config from spawn argv', async () => {
+  const { baseUrl, instances, tmpHome, close } = await setupWithProject();
+  const fsp = (await import('node:fs')).promises;
+  try {
+    const argvPath = `${tmpHome}/argv.txt`;
+    process.env.FAKE_CLAUDE_ARGV_DUMP = argvPath;
+    process.env.ORCH_DISABLE_MCP_AUTOREGISTER = '1';
+
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'demo' });
+    const id = r.body.id;
+    await waitFor(() => instances.get(id).status === 'idle');
+
+    await waitFor(async () => { try { await fsp.stat(argvPath); return true; } catch { return false; } });
+    const argv = (await fsp.readFile(argvPath, 'utf8')).split('\n').filter(Boolean);
+    assert.equal(argv.indexOf('--mcp-config'), -1,
+      `--mcp-config should be absent when ORCH_DISABLE_MCP_AUTOREGISTER=1; argv was: ${argv.join(' ')}`);
+  } finally {
+    delete process.env.FAKE_CLAUDE_ARGV_DUMP;
+    delete process.env.ORCH_DISABLE_MCP_AUTOREGISTER;
     await close();
   }
 });

@@ -7,7 +7,7 @@ import path from 'node:path';
 import { Parser } from './parser.js';
 import { getProject, claudeProjectsRoot, encodeCwd } from './projects.js';
 import { createWorktree, getWorktree } from './worktrees.js';
-import { buildSettingsJSON } from './settings.js';
+import { buildSettingsJSON, buildMcpConfigJSON } from './settings.js';
 import { HookBroker } from './hookBroker.js';
 import { loadPersistedTranscript, writeSessionMetadata } from './transcript.js';
 import { saveAttachment, isImageType } from './attachments.js';
@@ -64,7 +64,7 @@ class EventLog {
 }
 
 export class Instance extends EventEmitter {
-  constructor({ id, project, cwd, mode, effort, thinking, model, hookCallbackUrl = null, worktree = null, temp = false, debug = false }) {
+  constructor({ id, project, cwd, mode, effort, thinking, model, hookCallbackUrl = null, mcpServerUrl = null, worktree = null, temp = false, debug = false }) {
     super();
     this.id = id;
     this.project = project;
@@ -74,6 +74,7 @@ export class Instance extends EventEmitter {
     this.thinking = thinking;
     this.model = model;
     this.hookCallbackUrl = hookCallbackUrl;
+    this.mcpServerUrl = mcpServerUrl;
     // null for a normal instance; otherwise the worktree metadata object
     // (parentProject, worktreeName, worktreePath, branch, baseBranch,
     // baseSha) so the UI can show a chip and the rebase/ff buttons.
@@ -271,6 +272,13 @@ export class Instance extends EventEmitter {
       // orchestrator-tracked mode (ask = prompt user, otherwise = allow).
       '--settings', buildSettingsJSON({ hookCallbackUrl: this.hookCallbackUrl }),
     ];
+    // Auto-register the orchestrator's own MCP server so any spawned
+    // session can drive `mcp__claude-orch__*` tools without a prior
+    // `claude mcp add` step. Disabled when ORCH_DISABLE_MCP_AUTOREGISTER=1
+    // is set on the orchestrator (the URL comes through as null).
+    if (this.mcpServerUrl) {
+      args.push('--mcp-config', buildMcpConfigJSON({ url: this.mcpServerUrl }));
+    }
     if (this.model) args.push('--model', this.model);
     if (resume) args.push('--resume', this.sessionId);
     else args.push('--session-id', this.sessionId);
@@ -571,6 +579,15 @@ export class InstanceManager extends EventEmitter {
     return `http://127.0.0.1:${this.serverPort}/api/instances/${id}/hook-callback`;
   }
 
+  // Auto-registered orchestrator MCP server URL. Same for every instance,
+  // but exposed as a method to stay parallel with hookCallbackUrl and to
+  // honour the ORCH_DISABLE_MCP_AUTOREGISTER opt-out at call time.
+  mcpServerUrl() {
+    if (!this.serverPort) return null;
+    if (process.env.ORCH_DISABLE_MCP_AUTOREGISTER === '1') return null;
+    return `http://127.0.0.1:${this.serverPort}/mcp`;
+  }
+
   list() { return [...this.byId.values()].map(i => i.summary()); }
   get(id) { return this.byId.get(id); }
   idsForProject(name) {
@@ -647,6 +664,7 @@ export class InstanceManager extends EventEmitter {
       id, project, cwd,
       mode: finalMode, effort: finalEffort, thinking: finalThinking, model: finalModel,
       hookCallbackUrl: this.hookCallbackUrl(id),
+      mcpServerUrl: this.mcpServerUrl(),
       worktree: worktreeMeta,
       temp: tempFlag,
       debug: !!debug,

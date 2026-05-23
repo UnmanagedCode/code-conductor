@@ -80,13 +80,9 @@ Each project gets a one-line `CLAUDE.md`:
 
 ### MCP interface
 
-The orchestrator's verbs are also exposed as an [MCP](https://modelcontextprotocol.io/) server mounted on the same port at `POST /mcp` (Streamable HTTP, JSON-RPC 2.0). Once registered, any Claude session can drive the orchestrator directly — list / spawn / kill instances, send prompts to other live sessions, read their transcripts, create and merge worktrees, etc. Useful for letting one agent supervise or fan out work across several others.
+The orchestrator's verbs are also exposed as an [MCP](https://modelcontextprotocol.io/) server mounted on the same port at `POST /mcp` (Streamable HTTP, JSON-RPC 2.0). Any Claude session can drive the orchestrator directly — list / spawn / kill instances, send prompts to other live sessions, read their transcripts, create and merge worktrees, etc. Useful for letting one agent supervise or fan out work across several others.
 
-Register it once with the `claude` CLI:
-
-```bash
-claude mcp add --transport http claude-orch http://127.0.0.1:8787/mcp
-```
+**Auto-registered on every spawn** — no setup required. The orchestrator passes `--mcp-config '{"mcpServers":{"claude-orch":{"type":"http","url":"http://127.0.0.1:<port>/mcp"}}}'` to every Claude subprocess, so the `mcp__claude-orch__*` tools are available immediately without a prior `claude mcp add` step. The server name is fixed at `claude-orch` because the tool-name prefix is bound to it. To opt out (e.g. to neutralise the Claude-spawning-Claude recursion footgun described in [Known limitations](#known-limitations)), set `ORCH_DISABLE_MCP_AUTOREGISTER=1` on the orchestrator's environment before `npm start`.
 
 Available tools:
 
@@ -133,6 +129,7 @@ claude -p \
   --allow-dangerously-skip-permissions \
   --permission-mode <plan|bypassPermissions> --effort <effort> --thinking <thinking> \
   --settings '{"hooks":{"PreToolUse":[…]}}' \
+  --mcp-config '{"mcpServers":{"claude-orch":{"type":"http","url":"http://127.0.0.1:<port>/mcp"}}}' \
   [--model <name>] \
   --session-id <fresh-uuid> | --resume <existing-uuid>
 ```
@@ -510,5 +507,5 @@ The opt-in real-claude smoke (`tests/smoke.real.test.mjs`, gated by `RUN_REAL_CL
 - **`--effort` and `--thinking` are spawn-time only.** Switching them mid-session would require respawn + resume. Mode is the only knob that's live-switchable (via `control_request set_permission_mode`).
 - **No auth.** Bound to 127.0.0.1 — anyone with shell access on the device can drive it.
 - **Best-effort metadata writes.** If the orchestrator crashes between a turn ending and the metadata append, the session jsonl may lack the `last-prompt` line and won't show up in `claude --resume`'s picker. The transcript is still intact and resumable by `claude --resume <sid>`.
-- **MCP: Claude-spawning-Claude recursion.** A session that has the orchestrator MCP registered (see [MCP interface](#mcp-interface)) can call `spawn_instance` to launch further sessions, which can in turn register the same MCP and spawn more — ad infinitum if you set up an autonomous loop. There is no orchestrator-side depth guard. Recommended mitigations: spawn child agents in `plan` mode by default (they then can't `claude mcp add` because `Bash` is denied), and register the MCP per-project rather than into the workspace-wide `~/.claude.json` so children inherit a clean config.
+- **MCP: Claude-spawning-Claude recursion.** Because the orchestrator MCP is auto-registered into every spawn (see [MCP interface](#mcp-interface)), any session can call `spawn_instance` to launch further sessions — and those children inherit the same auto-registration, so they can spawn more in turn, ad infinitum if you set up an autonomous loop. There is no orchestrator-side depth guard. Recommended mitigations, in order of strength: (1) set `ORCH_DISABLE_MCP_AUTOREGISTER=1` on the orchestrator process — children spawned under that env never see the MCP at all; (2) spawn child agents in `plan` mode by default (they still see the MCP but can't `set_mode`/`send_prompt` to escalate themselves into deeper spawns without user approval); (3) prefer the `wait:true` MCP send-prompt path over fire-and-forget so a runaway fan-out blocks on its first child instead of racing.
 - **Notifications need user permission.** The 🔔 toggle works on browsers that expose the Notification API. On mobile Chrome notifications require the Service Worker at `/sw.js` (registered automatically once permission is granted). iOS Safari requires installing the page as a PWA. The toggle reports the current permission state in its tooltip when unavailable.
