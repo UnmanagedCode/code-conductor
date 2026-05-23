@@ -59,6 +59,18 @@ export function buildSettingsJSON({ hookCallbackUrl } = {}) {
   return JSON.stringify({ hooks: { PreToolUse: preToolUse } });
 }
 
+// Builds the inline `--mcp-config` JSON the orchestrator passes to every
+// claude subprocess so the spawned session sees the orchestrator's own
+// MCP server (mounted at POST /mcp) without a prior `claude mcp add`
+// step. The server name must stay `claude-orch` — tool names are
+// prefixed `mcp__claude-orch__*`, and changing the name would break any
+// in-flight transcripts and tool-allowlist patterns.
+export function buildMcpConfigJSON({ url, name = 'claude-orch' } = {}) {
+  return JSON.stringify({
+    mcpServers: { [name]: { type: 'http', url } },
+  });
+}
+
 // Exported for tests that want to assert the deny reason makes it
 // into the rendered hookSpecificOutput.
 export const _internal = {
