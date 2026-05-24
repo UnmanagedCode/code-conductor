@@ -113,16 +113,41 @@ const autoApprovePlansByInstance = new Set();
 // for a session the user isn't currently viewing; cleared on
 // selectInstance. Keyed by sessionId (not instance id) so the count
 // survives a crash + resume cycle that mints a new instance id for the
-// same session.
-const unreadBySessionId = new Map();
+// same session. Persisted to localStorage so it also survives page
+// refreshes — turn_notifications keep firing for live background
+// instances even when no tab is connected (the server-side ring buffer
+// can't replay missed ones, but new ones after reload are counted).
+const UNREAD_STORAGE_KEY = 'claude-orch:unread';
+function loadUnreadFromStorage() {
+  try {
+    const raw = localStorage.getItem(UNREAD_STORAGE_KEY);
+    if (!raw) return new Map();
+    const obj = JSON.parse(raw);
+    if (!obj || typeof obj !== 'object') return new Map();
+    return new Map(Object.entries(obj).filter(([, v]) => Number.isInteger(v) && v > 0));
+  } catch {
+    return new Map();
+  }
+}
+function saveUnreadToStorage() {
+  try {
+    if (unreadBySessionId.size === 0) localStorage.removeItem(UNREAD_STORAGE_KEY);
+    else localStorage.setItem(UNREAD_STORAGE_KEY, JSON.stringify(Object.fromEntries(unreadBySessionId)));
+  } catch {
+    // localStorage can throw (private mode, quota) — unread is best-effort.
+  }
+}
+const unreadBySessionId = loadUnreadFromStorage();
 function bumpUnread(sessionId) {
   if (!sessionId) return;
   unreadBySessionId.set(sessionId, (unreadBySessionId.get(sessionId) ?? 0) + 1);
+  saveUnreadToStorage();
   sidebar.setUnread(unreadBySessionId);
 }
 function clearUnread(sessionId) {
   if (!sessionId) return;
   if (!unreadBySessionId.delete(sessionId)) return;
+  saveUnreadToStorage();
   sidebar.setUnread(unreadBySessionId);
 }
 
@@ -217,6 +242,11 @@ const sidebar = new Sidebar({
   onLoadSessions: loadSessions,
   onDeleteSession: deleteSession,
 });
+// Seed the sidebar with any unread counts restored from localStorage so
+// the pills appear on the first render after a page reload — without
+// this, sidebar starts with an empty Map and the badges only reappear
+// after the next bumpUnread fires.
+sidebar.setUnread(unreadBySessionId);
 
 const composer = attachComposer({
   form: dom.composerForm,
@@ -630,6 +660,8 @@ async function deleteSession({ projectName, worktreeName, sessionId, preview }) 
       const key = worktreeName ? `${projectName}:${worktreeName}` : projectName;
       sidebar.sessionsCache.delete(key);
     }
+    // Don't keep an unread entry for a session that no longer exists.
+    clearUnread(sessionId);
     await refreshProjects();
     await refreshInstances();
   } catch (e) {
