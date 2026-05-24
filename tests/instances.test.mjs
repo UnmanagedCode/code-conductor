@@ -202,6 +202,70 @@ test('crash + respawn preserves sessionId, ring buffer, and uses --resume', asyn
   }
 });
 
+test('respawn wipes the ring so loadHistory does not pile on top of the prior run', async () => {
+  // Regression: a respawn into an instance whose ring still holds the prior
+  // run's events would replay the persisted transcript on top, doubling
+  // every message in the UI. The wipe lives in InstanceManager.respawn() and
+  // mirrors what the rewind path does.
+  const ctx = await bootServer({
+    scenarioPath: path.join(__dirname, 'fixtures', 'scenario-resume.json'),
+  });
+  try {
+    const sid = 'cccc1234-2222-3333-4444-555555555555';
+    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'respawnproj' });
+    const projectPath = path.join(ctx.projectsRoot, 'respawnproj');
+    const sessionDir = path.join(ctx.claudeProjectsRoot, encodeCwd(projectPath));
+    await fs.mkdir(sessionDir, { recursive: true });
+    await fs.writeFile(
+      path.join(sessionDir, `${sid}.jsonl`),
+      [
+        { type: 'user', uuid: 'u1', message: { role: 'user', content: 'first prompt' } },
+        { type: 'assistant', uuid: 'a1', message: { id: 'm1', role: 'assistant', content: [
+          { type: 'text', text: 'first reply' },
+        ] } },
+        { type: 'user', uuid: 'u2', message: { role: 'user', content: 'second prompt' } },
+        { type: 'assistant', uuid: 'a2', message: { id: 'm2', role: 'assistant', content: [
+          { type: 'text', text: 'second reply' },
+        ] } },
+      ].map(l => JSON.stringify(l)).join('\n') + '\n',
+    );
+
+    const r = await api(ctx.baseUrl, 'POST', '/api/instances', {
+      project: 'respawnproj', mode: 'bypassPermissions', resume: sid,
+    });
+    const id = r.body.id;
+    await waitFor(() => ctx.instances.get(id).status === 'idle');
+    assert.equal(
+      ctx.instances.get(id).ringSnapshot().filter(e => e.kind === 'user_echo').length,
+      2,
+    );
+
+    await ctx.instances.get(id).kill({ graceMs: 50 });
+    await waitFor(() => {
+      const s = ctx.instances.get(id).status;
+      return s === 'exited' || s === 'crashed';
+    });
+
+    let resetSeen = 0;
+    ctx.instances.on('snapshot_reset', (snap) => {
+      if (snap.id === id) resetSeen++;
+    });
+    const rs = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/respawn`);
+    assert.equal(rs.status, 200);
+    await waitFor(() => ctx.instances.get(id).status === 'idle');
+
+    assert.equal(resetSeen, 1, 'respawn broadcasts snapshot_reset so subscribers clear their view');
+
+    const echoes = ctx.instances.get(id).ringSnapshot()
+      .filter(e => e.kind === 'user_echo')
+      .map(e => e.text);
+    assert.deepEqual(
+      echoes, ['first prompt', 'second prompt'],
+      'history replayed exactly once after respawn',
+    );
+  } finally { await ctx.close(); }
+});
+
 test('DELETE /api/instances/:id kills subprocess and removes it', async () => {
   const { baseUrl, instances, close } = await setupWithProject();
   try {

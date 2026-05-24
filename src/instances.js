@@ -598,20 +598,10 @@ export class Instance extends EventEmitter {
         permissionMode: cliPermissionMode(this.mode),
       });
 
-      // Wipe in-memory state. The ring is now empty; loadHistory() in the
-      // upcoming spawn() will rebuild it from the truncated jsonl.
-      this.ring.clear();
-      this.parser.reset();
-      this._lastLeafUuid = null;
-      this._lastPlanFilePath = null;
-      this._hooks.discardAll();
-
-      // Tell subscribers to drop their current conversation DOM before the
-      // new replay events start arriving. `droppedText` rides along on the
-      // frame so the client can prefill the composer without racing the
-      // rewind HTTP response (which arrives on a separate connection and
-      // can land after the WS frame on localhost).
-      this.emit('snapshot_reset', { ...this._snapshotForReset(), droppedText: result.droppedText });
+      // Wipe in-memory state and tell subscribers to drop their conversation
+      // DOM. `droppedText` rides on the broadcast frame so the client can
+      // prefill the composer without racing the rewind HTTP response.
+      this._wipeForResume({ droppedText: result.droppedText });
 
       // Empty prefix (rewound to the first user message): the jsonl now has
       // zero lines, so `--resume <sid>` would point the CLI at a file with
@@ -632,6 +622,21 @@ export class Instance extends EventEmitter {
     } finally {
       this._mutating = false;
     }
+  }
+
+  // Wipe in-memory state (ring buffer, parser, leaf marker, pending hook
+  // resolutions) before a resume that will call loadHistory(). Without this,
+  // a respawn into an instance that still has prior events would replay the
+  // persisted transcript on top of the existing ring and every message would
+  // render twice. Also broadcasts `snapshot_reset` so subscribed clients
+  // clear their conversation DOM before the new replay starts streaming.
+  _wipeForResume(extra = {}) {
+    this.ring.clear();
+    this.parser.reset();
+    this._lastLeafUuid = null;
+    this._lastPlanFilePath = null;
+    this._hooks.discardAll();
+    this.emit('snapshot_reset', { ...this._snapshotForReset(), ...extra });
   }
 
   // Snapshot frame used at rewind broadcast time. Mirrors the shape of the
@@ -779,6 +784,10 @@ export class InstanceManager extends EventEmitter {
     if (!inst.sessionId) {
       throw Object.assign(new Error('no sessionId to resume'), { statusCode: 400 });
     }
+    // Drop the prior run's events before loadHistory() replays the persisted
+    // transcript into the ring — otherwise the replay piles up on top of the
+    // existing conversation and every message renders twice.
+    inst._wipeForResume();
     inst.spawn({ resume: inst.sessionId });
     this.emit('list_changed');
     return inst;
