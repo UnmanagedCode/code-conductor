@@ -3,11 +3,20 @@ import path from 'node:path';
 import os from 'node:os';
 
 const NAME_RE = /^[a-zA-Z0-9._-]+$/;
+// Project group names are looser than project names: spaces and slashes
+// are allowed so users can type a natural label ("Work", "Side projects",
+// "client/Foo"). Bounded length + no control chars so it remains safe to
+// render and serialise.
+const GROUP_RE = /^[\w][\w \-./]{0,39}$/;
 // Directories owned by the orchestrator's worktree feature carry this
 // marker path (see src/worktrees.js). Top-level project listing filters
 // them out so they aren't presented as standalone projects — they appear
 // as a child node under the parent.
 const WORKTREE_MARKER = '.claude-orch-app/worktree.json';
+// Per-project metadata lives alongside other orchestrator state in the
+// project's .claude-orch-app/ dotfolder. Created lazily — projects with
+// no metadata simply have no file.
+const META_FILE = '.claude-orch-app/project.json';
 
 async function isWorktreeMarkerPresent(dir) {
   try {
@@ -58,10 +67,79 @@ export async function listProjects() {
     // Skip orchestrator-owned worktree dirs — they're surfaced under
     // their parent project, not as top-level projects.
     if (await isWorktreeMarkerPresent(full)) continue;
-    out.push({ name: e.name, path: full });
+    const meta = await readProjectMeta(e.name);
+    out.push({ name: e.name, path: full, group: meta.group });
   }
   out.sort((a, b) => a.name.localeCompare(b.name));
   return out;
+}
+
+export function validateGroup(group) {
+  if (group === null) return null;
+  if (typeof group !== 'string') {
+    const err = new Error('group must be a string or null');
+    err.statusCode = 400;
+    throw err;
+  }
+  const trimmed = group.trim();
+  if (trimmed === '') return null;
+  if (!GROUP_RE.test(trimmed)) {
+    const err = new Error('invalid group name (1–40 chars, no control chars; spaces / `/`,`.`,`-`,`_` allowed)');
+    err.statusCode = 400;
+    throw err;
+  }
+  return trimmed;
+}
+
+// Read the project's optional metadata file. Missing file or malformed
+// JSON → {group: null}. The dotfolder may not exist yet — that's fine.
+export async function readProjectMeta(name) {
+  validateName(name);
+  const file = path.join(projectsRoot(), name, META_FILE);
+  try {
+    const raw = await fs.readFile(file, 'utf8');
+    const obj = JSON.parse(raw);
+    const group = typeof obj?.group === 'string' && obj.group.trim() !== ''
+      ? obj.group.trim()
+      : null;
+    return { group };
+  } catch (e) {
+    if (e.code === 'ENOENT') return { group: null };
+    // Malformed JSON or unreadable — degrade to ungrouped rather than
+    // throwing. A single console.warn (not an error) so noisy systems
+    // don't spam logs on every list.
+    console.warn(`projects: failed to read ${file}: ${e.message}`);
+    return { group: null };
+  }
+}
+
+// Write the project's metadata. Atomic rename to avoid torn reads if the
+// process dies mid-write. Passing {group: null} clears the field and
+// deletes the file if it would otherwise be empty.
+export async function writeProjectMeta(name, patch) {
+  validateName(name);
+  await getProject(name);
+  const dir = path.join(projectsRoot(), name, '.claude-orch-app');
+  const file = path.join(dir, 'project.json');
+  const current = await readProjectMeta(name);
+  const next = { ...current, ...patch };
+  if ('group' in patch) next.group = validateGroup(patch.group);
+  // Drop empty fields so the on-disk file stays minimal.
+  for (const k of Object.keys(next)) {
+    if (next[k] === null || next[k] === undefined) delete next[k];
+  }
+  if (Object.keys(next).length === 0) {
+    // Nothing to persist — remove the file (and the dotfolder if empty,
+    // best-effort). Keeps a freshly-created-then-cleared project tidy.
+    try { await fs.unlink(file); } catch (e) { if (e.code !== 'ENOENT') throw e; }
+    try { await fs.rmdir(dir); } catch { /* not empty / not there — fine */ }
+    return next;
+  }
+  await fs.mkdir(dir, { recursive: true });
+  const tmp = `${file}.tmp-${process.pid}`;
+  await fs.writeFile(tmp, JSON.stringify(next, null, 2) + '\n');
+  await fs.rename(tmp, file);
+  return next;
 }
 
 export async function createProject(name) {

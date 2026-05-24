@@ -47,6 +47,15 @@ const dom = {
   npName: document.getElementById('np-name'),
   npError: document.getElementById('np-error'),
   npPreview: document.getElementById('np-preview'),
+  newGroupBtn: document.getElementById('new-group-btn'),
+  groupDialog: document.getElementById('group-dialog'),
+  gdTitle: document.getElementById('gd-title'),
+  gdName: document.getElementById('gd-name'),
+  gdProjectList: document.getElementById('gd-project-list'),
+  gdEmptyHint: document.getElementById('gd-empty-hint'),
+  gdError: document.getElementById('gd-error'),
+  gdDelete: document.getElementById('gd-delete'),
+  gdSave: document.getElementById('gd-save'),
   newInstanceDialog: document.getElementById('new-instance-dialog'),
   niProject: document.getElementById('ni-project'),
   niMode: document.getElementById('ni-mode'),
@@ -241,6 +250,7 @@ const sidebar = new Sidebar({
   onResumeSession: resumeSession,
   onLoadSessions: loadSessions,
   onDeleteSession: deleteSession,
+  onEditGroup: openEditGroupDialog,
 });
 // Seed the sidebar with any unread counts restored from localStorage so
 // the pills appear on the first render after a page reload — without
@@ -378,6 +388,158 @@ dom.newProjectDialog.addEventListener('close', async () => {
   } catch (e) {
     dom.npError.textContent = e.message;
     dom.newProjectDialog.showModal();
+  }
+});
+
+// Group dialog. Double-duty for new + edit:
+//   - new mode (groupDialogOriginalName === null): blank name input,
+//     no tickboxes pre-checked, Delete-group button hidden.
+//   - edit mode (groupDialogOriginalName === '<name>'): name pre-filled,
+//     current members ticked, Delete button shown.
+// On submit, we diff the rendered ticks against the original membership
+// and fire one PUT /api/projects/:name/group per changed project in
+// parallel. Renames (edit mode) fan out an extra PUT per existing member
+// to update their stored group string.
+let groupDialogOriginalName = null;
+let groupDialogOriginalMembers = new Set();
+
+function renderGroupDialogProjectList() {
+  dom.gdProjectList.innerHTML = '';
+  const projects = state.projects;
+  if (projects.length === 0) {
+    dom.gdEmptyHint.hidden = false;
+    return;
+  }
+  dom.gdEmptyHint.hidden = true;
+  for (const p of projects) {
+    const li = document.createElement('li');
+    const label = document.createElement('label');
+    label.className = 'gd-project-row';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.value = p.name;
+    cb.checked = groupDialogOriginalMembers.has(p.name);
+    label.appendChild(cb);
+    const name = document.createElement('span');
+    name.className = 'gd-project-name';
+    name.textContent = p.name;
+    label.appendChild(name);
+    const currentGroup = (typeof p.group === 'string' && p.group.trim() !== '') ? p.group.trim() : null;
+    if (currentGroup && currentGroup !== groupDialogOriginalName) {
+      const tag = document.createElement('span');
+      tag.className = 'gd-project-current-group';
+      tag.textContent = `in '${currentGroup}'`;
+      tag.title = `Ticking this project will move it out of '${currentGroup}'.`;
+      label.appendChild(tag);
+    }
+    li.appendChild(label);
+    dom.gdProjectList.appendChild(li);
+  }
+}
+
+function openNewGroupDialog() {
+  groupDialogOriginalName = null;
+  groupDialogOriginalMembers = new Set();
+  dom.gdTitle.textContent = 'New group';
+  dom.gdName.value = '';
+  dom.gdError.textContent = '';
+  dom.gdDelete.hidden = true;
+  dom.gdSave.textContent = 'Create';
+  renderGroupDialogProjectList();
+  dom.groupDialog.showModal();
+  // Focus the name field once the dialog is up.
+  setTimeout(() => dom.gdName.focus(), 0);
+}
+
+function openEditGroupDialog(groupName) {
+  groupDialogOriginalName = groupName;
+  groupDialogOriginalMembers = new Set(
+    state.projects.filter(p => (p.group ?? '').trim() === groupName).map(p => p.name),
+  );
+  dom.gdTitle.textContent = `Edit group '${groupName}'`;
+  dom.gdName.value = groupName;
+  dom.gdError.textContent = '';
+  dom.gdDelete.hidden = false;
+  dom.gdSave.textContent = 'Save';
+  renderGroupDialogProjectList();
+  dom.groupDialog.showModal();
+}
+
+dom.newGroupBtn.addEventListener('click', openNewGroupDialog);
+
+// Delete-group: clear the group field on every current member. The
+// projects themselves are untouched; they fall back to ungrouped. Sits
+// inside the form but is a type=button so it doesn't submit it — we
+// handle it explicitly and close the dialog ourselves.
+dom.gdDelete.addEventListener('click', async () => {
+  if (!groupDialogOriginalName) return;
+  if (!confirm(`Delete group '${groupDialogOriginalName}'?\nMember projects will move back to ungrouped (no project data is removed).`)) return;
+  dom.gdDelete.disabled = true;
+  dom.gdError.textContent = '';
+  try {
+    await Promise.all([...groupDialogOriginalMembers].map(name =>
+      setProjectGroup(name, null),
+    ));
+    dom.groupDialog.close('deleted');
+    await refreshProjects();
+  } catch (e) {
+    dom.gdError.textContent = e.message;
+  } finally {
+    dom.gdDelete.disabled = false;
+  }
+});
+
+async function setProjectGroup(projectName, group) {
+  const r = await fetch(`/api/projects/${encodeURIComponent(projectName)}/group`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ group }),
+  });
+  if (!r.ok) {
+    const body = await r.json().catch(() => ({}));
+    throw new Error(body.error ?? `${projectName}: HTTP ${r.status}`);
+  }
+}
+
+dom.groupDialog.addEventListener('close', async () => {
+  if (dom.groupDialog.returnValue !== 'save') return;
+  const newName = dom.gdName.value.trim();
+  if (!newName) {
+    dom.gdError.textContent = 'Group name is required';
+    dom.groupDialog.showModal();
+    return;
+  }
+  // Diff the ticked set against the original. Any project whose ticked
+  // state differs from its membership-at-dialog-open gets a PUT. In edit
+  // mode we additionally rename existing members if newName !== old.
+  const ticked = new Set();
+  for (const cb of dom.gdProjectList.querySelectorAll('input[type="checkbox"]')) {
+    if (cb.checked) ticked.add(cb.value);
+  }
+  const updates = [];
+  for (const name of ticked) {
+    if (!groupDialogOriginalMembers.has(name)) {
+      // Newly ticked — assign to this group (may move from another).
+      updates.push(setProjectGroup(name, newName));
+    } else if (groupDialogOriginalName && newName !== groupDialogOriginalName) {
+      // Was already a member, but the group is being renamed — rewrite.
+      updates.push(setProjectGroup(name, newName));
+    }
+    // Already a member and name unchanged → no-op.
+  }
+  for (const name of groupDialogOriginalMembers) {
+    if (!ticked.has(name)) {
+      // Was a member, no longer ticked — drop from the group.
+      updates.push(setProjectGroup(name, null));
+    }
+  }
+  if (updates.length === 0) return; // nothing to do
+  try {
+    await Promise.all(updates);
+    await refreshProjects();
+  } catch (e) {
+    dom.gdError.textContent = e.message;
+    dom.groupDialog.showModal();
   }
 });
 

@@ -54,8 +54,9 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
 #sidebar-scrim.open { display: block; }
 #sidebar-body { flex: 1; overflow-y: auto; padding: 8px 10px; }
 
-.sidebar-actions { margin-bottom: 10px; }
-.sidebar-actions button { width: 100%; }
+.sidebar-actions { margin-bottom: 10px; display: flex; gap: 6px; }
+.sidebar-actions button { flex: 1; min-width: 0; }
+#new-group-btn { flex: 0 0 auto; padding-left: 10px; padding-right: 10px; }
 
 /* Sidebar footer: pinned at the bottom of the column-flex sidebar.
    Hosts the "Restart server" button + a small connection-status line
@@ -77,6 +78,91 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
 
 .project-list { list-style: none; padding: 0; margin: 0; }
 .project-list > li { margin-bottom: 6px; }
+
+/* Collapsible group header. Visually parallel to .worktree-group /
+   .sessions-group: a <summary> with a custom caret, plus a small pencil
+   ✎ that opens the membership dialog. Members render inside a nested
+   <ul>, each with the same .project-row markup as ungrouped projects.
+   The wrapping <li> drops list bullets so the layout doesn't sprout an
+   extra indent. */
+.project-list > li.project-group-item { list-style: none; }
+.project-group {
+  margin: 4px 0;
+  border-top: 1px dashed var(--border);
+  padding-top: 4px;
+}
+.project-group > .project-group-summary {
+  list-style: none; cursor: pointer;
+  display: flex; align-items: center; gap: 6px;
+  padding: 4px 6px; border-radius: 4px;
+  font-size: 12px; color: var(--muted);
+  user-select: none;
+}
+.project-group > .project-group-summary::-webkit-details-marker { display: none; }
+.project-group > .project-group-summary::before {
+  content: '▸';
+  display: inline-block; width: 12px;
+  color: var(--muted);
+  transition: transform .12s;
+}
+.project-group[open] > .project-group-summary::before { transform: rotate(90deg); }
+.project-group > .project-group-summary:hover { background: var(--panel-2); }
+.project-group-name {
+  flex: 1 1 auto; min-width: 0;
+  font-weight: 600; color: var(--text);
+  text-transform: uppercase; letter-spacing: .04em; font-size: 11px;
+}
+.project-group-count { color: var(--muted); font-family: ui-monospace, monospace; font-size: 11px; }
+.project-group-edit {
+  background: none; border: none; color: var(--muted);
+  cursor: pointer; padding: 0 4px; font-size: 12px; line-height: 1;
+  flex: 0 0 auto;
+}
+.project-group-edit:hover { color: var(--text); }
+.project-group-list {
+  list-style: none; padding: 0; margin: 4px 0 4px 8px;
+  border-left: 1px solid var(--border);
+  padding-left: 8px;
+}
+.project-group-list > li { margin-bottom: 6px; list-style: none; }
+
+/* Group dialog (new + edit + delete). Reuses the modal <dialog> base. */
+#group-dialog .gd-projects {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px;
+  margin: 0 0 10px 0;
+  max-height: 50vh;
+  overflow-y: auto;
+}
+#group-dialog .gd-projects legend { font-size: 11px; color: var(--muted); padding: 0 6px; }
+.gd-project-list { list-style: none; padding: 0; margin: 0; }
+.gd-project-list > li { margin: 0; padding: 0; }
+.gd-project-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 4px 6px; border-radius: 4px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.gd-project-row:hover { background: var(--panel-2); }
+.gd-project-row input[type="checkbox"] {
+  width: auto !important; margin: 0; flex: 0 0 auto;
+}
+.gd-project-name { flex: 1 1 auto; min-width: 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.gd-project-current-group {
+  font-size: 10px; color: var(--amber);
+  border: 1px solid var(--amber); border-radius: 8px;
+  padding: 0 5px; flex: 0 0 auto;
+  font-family: ui-monospace, monospace;
+  text-transform: lowercase;
+}
+.gd-delete {
+  margin-right: auto;
+  background: rgba(248,113,113,.10); color: var(--red); border-color: var(--red);
+}
+.gd-delete:hover:not(:disabled) { background: rgba(248,113,113,.18); }
 .project-row {
   display: flex; align-items: center; gap: 6px;
   padding: 6px 8px; border-radius: 6px; cursor: pointer;

@@ -21,6 +21,7 @@
       <div id="sidebar-body">
         <div class="sidebar-actions">
           <button id="new-project-btn">+ New project</button>
+          <button id="new-group-btn" title="Create a new project group">+ Group</button>
         </div>
         <ul id="project-list" class="project-list"></ul>
       </div>
@@ -85,6 +86,25 @@
       <menu>
         <button value="cancel" formnovalidate>Cancel</button>
         <button id="np-create" value="create">Create</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <dialog id="group-dialog">
+    <form method="dialog">
+      <h3 id="gd-title">Group projects</h3>
+      <label>Group name <input id="gd-name" required autofocus placeholder="Work / Side / client-X" /></label>
+      <p class="hint">Each project can belong to one group. Tick to include; untick to remove. A project ticked here is moved out of any other group.</p>
+      <fieldset class="gd-projects">
+        <legend>Projects</legend>
+        <ul id="gd-project-list" class="gd-project-list"></ul>
+        <p class="hint" id="gd-empty-hint" hidden>No projects yet — create one first.</p>
+      </fieldset>
+      <p class="error" id="gd-error"></p>
+      <menu>
+        <button id="gd-delete" type="button" class="gd-delete" hidden>Delete group</button>
+        <button value="cancel" formnovalidate>Cancel</button>
+        <button id="gd-save" value="save">Save</button>
       </menu>
     </form>
   </dialog>
