@@ -105,6 +105,8 @@ RUN_REAL_CLAUDE=1 npm test   # also runs the opt-in real-claude smoke test
 
 Open `http://127.0.0.1:8787` in a browser on the same device. Bound to localhost only — no auth.
 
+**Install as an app on Android.** Visit the URL in Chrome, open the ⋮ menu, and tap **Install app** (or **Add to home screen**). Hivemind ships a Web App Manifest (`public/manifest.webmanifest`) and an SVG icon, so the launcher icon lands on the home screen and opens the app in standalone mode — no URL bar, separate task in the recents view. The same Service Worker that powers desktop notifications keeps working.
+
 For headless visual debugging via Playwright + Termux Chromium, see [`debug/README.md`](./debug/README.md). The reusable harness lives in a sibling repo at [`~/project/termux-playwright-harness/`](../termux-playwright-harness/) (clone it alongside and `npm install` once); `debug/` here is a thin orchestrator-specific wrapper, not wired into the main test suite.
 
 ## Technical detail

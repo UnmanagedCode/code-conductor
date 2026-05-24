@@ -1,0 +1,15 @@
+{
+  "name": "Hivemind",
+  "short_name": "Hivemind",
+  "description": "Orchestrate multiple Claude Code CLI instances",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "theme_color": "#0f1117",
+  "background_color": "#0f1117",
+  "icons": [
+    { "src": "/icon.svg", "type": "image/svg+xml", "sizes": "any", "purpose": "any" },
+    { "src": "/icon.svg", "type": "image/svg+xml", "sizes": "any", "purpose": "maskable" }
+  ]
+}
