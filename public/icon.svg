@@ -1,9 +1,9 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
   <rect width="512" height="512" fill="#000"/>
-  <polyline points="140,176 270,256 140,336"
-            fill="none" stroke="#fff" stroke-width="48"
+  <polyline points="186,200 256,256 186,312"
+            fill="none" stroke="#fff" stroke-width="32"
             stroke-linecap="round" stroke-linejoin="round"/>
-  <text x="300" y="338"
+  <text x="282" y="316"
         font-family="ui-monospace,'SF Mono','Menlo','Consolas','Roboto Mono',monospace"
-        font-size="120" font-weight="700" fill="#fff">CC</text>
+        font-size="76" font-weight="700" fill="#fff">CC</text>
 </svg>
