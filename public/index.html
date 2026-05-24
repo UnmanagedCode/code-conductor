@@ -21,7 +21,15 @@
       <div id="sidebar-body">
         <div class="sidebar-actions">
           <button id="new-project-btn">+ New project</button>
-          <button id="new-group-btn" title="Create a new project group">+ Group</button>
+          <div id="sidebar-overflow-menu" class="overflow-menu">
+            <button id="sidebar-overflow-toggle" type="button"
+                    aria-haspopup="menu" aria-expanded="false"
+                    title="More project actions">≡</button>
+            <div id="sidebar-overflow-panel" class="overflow-panel" hidden role="menu">
+              <button id="new-group-btn" type="button" role="menuitem"
+                      title="Create a new project group">+ Group</button>
+            </div>
+          </div>
         </div>
         <ul id="project-list" class="project-list"></ul>
       </div>

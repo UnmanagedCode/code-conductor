@@ -431,10 +431,11 @@ export class Sidebar {
       return;
     }
 
-    // Split into ungrouped (top-level) vs grouped (nested under <details>).
-    // Group bucket order is alphabetical for v1 — explicit ordering can
-    // come later. `project.group` is whatever the server returned (the
-    // trimmed string from .code-conductor/project.json) or null/missing.
+    // Split into grouped (rendered first, nested under <details>) and
+    // ungrouped (rendered flat underneath). Group bucket order is
+    // alphabetical for v1 — explicit ordering can come later.
+    // `project.group` is whatever the server returned (the trimmed string
+    // from .code-conductor/project.json) or null/missing.
     const ungrouped = [];
     const byGroup = new Map();
     for (const p of this.projects) {
@@ -446,10 +447,6 @@ export class Sidebar {
       } else {
         ungrouped.push(p);
       }
-    }
-
-    for (const p of ungrouped) {
-      this.list.appendChild(this._projectItem({ project: p, directByProject, byWorktree }));
     }
 
     const groupNames = [...byGroup.keys()].sort((a, b) => a.localeCompare(b));
@@ -487,6 +484,10 @@ export class Sidebar {
       const li = el('li', { class: 'project-group-item' });
       li.appendChild(det);
       this.list.appendChild(li);
+    }
+
+    for (const p of ungrouped) {
+      this.list.appendChild(this._projectItem({ project: p, directByProject, byWorktree }));
     }
   }
 }

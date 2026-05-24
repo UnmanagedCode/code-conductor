@@ -357,7 +357,7 @@ test('Sessions subnode is default-expanded; manual collapse persists across re-r
   assert.ok(!det.hasAttribute('open'), 'manual collapse persists across re-render');
 });
 
-test('Projects with a group render under a <details> group container; ungrouped render flat above', async () => {
+test('Projects with a group render under a <details> group container at the top; ungrouped render flat below', async () => {
   const { root, sidebar } = await setupSidebar({ onLoadSessions: async () => [] });
   sidebar.setProjects([
     { name: 'alpha', path: '/p/alpha', instanceIds: [], isGitRepo: false, worktrees: [],
@@ -370,11 +370,12 @@ test('Projects with a group render under a <details> group container; ungrouped 
       sessions: { count: 0, lastMtime: 0 }, group: 'Work' },
   ]);
   sidebar.setInstances([]);
-  // Top-level <li> children: one ungrouped project + two group items
-  // (Side, Work — sorted alphabetically).
+  // Top-level <li> children: two group items (Side, Work — sorted
+  // alphabetically) followed by the one ungrouped project at the bottom.
   const topLis = [...root.children].filter(n => n.tagName === 'LI');
-  // ungrouped first, then group items
-  assert.equal(topLis[0].querySelector(':scope > .project-row .project-name').textContent, 'alpha');
+  assert.ok(topLis[0].classList.contains('project-group-item'), 'first row is a group');
+  assert.ok(topLis[1].classList.contains('project-group-item'), 'second row is a group');
+  assert.equal(topLis[2].querySelector(':scope > .project-row .project-name').textContent, 'alpha');
   const groupItems = topLis.filter(li => li.classList.contains('project-group-item'));
   assert.equal(groupItems.length, 2);
   const names = groupItems.map(li => li.querySelector('.project-group-name').textContent);

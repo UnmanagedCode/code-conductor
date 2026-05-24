@@ -74,6 +74,9 @@ const dom = {
   overflowMenu: document.getElementById('overflow-menu'),
   overflowToggle: document.getElementById('overflow-toggle'),
   overflowPanel: document.getElementById('overflow-panel'),
+  sidebarOverflowMenu: document.getElementById('sidebar-overflow-menu'),
+  sidebarOverflowToggle: document.getElementById('sidebar-overflow-toggle'),
+  sidebarOverflowPanel: document.getElementById('sidebar-overflow-panel'),
   sidebarToggle: document.getElementById('sidebar-toggle'),
   sidebar: document.getElementById('sidebar'),
   sidebarScrim: document.getElementById('sidebar-scrim'),
@@ -465,7 +468,10 @@ function openEditGroupDialog(groupName) {
   dom.groupDialog.showModal();
 }
 
-dom.newGroupBtn.addEventListener('click', openNewGroupDialog);
+dom.newGroupBtn.addEventListener('click', () => {
+  closeSidebarOverflow();
+  openNewGroupDialog();
+});
 
 // Delete-group: clear the group field on every current member. The
 // projects themselves are untouched; they fall back to ungrouped. Sits
@@ -1086,6 +1092,37 @@ function toggleOverflow() {
   openOverflow = { dismiss };
 }
 dom.overflowToggle.addEventListener('click', toggleOverflow);
+
+// Sidebar ≡ hamburger — mirrors the header overflow pattern. Hosts
+// secondary project actions (currently just "+ Group") so the primary
+// "+ New project" button gets the full action-row width.
+let openSidebarOverflow = null;
+function closeSidebarOverflow() {
+  if (!openSidebarOverflow) return;
+  const { dismiss } = openSidebarOverflow;
+  dom.sidebarOverflowPanel.hidden = true;
+  dom.sidebarOverflowToggle.setAttribute('aria-expanded', 'false');
+  document.removeEventListener('pointerdown', dismiss, true);
+  document.removeEventListener('keydown', dismiss, true);
+  openSidebarOverflow = null;
+}
+function toggleSidebarOverflow() {
+  if (openSidebarOverflow) { closeSidebarOverflow(); return; }
+  dom.sidebarOverflowPanel.hidden = false;
+  dom.sidebarOverflowToggle.setAttribute('aria-expanded', 'true');
+  const dismiss = (ev) => {
+    if (ev.type === 'keydown') {
+      if (ev.key === 'Escape') closeSidebarOverflow();
+      return;
+    }
+    if (dom.sidebarOverflowPanel.contains(ev.target) || dom.sidebarOverflowToggle.contains(ev.target)) return;
+    closeSidebarOverflow();
+  };
+  document.addEventListener('pointerdown', dismiss, true);
+  document.addEventListener('keydown', dismiss, true);
+  openSidebarOverflow = { dismiss };
+}
+dom.sidebarOverflowToggle.addEventListener('click', toggleSidebarOverflow);
 
 function buildUsagePopover(inst) {
   const usage = getUsage(inst.id);

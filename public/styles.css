@@ -54,9 +54,10 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
 #sidebar-scrim.open { display: block; }
 #sidebar-body { flex: 1; overflow-y: auto; padding: 8px 10px; }
 
-.sidebar-actions { margin-bottom: 10px; display: flex; gap: 6px; }
-.sidebar-actions button { flex: 1; min-width: 0; }
-#new-group-btn { flex: 0 0 auto; padding-left: 10px; padding-right: 10px; }
+.sidebar-actions { margin-bottom: 10px; display: flex; gap: 6px; align-items: stretch; }
+.sidebar-actions > #new-project-btn { flex: 1; min-width: 0; }
+.sidebar-actions > .overflow-menu { flex: 0 0 auto; }
+#sidebar-overflow-toggle { padding: 4px 10px; line-height: 1; }
 
 /* Sidebar footer: pinned at the bottom of the column-flex sidebar.
    Hosts the "Restart server" button + a small connection-status line
