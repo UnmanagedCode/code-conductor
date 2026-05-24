@@ -407,10 +407,35 @@ input:focus, textarea:focus, select:focus { outline: 2px solid var(--accent); ou
 .conversation .empty { color: var(--muted); padding: 20px; text-align: center; }
 
 .msg { margin-bottom: 16px; padding: 8px 12px; border-radius: 8px; background: var(--panel); border: 1px solid var(--border); }
-.msg.user { background: var(--panel-2); border-color: var(--accent); }
+.msg.user { background: var(--panel-2); border-color: var(--accent); position: relative; }
 .msg.assistant { background: var(--panel); }
 .msg .role { font-size: 11px; text-transform: uppercase; color: var(--muted); margin-bottom: 6px; letter-spacing: .04em; }
 .msg .blocks { display: flex; flex-direction: column; gap: 6px; }
+
+/* Hover-revealed rewind / fork affordances on user messages. Mirrors the
+   .session-delete pattern in the sidebar — hidden by default, opacity:1 on
+   hover. Pinned to the top-right of the user bubble. */
+.user-msg-actions {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  display: flex;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity 120ms ease-out;
+}
+.msg.user:hover .user-msg-actions { opacity: 1; }
+@media (hover: none) {
+  .user-msg-actions { opacity: 1; }
+}
+.user-msg-action {
+  background: none; border: none; color: var(--muted);
+  cursor: pointer; padding: 2px 6px; font-size: 14px; line-height: 1;
+  border-radius: 4px;
+}
+.user-msg-action:hover { color: var(--text); background: var(--panel); }
+.user-msg-action:disabled { cursor: not-allowed; opacity: 0.4; }
+.user-msg-action:disabled:hover { color: var(--muted); background: transparent; }
 
 .block { font-size: 13px; }
 .block.text { white-space: pre-wrap; word-break: break-word; }

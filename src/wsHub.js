@@ -10,14 +10,15 @@
 //   { t: "hook_decision",  id, toolUseId, allow }
 //
 // Server → client:
-//   { t: "snapshot",  id, status, mode, sessionId, project, events: [...] }
-//   { t: "event",     id, ev }
-//   { t: "status",    id, status, sessionId, mode }
-//   { t: "closed",    id, code, signal }
+//   { t: "snapshot",       id, status, mode, sessionId, project, events: [...] }
+//   { t: "reset_snapshot", id, status, mode, sessionId, project, events: [...] }
+//   { t: "event",          id, ev }
+//   { t: "status",         id, status, sessionId, mode }
+//   { t: "closed",         id, code, signal }
 //   { t: "projects" }              // hint to re-fetch /api/projects
 //   { t: "instances" }             // hint to re-fetch /api/instances
-//   { t: "ack",       reqId, ok, error? }
-//   { t: "error",     message }
+//   { t: "ack",            reqId, ok, error? }
+//   { t: "error",          message }
 
 import { WebSocket } from 'ws';
 
@@ -76,6 +77,18 @@ export function attachWsHub({ wss, instances }) {
   instances.on('list_changed', () => {
     broadcastAll(JSON.stringify({ t: 'instances' }));
     broadcastAll(JSON.stringify({ t: 'projects' }));
+  });
+
+  // Rewind: server-side, the instance's ring buffer was just wiped and the
+  // subprocess respawned against a truncated jsonl. Subscribers need to
+  // drop their current conversation DOM before the replayed events from
+  // the new spawn start landing — that's what `reset_snapshot` does. Same
+  // shape as `snapshot` so the client can apply it through the same path.
+  instances.on('snapshot_reset', (snap) => {
+    const subs = subscribers.get(snap.id);
+    if (!subs) return;
+    const msg = JSON.stringify({ t: 'reset_snapshot', ...snap });
+    for (const ws of subs) safeSend(ws, msg);
   });
 
   function broadcastAll(msg) {

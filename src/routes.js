@@ -325,6 +325,72 @@ export function buildRoutes({ instances, serverCtx } = {}) {
       } catch (e) { next(e); }
     });
 
+    // Rewind the active session to before the Nth user prompt (0-indexed
+    // among emitted user_echo events). Kills the subprocess, truncates the
+    // persisted jsonl, broadcasts a snapshot_reset so subscribers clear
+    // their conversation, then respawns with --resume so the surviving
+    // prefix is replayed. Returns { ok:true, droppedText } so the
+    // frontend can prefill the composer with the removed prompt.
+    r.post('/instances/:id/rewind', async (req, res, next) => {
+      try {
+        const inst = instances.get(req.params.id);
+        if (!inst) throw Object.assign(new Error('instance not found'), { statusCode: 404 });
+        const idx = Number((req.body ?? {}).userMessageIndex);
+        if (!Number.isInteger(idx) || idx < 0) {
+          throw Object.assign(new Error('userMessageIndex must be a non-negative integer'), { statusCode: 400 });
+        }
+        const { droppedText } = await inst.rewindToUserMessage(idx);
+        res.json({ ok: true, droppedText });
+      } catch (e) { next(e); }
+    });
+
+    // Fork the session of the named instance: copy the prefix of its
+    // jsonl up to (excluding) the Nth user prompt into a new sessionId,
+    // leave the original session intact, and spawn a fresh instance
+    // resuming the forked jsonl. Returns the new instance summary plus
+    // { newSessionId, droppedText } for composer prefill + URL-anchor
+    // navigation in the frontend.
+    r.post('/instances/:id/fork', async (req, res, next) => {
+      try {
+        const inst = instances.get(req.params.id);
+        if (!inst) throw Object.assign(new Error('instance not found'), { statusCode: 404 });
+        if (inst.temp) throw Object.assign(new Error('temp sessions cannot be forked'), { statusCode: 400 });
+        if (!inst.sessionId) {
+          throw Object.assign(new Error('no sessionId — instance has not yet received a turn'), { statusCode: 400 });
+        }
+        const idx = Number((req.body ?? {}).userMessageIndex);
+        if (!Number.isInteger(idx) || idx < 0) {
+          throw Object.assign(new Error('userMessageIndex must be a non-negative integer'), { statusCode: 400 });
+        }
+        // Defer the import until first use — keeps the routes module light
+        // and avoids pulling sessionEdit into the test paths that don't
+        // exercise it.
+        const { forkSessionAtUserMessage } = await import('./sessionEdit.js');
+        const { newSessionId, droppedText } = await forkSessionAtUserMessage({
+          cwd: inst.cwd,
+          sessionId: inst.sessionId,
+          userMessageIndex: idx,
+          permissionMode: inst.mode === 'ask' ? 'bypassPermissions' : inst.mode,
+        });
+        // Spawn the fork as a new instance against the same cwd / worktree.
+        const newInst = await instances.create({
+          project: inst.project,
+          resume: newSessionId,
+          mode: inst.mode,
+          effort: inst.effort,
+          thinking: inst.thinking,
+          model: inst.model,
+          worktree: inst.worktree?.worktreeName ?? null,
+        });
+        res.status(201).json({
+          ok: true,
+          newSessionId,
+          droppedText,
+          instance: newInst.summary(),
+        });
+      } catch (e) { next(e); }
+    });
+
     r.delete('/instances/:id', async (req, res, next) => {
       try {
         await instances.remove(req.params.id);
