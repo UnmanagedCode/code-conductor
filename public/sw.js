@@ -7,6 +7,13 @@
 self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', (event) => event.waitUntil(self.clients.claim()));
 
+// Pass-through fetch handler. Hivemind has no offline mode (the local Node
+// server is the whole app), so we don't cache anything — but Chrome's PWA
+// installability check requires a registered fetch listener before it will
+// surface the "Install app" entry. Without this, the menu shows only the
+// weaker "Add to home screen" bookmark shortcut.
+self.addEventListener('fetch', () => { /* default network handling */ });
+
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
   event.waitUntil((async () => {
