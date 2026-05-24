@@ -16,6 +16,7 @@ import {
   maybeNotifyTurnEnd, isNotificationAPIAvailable, registerServiceWorker,
 } from './notifications.js';
 import { readSessionAnchor, writeSessionAnchor } from './anchor.js';
+import { installExternalLinkOpener } from './external-links.js';
 
 const state = {
   projects: [],
@@ -1329,5 +1330,7 @@ bus.addEventListener('open', async () => {
     send('subscribe', { id: state.activeId });
   }
 });
+
+installExternalLinkOpener();
 
 connect();
