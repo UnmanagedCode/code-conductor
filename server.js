@@ -9,6 +9,7 @@ import { InstanceManager } from './src/instances.js';
 import { attachWsHub } from './src/wsHub.js';
 import { projectsRoot } from './src/projects.js';
 import { runMigrations } from './migrations/index.mjs';
+import { checkClaudeReadiness, formatReadiness } from './src/health.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -61,6 +62,8 @@ export async function start({ port = 8787, host = '127.0.0.1' } = {}) {
   // migration is idempotent and a no-op on an already-migrated workspace,
   // so this is fast in steady state. A migration that throws aborts boot.
   await runMigrations({ root: projectsRoot() });
+  const readiness = await checkClaudeReadiness();
+  process.stderr.write(formatReadiness(readiness) + '\n');
   const { server, instances, wss } = createServer();
   await listenWithRetry(server, port, host);
   const addr = server.address();

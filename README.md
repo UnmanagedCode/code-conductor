@@ -106,6 +106,8 @@ RUN_REAL_CLAUDE=1 npm test   # also runs the opt-in real-claude smoke test
 
 Open `http://127.0.0.1:8787` in a browser on the same device. Bound to localhost only — no auth.
 
+**Startup readiness check.** On boot the server probes whether the `claude` CLI is runnable (spawns `claude --version` with a 3 s timeout) and whether it's signed in (`~/.claude/.credentials.json` or `ANTHROPIC_API_KEY`). When everything's fine you get a single line on stderr — `claude OK — v2.1.143, authenticated via credentials.json`. When something's off (binary missing, `~/.claude/` never initialized, no credentials) you get a framed `WARNING` block listing each issue with the exact command to run to fix it. The server still starts either way — the UI is useful for browsing projects even without `claude` set up — but you'll see the warning loudly in the terminal you launched it from. Implemented in `src/health.js`, wired in `server.js`'s `start()`.
+
 **Install as an app on Android.** Visit the URL in Chrome, open the ⋮ menu, and tap **Install app** (or **Add to home screen**). CodeConductor ships a Web App Manifest (`public/manifest.webmanifest`) and an SVG icon, so the launcher icon lands on the home screen and opens the app in standalone mode — no URL bar, separate task in the recents view. The same Service Worker that powers desktop notifications keeps working.
 
 For headless visual debugging via Playwright + Termux Chromium, see [`debug/README.md`](./debug/README.md). The reusable harness lives in a sibling repo at [`~/project/termux-playwright-harness/`](../termux-playwright-harness/) (clone it alongside and `npm install` once); `debug/` here is a thin orchestrator-specific wrapper, not wired into the main test suite.

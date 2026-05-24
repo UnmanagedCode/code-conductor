@@ -43,7 +43,7 @@ const DEFAULT_EFFORT = 'high';
 const VALID_THINKING = new Set(['adaptive', 'enabled', 'disabled']);
 const DEFAULT_THINKING = 'adaptive';
 
-function resolveClaudeBin() {
+export function resolveClaudeBin() {
   // CLAUDE_BIN may be "node /path/to/script.mjs" so callers can swap in the
   // fake CLI used by tests; split on whitespace.
   const raw = (process.env.CLAUDE_BIN ?? 'claude').trim();
