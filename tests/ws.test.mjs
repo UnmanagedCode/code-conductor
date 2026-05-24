@@ -196,6 +196,28 @@ test('turn_notification is broadcast to every connected client (not just subscri
   } finally { await close(); }
 });
 
+test('projects hint is broadcast on instance lifecycle so sidebar session counts refresh', async () => {
+  // Regression for "sessions disappear from the sidebar after the live
+  // instance is killed". The frontend depends on this broadcast to
+  // re-fetch /api/projects and pick up freshly-written session jsonls;
+  // without it `summary.count` stays at the page-load value and a
+  // project that started with zero on-disk sessions can have its whole
+  // Sessions subnode vanish once `liveCount` drops to zero.
+  const { baseUrl, wsUrl, instances, close } = await setup();
+  try {
+    const bystander = await wsClient(wsUrl);
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'a', mode: 'bypassPermissions' });
+    const id = r.body.id;
+    await waitFor(() => bystander.messages.some(m => m.t === 'projects'));
+    // status flips during spawn + first idle also fire the hint
+    await waitFor(() => instances.get(id).status === 'idle');
+    const beforeRemove = bystander.messages.length;
+    await instances.remove(id);
+    await waitFor(() => bystander.messages.slice(beforeRemove).some(m => m.t === 'projects'));
+    await bystander.close();
+  } finally { await close(); }
+});
+
 test('interrupt via WS returns instance to idle', async () => {
   const { baseUrl, wsUrl, instances, close } = await setup(SCENARIO_INTERRUPT);
   try {

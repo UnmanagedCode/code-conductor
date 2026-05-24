@@ -105,7 +105,7 @@ RUN_REAL_CLAUDE=1 npm test   # also runs the opt-in real-claude smoke test
 
 Open `http://127.0.0.1:8787` in a browser on the same device. Bound to localhost only — no auth.
 
-For headless visual debugging via Playwright + Termux Chromium, see [`debug/README.md`](./debug/README.md). It's a separate, opt-in setup with its own `package.json`, not wired into the main test suite.
+For headless visual debugging via Playwright + Termux Chromium, see [`debug/README.md`](./debug/README.md). The reusable harness lives in a sibling repo at [`~/project/termux-playwright/`](../termux-playwright/) (clone it alongside and `npm install` once); `debug/` here is a thin orchestrator-specific wrapper, not wired into the main test suite.
 
 ## Technical detail
 
@@ -384,13 +384,15 @@ claude-orch-app/
                               the same tool_use_id proceed, no regeneration).
 
 debug/                        Opt-in Playwright + Termux-Chromium harness for
-├── README.md                 visual verification of UI changes. Separate
-├── package.json              package.json (so playwright-core doesn't bleed
-├── browser.mjs               into the main deps), bootServer() spawns the
-└── snap.mjs                  orchestrator on a free ephemeral port with an
-                              optional sandboxed PROJECTS_ROOT + fake-claude,
-                              snap.mjs is a generic CLI screenshotter. See
-                              debug/README.md for the full workflow.
+├── README.md                 visual verification of UI changes. Thin
+├── boot-orch.mjs             orchestrator-specific glue over the generic
+└── snap.mjs                  termux-playwright sibling repo at
+                              ~/project/termux-playwright/. boot-orch.mjs wraps
+                              the generic bootServer with the orch's cwd /
+                              server.js entry / sandboxed PROJECTS_ROOT +
+                              fake-claude. snap.mjs is a CLI screenshotter
+                              with a --boot mode that uses bootOrch.
+                              See debug/README.md for the workflow.
 ```
 
 ### WebSocket protocol
@@ -421,6 +423,7 @@ One persistent connection at `ws://127.0.0.1:8787/ws`, multiplexed across instan
 | `error` | `message` | Server-side parse-time rejection (e.g. malformed JSON frame). Not tied to a `reqId` — unparseable frames have no `reqId` to ack against. |
 | `turn_notification` | `id`, `project`, `isError`, `stopReason`, `cost` | Lean notification fan-out — broadcast to **every** connected client (not just per-instance subscribers) whenever a turn ends. Lets background-tab listeners ping the OS notification system for instances they aren't currently watching. |
 | `instances` | — | Hint to re-fetch `/api/instances` (no payload). Broadcast on every instance create / remove / status flip. |
+| `projects` | — | Hint to re-fetch `/api/projects` (no payload). Broadcast alongside `instances` on every instance create / remove / status flip — covers the case where a CLI just flushed its session jsonl and the sidebar's cached `summary.count` would otherwise stay stale. |
 
 **UI event kinds** (`ev.kind`)
 

@@ -64,10 +64,18 @@ export function attachWsHub({ wss, instances }) {
     });
     if (subs) for (const ws of subs) safeSend(ws, payload);
     broadcastAll(JSON.stringify({ t: 'instances' }));
+    // Status flips (especially the post-turn transition back to `idle`)
+    // mean the CLI has flushed its session jsonl to disk, so per-project
+    // session summary numbers may have just changed. Nudge clients to
+    // re-fetch /api/projects — otherwise the sidebar's `summary.count`
+    // stays stale at the page-load value and a Sessions subnode can
+    // vanish when the last live instance is removed.
+    broadcastAll(JSON.stringify({ t: 'projects' }));
   });
 
   instances.on('list_changed', () => {
     broadcastAll(JSON.stringify({ t: 'instances' }));
+    broadcastAll(JSON.stringify({ t: 'projects' }));
   });
 
   function broadcastAll(msg) {
