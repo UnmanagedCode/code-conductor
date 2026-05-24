@@ -26,6 +26,12 @@ export class Conversation {
     // transcript replay (when the live user_echo's dataBase64 is gone).
     // Returns null when no instance is active.
     resolveAttachmentUrl = null,
+    // (userMessageIndex) -> called when the user clicks the ↶ button on
+    // a user bubble. Truncates the session at that point.
+    onRewind = null,
+    // (userMessageIndex) -> called when the user clicks the ⑂ button on
+    // a user bubble. Forks a new session from the prefix up to that point.
+    onFork = null,
   } = {}) {
     this.root = rootEl;
     this.isSub = isSub;
@@ -34,6 +40,15 @@ export class Conversation {
     this.onPermissionDecision = onPermissionDecision;
     this.isAutoApprovePlanEnabled = isAutoApprovePlanEnabled;
     this.resolveAttachmentUrl = resolveAttachmentUrl;
+    this.onRewind = onRewind;
+    this.onFork = onFork;
+    // 0-based index of the next user_echo to render. Stamped onto the
+    // bubble's DOM via `data-user-index` so click handlers know which
+    // jsonl user-prompt line to anchor against on rewind/fork.
+    this.userMessageCounter = 0;
+    // Sub-conversations (Task sub-agents) don't get rewind/fork buttons —
+    // those operations only make sense at the outer session level.
+    this._userActionsEnabled = !this.isSub;
     // Resolver-style context passed to describeToolInput so a
     // TaskUpdate tool block (whose input only carries taskId) can
     // surface the task's actual subject + description.
@@ -93,7 +108,22 @@ export class Conversation {
     this.planBlocks.clear();
     this.permissionBlocks.clear();
     this._activeAssistantWrap = null;
+    this.userMessageCounter = 0;
     this._setEmpty();
+  }
+
+  // Alias for clear() — invoked from app.js when a `reset_snapshot` WS
+  // frame arrives (the active session was just rewound server-side).
+  reset() { this.clear(); }
+
+  // Enables/disables the rewind/fork buttons on every existing user bubble.
+  // Called from app.js when the active instance flips status — during a
+  // running turn the buttons should be inert (a rewind would 409 anyway).
+  setUserActionsEnabled(enabled) {
+    this._userActionsEnabled = !!enabled && !this.isSub;
+    for (const btn of this.root.querySelectorAll('.user-msg-action')) {
+      btn.disabled = !this._userActionsEnabled;
+    }
   }
 
   _closeAssistantSegment() {
@@ -238,10 +268,40 @@ export class Conversation {
       // Defensive — never produce an empty user bubble.
       blocks.appendChild(el('div', { class: 'block text' }, ''));
     }
-    const wrap = el('div', { class: 'msg user' },
+    const userIndex = this.userMessageCounter;
+    this.userMessageCounter += 1;
+    const wrap = el('div', { class: 'msg user', 'data-user-index': String(userIndex) },
       el('div', { class: 'role' }, 'user'),
       blocks,
     );
+    // Hover-revealed rewind / fork affordances — only on the outer
+    // conversation (sub-agent transcripts never get them). The buttons stay
+    // visually hidden until the bubble is hovered; CSS lives in styles.css
+    // under `.user-msg-actions` (mirrors the `.session-delete` pattern).
+    if (!this.isSub && (this.onRewind || this.onFork)) {
+      const actions = el('div', { class: 'user-msg-actions' });
+      if (this.onRewind) {
+        const btn = el('button', {
+          type: 'button',
+          class: 'user-msg-action user-msg-rewind',
+          title: 'Rewind to before this message (drops everything after, prefills the composer with this prompt)',
+        }, '↶');
+        btn.disabled = !this._userActionsEnabled;
+        btn.addEventListener('click', () => this.onRewind && this.onRewind(userIndex));
+        actions.appendChild(btn);
+      }
+      if (this.onFork) {
+        const btn = el('button', {
+          type: 'button',
+          class: 'user-msg-action user-msg-fork',
+          title: 'Fork a new session at this point (original session is preserved, composer is prefilled with this prompt)',
+        }, '⑂');
+        btn.disabled = !this._userActionsEnabled;
+        btn.addEventListener('click', () => this.onFork && this.onFork(userIndex));
+        actions.appendChild(btn);
+      }
+      wrap.appendChild(actions);
+    }
     this.root.appendChild(wrap);
     this._closeAssistantSegment();
   }

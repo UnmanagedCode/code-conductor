@@ -64,6 +64,7 @@ Designed to run on a Termux phone (single user, localhost-only), but works on an
 - **Browser notifications** — a 🔔/🔕 toggle pinned in the sidebar header (next to the `code-conductor` title) since the preference is global, not per-instance. Tapping it requests notification permission, then fires a desktop / Android notification whenever any instance's turn finishes while the tab is hidden (errors notify even when visible). On page reload the bell auto-enables itself if permission was already granted in a previous session. Notifications are dispatched through a tiny Service Worker (`public/sw.js`) because mobile Chrome refuses the page-level `new Notification(...)` constructor; tapping a ping focuses the existing tab via `notificationclick` in the SW. Works for background instances you aren't currently viewing — the orchestrator broadcasts a `turn_notification` to all connected WS clients regardless of which instance they're subscribed to.
 - **Resume** — same Sessions subnode as above. Clicking a non-live row spawns an instance with `--resume <sessionId>` against the matching cwd. Resumes default to `code` mode (CLI `bypassPermissions`) rather than `plan`, on the assumption that a resume is continuing real work; effort/thinking use the orchestrator defaults. All three are adjustable from the header dropdown after the resume lands. The orchestrator refuses to resume into a session already attached to a running instance (`409 "session … already attached"`). On resume the persisted transcript from `~/.claude/projects/<encoded-cwd>/<sid>.jsonl` is replayed into the conversation view before the live stream takes over, with a `── N prior messages replayed ──` divider separating history from the new turn.
 - **Delete a session** — each session row has an `×` (revealed on hover) that deletes the persisted `*.jsonl` after a confirm. Refused with a `409` if a live instance is still attached; the dialog then offers to kill the instance and delete anyway (`?force=1`). The worktree-scoped variant deletes from the worktree's own encoded session dir, not the parent project's.
+- **Rewind & fork a conversation** — every user message bubble carries two hover-revealed buttons in its top-right corner: `↶` rewinds the active session to before that prompt (in place, same sessionId), and `⑂` forks a new session whose history is the prefix up to (but not including) that prompt. Both ask for confirmation, drop the chosen user message + everything after it, and prefill the composer with the dropped prompt text so you can edit and resend. **Rewind** kills the subprocess, atomically rewrites `~/.claude/projects/<encoded-cwd>/<sid>.jsonl` to keep only the surviving prefix (and appends a fresh `last-prompt` / `permission-mode` pair anchored at the new tail), wipes the in-memory ring buffer, broadcasts a `reset_snapshot` WS frame so subscribed tabs clear their view, then respawns with `--resume <sid>` — the truncated history is replayed into the fresh ring and the URL anchor stays put. **Fork** copies the prefix into a brand-new `<newSid>.jsonl`, leaves the original session byte-identical, spawns a new instance against the fork, switches the active view to it, and writes the new sessionId into the URL hash. Buttons are disabled (and the server refuses 409) while a turn is running — interrupt first. Temp sessions can't be rewound or forked because the on-exit cleanup races the rewrite. Anchor identity: the Nth user_echo in the conversation view = the Nth pure user-prompt line in the jsonl (tool_result-carrying `type:"user"` lines are not counted, matching the live `user_echo` emission), so the click target is unambiguous on both sides. UI-only — no MCP tools yet.
 - **Crash recovery** — if a subprocess dies, status flips to `crashed`. The Resume button respawns the same Instance with `--resume <sid>`, preserving the in-memory event ring and conversation.
 - **Session anchor in the URL** — selecting an instance sets `#session=<sessionId>` on the URL (via `history.replaceState`, so the back button isn't polluted with one entry per click). On the first WebSocket connect after page load, the bootstrap finds the live instance whose `sessionId` matches the anchor and selects it automatically. If no live instance owns the anchor (server restart, killed instance, etc.) the orchestrator looks the sessionId up on disk via `GET /api/sessions/:sid/locate` and auto-resumes it into the matching cwd — worktree-aware, so a worktree-owned session lands back in its worktree. A `--resume` spawn doesn't call the model until you send a prompt, so the auto-resume costs zero API tokens. The only failure mode is an anchor that names a session whose jsonl has since been deleted — in that case the stale anchor is silently cleared and the user lands on the empty placeholder, identical to a fresh visit. The sessionId is used (not the transient instance id) because it survives crash/respawn cycles.
 - **Concurrent sessions** — multiple subprocesses run in parallel across projects + worktrees. The sidebar's Sessions subnodes show a status dot per row.
@@ -198,6 +199,22 @@ code-conductor/
 │   │                         best-effort appends the `last-prompt` +
 │   │                         `permission-mode` metadata lines that
 │   │                         `claude --resume`'s interactive picker reads.
+│   │                         Also exports `isPureUserPromptLine` — the
+│   │                         shared predicate the rewind/fork plumbing uses
+│   │                         to keep the Nth user_echo index in lock-step
+│   │                         with the Nth pure-user-prompt line in the jsonl.
+│   ├── sessionEdit.js        Destructive edits on persisted session jsonls.
+│   │                         truncateSessionAtUserMessage rewrites the file
+│   │                         atomically (write tmp → fsync → rename) to keep
+│   │                         only the prefix before the Nth pure user-prompt
+│   │                         line + appends a fresh last-prompt/permission-
+│   │                         mode pair anchored at the surviving leaf.
+│   │                         forkSessionAtUserMessage copies the prefix into
+│   │                         a new sessionId file with the sessionId field
+│   │                         on each line rewritten to the new id; the
+│   │                         original jsonl is untouched. Both return the
+│   │                         droppedText so the frontend can prefill the
+│   │                         composer.
 │   ├── parser.js             stream-json line → UI event normalization. Merges
 │   │                         deltas by (msgId, blockIdx); emits thinking_redacted
 │   │                         when a thinking block closes with only signature_delta;
@@ -384,6 +401,22 @@ code-conductor/
     │                         Spawns `node server.js`, hits the endpoint,
     │                         asserts the original PID exits cleanly and a
     │                         new PID is serving the same port.
+    ├── session-edit.test.mjs Pure-function coverage of truncate + fork
+    │                         helpers in src/sessionEdit.js: index counting
+    │                         (tool_result-only user lines are skipped),
+    │                         atomic rewrite, fresh resume-picker metadata,
+    │                         out-of-range rejection, attachment-marker
+    │                         stripping from droppedText.
+    ├── rewind.test.mjs       POST /api/instances/:id/rewind end-to-end:
+    │                         seeds a jsonl, resumes, rewinds, asserts the
+    │                         ring buffer + on-disk jsonl reflect the truncate
+    │                         and `snapshot_reset` fired exactly once. Also
+    │                         covers 409-during-turn, 400-temp, 400-out-of-
+    │                         range refusals.
+    ├── fork.test.mjs         POST /api/instances/:id/fork end-to-end:
+    │                         original jsonl is byte-identical after the
+    │                         call, the new instance's ring contains only
+    │                         the prefix, the original instance is untouched.
     └── smoke.real.test.mjs   Opt-in real-claude end-to-end (RUN_REAL_CLAUDE=1) —
                               text reply, Bash tool call shape, AskUserQuestion
                               user_question event shape, and ask-mode Write
@@ -423,6 +456,7 @@ One persistent connection at `ws://127.0.0.1:8787/ws`, multiplexed across instan
 | `t` | Fields | Purpose |
 |---|---|---|
 | `snapshot` | `id`, `status`, `mode`, `sessionId`, `project`, `events[]` | Sent on subscribe; events carry `_seq` for dedup. |
+| `reset_snapshot` | `id`, `status`, `mode`, `sessionId`, `project`, `events[]` | Same shape as `snapshot` but with reset semantics: the ring buffer was just wiped by a rewind. Subscribed clients clear their conversation DOM before applying the (typically empty) events. Sent only to subscribers of the rewound instance. |
 | `event` | `id`, `ev` | Live UI event. See "UI event kinds" below. |
 | `status` | `id`, `status`, `sessionId`, `mode` | Status transition (`spawning|idle|turn|exited|crashed`). |
 | `ack` | `reqId`, `ok`, `error?` | Reply to a client request that included `reqId`. |
@@ -455,6 +489,8 @@ Every event carries a `parentToolUseId` (or `null`) — the conversation view ro
 | `POST` | `/api/instances` | `{project, mode?, effort?, thinking?, model?, resume?, worktree?, temp?, debug?}` → instance summary (includes `temp: bool`). When `temp:true` and `mode` is omitted, defaults to `bypassPermissions`; on exit the session jsonl + sub-agent dir under `~/.claude/projects/<encoded-cwd>/` are removed and no `last-prompt`/`permission-mode` metadata is appended during the run. `debug:true` mirrors raw CLI traffic to the central store at `~/project/.code-conductor/projects/<p>/[worktrees/<wt>/]debug/<instance-id>/`. |
 | `GET` | `/api/instances` | `[{id, project, sessionId, status, mode, effort, thinking, model, pid}]` |
 | `POST` | `/api/instances/:id/respawn` | `{id, sessionId}` — uses `--resume lastSessionId` |
+| `POST` | `/api/instances/:id/rewind` | Body `{userMessageIndex}`. Rewinds the active session in place to before the Nth user prompt: kills the subprocess, atomically truncates the jsonl, broadcasts a `reset_snapshot` WS frame, and respawns with `--resume <sid>`. Returns `{ok:true, droppedText}`. Refused 409 during a running turn, 400 on temp sessions, 400 on out-of-range index. The same instance id + sessionId is preserved. |
+| `POST` | `/api/instances/:id/fork` | Body `{userMessageIndex}`. Copies the prefix of the named instance's jsonl into a new `<newSessionId>.jsonl` (the original session jsonl is byte-identical after the call), spawns a fresh instance with `--resume <newSessionId>` against the same cwd/worktree, and returns `{ok:true, newSessionId, droppedText, instance}`. Refused 400 on temp sessions / out-of-range / missing sessionId. |
 | `DELETE` | `/api/instances/:id` | `{ok: true}` — SIGTERM + remove |
 | `POST` | `/api/instances/:id/debug` | Flip debug capture ON for a running instance (idempotent — `alreadyOn:true` if it was already capturing). Returns `{ok:true, debug, debugDir, alreadyOn}`. No matching "off" endpoint: kill the instance to stop. 404 on unknown id. |
 | `POST` | `/api/instances/:id/sync` | Brings the worktree up to date with its base branch. Returns `{ok:true, action:"already-in-sync"\|"fast-forwarded"\|"rebase-prompt-sent", ...}` or `{ok:false, reason}`. The FF case runs `git merge --ff-only <baseBranch>` inside the worktree server-side; the rebase case sends the templated rebase prompt to the worktree's live instance (refused with `{ok:false, reason:"…not running…"}` if the instance has been stopped). 400 if the instance has no worktree. |

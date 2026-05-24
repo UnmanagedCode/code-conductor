@@ -10,6 +10,7 @@ import { createWorktree, getWorktree, debugBaseDir } from './worktrees.js';
 import { buildSettingsJSON, buildMcpConfigJSON } from './settings.js';
 import { HookBroker } from './hookBroker.js';
 import { loadPersistedTranscript, writeSessionMetadata } from './transcript.js';
+import { truncateSessionAtUserMessage } from './sessionEdit.js';
 import { saveAttachment, isImageType } from './attachments.js';
 
 // Three user-facing modes:
@@ -562,6 +563,75 @@ export class Instance extends EventEmitter {
       proc.once('exit', () => { clearTimeout(t1); clearTimeout(t2); });
     });
   }
+
+  // Rewind this session to before the Nth user prompt (0-indexed). Kills
+  // the live subprocess, truncates the persisted jsonl, wipes the in-memory
+  // ring buffer, broadcasts a `snapshot_reset` so subscribed clients clear
+  // their conversation view, then respawns with `--resume <sessionId>` so
+  // the freshly-truncated history is replayed into the ring.
+  //
+  // Returns { droppedText }: the prompt text of the dropped user message,
+  // so the frontend can prefill it back into the composer.
+  async rewindToUserMessage(userMessageIndex) {
+    if (this._mutating) {
+      throw Object.assign(new Error('another rewind/fork is in progress'), { statusCode: 409 });
+    }
+    if (this.temp) {
+      throw Object.assign(new Error('temp sessions cannot be rewound'), { statusCode: 400 });
+    }
+    if (!this.sessionId) {
+      throw Object.assign(new Error('no sessionId — instance has not yet received a turn'), { statusCode: 400 });
+    }
+    if (this.status === 'turn') {
+      throw Object.assign(new Error('cannot rewind during a running turn — interrupt first'), { statusCode: 409 });
+    }
+    this._mutating = true;
+    try {
+      // Kill the subprocess first so the CLI can't flush a stale tail
+      // into the jsonl mid-truncate.
+      if (this.proc) await this.kill({ graceMs: 300 });
+
+      const result = await truncateSessionAtUserMessage({
+        cwd: this.cwd,
+        sessionId: this.sessionId,
+        userMessageIndex,
+        permissionMode: cliPermissionMode(this.mode),
+      });
+
+      // Wipe in-memory state. The ring is now empty; loadHistory() in the
+      // upcoming spawn() will rebuild it from the truncated jsonl.
+      this.ring.clear();
+      this.parser.reset();
+      this._lastLeafUuid = null;
+      this._lastPlanFilePath = null;
+      this._hooks.discardAll();
+
+      // Tell subscribers to drop their current conversation DOM before the
+      // new replay events start arriving.
+      this.emit('snapshot_reset', this._snapshotForReset());
+
+      // Respawn against the truncated jsonl. loadHistory replays the
+      // surviving prefix into the now-empty ring as fresh `_seq` events.
+      this.spawn({ resume: this.sessionId });
+
+      return { droppedText: result.droppedText };
+    } finally {
+      this._mutating = false;
+    }
+  }
+
+  // Snapshot frame used at rewind broadcast time. Mirrors the shape of the
+  // `snapshot` WS frame so the client can apply it through the same path.
+  _snapshotForReset() {
+    return {
+      id: this.id,
+      project: this.project,
+      status: 'spawning',
+      mode: this.mode,
+      sessionId: this.sessionId,
+      events: [],
+    };
+  }
 }
 
 export class InstanceManager extends EventEmitter {
@@ -676,6 +746,7 @@ export class InstanceManager extends EventEmitter {
 
     inst.on('event', (ev) => this.emit('event', { id, ev }));
     inst.on('status', (summary) => this.emit('status', summary));
+    inst.on('snapshot_reset', (snap) => this.emit('snapshot_reset', snap));
 
     this.byId.set(id, inst);
     inst.spawn({ resume });

@@ -11,6 +11,22 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { encodeCwd, claudeProjectsRoot } from './projects.js';
+import { extractAttachedMarkers } from './parser.js';
+
+// Predicate: does this persisted jsonl object emit at least one `user_echo`
+// UI event when replayed? Mirrors the live-path emission in
+// `parser.js:_handleUser` so the rewind/fork code can count "user prompt"
+// lines in the jsonl and have the count match the Nth user_echo in the
+// orchestrator's event stream. tool_result-only `type:"user"` lines are
+// excluded; sidechain lines are excluded too (consistent with replay).
+export function isPureUserPromptLine(obj) {
+  if (!obj || typeof obj !== 'object' || obj.type !== 'user') return false;
+  if (obj.isSidechain) return false;
+  const content = obj.message?.content;
+  if (typeof content === 'string') return content.length > 0;
+  if (!Array.isArray(content)) return false;
+  return content.some((b) => b && b.type === 'text' && typeof b.text === 'string');
+}
 
 // Convert one persisted jsonl object into the UI events that would
 // have been emitted live. Returns an array (possibly empty); the
@@ -46,6 +62,12 @@ export function replayPersistedLine(obj, { seqHint = 0, parentToolUseId = null, 
       return tagAndReturn();
     }
     if (Array.isArray(content)) {
+      // Group text blocks of a single user message into one user_echo so
+      // the bubble renders text and attachments together — mirrors the
+      // live `parser.js:_handleUser` consolidation. tool_result blocks
+      // remain their own events.
+      const echoTexts = [];
+      const echoAttachments = [];
       for (const block of content) {
         if (!block || typeof block !== 'object') continue;
         if (block.type === 'tool_result') {
@@ -56,8 +78,18 @@ export function replayPersistedLine(obj, { seqHint = 0, parentToolUseId = null, 
             isError: !!block.is_error,
           });
         } else if (block.type === 'text') {
-          events.push({ kind: 'user_echo', text: block.text ?? '' });
+          if (typeof block.text !== 'string') continue;
+          const { text: leftover, attachments } = extractAttachedMarkers(block.text);
+          if (leftover.length) echoTexts.push(leftover);
+          for (const a of attachments) echoAttachments.push(a);
         }
+      }
+      if (echoTexts.length || echoAttachments.length) {
+        events.push({
+          kind: 'user_echo',
+          text: echoTexts.join('\n'),
+          attachments: echoAttachments,
+        });
       }
     }
     return tagAndReturn();

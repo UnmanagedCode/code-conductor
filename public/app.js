@@ -246,6 +246,8 @@ const conversation = new Conversation(dom.conversation, {
       sendOrQueuePrompt(activeId, text);
     }
   },
+  onRewind: (userMessageIndex) => rewindActiveSession(userMessageIndex),
+  onFork: (userMessageIndex) => forkActiveSession(userMessageIndex),
 });
 
 const sidebar = new Sidebar({
@@ -814,6 +816,61 @@ async function resumeSession({ projectName, worktreeName, sessionId }) {
   }
 }
 
+// Rewind the active instance's session to before the Nth user prompt. The
+// orchestrator kills the subprocess, truncates the jsonl, broadcasts a
+// `reset_snapshot` (handled below) so this view clears, and respawns
+// against the truncated history. We prefill the composer with the
+// dropped prompt so the user can edit and re-send.
+async function rewindActiveSession(userMessageIndex) {
+  const id = state.activeId;
+  if (!id) return;
+  if (!confirm('Rewind to here? Everything after this message will be discarded; the composer will be prefilled with this prompt so you can edit and resend.')) return;
+  try {
+    const r = await fetch(`/api/instances/${encodeURIComponent(id)}/rewind`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ userMessageIndex }),
+    });
+    if (!r.ok) throw new Error((await r.json()).error);
+    const { droppedText } = await r.json();
+    // Prefill happens after the reset_snapshot frame lands and the
+    // composer flips back to writable. Stash here; the snapshot handler
+    // below consumes it.
+    pendingPrefill = { instanceId: id, text: droppedText ?? '' };
+  } catch (e) {
+    alert(`rewind failed: ${e.message}`);
+  }
+}
+
+// Fork the active instance's session: copy the prefix into a new
+// sessionId, spawn a new instance against it, switch focus to the
+// new instance, and prefill the composer with the dropped prompt.
+async function forkActiveSession(userMessageIndex) {
+  const id = state.activeId;
+  if (!id) return;
+  if (!confirm('Fork from here? A new session is created from the prefix; the original session is left intact and the composer is prefilled with this prompt.')) return;
+  try {
+    const r = await fetch(`/api/instances/${encodeURIComponent(id)}/fork`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ userMessageIndex }),
+    });
+    if (!r.ok) throw new Error((await r.json()).error);
+    const { instance: newInst, droppedText } = await r.json();
+    pendingPrefill = { instanceId: newInst.id, text: droppedText ?? '' };
+    await refreshProjects();
+    await refreshInstances();
+    selectInstance(newInst.id);
+  } catch (e) {
+    alert(`fork failed: ${e.message}`);
+  }
+}
+
+// Set by rewindActiveSession / forkActiveSession; consumed by the snapshot
+// or status handler once the relevant instance comes back online. Held
+// outside any closure so a focus switch (fork case) doesn't lose it.
+let pendingPrefill = null;
+
 async function deleteProject(project) {
   const insts = state.instances.filter(i => i.project === project.name);
   const wts = project.worktrees ?? [];
@@ -1028,6 +1085,10 @@ function updateActiveHeader() {
   const canType = ['idle', 'turn', 'spawning'].includes(inst.status);
   const canSend = ['idle', 'turn'].includes(inst.status);
   composer.set({ canType, canSend });
+  // Rewind/fork buttons are only safe between turns — the server refuses
+  // a rewind during `turn` status anyway, but disabling them here keeps
+  // the UX honest (no clickable button that just throws a 409).
+  conversation.setUserActionsEnabled(inst.status === 'idle');
   dom.composerInput.placeholder = inst.status === 'turn'
     ? 'turn running — your message will queue'
     : inst.status === 'spawning'
@@ -1231,6 +1292,40 @@ bus.addEventListener('snapshot', (e) => {
   conversation.clear();
   conversation.applyEvents(m.events ?? []);
   updateActiveHeader();
+  // Fork case: the newly-spawned instance's first snapshot is our cue to
+  // prefill the composer with the dropped user prompt. (Rewind goes
+  // through reset_snapshot below instead.)
+  if (pendingPrefill && pendingPrefill.instanceId === m.id) {
+    composer.prefill(pendingPrefill.text);
+    pendingPrefill = null;
+  }
+});
+
+// Server-issued reset: the active instance's ring buffer was just wiped by
+// a rewind, and the replayed events from the truncated jsonl will start
+// landing through normal `event` frames immediately after. Mirror the
+// snapshot handler but treat the incoming events as initial state rather
+// than a merge. Also consume any pending composer prefill stashed by
+// rewindActiveSession — by now the subprocess is back to spawning, the
+// user can see the cleared view, and the prompt slides back in.
+bus.addEventListener('reset_snapshot', (e) => {
+  const m = e.detail;
+  const tracker = getTracker(m.id);
+  tracker.reset();
+  const usage = getUsage(m.id);
+  usage.reset();
+  for (const ev of m.events ?? []) {
+    tracker.apply(ev);
+    usage.apply(ev);
+  }
+  if (m.id !== state.activeId) return;
+  conversation.reset();
+  conversation.applyEvents(m.events ?? []);
+  updateActiveHeader();
+  if (pendingPrefill && pendingPrefill.instanceId === m.id) {
+    composer.prefill(pendingPrefill.text);
+    pendingPrefill = null;
+  }
 });
 
 bus.addEventListener('event', (e) => {

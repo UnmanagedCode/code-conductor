@@ -194,5 +194,20 @@ export function attachComposer({ form, textarea, sendBtn, attachBtn, fileInput, 
   return {
     set(state) { setState(state); },
     disable() { setState({ canType: false, canSend: false }); },
+    // Drop any pending attachments + set the textarea to `text`, leaving
+    // the cursor at the end so the user can edit immediately. Used after
+    // a rewind/fork so the discarded prompt is one keystroke away from
+    // being re-sent.
+    prefill(text) {
+      clearAttachments();
+      textarea.value = typeof text === 'string' ? text : '';
+      // Move caret to end and focus — `focus()` is a no-op when the textarea
+      // is disabled, which is fine: the user can still see the value, and
+      // it'll focus when the next status transition flips canType on.
+      try { textarea.focus(); } catch { /* ignore */ }
+      try { textarea.setSelectionRange(textarea.value.length, textarea.value.length); }
+      catch { /* ignore */ }
+      refreshSendEnabled();
+    },
   };
 }
