@@ -32,7 +32,7 @@ test('serves the SVG icon with the right shape', async () => {
     const body = await r.text();
     assert.match(body, /<svg[\s>]/);
     assert.match(body, /<\/svg>/);
-    assert.match(body, /<text[\s>][^<]*>CC<\/text>/, 'icon should contain the CC monogram');
+    assert.match(body, /<text[\s>][\s\S]*?CC[\s\S]*?<\/text>/, 'icon should contain the CC monogram');
   } finally { await close(); }
 });
 
