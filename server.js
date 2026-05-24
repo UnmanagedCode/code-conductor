@@ -69,7 +69,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const port = Number(process.env.PORT ?? 8787);
   const host = process.env.HOST ?? '127.0.0.1';
   start({ port, host }).then(({ port, host }) => {
-    console.log(`claude-orch-app listening on http://${host}:${port}`);
+    console.log(`code-conductor listening on http://${host}:${port}`);
   }).catch(e => {
     console.error('failed to start:', e);
     process.exit(1);
