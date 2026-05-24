@@ -29,7 +29,12 @@ export function isNotificationAPIAvailable() {
   return typeof window !== 'undefined' && 'Notification' in window;
 }
 
-async function ensureServiceWorker() {
+// Exported because Chrome only offers the "Install app" PWA flow once a
+// Service Worker is active — registering eagerly on page boot (rather than
+// waiting for the user to tap the 🔔 toggle) is what flips the menu entry
+// from "Add to home screen" (bookmark) to "Install app" (full PWA).
+// Idempotent: NotificationState.swRegistration is set once and reused.
+export async function registerServiceWorker() {
   if (NotificationState.swRegistration) return NotificationState.swRegistration;
   if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return null;
   try {
@@ -55,7 +60,7 @@ export async function ensurePermission() {
   // Pre-register the Service Worker as soon as we have permission. Mobile
   // Chrome only fires notifications via `registration.showNotification()`;
   // page-level `new Notification(...)` throws "Illegal constructor" there.
-  if (result === 'granted') await ensureServiceWorker();
+  if (result === 'granted') await registerServiceWorker();
   return result;
 }
 

@@ -13,7 +13,7 @@ import {
 } from './usage.js';
 import {
   NotificationState, ensurePermission, setGlobalEnabled,
-  maybeNotifyTurnEnd, isNotificationAPIAvailable,
+  maybeNotifyTurnEnd, isNotificationAPIAvailable, registerServiceWorker,
 } from './notifications.js';
 import { readSessionAnchor, writeSessionAnchor } from './anchor.js';
 
@@ -581,6 +581,12 @@ if (NotificationState.permission === 'granted') {
   // notifications actually fire on mobile (which requires SW transport).
   setGlobalEnabled(true);
   ensurePermission().catch(() => {});
+} else {
+  // Eagerly register the Service Worker even without notification permission.
+  // Chrome only surfaces the "Install app" PWA entry once an active SW is
+  // present; without this, the menu shows the weaker "Add to home screen"
+  // (bookmark shortcut) instead.
+  registerServiceWorker().catch(() => {});
 }
 renderNotifyToggle();
 dom.sidebarScrim.addEventListener('click', () => setSidebarOpen(false));
