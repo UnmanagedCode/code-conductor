@@ -53,7 +53,7 @@ function mergeLive(onDisk, liveInstances) {
 // localStorage key for the set of collapsed group headers. Sessions and
 // worktree collapse state is session-local, but groups are higher-level
 // navigation — surviving a refresh is worth the extra persistence.
-const GROUPS_COLLAPSED_STORAGE_KEY = 'claude-orch:groups-collapsed';
+const GROUPS_COLLAPSED_STORAGE_KEY = 'hivemind:groups-collapsed';
 
 function loadCollapsedGroups() {
   try {
@@ -434,7 +434,7 @@ export class Sidebar {
     // Split into ungrouped (top-level) vs grouped (nested under <details>).
     // Group bucket order is alphabetical for v1 — explicit ordering can
     // come later. `project.group` is whatever the server returned (the
-    // trimmed string from .claude-orch-app/project.json) or null/missing.
+    // trimmed string from .hivemind/project.json) or null/missing.
     const ungrouped = [];
     const byGroup = new Map();
     for (const p of this.projects) {

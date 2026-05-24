@@ -1,9 +1,9 @@
 // Git worktree operations for isolated agent runs. Each worktree lives as
 // a sibling directory at `<projectsRoot>/<project>_worktree_<short-id>/`
-// with a `.claude-orch-app/worktree.json` metadata file inside it. The
+// with a `.hivemind/worktree.json` metadata file inside it. The
 // metadata records the parent project + the branch / SHA that HEAD was
 // on at creation time, so a later rebase-back targets the right base.
-// `.claude-orch-app/` also holds the per-message attachments dir.
+// `.hivemind/` also holds the per-message attachments dir.
 
 import { execFile } from 'node:child_process';
 import { promises as fs } from 'node:fs';
@@ -30,10 +30,10 @@ function execFileP(file, args, options = {}) {
   });
 }
 
-// Per-worktree dotfolder layout: `<worktree>/.claude-orch-app/worktree.json`
-// for metadata, `<worktree>/.claude-orch-app/attachments/` for files attached
+// Per-worktree dotfolder layout: `<worktree>/.hivemind/worktree.json`
+// for metadata, `<worktree>/.hivemind/attachments/` for files attached
 // to user messages.
-export const ORCH_DOTDIR = '.claude-orch-app';
+export const ORCH_DOTDIR = '.hivemind';
 export const WORKTREE_META_FILENAME = 'worktree.json';
 
 export function orchDotdir(worktreePath) {
@@ -55,7 +55,7 @@ function shortId() {
 }
 
 function worktreeBranchName(id) {
-  return `claude-orch/${id}`;
+  return `hivemind/${id}`;
 }
 
 function worktreeDirName(project, id) {
@@ -316,7 +316,7 @@ export async function getWorktreeMergeStatus(meta) {
 // so each worktree's contribution is a visible branch in the parent's
 // history — easy to spot in `git log --graph` and revertable as a single
 // commit via `git revert -m 1 <mergeSha>`. The commit message uses git's
-// default ("Merge branch 'claude-orch/<id>'"). Returns {ok:true, newSha}
+// default ("Merge branch 'hivemind/<id>'"). Returns {ok:true, newSha}
 // on success or {ok:false, reason} when the merge can't proceed (parent
 // on wrong branch, dirty parent, conflicts, etc.) — caller surfaces the
 // reason to the UI rather than throwing.

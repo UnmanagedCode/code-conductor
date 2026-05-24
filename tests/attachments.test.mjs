@@ -84,13 +84,13 @@ test('prompt() with an image attachment appends a path-reference text block (no 
     assert.equal(user.message.content[0].type, 'text');
     assert.equal(user.message.content[0].text, 'look at this');
     assert.equal(user.message.content[1].type, 'text');
-    assert.match(user.message.content[1].text, /^Attached file: `\.claude-orch-app\/attachments\/.*tiny\.png`$/);
+    assert.match(user.message.content[1].text, /^Attached file: `\.hivemind\/attachments\/.*tiny\.png`$/);
     // Belt and braces: no `image` content block of any kind.
     assert.ok(!user.message.content.some(b => b.type === 'image'),
       'no inline vision blocks should be sent to the CLI');
 
-    // Disk: file landed under .claude-orch-app/attachments/.
-    const attDir = path.join(inst.cwd, '.claude-orch-app', 'attachments');
+    // Disk: file landed under .hivemind/attachments/.
+    const attDir = path.join(inst.cwd, '.hivemind', 'attachments');
     const entries = await fs.readdir(attDir);
     assert.equal(entries.length, 1);
     assert.match(entries[0], /tiny\.png$/);
@@ -128,10 +128,10 @@ test('prompt() with a non-image attachment appends a path-reference text block',
     assert.equal(user.message.content.length, 2);
     assert.equal(user.message.content[0].type, 'text');
     assert.equal(user.message.content[1].type, 'text');
-    assert.match(user.message.content[1].text, /^Attached file: `\.claude-orch-app\/attachments\/.*sample\.csv`$/);
+    assert.match(user.message.content[1].text, /^Attached file: `\.hivemind\/attachments\/.*sample\.csv`$/);
 
     // File contents round-trip.
-    const attDir = path.join(inst.cwd, '.claude-orch-app', 'attachments');
+    const attDir = path.join(inst.cwd, '.hivemind', 'attachments');
     const entries = await fs.readdir(attDir);
     const onDisk = await fs.readFile(path.join(attDir, entries[0]), 'utf8');
     assert.equal(onDisk, 'hello,world\n1,2\n');
@@ -139,7 +139,7 @@ test('prompt() with a non-image attachment appends a path-reference text block',
     // user_echo carries a file-kind attachment entry.
     const echo = events.map(e => e.ev).find(e => e.kind === 'user_echo');
     assert.equal(echo.attachments[0].kind, 'file');
-    assert.match(echo.attachments[0].path, /^\.claude-orch-app\/attachments\//);
+    assert.match(echo.attachments[0].path, /^\.hivemind\/attachments\//);
   } finally { await close(); }
 });
 
@@ -159,7 +159,7 @@ test('prompt() with no text but one attachment still sends (content array led by
     const user = stdinLines.map(l => JSON.parse(l)).find(o => o.type === 'user');
     assert.equal(user.message.content.length, 1);
     assert.equal(user.message.content[0].type, 'text');
-    assert.match(user.message.content[0].text, /^Attached file: `\.claude-orch-app\/attachments\/.*snap\.png`$/);
+    assert.match(user.message.content[0].text, /^Attached file: `\.hivemind\/attachments\/.*snap\.png`$/);
   } finally { await close(); }
 });
 
@@ -182,7 +182,7 @@ test('parser replay: text block with `Attached file:` marker becomes an attachme
       role: 'user',
       content: [
         { type: 'text', text: 'look at this' },
-        { type: 'text', text: 'Attached file: `.claude-orch-app/attachments/2026-01-01T00-00-00-000Z-pic.png`' },
+        { type: 'text', text: 'Attached file: `.hivemind/attachments/2026-01-01T00-00-00-000Z-pic.png`' },
       ],
     },
   });
@@ -206,7 +206,7 @@ test('parser replay: non-image extension yields kind: file', async () => {
       role: 'user',
       content: [
         { type: 'text', text: 'parse this csv' },
-        { type: 'text', text: 'Attached file: `.claude-orch-app/attachments/2026-01-01T00-00-00-000Z-data.csv`' },
+        { type: 'text', text: 'Attached file: `.hivemind/attachments/2026-01-01T00-00-00-000Z-data.csv`' },
       ],
     },
   });
@@ -249,7 +249,7 @@ test('wsHub prompt: malformed attachment entries are dropped, valid ones are kep
     assert.equal(user.message.content[0].type, 'text');
     assert.equal(user.message.content[0].text, 'hi');
     assert.equal(user.message.content[1].type, 'text');
-    assert.match(user.message.content[1].text, /^Attached file: `\.claude-orch-app\/attachments\/.*good\.png`$/);
+    assert.match(user.message.content[1].text, /^Attached file: `\.hivemind\/attachments\/.*good\.png`$/);
   } finally { await close(); }
 });
 
@@ -262,7 +262,7 @@ test('GET /api/instances/:id/attachments/:filename serves saved bytes; rejects t
     const inst = instances.get(id);
 
     // Drop a known file into the per-instance attachments dir.
-    const attDir = path.join(inst.cwd, '.claude-orch-app', 'attachments');
+    const attDir = path.join(inst.cwd, '.hivemind', 'attachments');
     await fs.mkdir(attDir, { recursive: true });
     const filename = 'stamp-hello.png';
     const bytes = Buffer.from(PNG_1PX, 'base64');

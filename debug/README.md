@@ -12,14 +12,14 @@ cd ~/project/termux-playwright-harness && npm install
 pkg install chromium                                            # Termux system browser
 ```
 
-That's it — nothing to install in `claude-orch-app/debug/` itself. Imports resolve via `../../termux-playwright-harness/`.
+That's it — nothing to install in `hivemind/debug/` itself. Imports resolve via `../../termux-playwright-harness/`.
 
 ## Quick smoke test
 
 Boot a sandboxed scratch orchestrator, snap, tear down — one process:
 
 ```bash
-cd ~/project/claude-orch-app/debug
+cd ~/project/hivemind/debug
 node snap.mjs --boot ./home.png
 # [boot] http://127.0.0.1:<ephemeral>
 # ./home.png   (PNG, headless, viewport 1280×800)
@@ -40,7 +40,7 @@ Use `bootOrch()` from this directory for the orch's sandboxed-spawn shape, or `b
 ```js
 // /tmp/repro-something.mjs
 import { withPage } from '../../termux-playwright-harness/browser.mjs';
-import { bootOrch } from '../claude-orch-app/debug/boot-orch.mjs';
+import { bootOrch } from '../hivemind/debug/boot-orch.mjs';
 
 const orch = await bootOrch({
   sandbox: true,

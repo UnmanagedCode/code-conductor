@@ -15,7 +15,7 @@
     <div id="sidebar-scrim"></div>
     <aside id="sidebar">
       <header>
-        <h1>claude-orch</h1>
+        <h1>hivemind</h1>
         <button id="notify-toggle" title="Browser notifications when a turn finishes" aria-pressed="false">🔕</button>
       </header>
       <div id="sidebar-body">
@@ -50,7 +50,7 @@
             <button id="overflow-toggle" type="button" aria-haspopup="menu" aria-expanded="false" title="More actions">⋮</button>
             <div id="overflow-panel" class="overflow-panel" hidden role="menu">
               <button id="auto-approve-plan-btn" type="button" role="menuitemcheckbox" aria-checked="false" title="When on, ExitPlanMode is auto-approved without a confirmation card. Session-local; per instance.">📋 Auto-approve plans: off</button>
-              <button id="debug-btn" type="button" role="menuitem" title="Start mirroring CLI stdin/stdout/stderr to .claude-orch-app/debug/&lt;id&gt;/ for offline inspection">🐛 Debug</button>
+              <button id="debug-btn" type="button" role="menuitem" title="Start mirroring CLI stdin/stdout/stderr to .hivemind/debug/&lt;id&gt;/ for offline inspection">🐛 Debug</button>
             </div>
           </div>
         </div>
@@ -160,7 +160,7 @@
         <input type="checkbox" id="ni-debug" />
         <span>Debug mode (capture stdin/stdout/stderr to disk)</span>
       </label>
-      <p class="hint">writes to <code>&lt;cwd&gt;/.claude-orch-app/debug/&lt;instance-id&gt;/</code> for sharing back to a maintainer</p>
+      <p class="hint">writes to <code>&lt;cwd&gt;/.hivemind/debug/&lt;instance-id&gt;/</code> for sharing back to a maintainer</p>
       <p class="error" id="ni-error"></p>
       <menu>
         <button value="cancel">Cancel</button>

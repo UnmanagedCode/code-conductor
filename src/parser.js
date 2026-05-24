@@ -307,11 +307,11 @@ export class Parser {
 
 // Detect "Attached file: `<path>`" marker lines in a text block (the
 // shape we write in instances.js prompt()) and split them out as
-// attachment entries. Path must live under .claude-orch-app/attachments/
+// attachment entries. Path must live under .hivemind/attachments/
 // to be recognized — anchors the match so unrelated prose mentioning
 // "Attached file:" isn't accidentally promoted.
 const IMG_EXT = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp']);
-const ATT_LINE_RE = /^Attached file:\s*`((?:[^`]*\/)?\.claude-orch-app\/attachments\/[^`]+)`\s*$/;
+const ATT_LINE_RE = /^Attached file:\s*`((?:[^`]*\/)?\.hivemind\/attachments\/[^`]+)`\s*$/;
 
 export function extractAttachedMarkers(text) {
   const lines = text.split('\n');

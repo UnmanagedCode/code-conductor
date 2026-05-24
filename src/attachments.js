@@ -16,7 +16,7 @@ function safeName(name) {
   return cleaned || 'file';
 }
 
-// Persist one attachment to <cwd>/.claude-orch-app/attachments/<stamp>-<name>
+// Persist one attachment to <cwd>/.hivemind/attachments/<stamp>-<name>
 // and return both the absolute path and the worktree-relative path the
 // model can use with the Read tool.
 export async function saveAttachment(cwd, { name, dataBase64 }) {

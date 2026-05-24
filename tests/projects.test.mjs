@@ -498,8 +498,8 @@ test('writeProjectMeta({group}) round-trips through listProjects/GET /api/projec
     await writeProjectMeta('work', { group: 'Side projects' });
     const meta = await readProjectMeta('work');
     assert.equal(meta.group, 'Side projects');
-    // The on-disk file lives at the conventional .claude-orch-app path.
-    const file = path.join(projectsRoot, 'work', '.claude-orch-app', 'project.json');
+    // The on-disk file lives at the conventional .hivemind path.
+    const file = path.join(projectsRoot, 'work', '.hivemind', 'project.json');
     const raw = await fs.readFile(file, 'utf8');
     assert.match(raw, /"group": "Side projects"/);
     // And it surfaces in the REST listing.
@@ -514,7 +514,7 @@ test('writeProjectMeta({group:null}) clears the field and removes the now-empty 
   try {
     await api(baseUrl, 'POST', '/api/projects', { name: 'clearme' });
     await writeProjectMeta('clearme', { group: 'Temp' });
-    const file = path.join(projectsRoot, 'clearme', '.claude-orch-app', 'project.json');
+    const file = path.join(projectsRoot, 'clearme', '.hivemind', 'project.json');
     await fs.stat(file); // exists
     await writeProjectMeta('clearme', { group: null });
     await assert.rejects(fs.stat(file), { code: 'ENOENT' });

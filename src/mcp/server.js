@@ -5,13 +5,13 @@
 // Exposes the orchestrator's verbs (spawn / list / send_prompt / read
 // transcript / worktree ops) as MCP tools so a Claude session can drive
 // the orchestrator directly via `claude mcp add --transport http
-// claude-orch http://127.0.0.1:8787/mcp`.
+// hivemind http://127.0.0.1:8787/mcp`.
 
 import express from 'express';
 import { buildTools } from './tools.js';
 
 const PROTOCOL_VERSION = '2025-06-18';
-const SERVER_NAME = 'claude-orch';
+const SERVER_NAME = 'hivemind';
 const SERVER_VERSION = '0.1.0';
 const JSONRPC = '2.0';
 

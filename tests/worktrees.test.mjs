@@ -51,7 +51,7 @@ test('createWorktree creates a sibling directory with metadata and a fresh branc
     });
     assert.equal(r.status, 201);
     assert.ok(r.body.worktree, 'instance summary carries worktree metadata');
-    assert.match(r.body.worktree.branch, /^claude-orch\//);
+    assert.match(r.body.worktree.branch, /^hivemind\//);
     assert.equal(r.body.worktree.baseBranch, 'main');
 
     // Sibling dir exists and is itself a working tree of the same repo.
@@ -64,7 +64,7 @@ test('createWorktree creates a sibling directory with metadata and a fresh branc
     assert.equal(wtBranch, wt.branch);
 
     // Metadata file is inside the per-worktree dotfolder and round-trips.
-    const meta = JSON.parse(await fs.readFile(path.join(wt.worktreePath, '.claude-orch-app', 'worktree.json'), 'utf8'));
+    const meta = JSON.parse(await fs.readFile(path.join(wt.worktreePath, '.hivemind', 'worktree.json'), 'utf8'));
     assert.equal(meta.parentProject, 'demo');
     assert.equal(meta.baseBranch, 'main');
     // The dotfolder is added to the worktree's local exclude file so `git
@@ -72,7 +72,7 @@ test('createWorktree creates a sibling directory with metadata and a fresh branc
     const gitDir = (await git(wt.worktreePath, 'rev-parse', '--git-path', 'info/exclude')).stdout.trim();
     const excludeAbs = path.isAbsolute(gitDir) ? gitDir : path.join(wt.worktreePath, gitDir);
     const exclude = await fs.readFile(excludeAbs, 'utf8');
-    assert.match(exclude, /\/\.claude-orch-app\//);
+    assert.match(exclude, /\/\.hivemind\//);
   } finally { await ctx.close(); }
 });
 
@@ -410,7 +410,7 @@ test('POST /merge creates a merge commit on the parent when worktree is ahead (-
 
     // Git's default merge message — we explicitly didn't customize it.
     const msg = (await git(repoPath, 'log', '-1', '--format=%s', parentSha)).stdout.trim();
-    assert.match(msg, /^Merge branch 'claude-orch\//);
+    assert.match(msg, /^Merge branch 'hivemind\//);
   } finally { await ctx.close(); }
 });
 

@@ -12,11 +12,11 @@ const GROUP_RE = /^[\w][\w \-./]{0,39}$/;
 // marker path (see src/worktrees.js). Top-level project listing filters
 // them out so they aren't presented as standalone projects — they appear
 // as a child node under the parent.
-const WORKTREE_MARKER = '.claude-orch-app/worktree.json';
+const WORKTREE_MARKER = '.hivemind/worktree.json';
 // Per-project metadata lives alongside other orchestrator state in the
-// project's .claude-orch-app/ dotfolder. Created lazily — projects with
+// project's .hivemind/ dotfolder. Created lazily — projects with
 // no metadata simply have no file.
-const META_FILE = '.claude-orch-app/project.json';
+const META_FILE = '.hivemind/project.json';
 
 async function isWorktreeMarkerPresent(dir) {
   try {
@@ -119,7 +119,7 @@ export async function readProjectMeta(name) {
 export async function writeProjectMeta(name, patch) {
   validateName(name);
   await getProject(name);
-  const dir = path.join(projectsRoot(), name, '.claude-orch-app');
+  const dir = path.join(projectsRoot(), name, '.hivemind');
   const file = path.join(dir, 'project.json');
   const current = await readProjectMeta(name);
   const next = { ...current, ...patch };
