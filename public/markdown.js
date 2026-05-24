@@ -187,7 +187,37 @@ function blockToNode(block) {
     case 'code': {
       const code = el('code', block.code);
       if (block.lang) code.dataset.lang = block.lang;
-      return el('pre', code);
+      const pre = el('pre', code);
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'md-code-copy';
+      btn.textContent = 'Copy';
+      let resetTimer = null;
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const text = code.textContent;
+        const flash = (label, cls) => {
+          btn.textContent = label;
+          btn.classList.remove('copied', 'failed');
+          if (cls) btn.classList.add(cls);
+          if (resetTimer) clearTimeout(resetTimer);
+          resetTimer = setTimeout(() => {
+            btn.textContent = 'Copy';
+            btn.classList.remove('copied', 'failed');
+            resetTimer = null;
+          }, 1200);
+        };
+        const p = navigator.clipboard && navigator.clipboard.writeText
+          ? navigator.clipboard.writeText(text)
+          : Promise.reject(new Error('clipboard unavailable'));
+        p.then(() => flash('Copied', 'copied'))
+         .catch(() => flash('Copy failed', 'failed'));
+      });
+      const wrap = document.createElement('div');
+      wrap.className = 'md-code-wrap';
+      wrap.appendChild(btn);
+      wrap.appendChild(pre);
+      return wrap;
     }
     case 'ul':
     case 'ol': {

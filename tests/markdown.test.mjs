@@ -78,6 +78,25 @@ test('markdown: fenced code block preserves whitespace + language data attr', as
   assert.equal(code.textContent, 'const x = 1;\nconst y = 2;');
 });
 
+test('markdown: fenced code block gets a sibling Copy button inside a wrapper', async () => {
+  setupDOM();
+  const md = await loadMarkdown();
+  const root = render(md, '```\nhello world\n```');
+  const wrap = root.querySelector('.md-code-wrap');
+  assert.ok(wrap, 'expected .md-code-wrap to exist');
+  const pre = wrap.querySelector('pre');
+  assert.ok(pre, 'expected <pre> inside wrapper');
+  const btn = wrap.querySelector(':scope > .md-code-copy');
+  assert.ok(btn, 'expected .md-code-copy as direct child of wrapper');
+  assert.equal(btn.tagName, 'BUTTON');
+  assert.equal(btn.getAttribute('type'), 'button');
+  assert.equal(btn.textContent, 'Copy');
+  // Button must NOT live inside <pre> — otherwise pre.textContent would
+  // include "Copy" and break copy semantics.
+  assert.equal(pre.querySelector('.md-code-copy'), null);
+  assert.equal(pre.textContent, 'hello world');
+});
+
 test('markdown: inline bold / italic / code', async () => {
   setupDOM();
   const md = await loadMarkdown();
