@@ -72,16 +72,20 @@ test('rewind drops the chosen user message + tail, ring is rebuilt from truncate
     assert.equal(preEchoes, 2, 'two user_echoes replayed from history');
 
     // Rewind at index 1 → drop the 2nd user prompt + everything after.
-    let snapshotResetSeen = 0;
+    const resets = [];
     ctx.instances.on('snapshot_reset', (snap) => {
-      if (snap.id === id) snapshotResetSeen++;
+      if (snap.id === id) resets.push(snap);
     });
     const rew = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/rewind`, { userMessageIndex: 1 });
     assert.equal(rew.status, 200);
     assert.equal(rew.body.droppedText, 'second prompt');
 
-    // snapshot_reset fired once for this instance.
-    assert.equal(snapshotResetSeen, 1, 'snapshot_reset emitted exactly once');
+    // snapshot_reset fired once for this instance, and carries droppedText
+    // on the frame so the client can prefill the composer without waiting
+    // on the rewind HTTP response.
+    assert.equal(resets.length, 1, 'snapshot_reset emitted exactly once');
+    assert.equal(resets[0].droppedText, 'second prompt',
+      'droppedText rides on the snapshot_reset frame');
 
     await waitFor(() => ctx.instances.get(id).status === 'idle');
 
@@ -125,14 +129,16 @@ test('rewind to index 0 wipes the session and respawns under the same sessionId'
     const id = r.body.id;
     await waitFor(() => ctx.instances.get(id).status === 'idle');
 
-    let snapshotResetSeen = 0;
+    const resets = [];
     ctx.instances.on('snapshot_reset', (snap) => {
-      if (snap.id === id) snapshotResetSeen++;
+      if (snap.id === id) resets.push(snap);
     });
     const rew = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/rewind`, { userMessageIndex: 0 });
     assert.equal(rew.status, 200);
     assert.equal(rew.body.droppedText, 'only prompt');
-    assert.equal(snapshotResetSeen, 1, 'snapshot_reset emitted exactly once');
+    assert.equal(resets.length, 1, 'snapshot_reset emitted exactly once');
+    assert.equal(resets[0].droppedText, 'only prompt',
+      'droppedText rides on the snapshot_reset frame');
 
     await waitFor(() => ctx.instances.get(id).status === 'idle');
 

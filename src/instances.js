@@ -607,8 +607,11 @@ export class Instance extends EventEmitter {
       this._hooks.discardAll();
 
       // Tell subscribers to drop their current conversation DOM before the
-      // new replay events start arriving.
-      this.emit('snapshot_reset', this._snapshotForReset());
+      // new replay events start arriving. `droppedText` rides along on the
+      // frame so the client can prefill the composer without racing the
+      // rewind HTTP response (which arrives on a separate connection and
+      // can land after the WS frame on localhost).
+      this.emit('snapshot_reset', { ...this._snapshotForReset(), droppedText: result.droppedText });
 
       // Empty prefix (rewound to the first user message): the jsonl now has
       // zero lines, so `--resume <sid>` would point the CLI at a file with

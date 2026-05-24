@@ -832,11 +832,10 @@ async function rewindActiveSession(userMessageIndex) {
       body: JSON.stringify({ userMessageIndex }),
     });
     if (!r.ok) throw new Error((await r.json()).error);
-    const { droppedText } = await r.json();
-    // Prefill happens after the reset_snapshot frame lands and the
-    // composer flips back to writable. Stash here; the snapshot handler
-    // below consumes it.
-    pendingPrefill = { instanceId: id, text: droppedText ?? '' };
+    // Prefill rides on the `reset_snapshot` WS frame (carries droppedText
+    // directly) so there's no race between this HTTP response and the
+    // server-side emit. Just drain the body to release the connection.
+    await r.json();
   } catch (e) {
     alert(`rewind failed: ${e.message}`);
   }
@@ -1322,9 +1321,13 @@ bus.addEventListener('reset_snapshot', (e) => {
   conversation.reset();
   conversation.applyEvents(m.events ?? []);
   updateActiveHeader();
-  if (pendingPrefill && pendingPrefill.instanceId === m.id) {
-    composer.prefill(pendingPrefill.text);
-    pendingPrefill = null;
+  // Rewind carries the dropped prompt directly on the frame so the
+  // composer is prefilled regardless of when the rewind HTTP response
+  // returns. Fork still uses the legacy pendingPrefill handshake — its
+  // prefill lands on the *new* instance's first `snapshot` frame, not
+  // here.
+  if (typeof m.droppedText === 'string') {
+    composer.prefill(m.droppedText);
   }
 });
 
