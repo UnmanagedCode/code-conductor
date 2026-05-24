@@ -81,7 +81,8 @@ test('external-links: standalone + Android routes target=_blank through an inten
   const intent = locationAssignments[0];
   assert.match(intent, /^intent:\/\/example\.com\/path\?q=1#Intent;/);
   assert.match(intent, /;scheme=https;/);
-  assert.match(intent, /;S\.browser_fallback_url=https%3A%2F%2Fexample\.com%2Fpath%3Fq%3D1;/);
+  assert.match(intent, /;package=com\.android\.chrome;/);
+  assert.doesNotMatch(intent, /S\.browser_fallback_url/);
   assert.match(intent, /;end$/);
 });
 
@@ -176,12 +177,24 @@ test('external-links: mailto: on Android uses window.open (intent: is http/https
   assert.equal(ourOpenCalls[0][0], 'mailto:hi@example.com');
 });
 
-test('external-links: toIntentUrl encodes host, path, query, and fallback', async () => {
+test('external-links: toIntentUrl encodes host, path, query, hash with chrome package', async () => {
   const mod = await loadModule();
   const url = new URL('https://example.com/a/b?c=1&d=2#frag');
   const intent = mod.toIntentUrl(url);
   assert.match(intent, /^intent:\/\/example\.com\/a\/b\?c=1&d=2#frag#Intent;/);
   assert.match(intent, /;scheme=https;/);
-  assert.match(intent, /;S\.browser_fallback_url=https%3A%2F%2Fexample\.com%2Fa%2Fb%3Fc%3D1%26d%3D2%23frag;/);
+  assert.match(intent, /;package=com\.android\.chrome;/);
+  assert.doesNotMatch(intent, /S\.browser_fallback_url/);
+  assert.match(intent, /;end$/);
+});
+
+test('external-links: toIntentUrl handles loopback URLs with non-default port', async () => {
+  const mod = await loadModule();
+  const url = new URL('http://127.0.0.1:8765/r/path?x=1');
+  const intent = mod.toIntentUrl(url);
+  assert.match(intent, /^intent:\/\/127\.0\.0\.1:8765\/r\/path\?x=1#Intent;/);
+  assert.match(intent, /;scheme=http;/);
+  assert.match(intent, /;package=com\.android\.chrome;/);
+  assert.doesNotMatch(intent, /S\.browser_fallback_url/);
   assert.match(intent, /;end$/);
 });

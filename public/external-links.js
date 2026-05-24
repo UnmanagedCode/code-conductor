@@ -38,16 +38,28 @@ function isModifierClick(e) {
   return e.ctrlKey || e.metaKey || e.shiftKey || e.altKey || (e.button != null && e.button !== 0);
 }
 
-// Encode an http(s) URL as an Android intent: URI. Chrome treats navigations
-// to `intent://...` specially — it dispatches a VIEW intent for the embedded
-// URL and stays on the current page, so the PWA itself does not navigate.
+// Encode an http(s) URL as an Android intent: URI targeted at Chrome's
+// package. Two important details:
+//
+//   1. We pin `package=com.android.chrome` so the intent is routed to Chrome
+//      browser specifically (a separate task), instead of letting Android pick
+//      a handler — which for loopback URLs like http://127.0.0.1:8765 ends up
+//      with no advertised handler and falls back to the in-PWA Custom Tab.
+//      Chrome's browser activity accepts any http(s) URL, loopback included.
+//
+//   2. We deliberately omit `S.browser_fallback_url`. If a fallback is set,
+//      Chrome navigates the *current page* (i.e. the PWA itself) to that URL
+//      when the intent can't be dispatched, which replaces the PWA with the
+//      site we were trying to externalize. With no fallback, a failed intent
+//      dispatch leaves the PWA untouched.
+//
+// Assumes Chrome is installed — true by construction here, since installing
+// the PWA on Android requires Chrome (or a Chromium variant, but those share
+// the package name in practice for our users).
 export function toIntentUrl(url) {
   const scheme = url.protocol.replace(/:$/, '');
   const rest = (url.host || '') + (url.pathname || '') + (url.search || '') + (url.hash || '');
-  // Include a browser_fallback_url so devices without a matching browser
-  // intent handler don't end up on an error page.
-  const fallback = encodeURIComponent(url.href);
-  return `intent://${rest}#Intent;scheme=${scheme};S.browser_fallback_url=${fallback};end`;
+  return `intent://${rest}#Intent;scheme=${scheme};package=com.android.chrome;end`;
 }
 
 export function installExternalLinkOpener({ doc = document, win = window } = {}) {
