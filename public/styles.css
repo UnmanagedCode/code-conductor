@@ -57,7 +57,7 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
 .sidebar-actions { margin-bottom: 10px; display: flex; gap: 6px; align-items: stretch; }
 .sidebar-actions > #new-project-btn { flex: 1; min-width: 0; }
 .sidebar-actions > .overflow-menu { flex: 0 0 auto; }
-#sidebar-overflow-toggle { padding: 4px 10px; line-height: 1; }
+#sidebar-overflow-toggle { padding: 6px 10px; line-height: 1; }
 
 /* Sidebar footer: pinned at the bottom of the column-flex sidebar.
    Hosts the "Restart server" button + a small connection-status line
