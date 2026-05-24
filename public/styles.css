@@ -80,55 +80,59 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
 .project-list { list-style: none; padding: 0; margin: 0; }
 .project-list > li { margin-bottom: 6px; }
 
-/* Collapsible group header. Visually parallel to .worktree-group /
+/* Collapsible workspace header. Visually parallel to .worktree-group /
    .sessions-group: a <summary> with a custom caret, plus a small pencil
    ✎ that opens the membership dialog. Members render inside a nested
-   <ul>, each with the same .project-row markup as ungrouped projects.
+   <ul>, each with the same .project-row markup as unassigned projects.
    The wrapping <li> drops list bullets so the layout doesn't sprout an
    extra indent. */
-.project-list > li.project-group-item { list-style: none; }
-.project-group {
+.project-list > li.project-workspace-item { list-style: none; }
+.project-workspace {
   margin: 4px 0;
   border-top: 1px dashed var(--border);
   padding-top: 4px;
 }
-.project-group > .project-group-summary {
+.project-workspace > .project-workspace-summary {
   list-style: none; cursor: pointer;
   display: flex; align-items: center; gap: 6px;
   padding: 4px 6px; border-radius: 4px;
   font-size: 12px; color: var(--muted);
   user-select: none;
 }
-.project-group > .project-group-summary::-webkit-details-marker { display: none; }
-.project-group > .project-group-summary::before {
+.project-workspace > .project-workspace-summary::-webkit-details-marker { display: none; }
+.project-workspace > .project-workspace-summary::before {
   content: '▸';
   display: inline-block; width: 12px;
   color: var(--muted);
   transition: transform .12s;
 }
-.project-group[open] > .project-group-summary::before { transform: rotate(90deg); }
-.project-group > .project-group-summary:hover { background: var(--panel-2); }
-.project-group-name {
+.project-workspace[open] > .project-workspace-summary::before { transform: rotate(90deg); }
+.project-workspace > .project-workspace-summary:hover { background: var(--panel-2); }
+.project-workspace-name {
   flex: 1 1 auto; min-width: 0;
   font-weight: 600; color: var(--text);
   text-transform: uppercase; letter-spacing: .04em; font-size: 11px;
 }
-.project-group-count { color: var(--muted); font-family: ui-monospace, monospace; font-size: 11px; }
-.project-group-edit {
+.project-workspace-count { color: var(--muted); font-family: ui-monospace, monospace; font-size: 11px; }
+.project-workspace-edit {
   background: none; border: none; color: var(--muted);
   cursor: pointer; padding: 0 4px; font-size: 12px; line-height: 1;
   flex: 0 0 auto;
 }
-.project-group-edit:hover { color: var(--text); }
-.project-group-list {
+.project-workspace-edit:hover { color: var(--text); }
+.project-workspace-list {
   list-style: none; padding: 0; margin: 4px 0 4px 8px;
   border-left: 1px solid var(--border);
   padding-left: 8px;
 }
-.project-group-list > li { margin-bottom: 6px; list-style: none; }
+.project-workspace-list > li { margin-bottom: 6px; list-style: none; }
+.workspace-empty {
+  font-size: 11px; color: var(--muted);
+  padding: 4px 6px; font-style: italic;
+}
 
-/* Group dialog (new + edit + delete). Reuses the modal <dialog> base. */
-#group-dialog .gd-projects {
+/* Workspace dialog (new + edit + delete). Reuses the modal <dialog> base. */
+#workspace-dialog .gd-projects {
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 8px;
@@ -136,7 +140,7 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
   max-height: 50vh;
   overflow-y: auto;
 }
-#group-dialog .gd-projects legend { font-size: 11px; color: var(--muted); padding: 0 6px; }
+#workspace-dialog .gd-projects legend { font-size: 11px; color: var(--muted); padding: 0 6px; }
 .gd-project-list { list-style: none; padding: 0; margin: 0; }
 .gd-project-list > li { margin: 0; padding: 0; }
 .gd-project-row {
@@ -152,7 +156,7 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
 .gd-project-name { flex: 1 1 auto; min-width: 0;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.gd-project-current-group {
+.gd-project-current-workspace {
   font-size: 10px; color: var(--amber);
   border: 1px solid var(--amber); border-radius: 8px;
   padding: 0 5px; flex: 0 0 auto;

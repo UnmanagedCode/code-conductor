@@ -69,9 +69,9 @@ test('0001 migration: moves project + worktree state into the central store', as
     const logs = [];
     await runMigrations({ root, log: (...args) => logs.push(args.join(' ')) });
 
-    // Project metadata moved.
+    // Project metadata moved. 0002 also runs and renames group → workspace.
     const projectMeta = path.join(root, '.code-conductor', 'projects', 'alpha', 'project.json');
-    assert.equal(JSON.parse(await fs.readFile(projectMeta, 'utf8')).group, 'Work');
+    assert.equal(JSON.parse(await fs.readFile(projectMeta, 'utf8')).workspace, 'Work');
 
     // Project attachments + debug moved.
     assert.equal(
@@ -127,9 +127,9 @@ test('0001 migration: second run is a fast no-op', async () => {
     await runMigrations({ root, log: (...args) => secondLogs.push(args.join(' ')) });
     assert.deepEqual(secondLogs, [], 'second run produces no log lines');
 
-    // State unchanged.
+    // State unchanged. 0002 ran on the first pass and converted to workspace.
     const projectMeta = path.join(root, '.code-conductor', 'projects', 'gamma', 'project.json');
-    assert.equal(JSON.parse(await fs.readFile(projectMeta, 'utf8')).group, 'G');
+    assert.equal(JSON.parse(await fs.readFile(projectMeta, 'utf8')).workspace, 'G');
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }
@@ -153,9 +153,13 @@ test('0001 migration: refuses to clobber a pre-existing non-empty destination', 
     const src = path.join(root, 'delta', '.code-conductor', 'project.json');
     assert.ok(await exists(src), 'source file should remain in place when destination is non-empty');
 
-    // Destination is unchanged.
+    // Destination preserved by 0001; 0002 then renames its `group` key to
+    // `workspace` (its job is to upgrade any project.json in the central
+    // store, including those 0001 left in place).
     const destFile = path.join(destDir, 'project.json');
-    assert.equal((await fs.readFile(destFile, 'utf8')).trim(), '{"group":"PRE-EXISTING"}');
+    const destBody = JSON.parse(await fs.readFile(destFile, 'utf8'));
+    assert.equal(destBody.workspace, 'PRE-EXISTING');
+    assert.ok(!('group' in destBody), 'group key removed by 0002');
 
     // A warning was logged.
     assert.ok(logs.some(l => l.includes('skipping')), `expected a "skipping" warning; got: ${logs.join('\n')}`);
@@ -174,6 +178,68 @@ test('0001 migration: no candidates → applied:false, no log output', async () 
     await runMigrations({ root, log: (...args) => logs.push(args.join(' ')) });
 
     assert.deepEqual(logs, []);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test('0002 migration: renames group → workspace and seeds workspaces.json', async () => {
+  const root = await mkTempRoot();
+  try {
+    // Stage post-0001 state directly in the central store: two projects
+    // each with a `group` field, one project with neither field.
+    await writeJson(
+      path.join(root, '.code-conductor', 'projects', 'a', 'project.json'),
+      { group: 'Work' },
+    );
+    await writeJson(
+      path.join(root, '.code-conductor', 'projects', 'b', 'project.json'),
+      { group: 'Side' },
+    );
+    await writeJson(
+      path.join(root, '.code-conductor', 'projects', 'c', 'project.json'),
+      { somethingElse: 'x' },
+    );
+
+    const logs = [];
+    await runMigrations({ root, log: (...args) => logs.push(args.join(' ')) });
+
+    // group → workspace on every affected file.
+    const a = JSON.parse(await fs.readFile(path.join(root, '.code-conductor', 'projects', 'a', 'project.json'), 'utf8'));
+    assert.equal(a.workspace, 'Work');
+    assert.ok(!('group' in a));
+    const b = JSON.parse(await fs.readFile(path.join(root, '.code-conductor', 'projects', 'b', 'project.json'), 'utf8'));
+    assert.equal(b.workspace, 'Side');
+    // The unrelated project is untouched.
+    const c = JSON.parse(await fs.readFile(path.join(root, '.code-conductor', 'projects', 'c', 'project.json'), 'utf8'));
+    assert.equal(c.somethingElse, 'x');
+
+    // Registry seeded with the union of observed values.
+    const reg = JSON.parse(await fs.readFile(path.join(root, '.code-conductor', 'workspaces.json'), 'utf8'));
+    assert.deepEqual(reg.workspaces, ['Side', 'Work']);
+    assert.ok(logs.some(l => l.includes('migration 0002')), 'first run logs 0002');
+
+    // Second run is a fast no-op (no groups remain + registry exists).
+    const logs2 = [];
+    await runMigrations({ root, log: (...args) => logs2.push(args.join(' ')) });
+    assert.ok(!logs2.some(l => l.includes('migration 0002')), 'second run does not log 0002');
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test('0002 migration: prefers existing workspace field if both keys are present', async () => {
+  const root = await mkTempRoot();
+  try {
+    const file = path.join(root, '.code-conductor', 'projects', 'dual', 'project.json');
+    await writeJson(file, { group: 'Old', workspace: 'New' });
+    await runMigrations({ root, log: () => {} });
+    const body = JSON.parse(await fs.readFile(file, 'utf8'));
+    assert.equal(body.workspace, 'New');
+    assert.ok(!('group' in body));
+    // The newer (workspace) value is what gets seeded into the registry.
+    const reg = JSON.parse(await fs.readFile(path.join(root, '.code-conductor', 'workspaces.json'), 'utf8'));
+    assert.deepEqual(reg.workspaces, ['New']);
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }

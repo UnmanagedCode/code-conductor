@@ -26,8 +26,8 @@
                     aria-haspopup="menu" aria-expanded="false"
                     title="More project actions">≡</button>
             <div id="sidebar-overflow-panel" class="overflow-panel" hidden role="menu">
-              <button id="new-group-btn" type="button" role="menuitem"
-                      title="Create a new project group">+ New group</button>
+              <button id="new-workspace-btn" type="button" role="menuitem"
+                      title="Create a new workspace">+ New workspace</button>
             </div>
           </div>
         </div>
@@ -98,11 +98,11 @@
     </form>
   </dialog>
 
-  <dialog id="group-dialog">
+  <dialog id="workspace-dialog">
     <form method="dialog">
-      <h3 id="gd-title">Group projects</h3>
-      <label>Group name <input id="gd-name" required autofocus placeholder="Work / Side / client-X" /></label>
-      <p class="hint">Each project can belong to one group. Tick to include; untick to remove. A project ticked here is moved out of any other group.</p>
+      <h3 id="gd-title">Workspace</h3>
+      <label>Workspace name <input id="gd-name" required autofocus placeholder="Work / Side / client-X" /></label>
+      <p class="hint">Each project can belong to one workspace. Tick to include; untick to remove. A project ticked here is moved out of any other workspace. Submitting with no projects ticked creates an empty workspace.</p>
       <fieldset class="gd-projects">
         <legend>Projects</legend>
         <ul id="gd-project-list" class="gd-project-list"></ul>
@@ -110,7 +110,7 @@
       </fieldset>
       <p class="error" id="gd-error"></p>
       <menu>
-        <button id="gd-delete" type="button" class="gd-delete" hidden>Delete group</button>
+        <button id="gd-delete" type="button" class="gd-delete" hidden>Delete workspace</button>
         <button value="cancel" formnovalidate>Cancel</button>
         <button id="gd-save" value="save">Save</button>
       </menu>

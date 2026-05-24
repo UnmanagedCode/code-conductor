@@ -66,3 +66,4 @@ server is undefined.
 | Migration | Description |
 |-----------|-------------|
 | `0001-centralize-orchestrator-state` | Moves per-project `.code-conductor/` dotfolder state (project.json, attachments/, debug/, worktree.json) into a single central store at `<root>/.code-conductor/projects/<project>/...`. Removes the matching `.git/info/exclude` line from each worktree. |
+| `0002-rename-group-to-workspace` | Renames the project-grouping field `group` to `workspace` in every `<root>/.code-conductor/projects/<project>/project.json`, and seeds `<root>/.code-conductor/workspaces.json` from the union of observed values so empty workspaces can persist independently of membership. |

@@ -50,14 +50,15 @@ function mergeLive(onDisk, liveInstances) {
   return out;
 }
 
-// localStorage key for the set of collapsed group headers. Sessions and
-// worktree collapse state is session-local, but groups are higher-level
-// navigation — surviving a refresh is worth the extra persistence.
-const GROUPS_COLLAPSED_STORAGE_KEY = 'code-conductor:groups-collapsed';
+// localStorage key for the set of collapsed workspace headers. Sessions
+// and worktree collapse state is session-local, but workspaces are
+// higher-level navigation — surviving a refresh is worth the extra
+// persistence.
+const WORKSPACES_COLLAPSED_STORAGE_KEY = 'code-conductor:workspaces-collapsed';
 
-function loadCollapsedGroups() {
+function loadCollapsedWorkspaces() {
   try {
-    const raw = localStorage.getItem(GROUPS_COLLAPSED_STORAGE_KEY);
+    const raw = localStorage.getItem(WORKSPACES_COLLAPSED_STORAGE_KEY);
     if (!raw) return new Set();
     const arr = JSON.parse(raw);
     if (!Array.isArray(arr)) return new Set();
@@ -66,10 +67,10 @@ function loadCollapsedGroups() {
     return new Set();
   }
 }
-function saveCollapsedGroups(set) {
+function saveCollapsedWorkspaces(set) {
   try {
-    if (set.size === 0) localStorage.removeItem(GROUPS_COLLAPSED_STORAGE_KEY);
-    else localStorage.setItem(GROUPS_COLLAPSED_STORAGE_KEY, JSON.stringify([...set]));
+    if (set.size === 0) localStorage.removeItem(WORKSPACES_COLLAPSED_STORAGE_KEY);
+    else localStorage.setItem(WORKSPACES_COLLAPSED_STORAGE_KEY, JSON.stringify([...set]));
   } catch { /* private mode / quota — best-effort */ }
 }
 
@@ -77,7 +78,7 @@ export class Sidebar {
   constructor({
     rootList, onSelectInstance, onCreateInstanceClick,
     onRemoveWorktree, onDeleteProject, onResumeSession, onLoadSessions,
-    onDeleteSession, onEditGroup,
+    onDeleteSession, onEditWorkspace,
   }) {
     this.list = rootList;
     this.onSelectInstance = onSelectInstance;
@@ -87,18 +88,22 @@ export class Sidebar {
     this.onResumeSession = onResumeSession;
     this.onLoadSessions = onLoadSessions;
     this.onDeleteSession = onDeleteSession;
-    this.onEditGroup = onEditGroup;
+    this.onEditWorkspace = onEditWorkspace;
     this.projects = [];
     this.instances = [];
+    // Names of registered workspaces (from GET /api/workspaces). Render
+    // unions this with the set derived from project.workspace values so
+    // empty workspaces still appear.
+    this.workspaces = [];
     this.activeInstanceId = null;
     // Sessions subnodes default to expanded — they are the primary
     // navigation. We track only the keys the user has EXPLICITLY
     // collapsed so manual collapse sticks across re-renders.
     this.collapsedSessions = new Set();   // key: `${projectName}` or `${projectName}:${worktreeName}`
     this.expandedWorktrees = new Set();   // key: projectName (worktree subnodes stay default-collapsed)
-    // Group containers default-expanded and persist their collapsed
+    // Workspace containers default-expanded and persist their collapsed
     // state in localStorage so a page refresh keeps the layout stable.
-    this.collapsedGroups = loadCollapsedGroups(); // key: group name
+    this.collapsedWorkspaces = loadCollapsedWorkspaces(); // key: workspace name
     // Cached lazy-loaded session lists keyed the same way as
     // collapsedSessions. The cache holds the on-disk list; live
     // instances are merged in fresh on every render so status dots
@@ -117,6 +122,11 @@ export class Sidebar {
   }
 
   setProjects(projects) { this.projects = projects; this.render(); }
+  setWorkspaces(names) {
+    const arr = Array.isArray(names) ? names.filter(n => typeof n === 'string') : [];
+    this.workspaces = [...new Set(arr)];
+    this.render();
+  }
   setUnread(map) { this.unreadBySessionId = map ?? new Map(); this.render(); }
   setInstances(instances) {
     // Detect new sessionIds appearing/disappearing — when they do, the
@@ -352,8 +362,8 @@ export class Sidebar {
 
   // Build a single project's list item (project row + Sessions subnode +
   // Worktrees subnode). Pulled out of render() so the same renderer
-  // produces ungrouped items at the top level AND items nested inside a
-  // group's <details> body — the row markup is identical either way.
+  // produces unassigned items at the top level AND items nested inside
+  // a workspace's <details> body — the row markup is identical either way.
   _projectItem({ project: p, directByProject, byWorktree }) {
     const directs = directByProject.get(p.name) ?? [];
     const worktrees = Array.isArray(p.worktrees) ? p.worktrees : [];
@@ -431,40 +441,46 @@ export class Sidebar {
       return;
     }
 
-    // Split into grouped (rendered first, nested under <details>) and
-    // ungrouped (rendered flat underneath). Group bucket order is
-    // alphabetical for v1 — explicit ordering can come later.
-    // `project.group` is whatever the server returned (the trimmed string
-    // from the project's central-store project.json) or null/missing.
-    const ungrouped = [];
-    const byGroup = new Map();
+    // Split into workspace-assigned (rendered first, nested under
+    // <details>) and unassigned (rendered flat underneath). Workspace
+    // order is alphabetical for v1 — explicit ordering can come later.
+    // `project.workspace` is whatever the server returned (the trimmed
+    // string from the project's central-store project.json) or
+    // null/missing. The set of rendered workspaces is the union of
+    // (registered workspaces from GET /api/workspaces) and (workspaces
+    // referenced by any project), so empty workspaces still appear.
+    const unassigned = [];
+    const byWorkspace = new Map();
     for (const p of this.projects) {
-      const g = (typeof p.group === 'string' && p.group.trim() !== '') ? p.group.trim() : null;
-      if (g) {
-        let arr = byGroup.get(g);
-        if (!arr) { arr = []; byGroup.set(g, arr); }
+      const w = (typeof p.workspace === 'string' && p.workspace.trim() !== '') ? p.workspace.trim() : null;
+      if (w) {
+        let arr = byWorkspace.get(w);
+        if (!arr) { arr = []; byWorkspace.set(w, arr); }
         arr.push(p);
       } else {
-        ungrouped.push(p);
+        unassigned.push(p);
       }
     }
+    for (const name of this.workspaces) {
+      if (!byWorkspace.has(name)) byWorkspace.set(name, []);
+    }
 
-    const groupNames = [...byGroup.keys()].sort((a, b) => a.localeCompare(b));
-    for (const name of groupNames) {
-      const members = byGroup.get(name);
-      const det = el('details', { class: 'project-group' });
-      if (!this.collapsedGroups.has(name)) det.setAttribute('open', '');
+    const workspaceNames = [...byWorkspace.keys()].sort((a, b) => a.localeCompare(b));
+    for (const name of workspaceNames) {
+      const members = byWorkspace.get(name);
+      const det = el('details', { class: 'project-workspace' });
+      if (!this.collapsedWorkspaces.has(name)) det.setAttribute('open', '');
       det.addEventListener('toggle', () => {
-        if (det.open) this.collapsedGroups.delete(name);
-        else this.collapsedGroups.add(name);
-        saveCollapsedGroups(this.collapsedGroups);
+        if (det.open) this.collapsedWorkspaces.delete(name);
+        else this.collapsedWorkspaces.add(name);
+        saveCollapsedWorkspaces(this.collapsedWorkspaces);
       });
-      const summary = el('summary', { class: 'project-group-summary' },
-        el('span', { class: 'project-group-name' }, name),
-        el('span', { class: 'project-group-count' }, `(${members.length})`),
+      const summary = el('summary', { class: 'project-workspace-summary' },
+        el('span', { class: 'project-workspace-name' }, name),
+        el('span', { class: 'project-workspace-count' }, `(${members.length})`),
       );
       summary.appendChild(el('button', {
-        class: 'project-group-edit',
+        class: 'project-workspace-edit',
         title: `edit '${name}'`,
         onclick: (e) => {
           // Prevent the click from toggling the <details> open state and
@@ -472,21 +488,26 @@ export class Sidebar {
           // handlers.
           e.preventDefault();
           e.stopPropagation();
-          if (this.onEditGroup) this.onEditGroup(name);
+          if (this.onEditWorkspace) this.onEditWorkspace(name);
         },
       }, '✎'));
       det.appendChild(summary);
-      const ul = el('ul', { class: 'project-group-list' });
-      for (const p of members) {
-        ul.appendChild(this._projectItem({ project: p, directByProject, byWorktree }));
+      const ul = el('ul', { class: 'project-workspace-list' });
+      if (members.length === 0) {
+        ul.appendChild(el('li', { class: 'workspace-empty' },
+          'no projects in this workspace — tap ✎ to add'));
+      } else {
+        for (const p of members) {
+          ul.appendChild(this._projectItem({ project: p, directByProject, byWorktree }));
+        }
       }
       det.appendChild(ul);
-      const li = el('li', { class: 'project-group-item' });
+      const li = el('li', { class: 'project-workspace-item' });
       li.appendChild(det);
       this.list.appendChild(li);
     }
 
-    for (const p of ungrouped) {
+    for (const p of unassigned) {
       this.list.appendChild(this._projectItem({ project: p, directByProject, byWorktree }));
     }
   }

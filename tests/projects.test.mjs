@@ -482,48 +482,48 @@ test('GET /api/sessions/:sid/locate 400s on malformed id', async () => {
   } finally { await close(); }
 });
 
-test('readProjectMeta returns {group:null} when the dotfile is absent', async () => {
+test('readProjectMeta returns {workspace:null} when the dotfile is absent', async () => {
   const { baseUrl, close } = await bootServer();
   try {
     await api(baseUrl, 'POST', '/api/projects', { name: 'fresh' });
     const meta = await readProjectMeta('fresh');
-    assert.deepEqual(meta, { group: null });
+    assert.deepEqual(meta, { workspace: null });
   } finally { await close(); }
 });
 
-test('writeProjectMeta({group}) round-trips through listProjects/GET /api/projects', async () => {
+test('writeProjectMeta({workspace}) round-trips through listProjects/GET /api/projects', async () => {
   const { baseUrl, projectsRoot, close } = await bootServer();
   try {
     await api(baseUrl, 'POST', '/api/projects', { name: 'work' });
-    await writeProjectMeta('work', { group: 'Side projects' });
+    await writeProjectMeta('work', { workspace: 'Side projects' });
     const meta = await readProjectMeta('work');
-    assert.equal(meta.group, 'Side projects');
+    assert.equal(meta.workspace, 'Side projects');
     // The on-disk file lives in the workspace-wide central store.
     const file = path.join(projectsRoot, '.code-conductor', 'projects', 'work', 'project.json');
     const raw = await fs.readFile(file, 'utf8');
-    assert.match(raw, /"group": "Side projects"/);
+    assert.match(raw, /"workspace": "Side projects"/);
     // And it surfaces in the REST listing.
     const r = await api(baseUrl, 'GET', '/api/projects');
     const proj = r.body.find(p => p.name === 'work');
-    assert.equal(proj.group, 'Side projects');
+    assert.equal(proj.workspace, 'Side projects');
   } finally { await close(); }
 });
 
-test('writeProjectMeta({group:null}) clears the field and removes the now-empty file', async () => {
+test('writeProjectMeta({workspace:null}) clears the field and removes the now-empty file', async () => {
   const { baseUrl, projectsRoot, close } = await bootServer();
   try {
     await api(baseUrl, 'POST', '/api/projects', { name: 'clearme' });
-    await writeProjectMeta('clearme', { group: 'Temp' });
+    await writeProjectMeta('clearme', { workspace: 'Temp' });
     const file = path.join(projectsRoot, '.code-conductor', 'projects', 'clearme', 'project.json');
     await fs.stat(file); // exists
-    await writeProjectMeta('clearme', { group: null });
+    await writeProjectMeta('clearme', { workspace: null });
     await assert.rejects(fs.stat(file), { code: 'ENOENT' });
     const meta = await readProjectMeta('clearme');
-    assert.deepEqual(meta, { group: null });
+    assert.deepEqual(meta, { workspace: null });
   } finally { await close(); }
 });
 
-test('writeProjectMeta rejects invalid group strings', async () => {
+test('writeProjectMeta rejects invalid workspace strings', async () => {
   const { baseUrl, close } = await bootServer();
   try {
     await api(baseUrl, 'POST', '/api/projects', { name: 'bad' });
@@ -532,24 +532,24 @@ test('writeProjectMeta rejects invalid group strings', async () => {
     // map to null (clear), not an error.
     for (const bad of ['x'.repeat(60), 'has:colon', 'has!bang', 'with\ttab']) {
       await assert.rejects(
-        writeProjectMeta('bad', { group: bad }),
-        /invalid group name/,
+        writeProjectMeta('bad', { workspace: bad }),
+        /invalid workspace name/,
         `expected reject for ${JSON.stringify(bad)}`,
       );
     }
-    await assert.rejects(writeProjectMeta('bad', { group: 123 }), /must be a string/);
+    await assert.rejects(writeProjectMeta('bad', { workspace: 123 }), /must be a string/);
     // Whitespace-only treated as null — no throw.
-    await writeProjectMeta('bad', { group: '   ' });
+    await writeProjectMeta('bad', { workspace: '   ' });
   } finally { await close(); }
 });
 
-test('PUT /api/projects/:name/group assigns and clears the field; broadcasts the projects WS hint', async () => {
+test('PUT /api/projects/:name/workspace assigns and clears the field; broadcasts the projects WS hint', async () => {
   const { baseUrl, wsUrl, close } = await bootServer();
   try {
     await api(baseUrl, 'POST', '/api/projects', { name: 'wsp' });
 
     // Subscribe to the WS so we can assert the broadcast lands. The
-    // server pushes {t:'projects'} on every successful group change.
+    // server pushes {t:'projects'} on every successful workspace change.
     const { WebSocket } = await import('ws');
     const ws = new WebSocket(wsUrl);
     const seen = [];
@@ -558,31 +558,93 @@ test('PUT /api/projects/:name/group assigns and clears the field; broadcasts the
       try { const m = JSON.parse(raw.toString()); seen.push(m); } catch { /* ignore */ }
     });
 
-    const assign = await api(baseUrl, 'PUT', '/api/projects/wsp/group', { group: 'Work' });
+    const assign = await api(baseUrl, 'PUT', '/api/projects/wsp/workspace', { workspace: 'Work' });
     assert.equal(assign.status, 200);
-    assert.equal(assign.body.group, 'Work');
+    assert.equal(assign.body.workspace, 'Work');
     await waitFor(() => seen.some(m => m.t === 'projects'));
 
     // Clearing: explicit null.
     seen.length = 0;
-    const clr = await api(baseUrl, 'PUT', '/api/projects/wsp/group', { group: null });
+    const clr = await api(baseUrl, 'PUT', '/api/projects/wsp/workspace', { workspace: null });
     assert.equal(clr.status, 200);
-    assert.equal(clr.body.group, null);
+    assert.equal(clr.body.workspace, null);
     await waitFor(() => seen.some(m => m.t === 'projects'));
 
     ws.close();
   } finally { await close(); }
 });
 
-test('PUT /api/projects/:name/group: 400 on invalid group, 404 on unknown project', async () => {
+test('PUT /api/projects/:name/workspace: 400 on invalid workspace, 404 on unknown project', async () => {
   const { baseUrl, close } = await bootServer();
   try {
     await api(baseUrl, 'POST', '/api/projects', { name: 'val' });
-    const bad = await api(baseUrl, 'PUT', '/api/projects/val/group', { group: 'x'.repeat(60) });
+    const bad = await api(baseUrl, 'PUT', '/api/projects/val/workspace', { workspace: 'x'.repeat(60) });
     assert.equal(bad.status, 400);
-    assert.match(bad.body.error, /invalid group name/);
-    const missing = await api(baseUrl, 'PUT', '/api/projects/nope/group', { group: 'X' });
+    assert.match(bad.body.error, /invalid workspace name/);
+    const missing = await api(baseUrl, 'PUT', '/api/projects/nope/workspace', { workspace: 'X' });
     assert.equal(missing.status, 404);
+  } finally { await close(); }
+});
+
+test('Workspace registry endpoints: GET/POST/PUT/DELETE /api/workspaces', async () => {
+  const { baseUrl, projectsRoot, close } = await bootServer();
+  try {
+    await api(baseUrl, 'POST', '/api/projects', { name: 'p1' });
+    await api(baseUrl, 'POST', '/api/projects', { name: 'p2' });
+
+    // Empty list at boot.
+    let r = await api(baseUrl, 'GET', '/api/workspaces');
+    assert.equal(r.status, 200);
+    assert.deepEqual(r.body, []);
+
+    // POST creates an empty workspace.
+    r = await api(baseUrl, 'POST', '/api/workspaces', { name: 'Solo' });
+    assert.equal(r.status, 201);
+    assert.equal(r.body.name, 'Solo');
+    assert.equal(r.body.added, true);
+
+    // Idempotent: a second POST with the same name reports added:false
+    // but still 200.
+    r = await api(baseUrl, 'POST', '/api/workspaces', { name: 'Solo' });
+    assert.equal(r.status, 200);
+    assert.equal(r.body.added, false);
+
+    // GET surfaces it with projectCount 0.
+    r = await api(baseUrl, 'GET', '/api/workspaces');
+    assert.deepEqual(r.body, [{ name: 'Solo', projectCount: 0 }]);
+
+    // Assigning a project auto-registers a NEW workspace name.
+    await api(baseUrl, 'PUT', '/api/projects/p1/workspace', { workspace: 'Auto' });
+    r = await api(baseUrl, 'GET', '/api/workspaces');
+    const byName = Object.fromEntries(r.body.map(w => [w.name, w.projectCount]));
+    assert.equal(byName.Auto, 1);
+    assert.equal(byName.Solo, 0);
+
+    // PUT renames a workspace and rewrites every member.
+    await api(baseUrl, 'PUT', '/api/projects/p2/workspace', { workspace: 'Auto' });
+    r = await api(baseUrl, 'PUT', '/api/workspaces/Auto', { name: 'Renamed' });
+    assert.equal(r.status, 200);
+    assert.equal(r.body.renamed, true);
+    assert.equal(r.body.movedProjects.length, 2);
+    const projs = (await api(baseUrl, 'GET', '/api/projects')).body;
+    assert.equal(projs.find(p => p.name === 'p1').workspace, 'Renamed');
+    assert.equal(projs.find(p => p.name === 'p2').workspace, 'Renamed');
+
+    // DELETE clears the field on every member and drops the registry entry.
+    r = await api(baseUrl, 'DELETE', '/api/workspaces/Renamed');
+    assert.equal(r.status, 200);
+    assert.equal(r.body.removed, true);
+    assert.equal(r.body.clearedProjects.length, 2);
+    const after = (await api(baseUrl, 'GET', '/api/projects')).body;
+    assert.equal(after.find(p => p.name === 'p1').workspace, null);
+    assert.equal(after.find(p => p.name === 'p2').workspace, null);
+    r = await api(baseUrl, 'GET', '/api/workspaces');
+    assert.deepEqual(r.body.map(w => w.name), ['Solo']);
+
+    // The registry file is removed once empty.
+    await api(baseUrl, 'DELETE', '/api/workspaces/Solo');
+    const regFile = path.join(projectsRoot, '.code-conductor', 'workspaces.json');
+    await assert.rejects(fs.stat(regFile), { code: 'ENOENT' });
   } finally { await close(); }
 });
 

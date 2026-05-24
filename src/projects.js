@@ -3,11 +3,11 @@ import path from 'node:path';
 import os from 'node:os';
 
 const NAME_RE = /^[a-zA-Z0-9._-]+$/;
-// Project group names are looser than project names: spaces and slashes
-// are allowed so users can type a natural label ("Work", "Side projects",
+// Workspace names are looser than project names: spaces and slashes are
+// allowed so users can type a natural label ("Work", "Side projects",
 // "client/Foo"). Bounded length + no control chars so it remains safe to
 // render and serialise.
-const GROUP_RE = /^[\w][\w \-./]{0,39}$/;
+const WORKSPACE_RE = /^[\w][\w \-./]{0,39}$/;
 
 // All orchestrator-owned state lives under a single dotfolder at the
 // workspace root (`<projectsRoot>/.code-conductor/`). Layout:
@@ -98,23 +98,23 @@ export async function listProjects() {
     if (worktreeDirs.has(e.name)) continue;
     const full = path.join(root, e.name);
     const meta = await readProjectMeta(e.name);
-    out.push({ name: e.name, path: full, group: meta.group });
+    out.push({ name: e.name, path: full, workspace: meta.workspace });
   }
   out.sort((a, b) => a.name.localeCompare(b.name));
   return out;
 }
 
-export function validateGroup(group) {
-  if (group === null) return null;
-  if (typeof group !== 'string') {
-    const err = new Error('group must be a string or null');
+export function validateWorkspace(workspace) {
+  if (workspace === null) return null;
+  if (typeof workspace !== 'string') {
+    const err = new Error('workspace must be a string or null');
     err.statusCode = 400;
     throw err;
   }
-  const trimmed = group.trim();
+  const trimmed = workspace.trim();
   if (trimmed === '') return null;
-  if (!GROUP_RE.test(trimmed)) {
-    const err = new Error('invalid group name (1–40 chars, no control chars; spaces / `/`,`.`,`-`,`_` allowed)');
+  if (!WORKSPACE_RE.test(trimmed)) {
+    const err = new Error('invalid workspace name (1–40 chars, no control chars; spaces / `/`,`.`,`-`,`_` allowed)');
     err.statusCode = 400;
     throw err;
   }
@@ -122,30 +122,30 @@ export function validateGroup(group) {
 }
 
 // Read the project's optional metadata file from the central store.
-// Missing file or malformed JSON → {group: null}. The store dir may not
-// exist yet — that's fine.
+// Missing file or malformed JSON → {workspace: null}. The store dir may
+// not exist yet — that's fine.
 export async function readProjectMeta(name) {
   validateName(name);
   const file = path.join(projectStoreDir(name), 'project.json');
   try {
     const raw = await fs.readFile(file, 'utf8');
     const obj = JSON.parse(raw);
-    const group = typeof obj?.group === 'string' && obj.group.trim() !== ''
-      ? obj.group.trim()
+    const workspace = typeof obj?.workspace === 'string' && obj.workspace.trim() !== ''
+      ? obj.workspace.trim()
       : null;
-    return { group };
+    return { workspace };
   } catch (e) {
-    if (e.code === 'ENOENT') return { group: null };
-    // Malformed JSON or unreadable — degrade to ungrouped rather than
+    if (e.code === 'ENOENT') return { workspace: null };
+    // Malformed JSON or unreadable — degrade to unassigned rather than
     // throwing. A single console.warn (not an error) so noisy systems
     // don't spam logs on every list.
     console.warn(`projects: failed to read ${file}: ${e.message}`);
-    return { group: null };
+    return { workspace: null };
   }
 }
 
 // Write the project's metadata. Atomic rename to avoid torn reads if the
-// process dies mid-write. Passing {group: null} clears the field and
+// process dies mid-write. Passing {workspace: null} clears the field and
 // deletes the file if it would otherwise be empty.
 export async function writeProjectMeta(name, patch) {
   validateName(name);
@@ -154,7 +154,7 @@ export async function writeProjectMeta(name, patch) {
   const file = path.join(dir, 'project.json');
   const current = await readProjectMeta(name);
   const next = { ...current, ...patch };
-  if ('group' in patch) next.group = validateGroup(patch.group);
+  if ('workspace' in patch) next.workspace = validateWorkspace(patch.workspace);
   // Drop empty fields so the on-disk file stays minimal.
   for (const k of Object.keys(next)) {
     if (next[k] === null || next[k] === undefined) delete next[k];
@@ -170,6 +170,112 @@ export async function writeProjectMeta(name, patch) {
   await fs.writeFile(tmp, JSON.stringify(next, null, 2) + '\n');
   await fs.rename(tmp, file);
   return next;
+}
+
+// ── Workspace registry ────────────────────────────────────────────────
+// Workspace existence is persisted independently of membership. A
+// workspace with zero member projects still exists if its name appears
+// in `<store>/workspaces.json`. Membership remains stored per-project on
+// `project.workspace`; the registry is the union source so empty
+// workspaces survive the last member leaving.
+
+function workspacesFile() {
+  return path.join(orchStoreRoot(), 'workspaces.json');
+}
+
+export async function listWorkspaces() {
+  try {
+    const raw = await fs.readFile(workspacesFile(), 'utf8');
+    const obj = JSON.parse(raw);
+    if (!Array.isArray(obj?.workspaces)) return [];
+    const out = [];
+    for (const v of obj.workspaces) {
+      if (typeof v !== 'string') continue;
+      const t = v.trim();
+      if (t) out.push(t);
+    }
+    return [...new Set(out)].sort((a, b) => a.localeCompare(b));
+  } catch (e) {
+    if (e.code === 'ENOENT') return [];
+    console.warn(`projects: failed to read ${workspacesFile()}: ${e.message}`);
+    return [];
+  }
+}
+
+async function writeWorkspacesRegistry(names) {
+  const file = workspacesFile();
+  const cleaned = [...new Set(names.map(n => (typeof n === 'string' ? n.trim() : '')).filter(Boolean))]
+    .sort((a, b) => a.localeCompare(b));
+  if (cleaned.length === 0) {
+    try { await fs.unlink(file); } catch (e) { if (e.code !== 'ENOENT') throw e; }
+    return cleaned;
+  }
+  await fs.mkdir(orchStoreRoot(), { recursive: true });
+  const tmp = `${file}.tmp-${process.pid}`;
+  await fs.writeFile(tmp, JSON.stringify({ workspaces: cleaned }, null, 2) + '\n');
+  await fs.rename(tmp, file);
+  return cleaned;
+}
+
+export async function addWorkspace(name) {
+  const v = validateWorkspace(name);
+  if (!v) {
+    const err = new Error('workspace name is required');
+    err.statusCode = 400;
+    throw err;
+  }
+  const current = await listWorkspaces();
+  if (current.includes(v)) return { added: false, name: v };
+  await writeWorkspacesRegistry([...current, v]);
+  return { added: true, name: v };
+}
+
+// Remove a workspace from the registry and clear the `workspace` field
+// on every project that currently points at it. The projects themselves
+// are untouched — they just fall back to unassigned.
+export async function removeWorkspace(name) {
+  const v = validateWorkspace(name);
+  if (!v) {
+    const err = new Error('workspace name is required');
+    err.statusCode = 400;
+    throw err;
+  }
+  const projects = await listProjects();
+  const members = projects.filter(p => p.workspace === v).map(p => p.name);
+  for (const m of members) {
+    try { await writeProjectMeta(m, { workspace: null }); }
+    catch (e) { console.warn(`removeWorkspace: failed clearing '${m}': ${e.message}`); }
+  }
+  const current = await listWorkspaces();
+  const filtered = current.filter(n => n !== v);
+  const removed = filtered.length !== current.length;
+  if (removed) await writeWorkspacesRegistry(filtered);
+  return { removed: removed || members.length > 0, name: v, clearedProjects: members };
+}
+
+// Atomically rename a workspace: rewrite every member project's
+// `workspace` field and swap the entry in the registry. If the old name
+// isn't in the registry but has members on disk (legacy path), still
+// rewrites the members and adds the new name.
+export async function renameWorkspace(oldName, newName) {
+  const oldV = validateWorkspace(oldName);
+  const newV = validateWorkspace(newName);
+  if (!oldV || !newV) {
+    const err = new Error('both old and new workspace names are required');
+    err.statusCode = 400;
+    throw err;
+  }
+  if (oldV === newV) return { renamed: false, name: newV, movedProjects: [] };
+  const projects = await listProjects();
+  const members = projects.filter(p => p.workspace === oldV).map(p => p.name);
+  for (const m of members) {
+    try { await writeProjectMeta(m, { workspace: newV }); }
+    catch (e) { console.warn(`renameWorkspace: failed rewriting '${m}': ${e.message}`); }
+  }
+  const current = await listWorkspaces();
+  const next = [...new Set(current.filter(n => n !== oldV).concat(newV))];
+  await writeWorkspacesRegistry(next);
+  return { renamed: true, name: newV, movedProjects: members };
 }
 
 export async function createProject(name) {

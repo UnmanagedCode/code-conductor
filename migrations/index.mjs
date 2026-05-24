@@ -5,10 +5,11 @@
 // migrated state.
 
 import * as m0001 from './0001-centralize-orchestrator-state.mjs';
+import * as m0002 from './0002-rename-group-to-workspace.mjs';
 
 // Ordered list — append new migrations to the end. Order matters:
 // later migrations may assume earlier ones have run.
-const ALL = [m0001];
+const ALL = [m0001, m0002];
 
 export async function runMigrations({ root, log = console.log } = {}) {
   for (const m of ALL) {

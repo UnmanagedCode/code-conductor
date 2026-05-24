@@ -47,8 +47,8 @@ const dom = {
   npName: document.getElementById('np-name'),
   npError: document.getElementById('np-error'),
   npPreview: document.getElementById('np-preview'),
-  newGroupBtn: document.getElementById('new-group-btn'),
-  groupDialog: document.getElementById('group-dialog'),
+  newWorkspaceBtn: document.getElementById('new-workspace-btn'),
+  workspaceDialog: document.getElementById('workspace-dialog'),
   gdTitle: document.getElementById('gd-title'),
   gdName: document.getElementById('gd-name'),
   gdProjectList: document.getElementById('gd-project-list'),
@@ -253,7 +253,7 @@ const sidebar = new Sidebar({
   onResumeSession: resumeSession,
   onLoadSessions: loadSessions,
   onDeleteSession: deleteSession,
-  onEditGroup: openEditGroupDialog,
+  onEditWorkspace: openEditWorkspaceDialog,
 });
 // Seed the sidebar with any unread counts restored from localStorage so
 // the pills appear on the first render after a page reload — without
@@ -394,19 +394,20 @@ dom.newProjectDialog.addEventListener('close', async () => {
   }
 });
 
-// Group dialog. Double-duty for new + edit:
-//   - new mode (groupDialogOriginalName === null): blank name input,
-//     no tickboxes pre-checked, Delete-group button hidden.
-//   - edit mode (groupDialogOriginalName === '<name>'): name pre-filled,
+// Workspace dialog. Double-duty for new + edit:
+//   - new mode (workspaceDialogOriginalName === null): blank name input,
+//     no tickboxes pre-checked, Delete-workspace button hidden. Submitting
+//     with no projects ticked creates an empty workspace via POST /api/workspaces.
+//   - edit mode (workspaceDialogOriginalName === '<name>'): name pre-filled,
 //     current members ticked, Delete button shown.
-// On submit, we diff the rendered ticks against the original membership
-// and fire one PUT /api/projects/:name/group per changed project in
-// parallel. Renames (edit mode) fan out an extra PUT per existing member
-// to update their stored group string.
-let groupDialogOriginalName = null;
-let groupDialogOriginalMembers = new Set();
+// On submit, we first rename the workspace via PUT /api/workspaces/:old
+// if the name changed, then diff the rendered ticks against the original
+// membership and fire one PUT /api/projects/:name/workspace per
+// changed project in parallel.
+let workspaceDialogOriginalName = null;
+let workspaceDialogOriginalMembers = new Set();
 
-function renderGroupDialogProjectList() {
+function renderWorkspaceDialogProjectList() {
   dom.gdProjectList.innerHTML = '';
   const projects = state.projects;
   if (projects.length === 0) {
@@ -421,18 +422,18 @@ function renderGroupDialogProjectList() {
     const cb = document.createElement('input');
     cb.type = 'checkbox';
     cb.value = p.name;
-    cb.checked = groupDialogOriginalMembers.has(p.name);
+    cb.checked = workspaceDialogOriginalMembers.has(p.name);
     label.appendChild(cb);
     const name = document.createElement('span');
     name.className = 'gd-project-name';
     name.textContent = p.name;
     label.appendChild(name);
-    const currentGroup = (typeof p.group === 'string' && p.group.trim() !== '') ? p.group.trim() : null;
-    if (currentGroup && currentGroup !== groupDialogOriginalName) {
+    const currentWorkspace = (typeof p.workspace === 'string' && p.workspace.trim() !== '') ? p.workspace.trim() : null;
+    if (currentWorkspace && currentWorkspace !== workspaceDialogOriginalName) {
       const tag = document.createElement('span');
-      tag.className = 'gd-project-current-group';
-      tag.textContent = `in '${currentGroup}'`;
-      tag.title = `Ticking this project will move it out of '${currentGroup}'.`;
+      tag.className = 'gd-project-current-workspace';
+      tag.textContent = `in '${currentWorkspace}'`;
+      tag.title = `Ticking this project will move it out of '${currentWorkspace}'.`;
       label.appendChild(tag);
     }
     li.appendChild(label);
@@ -440,53 +441,56 @@ function renderGroupDialogProjectList() {
   }
 }
 
-function openNewGroupDialog() {
-  groupDialogOriginalName = null;
-  groupDialogOriginalMembers = new Set();
-  dom.gdTitle.textContent = 'New group';
+function openNewWorkspaceDialog() {
+  workspaceDialogOriginalName = null;
+  workspaceDialogOriginalMembers = new Set();
+  dom.gdTitle.textContent = 'New workspace';
   dom.gdName.value = '';
   dom.gdError.textContent = '';
   dom.gdDelete.hidden = true;
   dom.gdSave.textContent = 'Create';
-  renderGroupDialogProjectList();
-  dom.groupDialog.showModal();
+  renderWorkspaceDialogProjectList();
+  dom.workspaceDialog.showModal();
   // Focus the name field once the dialog is up.
   setTimeout(() => dom.gdName.focus(), 0);
 }
 
-function openEditGroupDialog(groupName) {
-  groupDialogOriginalName = groupName;
-  groupDialogOriginalMembers = new Set(
-    state.projects.filter(p => (p.group ?? '').trim() === groupName).map(p => p.name),
+function openEditWorkspaceDialog(workspaceName) {
+  workspaceDialogOriginalName = workspaceName;
+  workspaceDialogOriginalMembers = new Set(
+    state.projects.filter(p => (p.workspace ?? '').trim() === workspaceName).map(p => p.name),
   );
-  dom.gdTitle.textContent = `Edit group '${groupName}'`;
-  dom.gdName.value = groupName;
+  dom.gdTitle.textContent = `Edit workspace '${workspaceName}'`;
+  dom.gdName.value = workspaceName;
   dom.gdError.textContent = '';
   dom.gdDelete.hidden = false;
   dom.gdSave.textContent = 'Save';
-  renderGroupDialogProjectList();
-  dom.groupDialog.showModal();
+  renderWorkspaceDialogProjectList();
+  dom.workspaceDialog.showModal();
 }
 
-dom.newGroupBtn.addEventListener('click', () => {
+dom.newWorkspaceBtn.addEventListener('click', () => {
   closeSidebarOverflow();
-  openNewGroupDialog();
+  openNewWorkspaceDialog();
 });
 
-// Delete-group: clear the group field on every current member. The
-// projects themselves are untouched; they fall back to ungrouped. Sits
-// inside the form but is a type=button so it doesn't submit it — we
-// handle it explicitly and close the dialog ourselves.
+// Delete-workspace: hits DELETE /api/workspaces/:name which removes the
+// registry entry AND clears the workspace field on every current member.
+// The projects themselves are untouched; they fall back to unassigned.
+// Sits inside the form but is a type=button so it doesn't submit it —
+// we handle it explicitly and close the dialog ourselves.
 dom.gdDelete.addEventListener('click', async () => {
-  if (!groupDialogOriginalName) return;
-  if (!confirm(`Delete group '${groupDialogOriginalName}'?\nMember projects will move back to ungrouped (no project data is removed).`)) return;
+  if (!workspaceDialogOriginalName) return;
+  if (!confirm(`Delete workspace '${workspaceDialogOriginalName}'?\nMember projects will move back to unassigned (no project data is removed).`)) return;
   dom.gdDelete.disabled = true;
   dom.gdError.textContent = '';
   try {
-    await Promise.all([...groupDialogOriginalMembers].map(name =>
-      setProjectGroup(name, null),
-    ));
-    dom.groupDialog.close('deleted');
+    const r = await fetch(`/api/workspaces/${encodeURIComponent(workspaceDialogOriginalName)}`, { method: 'DELETE' });
+    if (!r.ok) {
+      const body = await r.json().catch(() => ({}));
+      throw new Error(body.error ?? `HTTP ${r.status}`);
+    }
+    dom.workspaceDialog.close('deleted');
     await refreshProjects();
   } catch (e) {
     dom.gdError.textContent = e.message;
@@ -495,11 +499,11 @@ dom.gdDelete.addEventListener('click', async () => {
   }
 });
 
-async function setProjectGroup(projectName, group) {
-  const r = await fetch(`/api/projects/${encodeURIComponent(projectName)}/group`, {
+async function setProjectWorkspace(projectName, workspace) {
+  const r = await fetch(`/api/projects/${encodeURIComponent(projectName)}/workspace`, {
     method: 'PUT',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ group }),
+    body: JSON.stringify({ workspace }),
   });
   if (!r.ok) {
     const body = await r.json().catch(() => ({}));
@@ -507,45 +511,75 @@ async function setProjectGroup(projectName, group) {
   }
 }
 
-dom.groupDialog.addEventListener('close', async () => {
-  if (dom.groupDialog.returnValue !== 'save') return;
+async function createEmptyWorkspace(name) {
+  const r = await fetch('/api/workspaces', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ name }),
+  });
+  if (!r.ok) {
+    const body = await r.json().catch(() => ({}));
+    throw new Error(body.error ?? `HTTP ${r.status}`);
+  }
+}
+
+async function renameWorkspaceServerSide(oldName, newName) {
+  const r = await fetch(`/api/workspaces/${encodeURIComponent(oldName)}`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ name: newName }),
+  });
+  if (!r.ok) {
+    const body = await r.json().catch(() => ({}));
+    throw new Error(body.error ?? `HTTP ${r.status}`);
+  }
+}
+
+dom.workspaceDialog.addEventListener('close', async () => {
+  if (dom.workspaceDialog.returnValue !== 'save') return;
   const newName = dom.gdName.value.trim();
   if (!newName) {
-    dom.gdError.textContent = 'Group name is required';
-    dom.groupDialog.showModal();
+    dom.gdError.textContent = 'Workspace name is required';
+    dom.workspaceDialog.showModal();
     return;
   }
-  // Diff the ticked set against the original. Any project whose ticked
-  // state differs from its membership-at-dialog-open gets a PUT. In edit
-  // mode we additionally rename existing members if newName !== old.
   const ticked = new Set();
   for (const cb of dom.gdProjectList.querySelectorAll('input[type="checkbox"]')) {
     if (cb.checked) ticked.add(cb.value);
   }
-  const updates = [];
-  for (const name of ticked) {
-    if (!groupDialogOriginalMembers.has(name)) {
-      // Newly ticked — assign to this group (may move from another).
-      updates.push(setProjectGroup(name, newName));
-    } else if (groupDialogOriginalName && newName !== groupDialogOriginalName) {
-      // Was already a member, but the group is being renamed — rewrite.
-      updates.push(setProjectGroup(name, newName));
-    }
-    // Already a member and name unchanged → no-op.
-  }
-  for (const name of groupDialogOriginalMembers) {
-    if (!ticked.has(name)) {
-      // Was a member, no longer ticked — drop from the group.
-      updates.push(setProjectGroup(name, null));
-    }
-  }
-  if (updates.length === 0) return; // nothing to do
+
   try {
-    await Promise.all(updates);
+    // Edit mode + rename: do the atomic server-side rename first so the
+    // subsequent membership PUTs operate against the new name.
+    if (workspaceDialogOriginalName && newName !== workspaceDialogOriginalName) {
+      await renameWorkspaceServerSide(workspaceDialogOriginalName, newName);
+    }
+    // New mode + no projects ticked: explicitly create the empty
+    // workspace so it persists in the registry.
+    if (!workspaceDialogOriginalName && ticked.size === 0) {
+      await createEmptyWorkspace(newName);
+      await refreshProjects();
+      return;
+    }
+    // Diff the ticked set against the original membership. Renamed
+    // members were already rewritten by the rename call above, so we
+    // only need to PUT for ticks that differ.
+    const updates = [];
+    for (const name of ticked) {
+      if (!workspaceDialogOriginalMembers.has(name)) {
+        updates.push(setProjectWorkspace(name, newName));
+      }
+    }
+    for (const name of workspaceDialogOriginalMembers) {
+      if (!ticked.has(name)) {
+        updates.push(setProjectWorkspace(name, null));
+      }
+    }
+    if (updates.length > 0) await Promise.all(updates);
     await refreshProjects();
   } catch (e) {
     dom.gdError.textContent = e.message;
-    dom.groupDialog.showModal();
+    dom.workspaceDialog.showModal();
   }
 });
 
@@ -862,8 +896,14 @@ async function removeWorktree(project, worktreeName) {
 }
 
 async function refreshProjects() {
-  state.projects = await (await fetch('/api/projects')).json();
-  sidebar.setProjects(state.projects);
+  const [projects, workspaces] = await Promise.all([
+    fetch('/api/projects').then(r => r.json()),
+    fetch('/api/workspaces').then(r => r.json()).catch(() => []),
+  ]);
+  state.projects = projects;
+  sidebar.setProjects(projects);
+  const names = Array.isArray(workspaces) ? workspaces.map(w => w.name).filter(Boolean) : [];
+  sidebar.setWorkspaces(names);
 }
 async function refreshInstances() {
   state.instances = await (await fetch('/api/instances')).json();

@@ -5,6 +5,7 @@ import {
   listProjects, createProject, listSessions, listSessionsForCwd,
   summarizeSessions, deleteProject, deleteSessionForCwd, getProject,
   findSessionLocation, writeProjectMeta,
+  listWorkspaces, addWorkspace, removeWorkspace, renameWorkspace,
 } from './projects.js';
 import { WebSocket } from 'ws';
 import {
@@ -29,7 +30,7 @@ export function buildRoutes({ instances, serverCtx } = {}) {
   // Nudge every connected client to re-fetch /api/projects. Mirrors the
   // hint that wsHub.js broadcasts on instance lifecycle events — used
   // here when a route mutates project state outside that channel (e.g.
-  // group assignment).
+  // workspace assignment).
   function broadcastProjects() {
     const wss = serverCtx?.wss;
     if (!wss) return;
@@ -109,20 +110,71 @@ export function buildRoutes({ instances, serverCtx } = {}) {
     } catch (e) { next(e); }
   });
 
-  // Assign or clear the project's group. Body: {group: string|null}.
-  // An empty string is treated as null (clears the field). Group names
-  // are validated in writeProjectMeta — see validateGroup() in projects.js.
-  // A successful write broadcasts the `projects` WS hint so connected
-  // sidebars re-fetch and rebucket immediately, including the
-  // `+ Group` dialog if it's open.
-  r.put('/projects/:name/group', async (req, res, next) => {
+  // Assign or clear the project's workspace. Body: {workspace: string|null}.
+  // An empty string is treated as null (clears the field). Workspace names
+  // are validated in writeProjectMeta — see validateWorkspace() in projects.js.
+  // Setting a non-null workspace auto-registers it (so newly-named
+  // workspaces appear in /api/workspaces). A successful write broadcasts
+  // the `projects` WS hint so connected sidebars re-fetch and rebucket
+  // immediately, including the `+ Workspace` dialog if it's open.
+  r.put('/projects/:name/workspace', async (req, res, next) => {
     try {
       await getProject(req.params.name);
-      const raw = req.body?.group;
-      const next = raw === '' || raw === undefined ? null : raw;
-      const meta = await writeProjectMeta(req.params.name, { group: next });
+      const raw = req.body?.workspace;
+      const target = raw === '' || raw === undefined ? null : raw;
+      const meta = await writeProjectMeta(req.params.name, { workspace: target });
+      if (meta.workspace) {
+        try { await addWorkspace(meta.workspace); } catch { /* validation already ran in writeProjectMeta */ }
+      }
       broadcastProjects();
-      res.json({ ok: true, name: req.params.name, group: meta.group ?? null });
+      res.json({ ok: true, name: req.params.name, workspace: meta.workspace ?? null });
+    } catch (e) { next(e); }
+  });
+
+  // ── Workspace registry endpoints ────────────────────────────────────
+  // Workspaces persist independently of membership: an empty workspace
+  // stays visible in the sidebar. The registry is the union source.
+
+  r.get('/workspaces', async (req, res, next) => {
+    try {
+      const registered = await listWorkspaces();
+      const projects = await listProjects();
+      const derived = new Set();
+      const counts = new Map();
+      for (const p of projects) {
+        if (p.workspace) {
+          derived.add(p.workspace);
+          counts.set(p.workspace, (counts.get(p.workspace) ?? 0) + 1);
+        }
+      }
+      const names = [...new Set([...registered, ...derived])].sort((a, b) => a.localeCompare(b));
+      res.json(names.map(name => ({ name, projectCount: counts.get(name) ?? 0 })));
+    } catch (e) { next(e); }
+  });
+
+  r.post('/workspaces', async (req, res, next) => {
+    try {
+      const { name } = req.body ?? {};
+      const result = await addWorkspace(name);
+      broadcastProjects();
+      res.status(result.added ? 201 : 200).json({ ok: true, ...result });
+    } catch (e) { next(e); }
+  });
+
+  r.delete('/workspaces/:name', async (req, res, next) => {
+    try {
+      const result = await removeWorkspace(req.params.name);
+      broadcastProjects();
+      res.json({ ok: true, ...result });
+    } catch (e) { next(e); }
+  });
+
+  r.put('/workspaces/:name', async (req, res, next) => {
+    try {
+      const newName = req.body?.name;
+      const result = await renameWorkspace(req.params.name, newName);
+      broadcastProjects();
+      res.json({ ok: true, ...result });
     } catch (e) { next(e); }
   });
 

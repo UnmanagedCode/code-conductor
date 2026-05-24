@@ -16,7 +16,7 @@ async function setupSidebar({ onLoadSessions } = {}) {
   globalThis.HTMLElement = window.HTMLElement;
   globalThis.Element = window.Element;
   globalThis.Node = window.Node;
-  // Sidebar's group module reads/writes localStorage for collapsed-groups
+  // Sidebar reads/writes localStorage for collapsed-workspaces
   // persistence. happy-dom ships a Storage but we want a clean slate per
   // test so collapse state doesn't leak between cases.
   globalThis.localStorage = window.localStorage;
@@ -26,7 +26,7 @@ async function setupSidebar({ onLoadSessions } = {}) {
   document.body.innerHTML = '<ul id="root"></ul>';
   const root = document.getElementById('root');
 
-  const calls = { select: [], create: [], resume: [], removeWorktree: [], deleteProject: [], editGroup: [] };
+  const calls = { select: [], create: [], resume: [], removeWorktree: [], deleteProject: [], editWorkspace: [] };
   const sidebar = new Sidebar({
     rootList: root,
     onSelectInstance: (id) => calls.select.push(id),
@@ -35,7 +35,7 @@ async function setupSidebar({ onLoadSessions } = {}) {
     onRemoveWorktree: (p, w) => calls.removeWorktree.push({ p, w }),
     onDeleteProject: (p) => calls.deleteProject.push(p),
     onLoadSessions: onLoadSessions ?? (async () => []),
-    onEditGroup: (g) => calls.editGroup.push(g),
+    onEditWorkspace: (g) => calls.editWorkspace.push(g),
   });
   return { window, document, root, sidebar, calls };
 }
@@ -357,60 +357,76 @@ test('Sessions subnode is default-expanded; manual collapse persists across re-r
   assert.ok(!det.hasAttribute('open'), 'manual collapse persists across re-render');
 });
 
-test('Projects with a group render under a <details> group container at the top; ungrouped render flat below', async () => {
+test('Projects with a workspace render under a <details> workspace container at the top; unassigned render flat below', async () => {
   const { root, sidebar } = await setupSidebar({ onLoadSessions: async () => [] });
   sidebar.setProjects([
     { name: 'alpha', path: '/p/alpha', instanceIds: [], isGitRepo: false, worktrees: [],
-      sessions: { count: 0, lastMtime: 0 }, group: null },
+      sessions: { count: 0, lastMtime: 0 }, workspace: null },
     { name: 'work-thing', path: '/p/work', instanceIds: [], isGitRepo: false, worktrees: [],
-      sessions: { count: 0, lastMtime: 0 }, group: 'Work' },
+      sessions: { count: 0, lastMtime: 0 }, workspace: 'Work' },
     { name: 'play-thing', path: '/p/play', instanceIds: [], isGitRepo: false, worktrees: [],
-      sessions: { count: 0, lastMtime: 0 }, group: 'Side' },
+      sessions: { count: 0, lastMtime: 0 }, workspace: 'Side' },
     { name: 'work-other', path: '/p/wo', instanceIds: [], isGitRepo: false, worktrees: [],
-      sessions: { count: 0, lastMtime: 0 }, group: 'Work' },
+      sessions: { count: 0, lastMtime: 0 }, workspace: 'Work' },
   ]);
   sidebar.setInstances([]);
-  // Top-level <li> children: two group items (Side, Work — sorted
-  // alphabetically) followed by the one ungrouped project at the bottom.
+  // Top-level <li> children: two workspace items (Side, Work — sorted
+  // alphabetically) followed by the one unassigned project at the bottom.
   const topLis = [...root.children].filter(n => n.tagName === 'LI');
-  assert.ok(topLis[0].classList.contains('project-group-item'), 'first row is a group');
-  assert.ok(topLis[1].classList.contains('project-group-item'), 'second row is a group');
+  assert.ok(topLis[0].classList.contains('project-workspace-item'), 'first row is a workspace');
+  assert.ok(topLis[1].classList.contains('project-workspace-item'), 'second row is a workspace');
   assert.equal(topLis[2].querySelector(':scope > .project-row .project-name').textContent, 'alpha');
-  const groupItems = topLis.filter(li => li.classList.contains('project-group-item'));
-  assert.equal(groupItems.length, 2);
-  const names = groupItems.map(li => li.querySelector('.project-group-name').textContent);
-  assert.deepEqual(names, ['Side', 'Work'], 'group names sorted alphabetically');
-  // The Work group has two members.
-  const workGroup = groupItems[1].querySelector('details.project-group');
-  const workMembers = workGroup.querySelectorAll('.project-group-list > li > .project-row .project-name');
+  const wsItems = topLis.filter(li => li.classList.contains('project-workspace-item'));
+  assert.equal(wsItems.length, 2);
+  const names = wsItems.map(li => li.querySelector('.project-workspace-name').textContent);
+  assert.deepEqual(names, ['Side', 'Work'], 'workspace names sorted alphabetically');
+  // The Work workspace has two members.
+  const workWs = wsItems[1].querySelector('details.project-workspace');
+  const workMembers = workWs.querySelectorAll('.project-workspace-list > li > .project-row .project-name');
   assert.deepEqual(
     [...workMembers].map(n => n.textContent).sort(),
     ['work-other', 'work-thing'],
   );
   // Count label reflects member count.
-  assert.equal(groupItems[1].querySelector('.project-group-count').textContent, '(2)');
+  assert.equal(wsItems[1].querySelector('.project-workspace-count').textContent, '(2)');
 });
 
-test('Clicking the group ✎ button calls onEditGroup with the group name and does not toggle the details', async () => {
+test('Empty workspaces (from setWorkspaces) render with (0) count and an empty hint', async () => {
+  const { root, sidebar } = await setupSidebar({ onLoadSessions: async () => [] });
+  sidebar.setProjects([
+    { name: 'alpha', path: '/p/alpha', instanceIds: [], isGitRepo: false, worktrees: [],
+      sessions: { count: 0, lastMtime: 0 }, workspace: null },
+  ]);
+  // The registry knows about a workspace nobody is in.
+  sidebar.setWorkspaces(['Lonely']);
+  sidebar.setInstances([]);
+  const wsItem = root.querySelector('li.project-workspace-item');
+  assert.ok(wsItem, 'empty workspace renders an <li>');
+  assert.equal(wsItem.querySelector('.project-workspace-name').textContent, 'Lonely');
+  assert.equal(wsItem.querySelector('.project-workspace-count').textContent, '(0)');
+  assert.ok(wsItem.querySelector('.workspace-empty'), 'empty hint inside the list');
+});
+
+test('Clicking the workspace ✎ button calls onEditWorkspace with the name and does not toggle the details', async () => {
   const { root, sidebar, calls } = await setupSidebar({ onLoadSessions: async () => [] });
   sidebar.setProjects([
     { name: 'a', path: '/p/a', instanceIds: [], isGitRepo: false, worktrees: [],
-      sessions: { count: 0, lastMtime: 0 }, group: 'Stuff' },
+      sessions: { count: 0, lastMtime: 0 }, workspace: 'Stuff' },
   ]);
   sidebar.setInstances([]);
-  const det = root.querySelector('details.project-group');
+  const det = root.querySelector('details.project-workspace');
   assert.ok(det.hasAttribute('open'), 'default-expanded');
-  const edit = root.querySelector('.project-group-edit');
+  const edit = root.querySelector('.project-workspace-edit');
   edit.click();
-  assert.deepEqual(calls.editGroup, ['Stuff']);
+  assert.deepEqual(calls.editWorkspace, ['Stuff']);
   // Default-expanded state still holds — the click on ✎ should not have
   // toggled the surrounding <details>.
-  assert.ok(det.hasAttribute('open'), 'edit click does not collapse group');
+  assert.ok(det.hasAttribute('open'), 'edit click does not collapse workspace');
 });
 
-test('Group collapse state is read from localStorage on construction', async () => {
+test('Workspace collapse state is read from localStorage on construction', async () => {
   // Seed the storage key BEFORE constructing the Sidebar so its
-  // collapsedGroups set initialises from it.
+  // collapsedWorkspaces set initialises from it.
   const window = new Window({ url: 'http://localhost/' });
   globalThis.window = window;
   globalThis.document = window.document;
@@ -418,9 +434,9 @@ test('Group collapse state is read from localStorage on construction', async () 
   globalThis.Element = window.Element;
   globalThis.Node = window.Node;
   globalThis.localStorage = window.localStorage;
-  window.localStorage.setItem('code-conductor:groups-collapsed', JSON.stringify(['Hidden']));
+  window.localStorage.setItem('code-conductor:workspaces-collapsed', JSON.stringify(['Hidden']));
   // happy-dom caches ES modules — break the cache so the freshly-seeded
-  // localStorage drives this Sidebar's `loadCollapsedGroups` call.
+  // localStorage drives this Sidebar's `loadCollapsedWorkspaces` call.
   const url = pathToFileURL(path.join(PUB, 'sidebar.js')).href + `?seed=${Date.now()}`;
   const { Sidebar } = await import(url);
   document.body.innerHTML = '<ul id="root"></ul>';
@@ -430,18 +446,18 @@ test('Group collapse state is read from localStorage on construction', async () 
     onSelectInstance: () => {}, onCreateInstanceClick: () => {},
     onRemoveWorktree: () => {}, onDeleteProject: () => {},
     onResumeSession: () => {}, onLoadSessions: async () => [],
-    onEditGroup: () => {},
+    onEditWorkspace: () => {},
   });
   sidebar.setProjects([
     { name: 'a', path: '/p/a', instanceIds: [], isGitRepo: false, worktrees: [],
-      sessions: { count: 0, lastMtime: 0 }, group: 'Hidden' },
+      sessions: { count: 0, lastMtime: 0 }, workspace: 'Hidden' },
     { name: 'b', path: '/p/b', instanceIds: [], isGitRepo: false, worktrees: [],
-      sessions: { count: 0, lastMtime: 0 }, group: 'Visible' },
+      sessions: { count: 0, lastMtime: 0 }, workspace: 'Visible' },
   ]);
   sidebar.setInstances([]);
-  const groups = [...root.querySelectorAll('details.project-group')];
-  const byName = Object.fromEntries(groups.map(g =>
-    [g.querySelector('.project-group-name').textContent, g]));
-  assert.ok(!byName['Hidden'].hasAttribute('open'), 'Hidden group respects localStorage collapse');
-  assert.ok(byName['Visible'].hasAttribute('open'), 'Visible group default-expanded');
+  const workspaces = [...root.querySelectorAll('details.project-workspace')];
+  const byName = Object.fromEntries(workspaces.map(g =>
+    [g.querySelector('.project-workspace-name').textContent, g]));
+  assert.ok(!byName['Hidden'].hasAttribute('open'), 'Hidden workspace respects localStorage collapse');
+  assert.ok(byName['Visible'].hasAttribute('open'), 'Visible workspace default-expanded');
 });
