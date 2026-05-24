@@ -15,7 +15,10 @@ import {
   NotificationState, ensurePermission, setGlobalEnabled,
   maybeNotifyTurnEnd, isNotificationAPIAvailable, registerServiceWorker,
 } from './notifications.js';
-import { readSessionAnchor, writeSessionAnchor } from './anchor.js';
+import {
+  readSessionAnchor, writeSessionAnchor,
+  stashCurrentAnchorForRelaunch, consumeStashedAnchor,
+} from './anchor.js';
 import { installExternalLinkOpener } from './external-links.js';
 
 const state = {
@@ -1291,7 +1294,12 @@ bus.addEventListener('open', async () => {
   if (firstConnect) {
     firstConnect = false;
     if (!state.activeId) {
-      const anchor = readSessionAnchor();
+      // Prefer the URL hash; fall back to the stashed anchor that an
+      // external-link click squirreled away in localStorage right before we
+      // handed off to Chrome. Covers cold-relaunches where Android reaped the
+      // PWA process while it was backgrounded and start_url ('/') doesn't
+      // carry the previous hash.
+      const anchor = readSessionAnchor() || consumeStashedAnchor();
       if (anchor) {
         const live = state.instances.find(i => i.sessionId === anchor);
         if (live) {
@@ -1331,6 +1339,8 @@ bus.addEventListener('open', async () => {
   }
 });
 
-installExternalLinkOpener();
+installExternalLinkOpener({
+  beforeNavigate: () => stashCurrentAnchorForRelaunch(),
+});
 
 connect();

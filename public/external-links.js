@@ -62,7 +62,7 @@ export function toIntentUrl(url) {
   return `intent://${rest}#Intent;scheme=${scheme};package=com.android.chrome;end`;
 }
 
-export function installExternalLinkOpener({ doc = document, win = window } = {}) {
+export function installExternalLinkOpener({ doc = document, win = window, beforeNavigate } = {}) {
   doc.addEventListener('click', (e) => {
     if (e.defaultPrevented) return;
     if (isModifierClick(e)) return;
@@ -80,6 +80,9 @@ export function installExternalLinkOpener({ doc = document, win = window } = {})
     if (!SAFE_SCHEMES.has(url.protocol)) return;
     if (!isStandalone(win)) return;
     e.preventDefault();
+    if (typeof beforeNavigate === 'function') {
+      try { beforeNavigate(url); } catch { /* don't let a hook abort the click */ }
+    }
     if (isAndroid(win) && INTENT_SCHEMES.has(url.protocol)) {
       win.location.href = toIntentUrl(url);
       return;

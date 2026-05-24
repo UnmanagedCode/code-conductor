@@ -188,6 +188,66 @@ test('external-links: toIntentUrl encodes host, path, query, hash with chrome pa
   assert.match(intent, /;end$/);
 });
 
+test('external-links: beforeNavigate fires once with the resolved URL, before dispatch', async () => {
+  const { window, document, locationAssignments } = setup({ standalone: true, android: true });
+  const mod = await loadModule();
+  const calls = [];
+  mod.installExternalLinkOpener({
+    doc: document,
+    win: window,
+    beforeNavigate: (url) => {
+      // Hook must run before the intent: navigation lands so a stash write
+      // is durable before the PWA process can be reaped.
+      assert.equal(locationAssignments.length, 0, 'beforeNavigate must run before navigation');
+      calls.push(url);
+    },
+  });
+
+  const a = document.createElement('a');
+  a.setAttribute('href', 'https://example.com/p?q=1');
+  a.setAttribute('target', '_blank');
+  dispatchAnchorClick(document, a);
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].href, 'https://example.com/p?q=1');
+  assert.equal(locationAssignments.length, 1);
+});
+
+test('external-links: a throwing beforeNavigate does not abort the dispatch', async () => {
+  const { window, document, locationAssignments } = setup({ standalone: true, android: true });
+  const mod = await loadModule();
+  mod.installExternalLinkOpener({
+    doc: document,
+    win: window,
+    beforeNavigate: () => { throw new Error('boom'); },
+  });
+
+  const a = document.createElement('a');
+  a.setAttribute('href', 'https://example.com/');
+  a.setAttribute('target', '_blank');
+  const event = dispatchAnchorClick(document, a);
+
+  assert.equal(event.defaultPrevented, true);
+  assert.equal(locationAssignments.length, 1);
+});
+
+test('external-links: beforeNavigate is not called for clicks that pass through', async () => {
+  const { window, document } = setup({ standalone: false, android: true });
+  const mod = await loadModule();
+  let called = 0;
+  mod.installExternalLinkOpener({
+    doc: document, win: window,
+    beforeNavigate: () => { called++; },
+  });
+
+  const a = document.createElement('a');
+  a.setAttribute('href', 'https://example.com/');
+  a.setAttribute('target', '_blank');
+  dispatchAnchorClick(document, a);
+
+  assert.equal(called, 0);
+});
+
 test('external-links: toIntentUrl handles loopback URLs with non-default port', async () => {
   const mod = await loadModule();
   const url = new URL('http://127.0.0.1:8765/r/path?x=1');

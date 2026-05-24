@@ -81,3 +81,51 @@ test('writeSessionAnchor URL-encodes session ids with special characters', async
   // ...but URLSearchParams decodes back to the original on read.
   assert.equal(readSessionAnchor(), 'a b/c?d');
 });
+
+function memStorage() {
+  const m = new Map();
+  return {
+    getItem(k) { return m.has(k) ? m.get(k) : null; },
+    setItem(k, v) { m.set(k, String(v)); },
+    removeItem(k) { m.delete(k); },
+    _dump() { return Object.fromEntries(m); },
+  };
+}
+
+test('stashCurrentAnchorForRelaunch persists the current anchor to storage', async () => {
+  const { stashCurrentAnchorForRelaunch } = await setup('http://localhost/#session=abc-1');
+  const storage = memStorage();
+  stashCurrentAnchorForRelaunch(storage);
+  assert.equal(storage.getItem('cc:session-stash'), 'abc-1');
+});
+
+test('stashCurrentAnchorForRelaunch clears the stash when there is no current anchor', async () => {
+  const { stashCurrentAnchorForRelaunch } = await setup('http://localhost/');
+  const storage = memStorage();
+  storage.setItem('cc:session-stash', 'leftover');
+  stashCurrentAnchorForRelaunch(storage);
+  assert.equal(storage.getItem('cc:session-stash'), null);
+});
+
+test('consumeStashedAnchor returns and clears the stash (one-shot)', async () => {
+  const { consumeStashedAnchor } = await setup('http://localhost/');
+  const storage = memStorage();
+  storage.setItem('cc:session-stash', 'sess-9');
+  assert.equal(consumeStashedAnchor(storage), 'sess-9');
+  assert.equal(storage.getItem('cc:session-stash'), null);
+  // Second consume is empty — no silent resurrection on future relaunches.
+  assert.equal(consumeStashedAnchor(storage), null);
+});
+
+test('consumeStashedAnchor returns null when nothing is stashed', async () => {
+  const { consumeStashedAnchor } = await setup('http://localhost/');
+  assert.equal(consumeStashedAnchor(memStorage()), null);
+});
+
+test('stash + consume round-trip preserves session ids with special characters', async () => {
+  const { stashCurrentAnchorForRelaunch, consumeStashedAnchor } =
+    await setup('http://localhost/#session=' + encodeURIComponent('a b/c?d'));
+  const storage = memStorage();
+  stashCurrentAnchorForRelaunch(storage);
+  assert.equal(consumeStashedAnchor(storage), 'a b/c?d');
+});
