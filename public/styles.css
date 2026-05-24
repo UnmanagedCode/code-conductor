@@ -20,7 +20,7 @@
 html, body { margin: 0; height: 100%; }
 body { background: var(--bg); color: var(--text); overflow: hidden; }
 
-#app { display: grid; grid-template-columns: 280px 1fr; height: 100vh; height: 100dvh; }
+#app { display: grid; grid-template-columns: 280px 1fr; height: 100svh; }
 
 #sidebar {
   background: var(--panel);
