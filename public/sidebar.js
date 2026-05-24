@@ -50,11 +50,34 @@ function mergeLive(onDisk, liveInstances) {
   return out;
 }
 
+// localStorage key for the set of collapsed group headers. Sessions and
+// worktree collapse state is session-local, but groups are higher-level
+// navigation — surviving a refresh is worth the extra persistence.
+const GROUPS_COLLAPSED_STORAGE_KEY = 'claude-orch:groups-collapsed';
+
+function loadCollapsedGroups() {
+  try {
+    const raw = localStorage.getItem(GROUPS_COLLAPSED_STORAGE_KEY);
+    if (!raw) return new Set();
+    const arr = JSON.parse(raw);
+    if (!Array.isArray(arr)) return new Set();
+    return new Set(arr.filter(s => typeof s === 'string'));
+  } catch {
+    return new Set();
+  }
+}
+function saveCollapsedGroups(set) {
+  try {
+    if (set.size === 0) localStorage.removeItem(GROUPS_COLLAPSED_STORAGE_KEY);
+    else localStorage.setItem(GROUPS_COLLAPSED_STORAGE_KEY, JSON.stringify([...set]));
+  } catch { /* private mode / quota — best-effort */ }
+}
+
 export class Sidebar {
   constructor({
     rootList, onSelectInstance, onCreateInstanceClick,
     onRemoveWorktree, onDeleteProject, onResumeSession, onLoadSessions,
-    onDeleteSession,
+    onDeleteSession, onEditGroup,
   }) {
     this.list = rootList;
     this.onSelectInstance = onSelectInstance;
@@ -64,6 +87,7 @@ export class Sidebar {
     this.onResumeSession = onResumeSession;
     this.onLoadSessions = onLoadSessions;
     this.onDeleteSession = onDeleteSession;
+    this.onEditGroup = onEditGroup;
     this.projects = [];
     this.instances = [];
     this.activeInstanceId = null;
@@ -72,6 +96,9 @@ export class Sidebar {
     // collapsed so manual collapse sticks across re-renders.
     this.collapsedSessions = new Set();   // key: `${projectName}` or `${projectName}:${worktreeName}`
     this.expandedWorktrees = new Set();   // key: projectName (worktree subnodes stay default-collapsed)
+    // Group containers default-expanded and persist their collapsed
+    // state in localStorage so a page refresh keeps the layout stable.
+    this.collapsedGroups = loadCollapsedGroups(); // key: group name
     // Cached lazy-loaded session lists keyed the same way as
     // collapsedSessions. The cache holds the on-disk list; live
     // instances are merged in fresh on every render so status dots
@@ -323,6 +350,62 @@ export class Sidebar {
     return el('li', { class: 'worktree-item' }, head, sessions);
   }
 
+  // Build a single project's list item (project row + Sessions subnode +
+  // Worktrees subnode). Pulled out of render() so the same renderer
+  // produces ungrouped items at the top level AND items nested inside a
+  // group's <details> body — the row markup is identical either way.
+  _projectItem({ project: p, directByProject, byWorktree }) {
+    const directs = directByProject.get(p.name) ?? [];
+    const worktrees = Array.isArray(p.worktrees) ? p.worktrees : [];
+    const li = el('li', {});
+    li.appendChild(el('div', { class: 'project-row' },
+      el('span', { class: 'project-name' }, p.name),
+      el('button', {
+        class: 'add-instance', title: 'new session',
+        onclick: () => this.onCreateInstanceClick(p.name),
+      }, '+'),
+      el('button', {
+        class: 'delete-project', title: 'delete project',
+        onclick: (e) => { e.stopPropagation(); this.onDeleteProject(p); },
+      }, '×'),
+    ));
+
+    const sessionsNode = this._sessionsNode({
+      project: p,
+      liveInstances: directs,
+      summary: p.sessions,
+    });
+    if (sessionsNode) li.appendChild(sessionsNode);
+    else if (worktrees.length === 0) {
+      // Project with neither sessions nor worktrees — show a tiny
+      // "no sessions yet" hint to make the "+" button discoverable.
+      li.appendChild(el('div', { class: 'empty-project-hint' }, 'no sessions yet — click + to start'));
+    }
+
+    if (worktrees.length > 0) {
+      const det = el('details', { class: 'worktree-group' });
+      if (this.expandedWorktrees.has(p.name)) det.setAttribute('open', '');
+      det.addEventListener('toggle', () => {
+        if (det.open) this.expandedWorktrees.add(p.name);
+        else this.expandedWorktrees.delete(p.name);
+      });
+      det.appendChild(el('summary', { class: 'worktree-summary' },
+        `Worktrees (${worktrees.length})`));
+      const wtUl = el('ul', { class: 'worktree-list' });
+      for (const wt of worktrees) {
+        const key = `${p.name}:${wt.worktreeName}`;
+        const attached = byWorktree.get(key) ?? [];
+        wtUl.appendChild(this._worktreeNode({
+          project: p, wt, liveInstances: attached,
+        }));
+      }
+      det.appendChild(wtUl);
+      li.appendChild(det);
+    }
+
+    return li;
+  }
+
   render() {
     // Bucket live instances by (project, worktree?) so the per-subnode
     // merge into Sessions has only the relevant live overlay.
@@ -348,55 +431,61 @@ export class Sidebar {
       return;
     }
 
+    // Split into ungrouped (top-level) vs grouped (nested under <details>).
+    // Group bucket order is alphabetical for v1 — explicit ordering can
+    // come later. `project.group` is whatever the server returned (the
+    // trimmed string from .claude-orch-app/project.json) or null/missing.
+    const ungrouped = [];
+    const byGroup = new Map();
     for (const p of this.projects) {
-      const directs = directByProject.get(p.name) ?? [];
-      const worktrees = Array.isArray(p.worktrees) ? p.worktrees : [];
-      const li = el('li', {});
-      li.appendChild(el('div', { class: 'project-row' },
-        el('span', { class: 'project-name' }, p.name),
-        el('button', {
-          class: 'add-instance', title: 'new session',
-          onclick: () => this.onCreateInstanceClick(p.name),
-        }, '+'),
-        el('button', {
-          class: 'delete-project', title: 'delete project',
-          onclick: (e) => { e.stopPropagation(); this.onDeleteProject(p); },
-        }, '×'),
-      ));
+      const g = (typeof p.group === 'string' && p.group.trim() !== '') ? p.group.trim() : null;
+      if (g) {
+        let arr = byGroup.get(g);
+        if (!arr) { arr = []; byGroup.set(g, arr); }
+        arr.push(p);
+      } else {
+        ungrouped.push(p);
+      }
+    }
 
-      const sessionsNode = this._sessionsNode({
-        project: p,
-        liveInstances: directs,
-        summary: p.sessions,
+    for (const p of ungrouped) {
+      this.list.appendChild(this._projectItem({ project: p, directByProject, byWorktree }));
+    }
+
+    const groupNames = [...byGroup.keys()].sort((a, b) => a.localeCompare(b));
+    for (const name of groupNames) {
+      const members = byGroup.get(name);
+      const det = el('details', { class: 'project-group' });
+      if (!this.collapsedGroups.has(name)) det.setAttribute('open', '');
+      det.addEventListener('toggle', () => {
+        if (det.open) this.collapsedGroups.delete(name);
+        else this.collapsedGroups.add(name);
+        saveCollapsedGroups(this.collapsedGroups);
       });
-      if (sessionsNode) li.appendChild(sessionsNode);
-      else if (worktrees.length === 0) {
-        // Project with neither sessions nor worktrees — show a tiny
-        // "no sessions yet" hint to make the "+" button discoverable.
-        li.appendChild(el('div', { class: 'empty-project-hint' }, 'no sessions yet — click + to start'));
+      const summary = el('summary', { class: 'project-group-summary' },
+        el('span', { class: 'project-group-name' }, name),
+        el('span', { class: 'project-group-count' }, `(${members.length})`),
+      );
+      summary.appendChild(el('button', {
+        class: 'project-group-edit',
+        title: `edit '${name}'`,
+        onclick: (e) => {
+          // Prevent the click from toggling the <details> open state and
+          // from bubbling into the document-level overflow/popover dismiss
+          // handlers.
+          e.preventDefault();
+          e.stopPropagation();
+          if (this.onEditGroup) this.onEditGroup(name);
+        },
+      }, '✎'));
+      det.appendChild(summary);
+      const ul = el('ul', { class: 'project-group-list' });
+      for (const p of members) {
+        ul.appendChild(this._projectItem({ project: p, directByProject, byWorktree }));
       }
-
-      if (worktrees.length > 0) {
-        const det = el('details', { class: 'worktree-group' });
-        if (this.expandedWorktrees.has(p.name)) det.setAttribute('open', '');
-        det.addEventListener('toggle', () => {
-          if (det.open) this.expandedWorktrees.add(p.name);
-          else this.expandedWorktrees.delete(p.name);
-        });
-        det.appendChild(el('summary', { class: 'worktree-summary' },
-          `Worktrees (${worktrees.length})`));
-        const wtUl = el('ul', { class: 'worktree-list' });
-        for (const wt of worktrees) {
-          const key = `${p.name}:${wt.worktreeName}`;
-          const attached = byWorktree.get(key) ?? [];
-          wtUl.appendChild(this._worktreeNode({
-            project: p, wt, liveInstances: attached,
-          }));
-        }
-        det.appendChild(wtUl);
-        li.appendChild(det);
-      }
-
+      det.appendChild(ul);
+      const li = el('li', { class: 'project-group-item' });
+      li.appendChild(det);
       this.list.appendChild(li);
     }
   }

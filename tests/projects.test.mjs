@@ -4,7 +4,10 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor } from './helpers.mjs';
-import { encodeCwd, findSessionLocation } from '../src/projects.js';
+import {
+  encodeCwd, findSessionLocation,
+  readProjectMeta, writeProjectMeta,
+} from '../src/projects.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURE_JSONL = path.join(__dirname, 'fixtures', 'session-sample.jsonl');
@@ -476,6 +479,110 @@ test('GET /api/sessions/:sid/locate 400s on malformed id', async () => {
     const r = await api(baseUrl, 'GET', '/api/sessions/has.dots/locate');
     assert.equal(r.status, 400);
     assert.match(r.body.error, /invalid sessionId/);
+  } finally { await close(); }
+});
+
+test('readProjectMeta returns {group:null} when the dotfile is absent', async () => {
+  const { baseUrl, close } = await bootServer();
+  try {
+    await api(baseUrl, 'POST', '/api/projects', { name: 'fresh' });
+    const meta = await readProjectMeta('fresh');
+    assert.deepEqual(meta, { group: null });
+  } finally { await close(); }
+});
+
+test('writeProjectMeta({group}) round-trips through listProjects/GET /api/projects', async () => {
+  const { baseUrl, projectsRoot, close } = await bootServer();
+  try {
+    await api(baseUrl, 'POST', '/api/projects', { name: 'work' });
+    await writeProjectMeta('work', { group: 'Side projects' });
+    const meta = await readProjectMeta('work');
+    assert.equal(meta.group, 'Side projects');
+    // The on-disk file lives at the conventional .claude-orch-app path.
+    const file = path.join(projectsRoot, 'work', '.claude-orch-app', 'project.json');
+    const raw = await fs.readFile(file, 'utf8');
+    assert.match(raw, /"group": "Side projects"/);
+    // And it surfaces in the REST listing.
+    const r = await api(baseUrl, 'GET', '/api/projects');
+    const proj = r.body.find(p => p.name === 'work');
+    assert.equal(proj.group, 'Side projects');
+  } finally { await close(); }
+});
+
+test('writeProjectMeta({group:null}) clears the field and removes the now-empty file', async () => {
+  const { baseUrl, projectsRoot, close } = await bootServer();
+  try {
+    await api(baseUrl, 'POST', '/api/projects', { name: 'clearme' });
+    await writeProjectMeta('clearme', { group: 'Temp' });
+    const file = path.join(projectsRoot, 'clearme', '.claude-orch-app', 'project.json');
+    await fs.stat(file); // exists
+    await writeProjectMeta('clearme', { group: null });
+    await assert.rejects(fs.stat(file), { code: 'ENOENT' });
+    const meta = await readProjectMeta('clearme');
+    assert.deepEqual(meta, { group: null });
+  } finally { await close(); }
+});
+
+test('writeProjectMeta rejects invalid group strings', async () => {
+  const { baseUrl, close } = await bootServer();
+  try {
+    await api(baseUrl, 'POST', '/api/projects', { name: 'bad' });
+    // Disallowed characters and over-long names are rejected.
+    // Leading/trailing whitespace is trimmed; empty / whitespace-only
+    // map to null (clear), not an error.
+    for (const bad of ['x'.repeat(60), 'has:colon', 'has!bang', 'with\ttab']) {
+      await assert.rejects(
+        writeProjectMeta('bad', { group: bad }),
+        /invalid group name/,
+        `expected reject for ${JSON.stringify(bad)}`,
+      );
+    }
+    await assert.rejects(writeProjectMeta('bad', { group: 123 }), /must be a string/);
+    // Whitespace-only treated as null — no throw.
+    await writeProjectMeta('bad', { group: '   ' });
+  } finally { await close(); }
+});
+
+test('PUT /api/projects/:name/group assigns and clears the field; broadcasts the projects WS hint', async () => {
+  const { baseUrl, wsUrl, close } = await bootServer();
+  try {
+    await api(baseUrl, 'POST', '/api/projects', { name: 'wsp' });
+
+    // Subscribe to the WS so we can assert the broadcast lands. The
+    // server pushes {t:'projects'} on every successful group change.
+    const { WebSocket } = await import('ws');
+    const ws = new WebSocket(wsUrl);
+    const seen = [];
+    await new Promise(resolve => { ws.once('open', resolve); });
+    ws.on('message', (raw) => {
+      try { const m = JSON.parse(raw.toString()); seen.push(m); } catch { /* ignore */ }
+    });
+
+    const assign = await api(baseUrl, 'PUT', '/api/projects/wsp/group', { group: 'Work' });
+    assert.equal(assign.status, 200);
+    assert.equal(assign.body.group, 'Work');
+    await waitFor(() => seen.some(m => m.t === 'projects'));
+
+    // Clearing: explicit null.
+    seen.length = 0;
+    const clr = await api(baseUrl, 'PUT', '/api/projects/wsp/group', { group: null });
+    assert.equal(clr.status, 200);
+    assert.equal(clr.body.group, null);
+    await waitFor(() => seen.some(m => m.t === 'projects'));
+
+    ws.close();
+  } finally { await close(); }
+});
+
+test('PUT /api/projects/:name/group: 400 on invalid group, 404 on unknown project', async () => {
+  const { baseUrl, close } = await bootServer();
+  try {
+    await api(baseUrl, 'POST', '/api/projects', { name: 'val' });
+    const bad = await api(baseUrl, 'PUT', '/api/projects/val/group', { group: 'x'.repeat(60) });
+    assert.equal(bad.status, 400);
+    assert.match(bad.body.error, /invalid group name/);
+    const missing = await api(baseUrl, 'PUT', '/api/projects/nope/group', { group: 'X' });
+    assert.equal(missing.status, 404);
   } finally { await close(); }
 });
 

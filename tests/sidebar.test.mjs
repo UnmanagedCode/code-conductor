@@ -16,12 +16,17 @@ async function setupSidebar({ onLoadSessions } = {}) {
   globalThis.HTMLElement = window.HTMLElement;
   globalThis.Element = window.Element;
   globalThis.Node = window.Node;
+  // Sidebar's group module reads/writes localStorage for collapsed-groups
+  // persistence. happy-dom ships a Storage but we want a clean slate per
+  // test so collapse state doesn't leak between cases.
+  globalThis.localStorage = window.localStorage;
+  try { window.localStorage.clear(); } catch { /* ignore */ }
 
   const { Sidebar } = await import(pathToFileURL(path.join(PUB, 'sidebar.js')).href);
   document.body.innerHTML = '<ul id="root"></ul>';
   const root = document.getElementById('root');
 
-  const calls = { select: [], create: [], resume: [], removeWorktree: [], deleteProject: [] };
+  const calls = { select: [], create: [], resume: [], removeWorktree: [], deleteProject: [], editGroup: [] };
   const sidebar = new Sidebar({
     rootList: root,
     onSelectInstance: (id) => calls.select.push(id),
@@ -30,6 +35,7 @@ async function setupSidebar({ onLoadSessions } = {}) {
     onRemoveWorktree: (p, w) => calls.removeWorktree.push({ p, w }),
     onDeleteProject: (p) => calls.deleteProject.push(p),
     onLoadSessions: onLoadSessions ?? (async () => []),
+    onEditGroup: (g) => calls.editGroup.push(g),
   });
   return { window, document, root, sidebar, calls };
 }
@@ -349,4 +355,92 @@ test('Sessions subnode is default-expanded; manual collapse persists across re-r
   sidebar.setInstances([]);
   det = root.querySelector('details.sessions-group');
   assert.ok(!det.hasAttribute('open'), 'manual collapse persists across re-render');
+});
+
+test('Projects with a group render under a <details> group container; ungrouped render flat above', async () => {
+  const { root, sidebar } = await setupSidebar({ onLoadSessions: async () => [] });
+  sidebar.setProjects([
+    { name: 'alpha', path: '/p/alpha', instanceIds: [], isGitRepo: false, worktrees: [],
+      sessions: { count: 0, lastMtime: 0 }, group: null },
+    { name: 'work-thing', path: '/p/work', instanceIds: [], isGitRepo: false, worktrees: [],
+      sessions: { count: 0, lastMtime: 0 }, group: 'Work' },
+    { name: 'play-thing', path: '/p/play', instanceIds: [], isGitRepo: false, worktrees: [],
+      sessions: { count: 0, lastMtime: 0 }, group: 'Side' },
+    { name: 'work-other', path: '/p/wo', instanceIds: [], isGitRepo: false, worktrees: [],
+      sessions: { count: 0, lastMtime: 0 }, group: 'Work' },
+  ]);
+  sidebar.setInstances([]);
+  // Top-level <li> children: one ungrouped project + two group items
+  // (Side, Work — sorted alphabetically).
+  const topLis = [...root.children].filter(n => n.tagName === 'LI');
+  // ungrouped first, then group items
+  assert.equal(topLis[0].querySelector(':scope > .project-row .project-name').textContent, 'alpha');
+  const groupItems = topLis.filter(li => li.classList.contains('project-group-item'));
+  assert.equal(groupItems.length, 2);
+  const names = groupItems.map(li => li.querySelector('.project-group-name').textContent);
+  assert.deepEqual(names, ['Side', 'Work'], 'group names sorted alphabetically');
+  // The Work group has two members.
+  const workGroup = groupItems[1].querySelector('details.project-group');
+  const workMembers = workGroup.querySelectorAll('.project-group-list > li > .project-row .project-name');
+  assert.deepEqual(
+    [...workMembers].map(n => n.textContent).sort(),
+    ['work-other', 'work-thing'],
+  );
+  // Count label reflects member count.
+  assert.equal(groupItems[1].querySelector('.project-group-count').textContent, '(2)');
+});
+
+test('Clicking the group ✎ button calls onEditGroup with the group name and does not toggle the details', async () => {
+  const { root, sidebar, calls } = await setupSidebar({ onLoadSessions: async () => [] });
+  sidebar.setProjects([
+    { name: 'a', path: '/p/a', instanceIds: [], isGitRepo: false, worktrees: [],
+      sessions: { count: 0, lastMtime: 0 }, group: 'Stuff' },
+  ]);
+  sidebar.setInstances([]);
+  const det = root.querySelector('details.project-group');
+  assert.ok(det.hasAttribute('open'), 'default-expanded');
+  const edit = root.querySelector('.project-group-edit');
+  edit.click();
+  assert.deepEqual(calls.editGroup, ['Stuff']);
+  // Default-expanded state still holds — the click on ✎ should not have
+  // toggled the surrounding <details>.
+  assert.ok(det.hasAttribute('open'), 'edit click does not collapse group');
+});
+
+test('Group collapse state is read from localStorage on construction', async () => {
+  // Seed the storage key BEFORE constructing the Sidebar so its
+  // collapsedGroups set initialises from it.
+  const window = new Window({ url: 'http://localhost/' });
+  globalThis.window = window;
+  globalThis.document = window.document;
+  globalThis.HTMLElement = window.HTMLElement;
+  globalThis.Element = window.Element;
+  globalThis.Node = window.Node;
+  globalThis.localStorage = window.localStorage;
+  window.localStorage.setItem('claude-orch:groups-collapsed', JSON.stringify(['Hidden']));
+  // happy-dom caches ES modules — break the cache so the freshly-seeded
+  // localStorage drives this Sidebar's `loadCollapsedGroups` call.
+  const url = pathToFileURL(path.join(PUB, 'sidebar.js')).href + `?seed=${Date.now()}`;
+  const { Sidebar } = await import(url);
+  document.body.innerHTML = '<ul id="root"></ul>';
+  const root = document.getElementById('root');
+  const sidebar = new Sidebar({
+    rootList: root,
+    onSelectInstance: () => {}, onCreateInstanceClick: () => {},
+    onRemoveWorktree: () => {}, onDeleteProject: () => {},
+    onResumeSession: () => {}, onLoadSessions: async () => [],
+    onEditGroup: () => {},
+  });
+  sidebar.setProjects([
+    { name: 'a', path: '/p/a', instanceIds: [], isGitRepo: false, worktrees: [],
+      sessions: { count: 0, lastMtime: 0 }, group: 'Hidden' },
+    { name: 'b', path: '/p/b', instanceIds: [], isGitRepo: false, worktrees: [],
+      sessions: { count: 0, lastMtime: 0 }, group: 'Visible' },
+  ]);
+  sidebar.setInstances([]);
+  const groups = [...root.querySelectorAll('details.project-group')];
+  const byName = Object.fromEntries(groups.map(g =>
+    [g.querySelector('.project-group-name').textContent, g]));
+  assert.ok(!byName['Hidden'].hasAttribute('open'), 'Hidden group respects localStorage collapse');
+  assert.ok(byName['Visible'].hasAttribute('open'), 'Visible group default-expanded');
 });

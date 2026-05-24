@@ -4,8 +4,9 @@ import { promises as fs, createReadStream } from 'node:fs';
 import {
   listProjects, createProject, listSessions, listSessionsForCwd,
   summarizeSessions, deleteProject, deleteSessionForCwd, getProject,
-  findSessionLocation,
+  findSessionLocation, writeProjectMeta,
 } from './projects.js';
+import { WebSocket } from 'ws';
 import {
   isGitRepo, listWorktrees, removeWorktree, mergeWorktreeIntoParent,
   buildRebasePrompt, getWorktree, removeAllWorktreesForProject,
@@ -24,6 +25,21 @@ const CONTENT_TYPE_BY_EXT = {
 export function buildRoutes({ instances, serverCtx } = {}) {
   const r = express.Router();
   r.use(express.json({ limit: '1mb' }));
+
+  // Nudge every connected client to re-fetch /api/projects. Mirrors the
+  // hint that wsHub.js broadcasts on instance lifecycle events — used
+  // here when a route mutates project state outside that channel (e.g.
+  // group assignment).
+  function broadcastProjects() {
+    const wss = serverCtx?.wss;
+    if (!wss) return;
+    const msg = JSON.stringify({ t: 'projects' });
+    for (const ws of wss.clients) {
+      if (ws.readyState === WebSocket.OPEN) {
+        try { ws.send(msg); } catch { /* ignore */ }
+      }
+    }
+  }
 
   // Self-respawn the orchestrator. Sends 202 immediately, then spawns
   // a detached replacement node process and exits. Frontend's existing
@@ -90,6 +106,23 @@ export function buildRoutes({ instances, serverCtx } = {}) {
       await removeAllWorktreesForProject(proj.name);
       await deleteProject(proj.name);
       res.json({ ok: true, project: proj.name, killedInstances: killed });
+    } catch (e) { next(e); }
+  });
+
+  // Assign or clear the project's group. Body: {group: string|null}.
+  // An empty string is treated as null (clears the field). Group names
+  // are validated in writeProjectMeta — see validateGroup() in projects.js.
+  // A successful write broadcasts the `projects` WS hint so connected
+  // sidebars re-fetch and rebucket immediately, including the
+  // `+ Group` dialog if it's open.
+  r.put('/projects/:name/group', async (req, res, next) => {
+    try {
+      await getProject(req.params.name);
+      const raw = req.body?.group;
+      const next = raw === '' || raw === undefined ? null : raw;
+      const meta = await writeProjectMeta(req.params.name, { group: next });
+      broadcastProjects();
+      res.json({ ok: true, name: req.params.name, group: meta.group ?? null });
     } catch (e) { next(e); }
   });
 
