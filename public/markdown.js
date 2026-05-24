@@ -15,6 +15,7 @@
 //   > blockquotes
 //   --- / *** / ___ horizontal rules
 //   [text](url) links
+//   | GFM pipe tables (with optional :--- / :---: / ---: alignment)
 //   blank-line-separated paragraphs
 
 function el(tag, ...children) {
@@ -108,6 +109,34 @@ function startsHr(line) { return /^[-*_]{3,}\s*$/.test(line.trim()); }
 function startsUl(line) { return /^[\-*+]\s+/.test(line); }
 function startsOl(line) { return /^\d+\.\s+/.test(line); }
 function startsBq(line) { return line.startsWith('> ') || line === '>'; }
+function looksLikeTableRow(line) {
+  return line != null && line.includes('|') && line.trim() !== '';
+}
+// Separator row like "| --- | :---: | ---: |". Requires at least two columns
+// (single-column "tables" aren't a thing in GFM and would collide with HR).
+const TABLE_SEPARATOR_RE = /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/;
+function looksLikeTableSeparator(line) {
+  return line != null && TABLE_SEPARATOR_RE.test(line);
+}
+function isTableStart(line, next) {
+  return looksLikeTableRow(line) && looksLikeTableSeparator(next);
+}
+function splitTableRow(line) {
+  let s = line.trim();
+  if (s.startsWith('|')) s = s.slice(1);
+  if (s.endsWith('|')) s = s.slice(0, -1);
+  return s.split('|').map((c) => c.trim());
+}
+function parseAlignments(sepLine) {
+  return splitTableRow(sepLine).map((cell) => {
+    const left = cell.startsWith(':');
+    const right = cell.endsWith(':');
+    if (left && right) return 'center';
+    if (right) return 'right';
+    if (left) return 'left';
+    return null;
+  });
+}
 function startsAnyBlock(line) {
   return isBlankLine(line) || startsHeading(line) || startsCodeFence(line)
     || startsHr(line) || startsUl(line) || startsOl(line) || startsBq(line);
@@ -163,11 +192,28 @@ export function parseMarkdown(text) {
       blocks.push({ type: 'ol', items });
       continue;
     }
+    if (isTableStart(line, lines[i + 1])) {
+      const header = splitTableRow(line);
+      const aligns = parseAlignments(lines[i + 1]);
+      const width = header.length;
+      const norm = (r) => r.length === width
+        ? r
+        : (r.length < width ? r.concat(Array(width - r.length).fill('')) : r.slice(0, width));
+      const rows = [];
+      i += 2;
+      while (i < lines.length && looksLikeTableRow(lines[i]) && !startsAnyBlock(lines[i])) {
+        rows.push(norm(splitTableRow(lines[i])));
+        i++;
+      }
+      blocks.push({ type: 'table', header: norm(header), aligns, rows });
+      continue;
+    }
     // Paragraph — collect contiguous non-block lines.
     const para = [];
     while (i < lines.length && !isBlankLine(lines[i]) && !startsCodeFence(lines[i])
            && !startsHeading(lines[i]) && !startsHr(lines[i])
-           && !startsUl(lines[i]) && !startsOl(lines[i]) && !startsBq(lines[i])) {
+           && !startsUl(lines[i]) && !startsOl(lines[i]) && !startsBq(lines[i])
+           && !isTableStart(lines[i], lines[i + 1])) {
       para.push(lines[i]);
       i++;
     }
@@ -232,6 +278,30 @@ function blockToNode(block) {
       return el('blockquote', ...renderInline(block.text));
     case 'hr':
       return document.createElement('hr');
+    case 'table': {
+      const table = document.createElement('table');
+      const thead = document.createElement('thead');
+      const trh = document.createElement('tr');
+      block.header.forEach((cell, idx) => {
+        const th = el('th', ...renderInline(cell));
+        if (block.aligns[idx]) th.style.textAlign = block.aligns[idx];
+        trh.appendChild(th);
+      });
+      thead.appendChild(trh);
+      table.appendChild(thead);
+      const tbody = document.createElement('tbody');
+      for (const row of block.rows) {
+        const tr = document.createElement('tr');
+        row.forEach((cell, idx) => {
+          const td = el('td', ...renderInline(cell));
+          if (block.aligns[idx]) td.style.textAlign = block.aligns[idx];
+          tr.appendChild(td);
+        });
+        tbody.appendChild(tr);
+      }
+      table.appendChild(tbody);
+      return table;
+    }
     default:
       return el('p', String(block.text ?? ''));
   }

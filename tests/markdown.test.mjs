@@ -271,3 +271,145 @@ test('markdown: real plan-shaped input — headings, lists, code, bold', async (
   assert.equal(pre.querySelector('code').dataset.lang, 'ts');
   assert.match(pre.textContent, /authMiddleware/);
 });
+
+test('markdown: GFM pipe table renders thead + tbody with right cell counts', async () => {
+  setupDOM();
+  const md = await loadMarkdown();
+  const src = [
+    '| A | B | C |',
+    '| --- | --- | --- |',
+    '| 1 | 2 | 3 |',
+    '| 4 | 5 | 6 |',
+  ].join('\n');
+  const root = render(md, src);
+  const table = root.querySelector('table');
+  assert.ok(table, 'expected <table>');
+  const ths = table.querySelectorAll('thead th');
+  assert.equal(ths.length, 3);
+  assert.equal(ths[0].textContent, 'A');
+  assert.equal(ths[2].textContent, 'C');
+  const rows = table.querySelectorAll('tbody tr');
+  assert.equal(rows.length, 2);
+  const cells = rows[0].querySelectorAll('td');
+  assert.equal(cells.length, 3);
+  assert.equal(cells[1].textContent, '2');
+  assert.equal(rows[1].querySelectorAll('td')[2].textContent, '6');
+});
+
+test('markdown: table alignment markers become text-align styles', async () => {
+  setupDOM();
+  const md = await loadMarkdown();
+  const src = [
+    '| L | C | R |',
+    '| :--- | :---: | ---: |',
+    '| a | b | c |',
+  ].join('\n');
+  const root = render(md, src);
+  const ths = root.querySelectorAll('thead th');
+  assert.equal(ths[0].style.textAlign, 'left');
+  assert.equal(ths[1].style.textAlign, 'center');
+  assert.equal(ths[2].style.textAlign, 'right');
+  const tds = root.querySelectorAll('tbody td');
+  assert.equal(tds[0].style.textAlign, 'left');
+  assert.equal(tds[1].style.textAlign, 'center');
+  assert.equal(tds[2].style.textAlign, 'right');
+});
+
+test('markdown: inline markdown inside table cells (bold, code, link) is rendered', async () => {
+  setupDOM();
+  const md = await loadMarkdown();
+  const src = [
+    '| Name | Value |',
+    '| --- | --- |',
+    '| **bold** | `code` |',
+    '| [docs](https://example.com) | plain |',
+  ].join('\n');
+  const root = render(md, src);
+  assert.ok(root.querySelector('tbody td strong'));
+  assert.equal(root.querySelector('tbody td strong').textContent, 'bold');
+  assert.ok(root.querySelector('tbody td code'));
+  const a = root.querySelector('tbody td a');
+  assert.ok(a);
+  assert.equal(a.getAttribute('href'), 'https://example.com');
+  assert.equal(a.textContent, 'docs');
+});
+
+test('markdown: pipe row without a separator row stays a paragraph', async () => {
+  setupDOM();
+  const md = await loadMarkdown();
+  const root = render(md, 'this | has | pipes\nbut no separator\n');
+  assert.equal(root.querySelector('table'), null);
+  assert.ok(root.querySelector('p'));
+  assert.match(root.textContent, /this \| has \| pipes/);
+});
+
+test('markdown: table parses both with and without edge pipes', async () => {
+  setupDOM();
+  const md = await loadMarkdown();
+  const withEdges = [
+    '| A | B |',
+    '| --- | --- |',
+    '| 1 | 2 |',
+  ].join('\n');
+  const noEdges = [
+    'A | B',
+    '--- | ---',
+    '1 | 2',
+  ].join('\n');
+  const r1 = render(md, withEdges);
+  const r2 = render(md, noEdges);
+  for (const root of [r1, r2]) {
+    const table = root.querySelector('table');
+    assert.ok(table);
+    assert.equal(table.querySelectorAll('thead th').length, 2);
+    const cells = table.querySelectorAll('tbody td');
+    assert.equal(cells.length, 2);
+    assert.equal(cells[0].textContent, '1');
+    assert.equal(cells[1].textContent, '2');
+  }
+});
+
+test('markdown: short and long rows are normalized to header width', async () => {
+  setupDOM();
+  const md = await loadMarkdown();
+  const src = [
+    '| A | B | C |',
+    '| --- | --- | --- |',
+    '| only-one |',
+    '| 1 | 2 | 3 | 4 | 5 |',
+  ].join('\n');
+  const root = render(md, src);
+  const rows = root.querySelectorAll('tbody tr');
+  assert.equal(rows.length, 2);
+  const row1 = rows[0].querySelectorAll('td');
+  assert.equal(row1.length, 3);
+  assert.equal(row1[0].textContent, 'only-one');
+  assert.equal(row1[1].textContent, '');
+  assert.equal(row1[2].textContent, '');
+  const row2 = rows[1].querySelectorAll('td');
+  assert.equal(row2.length, 3);
+  assert.equal(row2[2].textContent, '3');
+});
+
+test('markdown: table terminates cleanly when followed by a heading', async () => {
+  setupDOM();
+  const md = await loadMarkdown();
+  const src = [
+    '| A | B |',
+    '| --- | --- |',
+    '| 1 | 2 |',
+    '## After',
+    '',
+    'tail paragraph',
+  ].join('\n');
+  const root = render(md, src);
+  const table = root.querySelector('table');
+  assert.ok(table);
+  assert.equal(table.querySelectorAll('tbody tr').length, 1);
+  const h2 = root.querySelector('h2');
+  assert.ok(h2);
+  assert.equal(h2.textContent, 'After');
+  const ps = root.querySelectorAll('p');
+  assert.equal(ps.length, 1);
+  assert.match(ps[0].textContent, /tail paragraph/);
+});

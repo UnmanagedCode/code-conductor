@@ -654,6 +654,28 @@ input:focus, textarea:focus, select:focus { outline: 2px solid var(--accent); ou
 .md a { color: var(--accent); text-decoration: underline; }
 .md a:hover { color: #8cb9ff; }
 .md hr { border: none; border-top: 1px dashed var(--border); margin: 12px 0; }
+.md table {
+  border-collapse: collapse;
+  margin: 8px 0;
+  font-size: .95em;
+  display: block;
+  overflow-x: auto;
+  max-width: 100%;
+}
+.md th, .md td {
+  border: 1px solid var(--border);
+  padding: 5px 9px;
+  text-align: left;
+  vertical-align: top;
+}
+.md th {
+  background: #1b1f2c;
+  color: var(--text);
+  font-weight: 600;
+}
+.md tbody tr:nth-child(even) td {
+  background: rgba(110,168,255,0.04);
+}
 .pr-feedback-wrap { margin: 0 0 10px 0; }
 .pr-feedback {
   width: 100%; resize: vertical; min-height: 40px;
