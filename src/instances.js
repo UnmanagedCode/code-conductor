@@ -610,9 +610,20 @@ export class Instance extends EventEmitter {
       // new replay events start arriving.
       this.emit('snapshot_reset', this._snapshotForReset());
 
-      // Respawn against the truncated jsonl. loadHistory replays the
-      // surviving prefix into the now-empty ring as fresh `_seq` events.
-      this.spawn({ resume: this.sessionId });
+      // Empty prefix (rewound to the first user message): the jsonl now has
+      // zero lines, so `--resume <sid>` would point the CLI at a file with
+      // no init line and the subprocess would exit immediately. Delete the
+      // empty file (plus any stale sub-agent dir from the dropped tail) and
+      // respawn with --session-id under the same id so the URL anchor stays
+      // valid and the instance comes back ready for a fresh first turn.
+      if (result.remainingLineCount === 0) {
+        const dir = path.join(claudeProjectsRoot(), encodeCwd(this.cwd));
+        await fsp.rm(path.join(dir, `${this.sessionId}.jsonl`), { force: true });
+        await fsp.rm(path.join(dir, this.sessionId), { recursive: true, force: true });
+        this.spawn({});
+      } else {
+        this.spawn({ resume: this.sessionId });
+      }
 
       return { droppedText: result.droppedText };
     } finally {

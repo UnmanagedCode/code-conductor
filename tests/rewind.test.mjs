@@ -99,6 +99,62 @@ test('rewind drops the chosen user message + tail, ring is rebuilt from truncate
   } finally { await ctx.close(); }
 });
 
+test('rewind to index 0 wipes the session and respawns under the same sessionId', async () => {
+  // Empty-prefix case: --resume <sid> against a zero-line jsonl would crash
+  // the real CLI, so the orchestrator deletes the file and respawns with
+  // --session-id under the same id. The URL anchor stays valid and the
+  // instance lands back at idle, ready for a fresh first turn.
+  const ctx = await bootServer({ scenarioPath: SCENARIO });
+  try {
+    const sid = '00000000-2222-3333-4444-555555555555';
+    const { sessionDir } = await seedSession({
+      ctx, projectName: 'wipeable', sid,
+      lines: [
+        { type: 'user', uuid: 'u1', message: { role: 'user', content: 'only prompt' } },
+        { type: 'assistant', uuid: 'a1', message: { id: 'm1', role: 'assistant', content: [
+          { type: 'text', text: 'only reply' },
+        ] } },
+      ],
+    });
+
+    const events = collectEvents(ctx.instances);
+    const r = await api(ctx.baseUrl, 'POST', '/api/instances', {
+      project: 'wipeable', mode: 'bypassPermissions', resume: sid,
+    });
+    assert.equal(r.status, 201);
+    const id = r.body.id;
+    await waitFor(() => ctx.instances.get(id).status === 'idle');
+
+    let snapshotResetSeen = 0;
+    ctx.instances.on('snapshot_reset', (snap) => {
+      if (snap.id === id) snapshotResetSeen++;
+    });
+    const rew = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/rewind`, { userMessageIndex: 0 });
+    assert.equal(rew.status, 200);
+    assert.equal(rew.body.droppedText, 'only prompt');
+    assert.equal(snapshotResetSeen, 1, 'snapshot_reset emitted exactly once');
+
+    await waitFor(() => ctx.instances.get(id).status === 'idle');
+
+    // Same sessionId — URL anchor preserved.
+    assert.equal(ctx.instances.get(id).sessionId, sid);
+
+    // No user_echo events in the rebuilt ring.
+    const postRing = ctx.instances.get(id).ringSnapshot();
+    const postEchoes = postRing.filter(ev => ev.kind === 'user_echo');
+    assert.equal(postEchoes.length, 0, 'ring has no surviving user_echo');
+
+    // The empty jsonl was deleted (the fresh subprocess hasn't written its
+    // own yet — fake-claude only writes when the scenario tells it to).
+    const exists = await fs.stat(path.join(sessionDir, `${sid}.jsonl`)).then(() => true, () => false);
+    assert.equal(exists, false, 'empty jsonl was deleted');
+
+    // Sanity: events were observed (collectEvents is a smoke check that the
+    // bus stayed alive across the wipe + respawn).
+    assert.ok(events.length > 0, 'event bus still streaming after wipe');
+  } finally { await ctx.close(); }
+});
+
 test('rewind during a running turn is refused 409', async () => {
   // The instances scenario has a 2nd turn that pauses mid-stream (no
   // turn_end) until an interrupt arrives — perfect for catching the
