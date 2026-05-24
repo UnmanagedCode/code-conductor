@@ -605,8 +605,8 @@ export class PlanRequestBlock {
         class: 'pr-feedback', rows: '2',
         placeholder: 'Optional feedback / refinement notes (used when rejecting)',
       });
-      this.approveBtn = el('button', { class: 'pr-approve', type: 'button' }, 'Approve & implement');
-      this.rejectBtn = el('button', { class: 'pr-reject', type: 'button' }, 'Reject & refine');
+      this.approveBtn = el('button', { class: 'pr-approve', type: 'button' }, 'Approve & Implement');
+      this.rejectBtn = el('button', { class: 'pr-reject', type: 'button' }, 'Reject & Refine');
       this.approveBtn.addEventListener('click', () => this._click('approve'));
       this.rejectBtn.addEventListener('click', () => this._click('reject'));
 
