@@ -1,9 +1,10 @@
-// Save user-attached files to a per-worktree dir and classify image
-// vs. non-image so instances.js can build the right content block.
+// Save user-attached files to the project's / worktree's central-store
+// attachments dir and classify image vs. non-image so instances.js can
+// build the right content block.
 
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { attachmentsDir, ORCH_DOTDIR } from './worktrees.js';
+import { attachmentsDir } from './worktrees.js';
 
 const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
 
@@ -16,11 +17,13 @@ function safeName(name) {
   return cleaned || 'file';
 }
 
-// Persist one attachment to <cwd>/.code-conductor/attachments/<stamp>-<name>
-// and return both the absolute path and the worktree-relative path the
-// model can use with the Read tool.
-export async function saveAttachment(cwd, { name, dataBase64 }) {
-  const dir = attachmentsDir(cwd);
+// Persist one attachment to <store>/projects/<project>/[worktrees/<wt>/]
+// attachments/<stamp>-<name> and return both the absolute saved path
+// and the absolute prompt path Claude reads with the `Read` tool. The
+// prompt path is absolute because the file lives outside the agent's
+// cwd — relative paths from the worktree would no longer resolve.
+export async function saveAttachment(project, worktreeName, { name, dataBase64 }) {
+  const dir = attachmentsDir(project, worktreeName ?? null);
   await fs.mkdir(dir, { recursive: true });
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const filename = `${stamp}-${safeName(name)}`;
@@ -28,7 +31,7 @@ export async function saveAttachment(cwd, { name, dataBase64 }) {
   await fs.writeFile(abs, Buffer.from(dataBase64, 'base64'));
   return {
     savedPath: abs,
-    relPath: path.posix.join(ORCH_DOTDIR, 'attachments', filename),
+    promptPath: abs,
     filename,
   };
 }

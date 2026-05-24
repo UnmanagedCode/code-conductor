@@ -6,7 +6,7 @@ import { promises as fsp, readFileSync, mkdirSync, createWriteStream, writeFileS
 import path from 'node:path';
 import { Parser } from './parser.js';
 import { getProject, claudeProjectsRoot, encodeCwd } from './projects.js';
-import { createWorktree, getWorktree } from './worktrees.js';
+import { createWorktree, getWorktree, debugBaseDir } from './worktrees.js';
 import { buildSettingsJSON, buildMcpConfigJSON } from './settings.js';
 import { HookBroker } from './hookBroker.js';
 import { loadPersistedTranscript, writeSessionMetadata } from './transcript.js';
@@ -84,9 +84,9 @@ export class Instance extends EventEmitter {
     // and the orchestrator skips its last-prompt / permission-mode
     // metadata appends during the run.
     this.temp = !!temp;
-    // When true, raw CLI stdin/stdout/stderr is mirrored to
-    // <cwd>/.code-conductor/debug/<id>/ for offline inspection.
-    // Streams + the debug dir path are populated at spawn time.
+    // When true, raw CLI stdin/stdout/stderr is mirrored to the
+    // central store's debug dir for offline inspection. Streams + the
+    // debug dir path are populated at spawn time.
     this.debug = !!debug;
     this.debugDir = null;
     this._debugStreams = null;
@@ -145,7 +145,10 @@ export class Instance extends EventEmitter {
     if (!this.debug) return;
     if (this._debugStreams) return; // idempotent — already capturing.
     try {
-      const dir = path.join(this.cwd, '.code-conductor', 'debug', this.id);
+      const dir = path.join(
+        debugBaseDir(this.project, this.worktree?.worktreeName ?? null),
+        this.id,
+      );
       mkdirSync(dir, { recursive: true });
       const meta = {
         instanceId: this.id,
@@ -194,7 +197,7 @@ export class Instance extends EventEmitter {
   }
 
   // Flip debug ON for an already-running instance. Future stdin/stdout/
-  // stderr lines are mirrored to .code-conductor/debug/<id>/. Lines from
+  // stderr lines are mirrored to the central-store debug dir. Lines from
   // before the toggle are NOT recoverable — they were never tee'd. Emits a
   // status event so the UI can refresh the DEBUG pill + button label.
   // Idempotent: a second call is a no-op.
@@ -454,12 +457,13 @@ export class Instance extends EventEmitter {
 
   // Send a user turn to the CLI. `attachments` is an optional list of
   // {name, mediaType, dataBase64} objects produced by the composer.
-  // Every attachment is saved to <cwd>/.code-conductor/attachments/
-  // and a single "Attached file: `<relPath>`" text block is appended
-  // to the message — Claude's Read tool handles both image files
-  // (returns vision content) and arbitrary file bytes on demand.
-  // This avoids re-paying the base64 token cost on every subsequent
-  // turn and keeps the prompt-cache prefix stable.
+  // Every attachment is saved into the central store's attachments
+  // dir for this project / worktree and a single
+  // "Attached file: `<abs-path>`" text block is appended to the
+  // message — Claude's Read tool handles both image files (returns
+  // vision content) and arbitrary file bytes on demand. This avoids
+  // re-paying the base64 token cost on every subsequent turn and
+  // keeps the prompt-cache prefix stable.
   async prompt(text, attachments = []) {
     if (!this.proc) throw new Error('not running');
     const safeText = typeof text === 'string' ? text : '';
@@ -476,17 +480,17 @@ export class Instance extends EventEmitter {
       if (!a || typeof a.name !== 'string' || typeof a.dataBase64 !== 'string') continue;
       const mediaType = typeof a.mediaType === 'string' ? a.mediaType : 'application/octet-stream';
       let saved;
-      try { saved = await saveAttachment(this.cwd, a); }
+      try { saved = await saveAttachment(this.project, this.worktree?.worktreeName ?? null, a); }
       catch (e) {
         this._emitUi({ kind: 'system', subtype: 'stderr', data: { line: `attachment save failed (${a.name}): ${e.message}` } });
         continue;
       }
-      content.push({ type: 'text', text: `Attached file: \`${saved.relPath}\`` });
+      content.push({ type: 'text', text: `Attached file: \`${saved.promptPath}\`` });
       echoAttachments.push({
         kind: isImageType(mediaType) ? 'image' : 'file',
         name: a.name,
         mediaType,
-        path: saved.relPath,
+        path: saved.promptPath,
         filename: saved.filename,
         // For the live user_echo bubble only — lets the frontend show
         // the thumbnail without a round-trip. Not written to the CLI's

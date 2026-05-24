@@ -354,11 +354,11 @@ export function buildRoutes({ instances, serverCtx } = {}) {
     // permission_request to the UI (ask mode) — the user's Allow/Deny
     // click eventually resolves the response. Response shape mirrors the
     // CLI's expected hookSpecificOutput JSON.
-    // Serve a previously-saved attachment from an instance's per-worktree
-    // attachments dir. The frontend uses this to populate user-bubble
-    // thumbnails on transcript replay (the bytes aren't echoed back via
-    // the WS user_echo on a fresh page load because they were never
-    // written to the session jsonl).
+    // Serve a previously-saved attachment from the instance's central-
+    // store attachments dir. The frontend uses this to populate user-
+    // bubble thumbnails on transcript replay (the bytes aren't echoed
+    // back via the WS user_echo on a fresh page load because they were
+    // never written to the session jsonl).
     r.get('/instances/:id/attachments/:filename', async (req, res, next) => {
       try {
         const inst = instances.get(req.params.id);
@@ -368,7 +368,10 @@ export function buildRoutes({ instances, serverCtx } = {}) {
         if (!raw || raw.includes('/') || raw.includes('\\') || raw.includes('..') || raw !== path.basename(raw)) {
           throw Object.assign(new Error('invalid attachment filename'), { statusCode: 400 });
         }
-        const abs = path.join(attachmentsDir(inst.cwd), raw);
+        const abs = path.join(
+          attachmentsDir(inst.project, inst.worktree?.worktreeName ?? null),
+          raw,
+        );
         let stat;
         try { stat = await fs.stat(abs); }
         catch (e) {

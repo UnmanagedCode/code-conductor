@@ -853,7 +853,7 @@ test('non-temp: jsonl is left in place on exit', async () => {
   } finally { await close(); }
 });
 
-test('debug: enabling debug mode writes stdin/stdout/stderr + meta.json under .code-conductor/debug/<id>/', async () => {
+test('debug: enabling debug mode writes stdin/stdout/stderr + meta.json under the central-store debug dir', async () => {
   const { baseUrl, instances, close } = await setupWithProject();
   const fsp = (await import('node:fs')).promises;
   try {
@@ -868,10 +868,12 @@ test('debug: enabling debug mode writes stdin/stdout/stderr + meta.json under .c
     const inst = instances.get(id);
     await waitFor(() => inst.status === 'idle' && inst.debugDir);
 
-    // The debug dir exists where we promised: <cwd>/.code-conductor/debug/<id>/
+    // The debug dir lives in the workspace-wide central store:
+    // <root>/.code-conductor/projects/demo/debug/<id>/
     const debugDir = inst.debugDir;
-    assert.ok(debugDir.endsWith(path.join('.code-conductor', 'debug', id)),
-      `debugDir should end with .code-conductor/debug/${id}, got ${debugDir}`);
+    const expectedTail = path.join('.code-conductor', 'projects', 'demo', 'debug', id);
+    assert.ok(debugDir.endsWith(expectedTail),
+      `debugDir should end with ${expectedTail}, got ${debugDir}`);
 
     // meta.json captures the spawn shape — useful when sharing debug bundles
     // back to a maintainer who didn't observe the spawn-time options.
@@ -915,8 +917,9 @@ test('debug: omitting the flag leaves debug=false and writes nothing', async () 
     await waitFor(() => inst.status === 'idle');
     assert.equal(inst.debug, false);
     assert.equal(inst.debugDir, null);
-    // No debug dir created.
-    const debugDirGuess = path.join(inst.cwd, '.code-conductor', 'debug');
+    // No debug dir created in the central store.
+    const projectsRoot = process.env.PROJECTS_ROOT;
+    const debugDirGuess = path.join(projectsRoot, '.code-conductor', 'projects', 'demo', 'debug');
     let exists = true;
     try { await fsp.access(debugDirGuess); } catch { exists = false; }
     assert.equal(exists, false, 'debug dir is not created when the flag is omitted');
@@ -941,7 +944,7 @@ test('debug: POST /api/instances/:id/debug enables capture on a running instance
     assert.equal(enable.status, 200);
     assert.equal(enable.body.ok, true);
     assert.equal(enable.body.alreadyOn, false);
-    assert.ok(enable.body.debugDir.endsWith(path.join('.code-conductor', 'debug', id)));
+    assert.ok(enable.body.debugDir.endsWith(path.join('.code-conductor', 'projects', 'demo', 'debug', id)));
     assert.equal(inst.debug, true);
 
     // Future prompts get mirrored even though spawn was non-debug.

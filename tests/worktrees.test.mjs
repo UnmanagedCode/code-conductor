@@ -63,16 +63,20 @@ test('createWorktree creates a sibling directory with metadata and a fresh branc
     const wtBranch = (await git(wt.worktreePath, 'symbolic-ref', '--short', 'HEAD')).stdout.trim();
     assert.equal(wtBranch, wt.branch);
 
-    // Metadata file is inside the per-worktree dotfolder and round-trips.
-    const meta = JSON.parse(await fs.readFile(path.join(wt.worktreePath, '.code-conductor', 'worktree.json'), 'utf8'));
+    // Metadata file lives in the workspace-wide central store and
+    // round-trips. The worktree dir itself stays clean (no `.code-conductor/`).
+    const metaPath = path.join(
+      ctx.projectsRoot, '.code-conductor', 'projects', 'demo',
+      'worktrees', wt.worktreeName, 'worktree.json',
+    );
+    const meta = JSON.parse(await fs.readFile(metaPath, 'utf8'));
     assert.equal(meta.parentProject, 'demo');
     assert.equal(meta.baseBranch, 'main');
-    // The dotfolder is added to the worktree's local exclude file so `git
-    // status` inside the worktree doesn't surface it as untracked clutter.
-    const gitDir = (await git(wt.worktreePath, 'rev-parse', '--git-path', 'info/exclude')).stdout.trim();
-    const excludeAbs = path.isAbsolute(gitDir) ? gitDir : path.join(wt.worktreePath, gitDir);
-    const exclude = await fs.readFile(excludeAbs, 'utf8');
-    assert.match(exclude, /\/\.code-conductor\//);
+    await assert.rejects(
+      fs.stat(path.join(wt.worktreePath, '.code-conductor')),
+      { code: 'ENOENT' },
+      'worktree dir must not contain a .code-conductor/ dotfolder',
+    );
   } finally { await ctx.close(); }
 });
 

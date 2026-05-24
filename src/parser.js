@@ -307,11 +307,12 @@ export class Parser {
 
 // Detect "Attached file: `<path>`" marker lines in a text block (the
 // shape we write in instances.js prompt()) and split them out as
-// attachment entries. Path must live under .code-conductor/attachments/
-// to be recognized — anchors the match so unrelated prose mentioning
+// attachment entries. Path must point inside the orchestrator's central
+// store (`.../<ORCH_STORE_DIRNAME>/.../attachments/<file>`) to be
+// recognized — anchors the match so unrelated prose mentioning
 // "Attached file:" isn't accidentally promoted.
 const IMG_EXT = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp']);
-const ATT_LINE_RE = /^Attached file:\s*`((?:[^`]*\/)?\.code-conductor\/attachments\/[^`]+)`\s*$/;
+const ATT_LINE_RE = /^Attached file:\s*`([^`]*?\/\.code-conductor\/[^`]+?\/attachments\/[^`]+)`\s*$/;
 
 export function extractAttachedMarkers(text) {
   const lines = text.split('\n');
@@ -320,11 +321,11 @@ export function extractAttachedMarkers(text) {
   for (const line of lines) {
     const m = line.match(ATT_LINE_RE);
     if (!m) { keptLines.push(line); continue; }
-    const relPath = m[1];
-    const filename = relPath.split('/').pop();
+    const attPath = m[1];
+    const filename = attPath.split('/').pop();
     const ext = (filename.split('.').pop() || '').toLowerCase();
     const kind = IMG_EXT.has(ext) ? 'image' : 'file';
-    attachments.push({ kind, path: relPath, filename, name: filename });
+    attachments.push({ kind, path: attPath, filename, name: filename });
   }
   // Trim any trailing blank lines that the marker(s) leave behind, but
   // preserve interior structure so leading prose stays intact.

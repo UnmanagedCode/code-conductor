@@ -8,27 +8,32 @@ const NAME_RE = /^[a-zA-Z0-9._-]+$/;
 // "client/Foo"). Bounded length + no control chars so it remains safe to
 // render and serialise.
 const GROUP_RE = /^[\w][\w \-./]{0,39}$/;
-// Directories owned by the orchestrator's worktree feature carry this
-// marker path (see src/worktrees.js). Top-level project listing filters
-// them out so they aren't presented as standalone projects — they appear
-// as a child node under the parent.
-const WORKTREE_MARKER = '.code-conductor/worktree.json';
-// Per-project metadata lives alongside other orchestrator state in the
-// project's .code-conductor/ dotfolder. Created lazily — projects with
-// no metadata simply have no file.
-const META_FILE = '.code-conductor/project.json';
 
-async function isWorktreeMarkerPresent(dir) {
-  try {
-    await fs.access(path.join(dir, WORKTREE_MARKER));
-    return true;
-  } catch {
-    return false;
-  }
-}
+// All orchestrator-owned state lives under a single dotfolder at the
+// workspace root (`<projectsRoot>/.code-conductor/`). Layout:
+//   <store>/projects/<name>/project.json
+//   <store>/projects/<name>/attachments/<file>
+//   <store>/projects/<name>/debug/<instance-id>/
+//   <store>/projects/<name>/worktrees/<worktreeDir>/worktree.json
+//   <store>/projects/<name>/worktrees/<worktreeDir>/attachments/<file>
+//   <store>/projects/<name>/worktrees/<worktreeDir>/debug/<instance-id>/
+// Project + worktree directories themselves stay clean.
+export const ORCH_STORE_DIRNAME = '.code-conductor';
 
 export function projectsRoot() {
   return process.env.PROJECTS_ROOT ?? path.join(os.homedir(), 'project');
+}
+
+export function orchStoreRoot() {
+  return path.join(projectsRoot(), ORCH_STORE_DIRNAME);
+}
+
+export function projectStoreDir(name) {
+  return path.join(orchStoreRoot(), 'projects', name);
+}
+
+export function worktreeStoreDir(projectName, worktreeName) {
+  return path.join(projectStoreDir(projectName), 'worktrees', worktreeName);
 }
 
 export function claudeProjectsRoot() {
@@ -56,17 +61,42 @@ export function validateName(name) {
   return name;
 }
 
+// Build the set of every worktree dir-name registered under any project
+// in the central store. listProjects() uses this to hide worktree dirs
+// from the sidebar's top-level project list — replacing the older
+// per-dir marker probe with a single readdir.
+async function listAllWorktreeDirNames() {
+  const out = new Set();
+  const projectsDir = path.join(orchStoreRoot(), 'projects');
+  let projects;
+  try { projects = await fs.readdir(projectsDir); }
+  catch (e) { if (e.code === 'ENOENT') return out; throw e; }
+  for (const p of projects) {
+    const wtDir = path.join(projectsDir, p, 'worktrees');
+    let wts;
+    try { wts = await fs.readdir(wtDir); }
+    catch (e) { if (e.code === 'ENOENT') continue; throw e; }
+    for (const wt of wts) out.add(wt);
+  }
+  return out;
+}
+
 export async function listProjects() {
   const root = projectsRoot();
   await fs.mkdir(root, { recursive: true });
   const entries = await fs.readdir(root, { withFileTypes: true });
+  const worktreeDirs = await listAllWorktreeDirNames();
   const out = [];
   for (const e of entries) {
     if (!e.isDirectory()) continue;
-    const full = path.join(root, e.name);
+    // Skip dotfile dirs — the central store itself sits at
+    // `<root>/.code-conductor/` and would otherwise surface as a fake
+    // project named ".code-conductor".
+    if (e.name.startsWith('.')) continue;
     // Skip orchestrator-owned worktree dirs — they're surfaced under
     // their parent project, not as top-level projects.
-    if (await isWorktreeMarkerPresent(full)) continue;
+    if (worktreeDirs.has(e.name)) continue;
+    const full = path.join(root, e.name);
     const meta = await readProjectMeta(e.name);
     out.push({ name: e.name, path: full, group: meta.group });
   }
@@ -91,11 +121,12 @@ export function validateGroup(group) {
   return trimmed;
 }
 
-// Read the project's optional metadata file. Missing file or malformed
-// JSON → {group: null}. The dotfolder may not exist yet — that's fine.
+// Read the project's optional metadata file from the central store.
+// Missing file or malformed JSON → {group: null}. The store dir may not
+// exist yet — that's fine.
 export async function readProjectMeta(name) {
   validateName(name);
-  const file = path.join(projectsRoot(), name, META_FILE);
+  const file = path.join(projectStoreDir(name), 'project.json');
   try {
     const raw = await fs.readFile(file, 'utf8');
     const obj = JSON.parse(raw);
@@ -119,7 +150,7 @@ export async function readProjectMeta(name) {
 export async function writeProjectMeta(name, patch) {
   validateName(name);
   await getProject(name);
-  const dir = path.join(projectsRoot(), name, '.code-conductor');
+  const dir = projectStoreDir(name);
   const file = path.join(dir, 'project.json');
   const current = await readProjectMeta(name);
   const next = { ...current, ...patch };
@@ -129,10 +160,9 @@ export async function writeProjectMeta(name, patch) {
     if (next[k] === null || next[k] === undefined) delete next[k];
   }
   if (Object.keys(next).length === 0) {
-    // Nothing to persist — remove the file (and the dotfolder if empty,
-    // best-effort). Keeps a freshly-created-then-cleared project tidy.
+    // Nothing to persist — remove the file. Leave the surrounding
+    // store dir (it may still hold attachments/debug/worktrees).
     try { await fs.unlink(file); } catch (e) { if (e.code !== 'ENOENT') throw e; }
-    try { await fs.rmdir(dir); } catch { /* not empty / not there — fine */ }
     return next;
   }
   await fs.mkdir(dir, { recursive: true });
@@ -168,12 +198,12 @@ export async function createProject(name) {
   return { name, path: full };
 }
 
-// Delete the entire project directory. Caller is responsible for first
-// killing any running instances and removing worktree registrations
-// (the cascade is orchestrated in src/routes.js). Sessions under
-// ~/.claude/projects/<encoded>/ are deliberately left in place — they
-// might still be referenced by `claude --resume` outside the
-// orchestrator.
+// Delete the entire project directory + the project's central-store
+// entry. Caller is responsible for first killing any running instances
+// and removing worktree registrations (the cascade is orchestrated in
+// src/routes.js). Sessions under ~/.claude/projects/<encoded>/ are
+// deliberately left in place — they might still be referenced by
+// `claude --resume` outside the orchestrator.
 export async function deleteProject(name) {
   validateName(name);
   const full = path.join(projectsRoot(), name);
@@ -184,6 +214,10 @@ export async function deleteProject(name) {
     err.statusCode = 500;
     throw err;
   }
+  // Central-store entry holds attachments, debug captures, worktree
+  // metadata — all of it goes with the project.
+  try { await fs.rm(projectStoreDir(name), { recursive: true, force: true }); }
+  catch { /* best-effort */ }
   return { name, path: full };
 }
 

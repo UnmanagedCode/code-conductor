@@ -18,7 +18,7 @@ import {
   isGitRepo, listWorktrees as fsListWorktrees, getWorktreeMergeStatus,
   createWorktree as fsCreateWorktree, removeWorktree, getWorktree,
   syncWorktree as fsSyncWorktree, mergeWorktreeIntoParent, buildRebasePrompt,
-  worktreeDirtyLines, ORCH_DOTDIR,
+  worktreeDirtyLines,
 } from '../worktrees.js';
 
 // ---------- helpers ----------
@@ -413,14 +413,14 @@ function runGitInDir(cwd, args) {
   });
 }
 
-// Read the top-level directory listing, hiding our own dotdir + dotfiles
-// by default. Used by project_status for a quick "what's in this dir?"
-// snapshot. Errors return an empty list.
+// Read the top-level directory listing, hiding dotfiles by default.
+// Used by project_status for a quick "what's in this dir?" snapshot.
+// Errors return an empty list.
 async function listTopLevelEntries(cwd) {
   try {
     const entries = await fs.readdir(cwd, { withFileTypes: true });
     return entries
-      .filter(e => e.name !== ORCH_DOTDIR && !e.name.startsWith('.'))
+      .filter(e => !e.name.startsWith('.'))
       .map(e => ({ name: e.name, kind: e.isDirectory() ? 'dir' : (e.isFile() ? 'file' : 'other') }))
       .sort((a, b) => {
         if (a.kind !== b.kind) return a.kind === 'dir' ? -1 : 1;

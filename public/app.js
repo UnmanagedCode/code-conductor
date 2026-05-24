@@ -974,7 +974,7 @@ function updateActiveHeader() {
   } else {
     dom.debugBtn.textContent = '🐛 Debug';
     dom.debugBtn.disabled = false;
-    dom.debugBtn.title = 'Start mirroring CLI stdin/stdout/stderr to .code-conductor/debug/<id>/';
+    dom.debugBtn.title = 'Start mirroring CLI stdin/stdout/stderr to the orchestrator debug dir';
   }
   const autoApproveOn = autoApprovePlansByInstance.has(inst.id);
   dom.autoApprovePlanBtn.textContent = autoApproveOn

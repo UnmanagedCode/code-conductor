@@ -7,6 +7,8 @@ import { buildRoutes } from './src/routes.js';
 import { buildMcpRouter } from './src/mcp/server.js';
 import { InstanceManager } from './src/instances.js';
 import { attachWsHub } from './src/wsHub.js';
+import { projectsRoot } from './src/projects.js';
+import { runMigrations } from './migrations/index.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -55,6 +57,10 @@ async function listenWithRetry(server, port, host, { tries = 40, delayMs = 100 }
 }
 
 export async function start({ port = 8787, host = '127.0.0.1' } = {}) {
+  // Apply any pending on-disk migrations before we accept traffic. Each
+  // migration is idempotent and a no-op on an already-migrated workspace,
+  // so this is fast in steady state. A migration that throws aborts boot.
+  await runMigrations({ root: projectsRoot() });
   const { server, instances, wss } = createServer();
   await listenWithRetry(server, port, host);
   const addr = server.address();

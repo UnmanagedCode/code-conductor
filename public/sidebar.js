@@ -435,7 +435,7 @@ export class Sidebar {
     // ungrouped (rendered flat underneath). Group bucket order is
     // alphabetical for v1 — explicit ordering can come later.
     // `project.group` is whatever the server returned (the trimmed string
-    // from .code-conductor/project.json) or null/missing.
+    // from the project's central-store project.json) or null/missing.
     const ungrouped = [];
     const byGroup = new Map();
     for (const p of this.projects) {

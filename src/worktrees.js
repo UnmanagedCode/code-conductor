@@ -1,15 +1,15 @@
 // Git worktree operations for isolated agent runs. Each worktree lives as
-// a sibling directory at `<projectsRoot>/<project>_worktree_<short-id>/`
-// with a `.code-conductor/worktree.json` metadata file inside it. The
-// metadata records the parent project + the branch / SHA that HEAD was
-// on at creation time, so a later rebase-back targets the right base.
-// `.code-conductor/` also holds the per-message attachments dir.
+// a sibling directory at `<projectsRoot>/<project>_worktree_<short-id>/`.
+// All orchestrator-owned metadata for the worktree (worktree.json,
+// attachments/, debug/) lives in the central store under
+// `<projectsRoot>/.code-conductor/projects/<project>/worktrees/<worktreeDir>/`
+// — the worktree dir itself stays clean.
 
 import { execFile } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
-import { projectsRoot, getProject } from './projects.js';
+import { projectsRoot, getProject, projectStoreDir, worktreeStoreDir } from './projects.js';
 
 // Manual execFile wrapper. `promisify(execFile)` would be tempting but
 // this Node build (Termux's android port) doesn't ship the
@@ -30,22 +30,26 @@ function execFileP(file, args, options = {}) {
   });
 }
 
-// Per-worktree dotfolder layout: `<worktree>/.code-conductor/worktree.json`
-// for metadata, `<worktree>/.code-conductor/attachments/` for files attached
-// to user messages.
-export const ORCH_DOTDIR = '.code-conductor';
 export const WORKTREE_META_FILENAME = 'worktree.json';
 
-export function orchDotdir(worktreePath) {
-  return path.join(worktreePath, ORCH_DOTDIR);
+// Where this project / worktree's central-store entry lives. Pass
+// `worktreeName: null` for the project root.
+function baseStoreDir(project, worktreeName) {
+  return worktreeName
+    ? worktreeStoreDir(project, worktreeName)
+    : projectStoreDir(project);
 }
 
-export function attachmentsDir(worktreePath) {
-  return path.join(orchDotdir(worktreePath), 'attachments');
+export function attachmentsDir(project, worktreeName) {
+  return path.join(baseStoreDir(project, worktreeName), 'attachments');
 }
 
-function metaPath(worktreePath) {
-  return path.join(orchDotdir(worktreePath), WORKTREE_META_FILENAME);
+export function debugBaseDir(project, worktreeName) {
+  return path.join(baseStoreDir(project, worktreeName), 'debug');
+}
+
+function metaPath(project, worktreeName) {
+  return path.join(worktreeStoreDir(project, worktreeName), WORKTREE_META_FILENAME);
 }
 
 // Shorter-than-uuid identifier — 6 hex chars is plenty for collision
@@ -84,22 +88,13 @@ export async function isGitRepo(projectPath) {
   return r.code === 0;
 }
 
-// `git status --porcelain` for a worktree path, with our orchestrator-
-// owned dotdir filtered out (it's untracked by design). Returns
+// `git status --porcelain` for a worktree path. Returns
 // { ok: boolean, lines: string[] }. Callers can decide whether a
 // non-empty `lines` means "refuse" or "fall back to the agent flow".
 export async function worktreeDirtyLines(worktreePath) {
   const dirty = await runGit(worktreePath, ['status', '--porcelain']);
   if (dirty.code !== 0) return { ok: false, lines: [] };
-  const lines = (dirty.stdout || '').split('\n').filter(l => {
-    const t = l.trim();
-    if (!t) return false;
-    // Porcelain "XY <path>" → grab the path and check the prefix.
-    const m = t.match(/^..\s+(.*)$/);
-    const p = m ? m[1] : t;
-    if (p === ORCH_DOTDIR || p.startsWith(`${ORCH_DOTDIR}/`)) return false;
-    return true;
-  });
+  const lines = (dirty.stdout || '').split('\n').filter(l => l.trim().length > 0);
   return { ok: true, lines };
 }
 
@@ -118,45 +113,16 @@ export async function getHeadBranchAndSha(projectPath) {
   return { branch, sha: sha.stdout.trim() };
 }
 
-async function writeMeta(worktreePath, meta) {
-  await fs.mkdir(orchDotdir(worktreePath), { recursive: true });
-  await fs.writeFile(metaPath(worktreePath), JSON.stringify(meta, null, 2) + '\n', 'utf8');
+async function writeMeta(project, worktreeName, meta) {
+  await fs.mkdir(worktreeStoreDir(project, worktreeName), { recursive: true });
+  await fs.writeFile(metaPath(project, worktreeName), JSON.stringify(meta, null, 2) + '\n', 'utf8');
 }
 
-export async function readMeta(worktreePath) {
+export async function readMeta(project, worktreeName) {
   let text;
-  try { text = await fs.readFile(metaPath(worktreePath), 'utf8'); }
+  try { text = await fs.readFile(metaPath(project, worktreeName), 'utf8'); }
   catch (e) { if (e.code === 'ENOENT') return null; throw e; }
   try { return JSON.parse(text); } catch { return null; }
-}
-
-// One-line append to <worktree>/.git/info/exclude so the dotdir doesn't
-// surface as untracked clutter in `git status`. Worktree-local — the
-// project's tracked .gitignore is left alone. Idempotent.
-async function excludeOrchDotdir(worktreePath) {
-  // In a linked worktree, .git is a file pointing at the real gitdir.
-  // We want the per-worktree info/exclude, which lives at <gitdir>/info/exclude.
-  const r = await runGit(worktreePath, ['rev-parse', '--git-path', 'info/exclude']);
-  if (r.code !== 0) return;
-  const rel = r.stdout.trim();
-  if (!rel) return;
-  const excludeFile = path.isAbsolute(rel) ? rel : path.join(worktreePath, rel);
-  let current = '';
-  try { current = await fs.readFile(excludeFile, 'utf8'); }
-  catch (e) { if (e.code !== 'ENOENT') return; }
-  const line = `/${ORCH_DOTDIR}/`;
-  const lines = current.split('\n').map(s => s.trim());
-  if (lines.includes(line)) return;
-  const next = (current.endsWith('\n') || current.length === 0 ? current : current + '\n') + line + '\n';
-  try {
-    await fs.mkdir(path.dirname(excludeFile), { recursive: true });
-    await fs.writeFile(excludeFile, next, 'utf8');
-  } catch { /* best-effort */ }
-}
-
-export async function isWorktreeDir(absDir) {
-  const meta = await readMeta(absDir).catch(() => null);
-  return meta != null;
 }
 
 // Create a fresh worktree off the parent repo's current HEAD. Returns
@@ -201,35 +167,29 @@ export async function createWorktree(projectName) {
     baseSha: head.sha,
     createdAt: new Date().toISOString(),
   };
-  await writeMeta(worktreePath, meta);
-  await excludeOrchDotdir(worktreePath);
+  await writeMeta(projectName, dirName, meta);
   return meta;
 }
 
 // List every worktree on disk that we own for a given project. Reads
 // the parent repo's `git worktree list --porcelain` and filters down to
-// entries whose dir carries our metadata file. (We use git's view rather
-// than scanning `projectsRoot` so stale orphaned directories don't show
-// up if they were already deregistered from git.)
+// entries whose dir has a matching record in the central store.
 export async function listWorktrees(projectName) {
   const proj = await getProject(projectName);
   if (!(await isGitRepo(proj.path))) return [];
   const r = await runGit(proj.path, ['worktree', 'list', '--porcelain']);
   if (r.code !== 0) return [];
-  const out = [];
-  let cur = null;
+  const candidates = [];
   for (const line of r.stdout.split('\n')) {
     if (line.startsWith('worktree ')) {
-      if (cur) {
-        // Skip the parent repo itself (no metadata, no relevance).
-        const meta = await readMeta(cur.path).catch(() => null);
-        if (meta && meta.parentProject === projectName) out.push(meta);
-      }
-      cur = { path: line.slice('worktree '.length) };
+      candidates.push(line.slice('worktree '.length));
     }
   }
-  if (cur) {
-    const meta = await readMeta(cur.path).catch(() => null);
+  const out = [];
+  for (const wtPath of candidates) {
+    // Skip the parent repo itself (no store entry).
+    const dirName = path.basename(wtPath);
+    const meta = await readMeta(projectName, dirName).catch(() => null);
     if (meta && meta.parentProject === projectName) out.push(meta);
   }
   out.sort((a, b) => (a.createdAt ?? '').localeCompare(b.createdAt ?? ''));
@@ -242,8 +202,9 @@ export async function getWorktree(projectName, worktreeName) {
 }
 
 // Remove a worktree: deregister it via git, drop the directory, delete
-// the branch. We refuse if the working tree has uncommitted changes so
-// the user can't silently throw away in-progress agent work.
+// the branch, drop the central-store entry. We refuse if the working
+// tree has uncommitted changes so the user can't silently throw away
+// in-progress agent work.
 export async function removeWorktree(projectName, worktreeName, { force = false } = {}) {
   const meta = await getWorktree(projectName, worktreeName);
   if (!meta) {
@@ -264,10 +225,9 @@ export async function removeWorktree(projectName, worktreeName, { force = false 
     }
   }
 
-  // Always pass --force to `git worktree remove`: the only thing we
-  // tolerate in the working tree is our own (untracked) metadata file,
-  // and we've already validated that above. Without --force, git would
-  // refuse on that untracked file alone.
+  // Pass --force to `git worktree remove`. We already validated the
+  // tree is clean above (or the caller opted into force); the flag
+  // also keeps git from refusing on minor leftover state.
   const rm = await runGit(parentPath, ['worktree', 'remove', '--force', meta.worktreePath]);
   if (rm.code !== 0) {
     const err = new Error(`git worktree remove failed: ${rm.stderr.trim() || rm.stdout.trim()}`);
@@ -279,6 +239,9 @@ export async function removeWorktree(projectName, worktreeName, { force = false 
   // succeed; otherwise the branch may be ahead and we use `-D`.
   const delArgs = ['branch', force ? '-D' : '-d', meta.branch];
   await runGit(parentPath, delArgs);
+  // Drop the central-store entry (metadata + attachments + debug).
+  try { await fs.rm(worktreeStoreDir(projectName, worktreeName), { recursive: true, force: true }); }
+  catch { /* best-effort */ }
   return meta;
 }
 
@@ -446,26 +409,13 @@ export function buildRebasePrompt(meta) {
 }
 
 // Best-effort sweep: remove every orchestrator-owned worktree under a
-// project, plus any orphan sibling dirs that carry our metadata marker
-// but aren't registered with git (left behind by manual filesystem
-// mucking). Used by the project-delete cascade — failures are
-// swallowed because the caller is about to `rm -rf` the parent anyway.
+// project. Used by the project-delete cascade — failures are swallowed
+// because the caller is about to `rm -rf` the parent anyway.
 export async function removeAllWorktreesForProject(projectName) {
   let known = [];
   try { known = await listWorktrees(projectName); } catch { /* repo may be gone */ }
   for (const wt of known) {
     try { await removeWorktree(projectName, wt.worktreeName, { force: true }); } catch { /* ignore */ }
-  }
-  // Sweep the projects root for orphan dirs that point at this project.
-  let entries = [];
-  try { entries = await fs.readdir(projectsRoot(), { withFileTypes: true }); } catch { return; }
-  for (const e of entries) {
-    if (!e.isDirectory()) continue;
-    const full = path.join(projectsRoot(), e.name);
-    const meta = await readMeta(full).catch(() => null);
-    if (meta && meta.parentProject === projectName) {
-      try { await fs.rm(full, { recursive: true, force: true }); } catch { /* ignore */ }
-    }
   }
 }
 
