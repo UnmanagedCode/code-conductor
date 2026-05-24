@@ -10,12 +10,11 @@ async function loadModule() {
   return import(pathToFileURL(path.resolve(__dirname, '..', 'public', 'external-links.js')).href);
 }
 
-// Build a synthetic window with a stub matchMedia, stub window.open that
-// records calls our handler makes (filtered by the noopener,noreferrer feature
-// string so we don't capture happy-dom's own default-action calls), and a stub
-// for navigation. Click events are dispatched on a real happy-dom document so
-// `closest('a')` / event bubbling work like in a browser.
-function setup({ standalone }) {
+// Build a synthetic window with stubbed matchMedia, a configurable userAgent,
+// an intercepted window.open (filtered by the 'noopener,noreferrer' feature
+// string so happy-dom's own default-action calls don't show up), and a
+// trackable location setter for the intent: redirect path.
+function setup({ standalone, android = false }) {
   const window = new Window({ url: 'http://localhost/' });
   const document = window.document;
   window.matchMedia = (query) => ({
@@ -24,18 +23,37 @@ function setup({ standalone }) {
     addListener() {}, removeListener() {},
     addEventListener() {}, removeEventListener() {}, dispatchEvent() { return false; },
   });
+  Object.defineProperty(window.navigator, 'userAgent', {
+    configurable: true,
+    get() {
+      return android
+        ? 'Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 Chrome/120 Mobile Safari/537.36'
+        : 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120 Safari/537.36';
+    },
+  });
   const ourOpenCalls = [];
   const origOpen = window.open;
   window.open = function (...args) {
-    // Our handler always passes 'noopener,noreferrer'; happy-dom's default
-    // anchor action does not. Filter so we only see deliberate calls.
     if (args[2] === 'noopener,noreferrer') {
       ourOpenCalls.push(args);
       return {};
     }
     return origOpen ? origOpen.apply(this, args) : null;
   };
-  return { window, document, ourOpenCalls };
+  // Track location assignments without actually navigating happy-dom.
+  // We override `window.location` with a mock whose `.href` setter records
+  // navigation attempts (rather than overriding `location` itself, since the
+  // module assigns to `win.location.href`, not `win.location`).
+  const locationAssignments = [];
+  const mockLocation = {
+    get href() { return 'http://localhost/'; },
+    set href(v) { locationAssignments.push(v); },
+  };
+  Object.defineProperty(window, 'location', {
+    configurable: true,
+    get() { return mockLocation; },
+  });
+  return { window, document, ourOpenCalls, locationAssignments };
 }
 
 function dispatchAnchorClick(document, anchor, { ctrlKey = false } = {}) {
@@ -47,8 +65,28 @@ function dispatchAnchorClick(document, anchor, { ctrlKey = false } = {}) {
   return event;
 }
 
-test('external-links: standalone mode routes target=_blank through window.open', async () => {
-  const { window, document, ourOpenCalls } = setup({ standalone: true });
+test('external-links: standalone + Android routes target=_blank through an intent: URL', async () => {
+  const { window, document, ourOpenCalls, locationAssignments } = setup({ standalone: true, android: true });
+  const mod = await loadModule();
+  mod.installExternalLinkOpener({ doc: document, win: window });
+
+  const a = document.createElement('a');
+  a.setAttribute('href', 'https://example.com/path?q=1');
+  a.setAttribute('target', '_blank');
+  const event = dispatchAnchorClick(document, a);
+
+  assert.equal(event.defaultPrevented, true);
+  assert.equal(ourOpenCalls.length, 0, 'window.open should not be used on Android — intent: only');
+  assert.equal(locationAssignments.length, 1);
+  const intent = locationAssignments[0];
+  assert.match(intent, /^intent:\/\/example\.com\/path\?q=1#Intent;/);
+  assert.match(intent, /;scheme=https;/);
+  assert.match(intent, /;S\.browser_fallback_url=https%3A%2F%2Fexample\.com%2Fpath%3Fq%3D1;/);
+  assert.match(intent, /;end$/);
+});
+
+test('external-links: standalone non-Android still falls back to window.open', async () => {
+  const { window, document, ourOpenCalls, locationAssignments } = setup({ standalone: true, android: false });
   const mod = await loadModule();
   mod.installExternalLinkOpener({ doc: document, win: window });
 
@@ -60,10 +98,11 @@ test('external-links: standalone mode routes target=_blank through window.open',
   assert.equal(event.defaultPrevented, true);
   assert.equal(ourOpenCalls.length, 1);
   assert.deepEqual(ourOpenCalls[0], ['https://example.com/', '_blank', 'noopener,noreferrer']);
+  assert.equal(locationAssignments.length, 0);
 });
 
 test('external-links: browser (non-standalone) mode leaves clicks alone', async () => {
-  const { window, document, ourOpenCalls } = setup({ standalone: false });
+  const { window, document, ourOpenCalls, locationAssignments } = setup({ standalone: false, android: true });
   const mod = await loadModule();
   mod.installExternalLinkOpener({ doc: document, win: window });
 
@@ -74,10 +113,11 @@ test('external-links: browser (non-standalone) mode leaves clicks alone', async 
 
   assert.equal(event.defaultPrevented, false);
   assert.equal(ourOpenCalls.length, 0);
+  assert.equal(locationAssignments.length, 0);
 });
 
 test('external-links: modifier click is not intercepted', async () => {
-  const { window, document, ourOpenCalls } = setup({ standalone: true });
+  const { window, document, ourOpenCalls, locationAssignments } = setup({ standalone: true, android: true });
   const mod = await loadModule();
   mod.installExternalLinkOpener({ doc: document, win: window });
 
@@ -88,10 +128,11 @@ test('external-links: modifier click is not intercepted', async () => {
 
   assert.equal(event.defaultPrevented, false);
   assert.equal(ourOpenCalls.length, 0);
+  assert.equal(locationAssignments.length, 0);
 });
 
 test('external-links: non-_blank links pass through', async () => {
-  const { window, document, ourOpenCalls } = setup({ standalone: true });
+  const { window, document, ourOpenCalls, locationAssignments } = setup({ standalone: true, android: true });
   const mod = await loadModule();
   mod.installExternalLinkOpener({ doc: document, win: window });
 
@@ -101,10 +142,11 @@ test('external-links: non-_blank links pass through', async () => {
 
   assert.equal(event.defaultPrevented, false);
   assert.equal(ourOpenCalls.length, 0);
+  assert.equal(locationAssignments.length, 0);
 });
 
 test('external-links: unsafe schemes are ignored', async () => {
-  const { window, document, ourOpenCalls } = setup({ standalone: true });
+  const { window, document, ourOpenCalls, locationAssignments } = setup({ standalone: true, android: true });
   const mod = await loadModule();
   mod.installExternalLinkOpener({ doc: document, win: window });
 
@@ -115,4 +157,31 @@ test('external-links: unsafe schemes are ignored', async () => {
 
   assert.equal(event.defaultPrevented, false);
   assert.equal(ourOpenCalls.length, 0);
+  assert.equal(locationAssignments.length, 0);
+});
+
+test('external-links: mailto: on Android uses window.open (intent: is http/https only)', async () => {
+  const { window, document, ourOpenCalls, locationAssignments } = setup({ standalone: true, android: true });
+  const mod = await loadModule();
+  mod.installExternalLinkOpener({ doc: document, win: window });
+
+  const a = document.createElement('a');
+  a.setAttribute('href', 'mailto:hi@example.com');
+  a.setAttribute('target', '_blank');
+  const event = dispatchAnchorClick(document, a);
+
+  assert.equal(event.defaultPrevented, true);
+  assert.equal(locationAssignments.length, 0);
+  assert.equal(ourOpenCalls.length, 1);
+  assert.equal(ourOpenCalls[0][0], 'mailto:hi@example.com');
+});
+
+test('external-links: toIntentUrl encodes host, path, query, and fallback', async () => {
+  const mod = await loadModule();
+  const url = new URL('https://example.com/a/b?c=1&d=2#frag');
+  const intent = mod.toIntentUrl(url);
+  assert.match(intent, /^intent:\/\/example\.com\/a\/b\?c=1&d=2#frag#Intent;/);
+  assert.match(intent, /;scheme=https;/);
+  assert.match(intent, /;S\.browser_fallback_url=https%3A%2F%2Fexample\.com%2Fa%2Fb%3Fc%3D1%26d%3D2%23frag;/);
+  assert.match(intent, /;end$/);
 });
