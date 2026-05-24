@@ -1,10 +1,11 @@
-// Orch-specific wrapper around termux-playwright's generic bootServer.
-// Hardcodes the orchestrator's cwd (..) and entrypoint (server.js), plus
-// the sandbox shape that tests/fake-claude.mjs expects (PROJECTS_ROOT +
-// CLAUDE_PROJECTS_ROOT subdirs and CLAUDE_BIN pointing at the fake).
+// Orch-specific wrapper around termux-playwright-harness's generic
+// bootServer. Hardcodes the orchestrator's cwd (..) and entrypoint
+// (server.js), plus the sandbox shape that tests/fake-claude.mjs expects
+// (PROJECTS_ROOT + CLAUDE_PROJECTS_ROOT subdirs and CLAUDE_BIN pointing
+// at the fake).
 //
 // The generic harness lives in a sibling repo cloned at
-// ~/project/termux-playwright/. See ./README.md for setup.
+// ~/project/termux-playwright-harness/. See ./README.md for setup.
 //
 //   import { bootOrch } from './boot-orch.mjs';
 //   const orch = await bootOrch({ sandbox: true });
@@ -15,7 +16,7 @@
 
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { bootServer } from '../../termux-playwright/browser.mjs';
+import { bootServer } from '../../termux-playwright-harness/browser.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ORCH_ROOT = path.resolve(__dirname, '..');

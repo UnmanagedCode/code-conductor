@@ -105,7 +105,7 @@ RUN_REAL_CLAUDE=1 npm test   # also runs the opt-in real-claude smoke test
 
 Open `http://127.0.0.1:8787` in a browser on the same device. Bound to localhost only — no auth.
 
-For headless visual debugging via Playwright + Termux Chromium, see [`debug/README.md`](./debug/README.md). The reusable harness lives in a sibling repo at [`~/project/termux-playwright/`](../termux-playwright/) (clone it alongside and `npm install` once); `debug/` here is a thin orchestrator-specific wrapper, not wired into the main test suite.
+For headless visual debugging via Playwright + Termux Chromium, see [`debug/README.md`](./debug/README.md). The reusable harness lives in a sibling repo at [`~/project/termux-playwright-harness/`](../termux-playwright-harness/) (clone it alongside and `npm install` once); `debug/` here is a thin orchestrator-specific wrapper, not wired into the main test suite.
 
 ## Technical detail
 
@@ -386,8 +386,8 @@ claude-orch-app/
 debug/                        Opt-in Playwright + Termux-Chromium harness for
 ├── README.md                 visual verification of UI changes. Thin
 ├── boot-orch.mjs             orchestrator-specific glue over the generic
-└── snap.mjs                  termux-playwright sibling repo at
-                              ~/project/termux-playwright/. boot-orch.mjs wraps
+└── snap.mjs                  termux-playwright-harness sibling repo at
+                              ~/project/termux-playwright-harness/. boot-orch.mjs wraps
                               the generic bootServer with the orch's cwd /
                               server.js entry / sandboxed PROJECTS_ROOT +
                               fake-claude. snap.mjs is a CLI screenshotter
