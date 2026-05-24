@@ -527,3 +527,68 @@ test('sync and merge reject non-worktree instances', async () => {
     assert.match(m.body.error, /not attached to a worktree/);
   } finally { await ctx.close(); }
 });
+
+test('GET /api/projects exposes mergeStatus for the project branch vs its configured upstream', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO });
+  try {
+    const repoPath = await makeRealRepo(ctx.projectsRoot, 'demo');
+
+    // Bare repo nearby to act as origin. Living outside projectsRoot
+    // keeps it from being picked up as a sibling project.
+    const remotePath = path.join(path.dirname(ctx.projectsRoot), 'demo-remote.git');
+    await fs.mkdir(remotePath, { recursive: true });
+    await git(remotePath, 'init', '--bare', '-q', '-b', 'main');
+
+    await git(repoPath, 'remote', 'add', 'origin', remotePath);
+    await git(repoPath, 'push', '-q', '-u', 'origin', 'main');
+
+    // Up to date with origin/main right after the push.
+    let r = await api(ctx.baseUrl, 'GET', '/api/projects');
+    let demo = r.body.find(p => p.name === 'demo');
+    assert.deepEqual(demo.mergeStatus, { ahead: 0, behind: 0, upstream: 'origin/main' });
+
+    // Local-only commit — ahead by one, behind zero.
+    await fs.writeFile(path.join(repoPath, 'local.txt'), 'local work\n');
+    await git(repoPath, 'add', '.');
+    await git(repoPath, 'commit', '-q', '-m', 'local work');
+
+    r = await api(ctx.baseUrl, 'GET', '/api/projects');
+    demo = r.body.find(p => p.name === 'demo');
+    assert.equal(demo.mergeStatus.ahead, 1, 'one unpushed commit');
+    assert.equal(demo.mergeStatus.behind, 0);
+    assert.equal(demo.mergeStatus.upstream, 'origin/main');
+
+    // Advance origin/main from a second working copy, then fetch into
+    // demo so its cached origin/main moves forward. demo's branch and
+    // origin/main have now diverged: ahead 1 / behind 1.
+    const otherPath = path.join(path.dirname(ctx.projectsRoot), 'demo-other');
+    await fs.mkdir(otherPath, { recursive: true });
+    await git(otherPath, 'clone', '-q', remotePath, '.');
+    await git(otherPath, 'config', 'user.email', 'other@example.com');
+    await git(otherPath, 'config', 'user.name', 'other');
+    await git(otherPath, 'config', 'commit.gpgsign', 'false');
+    await fs.writeFile(path.join(otherPath, 'remote.txt'), 'remote work\n');
+    await git(otherPath, 'add', '.');
+    await git(otherPath, 'commit', '-q', '-m', 'remote work');
+    await git(otherPath, 'push', '-q', 'origin', 'main');
+
+    await git(repoPath, 'fetch', '-q', 'origin');
+
+    r = await api(ctx.baseUrl, 'GET', '/api/projects');
+    demo = r.body.find(p => p.name === 'demo');
+    assert.equal(demo.mergeStatus.ahead, 1);
+    assert.equal(demo.mergeStatus.behind, 1);
+    assert.equal(demo.mergeStatus.upstream, 'origin/main');
+  } finally { await ctx.close(); }
+});
+
+test('GET /api/projects reports null mergeStatus when the branch has no upstream', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO });
+  try {
+    await makeRealRepo(ctx.projectsRoot, 'solo');
+
+    const r = await api(ctx.baseUrl, 'GET', '/api/projects');
+    const solo = r.body.find(p => p.name === 'solo');
+    assert.deepEqual(solo.mergeStatus, { ahead: null, behind: null, upstream: null });
+  } finally { await ctx.close(); }
+});

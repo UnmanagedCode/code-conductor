@@ -12,6 +12,7 @@ import {
   isGitRepo, listWorktrees, removeWorktree, mergeWorktreeIntoParent,
   buildRebasePrompt, getWorktree, removeAllWorktreesForProject,
   attachmentsDir, getWorktreeMergeStatus, syncWorktree,
+  getProjectUpstreamStatus,
 } from './worktrees.js';
 import { scheduleRestart } from './restart.js';
 
@@ -69,12 +70,16 @@ export function buildRoutes({ instances, serverCtx } = {}) {
           sessions: await summarizeSessions(w.worktreePath).catch(() => ({ count: 0, lastMtime: 0 })),
           mergeStatus: await getWorktreeMergeStatus(w).catch(() => ({ ahead: null, behind: null })),
         })));
+        const projIsGitRepo = await isGitRepo(p.path);
         return {
           ...p,
           instanceIds: instances ? instances.idsForProject(p.name) : [],
-          isGitRepo: await isGitRepo(p.path),
+          isGitRepo: projIsGitRepo,
           worktrees: worktreesWithSessions,
           sessions: await summarizeSessions(p.path).catch(() => ({ count: 0, lastMtime: 0 })),
+          mergeStatus: projIsGitRepo
+            ? await getProjectUpstreamStatus(p.path).catch(() => ({ ahead: null, behind: null, upstream: null }))
+            : { ahead: null, behind: null, upstream: null },
         };
       }));
       res.json(enriched);

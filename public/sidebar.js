@@ -368,17 +368,34 @@ export class Sidebar {
     const directs = directByProject.get(p.name) ?? [];
     const worktrees = Array.isArray(p.worktrees) ? p.worktrees : [];
     const li = el('li', {});
-    li.appendChild(el('div', { class: 'project-row' },
+    const row = el('div', { class: 'project-row' },
       el('span', { class: 'project-name' }, p.name),
-      el('button', {
-        class: 'add-instance', title: 'new session',
-        onclick: () => this.onCreateInstanceClick(p.name),
-      }, '+'),
-      el('button', {
-        class: 'delete-project', title: 'delete project',
-        onclick: (e) => { e.stopPropagation(); this.onDeleteProject(p); },
-      }, '×'),
-    ));
+    );
+    const ms = p.mergeStatus;
+    if (ms && ms.upstream && (ms.ahead > 0 || ms.behind > 0)) {
+      const upstream = ms.upstream;
+      let label, title;
+      if (ms.ahead > 0 && ms.behind > 0) {
+        label = `↑${ms.ahead} ↓${ms.behind}`;
+        title = `${ms.ahead} commit(s) ahead of ${upstream}, ${ms.behind} behind — pull (or rebase) then push`;
+      } else if (ms.ahead > 0) {
+        label = `↑${ms.ahead}`;
+        title = `${ms.ahead} commit(s) ahead of ${upstream} — push to publish`;
+      } else {
+        label = `↓${ms.behind}`;
+        title = `${ms.behind} commit(s) behind ${upstream} — pull to catch up`;
+      }
+      row.appendChild(el('span', { class: 'wt-unmerged', title }, label));
+    }
+    row.appendChild(el('button', {
+      class: 'add-instance', title: 'new session',
+      onclick: () => this.onCreateInstanceClick(p.name),
+    }, '+'));
+    row.appendChild(el('button', {
+      class: 'delete-project', title: 'delete project',
+      onclick: (e) => { e.stopPropagation(); this.onDeleteProject(p); },
+    }, '×'));
+    li.appendChild(row);
 
     const sessionsNode = this._sessionsNode({
       project: p,

@@ -274,6 +274,42 @@ export async function getWorktreeMergeStatus(meta) {
   return { ahead, behind };
 }
 
+// Compare the project's currently-checked-out branch against its
+// configured upstream (whatever `git branch --set-upstream-to` picked —
+// usually `origin/<branch>`, matching what `git status` reports).
+// Reads cached remote refs only — never runs `git fetch` — so numbers
+// reflect the last manual fetch/pull. Returns
+//   { ahead, behind, upstream } when both sides are known
+//   { ahead: null, behind: null, upstream: null } when the branch has
+//     no upstream configured, HEAD is detached, the project isn't a
+//     git repo, or the rev-list comparison fails. Callers treat the
+//     null shape as "no indicator to render".
+export async function getProjectUpstreamStatus(projectPath) {
+  const headRef = await runGit(projectPath, ['symbolic-ref', '--quiet', '--short', 'HEAD']);
+  if (headRef.code !== 0) return { ahead: null, behind: null, upstream: null };
+  const branch = headRef.stdout.trim();
+  if (!branch) return { ahead: null, behind: null, upstream: null };
+  const upRef = await runGit(projectPath, [
+    'rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}',
+  ]);
+  if (upRef.code !== 0) return { ahead: null, behind: null, upstream: null };
+  const upstream = upRef.stdout.trim();
+  if (!upstream) return { ahead: null, behind: null, upstream: null };
+  const r = await runGit(projectPath, [
+    'rev-list', '--left-right', '--count',
+    `${upstream}...${branch}`,
+  ]);
+  if (r.code !== 0) return { ahead: null, behind: null, upstream: null };
+  const parts = r.stdout.trim().split(/\s+/);
+  if (parts.length !== 2) return { ahead: null, behind: null, upstream: null };
+  const behind = Number.parseInt(parts[0], 10);
+  const ahead = Number.parseInt(parts[1], 10);
+  if (!Number.isFinite(ahead) || !Number.isFinite(behind)) {
+    return { ahead: null, behind: null, upstream: null };
+  }
+  return { ahead, behind, upstream };
+}
+
 // Run `git merge --no-ff --no-edit <branch>` on the parent repo. Always
 // produces a merge commit (even when a fast-forward would be possible)
 // so each worktree's contribution is a visible branch in the parent's
