@@ -11,6 +11,11 @@ test('serves a valid Web App Manifest', async () => {
     assert.equal(m.name, 'CodeConductor');
     assert.equal(m.display, 'standalone');
     assert.equal(m.start_url, '/');
+    // launch_handler.client_mode=navigate-existing tells Chrome on Android
+    // to reuse the existing PWA tab when relaunching (e.g. when returning
+    // from a Chrome browser tab) instead of cold-starting and dropping the
+    // session anchor in the URL hash.
+    assert.deepEqual(m.launch_handler, { client_mode: 'navigate-existing' });
     assert.ok(Array.isArray(m.icons) && m.icons.length >= 1, 'icons[] must be non-empty');
     const purposes = new Set(m.icons.map(i => i.purpose));
     assert.ok(purposes.has('any'), 'needs an icon with purpose="any"');
