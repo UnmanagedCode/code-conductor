@@ -85,7 +85,7 @@ export class Instance extends EventEmitter {
     // metadata appends during the run.
     this.temp = !!temp;
     // When true, raw CLI stdin/stdout/stderr is mirrored to
-    // <cwd>/.hivemind/debug/<id>/ for offline inspection.
+    // <cwd>/.code-conductor/debug/<id>/ for offline inspection.
     // Streams + the debug dir path are populated at spawn time.
     this.debug = !!debug;
     this.debugDir = null;
@@ -145,7 +145,7 @@ export class Instance extends EventEmitter {
     if (!this.debug) return;
     if (this._debugStreams) return; // idempotent — already capturing.
     try {
-      const dir = path.join(this.cwd, '.hivemind', 'debug', this.id);
+      const dir = path.join(this.cwd, '.code-conductor', 'debug', this.id);
       mkdirSync(dir, { recursive: true });
       const meta = {
         instanceId: this.id,
@@ -194,7 +194,7 @@ export class Instance extends EventEmitter {
   }
 
   // Flip debug ON for an already-running instance. Future stdin/stdout/
-  // stderr lines are mirrored to .hivemind/debug/<id>/. Lines from
+  // stderr lines are mirrored to .code-conductor/debug/<id>/. Lines from
   // before the toggle are NOT recoverable — they were never tee'd. Emits a
   // status event so the UI can refresh the DEBUG pill + button label.
   // Idempotent: a second call is a no-op.
@@ -273,7 +273,7 @@ export class Instance extends EventEmitter {
       '--settings', buildSettingsJSON({ hookCallbackUrl: this.hookCallbackUrl }),
     ];
     // Auto-register the orchestrator's own MCP server so any spawned
-    // session can drive `mcp__hivemind__*` tools without a prior
+    // session can drive `mcp__code-conductor__*` tools without a prior
     // `claude mcp add` step. Disabled when ORCH_DISABLE_MCP_AUTOREGISTER=1
     // is set on the orchestrator (the URL comes through as null).
     if (this.mcpServerUrl) {
@@ -454,7 +454,7 @@ export class Instance extends EventEmitter {
 
   // Send a user turn to the CLI. `attachments` is an optional list of
   // {name, mediaType, dataBase64} objects produced by the composer.
-  // Every attachment is saved to <cwd>/.hivemind/attachments/
+  // Every attachment is saved to <cwd>/.code-conductor/attachments/
   // and a single "Attached file: `<relPath>`" text block is appended
   // to the message — Claude's Read tool handles both image files
   // (returns vision content) and arbitrary file bytes on demand.

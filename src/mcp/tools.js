@@ -91,7 +91,7 @@ export function buildTools() {
       name: 'spawn_instance',
       description:
         'Spawn a new Claude subprocess inside a project (optionally inside a new or existing git worktree of it). ' +
-        'Returns the instance summary. CAUTION: an instance with the hivemind MCP registered can in turn spawn ' +
+        'Returns the instance summary. CAUTION: an instance with the code-conductor MCP registered can in turn spawn ' +
         'further instances — guard against runaway recursion by defaulting child agents to plan mode.',
       inputSchema: {
         type: 'object',
@@ -107,7 +107,7 @@ export function buildTools() {
             description: 'true → create a fresh worktree off the project\'s HEAD. <name> → spawn into an existing worktree.',
           },
           temp: { type: 'boolean', description: 'If true, the session jsonl is removed on subprocess exit.' },
-          debug: { type: 'boolean', description: 'If true, raw CLI traffic is mirrored to .hivemind/debug/<id>/.' },
+          debug: { type: 'boolean', description: 'If true, raw CLI traffic is mirrored to .code-conductor/debug/<id>/.' },
         },
         required: ['project'],
       },

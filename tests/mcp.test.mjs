@@ -72,7 +72,7 @@ test('initialize handshake returns expected server info + tools capability', asy
     });
     assert.equal(body.jsonrpc, '2.0');
     assert.ok(body.result, 'initialize has a result');
-    assert.equal(body.result.serverInfo.name, 'hivemind');
+    assert.equal(body.result.serverInfo.name, 'code-conductor');
     assert.ok(body.result.capabilities.tools, 'declares tools capability');
     assert.match(body.result.protocolVersion, /^\d{4}-\d{2}-\d{2}$/);
   } finally { await close(); }

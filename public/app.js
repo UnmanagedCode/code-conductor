@@ -126,7 +126,7 @@ const autoApprovePlansByInstance = new Set();
 // refreshes — turn_notifications keep firing for live background
 // instances even when no tab is connected (the server-side ring buffer
 // can't replay missed ones, but new ones after reload are counted).
-const UNREAD_STORAGE_KEY = 'hivemind:unread';
+const UNREAD_STORAGE_KEY = 'code-conductor:unread';
 function loadUnreadFromStorage() {
   try {
     const raw = localStorage.getItem(UNREAD_STORAGE_KEY);
@@ -968,7 +968,7 @@ function updateActiveHeader() {
   } else {
     dom.debugBtn.textContent = '🐛 Debug';
     dom.debugBtn.disabled = false;
-    dom.debugBtn.title = 'Start mirroring CLI stdin/stdout/stderr to .hivemind/debug/<id>/';
+    dom.debugBtn.title = 'Start mirroring CLI stdin/stdout/stderr to .code-conductor/debug/<id>/';
   }
   const autoApproveOn = autoApprovePlansByInstance.has(inst.id);
   dom.autoApprovePlanBtn.textContent = autoApproveOn

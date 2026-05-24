@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,interactive-widget=resizes-content" />
   <meta name="theme-color" content="#0f1117" />
-  <title>Hivemind</title>
+  <title>CodeConductor</title>
   <link rel="manifest" href="/manifest.webmanifest" />
   <link rel="icon" href="/icon.svg" type="image/svg+xml" />
   <link rel="stylesheet" href="/styles.css" />
@@ -15,7 +15,7 @@
     <div id="sidebar-scrim"></div>
     <aside id="sidebar">
       <header>
-        <h1>hivemind</h1>
+        <h1>CodeConductor</h1>
         <button id="notify-toggle" title="Browser notifications when a turn finishes" aria-pressed="false">🔕</button>
       </header>
       <div id="sidebar-body">
@@ -50,7 +50,7 @@
             <button id="overflow-toggle" type="button" aria-haspopup="menu" aria-expanded="false" title="More actions">⋮</button>
             <div id="overflow-panel" class="overflow-panel" hidden role="menu">
               <button id="auto-approve-plan-btn" type="button" role="menuitemcheckbox" aria-checked="false" title="When on, ExitPlanMode is auto-approved without a confirmation card. Session-local; per instance.">📋 Auto-approve plans: off</button>
-              <button id="debug-btn" type="button" role="menuitem" title="Start mirroring CLI stdin/stdout/stderr to .hivemind/debug/&lt;id&gt;/ for offline inspection">🐛 Debug</button>
+              <button id="debug-btn" type="button" role="menuitem" title="Start mirroring CLI stdin/stdout/stderr to .code-conductor/debug/&lt;id&gt;/ for offline inspection">🐛 Debug</button>
             </div>
           </div>
         </div>
@@ -160,7 +160,7 @@
         <input type="checkbox" id="ni-debug" />
         <span>Debug mode (capture stdin/stdout/stderr to disk)</span>
       </label>
-      <p class="hint">writes to <code>&lt;cwd&gt;/.hivemind/debug/&lt;instance-id&gt;/</code> for sharing back to a maintainer</p>
+      <p class="hint">writes to <code>&lt;cwd&gt;/.code-conductor/debug/&lt;instance-id&gt;/</code> for sharing back to a maintainer</p>
       <p class="error" id="ni-error"></p>
       <menu>
         <button value="cancel">Cancel</button>

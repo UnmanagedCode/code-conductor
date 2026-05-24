@@ -8,7 +8,7 @@ test('serves a valid Web App Manifest', async () => {
     const r = await fetch(baseUrl + '/manifest.webmanifest');
     assert.equal(r.status, 200);
     const m = await r.json();
-    assert.equal(m.name, 'Hivemind');
+    assert.equal(m.name, 'CodeConductor');
     assert.equal(m.display, 'standalone');
     assert.equal(m.start_url, '/');
     assert.ok(Array.isArray(m.icons) && m.icons.length >= 1, 'icons[] must be non-empty');
@@ -44,6 +44,6 @@ test('index.html wires up the manifest and theme color', async () => {
     const html = await r.text();
     assert.match(html, /<link\s+rel="manifest"\s+href="\/manifest\.webmanifest"/);
     assert.match(html, /<meta\s+name="theme-color"\s+content="#0f1117"/);
-    assert.match(html, /<title>Hivemind<\/title>/);
+    assert.match(html, /<title>CodeConductor<\/title>/);
   } finally { await close(); }
 });

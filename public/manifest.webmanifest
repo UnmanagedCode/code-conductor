@@ -1,6 +1,6 @@
 {
-  "name": "Hivemind",
-  "short_name": "Hivemind",
+  "name": "CodeConductor",
+  "short_name": "CodeConductor",
   "description": "Orchestrate multiple Claude Code CLI instances",
   "start_url": "/",
   "scope": "/",

@@ -62,10 +62,10 @@ export function buildSettingsJSON({ hookCallbackUrl } = {}) {
 // Builds the inline `--mcp-config` JSON the orchestrator passes to every
 // claude subprocess so the spawned session sees the orchestrator's own
 // MCP server (mounted at POST /mcp) without a prior `claude mcp add`
-// step. The server name must stay `hivemind` — tool names are
-// prefixed `mcp__hivemind__*`, and changing the name would break any
+// step. The server name must stay `code-conductor` — tool names are
+// prefixed `mcp__code-conductor__*`, and changing the name would break any
 // in-flight transcripts and tool-allowlist patterns.
-export function buildMcpConfigJSON({ url, name = 'hivemind' } = {}) {
+export function buildMcpConfigJSON({ url, name = 'code-conductor' } = {}) {
   return JSON.stringify({
     mcpServers: { [name]: { type: 'http', url } },
   });

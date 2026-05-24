@@ -134,7 +134,7 @@ export function buildRoutes({ instances, serverCtx } = {}) {
   });
 
   // List worktrees that belong to a project. Returns the same metadata
-  // shape that's stored in each worktree's .hivemind/worktree.json,
+  // shape that's stored in each worktree's .code-conductor/worktree.json,
   // augmented with the currently-running instance id (if any).
   r.get('/projects/:name/worktrees', async (req, res, next) => {
     try {

@@ -139,7 +139,7 @@ test('Worktree row carries its own Sessions subnode, scoped to its own live inst
     name: 'demo', path: '/p/demo', instanceIds: [], isGitRepo: true,
     sessions: { count: 1, lastMtime: now - 60_000 },
     worktrees: [{
-      worktreeName: 'demo_worktree_abc123', branch: 'hivemind/abc123',
+      worktreeName: 'demo_worktree_abc123', branch: 'code-conductor/abc123',
       baseBranch: 'main', baseSha: 'deadbeef0000', parentProject: 'demo',
       sessions: { count: 1, lastMtime: now - 30_000 },
     }],
@@ -147,7 +147,7 @@ test('Worktree row carries its own Sessions subnode, scoped to its own live inst
   sidebar.setInstances([
     { id: 'inst-root', project: 'demo', sessionId: 'root-sid', status: 'idle', mode: 'plan', worktree: null },
     { id: 'inst-wt', project: 'demo', sessionId: 'wt-sid', status: 'turn', mode: 'bypassPermissions',
-      worktree: { worktreeName: 'demo_worktree_abc123', branch: 'hivemind/abc123', baseBranch: 'main', baseSha: 'deadbeef0000' } },
+      worktree: { worktreeName: 'demo_worktree_abc123', branch: 'code-conductor/abc123', baseBranch: 'main', baseSha: 'deadbeef0000' } },
   ]);
 
   // Expand the worktree subnode (default-collapsed).
@@ -260,7 +260,7 @@ test('Cache invalidation on turn→idle is scoped to the instance\'s worktree ke
     name: 'demo', path: '/p/demo', instanceIds: [], isGitRepo: true,
     sessions: { count: 1, lastMtime: Date.now() - 60_000 },
     worktrees: [{
-      worktreeName: 'demo_worktree_xyz', branch: 'hivemind/xyz',
+      worktreeName: 'demo_worktree_xyz', branch: 'code-conductor/xyz',
       baseBranch: 'main', baseSha: 'cafef00d', parentProject: 'demo',
       sessions: { count: 0, lastMtime: 0 },
     }],
@@ -268,7 +268,7 @@ test('Cache invalidation on turn→idle is scoped to the instance\'s worktree ke
   sidebar.expandedWorktrees.add('demo');
   sidebar.setInstances([
     { id: 'inst-wt', project: 'demo', sessionId: 'wt-sid', status: 'turn', mode: 'plan',
-      worktree: { worktreeName: 'demo_worktree_xyz', branch: 'hivemind/xyz', baseBranch: 'main', baseSha: 'cafef00d' } },
+      worktree: { worktreeName: 'demo_worktree_xyz', branch: 'code-conductor/xyz', baseBranch: 'main', baseSha: 'cafef00d' } },
   ]);
   await new Promise(r => setTimeout(r, 0));
 
@@ -280,7 +280,7 @@ test('Cache invalidation on turn→idle is scoped to the instance\'s worktree ke
   // cache must NOT be invalidated — only the worktree's.
   sidebar.setInstances([
     { id: 'inst-wt', project: 'demo', sessionId: 'wt-sid', status: 'idle', mode: 'plan',
-      worktree: { worktreeName: 'demo_worktree_xyz', branch: 'hivemind/xyz', baseBranch: 'main', baseSha: 'cafef00d' } },
+      worktree: { worktreeName: 'demo_worktree_xyz', branch: 'code-conductor/xyz', baseBranch: 'main', baseSha: 'cafef00d' } },
   ]);
   await new Promise(r => setTimeout(r, 0));
 
@@ -417,7 +417,7 @@ test('Group collapse state is read from localStorage on construction', async () 
   globalThis.Element = window.Element;
   globalThis.Node = window.Node;
   globalThis.localStorage = window.localStorage;
-  window.localStorage.setItem('hivemind:groups-collapsed', JSON.stringify(['Hidden']));
+  window.localStorage.setItem('code-conductor:groups-collapsed', JSON.stringify(['Hidden']));
   // happy-dom caches ES modules — break the cache so the freshly-seeded
   // localStorage drives this Sidebar's `loadCollapsedGroups` call.
   const url = pathToFileURL(path.join(PUB, 'sidebar.js')).href + `?seed=${Date.now()}`;

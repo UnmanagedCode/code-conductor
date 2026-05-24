@@ -295,15 +295,15 @@ test('default spawn passes --permission-mode plan, --effort high, --thinking ada
       `http hook timeout should leave room for a human (>= 60s), got ${httpHook.timeout}`);
 
     // The orchestrator auto-registers its own MCP server on every spawn
-    // so the session can drive `mcp__hivemind__*` tools without a
-    // prior `claude mcp add` step. Server name must stay `hivemind`
+    // so the session can drive `mcp__code-conductor__*` tools without a
+    // prior `claude mcp add` step. Server name must stay `code-conductor`
     // — the tool-name prefix is bound to it.
     const mcp = argv.indexOf('--mcp-config');
     assert.ok(mcp >= 0, `--mcp-config not passed; argv was: ${argv.join(' ')}`);
     const mcpCfg = JSON.parse(argv[mcp + 1]);
-    assert.ok(mcpCfg.mcpServers?.['hivemind'], 'mcp-config registers a `hivemind` server');
-    assert.equal(mcpCfg.mcpServers['hivemind'].type, 'http');
-    assert.match(mcpCfg.mcpServers['hivemind'].url, /^http:\/\/127\.0\.0\.1:\d+\/mcp$/);
+    assert.ok(mcpCfg.mcpServers?.['code-conductor'], 'mcp-config registers a `code-conductor` server');
+    assert.equal(mcpCfg.mcpServers['code-conductor'].type, 'http');
+    assert.match(mcpCfg.mcpServers['code-conductor'].url, /^http:\/\/127\.0\.0\.1:\d+\/mcp$/);
   } finally {
     delete process.env.FAKE_CLAUDE_ARGV_DUMP;
     await close();
@@ -853,7 +853,7 @@ test('non-temp: jsonl is left in place on exit', async () => {
   } finally { await close(); }
 });
 
-test('debug: enabling debug mode writes stdin/stdout/stderr + meta.json under .hivemind/debug/<id>/', async () => {
+test('debug: enabling debug mode writes stdin/stdout/stderr + meta.json under .code-conductor/debug/<id>/', async () => {
   const { baseUrl, instances, close } = await setupWithProject();
   const fsp = (await import('node:fs')).promises;
   try {
@@ -868,10 +868,10 @@ test('debug: enabling debug mode writes stdin/stdout/stderr + meta.json under .h
     const inst = instances.get(id);
     await waitFor(() => inst.status === 'idle' && inst.debugDir);
 
-    // The debug dir exists where we promised: <cwd>/.hivemind/debug/<id>/
+    // The debug dir exists where we promised: <cwd>/.code-conductor/debug/<id>/
     const debugDir = inst.debugDir;
-    assert.ok(debugDir.endsWith(path.join('.hivemind', 'debug', id)),
-      `debugDir should end with .hivemind/debug/${id}, got ${debugDir}`);
+    assert.ok(debugDir.endsWith(path.join('.code-conductor', 'debug', id)),
+      `debugDir should end with .code-conductor/debug/${id}, got ${debugDir}`);
 
     // meta.json captures the spawn shape — useful when sharing debug bundles
     // back to a maintainer who didn't observe the spawn-time options.
@@ -916,7 +916,7 @@ test('debug: omitting the flag leaves debug=false and writes nothing', async () 
     assert.equal(inst.debug, false);
     assert.equal(inst.debugDir, null);
     // No debug dir created.
-    const debugDirGuess = path.join(inst.cwd, '.hivemind', 'debug');
+    const debugDirGuess = path.join(inst.cwd, '.code-conductor', 'debug');
     let exists = true;
     try { await fsp.access(debugDirGuess); } catch { exists = false; }
     assert.equal(exists, false, 'debug dir is not created when the flag is omitted');
@@ -941,7 +941,7 @@ test('debug: POST /api/instances/:id/debug enables capture on a running instance
     assert.equal(enable.status, 200);
     assert.equal(enable.body.ok, true);
     assert.equal(enable.body.alreadyOn, false);
-    assert.ok(enable.body.debugDir.endsWith(path.join('.hivemind', 'debug', id)));
+    assert.ok(enable.body.debugDir.endsWith(path.join('.code-conductor', 'debug', id)));
     assert.equal(inst.debug, true);
 
     // Future prompts get mirrored even though spawn was non-debug.
