@@ -76,6 +76,30 @@ test('instance-controls: kill-btn moved into the ⋮ overflow menu', async () =>
     'kill-btn must precede debug-btn in the overflow panel');
 });
 
+test('quick-spawn dialog hosts a plan + auto-accept toggle, default off', async () => {
+  // The Quick (↯) dialog gates a per-open decision: spawn the temp
+  // session in plan mode with auto-approve pre-armed, or fall through to
+  // the default code-mode spawn. The toggle must live inside the dialog,
+  // start aria-pressed=false (no persistence per design), and sit above
+  // the model row so it's read before the user commits to a model.
+  const html = await fs.readFile(INDEX_HTML, 'utf8');
+  const window = new Window({ url: 'http://localhost/' });
+  window.document.documentElement.innerHTML = html;
+  const doc = window.document;
+  const dialog = doc.getElementById('quick-spawn-dialog');
+  assert.ok(dialog, 'quick-spawn-dialog must exist');
+  const toggle = doc.getElementById('qs-plan-toggle');
+  assert.ok(toggle, 'qs-plan-toggle must exist');
+  assert.ok(dialog.contains(toggle), 'toggle must live inside the dialog');
+  assert.equal(toggle.getAttribute('aria-pressed'), 'false', 'default aria-pressed=false');
+  // Order check: toggle precedes the .quick-spawn-models row.
+  const models = dialog.querySelector('.quick-spawn-models');
+  assert.ok(models, '.quick-spawn-models row must exist');
+  const togglePos = toggle.compareDocumentPosition(models);
+  assert.ok(togglePos & window.Node.DOCUMENT_POSITION_FOLLOWING,
+    'toggle must come before the model row');
+});
+
 test('DOM-free public modules import cleanly in Node', async () => {
   // Use file:// imports — these modules have no top-level browser-globals
   // access, so a successful import proves their syntax + imports resolve.

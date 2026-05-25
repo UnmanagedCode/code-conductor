@@ -179,7 +179,8 @@
   <dialog id="quick-spawn-dialog">
     <form method="dialog">
       <h3>Quick temp session in <span id="qs-project"></span></h3>
-      <p class="hint">Spawns a temp session in code mode at the project root. The transcript is wiped on exit.</p>
+      <p class="hint">Spawns a temp session at the project root. The transcript is wiped on exit.</p>
+      <button type="button" id="qs-plan-toggle" class="qs-plan-toggle" aria-pressed="false">📋 Plan + auto-accept</button>
       <div class="quick-spawn-models">
         <button type="button" class="qs-model" data-model="claude-haiku-4-5">Haiku</button>
         <button type="button" class="qs-model" data-model="claude-sonnet-4-6">Sonnet</button>

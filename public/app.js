@@ -73,6 +73,7 @@ const dom = {
   niError: document.getElementById('ni-error'),
   quickSpawnDialog: document.getElementById('quick-spawn-dialog'),
   qsProject: document.getElementById('qs-project'),
+  qsPlanToggle: document.getElementById('qs-plan-toggle'),
   qsError: document.getElementById('qs-error'),
   syncBtn: document.getElementById('sync-btn'),
   mergeBtn: document.getElementById('merge-btn'),
@@ -789,10 +790,16 @@ dom.newInstanceDialog.addEventListener('close', async () => {
 // one tap to get a throwaway agent running. The dialog closes itself
 // once the request fires; the new instance lands as the active one.
 let pendingQuickSpawnProject = null;
+// Per-open toggle: when true, the next model pick spawns in plan mode
+// and pre-arms auto-approve so the first ExitPlanMode auto-rolls into
+// bypassPermissions. Reset to false every time the dialog opens.
+let quickSpawnPlanMode = false;
 async function openQuickSpawnDialog(projectName) {
   pendingQuickSpawnProject = projectName;
   dom.qsProject.textContent = projectName;
   dom.qsError.textContent = '';
+  quickSpawnPlanMode = false;
+  dom.qsPlanToggle.setAttribute('aria-pressed', 'false');
   dom.quickSpawnDialog.showModal();
 }
 async function quickSpawn(model) {
@@ -800,15 +807,20 @@ async function quickSpawn(model) {
   if (!project) return;
   dom.qsError.textContent = '';
   try {
+    const mode = quickSpawnPlanMode ? 'plan' : 'bypassPermissions';
     const r = await fetch('/api/instances', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
-        project, model, temp: true, mode: 'bypassPermissions',
+        project, model, temp: true, mode,
       }),
     });
     if (!r.ok) throw new Error((await r.json()).error);
     const inst = await r.json();
+    // Pre-arm auto-approve so the first plan_request fires Approve
+    // immediately — the conversation reads through isAutoApprovePlanEnabled
+    // before rendering the plan card.
+    if (quickSpawnPlanMode) autoApprovePlansByInstance.add(inst.id);
     dom.quickSpawnDialog.close();
     await refreshProjects();
     await refreshInstances();
@@ -817,6 +829,11 @@ async function quickSpawn(model) {
     dom.qsError.textContent = e.message;
   }
 }
+dom.qsPlanToggle.addEventListener('click', (e) => {
+  e.preventDefault();
+  quickSpawnPlanMode = !quickSpawnPlanMode;
+  dom.qsPlanToggle.setAttribute('aria-pressed', quickSpawnPlanMode ? 'true' : 'false');
+});
 // Delegate clicks on any .qs-model button inside the dialog. Buttons
 // carry `data-model` with the canonical CLI model id.
 dom.quickSpawnDialog.addEventListener('click', (e) => {
