@@ -649,20 +649,25 @@ test('DOM: ExitPlanMode renders an approve/reject card with the plan + feedback 
   assert.equal(decisions.length, 1);
 });
 
-test('DOM: ExitPlanMode auto-approve — when isAutoApprovePlanEnabled returns true, the card renders display-only and onPlanDecision auto-fires approve', async () => {
-  const { root, Parser, Conversation } = await setupDOM();
+test('DOM: ExitPlanMode auto-approve — when the event arrives with autoApproved=true the card renders display-only', async () => {
+  // Auto-approval now lives on the server: the Instance flips its mode and
+  // sends the approval prompt itself before broadcasting the plan_request,
+  // tagging the event with `autoApproved: true`. The renderer's job is just
+  // to show that tag — no client-side onPlanDecision auto-fire any more.
+  const { root, Conversation } = await setupDOM();
   const decisions = [];
   const conversation = new Conversation(root, {
     onPlanDecision: (d) => decisions.push(d),
-    isAutoApprovePlanEnabled: () => true,
   });
 
-  feed(new Parser(), conversation, [
-    { type: 'stream_event', event: { type: 'message_start', message: { id: 'm', role: 'assistant' } } },
-    { type: 'stream_event', event: { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'tu_auto', name: 'ExitPlanMode', input: {} } } },
-    { type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '{"plan":"auto plan"}' } } },
-    { type: 'stream_event', event: { type: 'content_block_stop', index: 0 } },
-  ]);
+  conversation.apply({
+    kind: 'plan_request',
+    toolUseId: 'tu_auto',
+    plan: 'auto plan',
+    planPath: null,
+    autoApproved: true,
+    _seq: 0,
+  });
 
   const card = root.querySelector('.block.plan-request');
   assert.ok(card, 'plan card still renders so the user can see what was auto-approved');
@@ -672,19 +677,15 @@ test('DOM: ExitPlanMode auto-approve — when isAutoApprovePlanEnabled returns t
   assert.equal(card.querySelector('.pr-feedback'), null, 'no feedback textarea');
   assert.match(card.querySelector('.pr-status').textContent, /auto-approved/i);
   assert.match(card.querySelector('.pr-body').textContent, /auto plan/);
-
-  assert.equal(decisions.length, 1, 'onPlanDecision fires automatically');
-  assert.equal(decisions[0].toolUseId, 'tu_auto');
-  assert.equal(decisions[0].decision, 'approve');
-  assert.equal(decisions[0].feedback, '', 'auto-approved decision carries empty feedback');
+  assert.equal(decisions.length, 0,
+    'renderer no longer auto-fires onPlanDecision — the server already sent the approval');
 });
 
-test('DOM: ExitPlanMode — when isAutoApprovePlanEnabled returns false, the card is interactive (no auto-fire)', async () => {
+test('DOM: ExitPlanMode — without the autoApproved annotation the card is interactive', async () => {
   const { root, Parser, Conversation } = await setupDOM();
   const decisions = [];
   const conversation = new Conversation(root, {
     onPlanDecision: (d) => decisions.push(d),
-    isAutoApprovePlanEnabled: () => false,
   });
   feed(new Parser(), conversation, [
     { type: 'stream_event', event: { type: 'message_start', message: { id: 'm', role: 'assistant' } } },
@@ -693,9 +694,9 @@ test('DOM: ExitPlanMode — when isAutoApprovePlanEnabled returns false, the car
     { type: 'stream_event', event: { type: 'content_block_stop', index: 0 } },
   ]);
   const card = root.querySelector('.block.plan-request');
-  assert.ok(card.querySelector('.pr-approve'), 'Approve button is present when toggle is off');
-  assert.ok(card.querySelector('.pr-reject'), 'Reject button is present when toggle is off');
-  assert.equal(decisions.length, 0, 'no auto-fire when toggle is off');
+  assert.ok(card.querySelector('.pr-approve'), 'Approve button is present when not auto-approved');
+  assert.ok(card.querySelector('.pr-reject'), 'Reject button is present when not auto-approved');
+  assert.equal(decisions.length, 0, 'no auto-fire when the event does not carry autoApproved');
 });
 
 test('DOM: ExitPlanMode rejection carries the feedback text', async () => {

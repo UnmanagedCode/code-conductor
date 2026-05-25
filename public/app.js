@@ -125,11 +125,13 @@ function getUsage(instanceId) {
 // responses. We hold the answer here and flush it when status flips to idle.
 const pendingAnswersByInstance = new Map();
 
-// Per-instance "auto-approve plans" flag, toggled from the ⋮ overflow
-// menu. While set, plan_request events for that instance render a
-// display-only "auto-approved" card and fire approve automatically.
-// Session-local; cleared on full page reload.
-const autoApprovePlansByInstance = new Set();
+// Auto-approve-plan toggle now lives on the server (per Instance) and
+// the flag is mirrored down through `snapshot` / `status` frames into
+// each entry of `state.instances`. The client just renders the synced
+// state and sends a WS message on toggle; the server is the one that
+// actually approves the plan when an ExitPlanMode lands. This makes the
+// toggle work even when the tab isn't focused on the affected session
+// or is backgrounded entirely.
 
 // Per-sessionId unread count. Incremented when a turn_notification lands
 // for a session the user isn't currently viewing; cleared on
@@ -222,7 +224,6 @@ const conversation = new Conversation(dom.conversation, {
     // status=idle.
     sendOrQueuePrompt(state.activeId, formatUserQuestionAnswers(questions, answers));
   },
-  isAutoApprovePlanEnabled: () => !!(state.activeId && autoApprovePlansByInstance.has(state.activeId)),
   onPermissionDecision: ({ toolUseId, allow }) => {
     if (!state.activeId) return;
     // Forward the Allow/Deny click to the orchestrator over WS. The
@@ -309,12 +310,14 @@ dom.killBtn.addEventListener('click', () => {
 
 dom.autoApprovePlanBtn.addEventListener('click', () => {
   if (!state.activeId) return;
-  if (autoApprovePlansByInstance.has(state.activeId)) {
-    autoApprovePlansByInstance.delete(state.activeId);
-  } else {
-    autoApprovePlansByInstance.add(state.activeId);
-  }
+  const inst = state.instances.find(i => i.id === state.activeId);
+  const next = !(inst && inst.autoApprovePlan);
+  // Optimistic: flip the local mirror immediately so the button's
+  // pressed-state updates without waiting for the status round-trip.
+  // The next `status` frame will reassert the authoritative value.
+  if (inst) inst.autoApprovePlan = next;
   updateActiveHeader();
+  send('auto_approve_plan', { id: state.activeId, enabled: next });
 });
 
 dom.debugBtn.addEventListener('click', async () => {
@@ -1182,8 +1185,7 @@ function updateActiveHeader() {
     dom.debugBtn.disabled = false;
     dom.debugBtn.title = 'Start mirroring CLI stdin/stdout/stderr to the orchestrator debug dir';
   }
-  const autoApproveOn = autoApprovePlansByInstance.has(inst.id);
-  dom.autoApprovePlanBtn.setAttribute('aria-pressed', autoApproveOn ? 'true' : 'false');
+  dom.autoApprovePlanBtn.setAttribute('aria-pressed', inst.autoApprovePlan ? 'true' : 'false');
   const canType = ['idle', 'turn', 'spawning'].includes(inst.status);
   const canSend = ['idle', 'turn'].includes(inst.status);
   composer.set({ canType, canSend });
@@ -1390,6 +1392,11 @@ bus.addEventListener('snapshot', (e) => {
     tracker.apply(ev);
     usage.apply(ev);
   }
+  // Mirror the server's auto-approve-plan flag into our local instance
+  // entry so the header toggle reflects it correctly the moment a tab
+  // subscribes (or re-subscribes after a session switch).
+  const inst = state.instances.find(i => i.id === m.id);
+  if (inst) inst.autoApprovePlan = !!m.autoApprovePlan;
   if (m.id !== state.activeId) return;
   conversation.clear();
   conversation.applyEvents(m.events ?? []);
@@ -1473,6 +1480,7 @@ bus.addEventListener('status', (e) => {
     inst.status = m.status;
     inst.mode = m.mode;
     inst.sessionId = m.sessionId;
+    if (typeof m.autoApprovePlan === 'boolean') inst.autoApprovePlan = m.autoApprovePlan;
     sidebar.setInstances(state.instances);
     if (m.id === state.activeId) updateActiveHeader();
   }

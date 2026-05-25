@@ -20,7 +20,6 @@ export class Conversation {
     onUserQuestionSubmit = null,
     onPlanDecision = null,
     onPermissionDecision = null,
-    isAutoApprovePlanEnabled = null,
     describeToolCtx = {},
     // (filename) -> URL string used to source attachment thumbnails on
     // transcript replay (when the live user_echo's dataBase64 is gone).
@@ -38,7 +37,6 @@ export class Conversation {
     this.onUserQuestionSubmit = onUserQuestionSubmit;
     this.onPlanDecision = onPlanDecision;
     this.onPermissionDecision = onPermissionDecision;
-    this.isAutoApprovePlanEnabled = isAutoApprovePlanEnabled;
     this.resolveAttachmentUrl = resolveAttachmentUrl;
     this.onRewind = onRewind;
     this.onFork = onFork;
@@ -420,7 +418,11 @@ export class Conversation {
   _renderPlanRequest(ev) {
     this._ensureNotEmpty();
     if (this.planBlocks.has(ev.toolUseId)) return;
-    const autoApproved = !!(this.isAutoApprovePlanEnabled && this.isAutoApprovePlanEnabled());
+    // The server marks `ev.autoApproved=true` when its per-instance
+    // auto-approve flag fired — the mode flip + approval prompt have
+    // already been sent on the wire, so the card just renders as a
+    // display-only "auto-approved" tile here. No client callback needed.
+    const autoApproved = !!ev.autoApproved;
     const block = new PlanRequestBlock(ev, (decision) => {
       if (this.onPlanDecision) this.onPlanDecision(decision);
     }, { autoApproved });
@@ -428,13 +430,6 @@ export class Conversation {
     this.root.appendChild(block.node);
     this._closeAssistantSegment();
     this._maybeScroll();
-    if (autoApproved && this.onPlanDecision) {
-      this.onPlanDecision({
-        toolUseId: ev.toolUseId,
-        decision: 'approve',
-        feedback: '',
-      });
-    }
   }
 
   _renderUserQuestion(ev) {

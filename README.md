@@ -61,7 +61,7 @@ Runs on Termux (localhost-only, single user) or any host with Node 22+ and the `
 - **Tool use** — collapsed by default with smart one-line summary (`🔧 Bash · ls -la · done`). Edit/Write/NotebookEdit render as syntax-coloured unified diffs (green/red gutters, ±counts, sticky file-path); Write shows a numbered preview. Other tools: raw-JSON input in its own collapsed `↪ tool_input` block.
 - **Tool result** — truncated at 4 KB with "show full". `image` content blocks (e.g. `Read` on a `.png`/`.jpg`) render as inline `<img>` thumbnails alongside the text — base64 sources become `data:` URLs, `url` sources only pass through for `http(s)`/`file://`, `image/svg+xml` is refused (XSS). Auto-expanded when an image is present. Tap any conversation image to open it full-size in an in-page lightbox (`public/lightbox.js`) — works for `data:`/`file://` sources that Chrome on Android refuses to open as a top-level navigation; tap backdrop or press Esc to close.
 - **Sub-agent drill-down** — `Task` tool calls nest a mini-conversation (dashed border, `↳ sub-agent` label) inside the parent tool block, routed by `parentToolUseId`.
-- **Plan mode card** — green-bordered card "Plan ready for approval". Body comes from `input.plan`, or — when the model wrote the plan to `~/.claude/plans/*.md` first and called `ExitPlanMode` with empty input — the most-recent such file. **Approve** sends `"I approve the plan. Please proceed with the implementation."` (+ feedback if provided) and flips the instance to `code` (`bypassPermissions`). **Reject** keeps plan mode active and sends `"I'd like to revise the plan. Refinement notes:\n<feedback>"`. **📋 Auto-approve plans** toggle sits inline immediately left of the mode dropdown and is only visible while the instance is in `plan` mode (one-click, mid-turn friendly); per-instance, session-local, cleared on full page reload. Green-tinted background when on, outlined when off.
+- **Plan mode card** — green-bordered card "Plan ready for approval". Body comes from `input.plan`, or — when the model wrote the plan to `~/.claude/plans/*.md` first and called `ExitPlanMode` with empty input — the most-recent such file. **Approve** sends `"I approve the plan. Please proceed with the implementation."` (+ feedback if provided) and flips the instance to `code` (`bypassPermissions`). **Reject** keeps plan mode active and sends `"I'd like to revise the plan. Refinement notes:\n<feedback>"`. **📋 Auto-approve plans** toggle sits inline immediately left of the mode dropdown and is only visible while the instance is in `plan` mode (one-click, mid-turn friendly); per-instance, server-side state (mirrored down through `snapshot`/`status` WS frames so every tab agrees), cleared on server restart. Because the approval fires from the server when `ExitPlanMode` lands, it works even when the affected session is in the background or the app is minimized. Green-tinted background when on, outlined when off.
 - **AskUserQuestion card** — blue card; multi-question tab strip across the top. Same input field flips role: **Other:** before any option picked (overrides), **Add a note (optional)** after a pick. Typed text persists across pick/unpick. **Send all answers** enables once every question is answered and queues if instance is busy (flushes on next `status=idle`).
 - **Ask-mode card** — purple-bordered, with tool name + summary + full diff/Write preview. **Allow** → `permissionDecision:"allow"` resolves the held-open HTTP hook response; CLI proceeds with the original `tool_use_id` (no model regeneration). **Deny** → inverse. `permission_resolved` flips the card to ✓/✗ across tabs.
 - **System notes** — kept: `init`, `stderr`, `exit`, `permission_denied`, `compacting`, `spawn_error`, `crashed`, `history_load_error`, non-allowed `rate_limit_event`. Filtered: per-turn `status:"requesting"`, `rate_limit_event:"allowed"`, hook lifecycle pings, task progress.
@@ -164,14 +164,15 @@ Outbound: `system` + `subtype:"init"` (bundled with first turn's response, not a
 | `interrupt` | `id` |
 | `kill` | `id` |
 | `hook_decision` | `id`, `toolUseId`, `allow` (resolves ask-mode hook with original `tool_use_id`) |
+| `auto_approve_plan` | `id`, `enabled` (server-side flag; while on, an incoming `plan_request` in plan mode auto-fires `setMode(bypassPermissions)` + the approval prompt) |
 
 **Server → client:**
 | `t` | Fields |
 |---|---|
-| `snapshot` | `id`, `status`, `mode`, `sessionId`, `project`, `events[]` |
+| `snapshot` | `id`, `status`, `mode`, `sessionId`, `project`, `autoApprovePlan`, `events[]` |
 | `reset_snapshot` | Same shape; sent after rewind so subscribers clear DOM first |
 | `event` | `id`, `ev` (monotonic `_seq` for idempotent merge) |
-| `status` | `id`, `status` (`spawning|idle|turn|exited|crashed`), `sessionId`, `mode` |
+| `status` | `id`, `status` (`spawning|idle|turn|exited|crashed`), `sessionId`, `mode`, `autoApprovePlan` |
 | `ack` | `reqId`, `ok`, `error?` |
 | `hello` | sent on connect |
 | `error` | `message` (server-side parse rejection; not tied to a `reqId`) |

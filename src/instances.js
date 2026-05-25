@@ -113,6 +113,12 @@ export class Instance extends EventEmitter {
     // live temp session's row — temp rows don't read the jsonl, so without
     // this they'd stay as "(new session)" forever.
     this.firstPrompt = null;
+    // When true and the instance is in plan mode, an incoming
+    // plan_request is auto-approved server-side (mode flip + approval
+    // prompt) without waiting for a client click. Lives on the server so
+    // the auto-approve fires regardless of which tab/session is in
+    // focus, or whether any client is even connected.
+    this.autoApprovePlan = false;
   }
 
   summary() {
@@ -139,7 +145,15 @@ export class Instance extends EventEmitter {
       debug: this.debug,
       debugDir: this.debugDir,
       firstPrompt: this.firstPrompt,
+      autoApprovePlan: this.autoApprovePlan,
     };
+  }
+
+  setAutoApprovePlan(enabled) {
+    const next = !!enabled;
+    if (this.autoApprovePlan === next) return;
+    this.autoApprovePlan = next;
+    this.emit('status', this.summary());
   }
 
   ringSnapshot() { return this.ring.toArray(); }
@@ -401,8 +415,40 @@ export class Instance extends EventEmitter {
         try { ev.plan = readFileSync(this._lastPlanFilePath, 'utf8'); }
         catch { /* best-effort — UI will just show "(no plan content)" */ }
       }
+      // Server-side auto-approve. The flag is per-instance and toggled
+      // over WS; firing here (not in the client) means it works even
+      // when no tab is subscribed to this instance — switching sessions
+      // or backgrounding the app no longer drops the approval.
+      // The event is annotated so the rendered card still shows the
+      // "auto-approved" state on every subscribed client.
+      let autoApproveFire = false;
+      if (ev.kind === 'plan_request'
+          && this.autoApprovePlan
+          && this.mode === 'plan'
+          && this.proc) {
+        ev.autoApproved = true;
+        autoApproveFire = true;
+      }
       this._emitUi(ev);
+      if (autoApproveFire) this._fireAutoApprovePlan();
     }
+  }
+
+  _fireAutoApprovePlan() {
+    // Run after the current stdout line has finished dispatching so the
+    // plan_request event reaches subscribers before the resulting mode
+    // flip / user_echo / turn-start events do.
+    queueMicrotask(async () => {
+      try {
+        if (!this.proc) return;
+        if (this.mode === 'plan') await this.setMode('bypassPermissions');
+        if (!this.proc) return;
+        await this.prompt('I approve the plan. Please proceed with the implementation.');
+      } catch (err) {
+        this._emitUi({ kind: 'system', subtype: 'stderr',
+          data: { line: `auto-approve plan failed: ${err.message}` } });
+      }
+    });
   }
 
 

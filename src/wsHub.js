@@ -8,12 +8,13 @@
 //   { t: "interrupt",      id }
 //   { t: "kill",           id }
 //   { t: "hook_decision",  id, toolUseId, allow }
+//   { t: "auto_approve_plan", id, enabled }
 //
 // Server → client:
-//   { t: "snapshot",       id, status, mode, sessionId, project, events: [...] }
+//   { t: "snapshot",       id, status, mode, sessionId, project, autoApprovePlan, events: [...] }
 //   { t: "reset_snapshot", id, status, mode, sessionId, project, events: [...] }
 //   { t: "event",          id, ev }
-//   { t: "status",         id, status, sessionId, mode }
+//   { t: "status",         id, status, sessionId, mode, autoApprovePlan }
 //   { t: "closed",         id, code, signal }
 //   { t: "projects" }              // hint to re-fetch /api/projects
 //   { t: "instances" }             // hint to re-fetch /api/instances
@@ -62,6 +63,7 @@ export function attachWsHub({ wss, instances }) {
       status: summary.status,
       sessionId: summary.sessionId,
       mode: summary.mode,
+      autoApprovePlan: !!summary.autoApprovePlan,
     });
     if (subs) for (const ws of subs) safeSend(ws, payload);
     broadcastAll(JSON.stringify({ t: 'instances' }));
@@ -122,6 +124,7 @@ export function attachWsHub({ wss, instances }) {
               status: inst.status,
               mode: inst.mode,
               sessionId: inst.sessionId,
+              autoApprovePlan: !!inst.autoApprovePlan,
               events: inst.ringSnapshot(),
             }));
             reply(true);
@@ -161,6 +164,12 @@ export function attachWsHub({ wss, instances }) {
           case 'kill': {
             if (!inst) { reply(false, 'unknown instance'); return; }
             await inst.kill();
+            reply(true);
+            return;
+          }
+          case 'auto_approve_plan': {
+            if (!inst) { reply(false, 'unknown instance'); return; }
+            inst.setAutoApprovePlan(!!msg.enabled);
             reply(true);
             return;
           }
