@@ -391,6 +391,83 @@ test('markdown: short and long rows are normalized to header width', async () =>
   assert.equal(row2[2].textContent, '3');
 });
 
+test('markdown: image with http(s) src renders <img>', async () => {
+  setupDOM();
+  const md = await loadMarkdown();
+  const root = render(md, '![a screenshot](https://example.com/a.png)');
+  const img = root.querySelector('img');
+  assert.ok(img);
+  assert.equal(img.getAttribute('src'), 'https://example.com/a.png');
+  assert.equal(img.getAttribute('alt'), 'a screenshot');
+  assert.equal(img.getAttribute('loading'), 'lazy');
+});
+
+test('markdown: image with file:// src renders <img> and empty alt', async () => {
+  setupDOM();
+  const md = await loadMarkdown();
+  const root = render(md, '![](file:///data/data/com.termux/files/home/foo.png)');
+  const img = root.querySelector('img');
+  assert.ok(img);
+  assert.equal(img.getAttribute('src'), 'file:///data/data/com.termux/files/home/foo.png');
+  assert.equal(img.getAttribute('alt'), '');
+});
+
+test('markdown: image with absolute /path src renders <img>', async () => {
+  setupDOM();
+  const md = await loadMarkdown();
+  const root = render(md, '![x](/static/a.png)');
+  const img = root.querySelector('img');
+  assert.ok(img);
+  assert.equal(img.getAttribute('src'), '/static/a.png');
+  assert.equal(img.getAttribute('alt'), 'x');
+});
+
+test('markdown: image with javascript: src renders as literal text', async () => {
+  setupDOM();
+  const md = await loadMarkdown();
+  const root = render(md, 'see ![x](javascript:alert(1)) here');
+  assert.equal(root.querySelector('img'), null);
+  assert.match(root.textContent, /!\[x\]\(javascript:alert\(1\)\)/);
+});
+
+test('markdown: image with data: src renders as literal text', async () => {
+  setupDOM();
+  const md = await loadMarkdown();
+  const root = render(md, '![x](data:image/svg+xml,<script>alert(1)</script>)');
+  assert.equal(root.querySelector('img'), null);
+  assert.equal(root.querySelector('script'), null);
+  assert.match(root.textContent, /data:image\/svg\+xml/);
+});
+
+test('markdown: image inside a table cell renders via renderInline', async () => {
+  setupDOM();
+  const md = await loadMarkdown();
+  const src = [
+    '| Name | Preview |',
+    '| --- | --- |',
+    '| logo | ![logo](https://example.com/logo.png) |',
+  ].join('\n');
+  const root = render(md, src);
+  const img = root.querySelector('tbody td img');
+  assert.ok(img);
+  assert.equal(img.getAttribute('src'), 'https://example.com/logo.png');
+  assert.equal(img.getAttribute('alt'), 'logo');
+});
+
+test('markdown: ![alt](url) image does not collide with [text](url) link in same paragraph', async () => {
+  setupDOM();
+  const md = await loadMarkdown();
+  const root = render(md, 'See ![pic](https://example.com/p.png) and [docs](https://example.com/d) please.');
+  const imgs = root.querySelectorAll('img');
+  const anchors = root.querySelectorAll('a');
+  assert.equal(imgs.length, 1);
+  assert.equal(anchors.length, 1);
+  assert.equal(imgs[0].getAttribute('src'), 'https://example.com/p.png');
+  assert.equal(imgs[0].getAttribute('alt'), 'pic');
+  assert.equal(anchors[0].getAttribute('href'), 'https://example.com/d');
+  assert.equal(anchors[0].textContent, 'docs');
+});
+
 test('markdown: table terminates cleanly when followed by a heading', async () => {
   setupDOM();
   const md = await loadMarkdown();

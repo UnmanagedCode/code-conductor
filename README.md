@@ -56,7 +56,7 @@ Runs on Termux (localhost-only, single user) or any host with Node 22+ and the `
 - **Debug mode** — mirrors raw CLI traffic (`claude-stdin.jsonl`, `claude-stdout.jsonl`, `claude-stderr.log`, `meta.json`) to `~/project/.code-conductor/projects/<p>/[worktrees/<wt>/]debug/<instance-id>/`. Append-mode, survives session end. Header shows a `DEBUG` pill.
 
 ### Live conversation
-- **Text** — streams as text-node deltas; on `text_end` re-renders through `public/markdown.js` (headings, lists, code, **bold**, *italic*, links, autolinked bare `http(s)://…` URLs). Link schemes restricted to `http(s)/relative/fragment/mailto`; no `innerHTML`; raw HTML in source rendered as literal text.
+- **Text** — streams as text-node deltas; on `text_end` re-renders through `public/markdown.js` (headings, lists, code, **bold**, *italic*, links, autolinked bare `http(s)://…` URLs, `![alt](src)` images). Link schemes restricted to `http(s)/relative/fragment/mailto`; image `src` to `http(s)/file://`/absolute path; no `innerHTML`; raw HTML in source rendered as literal text.
 - **Thinking** — collapsible block; Opus 4.7 emits only `signature_delta`, rendered as a non-expandable `thinking (redacted)` line (no disclosure caret).
 - **Tool use** — collapsed by default with smart one-line summary (`🔧 Bash · ls -la · done`). Edit/Write/NotebookEdit render as syntax-coloured unified diffs (green/red gutters, ±counts, sticky file-path); Write shows a numbered preview. Other tools: raw-JSON input in its own collapsed `↪ tool_input` block.
 - **Tool result** — truncated at 4 KB with "show full".

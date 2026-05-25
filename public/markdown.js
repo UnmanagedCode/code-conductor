@@ -28,6 +28,9 @@ function el(tag, ...children) {
 }
 
 const SAFE_URL = /^(https?:\/\/|\/|#|mailto:)/i;
+// Same as SAFE_URL plus file:// for local images. Kept separate so anchor
+// link safety stays unchanged.
+const SAFE_IMG_SRC = /^(https?:\/\/|file:\/\/|\/|#)/i;
 
 // Inline construct pattern — order matters: try **bold** before *italic*
 // (bold appears as the first alternative so it wins for "**...**").
@@ -39,7 +42,7 @@ const SAFE_URL = /^(https?:\/\/|\/|#|mailto:)/i;
 // regex causes the recursion to repeatedly re-match the same outer span
 // (infinite loop / heap OOM).
 const INLINE_PATTERN =
-  '(\\*\\*[^*\\n]+?\\*\\*)|(\\*[^*\\n]+?\\*)|((?:^|\\s)_[^_\\n]+?_(?=\\s|[.,;:!?)\\]]|$))|(`[^`\\n]+?`)|(\\[[^\\]\\n]+?\\]\\([^)\\n]+?\\))|(\\bhttps?:\\/\\/[^\\s<>()\\[\\]]+)';
+  '(\\*\\*[^*\\n]+?\\*\\*)|(\\*[^*\\n]+?\\*)|((?:^|\\s)_[^_\\n]+?_(?=\\s|[.,;:!?)\\]]|$))|(`[^`\\n]+?`)|(!\\[[^\\]\\n]*?\\]\\([^)\\n]+?\\))|(\\[[^\\]\\n]+?\\]\\([^)\\n]+?\\))|(\\bhttps?:\\/\\/[^\\s<>()\\[\\]]+)';
 
 // Trailing punctuation that should not be part of an autolinked URL
 // (e.g. the period in "see https://example.com.").
@@ -65,7 +68,18 @@ export function renderInline(text) {
     } else if (m[4]) {
       out.push(el('code', m[4].slice(1, -1)));
     } else if (m[5]) {
-      const lm = m[5].match(/^\[(.+?)\]\((.+?)\)$/);
+      const im = m[5].match(/^!\[(.*?)\]\((.+?)\)$/);
+      if (im && SAFE_IMG_SRC.test(im[2])) {
+        const img = document.createElement('img');
+        img.setAttribute('src', im[2]);
+        img.setAttribute('alt', im[1] || '');
+        img.setAttribute('loading', 'lazy');
+        out.push(img);
+      } else {
+        out.push(m[5]); // unsafe src — render as literal text
+      }
+    } else if (m[6]) {
+      const lm = m[6].match(/^\[(.+?)\]\((.+?)\)$/);
       if (lm && SAFE_URL.test(lm[2])) {
         const a = el('a', ...renderInline(lm[1]));
         a.setAttribute('href', lm[2]);
@@ -73,10 +87,10 @@ export function renderInline(text) {
         a.setAttribute('rel', 'noopener noreferrer');
         out.push(a);
       } else {
-        out.push(m[5]); // unsafe URL — render as literal text
+        out.push(m[6]); // unsafe URL — render as literal text
       }
-    } else if (m[6]) {
-      let url = m[6];
+    } else if (m[7]) {
+      let url = m[7];
       let trailing = '';
       const tm = url.match(URL_TRAILING_PUNCT);
       if (tm) { trailing = tm[0]; url = url.slice(0, -trailing.length); }
