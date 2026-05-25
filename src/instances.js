@@ -779,7 +779,22 @@ export class InstanceManager extends EventEmitter {
     });
 
     inst.on('event', (ev) => this.emit('event', { id, ev }));
-    inst.on('status', (summary) => this.emit('status', summary));
+    inst.on('status', (summary) => {
+      this.emit('status', summary);
+      // Temp sessions are disposable: once the subprocess is gone the
+      // jsonl has been wiped by _deleteTempArtifacts(), so Resume can
+      // never recover them. Drop them from byId on exit/crash so the
+      // sidebar's Temp Sessions subnode collapses instead of piling up
+      // dim ghost rows the user would have to delete by hand.
+      // `inst.temp` is read at event time, so a session promoted via
+      // /promote (which flips temp=false) survives this path.
+      if (inst.temp && !inst.proc &&
+          (summary.status === 'exited' || summary.status === 'crashed') &&
+          this.byId.has(id)) {
+        this.byId.delete(id);
+        this.emit('list_changed');
+      }
+    });
     inst.on('snapshot_reset', (snap) => this.emit('snapshot_reset', snap));
 
     this.byId.set(id, inst);

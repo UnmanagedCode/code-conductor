@@ -52,7 +52,7 @@ Runs on Termux (localhost-only, single user) or any host with Node 22+ and the `
 - **Effort** — `low` / `medium` / `high` (default) / `xhigh` / `max`.
 - **Thinking** — `adaptive` (default) / `enabled` / `disabled`.
 - **Model** — empty (account default) or pick `claude-sonnet-4-6` / `claude-opus-4-7` / `claude-haiku-4-5`.
-- **Temp session** — deletes the jsonl + sibling `subagents/` dir on exit and skips `last-prompt`/`permission-mode` metadata appends during the run; mode defaults to `code`; header shows a `TEMP` pill.
+- **Temp session** — deletes the jsonl + sibling `subagents/` dir on exit, drops itself from the sidebar's Temp Sessions list on exit/crash (no ghost row to clean up by hand), and skips `last-prompt`/`permission-mode` metadata appends during the run; mode defaults to `code`; header shows a `TEMP` pill.
 - **Debug mode** — mirrors raw CLI traffic (`claude-stdin.jsonl`, `claude-stdout.jsonl`, `claude-stderr.log`, `meta.json`) to `~/project/.code-conductor/projects/<p>/[worktrees/<wt>/]debug/<instance-id>/`. Append-mode, survives session end. Header shows a `DEBUG` pill.
 
 ### Live conversation

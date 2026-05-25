@@ -895,6 +895,77 @@ test('temp: deletes session jsonl + sibling subagents dir on subprocess exit', a
   } finally { await close(); }
 });
 
+test('temp: instance is auto-removed from byId on subprocess exit (no ghost row)', async () => {
+  // The composer's Kill button takes the WS-`kill` path (`inst.kill()`), not
+  // DELETE /api/instances/:id. Without auto-removal the temp Instance would
+  // sit in byId with status='exited' forever — the sidebar's Temp Sessions
+  // subnode would keep a dim ghost row that the user had to delete by hand.
+  const { baseUrl, instances, close } = await setupWithProject();
+  try {
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', temp: true });
+    const id = r.body.id;
+    const inst = instances.get(id);
+    await waitFor(() => inst.status === 'idle' && inst.sessionId);
+
+    let listChangedSeen = 0;
+    instances.on('list_changed', () => { listChangedSeen++; });
+
+    await inst.kill({ graceMs: 50 });
+    await waitFor(() => instances.get(id) === undefined);
+
+    assert.equal(instances.get(id), undefined, 'temp instance removed from byId after exit');
+    assert.ok(!instances.list().some(s => s.id === id), 'temp instance no longer in list()');
+    assert.ok(listChangedSeen >= 1, 'list_changed fired so wsHub can broadcast {t:"instances"}');
+  } finally { await close(); }
+});
+
+test('non-temp: instance survives in byId after kill (Resume from the sidebar still works)', async () => {
+  // Guard the temp-only gate. Normal sessions need to stay in byId after their
+  // subprocess dies so the sidebar's Resume button has something to call
+  // `/api/instances/:id/respawn` against.
+  const { baseUrl, instances, close } = await setupWithProject();
+  try {
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', mode: 'bypassPermissions' });
+    const id = r.body.id;
+    const inst = instances.get(id);
+    await waitFor(() => inst.status === 'idle' && inst.sessionId);
+
+    await inst.kill({ graceMs: 50 });
+    await waitFor(() => inst.status === 'exited' || inst.status === 'crashed');
+
+    assert.ok(instances.get(id), 'non-temp instance stays in byId after exit');
+    assert.equal(instances.get(id).temp, false);
+  } finally { await close(); }
+});
+
+test('promoted temp: instance survives in byId after kill (promote disables the auto-removal)', async () => {
+  // After `/api/instances/:id/promote` flips temp=false the row migrates out
+  // of the Temp Sessions subnode into the regular Sessions list. Killing
+  // it should now behave like any other session — stays in byId so Resume
+  // is offered.
+  const scenario = path.join(__dirname, 'fixtures', 'scenario-resume.json');
+  const ctx = await bootServer({ scenarioPath: scenario });
+  try {
+    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'promo-kill' });
+    const events = collectEvents(ctx.instances);
+    const r = await api(ctx.baseUrl, 'POST', '/api/instances', { project: 'promo-kill', temp: true });
+    const id = r.body.id;
+    const inst = ctx.instances.get(id);
+    await waitFor(() => inst.status === 'idle');
+    inst.prompt('hi');
+    await waitFor(() => events.some(e => e.id === id && e.ev.kind === 'turn_end'));
+
+    const promote = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/promote`);
+    assert.equal(promote.status, 200);
+    assert.equal(inst.temp, false);
+
+    await inst.kill({ graceMs: 50 });
+    await waitFor(() => inst.status === 'exited' || inst.status === 'crashed');
+
+    assert.ok(ctx.instances.get(id), 'promoted-then-killed instance stays in byId');
+  } finally { await ctx.close(); }
+});
+
 test('promote: flips temp flag, writes resume-picker metadata, skips on-exit cleanup', async () => {
   const scenario = path.join(__dirname, 'fixtures', 'scenario-resume.json');
   const ctx = await bootServer({ scenarioPath: scenario });
