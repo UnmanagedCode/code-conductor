@@ -245,11 +245,31 @@ export class Parser {
 
   _handleAssistant(obj) {
     const msg = obj.message ?? {};
-    return [{
+    const events = [];
+    // Slash commands (registered or not) are handled locally by the CLI and
+    // come back as a single `assistant` envelope with `model:"<synthetic>"`
+    // and no preceding stream_event frames. The normal delta-driven render
+    // path never fires, so without unpacking the text blocks here the UI
+    // sees nothing between the user prompt and the turn footer. Emit
+    // synthetic text_delta + text_end events so the existing pipeline
+    // renders an assistant bubble.
+    if (msg.model === '<synthetic>' && Array.isArray(msg.content)) {
+      const msgId = msg.id ?? `synthetic_${randomUUID()}`;
+      let blockIdx = 0;
+      for (const block of msg.content) {
+        if (block?.type === 'text' && typeof block.text === 'string' && block.text.length) {
+          events.push({ kind: 'text_delta', msgId, blockIdx, text: block.text });
+          events.push({ kind: 'text_end', msgId, blockIdx });
+          blockIdx += 1;
+        }
+      }
+    }
+    events.push({
       kind: 'assistant_message',
       msgId: msg.id ?? this.currentMsgId,
       message: msg,
-    }];
+    });
+    return events;
   }
 
   _handleUser(obj) {

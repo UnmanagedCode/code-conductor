@@ -338,3 +338,53 @@ test('parser: message_start without usage stays silent (legacy fixtures)', () =>
   });
   assert.equal(out.length, 0);
 });
+
+test('parser: synthetic assistant message (slash command) emits text events', () => {
+  const p = new Parser();
+  // Shape lifted from a real debug trace: the CLI handles slash commands
+  // locally and returns a single `assistant` envelope with model="<synthetic>"
+  // and no preceding stream_event frames.
+  const out = p.handleObject({
+    type: 'assistant',
+    message: {
+      id: 'synth-uuid-001',
+      role: 'assistant',
+      type: 'message',
+      model: '<synthetic>',
+      content: [{ type: 'text', text: "/btw isn't available in this environment." }],
+    },
+    parent_tool_use_id: null,
+  });
+  const deltas = out.filter(e => e.kind === 'text_delta');
+  const ends = out.filter(e => e.kind === 'text_end');
+  assert.equal(deltas.length, 1, 'one text_delta emitted for one text block');
+  assert.equal(deltas[0].text, "/btw isn't available in this environment.");
+  assert.equal(deltas[0].msgId, 'synth-uuid-001');
+  assert.equal(deltas[0].blockIdx, 0);
+  assert.equal(ends.length, 1);
+  assert.equal(ends[0].msgId, 'synth-uuid-001');
+  assert.equal(ends[0].blockIdx, 0);
+  const assistant = out.filter(e => e.kind === 'assistant_message');
+  assert.equal(assistant.length, 1, 'assistant_message still emitted for sub-agent reconcile path');
+});
+
+test('parser: non-synthetic assistant message does not emit text events', () => {
+  const p = new Parser();
+  // Real assistant envelope: msg_… id and a real model. The stream_event
+  // path is the source of truth for these; we must NOT also emit text
+  // events from the envelope or the UI will double-render.
+  const out = p.handleObject({
+    type: 'assistant',
+    message: {
+      id: 'msg_01ABC',
+      role: 'assistant',
+      type: 'message',
+      model: 'claude-opus-4-7',
+      content: [{ type: 'text', text: 'hello world' }],
+    },
+    parent_tool_use_id: null,
+  });
+  assert.equal(out.filter(e => e.kind === 'text_delta').length, 0);
+  assert.equal(out.filter(e => e.kind === 'text_end').length, 0);
+  assert.equal(out.filter(e => e.kind === 'assistant_message').length, 1);
+});
