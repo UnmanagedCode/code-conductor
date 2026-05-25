@@ -471,7 +471,7 @@ export class Sidebar {
         e.stopPropagation();
         if (this.onQuickSpawn) this.onQuickSpawn(p.name);
       },
-    }, '⚡'));
+    }, '↯'));
     row.appendChild(el('button', {
       class: 'add-instance', title: 'new session',
       onclick: () => this.onCreateInstanceClick(p.name),
@@ -490,9 +490,9 @@ export class Sidebar {
     if (sessionsNode) li.appendChild(sessionsNode);
     else if (worktrees.length === 0 && tempDirects.length === 0) {
       // Project with neither sessions nor worktrees nor temp instances
-      // — show a tiny "no sessions yet" hint to make the "+" / "⚡"
+      // — show a tiny "no sessions yet" hint to make the "+" / "↯"
       // buttons discoverable.
-      li.appendChild(el('div', { class: 'empty-project-hint' }, 'no sessions yet — tap ⚡ or + to start'));
+      li.appendChild(el('div', { class: 'empty-project-hint' }, 'no sessions yet — tap ↯ or + to start'));
     }
 
     const tempNode = this._tempSessionsNode({ project: p, tempInstances: tempDirects });

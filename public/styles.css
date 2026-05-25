@@ -186,12 +186,9 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
 .project-row .add-instance:hover { color: var(--text); }
 .project-row .quick-spawn {
   background: transparent; color: var(--muted); border: none;
-  cursor: pointer; padding: 0 6px; font-size: 12px; line-height: 1;
-  /* The ⚡ glyph renders in color on most platforms — grey it out so
-     it matches the other muted toolbar buttons. */
-  filter: grayscale(1); opacity: .7;
+  cursor: pointer; padding: 0 6px; font-size: 14px; line-height: 1;
 }
-.project-row .quick-spawn:hover { color: var(--text); opacity: 1; }
+.project-row .quick-spawn:hover { color: var(--text); }
 
 /* Quick-spawn model picker dialog: three large buttons on one row. */
 .quick-spawn-models { display: flex; gap: 8px; margin: 10px 0; }
