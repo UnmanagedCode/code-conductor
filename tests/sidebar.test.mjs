@@ -462,7 +462,7 @@ test('Workspace collapse state is read from localStorage on construction', async
   assert.ok(byName['Visible'].hasAttribute('open'), 'Visible workspace default-expanded');
 });
 
-test('Project row carries a ⚡ quick-spawn button wired to onQuickSpawn', async () => {
+test('Project row carries a ↯ quick-spawn button wired to onQuickSpawn', async () => {
   const { root, sidebar } = await setupSidebar({});
   const quickCalls = [];
   sidebar.onQuickSpawn = (name) => quickCalls.push(name);
@@ -472,8 +472,8 @@ test('Project row carries a ⚡ quick-spawn button wired to onQuickSpawn', async
   }]);
   sidebar.setInstances([]);
   const btn = root.querySelector('.project-row .quick-spawn');
-  assert.ok(btn, 'lightning button rendered on the project row');
-  assert.equal(btn.textContent, '⚡');
+  assert.ok(btn, 'quick-spawn button rendered on the project row');
+  assert.equal(btn.textContent, '↯');
   btn.click();
   assert.deepEqual(quickCalls, ['demo']);
 });
