@@ -1118,7 +1118,7 @@ function updateActiveHeader() {
   dom.tiUsageSlot.appendChild(renderUsageChip(inst));
   dom.modeSelect.value = inst.mode;
   dom.modeSelect.disabled = inst.status === 'turn' || inst.status === 'crashed' || inst.status === 'exited';
-  dom.killBtn.textContent = inst.status === 'turn' ? 'Interrupt' : '🛑 Terminate';
+  dom.killBtn.textContent = inst.status === 'turn' ? '⏸ Interrupt' : '🛑 Terminate';
   dom.killBtn.disabled = !['idle', 'turn', 'spawning'].includes(inst.status);
   dom.resumeBtn.hidden = !(inst.status === 'crashed' || inst.status === 'exited');
   dom.turnIndicator.hidden = false;
