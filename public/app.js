@@ -986,8 +986,8 @@ async function deleteSession({ projectName, worktreeName, sessionId, preview }) 
   try {
     let r = await fetch(base, { method: 'DELETE' });
     if (r.status === 409) {
-      const { error } = await r.json();
-      if (!confirm(`${error}\n\nKill the running instance and delete anyway?`)) return;
+      // Session is attached to a live instance; the user already confirmed
+      // the delete, so kill the instance and retry without a second prompt.
       r = await fetch(`${base}?force=1`, { method: 'DELETE' });
     }
     if (!r.ok) throw new Error((await r.json()).error);
