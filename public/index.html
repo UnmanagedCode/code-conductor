@@ -180,11 +180,14 @@
     <form method="dialog">
       <h3>Quick temp session in <span id="qs-project"></span></h3>
       <p class="hint">Spawns a temp session at the project root. The transcript is wiped on exit.</p>
-      <button type="button" id="qs-plan-toggle" class="qs-plan-toggle" aria-pressed="false">📋 Plan + auto-accept</button>
       <div class="quick-spawn-models">
         <button type="button" class="qs-model" data-model="claude-haiku-4-5">Haiku</button>
         <button type="button" class="qs-model" data-model="claude-sonnet-4-6">Sonnet</button>
         <button type="button" class="qs-model" data-model="claude-opus-4-7">Opus</button>
+      </div>
+      <div class="qs-mode-toggle" role="group" aria-label="Spawn mode">
+        <button type="button" id="qs-mode-code" class="qs-mode-opt" data-mode="code" aria-pressed="true">Code</button>
+        <button type="button" id="qs-mode-plan" class="qs-mode-opt" data-mode="plan" aria-pressed="false">Plan &amp; Approve</button>
       </div>
       <p class="error" id="qs-error"></p>
       <menu>

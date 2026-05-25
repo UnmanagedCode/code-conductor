@@ -73,7 +73,8 @@ const dom = {
   niError: document.getElementById('ni-error'),
   quickSpawnDialog: document.getElementById('quick-spawn-dialog'),
   qsProject: document.getElementById('qs-project'),
-  qsPlanToggle: document.getElementById('qs-plan-toggle'),
+  qsModeCode: document.getElementById('qs-mode-code'),
+  qsModePlan: document.getElementById('qs-mode-plan'),
   qsError: document.getElementById('qs-error'),
   syncBtn: document.getElementById('sync-btn'),
   mergeBtn: document.getElementById('merge-btn'),
@@ -799,7 +800,7 @@ async function openQuickSpawnDialog(projectName) {
   dom.qsProject.textContent = projectName;
   dom.qsError.textContent = '';
   quickSpawnPlanMode = false;
-  dom.qsPlanToggle.setAttribute('aria-pressed', 'false');
+  syncQuickSpawnModeToggle();
   dom.quickSpawnDialog.showModal();
 }
 async function quickSpawn(model) {
@@ -829,10 +830,19 @@ async function quickSpawn(model) {
     dom.qsError.textContent = e.message;
   }
 }
-dom.qsPlanToggle.addEventListener('click', (e) => {
+function syncQuickSpawnModeToggle() {
+  dom.qsModeCode.setAttribute('aria-pressed', quickSpawnPlanMode ? 'false' : 'true');
+  dom.qsModePlan.setAttribute('aria-pressed', quickSpawnPlanMode ? 'true' : 'false');
+}
+dom.qsModeCode.addEventListener('click', (e) => {
   e.preventDefault();
-  quickSpawnPlanMode = !quickSpawnPlanMode;
-  dom.qsPlanToggle.setAttribute('aria-pressed', quickSpawnPlanMode ? 'true' : 'false');
+  quickSpawnPlanMode = false;
+  syncQuickSpawnModeToggle();
+});
+dom.qsModePlan.addEventListener('click', (e) => {
+  e.preventDefault();
+  quickSpawnPlanMode = true;
+  syncQuickSpawnModeToggle();
 });
 // Delegate clicks on any .qs-model button inside the dialog. Buttons
 // carry `data-model` with the canonical CLI model id.

@@ -76,28 +76,31 @@ test('instance-controls: kill-btn moved into the ⋮ overflow menu', async () =>
     'kill-btn must precede debug-btn in the overflow panel');
 });
 
-test('quick-spawn dialog hosts a plan + auto-accept toggle, default off', async () => {
+test('quick-spawn dialog hosts a Code / Plan & Approve segmented toggle, default Code', async () => {
   // The Quick (↯) dialog gates a per-open decision: spawn the temp
-  // session in plan mode with auto-approve pre-armed, or fall through to
-  // the default code-mode spawn. The toggle must live inside the dialog,
-  // start aria-pressed=false (no persistence per design), and sit above
-  // the model row so it's read before the user commits to a model.
+  // session in code (bypassPermissions) mode — the default — or in plan
+  // mode with auto-approve pre-armed. Rendered as a segmented control
+  // below the model row so the user picks the spawn variant *after*
+  // seeing the model choices. Code starts pressed (no persistence per
+  // design).
   const html = await fs.readFile(INDEX_HTML, 'utf8');
   const window = new Window({ url: 'http://localhost/' });
   window.document.documentElement.innerHTML = html;
   const doc = window.document;
   const dialog = doc.getElementById('quick-spawn-dialog');
   assert.ok(dialog, 'quick-spawn-dialog must exist');
-  const toggle = doc.getElementById('qs-plan-toggle');
-  assert.ok(toggle, 'qs-plan-toggle must exist');
-  assert.ok(dialog.contains(toggle), 'toggle must live inside the dialog');
-  assert.equal(toggle.getAttribute('aria-pressed'), 'false', 'default aria-pressed=false');
-  // Order check: toggle precedes the .quick-spawn-models row.
+  const code = doc.getElementById('qs-mode-code');
+  const plan = doc.getElementById('qs-mode-plan');
+  assert.ok(code && plan, 'both segmented options must exist');
+  assert.ok(dialog.contains(code) && dialog.contains(plan), 'toggle must live inside the dialog');
+  assert.equal(code.getAttribute('aria-pressed'), 'true', 'Code starts pressed (default mode)');
+  assert.equal(plan.getAttribute('aria-pressed'), 'false', 'Plan & Approve starts unpressed');
+  // Order check: model row precedes the toggle.
   const models = dialog.querySelector('.quick-spawn-models');
   assert.ok(models, '.quick-spawn-models row must exist');
-  const togglePos = toggle.compareDocumentPosition(models);
+  const togglePos = models.compareDocumentPosition(code);
   assert.ok(togglePos & window.Node.DOCUMENT_POSITION_FOLLOWING,
-    'toggle must come before the model row');
+    'toggle must come after the model row');
 });
 
 test('DOM-free public modules import cleanly in Node', async () => {
