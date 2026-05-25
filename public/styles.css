@@ -786,6 +786,12 @@ input:focus, textarea:focus, select:focus { outline: 2px solid var(--accent); ou
 .block.tool-result summary,
 .block.tool-input summary { font-family: ui-monospace, monospace; font-size: 11px; color: var(--muted); }
 .block.tool-result.error summary { color: var(--red); }
+.block.tool-result .tool-result-img {
+  display: block;
+  max-width: 360px; max-height: 360px;
+  margin: 6px 0 0 0;
+  border-radius: 6px; border: 1px solid var(--border);
+}
 
 .block.system {
   font-size: 11px; color: var(--muted); font-family: ui-monospace, monospace;

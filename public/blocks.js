@@ -710,24 +710,72 @@ export class PermissionRequestBlock {
 export class ToolResultBlock {
   constructor({ content, isError, toolUseId }) {
     this.toolUseId = toolUseId; this.isError = isError;
-    const text = typeof content === 'string'
-      ? content
-      : Array.isArray(content)
-        ? content.map(b => b?.text ?? '').filter(Boolean).join('\n')
-        : JSON.stringify(content);
+    // Separate text and image content. The Read tool returns images as
+    // {type:'image', source:{type:'base64'|'url', ...}} content blocks
+    // that the old text-only path silently dropped.
+    const textParts = [];
+    const images = [];
+    if (typeof content === 'string') {
+      textParts.push(content);
+    } else if (Array.isArray(content)) {
+      for (const b of content) {
+        if (!b || typeof b !== 'object') continue;
+        if (b.type === 'image' && b.source && typeof b.source === 'object') {
+          const src = imageSrcFromSource(b.source);
+          if (src) images.push(src);
+        } else if (typeof b.text === 'string' && b.text) {
+          textParts.push(b.text);
+        }
+      }
+    } else {
+      textParts.push(JSON.stringify(content));
+    }
+    const text = textParts.join('\n');
     const TRUNC = 4000;
     const truncated = text.length > TRUNC;
     const pre = el('pre', {}, truncated ? text.slice(0, TRUNC) + '\n…(truncated)' : text);
-    const summary = el('summary', {}, isError ? '↪ tool_result (error)' : '↪ tool_result');
-    const det = el('details', { class: 'block tool-result' + (isError ? ' error' : ''), open: !isError && text.length < 600 },
+    const label = images.length
+      ? (isError ? '↪ tool_result (error)' : `↪ tool_result · ${images.length} image${images.length === 1 ? '' : 's'}`)
+      : (isError ? '↪ tool_result (error)' : '↪ tool_result');
+    const summary = el('summary', {}, label);
+    // Auto-open when small, when it carries an image, or always for non-errors
+    // with images so the user actually sees the picture.
+    const det = el('details', { class: 'block tool-result' + (isError ? ' error' : ''), open: !isError && (images.length > 0 || text.length < 600) },
       summary, pre,
     );
     if (truncated) {
       const showFull = el('button', { type: 'button', onclick: () => { pre.textContent = text; showFull.remove(); } }, 'show full');
       det.appendChild(showFull);
     }
+    for (const src of images) {
+      const img = document.createElement('img');
+      img.setAttribute('src', src);
+      img.setAttribute('alt', 'tool-result image');
+      img.setAttribute('loading', 'lazy');
+      img.className = 'tool-result-img';
+      const link = el('a', { href: src, target: '_blank', rel: 'noopener' }, img);
+      det.appendChild(link);
+    }
     this.node = det;
   }
+}
+
+// Build a safe <img src> from a Messages-API image content block source.
+// base64 → data: URL with media_type sniffing.
+// url    → only http(s)/file:// passed through.
+function imageSrcFromSource(source) {
+  if (source.type === 'base64' && typeof source.data === 'string') {
+    const media = typeof source.media_type === 'string' && /^image\/[\w.+-]+$/i.test(source.media_type)
+      ? source.media_type
+      : 'image/png';
+    // svg+xml can carry inline scripts — refuse it to match the markdown image policy.
+    if (/svg/i.test(media)) return null;
+    return `data:${media};base64,${source.data}`;
+  }
+  if (source.type === 'url' && typeof source.url === 'string') {
+    if (/^(https?:|file:)\/\//i.test(source.url)) return source.url;
+  }
+  return null;
 }
 
 // Subtypes the conversation view will render. Everything else (including the
