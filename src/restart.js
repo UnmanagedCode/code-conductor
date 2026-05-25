@@ -33,6 +33,14 @@ export function scheduleRestart({ server, wss, instances, log = console } = {}) 
     if (server) {
       try { server.close(); } catch { /* ignore */ }
     }
+    if (instances && typeof instances.shutdownTempSync === 'function') {
+      // Synchronously delete temp session jsonls + subagents dirs before
+      // we exit — `_handleExit()`'s async cleanup races process.exit(),
+      // so without this the temp jsonls survive the restart and reappear
+      // in the sidebar as ordinary persistent sessions.
+      try { instances.shutdownTempSync(); }
+      catch (e) { log.warn?.('restart: temp cleanup error', e); }
+    }
     if (instances && typeof instances.shutdown === 'function') {
       // Fire-and-forget — instance subprocesses outlive us.
       Promise.resolve().then(() => instances.shutdown()).catch(() => {});

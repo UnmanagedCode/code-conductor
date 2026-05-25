@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import readline from 'node:readline';
-import { promises as fsp, readFileSync, mkdirSync, createWriteStream, writeFileSync } from 'node:fs';
+import { promises as fsp, readFileSync, mkdirSync, createWriteStream, writeFileSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { Parser } from './parser.js';
 import { getProject, claudeProjectsRoot, encodeCwd } from './projects.js';
@@ -975,5 +975,23 @@ export class InstanceManager extends EventEmitter {
     const all = [...this.byId.values()];
     this.byId.clear();
     await Promise.all(all.map(i => i.kill({ graceMs: 200 }).catch(() => {})));
+  }
+
+  // Synchronously SIGTERM every live temp subprocess and delete its
+  // persisted jsonl + sub-agent dir. The async `shutdown()` above relies
+  // on subprocess `exit` events to fire `_deleteTempArtifacts()`, which
+  // races process.exit() during the restart path — so the restart path
+  // calls this first to guarantee on-disk cleanup before we exit.
+  shutdownTempSync() {
+    for (const inst of this.byId.values()) {
+      if (!inst.temp) continue;
+      if (inst.proc && inst.pid) {
+        try { process.kill(inst.pid, 'SIGTERM'); } catch { /* gone */ }
+      }
+      if (!inst.sessionId) continue;
+      const dir = path.join(claudeProjectsRoot(), encodeCwd(inst.cwd));
+      try { rmSync(path.join(dir, `${inst.sessionId}.jsonl`), { force: true }); } catch { /* ignore */ }
+      try { rmSync(path.join(dir, inst.sessionId), { recursive: true, force: true }); } catch { /* ignore */ }
+    }
   }
 }
