@@ -722,6 +722,13 @@ input:focus, textarea:focus, select:focus { outline: 2px solid var(--accent); ou
 .md a { color: var(--accent); text-decoration: underline; }
 .md a:hover { color: #8cb9ff; }
 .md hr { border: none; border-top: 1px dashed var(--border); margin: 12px 0; }
+.md img {
+  display: block;
+  max-width: min(100%, 360px); max-height: 360px;
+  height: auto; width: auto;
+  margin: 6px 0;
+  border-radius: 6px; border: 1px solid var(--border);
+}
 .md table {
   border-collapse: collapse;
   margin: 8px 0;
