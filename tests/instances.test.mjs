@@ -328,27 +328,35 @@ test('default spawn passes --permission-mode plan, --effort high, --thinking ada
       `--allow-dangerously-skip-permissions missing; argv was: ${argv.join(' ')}`,
     );
 
-    // PreToolUse hook denying AskUserQuestion + ExitPlanMode. Replaces the
-    // old auto-interrupt plumbing — the model receives an is_error
-    // tool_result with the deny reason and the turn ends naturally.
+    // PreToolUse hooks. AskUserQuestion still goes through the static
+    // command-deny path (the CLI can't run an interactive question in
+    // --print mode anyway, so the http hook would buy us nothing). The
+    // command-deny matcher should therefore cover AskUserQuestion only.
     const s = argv.indexOf('--settings');
     assert.ok(s >= 0, `--settings not passed; argv was: ${argv.join(' ')}`);
     const settings = JSON.parse(argv[s + 1]);
     const preToolUse = settings.hooks?.PreToolUse;
     assert.ok(Array.isArray(preToolUse) && preToolUse.length >= 1, 'settings.hooks.PreToolUse is non-empty');
-    const matcherRow = preToolUse.find(h => /AskUserQuestion/.test(h.matcher) && /ExitPlanMode/.test(h.matcher));
-    assert.ok(matcherRow, 'PreToolUse matcher covers AskUserQuestion + ExitPlanMode');
+    const matcherRow = preToolUse.find(h => h.hooks?.[0]?.type === 'command');
+    assert.ok(matcherRow, 'PreToolUse must register a command-deny hook');
+    assert.match(matcherRow.matcher, /AskUserQuestion/, 'command-deny covers AskUserQuestion');
+    assert.doesNotMatch(matcherRow.matcher, /ExitPlanMode/,
+      'ExitPlanMode is now routed through the http hook, not the command-deny matcher');
     const cmd = matcherRow.hooks?.[0];
     assert.equal(cmd.type, 'command');
     assert.match(cmd.command, /printf/);
     assert.match(cmd.command, /permissionDecision.*deny/);
 
-    // The interactive PreToolUse http hook is also registered so that a
-    // plan→ask runtime switch starts gating destructive tools without
-    // requiring a respawn. The hook targets the orchestrator's REST
-    // callback for this specific instance.
-    const httpRow = preToolUse.find(h => /Edit/.test(h.matcher) && /Write/.test(h.matcher) && /Bash/.test(h.matcher));
-    assert.ok(httpRow, 'PreToolUse matcher covers destructive tools (Edit|Write|NotebookEdit|Bash)');
+    // The interactive PreToolUse http hook is registered for the
+    // destructive tools (so an ask-mode runtime switch starts gating
+    // them) and for ExitPlanMode (so the broker can hold approval open
+    // / auto-approve / fall back to deny+reprompt on timeout).
+    const httpRow = preToolUse.find(h => h.hooks?.[0]?.type === 'http');
+    assert.ok(httpRow, 'PreToolUse must register the interactive http hook');
+    for (const expected of ['Edit', 'Write', 'NotebookEdit', 'Bash', 'ExitPlanMode']) {
+      assert.match(httpRow.matcher, new RegExp(expected),
+        `http hook matcher must cover ${expected}; got: ${httpRow.matcher}`);
+    }
     const httpHook = httpRow.hooks?.[0];
     assert.equal(httpHook.type, 'http');
     assert.match(httpHook.url, /^http:\/\/127\.0\.0\.1:\d+\/api\/instances\/[^/]+\/hook-callback$/,

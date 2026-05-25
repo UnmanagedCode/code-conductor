@@ -622,17 +622,43 @@ export class PlanRequestBlock {
   _click(decision) {
     if (this.submitted) return;
     this.submitted = true;
-    this.approveBtn.disabled = true;
-    this.rejectBtn.disabled = true;
-    this.feedbackInput.disabled = true;
+    if (this.approveBtn) this.approveBtn.disabled = true;
+    if (this.rejectBtn) this.rejectBtn.disabled = true;
+    if (this.feedbackInput) this.feedbackInput.disabled = true;
     this.statusNode.textContent = decision === 'approve' ? 'approving…' : 'sending refinement…';
     this.node.classList.add(decision === 'approve' ? 'approved' : 'rejected');
     if (this.onDecision) {
       this.onDecision({
         toolUseId: this.toolUseId,
         decision,
-        feedback: this.feedbackInput.value.trim(),
+        feedback: this.feedbackInput ? this.feedbackInput.value.trim() : '',
       });
+    }
+  }
+
+  // Called by Conversation when a plan_resolved event arrives — either
+  // the server's broker finalised the decision (manual click, auto-
+  // approve, or its 540s timeout), or the legacy fallback path on the
+  // Instance synthesised a resolved event after running setMode+prompt.
+  // Lets a second tab catch up with a decision made elsewhere.
+  markResolved(decision, { autoApproved = false } = {}) {
+    if (this.approveBtn) this.approveBtn.disabled = true;
+    if (this.rejectBtn) this.rejectBtn.disabled = true;
+    if (this.feedbackInput) this.feedbackInput.disabled = true;
+    this.node.classList.remove('approved', 'rejected');
+    if (decision === 'approve') {
+      this.node.classList.add('approved');
+      this.statusNode.textContent = autoApproved ? 'auto-approved' : '✓ approved';
+    } else if (decision === 'reject') {
+      this.node.classList.add('rejected');
+      this.statusNode.textContent = '✗ rejected';
+    } else if (decision === 'timeout') {
+      // The broker auto-denied at 540s — tool errored, model ended its
+      // turn, but the card stays interactive: the next click falls back
+      // to the legacy setMode+prompt path on the server.
+      this.statusNode.textContent = 'expired — click again to approve manually';
+    } else if (decision === 'exited') {
+      this.statusNode.textContent = 'instance exited';
     }
   }
 }

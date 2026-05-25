@@ -231,27 +231,21 @@ const conversation = new Conversation(dom.conversation, {
     // the CLI then either runs the tool or auto-denies it.
     send('hook_decision', { id: state.activeId, toolUseId, allow });
   },
-  onPlanDecision: async ({ decision, feedback }) => {
+  onPlanDecision: ({ toolUseId, decision, feedback }) => {
     if (!state.activeId) return;
-    const activeId = state.activeId;
-    if (decision === 'approve') {
-      // Switch the instance to bypassPermissions so the model can actually
-      // implement what was just approved without every tool call hitting
-      // the "Claude requested permission" auto-deny. Best-effort — if the
-      // mode switch fails (e.g. instance just crashed), still send the
-      // approval prompt and let the user adjust mode manually.
-      try { await send('mode', { id: activeId, mode: 'bypassPermissions' }, { ack: true }); }
-      catch (e) { console.warn('plan-approve mode switch failed', e); }
-      const text = feedback
-        ? `I approve the plan. Additional notes: ${feedback}\n\nPlease proceed with the implementation.`
-        : 'I approve the plan. Please proceed with the implementation.';
-      sendOrQueuePrompt(activeId, text);
-    } else {
-      const text = feedback
-        ? `I'd like to revise the plan. Refinement notes:\n${feedback}`
-        : `I'd like to revise the plan. Please refine it.`;
-      sendOrQueuePrompt(activeId, text);
-    }
+    // Server owns the whole flow now: when the broker has a held-open
+    // ExitPlanMode hook for this toolUseId it resolves it (same-turn
+    // allow on approve, deny + refinement prompt on reject); when the
+    // hook has already timed out it falls back to the legacy
+    // setMode+approval-prompt path. Either way, the orchestrator
+    // takes care of mode flips and prompt formatting — the UI just
+    // tells it what the user picked.
+    send('plan_decision', {
+      id: state.activeId,
+      toolUseId,
+      decision,
+      feedback: feedback ?? '',
+    });
   },
   onRewind: (userMessageIndex) => rewindActiveSession(userMessageIndex),
   onFork: (userMessageIndex) => forkActiveSession(userMessageIndex),

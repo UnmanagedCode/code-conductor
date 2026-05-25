@@ -100,10 +100,15 @@ export class Instance extends EventEmitter {
     this._pending = new Map(); // request_id -> { resolve, reject, timer }
     // Per-instance PreToolUse hook callback broker (held-open
     // responses + timeout fallbacks + the ask-mode permission_request
-    // emission). See src/hookBroker.js.
+    // emission + ExitPlanMode hold-open / auto-approve). See
+    // src/hookBroker.js. The callbacks let the broker reach back into
+    // the Instance for state it needs without a circular dep.
     this._hooks = new HookBroker({
       getMode: () => this.mode,
       emit: (ev) => this._emitUi(ev),
+      getAutoApprovePlan: () => this.autoApprovePlan,
+      enterBypassMode: () => this._enterBypassModeFromPlan(),
+      sendRefinement: (text) => this.prompt(text),
     });
     this._stderr = '';
     this._lastLeafUuid = null;     // for last-prompt jsonl marker
@@ -415,40 +420,35 @@ export class Instance extends EventEmitter {
         try { ev.plan = readFileSync(this._lastPlanFilePath, 'utf8'); }
         catch { /* best-effort — UI will just show "(no plan content)" */ }
       }
-      // Server-side auto-approve. The flag is per-instance and toggled
-      // over WS; firing here (not in the client) means it works even
-      // when no tab is subscribed to this instance — switching sessions
-      // or backgrounding the app no longer drops the approval.
-      // The event is annotated so the rendered card still shows the
-      // "auto-approved" state on every subscribed client.
-      let autoApproveFire = false;
-      if (ev.kind === 'plan_request'
-          && this.autoApprovePlan
-          && this.mode === 'plan'
-          && this.proc) {
-        ev.autoApproved = true;
-        autoApproveFire = true;
-      }
       this._emitUi(ev);
-      if (autoApproveFire) this._fireAutoApprovePlan();
     }
   }
 
-  _fireAutoApprovePlan() {
-    // Run after the current stdout line has finished dispatching so the
-    // plan_request event reaches subscribers before the resulting mode
-    // flip / user_echo / turn-start events do.
-    queueMicrotask(async () => {
-      try {
-        if (!this.proc) return;
-        if (this.mode === 'plan') await this.setMode('bypassPermissions');
-        if (!this.proc) return;
-        await this.prompt('I approve the plan. Please proceed with the implementation.');
-      } catch (err) {
-        this._emitUi({ kind: 'system', subtype: 'stderr',
-          data: { line: `auto-approve plan failed: ${err.message}` } });
-      }
-    });
+  // Called by the broker when ExitPlanMode is allowed (auto or manual).
+  // The CLI flips its own permission_mode out of plan internally when
+  // ExitPlanMode runs, but the orchestrator-tracked `this.mode` is
+  // independent — the UI dropdown, hookBroker.getMode(), and metadata
+  // appends all read it. Flip both sides in lockstep via a control_
+  // request so they don't drift.
+  async _enterBypassModeFromPlan() {
+    if (this.mode !== 'plan') return;
+    if (!this.proc) {
+      // Subprocess already gone — nothing to negotiate with. Just
+      // align our own state so a later resume picks the right value.
+      this.mode = 'bypassPermissions';
+      this.emit('status', this.summary());
+      return;
+    }
+    try { await this.setMode('bypassPermissions'); }
+    catch (err) {
+      // setMode races the CLI's own internal plan-exit. If the CLI
+      // already flipped, the control_request may error — log but
+      // realign our tracked mode so we don't stay stuck on 'plan'.
+      this.mode = 'bypassPermissions';
+      this.emit('status', this.summary());
+      this._emitUi({ kind: 'system', subtype: 'stderr',
+        data: { line: `setMode after plan approve failed: ${err.message}` } });
+    }
   }
 
 
@@ -610,6 +610,52 @@ export class Instance extends EventEmitter {
   // the Instance — the broker holds the actual state.
   handleHookCallback(envelope, res) { this._hooks.handle(envelope, res); }
   resolveHookCallback(toolUseId, allow) { return this._hooks.resolve(toolUseId, allow); }
+
+  // Resolve a plan approval/rejection from the UI (or from server-side
+  // auto-approve, though that path goes through the broker directly).
+  // Returns the same shape regardless of which leg actually ran so the
+  // WS hub can ack uniformly:
+  //   { ok: true,  via: 'hook'   } — broker had a pending hook; resolved.
+  //   { ok: true,  via: 'legacy' } — hook had already timed out (or was
+  //                                  never registered); fell back to
+  //                                  setMode + approval-prompt.
+  async resolvePlan(toolUseId, decision, feedback = '') {
+    if (decision !== 'approve' && decision !== 'reject') {
+      throw Object.assign(new Error('decision must be approve or reject'), { statusCode: 400 });
+    }
+    const resolved = this._hooks.resolvePlan(toolUseId, decision, feedback);
+    if (resolved) return { ok: true, via: 'hook' };
+    // Legacy fallback — the broker had no pending hook for this
+    // toolUseId. Either the hook timed out (broker auto-denied at
+    // 540s, the model ended its turn, the card is still on screen),
+    // or the spawn predates the http-hook era (no hookCallbackUrl),
+    // or the user clicked twice. Re-run the original orchestration:
+    // flip mode and feed the decision back as the next user prompt.
+    if (!this.proc) {
+      throw Object.assign(new Error('instance is not running'), { statusCode: 409 });
+    }
+    if (decision === 'approve') {
+      if (this.mode === 'plan') {
+        try { await this.setMode('bypassPermissions'); }
+        catch { /* best-effort — the CLI may have flipped already */ }
+      }
+      const trimmed = typeof feedback === 'string' ? feedback.trim() : '';
+      const text = trimmed
+        ? `I approve the plan. Additional notes: ${trimmed}\n\nPlease proceed with the implementation.`
+        : 'I approve the plan. Please proceed with the implementation.';
+      await this.prompt(text);
+    } else {
+      const trimmed = typeof feedback === 'string' ? feedback.trim() : '';
+      const text = trimmed
+        ? `I'd like to revise the plan. Refinement notes:\n${trimmed}`
+        : "I'd like to revise the plan. Please refine it.";
+      await this.prompt(text);
+    }
+    // Synthetic resolved event so the UI card flips even though the
+    // broker didn't fire one.
+    this._emitUi({ kind: 'plan_resolved', toolUseId, decision, viaFallback: true });
+    return { ok: true, via: 'legacy' };
+  }
 
   async interrupt() {
     if (this.status !== 'turn') return;

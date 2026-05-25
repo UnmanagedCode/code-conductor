@@ -8,6 +8,7 @@
 //   { t: "interrupt",      id }
 //   { t: "kill",           id }
 //   { t: "hook_decision",  id, toolUseId, allow }
+//   { t: "plan_decision",  id, toolUseId, decision: "approve"|"reject", feedback?: string }
 //   { t: "auto_approve_plan", id, enabled }
 //
 // Server → client:
@@ -180,6 +181,20 @@ export function attachWsHub({ wss, instances }) {
             const resolved = inst.resolveHookCallback(toolUseId, !!msg.allow);
             if (!resolved) { reply(false, 'no pending permission request for that toolUseId'); return; }
             reply(true);
+            return;
+          }
+          case 'plan_decision': {
+            if (!inst) { reply(false, 'unknown instance'); return; }
+            const toolUseId = msg.toolUseId;
+            if (!toolUseId) { reply(false, 'missing toolUseId'); return; }
+            try {
+              await inst.resolvePlan(
+                toolUseId,
+                String(msg.decision ?? ''),
+                typeof msg.feedback === 'string' ? msg.feedback : '',
+              );
+              reply(true);
+            } catch (e) { reply(false, e.message ?? 'plan decision failed'); }
             return;
           }
           default:
