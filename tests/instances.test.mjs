@@ -519,6 +519,95 @@ test('resuming an existing session replays the persisted transcript into the rin
   } finally { await ctx.close(); }
 });
 
+test('resume without explicit model passes --model from the session jsonl (preserves Sonnet across server restart)', async () => {
+  // Regression: spawning with model=claude-sonnet-4-6, restarting the server,
+  // then auto-resuming via the URL anchor used to silently flip the session
+  // to the account default (Opus) because the resume call doesn't carry the
+  // model and `claude --resume <sid>` falls back to the default. Fix reads
+  // the most-recent assistant.message.model from the jsonl on resume and
+  // re-passes it via --model.
+  const ctx = await bootServer({ scenarioPath: path.join(__dirname, 'fixtures', 'scenario-resume.json') });
+  const fsp = (await import('node:fs')).promises;
+  try {
+    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'resume-model' });
+    const projectPath = path.join(ctx.projectsRoot, 'resume-model');
+    const sid = '99999999-aaaa-bbbb-cccc-dddddddddddd';
+    const sessionDir = path.join(ctx.claudeProjectsRoot, encodeCwd(projectPath));
+    await fsp.mkdir(sessionDir, { recursive: true });
+    const lines = [
+      { type: 'user', uuid: 'u1', message: { role: 'user', content: 'hi' } },
+      { type: 'assistant', uuid: 'a1', message: {
+        id: 'm1', role: 'assistant', model: 'claude-sonnet-4-6',
+        content: [{ type: 'text', text: 'hello' }],
+      } },
+    ];
+    await fsp.writeFile(
+      path.join(sessionDir, `${sid}.jsonl`),
+      lines.map(l => JSON.stringify(l)).join('\n') + '\n',
+    );
+
+    const argvPath = `${ctx.tmpHome}/argv-resume.txt`;
+    process.env.FAKE_CLAUDE_ARGV_DUMP = argvPath;
+    try {
+      const r = await api(ctx.baseUrl, 'POST', '/api/instances', {
+        project: 'resume-model', resume: sid,
+        // intentionally no `model` — mirrors the auto-resume flow
+      });
+      const id = r.body.id;
+      await waitFor(() => ctx.instances.get(id)?.status === 'idle');
+      await waitFor(async () => { try { await fsp.stat(argvPath); return true; } catch { return false; } });
+      const argv = (await fsp.readFile(argvPath, 'utf8')).split('\n').filter(Boolean);
+      const m = argv.indexOf('--model');
+      assert.ok(m >= 0, `--model should be passed on resume; argv was: ${argv.join(' ')}`);
+      assert.equal(argv[m + 1], 'claude-sonnet-4-6');
+      assert.equal(ctx.instances.get(id).model, 'claude-sonnet-4-6');
+    } finally {
+      delete process.env.FAKE_CLAUDE_ARGV_DUMP;
+    }
+  } finally { await ctx.close(); }
+});
+
+test('resume with explicit model overrides the model recorded in the jsonl', async () => {
+  // Caller can still force a different model on resume — the jsonl-derived
+  // model is only a fallback when the caller didn't pass one.
+  const ctx = await bootServer({ scenarioPath: path.join(__dirname, 'fixtures', 'scenario-resume.json') });
+  const fsp = (await import('node:fs')).promises;
+  try {
+    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'resume-model-override' });
+    const projectPath = path.join(ctx.projectsRoot, 'resume-model-override');
+    const sid = '88888888-aaaa-bbbb-cccc-dddddddddddd';
+    const sessionDir = path.join(ctx.claudeProjectsRoot, encodeCwd(projectPath));
+    await fsp.mkdir(sessionDir, { recursive: true });
+    const lines = [
+      { type: 'assistant', uuid: 'a1', message: {
+        id: 'm1', role: 'assistant', model: 'claude-sonnet-4-6',
+        content: [{ type: 'text', text: 'x' }],
+      } },
+    ];
+    await fsp.writeFile(
+      path.join(sessionDir, `${sid}.jsonl`),
+      lines.map(l => JSON.stringify(l)).join('\n') + '\n',
+    );
+
+    const argvPath = `${ctx.tmpHome}/argv-override.txt`;
+    process.env.FAKE_CLAUDE_ARGV_DUMP = argvPath;
+    try {
+      const r = await api(ctx.baseUrl, 'POST', '/api/instances', {
+        project: 'resume-model-override', resume: sid,
+        model: 'claude-haiku-4-5',
+      });
+      const id = r.body.id;
+      await waitFor(() => ctx.instances.get(id)?.status === 'idle');
+      await waitFor(async () => { try { await fsp.stat(argvPath); return true; } catch { return false; } });
+      const argv = (await fsp.readFile(argvPath, 'utf8')).split('\n').filter(Boolean);
+      const m = argv.indexOf('--model');
+      assert.equal(argv[m + 1], 'claude-haiku-4-5');
+    } finally {
+      delete process.env.FAKE_CLAUDE_ARGV_DUMP;
+    }
+  } finally { await ctx.close(); }
+});
+
 
 test('resume: AskUserQuestion and ExitPlanMode tool calls from history replay as their structured cards', async () => {
   // Regression: the live parser emits `user_question` (and `plan_request`)

@@ -9,7 +9,7 @@ import { getProject, claudeProjectsRoot, encodeCwd } from './projects.js';
 import { createWorktree, getWorktree, debugBaseDir } from './worktrees.js';
 import { buildSettingsJSON, buildMcpConfigJSON } from './settings.js';
 import { HookBroker } from './hookBroker.js';
-import { loadPersistedTranscript, writeSessionMetadata } from './transcript.js';
+import { loadPersistedTranscript, writeSessionMetadata, readLastSessionModel } from './transcript.js';
 import { truncateSessionAtUserMessage } from './sessionEdit.js';
 import { saveAttachment, isImageType } from './attachments.js';
 
@@ -767,7 +767,7 @@ export class InstanceManager extends EventEmitter {
     if (!VALID_THINKING.has(finalThinking)) {
       throw Object.assign(new Error('invalid thinking'), { statusCode: 400 });
     }
-    const finalModel = (typeof model === 'string' && model.trim()) ? model.trim() : null;
+    let finalModel = (typeof model === 'string' && model.trim()) ? model.trim() : null;
 
     // Optional worktree attachment:
     //   worktree === true  → create a fresh worktree off the parent's HEAD
@@ -784,6 +784,18 @@ export class InstanceManager extends EventEmitter {
         throw Object.assign(new Error(`worktree '${worktree}' not found under project '${project}'`), { statusCode: 404 });
       }
       cwd = worktreeMeta.worktreePath;
+    }
+
+    // On resume without an explicit model, recover the model the session
+    // was last run with by reading the most-recent assistant line in the
+    // jsonl. Otherwise `claude --resume <sid>` falls back to the account
+    // default (often Opus) and silently switches the model out from under
+    // a session that was spawned with Sonnet/Haiku.
+    if (resume && !finalModel) {
+      try {
+        const prev = await readLastSessionModel({ cwd, sessionId: resume });
+        if (prev) finalModel = prev;
+      } catch { /* best-effort */ }
     }
 
     const id = randomUUID();

@@ -228,6 +228,7 @@ On **resume**: `loadHistory(sessionId)` runs before flipping to `idle` — repla
 - Bind: `127.0.0.1:8787` (override with `HOST` / `PORT`).
 - New instance: `plan` mode, `high` effort, `adaptive` thinking, no model flag. Temp checkbox flips mode default to `bypassPermissions`.
 - Sidebar one-click resume: `bypassPermissions` mode (continuing real work), same effort/thinking defaults. Crash-respawn preserves whatever mode was running.
+- Resume without an explicit `model` recovers the model the session was last run with by reading the most-recent `assistant.message.model` from the jsonl — otherwise `claude --resume` falls back to the account default (often Opus) and silently flips a Sonnet/Haiku session. Explicit `model` on the POST still wins.
 - Ring buffer: 500 events / instance.
 - Control-request timeout: 5 s. Kill grace: stdin closed → 2 s → SIGTERM → 5 s → SIGKILL.
 
