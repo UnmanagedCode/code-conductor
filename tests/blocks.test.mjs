@@ -130,6 +130,9 @@ test('ToolResultBlock: renders a base64 image content block as <img>', () => {
   assert.match(block.node.querySelector('summary').textContent, /1 image/);
   // Auto-open so the user sees the picture without clicking.
   assert.equal(block.node.hasAttribute('open'), true);
+  // No empty <pre> when there's no text — it would render as a dark strip
+  // above the image.
+  assert.equal(block.node.querySelector('pre'), null);
 });
 
 test('ToolResultBlock: renders multiple images and mixed text', () => {

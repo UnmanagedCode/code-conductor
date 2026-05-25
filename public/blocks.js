@@ -733,7 +733,6 @@ export class ToolResultBlock {
     const text = textParts.join('\n');
     const TRUNC = 4000;
     const truncated = text.length > TRUNC;
-    const pre = el('pre', {}, truncated ? text.slice(0, TRUNC) + '\n…(truncated)' : text);
     const label = images.length
       ? (isError ? '↪ tool_result (error)' : `↪ tool_result · ${images.length} image${images.length === 1 ? '' : 's'}`)
       : (isError ? '↪ tool_result (error)' : '↪ tool_result');
@@ -741,9 +740,14 @@ export class ToolResultBlock {
     // Auto-open when small, when it carries an image, or always for non-errors
     // with images so the user actually sees the picture.
     const det = el('details', { class: 'block tool-result' + (isError ? ' error' : ''), open: !isError && (images.length > 0 || text.length < 600) },
-      summary, pre,
+      summary,
     );
-    if (truncated) {
+    let pre = null;
+    if (text.length) {
+      pre = el('pre', {}, truncated ? text.slice(0, TRUNC) + '\n…(truncated)' : text);
+      det.appendChild(pre);
+    }
+    if (truncated && pre) {
       const showFull = el('button', { type: 'button', onclick: () => { pre.textContent = text; showFull.remove(); } }, 'show full');
       det.appendChild(showFull);
     }
