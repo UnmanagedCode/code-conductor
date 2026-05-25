@@ -823,7 +823,7 @@ export class InstanceManager extends EventEmitter {
     return out;
   }
 
-  async create({ project, resume, mode, effort, thinking, model, worktree, temp, debug } = {}) {
+  async create({ project, resume, mode, effort, thinking, model, worktree, temp, debug, autoApprovePlan } = {}) {
     if (!project) {
       throw Object.assign(new Error('project required'), { statusCode: 400 });
     }
@@ -921,6 +921,7 @@ export class InstanceManager extends EventEmitter {
     inst.on('snapshot_reset', (snap) => this.emit('snapshot_reset', snap));
 
     this.byId.set(id, inst);
+    if (autoApprovePlan) inst.autoApprovePlan = true;
     inst.spawn({ resume });
     this.emit('list_changed');
     return inst;

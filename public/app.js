@@ -812,14 +812,11 @@ async function quickSpawn(model) {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         project, model, temp: true, mode,
+        autoApprovePlan: quickSpawnPlanMode,
       }),
     });
     if (!r.ok) throw new Error((await r.json()).error);
     const inst = await r.json();
-    // Pre-arm auto-approve so the first plan_request fires Approve
-    // immediately — the conversation reads through isAutoApprovePlanEnabled
-    // before rendering the plan card.
-    if (quickSpawnPlanMode) autoApprovePlansByInstance.add(inst.id);
     dom.quickSpawnDialog.close();
     await refreshProjects();
     await refreshInstances();

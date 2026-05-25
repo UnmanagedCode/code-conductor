@@ -308,6 +308,50 @@ test('snapshot carries autoApprovePlan when a fresh client subscribes', async ()
   }
 });
 
+test('POST /api/instances with autoApprovePlan:true arms the flag before spawn', async () => {
+  // The quick-spawn "Plan & Approve" path POSTs autoApprovePlan in the
+  // body so the server sets the flag synchronously before the subprocess
+  // can emit its first ExitPlanMode — no client-side WS race.
+  const tmpDir = await seedPlanFile();
+  const ctx = await bootServer({ scenarioPath: SCENARIO });
+  try {
+    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'p' });
+    const r = await api(ctx.baseUrl, 'POST', '/api/instances', {
+      project: 'p', mode: 'plan', temp: true, autoApprovePlan: true,
+    });
+    const id = r.body.id;
+    assert.equal(r.body.autoApprovePlan, true, 'summary reflects the flag');
+    assert.equal(ctx.instances.get(id).autoApprovePlan, true,
+      'flag is set synchronously, not after a WS round-trip');
+
+    await waitFor(() => ctx.instances.get(id).status === 'idle');
+    const cb = await api(
+      ctx.baseUrl, 'POST', `/api/instances/${id}/hook-callback`,
+      buildExitPlanModeEnvelope('tu_qs_aa'),
+    );
+    assert.equal(cb.body.hookSpecificOutput.permissionDecision, 'allow',
+      'first ExitPlanMode is auto-approved');
+  } finally {
+    delete process.env.FAKE_PLAN_FILE;
+    await ctx.close();
+    await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+  }
+});
+
+test('POST /api/instances without autoApprovePlan leaves the flag false', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO });
+  try {
+    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'p' });
+    const r = await api(ctx.baseUrl, 'POST', '/api/instances', {
+      project: 'p', mode: 'plan', temp: true,
+    });
+    assert.equal(r.body.autoApprovePlan, false);
+    assert.equal(ctx.instances.get(r.body.id).autoApprovePlan, false);
+  } finally {
+    await ctx.close();
+  }
+});
+
 test('ExitPlanMode hook in bypassPermissions is a no-op allow', async () => {
   // The broker only runs the plan-mode flow when the orchestrator
   // thinks it's in plan. If a stray ExitPlanMode hook fires outside
