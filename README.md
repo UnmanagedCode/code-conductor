@@ -1,100 +1,88 @@
 # CodeConductor
 
-CodeConductor is a local webapp for orchestrating multiple Claude Code CLI instances across the projects in `~/project/`. Spawn, watch, and interact with several `claude` subprocesses in parallel from a single browser tab.
+Local webapp for orchestrating multiple Claude Code CLI instances across projects in `~/project/`. Spawn, watch, and interact with several `claude` subprocesses in parallel from one browser tab.
 
-Designed to run on a Termux phone (single user, localhost-only), but works on any host with Node 22+ and the `claude` CLI on `$PATH`.
-
-```
-                  ┌─────────────────┐
-                  │  browser tab    │
-                  │  (vanilla JS)   │
-                  └────────┬────────┘
-                       HTTP + WS (:8787)
-                  ┌────────┴────────┐
-                  │  Node server    │
-                  │  express + ws   │
-                  └────────┬────────┘
-            ┌──────────────┼──────────────┐
-            │              │              │
-    ┌───────┴─────┐ ┌──────┴──────┐ ┌─────┴───────┐
-    │ claude -p   │ │ claude -p   │ │ claude -p   │
-    │ (project A) │ │ (project B) │ │ (project C) │
-    └─────────────┘ └─────────────┘ └─────────────┘
-        stream-json stdin/stdout per instance
-```
-
-## Functional overview
-
-### What it does
-
-- **Project list** — sidebar shows every directory under `~/project/`. A `+ New project` button creates a directory and drops a `CLAUDE.md` that imports the workspace-wide one at `~/project/CLAUDE.md`. Worktree-owned directories are hidden from the project list and surfaced under their parent project instead — the orchestrator builds a `Set` of worktree dir names from the central store at `~/project/.code-conductor/projects/*/worktrees/*` and filters against it. Each project row that's a git repo with a configured upstream shows the same amber `↑N ↓M` pill the worktrees use — comparing the currently-checked-out branch to its configured upstream (typically `origin/<branch>`) using cached remote refs only (no `git fetch` per render), so numbers reflect your last manual pull/fetch. No pill when in sync, detached, or upstream-less. The `×` next to each project row deletes the entire project (after a typed-name confirmation prompt) — cascades through every attached instance + worktree (kills + removes them) and then `rm -rf`s the project directory itself; `~/.claude/projects/<encoded>/` session jsonls are left in place since they may still be referenced by the standalone `claude` CLI.
-- **Project workspaces** — a `≡` hamburger menu alongside `+ New project` exposes a `+ New workspace` item that opens a dialog where you name a workspace and tick projects to put in it. Workspace membership is one-per-project (a project ticked into a new workspace is moved out of any previous workspace, shown inline in the dialog). Workspace-assigned projects are nested under collapsible `<details>` headers (showing the workspace name + member count) and render at the top of the sidebar; unassigned projects render flat underneath them. Each workspace header carries a small ✎ button that re-opens the same dialog in edit mode — rename the workspace (atomically rewrites every member's stored workspace field via `PUT /api/workspaces/:name`), add/remove members, or click **Delete workspace** to clear the field on every member and drop the registry entry (the projects themselves are untouched, just falling back to unassigned). **Empty workspaces persist**: submitting the new-workspace dialog with no projects ticked creates an empty workspace via `POST /api/workspaces`, and workspaces that lose their last member through editing stay visible too. Membership is stored server-side in the workspace-wide central store at `~/project/.code-conductor/projects/<name>/project.json` as `{"workspace": "<name>"}`, created lazily and removed when the field is cleared. The set of workspaces is the union of (a registry file at `~/project/.code-conductor/workspaces.json`) and (the distinct non-null `workspace` values across all projects) — so empty workspaces survive the last member leaving. Collapse state for each workspace header is persisted in `localStorage` under `code-conductor:workspaces-collapsed` so layout survives a page refresh.
-- **Isolated worktrees** — for any project that's a git repo, the new-instance dialog has a "Run in isolated git worktree" checkbox. Ticking it triggers `git worktree add ../<project>_worktree_<short-id> -b code-conductor/<short-id> <currentSha>` against the parent repo and spawns the Claude instance with `cwd` pointing at that fresh worktree. The orchestrator captures **the parent's current branch + SHA at creation time** as the rebase-back target, so you can spawn an experiment off any branch (not just `main`) and have a defined place to land it later. Each project has a default-collapsed **"Worktrees (N)"** subnode in the sidebar; from there you can spawn / resume agents into existing worktrees or remove them (refused if there's a live instance or uncommitted work, with a `force=1` override). Worktrees show an amber pill next to the worktree id whenever their branch diverges from its base: `↑N` when there are commits ahead waiting to be fast-forwarded into the parent, `↓M` when the worktree is purely behind (Sync will fast-forward), or `↑N ↓M` when both — signalling that a rebase is needed before the FF can land cleanly. Worktrees survive instance death — the same worktree can host multiple sequential agent runs.
-  - **Rebase back into the parent** — when the agent in a worktree has finished, two header buttons drive the merge-back as two distinct clicks:
-    - **Sync** brings the worktree's branch up to date with its parent's base branch, picking the cheapest path. Already in sync → no-op. Purely behind with a clean tree → server-side `git merge --ff-only <baseBranch>` inside the worktree. Diverged, or purely behind but dirty → sends the agent a templated prompt asking it to commit any work, run `git rebase <baseBranch>`, ask the user (via `AskUserQuestion`) before non-trivial conflict resolutions, and reply with the line `REBASE_DONE` so you can click Merge next. The orchestrator never runs `git rebase` itself — leaving conflict-resolution decisions to a Claude instance + the human in the loop avoids silent wrong choices.
-    - **Merge** runs `git merge --no-ff --no-edit <worktreeBranch>` on the parent repo — always creating a merge commit (even when a fast-forward would be possible) so each worktree's contribution stays visible as a branch in the parent's `git log --graph` and can be reverted as a single commit via `git revert -m 1 <mergeSha>`. The commit message is git's default (`Merge branch 'code-conductor/<id>'`). Refuses (with an inline reason rather than a server error) if the worktree is still behind the parent ("click Sync first" — conflicts are better resolved inside the worktree where the agent can help), the parent is on a different branch than the captured base, or has uncommitted changes.
-- **Sessions are the canonical thing** — instances and persisted sessions are unified into a single "Sessions" list per project (and per worktree). Each row shows a status dot (live → idle/turn/spawning/crashed colour, otherwise a dim outlined `○`), a "time ago" stamp, and the session's first-prompt snippet — sorted newest-first. **Click a row**: if a live instance is attached → focus it; otherwise → resume it (`POST /api/instances` with `--resume <sid>`, into the matching cwd including worktree). Live instances whose `.jsonl` doesn't exist yet (just spawned, no first turn) appear as synthetic `(new session)` rows. The subnode header is `"Sessions (N) · K live · last <ago>"` and defaults to expanded; manual collapse sticks per-subnode. **Unread indicator**: when a session you aren't currently viewing finishes a turn, a small accent-coloured pill appears next to the row with the number of unread turns (and the preview text bolds); selecting the session clears it. Driven by the same `turn_notification` broadcast as the desktop ping, so it works for every running session without extra WS traffic. Counts are persisted in `localStorage` (key `code-conductor:unread`) keyed by sessionId, so they survive page refreshes, server restarts, and the orchestrator's auto-resume-from-anchor flow. Deleting a session drops its entry; localStorage is best-effort (silently disabled in private mode / on quota errors).
-- **Quick-spawn ↯** — every project row carries a `↯` button next to `+`. Tapping it opens a tiny 3-button picker (Haiku / Sonnet / Opus); clicking a model immediately spawns a **temp session** in `code` mode at the project root — one tap, no further dialog. Temp sessions land in their own default-collapsed **Temp Sessions** subnode below the regular Sessions list (collapse state persisted in `localStorage` under `code-conductor:temp-sessions-expanded`); they're never mixed with persistent sessions because their jsonl is wiped on exit. Killing a temp session removes the row immediately. If the work turns out to be worth keeping, the small `↑` button on each temp row (always visible — no hover-gate, so it's tappable on mobile) **promotes** the temp session to a normal one via `POST /api/instances/:id/promote`: the server flips the `temp` flag, writes the resume-picker metadata, broadcasts the status change, and the sidebar migrates the row out of the Temp Sessions subnode into the regular Sessions list. The jsonl then survives subsequent exits.
-- **Spawn a new session** — for any project, click `+` to launch a fresh Claude subprocess and a new sessionId. Worktrees get their own `+` button that spawns into the worktree. The new-session dialog lets you choose:
-  - **Mode** — three options:
-    - **`plan`** (default) — read-only planning. The CLI's plan mode denies destructive tools; the model proposes a plan and exits via `ExitPlanMode` so you can Approve / Reject.
-    - **`ask`** — full power but every destructive tool (`Edit` / `Write` / `NotebookEdit` / `Bash`) goes through an interactive **Allow / Deny** card before it runs. Implemented via a `PreToolUse` HTTP hook registered through `--settings` at spawn — the hook POSTs the envelope back to the orchestrator, which holds the response open while the UI shows the card. The user's click resolves the response with `permissionDecision: "allow"` or `"deny"`, and the CLI then either runs the tool with the original `tool_use_id` (no regeneration of large `content` fields) or auto-denies it. Reads (`Read` / `Glob` / `Grep` / `WebFetch` / `WebSearch`) are not gated.
-    - **`code`** — full power, no per-tool prompts. CLI's `bypassPermissions`.
-    The CLI's `default` / `acceptEdits` modes are not exposed because in stream-json `--print` (no SDK `canUseTool` callback) they auto-deny tool calls and the only way to recover would be to make the model re-emit the entire tool input.
-  - **Effort** — `low` / `medium` / `high` (default) / `xhigh` / `max`.
-  - **Thinking** — `adaptive` (default, model decides) / `enabled` / `disabled`.
-  - **Model** — empty for account default, or pick `claude-sonnet-4-6` / `claude-opus-4-7` / `claude-haiku-4-5`.
-  - **Temp session** — checkbox. When ticked, the session's persisted jsonl (and any sibling `subagents/` dir) is deleted from `~/.claude/projects/<encoded-cwd>/` when the subprocess exits, and the orchestrator skips its `last-prompt` / `permission-mode` metadata appends during the run. The mode dropdown auto-flips to `code` (still re-pickable). The conversation header shows a small `TEMP` pill so it's obvious the session won't be saved. Worktrees are untouched — only the jsonl is cleaned up.
-  - **Debug mode** — checkbox. When ticked, the orchestrator mirrors the raw CLI traffic to the central store at `~/project/.code-conductor/projects/<project>/[worktrees/<wt>/]debug/<instance-id>/`: `claude-stdin.jsonl` (every JSON line we send to the CLI), `claude-stdout.jsonl` (every line the CLI emits, pre-parser), `claude-stderr.log` (anything on stderr), and `meta.json` (instance options, model, full CLI argv, spawn timestamp). Files are append-mode and stay on disk after the session ends, so they can be inspected or attached to a bug report verbatim. The header shows a `DEBUG` pill. Best-effort: if the dir can't be created (read-only filesystem, etc.) the spawn still proceeds with debug silently disabled.
-- **Live conversation view** — streams the assistant's response as it arrives. Consecutive assistant activity (multiple tool calls, each technically its own CLI-level turn with its own `msgId`) is grouped into a single bordered "assistant" envelope with one role label, rather than minting a new box per action; the envelope closes when a real user action lands (user echo, structured-question card, plan-request card, permission-request card, or history-replay divider). The same grouping applies inside the sub-agent drill-down. Renders:
-  - **Text** — streams in as plain text node deltas (no flicker, no per-delta DOM churn); on `text_end` the block re-renders through the shared `public/markdown.js` parser so headings, lists, fenced code, inline `code`, **bold**, *italic*, blockquotes, explicit `[text](url)` links, and bare `http(s)://…` URLs all become rendered DOM. URL autolinking trims trailing sentence punctuation, accepts URLs wrapped in `**…**`, and skips non-`http(s)` schemes (no `javascript:` anchors).
-  - **Thinking** — collapsible block when the model streams thinking content (Sonnet/Haiku). When the model emits only a signature (Opus 4.7), renders as a single non-expandable `thinking (redacted)` line instead — no disclosure caret, since there's nothing to reveal.
-  - **Tool use** — block is collapsed by default; the smart one-line summary like `🔧 Bash · ls -la · done` shows the command/key argument inline, and a custom disclosure caret rotates when you tap to expand. Per-tool summary picks the most useful argument (command for Bash, file_path for Edit/Read/Write, pattern for Glob/Grep, url for WebFetch, etc.). **Edit / Write / NotebookEdit** tool calls render as a syntax-coloured **unified diff** (green/red gutters, ±counts header, sticky file-path) once expanded; Write shows a numbered preview of the new file. For every other tool, the raw-JSON input is wrapped in its own default-collapsed `↪ tool_input` block (mirroring `↪ tool_result`), so expanding the outer block doesn't blast a multi-line JSON dump.
-  - **Tool result** — truncated at 4 KB with a "show full" button, attached under its matching tool_use.
-  - **Sub-agent drill-down** — when Claude uses the `Task` tool, the sub-agent's events stream into a nested mini-conversation rendered inside the outer tool block, with a dashed left border and `↳ sub-agent` label. Tap the Task tool to expand and inspect what the sub-agent did.
-  - **Plan mode (`ExitPlanMode`)** — when the model finishes a plan and calls `ExitPlanMode`, a `PreToolUse` hook registered via `--settings` cleanly denies the tool with a "wait for the user" reason. The model receives that as an `is_error: true` tool_result and ends the turn naturally — no interrupt, no `[Request interrupted by user]` marker. The orchestrator renders a green-bordered card titled "Plan ready for approval". The plan body comes from `input.plan` directly, or — when the model wrote the plan to a file under `~/.claude/plans/*.md` first and called `ExitPlanMode` with empty input — the orchestrator reads the most-recent such file and shows its content. The body is rendered as **Markdown** (`public/markdown.js`) with headings, lists, fenced code blocks, inline code, bold/italic, blockquotes, links, and horizontal rules — no `innerHTML` is ever used, links must use safe schemes, and raw HTML in the source is shown as literal text. The card has Approve and Reject buttons plus an optional feedback textarea. **Approve** switches the instance to `code` mode (CLI's `bypassPermissions`) so the model can actually execute the tools the plan calls for, and sends `"I approve the plan. Please proceed with the implementation."` (plus your feedback if provided). **Reject** keeps plan mode active and sends `"I'd like to revise the plan. Refinement notes:\n<feedback>"` so the model can refine. The header ⋮ overflow menu also carries an **📋 Auto-approve plans: on / off** toggle (alongside Debug) — when on, subsequent `ExitPlanMode` calls render a non-interactive "auto-approved" card and fire the same approval flow without waiting for a click. Per-instance, session-local (cleared on full page reload).
-  - **AskUserQuestion** — when the model invokes the `AskUserQuestion` tool, the same `PreToolUse` hook denies it cleanly. The model receives an `is_error: true` tool_result with the deny reason and ends the turn naturally — no interrupt, no marker. The orchestrator renders a blue card with the structured questions/options. **Multiple questions** render as a tab strip across the top; the active tab's pane shows its options. Each pane has the model's options as buttons plus a context-sensitive text field: before any option is picked it's the **Other:** field for a free-form custom answer (overrides any option pick), and once an option is picked the same field becomes **Add a note (optional)** that attaches to the answer as `Label — note`. Typed text persists across the role flip (picking and un-picking an option doesn't clear the input). A single **Send all answers** button at the bottom enables once every question has an answer and submits them as one consolidated prompt; if the instance somehow isn't idle yet, the answer is queued locally and flushed automatically on the next `status=idle` event.
-  - **Ask mode (`permission_request`)** — in `ask` mode the CLI hits the orchestrator's `POST /api/instances/:id/hook-callback` before every `Edit` / `Write` / `NotebookEdit` / `Bash`. The orchestrator surfaces a `permission_request` UI event over WS; the frontend renders a purple-bordered card with the tool name, a one-line argument summary, and a full **diff / Write preview / NotebookEdit body** of what's about to run. **Allow** sends `{t:"hook_decision", id, toolUseId, allow:true}` over WS, which resolves the held-open HTTP response with `permissionDecision:"allow"` — the CLI proceeds with the same `tool_use_id`, no model regeneration. **Deny** does the inverse with `permissionDecision:"deny"`. A `permission_resolved` follow-up event flips the card to ✓ allowed / ✗ denied for any tab subscribed to the same instance. Server holds the response open for up to 540 s; on timeout the response resolves deny with reason "user did not respond in time".
-  - **System notes** — most diagnostic events (per-turn `status:"requesting"`, `rate_limit_event:"allowed"`, hook lifecycle pings, task progress) are filtered out. The ones that remain (`init`, `stderr`, `exit`, `permission_denied`, `compacting`, `spawn_error`, `crashed`, `history_load_error`, non-allowed `rate_limit_event`) render as compact one-line notes inline where they actually occurred — no more shared "SYSTEM" box that silently extends itself across turns.
-  - **Turn end** — small footer line with duration / cost / tokens.
-- **Task panel** — a compact strip just above the composer that mirrors the agent's `TaskCreate` / `TaskUpdate` tool calls. Each row shows a marker (`○` pending, `▶` in progress, `✓` completed), the task subject (or the present-continuous `activeForm` while in progress — "Refactoring X"), and a `Tasks · K/N done` header. The panel is per-active-instance; switching sessions swaps in that session's tracker. It hides itself once **every** task is in `completed` state (or none exist). Tasks are grouped into **batches**: as long as at least one is still pending or in progress, the whole group (including its completed members) stays visible. When the model creates a *new* task after a previous batch finished, the historical ✓s are dropped and the panel comes back fresh — only the new in-flight batch is shown. Snapshot replay rebuilds the state deterministically, so reconnecting in the middle of a long task run shows the live progress, not an empty panel.
-- **Footer status bar** — a thin always-visible row pinned at the bottom of the chat pane (between the task panel and the composer). The **right side** hosts the **ctx chip** (see below) so a filled `ctx N% · 245k/1M` readout doesn't wrap the header onto a third line on mobile. The **left side** is the **turn-in-progress indicator** — a pulsing green dot + animated `Claude is working…` ellipsis — visible only while the active instance's status is `turn`, hidden in `idle` / `spawning` / `crashed` / `exited`. Respects `prefers-reduced-motion` (working indicator stays visible but stops animating). The whole bar collapses when no instance is selected.
-- **Composer** — textarea at the bottom. Enter sends, Shift+Enter inserts a newline. The placeholder explains the current state ("turn running — your message will queue", "click Resume", etc.). The text input stays focusable during a running turn so you can queue a follow-up. **Attachments**: a `+` button next to Send opens a file picker; you can also paste (handy for clipboard screenshots) or drag-and-drop files onto the composer. Each attachment shows as a chip with a thumbnail (images) or filename + size (other files); the `×` removes it. Files are capped at 10 MB each; sent on submit. Every attachment is saved into the workspace-wide central store at `~/project/.code-conductor/projects/<project>/[worktrees/<wt>/]attachments/<timestamp>-<name>` and the user message gets a single `Attached file: \`<abs-path>\`` text block per attachment — **no inline base64**, and the path is absolute so Claude's `Read` tool resolves it regardless of cwd. Claude views images (and reads other files) on demand via that tool, which means the bytes only cost tokens the turn the model actually looks at them, not every subsequent turn. The user's own message bubble still shows the thumbnail: live echoes paint from the in-memory base64, transcript replays fetch via `GET /api/instances/:id/attachments/<filename>`. Because nothing lands inside the project / worktree directory itself, `git status` stays clean — no `.gitignore` or `.git/info/exclude` plumbing required.
-- **Context-usage chip** — a `ctx N% · 245k/1M` chip pinned to the right of the footer status bar (above the composer), always visible while an instance is selected. The `N%` is the latest agent-loop step's prompt size (`input_tokens` + `cache_read_input_tokens` + `cache_creation_input_tokens`) as a fraction of the model's context window, so it answers "how close are we to compaction?" at a glance. Updates **live mid-turn** — every `message_start` from the CLI's stream-json carries the cumulative input-side counts, and a long multi-tool turn fires one per loop step, so the chip ticks up as tool results stack into context rather than waiting for the final `result`. Colour-graded green / amber / red across 50% / 80% thresholds, muted `ctx —` until the first message_start lands. Tapping the chip toggles a popover with **session totals** — turn count, accumulated duration, total cost, uncached input tokens, output tokens, cache reads (with hit ratio), and cache creation tokens. The context-window-size lookup is hardcoded per model (`claude-opus-4-7[1m]` → 1M, everything else → 200k by default).
-- **Controls** — header bar has a mode dropdown (live switching via `control_request`), a single context-aware stop button (labelled **Interrupt** while a turn is running, **Kill** otherwise — with a confirm prompt in the kill case), and a **Resume** button that takes its place when the instance has exited / crashed.
-- **Browser notifications** — a 🔔/🔕 toggle pinned in the sidebar header (next to the `code-conductor` title) since the preference is global, not per-instance. Tapping it requests notification permission, then fires a desktop / Android notification whenever any instance's turn finishes while the tab is hidden (errors notify even when visible). On page reload the bell auto-enables itself if permission was already granted in a previous session. Notifications are dispatched through a tiny Service Worker (`public/sw.js`) because mobile Chrome refuses the page-level `new Notification(...)` constructor; tapping a ping focuses the existing tab via `notificationclick` in the SW. Works for background instances you aren't currently viewing — the orchestrator broadcasts a `turn_notification` to all connected WS clients regardless of which instance they're subscribed to.
-- **Resume** — same Sessions subnode as above. Clicking a non-live row spawns an instance with `--resume <sessionId>` against the matching cwd. Resumes default to `code` mode (CLI `bypassPermissions`) rather than `plan`, on the assumption that a resume is continuing real work; effort/thinking use the orchestrator defaults. All three are adjustable from the header dropdown after the resume lands. The orchestrator refuses to resume into a session already attached to a running instance (`409 "session … already attached"`). On resume the persisted transcript from `~/.claude/projects/<encoded-cwd>/<sid>.jsonl` is replayed into the conversation view before the live stream takes over, with a `── N prior messages replayed ──` divider separating history from the new turn.
-- **Delete a session** — each session row has an `×` (revealed on hover) that deletes the persisted `*.jsonl` after a confirm. Refused with a `409` if a live instance is still attached; the dialog then offers to kill the instance and delete anyway (`?force=1`). The worktree-scoped variant deletes from the worktree's own encoded session dir, not the parent project's.
-- **Rewind & fork a conversation** — every user message bubble carries two hover-revealed buttons in its top-right corner: `↶` rewinds the active session to before that prompt (in place, same sessionId), and `⑂` forks a new session whose history is the prefix up to (but not including) that prompt. Both ask for confirmation, drop the chosen user message + everything after it, and prefill the composer with the dropped prompt text so you can edit and resend. **Rewind** kills the subprocess, atomically rewrites `~/.claude/projects/<encoded-cwd>/<sid>.jsonl` to keep only the surviving prefix (and appends a fresh `last-prompt` / `permission-mode` pair anchored at the new tail), wipes the in-memory ring buffer, broadcasts a `reset_snapshot` WS frame so subscribed tabs clear their view, then respawns with `--resume <sid>` — the truncated history is replayed into the fresh ring and the URL anchor stays put. Rewinding to the very first user message is a special case: the prefix is empty, so the orchestrator deletes the jsonl entirely (rather than handing the CLI a zero-line file to resume, which it refuses) and respawns with `--session-id <sid>` so the same id picks up a brand-new session. **Fork** copies the prefix into a brand-new `<newSid>.jsonl`, leaves the original session byte-identical, spawns a new instance against the fork, switches the active view to it, and writes the new sessionId into the URL hash. Buttons are disabled (and the server refuses 409) while a turn is running — interrupt first. Temp sessions can't be rewound or forked because the on-exit cleanup races the rewrite. Anchor identity: the Nth user_echo in the conversation view = the Nth pure user-prompt line in the jsonl (tool_result-carrying `type:"user"` lines are not counted, matching the live `user_echo` emission), so the click target is unambiguous on both sides. UI-only — no MCP tools yet.
-- **Crash recovery** — if a subprocess dies, status flips to `crashed`. The Resume button respawns the same Instance with `--resume <sid>`, preserving the in-memory event ring and conversation.
-- **Session anchor in the URL** — selecting an instance sets `#session=<sessionId>` on the URL (via `history.replaceState`, so the back button isn't polluted with one entry per click). On the first WebSocket connect after page load, the bootstrap finds the live instance whose `sessionId` matches the anchor and selects it automatically. If no live instance owns the anchor (server restart, killed instance, etc.) the orchestrator looks the sessionId up on disk via `GET /api/sessions/:sid/locate` and auto-resumes it into the matching cwd — worktree-aware, so a worktree-owned session lands back in its worktree. A `--resume` spawn doesn't call the model until you send a prompt, so the auto-resume costs zero API tokens. The only failure mode is an anchor that names a session whose jsonl has since been deleted — in that case the stale anchor is silently cleared and the user lands on the empty placeholder, identical to a fresh visit. The sessionId is used (not the transient instance id) because it survives crash/respawn cycles.
-- **Concurrent sessions** — multiple subprocesses run in parallel across projects + worktrees. The sidebar's Sessions subnodes show a status dot per row.
-- **Restart server button** — a `⟲ Restart server` button pinned at the bottom of the sidebar self-respawns the orchestrator process. POSTs `/api/admin/restart`; the server immediately responds `202`, spawns a detached replacement (`process.execPath` + same argv/env/cwd), and exits. The new process retries the `listen` on `EADDRINUSE` while the kernel releases the old socket. After firing the POST the frontend waits 800 ms (to be sure the old server has actually exited), then polls `GET /api/projects` with `cache:'no-store'` until the new server answers `200`, then calls `location.reload()` — so any frontend-asset changes (HTML/CSS/JS) get re-fetched, not just the WebSocket reconnected against a still-cached page. After the reload, the anchor-auto-resume path (see "Session anchor in the URL" above) kicks in and the previously-active conversation is re-spawned with `--resume <sid>` into its original cwd, so the user lands back where they were rather than on the empty placeholder.
-
-### CLAUDE.md conventions
-
-Each project gets a one-line `CLAUDE.md`:
+Runs on Termux (localhost-only, single user) or any host with Node 22+ and the `claude` CLI on `$PATH`.
 
 ```
-@../CLAUDE.md
+        browser tab               HTTP + WS (:8787)
+        (vanilla JS)       ┌──────────────────────┐
+             │◄────────────►│   Node server        │
+             │              │  (express + ws)      │
+             │              └─────────┬────────────┘
+             │                   ┌────┴───┬──────┐
+             │           ┌───────┴───┐ ┌──┴──────┐ ┌─────────┐
+             └──────────►│ claude -p │ │claude -p│ │claude -p│
+                         │ project A │ │project B│ │project C│
+                         └───────────┘ └─────────┘ └─────────┘
+                         (stream-json stdin/stdout per instance)
 ```
 
-…which imports the workspace-wide `~/project/CLAUDE.md`. That file currently encodes git hygiene rules — init a repo if missing, commit after every changeful turn with a concise subject + short *why* summary, maintain `.gitignore`, never push or bypass hooks.
+## Features
+
+### Projects & workspaces
+- **Project list** — sidebar shows every dir under `~/project/`. `+ New project` creates a dir with `CLAUDE.md` containing `@../CLAUDE.md`. Worktree-owned dirs are hidden from the list (filtered against a Set built from the central store).
+- **Delete project** — `×` per row, typed-name confirm; cascades through instances + worktrees then `rm -rf`s the project. `~/.claude/projects/<encoded>/` jsonls are left intact (still resumable by the standalone CLI).
+- **Workspaces** — `≡` hamburger menu hosts `+ New workspace`; nest projects under collapsible `<details>` headers, one workspace per project, empty workspaces persist. Edit (rename / re-pick members / delete) via the ✎ button on each header. Collapse state persists in `localStorage` (`code-conductor:workspaces-collapsed`). Stored server-side at `~/project/.code-conductor/projects/<name>/project.json`; the workspace set is the union of `~/project/.code-conductor/workspaces.json` and any referenced names. Workspace names use the same `^[a-zA-Z0-9._-]+$` regex as project names.
+- **Git status pill** —
+  - **Project rows**: amber `↑N ↓M` against the currently-checked-out branch's *configured upstream* (e.g. `origin/<branch>`), using cached refs only (no `git fetch`). No pill when in sync / detached / upstream-less.
+  - **Worktree rows**: same shape but compares the worktree branch to its captured *parent base branch* (may be a local branch, not a remote). `↑N` = ahead and FF-able, `↓M` = behind and FF-able, `↑N ↓M` = diverged → rebase needed before merge.
+
+### Worktrees
+- **Isolated environments** — "Run in isolated git worktree" checkbox in the new-instance dialog runs `git worktree add ../<project>_worktree_<short-id> -b code-conductor/<short-id> <currentSha>` and spawns the agent with `cwd` set to the worktree. The orchestrator captures `{baseBranch, baseSha, branch}` at creation so you can spawn off any branch and land back later. Worktrees survive instance death — re-spawn into the same worktree from the sidebar.
+- **Two-step rebase-back**:
+  - **Sync** — already in sync → no-op; purely behind & clean → server-side `git merge --ff-only <baseBranch>`; diverged or behind-but-dirty → orchestrator sends the agent a templated rebase prompt (it runs `git rebase` itself, asks the user via `AskUserQuestion` on non-trivial conflicts, replies `REBASE_DONE`). Orchestrator never rebases directly.
+  - **Merge** — `git merge --no-ff --no-edit <worktreeBranch>` on the parent. Always produces a merge commit (default msg `Merge branch 'code-conductor/<id>'`) so each contribution stays visible in `git log --graph` and is revertible as one commit. Refuses inline (not as a 500) if the worktree is behind the parent, the parent is on a different branch than `baseBranch`, or the parent tree is dirty.
+- **Delete** — refused if there's a live instance or uncommitted work, with a `force=1` override.
+
+### Sessions & instances
+- **Unified view** — Sessions list per project (and per worktree) shows live + historical. Header: `Sessions (N) · K live · last <ago>`. Click to focus live instance, or resume stopped one (`POST /api/instances` with `--resume <sid>`). Synthetic `(new session)` row for spawned-but-no-jsonl-yet instances.
+- **Quick-spawn ↯** — `↯` button next to `+` on every project row pops a 3-button Haiku/Sonnet/Opus picker; one tap spawns a **temp session** in `code` mode at the project root, no dialog. Temp sessions land in a default-collapsed **Temp Sessions** subnode (collapse state in `localStorage` key `code-conductor:temp-sessions-expanded`); never mixed with persistent sessions since the jsonl is wiped on exit. Each temp row has an always-visible `↑` button (no hover gate, mobile-tappable) that **promotes** the session via `POST /api/instances/:id/promote` — flips `temp:false`, writes the resume-picker metadata, broadcasts the status change, and the row migrates into the regular Sessions list.
+- **Unread indicator** — small accent pill next to a row when its instance finishes a turn while you're viewing a different session (per-instance, persisted in `localStorage` key `code-conductor:unread`).
+- **Delete session** — hover-revealed `×`, confirm; 409 if live, with offer to kill instance + delete via `?force=1`.
+- **Rewind & fork** — every user message bubble has `↶` (rewind in place, same `sessionId`) and `⑂` (fork to a new `sessionId`) on hover. Both atomically rewrite the jsonl, preserve the dropped prompt in the composer, and 409 during a running turn.
+  - Rewinding **to the first user message** is special-cased: prefix is empty, so the orchestrator deletes the jsonl entirely and respawns with `--session-id <sid>` (not `--resume`, which the CLI rejects on zero-line files).
+  - **Temp sessions cannot be rewound or forked** — the on-exit cleanup races the rewrite.
+  - UI-only — no MCP equivalent yet.
+- **Crash recovery** — subprocess death → `crashed`; Resume respawns with `--resume <sid>`, preserving the in-memory event ring + conversation.
+- **Session anchor** — `#session=<sid>` URL hash; on reload, auto-resumes by locating the jsonl on disk (worktree-aware) via `GET /api/sessions/:sid/locate`. `--resume` spawn costs zero API tokens until the next prompt. Stale anchors are silently cleared.
+
+### Spawn options
+- **Mode** — `plan` (read-only, propose then `ExitPlanMode`), `ask` (every destructive tool gates through Allow/Deny card), `code` (full power, CLI's `bypassPermissions`). CLI's `default` / `acceptEdits` are not exposed: in `stream-json --print` (no SDK `canUseTool` callback) they auto-deny tool calls and the only recovery is forcing the model to regenerate the entire tool input.
+- **Effort** — `low` / `medium` / `high` (default) / `xhigh` / `max`.
+- **Thinking** — `adaptive` (default) / `enabled` / `disabled`.
+- **Model** — empty (account default) or pick `claude-sonnet-4-6` / `claude-opus-4-7` / `claude-haiku-4-5`.
+- **Temp session** — deletes the jsonl + sibling `subagents/` dir on exit and skips `last-prompt`/`permission-mode` metadata appends during the run; mode defaults to `code`; header shows a `TEMP` pill.
+- **Debug mode** — mirrors raw CLI traffic (`claude-stdin.jsonl`, `claude-stdout.jsonl`, `claude-stderr.log`, `meta.json`) to `~/project/.code-conductor/projects/<p>/[worktrees/<wt>/]debug/<instance-id>/`. Append-mode, survives session end. Header shows a `DEBUG` pill.
+
+### Live conversation
+- **Text** — streams as text-node deltas; on `text_end` re-renders through `public/markdown.js` (headings, lists, code, **bold**, *italic*, links, autolinked bare `http(s)://…` URLs). Link schemes restricted to `http(s)/relative/fragment/mailto`; no `innerHTML`; raw HTML in source rendered as literal text.
+- **Thinking** — collapsible block; Opus 4.7 emits only `signature_delta`, rendered as a non-expandable `thinking (redacted)` line (no disclosure caret).
+- **Tool use** — collapsed by default with smart one-line summary (`🔧 Bash · ls -la · done`). Edit/Write/NotebookEdit render as syntax-coloured unified diffs (green/red gutters, ±counts, sticky file-path); Write shows a numbered preview. Other tools: raw-JSON input in its own collapsed `↪ tool_input` block.
+- **Tool result** — truncated at 4 KB with "show full".
+- **Sub-agent drill-down** — `Task` tool calls nest a mini-conversation (dashed border, `↳ sub-agent` label) inside the parent tool block, routed by `parentToolUseId`.
+- **Plan mode card** — green-bordered card "Plan ready for approval". Body comes from `input.plan`, or — when the model wrote the plan to `~/.claude/plans/*.md` first and called `ExitPlanMode` with empty input — the most-recent such file. **Approve** sends `"I approve the plan. Please proceed with the implementation."` (+ feedback if provided) and flips the instance to `code` (`bypassPermissions`). **Reject** keeps plan mode active and sends `"I'd like to revise the plan. Refinement notes:\n<feedback>"`. **📋 Auto-approve plans** toggle in the ⋮ menu is per-instance, session-local, cleared on full page reload.
+- **AskUserQuestion card** — blue card; multi-question tab strip across the top. Same input field flips role: **Other:** before any option picked (overrides), **Add a note (optional)** after a pick. Typed text persists across pick/unpick. **Send all answers** enables once every question is answered and queues if instance is busy (flushes on next `status=idle`).
+- **Ask-mode card** — purple-bordered, with tool name + summary + full diff/Write preview. **Allow** → `permissionDecision:"allow"` resolves the held-open HTTP hook response; CLI proceeds with the original `tool_use_id` (no model regeneration). **Deny** → inverse. `permission_resolved` flips the card to ✓/✗ across tabs.
+- **System notes** — kept: `init`, `stderr`, `exit`, `permission_denied`, `compacting`, `spawn_error`, `crashed`, `history_load_error`, non-allowed `rate_limit_event`. Filtered: per-turn `status:"requesting"`, `rate_limit_event:"allowed"`, hook lifecycle pings, task progress.
+- **Turn footer** — duration, cost, tokens.
+
+### UI elements
+- **Task panel** — strip above composer mirroring `TaskCreate`/`TaskUpdate`. Groups into batches: while at least one task is pending/in-progress, the whole batch (including its ✓s) stays. Panel hides only when *all* batches are fully completed; a new task post-batch drops the historical ✓s and starts fresh.
+- **Footer status bar** — thin row pinned between task panel and composer. **Left**: pulsing green dot + animated `Claude is working…` ellipsis while the active instance is in `turn` status (respects `prefers-reduced-motion` — stays visible but stops animating). **Right**: ctx chip. Collapses when no instance is selected.
+- **Context-usage chip** — `ctx N% · 245k/1M` pinned right of the footer. `N%` = latest `message_start`'s `input_tokens + cache_read_input_tokens + cache_creation_input_tokens` over the model's context window. Updates **live mid-turn** (each agent-loop step fires a `message_start`). Colour-graded green/amber/red at 50%/80%; tap for session totals (turns, duration, cost, uncached input, output, cache reads + hit ratio, cache creation). Window sizes hardcoded: `claude-opus-4-7[1m]` → 1M, everything else → 200k.
+- **Composer** — Enter sends, Shift+Enter newlines. Placeholder reflects state ("turn running — your message will queue", "click Resume", etc.). Queueable during running turns. Attachments via `+` button, paste, or drag-and-drop (10 MB cap each). Saved to `~/project/.code-conductor/projects/<p>/[worktrees/<wt>/]attachments/<timestamp>-<name>` and referenced via `` Attached file: `<abs-path>` `` text blocks — no inline base64, Claude `Read`s on demand. Project/worktree dirs stay clean (no `.gitignore` needed). User-bubble thumbnails: live echoes paint from in-memory base64, replays fetch via `GET /api/instances/:id/attachments/<filename>`.
+- **Controls** — mode dropdown (live `control_request set_permission_mode`), context-aware **Interrupt** (turn running) / **Kill** (otherwise, with confirm), **Resume** when exited/crashed.
+- **Notifications** — 🔔/🔕 toggle in sidebar header (global, not per-instance). Pings OS when any instance finishes while tab is hidden (errors notify even when visible). On page reload the bell auto-enables if Notification permission was previously granted. Dispatched via Service Worker (`public/sw.js`) because mobile Chrome refuses page-level `new Notification(...)`. `notificationclick` focuses the existing tab.
+- **Restart server button** — `⟲` at sidebar bottom. POSTs `/api/admin/restart` (202 immediate, spawns a detached child, exits). Frontend waits 800 ms (let the old socket release), polls `GET /api/projects` with `cache:'no-store'` until 200, then `location.reload()` so HTML/CSS/JS get re-fetched. Anchor-auto-resume kicks in post-reload.
 
 ### MCP interface
+Mounted at `POST /mcp` (Streamable HTTP, JSON-RPC 2.0); tools exposed as `mcp__code-conductor__*`. Auto-registered on every spawn via `--mcp-config` (opt out with `ORCH_DISABLE_MCP_AUTOREGISTER=1`). No auth — localhost-only.
 
-The orchestrator's verbs are also exposed as an [MCP](https://modelcontextprotocol.io/) server mounted on the same port at `POST /mcp` (Streamable HTTP, JSON-RPC 2.0). Any Claude session can drive the orchestrator directly — list / spawn / kill instances, send prompts to other live sessions, read their transcripts, create and merge worktrees, etc. Useful for letting one agent supervise or fan out work across several others.
-
-**Auto-registered on every spawn** — no setup required. The orchestrator passes `--mcp-config '{"mcpServers":{"code-conductor":{"type":"http","url":"http://127.0.0.1:<port>/mcp"}}}'` to every Claude subprocess, so the `mcp__code-conductor__*` tools are available immediately without a prior `claude mcp add` step. The server name is fixed at `code-conductor` because the tool-name prefix is bound to it. To opt out (e.g. to neutralise the Claude-spawning-Claude recursion footgun described in [Known limitations](#known-limitations)), set `ORCH_DISABLE_MCP_AUTOREGISTER=1` on the orchestrator's environment before `npm start`.
-
-Available tools:
-
-- **Read:** `list_projects`, `list_instances`, `list_sessions`, `list_worktrees`, `locate_session` (find which project / worktree owns a sessionId by probing on-disk jsonls), `get_transcript`, `get_last_message` (joined text of the most recent assistant message, plus structured blocks), `project_status` (branch, HEAD, dirty lines, recent commits, top-level files, and — for worktrees — mergeStatus + diffStat vs base), `read_file` (path-traversal-guarded read of a project- or worktree-relative file).
-- **Create:** `create_project` (`{name, gitInit?}` — seeds `CLAUDE.md` with `@../CLAUDE.md`).
-- **Spawn / drive:** `spawn_instance`, `send_prompt` (optional `wait:true` blocks until `turn_end`), `wait_for_idle` (default 10 min, matching `send_prompt`'s wait cap), `set_mode`, `interrupt_turn`, `kill_instance`, `respawn_instance`
-- **Worktrees:** `create_worktree`, `delete_worktree`, `sync_worktree`, `merge_worktree` (takes either `instanceId` *or* `{project, worktreeName}` — the latter form works after the attached instance has been killed)
-
-No auth — same localhost-only posture as the REST surface. See [Known limitations](#known-limitations) for the Claude-spawning-Claude recursion caveat.
+- **Read:** `list_projects`, `list_instances`, `list_sessions`, `list_worktrees`, `locate_session`, `get_transcript`, `get_last_message`, `project_status`, `read_file` (path-traversal guarded).
+- **Create:** `create_project` (`{name, gitInit?}`).
+- **Spawn/drive:** `spawn_instance`, `send_prompt` (optional `wait:true`, 10 min cap), `wait_for_idle`, `set_mode`, `interrupt_turn`, `kill_instance`, `respawn_instance`.
+- **Worktrees:** `create_worktree`, `delete_worktree`, `sync_worktree`, `merge_worktree` (takes `instanceId` or `{project, worktreeName}` — the latter works after the instance is gone).
 
 ## Quick start
 
@@ -102,33 +90,26 @@ No auth — same localhost-only posture as the REST surface. See [Known limitati
 cd ~/project/code-conductor
 npm install            # express, ws
 npm start              # http://127.0.0.1:8787
-npm test               # run the integration suite (node:test)
-RUN_REAL_CLAUDE=1 npm test   # also runs the opt-in real-claude smoke test
+npm test               # integration suite (node:test)
+RUN_REAL_CLAUDE=1 npm test   # also runs opt-in real-claude smoke
 ```
 
-Open `http://127.0.0.1:8787` in a browser on the same device. Bound to localhost only — no auth.
+**Startup check.** Server probes `claude --version` (3s timeout) and credentials (`~/.claude/.credentials.json` or `ANTHROPIC_API_KEY`). Emits `claude OK — v…, authenticated via…` or a framed `WARNING` block per issue. Server starts either way. Implemented in `src/health.js`.
 
-**Startup readiness check.** On boot the server probes whether the `claude` CLI is runnable (spawns `claude --version` with a 3 s timeout) and whether it's signed in (`~/.claude/.credentials.json` or `ANTHROPIC_API_KEY`). When everything's fine you get a single line on stderr — `claude OK — v2.1.143, authenticated via credentials.json`. When something's off (binary missing, `~/.claude/` never initialized, no credentials) you get a framed `WARNING` block listing each issue with the exact command to run to fix it. The server still starts either way — the UI is useful for browsing projects even without `claude` set up — but you'll see the warning loudly in the terminal you launched it from. Implemented in `src/health.js`, wired in `server.js`'s `start()`.
+**Install on Android.** Chrome → ⋮ → **Install app** / **Add to home screen**. Uses Web App Manifest (`public/manifest.webmanifest`) + SVG icon + Service Worker for standalone-mode launch.
 
-**Install as an app on Android.** Visit the URL in Chrome, open the ⋮ menu, and tap **Install app** (or **Add to home screen**). CodeConductor ships a Web App Manifest (`public/manifest.webmanifest`) and an SVG icon, so the launcher icon lands on the home screen and opens the app in standalone mode — no URL bar, separate task in the recents view. The same Service Worker that powers desktop notifications keeps working.
+**Visual debug.** Playwright + Termux Chromium harness in `debug/`, which is a thin wrapper over the **sibling repo** `~/project/termux-playwright-harness/` — clone alongside and `npm install` once. Not wired into the main test suite.
 
-For headless visual debugging via Playwright + Termux Chromium, see [`debug/README.md`](./debug/README.md). The reusable harness lives in a sibling repo at [`~/project/termux-playwright-harness/`](../termux-playwright-harness/) (clone it alongside and `npm install` once); `debug/` here is a thin orchestrator-specific wrapper, not wired into the main test suite.
-
-## Technical detail
+## Technical
 
 ### Stack
-
-- **Node 22+** (uses `node:test`, top-level await, `crypto.randomUUID`).
-- **`express`** for the small REST surface and static asset serving.
-- **`ws`** for a single `/ws` WebSocket multiplexed across all instance subscriptions.
-- **Vanilla HTML/CSS/JS** in `public/` — no build step. Modules load via native `<script type="module">`.
-- **`happy-dom`** (dev-only) — used by `tests/rendering.test.mjs` to run the actual conversation renderer against simulated streams and assert what lands in the DOM.
-- **No DB** — projects live as directories under `~/project/`, sessions live as `~/.claude/projects/<encoded-cwd>/*.jsonl`.
+- Node 22+ (`node:test`, top-level await, `crypto.randomUUID`).
+- `express` (REST + static) + `ws` (WebSocket).
+- Vanilla HTML/CSS/JS in `public/`, no build step.
+- `happy-dom` (dev-only) for DOM-backed rendering tests.
+- No DB — projects in `~/project/`, sessions in `~/.claude/projects/<encoded-cwd>/*.jsonl`.
 
 ### Subprocess protocol
-
-Each Instance spawns:
-
 ```bash
 claude -p \
   --input-format=stream-json --output-format=stream-json \
@@ -141,452 +122,149 @@ claude -p \
   --session-id <fresh-uuid> | --resume <existing-uuid>
 ```
 
-`--allow-dangerously-skip-permissions` is passed at spawn even when the instance starts in `plan` mode — without it the CLI rejects any later runtime `set_permission_mode bypassPermissions` (the plan-approve flow) with *"session was not launched with --dangerously-skip-permissions"*. The flag only *permits* the switch; it doesn't activate bypass by itself.
+`--allow-dangerously-skip-permissions` is **always** passed at spawn — even for `plan`-mode instances — because without it the CLI rejects any later runtime `set_permission_mode bypassPermissions` (i.e. the plan-approve flow). The flag only *permits* the switch; it doesn't activate bypass on its own.
 
-`--settings` carries an inline JSON object (a single CLI string, no settings file on disk) that registers two `PreToolUse` hooks per instance:
+Two `PreToolUse` hooks via inline `--settings` JSON:
+1. **AskUserQuestion|ExitPlanMode** — `command` hook, static deny with reason "Awaiting user input via the orchestrator UI". Model gets `is_error: true` tool_result, emits a short waiting note, ends the turn naturally — no `control_request interrupt`, no `[Request interrupted by user]` marker.
+2. **Edit|Write|NotebookEdit|Bash** — `http` hook → `POST /api/instances/<id>/hook-callback`, **660 s** CLI-side timeout. Orchestrator auto-allows when the mode isn't `ask`; in `ask` mode holds the response open up to **540 s** (deliberately under 660 s — an HTTP timeout would make the CLI treat the hook as a non-blocking error and proceed, the opposite of intent). `ask` is orchestrator-tracked only and maps to `bypassPermissions` at the CLI level; the hook callback inspects orchestrator-side mode to gate.
 
-1. **`AskUserQuestion|ExitPlanMode`** — a `command` hook running `printf` that returns a static deny with reason *"Awaiting user input via the orchestrator UI"*. Replaces the older auto-interrupt + marker-scrub plumbing: the model receives an `is_error: true` tool_result, emits a short "Waiting for your response." text block, and ends the turn naturally — no `control_request interrupt`, no `[Request interrupted by user]` marker.
-2. **`Edit|Write|NotebookEdit|Bash`** — an `http` hook pointing at `http://127.0.0.1:<port>/api/instances/<id>/hook-callback` with a 660 s timeout. The orchestrator-side endpoint auto-allows when the instance is not in `ask` mode (so the hook is harmless in plan/code), or otherwise holds the response open and surfaces a `permission_request` UI event. A WS `hook_decision` from the user resolves the response with the matching `permissionDecision`. Server-side internal timeout is 540 s — safely under the CLI-side 660 s, because an HTTP timeout would make the CLI treat the hook as a non-blocking error and the tool would proceed (the opposite of what we want).
+Inbound: `user` (text or `[{type:"text", text:"..."}, …]` blocks; attachments use `` Attached file: `<rel-path>` ``), `control_request` (`set_permission_mode` / `interrupt`), `keep_alive`.
 
-The orchestrator-tracked `ask` mode maps to `bypassPermissions` at the CLI level (the CLI itself doesn't know about ask). `setMode("ask")` issues `control_request set_permission_mode bypassPermissions` and tracks `ask` locally; the hook callback inspects the orchestrator's mode to decide whether to prompt or auto-allow.
-
-The CLI then reads JSON lines on stdin and emits JSON lines on stdout. Inbound message types we send:
-
-- `{"type":"user","message":{"role":"user","content":"..."},"parent_tool_use_id":null}` — new user turn. `content` is either a plain string (text-only prompts) or an array of text blocks; attachment text blocks have the canonical form `Attached file: \`<rel-path>\`` (the parser uses this exact shape to extract attachment chips on replay).
-- `{"type":"control_request","request_id":"<uuid>","request":{"subtype":"set_permission_mode","mode":"plan"}}` — switch mode without restarting (e.g. flipping between `plan` and `bypassPermissions`).
-- `{"type":"control_request","request_id":"<uuid>","request":{"subtype":"interrupt"}}` — abort the current turn.
-- `{"type":"keep_alive"}` — heartbeat.
-
-Outbound message types we parse:
-
-| `type` | Meaning |
-|---|---|
-| `system` + `subtype:"init"` | First-event-of-the-turn (note: only arrives bundled with the first turn's response, not at startup). Carries `session_id`, `model`, `tools`, `permissionMode`. |
-| `stream_event` | SSE deltas from `--include-partial-messages` — `text_delta`, `thinking_delta`, `input_json_delta`, `signature_delta`, plus the `message_start` / `content_block_start` / `content_block_stop` / `message_stop` framing. The primary live-rendering feed. |
-| `assistant` | Final reconciled assistant message for each turn. Used for replay; deltas already drove the live UI. |
-| `user` | Inbound `tool_result` blocks from tool execution. |
-| `result` | Turn-end marker with `duration_ms`, `usage`, `total_cost_usd`, `stop_reason`, `is_error`. |
-| `hook_event` | Lifecycle hooks (PreToolUse, PostToolUse, etc.) — rendered as small dimmed lines. |
-| `control_response` | Our reply to control_requests we issued. |
+Outbound: `system` + `subtype:"init"` (bundled with first turn's response, not at startup; carries `session_id`, `model`, `tools`, `permissionMode`), `stream_event` (live SSE deltas — primary feed), `assistant` (final reconciled per-turn message — used for replay only), `user` (`tool_result` blocks), `result` (turn-end with `duration_ms`, `usage`, `total_cost_usd`, `stop_reason`, `is_error`), `hook_event`, `control_response`.
 
 ### Component layout
-
-```
-code-conductor/
-├── server.js                 Express + ws boot, mounts routes, binds 127.0.0.1:8787
-├── package.json              "type": "module"; deps: express, ws
-├── CLAUDE.md                 @../CLAUDE.md
-├── src/
-│   ├── instances.js          Instance class + InstanceManager. Subprocess lifecycle,
-│   │                         ring buffer (last 500 UI events), control_request
-│   │                         round-trip, mode validation (plan / ask /
-│   │                         bypassPermissions). Delegates hook callbacks to
-│   │                         hookBroker.js, `--settings` JSON to settings.js, and
-│   │                         persisted-session replay + metadata appends to
-│   │                         transcript.js.
-│   ├── hookBroker.js         Per-instance broker for the PreToolUse http hook
-│   │                         callback. Holds open hook HTTP responses in a pending
-│   │                         map keyed by tool_use_id, applies the 540 s timeout,
-│   │                         and reaches back into the Instance through two
-│   │                         injected callbacks only (getMode + emit).
-│   ├── settings.js           Builds the inline `--settings` JSON passed to every
-│   │                         claude spawn — registers the static-deny PreToolUse
-│   │                         hook on AskUserQuestion|ExitPlanMode and (optionally)
-│   │                         the interactive http hook on Edit|Write|NotebookEdit|Bash.
-│   │                         Pure values in, JSON string out — no Instance state.
-│   ├── transcript.js         Persisted-session helpers. Replays
-│   │                         `~/.claude/projects/<encoded-cwd>/<sid>.jsonl` into the
-│   │                         orchestrator's UI-event shape on resume, and
-│   │                         best-effort appends the `last-prompt` +
-│   │                         `permission-mode` metadata lines that
-│   │                         `claude --resume`'s interactive picker reads.
-│   │                         Also exports `isPureUserPromptLine` — the
-│   │                         shared predicate the rewind/fork plumbing uses
-│   │                         to keep the Nth user_echo index in lock-step
-│   │                         with the Nth pure-user-prompt line in the jsonl.
-│   ├── sessionEdit.js        Destructive edits on persisted session jsonls.
-│   │                         truncateSessionAtUserMessage rewrites the file
-│   │                         atomically (write tmp → fsync → rename) to keep
-│   │                         only the prefix before the Nth pure user-prompt
-│   │                         line + appends a fresh last-prompt/permission-
-│   │                         mode pair anchored at the surviving leaf.
-│   │                         forkSessionAtUserMessage copies the prefix into
-│   │                         a new sessionId file with the sessionId field
-│   │                         on each line rewritten to the new id; the
-│   │                         original jsonl is untouched. Both return the
-│   │                         droppedText so the frontend can prefill the
-│   │                         composer.
-│   ├── parser.js             stream-json line → UI event normalization. Merges
-│   │                         deltas by (msgId, blockIdx); emits thinking_redacted
-│   │                         when a thinking block closes with only signature_delta;
-│   │                         attaches parentToolUseId so sub-agent events can be
-│   │                         routed to nested views; emits structured user_question
-│   │                         events for AskUserQuestion and plan_request events for
-│   │                         ExitPlanMode.
-│   ├── projects.js           FS ops on ~/project; cwd encoding for ~/.claude/projects;
-│   │                         seeds CLAUDE.md on new projects.
-│   ├── routes.js             REST handlers; thin shell over instances + projects.
-│   │                         Hosts POST /instances/:id/hook-callback — the
-│   │                         PreToolUse http hook endpoint the CLI calls into.
-│   │                         GET /instances/:id/attachments/:filename streams
-│   │                         saved attachments back to the UI for replay
-│   │                         thumbnails (path-traversal guarded).
-│   │                         POST /admin/restart triggers self-respawn via
-│   │                         src/restart.js.
-│   │                         Worktree surface: list/delete worktrees per project,
-│   │                         POST sync + merge.
-│   ├── restart.js            scheduleRestart(): closes the WSS + http server,
-│   │                         spawns a detached node child with the same argv/
-│   │                         env/cwd, and exits. The child's listen-with-retry
-│   │                         loop in server.js handles the EADDRINUSE window
-│   │                         while the kernel releases the old socket.
-│   ├── worktrees.js          Git worktree operations. createWorktree captures
-│   │                         {baseBranch, baseSha, branch} at HEAD, writes a
-│   │                         worktree.json record into the central store at
-│   │                         <root>/.code-conductor/projects/<p>/worktrees/<wt>/
-│   │                         (which listProjects uses to filter the dir out
-│   │                         of the project list), and runs `git worktree
-│   │                         add` off the captured SHA. The worktree dir
-│   │                         itself stays clean — no in-tree dotfolder.
-│   │                         syncWorktree picks the cheapest update path
-│   │                         (no-op / FF inside worktree / "rebase
-│   │                         required" → caller sends buildRebasePrompt
-│   │                         to the agent). mergeWorktreeIntoParent runs
-│   │                         `git merge --no-ff --no-edit` on the parent
-│   │                         with safety checks (parent on baseBranch +
-│   │                         clean tree) — always produces a merge commit
-│   │                         so the worktree stays visible in history.
-│   ├── mcp/                  MCP server mounted at /mcp. server.js handles the
-│   │   ├── server.js         JSON-RPC 2.0 dispatch (initialize / tools/list /
-│   │   ├── tools.js          tools/call) over Streamable HTTP. tools.js is the
-│   │   └── handlers.js       static tool registry (schema + name + description);
-│   │                         handlers.js implements them as thin shells over
-│   │                         InstanceManager + projects.js + worktrees.js. No
-│   │                         business logic duplicated here.
-│   ├── attachments.js        Central-store attachment storage.
-│   │                         saveAttachment(project, worktreeName, {name,
-│   │                         dataBase64}) decodes the base64 payload into
-│   │                         <root>/.code-conductor/projects/<p>/[worktrees/<wt>/]
-│   │                         attachments/<stamp>-<safe-name> and returns
-│   │                         the absolute promptPath the model reads via
-│   │                         the Read tool. isImageType() classifies images
-│   │                         vs. non-images so prompt() can build
-│   │                         a vision block (image) or a path-reference text block
-│   │                         (non-image).
-│   └── wsHub.js              Per-socket subscriptions; snapshot replay; fan-out;
-│                             prompt/mode/interrupt/kill/hook_decision via WS;
-│                             broadcasts turn_notification to every client on
-│                             turn_end.
-├── public/
-│   ├── index.html            Shell layout + new-project / new-instance dialogs +
-│   │                         🔔 notification toggle.
-│   ├── styles.css            Mobile-friendly dark theme; diff/sub-agent/
-│   │                         user-question/plan card styling.
-│   ├── app.js                Bootstraps; reactive store; reconnect on WS open;
-│   │                         wires notification toggle, user-question submissions,
-│   │                         and plan-mode decisions back over WS.
-│   ├── ws.js                 Reconnecting WebSocket client with ack-based requests.
-│   ├── sidebar.js            Project ▸ Sessions subnode (unified live +
-│   │                         historical) ▸ Worktrees subnode (each worktree
-│   │                         has its own Sessions subnode). Sessions
-│   │                         default-expanded; lazy-loaded on first expand;
-│   │                         re-merged with live instances on every render
-│   │                         so status dots stay fresh.
-│   ├── conversation.js       Ordered message list; sticky-scroll; idempotent by _seq;
-│   │                         routes events with parentToolUseId into nested
-│   │                         sub-Conversations; dispatches user_question,
-│   │                         plan_request, permission_request, and the
-│   │                         permission_resolved follow-up to inline card renderers.
-│   ├── blocks.js             Renderers for text/thinking/tool_use/tool_result/
-│   │                         user-question/plan-request/permission-request;
-│   │                         describeToolInput() for collapsed summaries; per-tool
-│   │                         body renderers for Edit/Write/NotebookEdit using the
-│   │                         diff module (reused inside the Allow/Deny card).
-│   ├── diff.js               Pure-JS Myers' line-diff + diffStats().
-│   ├── markdown.js           Tiny safe Markdown → DOM renderer (textContent only,
-│   │                         no innerHTML). Used for plan bodies and for the
-│   │                         `text_end` re-render of assistant text blocks; link
-│   │                         schemes restricted to http(s)/relative/fragment/mailto.
-│   ├── notifications.js      Notification API wrapper + pure shouldNotify()
-│   │                         decision used by both runtime and tests.
-│   ├── tasks.js              TaskTracker — observes the UI event stream for
-│   │                         TaskCreate / TaskUpdate tool calls, binds the
-│   │                         tool-allocated task IDs by reading the matching
-│   │                         tool_result text, and drives the TaskPanel above
-│   │                         the composer. Pure state; DOM rendering is separate.
-│   ├── usage.js              Per-instance UsageTracker that consumes the UI
-│   │                         event stream (system/init + turn_end) and
-│   │                         exposes currentContextSize / currentFillPct
-│   │                         plus a cum.* running total. Drives the
-│   │                         `ctx N%` header chip and the session-totals
-│   │                         popover. CONTEXT_WINDOWS table is hardcoded.
-│   ├── anchor.js             URL-hash helpers (readSessionAnchor /
-│   │                         writeSessionAnchor) so a refresh restores
-│   │                         the active session by `#session=<sid>`.
-│   └── composer.js           Textarea (Enter→send / Shift+Enter→newline) plus
-│                              the `+` attach button, file picker, chip strip with
-│                              image previews, paste + drag-and-drop handlers, and
-│                              base64 encoding of each attachment for the WS payload.
-└── tests/
-    ├── run.mjs               Programmatic node:test runner (the Termux node wrapper
-    │                         hoists leading --flags into NODE_OPTIONS, which forbids
-    │                         --test, so we invoke run() directly).
-    ├── fake-claude.mjs       Scenario-driven stand-in for the real CLI. Reads stdin
-    │                         JSON lines, emits canned events from a FAKE_CLAUDE_SCENARIO
-    │                         file, auto-acks parent-issued control_requests, and
-    │                         matches incoming control_response (with optional
-    │                         request_id + behavior filter) so scenarios can branch
-    │                         on the user's allow/deny choice. Mirrors real claude's
-    │                         "silent until first prompt" behavior.
-    ├── helpers.mjs           bootServer() sets ephemeral PROJECTS_ROOT/CLAUDE_PROJECTS_ROOT
-    │                         + CLAUDE_BIN (or skips for useRealClaude:true).
-    ├── fixtures/             Scenario JSONs and a sample session.jsonl.
-    ├── parser.test.mjs       Pure-function tests over Parser.handleLine() — including
-    │                         parentToolUseId propagation, thinking_redacted,
-    │                         AskUserQuestion → user_question emission.
-    ├── projects.test.mjs     REST: create/list/sessions; CLAUDE.md seed.
-    ├── instances.test.mjs    Lifecycle: spawn → idle, prompt → turn_end, setMode
-    │                         round-trip, interrupt, crash + respawn, history
-    │                         replay, last-prompt metadata write, single user_echo.
-    ├── ws.test.mjs           Subscribe + snapshot + live fan-out; reconnect dedup;
-    │                         two-instance concurrency; mode/interrupt over WS;
-    │                         turn_notification fan-out to non-subscribers.
-    ├── hook-callback.test.mjs PreToolUse http hook endpoint: auto-allows in
-    │                         non-ask modes; in ask mode emits permission_request
-    │                         over WS and resolves on hook_decision allow/deny;
-    │                         instance exit resolves pending callbacks deny.
-    ├── worktrees.test.mjs    End-to-end worktree feature against a real `git`:
-    │                         create / list / delete worktrees, listProjects
-    │                         hides them, spawn-into-existing reuses metadata,
-    │                         sync (already-in-sync / FF / rebase-prompt-sent /
-    │                         instance-not-running) and merge (happy path +
-    │                         "click Sync first" + parent-on-wrong-branch).
-    ├── question.test.mjs     AskUserQuestion → user_question UI event end-to-end;
-    │                         scenario emits the hook-deny tool_result + a normal
-    │                         result/success and the orchestrator must NOT issue an
-    │                         interrupt control_request.
-    ├── plan.test.mjs         ExitPlanMode → plan_request enriched from ~/.claude/
-    │                         plans/*.md; same hook-deny shape; no interrupt; the
-    │                         plan-approve setMode → bypassPermissions WS path.
-    ├── notifications.test.mjs Pure-unit shouldNotify() decision table.
-    ├── diff.test.mjs         Myers' diff: identity, pure add/del, replacement,
-    │                         empties, round-trip both sides, stats.
-    ├── static.test.mjs       Static asset serving + DOM-free module import.
-    ├── blocks.test.mjs       describeToolInput() per-tool summaries.
-    ├── anchor.test.mjs       URL-hash readSessionAnchor / writeSessionAnchor.
-    ├── attachments.test.mjs  saveAttachment() round-trip + isImageType()
-    │                         classification + prompt-block assembly.
-    ├── markdown.test.mjs     Markdown → DOM renderer: heading/list/code/inline
-    │                         coverage plus link-scheme rejection (no
-    │                         javascript:, no raw HTML passthrough).
-    ├── sidebar.test.mjs      Sidebar renderer: project ▸ Sessions ▸ Worktrees
-    │                         subnode wiring, status-dot merge, collapse state.
-    ├── tasks.test.mjs        TaskTracker state machine: create/update batching,
-    │                         tool_result id binding, completed-batch hiding.
-    ├── usage.test.mjs        UsageTracker math + format helpers + DOM
-    │                         assertions for the header chip class
-    │                         transitions across the 50% / 80% thresholds.
-    ├── rendering.test.mjs    happy-dom-backed DOM tests over the parser →
-    │                         conversation rendering pipeline. Catches
-    │                         user-visible regressions the parser tests miss
-    │                         (e.g. "is the tool command actually visible?").
-    ├── mcp.test.mjs          MCP server end-to-end via fetch /mcp:
-    │                         initialize/tools-list handshake, unknown-method
-    │                         error envelope, unknown-tool isError, list_projects,
-    │                         spawn_instance → send_prompt(wait:true) →
-    │                         get_transcript round-trip, wait_for_idle,
-    │                         set_mode, kill_instance, argument validation,
-    │                         create/list/delete_worktree against a real git
-    │                         repo, merge_worktree "behind" refusal.
-    ├── server-restart.test.mjs Live subprocess test for POST /api/admin/restart.
-    │                         Spawns `node server.js`, hits the endpoint,
-    │                         asserts the original PID exits cleanly and a
-    │                         new PID is serving the same port.
-    ├── session-edit.test.mjs Pure-function coverage of truncate + fork
-    │                         helpers in src/sessionEdit.js: index counting
-    │                         (tool_result-only user lines are skipped),
-    │                         atomic rewrite, fresh resume-picker metadata,
-    │                         out-of-range rejection, attachment-marker
-    │                         stripping from droppedText.
-    ├── rewind.test.mjs       POST /api/instances/:id/rewind end-to-end:
-    │                         seeds a jsonl, resumes, rewinds, asserts the
-    │                         ring buffer + on-disk jsonl reflect the truncate
-    │                         and `snapshot_reset` fired exactly once. Also
-    │                         covers 409-during-turn, 400-temp, 400-out-of-
-    │                         range refusals.
-    ├── fork.test.mjs         POST /api/instances/:id/fork end-to-end:
-    │                         original jsonl is byte-identical after the
-    │                         call, the new instance's ring contains only
-    │                         the prefix, the original instance is untouched.
-    └── smoke.real.test.mjs   Opt-in real-claude end-to-end (RUN_REAL_CLAUDE=1) —
-                              text reply, Bash tool call shape, AskUserQuestion
-                              user_question event shape, and ask-mode Write
-                              gated by the PreToolUse hook (proves Allow lets
-                              the same tool_use_id proceed, no regeneration).
-
-debug/                        Opt-in Playwright + Termux-Chromium harness for
-├── README.md                 visual verification of UI changes. Thin
-├── boot-orch.mjs             orchestrator-specific glue over the generic
-└── snap.mjs                  termux-playwright-harness sibling repo at
-                              ~/project/termux-playwright-harness/. boot-orch.mjs wraps
-                              the generic bootServer with the orch's cwd /
-                              server.js entry / sandboxed PROJECTS_ROOT +
-                              fake-claude. snap.mjs is a CLI screenshotter
-                              with a --boot mode that uses bootOrch.
-                              See debug/README.md for the workflow.
-```
+- **server.js** — Express + ws boot, mounts routes, binds `127.0.0.1:8787`.
+- **src/instances.js** — Instance class, InstanceManager, ring buffer (500 events), control_request round-trip, mode validation.
+- **src/hookBroker.js** — Per-instance broker for the PreToolUse http hook, pending-response map keyed by `tool_use_id`, 540 s timeout.
+- **src/settings.js** — Builds the inline `--settings` JSON. Pure values → JSON string; no Instance state.
+- **src/transcript.js** — Replays `~/.claude/projects/<encoded-cwd>/<sid>.jsonl` into UI-event shape on resume; best-effort `last-prompt`/`permission-mode` appends; exports `isPureUserPromptLine`.
+- **src/sessionEdit.js** — Atomic destructive jsonl edits: `truncateSessionAtUserMessage` (tmp → fsync → rename, appends fresh metadata at the new leaf), `forkSessionAtUserMessage` (copies prefix into a new `<sid>.jsonl` with `sessionId` rewritten on every line). Both return `droppedText` for composer prefill.
+- **src/parser.js** — stream-json line → UI event normalization. Delta merging by `(msgId, blockIdx)`, `thinking_redacted` emission, `parentToolUseId` routing, structured `user_question` / `plan_request` events.
+- **src/projects.js** — FS ops on `~/project/`, cwd encoding for `~/.claude/projects/`, CLAUDE.md seeding.
+- **src/routes.js** — Thin REST shell; hosts hook-callback, attachment streaming, `/admin/restart`, worktree sync/merge.
+- **src/restart.js** — `scheduleRestart()`: close WSS + http, spawn detached child with same argv/env/cwd, exit. Child's listen-with-retry handles `EADDRINUSE`.
+- **src/worktrees.js** — `createWorktree` captures `{baseBranch, baseSha, branch}` + writes `worktree.json` into the central store, then `git worktree add` off the captured SHA. `syncWorktree` picks no-op / FF / rebase-prompt-sent. `mergeWorktreeIntoParent` runs `git merge --no-ff --no-edit` with safety checks.
+- **src/attachments.js** — `saveAttachment(project, worktreeName, {name, dataBase64})` → central-store path + abs `promptPath`. `isImageType()` classifies for image vs path-reference text blocks.
+- **src/wsHub.js** — Per-socket subscriptions, snapshot replay, fan-out, `prompt/mode/interrupt/kill/hook_decision` over WS, `turn_notification` broadcast to all clients.
+- **src/mcp/** — `server.js` (JSON-RPC 2.0 over Streamable HTTP), `tools.js` (static registry), `handlers.js` (thin shells over InstanceManager + projects + worktrees).
+- **public/** — `index.html`, `styles.css`, `app.js` (bootstrap + reactive store + WS wiring), `ws.js` (reconnecting + ack-based), `sidebar.js` (Project ▸ Sessions ▸ Worktrees subnodes), `conversation.js` (sticky-scroll, idempotent by `_seq`, routes by `parentToolUseId`), `blocks.js` (per-tool summaries + body renderers), `diff.js` (Myers' line-diff), `markdown.js` (safe Markdown → DOM, `textContent` only), `notifications.js`, `tasks.js`, `usage.js`, `anchor.js`, `composer.js`, `sw.js`.
+- **tests/** — `node:test` suite (see Testing below).
+- **debug/** — Opt-in Playwright + Termux-Chromium harness (sibling-repo dep).
+- **migrations/** — Idempotent on-disk migrations; see "Migrations" below.
 
 ### WebSocket protocol
 
-One persistent connection at `ws://127.0.0.1:8787/ws`, multiplexed across instances by `id`.
+**Client → server:**
+| `t` | Fields |
+|---|---|
+| `subscribe` | `id`, optional `reqId` (triggers `snapshot` + live `event`s) |
+| `unsubscribe` | `id` |
+| `prompt` | `id`, `text`, optional `attachments` (`[{name, mediaType, dataBase64}]`) |
+| `mode` | `id`, `mode` (`plan` / `ask` / `bypassPermissions`; `ask` → CLI `bypassPermissions`) |
+| `interrupt` | `id` |
+| `kill` | `id` |
+| `hook_decision` | `id`, `toolUseId`, `allow` (resolves ask-mode hook with original `tool_use_id`) |
 
-**Client → server**
+**Server → client:**
+| `t` | Fields |
+|---|---|
+| `snapshot` | `id`, `status`, `mode`, `sessionId`, `project`, `events[]` |
+| `reset_snapshot` | Same shape; sent after rewind so subscribers clear DOM first |
+| `event` | `id`, `ev` (monotonic `_seq` for idempotent merge) |
+| `status` | `id`, `status` (`spawning|idle|turn|exited|crashed`), `sessionId`, `mode` |
+| `ack` | `reqId`, `ok`, `error?` |
+| `hello` | sent on connect |
+| `error` | `message` (server-side parse rejection; not tied to a `reqId`) |
+| `turn_notification` | `id`, `project`, `isError`, `stopReason`, `cost` — **broadcast to all clients** (not just per-instance subscribers) so background tabs can ping OS notifications |
+| `instances` / `projects` | Hints to re-fetch (no payload); broadcast on every instance create/remove/status flip — `projects` covers the case where a CLI just flushed a session jsonl |
 
-| `t` | Fields | Purpose |
-|---|---|---|
-| `subscribe` | `id`, optional `reqId` | Subscribe to live events for an instance. Triggers a `snapshot` message followed by live `event`s. |
-| `unsubscribe` | `id` | Stop receiving events. |
-| `prompt` | `id`, `text`, `attachments?` | Send a user message. `attachments` is an optional list of `{name, mediaType, dataBase64}` objects — each is saved into the central store at `~/project/.code-conductor/projects/<p>/[worktrees/<wt>/]attachments/` and appended to the message as an `Attached file: \`<abs-path>\`` text block. Claude views/reads them on demand via its `Read` tool. |
-| `mode` | `id`, `mode` | Switch permission mode via `control_request set_permission_mode` (`plan` / `ask` / `bypassPermissions`; `ask` maps to `bypassPermissions` at the CLI level). |
-| `interrupt` | `id` | Abort current turn via `control_request interrupt`. |
-| `kill` | `id` | SIGTERM the subprocess. |
-| `hook_decision` | `id`, `toolUseId`, `allow` | Resolves a pending ask-mode `PreToolUse` hook callback. Allow → CLI runs the tool with the original `tool_use_id`; deny → CLI auto-denies. |
-
-**Server → client**
-
-| `t` | Fields | Purpose |
-|---|---|---|
-| `snapshot` | `id`, `status`, `mode`, `sessionId`, `project`, `events[]` | Sent on subscribe; events carry `_seq` for dedup. |
-| `reset_snapshot` | `id`, `status`, `mode`, `sessionId`, `project`, `events[]` | Same shape as `snapshot` but with reset semantics: the ring buffer was just wiped by a rewind. Subscribed clients clear their conversation DOM before applying the (typically empty) events. Sent only to subscribers of the rewound instance. |
-| `event` | `id`, `ev` | Live UI event. See "UI event kinds" below. |
-| `status` | `id`, `status`, `sessionId`, `mode` | Status transition (`spawning|idle|turn|exited|crashed`). |
-| `ack` | `reqId`, `ok`, `error?` | Reply to a client request that included `reqId`. |
-| `hello` | — | Sent immediately on connect; lets the client confirm the socket is live before issuing requests. |
-| `error` | `message` | Server-side parse-time rejection (e.g. malformed JSON frame). Not tied to a `reqId` — unparseable frames have no `reqId` to ack against. |
-| `turn_notification` | `id`, `project`, `isError`, `stopReason`, `cost` | Lean notification fan-out — broadcast to **every** connected client (not just per-instance subscribers) whenever a turn ends. Lets background-tab listeners ping the OS notification system for instances they aren't currently watching. |
-| `instances` | — | Hint to re-fetch `/api/instances` (no payload). Broadcast on every instance create / remove / status flip. |
-| `projects` | — | Hint to re-fetch `/api/projects` (no payload). Broadcast alongside `instances` on every instance create / remove / status flip — covers the case where a CLI just flushed its session jsonl and the sidebar's cached `summary.count` would otherwise stay stale. |
-
-**UI event kinds** (`ev.kind`)
-
-Every event carries a `parentToolUseId` (or `null`) — the conversation view routes non-null events into a nested mini-conversation under the matching outer tool block, enabling sub-agent drill-down for `Task`.
-
-`text_delta`, `text_end`, `thinking_start`, `thinking_delta`, `thinking_end`, `thinking_redacted`, `tool_use_start`, `tool_use_input_delta`, `tool_use`, `tool_result`, `user_echo`, `system` (with `subtype` — includes `history_replayed` marker), `hook`, `turn_end`, `assistant_message`, `control_response`, `user_question` (`toolUseId`, `questions[]`), `plan_request` (`toolUseId`, `plan`, `planPath`), `permission_request` (`toolUseId`, `toolName`, `toolInput`), `permission_resolved` (`toolUseId`, `allow`), `raw`. Each event in the ring has a monotonic `_seq` so snapshot + live merge is idempotent.
+**UI event kinds (`ev.kind`):** `text_delta`, `text_end`, `thinking_start/delta/end/redacted`, `tool_use_start/input_delta/use`, `tool_result`, `user_echo`, `system` (subtypes incl. `init`, `history_replayed`), `hook`, `turn_end`, `assistant_message`, `control_response`, `user_question` (`toolUseId`, `questions[]`), `plan_request` (`toolUseId`, `plan`, `planPath`), `permission_request` (`toolUseId`, `toolName`, `toolInput`), `permission_resolved` (`toolUseId`, `allow`), `raw`. Each carries `parentToolUseId` (or `null`) — non-null routes into a nested sub-Conversation.
 
 ### REST endpoints
-
-| Method | Path | Body / Returns |
+| Method | Path | Purpose |
 |---|---|---|
-| `GET` | `/api/projects` | `[{name, path, workspace, instanceIds[], isGitRepo, sessions, worktrees}]`. `workspace` is the trimmed string from the project's central-store `project.json` or `null` when unset. |
-| `POST` | `/api/projects` | `{name}` → `{name, path}`. Validates `^[a-zA-Z0-9._-]+$`. Writes `CLAUDE.md` with `@../CLAUDE.md`. |
-| `DELETE` | `/api/projects/:name` | `{ok:true, project, killedInstances}` — cascades: kill all attached instances → remove all worktrees → `rm -rf` the project dir. Sessions under `~/.claude/projects/` are left in place. |
-| `PUT` | `/api/projects/:name/workspace` | Body `{workspace: string\|null}`. Assigns or clears the project's workspace; an empty string is treated as null. Setting a non-null value auto-registers the workspace name. Writes `~/project/.code-conductor/projects/<name>/project.json` (and deletes the file when it would otherwise be empty) and broadcasts the `projects` WS hint so connected sidebars re-fetch. 400 on invalid workspace string, 404 on unknown project. |
-| `GET` | `/api/workspaces` | `[{name, projectCount}]`. Returns the union of (registry file `~/project/.code-conductor/workspaces.json`) and (workspaces referenced by any project), sorted alphabetically. Empty workspaces appear with `projectCount: 0`. |
-| `POST` | `/api/workspaces` | `{name}` → `{ok:true, added:bool, name}`. Idempotent — adding an existing name returns `added:false` with status 200; a new name returns 201. Validates the same character set as the membership field. |
-| `PUT` | `/api/workspaces/:name` | Body `{name: newName}` → `{ok:true, renamed, movedProjects[]}`. Atomic rename: rewrites every member project's `workspace` field and swaps the registry entry. 400 on invalid name. |
-| `DELETE` | `/api/workspaces/:name` | `{ok:true, removed, clearedProjects[]}`. Removes the registry entry **and** clears the `workspace` field on every project currently pointing at it (member projects fall back to unassigned, otherwise untouched). |
-| `GET` | `/api/projects/:name/sessions` | `[{sessionId, firstPrompt, mtime, size}]` |
-| `GET` | `/api/sessions/:sessionId/locate` | `{project, worktreeName}` (`worktreeName` is `null` for project-root sessions). 404 if the jsonl isn't found under any known project / worktree cwd. 400 for malformed ids. Drives the frontend's auto-resume-from-URL-anchor flow. |
-| `POST` | `/api/instances` | `{project, mode?, effort?, thinking?, model?, resume?, worktree?, temp?, debug?}` → instance summary (includes `temp: bool`). When `temp:true` and `mode` is omitted, defaults to `bypassPermissions`; on exit the session jsonl + sub-agent dir under `~/.claude/projects/<encoded-cwd>/` are removed and no `last-prompt`/`permission-mode` metadata is appended during the run. `debug:true` mirrors raw CLI traffic to the central store at `~/project/.code-conductor/projects/<p>/[worktrees/<wt>/]debug/<instance-id>/`. |
-| `GET` | `/api/instances` | `[{id, project, sessionId, status, mode, effort, thinking, model, pid}]` |
-| `POST` | `/api/instances/:id/respawn` | `{id, sessionId}` — uses `--resume lastSessionId` |
-| `POST` | `/api/instances/:id/rewind` | Body `{userMessageIndex}`. Rewinds the active session in place to before the Nth user prompt: kills the subprocess, atomically truncates the jsonl, broadcasts a `reset_snapshot` WS frame, and respawns with `--resume <sid>`. Returns `{ok:true, droppedText}`. Refused 409 during a running turn, 400 on temp sessions, 400 on out-of-range index. The same instance id + sessionId is preserved. |
-| `POST` | `/api/instances/:id/fork` | Body `{userMessageIndex}`. Copies the prefix of the named instance's jsonl into a new `<newSessionId>.jsonl` (the original session jsonl is byte-identical after the call), spawns a fresh instance with `--resume <newSessionId>` against the same cwd/worktree, and returns `{ok:true, newSessionId, droppedText, instance}`. Refused 400 on temp sessions / out-of-range / missing sessionId. |
-| `DELETE` | `/api/instances/:id` | `{ok: true}` — SIGTERM + remove |
-| `POST` | `/api/instances/:id/promote` | Promote a live temp session into a normal one — flips `instance.temp = false`, writes the resume-picker metadata (`last-prompt` + `permission-mode`) so `claude --resume` from the shell can find the session, and emits the standard `status` event so the sidebar migrates the row out of the Temp Sessions subnode. Returns `{ok:true, instance}`. 400 if the instance is not temp, 404 on unknown id. |
-| `POST` | `/api/instances/:id/debug` | Flip debug capture ON for a running instance (idempotent — `alreadyOn:true` if it was already capturing). Returns `{ok:true, debug, debugDir, alreadyOn}`. No matching "off" endpoint: kill the instance to stop. 404 on unknown id. |
-| `POST` | `/api/instances/:id/sync` | Brings the worktree up to date with its base branch. Returns `{ok:true, action:"already-in-sync"\|"fast-forwarded"\|"rebase-prompt-sent", ...}` or `{ok:false, reason}`. The FF case runs `git merge --ff-only <baseBranch>` inside the worktree server-side; the rebase case sends the templated rebase prompt to the worktree's live instance (refused with `{ok:false, reason:"…not running…"}` if the instance has been stopped). 400 if the instance has no worktree. |
-| `POST` | `/api/instances/:id/merge` | Runs `git merge --no-ff --no-edit <worktreeBranch>` on the parent repo — always creates a merge commit (git's default message). Returns `{ok:true, newSha}` or `{ok:false, reason}` (refusals are returned 200 with `ok:false` so the UI can render the reason inline). If the worktree is still behind the parent, refuses with a "click Sync first" reason — conflict resolution belongs inside the worktree where the agent can help, not on the parent. |
-| `GET` | `/api/projects/:name/worktrees` | `[{worktreeName, branch, baseBranch, baseSha, parentPath, createdAt, instanceIds}]` |
-| `GET` | `/api/projects/:name/worktrees/:wt/sessions` | Same shape as the project-level session list, but scoped to the worktree's encoded cwd. |
-| `DELETE` | `/api/projects/:name/worktrees/:wt[?force=1]` | Removes the worktree dir + branch. 409 if there's a running instance or uncommitted changes; `force=1` kills attached instances and ignores dirt. |
-| `DELETE` | `/api/projects/:name/sessions/:sid[?force=1]` | Removes the persisted session jsonl. 409 if attached to a running instance; `force=1` kills the instance then deletes. |
-| `DELETE` | `/api/projects/:name/worktrees/:wt/sessions/:sid[?force=1]` | Same, scoped to a worktree's own session dir. |
-| `POST` | `/api/instances/:id/hook-callback` | PreToolUse http hook endpoint the CLI calls. Body = full hook envelope. Always responds 200 with `{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow"|"deny"}}`. Auto-allows in non-ask modes; in ask mode the response stays open up to 540 s until a WS `hook_decision` arrives. |
-| `GET` | `/api/instances/:id/attachments/:filename` | Streams a previously-saved attachment from the instance's central-store attachments dir (`~/project/.code-conductor/projects/<p>/[worktrees/<wt>/]attachments/`). Used by the frontend to paint user-bubble thumbnails on transcript replay (when the live `user_echo`'s `dataBase64` is gone). Rejects path traversal (400), missing files (404), unknown instances (404). |
-| `POST` | `/api/admin/restart` | Self-respawn the orchestrator. Responds `202 {ok:true}` immediately, then spawns a detached child node process with the same argv/env/cwd and exits. The child retries `listen` on `EADDRINUSE` while the kernel releases the old socket. Drives the sidebar's `⟲ Restart server` button. |
+| `GET` | `/api/projects` | List with workspace, git status, sessions, worktrees. |
+| `POST` | `/api/projects` | Create (validates `^[a-zA-Z0-9._-]+$`, seeds `CLAUDE.md`). |
+| `DELETE` | `/api/projects/:name` | Cascade: kill instances → remove worktrees → `rm -rf`. Sessions persist under `~/.claude/projects/`. |
+| `PUT` | `/api/projects/:name/workspace` | `{workspace}` — assigns/clears; auto-registers new names. |
+| `GET` | `/api/workspaces` | Union of registry + referenced names. |
+| `POST` | `/api/workspaces` | `{name}` — 201 new / 200 idempotent. Same regex. |
+| `PUT` | `/api/workspaces/:name` | `{name: newName}` — atomic rename across all members. |
+| `DELETE` | `/api/workspaces/:name` | Removes the entry **and** clears `workspace` on every member (projects stay). |
+| `GET` | `/api/projects/:name/sessions` | Session metadata list. |
+| `GET` | `/api/sessions/:sid/locate` | `{project, worktreeName}`; drives anchor auto-resume. 404 if not found. |
+| `POST` | `/api/instances` | Spawn. Returns summary. |
+| `GET` | `/api/instances` | List live. |
+| `POST` | `/api/instances/:id/respawn` | Uses `--resume lastSessionId`. |
+| `POST` | `/api/instances/:id/rewind` | `{userMessageIndex}` — atomic truncate + respawn (same `sessionId`). 409 during turn, 400 on temp / out-of-range. Returns `droppedText`. |
+| `POST` | `/api/instances/:id/fork` | `{userMessageIndex}` — copies prefix to new `sessionId`, original is byte-identical, spawns fresh instance. 400 on temp / OOR. |
+| `DELETE` | `/api/instances/:id` | SIGTERM + remove. |
+| `POST` | `/api/instances/:id/promote` | Promote a live temp session to a normal one: flips `instance.temp = false`, writes `last-prompt` + `permission-mode` so `claude --resume`'s picker can find it, emits `status` so the sidebar migrates the row out of Temp Sessions. 400 if not temp, 404 unknown id. |
+| `POST` | `/api/instances/:id/debug` | Flip debug capture **ON** for a running instance (idempotent — `alreadyOn:true`). **No "off" endpoint** — kill the instance to stop. |
+| `POST` | `/api/instances/:id/sync` | Returns `action: already-in-sync | fast-forwarded | rebase-prompt-sent`. FF runs server-side; rebase sends templated prompt to the live agent. 400 if no worktree; `ok:false, reason:"…not running…"` if instance is dead. |
+| `POST` | `/api/instances/:id/merge` | Parent-side merge. Refusals return 200 with `ok:false, reason` so the UI can render inline. |
+| `GET` | `/api/projects/:name/worktrees` | List with metadata. |
+| `GET` | `/api/projects/:name/worktrees/:wt/sessions` | Worktree-scoped session list. |
+| `DELETE` | `/api/projects/:name/worktrees/:wt[?force=1]` | 409 on live instance / dirt; `force=1` kills + ignores. |
+| `DELETE` | `/api/projects/:name/sessions/:sid[?force=1]` | Delete persisted jsonl; 409 if attached. |
+| `DELETE` | `/api/projects/:name/worktrees/:wt/sessions/:sid[?force=1]` | Same, worktree-scoped. |
+| `GET` | `/api/instances/:id/attachments/:filename` | Streams from the central-store attachments dir (path-traversal guarded). |
+| `POST` | `/api/instances/:id/hook-callback` | PreToolUse http hook target; always 200 with `permissionDecision`. |
+| `POST` | `/api/admin/restart` | Self-respawn (202 immediate, detached child, exit). |
 
 ### Instance lifecycle
-
 ```
-       create
-         │
-         ▼
-   ┌──────────┐    proc alive + stdin    ┌──────┐    prompt sent    ┌──────┐
-   │ spawning │ ───────────────────────► │ idle │ ────────────────► │ turn │
-   └──────────┘                          └──┬───┘ ◄──── turn_end ───┴──────┘
-         │                                  │
-         │ load-history fails               │ subprocess exits
-         ▼                                  ▼
-                                       ┌───────────┐
-                                       │ crashed / │
-                                       │  exited   │
-                                       └─────┬─────┘
-                                             │ respawn  --resume <sid>
-                                             ▼
-                                          (back to spawning)
+create → spawning → idle ←─ turn ─→ turn_end ─┐
+            ↓        ↓                          ↓
+        load-hist  prompt                  exited / crashed
+        fails                                   │
+                                                ▼ respawn --resume <sid>
+                                            (back to spawning)
 ```
 
-When **resuming**, the spawn awaits `loadHistory(sessionId)` before flipping to `idle`. That reads the persisted `*.jsonl`, replays each user/assistant line as UI events into the ring buffer, and emits a `system/history_replayed` marker so the UI can render a divider.
-
-When a **turn ends** or the **mode changes**, two metadata lines are appended to the session jsonl so `claude --resume` from the shell can discover the session in its interactive picker:
-
-```json
-{"type":"last-prompt","leafUuid":"<uuid>","sessionId":"<sid>"}
-{"type":"permission-mode","permissionMode":"<mode>","sessionId":"<sid>"}
-```
+On **resume**: `loadHistory(sessionId)` runs before flipping to `idle` — replays jsonl into UI events and emits a `system/history_replayed` divider. On **turn end** or **mode change**: append `{"type":"last-prompt", …}` + `{"type":"permission-mode", …}` lines so `claude --resume`'s interactive picker can discover the session.
 
 ### Defaults
-
-- Bind: `127.0.0.1:8787` (override with `HOST` / `PORT` env vars).
-- New instance: `--permission-mode plan` (the safer default — read-only; the user can pick `code` in the dialog or approve a plan mid-session to flip to `bypassPermissions`), `--effort high`, `--thinking adaptive`, no `--model` flag (uses account default). When the **Temp session** checkbox is ticked, the mode default flips to `bypassPermissions` instead.
-- Resumed instance (sidebar one-click resume): `--permission-mode bypassPermissions` (i.e. `code`), same effort/thinking defaults as above. Crash-recovery respawn preserves whatever mode the instance was already running.
-- Ring buffer: 500 events per instance.
-- Control-request timeout: 5 s.
-- Kill grace: stdin closed → 2 s → SIGTERM → 5 s → SIGKILL.
+- Bind: `127.0.0.1:8787` (override with `HOST` / `PORT`).
+- New instance: `plan` mode, `high` effort, `adaptive` thinking, no model flag. Temp checkbox flips mode default to `bypassPermissions`.
+- Sidebar one-click resume: `bypassPermissions` mode (continuing real work), same effort/thinking defaults. Crash-respawn preserves whatever mode was running.
+- Ring buffer: 500 events / instance.
+- Control-request timeout: 5 s. Kill grace: stdin closed → 2 s → SIGTERM → 5 s → SIGKILL.
 
 ### On-disk state
-
-All orchestrator-owned state lives in a single workspace-wide dotfolder at `~/project/.code-conductor/`:
-
+All orchestrator-owned state in a single workspace-wide dotfolder at `~/project/.code-conductor/`:
 ```
 ~/project/                                  # projectsRoot()
 ├── .code-conductor/                        # central store
 │   ├── workspaces.json                     # registry of known workspace names
-│   └── projects/
-│       └── <project>/
-│           ├── project.json                # workspace membership ({workspace: "<name>"})
-│           ├── attachments/                # files attached at project root
-│           ├── debug/<instance-id>/        # raw CLI capture in debug mode
-│           └── worktrees/
-│               └── <project>_worktree_<id>/
-│                   ├── worktree.json
-│                   ├── attachments/
-│                   └── debug/<instance-id>/
+│   └── projects/<project>/
+│       ├── project.json                    # {workspace: "<name>"}
+│       ├── attachments/<timestamp>-<name>
+│       ├── debug/<instance-id>/            # raw CLI capture
+│       └── worktrees/<project>_worktree_<id>/
+│           ├── worktree.json               # {baseBranch, baseSha, branch, parentPath, …}
+│           ├── attachments/
+│           └── debug/<instance-id>/
 ├── <project>/                              # normal project — nothing of ours inside
 └── <project>_worktree_<id>/                # worktree dir — nothing of ours inside
 ```
-
-Project and worktree directories stay clean — no per-project `.gitignore` entry or `.git/info/exclude` plumbing is needed.
+Project + worktree dirs stay clean — no per-project `.gitignore` plumbing needed.
 
 ### Migrations
-
-`migrations/` holds idempotent migration scripts that run automatically when the server boots (entrypoint: `migrations/index.mjs`). They mutate on-disk state to keep the workspace layout aligned with the current codebase. Each script self-checks "already applied?" and is a fast no-op in steady state; a migration that throws aborts the boot. See [`migrations/migrations.md`](./migrations/migrations.md) for the listing and the conventions for adding new ones.
+`migrations/` holds idempotent migration scripts run automatically on boot (entrypoint `migrations/index.mjs`). Each self-checks "already applied?" and is a fast no-op in steady state; a script that throws **aborts the boot**. See [`migrations/migrations.md`](./migrations/migrations.md) for the listing and conventions for adding new ones.
 
 ### Testing
+All tests via `node tests/run.mjs` (programmatic node:test runner — Termux's glibc-runner wrapper hoists leading `--flags` into `NODE_OPTIONS` and refuses `--test`).
 
-All tests run via `node tests/run.mjs` (programmatic node:test runner, because the Termux glibc-runner wrapper for node hoists leading `--flags` into `NODE_OPTIONS` and `--test` isn't allowed there).
+Default suite uses **fake-claude** (`tests/fake-claude.mjs`) via `CLAUDE_BIN`: silent until first stdin message, auto-acks `control_request`s, emits canned events from `FAKE_CLAUDE_SCENARIO`, matches `control_response`s so scenarios can branch on allow/deny. `FAKE_CLAUDE_ARGV_DUMP=<path>` captures launch argv.
 
-The default suite uses a **fake-claude** subprocess (`tests/fake-claude.mjs`) injected via `CLAUDE_BIN`. The fake mirrors real claude's behavior: silent on startup until the first stdin message arrives, auto-acks control_requests, and emits scenario JSON from `FAKE_CLAUDE_SCENARIO`. `FAKE_CLAUDE_ARGV_DUMP=<path>` captures the launch argv so tests can assert what flags the orchestrator passes.
+Opt-in real-claude smoke (`smoke.real.test.mjs`, `RUN_REAL_CLAUDE=1`): spawns the actual CLI, asserts `system/init` + ≥1 `text_delta` + non-error `turn_end`. Cleans the session jsonl on exit.
 
-The opt-in real-claude smoke (`tests/smoke.real.test.mjs`, gated by `RUN_REAL_CLAUDE=1`) spawns the actual CLI, sends a one-word prompt, and asserts that `system/init`, at least one `text_delta`, and a non-error `turn_end` all arrive. Cleans its session jsonl on exit.
-
-### Known limitations
-
-- **Opus 4.7 thinking is redacted.** The model emits a thinking block but only a `signature_delta`, never the content. The UI shows a single non-expandable `thinking (redacted)` line for those blocks (no disclosure caret, since there's nothing inside to reveal). Pick `claude-sonnet-4-6` from the model dropdown if you want to see the thinking stream.
-- **AskUserQuestion is answered via the next prompt, not as a real tool result.** A `PreToolUse` hook (registered via `--settings`) denies the tool, the model receives an `is_error: true` tool_result with a "wait for the user" reason and ends the turn naturally. The orchestrator renders the structured options as buttons; the picked answer is fed in as a normal user prompt on the next turn. Functionally fine, but the original tool_result is still an `is_error` for diagnostic purposes.
-- **`--effort` and `--thinking` are spawn-time only.** Switching them mid-session would require respawn + resume. Mode is the only knob that's live-switchable (via `control_request set_permission_mode`).
-- **No auth.** Bound to 127.0.0.1 — anyone with shell access on the device can drive it.
-- **Best-effort metadata writes.** If the orchestrator crashes between a turn ending and the metadata append, the session jsonl may lack the `last-prompt` line and won't show up in `claude --resume`'s picker. The transcript is still intact and resumable by `claude --resume <sid>`.
-- **MCP: Claude-spawning-Claude recursion.** Because the orchestrator MCP is auto-registered into every spawn (see [MCP interface](#mcp-interface)), any session can call `spawn_instance` to launch further sessions — and those children inherit the same auto-registration, so they can spawn more in turn, ad infinitum if you set up an autonomous loop. There is no orchestrator-side depth guard. Recommended mitigations, in order of strength: (1) set `ORCH_DISABLE_MCP_AUTOREGISTER=1` on the orchestrator process — children spawned under that env never see the MCP at all; (2) spawn child agents in `plan` mode by default (they still see the MCP but can't `set_mode`/`send_prompt` to escalate themselves into deeper spawns without user approval); (3) prefer the `wait:true` MCP send-prompt path over fire-and-forget so a runaway fan-out blocks on its first child instead of racing.
-- **Notifications need user permission.** The 🔔 toggle works on browsers that expose the Notification API. On mobile Chrome notifications require the Service Worker at `/sw.js` (registered automatically once permission is granted). iOS Safari requires installing the page as a PWA. The toggle reports the current permission state in its tooltip when unavailable.
+## Known limitations
+- **Opus 4.7 thinking is redacted** — only `signature_delta`, no content. Pick `claude-sonnet-4-6` for the full stream.
+- **AskUserQuestion answered via next prompt** — PreToolUse hook denies; tool_result is `is_error:true`; answer is fed in as a normal user prompt. Functionally fine, but the original tool_result is still an error for diagnostics.
+- **`--effort` / `--thinking` are spawn-time only** — switching mid-session needs respawn + resume. Only `mode` is live-switchable.
+- **No auth** — bound to 127.0.0.1; anyone with shell access can drive it.
+- **Best-effort metadata writes** — crash between turn-end and metadata append may omit the `last-prompt` line and hide the session from `claude --resume`'s picker. Transcript itself is intact.
+- **Claude-spawning-Claude recursion** — auto-registered MCP lets any session call `spawn_instance`; children inherit the auto-registration, no depth guard. Mitigations: (1) `ORCH_DISABLE_MCP_AUTOREGISTER=1`, (2) keep child default mode `plan`, (3) prefer `wait:true` send_prompt over fire-and-forget.
+- **Notifications need permission** — desktop browsers need API grant; mobile Chrome needs the Service Worker; iOS Safari needs PWA install.
