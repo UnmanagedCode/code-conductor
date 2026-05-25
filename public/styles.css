@@ -186,16 +186,40 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
 }
 .project-row .quick-spawn:hover { color: var(--text); }
 
-/* Quick-spawn model picker dialog: three large buttons on one row. */
-.quick-spawn-models { display: flex; gap: 8px; margin: 10px 0; }
+/* Quick-spawn model picker dialog: model rows + context badges. */
+.quick-spawn-models { display: flex; gap: 8px; margin: 10px 0 0; }
 .quick-spawn-models .qs-model {
-  flex: 1; padding: 10px 8px; border-radius: 6px;
+  flex: 1; padding: 8px 6px 6px; border-radius: 6px;
   background: var(--panel-2); color: var(--text);
   border: 1px solid var(--border); cursor: pointer;
   font-size: 13px; font-weight: 600;
+  display: flex; flex-direction: column; align-items: center; gap: 2px;
 }
 .quick-spawn-models .qs-model:hover {
   background: var(--panel); border-color: var(--amber); color: var(--amber);
+}
+/* Small context-window badge beneath each model name */
+.qs-ctx {
+  font-size: 10px; font-weight: 400; color: var(--muted);
+  letter-spacing: 0.04em; line-height: 1;
+}
+.qs-model:hover .qs-ctx { color: inherit; opacity: 0.8; }
+/* Extended-context row: amber accent + section label via pseudo-element */
+.quick-spawn-extended { margin-top: 6px; position: relative; }
+.quick-spawn-extended::before {
+  content: 'Extended context';
+  display: block; width: 100%; text-align: center;
+  font-size: 10px; color: var(--muted); margin-bottom: 4px;
+  letter-spacing: 0.04em;
+}
+.qs-model-1m {
+  border-color: color-mix(in srgb, var(--amber) 35%, var(--border)) !important;
+}
+.qs-model-1m .qs-ctx { color: var(--amber); opacity: 0.75; }
+.qs-model-1m:hover {
+  background: color-mix(in srgb, var(--amber) 10%, var(--panel)) !important;
+  border-color: var(--amber) !important;
+  color: var(--amber) !important;
 }
 /* Spawn-mode segmented toggle: two side-by-side options below the
    model row. The aria-pressed side is highlighted; the other is muted
