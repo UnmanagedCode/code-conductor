@@ -426,8 +426,9 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
 
 /* Inline auto-approve-plans toggle, sibling of #mode-select. Icon-only so
  * it doesn't crowd the mobile controls row; on/off state is communicated
- * by aria-pressed (green-tinted background when on). */
-.auto-approve-toggle { padding: 4px 8px; line-height: 1; }
+ * by aria-pressed (green-tinted background when on). Padding matches the
+ * default button rule so its height aligns with #mode-select and the ⋮
+ * burger. */
 .auto-approve-toggle[aria-pressed="true"] {
   background: rgba(74,222,128,.20); border-color: var(--green);
 }

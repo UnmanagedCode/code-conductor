@@ -45,14 +45,14 @@
       <header id="instance-header">
         <div id="instance-title">no instance selected</div>
         <div id="instance-controls">
+          <button id="auto-approve-plan-btn" type="button" class="auto-approve-toggle"
+                  aria-pressed="false" aria-label="Auto-approve plans" disabled hidden
+                  title="Auto-approve plans — when on, ExitPlanMode skips the confirmation card. Session-local; per instance.">📋</button>
           <select id="mode-select" disabled>
             <option value="bypassPermissions">code</option>
             <option value="ask">ask</option>
             <option value="plan">plan</option>
           </select>
-          <button id="auto-approve-plan-btn" type="button" class="auto-approve-toggle"
-                  aria-pressed="false" aria-label="Auto-approve plans" disabled
-                  title="Auto-approve plans — when on, ExitPlanMode skips the confirmation card. Session-local; per instance.">📋</button>
           <button id="resume-btn" hidden>Resume</button>
           <button id="sync-btn" hidden title="Bring this worktree up to date with its parent branch (fast-forward when possible, otherwise ask the agent to rebase)">Sync</button>
           <button id="merge-btn" hidden title="Merge this worktree's branch into the parent (creates a merge commit, even when fast-forward would be possible)">Merge</button>

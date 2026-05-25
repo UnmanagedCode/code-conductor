@@ -299,7 +299,7 @@ dom.killBtn.addEventListener('click', () => {
   closeOverflow();
   if (state.activeStatus === 'turn') {
     send('interrupt', { id: state.activeId });
-  } else if (confirm('Kill this instance?')) {
+  } else if (confirm('Terminate this instance?')) {
     send('kill', { id: state.activeId });
   }
 });
@@ -1118,7 +1118,7 @@ function updateActiveHeader() {
   dom.tiUsageSlot.appendChild(renderUsageChip(inst));
   dom.modeSelect.value = inst.mode;
   dom.modeSelect.disabled = inst.status === 'turn' || inst.status === 'crashed' || inst.status === 'exited';
-  dom.killBtn.textContent = inst.status === 'turn' ? 'Interrupt' : 'Kill';
+  dom.killBtn.textContent = inst.status === 'turn' ? 'Interrupt' : '🛑 Terminate';
   dom.killBtn.disabled = !['idle', 'turn', 'spawning'].includes(inst.status);
   dom.resumeBtn.hidden = !(inst.status === 'crashed' || inst.status === 'exited');
   dom.turnIndicator.hidden = false;
@@ -1138,8 +1138,12 @@ function updateActiveHeader() {
   // mid-turn.
   const canMenu = ['idle', 'turn', 'spawning'].includes(inst.status);
   dom.debugBtn.hidden = !canMenu;
-  dom.autoApprovePlanBtn.hidden = !canMenu;
-  dom.autoApprovePlanBtn.disabled = !canMenu;
+  // Auto-approve only applies to plan mode (it short-circuits the
+  // ExitPlanMode confirmation card). Hide it in code/ask mode so the
+  // controls row stays uncluttered.
+  const showAutoApprove = canMenu && inst.mode === 'plan';
+  dom.autoApprovePlanBtn.hidden = !showAutoApprove;
+  dom.autoApprovePlanBtn.disabled = !showAutoApprove;
   dom.overflowMenu.hidden = !canMenu;
   if (inst.debug) {
     dom.debugBtn.textContent = '🐛 capturing';
