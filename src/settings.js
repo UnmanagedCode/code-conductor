@@ -1,35 +1,30 @@
 // Builds the inline `--settings` JSON the orchestrator passes to every
-// claude subprocess. PreToolUse hooks:
+// claude subprocess. Two PreToolUse hooks are registered:
 //
-//   1. A static `command` deny on AskUserQuestion: the CLI auto-errors
-//      this tool in stream-json --print mode anyway (no canUseTool
-//      callback to satisfy), so we deny with a friendlier reason and
-//      let the orchestrator collect the answers via the regular UI
-//      card + feed them as the next user prompt.
+//   1. A static `command` deny on AskUserQuestion|ExitPlanMode that
+//      tells the model to stop and wait for the user. The CLI auto-
+//      errors both tools in stream-json --print mode anyway (no SDK
+//      `canUseTool` callback to satisfy), so we just give them a
+//      friendlier deny reason. The orchestrator surfaces the
+//      corresponding UI card and, on the user's decision, drives the
+//      conversation forward via the next user prompt (plus, for plan
+//      approval, a setMode(bypassPermissions) control_request first).
 //
-//   2. (When hookCallbackUrl is provided) An interactive `http` hook
-//      on the destructive tools *and* ExitPlanMode. The orchestrator's
-//      hook-callback endpoint auto-allows for the destructive tools in
-//      non-ask modes, surfaces a permission_request in ask mode, and
-//      holds open / auto-approves / awaits user click for ExitPlanMode.
-//      Routing by tool name lives in src/hookBroker.js.
-//
-//   3. Fallback when hookCallbackUrl is null (rare — primarily test
-//      edge cases): ExitPlanMode is added to the command-deny matcher
-//      so the model doesn't actually exit plan mode without
-//      orchestrator awareness.
+//   2. (Optional, when hookCallbackUrl is provided) An interactive
+//      `http` hook on the destructive tools that POSTs back to the
+//      orchestrator's hook-callback endpoint. The endpoint auto-allows
+//      in non-ask modes, or surfaces a permission_request to the UI in
+//      ask mode and holds the response open until the user clicks.
 //
 // All inputs are pure JS values — no Instance state involved.
 
 const HOOK_DENY_REASON_BLOCKING_TOOL =
   'Awaiting user input via the orchestrator UI — please stop and wait for the next user message.';
 
-// Tools gated by the interactive PreToolUse http hook. Edit/Write/
-// NotebookEdit/Bash are gated only in ask mode; ExitPlanMode is gated
-// in plan mode (held open until the user approves or auto-approve
-// fires). Reads (Read|Glob|Grep|LS|WebFetch|WebSearch) are NOT gated
+// Destructive tools gated by the interactive PreToolUse http hook in
+// ask mode. Reads (Read|Glob|Grep|LS|WebFetch|WebSearch) are NOT gated
 // so the model can explore freely without a prompt per call.
-const HTTP_HOOK_TOOL_MATCHER = 'Edit|Write|NotebookEdit|Bash|ExitPlanMode';
+const ASK_GATED_TOOL_MATCHER = 'Edit|Write|NotebookEdit|Bash';
 
 // Per-hook timeout (seconds) for the interactive http hook. Generous —
 // the CLI waits this long for the user to click Allow/Deny in the UI.
@@ -46,14 +41,8 @@ function buildBlockingToolHookCommand() {
 }
 
 export function buildSettingsJSON({ hookCallbackUrl } = {}) {
-  // AskUserQuestion always goes through the static command-deny path:
-  // the CLI cannot run an interactive question in --print mode, so
-  // there's nothing the http hook could buy us.
-  const commandDenyMatcher = hookCallbackUrl
-    ? 'AskUserQuestion'
-    : 'AskUserQuestion|ExitPlanMode';
   const preToolUse = [{
-    matcher: commandDenyMatcher,
+    matcher: 'AskUserQuestion|ExitPlanMode',
     hooks: [{
       type: 'command',
       timeout: 5,
@@ -62,7 +51,7 @@ export function buildSettingsJSON({ hookCallbackUrl } = {}) {
   }];
   if (hookCallbackUrl) {
     preToolUse.push({
-      matcher: HTTP_HOOK_TOOL_MATCHER,
+      matcher: ASK_GATED_TOOL_MATCHER,
       hooks: [{
         type: 'http',
         url: hookCallbackUrl,
@@ -89,6 +78,6 @@ export function buildMcpConfigJSON({ url, name = 'code-conductor' } = {}) {
 // into the rendered hookSpecificOutput.
 export const _internal = {
   HOOK_DENY_REASON_BLOCKING_TOOL,
-  HTTP_HOOK_TOOL_MATCHER,
+  ASK_GATED_TOOL_MATCHER,
   buildBlockingToolHookCommand,
 };

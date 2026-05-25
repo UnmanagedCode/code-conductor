@@ -161,7 +161,6 @@ export class Conversation {
     }
     if (ev.kind === 'user_question') { this._renderUserQuestion(ev); return; }
     if (ev.kind === 'plan_request') { this._renderPlanRequest(ev); return; }
-    if (ev.kind === 'plan_resolved') { this._resolvePlanRequest(ev); return; }
     if (ev.kind === 'permission_request') { this._renderPermissionRequest(ev); return; }
     if (ev.kind === 'permission_resolved') { this._resolvePermissionRequest(ev); return; }
     this._ensureNotEmpty();
@@ -431,11 +430,6 @@ export class Conversation {
     this.root.appendChild(block.node);
     this._closeAssistantSegment();
     this._maybeScroll();
-  }
-
-  _resolvePlanRequest(ev) {
-    const block = this.planBlocks.get(ev.toolUseId);
-    if (block) block.markResolved(ev.decision, { autoApproved: !!ev.autoApproved });
   }
 
   _renderUserQuestion(ev) {
