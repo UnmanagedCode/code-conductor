@@ -303,7 +303,21 @@ export class Instance extends EventEmitter {
     if (this.mcpServerUrl) {
       args.push('--mcp-config', buildMcpConfigJSON({ url: this.mcpServerUrl }));
     }
-    if (this.model) args.push('--model', this.model);
+    // Resolve the model identifier to what the CLI actually accepts and
+    // build any env-flag overrides. The `[200k]` suffix is an
+    // orchestrator-only synthetic — the CLI doesn't recognise it, so we
+    // strip it before passing `--model` and instead set
+    // CLAUDE_CODE_DISABLE_1M_CONTEXT=1 in the spawn env, which is the
+    // only way to force a 200k window out of Opus 4.7 (it defaults to
+    // 1M otherwise). The `[1m]` suffix is CLI-native and passes through
+    // unchanged.
+    let cliModel = this.model;
+    const spawnEnv = { ...process.env };
+    if (typeof cliModel === 'string' && cliModel.endsWith('[200k]')) {
+      cliModel = cliModel.slice(0, -'[200k]'.length);
+      spawnEnv.CLAUDE_CODE_DISABLE_1M_CONTEXT = '1';
+    }
+    if (cliModel) args.push('--model', cliModel);
     if (resume) args.push('--resume', this.sessionId);
     else args.push('--session-id', this.sessionId);
 
@@ -316,7 +330,7 @@ export class Instance extends EventEmitter {
 
     this.proc = spawn(command, args, {
       cwd: this.cwd,
-      env: { ...process.env },
+      env: spawnEnv,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     this.pid = this.proc.pid;

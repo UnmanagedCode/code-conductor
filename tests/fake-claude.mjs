@@ -43,6 +43,15 @@ if (process.env.FAKE_CLAUDE_ARGV_DUMP) {
   // Synchronous so tests can read it immediately after detecting `idle`.
   writeFileSync(process.env.FAKE_CLAUDE_ARGV_DUMP, process.argv.slice(2).join('\n') + '\n');
 }
+// Optional env dump — used by tests that need to assert the orchestrator
+// passed a specific env var to the subprocess (e.g.
+// CLAUDE_CODE_DISABLE_1M_CONTEXT for "Opus 200k" mode).
+if (process.env.FAKE_CLAUDE_ENV_DUMP) {
+  writeFileSync(
+    process.env.FAKE_CLAUDE_ENV_DUMP,
+    Object.entries(process.env).map(([k, v]) => `${k}=${v}`).join('\n') + '\n',
+  );
+}
 const SID = args.resumeId ?? args.sessionId ?? '00000000-0000-0000-0000-000000000000';
 const MODE = args.mode;
 const CWD = process.cwd();
