@@ -36,7 +36,7 @@ function mergeLive(onDisk, liveInstances) {
     } else {
       byId.set(inst.sessionId, {
         sessionId: inst.sessionId,
-        firstPrompt: null,
+        firstPrompt: inst.firstPrompt ?? null,
         mtime: Date.now(),
         size: 0,
         instanceId: inst.id,

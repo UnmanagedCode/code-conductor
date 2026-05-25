@@ -376,7 +376,7 @@ async function readFirstPrompt(jsonlPath) {
   }
 }
 
-export async function listSessionsForCwd(absCwd) {
+export async function listSessionsForCwd(absCwd, excludeSessionIds = null) {
   const encoded = encodeCwd(absCwd);
   const dir = path.join(claudeProjectsRoot(), encoded);
   let entries;
@@ -389,6 +389,8 @@ export async function listSessionsForCwd(absCwd) {
   const out = [];
   for (const name of entries) {
     if (!name.endsWith('.jsonl')) continue;
+    const sid = name.replace(/\.jsonl$/, '');
+    if (excludeSessionIds && excludeSessionIds.has(sid)) continue;
     const full = path.join(dir, name);
     let stat;
     try { stat = await fs.stat(full); } catch { continue; }
@@ -396,7 +398,7 @@ export async function listSessionsForCwd(absCwd) {
     let firstPrompt = null;
     try { firstPrompt = await readFirstPrompt(full); } catch { /* ignore */ }
     out.push({
-      sessionId: name.replace(/\.jsonl$/, ''),
+      sessionId: sid,
       firstPrompt,
       mtime: stat.mtimeMs,
       size: stat.size,
@@ -406,9 +408,9 @@ export async function listSessionsForCwd(absCwd) {
   return out;
 }
 
-export async function listSessions(projectName) {
+export async function listSessions(projectName, excludeSessionIds = null) {
   const proj = await getProject(projectName);
-  return listSessionsForCwd(proj.path);
+  return listSessionsForCwd(proj.path, excludeSessionIds);
 }
 
 // Remove the persisted session jsonl at the conventional path.
@@ -469,7 +471,7 @@ export async function findSessionLocation(sessionId) {
 // "last active" stamp in the sidebar without paying the file-read cost
 // of listSessionsForCwd (which extracts firstPrompt from every jsonl).
 // Just readdir + stat, no opens.
-export async function summarizeSessions(absCwd) {
+export async function summarizeSessions(absCwd, excludeSessionIds = null) {
   const dir = path.join(claudeProjectsRoot(), encodeCwd(absCwd));
   let entries;
   try { entries = await fs.readdir(dir); }
@@ -478,6 +480,8 @@ export async function summarizeSessions(absCwd) {
   let lastMtime = 0;
   for (const name of entries) {
     if (!name.endsWith('.jsonl')) continue;
+    const sid = name.replace(/\.jsonl$/, '');
+    if (excludeSessionIds && excludeSessionIds.has(sid)) continue;
     let stat;
     try { stat = await fs.stat(path.join(dir, name)); } catch { continue; }
     if (!stat.isFile()) continue;

@@ -108,6 +108,11 @@ export class Instance extends EventEmitter {
     this._stderr = '';
     this._lastLeafUuid = null;     // for last-prompt jsonl marker
     this._lastPlanFilePath = null; // last Write to ~/.claude/plans/*.md, used to enrich ExitPlanMode
+    // Cached first user-prompt text (200-char cap matching readFirstPrompt
+    // in projects.js). Surfaced via summary() so the sidebar can label a
+    // live temp session's row — temp rows don't read the jsonl, so without
+    // this they'd stay as "(new session)" forever.
+    this.firstPrompt = null;
   }
 
   summary() {
@@ -133,6 +138,7 @@ export class Instance extends EventEmitter {
       temp: this.temp,
       debug: this.debug,
       debugDir: this.debugDir,
+      firstPrompt: this.firstPrompt,
     };
   }
 
@@ -506,6 +512,9 @@ export class Instance extends EventEmitter {
     }
 
     this._emitUi({ kind: 'user_echo', text: safeText, attachments: echoAttachments });
+    if (this.firstPrompt == null && safeText.length) {
+      this.firstPrompt = safeText.slice(0, 200);
+    }
     this._sendRaw({
       type: 'user',
       message: { role: 'user', content },
@@ -710,6 +719,16 @@ export class InstanceManager extends EventEmitter {
     return [...this.byId.values()]
       .filter(i => i.sessionId === sessionId)
       .map(i => i.id);
+  }
+  // SessionIds of live (proc-attached) temp instances whose cwd matches.
+  // Routes use this to strip running temp jsonls from the regular Sessions
+  // list — otherwise clicking the row would 409 against the live instance.
+  tempSessionIdsForCwd(cwd) {
+    const out = new Set();
+    for (const i of this.byId.values()) {
+      if (i.temp && i.proc && i.cwd === cwd && i.sessionId) out.add(i.sessionId);
+    }
+    return out;
   }
 
   async create({ project, resume, mode, effort, thinking, model, worktree, temp, debug } = {}) {

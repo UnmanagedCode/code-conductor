@@ -65,18 +65,22 @@ export function buildRoutes({ instances, serverCtx } = {}) {
         // Attach a lightweight session count + last-active mtime to
         // each worktree too, so the sidebar can decide whether to show
         // its "Sessions (N)" subnode without an extra fetch.
-        const worktreesWithSessions = await Promise.all(worktrees.map(async (w) => ({
-          ...w,
-          sessions: await summarizeSessions(w.worktreePath).catch(() => ({ count: 0, lastMtime: 0 })),
-          mergeStatus: await getWorktreeMergeStatus(w).catch(() => ({ ahead: null, behind: null })),
-        })));
+        const worktreesWithSessions = await Promise.all(worktrees.map(async (w) => {
+          const wtTempSids = instances ? instances.tempSessionIdsForCwd(w.worktreePath) : null;
+          return {
+            ...w,
+            sessions: await summarizeSessions(w.worktreePath, wtTempSids).catch(() => ({ count: 0, lastMtime: 0 })),
+            mergeStatus: await getWorktreeMergeStatus(w).catch(() => ({ ahead: null, behind: null })),
+          };
+        }));
         const projIsGitRepo = await isGitRepo(p.path);
+        const projTempSids = instances ? instances.tempSessionIdsForCwd(p.path) : null;
         return {
           ...p,
           instanceIds: instances ? instances.idsForProject(p.name) : [],
           isGitRepo: projIsGitRepo,
           worktrees: worktreesWithSessions,
-          sessions: await summarizeSessions(p.path).catch(() => ({ count: 0, lastMtime: 0 })),
+          sessions: await summarizeSessions(p.path, projTempSids).catch(() => ({ count: 0, lastMtime: 0 })),
           mergeStatus: projIsGitRepo
             ? await getProjectUpstreamStatus(p.path).catch(() => ({ ahead: null, behind: null, upstream: null }))
             : { ahead: null, behind: null, upstream: null },
@@ -185,7 +189,9 @@ export function buildRoutes({ instances, serverCtx } = {}) {
 
   r.get('/projects/:name/sessions', async (req, res, next) => {
     try {
-      const sessions = await listSessions(req.params.name);
+      const proj = await getProject(req.params.name);
+      const tempSids = instances ? instances.tempSessionIdsForCwd(proj.path) : null;
+      const sessions = await listSessionsForCwd(proj.path, tempSids);
       res.json(sessions);
     } catch (e) { next(e); }
   });
@@ -260,7 +266,8 @@ export function buildRoutes({ instances, serverCtx } = {}) {
     try {
       const wt = await getWorktree(req.params.name, req.params.wt);
       if (!wt) throw Object.assign(new Error('worktree not found'), { statusCode: 404 });
-      res.json(await listSessionsForCwd(wt.worktreePath));
+      const tempSids = instances ? instances.tempSessionIdsForCwd(wt.worktreePath) : null;
+      res.json(await listSessionsForCwd(wt.worktreePath, tempSids));
     } catch (e) { next(e); }
   });
 
