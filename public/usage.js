@@ -84,7 +84,9 @@ export class UsageTracker {
       this.cum.outputTokens  += u.output_tokens ?? 0;
       this.cum.cacheRead     += u.cache_read_input_tokens ?? 0;
       this.cum.cacheCreation += u.cache_creation_input_tokens ?? 0;
-      this.cum.cost          += ev.cost ?? 0;
+      // costDelta is the actual cost of this turn; ev.cost is the cumulative
+      // session total emitted by the CLI. Use the delta to avoid double-counting.
+      this.cum.cost          += ev.costDelta ?? ev.cost ?? 0;
       this.cum.durationMs    += ev.durationMs ?? 0;
       this.cum.turns         += 1;
     }

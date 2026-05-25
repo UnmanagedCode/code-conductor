@@ -18,7 +18,7 @@
 //   system                  { subtype, data }
 //   hook                    { event, data }
 //   assistant_message       { msgId, message }              // final reconciled message
-//   turn_end                { usage, durationMs, cost, isError, stopReason, subtype }
+//   turn_end                { usage, durationMs, cost, costDelta, isError, stopReason, subtype }
 //   control_response        { requestId, ok, response?, error? }
 //   raw                     { line }                        // fallback for unrecognized
 
@@ -28,11 +28,13 @@ export class Parser {
   constructor() {
     this.currentMsgId = null;
     this.blocks = new Map(); // blockIdx -> { type, accumText, accumJson, toolUseId, name }
+    this._lastCost = 0; // tracks cumulative cost to compute per-turn delta
   }
 
   reset() {
     this.currentMsgId = null;
     this.blocks.clear();
+    this._lastCost = 0;
   }
 
   handleLine(line) {
@@ -293,12 +295,18 @@ export class Parser {
   }
 
   _handleResult(obj) {
+    // total_cost_usd is the cumulative session total, not a per-turn cost.
+    // Compute the delta so callers can display / accumulate the actual turn cost.
+    const cost = obj.total_cost_usd ?? null;
+    const costDelta = cost != null ? cost - this._lastCost : null;
+    if (cost != null) this._lastCost = cost;
     return [{
       kind: 'turn_end',
       subtype: obj.subtype ?? 'success',
       stopReason: obj.stop_reason ?? null,
       durationMs: obj.duration_ms ?? null,
-      cost: obj.total_cost_usd ?? null,
+      cost,      // raw cumulative session total (kept for reference)
+      costDelta, // actual cost of this turn
       usage: obj.usage ?? null,
       isError: !!obj.is_error,
     }];

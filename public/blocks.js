@@ -844,12 +844,15 @@ export class SystemBlock {
 }
 
 export class TurnEndBlock {
-  constructor({ subtype, durationMs, cost, usage, isError, stopReason }) {
+  constructor({ subtype, durationMs, cost, costDelta, usage, isError, stopReason }) {
+    // costDelta is the actual cost of this turn; cost is the cumulative session total.
+    // Prefer costDelta for display so each line shows what that turn cost, not the running total.
+    const displayCost = costDelta ?? cost;
     const parts = [
       isError ? '❌ turn ended' : '✓ turn ended',
       stopReason ? `(${stopReason})` : '',
       durationMs != null ? `${durationMs}ms` : '',
-      cost != null ? `$${cost.toFixed(4)}` : '',
+      displayCost != null ? `$${displayCost.toFixed(4)}` : '',
       usage ? `in=${usage.input_tokens ?? '?'} out=${usage.output_tokens ?? '?'}` : '',
     ].filter(Boolean);
     this.node = el('div', { class: 'block turn-end' }, parts.join(' · '));

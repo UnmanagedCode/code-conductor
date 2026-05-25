@@ -50,7 +50,7 @@ export function attachWsHub({ wss, instances }) {
         project: inst?.project ?? null,
         isError: !!ev.isError,
         stopReason: ev.stopReason ?? null,
-        cost: ev.cost ?? null,
+        cost: ev.costDelta ?? ev.cost ?? null,
       });
       broadcastAll(note);
     }
