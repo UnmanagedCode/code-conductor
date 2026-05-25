@@ -43,8 +43,7 @@ export class ImageBlock {
   constructor({ mediaType, dataBase64, src, name } = {}) {
     const url = src || `data:${mediaType || 'image/png'};base64,${dataBase64 || ''}`;
     const img = el('img', { class: 'block-image-img', src: url, alt: name || 'attached image' });
-    const link = el('a', { href: url, target: '_blank', rel: 'noopener' }, img);
-    this.node = el('div', { class: 'block image' }, link);
+    this.node = el('div', { class: 'block image' }, img);
   }
   appendDelta() {}
   finalize() {}
@@ -757,8 +756,7 @@ export class ToolResultBlock {
       img.setAttribute('alt', 'tool-result image');
       img.setAttribute('loading', 'lazy');
       img.className = 'tool-result-img';
-      const link = el('a', { href: src, target: '_blank', rel: 'noopener' }, img);
-      det.appendChild(link);
+      det.appendChild(img);
     }
     this.node = det;
   }

@@ -20,6 +20,7 @@ import {
   stashCurrentAnchorForRelaunch, consumeStashedAnchor,
 } from './anchor.js';
 import { installExternalLinkOpener } from './external-links.js';
+import { installLightbox } from './lightbox.js';
 
 const state = {
   projects: [],
@@ -1542,5 +1543,7 @@ bus.addEventListener('open', async () => {
 installExternalLinkOpener({
   beforeNavigate: () => stashCurrentAnchorForRelaunch(),
 });
+
+installLightbox();
 
 connect();

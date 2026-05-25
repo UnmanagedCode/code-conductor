@@ -122,10 +122,9 @@ test('ToolResultBlock: renders a base64 image content block as <img>', () => {
   assert.ok(img, 'expected an <img.tool-result-img>');
   assert.equal(img.getAttribute('src'), 'data:image/png;base64,AAAA');
   assert.equal(img.getAttribute('loading'), 'lazy');
-  // Wrapped in an anchor so it can be opened full-size.
-  const a = block.node.querySelector('a');
-  assert.ok(a);
-  assert.equal(a.getAttribute('href'), 'data:image/png;base64,AAAA');
+  // No anchor wrap — the lightbox handles tap-to-zoom in-page, since
+  // Chrome on Android blocks top-level data:-URL navigation.
+  assert.equal(block.node.querySelector('a'), null);
   // Summary advertises the image count.
   assert.match(block.node.querySelector('summary').textContent, /1 image/);
   // Auto-open so the user sees the picture without clicking.
