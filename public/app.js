@@ -71,6 +71,9 @@ const dom = {
   niTemp: document.getElementById('ni-temp'),
   niDebug: document.getElementById('ni-debug'),
   niError: document.getElementById('ni-error'),
+  quickSpawnDialog: document.getElementById('quick-spawn-dialog'),
+  qsProject: document.getElementById('qs-project'),
+  qsError: document.getElementById('qs-error'),
   syncBtn: document.getElementById('sync-btn'),
   mergeBtn: document.getElementById('merge-btn'),
   debugBtn: document.getElementById('debug-btn'),
@@ -260,6 +263,8 @@ const sidebar = new Sidebar({
   onLoadSessions: loadSessions,
   onDeleteSession: deleteSession,
   onEditWorkspace: openEditWorkspaceDialog,
+  onQuickSpawn: openQuickSpawnDialog,
+  onPromoteSession: promoteSession,
 });
 // Seed the sidebar with any unread counts restored from localStorage so
 // the pills appear on the first render after a page reload — without
@@ -777,6 +782,73 @@ dom.newInstanceDialog.addEventListener('close', async () => {
     dom.newInstanceDialog.showModal();
   }
 });
+
+// ⚡ Quick spawn — opens a small 3-button model picker. Clicking any
+// model immediately spawns a temp session in bypassPermissions ("code")
+// mode at the project root. No worktree, no further configuration —
+// one tap to get a throwaway agent running. The dialog closes itself
+// once the request fires; the new instance lands as the active one.
+let pendingQuickSpawnProject = null;
+async function openQuickSpawnDialog(projectName) {
+  pendingQuickSpawnProject = projectName;
+  dom.qsProject.textContent = projectName;
+  dom.qsError.textContent = '';
+  dom.quickSpawnDialog.showModal();
+}
+async function quickSpawn(model) {
+  const project = pendingQuickSpawnProject;
+  if (!project) return;
+  dom.qsError.textContent = '';
+  try {
+    const r = await fetch('/api/instances', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        project, model, temp: true, mode: 'bypassPermissions',
+      }),
+    });
+    if (!r.ok) throw new Error((await r.json()).error);
+    const inst = await r.json();
+    dom.quickSpawnDialog.close();
+    await refreshProjects();
+    await refreshInstances();
+    selectInstance(inst.id);
+  } catch (e) {
+    dom.qsError.textContent = e.message;
+  }
+}
+// Delegate clicks on any .qs-model button inside the dialog. Buttons
+// carry `data-model` with the canonical CLI model id.
+dom.quickSpawnDialog.addEventListener('click', (e) => {
+  const btn = e.target.closest('.qs-model');
+  if (!btn) return;
+  e.preventDefault();
+  const model = btn.dataset.model;
+  if (model) quickSpawn(model);
+});
+
+// Promote a live temp session into a regular one. The server flips the
+// temp flag, writes the resume-picker metadata, and broadcasts the
+// status change — the sidebar's `instances` re-fetch then migrates the
+// row from the Temp Sessions subnode into the regular Sessions list.
+async function promoteSession({ projectName, instanceId, preview }) {
+  if (!instanceId) return;
+  const ok = confirm(
+    `Promote this temp session to a normal session in '${projectName}'?\n\n` +
+    `${preview || '(no preview yet)'}\n\n` +
+    `The transcript will be preserved when the session ends.`,
+  );
+  if (!ok) return;
+  try {
+    const r = await fetch(`/api/instances/${encodeURIComponent(instanceId)}/promote`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+    });
+    if (!r.ok) throw new Error((await r.json()).error);
+    await refreshInstances();
+  } catch (e) {
+    alert(`Failed to promote: ${e.message}`);
+  }
+}
 
 // Fetches sessions for a project (or for a specific worktree under it).
 // Called by the sidebar when the user expands the "Sessions" subnode.

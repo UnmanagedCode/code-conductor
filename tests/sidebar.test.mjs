@@ -461,3 +461,105 @@ test('Workspace collapse state is read from localStorage on construction', async
   assert.ok(!byName['Hidden'].hasAttribute('open'), 'Hidden workspace respects localStorage collapse');
   assert.ok(byName['Visible'].hasAttribute('open'), 'Visible workspace default-expanded');
 });
+
+test('Project row carries a ⚡ quick-spawn button wired to onQuickSpawn', async () => {
+  const { root, sidebar } = await setupSidebar({});
+  const quickCalls = [];
+  sidebar.onQuickSpawn = (name) => quickCalls.push(name);
+  sidebar.setProjects([{
+    name: 'demo', path: '/p/demo', instanceIds: [], isGitRepo: false,
+    worktrees: [], sessions: { count: 0, lastMtime: 0 },
+  }]);
+  sidebar.setInstances([]);
+  const btn = root.querySelector('.project-row .quick-spawn');
+  assert.ok(btn, 'lightning button rendered on the project row');
+  assert.equal(btn.textContent, '⚡');
+  btn.click();
+  assert.deepEqual(quickCalls, ['demo']);
+});
+
+test('Temp instances are routed to their own default-collapsed Temp Sessions subnode', async () => {
+  const { root, sidebar } = await setupSidebar({
+    onLoadSessions: async () => [],
+  });
+  sidebar.setProjects([{
+    name: 'demo', path: '/p/demo', instanceIds: [], isGitRepo: false,
+    worktrees: [], sessions: { count: 0, lastMtime: 0 },
+  }]);
+  sidebar.setInstances([
+    { id: 'inst-normal', project: 'demo', sessionId: 'sid-normal',
+      status: 'idle', mode: 'plan', worktree: null, temp: false },
+    { id: 'inst-temp',   project: 'demo', sessionId: 'sid-temp',
+      status: 'idle', mode: 'bypassPermissions', worktree: null, temp: true },
+  ]);
+
+  await new Promise(r => setTimeout(r, 0));
+  const tempGroup = root.querySelector('details.temp-sessions-group');
+  assert.ok(tempGroup, 'Temp Sessions subnode exists when there are temp instances');
+  assert.ok(!tempGroup.hasAttribute('open'), 'Temp Sessions subnode is collapsed by default');
+  // Force open to inspect the contained row.
+  tempGroup.open = true;
+  const tempRows = tempGroup.querySelectorAll('.session-row');
+  assert.equal(tempRows.length, 1, 'Temp Sessions subnode shows only the temp instance');
+
+  // The regular Sessions subnode must contain only the non-temp instance.
+  const regularGroups = [...root.querySelectorAll('details.sessions-group')]
+    .filter(g => !g.classList.contains('temp-sessions-group'));
+  assert.equal(regularGroups.length, 1, 'one regular Sessions subnode rendered');
+  const regularRows = regularGroups[0].querySelectorAll('.session-row');
+  assert.equal(regularRows.length, 1, 'regular Sessions subnode shows the non-temp instance only');
+});
+
+test('Temp Sessions subnode is NOT rendered when there are zero temp instances', async () => {
+  const { root, sidebar } = await setupSidebar({});
+  sidebar.setProjects([{
+    name: 'demo', path: '/p/demo', instanceIds: [], isGitRepo: false,
+    worktrees: [], sessions: { count: 0, lastMtime: 0 },
+  }]);
+  sidebar.setInstances([
+    { id: 'inst-x', project: 'demo', sessionId: 'sid-x',
+      status: 'idle', mode: 'plan', worktree: null, temp: false },
+  ]);
+  await new Promise(r => setTimeout(r, 0));
+  assert.equal(root.querySelector('details.temp-sessions-group'), null,
+    'no Temp Sessions subnode when there are no temp instances');
+});
+
+test('Temp session row exposes a ↑ promote button wired to onPromoteSession', async () => {
+  const { root, sidebar } = await setupSidebar({});
+  const promoteCalls = [];
+  sidebar.onPromoteSession = (arg) => promoteCalls.push(arg);
+  sidebar.setProjects([{
+    name: 'demo', path: '/p/demo', instanceIds: [], isGitRepo: false,
+    worktrees: [], sessions: { count: 0, lastMtime: 0 },
+  }]);
+  sidebar.setInstances([
+    { id: 'inst-temp', project: 'demo', sessionId: 'sid-temp',
+      status: 'idle', mode: 'bypassPermissions', worktree: null, temp: true },
+  ]);
+  await new Promise(r => setTimeout(r, 0));
+  const tempGroup = root.querySelector('details.temp-sessions-group');
+  tempGroup.open = true;
+  const btn = tempGroup.querySelector('.session-promote');
+  assert.ok(btn, 'promote button rendered on the temp row');
+  assert.equal(btn.textContent, '↑');
+  btn.click();
+  assert.equal(promoteCalls.length, 1);
+  assert.equal(promoteCalls[0].instanceId, 'inst-temp');
+  assert.equal(promoteCalls[0].projectName, 'demo');
+});
+
+test('Regular (non-temp) session rows do NOT show the promote button', async () => {
+  const { root, sidebar } = await setupSidebar({});
+  sidebar.setProjects([{
+    name: 'demo', path: '/p/demo', instanceIds: [], isGitRepo: false,
+    worktrees: [], sessions: { count: 0, lastMtime: 0 },
+  }]);
+  sidebar.setInstances([
+    { id: 'inst-normal', project: 'demo', sessionId: 'sid-normal',
+      status: 'idle', mode: 'plan', worktree: null, temp: false },
+  ]);
+  await new Promise(r => setTimeout(r, 0));
+  const promoteBtn = root.querySelector('.session-promote');
+  assert.equal(promoteBtn, null, 'no promote button on non-temp rows');
+});

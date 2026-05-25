@@ -895,6 +895,73 @@ test('temp: deletes session jsonl + sibling subagents dir on subprocess exit', a
   } finally { await close(); }
 });
 
+test('promote: flips temp flag, writes resume-picker metadata, skips on-exit cleanup', async () => {
+  const scenario = path.join(__dirname, 'fixtures', 'scenario-resume.json');
+  const ctx = await bootServer({ scenarioPath: scenario });
+  const fsp = (await import('node:fs')).promises;
+  try {
+    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'promo' });
+    const events = collectEvents(ctx.instances);
+    const r = await api(ctx.baseUrl, 'POST', '/api/instances', { project: 'promo', temp: true });
+    const id = r.body.id;
+    const inst = ctx.instances.get(id);
+    await waitFor(() => inst.status === 'idle');
+    // Run one turn so the CLI flushes its jsonl to disk — that's the
+    // file the on-exit cleanup would otherwise delete, and the file the
+    // promote endpoint should keep.
+    inst.prompt('hi');
+    await waitFor(() => events.some(e => e.id === id && e.ev.kind === 'turn_end'));
+
+    const dir = path.join(ctx.claudeProjectsRoot, encodeCwd(inst.cwd));
+    const file = path.join(dir, `${inst.sessionId}.jsonl`);
+
+    const promote = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/promote`);
+    assert.equal(promote.status, 200);
+    assert.equal(promote.body.ok, true);
+    assert.equal(promote.body.instance.temp, false, 'summary reflects the flag flip');
+    assert.equal(inst.temp, false, 'in-memory flag is flipped too');
+
+    // Wait for the metadata append (writeSessionMetadata is fired-and-forgotten
+    // inside promoteToNormal — we awaited it via the request, but the disk
+    // write itself is also a microtask away).
+    await waitFor(async () => {
+      try {
+        const txt = await fsp.readFile(file, 'utf8');
+        return txt.includes('"type":"last-prompt"');
+      } catch { return false; }
+    });
+    const txt = await fsp.readFile(file, 'utf8');
+    assert.ok(txt.includes('"type":"permission-mode"'), 'permission-mode metadata appended after promote');
+
+    // Kill the instance and assert the jsonl SURVIVES — promote should have
+    // disabled the temp on-exit cleanup.
+    const del = await api(ctx.baseUrl, 'DELETE', `/api/instances/${id}`);
+    assert.equal(del.status, 200);
+    await new Promise(r => setTimeout(r, 50));
+    await fsp.access(file); // throws if missing — must not throw
+  } finally { await ctx.close(); }
+});
+
+test('promote: 400 when the instance is not temp', async () => {
+  const { baseUrl, instances, close } = await setupWithProject();
+  try {
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', mode: 'bypassPermissions' });
+    const id = r.body.id;
+    await waitFor(() => instances.get(id).status === 'idle');
+    const promote = await api(baseUrl, 'POST', `/api/instances/${id}/promote`);
+    assert.equal(promote.status, 400);
+    assert.match(promote.body.error, /not temp/);
+  } finally { await close(); }
+});
+
+test('promote: 404 when the instance id is unknown', async () => {
+  const { baseUrl, close } = await setupWithProject();
+  try {
+    const promote = await api(baseUrl, 'POST', '/api/instances/no-such-id/promote');
+    assert.equal(promote.status, 404);
+  } finally { await close(); }
+});
+
 test('non-temp: jsonl is left in place on exit', async () => {
   const { baseUrl, instances, claudeProjectsRoot, close } = await setupWithProject();
   const fsp = (await import('node:fs')).promises;

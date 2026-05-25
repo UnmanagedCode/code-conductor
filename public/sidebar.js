@@ -32,6 +32,7 @@ function mergeLive(onDisk, liveInstances) {
       row.instanceId = inst.id;
       row.instanceStatus = inst.status;
       row.instanceMode = inst.mode;
+      row.instanceTemp = !!inst.temp;
     } else {
       byId.set(inst.sessionId, {
         sessionId: inst.sessionId,
@@ -41,6 +42,7 @@ function mergeLive(onDisk, liveInstances) {
         instanceId: inst.id,
         instanceStatus: inst.status,
         instanceMode: inst.mode,
+        instanceTemp: !!inst.temp,
         synthetic: true,
       });
     }
@@ -74,11 +76,35 @@ function saveCollapsedWorkspaces(set) {
   } catch { /* private mode / quota — best-effort */ }
 }
 
+// Temp Sessions subnodes default-collapsed; we persist the set the user
+// has *opened* so a refresh keeps the layout. localStorage values are
+// project names (no worktree split — temp sessions never run inside
+// worktrees).
+const TEMP_SESSIONS_EXPANDED_STORAGE_KEY = 'code-conductor:temp-sessions-expanded';
+
+function loadExpandedTempSessions() {
+  try {
+    const raw = localStorage.getItem(TEMP_SESSIONS_EXPANDED_STORAGE_KEY);
+    if (!raw) return new Set();
+    const arr = JSON.parse(raw);
+    if (!Array.isArray(arr)) return new Set();
+    return new Set(arr.filter(s => typeof s === 'string'));
+  } catch {
+    return new Set();
+  }
+}
+function saveExpandedTempSessions(set) {
+  try {
+    if (set.size === 0) localStorage.removeItem(TEMP_SESSIONS_EXPANDED_STORAGE_KEY);
+    else localStorage.setItem(TEMP_SESSIONS_EXPANDED_STORAGE_KEY, JSON.stringify([...set]));
+  } catch { /* private mode / quota — best-effort */ }
+}
+
 export class Sidebar {
   constructor({
     rootList, onSelectInstance, onCreateInstanceClick,
     onRemoveWorktree, onDeleteProject, onResumeSession, onLoadSessions,
-    onDeleteSession, onEditWorkspace,
+    onDeleteSession, onEditWorkspace, onQuickSpawn, onPromoteSession,
   }) {
     this.list = rootList;
     this.onSelectInstance = onSelectInstance;
@@ -89,6 +115,8 @@ export class Sidebar {
     this.onLoadSessions = onLoadSessions;
     this.onDeleteSession = onDeleteSession;
     this.onEditWorkspace = onEditWorkspace;
+    this.onQuickSpawn = onQuickSpawn;
+    this.onPromoteSession = onPromoteSession;
     this.projects = [];
     this.instances = [];
     // Names of registered workspaces (from GET /api/workspaces). Render
@@ -101,6 +129,7 @@ export class Sidebar {
     // collapsed so manual collapse sticks across re-renders.
     this.collapsedSessions = new Set();   // key: `${projectName}` or `${projectName}:${worktreeName}`
     this.expandedWorktrees = new Set();   // key: projectName (worktree subnodes stay default-collapsed)
+    this.expandedTempSessions = loadExpandedTempSessions(); // key: projectName (temp subnodes default-collapsed)
     // Workspace containers default-expanded and persist their collapsed
     // state in localStorage so a page refresh keeps the layout stable.
     this.collapsedWorkspaces = loadCollapsedWorkspaces(); // key: workspace name
@@ -193,6 +222,19 @@ export class Sidebar {
         class: 'session-unread',
         title: `${unread} new turn${unread === 1 ? '' : 's'} since you last viewed this session`,
       }, String(unread)));
+    }
+    // Live temp instance → show the promote button to the left of ×.
+    // Always visible (no opacity:0 hover) so mobile users can tap it.
+    if (session.instanceTemp && session.instanceId) {
+      row.appendChild(el('button', {
+        class: 'session-promote', title: 'promote to normal session',
+        onclick: (e) => {
+          e.stopPropagation();
+          if (this.onPromoteSession) this.onPromoteSession({
+            projectName, instanceId: session.instanceId, preview: liveLabel,
+          });
+        },
+      }, '↑'));
     }
     row.appendChild(el('button', {
       class: 'session-delete', title: 'delete session',
@@ -321,6 +363,38 @@ export class Sidebar {
     return det;
   }
 
+  // Default-collapsed sibling of the regular Sessions subnode that lists
+  // only live temp instances for this project. Temp sessions never live
+  // on disk (their jsonl is wiped on exit) so this subnode is a purely
+  // live overlay — when the last temp instance exits, the subnode hides
+  // itself. Returns null when there's nothing to show, so empty subnodes
+  // don't add visual noise.
+  _tempSessionsNode({ project, tempInstances }) {
+    if (!tempInstances || tempInstances.length === 0) return null;
+    const projectName = project.name;
+    const det = el('details', { class: 'sessions-group temp-sessions-group' });
+    if (this.expandedTempSessions.has(projectName)) det.setAttribute('open', '');
+    det.addEventListener('toggle', () => {
+      if (det.open) this.expandedTempSessions.add(projectName);
+      else this.expandedTempSessions.delete(projectName);
+      saveExpandedTempSessions(this.expandedTempSessions);
+    });
+    det.appendChild(el('summary', { class: 'sessions-summary' },
+      `Temp Sessions (${tempInstances.length})`));
+    const listEl = el('ul', { class: 'sessions-list' });
+    // Reuse mergeLive with an empty on-disk list — we want the same
+    // shape (instanceId / instanceStatus / instanceTemp wiring) as the
+    // regular subnode, so _sessionRow's promote button kicks in.
+    const merged = mergeLive([], tempInstances);
+    for (const s of merged) {
+      listEl.appendChild(el('li', {}, this._sessionRow({
+        session: s, projectName, worktreeName: null,
+      })));
+    }
+    det.appendChild(listEl);
+    return det;
+  }
+
   _worktreeNode({ project, wt, liveInstances }) {
     const head = el('div', { class: 'worktree-row' },
       el('span', { class: 'worktree-name', title: `${wt.branch}\nfrom ${wt.baseBranch} @ ${wt.baseSha?.slice(0, 12) ?? '?'}` },
@@ -365,7 +439,11 @@ export class Sidebar {
   // produces unassigned items at the top level AND items nested inside
   // a workspace's <details> body — the row markup is identical either way.
   _projectItem({ project: p, directByProject, byWorktree }) {
-    const directs = directByProject.get(p.name) ?? [];
+    const allDirects = directByProject.get(p.name) ?? [];
+    // Temp instances are routed to their own subnode below; the regular
+    // Sessions list excludes them so a temp session never appears twice.
+    const tempDirects = allDirects.filter(i => i.temp);
+    const directs = allDirects.filter(i => !i.temp);
     const worktrees = Array.isArray(p.worktrees) ? p.worktrees : [];
     const li = el('li', {});
     const row = el('div', { class: 'project-row' },
@@ -388,6 +466,13 @@ export class Sidebar {
       row.appendChild(el('span', { class: 'wt-unmerged', title }, label));
     }
     row.appendChild(el('button', {
+      class: 'quick-spawn', title: 'quick temp session',
+      onclick: (e) => {
+        e.stopPropagation();
+        if (this.onQuickSpawn) this.onQuickSpawn(p.name);
+      },
+    }, '⚡'));
+    row.appendChild(el('button', {
       class: 'add-instance', title: 'new session',
       onclick: () => this.onCreateInstanceClick(p.name),
     }, '+'));
@@ -403,11 +488,15 @@ export class Sidebar {
       summary: p.sessions,
     });
     if (sessionsNode) li.appendChild(sessionsNode);
-    else if (worktrees.length === 0) {
-      // Project with neither sessions nor worktrees — show a tiny
-      // "no sessions yet" hint to make the "+" button discoverable.
-      li.appendChild(el('div', { class: 'empty-project-hint' }, 'no sessions yet — click + to start'));
+    else if (worktrees.length === 0 && tempDirects.length === 0) {
+      // Project with neither sessions nor worktrees nor temp instances
+      // — show a tiny "no sessions yet" hint to make the "+" / "⚡"
+      // buttons discoverable.
+      li.appendChild(el('div', { class: 'empty-project-hint' }, 'no sessions yet — tap ⚡ or + to start'));
     }
+
+    const tempNode = this._tempSessionsNode({ project: p, tempInstances: tempDirects });
+    if (tempNode) li.appendChild(tempNode);
 
     if (worktrees.length > 0) {
       const det = el('details', { class: 'worktree-group' });

@@ -177,6 +177,22 @@
     </form>
   </dialog>
 
+  <dialog id="quick-spawn-dialog">
+    <form method="dialog">
+      <h3>Quick temp session in <span id="qs-project"></span></h3>
+      <p class="hint">Spawns a temp session in code mode at the project root. The transcript is wiped on exit.</p>
+      <div class="quick-spawn-models">
+        <button type="button" class="qs-model" data-model="claude-haiku-4-5">Haiku</button>
+        <button type="button" class="qs-model" data-model="claude-sonnet-4-6">Sonnet</button>
+        <button type="button" class="qs-model" data-model="claude-opus-4-7">Opus</button>
+      </div>
+      <p class="error" id="qs-error"></p>
+      <menu>
+        <button value="cancel">Cancel</button>
+      </menu>
+    </form>
+  </dialog>
+
   <script type="module" src="/app.js"></script>
 </body>
 </html>

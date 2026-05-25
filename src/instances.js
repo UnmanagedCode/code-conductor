@@ -536,6 +536,21 @@ export class Instance extends EventEmitter {
     return this.mode;
   }
 
+  // Promote a temp session to a normal one: stop suppressing the
+  // resume-picker metadata appends and stop the on-exit cleanup of
+  // the jsonl. The jsonl itself was already being written by the CLI
+  // — only the orchestrator's bookkeeping was opting out.
+  async promoteToNormal() {
+    if (!this.temp) throw Object.assign(new Error('instance is not temp'), { statusCode: 400 });
+    this.temp = false;
+    // Persist last-prompt + permission-mode now, so the standalone
+    // `claude --resume` picker sees this session immediately — without
+    // waiting for the next turn-end / setMode cycle to trigger it.
+    await this._writeSessionMetadata().catch(() => {});
+    this.emit('status', this.summary());
+    return this.summary();
+  }
+
   // Thin delegate so callers (routes.js / wsHub.js) keep talking to
   // the Instance — the broker holds the actual state.
   handleHookCallback(envelope, res) { this._hooks.handle(envelope, res); }

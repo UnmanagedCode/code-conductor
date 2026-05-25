@@ -398,6 +398,20 @@ export function buildRoutes({ instances, serverCtx } = {}) {
       } catch (e) { next(e); }
     });
 
+    // Promote a temp session to a regular one. 404 on unknown id, 400
+    // when the instance is not temp (no-op would be confusing — better
+    // to surface the misuse). The summary broadcast that follows the
+    // status emit lets the sidebar migrate the row from the Temp
+    // Sessions subnode into the regular Sessions list.
+    r.post('/instances/:id/promote', async (req, res, next) => {
+      try {
+        const inst = instances.get(req.params.id);
+        if (!inst) throw Object.assign(new Error('instance not found'), { statusCode: 404 });
+        const summary = await inst.promoteToNormal();
+        res.json({ ok: true, instance: summary });
+      } catch (e) { next(e); }
+    });
+
     // Flip debug capture ON for a running instance. No matching "off"
     // endpoint — append-mode logs are best-effort and live for the rest
     // of the subprocess's life; to stop capturing, kill the instance.
