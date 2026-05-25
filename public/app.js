@@ -296,6 +296,7 @@ dom.modeSelect.addEventListener('change', async () => {
 
 dom.killBtn.addEventListener('click', () => {
   if (!state.activeId) return;
+  closeOverflow();
   if (state.activeStatus === 'turn') {
     send('interrupt', { id: state.activeId });
   } else if (confirm('Kill this instance?')) {
@@ -310,7 +311,6 @@ dom.autoApprovePlanBtn.addEventListener('click', () => {
   } else {
     autoApprovePlansByInstance.add(state.activeId);
   }
-  closeOverflow();
   updateActiveHeader();
 });
 
@@ -1128,16 +1128,18 @@ function updateActiveHeader() {
   dom.syncBtn.disabled = !hasWorktree;
   dom.mergeBtn.hidden = !hasWorktree;
   dom.mergeBtn.disabled = !hasWorktree;
-  // Overflow menu (⋮) hosts secondary actions: Debug capture + Auto-approve
-  // plans toggle. The whole trigger is hidden when no items apply (i.e.
-  // the instance isn't alive). Debug button: shown while alive; once
-  // enabled it flips to a disabled '🐛 capturing' indicator — there's no
-  // off path (the CLI stays mirrored for the rest of its life).
-  // Auto-approve plans: per-instance, session-local toggle; label
-  // reflects current state.
+  // Overflow menu (⋮) hosts secondary actions: Interrupt/Kill + Debug
+  // capture. The whole trigger is hidden when no items apply (i.e. the
+  // instance isn't alive). Debug button: shown while alive; once enabled
+  // it flips to a disabled '🐛 capturing' indicator — there's no off
+  // path (the CLI stays mirrored for the rest of its life). Auto-approve
+  // plans lives in the controls row (sibling of #mode-select), not in
+  // this menu, so the toggle is one click from anywhere — including
+  // mid-turn.
   const canMenu = ['idle', 'turn', 'spawning'].includes(inst.status);
   dom.debugBtn.hidden = !canMenu;
   dom.autoApprovePlanBtn.hidden = !canMenu;
+  dom.autoApprovePlanBtn.disabled = !canMenu;
   dom.overflowMenu.hidden = !canMenu;
   if (inst.debug) {
     dom.debugBtn.textContent = '🐛 capturing';
@@ -1149,10 +1151,7 @@ function updateActiveHeader() {
     dom.debugBtn.title = 'Start mirroring CLI stdin/stdout/stderr to the orchestrator debug dir';
   }
   const autoApproveOn = autoApprovePlansByInstance.has(inst.id);
-  dom.autoApprovePlanBtn.textContent = autoApproveOn
-    ? '📋 Auto-approve plans: on'
-    : '📋 Auto-approve plans: off';
-  dom.autoApprovePlanBtn.setAttribute('aria-checked', autoApproveOn ? 'true' : 'false');
+  dom.autoApprovePlanBtn.setAttribute('aria-pressed', autoApproveOn ? 'true' : 'false');
   const canType = ['idle', 'turn', 'spawning'].includes(inst.status);
   const canSend = ['idle', 'turn'].includes(inst.status);
   composer.set({ canType, canSend });

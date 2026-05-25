@@ -424,6 +424,17 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
 #notify-toggle { padding: 4px 8px; line-height: 1; }
 #notify-toggle[aria-pressed="true"] { background: #2a3548; }
 
+/* Inline auto-approve-plans toggle, sibling of #mode-select. Icon-only so
+ * it doesn't crowd the mobile controls row; on/off state is communicated
+ * by aria-pressed (green-tinted background when on). */
+.auto-approve-toggle { padding: 4px 8px; line-height: 1; }
+.auto-approve-toggle[aria-pressed="true"] {
+  background: rgba(74,222,128,.20); border-color: var(--green);
+}
+.auto-approve-toggle[aria-pressed="true"]:hover:not(:disabled) {
+  background: rgba(74,222,128,.30);
+}
+
 button, select, textarea, input {
   background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
   border-radius: 6px; padding: 6px 10px; font: inherit;

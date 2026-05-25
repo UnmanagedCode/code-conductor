@@ -1,6 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { promises as fs } from 'node:fs';
+import { Window } from 'happy-dom';
 import { bootServer, api } from './helpers.mjs';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const INDEX_HTML = path.resolve(__dirname, '..', 'public', 'index.html');
 
 test('serves index.html with module entry', async () => {
   const { baseUrl, close } = await bootServer();
@@ -24,6 +31,49 @@ test('serves each public asset', async () => {
       assert.ok(len > 0, `${asset} should be non-empty`);
     }
   } finally { await close(); }
+});
+
+test('instance-controls: auto-approve-plan-btn lives in the controls row (not the overflow menu)', async () => {
+  // The toggle is the user-facing control for the "auto-approve plans"
+  // feature and needs to be one click away — including mid-turn — rather
+  // than buried two clicks deep inside the ⋮ overflow panel.
+  const html = await fs.readFile(INDEX_HTML, 'utf8');
+  const window = new Window({ url: 'http://localhost/' });
+  window.document.documentElement.innerHTML = html;
+  const doc = window.document;
+  const btn = doc.getElementById('auto-approve-plan-btn');
+  assert.ok(btn, 'auto-approve-plan-btn must exist');
+  assert.equal(btn.parentElement?.id, 'instance-controls',
+    'auto-approve-plan-btn must be a direct child of #instance-controls');
+  assert.equal(btn.getAttribute('aria-pressed'), 'false', 'default aria-pressed=false');
+  assert.ok(btn.getAttribute('aria-label'), 'icon-only button needs an aria-label');
+  assert.ok(btn.getAttribute('title'), 'tooltip text required for hover/long-press');
+  assert.ok(btn.hasAttribute('disabled'), 'starts disabled until an instance is selected');
+  assert.ok(btn.classList.contains('auto-approve-toggle'),
+    'has the .auto-approve-toggle class for inline styling');
+});
+
+test('instance-controls: kill-btn moved into the ⋮ overflow menu', async () => {
+  // Interrupt/Kill is less frequently needed than the primary controls,
+  // so it lives inside the ⋮ panel alongside Debug — freeing the
+  // controls row for the always-visible auto-approve toggle.
+  const html = await fs.readFile(INDEX_HTML, 'utf8');
+  const window = new Window({ url: 'http://localhost/' });
+  window.document.documentElement.innerHTML = html;
+  const doc = window.document;
+  const killBtn = doc.getElementById('kill-btn');
+  assert.ok(killBtn, 'kill-btn must exist');
+  assert.equal(killBtn.parentElement?.id, 'overflow-panel',
+    'kill-btn must live inside #overflow-panel');
+  assert.ok(killBtn.hasAttribute('disabled'), 'starts disabled until an instance is selected');
+  // Sibling order: kill-btn before debug-btn so it's the primary
+  // overflow action.
+  const panel = doc.getElementById('overflow-panel');
+  const children = Array.from(panel.children);
+  const killIdx = children.indexOf(killBtn);
+  const debugIdx = children.indexOf(doc.getElementById('debug-btn'));
+  assert.ok(killIdx >= 0 && debugIdx >= 0 && killIdx < debugIdx,
+    'kill-btn must precede debug-btn in the overflow panel');
 });
 
 test('DOM-free public modules import cleanly in Node', async () => {
