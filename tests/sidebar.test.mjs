@@ -478,7 +478,7 @@ test('Project row carries a ↯ quick-spawn button wired to onQuickSpawn', async
   assert.deepEqual(quickCalls, ['demo']);
 });
 
-test('Temp instances are routed to their own default-collapsed Temp Sessions subnode', async () => {
+test('Temp instances render inside the unified Sessions subnode below a dim separator', async () => {
   const { root, sidebar } = await setupSidebar({
     onLoadSessions: async () => [],
   });
@@ -494,23 +494,27 @@ test('Temp instances are routed to their own default-collapsed Temp Sessions sub
   ]);
 
   await new Promise(r => setTimeout(r, 0));
-  const tempGroup = root.querySelector('details.temp-sessions-group');
-  assert.ok(tempGroup, 'Temp Sessions subnode exists when there are temp instances');
-  assert.ok(!tempGroup.hasAttribute('open'), 'Temp Sessions subnode is collapsed by default');
-  // Force open to inspect the contained row.
-  tempGroup.open = true;
-  const tempRows = tempGroup.querySelectorAll('.session-row');
-  assert.equal(tempRows.length, 1, 'Temp Sessions subnode shows only the temp instance');
-
-  // The regular Sessions subnode must contain only the non-temp instance.
-  const regularGroups = [...root.querySelectorAll('details.sessions-group')]
-    .filter(g => !g.classList.contains('temp-sessions-group'));
-  assert.equal(regularGroups.length, 1, 'one regular Sessions subnode rendered');
-  const regularRows = regularGroups[0].querySelectorAll('.session-row');
-  assert.equal(regularRows.length, 1, 'regular Sessions subnode shows the non-temp instance only');
+  // No separate temp subnode anymore — everything lives in the one
+  // Sessions <details>.
+  assert.equal(root.querySelector('details.temp-sessions-group'), null,
+    'separate Temp Sessions subnode has been removed');
+  const group = root.querySelector('details.sessions-group');
+  assert.ok(group, 'unified Sessions subnode rendered');
+  const items = [...group.querySelector('.sessions-list').children];
+  // Expect: normal row, separator, temp row — in that order.
+  assert.equal(items.length, 3);
+  assert.ok(items[0].querySelector('.session-row'), 'first child is the normal row');
+  assert.ok(!items[0].querySelector('.session-row').classList.contains('temp'),
+    'normal row does not have .temp class');
+  assert.ok(items[1].classList.contains('sessions-separator'),
+    'middle child is the — temp — separator');
+  assert.match(items[1].textContent, /temp/i);
+  const tempRow = items[2].querySelector('.session-row');
+  assert.ok(tempRow, 'third child is the temp row');
+  assert.ok(tempRow.classList.contains('temp'), 'temp row carries .temp class for styling');
 });
 
-test('Temp Sessions subnode is NOT rendered when there are zero temp instances', async () => {
+test('Sessions subnode renders no separator when there are zero temp instances', async () => {
   const { root, sidebar } = await setupSidebar({});
   sidebar.setProjects([{
     name: 'demo', path: '/p/demo', instanceIds: [], isGitRepo: false,
@@ -521,8 +525,8 @@ test('Temp Sessions subnode is NOT rendered when there are zero temp instances',
       status: 'idle', mode: 'plan', worktree: null, temp: false },
   ]);
   await new Promise(r => setTimeout(r, 0));
-  assert.equal(root.querySelector('details.temp-sessions-group'), null,
-    'no Temp Sessions subnode when there are no temp instances');
+  assert.equal(root.querySelector('.sessions-separator'), null,
+    'no separator when there are no temp instances');
 });
 
 test('Temp session row exposes a ↑ promote button wired to onPromoteSession', async () => {
@@ -538,9 +542,9 @@ test('Temp session row exposes a ↑ promote button wired to onPromoteSession', 
       status: 'idle', mode: 'bypassPermissions', worktree: null, temp: true },
   ]);
   await new Promise(r => setTimeout(r, 0));
-  const tempGroup = root.querySelector('details.temp-sessions-group');
-  tempGroup.open = true;
-  const btn = tempGroup.querySelector('.session-promote');
+  const group = root.querySelector('details.sessions-group');
+  assert.ok(group, 'Sessions subnode exists when a temp instance is the only entry');
+  const btn = group.querySelector('.session-promote');
   assert.ok(btn, 'promote button rendered on the temp row');
   assert.equal(btn.textContent, '↑');
   btn.click();

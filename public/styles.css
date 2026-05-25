@@ -324,9 +324,16 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
 }
 .session-promote:hover { color: var(--text); }
 
-/* Temp Sessions subnode: same skeleton as .sessions-group with a hint
-   of the warm temp-pill colour on the summary line. */
-.temp-sessions-group > .sessions-summary { color: #ffc7a3; }
+/* Temp rows live inside the regular Sessions list, pinned below a dim
+   "— temp —" divider. The warm temp-pill colour stays on the preview
+   only — status dot, ago timestamp, and action buttons keep their
+   normal colour so liveness signals still read clearly. */
+.sessions-separator {
+  font-size: 10px; color: var(--muted); font-style: italic;
+  letter-spacing: 0.5px; text-align: center;
+  padding: 6px 6px 2px; opacity: 0.7;
+}
+.session-row.temp .session-preview { color: #ffc7a3; }
 .empty-project-hint {
   font-size: 11px; color: var(--muted); font-style: italic;
   padding: 4px 14px;

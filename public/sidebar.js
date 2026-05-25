@@ -76,30 +76,6 @@ function saveCollapsedWorkspaces(set) {
   } catch { /* private mode / quota — best-effort */ }
 }
 
-// Temp Sessions subnodes default-collapsed; we persist the set the user
-// has *opened* so a refresh keeps the layout. localStorage values are
-// project names (no worktree split — temp sessions never run inside
-// worktrees).
-const TEMP_SESSIONS_EXPANDED_STORAGE_KEY = 'code-conductor:temp-sessions-expanded';
-
-function loadExpandedTempSessions() {
-  try {
-    const raw = localStorage.getItem(TEMP_SESSIONS_EXPANDED_STORAGE_KEY);
-    if (!raw) return new Set();
-    const arr = JSON.parse(raw);
-    if (!Array.isArray(arr)) return new Set();
-    return new Set(arr.filter(s => typeof s === 'string'));
-  } catch {
-    return new Set();
-  }
-}
-function saveExpandedTempSessions(set) {
-  try {
-    if (set.size === 0) localStorage.removeItem(TEMP_SESSIONS_EXPANDED_STORAGE_KEY);
-    else localStorage.setItem(TEMP_SESSIONS_EXPANDED_STORAGE_KEY, JSON.stringify([...set]));
-  } catch { /* private mode / quota — best-effort */ }
-}
-
 export class Sidebar {
   constructor({
     rootList, onSelectInstance, onCreateInstanceClick,
@@ -129,7 +105,6 @@ export class Sidebar {
     // collapsed so manual collapse sticks across re-renders.
     this.collapsedSessions = new Set();   // key: `${projectName}` or `${projectName}:${worktreeName}`
     this.expandedWorktrees = new Set();   // key: projectName (worktree subnodes stay default-collapsed)
-    this.expandedTempSessions = loadExpandedTempSessions(); // key: projectName (temp subnodes default-collapsed)
     // Workspace containers default-expanded and persist their collapsed
     // state in localStorage so a page refresh keeps the layout stable.
     this.collapsedWorkspaces = loadCollapsedWorkspaces(); // key: workspace name
@@ -204,7 +179,7 @@ export class Sidebar {
     const isActive = session.instanceId === this.activeInstanceId;
     const unread = this.unreadBySessionId.get(session.sessionId) ?? 0;
     const row = el('div', {
-      class: 'session-row' + (isActive ? ' active' : '') + (isLive ? ' live' : '') + (unread > 0 ? ' has-unread' : ''),
+      class: 'session-row' + (isActive ? ' active' : '') + (isLive ? ' live' : '') + (unread > 0 ? ' has-unread' : '') + (session.instanceTemp ? ' temp' : ''),
       title: `${session.sessionId}${preview ? '\n' + preview : ''}`,
       onclick: () => {
         if (session.instanceId) this.onSelectInstance(session.instanceId);
@@ -299,10 +274,23 @@ export class Sidebar {
         listEl.appendChild(el('li', { class: 'sessions-empty' }, 'no sessions'));
         return;
       }
-      for (const s of merged) {
+      // Live temp sessions pin to the bottom under a dim "— temp —"
+      // divider so the user can see them at a glance without losing the
+      // mtime sort over the normal sessions above.
+      const normal = merged.filter(s => !s.instanceTemp);
+      const temps = merged.filter(s => s.instanceTemp);
+      for (const s of normal) {
         listEl.appendChild(el('li', {}, this._sessionRow({
           session: s, projectName: project.name, worktreeName,
         })));
+      }
+      if (temps.length > 0) {
+        listEl.appendChild(el('li', { class: 'sessions-separator' }, '— temp —'));
+        for (const s of temps) {
+          listEl.appendChild(el('li', {}, this._sessionRow({
+            session: s, projectName: project.name, worktreeName,
+          })));
+        }
       }
     };
 
@@ -363,38 +351,6 @@ export class Sidebar {
     return det;
   }
 
-  // Default-collapsed sibling of the regular Sessions subnode that lists
-  // only live temp instances for this project. Temp sessions never live
-  // on disk (their jsonl is wiped on exit) so this subnode is a purely
-  // live overlay — when the last temp instance exits, the subnode hides
-  // itself. Returns null when there's nothing to show, so empty subnodes
-  // don't add visual noise.
-  _tempSessionsNode({ project, tempInstances }) {
-    if (!tempInstances || tempInstances.length === 0) return null;
-    const projectName = project.name;
-    const det = el('details', { class: 'sessions-group temp-sessions-group' });
-    if (this.expandedTempSessions.has(projectName)) det.setAttribute('open', '');
-    det.addEventListener('toggle', () => {
-      if (det.open) this.expandedTempSessions.add(projectName);
-      else this.expandedTempSessions.delete(projectName);
-      saveExpandedTempSessions(this.expandedTempSessions);
-    });
-    det.appendChild(el('summary', { class: 'sessions-summary' },
-      `Temp Sessions (${tempInstances.length})`));
-    const listEl = el('ul', { class: 'sessions-list' });
-    // Reuse mergeLive with an empty on-disk list — we want the same
-    // shape (instanceId / instanceStatus / instanceTemp wiring) as the
-    // regular subnode, so _sessionRow's promote button kicks in.
-    const merged = mergeLive([], tempInstances);
-    for (const s of merged) {
-      listEl.appendChild(el('li', {}, this._sessionRow({
-        session: s, projectName, worktreeName: null,
-      })));
-    }
-    det.appendChild(listEl);
-    return det;
-  }
-
   _worktreeNode({ project, wt, liveInstances }) {
     const head = el('div', { class: 'worktree-row' },
       el('span', { class: 'worktree-name', title: `${wt.branch}\nfrom ${wt.baseBranch} @ ${wt.baseSha?.slice(0, 12) ?? '?'}` },
@@ -440,10 +396,6 @@ export class Sidebar {
   // a workspace's <details> body — the row markup is identical either way.
   _projectItem({ project: p, directByProject, byWorktree }) {
     const allDirects = directByProject.get(p.name) ?? [];
-    // Temp instances are routed to their own subnode below; the regular
-    // Sessions list excludes them so a temp session never appears twice.
-    const tempDirects = allDirects.filter(i => i.temp);
-    const directs = allDirects.filter(i => !i.temp);
     const worktrees = Array.isArray(p.worktrees) ? p.worktrees : [];
     const li = el('li', {});
     const row = el('div', { class: 'project-row' },
@@ -484,19 +436,16 @@ export class Sidebar {
 
     const sessionsNode = this._sessionsNode({
       project: p,
-      liveInstances: directs,
+      liveInstances: allDirects,
       summary: p.sessions,
     });
     if (sessionsNode) li.appendChild(sessionsNode);
-    else if (worktrees.length === 0 && tempDirects.length === 0) {
-      // Project with neither sessions nor worktrees nor temp instances
-      // — show a tiny "no sessions yet" hint to make the "+" / "↯"
-      // buttons discoverable.
+    else if (worktrees.length === 0) {
+      // Project with neither sessions nor worktrees — show a tiny
+      // "no sessions yet" hint to make the "+" / "↯" buttons
+      // discoverable.
       li.appendChild(el('div', { class: 'empty-project-hint' }, 'no sessions yet — tap ↯ or + to start'));
     }
-
-    const tempNode = this._tempSessionsNode({ project: p, tempInstances: tempDirects });
-    if (tempNode) li.appendChild(tempNode);
 
     if (worktrees.length > 0) {
       const det = el('details', { class: 'worktree-group' });
