@@ -188,7 +188,7 @@ export class ToolUseBlock {
 
   finalizeInput(input) {
     this.input = input;
-    this.status = 'ready';
+    this.status = 'running';
     this._renderSummary();
     this._renderBody();
   }
@@ -236,8 +236,8 @@ export class ToolUseBlock {
 }
 
 function wrapToolInputPre(pre) {
-  return el('details', { class: 'block tool-input' },
-    el('summary', {}, '↪ tool_input'),
+  return el('details', { class: 'block tool-args' },
+    el('summary', {}, '↪ tool_args'),
     pre,
   );
 }
