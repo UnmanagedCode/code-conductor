@@ -88,11 +88,11 @@ test('DOM: a Bash tool call renders a tool block with the command visible', asyn
 
   // The raw-JSON input is wrapped in its own collapsible <details>, mirroring
   // the tool_result pattern. Default-closed.
-  const input = tool.querySelector('.block.tool-input');
-  assert.ok(input, 'raw-JSON input must be wrapped in a .block.tool-input details');
-  assert.equal(input.hasAttribute('open') || input.open, false, 'tool_input should be collapsed by default');
-  assert.match(input.querySelector('summary')?.textContent ?? '', /tool_input/);
-  assert.match(input.textContent, /ls -la/, 'tool_input body still contains the JSON-rendered command');
+  const input = tool.querySelector('.block.tool-args');
+  assert.ok(input, 'raw-JSON input must be wrapped in a .block.tool-args details');
+  assert.equal(input.hasAttribute('open') || input.open, false, 'tool_args should be collapsed by default');
+  assert.match(input.querySelector('summary')?.textContent ?? '', /tool_args/);
+  assert.match(input.textContent, /ls -la/, 'tool_args body still contains the JSON-rendered command');
 });
 
 function editToolCallStream() {
