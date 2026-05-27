@@ -89,7 +89,7 @@ test('lightbox: clicking inside .md img opens the overlay', async () => {
   assert.equal(big.getAttribute('src'), 'https://example.com/x.png');
 });
 
-test('lightbox: clicking the big image inside the overlay does not re-open it', async () => {
+test('lightbox: tapping the big image toggles full-res zoom (does not close)', async () => {
   const { document, mod } = await setup();
   mod.installLightbox();
   const img = document.createElement('img');
@@ -97,11 +97,37 @@ test('lightbox: clicking the big image inside the overlay does not re-open it', 
   img.setAttribute('src', 'data:image/png;base64,DDDD');
   document.body.appendChild(img);
   click(img);
-  const big = document.querySelector('.lightbox-img');
-  // Clicking the big image bubbles up to the backdrop click → close.
-  click(big);
   const backdrop = document.querySelector('.lightbox-backdrop');
+  const big = document.querySelector('.lightbox-img');
+  // Opens fit-to-screen.
+  assert.equal(big.classList.contains('zoomed'), false);
+  // First tap → 1:1 native resolution; overlay stays open.
+  click(big);
+  assert.equal(backdrop.hidden, false, 'tapping the image must not close the overlay');
+  assert.equal(big.classList.contains('zoomed'), true);
+  assert.equal(backdrop.classList.contains('zoomed'), true);
+  // Second tap → back to fit.
+  click(big);
+  assert.equal(backdrop.hidden, false);
+  assert.equal(big.classList.contains('zoomed'), false);
+});
+
+test('lightbox: backdrop click still closes after zooming', async () => {
+  const { document, mod } = await setup();
+  mod.installLightbox();
+  const img = document.createElement('img');
+  img.className = 'tool-result-img';
+  img.setAttribute('src', 'data:image/png;base64,EEEE');
+  document.body.appendChild(img);
+  click(img);
+  const backdrop = document.querySelector('.lightbox-backdrop');
+  const big = document.querySelector('.lightbox-img');
+  click(big); // zoom in
+  assert.equal(backdrop.classList.contains('zoomed'), true);
+  click(backdrop); // click outside the image → close
   assert.equal(backdrop.hidden, true);
+  // Zoom state resets on close so the next open starts fit-to-screen.
+  assert.equal(backdrop.classList.contains('zoomed'), false);
 });
 
 test('lightbox: ignores clicks on unrelated images', async () => {

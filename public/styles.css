@@ -847,6 +847,16 @@ input:focus, textarea:focus, select:focus { outline: 2px solid var(--accent); ou
   object-fit: contain;
   border-radius: 4px;
   box-shadow: 0 8px 32px rgba(0, 0, 0, .5);
+  cursor: zoom-in;
+}
+/* Zoomed: image renders at full native size, backdrop scrolls to pan.
+   block + overflow:auto instead of flex-centering, which would clip the
+   top/left of a larger-than-viewport image out of scroll reach. */
+.lightbox-backdrop.zoomed { display: block; overflow: auto; cursor: default; }
+.lightbox-img.zoomed {
+  max-width: none; max-height: none;
+  width: auto; height: auto;
+  cursor: zoom-out;
 }
 body.lightbox-open { overflow: hidden; }
 

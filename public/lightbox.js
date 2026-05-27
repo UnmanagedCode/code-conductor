@@ -9,6 +9,16 @@
 let backdrop = null;
 let bigImg = null;
 let escHandler = null;
+let zoomed = false;
+
+// Toggle between fit-to-screen (default) and 1:1 native resolution. In
+// zoomed mode the backdrop scrolls so a larger-than-viewport image can be
+// panned; flex-centering would clip the top/left out of reach.
+function setZoom(on) {
+  zoomed = on;
+  if (backdrop) backdrop.classList.toggle('zoomed', on);
+  if (bigImg) bigImg.classList.toggle('zoomed', on);
+}
 
 function ensureOverlay() {
   if (backdrop) return;
@@ -20,6 +30,9 @@ function ensureOverlay() {
   bigImg = document.createElement('img');
   bigImg.className = 'lightbox-img';
   bigImg.setAttribute('alt', '');
+  // Tap the image to toggle full native resolution; stopPropagation so the
+  // tap doesn't bubble to the backdrop's close handler.
+  bigImg.addEventListener('click', (e) => { e.stopPropagation(); setZoom(!zoomed); });
   backdrop.appendChild(bigImg);
   backdrop.addEventListener('click', close);
   document.body.appendChild(backdrop);
@@ -28,6 +41,7 @@ function ensureOverlay() {
 function open(src) {
   ensureOverlay();
   bigImg.setAttribute('src', src);
+  setZoom(false); // every image starts fit-to-screen
   backdrop.hidden = false;
   document.body.classList.add('lightbox-open');
   if (!escHandler) {
@@ -39,6 +53,7 @@ function open(src) {
 function close() {
   if (!backdrop || backdrop.hidden) return;
   backdrop.hidden = true;
+  setZoom(false);
   bigImg.removeAttribute('src');
   document.body.classList.remove('lightbox-open');
   if (escHandler) {
