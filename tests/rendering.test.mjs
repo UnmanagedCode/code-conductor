@@ -1025,10 +1025,10 @@ test('DOM: outer-turn assistant envelope does not duplicate text or tool blocks 
   assert.equal(root.querySelectorAll('.block.tool').length, 1, 'outer tool block must not be duplicated by reconcile');
   assert.equal(root.querySelectorAll('.block.text').length, 1, 'outer text block must not be duplicated by reconcile');
   assert.equal(root.querySelectorAll('.block.thinking').length, 1, 'outer thinking block must not be duplicated by reconcile');
-  // And the streamed tool block reached 'ready' via the content_block_stop tool_use event.
+  // And the streamed tool block reached 'running' via the content_block_stop tool_use event.
   const status = root.querySelector('.block.tool .tool-status');
   assert.ok(status);
-  assert.match(status.textContent, /ready/, `streamed tool block reaches 'ready' on its own content_block_stop (got: ${status.textContent})`);
+  assert.match(status.textContent, /running/, `streamed tool block reaches 'running' on its own content_block_stop (got: ${status.textContent})`);
 });
 
 test('DOM: tool block always shows its command in the summary even while streaming', async () => {
