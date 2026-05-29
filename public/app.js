@@ -795,88 +795,73 @@ dom.newInstanceDialog.addEventListener('close', async () => {
   }
 });
 
-// ⚡ Quick spawn — opens a small 3-button model picker. Clicking any
-// model immediately spawns a temp session in bypassPermissions ("code")
-// mode at the project root. No worktree, no further configuration —
-// one tap to get a throwaway agent running. The dialog closes itself
-// once the request fires; the new instance lands as the active one.
-let pendingQuickSpawnProject = null;
-// Per-open toggle: when true, the next model pick spawns in plan mode
-// and pre-arms auto-approve so the first ExitPlanMode auto-rolls into
-// bypassPermissions. Reset to false every time the dialog opens.
-let quickSpawnPlanMode = false;
-async function openQuickSpawnDialog(projectName) {
-  pendingQuickSpawnProject = projectName;
-  dom.qsProject.textContent = projectName;
-  dom.qsError.textContent = '';
-  quickSpawnPlanMode = false;
-  syncQuickSpawnModeToggle();
-  dom.quickSpawnDialog.showModal();
+// ── Shared spawn-dialog helpers ───────────────────────────────────────
+// Both the quick-spawn and conduct dialogs share the same model-picker +
+// Code/Plan toggle shape. These two helpers implement that logic once.
+
+// Returns a controller with .planMode getter and .reset(). Wires the two
+// mode buttons so clicking them updates aria-pressed and internal state.
+function makeModeToggle(codeBtn, planBtn) {
+  let planMode = false;
+  function sync() {
+    codeBtn.setAttribute('aria-pressed', planMode ? 'false' : 'true');
+    planBtn.setAttribute('aria-pressed', planMode ? 'true' : 'false');
+  }
+  codeBtn.addEventListener('click', e => { e.preventDefault(); planMode = false; sync(); });
+  planBtn.addEventListener('click', e => { e.preventDefault(); planMode = true; sync(); });
+  return { get planMode() { return planMode; }, reset() { planMode = false; sync(); } };
 }
-async function quickSpawn(model) {
-  const project = pendingQuickSpawnProject;
-  if (!project) return;
-  dom.qsError.textContent = '';
+
+// POSTs a temp instance, closes the dialog, and selects the new session.
+async function spawnInstance({ project, model, planMode, dialogEl, errorEl }) {
+  errorEl.textContent = '';
   try {
-    const mode = quickSpawnPlanMode ? 'plan' : 'bypassPermissions';
+    const mode = planMode ? 'plan' : 'bypassPermissions';
     const r = await fetch('/api/instances', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        project, model, temp: true, mode,
-        autoApprovePlan: quickSpawnPlanMode,
-      }),
+      body: JSON.stringify({ project, model, temp: true, mode, autoApprovePlan: planMode }),
     });
     if (!r.ok) throw new Error((await r.json()).error);
     const inst = await r.json();
-    dom.quickSpawnDialog.close();
+    dialogEl.close();
     await refreshProjects();
     await refreshInstances();
     selectInstance(inst.id);
   } catch (e) {
-    dom.qsError.textContent = e.message;
+    errorEl.textContent = e.message;
   }
 }
-function syncQuickSpawnModeToggle() {
-  dom.qsModeCode.setAttribute('aria-pressed', quickSpawnPlanMode ? 'false' : 'true');
-  dom.qsModePlan.setAttribute('aria-pressed', quickSpawnPlanMode ? 'true' : 'false');
+
+// ── Quick-spawn dialog ────────────────────────────────────────────────
+let pendingQuickSpawnProject = null;
+const qsMode = makeModeToggle(dom.qsModeCode, dom.qsModePlan);
+
+async function openQuickSpawnDialog(projectName) {
+  pendingQuickSpawnProject = projectName;
+  dom.qsProject.textContent = projectName;
+  dom.qsError.textContent = '';
+  qsMode.reset();
+  dom.quickSpawnDialog.showModal();
 }
-dom.qsModeCode.addEventListener('click', (e) => {
-  e.preventDefault();
-  quickSpawnPlanMode = false;
-  syncQuickSpawnModeToggle();
-});
-dom.qsModePlan.addEventListener('click', (e) => {
-  e.preventDefault();
-  quickSpawnPlanMode = true;
-  syncQuickSpawnModeToggle();
-});
-// Delegate clicks on any .qs-model button inside the dialog. Buttons
-// carry `data-model` with the canonical CLI model id.
 dom.quickSpawnDialog.addEventListener('click', (e) => {
   const btn = e.target.closest('.qs-model');
-  if (!btn) return;
+  if (!btn || btn.classList.contains('cd-model')) return;
   e.preventDefault();
   const model = btn.dataset.model;
-  if (model) quickSpawn(model);
+  if (model) spawnInstance({ project: pendingQuickSpawnProject, model, planMode: qsMode.planMode, dialogEl: dom.quickSpawnDialog, errorEl: dom.qsError });
 });
 
 // ── Conduct mode ─────────────────────────────────────────────────────
-// The 🎼 Conduct button at the top of the sidebar spawns a temp Claude
-// session in the hidden `.conduct` project. The project is lazy-created
-// on first open (POST /api/projects/.conduct/ensure). Dialog shape
-// mirrors the quick-spawn dialog: a model picker + Code/Plan toggle;
-// one model click spawns and closes.
-let conductPlanMode = false;
-function syncConductModeToggle() {
-  dom.cdModeCode.setAttribute('aria-pressed', conductPlanMode ? 'false' : 'true');
-  dom.cdModePlan.setAttribute('aria-pressed', conductPlanMode ? 'true' : 'false');
-}
+// The 🎼 Conduct button spawns a temp Claude session in the hidden
+// `.conduct` project, lazy-created on first open via
+// POST /api/projects/.conduct/ensure.
+const cdMode = makeModeToggle(dom.cdModeCode, dom.cdModePlan);
+
 async function openConductDialog() {
   closeSidebarOverflow();
   dom.cdError.textContent = '';
-  conductPlanMode = false;
-  syncConductModeToggle();
+  cdMode.reset();
   try {
     const r = await fetch('/api/projects/.conduct/ensure', { method: 'POST' });
     if (!r.ok) {
@@ -888,45 +873,13 @@ async function openConductDialog() {
   }
   dom.conductDialog.showModal();
 }
-async function conductSpawn(model) {
-  dom.cdError.textContent = '';
-  try {
-    const mode = conductPlanMode ? 'plan' : 'bypassPermissions';
-    const r = await fetch('/api/instances', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        project: '.conduct', model, temp: true, mode,
-        autoApprovePlan: conductPlanMode,
-      }),
-    });
-    if (!r.ok) throw new Error((await r.json()).error);
-    const inst = await r.json();
-    dom.conductDialog.close();
-    await refreshProjects();
-    await refreshInstances();
-    selectInstance(inst.id);
-  } catch (e) {
-    dom.cdError.textContent = e.message;
-  }
-}
 dom.conductBtn.addEventListener('click', openConductDialog);
-dom.cdModeCode.addEventListener('click', (e) => {
-  e.preventDefault();
-  conductPlanMode = false;
-  syncConductModeToggle();
-});
-dom.cdModePlan.addEventListener('click', (e) => {
-  e.preventDefault();
-  conductPlanMode = true;
-  syncConductModeToggle();
-});
 dom.conductDialog.addEventListener('click', (e) => {
   const btn = e.target.closest('.cd-model');
   if (!btn) return;
   e.preventDefault();
   const model = btn.dataset.model;
-  if (model) conductSpawn(model);
+  if (model) spawnInstance({ project: '.conduct', model, planMode: cdMode.planMode, dialogEl: dom.conductDialog, errorEl: dom.cdError });
 });
 
 // Promote a live temp session into a regular one. The server flips the
