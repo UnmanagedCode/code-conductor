@@ -4,8 +4,8 @@
 // (PROJECTS_ROOT + CLAUDE_PROJECTS_ROOT subdirs and CLAUDE_BIN pointing
 // at the fake).
 //
-// The generic harness lives in a sibling repo cloned at
-// ~/project/termux-playwright-harness/. See ./README.md for setup.
+// The generic harness lives in a sibling repo cloned to the parent directory
+// of code-conductor. See ./README.md for setup.
 //
 //   import { bootOrch } from './boot-orch.mjs';
 //   const orch = await bootOrch({ sandbox: true });

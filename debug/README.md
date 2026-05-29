@@ -4,11 +4,12 @@ Orchestrator-specific glue around the generic [`termux-playwright-harness`](../.
 
 ## Prereqs
 
-Clone the sibling repo and install its single dep:
+Clone the sibling repo to the parent directory of code-conductor and install its single dep:
 
 ```bash
-git clone git@github.com:UnmanagedCode/termux-playwright-harness.git ~/project/termux-playwright-harness
-cd ~/project/termux-playwright-harness && npm install
+cd ..
+git clone git@github.com:UnmanagedCode/termux-playwright-harness.git
+cd termux-playwright-harness && npm install
 pkg install chromium                                            # Termux system browser
 ```
 

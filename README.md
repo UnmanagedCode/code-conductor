@@ -105,7 +105,7 @@ RUN_REAL_CLAUDE=1 npm test   # also runs opt-in real-claude smoke
 
 **Install on Android.** Chrome → ⋮ → **Install app** / **Add to home screen**. Uses Web App Manifest (`public/manifest.webmanifest`) + SVG icon + Service Worker for standalone-mode launch.
 
-**Visual debug.** Playwright + Termux Chromium harness in `debug/`, which is a thin wrapper over the **sibling repo** `~/project/termux-playwright-harness/` — clone alongside and `npm install` once. Not wired into the main test suite.
+**Visual debug.** Playwright + Termux Chromium harness in `debug/`, which is a thin wrapper over the **sibling repo** — clone `termux-playwright-harness` to the parent directory of code-conductor and `npm install` once. Not wired into the main test suite.
 
 ## Technical
 
