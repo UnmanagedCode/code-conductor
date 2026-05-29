@@ -38,7 +38,16 @@ function tryParse(line) {
 // in parser.js but here we keep it simple and return the joined raw text
 // minus the `Attached file:` lines).
 function extractUserPromptText(obj) {
-  const content = obj?.message?.content;
+  // `type:"attachment"` queued_command lines stash the text blocks under
+  // `attachment.prompt` instead of `message.content` — same block shape,
+  // different envelope. Pick the right source so composer prefill works
+  // when the rewind/fork target is a queued prompt (e.g. auto-approve).
+  let content;
+  if (obj?.type === 'attachment' && obj.attachment?.type === 'queued_command') {
+    content = obj.attachment.prompt;
+  } else {
+    content = obj?.message?.content;
+  }
   if (typeof content === 'string') return content;
   if (!Array.isArray(content)) return '';
   const parts = [];

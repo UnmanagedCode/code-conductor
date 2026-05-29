@@ -199,6 +199,133 @@ test('predicate: tool_result-only user lines do NOT increment the user-message c
   assert.ok(!after.some(l => l.uuid === 'u2'), 'second user prompt is dropped');
 });
 
+test('isPureUserPromptLine: queued_command attachments count when prompt is an array of text blocks', () => {
+  // The CLI persists a stdin user prompt that arrived mid-turn as
+  // type:"attachment", attachment.type:"queued_command". The orchestrator
+  // already emitted a user_echo from inst.prompt() — so the predicate must
+  // count this line too, or the rewind/fork index drifts.
+  assert.equal(isPureUserPromptLine({
+    type: 'attachment',
+    attachment: {
+      type: 'queued_command',
+      prompt: [{ type: 'text', text: 'I approve the plan. Please proceed with the implementation.' }],
+      commandMode: 'prompt',
+    },
+  }), true);
+  // CLI-internal task-notification queued commands carry a string `prompt`
+  // and never produced a user_echo — must NOT count.
+  assert.equal(isPureUserPromptLine({
+    type: 'attachment',
+    attachment: {
+      type: 'queued_command',
+      prompt: '<task-notification>...</task-notification>',
+      commandMode: 'prompt',
+    },
+  }), false);
+  // Empty text block — no user_echo would be rendered, no count.
+  assert.equal(isPureUserPromptLine({
+    type: 'attachment',
+    attachment: {
+      type: 'queued_command',
+      prompt: [{ type: 'text', text: '' }],
+    },
+  }), false);
+  // Non-queued_command attachment (other CLI attachment subtypes) — no count.
+  assert.equal(isPureUserPromptLine({
+    type: 'attachment',
+    attachment: { type: 'something_else', prompt: [{ type: 'text', text: 'x' }] },
+  }), false);
+});
+
+test('fork targeting a queued_command auto-approve mid-session succeeds and prefills its text', async () => {
+  // Reproduces the exact bug pattern from toy_battle: 3 real user prompts
+  // interleaved with one auto-approve queued_command attachment. The
+  // attachment line was invisible to isPureUserPromptLine pre-fix, so the
+  // 3rd real prompt (rendered as the 4th user_echo bubble client-side) hit
+  // "index 3 out of range, 3 user prompts".
+  const lines = [
+    { type: 'user', uuid: 'u1', sessionId: 'orig', message: { role: 'user', content: 'build the thing' } },
+    { type: 'assistant', uuid: 'a1', sessionId: 'orig', message: { id: 'm1', role: 'assistant', content: [
+      { type: 'tool_use', id: 'epm1', name: 'ExitPlanMode', input: { plan: 'do stuff' } },
+    ] } },
+    // PreToolUse hook deny tool_result follows ExitPlanMode in real sessions.
+    { type: 'user', uuid: 'u_tr1', sessionId: 'orig', message: { role: 'user', content: [
+      { type: 'tool_result', tool_use_id: 'epm1', content: 'denied', is_error: true },
+    ] } },
+    // Auto-approve from _fireAutoApprovePlan — orchestrator's inst.prompt()
+    // wrote to stdin while the CLI was finishing the turn, so the CLI
+    // persisted it as a queued_command attachment instead of a user line.
+    { type: 'attachment', uuid: 'att1', sessionId: 'orig', attachment: {
+      type: 'queued_command',
+      prompt: [{ type: 'text', text: 'I approve the plan. Please proceed with the implementation.' }],
+      commandMode: 'prompt',
+    } },
+    { type: 'assistant', uuid: 'a2', sessionId: 'orig', message: { id: 'm2', role: 'assistant', content: [
+      { type: 'text', text: 'starting' },
+    ] } },
+    { type: 'user', uuid: 'u2', sessionId: 'orig', message: { role: 'user', content: 'answer to a question' } },
+    { type: 'assistant', uuid: 'a3', sessionId: 'orig', message: { id: 'm3', role: 'assistant', content: [
+      { type: 'text', text: 'ok' },
+    ] } },
+    { type: 'user', uuid: 'u3', sessionId: 'orig', message: { role: 'user', content: 'Please start' } },
+    { type: 'assistant', uuid: 'a4', sessionId: 'orig', message: { id: 'm4', role: 'assistant', content: [
+      { type: 'text', text: 'starting up' },
+    ] } },
+  ];
+  const { cwd, sid, file, dir } = await makeFixture(lines);
+
+  // The 4th forkable bubble (index 3) is "Please start" — must succeed.
+  const result = await forkSessionAtUserMessage({
+    cwd, sessionId: sid, userMessageIndex: 3,
+    permissionMode: 'bypassPermissions',
+  });
+  assert.equal(result.droppedText, 'Please start',
+    'index 3 maps to the 4th forkable bubble — the post-auto-approve user prompt');
+
+  // Original is untouched.
+  const newFile = path.join(dir, `${result.newSessionId}.jsonl`);
+  const after = readJsonl(await fs.readFile(newFile, 'utf8'));
+  // Prefix should include u1, a1, u_tr1, att1, a2, u2, a3 — i.e. everything
+  // before u3 ("Please start").
+  assert.ok(after.some(l => l.uuid === 'att1'), 'auto-approve attachment survives in the fork');
+  assert.ok(after.some(l => l.uuid === 'u2'), 'mid-session user prompt survives');
+  assert.ok(after.some(l => l.uuid === 'a3'), 'assistant turn before Please start survives');
+  assert.ok(!after.some(l => l.uuid === 'u3'), 'Please start prompt is dropped');
+  assert.ok(!after.some(l => l.uuid === 'a4'), 'reply to Please start is dropped');
+});
+
+test('fork targeting the queued_command itself prefills the queued text and drops it forward', async () => {
+  // When the user clicks fork/rewind on the auto-approve bubble itself,
+  // droppedText should pull from attachment.prompt, not message.content.
+  const lines = [
+    { type: 'user', uuid: 'u1', sessionId: 'orig', message: { role: 'user', content: 'plan it' } },
+    { type: 'assistant', uuid: 'a1', sessionId: 'orig', message: { id: 'm1', role: 'assistant', content: [
+      { type: 'tool_use', id: 'epm1', name: 'ExitPlanMode', input: { plan: 'do stuff' } },
+    ] } },
+    { type: 'attachment', uuid: 'att1', sessionId: 'orig', attachment: {
+      type: 'queued_command',
+      prompt: [{ type: 'text', text: 'I approve the plan. Please proceed with the implementation.' }],
+      commandMode: 'prompt',
+    } },
+    { type: 'assistant', uuid: 'a2', sessionId: 'orig', message: { id: 'm2', role: 'assistant', content: [
+      { type: 'text', text: 'starting' },
+    ] } },
+  ];
+  const { cwd, sid, dir } = await makeFixture(lines);
+  const result = await forkSessionAtUserMessage({
+    cwd, sessionId: sid, userMessageIndex: 1,
+    permissionMode: 'bypassPermissions',
+  });
+  assert.equal(result.droppedText,
+    'I approve the plan. Please proceed with the implementation.',
+    'droppedText pulled from attachment.prompt for queued_command targets');
+  const newFile = path.join(dir, `${result.newSessionId}.jsonl`);
+  const after = readJsonl(await fs.readFile(newFile, 'utf8'));
+  assert.ok(!after.some(l => l.uuid === 'att1'), 'queued_command itself is dropped');
+  assert.ok(!after.some(l => l.uuid === 'a2'), 'turn after it is dropped');
+  assert.ok(after.some(l => l.uuid === 'u1'), 'pre-attachment user prompt survives');
+});
+
 test('fork with attachment-bearing user message strips the marker from droppedText', async () => {
   // The user composer writes prompt text + an "Attached file:" marker line in
   // the same `text` block array. When we prefill the composer after a fork,

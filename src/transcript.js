@@ -19,13 +19,30 @@ import { extractAttachedMarkers } from './parser.js';
 // lines in the jsonl and have the count match the Nth user_echo in the
 // orchestrator's event stream. tool_result-only `type:"user"` lines are
 // excluded; sidechain lines are excluded too (consistent with replay).
+//
+// `type:"attachment"` queued_command lines also count when their `prompt`
+// is the array shape `inst.prompt()` writes to stdin — the CLI persists
+// prompts received mid-turn as this attachment shape instead of a
+// `type:"user"` line, so without recognising them here the fork/rewind
+// counter would drift below the live `user_echo` count (every queued
+// auto-approve / user-typed-during-busy prompt would shift indices by
+// one). CLI-internal `<task-notification>` queued commands carry a
+// string `prompt` and are excluded — they never produced a user_echo.
 export function isPureUserPromptLine(obj) {
-  if (!obj || typeof obj !== 'object' || obj.type !== 'user') return false;
+  if (!obj || typeof obj !== 'object') return false;
   if (obj.isSidechain) return false;
-  const content = obj.message?.content;
-  if (typeof content === 'string') return content.length > 0;
-  if (!Array.isArray(content)) return false;
-  return content.some((b) => b && b.type === 'text' && typeof b.text === 'string');
+  if (obj.type === 'user') {
+    const content = obj.message?.content;
+    if (typeof content === 'string') return content.length > 0;
+    if (!Array.isArray(content)) return false;
+    return content.some((b) => b && b.type === 'text' && typeof b.text === 'string');
+  }
+  if (obj.type === 'attachment' && obj.attachment?.type === 'queued_command') {
+    const prompt = obj.attachment.prompt;
+    if (!Array.isArray(prompt)) return false;
+    return prompt.some((b) => b && b.type === 'text' && typeof b.text === 'string' && b.text.length > 0);
+  }
+  return false;
 }
 
 // Convert one persisted jsonl object into the UI events that would
@@ -91,6 +108,33 @@ export function replayPersistedLine(obj, { seqHint = 0, parentToolUseId = null, 
           attachments: echoAttachments,
         });
       }
+    }
+    return tagAndReturn();
+  }
+
+  if (obj.type === 'attachment' && obj.attachment?.type === 'queued_command') {
+    // Prompts received via stdin while the CLI is mid-turn get persisted
+    // as this attachment shape instead of a `type:"user"` line. Replay the
+    // same `user_echo` the live path emitted from `inst.prompt()` so the
+    // bubble count survives a reload / resume. CLI-internal queued
+    // commands (e.g. `<task-notification>...</task-notification>`) carry a
+    // string `prompt` — they never produced a user_echo live, so skip.
+    const prompt = obj.attachment.prompt;
+    if (!Array.isArray(prompt)) return tagAndReturn();
+    const echoTexts = [];
+    const echoAttachments = [];
+    for (const block of prompt) {
+      if (!block || block.type !== 'text' || typeof block.text !== 'string') continue;
+      const { text: leftover, attachments } = extractAttachedMarkers(block.text);
+      if (leftover.length) echoTexts.push(leftover);
+      for (const a of attachments) echoAttachments.push(a);
+    }
+    if (echoTexts.length || echoAttachments.length) {
+      events.push({
+        kind: 'user_echo',
+        text: echoTexts.join('\n'),
+        attachments: echoAttachments,
+      });
     }
     return tagAndReturn();
   }
