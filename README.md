@@ -1,6 +1,6 @@
 # CodeConductor
 
-Local webapp for orchestrating multiple Claude Code CLI instances across projects in `~/project/`. Spawn, watch, and interact with several `claude` subprocesses in parallel from one browser tab.
+Local webapp for orchestrating multiple Claude Code CLI instances across projects in the parent directory of this repo (typically `~/cc-projects/`; override with the `PROJECTS_ROOT` env var). Spawn, watch, and interact with several `claude` subprocesses in parallel from one browser tab.
 
 Runs on Termux (localhost-only, single user) or any host with Node 22+ and the `claude` CLI on `$PATH`.
 
@@ -235,6 +235,7 @@ create → spawning → idle ←─ turn ─→ turn_end ─┐
 On **resume**: `loadHistory(sessionId)` runs before flipping to `idle` — replays jsonl into UI events and emits a `system/history_replayed` divider. On **turn end** or **mode change**: append `{"type":"last-prompt", …}` + `{"type":"permission-mode", …}` lines so `claude --resume`'s interactive picker can discover the session.
 
 ### Defaults
+- **Projects root**: parent directory of the code-conductor repo (resolved from `import.meta.url` at module load — typically `~/cc-projects/` if you cloned into the conventional location). Override with `PROJECTS_ROOT=<abs-path>`. The whole orchestrator (project list, central store at `<root>/.code-conductor/`, the hidden `.conduct` project) lives under this dir; `~/project/` is the docs shorthand for it.
 - Bind: `127.0.0.1:8787` (override with `HOST` / `PORT`).
 - New instance: `plan` mode, `high` effort, `adaptive` thinking, no model flag. Temp checkbox flips mode default to `bypassPermissions`.
 - Sidebar one-click resume: `bypassPermissions` mode (continuing real work), same effort/thinking defaults. Crash-respawn preserves whatever mode was running.

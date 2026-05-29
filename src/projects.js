@@ -1,6 +1,16 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
+import { fileURLToPath } from 'node:url';
+
+// Default projects root = parent directory of the code-conductor repo,
+// resolved once at module load. Layout: <parent>/code-conductor/src/
+// projects.js → <parent>/. Matches the convention that the orchestrator
+// + its sibling projects all live under a single workspace dir (the
+// user's ~/cc-projects/ by default). Override with PROJECTS_ROOT.
+const DEFAULT_PROJECTS_ROOT = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '..', '..',
+);
 
 const NAME_RE = /^[a-zA-Z0-9._-]+$/;
 // Workspace names are looser than project names: spaces and slashes are
@@ -21,7 +31,7 @@ const WORKSPACE_RE = /^[\w][\w \-./]{0,39}$/;
 export const ORCH_STORE_DIRNAME = '.code-conductor';
 
 export function projectsRoot() {
-  return process.env.PROJECTS_ROOT ?? path.join(os.homedir(), 'project');
+  return process.env.PROJECTS_ROOT ?? DEFAULT_PROJECTS_ROOT;
 }
 
 export function orchStoreRoot() {
