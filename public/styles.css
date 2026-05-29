@@ -51,7 +51,7 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
 #sidebar-body { flex: 1; overflow-y: auto; padding: 8px 10px; }
 
 .sidebar-actions { margin-bottom: 10px; display: flex; gap: 6px; align-items: stretch; }
-.sidebar-actions > #new-project-btn { flex: 1; min-width: 0; }
+.sidebar-actions > #conduct-btn { flex: 1; min-width: 0; }
 .sidebar-actions > .overflow-menu { flex: 0 0 auto; }
 #sidebar-overflow-toggle { padding: 6px 10px; }
 
