@@ -13,7 +13,13 @@ import {
   createProject as fsCreateProject,
   getProject,
   findSessionLocation,
+  listWorkspaces as fsListWorkspaces,
+  addWorkspace as fsAddWorkspace,
+  removeWorkspace as fsRemoveWorkspace,
+  renameWorkspace as fsRenameWorkspace,
+  writeProjectMeta,
 } from '../projects.js';
+import { CONDUCT_PROJECT_NAME } from '../conduct.js';
 import {
   isGitRepo, listWorktrees as fsListWorktrees, getWorktreeMergeStatus,
   createWorktree as fsCreateWorktree, removeWorktree, getWorktree,
@@ -375,6 +381,63 @@ export async function mergeWorktree({ instanceId, project, worktreeName }, { ins
     };
   }
   return mergeWorktreeIntoParent(projectName, wtName);
+}
+
+// ---------- workspaces ----------
+// Workspaces are sidebar-organisation primitives — registered names plus
+// a `workspace` field per project. The registry persists independently
+// of membership so an empty workspace still shows up. These tools mirror
+// the REST endpoints in src/routes.js (PUT /projects/:name/workspace,
+// POST/PUT/DELETE /workspaces, GET /workspaces) so a conductor can set
+// up its own organisation alongside the human.
+
+export async function listWorkspaces() {
+  const registered = await fsListWorkspaces();
+  const projects = await fsListProjects();
+  const counts = new Map();
+  const derived = new Set();
+  for (const p of projects) {
+    if (p.workspace) {
+      derived.add(p.workspace);
+      counts.set(p.workspace, (counts.get(p.workspace) ?? 0) + 1);
+    }
+  }
+  const names = [...new Set([...registered, ...derived])].sort((a, b) => a.localeCompare(b));
+  return names.map(name => ({ name, projectCount: counts.get(name) ?? 0 }));
+}
+
+export async function createWorkspace({ name }) {
+  const result = await fsAddWorkspace(name);
+  return { ok: true, ...result };
+}
+
+export async function deleteWorkspace({ name }) {
+  const result = await fsRemoveWorkspace(name);
+  return { ok: true, ...result };
+}
+
+export async function renameWorkspace({ oldName, newName }) {
+  const result = await fsRenameWorkspace(oldName, newName);
+  return { ok: true, ...result };
+}
+
+// Assign or clear a project's workspace. `workspace: null` or "" clears
+// the field. Non-null values are auto-registered so freshly-named
+// workspaces appear in list_workspaces immediately, matching the REST
+// PUT handler's behaviour. Refuses .conduct — the hidden project can't
+// belong to a workspace.
+export async function setProjectWorkspace({ project, workspace }) {
+  if (typeof project !== 'string' || !project) throw new Error('project required');
+  if (project === CONDUCT_PROJECT_NAME) {
+    throw new Error('the .conduct project cannot be assigned to a workspace');
+  }
+  await getProject(project);
+  const target = (workspace === '' || workspace === undefined) ? null : workspace;
+  const meta = await writeProjectMeta(project, { workspace: target });
+  if (meta.workspace) {
+    try { await fsAddWorkspace(meta.workspace); } catch { /* validateWorkspace already ran */ }
+  }
+  return { ok: true, project, workspace: meta.workspace ?? null };
 }
 
 // ---------- create / introspect ----------

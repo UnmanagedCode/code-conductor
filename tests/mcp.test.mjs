@@ -98,16 +98,19 @@ test('tools/list returns the full expected tool catalog', async () => {
     const names = body.result.tools.map(t => t.name).sort();
     const expected = [
       'approve_plan',
-      'create_project', 'create_worktree', 'delete_worktree',
+      'create_project', 'create_workspace', 'create_worktree',
+      'delete_workspace', 'delete_worktree',
       'get_last_message', 'get_transcript', 'get_worktree_diff',
       'interrupt_turn',
       'kill_instance',
-      'list_instances', 'list_projects', 'list_sessions', 'list_worktrees',
+      'list_instances', 'list_projects', 'list_sessions',
+      'list_workspaces', 'list_worktrees',
       'locate_session',
       'merge_worktree',
       'project_status',
-      'read_file', 'reject_plan', 'respawn_instance',
+      'read_file', 'reject_plan', 'rename_workspace', 'respawn_instance',
       'send_prompt', 'set_auto_approve_plan', 'set_mode',
+      'set_project_workspace',
       'spawn_instance', 'sync_worktree',
       'wait_for_idle',
     ].sort();

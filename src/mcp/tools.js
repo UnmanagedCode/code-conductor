@@ -300,6 +300,76 @@ export function buildTools() {
       handler: h.mergeWorktree,
     },
     {
+      name: 'list_workspaces',
+      description:
+        'List every workspace — both registered (in the central store\'s workspaces.json) ' +
+        'and derived (referenced by any project\'s `workspace` field). Returns ' +
+        '[{name, projectCount}] sorted alphabetically. Empty workspaces appear with projectCount 0.',
+      inputSchema: { type: 'object', properties: {}, required: [] },
+      handler: h.listWorkspaces,
+    },
+    {
+      name: 'create_workspace',
+      description:
+        'Register a workspace name so it appears in the sidebar even before any project joins it. ' +
+        'Idempotent — calling on an existing name is a no-op (added:false). Workspace names allow ' +
+        'spaces, slashes, dots, hyphens, underscores (1–40 chars, no control chars).',
+      inputSchema: {
+        type: 'object',
+        properties: { name: { type: 'string' } },
+        required: ['name'],
+      },
+      handler: h.createWorkspace,
+    },
+    {
+      name: 'delete_workspace',
+      description:
+        'Remove a workspace from the registry and clear the `workspace` field on every project ' +
+        'that currently points at it. The projects themselves are untouched; they fall back to ' +
+        'unassigned. Returns {removed, name, clearedProjects: string[]}.',
+      inputSchema: {
+        type: 'object',
+        properties: { name: { type: 'string' } },
+        required: ['name'],
+      },
+      handler: h.deleteWorkspace,
+    },
+    {
+      name: 'rename_workspace',
+      description:
+        'Atomically rename a workspace: rewrites every member project\'s `workspace` field and ' +
+        'swaps the entry in the registry. No-op (renamed:false) when old and new names match. ' +
+        'Returns {renamed, name, movedProjects: string[]}.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          oldName: { type: 'string' },
+          newName: { type: 'string' },
+        },
+        required: ['oldName', 'newName'],
+      },
+      handler: h.renameWorkspace,
+    },
+    {
+      name: 'set_project_workspace',
+      description:
+        'Assign a project to a workspace, or clear the assignment with workspace:null (or ""). ' +
+        'Non-null values are auto-registered so a freshly-named workspace appears in ' +
+        'list_workspaces immediately. Refuses the hidden `.conduct` project.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          project: { type: 'string' },
+          workspace: {
+            type: ['string', 'null'],
+            description: 'Target workspace name, or null/empty-string to clear the assignment.',
+          },
+        },
+        required: ['project'],
+      },
+      handler: h.setProjectWorkspace,
+    },
+    {
       name: 'create_project',
       description:
         'Create a new empty project under ~/project/<name>. Seeds CLAUDE.md with @../CLAUDE.md ' +

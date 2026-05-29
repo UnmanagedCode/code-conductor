@@ -84,8 +84,9 @@ Runs on Termux (localhost-only, single user) or any host with Node 22+ and the `
 ### MCP interface
 Mounted at `POST /mcp` (Streamable HTTP, JSON-RPC 2.0); tools exposed as `mcp__code-conductor__*`. Auto-registered on every spawn via `--mcp-config` (opt out with `ORCH_DISABLE_MCP_AUTOREGISTER=1`). No auth — localhost-only.
 
-- **Read:** `list_projects`, `list_instances`, `list_sessions`, `list_worktrees`, `locate_session`, `get_transcript`, `get_last_message`, `project_status`, `read_file` (path-traversal guarded), `get_worktree_diff` (full unified diff of `<base>...HEAD`, capped at ~200 KB).
+- **Read:** `list_projects`, `list_workspaces`, `list_instances`, `list_sessions`, `list_worktrees`, `locate_session`, `get_transcript`, `get_last_message`, `project_status`, `read_file` (path-traversal guarded), `get_worktree_diff` (full unified diff of `<base>...HEAD`, capped at ~200 KB).
 - **Create:** `create_project` (`{name, gitInit?}`).
+- **Workspaces:** `create_workspace` (`{name}` — register), `delete_workspace` (`{name}` — removes registry entry + clears member assignments), `rename_workspace` (`{oldName, newName}` — atomic), `set_project_workspace` (`{project, workspace}` — assign or clear with `null`/`""`; refuses `.conduct`; auto-registers a new workspace name).
 - **Spawn/drive:** `spawn_instance`, `send_prompt` (optional `wait:true`, 10 min cap), `wait_for_idle`, `set_mode`, `interrupt_turn`, `kill_instance`, `respawn_instance`.
 - **Plan handling (Conduct-mode verbs):** `approve_plan` (`{instanceId, feedback?}` — flips to bypassPermissions + sends canonical approval prompt), `reject_plan` (`{instanceId, feedback?}` — stays in plan mode, asks for refinement), `set_auto_approve_plan` (`{instanceId, enabled}` — flip the per-instance auto-approve flag). All three share the same approval/rejection text as the UI's Approve & Implement / Reject buttons via `src/planApproval.js`.
 - **Worktrees:** `create_worktree`, `delete_worktree`, `sync_worktree`, `merge_worktree` (takes `instanceId` or `{project, worktreeName}` — the latter works after the instance is gone).

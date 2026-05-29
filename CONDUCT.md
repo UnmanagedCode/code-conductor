@@ -23,6 +23,13 @@ The orchestrator's MCP server exposes the `mcp__code-conductor__*` tools below. 
 - `create_project({name, gitInit?})` — for greenfield work. Validates `^[a-zA-Z0-9._-]+$` and refuses dot-prefixed names.
 - `create_worktree({project})` — create a worktree without spawning into it (rare; usually `spawn_instance({worktree:true})` is what you want).
 
+**Organise the sidebar** — useful when spawning multiple related workers; group them in their own workspace so the human can collapse the chunk away when they're done with it.
+- `list_workspaces()` → `[{name, projectCount}]`.
+- `create_workspace({name})` — register a workspace; appears even before any project joins. Idempotent.
+- `delete_workspace({name})` — removes the registry entry **and** clears `workspace` on every member project. Projects themselves are untouched.
+- `rename_workspace({oldName, newName})` — atomic; moves every member.
+- `set_project_workspace({project, workspace})` — assign or clear (`null` / `""`). Auto-registers the workspace name. Refuses `.conduct`.
+
 **Drive workers**
 - `send_prompt({id, text, wait?, waitTimeoutMs?})` — send a turn. `wait: true` blocks until `turn_end` and returns the event inline. Default cap 10 min.
 - `wait_for_idle({id, timeoutMs?})` — block until idle / exited / crashed. Useful between `send_prompt({wait:false})` and `get_transcript`.
