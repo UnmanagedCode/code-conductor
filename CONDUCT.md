@@ -78,6 +78,28 @@ For a typical "implement feature X in project Y" request:
 8. **Land** — `sync_worktree({instanceId: id})` (catches FF / sends rebase prompt). Then `merge_worktree({instanceId: id})`.
 9. **Clean up** — `kill_instance({id})`; `delete_worktree({project, worktreeName})`.
 
+## Operational tasks in other projects
+
+For any action that runs *inside* another project — even read-only work like
+verifying services, tailing logs, or running health checks — spawn a session
+in that project rather than running the commands yourself from `.conduct`:
+
+1. **Spawn into the project** (no worktree needed for read-only/operational work):
+   ```
+   spawn_instance({
+     project: 'Y',
+     mode: 'bypassPermissions',
+     model: 'claude-sonnet-4-6'
+   })
+   ```
+2. **Brief the worker** — `send_prompt({id, text: "<task>", wait: true})`.
+3. **Relay the result** — `get_last_message({id})`, then summarise to the user.
+4. **Clean up** — `kill_instance({id})` when done.
+
+This ensures the worker loads the project's README and CLAUDE.md, runs in the
+correct working directory, and keeps the conductor's context uncluttered by raw
+command output.
+
 ## Safety
 
 **No recursion.** The MCP tools are auto-registered into every spawned subprocess, which means *workers can also call `spawn_instance`*. Don't let that runaway:
