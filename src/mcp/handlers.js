@@ -262,7 +262,7 @@ export async function approvePlan({ instanceId, feedback }, { instances }) {
 
 // Reject a worker's plan: stay in plan mode, send the refinement prompt.
 // The worker will produce a revised plan; the conductor loops back to
-// reviewing get_last_message and either approves or rejects again.
+// reviewing get_recent_messages and either approves or rejects again.
 export async function rejectPlan({ instanceId, feedback }, { instances }) {
   const inst = getInst(instances, instanceId);
   if (!inst.proc) throw new Error(`instance ${instanceId} is not running (status=${inst.status})`);
@@ -461,7 +461,7 @@ export async function createProject({ name, gitInit = false }) {
 // [1, 50]. The top-level `text`/`blocks`/`msgId`/`hasToolUse` fields mirror
 // the latest message for backward compatibility; `messages` is the full
 // list, oldest-first.
-export async function getLastMessage({ id, count }, { instances }) {
+export async function getRecentMessages({ id, count }, { instances }) {
   const inst = getInst(instances, id);
   const ring = inst.ringSnapshot();
   const n = Math.max(1, Math.min(Number.isInteger(count) ? count : 1, 50));

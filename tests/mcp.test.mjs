@@ -100,7 +100,7 @@ test('tools/list returns the full expected tool catalog', async () => {
       'approve_plan',
       'create_project', 'create_workspace', 'create_worktree',
       'delete_workspace', 'delete_worktree',
-      'get_last_message', 'get_transcript', 'get_worktree_diff',
+      'get_recent_messages', 'get_transcript', 'get_worktree_diff',
       'interrupt_turn',
       'kill_instance',
       'list_instances', 'list_projects', 'list_sessions',
@@ -385,7 +385,7 @@ test('create_project creates the directory, seeds CLAUDE.md, and optionally init
   } finally { await ctx.close(); }
 });
 
-test('get_last_message reads the most recent assistant text from the ring', async () => {
+test('get_recent_messages reads the most recent assistant text from the ring', async () => {
   const ctx = await bootServer({ scenarioPath: SCENARIO_WS });
   try {
     await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'a' });
@@ -395,25 +395,25 @@ test('get_last_message reads the most recent assistant text from the ring', asyn
     await waitFor(() => ctx.instances.get(spawn.id).status === 'idle' && ctx.instances.get(spawn.id).sessionId);
 
     // Before any turn — no assistant content yet.
-    const before = unwrap(await callTool(ctx.baseUrl, 'get_last_message', { id: spawn.id }));
+    const before = unwrap(await callTool(ctx.baseUrl, 'get_recent_messages', { id: spawn.id }));
     assert.equal(before.text, '');
     assert.equal(before.msgId, null);
 
     // First turn: text "First " + Bash tool_use.
     await callTool(ctx.baseUrl, 'send_prompt', { id: spawn.id, text: 'one', wait: true, waitTimeoutMs: 5000 });
-    const first = unwrap(await callTool(ctx.baseUrl, 'get_last_message', { id: spawn.id }));
+    const first = unwrap(await callTool(ctx.baseUrl, 'get_recent_messages', { id: spawn.id }));
     assert.equal(first.text, 'First ');
     assert.equal(first.hasToolUse, true);
     assert.ok(first.blocks.some(b => b.type === 'tool_use' && b.name === 'Bash'));
 
     // Second turn: just text "Second!" — should now be the latest.
     await callTool(ctx.baseUrl, 'send_prompt', { id: spawn.id, text: 'two', wait: true, waitTimeoutMs: 5000 });
-    const second = unwrap(await callTool(ctx.baseUrl, 'get_last_message', { id: spawn.id }));
+    const second = unwrap(await callTool(ctx.baseUrl, 'get_recent_messages', { id: spawn.id }));
     assert.equal(second.text, 'Second!');
     assert.notEqual(second.msgId, first.msgId);
 
     // count:2 returns both turns, oldest-first.
-    const both = unwrap(await callTool(ctx.baseUrl, 'get_last_message', { id: spawn.id, count: 2 }));
+    const both = unwrap(await callTool(ctx.baseUrl, 'get_recent_messages', { id: spawn.id, count: 2 }));
     assert.equal(both.messages.length, 2);
     assert.equal(both.messages[0].text, 'First ');
     assert.equal(both.messages[0].hasToolUse, true);
@@ -423,7 +423,7 @@ test('get_last_message reads the most recent assistant text from the ring', asyn
     assert.equal(both.text, 'Second!');
 
     // count larger than available — returns what's there.
-    const cap = unwrap(await callTool(ctx.baseUrl, 'get_last_message', { id: spawn.id, count: 10 }));
+    const cap = unwrap(await callTool(ctx.baseUrl, 'get_recent_messages', { id: spawn.id, count: 10 }));
     assert.equal(cap.messages.length, 2);
   } finally { await ctx.close(); }
 });

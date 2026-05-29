@@ -45,12 +45,16 @@ The orchestrator's MCP server exposes the `mcp__code-conductor__*` tools below. 
 
 **Inspect work**
 - `get_transcript({id, sinceSeq?, limit?})` — UI event ring. Poll with `sinceSeq = lastSeqIveSeen` for incremental reads.
-- `get_last_message({id})` — most recent assistant message as a single joined string + structured blocks. Cheap. Use this for "what did the worker just say?".
+- `get_recent_messages({id, count?})` — the last N assistant messages as joined strings + structured blocks (default 1, max 50). Cheap. Use this for "what did the worker just say?".
 
 **Land work**
 - `sync_worktree({instanceId})` — server-side fast-forward when possible; otherwise sends a templated rebase prompt to the worker. Returns `{action: 'already-in-sync' | 'fast-forwarded' | 'rebase-prompt-sent' | …}`.
 - `merge_worktree({instanceId})` or `merge_worktree({project, worktreeName})` — `git merge --no-ff --no-edit` on the parent. The second form lets you merge after killing the worker. Refuses if behind base — call `sync_worktree` first.
 - `delete_worktree({project, worktreeName, force?})` — remove the worktree.
+
+## When the user's intent is unclear
+
+If there is any doubt about what the user is asking — which project they mean, what scope, or what goal — call `list_projects()` first. Use the returned names and paths to ground your interpretation before spawning anything or taking any action. Asking for clarification on top of a concrete project list is far more useful to the user than guessing.
 
 ## Canonical workflow
 
@@ -68,7 +72,7 @@ For a typical "implement feature X in project Y" request:
    ```
    Capture the returned `id`.
 3. **Brief the worker** — `send_prompt({id, text: "<scoped goal + constraints + completion sentinel>", wait: true})`.
-4. **Read the plan** — `get_last_message({id})`. The latest assistant message contains the worker's plan.
+4. **Read the plan** — `get_recent_messages({id})`. The latest assistant message contains the worker's plan.
 5. **Decide**:
    - **Approve**: `approve_plan({instanceId: id})` (with optional `feedback`).
    - **Revise**: `reject_plan({instanceId: id, feedback: "<what to change>"})`. Loop back to step 4.
@@ -93,7 +97,7 @@ in that project rather than running the commands yourself from `.conduct`:
    })
    ```
 2. **Brief the worker** — `send_prompt({id, text: "<task>", wait: true})`.
-3. **Relay the result** — `get_last_message({id})`, then summarise to the user.
+3. **Relay the result** — `get_recent_messages({id})`, then summarise to the user.
 4. **Clean up** — `kill_instance({id})` when done.
 
 This ensures the worker loads the project's README and CLAUDE.md, runs in the
@@ -115,7 +119,7 @@ If `list_instances` ever shows you running *inside* a worker session (your `cwd`
 
 - **Scope explicitly.** Workers can't reliably ask clarifying questions (the CLI auto-errors `AskUserQuestion` in stream-json mode). State the goal, the constraints, the success criteria, and the *non*-goals up front.
 - **Declare the environment.** Workers don't automatically know they're in a worktree. Say: "You are working in a git worktree branched from `<baseBranch>`. Implement your changes here; do not switch branches."
-- **Agree on a sentinel.** Ask the worker to say a specific phrase (e.g. `IMPLEMENTATION_COMPLETE`) when finished, then poll `get_last_message` for it. `wait_for_idle` only tells you the turn ended — the agent may still have more to do across multiple turns.
+- **Agree on a sentinel.** Ask the worker to say a specific phrase (e.g. `IMPLEMENTATION_COMPLETE`) when finished, then poll `get_recent_messages` for it. `wait_for_idle` only tells you the turn ended — the agent may still have more to do across multiple turns.
 - **One concern per worker.** If a task has independent parts (frontend + backend, two unrelated modules), spawn separate workers in separate worktrees and merge sequentially.
 - **Model choice**: Haiku for trivial mechanical edits; Sonnet for normal feature work; Opus when the worker needs deep reasoning or large refactors.
 
@@ -136,7 +140,7 @@ If `list_instances` ever shows you running *inside* a worker session (your `cwd`
 - `user_question` — worker called `AskUserQuestion`; you'll need to drive forward with a follow-up `send_prompt`.
 - `turn_end` — `duration_ms`, `usage`, `total_cost_usd`, `is_error`.
 
-For most decisions `get_last_message` is enough.
+For most decisions `get_recent_messages` is enough.
 
 ## Talking to the user
 

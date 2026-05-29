@@ -385,7 +385,7 @@ export function buildTools() {
       handler: h.createProject,
     },
     {
-      name: 'get_last_message',
+      name: 'get_recent_messages',
       description:
         'Return the most recent assistant message(s) from an instance as joined strings plus ' +
         'structured blocks (text / tool_use / thinking). Convenient when you just want to read ' +
@@ -401,7 +401,7 @@ export function buildTools() {
         },
         required: ['id'],
       },
-      handler: h.getLastMessage,
+      handler: h.getRecentMessages,
     },
     {
       name: 'project_status',
