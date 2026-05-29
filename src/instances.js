@@ -314,6 +314,10 @@ export class Instance extends EventEmitter {
     // unchanged.
     let cliModel = this.model;
     const spawnEnv = { ...process.env };
+    // The orchestrator's model dropdown is the single source of truth for
+    // Opus 4.7's context window — strip any ambient CLAUDE_CODE_DISABLE_1M_CONTEXT
+    // so a user-level export can't silently downgrade a `[1m]` pick to 200k.
+    delete spawnEnv.CLAUDE_CODE_DISABLE_1M_CONTEXT;
     if (typeof cliModel === 'string' && cliModel.endsWith('[200k]')) {
       cliModel = cliModel.slice(0, -'[200k]'.length);
       spawnEnv.CLAUDE_CODE_DISABLE_1M_CONTEXT = '1';
