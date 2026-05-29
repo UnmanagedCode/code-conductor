@@ -17,7 +17,7 @@
 
 import path from 'node:path';
 import { mkdir } from 'node:fs/promises';
-import { withPage, waitForServer } from '../../termux-playwright-harness/browser.mjs';
+import { withPage, waitForServer } from '../../../termux-playwright-harness/browser.mjs';
 import { bootOrch } from './boot-orch.mjs';
 
 const args = process.argv.slice(2);

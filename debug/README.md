@@ -1,18 +1,18 @@
 # Visual debug harness
 
-Orchestrator-specific glue around the generic [`termux-playwright-harness`](../../termux-playwright-harness/) — Playwright + system Chromium for visually verifying UI changes. The reusable plumbing (`launchBrowser`, `withPage`, `waitForServer`, `bootServer`) lives in the sibling repo so other Termux webapps can share it; this directory just bakes in the orchestrator's defaults (`server.js`, fake-claude, sandboxed `PROJECTS_ROOT` / `CLAUDE_PROJECTS_ROOT`).
+Orchestrator-specific glue around the generic [`termux-playwright-harness`](../../../termux-playwright-harness/) — Playwright + system Chromium for visually verifying UI changes. The reusable plumbing (`launchBrowser`, `withPage`, `waitForServer`, `bootServer`) lives in the sibling repo so other Termux webapps can share it; this directory just bakes in the orchestrator's defaults (`server.js`, fake-claude, sandboxed `PROJECTS_ROOT` / `CLAUDE_PROJECTS_ROOT`).
 
 ## Prereqs
 
 Clone the sibling repo and install its single dep:
 
 ```bash
-git clone git@github.com:UnmanagedCode/termux-playwright-harness.git ~/project/termux-playwright-harness
-cd ~/project/termux-playwright-harness && npm install
+git clone git@github.com:UnmanagedCode/termux-playwright-harness.git ~/termux-playwright-harness
+cd ~/termux-playwright-harness && npm install
 pkg install chromium                                            # Termux system browser
 ```
 
-That's it — nothing to install in `code-conductor/debug/` itself. Imports resolve via `../../termux-playwright-harness/`.
+That's it — nothing to install in `code-conductor/debug/` itself. Imports resolve via `../../../termux-playwright-harness/`.
 
 ## Quick smoke test
 
@@ -39,7 +39,7 @@ Use `bootOrch()` from this directory for the orch's sandboxed-spawn shape, or `b
 
 ```js
 // /tmp/repro-something.mjs
-import { withPage } from '../../termux-playwright-harness/browser.mjs';
+import { withPage } from '../../../termux-playwright-harness/browser.mjs';
 import { bootOrch } from '../code-conductor/debug/boot-orch.mjs';
 
 const orch = await bootOrch({
