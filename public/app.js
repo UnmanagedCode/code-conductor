@@ -77,6 +77,11 @@ const dom = {
   qsModeCode: document.getElementById('qs-mode-code'),
   qsModePlan: document.getElementById('qs-mode-plan'),
   qsError: document.getElementById('qs-error'),
+  conductBtn: document.getElementById('conduct-btn'),
+  conductDialog: document.getElementById('conduct-dialog'),
+  cdModeCode: document.getElementById('cd-mode-code'),
+  cdModePlan: document.getElementById('cd-mode-plan'),
+  cdError: document.getElementById('cd-error'),
   syncBtn: document.getElementById('sync-btn'),
   mergeBtn: document.getElementById('merge-btn'),
   debugBtn: document.getElementById('debug-btn'),
@@ -389,6 +394,7 @@ dom.resumeBtn.addEventListener('click', async () => {
 });
 
 dom.newProjectBtn.addEventListener('click', () => {
+  closeSidebarOverflow();
   dom.npName.value = '';
   dom.npError.textContent = '';
   dom.npPreview.textContent = '~/project/<name>';
@@ -853,6 +859,74 @@ dom.quickSpawnDialog.addEventListener('click', (e) => {
   e.preventDefault();
   const model = btn.dataset.model;
   if (model) quickSpawn(model);
+});
+
+// ── Conduct mode ─────────────────────────────────────────────────────
+// The 🎼 Conduct button at the top of the sidebar spawns a temp Claude
+// session in the hidden `.conduct` project. The project is lazy-created
+// on first open (POST /api/projects/.conduct/ensure). Dialog shape
+// mirrors the quick-spawn dialog: a model picker + Code/Plan toggle;
+// one model click spawns and closes.
+let conductPlanMode = false;
+function syncConductModeToggle() {
+  dom.cdModeCode.setAttribute('aria-pressed', conductPlanMode ? 'false' : 'true');
+  dom.cdModePlan.setAttribute('aria-pressed', conductPlanMode ? 'true' : 'false');
+}
+async function openConductDialog() {
+  closeSidebarOverflow();
+  dom.cdError.textContent = '';
+  conductPlanMode = false;
+  syncConductModeToggle();
+  try {
+    const r = await fetch('/api/projects/.conduct/ensure', { method: 'POST' });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      dom.cdError.textContent = err.error || `ensure failed (${r.status})`;
+    }
+  } catch (e) {
+    dom.cdError.textContent = e.message;
+  }
+  dom.conductDialog.showModal();
+}
+async function conductSpawn(model) {
+  dom.cdError.textContent = '';
+  try {
+    const mode = conductPlanMode ? 'plan' : 'bypassPermissions';
+    const r = await fetch('/api/instances', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        project: '.conduct', model, temp: true, mode,
+        autoApprovePlan: conductPlanMode,
+      }),
+    });
+    if (!r.ok) throw new Error((await r.json()).error);
+    const inst = await r.json();
+    dom.conductDialog.close();
+    await refreshProjects();
+    await refreshInstances();
+    selectInstance(inst.id);
+  } catch (e) {
+    dom.cdError.textContent = e.message;
+  }
+}
+dom.conductBtn.addEventListener('click', openConductDialog);
+dom.cdModeCode.addEventListener('click', (e) => {
+  e.preventDefault();
+  conductPlanMode = false;
+  syncConductModeToggle();
+});
+dom.cdModePlan.addEventListener('click', (e) => {
+  e.preventDefault();
+  conductPlanMode = true;
+  syncConductModeToggle();
+});
+dom.conductDialog.addEventListener('click', (e) => {
+  const btn = e.target.closest('.cd-model');
+  if (!btn) return;
+  e.preventDefault();
+  const model = btn.dataset.model;
+  if (model) conductSpawn(model);
 });
 
 // Promote a live temp session into a regular one. The server flips the

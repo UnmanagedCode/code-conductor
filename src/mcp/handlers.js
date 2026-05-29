@@ -20,6 +20,7 @@ import {
   syncWorktree as fsSyncWorktree, mergeWorktreeIntoParent, buildRebasePrompt,
   worktreeDirtyLines,
 } from '../worktrees.js';
+import { buildApprovePrompt, buildRejectPrompt } from '../planApproval.js';
 
 // ---------- helpers ----------
 
@@ -229,6 +230,80 @@ export async function respawnInstance({ id }, { instances }) {
   if (!instances) throw new Error('orchestrator has no InstanceManager');
   const inst = await instances.respawn(id);
   return inst.summary();
+}
+
+// ---------- mutating: plan approval ----------
+
+// Approve a worker's plan: flip the instance to bypassPermissions so it
+// can actually act on what was just approved, then send the approval
+// prompt as a normal user turn. Mirrors the UI's Approve & Implement
+// button (public/app.js onPlanDecision) — phrasing comes from the
+// shared planApproval module so the three entry points (UI click,
+// server-side auto-approve, MCP) all look identical to the worker.
+export async function approvePlan({ instanceId, feedback }, { instances }) {
+  const inst = getInst(instances, instanceId);
+  if (!inst.proc) throw new Error(`instance ${instanceId} is not running (status=${inst.status})`);
+  if (inst.mode === 'plan') {
+    try { await inst.setMode('bypassPermissions'); }
+    catch (e) {
+      throw new Error(`failed to switch instance ${instanceId} to bypassPermissions: ${e.message}`);
+    }
+  }
+  const text = buildApprovePrompt(feedback);
+  await inst.prompt(text);
+  return { ok: true, id: instanceId, mode: inst.mode, sentText: text };
+}
+
+// Reject a worker's plan: stay in plan mode, send the refinement prompt.
+// The worker will produce a revised plan; the conductor loops back to
+// reviewing get_last_message and either approves or rejects again.
+export async function rejectPlan({ instanceId, feedback }, { instances }) {
+  const inst = getInst(instances, instanceId);
+  if (!inst.proc) throw new Error(`instance ${instanceId} is not running (status=${inst.status})`);
+  const text = buildRejectPrompt(feedback);
+  await inst.prompt(text);
+  return { ok: true, id: instanceId, mode: inst.mode, sentText: text };
+}
+
+// Flip the per-instance auto-approve-plan flag. While enabled, the next
+// plan_request emitted by the worker auto-fires the same setMode +
+// approval-prompt path as approvePlan above, server-side, without any
+// further intervention. Useful for "fire N workers and let them roll".
+export async function setAutoApprovePlan({ instanceId, enabled }, { instances }) {
+  const inst = getInst(instances, instanceId);
+  inst.setAutoApprovePlan(!!enabled);
+  return { ok: true, id: instanceId, autoApprovePlan: inst.autoApprovePlan };
+}
+
+// ---------- read-only: worktree diff ----------
+
+// Unified diff of <baseRef>...HEAD in a worktree. baseRef defaults to
+// the worktree's recorded baseBranch (the branch it was created from).
+// Capped at ~200 KB to keep this cheap to call from an LLM loop;
+// `truncated: true` in the result tells the caller to drill in with
+// read_file for specific files.
+const DIFF_BYTE_CAP = 200 * 1024;
+export async function getWorktreeDiff({ project, worktreeName, baseRef, contextLines = 3 }) {
+  if (!project || !worktreeName) {
+    throw new Error('get_worktree_diff requires {project, worktreeName}');
+  }
+  const wt = await getWorktree(project, worktreeName);
+  if (!wt) throw new Error(`worktree '${worktreeName}' not found under project '${project}'`);
+  const ref = (typeof baseRef === 'string' && baseRef.trim()) ? baseRef.trim() : wt.baseBranch;
+  const ctx = Number.isInteger(contextLines) && contextLines >= 0 && contextLines <= 50 ? contextLines : 3;
+  const r = await runGitInDir(wt.worktreePath, ['diff', `--unified=${ctx}`, `${ref}...HEAD`]);
+  if (r.code !== 0) {
+    throw new Error(`git diff failed in ${wt.worktreePath}: ${r.stderr.trim() || r.stdout.trim()}`);
+  }
+  const full = r.stdout ?? '';
+  const sizeBytes = Buffer.byteLength(full, 'utf8');
+  const truncated = sizeBytes > DIFF_BYTE_CAP;
+  const diff = truncated ? full.slice(0, DIFF_BYTE_CAP) : full;
+  return {
+    project, worktreeName, baseRef: ref,
+    contextLines: ctx,
+    diff, sizeBytes, truncated,
+  };
 }
 
 // ---------- mutating: worktrees ----------

@@ -6,6 +6,7 @@ import {
   summarizeSessions, deleteProject, deleteSessionForCwd, getProject,
   findSessionLocation, writeProjectMeta,
   listWorkspaces, addWorkspace, removeWorkspace, renameWorkspace,
+  validateName,
 } from './projects.js';
 import { WebSocket } from 'ws';
 import {
@@ -15,6 +16,7 @@ import {
   getProjectUpstreamStatus,
 } from './worktrees.js';
 import { scheduleRestart } from './restart.js';
+import { ensureConductProject, CONDUCT_PROJECT_NAME } from './conduct.js';
 
 const CONTENT_TYPE_BY_EXT = {
   png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg',
@@ -93,8 +95,32 @@ export function buildRoutes({ instances, serverCtx } = {}) {
   r.post('/projects', async (req, res, next) => {
     try {
       const { name } = req.body ?? {};
+      // Validate the regex first so callers that hit BOTH conditions
+      // (e.g. "../escape" — starts with "." AND contains "/") get the
+      // canonical "invalid project name" error rather than the dot-prefix
+      // one. Then refuse dot-prefixed names that *did* pass the regex —
+      // those are reserved for orchestrator-managed hidden projects
+      // (currently just `.conduct`).
+      validateName(name);
+      if (name.startsWith('.')) {
+        throw Object.assign(
+          new Error('invalid project name (cannot start with "." — reserved for orchestrator-managed projects)'),
+          { statusCode: 400 },
+        );
+      }
       const created = await createProject(name);
       res.status(201).json(created);
+    } catch (e) { next(e); }
+  });
+
+  // Lazy-create the hidden `.conduct` project that hosts Conduct sessions.
+  // Mounted at a literal path so the regular /projects/:name guards don't
+  // need to special-case the name and so curl-ing this never spawns a
+  // visible project. Idempotent — second call is a fast no-op.
+  r.post('/projects/.conduct/ensure', async (req, res, next) => {
+    try {
+      const result = await ensureConductProject();
+      res.json({ ok: true, ...result });
     } catch (e) { next(e); }
   });
 
@@ -110,6 +136,12 @@ export function buildRoutes({ instances, serverCtx } = {}) {
   // may still be referenced outside the orchestrator.
   r.delete('/projects/:name', async (req, res, next) => {
     try {
+      if (req.params.name === CONDUCT_PROJECT_NAME) {
+        throw Object.assign(
+          new Error('the .conduct project is managed by the orchestrator and cannot be deleted via this endpoint'),
+          { statusCode: 400 },
+        );
+      }
       const proj = await getProject(req.params.name);
       let killed = 0;
       if (instances) killed = await instances.removeAllForProject(proj.name);
@@ -128,6 +160,12 @@ export function buildRoutes({ instances, serverCtx } = {}) {
   // immediately, including the `+ Workspace` dialog if it's open.
   r.put('/projects/:name/workspace', async (req, res, next) => {
     try {
+      if (req.params.name === CONDUCT_PROJECT_NAME) {
+        throw Object.assign(
+          new Error('the .conduct project cannot be assigned to a workspace'),
+          { statusCode: 400 },
+        );
+      }
       await getProject(req.params.name);
       const raw = req.body?.workspace;
       const target = raw === '' || raw === undefined ? null : raw;

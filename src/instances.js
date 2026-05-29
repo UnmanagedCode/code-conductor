@@ -12,6 +12,7 @@ import { HookBroker } from './hookBroker.js';
 import { loadPersistedTranscript, writeSessionMetadata, readLastSessionModel } from './transcript.js';
 import { truncateSessionAtUserMessage } from './sessionEdit.js';
 import { saveAttachment, isImageType } from './attachments.js';
+import { buildApprovePrompt } from './planApproval.js';
 
 // Three user-facing modes:
 //   - `plan`              — read-only planning; CLI is in plan mode
@@ -461,7 +462,7 @@ export class Instance extends EventEmitter {
         if (!this.proc) return;
         if (this.mode === 'plan') await this.setMode('bypassPermissions');
         if (!this.proc) return;
-        await this.prompt('I approve the plan. Please proceed with the implementation.');
+        await this.prompt(buildApprovePrompt());
       } catch (err) {
         this._emitUi({ kind: 'system', subtype: 'stderr',
           data: { line: `auto-approve plan failed: ${err.message}` } });

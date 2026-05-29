@@ -397,9 +397,10 @@ export class Sidebar {
   _projectItem({ project: p, directByProject, byWorktree }) {
     const allDirects = directByProject.get(p.name) ?? [];
     const worktrees = Array.isArray(p.worktrees) ? p.worktrees : [];
-    const li = el('li', {});
-    const row = el('div', { class: 'project-row' },
-      el('span', { class: 'project-name' }, p.name),
+    const isConduct = !!p.isConduct;
+    const li = el('li', { class: isConduct ? 'project-conduct' : undefined });
+    const row = el('div', { class: 'project-row' + (isConduct ? ' project-row-conduct' : '') },
+      el('span', { class: 'project-name' }, isConduct ? '🎼 Conduct' : p.name),
     );
     const ms = p.mergeStatus;
     if (ms && ms.upstream && (ms.ahead > 0 || ms.behind > 0)) {
@@ -417,21 +418,26 @@ export class Sidebar {
       }
       row.appendChild(el('span', { class: 'wt-unmerged', title }, label));
     }
-    row.appendChild(el('button', {
-      class: 'quick-spawn', title: 'quick temp session',
-      onclick: (e) => {
-        e.stopPropagation();
-        if (this.onQuickSpawn) this.onQuickSpawn(p.name);
-      },
-    }, '↯'));
-    row.appendChild(el('button', {
-      class: 'add-instance', title: 'new session',
-      onclick: () => this.onCreateInstanceClick(p.name),
-    }, '+'));
-    row.appendChild(el('button', {
-      class: 'delete-project', title: 'delete project',
-      onclick: (e) => { e.stopPropagation(); this.onDeleteProject(p); },
-    }, '×'));
+    // The synthetic Conduct row is read-only: no quick-spawn, no
+    // new-session button, no delete. Spawning a new Conduct session is
+    // done via the top-level 🎼 button; deletion is blocked server-side.
+    if (!isConduct) {
+      row.appendChild(el('button', {
+        class: 'quick-spawn', title: 'quick temp session',
+        onclick: (e) => {
+          e.stopPropagation();
+          if (this.onQuickSpawn) this.onQuickSpawn(p.name);
+        },
+      }, '↯'));
+      row.appendChild(el('button', {
+        class: 'add-instance', title: 'new session',
+        onclick: () => this.onCreateInstanceClick(p.name),
+      }, '+'));
+      row.appendChild(el('button', {
+        class: 'delete-project', title: 'delete project',
+        onclick: (e) => { e.stopPropagation(); this.onDeleteProject(p); },
+      }, '×'));
+    }
     li.appendChild(row);
 
     const sessionsNode = this._sessionsNode({
@@ -490,9 +496,35 @@ export class Sidebar {
     }
 
     this.list.innerHTML = '';
+
+    // Synthetic .conduct row — only appears while a Conduct instance is
+    // live. The project itself is hidden from listProjects() by the
+    // dot-prefix filter, so without this synthesis a conductor session
+    // would have no parent row in the sidebar and be unreachable.
+    const conductInstances = this.instances.filter(i => i.project === '.conduct');
+    if (conductInstances.length > 0) {
+      directByProject.set('.conduct', conductInstances);
+      const syntheticConduct = {
+        name: '.conduct',
+        path: '(hidden)',
+        workspace: null,
+        isGitRepo: false,
+        worktrees: [],
+        sessions: { count: 0, lastMtime: 0 },
+        mergeStatus: { ahead: null, behind: null, upstream: null },
+        instanceIds: conductInstances.map(i => i.id),
+        isConduct: true,
+      };
+      this.list.appendChild(this._projectItem({
+        project: syntheticConduct, directByProject, byWorktree,
+      }));
+    }
+
     if (this.projects.length === 0) {
-      this.list.appendChild(el('li', { class: 'project-row' },
-        el('span', { class: 'project-name' }, 'no projects yet')));
+      if (conductInstances.length === 0) {
+        this.list.appendChild(el('li', { class: 'project-row' },
+          el('span', { class: 'project-name' }, 'no projects yet')));
+      }
       return;
     }
 

@@ -97,17 +97,17 @@ test('tools/list returns the full expected tool catalog', async () => {
     assert.ok(Array.isArray(body.result.tools));
     const names = body.result.tools.map(t => t.name).sort();
     const expected = [
+      'approve_plan',
       'create_project', 'create_worktree', 'delete_worktree',
-      'get_last_message', 'get_transcript',
+      'get_last_message', 'get_transcript', 'get_worktree_diff',
       'interrupt_turn',
       'kill_instance',
       'list_instances', 'list_projects', 'list_sessions', 'list_worktrees',
       'locate_session',
       'merge_worktree',
       'project_status',
-      'read_file',
-      'respawn_instance',
-      'send_prompt', 'set_mode',
+      'read_file', 'reject_plan', 'respawn_instance',
+      'send_prompt', 'set_auto_approve_plan', 'set_mode',
       'spawn_instance', 'sync_worktree',
       'wait_for_idle',
     ].sort();

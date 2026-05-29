@@ -161,6 +161,55 @@ export function buildTools() {
       handler: h.setMode,
     },
     {
+      name: 'approve_plan',
+      description:
+        'Approve a worker\'s plan: flips the instance to bypassPermissions and sends the canonical approval ' +
+        'prompt as a normal user turn. Mirrors the UI\'s Approve & Implement button — use this rather than ' +
+        'driving set_mode + send_prompt by hand. Optional `feedback` is appended to the approval message.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          instanceId: { type: 'string', description: 'Instance id of the worker whose plan you\'re approving.' },
+          feedback: { type: 'string', description: 'Optional additional notes appended to the approval message.' },
+        },
+        required: ['instanceId'],
+      },
+      handler: h.approvePlan,
+    },
+    {
+      name: 'reject_plan',
+      description:
+        'Reject a worker\'s plan and ask for refinement. The instance stays in plan mode; the worker will ' +
+        'produce a revised plan in its next turn. `feedback` is recommended — without it the worker has no ' +
+        'guidance for what to change.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          instanceId: { type: 'string', description: 'Instance id of the worker whose plan you\'re rejecting.' },
+          feedback: { type: 'string', description: 'What you want the worker to change. Strongly recommended.' },
+        },
+        required: ['instanceId'],
+      },
+      handler: h.rejectPlan,
+    },
+    {
+      name: 'set_auto_approve_plan',
+      description:
+        'Toggle the per-instance auto-approve-plan flag. While enabled, the next plan_request emitted by the ' +
+        'worker auto-fires setMode(bypassPermissions) + the approval prompt server-side — no further calls ' +
+        'needed. Useful for spawning multiple workers and letting them roll forward without per-plan ' +
+        'intervention.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          instanceId: { type: 'string' },
+          enabled: { type: 'boolean' },
+        },
+        required: ['instanceId', 'enabled'],
+      },
+      handler: h.setAutoApprovePlan,
+    },
+    {
       name: 'interrupt_turn',
       description: 'Abort the current turn of a running instance (control_request interrupt).',
       inputSchema: {
@@ -297,6 +346,25 @@ export function buildTools() {
         required: ['project'],
       },
       handler: h.projectStatus,
+    },
+    {
+      name: 'get_worktree_diff',
+      description:
+        'Return the full unified diff of <baseRef>...HEAD in a worktree. baseRef defaults to the worktree\'s ' +
+        'recorded baseBranch (the branch it was created from). Output is capped at ~200 KB — when truncated, ' +
+        'follow up with read_file on specific files. Complements project_status, which only returns the diff ' +
+        'stat.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          project: { type: 'string' },
+          worktreeName: { type: 'string' },
+          baseRef: { type: 'string', description: 'Optional ref to diff against. Defaults to the worktree\'s baseBranch.' },
+          contextLines: { type: 'integer', description: 'Lines of context around each hunk (0-50, default 3).' },
+        },
+        required: ['project', 'worktreeName'],
+      },
+      handler: h.getWorktreeDiff,
     },
     {
       name: 'read_file',
