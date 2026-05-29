@@ -464,7 +464,7 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
   background: var(--panel-2); border: 1px solid var(--border);
   border-radius: 6px; padding: 4px;
   display: flex; flex-direction: column; gap: 4px;
-  min-width: 140px; z-index: 40;
+  min-width: 165px; z-index: 40;
   box-shadow: 0 4px 12px rgba(0,0,0,.4);
 }
 .overflow-panel[hidden] { display: none; }
