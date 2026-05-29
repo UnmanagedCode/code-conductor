@@ -387,13 +387,18 @@ export function buildTools() {
     {
       name: 'get_last_message',
       description:
-        'Return the most recent assistant message from an instance as a single joined string, ' +
-        'plus its structured blocks (text / tool_use / thinking). Convenient when you just want ' +
-        'to read what the agent said without parsing the full event ring. Empty text if no ' +
-        'assistant content has arrived yet.',
+        'Return the most recent assistant message(s) from an instance as joined strings plus ' +
+        'structured blocks (text / tool_use / thinking). Convenient when you just want to read ' +
+        'what the agent said without parsing the full event ring. Pass `count` to get the last N ' +
+        'messages (default 1, max 50) as a `messages[]` array, oldest-first. The top-level ' +
+        '`text`/`blocks`/`msgId`/`hasToolUse` always mirror the latest message. Empty text and ' +
+        'empty messages[] if no assistant content has arrived yet.',
       inputSchema: {
         type: 'object',
-        properties: { id: { type: 'string', description: 'Instance id.' } },
+        properties: {
+          id: { type: 'string', description: 'Instance id.' },
+          count: { type: 'integer', description: 'Number of recent messages to return. Default 1, clamped to [1, 50].' },
+        },
         required: ['id'],
       },
       handler: h.getLastMessage,

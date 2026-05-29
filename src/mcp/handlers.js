@@ -453,30 +453,50 @@ export async function createProject({ name, gitInit = false }) {
   return { ...created, gitInit: !!gitInit };
 }
 
-// Walk the event ring backward, find the most recent assistant message,
-// and return its joined text (concatenation of all text blocks in the
-// latest msgId, in stream order). Useful when a coordinating agent just
-// wants to read what the spawned agent said without parsing the raw
-// event stream. Returns `text:""` if no assistant content has arrived yet.
-export async function getLastMessage({ id }, { instances }) {
+// Walk the event ring backward, find the most recent N assistant messages,
+// and return each as joined text (concatenation of all text blocks in that
+// msgId, in stream order) plus structured blocks. Useful when a coordinating
+// agent just wants to read what the spawned agent said without parsing the
+// raw event stream. `count` defaults to 1 (last message only); clamped to
+// [1, 50]. The top-level `text`/`blocks`/`msgId`/`hasToolUse` fields mirror
+// the latest message for backward compatibility; `messages` is the full
+// list, oldest-first.
+export async function getLastMessage({ id, count }, { instances }) {
   const inst = getInst(instances, id);
   const ring = inst.ringSnapshot();
-  // Find the latest msgId that has any text content. We look at both
-  // text_delta and text_end so a turn that ended cleanly is still
-  // considered, and so is a turn that's mid-stream.
-  let latestMsgId = null;
-  for (let i = ring.length - 1; i >= 0; i--) {
+  const n = Math.max(1, Math.min(Number.isInteger(count) ? count : 1, 50));
+  // Find the latest N distinct msgIds carrying assistant content,
+  // walking the ring backward. We accept tool_use too so a message
+  // composed only of tool calls (no text) still counts.
+  const seen = new Set();
+  const reverseIds = [];
+  for (let i = ring.length - 1; i >= 0 && reverseIds.length < n; i--) {
     const ev = ring[i];
-    if (ev.parentToolUseId) continue; // ignore sub-agent text
-    if (ev.kind === 'text_delta' || ev.kind === 'text_end' || ev.kind === 'assistant_message') {
-      latestMsgId = ev.msgId;
-      break;
-    }
+    if (ev.parentToolUseId) continue; // ignore sub-agent content
+    if (!ev.msgId) continue;
+    if (ev.kind !== 'text_delta' && ev.kind !== 'text_end'
+        && ev.kind !== 'assistant_message' && ev.kind !== 'tool_use') continue;
+    if (seen.has(ev.msgId)) continue;
+    seen.add(ev.msgId);
+    reverseIds.push(ev.msgId);
   }
-  if (!latestMsgId) {
-    return { id, msgId: null, text: '', blocks: [] };
+  const orderedIds = reverseIds.reverse();
+  const messages = orderedIds.map(msgId => buildMessageFromRing(ring, msgId));
+  if (messages.length === 0) {
+    return { id, msgId: null, text: '', blocks: [], messages: [] };
   }
-  // Collect text by blockIdx in stream order.
+  const latest = messages[messages.length - 1];
+  return {
+    id,
+    msgId: latest.msgId,
+    text: latest.text,
+    blocks: latest.blocks,
+    hasToolUse: latest.hasToolUse,
+    messages,
+  };
+}
+
+function buildMessageFromRing(ring, targetMsgId) {
   const byBlock = new Map();
   const blockOrder = [];
   const otherBlocks = []; // tool_use blocks etc, for context
@@ -484,7 +504,7 @@ export async function getLastMessage({ id }, { instances }) {
   let assistantMessage = null;
   for (const ev of ring) {
     if (ev.parentToolUseId) continue;
-    if (ev.msgId !== latestMsgId) continue;
+    if (ev.msgId !== targetMsgId) continue;
     if (ev.kind === 'text_delta') {
       if (!byBlock.has(ev.blockIdx)) {
         byBlock.set(ev.blockIdx, '');
@@ -515,12 +535,12 @@ export async function getLastMessage({ id }, { instances }) {
         blocks.push({ type: 'thinking', text: block.thinking ?? '' });
       }
     }
-    return { id, msgId: latestMsgId, text: textParts.join(''), blocks, hasToolUse };
+    return { msgId: targetMsgId, text: textParts.join(''), blocks, hasToolUse };
   }
   const text = blockOrder.map(idx => byBlock.get(idx)).join('');
   const blocks = blockOrder.map(idx => ({ type: 'text', text: byBlock.get(idx) }));
   blocks.push(...otherBlocks);
-  return { id, msgId: latestMsgId, text, blocks, hasToolUse };
+  return { msgId: targetMsgId, text, blocks, hasToolUse };
 }
 
 // Resolve { project, worktree? } to an absolute cwd, throwing with a

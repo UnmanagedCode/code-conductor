@@ -411,6 +411,20 @@ test('get_last_message reads the most recent assistant text from the ring', asyn
     const second = unwrap(await callTool(ctx.baseUrl, 'get_last_message', { id: spawn.id }));
     assert.equal(second.text, 'Second!');
     assert.notEqual(second.msgId, first.msgId);
+
+    // count:2 returns both turns, oldest-first.
+    const both = unwrap(await callTool(ctx.baseUrl, 'get_last_message', { id: spawn.id, count: 2 }));
+    assert.equal(both.messages.length, 2);
+    assert.equal(both.messages[0].text, 'First ');
+    assert.equal(both.messages[0].hasToolUse, true);
+    assert.equal(both.messages[1].text, 'Second!');
+    // Top-level fields mirror the latest message.
+    assert.equal(both.msgId, both.messages[1].msgId);
+    assert.equal(both.text, 'Second!');
+
+    // count larger than available — returns what's there.
+    const cap = unwrap(await callTool(ctx.baseUrl, 'get_last_message', { id: spawn.id, count: 10 }));
+    assert.equal(cap.messages.length, 2);
   } finally { await ctx.close(); }
 });
 
