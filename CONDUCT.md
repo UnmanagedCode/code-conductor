@@ -46,6 +46,8 @@ The orchestrator's MCP server exposes the `mcp__code-conductor__*` tools below. 
 **Drive workers**
 - `send_prompt({id, text, wait?, waitTimeoutMs?})` — send a turn. `wait: true` blocks until `turn_end` and returns the event inline. Default cap 10 min.
 - `wait_for_idle({id, timeoutMs?})` — block until idle / exited / crashed. Useful between `send_prompt({wait:false})` and `get_transcript`.
+- `subscribe_to_idle({targetId})` — one-shot async callback. When `targetId` next hits `turn_end`, the orchestrator injects a short stub user prompt into *your* session naming the worker and pointing at `get_recent_messages`. Pair with `send_prompt({wait:false})` when you want to end your own turn (so queued user messages flow) and be re-woken once the worker is done. Single-fire — resubscribe per turn if you want repeated pings.
+- `unsubscribe_from_idle({targetId})` — cancel a pending subscription (e.g. after `interrupt_turn`).
 - `set_mode({id, mode})` — runtime permission-mode switch (plan / ask / bypassPermissions).
 - `interrupt_turn({id})` — abort the current turn.
 - `kill_instance({id})` — terminate and remove.
@@ -120,6 +122,25 @@ When the user hands you several independent tasks at once — or when a single t
 9. **Clean up in parallel** — one turn with N `kill_instance` + N `delete_worktree` calls.
 
 Key benefits: the human keeps seeing the conductor finish turns at the cadence of the slowest worker in each phase, not the sum across all workers, so new prompts they type into the composer get picked up much sooner. The trade-off is that you can't easily handle one worker's failure independently of the others mid-batch — if a worker stalls past the 10-min `wait:true` cap, that single tool_result errors and the rest of the batch's results still come back; handle the failure in the follow-up turn.
+
+### Fire-and-forget with a callback
+
+When the user wants you to dispatch a long-running worker and *immediately* return your turn so they can keep chatting — without losing the result — combine `send_prompt({wait:false})` with `subscribe_to_idle`:
+
+```
+spawn_instance({project, mode, worktree:true})     → workerId
+send_prompt({id: workerId, text: "<task>", wait: false})
+subscribe_to_idle({targetId: workerId})
+// Your turn ends here. The user can type freely. When the worker
+// hits turn_end, the orchestrator wakes you with a stub like:
+//   "Worker `<workerId>` finished its turn. Call
+//    mcp__code-conductor__get_recent_messages({id:"<workerId>"}) …"
+// Your next turn fires automatically; review and proceed:
+get_recent_messages({id: workerId})
+// …then approve_plan / sync_worktree / merge_worktree / kill_instance.
+```
+
+The subscription is **one-shot** — consumed on the first `turn_end`. For multi-turn workers (e.g. plan → implementation), resubscribe inside each callback turn if you want the next ping. If the user interrupts and you decide to abandon the worker, call `unsubscribe_from_idle({targetId})` to drop the pending callback.
 
 ## Operational tasks in other projects
 

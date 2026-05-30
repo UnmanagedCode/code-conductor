@@ -138,9 +138,16 @@ export function buildMcpRouter({ instances }) {
   r.use(express.json({ limit: '8mb' }));
 
   const tools = buildTools();
-  const ctx = { instances, tools };
 
   r.post('/', async (req, res) => {
+    // Each spawned instance registers the MCP URL with its own id baked
+    // into the query string (see InstanceManager.mcpServerUrl). Read it
+    // here so handlers like subscribe_to_idle know which instance is
+    // calling. Older/legacy callers without the param get callerId=null
+    // and any caller-dependent tool errors with a clear message.
+    const callerId = typeof req.query.caller === 'string' && req.query.caller
+      ? req.query.caller : null;
+    const ctx = { instances, tools, callerId };
     const body = req.body;
     // Batch: array of requests → array of responses (notifications dropped).
     if (Array.isArray(body)) {

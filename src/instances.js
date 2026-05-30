@@ -792,6 +792,117 @@ export class InstanceManager extends EventEmitter {
     // spawned without a port set get null hookCallbackUrl, which disables
     // the interactive http hook (ask mode falls back to auto-allow).
     this.serverPort = null;
+    // One-shot idle subscriptions: when target hits turn_end, deliver
+    // a stub user prompt to every registered caller and clear the set.
+    // Keyed by targetId → Set<callerId>.
+    this._idleSubscribers = new Map();
+    this.on('event', ({ id: targetId, ev }) => {
+      if (ev?.kind !== 'turn_end') return;
+      const subs = this._idleSubscribers.get(targetId);
+      if (!subs || subs.size === 0) return;
+      const callers = [...subs];
+      subs.clear();
+      this._idleSubscribers.delete(targetId);
+      for (const callerId of callers) {
+        this._deliverIdleCallback(callerId, targetId);
+      }
+    });
+  }
+
+  // Register a one-shot callback: when targetId's next turn_end fires,
+  // a stub user prompt lands in callerId pointing at get_recent_messages.
+  // Re-subscribing the same pair before the callback fires is a no-op.
+  subscribeIdle(callerId, targetId) {
+    if (typeof callerId !== 'string' || !callerId) {
+      throw new Error('callerId required');
+    }
+    if (typeof targetId !== 'string' || !targetId) {
+      throw new Error('targetId required');
+    }
+    if (callerId === targetId) {
+      throw new Error('cannot subscribe to self');
+    }
+    if (!this.byId.has(callerId)) {
+      throw new Error(`caller instance not found: ${callerId}`);
+    }
+    if (!this.byId.has(targetId)) {
+      throw new Error(`target instance not found: ${targetId}`);
+    }
+    let subs = this._idleSubscribers.get(targetId);
+    if (!subs) {
+      subs = new Set();
+      this._idleSubscribers.set(targetId, subs);
+    }
+    const already = subs.has(callerId);
+    subs.add(callerId);
+    return { already };
+  }
+
+  // Cancel a pending subscription. Idempotent.
+  unsubscribeIdle(callerId, targetId) {
+    const subs = this._idleSubscribers.get(targetId);
+    if (!subs) return { removed: false };
+    const removed = subs.delete(callerId);
+    if (subs.size === 0) this._idleSubscribers.delete(targetId);
+    return { removed };
+  }
+
+  // Snapshot of the current idle-subscription graph. Test-only — gives
+  // tests a way to assert that purging on remove() actually happened.
+  _idleSubscriberSnapshot() {
+    const out = {};
+    for (const [target, callers] of this._idleSubscribers) {
+      out[target] = [...callers];
+    }
+    return out;
+  }
+
+  // Drop callerId from every subscription set (as caller) AND drop any
+  // entry where callerId was the target. Called on instance removal so
+  // dead sessions can't accumulate subscriptions.
+  _purgeIdleFor(instanceId) {
+    if (this._idleSubscribers.has(instanceId)) {
+      this._idleSubscribers.delete(instanceId);
+    }
+    for (const [target, subs] of this._idleSubscribers) {
+      if (subs.delete(instanceId) && subs.size === 0) {
+        this._idleSubscribers.delete(target);
+      }
+    }
+  }
+
+  _deliverIdleCallback(callerId, targetId) {
+    const caller = this.byId.get(callerId);
+    if (!caller || !caller.proc) return; // caller gone — drop silently.
+    const stub =
+      `Worker \`${targetId}\` finished its turn. ` +
+      `Call \`mcp__code-conductor__get_recent_messages({id:"${targetId}"})\` ` +
+      `to inspect the result.`;
+    const deliver = async () => {
+      try {
+        if (!caller.proc) return;
+        await caller.prompt(stub);
+      } catch (err) {
+        caller._emitUi({
+          kind: 'system', subtype: 'stderr',
+          data: { line: `idle-callback delivery failed: ${err.message}` },
+        });
+      }
+    };
+    if (caller.status === 'turn') {
+      // Wait for the caller to finish its own turn before injecting the
+      // stub, so we don't try to write to stdin while another turn is
+      // in flight. One-shot listener.
+      const onStatus = (s) => {
+        if (s.status === 'turn' || s.status === 'spawning') return;
+        caller.off('status', onStatus);
+        if (s.status === 'idle') queueMicrotask(deliver);
+        // exited/crashed → drop silently.
+      };
+      caller.on('status', onStatus);
+      return;
+    }
+    queueMicrotask(deliver);
   }
 
   setServerPort(port) {
@@ -803,13 +914,16 @@ export class InstanceManager extends EventEmitter {
     return `http://127.0.0.1:${this.serverPort}/api/instances/${id}/hook-callback`;
   }
 
-  // Auto-registered orchestrator MCP server URL. Same for every instance,
-  // but exposed as a method to stay parallel with hookCallbackUrl and to
-  // honour the ORCH_DISABLE_MCP_AUTOREGISTER opt-out at call time.
-  mcpServerUrl() {
+  // Auto-registered orchestrator MCP server URL. Per-instance: the caller's
+  // own id is baked into the query string so the MCP server can identify
+  // which instance is calling — needed by subscribe_to_idle to send the
+  // turn_end callback back to the right session. Other tools ignore the
+  // query string. Honours ORCH_DISABLE_MCP_AUTOREGISTER at call time.
+  mcpServerUrl(callerId) {
     if (!this.serverPort) return null;
     if (process.env.ORCH_DISABLE_MCP_AUTOREGISTER === '1') return null;
-    return `http://127.0.0.1:${this.serverPort}/mcp`;
+    const base = `http://127.0.0.1:${this.serverPort}/mcp`;
+    return callerId ? `${base}?caller=${encodeURIComponent(callerId)}` : base;
   }
 
   list() { return [...this.byId.values()].map(i => i.summary()); }
@@ -910,7 +1024,7 @@ export class InstanceManager extends EventEmitter {
       id, project, cwd,
       mode: finalMode, effort: finalEffort, thinking: finalThinking, model: finalModel,
       hookCallbackUrl: this.hookCallbackUrl(id),
-      mcpServerUrl: this.mcpServerUrl(),
+      mcpServerUrl: this.mcpServerUrl(id),
       worktree: worktreeMeta,
       temp: tempFlag,
       debug: !!debug,
@@ -930,6 +1044,7 @@ export class InstanceManager extends EventEmitter {
           (summary.status === 'exited' || summary.status === 'crashed') &&
           this.byId.has(id)) {
         this.byId.delete(id);
+        this._purgeIdleFor(id);
         this.emit('list_changed');
       }
     });
@@ -969,6 +1084,7 @@ export class InstanceManager extends EventEmitter {
     }
     if (inst.proc) await inst.kill({ graceMs: 500 });
     this.byId.delete(id);
+    this._purgeIdleFor(id);
     this.emit('list_changed');
   }
 
@@ -981,6 +1097,7 @@ export class InstanceManager extends EventEmitter {
     await Promise.all(victims.map(async (i) => {
       try { if (i.proc) await i.kill({ graceMs: 200 }); } catch { /* ignore */ }
       this.byId.delete(i.id);
+      this._purgeIdleFor(i.id);
     }));
     if (victims.length > 0) this.emit('list_changed');
     return victims.length;

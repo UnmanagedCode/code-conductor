@@ -210,6 +210,36 @@ export function buildTools() {
       handler: h.setAutoApprovePlan,
     },
     {
+      name: 'subscribe_to_idle',
+      description:
+        'Register a one-shot callback: when the target instance next emits turn_end, the orchestrator ' +
+        'injects a short stub user prompt into the *calling* instance pointing at get_recent_messages. ' +
+        'Use this right after send_prompt({wait:false}) so you can hand control back to the user but still ' +
+        'be re-woken when the worker finishes. The subscription is consumed on fire — call again to watch ' +
+        'further turns. Caller identity is taken from the MCP URL (?caller=<id>), so this only works for ' +
+        'orchestrator-spawned instances.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          targetId: { type: 'string', description: 'Instance id of the worker to watch for turn_end.' },
+        },
+        required: ['targetId'],
+      },
+      handler: h.subscribeToIdle,
+    },
+    {
+      name: 'unsubscribe_from_idle',
+      description:
+        'Cancel a pending subscribe_to_idle registration. Idempotent — returns removed:false if no ' +
+        'subscription was active for this caller/target pair.',
+      inputSchema: {
+        type: 'object',
+        properties: { targetId: { type: 'string' } },
+        required: ['targetId'],
+      },
+      handler: h.unsubscribeFromIdle,
+    },
+    {
       name: 'interrupt_turn',
       description: 'Abort the current turn of a running instance (control_request interrupt).',
       inputSchema: {

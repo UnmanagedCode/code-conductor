@@ -369,7 +369,12 @@ test('default spawn passes --permission-mode plan, --effort high, --thinking ada
     const mcpCfg = JSON.parse(argv[mcp + 1]);
     assert.ok(mcpCfg.mcpServers?.['code-conductor'], 'mcp-config registers a `code-conductor` server');
     assert.equal(mcpCfg.mcpServers['code-conductor'].type, 'http');
-    assert.match(mcpCfg.mcpServers['code-conductor'].url, /^http:\/\/127\.0\.0\.1:\d+\/mcp$/);
+    // The URL embeds the spawning instance's id as `?caller=<id>` so the
+    // MCP server can identify the caller (used by subscribe_to_idle).
+    assert.match(
+      mcpCfg.mcpServers['code-conductor'].url,
+      /^http:\/\/127\.0\.0\.1:\d+\/mcp\?caller=[0-9a-f-]{36}$/,
+    );
   } finally {
     delete process.env.FAKE_CLAUDE_ARGV_DUMP;
     await close();

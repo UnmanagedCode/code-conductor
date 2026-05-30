@@ -111,7 +111,8 @@ test('tools/list returns the full expected tool catalog', async () => {
       'read_file', 'reject_plan', 'rename_workspace', 'respawn_instance',
       'send_prompt', 'set_auto_approve_plan', 'set_mode',
       'set_project_workspace',
-      'spawn_instance', 'sync_worktree',
+      'spawn_instance', 'subscribe_to_idle', 'sync_worktree',
+      'unsubscribe_from_idle',
       'wait_for_idle',
     ].sort();
     assert.deepEqual(names, expected);

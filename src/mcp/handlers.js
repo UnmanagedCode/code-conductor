@@ -220,6 +220,40 @@ export async function setMode({ id, mode }, { instances }) {
   return { id, mode: inst.mode };
 }
 
+// Register the calling instance to receive a one-shot stub user prompt
+// when the target instance next hits turn_end. Caller identity comes
+// from the MCP URL's ?caller=<id> query string (baked in at spawn time
+// by InstanceManager.mcpServerUrl). The stub names the target and
+// points at get_recent_messages so the conductor can inspect the
+// result. Re-subscribe after every callback to keep getting pings.
+export async function subscribeToIdle({ targetId }, { instances, callerId }) {
+  if (!instances) throw new Error('orchestrator has no InstanceManager');
+  if (!callerId) {
+    throw new Error(
+      'caller identity missing — the MCP URL must include ?caller=<callerInstanceId>. ' +
+      'Spawn this instance through the orchestrator so its MCP config carries the caller id.',
+    );
+  }
+  if (typeof targetId !== 'string' || !targetId) {
+    throw new Error('targetId required');
+  }
+  // Existence check before registering, so the error surfaces here
+  // rather than as a silent drop at callback time.
+  getInst(instances, targetId);
+  const res = instances.subscribeIdle(callerId, targetId);
+  return { ok: true, callerId, targetId, already: res.already };
+}
+
+export async function unsubscribeFromIdle({ targetId }, { instances, callerId }) {
+  if (!instances) throw new Error('orchestrator has no InstanceManager');
+  if (!callerId) throw new Error('caller identity missing — MCP URL lacks ?caller=…');
+  if (typeof targetId !== 'string' || !targetId) {
+    throw new Error('targetId required');
+  }
+  const res = instances.unsubscribeIdle(callerId, targetId);
+  return { ok: true, callerId, targetId, removed: res.removed };
+}
+
 export async function interruptTurn({ id }, { instances }) {
   const inst = getInst(instances, id);
   await inst.interrupt();
