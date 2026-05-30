@@ -7,6 +7,7 @@ import path from 'node:path';
 import { Parser } from './parser.js';
 import { getProject, claudeProjectsRoot, encodeCwd } from './projects.js';
 import { createWorktree, getWorktree, debugBaseDir } from './worktrees.js';
+import { getTitle as getSessionTitle, deleteTitle as deleteSessionTitle } from './sessionTitles.js';
 import { buildSettingsJSON, buildMcpConfigJSON } from './settings.js';
 import { HookBroker } from './hookBroker.js';
 import { loadPersistedTranscript, writeSessionMetadata, readLastSessionModel } from './transcript.js';
@@ -114,6 +115,12 @@ export class Instance extends EventEmitter {
     // live temp session's row — temp rows don't read the jsonl, so without
     // this they'd stay as "(new session)" forever.
     this.firstPrompt = null;
+    // Custom human-readable label set via the ⋮ menu's Rename session
+    // action. When set, the sidebar + header render this in place of the
+    // first-prompt preview. Loaded from the sidecar `<store>/session-
+    // titles.json` after sessionId is known; mutated by setTitle() from
+    // the PUT /api/sessions/:sid/title route.
+    this.title = null;
     // When true and the instance is in plan mode, an incoming
     // plan_request is auto-approved server-side (mode flip + approval
     // prompt) without waiting for a client click. Lives on the server so
@@ -146,6 +153,7 @@ export class Instance extends EventEmitter {
       debug: this.debug,
       debugDir: this.debugDir,
       firstPrompt: this.firstPrompt,
+      title: this.title,
       autoApprovePlan: this.autoApprovePlan,
     };
   }
@@ -155,6 +163,32 @@ export class Instance extends EventEmitter {
     if (this.autoApprovePlan === next) return;
     this.autoApprovePlan = next;
     this.emit('status', this.summary());
+  }
+
+  // Update the cached custom session title and broadcast the new
+  // summary so all subscribed clients re-render the active header chip.
+  // Pass null/'' to clear. Callers (the PUT route, the resume hydration
+  // path) are responsible for the sidecar write; this just updates the
+  // in-memory mirror.
+  setTitle(title) {
+    const next = (typeof title === 'string' && title.trim()) ? title.trim() : null;
+    if (this.title === next) return;
+    this.title = next;
+    this.emit('status', this.summary());
+  }
+
+  // Hydrate the in-memory title from the sidecar. Called after the
+  // sessionId becomes known so the active header chip survives a
+  // resume/respawn without the user re-typing.
+  async _hydrateTitle() {
+    if (!this.sessionId) return;
+    try {
+      const t = await getSessionTitle(this.sessionId);
+      if (t && this.title !== t) {
+        this.title = t;
+        this.emit('status', this.summary());
+      }
+    } catch { /* sidecar read is best-effort */ }
   }
 
   ringSnapshot() { return this.ring.toArray(); }
@@ -272,6 +306,7 @@ export class Instance extends EventEmitter {
     const { command, prefixArgs } = resolveClaudeBin();
     if (resume) this.sessionId = resume;
     else if (!this.sessionId) this.sessionId = randomUUID();
+    this._hydrateTitle().catch(() => {});
     const args = [
       ...prefixArgs,
       '-p',
@@ -395,7 +430,10 @@ export class Instance extends EventEmitter {
     for (const ev of events) {
       if (ev.kind === 'system' && ev.subtype === 'init') {
         const sid = ev.data?.session_id;
-        if (sid) this.sessionId = sid;
+        if (sid && sid !== this.sessionId) {
+          this.sessionId = sid;
+          this._hydrateTitle().catch(() => {});
+        }
         const mode = ev.data?.permissionMode;
         if (mode && VALID_MODES.has(mode)) {
           // The CLI reports its own mode value ('plan' or
@@ -519,6 +557,7 @@ export class Instance extends EventEmitter {
     const subagents = path.join(dir, this.sessionId);
     await fsp.rm(file, { force: true });
     await fsp.rm(subagents, { recursive: true, force: true });
+    try { await deleteSessionTitle(this.sessionId); } catch { /* best-effort */ }
   }
 
   _sendRaw(obj) {
@@ -1014,5 +1053,12 @@ export class InstanceManager extends EventEmitter {
     wipe();
     Atomics.wait(sab, 0, 0, 30);
     wipe();
+    // Drop any custom titles for the wiped temp sessions. Fire-and-forget —
+    // the sidecar write is async and the restart path is about to exit; if
+    // it doesn't land in time the next boot's sweepPendingTempCleanup will
+    // pick up the slack via the manifest.
+    for (const inst of temps) {
+      if (inst.sessionId) deleteSessionTitle(inst.sessionId).catch(() => {});
+    }
   }
 }

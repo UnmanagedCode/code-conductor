@@ -40,6 +40,7 @@ Runs on Termux (localhost-only, single user) or any host with Node 22+ and the `
 - **Quick-spawn ↯** — `↯` button next to `+` on every project row pops a 3-button Haiku/Sonnet/Opus picker; one tap spawns a **temp session** in `code` mode at the project root, no dialog. A **Code / Plan & Approve** segmented toggle below the model row picks the spawn variant: `Code` (default) → `bypassPermissions`; `Plan & Approve` → `plan` mode with auto-approve pre-armed so the first `ExitPlanMode` auto-approves and rolls into `bypassPermissions` without a second click. Resets to `Code` each open (no persistence). Temp sessions render inside the regular Sessions subnode, pinned below a dim `— temp —` separator with a warm preview colour (`.session-row.temp`). Their on-disk jsonl is filtered out of `listSessions`/`summarizeSessions` server-side while the temp instance is live, so clicking a temp row always hits the live instance (no 409 against `--resume`) and the row vanishes the moment the temp exits + its jsonl is wiped. Each temp row has an always-visible `↑` button (no hover gate, mobile-tappable) that **promotes** the session via `POST /api/instances/:id/promote` — flips `temp:false`, writes the resume-picker metadata, broadcasts the status change, and the row migrates above the separator into the normal list.
 - **Unread indicator** — small accent pill next to a row when its instance finishes a turn while you're viewing a different session (per-instance, persisted in `localStorage` key `code-conductor:unread`).
 - **Delete session** — hover-revealed `×`, single confirm; on 409 the client auto-retries with `?force=1` (kills the live instance) without a second prompt.
+- **Rename session** — `⋮` menu's `✎ Rename session` opens a prompt to set a custom human-readable label (≤100 chars, empty clears) that overrides the first-prompt preview in the sidebar and prepends an italic chip to the active header. Stored in `~/project/.code-conductor/session-titles.json` keyed by `sessionId`; auto-cleaned when the session jsonl is deleted or a temp session exits. Survives rewind (same `sessionId`); fork starts un-titled.
 - **Rewind & fork** — every user message bubble has `↶` (rewind in place, same `sessionId`) and `⑂` (fork to a new `sessionId`) on hover. Both atomically rewrite the jsonl, preserve the dropped prompt in the composer, and 409 during a running turn.
   - Rewinding **to the first user message** is special-cased: prefix is empty, so the orchestrator deletes the jsonl entirely and respawns with `--session-id <sid>` (not `--resume`, which the CLI rejects on zero-line files).
   - **Temp sessions cannot be rewound or forked** — the on-exit cleanup races the rewrite.
@@ -207,6 +208,7 @@ Outbound: `system` + `subtype:"init"` (bundled with first turn's response, not a
 | `DELETE` | `/api/workspaces/:name` | Removes the entry **and** clears `workspace` on every member (projects stay). |
 | `GET` | `/api/projects/:name/sessions` | Session metadata list. |
 | `GET` | `/api/sessions/:sid/locate` | `{project, worktreeName}`; drives anchor auto-resume. 404 if not found. |
+| `PUT` | `/api/sessions/:sid/title` | `{title}` — set custom session label (≤100 chars; empty/whitespace clears). Returns `{ok, sessionId, title, maxLength}`. Broadcasts `projects` hint + pushes updated summary to any live instance with this `sessionId`. |
 | `POST` | `/api/instances` | Spawn. Returns summary. |
 | `GET` | `/api/instances` | List live. |
 | `POST` | `/api/instances/:id/respawn` | Uses `--resume lastSessionId`. |
@@ -255,6 +257,7 @@ All orchestrator-owned state in a single workspace-wide dotfolder at `~/project/
 ~/project/                                  # projectsRoot()
 ├── .code-conductor/                        # central store
 │   ├── workspaces.json                     # registry of known workspace names
+│   ├── session-titles.json                 # {sessionId: customLabel} sidecar
 │   └── projects/<project>/
 │       ├── project.json                    # {workspace: "<name>"}
 │       ├── attachments/<timestamp>-<name>

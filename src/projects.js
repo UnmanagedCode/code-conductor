@@ -2,6 +2,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { loadAll as loadAllTitles, deleteTitle as deleteSessionTitle } from './sessionTitles.js';
 
 // Default projects root = parent directory of the code-conductor repo,
 // resolved once at module load. Layout: <parent>/code-conductor/src/
@@ -397,6 +398,7 @@ export async function listSessionsForCwd(absCwd, excludeSessionIds = null) {
     if (e.code === 'ENOENT') return [];
     throw e;
   }
+  const titles = await loadAllTitles();
   const out = [];
   for (const name of entries) {
     if (!name.endsWith('.jsonl')) continue;
@@ -411,6 +413,7 @@ export async function listSessionsForCwd(absCwd, excludeSessionIds = null) {
     out.push({
       sessionId: sid,
       firstPrompt,
+      title: titles.get(sid) ?? null,
       mtime: stat.mtimeMs,
       size: stat.size,
     });
@@ -432,6 +435,7 @@ export async function deleteSessionForCwd(absCwd, sessionId) {
   const file = path.join(claudeProjectsRoot(), encodeCwd(absCwd), `${sessionId}.jsonl`);
   try {
     await fs.unlink(file);
+    try { await deleteSessionTitle(sessionId); } catch { /* sidecar cleanup is best-effort */ }
     return true;
   } catch (e) {
     if (e.code === 'ENOENT') return false;

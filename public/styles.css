@@ -392,6 +392,9 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
   background: var(--panel-2);
   white-space: nowrap;
 }
+.ih-chip.ih-title { font-family: inherit; font-size: 13px; font-weight: 600; font-style: italic; color: var(--text); background: transparent; padding-left: 0; padding-right: 0; }
+.ih-chip.ih-title + .ih-chip.ih-project { color: var(--muted); font-weight: 400; }
+.ih-chip.ih-title + .ih-chip.ih-project::before { content: '· '; opacity: .6; }
 .ih-chip.ih-project { font-family: inherit; font-size: 13px; font-weight: 600; color: var(--text); background: transparent; padding-left: 0; }
 .ih-chip.ih-sid { color: var(--muted); }
 .ih-chip.ih-mode { color: var(--text); }

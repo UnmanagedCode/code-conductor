@@ -18,6 +18,7 @@ import {
 import { scheduleRestart } from './restart.js';
 import { ensureConductProject, CONDUCT_PROJECT_NAME } from './conduct.js';
 import { isAvailable as transcribeAvailable, transcribe } from './transcribe.js';
+import { setTitle as setSessionTitle, MAX_TITLE_LEN } from './sessionTitles.js';
 
 const CONTENT_TYPE_BY_EXT = {
   png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg',
@@ -339,6 +340,34 @@ export function buildRoutes({ instances, serverCtx } = {}) {
   // page anchored to a session whose live instance is gone (server restart,
   // killed instance, etc.) hits this endpoint to find the right cwd to
   // resume into.
+  // Set or clear a custom human-readable title for a session. Empty /
+  // whitespace-only / null title clears the entry. The new title is
+  // capped at MAX_TITLE_LEN. Broadcasts a `projects` hint so sidebars
+  // refetch, and pushes the updated summary to any live instance(s)
+  // currently attached to this sessionId so the active header chip
+  // re-renders without a page reload.
+  r.put('/sessions/:sessionId/title', async (req, res, next) => {
+    try {
+      const sid = String(req.params.sessionId || '');
+      if (!/^[A-Za-z0-9_-]+$/.test(sid)) {
+        throw Object.assign(new Error('invalid sessionId'), { statusCode: 400 });
+      }
+      const raw = req.body?.title;
+      if (raw != null && typeof raw !== 'string') {
+        throw Object.assign(new Error('title must be a string'), { statusCode: 400 });
+      }
+      const stored = await setSessionTitle(sid, raw ?? '');
+      if (instances) {
+        for (const id of instances.idsForSession(sid)) {
+          const inst = instances.get(id);
+          if (inst) inst.setTitle(stored);
+        }
+      }
+      broadcastProjects();
+      res.json({ ok: true, sessionId: sid, title: stored, maxLength: MAX_TITLE_LEN });
+    } catch (e) { next(e); }
+  });
+
   r.get('/sessions/:sessionId/locate', async (req, res, next) => {
     try {
       const sid = String(req.params.sessionId || '');

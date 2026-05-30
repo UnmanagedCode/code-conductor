@@ -33,10 +33,15 @@ function mergeLive(onDisk, liveInstances) {
       row.instanceStatus = inst.status;
       row.instanceMode = inst.mode;
       row.instanceTemp = !!inst.temp;
+      // Live instance summary carries the freshest title (set via the
+      // ⋮ Rename action without a refetch). Prefer it over a stale
+      // on-disk-list entry from the last /api/projects round-trip.
+      if (inst.title) row.title = inst.title;
     } else {
       byId.set(inst.sessionId, {
         sessionId: inst.sessionId,
         firstPrompt: inst.firstPrompt ?? null,
+        title: inst.title ?? null,
         mtime: Date.now(),
         size: 0,
         instanceId: inst.id,
@@ -172,15 +177,18 @@ export class Sidebar {
   // status when one is attached; otherwise we render a dim "○" so the
   // user can tell at a glance which sessions are alive.
   _sessionRow({ session, projectName, worktreeName }) {
+    const customTitle = (session.title ?? '').trim();
     const preview = (session.firstPrompt ?? '').slice(0, 80).replace(/\s+/g, ' ').trim();
-    const liveLabel = preview || (session.synthetic ? '(new session)' : `${session.sessionId.slice(0, 8)}…`);
+    const liveLabel = customTitle || preview || (session.synthetic ? '(new session)' : `${session.sessionId.slice(0, 8)}…`);
     const isLive = !!session.instanceId;
     const status = session.instanceStatus ?? 'offline';
     const isActive = session.instanceId === this.activeInstanceId;
     const unread = this.unreadBySessionId.get(session.sessionId) ?? 0;
+    const tooltipParts = [session.sessionId];
+    if (customTitle && preview) tooltipParts.push(preview);
     const row = el('div', {
-      class: 'session-row' + (isActive ? ' active' : '') + (isLive ? ' live' : '') + (unread > 0 ? ' has-unread' : '') + (session.instanceTemp ? ' temp' : ''),
-      title: `${session.sessionId}${preview ? '\n' + preview : ''}`,
+      class: 'session-row' + (isActive ? ' active' : '') + (isLive ? ' live' : '') + (unread > 0 ? ' has-unread' : '') + (session.instanceTemp ? ' temp' : '') + (customTitle ? ' has-title' : ''),
+      title: tooltipParts.join('\n'),
       onclick: () => {
         if (session.instanceId) this.onSelectInstance(session.instanceId);
         else if (this.onResumeSession) this.onResumeSession({

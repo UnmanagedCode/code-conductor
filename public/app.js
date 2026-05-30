@@ -86,6 +86,7 @@ const dom = {
   syncBtn: document.getElementById('sync-btn'),
   mergeBtn: document.getElementById('merge-btn'),
   debugBtn: document.getElementById('debug-btn'),
+  renameSessionBtn: document.getElementById('rename-session-btn'),
   autoApprovePlanBtn: document.getElementById('auto-approve-plan-btn'),
   overflowMenu: document.getElementById('overflow-menu'),
   overflowToggle: document.getElementById('overflow-toggle'),
@@ -338,6 +339,36 @@ dom.autoApprovePlanBtn.addEventListener('click', () => {
   if (inst) inst.autoApprovePlan = next;
   updateActiveHeader();
   send('auto_approve_plan', { id: state.activeId, enabled: next });
+});
+
+dom.renameSessionBtn.addEventListener('click', async () => {
+  if (!state.activeId) return;
+  const inst = state.instances.find(i => i.id === state.activeId);
+  if (!inst?.sessionId) return;
+  closeOverflow();
+  const cur = inst.title ?? '';
+  const next = prompt('Session title (empty to clear):', cur);
+  if (next === null) return; // cancelled
+  const trimmed = next.trim().slice(0, 100);
+  if (trimmed === (cur ?? '').trim()) return; // no change
+  try {
+    const r = await fetch(`/api/sessions/${encodeURIComponent(inst.sessionId)}/title`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: trimmed }),
+    });
+    if (!r.ok) {
+      const body = await r.json().catch(() => ({}));
+      throw new Error(body.error ?? `HTTP ${r.status}`);
+    }
+    const result = await r.json();
+    // Optimistic local mirror — the broadcast `status` frame will reassert.
+    inst.title = result.title ?? null;
+    updateActiveHeader();
+    await refreshProjects();
+  } catch (e) {
+    alert('Rename failed: ' + e.message);
+  }
 });
 
 dom.debugBtn.addEventListener('click', async () => {
@@ -1164,6 +1195,13 @@ function updateActiveHeader() {
     e.textContent = text;
     return e;
   };
+  // Custom session title (set via ⋮ → Rename session) leads the chip row
+  // when present, so the human label is the first thing the user reads.
+  if (inst.title) {
+    const titleChip = chip('ih-title', inst.title);
+    titleChip.title = 'custom session title — change via ⋮ → Rename session';
+    dom.instanceTitle.appendChild(titleChip);
+  }
   // Project chip carries the full session id as a tooltip — long-press on
   // mobile / hover on desktop — instead of taking a dedicated header chip.
   const projectChip = chip('ih-project', inst.project);
@@ -1208,6 +1246,8 @@ function updateActiveHeader() {
   // mid-turn.
   const canMenu = ['idle', 'turn', 'spawning'].includes(inst.status);
   dom.debugBtn.hidden = !canMenu;
+  dom.renameSessionBtn.hidden = !canMenu;
+  dom.renameSessionBtn.disabled = !canMenu || !inst.sessionId;
   // Auto-approve only applies to plan mode (it short-circuits the
   // ExitPlanMode confirmation card). Hide it in code/ask mode so the
   // controls row stays uncluttered.
