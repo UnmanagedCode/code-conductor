@@ -925,9 +925,22 @@ body.lightbox-open { overflow: hidden; }
   flex: 1; resize: none; min-height: 40px; max-height: 240px;
   font-family: ui-monospace, monospace; font-size: 13px;
 }
-#composer-attach {
+#composer-attach,
+#composer-mic {
   min-width: 36px; padding: 0 10px;
   display: flex; align-items: center; justify-content: center;
+}
+#composer-mic.recording {
+  background: var(--red, #e0556a); color: #fff; border-color: var(--red, #e0556a);
+  animation: composer-mic-pulse 1.1s ease-in-out infinite;
+}
+#composer-mic.transcribing { opacity: 0.6; }
+@keyframes composer-mic-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(224, 85, 106, 0.6); }
+  50%      { box-shadow: 0 0 0 6px rgba(224, 85, 106, 0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  #composer-mic.recording { animation: none; }
 }
 #composer-send {
   align-self: stretch; min-width: 80px;

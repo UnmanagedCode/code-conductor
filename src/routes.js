@@ -17,6 +17,7 @@ import {
 } from './worktrees.js';
 import { scheduleRestart } from './restart.js';
 import { ensureConductProject, CONDUCT_PROJECT_NAME } from './conduct.js';
+import { isAvailable as transcribeAvailable, transcribe } from './transcribe.js';
 
 const CONTENT_TYPE_BY_EXT = {
   png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg',
@@ -591,6 +592,27 @@ export function buildRoutes({ instances, serverCtx } = {}) {
       inst.handleHookCallback(req.body ?? {}, res);
     });
   }
+
+  // Voice dictation: the composer's mic button streams a recorded audio
+  // blob here, the server runs whisper.cpp locally and returns the text.
+  // /status drives the frontend's button-visibility — both binaries must
+  // be present or the mic button stays hidden.
+  r.get('/transcribe/status', async (req, res, next) => {
+    try {
+      const available = await transcribeAvailable();
+      res.json({ available });
+    } catch (e) { next(e); }
+  });
+
+  r.post('/transcribe', express.raw({ type: '*/*', limit: '25mb' }), async (req, res, next) => {
+    try {
+      if (!(await transcribeAvailable())) {
+        throw Object.assign(new Error('whisper.cpp not installed — run bin/install-whisper.sh'), { statusCode: 503 });
+      }
+      const text = await transcribe(req.body);
+      res.json({ text });
+    } catch (e) { next(e); }
+  });
 
   r.use((err, req, res, _next) => {
     const status = err.statusCode ?? 500;

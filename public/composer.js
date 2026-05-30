@@ -28,7 +28,7 @@ function fmtSize(n) {
   return `${(n / 1024 / 1024).toFixed(1)} MB`;
 }
 
-export function attachComposer({ form, textarea, sendBtn, attachBtn, fileInput, chipsContainer, onSubmit }) {
+export function attachComposer({ form, textarea, sendBtn, attachBtn, micBtn, fileInput, chipsContainer, onSubmit }) {
   // Pending attachments, in the order the user added them. Each entry:
   //   { id, name, size, mediaType, isImage, dataBase64, objectUrl, error }
   const pending = [];
@@ -37,11 +37,20 @@ export function attachComposer({ form, textarea, sendBtn, attachBtn, fileInput, 
   let canType = false;
   let canSend = false;
 
+  // Recording state for the mic button — declared up here because setState
+  // calls refreshMicEnabled before the dictation block below would otherwise
+  // initialise them. 'idle' | 'recording' | 'transcribing'.
+  let recordingState = 'idle';
+  let mediaRecorder = null;
+  let mediaStream = null;
+  let recordedChunks = [];
+
   function setState({ canType: ct, canSend: cs }) {
     canType = ct; canSend = cs;
     textarea.disabled = !ct;
     if (attachBtn) attachBtn.disabled = !ct;
     if (fileInput) fileInput.disabled = !ct;
+    refreshMicEnabled();
     refreshSendEnabled();
   }
   setState({ canType: false, canSend: false });
@@ -167,6 +176,117 @@ export function attachComposer({ form, textarea, sendBtn, attachBtn, fileInput, 
     e.preventDefault();
     for (const f of files) await addFile(f);
   });
+
+  // ── Dictation (mic button) ──────────────────────────────────────────
+  // idle → recording → transcribing → idle. Mic is hidden by default in
+  // markup; app.js reveals it after /api/transcribe/status returns
+  // available:true. We never auto-record on mount; user must tap.
+  function refreshMicEnabled() {
+    if (!micBtn) return;
+    if (recordingState === 'transcribing') micBtn.disabled = true;
+    else if (recordingState === 'recording') micBtn.disabled = false;
+    else micBtn.disabled = !canType;
+  }
+
+  function setMicState(next) {
+    recordingState = next;
+    if (micBtn) {
+      micBtn.classList.toggle('recording', next === 'recording');
+      micBtn.classList.toggle('transcribing', next === 'transcribing');
+      micBtn.title = next === 'recording'
+        ? 'Recording — tap to stop and transcribe'
+        : next === 'transcribing'
+          ? 'Transcribing…'
+          : 'Dictate — tap to record, tap again to transcribe (local Whisper)';
+    }
+    refreshMicEnabled();
+  }
+
+  function insertAtCursor(text) {
+    if (!text) return;
+    const start = textarea.selectionStart ?? textarea.value.length;
+    const end = textarea.selectionEnd ?? textarea.value.length;
+    const before = textarea.value.slice(0, start);
+    const after = textarea.value.slice(end);
+    // Add a space between adjacent words so back-to-back dictations don't run together.
+    const needsLeadingSpace = before.length > 0 && !/\s$/.test(before) && !/^\s/.test(text);
+    const insert = (needsLeadingSpace ? ' ' : '') + text;
+    textarea.value = before + insert + after;
+    const caret = start + insert.length;
+    try { textarea.setSelectionRange(caret, caret); } catch { /* ignore */ }
+    try { textarea.focus(); } catch { /* ignore */ }
+    refreshSendEnabled();
+  }
+
+  async function startRecording() {
+    if (recordingState !== 'idle') return;
+    try {
+      mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (e) {
+      alert(`Microphone access denied: ${e.message || e}`);
+      return;
+    }
+    recordedChunks = [];
+    try {
+      mediaRecorder = new MediaRecorder(mediaStream);
+    } catch (e) {
+      stopMediaTracks();
+      alert(`MediaRecorder unavailable: ${e.message || e}`);
+      return;
+    }
+    mediaRecorder.addEventListener('dataavailable', (ev) => {
+      if (ev.data && ev.data.size > 0) recordedChunks.push(ev.data);
+    });
+    mediaRecorder.addEventListener('stop', () => {
+      const blob = new Blob(recordedChunks, { type: mediaRecorder.mimeType || 'audio/webm' });
+      stopMediaTracks();
+      recordedChunks = [];
+      void postForTranscript(blob);
+    });
+    mediaRecorder.start();
+    setMicState('recording');
+  }
+
+  function stopRecording() {
+    if (recordingState !== 'recording' || !mediaRecorder) return;
+    setMicState('transcribing');
+    try { mediaRecorder.stop(); } catch { /* fall through to cleanup */ }
+  }
+
+  function stopMediaTracks() {
+    if (mediaStream) {
+      for (const t of mediaStream.getTracks()) try { t.stop(); } catch { /* ignore */ }
+      mediaStream = null;
+    }
+    mediaRecorder = null;
+  }
+
+  async function postForTranscript(blob) {
+    try {
+      const res = await fetch('/api/transcribe', {
+        method: 'POST',
+        headers: { 'content-type': blob.type || 'audio/webm' },
+        body: blob,
+      });
+      if (!res.ok) {
+        const body = await res.text();
+        throw new Error(`HTTP ${res.status}: ${body.slice(0, 200)}`);
+      }
+      const { text } = await res.json();
+      insertAtCursor(text);
+    } catch (e) {
+      alert(`Transcription failed: ${e.message || e}`);
+    } finally {
+      setMicState('idle');
+    }
+  }
+
+  if (micBtn) {
+    micBtn.addEventListener('click', () => {
+      if (recordingState === 'idle') void startRecording();
+      else if (recordingState === 'recording') stopRecording();
+    });
+  }
 
   textarea.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {

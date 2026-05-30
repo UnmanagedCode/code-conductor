@@ -37,6 +37,7 @@ const dom = {
   composerInput: document.getElementById('composer-input'),
   composerSend: document.getElementById('composer-send'),
   composerAttach: document.getElementById('composer-attach'),
+  composerMic: document.getElementById('composer-mic'),
   composerFile: document.getElementById('composer-file'),
   composerAttachments: document.getElementById('composer-attachments'),
   modeSelect: document.getElementById('mode-select'),
@@ -286,6 +287,7 @@ const composer = attachComposer({
   textarea: dom.composerInput,
   sendBtn: dom.composerSend,
   attachBtn: dom.composerAttach,
+  micBtn: dom.composerMic,
   fileInput: dom.composerFile,
   chipsContainer: dom.composerAttachments,
   onSubmit: ({ text, attachments }) => {
@@ -295,6 +297,19 @@ const composer = attachComposer({
     send('prompt', payload);
   },
 });
+
+// Reveal the mic button only when the server has whisper.cpp + the model
+// on disk. Done as a one-shot fetch — install state doesn't change at
+// runtime, and a missed reveal heals after a page reload.
+(async () => {
+  if (!dom.composerMic) return;
+  try {
+    const r = await fetch('/api/transcribe/status', { cache: 'no-store' });
+    if (!r.ok) return;
+    const { available } = await r.json();
+    if (available) dom.composerMic.hidden = false;
+  } catch { /* leave hidden */ }
+})();
 
 dom.modeSelect.addEventListener('change', async () => {
   if (!state.activeId) return;
