@@ -415,18 +415,18 @@ test('Clicking the workspace ✎ button calls onEditWorkspace with the name and 
   ]);
   sidebar.setInstances([]);
   const det = root.querySelector('details.project-workspace');
-  assert.ok(det.hasAttribute('open'), 'default-expanded');
+  assert.ok(!det.hasAttribute('open'), 'default-collapsed');
   const edit = root.querySelector('.project-workspace-edit');
   edit.click();
   assert.deepEqual(calls.editWorkspace, ['Stuff']);
-  // Default-expanded state still holds — the click on ✎ should not have
+  // Default-collapsed state still holds — the click on ✎ should not have
   // toggled the surrounding <details>.
-  assert.ok(det.hasAttribute('open'), 'edit click does not collapse workspace');
+  assert.ok(!det.hasAttribute('open'), 'edit click does not expand workspace');
 });
 
-test('Workspace collapse state is read from localStorage on construction', async () => {
+test('Workspace expand state is read from localStorage on construction', async () => {
   // Seed the storage key BEFORE constructing the Sidebar so its
-  // collapsedWorkspaces set initialises from it.
+  // expandedWorkspaces set initialises from it.
   const window = new Window({ url: 'http://localhost/' });
   globalThis.window = window;
   globalThis.document = window.document;
@@ -434,9 +434,9 @@ test('Workspace collapse state is read from localStorage on construction', async
   globalThis.Element = window.Element;
   globalThis.Node = window.Node;
   globalThis.localStorage = window.localStorage;
-  window.localStorage.setItem('code-conductor:workspaces-collapsed', JSON.stringify(['Hidden']));
+  window.localStorage.setItem('code-conductor:workspaces-expanded', JSON.stringify(['Visible']));
   // happy-dom caches ES modules — break the cache so the freshly-seeded
-  // localStorage drives this Sidebar's `loadCollapsedWorkspaces` call.
+  // localStorage drives this Sidebar's `loadExpandedWorkspaces` call.
   const url = pathToFileURL(path.join(PUB, 'sidebar.js')).href + `?seed=${Date.now()}`;
   const { Sidebar } = await import(url);
   document.body.innerHTML = '<ul id="root"></ul>';
@@ -458,8 +458,8 @@ test('Workspace collapse state is read from localStorage on construction', async
   const workspaces = [...root.querySelectorAll('details.project-workspace')];
   const byName = Object.fromEntries(workspaces.map(g =>
     [g.querySelector('.project-workspace-name').textContent, g]));
-  assert.ok(!byName['Hidden'].hasAttribute('open'), 'Hidden workspace respects localStorage collapse');
-  assert.ok(byName['Visible'].hasAttribute('open'), 'Visible workspace default-expanded');
+  assert.ok(!byName['Hidden'].hasAttribute('open'), 'Hidden workspace is default-collapsed');
+  assert.ok(byName['Visible'].hasAttribute('open'), 'Visible workspace respects localStorage expand');
 });
 
 test('Project row carries a ↯ quick-spawn button wired to onQuickSpawn', async () => {

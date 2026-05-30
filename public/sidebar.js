@@ -52,15 +52,15 @@ function mergeLive(onDisk, liveInstances) {
   return out;
 }
 
-// localStorage key for the set of collapsed workspace headers. Sessions
+// localStorage key for the set of expanded workspace headers. Sessions
 // and worktree collapse state is session-local, but workspaces are
 // higher-level navigation — surviving a refresh is worth the extra
 // persistence.
-const WORKSPACES_COLLAPSED_STORAGE_KEY = 'code-conductor:workspaces-collapsed';
+const WORKSPACES_EXPANDED_STORAGE_KEY = 'code-conductor:workspaces-expanded';
 
-function loadCollapsedWorkspaces() {
+function loadExpandedWorkspaces() {
   try {
-    const raw = localStorage.getItem(WORKSPACES_COLLAPSED_STORAGE_KEY);
+    const raw = localStorage.getItem(WORKSPACES_EXPANDED_STORAGE_KEY);
     if (!raw) return new Set();
     const arr = JSON.parse(raw);
     if (!Array.isArray(arr)) return new Set();
@@ -69,10 +69,10 @@ function loadCollapsedWorkspaces() {
     return new Set();
   }
 }
-function saveCollapsedWorkspaces(set) {
+function saveExpandedWorkspaces(set) {
   try {
-    if (set.size === 0) localStorage.removeItem(WORKSPACES_COLLAPSED_STORAGE_KEY);
-    else localStorage.setItem(WORKSPACES_COLLAPSED_STORAGE_KEY, JSON.stringify([...set]));
+    if (set.size === 0) localStorage.removeItem(WORKSPACES_EXPANDED_STORAGE_KEY);
+    else localStorage.setItem(WORKSPACES_EXPANDED_STORAGE_KEY, JSON.stringify([...set]));
   } catch { /* private mode / quota — best-effort */ }
 }
 
@@ -105,9 +105,9 @@ export class Sidebar {
     // collapsed so manual collapse sticks across re-renders.
     this.collapsedSessions = new Set();   // key: `${projectName}` or `${projectName}:${worktreeName}`
     this.expandedWorktrees = new Set();   // key: projectName (worktree subnodes stay default-collapsed)
-    // Workspace containers default-expanded and persist their collapsed
+    // Workspace containers default-collapsed and persist their expanded
     // state in localStorage so a page refresh keeps the layout stable.
-    this.collapsedWorkspaces = loadCollapsedWorkspaces(); // key: workspace name
+    this.expandedWorkspaces = loadExpandedWorkspaces(); // key: workspace name
     // Cached lazy-loaded session lists keyed the same way as
     // collapsedSessions. The cache holds the on-disk list; live
     // instances are merged in fresh on every render so status dots
@@ -556,11 +556,11 @@ export class Sidebar {
     for (const name of workspaceNames) {
       const members = byWorkspace.get(name);
       const det = el('details', { class: 'project-workspace' });
-      if (!this.collapsedWorkspaces.has(name)) det.setAttribute('open', '');
+      if (this.expandedWorkspaces.has(name)) det.setAttribute('open', '');
       det.addEventListener('toggle', () => {
-        if (det.open) this.collapsedWorkspaces.delete(name);
-        else this.collapsedWorkspaces.add(name);
-        saveCollapsedWorkspaces(this.collapsedWorkspaces);
+        if (det.open) this.expandedWorkspaces.add(name);
+        else this.expandedWorkspaces.delete(name);
+        saveExpandedWorkspaces(this.expandedWorkspaces);
       });
       const summary = el('summary', { class: 'project-workspace-summary' },
         el('span', { class: 'project-workspace-name' }, name),
