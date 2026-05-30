@@ -25,11 +25,14 @@ export function conductProjectPath() {
 }
 
 // Idempotent: creates the .conduct dir (if missing) and seeds CLAUDE.md
-// with two imports — the workspace-wide @../CLAUDE.md and the absolute
+// with two imports — the workspace-wide @../CLAUDE.md and a relative
 // path to CONDUCT.md so conductor instances pick up the role definition
-// regardless of cwd quirks. The `wx` flag preserves any user-customised
-// CLAUDE.md once it exists. Returns {path, created, claudeMdPath,
-// claudeMdSeeded} so callers (and tests) can tell what happened.
+// regardless of cwd quirks. Claude Code only expands relative @-imports
+// in CLAUDE.md, not absolute ones — so the CONDUCT.md path must be made
+// relative to the .conduct dir. The `wx` flag preserves any user-
+// customised CLAUDE.md once it exists. Returns {path, created,
+// claudeMdPath, claudeMdSeeded} so callers (and tests) can tell what
+// happened.
 export async function ensureConductProject() {
   const dir = conductProjectPath();
   let created = false;
@@ -41,7 +44,8 @@ export async function ensureConductProject() {
   }
 
   const claudeMdPath = path.join(dir, 'CLAUDE.md');
-  const seedContent = `@../CLAUDE.md\n@${CONDUCT_MD_PATH}\n`;
+  const conductMdRel = path.relative(dir, CONDUCT_MD_PATH);
+  const seedContent = `@../CLAUDE.md\n@${conductMdRel}\n`;
   let claudeMdSeeded = false;
   try {
     await fs.writeFile(claudeMdPath, seedContent, { flag: 'wx' });

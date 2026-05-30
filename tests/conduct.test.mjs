@@ -31,11 +31,16 @@ test('ensureConductProject creates .conduct/ + seeds CLAUDE.md with two imports'
     );
     assert.match(claudeMd, /@\.\.\/CLAUDE\.md/, 'inherits workspace CLAUDE.md');
     assert.match(claudeMd, /@.*CONDUCT\.md/, 'imports CONDUCT.md');
-    // CONDUCT.md import should be an absolute path so it follows the repo
-    // wherever it lives.
+    // CONDUCT.md import must be a *relative* path: Claude Code's @-imports
+    // in CLAUDE.md only expand relative paths, not absolute ones.
     const conductLine = claudeMd.split('\n').find(l => l.startsWith('@') && l.endsWith('CONDUCT.md'));
     assert.ok(conductLine, 'CONDUCT.md import line present');
-    assert.ok(conductLine.startsWith('@/'), `expected absolute path, got: ${conductLine}`);
+    assert.ok(!conductLine.startsWith('@/'), `expected relative path, got: ${conductLine}`);
+    // And it must actually resolve to the repo's CONDUCT.md from inside .conduct/.
+    const importPath = conductLine.slice(1);
+    const resolved = path.resolve(path.join(ctx.projectsRoot, '.conduct'), importPath);
+    const conductStat = await fs.stat(resolved);
+    assert.ok(conductStat.isFile(), `resolved CONDUCT.md path must exist: ${resolved}`);
   } finally { await ctx.close(); }
 });
 
