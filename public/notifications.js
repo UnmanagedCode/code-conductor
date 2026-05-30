@@ -71,10 +71,10 @@ export function muteInstance(id, mute) {
   else NotificationState.mutedInstances.delete(id);
 }
 
-export function fire({ title, body, tag }) {
+export function fire({ title, body, tag, data }) {
   if (!isNotificationAPIAvailable()) return null;
   if (Notification.permission !== 'granted') return null;
-  const opts = { body, tag, icon: '/favicon.ico' };
+  const opts = { body, tag, icon: '/favicon.ico', data };
   // Mobile Chrome only allows notifications via the Service Worker
   // registration. Try that first; fall back to the page-level constructor
   // for desktop browsers where it still works.
@@ -88,6 +88,64 @@ export function fire({ title, body, tag }) {
     return new Notification(title, opts);
   } catch {
     return null;
+  }
+}
+
+const SUMMARY_TAG = 'cc-summary';
+const SUMMARY_PROJECT_LIMIT = 3;
+
+/**
+ * Pure: given the current set of open notifications, decide whether a summary
+ * should be visible and what it should say. Public for tests.
+ */
+export function summarizeOpenNotifications(notifications) {
+  const ours = (notifications || []).filter(n => typeof n?.tag === 'string' && n.tag.startsWith('instance:'));
+  if (ours.length < 2) return { shouldFire: false };
+  const projects = [];
+  const seen = new Set();
+  for (const n of ours) {
+    const p = n?.data?.project;
+    if (!p || seen.has(p)) continue;
+    seen.add(p);
+    projects.push(p);
+  }
+  const shown = projects.slice(0, SUMMARY_PROJECT_LIMIT);
+  const overflow = projects.length - shown.length;
+  let body = shown.join(', ');
+  if (overflow > 0) body += ` …+${overflow} more`;
+  return {
+    shouldFire: true,
+    title: `${ours.length} turns complete`,
+    body,
+  };
+}
+
+async function getOpenNotifications() {
+  const reg = NotificationState.swRegistration;
+  if (!reg) return null;
+  try { return await reg.getNotifications(); }
+  catch { return null; }
+}
+
+export async function maybeUpdateSummary() {
+  const reg = NotificationState.swRegistration;
+  if (!reg) return;
+  const open = await getOpenNotifications();
+  if (open == null) return;
+  const { shouldFire, title, body } = summarizeOpenNotifications(open);
+  if (shouldFire) {
+    try { reg.showNotification(title, { body, tag: SUMMARY_TAG, renotify: false, icon: '/favicon.ico' }); }
+    catch { /* ignore */ }
+  } else {
+    for (const n of open) if (n.tag === SUMMARY_TAG) n.close();
+  }
+}
+
+export async function closeAllOnFocus() {
+  const open = await getOpenNotifications();
+  if (open == null) return;
+  for (const n of open) {
+    if (n.tag === SUMMARY_TAG || (typeof n.tag === 'string' && n.tag.startsWith('instance:'))) n.close();
   }
 }
 
@@ -107,5 +165,8 @@ export function maybeNotifyTurnEnd({ instanceId, projectName, turnEvent }) {
   const cost = turnEvent.cost != null ? ` · $${turnEvent.cost.toFixed(4)}` : '';
   const title = turnEvent.isError ? `❌ ${projectName} — turn errored` : `✓ ${projectName} — turn complete`;
   const body = `${turnEvent.stopReason ?? 'end_turn'}${cost}`;
-  return fire({ title, body, tag: `instance:${instanceId}` });
+  const result = fire({ title, body, tag: `instance:${instanceId}`, data: { project: projectName } });
+  // Best-effort summary refresh; failures here must not block the per-instance ping.
+  maybeUpdateSummary();
+  return result;
 }

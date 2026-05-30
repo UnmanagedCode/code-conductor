@@ -14,6 +14,7 @@ import {
 import {
   NotificationState, ensurePermission, setGlobalEnabled,
   maybeNotifyTurnEnd, isNotificationAPIAvailable, registerServiceWorker,
+  closeAllOnFocus,
 } from './notifications.js';
 import {
   readSessionAnchor, writeSessionAnchor,
@@ -698,6 +699,9 @@ if (NotificationState.permission === 'granted') {
   registerServiceWorker().catch(() => {});
 }
 renderNotifyToggle();
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) closeAllOnFocus();
+});
 dom.sidebarScrim.addEventListener('click', () => setSidebarOpen(false));
 
 // Restart-server button. Self-respawn happens server-side: POST kicks
