@@ -10,6 +10,7 @@ import { attachWsHub } from './src/wsHub.js';
 import { projectsRoot } from './src/projects.js';
 import { runMigrations } from './migrations/index.mjs';
 import { checkClaudeReadiness, formatReadiness } from './src/health.js';
+import { sweepPendingTempCleanup } from './src/tempCleanup.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -62,6 +63,11 @@ export async function start({ port = 8787, host = '127.0.0.1' } = {}) {
   // migration is idempotent and a no-op on an already-migrated workspace,
   // so this is fast in steady state. A migration that throws aborts boot.
   await runMigrations({ root: projectsRoot() });
+  // Belt-and-braces cleanup for temp sessions whose jsonl re-appeared after
+  // the previous process exited (orphaned subagent writes etc.). The manifest
+  // is written by scheduleRestart in src/restart.js.
+  try { sweepPendingTempCleanup({ log: console }); }
+  catch (e) { console.warn('temp-cleanup sweep failed:', e); }
   const readiness = await checkClaudeReadiness();
   process.stderr.write(formatReadiness(readiness) + '\n');
   const { server, instances, wss } = createServer();

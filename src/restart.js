@@ -18,6 +18,7 @@
 //   5. Exit this process after a small delay so the 202 response can
 //      flush over the wire.
 import { spawn } from 'node:child_process';
+import { writePendingTempCleanup } from './tempCleanup.js';
 
 export function scheduleRestart({ server, wss, instances, log = console } = {}) {
   // Don't await any of this; the response was already sent before we
@@ -34,12 +35,28 @@ export function scheduleRestart({ server, wss, instances, log = console } = {}) 
       try { server.close(); } catch { /* ignore */ }
     }
     if (instances && typeof instances.shutdownTempSync === 'function') {
+      // Capture the temp session set *before* shutdownTempSync runs, then
+      // write a manifest that the next boot will replay. This is defence
+      // in depth: orphaned subagent processes (claude forks them for Task
+      // calls, we don't track them) can keep writing to the jsonl after
+      // our parent has exited, so the in-process cleanup alone isn't
+      // enough — the post-restart sweep wipes anything that reappeared.
+      let snapshot = [];
+      try {
+        if (typeof instances.tempCleanupSnapshot === 'function') {
+          snapshot = instances.tempCleanupSnapshot();
+        }
+      } catch (e) { log.warn?.('restart: temp snapshot error', e); }
+
       // Synchronously delete temp session jsonls + subagents dirs before
       // we exit — `_handleExit()`'s async cleanup races process.exit(),
       // so without this the temp jsonls survive the restart and reappear
       // in the sidebar as ordinary persistent sessions.
       try { instances.shutdownTempSync(); }
       catch (e) { log.warn?.('restart: temp cleanup error', e); }
+
+      try { writePendingTempCleanup(snapshot); }
+      catch (e) { log.warn?.('restart: pending-cleanup manifest write failed', e); }
     }
     if (instances && typeof instances.shutdown === 'function') {
       // Fire-and-forget — instance subprocesses outlive us.

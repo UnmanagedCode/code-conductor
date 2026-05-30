@@ -953,21 +953,66 @@ export class InstanceManager extends EventEmitter {
     await Promise.all(all.map(i => i.kill({ graceMs: 200 }).catch(() => {})));
   }
 
-  // Synchronously SIGTERM every live temp subprocess and delete its
-  // persisted jsonl + sub-agent dir. The async `shutdown()` above relies
-  // on subprocess `exit` events to fire `_deleteTempArtifacts()`, which
-  // races process.exit() during the restart path — so the restart path
-  // calls this first to guarantee on-disk cleanup before we exit.
+  // Snapshot of live temp sessions keyed by what's needed to find their
+  // on-disk jsonl: {cwd, sessionId}. Used by the restart path to write a
+  // pending-cleanup manifest that the next boot can replay (defence in
+  // depth against orphaned post-exit writes).
+  tempCleanupSnapshot() {
+    const out = [];
+    for (const inst of this.byId.values()) {
+      if (!inst.temp || !inst.sessionId) continue;
+      out.push({ cwd: inst.cwd, sessionId: inst.sessionId });
+    }
+    return out;
+  }
+
+  // Synchronously kill every live temp subprocess and delete its persisted
+  // jsonl + sub-agent dir. The async `shutdown()` above relies on subprocess
+  // `exit` events to fire `_deleteTempArtifacts()`, which races process.exit()
+  // during the restart path — so the restart path calls this first to
+  // guarantee on-disk cleanup before we exit.
+  //
+  // SIGKILL (not SIGTERM) because claude's SIGTERM handler can flush one
+  // last line to the jsonl, and the CLI opens it `O_APPEND|O_CREAT`, so a
+  // post-`rmSync` write re-creates the file at the same path. SIGKILL is
+  // unmaskable — once the kernel delivers it, the process can't write again.
+  // We then block briefly until every targeted pid is reaped before deleting,
+  // and wipe a second time as belt-and-braces.
   shutdownTempSync() {
+    const temps = [];
     for (const inst of this.byId.values()) {
       if (!inst.temp) continue;
+      temps.push(inst);
       if (inst.proc && inst.pid) {
-        try { process.kill(inst.pid, 'SIGTERM'); } catch { /* gone */ }
+        try { process.kill(inst.pid, 'SIGKILL'); } catch { /* gone */ }
       }
-      if (!inst.sessionId) continue;
-      const dir = path.join(claudeProjectsRoot(), encodeCwd(inst.cwd));
-      try { rmSync(path.join(dir, `${inst.sessionId}.jsonl`), { force: true }); } catch { /* ignore */ }
-      try { rmSync(path.join(dir, inst.sessionId), { recursive: true, force: true }); } catch { /* ignore */ }
     }
+
+    // Bounded sync wait for the SIGKILLed processes to actually be reaped.
+    // Atomics.wait is Node's only non-spinning sync sleep primitive.
+    const sab = new Int32Array(new SharedArrayBuffer(4));
+    const deadline = Date.now() + 300;
+    while (Date.now() < deadline) {
+      let allDead = true;
+      for (const inst of temps) {
+        if (!inst.pid) continue;
+        try { process.kill(inst.pid, 0); allDead = false; break; }
+        catch { /* ESRCH = gone */ }
+      }
+      if (allDead) break;
+      Atomics.wait(sab, 0, 0, 20);
+    }
+
+    const wipe = () => {
+      for (const inst of temps) {
+        if (!inst.sessionId) continue;
+        const dir = path.join(claudeProjectsRoot(), encodeCwd(inst.cwd));
+        try { rmSync(path.join(dir, `${inst.sessionId}.jsonl`), { force: true }); } catch { /* ignore */ }
+        try { rmSync(path.join(dir, inst.sessionId), { recursive: true, force: true }); } catch { /* ignore */ }
+      }
+    };
+    wipe();
+    Atomics.wait(sab, 0, 0, 30);
+    wipe();
   }
 }

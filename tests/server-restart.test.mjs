@@ -134,3 +134,85 @@ test('POST /api/admin/restart respawns the server on the same port with a new pi
   // Grandchild process must be alive.
   assert.doesNotThrow(() => process.kill(grandchildPid, 0));
 });
+
+test('restart sweeps a pending-temp-cleanup manifest on the next boot', async (t) => {
+  // Regression: temp jsonls that survive the parent's in-process cleanup
+  // (e.g. orphaned subagent processes that recreate them after exit) must
+  // be wiped by the next boot. We plant a manifest + a fake jsonl before
+  // triggering restart, then assert both are gone after the grandchild
+  // comes up.
+  const port = await getFreePort();
+  const tmpHome = await fs.mkdtemp(path.join(os.tmpdir(), 'orch-restart-sweep-'));
+  const projectsRoot = path.join(tmpHome, 'project');
+  const claudeProjectsRoot = path.join(tmpHome, '.claude', 'projects');
+  await fs.mkdir(projectsRoot, { recursive: true });
+  await fs.mkdir(claudeProjectsRoot, { recursive: true });
+
+  // Pre-plant: fake jsonl + manifest pointing at it.
+  const fakeCwd = path.join(projectsRoot, 'sweep-target');
+  await fs.mkdir(fakeCwd, { recursive: true });
+  const sid = 'cafef00d-0000-0000-0000-000000000001';
+  const { encodeCwd } = await import('../src/projects.js');
+  const sessionDir = path.join(claudeProjectsRoot, encodeCwd(fakeCwd));
+  await fs.mkdir(sessionDir, { recursive: true });
+  const jsonl = path.join(sessionDir, `${sid}.jsonl`);
+  const subagents = path.join(sessionDir, sid);
+  await fs.writeFile(jsonl, '{"type":"user","uuid":"x"}\n');
+  await fs.mkdir(subagents, { recursive: true });
+
+  const storeDir = path.join(projectsRoot, '.code-conductor');
+  await fs.mkdir(storeDir, { recursive: true });
+  const manifest = path.join(storeDir, 'pending-temp-cleanup.json');
+  await fs.writeFile(manifest, JSON.stringify({
+    writtenAt: new Date().toISOString(),
+    entries: [{ cwd: fakeCwd, sessionId: sid }],
+  }));
+
+  const captured = { stdout: '', stderr: '' };
+  const child = spawnServer(port, tmpHome);
+  child.stdout.setEncoding('utf8');
+  child.stderr.setEncoding('utf8');
+  child.stdout.on('data', (c) => { captured.stdout += c; });
+  child.stderr.on('data', (c) => { captured.stderr += c; });
+
+  let grandchildPid = null;
+  t.after(async () => {
+    if (grandchildPid) { try { process.kill(grandchildPid, 'SIGTERM'); } catch {} }
+    if (!child.killed) { try { child.kill('SIGTERM'); } catch {} }
+    await new Promise(r => setTimeout(r, 100));
+    if (grandchildPid) { try { process.kill(grandchildPid, 'SIGKILL'); } catch {} }
+    await fs.rm(tmpHome, { recursive: true, force: true });
+  });
+
+  await waitForListening(port);
+
+  // The initial boot already swept the planted manifest. Re-plant before
+  // restart so the restarted process is the one we're asserting against.
+  // (Order doesn't actually matter for correctness — either boot path is
+  // valid — but doing it this way exercises the restart-then-sweep flow.)
+  await fs.writeFile(jsonl, '{"type":"user","uuid":"x"}\n');
+  await fs.mkdir(subagents, { recursive: true });
+  await fs.writeFile(manifest, JSON.stringify({
+    writtenAt: new Date().toISOString(),
+    entries: [{ cwd: fakeCwd, sessionId: sid }],
+  }));
+
+  await fetch(`http://127.0.0.1:${port}/api/admin/restart`, { method: 'POST' }).catch(() => {});
+
+  await new Promise((resolve) => {
+    if (child.exitCode != null || child.signalCode != null) return resolve();
+    child.once('exit', resolve);
+    setTimeout(resolve, 5_000);
+  });
+
+  const m = captured.stdout.match(/restart: spawned replacement pid=(\d+)/);
+  assert.ok(m, `no restart pid log\nstdout=${captured.stdout}`);
+  grandchildPid = Number(m[1]);
+
+  await waitForListening(port, { timeout: 8_000 });
+
+  // Grandchild boot should have swept the planted manifest + jsonl.
+  await assert.rejects(() => fs.access(jsonl), 'temp jsonl must be swept');
+  await assert.rejects(() => fs.access(subagents), 'temp subagents dir must be swept');
+  await assert.rejects(() => fs.access(manifest), 'manifest must be unlinked');
+});
