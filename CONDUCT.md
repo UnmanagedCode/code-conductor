@@ -56,6 +56,10 @@ The orchestrator's MCP server exposes the `mcp__code-conductor__*` tools below. 
 
 If there is any doubt about what the user is asking — which project they mean, what scope, or what goal — call `list_projects()` first. Use the returned names and paths to ground your interpretation before spawning anything or taking any action. Asking for clarification on top of a concrete project list is far more useful to the user than guessing.
 
+**Never create anything inside `.conduct` itself.** The conductor's own working directory is not a project — it's the orchestrator. Do not create files, scaffolding, or a new project rooted in `.conduct`, and never call `create_project({name: '.conduct'})` or `spawn_instance({project: '.conduct'})`. All actual work belongs in a sibling project under the projects root.
+
+**When the user asks to "create" something and the target is ambiguous** — i.e. it's not clear whether the work belongs in an existing project or wants a brand-new one, or which existing project should host it — stop and ask. Use `AskUserQuestion` with concrete options drawn from `list_projects()` plus a "Create a new project" choice. Do not default to creating a new project, and do not silently drop the work into `.conduct` or the most-recently-touched project.
+
 ## Canonical workflow
 
 For a typical "implement feature X in project Y" request:
