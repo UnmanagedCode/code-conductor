@@ -13,21 +13,48 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
+import { getTranscribeModel } from './appSettings.js';
+import { modelFileName, DEFAULT_MODEL } from './whisperModels.js';
+
+// Root of the whisper.cpp install. INSTALL_ROOT mirrors the knob honoured by
+// bin/install-whisper.sh, so the server and the installer agree on where the
+// binary + models live (and tests can point both at a temp dir).
+export function whisperRoot() {
+  const home = process.env.HOME || os.homedir();
+  return path.join(process.env.INSTALL_ROOT || path.join(home, '.code-conductor'), 'whisper.cpp');
+}
+
+export function modelsDir() {
+  return path.join(whisperRoot(), 'models');
+}
+
+export function modelPathForName(name) {
+  return path.join(modelsDir(), modelFileName(name));
+}
 
 function defaultPaths() {
-  const home = process.env.HOME || os.homedir();
   return {
-    cli: path.join(home, '.code-conductor', 'whisper.cpp', 'build', 'bin', 'whisper-cli'),
-    model: path.join(home, '.code-conductor', 'whisper.cpp', 'models', 'ggml-small.en-q5_1.bin'),
+    cli: path.join(whisperRoot(), 'build', 'bin', 'whisper-cli'),
+    model: modelPathForName(DEFAULT_MODEL),
     ffmpeg: 'ffmpeg',
   };
+}
+
+// Resolve the active model path. Priority: WHISPER_MODEL env (an explicit
+// absolute path) → the model chosen in Settings (persisted in settings.json)
+// → the built-in default. The latter two derive a path under modelsDir().
+function resolveModelPath() {
+  if (process.env.WHISPER_MODEL) return process.env.WHISPER_MODEL;
+  const chosen = getTranscribeModel();
+  if (chosen) return modelPathForName(chosen);
+  return modelPathForName(DEFAULT_MODEL);
 }
 
 export function whisperPaths() {
   const d = defaultPaths();
   return {
     cli: process.env.WHISPER_CLI || d.cli,
-    model: process.env.WHISPER_MODEL || d.model,
+    model: resolveModelPath(),
     ffmpeg: process.env.FFMPEG_BIN || d.ffmpeg,
   };
 }

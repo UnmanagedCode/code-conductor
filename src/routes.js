@@ -17,7 +17,12 @@ import {
 } from './worktrees.js';
 import { scheduleRestart } from './restart.js';
 import { ensureConductProject, CONDUCT_PROJECT_NAME } from './conduct.js';
-import { isAvailable as transcribeAvailable, transcribe } from './transcribe.js';
+import {
+  isAvailable as transcribeAvailable, transcribe, modelPathForName,
+} from './transcribe.js';
+import { WHISPER_MODELS, isKnownModel, DEFAULT_MODEL } from './whisperModels.js';
+import { getTranscribeModel, setTranscribeModel } from './appSettings.js';
+import * as whisperInstall from './whisperInstall.js';
 import { setTitle as setSessionTitle, MAX_TITLE_LEN } from './sessionTitles.js';
 
 const CONTENT_TYPE_BY_EXT = {
@@ -641,6 +646,58 @@ export function buildRoutes({ instances, serverCtx } = {}) {
       const text = await transcribe(req.body);
       res.json({ text });
     } catch (e) { next(e); }
+  });
+
+  // Settings → Transcribe group. Reports the curated model catalog (with
+  // per-model on-disk presence), the active model, and lets the UI switch
+  // models / kick off an install of whisper.cpp + a chosen model.
+  async function transcribeSettingsState() {
+    // The model the server would actually use (see resolveModelPath): the
+    // explicit choice, else the built-in default.
+    const active = getTranscribeModel() || DEFAULT_MODEL;
+    const models = await Promise.all(WHISPER_MODELS.map(async (m) => {
+      let installed = false;
+      try { installed = (await fs.stat(modelPathForName(m.name))).isFile(); } catch { /* missing */ }
+      return { ...m, installed };
+    }));
+    return {
+      available: await transcribeAvailable(),
+      activeModel: active,
+      models,
+      install: whisperInstall.status(),
+    };
+  }
+
+  r.get('/settings/transcribe', async (req, res, next) => {
+    try { res.json(await transcribeSettingsState()); } catch (e) { next(e); }
+  });
+
+  r.post('/settings/transcribe/model', async (req, res, next) => {
+    try {
+      const model = req.body?.model;
+      if (!isKnownModel(model)) {
+        throw Object.assign(new Error('unknown model'), { statusCode: 400 });
+      }
+      let onDisk = false;
+      try { onDisk = (await fs.stat(modelPathForName(model))).isFile(); } catch { /* missing */ }
+      if (!onDisk) {
+        throw Object.assign(new Error('model not installed — install it first'), { statusCode: 400 });
+      }
+      await setTranscribeModel(model);
+      res.json(await transcribeSettingsState());
+    } catch (e) { next(e); }
+  });
+
+  r.post('/settings/transcribe/install', async (req, res, next) => {
+    try {
+      const result = whisperInstall.start(req.body?.model);
+      if (!result.started) return res.status(409).json({ ok: false, running: true });
+      res.json({ ok: true, started: true });
+    } catch (e) { next(e); }
+  });
+
+  r.get('/settings/transcribe/install/status', (req, res) => {
+    res.json(whisperInstall.status());
   });
 
   r.use((err, req, res, _next) => {
