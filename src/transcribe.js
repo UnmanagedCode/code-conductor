@@ -18,7 +18,7 @@ function defaultPaths() {
   const home = process.env.HOME || os.homedir();
   return {
     cli: path.join(home, '.code-conductor', 'whisper.cpp', 'build', 'bin', 'whisper-cli'),
-    model: path.join(home, '.code-conductor', 'whisper.cpp', 'models', 'ggml-large-v3.bin'),
+    model: path.join(home, '.code-conductor', 'whisper.cpp', 'models', 'ggml-small.en-q5_1.bin'),
     ffmpeg: 'ffmpeg',
   };
 }
