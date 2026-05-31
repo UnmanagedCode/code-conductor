@@ -329,7 +329,10 @@ const settings = installSettings({
 dom.settingsBtn?.addEventListener('click', () => {
   closeSidebarOverflow();
   if (location.hash === '#settings') settings.close();
-  else settings.open();
+  else {
+    setSidebarOpen(false);
+    settings.open();
+  }
 });
 
 dom.modeSelect.addEventListener('change', async () => {
