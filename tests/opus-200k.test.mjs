@@ -1,7 +1,7 @@
 // "Opus 200k mode" — the orchestrator-only `[200k]` suffix that strips
-// to a bare `claude-opus-4-7` on the wire *and* injects
+// to a bare `claude-opus-4-8` on the wire *and* injects
 // CLAUDE_CODE_DISABLE_1M_CONTEXT=1 into the spawn env (the only knob
-// the CLI actually honours for downgrading Opus 4.7 to 200k).
+// the CLI actually honours for downgrading Opus 4.8 to 200k).
 //
 // Also asserts the [1m] suffix is passed through unchanged (CLI-native).
 
@@ -52,35 +52,35 @@ function modelFromArgv(argv) {
 }
 
 test('Opus [200k] strips the suffix on the wire and sets CLAUDE_CODE_DISABLE_1M_CONTEXT=1', async () => {
-  const { argv, env, ctx, id } = await spawnAndDump('claude-opus-4-7[200k]');
+  const { argv, env, ctx, id } = await spawnAndDump('claude-opus-4-8[200k]');
   try {
-    assert.equal(modelFromArgv(argv), 'claude-opus-4-7',
+    assert.equal(modelFromArgv(argv), 'claude-opus-4-8',
       '--model must be the bare identifier; the CLI does not understand [200k]');
     assert.equal(env.CLAUDE_CODE_DISABLE_1M_CONTEXT, '1',
-      'spawn env must set the disable flag — it is the only way to actually get 200k from Opus 4.7');
+      'spawn env must set the disable flag — it is the only way to actually get 200k from Opus 4.8');
     // The orchestrator-tracked model retains the synthetic suffix so the
     // UI's contextWindowFor mapping still resolves to 200k.
-    assert.equal(ctx.instances.get(id).model, 'claude-opus-4-7[200k]');
+    assert.equal(ctx.instances.get(id).model, 'claude-opus-4-8[200k]');
   } finally {
     await ctx.close();
   }
 });
 
 test('Opus [1m] is passed through unchanged (CLI-native suffix) and does NOT set the disable flag', async () => {
-  const { argv, env, ctx, id } = await spawnAndDump('claude-opus-4-7[1m]');
+  const { argv, env, ctx, id } = await spawnAndDump('claude-opus-4-8[1m]');
   try {
-    assert.equal(modelFromArgv(argv), 'claude-opus-4-7[1m]',
+    assert.equal(modelFromArgv(argv), 'claude-opus-4-8[1m]',
       '--model must keep the [1m] suffix — the CLI parses it via Oh3()');
     assert.ok(!('CLAUDE_CODE_DISABLE_1M_CONTEXT' in env),
       'the disable flag must not leak into the env when picking the 1M variant');
-    assert.equal(ctx.instances.get(id).model, 'claude-opus-4-7[1m]');
+    assert.equal(ctx.instances.get(id).model, 'claude-opus-4-8[1m]');
   } finally {
     await ctx.close();
   }
 });
 
-test('Bare claude-opus-4-7 (which is 1M by default per CLI) does not set the disable flag', async () => {
-  const { env, ctx } = await spawnAndDump('claude-opus-4-7');
+test('Bare claude-opus-4-8 (which is 1M by default per CLI) does not set the disable flag', async () => {
+  const { env, ctx } = await spawnAndDump('claude-opus-4-8');
   try {
     assert.ok(!('CLAUDE_CODE_DISABLE_1M_CONTEXT' in env),
       'bare model name leaves env alone; CLI will use its 1M default');

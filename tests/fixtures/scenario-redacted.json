@@ -1,6 +1,6 @@
 {
   "events": [
-    { "type": "system", "subtype": "init", "session_id": "$SID", "cwd": "$CWD", "model": "claude-opus-4-7", "permissionMode": "$MODE" }
+    { "type": "system", "subtype": "init", "session_id": "$SID", "cwd": "$CWD", "model": "claude-opus-4-8", "permissionMode": "$MODE" }
   ],
   "turns": [
     {

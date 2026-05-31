@@ -182,7 +182,7 @@ export class Parser {
         }
         if (block.type === 'thinking') {
           if (!block.gotThinkingDelta) {
-            // No thinking_delta arrived — the model (e.g. Opus 4.7) thought
+            // No thinking_delta arrived — the model (e.g. Opus 4.7/4.8) thought
             // but the content is encrypted/redacted; only signature_delta
             // streamed. Surface a placeholder so the UI can show something.
             return [

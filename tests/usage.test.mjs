@@ -30,14 +30,14 @@ test('UsageTracker: initial state has no current size or totals', async () => {
 test('UsageTracker: system/init captures model authoritatively', async () => {
   const { UsageTracker } = await import(USAGE_URL);
   const t = new UsageTracker();
-  t.apply({ kind: 'system', subtype: 'init', data: { model: 'claude-opus-4-7[1m]' } });
-  assert.equal(t.effectiveModel(), 'claude-opus-4-7[1m]');
+  t.apply({ kind: 'system', subtype: 'init', data: { model: 'claude-opus-4-8[1m]' } });
+  assert.equal(t.effectiveModel(), 'claude-opus-4-8[1m]');
 });
 
 test('UsageTracker: turn_end accumulates cum but does NOT touch lastUsage', async () => {
   const { UsageTracker } = await import(USAGE_URL);
   const t = new UsageTracker();
-  t.apply({ kind: 'system', subtype: 'init', data: { model: 'claude-opus-4-7[1m]' } });
+  t.apply({ kind: 'system', subtype: 'init', data: { model: 'claude-opus-4-8[1m]' } });
   // turn_end.usage is the per-turn SUM across every agent-loop LLM
   // call (e.g. 100 tool calls each reading 74k cached → 7.4M). Feeding
   // it as "current context size" inflates the chip wildly. Verify the
@@ -151,7 +151,7 @@ test('UsageTracker: missing usage fields default to 0', async () => {
 test('UsageTracker: reset clears everything', async () => {
   const { UsageTracker } = await import(USAGE_URL);
   const t = new UsageTracker();
-  t.apply({ kind: 'system', subtype: 'init', data: { model: 'claude-opus-4-7' } });
+  t.apply({ kind: 'system', subtype: 'init', data: { model: 'claude-opus-4-8' } });
   t.apply({ kind: 'turn_end', cost: 1, usage: { input_tokens: 42 } });
   t.reset();
   assert.equal(t.currentContextSize(), null);
@@ -174,12 +174,12 @@ test('UsageTracker: ignores unrelated event kinds', async () => {
 
 test('contextWindowFor: known models and unknown fallback', async () => {
   const { contextWindowFor } = await import(USAGE_URL);
-  // Opus 4.7's default is 1M — the CLI ships it that way; only the
+  // Opus 4.7/4.8 default is 1M — the CLI ships it that way; only the
   // CLAUDE_CODE_DISABLE_1M_CONTEXT env flag downgrades it. The
   // orchestrator-only [200k] suffix maps back to 200k.
-  assert.equal(contextWindowFor('claude-opus-4-7'), 1_000_000);
-  assert.equal(contextWindowFor('claude-opus-4-7[1m]'), 1_000_000);
-  assert.equal(contextWindowFor('claude-opus-4-7[200k]'), 200_000);
+  assert.equal(contextWindowFor('claude-opus-4-8'), 1_000_000);
+  assert.equal(contextWindowFor('claude-opus-4-8[1m]'), 1_000_000);
+  assert.equal(contextWindowFor('claude-opus-4-8[200k]'), 200_000);
   // Sonnet 4.6 default is 200k; [1m] is the CLI-native opt-in.
   assert.equal(contextWindowFor('claude-sonnet-4-6'), 200_000);
   assert.equal(contextWindowFor('claude-sonnet-4-6[1m]'), 1_000_000);
@@ -256,8 +256,8 @@ async function setupDOM() {
 test('DOM: tracker drives chip-class transitions across thresholds', async () => {
   const { document, UsageTracker, fillClass, formatPct } = await setupDOM();
   const tracker = new UsageTracker();
-  tracker.apply({ kind: 'system', subtype: 'init', data: { model: 'claude-opus-4-7[1m]' } });
-  const model = 'claude-opus-4-7[1m]'; // 1M context
+  tracker.apply({ kind: 'system', subtype: 'init', data: { model: 'claude-opus-4-8[1m]' } });
+  const model = 'claude-opus-4-8[1m]'; // 1M context
 
   function chipClassNow() {
     return fillClass(tracker.currentFillPct(model));

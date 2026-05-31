@@ -563,7 +563,7 @@ test('DOM: kept system events render inline in chronological order (no shared __
   // Simulate two turns: each emits an init, and we want them at their
   // chronological positions, NOT both bunched into one box at the top.
   const stream1 = [
-    { type: 'system', subtype: 'init', session_id: 'sid', model: 'claude-opus-4-7', uuid: 'i1' },
+    { type: 'system', subtype: 'init', session_id: 'sid', model: 'claude-opus-4-8', uuid: 'i1' },
     { type: 'stream_event', event: { type: 'message_start', message: { id: 'm1', role: 'assistant' } } },
     { type: 'stream_event', event: { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } } },
     { type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'first' } } },
@@ -572,7 +572,7 @@ test('DOM: kept system events render inline in chronological order (no shared __
     { type: 'result', subtype: 'success', stop_reason: 'end_turn', duration_ms: 1, total_cost_usd: 0 },
   ];
   const stream2 = [
-    { type: 'system', subtype: 'init', session_id: 'sid', model: 'claude-opus-4-7', uuid: 'i2' },
+    { type: 'system', subtype: 'init', session_id: 'sid', model: 'claude-opus-4-8', uuid: 'i2' },
     { type: 'stream_event', event: { type: 'message_start', message: { id: 'm2', role: 'assistant' } } },
     { type: 'stream_event', event: { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } } },
     { type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'second' } } },
@@ -1138,7 +1138,7 @@ test('DOM: sub-agent (Task) drill-down groups its own consecutive assistant turn
 });
 
 test('DOM: redacted thinking renders as a non-expandable "thinking (redacted)" line', async () => {
-  // Opus 4.7 emits a thinking block carrying only a signature_delta — no
+  // Opus 4.7/4.8 emits a thinking block carrying only a signature_delta — no
   // thinking content. The parser emits thinking_redacted followed by
   // thinking_end. The UI must show a single static line, NOT a collapsible
   // <details> that opens to reveal the placeholder sentence (the previous

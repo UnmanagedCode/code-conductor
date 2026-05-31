@@ -379,7 +379,7 @@ test('parser: non-synthetic assistant message does not emit text events', () => 
       id: 'msg_01ABC',
       role: 'assistant',
       type: 'message',
-      model: 'claude-opus-4-7',
+      model: 'claude-opus-4-8',
       content: [{ type: 'text', text: 'hello world' }],
     },
     parent_tool_use_id: null,
