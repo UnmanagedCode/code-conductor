@@ -938,7 +938,7 @@ body.lightbox-open { overflow: hidden; }
   display: flex; align-items: center; justify-content: center;
   background: var(--accent); color: #0a0c12;
   border-color: var(--accent); font-weight: 600;
-  /* Suppress the long-press text-selection / callout on hold-to-record. */
+  /* Suppress long-press text-selection / OS callout in mic/recording mode. */
   touch-action: none; user-select: none; -webkit-user-select: none;
 }
 #composer-send:hover:not(:disabled) { background: #8cb9ff; border-color: #8cb9ff; }

@@ -1,9 +1,9 @@
 // DOM-level tests for the merged Send/mic composer button.
 //
 // The Send button is content-driven (WhatsApp-style): an empty composer with
-// whisper installed turns it into a hold-to-record mic; any text/attachment
-// makes it a Send button. Recording uses press-and-hold (Pointer Events) and
-// inserts the transcript at the caret for review.
+// an active session shows a mic affordance; any text/attachment makes it a
+// Send button. Recording uses tap-toggle (first tap starts, second tap stops
+// and transcribes) and inserts the transcript at the caret for review.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -99,7 +99,15 @@ test('empty composer with whisper available → mic mode, enabled', async () => 
   composer.set({ canType: true, canSend: true });
   composer.setMicAvailable(true);
   assert.ok(sendBtn.classList.contains('mode-mic'), 'should be mic mode');
-  assert.equal(sendBtn.disabled, false, 'mic button is enabled to allow holding');
+  assert.equal(sendBtn.disabled, false, 'mic button enabled when whisper available');
+});
+
+test('empty composer with whisper unavailable → mic mode, disabled (mic affordance shown but not tappable)', async () => {
+  const { sendBtn, composer } = await setupComposer();
+  composer.set({ canType: true, canSend: true });
+  // setMicAvailable not called → micAvailable stays false.
+  assert.ok(sendBtn.classList.contains('mode-mic'), 'mic affordance still shown');
+  assert.equal(sendBtn.disabled, true, 'disabled until whisper is installed');
 });
 
 test('typing flips mic → send mode; clearing flips back', async () => {
@@ -116,27 +124,21 @@ test('typing flips mic → send mode; clearing flips back', async () => {
   assert.ok(sendBtn.classList.contains('mode-mic'), 'cleared → back to mic mode');
 });
 
-test('whisper unavailable + empty → disabled Send (no mic)', async () => {
-  const { sendBtn, composer } = await setupComposer();
-  composer.set({ canType: true, canSend: true });
-  // setMicAvailable not called → micAvailable stays false.
-  assert.ok(sendBtn.classList.contains('mode-send'), 'no mic affordance');
-  assert.equal(sendBtn.disabled, true, 'empty Send is disabled, as before');
-});
-
-test('hold-to-record: pointerdown records, pointerup transcribes and inserts text', async () => {
+test('tap-toggle: first click starts recording, second click transcribes and inserts text', async () => {
   const { sendBtn, textarea, composer, calls, fire, flush } = await setupComposer({ transcribeText: 'hello world' });
   composer.set({ canType: true, canSend: true });
   composer.setMicAvailable(true);
 
-  fire(sendBtn, 'pointerdown');
+  // First tap → start recording
+  fire(sendBtn, 'click');
   await flush();
   assert.equal(calls.getUserMedia, 1, 'requested the mic');
   assert.ok(sendBtn.classList.contains('recording'), 'recording visual on');
 
-  fire(sendBtn, 'pointerup');
+  // Second tap → stop recording → transcribe
+  fire(sendBtn, 'click');
   await flush();
-  assert.equal(calls.recorderStops, 1, 'recorder stopped on release');
+  assert.equal(calls.recorderStops, 1, 'recorder stopped on second tap');
   assert.equal(calls.fetch.length, 1, 'posted audio once');
   assert.equal(calls.fetch[0].url, '/api/transcribe');
   assert.equal(textarea.value, 'hello world', 'transcript inserted into composer');
@@ -156,13 +158,13 @@ test('send mode: click submits the typed message and clears the composer', async
   assert.equal(textarea.value, '', 'composer cleared after send');
 });
 
-test('pointerdown in send mode does not record (click handles send)', async () => {
+test('click in send mode does not record', async () => {
   const { sendBtn, composer, calls, typeInto, fire, flush } = await setupComposer();
   composer.set({ canType: true, canSend: true });
   composer.setMicAvailable(true);
 
   typeInto('already typed');
-  fire(sendBtn, 'pointerdown');
+  fire(sendBtn, 'click');
   await flush();
   assert.equal(calls.getUserMedia, 0, 'no recording started in send mode');
   assert.ok(!sendBtn.classList.contains('recording'));

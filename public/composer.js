@@ -59,11 +59,6 @@ export function attachComposer({ form, textarea, sendBtn, attachBtn, fileInput, 
   let mediaRecorder = null;
   let mediaStream = null;
   let recordedChunks = [];
-  // True between pointerdown and pointerup/cancel/leave on the Send button —
-  // lets startRecording() bail if the press was released before getUserMedia
-  // (which prompts for permission on first use) resolved.
-  let holding = false;
-
   // True once dictation has contributed to the current draft, so the message
   // gets a leading <transcribed> tag at send time. Reset on send, on prefill,
   // and whenever the composer is emptied (so a cleared-then-retyped draft
@@ -81,14 +76,14 @@ export function attachComposer({ form, textarea, sendBtn, attachBtn, fileInput, 
 
   // Single source of truth for the Send/mic button's mode, label, icon,
   // enabled state, and title. Mode is content-driven (WhatsApp-style):
-  // empty + whisper installed → mic (hold-to-record); otherwise → Send.
+  // empty + session active → mic (tap-to-toggle); otherwise → Send.
   function updateButton() {
     const hasContent = textarea.value.trim().length > 0 || pending.some(p => !p.error);
     let mode;
     if (recordingState === 'recording') mode = 'recording';
     else if (recordingState === 'transcribing') mode = 'transcribing';
     else if (hasContent) mode = 'send';
-    else if (micAvailable && canType) mode = 'mic';
+    else if (canType) mode = 'mic';
     else mode = 'send';
 
     sendBtn.classList.toggle('mode-mic', mode === 'mic');
@@ -98,13 +93,15 @@ export function attachComposer({ form, textarea, sendBtn, attachBtn, fileInput, 
 
     if (mode === 'recording') {
       sendBtn.disabled = false;
-      sendBtn.title = 'Recording — release to transcribe';
+      sendBtn.title = 'Recording — tap to stop and transcribe';
     } else if (mode === 'transcribing') {
       sendBtn.disabled = true;
       sendBtn.title = 'Transcribing…';
     } else if (mode === 'mic') {
-      sendBtn.disabled = false;
-      sendBtn.title = 'Hold to record — release to transcribe (local Whisper)';
+      sendBtn.disabled = !micAvailable;
+      sendBtn.title = micAvailable
+        ? 'Tap to start recording — tap again to stop and transcribe'
+        : 'Install Whisper to enable voice dictation (Settings → Transcribe)';
     } else {
       sendBtn.disabled = !canSend || !hasContent;
       sendBtn.title = 'Send message';
@@ -283,9 +280,6 @@ export function attachComposer({ form, textarea, sendBtn, attachBtn, fileInput, 
     });
     mediaRecorder.start();
     setMicState('recording');
-    // The press may have been released while getUserMedia was still prompting
-    // for permission — stop immediately so the held-gesture contract holds.
-    if (!holding) stopRecording();
   }
 
   function stopRecording() {
@@ -323,33 +317,29 @@ export function attachComposer({ form, textarea, sendBtn, attachBtn, fileInput, 
     }
   }
 
-  // Whether the button is currently acting as a hold-to-record mic (empty
+  // Whether the button is currently acting as a tap-to-record mic (empty
   // composer, whisper installed, not already mid-recording/transcribing).
   function inMicMode() {
     return sendBtn.classList.contains('mode-mic') && recordingState === 'idle';
   }
 
-  // Press-and-hold on the Send button records while empty; a plain click
-  // sends while there's content. Pointer Events cover both Android touch
-  // (the primary target) and mouse with one path.
+  // Suppress long-press text-selection / callout on Android when the button
+  // is in mic or recording mode (no hold gesture needed for tap-toggle, but
+  // the OS still fires long-press on a sustained finger contact).
   sendBtn.addEventListener('pointerdown', (e) => {
-    if (!inMicMode()) return; // let click() handle the send case
-    e.preventDefault();        // suppress focus-steal / long-press selection
-    holding = true;
-    void startRecording();
+    if (inMicMode() || recordingState === 'recording') e.preventDefault();
   });
-  const endHold = () => {
-    holding = false;
-    if (recordingState === 'recording') stopRecording();
-  };
-  sendBtn.addEventListener('pointerup', endHold);
-  sendBtn.addEventListener('pointercancel', endHold);
-  sendBtn.addEventListener('pointerleave', endHold);
 
+  // Tap-toggle: first tap starts recording, second tap stops and transcribes.
+  // A plain click sends when there's content; transcribing clicks are ignored.
   sendBtn.addEventListener('click', () => {
-    // Only the send case acts on click. The click that trails a hold-release
-    // lands here in mic/transcribing mode and is ignored (no content yet).
-    if (sendBtn.classList.contains('mode-send') && !sendBtn.disabled) form.requestSubmit();
+    if (sendBtn.classList.contains('mode-send') && !sendBtn.disabled) {
+      form.requestSubmit();
+    } else if (inMicMode()) {
+      void startRecording();
+    } else if (recordingState === 'recording') {
+      stopRecording();
+    }
   });
 
   textarea.addEventListener('keydown', (e) => {
