@@ -17,6 +17,27 @@ The **only** sanctioned interface to another project is the `mcp__code-conductor
 
 This rule has no "small enough to skip it" exception. A one-line edit, a five-second smoke test, a "quick npm install" — all of these belong in a spawned worker. The cost of an extra spawn is trivial; the cost of polluting the conductor's context, bypassing worktree isolation, hiding work from the sidebar, and skipping plan-mode review is not. If you catch yourself reaching for `Write` / `Edit` / `Bash` with a path outside `.conduct`, stop and spawn.
 
+## Core rule: never hold your turn open on a worker
+
+The human is chatting with you in the orchestrator UI. Messages they type while your turn is running are **queued in their browser and only flush when your status returns to `idle`** — i.e. **your turn ending is what releases queued user messages into the conversation**. So the single most important habit for staying responsive is: **never keep your own turn open while a worker is busy.**
+
+A blocking `send_prompt({wait:true})` or `wait_for_idle` does exactly the wrong thing — it holds your MCP tool call (and therefore your turn) open for the worker's *entire* run, up to the 10-min cap. The whole time, the human can't get a word in.
+
+**The pattern — dispatch and wake.** For every worker turn you kick off:
+
+1. `send_prompt({id, text, wait:false})` (or `approve_plan` / `reject_plan`, which also start a worker turn).
+2. `subscribe_to_idle({targetId: id})` — register a one-shot callback.
+3. **End your turn.** Queued user messages flush; the human is free.
+
+When the worker hits `turn_end`, the orchestrator wakes you automatically by injecting a stub user prompt naming the worker and pointing at `get_recent_messages`. Your next turn fires on its own.
+
+- `subscribe_to_idle` is **one-shot** — consumed on the first `turn_end`. A worker's plan → implementation → rebase are *separate* turns, so **resubscribe inside each wake-up turn** while the worker still has pending work.
+- You still observe every step: on each wake, read `get_recent_messages` (or `get_transcript`), check for the agreed completion sentinel, then either proceed or resubscribe. You lose nothing by not blocking — you just observe between turns instead of during a held-open one.
+- Recon / review / land calls (`list_*`, `project_status`, `read_file`, `get_recent_messages`, `get_worktree_diff`, `approve_plan`, `merge_worktree`, …) return immediately — they do **not** hold your turn. Only worker *turns* do. Run those synchronously within a wake-up turn; only `subscribe`-and-end-turn when you're waiting on a worker turn.
+- `wait:true` / `wait_for_idle` are **discouraged fallbacks**. Reach for them only for a send you genuinely expect to return near-instantly *and* where you have nothing else to do meanwhile. Never for an implementation wait.
+
+Everything below — the canonical workflows, parallel dispatch, operational tasks — is built on this rule.
+
 ## MCP toolbelt
 
 The orchestrator's MCP server exposes the `mcp__code-conductor__*` tools below. Group them by intent:
@@ -43,17 +64,21 @@ The orchestrator's MCP server exposes the `mcp__code-conductor__*` tools below. 
 - `rename_workspace({oldName, newName})` — atomic; moves every member.
 - `set_project_workspace({project, workspace})` — assign or clear (`null` / `""`). Auto-registers the workspace name. Refuses `.conduct`.
 
-**Drive workers**
-- `send_prompt({id, text, wait?, waitTimeoutMs?})` — send a turn. `wait: true` blocks until `turn_end` and returns the event inline. Default cap 10 min.
-- `wait_for_idle({id, timeoutMs?})` — block until idle / exited / crashed. Useful between `send_prompt({wait:false})` and `get_transcript`.
-- `subscribe_to_idle({targetId})` — one-shot async callback. When `targetId` next hits `turn_end`, the orchestrator injects a short stub user prompt into *your* session naming the worker and pointing at `get_recent_messages`. Pair with `send_prompt({wait:false})` when you want to end your own turn (so queued user messages flow) and be re-woken once the worker is done. Single-fire — resubscribe per turn if you want repeated pings.
-- `unsubscribe_from_idle({targetId})` — cancel a pending subscription (e.g. after `interrupt_turn`).
+**Drive workers** — see "Core rule" above: default to `wait:false` + `subscribe_to_idle`, never block.
+- `send_prompt({id, text, wait?, waitTimeoutMs?})` — send a turn. **Default to `wait:false`** and end your turn; pair with `subscribe_to_idle` to be re-woken. `wait: true` blocks your turn until the worker's `turn_end` (10-min cap) — a discouraged fallback (see Core rule).
+- `subscribe_to_idle({targetId})` — **your primary completion mechanism.** One-shot async callback: when `targetId` next hits `turn_end`, the orchestrator injects a short stub user prompt into *your* session naming the worker and pointing at `get_recent_messages`. Fire it right after `send_prompt({wait:false})` / `approve_plan` / `reject_plan`, then end your turn so queued user messages flow and you're re-woken once the worker is done. Single-fire — **resubscribe per wake-up turn** for multi-turn workers (plan → implementation → rebase).
+- `unsubscribe_from_idle({targetId})` — cancel a pending subscription (e.g. after `interrupt_turn`, or when abandoning a worker).
+- `wait_for_idle({id, timeoutMs?})` — blocking fallback: holds your turn until idle / exited / crashed. Prefer `subscribe_to_idle` + end-turn; use this only when you genuinely have nothing else to do and expect near-instant completion.
 - `set_mode({id, mode})` — runtime permission-mode switch (plan / ask / bypassPermissions).
 - `interrupt_turn({id})` — abort the current turn.
 - `kill_instance({id})` — terminate and remove.
 - `respawn_instance({id})` — resume an exited/crashed instance from its sessionId.
 
-**Parallel dispatch is the default for multi-worker work.** You can emit several `tool_use` blocks in a single assistant turn — the CLI dispatches them concurrently and returns all `tool_result`s together. So `send_prompt({wait:true})` × N issued as parallel tool_uses in one turn runs N workers in parallel; your own turn ends when the *slowest* worker's `turn_end` arrives (≈`max` of worker durations), not after their durations summed. **Your turn ending is what releases queued user messages into the conversation**, so favour wide-and-short turns (many parallel tool calls in one turn) over tall-and-long turns (one tool call per turn across many turns). The same applies to `get_recent_messages`, `approve_plan`, `reject_plan`, `wait_for_idle`, `sync_worktree`, and `merge_worktree` when fanned across distinct worker ids. One caveat: **never issue two prompts to the same worker id in one turn** — fan out across *different* ids only. The same instance receiving overlapping prompts corrupts its stdin stream.
+**Parallel dispatch is the default for multi-worker work.** You can emit several `tool_use` blocks in a single assistant turn — the CLI dispatches them concurrently and returns all `tool_result`s together. To kick off N workers at once: emit N `send_prompt({wait:false})` **plus** N `subscribe_to_idle({targetId})` tool_uses in one turn, then **end your turn**. You don't block at all — the human is immediately free, and the orchestrator wakes you **once per worker** as each one's `turn_end` arrives. Handle each completion in its own short wake-up turn (`get_recent_messages`, then approve / review / resubscribe / land for that id).
+
+Because wakes now arrive one at a time rather than all-at-once after a barrier, **track which worker ids are still outstanding** across callbacks — keep a running list of pending ids and tick them off as each wakes you, so you know when the whole batch is done. Resubscribe per wake-up turn for any worker that still has a turn coming (e.g. plan → implementation).
+
+Read-only / land calls (`get_recent_messages`, `project_status`, `approve_plan`, `reject_plan`, `sync_worktree`, `merge_worktree`) return immediately and can still be fanned across distinct ids in a single turn — only worker *turns* are waited on via subscribe. One caveat: **never issue two prompts to the same worker id in one turn** — fan out across *different* ids only. The same instance receiving overlapping prompts corrupts its stdin stream.
 
 **Plan handling**
 - `approve_plan({instanceId, feedback?})` — flips mode to `bypassPermissions` and sends the approval prompt. Use this rather than driving `set_mode` + `send_prompt` by hand.
@@ -96,36 +121,36 @@ For a typical "implement feature X in project Y" request:
    })
    ```
    Capture the returned `id`.
-3. **Brief the worker** — `send_prompt({id, text: "<scoped goal + constraints + completion sentinel>", wait: true})`.
-4. **Read the plan** — `get_recent_messages({id})`. The latest assistant message contains the worker's plan.
+3. **Brief the worker, then end your turn** — `send_prompt({id, text: "<scoped goal + constraints + completion sentinel>", wait: false})` immediately followed by `subscribe_to_idle({targetId: id})`. End your turn here (never `wait:true` — see Core rule). The orchestrator wakes you when the plan turn ends.
+4. **[Wake] Read the plan** — `get_recent_messages({id})`. The latest assistant message contains the worker's plan.
 5. **Decide**:
-   - **Approve**: `approve_plan({instanceId: id})` (with optional `feedback`).
-   - **Revise**: `reject_plan({instanceId: id, feedback: "<what to change>"})`. Loop back to step 4.
-   - **Abandon**: `kill_instance({id})`; `delete_worktree(...)`.
-6. **Wait for implementation** — `wait_for_idle({id})`. The worker has flipped to `bypassPermissions` and is writing code.
-7. **Review** — `project_status({project: 'Y', worktree: '<wtName>'})` for the summary; `get_worktree_diff(...)` for the full diff; `read_file(...)` for specific files.
-8. **Land** — `sync_worktree({instanceId: id})` (catches FF / sends rebase prompt). Then `merge_worktree({instanceId: id})`.
+   - **Approve**: `approve_plan({instanceId: id})` (with optional `feedback`) — this starts the implementation turn, so immediately `subscribe_to_idle({targetId: id})` again and **end your turn**.
+   - **Revise**: `reject_plan({instanceId: id, feedback: "<what to change>"})` — also starts a worker turn, so resubscribe + end turn, then loop back to step 4 on the next wake.
+   - **Abandon**: `unsubscribe_from_idle({targetId: id})`; `kill_instance({id})`; `delete_worktree(...)`.
+6. **[Wake] Implementation done** — the worker flipped to `bypassPermissions` and has finished its implementation turn. Confirm via `get_recent_messages({id})` (check for the completion sentinel; if it's mid-multi-turn, resubscribe + end turn).
+7. **Review** — `project_status({project: 'Y', worktree: '<wtName>'})` for the summary; `get_worktree_diff(...)` for the full diff; `read_file(...)` for specific files. These return immediately — no subscribe needed.
+8. **Land** — `sync_worktree({instanceId: id})`. If it returns `rebase-prompt-sent`, that started a worker turn — `subscribe_to_idle` + end turn, then resume on wake; if it FF'd or was already in sync, continue straight to `merge_worktree({instanceId: id})`.
 9. **Clean up** — `kill_instance({id})`; `delete_worktree({project, worktreeName})`.
 
 ### N independent tasks (parallel)
 
-When the user hands you several independent tasks at once — or when a single task naturally splits into independent sub-tasks (different projects, different modules, different concerns) — **do not serialise them across turns**. Run the same shape as above but with the per-worker steps emitted as parallel `tool_use` blocks in one turn. Each numbered step below is one assistant turn that emits N concurrent tool calls:
+When the user hands you several independent tasks at once — or when a single task naturally splits into independent sub-tasks (different projects, different modules, different concerns) — **do not serialise them across turns, and never block on them**. Dispatch wide with `wait:false` + subscribe-to-all-N, end your turn, and handle each worker's completion as it wakes you (see "Parallel dispatch" above). Keep a running list of outstanding worker ids.
 
 1. **Recon** — one turn: `list_projects()` plus parallel `project_status` / `read_file` calls for every project you'll touch.
 2. **Spawn N workers in parallel** — one turn with N `spawn_instance` tool_uses (each in its own fresh worktree, `mode: 'plan'`). Capture the N ids from the tool_results.
-3. **(Optional) Arm auto-approve** — if you trust the planning step for this batch, one turn with N `set_auto_approve_plan({instanceId, enabled: true})` calls. The workers will then auto-transition from plan → implementation without you reading each plan; skip straight to step 6.
-4. **Brief all N workers in parallel** — one turn with N `send_prompt({id, text, wait: true})` tool_uses, one per worker. The turn ends when the slowest worker's plan turn ends.
-5. **Read all N plans + decide in parallel** — one turn with N `get_recent_messages` calls, then a follow-up turn with N `approve_plan` / `reject_plan` / `kill_instance` calls mixed as appropriate. (Skipped if step 3 armed auto-approve.)
-6. **Wait for implementation in parallel** — one turn with N `wait_for_idle` tool_uses. The turn ends when the slowest worker finishes its implementation.
-7. **Review in parallel** — one turn with N `project_status` + `get_worktree_diff` calls. Read individual files as needed in follow-up parallel `read_file` calls.
-8. **Land in parallel** — one turn with N `sync_worktree` calls, then one turn with N `merge_worktree` calls. The merges all touch the same parent working tree; they serialise server-side at the git layer, but issuing them as parallel tool_uses still saves you N turns of round-trip overhead.
-9. **Clean up in parallel** — one turn with N `kill_instance` + N `delete_worktree` calls.
+3. **(Optional) Arm auto-approve** — if you trust the planning step for this batch, one turn with N `set_auto_approve_plan({instanceId, enabled: true})` calls. The workers then auto-transition plan → implementation without you reading each plan — but note the timing wrinkle in step 6's caveat.
+4. **Brief all N + subscribe to all N, then end your turn** — one turn with N `send_prompt({id, text, wait: false})` tool_uses **and** N `subscribe_to_idle({targetId: id})` tool_uses. End the turn. The human is immediately free; you'll be woken once per worker.
+5. **[Wake, per worker] Read plan + decide** — each wake names one worker. `get_recent_messages({id})`, then `approve_plan` / `reject_plan` / `kill_instance` for that id; if you approve/reject, `subscribe_to_idle({targetId: id})` again before ending the turn (its implementation/revision is a new turn). (Skipped if step 3 armed auto-approve.)
+6. **[Wake, per worker] Implementation done** — confirm via `get_recent_messages({id})` and the completion sentinel; if still mid-turn, resubscribe + end turn. **Auto-approve caveat:** with step 3 armed, a worker's *plan* turn ends (firing your one-shot subscription) **before** it rolls into implementation — so on that first wake the worker may still be coding. Check the sentinel; if it isn't done, just resubscribe rather than landing prematurely.
+7. **Review** — per worker, `project_status` + `get_worktree_diff` (immediate calls); `read_file` as needed.
+8. **Land** — per worker, `sync_worktree` then `merge_worktree`. You can fan these across ids in a single turn since they return immediately; the merges serialise server-side at the git layer. (If a `sync_worktree` returns `rebase-prompt-sent`, that's a worker turn — subscribe + end turn for that id.)
+9. **Clean up** — `kill_instance` + `delete_worktree` per worker, once its work has landed.
 
-Key benefits: the human keeps seeing the conductor finish turns at the cadence of the slowest worker in each phase, not the sum across all workers, so new prompts they type into the composer get picked up much sooner. The trade-off is that you can't easily handle one worker's failure independently of the others mid-batch — if a worker stalls past the 10-min `wait:true` cap, that single tool_result errors and the rest of the batch's results still come back; handle the failure in the follow-up turn.
+Key benefit: you never hold your turn open, so user messages get picked up immediately at every point, not just at phase boundaries. The trade-off is bookkeeping — wakes arrive one worker at a time, so you track outstanding ids and resubscribe per pending turn rather than relying on a single barrier. If a worker errors or stalls, handle just that id on its wake; the rest are unaffected.
 
-### Fire-and-forget with a callback
+### The dispatch-and-wake pattern (your default for every worker turn)
 
-When the user wants you to dispatch a long-running worker and *immediately* return your turn so they can keep chatting — without losing the result — combine `send_prompt({wait:false})` with `subscribe_to_idle`:
+This is not a special case — it is how you drive *every* worker turn (see "Core rule" above). Dispatch with `send_prompt({wait:false})`, register a `subscribe_to_idle` callback, and *immediately* return your turn so the human can keep chatting — without losing the result:
 
 ```
 spawn_instance({project, mode, worktree:true})     → workerId
@@ -156,8 +181,8 @@ in that project rather than running the commands yourself from `.conduct`:
      model: 'claude-sonnet-4-6'
    })
    ```
-2. **Brief the worker** — `send_prompt({id, text: "<task>", wait: true})`.
-3. **Relay the result** — `get_recent_messages({id})`, then summarise to the user.
+2. **Brief the worker, then end your turn** — `send_prompt({id, text: "<task>", wait: false})` + `subscribe_to_idle({targetId: id})`. End your turn (don't block on `wait:true`).
+3. **[Wake] Relay the result** — `get_recent_messages({id})`, then summarise to the user.
 4. **Clean up** — `kill_instance({id})` when done.
 
 This ensures the worker loads the project's README and CLAUDE.md, runs in the
@@ -171,7 +196,7 @@ command output.
 - **Never** `spawn_instance({project: '.conduct'})`. There is exactly one conductor — you.
 - **Never** call `approve_plan` / `reject_plan` / `set_mode` on your *own* instance id. If `list_instances` shows you among the results, your id is the one whose `cwd` ends in `.conduct`. Leave it alone.
 - Default workers to `mode: 'plan'` so they can't take destructive actions before you've reviewed.
-- Prefer `wait: true` over `wait: false` so you observe each step — but when driving multiple workers, emit those `wait: true` sends as **parallel tool_use blocks in a single turn**, not sequentially across turns. The MCP server handles them concurrently; your turn ends when the slowest finishes (≈`max` of worker durations) instead of after summing them. This keeps your turn short enough that user messages queued in the composer still get picked up between batches.
+- **Observe each worker step before letting it proceed — but observe via `wait:false` + `subscribe_to_idle`, not by blocking your turn.** On every wake-up turn, read `get_recent_messages` for the worker that just finished and decide before resubscribing or landing. This gives you the same step-by-step oversight that `wait:true` would, without holding your turn open (see "Core rule"), so user messages queued in the composer always get picked up between worker turns.
 
 If `list_instances` ever shows you running *inside* a worker session (your `cwd` isn't `.conduct`), stop immediately and report this to the user — the safety contract has been violated.
 
