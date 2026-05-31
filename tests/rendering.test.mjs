@@ -1308,3 +1308,33 @@ test('DOM: assistant text re-renders as Markdown + autolinks on text_end', async
   // Trailing sentence punctuation must remain outside the anchor.
   assert.match(textBlock.textContent, /here\.$/);
 });
+
+test('DOM: transcribed user message strips the marker and shows mic badge', async () => {
+  const { root, Conversation } = await setupDOM();
+  const conversation = new Conversation(root);
+  conversation.apply({ kind: 'user_echo', text: '<transcribed>\nfix the login bug', attachments: [] });
+
+  const userMsg = root.querySelector('.msg.user');
+  assert.ok(userMsg, 'user bubble rendered');
+
+  const badge = userMsg.querySelector('.transcribed-badge');
+  assert.ok(badge, '.transcribed-badge element present');
+  assert.equal(badge.getAttribute('title'), 'Transcribed from voice');
+  assert.equal(badge.textContent, '🎤');
+
+  const textBlock = userMsg.querySelector('.block.text');
+  assert.ok(textBlock, 'text block present');
+  assert.equal(textBlock.textContent, 'fix the login bug', 'marker stripped from displayed text');
+  assert.ok(!textBlock.textContent.includes('<transcribed>'), 'literal <transcribed> not visible');
+});
+
+test('DOM: plain (non-transcribed) user message has no mic badge', async () => {
+  const { root, Conversation } = await setupDOM();
+  const conversation = new Conversation(root);
+  conversation.apply({ kind: 'user_echo', text: 'hello', attachments: [] });
+
+  const userMsg = root.querySelector('.msg.user');
+  assert.ok(userMsg, 'user bubble rendered');
+  assert.equal(userMsg.querySelector('.transcribed-badge'), null, 'no badge on plain message');
+  assert.equal(userMsg.querySelector('.block.text').textContent, 'hello');
+});
