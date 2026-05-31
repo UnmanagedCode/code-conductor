@@ -64,6 +64,7 @@ export function attachComposer({ form, textarea, sendBtn, attachBtn, fileInput, 
   // and whenever the composer is emptied (so a cleared-then-retyped draft
   // doesn't inherit a stale tag).
   let hasTranscript = false;
+  let wakeLock = null;
 
   function setState({ canType: ct, canSend: cs }) {
     canType = ct; canSend = cs;
@@ -240,7 +241,19 @@ export function attachComposer({ form, textarea, sendBtn, attachBtn, fileInput, 
   // idle → recording → transcribing → idle. The merged Send/mic button only
   // offers the mic affordance when the composer is empty and whisper is
   // installed; updateButton() owns the visuals. We never auto-record.
+  async function acquireWakeLock() {
+    if (!navigator.wakeLock) return;
+    try { wakeLock = await navigator.wakeLock.request('screen'); } catch { /* unavailable */ }
+  }
+  function releaseWakeLock() {
+    if (!wakeLock) return;
+    try { wakeLock.release(); } catch { /* ignore */ }
+    wakeLock = null;
+  }
+
   function setMicState(next) {
+    if (next === 'recording') void acquireWakeLock();
+    else if (next === 'idle') releaseWakeLock();
     recordingState = next;
     updateButton();
   }
@@ -374,6 +387,10 @@ export function attachComposer({ form, textarea, sendBtn, attachBtn, fileInput, 
     hasTranscript = false;
     clearAttachments();
     refreshSendEnabled();
+  });
+
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && recordingState !== 'idle') void acquireWakeLock();
   });
 
   autoGrow();
