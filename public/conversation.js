@@ -3,7 +3,7 @@
 // replays don't duplicate prior content.
 
 import { TextBlock, ThinkingBlock, ToolUseBlock, ToolResultBlock, SystemBlock, TurnEndBlock,
-  UserQuestionBlock, PlanRequestBlock, PermissionRequestBlock, ImageBlock,
+  TaskCompletionBlock, UserQuestionBlock, PlanRequestBlock, PermissionRequestBlock, ImageBlock,
   shouldRenderSystem, el } from './blocks.js';
 
 function renderFileChip(a) {
@@ -176,6 +176,10 @@ export class Conversation {
       case 'tool_use_input_delta': this._renderToolInputDelta(ev); break;
       case 'tool_use':       this._renderToolFinal(ev); break;
       case 'tool_result':    this._renderToolResult(ev); break;
+      case 'task_completion':
+        this.root.appendChild(new TaskCompletionBlock(ev).node);
+        this._maybeScroll();
+        break;
       case 'system':
         if (ev.subtype === 'history_replayed') { this._renderHistoryDivider(ev); break; }
         if (!shouldRenderSystem(ev)) break; // drop status/rate_limit/etc. noise

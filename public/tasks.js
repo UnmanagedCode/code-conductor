@@ -24,6 +24,10 @@ export class TaskTracker {
     // Renames + description edits are recorded too.
     this._infoHistory = new Map();
     this._listeners = new Set();
+    // Snapshots of fully-completed batches, appended in order. Each entry is
+    // { tasks: [{id, subject, ...}] }. Rebuilt from the same replayed task
+    // events as this.tasks, so it survives page reload / snapshot replay.
+    this.completedBatches = [];
   }
 
   // Public lookups for the tool-block renderer. Returns the most
@@ -46,6 +50,7 @@ export class TaskTracker {
     this.tasks.clear();
     this._pendingCreates.clear();
     this._infoHistory.clear();
+    this.completedBatches = [];
     this._notify();
   }
 
@@ -80,10 +85,16 @@ export class TaskTracker {
           return;
         }
         if (!t) return;
+        const wasVisible = this.isVisible();
         if (typeof input.subject === 'string') t.subject = input.subject;
         if (typeof input.description === 'string') t.description = input.description;
         if (typeof input.activeForm === 'string') t.activeForm = input.activeForm;
         if (typeof input.status === 'string') t.status = input.status;
+        // Detect the transition from "some tasks incomplete" → "all done":
+        // snapshot the batch so the conversation can show a permanent record.
+        if (wasVisible && !this.isVisible() && this.tasks.size > 0) {
+          this.completedBatches.push({ tasks: this.list() });
+        }
         this._notify();
         return;
       }
