@@ -397,21 +397,20 @@ test('get_recent_messages reads the most recent assistant text from the ring', a
 
     // Before any turn — no assistant content yet.
     const before = unwrap(await callTool(ctx.baseUrl, 'get_recent_messages', { id: spawn.id }));
-    assert.equal(before.text, '');
-    assert.equal(before.msgId, null);
+    assert.equal(before.messages.length, 0);
 
     // First turn: text "First " + Bash tool_use.
     await callTool(ctx.baseUrl, 'send_prompt', { id: spawn.id, text: 'one', wait: true, waitTimeoutMs: 5000 });
     const first = unwrap(await callTool(ctx.baseUrl, 'get_recent_messages', { id: spawn.id }));
-    assert.equal(first.text, 'First ');
-    assert.equal(first.hasToolUse, true);
-    assert.ok(first.blocks.some(b => b.type === 'tool_use' && b.name === 'Bash'));
+    assert.equal(first.messages[0].text, 'First ');
+    assert.equal(first.messages[0].hasToolUse, true);
+    assert.ok(first.messages[0].blocks.some(b => b.type === 'tool_use' && b.name === 'Bash'));
 
     // Second turn: just text "Second!" — should now be the latest.
     await callTool(ctx.baseUrl, 'send_prompt', { id: spawn.id, text: 'two', wait: true, waitTimeoutMs: 5000 });
     const second = unwrap(await callTool(ctx.baseUrl, 'get_recent_messages', { id: spawn.id }));
-    assert.equal(second.text, 'Second!');
-    assert.notEqual(second.msgId, first.msgId);
+    assert.equal(second.messages[0].text, 'Second!');
+    assert.notEqual(second.messages[0].msgId, first.messages[0].msgId);
 
     // count:2 returns both turns, oldest-first.
     const both = unwrap(await callTool(ctx.baseUrl, 'get_recent_messages', { id: spawn.id, count: 2 }));
@@ -419,9 +418,6 @@ test('get_recent_messages reads the most recent assistant text from the ring', a
     assert.equal(both.messages[0].text, 'First ');
     assert.equal(both.messages[0].hasToolUse, true);
     assert.equal(both.messages[1].text, 'Second!');
-    // Top-level fields mirror the latest message.
-    assert.equal(both.msgId, both.messages[1].msgId);
-    assert.equal(both.text, 'Second!');
 
     // count larger than available — returns what's there.
     const cap = unwrap(await callTool(ctx.baseUrl, 'get_recent_messages', { id: spawn.id, count: 10 }));

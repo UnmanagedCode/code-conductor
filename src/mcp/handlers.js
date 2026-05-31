@@ -492,9 +492,7 @@ export async function createProject({ name, gitInit = false }) {
 // msgId, in stream order) plus structured blocks. Useful when a coordinating
 // agent just wants to read what the spawned agent said without parsing the
 // raw event stream. `count` defaults to 1 (last message only); clamped to
-// [1, 50]. The top-level `text`/`blocks`/`msgId`/`hasToolUse` fields mirror
-// the latest message for backward compatibility; `messages` is the full
-// list, oldest-first.
+// [1, 50]. Returns `{ id, messages }` — oldest-first.
 export async function getRecentMessages({ id, count }, { instances }) {
   const inst = getInst(instances, id);
   const ring = inst.ringSnapshot();
@@ -516,18 +514,7 @@ export async function getRecentMessages({ id, count }, { instances }) {
   }
   const orderedIds = reverseIds.reverse();
   const messages = orderedIds.map(msgId => buildMessageFromRing(ring, msgId));
-  if (messages.length === 0) {
-    return { id, msgId: null, text: '', blocks: [], messages: [] };
-  }
-  const latest = messages[messages.length - 1];
-  return {
-    id,
-    msgId: latest.msgId,
-    text: latest.text,
-    blocks: latest.blocks,
-    hasToolUse: latest.hasToolUse,
-    messages,
-  };
+  return { id, messages };
 }
 
 function buildMessageFromRing(ring, targetMsgId) {
