@@ -12,7 +12,7 @@ import { bootServer, api, waitFor } from './helpers.mjs';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO_WS = path.join(__dirname, 'fixtures', 'scenario-ws.json');
 
-test('ensureConductProject creates .conduct/ + seeds CLAUDE.md with two imports', async () => {
+test('ensureConductProject creates .conduct/ + seeds CLAUDE.md with @CONDUCT.md import and CONDUCT.md symlink', async () => {
   const ctx = await bootServer({ scenarioPath: SCENARIO_WS });
   try {
     const r = await api(ctx.baseUrl, 'POST', '/api/projects/.conduct/ensure');
@@ -22,25 +22,25 @@ test('ensureConductProject creates .conduct/ + seeds CLAUDE.md with two imports'
     assert.equal(r.body.claudeMdSeeded, true);
     assert.equal(r.body.path, path.join(ctx.projectsRoot, '.conduct'));
 
-    const stat = await fs.stat(path.join(ctx.projectsRoot, '.conduct'));
+    const conductDir = path.join(ctx.projectsRoot, '.conduct');
+    const stat = await fs.stat(conductDir);
     assert.ok(stat.isDirectory());
 
-    const claudeMd = await fs.readFile(
-      path.join(ctx.projectsRoot, '.conduct', 'CLAUDE.md'),
-      'utf8',
-    );
-    assert.match(claudeMd, /@\.\.\/CLAUDE\.md/, 'inherits workspace CLAUDE.md');
-    assert.match(claudeMd, /@.*CONDUCT\.md/, 'imports CONDUCT.md');
-    // CONDUCT.md import must be a *relative* path: Claude Code's @-imports
-    // in CLAUDE.md only expand relative paths, not absolute ones.
-    const conductLine = claudeMd.split('\n').find(l => l.startsWith('@') && l.endsWith('CONDUCT.md'));
-    assert.ok(conductLine, 'CONDUCT.md import line present');
-    assert.ok(!conductLine.startsWith('@/'), `expected relative path, got: ${conductLine}`);
-    // And it must actually resolve to the repo's CONDUCT.md from inside .conduct/.
-    const importPath = conductLine.slice(1);
-    const resolved = path.resolve(path.join(ctx.projectsRoot, '.conduct'), importPath);
-    const conductStat = await fs.stat(resolved);
-    assert.ok(conductStat.isFile(), `resolved CONDUCT.md path must exist: ${resolved}`);
+    // CLAUDE.md must be exactly the single in-project @CONDUCT.md import.
+    // External imports (e.g. `@../CLAUDE.md`, `@/abs/path/CONDUCT.md`)
+    // silently no-op in headless / `-p` mode, which is how every
+    // conductor session is spawned.
+    const claudeMd = await fs.readFile(path.join(conductDir, 'CLAUDE.md'), 'utf8');
+    assert.equal(claudeMd, '@CONDUCT.md\n');
+
+    // CONDUCT.md must be a symlink resolving to the repo's CONDUCT.md.
+    const symlinkPath = path.join(conductDir, 'CONDUCT.md');
+    const lstat = await fs.lstat(symlinkPath);
+    assert.ok(lstat.isSymbolicLink(), 'CONDUCT.md must be a symlink');
+    const real = await fs.realpath(symlinkPath);
+    const realStat = await fs.stat(real);
+    assert.ok(realStat.isFile(), `symlink target must exist: ${real}`);
+    assert.equal(path.basename(real), 'CONDUCT.md');
   } finally { await ctx.close(); }
 });
 
@@ -62,6 +62,11 @@ test('ensureConductProject is idempotent — second call leaves an existing CLAU
 
     const after = await fs.readFile(claudeMdPath, 'utf8');
     assert.equal(after, customContent, 'user edits preserved');
+
+    // Symlink survives the second ensure call.
+    const symlinkPath = path.join(ctx.projectsRoot, '.conduct', 'CONDUCT.md');
+    const lstat = await fs.lstat(symlinkPath);
+    assert.ok(lstat.isSymbolicLink(), 'CONDUCT.md symlink still present');
   } finally { await ctx.close(); }
 });
 
