@@ -919,6 +919,13 @@ body.lightbox-open { overflow: hidden; }
 }
 .task-row.task-in_progress .task-text { font-weight: 500; }
 
+.block.task-completion {
+  margin: 6px 0;
+  padding: 6px 14px;
+  border-left: 2px solid var(--accent);
+  opacity: 0.85;
+}
+
 #composer {
   display: flex; flex-direction: column; gap: 6px;
   padding: 10px 14px; border-top: 1px solid var(--border);

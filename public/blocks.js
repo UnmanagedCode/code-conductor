@@ -817,6 +817,22 @@ export class SystemBlock {
   }
 }
 
+export class TaskCompletionBlock {
+  constructor({ tasks }) {
+    const head = el('div', { class: 'task-panel-head' },
+      `Tasks · ${tasks.length}/${tasks.length} done`);
+    const ul = el('ul', { class: 'task-panel-list' });
+    for (const t of tasks) {
+      ul.appendChild(
+        el('li', { class: 'task-row task-completed' },
+          el('span', { class: 'task-marker' }, '✓'),
+          el('span', { class: 'task-text' }, t.subject))
+      );
+    }
+    this.node = el('div', { class: 'block task-completion' }, head, ul);
+  }
+}
+
 export class TurnEndBlock {
   constructor({ subtype, durationMs, cost, costDelta, usage, isError, stopReason }) {
     // costDelta is the actual cost of this turn; cost is the cumulative session total.

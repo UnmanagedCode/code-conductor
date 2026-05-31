@@ -206,6 +206,63 @@ test('TaskPanel renders rows, swaps active marker, hides when all completed (hap
   assert.equal(host.hidden, true);
 });
 
+test('completedBatches is empty initially and after reset()', () => {
+  const t = new TaskTracker();
+  assert.deepEqual(t.completedBatches, []);
+  feedCreate(t, { toolUseId: 'tu1', taskId: '1', subject: 'A' });
+  t.apply({ kind: 'tool_use', name: 'TaskUpdate', toolUseId: 'u1', input: { taskId: '1', status: 'completed' } });
+  assert.equal(t.completedBatches.length, 1);
+  t.reset();
+  assert.deepEqual(t.completedBatches, []);
+});
+
+test('completedBatches records a snapshot when the last task flips to completed', () => {
+  const t = new TaskTracker();
+  feedCreate(t, { toolUseId: 'tu1', taskId: '1', subject: 'Task Alpha' });
+  feedCreate(t, { toolUseId: 'tu2', taskId: '2', subject: 'Task Beta' });
+  t.apply({ kind: 'tool_use', name: 'TaskUpdate', toolUseId: 'u1', input: { taskId: '1', status: 'completed' } });
+  assert.equal(t.completedBatches.length, 0, 'only one of two done — no snapshot yet');
+  t.apply({ kind: 'tool_use', name: 'TaskUpdate', toolUseId: 'u2', input: { taskId: '2', status: 'completed' } });
+  assert.equal(t.completedBatches.length, 1, 'snapshot recorded after last task done');
+  const snap = t.completedBatches[0].tasks;
+  assert.equal(snap.length, 2);
+  assert.equal(snap[0].subject, 'Task Alpha');
+  assert.equal(snap[1].subject, 'Task Beta');
+  assert.ok(snap.every(x => x.status === 'completed'));
+});
+
+test('completedBatches accumulates one entry per batch across multiple batches', () => {
+  const t = new TaskTracker();
+  // Batch 1
+  feedCreate(t, { toolUseId: 'a1', taskId: '1', subject: 'First' });
+  t.apply({ kind: 'tool_use', name: 'TaskUpdate', toolUseId: 'u1', input: { taskId: '1', status: 'completed' } });
+  assert.equal(t.completedBatches.length, 1);
+  // Batch 2
+  feedCreate(t, { toolUseId: 'a2', taskId: '2', subject: 'Second' });
+  feedCreate(t, { toolUseId: 'a3', taskId: '3', subject: 'Third' });
+  t.apply({ kind: 'tool_use', name: 'TaskUpdate', toolUseId: 'u2', input: { taskId: '2', status: 'completed' } });
+  t.apply({ kind: 'tool_use', name: 'TaskUpdate', toolUseId: 'u3', input: { taskId: '3', status: 'completed' } });
+  assert.equal(t.completedBatches.length, 2);
+  assert.equal(t.completedBatches[0].tasks[0].subject, 'First');
+  assert.equal(t.completedBatches[1].tasks.map(x => x.subject).join(','), 'Second,Third');
+});
+
+test('completedBatches snapshot is idempotent on replay (reset + re-apply)', () => {
+  const t = new TaskTracker();
+  const events = [
+    { kind: 'tool_use', name: 'TaskCreate', toolUseId: 'a', input: { subject: 'X' } },
+    { kind: 'tool_result', toolUseId: 'a', content: 'Task #1 created successfully: X', isError: false },
+    { kind: 'tool_use', name: 'TaskUpdate', toolUseId: 'b', input: { taskId: '1', status: 'completed' } },
+  ];
+  for (const ev of events) t.apply(ev);
+  assert.equal(t.completedBatches.length, 1);
+  // Simulate snapshot replay: reset then re-apply the same events.
+  t.reset();
+  for (const ev of events) t.apply(ev);
+  assert.equal(t.completedBatches.length, 1, 'exactly one batch after re-applying same events');
+  assert.equal(t.completedBatches[0].tasks[0].subject, 'X');
+});
+
 test('snapshot replay: feeding a long stream rebuilds state deterministically', () => {
   const t = new TaskTracker();
   const stream = [

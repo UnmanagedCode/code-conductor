@@ -1495,22 +1495,32 @@ bus.addEventListener('snapshot', (e) => {
   // — not just the active one — so the panel is correct the moment
   // the user flips to it. Same shape for the usage tracker so the
   // header chip lands populated when resuming a long historical session.
+  // For the active instance, tracker and conversation are stepped together
+  // so completed-batch records land inline at the right position.
   const tracker = getTracker(m.id);
   tracker.reset();
   const usage = getUsage(m.id);
   usage.reset();
+  const isActive = m.id === state.activeId;
+  if (isActive) conversation.clear();
   for (const ev of m.events ?? []) {
+    const prevCount = tracker.completedBatches.length;
     tracker.apply(ev);
     usage.apply(ev);
+    if (isActive) {
+      conversation.apply(ev);
+      if (tracker.completedBatches.length > prevCount) {
+        conversation.apply({ kind: 'task_completion',
+          tasks: tracker.completedBatches[tracker.completedBatches.length - 1].tasks });
+      }
+    }
   }
   // Mirror the server's auto-approve-plan flag into our local instance
   // entry so the header toggle reflects it correctly the moment a tab
   // subscribes (or re-subscribes after a session switch).
   const inst = state.instances.find(i => i.id === m.id);
   if (inst) inst.autoApprovePlan = !!m.autoApprovePlan;
-  if (m.id !== state.activeId) return;
-  conversation.clear();
-  conversation.applyEvents(m.events ?? []);
+  if (!isActive) return;
   updateActiveHeader();
   // Fork case: the newly-spawned instance's first snapshot is our cue to
   // prefill the composer with the dropped user prompt. (Rewind goes
@@ -1534,13 +1544,21 @@ bus.addEventListener('reset_snapshot', (e) => {
   tracker.reset();
   const usage = getUsage(m.id);
   usage.reset();
+  const isActive = m.id === state.activeId;
+  if (isActive) conversation.reset();
   for (const ev of m.events ?? []) {
+    const prevCount = tracker.completedBatches.length;
     tracker.apply(ev);
     usage.apply(ev);
+    if (isActive) {
+      conversation.apply(ev);
+      if (tracker.completedBatches.length > prevCount) {
+        conversation.apply({ kind: 'task_completion',
+          tasks: tracker.completedBatches[tracker.completedBatches.length - 1].tasks });
+      }
+    }
   }
-  if (m.id !== state.activeId) return;
-  conversation.reset();
-  conversation.applyEvents(m.events ?? []);
+  if (!isActive) return;
   updateActiveHeader();
   // Rewind carries the dropped prompt directly on the frame so the
   // composer is prefilled regardless of when the rewind HTTP response
@@ -1554,10 +1572,18 @@ bus.addEventListener('reset_snapshot', (e) => {
 
 bus.addEventListener('event', (e) => {
   const m = e.detail;
-  getTracker(m.id).apply(m.ev);
+  const tracker = getTracker(m.id);
+  const prevCount = tracker.completedBatches.length;
+  tracker.apply(m.ev);
   getUsage(m.id).apply(m.ev);
   if (m.id !== state.activeId) return;
   conversation.apply(m.ev);
+  // When the tracker records a newly-completed batch, append a permanent
+  // snapshot block into the conversation at this exact chronological point.
+  if (tracker.completedBatches.length > prevCount) {
+    conversation.apply({ kind: 'task_completion',
+      tasks: tracker.completedBatches[tracker.completedBatches.length - 1].tasks });
+  }
   // Refresh the header chip whenever data that affects it lands. init
   // sets the model, message_start gives a live mid-turn context-size
   // update (each agent-loop step fires its own with cumulative counts),
