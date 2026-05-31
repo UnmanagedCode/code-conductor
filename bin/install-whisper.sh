@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # One-shot installer for the composer's voice-dictation feature.
 # Builds whisper.cpp under ~/.code-conductor/whisper.cpp and downloads
-# the large-v3 model. Total disk cost ~3.2 GB (30 MB binary + ~3.1 GB model).
+# the quantized small English model. Total disk cost ~210 MB (30 MB binary + ~182 MB model).
 #
 # Re-run safely: clone is git pull on existing checkout, model download
 # script is idempotent.
@@ -10,7 +10,7 @@ set -euo pipefail
 
 INSTALL_ROOT="${INSTALL_ROOT:-$HOME/.code-conductor}"
 WHISPER_DIR="$INSTALL_ROOT/whisper.cpp"
-MODEL="${WHISPER_MODEL_NAME:-large-v3}"
+MODEL="${WHISPER_MODEL_NAME:-small.en-q5_1}"
 
 echo "==> Installing system deps (ffmpeg, clang, make, cmake, git)"
 if command -v pkg >/dev/null 2>&1; then
