@@ -28,6 +28,16 @@ function fmtSize(n) {
   return `${(n / 1024 / 1024).toFixed(1)} MB`;
 }
 
+// Prepend a <transcribed> marker tag to a message that includes dictated text,
+// so the receiving instance knows it contains speech-to-text that may have
+// transcription errors. Applied only at send time — the composer keeps the
+// dictated text plain while you edit it. No-op when there's no transcript or
+// the message is empty (e.g. an attachment-only send).
+export function prependTranscribedTag(text, hasTranscript) {
+  if (!hasTranscript || !text) return text;
+  return `<transcribed>\n${text}`;
+}
+
 export function attachComposer({ form, textarea, sendBtn, attachBtn, fileInput, chipsContainer, onSubmit }) {
   // Pending attachments, in the order the user added them. Each entry:
   //   { id, name, size, mediaType, isImage, dataBase64, objectUrl, error }
@@ -53,6 +63,12 @@ export function attachComposer({ form, textarea, sendBtn, attachBtn, fileInput, 
   // lets startRecording() bail if the press was released before getUserMedia
   // (which prompts for permission on first use) resolved.
   let holding = false;
+
+  // True once dictation has contributed to the current draft, so the message
+  // gets a leading <transcribed> tag at send time. Reset on send, on prefill,
+  // and whenever the composer is emptied (so a cleared-then-retyped draft
+  // doesn't inherit a stale tag).
+  let hasTranscript = false;
 
   function setState({ canType: ct, canSend: cs }) {
     canType = ct; canSend = cs;
@@ -97,6 +113,8 @@ export function attachComposer({ form, textarea, sendBtn, attachBtn, fileInput, 
   // Alias so the existing call sites keep reading naturally.
   const refreshSendEnabled = updateButton;
   textarea.addEventListener('input', updateButton);
+  // Clearing the composer by hand drops the transcribed-content marker.
+  textarea.addEventListener('input', () => { if (!textarea.value.trim()) hasTranscript = false; });
 
   function renderChips() {
     if (!chipsContainer) return;
@@ -296,6 +314,7 @@ export function attachComposer({ form, textarea, sendBtn, attachBtn, fileInput, 
         throw new Error(`HTTP ${res.status}: ${body.slice(0, 200)}`);
       }
       const { text } = await res.json();
+      if (text && text.trim()) hasTranscript = true;
       insertAtCursor(text);
     } catch (e) {
       alert(`Transcription failed: ${e.message || e}`);
@@ -350,8 +369,9 @@ export function attachComposer({ form, textarea, sendBtn, attachBtn, fileInput, 
     const attachments = ready.map(p => ({
       name: p.name, mediaType: p.mediaType, dataBase64: p.dataBase64,
     }));
-    onSubmit({ text, attachments });
+    onSubmit({ text: prependTranscribedTag(text, hasTranscript), attachments });
     textarea.value = '';
+    hasTranscript = false;
     clearAttachments();
     refreshSendEnabled();
   });
@@ -368,6 +388,7 @@ export function attachComposer({ form, textarea, sendBtn, attachBtn, fileInput, 
     // being re-sent.
     prefill(text) {
       clearAttachments();
+      hasTranscript = false;
       textarea.value = typeof text === 'string' ? text : '';
       // Move caret to end and focus — `focus()` is a no-op when the textarea
       // is disabled, which is fine: the user can still see the value, and
