@@ -1044,6 +1044,11 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
   #sidebar-toggle { display: block; }
   #sidebar-toggle[aria-expanded="true"] { display: none; }
   .settings-nav { display: none; }
+  .settings-content { padding: 10px 12px; }
+  .settings-header { margin-bottom: 8px; }
+  .st-status { margin: 8px 0; }
+  .st-model-list { max-width: none; margin: 8px 0; }
+  .st-model-row { padding: 8px 10px; }
 }
 
 /* In-progress marker pinned to the bottom of the chat pane while a

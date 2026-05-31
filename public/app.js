@@ -328,7 +328,7 @@ const settings = installSettings({
 });
 dom.settingsBtn?.addEventListener('click', () => {
   closeSidebarOverflow();
-  if (location.hash === '#settings') closeSettings();
+  if (location.hash === '#settings') settings.close();
   else settings.open();
 });
 
