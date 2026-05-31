@@ -100,7 +100,7 @@ export function buildTools() {
           mode: { type: 'string', enum: VALID_MODES, description: 'plan / ask / bypassPermissions. Defaults to plan (or bypassPermissions when temp:true).' },
           effort: { type: 'string', enum: VALID_EFFORTS },
           thinking: { type: 'string', enum: VALID_THINKING },
-          model: { type: 'string', description: 'e.g. claude-sonnet-4-6 / claude-opus-4-7 / claude-haiku-4-5. Empty/omitted uses account default.' },
+          model: { type: 'string', description: 'e.g. claude-sonnet-4-6 / claude-opus-4-8 / claude-haiku-4-5. Empty/omitted uses account default.' },
           resume: { type: 'string', description: 'Optional sessionId to resume (vs. spawning a fresh session).' },
           worktree: {
             type: ['boolean', 'string'],
