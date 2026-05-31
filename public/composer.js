@@ -28,7 +28,7 @@ function fmtSize(n) {
   return `${(n / 1024 / 1024).toFixed(1)} MB`;
 }
 
-export function attachComposer({ form, textarea, sendBtn, attachBtn, micBtn, fileInput, chipsContainer, onSubmit }) {
+export function attachComposer({ form, textarea, sendBtn, attachBtn, fileInput, chipsContainer, onSubmit }) {
   // Pending attachments, in the order the user added them. Each entry:
   //   { id, name, size, mediaType, isImage, dataBase64, objectUrl, error }
   const pending = [];
@@ -37,30 +37,66 @@ export function attachComposer({ form, textarea, sendBtn, attachBtn, micBtn, fil
   let canType = false;
   let canSend = false;
 
-  // Recording state for the mic button — declared up here because setState
-  // calls refreshMicEnabled before the dictation block below would otherwise
-  // initialise them. 'idle' | 'recording' | 'transcribing'.
+  // Whether the server has whisper.cpp + the model on disk. Flipped by
+  // app.js via setMicAvailable() once /api/transcribe/status resolves. When
+  // false, an empty composer just shows a disabled Send (no mic affordance).
+  let micAvailable = false;
+
+  // Recording state for the merged Send/mic button — declared up here because
+  // setState calls updateButton before the dictation block below would
+  // otherwise initialise them. 'idle' | 'recording' | 'transcribing'.
   let recordingState = 'idle';
   let mediaRecorder = null;
   let mediaStream = null;
   let recordedChunks = [];
+  // True between pointerdown and pointerup/cancel/leave on the Send button —
+  // lets startRecording() bail if the press was released before getUserMedia
+  // (which prompts for permission on first use) resolved.
+  let holding = false;
 
   function setState({ canType: ct, canSend: cs }) {
     canType = ct; canSend = cs;
     textarea.disabled = !ct;
     if (attachBtn) attachBtn.disabled = !ct;
     if (fileInput) fileInput.disabled = !ct;
-    refreshMicEnabled();
-    refreshSendEnabled();
+    updateButton();
   }
   setState({ canType: false, canSend: false });
 
-  function refreshSendEnabled() {
-    const hasText = textarea.value.trim().length > 0;
-    const hasAtt = pending.some(p => !p.error);
-    sendBtn.disabled = !canSend || (!hasText && !hasAtt);
+  // Single source of truth for the Send/mic button's mode, label, icon,
+  // enabled state, and title. Mode is content-driven (WhatsApp-style):
+  // empty + whisper installed → mic (hold-to-record); otherwise → Send.
+  function updateButton() {
+    const hasContent = textarea.value.trim().length > 0 || pending.some(p => !p.error);
+    let mode;
+    if (recordingState === 'recording') mode = 'recording';
+    else if (recordingState === 'transcribing') mode = 'transcribing';
+    else if (hasContent) mode = 'send';
+    else if (micAvailable && canType) mode = 'mic';
+    else mode = 'send';
+
+    sendBtn.classList.toggle('mode-mic', mode === 'mic');
+    sendBtn.classList.toggle('mode-send', mode === 'send');
+    sendBtn.classList.toggle('recording', mode === 'recording');
+    sendBtn.classList.toggle('transcribing', mode === 'transcribing');
+
+    if (mode === 'recording') {
+      sendBtn.disabled = false;
+      sendBtn.title = 'Recording — release to transcribe';
+    } else if (mode === 'transcribing') {
+      sendBtn.disabled = true;
+      sendBtn.title = 'Transcribing…';
+    } else if (mode === 'mic') {
+      sendBtn.disabled = false;
+      sendBtn.title = 'Hold to record — release to transcribe (local Whisper)';
+    } else {
+      sendBtn.disabled = !canSend || !hasContent;
+      sendBtn.title = 'Send message';
+    }
   }
-  textarea.addEventListener('input', refreshSendEnabled);
+  // Alias so the existing call sites keep reading naturally.
+  const refreshSendEnabled = updateButton;
+  textarea.addEventListener('input', updateButton);
 
   function renderChips() {
     if (!chipsContainer) return;
@@ -177,29 +213,13 @@ export function attachComposer({ form, textarea, sendBtn, attachBtn, micBtn, fil
     for (const f of files) await addFile(f);
   });
 
-  // ── Dictation (mic button) ──────────────────────────────────────────
-  // idle → recording → transcribing → idle. Mic is hidden by default in
-  // markup; app.js reveals it after /api/transcribe/status returns
-  // available:true. We never auto-record on mount; user must tap.
-  function refreshMicEnabled() {
-    if (!micBtn) return;
-    if (recordingState === 'transcribing') micBtn.disabled = true;
-    else if (recordingState === 'recording') micBtn.disabled = false;
-    else micBtn.disabled = !canType;
-  }
-
+  // ── Dictation (hold the Send button while the composer is empty) ──────
+  // idle → recording → transcribing → idle. The merged Send/mic button only
+  // offers the mic affordance when the composer is empty and whisper is
+  // installed; updateButton() owns the visuals. We never auto-record.
   function setMicState(next) {
     recordingState = next;
-    if (micBtn) {
-      micBtn.classList.toggle('recording', next === 'recording');
-      micBtn.classList.toggle('transcribing', next === 'transcribing');
-      micBtn.title = next === 'recording'
-        ? 'Recording — tap to stop and transcribe'
-        : next === 'transcribing'
-          ? 'Transcribing…'
-          : 'Dictate — tap to record, tap again to transcribe (local Whisper)';
-    }
-    refreshMicEnabled();
+    updateButton();
   }
 
   function insertAtCursor(text) {
@@ -245,6 +265,9 @@ export function attachComposer({ form, textarea, sendBtn, attachBtn, micBtn, fil
     });
     mediaRecorder.start();
     setMicState('recording');
+    // The press may have been released while getUserMedia was still prompting
+    // for permission — stop immediately so the held-gesture contract holds.
+    if (!holding) stopRecording();
   }
 
   function stopRecording() {
@@ -281,12 +304,34 @@ export function attachComposer({ form, textarea, sendBtn, attachBtn, micBtn, fil
     }
   }
 
-  if (micBtn) {
-    micBtn.addEventListener('click', () => {
-      if (recordingState === 'idle') void startRecording();
-      else if (recordingState === 'recording') stopRecording();
-    });
+  // Whether the button is currently acting as a hold-to-record mic (empty
+  // composer, whisper installed, not already mid-recording/transcribing).
+  function inMicMode() {
+    return sendBtn.classList.contains('mode-mic') && recordingState === 'idle';
   }
+
+  // Press-and-hold on the Send button records while empty; a plain click
+  // sends while there's content. Pointer Events cover both Android touch
+  // (the primary target) and mouse with one path.
+  sendBtn.addEventListener('pointerdown', (e) => {
+    if (!inMicMode()) return; // let click() handle the send case
+    e.preventDefault();        // suppress focus-steal / long-press selection
+    holding = true;
+    void startRecording();
+  });
+  const endHold = () => {
+    holding = false;
+    if (recordingState === 'recording') stopRecording();
+  };
+  sendBtn.addEventListener('pointerup', endHold);
+  sendBtn.addEventListener('pointercancel', endHold);
+  sendBtn.addEventListener('pointerleave', endHold);
+
+  sendBtn.addEventListener('click', () => {
+    // Only the send case acts on click. The click that trails a hold-release
+    // lands here in mic/transcribing mode and is ignored (no content yet).
+    if (sendBtn.classList.contains('mode-send') && !sendBtn.disabled) form.requestSubmit();
+  });
 
   textarea.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -314,6 +359,9 @@ export function attachComposer({ form, textarea, sendBtn, attachBtn, micBtn, fil
   return {
     set(state) { setState(state); },
     disable() { setState({ canType: false, canSend: false }); },
+    // app.js flips this on once /api/transcribe/status confirms whisper is
+    // installed; an empty composer then turns the Send button into a mic.
+    setMicAvailable(v) { micAvailable = !!v; updateButton(); },
     // Drop any pending attachments + set the textarea to `text`, leaving
     // the cursor at the end so the user can edit immediately. Used after
     // a rewind/fork so the discarded prompt is one keystroke away from

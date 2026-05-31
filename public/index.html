@@ -25,10 +25,12 @@
                     aria-haspopup="menu" aria-expanded="false"
                     title="More project actions">≡</button>
             <div id="sidebar-overflow-panel" class="overflow-panel" hidden role="menu">
-              <button id="new-project-btn" type="button" role="menuitem"
-                      title="Create a new project under ~/project/">+ New project</button>
               <button id="new-workspace-btn" type="button" role="menuitem"
                       title="Create a new workspace">+ New workspace</button>
+              <button id="new-project-btn" type="button" role="menuitem"
+                      title="Create a new project under ~/project/">+ New project</button>
+              <button id="settings-btn" type="button" role="menuitem"
+                      title="Open settings">⚙ Settings</button>
             </div>
           </div>
         </div>
@@ -85,10 +87,34 @@
           <textarea id="composer-input" placeholder="Send a message — Enter to send, Shift+Enter for newline" rows="2" disabled></textarea>
           <input id="composer-file" type="file" multiple hidden />
           <button id="composer-attach" type="button" class="composer-attach" title="Attach files (images or any file)" disabled><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg></button>
-          <button id="composer-mic" type="button" class="composer-mic" title="Dictate — tap to record, tap again to transcribe (local Whisper)" disabled hidden><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v2a7 7 0 0 0 14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg></button>
-          <button id="composer-send" type="submit" disabled>Send</button>
+          <button id="composer-send" type="button" class="composer-send" disabled><span class="cs-label">Send</span><svg class="cs-mic" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v2a7 7 0 0 0 14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg></button>
         </div>
       </form>
+      <section id="settings-view" hidden aria-label="Settings">
+        <nav class="settings-nav" aria-label="Settings groups">
+          <div class="settings-nav-title">Settings</div>
+          <button type="button" class="settings-nav-item active" data-group="transcribe">Transcribe</button>
+        </nav>
+        <div class="settings-content">
+          <header class="settings-header">
+            <h2 id="settings-group-title">Transcribe</h2>
+            <button id="settings-close" type="button" title="Close settings">✕ Close</button>
+          </header>
+          <div id="settings-transcribe" class="settings-group">
+            <p class="settings-desc">
+              Voice dictation (hold the composer's Send button while it's empty) runs whisper.cpp
+              locally on the server — no network, no API key. Install it and pick a model below.
+            </p>
+            <div id="st-status" class="st-status" aria-live="polite">Loading…</div>
+            <ul id="st-model-list" class="st-model-list"></ul>
+            <div class="st-actions">
+              <button id="st-install-btn" type="button" hidden>Install</button>
+              <span id="st-action-hint" class="st-action-hint"></span>
+            </div>
+            <pre id="st-install-log" class="st-install-log" hidden aria-live="polite"></pre>
+          </div>
+        </div>
+      </section>
     </main>
   </div>
 

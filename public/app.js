@@ -22,6 +22,7 @@ import {
 } from './anchor.js';
 import { installExternalLinkOpener } from './external-links.js';
 import { installLightbox } from './lightbox.js';
+import { installSettings } from './settings.js';
 
 const state = {
   projects: [],
@@ -38,7 +39,6 @@ const dom = {
   composerInput: document.getElementById('composer-input'),
   composerSend: document.getElementById('composer-send'),
   composerAttach: document.getElementById('composer-attach'),
-  composerMic: document.getElementById('composer-mic'),
   composerFile: document.getElementById('composer-file'),
   composerAttachments: document.getElementById('composer-attachments'),
   modeSelect: document.getElementById('mode-select'),
@@ -55,6 +55,7 @@ const dom = {
   npError: document.getElementById('np-error'),
   npPreview: document.getElementById('np-preview'),
   newWorkspaceBtn: document.getElementById('new-workspace-btn'),
+  settingsBtn: document.getElementById('settings-btn'),
   workspaceDialog: document.getElementById('workspace-dialog'),
   gdTitle: document.getElementById('gd-title'),
   gdName: document.getElementById('gd-name'),
@@ -289,7 +290,6 @@ const composer = attachComposer({
   textarea: dom.composerInput,
   sendBtn: dom.composerSend,
   attachBtn: dom.composerAttach,
-  micBtn: dom.composerMic,
   fileInput: dom.composerFile,
   chipsContainer: dom.composerAttachments,
   onSubmit: ({ text, attachments }) => {
@@ -300,18 +300,35 @@ const composer = attachComposer({
   },
 });
 
-// Reveal the mic button only when the server has whisper.cpp + the model
-// on disk. Done as a one-shot fetch — install state doesn't change at
-// runtime, and a missed reveal heals after a page reload.
+// Enable the Send button's hold-to-record mic affordance only when the
+// server has whisper.cpp + the model on disk. The Settings page can flip
+// availability at runtime (install / model switch), so this is also called
+// via onAvailabilityChange below.
+function setMicAvailable(available) {
+  composer.setMicAvailable(available);
+}
 (async () => {
-  if (!dom.composerMic) return;
   try {
     const r = await fetch('/api/transcribe/status', { cache: 'no-store' });
     if (!r.ok) return;
     const { available } = await r.json();
-    if (available) dom.composerMic.hidden = false;
-  } catch { /* leave hidden */ }
+    setMicAvailable(available);
+  } catch { /* leave mic disabled */ }
 })();
+
+// Settings page (full-page view at #settings). The burger-menu button routes
+// here; closing restores the previously-active session anchor.
+const settings = installSettings({
+  requestClose: () => {
+    const inst = state.instances.find(i => i.id === state.activeId);
+    writeSessionAnchor(inst?.sessionId || null);
+  },
+  onAvailabilityChange: setMicAvailable,
+});
+dom.settingsBtn?.addEventListener('click', () => {
+  closeSidebarOverflow();
+  settings.open();
+});
 
 dom.modeSelect.addEventListener('change', async () => {
   if (!state.activeId) return;
@@ -1585,7 +1602,7 @@ bus.addEventListener('open', async () => {
   // back if the user has since navigated elsewhere or closed the instance.
   if (firstConnect) {
     firstConnect = false;
-    if (!state.activeId) {
+    if (!state.activeId && location.hash !== '#settings') {
       // Prefer the URL hash; fall back to the stashed anchor that an
       // external-link click squirreled away in localStorage right before we
       // handed off to Chrome. Covers cold-relaunches where Android reaped the
