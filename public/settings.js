@@ -46,10 +46,12 @@ export function installSettings({ requestClose, onAvailabilityChange } = {}) {
     else hide();
   }
 
-  closeBtn?.addEventListener('click', () => {
-    if (typeof requestClose === 'function') requestClose();
-    else { location.hash = ''; }
-  });
+  function close() {
+    hide();
+    requestClose?.();
+  }
+
+  closeBtn?.addEventListener('click', () => { close(); });
 
   async function load() {
     try {
@@ -200,12 +202,9 @@ export function installSettings({ requestClose, onAvailabilityChange } = {}) {
 
   window.addEventListener('hashchange', sync);
   window.addEventListener('keydown', e => {
-    if (e.key === 'Escape' && isOpen) {
-      if (typeof requestClose === 'function') requestClose();
-      else location.hash = '';
-    }
+    if (e.key === 'Escape' && isOpen) close();
   });
   sync(); // honour an initial #settings on load
 
-  return { open: () => { location.hash = '#settings'; }, close: hide };
+  return { open: () => { location.hash = '#settings'; }, close };
 }
