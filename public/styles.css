@@ -927,7 +927,7 @@ body.lightbox-open { overflow: hidden; }
 #composer.drag-over { background: rgba(110, 168, 255, 0.08); }
 #composer .composer-row { display: flex; gap: 6px; align-items: stretch; }
 #composer textarea {
-  flex: 1; resize: none; min-height: 40px; max-height: 240px;
+  flex: 1; resize: none; min-height: 40px; max-height: 240px; overflow-y: hidden;
   font-family: ui-monospace, monospace; font-size: 13px;
 }
 #composer-attach {
