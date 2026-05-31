@@ -286,6 +286,8 @@ Project + worktree dirs stay clean — no per-project `.gitignore` plumbing need
 ### Testing
 All tests via `node tests/run.mjs` (programmatic node:test runner — Termux's glibc-runner wrapper hoists leading `--flags` into `NODE_OPTIONS` and refuses `--test`).
 
+Test **files run in parallel** (node:test `isolation:'process'` — one child process per file). The suite is isolation-safe: `bootServer` binds an ephemeral port (`listen(0)`) and `mkdtemp`s a unique home per server, so files never contend over ports or paths. Concurrency defaults to `min(4, cores/2)` — capped low on purpose because each file boots its own express+ws and spawns fake-claude subprocesses, so oversubscribing (e.g. one runner per core) is *slower* and risks tripping the timing-sensitive waits (control-request 5s, `waitFor` 4s). Override with `TEST_CONCURRENCY=<n>` (`1` = fully serial). Measured ~79s serial → ~29s at the default on an 8-core device.
+
 Default suite uses **fake-claude** (`tests/fake-claude.mjs`) via `CLAUDE_BIN`: silent until first stdin message, auto-acks `control_request`s, emits canned events from `FAKE_CLAUDE_SCENARIO`, matches `control_response`s so scenarios can branch on allow/deny. `FAKE_CLAUDE_ARGV_DUMP=<path>` captures launch argv.
 
 Opt-in real-claude smoke (`smoke.real.test.mjs`, `RUN_REAL_CLAUDE=1`): spawns the actual CLI, asserts `system/init` + ≥1 `text_delta` + non-error `turn_end`. Cleans the session jsonl on exit.
