@@ -504,6 +504,7 @@ input:focus, textarea:focus, select:focus { outline: 2px solid var(--accent); ou
 .msg.user { background: var(--panel-2); border-color: var(--accent); position: relative; }
 .msg.assistant { background: var(--panel); }
 .msg .role { font-size: 11px; text-transform: uppercase; color: var(--muted); margin-bottom: 6px; letter-spacing: .04em; }
+.transcribed-badge { display: inline-flex; align-items: center; font-size: 10px; padding: 1px 5px; margin-left: 6px; border-radius: 8px; background: var(--panel-2); color: var(--muted); vertical-align: middle; cursor: default; user-select: none; }
 .msg .blocks { display: flex; flex-direction: column; gap: 6px; }
 
 /* Hover-revealed rewind / fork affordances on user messages. Mirrors the

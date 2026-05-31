@@ -243,7 +243,14 @@ export class Conversation {
 
   _renderUserEcho(ev) {
     const blocks = el('div', { class: 'blocks' });
-    const text = ev.text ?? '';
+    let text = ev.text ?? '';
+
+    // Strip the <transcribed> marker for display — the agent still receives it
+    // in the sent payload so it knows the message came from speech-to-text.
+    const TRANSCRIBED_PREFIX = '<transcribed>\n';
+    const isTranscribed = text.startsWith(TRANSCRIBED_PREFIX);
+    if (isTranscribed) text = text.slice(TRANSCRIBED_PREFIX.length);
+
     if (text.length) blocks.appendChild(el('div', { class: 'block text' }, text));
     for (const a of (ev.attachments ?? [])) {
       if (a?.kind === 'image') {
@@ -268,8 +275,12 @@ export class Conversation {
     }
     const userIndex = this.userMessageCounter;
     this.userMessageCounter += 1;
+    const roleEl = el('div', { class: 'role' }, 'user');
+    if (isTranscribed) {
+      roleEl.appendChild(el('span', { class: 'transcribed-badge', title: 'Transcribed from voice' }, '🎤'));
+    }
     const wrap = el('div', { class: 'msg user', 'data-user-index': String(userIndex) },
-      el('div', { class: 'role' }, 'user'),
+      roleEl,
       blocks,
     );
     // Hover-revealed rewind / fork affordances — only on the outer
