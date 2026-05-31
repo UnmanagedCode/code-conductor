@@ -473,7 +473,7 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
 .overflow-panel[hidden] { display: none; }
 .overflow-panel button { width: 100%; text-align: left; }
 .sidebar-header-btns { display: flex; gap: 4px; align-items: center; }
-#notify-toggle { padding: 4px 8px; line-height: 1; }
+#notify-toggle, #settings-btn { padding: 4px 8px; line-height: 1; }
 #notify-toggle[aria-pressed="true"] { background: #2a3548; }
 
 /* Inline auto-approve-plans toggle, sibling of #mode-select. Icon-only so
