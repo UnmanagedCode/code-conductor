@@ -58,7 +58,7 @@ Runs on Termux (localhost-only, single user) or any host with Node 22+ and the `
 
 ### Live conversation
 - **Text** — streams as text-node deltas; on `text_end` re-renders through `public/markdown.js` (headings, lists, code, **bold**, *italic*, links, autolinked bare `http(s)://…` URLs, `![alt](src)` images). Link schemes restricted to `http(s)/relative/fragment/mailto`; image `src` to `http(s)/file://`/absolute path; no `innerHTML`; raw HTML in source rendered as literal text.
-- **Thinking** — collapsible block; Opus 4.7/4.8 emit only `signature_delta`, rendered as a non-expandable `thinking (redacted)` line (no disclosure caret).
+- **Thinking** — collapsible block; redacted thinking renders as a non-expandable `thinking (redacted)` line (no disclosure caret). Opus 4.7 emits only a `signature_delta`; Opus 4.8 streams empty `thinking_delta`s (`""`) — the parser drops the empties so both collapse to the same redacted line.
 - **Tool use** — collapsed by default with smart one-line summary (`🔧 Bash · ls -la · done`). Edit/Write/NotebookEdit render as syntax-coloured unified diffs (green/red gutters, ±counts, sticky file-path); Write shows a numbered preview. Other tools: raw-JSON input in its own collapsed `↪ tool_input` block.
 - **Tool result** — truncated at 4 KB with "show full". `image` content blocks (e.g. `Read` on a `.png`/`.jpg`) render as inline `<img>` thumbnails alongside the text — base64 sources become `data:` URLs, `url` sources only pass through for `http(s)`/`file://`, `image/svg+xml` is refused (XSS). Auto-expanded when an image is present. Tap any conversation image to open it full-size in an in-page lightbox (`public/lightbox.js`) — works for `data:`/`file://` sources that Chrome on Android refuses to open as a top-level navigation. Opens fit-to-screen; tap the image to toggle 1:1 full native resolution (backdrop scrolls to pan), tap again to fit; tap backdrop or press Esc to close.
 - **Sub-agent drill-down** — `Task` tool calls nest a mini-conversation (dashed border, `↳ sub-agent` label) inside the parent tool block, routed by `parentToolUseId`.
@@ -291,7 +291,7 @@ Default suite uses **fake-claude** (`tests/fake-claude.mjs`) via `CLAUDE_BIN`: s
 Opt-in real-claude smoke (`smoke.real.test.mjs`, `RUN_REAL_CLAUDE=1`): spawns the actual CLI, asserts `system/init` + ≥1 `text_delta` + non-error `turn_end`. Cleans the session jsonl on exit.
 
 ## Known limitations
-- **Opus 4.7/4.8 thinking is redacted** — only `signature_delta`, no content. Pick `claude-sonnet-4-6` for the full stream.
+- **Opus 4.7/4.8 thinking is redacted** — no readable content (4.7 sends only `signature_delta`; 4.8 sends empty `thinking_delta`s). Both render as `thinking (redacted)`. Pick `claude-sonnet-4-6` for the full stream.
 - **AskUserQuestion answered via next prompt** — PreToolUse hook denies; tool_result is `is_error:true`; answer is fed in as a normal user prompt. Functionally fine, but the original tool_result is still an error for diagnostics.
 - **`--effort` / `--thinking` are spawn-time only** — switching mid-session needs respawn + resume. Only `mode` is live-switchable.
 - **No auth** — bound to 127.0.0.1; anyone with shell access can drive it.

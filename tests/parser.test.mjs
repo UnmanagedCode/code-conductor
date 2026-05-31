@@ -111,6 +111,22 @@ test('parser: thinking_redacted fires when only signature_delta arrives (no thin
   assert.equal(ends.length, 1);
 });
 
+test('parser: empty thinking_delta is dropped and still emits thinking_redacted (Opus 4.8)', async () => {
+  // Opus 4.8 streams thinking_delta events with thinking:"" for redacted
+  // thinking (where 4.7 sent only a signature_delta). The empties must be
+  // dropped so gotThinkingDelta stays false and content_block_stop takes the
+  // redacted path — otherwise the block finalizes empty and renders as
+  // "thinking (0 chars)".
+  const sc = await loadScenario('scenario-redacted-empty-deltas.json');
+  const events = feed(sc);
+  const redacted = events.filter(e => e.kind === 'thinking_redacted');
+  assert.equal(redacted.length, 1, 'one thinking_redacted emitted');
+  const deltas = events.filter(e => e.kind === 'thinking_delta');
+  assert.equal(deltas.length, 0, 'empty thinking_delta events are dropped, not forwarded');
+  const ends = events.filter(e => e.kind === 'thinking_end');
+  assert.equal(ends.length, 1);
+});
+
 test('parser: thinking deltas tracked separately from text', async () => {
   const sc = await loadScenario('scenario-thinking.json');
   const events = feed(sc);
