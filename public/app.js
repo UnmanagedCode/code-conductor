@@ -1155,14 +1155,20 @@ async function removeWorktree(project, worktreeName) {
 }
 
 async function refreshProjects() {
-  const [projects, workspaces] = await Promise.all([
+  const [projects, workspaces, conductSessions] = await Promise.all([
     fetch('/api/projects').then(r => r.json()),
     fetch('/api/workspaces').then(r => r.json()).catch(() => []),
+    fetch('/api/projects/.conduct/sessions').then(r => r.ok ? r.json() : []).catch(() => []),
   ]);
   state.projects = projects;
   sidebar.setProjects(projects);
   const names = Array.isArray(workspaces) ? workspaces.map(w => w.name).filter(Boolean) : [];
   sidebar.setWorkspaces(names);
+  const count = Array.isArray(conductSessions) ? conductSessions.length : 0;
+  const lastMtime = count > 0
+    ? conductSessions.reduce((max, s) => Math.max(max, s.mtime ?? 0), 0)
+    : 0;
+  sidebar.setConductSessions({ count, lastMtime });
 }
 async function refreshInstances() {
   state.instances = await (await fetch('/api/instances')).json();

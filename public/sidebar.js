@@ -128,6 +128,8 @@ export class Sidebar {
     // selectInstance. Keyed by sessionId so it survives crash + resume
     // (a new instance id for the same session).
     this.unreadBySessionId = new Map();
+    this.conductSessionCount = 0;
+    this.conductSessionLastMtime = 0;
   }
 
   setProjects(projects) { this.projects = projects; this.render(); }
@@ -137,6 +139,11 @@ export class Sidebar {
     this.render();
   }
   setUnread(map) { this.unreadBySessionId = map ?? new Map(); this.render(); }
+  setConductSessions({ count = 0, lastMtime = 0 } = {}) {
+    this.conductSessionCount = count;
+    this.conductSessionLastMtime = lastMtime;
+    this.render();
+  }
   setInstances(instances) {
     // Detect new sessionIds appearing/disappearing — when they do, the
     // affected subnodes' cached lists are stale (a synthetic row was
@@ -510,7 +517,7 @@ export class Sidebar {
     // dot-prefix filter, so without this synthesis a conductor session
     // would have no parent row in the sidebar and be unreachable.
     const conductInstances = this.instances.filter(i => i.project === '.conduct');
-    if (conductInstances.length > 0) {
+    if (conductInstances.length > 0 || this.conductSessionCount > 0) {
       directByProject.set('.conduct', conductInstances);
       const syntheticConduct = {
         name: '.conduct',
@@ -518,7 +525,7 @@ export class Sidebar {
         workspace: null,
         isGitRepo: false,
         worktrees: [],
-        sessions: { count: 0, lastMtime: 0 },
+        sessions: { count: this.conductSessionCount, lastMtime: this.conductSessionLastMtime },
         mergeStatus: { ahead: null, behind: null, upstream: null },
         instanceIds: conductInstances.map(i => i.id),
         isConduct: true,
@@ -529,7 +536,7 @@ export class Sidebar {
     }
 
     if (this.projects.length === 0) {
-      if (conductInstances.length === 0) {
+      if (conductInstances.length === 0 && this.conductSessionCount === 0) {
         this.list.appendChild(el('li', { class: 'project-row' },
           el('span', { class: 'project-name' }, 'no projects yet')));
       }
