@@ -286,12 +286,12 @@ export async function loadPersistedTranscript({ cwd, sessionId, seqHint = 0 }) {
   return { lines, replayedCount, lastLeafUuid };
 }
 
-// Scan the persisted jsonl and return the `message.model` from the
-// most-recent `type:"assistant"` line, or null if none found / file
-// missing. Used by resume to preserve the model the session was last
-// run with — without it, `claude --resume <sid>` falls back to the
-// account default (often Opus) even if the session was spawned with
-// Sonnet/Haiku.
+// Scan the persisted jsonl and return the orchestrator-level model
+// string (which may include the [200k] or [1m] context-window suffix)
+// if a `type:"orchestrator-model"` metadata marker was written by
+// _writeSessionMetadata(). Falls back to the `message.model` from the
+// most-recent `type:"assistant"` line for sessions predating this
+// marker, or null if none found / file missing.
 export async function readLastSessionModel({ cwd, sessionId }) {
   if (!cwd || !sessionId) return null;
   const file = path.join(claudeProjectsRoot(), encodeCwd(cwd), `${sessionId}.jsonl`);
@@ -299,30 +299,38 @@ export async function readLastSessionModel({ cwd, sessionId }) {
   try { text = await fs.readFile(file, 'utf8'); }
   catch (e) { if (e.code === 'ENOENT') return null; throw e; }
   let lastModel = null;
+  let orchestratorModel = null;
   for (const raw of text.split('\n')) {
     const trimmed = raw.trim();
     if (!trimmed) continue;
     let obj;
     try { obj = JSON.parse(trimmed); } catch { continue; }
+    if (obj && obj.type === 'orchestrator-model' && typeof obj.model === 'string') {
+      orchestratorModel = obj.model;
+    }
     if (obj && obj.type === 'assistant' && typeof obj.message?.model === 'string') {
       lastModel = obj.message.model;
     }
   }
-  return lastModel;
+  return orchestratorModel ?? lastModel;
 }
 
-// Append the two metadata markers claude --resume's interactive
-// picker uses to discover a session. Best-effort — caller swallows
-// errors. permissionMode is the CLI-level value (the orchestrator's
-// 'ask' is collapsed to 'bypassPermissions' before reaching this
-// function; see cliPermissionMode in instances.js).
-export async function writeSessionMetadata({ cwd, sessionId, leafUuid, permissionMode }) {
+// Append metadata markers to the session jsonl. Best-effort — caller
+// swallows errors. permissionMode is the CLI-level value (the
+// orchestrator's 'ask' is collapsed to 'bypassPermissions' before
+// reaching this function; see cliPermissionMode in instances.js).
+// model is the orchestrator-level model string (may include the [200k]
+// or [1m] context-window suffix); omit or pass null to skip the marker.
+export async function writeSessionMetadata({ cwd, sessionId, leafUuid, permissionMode, model }) {
   if (!cwd || !sessionId || !leafUuid) return;
   const dir = path.join(claudeProjectsRoot(), encodeCwd(cwd));
   const file = path.join(dir, `${sessionId}.jsonl`);
-  const lines =
+  let lines =
     JSON.stringify({ type: 'last-prompt', leafUuid, sessionId }) + '\n' +
     JSON.stringify({ type: 'permission-mode', permissionMode, sessionId }) + '\n';
+  if (model) {
+    lines += JSON.stringify({ type: 'orchestrator-model', model, sessionId }) + '\n';
+  }
   await fs.mkdir(dir, { recursive: true });
   await fs.appendFile(file, lines);
 }

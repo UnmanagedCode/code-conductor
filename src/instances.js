@@ -525,6 +525,7 @@ export class Instance extends EventEmitter {
         sessionId: this.sessionId,
         leafUuid: this._lastLeafUuid,
         permissionMode: cliPermissionMode(this.mode),
+        model: this.model ?? undefined,
       });
     } catch { /* best effort */ }
   }
