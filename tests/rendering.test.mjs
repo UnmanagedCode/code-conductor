@@ -1169,6 +1169,37 @@ test('DOM: redacted thinking renders as a non-expandable "thinking (redacted)" l
   assert.doesNotMatch(root.textContent, /signature is streamed/, 'placeholder sentence is no longer in the DOM');
 });
 
+test('DOM: empty thinking_delta stream renders as "thinking (redacted)", not "thinking (0 chars)" (Opus 4.8)', async () => {
+  // Opus 4.8 streams thinking_delta events with thinking:"" for redacted
+  // thinking. The parser drops the empties so the block still goes down the
+  // redacted path. Without that, the block would finalize empty and render the
+  // ugly collapsible "thinking (0 chars)" line.
+  const { root, Parser, Conversation } = await setupDOM();
+  const conversation = new Conversation(root);
+  const msgId = 'msg_empty_deltas';
+  feed(new Parser(), conversation, [
+    { type: 'stream_event', event: { type: 'message_start', message: { id: msgId, role: 'assistant' } } },
+    { type: 'stream_event', event: { type: 'content_block_start', index: 0, content_block: { type: 'thinking' } } },
+    { type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: '' } } },
+    { type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: '' } } },
+    { type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'signature_delta', signature: 'sig_xyz' } } },
+    { type: 'stream_event', event: { type: 'content_block_stop', index: 0 } },
+    { type: 'stream_event', event: { type: 'content_block_start', index: 1, content_block: { type: 'text' } } },
+    { type: 'stream_event', event: { type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: 'ok' } } },
+    { type: 'stream_event', event: { type: 'content_block_stop', index: 1 } },
+    { type: 'stream_event', event: { type: 'message_stop' } },
+  ]);
+
+  const thinkings = root.querySelectorAll('.block.thinking');
+  assert.equal(thinkings.length, 1, 'exactly one thinking block in the DOM');
+  const node = thinkings[0];
+  assert.equal(node.tagName, 'DIV', 'must NOT be a <details> — no expansion affordance');
+  assert.equal(node.querySelector('summary'), null, 'must have no <summary>');
+  assert.equal(node.textContent.trim(), 'thinking (redacted)', `label must be "thinking (redacted)" (got: ${node.textContent})`);
+  assert.ok(node.classList.contains('redacted'), 'carries .redacted class');
+  assert.doesNotMatch(root.textContent, /\d+ chars/, 'no "thinking (0 chars)" / "(NN chars)" leak');
+});
+
 // Working/in-progress indicator: must exist in the static markup, default
 // hidden, and only show the "Claude is working" sub-row while status==='turn'.
 // The outer bar is now a persistent footer (visible whenever an instance is

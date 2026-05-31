@@ -152,6 +152,12 @@ export class Parser {
           }
           case 'thinking_delta': {
             const text = delta.thinking ?? delta.text ?? '';
+            // Opus 4.8 streams empty thinking_delta ("") for redacted thinking
+            // (where 4.7 sent only a signature_delta). Ignore empties so
+            // gotThinkingDelta stays false and content_block_stop takes the
+            // thinking_redacted path — otherwise the block finalizes empty and
+            // renders as "thinking (0 chars)" instead of "thinking (redacted)".
+            if (!text) return [];
             block.accumText += text;
             block.gotThinkingDelta = true;
             return [{ kind: 'thinking_delta', msgId: this.currentMsgId, blockIdx: idx, text }];
