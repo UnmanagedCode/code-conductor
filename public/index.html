@@ -15,7 +15,10 @@
     <aside id="sidebar">
       <header>
         <h1>CodeConductor</h1>
-        <button id="notify-toggle" title="Browser notifications when a turn finishes" aria-pressed="false">🔕</button>
+        <div class="sidebar-header-btns">
+          <button id="notify-toggle" title="Browser notifications when a turn finishes" aria-pressed="false">🔕</button>
+          <button id="settings-btn" type="button" title="Open settings">⚙ Settings</button>
+        </div>
       </header>
       <div id="sidebar-body">
         <div class="sidebar-actions">
@@ -29,8 +32,6 @@
                       title="Create a new workspace">+ New workspace</button>
               <button id="new-project-btn" type="button" role="menuitem"
                       title="Create a new project under ~/project/">+ New project</button>
-              <button id="settings-btn" type="button" role="menuitem"
-                      title="Open settings">⚙ Settings</button>
             </div>
           </div>
         </div>

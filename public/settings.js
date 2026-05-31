@@ -199,6 +199,12 @@ export function installSettings({ requestClose, onAvailabilityChange } = {}) {
   }
 
   window.addEventListener('hashchange', sync);
+  window.addEventListener('keydown', e => {
+    if (e.key === 'Escape' && isOpen) {
+      if (typeof requestClose === 'function') requestClose();
+      else location.hash = '';
+    }
+  });
   sync(); // honour an initial #settings on load
 
   return { open: () => { location.hash = '#settings'; }, close: hide };

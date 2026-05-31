@@ -472,6 +472,7 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
 }
 .overflow-panel[hidden] { display: none; }
 .overflow-panel button { width: 100%; text-align: left; }
+.sidebar-header-btns { display: flex; gap: 4px; align-items: center; }
 #notify-toggle { padding: 4px 8px; line-height: 1; }
 #notify-toggle[aria-pressed="true"] { background: #2a3548; }
 
@@ -1042,6 +1043,7 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
   #sidebar.open { transform: translateX(0); }
   #sidebar-toggle { display: block; }
   #sidebar-toggle[aria-expanded="true"] { display: none; }
+  .settings-nav { display: none; }
 }
 
 /* In-progress marker pinned to the bottom of the chat pane while a

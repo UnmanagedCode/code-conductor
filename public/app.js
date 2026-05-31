@@ -318,16 +318,18 @@ function setMicAvailable(available) {
 
 // Settings page (full-page view at #settings). The burger-menu button routes
 // here; closing restores the previously-active session anchor.
+function closeSettings() {
+  const inst = state.instances.find(i => i.id === state.activeId);
+  writeSessionAnchor(inst?.sessionId || null);
+}
 const settings = installSettings({
-  requestClose: () => {
-    const inst = state.instances.find(i => i.id === state.activeId);
-    writeSessionAnchor(inst?.sessionId || null);
-  },
+  requestClose: closeSettings,
   onAvailabilityChange: setMicAvailable,
 });
 dom.settingsBtn?.addEventListener('click', () => {
   closeSidebarOverflow();
-  settings.open();
+  if (location.hash === '#settings') closeSettings();
+  else settings.open();
 });
 
 dom.modeSelect.addEventListener('change', async () => {
