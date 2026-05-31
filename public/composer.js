@@ -109,9 +109,17 @@ export function attachComposer({ form, textarea, sendBtn, attachBtn, fileInput, 
   }
   // Alias so the existing call sites keep reading naturally.
   const refreshSendEnabled = updateButton;
+  function autoGrow() {
+    textarea.style.height = 'auto';
+    const capped = textarea.scrollHeight > 240;
+    textarea.style.overflowY = capped ? 'auto' : 'hidden';
+    textarea.style.height = Math.min(textarea.scrollHeight, 240) + 'px';
+  }
+
   textarea.addEventListener('input', updateButton);
   // Clearing the composer by hand drops the transcribed-content marker.
   textarea.addEventListener('input', () => { if (!textarea.value.trim()) hasTranscript = false; });
+  textarea.addEventListener('input', autoGrow);
 
   function renderChips() {
     if (!chipsContainer) return;
@@ -247,6 +255,7 @@ export function attachComposer({ form, textarea, sendBtn, attachBtn, fileInput, 
     const needsLeadingSpace = before.length > 0 && !/\s$/.test(before) && !/^\s/.test(text);
     const insert = (needsLeadingSpace ? ' ' : '') + text;
     textarea.value = before + insert + after;
+    autoGrow();
     const caret = start + insert.length;
     try { textarea.setSelectionRange(caret, caret); } catch { /* ignore */ }
     try { textarea.focus(); } catch { /* ignore */ }
@@ -361,11 +370,13 @@ export function attachComposer({ form, textarea, sendBtn, attachBtn, fileInput, 
     }));
     onSubmit({ text: prependTranscribedTag(text, hasTranscript), attachments });
     textarea.value = '';
+    autoGrow();
     hasTranscript = false;
     clearAttachments();
     refreshSendEnabled();
   });
 
+  autoGrow();
   return {
     set(state) { setState(state); },
     disable() { setState({ canType: false, canSend: false }); },
@@ -380,6 +391,7 @@ export function attachComposer({ form, textarea, sendBtn, attachBtn, fileInput, 
       clearAttachments();
       hasTranscript = false;
       textarea.value = typeof text === 'string' ? text : '';
+      autoGrow();
       // Move caret to end and focus — `focus()` is a no-op when the textarea
       // is disabled, which is fine: the user can still see the value, and
       // it'll focus when the next status transition flips canType on.
