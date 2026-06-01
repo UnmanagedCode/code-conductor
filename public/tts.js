@@ -20,6 +20,16 @@ let userHasInteracted = false;
 let audioCtx = null;
 let session = null; // current playback session (so a new speak() cancels it)
 
+// Speaking-state change notification. blocks.js sets one listener at module
+// load time to drive the play/stop button toggle. Fires on speak() start,
+// explicit stop(), and natural end (all audio finished + stream drained).
+let speakToken = 0;           // monotonic; incremented on each new speak()
+let currentSpeakToken = null; // null when idle
+
+let _speakingChangeListener = null;
+export function getCurrentSpeakToken() { return currentSpeakToken; }
+export function onSpeakingChange(fn) { _speakingChangeListener = fn; }
+
 // First user gesture unlocks auto-speak + lets us resume the AudioContext.
 function markInteracted() { userHasInteracted = true; }
 if (typeof document !== 'undefined') {
@@ -42,12 +52,31 @@ function ensureCtx() {
   return audioCtx;
 }
 
-export function stop() {
+// Internal stop: aborts the session without firing the change listener.
+// Used inside speak() so switching from one message to another fires only
+// ONE notification ("new speak started"), not a spurious null in between.
+function _stopSilent() {
   if (!session) return;
   session.aborted = true;
   try { session.controller.abort(); } catch { /* ignore */ }
   for (const src of session.sources) { try { src.stop(); } catch { /* ignore */ } }
   session = null;
+  currentSpeakToken = null;
+}
+
+export function stop() {
+  if (!session) return;
+  _stopSilent();
+  if (_speakingChangeListener) _speakingChangeListener();
+}
+
+// Called when the fetch stream is fully drained AND no scheduled sources
+// remain. Guards against stale callbacks from a replaced session.
+function _naturalEnd(s) {
+  if (session !== s) return;
+  session = null;
+  currentSpeakToken = null;
+  if (_speakingChangeListener) _speakingChangeListener();
 }
 
 function concat(a, b) {
@@ -73,18 +102,38 @@ async function scheduleWav(ctx, s, wavBytes) {
   try { src.start(startAt); } catch { return; }
   s.playhead = startAt + audioBuf.duration;
   s.sources.push(src);
+  // Track active sources so _naturalEnd fires only after all audio has played.
+  s.activeSourceCount++;
+  src.onended = () => {
+    s.activeSourceCount--;
+    if (s.streamDone && s.activeSourceCount === 0 && !s.aborted) _naturalEnd(s);
+  };
 }
 
 // POST the text and stream-play the framed WAV response.
 export async function speak(text) {
   if (!available || typeof text !== 'string' || !text.trim()) return;
-  stop();
+  _stopSilent(); // cancel any prior session without firing the listener
   const ctx = ensureCtx();
   if (!ctx) return;
-  try { await ctx.resume(); } catch { /* ignore */ }
 
-  const s = { aborted: false, controller: new AbortController(), sources: [], playhead: ctx.currentTime + 0.05 };
+  // Set token and notify BEFORE the first await so the change fires
+  // synchronously inside the button's onclick — _activeBtn in blocks.js is
+  // already set when the listener runs.
+  const token = ++speakToken;
+  const s = {
+    aborted: false,
+    controller: new AbortController(),
+    sources: [],
+    playhead: ctx.currentTime + 0.05,
+    streamDone: false,
+    activeSourceCount: 0,
+  };
   session = s;
+  currentSpeakToken = token;
+  if (_speakingChangeListener) _speakingChangeListener();
+
+  try { await ctx.resume(); } catch { /* ignore */ }
 
   let res;
   try {
@@ -116,6 +165,11 @@ export async function speak(text) {
       if (done) break;
     }
   } catch { /* aborted or network error — stop quietly */ }
+
+  // Stream fully drained. If no sources are still playing, end immediately;
+  // otherwise _naturalEnd fires from the last source's onended handler.
+  s.streamDone = true;
+  if (s.activeSourceCount === 0 && !s.aborted) _naturalEnd(s);
 }
 
 // Tap-driven playback (the 🔊 button). The tap is a user gesture.

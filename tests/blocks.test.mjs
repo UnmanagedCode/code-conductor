@@ -6,10 +6,23 @@ import { Window } from 'happy-dom';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// Import the pure function from blocks.js without booting a real DOM.
-// describeToolInput doesn't touch DOM at module-import time, so a plain
-// dynamic import works.
-const { describeToolInput, ToolResultBlock } = await import(pathToFileURL(path.resolve(__dirname, '..', 'public', 'blocks.js')).href);
+// Stub Web Audio + fetch BEFORE importing tts.js (which blocks.js pulls in).
+// The stub AudioContext is created once and cached by tts.js's ensureCtx().
+globalThis.AudioContext = class MockAudioContext {
+  constructor() { this.currentTime = 0; this.destination = {}; }
+  resume() { return Promise.resolve(); }
+  createBufferSource() { return { connect() {}, start() {}, onended: null, buffer: null }; }
+  decodeAudioData() { return Promise.resolve({ duration: 0.5 }); }
+};
+globalThis.fetch = async () => ({
+  ok: true,
+  body: { getReader: () => ({ read: async () => ({ done: true, value: undefined }) }) },
+});
+
+// Import blocks.js (which also imports tts.js as a side-effect) and tts.js
+// directly so tests can drive speaking state.
+const { describeToolInput, ToolResultBlock, TextBlock } = await import(pathToFileURL(path.resolve(__dirname, '..', 'public', 'blocks.js')).href);
+const { setTtsAvailable, getCurrentSpeakToken, stop: ttsStop } = await import(pathToFileURL(path.resolve(__dirname, '..', 'public', 'tts.js')).href);
 
 function setupDOM() {
   const window = new Window({ url: 'http://localhost/' });
@@ -18,6 +31,26 @@ function setupDOM() {
   globalThis.HTMLElement = window.HTMLElement;
   globalThis.Element = window.Element;
   globalThis.Node = window.Node;
+}
+
+// Drain all pending microtasks so speak()'s async chain can complete.
+function flushMicrotasks() {
+  return new Promise(resolve => setTimeout(resolve, 0));
+}
+
+// setupDOM + expose AudioContext on the happy-dom window so tts.js's
+// ensureCtx() (which reads window.AudioContext) finds the mock.
+function setupDOMWithAudio() {
+  setupDOM();
+  globalThis.window.AudioContext = globalThis.AudioContext;
+}
+
+// Build a finalized TextBlock and return it + the button element.
+function makeSpeakingBlock(text = 'Hello world') {
+  const block = new TextBlock();
+  block.appendDelta(text);
+  block.finalize();
+  return { block, btn: block.body.querySelector('.tts-speak') };
 }
 
 test('describeToolInput: Bash → command', () => {
@@ -191,4 +224,97 @@ test('ToolResultBlock: plain string content still renders as text in <pre>', () 
   });
   assert.equal(block.node.querySelectorAll('img').length, 0);
   assert.match(block.node.querySelector('pre').textContent, /file1/);
+});
+
+// ── TTS play/stop toggle ──────────────────────────────────────────────────────
+
+test('TTS button: not created when TTS unavailable', () => {
+  setupDOM();
+  setTtsAvailable(false);
+  const { btn } = makeSpeakingBlock();
+  assert.equal(btn, null, 'button should not exist when TTS is unavailable');
+});
+
+test('TTS button: created in idle state when TTS available', () => {
+  setupDOMWithAudio();
+  ttsStop(); // ensure clean state
+  setTtsAvailable(true);
+  const { btn } = makeSpeakingBlock();
+  assert.ok(btn, 'button should exist when TTS is available');
+  assert.equal(btn.textContent, '🔊');
+  assert.equal(btn.title, 'Read aloud');
+  assert.equal(btn.classList.contains('speaking'), false);
+});
+
+test('TTS button: click starts speaking — gets ⏹ glyph, speaking class, Stop title', () => {
+  setupDOMWithAudio();
+  ttsStop();
+  setTtsAvailable(true);
+  const { btn } = makeSpeakingBlock();
+
+  btn.click();
+  // speak() fires onSpeakingChange synchronously (before first await), so
+  // _activeBtn is updated before this assertion runs.
+  assert.equal(btn.textContent, '⏹');
+  assert.equal(btn.title, 'Stop');
+  assert.equal(btn.classList.contains('speaking'), true);
+  assert.notEqual(getCurrentSpeakToken(), null);
+
+  ttsStop(); // clean up for next test
+});
+
+test('TTS button: click while playing (toggle-off) stops and reverts to 🔊', () => {
+  setupDOMWithAudio();
+  ttsStop();
+  setTtsAvailable(true);
+  const { btn } = makeSpeakingBlock();
+
+  btn.click(); // start
+  assert.equal(btn.classList.contains('speaking'), true);
+
+  btn.click(); // stop (toggle-off path)
+  assert.equal(btn.textContent, '🔊');
+  assert.equal(btn.title, 'Read aloud');
+  assert.equal(btn.classList.contains('speaking'), false);
+  assert.equal(getCurrentSpeakToken(), null);
+});
+
+test('TTS button: clicking a different button stops the first and activates the second', () => {
+  setupDOMWithAudio();
+  ttsStop();
+  setTtsAvailable(true);
+  const { btn: btnA } = makeSpeakingBlock('Message A');
+  const { btn: btnB } = makeSpeakingBlock('Message B');
+
+  btnA.click(); // start A
+  assert.equal(btnA.classList.contains('speaking'), true);
+  assert.equal(btnB.classList.contains('speaking'), false);
+
+  btnB.click(); // switch to B
+  assert.equal(btnA.classList.contains('speaking'), false, 'A should revert');
+  assert.equal(btnA.textContent, '🔊');
+  assert.equal(btnB.classList.contains('speaking'), true, 'B should be speaking');
+  assert.equal(btnB.textContent, '⏹');
+  assert.notEqual(getCurrentSpeakToken(), null);
+
+  ttsStop(); // clean up
+});
+
+test('TTS button: natural end (empty stream, no sources) reverts button automatically', async () => {
+  setupDOMWithAudio();
+  ttsStop();
+  setTtsAvailable(true);
+  const { btn } = makeSpeakingBlock();
+
+  btn.click(); // starts speak(); fetch stub returns empty body immediately
+  assert.equal(btn.classList.contains('speaking'), true);
+
+  // Let speak()'s async chain run to completion:
+  // ctx.resume() → fetch() → reader.read() (done=true) → _naturalEnd fires.
+  await flushMicrotasks();
+
+  assert.equal(btn.classList.contains('speaking'), false, 'button should revert after natural end');
+  assert.equal(btn.textContent, '🔊');
+  assert.equal(btn.title, 'Read aloud');
+  assert.equal(getCurrentSpeakToken(), null);
 });
