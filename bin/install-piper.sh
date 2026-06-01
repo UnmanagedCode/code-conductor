@@ -169,12 +169,15 @@ static struct PyModuleDef module = {PyModuleDef_HEAD_INIT, "espeakbridge", NULL,
 PyMODINIT_FUNC PyInit_espeakbridge(void) { return PyModule_Create(&module); }
 EOF
   PYINC="$("$PYTHON" -c 'import sysconfig; print(sysconfig.get_path("include"))')"
+  # Android/Bionic dlopen requires all symbols resolved at load time (no RTLD_GLOBAL
+  # fallback unlike glibc), so we must link explicitly against libpython.
+  PYLDVER="$("$PYTHON" -c 'import sysconfig; print(sysconfig.get_config_var("LDVERSION"))')"
   PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
   # Remove any prebuilt (glibc-linked) bridge so our .so wins import resolution.
   rm -f "$SITE"/espeakbridge*.so
   clang -shared -fPIC -DPy_LIMITED_API=0x03090000 \
     -I"$PYINC" -I"$PREFIX/include" -L"$PREFIX/lib" \
-    "$BRIDGE_SRC" -o "$BRIDGE_SO" -lespeak-ng
+    "$BRIDGE_SRC" -o "$BRIDGE_SO" -lespeak-ng -lpython"$PYLDVER"
   echo "==> Built $BRIDGE_SO"
 else
   echo "==> espeakbridge already built — skipping"
