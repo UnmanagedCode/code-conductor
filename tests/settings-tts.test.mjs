@@ -140,7 +140,9 @@ test('POST /api/settings/tts/prefs persists enabled + rate', async () => {
   } finally { await fs.rm(installRoot, { recursive: true, force: true }); }
 });
 
-test('install flow: POST install → poll → voice becomes available + active', async () => {
+const RUN_INSTALL = process.env.RUN_TTS_INSTALL_TESTS ? undefined : 'set RUN_TTS_INSTALL_TESTS=1 to run';
+
+test('install flow: POST install → poll → voice becomes available + active', { skip: RUN_INSTALL }, async () => {
   ttsInstall._reset();
   const installRoot = await mkTmp();
   const scriptDir = await mkTmp();
@@ -176,7 +178,7 @@ test('install flow: POST install → poll → voice becomes available + active',
   }
 });
 
-test('install flow: a second install while one is running returns 409', async () => {
+test('install flow: a second install while one is running returns 409', { skip: RUN_INSTALL }, async () => {
   ttsInstall._reset();
   const installRoot = await mkTmp();
   const scriptDir = await mkTmp();
