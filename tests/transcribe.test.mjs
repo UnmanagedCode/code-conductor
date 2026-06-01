@@ -16,6 +16,16 @@ const text = process.env.FAKE_WHISPER_TEXT || 'hello from fake whisper';
 fs.writeFileSync(out + '.txt', text + '\\n');
 `;
 
+// Fake whisper-cli that records the LD_LIBRARY_PATH it was spawned with into
+// "<prefix>.txt" — lets a test assert the build-lib dirs were wired in.
+const FAKE_WHISPER_ECHO_LDPATH = `
+const fs = require('fs');
+const args = process.argv.slice(2);
+const ofIdx = args.indexOf('-of');
+const out = ofIdx >= 0 ? args[ofIdx + 1] : 'out';
+fs.writeFileSync(out + '.txt', (process.env.LD_LIBRARY_PATH || '') + '\\n');
+`;
+
 // Fake ffmpeg: parses `-i <input>` and copies it to the last positional arg.
 const FAKE_FFMPEG = `
 const fs = require('fs');
@@ -107,6 +117,37 @@ test('POST /api/transcribe returns the canned text from the fake whisper-cli', a
         assert.equal(res.status, 200);
         const body = await res.json();
         assert.equal(body.text, 'good morning');
+      } finally { await close(); }
+    });
+  } finally { await fs.rm(tmp, { recursive: true, force: true }); }
+});
+
+test('POST /api/transcribe spawns whisper-cli with the build lib dirs on LD_LIBRARY_PATH', async () => {
+  const tmp = await mkTmp();
+  try {
+    // Lay the cli out at the real <root>/build/bin/whisper-cli shape so the
+    // derived lib dirs are <root>/build/{src,ggml/src}.
+    const binDir = path.join(tmp, 'whisper.cpp', 'build', 'bin');
+    await fs.mkdir(binDir, { recursive: true });
+    const cli = await writeFakeBin(binDir, 'whisper-cli', FAKE_WHISPER_ECHO_LDPATH);
+    const ffmpeg = await writeFakeBin(tmp, 'fake-ffmpeg', FAKE_FFMPEG);
+    const model = path.join(tmp, 'model.bin');
+    await fs.writeFile(model, 'fake-model-bytes');
+    await withEnv({ WHISPER_CLI: cli, WHISPER_MODEL: model, FFMPEG_BIN: ffmpeg }, async () => {
+      const { baseUrl, close } = await bootServer();
+      try {
+        const res = await fetch(baseUrl + '/api/transcribe', {
+          method: 'POST',
+          headers: { 'content-type': 'audio/webm' },
+          body: new Uint8Array([1, 2, 3, 4]),
+        });
+        assert.equal(res.status, 200);
+        const body = await res.json();
+        const buildDir = path.join(tmp, 'whisper.cpp', 'build');
+        assert.ok(body.text.includes(path.join(buildDir, 'src')),
+          `expected build/src in LD_LIBRARY_PATH, got: ${body.text}`);
+        assert.ok(body.text.includes(path.join(buildDir, 'ggml', 'src')),
+          `expected build/ggml/src in LD_LIBRARY_PATH, got: ${body.text}`);
       } finally { await close(); }
     });
   } finally { await fs.rm(tmp, { recursive: true, force: true }); }
