@@ -34,11 +34,30 @@ export class TextBlock {
     renderMarkdownInto(this.body, this.buffer);
     // Attach a 🔊 speak affordance when server-side Piper TTS is available.
     // Mirrors the composer's mic-button gating: hidden entirely otherwise.
+    // The button is a play/stop toggle: tap to start, tap again to stop.
+    // Tapping a different message's button stops the current one and starts the new.
     if (isTtsAvailable()) {
       const text = this.buffer;
       const btn = el('button', {
         class: 'tts-speak', type: 'button', title: 'Read aloud',
-        onclick: () => requestSpeak(text),
+        onclick() {
+          const isThisPlaying = _activeBtn === btn && getCurrentSpeakToken() !== null;
+          if (isThisPlaying) {
+            stop(); // onSpeakingChange listener will revert the button
+          } else {
+            // Revert any button that's currently active (different message)
+            if (_activeBtn && _activeBtn !== btn) {
+              _revertBtn(_activeBtn);
+              _activeBtn = null;
+              _activeBtnToken = null;
+            }
+            _activeBtn = btn;
+            _activeBtnToken = null; // listener records the token when speak() fires
+            _setBtnSpeaking(btn);
+            requestSpeak(text);
+            // speak() fires onSpeakingChange synchronously → listener records _activeBtnToken
+          }
+        },
       }, '🔊');
       this.body.appendChild(btn);
     }
@@ -87,7 +106,40 @@ export class ThinkingBlock {
 
 import { lineDiff, diffStats } from './diff.js';
 import { renderMarkdownInto } from './markdown.js';
-import { isTtsAvailable, requestSpeak } from './tts.js';
+import { isTtsAvailable, requestSpeak, getCurrentSpeakToken, onSpeakingChange, stop } from './tts.js';
+
+// Module-level active-button tracking — one subscription, no per-button leaks.
+// _activeBtnToken distinguishes "our button's own speak started" from
+// maybeAutoSpeak taking over mid-play (so the stale button reverts correctly).
+let _activeBtn = null;
+let _activeBtnToken = null;
+
+onSpeakingChange(() => {
+  const token = getCurrentSpeakToken();
+  if (!_activeBtn) return;
+  if (token === null) {
+    // Stopped: explicit tap or natural end
+    _revertBtn(_activeBtn); _activeBtn = null; _activeBtnToken = null;
+  } else if (_activeBtnToken === null) {
+    // Our button's own speak just started — record the token
+    _activeBtnToken = token;
+  } else if (_activeBtnToken !== token) {
+    // A different speak started (e.g. auto-speak overtook an active button)
+    _revertBtn(_activeBtn); _activeBtn = null; _activeBtnToken = null;
+  }
+});
+
+function _setBtnSpeaking(btn) {
+  btn.textContent = '⏹';
+  btn.title = 'Stop';
+  btn.classList.add('speaking');
+}
+
+function _revertBtn(btn) {
+  btn.textContent = '🔊';
+  btn.title = 'Read aloud';
+  btn.classList.remove('speaking');
+}
 
 // Per-tool one-line description for the collapsed summary.
 // Returns a short string with the most-useful argument for the tool.
