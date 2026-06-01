@@ -13,6 +13,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isKnownVoice } from './ttsModels.js';
 import { setTtsVoice } from './appSettings.js';
+import { orchStoreRoot } from './projects.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_SCRIPT = path.resolve(__dirname, '..', 'bin', 'install-piper.sh');
@@ -43,7 +44,10 @@ export function start(voice) {
 
   const state = { voice, child: null, log: '', running: true, exitCode: null };
   const child = spawn('bash', [scriptPath()], {
-    env: { ...process.env, PIPER_VOICE_NAME: voice },
+    // Pin INSTALL_ROOT to the orchestrator store so the script installs where
+    // tts.js looks for the venv + voices, regardless of the script's own
+    // fallback default.
+    env: { ...process.env, PIPER_VOICE_NAME: voice, INSTALL_ROOT: process.env.INSTALL_ROOT || orchStoreRoot() },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   state.child = child;

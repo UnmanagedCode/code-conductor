@@ -4,7 +4,7 @@
 // quantized model, and returns the recognised text.
 //
 // Feature is gated on the presence of both WHISPER_CLI and WHISPER_MODEL
-// (env vars override the defaults under ~/.code-conductor/whisper.cpp/).
+// (env vars override the defaults under <orchStoreRoot>/whisper.cpp/).
 // If either file is missing, /api/transcribe/status reports unavailable
 // and the frontend hides the mic button.
 
@@ -15,13 +15,15 @@ import os from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { getTranscribeModel } from './appSettings.js';
 import { modelFileName, DEFAULT_MODEL } from './whisperModels.js';
+import { orchStoreRoot } from './projects.js';
 
-// Root of the whisper.cpp install. INSTALL_ROOT mirrors the knob honoured by
-// bin/install-whisper.sh, so the server and the installer agree on where the
-// binary + models live (and tests can point both at a temp dir).
+// Root of the whisper.cpp install. Defaults to the orchestrator store
+// (<projectsRoot>/.code-conductor/whisper.cpp), the same dir the rest of the
+// app's state lives under. INSTALL_ROOT overrides it and mirrors the knob
+// honoured by bin/install-whisper.sh, so the server and the installer agree
+// on where the binary + models live (and tests can point both at a temp dir).
 export function whisperRoot() {
-  const home = process.env.HOME || os.homedir();
-  return path.join(process.env.INSTALL_ROOT || path.join(home, '.code-conductor'), 'whisper.cpp');
+  return path.join(process.env.INSTALL_ROOT || orchStoreRoot(), 'whisper.cpp');
 }
 
 export function modelsDir() {

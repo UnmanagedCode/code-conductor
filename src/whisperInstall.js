@@ -13,6 +13,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isKnownModel } from './whisperModels.js';
 import { setTranscribeModel } from './appSettings.js';
+import { orchStoreRoot } from './projects.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_SCRIPT = path.resolve(__dirname, '..', 'bin', 'install-whisper.sh');
@@ -43,7 +44,10 @@ export function start(model) {
 
   const state = { model, child: null, log: '', running: true, exitCode: null };
   const child = spawn('bash', [scriptPath()], {
-    env: { ...process.env, WHISPER_MODEL_NAME: model },
+    // Pin INSTALL_ROOT to the orchestrator store so the script installs where
+    // transcribe.js looks for the binary + model, regardless of the script's
+    // own fallback default.
+    env: { ...process.env, WHISPER_MODEL_NAME: model, INSTALL_ROOT: process.env.INSTALL_ROOT || orchStoreRoot() },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   state.child = child;

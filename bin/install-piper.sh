@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # One-shot installer for the conversation's text-to-speech (TTS) feature.
-# Builds a Piper venv under ~/.code-conductor/piper and downloads a neural
+# Builds a Piper venv under <INSTALL_ROOT>/piper and downloads a neural
 # voice. This recipe solves five non-obvious Termux/aarch64 hurdles — keep the
 # explanatory comments; they're why each step exists.
 #
@@ -9,7 +9,14 @@
 
 set -euo pipefail
 
-INSTALL_ROOT="${INSTALL_ROOT:-$HOME/.code-conductor}"
+# Default install root = the orchestrator store at <projectsRoot>/.code-conductor,
+# mirroring src/projects.js: PROJECTS_ROOT override, else the parent dir of this
+# repo (this script lives at <repo>/bin/). When launched from the web UI the
+# server pins INSTALL_ROOT explicitly; this fallback only applies to manual runs.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(dirname "$SCRIPT_DIR")"
+DEFAULT_PROJECTS_ROOT="$(dirname "$REPO_ROOT")"
+INSTALL_ROOT="${INSTALL_ROOT:-${PROJECTS_ROOT:-$DEFAULT_PROJECTS_ROOT}/.code-conductor}"
 PIPER_DIR="$INSTALL_ROOT/piper"
 VENV="$PIPER_DIR/venv"
 VOICES_DIR="$PIPER_DIR/voices"

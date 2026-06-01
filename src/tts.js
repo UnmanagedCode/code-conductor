@@ -9,26 +9,27 @@
 //
 // Feature is gated on the presence of the piper venv python + the active
 // voice's .onnx and .onnx.json (env vars override the defaults under
-// ~/.code-conductor/piper/). If anything is missing, /api/tts/status reports
+// <orchStoreRoot>/piper/). If anything is missing, /api/tts/status reports
 // unavailable and the frontend hides the speak button.
 
 import { spawn } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { getTtsVoice, getTtsRate } from './appSettings.js';
 import { voiceFileName, DEFAULT_VOICE } from './ttsModels.js';
+import { orchStoreRoot } from './projects.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_SYNTH_SCRIPT = path.resolve(__dirname, '..', 'bin', 'piper-synth.py');
 
-// Root of the piper install. INSTALL_ROOT mirrors the knob honoured by
-// bin/install-piper.sh, so the server and the installer agree on where the
+// Root of the piper install. Defaults to the orchestrator store
+// (<projectsRoot>/.code-conductor/piper), the same dir the rest of the app's
+// state lives under. INSTALL_ROOT overrides it and mirrors the knob honoured
+// by bin/install-piper.sh, so the server and the installer agree on where the
 // venv + voices live (and tests can point both at a temp dir).
 export function piperRoot() {
-  const home = process.env.HOME || os.homedir();
-  return path.join(process.env.INSTALL_ROOT || path.join(home, '.code-conductor'), 'piper');
+  return path.join(process.env.INSTALL_ROOT || orchStoreRoot(), 'piper');
 }
 
 export function voicesDir() {

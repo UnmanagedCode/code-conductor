@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # One-shot installer for the composer's voice-dictation feature.
-# Builds whisper.cpp under ~/.code-conductor/whisper.cpp and downloads
+# Builds whisper.cpp under <INSTALL_ROOT>/whisper.cpp and downloads
 # the quantized small English model. Total disk cost ~210 MB (30 MB binary + ~182 MB model).
 #
 # Re-run safely: clone is git pull on existing checkout, model download
@@ -8,7 +8,14 @@
 
 set -euo pipefail
 
-INSTALL_ROOT="${INSTALL_ROOT:-$HOME/.code-conductor}"
+# Default install root = the orchestrator store at <projectsRoot>/.code-conductor,
+# mirroring src/projects.js: PROJECTS_ROOT override, else the parent dir of this
+# repo (this script lives at <repo>/bin/). When launched from the web UI the
+# server pins INSTALL_ROOT explicitly; this fallback only applies to manual runs.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(dirname "$SCRIPT_DIR")"
+DEFAULT_PROJECTS_ROOT="$(dirname "$REPO_ROOT")"
+INSTALL_ROOT="${INSTALL_ROOT:-${PROJECTS_ROOT:-$DEFAULT_PROJECTS_ROOT}/.code-conductor}"
 WHISPER_DIR="$INSTALL_ROOT/whisper.cpp"
 MODEL="${WHISPER_MODEL_NAME:-small.en-q5_1}"
 
