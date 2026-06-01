@@ -95,6 +95,7 @@
         <nav class="settings-nav" aria-label="Settings groups">
           <div class="settings-nav-title">Settings</div>
           <button type="button" class="settings-nav-item active" data-group="transcribe">Transcribe</button>
+          <button type="button" class="settings-nav-item" data-group="models">Models</button>
         </nav>
         <div class="settings-content">
           <header class="settings-header">
@@ -113,6 +114,16 @@
               <span id="st-action-hint" class="st-action-hint"></span>
             </div>
             <pre id="st-install-log" class="st-install-log" hidden aria-live="polite"></pre>
+          </div>
+          <div id="settings-models" class="settings-group" hidden>
+            <p class="settings-desc">
+              Pick the concrete model version used for each Claude family. The three spawn pickers
+              (quick-spawn ↯, Conduct, the new-session dialog) resolve each family to the version
+              chosen here. The 200k / 1M context-window choice stays a per-spawn option. Changes take
+              effect immediately — no restart.
+            </p>
+            <div id="sm-status" class="st-status" aria-live="polite">Loading…</div>
+            <ul id="sm-family-list" class="sm-family-list"></ul>
           </div>
         </div>
       </section>
@@ -165,15 +176,16 @@
         <select id="ni-model">
           <option value="" selected>(default)</option>
           <optgroup label="200k context">
-            <option value="claude-haiku-4-5">Haiku (4.5)</option>
-            <option value="claude-sonnet-4-6">Sonnet (4.6)</option>
-            <option value="claude-opus-4-8[200k]">Opus (4.8) — 200k</option>
+            <option data-family="haiku">Haiku</option>
+            <option data-family="sonnet" data-ctx="200k">Sonnet — 200k</option>
+            <option data-family="opus" data-ctx="200k">Opus — 200k</option>
           </optgroup>
           <optgroup label="1M extended context">
-            <option value="claude-sonnet-4-6[1m]">Sonnet (4.6) — 1M</option>
-            <option value="claude-opus-4-8">Opus (4.8) — 1M (default)</option>
+            <option data-family="sonnet" data-ctx="1m">Sonnet — 1M</option>
+            <option data-family="opus" data-ctx="1m">Opus — 1M (default)</option>
           </optgroup>
         </select>
+        <span class="hint">Concrete version per family is set in ⚙ Settings → Models.</span>
       </label>
       <label>Effort (controls thinking budget)
         <select id="ni-effort">
@@ -219,13 +231,13 @@
       <h3>Quick temp session in <span id="qs-project"></span></h3>
       <p class="hint">Spawns a temp session at the project root. The transcript is wiped on exit.</p>
       <div class="quick-spawn-models">
-        <button type="button" class="qs-model" data-model="claude-haiku-4-5">Haiku<span class="qs-ctx">200k</span></button>
-        <button type="button" class="qs-model" data-model="claude-sonnet-4-6">Sonnet<span class="qs-ctx">200k</span></button>
-        <button type="button" class="qs-model" data-model="claude-opus-4-8[200k]">Opus<span class="qs-ctx">200k</span></button>
+        <button type="button" class="qs-model" data-family="haiku">Haiku<span class="qs-ctx">200k</span></button>
+        <button type="button" class="qs-model" data-family="sonnet" data-ctx="200k">Sonnet<span class="qs-ctx">200k</span></button>
+        <button type="button" class="qs-model" data-family="opus" data-ctx="200k">Opus<span class="qs-ctx">200k</span></button>
       </div>
       <div class="quick-spawn-models quick-spawn-extended">
-        <button type="button" class="qs-model qs-model-1m" data-model="claude-sonnet-4-6[1m]">Sonnet<span class="qs-ctx">1M</span></button>
-        <button type="button" class="qs-model qs-model-1m" data-model="claude-opus-4-8">Opus<span class="qs-ctx">1M</span></button>
+        <button type="button" class="qs-model qs-model-1m" data-family="sonnet" data-ctx="1m">Sonnet<span class="qs-ctx">1M</span></button>
+        <button type="button" class="qs-model qs-model-1m" data-family="opus" data-ctx="1m">Opus<span class="qs-ctx">1M</span></button>
       </div>
       <div class="qs-mode-toggle" role="group" aria-label="Spawn mode">
         <button type="button" id="qs-mode-code" class="qs-mode-opt" data-mode="code" aria-pressed="true">Code</button>
@@ -243,13 +255,13 @@
       <h3>🎼 New Conduct session</h3>
       <p class="hint">Spawns a temp Claude session in the hidden <code>.conduct</code> project, pre-configured to orchestrate other sessions via MCP. The transcript is wiped on exit.</p>
       <div class="quick-spawn-models">
-        <button type="button" class="cd-model qs-model" data-model="claude-haiku-4-5">Haiku<span class="qs-ctx">200k</span></button>
-        <button type="button" class="cd-model qs-model" data-model="claude-sonnet-4-6">Sonnet<span class="qs-ctx">200k</span></button>
-        <button type="button" class="cd-model qs-model" data-model="claude-opus-4-8[200k]">Opus<span class="qs-ctx">200k</span></button>
+        <button type="button" class="cd-model qs-model" data-family="haiku">Haiku<span class="qs-ctx">200k</span></button>
+        <button type="button" class="cd-model qs-model" data-family="sonnet" data-ctx="200k">Sonnet<span class="qs-ctx">200k</span></button>
+        <button type="button" class="cd-model qs-model" data-family="opus" data-ctx="200k">Opus<span class="qs-ctx">200k</span></button>
       </div>
       <div class="quick-spawn-models quick-spawn-extended">
-        <button type="button" class="cd-model qs-model qs-model-1m" data-model="claude-sonnet-4-6[1m]">Sonnet<span class="qs-ctx">1M</span></button>
-        <button type="button" class="cd-model qs-model qs-model-1m" data-model="claude-opus-4-8">Opus<span class="qs-ctx">1M</span></button>
+        <button type="button" class="cd-model qs-model qs-model-1m" data-family="sonnet" data-ctx="1m">Sonnet<span class="qs-ctx">1M</span></button>
+        <button type="button" class="cd-model qs-model qs-model-1m" data-family="opus" data-ctx="1m">Opus<span class="qs-ctx">1M</span></button>
       </div>
       <div class="qs-mode-toggle" role="group" aria-label="Spawn mode">
         <button type="button" id="cd-mode-code" class="qs-mode-opt" data-mode="code" aria-pressed="true">Code</button>

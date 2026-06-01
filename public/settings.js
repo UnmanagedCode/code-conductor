@@ -9,7 +9,7 @@
 
 const POLL_MS = 1500;
 
-export function installSettings({ requestClose, onAvailabilityChange } = {}) {
+export function installSettings({ requestClose, onAvailabilityChange, onModelsChange } = {}) {
   const main = document.getElementById('main');
   const view = document.getElementById('settings-view');
   const closeBtn = document.getElementById('settings-close');
@@ -18,6 +18,12 @@ export function installSettings({ requestClose, onAvailabilityChange } = {}) {
   const installBtn = document.getElementById('st-install-btn');
   const hintEl = document.getElementById('st-action-hint');
   const logEl = document.getElementById('st-install-log');
+  const titleEl = document.getElementById('settings-group-title');
+  const navItems = [...view?.querySelectorAll('.settings-nav-item') || []];
+  const groups = [...view?.querySelectorAll('.settings-group') || []];
+  // Models group elements.
+  const smStatusEl = document.getElementById('sm-status');
+  const smListEl = document.getElementById('sm-family-list');
   if (!view) return { open() {}, close() {} };
 
   let isOpen = false;
@@ -25,12 +31,24 @@ export function installSettings({ requestClose, onAvailabilityChange } = {}) {
   let installing = false;  // an install is in flight (controls disabled)
   let installTarget = null; // model the Install button would install
 
+  // ── Group nav ───────────────────────────────────────────────────────
+  function showGroup(group) {
+    for (const btn of navItems) btn.classList.toggle('active', btn.dataset.group === group);
+    for (const g of groups) g.hidden = g.id !== `settings-${group}`;
+    const active = navItems.find(b => b.dataset.group === group);
+    if (titleEl && active) titleEl.textContent = active.textContent;
+  }
+  for (const btn of navItems) {
+    btn.addEventListener('click', () => showGroup(btn.dataset.group));
+  }
+
   function show() {
     if (isOpen) return;
     isOpen = true;
     main.classList.add('settings-open');
     view.hidden = false;
     load();
+    loadModels();
   }
 
   function hide() {
@@ -197,6 +215,74 @@ export function installSettings({ requestClose, onAvailabilityChange } = {}) {
         const data = await r.json();
         onAvailabilityChange?.(data.available);
       } catch { /* ignore */ }
+    }
+  }
+
+  // ── Models group ────────────────────────────────────────────────────
+  async function loadModels() {
+    if (!smListEl) return;
+    try {
+      const r = await fetch('/api/settings/models', { cache: 'no-store' });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      renderModels(await r.json());
+    } catch (e) {
+      if (smStatusEl) smStatusEl.textContent = `Failed to load models: ${e.message || e}`;
+    }
+  }
+
+  function renderModels(data) {
+    const families = data.families || [];
+    const active = data.active || {};
+    if (smStatusEl) {
+      smStatusEl.innerHTML = families
+        .map(f => `${f.label}: <strong>${labelFor(f, active[f.family])}</strong>`)
+        .join(' · ');
+    }
+    smListEl.innerHTML = '';
+    for (const f of families) {
+      const li = document.createElement('li');
+      li.className = 'sm-family-row';
+
+      const label = document.createElement('span');
+      label.className = 'sm-family-label';
+      label.textContent = f.label;
+      li.appendChild(label);
+
+      const sel = document.createElement('select');
+      sel.className = 'sm-version';
+      sel.dataset.family = f.family;
+      for (const v of f.versions) {
+        const opt = document.createElement('option');
+        opt.value = v.id;
+        opt.textContent = v.label;
+        if (v.id === active[f.family]) opt.selected = true;
+        sel.appendChild(opt);
+      }
+      sel.disabled = f.versions.length < 2;
+      sel.addEventListener('change', () => onPickVersion(f.family, sel.value));
+      li.appendChild(sel);
+
+      smListEl.appendChild(li);
+    }
+  }
+
+  function labelFor(family, id) {
+    return family.versions.find(v => v.id === id)?.label || id;
+  }
+
+  async function onPickVersion(family, version) {
+    try {
+      const r = await fetch('/api/settings/models', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ family, version }),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+      renderModels(data);
+      onModelsChange?.(data.active);
+    } catch (e) {
+      if (smStatusEl) smStatusEl.textContent = `Switch failed: ${e.message || e}`;
     }
   }
 

@@ -21,7 +21,12 @@ import {
   isAvailable as transcribeAvailable, transcribe, modelPathForName,
 } from './transcribe.js';
 import { WHISPER_MODELS, isKnownModel, DEFAULT_MODEL } from './whisperModels.js';
-import { getTranscribeModel, setTranscribeModel } from './appSettings.js';
+import {
+  MODEL_FAMILIES, isKnownFamily, isKnownVersion,
+} from './modelVersions.js';
+import {
+  getTranscribeModel, setTranscribeModel, getModelVersion, setModelVersion,
+} from './appSettings.js';
 import * as whisperInstall from './whisperInstall.js';
 import { setTitle as setSessionTitle, MAX_TITLE_LEN } from './sessionTitles.js';
 
@@ -698,6 +703,36 @@ export function buildRoutes({ instances, serverCtx } = {}) {
 
   r.get('/settings/transcribe/install/status', (req, res) => {
     res.json(whisperInstall.status());
+  });
+
+  // Settings → Models group. Reports the curated per-family version catalog
+  // and the active concrete version id per family (falling back to the
+  // catalog default when unset), and lets the UI switch a family's version.
+  function modelsSettingsState() {
+    const active = {};
+    for (const f of MODEL_FAMILIES) {
+      active[f.family] = getModelVersion(f.family) || f.default;
+    }
+    return { families: MODEL_FAMILIES, active };
+  }
+
+  r.get('/settings/models', (req, res) => {
+    res.json(modelsSettingsState());
+  });
+
+  r.post('/settings/models', async (req, res, next) => {
+    try {
+      const family = req.body?.family;
+      const version = req.body?.version;
+      if (!isKnownFamily(family)) {
+        throw Object.assign(new Error('unknown family'), { statusCode: 400 });
+      }
+      if (!isKnownVersion(family, version)) {
+        throw Object.assign(new Error('unknown version for family'), { statusCode: 400 });
+      }
+      await setModelVersion(family, version);
+      res.json(modelsSettingsState());
+    } catch (e) { next(e); }
   });
 
   r.use((err, req, res, _next) => {

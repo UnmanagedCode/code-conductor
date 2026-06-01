@@ -56,3 +56,18 @@ export async function setTranscribeModel(name) {
   await writeSettings(next);
   return name;
 }
+
+// Models group: the active concrete version id per Claude family
+// (`models.sonnet`, `models.opus`, `models.haiku`). Returns null when unset
+// so callers fall back to the catalog default (see modelVersions.js).
+export function getModelVersion(family) {
+  const s = loadSync();
+  return s.models?.[family] ?? null;
+}
+
+export async function setModelVersion(family, id) {
+  const cur = loadSync();
+  const next = { ...cur, models: { ...(cur.models || {}), [family]: id } };
+  await writeSettings(next);
+  return id;
+}

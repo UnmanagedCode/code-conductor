@@ -40,7 +40,12 @@ const DEFAULT_CONTEXT_WINDOW = 200_000;
 
 export function contextWindowFor(model) {
   if (!model) return DEFAULT_CONTEXT_WINDOW;
-  return CONTEXT_WINDOWS[model] ?? DEFAULT_CONTEXT_WINDOW;
+  if (CONTEXT_WINDOWS[model]) return CONTEXT_WINDOWS[model];
+  // Generic fallback for versions the catalog can emit but aren't mapped
+  // above: an explicit context-window suffix is authoritative.
+  if (model.endsWith('[1m]')) return 1_000_000;
+  if (model.endsWith('[200k]')) return 200_000;
+  return DEFAULT_CONTEXT_WINDOW;
 }
 
 export class UsageTracker {
