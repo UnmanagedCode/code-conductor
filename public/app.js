@@ -1220,11 +1220,16 @@ function selectInstance(id) {
   send('subscribe', { id });
   // Anchor the active session in the URL so a page refresh restores it.
   // Uses sessionId (stable across crash/resume), not the transient instance id.
+  const leavingSettings = location.hash === '#settings';
   const inst = id ? state.instances.find(i => i.id === id) : null;
   writeSessionAnchor(inst?.sessionId || null);
   // Now that the user is viewing this session, any backlog of unread
   // turn-end pings for it is by definition read.
   clearUnread(inst?.sessionId);
+  // If the user tapped a session from within the Settings page, leave settings
+  // so the conversation view is visible. writeSessionAnchor already replaced
+  // the hash, so we check the flag captured before that call.
+  if (leavingSettings) settings.close();
   if (window.matchMedia('(max-width: 720px)').matches) setSidebarOpen(false);
 }
 
