@@ -7,10 +7,11 @@
 import * as m0001 from './0001-centralize-orchestrator-state.mjs';
 import * as m0002 from './0002-rename-group-to-workspace.mjs';
 import * as m0003 from './0003-conduct-md-symlink.mjs';
+import * as m0004 from './0004-relocate-av-installs.mjs';
 
 // Ordered list — append new migrations to the end. Order matters:
 // later migrations may assume earlier ones have run.
-const ALL = [m0001, m0002, m0003];
+const ALL = [m0001, m0002, m0003, m0004];
 
 export async function runMigrations({ root, log = console.log } = {}) {
   for (const m of ALL) {
