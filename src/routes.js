@@ -25,9 +25,15 @@ import {
   MODEL_FAMILIES, isKnownFamily, isKnownVersion,
 } from './modelVersions.js';
 import {
+  isAvailable as ttsAvailable, synthesize, voicePathForName,
+} from './tts.js';
+import { TTS_VOICES, isKnownVoice, DEFAULT_VOICE } from './ttsModels.js';
+import {
   getTranscribeModel, setTranscribeModel, getModelVersion, setModelVersion,
+  getTtsEnabled, setTtsEnabled, getTtsVoice, setTtsVoice, getTtsRate, setTtsRate,
 } from './appSettings.js';
 import * as whisperInstall from './whisperInstall.js';
+import * as ttsInstall from './ttsInstall.js';
 import { setTitle as setSessionTitle, MAX_TITLE_LEN } from './sessionTitles.js';
 
 const CONTENT_TYPE_BY_EXT = {
@@ -733,6 +739,112 @@ export function buildRoutes({ instances, serverCtx } = {}) {
       await setModelVersion(family, version);
       res.json(modelsSettingsState());
     } catch (e) { next(e); }
+  });
+
+  // Text-to-speech: the conversation's 🔊 button (and auto-speak) POSTs the
+  // assistant's text here; the server runs Piper locally and streams the
+  // synthesized audio back sentence-by-sentence. /status drives the button's
+  // visibility — the piper venv + the active voice must be present.
+  r.get('/tts/status', async (req, res, next) => {
+    try {
+      const available = await ttsAvailable();
+      res.json({ available });
+    } catch (e) { next(e); }
+  });
+
+  // Streaming synthesis. Body is the raw text (route-scoped text parser so the
+  // global 1 MB JSON limit doesn't apply). The response body is a sequence of
+  // [4-byte LE length][WAV] frames, one per sentence, flushed as Piper yields
+  // them so the client can start playing the first sentence immediately.
+  r.post('/tts', express.text({ type: '*/*', limit: '256kb' }), async (req, res, next) => {
+    try {
+      if (!(await ttsAvailable())) {
+        throw Object.assign(new Error('piper not installed — run bin/install-piper.sh'), { statusCode: 503 });
+      }
+      const text = typeof req.body === 'string' ? req.body : '';
+      const child = synthesize(text); // throws 400 on empty text
+      res.setHeader('Content-Type', 'application/octet-stream');
+      res.setHeader('Cache-Control', 'no-store');
+
+      let errBuf = '';
+      child.stderr.on('data', (b) => { errBuf += b.toString(); });
+      child.stdout.pipe(res);
+      child.on('error', (err) => {
+        if (!res.headersSent) res.status(500);
+        res.end();
+        void err;
+      });
+      child.on('close', (code) => {
+        if (code !== 0 && !res.writableEnded) {
+          // Piper failed mid-stream; nothing useful to send as a body now.
+          res.end();
+        }
+        void errBuf;
+      });
+      // If the client disconnects, stop synthesizing.
+      res.on('close', () => { try { child.kill('SIGKILL'); } catch { /* ignore */ } });
+    } catch (e) { next(e); }
+  });
+
+  // Settings → TTS group. Reports the curated voice catalog (with per-voice
+  // on-disk presence), the active voice, the auto-speak/rate prefs, and lets
+  // the UI switch voices / kick off an install of piper + a chosen voice.
+  async function ttsSettingsState() {
+    const active = getTtsVoice() || DEFAULT_VOICE;
+    const voices = await Promise.all(TTS_VOICES.map(async (v) => {
+      let installed = false;
+      try { installed = (await fs.stat(voicePathForName(v.name))).isFile(); } catch { /* missing */ }
+      return { ...v, installed };
+    }));
+    return {
+      available: await ttsAvailable(),
+      activeVoice: active,
+      voices,
+      install: ttsInstall.status(),
+      enabled: getTtsEnabled(),
+      rate: getTtsRate(),
+    };
+  }
+
+  r.get('/settings/tts', async (req, res, next) => {
+    try { res.json(await ttsSettingsState()); } catch (e) { next(e); }
+  });
+
+  r.post('/settings/tts/voice', async (req, res, next) => {
+    try {
+      const voice = req.body?.voice;
+      if (!isKnownVoice(voice)) {
+        throw Object.assign(new Error('unknown voice'), { statusCode: 400 });
+      }
+      let onDisk = false;
+      try { onDisk = (await fs.stat(voicePathForName(voice))).isFile(); } catch { /* missing */ }
+      if (!onDisk) {
+        throw Object.assign(new Error('voice not installed — install it first'), { statusCode: 400 });
+      }
+      await setTtsVoice(voice);
+      res.json(await ttsSettingsState());
+    } catch (e) { next(e); }
+  });
+
+  // Persist the auto-speak toggle and/or playback rate.
+  r.post('/settings/tts/prefs', async (req, res, next) => {
+    try {
+      if (req.body?.enabled !== undefined) await setTtsEnabled(req.body.enabled);
+      if (req.body?.rate !== undefined) await setTtsRate(req.body.rate);
+      res.json(await ttsSettingsState());
+    } catch (e) { next(e); }
+  });
+
+  r.post('/settings/tts/install', async (req, res, next) => {
+    try {
+      const result = ttsInstall.start(req.body?.voice);
+      if (!result.started) return res.status(409).json({ ok: false, running: true });
+      res.json({ ok: true, started: true });
+    } catch (e) { next(e); }
+  });
+
+  r.get('/settings/tts/install/status', (req, res) => {
+    res.json(ttsInstall.status());
   });
 
   r.use((err, req, res, _next) => {

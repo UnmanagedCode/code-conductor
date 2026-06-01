@@ -32,6 +32,16 @@ export class TextBlock {
     if (!this.buffer.trim()) return;
     this.body.classList.add('md');
     renderMarkdownInto(this.body, this.buffer);
+    // Attach a 🔊 speak affordance when server-side Piper TTS is available.
+    // Mirrors the composer's mic-button gating: hidden entirely otherwise.
+    if (isTtsAvailable()) {
+      const text = this.buffer;
+      const btn = el('button', {
+        class: 'tts-speak', type: 'button', title: 'Read aloud',
+        onclick: () => requestSpeak(text),
+      }, '🔊');
+      this.body.appendChild(btn);
+    }
   }
 }
 
@@ -77,6 +87,7 @@ export class ThinkingBlock {
 
 import { lineDiff, diffStats } from './diff.js';
 import { renderMarkdownInto } from './markdown.js';
+import { isTtsAvailable, requestSpeak } from './tts.js';
 
 // Per-tool one-line description for the collapsed summary.
 // Returns a short string with the most-useful argument for the tool.
