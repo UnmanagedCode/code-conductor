@@ -21,8 +21,23 @@ function buildDOM(document) {
   view.id = 'settings-view';
   view.hidden = true;
 
-  const closeBtn = document.createElement('button');
-  closeBtn.id = 'settings-close';
+  const groupSelect = document.createElement('select');
+  groupSelect.id = 'settings-group-select';
+  for (const val of ['transcribe', 'models', 'tts']) {
+    const opt = document.createElement('option');
+    opt.value = val;
+    groupSelect.appendChild(opt);
+  }
+  view.appendChild(groupSelect);
+
+  // Group panels — must exist before installSettings() so they're captured in groups[].
+  for (const g of ['transcribe', 'models', 'tts']) {
+    const panel = document.createElement('div');
+    panel.id = `settings-${g}`;
+    panel.className = 'settings-group';
+    panel.hidden = g !== 'transcribe';
+    view.appendChild(panel);
+  }
 
   for (const [id, tag] of [
     ['st-status', 'div'], ['st-model-list', 'ul'],
@@ -33,7 +48,6 @@ function buildDOM(document) {
     if (id === 'st-install-btn' || id === 'st-install-log') el.hidden = true;
     view.appendChild(el);
   }
-  view.insertBefore(closeBtn, view.firstChild);
   main.appendChild(view);
 
   const sidebar = document.createElement('aside');
@@ -44,7 +58,7 @@ function buildDOM(document) {
 
   document.body.appendChild(sidebar);
   document.body.appendChild(main);
-  return { main, view, closeBtn, settingsBtn, sidebar };
+  return { main, view, groupSelect, settingsBtn, sidebar };
 }
 
 let counter = 0;
@@ -105,17 +119,17 @@ test('settings: close() hides panel and removes settings-open class', async () =
   window.happyDOM.abort();
 });
 
-test('settings: close button hides panel', async () => {
-  const { window, mod, main, view, closeBtn } = await setup();
+test('settings: group select switches visible panel', async () => {
+  const { window, mod, groupSelect } = await setup();
   const s = mod.installSettings({ requestClose: () => {} });
 
   s.open();
   await window.happyDOM.waitUntilComplete();
-  assert.equal(view.hidden, false);
 
-  click(closeBtn, window);
-  assert.equal(main.classList.contains('settings-open'), false);
-  assert.equal(view.hidden, true);
+  groupSelect.value = 'models';
+  groupSelect.dispatchEvent(new window.Event('change', { bubbles: true }));
+  assert.equal(window.document.getElementById('settings-models').hidden, false);
+  assert.equal(window.document.getElementById('settings-transcribe').hidden, true);
   window.happyDOM.abort();
 });
 

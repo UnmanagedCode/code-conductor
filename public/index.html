@@ -92,16 +92,14 @@
         </div>
       </form>
       <section id="settings-view" hidden aria-label="Settings">
-        <nav class="settings-nav" aria-label="Settings groups">
-          <div class="settings-nav-title">Settings</div>
-          <button type="button" class="settings-nav-item active" data-group="transcribe">Transcribe</button>
-          <button type="button" class="settings-nav-item" data-group="models">Models</button>
-          <button type="button" class="settings-nav-item" data-group="tts">TTS</button>
-        </nav>
         <div class="settings-content">
           <header class="settings-header">
-            <h2 id="settings-group-title">Transcribe</h2>
-            <button id="settings-close" type="button" title="Close settings">✕ Close</button>
+            <span class="settings-title">Settings</span>
+            <select id="settings-group-select">
+              <option value="transcribe">Transcribe</option>
+              <option value="models">Models</option>
+              <option value="tts">TTS</option>
+            </select>
           </header>
           <div id="settings-transcribe" class="settings-group">
             <p class="settings-desc">

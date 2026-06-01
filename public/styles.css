@@ -1120,40 +1120,28 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
 #main.settings-open #composer,
 #main.settings-open #instance-controls { display: none !important; }
 
-#settings-view { flex: 1 1 auto; min-height: 0; display: flex; }
-/* Explicit display above outranks UA `[hidden] { display: none }` (same trap
+/* Explicit display below outranks UA `[hidden] { display: none }` (same trap
    as .turn-indicator) — restore the hidden behaviour. */
+#settings-view { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
 #settings-view[hidden] { display: none; }
 
-.settings-nav {
-  flex: 0 0 180px; border-right: 1px solid var(--border);
-  padding: 14px 8px; display: flex; flex-direction: column; gap: 4px;
-  background: var(--panel);
-}
-.settings-nav-title {
-  font-size: 11px; text-transform: uppercase; letter-spacing: .05em;
-  color: var(--muted); padding: 0 8px 6px;
-}
-.settings-nav-item {
-  text-align: left; width: 100%; padding: 8px 10px; border-radius: 6px;
-  background: transparent; border: 1px solid transparent; color: var(--text);
-}
-.settings-nav-item:hover { background: var(--panel-2); }
-.settings-nav-item.active { background: var(--panel-2); border-color: var(--border); }
-
-.settings-content { flex: 1 1 auto; min-width: 0; overflow-y: auto; padding: 16px 20px; }
+.settings-content { flex: 1 1 auto; min-width: 0; overflow-y: auto; padding: 16px; box-sizing: border-box; }
 .settings-header {
-  display: flex; align-items: center; justify-content: space-between;
-  margin-bottom: 14px;
+  display: flex; align-items: center; gap: 12px;
+  margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px solid var(--border);
 }
-.settings-header h2 { margin: 0; font-size: 18px; }
+.settings-title { font-size: 18px; font-weight: 600; white-space: nowrap; flex: 0 0 auto; }
+#settings-group-select {
+  flex: 1; background: var(--panel-2); border: 1px solid var(--border);
+  color: var(--text); border-radius: 6px; padding: 6px 10px; font-size: 14px;
+}
 .settings-desc { color: var(--muted); font-size: 12px; max-width: 60ch; }
 
 .st-status { margin: 12px 0; font-size: 13px; }
 .st-ok { color: var(--green); }
 .st-warn { color: var(--amber); }
 
-.st-model-list { list-style: none; margin: 12px 0; padding: 0; display: flex; flex-direction: column; gap: 6px; max-width: 520px; }
+.st-model-list { list-style: none; margin: 12px 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
 .st-model-row {
   display: flex; align-items: center; justify-content: space-between; gap: 10px;
   padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px;
@@ -1206,15 +1194,14 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
 .tts-speak.speaking:hover { background: rgba(248, 113, 113, 0.25); }
 
 /* Settings → Models group: one row per family (label + version select). */
-.sm-family-list { list-style: none; margin: 12px 0; padding: 0; display: flex; flex-direction: column; gap: 6px; max-width: 520px; }
+.sm-family-list { list-style: none; margin: 12px 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
 .sm-family-row {
-  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  display: flex; align-items: center; gap: 10px; min-width: 0;
   padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px;
   background: var(--panel);
 }
-.sm-family-label { font-size: 13px; }
-.sm-version { min-width: 160px; }
+.sm-family-label { font-size: 13px; white-space: nowrap; flex: 0 0 auto; }
+.sm-version { flex: 1; min-width: 0; max-width: 100%; }
 @media (max-width: 720px) {
-  .sm-family-list { max-width: none; margin: 8px 0; }
   .sm-family-row { padding: 8px 10px; }
 }

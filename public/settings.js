@@ -15,14 +15,12 @@ export function installSettings({
 } = {}) {
   const main = document.getElementById('main');
   const view = document.getElementById('settings-view');
-  const closeBtn = document.getElementById('settings-close');
+  const groupSelect = document.getElementById('settings-group-select');
   const statusEl = document.getElementById('st-status');
   const listEl = document.getElementById('st-model-list');
   const installBtn = document.getElementById('st-install-btn');
   const hintEl = document.getElementById('st-action-hint');
   const logEl = document.getElementById('st-install-log');
-  const titleEl = document.getElementById('settings-group-title');
-  const navItems = [...view?.querySelectorAll('.settings-nav-item') || []];
   const groups = [...view?.querySelectorAll('.settings-group') || []];
   // Models group elements.
   const smStatusEl = document.getElementById('sm-status');
@@ -49,14 +47,10 @@ export function installSettings({
 
   // ── Group nav ───────────────────────────────────────────────────────
   function showGroup(group) {
-    for (const btn of navItems) btn.classList.toggle('active', btn.dataset.group === group);
     for (const g of groups) g.hidden = g.id !== `settings-${group}`;
-    const active = navItems.find(b => b.dataset.group === group);
-    if (titleEl && active) titleEl.textContent = active.textContent;
+    if (groupSelect) groupSelect.value = group;
   }
-  for (const btn of navItems) {
-    btn.addEventListener('click', () => showGroup(btn.dataset.group));
-  }
+  groupSelect?.addEventListener('change', () => showGroup(groupSelect.value));
 
   function show() {
     if (isOpen) return;
@@ -86,7 +80,6 @@ export function installSettings({
     requestClose?.();
   }
 
-  closeBtn?.addEventListener('click', () => { close(); });
 
   async function load() {
     try {

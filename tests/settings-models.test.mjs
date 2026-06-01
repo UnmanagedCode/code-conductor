@@ -33,7 +33,7 @@ async function withEnv(overrides, fn) {
 
 // ── Catalog ────────────────────────────────────────────────────────────
 test('modelVersions catalog: families, defaults, and validators', () => {
-  assert.deepEqual(MODEL_FAMILIES.map(f => f.family), ['sonnet', 'opus', 'haiku']);
+  assert.deepEqual(MODEL_FAMILIES.map(f => f.family), ['opus', 'sonnet', 'haiku']);
   // Every family default is itself a known version of that family.
   for (const f of MODEL_FAMILIES) {
     assert.equal(DEFAULT_VERSIONS[f.family], f.default);
@@ -81,7 +81,7 @@ test('GET /api/settings/models returns catalog + active defaults', async () => {
   try {
     const r = await api(baseUrl, 'GET', '/api/settings/models');
     assert.equal(r.status, 200);
-    assert.deepEqual(r.body.families.map(f => f.family), ['sonnet', 'opus', 'haiku']);
+    assert.deepEqual(r.body.families.map(f => f.family), ['opus', 'sonnet', 'haiku']);
     // Unset → catalog defaults.
     assert.equal(r.body.active.sonnet, 'claude-sonnet-4-6');
     assert.equal(r.body.active.opus, 'claude-opus-4-8');

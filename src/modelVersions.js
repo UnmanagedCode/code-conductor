@@ -14,21 +14,21 @@
 
 export const MODEL_FAMILIES = [
   {
-    family: 'sonnet',
-    label: 'Sonnet',
-    default: 'claude-sonnet-4-6',
-    versions: [
-      { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6' },
-      { id: 'claude-sonnet-4-5', label: 'Sonnet 4.5' },
-    ],
-  },
-  {
     family: 'opus',
     label: 'Opus',
     default: 'claude-opus-4-8',
     versions: [
       { id: 'claude-opus-4-8', label: 'Opus 4.8' },
       { id: 'claude-opus-4-7', label: 'Opus 4.7' },
+    ],
+  },
+  {
+    family: 'sonnet',
+    label: 'Sonnet',
+    default: 'claude-sonnet-4-6',
+    versions: [
+      { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6' },
+      { id: 'claude-sonnet-4-5', label: 'Sonnet 4.5' },
     ],
   },
   {
