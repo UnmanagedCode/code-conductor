@@ -61,6 +61,28 @@ export function whisperPaths() {
   };
 }
 
+// whisper-cli is run in-place from its CMake build tree, which bakes the
+// *build-time* absolute paths of libwhisper/libggml into the binary's RUNPATH.
+// When the install is relocated (e.g. migration 0004 moving it into the store)
+// that RUNPATH points at a now-missing dir and the loader aborts with
+// "CANNOT LINK EXECUTABLE … libwhisper.so.1 not found". Derive the lib dirs
+// from the actual cli path (<root>/build/bin/whisper-cli → <root>/build/{src,
+// ggml/src}) so they stay correct across relocations and honour a WHISPER_CLI
+// override, and feed them via LD_LIBRARY_PATH at spawn time.
+function whisperLibDirs(cli) {
+  const buildDir = path.resolve(cli, '..', '..');
+  return [path.join(buildDir, 'src'), path.join(buildDir, 'ggml', 'src')];
+}
+
+function whisperEnv(cli) {
+  return {
+    ...process.env,
+    LD_LIBRARY_PATH: [...whisperLibDirs(cli), process.env.LD_LIBRARY_PATH]
+      .filter(Boolean)
+      .join(path.delimiter),
+  };
+}
+
 export async function isAvailable() {
   const { cli, model } = whisperPaths();
   try {
@@ -71,9 +93,9 @@ export async function isAvailable() {
   }
 }
 
-function run(cmd, args) {
+function run(cmd, args, opts = {}) {
   return new Promise((resolve, reject) => {
-    execFile(cmd, args, { maxBuffer: 16 * 1024 * 1024 }, (err, stdout, stderr) => {
+    execFile(cmd, args, { maxBuffer: 16 * 1024 * 1024, ...opts }, (err, stdout, stderr) => {
       if (err) {
         err.stdout = stdout;
         err.stderr = stderr;
@@ -100,7 +122,10 @@ export async function transcribe(audioBuf) {
     // Convert to 16 kHz mono 16-bit PCM WAV — whisper.cpp's required input.
     await run(ffmpeg, ['-y', '-i', inputPath, '-ac', '1', '-ar', '16000', '-f', 'wav', wavPath]);
     // -of writes "<prefix>.txt"; --no-prints silences whisper-cli's progress noise.
-    await run(cli, ['-m', model, '-f', wavPath, '--output-txt', '-of', outPrefix, '--no-prints']);
+    // env carries LD_LIBRARY_PATH so the loader finds libwhisper/libggml at the
+    // current install path regardless of the binary's baked-in RUNPATH.
+    await run(cli, ['-m', model, '-f', wavPath, '--output-txt', '-of', outPrefix, '--no-prints'],
+      { env: whisperEnv(cli) });
     const text = await fs.readFile(`${outPrefix}.txt`, 'utf8');
     return text.trim();
   } finally {
