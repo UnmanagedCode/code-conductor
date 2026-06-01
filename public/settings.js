@@ -9,7 +9,10 @@
 
 const POLL_MS = 1500;
 
-export function installSettings({ requestClose, onAvailabilityChange, onModelsChange } = {}) {
+export function installSettings({
+  requestClose, onAvailabilityChange, onModelsChange,
+  onTtsAvailabilityChange, onTtsPrefsChange,
+} = {}) {
   const main = document.getElementById('main');
   const view = document.getElementById('settings-view');
   const closeBtn = document.getElementById('settings-close');
@@ -24,12 +27,25 @@ export function installSettings({ requestClose, onAvailabilityChange, onModelsCh
   // Models group elements.
   const smStatusEl = document.getElementById('sm-status');
   const smListEl = document.getElementById('sm-family-list');
+  // TTS group elements.
+  const ttStatusEl = document.getElementById('tt-status');
+  const ttListEl = document.getElementById('tt-voice-list');
+  const ttInstallBtn = document.getElementById('tt-install-btn');
+  const ttHintEl = document.getElementById('tt-action-hint');
+  const ttLogEl = document.getElementById('tt-install-log');
+  const ttEnabledEl = document.getElementById('tt-enabled');
+  const ttRateEl = document.getElementById('tt-rate');
+  const ttRateValEl = document.getElementById('tt-rate-val');
   if (!view) return { open() {}, close() {} };
 
   let isOpen = false;
   let selected = null;     // model name highlighted by the user
   let installing = false;  // an install is in flight (controls disabled)
   let installTarget = null; // model the Install button would install
+  // TTS group state (independent of the transcribe install state above).
+  let ttSelected = null;
+  let ttInstalling = false;
+  let ttInstallTarget = null;
 
   // ── Group nav ───────────────────────────────────────────────────────
   function showGroup(group) {
@@ -49,6 +65,7 @@ export function installSettings({ requestClose, onAvailabilityChange, onModelsCh
     view.hidden = false;
     load();
     loadModels();
+    loadTts();
   }
 
   function hide() {
@@ -285,6 +302,176 @@ export function installSettings({ requestClose, onAvailabilityChange, onModelsCh
       if (smStatusEl) smStatusEl.textContent = `Switch failed: ${e.message || e}`;
     }
   }
+
+  // ── TTS group ───────────────────────────────────────────────────────
+  async function loadTts() {
+    if (!ttListEl) return;
+    try {
+      const r = await fetch('/api/settings/tts', { cache: 'no-store' });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const data = await r.json();
+      renderTts(data);
+      if (data.install?.running && !ttInstalling) ttBeginPoll();
+    } catch (e) {
+      if (ttStatusEl) ttStatusEl.textContent = `Failed to load TTS settings: ${e.message || e}`;
+    }
+  }
+
+  function renderTts(data) {
+    const voices = data.voices || [];
+    const active = data.activeVoice;
+    const activeLabel = voices.find(v => v.name === active)?.label;
+
+    if (data.available) {
+      ttStatusEl.innerHTML = `<span class="st-ok">✓ TTS available</span>` +
+        (activeLabel ? ` — active voice: <strong>${activeLabel}</strong>` : '');
+    } else {
+      ttStatusEl.innerHTML = `<span class="st-warn">Piper not installed</span> — pick a voice and install it.`;
+    }
+
+    // Prefs (only refresh from data when present — beginPoll passes a stub).
+    if (data.enabled !== undefined && ttEnabledEl) ttEnabledEl.checked = !!data.enabled;
+    if (data.rate !== undefined && ttRateEl) {
+      ttRateEl.value = String(data.rate);
+      if (ttRateValEl) ttRateValEl.textContent = `${Number(data.rate).toFixed(2)}×`;
+    }
+    if (ttEnabledEl) ttEnabledEl.disabled = !data.available;
+
+    ttListEl.innerHTML = '';
+    for (const v of voices) {
+      const li = document.createElement('li');
+      li.className = 'st-model-row';
+      const isActive = v.name === active && v.installed;
+      if (isActive) li.classList.add('active');
+      if (v.name === ttSelected) li.classList.add('selected');
+      li.dataset.voice = v.name;
+
+      const main2 = document.createElement('div');
+      main2.className = 'st-model-main';
+      main2.innerHTML = `<span class="st-model-label">${v.label}</span>` +
+        `<span class="st-model-size">${v.sizeLabel}</span>`;
+      li.appendChild(main2);
+
+      const badge = document.createElement('span');
+      badge.className = 'st-badge';
+      if (isActive) { badge.textContent = 'active'; badge.classList.add('badge-active'); }
+      else if (v.installed) { badge.textContent = 'installed'; badge.classList.add('badge-installed'); }
+      else { badge.textContent = 'not installed'; badge.classList.add('badge-missing'); }
+      li.appendChild(badge);
+
+      if (!ttInstalling) li.addEventListener('click', () => onPickVoice(v));
+      ttListEl.appendChild(li);
+    }
+
+    const sel = voices.find(v => v.name === ttSelected);
+    if (ttInstallBtn) ttInstallBtn.disabled = ttInstalling;
+    if (!sel) {
+      if (ttInstallBtn) ttInstallBtn.hidden = true;
+      if (ttHintEl) ttHintEl.textContent = ttInstalling ? 'Installing…' : '';
+    } else if (sel.installed) {
+      if (ttInstallBtn) ttInstallBtn.hidden = true;
+      if (ttHintEl) ttHintEl.textContent = sel.name === active ? '' : 'Switching…';
+    } else {
+      ttInstallTarget = sel.name;
+      if (ttInstallBtn) { ttInstallBtn.hidden = false; ttInstallBtn.textContent = `Install ${sel.label} (${sel.sizeLabel})`; }
+      if (ttHintEl) ttHintEl.textContent = 'First install also builds Piper from source — can take several minutes.';
+    }
+  }
+
+  async function onPickVoice(v) {
+    if (ttInstalling) return;
+    ttSelected = v.name;
+    if (v.installed) {
+      try {
+        const r = await fetch('/api/settings/tts/voice', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ voice: v.name }),
+        });
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+        ttSelected = null;
+        renderTts(data);
+        onTtsAvailabilityChange?.(data.available);
+      } catch (e) {
+        if (ttHintEl) ttHintEl.textContent = `Switch failed: ${e.message || e}`;
+      }
+    } else {
+      loadTts();
+    }
+  }
+
+  ttInstallBtn?.addEventListener('click', async () => {
+    if (ttInstalling || !ttInstallTarget) return;
+    const voice = ttInstallTarget;
+    ttLogEl.hidden = false;
+    ttLogEl.textContent = '';
+    try {
+      const r = await fetch('/api/settings/tts/install', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ voice }),
+      });
+      if (r.status === 409) { if (ttHintEl) ttHintEl.textContent = 'An install is already running.'; }
+      else if (!r.ok) { const d = await r.json().catch(() => ({})); throw new Error(d.error || `HTTP ${r.status}`); }
+      ttBeginPoll();
+    } catch (e) {
+      if (ttHintEl) ttHintEl.textContent = `Install failed to start: ${e.message || e}`;
+    }
+  });
+
+  function ttBeginPoll() {
+    ttInstalling = true;
+    ttSelected = null;
+    renderTts({ voices: [] });
+    ttPoll();
+  }
+
+  async function ttPoll() {
+    let s;
+    try {
+      const r = await fetch('/api/settings/tts/install/status', { cache: 'no-store' });
+      s = await r.json();
+    } catch {
+      setTimeout(ttPoll, POLL_MS);
+      return;
+    }
+    ttLogEl.hidden = false;
+    ttLogEl.textContent = s.log || '';
+    ttLogEl.scrollTop = ttLogEl.scrollHeight;
+    if (s.running) {
+      setTimeout(ttPoll, POLL_MS);
+    } else {
+      ttInstalling = false;
+      await loadTts();
+      try {
+        const r = await fetch('/api/settings/tts', { cache: 'no-store' });
+        const data = await r.json();
+        onTtsAvailabilityChange?.(data.available);
+      } catch { /* ignore */ }
+    }
+  }
+
+  async function savePrefs(patch) {
+    try {
+      const r = await fetch('/api/settings/tts/prefs', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(patch),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+      onTtsPrefsChange?.({ enabled: data.enabled, rate: data.rate });
+    } catch (e) {
+      if (ttHintEl) ttHintEl.textContent = `Save failed: ${e.message || e}`;
+    }
+  }
+
+  ttEnabledEl?.addEventListener('change', () => savePrefs({ enabled: ttEnabledEl.checked }));
+  ttRateEl?.addEventListener('input', () => {
+    if (ttRateValEl) ttRateValEl.textContent = `${Number(ttRateEl.value).toFixed(2)}×`;
+  });
+  ttRateEl?.addEventListener('change', () => savePrefs({ rate: Number(ttRateEl.value) }));
 
   window.addEventListener('hashchange', sync);
   window.addEventListener('keydown', e => {

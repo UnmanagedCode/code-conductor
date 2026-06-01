@@ -71,3 +71,49 @@ export async function setModelVersion(family, id) {
   await writeSettings(next);
   return id;
 }
+
+// TTS group: the `tts` namespace holds { enabled, voice, rate }.
+// `enabled` gates auto-speak of finalized assistant messages; `voice` is the
+// active Piper voice name (null → built-in default, see ttsModels.js); `rate`
+// is the playback speed multiplier (1.0 = natural). Each setter spreads the
+// existing namespace so it never clobbers `transcribe`/`models`.
+const TTS_RATE_MIN = 0.5;
+const TTS_RATE_MAX = 2.0;
+
+export function getTtsEnabled() {
+  const s = loadSync();
+  return s.tts?.enabled ?? false;
+}
+
+export async function setTtsEnabled(enabled) {
+  const cur = loadSync();
+  const next = { ...cur, tts: { ...(cur.tts || {}), enabled: !!enabled } };
+  await writeSettings(next);
+  return !!enabled;
+}
+
+export function getTtsVoice() {
+  const s = loadSync();
+  return s.tts?.voice ?? null;
+}
+
+export async function setTtsVoice(name) {
+  const cur = loadSync();
+  const next = { ...cur, tts: { ...(cur.tts || {}), voice: name } };
+  await writeSettings(next);
+  return name;
+}
+
+export function getTtsRate() {
+  const s = loadSync();
+  return s.tts?.rate ?? 1.0;
+}
+
+export async function setTtsRate(rate) {
+  const n = Number(rate);
+  const clamped = Number.isFinite(n) ? Math.min(TTS_RATE_MAX, Math.max(TTS_RATE_MIN, n)) : 1.0;
+  const cur = loadSync();
+  const next = { ...cur, tts: { ...(cur.tts || {}), rate: clamped } };
+  await writeSettings(next);
+  return clamped;
+}

@@ -31,6 +31,9 @@ export class Conversation {
     // (userMessageIndex) -> called when the user clicks the ⑂ button on
     // a user bubble. Forks a new session from the prefix up to that point.
     onFork = null,
+    // (text) -> called when an outer assistant text block finalizes (text_end).
+    // Wired to TTS auto-speak in app.js. Sub-conversations don't fire it.
+    onAssistantText = null,
   } = {}) {
     this.root = rootEl;
     this.isSub = isSub;
@@ -40,6 +43,7 @@ export class Conversation {
     this.resolveAttachmentUrl = resolveAttachmentUrl;
     this.onRewind = onRewind;
     this.onFork = onFork;
+    this.onAssistantText = onAssistantText;
     // 0-based index of the next user_echo to render. Stamped onto the
     // bubble's DOM via `data-user-index` so click handlers know which
     // jsonl user-prompt line to anchor against on rewind/fork.
@@ -336,6 +340,12 @@ export class Conversation {
     const key = `${ev.msgId ?? '?'}:${ev.blockIdx ?? 0}:${t}`;
     const block = this.blocksByKey.get(key);
     if (block?.finalize) block.finalize();
+    // Auto-speak finalized assistant text (outer conversation only — sub-agent
+    // chatter isn't read aloud). Gating on enabled/availability/user-gesture
+    // lives in the callback (maybeAutoSpeak).
+    if (ev.kind === 'text_end' && !this.isSub && block?.buffer) {
+      this.onAssistantText?.(block.buffer);
+    }
   }
 
   _renderToolStart(ev) {

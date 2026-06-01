@@ -96,6 +96,7 @@
           <div class="settings-nav-title">Settings</div>
           <button type="button" class="settings-nav-item active" data-group="transcribe">Transcribe</button>
           <button type="button" class="settings-nav-item" data-group="models">Models</button>
+          <button type="button" class="settings-nav-item" data-group="tts">TTS</button>
         </nav>
         <div class="settings-content">
           <header class="settings-header">
@@ -124,6 +125,27 @@
             </p>
             <div id="sm-status" class="st-status" aria-live="polite">Loading…</div>
             <ul id="sm-family-list" class="sm-family-list"></ul>
+          </div>
+          <div id="settings-tts" class="settings-group" hidden>
+            <p class="settings-desc">
+              Read assistant messages aloud with Piper — a local neural text-to-speech engine
+              (no network, no API key). Tap the 🔊 button on any assistant message, or enable
+              auto-speak below to read each reply as it finishes. Install a voice to get started.
+            </p>
+            <div id="tt-status" class="st-status" aria-live="polite">Loading…</div>
+            <div class="tt-prefs">
+              <label class="tt-toggle"><input id="tt-enabled" type="checkbox" /> Auto-speak assistant replies</label>
+              <label class="tt-rate-label">Rate
+                <input id="tt-rate" type="range" min="0.5" max="2" step="0.05" value="1" />
+                <span id="tt-rate-val" class="tt-rate-val">1.00×</span>
+              </label>
+            </div>
+            <ul id="tt-voice-list" class="st-model-list"></ul>
+            <div class="st-actions">
+              <button id="tt-install-btn" type="button" hidden>Install</button>
+              <span id="tt-action-hint" class="st-action-hint"></span>
+            </div>
+            <pre id="tt-install-log" class="st-install-log" hidden aria-live="polite"></pre>
           </div>
         </div>
       </section>

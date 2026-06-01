@@ -24,6 +24,7 @@ import { installExternalLinkOpener } from './external-links.js';
 import { installLightbox } from './lightbox.js';
 import { installSettings } from './settings.js';
 import { loadModelVersions, setActiveVersions, resolveSpawnModel } from './models.js';
+import { setTtsAvailable, setTtsEnabled, setTtsRate, maybeAutoSpeak } from './tts.js';
 
 const state = {
   projects: [],
@@ -265,6 +266,8 @@ const conversation = new Conversation(dom.conversation, {
   },
   onRewind: (userMessageIndex) => rewindActiveSession(userMessageIndex),
   onFork: (userMessageIndex) => forkActiveSession(userMessageIndex),
+  // Read finalized assistant messages aloud when TTS auto-speak is enabled.
+  onAssistantText: (text) => maybeAutoSpeak(text),
 });
 
 const sidebar = new Sidebar({
@@ -317,6 +320,23 @@ function setMicAvailable(available) {
   } catch { /* leave mic disabled */ }
 })();
 
+// Probe Piper TTS availability (gates the 🔊 speak buttons) and seed the
+// auto-speak/rate prefs. Mirrors the transcribe-status probe above.
+(async () => {
+  try {
+    const r = await fetch('/api/tts/status', { cache: 'no-store' });
+    if (r.ok) setTtsAvailable((await r.json()).available);
+  } catch { /* leave TTS disabled */ }
+  try {
+    const r = await fetch('/api/settings/tts', { cache: 'no-store' });
+    if (r.ok) {
+      const d = await r.json();
+      setTtsEnabled(d.enabled);
+      setTtsRate(d.rate);
+    }
+  } catch { /* prefs default off */ }
+})();
+
 // Settings page (full-page view at #settings). The burger-menu button routes
 // here; closing restores the previously-active session anchor.
 function closeSettings() {
@@ -327,6 +347,8 @@ const settings = installSettings({
   requestClose: closeSettings,
   onAvailabilityChange: setMicAvailable,
   onModelsChange: setActiveVersions,
+  onTtsAvailabilityChange: setTtsAvailable,
+  onTtsPrefsChange: ({ enabled, rate }) => { setTtsEnabled(enabled); setTtsRate(rate); },
 });
 // Seed the per-family model-version cache the spawn pickers resolve against.
 loadModelVersions();
