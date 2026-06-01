@@ -23,6 +23,7 @@ import {
 import { installExternalLinkOpener } from './external-links.js';
 import { installLightbox } from './lightbox.js';
 import { installSettings } from './settings.js';
+import { loadModelVersions, setActiveVersions, resolveSpawnModel } from './models.js';
 
 const state = {
   projects: [],
@@ -325,7 +326,10 @@ function closeSettings() {
 const settings = installSettings({
   requestClose: closeSettings,
   onAvailabilityChange: setMicAvailable,
+  onModelsChange: setActiveVersions,
 });
+// Seed the per-family model-version cache the spawn pickers resolve against.
+loadModelVersions();
 dom.settingsBtn?.addEventListener('click', () => {
   closeSidebarOverflow();
   if (location.hash === '#settings') settings.close();
@@ -843,7 +847,10 @@ dom.newInstanceDialog.addEventListener('close', async () => {
   const mode = dom.niMode.value;
   const effort = dom.niEffort.value;
   const thinking = dom.niThinking.value;
-  const model = dom.niModel.value || undefined;
+  const modelOpt = dom.niModel.selectedOptions[0];
+  const model = modelOpt?.dataset.family
+    ? resolveSpawnModel(modelOpt.dataset.family, modelOpt.dataset.ctx)
+    : undefined;
   const temp = dom.niTemp.checked || undefined;
   const debug = dom.niDebug.checked || undefined;
   // Worktree intent: pre-locked name (existing) > checkbox (fresh) > omitted.
@@ -920,7 +927,9 @@ dom.quickSpawnDialog.addEventListener('click', (e) => {
   const btn = e.target.closest('.qs-model');
   if (!btn || btn.classList.contains('cd-model')) return;
   e.preventDefault();
-  const model = btn.dataset.model;
+  const family = btn.dataset.family;
+  if (!family) return;
+  const model = resolveSpawnModel(family, btn.dataset.ctx);
   if (model) spawnInstance({ project: pendingQuickSpawnProject, model, planMode: qsMode.planMode, dialogEl: dom.quickSpawnDialog, errorEl: dom.qsError });
 });
 
@@ -950,7 +959,9 @@ dom.conductDialog.addEventListener('click', (e) => {
   const btn = e.target.closest('.cd-model');
   if (!btn) return;
   e.preventDefault();
-  const model = btn.dataset.model;
+  const family = btn.dataset.family;
+  if (!family) return;
+  const model = resolveSpawnModel(family, btn.dataset.ctx);
   if (model) spawnInstance({ project: '.conduct', model, planMode: cdMode.planMode, dialogEl: dom.conductDialog, errorEl: dom.cdError });
 });
 
