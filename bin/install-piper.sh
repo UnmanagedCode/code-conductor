@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 # One-shot installer for the conversation's text-to-speech (TTS) feature.
-# Builds a Piper venv under <INSTALL_ROOT>/piper and downloads a neural
-# voice. This recipe solves five non-obvious Termux/aarch64 hurdles — keep the
-# explanatory comments; they're why each step exists.
+# Builds a Piper venv under <INSTALL_ROOT>/piper and downloads a neural voice.
+#
+# The script has two clearly-separated platform paths that converge at the voice
+# download and smoke test:
+#   - Termux/Android: five non-obvious aarch64 workarounds (keep the comments)
+#   - Debian/Ubuntu:  clean minimal flow using the manylinux binary pip wheel
 #
 # Re-run safely: every step self-checks "already done?" and is a fast no-op in
 # steady state (venv reuse, pip idempotency, voice-file presence checks).
@@ -25,63 +28,70 @@ VOICE="${PIPER_VOICE_NAME:-en_US-lessac-medium}"
 PYTHON="$VENV/bin/python3"
 PIP="$VENV/bin/pip"
 
-# manylinux aarch64 piper_tts wheel — we DON'T install it (its native .so links
-# glibc and won't load on Android bionic), but we mine it for espeak-ng-data,
-# which the pure-Python wheel pip installs omits.
+# manylinux aarch64 piper_tts wheel — on Termux we DON'T install it (its native
+# .so links glibc and won't load on Android bionic), but we mine it for
+# espeak-ng-data, which the pure-Python wheel pip installs omits. On Debian this
+# is a fallback only; the binary wheel normally bundles espeak-ng-data already.
 WHEEL_URL="https://files.pythonhosted.org/packages/77/1c/260c65320df47fee582d78ad52d49d4195c5439a77b62e73306c2de835ea/piper_tts-1.4.2-cp39-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.manylinux_2_28_aarch64.whl"
 
-# ── 1. System deps ────────────────────────────────────────────────────────
-# onnxruntime has NO PyPI wheel for py3.13/aarch64; Termux splits it into a C
-# library (onnxruntime) + the Python bindings (python-onnxruntime). espeak
-# provides libespeak-ng.so + the headers we compile espeakbridge.c against.
-echo "==> Installing system deps (onnxruntime, python-onnxruntime, espeak, clang)"
+# Detect platform once; all platform-specific blocks key off this variable.
 if command -v pkg >/dev/null 2>&1; then
-  pkg install -y onnxruntime python-onnxruntime espeak clang
-elif command -v apt-get >/dev/null 2>&1; then
-  sudo apt-get update && sudo apt-get install -y espeak-ng clang
-  echo "WARN: non-Termux host — ensure onnxruntime python bindings are importable" >&2
+  IS_TERMUX=1
 else
-  echo "WARN: no known package manager — install onnxruntime python-onnxruntime espeak clang manually" >&2
+  IS_TERMUX=0
 fi
 
 mkdir -p "$PIPER_DIR" "$VOICES_DIR"
 
-# ── 2. venv (with system site-packages) ─────────────────────────────────────
-# --system-site-packages is REQUIRED so the venv can see the pkg-installed
-# python-onnxruntime (there's no pip-installable onnxruntime for this target).
-if [ ! -x "$PYTHON" ]; then
-  echo "==> Creating venv at $VENV"
-  python3 -m venv --system-site-packages "$VENV"
-else
-  echo "==> Reusing existing venv at $VENV"
-fi
+# ════════════════════════════════════════════════════════════════════════════
+# TERMUX / ANDROID PATH
+# Five non-obvious workarounds required on aarch64 Android — keep comments.
+# ════════════════════════════════════════════════════════════════════════════
+if [ "$IS_TERMUX" -eq 1 ]; then
 
-# ── 3. pip install piper-tts (no build isolation) ───────────────────────────
-# Without scikit-build/setuptools/wheel present + --no-build-isolation, pip
-# tries to build the `cmake` PyPI package from source (slow, fails on Termux).
-# --no-build-isolation makes the build use the system cmake instead.
-if ! "$PYTHON" -c "import piper" >/dev/null 2>&1; then
-  echo "==> Installing piper-tts into the venv"
-  "$PIP" install --upgrade pip >/dev/null
-  "$PIP" install scikit-build setuptools wheel
-  "$PIP" install piper-tts --no-build-isolation
-else
-  echo "==> piper-tts already importable — skipping pip install"
-fi
+  # ── 1. System deps ────────────────────────────────────────────────────────
+  # onnxruntime has NO PyPI wheel for py3.13/aarch64; Termux splits it into a C
+  # library (onnxruntime) + the Python bindings (python-onnxruntime). espeak
+  # provides libespeak-ng.so + the headers we compile espeakbridge.c against.
+  echo "==> [Termux] Installing system deps (onnxruntime, python-onnxruntime, espeak, clang)"
+  pkg install -y onnxruntime python-onnxruntime espeak clang
 
-SITE="$("$PYTHON" -c 'import piper, os; print(os.path.dirname(piper.__file__))')"
-echo "==> piper package at $SITE"
-
-# ── 4. espeak-ng-data (mined from the manylinux wheel) ──────────────────────
-# Piper phonemizes via its bundled espeak-ng fork's data files; the pure-Python
-# wheel pip installed omits espeak-ng-data, so pull it from the manylinux wheel.
-if [ ! -d "$SITE/espeak-ng-data" ]; then
-  echo "==> Fetching espeak-ng-data from the manylinux wheel"
-  TMP_WHEEL="$PIPER_DIR/piper_tts-manylinux.whl"
-  if [ ! -f "$TMP_WHEEL" ]; then
-    curl -L --fail -o "$TMP_WHEEL" "$WHEEL_URL"
+  # ── 2. venv (with system site-packages) ─────────────────────────────────────
+  # --system-site-packages is REQUIRED so the venv can see the pkg-installed
+  # python-onnxruntime (there's no pip-installable onnxruntime for this target).
+  if [ ! -x "$PYTHON" ]; then
+    echo "==> Creating venv at $VENV"
+    python3 -m venv --system-site-packages "$VENV"
+  else
+    echo "==> Reusing existing venv at $VENV"
   fi
-  "$PYTHON" - "$TMP_WHEEL" "$SITE" <<'PY'
+
+  # ── 3. pip install piper-tts (no build isolation) ───────────────────────────
+  # Without scikit-build/setuptools/wheel present + --no-build-isolation, pip
+  # tries to build the `cmake` PyPI package from source (slow, fails on Termux).
+  # --no-build-isolation makes the build use the system cmake instead.
+  if ! "$PYTHON" -c "import piper" >/dev/null 2>&1; then
+    echo "==> Installing piper-tts into the venv"
+    "$PIP" install --upgrade pip >/dev/null
+    "$PIP" install scikit-build setuptools wheel
+    "$PIP" install piper-tts --no-build-isolation
+  else
+    echo "==> piper-tts already importable — skipping pip install"
+  fi
+
+  SITE="$("$PYTHON" -c 'import piper, os; print(os.path.dirname(piper.__file__))')"
+  echo "==> piper package at $SITE"
+
+  # ── 4. espeak-ng-data (mined from the manylinux wheel) ──────────────────────
+  # Piper phonemizes via its bundled espeak-ng fork's data files; the pure-Python
+  # wheel pip installed omits espeak-ng-data, so pull it from the manylinux wheel.
+  if [ ! -d "$SITE/espeak-ng-data" ]; then
+    echo "==> Fetching espeak-ng-data from the manylinux wheel"
+    TMP_WHEEL="$PIPER_DIR/piper_tts-manylinux.whl"
+    if [ ! -f "$TMP_WHEEL" ]; then
+      curl -L --fail -o "$TMP_WHEEL" "$WHEEL_URL"
+    fi
+    "$PYTHON" - "$TMP_WHEEL" "$SITE" <<'PY'
 import sys, zipfile, os
 wheel, site = sys.argv[1], sys.argv[2]
 with zipfile.ZipFile(wheel) as z:
@@ -91,23 +101,23 @@ with zipfile.ZipFile(wheel) as z:
         z.extract(n, base)
 print(f"extracted {len(members)} espeak-ng-data members")
 PY
-  rm -f "$TMP_WHEEL"
-else
-  echo "==> espeak-ng-data already present — skipping"
-fi
+    rm -f "$TMP_WHEEL"
+  else
+    echo "==> espeak-ng-data already present — skipping"
+  fi
 
-# ── 5. Build espeakbridge.so natively against Termux libespeak-ng ───────────
-# The manylinux wheel's espeakbridge.*.so links glibc and won't load on Android
-# bionic, so we compile our own against Termux's libespeak-ng. The upstream
-# bridge calls espeak_TextToPhonemesWithTerminator — a piper1-gpl fork addition
-# absent from Termux espeak-ng 1.52.0 — so we PATCH it to the standard 3-arg
-# espeak_TextToPhonemes, treating each returned chunk as a full sentence
-# boundary (no terminator info is available from the stock API).
-BRIDGE_SO="$SITE/espeakbridge.abi3.so"
-if [ ! -f "$BRIDGE_SO" ]; then
-  echo "==> Building patched espeakbridge.abi3.so"
-  BRIDGE_SRC="$PIPER_DIR/espeakbridge.c"
-  cat > "$BRIDGE_SRC" <<'EOF'
+  # ── 5. Build espeakbridge.so natively against Termux libespeak-ng ───────────
+  # The manylinux wheel's espeakbridge.*.so links glibc and won't load on Android
+  # bionic, so we compile our own against Termux's libespeak-ng. The upstream
+  # bridge calls espeak_TextToPhonemesWithTerminator — a piper1-gpl fork addition
+  # absent from Termux espeak-ng 1.52.0 — so we PATCH it to the standard 3-arg
+  # espeak_TextToPhonemes, treating each returned chunk as a full sentence
+  # boundary (no terminator info is available from the stock API).
+  BRIDGE_SO="$SITE/espeakbridge.abi3.so"
+  if [ ! -f "$BRIDGE_SO" ]; then
+    echo "==> Building patched espeakbridge.abi3.so"
+    BRIDGE_SRC="$PIPER_DIR/espeakbridge.c"
+    cat > "$BRIDGE_SRC" <<'EOF'
 // Patched for Termux/aarch64: derived from piper1-gpl's espeakbridge.c, with
 // espeak_TextToPhonemesWithTerminator (a fork-only addition, missing from
 // Termux espeak-ng 1.52.0) replaced by the standard 3-arg espeak_TextToPhonemes.
@@ -175,19 +185,94 @@ static struct PyModuleDef module = {PyModuleDef_HEAD_INIT, "espeakbridge", NULL,
 
 PyMODINIT_FUNC PyInit_espeakbridge(void) { return PyModule_Create(&module); }
 EOF
-  PYINC="$("$PYTHON" -c 'import sysconfig; print(sysconfig.get_path("include"))')"
-  # Android/Bionic dlopen requires all symbols resolved at load time (no RTLD_GLOBAL
-  # fallback unlike glibc), so we must link explicitly against libpython.
-  PYLDVER="$("$PYTHON" -c 'import sysconfig; print(sysconfig.get_config_var("LDVERSION"))')"
-  PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
-  # Remove any prebuilt (glibc-linked) bridge so our .so wins import resolution.
-  rm -f "$SITE"/espeakbridge*.so
-  clang -shared -fPIC -DPy_LIMITED_API=0x03090000 \
-    -I"$PYINC" -I"$PREFIX/include" -L"$PREFIX/lib" \
-    "$BRIDGE_SRC" -o "$BRIDGE_SO" -lespeak-ng -lpython"$PYLDVER"
-  echo "==> Built $BRIDGE_SO"
+    PYINC="$("$PYTHON" -c 'import sysconfig; print(sysconfig.get_path("include"))')"
+    # Android/Bionic dlopen requires all symbols resolved at load time (no RTLD_GLOBAL
+    # fallback unlike glibc), so we must link explicitly against libpython.
+    PYLDVER="$("$PYTHON" -c 'import sysconfig; print(sysconfig.get_config_var("LDVERSION"))')"
+    PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
+    # Remove any prebuilt (glibc-linked) bridge so our .so wins import resolution.
+    rm -f "$SITE"/espeakbridge*.so
+    clang -shared -fPIC -DPy_LIMITED_API=0x03090000 \
+      -I"$PYINC" -I"$PREFIX/include" -L"$PREFIX/lib" \
+      "$BRIDGE_SRC" -o "$BRIDGE_SO" -lespeak-ng -lpython"$PYLDVER"
+    echo "==> Built $BRIDGE_SO"
+  else
+    echo "==> espeakbridge already built — skipping"
+  fi
+
+# ════════════════════════════════════════════════════════════════════════════
+# DEBIAN / UBUNTU PATH
+# piper-tts ships as a proper manylinux binary wheel on PyPI that bundles
+# espeakbridge.abi3.so, espeak-ng-data, and onnxruntime — no source builds,
+# no --system-site-packages, no wheel mining required on the happy path.
+# ════════════════════════════════════════════════════════════════════════════
 else
-  echo "==> espeakbridge already built — skipping"
+
+  # ── 1. System deps ────────────────────────────────────────────────────────
+  # python3-venv is a separate package on Debian/Ubuntu required for `python3 -m venv`.
+  # espeak-ng provides the shared library the bundled espeakbridge.so loads at runtime.
+  # python3-dev + libespeak-ng-dev + clang are included for robustness (e.g. if the
+  # wheel ever falls back to a source build or espeak-ng-data needs recompiling).
+  if command -v apt-get >/dev/null 2>&1; then
+    echo "==> [Debian/Ubuntu] Installing system deps (python3, python3-venv, python3-dev, espeak-ng, libespeak-ng-dev, clang)"
+    sudo apt-get update && sudo apt-get install -y python3 python3-venv python3-dev espeak-ng libespeak-ng-dev clang
+  else
+    echo "WARN: no known package manager — install python3 python3-venv espeak-ng manually" >&2
+  fi
+
+  # ── 2. venv (no --system-site-packages) ─────────────────────────────────────
+  # onnxruntime installs cleanly from PyPI as a binary wheel on x86_64/arm64
+  # Debian, so we don't need to expose system site-packages.
+  if [ ! -x "$PYTHON" ]; then
+    echo "==> Creating venv at $VENV"
+    python3 -m venv "$VENV"
+  else
+    echo "==> Reusing existing venv at $VENV"
+  fi
+
+  # ── 3. pip install piper-tts ─────────────────────────────────────────────────
+  # The manylinux binary wheel bundles onnxruntime, espeakbridge.abi3.so, and
+  # espeak-ng-data. No --no-build-isolation or scikit-build scaffolding needed.
+  if ! "$PYTHON" -c "import piper" >/dev/null 2>&1; then
+    echo "==> Installing piper-tts into the venv"
+    "$PIP" install --upgrade pip >/dev/null
+    "$PIP" install piper-tts
+  else
+    echo "==> piper-tts already importable — skipping pip install"
+  fi
+
+  SITE="$("$PYTHON" -c 'import piper, os; print(os.path.dirname(piper.__file__))')"
+  echo "==> piper package at $SITE"
+
+  # ── 4. espeak-ng-data (normally bundled in the binary wheel) ─────────────────
+  # The manylinux wheel includes espeak-ng-data; this block is normally a no-op.
+  # If it's somehow absent (e.g. an older wheel or custom install), mine it from
+  # the aarch64 manylinux wheel as a fallback — same data files, platform-neutral.
+  if [ ! -d "$SITE/espeak-ng-data" ]; then
+    echo "==> espeak-ng-data missing from wheel — fetching from manylinux wheel (fallback)"
+    TMP_WHEEL="$PIPER_DIR/piper_tts-manylinux.whl"
+    if [ ! -f "$TMP_WHEEL" ]; then
+      curl -L --fail -o "$TMP_WHEEL" "$WHEEL_URL"
+    fi
+    "$PYTHON" - "$TMP_WHEEL" "$SITE" <<'PY'
+import sys, zipfile, os
+wheel, site = sys.argv[1], sys.argv[2]
+with zipfile.ZipFile(wheel) as z:
+    members = [n for n in z.namelist() if "/espeak-ng-data/" in n or n.startswith("piper/espeak-ng-data/")]
+    base = os.path.dirname(site)  # site is .../piper ; extract relative to its parent
+    for n in members:
+        z.extract(n, base)
+print(f"extracted {len(members)} espeak-ng-data members")
+PY
+    rm -f "$TMP_WHEEL"
+  else
+    echo "==> espeak-ng-data already present — skipping"
+  fi
+
+  # ── 5. espeakbridge.so ────────────────────────────────────────────────────────
+  # Skipped on Debian/Ubuntu: the binary wheel includes espeakbridge.abi3.so
+  # linked against glibc, which loads correctly. No native compile needed.
+
 fi
 
 # ── 6. Download the voice ───────────────────────────────────────────────────
