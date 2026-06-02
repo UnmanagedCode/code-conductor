@@ -42,7 +42,8 @@ fi
 cd "$WHISPER_DIR"
 
 echo "==> Building whisper-cli (cmake Release)"
-cmake -B build -DCMAKE_BUILD_TYPE=Release >/dev/null
+cmake -B build -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ >/dev/null
 cmake --build build --config Release -j"$(nproc 2>/dev/null || echo 2)"
 
 echo "==> Downloading model: $MODEL"
