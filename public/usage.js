@@ -11,41 +11,24 @@
 // Hardcoded lookup — there's no API surface that reports each model's
 // context-window size, and the CLI doesn't carry it in system/init.
 //
-// Opus 4.7+ ships with a 1M-context default ("1M context window at
-// standard API pricing" per the CLI binary's own documentation), so
-// bare `claude-opus-4-8` maps to 1M here. The `[1m]` suffix is the
-// CLI's native opt-in identifier for the same 1M build (we keep the
-// entry for picker-source compatibility). The `[200k]` suffix is an
-// orchestrator-only synthetic — when the user picks "Opus — 200k"
-// the orchestrator strips the suffix before invoking the CLI and
-// sets `CLAUDE_CODE_DISABLE_1M_CONTEXT=1` in the spawn env, which is
-// the only way to actually get a 200k window out of these models.
-// 4.7 entries are kept so resumed 4.7 sessions still track correctly.
-//
-// Sonnet 4.6 ships with a 200k default; `[1m]` is the CLI-native
-// opt-in.
+// One fixed window per family (mirrors canonicalizeModel in
+// src/modelVersions.js): Opus → 1M, Sonnet → 1M, Haiku → 200k. Keyed on
+// the bare id; `contextWindowFor` strips any `[200k]`/`[1m]` suffix first,
+// so it's correct regardless of whether the CLI echoes the suffix in
+// system/init.
 const CONTEXT_WINDOWS = {
   'claude-opus-4-8': 1_000_000,
-  'claude-opus-4-8[1m]': 1_000_000,
-  'claude-opus-4-8[200k]': 200_000,
   'claude-opus-4-7': 1_000_000,
-  'claude-opus-4-7[1m]': 1_000_000,
-  'claude-opus-4-7[200k]': 200_000,
-  'claude-sonnet-4-6': 200_000,
-  'claude-sonnet-4-6[1m]': 1_000_000,
-  'claude-sonnet-4-5': 200_000,
+  'claude-sonnet-4-6': 1_000_000,
+  'claude-sonnet-4-5': 1_000_000,
   'claude-haiku-4-5': 200_000,
 };
 const DEFAULT_CONTEXT_WINDOW = 200_000;
 
 export function contextWindowFor(model) {
   if (!model) return DEFAULT_CONTEXT_WINDOW;
-  if (CONTEXT_WINDOWS[model]) return CONTEXT_WINDOWS[model];
-  // Generic fallback for versions the catalog can emit but aren't mapped
-  // above: an explicit context-window suffix is authoritative.
-  if (model.endsWith('[1m]')) return 1_000_000;
-  if (model.endsWith('[200k]')) return 200_000;
-  return DEFAULT_CONTEXT_WINDOW;
+  const bare = model.replace(/\[(200k|1m)\]$/, '');
+  return CONTEXT_WINDOWS[bare] ?? DEFAULT_CONTEXT_WINDOW;
 }
 
 export class UsageTracker {

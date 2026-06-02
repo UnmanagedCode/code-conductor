@@ -11,6 +11,7 @@ import { getTitle as getSessionTitle, deleteTitle as deleteSessionTitle } from '
 import { buildSettingsJSON, buildMcpConfigJSON } from './settings.js';
 import { HookBroker } from './hookBroker.js';
 import { loadPersistedTranscript, writeSessionMetadata, readLastSessionModel } from './transcript.js';
+import { canonicalizeModel } from './modelVersions.js';
 import { truncateSessionAtUserMessage } from './sessionEdit.js';
 import { saveAttachment, isImageType } from './attachments.js';
 import { buildApprovePrompt } from './planApproval.js';
@@ -339,25 +340,14 @@ export class Instance extends EventEmitter {
     if (this.mcpServerUrl) {
       args.push('--mcp-config', buildMcpConfigJSON({ url: this.mcpServerUrl }));
     }
-    // Resolve the model identifier to what the CLI actually accepts and
-    // build any env-flag overrides. The `[200k]` suffix is an
-    // orchestrator-only synthetic — the CLI doesn't recognise it, so we
-    // strip it before passing `--model` and instead set
-    // CLAUDE_CODE_DISABLE_1M_CONTEXT=1 in the spawn env, which is the
-    // only way to force a 200k window out of Opus 4.7+ (which defaults
-    // to 1M otherwise). The `[1m]` suffix is CLI-native and passes
-    // through unchanged.
-    let cliModel = this.model;
+    // Each family runs at one fixed context window, pinned via the model id
+    // itself (Sonnet carries the CLI-native `[1m]` suffix; Opus/Haiku are
+    // bare — see canonicalizeModel in modelVersions.js). Strip any ambient
+    // CLAUDE_CODE_DISABLE_1M_CONTEXT so a user-level export can't silently
+    // downgrade our 1M Opus/Sonnet sessions to 200k.
     const spawnEnv = { ...process.env };
-    // The orchestrator's model dropdown is the single source of truth for
-    // Opus's context window — strip any ambient CLAUDE_CODE_DISABLE_1M_CONTEXT
-    // so a user-level export can't silently downgrade a `[1m]` pick to 200k.
     delete spawnEnv.CLAUDE_CODE_DISABLE_1M_CONTEXT;
-    if (typeof cliModel === 'string' && cliModel.endsWith('[200k]')) {
-      cliModel = cliModel.slice(0, -'[200k]'.length);
-      spawnEnv.CLAUDE_CODE_DISABLE_1M_CONTEXT = '1';
-    }
-    if (cliModel) args.push('--model', cliModel);
+    if (this.model) args.push('--model', this.model);
     if (resume) args.push('--resume', this.sessionId);
     else args.push('--session-id', this.sessionId);
 
@@ -525,7 +515,6 @@ export class Instance extends EventEmitter {
         sessionId: this.sessionId,
         leafUuid: this._lastLeafUuid,
         permissionMode: cliPermissionMode(this.mode),
-        model: this.model ?? undefined,
       });
     } catch { /* best effort */ }
   }
@@ -1019,6 +1008,13 @@ export class InstanceManager extends EventEmitter {
         if (prev) finalModel = prev;
       } catch { /* best-effort */ }
     }
+
+    // Pin the model to its family's canonical context window. The window is
+    // a pure function of the family (Sonnet → 1M via `[1m]`; Opus/Haiku
+    // bare), so we re-derive it here for every spawn — including a model
+    // recovered bare from a resumed session's jsonl — rather than persisting
+    // it. Normalises away any stale `[200k]`/`[1m]` from older clients too.
+    if (finalModel) finalModel = canonicalizeModel(finalModel);
 
     const id = randomUUID();
     const inst = new Instance({

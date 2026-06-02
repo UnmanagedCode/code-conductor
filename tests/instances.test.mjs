@@ -532,7 +532,8 @@ test('resume without explicit model passes --model from the session jsonl (prese
   // to the account default (Opus) because the resume call doesn't carry the
   // model and `claude --resume <sid>` falls back to the default. Fix reads
   // the most-recent assistant.message.model from the jsonl on resume and
-  // re-passes it via --model.
+  // re-passes it via --model — canonicalised to the family's fixed window
+  // (Sonnet → 1M via the CLI-native [1m] suffix).
   const ctx = await bootServer({ scenarioPath: path.join(__dirname, 'fixtures', 'scenario-resume.json') });
   const fsp = (await import('node:fs')).promises;
   try {
@@ -566,8 +567,8 @@ test('resume without explicit model passes --model from the session jsonl (prese
       const argv = (await fsp.readFile(argvPath, 'utf8')).split('\n').filter(Boolean);
       const m = argv.indexOf('--model');
       assert.ok(m >= 0, `--model should be passed on resume; argv was: ${argv.join(' ')}`);
-      assert.equal(argv[m + 1], 'claude-sonnet-4-6');
-      assert.equal(ctx.instances.get(id).model, 'claude-sonnet-4-6');
+      assert.equal(argv[m + 1], 'claude-sonnet-4-6[1m]');
+      assert.equal(ctx.instances.get(id).model, 'claude-sonnet-4-6[1m]');
     } finally {
       delete process.env.FAKE_CLAUDE_ARGV_DUMP;
     }

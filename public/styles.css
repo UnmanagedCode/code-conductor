@@ -204,25 +204,6 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
   letter-spacing: 0.04em; line-height: 1;
 }
 .qs-model:hover .qs-ctx { color: inherit; opacity: 0.8; }
-/* Extended-context row: amber accent + section label via pseudo-element.
-   flex-wrap:wrap lets ::before occupy a full row (flex-basis:100%) so the
-   buttons wrap beneath it rather than sitting in the same line. */
-.quick-spawn-extended { margin-top: 6px; flex-wrap: wrap; }
-.quick-spawn-extended::before {
-  content: 'Extended context';
-  flex-basis: 100%; text-align: center;
-  font-size: 10px; color: var(--muted); margin-bottom: 4px;
-  letter-spacing: 0.04em;
-}
-.qs-model-1m {
-  border-color: color-mix(in srgb, var(--amber) 35%, var(--border)) !important;
-}
-.qs-model-1m .qs-ctx { color: var(--amber); opacity: 0.75; }
-.qs-model-1m:hover {
-  background: color-mix(in srgb, var(--amber) 10%, var(--panel)) !important;
-  border-color: var(--amber) !important;
-  color: var(--amber) !important;
-}
 /* Spawn-mode segmented toggle: two side-by-side options below the
    model row. The aria-pressed side is highlighted; the other is muted
    so it reads as the inactive choice. */

@@ -43,9 +43,8 @@ if (process.env.FAKE_CLAUDE_ARGV_DUMP) {
   // Synchronous so tests can read it immediately after detecting `idle`.
   writeFileSync(process.env.FAKE_CLAUDE_ARGV_DUMP, process.argv.slice(2).join('\n') + '\n');
 }
-// Optional env dump — used by tests that need to assert the orchestrator
-// passed a specific env var to the subprocess (e.g.
-// CLAUDE_CODE_DISABLE_1M_CONTEXT for "Opus 200k" mode).
+// Optional env dump — used by tests that need to assert which env vars the
+// orchestrator did (or did not) pass to the subprocess.
 if (process.env.FAKE_CLAUDE_ENV_DUMP) {
   writeFileSync(
     process.env.FAKE_CLAUDE_ENV_DUMP,

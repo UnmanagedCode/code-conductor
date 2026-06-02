@@ -871,7 +871,7 @@ dom.newInstanceDialog.addEventListener('close', async () => {
   const thinking = dom.niThinking.value;
   const modelOpt = dom.niModel.selectedOptions[0];
   const model = modelOpt?.dataset.family
-    ? resolveSpawnModel(modelOpt.dataset.family, modelOpt.dataset.ctx)
+    ? resolveSpawnModel(modelOpt.dataset.family)
     : undefined;
   const temp = dom.niTemp.checked || undefined;
   const debug = dom.niDebug.checked || undefined;
@@ -951,7 +951,7 @@ dom.quickSpawnDialog.addEventListener('click', (e) => {
   e.preventDefault();
   const family = btn.dataset.family;
   if (!family) return;
-  const model = resolveSpawnModel(family, btn.dataset.ctx);
+  const model = resolveSpawnModel(family);
   if (model) spawnInstance({ project: pendingQuickSpawnProject, model, planMode: qsMode.planMode, dialogEl: dom.quickSpawnDialog, errorEl: dom.qsError });
 });
 
@@ -983,7 +983,7 @@ dom.conductDialog.addEventListener('click', (e) => {
   e.preventDefault();
   const family = btn.dataset.family;
   if (!family) return;
-  const model = resolveSpawnModel(family, btn.dataset.ctx);
+  const model = resolveSpawnModel(family);
   if (model) spawnInstance({ project: '.conduct', model, planMode: cdMode.planMode, dialogEl: dom.conductDialog, errorEl: dom.cdError });
 });
 

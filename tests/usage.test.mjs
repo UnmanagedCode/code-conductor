@@ -172,17 +172,17 @@ test('UsageTracker: ignores unrelated event kinds', async () => {
   assert.equal(t.cum.turns, 0);
 });
 
-test('contextWindowFor: known models and unknown fallback', async () => {
+test('contextWindowFor: one fixed window per family, suffix-robust', async () => {
   const { contextWindowFor } = await import(USAGE_URL);
-  // Opus 4.7/4.8 default is 1M — the CLI ships it that way; only the
-  // CLAUDE_CODE_DISABLE_1M_CONTEXT env flag downgrades it. The
-  // orchestrator-only [200k] suffix maps back to 200k.
+  // Opus → 1M; Sonnet → 1M; Haiku → 200k. Any [200k]/[1m] suffix the CLI
+  // might echo is stripped before lookup, so the family alone decides.
   assert.equal(contextWindowFor('claude-opus-4-8'), 1_000_000);
   assert.equal(contextWindowFor('claude-opus-4-8[1m]'), 1_000_000);
-  assert.equal(contextWindowFor('claude-opus-4-8[200k]'), 200_000);
-  // Sonnet 4.6 default is 200k; [1m] is the CLI-native opt-in.
-  assert.equal(contextWindowFor('claude-sonnet-4-6'), 200_000);
+  assert.equal(contextWindowFor('claude-opus-4-8[200k]'), 1_000_000);
+  assert.equal(contextWindowFor('claude-opus-4-7'), 1_000_000);
+  assert.equal(contextWindowFor('claude-sonnet-4-6'), 1_000_000);
   assert.equal(contextWindowFor('claude-sonnet-4-6[1m]'), 1_000_000);
+  assert.equal(contextWindowFor('claude-sonnet-4-5'), 1_000_000);
   assert.equal(contextWindowFor('claude-haiku-4-5'), 200_000);
   // Unknown model → default.
   assert.equal(contextWindowFor('some-future-model'), 200_000);
