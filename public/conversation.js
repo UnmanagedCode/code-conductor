@@ -342,9 +342,9 @@ export class Conversation {
     if (block?.finalize) block.finalize();
     // Auto-speak finalized assistant text (outer conversation only — sub-agent
     // chatter isn't read aloud). Gating on enabled/availability/user-gesture
-    // lives in the callback (maybeAutoSpeak).
+    // lives in the callback (autoSpeakBlock).
     if (ev.kind === 'text_end' && !this.isSub && block?.buffer) {
-      this.onAssistantText?.(block.buffer);
+      this.onAssistantText?.(block);
     }
   }
 

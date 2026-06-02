@@ -106,7 +106,7 @@ export class ThinkingBlock {
 
 import { lineDiff, diffStats } from './diff.js';
 import { renderMarkdownInto } from './markdown.js';
-import { isTtsAvailable, requestSpeak, getCurrentSpeakToken, onSpeakingChange, stop } from './tts.js';
+import { isTtsAvailable, requestSpeak, getCurrentSpeakToken, onSpeakingChange, stop, maybeAutoSpeak } from './tts.js';
 
 // Module-level active-button tracking — one subscription, no per-button leaks.
 // _activeBtnToken distinguishes "our button's own speak started" from
@@ -139,6 +139,29 @@ function _revertBtn(btn) {
   btn.textContent = '🔊';
   btn.title = 'Read aloud';
   btn.classList.remove('speaking');
+}
+
+// Called by app.js when auto-speak fires for a finalized text block. Sets
+// _activeBtn before calling maybeAutoSpeak so the onSpeakingChange listener
+// sees the button and can record _activeBtnToken (speak() fires the listener
+// synchronously before its first await). If maybeAutoSpeak no-ops (disabled /
+// no user gesture), reverts immediately.
+export function autoSpeakBlock(block) {
+  const btn = block.node?.querySelector?.('.tts-speak');
+  if (!btn) return;
+  if (_activeBtn && _activeBtn !== btn) {
+    _revertBtn(_activeBtn);
+    _activeBtn = null;
+    _activeBtnToken = null;
+  }
+  _activeBtn = btn;
+  _activeBtnToken = null;
+  _setBtnSpeaking(btn);
+  maybeAutoSpeak(block.buffer);
+  if (getCurrentSpeakToken() === null) {
+    _revertBtn(btn);
+    _activeBtn = null;
+  }
 }
 
 // Per-tool one-line description for the collapsed summary.

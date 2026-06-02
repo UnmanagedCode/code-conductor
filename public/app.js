@@ -5,7 +5,7 @@ import { bus, connect, send } from './ws.js';
 import { Sidebar } from './sidebar.js';
 import { Conversation } from './conversation.js';
 import { attachComposer } from './composer.js';
-import { formatUserQuestionAnswers } from './blocks.js';
+import { formatUserQuestionAnswers, autoSpeakBlock } from './blocks.js';
 import { TaskTracker, TaskPanel } from './tasks.js';
 import {
   UsageTracker, contextWindowFor,
@@ -24,7 +24,7 @@ import { installExternalLinkOpener } from './external-links.js';
 import { installLightbox } from './lightbox.js';
 import { installSettings } from './settings.js';
 import { loadModelVersions, setActiveVersions, resolveSpawnModel } from './models.js';
-import { setTtsAvailable, setTtsEnabled, setTtsRate, maybeAutoSpeak } from './tts.js';
+import { setTtsAvailable, setTtsEnabled, setTtsRate } from './tts.js';
 
 const state = {
   projects: [],
@@ -267,7 +267,7 @@ const conversation = new Conversation(dom.conversation, {
   onRewind: (userMessageIndex) => rewindActiveSession(userMessageIndex),
   onFork: (userMessageIndex) => forkActiveSession(userMessageIndex),
   // Read finalized assistant messages aloud when TTS auto-speak is enabled.
-  onAssistantText: (text) => maybeAutoSpeak(text),
+  onAssistantText: (block) => autoSpeakBlock(block),
 });
 
 const sidebar = new Sidebar({
