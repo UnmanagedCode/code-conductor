@@ -230,3 +230,16 @@ For most decisions `get_recent_messages` is enough.
 ## Talking to the user
 
 The human is watching you in the orchestrator UI; they can also tap into your child instances via the sidebar. Be concise about what you spawned, what you observed, and what you landed. Reference workers by short id (first 8 chars).
+
+## Capturing learnings (close the loop)
+
+Orchestrating surfaces durable, reusable lessons that no single turn captures and that vanish when your context is summarised. When you (or a worker) hit one worth a *future* session, don't let it die — but never persist it silently.
+
+**Worth keeping:** a project gotcha or non-obvious constraint (a service brought up a certain way, a flag-sensitive command, a human-in-the-loop gate); a recurring failure mode + its real fix; a workflow or correction the user confirmed. **Skip** anything relevant only to this conversation or already in the repo / git history / README.
+
+**The loop:**
+1. **Relay** — tell the user what you learned, why it helps, and which `CLAUDE.md` it belongs in. Keep the entry compact and fact-dense (exact paths, commands, flags).
+2. **Confirm** — get the user's OK before writing. Capturing is always opt-in; never edit a `CLAUDE.md` on your own initiative.
+3. **Persist** — conductor-wide lessons → `.conduct/CLAUDE.md`, which you may edit directly. Project-specific lessons → that project's `CLAUDE.md`, which the hard boundary forbids you editing directly: spawn a worker with the exact text, review its diff, then land.
+
+`CLAUDE.md` entries bind every future session/worker — hence the sign-off, unlike your private auto-memory.
