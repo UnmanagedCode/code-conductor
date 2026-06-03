@@ -13,6 +13,7 @@ import { bootServer, api, waitFor } from './helpers.mjs';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO_WS = path.join(__dirname, 'fixtures', 'scenario-ws.json');
 const SCENARIO_INSTANCE = path.join(__dirname, 'fixtures', 'scenario-instance.json');
+const SCENARIO_TOOL_ONLY = path.join(__dirname, 'fixtures', 'scenario-tool-only.json');
 
 let nextRpcId = 1;
 
@@ -422,6 +423,41 @@ test('get_recent_messages reads the most recent assistant text from the ring', a
     // count larger than available — returns what's there.
     const cap = unwrap(await callTool(ctx.baseUrl, 'get_recent_messages', { id: spawn.id, count: 10 }));
     assert.equal(cap.messages.length, 2);
+  } finally { await ctx.close(); }
+});
+
+test('get_recent_messages filters tool-call-only messages by default', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO_TOOL_ONLY });
+  try {
+    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'a' });
+    const spawn = unwrap(await callTool(ctx.baseUrl, 'spawn_instance', {
+      project: 'a', mode: 'bypassPermissions',
+    }));
+    await waitFor(() => ctx.instances.get(spawn.id).status === 'idle' && ctx.instances.get(spawn.id).sessionId);
+
+    // Turn 1: tool-only. Default filter → messages[] is empty.
+    await callTool(ctx.baseUrl, 'send_prompt', { id: spawn.id, text: 'one', wait: true, waitTimeoutMs: 5000 });
+    const afterToolOnly = unwrap(await callTool(ctx.baseUrl, 'get_recent_messages', { id: spawn.id }));
+    assert.equal(afterToolOnly.messages.length, 0);
+
+    // Turn 2: text "Hello".
+    await callTool(ctx.baseUrl, 'send_prompt', { id: spawn.id, text: 'two', wait: true, waitTimeoutMs: 5000 });
+    // Turn 3: tool-only.
+    await callTool(ctx.baseUrl, 'send_prompt', { id: spawn.id, text: 'three', wait: true, waitTimeoutMs: 5000 });
+
+    // Default filter: count:3 yields only the one message with text.
+    const filtered = unwrap(await callTool(ctx.baseUrl, 'get_recent_messages', { id: spawn.id, count: 3 }));
+    assert.equal(filtered.messages.length, 1);
+    assert.equal(filtered.messages[0].text, 'Hello');
+
+    // includeToolCalls:true restores all three messages, oldest-first.
+    const all = unwrap(await callTool(ctx.baseUrl, 'get_recent_messages', { id: spawn.id, count: 3, includeToolCalls: true }));
+    assert.equal(all.messages.length, 3);
+    assert.equal(all.messages[0].text, '');
+    assert.equal(all.messages[0].hasToolUse, true);
+    assert.equal(all.messages[1].text, 'Hello');
+    assert.equal(all.messages[2].text, '');
+    assert.equal(all.messages[2].hasToolUse, true);
   } finally { await ctx.close(); }
 });
 

@@ -418,16 +418,18 @@ export function buildTools() {
       name: 'get_recent_messages',
       description:
         'Return the most recent assistant message(s) from an instance as joined strings plus ' +
-        'structured blocks (text / tool_use / thinking). Convenient when you just want to read ' +
-        'what the agent said without parsing the full event ring. Pass `count` to get the last N ' +
-        'messages (default 1, max 50) as a `messages[]` array, oldest-first. The top-level ' +
-        '`text`/`blocks`/`msgId`/`hasToolUse` always mirror the latest message. Empty text and ' +
-        'empty messages[] if no assistant content has arrived yet.',
+        'structured blocks (text / tool_use / thinking). By default, only messages that contain ' +
+        'actual text are returned — tool-call-only messages (no text blocks) are excluded. Set ' +
+        '`includeToolCalls` to true to include every assistant message regardless. `count` ' +
+        'applies to the filtered set: "count: 5" yields up to 5 messages with text. Returns a ' +
+        '`messages[]` array, oldest-first (default 1, max 50). Empty messages[] if no matching ' +
+        'content has arrived yet.',
       inputSchema: {
         type: 'object',
         properties: {
           id: { type: 'string', description: 'Instance id.' },
-          count: { type: 'integer', description: 'Number of recent messages to return. Default 1, clamped to [1, 50].' },
+          count: { type: 'integer', description: 'Number of recent messages to return (from the filtered set). Default 1, clamped to [1, 50].' },
+          includeToolCalls: { type: 'boolean', description: 'When true, include tool-call-only messages (no text blocks) in the result. Default false.' },
         },
         required: ['id'],
       },

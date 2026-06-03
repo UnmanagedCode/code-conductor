@@ -493,16 +493,15 @@ export async function createProject({ name, gitInit = false }) {
 // agent just wants to read what the spawned agent said without parsing the
 // raw event stream. `count` defaults to 1 (last message only); clamped to
 // [1, 50]. Returns `{ id, messages }` — oldest-first.
-export async function getRecentMessages({ id, count }, { instances }) {
+export async function getRecentMessages({ id, count, includeToolCalls = false }, { instances }) {
   const inst = getInst(instances, id);
   const ring = inst.ringSnapshot();
   const n = Math.max(1, Math.min(Number.isInteger(count) ? count : 1, 50));
-  // Find the latest N distinct msgIds carrying assistant content,
-  // walking the ring backward. We accept tool_use too so a message
-  // composed only of tool calls (no text) still counts.
+  // Collect all distinct msgIds from the ring, walking backward.
+  // No early stop — filtering happens after building messages.
   const seen = new Set();
   const reverseIds = [];
-  for (let i = ring.length - 1; i >= 0 && reverseIds.length < n; i--) {
+  for (let i = ring.length - 1; i >= 0; i--) {
     const ev = ring[i];
     if (ev.parentToolUseId) continue; // ignore sub-agent content
     if (!ev.msgId) continue;
@@ -513,7 +512,12 @@ export async function getRecentMessages({ id, count }, { instances }) {
     reverseIds.push(ev.msgId);
   }
   const orderedIds = reverseIds.reverse();
-  const messages = orderedIds.map(msgId => buildMessageFromRing(ring, msgId));
+  const allMessages = orderedIds.map(msgId => buildMessageFromRing(ring, msgId));
+  // By default, exclude tool-call-only messages (no text content).
+  const filtered = includeToolCalls
+    ? allMessages
+    : allMessages.filter(m => m.text.length > 0);
+  const messages = filtered.slice(-n);
   return { id, messages };
 }
 
