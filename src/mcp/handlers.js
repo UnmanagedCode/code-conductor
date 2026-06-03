@@ -552,7 +552,6 @@ function buildMessageFromRing(ring, targetMsgId) {
     for (const block of assistantMessage.content) {
       if (block?.type === 'text' && typeof block.text === 'string') {
         textParts.push(block.text);
-        blocks.push({ type: 'text', text: block.text });
       } else if (block?.type === 'tool_use') {
         hasToolUse = true;
         blocks.push({ type: 'tool_use', name: block.name, input: block.input, toolUseId: block.id });
@@ -560,12 +559,10 @@ function buildMessageFromRing(ring, targetMsgId) {
         blocks.push({ type: 'thinking', text: block.thinking ?? '' });
       }
     }
-    return { msgId: targetMsgId, text: textParts.join(''), blocks, hasToolUse };
+    return { msgId: targetMsgId, text: textParts.join(''), ...(blocks.length ? { blocks } : {}), hasToolUse };
   }
   const text = blockOrder.map(idx => byBlock.get(idx)).join('');
-  const blocks = blockOrder.map(idx => ({ type: 'text', text: byBlock.get(idx) }));
-  blocks.push(...otherBlocks);
-  return { msgId: targetMsgId, text, blocks, hasToolUse };
+  return { msgId: targetMsgId, text, ...(otherBlocks.length ? { blocks: otherBlocks } : {}), hasToolUse };
 }
 
 // Resolve { project, worktree? } to an absolute cwd, throwing with a
