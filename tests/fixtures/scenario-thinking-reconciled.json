@@ -1,0 +1,24 @@
+{
+  "events": [
+    { "type": "system", "subtype": "init", "session_id": "$SID", "cwd": "$CWD", "model": "claude-sonnet-4-6", "permissionMode": "$MODE" }
+  ],
+  "turns": [
+    {
+      "on": { "type": "prompt" },
+      "emit": [
+        {
+          "type": "assistant",
+          "message": {
+            "id": "msg_think1",
+            "role": "assistant",
+            "content": [
+              { "type": "thinking", "thinking": "Pondering. Concluded." },
+              { "type": "text", "text": "42" }
+            ]
+          }
+        },
+        { "type": "result", "subtype": "success", "stop_reason": "end_turn", "duration_ms": 22, "total_cost_usd": 0.0001, "is_error": false, "usage": { "input_tokens": 4, "output_tokens": 2 } }
+      ]
+    }
+  ]
+}

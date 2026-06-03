@@ -14,6 +14,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO_WS = path.join(__dirname, 'fixtures', 'scenario-ws.json');
 const SCENARIO_INSTANCE = path.join(__dirname, 'fixtures', 'scenario-instance.json');
 const SCENARIO_TOOL_ONLY = path.join(__dirname, 'fixtures', 'scenario-tool-only.json');
+const SCENARIO_THINKING_RECONCILED = path.join(__dirname, 'fixtures', 'scenario-thinking-reconciled.json');
 
 let nextRpcId = 1;
 
@@ -460,6 +461,34 @@ test('get_recent_messages filters tool-call-only messages by default', async () 
     assert.equal(all.messages[1].text, 'Hello');
     assert.equal(all.messages[2].text, '');
     assert.equal(all.messages[2].hasToolUse, true);
+  } finally { await ctx.close(); }
+});
+
+test('get_recent_messages strips thinking blocks by default, includeThinking restores them', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO_THINKING_RECONCILED });
+  try {
+    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'a' });
+    const spawn = unwrap(await callTool(ctx.baseUrl, 'spawn_instance', {
+      project: 'a', mode: 'bypassPermissions',
+    }));
+    await waitFor(() => ctx.instances.get(spawn.id).status === 'idle' && ctx.instances.get(spawn.id).sessionId);
+
+    // Turn: assistant message with thinking + text "42".
+    await callTool(ctx.baseUrl, 'send_prompt', { id: spawn.id, text: 'one', wait: true, waitTimeoutMs: 5000 });
+
+    // Default: thinking stripped, text-bearing message still returned.
+    const stripped = unwrap(await callTool(ctx.baseUrl, 'get_recent_messages', { id: spawn.id }));
+    assert.equal(stripped.messages.length, 1, 'text-bearing message returned even when thinking stripped');
+    assert.equal(stripped.messages[0].text, '42');
+    assert.ok(!Object.hasOwn(stripped.messages[0], 'blocks'), 'no blocks field when thinking stripped');
+
+    // includeThinking: true reveals the thinking block.
+    const withThinking = unwrap(await callTool(ctx.baseUrl, 'get_recent_messages', { id: spawn.id, includeThinking: true }));
+    assert.equal(withThinking.messages[0].text, '42');
+    assert.ok(Object.hasOwn(withThinking.messages[0], 'blocks'), 'blocks present with includeThinking');
+    assert.equal(withThinking.messages[0].blocks.length, 1);
+    assert.equal(withThinking.messages[0].blocks[0].type, 'thinking');
+    assert.equal(withThinking.messages[0].blocks[0].text, 'Pondering. Concluded.');
   } finally { await ctx.close(); }
 });
 

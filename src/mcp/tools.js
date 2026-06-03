@@ -423,7 +423,8 @@ export function buildTools() {
         '`thinking` entries — text content is fully represented by `text` and is not duplicated ' +
         'in `blocks`. By default, only messages that contain actual text are returned — ' +
         'tool-call-only messages (no text) are excluded. Set `includeToolCalls` to true to ' +
-        'include every assistant message regardless. `count` applies to the filtered set: ' +
+        'include every assistant message regardless. Thinking blocks are excluded by default; ' +
+        'set `includeThinking` to true to include them in `blocks[]`. `count` applies to the filtered set: ' +
         '"count: 5" yields up to 5 messages with text. Returns a `messages[]` array, ' +
         'oldest-first (default 1, max 50). Empty messages[] if no matching content has arrived yet.',
       inputSchema: {
@@ -432,6 +433,7 @@ export function buildTools() {
           id: { type: 'string', description: 'Instance id.' },
           count: { type: 'integer', description: 'Number of recent messages to return (from the filtered set). Default 1, clamped to [1, 50].' },
           includeToolCalls: { type: 'boolean', description: 'When true, include tool-call-only messages (no text blocks) in the result. Default false.' },
+          includeThinking: { type: 'boolean', description: 'When true, include thinking blocks in blocks[]. Default false.' },
         },
         required: ['id'],
       },

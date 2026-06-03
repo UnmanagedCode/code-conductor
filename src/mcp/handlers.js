@@ -493,7 +493,7 @@ export async function createProject({ name, gitInit = false }) {
 // agent just wants to read what the spawned agent said without parsing the
 // raw event stream. `count` defaults to 1 (last message only); clamped to
 // [1, 50]. Returns `{ id, messages }` — oldest-first.
-export async function getRecentMessages({ id, count, includeToolCalls = false }, { instances }) {
+export async function getRecentMessages({ id, count, includeToolCalls = false, includeThinking = false }, { instances }) {
   const inst = getInst(instances, id);
   const ring = inst.ringSnapshot();
   const n = Math.max(1, Math.min(Number.isInteger(count) ? count : 1, 50));
@@ -512,7 +512,7 @@ export async function getRecentMessages({ id, count, includeToolCalls = false },
     reverseIds.push(ev.msgId);
   }
   const orderedIds = reverseIds.reverse();
-  const allMessages = orderedIds.map(msgId => buildMessageFromRing(ring, msgId));
+  const allMessages = orderedIds.map(msgId => buildMessageFromRing(ring, msgId, includeThinking));
   // By default, exclude tool-call-only messages (no text content).
   const filtered = includeToolCalls
     ? allMessages
@@ -521,7 +521,7 @@ export async function getRecentMessages({ id, count, includeToolCalls = false },
   return { id, messages };
 }
 
-function buildMessageFromRing(ring, targetMsgId) {
+function buildMessageFromRing(ring, targetMsgId, includeThinking = false) {
   const byBlock = new Map();
   const blockOrder = [];
   const otherBlocks = []; // tool_use blocks etc, for context
@@ -555,7 +555,7 @@ function buildMessageFromRing(ring, targetMsgId) {
       } else if (block?.type === 'tool_use') {
         hasToolUse = true;
         blocks.push({ type: 'tool_use', name: block.name, input: block.input, toolUseId: block.id });
-      } else if (block?.type === 'thinking') {
+      } else if (block?.type === 'thinking' && includeThinking) {
         blocks.push({ type: 'thinking', text: block.thinking ?? '' });
       }
     }
