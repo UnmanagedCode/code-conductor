@@ -99,6 +99,7 @@
               <option value="transcribe">Transcribe</option>
               <option value="models">Models</option>
               <option value="tts">TTS</option>
+              <option value="workspace">Workspace conventions</option>
             </select>
           </header>
           <div id="settings-transcribe" class="settings-group">
@@ -144,6 +145,22 @@
               <span id="tt-action-hint" class="st-action-hint"></span>
             </div>
             <pre id="tt-install-log" class="st-install-log" hidden aria-live="polite"></pre>
+          </div>
+          <div id="settings-workspace" class="settings-group" hidden>
+            <p class="settings-desc">
+              code-conductor owns the projects-root <code>CLAUDE.md</code> — the workspace conventions
+              every project imports via <code>@../CLAUDE.md</code>. On startup it mirrors a bundled
+              canonical copy into <code>&lt;PROJECTS_ROOT&gt;/CLAUDE.md</code>. If you've edited that file
+              <em>and</em> the canonical has also changed, the sync stops and asks you to resolve the
+              conflict below. (Previously managed by termux-code-conductor.)
+            </p>
+            <div id="wc-status" class="st-status" aria-live="polite">Loading…</div>
+            <div class="st-actions">
+              <button id="wc-keep" type="button" hidden>Keep my copy</button>
+              <button id="wc-overwrite" type="button" hidden>Overwrite (backs up your copy)</button>
+              <span id="wc-action-hint" class="st-action-hint"></span>
+            </div>
+            <pre id="wc-diff" class="st-install-log" hidden aria-live="polite"></pre>
           </div>
         </div>
       </section>

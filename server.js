@@ -11,6 +11,7 @@ import { projectsRoot } from './src/projects.js';
 import { runMigrations } from './migrations/index.mjs';
 import { checkClaudeReadiness, formatReadiness } from './src/health.js';
 import { sweepPendingTempCleanup } from './src/tempCleanup.js';
+import { reconcile as reconcileRootClaudeMd } from './src/rootClaudeMd.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -68,6 +69,12 @@ export async function start({ port = 8787, host = '127.0.0.1' } = {}) {
   // is written by scheduleRestart in src/restart.js.
   try { sweepPendingTempCleanup({ log: console }); }
   catch (e) { console.warn('temp-cleanup sweep failed:', e); }
+  // Mirror the bundled canonical workspace-conventions into
+  // <PROJECTS_ROOT>/CLAUDE.md (the file every project imports via
+  // `@../CLAUDE.md`). Strictly non-fatal: a reconcile failure must never
+  // abort boot — unlike a migration, this is a convenience sync.
+  try { await reconcileRootClaudeMd({ log: console }); }
+  catch (e) { console.warn('root CLAUDE.md reconcile failed:', e); }
   const readiness = await checkClaudeReadiness();
   process.stderr.write(formatReadiness(readiness) + '\n');
   const { server, instances, wss } = createServer();

@@ -34,6 +34,12 @@ export function installSettings({
   const ttEnabledEl = document.getElementById('tt-enabled');
   const ttRateEl = document.getElementById('tt-rate');
   const ttRateValEl = document.getElementById('tt-rate-val');
+  // Workspace conventions (root CLAUDE.md) group elements.
+  const wcStatusEl = document.getElementById('wc-status');
+  const wcKeepBtn = document.getElementById('wc-keep');
+  const wcOverwriteBtn = document.getElementById('wc-overwrite');
+  const wcHintEl = document.getElementById('wc-action-hint');
+  const wcDiffEl = document.getElementById('wc-diff');
   if (!view) return { open() {}, close() {} };
 
   let isOpen = false;
@@ -60,6 +66,7 @@ export function installSettings({
     load();
     loadModels();
     loadTts();
+    loadWorkspace();
   }
 
   function hide() {
@@ -465,6 +472,78 @@ export function installSettings({
     if (ttRateValEl) ttRateValEl.textContent = `${Number(ttRateEl.value).toFixed(2)}×`;
   });
   ttRateEl?.addEventListener('change', () => savePrefs({ rate: Number(ttRateEl.value) }));
+
+  // ── Workspace conventions group (root CLAUDE.md) ────────────────────────
+  const WC_STATUS_LABEL = {
+    'created': '✓ created — canonical copied in',
+    'up-to-date': '✓ up to date',
+    'updated': '✓ updated to the latest canonical',
+    'kept': '✓ your edits kept (canonical unchanged)',
+    'conflict': 'conflict — your copy and the canonical have both changed',
+  };
+
+  async function loadWorkspace() {
+    if (!wcStatusEl) return;
+    try {
+      const r = await fetch('/api/settings/workspace-claudemd', { cache: 'no-store' });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      await renderWorkspace(await r.json());
+    } catch (e) {
+      wcStatusEl.textContent = `Failed to load: ${e.message || e}`;
+    }
+  }
+
+  async function renderWorkspace(data) {
+    const label = WC_STATUS_LABEL[data.status] || data.status || 'unknown';
+    if (data.conflict) {
+      wcStatusEl.innerHTML = `<span class="st-warn">${label}</span>`;
+    } else {
+      wcStatusEl.innerHTML = `<span class="st-ok">${label}</span>`;
+    }
+
+    if (data.conflict) {
+      if (wcKeepBtn) wcKeepBtn.hidden = false;
+      if (wcOverwriteBtn) wcOverwriteBtn.hidden = false;
+      if (wcHintEl) wcHintEl.textContent = '';
+      // Fetch and show the unified diff (your copy vs canonical).
+      try {
+        const dr = await fetch('/api/settings/workspace-claudemd/diff', { cache: 'no-store' });
+        const dd = await dr.json();
+        if (wcDiffEl) { wcDiffEl.textContent = dd.diff || ''; wcDiffEl.hidden = !dd.diff; }
+      } catch {
+        if (wcDiffEl) wcDiffEl.hidden = true;
+      }
+    } else {
+      if (wcKeepBtn) wcKeepBtn.hidden = true;
+      if (wcOverwriteBtn) wcOverwriteBtn.hidden = true;
+      if (wcDiffEl) { wcDiffEl.hidden = true; wcDiffEl.textContent = ''; }
+      if (wcHintEl) wcHintEl.textContent = '';
+    }
+  }
+
+  async function resolveWorkspace(action) {
+    if (wcKeepBtn) wcKeepBtn.disabled = true;
+    if (wcOverwriteBtn) wcOverwriteBtn.disabled = true;
+    if (wcHintEl) wcHintEl.textContent = 'Resolving…';
+    try {
+      const r = await fetch('/api/settings/workspace-claudemd/resolve', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ action }),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+      await renderWorkspace(data);
+    } catch (e) {
+      if (wcHintEl) wcHintEl.textContent = `Failed: ${e.message || e}`;
+    } finally {
+      if (wcKeepBtn) wcKeepBtn.disabled = false;
+      if (wcOverwriteBtn) wcOverwriteBtn.disabled = false;
+    }
+  }
+
+  wcKeepBtn?.addEventListener('click', () => resolveWorkspace('keep'));
+  wcOverwriteBtn?.addEventListener('click', () => resolveWorkspace('overwrite'));
 
   window.addEventListener('hashchange', sync);
   window.addEventListener('keydown', e => {

@@ -34,6 +34,10 @@ import {
 } from './appSettings.js';
 import * as whisperInstall from './whisperInstall.js';
 import * as ttsInstall from './ttsInstall.js';
+import {
+  getStatus as rootClaudeMdStatus, getDiff as rootClaudeMdDiff,
+  resolve as rootClaudeMdResolve,
+} from './rootClaudeMd.js';
 import { setTitle as setSessionTitle, MAX_TITLE_LEN } from './sessionTitles.js';
 
 const CONTENT_TYPE_BY_EXT = {
@@ -845,6 +849,28 @@ export function buildRoutes({ instances, serverCtx } = {}) {
 
   r.get('/settings/tts/install/status', (req, res) => {
     res.json(ttsInstall.status());
+  });
+
+  // Settings → Workspace conventions group. code-conductor owns the
+  // projects-root CLAUDE.md (the file every project imports via
+  // `@../CLAUDE.md`). Reports the reconcile status; on a "both changed"
+  // conflict the UI shows the diff and offers keep / overwrite(backup).
+  r.get('/settings/workspace-claudemd', async (req, res, next) => {
+    try { res.json(await rootClaudeMdStatus()); } catch (e) { next(e); }
+  });
+
+  r.get('/settings/workspace-claudemd/diff', async (req, res, next) => {
+    try { res.json(await rootClaudeMdDiff()); } catch (e) { next(e); }
+  });
+
+  r.post('/settings/workspace-claudemd/resolve', async (req, res, next) => {
+    try {
+      const action = req.body?.action;
+      if (action !== 'keep' && action !== 'overwrite') {
+        throw Object.assign(new Error('unknown action — use keep or overwrite'), { statusCode: 400 });
+      }
+      res.json(await rootClaudeMdResolve(action));
+    } catch (e) { next(e); }
   });
 
   r.use((err, req, res, _next) => {
