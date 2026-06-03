@@ -239,6 +239,61 @@ test('kill_instance removes the instance from the manager', async () => {
   } finally { await close(); }
 });
 
+test('list_sessions marks MCP-spawned sessions conductor:true, HTTP ones false, and returns both', async () => {
+  const { encodeCwd } = await import('../src/projects.js');
+  const { baseUrl, instances, claudeProjectsRoot, projectsRoot, close } =
+    await bootServer({ scenarioPath: SCENARIO_WS });
+  try {
+    await api(baseUrl, 'POST', '/api/projects', { name: 'a' });
+
+    // Conductor session: spawned via the MCP spawn_instance tool.
+    const cond = unwrap(await callTool(baseUrl, 'spawn_instance', { project: 'a', mode: 'bypassPermissions' }));
+    assert.equal(cond.conductor, true, 'MCP-spawned summary carries conductor:true');
+    const condInst = instances.get(cond.id);
+    await waitFor(() => condInst.status === 'idle' && condInst.sessionId);
+    // Drive a turn so the durable marker is persisted on turn_end.
+    await callTool(baseUrl, 'send_prompt', { id: cond.id, text: 'go', wait: true, waitTimeoutMs: 5000 });
+    const condSid = condInst.sessionId;
+
+    // Non-conductor session: spawned via the browser / HTTP path.
+    const httpRes = await api(baseUrl, 'POST', '/api/instances', { project: 'a', mode: 'bypassPermissions' });
+    assert.equal(httpRes.body.conductor, false, 'HTTP-spawned summary carries conductor:false');
+    const httpInst = instances.get(httpRes.body.id);
+    await waitFor(() => httpInst.status === 'idle' && httpInst.sessionId);
+    const httpSid = httpInst.sessionId;
+
+    // The durable marker lands in the central-store sidecar.
+    const sidecar = path.join(projectsRoot, '.code-conductor', 'conductor-sessions.json');
+    await waitFor(async () => {
+      try { return JSON.parse(await fs.readFile(sidecar, 'utf8')).sessions?.includes(condSid); }
+      catch { return false; }
+    });
+
+    // Materialize both jsonls (the fake CLI doesn't write them).
+    const dir = path.join(claudeProjectsRoot, encodeCwd(condInst.cwd));
+    await fs.mkdir(dir, { recursive: true });
+    for (const sid of [condSid, httpSid]) {
+      await fs.writeFile(path.join(dir, `${sid}.jsonl`),
+        '{"type":"user","uuid":"u","message":{"role":"user","content":"hi"}}\n');
+    }
+
+    const list = unwrap(await callTool(baseUrl, 'list_sessions', { project: 'a' }));
+    const bySid = new Map(list.map(s => [s.sessionId, s]));
+    assert.ok(bySid.has(condSid), 'conductor session is returned (separation, not a filter)');
+    assert.ok(bySid.has(httpSid), 'non-conductor session is returned');
+    assert.equal(bySid.get(condSid).conductor, true, 'MCP session annotated conductor:true');
+    assert.equal(bySid.get(httpSid).conductor, false, 'HTTP session annotated conductor:false');
+
+    // The marker is durable: it survives the live instance going away
+    // (simulating restart/resume recognition) because it reads from the
+    // on-disk sidecar, not the in-memory instance.
+    await callTool(baseUrl, 'kill_instance', { id: cond.id });
+    const list2 = unwrap(await callTool(baseUrl, 'list_sessions', { project: 'a' }));
+    const c2 = list2.find(s => s.sessionId === condSid);
+    assert.ok(c2 && c2.conductor === true, 'conductor marker persists after the instance exits');
+  } finally { await close(); }
+});
+
 test('argument validation rejects a missing required field via isError', async () => {
   const { baseUrl, close } = await bootServer({ scenarioPath: SCENARIO_WS });
   try {

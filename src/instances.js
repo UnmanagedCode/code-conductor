@@ -8,6 +8,7 @@ import { Parser } from './parser.js';
 import { getProject, claudeProjectsRoot, encodeCwd } from './projects.js';
 import { createWorktree, getWorktree, debugBaseDir } from './worktrees.js';
 import { getTitle as getSessionTitle, deleteTitle as deleteSessionTitle } from './sessionTitles.js';
+import { isConductor, markConductor, unmarkConductor } from './conductorSessions.js';
 import { buildSettingsJSON, buildMcpConfigJSON } from './settings.js';
 import { HookBroker } from './hookBroker.js';
 import { loadPersistedTranscript, writeSessionMetadata, readLastSessionModel } from './transcript.js';
@@ -68,7 +69,7 @@ class EventLog {
 }
 
 export class Instance extends EventEmitter {
-  constructor({ id, project, cwd, mode, effort, thinking, model, hookCallbackUrl = null, mcpServerUrl = null, worktree = null, temp = false, debug = false }) {
+  constructor({ id, project, cwd, mode, effort, thinking, model, hookCallbackUrl = null, mcpServerUrl = null, worktree = null, temp = false, conductor = false, debug = false }) {
     super();
     this.id = id;
     this.project = project;
@@ -88,6 +89,14 @@ export class Instance extends EventEmitter {
     // and the orchestrator skips its last-prompt / permission-mode
     // metadata appends during the run.
     this.temp = !!temp;
+    // When true, this session was spawned via the MCP `spawn_instance`
+    // tool (orchestrator-driven), as opposed to the browser UI / HTTP
+    // spawn path. Orthogonal to `temp`. Persisted durably to the
+    // `<store>/conductor-sessions.json` sidecar (see _writeSessionMetadata)
+    // so it survives exit / restart / --resume; the sidebar groups these
+    // under a `— conductor —` separator. Purely a marker + display axis:
+    // no behavioural divergence vs a normal session.
+    this.conductor = !!conductor;
     // When true, raw CLI stdin/stdout/stderr is mirrored to the
     // central store's debug dir for offline inspection. Streams + the
     // debug dir path are populated at spawn time.
@@ -151,6 +160,7 @@ export class Instance extends EventEmitter {
           }
         : null,
       temp: this.temp,
+      conductor: this.conductor,
       debug: this.debug,
       debugDir: this.debugDir,
       firstPrompt: this.firstPrompt,
@@ -504,6 +514,13 @@ export class Instance extends EventEmitter {
 
   async _writeSessionMetadata() {
     if (this.temp) return;
+    // Persist the durable conductor marker so a non-temp conductor session
+    // is recognised as conductor after exit / restart / --resume. This is
+    // the natural persistence point (same place last-prompt / permission-
+    // mode are written). Only needs sessionId, not the leaf uuid.
+    if (this.conductor && this.sessionId) {
+      try { await markConductor(this.sessionId); } catch { /* best effort */ }
+    }
     if (!this.sessionId || !this._lastLeafUuid) return;
     try {
       // Persist the CLI-level permission mode (not the orchestrator's
@@ -548,6 +565,10 @@ export class Instance extends EventEmitter {
     await fsp.rm(file, { force: true });
     await fsp.rm(subagents, { recursive: true, force: true });
     try { await deleteSessionTitle(this.sessionId); } catch { /* best-effort */ }
+    // Defensive: a temp conductor session is never persisted (the
+    // _writeSessionMetadata temp-guard returns early), but unmark anyway
+    // so a promoted-then-demoted edge case can't leave a stale marker.
+    try { await unmarkConductor(this.sessionId); } catch { /* best-effort */ }
   }
 
   _sendRaw(obj) {
@@ -942,7 +963,7 @@ export class InstanceManager extends EventEmitter {
     return out;
   }
 
-  async create({ project, resume, mode, effort, thinking, model, worktree, temp, debug, autoApprovePlan } = {}) {
+  async create({ project, resume, mode, effort, thinking, model, worktree, temp, conductor, debug, autoApprovePlan } = {}) {
     if (!project) {
       throw Object.assign(new Error('project required'), { statusCode: 400 });
     }
@@ -1016,6 +1037,15 @@ export class InstanceManager extends EventEmitter {
     // it. Normalises away any stale `[200k]`/`[1m]` from older clients too.
     if (finalModel) finalModel = canonicalizeModel(finalModel);
 
+    // The conductor marker is set explicitly on the MCP spawn path. When
+    // resuming a historical session, recover it from the durable sidecar
+    // so a UI-resumed conductor session re-acquires the marker (survives
+    // --resume). Per-session and immutable, so OR-ing the two is safe.
+    let conductorFlag = !!conductor;
+    if (!conductorFlag && resume) {
+      try { conductorFlag = await isConductor(resume); } catch { /* best-effort */ }
+    }
+
     const id = randomUUID();
     const inst = new Instance({
       id, project, cwd,
@@ -1024,6 +1054,7 @@ export class InstanceManager extends EventEmitter {
       mcpServerUrl: this.mcpServerUrl(id),
       worktree: worktreeMeta,
       temp: tempFlag,
+      conductor: conductorFlag,
       debug: !!debug,
     });
 

@@ -3,6 +3,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { loadAll as loadAllTitles, deleteTitle as deleteSessionTitle } from './sessionTitles.js';
+import { loadAll as loadAllConductor, unmarkConductor } from './conductorSessions.js';
 
 // Default projects root = parent directory of the code-conductor repo,
 // resolved once at module load. Layout: <parent>/code-conductor/src/
@@ -399,6 +400,7 @@ export async function listSessionsForCwd(absCwd, excludeSessionIds = null) {
     throw e;
   }
   const titles = await loadAllTitles();
+  const conductors = await loadAllConductor();
   const out = [];
   for (const name of entries) {
     if (!name.endsWith('.jsonl')) continue;
@@ -414,6 +416,7 @@ export async function listSessionsForCwd(absCwd, excludeSessionIds = null) {
       sessionId: sid,
       firstPrompt,
       title: titles.get(sid) ?? null,
+      conductor: conductors.has(sid),
       mtime: stat.mtimeMs,
       size: stat.size,
     });
@@ -436,6 +439,7 @@ export async function deleteSessionForCwd(absCwd, sessionId) {
   try {
     await fs.unlink(file);
     try { await deleteSessionTitle(sessionId); } catch { /* sidecar cleanup is best-effort */ }
+    try { await unmarkConductor(sessionId); } catch { /* sidecar cleanup is best-effort */ }
     return true;
   } catch (e) {
     if (e.code === 'ENOENT') return false;
