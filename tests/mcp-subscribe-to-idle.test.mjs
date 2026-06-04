@@ -260,3 +260,99 @@ test('subscribe is idempotent: re-registering the same pair reports already:true
       { [targetId]: [callerId] });
   } finally { await ctx.close(); }
 });
+
+// ── timeoutMs watchdog tests ──────────────────────────────────────────────────
+
+function findTimeoutStubFor(inst, targetId) {
+  return inst.ringSnapshot().find(ev =>
+    ev.kind === 'user_echo' &&
+    typeof ev.text === 'string' &&
+    ev.text.includes(targetId) &&
+    ev.text.includes('did NOT finish'),
+  );
+}
+
+test('timeoutMs: fires with a timeout stub when turn_end does not arrive in time', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO_WS });
+  try {
+    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'p' });
+    const callerId = await spawnReady(ctx, 'p');
+    const targetId = await spawnReady(ctx, 'p');
+
+    // Subscribe with a short watchdog — don't drive the target so turn_end never fires.
+    await callTool(ctx.baseUrl, 'subscribe_to_idle',
+      { targetId, timeoutMs: 150 }, { caller: callerId });
+
+    const caller = ctx.instances.get(callerId);
+    await waitFor(() => !!findTimeoutStubFor(caller, targetId), { timeout: 1000 });
+
+    const stub = findTimeoutStubFor(caller, targetId);
+    assert.ok(stub, 'timeout stub user_echo present in caller ring');
+    assert.match(stub.text, /did NOT finish/);
+    assert.match(stub.text, /timed out after 150ms/);
+    assert.match(stub.text, /get_recent_messages/);
+    assert.ok(stub.text.includes(targetId));
+
+    // Subscription consumed — map is empty.
+    assert.deepEqual(ctx.instances._idleSubscriberSnapshot(), {});
+  } finally { await ctx.close(); }
+});
+
+test('timeoutMs: turn_end before timeout wins; timer is cancelled, only one stub delivered', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO_WS });
+  try {
+    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'p' });
+    const callerId = await spawnReady(ctx, 'p');
+    const targetId = await spawnReady(ctx, 'p');
+
+    // Long watchdog — turn_end should fire well before it.
+    await callTool(ctx.baseUrl, 'subscribe_to_idle',
+      { targetId, timeoutMs: 2000 }, { caller: callerId });
+
+    // Drive the target to turn_end before the watchdog fires.
+    await callTool(ctx.baseUrl, 'send_prompt',
+      { id: targetId, text: 'go', wait: true, waitTimeoutMs: 5000 });
+
+    const caller = ctx.instances.get(callerId);
+    await waitFor(() => !!findStubFor(caller, targetId), { timeout: 2000 });
+
+    const completionStub = findStubFor(caller, targetId);
+    assert.ok(completionStub, 'completion stub present');
+    assert.match(completionStub.text, /finished its turn/);
+    // Must NOT say "did NOT finish".
+    assert.doesNotMatch(completionStub.text, /did NOT finish/);
+
+    // Wait well past the 2000ms watchdog window to confirm the timer was cancelled.
+    await new Promise(r => setTimeout(r, 300));
+    const allStubs = caller.ringSnapshot().filter(ev =>
+      ev.kind === 'user_echo' && ev.text?.includes(targetId));
+    assert.equal(allStubs.length, 1, 'exactly one stub — timer was cancelled');
+  } finally { await ctx.close(); }
+});
+
+test('timeoutMs: unsubscribe clears the watchdog timer — no stub delivered after unsubscribe', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO_WS });
+  try {
+    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'p' });
+    const callerId = await spawnReady(ctx, 'p');
+    const targetId = await spawnReady(ctx, 'p');
+
+    await callTool(ctx.baseUrl, 'subscribe_to_idle',
+      { targetId, timeoutMs: 150 }, { caller: callerId });
+
+    // Unsubscribe immediately — should clear the timer.
+    const unsub = unwrap(await callTool(ctx.baseUrl, 'unsubscribe_from_idle',
+      { targetId }, { caller: callerId }));
+    assert.equal(unsub.removed, true);
+    assert.deepEqual(ctx.instances._idleSubscriberSnapshot(), {});
+
+    // Wait well past the 150ms window.
+    await new Promise(r => setTimeout(r, 300));
+
+    const caller = ctx.instances.get(callerId);
+    assert.equal(findTimeoutStubFor(caller, targetId), undefined,
+      'no timeout stub after unsubscribe');
+    assert.equal(findStubFor(caller, targetId), undefined,
+      'no completion stub either');
+  } finally { await ctx.close(); }
+});
