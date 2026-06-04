@@ -117,3 +117,18 @@ export async function setTtsRate(rate) {
   await writeSettings(next);
   return clamped;
 }
+
+// Models group: auto-stop on overage (overtime). When true the server
+// interrupts a running turn the moment it receives a rate_limit_event with
+// isUsingOverage === true. Off by default — strictly opt-in.
+export function getAutoStopOnOverage() {
+  const s = loadSync();
+  return s.models?.autoStopOnOverage ?? false;
+}
+
+export async function setAutoStopOnOverage(enabled) {
+  const cur = loadSync();
+  const next = { ...cur, models: { ...(cur.models || {}), autoStopOnOverage: !!enabled } };
+  await writeSettings(next);
+  return !!enabled;
+}

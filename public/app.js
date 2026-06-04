@@ -10,6 +10,7 @@ import { TaskTracker, TaskPanel } from './tasks.js';
 import {
   UsageTracker, contextWindowFor,
   formatTokens, formatPct, formatDuration, fillClass,
+  RateLimitTracker, renderRateLimitChip,
 } from './usage.js';
 import {
   NotificationState, ensurePermission, setGlobalEnabled,
@@ -50,6 +51,7 @@ const dom = {
   taskPanel: document.getElementById('task-panel'),
   turnIndicator: document.getElementById('turn-indicator'),
   tiLeft: document.getElementById('ti-left'),
+  tiRatelimitSlot: document.getElementById('ti-ratelimit-slot'),
   tiUsageSlot: document.getElementById('ti-usage-slot'),
   newProjectBtn: document.getElementById('new-project-btn'),
   newProjectDialog: document.getElementById('new-project-dialog'),
@@ -127,6 +129,15 @@ function getUsage(instanceId) {
   let u = usageTrackersByInstance.get(instanceId);
   if (!u) { u = new UsageTracker(); usageTrackersByInstance.set(instanceId, u); }
   return u;
+}
+
+// Per-instance rate-limit trackers. Stores the latest rate_limit_event
+// payload per instance; drives the left-side rate-limit chip in the bottom bar.
+const rateLimitTrackersByInstance = new Map();
+function getRateLimit(instanceId) {
+  let r = rateLimitTrackersByInstance.get(instanceId);
+  if (!r) { r = new RateLimitTracker(); rateLimitTrackersByInstance.set(instanceId, r); }
+  return r;
 }
 
 // Pending user-question answers waiting for the active instance to reach
@@ -1294,6 +1305,16 @@ function updateActiveHeader() {
   // controls onto a third row on mobile.
   dom.tiUsageSlot.textContent = '';
   dom.tiUsageSlot.appendChild(renderUsageChip(inst));
+  // Rate-limit chip: left side of the bottom bar. Hidden until the first
+  // rate_limit_event arrives so it doesn't affect layout in idle sessions.
+  const rlInfo = getRateLimit(inst.id).info;
+  dom.tiRatelimitSlot.textContent = '';
+  if (rlInfo) {
+    dom.tiRatelimitSlot.hidden = false;
+    dom.tiRatelimitSlot.appendChild(renderRateLimitChip(rlInfo));
+  } else {
+    dom.tiRatelimitSlot.hidden = true;
+  }
   dom.modeSelect.value = inst.mode;
   dom.modeSelect.disabled = inst.status === 'turn' || inst.status === 'crashed' || inst.status === 'exited';
   dom.killBtn.textContent = inst.status === 'turn' ? '⏸ Interrupt' : '🛑 Terminate';
@@ -1614,6 +1635,7 @@ bus.addEventListener('event', (e) => {
   const prevCount = tracker.completedBatches.length;
   tracker.apply(m.ev);
   getUsage(m.id).apply(m.ev);
+  getRateLimit(m.id).apply(m.ev);
   if (m.id !== state.activeId) return;
   conversation.apply(m.ev);
   // When the tracker records a newly-completed batch, append a permanent
@@ -1626,9 +1648,11 @@ bus.addEventListener('event', (e) => {
   // sets the model, message_start gives a live mid-turn context-size
   // update (each agent-loop step fires its own with cumulative counts),
   // turn_end finalizes both current + cumulative totals.
+  // rate_limit_event updates the left-side rate-limit chip independently.
   if (m.ev?.kind === 'turn_end'
       || m.ev?.kind === 'message_start'
-      || (m.ev?.kind === 'system' && m.ev?.subtype === 'init')) {
+      || (m.ev?.kind === 'system' && m.ev?.subtype === 'init')
+      || (m.ev?.kind === 'system' && m.ev?.subtype === 'rate_limit_event')) {
     updateActiveHeader();
   }
 });

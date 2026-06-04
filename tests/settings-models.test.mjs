@@ -9,6 +9,7 @@ import {
 } from '../src/modelVersions.js';
 import {
   getModelVersion, setModelVersion, getTranscribeModel, setTranscribeModel,
+  getAutoStopOnOverage, setAutoStopOnOverage,
 } from '../src/appSettings.js';
 
 async function mkTmp() {
@@ -111,5 +112,76 @@ test('POST /api/settings/models rejects unknown family + version', async () => {
     // Cross-family version is also rejected.
     const crossFamily = await api(baseUrl, 'POST', '/api/settings/models', { family: 'sonnet', version: 'claude-opus-4-8' });
     assert.equal(crossFamily.status, 400);
+  } finally { await close(); }
+});
+
+// ── autoStopOnOverage ───────────────────────────────────────────────────
+test('appSettings: getAutoStopOnOverage defaults false, setAutoStopOnOverage round-trips', async () => {
+  const root = await mkTmp();
+  try {
+    await withEnv({ PROJECTS_ROOT: root }, async () => {
+      assert.equal(getAutoStopOnOverage(), false);
+      await setAutoStopOnOverage(true);
+      assert.equal(getAutoStopOnOverage(), true);
+      await setAutoStopOnOverage(false);
+      assert.equal(getAutoStopOnOverage(), false);
+    });
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test('appSettings: autoStopOnOverage coerces to boolean', async () => {
+  const root = await mkTmp();
+  try {
+    await withEnv({ PROJECTS_ROOT: root }, async () => {
+      await setAutoStopOnOverage(1);
+      assert.equal(getAutoStopOnOverage(), true);
+      await setAutoStopOnOverage(0);
+      assert.equal(getAutoStopOnOverage(), false);
+    });
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test('appSettings: autoStopOnOverage does not clobber model versions', async () => {
+  const root = await mkTmp();
+  try {
+    await withEnv({ PROJECTS_ROOT: root }, async () => {
+      await setModelVersion('sonnet', 'claude-sonnet-4-5');
+      await setAutoStopOnOverage(true);
+      assert.equal(getModelVersion('sonnet'), 'claude-sonnet-4-5');
+      assert.equal(getAutoStopOnOverage(), true);
+    });
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test('GET /api/settings/models includes autoStopOnOverage defaulting false', async () => {
+  const { baseUrl, close } = await bootServer();
+  try {
+    const r = await api(baseUrl, 'GET', '/api/settings/models');
+    assert.equal(r.status, 200);
+    assert.equal(r.body.autoStopOnOverage, false);
+  } finally { await close(); }
+});
+
+test('POST /api/settings/models/prefs toggles autoStopOnOverage and persists', async () => {
+  const { baseUrl, close } = await bootServer();
+  try {
+    const on = await api(baseUrl, 'POST', '/api/settings/models/prefs', { autoStopOnOverage: true });
+    assert.equal(on.status, 200);
+    assert.equal(on.body.autoStopOnOverage, true);
+    // Verify GET reflects the persisted state.
+    const g = await api(baseUrl, 'GET', '/api/settings/models');
+    assert.equal(g.body.autoStopOnOverage, true);
+    // Toggle back off.
+    const off = await api(baseUrl, 'POST', '/api/settings/models/prefs', { autoStopOnOverage: false });
+    assert.equal(off.body.autoStopOnOverage, false);
+  } finally { await close(); }
+});
+
+test('POST /api/settings/models/prefs ignores unknown keys gracefully', async () => {
+  const { baseUrl, close } = await bootServer();
+  try {
+    const r = await api(baseUrl, 'POST', '/api/settings/models/prefs', { randomField: 'foo' });
+    assert.equal(r.status, 200);
+    assert.equal(r.body.autoStopOnOverage, false);
   } finally { await close(); }
 });

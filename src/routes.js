@@ -31,6 +31,7 @@ import { TTS_VOICES, isKnownVoice, DEFAULT_VOICE } from './ttsModels.js';
 import {
   getTranscribeModel, setTranscribeModel, getModelVersion, setModelVersion,
   getTtsEnabled, setTtsEnabled, getTtsVoice, setTtsVoice, getTtsRate, setTtsRate,
+  getAutoStopOnOverage, setAutoStopOnOverage,
 } from './appSettings.js';
 import * as whisperInstall from './whisperInstall.js';
 import * as ttsInstall from './ttsInstall.js';
@@ -723,7 +724,7 @@ export function buildRoutes({ instances, serverCtx } = {}) {
     for (const f of MODEL_FAMILIES) {
       active[f.family] = getModelVersion(f.family) || f.default;
     }
-    return { families: MODEL_FAMILIES, active };
+    return { families: MODEL_FAMILIES, active, autoStopOnOverage: getAutoStopOnOverage() };
   }
 
   r.get('/settings/models', (req, res) => {
@@ -741,6 +742,14 @@ export function buildRoutes({ instances, serverCtx } = {}) {
         throw Object.assign(new Error('unknown version for family'), { statusCode: 400 });
       }
       await setModelVersion(family, version);
+      res.json(modelsSettingsState());
+    } catch (e) { next(e); }
+  });
+
+  r.post('/settings/models/prefs', async (req, res, next) => {
+    try {
+      const { autoStopOnOverage } = req.body ?? {};
+      if (typeof autoStopOnOverage === 'boolean') await setAutoStopOnOverage(autoStopOnOverage);
       res.json(modelsSettingsState());
     } catch (e) { next(e); }
   });

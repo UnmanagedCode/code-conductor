@@ -10,6 +10,7 @@ import { createWorktree, getWorktree, debugBaseDir } from './worktrees.js';
 import { getTitle as getSessionTitle, deleteTitle as deleteSessionTitle } from './sessionTitles.js';
 import { isConductor, markConductor, unmarkConductor } from './conductorSessions.js';
 import { buildSettingsJSON, buildMcpConfigJSON } from './settings.js';
+import { getAutoStopOnOverage } from './appSettings.js';
 import { HookBroker } from './hookBroker.js';
 import { loadPersistedTranscript, writeSessionMetadata, readLastSessionModel } from './transcript.js';
 import { canonicalizeModel } from './modelVersions.js';
@@ -26,6 +27,14 @@ import { buildApprovePrompt } from './planApproval.js';
 // The CLI's `default`/`acceptEdits` modes are unusable in stream-json
 // --print (no SDK canUseTool callback), so we don't expose them.
 const VALID_MODES = new Set(['plan', 'ask', 'bypassPermissions']);
+
+// Returns true when a rate_limit_event signals the session is now using
+// paid overage credits. Defensive: matches isUsingOverage at either
+// nesting level (nested under rate_limit_info or flat on the event).
+function isOverageEvent(data) {
+  return data?.rate_limit_info?.isUsingOverage === true
+      || data?.isUsingOverage === true;
+}
 // Start fresh instances in read-only plan mode by default. The user can pick
 // `ask` or `code` (= bypassPermissions) in the new-instance dialog, or
 // approve a plan to flip the running instance to bypassPermissions
@@ -488,6 +497,14 @@ export class Instance extends EventEmitter {
       }
       this._emitUi(ev);
       if (autoApproveFire) this._fireAutoApprovePlan();
+      // Auto-stop on overage: if the setting is enabled and this event
+      // signals the session crossed into paid overage credits, emit a
+      // visible notice and interrupt the running turn immediately.
+      if (ev.kind === 'system' && ev.subtype === 'rate_limit_event'
+          && isOverageEvent(ev.data) && getAutoStopOnOverage()) {
+        this._emitUi({ kind: 'system', subtype: 'auto_stop_overage', data: {} });
+        this.interrupt().catch(() => {});
+      }
     }
   }
 

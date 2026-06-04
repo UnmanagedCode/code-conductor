@@ -881,7 +881,7 @@ function imageSrcFromSource(source) {
 // previously dumped raw JSON into the chat) is dropped at the dispatcher.
 const SHOWN_SYSTEM_SUBTYPES = new Set([
   'init', 'stderr', 'exit', 'spawn_error', 'crashed',
-  'permission_denied', 'compacting', 'history_load_error',
+  'permission_denied', 'compacting', 'history_load_error', 'auto_stop_overage',
 ]);
 
 export function shouldRenderSystem(ev) {
@@ -904,6 +904,7 @@ export class SystemBlock {
       if (subtype === 'history_load_error') return `couldn't replay history: ${data?.message ?? ''}`;
       if (subtype === 'permission_denied') return data?.message ?? data?.reason ?? '';
       if (subtype === 'compacting') return 'auto-compacting context…';
+      if (subtype === 'auto_stop_overage') return '⛔ Stopped: session entered overage (overtime) usage — auto-stop is enabled.';
       try { return JSON.stringify(data).slice(0, 200); } catch { return ''; }
     })();
     this.node = el('div', { class: 'block system' },

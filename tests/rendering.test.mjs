@@ -1338,3 +1338,86 @@ test('DOM: plain (non-transcribed) user message has no mic badge', async () => {
   assert.equal(userMsg.querySelector('.transcribed-badge'), null, 'no badge on plain message');
   assert.equal(userMsg.querySelector('.block.text').textContent, 'hello');
 });
+
+// ── Rate-limit chip rendering ────────────────────────────────────────────
+async function setupChipDOM() {
+  const window = new Window({ url: 'http://localhost/' });
+  globalThis.window = window;
+  globalThis.document = window.document;
+  globalThis.HTMLElement = window.HTMLElement;
+  globalThis.Element = window.Element;
+  globalThis.Node = window.Node;
+  const { renderRateLimitChip, RateLimitTracker } = await import(
+    pathToFileURL(path.join(PUB, 'usage.js')).href
+  );
+  return { renderRateLimitChip, RateLimitTracker };
+}
+
+test('DOM: rate-limit chip with utilization shows percentage and colour class', async () => {
+  const { renderRateLimitChip } = await setupChipDOM();
+  const chip = renderRateLimitChip({
+    rateLimitType: 'five_hour',
+    utilization: 72,
+    resetsAt: 1729281600,
+  });
+  assert.ok(chip, 'chip element returned');
+  // Text includes bucket label and percentage
+  assert.ok(chip.textContent.includes('5h'), 'bucket label present');
+  assert.ok(chip.textContent.includes('72%'), 'utilization percentage present');
+  // 72% → frac 0.72 → ih-usage-mid (0.5 ≤ frac < 0.8)
+  assert.ok(chip.className.includes('ih-usage-mid'), 'mid colour class applied');
+  // No overage badge
+  assert.equal(chip.querySelector('.rl-overage-badge'), null, 'no overage badge');
+});
+
+test('DOM: rate-limit chip without utilization shows no percentage and uses empty class', async () => {
+  const { renderRateLimitChip } = await setupChipDOM();
+  const chip = renderRateLimitChip({
+    rateLimitType: 'seven_day',
+    resetsAt: 1729281600,
+  });
+  assert.ok(chip, 'chip element returned');
+  assert.ok(chip.textContent.includes('7d'), 'bucket label present');
+  assert.ok(!chip.textContent.includes('%'), 'no percentage when utilization absent');
+  // frac = null → ih-usage-empty
+  assert.ok(chip.className.includes('ih-usage-empty'), 'empty colour class when no utilization');
+});
+
+test('DOM: rate-limit chip with isUsingOverage shows OVERAGE badge and high colour', async () => {
+  const { renderRateLimitChip } = await setupChipDOM();
+  const chip = renderRateLimitChip({
+    rateLimitType: 'five_hour',
+    utilization: 95,
+    isUsingOverage: true,
+    overageStatus: 'allowed',
+  });
+  assert.ok(chip, 'chip element returned');
+  // 95% → ih-usage-high
+  assert.ok(chip.className.includes('ih-usage-high'), 'high colour class at 95%');
+  const badge = chip.querySelector('.rl-overage-badge');
+  assert.ok(badge, 'overage badge element present');
+  assert.equal(badge.textContent, 'OVERAGE', 'badge text correct');
+});
+
+test('DOM: RateLimitTracker applies rate_limit_event and ignores other events', async () => {
+  const { RateLimitTracker } = await setupChipDOM();
+  const tracker = new RateLimitTracker();
+  assert.equal(tracker.info, null, 'starts null');
+  // Irrelevant event — should not update info
+  tracker.apply({ kind: 'turn_end', subtype: 'success' });
+  assert.equal(tracker.info, null, 'unrelated event ignored');
+  // rate_limit_event with nested rate_limit_info
+  tracker.apply({
+    kind: 'system',
+    subtype: 'rate_limit_event',
+    data: {
+      rate_limit_info: { rateLimitType: 'five_hour', utilization: 60, isUsingOverage: false },
+    },
+  });
+  assert.ok(tracker.info, 'info populated after event');
+  assert.equal(tracker.info.rateLimitType, 'five_hour');
+  assert.equal(tracker.info.utilization, 60);
+  // reset() clears state
+  tracker.reset();
+  assert.equal(tracker.info, null, 'reset clears info');
+});
