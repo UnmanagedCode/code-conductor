@@ -226,6 +226,32 @@ test('ToolResultBlock: plain string content still renders as text in <pre>', () 
   assert.match(block.node.querySelector('pre').textContent, /file1/);
 });
 
+test('ToolResultBlock: renders tool_reference content blocks (ToolSearch result)', () => {
+  setupDOM();
+  // ToolSearch returns its result as tool_reference content blocks, not text —
+  // the old image/text-only loop dropped them, leaving a blank tool_result.
+  const block = new ToolResultBlock({
+    toolUseId: 'tu_toolsearch',
+    isError: false,
+    content: [
+      { type: 'tool_reference', tool_name: 'WebFetch' },
+      { type: 'tool_reference', tool_name: 'WebSearch' },
+    ],
+  });
+  const pre = block.node.querySelector('pre');
+  assert.ok(pre, 'tool_reference result must render a <pre>, not a blank box');
+  assert.match(pre.textContent, /WebFetch/);
+  assert.match(pre.textContent, /WebSearch/);
+  assert.match(pre.textContent, /2 tool schemas/);
+});
+
+test('describeToolInput: ToolSearch shows the query', () => {
+  assert.equal(
+    describeToolInput('ToolSearch', { query: 'select:WebFetch', max_results: 3 }),
+    'select:WebFetch',
+  );
+});
+
 // ── TTS play/stop toggle ──────────────────────────────────────────────────────
 
 test('TTS button: not created when TTS unavailable', () => {

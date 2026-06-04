@@ -197,6 +197,7 @@ export function describeToolInput(name, input, ctx = {}) {
     case 'Grep':       return trunc(input.pattern + (input.path ? `   in ${input.path}` : ''));
     case 'WebFetch':   return trunc(input.url);
     case 'WebSearch':  return trunc(input.query);
+    case 'ToolSearch': return trunc(input.query);
     case 'Task':       return trunc(input.subagent_type ? `[${input.subagent_type}] ${input.description ?? input.prompt ?? ''}` : (input.description ?? input.prompt ?? ''));
     case 'Skill':      return trunc(input.skill ?? input.name);
     case 'TaskCreate':
@@ -800,6 +801,10 @@ export class ToolResultBlock {
     // that the old text-only path silently dropped.
     const textParts = [];
     const images = [];
+    // ToolSearch returns its result as {type:'tool_reference', tool_name}
+    // content blocks (one per loaded schema) — no .text — that the
+    // image/text-only path silently dropped, leaving a blank tool_result.
+    const refs = [];
     if (typeof content === 'string') {
       textParts.push(content);
     } else if (Array.isArray(content)) {
@@ -808,9 +813,14 @@ export class ToolResultBlock {
         if (b.type === 'image' && b.source && typeof b.source === 'object') {
           const src = imageSrcFromSource(b.source);
           if (src) images.push(src);
+        } else if (b.type === 'tool_reference' && typeof b.tool_name === 'string') {
+          refs.push(b.tool_name);
         } else if (typeof b.text === 'string' && b.text) {
           textParts.push(b.text);
         }
+      }
+      if (refs.length) {
+        textParts.push(`Loaded ${refs.length} tool schema${refs.length === 1 ? '' : 's'}: ${refs.join(', ')}`);
       }
     } else {
       textParts.push(JSON.stringify(content));
