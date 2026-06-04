@@ -1,0 +1,21 @@
+{
+  "events": [],
+  "turns": [
+    {
+      "on": { "type": "prompt" },
+      "emit": [
+        {
+          "type": "assistant",
+          "message": {
+            "id": "msg_ep2",
+            "role": "assistant",
+            "content": [
+              { "type": "tool_use", "id": "tu_ep2", "name": "ExitPlanMode", "input": { "plan": "Step 1\nStep 2" } }
+            ]
+          }
+        },
+        { "type": "result", "subtype": "success", "stop_reason": "end_turn", "duration_ms": 5, "total_cost_usd": 0.0, "is_error": false }
+      ]
+    }
+  ]
+}

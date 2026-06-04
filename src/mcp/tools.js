@@ -437,7 +437,9 @@ export function buildTools() {
         '`text` (full joined prose), `hasToolUse` (boolean), `msgId`, and optionally `blocks`, `plan`, `questions`. ' +
         '`blocks` is present only when non-text blocks exist and contains only `tool_use` and ' +
         '`thinking` entries — text content is fully represented by `text` and is not duplicated ' +
-        'in `blocks`. `plan` (string) is present when the turn called ExitPlanMode with an inline plan. ' +
+        'in `blocks`; ExitPlanMode and AskUserQuestion tool_use blocks are likewise not duplicated ' +
+        'in `blocks[]` when their content is represented by `plan` / `questions`. ' +
+        '`plan` (string) is present when the turn called ExitPlanMode with an inline plan. ' +
         '`questions` (array) is present when the turn called AskUserQuestion. ' +
         'By default, messages are returned when they have text, a plan, or questions — ' +
         'tool-call-only messages with none of those are excluded. Set `includeToolCalls` to true to ' +
