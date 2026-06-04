@@ -15,6 +15,8 @@ const SCENARIO_WS = path.join(__dirname, 'fixtures', 'scenario-ws.json');
 const SCENARIO_INSTANCE = path.join(__dirname, 'fixtures', 'scenario-instance.json');
 const SCENARIO_TOOL_ONLY = path.join(__dirname, 'fixtures', 'scenario-tool-only.json');
 const SCENARIO_THINKING_RECONCILED = path.join(__dirname, 'fixtures', 'scenario-thinking-reconciled.json');
+const SCENARIO_EXIT_PLAN_INLINE = path.join(__dirname, 'fixtures', 'scenario-exit-plan-inline.json');
+const SCENARIO_ASK_USER_QUESTION_INLINE = path.join(__dirname, 'fixtures', 'scenario-ask-user-question-inline.json');
 
 let nextRpcId = 1;
 
@@ -544,6 +546,51 @@ test('get_recent_messages strips thinking blocks by default, includeThinking res
     assert.equal(withThinking.messages[0].blocks.length, 1);
     assert.equal(withThinking.messages[0].blocks[0].type, 'thinking');
     assert.equal(withThinking.messages[0].blocks[0].text, 'Pondering. Concluded.');
+  } finally { await ctx.close(); }
+});
+
+test('get_recent_messages returns plan-bearing messages by default', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO_EXIT_PLAN_INLINE });
+  try {
+    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'a' });
+    const spawn = unwrap(await callTool(ctx.baseUrl, 'spawn_instance', {
+      project: 'a', mode: 'bypassPermissions',
+    }));
+    await waitFor(() => ctx.instances.get(spawn.id).status === 'idle' && ctx.instances.get(spawn.id).sessionId);
+
+    const before = unwrap(await callTool(ctx.baseUrl, 'get_recent_messages', { id: spawn.id }));
+    assert.equal(before.messages.length, 0);
+
+    await callTool(ctx.baseUrl, 'send_prompt', { id: spawn.id, text: 'plan this', wait: true, waitTimeoutMs: 5000 });
+
+    const after = unwrap(await callTool(ctx.baseUrl, 'get_recent_messages', { id: spawn.id }));
+    assert.equal(after.messages.length, 1, 'plan-bearing message returned by default');
+    assert.equal(after.messages[0].text, '', 'text is empty for plan-only turn');
+    assert.equal(after.messages[0].plan, 'Step 1\nStep 2', 'plan field populated');
+    assert.equal(after.messages[0].hasToolUse, true);
+  } finally { await ctx.close(); }
+});
+
+test('get_recent_messages returns question-bearing messages by default', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO_ASK_USER_QUESTION_INLINE });
+  try {
+    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'a' });
+    const spawn = unwrap(await callTool(ctx.baseUrl, 'spawn_instance', {
+      project: 'a', mode: 'bypassPermissions',
+    }));
+    await waitFor(() => ctx.instances.get(spawn.id).status === 'idle' && ctx.instances.get(spawn.id).sessionId);
+
+    const before = unwrap(await callTool(ctx.baseUrl, 'get_recent_messages', { id: spawn.id }));
+    assert.equal(before.messages.length, 0);
+
+    await callTool(ctx.baseUrl, 'send_prompt', { id: spawn.id, text: 'ask me something', wait: true, waitTimeoutMs: 5000 });
+
+    const after = unwrap(await callTool(ctx.baseUrl, 'get_recent_messages', { id: spawn.id }));
+    assert.equal(after.messages.length, 1, 'question-bearing message returned by default');
+    assert.equal(after.messages[0].text, '', 'text is empty for question-only turn');
+    assert.ok(Array.isArray(after.messages[0].questions) && after.messages[0].questions.length > 0, 'questions field populated');
+    assert.equal(after.messages[0].questions[0].question, 'Which approach?');
+    assert.equal(after.messages[0].hasToolUse, true);
   } finally { await ctx.close(); }
 });
 

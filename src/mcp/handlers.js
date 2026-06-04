@@ -520,7 +520,7 @@ export async function getRecentMessages({ id, count, includeToolCalls = false, i
   // By default, exclude tool-call-only messages (no text content).
   const filtered = includeToolCalls
     ? allMessages
-    : allMessages.filter(m => m.text.length > 0);
+    : allMessages.filter(m => m.text.length > 0 || m.plan || (Array.isArray(m.questions) && m.questions.length > 0));
   const messages = filtered.slice(-n);
   return { id, messages };
 }
@@ -531,6 +531,8 @@ function buildMessageFromRing(ring, targetMsgId, includeThinking = false) {
   const otherBlocks = []; // tool_use blocks etc, for context
   let hasToolUse = false;
   let assistantMessage = null;
+  let plan = null;
+  let questions = null;
   for (const ev of ring) {
     if (ev.parentToolUseId) continue;
     if (ev.msgId !== targetMsgId) continue;
@@ -543,6 +545,18 @@ function buildMessageFromRing(ring, targetMsgId, includeThinking = false) {
     } else if (ev.kind === 'tool_use') {
       hasToolUse = true;
       otherBlocks.push({ type: 'tool_use', name: ev.name, input: ev.input, toolUseId: ev.toolUseId });
+      if (ev.name === 'ExitPlanMode') {
+        const p = ev.input?.plan;
+        if (typeof p === 'string' && p.length > 0) {
+          plan = p;
+        } else {
+          const fp = ev.input?.planFilePath ?? ev.input?.planPath;
+          if (typeof fp === 'string' && fp.length > 0) plan = `(plan at ${fp})`;
+        }
+      } else if (ev.name === 'AskUserQuestion') {
+        const q = ev.input?.questions;
+        if (Array.isArray(q) && q.length > 0) questions = q;
+      }
     } else if (ev.kind === 'assistant_message') {
       assistantMessage = ev.message ?? null;
     }
@@ -559,14 +573,28 @@ function buildMessageFromRing(ring, targetMsgId, includeThinking = false) {
       } else if (block?.type === 'tool_use') {
         hasToolUse = true;
         blocks.push({ type: 'tool_use', name: block.name, input: block.input, toolUseId: block.id });
+        if (block.name === 'ExitPlanMode') {
+          const p = block.input?.plan;
+          if (typeof p === 'string' && p.length > 0) {
+            plan = p;
+          } else {
+            const fp = block.input?.planFilePath ?? block.input?.planPath;
+            if (typeof fp === 'string' && fp.length > 0) plan = `(plan at ${fp})`;
+          }
+        } else if (block.name === 'AskUserQuestion') {
+          const q = block.input?.questions;
+          if (Array.isArray(q) && q.length > 0) questions = q;
+        }
       } else if (block?.type === 'thinking' && includeThinking) {
         blocks.push({ type: 'thinking', text: block.thinking ?? '' });
       }
     }
-    return { msgId: targetMsgId, text: textParts.join(''), ...(blocks.length ? { blocks } : {}), hasToolUse };
+    return { msgId: targetMsgId, text: textParts.join(''), ...(blocks.length ? { blocks } : {}), hasToolUse,
+      ...(plan ? { plan } : {}), ...(questions ? { questions } : {}) };
   }
   const text = blockOrder.map(idx => byBlock.get(idx)).join('');
-  return { msgId: targetMsgId, text, ...(otherBlocks.length ? { blocks: otherBlocks } : {}), hasToolUse };
+  return { msgId: targetMsgId, text, ...(otherBlocks.length ? { blocks: otherBlocks } : {}), hasToolUse,
+    ...(plan ? { plan } : {}), ...(questions ? { questions } : {}) };
 }
 
 // Resolve { project, worktree? } to an absolute cwd, throwing with a

@@ -434,15 +434,16 @@ export function buildTools() {
       name: 'get_recent_messages',
       description:
         'Return the most recent assistant message(s) from an instance. Each message has: ' +
-        '`text` (full joined prose), `hasToolUse` (boolean), `msgId`, and optionally `blocks`. ' +
+        '`text` (full joined prose), `hasToolUse` (boolean), `msgId`, and optionally `blocks`, `plan`, `questions`. ' +
         '`blocks` is present only when non-text blocks exist and contains only `tool_use` and ' +
         '`thinking` entries — text content is fully represented by `text` and is not duplicated ' +
-        'in `blocks`. By default, only messages that contain actual text are returned — ' +
-        'tool-call-only messages (no text) are excluded. Set `includeToolCalls` to true to ' +
+        'in `blocks`. `plan` (string) is present when the turn called ExitPlanMode with an inline plan. ' +
+        '`questions` (array) is present when the turn called AskUserQuestion. ' +
+        'By default, messages are returned when they have text, a plan, or questions — ' +
+        'tool-call-only messages with none of those are excluded. Set `includeToolCalls` to true to ' +
         'include every assistant message regardless. Thinking blocks are excluded by default; ' +
-        'set `includeThinking` to true to include them in `blocks[]`. `count` applies to the filtered set: ' +
-        '"count: 5" yields up to 5 messages with text. Returns a `messages[]` array, ' +
-        'oldest-first (default 1, max 50). Empty messages[] if no matching content has arrived yet.',
+        'set `includeThinking` to true to include them in `blocks[]`. `count` applies to the filtered set. ' +
+        'Returns a `messages[]` array, oldest-first (default 1, max 50). Empty messages[] if no matching content has arrived yet.',
       inputSchema: {
         type: 'object',
         properties: {
