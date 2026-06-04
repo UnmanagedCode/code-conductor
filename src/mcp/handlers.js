@@ -230,7 +230,7 @@ export async function setMode({ id, mode }, { instances }) {
 // by InstanceManager.mcpServerUrl). The stub names the target and
 // points at get_recent_messages so the conductor can inspect the
 // result. Re-subscribe after every callback to keep getting pings.
-export async function subscribeToIdle({ targetId }, { instances, callerId }) {
+export async function subscribeToIdle({ targetId, timeoutMs }, { instances, callerId }) {
   if (!instances) throw new Error('orchestrator has no InstanceManager');
   if (!callerId) {
     throw new Error(
@@ -244,7 +244,7 @@ export async function subscribeToIdle({ targetId }, { instances, callerId }) {
   // Existence check before registering, so the error surfaces here
   // rather than as a silent drop at callback time.
   getInst(instances, targetId);
-  const res = instances.subscribeIdle(callerId, targetId);
+  const res = instances.subscribeIdle(callerId, targetId, timeoutMs);
   return { ok: true, callerId, targetId, already: res.already };
 }
 

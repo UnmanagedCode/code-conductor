@@ -805,16 +805,17 @@ export class InstanceManager extends EventEmitter {
     this.serverPort = null;
     // One-shot idle subscriptions: when target hits turn_end, deliver
     // a stub user prompt to every registered caller and clear the set.
-    // Keyed by targetId → Set<callerId>.
+    // Keyed by targetId → Map<callerId, { timerId: Timeout | null }>.
     this._idleSubscribers = new Map();
     this.on('event', ({ id: targetId, ev }) => {
       if (ev?.kind !== 'turn_end') return;
       const subs = this._idleSubscribers.get(targetId);
       if (!subs || subs.size === 0) return;
-      const callers = [...subs];
+      const entries = [...subs.entries()];
       subs.clear();
       this._idleSubscribers.delete(targetId);
-      for (const callerId of callers) {
+      for (const [callerId, { timerId }] of entries) {
+        clearTimeout(timerId); // cancel watchdog — turn_end arrived first
         this._deliverIdleCallback(callerId, targetId);
       }
     });
@@ -823,7 +824,10 @@ export class InstanceManager extends EventEmitter {
   // Register a one-shot callback: when targetId's next turn_end fires,
   // a stub user prompt lands in callerId pointing at get_recent_messages.
   // Re-subscribing the same pair before the callback fires is a no-op.
-  subscribeIdle(callerId, targetId) {
+  // Optional timeoutMs: arm a watchdog that fires the subscription early
+  // (with a timeout-flagged stub) if turn_end hasn't arrived in time.
+  // Only armed when timeoutMs is a finite number > 0; ignored otherwise.
+  subscribeIdle(callerId, targetId, timeoutMs) {
     if (typeof callerId !== 'string' || !callerId) {
       throw new Error('callerId required');
     }
@@ -841,21 +845,38 @@ export class InstanceManager extends EventEmitter {
     }
     let subs = this._idleSubscribers.get(targetId);
     if (!subs) {
-      subs = new Set();
+      subs = new Map();
       this._idleSubscribers.set(targetId, subs);
     }
     const already = subs.has(callerId);
-    subs.add(callerId);
+    if (!already) {
+      const useTimeout = typeof timeoutMs === 'number' && isFinite(timeoutMs) && timeoutMs > 0;
+      let timerId = null;
+      if (useTimeout) {
+        timerId = setTimeout(() => {
+          const s = this._idleSubscribers.get(targetId);
+          if (s) {
+            s.delete(callerId);
+            if (s.size === 0) this._idleSubscribers.delete(targetId);
+          }
+          this._deliverIdleCallback(callerId, targetId, { timedOut: true, timeoutMs });
+        }, timeoutMs);
+      }
+      subs.set(callerId, { timerId });
+    }
     return { already };
   }
 
-  // Cancel a pending subscription. Idempotent.
+  // Cancel a pending subscription. Idempotent. Clears any watchdog timer.
   unsubscribeIdle(callerId, targetId) {
     const subs = this._idleSubscribers.get(targetId);
     if (!subs) return { removed: false };
-    const removed = subs.delete(callerId);
+    const entry = subs.get(callerId);
+    if (!entry) return { removed: false };
+    clearTimeout(entry.timerId);
+    subs.delete(callerId);
     if (subs.size === 0) this._idleSubscribers.delete(targetId);
-    return { removed };
+    return { removed: true };
   }
 
   // Snapshot of the current idle-subscription graph. Test-only — gives
@@ -863,32 +884,42 @@ export class InstanceManager extends EventEmitter {
   _idleSubscriberSnapshot() {
     const out = {};
     for (const [target, callers] of this._idleSubscribers) {
-      out[target] = [...callers];
+      out[target] = [...callers.keys()];
     }
     return out;
   }
 
-  // Drop callerId from every subscription set (as caller) AND drop any
-  // entry where callerId was the target. Called on instance removal so
-  // dead sessions can't accumulate subscriptions.
+  // Drop callerId from every subscription map (as caller) AND drop any
+  // entry where callerId was the target. Clears watchdog timers.
+  // Called on instance removal so dead sessions can't accumulate subscriptions.
   _purgeIdleFor(instanceId) {
-    if (this._idleSubscribers.has(instanceId)) {
+    const asTarget = this._idleSubscribers.get(instanceId);
+    if (asTarget) {
+      for (const [, { timerId }] of asTarget) clearTimeout(timerId);
       this._idleSubscribers.delete(instanceId);
     }
     for (const [target, subs] of this._idleSubscribers) {
-      if (subs.delete(instanceId) && subs.size === 0) {
-        this._idleSubscribers.delete(target);
+      const entry = subs.get(instanceId);
+      if (entry) {
+        clearTimeout(entry.timerId);
+        subs.delete(instanceId);
+        if (subs.size === 0) this._idleSubscribers.delete(target);
       }
     }
   }
 
-  _deliverIdleCallback(callerId, targetId) {
+  _deliverIdleCallback(callerId, targetId, opts) {
     const caller = this.byId.get(callerId);
     if (!caller || !caller.proc) return; // caller gone — drop silently.
-    const stub =
-      `Worker \`${targetId}\` finished its turn. ` +
-      `Call \`mcp__code-conductor__get_recent_messages({id:"${targetId}"})\` ` +
-      `to inspect the result.`;
+    const stub = opts?.timedOut
+      ? `Worker \`${targetId}\` did NOT finish — timed out after ${opts.timeoutMs}ms; ` +
+        `it may still be busy or stuck. ` +
+        `Call \`mcp__code-conductor__get_recent_messages({id:"${targetId}"})\` ` +
+        `to check its current state, then decide whether to resubscribe, ` +
+        `call interrupt_turn, or escalate.`
+      : `Worker \`${targetId}\` finished its turn. ` +
+        `Call \`mcp__code-conductor__get_recent_messages({id:"${targetId}"})\` ` +
+        `to inspect the result.`;
     const deliver = async () => {
       try {
         if (!caller.proc) return;

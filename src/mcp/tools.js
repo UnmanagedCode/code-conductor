@@ -220,11 +220,24 @@ export function buildTools() {
         'Use this right after send_prompt({wait:false}) so you can hand control back to the user but still ' +
         'be re-woken when the worker finishes. The subscription is consumed on fire — call again to watch ' +
         'further turns. Caller identity is taken from the MCP URL (?caller=<id>), so this only works for ' +
-        'orchestrator-spawned instances.',
+        'orchestrator-spawned instances. ' +
+        'Optional timeoutMs watchdog: if the worker has not hit turn_end within that many milliseconds, ' +
+        'the subscription fires early with a timeout-flagged stub that says the worker did NOT finish, ' +
+        'so the conductor can distinguish a hung or crashed worker from a completed one. Whichever fires ' +
+        'first (turn_end or timeout) consumes the subscription and cancels the other. ' +
+        'Omitting timeoutMs preserves the original behaviour (no timer, fire only on turn_end).',
       inputSchema: {
         type: 'object',
         properties: {
           targetId: { type: 'string', description: 'Instance id of the worker to watch for turn_end.' },
+          timeoutMs: {
+            type: 'number',
+            description:
+              'Optional watchdog: fire the subscription after this many ms even if turn_end has not ' +
+              'arrived. Must be a positive finite number; ignored otherwise. The stub injected on ' +
+              'timeout is clearly labelled as a timeout (not a completion) so the conductor can ' +
+              'distinguish a timed-out worker from a finished one.',
+          },
         },
         required: ['targetId'],
       },
