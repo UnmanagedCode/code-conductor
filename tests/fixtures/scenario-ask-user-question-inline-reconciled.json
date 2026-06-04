@@ -1,0 +1,21 @@
+{
+  "events": [],
+  "turns": [
+    {
+      "on": { "type": "prompt" },
+      "emit": [
+        {
+          "type": "assistant",
+          "message": {
+            "id": "msg_aq2",
+            "role": "assistant",
+            "content": [
+              { "type": "tool_use", "id": "tu_aq2", "name": "AskUserQuestion", "input": { "questions": [{ "question": "Which approach?", "header": "Approach", "options": [{ "label": "A", "description": "Fast" }, { "label": "B", "description": "Safe" }], "multiSelect": false }] } }
+            ]
+          }
+        },
+        { "type": "result", "subtype": "success", "stop_reason": "end_turn", "duration_ms": 5, "total_cost_usd": 0.0, "is_error": false }
+      ]
+    }
+  ]
+}

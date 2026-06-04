@@ -544,18 +544,22 @@ function buildMessageFromRing(ring, targetMsgId, includeThinking = false) {
       byBlock.set(ev.blockIdx, byBlock.get(ev.blockIdx) + (ev.text ?? ''));
     } else if (ev.kind === 'tool_use') {
       hasToolUse = true;
-      otherBlocks.push({ type: 'tool_use', name: ev.name, input: ev.input, toolUseId: ev.toolUseId });
+      let hoisted = false;
       if (ev.name === 'ExitPlanMode') {
         const p = ev.input?.plan;
         if (typeof p === 'string' && p.length > 0) {
           plan = p;
+          hoisted = true;
         } else {
           const fp = ev.input?.planFilePath ?? ev.input?.planPath;
-          if (typeof fp === 'string' && fp.length > 0) plan = `(plan at ${fp})`;
+          if (typeof fp === 'string' && fp.length > 0) { plan = `(plan at ${fp})`; hoisted = true; }
         }
       } else if (ev.name === 'AskUserQuestion') {
         const q = ev.input?.questions;
-        if (Array.isArray(q) && q.length > 0) questions = q;
+        if (Array.isArray(q) && q.length > 0) { questions = q; hoisted = true; }
+      }
+      if (!hoisted) {
+        otherBlocks.push({ type: 'tool_use', name: ev.name, input: ev.input, toolUseId: ev.toolUseId });
       }
     } else if (ev.kind === 'assistant_message') {
       assistantMessage = ev.message ?? null;
@@ -572,18 +576,22 @@ function buildMessageFromRing(ring, targetMsgId, includeThinking = false) {
         textParts.push(block.text);
       } else if (block?.type === 'tool_use') {
         hasToolUse = true;
-        blocks.push({ type: 'tool_use', name: block.name, input: block.input, toolUseId: block.id });
+        let hoisted = false;
         if (block.name === 'ExitPlanMode') {
           const p = block.input?.plan;
           if (typeof p === 'string' && p.length > 0) {
             plan = p;
+            hoisted = true;
           } else {
             const fp = block.input?.planFilePath ?? block.input?.planPath;
-            if (typeof fp === 'string' && fp.length > 0) plan = `(plan at ${fp})`;
+            if (typeof fp === 'string' && fp.length > 0) { plan = `(plan at ${fp})`; hoisted = true; }
           }
         } else if (block.name === 'AskUserQuestion') {
           const q = block.input?.questions;
-          if (Array.isArray(q) && q.length > 0) questions = q;
+          if (Array.isArray(q) && q.length > 0) { questions = q; hoisted = true; }
+        }
+        if (!hoisted) {
+          blocks.push({ type: 'tool_use', name: block.name, input: block.input, toolUseId: block.id });
         }
       } else if (block?.type === 'thinking' && includeThinking) {
         blocks.push({ type: 'thinking', text: block.thinking ?? '' });
