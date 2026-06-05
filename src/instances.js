@@ -9,8 +9,9 @@ import { getProject, claudeProjectsRoot, encodeCwd } from './projects.js';
 import { createWorktree, getWorktree, debugBaseDir } from './worktrees.js';
 import { getTitle as getSessionTitle, deleteTitle as deleteSessionTitle } from './sessionTitles.js';
 import { isConductor, markConductor, unmarkConductor } from './conductorSessions.js';
+import { CONDUCT_PROJECT_NAME } from './conduct.js';
 import { buildSettingsJSON, buildMcpConfigJSON } from './settings.js';
-import { getAutoStopOnOverage } from './appSettings.js';
+import { getAutoStopOnOverage, getConductorCompactWindow } from './appSettings.js';
 import { HookBroker } from './hookBroker.js';
 import { loadPersistedTranscript, writeSessionMetadata, readLastSessionModel } from './transcript.js';
 import { canonicalizeModel } from './modelVersions.js';
@@ -366,6 +367,16 @@ export class Instance extends EventEmitter {
     // downgrade our 1M Opus/Sonnet sessions to 200k.
     const spawnEnv = { ...process.env };
     delete spawnEnv.CLAUDE_CODE_DISABLE_1M_CONTEXT;
+    // Apply the compact-window override ONLY to the Conduct orchestrator session
+    // (project === '.conduct'). Do NOT gate on this.conductor — that flag marks
+    // MCP-spawned *worker* agents that the orchestrator spawns, which is the
+    // opposite of the orchestrator session itself.
+    if (this.project === CONDUCT_PROJECT_NAME) {
+      const cw = getConductorCompactWindow();
+      if (cw.enabled) {
+        spawnEnv.CLAUDE_CODE_AUTO_COMPACT_WINDOW = String(cw.value * 1000);
+      }
+    }
     if (this.model) args.push('--model', this.model);
     if (resume) args.push('--resume', this.sessionId);
     else args.push('--session-id', this.sessionId);

@@ -1204,6 +1204,10 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
 .tts-speak.speaking:hover { background: rgba(248, 113, 113, 0.25); }
 
 /* Settings → Models group: one row per family (label + version select). */
+.sm-compact-row { margin-top: 6px; }
+.sm-compact-label { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
+.sm-compact-label input[type="range"] { flex: 1 1 auto; max-width: 240px; }
+#sm-compact-window-val { min-width: 3.5em; }
 .sm-family-list { list-style: none; margin: 12px 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
 .sm-family-row {
   display: flex; align-items: center; gap: 10px; min-width: 0;
