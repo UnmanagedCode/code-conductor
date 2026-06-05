@@ -1040,13 +1040,10 @@ export class InstanceManager extends EventEmitter {
       }
     }
     const proj = await getProject(project);
-    // Temp sessions default to bypassPermissions instead of plan — a
-    // disposable session is almost always for *doing*, not planning. The
-    // user can still pick a different mode explicitly.
-    const tempFlag = !!temp;
-    const defaultMode = resume
-      ? DEFAULT_RESUME_MODE
-      : (tempFlag ? 'bypassPermissions' : DEFAULT_MODE);
+    // create() is policy-light: mode never depends on temp here. The UI's
+    // temp⇒bypassPermissions shortcut is applied at the REST route
+    // (POST /api/instances), not in this shared path.
+    const defaultMode = resume ? DEFAULT_RESUME_MODE : DEFAULT_MODE;
     const finalMode = mode ?? defaultMode;
     if (!VALID_MODES.has(finalMode)) {
       throw Object.assign(new Error('invalid mode (must be plan, ask, or bypassPermissions)'), { statusCode: 400 });
@@ -1113,7 +1110,7 @@ export class InstanceManager extends EventEmitter {
       hookCallbackUrl: this.hookCallbackUrl(id),
       mcpServerUrl: this.mcpServerUrl(id),
       worktree: worktreeMeta,
-      temp: tempFlag,
+      temp: !!temp,
       conducted: conductedFlag,
       debug: !!debug,
     });

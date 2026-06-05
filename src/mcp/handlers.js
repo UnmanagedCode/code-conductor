@@ -184,7 +184,12 @@ export async function spawnInstance(args, { instances }) {
     model: args.model,
     resume: args.resume,
     worktree: args.worktree,
-    temp: args.temp,
+    // Conductor workers default to temp (disposable). Unlike the UI's temp
+    // checkbox (which the REST route maps to bypassPermissions), temp here
+    // does NOT affect the mode default — create() leaves it at plan, so
+    // workers plan before acting. Explicit temp:false / mode from the
+    // caller win.
+    temp: args.temp === undefined ? true : args.temp,
     debug: args.debug,
     // Sessions spawned through the MCP tool are "conducted" sessions
     // (the worker agents an orchestrator conducts). This is the ONLY
@@ -275,6 +280,16 @@ export async function respawnInstance({ id }, { instances }) {
   if (!instances) throw new Error('orchestrator has no InstanceManager');
   const inst = await instances.respawn(id);
   return inst.summary();
+}
+
+// Promote a temp session to a persistent one — reuses the same
+// Instance.promoteToNormal() the REST endpoint calls. getInst throws
+// "instance not found: <id>" for an unknown id (the 404 equivalent);
+// promoteToNormal throws "instance is not temp" (statusCode 400). Both
+// surface as structured isError MCP responses rather than crashes.
+export async function promoteSession({ id }, { instances }) {
+  const inst = getInst(instances, id);
+  return inst.promoteToNormal();
 }
 
 // ---------- mutating: plan approval ----------
