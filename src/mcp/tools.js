@@ -94,13 +94,15 @@ export function buildTools() {
       name: 'spawn_instance',
       description:
         'Spawn a new Claude subprocess inside a project (optionally inside a new or existing git worktree of it). ' +
-        'Returns the instance summary. CAUTION: an instance with the code-conductor MCP registered can in turn spawn ' +
-        'further instances — guard against runaway recursion by defaulting child agents to plan mode.',
+        'Returns the instance summary. Defaults to temp:true (disposable worker) but mode still defaults to plan ' +
+        '(NOT bypassPermissions) so workers plan before acting — promote with promote_session to keep one. ' +
+        'CAUTION: an instance with the code-conductor MCP registered can in turn spawn ' +
+        'further instances — guard against runaway recursion by keeping child agents in plan mode.',
       inputSchema: {
         type: 'object',
         properties: {
           project: { type: 'string' },
-          mode: { type: 'string', enum: VALID_MODES, description: 'plan / ask / bypassPermissions. Defaults to plan (or bypassPermissions when temp:true).' },
+          mode: { type: 'string', enum: VALID_MODES, description: 'plan / ask / bypassPermissions. Defaults to plan, independent of temp (resume defaults to bypassPermissions).' },
           effort: { type: 'string', enum: VALID_EFFORTS },
           thinking: { type: 'string', enum: VALID_THINKING },
           model: { type: 'string', description: 'e.g. claude-sonnet-4-6 / claude-opus-4-8 / claude-haiku-4-5. Empty/omitted uses account default.' },
@@ -109,7 +111,7 @@ export function buildTools() {
             type: ['boolean', 'string'],
             description: 'true → create a fresh worktree off the project\'s HEAD. <name> → spawn into an existing worktree.',
           },
-          temp: { type: 'boolean', description: 'If true, the session jsonl is removed on subprocess exit.' },
+          temp: { type: 'boolean', description: 'If true, the session jsonl is removed on subprocess exit. Defaults to true for MCP spawns; pass false to keep the session (or promote_session later).' },
           debug: { type: 'boolean', description: 'If true, raw CLI traffic is mirrored to .code-conductor/debug/<id>/.' },
         },
         required: ['project'],
@@ -286,6 +288,19 @@ export function buildTools() {
         required: ['id'],
       },
       handler: h.respawnInstance,
+    },
+    {
+      name: 'promote_session',
+      description:
+        'Promote a temp session to a persistent one: flips temp=false and writes last-prompt + ' +
+        'permission-mode so `claude --resume` finds it (emits a status update). Errors if the ' +
+        'instance id is unknown or the instance is not temp.',
+      inputSchema: {
+        type: 'object',
+        properties: { id: { type: 'string', description: 'Instance id of the temp session to keep.' } },
+        required: ['id'],
+      },
+      handler: h.promoteSession,
     },
     {
       name: 'create_worktree',

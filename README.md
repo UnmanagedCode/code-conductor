@@ -49,7 +49,7 @@ RUN_REAL_CLAUDE=1 npm test   # also runs opt-in real-claude smoke
 - **Live conversation** — streaming markdown, TTS read-aloud (Piper, per-sentence), thinking blocks, tool diffs, plan-mode approval cards, AskUserQuestion cards, ask-mode permission cards.
 - **UI elements** — task panel, context-usage chip (live, colour-graded), rate-limit chip (live bucket/utilization/reset-time, left side of bottom bar; shows OVERAGE badge when `isUsingOverage`), voice dictation (whisper.cpp — tap empty-composer mic or hold Send to append), settings page (models + auto-stop-on-overage toggle, transcribe, TTS, workspace conventions), OS notifications via Service Worker.
 - **Conduct mode** — `🎼 Conduct` spawns a conductor temp session in `.conduct` project, pre-loaded with `CONDUCT.md` role prompt, orchestrates workers via MCP.
-- **MCP interface** — 20+ tools (`mcp__code-conductor__*`) auto-registered at spawn: read, create, workspaces, spawn/drive, plan handling, worktrees.
+- **MCP interface** — 20+ tools (`mcp__code-conductor__*`) auto-registered at spawn: read, create, workspaces, spawn/drive (incl. `promote_session` to keep a temp worker), plan handling, worktrees. MCP `spawn_instance` defaults to temp:true but keeps mode at plan.
 
 See [docs/features.md](docs/features.md) for the exhaustive feature and UI-element catalog.
 
@@ -57,7 +57,7 @@ See [docs/features.md](docs/features.md) for the exhaustive feature and UI-eleme
 
 - **Projects root**: parent directory of the code-conductor repo (resolved from `import.meta.url` at module load — typically `~/cc-projects/` if you cloned into the conventional location). Override with `PROJECTS_ROOT=<abs-path>`. The whole orchestrator (project list, central store at `<root>/.code-conductor/`, the hidden `.conduct` project) lives under this dir; `~/project/` is the docs shorthand for it.
 - Bind: `127.0.0.1:8787` (override with `HOST` / `PORT`).
-- New instance: `plan` mode, `high` effort, `adaptive` thinking, no model flag. Temp checkbox flips mode default to `bypassPermissions`.
+- New instance: `plan` mode, `high` effort, `adaptive` thinking, no model flag. `InstanceManager.create()` is policy-light — mode never depends on `temp`. The UI/REST temp checkbox ⇒ `bypassPermissions` mapping is applied at the `POST /api/instances` route. **MCP `spawn_instance`** defaults to `temp:true` but mode still defaults to `plan` (conducted-worker safety contract, since `create()` doesn't couple them) — explicit `temp:false`/`mode` still win.
 - Sidebar one-click resume: `bypassPermissions` mode (continuing real work), same effort/thinking defaults. Crash-respawn preserves whatever mode was running.
 - Resume without an explicit `model` recovers the model the session was last run with by reading the most-recent `assistant.message.model` from the jsonl — otherwise `claude --resume` falls back to the account default (often Opus) and silently flips a Sonnet/Haiku session. The recovered (bare) id is run through `canonicalizeModel` so the family's fixed window is re-applied (Sonnet → `[1m]`); the window is never persisted, and nothing of ours is written into Claude's jsonl for it. Explicit `model` on the POST still wins (also canonicalized).
 - Ring buffer: 500 events / instance.

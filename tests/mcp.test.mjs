@@ -113,7 +113,7 @@ test('tools/list returns the full expected tool catalog', async () => {
       'list_workspaces', 'list_worktrees',
       'locate_session',
       'merge_worktree',
-      'project_status',
+      'project_status', 'promote_session',
       'read_file', 'reject_plan', 'rename_workspace', 'respawn_instance',
       'send_prompt', 'set_auto_approve_plan', 'set_mode',
       'set_project_workspace',
@@ -250,8 +250,11 @@ test('list_sessions marks MCP-spawned sessions conducted:true, HTTP ones false, 
   try {
     await api(baseUrl, 'POST', '/api/projects', { name: 'a' });
 
-    // Conducted session: spawned via the MCP spawn_instance tool.
-    const cond = unwrap(await callTool(baseUrl, 'spawn_instance', { project: 'a', mode: 'bypassPermissions' }));
+    // Conducted session: spawned via the MCP spawn_instance tool. Pass
+    // temp:false explicitly — MCP spawns now default to temp:true, and the
+    // durable conducted marker (asserted below) is only persisted for
+    // non-temp sessions (_writeSessionMetadata skips temp).
+    const cond = unwrap(await callTool(baseUrl, 'spawn_instance', { project: 'a', mode: 'bypassPermissions', temp: false }));
     assert.equal(cond.conducted, true, 'MCP-spawned summary carries conducted:true');
     const condInst = instances.get(cond.id);
     await waitFor(() => condInst.status === 'idle' && condInst.sessionId);
@@ -758,5 +761,83 @@ test('read_file scoped to a worktree reads from the worktree root, not the paren
       project: 'demo', relativePath: 'shared.txt',
     }));
     assert.equal(fromParent.content, 'parent\n');
+  } finally { await ctx.close(); }
+});
+
+// ---------- spawn_instance temp/mode defaults ----------
+//
+// The MCP spawn path defaults temp:true (disposable conducted worker) and
+// gets mode plan automatically — create() is policy-light and never couples
+// temp to mode. The temp⇒bypassPermissions shortcut lives only at the REST
+// route POST /api/instances (covered by instances.test.mjs).
+
+async function spawnIdle(ctx, args) {
+  const summary = unwrap(await callTool(ctx.baseUrl, 'spawn_instance', args));
+  await waitFor(() => ctx.instances.get(summary.id)?.status === 'idle');
+  return summary;
+}
+
+test('spawn_instance defaults to temp:true with mode still plan (coupling broken)', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO_INSTANCE });
+  try {
+    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'demo' });
+    const summary = await spawnIdle(ctx, { project: 'demo' });
+    assert.equal(summary.temp, true, 'temp defaults to true for MCP spawns');
+    assert.equal(summary.mode, 'plan', 'mode stays plan despite temp:true');
+    assert.equal(summary.conducted, true);
+  } finally { await ctx.close(); }
+});
+
+test('spawn_instance explicit temp:false wins, mode still plan', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO_INSTANCE });
+  try {
+    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'demo' });
+    const summary = await spawnIdle(ctx, { project: 'demo', temp: false });
+    assert.equal(summary.temp, false, 'explicit temp:false overrides the default');
+    assert.equal(summary.mode, 'plan');
+  } finally { await ctx.close(); }
+});
+
+test('spawn_instance explicit mode wins over the temp default', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO_INSTANCE });
+  try {
+    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'demo' });
+    const summary = await spawnIdle(ctx, { project: 'demo', mode: 'bypassPermissions' });
+    assert.equal(summary.temp, true, 'temp still defaults to true');
+    assert.equal(summary.mode, 'bypassPermissions', 'explicit mode wins');
+  } finally { await ctx.close(); }
+});
+
+// ---------- promote_session ----------
+
+test('promote_session flips temp:false on a temp session', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO_INSTANCE });
+  try {
+    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'demo' });
+    const summary = await spawnIdle(ctx, { project: 'demo' });
+    assert.equal(summary.temp, true);
+    const promoted = unwrap(await callTool(ctx.baseUrl, 'promote_session', { id: summary.id }));
+    assert.equal(promoted.temp, false, 'promote flips temp to false');
+    assert.equal(ctx.instances.get(summary.id).temp, false, 'in-memory flag flipped too');
+  } finally { await ctx.close(); }
+});
+
+test('promote_session on a non-temp session returns a structured error', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO_INSTANCE });
+  try {
+    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'demo' });
+    const summary = await spawnIdle(ctx, { project: 'demo', temp: false });
+    const res = await callTool(ctx.baseUrl, 'promote_session', { id: summary.id });
+    assert.equal(res.isError, true, 'not-temp surfaces as isError, not a crash');
+    assert.match(res.content.map(c => c.text).join(''), /not temp/);
+  } finally { await ctx.close(); }
+});
+
+test('promote_session on an unknown id returns a structured error', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO_INSTANCE });
+  try {
+    const res = await callTool(ctx.baseUrl, 'promote_session', { id: 'no-such-id' });
+    assert.equal(res.isError, true, 'unknown id surfaces as isError, not a crash');
+    assert.match(res.content.map(c => c.text).join(''), /not found/);
   } finally { await ctx.close(); }
 });

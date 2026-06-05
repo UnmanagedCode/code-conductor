@@ -410,7 +410,12 @@ export function buildRoutes({ instances, serverCtx } = {}) {
     r.post('/instances', async (req, res, next) => {
       try {
         const { project, resume, mode, effort, thinking, model, worktree, temp, debug, autoApprovePlan } = req.body ?? {};
-        const inst = await instances.create({ project, resume, mode, effort, thinking, model, worktree, temp, debug, autoApprovePlan });
+        // UI shortcut: the temp checkbox implies bypassPermissions when no
+        // mode is picked (a disposable session is almost always for *doing*,
+        // not planning). create() is policy-light and no longer couples
+        // these, so the mapping lives here. An explicit mode still wins.
+        const effectiveMode = (mode == null && temp) ? 'bypassPermissions' : mode;
+        const inst = await instances.create({ project, resume, mode: effectiveMode, effort, thinking, model, worktree, temp, debug, autoApprovePlan });
         res.status(201).json(inst.summary());
       } catch (e) { next(e); }
     });

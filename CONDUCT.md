@@ -53,7 +53,7 @@ The orchestrator's MCP server exposes the `mcp__code-conductor__*` tools below. 
 - `get_worktree_diff({project, worktreeName, baseRef?, contextLines?})` — full unified diff of `<base>...HEAD` in a worktree, capped at 200 KB.
 
 **Spawn workers**
-- `spawn_instance({project, mode, model, worktree, temp?, ...})` — returns `{id, sessionId, ...}`. Prefer `worktree: true` for any worker that will modify code (it creates a fresh git worktree off HEAD, isolating the change and giving you a clean merge target). Prefer `mode: 'plan'` so the worker plans before acting.
+- `spawn_instance({project, mode, model, worktree, temp?, ...})` — returns `{id, sessionId, ...}`. Prefer `worktree: true` for any worker that will modify code (it creates a fresh git worktree off HEAD, isolating the change and giving you a clean merge target). Defaults to `temp:true` (disposable worker) but mode still defaults to `plan` — so workers plan before acting; promote with `promote_session` if you want to keep one. Explicit `temp:false`/`mode` override the defaults.
 - `create_project({name, gitInit?})` — for greenfield work. Validates `^[a-zA-Z0-9._-]+$` and refuses dot-prefixed names.
 - `create_worktree({project})` — create a worktree without spawning into it (rare; usually `spawn_instance({worktree:true})` is what you want).
 
@@ -73,6 +73,7 @@ The orchestrator's MCP server exposes the `mcp__code-conductor__*` tools below. 
 - `interrupt_turn({id})` — abort the current turn.
 - `kill_instance({id})` — terminate and remove.
 - `respawn_instance({id})` — resume an exited/crashed instance from its sessionId.
+- `promote_session({id})` — promote a temp worker to a persistent session (workers spawn temp by default): flips `temp=false` and writes resume-picker metadata so `claude --resume` finds it. Errors if the id is unknown or the session is not temp.
 
 **Parallel dispatch is the default for multi-worker work.** You can emit several `tool_use` blocks in a single assistant turn — the CLI dispatches them concurrently and returns all `tool_result`s together. To kick off N workers at once: emit N `send_prompt({wait:false})` **plus** N `subscribe_to_idle({targetId})` tool_uses in one turn, then **end your turn**. You don't block at all — the human is immediately free, and the orchestrator wakes you **once per worker** as each one's `turn_end` arrives. Handle each completion in its own short wake-up turn (`get_recent_messages`, then approve / review / resubscribe / land for that id).
 
