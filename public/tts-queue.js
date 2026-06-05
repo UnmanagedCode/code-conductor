@@ -14,28 +14,38 @@ export class TtsQueue {
   constructor(playFn) {
     this._items = [];
     this._draining = false;
+    this._drainId = 0;
     this._playFn = playFn;
   }
 
   enqueue(item) {
     this._items.push(item);
-    if (!this._draining) this._startDrain();
+    if (!this._draining) this._startDrain(++this._drainId);
   }
 
   flush() {
     this._items.length = 0;
   }
 
+  // Reset the drain state so the next enqueue starts a fresh drain synchronously.
+  // Used by requestSpeak() (tap) after _stopSilent(): the stale drain's microtask
+  // continuation sees a mismatched id and exits without resetting _draining.
+  interruptDrain() {
+    this._draining = false;
+    this._drainId++;
+  }
+
   get size() { return this._items.length; }
   get draining() { return this._draining; }
 
-  async _startDrain() {
+  async _startDrain(id) {
     this._draining = true;
     while (this._items.length > 0) {
       const item = this._items.shift();
       item.onStart?.();
       await this._playFn(item.text);
+      if (this._drainId !== id) return; // interrupted by requestSpeak; don't clean up
     }
-    this._draining = false;
+    if (this._drainId === id) this._draining = false;
   }
 }

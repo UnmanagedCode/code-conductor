@@ -205,12 +205,14 @@ export async function speak(text, { onStart } = {}) {
 
 // Tap-driven playback (the 🔊 button). The tap is a user gesture.
 // Flushes any queued auto-speak segments and interrupts the current audio,
-// then starts the tapped message immediately.
+// then starts the tapped message immediately — synchronously firing the
+// speaking-change listener before returning (same contract as the old code).
 export function requestSpeak(text) {
   markInteracted();
-  _queue.flush();  // clear pending auto-speak segments
-  _stopSilent();   // kill current audio without firing the listener
-  return speak(text); // enqueue; drain (still active) picks it up next microtask
+  _queue.flush();           // clear pending auto-speak segments
+  _stopSilent();            // kill current audio (sets currentSpeakToken=null, schedules microtask)
+  _queue.interruptDrain();  // reset _draining so enqueue() calls _startDrain() synchronously
+  return speak(text);       // _startDrain fires → _playSingle fires listener before first await
 }
 
 // Auto-speak a finalized assistant message — only when enabled, available, and

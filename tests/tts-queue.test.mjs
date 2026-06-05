@@ -169,6 +169,38 @@ test('item without onStart plays without error', async () => {
   assert.deepEqual(played, ['no-hook']);
 });
 
+// ── interruptDrain() ─────────────────────────────────────────────────────────
+
+test('interruptDrain() lets next enqueue start a fresh drain synchronously', async () => {
+  const events = [];
+  const resolvers = [];
+  const queue = new TtsQueue(async (text) => {
+    events.push(`play:${text}`);
+    await new Promise(r => resolvers.push(r));
+  });
+
+  // Start item 'a'.
+  queue.enqueue({ text: 'a' });
+  await flush(); // 'a' is playing
+
+  // Simulate requestSpeak: flush pending, interrupt, re-enqueue tap item.
+  queue.flush();
+  queue.interruptDrain(); // reset _draining
+  queue.enqueue({ text: 'tap', onStart: () => events.push('start:tap') });
+  // onStart + play:tap should have fired synchronously (within this tick).
+  assert.ok(events.includes('start:tap'), 'onStart fired synchronously after interruptDrain');
+  assert.ok(events.includes('play:tap'), 'playFn called synchronously after interruptDrain');
+
+  // Resolve 'a' — stale drain wakes but exits without resetting _draining.
+  resolvers[0]();
+  await flush();
+  assert.equal(queue.draining, true, 'new drain still active after stale drain exits');
+
+  resolvers[1]?.();
+  await flush();
+  assert.equal(queue.draining, false);
+});
+
 // ── Queue size tracking ───────────────────────────────────────────────────────
 
 test('size reflects pending items (not counting the currently-playing one)', async () => {
