@@ -123,7 +123,7 @@ export function buildTools() {
       description:
         'Send a user turn to a running instance. Defaults to wait:false (returns immediately). ' +
         'Pass wait:true to block until the turn ends and return the turn_end event inline. ' +
-        'A message sent while the worker is mid-turn is delivered live and interleaved into the running turn (not queued until turn_end), so a single send_prompt is a valid way to steer or course-correct a worker in flight.',
+        'A mid-turn send_prompt is delivered live into the running turn (not queued), so it can steer a worker in flight.',
       inputSchema: {
         type: 'object',
         properties: {
