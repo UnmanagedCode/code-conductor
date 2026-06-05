@@ -23,8 +23,8 @@ export function buildTools() {
       name: 'list_instances',
       description:
         'List every live or recently-exited orchestrator instance. Each entry carries ' +
-        '{id, project, sessionId, status, mode, effort, thinking, model, pid, worktree, temp, conductor, debug}. ' +
-        '`conductor:true` marks a session spawned via this `spawn_instance` tool.',
+        '{id, project, sessionId, status, mode, effort, thinking, model, pid, worktree, temp, conducted, debug}. ' +
+        '`conducted:true` marks a session spawned via this `spawn_instance` tool.',
       inputSchema: { type: 'object', properties: {}, required: [] },
       handler: h.listInstances,
     },
@@ -32,8 +32,8 @@ export function buildTools() {
       name: 'list_sessions',
       description:
         'List persisted Claude sessions for a project, or for a specific worktree inside it. ' +
-        'Returns [{sessionId, firstPrompt, title, conductor, mtime, size}] newest-first. ' +
-        '`conductor:true` marks a session spawned via the `spawn_instance` tool (orchestrator-driven); ' +
+        'Returns [{sessionId, firstPrompt, title, conducted, mtime, size}] newest-first. ' +
+        '`conducted:true` marks a session spawned via the `spawn_instance` tool (orchestrator-driven); ' +
         'all sessions are returned regardless — this is a grouping flag, not a filter.',
       inputSchema: {
         type: 'object',

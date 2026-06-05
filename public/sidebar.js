@@ -33,10 +33,10 @@ function mergeLive(onDisk, liveInstances) {
       row.instanceStatus = inst.status;
       row.instanceMode = inst.mode;
       row.instanceTemp = !!inst.temp;
-      // Conductor is durable on-disk metadata (row.conductor may already
-      // be set from the API). A live conductor instance is authoritative;
-      // OR the two so a UI-resumed conductor session stays grouped.
-      row.conductor = !!inst.conductor || !!row.conductor;
+      // Conducted is durable on-disk metadata (row.conducted may already
+      // be set from the API). A live conducted instance is authoritative;
+      // OR the two so a UI-resumed conducted session stays grouped.
+      row.conducted = !!inst.conducted || !!row.conducted;
       // Live instance summary carries the freshest title (set via the
       // ⋮ Rename action without a refetch). Prefer it over a stale
       // on-disk-list entry from the last /api/projects round-trip.
@@ -52,7 +52,7 @@ function mergeLive(onDisk, liveInstances) {
         instanceStatus: inst.status,
         instanceMode: inst.mode,
         instanceTemp: !!inst.temp,
-        conductor: !!inst.conductor,
+        conducted: !!inst.conducted,
         synthetic: true,
       });
     }
@@ -199,7 +199,7 @@ export class Sidebar {
     const tooltipParts = [session.sessionId];
     if (customTitle && preview) tooltipParts.push(preview);
     const row = el('div', {
-      class: 'session-row' + (isActive ? ' active' : '') + (isLive ? ' live' : '') + (unread > 0 ? ' has-unread' : '') + (session.instanceTemp ? ' temp' : '') + (session.conductor ? ' conductor' : '') + (customTitle ? ' has-title' : ''),
+      class: 'session-row' + (isActive ? ' active' : '') + (isLive ? ' live' : '') + (unread > 0 ? ' has-unread' : '') + (session.instanceTemp ? ' temp' : '') + (session.conducted ? ' conducted' : '') + (customTitle ? ' has-title' : ''),
       title: tooltipParts.join('\n'),
       onclick: () => {
         if (session.instanceId) this.onSelectInstance(session.instanceId);
@@ -297,15 +297,15 @@ export class Sidebar {
       // Two pinned sections below the normal list, each under a dim
       // divider, so the user can see them at a glance without losing the
       // mtime sort over the normal sessions above:
-      //   — temp —       live temp sessions that are NOT conductor
-      //   — conductor —  sessions spawned via the MCP spawn_instance tool
-      // Precedence: conductor wins over temp for *grouping*, so a session
-      // that is both renders under — conductor — (but keeps the warm temp
-      // colour via the .temp class, handled in CSS). Conductor section is
+      //   — temp —       live temp sessions that are NOT conducted
+      //   — conducted —  sessions spawned via the MCP spawn_instance tool
+      // Precedence: conducted wins over temp for *grouping*, so a session
+      // that is both renders under — conducted — (but keeps the warm temp
+      // colour via the .temp class, handled in CSS). Conducted section is
       // appended last so the temp-only ordering is unchanged.
-      const conductors = merged.filter(s => s.conductor);
-      const temps = merged.filter(s => !s.conductor && s.instanceTemp);
-      const normal = merged.filter(s => !s.conductor && !s.instanceTemp);
+      const conductedRows = merged.filter(s => s.conducted);
+      const temps = merged.filter(s => !s.conducted && s.instanceTemp);
+      const normal = merged.filter(s => !s.conducted && !s.instanceTemp);
       const appendRows = (rows) => {
         for (const s of rows) {
           listEl.appendChild(el('li', {}, this._sessionRow({
@@ -318,9 +318,9 @@ export class Sidebar {
         listEl.appendChild(el('li', { class: 'sessions-separator' }, '— temp —'));
         appendRows(temps);
       }
-      if (conductors.length > 0) {
-        listEl.appendChild(el('li', { class: 'sessions-separator' }, '— conductor —'));
-        appendRows(conductors);
+      if (conductedRows.length > 0) {
+        listEl.appendChild(el('li', { class: 'sessions-separator' }, '— conducted —'));
+        appendRows(conductedRows);
       }
     };
 

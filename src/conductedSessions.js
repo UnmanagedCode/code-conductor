@@ -1,13 +1,14 @@
 // Sidecar JSON store of sessionIds that were spawned via the MCP
-// `spawn_instance` tool (i.e. by an orchestrator / "conductor"), as
-// opposed to the browser UI / HTTP spawn path. Single global file at
-// `<store>/conductor-sessions.json` because session IDs are UUIDs
+// `spawn_instance` tool (i.e. the *worker* agents an orchestrator
+// conducts — the "conducted" sessions), as opposed to the browser UI /
+// HTTP spawn path. Single global file at
+// `<store>/conducted-sessions.json` because session IDs are UUIDs
 // (globally unique) — no need to scope per project/worktree.
 //
-// This is the *durable* half of the conductor axis: unlike `temp`
-// (purely in-memory, wiped on exit) the conductor marker must survive
+// This is the *durable* half of the conducted axis: unlike `temp`
+// (purely in-memory, wiped on exit) the conducted marker must survive
 // instance exit, server restart, and `--resume`, so a non-temp
-// conductor session is still recognised as conductor when it shows up
+// conducted session is still recognised as conducted when it shows up
 // as a historical/resumable session later.
 //
 // Atomic writes (write tmp + rename), mirroring `sessionTitles.js`.
@@ -17,13 +18,13 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { orchStoreRoot } from './projects.js';
 
-function conductorFile() {
-  return path.join(orchStoreRoot(), 'conductor-sessions.json');
+function conductedFile() {
+  return path.join(orchStoreRoot(), 'conducted-sessions.json');
 }
 
 export async function loadAll() {
   try {
-    const raw = await fs.readFile(conductorFile(), 'utf8');
+    const raw = await fs.readFile(conductedFile(), 'utf8');
     const obj = JSON.parse(raw);
     const arr = Array.isArray(obj?.sessions) ? obj.sessions : null;
     if (!arr) return new Set();
@@ -34,12 +35,12 @@ export async function loadAll() {
     return out;
   } catch (e) {
     if (e.code === 'ENOENT') return new Set();
-    console.warn(`conductorSessions: failed to read ${conductorFile()}: ${e.message}`);
+    console.warn(`conductedSessions: failed to read ${conductedFile()}: ${e.message}`);
     return new Set();
   }
 }
 
-export async function isConductor(sessionId) {
+export async function isConducted(sessionId) {
   if (typeof sessionId !== 'string' || !sessionId) return false;
   const set = await loadAll();
   return set.has(sessionId);
@@ -56,7 +57,7 @@ function serialize(fn) {
 }
 
 async function writeSet(set) {
-  const file = conductorFile();
+  const file = conductedFile();
   if (set.size === 0) {
     try { await fs.unlink(file); } catch (e) { if (e.code !== 'ENOENT') throw e; }
     return;
@@ -68,7 +69,7 @@ async function writeSet(set) {
   await fs.rename(tmp, file);
 }
 
-export function markConductor(sessionId) {
+export function markConducted(sessionId) {
   return serialize(async () => {
     if (typeof sessionId !== 'string' || !sessionId) return false;
     const set = await loadAll();
@@ -79,7 +80,7 @@ export function markConductor(sessionId) {
   });
 }
 
-export function unmarkConductor(sessionId) {
+export function unmarkConducted(sessionId) {
   return serialize(async () => {
     if (typeof sessionId !== 'string' || !sessionId) return false;
     const set = await loadAll();

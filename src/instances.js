@@ -8,7 +8,7 @@ import { Parser } from './parser.js';
 import { getProject, claudeProjectsRoot, encodeCwd } from './projects.js';
 import { createWorktree, getWorktree, debugBaseDir } from './worktrees.js';
 import { getTitle as getSessionTitle, deleteTitle as deleteSessionTitle } from './sessionTitles.js';
-import { isConductor, markConductor, unmarkConductor } from './conductorSessions.js';
+import { isConducted, markConducted, unmarkConducted } from './conductedSessions.js';
 import { CONDUCT_PROJECT_NAME } from './conduct.js';
 import { buildSettingsJSON, buildMcpConfigJSON } from './settings.js';
 import { getAutoStopOnOverage, getConductorCompactWindow } from './appSettings.js';
@@ -79,7 +79,7 @@ class EventLog {
 }
 
 export class Instance extends EventEmitter {
-  constructor({ id, project, cwd, mode, effort, thinking, model, hookCallbackUrl = null, mcpServerUrl = null, worktree = null, temp = false, conductor = false, debug = false }) {
+  constructor({ id, project, cwd, mode, effort, thinking, model, hookCallbackUrl = null, mcpServerUrl = null, worktree = null, temp = false, conducted = false, debug = false }) {
     super();
     this.id = id;
     this.project = project;
@@ -100,13 +100,14 @@ export class Instance extends EventEmitter {
     // metadata appends during the run.
     this.temp = !!temp;
     // When true, this session was spawned via the MCP `spawn_instance`
-    // tool (orchestrator-driven), as opposed to the browser UI / HTTP
-    // spawn path. Orthogonal to `temp`. Persisted durably to the
-    // `<store>/conductor-sessions.json` sidecar (see _writeSessionMetadata)
-    // so it survives exit / restart / --resume; the sidebar groups these
-    // under a `— conductor —` separator. Purely a marker + display axis:
-    // no behavioural divergence vs a normal session.
-    this.conductor = !!conductor;
+    // tool (orchestrator-driven) — a *conducted* worker, as opposed to a
+    // session from the browser UI / HTTP spawn path. Orthogonal to
+    // `temp`. Persisted durably to the `<store>/conducted-sessions.json`
+    // sidecar (see _writeSessionMetadata) so it survives exit / restart /
+    // --resume; the sidebar groups these under a `— conducted —`
+    // separator. Purely a marker + display axis: no behavioural
+    // divergence vs a normal session.
+    this.conducted = !!conducted;
     // When true, raw CLI stdin/stdout/stderr is mirrored to the
     // central store's debug dir for offline inspection. Streams + the
     // debug dir path are populated at spawn time.
@@ -170,7 +171,7 @@ export class Instance extends EventEmitter {
           }
         : null,
       temp: this.temp,
-      conductor: this.conductor,
+      conducted: this.conducted,
       debug: this.debug,
       debugDir: this.debugDir,
       firstPrompt: this.firstPrompt,
@@ -368,7 +369,7 @@ export class Instance extends EventEmitter {
     const spawnEnv = { ...process.env };
     delete spawnEnv.CLAUDE_CODE_DISABLE_1M_CONTEXT;
     // Apply the compact-window override ONLY to the Conduct orchestrator session
-    // (project === '.conduct'). Do NOT gate on this.conductor — that flag marks
+    // (project === '.conduct'). Do NOT gate on this.conducted — that flag marks
     // MCP-spawned *worker* agents that the orchestrator spawns, which is the
     // opposite of the orchestrator session itself.
     if (this.project === CONDUCT_PROJECT_NAME) {
@@ -542,12 +543,12 @@ export class Instance extends EventEmitter {
 
   async _writeSessionMetadata() {
     if (this.temp) return;
-    // Persist the durable conductor marker so a non-temp conductor session
-    // is recognised as conductor after exit / restart / --resume. This is
+    // Persist the durable conducted marker so a non-temp conducted session
+    // is recognised as conducted after exit / restart / --resume. This is
     // the natural persistence point (same place last-prompt / permission-
     // mode are written). Only needs sessionId, not the leaf uuid.
-    if (this.conductor && this.sessionId) {
-      try { await markConductor(this.sessionId); } catch { /* best effort */ }
+    if (this.conducted && this.sessionId) {
+      try { await markConducted(this.sessionId); } catch { /* best effort */ }
     }
     if (!this.sessionId || !this._lastLeafUuid) return;
     try {
@@ -593,10 +594,10 @@ export class Instance extends EventEmitter {
     await fsp.rm(file, { force: true });
     await fsp.rm(subagents, { recursive: true, force: true });
     try { await deleteSessionTitle(this.sessionId); } catch { /* best-effort */ }
-    // Defensive: a temp conductor session is never persisted (the
+    // Defensive: a temp conducted session is never persisted (the
     // _writeSessionMetadata temp-guard returns early), but unmark anyway
     // so a promoted-then-demoted edge case can't leave a stale marker.
-    try { await unmarkConductor(this.sessionId); } catch { /* best-effort */ }
+    try { await unmarkConducted(this.sessionId); } catch { /* best-effort */ }
   }
 
   _sendRaw(obj) {
@@ -1022,7 +1023,7 @@ export class InstanceManager extends EventEmitter {
     return out;
   }
 
-  async create({ project, resume, mode, effort, thinking, model, worktree, temp, conductor, debug, autoApprovePlan } = {}) {
+  async create({ project, resume, mode, effort, thinking, model, worktree, temp, conducted, debug, autoApprovePlan } = {}) {
     if (!project) {
       throw Object.assign(new Error('project required'), { statusCode: 400 });
     }
@@ -1096,13 +1097,13 @@ export class InstanceManager extends EventEmitter {
     // it. Normalises away any stale `[200k]`/`[1m]` from older clients too.
     if (finalModel) finalModel = canonicalizeModel(finalModel);
 
-    // The conductor marker is set explicitly on the MCP spawn path. When
+    // The conducted marker is set explicitly on the MCP spawn path. When
     // resuming a historical session, recover it from the durable sidecar
-    // so a UI-resumed conductor session re-acquires the marker (survives
+    // so a UI-resumed conducted session re-acquires the marker (survives
     // --resume). Per-session and immutable, so OR-ing the two is safe.
-    let conductorFlag = !!conductor;
-    if (!conductorFlag && resume) {
-      try { conductorFlag = await isConductor(resume); } catch { /* best-effort */ }
+    let conductedFlag = !!conducted;
+    if (!conductedFlag && resume) {
+      try { conductedFlag = await isConducted(resume); } catch { /* best-effort */ }
     }
 
     const id = randomUUID();
@@ -1113,7 +1114,7 @@ export class InstanceManager extends EventEmitter {
       mcpServerUrl: this.mcpServerUrl(id),
       worktree: worktreeMeta,
       temp: tempFlag,
-      conductor: conductorFlag,
+      conducted: conductedFlag,
       debug: !!debug,
     });
 

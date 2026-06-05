@@ -16,7 +16,7 @@
 - **src/sessionEdit.js** — Atomic destructive jsonl edits: `truncateSessionAtUserMessage` (tmp → fsync → rename, appends fresh metadata at the new leaf), `forkSessionAtUserMessage` (copies prefix into a new `<sid>.jsonl` with `sessionId` rewritten on every line). Both return `droppedText` for composer prefill.
 - **src/parser.js** — stream-json line → UI event normalization. Delta merging by `(msgId, blockIdx)`, `thinking_redacted` emission, `parentToolUseId` routing, structured `user_question` / `plan_request` events.
 - **src/projects.js** — FS ops on `~/project/`, cwd encoding for `~/.claude/projects/`, CLAUDE.md seeding.
-- **src/conductorSessions.js** — sidecar store (`<store>/conductor-sessions.json`) of sessionIds spawned via MCP `spawn_instance`. `loadAll()`/`isConductor(sid)`/`markConductor(sid)`/`unmarkConductor(sid)`, atomic write + serialised write-chain, mirroring `sessionTitles.js`. The durable half of the conductor axis.
+- **src/conductedSessions.js** — sidecar store (`<store>/conducted-sessions.json`) of sessionIds spawned via MCP `spawn_instance` (the worker agents an orchestrator conducts). `loadAll()`/`isConducted(sid)`/`markConducted(sid)`/`unmarkConducted(sid)`, atomic write + serialised write-chain, mirroring `sessionTitles.js`. The durable half of the conducted axis.
 - **src/conduct.js** — `ensureConductProject()` lazy-creates `~/project/.conduct/` and seeds its `CLAUDE.md` with `@../CLAUDE.md` + absolute path to `CONDUCT.md` (resolved from `import.meta.url`). Idempotent; `wx` flag preserves user customisation.
 - **src/planApproval.js** — `buildApprovePrompt(feedback)` / `buildRejectPrompt(feedback)`. Source-of-truth for the magic strings the UI's Approve & Implement / Reject buttons, the server-side auto-approve, and the MCP `approve_plan` / `reject_plan` tools all send to the worker.
 - **src/routes.js** — Thin REST shell; hosts hook-callback, attachment streaming, `/admin/restart`, worktree sync/merge.
@@ -59,7 +59,7 @@ All orchestrator-owned state in a single workspace-wide dotfolder at `~/project/
 ├── .code-conductor/                        # central store
 │   ├── workspaces.json                     # registry of known workspace names
 │   ├── session-titles.json                 # {sessionId: customLabel} sidecar
-│   ├── conductor-sessions.json             # {sessions:[sid,…]} — durable conductor-session markers
+│   ├── conducted-sessions.json             # {sessions:[sid,…]} — durable conducted-session markers
 │   ├── settings.json                        # app settings, e.g. {transcribe:{model}, models:{sonnet,opus,haiku}, tts:{enabled,voice,rate}}
 │   ├── workspace-claudemd/                   # root CLAUDE.md ownership
 │   │   ├── baseline.md                       # last-applied canonical (drives the reconcile)

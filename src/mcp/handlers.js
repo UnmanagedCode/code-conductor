@@ -186,10 +186,11 @@ export async function spawnInstance(args, { instances }) {
     worktree: args.worktree,
     temp: args.temp,
     debug: args.debug,
-    // Sessions spawned through the MCP tool are "conductor" sessions
-    // (orchestrator-driven). This is the ONLY place the marker is set —
-    // the browser UI / HTTP spawn path leaves it false.
-    conductor: true,
+    // Sessions spawned through the MCP tool are "conducted" sessions
+    // (the worker agents an orchestrator conducts). This is the ONLY
+    // place the marker is set — the browser UI / HTTP spawn path leaves
+    // it false.
+    conducted: true,
   });
   return inst.summary();
 }
