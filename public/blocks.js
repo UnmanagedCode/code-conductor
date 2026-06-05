@@ -141,27 +141,26 @@ function _revertBtn(btn) {
   btn.classList.remove('speaking');
 }
 
-// Called by app.js when auto-speak fires for a finalized text block. Sets
-// _activeBtn before calling maybeAutoSpeak so the onSpeakingChange listener
-// sees the button and can record _activeBtnToken (speak() fires the listener
-// synchronously before its first await). If maybeAutoSpeak no-ops (disabled /
-// no user gesture), reverts immediately.
+// Called by app.js when auto-speak fires for a finalized text block.
+// The button stays idle (🔊) while this segment is queued; onStart fires
+// when the segment actually begins playing so the button flips to ⏹ at
+// the right moment. If maybeAutoSpeak no-ops (disabled / no user gesture /
+// normalized-to-empty text), onStart is never called and the button stays 🔊.
 export function autoSpeakBlock(block) {
   const btn = block.node?.querySelector?.('.tts-speak');
   if (!btn) return;
-  if (_activeBtn && _activeBtn !== btn) {
-    _revertBtn(_activeBtn);
-    _activeBtn = null;
+  const onStart = () => {
+    if (_activeBtn && _activeBtn !== btn) {
+      _revertBtn(_activeBtn);
+      _activeBtnToken = null;
+    }
+    _activeBtn = btn;
     _activeBtnToken = null;
-  }
-  _activeBtn = btn;
-  _activeBtnToken = null;
-  _setBtnSpeaking(btn);
-  maybeAutoSpeak(block.buffer);
-  if (getCurrentSpeakToken() === null) {
-    _revertBtn(btn);
-    _activeBtn = null;
-  }
+    _setBtnSpeaking(btn);
+    // _playSingle fires the speaking-change listener synchronously next,
+    // which records _activeBtnToken from getCurrentSpeakToken().
+  };
+  maybeAutoSpeak(block.buffer, { onStart });
 }
 
 // Per-tool one-line description for the collapsed summary.
