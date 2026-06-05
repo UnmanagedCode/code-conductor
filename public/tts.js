@@ -12,18 +12,26 @@
 // the Settings page. Browsers block audio without a prior user gesture, so we
 // track whether the user has interacted: a 🔊 tap is itself a gesture (always
 // works), but auto-speak no-ops until the first interaction.
+//
+// speak() enqueues a normalized segment onto a FIFO TtsQueue. The drain loop
+// plays one segment at a time — so fast-generating blocks queue up instead of
+// cutting each other off. requestSpeak() (tap) flushes the queue and interrupts
+// the current audio before starting the new segment, since a tap is deliberate.
+
+import { mdToSpeech } from './md-to-speech.js';
+import { TtsQueue } from './tts-queue.js';
 
 let available = false;
 let enabled = false;
 let rate = 1.0;
 let userHasInteracted = false;
 let audioCtx = null;
-let session = null; // current playback session (so a new speak() cancels it)
+let session = null; // current playback session
 
 // Speaking-state change notification. blocks.js sets one listener at module
-// load time to drive the play/stop button toggle. Fires on speak() start,
+// load time to drive the play/stop button toggle. Fires on _playSingle() start,
 // explicit stop(), and natural end (all audio finished + stream drained).
-let speakToken = 0;           // monotonic; incremented on each new speak()
+let speakToken = 0;           // monotonic; incremented on each new _playSingle()
 let currentSpeakToken = null; // null when idle
 
 let _speakingChangeListener = null;
@@ -39,7 +47,10 @@ if (typeof document !== 'undefined') {
 
 export function isTtsAvailable() { return available; }
 export function setTtsAvailable(v) { available = !!v; }
-export function setTtsEnabled(v) { enabled = !!v; }
+export function setTtsEnabled(v) {
+  enabled = !!v;
+  if (!enabled) stop(); // flush queue + kill audio when auto-speak is turned off
+}
 export function setTtsRate(v) { const n = Number(v); if (Number.isFinite(n) && n > 0) rate = n; }
 export function getTtsRate() { return rate; }
 
@@ -52,19 +63,21 @@ function ensureCtx() {
   return audioCtx;
 }
 
-// Internal stop: aborts the session without firing the change listener.
-// Used inside speak() so switching from one message to another fires only
-// ONE notification ("new speak started"), not a spurious null in between.
+// Internal stop: aborts the current session without firing the change listener.
+// Also calls session.resolve() so the drain loop can advance or exit.
 function _stopSilent() {
   if (!session) return;
   session.aborted = true;
   try { session.controller.abort(); } catch { /* ignore */ }
   for (const src of session.sources) { try { src.stop(); } catch { /* ignore */ } }
+  const s = session;
   session = null;
   currentSpeakToken = null;
+  s.resolve?.(); // unblock the drain loop waiting on this segment
 }
 
 export function stop() {
+  _queue.flush(); // clear all pending segments
   if (!session) return;
   _stopSilent();
   if (_speakingChangeListener) _speakingChangeListener();
@@ -77,6 +90,7 @@ function _naturalEnd(s) {
   session = null;
   currentSpeakToken = null;
   if (_speakingChangeListener) _speakingChangeListener();
+  s.resolve?.(); // unblock the drain loop
 }
 
 function concat(a, b) {
@@ -110,16 +124,14 @@ async function scheduleWav(ctx, s, wavBytes) {
   };
 }
 
-// POST the text and stream-play the framed WAV response.
-export async function speak(text) {
-  if (!available || typeof text !== 'string' || !text.trim()) return;
-  _stopSilent(); // cancel any prior session without firing the listener
+// Play one segment end-to-end. Returns a Promise that resolves when the
+// segment finishes naturally OR when _stopSilent() aborts it — so the drain
+// loop can await this and advance to the next item either way.
+async function _playSingle(text) {
   const ctx = ensureCtx();
   if (!ctx) return;
 
-  // Set token and notify BEFORE the first await so the change fires
-  // synchronously inside the button's onclick — _activeBtn in blocks.js is
-  // already set when the listener runs.
+  // Allocate a resolve for the drain loop before any await.
   const token = ++speakToken;
   const s = {
     aborted: false,
@@ -128,9 +140,13 @@ export async function speak(text) {
     playhead: ctx.currentTime + 0.05,
     streamDone: false,
     activeSourceCount: 0,
+    resolve: null,
   };
+  const p = new Promise(res => { s.resolve = res; });
   session = s;
   currentSpeakToken = token;
+  // Fire the change listener synchronously before the first await so
+  // blocks.js's _activeBtn is already set when the listener runs.
   if (_speakingChangeListener) _speakingChangeListener();
 
   try { await ctx.resume(); } catch { /* ignore */ }
@@ -143,8 +159,8 @@ export async function speak(text) {
       body: text,
       signal: s.controller.signal,
     });
-  } catch { return; }
-  if (!res.ok || !res.body) return;
+  } catch { s.resolve?.(); return p; }
+  if (!res.ok || !res.body) { s.resolve?.(); return p; }
 
   const reader = res.body.getReader();
   let buf = new Uint8Array(0);
@@ -159,28 +175,49 @@ export async function speak(text) {
         if (buf.length < 4 + len) break;
         const wav = buf.subarray(4, 4 + len);
         buf = buf.subarray(4 + len);
-        if (s.aborted) return;
+        if (s.aborted) { s.resolve?.(); return p; }
         await scheduleWav(ctx, s, wav);
       }
       if (done) break;
     }
-  } catch { /* aborted or network error — stop quietly */ }
+  } catch { s.resolve?.(); return p; }
 
   // Stream fully drained. If no sources are still playing, end immediately;
   // otherwise _naturalEnd fires from the last source's onended handler.
   s.streamDone = true;
   if (s.activeSourceCount === 0 && !s.aborted) _naturalEnd(s);
+
+  return p;
+}
+
+// Module-level queue — drives sequential playback.
+const _queue = new TtsQueue(_playSingle);
+
+// Normalize markdown, then enqueue the segment. The drain loop plays it after
+// any currently-playing segment finishes. onStart (optional) fires just before
+// this segment begins playing, used by autoSpeakBlock to flip the button.
+export async function speak(text, { onStart } = {}) {
+  if (!available || typeof text !== 'string') return;
+  text = mdToSpeech(text);
+  if (!text.trim()) return;
+  _queue.enqueue({ text, onStart });
 }
 
 // Tap-driven playback (the 🔊 button). The tap is a user gesture.
+// Flushes any queued auto-speak segments and interrupts the current audio,
+// then starts the tapped message immediately.
 export function requestSpeak(text) {
   markInteracted();
-  return speak(text);
+  _queue.flush();  // clear pending auto-speak segments
+  _stopSilent();   // kill current audio without firing the listener
+  return speak(text); // enqueue; drain (still active) picks it up next microtask
 }
 
 // Auto-speak a finalized assistant message — only when enabled, available, and
 // the user has already interacted (else the browser blocks audio).
-export function maybeAutoSpeak(text) {
+// onStart fires when this segment actually begins playing (which may be after
+// earlier segments in the queue finish), so the button flips at the right time.
+export function maybeAutoSpeak(text, { onStart } = {}) {
   if (!enabled || !available || !userHasInteracted) return;
-  return speak(text);
+  return speak(text, { onStart });
 }
