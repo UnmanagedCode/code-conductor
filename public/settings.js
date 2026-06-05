@@ -25,6 +25,7 @@ export function installSettings({
   // Models group elements.
   const smStatusEl = document.getElementById('sm-status');
   const smListEl = document.getElementById('sm-family-list');
+  const smAutoStopEl = document.getElementById('sm-auto-stop');
   // TTS group elements.
   const ttStatusEl = document.getElementById('tt-status');
   const ttListEl = document.getElementById('tt-voice-list');
@@ -281,6 +282,7 @@ export function installSettings({
 
       smListEl.appendChild(li);
     }
+    if (smAutoStopEl) smAutoStopEl.checked = data.autoStopOnOverage ?? false;
   }
 
   function labelFor(family, id) {
@@ -300,6 +302,23 @@ export function installSettings({
       onModelsChange?.(data.active);
     } catch (e) {
       if (smStatusEl) smStatusEl.textContent = `Switch failed: ${e.message || e}`;
+    }
+  }
+
+  smAutoStopEl?.addEventListener('change', () => onPickAutoStop(smAutoStopEl.checked));
+
+  async function onPickAutoStop(enabled) {
+    try {
+      const r = await fetch('/api/settings/models/prefs', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ autoStopOnOverage: enabled }),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+      renderModels(data);
+    } catch (e) {
+      if (smStatusEl) smStatusEl.textContent = `Update failed: ${e.message || e}`;
     }
   }
 

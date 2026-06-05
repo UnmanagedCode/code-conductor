@@ -158,3 +158,74 @@ export function fillClass(frac) {
   if (frac < 0.8) return 'ih-usage-mid';
   return 'ih-usage-high';
 }
+
+// ── Rate-limit tracker ──────────────────────────────────────────────────
+// Per-instance tracker for the latest rate_limit_event payload. Mirrors
+// UsageTracker's reset() + apply(ev) shape so app.js drives it identically.
+
+export class RateLimitTracker {
+  constructor() { this.reset(); }
+
+  reset() {
+    this.info = null; // latest rate_limit_info object (null until first event)
+  }
+
+  apply(ev) {
+    if (ev?.kind !== 'system' || ev.subtype !== 'rate_limit_event') return;
+    const raw = ev.data ?? {};
+    // Accept both nested (rate_limit_info) and flat shapes defensively.
+    this.info = raw.rate_limit_info ?? (Object.keys(raw).length ? raw : null);
+  }
+}
+
+// Friendly labels for the rateLimitType values the CLI emits.
+const RATE_LIMIT_TYPE_LABELS = {
+  five_hour: '5h',
+  seven_day: '7d',
+  seven_day_opus: '7d Opus',
+  seven_day_sonnet: '7d Sonnet',
+};
+
+// Format the resetsAt Unix timestamp as a local time string, e.g. "resets 6:40pm".
+export function formatResetTime(unixSecs) {
+  if (!unixSecs || !Number.isFinite(unixSecs)) return null;
+  const d = new Date(unixSecs * 1000);
+  return 'resets ' + d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+}
+
+// Build the rate-limit chip element from a rate_limit_info object.
+// Returns null when info is falsy (slot should stay hidden).
+// Reuses fillClass() and ih-usage-* colour CSS from the context chip.
+export function renderRateLimitChip(info) {
+  if (!info) return null;
+
+  const typeLabel = RATE_LIMIT_TYPE_LABELS[info.rateLimitType] ?? info.rateLimitType ?? '?';
+  const util = typeof info.utilization === 'number' ? info.utilization : null;
+  // utilization is only present once a bucket crosses a warning threshold;
+  // when absent use null so fillClass returns the neutral ih-usage-empty class.
+  const frac = util != null ? util / 100 : null;
+  const resetStr = formatResetTime(info.resetsAt);
+  const isOverage = info.isUsingOverage === true;
+
+  const el = document.createElement('span');
+  el.className = `ih-chip ih-ratelimit ${fillClass(frac)}`;
+  el.title = [
+    `Rate limit bucket: ${typeLabel}`,
+    util != null ? `Utilization: ${util}%` : null,
+    resetStr,
+    isOverage ? 'OVERAGE active' : null,
+  ].filter(Boolean).join(' · ');
+
+  let text = `rl ${typeLabel}`;
+  if (util != null) text += ` · ${Math.round(util)}%`;
+  el.textContent = text;
+
+  if (isOverage) {
+    const badge = document.createElement('span');
+    badge.className = 'rl-overage-badge';
+    badge.textContent = 'OVERAGE';
+    el.appendChild(badge);
+  }
+
+  return el;
+}

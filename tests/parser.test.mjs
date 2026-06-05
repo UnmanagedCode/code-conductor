@@ -147,6 +147,58 @@ test('parser: thinking deltas tracked separately from text', async () => {
   assert.equal(textEnds.length, 1);
 });
 
+// ── rate_limit_event ─────────────────────────────────────────────────────
+test('parser: rate_limit_event with nested isUsingOverage passes through as system', () => {
+  const p = new Parser();
+  const events = p.handleObject({
+    type: 'rate_limit_event',
+    rate_limit_info: {
+      status: 'allowed',
+      rateLimitType: 'five_hour',
+      resetsAt: 1729281600,
+      utilization: 85,
+      isUsingOverage: true,
+      overageStatus: 'allowed',
+    },
+  });
+  assert.equal(events.length, 1);
+  assert.equal(events[0].kind, 'system');
+  assert.equal(events[0].subtype, 'rate_limit_event');
+  assert.equal(events[0].data.rate_limit_info.isUsingOverage, true);
+  assert.equal(events[0].data.rate_limit_info.rateLimitType, 'five_hour');
+  assert.equal(events[0].data.rate_limit_info.utilization, 85);
+});
+
+test('parser: rate_limit_event with flat isUsingOverage passes through as system', () => {
+  const p = new Parser();
+  const events = p.handleObject({
+    type: 'rate_limit_event',
+    isUsingOverage: true,
+    rateLimitType: 'seven_day',
+    resetsAt: 1729281600,
+  });
+  assert.equal(events.length, 1);
+  assert.equal(events[0].kind, 'system');
+  assert.equal(events[0].subtype, 'rate_limit_event');
+  assert.equal(events[0].data.isUsingOverage, true);
+});
+
+test('parser: rate_limit_event without isUsingOverage passes through cleanly', () => {
+  const p = new Parser();
+  const events = p.handleObject({
+    type: 'rate_limit_event',
+    rate_limit_info: {
+      status: 'allowed',
+      rateLimitType: 'seven_day',
+      resetsAt: 1729281600,
+    },
+  });
+  assert.equal(events.length, 1);
+  assert.equal(events[0].kind, 'system');
+  assert.equal(events[0].subtype, 'rate_limit_event');
+  assert.equal(events[0].data.rate_limit_info?.isUsingOverage, undefined);
+});
+
 test('parser: malformed line falls back to raw', () => {
   const p = new Parser();
   const out = p.handleLine('not json {');

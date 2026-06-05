@@ -1097,6 +1097,29 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
   .turn-indicator .ti-ellipsis span { animation: none; opacity: 1; }
 }
 
+/* Rate-limit chip — left side of the bottom bar, sibling of #ti-left and
+   #ti-usage-slot. Hidden until the first rate_limit_event arrives so it
+   doesn't affect layout in sessions that never hit a rate limit. Reuses
+   ih-chip and ih-usage-* colour classes from the context chip. */
+.ti-ratelimit-slot {
+  display: flex;
+  align-items: center;
+}
+.ti-ratelimit-slot[hidden] { display: none; }
+.ih-ratelimit { font-variant-numeric: tabular-nums; }
+.rl-overage-badge {
+  margin-left: 4px;
+  font-weight: 700;
+  color: var(--red);
+}
+
+/* settings-hint: small descriptive text under a settings control */
+.settings-hint {
+  margin: 4px 0 0;
+  font-size: 11px;
+  color: var(--muted);
+}
+
 /* Settings — full-page view filling #main. While open, the instance-specific
    children of #main are hidden (the burger ≡ sidebar toggle in the header
    stays so mobile can still reach the sidebar). The group-nav + content

@@ -80,6 +80,7 @@
           <span class="ti-label">Claude is working</span>
           <span class="ti-ellipsis" aria-hidden="true"><span>.</span><span>.</span><span>.</span></span>
         </div>
+        <div id="ti-ratelimit-slot" class="ti-ratelimit-slot" hidden></div>
         <div id="ti-usage-slot" class="ti-right"></div>
       </div>
       <form id="composer" autocomplete="off">
@@ -124,6 +125,10 @@
             </p>
             <div id="sm-status" class="st-status" aria-live="polite">Loading…</div>
             <ul id="sm-family-list" class="sm-family-list"></ul>
+            <div class="sm-prefs">
+              <label class="tt-toggle"><input id="sm-auto-stop" type="checkbox" /> Auto-stop on overage (overtime)</label>
+              <p class="settings-hint">Interrupts the session the moment it starts using paid overage credits. Off by default.</p>
+            </div>
           </div>
           <div id="settings-tts" class="settings-group" hidden>
             <p class="settings-desc">
