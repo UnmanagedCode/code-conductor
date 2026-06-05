@@ -132,3 +132,48 @@ export async function setAutoStopOnOverage(enabled) {
   await writeSettings(next);
   return !!enabled;
 }
+
+// Models group: conductor compact window override. When enabled, sets
+// CLAUDE_CODE_AUTO_COMPACT_WINDOW on the child process env for conductor
+// (MCP-spawned) sessions so Claude compacts as if the window were this size.
+// Value is stored in k-tokens (e.g. 200 = 200k); the env var receives raw
+// tokens (value * 1000). Seeded from the orchestrator's own env if set.
+// Off by default — strictly opt-in.
+const COMPACT_K_MIN  = 20;
+const COMPACT_K_MAX  = 1000;
+const COMPACT_K_STEP = 10;
+const COMPACT_K_DEFAULT = 200;
+
+function snapCompactK(k) {
+  const snapped = Math.round(k / COMPACT_K_STEP) * COMPACT_K_STEP;
+  return Math.max(COMPACT_K_MIN, Math.min(COMPACT_K_MAX, snapped));
+}
+
+export function getConductorCompactWindow() {
+  const s = loadSync();
+  const envRaw    = process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW;
+  const envTokens = envRaw ? parseInt(envRaw, 10) : null;
+  const envK      = (Number.isFinite(envTokens) && envTokens > 0)
+    ? snapCompactK(Math.round(envTokens / 1000))
+    : null;
+  return {
+    enabled: s.models?.conductorCompactWindowEnabled ?? (envK !== null),
+    value:   s.models?.conductorCompactWindowK       ?? envK ?? COMPACT_K_DEFAULT,
+  };
+}
+
+export async function setConductorCompactWindow({ enabled, value }) {
+  const n = Number(value);
+  const snapped = snapCompactK(Number.isFinite(n) ? n : COMPACT_K_DEFAULT);
+  const cur  = loadSync();
+  const next = {
+    ...cur,
+    models: {
+      ...(cur.models || {}),
+      conductorCompactWindowEnabled: !!enabled,
+      conductorCompactWindowK:       snapped,
+    },
+  };
+  await writeSettings(next);
+  return { enabled: !!enabled, value: snapped };
+}

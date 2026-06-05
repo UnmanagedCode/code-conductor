@@ -10,6 +10,7 @@ import {
 import {
   getModelVersion, setModelVersion, getTranscribeModel, setTranscribeModel,
   getAutoStopOnOverage, setAutoStopOnOverage,
+  getConductorCompactWindow, setConductorCompactWindow,
 } from '../src/appSettings.js';
 
 async function mkTmp() {
@@ -183,5 +184,122 @@ test('POST /api/settings/models/prefs ignores unknown keys gracefully', async ()
     const r = await api(baseUrl, 'POST', '/api/settings/models/prefs', { randomField: 'foo' });
     assert.equal(r.status, 200);
     assert.equal(r.body.autoStopOnOverage, false);
+  } finally { await close(); }
+});
+
+// ── conductorCompactWindow ──────────────────────────────────────────────
+test('appSettings: getConductorCompactWindow defaults {enabled:false,value:200} when unset', async () => {
+  const root = await mkTmp();
+  try {
+    await withEnv({ PROJECTS_ROOT: root, CLAUDE_CODE_AUTO_COMPACT_WINDOW: undefined }, async () => {
+      const cw = getConductorCompactWindow();
+      assert.equal(cw.enabled, false);
+      assert.equal(cw.value, 200);
+    });
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test('appSettings: setConductorCompactWindow round-trips enabled+value', async () => {
+  const root = await mkTmp();
+  try {
+    await withEnv({ PROJECTS_ROOT: root, CLAUDE_CODE_AUTO_COMPACT_WINDOW: undefined }, async () => {
+      const result = await setConductorCompactWindow({ enabled: true, value: 350 });
+      assert.equal(result.enabled, true);
+      assert.equal(result.value, 350);
+      const cw = getConductorCompactWindow();
+      assert.equal(cw.enabled, true);
+      assert.equal(cw.value, 350);
+    });
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test('appSettings: setConductorCompactWindow snaps to nearest 10k step', async () => {
+  const root = await mkTmp();
+  try {
+    await withEnv({ PROJECTS_ROOT: root, CLAUDE_CODE_AUTO_COMPACT_WINDOW: undefined }, async () => {
+      // 344 → 340 (rounds down, Math.round(34.4)=34)
+      assert.equal((await setConductorCompactWindow({ enabled: true, value: 344 })).value, 340);
+      // 346 → 350 (rounds up, Math.round(34.6)=35)
+      assert.equal((await setConductorCompactWindow({ enabled: true, value: 346 })).value, 350);
+      // 355 → 360 (rounds up, Math.round(35.5)=36 in JS)
+      assert.equal((await setConductorCompactWindow({ enabled: true, value: 355 })).value, 360);
+    });
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test('appSettings: setConductorCompactWindow clamps to [20, 1000]', async () => {
+  const root = await mkTmp();
+  try {
+    await withEnv({ PROJECTS_ROOT: root, CLAUDE_CODE_AUTO_COMPACT_WINDOW: undefined }, async () => {
+      assert.equal((await setConductorCompactWindow({ enabled: true, value: 5 })).value, 20);
+      assert.equal((await setConductorCompactWindow({ enabled: true, value: 9999 })).value, 1000);
+    });
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test('appSettings: CLAUDE_CODE_AUTO_COMPACT_WINDOW env seeds {enabled:true, value:500}', async () => {
+  const root = await mkTmp();
+  try {
+    await withEnv({ PROJECTS_ROOT: root, CLAUDE_CODE_AUTO_COMPACT_WINDOW: '500000' }, async () => {
+      const cw = getConductorCompactWindow();
+      assert.equal(cw.enabled, true);
+      assert.equal(cw.value, 500);
+    });
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test('appSettings: settings.json value wins over env seed', async () => {
+  const root = await mkTmp();
+  try {
+    await withEnv({ PROJECTS_ROOT: root, CLAUDE_CODE_AUTO_COMPACT_WINDOW: '500000' }, async () => {
+      await setConductorCompactWindow({ enabled: true, value: 300 });
+      const cw = getConductorCompactWindow();
+      assert.equal(cw.value, 300);
+    });
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test('appSettings: setConductorCompactWindow does not clobber autoStopOnOverage or model versions', async () => {
+  const root = await mkTmp();
+  try {
+    await withEnv({ PROJECTS_ROOT: root, CLAUDE_CODE_AUTO_COMPACT_WINDOW: undefined }, async () => {
+      await setModelVersion('sonnet', 'claude-sonnet-4-5');
+      await setAutoStopOnOverage(true);
+      await setConductorCompactWindow({ enabled: true, value: 400 });
+      assert.equal(getModelVersion('sonnet'), 'claude-sonnet-4-5');
+      assert.equal(getAutoStopOnOverage(), true);
+      assert.equal(getConductorCompactWindow().value, 400);
+    });
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test('GET /api/settings/models includes conductorCompactWindow defaulting {enabled:false}', async () => {
+  const { baseUrl, close } = await bootServer();
+  try {
+    const r = await api(baseUrl, 'GET', '/api/settings/models');
+    assert.equal(r.status, 200);
+    assert.ok('conductorCompactWindow' in r.body, 'conductorCompactWindow must be present');
+    assert.equal(r.body.conductorCompactWindow.enabled, false);
+    assert.equal(typeof r.body.conductorCompactWindow.value, 'number');
+  } finally { await close(); }
+});
+
+test('POST /api/settings/models/prefs saves conductorCompactWindow without clobbering autoStopOnOverage', async () => {
+  const { baseUrl, close } = await bootServer();
+  try {
+    // Enable auto-stop first.
+    await api(baseUrl, 'POST', '/api/settings/models/prefs', { autoStopOnOverage: true });
+    // Now set compact window.
+    const r = await api(baseUrl, 'POST', '/api/settings/models/prefs', {
+      conductorCompactWindow: { enabled: true, value: 400 },
+    });
+    assert.equal(r.status, 200);
+    assert.equal(r.body.conductorCompactWindow.enabled, true);
+    assert.equal(r.body.conductorCompactWindow.value, 400);
+    assert.equal(r.body.autoStopOnOverage, true, 'autoStopOnOverage must not be clobbered');
+    // Verify persistence via GET.
+    const g = await api(baseUrl, 'GET', '/api/settings/models');
+    assert.equal(g.body.conductorCompactWindow.enabled, true);
+    assert.equal(g.body.conductorCompactWindow.value, 400);
   } finally { await close(); }
 });

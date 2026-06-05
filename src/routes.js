@@ -32,6 +32,7 @@ import {
   getTranscribeModel, setTranscribeModel, getModelVersion, setModelVersion,
   getTtsEnabled, setTtsEnabled, getTtsVoice, setTtsVoice, getTtsRate, setTtsRate,
   getAutoStopOnOverage, setAutoStopOnOverage,
+  getConductorCompactWindow, setConductorCompactWindow,
 } from './appSettings.js';
 import * as whisperInstall from './whisperInstall.js';
 import * as ttsInstall from './ttsInstall.js';
@@ -724,7 +725,8 @@ export function buildRoutes({ instances, serverCtx } = {}) {
     for (const f of MODEL_FAMILIES) {
       active[f.family] = getModelVersion(f.family) || f.default;
     }
-    return { families: MODEL_FAMILIES, active, autoStopOnOverage: getAutoStopOnOverage() };
+    return { families: MODEL_FAMILIES, active, autoStopOnOverage: getAutoStopOnOverage(),
+      conductorCompactWindow: getConductorCompactWindow() };
   }
 
   r.get('/settings/models', (req, res) => {
@@ -748,8 +750,9 @@ export function buildRoutes({ instances, serverCtx } = {}) {
 
   r.post('/settings/models/prefs', async (req, res, next) => {
     try {
-      const { autoStopOnOverage } = req.body ?? {};
+      const { autoStopOnOverage, conductorCompactWindow } = req.body ?? {};
       if (typeof autoStopOnOverage === 'boolean') await setAutoStopOnOverage(autoStopOnOverage);
+      if (conductorCompactWindow !== undefined) await setConductorCompactWindow(conductorCompactWindow);
       res.json(modelsSettingsState());
     } catch (e) { next(e); }
   });

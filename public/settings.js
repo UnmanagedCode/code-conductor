@@ -26,6 +26,10 @@ export function installSettings({
   const smStatusEl = document.getElementById('sm-status');
   const smListEl = document.getElementById('sm-family-list');
   const smAutoStopEl = document.getElementById('sm-auto-stop');
+  const smCompactWindowEnabledEl = document.getElementById('sm-compact-window-enabled');
+  const smCompactWindowRowEl     = document.getElementById('sm-compact-window-row');
+  const smCompactWindowSliderEl  = document.getElementById('sm-compact-window');
+  const smCompactWindowValEl     = document.getElementById('sm-compact-window-val');
   // TTS group elements.
   const ttStatusEl = document.getElementById('tt-status');
   const ttListEl = document.getElementById('tt-voice-list');
@@ -283,6 +287,13 @@ export function installSettings({
       smListEl.appendChild(li);
     }
     if (smAutoStopEl) smAutoStopEl.checked = data.autoStopOnOverage ?? false;
+    if (smCompactWindowEnabledEl) {
+      const cw = data.conductorCompactWindow ?? { enabled: false, value: 200 };
+      smCompactWindowEnabledEl.checked = cw.enabled;
+      if (smCompactWindowSliderEl) smCompactWindowSliderEl.value = String(cw.value);
+      if (smCompactWindowValEl)    smCompactWindowValEl.textContent = `${cw.value}k`;
+      if (smCompactWindowRowEl)    smCompactWindowRowEl.hidden = !cw.enabled;
+    }
   }
 
   function labelFor(family, id) {
@@ -313,6 +324,32 @@ export function installSettings({
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ autoStopOnOverage: enabled }),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+      renderModels(data);
+    } catch (e) {
+      if (smStatusEl) smStatusEl.textContent = `Update failed: ${e.message || e}`;
+    }
+  }
+
+  smCompactWindowEnabledEl?.addEventListener('change', () => {
+    if (smCompactWindowRowEl) smCompactWindowRowEl.hidden = !smCompactWindowEnabledEl.checked;
+    onSaveCompactWindow();
+  });
+  smCompactWindowSliderEl?.addEventListener('input', () => {
+    if (smCompactWindowValEl) smCompactWindowValEl.textContent = `${smCompactWindowSliderEl.value}k`;
+  });
+  smCompactWindowSliderEl?.addEventListener('change', onSaveCompactWindow);
+
+  async function onSaveCompactWindow() {
+    const enabled = smCompactWindowEnabledEl?.checked ?? false;
+    const value   = Number(smCompactWindowSliderEl?.value ?? 200);
+    try {
+      const r = await fetch('/api/settings/models/prefs', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ conductorCompactWindow: { enabled, value } }),
       });
       const data = await r.json();
       if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
