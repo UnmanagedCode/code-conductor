@@ -11,7 +11,7 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { encodeCwd, claudeProjectsRoot } from './projects.js';
-import { extractAttachedMarkers } from './parser.js';
+import { extractAttachedMarkers, isSoftInterruptContent } from './parser.js';
 
 // Predicate: does this persisted jsonl object emit at least one `user_echo`
 // UI event when replayed? Mirrors the live-path emission in
@@ -33,6 +33,9 @@ export function isPureUserPromptLine(obj) {
   if (obj.isSidechain) return false;
   if (obj.type === 'user') {
     const content = obj.message?.content;
+    // Hidden soft-interrupt steer never produced a visible bubble — don't
+    // count it, or fork/rewind indices would drift past the user_echo count.
+    if (isSoftInterruptContent(content)) return false;
     if (typeof content === 'string') return content.length > 0;
     if (!Array.isArray(content)) return false;
     return content.some((b) => b && b.type === 'text' && typeof b.text === 'string');
@@ -40,6 +43,7 @@ export function isPureUserPromptLine(obj) {
   if (obj.type === 'attachment' && obj.attachment?.type === 'queued_command') {
     const prompt = obj.attachment.prompt;
     if (!Array.isArray(prompt)) return false;
+    if (isSoftInterruptContent(prompt)) return false; // hidden soft-interrupt steer
     return prompt.some((b) => b && b.type === 'text' && typeof b.text === 'string' && b.text.length > 0);
   }
   return false;
@@ -74,6 +78,8 @@ export function replayPersistedLine(obj, { seqHint = 0, parentToolUseId = null, 
   if (obj.type === 'user') {
     const msg = obj.message ?? {};
     const content = msg.content;
+    // Hidden soft-interrupt steer — never rendered live, never replayed.
+    if (isSoftInterruptContent(content)) return tagAndReturn();
     if (typeof content === 'string') {
       events.push({ kind: 'user_echo', text: content });
       return tagAndReturn();
@@ -121,6 +127,7 @@ export function replayPersistedLine(obj, { seqHint = 0, parentToolUseId = null, 
     // string `prompt` — they never produced a user_echo live, so skip.
     const prompt = obj.attachment.prompt;
     if (!Array.isArray(prompt)) return tagAndReturn();
+    if (isSoftInterruptContent(prompt)) return tagAndReturn(); // hidden soft-interrupt steer
     const echoTexts = [];
     const echoAttachments = [];
     for (const block of prompt) {

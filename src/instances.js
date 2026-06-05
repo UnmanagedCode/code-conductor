@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import readline from 'node:readline';
 import { promises as fsp, readFileSync, mkdirSync, createWriteStream, writeFileSync, rmSync } from 'node:fs';
 import path from 'node:path';
-import { Parser } from './parser.js';
+import { Parser, SOFT_INTERRUPT_MARKER } from './parser.js';
 import { getProject, claudeProjectsRoot, encodeCwd } from './projects.js';
 import { createWorktree, getWorktree, debugBaseDir } from './worktrees.js';
 import { getTitle as getSessionTitle, deleteTitle as deleteSessionTitle } from './sessionTitles.js';
@@ -28,6 +28,15 @@ import { buildApprovePrompt } from './planApproval.js';
 // The CLI's `default`/`acceptEdits` modes are unusable in stream-json
 // --print (no SDK canUseTool callback), so we don't expose them.
 const VALID_MODES = new Set(['plan', 'ask', 'bypassPermissions']);
+
+// The hidden steering instruction a SOFT interrupt injects mid-turn. It
+// must forbid any further output and direct the model to end its turn
+// silently — a graceful stop, not a hard abort. Prefixed with
+// SOFT_INTERRUPT_MARKER at send time so it never renders / replays.
+const SOFT_INTERRUPT_TEXT =
+  'SYSTEM INTERRUPT (not from the user): Stop all work on the current task immediately. '
+  + 'Do not call any more tools. Do not produce any further response, summary, or explanation. '
+  + 'End your turn now without saying anything to the user.';
 
 // Returns true when a rate_limit_event signals the session is now using
 // paid overage credits. Defensive: matches isUsingOverage at either
@@ -148,6 +157,12 @@ export class Instance extends EventEmitter {
     // the auto-approve fires regardless of which tab/session is in
     // focus, or whether any client is even connected.
     this.autoApprovePlan = false;
+    // Transient flag layered on top of `status: 'turn'`: set true when a
+    // SOFT interrupt injects its hidden steering message and the model is
+    // winding the turn down; cleared automatically by _setStatus on any
+    // exit from `turn` (turn_end → idle, crash, exit). Drives the
+    // "stopping…" marker + the "Interrupt now" escalate affordance.
+    this.interrupting = false;
   }
 
   summary() {
@@ -177,6 +192,7 @@ export class Instance extends EventEmitter {
       firstPrompt: this.firstPrompt,
       title: this.title,
       autoApprovePlan: this.autoApprovePlan,
+      interrupting: this.interrupting,
     };
   }
 
@@ -297,6 +313,9 @@ export class Instance extends EventEmitter {
   _setStatus(next) {
     if (this.status === next) return;
     this.status = next;
+    // Any exit from `turn` ends an in-flight soft interrupt — the model
+    // either wound down (turn_end → idle) or the process died.
+    if (next !== 'turn') this.interrupting = false;
     this.emit('status', this.summary());
   }
 
@@ -712,9 +731,31 @@ export class Instance extends EventEmitter {
   handleHookCallback(envelope, res) { this._hooks.handle(envelope, res); }
   resolveHookCallback(toolUseId, allow) { return this._hooks.resolve(toolUseId, allow); }
 
-  async interrupt() {
+  // Two-tier interrupt. FORCED (`force:true`) is the hard abort: a
+  // control_request the CLI honours by severing the in-flight turn and
+  // discarding partial work. SOFT (default) injects a hidden steering
+  // user message mid-turn — the CLI delivers it into the live turn (it is
+  // NOT queued until turn_end) — telling the model to stop all work and
+  // end its turn without responding, so it winds down gracefully. The
+  // steer is never echoed to the UI and is filtered from replay (see
+  // SOFT_INTERRUPT_MARKER in parser.js / transcript.js).
+  async interrupt({ force = false } = {}) {
     if (this.status !== 'turn') return;
-    await this._controlRequest({ subtype: 'interrupt' });
+    if (force) {
+      await this._controlRequest({ subtype: 'interrupt' });
+      return;
+    }
+    if (this.interrupting) return; // idempotent — one steer per turn
+    this._sendRaw({
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [{ type: 'text', text: `${SOFT_INTERRUPT_MARKER}\n${SOFT_INTERRUPT_TEXT}` }],
+      },
+      parent_tool_use_id: null,
+    });
+    this.interrupting = true;
+    this.emit('status', this.summary());
   }
 
   async kill({ graceMs = 2000 } = {}) {

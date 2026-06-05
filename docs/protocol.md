@@ -19,7 +19,9 @@ Two `PreToolUse` hooks via inline `--settings` JSON:
 1. **AskUserQuestion|ExitPlanMode** — `command` hook, static deny with reason "Awaiting user input via the orchestrator UI". The CLI auto-errors both tools in stream-json `--print` mode anyway (no SDK `canUseTool` callback to satisfy); the deny just gives them a friendlier reason. The model receives an `is_error: true` tool_result, ends the turn naturally, and the orchestrator drives the conversation forward via the next user prompt (plus, for plan approval, a `setMode(bypassPermissions)` control_request first).
 2. **Edit|Write|NotebookEdit|Bash** — `http` hook → `POST /api/instances/<id>/hook-callback`, **660 s** CLI-side timeout. Orchestrator auto-allows when the mode isn't `ask`; in `ask` mode holds the response open up to **540 s** (deliberately under 660 s — an HTTP timeout would make the CLI treat the hook as a non-blocking error and proceed, the opposite of intent). `ask` is orchestrator-tracked only and maps to `bypassPermissions` at the CLI level; the hook callback inspects orchestrator-side mode to gate.
 
-Inbound: `user` (text or `[{type:"text", text:"..."}, …]` blocks; attachments use `` Attached file: `<rel-path>` ``), `control_request` (`set_permission_mode` / `interrupt`), `keep_alive`.
+Inbound: `user` (text or `[{type:"text", text:"..."}, …]` blocks; attachments use `` Attached file: `<rel-path>` ``), `control_request` (`set_permission_mode` / `interrupt`), `keep_alive`. A `user` message written while a turn is running is **delivered mid-turn and interleaved into the live turn** (steering) — not queued until turn_end; the CLI persists such a mid-turn prompt as a `type:"attachment"` `queued_command` line (array `prompt`) rather than a `type:"user"` line.
+
+**Two-tier interrupt.** SOFT (default) injects a hidden steering `user` message prefixed with `[[cc:soft-interrupt]]` (`SOFT_INTERRUPT_MARKER`) telling the model to stop all work and end its turn silently — graceful wind-down, partial work preserved. The marker is filtered everywhere it could surface (`parser._handleUser`, `transcript.replayPersistedLine`, `transcript.isPureUserPromptLine`) so it never renders a user bubble, never replays, and never shifts the rewind/fork index. FORCED (`force:true`) is the unchanged hard `control_request` `subtype:interrupt` abort (discards partial work). Both gated by `if (status !== 'turn') return`.
 
 Outbound: `system` + `subtype:"init"` (bundled with first turn's response, not at startup; carries `session_id`, `model`, `tools`, `permissionMode`), `stream_event` (live SSE deltas — primary feed), `assistant` (final reconciled per-turn message — used for replay only), `user` (`tool_result` blocks), `result` (turn-end with `duration_ms`, `usage`, `total_cost_usd`, `stop_reason`, `is_error`), `hook_event`, `control_response`.
 
@@ -32,7 +34,7 @@ Outbound: `system` + `subtype:"init"` (bundled with first turn's response, not a
 | `unsubscribe` | `id` |
 | `prompt` | `id`, `text`, optional `attachments` (`[{name, mediaType, dataBase64}]`) |
 | `mode` | `id`, `mode` (`plan` / `ask` / `bypassPermissions`; `ask` → CLI `bypassPermissions`) |
-| `interrupt` | `id` |
+| `interrupt` | `id`, optional `force` (omitted/false ⇒ soft hidden-steer; `true` ⇒ hard `control_request` abort) |
 | `kill` | `id` |
 | `hook_decision` | `id`, `toolUseId`, `allow` (resolves ask-mode hook with original `tool_use_id`) |
 | `auto_approve_plan` | `id`, `enabled` (server-side flag; while on, an incoming `plan_request` in plan mode auto-fires `setMode(bypassPermissions)` + the approval prompt) |
@@ -40,10 +42,10 @@ Outbound: `system` + `subtype:"init"` (bundled with first turn's response, not a
 **Server → client:**
 | `t` | Fields |
 |---|---|
-| `snapshot` | `id`, `status`, `mode`, `sessionId`, `project`, `autoApprovePlan`, `events[]` |
+| `snapshot` | `id`, `status`, `mode`, `sessionId`, `project`, `autoApprovePlan`, `interrupting`, `events[]` |
 | `reset_snapshot` | Same shape; sent after rewind so subscribers clear DOM first |
 | `event` | `id`, `ev` (monotonic `_seq` for idempotent merge) |
-| `status` | `id`, `status` (`spawning|idle|turn|exited|crashed`), `sessionId`, `mode`, `autoApprovePlan` |
+| `status` | `id`, `status` (`spawning|idle|turn|exited|crashed`), `sessionId`, `mode`, `autoApprovePlan`, `interrupting` (transient — `true` while a soft interrupt winds a turn down; auto-clears on exit from `turn`) |
 | `ack` | `reqId`, `ok`, `error?` |
 | `hello` | sent on connect |
 | `error` | `message` (server-side parse rejection; not tied to a `reqId`) |

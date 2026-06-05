@@ -259,10 +259,13 @@ export function buildTools() {
     },
     {
       name: 'interrupt_turn',
-      description: 'Abort the current turn of a running instance (control_request interrupt).',
+      description: 'Stop the current turn of a running instance. Default (soft) injects a hidden steering message asking the model to stop work and end its turn gracefully. Pass force:true for a hard control_request abort that severs the turn and discards partial work.',
       inputSchema: {
         type: 'object',
-        properties: { id: { type: 'string' } },
+        properties: {
+          id: { type: 'string' },
+          force: { type: 'boolean', description: 'true = hard abort; omitted/false = soft graceful stop' },
+        },
         required: ['id'],
       },
       handler: h.interruptTurn,

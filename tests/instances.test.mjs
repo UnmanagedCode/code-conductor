@@ -137,7 +137,7 @@ test('setMode writes control_request and resolves on control_response', async ()
   }
 });
 
-test('interrupt mid-turn emits turn_end and returns to idle', async () => {
+test('forced interrupt (force:true) mid-turn emits turn_end and returns to idle', async () => {
   const { baseUrl, instances, close } = await setupWithProject();
   try {
     const events = collectEvents(instances);
@@ -154,13 +154,95 @@ test('interrupt mid-turn emits turn_end and returns to idle', async () => {
     assert.equal(inst.status, 'turn');
     // The "slow" scenario turn waits 80ms per event; interrupt before it finishes.
     await waitFor(() => events.slice(beforeInterrupt).some(e => e.id === id && e.ev.kind === 'text_delta'));
-    await inst.interrupt();
+    await inst.interrupt({ force: true }); // hard abort — control_request
 
     await waitFor(() => inst.status === 'idle');
     const last = events.filter(e => e.id === id && e.ev.kind === 'turn_end').slice(-1)[0];
     assert.equal(last.ev.subtype, 'error_during_execution');
     assert.equal(last.ev.stopReason, 'interrupted');
+    assert.equal(inst.interrupting, false, 'interrupting flag cleared on turn exit');
   } finally { await close(); }
+});
+
+test('soft interrupt (default) injects a hidden steer, sets interrupting, leaves no bubble', async () => {
+  const { baseUrl, instances, tmpHome, close } = await setupWithProject();
+  const transcriptPath = path.join(tmpHome, 'soft-stdin.log');
+  process.env.FAKE_CLAUDE_TRANSCRIPT = transcriptPath;
+  try {
+    const events = collectEvents(instances);
+    const statuses = [];
+    instances.on('status', (s) => statuses.push(s));
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', mode: 'bypassPermissions' });
+    const id = r.body.id;
+    const inst = instances.get(id);
+    await waitFor(() => inst.status === 'idle' && inst.sessionId);
+
+    inst.prompt('first turn');
+    await waitFor(() => events.some(e => e.id === id && e.ev.kind === 'turn_end'));
+    const beforeSecond = events.length;
+
+    // Second (slow) turn never completes on its own — instance stays in `turn`.
+    inst.prompt('second turn please be slow');
+    assert.equal(inst.status, 'turn');
+    await waitFor(() => events.slice(beforeSecond).some(e => e.id === id && e.ev.kind === 'text_delta'));
+    const ringBefore = inst.ring.toArray().length;
+
+    await inst.interrupt(); // SOFT (no force)
+    assert.equal(inst.status, 'turn', 'soft interrupt does NOT change status');
+    assert.equal(inst.interrupting, true, 'interrupting flag set');
+    assert.equal(inst.summary().interrupting, true, 'summary carries interrupting');
+    assert.ok(statuses.some(s => s.id === id && s.interrupting === true),
+      'a status event was broadcast with interrupting:true');
+
+    // No new user_echo bubble entered the ring for the steer.
+    const newEchoes = inst.ring.toArray().slice(ringBefore).filter(e => e.kind === 'user_echo');
+    assert.equal(newEchoes.length, 0, 'soft steer emits no user_echo');
+
+    // The hidden steer WAS written to the subprocess stdin (with marker).
+    // fake-claude appends stdin to the transcript asynchronously, so poll.
+    const steerLines = async () => (await fs.readFile(transcriptPath, 'utf8').catch(() => ''))
+      .split('\n').filter(l => l.includes('[[cc:soft-interrupt]]'));
+    await waitFor(async () => (await steerLines()).length === 1);
+    const parsed = JSON.parse((await steerLines())[0]);
+    assert.equal(parsed.type, 'user');
+
+    // Idempotent: a second soft while already interrupting writes nothing more.
+    await inst.interrupt();
+    await new Promise(r => setTimeout(r, 60));
+    assert.equal((await steerLines()).length, 1, 'second soft is a no-op (idempotent)');
+
+    // Escalate to forced — turn ends, interrupting clears.
+    await inst.interrupt({ force: true });
+    await waitFor(() => inst.status === 'idle');
+    assert.equal(inst.interrupting, false, 'interrupting cleared after turn_end');
+  } finally {
+    delete process.env.FAKE_CLAUDE_TRANSCRIPT;
+    await close();
+  }
+});
+
+test('soft interrupt is a no-op when not in a turn', async () => {
+  const { baseUrl, instances, tmpHome, close } = await setupWithProject();
+  const transcriptPath = path.join(tmpHome, 'soft-noop-stdin.log');
+  process.env.FAKE_CLAUDE_TRANSCRIPT = transcriptPath;
+  try {
+    const events = collectEvents(instances);
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', mode: 'bypassPermissions' });
+    const id = r.body.id;
+    const inst = instances.get(id);
+    await waitFor(() => inst.status === 'idle' && inst.sessionId);
+    inst.prompt('first turn');
+    await waitFor(() => events.some(e => e.id === id && e.ev.kind === 'turn_end'));
+    assert.equal(inst.status, 'idle');
+
+    await inst.interrupt(); // idle — guard returns
+    assert.equal(inst.interrupting, false);
+    const stdin = await fs.readFile(transcriptPath, 'utf8');
+    assert.ok(!stdin.includes('[[cc:soft-interrupt]]'), 'no steer written when idle');
+  } finally {
+    delete process.env.FAKE_CLAUDE_TRANSCRIPT;
+    await close();
+  }
 });
 
 test('crash + respawn preserves sessionId, ring buffer, and uses --resume', async () => {

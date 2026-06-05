@@ -219,6 +219,33 @@ test('wait_for_idle resolves when an in-flight turn completes', async () => {
   } finally { await close(); }
 });
 
+test('interrupt_turn: soft (default) sets interrupting, force aborts the turn', async () => {
+  const { baseUrl, instances, close } = await bootServer({ scenarioPath: SCENARIO_INSTANCE });
+  try {
+    await api(baseUrl, 'POST', '/api/projects', { name: 'a' });
+    const spawn = unwrap(await callTool(baseUrl, 'spawn_instance', { project: 'a', mode: 'bypassPermissions' }));
+    await waitFor(() => instances.get(spawn.id).sessionId);
+
+    await callTool(baseUrl, 'send_prompt', { id: spawn.id, text: 'one' });
+    await waitFor(() => instances.get(spawn.id).status === 'idle');
+
+    // Slow turn — stays in `turn` (scenario emits no result for it).
+    await callTool(baseUrl, 'send_prompt', { id: spawn.id, text: 'two please be slow' });
+    await waitFor(() => instances.get(spawn.id).status === 'turn');
+
+    // Soft (force omitted): flag set, turn continues.
+    const soft = unwrap(await callTool(baseUrl, 'interrupt_turn', { id: spawn.id }));
+    assert.equal(soft.status, 'turn');
+    assert.equal(soft.interrupting, true);
+    assert.equal(instances.get(spawn.id).interrupting, true);
+
+    // Force: hard abort ends the turn and clears the flag.
+    await callTool(baseUrl, 'interrupt_turn', { id: spawn.id, force: true });
+    await waitFor(() => instances.get(spawn.id).status === 'idle');
+    assert.equal(instances.get(spawn.id).interrupting, false);
+  } finally { await close(); }
+});
+
 test('set_mode round-trips and is reflected on the live instance', async () => {
   const { baseUrl, instances, close } = await bootServer({ scenarioPath: SCENARIO_WS });
   try {
