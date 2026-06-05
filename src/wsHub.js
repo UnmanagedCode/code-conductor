@@ -64,6 +64,7 @@ export function attachWsHub({ wss, instances }) {
       sessionId: summary.sessionId,
       mode: summary.mode,
       autoApprovePlan: !!summary.autoApprovePlan,
+      interrupting: !!summary.interrupting,
     });
     if (subs) for (const ws of subs) safeSend(ws, payload);
     broadcastAll(JSON.stringify({ t: 'instances' }));
@@ -125,6 +126,7 @@ export function attachWsHub({ wss, instances }) {
               mode: inst.mode,
               sessionId: inst.sessionId,
               autoApprovePlan: !!inst.autoApprovePlan,
+              interrupting: !!inst.interrupting,
               events: inst.ringSnapshot(),
             }));
             reply(true);
@@ -157,7 +159,7 @@ export function attachWsHub({ wss, instances }) {
           }
           case 'interrupt': {
             if (!inst) { reply(false, 'unknown instance'); return; }
-            await inst.interrupt();
+            await inst.interrupt({ force: !!msg.force });
             reply(true);
             return;
           }

@@ -264,10 +264,10 @@ export async function unsubscribeFromIdle({ targetId }, { instances, callerId })
   return { ok: true, callerId, targetId, removed: res.removed };
 }
 
-export async function interruptTurn({ id }, { instances }) {
+export async function interruptTurn({ id, force }, { instances }) {
   const inst = getInst(instances, id);
-  await inst.interrupt();
-  return { id, status: inst.status };
+  await inst.interrupt({ force: !!force });
+  return { id, status: inst.status, interrupting: !!inst.interrupting };
 }
 
 export async function killInstance({ id }, { instances }) {

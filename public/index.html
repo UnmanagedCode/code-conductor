@@ -77,8 +77,10 @@
       <div id="turn-indicator" class="turn-indicator" hidden aria-live="polite">
         <div id="ti-left" class="ti-left" hidden>
           <span class="ti-dot" aria-hidden="true"></span>
-          <span class="ti-label">Claude is working</span>
+          <span id="ti-label" class="ti-label">Claude is working</span>
           <span class="ti-ellipsis" aria-hidden="true"><span>.</span><span>.</span><span>.</span></span>
+          <button id="ti-interrupt-now" type="button" class="ti-interrupt-now" hidden
+                  title="Force-stop now — severs the turn and discards in-progress work">⏹ Interrupt now</button>
         </div>
         <div id="ti-ratelimit-slot" class="ti-ratelimit-slot" hidden></div>
         <div id="ti-usage-slot" class="ti-right"></div>

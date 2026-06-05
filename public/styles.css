@@ -388,6 +388,7 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
 .ih-chip.ih-status { color: var(--muted); }
 .ih-chip.ih-status-turn { color: var(--green); }
 .ih-chip.ih-status-spawning { color: var(--amber); }
+.ih-chip.ih-status-interrupting { color: var(--amber); animation: pulse 1s infinite alternate; }
 .ih-chip.ih-status-crashed, .ih-chip.ih-status-exited { color: var(--red); }
 .ih-chip.ih-temp { background: rgba(223, 132, 90, .25); color: #ffc7a3; text-transform: uppercase; font-size: 10px; letter-spacing: .5px; }
 .ih-chip.ih-debug { background: rgba(110, 168, 255, .25); color: #b6d1ff; text-transform: uppercase; font-size: 10px; letter-spacing: .5px; }
@@ -1092,9 +1093,24 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
   0%, 80%, 100% { opacity: 0.2; }
   40% { opacity: 1; }
 }
+.turn-indicator .ti-interrupt-now {
+  align-self: center;
+  margin-left: 8px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-family: inherit;
+  color: var(--red);
+  background: rgba(229, 83, 75, .12);
+  border: 1px solid var(--red);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.turn-indicator .ti-interrupt-now:hover { background: rgba(229, 83, 75, .22); }
+.turn-indicator .ti-interrupt-now[hidden] { display: none; }
 @media (prefers-reduced-motion: reduce) {
   .turn-indicator .ti-dot { animation: none; opacity: 1; }
   .turn-indicator .ti-ellipsis span { animation: none; opacity: 1; }
+  .ih-chip.ih-status-interrupting { animation: none; opacity: 1; }
 }
 
 /* Rate-limit chip — left side of the bottom bar, sibling of #ti-left and

@@ -218,7 +218,7 @@ test('projects hint is broadcast on instance lifecycle so sidebar session counts
   } finally { await close(); }
 });
 
-test('interrupt via WS returns instance to idle', async () => {
+test('forced interrupt via WS (force:true) returns instance to idle', async () => {
   const { baseUrl, wsUrl, instances, close } = await setup(SCENARIO_INTERRUPT);
   try {
     const r = await api(baseUrl, 'POST', '/api/instances', { project: 'a', mode: 'bypassPermissions' });
@@ -232,11 +232,37 @@ test('interrupt via WS returns instance to idle', async () => {
     c.send({ t: 'prompt', id, text: 'one' });
     await c.wait(m => m.t === 'event' && m.ev.kind === 'turn_end');
 
-    // Second turn (slow); interrupt it.
+    // Second turn (slow); force-interrupt it.
     c.send({ t: 'prompt', id, text: 'two please be slow' });
     await waitFor(() => instances.get(id).status === 'turn');
-    c.send({ t: 'interrupt', id });
+    c.send({ t: 'interrupt', id, force: true });
     await waitFor(() => instances.get(id).status === 'idle');
+    await c.close();
+  } finally { await close(); }
+});
+
+test('soft interrupt via WS broadcasts interrupting:true without ending the turn', async () => {
+  const { baseUrl, wsUrl, instances, close } = await setup(SCENARIO_INTERRUPT);
+  try {
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'a', mode: 'bypassPermissions' });
+    const id = r.body.id;
+    await waitFor(() => instances.get(id).sessionId);
+    const c = await wsClient(wsUrl);
+    c.send({ t: 'subscribe', id });
+    await c.wait(m => m.t === 'snapshot');
+
+    c.send({ t: 'prompt', id, text: 'one' });
+    await c.wait(m => m.t === 'event' && m.ev.kind === 'turn_end');
+
+    c.send({ t: 'prompt', id, text: 'two please be slow' });
+    await waitFor(() => instances.get(id).status === 'turn');
+
+    // Soft interrupt — no force field.
+    c.send({ t: 'interrupt', id });
+    await c.wait(m => m.t === 'status' && m.id === id && m.interrupting === true);
+    // Still in turn (soft does not sever it), flag set server-side.
+    assert.equal(instances.get(id).status, 'turn');
+    assert.equal(instances.get(id).interrupting, true);
     await c.close();
   } finally { await close(); }
 });

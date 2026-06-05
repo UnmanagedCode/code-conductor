@@ -51,6 +51,8 @@ const dom = {
   taskPanel: document.getElementById('task-panel'),
   turnIndicator: document.getElementById('turn-indicator'),
   tiLeft: document.getElementById('ti-left'),
+  tiLabel: document.getElementById('ti-label'),
+  tiInterruptNow: document.getElementById('ti-interrupt-now'),
   tiRatelimitSlot: document.getElementById('ti-ratelimit-slot'),
   tiUsageSlot: document.getElementById('ti-usage-slot'),
   newProjectBtn: document.getElementById('new-project-btn'),
@@ -383,10 +385,19 @@ dom.killBtn.addEventListener('click', () => {
   if (!state.activeId) return;
   closeOverflow();
   if (state.activeStatus === 'turn') {
+    // Default interrupt is SOFT — a hidden steer asking the model to wind
+    // down. Escalate to a hard abort via the "Interrupt now" button.
     send('interrupt', { id: state.activeId });
   } else if (confirm('Terminate this instance?')) {
     send('kill', { id: state.activeId });
   }
+});
+
+// Turn-indicator escalate button: force-stop the in-flight turn (hard
+// control_request abort) once a soft interrupt is underway.
+dom.tiInterruptNow.addEventListener('click', () => {
+  if (!state.activeId) return;
+  send('interrupt', { id: state.activeId, force: true });
 });
 
 dom.autoApprovePlanBtn.addEventListener('click', () => {
@@ -1294,8 +1305,11 @@ function updateActiveHeader() {
       `${wtShort} (← ${inst.worktree.baseBranch})`));
   }
   // Status chip only when it's signalling something actionable. `idle` is
-  // the no-op state; turn / spawning / crashed / exited still surface.
-  if (inst.status !== 'idle') {
+  // the no-op state; turn / spawning / crashed / exited still surface. A
+  // soft interrupt mid-turn shows a distinct "stopping…" chip.
+  if (inst.status === 'turn' && inst.interrupting) {
+    dom.instanceTitle.appendChild(chip('ih-status ih-status-interrupting', 'stopping…'));
+  } else if (inst.status !== 'idle') {
     dom.instanceTitle.appendChild(chip(`ih-status ih-status-${inst.status}`, inst.status));
   }
   if (inst.temp) dom.instanceTitle.appendChild(chip('ih-temp', 'temp'));
@@ -1322,6 +1336,9 @@ function updateActiveHeader() {
   dom.resumeBtn.hidden = !(inst.status === 'crashed' || inst.status === 'exited');
   dom.turnIndicator.hidden = false;
   dom.tiLeft.hidden = inst.status !== 'turn';
+  const interrupting = inst.status === 'turn' && !!inst.interrupting;
+  dom.tiLabel.textContent = interrupting ? 'Stopping…' : 'Claude is working';
+  dom.tiInterruptNow.hidden = !interrupting;
   const hasWorktree = !!inst.worktree?.worktreeName;
   dom.syncBtn.hidden = !hasWorktree;
   dom.syncBtn.disabled = !hasWorktree;
@@ -1578,7 +1595,10 @@ bus.addEventListener('snapshot', (e) => {
   // entry so the header toggle reflects it correctly the moment a tab
   // subscribes (or re-subscribes after a session switch).
   const inst = state.instances.find(i => i.id === m.id);
-  if (inst) inst.autoApprovePlan = !!m.autoApprovePlan;
+  if (inst) {
+    inst.autoApprovePlan = !!m.autoApprovePlan;
+    inst.interrupting = !!m.interrupting;
+  }
   if (!isActive) return;
   updateActiveHeader();
   // Fork case: the newly-spawned instance's first snapshot is our cue to
@@ -1680,6 +1700,7 @@ bus.addEventListener('status', (e) => {
     inst.mode = m.mode;
     inst.sessionId = m.sessionId;
     if (typeof m.autoApprovePlan === 'boolean') inst.autoApprovePlan = m.autoApprovePlan;
+    inst.interrupting = !!m.interrupting;
     sidebar.setInstances(state.instances);
     if (m.id === state.activeId) updateActiveHeader();
   }
