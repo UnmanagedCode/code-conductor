@@ -65,6 +65,10 @@ export function attachComposer({ form, textarea, sendBtn, attachBtn, fileInput, 
   // doesn't inherit a stale tag).
   let hasTranscript = false;
   let wakeLock = null;
+  let longPressTimer = null;       // hold-to-dictate timer
+  let holdDidRecord = false;        // suppress post-hold click from sending
+  let cancelOnRecordStart = false;  // user released before getUserMedia resolved
+  let recordingCancelled = false;   // abort without transcribing (pointercancel etc.)
 
   function setState({ canType: ct, canSend: cs }) {
     canType = ct; canSend = cs;
@@ -105,7 +109,7 @@ export function attachComposer({ form, textarea, sendBtn, attachBtn, fileInput, 
         : 'Install Whisper to enable voice dictation (Settings → Transcribe)';
     } else {
       sendBtn.disabled = !canSend || !hasContent;
-      sendBtn.title = 'Send message';
+      sendBtn.title = micAvailable ? 'Send message (hold to dictate)' : 'Send message';
     }
   }
   // Alias so the existing call sites keep reading naturally.
@@ -298,10 +302,12 @@ export function attachComposer({ form, textarea, sendBtn, attachBtn, fileInput, 
       const blob = new Blob(recordedChunks, { type: mediaRecorder.mimeType || 'audio/webm' });
       stopMediaTracks();
       recordedChunks = [];
+      if (recordingCancelled) { recordingCancelled = false; return; }
       void postForTranscript(blob);
     });
     mediaRecorder.start();
     setMicState('recording');
+    if (cancelOnRecordStart) { cancelOnRecordStart = false; abortRecording(); }
   }
 
   function stopRecording() {
@@ -316,6 +322,19 @@ export function attachComposer({ form, textarea, sendBtn, attachBtn, fileInput, 
       mediaStream = null;
     }
     mediaRecorder = null;
+  }
+
+  // Abort an in-progress recording without POSTing for transcription.
+  // Sets recordingCancelled so the deferred 'stop' event skips postForTranscript.
+  function abortRecording() {
+    clearTimeout(longPressTimer);
+    longPressTimer = null;
+    if (recordingState !== 'recording' || !mediaRecorder) return;
+    recordingCancelled = true;
+    releaseWakeLock();
+    recordingState = 'idle';
+    updateButton();
+    try { mediaRecorder.stop(); } catch { /* ignore */ }
   }
 
   async function postForTranscript(blob) {
@@ -345,16 +364,55 @@ export function attachComposer({ form, textarea, sendBtn, attachBtn, fileInput, 
     return sendBtn.classList.contains('mode-mic') && recordingState === 'idle';
   }
 
-  // Suppress long-press text-selection / callout on Android when the button
-  // is in mic or recording mode (no hold gesture needed for tap-toggle, but
-  // the OS still fires long-press on a sustained finger contact).
+  // Suppress OS long-press callout in mic/recording modes. Also starts the
+  // hold-to-dictate timer when the composer has content (mode-send).
   sendBtn.addEventListener('pointerdown', (e) => {
-    if (inMicMode() || recordingState === 'recording') e.preventDefault();
+    if (inMicMode() || recordingState === 'recording') {
+      e.preventDefault();
+      return;
+    }
+    if (sendBtn.classList.contains('mode-send') && micAvailable) {
+      // Explicit capture so pointerup/cancel reach the button even if finger drifts.
+      try { sendBtn.setPointerCapture(e.pointerId); } catch { /* ignore */ }
+      longPressTimer = setTimeout(() => {
+        longPressTimer = null;
+        holdDidRecord = true;
+        void startRecording();
+      }, 500);
+    }
+  });
+
+  sendBtn.addEventListener('pointerup', () => {
+    if (longPressTimer !== null) {
+      clearTimeout(longPressTimer);
+      longPressTimer = null;
+      return; // short tap — let click fire normally
+    }
+    if (!holdDidRecord) return;
+    if (recordingState === 'recording') {
+      stopRecording();
+    } else {
+      // getUserMedia still resolving — abort cleanly when recording starts
+      cancelOnRecordStart = true;
+    }
+    // Defer reset so the click event (fired after pointerup) sees holdDidRecord=true
+    setTimeout(() => { holdDidRecord = false; }, 0);
+  });
+
+  sendBtn.addEventListener('pointercancel', () => {
+    clearTimeout(longPressTimer);
+    longPressTimer = null;
+    if (holdDidRecord) {
+      holdDidRecord = false;
+      abortRecording();
+    }
   });
 
   // Tap-toggle: first tap starts recording, second tap stops and transcribes.
   // A plain click sends when there's content; transcribing clicks are ignored.
+  // A hold-to-dictate release sets holdDidRecord, which suppresses the send here.
   sendBtn.addEventListener('click', () => {
+    if (holdDidRecord) return;
     if (sendBtn.classList.contains('mode-send') && !sendBtn.disabled) {
       form.requestSubmit();
     } else if (inMicMode()) {
