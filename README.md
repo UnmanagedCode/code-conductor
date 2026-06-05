@@ -44,7 +44,7 @@ RUN_REAL_CLAUDE=1 npm test   # also runs opt-in real-claude smoke
 
 - **Projects & workspaces** — sidebar project list with git-status pills; workspaces nest projects under collapsible headers; project create/delete with cascade.
 - **Worktrees** — isolated git worktrees per spawn; two-step land-back: sync (FF or agent-driven rebase) then no-ff merge into parent.
-- **Sessions & instances** — unified live + historical session list; conductor sessions (MCP-spawned, durable marker); quick-spawn ↯ picker; temp sessions with promote; rewind & fork; crash recovery; session anchor (`#session=<sid>`).
+- **Sessions & instances** — unified live + historical session list; conducted sessions (MCP-spawned, durable marker); quick-spawn ↯ picker; temp sessions with promote; rewind & fork; crash recovery; session anchor (`#session=<sid>`).
 - **Spawn options** — mode (`plan` / `ask` / `code`), effort, thinking, model family (Haiku 200k / Sonnet & Opus 1M), temp session, debug capture.
 - **Live conversation** — streaming markdown, TTS read-aloud (Piper, per-sentence), thinking blocks, tool diffs, plan-mode approval cards, AskUserQuestion cards, ask-mode permission cards.
 - **UI elements** — task panel, context-usage chip (live, colour-graded), rate-limit chip (live bucket/utilization/reset-time, left side of bottom bar; shows OVERAGE badge when `isUsingOverage`), voice dictation (whisper.cpp press-and-hold), settings page (models + auto-stop-on-overage toggle, transcribe, TTS, workspace conventions), OS notifications via Service Worker.

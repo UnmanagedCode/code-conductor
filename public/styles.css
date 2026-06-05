@@ -337,12 +337,12 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
   padding: 6px 6px 2px; opacity: 0.7;
 }
 .session-row.temp .session-preview { color: #ffc7a3; }
-/* Conductor rows (spawned via the MCP spawn_instance tool) pin below a
-   dim "— conductor —" divider, reusing .sessions-separator. Cool preview
-   tint distinguishes them — but a session that is BOTH conductor and temp
+/* Conducted rows (spawned via the MCP spawn_instance tool) pin below a
+   dim "— conducted —" divider, reusing .sessions-separator. Cool preview
+   tint distinguishes them — but a session that is BOTH conducted and temp
    keeps the warm temp colour (the :not(.temp) guard yields to the rule
    above). */
-.session-row.conductor:not(.temp) .session-preview { color: #a3c7ff; }
+.session-row.conducted:not(.temp) .session-preview { color: #a3c7ff; }
 .empty-project-hint {
   font-size: 11px; color: var(--muted); font-style: italic;
   padding: 4px 14px;

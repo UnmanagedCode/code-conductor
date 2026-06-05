@@ -514,7 +514,7 @@ test('Temp instances render inside the unified Sessions subnode below a dim sepa
   assert.ok(tempRow.classList.contains('temp'), 'temp row carries .temp class for styling');
 });
 
-test('Conductor instances render below a — conductor — separator, separate from temp', async () => {
+test('Conducted instances render below a — conducted — separator, separate from temp', async () => {
   const { root, sidebar } = await setupSidebar({
     onLoadSessions: async () => [],
   });
@@ -524,34 +524,34 @@ test('Conductor instances render below a — conductor — separator, separate f
   }]);
   sidebar.setInstances([
     { id: 'inst-normal', project: 'demo', sessionId: 'sid-normal',
-      status: 'idle', mode: 'plan', worktree: null, temp: false, conductor: false },
+      status: 'idle', mode: 'plan', worktree: null, temp: false, conducted: false },
     { id: 'inst-temp', project: 'demo', sessionId: 'sid-temp',
-      status: 'idle', mode: 'bypassPermissions', worktree: null, temp: true, conductor: false },
+      status: 'idle', mode: 'bypassPermissions', worktree: null, temp: true, conducted: false },
     { id: 'inst-cond', project: 'demo', sessionId: 'sid-cond',
-      status: 'idle', mode: 'plan', worktree: null, temp: false, conductor: true },
+      status: 'idle', mode: 'plan', worktree: null, temp: false, conducted: true },
   ]);
   await new Promise(r => setTimeout(r, 0));
   const list = root.querySelector('details.sessions-group .sessions-list');
   const items = [...list.children];
-  // normal, — temp —, temp, — conductor —, conductor  (5 children)
+  // normal, — temp —, temp, — conducted —, conducted  (5 children)
   assert.equal(items.length, 5);
   const seps = items.filter(li => li.classList.contains('sessions-separator'));
   assert.equal(seps.length, 2, 'two separators rendered');
   assert.match(seps[0].textContent, /temp/i);
-  assert.match(seps[1].textContent, /conductor/i);
-  // The — conductor — separator is the 4th child; the conductor row follows.
-  assert.match(items[3].textContent, /conductor/i);
+  assert.match(seps[1].textContent, /conducted/i);
+  // The — conducted — separator is the 4th child; the conducted row follows.
+  assert.match(items[3].textContent, /conducted/i);
   const condRow = items[4].querySelector('.session-row');
-  assert.ok(condRow, 'conductor row follows the conductor separator');
-  assert.ok(condRow.classList.contains('conductor'), 'conductor row carries .conductor class');
-  assert.ok(!condRow.classList.contains('temp'), 'pure conductor row is not .temp');
-  // The temp row (2nd section) is NOT under conductor and stays .temp.
+  assert.ok(condRow, 'conducted row follows the conducted separator');
+  assert.ok(condRow.classList.contains('conducted'), 'conducted row carries .conducted class');
+  assert.ok(!condRow.classList.contains('temp'), 'pure conducted row is not .temp');
+  // The temp row (2nd section) is NOT under conducted and stays .temp.
   const tempRow = items[2].querySelector('.session-row');
   assert.ok(tempRow.classList.contains('temp'));
-  assert.ok(!tempRow.classList.contains('conductor'));
+  assert.ok(!tempRow.classList.contains('conducted'));
 });
 
-test('A conductor+temp session groups under — conductor — but keeps the .temp color class', async () => {
+test('A conducted+temp session groups under — conducted — but keeps the .temp color class', async () => {
   const { root, sidebar } = await setupSidebar({
     onLoadSessions: async () => [],
   });
@@ -561,25 +561,25 @@ test('A conductor+temp session groups under — conductor — but keeps the .tem
   }]);
   sidebar.setInstances([
     { id: 'inst-ct', project: 'demo', sessionId: 'sid-ct',
-      status: 'idle', mode: 'bypassPermissions', worktree: null, temp: true, conductor: true },
+      status: 'idle', mode: 'bypassPermissions', worktree: null, temp: true, conducted: true },
   ]);
   await new Promise(r => setTimeout(r, 0));
   const items = [...root.querySelector('details.sessions-group .sessions-list').children];
-  // Only a conductor section should appear (no — temp — separator, since the
-  // sole temp session is also conductor → grouped under conductor).
+  // Only a conducted section should appear (no — temp — separator, since the
+  // sole temp session is also conducted → grouped under conducted).
   const seps = items.filter(li => li.classList.contains('sessions-separator'));
-  assert.equal(seps.length, 1, 'only the conductor separator renders');
-  assert.match(seps[0].textContent, /conductor/i);
+  assert.equal(seps.length, 1, 'only the conducted separator renders');
+  assert.match(seps[0].textContent, /conducted/i);
   const row = root.querySelector('.session-row');
-  assert.ok(row.classList.contains('conductor'), 'row is in the conductor group');
+  assert.ok(row.classList.contains('conducted'), 'row is in the conducted group');
   assert.ok(row.classList.contains('temp'), 'row keeps .temp so the warm temp color applies');
 });
 
-test('On-disk conductor metadata (no live instance) still groups under — conductor —', async () => {
+test('On-disk conducted metadata (no live instance) still groups under — conducted —', async () => {
   const { root, sidebar } = await setupSidebar({
-    // Historical, non-live session carrying the persisted conductor flag.
+    // Historical, non-live session carrying the persisted conducted flag.
     onLoadSessions: async () => [
-      { sessionId: 'sid-hist', firstPrompt: 'hi', title: null, conductor: true, mtime: 1, size: 10 },
+      { sessionId: 'sid-hist', firstPrompt: 'hi', title: null, conducted: true, mtime: 1, size: 10 },
     ],
   });
   sidebar.setProjects([{
@@ -592,10 +592,10 @@ test('On-disk conductor metadata (no live instance) still groups under — condu
   const items = [...root.querySelector('details.sessions-group .sessions-list').children];
   const seps = items.filter(li => li.classList.contains('sessions-separator'));
   assert.equal(seps.length, 1);
-  assert.match(seps[0].textContent, /conductor/i);
+  assert.match(seps[0].textContent, /conducted/i);
   const row = root.querySelector('.session-row');
-  assert.ok(row.classList.contains('conductor'),
-    'persisted conductor session groups under conductor even with no live instance');
+  assert.ok(row.classList.contains('conducted'),
+    'persisted conducted session groups under conducted even with no live instance');
 });
 
 test('Sessions subnode renders no separator when there are zero temp instances', async () => {

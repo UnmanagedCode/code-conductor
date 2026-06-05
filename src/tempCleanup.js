@@ -17,7 +17,7 @@ import path from 'node:path';
 import { writeFileSync, readFileSync, rmSync, existsSync } from 'node:fs';
 import { orchStoreRoot, claudeProjectsRoot, encodeCwd } from './projects.js';
 import { deleteTitle as deleteSessionTitle } from './sessionTitles.js';
-import { unmarkConductor } from './conductorSessions.js';
+import { unmarkConducted } from './conductedSessions.js';
 
 export const PENDING_TEMP_CLEANUP_FILENAME = 'pending-temp-cleanup.json';
 
@@ -62,7 +62,7 @@ export function sweepPendingTempCleanup({ log = console } = {}) {
     // Sidecar title cleanup is fire-and-forget — sweep is called from
     // sync boot context and the title write doesn't block startup.
     deleteSessionTitle(sessionId).catch(() => {});
-    unmarkConductor(sessionId).catch(() => {});
+    unmarkConducted(sessionId).catch(() => {});
     swept++;
   }
 

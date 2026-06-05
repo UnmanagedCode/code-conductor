@@ -1,7 +1,7 @@
 // Verifies that CLAUDE_CODE_AUTO_COMPACT_WINDOW is injected into the child
 // process env ONLY when spawning the .conduct orchestrator session (project
 // === '.conduct') with the feature enabled. MCP-spawned worker agents
-// (this.conductor === true) and ordinary non-.conduct sessions must NOT
+// (this.conducted === true) and ordinary non-.conduct sessions must NOT
 // receive the env var, even when the feature is enabled.
 
 import { test } from 'node:test';
@@ -17,13 +17,13 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-instance.json');
 const SCENARIO_WS = path.join(__dirname, 'fixtures', 'scenario-ws.json');
 
-async function spawnAndGetEnv({ ctx, project, conductorWorker = false }) {
+async function spawnAndGetEnv({ ctx, project, conductedWorker = false }) {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'cwspawn-'));
   const envDump = path.join(tmp, 'env.txt');
   process.env.FAKE_CLAUDE_ENV_DUMP = envDump;
   try {
     const spawnBody = { project, mode: 'bypassPermissions', model: 'claude-haiku-4-5', temp: true };
-    if (conductorWorker) spawnBody.conductor = true;
+    if (conductedWorker) spawnBody.conducted = true;
     const r = await api(ctx.baseUrl, 'POST', '/api/instances', spawnBody);
     assert.equal(r.status, 201, `spawn failed: ${JSON.stringify(r.body)}`);
     const id = r.body.id;
@@ -85,16 +85,16 @@ test('ordinary project spawn does NOT receive CLAUDE_CODE_AUTO_COMPACT_WINDOW ev
   } finally { await ctx.close(); }
 });
 
-test('MCP-spawned worker (conductor:true) does NOT receive CLAUDE_CODE_AUTO_COMPACT_WINDOW', async () => {
+test('MCP-spawned worker (conducted:true) does NOT receive CLAUDE_CODE_AUTO_COMPACT_WINDOW', async () => {
   const ctx = await bootServer({ scenarioPath: SCENARIO });
   try {
     await withEnv({ PROJECTS_ROOT: ctx.projectsRoot, CLAUDE_CODE_AUTO_COMPACT_WINDOW: undefined }, async () => {
       await setConductorCompactWindow({ enabled: true, value: 400 });
     });
     await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'myproject' });
-    const env = await spawnAndGetEnv({ ctx, project: 'myproject', conductorWorker: true });
+    const env = await spawnAndGetEnv({ ctx, project: 'myproject', conductedWorker: true });
     assert.ok(!('CLAUDE_CODE_AUTO_COMPACT_WINDOW' in env),
-      'MCP-spawned worker (this.conductor===true) must not receive CLAUDE_CODE_AUTO_COMPACT_WINDOW');
+      'MCP-spawned worker (this.conducted===true) must not receive CLAUDE_CODE_AUTO_COMPACT_WINDOW');
   } finally { await ctx.close(); }
 });
 
