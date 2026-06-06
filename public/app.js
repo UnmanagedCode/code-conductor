@@ -25,7 +25,7 @@ import {
 import { installExternalLinkOpener } from './external-links.js';
 import { installLightbox } from './lightbox.js';
 import { installSettings } from './settings.js';
-import { loadModelVersions, setActiveVersions, resolveSpawnModel, updateSonnetWindowPref } from './models.js';
+import { loadModelVersions, setActiveVersions, setActiveSonnetWindow, getActiveSonnetWindow, resolveSpawnModel } from './models.js';
 import { setTtsAvailable, setTtsEnabled, setTtsRate } from './tts.js';
 
 const state = {
@@ -366,12 +366,16 @@ function closeSettings() {
 const settings = installSettings({
   requestClose: closeSettings,
   onAvailabilityChange: setMicAvailable,
-  onModelsChange: setActiveVersions,
+  onModelsChange: data => {
+    setActiveVersions(data.active);
+    setActiveSonnetWindow(data.sonnetContextWindow);
+    syncSonnetPickerLabels();
+  },
   onTtsAvailabilityChange: setTtsAvailable,
   onTtsPrefsChange: ({ enabled, rate }) => { setTtsEnabled(enabled); setTtsRate(rate); },
 });
 // Seed the per-family model-version cache the spawn pickers resolve against.
-loadModelVersions();
+loadModelVersions().then(syncSonnetPickerLabels);
 dom.settingsBtn?.addEventListener('click', () => {
   closeSidebarOverflow();
   if (location.hash === '#settings') settings.close();
@@ -899,9 +903,6 @@ dom.newInstanceDialog.addEventListener('close', async () => {
   const effort = dom.niEffort.value;
   const thinking = dom.niThinking.value;
   const modelOpt = dom.niModel.selectedOptions[0];
-  if (modelOpt?.dataset.family === 'sonnet' && modelOpt.dataset.window) {
-    await updateSonnetWindowPref(modelOpt.dataset.window);
-  }
   const model = modelOpt?.dataset.family
     ? resolveSpawnModel(modelOpt.dataset.family)
     : undefined;
@@ -966,6 +967,16 @@ async function spawnInstance({ project, model, planMode, dialogEl, errorEl }) {
   }
 }
 
+// Updates the Sonnet button labels in all spawn pickers to match the stored
+// context-window preference, so the UI reflects what will actually be spawned.
+function syncSonnetPickerLabels() {
+  const w = getActiveSonnetWindow() === '200k' ? '200k' : '1M';
+  document.querySelectorAll('.qs-model[data-family="sonnet"] .qs-ctx')
+    .forEach(el => { el.textContent = w; });
+  const opt = dom.niModel?.querySelector('option[data-family="sonnet"]');
+  if (opt) opt.textContent = `Sonnet — ${w}`;
+}
+
 // ── Quick-spawn dialog ────────────────────────────────────────────────
 let pendingQuickSpawnProject = null;
 const qsMode = makeModeToggle(dom.qsModeCode, dom.qsModePlan);
@@ -977,13 +988,12 @@ async function openQuickSpawnDialog(projectName) {
   qsMode.reset();
   dom.quickSpawnDialog.showModal();
 }
-dom.quickSpawnDialog.addEventListener('click', async (e) => {
+dom.quickSpawnDialog.addEventListener('click', (e) => {
   const btn = e.target.closest('.qs-model');
   if (!btn || btn.classList.contains('cd-model')) return;
   e.preventDefault();
   const family = btn.dataset.family;
   if (!family) return;
-  if (family === 'sonnet' && btn.dataset.window) await updateSonnetWindowPref(btn.dataset.window);
   const model = resolveSpawnModel(family);
   if (model) spawnInstance({ project: pendingQuickSpawnProject, model, planMode: qsMode.planMode, dialogEl: dom.quickSpawnDialog, errorEl: dom.qsError });
 });
@@ -1010,13 +1020,12 @@ async function openConductDialog() {
   dom.conductDialog.showModal();
 }
 dom.conductBtn.addEventListener('click', openConductDialog);
-dom.conductDialog.addEventListener('click', async (e) => {
+dom.conductDialog.addEventListener('click', (e) => {
   const btn = e.target.closest('.cd-model');
   if (!btn) return;
   e.preventDefault();
   const family = btn.dataset.family;
   if (!family) return;
-  if (family === 'sonnet' && btn.dataset.window) await updateSonnetWindowPref(btn.dataset.window);
   const model = resolveSpawnModel(family);
   if (model) spawnInstance({ project: '.conduct', model, planMode: cdMode.planMode, dialogEl: dom.conductDialog, errorEl: dom.cdError });
 });

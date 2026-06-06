@@ -255,10 +255,15 @@ export function installSettings({
   function renderModels(data) {
     const families = data.families || [];
     const active = data.active || {};
+    const sonnetWindow = data.sonnetContextWindow ?? '1m';
     if (smStatusEl) {
-      smStatusEl.innerHTML = families
-        .map(f => `${f.label}: <strong>${labelFor(f, active[f.family])}</strong>`)
-        .join(' · ');
+      smStatusEl.innerHTML = families.map(f => {
+        const vLabel = labelFor(f, active[f.family]);
+        const extra = f.family === 'sonnet'
+          ? ` — ${sonnetWindow === '200k' ? '200k' : '1M'}`
+          : '';
+        return `${f.label}: <strong>${vLabel}${extra}</strong>`;
+      }).join(' · ');
     }
     smListEl.innerHTML = '';
     for (const f of families) {
@@ -273,15 +278,32 @@ export function installSettings({
       const sel = document.createElement('select');
       sel.className = 'sm-version';
       sel.dataset.family = f.family;
-      for (const v of f.versions) {
-        const opt = document.createElement('option');
-        opt.value = v.id;
-        opt.textContent = v.label;
-        if (v.id === active[f.family]) opt.selected = true;
-        sel.appendChild(opt);
+      if (f.family === 'sonnet') {
+        for (const v of f.versions) {
+          for (const w of ['200k', '1m']) {
+            const opt = document.createElement('option');
+            opt.value = v.id;
+            opt.dataset.window = w;
+            opt.textContent = `${v.label} — ${w === '200k' ? '200k' : '1M'}`;
+            if (v.id === active[f.family] && w === sonnetWindow) opt.selected = true;
+            sel.appendChild(opt);
+          }
+        }
+        sel.addEventListener('change', () => {
+          const opt = sel.options[sel.selectedIndex];
+          onPickSonnetVersionAndWindow(opt.value, opt.dataset.window);
+        });
+      } else {
+        for (const v of f.versions) {
+          const opt = document.createElement('option');
+          opt.value = v.id;
+          opt.textContent = v.label;
+          if (v.id === active[f.family]) opt.selected = true;
+          sel.appendChild(opt);
+        }
+        sel.addEventListener('change', () => onPickVersion(f.family, sel.value));
       }
       sel.disabled = f.versions.length < 2;
-      sel.addEventListener('change', () => onPickVersion(f.family, sel.value));
       li.appendChild(sel);
 
       smListEl.appendChild(li);
@@ -310,7 +332,29 @@ export function installSettings({
       const data = await r.json();
       if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
       renderModels(data);
-      onModelsChange?.(data.active);
+      onModelsChange?.(data);
+    } catch (e) {
+      if (smStatusEl) smStatusEl.textContent = `Switch failed: ${e.message || e}`;
+    }
+  }
+
+  async function onPickSonnetVersionAndWindow(version, window) {
+    try {
+      const r1 = await fetch('/api/settings/models', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ family: 'sonnet', version }),
+      });
+      if (!r1.ok) { const d = await r1.json().catch(() => ({})); throw new Error(d.error || `HTTP ${r1.status}`); }
+      const r2 = await fetch('/api/settings/models/prefs', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ sonnetContextWindow: window }),
+      });
+      const data = await r2.json();
+      if (!r2.ok) throw new Error(data.error || `HTTP ${r2.status}`);
+      renderModels(data);
+      onModelsChange?.(data);
     } catch (e) {
       if (smStatusEl) smStatusEl.textContent = `Switch failed: ${e.message || e}`;
     }
