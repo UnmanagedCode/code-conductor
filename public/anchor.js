@@ -23,6 +23,18 @@ export function writeSessionAnchor(sessionId) {
   }
 }
 
+// Pushes a new history entry so the browser back button can return to the
+// current page. Used when navigating into a sub-agent session so the
+// conductor session is preserved in the back stack.
+export function pushSessionAnchor(sessionId) {
+  const base = location.pathname + location.search;
+  if (sessionId) {
+    history.pushState(null, '', `${base}#session=${encodeURIComponent(sessionId)}`);
+  } else if (location.hash) {
+    history.pushState(null, '', base);
+  }
+}
+
 // Persist the current session anchor to localStorage so it survives a PWA
 // cold-relaunch. We do this only at the moment we're about to hand the user
 // off to an external browser tab (where Android may reap the PWA process
