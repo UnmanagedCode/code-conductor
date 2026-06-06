@@ -34,9 +34,7 @@ const VALID_MODES = new Set(['plan', 'ask', 'bypassPermissions']);
 // silently — a graceful stop, not a hard abort. Prefixed with
 // SOFT_INTERRUPT_MARKER at send time so it never renders / replays.
 const SOFT_INTERRUPT_TEXT =
-  'SYSTEM INTERRUPT (not from the user): Stop all work on the current task immediately. '
-  + 'Do not call any more tools. Do not produce any further response, summary, or explanation. '
-  + 'End your turn now without saying anything to the user.';
+  'Stop now. Do not make any more tool calls. End your turn immediately. And don\'t reply in any way.';
 
 // Returns true when a rate_limit_event signals the session is now using
 // paid overage credits. Defensive: matches isUsingOverage at either
@@ -756,7 +754,7 @@ export class Instance extends EventEmitter {
       type: 'user',
       message: {
         role: 'user',
-        content: [{ type: 'text', text: `${SOFT_INTERRUPT_MARKER}\n${SOFT_INTERRUPT_TEXT}` }],
+        content: [{ type: 'text', text: `${SOFT_INTERRUPT_TEXT}\n${SOFT_INTERRUPT_MARKER}` }],
       },
       parent_tool_use_id: null,
     });
