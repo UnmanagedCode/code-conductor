@@ -19,7 +19,7 @@ import {
   closeAllOnFocus,
 } from './notifications.js';
 import {
-  readSessionAnchor, writeSessionAnchor,
+  readSessionAnchor, writeSessionAnchor, pushSessionAnchor,
   stashCurrentAnchorForRelaunch, consumeStashedAnchor,
 } from './anchor.js';
 import { installExternalLinkOpener } from './external-links.js';
@@ -127,7 +127,7 @@ const taskPanel = new TaskPanel(dom.taskPanel);
 // Sub-agent panel: shows workers spawned by the active conductor instance.
 // Populated from state.instances; updates arrive via instances hint.
 const subagentPanel = new SubagentPanel(dom.subagentPanel);
-subagentPanel.onNavigate = (instanceId) => selectInstance(instanceId);
+subagentPanel.onNavigate = (instanceId) => selectInstance(instanceId, { push: true });
 
 // Per-instance context-usage trackers. Same lifecycle as the task
 // trackers: reset()+replay on snapshot, apply(ev) on each live event.
@@ -1253,7 +1253,7 @@ async function refreshInstances() {
   updateActiveHeader();
 }
 
-function selectInstance(id) {
+function selectInstance(id, opts = {}) {
   if (state.activeId && state.activeId !== id) send('unsubscribe', { id: state.activeId });
   state.activeId = id;
   sidebar.setActive(id);
@@ -1265,9 +1265,15 @@ function selectInstance(id) {
   send('subscribe', { id });
   // Anchor the active session in the URL so a page refresh restores it.
   // Uses sessionId (stable across crash/resume), not the transient instance id.
+  // pushState when navigating into a sub-agent so the back button can return
+  // to the conductor; replaceState for all other navigation to avoid clutter.
   const leavingSettings = location.hash === '#settings';
   const inst = id ? state.instances.find(i => i.id === id) : null;
-  writeSessionAnchor(inst?.sessionId || null);
+  if (opts.push) {
+    pushSessionAnchor(inst?.sessionId || null);
+  } else {
+    writeSessionAnchor(inst?.sessionId || null);
+  }
   // Now that the user is viewing this session, any backlog of unread
   // turn-end pings for it is by definition read.
   clearUnread(inst?.sessionId);
@@ -1735,6 +1741,18 @@ bus.addEventListener('status', (e) => {
 
 bus.addEventListener('instances', () => { refreshInstances(); });
 bus.addEventListener('projects', () => { refreshProjects(); });
+
+// Handle browser back/forward button. Fires when the user pops a history
+// entry created by pushSessionAnchor (e.g. going back from a sub-agent to
+// the conductor session that opened it).
+window.addEventListener('popstate', () => {
+  // Settings has its own hashchange handler; don't interfere.
+  if (location.hash === '#settings') return;
+  const anchor = readSessionAnchor();
+  const live = anchor ? state.instances.find(i => i.sessionId === anchor) : null;
+  const targetId = live?.id ?? null;
+  if (targetId !== state.activeId) selectInstance(targetId);
+});
 
 let firstConnect = true;
 bus.addEventListener('open', async () => {
