@@ -362,12 +362,15 @@ export const SOFT_INTERRUPT_MARKER = '[[cc:soft-interrupt]]';
 
 // True when a user-message `content` (string or block array) or a
 // queued_command `prompt` array is the hidden soft-interrupt steer —
-// detected by the marker on its first text block.
+// detected by the marker appearing anywhere in a text block (marker is
+// now appended at the end of the text, not the beginning).
 export function isSoftInterruptContent(content) {
-  if (typeof content === 'string') return content.startsWith(SOFT_INTERRUPT_MARKER);
+  if (typeof content === 'string') return content.includes(SOFT_INTERRUPT_MARKER);
   if (!Array.isArray(content)) return false;
-  const firstText = content.find((b) => b && b.type === 'text' && typeof b.text === 'string');
-  return !!firstText && firstText.text.startsWith(SOFT_INTERRUPT_MARKER);
+  return content.some(
+    (b) => b && b.type === 'text' && typeof b.text === 'string'
+           && b.text.includes(SOFT_INTERRUPT_MARKER),
+  );
 }
 
 export function extractAttachedMarkers(text) {
