@@ -122,8 +122,8 @@
             <p class="settings-desc">
               Pick the concrete model version used for each Claude family. The three spawn pickers
               (quick-spawn ↯, Conduct, the new-session dialog) resolve each family to the version
-              chosen here. Each family runs at a fixed context window (Haiku 200k, Sonnet &amp; Opus
-              1M). Changes take effect immediately — no restart.
+              chosen here. Haiku is always 200k; Opus is always 1M; Sonnet's context window is
+              selectable below. Changes take effect immediately — no restart.
             </p>
             <div id="sm-status" class="st-status" aria-live="polite">Loading…</div>
             <ul id="sm-family-list" class="sm-family-list"></ul>
@@ -138,6 +138,12 @@
                   <span id="sm-compact-window-val">200k</span>
                 </label>
               </div>
+              <div class="sm-pref-row">
+                <span class="sm-pref-label">Sonnet context window</span>
+                <label class="tt-radio"><input type="radio" name="sm-sonnet-ctx" id="sm-sonnet-ctx-1m" value="1m" checked /> 1M</label>
+                <label class="tt-radio"><input type="radio" name="sm-sonnet-ctx" id="sm-sonnet-ctx-200k" value="200k" /> 200k (CLI default)</label>
+              </div>
+              <p class="settings-hint">Sonnet 1M uses the CLI-native <code>[1m]</code> flag; 200k uses the bare model id. Takes effect on next spawn or resume. Default: 1M.</p>
             </div>
           </div>
           <div id="settings-tts" class="settings-group" hidden>
@@ -278,7 +284,7 @@
       <p class="hint">Spawns a temp session at the project root. The transcript is wiped on exit.</p>
       <div class="quick-spawn-models">
         <button type="button" class="qs-model" data-family="haiku">Haiku<span class="qs-ctx">200k</span></button>
-        <button type="button" class="qs-model" data-family="sonnet">Sonnet<span class="qs-ctx">1M</span></button>
+        <button type="button" class="qs-model" data-family="sonnet">Sonnet<span class="qs-ctx qs-sonnet-ctx">1M</span></button>
         <button type="button" class="qs-model" data-family="opus">Opus<span class="qs-ctx">1M</span></button>
       </div>
       <div class="qs-mode-toggle" role="group" aria-label="Spawn mode">
@@ -298,7 +304,7 @@
       <p class="hint">Spawns a temp Claude session in the hidden <code>.conduct</code> project, pre-configured to orchestrate other sessions via MCP. The transcript is wiped on exit.</p>
       <div class="quick-spawn-models">
         <button type="button" class="cd-model qs-model" data-family="haiku">Haiku<span class="qs-ctx">200k</span></button>
-        <button type="button" class="cd-model qs-model" data-family="sonnet">Sonnet<span class="qs-ctx">1M</span></button>
+        <button type="button" class="cd-model qs-model" data-family="sonnet">Sonnet<span class="qs-ctx qs-sonnet-ctx">1M</span></button>
         <button type="button" class="cd-model qs-model" data-family="opus">Opus<span class="qs-ctx">1M</span></button>
       </div>
       <div class="qs-mode-toggle" role="group" aria-label="Spawn mode">

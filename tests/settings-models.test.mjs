@@ -11,6 +11,7 @@ import {
   getModelVersion, setModelVersion, getTranscribeModel, setTranscribeModel,
   getAutoStopOnOverage, setAutoStopOnOverage,
   getConductorCompactWindow, setConductorCompactWindow,
+  getSonnetContextWindow, setSonnetContextWindow,
 } from '../src/appSettings.js';
 
 async function mkTmp() {
@@ -301,5 +302,86 @@ test('POST /api/settings/models/prefs saves conductorCompactWindow without clobb
     const g = await api(baseUrl, 'GET', '/api/settings/models');
     assert.equal(g.body.conductorCompactWindow.enabled, true);
     assert.equal(g.body.conductorCompactWindow.value, 400);
+  } finally { await close(); }
+});
+
+// ── sonnetContextWindow ─────────────────────────────────────────────────
+test('appSettings: getSonnetContextWindow defaults to "1m" when unset', async () => {
+  const root = await mkTmp();
+  try {
+    await withEnv({ PROJECTS_ROOT: root }, async () => {
+      assert.equal(getSonnetContextWindow(), '1m');
+    });
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test('appSettings: setSonnetContextWindow round-trips "200k" and "1m"', async () => {
+  const root = await mkTmp();
+  try {
+    await withEnv({ PROJECTS_ROOT: root }, async () => {
+      assert.equal(await setSonnetContextWindow('200k'), '200k');
+      assert.equal(getSonnetContextWindow(), '200k');
+      assert.equal(await setSonnetContextWindow('1m'), '1m');
+      assert.equal(getSonnetContextWindow(), '1m');
+    });
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test('appSettings: setSonnetContextWindow coerces unknown values to "1m"', async () => {
+  const root = await mkTmp();
+  try {
+    await withEnv({ PROJECTS_ROOT: root }, async () => {
+      assert.equal(await setSonnetContextWindow('garbage'), '1m');
+      assert.equal(getSonnetContextWindow(), '1m');
+    });
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test('appSettings: setSonnetContextWindow does not clobber other model settings', async () => {
+  const root = await mkTmp();
+  try {
+    await withEnv({ PROJECTS_ROOT: root }, async () => {
+      await setModelVersion('sonnet', 'claude-sonnet-4-5');
+      await setAutoStopOnOverage(true);
+      await setSonnetContextWindow('200k');
+      assert.equal(getModelVersion('sonnet'), 'claude-sonnet-4-5');
+      assert.equal(getAutoStopOnOverage(), true);
+      assert.equal(getSonnetContextWindow(), '200k');
+    });
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test('GET /api/settings/models includes sonnetContextWindow defaulting "1m"', async () => {
+  const { baseUrl, close } = await bootServer();
+  try {
+    const r = await api(baseUrl, 'GET', '/api/settings/models');
+    assert.equal(r.status, 200);
+    assert.equal(r.body.sonnetContextWindow, '1m');
+  } finally { await close(); }
+});
+
+test('POST /api/settings/models/prefs sets sonnetContextWindow to "200k" and persists', async () => {
+  const { baseUrl, close } = await bootServer();
+  try {
+    const r = await api(baseUrl, 'POST', '/api/settings/models/prefs', { sonnetContextWindow: '200k' });
+    assert.equal(r.status, 200);
+    assert.equal(r.body.sonnetContextWindow, '200k');
+    // Verify GET reflects the persisted value.
+    const g = await api(baseUrl, 'GET', '/api/settings/models');
+    assert.equal(g.body.sonnetContextWindow, '200k');
+    // Toggle back to 1m.
+    const r2 = await api(baseUrl, 'POST', '/api/settings/models/prefs', { sonnetContextWindow: '1m' });
+    assert.equal(r2.body.sonnetContextWindow, '1m');
+  } finally { await close(); }
+});
+
+test('POST /api/settings/models/prefs sonnetContextWindow does not clobber autoStopOnOverage', async () => {
+  const { baseUrl, close } = await bootServer();
+  try {
+    await api(baseUrl, 'POST', '/api/settings/models/prefs', { autoStopOnOverage: true });
+    const r = await api(baseUrl, 'POST', '/api/settings/models/prefs', { sonnetContextWindow: '200k' });
+    assert.equal(r.status, 200);
+    assert.equal(r.body.sonnetContextWindow, '200k');
+    assert.equal(r.body.autoStopOnOverage, true, 'autoStopOnOverage must not be clobbered');
   } finally { await close(); }
 });

@@ -33,6 +33,7 @@ import {
   getTtsEnabled, setTtsEnabled, getTtsVoice, setTtsVoice, getTtsRate, setTtsRate,
   getAutoStopOnOverage, setAutoStopOnOverage,
   getConductorCompactWindow, setConductorCompactWindow,
+  getSonnetContextWindow, setSonnetContextWindow,
 } from './appSettings.js';
 import * as whisperInstall from './whisperInstall.js';
 import * as ttsInstall from './ttsInstall.js';
@@ -731,7 +732,8 @@ export function buildRoutes({ instances, serverCtx } = {}) {
       active[f.family] = getModelVersion(f.family) || f.default;
     }
     return { families: MODEL_FAMILIES, active, autoStopOnOverage: getAutoStopOnOverage(),
-      conductorCompactWindow: getConductorCompactWindow() };
+      conductorCompactWindow: getConductorCompactWindow(),
+      sonnetContextWindow: getSonnetContextWindow() };
   }
 
   r.get('/settings/models', (req, res) => {
@@ -755,9 +757,10 @@ export function buildRoutes({ instances, serverCtx } = {}) {
 
   r.post('/settings/models/prefs', async (req, res, next) => {
     try {
-      const { autoStopOnOverage, conductorCompactWindow } = req.body ?? {};
+      const { autoStopOnOverage, conductorCompactWindow, sonnetContextWindow } = req.body ?? {};
       if (typeof autoStopOnOverage === 'boolean') await setAutoStopOnOverage(autoStopOnOverage);
       if (conductorCompactWindow !== undefined) await setConductorCompactWindow(conductorCompactWindow);
+      if (sonnetContextWindow !== undefined) await setSonnetContextWindow(sonnetContextWindow);
       res.json(modelsSettingsState());
     } catch (e) { next(e); }
   });
