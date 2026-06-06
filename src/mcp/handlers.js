@@ -174,7 +174,7 @@ export async function getTranscript({ id, sinceSeq = -1, limit = 200 }, { instan
 
 // ---------- mutating: instance ----------
 
-export async function spawnInstance(args, { instances }) {
+export async function spawnInstance(args, { instances, callerId }) {
   if (!instances) throw new Error('orchestrator has no InstanceManager');
   const inst = await instances.create({
     project: args.project,
@@ -196,6 +196,9 @@ export async function spawnInstance(args, { instances }) {
     // place the marker is set — the browser UI / HTTP spawn path leaves
     // it false.
     conducted: true,
+    // Record which conductor spawned this worker so the frontend can
+    // show a live sub-agent panel scoped to that conductor's view.
+    callerInstanceId: callerId ?? null,
   });
   return inst.summary();
 }

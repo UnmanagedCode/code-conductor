@@ -7,6 +7,7 @@ import { Conversation } from './conversation.js';
 import { attachComposer } from './composer.js';
 import { formatUserQuestionAnswers, autoSpeakBlock } from './blocks.js';
 import { TaskTracker, TaskPanel } from './tasks.js';
+import { SubagentPanel } from './subagents.js';
 import {
   UsageTracker, contextWindowFor,
   formatTokens, formatPct, formatDuration, fillClass,
@@ -49,6 +50,7 @@ const dom = {
   resumeBtn: document.getElementById('resume-btn'),
   instanceTitle: document.getElementById('instance-title'),
   taskPanel: document.getElementById('task-panel'),
+  subagentPanel: document.getElementById('subagent-panel'),
   turnIndicator: document.getElementById('turn-indicator'),
   tiLeft: document.getElementById('ti-left'),
   tiLabel: document.getElementById('ti-label'),
@@ -121,6 +123,11 @@ function getTracker(instanceId) {
   return t;
 }
 const taskPanel = new TaskPanel(dom.taskPanel);
+
+// Sub-agent panel: shows workers spawned by the active conductor instance.
+// Populated from state.instances; updates arrive via instances hint.
+const subagentPanel = new SubagentPanel(dom.subagentPanel);
+subagentPanel.onNavigate = (instanceId) => selectInstance(instanceId);
 
 // Per-instance context-usage trackers. Same lifecycle as the task
 // trackers: reset()+replay on snapshot, apply(ev) on each live event.
@@ -1233,6 +1240,7 @@ async function refreshProjects() {
 async function refreshInstances() {
   state.instances = await (await fetch('/api/instances')).json();
   sidebar.setInstances(state.instances);
+  subagentPanel.setInstances(state.instances, state.activeId);
   updateActiveHeader();
 }
 
@@ -1244,6 +1252,7 @@ function selectInstance(id) {
   updateActiveHeader();
   // Swap the task panel onto whichever instance just became active.
   taskPanel.attach(id ? getTracker(id) : null);
+  subagentPanel.setInstances(state.instances, id);
   send('subscribe', { id });
   // Anchor the active session in the URL so a page refresh restores it.
   // Uses sessionId (stable across crash/resume), not the transient instance id.
@@ -1707,6 +1716,7 @@ bus.addEventListener('status', (e) => {
     if (typeof m.autoApprovePlan === 'boolean') inst.autoApprovePlan = m.autoApprovePlan;
     inst.interrupting = !!m.interrupting;
     sidebar.setInstances(state.instances);
+    subagentPanel.setInstances(state.instances, state.activeId);
     if (m.id === state.activeId) updateActiveHeader();
   }
   // Now that this instance is idle again, drain any queued user-question
