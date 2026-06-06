@@ -78,6 +78,39 @@ test('readLastSessionModel returns null when no assistant line is present', asyn
   });
 });
 
+test('readLastSessionModel skips <synthetic> entries and returns the preceding real model', async () => {
+  await withTmpClaudeRoot(async ({ tmpDir, claudeProjects }) => {
+    const cwd = path.join(tmpDir, 'proj');
+    const sessionId = 'dddddddd-eeee-ffff-0000-111111111111';
+    const sessionDir = path.join(claudeProjects, encodeCwd(cwd));
+    await fs.mkdir(sessionDir, { recursive: true });
+    await fs.writeFile(
+      path.join(sessionDir, `${sessionId}.jsonl`),
+      [
+        JSON.stringify({ type: 'assistant', message: { model: 'claude-sonnet-4-6' } }),
+        JSON.stringify({ type: 'assistant', message: { model: '<synthetic>' } }),
+      ].join('\n') + '\n',
+    );
+    const result = await readLastSessionModel({ cwd, sessionId });
+    assert.equal(result, 'claude-sonnet-4-6');
+  });
+});
+
+test('readLastSessionModel returns null when all assistant lines are <synthetic>', async () => {
+  await withTmpClaudeRoot(async ({ tmpDir, claudeProjects }) => {
+    const cwd = path.join(tmpDir, 'proj');
+    const sessionId = 'eeeeeeee-ffff-0000-1111-222222222222';
+    const sessionDir = path.join(claudeProjects, encodeCwd(cwd));
+    await fs.mkdir(sessionDir, { recursive: true });
+    await fs.writeFile(
+      path.join(sessionDir, `${sessionId}.jsonl`),
+      JSON.stringify({ type: 'assistant', message: { model: '<synthetic>' } }) + '\n',
+    );
+    const result = await readLastSessionModel({ cwd, sessionId });
+    assert.equal(result, null);
+  });
+});
+
 // --- Integration test: full server path ---
 
 test('resume recovers the bare model and re-derives the window (Sonnet → [1m]), no marker, no disable flag', async () => {

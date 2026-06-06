@@ -310,7 +310,8 @@ export async function readLastSessionModel({ cwd, sessionId }) {
     if (!trimmed) continue;
     let obj;
     try { obj = JSON.parse(trimmed); } catch { continue; }
-    if (obj && obj.type === 'assistant' && typeof obj.message?.model === 'string') {
+    if (obj && obj.type === 'assistant' && typeof obj.message?.model === 'string'
+        && obj.message.model !== '<synthetic>') {
       lastModel = obj.message.model;
     }
   }
