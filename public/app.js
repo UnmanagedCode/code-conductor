@@ -24,7 +24,7 @@ import {
 import { installExternalLinkOpener } from './external-links.js';
 import { installLightbox } from './lightbox.js';
 import { installSettings } from './settings.js';
-import { loadModelVersions, setActiveVersions, resolveSpawnModel } from './models.js';
+import { loadModelVersions, setActiveVersions, resolveSpawnModel, updateSonnetWindowPref } from './models.js';
 import { setTtsAvailable, setTtsEnabled, setTtsRate } from './tts.js';
 
 const state = {
@@ -892,6 +892,9 @@ dom.newInstanceDialog.addEventListener('close', async () => {
   const effort = dom.niEffort.value;
   const thinking = dom.niThinking.value;
   const modelOpt = dom.niModel.selectedOptions[0];
+  if (modelOpt?.dataset.family === 'sonnet' && modelOpt.dataset.window) {
+    await updateSonnetWindowPref(modelOpt.dataset.window);
+  }
   const model = modelOpt?.dataset.family
     ? resolveSpawnModel(modelOpt.dataset.family)
     : undefined;
@@ -967,12 +970,13 @@ async function openQuickSpawnDialog(projectName) {
   qsMode.reset();
   dom.quickSpawnDialog.showModal();
 }
-dom.quickSpawnDialog.addEventListener('click', (e) => {
+dom.quickSpawnDialog.addEventListener('click', async (e) => {
   const btn = e.target.closest('.qs-model');
   if (!btn || btn.classList.contains('cd-model')) return;
   e.preventDefault();
   const family = btn.dataset.family;
   if (!family) return;
+  if (family === 'sonnet' && btn.dataset.window) await updateSonnetWindowPref(btn.dataset.window);
   const model = resolveSpawnModel(family);
   if (model) spawnInstance({ project: pendingQuickSpawnProject, model, planMode: qsMode.planMode, dialogEl: dom.quickSpawnDialog, errorEl: dom.qsError });
 });
@@ -999,12 +1003,13 @@ async function openConductDialog() {
   dom.conductDialog.showModal();
 }
 dom.conductBtn.addEventListener('click', openConductDialog);
-dom.conductDialog.addEventListener('click', (e) => {
+dom.conductDialog.addEventListener('click', async (e) => {
   const btn = e.target.closest('.cd-model');
   if (!btn) return;
   e.preventDefault();
   const family = btn.dataset.family;
   if (!family) return;
+  if (family === 'sonnet' && btn.dataset.window) await updateSonnetWindowPref(btn.dataset.window);
   const model = resolveSpawnModel(family);
   if (model) spawnInstance({ project: '.conduct', model, planMode: cdMode.planMode, dialogEl: dom.conductDialog, errorEl: dom.cdError });
 });
