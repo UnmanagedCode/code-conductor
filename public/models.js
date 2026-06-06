@@ -7,8 +7,8 @@
 // Context-window policy (mirrors canonicalizeModel in src/modelVersions.js):
 //   Opus  → 1M bare (CLI native default)
 //   Haiku → 200k bare (no 1M build)
-//   Sonnet → chosen per-spawn in the model picker (200k or 1M); preference
-//            persisted via updateSonnetWindowPref() so resume inherits it.
+//   Sonnet → user-selectable (200k or 1M) via Settings → Models; preference
+//            persisted server-side so all spawn paths and resume inherit it.
 // The server re-derives the same window on resume using the stored preference.
 
 export const DEFAULT_VERSIONS = {
@@ -48,24 +48,6 @@ export async function loadModelVersions() {
     }
   } catch { /* keep defaults */ }
   return activeVersions;
-}
-
-// Persist a Sonnet context-window choice to the server and update local state.
-// Called from spawn-click handlers before resolveSpawnModel so canonicalizeModel
-// on the server sees the updated preference when the spawn POST arrives.
-export async function updateSonnetWindowPref(val) {
-  setActiveSonnetWindow(val);
-  try {
-    const r = await fetch('/api/settings/models/prefs', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ sonnetContextWindow: activeSonnetWindow }),
-    });
-    if (r.ok) {
-      const data = await r.json();
-      setActiveSonnetWindow(data.sonnetContextWindow);
-    }
-  } catch { /* non-fatal; local state already updated */ }
 }
 
 // family: 'sonnet' | 'opus' | 'haiku'. Returns the model string to send on
