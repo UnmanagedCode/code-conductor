@@ -30,6 +30,7 @@ export function installSettings({
   const smCompactWindowRowEl     = document.getElementById('sm-compact-window-row');
   const smCompactWindowSliderEl  = document.getElementById('sm-compact-window');
   const smCompactWindowValEl     = document.getElementById('sm-compact-window-val');
+  const smSonnetCtxRadios        = view?.querySelectorAll('input[name="sm-sonnet-ctx"]');
   // TTS group elements.
   const ttStatusEl = document.getElementById('tt-status');
   const ttListEl = document.getElementById('tt-voice-list');
@@ -294,6 +295,11 @@ export function installSettings({
       if (smCompactWindowValEl)    smCompactWindowValEl.textContent = `${cw.value}k`;
       if (smCompactWindowRowEl)    smCompactWindowRowEl.hidden = !cw.enabled;
     }
+    const scw = data.sonnetContextWindow ?? '1m';
+    smSonnetCtxRadios?.forEach(r => { r.checked = (r.value === scw); });
+    document.querySelectorAll('.qs-sonnet-ctx').forEach(el => {
+      el.textContent = scw === '200k' ? '200k' : '1M';
+    });
   }
 
   function labelFor(family, id) {
@@ -354,6 +360,26 @@ export function installSettings({
       const data = await r.json();
       if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
       renderModels(data);
+    } catch (e) {
+      if (smStatusEl) smStatusEl.textContent = `Update failed: ${e.message || e}`;
+    }
+  }
+
+  smSonnetCtxRadios?.forEach(radio => radio.addEventListener('change', () => {
+    if (radio.checked) onPickSonnetWindow(radio.value);
+  }));
+
+  async function onPickSonnetWindow(val) {
+    try {
+      const r = await fetch('/api/settings/models/prefs', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ sonnetContextWindow: val }),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+      renderModels(data);
+      onModelsChange?.(data.active);
     } catch (e) {
       if (smStatusEl) smStatusEl.textContent = `Update failed: ${e.message || e}`;
     }

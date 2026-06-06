@@ -133,6 +133,23 @@ export async function setAutoStopOnOverage(enabled) {
   return !!enabled;
 }
 
+// Models group: Sonnet context-window preference. '1m' (default) keeps the
+// CLI-native `[1m]` suffix so Sonnet spawns at 1M; '200k' uses the bare id
+// so Sonnet spawns at its CLI-native 200k default. Defaults to '1m' to
+// preserve pre-existing behaviour — change via Settings → Models.
+export function getSonnetContextWindow() {
+  const s = loadSync();
+  return s.models?.sonnetContextWindow === '200k' ? '200k' : '1m';
+}
+
+export async function setSonnetContextWindow(window) {
+  const val = window === '200k' ? '200k' : '1m';
+  const cur = loadSync();
+  const next = { ...cur, models: { ...(cur.models || {}), sonnetContextWindow: val } };
+  await writeSettings(next);
+  return val;
+}
+
 // Models group: conductor compact window override. When enabled, sets
 // CLAUDE_CODE_AUTO_COMPACT_WINDOW on the child process env for conductor
 // (MCP-spawned) sessions so Claude compacts as if the window were this size.

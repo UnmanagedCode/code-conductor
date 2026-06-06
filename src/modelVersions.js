@@ -67,15 +67,14 @@ export function familyOf(modelId) {
   return null;
 }
 
-// Single source of truth for context-window policy: one fixed window per
-// family. Sonnet → 1M requires the CLI-native `[1m]` suffix (its bare
-// default is 200k); Opus → 1M is the CLI-native default (bare); Haiku →
-// 200k (no 1M build, bare). Strips any stale `[200k]`/`[1m]` suffix first,
-// so a model recovered from a resumed session (always bare on disk) or an
-// older client string normalises to the canonical form. Unknown ids pass
-// through unchanged.
-export function canonicalizeModel(modelId) {
+// Single source of truth for context-window policy. Strips any stale
+// `[200k]`/`[1m]` suffix first so recovered/older ids normalise cleanly.
+// Opus → 1M bare (CLI default); Haiku → 200k bare (no 1M build).
+// Sonnet → user-selectable: '1m' (default, CLI `[1m]` suffix) or '200k'
+// (bare). Unknown ids pass through unchanged.
+export function canonicalizeModel(modelId, { sonnetWindow = '1m' } = {}) {
   if (typeof modelId !== 'string' || !modelId) return modelId;
   const bare = modelId.replace(/\[(200k|1m)\]$/, '');
-  return familyOf(bare) === 'sonnet' ? `${bare}[1m]` : bare;
+  if (familyOf(bare) !== 'sonnet') return bare;
+  return sonnetWindow === '200k' ? bare : `${bare}[1m]`;
 }

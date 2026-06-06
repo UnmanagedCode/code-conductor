@@ -11,7 +11,7 @@ import { getTitle as getSessionTitle, deleteTitle as deleteSessionTitle } from '
 import { isConducted, markConducted, unmarkConducted } from './conductedSessions.js';
 import { CONDUCT_PROJECT_NAME } from './conduct.js';
 import { buildSettingsJSON, buildMcpConfigJSON } from './settings.js';
-import { getAutoStopOnOverage, getConductorCompactWindow } from './appSettings.js';
+import { getAutoStopOnOverage, getConductorCompactWindow, getSonnetContextWindow } from './appSettings.js';
 import { HookBroker } from './hookBroker.js';
 import { loadPersistedTranscript, writeSessionMetadata, readLastSessionModel } from './transcript.js';
 import { canonicalizeModel } from './modelVersions.js';
@@ -1128,12 +1128,12 @@ export class InstanceManager extends EventEmitter {
       } catch { /* best-effort */ }
     }
 
-    // Pin the model to its family's canonical context window. The window is
-    // a pure function of the family (Sonnet → 1M via `[1m]`; Opus/Haiku
-    // bare), so we re-derive it here for every spawn — including a model
-    // recovered bare from a resumed session's jsonl — rather than persisting
-    // it. Normalises away any stale `[200k]`/`[1m]` from older clients too.
-    if (finalModel) finalModel = canonicalizeModel(finalModel);
+    // Re-derive the context-window suffix from the family + the user's Sonnet
+    // window preference (Sonnet → '1m' or '200k'; Opus/Haiku always bare).
+    // Done on every spawn, including model-recovery from a resumed session's
+    // jsonl, so the preference is always honoured and stale `[200k]`/`[1m]`
+    // from older clients normalise cleanly.
+    if (finalModel) finalModel = canonicalizeModel(finalModel, { sonnetWindow: getSonnetContextWindow() });
 
     // The conducted marker is set explicitly on the MCP spawn path. When
     // resuming a historical session, recover it from the durable sidecar
