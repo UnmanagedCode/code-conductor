@@ -878,6 +878,13 @@ body.lightbox-open { overflow: hidden; }
   font-size: 11px; color: var(--muted); font-family: ui-monospace, monospace;
 }
 
+#subagent-panel {
+  border-top: 1px solid var(--border);
+  background: var(--panel);
+  padding: 8px 14px;
+  max-height: 30vh; overflow-y: auto;
+}
+#subagent-panel[hidden] { display: none; }
 #task-panel {
   border-top: 1px solid var(--border);
   background: var(--panel);
@@ -906,6 +913,13 @@ body.lightbox-open { overflow: hidden; }
   color: var(--muted); text-decoration: line-through;
 }
 .task-row.task-in_progress .task-text { font-weight: 500; }
+
+/* Sub-agent panel rows are always clickable; idle bullet is muted vs turn */
+#subagent-panel .task-row { cursor: pointer; border-radius: 3px; }
+#subagent-panel .task-row:hover { background: rgba(255,255,255,.05); }
+.task-row.subagent-idle .task-marker { color: var(--muted); }
+.task-row.subagent-crashed .task-marker { color: var(--red); }
+.task-row.subagent-crashed .task-text { color: var(--red); opacity: .8; }
 
 .block.task-completion {
   margin: 6px 0;

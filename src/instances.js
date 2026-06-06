@@ -88,7 +88,7 @@ class EventLog {
 }
 
 export class Instance extends EventEmitter {
-  constructor({ id, project, cwd, mode, effort, thinking, model, hookCallbackUrl = null, mcpServerUrl = null, worktree = null, temp = false, conducted = false, debug = false }) {
+  constructor({ id, project, cwd, mode, effort, thinking, model, hookCallbackUrl = null, mcpServerUrl = null, worktree = null, temp = false, conducted = false, callerInstanceId = null, debug = false }) {
     super();
     this.id = id;
     this.project = project;
@@ -117,6 +117,11 @@ export class Instance extends EventEmitter {
     // separator. Purely a marker + display axis: no behavioural
     // divergence vs a normal session.
     this.conducted = !!conducted;
+    // Instance ID of the conductor that spawned this worker via
+    // spawn_instance. Null for sessions created by the browser UI / HTTP
+    // path. Surfaced in summary() so GET /api/instances lets the frontend
+    // build a caller→workers map for the sub-agent panel.
+    this.callerInstanceId = callerInstanceId ?? null;
     // When true, raw CLI stdin/stdout/stderr is mirrored to the
     // central store's debug dir for offline inspection. Streams + the
     // debug dir path are populated at spawn time.
@@ -187,6 +192,7 @@ export class Instance extends EventEmitter {
         : null,
       temp: this.temp,
       conducted: this.conducted,
+      callerInstanceId: this.callerInstanceId,
       debug: this.debug,
       debugDir: this.debugDir,
       firstPrompt: this.firstPrompt,
@@ -1064,7 +1070,7 @@ export class InstanceManager extends EventEmitter {
     return out;
   }
 
-  async create({ project, resume, mode, effort, thinking, model, worktree, temp, conducted, debug, autoApprovePlan } = {}) {
+  async create({ project, resume, mode, effort, thinking, model, worktree, temp, conducted, callerInstanceId, debug, autoApprovePlan } = {}) {
     if (!project) {
       throw Object.assign(new Error('project required'), { statusCode: 400 });
     }
@@ -1153,6 +1159,7 @@ export class InstanceManager extends EventEmitter {
       worktree: worktreeMeta,
       temp: !!temp,
       conducted: conductedFlag,
+      callerInstanceId: callerInstanceId ?? null,
       debug: !!debug,
     });
 

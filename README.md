@@ -48,7 +48,7 @@ RUN_REAL_CLAUDE=1 npm test   # also runs opt-in real-claude smoke
 - **Spawn options** — mode (`plan` / `ask` / `code`), effort, thinking, model family (Haiku 200k / Sonnet 200k or 1M chosen per-spawn in the picker / Opus 1M), temp session, debug capture.
 - **Live conversation** — streaming markdown, TTS read-aloud (Piper, per-sentence), thinking blocks, tool diffs, plan-mode approval cards, AskUserQuestion cards, ask-mode permission cards.
 - **UI elements** — task panel, context-usage chip (live, colour-graded), rate-limit chip (live bucket/utilization/reset-time, left side of bottom bar; shows OVERAGE badge when `isUsingOverage`), voice dictation (whisper.cpp — tap empty-composer mic or hold Send to append), settings page (models + auto-stop-on-overage toggle, transcribe, TTS, workspace conventions), OS notifications via Service Worker.
-- **Conduct mode** — `🎼 Conduct` spawns a conductor temp session in `.conduct` project, pre-loaded with `CONDUCT.md` role prompt, orchestrates workers via MCP.
+- **Conduct mode** — `🎼 Conduct` spawns a conductor temp session in `.conduct` project, pre-loaded with `CONDUCT.md` role prompt, orchestrates workers via MCP. While viewing the conductor, a **Sub-agents** strip above the task panel lists each spawned worker with live status and is tap-to-navigate.
 - **MCP interface** — 20+ tools (`mcp__code-conductor__*`) auto-registered at spawn: read, create, workspaces, spawn/drive (incl. `promote_session` to keep a temp worker), plan handling, worktrees. MCP `spawn_instance` defaults to temp:true but keeps mode at plan.
 
 See [docs/features.md](docs/features.md) for the exhaustive feature and UI-element catalog.
