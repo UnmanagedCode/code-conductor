@@ -9,6 +9,7 @@ import { getProject, claudeProjectsRoot, encodeCwd } from './projects.js';
 import { createWorktree, getWorktree, debugBaseDir } from './worktrees.js';
 import { getTitle as getSessionTitle, deleteTitle as deleteSessionTitle } from './sessionTitles.js';
 import { isConducted, markConducted, unmarkConducted } from './conductedSessions.js';
+import { isTemp, markTemp, unmarkTemp } from './tempSessions.js';
 import { CONDUCT_PROJECT_NAME } from './conduct.js';
 import { buildSettingsJSON, buildMcpConfigJSON } from './settings.js';
 import { getAutoStopOnOverage, getConductorCompactWindow, getSonnetContextWindow } from './appSettings.js';
@@ -565,6 +566,9 @@ export class Instance extends EventEmitter {
   }
 
   async _writeSessionMetadata() {
+    if (this.temp && this.sessionId) {
+      try { await markTemp(this.sessionId); } catch { /* best effort */ }
+    }
     if (this.temp) return;
     // Persist the durable conducted marker so a non-temp conducted session
     // is recognised as conducted after exit / restart / --resume. This is
@@ -621,6 +625,7 @@ export class Instance extends EventEmitter {
     // _writeSessionMetadata temp-guard returns early), but unmark anyway
     // so a promoted-then-demoted edge case can't leave a stale marker.
     try { await unmarkConducted(this.sessionId); } catch { /* best-effort */ }
+    try { await unmarkTemp(this.sessionId); } catch { /* best-effort */ }
   }
 
   _sendRaw(obj) {
@@ -722,6 +727,7 @@ export class Instance extends EventEmitter {
   async promoteToNormal() {
     if (!this.temp) throw Object.assign(new Error('instance is not temp'), { statusCode: 400 });
     this.temp = false;
+    try { await unmarkTemp(this.sessionId); } catch { /* best-effort */ }
     // Persist last-prompt + permission-mode now, so the standalone
     // `claude --resume` picker sees this session immediately — without
     // waiting for the next turn-end / setMode cycle to trigger it.
@@ -1146,6 +1152,11 @@ export class InstanceManager extends EventEmitter {
     let conductedFlag = !!conducted;
     if (!conductedFlag && resume) {
       try { conductedFlag = await isConducted(resume); } catch { /* best-effort */ }
+    }
+    // Recover temp flag from durable sidecar on resume so a session that
+    // survived SIGKILL comes back temp rather than silently going persistent.
+    if (!temp && resume) {
+      try { if (await isTemp(resume)) temp = true; } catch { /* best-effort */ }
     }
 
     const id = randomUUID();

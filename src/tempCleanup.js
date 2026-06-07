@@ -18,6 +18,7 @@ import { writeFileSync, readFileSync, rmSync, existsSync } from 'node:fs';
 import { orchStoreRoot, claudeProjectsRoot, encodeCwd } from './projects.js';
 import { deleteTitle as deleteSessionTitle } from './sessionTitles.js';
 import { unmarkConducted } from './conductedSessions.js';
+import { unmarkTemp } from './tempSessions.js';
 
 export const PENDING_TEMP_CLEANUP_FILENAME = 'pending-temp-cleanup.json';
 
@@ -63,6 +64,7 @@ export function sweepPendingTempCleanup({ log = console } = {}) {
     // sync boot context and the title write doesn't block startup.
     deleteSessionTitle(sessionId).catch(() => {});
     unmarkConducted(sessionId).catch(() => {});
+    unmarkTemp(sessionId).catch(() => {});
     swept++;
   }
 
