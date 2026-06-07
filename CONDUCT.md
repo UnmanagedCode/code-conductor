@@ -184,7 +184,7 @@ in that project rather than running the commands yourself from `.conduct`:
    ```
 2. **Brief the worker, then end your turn** — `send_prompt({id, text: "<task>", wait: false})` + `subscribe_to_idle({targetId: id})`. End your turn (don't block on `wait:true`).
 3. **[Wake] Relay the result** — `get_recent_messages({id})`, then summarise to the user.
-4. **Clean up** — `kill_instance({id})` when done.
+4. **Keep or clean up** — keep the instance around for more checks of the same kind (`send_prompt` again); `kill_instance({id})` only when you won't need it.
 
 This ensures the worker loads the project's README and CLAUDE.md, runs in the
 correct working directory, and keeps the conductor's context uncluttered by raw
