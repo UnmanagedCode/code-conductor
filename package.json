@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "node server.js",
+    "start": "./conductor.sh",
     "test": "node tests/run.mjs"
   },
   "dependencies": {

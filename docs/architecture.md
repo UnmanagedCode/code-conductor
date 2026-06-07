@@ -8,7 +8,7 @@
 - No DB — projects in `~/project/`, sessions in `~/.claude/projects/<encoded-cwd>/*.jsonl`.
 
 ## Component layout
-- **server.js** — Express + ws boot, mounts routes, binds `127.0.0.1:8787`.
+- **server.js** — Express + ws boot, mounts routes, binds `127.0.0.1:8787`. Sets `process.title = 'code-conductor'` on entry so `pkill -f code-conductor` targets it precisely and `pkill -f server.js` misses it. Launched via `conductor.sh` (`npm start`).
 - **src/instances.js** — Instance class, InstanceManager, ring buffer (500 events), control_request round-trip, mode validation.
 - **src/hookBroker.js** — Per-instance broker for the PreToolUse http hook, pending-response map keyed by `tool_use_id`, 540 s timeout.
 - **src/settings.js** — Builds the inline `--settings` JSON. Pure values → JSON string; no Instance state.
