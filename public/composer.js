@@ -67,7 +67,6 @@ export function attachComposer({ form, textarea, sendBtn, attachBtn, fileInput, 
   let wakeLock = null;
   let longPressTimer = null;       // hold-to-dictate timer
   let holdDidRecord = false;        // suppress post-hold click from sending
-  let cancelOnRecordStart = false;  // user released before getUserMedia resolved
   let recordingCancelled = false;   // abort without transcribing (pointercancel etc.)
 
   function setState({ canType: ct, canSend: cs }) {
@@ -307,7 +306,6 @@ export function attachComposer({ form, textarea, sendBtn, attachBtn, fileInput, 
     });
     mediaRecorder.start();
     setMicState('recording');
-    if (cancelOnRecordStart) { cancelOnRecordStart = false; abortRecording(); }
   }
 
   function stopRecording() {
@@ -372,6 +370,10 @@ export function attachComposer({ form, textarea, sendBtn, attachBtn, fileInput, 
       return;
     }
     if (sendBtn.classList.contains('mode-send') && micAvailable) {
+      // preventDefault keeps the textarea focused so the keyboard does not collapse
+      // during the hold gesture — without it, blur+layout-shift moves the button
+      // out from under the finger before the 500 ms threshold can fire on Android.
+      e.preventDefault();
       // Explicit capture so pointerup/cancel reach the button even if finger drifts.
       try { sendBtn.setPointerCapture(e.pointerId); } catch { /* ignore */ }
       longPressTimer = setTimeout(() => {
@@ -389,23 +391,18 @@ export function attachComposer({ form, textarea, sendBtn, attachBtn, fileInput, 
       return; // short tap — let click fire normally
     }
     if (!holdDidRecord) return;
-    if (recordingState === 'recording') {
-      stopRecording();
-    } else {
-      // getUserMedia still resolving — abort cleanly when recording starts
-      cancelOnRecordStart = true;
-    }
-    // Defer reset so the click event (fired after pointerup) sees holdDidRecord=true
+    // Recording is latched — releasing the finger does NOT stop it.
+    // Defer the reset so the click that fires synchronously after this pointerup
+    // still sees holdDidRecord=true and is swallowed; only an independent later
+    // tap will get through to stopRecording().
     setTimeout(() => { holdDidRecord = false; }, 0);
   });
 
   sendBtn.addEventListener('pointercancel', () => {
     clearTimeout(longPressTimer);
     longPressTimer = null;
-    if (holdDidRecord) {
-      holdDidRecord = false;
-      abortRecording();
-    }
+    // If recording already latched, leave it running — a subsequent tap stops it.
+    holdDidRecord = false;
   });
 
   // Tap-toggle: first tap starts recording, second tap stops and transcribes.
