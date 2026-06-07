@@ -23,7 +23,7 @@ Runs on Termux (localhost-only, single user) or any host with Node 22+ and the `
 ```bash
 cd ~/project/code-conductor
 npm install            # express, ws
-npm start              # http://127.0.0.1:8787
+npm start              # http://127.0.0.1:8787  (process title: code-conductor)
 npm test               # integration suite (node:test)
 RUN_REAL_CLAUDE=1 npm test   # also runs opt-in real-claude smoke
 ```

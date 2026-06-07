@@ -88,6 +88,7 @@ export async function start({ port = 8787, host = '127.0.0.1' } = {}) {
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
+  process.title = 'code-conductor';
   const port = Number(process.env.PORT ?? 8787);
   const host = process.env.HOST ?? '127.0.0.1';
   start({ port, host }).then(({ port, host }) => {
