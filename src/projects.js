@@ -4,6 +4,7 @@ import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { loadAll as loadAllTitles, deleteTitle as deleteSessionTitle } from './sessionTitles.js';
 import { loadAll as loadAllConducted, unmarkConducted } from './conductedSessions.js';
+import { loadAllTemps } from './tempSessions.js';
 
 // Default projects root = parent directory of the code-conductor repo,
 // resolved once at module load. Layout: <parent>/code-conductor/src/
@@ -401,6 +402,7 @@ export async function listSessionsForCwd(absCwd, excludeSessionIds = null) {
   }
   const titles = await loadAllTitles();
   const conducted = await loadAllConducted();
+  const temps = await loadAllTemps();
   const out = [];
   for (const name of entries) {
     if (!name.endsWith('.jsonl')) continue;
@@ -417,6 +419,7 @@ export async function listSessionsForCwd(absCwd, excludeSessionIds = null) {
       firstPrompt,
       title: titles.get(sid) ?? null,
       conducted: conducted.has(sid),
+      temp: temps.has(sid),
       mtime: stat.mtimeMs,
       size: stat.size,
     });
