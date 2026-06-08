@@ -566,17 +566,20 @@ export class Instance extends EventEmitter {
   }
 
   async _writeSessionMetadata() {
+    // Persist the durable temp + conducted markers BEFORE the temp early
+    // return, so a temp session that survives SIGKILL recovers BOTH flags on
+    // respawn (InstanceManager.create() OR-recovers them via isTemp/isConducted).
+    // These only need sessionId, not the leaf uuid. The last-prompt /
+    // permission-mode write below stays after the early return — it exists
+    // only to surface a session in the shell-side `claude --resume` picker,
+    // which temp sessions must not appear in.
     if (this.temp && this.sessionId) {
       try { await markTemp(this.sessionId); } catch { /* best effort */ }
     }
-    if (this.temp) return;
-    // Persist the durable conducted marker so a non-temp conducted session
-    // is recognised as conducted after exit / restart / --resume. This is
-    // the natural persistence point (same place last-prompt / permission-
-    // mode are written). Only needs sessionId, not the leaf uuid.
     if (this.conducted && this.sessionId) {
       try { await markConducted(this.sessionId); } catch { /* best effort */ }
     }
+    if (this.temp) return;
     if (!this.sessionId || !this._lastLeafUuid) return;
     try {
       // Persist the CLI-level permission mode (not the orchestrator's
@@ -621,9 +624,10 @@ export class Instance extends EventEmitter {
     await fsp.rm(file, { force: true });
     await fsp.rm(subagents, { recursive: true, force: true });
     try { await deleteSessionTitle(this.sessionId); } catch { /* best-effort */ }
-    // Defensive: a temp conducted session is never persisted (the
-    // _writeSessionMetadata temp-guard returns early), but unmark anyway
-    // so a promoted-then-demoted edge case can't leave a stale marker.
+    // A temp conducted session DOES persist its conducted marker (written in
+    // _writeSessionMetadata before the temp early-return, so it survives
+    // SIGKILL). On this clean-exit path the jsonl is gone, so clear both
+    // durable markers — the symmetric counterpart of the unmarkTemp beside it.
     try { await unmarkConducted(this.sessionId); } catch { /* best-effort */ }
     try { await unmarkTemp(this.sessionId); } catch { /* best-effort */ }
   }
