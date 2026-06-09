@@ -131,7 +131,7 @@ For a typical "implement feature X in project Y" request:
 6. **[Wake] Implementation done** — the worker flipped to `bypassPermissions` and has finished its implementation turn. Confirm via `get_recent_messages({id})` (check for the completion sentinel; if it's mid-multi-turn, resubscribe + end turn).
 7. **Review** — `project_status({project: 'Y', worktree: '<wtName>'})` for the summary; `get_worktree_diff(...)` for the full diff; `read_file(...)` for specific files. These return immediately — no subscribe needed.
 8. **Land** — `sync_worktree({instanceId: id})`. If it returns `rebase-prompt-sent`, that started a worker turn — `subscribe_to_idle` + end turn, then resume on wake; if it FF'd or was already in sync, continue straight to `merge_worktree({instanceId: id})`.
-9. **Clean up** — `kill_instance({id})`; `delete_worktree({project, worktreeName})`.
+9. **Reuse or clean up** — **don't kill by reflex.** If more related work is likely, keep the worker alive and send the next task to the same `id` (see "Worker lifecycle: reuse before you kill"). Only `kill_instance({id})` + `delete_worktree({project, worktreeName})` once that line of work is done, the worker is wedged, or the human asks you to tidy up.
 
 ### N independent tasks (parallel)
 
@@ -145,7 +145,7 @@ When the user hands you several independent tasks at once — or when a single t
 6. **[Wake, per worker] Implementation done** — confirm via `get_recent_messages({id})` and the completion sentinel; if still mid-turn, resubscribe + end turn. **Auto-approve caveat:** with step 3 armed, a worker's *plan* turn ends (firing your one-shot subscription) **before** it rolls into implementation — so on that first wake the worker may still be coding. Check the sentinel; if it isn't done, just resubscribe rather than landing prematurely.
 7. **Review** — per worker, `project_status` + `get_worktree_diff` (immediate calls); `read_file` as needed.
 8. **Land** — per worker, `sync_worktree` then `merge_worktree`. You can fan these across ids in a single turn since they return immediately; the merges serialise server-side at the git layer. (If a `sync_worktree` returns `rebase-prompt-sent`, that's a worker turn — subscribe + end turn for that id.)
-9. **Clean up** — `kill_instance` + `delete_worktree` per worker, once its work has landed.
+9. **Reuse or clean up** — per worker, once its work has landed: keep it alive and reuse it if a related follow-up is likely (see "Worker lifecycle: reuse before you kill"); otherwise `kill_instance` + `delete_worktree`.
 
 Key benefit: you never hold your turn open, so user messages get picked up immediately at every point, not just at phase boundaries. The trade-off is bookkeeping — wakes arrive one worker at a time, so you track outstanding ids and resubscribe per pending turn rather than relying on a single barrier. If a worker errors or stalls, handle just that id on its wake; the rest are unaffected.
 
@@ -167,6 +167,26 @@ get_recent_messages({id: workerId})
 ```
 
 The subscription is **one-shot** — consumed on the first `turn_end`. For multi-turn workers (e.g. plan → implementation), resubscribe inside each callback turn if you want the next ping. If the user interrupts and you decide to abandon the worker, call `unsubscribe_from_idle({targetId})` to drop the pending callback.
+
+## Worker lifecycle: reuse before you kill
+
+**Do not reflexively `kill_instance` when a task lands.** A worker that just finished has *paid the exploration cost* — it has read the README and CLAUDE.md, mapped the relevant files, built a mental model of the code, and sits in a live worktree. Killing it throws all of that away; the next task then re-pays it from zero. The default after a successful land is therefore: **keep the worker alive and route the next task by its relationship to what the worker already knows.**
+
+When the next task arrives (or you split more work off the current request), classify it:
+
+- **Related to what a live worker just did** — same project, same module/feature area, a follow-up, fix, extension, or review of its own work → **reuse that worker.** Don't spawn. `send_prompt({id, text: "<next task>", wait:false})` + `subscribe_to_idle` + end turn, exactly as for a fresh dispatch. The worker keeps its loaded context and skips re-exploration. Worktree caveats:
+  - If you already merged its branch, the worktree still exists on that branch — it can keep building there and you merge again. If the new task should start from the latest base, `sync_worktree({instanceId})` first (handle a `rebase-prompt-sent` as its own worker turn).
+  - The worker is in `bypassPermissions` after the earlier `approve_plan`. For a substantial new task you want to review, `set_mode({id, mode:'plan'})` before briefing so it plans again; for a small, well-scoped follow-up, leave it and let it code.
+- **Unrelated** — different project, different concern, or work that would muddy the worker's context/worktree with a second topic → **spawn a fresh worker** in its own worktree (canonical single-worker flow). One concern per worker still holds: don't graft an unrelated task onto a worker just because it's idle.
+
+**When to actually kill** — reuse is the default, not a licence to hoard zombies. `kill_instance` (+ `delete_worktree` once its work has landed) when:
+- the user signals that line of work is done, or the conversation has clearly moved on from that project/area;
+- the worker is wedged, crashed, or its context is polluted/confused (a fresh spawn is cleaner than untangling it);
+- you're holding more live workers than you can track, or the human asks you to tidy the sidebar.
+
+Before killing, make sure its work is **landed or intentionally discarded** — don't kill a worker whose worktree still holds unmerged changes you meant to keep. To keep a reused worker as a named session instead of a temp, `promote_session({id})`.
+
+When you keep a worker around, tell the user — e.g. "leaving `<id>` up for follow-ups in project Y" — so the live instance in the sidebar isn't a surprise.
 
 ## Operational tasks in other projects
 
@@ -206,7 +226,7 @@ If `list_instances` ever shows you running *inside* a worker session (your `cwd`
 - **Scope explicitly.** Workers can't reliably ask clarifying questions (the CLI auto-errors `AskUserQuestion` in stream-json mode). State the goal, the constraints, the success criteria, and the *non*-goals up front.
 - **Declare the environment.** Workers don't automatically know they're in a worktree. Say: "You are working in a git worktree branched from `<baseBranch>`. Implement your changes here; do not switch branches."
 - **Agree on a sentinel.** Ask the worker to say a specific phrase (e.g. `IMPLEMENTATION_COMPLETE`) when finished, then poll `get_recent_messages` for it. `wait_for_idle` only tells you the turn ended — the agent may still have more to do across multiple turns.
-- **One concern per worker.** If a task has independent parts (frontend + backend, two unrelated modules), spawn separate workers in separate worktrees and drive them in parallel (see "N independent tasks" above). Merges land on a single parent and serialise server-side at the git layer, but you should still issue them as parallel tool_uses rather than across separate turns.
+- **One concern per worker.** If a task has independent parts (frontend + backend, two unrelated modules), spawn separate workers in separate worktrees and drive them in parallel (see "N independent tasks" above). Merges land on a single parent and serialise server-side at the git layer, but you should still issue them as parallel tool_uses rather than across separate turns. *Independent* concerns get *separate* workers; but *sequential, related* tasks in the same area should reuse *one* worker across turns rather than respawning (see "Worker lifecycle: reuse before you kill").
 - **Model choice**: Haiku for trivial mechanical edits; Sonnet for normal feature work; Opus when the worker needs deep reasoning or large refactors.
 
 ## When to use which mode
