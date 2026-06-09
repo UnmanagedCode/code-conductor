@@ -33,6 +33,7 @@ function mergeLive(onDisk, liveInstances) {
       row.instanceStatus = inst.status;
       row.instanceMode = inst.mode;
       row.instanceTemp = !!inst.temp;
+      row.instanceHasIdleSubscriber = !!inst.hasIdleSubscriber;
       // Conducted is durable on-disk metadata (row.conducted may already
       // be set from the API). A live conducted instance is authoritative;
       // OR the two so a UI-resumed conducted session stays grouped.
@@ -52,6 +53,7 @@ function mergeLive(onDisk, liveInstances) {
         instanceStatus: inst.status,
         instanceMode: inst.mode,
         instanceTemp: !!inst.temp,
+        instanceHasIdleSubscriber: !!inst.hasIdleSubscriber,
         conducted: !!inst.conducted,
         synthetic: true,
       });
@@ -210,7 +212,7 @@ export class Sidebar {
         });
       },
     },
-      el('span', { class: `dot ${status}`, title: status }),
+      el('span', { class: `dot ${status}${status === 'idle' && session.instanceHasIdleSubscriber ? ' subscribed' : ''}`, title: status }),
       el('span', { class: 'session-ago' }, formatAgo(session.mtime)),
       el('span', { class: 'session-preview' }, liveLabel),
     );
