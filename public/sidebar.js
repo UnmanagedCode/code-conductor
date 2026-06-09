@@ -91,6 +91,7 @@ export class Sidebar {
     rootList, onSelectInstance, onCreateInstanceClick,
     onRemoveWorktree, onDeleteProject, onResumeSession, onLoadSessions,
     onDeleteSession, onEditWorkspace, onQuickSpawn, onPromoteSession,
+    onReviewWorktree,
   }) {
     this.list = rootList;
     this.onSelectInstance = onSelectInstance;
@@ -103,6 +104,7 @@ export class Sidebar {
     this.onEditWorkspace = onEditWorkspace;
     this.onQuickSpawn = onQuickSpawn;
     this.onPromoteSession = onPromoteSession;
+    this.onReviewWorktree = onReviewWorktree;
     this.projects = [];
     this.instances = [];
     // Names of registered workspaces (from GET /api/workspaces). Render
@@ -403,6 +405,10 @@ export class Sidebar {
       head.appendChild(el('span', { class: 'wt-unmerged', title }, label));
     }
     head.appendChild(el('span', { class: 'worktree-base' }, `← ${wt.baseBranch}`));
+    head.appendChild(el('button', {
+      class: 'wt-review', title: 'review changes',
+      onclick: (e) => { e.stopPropagation(); this.onReviewWorktree?.(project.name, wt.worktreeName); },
+    }, '±'));
     head.appendChild(el('button', {
       class: 'wt-spawn', title: 'new session in this worktree',
       onclick: (e) => { e.stopPropagation(); this.onCreateInstanceClick(project.name, { worktreeName: wt.worktreeName }); },

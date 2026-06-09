@@ -455,6 +455,102 @@ export async function removeAllWorktreesForProject(projectName) {
   }
 }
 
+// Maximum bytes of raw git diff output to keep. Matches the cap in the
+// MCP get_worktree_diff handler so both surfaces behave consistently.
+const DIFF_BYTE_CAP = 200 * 1024;
+
+// Parse a raw unified diff string (from `git diff --unified=N base...HEAD`)
+// into a per-file array of structured objects. Pure string-walking, no deps.
+function parseUnifiedDiff(raw) {
+  const files = [];
+  if (!raw || !raw.trim()) return files;
+
+  // Each file section starts with "diff --git ...". Split there.
+  const rawSections = raw.split('\ndiff --git ');
+  for (let si = 0; si < rawSections.length; si++) {
+    const section = si === 0 ? rawSections[si] : 'diff --git ' + rawSections[si];
+    if (!section.startsWith('diff --git ')) continue;
+    const lines = section.split('\n');
+
+    const headerMatch = lines[0].match(/^diff --git a\/(.+) b\/(.+)$/);
+    if (!headerMatch) continue;
+
+    let status = 'modified';
+    let filePath = headerMatch[2]; // b-side path (current name)
+    let oldPath = null;
+    const hunks = [];
+    let currentHunk = null;
+    let adds = 0;
+    let dels = 0;
+    let inHunks = false;
+
+    for (let i = 1; i < lines.length; i++) {
+      const line = lines[i];
+      if (!inHunks) {
+        if (line.startsWith('new file mode')) {
+          status = 'added';
+        } else if (line.startsWith('deleted file mode')) {
+          status = 'deleted';
+        } else if (line.startsWith('rename from ')) {
+          oldPath = line.slice('rename from '.length);
+        } else if (line.startsWith('rename to ')) {
+          filePath = line.slice('rename to '.length);
+          status = 'renamed';
+        } else if (line.startsWith('@@ ')) {
+          inHunks = true;
+          currentHunk = { header: line, lines: [] };
+          hunks.push(currentHunk);
+        }
+      } else {
+        if (line.startsWith('@@ ')) {
+          currentHunk = { header: line, lines: [] };
+          hunks.push(currentHunk);
+        } else if (line.startsWith('+') && currentHunk) {
+          currentHunk.lines.push({ type: 'add', content: line.slice(1) });
+          adds++;
+        } else if (line.startsWith('-') && currentHunk) {
+          currentHunk.lines.push({ type: 'del', content: line.slice(1) });
+          dels++;
+        } else if (line.startsWith(' ') && currentHunk) {
+          currentHunk.lines.push({ type: 'ctx', content: line.slice(1) });
+        }
+        // "\ No newline at end of file" and other metadata lines are skipped.
+      }
+    }
+
+    files.push({ path: filePath, oldPath, status, adds, dels, hunks });
+  }
+  return files;
+}
+
+// Return structured diff data for a worktree relative to its base branch.
+// Validates ownership via getWorktree (throws 404 if not found).
+// Returns { project, worktreeName, baseRef, files, totalAdds, totalDels, truncated }.
+export async function getWorktreeDiff(projectName, worktreeName, { baseRef, contextLines = 3 } = {}) {
+  const meta = await getWorktree(projectName, worktreeName);
+  if (!meta) {
+    const err = new Error(`worktree '${worktreeName}' not found under project '${projectName}'`);
+    err.statusCode = 404;
+    throw err;
+  }
+  const ctx = Math.max(0, Math.min(50, Number.isFinite(Number(contextLines)) ? Math.floor(Number(contextLines)) : 3));
+  const ref = baseRef || meta.baseBranch;
+  const r = await runGit(meta.worktreePath, ['diff', `--unified=${ctx}`, `${ref}...HEAD`]);
+  if (r.code !== 0) {
+    const msg = (r.stderr || r.stdout).trim() || `git diff ${ref}...HEAD failed`;
+    const err = new Error(msg);
+    err.statusCode = 500;
+    throw err;
+  }
+  const rawOutput = r.stdout;
+  const truncated = rawOutput.length > DIFF_BYTE_CAP;
+  const raw = truncated ? rawOutput.slice(0, DIFF_BYTE_CAP) : rawOutput;
+  const files = parseUnifiedDiff(raw);
+  const totalAdds = files.reduce((s, f) => s + f.adds, 0);
+  const totalDels = files.reduce((s, f) => s + f.dels, 0);
+  return { project: projectName, worktreeName, baseRef: ref, files, totalAdds, totalDels, truncated };
+}
+
 // Re-exported for tests / route handlers.
 export const _internal = {
   worktreeBranchName,
