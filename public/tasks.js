@@ -17,6 +17,12 @@ export class TaskTracker {
     // toolUseId -> { input } awaiting the matching tool_result that
     // carries the freshly-allocated task id.
     this._pendingCreates = new Map();
+    // toolUseId -> tool_result event, for the replay case where the
+    // persisted jsonl emits tool_result (from a type:"user" line) before
+    // the matching tool_use (from the type:"assistant" envelope written at
+    // turn end). When the tool_use TaskCreate later arrives, the buffered
+    // result is popped and the task is created immediately.
+    this._pendingResults = new Map();
     // Persistent id → { subject, description } map. Outlives batch
     // rollovers so that scrolling back to an OLD TaskUpdate tool block
     // (whose batch has since been cleared from `this.tasks`) can still
@@ -49,8 +55,37 @@ export class TaskTracker {
   reset() {
     this.tasks.clear();
     this._pendingCreates.clear();
+    this._pendingResults.clear();
     this._infoHistory.clear();
     this.completedBatches = [];
+    this._notify();
+  }
+
+  // Shared task-creation logic, called from both the normal path (live:
+  // tool_use first, then tool_result) and the replay path (jsonl: tool_result
+  // first, then tool_use).
+  _applyCreate(input, resultEv) {
+    const content = typeof resultEv.content === 'string'
+      ? resultEv.content
+      : Array.isArray(resultEv.content)
+        ? resultEv.content.map(b => b?.text ?? '').join('\n')
+        : '';
+    const m = content.match(CREATE_ID_RE);
+    if (!m) return;
+    const id = m[1];
+    if (this.tasks.size > 0 && this._allCompleted()) {
+      this.tasks.clear();
+    }
+    this.tasks.set(id, {
+      subject: input.subject ?? '(no subject)',
+      description: input.description ?? '',
+      activeForm: input.activeForm ?? null,
+      status: 'pending',
+    });
+    this._infoHistory.set(id, {
+      subject: input.subject ?? '(no subject)',
+      description: input.description ?? '',
+    });
     this._notify();
   }
 
@@ -59,6 +94,15 @@ export class TaskTracker {
     if (ev.kind === 'tool_use') {
       if (ev.name === 'TaskCreate') {
         const input = ev.input ?? {};
+        // Replay path: tool_result may have arrived before this tool_use
+        // (persisted jsonl writes type:"user" mid-turn, type:"assistant" at
+        // turn end). If a buffered result is waiting, consume it now.
+        const buffered = this._pendingResults.get(ev.toolUseId);
+        if (buffered) {
+          this._pendingResults.delete(ev.toolUseId);
+          this._applyCreate(input, buffered);
+          return;
+        }
         this._pendingCreates.set(ev.toolUseId, {
           subject: input.subject ?? '(no subject)',
           description: input.description ?? '',
@@ -102,35 +146,25 @@ export class TaskTracker {
     }
     if (ev.kind === 'tool_result') {
       const pending = this._pendingCreates.get(ev.toolUseId);
-      if (!pending) return;
-      this._pendingCreates.delete(ev.toolUseId);
-      const content = typeof ev.content === 'string'
-        ? ev.content
-        : Array.isArray(ev.content)
-          ? ev.content.map(b => b?.text ?? '').join('\n')
-          : '';
-      const m = content.match(CREATE_ID_RE);
-      if (!m) return;
-      const id = m[1];
-      // If every existing task is already completed, the previous
-      // batch is "done" — drop those rows before the new task lands,
-      // so a fresh panel doesn't drag a wall of historical ✓s in
-      // with it. As long as at least one task is still pending or
-      // in_progress, the new task joins the current batch.
-      if (this.tasks.size > 0 && this._allCompleted()) {
-        this.tasks.clear();
+      if (!pending) {
+        // Live path: tool_use always precedes tool_result, so !pending
+        // means this result is for a non-TaskCreate tool — ignore it.
+        // Replay path (jsonl ordering): tool_result arrives before its
+        // tool_use because type:"user" lines are written mid-turn while
+        // type:"assistant" is written at turn end. Buffer it so the
+        // matching tool_use TaskCreate can consume it when it arrives.
+        const content = typeof ev.content === 'string'
+          ? ev.content
+          : Array.isArray(ev.content)
+            ? ev.content.map(b => b?.text ?? '').join('\n')
+            : '';
+        if (CREATE_ID_RE.test(content)) {
+          this._pendingResults.set(ev.toolUseId, ev);
+        }
+        return;
       }
-      this.tasks.set(id, {
-        subject: pending.subject,
-        description: pending.description,
-        activeForm: pending.activeForm,
-        status: 'pending',
-      });
-      this._infoHistory.set(id, {
-        subject: pending.subject,
-        description: pending.description,
-      });
-      this._notify();
+      this._pendingCreates.delete(ev.toolUseId);
+      this._applyCreate(pending, ev);
     }
   }
 

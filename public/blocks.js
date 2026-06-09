@@ -615,6 +615,23 @@ export class UserQuestionBlock {
       });
     }
   }
+
+  // Called during session replay to restore the answered state. `answers`
+  // is the reconstructed answer array from parseUserQuestionAnswers(); pass
+  // null to mark answered without highlighting a specific option.
+  markAnswered(answers) {
+    if (this.submitted) return;
+    if (Array.isArray(answers)) {
+      this.answers = answers;
+      this._render(); // applies 'picked' class to the selected option buttons
+    }
+    this.submitted = true;
+    this.submitBtn.disabled = true;
+    this.statusNode.textContent = 'sending…';
+    this.node.classList.add('answered');
+    this.panes.querySelectorAll('button.uq-opt').forEach(b => { b.disabled = true; });
+    this.panes.querySelectorAll('.uq-custom-input').forEach(i => { i.disabled = true; });
+  }
 }
 
 // Format the per-question answer into the text we send to the model.
@@ -646,6 +663,61 @@ export function formatUserQuestionAnswers(questions, answers) {
     return `Answer to "${qText}": ${renderAnswer(answers[0])}`;
   }
   return `My answers:\n${lines.join('\n')}`;
+}
+
+// Best-effort reverse of formatUserQuestionAnswers. Reconstructs the
+// per-question answer objects from the text that was sent to the model.
+// Exported so conversation.js can call it during session replay.
+// Never throws — returns an array of { kind: 'none' } on any parse failure
+// so callers can degrade gracefully.
+export function parseUserQuestionAnswers(questions, text) {
+  if (!Array.isArray(questions) || questions.length === 0) return [];
+  if (typeof text !== 'string') return questions.map(() => ({ kind: 'none' }));
+  try {
+    if (questions.length === 1) {
+      const q = questions[0];
+      const qText = (q?.question ?? 'Question').replace(/\s+/g, ' ').trim();
+      const prefix = `Answer to "${qText}": `;
+      const answerText = text.startsWith(prefix) ? text.slice(prefix.length) : text;
+      return [_parseOneAnswer(q, answerText)];
+    }
+    // Multi-question format: "My answers:\n- Q1: A1\n- Q2: A2"
+    const MULTI_PREFIX = 'My answers:\n';
+    if (!text.startsWith(MULTI_PREFIX)) return questions.map(() => ({ kind: 'none' }));
+    const lines = text.slice(MULTI_PREFIX.length).split('\n');
+    return questions.map((q, i) => {
+      const qText = (q?.question ?? `Question ${i + 1}`).replace(/\s+/g, ' ').trim();
+      const linePrefix = `- ${qText}: `;
+      const line = lines.find(l => l.startsWith(linePrefix));
+      if (!line) return { kind: 'none' };
+      return _parseOneAnswer(q, line.slice(linePrefix.length));
+    });
+  } catch {
+    return questions.map(() => ({ kind: 'none' }));
+  }
+}
+
+function _parseOneAnswer(q, renderText) {
+  if (typeof renderText !== 'string' || !renderText) return { kind: 'none' };
+  // Split on ' — ' to separate the value from an optional note.
+  const dashIdx = renderText.indexOf(' — ');
+  let valuePart = dashIdx >= 0 ? renderText.slice(0, dashIdx) : renderText;
+  const note = dashIdx >= 0 ? renderText.slice(dashIdx + 3) : undefined;
+  valuePart = valuePart.trim();
+  if (q?.multiSelect) {
+    const labels = valuePart.split(', ').map(s => s.trim()).filter(Boolean);
+    const validLabels = labels.filter(l => (q.options ?? []).some(o => o.label === l));
+    if (validLabels.length > 0) {
+      return note ? { kind: 'multi', labels: validLabels, note } : { kind: 'multi', labels: validLabels };
+    }
+  } else {
+    const opt = (q?.options ?? []).find(o => o.label === valuePart);
+    if (opt) {
+      return note ? { kind: 'option', label: opt.label, note } : { kind: 'option', label: opt.label };
+    }
+  }
+  // No option matched — treat as a free-form custom answer.
+  return { kind: 'custom', text: valuePart };
 }
 
 // Renders the plan the model produced in plan mode + Approve/Reject

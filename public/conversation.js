@@ -4,7 +4,7 @@
 
 import { TextBlock, ThinkingBlock, ToolUseBlock, ToolResultBlock, SystemBlock, TurnEndBlock,
   TaskCompletionBlock, UserQuestionBlock, PlanRequestBlock, PermissionRequestBlock, ImageBlock,
-  shouldRenderSystem, el } from './blocks.js';
+  shouldRenderSystem, el, parseUserQuestionAnswers } from './blocks.js';
 
 function renderFileChip(a) {
   return el('div', { class: 'block file-attachment' },
@@ -58,6 +58,9 @@ export class Conversation {
     this.userQuestionBlocks = new Map(); // toolUseId -> UserQuestionBlock
     this.planBlocks = new Map(); // toolUseId -> PlanRequestBlock
     this.permissionBlocks = new Map(); // toolUseId -> PermissionRequestBlock
+    // Set during replay when a tool_result for AskUserQuestion is processed;
+    // cleared when the following user_echo arrives carrying the answer text.
+    this._pendingAnswerUQId = null;
     this.blocksByKey = new Map();   // `${msgId}:${blockIdx}` -> block instance
     this.toolBlocks = new Map();    // toolUseId -> ToolUseBlock
     this.seenSeq = new Set();
@@ -110,6 +113,7 @@ export class Conversation {
     this.planBlocks.clear();
     this.permissionBlocks.clear();
     this._activeAssistantWrap = null;
+    this._pendingAnswerUQId = null;
     this.userMessageCounter = 0;
     this._setEmpty();
   }
@@ -169,7 +173,19 @@ export class Conversation {
     if (ev.kind === 'permission_resolved') { this._resolvePermissionRequest(ev); return; }
     this._ensureNotEmpty();
     switch (ev.kind) {
-      case 'user_echo':      this._renderUserEcho(ev); break;
+      case 'user_echo': {
+        // On session replay the user_echo that immediately follows an
+        // AskUserQuestion tool_result carries the formatted answer text.
+        // Reconstruct the selection and mark the card as answered so it
+        // renders consistently with a live submission.
+        if (this._pendingAnswerUQId) {
+          const qBlock = this.userQuestionBlocks.get(this._pendingAnswerUQId);
+          if (qBlock) qBlock.markAnswered(parseUserQuestionAnswers(qBlock.questions, ev.text));
+          this._pendingAnswerUQId = null;
+        }
+        this._renderUserEcho(ev);
+        break;
+      }
       case 'text_delta':     this._appendStreamingBlock(ev, 'text', TextBlock, ev.text); break;
       case 'text_end':       this._finalizeBlock(ev); break;
       case 'thinking_start': this._renderThinkingStart(ev); break;
@@ -397,6 +413,13 @@ export class Conversation {
     else {
       const wrap = this._ensureMessageWrap(null, 'assistant');
       wrap.body.appendChild(result.node);
+    }
+    // When the result is for an unanswered AskUserQuestion block, the
+    // following user_echo carries the formatted answer text. Record the
+    // toolUseId so _renderUserEcho can reconstruct the selection.
+    const qBlock = this.userQuestionBlocks.get(ev.toolUseId);
+    if (qBlock && !qBlock.submitted) {
+      this._pendingAnswerUQId = ev.toolUseId;
     }
   }
 

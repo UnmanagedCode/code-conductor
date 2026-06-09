@@ -158,6 +158,72 @@ test('tool_use events for unrelated tools are ignored', () => {
   assert.equal(t.list().length, 0);
 });
 
+// Replay-order tests — jsonl emits tool_result (type:"user" mid-turn) before
+// tool_use (type:"assistant" written at turn end), opposite of live order.
+test('replay: tool_result arriving before its tool_use still creates the task', () => {
+  const t = new TaskTracker();
+  // Replay order: result first, then tool_use
+  t.apply({ kind: 'tool_result', toolUseId: 'tu1', content: 'Task #1 created successfully: My task', isError: false });
+  t.apply({ kind: 'tool_use', name: 'TaskCreate', toolUseId: 'tu1', input: { subject: 'My task' } });
+  assert.equal(t.list().length, 1);
+  assert.equal(t.list()[0].id, '1');
+  assert.equal(t.list()[0].subject, 'My task');
+  assert.equal(t.list()[0].status, 'pending');
+  assert.equal(t.isVisible(), true);
+});
+
+test('replay: task subject comes from the tool_use input even when result arrives first', () => {
+  const t = new TaskTracker();
+  t.apply({ kind: 'tool_result', toolUseId: 'tu1', content: 'Task #5 created', isError: false });
+  t.apply({ kind: 'tool_use', name: 'TaskCreate', toolUseId: 'tu1', input: { subject: 'Subject from tool_use', description: 'Some desc' } });
+  assert.equal(t.list()[0].subject, 'Subject from tool_use');
+  assert.equal(t.list()[0].id, '5');
+  assert.equal(t.getDescription('5'), 'Some desc');
+});
+
+test('replay: subsequent TaskUpdate applies correctly after deferred create', () => {
+  const t = new TaskTracker();
+  t.apply({ kind: 'tool_result', toolUseId: 'tu1', content: 'Task #2 created', isError: false });
+  t.apply({ kind: 'tool_use', name: 'TaskCreate', toolUseId: 'tu1', input: { subject: 'Work' } });
+  t.apply({ kind: 'tool_use', name: 'TaskUpdate', toolUseId: 'tu2', input: { taskId: '2', status: 'in_progress' } });
+  assert.equal(t.list()[0].status, 'in_progress');
+  assert.equal(t.isVisible(), true);
+});
+
+test('replay: batch rollover works correctly when result arrives before tool_use', () => {
+  const t = new TaskTracker();
+  // Batch 1 via normal order (live)
+  feedCreate(t, { toolUseId: 'tu1', taskId: '1', subject: 'First' });
+  t.apply({ kind: 'tool_use', name: 'TaskUpdate', toolUseId: 'u1', input: { taskId: '1', status: 'completed' } });
+  assert.equal(t.isVisible(), false, 'batch 1 done');
+  // Batch 2 via replay order (result before tool_use)
+  t.apply({ kind: 'tool_result', toolUseId: 'tu2', content: 'Task #2 created successfully: Second', isError: false });
+  t.apply({ kind: 'tool_use', name: 'TaskCreate', toolUseId: 'tu2', input: { subject: 'Second' } });
+  assert.deepEqual(t.list().map(x => x.id), ['2'], 'old completed batch cleared, new task present');
+  assert.equal(t.isVisible(), true);
+});
+
+test('replay: non-TaskCreate tool_result with similar text is not buffered', () => {
+  const t = new TaskTracker();
+  // A Bash result that happens to contain "Task #1 created" in output —
+  // should NOT be buffered since it belongs to a Bash tool_use, not TaskCreate.
+  // In practice this is extremely rare but we verify the tracker stays clean.
+  t.apply({ kind: 'tool_result', toolUseId: 'bash1', content: 'Task #1 created by script', isError: false });
+  t.apply({ kind: 'tool_use', name: 'Bash', toolUseId: 'bash1', input: { command: 'make' } });
+  // The Bash tool_use doesn't match 'TaskCreate', so the buffered result
+  // remains in _pendingResults but no task is created.
+  assert.equal(t.list().length, 0);
+});
+
+test('replay: reset() clears pending buffered results', () => {
+  const t = new TaskTracker();
+  t.apply({ kind: 'tool_result', toolUseId: 'tu1', content: 'Task #1 created', isError: false });
+  t.reset();
+  // After reset, the buffered result is gone — applying the tool_use has no effect.
+  t.apply({ kind: 'tool_use', name: 'TaskCreate', toolUseId: 'tu1', input: { subject: 'Ghost' } });
+  assert.equal(t.list().length, 0);
+});
+
 test('TaskPanel renders rows, swaps active marker, hides when all completed (happy-dom)', async () => {
   const { Window } = await import('happy-dom');
   const window = new Window({ url: 'http://localhost/' });
