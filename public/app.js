@@ -25,6 +25,7 @@ import {
 import { installExternalLinkOpener } from './external-links.js';
 import { installLightbox } from './lightbox.js';
 import { installSettings } from './settings.js';
+import { installReview } from './review.js';
 import { loadModelVersions, setActiveVersions, setActiveSonnetWindow, getActiveSonnetWindow, resolveSpawnModel } from './models.js';
 import { setTtsAvailable, setTtsEnabled, setTtsRate } from './tts.js';
 
@@ -384,6 +385,17 @@ dom.settingsBtn?.addEventListener('click', () => {
     settings.open();
   }
 });
+
+// Review view (full-page diff browser opened from the sidebar ± button).
+function closeReview() {
+  const inst = state.instances.find(i => i.id === state.activeId);
+  writeSessionAnchor(inst?.sessionId || null);
+}
+const review = installReview({ onClose: closeReview });
+sidebar.onReviewWorktree = (project, wt) => {
+  setSidebarOpen(false);
+  review.open(project, wt);
+};
 
 dom.modeSelect.addEventListener('change', async () => {
   if (!state.activeId) return;

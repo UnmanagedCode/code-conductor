@@ -13,7 +13,7 @@ import {
   isGitRepo, listWorktrees, removeWorktree, mergeWorktreeIntoParent,
   buildRebasePrompt, getWorktree, removeAllWorktreesForProject,
   attachmentsDir, getWorktreeMergeStatus, syncWorktree,
-  getProjectUpstreamStatus,
+  getProjectUpstreamStatus, getWorktreeDiff,
 } from './worktrees.js';
 import { scheduleRestart } from './restart.js';
 import { ensureConductProject, CONDUCT_PROJECT_NAME } from './conduct.js';
@@ -331,6 +331,18 @@ export function buildRoutes({ instances, serverCtx } = {}) {
       if (!wt) throw Object.assign(new Error('worktree not found'), { statusCode: 404 });
       const tempSids = instances ? instances.tempSessionIdsForCwd(wt.worktreePath) : null;
       res.json(await listSessionsForCwd(wt.worktreePath, tempSids));
+    } catch (e) { next(e); }
+  });
+
+  // Structured diff for a worktree vs its base branch. Returns per-file
+  // data with hunks parsed for direct rendering — no client-side diffing
+  // needed. Accepts optional ?baseRef= and ?context= (0–50, default 3).
+  r.get('/projects/:name/worktrees/:wt/diff', async (req, res, next) => {
+    try {
+      const baseRef = req.query.baseRef || undefined;
+      const contextLines = req.query.context !== undefined ? Number(req.query.context) : 3;
+      const result = await getWorktreeDiff(req.params.name, req.params.wt, { baseRef, contextLines });
+      res.json(result);
     } catch (e) { next(e); }
   });
 

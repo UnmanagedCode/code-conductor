@@ -1249,3 +1249,78 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
 @media (max-width: 720px) {
   .sm-family-row { padding: 8px 10px; }
 }
+
+/* ── Review view ─────────────────────────────────────────────────────────── */
+/* Full-page diff browser, same pattern as settings. While open the instance-
+   specific children of #main are hidden. The ± sidebar button opens it. */
+#main.review-open #conversation,
+#main.review-open #task-panel,
+#main.review-open #turn-indicator,
+#main.review-open #composer,
+#main.review-open #instance-controls { display: none !important; }
+
+#review-view { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+#review-view[hidden] { display: none; }
+
+#review-header {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 12px; flex-shrink: 0;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel-1); min-height: 44px;
+}
+#review-back {
+  background: none; border: 1px solid var(--border);
+  color: var(--muted); cursor: pointer; padding: 4px 10px;
+  border-radius: 4px; font-size: 13px;
+  min-width: 44px; min-height: 36px; white-space: nowrap;
+}
+#review-back:hover { color: var(--text); background: var(--panel-2); }
+#review-title {
+  font-family: ui-monospace, monospace; font-size: 12px; color: var(--text);
+  flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+#review-stats { font-size: 11px; color: var(--muted); flex-shrink: 0; }
+#review-file-list { flex: 1 1 auto; overflow-y: auto; }
+
+.worktree-row .wt-review:hover { color: var(--tool); }
+
+.review-file { border-bottom: 1px solid var(--border); }
+.review-file-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 12px; min-height: 44px;
+  cursor: pointer; user-select: none; list-style: none;
+  background: var(--panel-1);
+}
+.review-file-head::-webkit-details-marker { display: none; }
+.review-file-head:hover { background: var(--panel-2); }
+.review-file-status {
+  flex-shrink: 0; width: 16px; height: 16px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 3px; font-size: 10px; font-weight: bold;
+  font-family: ui-monospace, monospace;
+}
+.review-status-added    { background: rgba(74, 222, 128, 0.2); color: var(--green); }
+.review-status-deleted  { background: rgba(248, 113, 113, 0.2); color: var(--red); }
+.review-status-modified { background: rgba(122, 213, 211, 0.2); color: var(--tool); }
+.review-status-renamed  { background: rgba(251, 191, 36, 0.2);  color: var(--amber); }
+.review-file-path {
+  flex: 1 1 auto; font-family: ui-monospace, monospace; font-size: 12px;
+  color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.review-file-stats { flex-shrink: 0; font-size: 11px; display: flex; gap: 4px; }
+.review-file-stats ins { text-decoration: none; color: var(--green); }
+.review-file-stats del { text-decoration: none; color: var(--red); }
+
+/* Diff body inside the review view. Lines use pre (not pre-wrap) so long
+   lines scroll horizontally rather than wrapping — essential on mobile. */
+.review-diff-body {
+  overflow-x: auto; font-family: ui-monospace, monospace;
+  font-size: 12px; background: var(--panel-2);
+}
+.review-diff-body .diff-line { white-space: pre; word-break: normal; }
+.review-hunk-header {
+  color: var(--tool); background: rgba(122, 213, 211, 0.06);
+  padding: 2px 8px; font-size: 11px; white-space: pre;
+}
+.review-loading, .review-empty { padding: 24px; color: var(--muted); text-align: center; font-size: 13px; }
+.review-error { padding: 24px; color: var(--red); text-align: center; font-size: 13px; }
