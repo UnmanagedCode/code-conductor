@@ -1257,7 +1257,16 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
 #main.review-open #task-panel,
 #main.review-open #turn-indicator,
 #main.review-open #composer,
-#main.review-open #instance-controls { display: none !important; }
+#main.review-open #instance-controls,
+#main.commits-open #conversation,
+#main.commits-open #task-panel,
+#main.commits-open #turn-indicator,
+#main.commits-open #composer,
+#main.commits-open #instance-controls { display: none !important; }
+
+/* The diff view layers on top of the commit list: hide the list while a
+   per-commit diff is open, so backing out of the diff reveals it again. */
+#main.review-open #commits-view { display: none !important; }
 
 #review-view { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
 #review-view[hidden] { display: none; }
@@ -1324,3 +1333,50 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
 }
 .review-loading, .review-empty { padding: 24px; color: var(--muted); text-align: center; font-size: 13px; }
 .review-error { padding: 24px; color: var(--red); text-align: center; font-size: 13px; }
+
+/* Commit history view — same full-page pattern as the review/diff view. The
+   ≡ project-row button opens it; tapping a commit opens the diff view above. */
+#commits-view { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+#commits-view[hidden] { display: none; }
+#commits-header {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 12px; flex-shrink: 0;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel-1); min-height: 44px;
+}
+#commits-back {
+  background: none; border: 1px solid var(--border);
+  color: var(--muted); cursor: pointer; padding: 4px 10px;
+  border-radius: 4px; font-size: 13px;
+  min-width: 44px; min-height: 36px; white-space: nowrap;
+}
+#commits-back:hover { color: var(--text); background: var(--panel-2); }
+#commits-title {
+  font-family: ui-monospace, monospace; font-size: 12px; color: var(--text);
+  flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+#commits-stats { font-size: 11px; color: var(--muted); flex-shrink: 0; }
+#commits-list { flex: 1 1 auto; overflow-y: auto; }
+
+.commit-row {
+  display: flex; align-items: baseline; gap: 8px; width: 100%;
+  padding: 8px 12px; min-height: 44px;
+  background: var(--panel-1); border: none; border-bottom: 1px solid var(--border);
+  cursor: pointer; text-align: left; color: var(--text); font: inherit;
+}
+.commit-row:hover { background: var(--panel-2); }
+.commit-sha {
+  flex-shrink: 0; font-family: ui-monospace, monospace; font-size: 12px;
+  color: var(--tool);
+}
+.commit-subject {
+  flex: 1 1 auto; font-size: 13px; color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.commit-meta { flex-shrink: 0; font-size: 11px; color: var(--muted); white-space: nowrap; }
+
+.project-row .commit-log {
+  background: transparent; color: var(--muted); border: none;
+  cursor: pointer; padding: 0 6px; font-size: 14px; line-height: 1;
+}
+.project-row .commit-log:hover { color: var(--tool); }

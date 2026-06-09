@@ -551,6 +551,72 @@ export async function getWorktreeDiff(projectName, worktreeName, { baseRef, cont
   return { project: projectName, worktreeName, baseRef: ref, files, totalAdds, totalDels, truncated };
 }
 
+// Default / maximum number of commits returned by getProjectCommits.
+const COMMITS_DEFAULT_LIMIT = 100;
+const COMMITS_MAX_LIMIT = 500;
+
+// Return the commit history of a project's current branch (HEAD), newest first.
+// Validates the project via getProject (throws 404 if not found). Caps the log
+// at `limit` (default 100, max 500) and sets `truncated` when more commits exist.
+// Returns { project, branch, commits, truncated, limit }, where each commit is
+// { sha, shortSha, subject, author, relativeDate, isoDate }.
+export async function getProjectCommits(projectName, { limit = COMMITS_DEFAULT_LIMIT } = {}) {
+  const proj = await getProject(projectName);
+  const n = Number(limit);
+  const cap = Math.max(1, Math.min(COMMITS_MAX_LIMIT, Number.isFinite(n) ? Math.floor(n) : COMMITS_DEFAULT_LIMIT));
+  if (!(await isGitRepo(proj.path))) {
+    return { project: projectName, branch: null, commits: [], truncated: false, limit: cap };
+  }
+  const head = await runGit(proj.path, ['rev-parse', '--abbrev-ref', 'HEAD']);
+  const branch = head.code === 0 ? (head.stdout.trim() || null) : null;
+  // Field separator \x1f between fields; %s/%h/%H/%an/%ar/%aI are all single-line.
+  const r = await runGit(proj.path, [
+    'log', `--max-count=${cap + 1}`,
+    '--pretty=format:%H%x1f%h%x1f%s%x1f%an%x1f%ar%x1f%aI',
+  ]);
+  if (r.code !== 0) {
+    // A fresh repo with no commits exits non-zero — treat as empty history.
+    return { project: projectName, branch, commits: [], truncated: false, limit: cap };
+  }
+  const rows = r.stdout.split('\n').filter(Boolean).map((line) => {
+    const [sha, shortSha, subject, author, relativeDate, isoDate] = line.split('\x1f');
+    return { sha, shortSha, subject, author, relativeDate, isoDate };
+  });
+  const truncated = rows.length > cap;
+  const commits = truncated ? rows.slice(0, cap) : rows;
+  return { project: projectName, branch, commits, truncated, limit: cap };
+}
+
+// Return structured diff data for the change introduced by a single commit.
+// Mirrors getWorktreeDiff's response shape so the same frontend renderer works.
+// Validates the project via getProject; guards `sha` to a hex object name.
+// Uses `git show` (handles root commits automatically). Returns
+// { project, sha, files, totalAdds, totalDels, truncated }.
+export async function getCommitDiff(projectName, sha, { contextLines = 3 } = {}) {
+  const proj = await getProject(projectName);
+  if (!/^[0-9a-fA-F]{4,40}$/.test(String(sha))) {
+    const err = new Error('invalid commit sha');
+    err.statusCode = 400;
+    throw err;
+  }
+  const ctx = Math.max(0, Math.min(50, Number.isFinite(Number(contextLines)) ? Math.floor(Number(contextLines)) : 3));
+  const r = await runGit(proj.path, ['show', `--unified=${ctx}`, '--format=', '--no-color', sha]);
+  if (r.code !== 0) {
+    const stderr = (r.stderr || '').trim();
+    const notFound = /unknown revision|bad revision|ambiguous argument/i.test(stderr);
+    const err = new Error(stderr || `git show ${sha} failed`);
+    err.statusCode = notFound ? 404 : 500;
+    throw err;
+  }
+  const rawOutput = r.stdout;
+  const truncated = rawOutput.length > DIFF_BYTE_CAP;
+  const raw = truncated ? rawOutput.slice(0, DIFF_BYTE_CAP) : rawOutput;
+  const files = parseUnifiedDiff(raw);
+  const totalAdds = files.reduce((s, f) => s + f.adds, 0);
+  const totalDels = files.reduce((s, f) => s + f.dels, 0);
+  return { project: projectName, sha, files, totalAdds, totalDels, truncated };
+}
+
 // Re-exported for tests / route handlers.
 export const _internal = {
   worktreeBranchName,

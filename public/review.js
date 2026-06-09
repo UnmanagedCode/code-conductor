@@ -1,10 +1,12 @@
-// Review view — browse per-file diffs for a worktree before merging.
+// Review view — renders a structured unified diff (per-file, collapsible).
 // Activated via location.hash = '#review'; mirrors the settings.js pattern:
-// installReview() returns { open(project, wt), close() }.
+// installReview() returns { open({ title, url, onBack }), close() }.
+// The same renderer serves both worktree diffs and per-commit diffs — only the
+// title and the fetch URL differ, supplied by the caller via open().
 
-let _project = null;
-let _worktreeName = null;
-let _onClose = null;
+let _title = '';
+let _url = null;
+let _onBack = null;
 
 function getEl(id) { return document.getElementById(id); }
 
@@ -18,32 +20,37 @@ function hide() {
   getEl('main').classList.remove('review-open');
 }
 
-function close() {
+function goBack() {
   hide();
-  _project = null;
-  _worktreeName = null;
-  _onClose?.();
+  const cb = _onBack;
+  _title = '';
+  _url = null;
+  _onBack = null;
+  cb?.();
 }
 
-function open(project, worktreeName) {
-  _project = project;
-  _worktreeName = worktreeName;
+function close() {
+  goBack();
+}
+
+function open({ title, url, onBack } = {}) {
+  _title = title || '';
+  _url = url || null;
+  _onBack = onBack || null;
   location.hash = '#review';
   show();
   loadDiff();
 }
 
 async function loadDiff() {
-  const project = _project;
-  const wt = _worktreeName;
-  if (!project || !wt) return;
+  const url = _url;
+  if (!url) return;
 
   const fileList = getEl('review-file-list');
   const titleEl = getEl('review-title');
   const statsEl = getEl('review-stats');
 
-  const shortName = wt.replace(`${project}_worktree_`, '');
-  titleEl.textContent = `${project} / ${shortName}`;
+  titleEl.textContent = _title;
   statsEl.textContent = '';
   fileList.innerHTML = '';
   fileList.appendChild(Object.assign(document.createElement('div'), {
@@ -52,10 +59,7 @@ async function loadDiff() {
 
   let data;
   try {
-    const res = await fetch(
-      `/api/projects/${encodeURIComponent(project)}/worktrees/${encodeURIComponent(wt)}/diff`,
-      { cache: 'no-store' },
-    );
+    const res = await fetch(url, { cache: 'no-store' });
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
       throw new Error(body.error || `HTTP ${res.status}`);
@@ -154,30 +158,21 @@ function renderFile(file) {
   return details;
 }
 
-export function installReview({ onClose } = {}) {
-  _onClose = onClose;
-
-  getEl('review-back')?.addEventListener('click', () => {
-    hide();
-    _project = null;
-    _worktreeName = null;
-    onClose?.();
-  });
+export function installReview() {
+  getEl('review-back')?.addEventListener('click', () => goBack());
 
   window.addEventListener('keydown', e => {
-    if (e.key === 'Escape' && !getEl('review-view')?.hidden) {
-      hide();
-      _project = null;
-      _worktreeName = null;
-      onClose?.();
-    }
+    if (e.key === 'Escape' && !getEl('review-view')?.hidden) goBack();
   });
 
   window.addEventListener('hashchange', () => {
     if (location.hash !== '#review' && !getEl('review-view')?.hidden) {
+      // Hash navigated away (e.g. back to the commit list) — hide without
+      // re-invoking the back callback to avoid a navigation loop.
       hide();
-      _project = null;
-      _worktreeName = null;
+      _title = '';
+      _url = null;
+      _onBack = null;
     }
   });
 

@@ -80,6 +80,9 @@ Outbound: `system` + `subtype:"init"` (bundled with first turn's response, not a
 | `POST` | `/api/instances/:id/merge` | Parent-side merge. Refusals return 200 with `ok:false, reason` so the UI can render inline. |
 | `GET` | `/api/projects/:name/worktrees` | List with metadata. |
 | `GET` | `/api/projects/:name/worktrees/:wt/sessions` | Worktree-scoped session list. |
+| `GET` | `/api/projects/:name/worktrees/:wt/diff[?baseRef=&context=]` | Structured unified diff of `<baseRef|baseBranch>...HEAD`. `{project, worktreeName, baseRef, files:[{path, oldPath, status, adds, dels, hunks:[{header, lines:[{type:add\|del\|ctx, content}]}]}], totalAdds, totalDels, truncated}`. `context` clamped 0–50 (default 3); raw diff capped at 200 KB → `truncated:true`. 404 unknown worktree. |
+| `GET` | `/api/projects/:name/commits[?limit=]` | Commit log of the project's current branch (HEAD), newest first. `{project, branch, commits:[{sha, shortSha, subject, author, relativeDate, isoDate}], truncated, limit}`. `limit` clamped 1–500 (default 100); `truncated:true` when more exist. Non-git project → `{branch:null, commits:[]}`. 404 unknown project. |
+| `GET` | `/api/projects/:name/commits/:sha/diff[?context=]` | Structured diff for the single commit `sha` (via `git show`; handles root commits). Same `files/totalAdds/totalDels/truncated` shape as the worktree diff (renderer-compatible), plus `{project, sha}`. `sha` guarded `^[0-9a-fA-F]{4,40}$` → 400 otherwise; unknown commit → 404. Merge commits yield a combined diff that isn't parsed → empty `files`. |
 | `DELETE` | `/api/projects/:name/worktrees/:wt[?force=1]` | 409 on live instance / dirt; `force=1` kills + ignores. |
 | `DELETE` | `/api/projects/:name/sessions/:sid[?force=1]` | Delete persisted jsonl; 409 if attached. |
 | `DELETE` | `/api/projects/:name/worktrees/:wt/sessions/:sid[?force=1]` | Same, worktree-scoped. |
