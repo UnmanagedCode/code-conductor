@@ -82,6 +82,10 @@ export function attachWsHub({ wss, instances }) {
     broadcastAll(JSON.stringify({ t: 'projects' }));
   });
 
+  instances.on('subscription_changed', () => {
+    broadcastAll(JSON.stringify({ t: 'instances' }));
+  });
+
   // Rewind: server-side, the instance's ring buffer was just wiped and the
   // subprocess respawned against a truncated jsonl. Subscribers need to
   // drop their current conversation DOM before the replayed events from

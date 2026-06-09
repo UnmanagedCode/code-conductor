@@ -943,10 +943,12 @@ export class InstanceManager extends EventEmitter {
             s.delete(callerId);
             if (s.size === 0) this._idleSubscribers.delete(targetId);
           }
+          this.emit('subscription_changed', { targetId });
           this._deliverIdleCallback(callerId, targetId, { timedOut: true, timeoutMs });
         }, timeoutMs);
       }
       subs.set(callerId, { timerId });
+      this.emit('subscription_changed', { targetId });
     }
     return { already };
   }
@@ -960,6 +962,7 @@ export class InstanceManager extends EventEmitter {
     clearTimeout(entry.timerId);
     subs.delete(callerId);
     if (subs.size === 0) this._idleSubscribers.delete(targetId);
+    this.emit('subscription_changed', { targetId });
     return { removed: true };
   }
 
@@ -1052,7 +1055,17 @@ export class InstanceManager extends EventEmitter {
     return callerId ? `${base}?caller=${encodeURIComponent(callerId)}` : base;
   }
 
-  list() { return [...this.byId.values()].map(i => i.summary()); }
+  hasIdleSubscriber(id) {
+    const subs = this._idleSubscribers.get(id);
+    return subs != null && subs.size > 0;
+  }
+
+  list() {
+    return [...this.byId.values()].map(i => ({
+      ...i.summary(),
+      hasIdleSubscriber: this.hasIdleSubscriber(i.id),
+    }));
+  }
   get(id) { return this.byId.get(id); }
   idsForProject(name) {
     return [...this.byId.values()].filter(i => i.project === name).map(i => i.id);

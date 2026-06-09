@@ -244,6 +244,7 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
 
 .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; background: var(--muted); }
 .dot.idle { background: var(--muted); }
+.dot.idle.subscribed { background: var(--accent); }
 .dot.turn { background: var(--green); animation: pulse 1s infinite alternate; }
 .dot.spawning { background: var(--amber); }
 .dot.crashed, .dot.exited { background: var(--red); }
