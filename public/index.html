@@ -231,80 +231,58 @@
     </form>
   </dialog>
 
-  <dialog id="new-instance-dialog">
+  <dialog id="spawn-dialog">
     <form method="dialog">
-      <h3>New session in <span id="ni-project"></span></h3>
-      <label>Mode
-        <select id="ni-mode">
-          <option value="plan" selected>plan (read-only — propose a plan first)</option>
-          <option value="ask">ask (prompt before destructive tools)</option>
-          <option value="bypassPermissions">code (full power, no prompts)</option>
-        </select>
-      </label>
-      <label>Model
-        <select id="ni-model">
-          <option value="" selected>(default)</option>
-          <option data-family="haiku">Haiku — 200k</option>
-          <option data-family="sonnet">Sonnet — 1M</option>
-          <option data-family="opus">Opus — 1M</option>
-        </select>
-        <span class="hint">Concrete version per family is set in ⚙ Settings → Models.</span>
-      </label>
-      <label>Effort (controls thinking budget)
-        <select id="ni-effort">
-          <option value="low">low</option>
-          <option value="medium">medium</option>
-          <option value="high" selected>high</option>
-          <option value="xhigh">xhigh</option>
-          <option value="max">max</option>
-        </select>
-      </label>
-      <label>Thinking
-        <select id="ni-thinking">
-          <option value="adaptive" selected>adaptive (Claude decides)</option>
-          <option value="enabled">enabled</option>
-          <option value="disabled">disabled</option>
-        </select>
-      </label>
-      <label class="ni-worktree-row">
-        <input type="checkbox" id="ni-worktree" />
-        <span>Run in isolated git worktree</span>
-      </label>
-      <p class="hint" id="ni-worktree-hint"></p>
-      <label class="ni-temp-row">
-        <input type="checkbox" id="ni-temp" />
-        <span>Temp session (don't persist transcript)</span>
-      </label>
-      <p class="hint">defaults mode to code; jsonl is removed when the session ends</p>
-      <label class="ni-temp-row">
-        <input type="checkbox" id="ni-debug" />
-        <span>Debug mode (capture stdin/stdout/stderr to disk)</span>
-      </label>
-      <p class="hint">writes to <code>&lt;cwd&gt;/.code-conductor/debug/&lt;instance-id&gt;/</code> for sharing back to a maintainer</p>
-      <p class="error" id="ni-error"></p>
-      <menu>
-        <button value="cancel">Cancel</button>
-        <button id="ni-create" value="create">Spawn</button>
-      </menu>
-    </form>
-  </dialog>
-
-  <dialog id="quick-spawn-dialog">
-    <form method="dialog">
-      <h3>Quick temp session in <span id="qs-project"></span></h3>
-      <p class="hint">Spawns a temp session at the project root. The transcript is wiped on exit.</p>
+      <h3>New session in <span id="sd-project"></span></h3>
       <div class="quick-spawn-models">
         <button type="button" class="qs-model" data-family="haiku">Haiku<span class="qs-ctx">200k</span></button>
         <button type="button" class="qs-model" data-family="sonnet">Sonnet<span class="qs-ctx">1M</span></button>
         <button type="button" class="qs-model" data-family="opus">Opus<span class="qs-ctx">1M</span></button>
       </div>
       <div class="qs-mode-toggle" role="group" aria-label="Spawn mode">
-        <button type="button" id="qs-mode-code" class="qs-mode-opt" data-mode="code" aria-pressed="true">Code</button>
-        <button type="button" id="qs-mode-plan" class="qs-mode-opt" data-mode="plan" aria-pressed="false">Plan &amp; Approve</button>
+        <button type="button" id="sd-mode-code" class="qs-mode-opt" data-mode="code" aria-pressed="true">Code</button>
+        <button type="button" id="sd-mode-plan" class="qs-mode-opt" data-mode="plan" aria-pressed="false">Plan &amp; Approve</button>
       </div>
-      <p class="error" id="qs-error"></p>
+      <details id="sd-advanced">
+        <summary>Advanced options</summary>
+        <div class="sd-advanced-body">
+          <label>Effort
+            <select id="sd-effort">
+              <option value="low">low</option>
+              <option value="medium">medium</option>
+              <option value="high" selected>high</option>
+              <option value="xhigh">xhigh</option>
+              <option value="max">max</option>
+            </select>
+          </label>
+          <label>Thinking
+            <select id="sd-thinking">
+              <option value="adaptive" selected>adaptive (Claude decides)</option>
+              <option value="enabled">enabled</option>
+              <option value="disabled">disabled</option>
+            </select>
+          </label>
+          <label class="ni-worktree-row">
+            <input type="checkbox" id="sd-worktree" />
+            <span>Run in isolated git worktree</span>
+          </label>
+          <p class="hint" id="sd-worktree-hint"></p>
+          <label class="ni-temp-row">
+            <input type="checkbox" id="sd-temp" />
+            <span>Temp session (don't persist transcript)</span>
+          </label>
+          <p class="hint">jsonl is removed when the session ends</p>
+          <label class="ni-temp-row">
+            <input type="checkbox" id="sd-debug" />
+            <span>Debug mode (capture stdin/stdout/stderr to disk)</span>
+          </label>
+          <p class="hint">writes to <code>&lt;cwd&gt;/.code-conductor/debug/&lt;instance-id&gt;/</code></p>
+        </div>
+      </details>
+      <p class="error" id="sd-error"></p>
       <menu>
         <button value="cancel">Cancel</button>
+        <button id="sd-spawn" value="spawn">Spawn</button>
       </menu>
     </form>
   </dialog>
