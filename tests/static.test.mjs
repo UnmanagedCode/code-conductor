@@ -76,21 +76,19 @@ test('instance-controls: kill-btn moved into the ⋮ overflow menu', async () =>
     'kill-btn must precede debug-btn in the overflow panel');
 });
 
-test('quick-spawn dialog hosts a Code / Plan & Approve segmented toggle, default Code', async () => {
-  // The Quick (↯) dialog gates a per-open decision: spawn the temp
-  // session in code (bypassPermissions) mode — the default — or in plan
-  // mode with auto-approve pre-armed. Rendered as a segmented control
-  // below the model row so the user picks the spawn variant *after*
-  // seeing the model choices. Code starts pressed (no persistence per
-  // design).
+test('spawn dialog hosts a Code / Plan & Approve segmented toggle, default Code', async () => {
+  // The unified spawn dialog (opened by both ↯ and +) gates a per-open
+  // decision: spawn in code (bypassPermissions) mode — the default — or in
+  // plan mode with auto-approve pre-armed. Rendered as a segmented control
+  // below the model row. Code starts pressed (no persistence per design).
   const html = await fs.readFile(INDEX_HTML, 'utf8');
   const window = new Window({ url: 'http://localhost/' });
   window.document.documentElement.innerHTML = html;
   const doc = window.document;
-  const dialog = doc.getElementById('quick-spawn-dialog');
-  assert.ok(dialog, 'quick-spawn-dialog must exist');
-  const code = doc.getElementById('qs-mode-code');
-  const plan = doc.getElementById('qs-mode-plan');
+  const dialog = doc.getElementById('spawn-dialog');
+  assert.ok(dialog, 'spawn-dialog must exist');
+  const code = doc.getElementById('sd-mode-code');
+  const plan = doc.getElementById('sd-mode-plan');
   assert.ok(code && plan, 'both segmented options must exist');
   assert.ok(dialog.contains(code) && dialog.contains(plan), 'toggle must live inside the dialog');
   assert.equal(code.getAttribute('aria-pressed'), 'true', 'Code starts pressed (default mode)');

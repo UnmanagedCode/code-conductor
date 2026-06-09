@@ -74,22 +74,18 @@ const dom = {
   gdError: document.getElementById('gd-error'),
   gdDelete: document.getElementById('gd-delete'),
   gdSave: document.getElementById('gd-save'),
-  newInstanceDialog: document.getElementById('new-instance-dialog'),
-  niProject: document.getElementById('ni-project'),
-  niMode: document.getElementById('ni-mode'),
-  niEffort: document.getElementById('ni-effort'),
-  niThinking: document.getElementById('ni-thinking'),
-  niModel: document.getElementById('ni-model'),
-  niWorktree: document.getElementById('ni-worktree'),
-  niWorktreeHint: document.getElementById('ni-worktree-hint'),
-  niTemp: document.getElementById('ni-temp'),
-  niDebug: document.getElementById('ni-debug'),
-  niError: document.getElementById('ni-error'),
-  quickSpawnDialog: document.getElementById('quick-spawn-dialog'),
-  qsProject: document.getElementById('qs-project'),
-  qsModeCode: document.getElementById('qs-mode-code'),
-  qsModePlan: document.getElementById('qs-mode-plan'),
-  qsError: document.getElementById('qs-error'),
+  spawnDialog: document.getElementById('spawn-dialog'),
+  sdProject: document.getElementById('sd-project'),
+  sdModeCode: document.getElementById('sd-mode-code'),
+  sdModePlan: document.getElementById('sd-mode-plan'),
+  sdEffort: document.getElementById('sd-effort'),
+  sdThinking: document.getElementById('sd-thinking'),
+  sdWorktree: document.getElementById('sd-worktree'),
+  sdWorktreeHint: document.getElementById('sd-worktree-hint'),
+  sdTemp: document.getElementById('sd-temp'),
+  sdDebug: document.getElementById('sd-debug'),
+  sdError: document.getElementById('sd-error'),
+  sdAdvanced: document.getElementById('sd-advanced'),
   conductBtn: document.getElementById('conduct-btn'),
   conductDialog: document.getElementById('conduct-dialog'),
   cdModeCode: document.getElementById('cd-mode-code'),
@@ -295,14 +291,14 @@ const conversation = new Conversation(dom.conversation, {
 const sidebar = new Sidebar({
   rootList: dom.projectList,
   onSelectInstance: selectInstance,
-  onCreateInstanceClick: openNewInstanceDialog,
+  onCreateInstanceClick: openSpawnDialog,
   onRemoveWorktree: removeWorktree,
   onDeleteProject: deleteProject,
   onResumeSession: resumeSession,
   onLoadSessions: loadSessions,
   onDeleteSession: deleteSession,
   onEditWorkspace: openEditWorkspaceDialog,
-  onQuickSpawn: openQuickSpawnDialog,
+  onQuickSpawn: openSpawnDialog,
   onPromoteSession: promoteSession,
 });
 // Seed the sidebar with any unread counts restored from localStorage so
@@ -882,93 +878,8 @@ bus.addEventListener('reconnecting', () => {
   setSidebarStatus('reconnecting…', { warn: true });
 });
 
-let pendingNewInstanceProject = null;
-// Worktree intent for the new-instance dialog:
-//   null              — normal spawn at the project root
-//   true              — create a fresh worktree and spawn into it
-//   '<worktreeName>'  — spawn into an existing worktree
-let pendingWorktreeIntent = null;
-
-async function openNewInstanceDialog(projectName, opts = {}) {
-  pendingNewInstanceProject = projectName;
-  pendingWorktreeIntent = opts.worktreeName ?? null;
-  dom.niProject.textContent = projectName;
-  dom.niMode.value = 'plan';
-  dom.niEffort.value = 'high';
-  dom.niThinking.value = 'adaptive';
-  dom.niModel.value = '';
-  dom.niError.textContent = '';
-
-  // Worktree row: checkbox + status line. Greyed out if the project
-  // isn't a git repo; pre-locked if the caller passed an existing
-  // worktree name (e.g. from the Worktrees sidebar subnode).
-  const proj = state.projects.find(p => p.name === projectName);
-  const isGit = !!proj?.isGitRepo;
-  if (pendingWorktreeIntent) {
-    dom.niWorktree.checked = true;
-    dom.niWorktree.disabled = true;
-    dom.niWorktreeHint.textContent = `will spawn into existing worktree: ${pendingWorktreeIntent}`;
-  } else {
-    dom.niWorktree.checked = false;
-    dom.niWorktree.disabled = !isGit;
-    dom.niWorktreeHint.textContent = isGit
-      ? 'creates a sibling worktree under ~/project/, branched off current HEAD'
-      : 'project is not a git repo — `git init` first to use worktrees';
-  }
-
-  dom.niTemp.checked = false;
-  dom.niDebug.checked = false;
-  // Resume is no longer driven from this dialog — the sidebar's
-  // "Sessions" subnode handles that with one-click resume. The dialog
-  // only spawns FRESH sessions.
-  dom.newInstanceDialog.showModal();
-}
-
-// Ticking "Temp session" nudges the mode dropdown to code, since a
-// temp session is almost always for *doing*, not planning. The user
-// can still override.
-dom.niTemp.addEventListener('change', () => {
-  if (dom.niTemp.checked) dom.niMode.value = 'bypassPermissions';
-});
-dom.newInstanceDialog.addEventListener('close', async () => {
-  if (dom.newInstanceDialog.returnValue !== 'create') return;
-  const project = pendingNewInstanceProject;
-  const mode = dom.niMode.value;
-  const effort = dom.niEffort.value;
-  const thinking = dom.niThinking.value;
-  const modelOpt = dom.niModel.selectedOptions[0];
-  const model = modelOpt?.dataset.family
-    ? resolveSpawnModel(modelOpt.dataset.family)
-    : undefined;
-  const temp = dom.niTemp.checked || undefined;
-  const debug = dom.niDebug.checked || undefined;
-  // Worktree intent: pre-locked name (existing) > checkbox (fresh) > omitted.
-  let worktree;
-  if (typeof pendingWorktreeIntent === 'string') worktree = pendingWorktreeIntent;
-  else if (dom.niWorktree.checked) worktree = true;
-  try {
-    const r = await fetch('/api/instances', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ project, mode, effort, thinking, model, worktree, temp, debug }),
-    });
-    if (!r.ok) throw new Error((await r.json()).error);
-    const inst = await r.json();
-    await refreshProjects();
-    await refreshInstances();
-    selectInstance(inst.id);
-  } catch (e) {
-    dom.niError.textContent = e.message;
-    dom.newInstanceDialog.showModal();
-  }
-});
-
 // ── Shared spawn-dialog helpers ───────────────────────────────────────
-// Both the quick-spawn and conduct dialogs share the same model-picker +
-// Code/Plan toggle shape. These two helpers implement that logic once.
-
-// Returns a controller with .planMode getter and .reset(). Wires the two
-// mode buttons so clicking them updates aria-pressed and internal state.
+// The conduct dialog uses this two-button toggle helper.
 function makeModeToggle(codeBtn, planBtn) {
   let planMode = false;
   function sync() {
@@ -981,6 +892,7 @@ function makeModeToggle(codeBtn, planBtn) {
 }
 
 // POSTs a temp instance, closes the dialog, and selects the new session.
+// Used by the conduct dialog.
 async function spawnInstance({ project, model, planMode, dialogEl, errorEl }) {
   errorEl.textContent = '';
   try {
@@ -1007,29 +919,114 @@ function syncSonnetPickerLabels() {
   const w = getActiveSonnetWindow() === '200k' ? '200k' : '1M';
   document.querySelectorAll('.qs-model[data-family="sonnet"] .qs-ctx')
     .forEach(el => { el.textContent = w; });
-  const opt = dom.niModel?.querySelector('option[data-family="sonnet"]');
-  if (opt) opt.textContent = `Sonnet — ${w}`;
 }
 
-// ── Quick-spawn dialog ────────────────────────────────────────────────
-let pendingQuickSpawnProject = null;
-const qsMode = makeModeToggle(dom.qsModeCode, dom.qsModePlan);
+// ── Unified spawn dialog ──────────────────────────────────────────────
+// Opened by both the ↯ (quick) and + (new session) sidebar buttons.
+// Collapsed face: model cards + Code/Plan toggle.
+// Defaults: Opus selected, temp ON, worktree OFF — reproduces the old
+// quick-spawn behaviour when the user never opens Advanced options.
+let pendingSpawnProject = null;
+// null = project root | true = fresh worktree | '<name>' = existing worktree
+let pendingSpawnWorktreeIntent = null;
+let selectedSpawnFamily = 'opus';
 
-async function openQuickSpawnDialog(projectName) {
-  pendingQuickSpawnProject = projectName;
-  dom.qsProject.textContent = projectName;
-  dom.qsError.textContent = '';
-  qsMode.reset();
-  dom.quickSpawnDialog.showModal();
+function updateSpawnModelSelection() {
+  dom.spawnDialog.querySelectorAll('.qs-model').forEach(btn => {
+    btn.classList.toggle('qs-selected', btn.dataset.family === selectedSpawnFamily);
+  });
 }
-dom.quickSpawnDialog.addEventListener('click', (e) => {
-  const btn = e.target.closest('.qs-model');
-  if (!btn || btn.classList.contains('cd-model')) return;
+
+let sdModeValue = 'bypassPermissions';
+function resetSdMode() {
+  sdModeValue = 'bypassPermissions';
+  dom.sdModeCode.setAttribute('aria-pressed', 'true');
+  dom.sdModePlan.setAttribute('aria-pressed', 'false');
+}
+dom.sdModeCode.addEventListener('click', e => {
   e.preventDefault();
-  const family = btn.dataset.family;
-  if (!family) return;
-  const model = resolveSpawnModel(family);
-  if (model) spawnInstance({ project: pendingQuickSpawnProject, model, planMode: qsMode.planMode, dialogEl: dom.quickSpawnDialog, errorEl: dom.qsError });
+  sdModeValue = 'bypassPermissions';
+  dom.sdModeCode.setAttribute('aria-pressed', 'true');
+  dom.sdModePlan.setAttribute('aria-pressed', 'false');
+});
+dom.sdModePlan.addEventListener('click', e => {
+  e.preventDefault();
+  sdModeValue = 'plan';
+  dom.sdModeCode.setAttribute('aria-pressed', 'false');
+  dom.sdModePlan.setAttribute('aria-pressed', 'true');
+});
+
+// Model card click: select only, do not spawn.
+dom.spawnDialog.addEventListener('click', e => {
+  const btn = e.target.closest('.qs-model');
+  if (!btn) return;
+  e.preventDefault();
+  selectedSpawnFamily = btn.dataset.family;
+  updateSpawnModelSelection();
+});
+
+async function openSpawnDialog(projectName, opts = {}) {
+  pendingSpawnProject = projectName;
+  pendingSpawnWorktreeIntent = opts.worktreeName ?? null;
+  dom.sdProject.textContent = projectName;
+  dom.sdError.textContent = '';
+  resetSdMode();
+
+  selectedSpawnFamily = 'opus';
+  updateSpawnModelSelection();
+
+  dom.sdEffort.value = 'high';
+  dom.sdThinking.value = 'adaptive';
+  dom.sdDebug.checked = false;
+
+  const proj = state.projects.find(p => p.name === projectName);
+  const isGit = !!proj?.isGitRepo;
+  if (pendingSpawnWorktreeIntent) {
+    dom.sdWorktree.checked = true;
+    dom.sdWorktree.disabled = true;
+    dom.sdWorktreeHint.textContent = `will spawn into existing worktree: ${pendingSpawnWorktreeIntent}`;
+    dom.sdTemp.checked = false;
+  } else {
+    dom.sdWorktree.checked = false;
+    dom.sdWorktree.disabled = !isGit;
+    dom.sdWorktreeHint.textContent = isGit
+      ? 'creates a sibling worktree under ~/project/, branched off current HEAD'
+      : 'project is not a git repo — `git init` first to use worktrees';
+    dom.sdTemp.checked = true;
+  }
+
+  dom.sdAdvanced.removeAttribute('open');
+  dom.spawnDialog.showModal();
+}
+
+dom.spawnDialog.addEventListener('close', async () => {
+  if (dom.spawnDialog.returnValue !== 'spawn') return;
+  const project  = pendingSpawnProject;
+  const mode     = sdModeValue;
+  const model    = resolveSpawnModel(selectedSpawnFamily);
+  const effort   = dom.sdEffort.value;
+  const thinking = dom.sdThinking.value;
+  const temp     = dom.sdTemp.checked || undefined;
+  const debug    = dom.sdDebug.checked || undefined;
+  const autoApprovePlan = (mode === 'plan') || undefined;
+  let worktree;
+  if (typeof pendingSpawnWorktreeIntent === 'string') worktree = pendingSpawnWorktreeIntent;
+  else if (dom.sdWorktree.checked) worktree = true;
+  try {
+    const r = await fetch('/api/instances', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ project, mode, effort, thinking, model, worktree, temp, debug, autoApprovePlan }),
+    });
+    if (!r.ok) throw new Error((await r.json()).error);
+    const inst = await r.json();
+    await refreshProjects();
+    await refreshInstances();
+    selectInstance(inst.id);
+  } catch (e) {
+    dom.sdError.textContent = e.message;
+    dom.spawnDialog.showModal();
+  }
 });
 
 // ── Conduct mode ─────────────────────────────────────────────────────
