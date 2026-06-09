@@ -14,6 +14,7 @@ import {
   buildRebasePrompt, getWorktree, removeAllWorktreesForProject,
   attachmentsDir, getWorktreeMergeStatus, syncWorktree,
   getProjectUpstreamStatus, getWorktreeDiff,
+  getProjectCommits, getCommitDiff,
 } from './worktrees.js';
 import { scheduleRestart } from './restart.js';
 import { ensureConductProject, CONDUCT_PROJECT_NAME } from './conduct.js';
@@ -342,6 +343,28 @@ export function buildRoutes({ instances, serverCtx } = {}) {
       const baseRef = req.query.baseRef || undefined;
       const contextLines = req.query.context !== undefined ? Number(req.query.context) : 3;
       const result = await getWorktreeDiff(req.params.name, req.params.wt, { baseRef, contextLines });
+      res.json(result);
+    } catch (e) { next(e); }
+  });
+
+  // Commit history (git log) for a project's current branch (HEAD), newest
+  // first. Accepts optional ?limit= (default 100, max 500). Returns
+  // { project, branch, commits, truncated, limit }.
+  r.get('/projects/:name/commits', async (req, res, next) => {
+    try {
+      const limit = req.query.limit !== undefined ? Number(req.query.limit) : undefined;
+      const result = await getProjectCommits(req.params.name, { limit });
+      res.json(result);
+    } catch (e) { next(e); }
+  });
+
+  // Structured diff for the change introduced by a single commit. Mirrors the
+  // worktree /diff response shape so the same client renderer applies.
+  // Accepts optional ?context= (0–50, default 3).
+  r.get('/projects/:name/commits/:sha/diff', async (req, res, next) => {
+    try {
+      const contextLines = req.query.context !== undefined ? Number(req.query.context) : 3;
+      const result = await getCommitDiff(req.params.name, req.params.sha, { contextLines });
       res.json(result);
     } catch (e) { next(e); }
   });

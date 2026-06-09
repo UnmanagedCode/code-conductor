@@ -26,6 +26,7 @@ import { installExternalLinkOpener } from './external-links.js';
 import { installLightbox } from './lightbox.js';
 import { installSettings } from './settings.js';
 import { installReview } from './review.js';
+import { installCommits } from './commits.js';
 import { loadModelVersions, setActiveVersions, setActiveSonnetWindow, getActiveSonnetWindow, resolveSpawnModel } from './models.js';
 import { setTtsAvailable, setTtsEnabled, setTtsRate } from './tts.js';
 
@@ -391,10 +392,31 @@ function closeReview() {
   const inst = state.instances.find(i => i.id === state.activeId);
   writeSessionAnchor(inst?.sessionId || null);
 }
-const review = installReview({ onClose: closeReview });
+const review = installReview();
 sidebar.onReviewWorktree = (project, wt) => {
   setSidebarOpen(false);
-  review.open(project, wt);
+  const short = wt.replace(`${project}_worktree_`, '');
+  review.open({
+    title: `${project} / ${short}`,
+    url: `/api/projects/${encodeURIComponent(project)}/worktrees/${encodeURIComponent(wt)}/diff`,
+    onBack: closeReview,
+  });
+};
+
+// Commit history view (full-page list opened from the sidebar ≡ button).
+// Tapping a commit opens the shared diff renderer on top; backing out of the
+// diff returns to the list via location.hash = '#commits'.
+const commits = installCommits({ onClose: () => {} });
+sidebar.onShowCommits = (project) => {
+  setSidebarOpen(false);
+  commits.open(project);
+};
+commits.onOpenCommit = (project, c) => {
+  review.open({
+    title: `${c.shortSha} ${c.subject}`,
+    url: `/api/projects/${encodeURIComponent(project)}/commits/${encodeURIComponent(c.sha)}/diff`,
+    onBack: () => { location.hash = '#commits'; },
+  });
 };
 
 dom.modeSelect.addEventListener('change', async () => {

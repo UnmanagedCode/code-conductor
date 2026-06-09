@@ -458,6 +458,12 @@ export class Sidebar {
     // new-session button, no delete. Spawning a new Conduct session is
     // done via the top-level 🎼 button; deletion is blocked server-side.
     if (!isConduct) {
+      if (p.isGitRepo) {
+        row.appendChild(el('button', {
+          class: 'commit-log', title: 'commit history',
+          onclick: (e) => { e.stopPropagation(); this.onShowCommits?.(p.name); },
+        }, '≡'));
+      }
       row.appendChild(el('button', {
         class: 'quick-spawn', title: 'quick temp session',
         onclick: (e) => {
