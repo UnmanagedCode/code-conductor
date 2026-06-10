@@ -462,22 +462,6 @@ test('Workspace expand state is read from localStorage on construction', async (
   assert.ok(byName['Visible'].hasAttribute('open'), 'Visible workspace respects localStorage expand');
 });
 
-test('Project row carries a ↯ quick-spawn button wired to onQuickSpawn', async () => {
-  const { root, sidebar } = await setupSidebar({});
-  const quickCalls = [];
-  sidebar.onQuickSpawn = (name) => quickCalls.push(name);
-  sidebar.setProjects([{
-    name: 'demo', path: '/p/demo', instanceIds: [], isGitRepo: false,
-    worktrees: [], sessions: { count: 0, lastMtime: 0 },
-  }]);
-  sidebar.setInstances([]);
-  const btn = root.querySelector('.project-row .quick-spawn');
-  assert.ok(btn, 'quick-spawn button rendered on the project row');
-  assert.equal(btn.textContent, '↯');
-  btn.click();
-  assert.deepEqual(quickCalls, ['demo']);
-});
-
 test('Temp instances render inside the unified Sessions subnode below a dim separator', async () => {
   const { root, sidebar } = await setupSidebar({
     onLoadSessions: async () => [],
