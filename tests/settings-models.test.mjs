@@ -12,6 +12,8 @@ import {
   getAutoStopOnOverage, setAutoStopOnOverage,
   getConductorCompactWindow, setConductorCompactWindow,
   getSonnetContextWindow, setSonnetContextWindow,
+  getFable5Enabled, setFable5Enabled,
+  getDefaultSpawnFamily, setDefaultSpawnFamily,
 } from '../src/appSettings.js';
 
 async function mkTmp() {
@@ -36,7 +38,7 @@ async function withEnv(overrides, fn) {
 
 // ── Catalog ────────────────────────────────────────────────────────────
 test('modelVersions catalog: families, defaults, and validators', () => {
-  assert.deepEqual(MODEL_FAMILIES.map(f => f.family), ['opus', 'sonnet', 'haiku']);
+  assert.deepEqual(MODEL_FAMILIES.map(f => f.family), ['fable', 'opus', 'sonnet', 'haiku']);
   // Every family default is itself a known version of that family.
   for (const f of MODEL_FAMILIES) {
     assert.equal(DEFAULT_VERSIONS[f.family], f.default);
@@ -84,8 +86,9 @@ test('GET /api/settings/models returns catalog + active defaults', async () => {
   try {
     const r = await api(baseUrl, 'GET', '/api/settings/models');
     assert.equal(r.status, 200);
-    assert.deepEqual(r.body.families.map(f => f.family), ['opus', 'sonnet', 'haiku']);
+    assert.deepEqual(r.body.families.map(f => f.family), ['fable', 'opus', 'sonnet', 'haiku']);
     // Unset → catalog defaults.
+    assert.equal(r.body.active.fable, 'claude-fable-5');
     assert.equal(r.body.active.sonnet, 'claude-sonnet-4-6');
     assert.equal(r.body.active.opus, 'claude-opus-4-8');
     assert.equal(r.body.active.haiku, 'claude-haiku-4-5');
@@ -383,5 +386,97 @@ test('POST /api/settings/models/prefs sonnetContextWindow does not clobber autoS
     assert.equal(r.status, 200);
     assert.equal(r.body.sonnetContextWindow, '200k');
     assert.equal(r.body.autoStopOnOverage, true, 'autoStopOnOverage must not be clobbered');
+  } finally { await close(); }
+});
+
+// ── fable5Enabled ───────────────────────────────────────────────────────
+test('appSettings: getFable5Enabled defaults true when unset', async () => {
+  const root = await mkTmp();
+  try {
+    await withEnv({ PROJECTS_ROOT: root }, async () => {
+      assert.equal(getFable5Enabled(), true);
+    });
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test('appSettings: setFable5Enabled round-trips', async () => {
+  const root = await mkTmp();
+  try {
+    await withEnv({ PROJECTS_ROOT: root }, async () => {
+      assert.equal(await setFable5Enabled(false), false);
+      assert.equal(getFable5Enabled(), false);
+      assert.equal(await setFable5Enabled(true), true);
+      assert.equal(getFable5Enabled(), true);
+    });
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test('GET /api/settings/models includes fable5Enabled defaulting true', async () => {
+  const { baseUrl, close } = await bootServer();
+  try {
+    const r = await api(baseUrl, 'GET', '/api/settings/models');
+    assert.equal(r.status, 200);
+    assert.equal(r.body.fable5Enabled, true);
+  } finally { await close(); }
+});
+
+test('POST /api/settings/models/prefs toggles fable5Enabled and persists', async () => {
+  const { baseUrl, close } = await bootServer();
+  try {
+    const off = await api(baseUrl, 'POST', '/api/settings/models/prefs', { fable5Enabled: false });
+    assert.equal(off.status, 200);
+    assert.equal(off.body.fable5Enabled, false);
+    const g = await api(baseUrl, 'GET', '/api/settings/models');
+    assert.equal(g.body.fable5Enabled, false);
+    const on = await api(baseUrl, 'POST', '/api/settings/models/prefs', { fable5Enabled: true });
+    assert.equal(on.body.fable5Enabled, true);
+  } finally { await close(); }
+});
+
+// ── defaultSpawnFamily ──────────────────────────────────────────────────
+test('appSettings: getDefaultSpawnFamily defaults "opus" when unset', async () => {
+  const root = await mkTmp();
+  try {
+    await withEnv({ PROJECTS_ROOT: root }, async () => {
+      assert.equal(getDefaultSpawnFamily(), 'opus');
+    });
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test('appSettings: setDefaultSpawnFamily round-trips valid families', async () => {
+  const root = await mkTmp();
+  try {
+    await withEnv({ PROJECTS_ROOT: root }, async () => {
+      assert.equal(await setDefaultSpawnFamily('fable'), 'fable');
+      assert.equal(getDefaultSpawnFamily(), 'fable');
+      assert.equal(await setDefaultSpawnFamily('haiku'), 'haiku');
+      assert.equal(getDefaultSpawnFamily(), 'haiku');
+      // Invalid value falls back to opus.
+      assert.equal(await setDefaultSpawnFamily('gpt'), 'opus');
+      assert.equal(getDefaultSpawnFamily(), 'opus');
+    });
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test('GET /api/settings/models includes defaultSpawnFamily defaulting "opus"', async () => {
+  const { baseUrl, close } = await bootServer();
+  try {
+    const r = await api(baseUrl, 'GET', '/api/settings/models');
+    assert.equal(r.status, 200);
+    assert.equal(r.body.defaultSpawnFamily, 'opus');
+  } finally { await close(); }
+});
+
+test('POST /api/settings/models/prefs sets defaultSpawnFamily and persists', async () => {
+  const { baseUrl, close } = await bootServer();
+  try {
+    const r = await api(baseUrl, 'POST', '/api/settings/models/prefs', { defaultSpawnFamily: 'fable' });
+    assert.equal(r.status, 200);
+    assert.equal(r.body.defaultSpawnFamily, 'fable');
+    const g = await api(baseUrl, 'GET', '/api/settings/models');
+    assert.equal(g.body.defaultSpawnFamily, 'fable');
+    // Reset.
+    const r2 = await api(baseUrl, 'POST', '/api/settings/models/prefs', { defaultSpawnFamily: 'opus' });
+    assert.equal(r2.body.defaultSpawnFamily, 'opus');
   } finally { await close(); }
 });

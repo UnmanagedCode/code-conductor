@@ -17,8 +17,9 @@
 // so it's correct regardless of whether the CLI echoes the suffix in
 // system/init.
 const CONTEXT_WINDOWS = {
-  'claude-opus-4-8': 1_000_000,
-  'claude-opus-4-7': 1_000_000,
+  'claude-fable-5':   1_000_000,
+  'claude-opus-4-8':  1_000_000,
+  'claude-opus-4-7':  1_000_000,
   'claude-sonnet-4-6': 1_000_000,
   'claude-sonnet-4-5': 1_000_000,
   'claude-haiku-4-5': 200_000,

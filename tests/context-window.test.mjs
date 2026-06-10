@@ -52,6 +52,7 @@ function modelFromArgv(argv) {
 }
 
 test('familyOf infers the family by prefix, bare or suffixed', () => {
+  assert.equal(familyOf('claude-fable-5'), 'fable');
   assert.equal(familyOf('claude-opus-4-8'), 'opus');
   assert.equal(familyOf('claude-opus-4-8[200k]'), 'opus');
   assert.equal(familyOf('claude-sonnet-4-6'), 'sonnet');
@@ -61,6 +62,8 @@ test('familyOf infers the family by prefix, bare or suffixed', () => {
 });
 
 test('canonicalizeModel pins each family to its window — default (1m)', () => {
+  // Fable 5 → bare (1M via CLI default, no suffix needed — same as Opus).
+  assert.equal(canonicalizeModel('claude-fable-5'), 'claude-fable-5');
   // Sonnet → 1M via [1m]; idempotent.
   assert.equal(canonicalizeModel('claude-sonnet-4-6'), 'claude-sonnet-4-6[1m]');
   assert.equal(canonicalizeModel('claude-sonnet-4-6[1m]'), 'claude-sonnet-4-6[1m]');

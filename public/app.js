@@ -27,7 +27,9 @@ import { installLightbox } from './lightbox.js';
 import { installSettings } from './settings.js';
 import { installReview } from './review.js';
 import { installCommits } from './commits.js';
-import { loadModelVersions, setActiveVersions, setActiveSonnetWindow, getActiveSonnetWindow, resolveSpawnModel } from './models.js';
+import { loadModelVersions, setActiveVersions, setActiveSonnetWindow, getActiveSonnetWindow, resolveSpawnModel,
+  setActiveFable5Enabled, getActiveFable5Enabled,
+  setActiveDefaultSpawnFamily, getActiveDefaultSpawnFamily } from './models.js';
 import { setTtsAvailable, setTtsEnabled, setTtsRate } from './tts.js';
 
 const state = {
@@ -367,13 +369,16 @@ const settings = installSettings({
   onModelsChange: data => {
     setActiveVersions(data.active);
     setActiveSonnetWindow(data.sonnetContextWindow);
+    setActiveFable5Enabled(data.fable5Enabled);
+    setActiveDefaultSpawnFamily(data.defaultSpawnFamily);
     syncSonnetPickerLabels();
+    syncFable5Visibility();
   },
   onTtsAvailabilityChange: setTtsAvailable,
   onTtsPrefsChange: ({ enabled, rate }) => { setTtsEnabled(enabled); setTtsRate(rate); },
 });
 // Seed the per-family model-version cache the spawn pickers resolve against.
-loadModelVersions().then(syncSonnetPickerLabels);
+loadModelVersions().then(() => { syncSonnetPickerLabels(); syncFable5Visibility(); });
 dom.settingsBtn?.addEventListener('click', () => {
   closeSidebarOverflow();
   if (location.hash === '#settings') settings.close();
@@ -921,11 +926,33 @@ function syncSonnetPickerLabels() {
     .forEach(el => { el.textContent = w; });
 }
 
+// Shows or hides every Fable 5 button across all dialogs. If Fable 5 is
+// currently selected in the spawn dialog and gets disabled, resets to opus.
+function syncFable5Visibility() {
+  const enabled = getActiveFable5Enabled();
+  document.querySelectorAll('.qs-model[data-family="fable"]').forEach(btn => {
+    btn.hidden = !enabled;
+  });
+  if (!enabled && selectedSpawnFamily === 'fable') {
+    selectedSpawnFamily = 'opus';
+    updateSpawnModelSelection();
+  }
+}
+
+// Resolves the configured default family for the spawn dialog initial selection,
+// falling back to 'opus' if the configured default is currently disabled.
+function defaultSpawnFamily() {
+  const d = getActiveDefaultSpawnFamily();
+  if (d === 'fable' && !getActiveFable5Enabled()) return 'opus';
+  return d;
+}
+
 // ── Unified spawn dialog ──────────────────────────────────────────────
 // Opened by both the ↯ (quick) and + (new session) sidebar buttons.
 // Collapsed face: model cards + Code/Plan toggle.
-// Defaults: Opus selected, temp ON, worktree OFF — reproduces the old
-// quick-spawn behaviour when the user never opens Advanced options.
+// Defaults: configured default model (Opus out of the box; set via Settings →
+// Models), temp ON, worktree OFF — reproduces the old quick-spawn behaviour
+// when the user never opens Advanced options.
 let pendingSpawnProject = null;
 // null = project root | true = fresh worktree | '<name>' = existing worktree
 let pendingSpawnWorktreeIntent = null;
@@ -972,7 +999,7 @@ async function openSpawnDialog(projectName, opts = {}) {
   dom.sdError.textContent = '';
   resetSdMode();
 
-  selectedSpawnFamily = 'opus';
+  selectedSpawnFamily = defaultSpawnFamily();
   updateSpawnModelSelection();
 
   dom.sdEffort.value = 'high';
