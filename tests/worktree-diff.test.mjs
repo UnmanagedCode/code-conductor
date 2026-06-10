@@ -106,6 +106,27 @@ test('GET /diff returns 404 for an unknown worktree', async () => {
   } finally { await ctx.close(); }
 });
 
+test('GET /diff rejects baseRef starting with - (option injection)', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO });
+  try {
+    await makeRealRepo(ctx.projectsRoot, 'demo');
+    const created = await api(ctx.baseUrl, 'POST', '/api/instances', {
+      project: 'demo', mode: 'bypassPermissions', worktree: true,
+    });
+    const wtName = created.body.worktree.worktreeName;
+
+    // Leading-dash ref like '-Oevil' would be interpreted by git as an option.
+    const r = await api(ctx.baseUrl, 'GET',
+      `/api/projects/demo/worktrees/${encodeURIComponent(wtName)}/diff?baseRef=-Oevil`);
+    assert.equal(r.status, 400);
+
+    // Double-dash option form should also be rejected.
+    const r2 = await api(ctx.baseUrl, 'GET',
+      `/api/projects/demo/worktrees/${encodeURIComponent(wtName)}/diff?baseRef=--output%3D%2Ftmp%2Fpwned`);
+    assert.equal(r2.status, 400);
+  } finally { await ctx.close(); }
+});
+
 test('GET /diff reflects modifications and deletions in the structured output', async () => {
   const ctx = await bootServer({ scenarioPath: SCENARIO });
   try {

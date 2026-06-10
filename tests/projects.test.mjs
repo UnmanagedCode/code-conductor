@@ -381,6 +381,24 @@ test('DELETE worktree session removes from the worktree-encoded dir (not the par
   } finally { await close(); }
 });
 
+test('DELETE session 400s for a sessionId containing path traversal', async () => {
+  const { baseUrl, close } = await bootServer();
+  try {
+    await api(baseUrl, 'POST', '/api/projects', { name: 'sess' });
+    const r = await api(baseUrl, 'DELETE', '/api/projects/sess/sessions/..%2F..%2Fetc%2Fpasswd');
+    assert.equal(r.status, 400);
+  } finally { await close(); }
+});
+
+test('DELETE worktree session 400s for a sessionId containing path traversal', async () => {
+  const { baseUrl, close } = await bootServer();
+  try {
+    await api(baseUrl, 'POST', '/api/projects', { name: 'sess' });
+    const r = await api(baseUrl, 'DELETE', '/api/projects/sess/worktrees/wt/sessions/..%2F..%2Fetc%2Fpasswd');
+    assert.equal(r.status, 400);
+  } finally { await close(); }
+});
+
 test('findSessionLocation returns {project, worktreeName:null} for project-root sessions', async () => {
   const { baseUrl, projectsRoot, claudeProjectsRoot, close } = await bootServer();
   try {

@@ -535,6 +535,11 @@ export async function getWorktreeDiff(projectName, worktreeName, { baseRef, cont
   }
   const ctx = Math.max(0, Math.min(50, Number.isFinite(Number(contextLines)) ? Math.floor(Number(contextLines)) : 3));
   const ref = baseRef || meta.baseBranch;
+  if (baseRef && (ref.startsWith('-') || !/^[A-Za-z0-9._/-]+$/.test(ref))) {
+    const err = new Error('invalid baseRef');
+    err.statusCode = 400;
+    throw err;
+  }
   const r = await runGit(meta.worktreePath, ['diff', `--unified=${ctx}`, `${ref}...HEAD`]);
   if (r.code !== 0) {
     const msg = (r.stderr || r.stdout).trim() || `git diff ${ref}...HEAD failed`;

@@ -308,19 +308,23 @@ export function buildRoutes({ instances, serverCtx } = {}) {
 
   r.delete('/projects/:name/sessions/:sid', async (req, res, next) => {
     try {
+      const sid = String(req.params.sid || '');
+      if (!/^[A-Za-z0-9_-]+$/.test(sid)) throw Object.assign(new Error('invalid sessionId'), { statusCode: 400 });
       const proj = await getProject(req.params.name);
       const force = req.query.force === '1' || req.query.force === 'true';
-      await deleteSessionAtCwd({ cwd: proj.path, sessionId: req.params.sid, force });
+      await deleteSessionAtCwd({ cwd: proj.path, sessionId: sid, force });
       res.json({ ok: true });
     } catch (e) { next(e); }
   });
 
   r.delete('/projects/:name/worktrees/:wt/sessions/:sid', async (req, res, next) => {
     try {
+      const sid = String(req.params.sid || '');
+      if (!/^[A-Za-z0-9_-]+$/.test(sid)) throw Object.assign(new Error('invalid sessionId'), { statusCode: 400 });
       const wt = await getWorktree(req.params.name, req.params.wt);
       if (!wt) throw Object.assign(new Error('worktree not found'), { statusCode: 404 });
       const force = req.query.force === '1' || req.query.force === 'true';
-      await deleteSessionAtCwd({ cwd: wt.worktreePath, sessionId: req.params.sid, force });
+      await deleteSessionAtCwd({ cwd: wt.worktreePath, sessionId: sid, force });
       res.json({ ok: true });
     } catch (e) { next(e); }
   });
