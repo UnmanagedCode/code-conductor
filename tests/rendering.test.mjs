@@ -1207,18 +1207,24 @@ test('DOM: empty thinking_delta stream renders as "thinking (redacted)", not "th
 test('DOM: #turn-indicator is the persistent footer; .ti-left tracks status==="turn"', async () => {
   const fs = await import('node:fs/promises');
   const html = await fs.readFile(path.join(PUB, 'index.html'), 'utf8');
+  // Inject the <body> markup only. The <head> carries <link rel="stylesheet">,
+  // <link rel="manifest">, <link rel="icon"> and the trailing <body> has
+  // <script src="/app.js">; full-document injection makes happy-dom fire real
+  // HTTP fetches to localhost:80 (nothing listening) that never resolve. We feed
+  // the body and strip its <script> tag, then inject the stylesheet ourselves.
   const window = new Window({ url: 'http://localhost/' });
   globalThis.window = window;
   globalThis.document = window.document;
   globalThis.HTMLElement = window.HTMLElement;
-  document.documentElement.innerHTML = html.replace(/^[\s\S]*?<html[^>]*>/, '').replace(/<\/html>[\s\S]*$/, '');
-
+  const bodyContent = (html.match(/<body[^>]*>([\s\S]*?)<\/body>/i)?.[1] ?? '')
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '');
+  document.body.innerHTML = bodyContent;
+  const css = await fs.readFile(path.join(PUB, 'styles.css'), 'utf8');
   // Inject the actual stylesheet so [hidden] vs. visible can be tested
   // via computed style — the `hidden` attribute alone isn't enough,
   // because an author `display: flex` rule overrides the UA's
   // `[hidden] { display: none }`. That mismatch is the bug this test
   // exists to catch.
-  const css = await fs.readFile(path.join(PUB, 'styles.css'), 'utf8');
   const styleTag = document.createElement('style');
   styleTag.textContent = css;
   document.head.appendChild(styleTag);
@@ -1239,13 +1245,21 @@ test('DOM: #turn-indicator is the persistent footer; .ti-left tracks status==="t
   assert.match(tiLeft.textContent, /Claude is working/, '.ti-left has the working label');
   assert.equal(tiLeft.hidden, true, '.ti-left starts hidden (no turn yet)');
 
-  // It must sit between #task-panel and #composer — i.e. directly above
-  // the composer at the bottom of the chat pane.
+  // Layout order in the chat pane: #task-panel → #subagent-panel →
+  // #turn-indicator → #composer. The indicator is the persistent footer sitting
+  // directly above the composer; the panels stack above it.
+  // NOTE: compare element identity with assert.ok(a === b, msg), never
+  // assert.equal(nodeA, nodeB). On mismatch, assert.equal deep-inspects both
+  // happy-dom nodes — which carry circular parent/child refs and large subtrees
+  // — to build a diff, exploding into unbounded string allocation that OOMs the
+  // process. assert.ok on a boolean prints only the message.
+  const subagentPanel = document.getElementById('subagent-panel');
   const taskPanel = document.getElementById('task-panel');
   const composer = document.getElementById('composer');
-  assert.ok(taskPanel && composer);
-  assert.equal(taskPanel.nextElementSibling, indicator, '#turn-indicator follows #task-panel');
-  assert.equal(indicator.nextElementSibling, composer, '#turn-indicator immediately precedes #composer');
+  assert.ok(taskPanel && subagentPanel && composer);
+  assert.ok(taskPanel.nextElementSibling === subagentPanel, '#subagent-panel follows #task-panel');
+  assert.ok(subagentPanel.nextElementSibling === indicator, '#turn-indicator follows #subagent-panel');
+  assert.ok(indicator.nextElementSibling === composer, '#turn-indicator immediately precedes #composer');
 
   // Reproduce the toggle rules used in app.js:updateActiveHeader:
   //   - outer indicator: visible whenever there is a selected instance
