@@ -26,6 +26,8 @@ export function installSettings({
   const smStatusEl = document.getElementById('sm-status');
   const smListEl = document.getElementById('sm-family-list');
   const smAutoStopEl = document.getElementById('sm-auto-stop');
+  const smFable5EnabledEl  = document.getElementById('sm-fable5-enabled');
+  const smDefaultFamilyEl  = document.getElementById('sm-default-family');
   const smCompactWindowEnabledEl = document.getElementById('sm-compact-window-enabled');
   const smCompactWindowRowEl     = document.getElementById('sm-compact-window-row');
   const smCompactWindowSliderEl  = document.getElementById('sm-compact-window');
@@ -309,6 +311,8 @@ export function installSettings({
       smListEl.appendChild(li);
     }
     if (smAutoStopEl) smAutoStopEl.checked = data.autoStopOnOverage ?? false;
+    if (smFable5EnabledEl)  smFable5EnabledEl.value  = (data.fable5Enabled !== false) ? '1' : '0';
+    if (smDefaultFamilyEl)  smDefaultFamilyEl.value  = data.defaultSpawnFamily ?? 'opus';
     if (smCompactWindowEnabledEl) {
       const cw = data.conductorCompactWindow ?? { enabled: false, value: 200 };
       smCompactWindowEnabledEl.checked = cw.enabled;
@@ -372,6 +376,42 @@ export function installSettings({
       const data = await r.json();
       if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
       renderModels(data);
+    } catch (e) {
+      if (smStatusEl) smStatusEl.textContent = `Update failed: ${e.message || e}`;
+    }
+  }
+
+  smFable5EnabledEl?.addEventListener('change', () => onPickFable5Enabled(smFable5EnabledEl.value === '1'));
+
+  async function onPickFable5Enabled(enabled) {
+    try {
+      const r = await fetch('/api/settings/models/prefs', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ fable5Enabled: enabled }),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+      renderModels(data);
+      onModelsChange?.(data);
+    } catch (e) {
+      if (smStatusEl) smStatusEl.textContent = `Update failed: ${e.message || e}`;
+    }
+  }
+
+  smDefaultFamilyEl?.addEventListener('change', () => onPickDefaultFamily(smDefaultFamilyEl.value));
+
+  async function onPickDefaultFamily(family) {
+    try {
+      const r = await fetch('/api/settings/models/prefs', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ defaultSpawnFamily: family }),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+      renderModels(data);
+      onModelsChange?.(data);
     } catch (e) {
       if (smStatusEl) smStatusEl.textContent = `Update failed: ${e.message || e}`;
     }

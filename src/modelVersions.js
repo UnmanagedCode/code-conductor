@@ -13,6 +13,14 @@
 
 export const MODEL_FAMILIES = [
   {
+    family: 'fable',
+    label: 'Fable 5',
+    default: 'claude-fable-5',
+    versions: [
+      { id: 'claude-fable-5', label: 'Fable 5' },
+    ],
+  },
+  {
     family: 'opus',
     label: 'Opus',
     default: 'claude-opus-4-8',
@@ -61,6 +69,7 @@ export function defaultVersion(family) {
 // Infer the family from a bare or suffixed model id, by prefix.
 export function familyOf(modelId) {
   if (typeof modelId !== 'string') return null;
+  if (modelId.startsWith('claude-fable')) return 'fable';
   if (modelId.startsWith('claude-opus')) return 'opus';
   if (modelId.startsWith('claude-sonnet')) return 'sonnet';
   if (modelId.startsWith('claude-haiku')) return 'haiku';

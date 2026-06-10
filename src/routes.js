@@ -35,6 +35,8 @@ import {
   getAutoStopOnOverage, setAutoStopOnOverage,
   getConductorCompactWindow, setConductorCompactWindow,
   getSonnetContextWindow, setSonnetContextWindow,
+  getFable5Enabled, setFable5Enabled,
+  getDefaultSpawnFamily, setDefaultSpawnFamily,
 } from './appSettings.js';
 import * as whisperInstall from './whisperInstall.js';
 import * as ttsInstall from './ttsInstall.js';
@@ -768,7 +770,9 @@ export function buildRoutes({ instances, serverCtx } = {}) {
     }
     return { families: MODEL_FAMILIES, active, autoStopOnOverage: getAutoStopOnOverage(),
       conductorCompactWindow: getConductorCompactWindow(),
-      sonnetContextWindow: getSonnetContextWindow() };
+      sonnetContextWindow: getSonnetContextWindow(),
+      fable5Enabled: getFable5Enabled(),
+      defaultSpawnFamily: getDefaultSpawnFamily() };
   }
 
   r.get('/settings/models', (req, res) => {
@@ -792,10 +796,13 @@ export function buildRoutes({ instances, serverCtx } = {}) {
 
   r.post('/settings/models/prefs', async (req, res, next) => {
     try {
-      const { autoStopOnOverage, conductorCompactWindow, sonnetContextWindow } = req.body ?? {};
+      const { autoStopOnOverage, conductorCompactWindow, sonnetContextWindow,
+              fable5Enabled, defaultSpawnFamily } = req.body ?? {};
       if (typeof autoStopOnOverage === 'boolean') await setAutoStopOnOverage(autoStopOnOverage);
       if (conductorCompactWindow !== undefined) await setConductorCompactWindow(conductorCompactWindow);
       if (sonnetContextWindow !== undefined) await setSonnetContextWindow(sonnetContextWindow);
+      if (typeof fable5Enabled === 'boolean') await setFable5Enabled(fable5Enabled);
+      if (defaultSpawnFamily !== undefined) await setDefaultSpawnFamily(defaultSpawnFamily);
       res.json(modelsSettingsState());
     } catch (e) { next(e); }
   });

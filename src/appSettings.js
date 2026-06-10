@@ -150,6 +150,38 @@ export async function setSonnetContextWindow(window) {
   return val;
 }
 
+// Models group: Fable 5 visibility toggle. When false, `claude-fable-5` is
+// hidden from all spawn pickers. On by default — strictly opt-out.
+export function getFable5Enabled() {
+  const s = loadSync();
+  return s.models?.fable5Enabled !== false; // missing key → true
+}
+
+export async function setFable5Enabled(enabled) {
+  const cur = loadSync();
+  const next = { ...cur, models: { ...(cur.models || {}), fable5Enabled: !!enabled } };
+  await writeSettings(next);
+  return !!enabled;
+}
+
+// Models group: default spawn model family. Controls which model card is
+// pre-selected when the spawn dialog opens. Defaults to 'opus' when unset.
+const VALID_SPAWN_FAMILIES = ['haiku', 'sonnet', 'opus', 'fable'];
+
+export function getDefaultSpawnFamily() {
+  const s = loadSync();
+  const v = s.models?.defaultFamily;
+  return VALID_SPAWN_FAMILIES.includes(v) ? v : 'opus';
+}
+
+export async function setDefaultSpawnFamily(family) {
+  const val = VALID_SPAWN_FAMILIES.includes(family) ? family : 'opus';
+  const cur = loadSync();
+  const next = { ...cur, models: { ...(cur.models || {}), defaultFamily: val } };
+  await writeSettings(next);
+  return val;
+}
+
 // Models group: conductor compact window override. When enabled, sets
 // CLAUDE_CODE_AUTO_COMPACT_WINDOW on the child process env for conductor
 // (MCP-spawned) sessions so Claude compacts as if the window were this size.
