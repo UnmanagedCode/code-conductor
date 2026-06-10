@@ -345,9 +345,9 @@ export function buildTools() {
     {
       name: 'sync_worktree',
       description:
-        'Bring a worktree up to date with its base branch — server-side fast-forward when possible, ' +
-        'otherwise sends a rebase prompt to the worktree\'s live agent. Caller passes the worktree\'s ' +
-        'attached instance id.',
+        'Bring a worktree up to date with its base branch — server-side fast-forward when possible; ' +
+        'otherwise attempts an automatic git rebase and only sends a rebase prompt to the worktree\'s ' +
+        'live agent when conflicts block the rebase. Caller passes the worktree\'s attached instance id.',
       inputSchema: {
         type: 'object',
         properties: { instanceId: { type: 'string' } },

@@ -43,7 +43,7 @@ RUN_REAL_CLAUDE=1 npm test   # also runs opt-in real-claude smoke
 ## Features
 
 - **Projects & workspaces** — sidebar project list with git-status pills; workspaces nest projects under collapsible headers; project create/delete with cascade.
-- **Worktrees** — isolated git worktrees per spawn; two-step land-back: sync (FF or agent-driven rebase) then no-ff merge into parent.
+- **Worktrees** — isolated git worktrees per spawn; two-step land-back: sync (FF, auto-rebase, or agent-driven rebase on conflict) then no-ff merge into parent.
 - **Diff & history** — mobile-friendly full-page diff browser: `±` on a worktree row shows its `base...HEAD` diff; `≡` on a project row shows the current branch's commit log (capped, newest first), and tapping a commit reuses the same renderer for that single commit's change (`git show`).
 - **Sessions & instances** — unified live + historical session list; conducted sessions (MCP-spawned, durable marker); temp sessions with promote; rewind & fork; crash recovery; session anchor (`#session=<sid>`).
 - **Spawn options** — mode (`plan` / `ask` / `code`), effort, thinking, model family (Haiku 200k / Sonnet 200k or 1M per stored preference / Opus 1M / Fable 5 1M; Fable 5 can be disabled in Settings → Models), temp session, debug capture.

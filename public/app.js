@@ -525,6 +525,8 @@ dom.syncBtn.addEventListener('click', async () => {
       alert('Worktree is already up to date with its parent branch.');
     } else if (result.action === 'fast-forwarded') {
       alert(`Synced worktree → ${result.newSha?.slice(0, 12) ?? '?'}`);
+    } else if (result.action === 'rebased') {
+      alert(`Worktree auto-rebased onto ${result.newSha?.slice(0, 12) ?? '?'} — click Merge when ready.`);
     } else if (result.action === 'rebase-prompt-sent') {
       alert('Rebase prompt sent to the agent — watch the conversation for REBASE_DONE, then click Merge.');
     }

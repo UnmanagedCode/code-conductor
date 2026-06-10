@@ -296,7 +296,7 @@ test('POST /sync falls back to the rebase prompt when the pure-behind worktree h
   } finally { await ctx.close(); }
 });
 
-test('POST /sync sends the rebase prompt when the worktree has diverged from the parent', async () => {
+test('POST /sync auto-rebases the worktree when it has diverged without conflicts', async () => {
   const ctx = await bootServer({ scenarioPath: SCENARIO });
   try {
     const repoPath = await makeRealRepo(ctx.projectsRoot, 'demo');
@@ -308,16 +308,46 @@ test('POST /sync sends the rebase prompt when the worktree has diverged from the
     const wt = await getWorktree('demo', wtName);
     await waitFor(() => ctx.instances.get(id)?.status === 'idle');
 
-    // Both sides commit different files → diverged.
+    // Both sides commit different files → diverged but no conflict.
     await commitInParent(repoPath, 'parent.txt', 'parent work\n', 'parent work');
-    // Kill the proc briefly so the worktree's index isn't racing the
-    // (silent) subprocess while we run git commands. Use the instance's
-    // own kill() — that leaves the Instance in the manager but clears
-    // `proc`, so we then need to re-attach an instance for the route.
     await ctx.instances.get(id).kill({ graceMs: 200 });
     await commitInWorktree(wt.worktreePath, 'agent.txt', 'agent work\n', 'agent work');
-    // Re-spawn into the same worktree so the sync endpoint has a live
-    // instance whose `inst.prompt(...)` can route the rebase prompt.
+
+    const r = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/sync`);
+    assert.equal(r.status, 200);
+    assert.equal(r.body.ok, true, `sync failed: ${r.body.reason}`);
+    assert.equal(r.body.action, 'rebased');
+    assert.equal(r.body.behind, 0);
+    assert.ok(r.body.newSha, 'rebased result carries new HEAD sha');
+
+    // Worktree HEAD should now be ahead of the parent's new tip (rebased on top).
+    const wtSha = (await git(wt.worktreePath, 'rev-parse', 'HEAD')).stdout.trim();
+    assert.equal(wtSha, r.body.newSha);
+    // Worktree branch must be a descendant of the parent commit.
+    const parentSha = (await git(repoPath, 'rev-parse', 'HEAD')).stdout.trim();
+    const isAncestor = await git(repoPath, 'merge-base', '--is-ancestor', parentSha, wtSha)
+      .then(() => true).catch(() => false);
+    assert.ok(isAncestor, 'worktree HEAD should be a descendant of the parent tip after rebase');
+  } finally { await ctx.close(); }
+});
+
+test('POST /sync falls back to the rebase prompt when the diverged worktree has conflicts', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO });
+  try {
+    const repoPath = await makeRealRepo(ctx.projectsRoot, 'demo');
+    const created = await api(ctx.baseUrl, 'POST', '/api/instances', {
+      project: 'demo', mode: 'bypassPermissions', worktree: true,
+    });
+    const wtName = created.body.worktree.worktreeName;
+    const id = created.body.id;
+    const wt = await getWorktree('demo', wtName);
+    await waitFor(() => ctx.instances.get(id)?.status === 'idle');
+
+    // Both sides modify the same line → guaranteed conflict.
+    await commitInParent(repoPath, 'shared.txt', 'parent version\n', 'parent edit');
+    await ctx.instances.get(id).kill({ graceMs: 200 });
+    await commitInWorktree(wt.worktreePath, 'shared.txt', 'agent version\n', 'agent edit');
+    // Re-spawn so the sync endpoint has a live instance for the prompt.
     const second = await api(ctx.baseUrl, 'POST', '/api/instances', {
       project: 'demo', mode: 'bypassPermissions', worktree: wtName,
     });
@@ -334,13 +364,17 @@ test('POST /sync sends the rebase prompt when the worktree has diverged from the
     assert.equal(r.body.ahead, 1);
     assert.equal(r.body.behind, 1);
 
+    // Worktree must be clean — rebase was aborted before falling back.
+    const status = (await git(wt.worktreePath, 'status', '--porcelain')).stdout.trim();
+    assert.equal(status, '', 'worktree should be clean after aborted rebase');
+
     await waitFor(() => events.some(e => e.kind === 'user_echo'));
     const echo = events.find(e => e.kind === 'user_echo');
     assert.match(echo.text, /git rebase main/);
   } finally { await ctx.close(); }
 });
 
-test('POST /sync refuses the rebase path when the instance is not running', async () => {
+test('POST /sync refuses the rebase prompt when the instance is not running (conflict fallback)', async () => {
   const ctx = await bootServer({ scenarioPath: SCENARIO });
   try {
     const repoPath = await makeRealRepo(ctx.projectsRoot, 'demo');
@@ -352,18 +386,22 @@ test('POST /sync refuses the rebase path when the instance is not running', asyn
     const wt = await getWorktree('demo', wtName);
     await waitFor(() => ctx.instances.get(id)?.status === 'idle');
 
-    // Set up the diverged state, then stop the proc (without removing
-    // the Instance from the manager — the route still needs to look it
-    // up by id).
-    await commitInParent(repoPath, 'parent.txt', 'parent work\n', 'parent work');
+    // Both sides modify the same line → guaranteed conflict so auto-rebase
+    // fails and the code must fall back to sending the rebase prompt. With
+    // the instance stopped, that fallback path should return ok:false.
+    await commitInParent(repoPath, 'shared.txt', 'parent version\n', 'parent edit');
     await ctx.instances.get(id).kill({ graceMs: 200 });
-    await commitInWorktree(wt.worktreePath, 'agent.txt', 'agent work\n', 'agent work');
+    await commitInWorktree(wt.worktreePath, 'shared.txt', 'agent version\n', 'agent edit');
     await waitFor(() => !ctx.instances.get(id)?.proc);
 
     const r = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/sync`);
     assert.equal(r.status, 200);
     assert.equal(r.body.ok, false);
     assert.match(r.body.reason, /not running/i);
+
+    // Worktree must be clean — aborted rebase should not leave stray files.
+    const status = (await git(wt.worktreePath, 'status', '--porcelain')).stdout.trim();
+    assert.equal(status, '', 'worktree should be clean after aborted rebase');
   } finally { await ctx.close(); }
 });
 
