@@ -184,7 +184,7 @@ export async function setFamilyEnabled(family, enabled) {
 
   let nextDefault = cur.models?.defaultFamily ?? 'opus';
   if (!enabled && nextDefault === family) {
-    nextDefault = MODEL_FAMILIES.find(f => f.family !== family && nextEnabled[f.family] !== false)?.family ?? 'opus';
+    nextDefault = ['sonnet', 'haiku', 'opus', 'fable'].find(f => f !== family && nextEnabled[f] !== false) ?? 'sonnet';
   }
 
   const models = { ...(cur.models || {}), enabledFamilies: nextEnabled, defaultFamily: nextDefault };

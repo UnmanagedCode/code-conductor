@@ -947,10 +947,10 @@ function syncFamilyVisibility() {
 function defaultSpawnFamily() {
   const d = getActiveDefaultSpawnFamily();
   if (getActiveFamilyEnabled(d)) return d;
-  for (const f of ['fable', 'opus', 'sonnet', 'haiku']) {
+  for (const f of ['sonnet', 'haiku', 'opus', 'fable']) {
     if (getActiveFamilyEnabled(f)) return f;
   }
-  return 'opus';
+  return 'sonnet';
 }
 
 // ── Unified spawn dialog ──────────────────────────────────────────────
