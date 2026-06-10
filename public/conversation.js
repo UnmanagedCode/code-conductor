@@ -61,6 +61,10 @@ export class Conversation {
     // Set during replay when a tool_result for AskUserQuestion is processed;
     // cleared when the following user_echo arrives carrying the answer text.
     this._pendingAnswerUQId = null;
+    // True while a snapshot batch is being replayed. Used to gate markAnswered()
+    // so that unrelated live echoes (e.g. idle callbacks) cannot lock an
+    // unanswered question card.
+    this._replayMode = false;
     this.blocksByKey = new Map();   // `${msgId}:${blockIdx}` -> block instance
     this.toolBlocks = new Map();    // toolUseId -> ToolUseBlock
     this.seenSeq = new Set();
@@ -178,9 +182,16 @@ export class Conversation {
         // AskUserQuestion tool_result carries the formatted answer text.
         // Reconstruct the selection and mark the card as answered so it
         // renders consistently with a live submission.
+        // Guard: only call markAnswered() during replay (_replayMode=true) or
+        // when the card was already submitted by the user (live path, no-op).
+        // Without this guard an unrelated live echo — such as an idle-callback
+        // prompt injected by subscribe_to_idle — would incorrectly lock an
+        // unanswered card.
         if (this._pendingAnswerUQId) {
           const qBlock = this.userQuestionBlocks.get(this._pendingAnswerUQId);
-          if (qBlock) qBlock.markAnswered(parseUserQuestionAnswers(qBlock.questions, ev.text));
+          if (qBlock && (this._replayMode || qBlock.submitted)) {
+            qBlock.markAnswered(parseUserQuestionAnswers(qBlock.questions, ev.text));
+          }
           this._pendingAnswerUQId = null;
         }
         this._renderUserEcho(ev);
