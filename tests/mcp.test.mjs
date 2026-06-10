@@ -923,3 +923,52 @@ test('promote_session on an unknown id returns a structured error', async () => 
     assert.match(res.content.map(c => c.text).join(''), /not found/);
   } finally { await ctx.close(); }
 });
+
+// ---------- spawn_instance model alias resolution ----------
+
+test('spawn_instance: haiku alias resolves to concrete model id', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO_INSTANCE });
+  try {
+    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'demo' });
+    const summary = await spawnIdle(ctx, { project: 'demo', model: 'haiku', mode: 'bypassPermissions' });
+    assert.ok(
+      typeof summary.model === 'string' && summary.model.startsWith('claude-haiku-'),
+      `expected concrete haiku model id, got: ${summary.model}`,
+    );
+  } finally { await ctx.close(); }
+});
+
+test('spawn_instance: sonnet alias resolves to concrete model id with context-window suffix', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO_INSTANCE });
+  try {
+    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'demo' });
+    const summary = await spawnIdle(ctx, { project: 'demo', model: 'sonnet', mode: 'bypassPermissions' });
+    assert.ok(
+      typeof summary.model === 'string' && summary.model.startsWith('claude-sonnet-'),
+      `expected concrete sonnet model id, got: ${summary.model}`,
+    );
+    // Default sonnet context window is 1m — verify the [1m] suffix was applied
+    assert.ok(
+      summary.model.endsWith('[1m]'),
+      `expected [1m] suffix on sonnet by default, got: ${summary.model}`,
+    );
+  } finally { await ctx.close(); }
+});
+
+test('spawn_instance: full model id passes through unchanged (backward compat)', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO_INSTANCE });
+  try {
+    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'demo' });
+    const summary = await spawnIdle(ctx, { project: 'demo', model: 'claude-haiku-4-5', mode: 'bypassPermissions' });
+    assert.equal(summary.model, 'claude-haiku-4-5', 'full model id should pass through canonicalization unchanged');
+  } finally { await ctx.close(); }
+});
+
+test('spawn_instance: omitted model leaves summary.model null', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO_INSTANCE });
+  try {
+    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'demo' });
+    const summary = await spawnIdle(ctx, { project: 'demo', mode: 'bypassPermissions' });
+    assert.equal(summary.model, null, 'omitted model should leave model null (account default)');
+  } finally { await ctx.close(); }
+});
