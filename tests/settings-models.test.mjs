@@ -12,7 +12,7 @@ import {
   getAutoStopOnOverage, setAutoStopOnOverage,
   getConductorCompactWindow, setConductorCompactWindow,
   getSonnetContextWindow, setSonnetContextWindow,
-  getFable5Enabled, setFable5Enabled,
+  getEnabledFamilies, setFamilyEnabled,
   getDefaultSpawnFamily, setDefaultSpawnFamily,
 } from '../src/appSettings.js';
 
@@ -389,47 +389,114 @@ test('POST /api/settings/models/prefs sonnetContextWindow does not clobber autoS
   } finally { await close(); }
 });
 
-// ── fable5Enabled ───────────────────────────────────────────────────────
-test('appSettings: getFable5Enabled defaults true when unset', async () => {
+// ── enabledFamilies ─────────────────────────────────────────────────────
+test('appSettings: getEnabledFamilies defaults all-true when unset', async () => {
   const root = await mkTmp();
   try {
     await withEnv({ PROJECTS_ROOT: root }, async () => {
-      assert.equal(getFable5Enabled(), true);
+      const ef = getEnabledFamilies();
+      assert.equal(ef.fable, true);
+      assert.equal(ef.opus, true);
+      assert.equal(ef.sonnet, true);
+      assert.equal(ef.haiku, true);
     });
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
 
-test('appSettings: setFable5Enabled round-trips', async () => {
+test('appSettings: migration — legacy fable5Enabled:false → enabledFamilies.fable=false', async () => {
   const root = await mkTmp();
   try {
     await withEnv({ PROJECTS_ROOT: root }, async () => {
-      assert.equal(await setFable5Enabled(false), false);
-      assert.equal(getFable5Enabled(), false);
-      assert.equal(await setFable5Enabled(true), true);
-      assert.equal(getFable5Enabled(), true);
+      // Write a settings.json that uses the old format.
+      const { orchStoreRoot } = await import('../src/projects.js');
+      const p = path.join(orchStoreRoot(), 'settings.json');
+      await fs.mkdir(path.dirname(p), { recursive: true });
+      await fs.writeFile(p, JSON.stringify({ models: { fable5Enabled: false } }));
+      // Force cache invalidation by temporarily changing env (already in withEnv).
+      const ef = getEnabledFamilies();
+      assert.equal(ef.fable, false, 'fable should be disabled after migration');
+      assert.equal(ef.opus, true);
+      assert.equal(ef.sonnet, true);
+      assert.equal(ef.haiku, true);
     });
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
 
-test('GET /api/settings/models includes fable5Enabled defaulting true', async () => {
+test('appSettings: setFamilyEnabled round-trips', async () => {
+  const root = await mkTmp();
+  try {
+    await withEnv({ PROJECTS_ROOT: root }, async () => {
+      const result = await setFamilyEnabled('fable', false);
+      assert.equal(result.enabledFamilies.fable, false);
+      assert.equal(getEnabledFamilies().fable, false);
+      await setFamilyEnabled('fable', true);
+      assert.equal(getEnabledFamilies().fable, true);
+    });
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test('appSettings: setFamilyEnabled prevents disabling the last enabled family', async () => {
+  const root = await mkTmp();
+  try {
+    await withEnv({ PROJECTS_ROOT: root }, async () => {
+      await setFamilyEnabled('fable', false);
+      await setFamilyEnabled('sonnet', false);
+      await setFamilyEnabled('haiku', false);
+      // Only opus remains — disabling it must throw.
+      await assert.rejects(
+        () => setFamilyEnabled('opus', false),
+        /cannot disable the last enabled family/i,
+      );
+      assert.equal(getEnabledFamilies().opus, true);
+    });
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test('appSettings: setFamilyEnabled auto-reassigns default when disabling the default family', async () => {
+  const root = await mkTmp();
+  try {
+    await withEnv({ PROJECTS_ROOT: root }, async () => {
+      await setDefaultSpawnFamily('fable');
+      assert.equal(getDefaultSpawnFamily(), 'fable');
+      const result = await setFamilyEnabled('fable', false);
+      // Default must no longer be fable.
+      assert.notEqual(result.defaultSpawnFamily, 'fable');
+      assert.notEqual(getDefaultSpawnFamily(), 'fable');
+    });
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test('GET /api/settings/models includes enabledFamilies defaulting all-true', async () => {
   const { baseUrl, close } = await bootServer();
   try {
     const r = await api(baseUrl, 'GET', '/api/settings/models');
     assert.equal(r.status, 200);
-    assert.equal(r.body.fable5Enabled, true);
+    assert.deepEqual(r.body.enabledFamilies, { fable: true, opus: true, sonnet: true, haiku: true });
   } finally { await close(); }
 });
 
-test('POST /api/settings/models/prefs toggles fable5Enabled and persists', async () => {
+test('POST /api/settings/models/prefs with familyEnabled toggles a family and persists', async () => {
   const { baseUrl, close } = await bootServer();
   try {
-    const off = await api(baseUrl, 'POST', '/api/settings/models/prefs', { fable5Enabled: false });
+    const off = await api(baseUrl, 'POST', '/api/settings/models/prefs', { familyEnabled: { family: 'fable', enabled: false } });
     assert.equal(off.status, 200);
-    assert.equal(off.body.fable5Enabled, false);
+    assert.equal(off.body.enabledFamilies.fable, false);
     const g = await api(baseUrl, 'GET', '/api/settings/models');
-    assert.equal(g.body.fable5Enabled, false);
-    const on = await api(baseUrl, 'POST', '/api/settings/models/prefs', { fable5Enabled: true });
-    assert.equal(on.body.fable5Enabled, true);
+    assert.equal(g.body.enabledFamilies.fable, false);
+    const on = await api(baseUrl, 'POST', '/api/settings/models/prefs', { familyEnabled: { family: 'fable', enabled: true } });
+    assert.equal(on.body.enabledFamilies.fable, true);
+  } finally { await close(); }
+});
+
+test('POST /api/settings/models/prefs rejects disabling the last enabled family', async () => {
+  const { baseUrl, close } = await bootServer();
+  try {
+    await api(baseUrl, 'POST', '/api/settings/models/prefs', { familyEnabled: { family: 'fable', enabled: false } });
+    await api(baseUrl, 'POST', '/api/settings/models/prefs', { familyEnabled: { family: 'sonnet', enabled: false } });
+    await api(baseUrl, 'POST', '/api/settings/models/prefs', { familyEnabled: { family: 'haiku', enabled: false } });
+    // Only opus remains — disabling it must return 4xx.
+    const r = await api(baseUrl, 'POST', '/api/settings/models/prefs', { familyEnabled: { family: 'opus', enabled: false } });
+    assert.ok(r.status >= 400, `expected 4xx but got ${r.status}`);
   } finally { await close(); }
 });
 

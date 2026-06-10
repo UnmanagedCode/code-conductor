@@ -11,6 +11,7 @@
 import { promises as fs, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { orchStoreRoot } from './projects.js';
+import { MODEL_FAMILIES } from './modelVersions.js';
 
 function settingsPath() {
   return path.join(orchStoreRoot(), 'settings.json');
@@ -150,18 +151,46 @@ export async function setSonnetContextWindow(window) {
   return val;
 }
 
-// Models group: Fable 5 visibility toggle. When false, `claude-fable-5` is
-// hidden from all spawn pickers. On by default — strictly opt-out.
-export function getFable5Enabled() {
+// Models group: per-family visibility toggle. When a family is false it is
+// hidden from all spawn pickers. All families default to true (opt-out).
+// Migrates the legacy scalar `fable5Enabled` key on first read.
+const ENABLED_FAMILIES_DEFAULTS = { fable: true, opus: true, sonnet: true, haiku: true };
+
+export function getEnabledFamilies() {
   const s = loadSync();
-  return s.models?.fable5Enabled !== false; // missing key → true
+  if (s.models?.enabledFamilies !== undefined) {
+    return { ...ENABLED_FAMILIES_DEFAULTS, ...s.models.enabledFamilies };
+  }
+  // Migration: honour legacy fable5Enabled: false
+  if (s.models?.fable5Enabled === false) return { ...ENABLED_FAMILIES_DEFAULTS, fable: false };
+  return { ...ENABLED_FAMILIES_DEFAULTS };
 }
 
-export async function setFable5Enabled(enabled) {
+// Disable/enable one family. Guards against disabling the last enabled family.
+// Auto-reassigns defaultFamily when the disabled family is the current default.
+// Cleans up the legacy fable5Enabled key on write.
+export async function setFamilyEnabled(family, enabled) {
   const cur = loadSync();
-  const next = { ...cur, models: { ...(cur.models || {}), fable5Enabled: !!enabled } };
-  await writeSettings(next);
-  return !!enabled;
+  const current = getEnabledFamilies();
+
+  if (!enabled) {
+    const remaining = MODEL_FAMILIES.filter(f => f.family !== family && current[f.family] !== false);
+    if (remaining.length === 0) {
+      throw Object.assign(new Error('cannot disable the last enabled family'), { statusCode: 400 });
+    }
+  }
+
+  const nextEnabled = { ...current, [family]: !!enabled };
+
+  let nextDefault = cur.models?.defaultFamily ?? 'opus';
+  if (!enabled && nextDefault === family) {
+    nextDefault = MODEL_FAMILIES.find(f => f.family !== family && nextEnabled[f.family] !== false)?.family ?? 'opus';
+  }
+
+  const models = { ...(cur.models || {}), enabledFamilies: nextEnabled, defaultFamily: nextDefault };
+  delete models.fable5Enabled; // remove legacy key
+  await writeSettings({ ...cur, models });
+  return { enabledFamilies: nextEnabled, defaultSpawnFamily: nextDefault };
 }
 
 // Models group: default spawn model family. Controls which model card is

@@ -1250,21 +1250,31 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
 }
 .tts-speak.speaking:hover { background: rgba(248, 113, 113, 0.25); }
 
-/* Settings → Models group: one row per family (label + version select). */
+/* Settings → Models group: per-family grid (checkbox | name | version | default). */
 .sm-compact-row { margin-top: 6px; }
 .sm-compact-label { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
 .sm-compact-label input[type="range"] { flex: 1 1 auto; max-width: 240px; }
 #sm-compact-window-val { min-width: 3.5em; }
-.sm-family-list { list-style: none; margin: 12px 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.sm-family-header,
 .sm-family-row {
-  display: flex; align-items: center; gap: 10px; min-width: 0;
-  padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px;
+  display: grid;
+  grid-template-columns: 20px 76px 1fr 48px;
+  align-items: center;
+  gap: 10px;
+}
+.sm-family-header { padding: 0 12px 2px; }
+.sm-col-header { font-size: 11px; color: var(--muted); text-align: center; }
+.sm-family-list { list-style: none; margin: 4px 0 12px; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.sm-family-row {
+  padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px;
   background: var(--panel);
 }
-.sm-family-label { font-size: 13px; white-space: nowrap; flex: 0 0 auto; }
-.sm-version { flex: 1; min-width: 0; max-width: 100%; }
+.sm-family-row--disabled { opacity: 0.45; }
+.sm-family-label { font-size: 13px; white-space: nowrap; }
+.sm-version { min-width: 0; }
+.sm-family-row input[type="radio"] { justify-self: center; }
 @media (max-width: 720px) {
-  .sm-family-row { padding: 8px 10px; }
+  .sm-family-row { padding: 7px 10px; }
 }
 
 /* ── Review view ─────────────────────────────────────────────────────────── */
