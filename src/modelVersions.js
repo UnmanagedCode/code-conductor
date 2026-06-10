@@ -14,7 +14,7 @@
 export const MODEL_FAMILIES = [
   {
     family: 'fable',
-    label: 'Fable 5',
+    label: 'Fable',
     default: 'claude-fable-5',
     versions: [
       { id: 'claude-fable-5', label: 'Fable 5' },
