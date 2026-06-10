@@ -74,7 +74,7 @@ test('synthetic 🎼 Conduct row appears at the top when a live .conduct instanc
   assert.equal(name, '🎼 Conduct');
 
   // Pinned to the top of the list.
-  assert.equal(root.firstElementChild, conductLi, 'conduct row is the first list item');
+  assert.ok(root.firstElementChild === conductLi, 'conduct row is the first list item');
 });
 
 test('synthetic Conduct row hides destructive / spawn buttons', async () => {
