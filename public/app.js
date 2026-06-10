@@ -412,9 +412,11 @@ sidebar.onShowCommits = (project) => {
   commits.open(project);
 };
 commits.onOpenCommit = (project, c) => {
+  const url = c.diffUrl
+    ?? `/api/projects/${encodeURIComponent(project)}/commits/${encodeURIComponent(c.sha)}/diff`;
   review.open({
-    title: `${c.shortSha} ${c.subject}`,
-    url: `/api/projects/${encodeURIComponent(project)}/commits/${encodeURIComponent(c.sha)}/diff`,
+    title: c.sha ? `${c.shortSha} ${c.subject}` : c.subject,
+    url,
     onBack: () => { location.hash = '#commits'; },
   });
 };

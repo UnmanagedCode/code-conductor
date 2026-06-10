@@ -1402,6 +1402,19 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
 }
 .commit-meta { flex-shrink: 0; font-size: 11px; color: var(--muted); white-space: nowrap; }
 
+/* Uncommitted working-tree synthetic entry */
+.commit-row.uncommitted { border-left: 3px solid var(--amber); background: rgba(251,191,36,0.06); }
+.commit-row.uncommitted:hover { background: rgba(251,191,36,0.12); }
+.uncommitted-label { color: var(--amber); font-family: ui-monospace, monospace; font-size: 12px; flex-shrink: 0; }
+
+/* Ahead-of-base commits: teal left border to match SHA colour */
+.commit-row.ahead { border-left: 3px solid var(--tool); }
+.ahead-divider {
+  padding: 4px 12px; font-size: 11px; color: var(--muted);
+  background: var(--panel-2); border-bottom: 1px solid var(--border);
+  text-align: center;
+}
+
 .project-row .commit-log {
   background: transparent; color: var(--muted); border: none;
   cursor: pointer; padding: 0 6px; font-size: 14px; line-height: 1;

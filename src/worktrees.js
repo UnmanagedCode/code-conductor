@@ -9,7 +9,7 @@ import { execFile } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
-import { projectsRoot, getProject, projectStoreDir, worktreeStoreDir } from './projects.js';
+import { projectsRoot, getProject, projectStoreDir, worktreeStoreDir, listProjects } from './projects.js';
 
 // Manual execFile wrapper. `promisify(execFile)` would be tempting but
 // this Node build (Termux's android port) doesn't ship the
@@ -553,22 +553,75 @@ export async function getWorktreeDiff(projectName, worktreeName, { baseRef, cont
 
 // Default / maximum number of commits returned by getProjectCommits.
 const COMMITS_DEFAULT_LIMIT = 100;
+
+// Scan the metadata store for a worktree whose worktreePath matches
+// the given absolute path. Returns the metadata object or null.
+// Metadata lives at: projectStoreDir(project)/worktrees/<worktreeName>/worktree.json
+// so we list subdirectories under the per-project 'worktrees/' dir.
+async function findWorktreeMetaForPath(targetPath) {
+  let projects;
+  try { projects = await listProjects(); } catch { return null; }
+  for (const proj of projects) {
+    const wtListDir = path.join(projectStoreDir(proj.name), 'worktrees');
+    let entries;
+    try { entries = await fs.readdir(wtListDir, { withFileTypes: true }); } catch { continue; }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const meta = await readMeta(proj.name, entry.name);
+      if (meta?.worktreePath === targetPath) return meta;
+    }
+  }
+  return null;
+}
 const COMMITS_MAX_LIMIT = 500;
 
 // Return the commit history of a project's current branch (HEAD), newest first.
 // Validates the project via getProject (throws 404 if not found). Caps the log
 // at `limit` (default 100, max 500) and sets `truncated` when more commits exist.
-// Returns { project, branch, commits, truncated, limit }, where each commit is
-// { sha, shortSha, subject, author, relativeDate, isoDate }.
+// Returns { project, branch, commits, truncated, limit, hasUncommitted, aheadCount, aheadOf },
+// where each commit is { sha, shortSha, subject, author, relativeDate, isoDate }.
+// hasUncommitted: true when `git status --porcelain` is non-empty.
+// aheadCount/aheadOf: how many leading commits are ahead of the base (upstream or
+// worktree base branch), or null when unknown/not applicable.
 export async function getProjectCommits(projectName, { limit = COMMITS_DEFAULT_LIMIT } = {}) {
   const proj = await getProject(projectName);
   const n = Number(limit);
   const cap = Math.max(1, Math.min(COMMITS_MAX_LIMIT, Number.isFinite(n) ? Math.floor(n) : COMMITS_DEFAULT_LIMIT));
   if (!(await isGitRepo(proj.path))) {
-    return { project: projectName, branch: null, commits: [], truncated: false, limit: cap };
+    return {
+      project: projectName, branch: null, commits: [], truncated: false, limit: cap,
+      hasUncommitted: false, aheadCount: null, aheadOf: null,
+    };
   }
   const head = await runGit(proj.path, ['rev-parse', '--abbrev-ref', 'HEAD']);
   const branch = head.code === 0 ? (head.stdout.trim() || null) : null;
+
+  // Detect uncommitted changes (staged or unstaged).
+  const statusR = await runGit(proj.path, ['status', '--porcelain']);
+  const hasUncommitted = statusR.code === 0
+    ? (statusR.stdout || '').split('\n').some(l => l.trim().length > 0)
+    : false;
+
+  // Determine how many leading commits are "ahead" of the base.
+  // Try upstream tracking first (normal project with a configured remote).
+  // Fall back to worktree base-branch metadata (orchestrator-managed worktrees).
+  let aheadCount = null;
+  let aheadOf = null;
+  const upstreamStatus = await getProjectUpstreamStatus(proj.path);
+  if (upstreamStatus.ahead !== null) {
+    aheadCount = upstreamStatus.ahead;
+    aheadOf = upstreamStatus.upstream;
+  } else {
+    const worktreeMeta = await findWorktreeMetaForPath(proj.path);
+    if (worktreeMeta) {
+      const mergeStatus = await getWorktreeMergeStatus(worktreeMeta);
+      if (mergeStatus.ahead !== null) {
+        aheadCount = mergeStatus.ahead;
+        aheadOf = worktreeMeta.baseBranch;
+      }
+    }
+  }
+
   // Field separator \x1f between fields; %s/%h/%H/%an/%ar/%aI are all single-line.
   const r = await runGit(proj.path, [
     'log', `--max-count=${cap + 1}`,
@@ -576,7 +629,10 @@ export async function getProjectCommits(projectName, { limit = COMMITS_DEFAULT_L
   ]);
   if (r.code !== 0) {
     // A fresh repo with no commits exits non-zero — treat as empty history.
-    return { project: projectName, branch, commits: [], truncated: false, limit: cap };
+    return {
+      project: projectName, branch, commits: [], truncated: false, limit: cap,
+      hasUncommitted, aheadCount, aheadOf,
+    };
   }
   const rows = r.stdout.split('\n').filter(Boolean).map((line) => {
     const [sha, shortSha, subject, author, relativeDate, isoDate] = line.split('\x1f');
@@ -584,7 +640,7 @@ export async function getProjectCommits(projectName, { limit = COMMITS_DEFAULT_L
   });
   const truncated = rows.length > cap;
   const commits = truncated ? rows.slice(0, cap) : rows;
-  return { project: projectName, branch, commits, truncated, limit: cap };
+  return { project: projectName, branch, commits, truncated, limit: cap, hasUncommitted, aheadCount, aheadOf };
 }
 
 // Return structured diff data for the change introduced by a single commit.
@@ -615,6 +671,28 @@ export async function getCommitDiff(projectName, sha, { contextLines = 3 } = {})
   const totalAdds = files.reduce((s, f) => s + f.adds, 0);
   const totalDels = files.reduce((s, f) => s + f.dels, 0);
   return { project: projectName, sha, files, totalAdds, totalDels, truncated };
+}
+
+// Return structured diff data for all uncommitted changes in a project's
+// working tree (staged + unstaged vs HEAD). Uses `git diff HEAD` so both
+// staged and unstaged changes are included in one pass.
+// Returns { project, files, totalAdds, totalDels, truncated }.
+// If HEAD doesn't exist (fresh repo with no commits), returns an empty file
+// list rather than throwing — the frontend treats this as "no diff to show".
+export async function getProjectUncommittedDiff(projectName, { contextLines = 3 } = {}) {
+  const proj = await getProject(projectName);
+  const ctx = Math.max(0, Math.min(50, Number.isFinite(Number(contextLines)) ? Math.floor(Number(contextLines)) : 3));
+  const r = await runGit(proj.path, ['diff', 'HEAD', `--unified=${ctx}`, '--no-color']);
+  if (r.code !== 0) {
+    return { project: projectName, files: [], totalAdds: 0, totalDels: 0, truncated: false };
+  }
+  const rawOutput = r.stdout;
+  const truncated = rawOutput.length > DIFF_BYTE_CAP;
+  const raw = truncated ? rawOutput.slice(0, DIFF_BYTE_CAP) : rawOutput;
+  const files = parseUnifiedDiff(raw);
+  const totalAdds = files.reduce((s, f) => s + f.adds, 0);
+  const totalDels = files.reduce((s, f) => s + f.dels, 0);
+  return { project: projectName, files, totalAdds, totalDels, truncated };
 }
 
 // Re-exported for tests / route handlers.

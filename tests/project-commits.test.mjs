@@ -158,3 +158,146 @@ test('GET /commits returns 404 for an unknown project', async () => {
     assert.equal(r.status, 404, `expected 404, got ${r.status}`);
   } finally { await ctx.close(); }
 });
+
+// ── Uncommitted-changes detection ──────────────────────────────────────────
+
+test('GET /commits returns hasUncommitted:false on a clean tree', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO });
+  try {
+    await makeRealRepo(ctx.projectsRoot, 'demo');
+    const r = await api(ctx.baseUrl, 'GET', '/api/projects/demo/commits');
+    assert.equal(r.status, 200);
+    assert.equal(r.body.hasUncommitted, false);
+  } finally { await ctx.close(); }
+});
+
+test('GET /commits returns hasUncommitted:true when working tree is dirty', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO });
+  try {
+    const repoPath = await makeRealRepo(ctx.projectsRoot, 'demo');
+    // Modify a tracked file without committing.
+    await fs.writeFile(path.join(repoPath, 'README.md'), '# modified\n');
+    const r = await api(ctx.baseUrl, 'GET', '/api/projects/demo/commits');
+    assert.equal(r.status, 200);
+    assert.equal(r.body.hasUncommitted, true);
+  } finally { await ctx.close(); }
+});
+
+test('GET /commits/uncommitted/diff returns structured diff for dirty tree', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO });
+  try {
+    const repoPath = await makeRealRepo(ctx.projectsRoot, 'demo');
+    await fs.writeFile(path.join(repoPath, 'README.md'), '# modified\nextra line\n');
+    const r = await api(ctx.baseUrl, 'GET', '/api/projects/demo/commits/uncommitted/diff');
+    assert.equal(r.status, 200, `expected 200, got ${r.status}: ${JSON.stringify(r.body)}`);
+    assert.equal(r.body.project, 'demo');
+    assert.ok(Array.isArray(r.body.files), 'files should be an array');
+    assert.ok(r.body.files.length > 0, 'should have at least one changed file');
+    const readme = r.body.files.find(f => f.path === 'README.md');
+    assert.ok(readme, 'README.md should appear in the diff');
+    assert.ok(r.body.totalAdds > 0 || r.body.totalDels > 0, 'should have changes');
+  } finally { await ctx.close(); }
+});
+
+test('GET /commits/uncommitted/diff returns empty files on a clean tree', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO });
+  try {
+    await makeRealRepo(ctx.projectsRoot, 'demo');
+    const r = await api(ctx.baseUrl, 'GET', '/api/projects/demo/commits/uncommitted/diff');
+    assert.equal(r.status, 200);
+    assert.deepEqual(r.body.files, []);
+    assert.equal(r.body.totalAdds, 0);
+    assert.equal(r.body.totalDels, 0);
+  } finally { await ctx.close(); }
+});
+
+// ── Ahead-of-base detection ────────────────────────────────────────────────
+
+test('GET /commits returns aheadCount:null when there is no upstream', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO });
+  try {
+    await makeRealRepo(ctx.projectsRoot, 'demo');
+    const r = await api(ctx.baseUrl, 'GET', '/api/projects/demo/commits');
+    assert.equal(r.status, 200);
+    assert.equal(r.body.aheadCount, null);
+    assert.equal(r.body.aheadOf, null);
+  } finally { await ctx.close(); }
+});
+
+test('GET /commits returns aheadCount when project has upstream tracking', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO });
+  try {
+    // Create a bare "remote" and clone it so we have an upstream.
+    const bareDir = path.join(ctx.projectsRoot, 'demo.git');
+    await fs.mkdir(bareDir, { recursive: true });
+    await git(bareDir, 'init', '-q', '--bare', '-b', 'main');
+
+    const repoPath = path.join(ctx.projectsRoot, 'demo');
+    await fs.mkdir(repoPath, { recursive: true });
+    await git(repoPath, 'init', '-q', '-b', 'main');
+    await git(repoPath, 'config', 'user.email', 'test@example.com');
+    await git(repoPath, 'config', 'user.name', 'test');
+    await git(repoPath, 'config', 'commit.gpgsign', 'false');
+    await fs.writeFile(path.join(repoPath, 'README.md'), '# base\n');
+    await git(repoPath, 'add', '.');
+    await git(repoPath, 'commit', '-q', '-m', 'initial');
+    await git(repoPath, 'remote', 'add', 'origin', bareDir);
+    await git(repoPath, 'push', '-q', 'origin', 'main');
+    await git(repoPath, 'branch', '--set-upstream-to=origin/main', 'main');
+
+    // Add a local commit that hasn't been pushed.
+    await commitFile(repoPath, 'feature.js', 'export const x = 1;\n', 'add feature');
+
+    const r = await api(ctx.baseUrl, 'GET', '/api/projects/demo/commits');
+    assert.equal(r.status, 200);
+    assert.equal(r.body.aheadCount, 1, 'one commit ahead of origin/main');
+    assert.ok(typeof r.body.aheadOf === 'string' && r.body.aheadOf.length > 0, 'aheadOf should be a non-empty string');
+  } finally { await ctx.close(); }
+});
+
+test('GET /commits for a worktree returns aheadCount vs base branch', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO });
+  try {
+    // Create parent repo.
+    const parentPath = await makeRealRepo(ctx.projectsRoot, 'myapp');
+
+    // Create a worktree directly via git (simulating what createWorktree does).
+    const wtId = 'abc123';
+    const wtName = `myapp_worktree_${wtId}`;
+    const wtPath = path.join(ctx.projectsRoot, wtName);
+    const wtBranch = `code-conductor/${wtId}`;
+    const { stdout: headShaOut } = await git(parentPath, 'rev-parse', 'HEAD');
+    const headSha = headShaOut.trim();
+    await git(parentPath, 'worktree', 'add', wtPath, '-b', wtBranch, headSha);
+
+    // Write the orchestrator metadata so findWorktreeMetaForPath can find it.
+    const metaDir = path.join(
+      ctx.projectsRoot, '.code-conductor', 'projects', 'myapp', 'worktrees', wtName,
+    );
+    await fs.mkdir(metaDir, { recursive: true });
+    await fs.writeFile(path.join(metaDir, 'worktree.json'), JSON.stringify({
+      parentProject: 'myapp',
+      parentPath,
+      worktreeName: wtName,
+      worktreePath: wtPath,
+      branch: wtBranch,
+      baseBranch: 'main',
+      baseSha: headSha,
+      createdAt: new Date().toISOString(),
+    }));
+
+    // Configure git identity in the worktree.
+    await git(wtPath, 'config', 'user.email', 'test@example.com');
+    await git(wtPath, 'config', 'user.name', 'test');
+    await git(wtPath, 'config', 'commit.gpgsign', 'false');
+
+    // Add a commit on the worktree branch — now it's 1 ahead of 'main'.
+    await commitFile(wtPath, 'wt-feature.js', 'export const y = 2;\n', 'worktree commit');
+
+    // The worktree lives in projectsRoot so getProject(wtName) resolves it.
+    const r = await api(ctx.baseUrl, 'GET', `/api/projects/${encodeURIComponent(wtName)}/commits`);
+    assert.equal(r.status, 200, `expected 200, got ${r.status}: ${JSON.stringify(r.body)}`);
+    assert.equal(r.body.aheadCount, 1, 'one commit ahead of base branch');
+    assert.equal(r.body.aheadOf, 'main', 'ahead of the parent branch (main)');
+  } finally { await ctx.close(); }
+});
