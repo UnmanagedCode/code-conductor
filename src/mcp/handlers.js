@@ -27,6 +27,8 @@ import {
   worktreeDirtyLines,
 } from '../worktrees.js';
 import { buildApprovePrompt, buildRejectPrompt } from '../planApproval.js';
+import { isKnownFamily, defaultVersion } from '../modelVersions.js';
+import { getModelVersion } from '../appSettings.js';
 
 // ---------- helpers ----------
 
@@ -176,12 +178,18 @@ export async function getTranscript({ id, sinceSeq = -1, limit = 200 }, { instan
 
 export async function spawnInstance(args, { instances, callerId }) {
   if (!instances) throw new Error('orchestrator has no InstanceManager');
+  // Resolve family alias (opus/sonnet/haiku/fable) to the concrete version
+  // configured in Settings → Models. Full model ids pass through unchanged.
+  let model = args.model;
+  if (model && isKnownFamily(model)) {
+    model = getModelVersion(model) ?? defaultVersion(model);
+  }
   const inst = await instances.create({
     project: args.project,
     mode: args.mode,
     effort: args.effort,
     thinking: args.thinking,
-    model: args.model,
+    model,
     resume: args.resume,
     worktree: args.worktree,
     // Conductor workers default to temp (disposable). Unlike the UI's temp

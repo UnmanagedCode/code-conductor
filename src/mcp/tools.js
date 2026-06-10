@@ -105,7 +105,15 @@ export function buildTools() {
           mode: { type: 'string', enum: VALID_MODES, description: 'plan / ask / bypassPermissions. Defaults to plan, independent of temp (resume defaults to bypassPermissions).' },
           effort: { type: 'string', enum: VALID_EFFORTS },
           thinking: { type: 'string', enum: VALID_THINKING },
-          model: { type: 'string', description: 'e.g. claude-sonnet-4-6 / claude-opus-4-8 / claude-haiku-4-5. Empty/omitted uses account default.' },
+          model: {
+            type: 'string',
+            description:
+              'Family alias (opus / sonnet / haiku / fable) — resolves to the version configured in ' +
+              'Settings → Models, including the Sonnet 1M/200k context-window preference. ' +
+              'A full model id (e.g. claude-sonnet-4-6) is also accepted as a pass-through. ' +
+              'Empty/omitted uses the account default. ' +
+              'Disabled families are still resolved when passed explicitly.',
+          },
           resume: { type: 'string', description: 'Optional sessionId to resume (vs. spawning a fresh session).' },
           worktree: {
             type: ['boolean', 'string'],
