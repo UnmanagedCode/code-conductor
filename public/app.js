@@ -1672,6 +1672,7 @@ bus.addEventListener('snapshot', (e) => {
   usage.reset();
   const isActive = m.id === state.activeId;
   if (isActive) conversation.clear();
+  if (isActive) conversation._replayMode = true;
   for (const ev of m.events ?? []) {
     const prevCount = tracker.completedBatches.length;
     tracker.apply(ev);
@@ -1684,6 +1685,7 @@ bus.addEventListener('snapshot', (e) => {
       }
     }
   }
+  if (isActive) conversation._replayMode = false;
   // Mirror the server's auto-approve-plan flag into our local instance
   // entry so the header toggle reflects it correctly the moment a tab
   // subscribes (or re-subscribes after a session switch).
@@ -1718,6 +1720,7 @@ bus.addEventListener('reset_snapshot', (e) => {
   usage.reset();
   const isActive = m.id === state.activeId;
   if (isActive) conversation.reset();
+  if (isActive) conversation._replayMode = true;
   for (const ev of m.events ?? []) {
     const prevCount = tracker.completedBatches.length;
     tracker.apply(ev);
@@ -1730,6 +1733,7 @@ bus.addEventListener('reset_snapshot', (e) => {
       }
     }
   }
+  if (isActive) conversation._replayMode = false;
   if (!isActive) return;
   updateActiveHeader();
   // Rewind carries the dropped prompt directly on the frame so the
