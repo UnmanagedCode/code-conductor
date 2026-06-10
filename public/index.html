@@ -100,13 +100,13 @@
           <header class="settings-header">
             <span class="settings-title">Settings</span>
             <select id="settings-group-select">
-              <option value="transcribe">Transcribe</option>
               <option value="models">Models</option>
+              <option value="transcribe">Transcribe</option>
               <option value="tts">TTS</option>
               <option value="workspace">Workspace conventions</option>
             </select>
           </header>
-          <div id="settings-transcribe" class="settings-group">
+          <div id="settings-transcribe" class="settings-group" hidden>
             <p class="settings-desc">
               Voice dictation (tap the composer's Send button while it's empty) runs whisper.cpp
               locally on the server — no network, no API key. Install it and pick a model below.
@@ -119,7 +119,7 @@
             </div>
             <pre id="st-install-log" class="st-install-log" hidden aria-live="polite"></pre>
           </div>
-          <div id="settings-models" class="settings-group" hidden>
+          <div id="settings-models" class="settings-group">
             <p class="settings-desc">
               Pick the concrete model version used for each Claude family. The three spawn pickers
               (quick-spawn ↯, Conduct, the new-session dialog) resolve each family to the version
