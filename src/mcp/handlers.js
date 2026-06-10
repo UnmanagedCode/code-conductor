@@ -495,6 +495,9 @@ export async function getWorktreeDiff({ project, worktreeName, baseRef, contextL
   const wt = await getWorktree(project, worktreeName);
   if (!wt) throw new Error(`worktree '${worktreeName}' not found under project '${project}'`);
   const ref = (typeof baseRef === 'string' && baseRef.trim()) ? baseRef.trim() : wt.baseBranch;
+  if (typeof baseRef === 'string' && baseRef.trim() && (ref.startsWith('-') || !/^[A-Za-z0-9._/-]+$/.test(ref))) {
+    throw Object.assign(new Error('invalid baseRef'), { statusCode: 400 });
+  }
   const ctx = Number.isInteger(contextLines) && contextLines >= 0 && contextLines <= 50 ? contextLines : 3;
   const pathArgs = Array.isArray(paths) ? paths.filter(p => typeof p === 'string' && p.trim()) : [];
   const pathspec = pathArgs.length ? ['--', ...pathArgs] : [];
