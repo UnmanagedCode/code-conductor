@@ -595,7 +595,7 @@ test('DOM: kept system events render inline in chronological order (no shared __
   // Each init should be a direct child of the conversation root, not nested
   // inside a shared '__system__' message wrap.
   for (const init of inits) {
-    assert.equal(init.parentElement, root, 'system block must be a top-level conversation child');
+    assert.ok(init.parentElement === root, 'system block must be a top-level conversation child');
   }
 
   // The first init must come BEFORE the first assistant message in DOM
