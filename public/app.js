@@ -300,7 +300,6 @@ const sidebar = new Sidebar({
   onLoadSessions: loadSessions,
   onDeleteSession: deleteSession,
   onEditWorkspace: openEditWorkspaceDialog,
-  onQuickSpawn: openSpawnDialog,
   onPromoteSession: promoteSession,
 });
 // Seed the sidebar with any unread counts restored from localStorage so
@@ -948,7 +947,7 @@ function defaultSpawnFamily() {
 }
 
 // ── Unified spawn dialog ──────────────────────────────────────────────
-// Opened by both the ↯ (quick) and + (new session) sidebar buttons.
+// Opened by the + (new session) sidebar button.
 // Collapsed face: model cards + Code/Plan toggle.
 // Defaults: configured default model (Opus out of the box; set via Settings →
 // Models), temp ON, worktree OFF — reproduces the old quick-spawn behaviour

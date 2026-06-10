@@ -180,12 +180,6 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
   cursor: pointer; padding: 2px 6px; font-size: 16px; line-height: 1;
 }
 .project-row .add-instance:hover { color: var(--text); }
-.project-row .quick-spawn {
-  background: transparent; color: var(--muted); border: none;
-  cursor: pointer; padding: 0 6px; font-size: 14px; line-height: 1;
-}
-.project-row .quick-spawn:hover { color: var(--text); }
-
 /* Quick-spawn model picker dialog: model rows + context badges. */
 .quick-spawn-models { display: flex; gap: 8px; margin: 10px 0 0; }
 .quick-spawn-models .qs-model {
@@ -241,6 +235,10 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
 #spawn-dialog details[open] > summary::after { transform: rotate(-180deg); }
 #spawn-dialog details > summary::-webkit-details-marker { display: none; }
 .sd-advanced-body { padding-top: 6px; }
+/* Pin both spawn dialogs to the same fixed width so they match each other
+   and so #spawn-dialog doesn't jump when Advanced options is expanded. */
+#spawn-dialog,
+#conduct-dialog { width: 360px; }
 
 .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; background: var(--muted); }
 .dot.idle { background: var(--muted); }

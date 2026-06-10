@@ -92,7 +92,7 @@ export class Sidebar {
   constructor({
     rootList, onSelectInstance, onCreateInstanceClick,
     onRemoveWorktree, onDeleteProject, onResumeSession, onLoadSessions,
-    onDeleteSession, onEditWorkspace, onQuickSpawn, onPromoteSession,
+    onDeleteSession, onEditWorkspace, onPromoteSession,
     onReviewWorktree,
   }) {
     this.list = rootList;
@@ -104,7 +104,6 @@ export class Sidebar {
     this.onLoadSessions = onLoadSessions;
     this.onDeleteSession = onDeleteSession;
     this.onEditWorkspace = onEditWorkspace;
-    this.onQuickSpawn = onQuickSpawn;
     this.onPromoteSession = onPromoteSession;
     this.onReviewWorktree = onReviewWorktree;
     this.projects = [];
@@ -467,13 +466,6 @@ export class Sidebar {
         }, '≡'));
       }
       row.appendChild(el('button', {
-        class: 'quick-spawn', title: 'quick temp session',
-        onclick: (e) => {
-          e.stopPropagation();
-          if (this.onQuickSpawn) this.onQuickSpawn(p.name);
-        },
-      }, '↯'));
-      row.appendChild(el('button', {
         class: 'add-instance', title: 'new session',
         onclick: () => this.onCreateInstanceClick(p.name),
       }, '+'));
@@ -492,9 +484,8 @@ export class Sidebar {
     if (sessionsNode) li.appendChild(sessionsNode);
     else if (worktrees.length === 0) {
       // Project with neither sessions nor worktrees — show a tiny
-      // "no sessions yet" hint to make the "+" / "↯" buttons
-      // discoverable.
-      li.appendChild(el('div', { class: 'empty-project-hint' }, 'no sessions yet — tap ↯ or + to start'));
+      // "no sessions yet" hint to make the "+" button discoverable.
+      li.appendChild(el('div', { class: 'empty-project-hint' }, 'no sessions yet — tap + to start'));
     }
 
     if (worktrees.length > 0) {
