@@ -500,6 +500,25 @@ test('POST /api/settings/models/prefs rejects disabling the last enabled family'
   } finally { await close(); }
 });
 
+test('POST /api/settings/models/prefs rejects unknown or missing family in familyEnabled', async () => {
+  const { baseUrl, close } = await bootServer();
+  try {
+    // Unknown family name must be rejected with 400.
+    const bad = await api(baseUrl, 'POST', '/api/settings/models/prefs', { familyEnabled: { family: 'gpt', enabled: false } });
+    assert.equal(bad.status, 400);
+    // Missing family field must be rejected with 400.
+    const noFamily = await api(baseUrl, 'POST', '/api/settings/models/prefs', { familyEnabled: { enabled: false } });
+    assert.equal(noFamily.status, 400);
+    // Non-object payload must be rejected with 400.
+    const nonObj = await api(baseUrl, 'POST', '/api/settings/models/prefs', { familyEnabled: 'fable' });
+    assert.equal(nonObj.status, 400);
+    // Valid family is still accepted (smoke-check route remains functional).
+    const ok = await api(baseUrl, 'POST', '/api/settings/models/prefs', { familyEnabled: { family: 'fable', enabled: false } });
+    assert.equal(ok.status, 200);
+    assert.equal(ok.body.enabledFamilies.fable, false);
+  } finally { await close(); }
+});
+
 // ── defaultSpawnFamily ──────────────────────────────────────────────────
 test('appSettings: getDefaultSpawnFamily defaults "opus" when unset', async () => {
   const root = await mkTmp();

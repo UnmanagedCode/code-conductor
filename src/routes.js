@@ -817,7 +817,12 @@ export function buildRoutes({ instances, serverCtx } = {}) {
       if (typeof autoStopOnOverage === 'boolean') await setAutoStopOnOverage(autoStopOnOverage);
       if (conductorCompactWindow !== undefined) await setConductorCompactWindow(conductorCompactWindow);
       if (sonnetContextWindow !== undefined) await setSonnetContextWindow(sonnetContextWindow);
-      if (familyEnabled !== undefined) await setFamilyEnabled(familyEnabled.family, !!familyEnabled.enabled);
+      if (familyEnabled !== undefined) {
+        if (!familyEnabled || typeof familyEnabled !== 'object' || !isKnownFamily(familyEnabled.family)) {
+          return res.status(400).json({ error: 'familyEnabled.family must be a known model family' });
+        }
+        await setFamilyEnabled(familyEnabled.family, !!familyEnabled.enabled);
+      }
       if (defaultSpawnFamily !== undefined) await setDefaultSpawnFamily(defaultSpawnFamily);
       res.json(modelsSettingsState());
     } catch (e) { next(e); }

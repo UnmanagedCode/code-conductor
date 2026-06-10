@@ -63,19 +63,6 @@ export class UsageTracker {
     // its own, so currentContextSize tracks the growing prompt live.
     if (ev.kind === 'message_start' && ev.usage) {
       this.lastUsage = ev.usage;
-      // TEMP DIAGNOSTIC — logs every message_start so we can spot which
-      // event produces the >100% spike at turn end. Remove once root-caused.
-      const size = (ev.usage.input_tokens ?? 0)
-                 + (ev.usage.cache_read_input_tokens ?? 0)
-                 + (ev.usage.cache_creation_input_tokens ?? 0);
-      console.log('[usage] message_start',
-        'size=' + size,
-        'in=' + (ev.usage.input_tokens ?? 0),
-        'cache_r=' + (ev.usage.cache_read_input_tokens ?? 0),
-        'cache_c=' + (ev.usage.cache_creation_input_tokens ?? 0),
-        'out=' + (ev.usage.output_tokens ?? 0),
-        'msgId=' + ev.msgId,
-        'parent=' + (ev.parentToolUseId ?? 'null'));
       return;
     }
     // turn_end's `usage`, by contrast, is the per-turn SUM across every
