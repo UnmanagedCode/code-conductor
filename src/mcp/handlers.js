@@ -340,13 +340,147 @@ export async function setAutoApprovePlan({ instanceId, enabled }, { instances })
 
 // ---------- read-only: worktree diff ----------
 
-// Unified diff of <baseRef>...HEAD in a worktree. baseRef defaults to
-// the worktree's recorded baseBranch (the branch it was created from).
-// Capped at ~200 KB to keep this cheap to call from an LLM loop;
-// `truncated: true` in the result tells the caller to drill in with
-// read_file for specific files.
+// Tiered drill-down diff for a worktree relative to <baseRef>...HEAD.
+// baseRef defaults to the worktree's recorded baseBranch (the branch it
+// was created from). Three modes keep the tool usable at any size:
+//   - summary:true  -> a structured per-file stat (never truncated)
+//   - paths:[...]    -> scope the diff (or summary) to specific files
+//   - offset:<line>  -> line-based pagination; each page is <= DIFF_BYTE_CAP
+//                       of whole lines, mid-file pages re-emit file/hunk
+//                       headers so each page parses standalone.
+// The byte cap is the per-page ceiling, never a silent terminal cut.
 const DIFF_BYTE_CAP = 200 * 1024;
-export async function getWorktreeDiff({ project, worktreeName, baseRef, contextLines = 3 }) {
+
+// Parse `git diff --numstat` output into per-file {additions, deletions,
+// binary}. Binary files render as "-\t-\t<path>". File order matches
+// --name-status given identical flags, so callers zip the two by index.
+function parseNumstat(out) {
+  const rows = [];
+  for (const line of (out ?? '').split('\n')) {
+    if (!line) continue;
+    const tab1 = line.indexOf('\t');
+    const tab2 = line.indexOf('\t', tab1 + 1);
+    if (tab1 < 0 || tab2 < 0) continue;
+    const addsField = line.slice(0, tab1);
+    const delsField = line.slice(tab1 + 1, tab2);
+    const binary = addsField === '-';
+    rows.push({
+      additions: binary ? 0 : (Number(addsField) || 0),
+      deletions: binary ? 0 : (Number(delsField) || 0),
+      binary,
+    });
+  }
+  return rows;
+}
+
+// Parse `git diff --name-status` output into per-file {status, path,
+// oldPath?}. Rename/copy rows (R###/C###) carry the old path first.
+function parseNameStatus(out) {
+  const rows = [];
+  for (const line of (out ?? '').split('\n')) {
+    if (!line) continue;
+    const parts = line.split('\t');
+    const code = parts[0] ?? '';
+    const status = (code[0] || 'M').toUpperCase();
+    if ((status === 'R' || status === 'C') && parts.length >= 3) {
+      rows.push({ status, oldPath: parts[1], path: parts[2] });
+    } else {
+      rows.push({ status, path: parts[parts.length - 1] });
+    }
+  }
+  return rows;
+}
+
+// Walk a unified-diff line array once, recording for each line the file it
+// belongs to: {path, preambleLines, hunkAt} where preambleLines are the
+// lines from "diff --git" up to (not including) the first "@@", and
+// hunkAt[i] is the index of the active "@@" header for line i (or -1).
+function indexDiffLines(lines) {
+  const fileOf = new Array(lines.length).fill(-1);   // index into files[]
+  const hunkAt = new Array(lines.length).fill(-1);   // index of active @@ line
+  const files = [];                                  // {path, start, preEnd}
+  let cur = null;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.startsWith('diff --git ')) {
+      const m = line.match(/^diff --git a\/(.+) b\/(.+)$/);
+      cur = { path: m ? m[2] : null, start: i, preEnd: i + 1, sawHunk: false };
+      files.push(cur);
+    }
+    if (cur) {
+      fileOf[i] = files.length - 1;
+      if (line.startsWith('@@ ')) {
+        cur.sawHunk = true;
+        hunkAt[i] = i;
+      } else if (!cur.sawHunk) {
+        cur.preEnd = i + 1; // still in the file preamble
+      } else {
+        // body line — inherits the most recent @@ within this file
+        let h = -1;
+        for (let j = i - 1; j >= cur.start; j--) {
+          if (lines[j].startsWith('@@ ')) { h = j; break; }
+        }
+        hunkAt[i] = h;
+      }
+    }
+  }
+  return { fileOf, hunkAt, files };
+}
+
+// Line-based pager. Returns a page of whole lines starting at `offset`,
+// filling until the next line would exceed `cap` bytes. Mid-file pages are
+// prefixed with the file's preamble + active hunk header so they parse
+// standalone. Snaps the cutoff back to a hunk boundary when cheap.
+function paginateDiff(lines, offset, cap, idx) {
+  const { fileOf, hunkAt, files } = idx;
+  const total = lines.length;
+  if (offset >= total) {
+    return { diff: '', cutoff: total, prefixLines: [] };
+  }
+  // Re-emit headers when the page starts mid-file (not on the diff --git line).
+  const prefixLines = [];
+  const fi = fileOf[offset];
+  if (offset > 0 && fi >= 0) {
+    const f = files[fi];
+    const startsAtPreamble = offset === f.start;
+    if (!startsAtPreamble) {
+      for (let j = f.start; j < f.preEnd; j++) prefixLines.push(lines[j]);
+      const h = hunkAt[offset];
+      // Only re-add the @@ header if the offset line isn't itself that header.
+      if (h >= 0 && h !== offset) prefixLines.push(lines[h]);
+    }
+  }
+  let bytes = 0;
+  for (const p of prefixLines) bytes += Buffer.byteLength(p, 'utf8') + 1;
+
+  let cutoff = offset;
+  while (cutoff < total) {
+    const lineBytes = Buffer.byteLength(lines[cutoff], 'utf8') + 1;
+    if (bytes + lineBytes > cap && cutoff > offset) break;
+    bytes += lineBytes;
+    cutoff++;
+    if (bytes >= cap && cutoff > offset) break;
+  }
+
+  // Hunk-snap (nice-to-have): if a later line in the page opened a new hunk,
+  // snap the cutoff back to it so the page ends on a hunk boundary — but
+  // only when it keeps most of the budget and still makes progress.
+  if (cutoff < total && cutoff - offset > 1) {
+    const window = Math.max(1, Math.floor((cutoff - offset) * 0.1));
+    for (let j = cutoff - 1; j >= cutoff - window && j > offset; j--) {
+      if (lines[j].startsWith('@@ ') || lines[j].startsWith('diff --git ')) {
+        cutoff = j;
+        break;
+      }
+    }
+  }
+
+  const body = lines.slice(offset, cutoff);
+  const diff = prefixLines.length ? prefixLines.concat(body).join('\n') : body.join('\n');
+  return { diff, cutoff, prefixLines };
+}
+
+export async function getWorktreeDiff({ project, worktreeName, baseRef, contextLines = 3, summary = false, paths, offset = 0 }) {
   if (!project || !worktreeName) {
     throw new Error('get_worktree_diff requires {project, worktreeName}');
   }
@@ -354,19 +488,80 @@ export async function getWorktreeDiff({ project, worktreeName, baseRef, contextL
   if (!wt) throw new Error(`worktree '${worktreeName}' not found under project '${project}'`);
   const ref = (typeof baseRef === 'string' && baseRef.trim()) ? baseRef.trim() : wt.baseBranch;
   const ctx = Number.isInteger(contextLines) && contextLines >= 0 && contextLines <= 50 ? contextLines : 3;
-  const r = await runGitInDir(wt.worktreePath, ['diff', `--unified=${ctx}`, `${ref}...HEAD`]);
+  const pathArgs = Array.isArray(paths) ? paths.filter(p => typeof p === 'string' && p.trim()) : [];
+  const pathspec = pathArgs.length ? ['--', ...pathArgs] : [];
+
+  // ---- summary mode: structured per-file stat, never truncated ----
+  if (summary === true) {
+    // Identical flags (incl. -M) so --numstat and --name-status list files
+    // in the same order and zip cleanly by index.
+    const numArgs = ['diff', '--numstat', '-M', `${ref}...HEAD`, ...pathspec];
+    const nsArgs = ['diff', '--name-status', '-M', `${ref}...HEAD`, ...pathspec];
+    const [rn, rns] = await Promise.all([
+      runGitInDir(wt.worktreePath, numArgs),
+      runGitInDir(wt.worktreePath, nsArgs),
+    ]);
+    if (rn.code !== 0) throw new Error(`git diff --numstat failed in ${wt.worktreePath}: ${rn.stderr.trim() || rn.stdout.trim()}`);
+    if (rns.code !== 0) throw new Error(`git diff --name-status failed in ${wt.worktreePath}: ${rns.stderr.trim() || rns.stdout.trim()}`);
+    const nums = parseNumstat(rn.stdout);
+    const stats = parseNameStatus(rns.stdout);
+    const files = stats.map((s, i) => {
+      const n = nums[i] ?? { additions: 0, deletions: 0, binary: false };
+      const entry = { path: s.path, status: s.status, additions: n.additions, deletions: n.deletions, binary: n.binary };
+      if (s.oldPath) entry.oldPath = s.oldPath;
+      return entry;
+    });
+    const totals = {
+      files: files.length,
+      additions: files.reduce((acc, f) => acc + f.additions, 0),
+      deletions: files.reduce((acc, f) => acc + f.deletions, 0),
+    };
+    return { project, worktreeName, baseRef: ref, head: 'HEAD', summary: true, totals, files };
+  }
+
+  // ---- diff mode: full diff with line-based pagination ----
+  const r = await runGitInDir(wt.worktreePath, ['diff', `--unified=${ctx}`, `${ref}...HEAD`, ...pathspec]);
   if (r.code !== 0) {
     throw new Error(`git diff failed in ${wt.worktreePath}: ${r.stderr.trim() || r.stdout.trim()}`);
   }
   const full = r.stdout ?? '';
-  const sizeBytes = Buffer.byteLength(full, 'utf8');
-  const truncated = sizeBytes > DIFF_BYTE_CAP;
-  const diff = truncated ? full.slice(0, DIFF_BYTE_CAP) : full;
-  return {
-    project, worktreeName, baseRef: ref,
+  const totalBytes = Buffer.byteLength(full, 'utf8');
+  // Split into real diff lines, dropping the single trailing newline's empty tail.
+  const lines = full.length ? full.split('\n') : [];
+  if (lines.length && lines[lines.length - 1] === '') lines.pop();
+  const totalLines = lines.length;
+  const startLine = Number.isInteger(offset) && offset > 0 ? offset : 0;
+
+  const idx = indexDiffLines(lines);
+  const { diff, cutoff } = paginateDiff(lines, startLine, DIFF_BYTE_CAP, idx);
+  // `truncated` means more pages remain after this one; drain by re-calling
+  // with offset:nextOffset until truncated:false.
+  const truncated = cutoff < totalLines;
+  const nextOffset = truncated ? cutoff : null;
+
+  const result = {
+    project, worktreeName, baseRef: ref, head: 'HEAD',
     contextLines: ctx,
-    diff, sizeBytes, truncated,
+    offset: startLine,
+    diff,
+    truncated,
+    nextOffset,
+    totalLines,
+    totalBytes,
+    sizeBytes: totalBytes, // back-compat alias
   };
+  // Explicit truncation metadata: which files this page covers vs omits.
+  if (truncated) {
+    const included = new Set();
+    for (let i = startLine; i < cutoff; i++) {
+      const fi = idx.fileOf[i];
+      if (fi >= 0 && idx.files[fi].path) included.add(idx.files[fi].path);
+    }
+    const allPaths = idx.files.map(f => f.path).filter(Boolean);
+    result.includedFiles = allPaths.filter(p => included.has(p));
+    result.omittedFiles = allPaths.filter(p => !included.has(p));
+  }
+  return result;
 }
 
 // ---------- mutating: worktrees ----------
