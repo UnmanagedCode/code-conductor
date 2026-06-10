@@ -1,8 +1,8 @@
 // Client-side cache + resolver for the configurable per-family model version
-// (Settings → Models). The three spawn pickers (quick-spawn ↯, Conduct,
-// new-instance dialog) carry only a `family` marker; the concrete base
-// version id comes from the user's setting, fetched once at boot and
-// refreshed when the Settings page switches a version.
+// (Settings → Models). The two spawn pickers (Conduct, new-instance dialog)
+// carry only a `family` marker; the concrete base version id comes from the
+// user's setting, fetched once at boot and refreshed when the Settings page
+// switches a version.
 //
 // Context-window policy (mirrors canonicalizeModel in src/modelVersions.js):
 //   Opus  → 1M bare (CLI native default)

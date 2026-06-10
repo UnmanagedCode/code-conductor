@@ -1,7 +1,7 @@
 // Settings page — a full-page view inside #main, shown when the URL hash is
-// `#settings`. Built as a group-nav + content scaffold; the only group today
-// is Transcribe (whisper.cpp install + model picker). Future groups add a
-// nav item + a panel and hang off loadGroup().
+// `#settings`. Built as a group-nav + content scaffold with four groups today:
+// Transcribe, TTS, Models, and Workspace Conventions. Each adds a nav item +
+// a panel hanging off loadGroup().
 //
 // Navigation is hash-driven so a refresh keeps the page. app.js owns the
 // hash (it knows the active session to restore on close) and passes a

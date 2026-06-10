@@ -2,8 +2,8 @@
 // (Sonnet / Opus / Haiku), offered in the Settings → Models group. Single
 // source of truth: the API ships this list to the frontend (so the picker
 // isn't duplicated client-side) AND it doubles as the allow-list that gates
-// the per-family switch endpoint — only a (family, id) pair present here may
-// be activated, keeping arbitrary strings out of the spawn `--model` flag.
+// the per-family Settings endpoint — only a (family, id) pair present here
+// may be activated via Settings.
 //
 // `id` is the bare CLI model identifier. Context-window policy is one fixed
 // window per family (no per-spawn choice): Opus → 1M (bare CLI default),
