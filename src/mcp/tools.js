@@ -499,10 +499,15 @@ export function buildTools() {
     {
       name: 'get_worktree_diff',
       description:
-        'Return the full unified diff of <baseRef>...HEAD in a worktree. baseRef defaults to the worktree\'s ' +
-        'recorded baseBranch (the branch it was created from). Output is capped at ~200 KB — when truncated, ' +
-        'follow up with read_file on specific files. Complements project_status, which only returns the diff ' +
-        'stat.',
+        'Return the unified diff of <baseRef>...HEAD in a worktree. baseRef defaults to the worktree\'s recorded ' +
+        'baseBranch (the branch it was created from); contextLines (0-50, default 3) sets hunk context. Three modes ' +
+        'keep this usable at any size: (1) summary:true returns a structured per-file stat ' +
+        '{totals, files:[{path,status,oldPath?,additions,deletions,binary}]} instead of a diff — always small, never ' +
+        'truncated. (2) paths:[...] scopes the diff (or summary) to specific file paths. (3) the diff is paginated by ' +
+        'LINE INDEX: each call returns at most ~200 KB of whole lines starting at offset (0-based line index, default 0) ' +
+        'with {diff, truncated, nextOffset, totalLines, totalBytes}; when truncated, re-call with offset:nextOffset until ' +
+        'truncated:false. Mid-file pages re-emit the file/hunk headers so each page parses standalone, and a truncated ' +
+        'page lists includedFiles/omittedFiles. Never silently cuts. Complements project_status.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -510,6 +515,9 @@ export function buildTools() {
           worktreeName: { type: 'string' },
           baseRef: { type: 'string', description: 'Optional ref to diff against. Defaults to the worktree\'s baseBranch.' },
           contextLines: { type: 'integer', description: 'Lines of context around each hunk (0-50, default 3).' },
+          summary: { type: 'boolean', description: 'Return a per-file stat (totals + files[]) instead of a diff. Always small; never truncated.' },
+          paths: { type: 'array', items: { type: 'string' }, description: 'Limit the diff (or summary) to these file paths.' },
+          offset: { type: 'integer', description: '0-based line index into the diff to start this page at (default 0). Use nextOffset from the previous call to paginate.' },
         },
         required: ['project', 'worktreeName'],
       },
