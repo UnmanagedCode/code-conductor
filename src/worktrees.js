@@ -369,13 +369,16 @@ export async function mergeWorktreeIntoParent(projectName, worktreeName) {
 //   - behind == 0                                 → already in sync (no-op).
 //   - behind > 0, ahead == 0, worktree tree clean → server-side `git
 //     merge --ff-only <baseBranch>` inside the worktree.
-//   - anything else (diverged, or pure-behind but dirty)
-//                                                 → caller must send
-//     buildRebasePrompt(meta) to the worktree's agent (the rebase is
-//     async + interactive, so we don't drive `git rebase` ourselves).
+//   - dirty working tree (any ahead count)        → caller must send
+//     buildRebasePrompt(meta) to the worktree's agent (the agent
+//     commits/discards before rebasing).
+//   - ahead > 0, clean tree                       → attempt server-side
+//     `git rebase <baseBranch>`; on success return 'rebased'; on
+//     conflict abort cleanly and fall back to the agent rebase prompt.
 // Returns one of:
 //   { ok:true,  action:"already-in-sync",  ahead, behind }
 //   { ok:true,  action:"fast-forwarded",   ahead:0, behind:0, newSha }
+//   { ok:true,  action:"rebased",          ahead, behind:0, newSha }
 //   { ok:true,  action:"rebase-required",  ahead, behind }
 //   { ok:false, reason: "..." }
 export async function syncWorktree(projectName, worktreeName) {
@@ -395,13 +398,8 @@ export async function syncWorktree(projectName, worktreeName) {
   if (behind === 0) {
     return { ok: true, action: 'already-in-sync', ahead, behind };
   }
-  // Diverged → agent must rebase interactively.
-  if (ahead > 0) {
-    return { ok: true, action: 'rebase-required', ahead, behind };
-  }
-  // Pure-behind: try a clean fast-forward inside the worktree. Fall
-  // back to the rebase path if the working tree is dirty (the agent
-  // will commit / discard before rebasing).
+  // Dirty working tree → agent must commit/discard before any rebase can
+  // proceed (git rebase refuses a dirty tree). Send the rebase prompt.
   const dirty = await worktreeDirtyLines(meta.worktreePath);
   if (!dirty.ok) {
     return { ok: false, reason: `git status failed inside worktree '${meta.worktreePath}'` };
@@ -409,22 +407,42 @@ export async function syncWorktree(projectName, worktreeName) {
   if (dirty.lines.length > 0) {
     return { ok: true, action: 'rebase-required', ahead, behind };
   }
-  const merge = await runGit(meta.worktreePath, ['merge', '--ff-only', meta.baseBranch]);
-  if (merge.code !== 0) {
+  // Pure-behind + clean tree → fast-forward; no rebase needed.
+  if (ahead === 0) {
+    const merge = await runGit(meta.worktreePath, ['merge', '--ff-only', meta.baseBranch]);
+    if (merge.code !== 0) {
+      return {
+        ok: false,
+        reason: (merge.stderr.trim() || merge.stdout.trim() ||
+          `git merge --ff-only ${meta.baseBranch} failed inside worktree`),
+      };
+    }
+    const newHead = await runGit(meta.worktreePath, ['rev-parse', 'HEAD']);
     return {
-      ok: false,
-      reason: (merge.stderr.trim() || merge.stdout.trim() ||
-        `git merge --ff-only ${meta.baseBranch} failed inside worktree`),
+      ok: true,
+      action: 'fast-forwarded',
+      ahead: 0,
+      behind: 0,
+      newSha: newHead.stdout.trim(),
     };
   }
-  const newHead = await runGit(meta.worktreePath, ['rev-parse', 'HEAD']);
-  return {
-    ok: true,
-    action: 'fast-forwarded',
-    ahead: 0,
-    behind: 0,
-    newSha: newHead.stdout.trim(),
-  };
+  // Diverged + clean tree → attempt automatic rebase. On conflict, abort
+  // cleanly so the worktree is never left mid-rebase, then fall back to
+  // the agent rebase prompt.
+  const rebase = await runGit(meta.worktreePath, ['rebase', meta.baseBranch]);
+  if (rebase.code === 0) {
+    const newHead = await runGit(meta.worktreePath, ['rev-parse', 'HEAD']);
+    return {
+      ok: true,
+      action: 'rebased',
+      ahead,
+      behind: 0,
+      newSha: newHead.stdout.trim(),
+    };
+  }
+  // Abort unconditionally — safe no-op if rebase never started.
+  await runGit(meta.worktreePath, ['rebase', '--abort']);
+  return { ok: true, action: 'rebase-required', ahead, behind };
 }
 
 // Build the prompt text the orchestrator sends to the agent when the
