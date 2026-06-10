@@ -26,8 +26,6 @@ export function installSettings({
   const smStatusEl = document.getElementById('sm-status');
   const smListEl = document.getElementById('sm-family-list');
   const smAutoStopEl = document.getElementById('sm-auto-stop');
-  const smFable5EnabledEl  = document.getElementById('sm-fable5-enabled');
-  const smDefaultFamilyEl  = document.getElementById('sm-default-family');
   const smCompactWindowEnabledEl = document.getElementById('sm-compact-window-enabled');
   const smCompactWindowRowEl     = document.getElementById('sm-compact-window-row');
   const smCompactWindowSliderEl  = document.getElementById('sm-compact-window');
@@ -258,28 +256,51 @@ export function installSettings({
     const families = data.families || [];
     const active = data.active || {};
     const sonnetWindow = data.sonnetContextWindow ?? '1m';
+    const enabledFamilies = data.enabledFamilies ?? {};
+    const defaultFamily = data.defaultSpawnFamily ?? 'opus';
+    const enabledCount = families.filter(f => enabledFamilies[f.family] !== false).length;
+
     if (smStatusEl) {
       smStatusEl.innerHTML = families.map(f => {
         const vLabel = labelFor(f, active[f.family]);
         const extra = f.family === 'sonnet'
           ? ` — ${sonnetWindow === '200k' ? '200k' : '1M'}`
           : '';
-        return `${f.label}: <strong>${vLabel}${extra}</strong>`;
+        const isDefault = f.family === defaultFamily;
+        return `${f.label}: <strong>${vLabel}${extra}</strong>${isDefault ? ' <em>(default)</em>' : ''}`;
       }).join(' · ');
     }
+
     smListEl.innerHTML = '';
     for (const f of families) {
+      const isEnabled = enabledFamilies[f.family] !== false;
+      const isDefault = f.family === defaultFamily;
+      const isLastEnabled = isEnabled && enabledCount === 1;
+
       const li = document.createElement('li');
-      li.className = 'sm-family-row';
+      li.className = 'sm-family-row' + (isEnabled ? '' : ' sm-family-row--disabled');
 
-      const label = document.createElement('span');
-      label.className = 'sm-family-label';
-      label.textContent = f.label;
-      li.appendChild(label);
+      // Column 1: enable checkbox
+      const chk = document.createElement('input');
+      chk.type = 'checkbox';
+      chk.className = 'sm-enable';
+      chk.dataset.family = f.family;
+      chk.checked = isEnabled;
+      chk.disabled = isLastEnabled; // prevent disabling the last one
+      chk.addEventListener('change', () => onPickFamilyEnabled(f.family, chk.checked));
+      li.appendChild(chk);
 
+      // Column 2: family label
+      const labelEl = document.createElement('span');
+      labelEl.className = 'sm-family-label';
+      labelEl.textContent = f.label;
+      li.appendChild(labelEl);
+
+      // Column 3: version select
       const sel = document.createElement('select');
       sel.className = 'sm-version';
       sel.dataset.family = f.family;
+      sel.disabled = !isEnabled || f.versions.length < 2;
       if (f.family === 'sonnet') {
         for (const v of f.versions) {
           for (const w of ['200k', '1m']) {
@@ -305,14 +326,23 @@ export function installSettings({
         }
         sel.addEventListener('change', () => onPickVersion(f.family, sel.value));
       }
-      sel.disabled = f.versions.length < 2;
       li.appendChild(sel);
+
+      // Column 4: default radio
+      const radio = document.createElement('input');
+      radio.type = 'radio';
+      radio.name = 'sm-default-family';
+      radio.className = 'sm-default-radio';
+      radio.value = f.family;
+      radio.checked = isDefault;
+      radio.disabled = !isEnabled;
+      radio.addEventListener('change', () => { if (radio.checked) onPickDefaultFamily(f.family); });
+      li.appendChild(radio);
 
       smListEl.appendChild(li);
     }
+
     if (smAutoStopEl) smAutoStopEl.checked = data.autoStopOnOverage ?? false;
-    if (smFable5EnabledEl)  smFable5EnabledEl.value  = (data.fable5Enabled !== false) ? '1' : '0';
-    if (smDefaultFamilyEl)  smDefaultFamilyEl.value  = data.defaultSpawnFamily ?? 'opus';
     if (smCompactWindowEnabledEl) {
       const cw = data.conductorCompactWindow ?? { enabled: false, value: 200 };
       smCompactWindowEnabledEl.checked = cw.enabled;
@@ -381,14 +411,12 @@ export function installSettings({
     }
   }
 
-  smFable5EnabledEl?.addEventListener('change', () => onPickFable5Enabled(smFable5EnabledEl.value === '1'));
-
-  async function onPickFable5Enabled(enabled) {
+  async function onPickFamilyEnabled(family, enabled) {
     try {
       const r = await fetch('/api/settings/models/prefs', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ fable5Enabled: enabled }),
+        body: JSON.stringify({ familyEnabled: { family, enabled } }),
       });
       const data = await r.json();
       if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
@@ -398,8 +426,6 @@ export function installSettings({
       if (smStatusEl) smStatusEl.textContent = `Update failed: ${e.message || e}`;
     }
   }
-
-  smDefaultFamilyEl?.addEventListener('change', () => onPickDefaultFamily(smDefaultFamilyEl.value));
 
   async function onPickDefaultFamily(family) {
     try {

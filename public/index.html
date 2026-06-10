@@ -127,26 +127,16 @@
               or 1M) is chosen per-spawn in the picker. Changes take effect immediately — no restart.
             </p>
             <div id="sm-status" class="st-status" aria-live="polite">Loading…</div>
+            <div class="sm-family-header" aria-hidden="true">
+              <span></span>
+              <span></span>
+              <span class="sm-col-header">version</span>
+              <span class="sm-col-header">default</span>
+            </div>
             <ul id="sm-family-list" class="sm-family-list"></ul>
             <div class="sm-prefs">
               <label class="tt-toggle"><input id="sm-auto-stop" type="checkbox" /> Auto-stop on overage (overtime)</label>
               <p class="settings-hint">Interrupts the session the moment it starts using paid overage credits. Off by default.</p>
-              <label class="sm-pref-row">Claude Fable 5
-                <select id="sm-fable5-enabled">
-                  <option value="1">Enabled</option>
-                  <option value="0">Disabled</option>
-                </select>
-              </label>
-              <p class="settings-hint">Show Claude Fable 5 in spawn pickers. Enabled by default.</p>
-              <label class="sm-pref-row">Default spawn model
-                <select id="sm-default-family">
-                  <option value="haiku">Haiku</option>
-                  <option value="sonnet">Sonnet</option>
-                  <option value="opus">Opus</option>
-                  <option value="fable">Fable 5</option>
-                </select>
-              </label>
-              <p class="settings-hint">Pre-selected model when the spawn dialog opens. Defaults to Opus. If set to Fable 5 while Fable 5 is disabled, the dialog falls back to Opus.</p>
               <label class="tt-toggle"><input id="sm-compact-window-enabled" type="checkbox" /> Override compact window for the Conduct orchestrator session</label>
               <p class="settings-hint">Sets the effective context-window size at which the 🎼 Conduct orchestrator session (.conduct) auto-compacts. Does not affect worker agents it spawns. Off by default.</p>
               <div id="sm-compact-window-row" class="sm-compact-row" hidden>

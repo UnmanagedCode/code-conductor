@@ -20,7 +20,7 @@ export const DEFAULT_VERSIONS = {
 
 let activeVersions = { ...DEFAULT_VERSIONS };
 let activeSonnetWindow = '1m';
-let activeFable5Enabled = true;
+let activeFamilyEnabled = { fable: true, opus: true, sonnet: true, haiku: true };
 let activeDefaultSpawnFamily = 'opus';
 
 export function getActiveVersions() {
@@ -41,13 +41,12 @@ export function setActiveSonnetWindow(w) {
   return activeSonnetWindow;
 }
 
-export function getActiveFable5Enabled() {
-  return activeFable5Enabled;
+export function getActiveFamilyEnabled(family) {
+  return activeFamilyEnabled[family] !== false;
 }
 
-export function setActiveFable5Enabled(v) {
-  activeFable5Enabled = v !== false;
-  return activeFable5Enabled;
+export function setActiveFamilyEnabled(map) {
+  activeFamilyEnabled = { ...activeFamilyEnabled, ...(map || {}) };
 }
 
 export function getActiveDefaultSpawnFamily() {
@@ -66,7 +65,7 @@ export async function loadModelVersions() {
       const data = await r.json();
       setActiveVersions(data.active);
       setActiveSonnetWindow(data.sonnetContextWindow);
-      setActiveFable5Enabled(data.fable5Enabled);
+      if (data.enabledFamilies) setActiveFamilyEnabled(data.enabledFamilies);
       setActiveDefaultSpawnFamily(data.defaultSpawnFamily);
     }
   } catch { /* keep defaults */ }

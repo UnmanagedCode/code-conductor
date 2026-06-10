@@ -28,7 +28,7 @@ import { installSettings } from './settings.js';
 import { installReview } from './review.js';
 import { installCommits } from './commits.js';
 import { loadModelVersions, setActiveVersions, setActiveSonnetWindow, getActiveSonnetWindow, resolveSpawnModel,
-  setActiveFable5Enabled, getActiveFable5Enabled,
+  setActiveFamilyEnabled, getActiveFamilyEnabled,
   setActiveDefaultSpawnFamily, getActiveDefaultSpawnFamily } from './models.js';
 import { setTtsAvailable, setTtsEnabled, setTtsRate } from './tts.js';
 
@@ -368,16 +368,16 @@ const settings = installSettings({
   onModelsChange: data => {
     setActiveVersions(data.active);
     setActiveSonnetWindow(data.sonnetContextWindow);
-    setActiveFable5Enabled(data.fable5Enabled);
+    if (data.enabledFamilies) setActiveFamilyEnabled(data.enabledFamilies);
     setActiveDefaultSpawnFamily(data.defaultSpawnFamily);
     syncSonnetPickerLabels();
-    syncFable5Visibility();
+    syncFamilyVisibility();
   },
   onTtsAvailabilityChange: setTtsAvailable,
   onTtsPrefsChange: ({ enabled, rate }) => { setTtsEnabled(enabled); setTtsRate(rate); },
 });
 // Seed the per-family model-version cache the spawn pickers resolve against.
-loadModelVersions().then(() => { syncSonnetPickerLabels(); syncFable5Visibility(); });
+loadModelVersions().then(() => { syncSonnetPickerLabels(); syncFamilyVisibility(); });
 dom.settingsBtn?.addEventListener('click', () => {
   closeSidebarOverflow();
   if (location.hash === '#settings') settings.close();
@@ -925,25 +925,30 @@ function syncSonnetPickerLabels() {
     .forEach(el => { el.textContent = w; });
 }
 
-// Shows or hides every Fable 5 button across all dialogs. If Fable 5 is
-// currently selected in the spawn dialog and gets disabled, resets to opus.
-function syncFable5Visibility() {
-  const enabled = getActiveFable5Enabled();
-  document.querySelectorAll('.qs-model[data-family="fable"]').forEach(btn => {
-    btn.hidden = !enabled;
-  });
-  if (!enabled && selectedSpawnFamily === 'fable') {
-    selectedSpawnFamily = 'opus';
+// Shows or hides every family button across all dialogs. If the currently
+// selected family gets disabled, resets selection to the resolved default.
+function syncFamilyVisibility() {
+  for (const family of ['fable', 'opus', 'sonnet', 'haiku']) {
+    const enabled = getActiveFamilyEnabled(family);
+    document.querySelectorAll(`.qs-model[data-family="${family}"]`).forEach(btn => {
+      btn.hidden = !enabled;
+    });
+  }
+  if (!getActiveFamilyEnabled(selectedSpawnFamily)) {
+    selectedSpawnFamily = defaultSpawnFamily();
     updateSpawnModelSelection();
   }
 }
 
 // Resolves the configured default family for the spawn dialog initial selection,
-// falling back to 'opus' if the configured default is currently disabled.
+// falling back to the first enabled family if the configured default is disabled.
 function defaultSpawnFamily() {
   const d = getActiveDefaultSpawnFamily();
-  if (d === 'fable' && !getActiveFable5Enabled()) return 'opus';
-  return d;
+  if (getActiveFamilyEnabled(d)) return d;
+  for (const f of ['fable', 'opus', 'sonnet', 'haiku']) {
+    if (getActiveFamilyEnabled(f)) return f;
+  }
+  return 'opus';
 }
 
 // ── Unified spawn dialog ──────────────────────────────────────────────
