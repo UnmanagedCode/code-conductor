@@ -1474,7 +1474,7 @@ function updateActiveHeader() {
   // the UX honest (no clickable button that just throws a 409).
   conversation.setUserActionsEnabled(inst.status === 'idle');
   dom.composerInput.placeholder = inst.status === 'turn'
-    ? 'turn running — your message will queue'
+    ? 'turn running — type to steer the running turn'
     : inst.status === 'spawning'
       ? 'instance is starting…'
       : inst.status === 'crashed' || inst.status === 'exited'
