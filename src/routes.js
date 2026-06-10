@@ -14,7 +14,7 @@ import {
   buildRebasePrompt, getWorktree, removeAllWorktreesForProject,
   attachmentsDir, getWorktreeMergeStatus, syncWorktree,
   getProjectUpstreamStatus, getWorktreeDiff,
-  getProjectCommits, getCommitDiff,
+  getProjectCommits, getCommitDiff, getProjectUncommittedDiff,
 } from './worktrees.js';
 import { scheduleRestart } from './restart.js';
 import { ensureConductProject, CONDUCT_PROJECT_NAME } from './conduct.js';
@@ -356,6 +356,18 @@ export function buildRoutes({ instances, serverCtx } = {}) {
     try {
       const limit = req.query.limit !== undefined ? Number(req.query.limit) : undefined;
       const result = await getProjectCommits(req.params.name, { limit });
+      res.json(result);
+    } catch (e) { next(e); }
+  });
+
+  // Diff of all uncommitted changes (staged + unstaged vs HEAD). Mirrors the
+  // commit /diff response shape so the same client renderer applies.
+  // Registered before the :sha route so the literal "uncommitted" isn't
+  // treated as a SHA param.
+  r.get('/projects/:name/commits/uncommitted/diff', async (req, res, next) => {
+    try {
+      const contextLines = req.query.context !== undefined ? Number(req.query.context) : 3;
+      const result = await getProjectUncommittedDiff(req.params.name, { contextLines });
       res.json(result);
     } catch (e) { next(e); }
   });
