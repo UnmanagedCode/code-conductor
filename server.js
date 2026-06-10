@@ -75,8 +75,6 @@ export async function start({ port = 8787, host = '127.0.0.1' } = {}) {
   // abort boot — unlike a migration, this is a convenience sync.
   try { await reconcileRootClaudeMd({ log: console }); }
   catch (e) { console.warn('root CLAUDE.md reconcile failed:', e); }
-  const readiness = await checkClaudeReadiness();
-  process.stderr.write(formatReadiness(readiness) + '\n');
   const { server, instances, wss } = createServer();
   await listenWithRetry(server, port, host);
   const addr = server.address();
@@ -84,6 +82,13 @@ export async function start({ port = 8787, host = '127.0.0.1' } = {}) {
   // PreToolUse http hook URL — feed it back into the manager now that
   // listen has resolved (port may have been auto-assigned via 0).
   if (instances) instances.setServerPort(addr.port);
+  // Readiness is informational only (a stderr warning banner). Run it AFTER
+  // we're listening — never gate port availability on a `claude --version`
+  // spawn that can be slow or CPU-starved under concurrent startup. (Awaiting
+  // it here previously delayed listen() past test poll deadlines under load.)
+  checkClaudeReadiness()
+    .then((readiness) => process.stderr.write(formatReadiness(readiness) + '\n'))
+    .catch((e) => process.stderr.write(`claude readiness check failed: ${e?.message || e}\n`));
   return { server, instances, wss, port: addr.port, host: addr.address };
 }
 
