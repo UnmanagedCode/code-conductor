@@ -228,6 +228,10 @@ export class Instance extends EventEmitter {
     // exit from `turn` (turn_end → idle, crash, exit). Drives the
     // "stopping…" marker + the "Interrupt now" escalate affordance.
     this.interrupting = false;
+    // Set true by the resume-restart path before SIGKILL so _handleExit
+    // skips _deleteTempArtifacts() — the temp jsonl must survive to be
+    // resumed on the next boot. Never persisted.
+    this._suppressTempDelete = false;
   }
 
   summary() {
@@ -699,7 +703,11 @@ export class Instance extends EventEmitter {
     // the held-open HTTP responses.
     this._hooks.discardAll();
     this._closeDebugStreams();
-    if (this.temp) this._deleteTempArtifacts().catch(() => {});
+    // `_suppressTempDelete` is set by the resume-restart path
+    // (shutdownForResumeSync): there we SIGKILL temp subprocesses but must
+    // PRESERVE their jsonl so the next boot can `--resume` them. Without the
+    // guard, this exit handler would wipe the very transcript we're carrying.
+    if (this.temp && !this._suppressTempDelete) this._deleteTempArtifacts().catch(() => {});
   }
 
   // Best-effort removal of the CLI's persisted jsonl + sub-agent dir for
@@ -856,6 +864,27 @@ export class Instance extends EventEmitter {
       message: {
         role: 'user',
         content: [{ type: 'text', text: `${SOFT_INTERRUPT_TEXT}\n${SOFT_INTERRUPT_MARKER}` }],
+      },
+      parent_tool_use_id: null,
+    });
+    this.interrupting = true;
+    this.emit('status', this.summary());
+  }
+
+  // Like the SOFT path of interrupt() but with caller-supplied wind-down text
+  // — used by the resume-restart drain so each instance gets a restart-specific
+  // (and, for conductors, worker-aware) stop notice. Same hidden-marker
+  // injection contract: never rendered, never replayed; mid-turn only;
+  // idempotent within a turn via `interrupting`.
+  windDown(text) {
+    if (this.status !== 'turn') return;
+    if (this.interrupting) return;
+    const body = typeof text === 'string' && text.trim() ? text : SOFT_INTERRUPT_TEXT;
+    this._sendRaw({
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [{ type: 'text', text: `${body}\n${SOFT_INTERRUPT_MARKER}` }],
       },
       parent_tool_use_id: null,
     });
@@ -1437,5 +1466,48 @@ export class InstanceManager extends EventEmitter {
     for (const inst of temps) {
       if (inst.sessionId) deleteSessionTitle(inst.sessionId).catch(() => {});
     }
+  }
+
+  // Resume-restart counterpart of shutdownTempSync: synchronously SIGKILL every
+  // live subprocess (temp AND non-temp) so no orphan keeps writing the jsonl we
+  // are about to carry over — but DO NOT delete any jsonl. We set
+  // `_suppressTempDelete` first so each temp instance's _handleExit skips
+  // _deleteTempArtifacts(), preserving the transcript for `--resume` on boot.
+  shutdownForResumeSync() {
+    const live = [];
+    for (const inst of this.byId.values()) {
+      if (!inst.proc) continue;
+      inst._suppressTempDelete = true;
+      live.push(inst);
+      if (inst.pid) {
+        try { process.kill(inst.pid, 'SIGKILL'); } catch { /* gone */ }
+      }
+    }
+    // Bounded sync wait for the SIGKILLed processes to be reaped, mirroring
+    // shutdownTempSync. Atomics.wait is Node's only non-spinning sync sleep.
+    const sab = new Int32Array(new SharedArrayBuffer(4));
+    const deadline = Date.now() + 300;
+    while (Date.now() < deadline) {
+      let allDead = true;
+      for (const inst of live) {
+        if (!inst.pid) continue;
+        try { process.kill(inst.pid, 0); allDead = false; break; }
+        catch { /* ESRCH = gone */ }
+      }
+      if (allDead) break;
+      Atomics.wait(sab, 0, 0, 20);
+    }
+  }
+
+  // Enumerate the workers a conductor spawned via MCP, for the resume manifest's
+  // injected worker list. Returns [{sessionId, worktreeName}] for every live
+  // instance whose callerInstanceId matches and that has a sessionId.
+  conductedWorkersOf(conductorId) {
+    const out = [];
+    for (const inst of this.byId.values()) {
+      if (inst.callerInstanceId !== conductorId || !inst.sessionId) continue;
+      out.push({ sessionId: inst.sessionId, worktreeName: inst.worktree?.worktreeName ?? null });
+    }
+    return out;
   }
 }

@@ -89,7 +89,7 @@ Outbound: `system` + `subtype:"init"` (bundled with first turn's response, not a
 | `DELETE` | `/api/projects/:name/worktrees/:wt/sessions/:sid[?force=1]` | Same, worktree-scoped. |
 | `GET` | `/api/instances/:id/attachments/:filename` | Streams from the central-store attachments dir (path-traversal guarded). |
 | `POST` | `/api/instances/:id/hook-callback` | PreToolUse http hook target; always 200 with `permissionDecision`. |
-| `POST` | `/api/admin/restart` | Self-respawn (202 immediate, detached child, exit). |
+| `POST` | `/api/admin/restart` | Self-respawn (202 immediate, detached child, exit). Body `{resume:true}` ⇒ graceful **Resume after restart**: drain every live turn to idle (`src/resumeRestart.js`), carry sessions (incl. temps) over via `<store>/pending-resume.json`, and resurrect + notify them on boot. Omitted/false ⇒ normal hard restart (wipes temps). |
 | `GET` | `/api/transcribe/status` | `{available: boolean}` — true when both `WHISPER_CLI` and `WHISPER_MODEL` exist on disk. Drives the composer's mic-button visibility. |
 | `POST` | `/api/transcribe` | Body: raw audio bytes (any `audio/*` content-type, ≤ 25 MB). Returns `{text}`. 400 on empty body, 503 when whisper isn't installed. Route-scoped `express.raw` parser so the global 1 MB JSON limit doesn't apply. |
 | `GET` | `/api/settings/transcribe` | `{available, activeModel, models:[{name,label,sizeLabel,installed}], install}` — curated whisper model catalog + per-model on-disk state + active model + install status. |

@@ -111,6 +111,8 @@ const dom = {
   notifyToggle: document.getElementById('notify-toggle'),
   restartBtn: document.getElementById('restart-server-btn'),
   sidebarStatus: document.getElementById('sidebar-status'),
+  restartDialog: document.getElementById('restart-dialog'),
+  restartBlurb: document.getElementById('rd-blurb'),
 };
 
 // Per-instance task trackers — one TaskTracker is kept alive per
@@ -944,23 +946,47 @@ async function waitForServerBack({ tries = 60, delayMs = 250 } = {}) {
   }
   return false;
 }
-dom.restartBtn.addEventListener('click', async () => {
+// Run the restart → wait-for-server-back → reload flow. `resume` picks the
+// graceful drain path (carries sessions over); the resume branch widens the
+// poll budget to outlast the server-side drain (≤15 s) since HTTP is torn down
+// only after all sessions reach idle.
+async function performRestart({ resume = false } = {}) {
   if (restartInProgress) return;
   restartInProgress = true;
   dom.restartBtn.disabled = true;
-  setSidebarStatus('restarting…', { warn: true });
-  // Fire the restart. The server replies 202 then exits; the fetch
-  // may either resolve or be aborted mid-flight — both are fine.
-  await fetch('/api/admin/restart', { method: 'POST' }).catch(() => {});
-  // Give the server a moment to actually exit + spawn the replacement
-  // before we start probing, so the first probe doesn't hit the
-  // still-alive old server and reload prematurely.
+  setSidebarStatus(resume ? 'draining sessions…' : 'restarting…', { warn: true });
+  // Fire the restart. The server replies 202 then exits; the fetch may either
+  // resolve or be aborted mid-flight — both are fine.
+  await fetch('/api/admin/restart', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ resume }),
+  }).catch(() => {});
+  // Give the server a moment before we start probing so the first probe
+  // doesn't hit the still-alive old server and reload prematurely.
   await new Promise(r => setTimeout(r, 800));
   setSidebarStatus('waiting for server…', { warn: true });
-  await waitForServerBack();
+  await waitForServerBack(resume ? { tries: 240, delayMs: 250 } : undefined);
   setSidebarStatus('reloading…', { warn: true });
   // Full reload so the new HTML/CSS/JS replace what's in memory.
   location.reload();
+}
+dom.restartBtn.addEventListener('click', async () => {
+  if (restartInProgress) return;
+  // No live sessions → nothing to resume; keep the immediate hard restart.
+  if (!state.instances.length) { await performRestart({ resume: false }); return; }
+  const n = state.instances.length;
+  if (dom.restartBlurb) {
+    dom.restartBlurb.textContent =
+      `${n} active session${n === 1 ? '' : 's'}. Resume them after the restart, or restart only (sessions are dropped — temp sessions are cleaned up)?`;
+  }
+  dom.restartDialog.showModal();
+});
+dom.restartDialog?.addEventListener('close', async () => {
+  const choice = dom.restartDialog.returnValue;
+  if (choice === 'resume') await performRestart({ resume: true });
+  else if (choice === 'plain') await performRestart({ resume: false });
+  // 'cancel' / dismiss → no-op.
 });
 // Background connection status (unrelated to manual restart): show
 // "reconnecting…" if the WS drops on its own, clear it on reconnect.

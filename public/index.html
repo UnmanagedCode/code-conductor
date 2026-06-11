@@ -218,6 +218,18 @@
     </form>
   </dialog>
 
+  <dialog id="restart-dialog">
+    <form method="dialog">
+      <h3>Restart server</h3>
+      <p class="hint" id="rd-blurb"></p>
+      <menu>
+        <button value="cancel" formnovalidate>Cancel</button>
+        <button value="plain">Restart only</button>
+        <button id="rd-resume" value="resume">Resume after restart</button>
+      </menu>
+    </form>
+  </dialog>
+
   <dialog id="workspace-dialog">
     <form method="dialog">
       <h3 id="gd-title">Workspace</h3>
