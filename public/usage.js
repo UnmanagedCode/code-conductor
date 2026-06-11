@@ -194,14 +194,14 @@ export function renderRateLimitChip(info, accountUsage) {
   if (info) {
     typeLabel = RATE_LIMIT_TYPE_LABELS[info.rateLimitType] ?? info.rateLimitType ?? '?';
     util = typeof info.utilization === 'number' ? info.utilization : null;
-    frac = util != null ? util / 100 : null;
+    frac = util;  // 0-1 fraction from the OAuth API
     resetStr = formatResetTime(info.resetsAt);
     isOverage = info.isUsingOverage === true;
   } else if (accountUsage?.five_hour) {
     const fh = accountUsage.five_hour;
     typeLabel = '5h';
     util = typeof fh.utilization === 'number' ? fh.utilization : null;
-    frac = util != null ? util / 100 : null;
+    frac = util;  // 0-1 fraction from the OAuth API
     // five_hour.resets_at is ISO-8601; convert to Unix seconds for formatResetTime.
     resetStr = fh.resets_at ? formatResetTime(new Date(fh.resets_at).getTime() / 1000) : null;
     isOverage = false;
@@ -216,14 +216,14 @@ export function renderRateLimitChip(info, accountUsage) {
   el.setAttribute('aria-expanded', 'false');
   el.title = [
     `Rate limit: ${typeLabel}`,
-    util != null ? `Utilization: ${util}%` : null,
+    util != null ? `Utilization: ${Math.round(util * 100)}%` : null,
     resetStr,
     isOverage ? 'OVERAGE active' : null,
     'Tap for details',
   ].filter(Boolean).join(' · ');
 
   let text = `rl ${typeLabel}`;
-  if (util != null) text += ` · ${Math.round(util)}%`;
+  if (util != null) text += ` · ${Math.round(util * 100)}%`;
   el.textContent = text;
 
   if (isOverage) {
