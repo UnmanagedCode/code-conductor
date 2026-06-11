@@ -1882,16 +1882,16 @@ function buildRateLimitPopover() {
     const reset = bucket.resets_at
       ? formatResetTime(new Date(bucket.resets_at).getTime() / 1000)
       : null;
-    const utilStr = util != null ? `${Math.round(util)}%` : '—';
+    const utilStr = util != null ? `${Math.round(util * 100)}%` : '—';
     const resetStr = reset ? ` · ${reset}` : '';
-    const frac = util != null ? util / 100 : null;
+    const frac = util;  // 0-1 fraction from the OAuth API
     node.appendChild(row(label, utilStr + resetStr, fillClass(frac)));
   }
 
   const ex = accountUsage.extra_usage;
   if (ex?.is_enabled) {
-    const used = typeof ex.used_credits === 'number' ? ex.used_credits.toFixed(2) : '?';
-    const limit = ex.monthly_limit ?? '?';
+    const used = typeof ex.used_credits === 'number' ? (ex.used_credits / 100).toFixed(2) : '?';
+    const limit = typeof ex.monthly_limit === 'number' ? (ex.monthly_limit / 100).toFixed(2) : '?';
     const currency = ex.currency ?? '';
     node.appendChild(row('Extra credits', `${used} / ${limit} ${currency}`.trim()));
   }
