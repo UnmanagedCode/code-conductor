@@ -11,7 +11,7 @@ import { SubagentPanel } from './subagents.js';
 import {
   UsageTracker, contextWindowFor,
   formatTokens, formatPct, formatDuration, fillClass,
-  RateLimitTracker, renderRateLimitChip,
+  RateLimitTracker, renderRateLimitChip, formatResetTime,
 } from './usage.js';
 import {
   NotificationState, ensurePermission, setGlobalEnabled,
@@ -40,6 +40,20 @@ const state = {
   activeStatus: null,
   activeMode: null,
 };
+
+// Account-level usage fetched from /api/usage (OAuth endpoint, 60 s server cache).
+// null until the first successful fetch; stays null on errors (chip degrades silently).
+let accountUsage = null;
+
+async function refreshAccountUsage() {
+  try {
+    const r = await fetch('/api/usage', { cache: 'no-store' });
+    if (!r.ok) return;
+    const j = await r.json();
+    accountUsage = j.usage ?? null;
+    if (state.activeId) updateActiveHeader();
+  } catch { /* ignore — chip degrades silently */ }
+}
 
 const dom = {
   projectList: document.getElementById('project-list'),
@@ -1542,13 +1556,18 @@ function updateActiveHeader() {
   // controls onto a third row on mobile.
   dom.tiUsageSlot.textContent = '';
   dom.tiUsageSlot.appendChild(renderUsageChip(inst));
-  // Rate-limit chip: left side of the bottom bar. Hidden until the first
-  // rate_limit_event arrives so it doesn't affect layout in idle sessions.
+  // Rate-limit chip: left side of the bottom bar. Hidden when neither a
+  // rate_limit_event nor account-level OAuth data is available.
   const rlInfo = getRateLimit(inst.id).info;
   dom.tiRatelimitSlot.textContent = '';
-  if (rlInfo) {
+  const rlChip = renderRateLimitChip(rlInfo, accountUsage);
+  if (rlChip) {
+    rlChip.addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggleRateLimitPopover(rlChip);
+    });
     dom.tiRatelimitSlot.hidden = false;
-    dom.tiRatelimitSlot.appendChild(renderRateLimitChip(rlInfo));
+    dom.tiRatelimitSlot.appendChild(rlChip);
   } else {
     dom.tiRatelimitSlot.hidden = true;
   }
@@ -1788,6 +1807,106 @@ function buildUsagePopover(inst) {
   return node;
 }
 
+// ── Rate-limit detail popover ────────────────────────────────────────────────
+// Mirrors closeUsagePopover / toggleUsagePopover / buildUsagePopover exactly.
+
+const OAUTH_BUCKET_LABELS = {
+  five_hour:       '5-hour',
+  seven_day:       '7-day',
+  seven_day_sonnet: '7-day (Sonnet)',
+  seven_day_opus:  '7-day (Opus)',
+};
+
+function buildRateLimitPopover() {
+  const node = document.createElement('div');
+  node.className = 'ih-usage-popover';
+  node.setAttribute('role', 'dialog');
+  node.setAttribute('aria-label', 'Usage limits');
+  const row = (label, value, valueClass) => {
+    const r = document.createElement('div');
+    r.className = 'ih-usage-row';
+    const k = document.createElement('span'); k.className = 'ih-usage-k'; k.textContent = label;
+    const v = document.createElement('span'); v.className = 'ih-usage-v';
+    if (valueClass) v.classList.add(valueClass);
+    v.textContent = value;
+    r.appendChild(k); r.appendChild(v);
+    return r;
+  };
+  const header = document.createElement('div');
+  header.className = 'ih-usage-popover-header';
+  header.textContent = 'Usage limits';
+  node.appendChild(header);
+
+  if (!accountUsage) {
+    const empty = document.createElement('div');
+    empty.className = 'ih-usage-empty-msg';
+    empty.textContent = 'Usage data unavailable.';
+    node.appendChild(empty);
+    return node;
+  }
+
+  for (const key of ['five_hour', 'seven_day', 'seven_day_sonnet', 'seven_day_opus']) {
+    const bucket = accountUsage[key];
+    if (!bucket) continue;
+    const label = OAUTH_BUCKET_LABELS[key] ?? key;
+    const util = typeof bucket.utilization === 'number' ? bucket.utilization : null;
+    const reset = bucket.resets_at
+      ? formatResetTime(new Date(bucket.resets_at).getTime() / 1000)
+      : null;
+    const utilStr = util != null ? `${Math.round(util)}%` : '—';
+    const resetStr = reset ? ` · ${reset}` : '';
+    const frac = util != null ? util / 100 : null;
+    node.appendChild(row(label, utilStr + resetStr, fillClass(frac)));
+  }
+
+  const ex = accountUsage.extra_usage;
+  if (ex?.is_enabled) {
+    const used = typeof ex.used_credits === 'number' ? ex.used_credits.toFixed(2) : '?';
+    const limit = ex.monthly_limit ?? '?';
+    const currency = ex.currency ?? '';
+    node.appendChild(row('Extra credits', `${used} / ${limit} ${currency}`.trim()));
+  }
+
+  return node;
+}
+
+let openRateLimitPopover = null;
+function closeRateLimitPopover() {
+  if (!openRateLimitPopover) return;
+  const { node, anchor, dismiss } = openRateLimitPopover;
+  node.remove();
+  anchor.setAttribute('aria-expanded', 'false');
+  document.removeEventListener('pointerdown', dismiss, true);
+  document.removeEventListener('keydown', dismiss, true);
+  openRateLimitPopover = null;
+}
+function toggleRateLimitPopover(anchor) {
+  if (openRateLimitPopover && openRateLimitPopover.anchor === anchor) {
+    closeRateLimitPopover();
+    return;
+  }
+  closeRateLimitPopover();
+  const node = buildRateLimitPopover();
+  document.body.appendChild(node);
+  const r = anchor.getBoundingClientRect();
+  node.style.top = `${Math.round(r.top - node.offsetHeight - 6)}px`;
+  const desiredLeft = r.right - node.offsetWidth;
+  const maxLeft = window.innerWidth - node.offsetWidth - 8;
+  node.style.left = `${Math.max(8, Math.min(desiredLeft, maxLeft))}px`;
+  anchor.setAttribute('aria-expanded', 'true');
+  const dismiss = (ev) => {
+    if (ev.type === 'keydown') {
+      if (ev.key === 'Escape') closeRateLimitPopover();
+      return;
+    }
+    if (node.contains(ev.target) || anchor.contains(ev.target)) return;
+    closeRateLimitPopover();
+  };
+  document.addEventListener('pointerdown', dismiss, true);
+  document.addEventListener('keydown', dismiss, true);
+  openRateLimitPopover = { node, anchor, dismiss };
+}
+
 bus.addEventListener('snapshot', (e) => {
   const m = e.detail;
   // Rebuild task tracker from the snapshot for any instance we observe
@@ -1800,6 +1919,7 @@ bus.addEventListener('snapshot', (e) => {
   tracker.reset();
   const usage = getUsage(m.id);
   usage.reset();
+  getRateLimit(m.id).reset();
   const isActive = m.id === state.activeId;
   if (isActive) conversation.clear();
   if (isActive) conversation._replayMode = true;
@@ -1807,6 +1927,7 @@ bus.addEventListener('snapshot', (e) => {
     const prevCount = tracker.completedBatches.length;
     tracker.apply(ev);
     usage.apply(ev);
+    getRateLimit(m.id).apply(ev);
     if (isActive) {
       conversation.apply(ev);
       if (tracker.completedBatches.length > prevCount) {
@@ -1851,6 +1972,7 @@ bus.addEventListener('reset_snapshot', (e) => {
   tracker.reset();
   const usage = getUsage(m.id);
   usage.reset();
+  getRateLimit(m.id).reset();
   const isActive = m.id === state.activeId;
   if (isActive) { conversation.reset(); lazyReset(); }
   if (isActive) conversation._replayMode = true;
@@ -1858,6 +1980,7 @@ bus.addEventListener('reset_snapshot', (e) => {
     const prevCount = tracker.completedBatches.length;
     tracker.apply(ev);
     usage.apply(ev);
+    getRateLimit(m.id).apply(ev);
     if (isActive) {
       conversation.apply(ev);
       if (tracker.completedBatches.length > prevCount) {
@@ -2020,3 +2143,6 @@ installExternalLinkOpener({
 installLightbox();
 
 connect();
+
+refreshAccountUsage();
+setInterval(refreshAccountUsage, 60_000);
