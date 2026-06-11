@@ -988,6 +988,9 @@ dom.restartDialog?.addEventListener('close', async () => {
   else if (choice === 'plain') await performRestart({ resume: false });
   // 'cancel' / dismiss → no-op.
 });
+dom.restartDialog?.addEventListener('click', (e) => {
+  if (e.target === dom.restartDialog) dom.restartDialog.close();
+});
 // Background connection status (unrelated to manual restart): show
 // "reconnecting…" if the WS drops on its own, clear it on reconnect.
 let everConnected = false;
