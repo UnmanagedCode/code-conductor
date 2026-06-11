@@ -67,19 +67,24 @@ test('temp session jsonl is filtered out of GET /api/projects/:name/sessions whi
     assert.ok(proj, 'project present in /api/projects');
     assert.equal(proj.sessions.count, 1, 'count excludes live-temp jsonl, includes normal one');
 
-    // After the temp instance is killed, its jsonl is deleted by the
-    // existing temp cleanup, so it does not reappear in the list.
+    // After the temp instance is killed, it is archived: the .jsonl is kept
+    // but the session appears with archived:true in the list (not in the
+    // normal active section). It no longer shows as a plain active session.
     const del = await api(baseUrl, 'DELETE', `/api/instances/${tempId}`);
     assert.equal(del.status, 200);
-    await waitFor(async () => {
-      try { await fs.access(path.join(dir, `${tempSid}.jsonl`)); return false; }
-      catch { return true; }
-    });
+    await waitFor(() => !instances.get(tempId));
+    // Give the async archive sidecar write a moment to land.
+    const { isArchived } = await import('../src/archivedSessions.js');
+    await waitFor(async () => isArchived(tempSid));
+
+    // .jsonl is kept (archived, not deleted).
+    await fs.access(path.join(dir, `${tempSid}.jsonl`));
 
     const list2 = await api(baseUrl, 'GET', '/api/projects/tempfilter/sessions');
-    const sids2 = list2.body.map(s => s.sessionId);
-    assert.ok(!sids2.includes(tempSid), 'temp sessionId stays out after kill (jsonl deleted)');
-    assert.ok(sids2.includes(normalSid), 'normal sessionId still there');
+    const entry = list2.body.find(s => s.sessionId === tempSid);
+    assert.ok(entry, 'archived session should still appear in list');
+    assert.equal(entry.archived, true, 'temp session is archived after kill');
+    assert.ok(list2.body.find(s => s.sessionId === normalSid), 'normal sessionId still there');
   } finally { await close(); }
 });
 

@@ -32,9 +32,11 @@ export function buildTools() {
       name: 'list_sessions',
       description:
         'List persisted Claude sessions for a project, or for a specific worktree inside it. ' +
-        'Returns [{sessionId, firstPrompt, title, conducted, mtime, size}] newest-first. ' +
-        '`conducted:true` marks a session spawned via the `spawn_instance` tool (orchestrator-driven); ' +
-        'all sessions are returned regardless — this is a grouping flag, not a filter.',
+        'Returns [{sessionId, firstPrompt, title, conducted, archived, mtime, size}] newest-first. ' +
+        '`conducted:true` marks a session spawned via the `spawn_instance` tool (orchestrator-driven). ' +
+        '`archived:true` marks a session that was killed and archived rather than deleted — its ' +
+        'transcript is retained and it is resumable, but hidden from the normal active list. ' +
+        'All sessions are returned regardless of these flags — they are grouping flags, not filters.',
       inputSchema: {
         type: 'object',
         properties: {

@@ -10,6 +10,7 @@ import { createWorktree, getWorktree, debugBaseDir } from './worktrees.js';
 import { getTitle as getSessionTitle, deleteTitle as deleteSessionTitle } from './sessionTitles.js';
 import { isConducted, markConducted, unmarkConducted } from './conductedSessions.js';
 import { isTemp, markTemp, unmarkTemp } from './tempSessions.js';
+import { markArchived } from './archivedSessions.js';
 import { CONDUCT_PROJECT_NAME } from './conduct.js';
 import { buildSettingsJSON, buildMcpConfigJSON } from './settings.js';
 import { getAutoStopOnOverage, getConductorCompactWindow, getSonnetContextWindow } from './appSettings.js';
@@ -706,26 +707,24 @@ export class Instance extends EventEmitter {
     // `_suppressTempDelete` is set by the resume-restart path
     // (shutdownForResumeSync): there we SIGKILL temp subprocesses but must
     // PRESERVE their jsonl so the next boot can `--resume` them. Without the
-    // guard, this exit handler would wipe the very transcript we're carrying.
-    if (this.temp && !this._suppressTempDelete) this._deleteTempArtifacts().catch(() => {});
+    // guard, this exit handler would archive the transcript we're carrying,
+    // which is fine for the data but still wrong — it would not be resumable.
+    if (this.temp && !this._suppressTempDelete) this._archiveTempSession().catch(() => {});
   }
 
-  // Best-effort removal of the CLI's persisted jsonl + sub-agent dir for
-  // a temp session. Called after the subprocess exits.
-  async _deleteTempArtifacts() {
+  // Archive a killed temp session: retain the .jsonl (stays resumable) but
+  // mark it archived so it disappears from the normal session list and
+  // surfaces in the — archived — section instead. The sub-agent dir is
+  // still cleaned up (it is ephemeral; only the main .jsonl matters for
+  // restore). Title and conducted markers are kept — they are still
+  // meaningful on an archived session.
+  async _archiveTempSession() {
     if (!this.sessionId) return;
     const dir = path.join(claudeProjectsRoot(), encodeCwd(this.cwd));
-    const file = path.join(dir, `${this.sessionId}.jsonl`);
     const subagents = path.join(dir, this.sessionId);
-    await fsp.rm(file, { force: true });
     await fsp.rm(subagents, { recursive: true, force: true });
-    try { await deleteSessionTitle(this.sessionId); } catch { /* best-effort */ }
-    // A temp conducted session DOES persist its conducted marker (written in
-    // _writeSessionMetadata before the temp early-return, so it survives
-    // SIGKILL). On this clean-exit path the jsonl is gone, so clear both
-    // durable markers — the symmetric counterpart of the unmarkTemp beside it.
-    try { await unmarkConducted(this.sessionId); } catch { /* best-effort */ }
     try { await unmarkTemp(this.sessionId); } catch { /* best-effort */ }
+    try { await markArchived(this.sessionId); } catch { /* best-effort */ }
   }
 
   _sendRaw(obj) {
@@ -1448,23 +1447,27 @@ export class InstanceManager extends EventEmitter {
       Atomics.wait(sab, 0, 0, 20);
     }
 
+    // Remove subagent dirs (ephemeral; not needed for restore). The main
+    // .jsonl is KEPT — we archive rather than delete. A double-wipe for
+    // belt-and-braces against orphaned subagent writes is still correct here.
     const wipe = () => {
       for (const inst of temps) {
         if (!inst.sessionId) continue;
         const dir = path.join(claudeProjectsRoot(), encodeCwd(inst.cwd));
-        try { rmSync(path.join(dir, `${inst.sessionId}.jsonl`), { force: true }); } catch { /* ignore */ }
         try { rmSync(path.join(dir, inst.sessionId), { recursive: true, force: true }); } catch { /* ignore */ }
       }
     };
     wipe();
     Atomics.wait(sab, 0, 0, 30);
     wipe();
-    // Drop any custom titles for the wiped temp sessions. Fire-and-forget —
-    // the sidecar write is async and the restart path is about to exit; if
-    // it doesn't land in time the next boot's sweepPendingTempCleanup will
-    // pick up the slack via the manifest.
+    // Mark each session archived + unmark temp. Fire-and-forget — the sidecar
+    // writes are async and the restart path is about to exit; if they don't
+    // land in time the next boot's sweepPendingTempCleanup will pick up the
+    // slack via the manifest (which now carries action:"archive").
     for (const inst of temps) {
-      if (inst.sessionId) deleteSessionTitle(inst.sessionId).catch(() => {});
+      if (!inst.sessionId) continue;
+      unmarkTemp(inst.sessionId).catch(() => {});
+      markArchived(inst.sessionId).catch(() => {});
     }
   }
 

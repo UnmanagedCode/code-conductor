@@ -360,6 +360,17 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
    keeps the warm temp colour (the :not(.temp) guard yields to the rule
    above). */
 .session-row.conducted:not(.temp) .session-preview { color: #a3c7ff; }
+/* Archived rows pin below a dim "— archived —" divider. Dim the entire
+   row (not just the preview) to signal that these are inactive/archived. */
+.session-row.archived { opacity: 0.55; }
+.session-row.archived:hover { opacity: 0.85; }
+/* Restore (↩) button on archived rows — always visible (mirrors promote). */
+.session-restore {
+  background: none; border: none; color: var(--muted);
+  cursor: pointer; padding: 0 4px; font-size: 13px; line-height: 1;
+  flex: 0 0 auto;
+}
+.session-restore:hover { color: var(--text); }
 .empty-project-hint {
   font-size: 11px; color: var(--muted); font-style: italic;
   padding: 4px 14px;

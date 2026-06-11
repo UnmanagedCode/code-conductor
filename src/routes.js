@@ -50,6 +50,7 @@ import {
 import { setTitle as setSessionTitle, MAX_TITLE_LEN } from './sessionTitles.js';
 import { getAccountUsage } from './accountUsage.js';
 import { getCostSummary } from './costTracking.js';
+import { unmarkArchived } from './archivedSessions.js';
 
 const CONTENT_TYPE_BY_EXT = {
   png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg',
@@ -125,7 +126,7 @@ export function buildRoutes({ instances, serverCtx } = {}) {
           const wtTempSids = instances ? instances.tempSessionIdsForCwd(w.worktreePath) : null;
           return {
             ...w,
-            sessions: await summarizeSessions(w.worktreePath, wtTempSids).catch(() => ({ count: 0, lastMtime: 0 })),
+            sessions: await summarizeSessions(w.worktreePath, wtTempSids).catch(() => ({ count: 0, archivedCount: 0, lastMtime: 0 })),
           };
         }));
         const projTempSids = instances ? instances.tempSessionIdsForCwd(p.path) : null;
@@ -134,7 +135,7 @@ export function buildRoutes({ instances, serverCtx } = {}) {
           instanceIds: instances ? instances.idsForProject(p.name) : [],
           isGitRepo: gitFacts.isGitRepo,
           worktrees: worktreesWithSessions,
-          sessions: await summarizeSessions(p.path, projTempSids).catch(() => ({ count: 0, lastMtime: 0 })),
+          sessions: await summarizeSessions(p.path, projTempSids).catch(() => ({ count: 0, archivedCount: 0, lastMtime: 0 })),
           mergeStatus: gitFacts.mergeStatus,
         };
       }));
@@ -348,6 +349,26 @@ export function buildRoutes({ instances, serverCtx } = {}) {
       if (!wt) throw Object.assign(new Error('worktree not found'), { statusCode: 404 });
       const force = req.query.force === '1' || req.query.force === 'true';
       await deleteSessionAtCwd({ cwd: wt.worktreePath, sessionId: sid, force });
+      res.json({ ok: true });
+    } catch (e) { next(e); }
+  });
+
+  // Restore an archived session to the normal session list.
+  // Idempotent — restoring a non-archived session is a no-op.
+  r.post('/projects/:name/sessions/:sid/restore', async (req, res, next) => {
+    try {
+      const sid = String(req.params.sid || '');
+      if (!/^[A-Za-z0-9_-]+$/.test(sid)) throw Object.assign(new Error('invalid sessionId'), { statusCode: 400 });
+      await unmarkArchived(sid);
+      res.json({ ok: true });
+    } catch (e) { next(e); }
+  });
+
+  r.post('/projects/:name/worktrees/:wt/sessions/:sid/restore', async (req, res, next) => {
+    try {
+      const sid = String(req.params.sid || '');
+      if (!/^[A-Za-z0-9_-]+$/.test(sid)) throw Object.assign(new Error('invalid sessionId'), { statusCode: 400 });
+      await unmarkArchived(sid);
       res.json({ ok: true });
     } catch (e) { next(e); }
   });

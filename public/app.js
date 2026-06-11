@@ -412,6 +412,7 @@ const sidebar = new Sidebar({
   onDeleteSession: deleteSession,
   onEditWorkspace: openEditWorkspaceDialog,
   onPromoteSession: promoteSession,
+  onRestoreSession: restoreSession,
 });
 // Seed the sidebar with any unread counts restored from localStorage so
 // the pills appear on the first render after a page reload — without
@@ -1422,6 +1423,24 @@ async function deleteSession({ projectName, worktreeName, sessionId, preview }) 
     await refreshInstances();
   } catch (e) {
     alert(`delete session failed: ${e.message}`);
+  }
+}
+
+async function restoreSession({ projectName, worktreeName, sessionId }) {
+  const base = worktreeName
+    ? `/api/projects/${encodeURIComponent(projectName)}/worktrees/${encodeURIComponent(worktreeName)}/sessions/${encodeURIComponent(sessionId)}/restore`
+    : `/api/projects/${encodeURIComponent(projectName)}/sessions/${encodeURIComponent(sessionId)}/restore`;
+  try {
+    const r = await fetch(base, { method: 'POST' });
+    if (!r.ok) throw new Error((await r.json()).error);
+    if (sidebar.sessionsCache) {
+      const key = worktreeName ? `${projectName}:${worktreeName}` : projectName;
+      sidebar.sessionsCache.delete(key);
+    }
+    await refreshProjects();
+    await refreshInstances();
+  } catch (e) {
+    alert(`restore session failed: ${e.message}`);
   }
 }
 
