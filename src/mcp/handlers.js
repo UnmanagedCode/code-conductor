@@ -945,9 +945,12 @@ export async function projectStatus({ project, worktree, logLimit = 20 }) {
 // Path-traversal-guarded file read. Path is project-relative; absolute
 // paths or `..` segments that escape the project / worktree root are
 // rejected. Caps at maxBytes (default 256 KB) so this stays cheap to
-// call from an LLM loop. Returns text content; binary files are
-// reported as base64.
-export async function readFile({ project, worktree, relativePath, maxBytes = 256 * 1024 }) {
+// call from an LLM loop. Returns text content with lineCount; binary
+// files are reported as base64 (line params ignored for binary).
+// Optional line params (text only): offset (1-based start line, default 1),
+// limit (max lines, default: to EOF), lineNumbers (cat-n prefix).
+export async function readFile({ project, worktree, relativePath,
+  maxBytes = 256 * 1024, lineNumbers = false, offset = 1, limit }) {
   if (typeof relativePath !== 'string' || !relativePath) {
     throw new Error('relativePath required');
   }
@@ -978,26 +981,93 @@ export async function readFile({ project, worktree, relativePath, maxBytes = 256
     throw new Error(`'${relativePath}' is not a regular file`);
   }
   const cap = Number.isInteger(maxBytes) && maxBytes > 0 ? maxBytes : 256 * 1024;
+
+  // Always read up to cap bytes first (preserves existing binary behaviour and
+  // avoids loading huge files on the fast path).
   const fh = await fs.open(resolved, 'r');
+  let buf, truncatedByBytes;
   try {
     const len = Math.min(stat.size, cap);
-    const buf = Buffer.alloc(len);
+    buf = Buffer.alloc(len);
     await fh.read(buf, 0, len, 0);
-    const truncated = stat.size > cap;
-    // Best-effort text detection: probe for NULs in the first 4 KB.
-    const probe = buf.slice(0, Math.min(4096, buf.length));
-    const isBinary = probe.includes(0);
-    if (isBinary) {
-      return {
-        path: relativePath, size: stat.size, truncated, encoding: 'base64',
-        content: buf.toString('base64'),
-      };
-    }
-    return {
-      path: relativePath, size: stat.size, truncated, encoding: 'utf8',
-      content: buf.toString('utf8'),
-    };
+    truncatedByBytes = stat.size > cap;
   } finally {
     await fh.close();
   }
+
+  // Best-effort text detection: probe for NULs in the first 4 KB (unchanged).
+  const probe = buf.slice(0, Math.min(4096, buf.length));
+  const isBinary = probe.includes(0);
+  if (isBinary) {
+    // Binary: line params are ignored; behaviour identical to before.
+    return {
+      path: relativePath, size: stat.size, truncated: truncatedByBytes,
+      encoding: 'base64', content: buf.toString('base64'),
+    };
+  }
+
+  // Fast path: no line params requested — preserve the byte-capped read.
+  // lineCount reflects lines in the bytes we have; if truncated it may be
+  // partial (the truncated flag already signals that to the caller).
+  const lineParamsActive = lineNumbers || offset !== 1 || limit != null;
+  if (!lineParamsActive) {
+    const text = buf.toString('utf8');
+    const rawLines = text.split('\n');
+    const lineCount = text.endsWith('\n') ? rawLines.length - 1 : rawLines.length;
+    return {
+      path: relativePath, size: stat.size, truncated: truncatedByBytes,
+      encoding: 'utf8', content: text, lineCount,
+    };
+  }
+
+  // Slow path: line params active — read the full file for accurate line ops.
+  const fullText = truncatedByBytes
+    ? await fs.readFile(resolved, 'utf8')
+    : buf.toString('utf8');
+
+  const allLines = fullText.split('\n');
+  const hasTrailingNL = fullText.endsWith('\n');
+  if (hasTrailingNL) allLines.pop(); // remove sentinel empty element
+  const lineCount = allLines.length;
+
+  const startIdx = Number.isInteger(offset) && offset >= 1 ? offset - 1 : 0;
+  const endIdx = Number.isInteger(limit) && limit >= 1
+    ? Math.min(startIdx + limit, lineCount)
+    : lineCount;
+
+  const slicedLines = allLines.slice(startIdx, endIdx); // empty [] if past EOF
+  const startLine = startIdx + 1;
+  // endLine: last line number served; equals startLine when slice is empty
+  const endLine = Math.max(startLine, startLine + slicedLines.length - 1);
+
+  // Reassemble; restore trailing newline when the slice ends at the last line.
+  const atEof = slicedLines.length > 0 && endLine >= lineCount;
+  let content;
+  if (lineNumbers) {
+    const w = String(lineCount).length;
+    content = slicedLines
+      .map((line, i) => String(startLine + i).padStart(w) + '\t' + line)
+      .join('\n');
+    if (atEof && hasTrailingNL) content += '\n';
+  } else {
+    content = slicedLines.join('\n');
+    if (atEof && hasTrailingNL) content += '\n';
+  }
+
+  // Final byte-cap: safety net so a large slice can't produce a huge response.
+  let truncated = false;
+  if (Buffer.byteLength(content, 'utf8') > cap) {
+    content = Buffer.from(content, 'utf8').subarray(0, cap).toString('utf8');
+    truncated = true;
+  }
+
+  const result = {
+    path: relativePath, size: stat.size, truncated, encoding: 'utf8',
+    content, lineCount,
+  };
+  if (offset !== 1 || limit != null) {
+    result.startLine = startLine;
+    result.endLine = endLine;
+  }
+  return result;
 }
