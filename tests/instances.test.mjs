@@ -6,6 +6,7 @@ import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor } from './helpers.mjs';
 import { encodeCwd } from '../src/projects.js';
+import { isArchived } from '../src/archivedSessions.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-instance.json');
@@ -1046,7 +1047,7 @@ test('temp: skips last-prompt / permission-mode metadata writes after a turn', a
   } finally { await ctx.close(); }
 });
 
-test('temp: deletes session jsonl + sibling subagents dir on subprocess exit', async () => {
+test('temp: archives session jsonl + removes subagents dir on subprocess exit', async () => {
   const { baseUrl, instances, claudeProjectsRoot, close } = await setupWithProject();
   const fsp = (await import('node:fs')).promises;
   try {
@@ -1065,9 +1066,11 @@ test('temp: deletes session jsonl + sibling subagents dir on subprocess exit', a
 
     const del = await api(baseUrl, 'DELETE', `/api/instances/${id}`);
     assert.equal(del.status, 200);
-    await waitFor(async () => {
-      try { await fsp.access(file); return false; } catch { return true; }
-    });
+    // Wait for _archiveTempSession to complete — markArchived is the last write.
+    await waitFor(() => isArchived(inst.sessionId));
+    // .jsonl is retained for resumability — must still be on disk.
+    await fsp.access(file);
+    // Sub-agent dir is ephemeral and must be cleaned up.
     let subStillThere = true;
     try { await fsp.access(path.join(dir, inst.sessionId)); } catch { subStillThere = false; }
     assert.equal(subStillThere, false, 'sub-agent dir for the session was removed');
