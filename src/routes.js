@@ -18,6 +18,7 @@ import {
 } from './worktrees.js';
 import { scheduleRestart } from './restart.js';
 import { getOrCompute, invalidate, invalidateAll } from './projectsCache.js';
+import { pageInstanceEvents } from './eventArchive.js';
 import { ensureConductProject, CONDUCT_PROJECT_NAME } from './conduct.js';
 import {
   isAvailable as transcribeAvailable, transcribe, modelPathForName,
@@ -498,6 +499,34 @@ export function buildRoutes({ instances, serverCtx } = {}) {
       try {
         const inst = await instances.respawn(req.params.id);
         res.json(inst.summary());
+      } catch (e) { next(e); }
+    });
+
+    // Paged event history, including events evicted from the capped ring
+    // (reconstructed from the session jsonl — see src/eventArchive.js).
+    // `before=<seq>` pages backward (up to `limit` events immediately
+    // preceding that seq, oldest-first; the UI's scroll-up path — echo the
+    // response's `nextBefore` cursor back to continue). `after=<seq>` pages
+    // forward (first `limit` events with seq > after). Neither → trailing
+    // `limit` events. `limit` clamped to [1, 500], default 200. Responds
+    // { id, events, hasMore, nextBefore, trimmedBefore, lastSeq }.
+    r.get('/instances/:id/events', async (req, res, next) => {
+      try {
+        const inst = instances.get(req.params.id);
+        if (!inst) throw Object.assign(new Error('instance not found'), { statusCode: 404 });
+        const parseIntParam = (v, name) => {
+          if (v === undefined) return null;
+          const n = Number(v);
+          if (!Number.isInteger(n)) {
+            throw Object.assign(new Error(`${name} must be an integer`), { statusCode: 400 });
+          }
+          return n;
+        };
+        const before = parseIntParam(req.query.before, 'before');
+        const after = parseIntParam(req.query.after, 'after');
+        const limit = parseIntParam(req.query.limit, 'limit') ?? undefined;
+        const page = await pageInstanceEvents(inst, { before, after, limit });
+        res.json({ id: inst.id, ...page });
       } catch (e) { next(e); }
     });
 
