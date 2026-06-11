@@ -11,7 +11,7 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { encodeCwd, claudeProjectsRoot } from './projects.js';
-import { extractAttachedMarkers, isSoftInterruptContent } from './parser.js';
+import { extractAttachedMarkers, isSoftInterruptContent, isMidTurnNoteContent } from './parser.js';
 
 // Predicate: does this persisted jsonl object emit at least one `user_echo`
 // UI event when replayed? Mirrors the live-path emission in
@@ -102,6 +102,7 @@ export function replayPersistedLine(obj, { seqHint = 0, parentToolUseId = null, 
           });
         } else if (block.type === 'text') {
           if (typeof block.text !== 'string') continue;
+          if (isMidTurnNoteContent(block.text)) continue;
           const { text: leftover, attachments } = extractAttachedMarkers(block.text);
           if (leftover.length) echoTexts.push(leftover);
           for (const a of attachments) echoAttachments.push(a);
@@ -132,6 +133,7 @@ export function replayPersistedLine(obj, { seqHint = 0, parentToolUseId = null, 
     const echoAttachments = [];
     for (const block of prompt) {
       if (!block || block.type !== 'text' || typeof block.text !== 'string') continue;
+      if (isMidTurnNoteContent(block.text)) continue;
       const { text: leftover, attachments } = extractAttachedMarkers(block.text);
       if (leftover.length) echoTexts.push(leftover);
       for (const a of attachments) echoAttachments.push(a);

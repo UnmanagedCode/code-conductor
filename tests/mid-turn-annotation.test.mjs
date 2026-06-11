@@ -1,8 +1,12 @@
 // Verify that prompt() prepends a <system-reminder> annotation when the
-// instance is mid-turn, and that the user_echo event is never annotated.
+// instance is mid-turn, that the user_echo event is never annotated, and that
+// both the transcript-replay path and the live-parser path strip the
+// annotation block so it never appears in a rendered user bubble.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { Instance } from '../src/instances.js';
+import { Instance, MID_TURN_NOTE } from '../src/instances.js';
+import { isMidTurnNoteContent, Parser } from '../src/parser.js';
+import { replayPersistedLine } from '../src/transcript.js';
 
 // Returns a minimal fake proc + the array of lines written to its stdin.
 function makeProc() {
@@ -108,4 +112,110 @@ test('user_echo text is never annotated regardless of turn state', async () => {
     !echos[0].text.includes('system-reminder'),
     'no annotation leaked into user_echo',
   );
+});
+
+// ---------------------------------------------------------------------------
+// isMidTurnNoteContent predicate
+// ---------------------------------------------------------------------------
+
+test('isMidTurnNoteContent matches the actual MID_TURN_NOTE constant', () => {
+  assert.equal(isMidTurnNoteContent(MID_TURN_NOTE), true);
+});
+
+test('isMidTurnNoteContent rejects ordinary text', () => {
+  assert.equal(isMidTurnNoteContent('hello world'), false);
+  assert.equal(isMidTurnNoteContent(''), false);
+  assert.equal(isMidTurnNoteContent(undefined), false);
+  assert.equal(isMidTurnNoteContent(null), false);
+});
+
+test('isMidTurnNoteContent requires all three signals', () => {
+  // Missing opening tag
+  assert.equal(isMidTurnNoteContent('mid-turn context\n</system-reminder>'), false);
+  // Missing mid-turn token
+  assert.equal(isMidTurnNoteContent('<system-reminder>\nsome note\n</system-reminder>'), false);
+  // Missing closing tag
+  assert.equal(isMidTurnNoteContent('<system-reminder>\nmid-turn note'), false);
+});
+
+// ---------------------------------------------------------------------------
+// Transcript replay path (type:"user" persisted line)
+// ---------------------------------------------------------------------------
+
+function midTurnUserLine(userText) {
+  return {
+    type: 'user',
+    message: {
+      role: 'user',
+      content: [
+        { type: 'text', text: MID_TURN_NOTE },
+        { type: 'text', text: userText },
+      ],
+    },
+  };
+}
+
+test('transcript replay strips annotation — user_echo contains only user text', () => {
+  const evs = replayPersistedLine(midTurnUserLine('actual request'));
+  const echo = evs.find(e => e.kind === 'user_echo');
+  assert.ok(echo, 'user_echo was emitted');
+  assert.equal(echo.text, 'actual request');
+  assert.ok(!echo.text.includes('system-reminder'), 'no annotation in replayed bubble');
+  assert.ok(!echo.text.includes('mid-turn'), 'mid-turn token not in replayed bubble');
+});
+
+test('transcript replay: annotation-only message emits no user_echo', () => {
+  const line = {
+    type: 'user',
+    message: {
+      role: 'user',
+      content: [{ type: 'text', text: MID_TURN_NOTE }],
+    },
+  };
+  const evs = replayPersistedLine(line);
+  assert.equal(evs.filter(e => e.kind === 'user_echo').length, 0);
+});
+
+// ---------------------------------------------------------------------------
+// Transcript replay path (type:"attachment" queued_command — mid-turn shape)
+// ---------------------------------------------------------------------------
+
+test('transcript replay strips annotation from queued_command shape', () => {
+  const line = {
+    type: 'attachment',
+    attachment: {
+      type: 'queued_command',
+      prompt: [
+        { type: 'text', text: MID_TURN_NOTE },
+        { type: 'text', text: 'queued request' },
+      ],
+    },
+  };
+  const evs = replayPersistedLine(line);
+  const echo = evs.find(e => e.kind === 'user_echo');
+  assert.ok(echo, 'user_echo was emitted');
+  assert.equal(echo.text, 'queued request');
+  assert.ok(!echo.text.includes('system-reminder'), 'no annotation in queued_command bubble');
+});
+
+// ---------------------------------------------------------------------------
+// Live parser path (_handleUser)
+// ---------------------------------------------------------------------------
+
+test('live parser strips annotation — user_echo contains only user text', () => {
+  const p = new Parser();
+  const evs = p.handleObject({
+    type: 'user',
+    message: {
+      role: 'user',
+      content: [
+        { type: 'text', text: MID_TURN_NOTE },
+        { type: 'text', text: 'live request' },
+      ],
+    },
+  });
+  const echo = evs.find(e => e.kind === 'user_echo');
+  assert.ok(echo, 'user_echo was emitted');
+  assert.equal(echo.text, 'live request');
+  assert.ok(!echo.text.includes('system-reminder'), 'no annotation in live bubble');
 });

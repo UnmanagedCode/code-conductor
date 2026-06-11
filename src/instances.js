@@ -40,7 +40,7 @@ const SOFT_INTERRUPT_TEXT =
 // Prepended to user messages delivered while the worker is mid-turn. Keeps
 // the user's text verbatim but gives the worker timing context: the message
 // may not have been composed in reaction to the latest output.
-const MID_TURN_NOTE =
+export const MID_TURN_NOTE =
   '<system-reminder>\n' +
   'The user sent this message while you were mid-turn. They may not have seen your ' +
   'most recent output, and you\'ve continued working since they began composing. ' +
