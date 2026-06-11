@@ -109,6 +109,49 @@ test('reconnect mid-stream replays snapshot without duplicating events', async (
   } finally { await close(); }
 });
 
+test('subscribe sends only the ring tail, snapped to a turn boundary', async () => {
+  const prevTail = process.env.ORCH_SNAPSHOT_TAIL;
+  const prevCap = process.env.ORCH_EVENT_RING_CAP;
+  process.env.ORCH_SNAPSHOT_TAIL = '12';
+  process.env.ORCH_EVENT_RING_CAP = '40';
+  const { baseUrl, wsUrl, instances, close } = await setup();
+  try {
+    const created = await api(baseUrl, 'POST', '/api/instances', { project: 'a', mode: 'bypassPermissions' });
+    const id = created.body.id;
+    await waitFor(() => instances.get(id).status === 'idle' && instances.get(id).sessionId);
+
+    // Synthesize a long history: a user_echo every 5th event.
+    const inst = instances.get(id);
+    for (let i = 0; i < 100; i++) {
+      inst._emitUi(i % 5 === 0
+        ? { kind: 'user_echo', text: `prompt ${i / 5}` }
+        : { kind: 'text_delta', msgId: 'mT', blockIdx: 0, text: `e${i}` });
+    }
+
+    const c = await wsClient(wsUrl);
+    c.send({ t: 'subscribe', id });
+    const snap = await c.wait(m => m.t === 'snapshot' && m.id === id);
+    assert.ok(snap.events.length <= 12, `tail-only snapshot (${snap.events.length} > 12)`);
+    assert.ok(snap.events.length > 0);
+    // Window start snapped forward to a turn boundary.
+    assert.equal(snap.events[0].kind, 'user_echo');
+    // Frame metadata for the lazy-load affordance.
+    assert.equal(snap.tailStartSeq, snap.events[0]._seq);
+    assert.ok(snap.tailStartSeq > 0, 'older history exists below the tail');
+    assert.equal(typeof snap.trimmedBefore, 'number');
+    // Tail is the NEWEST slice.
+    const ring = inst.ringSnapshot();
+    assert.equal(snap.events[snap.events.length - 1]._seq, ring[ring.length - 1]._seq);
+    await c.close();
+  } finally {
+    await close();
+    if (prevTail === undefined) delete process.env.ORCH_SNAPSHOT_TAIL;
+    else process.env.ORCH_SNAPSHOT_TAIL = prevTail;
+    if (prevCap === undefined) delete process.env.ORCH_EVENT_RING_CAP;
+    else process.env.ORCH_EVENT_RING_CAP = prevCap;
+  }
+});
+
 test('two clients on two instances stream concurrently and independently', async () => {
   const { baseUrl, wsUrl, instances, close } = await setup();
   try {

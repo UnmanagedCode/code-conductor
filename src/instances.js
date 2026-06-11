@@ -89,6 +89,10 @@ export function resolveClaudeBin() {
 // e.g. when a single giant turn spans the whole droppable region.
 const DEFAULT_RING_CAP = 2000;
 const RING_TRIM_SLACK = 256;
+// Max events sent in a WS `subscribe` snapshot (see Instance.snapshotTail).
+// Matches the long-documented "500 events" figure, so sessions under 500
+// events behave exactly as before. Override with ORCH_SNAPSHOT_TAIL.
+const DEFAULT_SNAPSHOT_TAIL = 500;
 
 function isOuterUserEcho(ev) {
   return ev?.kind === 'user_echo' && !ev.parentToolUseId;
@@ -281,6 +285,26 @@ export class Instance extends EventEmitter {
   }
 
   ringSnapshot() { return this.ring.toArray(); }
+
+  // Trailing slice of the ring for the WS `subscribe` snapshot — tabs no
+  // longer receive the whole ring on every subscribe; older events are
+  // lazy-loaded via GET /api/instances/:id/events. The window start is
+  // snapped forward to the first outer user_echo inside it (a turn
+  // boundary) so the initial render doesn't begin mid-message; if the
+  // window holds no echo (one giant turn), the plain slice is sent and the
+  // client renders the partial turn as-is.
+  snapshotTail(max) {
+    const envMax = Number(process.env.ORCH_SNAPSHOT_TAIL);
+    const cap = Number.isInteger(max) && max > 0 ? max
+      : (Number.isInteger(envMax) && envMax > 0 ? envMax : DEFAULT_SNAPSHOT_TAIL);
+    const buf = this.ring.buf;
+    if (buf.length <= cap) return buf.slice();
+    let start = buf.length - cap;
+    for (let i = start; i < buf.length; i++) {
+      if (isOuterUserEcho(buf[i])) { start = i; break; }
+    }
+    return buf.slice(start);
+  }
 
   // Open log files for the raw CLI streams when debug mode is on. Called
   // exactly once at the top of spawn(), before any data flows. Best-effort:
