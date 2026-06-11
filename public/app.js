@@ -970,7 +970,7 @@ async function waitForServerBack({ tries = 60, delayMs = 250 } = {}) {
 }
 // Run the restart → wait-for-server-back → reload flow. `resume` picks the
 // graceful drain path (carries sessions over); the resume branch widens the
-// poll budget to outlast the server-side drain (≤15 s) since HTTP is torn down
+// poll budget to outlast the server-side drain (≤60 s) since HTTP is torn down
 // only after all sessions reach idle.
 async function performRestart({ resume = false } = {}) {
   if (restartInProgress) return;
@@ -988,7 +988,9 @@ async function performRestart({ resume = false } = {}) {
   // doesn't hit the still-alive old server and reload prematurely.
   await new Promise(r => setTimeout(r, 800));
   setSidebarStatus('waiting for server…', { warn: true });
-  await waitForServerBack(resume ? { tries: 240, delayMs: 250 } : undefined);
+  // 480 × 250 ms = 120 s — comfortably outlasts the ≤60 s drain plus the
+  // teardown + replacement-boot window before the new server answers.
+  await waitForServerBack(resume ? { tries: 480, delayMs: 250 } : undefined);
   setSidebarStatus('reloading…', { warn: true });
   // Full reload so the new HTML/CSS/JS replace what's in memory.
   location.reload();

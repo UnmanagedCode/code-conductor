@@ -19,8 +19,10 @@ import {
   restoreFromResumeManifest,
   buildConductorResumeText,
   WIND_DOWN_TEXT,
+  WIND_DOWN_TEXT_CONDUCTOR,
   RESUME_TEXT,
 } from '../src/resumeRestart.js';
+import { ensureConductProject, CONDUCT_PROJECT_NAME } from '../src/conduct.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BASIC = path.join(__dirname, 'fixtures', 'scenario-basic.json');
@@ -368,4 +370,73 @@ test('drainToManifest excludes exited instances still retained in byId', async (
     assert.ok(!sids.includes(dead.sessionId), 'exited instance excluded');
     clearResumeManifest();
   } finally { await close(); }
+});
+
+// --- 11. a parked (idle, waiting-on-worker) conductor is treated as busy ----
+// The regression fix: an idle conductor that ended its turn and is parked on an
+// OUTGOING idle-subscription (waiting on a worker) has durable re-conduct work,
+// so it must be wasBusy:true → re-prompted on boot. An idle conductor with NO
+// subscription stays wasBusy:false → resurrected silently. Shutdown stop
+// (windDown) stays mid-turn-only regardless.
+
+test('drainToManifest: idle conductor parked on a subscription is wasBusy:true; idle-no-sub stays silent; windDown is mid-turn-only', async () => {
+  const transcript = path.join(os.tmpdir(), `cc-parked-${randomUUID()}.log`);
+  const prev = process.env.FAKE_CLAUDE_TRANSCRIPT;
+  process.env.FAKE_CLAUDE_TRANSCRIPT = transcript;
+  const { baseUrl, instances, close } = await bootServer({ scenarioPath: NO_TURN });
+  try {
+    await ensureConductProject();
+    await api(baseUrl, 'POST', '/api/projects', { name: 'workproj' });
+
+    // Three conductors in .conduct + one worker (the subscription target).
+    const midTurn   = await instances.create({ project: CONDUCT_PROJECT_NAME });
+    const parked    = await instances.create({ project: CONDUCT_PROJECT_NAME });
+    const idleNoSub = await instances.create({ project: CONDUCT_PROJECT_NAME });
+    const worker    = await instances.create({ project: 'workproj', callerInstanceId: parked.id, conducted: true });
+    await waitFor(() => [midTurn, parked, idleNoSub, worker].every(i => i.sessionId));
+    await waitFor(() => [midTurn, parked, idleNoSub, worker].every(i => i.status === 'idle'));
+
+    // Park `parked` on the worker's idle: an OUTGOING subscription (parked is the
+    // caller) ⇒ isIdleCaller(parked) true. `idleNoSub` has no subscription.
+    instances.subscribeIdle(parked.id, worker.id);
+    assert.equal(instances.isIdleCaller(parked.id), true, 'parked conductor is an idle caller');
+    assert.equal(instances.isIdleCaller(idleNoSub.id), false, 'idle-no-sub conductor is not a caller');
+
+    // Drive only `midTurn` into a turn (NO_TURN scenario keeps it open).
+    await midTurn.prompt('go');
+    await waitFor(() => midTurn.status === 'turn');
+
+    const entries = await drainToManifest({ server: null, wss: null, instances, log: { warn() {}, log() {}, error() {} }, graceMs: 200 });
+    const byId = Object.fromEntries(entries.map(e => [e.sessionId, e]));
+
+    // wasBusy (the predicate Edit 1 widened): mid-turn OR parked ⇒ true.
+    assert.equal(byId[midTurn.sessionId].wasBusy,   true,  'mid-turn conductor → wasBusy:true');
+    assert.equal(byId[parked.sessionId].wasBusy,    true,  'idle conductor parked on a subscription → wasBusy:true');
+    assert.equal(byId[idleNoSub.sessionId].wasBusy, false, 'idle conductor with no subscription → wasBusy:false (silent)');
+    // Regression: a plain idle worker (no outgoing subscription) stays silent.
+    assert.equal(byId[worker.sessionId].wasBusy,    false, 'idle worker with no outgoing subscription → wasBusy:false');
+
+    // Shutdown side (Bug 1, unchanged): windDown fires ONLY for the mid-turn one.
+    assert.equal(midTurn.interrupting,   true,  'mid-turn conductor wound down');
+    assert.equal(parked.interrupting,    false, 'idle parked conductor NOT wound down');
+    assert.equal(idleNoSub.interrupting, false, 'idle conductor NOT wound down');
+    assert.equal(worker.interrupting,    false, 'idle worker NOT wound down');
+
+    // The conductor wind-down variant was injected exactly once (mid-turn only).
+    await waitFor(async () => {
+      try { return (await fs.readFile(transcript, 'utf8')).includes(WIND_DOWN_TEXT_CONDUCTOR); }
+      catch { return false; }
+    });
+    const dump = await fs.readFile(transcript, 'utf8');
+    const frag = 'Every worker you are conducting';
+    const condWindCount = (dump.match(new RegExp(frag, 'g')) || []).length;
+    assert.equal(condWindCount, 1, 'WIND_DOWN_TEXT_CONDUCTOR injected once — to the mid-turn conductor only');
+
+    clearResumeManifest();
+  } finally {
+    await close();
+    if (prev === undefined) delete process.env.FAKE_CLAUDE_TRANSCRIPT;
+    else process.env.FAKE_CLAUDE_TRANSCRIPT = prev;
+    await fs.rm(transcript, { force: true });
+  }
 });
