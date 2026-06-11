@@ -195,11 +195,50 @@ test('spawn_instance + send_prompt(wait:true) + get_transcript round-trip', asyn
     assert.ok(kinds.includes('tool_use'));
     assert.ok(kinds.includes('turn_end'));
     assert.equal(typeof tx.lastSeq, 'number');
+    // Untrimmed ring → trimmedBefore is 0.
+    assert.equal(tx.trimmedBefore, 0);
 
     // sinceSeq filter: after the turn, asking sinceSeq=lastSeq returns nothing.
     const tail = unwrap(await callTool(baseUrl, 'get_transcript', { id: spawn.id, sinceSeq: tx.lastSeq }));
     assert.equal(tail.events.length, 0);
   } finally { await close(); }
+});
+
+test('get_transcript + get_recent_messages survive a trimmed ring', async () => {
+  const prevCap = process.env.ORCH_EVENT_RING_CAP;
+  process.env.ORCH_EVENT_RING_CAP = '20';
+  const { baseUrl, instances, close } = await bootServer({ scenarioPath: SCENARIO_WS });
+  try {
+    await api(baseUrl, 'POST', '/api/projects', { name: 'a' });
+    const spawn = unwrap(await callTool(baseUrl, 'spawn_instance', { project: 'a', mode: 'bypassPermissions' }));
+    await waitFor(() => instances.get(spawn.id).status === 'idle' && instances.get(spawn.id).sessionId);
+    await callTool(baseUrl, 'send_prompt', { id: spawn.id, text: 'go', wait: true, waitTimeoutMs: 5000 });
+
+    // Force eviction with synthetic history; the newest assistant text
+    // must remain reachable for get_recent_messages.
+    const inst = instances.get(spawn.id);
+    for (let i = 0; i < 100; i++) {
+      inst._emitUi({ kind: 'text_delta', msgId: 'mNew', blockIdx: 0, text: i === 99 ? 'the latest words' : `pad ${i} ` });
+    }
+    inst._emitUi({ kind: 'text_end', msgId: 'mNew', blockIdx: 0 });
+    assert.ok(inst.ring.trimmedBefore > 0, 'ring actually trimmed');
+
+    const tx = unwrap(await callTool(baseUrl, 'get_transcript', { id: spawn.id }));
+    assert.equal(tx.trimmedBefore, inst.ring.trimmedBefore);
+    // sinceSeq below trimmedBefore: only retained events come back — the
+    // caller detects the gap via trimmedBefore and pages the REST endpoint.
+    const below = unwrap(await callTool(baseUrl, 'get_transcript', { id: spawn.id, sinceSeq: 0, limit: 0 }));
+    assert.ok(below.events.length > 0);
+    assert.ok(below.events[0]._seq >= below.trimmedBefore);
+
+    const recent = unwrap(await callTool(baseUrl, 'get_recent_messages', { id: spawn.id }));
+    assert.equal(recent.messages.length, 1);
+    assert.ok(recent.messages[0].text.includes('the latest words'));
+  } finally {
+    await close();
+    if (prevCap === undefined) delete process.env.ORCH_EVENT_RING_CAP;
+    else process.env.ORCH_EVENT_RING_CAP = prevCap;
+  }
 });
 
 test('wait_for_idle resolves when an in-flight turn completes', async () => {
