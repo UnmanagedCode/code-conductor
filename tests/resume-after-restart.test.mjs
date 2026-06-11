@@ -141,6 +141,7 @@ test('conductedWorkersOf enumerates a conductor\'s live workers', async () => {
     const sids = workers.map(w => w.sessionId).sort();
     assert.deepEqual(sids, [w1.sessionId, w2.sessionId].sort());
     assert.ok(workers.every(w => w.worktreeName === null));
+    assert.ok(workers.every(w => w.project === 'cwproj'), 'each worker carries its project');
     assert.equal(instances.conductedWorkersOf('nobody').length, 0);
   } finally { await close(); }
 });
@@ -175,7 +176,7 @@ test('restoreFromResumeManifest resumes conductors + others, skips workers, inje
         mode: 'bypassPermissions', effort: 'high', thinking: 'adaptive', model: null,
         worktreeName: null, temp: true, conducted: false, debug: false, title: null,
         autoApprovePlan: false, group: 'conductor',
-        workers: [{ sessionId: workerSid, worktreeName: 'realproj_worktree_zz' }],
+        workers: [{ project: 'realproj', sessionId: workerSid, worktreeName: 'realproj_worktree_zz' }],
       },
       {
         project: 'realproj', sessionId: workerSid, cwd: otherCwd,
@@ -213,6 +214,7 @@ test('restoreFromResumeManifest resumes conductors + others, skips workers, inje
     const dump = await fs.readFile(transcript, 'utf8');
     assert.ok(dump.includes(RESUME_TEXT), 'plain resume text injected');
     assert.ok(dump.includes(workerSid), 'conductor prompt embeds worker sessionId');
+    assert.ok(dump.includes('project `realproj`'), 'conductor prompt embeds worker project');
     assert.ok(dump.includes('resume conducting your workers'), 'conductor resume text injected');
   } finally {
     await close();
@@ -224,11 +226,11 @@ test('restoreFromResumeManifest resumes conductors + others, skips workers, inje
 
 test('buildConductorResumeText lists each worker sessionId + worktree', () => {
   const txt = buildConductorResumeText([
-    { sessionId: 'aaa', worktreeName: 'wt-1' },
-    { sessionId: 'bbb', worktreeName: null },
+    { project: 'p1', sessionId: 'aaa', worktreeName: 'wt-1' },
+    { project: 'p2', sessionId: 'bbb', worktreeName: null },
   ]);
-  assert.ok(txt.includes('sessionId `aaa`, worktree `wt-1`'));
-  assert.ok(txt.includes('sessionId `bbb`, (no worktree)'));
+  assert.ok(txt.includes('project `p1`, sessionId `aaa`, worktree `wt-1`'));
+  assert.ok(txt.includes('project `p2`, sessionId `bbb`, (no worktree)'));
   assert.ok(buildConductorResumeText([]).includes('(none recorded)'));
 });
 
@@ -254,6 +256,32 @@ test('drainToManifest force-interrupts stragglers past the grace and still write
     await fs.access(resumeManifestPath());
     assert.equal(readResumeManifest().instances[0].sessionId, sid);
     assert.equal(inst.proc, null, 'straggler subprocess killed after force + shutdownForResumeSync');
+    clearResumeManifest();
+  } finally { await close(); }
+});
+
+// --- 8. manifest excludes non-live (exited) instances ----------------------
+
+test('drainToManifest excludes exited instances still retained in byId', async () => {
+  const { baseUrl, instances, close } = await bootServer({ scenarioPath: BASIC });
+  try {
+    await api(baseUrl, 'POST', '/api/projects', { name: 'liveonly' });
+    const deadRes = await api(baseUrl, 'POST', '/api/instances', { project: 'liveonly' });
+    const dead = instances.get(deadRes.body.id);
+    await waitFor(() => dead.status === 'idle' && dead.sessionId);
+    const liveRes = await api(baseUrl, 'POST', '/api/instances', { project: 'liveonly' });
+    const live = instances.get(liveRes.body.id);
+    await waitFor(() => live.status === 'idle' && live.sessionId);
+
+    // Kill one (non-temp) instance: proc becomes null but it stays in byId.
+    await dead.kill({ graceMs: 50 });
+    assert.equal(dead.proc, null);
+    assert.ok(instances.byId.has(dead.id), 'exited non-temp instance retained in byId');
+
+    const entries = await drainToManifest({ server: null, wss: null, instances, log: { warn() {}, log() {}, error() {} }, graceMs: 100 });
+    const sids = entries.map(e => e.sessionId);
+    assert.ok(sids.includes(live.sessionId), 'live instance included');
+    assert.ok(!sids.includes(dead.sessionId), 'exited instance excluded');
     clearResumeManifest();
   } finally { await close(); }
 });

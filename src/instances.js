@@ -1500,13 +1500,19 @@ export class InstanceManager extends EventEmitter {
   }
 
   // Enumerate the workers a conductor spawned via MCP, for the resume manifest's
-  // injected worker list. Returns [{sessionId, worktreeName}] for every live
-  // instance whose callerInstanceId matches and that has a sessionId.
+  // injected worker list. Returns [{project, sessionId, worktreeName}] for every
+  // live instance whose callerInstanceId matches and that has a sessionId —
+  // `project` is required so the conductor can deterministically re-spawn each
+  // worker via spawn_instance without reconstructing it from its transcript.
   conductedWorkersOf(conductorId) {
     const out = [];
     for (const inst of this.byId.values()) {
       if (inst.callerInstanceId !== conductorId || !inst.sessionId) continue;
-      out.push({ sessionId: inst.sessionId, worktreeName: inst.worktree?.worktreeName ?? null });
+      out.push({
+        project: inst.project,
+        sessionId: inst.sessionId,
+        worktreeName: inst.worktree?.worktreeName ?? null,
+      });
     }
     return out;
   }

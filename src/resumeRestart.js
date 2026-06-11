@@ -56,7 +56,7 @@ export const RESUME_TEXT =
 export function buildConductorResumeText(workers = []) {
   const lines = (Array.isArray(workers) ? workers : []).map((w) => {
     const wt = w?.worktreeName ? `worktree \`${w.worktreeName}\`` : '(no worktree)';
-    return `- sessionId \`${w?.sessionId}\`, ${wt}`;
+    return `- project \`${w?.project}\`, sessionId \`${w?.sessionId}\`, ${wt}`;
   });
   const list = lines.length ? lines.join('\n') : '- (none recorded)';
   return (
@@ -159,7 +159,10 @@ export async function drainToManifest({ server, wss, instances, log = console, g
   // — carrying temps over is scoped to this path only.
   const entries = [];
   for (const inst of instances.byId.values()) {
-    if (!inst.sessionId) continue;
+    // LIVE instances only — byId retains recently exited/crashed instances
+    // (proc === null), which are not active sessions and must not be
+    // resurrected. Idle sessions keep proc alive, so they're still included.
+    if (!inst.proc || !inst.sessionId) continue;
     const s = inst.summary();
     const group = groupOf(inst);
     const entry = {
