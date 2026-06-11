@@ -44,16 +44,73 @@ function render(data) {
 
   if (data.row_count === 0) return;
 
-  // By project
+  // By project (expandable rows with per-model breakdown)
   const projSection = document.createElement('section');
   projSection.className = 'costs-section';
   const projH = document.createElement('h2');
   projH.textContent = 'By project';
   projSection.appendChild(projH);
-  projSection.appendChild(makeTable(
-    ['Project', 'Cost', 'Turns'],
-    data.by_project.map(p => [p.project, fmtExact(p.cost_usd), String(p.turns)]),
-  ));
+  const projTable = document.createElement('table');
+  projTable.className = 'costs-table';
+  const projThead = document.createElement('thead');
+  const projHeadRow = document.createElement('tr');
+  for (const h of ['Project', 'Cost', 'Turns']) {
+    const th = document.createElement('th');
+    th.textContent = h;
+    projHeadRow.appendChild(th);
+  }
+  projThead.appendChild(projHeadRow);
+  projTable.appendChild(projThead);
+  const projTbody = document.createElement('tbody');
+  for (const p of data.by_project) {
+    const projRow = document.createElement('tr');
+    projRow.className = 'costs-proj-row';
+
+    const nameTd = document.createElement('td');
+    const caret = document.createElement('span');
+    caret.className = 'costs-caret';
+    caret.textContent = '▶';
+    nameTd.appendChild(caret);
+    nameTd.appendChild(document.createTextNode(p.project));
+    projRow.appendChild(nameTd);
+
+    const costTd = document.createElement('td');
+    costTd.textContent = fmtExact(p.cost_usd);
+    projRow.appendChild(costTd);
+
+    const turnsTd = document.createElement('td');
+    turnsTd.textContent = String(p.turns);
+    projRow.appendChild(turnsTd);
+
+    const detailRow = document.createElement('tr');
+    detailRow.className = 'costs-proj-detail';
+    detailRow.hidden = true;
+    const detailTd = document.createElement('td');
+    detailTd.colSpan = 3;
+    detailTd.appendChild(makeTable(
+      ['Model', 'Cost', 'Input', 'Output', 'Cache create', 'Cache read', 'Turns'],
+      (p.by_model ?? []).map(m => [
+        m.model,
+        fmtExact(m.cost_usd),
+        fmtNum(m.input_tokens),
+        fmtNum(m.output_tokens),
+        fmtNum(m.cache_creation_tokens),
+        fmtNum(m.cache_read_tokens),
+        String(m.turns),
+      ]),
+    ));
+    detailRow.appendChild(detailTd);
+
+    projRow.addEventListener('click', () => {
+      const open = projRow.classList.toggle('costs-proj-row--open');
+      detailRow.hidden = !open;
+    });
+
+    projTbody.appendChild(projRow);
+    projTbody.appendChild(detailRow);
+  }
+  projTable.appendChild(projTbody);
+  projSection.appendChild(projTable);
   bodyEl.appendChild(projSection);
 
   // By model

@@ -1537,6 +1537,24 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
   min-width: 2px; width: var(--costs-bar-pct, 0%); max-width: 100%;
 }
 .costs-bar-val { flex-shrink: 0; color: var(--text); font-family: ui-monospace, monospace; width: 72px; }
+/* Expandable project rows */
+.costs-proj-row { cursor: pointer; user-select: none; }
+.costs-proj-row:hover td { background: var(--panel-2); }
+.costs-caret {
+  display: inline-block; margin-right: 6px;
+  font-size: 10px; color: var(--muted);
+  transition: transform 0.15s;
+}
+.costs-proj-row--open .costs-caret { transform: rotate(90deg); }
+.costs-proj-detail td { padding: 0; border-bottom: none; }
+.costs-proj-detail .costs-table {
+  margin: 6px 0 10px 20px;
+  width: calc(100% - 20px);
+  font-size: 12px;
+}
+.costs-proj-detail .costs-table td,
+.costs-proj-detail .costs-table th { padding: 4px 8px 4px 0; }
+
 .sm-cost-row { padding: 12px 0 4px; }
 .sm-cost-row button {
   background: var(--panel-2); border: 1px solid var(--border);
