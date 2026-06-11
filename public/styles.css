@@ -1319,6 +1319,12 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
 #main.commits-open #composer,
 #main.commits-open #instance-controls { display: none !important; }
 
+#main.costs-open #conversation,
+#main.costs-open #task-panel,
+#main.costs-open #turn-indicator,
+#main.costs-open #composer,
+#main.costs-open #instance-controls { display: none !important; }
+
 /* The diff view layers on top of the commit list: hide the list while a
    per-commit diff is open, so backing out of the diff reveals it again. */
 #main.review-open #commits-view { display: none !important; }

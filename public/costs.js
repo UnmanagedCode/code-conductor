@@ -134,18 +134,26 @@ function makeTable(headers, rows) {
   return table;
 }
 
+function show() {
+  getEl('costs-view').hidden = false;
+  getEl('main').classList.add('costs-open');
+}
+
+function hide() {
+  getEl('costs-view').hidden = true;
+  getEl('main').classList.remove('costs-open');
+}
+
 function open() {
-  const view = getEl('costs-view');
-  if (!view) return;
-  view.hidden = false;
+  if (!getEl('costs-view')) return;
   history.pushState({}, '', '#costs');
+  show();
   load();
 }
 
 function close() {
-  const view = getEl('costs-view');
-  if (!view) return;
-  view.hidden = true;
+  if (!getEl('costs-view')) return;
+  hide();
   _onClose?.();
 }
 
