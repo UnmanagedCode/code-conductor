@@ -413,12 +413,12 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
 /* Context-usage chip — `ctx N%` toggleable button. Color-graded by
  * fill: green under 50%, amber 50-80%, red over 80%. Empty state
  * (no turn yet) is muted grey. */
-.ih-chip.ih-usage {
+.ih-chip.ih-usage, .ih-chip.ih-ratelimit {
   border: 0; cursor: pointer; padding: 2px 6px; line-height: inherit;
   font-family: ui-monospace, monospace; font-size: 11px;
 }
-.ih-chip.ih-usage:hover { filter: brightness(1.15); }
-.ih-chip.ih-usage[aria-expanded="true"] { outline: 1px solid var(--border); }
+.ih-chip.ih-usage:hover, .ih-chip.ih-ratelimit:hover { filter: brightness(1.15); }
+.ih-chip.ih-usage[aria-expanded="true"], .ih-chip.ih-ratelimit[aria-expanded="true"] { outline: 1px solid var(--border); }
 .ih-chip.ih-usage.ih-usage-empty { background: var(--panel-2); color: var(--muted); }
 .ih-chip.ih-usage.ih-usage-low { background: rgba(74, 222, 128, .18); color: var(--green); }
 .ih-chip.ih-usage.ih-usage-mid { background: rgba(245, 158, 11, .22); color: var(--amber); }

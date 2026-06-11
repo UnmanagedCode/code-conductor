@@ -48,6 +48,7 @@ import {
   resolve as rootClaudeMdResolve,
 } from './rootClaudeMd.js';
 import { setTitle as setSessionTitle, MAX_TITLE_LEN } from './sessionTitles.js';
+import { getAccountUsage } from './accountUsage.js';
 
 const CONTENT_TYPE_BY_EXT = {
   png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg',
@@ -1007,6 +1008,16 @@ export function buildRoutes({ instances, serverCtx } = {}) {
         throw Object.assign(new Error('unknown action — use keep or overwrite'), { statusCode: 400 });
       }
       res.json(await rootClaudeMdResolve(action));
+    } catch (e) { next(e); }
+  });
+
+  // Account-level usage from the Anthropic OAuth endpoint. Cached server-side
+  // for 60 s. Returns { usage: <data> } or { usage: null } — never exposes
+  // the raw token to the browser.
+  r.get('/usage', async (req, res, next) => {
+    try {
+      const usage = await getAccountUsage();
+      res.json({ usage });
     } catch (e) { next(e); }
   });
 

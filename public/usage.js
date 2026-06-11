@@ -181,27 +181,45 @@ export function formatResetTime(unixSecs) {
   return 'resets ' + d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 }
 
-// Build the rate-limit chip element from a rate_limit_info object.
-// Returns null when info is falsy (slot should stay hidden).
-// Reuses fillClass() and ih-usage-* colour CSS from the context chip.
-export function renderRateLimitChip(info) {
-  if (!info) return null;
+// Build the rate-limit chip element.
+// info: rate_limit_info from the most recent rate_limit_event (or null).
+// accountUsage: OAuth account-level usage object (or null) — used as fallback
+//   when no per-session event has arrived yet (shows five_hour bucket).
+// Returns null when both are null (slot stays hidden).
+// Returns a <button> so it can open the detail popup on click.
+export function renderRateLimitChip(info, accountUsage) {
+  // Derive display values from the best available source.
+  let typeLabel, util, frac, resetStr, isOverage;
 
-  const typeLabel = RATE_LIMIT_TYPE_LABELS[info.rateLimitType] ?? info.rateLimitType ?? '?';
-  const util = typeof info.utilization === 'number' ? info.utilization : null;
-  // utilization is only present once a bucket crosses a warning threshold;
-  // when absent use null so fillClass returns the neutral ih-usage-empty class.
-  const frac = util != null ? util / 100 : null;
-  const resetStr = formatResetTime(info.resetsAt);
-  const isOverage = info.isUsingOverage === true;
+  if (info) {
+    typeLabel = RATE_LIMIT_TYPE_LABELS[info.rateLimitType] ?? info.rateLimitType ?? '?';
+    util = typeof info.utilization === 'number' ? info.utilization : null;
+    frac = util != null ? util / 100 : null;
+    resetStr = formatResetTime(info.resetsAt);
+    isOverage = info.isUsingOverage === true;
+  } else if (accountUsage?.five_hour) {
+    const fh = accountUsage.five_hour;
+    typeLabel = '5h';
+    util = typeof fh.utilization === 'number' ? fh.utilization : null;
+    frac = util != null ? util / 100 : null;
+    // five_hour.resets_at is ISO-8601; convert to Unix seconds for formatResetTime.
+    resetStr = fh.resets_at ? formatResetTime(new Date(fh.resets_at).getTime() / 1000) : null;
+    isOverage = false;
+  } else {
+    return null;
+  }
 
-  const el = document.createElement('span');
+  const el = document.createElement('button');
+  el.type = 'button';
   el.className = `ih-chip ih-ratelimit ${fillClass(frac)}`;
+  el.setAttribute('aria-haspopup', 'dialog');
+  el.setAttribute('aria-expanded', 'false');
   el.title = [
-    `Rate limit bucket: ${typeLabel}`,
+    `Rate limit: ${typeLabel}`,
     util != null ? `Utilization: ${util}%` : null,
     resetStr,
     isOverage ? 'OVERAGE active' : null,
+    'Tap for details',
   ].filter(Boolean).join(' · ');
 
   let text = `rl ${typeLabel}`;
