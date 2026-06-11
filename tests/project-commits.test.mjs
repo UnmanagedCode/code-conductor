@@ -63,6 +63,33 @@ test('GET /commits returns the current branch history newest-first', async () =>
     assert.equal(c.author, 'test');
     assert.ok(typeof c.relativeDate === 'string' && c.relativeDate.length > 0);
     assert.ok(typeof c.isoDate === 'string' && c.isoDate.length > 0);
+    // parents: the newest commit points at the root; the root has none.
+    assert.ok(Array.isArray(c.parents), 'parents should be an array');
+    assert.deepEqual(c.parents, [r.body.commits[1].sha], 'child parents = [root sha]');
+    assert.deepEqual(r.body.commits[1].parents, [], 'root commit has no parents');
+  } finally { await ctx.close(); }
+});
+
+test('GET /commits exposes both parents of a merge commit', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO });
+  try {
+    const repoPath = await makeRealRepo(ctx.projectsRoot, 'demo');
+    // Branch off, commit on the branch, then no-ff merge back into main so the
+    // merge commit has two parents (main tip + feature tip).
+    await git(repoPath, 'checkout', '-q', '-b', 'feature');
+    await commitFile(repoPath, 'feature.js', 'export const x = 1;\n', 'feature commit');
+    await git(repoPath, 'checkout', '-q', 'main');
+    await git(repoPath, 'merge', '--no-ff', '-q', '-m', 'merge feature', 'feature');
+
+    const r = await api(ctx.baseUrl, 'GET', '/api/projects/demo/commits');
+    assert.equal(r.status, 200, `expected 200, got ${r.status}: ${JSON.stringify(r.body)}`);
+    const merge = r.body.commits[0];
+    assert.equal(merge.subject, 'merge feature', 'newest commit is the merge');
+    assert.equal(merge.parents.length, 2, 'merge commit has two parents');
+    const allShas = new Set(r.body.commits.map(c => c.sha));
+    for (const p of merge.parents) {
+      assert.ok(allShas.has(p), `merge parent ${p} should be among the returned commits`);
+    }
   } finally { await ctx.close(); }
 });
 
