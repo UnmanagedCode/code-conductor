@@ -436,9 +436,15 @@ export class Sidebar {
     const worktrees = Array.isArray(p.worktrees) ? p.worktrees : [];
     const isConduct = !!p.isConduct;
     const li = el('li', { class: isConduct ? 'project-conduct' : undefined });
-    const row = el('div', { class: 'project-row' + (isConduct ? ' project-row-conduct' : '') },
-      el('span', { class: 'project-name' }, isConduct ? '🎼 Conduct' : p.name),
-    );
+    const row = el('div', { class: 'project-row' + (isConduct ? ' project-row-conduct' : '') });
+    // Commit-log button goes first (left of the name) for git projects.
+    if (!isConduct && p.isGitRepo) {
+      row.appendChild(el('button', {
+        class: 'commit-log', title: 'commit history',
+        onclick: (e) => { e.stopPropagation(); this.onShowCommits?.(p.name); },
+      }, '≡'));
+    }
+    row.appendChild(el('span', { class: 'project-name' }, isConduct ? '🎼 Conduct' : p.name));
     const ms = p.mergeStatus;
     if (ms && ms.upstream && (ms.ahead > 0 || ms.behind > 0)) {
       const upstream = ms.upstream;
@@ -459,12 +465,6 @@ export class Sidebar {
     // new-session button, no delete. Spawning a new Conduct session is
     // done via the top-level 🎼 button; deletion is blocked server-side.
     if (!isConduct) {
-      if (p.isGitRepo) {
-        row.appendChild(el('button', {
-          class: 'commit-log', title: 'commit history',
-          onclick: (e) => { e.stopPropagation(); this.onShowCommits?.(p.name); },
-        }, '≡'));
-      }
       row.appendChild(el('button', {
         class: 'add-instance', title: 'new session',
         onclick: () => this.onCreateInstanceClick(p.name),

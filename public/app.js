@@ -500,7 +500,10 @@ sidebar.onReviewWorktree = (project, wt) => {
 // Commit history view (full-page list opened from the sidebar ≡ button).
 // Tapping a commit opens the shared diff renderer on top; backing out of the
 // diff returns to the list via location.hash = '#commits'.
-const commits = installCommits({ onClose: () => {} });
+const commits = installCommits({ onClose: () => {
+  const inst = state.instances.find(i => i.id === state.activeId);
+  writeSessionAnchor(inst?.sessionId || null);
+} });
 sidebar.onShowCommits = (project) => {
   setSidebarOpen(false);
   commits.open(project);
@@ -1429,6 +1432,7 @@ function selectInstance(id, opts = {}) {
   // pushState when navigating into a sub-agent so the back button can return
   // to the conductor; replaceState for all other navigation to avoid clutter.
   const leavingSettings = location.hash === '#settings';
+  const leavingCommits  = location.hash === '#commits';
   const inst = id ? state.instances.find(i => i.id === id) : null;
   if (opts.push) {
     pushSessionAnchor(inst?.sessionId || null);
@@ -1438,10 +1442,11 @@ function selectInstance(id, opts = {}) {
   // Now that the user is viewing this session, any backlog of unread
   // turn-end pings for it is by definition read.
   clearUnread(inst?.sessionId);
-  // If the user tapped a session from within the Settings page, leave settings
-  // so the conversation view is visible. writeSessionAnchor already replaced
-  // the hash, so we check the flag captured before that call.
+  // If the user tapped a session from within the Settings or Commits page, close
+  // that overlay so the conversation view is visible. writeSessionAnchor already
+  // replaced the hash, so we check flags captured before that call.
   if (leavingSettings) settings.close();
+  if (leavingCommits)  commits.close();
   if (window.matchMedia('(max-width: 720px)').matches) setSidebarOpen(false);
 }
 
@@ -1914,8 +1919,10 @@ bus.addEventListener('projects', () => { refreshProjects(); });
 // entry created by pushSessionAnchor (e.g. going back from a sub-agent to
 // the conductor session that opened it).
 window.addEventListener('popstate', () => {
-  // Settings has its own hashchange handler; don't interfere.
+  // Settings/commits/review have their own handlers; don't interfere when
+  // the user navigates forward back into one of those views.
   if (location.hash === '#settings') return;
+  if (location.hash === '#commits' || location.hash === '#review') return;
   const anchor = readSessionAnchor();
   const live = anchor ? state.instances.find(i => i.sessionId === anchor) : null;
   const targetId = live?.id ?? null;
