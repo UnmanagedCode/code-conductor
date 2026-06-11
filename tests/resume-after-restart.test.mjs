@@ -76,13 +76,13 @@ test('shutdownForResumeSync SIGKILLs subprocesses but preserves temp + normal js
     await fs.writeFile(normalJsonl, '{"type":"user","uuid":"u2"}\n');
 
     instances.shutdownForResumeSync();
-    // Let any async _handleExit fire — the guard must keep it from deleting.
-    await new Promise(r => setTimeout(r, 100));
+    // Wait for the async _handleExit to fire (clears proc) — the
+    // _suppressTempDelete guard must keep it from deleting the jsonl. Poll the
+    // real signal instead of a fixed sleep.
+    await waitFor(() => tempInst.proc === null && normalInst.proc === null, { timeout: 20000 });
 
     await fs.access(tempJsonl);   // temp jsonl PRESERVED (contrast shutdownTempSync)
     await fs.access(normalJsonl);
-    assert.equal(tempInst.proc, null, 'temp subprocess killed');
-    assert.equal(normalInst.proc, null, 'normal subprocess killed');
   } finally { await close(); }
 });
 
@@ -255,7 +255,11 @@ test('drainToManifest force-interrupts stragglers past the grace and still write
     assert.equal(entries[0].group, 'other');
     await fs.access(resumeManifestPath());
     assert.equal(readResumeManifest().instances[0].sessionId, sid);
-    assert.equal(inst.proc, null, 'straggler subprocess killed after force + shutdownForResumeSync');
+    // shutdownForResumeSync() SIGKILLs synchronously and busy-waits only for the
+    // OS to reap the pid; inst.proc is cleared by the async _handleExit ('exit'
+    // event), which can't run until the event loop turns after the sync call
+    // returns. Wait on that real signal rather than asserting synchronously.
+    await waitFor(() => inst.proc === null, { timeout: 20000 });
     clearResumeManifest();
   } finally { await close(); }
 });
