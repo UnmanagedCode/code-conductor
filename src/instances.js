@@ -1138,10 +1138,19 @@ export class InstanceManager extends EventEmitter {
     return subs != null && subs.size > 0;
   }
 
+  // Returns true when id is the *caller* (conductor) in any pending subscription —
+  // i.e. this instance is actively waiting for a worker to finish.
+  isIdleCaller(id) {
+    for (const callers of this._idleSubscribers.values()) {
+      if (callers.has(id)) return true;
+    }
+    return false;
+  }
+
   list() {
     return [...this.byId.values()].map(i => ({
       ...i.summary(),
-      hasIdleSubscriber: this.hasIdleSubscriber(i.id),
+      hasIdleSubscriber: this.isIdleCaller(i.id),
     }));
   }
   get(id) { return this.byId.get(id); }
