@@ -132,6 +132,11 @@ export async function drainToManifest({ server, wss, instances, log = console, g
     }
   }
 
+  // Snapshot which instances were mid-turn BEFORE wind-down so the manifest can
+  // distinguish interrupted sessions (need a resume prompt) from ones that were
+  // already idle (should be resurrected silently).
+  const busyAtDrain = new Set(live.filter((i) => i.status === 'turn').map((i) => i.id));
+
   // (2) Wind down mid-turn instances. wss/http stay UP throughout.
   for (const inst of live) {
     if (inst.status !== 'turn') continue;
@@ -180,6 +185,7 @@ export async function drainToManifest({ server, wss, instances, log = console, g
       title: s.title ?? null,
       autoApprovePlan: !!s.autoApprovePlan,
       group,
+      wasBusy: busyAtDrain.has(inst.id),
     };
     if (group === 'conductor') entry.workers = workersByConductor.get(inst.id) ?? [];
     entries.push(entry);
@@ -261,8 +267,12 @@ export async function restoreFromResumeManifest({ instances, log = console, stag
         log.warn?.(`resume-restart: ${e.sessionId} came up '${st}'; skipping resume notification`);
         continue;
       }
-      const text = e.group === 'conductor' ? buildConductorResumeText(e.workers) : RESUME_TEXT;
-      try { await inst.prompt(text); } catch (err) { log.warn?.('resume-restart: notify failed', err?.message); }
+      // Only re-prompt sessions that were mid-turn when the drain began.
+      // Idle sessions are resurrected silently — they have nothing to resume.
+      if (e.wasBusy !== false) {
+        const text = e.group === 'conductor' ? buildConductorResumeText(e.workers) : RESUME_TEXT;
+        try { await inst.prompt(text); } catch (err) { log.warn?.('resume-restart: notify failed', err?.message); }
+      }
       restored++;
     } catch (err) {
       log.warn?.(`resume-restart: failed to resume ${e.sessionId}: ${err?.message}`);
