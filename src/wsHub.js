@@ -22,6 +22,7 @@
 //   { t: "error",          message }
 
 import { WebSocket } from 'ws';
+import { invalidateAll } from './projectsCache.js';
 
 export function attachWsHub({ wss, instances }) {
   const subscribers = new Map(); // instanceId -> Set<ws>
@@ -78,6 +79,10 @@ export function attachWsHub({ wss, instances }) {
   });
 
   instances.on('list_changed', () => {
+    // Instance spawn/exit changes instanceIds; clear all cached git facts so
+    // the next /api/projects fetch reflects the new instance assignment. This
+    // also covers worktree creation (which is tied to instance spawn).
+    invalidateAll();
     broadcastAll(JSON.stringify({ t: 'instances' }));
     broadcastAll(JSON.stringify({ t: 'projects' }));
   });
