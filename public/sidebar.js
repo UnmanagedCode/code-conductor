@@ -202,7 +202,7 @@ export class Sidebar {
     const tooltipParts = [session.sessionId];
     if (customTitle && preview) tooltipParts.push(preview);
     const row = el('div', {
-      class: 'session-row' + (isActive ? ' active' : '') + (isLive ? ' live' : '') + (unread > 0 ? ' has-unread' : '') + (session.instanceTemp ? ' temp' : '') + (session.conducted ? ' conducted' : '') + (customTitle ? ' has-title' : ''),
+      class: 'session-row' + (isActive ? ' active' : '') + (isLive ? ' live' : '') + (unread > 0 ? ' has-unread' : '') + (session.instanceTemp ? ' temp' : '') + (session.conducted ? ' conducted' : '') + (session.archived ? ' archived' : '') + (customTitle ? ' has-title' : ''),
       title: tooltipParts.join('\n'),
       onclick: () => {
         if (session.instanceId) this.onSelectInstance(session.instanceId);
@@ -221,9 +221,21 @@ export class Sidebar {
         title: `${unread} new turn${unread === 1 ? '' : 's'} since you last viewed this session`,
       }, String(unread)));
     }
-    // Live temp instance → show the promote button to the left of ×.
-    // Always visible (no opacity:0 hover) so mobile users can tap it.
-    if (session.instanceTemp && session.instanceId) {
+    if (session.archived) {
+      // Archived session: show restore button instead of promote.
+      row.appendChild(el('button', {
+        class: 'session-restore', title: 'restore session to normal list',
+        onclick: (e) => {
+          e.stopPropagation();
+          if (this.onRestoreSession) this.onRestoreSession({
+            projectName, worktreeName, sessionId: session.sessionId,
+            preview: liveLabel,
+          });
+        },
+      }, '↩'));
+    } else if (session.instanceTemp && session.instanceId) {
+      // Live temp instance → show the promote button to the left of ×.
+      // Always visible (no opacity:0 hover) so mobile users can tap it.
       row.appendChild(el('button', {
         class: 'session-promote', title: 'promote to normal session',
         onclick: (e) => {
@@ -275,7 +287,8 @@ export class Sidebar {
       }
     }
     const total = onDiskCount + extra;
-    if (total === 0) return null;
+    const archivedCount = summary?.archivedCount ?? 0;
+    if (total === 0 && archivedCount === 0) return null;
 
     const det = el('details', { class: 'sessions-group' });
     if (!this.collapsedSessions.has(key)) det.setAttribute('open', '');
@@ -306,9 +319,12 @@ export class Sidebar {
       // that is both renders under — conducted — (but keeps the warm temp
       // colour via the .temp class, handled in CSS). Conducted section is
       // appended last so the temp-only ordering is unchanged.
-      const conductedRows = merged.filter(s => s.conducted);
-      const temps = merged.filter(s => !s.conducted && s.instanceTemp);
-      const normal = merged.filter(s => !s.conducted && !s.instanceTemp);
+      // Archived sessions are always shown last in their own section.
+      // They are excluded from normal/temp/conducted grouping.
+      const archivedRows = merged.filter(s => s.archived);
+      const conductedRows = merged.filter(s => !s.archived && s.conducted);
+      const temps = merged.filter(s => !s.archived && !s.conducted && s.instanceTemp);
+      const normal = merged.filter(s => !s.archived && !s.conducted && !s.instanceTemp);
       const appendRows = (rows) => {
         for (const s of rows) {
           listEl.appendChild(el('li', {}, this._sessionRow({
@@ -324,6 +340,10 @@ export class Sidebar {
       if (conductedRows.length > 0) {
         listEl.appendChild(el('li', { class: 'sessions-separator' }, '— conducted —'));
         appendRows(conductedRows);
+      }
+      if (archivedRows.length > 0) {
+        listEl.appendChild(el('li', { class: 'sessions-separator' }, '— archived —'));
+        appendRows(archivedRows);
       }
     };
 

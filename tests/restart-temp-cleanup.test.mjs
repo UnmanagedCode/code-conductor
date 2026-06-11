@@ -21,7 +21,7 @@ const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-basic.json');
 // performs the cleanup synchronously, and `scheduleRestart` calls it before
 // exiting.
 
-test('shutdownTempSync deletes temp jsonl + subagents dir and leaves non-temp alone', async () => {
+test('shutdownTempSync archives temp session (jsonl kept, subagents dir deleted) and leaves non-temp alone', async () => {
   const { baseUrl, instances, claudeProjectsRoot, close } = await bootServer({ scenarioPath: SCENARIO });
   try {
     const created = await api(baseUrl, 'POST', '/api/projects', { name: 'restartcleanup' });
@@ -52,7 +52,9 @@ test('shutdownTempSync deletes temp jsonl + subagents dir and leaves non-temp al
 
     instances.shutdownTempSync();
 
-    await assert.rejects(() => fs.access(tempJsonl), 'temp jsonl must be deleted');
+    // Archive behavior: .jsonl is KEPT (the transcript is preserved for restore).
+    await fs.access(tempJsonl); // must still exist
+    // Subagent dir is still cleaned up (ephemeral, not needed for restore).
     await assert.rejects(() => fs.access(tempSubagents), 'temp subagents dir must be deleted');
     await fs.access(normalJsonl); // non-temp jsonl untouched
   } finally { await close(); }
@@ -75,7 +77,7 @@ test('tempCleanupSnapshot only includes live temp instances with a sessionId', a
   } finally { await close(); }
 });
 
-test('writePendingTempCleanup + sweepPendingTempCleanup round-trip deletes listed jsonls', async () => {
+test('writePendingTempCleanup + sweepPendingTempCleanup round-trip archives sessions (jsonl kept, subagents removed)', async () => {
   const { instances, claudeProjectsRoot, close } = await bootServer({ scenarioPath: SCENARIO });
   try {
     const cwd = '/tmp/cc-fake-cwd-' + Math.random().toString(36).slice(2);
@@ -90,6 +92,7 @@ test('writePendingTempCleanup + sweepPendingTempCleanup round-trip deletes liste
 
     // Manifest dir must exist (orchStoreRoot lives under projectsRoot).
     await fs.mkdir(orchStoreRoot(), { recursive: true });
+    // Default action is now 'archive': keep .jsonl, remove subagents dir.
     writePendingTempCleanup([{ cwd, sessionId: sid }]);
 
     const manifest = pendingTempCleanupPath();
@@ -97,36 +100,41 @@ test('writePendingTempCleanup + sweepPendingTempCleanup round-trip deletes liste
 
     const result = sweepPendingTempCleanup({ log: { warn() {}, log() {} } });
     assert.equal(result.swept, 1);
-    await assert.rejects(() => fs.access(jsonl));
+    // .jsonl must survive (archived, not deleted).
+    await fs.access(jsonl);
+    // Subagent dir is cleaned up.
     await assert.rejects(() => fs.access(subagents));
+    // Manifest is removed after sweep.
     await assert.rejects(() => fs.access(manifest));
 
     void instances;
   } finally { await close(); }
 });
 
-test('sweepPendingTempCleanup re-deletes files that reappeared after the manifest was written', async () => {
-  // Simulates the bug: claude (or an orphaned subagent) wrote to the jsonl
-  // AFTER our parent process called shutdownTempSync and exited. The post-
-  // restart boot sweep must wipe it again.
+test('sweepPendingTempCleanup with archive action keeps any surviving .jsonl and removes subagent dir', async () => {
+  // The archive sweep no longer deletes the .jsonl — it marks the session
+  // archived and leaves the transcript for restore. The subagent dir is
+  // still cleaned. Any .jsonl on disk (including orphaned writes) survives.
   const { claudeProjectsRoot, close } = await bootServer({ scenarioPath: SCENARIO });
   try {
     const cwd = '/tmp/cc-orphaned-' + Math.random().toString(36).slice(2);
     const sid = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
     const dir = path.join(claudeProjectsRoot, encodeCwd(cwd));
 
-    // Manifest written; no files on disk yet (shutdownTempSync deleted them).
     await fs.mkdir(orchStoreRoot(), { recursive: true });
+    // Default action is archive.
     writePendingTempCleanup([{ cwd, sessionId: sid }]);
 
-    // Orphaned write reappears.
+    // Simulate a .jsonl that survived (either was never deleted or reappeared).
     await fs.mkdir(dir, { recursive: true });
     await fs.writeFile(path.join(dir, `${sid}.jsonl`), '{"type":"user","uuid":"late"}\n');
     await fs.mkdir(path.join(dir, sid), { recursive: true });
 
     const result = sweepPendingTempCleanup({ log: { warn() {}, log() {} } });
     assert.equal(result.swept, 1);
-    await assert.rejects(() => fs.access(path.join(dir, `${sid}.jsonl`)));
+    // .jsonl is KEPT — we archive, not delete.
+    await fs.access(path.join(dir, `${sid}.jsonl`));
+    // Subagent dir is removed.
     await assert.rejects(() => fs.access(path.join(dir, sid)));
     await assert.rejects(() => fs.access(pendingTempCleanupPath()));
   } finally { await close(); }

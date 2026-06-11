@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { loadAll as loadAllTitles, deleteTitle as deleteSessionTitle } from './sessionTitles.js';
 import { loadAll as loadAllConducted, unmarkConducted } from './conductedSessions.js';
 import { loadAllTemps } from './tempSessions.js';
+import { loadAllArchived } from './archivedSessions.js';
 
 // Default projects root = parent directory of the code-conductor repo,
 // resolved once at module load. Layout: <parent>/code-conductor/src/
@@ -403,6 +404,7 @@ export async function listSessionsForCwd(absCwd, excludeSessionIds = null) {
   const titles = await loadAllTitles();
   const conducted = await loadAllConducted();
   const temps = await loadAllTemps();
+  const archived = await loadAllArchived();
   const out = [];
   for (const name of entries) {
     if (!name.endsWith('.jsonl')) continue;
@@ -420,6 +422,7 @@ export async function listSessionsForCwd(absCwd, excludeSessionIds = null) {
       title: titles.get(sid) ?? null,
       conducted: conducted.has(sid),
       temp: temps.has(sid),
+      archived: archived.has(sid),
       mtime: stat.mtimeMs,
       size: stat.size,
     });
@@ -498,7 +501,9 @@ export async function summarizeSessions(absCwd, excludeSessionIds = null) {
   let entries;
   try { entries = await fs.readdir(dir); }
   catch (e) { if (e.code === 'ENOENT') return { count: 0, lastMtime: 0 }; throw e; }
+  const archivedSet = await loadAllArchived();
   let count = 0;
+  let archivedCount = 0;
   let lastMtime = 0;
   for (const name of entries) {
     if (!name.endsWith('.jsonl')) continue;
@@ -507,8 +512,12 @@ export async function summarizeSessions(absCwd, excludeSessionIds = null) {
     let stat;
     try { stat = await fs.stat(path.join(dir, name)); } catch { continue; }
     if (!stat.isFile()) continue;
-    count++;
-    if (stat.mtimeMs > lastMtime) lastMtime = stat.mtimeMs;
+    if (archivedSet.has(sid)) {
+      archivedCount++;
+    } else {
+      count++;
+      if (stat.mtimeMs > lastMtime) lastMtime = stat.mtimeMs;
+    }
   }
-  return { count, lastMtime };
+  return { count, archivedCount, lastMtime };
 }

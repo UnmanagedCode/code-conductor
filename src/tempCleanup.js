@@ -16,9 +16,9 @@
 import path from 'node:path';
 import { writeFileSync, readFileSync, rmSync, existsSync } from 'node:fs';
 import { orchStoreRoot, claudeProjectsRoot, encodeCwd } from './projects.js';
-import { deleteTitle as deleteSessionTitle } from './sessionTitles.js';
 import { unmarkConducted } from './conductedSessions.js';
 import { unmarkTemp } from './tempSessions.js';
+import { markArchived } from './archivedSessions.js';
 
 export const PENDING_TEMP_CLEANUP_FILENAME = 'pending-temp-cleanup.json';
 
@@ -28,11 +28,14 @@ export function pendingTempCleanupPath() {
 
 // Synchronously write the manifest. Must be sync — the restart path calls
 // this immediately before `process.exit(0)`.
-export function writePendingTempCleanup(entries) {
+// `action` defaults to "archive": keep the .jsonl, mark session archived.
+// Pass "delete" only for legacy callers that explicitly want removal.
+export function writePendingTempCleanup(entries, action = 'archive') {
   if (!Array.isArray(entries) || entries.length === 0) return;
   const file = pendingTempCleanupPath();
   const payload = {
     writtenAt: new Date().toISOString(),
+    action,
     entries: entries.map(({ cwd, sessionId }) => ({ cwd, sessionId })),
   };
   writeFileSync(file, JSON.stringify(payload));
@@ -43,10 +46,12 @@ export function sweepPendingTempCleanup({ log = console } = {}) {
   if (!existsSync(file)) return { swept: 0 };
 
   let entries = [];
+  let action = 'delete'; // default for manifests written before the archive feature
   try {
     const raw = readFileSync(file, 'utf8');
     const parsed = JSON.parse(raw);
     entries = Array.isArray(parsed?.entries) ? parsed.entries : [];
+    if (parsed?.action === 'archive') action = 'archive';
   } catch (e) {
     log.warn?.('temp-cleanup: failed to parse manifest; removing', e?.message);
     try { rmSync(file, { force: true }); } catch { /* ignore */ }
@@ -58,17 +63,23 @@ export function sweepPendingTempCleanup({ log = console } = {}) {
   for (const { cwd, sessionId } of entries) {
     if (!cwd || !sessionId) continue;
     const dir = path.join(root, encodeCwd(cwd));
-    try { rmSync(path.join(dir, `${sessionId}.jsonl`), { force: true }); } catch { /* ignore */ }
-    try { rmSync(path.join(dir, sessionId), { recursive: true, force: true }); } catch { /* ignore */ }
-    // Sidecar title cleanup is fire-and-forget — sweep is called from
-    // sync boot context and the title write doesn't block startup.
-    deleteSessionTitle(sessionId).catch(() => {});
-    unmarkConducted(sessionId).catch(() => {});
-    unmarkTemp(sessionId).catch(() => {});
+    if (action === 'archive') {
+      // Keep the .jsonl; only clean up the subagent dir.
+      // Sidecar updates are fire-and-forget from the sync boot context.
+      try { rmSync(path.join(dir, sessionId), { recursive: true, force: true }); } catch { /* ignore */ }
+      unmarkTemp(sessionId).catch(() => {});
+      markArchived(sessionId).catch(() => {});
+    } else {
+      // Legacy delete behavior (pre-archive manifests).
+      try { rmSync(path.join(dir, `${sessionId}.jsonl`), { force: true }); } catch { /* ignore */ }
+      try { rmSync(path.join(dir, sessionId), { recursive: true, force: true }); } catch { /* ignore */ }
+      unmarkConducted(sessionId).catch(() => {});
+      unmarkTemp(sessionId).catch(() => {});
+    }
     swept++;
   }
 
   try { rmSync(file, { force: true }); } catch { /* ignore */ }
-  if (swept > 0) log.log?.(`temp-cleanup: swept ${swept} stale temp session(s) from previous run`);
+  if (swept > 0) log.log?.(`temp-cleanup: swept ${swept} temp session(s) from previous run (action: ${action})`);
   return { swept };
 }
