@@ -1371,14 +1371,14 @@ test('DOM: rate-limit chip with utilization shows percentage and colour class', 
   const { renderRateLimitChip } = await setupChipDOM();
   const chip = renderRateLimitChip({
     rateLimitType: 'five_hour',
-    utilization: 0.72,
+    utilization: 72,
     resetsAt: 1729281600,
   });
   assert.ok(chip, 'chip element returned');
   // Text includes bucket label and percentage
   assert.ok(chip.textContent.includes('5h'), 'bucket label present');
   assert.ok(chip.textContent.includes('72%'), 'utilization percentage present');
-  // 0.72 fraction → frac 0.72 → ih-usage-mid (0.5 ≤ frac < 0.8)
+  // 72% → frac 0.72 → ih-usage-mid (0.5 ≤ frac < 0.8)
   assert.ok(chip.className.includes('ih-usage-mid'), 'mid colour class applied');
   // No overage badge
   assert.equal(chip.querySelector('.rl-overage-badge'), null, 'no overage badge');
@@ -1397,15 +1397,15 @@ test('DOM: rate-limit chip without utilization shows no percentage and uses empt
   assert.ok(chip.className.includes('ih-usage-empty'), 'empty colour class when no utilization');
 });
 
-test('DOM: rate-limit chip: utilization 0.9 (fraction) → displays 90%, ih-usage-high', async () => {
+test('DOM: rate-limit chip: utilization 90 (percentage) → displays 90%, ih-usage-high', async () => {
   const { renderRateLimitChip } = await setupChipDOM();
   const chip = renderRateLimitChip({
     rateLimitType: 'five_hour',
-    utilization: 0.9,
+    utilization: 90,
     resetsAt: 1729281600,
   });
   assert.ok(chip, 'chip element returned');
-  assert.ok(chip.textContent.includes('90%'), 'fraction 0.9 must display as 90%, not 0% or 1%');
+  assert.ok(chip.textContent.includes('90%'), 'percentage 90 must display as 90%, not 0% or 9000%');
   assert.ok(chip.className.includes('ih-usage-high'), 'high colour class at 90% utilization');
   assert.ok(chip.title.includes('90%'), 'tooltip also shows 90%');
 });
@@ -1414,12 +1414,12 @@ test('DOM: rate-limit chip with isUsingOverage shows OVERAGE badge and high colo
   const { renderRateLimitChip } = await setupChipDOM();
   const chip = renderRateLimitChip({
     rateLimitType: 'five_hour',
-    utilization: 0.95,
+    utilization: 95,
     isUsingOverage: true,
     overageStatus: 'allowed',
   });
   assert.ok(chip, 'chip element returned');
-  // 0.95 fraction → 95% → ih-usage-high
+  // 95% → ih-usage-high
   assert.ok(chip.className.includes('ih-usage-high'), 'high colour class at 95%');
   const badge = chip.querySelector('.rl-overage-badge');
   assert.ok(badge, 'overage badge element present');
@@ -1438,12 +1438,12 @@ test('DOM: RateLimitTracker applies rate_limit_event and ignores other events', 
     kind: 'system',
     subtype: 'rate_limit_event',
     data: {
-      rate_limit_info: { rateLimitType: 'five_hour', utilization: 0.60, isUsingOverage: false },
+      rate_limit_info: { rateLimitType: 'five_hour', utilization: 60, isUsingOverage: false },
     },
   });
   assert.ok(tracker.info, 'info populated after event');
   assert.equal(tracker.info.rateLimitType, 'five_hour');
-  assert.equal(tracker.info.utilization, 0.60);
+  assert.equal(tracker.info.utilization, 60);
   // reset() clears state
   tracker.reset();
   assert.equal(tracker.info, null, 'reset clears info');
