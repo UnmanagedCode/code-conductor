@@ -121,6 +121,23 @@ test('cost-tracking: getCostSummary aggregates correctly', async () => {
     assert.equal(summary.by_project[0].turns, 2);
     assert.equal(summary.by_project[1].project, 'beta');
 
+    // by_project[*].by_model — nested per-model breakdown
+    const alphaModels = summary.by_project[0].by_model;
+    assert.ok(Array.isArray(alphaModels), 'alpha.by_model should be an array');
+    assert.equal(alphaModels.length, 1, 'alpha has 1 model');
+    assert.equal(alphaModels[0].model, 'claude-opus-4-8');
+    assert.ok(Math.abs(alphaModels[0].cost_usd - 0.08) < 1e-9);
+    assert.equal(alphaModels[0].input_tokens, 180);
+    assert.equal(alphaModels[0].output_tokens, 90);
+    assert.equal(alphaModels[0].cache_creation_tokens, 15);
+    assert.equal(alphaModels[0].cache_read_tokens, 300);
+    assert.equal(alphaModels[0].turns, 2);
+
+    const betaModels = summary.by_project[1].by_model;
+    assert.ok(Array.isArray(betaModels), 'beta.by_model should be an array');
+    assert.equal(betaModels.length, 1, 'beta has 1 model');
+    assert.equal(betaModels[0].model, 'claude-sonnet-4-6');
+
     // by_model
     assert.equal(summary.by_model.length, 2);
     const opus = summary.by_model.find(m => m.model === 'claude-opus-4-8');
@@ -204,6 +221,9 @@ test('GET /api/costs/summary returns aggregated data when rows exist', async () 
     assert.ok(Math.abs(body.total_usd - 0.001) < 1e-9);
     assert.equal(body.by_project.length, 1);
     assert.equal(body.by_project[0].project, 'foo');
+    assert.ok(Array.isArray(body.by_project[0].by_model), 'by_project[0].by_model should be array');
+    assert.equal(body.by_project[0].by_model.length, 1);
+    assert.equal(body.by_project[0].by_model[0].model, 'claude-haiku-4-5');
     assert.equal(body.by_model.length, 1);
     assert.equal(body.by_model[0].model, 'claude-haiku-4-5');
     assert.equal(body.daily_trend.length, 1);

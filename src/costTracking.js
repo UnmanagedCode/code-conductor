@@ -60,16 +60,34 @@ export async function getCostSummary() {
 
   const total_usd = rows.reduce((s, r) => s + (r.cost_usd ?? 0), 0);
 
-  // By project
+  // By project (with nested per-model breakdown)
   const projectMap = new Map();
   for (const r of rows) {
     const key = r.project ?? '(unknown)';
-    const entry = projectMap.get(key) ?? { project: key, cost_usd: 0, turns: 0 };
+    if (!projectMap.has(key)) {
+      projectMap.set(key, { project: key, cost_usd: 0, turns: 0, _modelMap: new Map() });
+    }
+    const entry = projectMap.get(key);
     entry.cost_usd += r.cost_usd ?? 0;
     entry.turns += 1;
-    projectMap.set(key, entry);
+
+    const mKey = r.model ?? '(unknown)';
+    const mEntry = entry._modelMap.get(mKey) ?? {
+      model: mKey, cost_usd: 0, input_tokens: 0, output_tokens: 0,
+      cache_creation_tokens: 0, cache_read_tokens: 0, turns: 0,
+    };
+    mEntry.cost_usd += r.cost_usd ?? 0;
+    mEntry.input_tokens += r.input_tokens ?? 0;
+    mEntry.output_tokens += r.output_tokens ?? 0;
+    mEntry.cache_creation_tokens += r.cache_creation_tokens ?? 0;
+    mEntry.cache_read_tokens += r.cache_read_tokens ?? 0;
+    mEntry.turns += 1;
+    entry._modelMap.set(mKey, mEntry);
   }
-  const by_project = [...projectMap.values()].sort((a, b) => b.cost_usd - a.cost_usd);
+  const by_project = [...projectMap.values()].map(e => {
+    const by_model = [...e._modelMap.values()].sort((a, b) => b.cost_usd - a.cost_usd);
+    return { project: e.project, cost_usd: e.cost_usd, turns: e.turns, by_model };
+  }).sort((a, b) => b.cost_usd - a.cost_usd);
 
   // By model
   const modelMap = new Map();
