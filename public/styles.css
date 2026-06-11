@@ -1470,3 +1470,60 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
   cursor: pointer; padding: 0 6px; font-size: 14px; line-height: 1;
 }
 .project-row .commit-log:hover { color: var(--tool); }
+
+/* Cost dashboard — full-page view opened from Settings → Models. */
+#costs-view { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+#costs-view[hidden] { display: none; }
+#costs-header {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 12px; flex-shrink: 0;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel-1); min-height: 44px;
+}
+#costs-back {
+  background: none; border: 1px solid var(--border);
+  color: var(--muted); cursor: pointer; padding: 4px 10px;
+  border-radius: 4px; font-size: 13px;
+  flex-shrink: 0; min-width: 44px; min-height: 36px; white-space: nowrap;
+}
+#costs-back:hover { color: var(--text); background: var(--panel-2); }
+#costs-title { font-size: 14px; font-weight: 600; color: var(--text); }
+#costs-body { flex: 1 1 auto; overflow-y: auto; padding: 16px; }
+.costs-total {
+  font-size: 15px; font-weight: 600; color: var(--text);
+  margin-bottom: 20px; padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.costs-section { margin-bottom: 24px; }
+.costs-section h2 {
+  font-size: 13px; font-weight: 600; color: var(--muted);
+  text-transform: uppercase; letter-spacing: 0.04em;
+  margin: 0 0 10px;
+}
+.costs-table { border-collapse: collapse; width: 100%; font-size: 13px; }
+.costs-table th {
+  text-align: left; color: var(--muted); font-weight: 500;
+  padding: 4px 10px 6px 0; border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.costs-table td {
+  padding: 6px 10px 6px 0; border-bottom: 1px solid rgba(255,255,255,0.04);
+  color: var(--text); font-family: ui-monospace, monospace; white-space: nowrap;
+}
+.costs-table td:first-child { font-family: inherit; }
+.costs-bars { display: flex; flex-direction: column; gap: 6px; }
+.costs-bar-row { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.costs-bar-label { width: 96px; flex-shrink: 0; color: var(--muted); font-family: ui-monospace, monospace; }
+.costs-bar {
+  flex: 1 1 auto; height: 14px; border-radius: 3px;
+  background: var(--accent); opacity: 0.7;
+  min-width: 2px; width: var(--costs-bar-pct, 0%); max-width: 100%;
+}
+.costs-bar-val { flex-shrink: 0; color: var(--text); font-family: ui-monospace, monospace; width: 72px; }
+.sm-cost-row { padding: 12px 0 4px; }
+.sm-cost-row button {
+  background: var(--panel-2); border: 1px solid var(--border);
+  color: var(--text); cursor: pointer; padding: 6px 14px;
+  border-radius: 4px; font-size: 13px;
+}
+.sm-cost-row button:hover { background: var(--panel-1); border-color: var(--muted); }

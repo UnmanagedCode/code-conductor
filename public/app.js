@@ -28,6 +28,7 @@ import { installLightbox } from './lightbox.js';
 import { installSettings } from './settings.js';
 import { installReview } from './review.js';
 import { installCommits } from './commits.js';
+import { installCosts } from './costs.js';
 import { loadModelVersions, setActiveVersions, setActiveSonnetWindow, getActiveSonnetWindow, resolveSpawnModel,
   setActiveFamilyEnabled, getActiveFamilyEnabled,
   setActiveDefaultSpawnFamily, getActiveDefaultSpawnFamily } from './models.js';
@@ -485,6 +486,7 @@ const settings = installSettings({
   },
   onTtsAvailabilityChange: setTtsAvailable,
   onTtsPrefsChange: ({ enabled, rate }) => { setTtsEnabled(enabled); setTtsRate(rate); },
+  onOpenCostDashboard: () => { settings.close(); costs.open(); },
 });
 // Seed the per-family model-version cache the spawn pickers resolve against.
 loadModelVersions().then(() => { syncSonnetPickerLabels(); syncFamilyVisibility(); });
@@ -532,6 +534,12 @@ commits.onOpenCommit = (project, c) => {
     url,
   });
 };
+
+// Cost dashboard (opened from Settings → Models → "Cost dashboard" button).
+const costs = installCosts({ onClose: () => {
+  const inst = state.instances.find(i => i.id === state.activeId);
+  writeSessionAnchor(inst?.sessionId || null);
+} });
 
 dom.modeSelect.addEventListener('change', async () => {
   if (!state.activeId) return;
