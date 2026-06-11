@@ -516,7 +516,6 @@ commits.onOpenCommit = (project, c) => {
   review.open({
     title: c.sha ? `${c.shortSha} ${c.subject}` : c.subject,
     url,
-    onBack: () => { location.hash = '#commits'; },
   });
 };
 

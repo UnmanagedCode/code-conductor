@@ -171,20 +171,17 @@ function renderFile(file) {
 }
 
 export function installReview() {
-  getEl('review-back')?.addEventListener('click', () => goBack());
+  getEl('review-back')?.addEventListener('click', () => history.back());
 
   window.addEventListener('keydown', e => {
-    if (e.key === 'Escape' && !getEl('review-view')?.hidden) goBack();
+    if (e.key === 'Escape' && !getEl('review-view')?.hidden) history.back();
   });
 
   window.addEventListener('hashchange', () => {
     if (location.hash !== '#review' && !getEl('review-view')?.hidden) {
-      // Hash navigated away (e.g. back to the commit list) — hide without
-      // re-invoking the back callback to avoid a navigation loop.
-      hide();
-      _title = '';
-      _url = null;
-      _onBack = null;
+      // Hash navigated away (hardware/browser back or commits-back) — run the
+      // full goBack() so the onBack callback (e.g. closeReview) still fires.
+      goBack();
     }
   });
 
