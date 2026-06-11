@@ -103,6 +103,7 @@ test('GET /commits/:sha/diff returns only that commit\'s change', async () => {
     assert.ok(r.body.totalAdds > 0, 'totalAdds should be > 0');
     assert.equal(r.body.totalDels, 0);
     assert.equal(r.body.truncated, false);
+    assert.equal(r.body.commitMessage, 'add feature', 'commitMessage should be the trimmed commit message');
   } finally { await ctx.close(); }
 });
 
@@ -118,6 +119,7 @@ test('GET /commits/:sha/diff works for the root commit', async () => {
     const file = r.body.files.find(f => f.path === 'README.md');
     assert.ok(file, 'README.md should appear in the root commit diff');
     assert.equal(file.status, 'added');
+    assert.equal(r.body.commitMessage, 'initial', 'commitMessage should be present for the root commit');
   } finally { await ctx.close(); }
 });
 
