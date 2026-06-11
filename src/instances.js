@@ -172,6 +172,13 @@ export class Instance extends EventEmitter {
     this.proc = null;
     this.parser = new Parser();
     this.ring = new EventLog();
+    // Absolute ordinal of the next outer user_echo, stamped onto the event
+    // as `userIndex` in _emitUi. Counts exactly the events that correspond
+    // 1:1 to `isPureUserPromptLine` jsonl lines (the rewind/fork anchor),
+    // so the index stays correct even after the ring trims away early
+    // bubbles — the client must NOT derive it by counting rendered bubbles.
+    // Reset alongside the ring in _wipeForResume (replay recounts from 0).
+    this._userEchoCount = 0;
     this._pending = new Map(); // request_id -> { resolve, reject, timer }
     // Per-instance PreToolUse hook callback broker (held-open
     // responses + timeout fallbacks + the ask-mode permission_request
@@ -365,6 +372,13 @@ export class Instance extends EventEmitter {
 
   _emitUi(ev) {
     const wrapped = { ...ev };
+    // Every outer user_echo funnels through here (live prompt(), parser
+    // queued-prompt echoes, jsonl replay), so this counter matches the
+    // Nth-pure-user-prompt-line semantics sessionEdit.js truncates by.
+    if (isOuterUserEcho(wrapped)) {
+      wrapped.userIndex = this._userEchoCount;
+      this._userEchoCount += 1;
+    }
     this.ring.push(wrapped); // stamps wrapped._seq
     this.emit('event', wrapped);
   }
@@ -897,6 +911,7 @@ export class Instance extends EventEmitter {
   // clear their conversation DOM before the new replay starts streaming.
   _wipeForResume(extra = {}) {
     this.ring.clear();
+    this._userEchoCount = 0;
     this.parser.reset();
     this._lastLeafUuid = null;
     this._lastPlanFilePath = null;

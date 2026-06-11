@@ -200,6 +200,70 @@ test('rewind on a temp session is refused 400', async () => {
   } finally { await ctx.close(); }
 });
 
+test('user_echo events carry absolute userIndex; rewind by stamp survives ring trimming', async () => {
+  // With a tiny ring cap, the earliest replayed user_echo bubbles are
+  // evicted. The surviving echoes still carry their absolute `userIndex`
+  // (stamped server-side at emit time), so a rewind anchored on a stamped
+  // index truncates the RIGHT jsonl line — a client counting rendered
+  // bubbles from 0 would hit the wrong one.
+  const prevCap = process.env.ORCH_EVENT_RING_CAP;
+  process.env.ORCH_EVENT_RING_CAP = '10';
+  const ctx = await bootServer({ scenarioPath: SCENARIO });
+  try {
+    const sid = 'ssssssss-2222-3333-4444-555555555555';
+    const lines = [];
+    for (let i = 0; i < 12; i++) {
+      lines.push({ type: 'user', uuid: `u${i}`, message: { role: 'user', content: `prompt ${i}` } });
+      lines.push({ type: 'assistant', uuid: `a${i}`, message: { id: `m${i}`, role: 'assistant', content: [
+        { type: 'text', text: `reply ${i}` },
+      ] } });
+    }
+    const { sessionDir } = await seedSession({ ctx, projectName: 'stamped', sid, lines });
+
+    const r = await api(ctx.baseUrl, 'POST', '/api/instances', {
+      project: 'stamped', mode: 'bypassPermissions', resume: sid,
+    });
+    assert.equal(r.status, 201);
+    const id = r.body.id;
+    await waitFor(() => ctx.instances.get(id).status === 'idle');
+
+    const ring = ctx.instances.get(id).ringSnapshot();
+    const echoes = ring.filter(ev => ev.kind === 'user_echo');
+    assert.ok(echoes.length > 0, 'some echoes retained');
+    assert.ok(echoes.length < 12, 'early echoes were evicted by the cap');
+    for (const e of echoes) assert.ok(Number.isInteger(e.userIndex), 'echo carries userIndex');
+    // Stamps are absolute: the retained echo for "prompt N" has userIndex N.
+    for (const e of echoes) {
+      const n = Number(/^prompt (\d+)$/.exec(e.text)?.[1]);
+      assert.equal(e.userIndex, n, `echo "${e.text}" stamped with absolute ordinal`);
+    }
+    const target = echoes[echoes.length - 1];
+    assert.ok(target.userIndex > 0, 'last retained echo has a non-zero absolute index');
+
+    // Rewind by the STAMPED index → drops exactly that prompt.
+    const rew = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/rewind`,
+      { userMessageIndex: target.userIndex });
+    assert.equal(rew.status, 200);
+    assert.equal(rew.body.droppedText, target.text, 'rewind hit the stamped jsonl line');
+
+    await waitFor(() => ctx.instances.get(id).status === 'idle');
+    const persisted = await fs.readFile(path.join(sessionDir, `${sid}.jsonl`), 'utf8');
+    assert.equal(userPromptLines(persisted).length, target.userIndex,
+      'jsonl truncated exactly before the stamped prompt');
+
+    // Post-rewind replay restarts the ordinals from 0.
+    const postEchoes = ctx.instances.get(id).ringSnapshot().filter(ev => ev.kind === 'user_echo');
+    if (postEchoes.length) {
+      const last = postEchoes[postEchoes.length - 1];
+      assert.equal(last.userIndex, target.userIndex - 1, 'counter reset by _wipeForResume');
+    }
+  } finally {
+    await ctx.close();
+    if (prevCap === undefined) delete process.env.ORCH_EVENT_RING_CAP;
+    else process.env.ORCH_EVENT_RING_CAP = prevCap;
+  }
+});
+
 test('rewind with out-of-range index returns 400', async () => {
   const ctx = await bootServer({ scenarioPath: SCENARIO });
   try {
