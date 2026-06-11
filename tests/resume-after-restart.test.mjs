@@ -262,6 +262,86 @@ test('drainToManifest force-interrupts stragglers past the grace and still write
 
 // --- 8. manifest excludes non-live (exited) instances ----------------------
 
+// --- 9. wasBusy captured correctly at drain time ---------------------------
+
+test('drainToManifest sets wasBusy:true for mid-turn and wasBusy:false for idle', async () => {
+  const { baseUrl, instances, close } = await bootServer({ scenarioPath: NO_TURN });
+  try {
+    await api(baseUrl, 'POST', '/api/projects', { name: 'busycheck' });
+
+    // Idle instance.
+    const idleRes = await api(baseUrl, 'POST', '/api/instances', { project: 'busycheck' });
+    const idleInst = instances.get(idleRes.body.id);
+    await waitFor(() => idleInst.status === 'idle' && idleInst.sessionId);
+
+    // Busy instance — drive into a turn with the no-turn scenario.
+    const busyRes = await api(baseUrl, 'POST', '/api/instances', { project: 'busycheck' });
+    const busyInst = instances.get(busyRes.body.id);
+    await waitFor(() => busyInst.status === 'idle' && busyInst.sessionId);
+    await busyInst.prompt('go');
+    await waitFor(() => busyInst.status === 'turn');
+
+    const entries = await drainToManifest({ server: null, wss: null, instances, log: { warn() {}, log() {}, error() {} }, graceMs: 200 });
+    const byId = Object.fromEntries(entries.map(e => [e.sessionId, e]));
+
+    assert.equal(byId[idleInst.sessionId].wasBusy, false, 'idle session → wasBusy:false');
+    assert.equal(byId[busyInst.sessionId].wasBusy, true,  'busy session → wasBusy:true');
+    clearResumeManifest();
+  } finally { await close(); }
+});
+
+// --- 10. idle sessions resurrected silently, busy sessions re-prompted -----
+
+test('restoreFromResumeManifest prompts busy sessions but not idle sessions', async () => {
+  const transcript = path.join(os.tmpdir(), `cc-wasBusy-${randomUUID()}.log`);
+  const prev = process.env.FAKE_CLAUDE_TRANSCRIPT;
+  process.env.FAKE_CLAUDE_TRANSCRIPT = transcript;
+  const { baseUrl, instances, projectsRoot, claudeProjectsRoot, close } = await bootServer({ scenarioPath: BASIC });
+  try {
+    await api(baseUrl, 'POST', '/api/projects', { name: 'busygate' });
+    const busySid = randomUUID();
+    const idleSid = randomUUID();
+    const cwd = path.join(projectsRoot, 'busygate');
+
+    for (const sid of [busySid, idleSid]) {
+      const dir = path.join(claudeProjectsRoot, encodeCwd(cwd));
+      await fs.mkdir(dir, { recursive: true });
+      await fs.writeFile(path.join(dir, `${sid}.jsonl`), '{"type":"user","uuid":"u1"}\n');
+    }
+
+    const baseEntry = { project: 'busygate', cwd, mode: 'plan', effort: 'high', thinking: 'adaptive', model: null, worktreeName: null, temp: false, conducted: false, debug: false, title: null, autoApprovePlan: false, group: 'other' };
+    await fs.mkdir(orchStoreRoot(), { recursive: true });
+    writeResumeManifest([
+      { ...baseEntry, sessionId: busySid, wasBusy: true  },
+      { ...baseEntry, sessionId: idleSid, wasBusy: false },
+    ]);
+
+    const { restored } = await restoreFromResumeManifest({ instances, log: { log() {}, warn() {} }, staggerMs: 0 });
+    assert.equal(restored, 2, 'both sessions restored');
+
+    // Poll until the busy session's prompt has arrived.
+    await waitFor(async () => {
+      try { return (await fs.readFile(transcript, 'utf8')).includes(busySid) || (await fs.readFile(transcript, 'utf8')).includes(RESUME_TEXT); }
+      catch { return false; }
+    }, 5000);
+
+    // Give a short extra window to catch any spurious prompt to the idle session.
+    await new Promise(r => setTimeout(r, 300));
+
+    const dump = await fs.readFile(transcript, 'utf8');
+    // Count how many times the RESUME_TEXT appears — only the busy session should receive it.
+    const promptCount = (dump.match(new RegExp(RESUME_TEXT.slice(0, 30).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')) || []).length;
+    assert.equal(promptCount, 1, 'exactly one resume prompt sent (to the busy session)');
+  } finally {
+    await close();
+    if (prev === undefined) delete process.env.FAKE_CLAUDE_TRANSCRIPT;
+    else process.env.FAKE_CLAUDE_TRANSCRIPT = prev;
+    await fs.rm(transcript, { force: true });
+  }
+});
+
+// --- 8. manifest excludes non-live (exited) instances ----------------------
+
 test('drainToManifest excludes exited instances still retained in byId', async () => {
   const { baseUrl, instances, close } = await bootServer({ scenarioPath: BASIC });
   try {
