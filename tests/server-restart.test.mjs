@@ -49,7 +49,12 @@ function spawnServer(port, tmpHome) {
   return child;
 }
 
-async function waitForListening(port, { timeout = 8_000 } = {}) {
+// Generous default deadline: this test boots the REAL server.js (port bind +
+// migrations + sync reconcile + restart respawn). Under the concurrent suite
+// these boots are CPU-starved on Termux, so the poll must allow ample headroom.
+// It returns the instant /api/projects responds, so a wide deadline is free on
+// the happy path and only widens the failure-detection window.
+async function waitForListening(port, { timeout = 20_000 } = {}) {
   const start = Date.now();
   for (;;) {
     try {
@@ -110,7 +115,7 @@ test('POST /api/admin/restart respawns the server on the same port with a new pi
       return;
     }
     child.once('exit', (code) => resolve(code));
-    setTimeout(() => resolve('timeout'), 5_000);
+    setTimeout(() => resolve('timeout'), 15_000);
   });
   assert.notEqual(exitCode, 'timeout', `original server did not exit after restart\nstdout=${captured.stdout}\nstderr=${captured.stderr}`);
   assert.equal(exitCode, 0, `original server exit code: ${exitCode}`);
@@ -123,7 +128,7 @@ test('POST /api/admin/restart respawns the server on the same port with a new pi
 
   // The grandchild rebinds the same port — with the listen-with-retry
   // loop it may take a moment after the parent releases the socket.
-  await waitForListening(port, { timeout: 8_000 });
+  await waitForListening(port, { timeout: 20_000 });
 
   // Verify the new process is actually serving (and is the one we
   // think it is — sanity check via PID).
@@ -202,14 +207,14 @@ test('restart sweeps a pending-temp-cleanup manifest on the next boot', async (t
   await new Promise((resolve) => {
     if (child.exitCode != null || child.signalCode != null) return resolve();
     child.once('exit', resolve);
-    setTimeout(resolve, 5_000);
+    setTimeout(resolve, 15_000);
   });
 
   const m = captured.stdout.match(/restart: spawned replacement pid=(\d+)/);
   assert.ok(m, `no restart pid log\nstdout=${captured.stdout}`);
   grandchildPid = Number(m[1]);
 
-  await waitForListening(port, { timeout: 8_000 });
+  await waitForListening(port, { timeout: 20_000 });
 
   // Grandchild boot should have swept the planted manifest + jsonl.
   await assert.rejects(() => fs.access(jsonl), 'temp jsonl must be swept');
