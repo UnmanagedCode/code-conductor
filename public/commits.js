@@ -377,14 +377,14 @@ const api = { open, close, onOpenCommit: null };
 export function installCommits({ onClose } = {}) {
   _onClose = onClose;
 
-  getEl('commits-back')?.addEventListener('click', () => close());
+  getEl('commits-back')?.addEventListener('click', () => history.back());
 
   // Capture phase: runs before review.js's bubble-phase handler, so when the
   // diff is layered on top (review-view visible) we bail and let review handle
   // Escape; otherwise we close the commit list.
   window.addEventListener('keydown', e => {
     if (e.key === 'Escape' && !getEl('commits-view')?.hidden && getEl('review-view')?.hidden) {
-      close();
+      history.back();
     }
   }, true);
 
