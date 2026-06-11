@@ -679,7 +679,10 @@ export async function getCommitDiff(projectName, sha, { contextLines = 3 } = {})
     throw err;
   }
   const ctx = Math.max(0, Math.min(50, Number.isFinite(Number(contextLines)) ? Math.floor(Number(contextLines)) : 3));
-  const r = await runGit(proj.path, ['show', `--unified=${ctx}`, '--format=', '--no-color', sha]);
+  const [r, msgR] = await Promise.all([
+    runGit(proj.path, ['show', `--unified=${ctx}`, '--format=', '--no-color', sha]),
+    runGit(proj.path, ['log', '-1', '--format=%B', sha]),
+  ]);
   if (r.code !== 0) {
     const stderr = (r.stderr || '').trim();
     const notFound = /unknown revision|bad revision|ambiguous argument/i.test(stderr);
@@ -687,13 +690,14 @@ export async function getCommitDiff(projectName, sha, { contextLines = 3 } = {})
     err.statusCode = notFound ? 404 : 500;
     throw err;
   }
+  const commitMessage = msgR.code === 0 ? (msgR.stdout.trim() || null) : null;
   const rawOutput = r.stdout;
   const truncated = rawOutput.length > DIFF_BYTE_CAP;
   const raw = truncated ? rawOutput.slice(0, DIFF_BYTE_CAP) : rawOutput;
   const files = parseUnifiedDiff(raw);
   const totalAdds = files.reduce((s, f) => s + f.adds, 0);
   const totalDels = files.reduce((s, f) => s + f.dels, 0);
-  return { project: projectName, sha, files, totalAdds, totalDels, truncated };
+  return { project: projectName, sha, commitMessage, files, totalAdds, totalDels, truncated };
 }
 
 // Return structured diff data for all uncommitted changes in a project's

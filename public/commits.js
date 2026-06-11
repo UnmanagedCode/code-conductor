@@ -76,9 +76,15 @@ function renderRow(project, commit, onOpenCommit, { ahead = false } = {}) {
   subject.title = commit.subject;
   subject.textContent = commit.subject;
 
-  const meta = document.createElement('span');
+  const meta = document.createElement('div');
   meta.className = 'commit-meta';
-  meta.textContent = `${commit.author} · ${commit.relativeDate}`;
+  const authorEl = document.createElement('span');
+  authorEl.className = 'commit-author';
+  authorEl.textContent = commit.author;
+  const dateEl = document.createElement('span');
+  dateEl.className = 'commit-date';
+  dateEl.textContent = commit.relativeDate;
+  meta.append(authorEl, dateEl);
 
   row.append(sha, subject, meta);
   row.addEventListener('click', () => onOpenCommit?.(project, commit));

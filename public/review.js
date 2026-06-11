@@ -50,8 +50,10 @@ async function loadDiff() {
   const titleEl = getEl('review-title');
   const statsEl = getEl('review-stats');
 
+  const msgEl = getEl('review-commit-message');
   titleEl.textContent = _title;
   statsEl.textContent = '';
+  if (msgEl) msgEl.hidden = true;
   fileList.innerHTML = '';
   fileList.appendChild(Object.assign(document.createElement('div'), {
     className: 'review-loading', textContent: 'Loading diff…',
@@ -66,11 +68,21 @@ async function loadDiff() {
     }
     data = await res.json();
   } catch (e) {
+    if (msgEl) msgEl.hidden = true;
     fileList.innerHTML = '';
     fileList.appendChild(Object.assign(document.createElement('div'), {
       className: 'review-error', textContent: `Failed to load diff: ${e.message}`,
     }));
     return;
+  }
+
+  if (msgEl) {
+    if (data.commitMessage) {
+      msgEl.textContent = data.commitMessage;
+      msgEl.hidden = false;
+    } else {
+      msgEl.hidden = true;
+    }
   }
 
   const parts = [];
