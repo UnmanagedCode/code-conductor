@@ -602,7 +602,9 @@ const COMMITS_MAX_LIMIT = 500;
 // Validates the project via getProject (throws 404 if not found). Caps the log
 // at `limit` (default 100, max 500) and sets `truncated` when more commits exist.
 // Returns { project, branch, commits, truncated, limit, hasUncommitted, aheadCount, aheadOf },
-// where each commit is { sha, shortSha, subject, author, relativeDate, isoDate }.
+// where each commit is { sha, shortSha, subject, author, relativeDate, isoDate, parents },
+// and `parents` is the array of parent SHAs (empty for the root, ≥2 for a merge) — the
+// frontend uses it to compute the branch/merge graph lanes.
 // hasUncommitted: true when `git status --porcelain` is non-empty.
 // aheadCount/aheadOf: how many leading commits are ahead of the base (upstream or
 // worktree base branch), or null when unknown/not applicable.
@@ -645,10 +647,11 @@ export async function getProjectCommits(projectName, { limit = COMMITS_DEFAULT_L
     }
   }
 
-  // Field separator \x1f between fields; %s/%h/%H/%an/%ar/%aI are all single-line.
+  // Field separator \x1f between fields; %s/%h/%H/%an/%ar/%aI/%P are all single-line.
+  // %P = parent SHAs (space-separated): empty for the root commit, ≥2 for a merge.
   const r = await runGit(proj.path, [
     'log', `--max-count=${cap + 1}`,
-    '--pretty=format:%H%x1f%h%x1f%s%x1f%an%x1f%ar%x1f%aI',
+    '--pretty=format:%H%x1f%h%x1f%s%x1f%an%x1f%ar%x1f%aI%x1f%P',
   ]);
   if (r.code !== 0) {
     // A fresh repo with no commits exits non-zero — treat as empty history.
@@ -658,8 +661,9 @@ export async function getProjectCommits(projectName, { limit = COMMITS_DEFAULT_L
     };
   }
   const rows = r.stdout.split('\n').filter(Boolean).map((line) => {
-    const [sha, shortSha, subject, author, relativeDate, isoDate] = line.split('\x1f');
-    return { sha, shortSha, subject, author, relativeDate, isoDate };
+    const [sha, shortSha, subject, author, relativeDate, isoDate, parentField] = line.split('\x1f');
+    const parents = parentField ? parentField.trim().split(' ').filter(Boolean) : [];
+    return { sha, shortSha, subject, author, relativeDate, isoDate, parents };
   });
   const truncated = rows.length > cap;
   const commits = truncated ? rows.slice(0, cap) : rows;

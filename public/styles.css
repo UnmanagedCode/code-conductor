@@ -1418,6 +1418,19 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
   cursor: pointer; text-align: left; color: var(--text); font: inherit;
 }
 .commit-row:hover { background: var(--panel-2); }
+
+/* Branch/merge graph rail — left of .commit-sha. A fixed-height SVG node band
+   (dot + diagonals) plus a flex filler holding full-height vertical lane lines,
+   so the rail stretches with variable-height (wrapping) rows without measuring. */
+.commit-rail {
+  flex-shrink: 0; align-self: stretch; position: relative;
+  /* width set inline = maxCols * LANE_W */
+}
+.rail-band { position: absolute; top: 0; left: 0; overflow: visible; }
+.rail-filler { position: absolute; left: 0; right: 0; top: 32px; bottom: 0; }
+.rail-line { position: absolute; top: 0; bottom: 0; width: 2px; }
+.rail-dot-uncommitted { fill: var(--panel-1); stroke: var(--amber); stroke-width: 1.5; }
+
 .commit-sha {
   flex-shrink: 0; font-family: ui-monospace, monospace; font-size: 12px;
   color: var(--tool); padding-top: 1px;
