@@ -12,6 +12,7 @@ import { runMigrations } from './migrations/index.mjs';
 import { checkClaudeReadiness, formatReadiness } from './src/health.js';
 import { sweepPendingTempCleanup } from './src/tempCleanup.js';
 import { reconcile as reconcileRootClaudeMd } from './src/rootClaudeMd.js';
+import { restoreFromResumeManifest } from './src/resumeRestart.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -82,6 +83,15 @@ export async function start({ port = 8787, host = '127.0.0.1' } = {}) {
   // PreToolUse http hook URL — feed it back into the manager now that
   // listen has resolved (port may have been auto-assigned via 0).
   if (instances) instances.setServerPort(addr.port);
+  // Resurrect sessions carried over by a "Resume after restart". Fire-and-forget
+  // (like the readiness check) so boot returns fast and the reloaded UI can
+  // connect while sessions re-spawn + get their resume notifications, staggered.
+  // No-op when no resume manifest is present. Needs the bound port (create()
+  // builds the per-instance hook/MCP URLs from it), so it runs after setServerPort.
+  if (instances) {
+    restoreFromResumeManifest({ instances, log: console })
+      .catch((e) => console.warn('resume-restart restore failed:', e?.message || e));
+  }
   // Readiness is informational only (a stderr warning banner). Run it AFTER
   // we're listening — never gate port availability on a `claude --version`
   // spawn that can be slow or CPU-starved under concurrent startup. (Awaiting

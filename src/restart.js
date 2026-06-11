@@ -66,6 +66,15 @@ export function scheduleRestart({ server, wss, instances, log = console } = {}) 
     log.warn?.('restart: pre-spawn cleanup error', e);
   }
 
+  spawnReplacementAndExit({ log });
+}
+
+// Spawn a detached replacement node process (same execPath + argv + cwd + env)
+// and exit this one after a short delay so the in-flight 202 response can flush.
+// Shared by the normal restart (scheduleRestart) and the graceful resume restart
+// (src/resumeRestart.js drainAndScheduleRestart). The child's listen-with-retry
+// (server.js) handles the EADDRINUSE race while our socket releases.
+export function spawnReplacementAndExit({ log = console } = {}) {
   const args = [process.argv[1], ...process.argv.slice(2)];
   try {
     const child = spawn(process.execPath, args, {

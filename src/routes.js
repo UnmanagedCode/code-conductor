@@ -17,6 +17,7 @@ import {
   getProjectCommits, getCommitDiff, getProjectUncommittedDiff,
 } from './worktrees.js';
 import { scheduleRestart } from './restart.js';
+import { drainAndScheduleRestart } from './resumeRestart.js';
 import { getOrCompute, invalidate, invalidateAll } from './projectsCache.js';
 import { pageInstanceEvents } from './eventArchive.js';
 import { ensureConductProject, CONDUCT_PROJECT_NAME } from './conduct.js';
@@ -82,11 +83,11 @@ export function buildRoutes({ instances, serverCtx } = {}) {
   r.post('/admin/restart', (req, res) => {
     res.status(202).json({ ok: true });
     if (!serverCtx) return;
-    scheduleRestart({
-      server: serverCtx.server,
-      wss: serverCtx.wss,
-      instances,
-    });
+    const ctx = { server: serverCtx.server, wss: serverCtx.wss, instances };
+    // `resume:true` ⇒ graceful drain → restart → resurrect (carries temps
+    // over). Otherwise the normal hard restart (wipes temps).
+    if (req.body?.resume) drainAndScheduleRestart(ctx);
+    else scheduleRestart(ctx);
   });
 
   // Compute the git-heavy facts for one project. Called via getOrCompute() so
