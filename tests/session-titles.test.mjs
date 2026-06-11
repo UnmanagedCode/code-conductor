@@ -8,6 +8,7 @@ import {
   setTitle, getTitle, deleteTitle, loadAll, MAX_TITLE_LEN,
 } from '../src/sessionTitles.js';
 import { orchStoreRoot } from '../src/projects.js';
+import { isArchived } from '../src/archivedSessions.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-basic.json');
@@ -183,7 +184,7 @@ test('rename pushes updated title onto a live instance summary', async () => {
   } finally { await close(); }
 });
 
-test('temp session exit drops its custom title from the sidecar', async () => {
+test('temp session exit preserves its custom title in the sidecar', async () => {
   const { baseUrl, instances, close } = await bootServer({ scenarioPath: SCENARIO });
   try {
     await api(baseUrl, 'POST', '/api/projects', { name: 'temp-titled' });
@@ -199,8 +200,9 @@ test('temp session exit drops its custom title from the sidecar', async () => {
     assert.equal(await getTitle(sid), 'ephemeral');
 
     await api(baseUrl, 'DELETE', `/api/instances/${id}`);
-    // _deleteTempArtifacts runs on subprocess exit; wait for the sidecar entry to clear.
-    await waitFor(async () => (await getTitle(sid)) === null);
-    assert.equal(await getTitle(sid), null);
+    // _archiveTempSession runs on subprocess exit; wait for archive to complete.
+    await waitFor(() => isArchived(sid));
+    // Title is retained — still meaningful on an archived session.
+    assert.equal(await getTitle(sid), 'ephemeral');
   } finally { await close(); }
 });
