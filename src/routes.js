@@ -657,7 +657,7 @@ export function buildRoutes({ instances, serverCtx } = {}) {
             });
             return;
           }
-          await inst.prompt(buildRebasePrompt(inst.worktree));
+          await inst.prompt(buildRebasePrompt(inst.worktree), [], { annotateIfMidTurn: false });
           invalidate(inst.project);
           res.json({ ok: true, action: 'rebase-prompt-sent', ahead: result.ahead, behind: result.behind });
           return;

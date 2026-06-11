@@ -37,6 +37,17 @@ const VALID_MODES = new Set(['plan', 'ask', 'bypassPermissions']);
 const SOFT_INTERRUPT_TEXT =
   'Stop now. Do not make any more tool calls. End your turn immediately. And don\'t reply in any way.';
 
+// Prepended to user messages delivered while the worker is mid-turn. Keeps
+// the user's text verbatim but gives the worker timing context: the message
+// may not have been composed in reaction to the latest output.
+const MID_TURN_NOTE =
+  '<system-reminder>\n' +
+  'The user sent this message while you were mid-turn. They may not have seen your ' +
+  'most recent output, and you\'ve continued working since they began composing. ' +
+  'This may be new direction or a reaction to earlier work — weigh it accordingly; ' +
+  'don\'t assume it refers to your latest action.\n' +
+  '</system-reminder>';
+
 // Returns true when a rate_limit_event signals the session is now using
 // paid overage credits. Defensive: matches isUsingOverage at either
 // nesting level (nested under rate_limit_info or flat on the event).
@@ -727,7 +738,7 @@ export class Instance extends EventEmitter {
   // vision content) and arbitrary file bytes on demand. This avoids
   // re-paying the base64 token cost on every subsequent turn and
   // keeps the prompt-cache prefix stable.
-  async prompt(text, attachments = []) {
+  async prompt(text, attachments = [], { annotateIfMidTurn = true } = {}) {
     if (!this.proc) throw new Error('not running');
     const safeText = typeof text === 'string' ? text : '';
     const atts = Array.isArray(attachments) ? attachments : [];
@@ -770,6 +781,9 @@ export class Instance extends EventEmitter {
     this._emitUi({ kind: 'user_echo', text: safeText, attachments: echoAttachments });
     if (this.firstPrompt == null && safeText.length) {
       this.firstPrompt = safeText.slice(0, 200);
+    }
+    if (annotateIfMidTurn && this.status === 'turn') {
+      content.unshift({ type: 'text', text: MID_TURN_NOTE });
     }
     this._sendRaw({
       type: 'user',
