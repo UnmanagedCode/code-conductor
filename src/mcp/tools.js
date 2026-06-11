@@ -535,15 +535,23 @@ export function buildTools() {
       name: 'read_file',
       description:
         'Read a file from a project or worktree by its project-relative path. Path-traversal ' +
-        'guarded. UTF-8 text returned inline; binary files come back base64-encoded. Truncated ' +
-        'at maxBytes (default 256 KB) — the `truncated` flag tells you when that happened.',
+        'guarded. UTF-8 text returned inline with a `lineCount` field; supports `offset` ' +
+        '(1-based start line, default 1) and `limit` (max lines, default: to EOF) for range ' +
+        'reads. Set `lineNumbers:true` to prefix each line with a right-aligned number and tab ' +
+        '(cat -n style, absolute to the full file). Response includes `startLine`/`endLine` ' +
+        'when a range is requested. Binary files come back base64-encoded — line params are ' +
+        'ignored for binary. Content is byte-capped at maxBytes (default 256 KB); the ' +
+        '`truncated` flag tells you when that happened.',
       inputSchema: {
         type: 'object',
         properties: {
           project: { type: 'string' },
           worktree: { type: 'string', description: 'Optional worktree name to scope into.' },
           relativePath: { type: 'string', description: 'Path relative to the project / worktree root.' },
-          maxBytes: { type: 'integer', description: 'Cap on bytes read. Default 262144 (256 KB).' },
+          maxBytes: { type: 'integer', description: 'Cap on bytes returned. Default 262144 (256 KB). For text with line params, applied as a final byte-cap on the assembled slice.' },
+          lineNumbers: { type: 'boolean', description: 'When true, prefix each line with a right-aligned line number and tab (cat -n style). Numbers are absolute to the full file. Ignored for binary files. Default false.' },
+          offset: { type: 'integer', description: '1-based line number to start at (default 1). Ignored for binary files.' },
+          limit: { type: 'integer', description: 'Maximum number of lines to return (default: to end of file). Ignored for binary files.' },
         },
         required: ['project', 'relativePath'],
       },
