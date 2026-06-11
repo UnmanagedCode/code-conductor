@@ -21,10 +21,10 @@ import {
 } from './resumeManifest.js';
 import { CONDUCT_PROJECT_NAME, ensureConductProject } from './conduct.js';
 
-// Force-then-proceed grace: after wind-down, wait at most this long for every
-// live instance to leave its turn; then force-interrupt stragglers and proceed
-// (resume is clean regardless of how the turn was cut).
-export const RESUME_DRAIN_GRACE_MS = 15000;
+// Force-then-proceed grace: after wind-down, wait at most this long (60 s) for
+// every live instance to leave its turn; then force-interrupt stragglers and
+// proceed (resume is clean regardless of how the turn was cut).
+export const RESUME_DRAIN_GRACE_MS = 60000;
 // Gap between staggered respawns on boot — N concurrent claude spawns is a
 // resource spike on Termux/Android.
 export const RESUME_STAGGER_MS = 1500;
@@ -132,10 +132,17 @@ export async function drainToManifest({ server, wss, instances, log = console, g
     }
   }
 
-  // Snapshot which instances were mid-turn BEFORE wind-down so the manifest can
-  // distinguish interrupted sessions (need a resume prompt) from ones that were
-  // already idle (should be resurrected silently).
-  const busyAtDrain = new Set(live.filter((i) => i.status === 'turn').map((i) => i.id));
+  // Snapshot which instances had resumable work BEFORE wind-down so the manifest
+  // can distinguish sessions that need a resume prompt from ones that were idle
+  // with nothing pending (resurrected silently). "Resumable work" = mid-turn OR
+  // idle-but-parked on a pending OUTGOING idle-subscription, i.e. a conductor
+  // that ended its turn and is waiting on a worker (isIdleCaller — the caller
+  // side, NOT hasIdleSubscriber which is the target side). Such a conductor has
+  // durable re-conduct work (re-spawn workers, re-establish subscriptions) even
+  // though it's idle, so it must still receive its restart prompt.
+  const busyAtDrain = new Set(
+    live.filter((i) => i.status === 'turn' || instances.isIdleCaller(i.id)).map((i) => i.id),
+  );
 
   // (2) Wind down mid-turn instances. wss/http stay UP throughout.
   for (const inst of live) {
