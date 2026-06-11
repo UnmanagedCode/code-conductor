@@ -988,7 +988,7 @@ dom.restartDialog?.addEventListener('close', async () => {
   else if (choice === 'plain') await performRestart({ resume: false });
   // 'cancel' / dismiss → no-op.
 });
-dom.restartDialog.addEventListener('click', (e) => {
+dom.restartDialog?.addEventListener('click', (e) => {
   if (e.target === dom.restartDialog) dom.restartDialog.close();
 });
 // Background connection status (unrelated to manual restart): show
