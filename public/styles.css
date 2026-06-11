@@ -888,6 +888,21 @@ body.lightbox-open { overflow: hidden; }
   font-family: ui-monospace, monospace;
 }
 
+/* "⋯ earlier messages" lazy-load affordance pinned above the oldest
+   rendered content (see loadEarlier in app.js). Tappable fallback for
+   the scroll-to-top trigger. */
+.history-sentinel {
+  text-align: center;
+  margin: 6px 0 14px 0;
+  padding: 6px 0;
+  color: var(--muted);
+  font-size: 11px;
+  font-family: ui-monospace, monospace;
+  cursor: pointer;
+  user-select: none;
+}
+.history-sentinel:hover { color: var(--text); }
+
 .block.turn-end {
   border-top: 1px dashed var(--border);
   padding-top: 6px;
