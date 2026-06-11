@@ -330,6 +330,59 @@ test('timeoutMs: turn_end before timeout wins; timer is cancelled, only one stub
   } finally { await ctx.close(); }
 });
 
+// ── list() hasIdleSubscriber semantics ───────────────────────────────────────
+
+test('list() sets hasIdleSubscriber on the caller (conductor), not the target (worker)', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO_WS });
+  try {
+    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'p' });
+    const callerId = await spawnReady(ctx, 'p');
+    const targetId = await spawnReady(ctx, 'p');
+
+    // Before subscribe: both false.
+    let listed = ctx.instances.list();
+    assert.equal(listed.find(i => i.id === callerId)?.hasIdleSubscriber, false);
+    assert.equal(listed.find(i => i.id === targetId)?.hasIdleSubscriber, false);
+
+    // After subscribe: caller=true, target=false.
+    await callTool(ctx.baseUrl, 'subscribe_to_idle',
+      { targetId }, { caller: callerId });
+    listed = ctx.instances.list();
+    assert.equal(listed.find(i => i.id === callerId)?.hasIdleSubscriber, true,
+      'caller (conductor) must show hasIdleSubscriber:true while awaiting');
+    assert.equal(listed.find(i => i.id === targetId)?.hasIdleSubscriber, false,
+      'target (worker) must NOT show hasIdleSubscriber:true');
+
+    // After the subscription fires (target completes a turn): caller goes false.
+    await callTool(ctx.baseUrl, 'send_prompt',
+      { id: targetId, text: 'go', wait: true, waitTimeoutMs: 5000 });
+    const caller = ctx.instances.get(callerId);
+    await waitFor(() => !!findStubFor(caller, targetId), { timeout: 2000 });
+    listed = ctx.instances.list();
+    assert.equal(listed.find(i => i.id === callerId)?.hasIdleSubscriber, false,
+      'hasIdleSubscriber must be false after subscription is consumed');
+    assert.equal(listed.find(i => i.id === targetId)?.hasIdleSubscriber, false);
+  } finally { await ctx.close(); }
+});
+
+test('list() hasIdleSubscriber goes false after unsubscribe', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO_WS });
+  try {
+    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'p' });
+    const callerId = await spawnReady(ctx, 'p');
+    const targetId = await spawnReady(ctx, 'p');
+
+    await callTool(ctx.baseUrl, 'subscribe_to_idle',
+      { targetId }, { caller: callerId });
+    assert.equal(ctx.instances.list().find(i => i.id === callerId)?.hasIdleSubscriber, true);
+
+    await callTool(ctx.baseUrl, 'unsubscribe_from_idle',
+      { targetId }, { caller: callerId });
+    assert.equal(ctx.instances.list().find(i => i.id === callerId)?.hasIdleSubscriber, false,
+      'hasIdleSubscriber must be false after manual unsubscribe');
+  } finally { await ctx.close(); }
+});
+
 test('timeoutMs: unsubscribe clears the watchdog timer — no stub delivered after unsubscribe', async () => {
   const ctx = await bootServer({ scenarioPath: SCENARIO_WS });
   try {
