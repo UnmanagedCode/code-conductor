@@ -171,6 +171,11 @@ export async function getTranscript({ id, sinceSeq = -1, limit = 200 }, { instan
     events,
     lastSeq,
     truncated: filtered.length > events.length,
+    // First retained _seq — the ring is capped (drop-oldest), so a
+    // sinceSeq below this points at evicted history: the gap is silent
+    // here, but callers can detect it and page the missing range via
+    // GET /api/instances/:id/events (jsonl-replay fallback).
+    trimmedBefore: inst.ring.trimmedBefore,
   };
 }
 
@@ -724,6 +729,12 @@ export async function createProject({ name, gitInit = false }) {
 // [1, 50]. Returns `{ id, messages }` — oldest-first.
 export async function getRecentMessages({ id, count, includeToolCalls = false, includeThinking = false }, { instances }) {
   const inst = getInst(instances, id);
+  // The ring is capped (drop-oldest, ≥2000 by default) but this walks
+  // backward for at most the last 50 messages, which comfortably fit in
+  // the retained tail. Under extreme trims the OLDEST returned message can
+  // be partial (its early deltas evicted) — buildMessageFromRing already
+  // prefers the trailing assistant_message envelope when present, which
+  // covers the common shape.
   const ring = inst.ringSnapshot();
   const n = Math.max(1, Math.min(Number.isInteger(count) ? count : 1, 50));
   // Collect all distinct msgIds from the ring, walking backward.

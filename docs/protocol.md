@@ -42,8 +42,8 @@ Outbound: `system` + `subtype:"init"` (bundled with first turn's response, not a
 **Server → client:**
 | `t` | Fields |
 |---|---|
-| `snapshot` | `id`, `status`, `mode`, `sessionId`, `project`, `autoApprovePlan`, `interrupting`, `events[]` |
-| `reset_snapshot` | Same shape; sent after rewind so subscribers clear DOM first |
+| `snapshot` | `id`, `status`, `mode`, `sessionId`, `project`, `autoApprovePlan`, `interrupting`, `events[]` (ring **tail** only — ≤ `ORCH_SNAPSHOT_TAIL`, default 500, window start snapped to a turn boundary), `tailStartSeq` (`_seq` of first tail event; `>0` ⇒ older history exists — page it via `GET /api/instances/:id/events?before=<seq>`), `trimmedBefore` (first `_seq` still in the in-memory ring) |
+| `reset_snapshot` | Same shape minus the tail metadata (`events: []`); sent after rewind so subscribers clear DOM first |
 | `event` | `id`, `ev` (monotonic `_seq` for idempotent merge) |
 | `status` | `id`, `status` (`spawning|idle|turn|exited|crashed`), `sessionId`, `mode`, `autoApprovePlan`, `interrupting` (transient — `true` while a soft interrupt winds a turn down; auto-clears on exit from `turn`) |
 | `ack` | `reqId`, `ok`, `error?` |
@@ -52,7 +52,7 @@ Outbound: `system` + `subtype:"init"` (bundled with first turn's response, not a
 | `turn_notification` | `id`, `project`, `isError`, `stopReason`, `cost` — **broadcast to all clients** (not just per-instance subscribers) so background tabs can ping OS notifications |
 | `instances` / `projects` | Hints to re-fetch (no payload); broadcast on every instance create/remove/status flip — `projects` covers the case where a CLI just flushed a session jsonl |
 
-**UI event kinds (`ev.kind`):** `text_delta`, `text_end`, `thinking_start/delta/end/redacted`, `tool_use_start/input_delta/use`, `tool_result`, `user_echo`, `system` (subtypes incl. `init`, `history_replayed`), `hook`, `turn_end`, `assistant_message`, `control_response`, `user_question` (`toolUseId`, `questions[]`), `plan_request` (`toolUseId`, `plan`, `planPath`, optional `autoApproved`), `permission_request` (`toolUseId`, `toolName`, `toolInput`), `permission_resolved` (`toolUseId`, `allow`), `raw`. Each carries `parentToolUseId` (or `null`) — non-null routes into a nested sub-Conversation.
+**UI event kinds (`ev.kind`):** `text_delta`, `text_end`, `thinking_start/delta/end/redacted`, `tool_use_start/input_delta/use`, `tool_result`, `user_echo` (outer echoes carry `userIndex` — the absolute 0-based ordinal among pure user-prompt jsonl lines; the rewind/fork anchor, immune to ring trimming), `system` (subtypes incl. `init`, `history_replayed`), `hook`, `turn_end`, `assistant_message`, `control_response`, `user_question` (`toolUseId`, `questions[]`), `plan_request` (`toolUseId`, `plan`, `planPath`, optional `autoApproved`), `permission_request` (`toolUseId`, `toolName`, `toolInput`), `permission_resolved` (`toolUseId`, `allow`), `raw`. Each carries `parentToolUseId` (or `null`) — non-null routes into a nested sub-Conversation.
 
 ## REST endpoints
 | Method | Path | Purpose |
@@ -71,6 +71,7 @@ Outbound: `system` + `subtype:"init"` (bundled with first turn's response, not a
 | `POST` | `/api/instances` | Spawn. Returns summary. |
 | `GET` | `/api/instances` | List live. |
 | `POST` | `/api/instances/:id/respawn` | Uses `--resume lastSessionId`. |
+| `GET` | `/api/instances/:id/events` | Paged event history, incl. events evicted from the capped ring (reconstructed by replaying the session jsonl). `before=<seq>` pages **backward** (up to `limit` events immediately preceding that seq, oldest-first — echo the response's `nextBefore` cursor to continue; wins over `after`); `after=<seq>` pages forward (`sinceSeq` semantics); neither ⇒ trailing page. `limit` clamped to `[1,500]`, default 200. Returns `{id, events, hasMore, nextBefore, trimmedBefore, lastSeq}`. Evicted/archived events get their own dense `_seq` space strictly below `trimmedBefore`, cut at a turn boundary so ring + archive never overlap (degenerate giant-turn case yields a gap, never duplication). 400 non-integer params, 404 unknown id. |
 | `POST` | `/api/instances/:id/rewind` | `{userMessageIndex}` — atomic truncate + respawn (same `sessionId`). 409 during turn, 400 on temp / out-of-range. Returns `droppedText`. |
 | `POST` | `/api/instances/:id/fork` | `{userMessageIndex}` — copies prefix to new `sessionId`, original is byte-identical, spawns fresh instance. 400 on temp / OOR. |
 | `DELETE` | `/api/instances/:id` | SIGTERM + remove. |

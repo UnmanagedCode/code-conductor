@@ -74,16 +74,59 @@ export function resolveClaudeBin() {
   return { command: parts[0], prefixArgs: parts.slice(1) };
 }
 
-// Unbounded append-only event log per instance. Grows for the lifetime of
-// the Instance object — no cap, so a resumed session whose persisted
-// transcript expands to thousands of UI events keeps every one of them in
-// the snapshot. Memory cost is one event per UI delta (~1 KB-ish), so a
-// multi-hour session is still well under tens of MB.
-class EventLog {
-  constructor() { this.buf = []; }
-  push(v) { this.buf.push(v); }
+// Bounded drop-oldest event log per instance. `_seq` is stamped here at
+// push time and stays monotonic for the life of the Instance — eviction
+// never renumbers, so consumers keyed on `_seq` (WS client dedup,
+// get_transcript({sinceSeq}), GET /api/instances/:id/events) survive
+// trims. Evicted events remain reconstructable from the session jsonl
+// (see src/eventArchive.js).
+//
+// Trimming is batched (amortized O(1) per push): once the buffer exceeds
+// cap + slack, the front is spliced down to cap, then "snapped" forward so
+// the surviving head is an outer user_echo — a turn boundary — which lets
+// the jsonl-replay archive be cut against the retained ring with no
+// overlap. Snapping gives up (plain cut) rather than drop below cap/2,
+// e.g. when a single giant turn spans the whole droppable region.
+const DEFAULT_RING_CAP = 2000;
+const RING_TRIM_SLACK = 256;
+// Max events sent in a WS `subscribe` snapshot (see Instance.snapshotTail).
+// Matches the long-documented "500 events" figure, so sessions under 500
+// events behave exactly as before. Override with ORCH_SNAPSHOT_TAIL.
+const DEFAULT_SNAPSHOT_TAIL = 500;
+
+function isOuterUserEcho(ev) {
+  return ev?.kind === 'user_echo' && !ev.parentToolUseId;
+}
+
+export class EventLog {
+  constructor({ cap } = {}) {
+    const envCap = Number(process.env.ORCH_EVENT_RING_CAP);
+    this.cap = Number.isInteger(cap) && cap > 0 ? cap
+      : (Number.isInteger(envCap) && envCap > 0 ? envCap : DEFAULT_RING_CAP);
+    // For tiny caps (tests) the trim trigger scales down with the cap.
+    this.slack = Math.min(RING_TRIM_SLACK, this.cap);
+    this.buf = [];
+    this.nextSeq = 0;
+  }
+  // First retained `_seq` — everything below it was evicted (0 when
+  // nothing was). Equals nextSeq for an empty ring.
+  get trimmedBefore() { return this.buf.length ? this.buf[0]._seq : this.nextSeq; }
+  push(v) {
+    v._seq = this.nextSeq;
+    this.nextSeq += 1;
+    this.buf.push(v);
+    if (this.buf.length > this.cap + this.slack) this._trim();
+  }
+  _trim() {
+    const base = this.buf.length - this.cap;                   // plain cut point
+    const maxIdx = this.buf.length - Math.ceil(this.cap / 2);  // snap give-up bound
+    let cut = base;
+    while (cut < maxIdx && !isOuterUserEcho(this.buf[cut])) cut += 1;
+    if (cut >= maxIdx) cut = base; // no turn boundary in range — plain cut
+    this.buf.splice(0, cut);
+  }
   toArray() { return this.buf.slice(); }
-  clear() { this.buf.length = 0; }
+  clear() { this.buf.length = 0; this.nextSeq = 0; }
 }
 
 export class Instance extends EventEmitter {
@@ -133,6 +176,13 @@ export class Instance extends EventEmitter {
     this.proc = null;
     this.parser = new Parser();
     this.ring = new EventLog();
+    // Absolute ordinal of the next outer user_echo, stamped onto the event
+    // as `userIndex` in _emitUi. Counts exactly the events that correspond
+    // 1:1 to `isPureUserPromptLine` jsonl lines (the rewind/fork anchor),
+    // so the index stays correct even after the ring trims away early
+    // bubbles — the client must NOT derive it by counting rendered bubbles.
+    // Reset alongside the ring in _wipeForResume (replay recounts from 0).
+    this._userEchoCount = 0;
     this._pending = new Map(); // request_id -> { resolve, reject, timer }
     // Per-instance PreToolUse hook callback broker (held-open
     // responses + timeout fallbacks + the ask-mode permission_request
@@ -236,6 +286,26 @@ export class Instance extends EventEmitter {
 
   ringSnapshot() { return this.ring.toArray(); }
 
+  // Trailing slice of the ring for the WS `subscribe` snapshot — tabs no
+  // longer receive the whole ring on every subscribe; older events are
+  // lazy-loaded via GET /api/instances/:id/events. The window start is
+  // snapped forward to the first outer user_echo inside it (a turn
+  // boundary) so the initial render doesn't begin mid-message; if the
+  // window holds no echo (one giant turn), the plain slice is sent and the
+  // client renders the partial turn as-is.
+  snapshotTail(max) {
+    const envMax = Number(process.env.ORCH_SNAPSHOT_TAIL);
+    const cap = Number.isInteger(max) && max > 0 ? max
+      : (Number.isInteger(envMax) && envMax > 0 ? envMax : DEFAULT_SNAPSHOT_TAIL);
+    const buf = this.ring.buf;
+    if (buf.length <= cap) return buf.slice();
+    let start = buf.length - cap;
+    for (let i = start; i < buf.length; i++) {
+      if (isOuterUserEcho(buf[i])) { start = i; break; }
+    }
+    return buf.slice(start);
+  }
+
   // Open log files for the raw CLI streams when debug mode is on. Called
   // exactly once at the top of spawn(), before any data flows. Best-effort:
   // a failure here demotes the instance to non-debug rather than blocking
@@ -325,14 +395,21 @@ export class Instance extends EventEmitter {
   }
 
   _emitUi(ev) {
-    const wrapped = { ...ev, _seq: this.ring.buf.length };
-    this.ring.push(wrapped);
+    const wrapped = { ...ev };
+    // Every outer user_echo funnels through here (live prompt(), parser
+    // queued-prompt echoes, jsonl replay), so this counter matches the
+    // Nth-pure-user-prompt-line semantics sessionEdit.js truncates by.
+    if (isOuterUserEcho(wrapped)) {
+      wrapped.userIndex = this._userEchoCount;
+      this._userEchoCount += 1;
+    }
+    this.ring.push(wrapped); // stamps wrapped._seq
     this.emit('event', wrapped);
   }
 
   async loadHistory(sessionId) {
     const result = await loadPersistedTranscript({
-      cwd: this.cwd, sessionId, seqHint: this.ring.buf.length,
+      cwd: this.cwd, sessionId, seqHint: this.ring.nextSeq,
     });
     if (!result) return; // ENOENT or no sessionId — silent no-op.
     for (const line of result.lines) {
@@ -858,6 +935,7 @@ export class Instance extends EventEmitter {
   // clear their conversation DOM before the new replay starts streaming.
   _wipeForResume(extra = {}) {
     this.ring.clear();
+    this._userEchoCount = 0;
     this.parser.reset();
     this._lastLeafUuid = null;
     this._lastPlanFilePath = null;

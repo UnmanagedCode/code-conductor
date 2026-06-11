@@ -11,7 +11,10 @@
 //   { t: "auto_approve_plan", id, enabled }
 //
 // Server → client:
-//   { t: "snapshot",       id, status, mode, sessionId, project, autoApprovePlan, events: [...] }
+//   { t: "snapshot",       id, status, mode, sessionId, project, autoApprovePlan,
+//                          events: [...],            // ring TAIL only (≤ ORCH_SNAPSHOT_TAIL, default 500)
+//                          tailStartSeq, trimmedBefore } // >0 ⇒ older history exists; page it via
+//                                                        // GET /api/instances/:id/events?before=<seq>
 //   { t: "reset_snapshot", id, status, mode, sessionId, project, events: [...] }
 //   { t: "event",          id, ev }
 //   { t: "status",         id, status, sessionId, mode, autoApprovePlan }
@@ -127,6 +130,11 @@ export function attachWsHub({ wss, instances }) {
           case 'subscribe': {
             if (!inst) { reply(false, 'unknown instance'); return; }
             subsFor(msg.id).add(ws);
+            // Tail-only snapshot: at most ORCH_SNAPSHOT_TAIL (default 500)
+            // trailing events, snapped to a turn boundary. tailStartSeq > 0
+            // tells the client older history exists — it lazy-loads it via
+            // GET /api/instances/:id/events?before=<seq>.
+            const events = inst.snapshotTail();
             safeSend(ws, JSON.stringify({
               t: 'snapshot',
               id: inst.id,
@@ -136,7 +144,9 @@ export function attachWsHub({ wss, instances }) {
               sessionId: inst.sessionId,
               autoApprovePlan: !!inst.autoApprovePlan,
               interrupting: !!inst.interrupting,
-              events: inst.ringSnapshot(),
+              events,
+              tailStartSeq: events.length ? events[0]._seq : inst.ring.trimmedBefore,
+              trimmedBefore: inst.ring.trimmedBefore,
             }));
             reply(true);
             return;

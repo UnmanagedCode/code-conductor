@@ -44,10 +44,12 @@ export class Conversation {
     this.onRewind = onRewind;
     this.onFork = onFork;
     this.onAssistantText = onAssistantText;
-    // 0-based index of the next user_echo to render. Stamped onto the
-    // bubble's DOM via `data-user-index` so click handlers know which
-    // jsonl user-prompt line to anchor against on rewind/fork.
-    this.userMessageCounter = 0;
+    // Rewind/fork anchoring: each outer user_echo arrives with a
+    // server-stamped absolute `userIndex` (the Nth pure user-prompt line
+    // in the jsonl). The bubble exposes it via `data-user-index`. We do
+    // NOT count rendered bubbles client-side — with a capped ring /
+    // tail-only snapshot the view can start mid-history, so a local
+    // counter would anchor rewinds against the wrong jsonl line.
     // Sub-conversations (Task sub-agents) don't get rewind/fork buttons —
     // those operations only make sense at the outer session level.
     this._userActionsEnabled = !this.isSub;
@@ -118,7 +120,6 @@ export class Conversation {
     this.permissionBlocks.clear();
     this._activeAssistantWrap = null;
     this._pendingAnswerUQId = null;
-    this.userMessageCounter = 0;
     this._setEmpty();
   }
 
@@ -308,13 +309,19 @@ export class Conversation {
       // Defensive — never produce an empty user bubble.
       blocks.appendChild(el('div', { class: 'block text' }, ''));
     }
-    const userIndex = this.userMessageCounter;
-    this.userMessageCounter += 1;
+    // Server-stamped absolute ordinal (see constructor comment). An echo
+    // without one (e.g. an orphaned sub-agent echo rendered at the outer
+    // level) gets no rewind/fork buttons — guessing an index could
+    // truncate the session at the wrong line.
+    const userIndex = Number.isInteger(ev.userIndex) ? ev.userIndex : null;
     const roleEl = el('div', { class: 'role' }, 'user');
     if (isTranscribed) {
       roleEl.appendChild(el('span', { class: 'transcribed-badge', title: 'Transcribed from voice' }, '🎤'));
     }
-    const wrap = el('div', { class: 'msg user', 'data-user-index': String(userIndex) },
+    const wrap = el('div',
+      userIndex != null
+        ? { class: 'msg user', 'data-user-index': String(userIndex) }
+        : { class: 'msg user' },
       roleEl,
       blocks,
     );
@@ -322,7 +329,7 @@ export class Conversation {
     // conversation (sub-agent transcripts never get them). The buttons stay
     // visually hidden until the bubble is hovered; CSS lives in styles.css
     // under `.user-msg-actions` (mirrors the `.session-delete` pattern).
-    if (!this.isSub && (this.onRewind || this.onFork)) {
+    if (!this.isSub && userIndex != null && (this.onRewind || this.onFork)) {
       const actions = el('div', { class: 'user-msg-actions' });
       if (this.onRewind) {
         const btn = el('button', {
