@@ -17,6 +17,7 @@ import {
   getProjectCommits, getCommitDiff, getProjectUncommittedDiff,
 } from './worktrees.js';
 import { scheduleRestart } from './restart.js';
+import { getOrCompute, invalidate, invalidateAll } from './projectsCache.js';
 import { ensureConductProject, CONDUCT_PROJECT_NAME } from './conduct.js';
 import {
   isAvailable as transcribeAvailable, transcribe, modelPathForName,
@@ -87,33 +88,50 @@ export function buildRoutes({ instances, serverCtx } = {}) {
     });
   });
 
+  // Compute the git-heavy facts for one project. Called via getOrCompute() so
+  // results are cached for TTL_MS and concurrent callers share one in-flight
+  // execution. Does NOT include instanceIds or session counts — those are cheap
+  // and always computed fresh so they stay live across status changes.
+  async function computeGitFacts(p) {
+    const worktrees = await listWorktrees(p.name).catch(() => []);
+    const worktreesWithMerge = await Promise.all(worktrees.map(async (w) => ({
+      ...w,
+      mergeStatus: await getWorktreeMergeStatus(w).catch(() => ({ ahead: null, behind: null })),
+    })));
+    const projIsGitRepo = await isGitRepo(p.path);
+    return {
+      isGitRepo: projIsGitRepo,
+      worktrees: worktreesWithMerge,
+      mergeStatus: projIsGitRepo
+        ? await getProjectUpstreamStatus(p.path).catch(() => ({ ahead: null, behind: null, upstream: null }))
+        : { ahead: null, behind: null, upstream: null },
+    };
+  }
+
   r.get('/projects', async (req, res, next) => {
     try {
       const projects = await listProjects();
       const enriched = await Promise.all(projects.map(async (p) => {
-        const worktrees = await listWorktrees(p.name).catch(() => []);
+        // Git facts are cached for TTL_MS; concurrent requests coalesce.
+        const gitFacts = await getOrCompute(p.name, () => computeGitFacts(p));
         // Attach a lightweight session count + last-active mtime to
         // each worktree too, so the sidebar can decide whether to show
         // its "Sessions (N)" subnode without an extra fetch.
-        const worktreesWithSessions = await Promise.all(worktrees.map(async (w) => {
+        const worktreesWithSessions = await Promise.all(gitFacts.worktrees.map(async (w) => {
           const wtTempSids = instances ? instances.tempSessionIdsForCwd(w.worktreePath) : null;
           return {
             ...w,
             sessions: await summarizeSessions(w.worktreePath, wtTempSids).catch(() => ({ count: 0, lastMtime: 0 })),
-            mergeStatus: await getWorktreeMergeStatus(w).catch(() => ({ ahead: null, behind: null })),
           };
         }));
-        const projIsGitRepo = await isGitRepo(p.path);
         const projTempSids = instances ? instances.tempSessionIdsForCwd(p.path) : null;
         return {
           ...p,
           instanceIds: instances ? instances.idsForProject(p.name) : [],
-          isGitRepo: projIsGitRepo,
+          isGitRepo: gitFacts.isGitRepo,
           worktrees: worktreesWithSessions,
           sessions: await summarizeSessions(p.path, projTempSids).catch(() => ({ count: 0, lastMtime: 0 })),
-          mergeStatus: projIsGitRepo
-            ? await getProjectUpstreamStatus(p.path).catch(() => ({ ahead: null, behind: null, upstream: null }))
-            : { ahead: null, behind: null, upstream: null },
+          mergeStatus: gitFacts.mergeStatus,
         };
       }));
       res.json(enriched);
@@ -175,6 +193,7 @@ export function buildRoutes({ instances, serverCtx } = {}) {
       if (instances) killed = await instances.removeAllForProject(proj.name);
       await removeAllWorktreesForProject(proj.name);
       await deleteProject(proj.name);
+      invalidate(proj.name);
       res.json({ ok: true, project: proj.name, killedInstances: killed });
     } catch (e) { next(e); }
   });
@@ -407,6 +426,7 @@ export function buildRoutes({ instances, serverCtx } = {}) {
         }
       }
       await removeWorktree(req.params.name, req.params.wt, { force });
+      invalidate(req.params.name);
       res.json({ ok: true });
     } catch (e) { next(e); }
   });
@@ -601,6 +621,7 @@ export function buildRoutes({ instances, serverCtx } = {}) {
         const result = await syncWorktree(inst.project, inst.worktree.worktreeName);
         if (result.ok && result.action === 'rebase-required') {
           if (!inst.proc) {
+            invalidate(inst.project);
             res.json({
               ok: false,
               reason: 'instance is not running — Resume it before clicking Sync so the agent can rebase',
@@ -608,9 +629,11 @@ export function buildRoutes({ instances, serverCtx } = {}) {
             return;
           }
           await inst.prompt(buildRebasePrompt(inst.worktree));
+          invalidate(inst.project);
           res.json({ ok: true, action: 'rebase-prompt-sent', ahead: result.ahead, behind: result.behind });
           return;
         }
+        invalidate(inst.project);
         res.json(result);
       } catch (e) { next(e); }
     });
@@ -637,6 +660,7 @@ export function buildRoutes({ instances, serverCtx } = {}) {
           return;
         }
         const result = await mergeWorktreeIntoParent(inst.project, inst.worktree.worktreeName);
+        invalidate(inst.project);
         res.json(result);
       } catch (e) { next(e); }
     });

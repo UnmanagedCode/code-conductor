@@ -3,6 +3,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { createServer } from '../server.js';
+import { _resetForTest as resetProjectsCache } from '../src/projectsCache.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FAKE_CLAUDE = path.join(__dirname, 'fake-claude.mjs');
@@ -19,6 +20,11 @@ export async function rmrf(p) {
 }
 
 export async function bootServer({ scenarioPath, useRealClaude = false } = {}) {
+  // Reset the projects git-facts cache so stale entries from a previous test
+  // can't bleed into this one. TTL=0 gives pure-coalescing semantics:
+  // concurrent requests coalesce but sequential requests always recompute,
+  // so integration tests always see exact live data.
+  resetProjectsCache(0);
   const tmpHome = await makeTmpHome();
   const projectsRoot = path.join(tmpHome, 'project');
   const claudeProjectsRoot = path.join(tmpHome, '.claude', 'projects');
