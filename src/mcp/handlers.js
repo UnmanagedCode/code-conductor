@@ -326,7 +326,7 @@ export async function approvePlan({ instanceId, feedback }, { instances }) {
     }
   }
   const text = buildApprovePrompt(feedback);
-  await inst.prompt(text);
+  await inst.prompt(text, [], { annotateIfMidTurn: false });
   return { ok: true, id: instanceId, mode: inst.mode, sentText: text };
 }
 
@@ -337,7 +337,7 @@ export async function rejectPlan({ instanceId, feedback }, { instances }) {
   const inst = getInst(instances, instanceId);
   if (!inst.proc) throw new Error(`instance ${instanceId} is not running (status=${inst.status})`);
   const text = buildRejectPrompt(feedback);
-  await inst.prompt(text);
+  await inst.prompt(text, [], { annotateIfMidTurn: false });
   return { ok: true, id: instanceId, mode: inst.mode, sentText: text };
 }
 
@@ -615,7 +615,7 @@ export async function syncWorktree({ instanceId }, { instances }) {
         reason: 'instance is not running — Resume it before calling sync_worktree so the agent can rebase',
       };
     }
-    await inst.prompt(buildRebasePrompt(inst.worktree));
+    await inst.prompt(buildRebasePrompt(inst.worktree), [], { annotateIfMidTurn: false });
     return {
       ok: true, action: 'rebase-prompt-sent',
       ahead: result.ahead, behind: result.behind,

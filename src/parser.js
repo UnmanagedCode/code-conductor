@@ -308,6 +308,7 @@ export class Parser {
         });
       } else if (block.type === 'text') {
         if (typeof block.text !== 'string') continue;
+        if (isMidTurnNoteContent(block.text)) continue;
         const { text: leftover, attachments } = extractAttachedMarkers(block.text);
         if (leftover.length) echoTexts.push(leftover);
         for (const a of attachments) echoAttachments.push(a);
@@ -371,6 +372,17 @@ export function isSoftInterruptContent(content) {
     (b) => b && b.type === 'text' && typeof b.text === 'string'
            && b.text.includes(SOFT_INTERRUPT_MARKER),
   );
+}
+
+// True when a single text block is the mid-turn annotation prepended by
+// Instance.prompt() when a message arrives while a worker is in-flight.
+// Matched by shape (system-reminder wrapper + 'mid-turn' token), not by
+// exact string, so minor wording tweaks don't silently break filtering.
+export function isMidTurnNoteContent(text) {
+  return typeof text === 'string'
+    && text.startsWith('<system-reminder>')
+    && text.includes('mid-turn')
+    && text.trimEnd().endsWith('</system-reminder>');
 }
 
 export function extractAttachedMarkers(text) {
