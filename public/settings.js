@@ -11,7 +11,7 @@ const POLL_MS = 1500;
 
 export function installSettings({
   requestClose, onAvailabilityChange, onModelsChange,
-  onTtsAvailabilityChange, onTtsPrefsChange,
+  onTtsAvailabilityChange, onTtsPrefsChange, onOpenCostDashboard,
 } = {}) {
   const main = document.getElementById('main');
   const view = document.getElementById('settings-view');
@@ -451,6 +451,9 @@ export function installSettings({
     if (smCompactWindowValEl) smCompactWindowValEl.textContent = `${smCompactWindowSliderEl.value}k`;
   });
   smCompactWindowSliderEl?.addEventListener('change', onSaveCompactWindow);
+  document.getElementById('sm-cost-dashboard-btn')?.addEventListener('click', () => {
+    onOpenCostDashboard?.();
+  });
 
   async function onSaveCompactWindow() {
     const enabled = smCompactWindowEnabledEl?.checked ?? false;

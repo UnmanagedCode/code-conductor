@@ -49,6 +49,7 @@ import {
 } from './rootClaudeMd.js';
 import { setTitle as setSessionTitle, MAX_TITLE_LEN } from './sessionTitles.js';
 import { getAccountUsage } from './accountUsage.js';
+import { getCostSummary } from './costTracking.js';
 
 const CONTENT_TYPE_BY_EXT = {
   png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg',
@@ -1019,6 +1020,10 @@ export function buildRoutes({ instances, serverCtx } = {}) {
       const usage = await getAccountUsage();
       res.json({ usage });
     } catch (e) { next(e); }
+  });
+
+  r.get('/costs/summary', async (req, res, next) => {
+    try { res.json(await getCostSummary()); } catch (e) { next(e); }
   });
 
   r.use((err, req, res, _next) => {

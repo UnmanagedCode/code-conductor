@@ -7,6 +7,7 @@ import { buildRoutes } from './src/routes.js';
 import { buildMcpRouter } from './src/mcp/server.js';
 import { InstanceManager } from './src/instances.js';
 import { attachWsHub } from './src/wsHub.js';
+import { initCostTracking } from './src/costTracking.js';
 import { projectsRoot } from './src/projects.js';
 import { runMigrations } from './migrations/index.mjs';
 import { checkClaudeReadiness, formatReadiness } from './src/health.js';
@@ -31,6 +32,7 @@ export function createServer({ withInstances = true } = {}) {
   const server = http.createServer(app);
   const wss = new WebSocketServer({ server, path: '/ws' });
   if (instances) attachWsHub({ wss, instances });
+  if (instances) initCostTracking(instances);
   serverCtx.server = server;
   serverCtx.wss = wss;
 
