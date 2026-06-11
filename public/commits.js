@@ -104,6 +104,14 @@ function computeGraph(commits) {
 
 function laneX(col) { return col * LANE_W + LANE_W / 2; }
 
+// Pure helper: true when column k's outgoing segment must emanate FROM the dot
+// rather than pass straight through. lanesBefore[k] === sha means that lane
+// converged into this dot, freeing the slot for a freshly-routed parent —
+// the new occupant must fork diagonally from the dot, not draw a straight line.
+export function laneEmanates(k, col, lanesBefore, sha) {
+  return k === col || lanesBefore[k] == null || lanesBefore[k] === sha;
+}
+
 function svgLine(x1, y1, x2, y2, color) {
   const l = document.createElementNS(SVG_NS, 'line');
   l.setAttribute('x1', x1); l.setAttribute('y1', y1);
@@ -150,8 +158,7 @@ function buildRail(layout, maxCols, { node = true, dotClass = '' } = {}) {
   for (let k = 0; k < lanesAfter.length; k++) {
     if (lanesAfter[k] == null) continue;
     const x = laneX(k);
-    const emanates = k === col || lanesBefore[k] == null;
-    if (emanates) svg.appendChild(svgLine(cx, DOT_CY, x, BAND_H, laneColor(k)));
+    if (laneEmanates(k, col, lanesBefore, sha)) svg.appendChild(svgLine(cx, DOT_CY, x, BAND_H, laneColor(k)));
     else svg.appendChild(svgLine(x, DOT_CY, x, BAND_H, laneColor(k)));
   }
 
