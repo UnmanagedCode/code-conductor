@@ -74,16 +74,55 @@ export function resolveClaudeBin() {
   return { command: parts[0], prefixArgs: parts.slice(1) };
 }
 
-// Unbounded append-only event log per instance. Grows for the lifetime of
-// the Instance object — no cap, so a resumed session whose persisted
-// transcript expands to thousands of UI events keeps every one of them in
-// the snapshot. Memory cost is one event per UI delta (~1 KB-ish), so a
-// multi-hour session is still well under tens of MB.
-class EventLog {
-  constructor() { this.buf = []; }
-  push(v) { this.buf.push(v); }
+// Bounded drop-oldest event log per instance. `_seq` is stamped here at
+// push time and stays monotonic for the life of the Instance — eviction
+// never renumbers, so consumers keyed on `_seq` (WS client dedup,
+// get_transcript({sinceSeq}), GET /api/instances/:id/events) survive
+// trims. Evicted events remain reconstructable from the session jsonl
+// (see src/eventArchive.js).
+//
+// Trimming is batched (amortized O(1) per push): once the buffer exceeds
+// cap + slack, the front is spliced down to cap, then "snapped" forward so
+// the surviving head is an outer user_echo — a turn boundary — which lets
+// the jsonl-replay archive be cut against the retained ring with no
+// overlap. Snapping gives up (plain cut) rather than drop below cap/2,
+// e.g. when a single giant turn spans the whole droppable region.
+const DEFAULT_RING_CAP = 2000;
+const RING_TRIM_SLACK = 256;
+
+function isOuterUserEcho(ev) {
+  return ev?.kind === 'user_echo' && !ev.parentToolUseId;
+}
+
+export class EventLog {
+  constructor({ cap } = {}) {
+    const envCap = Number(process.env.ORCH_EVENT_RING_CAP);
+    this.cap = Number.isInteger(cap) && cap > 0 ? cap
+      : (Number.isInteger(envCap) && envCap > 0 ? envCap : DEFAULT_RING_CAP);
+    // For tiny caps (tests) the trim trigger scales down with the cap.
+    this.slack = Math.min(RING_TRIM_SLACK, this.cap);
+    this.buf = [];
+    this.nextSeq = 0;
+  }
+  // First retained `_seq` — everything below it was evicted (0 when
+  // nothing was). Equals nextSeq for an empty ring.
+  get trimmedBefore() { return this.buf.length ? this.buf[0]._seq : this.nextSeq; }
+  push(v) {
+    v._seq = this.nextSeq;
+    this.nextSeq += 1;
+    this.buf.push(v);
+    if (this.buf.length > this.cap + this.slack) this._trim();
+  }
+  _trim() {
+    const base = this.buf.length - this.cap;                   // plain cut point
+    const maxIdx = this.buf.length - Math.ceil(this.cap / 2);  // snap give-up bound
+    let cut = base;
+    while (cut < maxIdx && !isOuterUserEcho(this.buf[cut])) cut += 1;
+    if (cut >= maxIdx) cut = base; // no turn boundary in range — plain cut
+    this.buf.splice(0, cut);
+  }
   toArray() { return this.buf.slice(); }
-  clear() { this.buf.length = 0; }
+  clear() { this.buf.length = 0; this.nextSeq = 0; }
 }
 
 export class Instance extends EventEmitter {
@@ -325,14 +364,14 @@ export class Instance extends EventEmitter {
   }
 
   _emitUi(ev) {
-    const wrapped = { ...ev, _seq: this.ring.buf.length };
-    this.ring.push(wrapped);
+    const wrapped = { ...ev };
+    this.ring.push(wrapped); // stamps wrapped._seq
     this.emit('event', wrapped);
   }
 
   async loadHistory(sessionId) {
     const result = await loadPersistedTranscript({
-      cwd: this.cwd, sessionId, seqHint: this.ring.buf.length,
+      cwd: this.cwd, sessionId, seqHint: this.ring.nextSeq,
     });
     if (!result) return; // ENOENT or no sessionId — silent no-op.
     for (const line of result.lines) {
