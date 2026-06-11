@@ -27,7 +27,9 @@ function close() {
 
 function open(project) {
   _project = project;
-  location.hash = '#commits';
+  // pushState updates the URL without firing hashchange, so no event handler
+  // can race with show()/loadCommits() and accidentally close the view.
+  history.pushState(null, '', '#commits');
   show();
   loadCommits();
 }
