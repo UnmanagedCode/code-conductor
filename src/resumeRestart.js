@@ -114,11 +114,12 @@ function waitAllIdle(instances, graceMs) {
   });
 }
 
-// Steps 1–6 of the drain: wind down, wait-for-idle (force-then-proceed), tear
-// down networking, write the manifest (NO temp wipe), SIGKILL subprocesses
-// without deleting temp jsonl. Returns the manifest entries written. Split out
-// from drainAndScheduleRestart so tests can exercise it without the
-// process-exiting spawn. Pass server/wss null to skip networking teardown.
+// Steps 1–6 of the drain: wind down, wait-for-idle (graceful — no force),
+// tear down networking, write the manifest (NO temp wipe), gracefully close
+// subprocesses without deleting temp jsonl. Returns the manifest entries
+// written. Split out from drainAndScheduleRestart so tests can exercise it
+// without the process-exiting spawn. Pass server/wss null to skip networking
+// teardown.
 export async function drainToManifest({ server, wss, instances, log = console, graceMs = RESUME_DRAIN_GRACE_MS } = {}) {
   if (!instances) return [];
   const live = [...instances.byId.values()].filter((i) => i.proc);
@@ -151,12 +152,13 @@ export async function drainToManifest({ server, wss, instances, log = console, g
     try { inst.windDown(text); } catch (e) { log.warn?.('resume-restart: windDown failed', e?.message); }
   }
 
-  // (3) Wait for all-idle; force-then-proceed on timeout.
-  const { timedOut, stragglers } = await waitAllIdle(instances, graceMs);
-  if (timedOut) {
-    log.warn?.(`resume-restart: drain grace (${graceMs}ms) elapsed; force-interrupting ${stragglers.length} straggler(s)`);
-    for (const inst of stragglers) {
-      try { await inst.interrupt({ force: true }); } catch { /* proceed regardless */ }
+  // (3) Wait for all-idle — gracefully, no forced interrupt ever. If the grace
+  // window expires, log a warning and keep waiting; repeat every graceMs until
+  // all instances finish their turns on their own.
+  { let { timedOut, stragglers } = await waitAllIdle(instances, graceMs);
+    while (timedOut) {
+      log.warn?.(`resume-restart: drain grace (${graceMs}ms) elapsed; ${stragglers.length} straggler(s) still in turn — waiting without forcing`);
+      ({ timedOut, stragglers } = await waitAllIdle(instances, graceMs));
     }
   }
 
@@ -200,7 +202,7 @@ export async function drainToManifest({ server, wss, instances, log = console, g
   try { writeResumeManifest(entries); }
   catch (e) { log.warn?.('resume-restart: manifest write failed', e?.message); }
 
-  // (6) SIGKILL subprocesses WITHOUT wiping temp jsonl.
+  // (6) Gracefully close subprocesses (stdin EOF) WITHOUT wiping temp jsonl.
   try { instances.shutdownForResumeSync(); }
   catch (e) { log.warn?.('resume-restart: shutdownForResumeSync error', e?.message); }
 

@@ -872,13 +872,16 @@ export class Instance extends EventEmitter {
 
   // Like the SOFT path of interrupt() but with caller-supplied wind-down text
   // — used by the resume-restart drain so each instance gets a restart-specific
-  // (and, for conductors, worker-aware) stop notice. Same hidden-marker
-  // injection contract: never rendered, never replayed; mid-turn only;
-  // idempotent within a turn via `interrupting`.
+  // (and, for conductors, worker-aware) stop notice. The text is emitted as a
+  // visible user_echo bubble so the human sees it in the transcript. The CLI
+  // receives the message with SOFT_INTERRUPT_MARKER appended so the parser
+  // drops it on JSONL replay after resume (no duplicate bubble in resumed
+  // session). Mid-turn only; idempotent within a turn via `interrupting`.
   windDown(text) {
     if (this.status !== 'turn') return;
     if (this.interrupting) return;
     const body = typeof text === 'string' && text.trim() ? text : SOFT_INTERRUPT_TEXT;
+    this._emitUi({ kind: 'user_echo', text: body });
     this._sendRaw({
       type: 'user',
       message: {
@@ -1471,25 +1474,28 @@ export class InstanceManager extends EventEmitter {
     }
   }
 
-  // Resume-restart counterpart of shutdownTempSync: synchronously SIGKILL every
-  // live subprocess (temp AND non-temp) so no orphan keeps writing the jsonl we
-  // are about to carry over — but DO NOT delete any jsonl. We set
-  // `_suppressTempDelete` first so each temp instance's _handleExit skips
-  // _deleteTempArtifacts(), preserving the transcript for `--resume` on boot.
+  // Resume-restart counterpart of shutdownTempSync: gracefully close every live
+  // subprocess (temp AND non-temp) via stdin EOF — all turns are already done
+  // before this is called, so no orphan can still be writing the jsonl we are
+  // about to carry over. DO NOT delete any jsonl. Set `_suppressTempDelete`
+  // first so each temp instance's _handleExit skips _deleteTempArtifacts(),
+  // preserving the transcript for `--resume` on boot.
   shutdownForResumeSync() {
     const live = [];
     for (const inst of this.byId.values()) {
       if (!inst.proc) continue;
       inst._suppressTempDelete = true;
       live.push(inst);
-      if (inst.pid) {
-        try { process.kill(inst.pid, 'SIGKILL'); } catch { /* gone */ }
-      }
+      // Graceful close: end stdin so the CLI exits normally when idle.
+      // All turns are already complete before this is called (the drain
+      // waits for all-idle), so the session JSONL is fully flushed.
+      try { inst.proc.stdin.end(); } catch { /* gone */ }
     }
-    // Bounded sync wait for the SIGKILLed processes to be reaped, mirroring
-    // shutdownTempSync. Atomics.wait is Node's only non-spinning sync sleep.
+    // Bounded sync wait for processes to exit after stdin close.
+    // 2 s gives the CLI enough time to handle the EOF and exit cleanly.
+    // Atomics.wait is Node's only non-spinning sync sleep primitive.
     const sab = new Int32Array(new SharedArrayBuffer(4));
-    const deadline = Date.now() + 300;
+    const deadline = Date.now() + 2000;
     while (Date.now() < deadline) {
       let allDead = true;
       for (const inst of live) {
