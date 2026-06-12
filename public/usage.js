@@ -201,8 +201,8 @@ export function renderRateLimitChip(info, accountUsage) {
   } else if (accountUsage?.five_hour) {
     const fh = accountUsage.five_hour;
     typeLabel = '5h';
-    util = typeof fh.utilization === 'number' ? fh.utilization : null;
-    frac = util;  // 0-1 fraction from the OAuth API
+    util = typeof fh.utilization === 'number' ? fh.utilization / 100 : null;
+    frac = util;  // normalize 0-100 → 0-1 (OAuth API returns percentage integers)
     // five_hour.resets_at is ISO-8601; convert to Unix seconds for formatResetTime.
     resetStr = fh.resets_at ? formatResetTime(new Date(fh.resets_at).getTime() / 1000) : null;
     isOverage = false;
