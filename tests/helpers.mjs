@@ -94,7 +94,7 @@ export async function api(baseUrl, method, urlPath, body) {
 // the children CPU-starve each other, so spawn + round-trip can spike past a
 // few seconds. waitFor returns the instant the predicate is true, so a wide
 // ceiling is free on the happy path and only widens the failure-detection
-// window. 10s stays well under the runner's 30s per-test timeout even when a
+// window. 10s stays well under the runner's 60s per-test timeout even when a
 // test chains several waits.
 export async function waitFor(predicate, { timeout = 10000, interval = 20 } = {}) {
   const start = Date.now();
