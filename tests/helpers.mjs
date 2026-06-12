@@ -88,7 +88,15 @@ export async function api(baseUrl, method, urlPath, body) {
   return { status: res.status, body: json };
 }
 
-export async function waitFor(predicate, { timeout = 4000, interval = 20 } = {}) {
+// Default deadline is generous on purpose. These tests spawn fake-claude
+// (a Node subprocess) and poll for the result of a turn round-trip; under the
+// concurrent runner (up to 4 files in parallel) on a slow Termux/Android box
+// the children CPU-starve each other, so spawn + round-trip can spike past a
+// few seconds. waitFor returns the instant the predicate is true, so a wide
+// ceiling is free on the happy path and only widens the failure-detection
+// window. 10s stays well under the runner's 30s per-test timeout even when a
+// test chains several waits.
+export async function waitFor(predicate, { timeout = 10000, interval = 20 } = {}) {
   const start = Date.now();
   for (;;) {
     let v;

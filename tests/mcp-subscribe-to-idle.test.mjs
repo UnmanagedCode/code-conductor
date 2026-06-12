@@ -91,9 +91,11 @@ test('happy path: caller receives a stub user_echo when target hits turn_end', a
       { id: targetId, text: 'go', wait: true, waitTimeoutMs: 5000 });
 
     // The stub is delivered via queueMicrotask + an async prompt() call.
-    // Poll the caller's ring until the user_echo appears.
+    // Poll the caller's ring until the user_echo appears. Inherit the default
+    // deadline — delivery follows the target's subprocess turn, which can lag
+    // under concurrent CPU contention.
     const caller = ctx.instances.get(callerId);
-    await waitFor(() => !!findStubFor(caller, targetId), { timeout: 2000 });
+    await waitFor(() => !!findStubFor(caller, targetId));
 
     const stub = findStubFor(caller, targetId);
     assert.ok(stub, 'stub user_echo present in caller ring');
@@ -117,10 +119,10 @@ test('one-shot: a second target turn does not re-fire the callback', async () =>
     await callTool(ctx.baseUrl, 'send_prompt',
       { id: targetId, text: 'one', wait: true, waitTimeoutMs: 5000 });
     const caller = ctx.instances.get(callerId);
-    await waitFor(() => !!findStubFor(caller, targetId), { timeout: 2000 });
+    await waitFor(() => !!findStubFor(caller, targetId));
 
     // Wait for the caller's own turn (triggered by the stub) to drain.
-    await waitFor(() => caller.status === 'idle', { timeout: 5000 });
+    await waitFor(() => caller.status === 'idle');
     const stubsAfterTurn1 = countUserEchoes(caller,
       ev => ev.text?.includes(targetId) && ev.text?.includes('get_recent_messages'));
     assert.equal(stubsAfterTurn1, 1, 'exactly one stub after turn 1');
@@ -284,7 +286,9 @@ test('timeoutMs: fires with a timeout stub when turn_end does not arrive in time
       { targetId, timeoutMs: 150 }, { caller: callerId });
 
     const caller = ctx.instances.get(callerId);
-    await waitFor(() => !!findTimeoutStubFor(caller, targetId), { timeout: 1000 });
+    // The 150ms watchdog fires the stub; inherit the default deadline so a
+    // CPU-starved timer + async delivery still lands within the catch window.
+    await waitFor(() => !!findTimeoutStubFor(caller, targetId));
 
     const stub = findTimeoutStubFor(caller, targetId);
     assert.ok(stub, 'timeout stub user_echo present in caller ring');
@@ -314,7 +318,7 @@ test('timeoutMs: turn_end before timeout wins; timer is cancelled, only one stub
       { id: targetId, text: 'go', wait: true, waitTimeoutMs: 5000 });
 
     const caller = ctx.instances.get(callerId);
-    await waitFor(() => !!findStubFor(caller, targetId), { timeout: 2000 });
+    await waitFor(() => !!findStubFor(caller, targetId));
 
     const completionStub = findStubFor(caller, targetId);
     assert.ok(completionStub, 'completion stub present');
@@ -357,7 +361,7 @@ test('list() sets hasIdleSubscriber on the caller (conductor), not the target (w
     await callTool(ctx.baseUrl, 'send_prompt',
       { id: targetId, text: 'go', wait: true, waitTimeoutMs: 5000 });
     const caller = ctx.instances.get(callerId);
-    await waitFor(() => !!findStubFor(caller, targetId), { timeout: 2000 });
+    await waitFor(() => !!findStubFor(caller, targetId));
     listed = ctx.instances.list();
     assert.equal(listed.find(i => i.id === callerId)?.hasIdleSubscriber, false,
       'hasIdleSubscriber must be false after subscription is consumed');

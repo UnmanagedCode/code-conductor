@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "start": "./conductor.sh",
-    "test": "node tests/run.mjs"
+    "test": "NODE_OPTIONS=--max-old-space-size=512 node tests/run.mjs"
   },
   "dependencies": {
     "express": "^4.21.2",
