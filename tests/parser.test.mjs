@@ -156,7 +156,7 @@ test('parser: rate_limit_event with nested isUsingOverage passes through as syst
       status: 'allowed',
       rateLimitType: 'five_hour',
       resetsAt: 1729281600,
-      utilization: 85,
+      utilization: 0.85,
       isUsingOverage: true,
       overageStatus: 'allowed',
     },
@@ -166,7 +166,7 @@ test('parser: rate_limit_event with nested isUsingOverage passes through as syst
   assert.equal(events[0].subtype, 'rate_limit_event');
   assert.equal(events[0].data.rate_limit_info.isUsingOverage, true);
   assert.equal(events[0].data.rate_limit_info.rateLimitType, 'five_hour');
-  assert.equal(events[0].data.rate_limit_info.utilization, 85);
+  assert.equal(events[0].data.rate_limit_info.utilization, 0.85);
 });
 
 test('parser: rate_limit_event with flat isUsingOverage passes through as system', () => {
