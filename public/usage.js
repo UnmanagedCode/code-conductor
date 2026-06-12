@@ -193,9 +193,8 @@ export function renderRateLimitChip(info, accountUsage) {
 
   if (info) {
     typeLabel = RATE_LIMIT_TYPE_LABELS[info.rateLimitType] ?? info.rateLimitType ?? '?';
-    const rawUtil = typeof info.utilization === 'number' ? info.utilization : null;
-    util = rawUtil != null ? rawUtil / 100 : null;  // rate_limit_event uses 0-100 scale; normalize to 0-1
-    frac = util;
+    util = typeof info.utilization === 'number' ? info.utilization : null;
+    frac = util;  // 0-1 fraction from the CLI
     resetStr = formatResetTime(info.resetsAt);
     isOverage = info.isUsingOverage === true;
   } else if (accountUsage?.five_hour) {
