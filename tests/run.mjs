@@ -47,7 +47,10 @@ if (files.length === 0) {
 }
 
 const concurrency = resolveConcurrency();
-const stream = run({ files, concurrency, timeout: 30_000 });
+// 60s per-file ceiling: proportionate headroom for heavy subprocess files that
+// chain several 10s `waitFor`s (see helpers.mjs) when co-scheduled under
+// concurrency on a slow Termux box — only fires on a genuine hang.
+const stream = run({ files, concurrency, timeout: 60_000 });
 let failed = 0;
 stream.on('test:fail', (data) => {
   // Skip the implicit top-level pass/fail summary entries; only count real failures.

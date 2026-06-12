@@ -186,8 +186,10 @@ test('DELETE worktree refuses (409) when an instance is still attached, then suc
     const forced = await api(ctx.baseUrl, 'DELETE',
       `/api/projects/demo/worktrees/${encodeURIComponent(wtName)}?force=1`);
     assert.equal(forced.status, 200);
-    // Force-remove should have killed the attached instance.
-    await waitFor(() => !ctx.instances.get(id)?.proc, { timeout: 2000 });
+    // Force-remove should have killed the attached instance. Inherit the
+    // default deadline rather than capping at a tight 2s (kill grace + child
+    // exit can run long under concurrent CPU contention).
+    await waitFor(() => !ctx.instances.get(id)?.proc);
   } finally { await ctx.close(); }
 });
 
