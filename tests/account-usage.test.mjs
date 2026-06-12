@@ -34,10 +34,10 @@ async function cleanTmpHome() {
 }
 
 const SAMPLE_USAGE = {
-  five_hour: { utilization: 0.67, resets_at: '2026-06-11T21:09:59+00:00' },
-  seven_day: { utilization: 0.43, resets_at: '2026-06-14T00:59:59+00:00' },
+  five_hour: { utilization: 67, resets_at: '2026-06-11T21:09:59+00:00' },
+  seven_day: { utilization: 43, resets_at: '2026-06-14T00:59:59+00:00' },
   seven_day_opus: null,
-  seven_day_sonnet: { utilization: 0.17, resets_at: '2026-06-14T00:59:59+00:00' },
+  seven_day_sonnet: { utilization: 17, resets_at: '2026-06-14T00:59:59+00:00' },
   extra_usage: { is_enabled: true, monthly_limit: 10000, used_credits: 101, currency: 'EUR' },
 };
 

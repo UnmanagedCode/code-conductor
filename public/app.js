@@ -1878,13 +1878,13 @@ function buildRateLimitPopover() {
     const bucket = accountUsage[key];
     if (!bucket) continue;
     const label = OAUTH_BUCKET_LABELS[key] ?? key;
-    const util = typeof bucket.utilization === 'number' ? bucket.utilization : null;
+    const util = typeof bucket.utilization === 'number' ? bucket.utilization / 100 : null;
     const reset = bucket.resets_at
       ? formatResetTime(new Date(bucket.resets_at).getTime() / 1000)
       : null;
     const utilStr = util != null ? `${Math.round(util * 100)}%` : '—';
     const resetStr = reset ? ` · ${reset}` : '';
-    const frac = util;  // 0-1 fraction from the OAuth API
+    const frac = util;  // normalized 0-1 (API returns 0-100)
     node.appendChild(row(label, utilStr + resetStr, fillClass(frac)));
   }
 

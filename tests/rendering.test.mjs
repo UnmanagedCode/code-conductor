@@ -1448,3 +1448,43 @@ test('DOM: RateLimitTracker applies rate_limit_event and ignores other events', 
   tracker.reset();
   assert.equal(tracker.info, null, 'reset clears info');
 });
+
+// ── accountUsage fallback branch ─────────────────────────────────────────────
+// The OAuth API returns utilization on a 0-100 scale (integer %). These tests
+// lock the normalization (/ 100) applied in the else-if (accountUsage?.five_hour)
+// branch against regression. buildRateLimitPopover() in app.js applies the same
+// / 100 normalization; it is not exported so cannot be DOM-tested here.
+
+test('DOM: chip accountUsage branch: utilization 67 (0-100 scale) renders as 67%', async () => {
+  const { renderRateLimitChip } = await setupChipDOM();
+  const chip = renderRateLimitChip(null, {
+    five_hour: { utilization: 67, resets_at: '2026-06-11T21:09:59+00:00' },
+  });
+  assert.ok(chip, 'chip returned for accountUsage fallback');
+  assert.ok(chip.textContent.includes('5h'), 'bucket label present');
+  assert.ok(chip.textContent.includes('67%'), 'renders 67% not 6700%');
+  assert.ok(chip.title.includes('67%'), 'tooltip also shows 67%');
+  // 67% → frac 0.67 → ih-usage-mid (0.5 ≤ frac < 0.8)
+  assert.ok(chip.className.includes('ih-usage-mid'), 'mid colour class for 67%');
+});
+
+test('DOM: chip accountUsage branch: utilization 90 → ih-usage-high, not 9000%', async () => {
+  const { renderRateLimitChip } = await setupChipDOM();
+  const chip = renderRateLimitChip(null, {
+    five_hour: { utilization: 90, resets_at: '2026-06-11T21:09:59+00:00' },
+  });
+  assert.ok(chip, 'chip returned');
+  assert.ok(chip.textContent.includes('90%'), 'displays 90%, not 9000%');
+  assert.ok(chip.className.includes('ih-usage-high'), 'high colour class for 90%');
+});
+
+test('DOM: chip accountUsage branch: null info + no five_hour bucket → chip hidden', async () => {
+  const { renderRateLimitChip } = await setupChipDOM();
+  const chip = renderRateLimitChip(null, { seven_day: { utilization: 40, resets_at: null } });
+  assert.equal(chip, null, 'returns null when five_hour is absent');
+});
+
+test('DOM: chip accountUsage branch: null info + null accountUsage → chip hidden', async () => {
+  const { renderRateLimitChip } = await setupChipDOM();
+  assert.equal(renderRateLimitChip(null, null), null, 'returns null when both args are null');
+});
