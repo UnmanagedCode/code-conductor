@@ -221,19 +221,7 @@ export class Sidebar {
         title: `${unread} new turn${unread === 1 ? '' : 's'} since you last viewed this session`,
       }, String(unread)));
     }
-    if (session.archived) {
-      // Archived session: show restore button instead of promote.
-      row.appendChild(el('button', {
-        class: 'session-restore', title: 'restore session to normal list',
-        onclick: (e) => {
-          e.stopPropagation();
-          if (this.onRestoreSession) this.onRestoreSession({
-            projectName, worktreeName, sessionId: session.sessionId,
-            preview: liveLabel,
-          });
-        },
-      }, '↩'));
-    } else if (session.instanceTemp && session.instanceId) {
+    if (session.instanceTemp && session.instanceId) {
       // Live temp instance → show the promote button to the left of ×.
       // Always visible (no opacity:0 hover) so mobile users can tap it.
       row.appendChild(el('button', {
@@ -247,7 +235,7 @@ export class Sidebar {
       }, '↑'));
     }
     row.appendChild(el('button', {
-      class: 'session-delete', title: 'delete session',
+      class: 'session-delete', title: 'archive session (keeps history)',
       onclick: (e) => {
         e.stopPropagation();
         if (this.onDeleteSession) this.onDeleteSession({
@@ -319,9 +307,8 @@ export class Sidebar {
       // that is both renders under — conducted — (but keeps the warm temp
       // colour via the .temp class, handled in CSS). Conducted section is
       // appended last so the temp-only ordering is unchanged.
-      // Archived sessions are always shown last in their own section.
-      // They are excluded from normal/temp/conducted grouping.
-      const archivedRows = merged.filter(s => s.archived);
+      // Archived sessions never appear in the sidebar — they are managed
+      // solely from Settings → Archived. Exclude them from every group.
       const conductedRows = merged.filter(s => !s.archived && s.conducted);
       const temps = merged.filter(s => !s.archived && !s.conducted && s.instanceTemp);
       const normal = merged.filter(s => !s.archived && !s.conducted && !s.instanceTemp);
@@ -340,10 +327,6 @@ export class Sidebar {
       if (conductedRows.length > 0) {
         listEl.appendChild(el('li', { class: 'sessions-separator' }, '— conducted —'));
         appendRows(conductedRows);
-      }
-      if (archivedRows.length > 0) {
-        listEl.appendChild(el('li', { class: 'sessions-separator' }, '— archived —'));
-        appendRows(archivedRows);
       }
     };
 

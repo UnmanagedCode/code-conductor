@@ -3,7 +3,8 @@ import path from 'node:path';
 import { promises as fs, createReadStream } from 'node:fs';
 import {
   listProjects, createProject, listSessions, listSessionsForCwd,
-  summarizeSessions, deleteProject, deleteSessionForCwd, getProject,
+  summarizeSessions, deleteProject, deleteSessionForCwd, archiveSessionForCwd,
+  listArchivedGroupedByProject, getProject,
   findSessionLocation, writeProjectMeta,
   listWorkspaces, addWorkspace, removeWorkspace, renameWorkspace,
   validateName,
@@ -350,6 +351,66 @@ export function buildRoutes({ instances, serverCtx } = {}) {
       const force = req.query.force === '1' || req.query.force === 'true';
       await deleteSessionAtCwd({ cwd: wt.worktreePath, sessionId: sid, force });
       res.json({ ok: true });
+    } catch (e) { next(e); }
+  });
+
+  // Shared by both archive-session endpoints below. Mirrors
+  // deleteSessionAtCwd's running-instance guard: a session attached to a
+  // live instance refuses with 409 unless ?force=1, which stops the
+  // instance first (so the archived session leaves the sidebar cleanly).
+  // Unlike delete, this keeps the jsonl — it only records the sessionId
+  // in the global archived set.
+  async function archiveSessionAtCwd({ cwd, sessionId, force }) {
+    if (instances) {
+      const attached = instances.idsForSession(sessionId)
+        .map(id => instances.get(id))
+        .filter(Boolean);
+      const running = attached.filter(i => i.proc);
+      if (running.length > 0 && !force) {
+        throw Object.assign(new Error(
+          `session ${sessionId} is attached to a running instance — stop it first or pass force=1`,
+        ), { statusCode: 409 });
+      }
+      if (force) {
+        await Promise.all(running.map(i => instances.remove(i.id).catch(() => {})));
+      }
+      const stale = attached.filter(i => !i.proc);
+      await Promise.all(stale.map(i => instances.remove(i.id).catch(() => {})));
+    }
+    const archived = await archiveSessionForCwd(cwd, sessionId);
+    if (!archived) {
+      throw Object.assign(new Error(`session ${sessionId} not found`), { statusCode: 404 });
+    }
+  }
+
+  r.post('/projects/:name/sessions/:sid/archive', async (req, res, next) => {
+    try {
+      const sid = String(req.params.sid || '');
+      if (!/^[A-Za-z0-9_-]+$/.test(sid)) throw Object.assign(new Error('invalid sessionId'), { statusCode: 400 });
+      const proj = await getProject(req.params.name);
+      const force = req.query.force === '1' || req.query.force === 'true';
+      await archiveSessionAtCwd({ cwd: proj.path, sessionId: sid, force });
+      res.json({ ok: true });
+    } catch (e) { next(e); }
+  });
+
+  r.post('/projects/:name/worktrees/:wt/sessions/:sid/archive', async (req, res, next) => {
+    try {
+      const sid = String(req.params.sid || '');
+      if (!/^[A-Za-z0-9_-]+$/.test(sid)) throw Object.assign(new Error('invalid sessionId'), { statusCode: 400 });
+      const wt = await getWorktree(req.params.name, req.params.wt);
+      if (!wt) throw Object.assign(new Error('worktree not found'), { statusCode: 404 });
+      const force = req.query.force === '1' || req.query.force === 'true';
+      await archiveSessionAtCwd({ cwd: wt.worktreePath, sessionId: sid, force });
+      res.json({ ok: true });
+    } catch (e) { next(e); }
+  });
+
+  // All archived sessions, grouped by the project (+ worktree) that owns
+  // them — backs the Settings → Archived page.
+  r.get('/archived', async (req, res, next) => {
+    try {
+      res.json({ groups: await listArchivedGroupedByProject() });
     } catch (e) { next(e); }
   });
 

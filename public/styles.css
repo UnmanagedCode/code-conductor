@@ -1253,6 +1253,38 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
 }
 .st-install-log[hidden] { display: none; }
 
+/* Settings → Archived group: per-project collapsible groups, each listing
+   archived sessions with Restore / Delete actions. */
+.ar-list { display: flex; flex-direction: column; gap: 8px; margin: 12px 0; max-width: 720px; }
+.archived-group {
+  border: 1px solid var(--border); border-radius: 8px; background: var(--panel);
+  overflow: hidden;
+}
+.archived-group-summary {
+  padding: 10px 12px; font-size: 13px; cursor: pointer; list-style: none;
+  user-select: none;
+}
+.archived-group-summary::-webkit-details-marker { display: none; }
+.archived-group-summary::before { content: '▸ '; color: var(--muted); }
+.archived-group[open] > .archived-group-summary::before { content: '▾ '; }
+.archived-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 12px; border-top: 1px solid var(--border);
+}
+.archived-row-main { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
+.archived-row-title {
+  font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.archived-row-meta { font-size: 11px; color: var(--muted); }
+.archived-row button {
+  flex: none; font-size: 12px; padding: 4px 10px; border-radius: 6px;
+  border: 1px solid var(--border); background: var(--panel-2); color: var(--text);
+  cursor: pointer;
+}
+.archived-restore:hover { border-color: var(--accent); }
+.archived-delete { color: var(--red); }
+.archived-delete:hover { border-color: var(--red); background: rgba(248, 113, 113, 0.15); }
+
 /* Settings → TTS group reuses the .st-* model-row/badge/log styles; these add
    the prefs row (auto-speak toggle + rate slider). */
 .tt-prefs { display: flex; flex-direction: column; gap: 10px; margin: 12px 0; max-width: 520px; }

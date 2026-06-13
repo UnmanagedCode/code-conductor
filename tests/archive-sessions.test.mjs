@@ -228,7 +228,7 @@ test('sweepPendingTempCleanup with action:archive keeps .jsonl and marks archive
   } finally { await close(); }
 });
 
-test('sweepPendingTempCleanup with no action (legacy) still deletes .jsonl', async () => {
+test('sweepPendingTempCleanup with no action (legacy) now archives instead of deleting', async () => {
   const { claudeProjectsRoot, close } = await bootServer({ scenarioPath: SCENARIO });
   try {
     const cwd = '/tmp/cc-legacy-sweep-' + Math.random().toString(36).slice(2);
@@ -236,7 +236,10 @@ test('sweepPendingTempCleanup with no action (legacy) still deletes .jsonl', asy
     const dir = path.join(claudeProjectsRoot, encodeCwd(cwd));
     await fs.mkdir(dir, { recursive: true });
     const jsonlFile = path.join(dir, `${sid}.jsonl`);
+    const subagentsDir = path.join(dir, sid);
     await fs.writeFile(jsonlFile, '{"type":"user","uuid":"u1"}\n');
+    await fs.mkdir(subagentsDir, { recursive: true });
+    await fs.writeFile(path.join(subagentsDir, 'a.jsonl'), '{}\n');
 
     await fs.mkdir(orchStoreRoot(), { recursive: true });
     // Write manifest WITHOUT action field (legacy format).
@@ -247,8 +250,12 @@ test('sweepPendingTempCleanup with no action (legacy) still deletes .jsonl', asy
 
     const result = sweepPendingTempCleanup({ log: { warn() {}, log() {} } });
     assert.equal(result.swept, 1);
-    // Legacy: .jsonl must be deleted.
-    await assert.rejects(() => fs.access(jsonlFile), 'legacy sweep must delete .jsonl');
+    // Always-archive policy: the legacy path no longer deletes the .jsonl —
+    // it keeps the transcript, cleans the subagent dir, and marks archived.
+    await fs.access(jsonlFile);
+    await assert.rejects(() => fs.access(subagentsDir), 'subagent dir swept');
+    await waitFor(async () => (await isArchived(sid)));
+    assert.equal(await isArchived(sid), true);
   } finally { await close(); }
 });
 

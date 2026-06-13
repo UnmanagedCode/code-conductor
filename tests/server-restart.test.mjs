@@ -140,12 +140,14 @@ test('POST /api/admin/restart respawns the server on the same port with a new pi
   assert.doesNotThrow(() => process.kill(grandchildPid, 0));
 });
 
-test('restart sweeps a pending-temp-cleanup manifest on the next boot', async (t) => {
-  // Regression: temp jsonls that survive the parent's in-process cleanup
-  // (e.g. orphaned subagent processes that recreate them after exit) must
-  // be wiped by the next boot. We plant a manifest + a fake jsonl before
-  // triggering restart, then assert both are gone after the grandchild
-  // comes up.
+test('restart sweeps a pending-temp-cleanup manifest on the next boot (archives the session)', async (t) => {
+  // A pending-temp-cleanup manifest left for the next boot is swept on
+  // restart: the manifest + ephemeral subagent dir are removed, and the
+  // session is **archived** (transcript jsonl kept — always-archive policy,
+  // so a temp that exited during restart is recoverable from Settings →
+  // Archived). We plant a (legacy, no-action) manifest + a fake jsonl
+  // before triggering restart, then assert the sweep outcome after the
+  // grandchild comes up.
   const port = await getFreePort();
   const tmpHome = await fs.mkdtemp(path.join(os.tmpdir(), 'orch-restart-sweep-'));
   const projectsRoot = path.join(tmpHome, 'project');
@@ -216,8 +218,15 @@ test('restart sweeps a pending-temp-cleanup manifest on the next boot', async (t
 
   await waitForListening(port, { timeout: 20_000 });
 
-  // Grandchild boot should have swept the planted manifest + jsonl.
-  await assert.rejects(() => fs.access(jsonl), 'temp jsonl must be swept');
+  // Grandchild boot should have swept the manifest + subagent dir, but
+  // KEPT the transcript jsonl (always-archive: never delete from disk).
+  await fs.access(jsonl); // jsonl preserved (archived, not deleted)
   await assert.rejects(() => fs.access(subagents), 'temp subagents dir must be swept');
   await assert.rejects(() => fs.access(manifest), 'manifest must be unlinked');
+
+  // The session must be recorded in the grandchild's archived set.
+  const archived = JSON.parse(
+    await fs.readFile(path.join(storeDir, 'archived-sessions.json'), 'utf8'),
+  );
+  assert.ok(archived.sessions.includes(sid), 'session must be archived after sweep');
 });

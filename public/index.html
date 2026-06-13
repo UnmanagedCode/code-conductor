@@ -104,6 +104,7 @@
               <option value="transcribe">Transcribe</option>
               <option value="tts">TTS</option>
               <option value="workspace">Workspace conventions</option>
+              <option value="archived">Archived</option>
             </select>
           </header>
           <div id="settings-transcribe" class="settings-group" hidden>
@@ -186,6 +187,15 @@
               <span id="wc-action-hint" class="st-action-hint"></span>
             </div>
             <pre id="wc-diff" class="st-install-log" hidden aria-live="polite"></pre>
+          </div>
+          <div id="settings-archived" class="settings-group" hidden>
+            <p class="settings-desc">
+              Archived sessions keep their transcript and stay resumable. Use the
+              <strong>×</strong> on a sidebar session to archive it. Restore returns one to the
+              sidebar; Delete permanently removes its transcript jsonl (cannot be undone).
+            </p>
+            <div id="ar-status" class="st-status" aria-live="polite">Loading…</div>
+            <div id="ar-list" class="ar-list"></div>
           </div>
         </div>
       </section>
