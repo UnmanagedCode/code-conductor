@@ -319,6 +319,50 @@ export class Instance extends EventEmitter {
     for (let i = start; i < buf.length; i++) {
       if (isOuterUserEcho(buf[i])) { start = i; break; }
     }
+    // Group-integrity snap: ensure the snapshot never begins with sub-agent
+    // child events whose owning tool-call head is absent from the window.
+    //   - Head present in ring before start → pull start back to include it.
+    //   - Head evicted (not in ring) → advance start past all children of
+    //     that group; they will be served later via lazy paging alongside
+    //     their head from the combined archive+ring.
+    // Re-runs after every adjustment because fixing one group can expose
+    // a different group that also straddles the new start boundary.
+    {
+      let gChanged = true;
+      while (gChanged) {
+        gChanged = false;
+        const headIds = new Set();
+        for (let i = start; i < buf.length; i++) {
+          if (buf[i].toolUseId &&
+              (buf[i].kind === 'tool_use_start' || buf[i].kind === 'tool_use')) {
+            headIds.add(buf[i].toolUseId);
+          }
+        }
+        for (let i = start; i < buf.length; i++) {
+          const pid = buf[i].parentToolUseId;
+          if (!pid || headIds.has(pid)) continue;
+          headIds.add(pid); // don't re-process this group in the same pass
+          let headIdx = -1;
+          for (let j = start - 1; j >= 0; j--) {
+            if (buf[j].toolUseId === pid &&
+                (buf[j].kind === 'tool_use_start' || buf[j].kind === 'tool_use')) {
+              headIdx = j; break;
+            }
+          }
+          if (headIdx >= 0) {
+            start = headIdx; // head is in ring — extend backward to include it
+          } else {
+            // Head is evicted — advance past all children of this group so
+            // the snapshot stays consistent; they'll come via lazy paging.
+            for (let j = start; j < buf.length; j++) {
+              if (buf[j].parentToolUseId === pid) start = j + 1;
+            }
+          }
+          gChanged = true;
+          break; // restart with updated start
+        }
+      }
+    }
     return buf.slice(start);
   }
 
