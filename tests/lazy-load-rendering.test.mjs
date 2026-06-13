@@ -115,6 +115,47 @@ test('prependBatch splices the batch after the sentinel, above newer content', a
   assert.deepEqual(bubbles, ['3', '4']);
 });
 
+test('sub-agent group: head and children in the same batch nest children under the tool block sub-conversation', async () => {
+  const { renderEventBatch } = await setupDOM();
+
+  // A complete group: tool_use_start + tool_use (head) followed by sub-agent
+  // child events (parentToolUseId set), then a tool_result.
+  const batch = [
+    { kind: 'user_echo', text: 'run task', userIndex: 0, _seq: 0, parentToolUseId: null },
+    { kind: 'tool_use_start', msgId: 'm1', blockIdx: 0, toolUseId: 'tu1', name: 'Task', _seq: 1, parentToolUseId: null },
+    { kind: 'tool_use', msgId: 'm1', blockIdx: 0, toolUseId: 'tu1', name: 'Task', input: {}, _seq: 2, parentToolUseId: null },
+    { kind: 'text_delta', msgId: 'msub', blockIdx: 0, text: 'sub-agent reply', _seq: 3, parentToolUseId: 'tu1' },
+    { kind: 'text_end', msgId: 'msub', blockIdx: 0, _seq: 4, parentToolUseId: 'tu1' },
+    { kind: 'tool_result', toolUseId: 'tu1', content: 'done', isError: false, _seq: 5, parentToolUseId: null },
+  ];
+
+  const holder = renderEventBatch(batch);
+
+  // The sub-conversation container must be present and visible.
+  const subConv = holder.querySelector('.sub-conversation');
+  assert.ok(subConv, 'sub-conversation container exists under the tool block');
+  assert.ok(!subConv.hasAttribute('hidden'), 'sub-conversation is revealed when children arrive');
+  // The sub-agent text must be inside the sub-conversation, not orphaned at
+  // the outer assistant level.
+  assert.ok(subConv.textContent.includes('sub-agent reply'),
+    'sub-agent text is nested in sub-conversation, not orphaned at outer level');
+  // The outer assistant wrap must NOT directly contain the orphaned text
+  // (i.e., it should only be reachable via .sub-conversation).
+  const outerBlocks = holder.querySelector('.msg.assistant > .blocks');
+  assert.ok(outerBlocks, 'outer assistant blocks container exists');
+  // Walk direct block children — none should contain the sub-agent text
+  // without going through a .sub-conversation.
+  let foundOrphaned = false;
+  for (const child of outerBlocks.children) {
+    if (!child.classList.contains('sub-conversation') &&
+        child.textContent.includes('sub-agent reply') &&
+        !child.querySelector('.sub-conversation')) {
+      foundOrphaned = true;
+    }
+  }
+  assert.ok(!foundOrphaned, 'sub-agent text is not directly in outer blocks (not orphaned)');
+});
+
 test('prependBatch falls back to the top when no sentinel is given', async () => {
   const { root, Conversation, renderEventBatch, prependBatch } = await setupDOM();
   const main = new Conversation(root, {});

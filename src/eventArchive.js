@@ -163,6 +163,39 @@ export async function pageInstanceEvents(inst, { before = null, after = null, li
         if (isOuterUserEcho(combined[i])) { start = i; break; }
       }
     }
+    // Group-integrity snap: extend start backward so that every sub-agent
+    // child event in [start..end) has its owning tool-call head present in
+    // the same range. A child whose head is missing would be silently
+    // orphaned by the renderer (conversation.js:apply → toolBlocks lookup).
+    // Loop because pulling start back can expose deeper nesting.
+    if (start > 0) {
+      let changed = true;
+      while (changed) {
+        changed = false;
+        const headIds = new Set();
+        for (let i = start; i < end; i++) {
+          if (combined[i].toolUseId &&
+              (combined[i].kind === 'tool_use_start' || combined[i].kind === 'tool_use')) {
+            headIds.add(combined[i].toolUseId);
+          }
+        }
+        for (let i = start; i < end; i++) {
+          const pid = combined[i].parentToolUseId;
+          if (!pid || headIds.has(pid)) continue;
+          // Search backward for the owning head event.
+          for (let j = start - 1; j >= 0; j--) {
+            if (combined[j].toolUseId === pid &&
+                (combined[j].kind === 'tool_use_start' || combined[j].kind === 'tool_use')) {
+              start = j;
+              changed = true;
+              headIds.add(pid);
+              break;
+            }
+          }
+          if (changed) break; // restart with wider window
+        }
+      }
+    }
     events = combined.slice(start, end);
     hasMore = start > 0
       // Served down to the very start of what we have. With the archive

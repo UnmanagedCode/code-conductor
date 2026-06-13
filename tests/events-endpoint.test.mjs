@@ -196,6 +196,104 @@ test('after= pages forward, mirroring sinceSeq semantics', async () => {
   } finally { await ctx.close(); }
 });
 
+// Returns each backward page as its own array (not flattened).
+async function pageAllPages(ctx, id, { limit = 10 } = {}) {
+  const pages = [];
+  let before;
+  for (let i = 0; i < 200; i++) {
+    const q = before == null ? `?limit=${limit}` : `?before=${before}&limit=${limit}`;
+    const r = await api(ctx.baseUrl, 'GET', `/api/instances/${id}/events${q}`);
+    assert.equal(r.status, 200);
+    if (r.body.events.length > 0) pages.push(r.body.events);
+    if (!r.body.hasMore) return pages;
+    before = r.body.nextBefore;
+  }
+  throw new Error('pageAllPages: cursor never terminated');
+}
+
+// Assert that every child event (parentToolUseId != null) in the array has its
+// owning tool-call head (a tool_use_start or tool_use event with the same
+// toolUseId) present in the same array.
+function assertGroupIntegrity(events, label = '') {
+  const headIds = new Set();
+  for (const ev of events) {
+    if (ev.toolUseId && (ev.kind === 'tool_use_start' || ev.kind === 'tool_use')) {
+      headIds.add(ev.toolUseId);
+    }
+  }
+  for (const ev of events) {
+    if (ev.parentToolUseId) {
+      assert.ok(headIds.has(ev.parentToolUseId),
+        `${label}orphaned child: parentToolUseId=${ev.parentToolUseId} has no ` +
+        `matching head in this set; seqs=[${events.map(e => e._seq).join(',')}]`);
+    }
+  }
+}
+
+test('group integrity: backward paging never splits a sub-agent tool-call group across page boundaries', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO });
+  try {
+    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'grouppage' });
+    const r = await api(ctx.baseUrl, 'POST', '/api/instances', { project: 'grouppage', mode: 'bypassPermissions' });
+    assert.equal(r.status, 201);
+    const id = r.body.id;
+    await waitFor(() => ctx.instances.get(id).status === 'idle');
+
+    const inst = ctx.instances.get(id);
+
+    // Inject one outer turn: a Task tool call with 20 sub-agent child events.
+    // 20 children >> the page limit of 5, so a fixed boundary falls inside the
+    // group and at least one page would contain orphaned children without the fix.
+    inst._emitUi({ kind: 'user_echo', text: 'run task' });
+    inst._emitUi({ kind: 'tool_use_start', msgId: 'm1', blockIdx: 0, toolUseId: 'tu_task', name: 'Task' });
+    inst._emitUi({ kind: 'tool_use', msgId: 'm1', blockIdx: 0, toolUseId: 'tu_task', name: 'Task', input: {} });
+    for (let i = 0; i < 20; i++) {
+      inst._emitUi({ kind: 'text_delta', msgId: 'msub', blockIdx: 0, text: `sub ${i}`, parentToolUseId: 'tu_task' });
+    }
+    inst._emitUi({ kind: 'tool_result', toolUseId: 'tu_task', content: 'done', isError: false });
+
+    const pages = await pageAllPages(ctx, id, { limit: 5 });
+    assert.ok(pages.length > 0, 'at least one page returned');
+    for (let p = 0; p < pages.length; p++) {
+      assertGroupIntegrity(pages[p], `page[${p}] `);
+    }
+  } finally { await ctx.close(); }
+});
+
+test('group integrity: snapshotTail never includes orphaned sub-agent children', async () => {
+  const prevTail = process.env.ORCH_SNAPSHOT_TAIL;
+  process.env.ORCH_SNAPSHOT_TAIL = '8';
+  const ctx = await bootServer({ scenarioPath: SCENARIO });
+  try {
+    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'groupsnap' });
+    const r = await api(ctx.baseUrl, 'POST', '/api/instances', { project: 'groupsnap', mode: 'bypassPermissions' });
+    assert.equal(r.status, 201);
+    const id = r.body.id;
+    await waitFor(() => ctx.instances.get(id).status === 'idle');
+
+    const inst = ctx.instances.get(id);
+
+    // Inject a Task group with 20 children. The snapshot tail is 8 events,
+    // so the tail window starts deep inside the group without the head.
+    inst._emitUi({ kind: 'user_echo', text: 'run task' });
+    inst._emitUi({ kind: 'tool_use_start', msgId: 'm1', blockIdx: 0, toolUseId: 'tu_snap', name: 'Task' });
+    inst._emitUi({ kind: 'tool_use', msgId: 'm1', blockIdx: 0, toolUseId: 'tu_snap', name: 'Task', input: {} });
+    for (let i = 0; i < 20; i++) {
+      inst._emitUi({ kind: 'text_delta', msgId: 'msub', blockIdx: 0, text: `sub ${i}`, parentToolUseId: 'tu_snap' });
+    }
+    inst._emitUi({ kind: 'tool_result', toolUseId: 'tu_snap', content: 'done', isError: false });
+
+    // Call snapshotTail directly — it reads ORCH_SNAPSHOT_TAIL from env.
+    const snap = inst.snapshotTail();
+    assert.ok(snap.length > 0, 'snapshot is non-empty');
+    assertGroupIntegrity(snap, 'snapshot ');
+  } finally {
+    await ctx.close();
+    if (prevTail === undefined) delete process.env.ORCH_SNAPSHOT_TAIL;
+    else process.env.ORCH_SNAPSHOT_TAIL = prevTail;
+  }
+});
+
 test('limit is clamped; bad params 400; unknown instance 404', async () => {
   const ctx = await bootServer({ scenarioPath: SCENARIO });
   try {
