@@ -57,6 +57,7 @@ async function listenWithRetry(server, port, host, { tries = 40, delayMs = 100 }
       return;
     } catch (e) {
       if (e.code !== 'EADDRINUSE' || i === tries - 1) throw e;
+      process.stderr.write(`server: EADDRINUSE on port ${port}, retrying (${i + 1}/${tries})...\n`);
       await new Promise(r => setTimeout(r, delayMs));
     }
   }
@@ -79,7 +80,15 @@ export async function start({ port = 8787, host = '127.0.0.1' } = {}) {
   try { await reconcileRootClaudeMd({ log: console }); }
   catch (e) { console.warn('root CLAUDE.md reconcile failed:', e); }
   const { server, instances, wss } = createServer();
+  // ws 8.20.1 registers `server.on('error', wss.emit.bind(wss, 'error'))` during
+  // WebSocketServer construction, before listenWithRetry's own once('error') is
+  // registered. On EADDRINUSE that forwarding fires first; with no wss 'error'
+  // listener Node throws an unhandled event and kills the process before the retry
+  // loop can run. Guard the wss during the retry window only, then remove it.
+  const _wssErrGuard = () => {};
+  wss.on('error', _wssErrGuard);
   await listenWithRetry(server, port, host);
+  wss.off('error', _wssErrGuard);
   const addr = server.address();
   // Instance subprocesses need the actual bound port to construct the
   // PreToolUse http hook URL — feed it back into the manager now that
