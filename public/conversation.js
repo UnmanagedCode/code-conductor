@@ -120,6 +120,7 @@ export class Conversation {
     this.permissionBlocks.clear();
     this._activeAssistantWrap = null;
     this._pendingAnswerUQId = null;
+    this.stickyBottom = true;
     this._setEmpty();
   }
 

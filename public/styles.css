@@ -513,7 +513,7 @@ button:hover:not(:disabled) { background: #262b3d; }
 button:disabled, select:disabled, textarea:disabled { opacity: .5; cursor: not-allowed; }
 input:focus, textarea:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 
-.conversation { flex: 1; overflow-y: auto; padding: 12px 14px; }
+.conversation { flex: 1; overflow-y: auto; overflow-anchor: none; padding: 12px 14px; }
 .conversation .empty { color: var(--muted); padding: 20px; text-align: center; }
 
 .msg { margin-bottom: 16px; padding: 8px 12px; border-radius: 8px; background: var(--panel); border: 1px solid var(--border); }

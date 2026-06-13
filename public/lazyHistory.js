@@ -31,11 +31,19 @@ export function renderEventBatch(events, options = {}) {
 // Move the batch's children into `root` right after `anchorNode` (the
 // "earlier messages" sentinel; falls back to the very top), preserving the
 // user's viewport by compensating scrollTop with the height delta.
+//
+// prevScrollTop is captured before any DOM mutation so that the absolute
+// assignment on the last line is correct even when the browser's CSS scroll
+// anchoring (overflow-anchor:auto) fires during the forced layout triggered
+// by reading scrollHeight after the insertBefore loop — which would otherwise
+// advance scrollTop by the same delta again, causing double-compensation and
+// a scroll jump toward the bottom of the conversation.
 export function prependBatch(root, holder, anchorNode = null) {
   const before = (anchorNode && anchorNode.parentNode === root)
     ? anchorNode.nextSibling
     : root.firstChild;
+  const prevScrollTop = root.scrollTop;
   const prevHeight = root.scrollHeight;
   while (holder.firstChild) root.insertBefore(holder.firstChild, before);
-  root.scrollTop += root.scrollHeight - prevHeight;
+  root.scrollTop = prevScrollTop + (root.scrollHeight - prevHeight);
 }
