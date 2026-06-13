@@ -45,12 +45,10 @@ export function sweepPendingTempCleanup({ log = console } = {}) {
   if (!existsSync(file)) return { swept: 0 };
 
   let entries = [];
-  let action = 'delete'; // default for manifests written before the archive feature
   try {
     const raw = readFileSync(file, 'utf8');
     const parsed = JSON.parse(raw);
     entries = Array.isArray(parsed?.entries) ? parsed.entries : [];
-    if (parsed?.action === 'archive') action = 'archive';
   } catch (e) {
     log.warn?.('temp-cleanup: failed to parse manifest; removing', e?.message);
     try { rmSync(file, { force: true }); } catch { /* ignore */ }
@@ -74,6 +72,6 @@ export function sweepPendingTempCleanup({ log = console } = {}) {
   }
 
   try { rmSync(file, { force: true }); } catch { /* ignore */ }
-  if (swept > 0) log.log?.(`temp-cleanup: swept ${swept} temp session(s) from previous run (action: ${action})`);
+  if (swept > 0) log.log?.(`temp-cleanup: swept ${swept} temp session(s) from previous run (archived)`);
   return { swept };
 }
