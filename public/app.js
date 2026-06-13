@@ -412,7 +412,6 @@ const sidebar = new Sidebar({
   onDeleteSession: deleteSession,
   onEditWorkspace: openEditWorkspaceDialog,
   onPromoteSession: promoteSession,
-  onRestoreSession: restoreSession,
 });
 // Seed the sidebar with any unread counts restored from localStorage so
 // the pills appear on the first render after a page reload — without
@@ -488,6 +487,14 @@ const settings = installSettings({
   onTtsAvailabilityChange: setTtsAvailable,
   onTtsPrefsChange: ({ enabled, rate }) => { setTtsEnabled(enabled); setTtsRate(rate); },
   onOpenCostDashboard: () => { settings.close(); costs.open(); },
+  // The Archived page restores/deletes sessions; drop the sidebar's
+  // per-scope session caches so a restored session reappears (and a
+  // deleted one disappears) on the next render.
+  onArchivedChanged: () => {
+    sidebar.sessionsCache?.clear?.();
+    refreshProjects();
+    refreshInstances();
+  },
 });
 // Seed the per-family model-version cache the spawn pickers resolve against.
 loadModelVersions().then(() => { syncSonnetPickerLabels(); syncFamilyVisibility(); });
@@ -1394,55 +1401,40 @@ async function deleteProject(project) {
   }
 }
 
+// The sidebar × action archives a session (keeps its transcript) rather
+// than deleting it — it moves to Settings → Archived, where it can be
+// restored or permanently deleted. Sessions are never deleted from here.
 async function deleteSession({ projectName, worktreeName, sessionId, preview }) {
   const label = preview && preview !== '(new session)' && preview !== `${sessionId.slice(0, 8)}…`
     ? `"${preview}"`
     : sessionId.slice(0, 8) + '…';
-  if (!confirm(`Delete session ${label}?\nThis removes the persisted transcript jsonl.`)) return;
+  if (!confirm(`Archive session ${label}?\nIt moves to Settings → Archived (transcript kept, still resumable).`)) return;
   const base = worktreeName
-    ? `/api/projects/${encodeURIComponent(projectName)}/worktrees/${encodeURIComponent(worktreeName)}/sessions/${encodeURIComponent(sessionId)}`
-    : `/api/projects/${encodeURIComponent(projectName)}/sessions/${encodeURIComponent(sessionId)}`;
+    ? `/api/projects/${encodeURIComponent(projectName)}/worktrees/${encodeURIComponent(worktreeName)}/sessions/${encodeURIComponent(sessionId)}/archive`
+    : `/api/projects/${encodeURIComponent(projectName)}/sessions/${encodeURIComponent(sessionId)}/archive`;
   try {
-    let r = await fetch(base, { method: 'DELETE' });
+    let r = await fetch(base, { method: 'POST' });
     if (r.status === 409) {
       // Session is attached to a live instance; the user already confirmed
-      // the delete, so kill the instance and retry without a second prompt.
-      r = await fetch(`${base}?force=1`, { method: 'DELETE' });
+      // the archive, so stop the instance and retry without a second prompt.
+      r = await fetch(`${base}?force=1`, { method: 'POST' });
     }
     if (!r.ok) throw new Error((await r.json()).error);
     // If we were focused on this session's instance, drop the focus.
     const inst = state.instances.find(i => i.sessionId === sessionId);
     if (inst && state.activeId === inst.id) state.activeId = null;
     // Drop any cached sessions for the affected scope so the
-    // subnode re-fetches on next render.
+    // subnode re-fetches on next render (archived rows are hidden).
     if (sidebar.sessionsCache) {
       const key = worktreeName ? `${projectName}:${worktreeName}` : projectName;
       sidebar.sessionsCache.delete(key);
     }
-    // Don't keep an unread entry for a session that no longer exists.
+    // Don't keep an unread entry for a session that's left the sidebar.
     clearUnread(sessionId);
     await refreshProjects();
     await refreshInstances();
   } catch (e) {
-    alert(`delete session failed: ${e.message}`);
-  }
-}
-
-async function restoreSession({ projectName, worktreeName, sessionId }) {
-  const base = worktreeName
-    ? `/api/projects/${encodeURIComponent(projectName)}/worktrees/${encodeURIComponent(worktreeName)}/sessions/${encodeURIComponent(sessionId)}/restore`
-    : `/api/projects/${encodeURIComponent(projectName)}/sessions/${encodeURIComponent(sessionId)}/restore`;
-  try {
-    const r = await fetch(base, { method: 'POST' });
-    if (!r.ok) throw new Error((await r.json()).error);
-    if (sidebar.sessionsCache) {
-      const key = worktreeName ? `${projectName}:${worktreeName}` : projectName;
-      sidebar.sessionsCache.delete(key);
-    }
-    await refreshProjects();
-    await refreshInstances();
-  } catch (e) {
-    alert(`restore session failed: ${e.message}`);
+    alert(`archive session failed: ${e.message}`);
   }
 }
 

@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { loadAll as loadAllTitles, deleteTitle as deleteSessionTitle } from './sessionTitles.js';
 import { loadAll as loadAllConducted, unmarkConducted } from './conductedSessions.js';
 import { loadAllTemps } from './tempSessions.js';
-import { loadAllArchived } from './archivedSessions.js';
+import { loadAllArchived, markArchived, unmarkArchived } from './archivedSessions.js';
 
 // Default projects root = parent directory of the code-conductor repo,
 // resolved once at module load. Layout: <parent>/code-conductor/src/
@@ -436,16 +436,38 @@ export async function listSessions(projectName, excludeSessionIds = null) {
   return listSessionsForCwd(proj.path, excludeSessionIds);
 }
 
-// Remove the persisted session jsonl at the conventional path.
-// Returns true on success, false if the file didn't exist (404 path
-// from the route). Caller is responsible for killing any running
-// instance attached to this sessionId first.
+// Archive the session at the conventional path: keep the jsonl (so it
+// stays resumable) and just record the sessionId in the global archived
+// set. Title + conducted markers are intentionally kept so a restore
+// brings the session back intact. Returns true on success, false if the
+// jsonl didn't exist (404 path from the route). This is the single
+// "remove from the normal list" action — it never deletes from disk.
+export async function archiveSessionForCwd(absCwd, sessionId) {
+  const file = path.join(claudeProjectsRoot(), encodeCwd(absCwd), `${sessionId}.jsonl`);
+  try {
+    await fs.access(file);
+  } catch (e) {
+    if (e.code === 'ENOENT') return false;
+    throw e;
+  }
+  await markArchived(sessionId);
+  return true;
+}
+
+// Permanently remove the persisted session jsonl at the conventional
+// path. Returns true on success, false if the file didn't exist (404
+// path from the route). This is the ONLY code path that deletes a
+// session jsonl from disk; it is reachable only from the explicit
+// per-session Delete on the Settings → Archived page. Caller is
+// responsible for killing any running instance attached to this
+// sessionId first.
 export async function deleteSessionForCwd(absCwd, sessionId) {
   const file = path.join(claudeProjectsRoot(), encodeCwd(absCwd), `${sessionId}.jsonl`);
   try {
     await fs.unlink(file);
     try { await deleteSessionTitle(sessionId); } catch { /* sidecar cleanup is best-effort */ }
     try { await unmarkConducted(sessionId); } catch { /* sidecar cleanup is best-effort */ }
+    try { await unmarkArchived(sessionId); } catch { /* sidecar cleanup is best-effort */ }
     return true;
   } catch (e) {
     if (e.code === 'ENOENT') return false;
@@ -490,6 +512,44 @@ export async function findSessionLocation(sessionId) {
     }
   }
   return null;
+}
+
+// List every archived session, grouped by the project (and worktree)
+// that owns it. archived-sessions.json only stores sessionIds, so we
+// enumerate known project + worktree paths and keep the rows
+// listSessionsForCwd already flags as archived (it also reads firstPrompt
+// + title). Used by the Settings → Archived page. Only projects with at
+// least one archived session are returned; sessions are mtime-desc.
+export async function listArchivedGroupedByProject() {
+  const { listWorktrees } = await import('./worktrees.js');
+  const projects = await listProjects();
+  const groups = [];
+  for (const proj of projects) {
+    const sessions = [];
+    const projRows = (await listSessionsForCwd(proj.path)).filter(s => s.archived);
+    for (const s of projRows) {
+      sessions.push({
+        sessionId: s.sessionId, title: s.title, firstPrompt: s.firstPrompt,
+        mtime: s.mtime, size: s.size, worktreeName: null,
+      });
+    }
+    let wts = [];
+    try { wts = await listWorktrees(proj.name); } catch { /* not a git repo, skip */ }
+    for (const wt of wts) {
+      const wtRows = (await listSessionsForCwd(wt.worktreePath)).filter(s => s.archived);
+      for (const s of wtRows) {
+        sessions.push({
+          sessionId: s.sessionId, title: s.title, firstPrompt: s.firstPrompt,
+          mtime: s.mtime, size: s.size, worktreeName: wt.worktreeName,
+        });
+      }
+    }
+    if (sessions.length > 0) {
+      sessions.sort((a, b) => b.mtime - a.mtime);
+      groups.push({ project: proj.name, sessions });
+    }
+  }
+  return groups;
 }
 
 // Lightweight session summary — used by /api/projects to show a count +

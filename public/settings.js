@@ -12,6 +12,7 @@ const POLL_MS = 1500;
 export function installSettings({
   requestClose, onAvailabilityChange, onModelsChange,
   onTtsAvailabilityChange, onTtsPrefsChange, onOpenCostDashboard,
+  onArchivedChanged,
 } = {}) {
   const main = document.getElementById('main');
   const view = document.getElementById('settings-view');
@@ -45,6 +46,9 @@ export function installSettings({
   const wcOverwriteBtn = document.getElementById('wc-overwrite');
   const wcHintEl = document.getElementById('wc-action-hint');
   const wcDiffEl = document.getElementById('wc-diff');
+  // Archived group elements.
+  const arStatusEl = document.getElementById('ar-status');
+  const arListEl = document.getElementById('ar-list');
   if (!view) return { open() {}, close() {} };
 
   let isOpen = false;
@@ -72,6 +76,7 @@ export function installSettings({
     loadModels();
     loadTts();
     loadWorkspace();
+    loadArchived();
   }
 
   function hide() {
@@ -711,8 +716,120 @@ export function installSettings({
     }
   }
 
-  wcKeepBtn?.addEventListener('click', () => resolveWorkspace('keep'));
-  wcOverwriteBtn?.addEventListener('click', () => resolveWorkspace('overwrite'));
+  // ── Archived group ──────────────────────────────────────────────────
+  // Lists every archived session grouped by project (collapsed by
+  // default), each with Restore (back to the sidebar) and Delete
+  // (permanent jsonl removal, confirmed). Backed by GET /api/archived.
+  function formatAgo(ms) {
+    if (!ms) return 'never';
+    const secs = Math.max(0, Math.floor((Date.now() - ms) / 1000));
+    if (secs < 60) return `${secs}s ago`;
+    const mins = Math.floor(secs / 60);
+    if (mins < 60) return `${mins}m ago`;
+    const hrs = Math.floor(mins / 60);
+    if (hrs < 24) return `${hrs}h ago`;
+    const days = Math.floor(hrs / 24);
+    if (days < 30) return `${days}d ago`;
+    const months = Math.floor(days / 30);
+    if (months < 12) return `${months}mo ago`;
+    return `${Math.floor(months / 12)}y ago`;
+  }
+
+  function sessionUrl(project, worktreeName, sessionId, suffix) {
+    const enc = encodeURIComponent;
+    const base = worktreeName
+      ? `/api/projects/${enc(project)}/worktrees/${enc(worktreeName)}/sessions/${enc(sessionId)}`
+      : `/api/projects/${enc(project)}/sessions/${enc(sessionId)}`;
+    return base + suffix;
+  }
+
+  async function restoreArchived(project, s) {
+    try {
+      const r = await fetch(sessionUrl(project, s.worktreeName, s.sessionId, '/restore'), { method: 'POST' });
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || `HTTP ${r.status}`);
+      onArchivedChanged?.();
+      await loadArchived();
+    } catch (e) {
+      alert(`restore failed: ${e.message || e}`);
+    }
+  }
+
+  async function deleteArchived(project, s, label) {
+    if (!confirm(`Permanently delete transcript for ${label}?\nThis removes the jsonl from disk and cannot be undone.`)) return;
+    try {
+      const r = await fetch(sessionUrl(project, s.worktreeName, s.sessionId, ''), { method: 'DELETE' });
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || `HTTP ${r.status}`);
+      onArchivedChanged?.();
+      await loadArchived();
+    } catch (e) {
+      alert(`delete failed: ${e.message || e}`);
+    }
+  }
+
+  function renderArchived({ groups }) {
+    const list = Array.isArray(groups) ? groups : [];
+    const total = list.reduce((n, g) => n + g.sessions.length, 0);
+    arStatusEl.innerHTML = total > 0
+      ? `<span class="st-ok">${total} archived session${total === 1 ? '' : 's'}</span> across ${list.length} project${list.length === 1 ? '' : 's'}.`
+      : 'No archived sessions.';
+
+    arListEl.innerHTML = '';
+    for (const g of list) {
+      const det = document.createElement('details');
+      det.className = 'archived-group'; // collapsed by default (no `open`)
+      const sum = document.createElement('summary');
+      sum.className = 'archived-group-summary';
+      sum.textContent = `${g.project} (${g.sessions.length})`;
+      det.appendChild(sum);
+
+      for (const s of g.sessions) {
+        const row = document.createElement('div');
+        row.className = 'archived-row';
+
+        const main = document.createElement('div');
+        main.className = 'archived-row-main';
+        const labelText = s.title || s.firstPrompt || `${s.sessionId.slice(0, 8)}…`;
+        const titleSpan = document.createElement('span');
+        titleSpan.className = 'archived-row-title';
+        titleSpan.textContent = labelText;
+        titleSpan.title = s.sessionId;
+        main.appendChild(titleSpan);
+        const meta = document.createElement('span');
+        meta.className = 'archived-row-meta';
+        meta.textContent = (s.worktreeName ? `⌥ ${s.worktreeName} · ` : '') + `last ${formatAgo(s.mtime)}`;
+        main.appendChild(meta);
+        row.appendChild(main);
+
+        const restoreBtn = document.createElement('button');
+        restoreBtn.type = 'button';
+        restoreBtn.className = 'archived-restore';
+        restoreBtn.textContent = 'Restore';
+        restoreBtn.addEventListener('click', () => restoreArchived(g.project, s));
+        row.appendChild(restoreBtn);
+
+        const delBtn = document.createElement('button');
+        delBtn.type = 'button';
+        delBtn.className = 'archived-delete';
+        delBtn.textContent = 'Delete';
+        delBtn.addEventListener('click', () => deleteArchived(g.project, s, `"${labelText}"`));
+        row.appendChild(delBtn);
+
+        det.appendChild(row);
+      }
+      arListEl.appendChild(det);
+    }
+  }
+
+  async function loadArchived() {
+    try {
+      const r = await fetch('/api/archived', { cache: 'no-store' });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      renderArchived(await r.json());
+    } catch (e) {
+      if (arStatusEl) arStatusEl.textContent = `Failed: ${e.message || e}`;
+      if (arListEl) arListEl.innerHTML = '';
+    }
+  }
 
   window.addEventListener('hashchange', sync);
   window.addEventListener('keydown', e => {
