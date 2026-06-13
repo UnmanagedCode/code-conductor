@@ -240,7 +240,7 @@ export class Sidebar {
         e.stopPropagation();
         if (this.onDeleteSession) this.onDeleteSession({
           projectName, worktreeName, sessionId: session.sessionId,
-          preview: liveLabel,
+          preview: liveLabel, synthetic: session.synthetic,
         });
       },
     }, '×'));

@@ -1404,11 +1404,32 @@ async function deleteProject(project) {
 // The sidebar × action archives a session (keeps its transcript) rather
 // than deleting it — it moves to Settings → Archived, where it can be
 // restored or permanently deleted. Sessions are never deleted from here.
-async function deleteSession({ projectName, worktreeName, sessionId, preview }) {
+async function deleteSession({ projectName, worktreeName, sessionId, preview, synthetic }) {
   const label = preview && preview !== '(new session)' && preview !== `${sessionId.slice(0, 8)}…`
     ? `"${preview}"`
     : sessionId.slice(0, 8) + '…';
   if (!confirm(`Archive session ${label}?\nIt moves to Settings → Archived (transcript kept, still resumable).`)) return;
+
+  // Synthetic sessions have no persisted .jsonl yet — the archive endpoint
+  // would return 404. Just kill the running instance (if any) and clean up.
+  if (synthetic) {
+    try {
+      const inst = state.instances.find(i => i.sessionId === sessionId);
+      if (inst) await fetch(`/api/instances/${encodeURIComponent(inst.id)}`, { method: 'DELETE' });
+      if (inst && state.activeId === inst.id) state.activeId = null;
+      if (sidebar.sessionsCache) {
+        const key = worktreeName ? `${projectName}:${worktreeName}` : projectName;
+        sidebar.sessionsCache.delete(key);
+      }
+      clearUnread(sessionId);
+      await refreshProjects();
+      await refreshInstances();
+    } catch (e) {
+      alert(`archive session failed: ${e.message}`);
+    }
+    return;
+  }
+
   const base = worktreeName
     ? `/api/projects/${encodeURIComponent(projectName)}/worktrees/${encodeURIComponent(worktreeName)}/sessions/${encodeURIComponent(sessionId)}/archive`
     : `/api/projects/${encodeURIComponent(projectName)}/sessions/${encodeURIComponent(sessionId)}/archive`;
@@ -1419,7 +1440,11 @@ async function deleteSession({ projectName, worktreeName, sessionId, preview }) 
       // the archive, so stop the instance and retry without a second prompt.
       r = await fetch(`${base}?force=1`, { method: 'POST' });
     }
-    if (!r.ok) throw new Error((await r.json()).error);
+    if (!r.ok) {
+      let errMsg;
+      try { errMsg = (await r.json()).error; } catch { errMsg = `HTTP ${r.status}`; }
+      throw new Error(errMsg);
+    }
     // If we were focused on this session's instance, drop the focus.
     const inst = state.instances.find(i => i.sessionId === sessionId);
     if (inst && state.activeId === inst.id) state.activeId = null;
