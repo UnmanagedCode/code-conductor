@@ -76,6 +76,11 @@ export async function bootServer({ scenarioPath, useRealClaude = false } = {}) {
   return { baseUrl, wsUrl, server, instances, tmpHome, projectsRoot, claudeProjectsRoot, close };
 }
 
+// MCP returns no longer carry the instanceId — resolve a live instance from
+// its stable sessionId for tests that need to poke internal Instance state.
+export const instForSession = (instances, sid) =>
+  instances.get(instances.idsForSession(sid)[0]);
+
 export async function api(baseUrl, method, urlPath, body) {
   const res = await fetch(baseUrl + urlPath, {
     method,

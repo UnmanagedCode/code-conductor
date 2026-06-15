@@ -102,9 +102,10 @@ test('approve_plan flips mode to bypassPermissions and sends the canonical appro
     const id = r.body.id;
     const inst = ctx.instances.get(id);
     await waitFor(() => inst.status === 'idle');
+    const sid = inst.sessionId;
 
-    const res = unwrap(await callTool(ctx.baseUrl, 'approve_plan', { id }));
-    assert.equal(res.id, id);
+    const res = unwrap(await callTool(ctx.baseUrl, 'approve_plan', { sessionId: sid }));
+    assert.equal(res.sessionId, sid);
     assert.equal(res.mode, 'bypassPermissions');
     assert.equal(
       res.sentText,
@@ -130,9 +131,10 @@ test('approve_plan with feedback interpolates the additional notes', async () =>
     const r = await api(ctx.baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'plan' });
     const id = r.body.id;
     await waitFor(() => ctx.instances.get(id).status === 'idle');
+    const sid = ctx.instances.get(id).sessionId;
 
     const res = unwrap(await callTool(ctx.baseUrl, 'approve_plan', {
-      id,
+      sessionId: sid,
       feedback: 'use TypeScript',
     }));
     assert.match(res.sentText, /I approve the plan\. Additional notes: use TypeScript/);
@@ -153,11 +155,12 @@ test('reject_plan keeps the worker in plan mode', async () => {
     const id = r.body.id;
     const inst = ctx.instances.get(id);
     await waitFor(() => inst.status === 'idle');
+    const sid = inst.sessionId;
 
     const res = unwrap(await callTool(ctx.baseUrl, 'reject_plan', {
-      id, feedback: 'simpler please',
+      sessionId: sid, feedback: 'simpler please',
     }));
-    assert.equal(res.id, id);
+    assert.equal(res.sessionId, sid);
     assert.equal(res.mode, 'plan', 'mode stays plan after reject');
     assert.match(res.sentText, /revise the plan/i);
     assert.match(res.sentText, /simpler please/);
@@ -177,17 +180,18 @@ test('set_auto_approve_plan flips the per-instance flag', async () => {
     const id = r.body.id;
     const inst = ctx.instances.get(id);
     await waitFor(() => inst.status === 'idle');
+    const sid = inst.sessionId;
     assert.equal(inst.autoApprovePlan, false);
 
     const on = unwrap(await callTool(ctx.baseUrl, 'set_auto_approve_plan', {
-      id, enabled: true,
+      sessionId: sid, enabled: true,
     }));
-    assert.equal(on.id, id);
+    assert.equal(on.sessionId, sid);
     assert.equal(on.autoApprovePlan, true);
     assert.equal(inst.autoApprovePlan, true);
 
     const off = unwrap(await callTool(ctx.baseUrl, 'set_auto_approve_plan', {
-      id, enabled: false,
+      sessionId: sid, enabled: false,
     }));
     assert.equal(off.autoApprovePlan, false);
     assert.equal(inst.autoApprovePlan, false);

@@ -8,7 +8,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { bootServer, api, waitFor } from './helpers.mjs';
+import { bootServer, api, waitFor, instForSession } from './helpers.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO_WS = path.join(__dirname, 'fixtures', 'scenario-ws.json');
@@ -60,7 +60,7 @@ function unwrapFile(result) {
 // get_recent_messages convenience: reattach each message's text from its body.
 function unwrapMessages(result) {
   const { meta, bodies } = unwrapPayload(result);
-  return { id: meta.id, messages: meta.messages.map((m, i) => ({ ...m, text: bodies[i] ?? '' })) };
+  return { sessionId: meta.sessionId, messages: meta.messages.map((m, i) => ({ ...m, text: bodies[i] ?? '' })) };
 }
 
 function git(cwd, ...args) {
@@ -190,20 +190,20 @@ test('spawn_instance + send_prompt(wait:true) + get_transcript round-trip', asyn
       project: 'a', mode: 'bypassPermissions',
     });
     const spawn = unwrap(spawnRes);
-    assert.ok(spawn.id, 'spawn returns instance id');
-    await waitFor(() => instances.get(spawn.id).status === 'idle' && instances.get(spawn.id).sessionId);
+    assert.ok(spawn.sessionId, 'spawn returns sessionId');
+    await waitFor(() => instForSession(instances, spawn.sessionId).status === 'idle' && instForSession(instances, spawn.sessionId).sessionId);
 
     // Send a prompt and wait for turn_end inline.
     const promptRes = await callTool(baseUrl, 'send_prompt', {
-      id: spawn.id, text: 'go', wait: true, waitTimeoutMs: 5000,
+      sessionId: spawn.sessionId, text: 'go', wait: true, waitTimeoutMs: 5000,
     });
     const promptBody = unwrap(promptRes);
-    assert.equal(promptBody.id, spawn.id);
+    assert.equal(promptBody.sessionId, spawn.sessionId);
     assert.ok(promptBody.turnEnd, 'wait:true returns the turn_end event');
     assert.equal(promptBody.turnEnd.kind, 'turn_end');
 
     // Read the transcript and verify the events flow.
-    const txRes = await callTool(baseUrl, 'get_transcript', { id: spawn.id });
+    const txRes = await callTool(baseUrl, 'get_transcript', { sessionId: spawn.sessionId });
     const tx = unwrap(txRes);
     const kinds = tx.events.map(e => e.kind);
     assert.ok(kinds.includes('text_delta'));
@@ -214,7 +214,7 @@ test('spawn_instance + send_prompt(wait:true) + get_transcript round-trip', asyn
     assert.equal(tx.trimmedBefore, 0);
 
     // sinceSeq filter: after the turn, asking sinceSeq=lastSeq returns nothing.
-    const tail = unwrap(await callTool(baseUrl, 'get_transcript', { id: spawn.id, sinceSeq: tx.lastSeq }));
+    const tail = unwrap(await callTool(baseUrl, 'get_transcript', { sessionId: spawn.sessionId, sinceSeq: tx.lastSeq }));
     assert.equal(tail.events.length, 0);
   } finally { await close(); }
 });
@@ -226,32 +226,32 @@ test('get_transcript + get_recent_messages survive a trimmed ring', async () => 
   try {
     await api(baseUrl, 'POST', '/api/projects', { name: 'a' });
     const spawn = unwrap(await callTool(baseUrl, 'spawn_instance', { project: 'a', mode: 'bypassPermissions' }));
-    await waitFor(() => instances.get(spawn.id).status === 'idle' && instances.get(spawn.id).sessionId);
-    await callTool(baseUrl, 'send_prompt', { id: spawn.id, text: 'go', wait: true, waitTimeoutMs: 5000 });
+    await waitFor(() => instForSession(instances, spawn.sessionId).status === 'idle' && instForSession(instances, spawn.sessionId).sessionId);
+    await callTool(baseUrl, 'send_prompt', { sessionId: spawn.sessionId, text: 'go', wait: true, waitTimeoutMs: 5000 });
 
     // Force eviction with synthetic history; the newest assistant text
     // must remain reachable for get_recent_messages.
-    const inst = instances.get(spawn.id);
+    const inst = instForSession(instances, spawn.sessionId);
     for (let i = 0; i < 100; i++) {
       inst._emitUi({ kind: 'text_delta', msgId: 'mNew', blockIdx: 0, text: i === 99 ? 'the latest words' : `pad ${i} ` });
     }
     inst._emitUi({ kind: 'text_end', msgId: 'mNew', blockIdx: 0 });
     assert.ok(inst.ring.trimmedBefore > 0, 'ring actually trimmed');
 
-    const tx = unwrap(await callTool(baseUrl, 'get_transcript', { id: spawn.id }));
+    const tx = unwrap(await callTool(baseUrl, 'get_transcript', { sessionId: spawn.sessionId }));
     assert.equal(tx.trimmedBefore, inst.ring.trimmedBefore);
     // sinceSeq below trimmedBefore: this fixture has no on-disk jsonl (the fake
     // CLI doesn't write one), so disk-fallback finds nothing and the dropped
     // range is served from the ring only — events start at trimmedBefore.
     // (Real disk-backed paging into a dropped range is covered in
     // tests/mcp-recent-disk.test.mjs.)
-    const below = unwrap(await callTool(baseUrl, 'get_transcript', { id: spawn.id, sinceSeq: 0 }));
+    const below = unwrap(await callTool(baseUrl, 'get_transcript', { sessionId: spawn.sessionId, sinceSeq: 0 }));
     assert.ok(below.events.length > 0);
     assert.ok(below.events[0]._seq >= below.trimmedBefore);
     assert.equal(typeof below.hasMore, 'boolean');
     assert.equal(typeof below.nextAfter, 'number');
 
-    const recent = unwrapMessages(await callTool(baseUrl, 'get_recent_messages', { id: spawn.id }));
+    const recent = unwrapMessages(await callTool(baseUrl, 'get_recent_messages', { sessionId: spawn.sessionId }));
     assert.equal(recent.messages.length, 1);
     assert.ok(recent.messages[0].text.includes('the latest words'));
   } finally {
@@ -266,13 +266,13 @@ test('wait_for_idle resolves when an in-flight turn completes', async () => {
   try {
     await api(baseUrl, 'POST', '/api/projects', { name: 'a' });
     const spawn = unwrap(await callTool(baseUrl, 'spawn_instance', { project: 'a', mode: 'bypassPermissions' }));
-    await waitFor(() => instances.get(spawn.id).sessionId);
+    await waitFor(() => instForSession(instances, spawn.sessionId).sessionId);
 
     // Kick a non-blocking prompt off, then race wait_for_idle against
     // the orchestrator's own status flip.
-    await callTool(baseUrl, 'send_prompt', { id: spawn.id, text: 'one' });
+    await callTool(baseUrl, 'send_prompt', { sessionId: spawn.sessionId, text: 'one' });
     const waitRes = unwrap(await callTool(baseUrl, 'wait_for_idle', {
-      id: spawn.id, timeoutMs: 5000,
+      sessionId: spawn.sessionId, timeoutMs: 5000,
     }));
     assert.equal(waitRes.status, 'idle');
   } finally { await close(); }
@@ -283,25 +283,25 @@ test('interrupt_turn: soft (default) sets interrupting, force aborts the turn', 
   try {
     await api(baseUrl, 'POST', '/api/projects', { name: 'a' });
     const spawn = unwrap(await callTool(baseUrl, 'spawn_instance', { project: 'a', mode: 'bypassPermissions' }));
-    await waitFor(() => instances.get(spawn.id).sessionId);
+    await waitFor(() => instForSession(instances, spawn.sessionId).sessionId);
 
-    await callTool(baseUrl, 'send_prompt', { id: spawn.id, text: 'one' });
-    await waitFor(() => instances.get(spawn.id).status === 'idle');
+    await callTool(baseUrl, 'send_prompt', { sessionId: spawn.sessionId, text: 'one' });
+    await waitFor(() => instForSession(instances, spawn.sessionId).status === 'idle');
 
     // Slow turn — stays in `turn` (scenario emits no result for it).
-    await callTool(baseUrl, 'send_prompt', { id: spawn.id, text: 'two please be slow' });
-    await waitFor(() => instances.get(spawn.id).status === 'turn');
+    await callTool(baseUrl, 'send_prompt', { sessionId: spawn.sessionId, text: 'two please be slow' });
+    await waitFor(() => instForSession(instances, spawn.sessionId).status === 'turn');
 
     // Soft (force omitted): flag set, turn continues.
-    const soft = unwrap(await callTool(baseUrl, 'interrupt_turn', { id: spawn.id }));
+    const soft = unwrap(await callTool(baseUrl, 'interrupt_turn', { sessionId: spawn.sessionId }));
     assert.equal(soft.status, 'turn');
     assert.equal(soft.interrupting, true);
-    assert.equal(instances.get(spawn.id).interrupting, true);
+    assert.equal(instForSession(instances, spawn.sessionId).interrupting, true);
 
     // Force: hard abort ends the turn and clears the flag.
-    await callTool(baseUrl, 'interrupt_turn', { id: spawn.id, force: true });
-    await waitFor(() => instances.get(spawn.id).status === 'idle');
-    assert.equal(instances.get(spawn.id).interrupting, false);
+    await callTool(baseUrl, 'interrupt_turn', { sessionId: spawn.sessionId, force: true });
+    await waitFor(() => instForSession(instances, spawn.sessionId).status === 'idle');
+    assert.equal(instForSession(instances, spawn.sessionId).interrupting, false);
   } finally { await close(); }
 });
 
@@ -310,10 +310,10 @@ test('set_mode round-trips and is reflected on the live instance', async () => {
   try {
     await api(baseUrl, 'POST', '/api/projects', { name: 'a' });
     const spawn = unwrap(await callTool(baseUrl, 'spawn_instance', { project: 'a', mode: 'bypassPermissions' }));
-    await waitFor(() => instances.get(spawn.id).sessionId);
-    const modeRes = unwrap(await callTool(baseUrl, 'set_mode', { id: spawn.id, mode: 'plan' }));
+    await waitFor(() => instForSession(instances, spawn.sessionId).sessionId);
+    const modeRes = unwrap(await callTool(baseUrl, 'set_mode', { sessionId: spawn.sessionId, mode: 'plan' }));
     assert.equal(modeRes.mode, 'plan');
-    assert.equal(instances.get(spawn.id).mode, 'plan');
+    assert.equal(instForSession(instances, spawn.sessionId).mode, 'plan');
   } finally { await close(); }
 });
 
@@ -322,10 +322,10 @@ test('kill_instance removes the instance from the manager', async () => {
   try {
     await api(baseUrl, 'POST', '/api/projects', { name: 'a' });
     const spawn = unwrap(await callTool(baseUrl, 'spawn_instance', { project: 'a', mode: 'bypassPermissions' }));
-    await waitFor(() => instances.get(spawn.id).sessionId);
-    const killRes = unwrap(await callTool(baseUrl, 'kill_instance', { id: spawn.id }));
-    assert.equal(killRes.id, spawn.id);
-    assert.equal(instances.get(spawn.id), undefined);
+    await waitFor(() => instForSession(instances, spawn.sessionId).sessionId);
+    const killRes = unwrap(await callTool(baseUrl, 'kill_instance', { sessionId: spawn.sessionId }));
+    assert.equal(killRes.sessionId, spawn.sessionId);
+    assert.equal(instForSession(instances, spawn.sessionId), undefined);
   } finally { await close(); }
 });
 
@@ -343,10 +343,10 @@ test('list_sessions marks MCP-spawned sessions conducted:true, HTTP ones false, 
     // it survives kill_instance without its jsonl being wiped.
     const cond = unwrap(await callTool(baseUrl, 'spawn_instance', { project: 'a', mode: 'bypassPermissions', temp: false }));
     assert.equal(cond.conducted, true, 'MCP-spawned summary carries conducted:true');
-    const condInst = instances.get(cond.id);
+    const condInst = instForSession(instances, cond.sessionId);
     await waitFor(() => condInst.status === 'idle' && condInst.sessionId);
     // Drive a turn so the durable marker is persisted on turn_end.
-    await callTool(baseUrl, 'send_prompt', { id: cond.id, text: 'go', wait: true, waitTimeoutMs: 5000 });
+    await callTool(baseUrl, 'send_prompt', { sessionId: cond.sessionId, text: 'go', wait: true, waitTimeoutMs: 5000 });
     const condSid = condInst.sessionId;
 
     // Non-conducted session: spawned via the browser / HTTP path.
@@ -381,7 +381,7 @@ test('list_sessions marks MCP-spawned sessions conducted:true, HTTP ones false, 
     // The marker is durable: it survives the live instance going away
     // (simulating restart/resume recognition) because it reads from the
     // on-disk sidecar, not the in-memory instance.
-    await callTool(baseUrl, 'kill_instance', { id: cond.id });
+    await callTool(baseUrl, 'kill_instance', { sessionId: cond.sessionId });
     const list2 = unwrap(await callTool(baseUrl, 'list_sessions', { project: 'a' }));
     const c2 = list2.find(s => s.sessionId === condSid);
     assert.ok(c2 && c2.conducted === true, 'conducted marker persists after the instance exits');
@@ -410,14 +410,14 @@ test('temp conducted session persists the conducted marker and recovers it on re
     const spawn = unwrap(await callTool(baseUrl, 'spawn_instance', { project: 'a', mode: 'bypassPermissions' }));
     assert.equal(spawn.conducted, true, 'MCP spawn defaults to conducted:true');
     assert.equal(spawn.temp, true, 'MCP spawn defaults to temp:true');
-    const inst = instances.get(spawn.id);
+    const inst = instForSession(instances, spawn.sessionId);
     await waitFor(() => inst.status === 'idle' && inst.sessionId);
     const sid = inst.sessionId;
 
     // Drive a turn so _writeSessionMetadata() runs. Both durable markers must
     // land even though the session is temp. (Before the fix, isConducted(sid)
     // would be false here — markConducted sat after the temp early-return.)
-    await callTool(baseUrl, 'send_prompt', { id: spawn.id, text: 'go', wait: true, waitTimeoutMs: 5000 });
+    await callTool(baseUrl, 'send_prompt', { sessionId: spawn.sessionId, text: 'go', wait: true, waitTimeoutMs: 5000 });
     await waitFor(async () => (await isConducted(sid)) === true);
     assert.equal(await isConducted(sid), true, 'conducted marker persisted for a temp session');
     assert.equal(await isTemp(sid), true, 'temp marker persisted (shared code path)');
@@ -509,14 +509,14 @@ test('merge_worktree refuses with friendly reason when the worktree is behind', 
     const spawn = unwrap(await callTool(ctx.baseUrl, 'spawn_instance', {
       project: 'demo', mode: 'bypassPermissions', createWorktree: true,
     }));
-    await waitFor(() => ctx.instances.get(spawn.id).sessionId);
+    await waitFor(() => instForSession(ctx.instances, spawn.sessionId).sessionId);
 
     // Move the parent branch forward so the worktree is now "behind".
     await fs.writeFile(path.join(repoPath, 'extra.txt'), 'after\n');
     await git(repoPath, 'add', '.');
     await git(repoPath, 'commit', '-q', '-m', 'second');
 
-    const mergeRes = unwrap(await callTool(ctx.baseUrl, 'merge_worktree', { id: spawn.id }));
+    const mergeRes = unwrap(await callTool(ctx.baseUrl, 'merge_worktree', { sessionId: spawn.sessionId }));
     assert.equal(mergeRes.ok, false);
     assert.equal(mergeRes.code, 'WORKTREE_BEHIND');
     assert.match(mergeRes.reason, /behind .* click Sync first|call sync_worktree first/i);
@@ -532,10 +532,10 @@ test('merge_worktree accepts {project, worktree} when the instance is gone', asy
     const spawn = unwrap(await callTool(ctx.baseUrl, 'spawn_instance', {
       project: 'demo', mode: 'bypassPermissions', createWorktree: true,
     }));
-    await waitFor(() => ctx.instances.get(spawn.id).sessionId);
-    const wtName = ctx.instances.get(spawn.id).worktree.worktreeName;
-    await callTool(ctx.baseUrl, 'kill_instance', { id: spawn.id });
-    assert.equal(ctx.instances.get(spawn.id), undefined);
+    await waitFor(() => instForSession(ctx.instances, spawn.sessionId).sessionId);
+    const wtName = instForSession(ctx.instances, spawn.sessionId).worktree.worktreeName;
+    await callTool(ctx.baseUrl, 'kill_instance', { sessionId: spawn.sessionId });
+    assert.equal(instForSession(ctx.instances, spawn.sessionId), undefined);
 
     // The worktree is up-to-date with main (no commits yet on either side),
     // so a merge with --no-ff produces an empty-but-valid merge commit.
@@ -547,14 +547,14 @@ test('merge_worktree accepts {project, worktree} when the instance is gone', asy
   } finally { await ctx.close(); }
 });
 
-test('merge_worktree rejects calls without id or {project, worktree}', async () => {
+test('merge_worktree rejects calls without sessionId or {project, worktree}', async () => {
   const ctx = await bootServer({ scenarioPath: SCENARIO_WS });
   try {
     const { body } = await rpc(ctx.baseUrl, 'tools/call', {
       name: 'merge_worktree', arguments: {},
     });
     assert.equal(body.result.isError, true);
-    assert.match(body.result.content[0].text, /requires either id or both/);
+    assert.match(body.result.content[0].text, /requires either sessionId or both/);
   } finally { await ctx.close(); }
 });
 
@@ -599,36 +599,36 @@ test('get_recent_messages reads the most recent assistant text from the ring', a
     const spawn = unwrap(await callTool(ctx.baseUrl, 'spawn_instance', {
       project: 'a', mode: 'bypassPermissions',
     }));
-    await waitFor(() => ctx.instances.get(spawn.id).status === 'idle' && ctx.instances.get(spawn.id).sessionId);
+    await waitFor(() => instForSession(ctx.instances, spawn.sessionId).status === 'idle' && instForSession(ctx.instances, spawn.sessionId).sessionId);
 
     // Before any turn — no assistant content yet.
-    const before = unwrapMessages(await callTool(ctx.baseUrl, 'get_recent_messages', { id: spawn.id }));
+    const before = unwrapMessages(await callTool(ctx.baseUrl, 'get_recent_messages', { sessionId: spawn.sessionId }));
     assert.equal(before.messages.length, 0);
 
     // First turn: text "First " + Bash tool_use.
-    await callTool(ctx.baseUrl, 'send_prompt', { id: spawn.id, text: 'one', wait: true, waitTimeoutMs: 5000 });
-    const first = unwrapMessages(await callTool(ctx.baseUrl, 'get_recent_messages', { id: spawn.id }));
+    await callTool(ctx.baseUrl, 'send_prompt', { sessionId: spawn.sessionId, text: 'one', wait: true, waitTimeoutMs: 5000 });
+    const first = unwrapMessages(await callTool(ctx.baseUrl, 'get_recent_messages', { sessionId: spawn.sessionId }));
     assert.equal(first.messages[0].text, 'First ');
     assert.equal(first.messages[0].hasToolUse, true);
     assert.ok(first.messages[0].blocks.some(b => b.type === 'tool_use' && b.name === 'Bash'));
     assert.ok(first.messages[0].blocks.every(b => b.type !== 'text'), 'tool-call message blocks has no text entries');
 
     // Second turn: just text "Second!" — should now be the latest.
-    await callTool(ctx.baseUrl, 'send_prompt', { id: spawn.id, text: 'two', wait: true, waitTimeoutMs: 5000 });
-    const second = unwrapMessages(await callTool(ctx.baseUrl, 'get_recent_messages', { id: spawn.id }));
+    await callTool(ctx.baseUrl, 'send_prompt', { sessionId: spawn.sessionId, text: 'two', wait: true, waitTimeoutMs: 5000 });
+    const second = unwrapMessages(await callTool(ctx.baseUrl, 'get_recent_messages', { sessionId: spawn.sessionId }));
     assert.equal(second.messages[0].text, 'Second!');
     assert.notEqual(second.messages[0].msgId, first.messages[0].msgId);
     assert.ok(!Object.hasOwn(second.messages[0], 'blocks'), 'pure-text message omits blocks field');
 
     // count:2 returns both turns, oldest-first.
-    const both = unwrapMessages(await callTool(ctx.baseUrl, 'get_recent_messages', { id: spawn.id, count: 2 }));
+    const both = unwrapMessages(await callTool(ctx.baseUrl, 'get_recent_messages', { sessionId: spawn.sessionId, count: 2 }));
     assert.equal(both.messages.length, 2);
     assert.equal(both.messages[0].text, 'First ');
     assert.equal(both.messages[0].hasToolUse, true);
     assert.equal(both.messages[1].text, 'Second!');
 
     // count larger than available — returns what's there.
-    const cap = unwrapMessages(await callTool(ctx.baseUrl, 'get_recent_messages', { id: spawn.id, count: 10 }));
+    const cap = unwrapMessages(await callTool(ctx.baseUrl, 'get_recent_messages', { sessionId: spawn.sessionId, count: 10 }));
     assert.equal(cap.messages.length, 2);
   } finally { await ctx.close(); }
 });
@@ -640,25 +640,25 @@ test('get_recent_messages filters tool-call-only messages by default', async () 
     const spawn = unwrap(await callTool(ctx.baseUrl, 'spawn_instance', {
       project: 'a', mode: 'bypassPermissions',
     }));
-    await waitFor(() => ctx.instances.get(spawn.id).status === 'idle' && ctx.instances.get(spawn.id).sessionId);
+    await waitFor(() => instForSession(ctx.instances, spawn.sessionId).status === 'idle' && instForSession(ctx.instances, spawn.sessionId).sessionId);
 
     // Turn 1: tool-only. Default filter → messages[] is empty.
-    await callTool(ctx.baseUrl, 'send_prompt', { id: spawn.id, text: 'one', wait: true, waitTimeoutMs: 5000 });
-    const afterToolOnly = unwrapMessages(await callTool(ctx.baseUrl, 'get_recent_messages', { id: spawn.id }));
+    await callTool(ctx.baseUrl, 'send_prompt', { sessionId: spawn.sessionId, text: 'one', wait: true, waitTimeoutMs: 5000 });
+    const afterToolOnly = unwrapMessages(await callTool(ctx.baseUrl, 'get_recent_messages', { sessionId: spawn.sessionId }));
     assert.equal(afterToolOnly.messages.length, 0);
 
     // Turn 2: text "Hello".
-    await callTool(ctx.baseUrl, 'send_prompt', { id: spawn.id, text: 'two', wait: true, waitTimeoutMs: 5000 });
+    await callTool(ctx.baseUrl, 'send_prompt', { sessionId: spawn.sessionId, text: 'two', wait: true, waitTimeoutMs: 5000 });
     // Turn 3: tool-only.
-    await callTool(ctx.baseUrl, 'send_prompt', { id: spawn.id, text: 'three', wait: true, waitTimeoutMs: 5000 });
+    await callTool(ctx.baseUrl, 'send_prompt', { sessionId: spawn.sessionId, text: 'three', wait: true, waitTimeoutMs: 5000 });
 
     // Default filter: count:3 yields only the one message with text.
-    const filtered = unwrapMessages(await callTool(ctx.baseUrl, 'get_recent_messages', { id: spawn.id, count: 3 }));
+    const filtered = unwrapMessages(await callTool(ctx.baseUrl, 'get_recent_messages', { sessionId: spawn.sessionId, count: 3 }));
     assert.equal(filtered.messages.length, 1);
     assert.equal(filtered.messages[0].text, 'Hello');
 
     // includeToolCalls:true restores all three messages, oldest-first.
-    const all = unwrapMessages(await callTool(ctx.baseUrl, 'get_recent_messages', { id: spawn.id, count: 3, includeToolCalls: true }));
+    const all = unwrapMessages(await callTool(ctx.baseUrl, 'get_recent_messages', { sessionId: spawn.sessionId, count: 3, includeToolCalls: true }));
     assert.equal(all.messages.length, 3);
     assert.equal(all.messages[0].text, '');
     assert.equal(all.messages[0].hasToolUse, true);
@@ -675,19 +675,19 @@ test('get_recent_messages strips thinking blocks by default, includeThinking res
     const spawn = unwrap(await callTool(ctx.baseUrl, 'spawn_instance', {
       project: 'a', mode: 'bypassPermissions',
     }));
-    await waitFor(() => ctx.instances.get(spawn.id).status === 'idle' && ctx.instances.get(spawn.id).sessionId);
+    await waitFor(() => instForSession(ctx.instances, spawn.sessionId).status === 'idle' && instForSession(ctx.instances, spawn.sessionId).sessionId);
 
     // Turn: assistant message with thinking + text "42".
-    await callTool(ctx.baseUrl, 'send_prompt', { id: spawn.id, text: 'one', wait: true, waitTimeoutMs: 5000 });
+    await callTool(ctx.baseUrl, 'send_prompt', { sessionId: spawn.sessionId, text: 'one', wait: true, waitTimeoutMs: 5000 });
 
     // Default: thinking stripped, text-bearing message still returned.
-    const stripped = unwrapMessages(await callTool(ctx.baseUrl, 'get_recent_messages', { id: spawn.id }));
+    const stripped = unwrapMessages(await callTool(ctx.baseUrl, 'get_recent_messages', { sessionId: spawn.sessionId }));
     assert.equal(stripped.messages.length, 1, 'text-bearing message returned even when thinking stripped');
     assert.equal(stripped.messages[0].text, '42');
     assert.ok(!Object.hasOwn(stripped.messages[0], 'blocks'), 'no blocks field when thinking stripped');
 
     // includeThinking: true reveals the thinking block.
-    const withThinking = unwrapMessages(await callTool(ctx.baseUrl, 'get_recent_messages', { id: spawn.id, includeThinking: true }));
+    const withThinking = unwrapMessages(await callTool(ctx.baseUrl, 'get_recent_messages', { sessionId: spawn.sessionId, includeThinking: true }));
     assert.equal(withThinking.messages[0].text, '42');
     assert.ok(Object.hasOwn(withThinking.messages[0], 'blocks'), 'blocks present with includeThinking');
     assert.equal(withThinking.messages[0].blocks.length, 1);
@@ -703,14 +703,14 @@ test('get_recent_messages returns plan-bearing messages by default', async () =>
     const spawn = unwrap(await callTool(ctx.baseUrl, 'spawn_instance', {
       project: 'a', mode: 'bypassPermissions',
     }));
-    await waitFor(() => ctx.instances.get(spawn.id).status === 'idle' && ctx.instances.get(spawn.id).sessionId);
+    await waitFor(() => instForSession(ctx.instances, spawn.sessionId).status === 'idle' && instForSession(ctx.instances, spawn.sessionId).sessionId);
 
-    const before = unwrapMessages(await callTool(ctx.baseUrl, 'get_recent_messages', { id: spawn.id }));
+    const before = unwrapMessages(await callTool(ctx.baseUrl, 'get_recent_messages', { sessionId: spawn.sessionId }));
     assert.equal(before.messages.length, 0);
 
-    await callTool(ctx.baseUrl, 'send_prompt', { id: spawn.id, text: 'plan this', wait: true, waitTimeoutMs: 5000 });
+    await callTool(ctx.baseUrl, 'send_prompt', { sessionId: spawn.sessionId, text: 'plan this', wait: true, waitTimeoutMs: 5000 });
 
-    const after = unwrapMessages(await callTool(ctx.baseUrl, 'get_recent_messages', { id: spawn.id }));
+    const after = unwrapMessages(await callTool(ctx.baseUrl, 'get_recent_messages', { sessionId: spawn.sessionId }));
     assert.equal(after.messages.length, 1, 'plan-bearing message returned by default');
     assert.equal(after.messages[0].text, '', 'text is empty for plan-only turn');
     assert.equal(after.messages[0].plan, 'Step 1\nStep 2', 'plan field populated');
@@ -726,14 +726,14 @@ test('get_recent_messages returns question-bearing messages by default', async (
     const spawn = unwrap(await callTool(ctx.baseUrl, 'spawn_instance', {
       project: 'a', mode: 'bypassPermissions',
     }));
-    await waitFor(() => ctx.instances.get(spawn.id).status === 'idle' && ctx.instances.get(spawn.id).sessionId);
+    await waitFor(() => instForSession(ctx.instances, spawn.sessionId).status === 'idle' && instForSession(ctx.instances, spawn.sessionId).sessionId);
 
-    const before = unwrapMessages(await callTool(ctx.baseUrl, 'get_recent_messages', { id: spawn.id }));
+    const before = unwrapMessages(await callTool(ctx.baseUrl, 'get_recent_messages', { sessionId: spawn.sessionId }));
     assert.equal(before.messages.length, 0);
 
-    await callTool(ctx.baseUrl, 'send_prompt', { id: spawn.id, text: 'ask me something', wait: true, waitTimeoutMs: 5000 });
+    await callTool(ctx.baseUrl, 'send_prompt', { sessionId: spawn.sessionId, text: 'ask me something', wait: true, waitTimeoutMs: 5000 });
 
-    const after = unwrapMessages(await callTool(ctx.baseUrl, 'get_recent_messages', { id: spawn.id }));
+    const after = unwrapMessages(await callTool(ctx.baseUrl, 'get_recent_messages', { sessionId: spawn.sessionId }));
     assert.equal(after.messages.length, 1, 'question-bearing message returned by default');
     assert.equal(after.messages[0].text, '', 'text is empty for question-only turn');
     assert.ok(Array.isArray(after.messages[0].questions) && after.messages[0].questions.length > 0, 'questions field populated');
@@ -750,9 +750,9 @@ test('get_recent_messages: reconciled ExitPlanMode not duplicated in blocks[]', 
     const spawn = unwrap(await callTool(ctx.baseUrl, 'spawn_instance', {
       project: 'a', mode: 'bypassPermissions',
     }));
-    await waitFor(() => ctx.instances.get(spawn.id).status === 'idle' && ctx.instances.get(spawn.id).sessionId);
-    await callTool(ctx.baseUrl, 'send_prompt', { id: spawn.id, text: 'plan this', wait: true, waitTimeoutMs: 5000 });
-    const result = unwrapMessages(await callTool(ctx.baseUrl, 'get_recent_messages', { id: spawn.id }));
+    await waitFor(() => instForSession(ctx.instances, spawn.sessionId).status === 'idle' && instForSession(ctx.instances, spawn.sessionId).sessionId);
+    await callTool(ctx.baseUrl, 'send_prompt', { sessionId: spawn.sessionId, text: 'plan this', wait: true, waitTimeoutMs: 5000 });
+    const result = unwrapMessages(await callTool(ctx.baseUrl, 'get_recent_messages', { sessionId: spawn.sessionId }));
     assert.equal(result.messages.length, 1, 'plan-bearing message returned (reconciled path)');
     assert.equal(result.messages[0].plan, 'Step 1\nStep 2', 'plan field populated (reconciled path)');
     assert.equal(result.messages[0].hasToolUse, true);
@@ -767,9 +767,9 @@ test('get_recent_messages: reconciled AskUserQuestion not duplicated in blocks[]
     const spawn = unwrap(await callTool(ctx.baseUrl, 'spawn_instance', {
       project: 'a', mode: 'bypassPermissions',
     }));
-    await waitFor(() => ctx.instances.get(spawn.id).status === 'idle' && ctx.instances.get(spawn.id).sessionId);
-    await callTool(ctx.baseUrl, 'send_prompt', { id: spawn.id, text: 'ask me', wait: true, waitTimeoutMs: 5000 });
-    const result = unwrapMessages(await callTool(ctx.baseUrl, 'get_recent_messages', { id: spawn.id }));
+    await waitFor(() => instForSession(ctx.instances, spawn.sessionId).status === 'idle' && instForSession(ctx.instances, spawn.sessionId).sessionId);
+    await callTool(ctx.baseUrl, 'send_prompt', { sessionId: spawn.sessionId, text: 'ask me', wait: true, waitTimeoutMs: 5000 });
+    const result = unwrapMessages(await callTool(ctx.baseUrl, 'get_recent_messages', { sessionId: spawn.sessionId }));
     assert.equal(result.messages.length, 1, 'question-bearing message returned (reconciled path)');
     assert.ok(Array.isArray(result.messages[0].questions) && result.messages[0].questions.length > 0, 'questions field populated (reconciled path)');
     assert.equal(result.messages[0].hasToolUse, true);
@@ -915,7 +915,7 @@ test('read_file scoped to a worktree reads from the worktree root, not the paren
 
 async function spawnIdle(ctx, args) {
   const summary = unwrap(await callTool(ctx.baseUrl, 'spawn_instance', args));
-  await waitFor(() => ctx.instances.get(summary.id)?.status === 'idle');
+  await waitFor(() => instForSession(ctx.instances, summary.sessionId)?.status === 'idle');
   return summary;
 }
 
@@ -958,9 +958,9 @@ test('promote_session flips temp:false on a temp session', async () => {
     await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'demo' });
     const summary = await spawnIdle(ctx, { project: 'demo' });
     assert.equal(summary.temp, true);
-    const promoted = unwrap(await callTool(ctx.baseUrl, 'promote_session', { id: summary.id }));
+    const promoted = unwrap(await callTool(ctx.baseUrl, 'promote_session', { sessionId: summary.sessionId }));
     assert.equal(promoted.temp, false, 'promote flips temp to false');
-    assert.equal(ctx.instances.get(summary.id).temp, false, 'in-memory flag flipped too');
+    assert.equal(instForSession(ctx.instances, summary.sessionId).temp, false, 'in-memory flag flipped too');
   } finally { await ctx.close(); }
 });
 
@@ -969,18 +969,19 @@ test('promote_session on a non-temp session returns a structured error', async (
   try {
     await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'demo' });
     const summary = await spawnIdle(ctx, { project: 'demo', temp: false });
-    const res = await callTool(ctx.baseUrl, 'promote_session', { id: summary.id });
+    const res = await callTool(ctx.baseUrl, 'promote_session', { sessionId: summary.sessionId });
     assert.equal(res.isError, true, 'not-temp surfaces as isError, not a crash');
     assert.match(res.content.map(c => c.text).join(''), /not temp/);
   } finally { await ctx.close(); }
 });
 
-test('promote_session on an unknown id returns a structured error', async () => {
+test('promote_session on an unknown sessionId soft-refuses SESSION_UNKNOWN', async () => {
   const ctx = await bootServer({ scenarioPath: SCENARIO_INSTANCE });
   try {
-    const res = await callTool(ctx.baseUrl, 'promote_session', { id: 'no-such-id' });
-    assert.equal(res.isError, true, 'unknown id surfaces as isError, not a crash');
-    assert.match(res.content.map(c => c.text).join(''), /not found/);
+    const res = unwrap(await callTool(ctx.baseUrl, 'promote_session', { sessionId: 'no-such-session' }));
+    assert.equal(res.ok, false, 'unknown session soft-refuses, not isError/crash');
+    assert.equal(res.code, 'SESSION_UNKNOWN');
+    assert.equal(res.sessionId, 'no-such-session');
   } finally { await ctx.close(); }
 });
 
@@ -1030,5 +1031,67 @@ test('spawn_instance: omitted model leaves summary.model null', async () => {
     await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'demo' });
     const summary = await spawnIdle(ctx, { project: 'demo', mode: 'bypassPermissions' });
     assert.equal(summary.model, null, 'omitted model should leave model null (account default)');
+  } finally { await ctx.close(); }
+});
+
+// ---------- sessionId-only contract: scrubbed view + strict-live resolution ----------
+
+test('sessionId is the only worker handle: returns carry sessionId, never id/callerInstanceId', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO_WS });
+  try {
+    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'a' });
+    const spawn = unwrap(await callTool(ctx.baseUrl, 'spawn_instance', { project: 'a', mode: 'bypassPermissions' }));
+    assert.ok(spawn.sessionId, 'spawn returns a sessionId handle');
+    assert.equal(spawn.id, undefined, 'spawn return carries no instanceId');
+    assert.equal(spawn.callerInstanceId, undefined, 'spawn return carries no callerInstanceId');
+    await waitFor(() => instForSession(ctx.instances, spawn.sessionId)?.status === 'idle');
+
+    const sent = unwrap(await callTool(ctx.baseUrl, 'send_prompt', {
+      sessionId: spawn.sessionId, text: 'go', wait: true, waitTimeoutMs: 5000,
+    }));
+    assert.equal(sent.sessionId, spawn.sessionId);
+    assert.equal(sent.id, undefined);
+
+    const list = unwrap(await callTool(ctx.baseUrl, 'list_instances', {}));
+    assert.ok(list.every(i => i.id === undefined && i.callerInstanceId === undefined),
+      'list_instances rows carry no instanceId/callerInstanceId');
+    assert.ok(list.some(i => i.sessionId === spawn.sessionId), 'worker is listed by sessionId');
+  } finally { await ctx.close(); }
+});
+
+test('send_prompt on an unknown sessionId soft-refuses SESSION_UNKNOWN', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO_WS });
+  try {
+    const res = unwrap(await callTool(ctx.baseUrl, 'send_prompt', {
+      sessionId: '00000000-dead-dead-dead-000000000000', text: 'hi',
+    }));
+    assert.equal(res.ok, false);
+    assert.equal(res.code, 'SESSION_UNKNOWN');
+  } finally { await ctx.close(); }
+});
+
+test('send_prompt on an exited non-temp session soft-refuses SESSION_NOT_LIVE and never auto-respawns', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO_INSTANCE });
+  try {
+    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'a' });
+    // temp:false → the instance is retained in byId after its subprocess exits.
+    const spawn = unwrap(await callTool(ctx.baseUrl, 'spawn_instance', { project: 'a', mode: 'bypassPermissions', temp: false }));
+    await waitFor(() => instForSession(ctx.instances, spawn.sessionId)?.status === 'idle');
+    const countBefore = ctx.instances.idsForSession(spawn.sessionId).length;
+
+    // Kill the subprocess directly (NOT instances.remove) so the non-temp
+    // instance stays in byId but loses its proc → strict-live should refuse.
+    await instForSession(ctx.instances, spawn.sessionId).kill({ graceMs: 200 });
+    await waitFor(() => !instForSession(ctx.instances, spawn.sessionId)?.proc);
+
+    const res = unwrap(await callTool(ctx.baseUrl, 'send_prompt', { sessionId: spawn.sessionId, text: 'hi' }));
+    assert.equal(res.ok, false);
+    assert.equal(res.code, 'SESSION_NOT_LIVE');
+    assert.equal(res.sessionId, spawn.sessionId);
+    assert.match(res.reason, /spawn_instance\(\{resume:/);
+
+    // No auto-respawn: still exactly one (dead) instance for the session.
+    assert.equal(ctx.instances.idsForSession(spawn.sessionId).length, countBefore);
+    assert.equal(instForSession(ctx.instances, spawn.sessionId).proc, null);
   } finally { await ctx.close(); }
 });

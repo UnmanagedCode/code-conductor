@@ -199,11 +199,11 @@ export function buildMcpRouter({ instances }) {
   const tools = buildTools();
 
   r.post('/', async (req, res) => {
-    // Each spawned instance registers the MCP URL with its own id baked
-    // into the query string (see InstanceManager.mcpServerUrl). Read it
-    // here so handlers like subscribe_to_idle know which instance is
-    // calling. Older/legacy callers without the param get callerId=null
-    // and any caller-dependent tool errors with a clear message.
+    // Each spawned worker registers the MCP URL with its own stable sessionId
+    // baked into the query string (see Instance.spawn). Read it here so handlers
+    // like subscribe_to_idle know which worker is calling. callerId is therefore
+    // a sessionId. Callers without the param get callerId=null and any
+    // caller-dependent tool errors with a clear message.
     const callerId = typeof req.query.caller === 'string' && req.query.caller
       ? req.query.caller : null;
     const ctx = { instances, tools, callerId };

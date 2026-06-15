@@ -14,7 +14,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { bootServer, api, waitFor } from './helpers.mjs';
+import { bootServer, api, waitFor, instForSession } from './helpers.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO_WS = path.join(__dirname, 'fixtures', 'scenario-ws.json');
@@ -51,10 +51,9 @@ async function spawnReady(ctx, project) {
     project, mode: 'bypassPermissions',
   }));
   await waitFor(() =>
-    ctx.instances.get(spawn.id)?.status === 'idle' &&
-    ctx.instances.get(spawn.id)?.sessionId,
+    instForSession(ctx.instances, spawn.sessionId)?.status === 'idle',
   );
-  return spawn.id;
+  return spawn.sessionId;
 }
 
 function countUserEchoes(inst, predicate = () => true) {
@@ -78,27 +77,28 @@ test('happy path: caller receives a stub user_echo when target hits turn_end', a
     const targetId = await spawnReady(ctx, 'p');
 
     const sub = unwrap(await callTool(ctx.baseUrl, 'subscribe_to_idle',
-      { targetId }, { caller: callerId }));
-    assert.equal(sub.callerId, callerId);
-    assert.equal(sub.targetId, targetId);
+      { sessionId: targetId }, { caller: callerId }));
+    assert.equal(sub.sessionId, targetId);
     assert.equal(sub.already, false);
 
     // Drive target through one full turn (wait:true ensures turn_end fires
     // before we assert on caller state).
     await callTool(ctx.baseUrl, 'send_prompt',
-      { id: targetId, text: 'go', wait: true, waitTimeoutMs: 5000 });
+      { sessionId: targetId, text: 'go', wait: true, waitTimeoutMs: 5000 });
 
     // The stub is delivered via queueMicrotask + an async prompt() call.
     // Poll the caller's ring until the user_echo appears. Inherit the default
     // deadline — delivery follows the target's subprocess turn, which can lag
     // under concurrent CPU contention.
-    const caller = ctx.instances.get(callerId);
+    const caller = instForSession(ctx.instances, callerId);
     await waitFor(() => !!findStubFor(caller, targetId));
 
     const stub = findStubFor(caller, targetId);
     assert.ok(stub, 'stub user_echo present in caller ring');
     assert.match(stub.text, /finished its turn/);
-    assert.match(stub.text, /get_recent_messages/);
+    // The stub points at the sessionId-keyed tool, naming the worker by sessionId.
+    assert.ok(stub.text.includes(`get_recent_messages({sessionId:"${targetId}"})`),
+      'stub references get_recent_messages({sessionId:"<target sid>"})');
     assert.ok(stub.text.includes(targetId));
   } finally { await ctx.close(); }
 });
@@ -111,12 +111,12 @@ test('one-shot: a second target turn does not re-fire the callback', async () =>
     const targetId = await spawnReady(ctx, 'p');
 
     await callTool(ctx.baseUrl, 'subscribe_to_idle',
-      { targetId }, { caller: callerId });
+      { sessionId: targetId }, { caller: callerId });
 
     // Turn 1: stub should land.
     await callTool(ctx.baseUrl, 'send_prompt',
-      { id: targetId, text: 'one', wait: true, waitTimeoutMs: 5000 });
-    const caller = ctx.instances.get(callerId);
+      { sessionId: targetId, text: 'one', wait: true, waitTimeoutMs: 5000 });
+    const caller = instForSession(ctx.instances, callerId);
     await waitFor(() => !!findStubFor(caller, targetId));
 
     // Wait for the caller's own turn (triggered by the stub) to drain.
@@ -128,7 +128,7 @@ test('one-shot: a second target turn does not re-fire the callback', async () =>
     // Turn 2: scenario-ws has a second turn defined. Drive it and assert
     // no additional stub arrives.
     await callTool(ctx.baseUrl, 'send_prompt',
-      { id: targetId, text: 'two', wait: true, waitTimeoutMs: 5000 });
+      { sessionId: targetId, text: 'two', wait: true, waitTimeoutMs: 5000 });
     // Give any spurious delivery a chance to land before we count.
     await new Promise(r => setTimeout(r, 200));
     const stubsAfterTurn2 = countUserEchoes(caller,
@@ -144,7 +144,7 @@ test('self-subscribe is rejected with a clear error', async () => {
     const aId = await spawnReady(ctx, 'p');
 
     const result = await callTool(ctx.baseUrl, 'subscribe_to_idle',
-      { targetId: aId }, { caller: aId });
+      { sessionId: aId }, { caller: aId });
     assert.equal(result.isError, true);
     assert.match(result.content[0].text, /subscribe to self/);
   } finally { await ctx.close(); }
@@ -157,7 +157,7 @@ test('missing ?caller= surfaces a clear isError result', async () => {
     const targetId = await spawnReady(ctx, 'p');
 
     const { body } = await rpc(ctx.baseUrl, 'tools/call', {
-      name: 'subscribe_to_idle', arguments: { targetId },
+      name: 'subscribe_to_idle', arguments: { sessionId: targetId },
     });
     assert.equal(body.result.isError, true);
     assert.match(body.result.content[0].text, /caller identity missing/);
@@ -172,22 +172,22 @@ test('caller removed before target turn_end: subscription is purged, no crash', 
     const targetId = await spawnReady(ctx, 'p');
 
     await callTool(ctx.baseUrl, 'subscribe_to_idle',
-      { targetId }, { caller: callerId });
+      { sessionId: targetId }, { caller: callerId });
 
     // Sanity: subscription is registered before we kill anything.
     assert.deepEqual(ctx.instances._idleSubscriberSnapshot(),
       { [targetId]: [callerId] });
 
     // Kill the caller. The manager's _purgeIdleFor hook should drop the entry.
-    await callTool(ctx.baseUrl, 'kill_instance', { id: callerId });
-    assert.equal(ctx.instances.get(callerId), undefined);
+    await callTool(ctx.baseUrl, 'kill_instance', { sessionId: callerId });
+    assert.equal(instForSession(ctx.instances, callerId), undefined);
     assert.deepEqual(ctx.instances._idleSubscriberSnapshot(), {});
 
     // Drive target through a turn. No callers exist → silent no-op, no throw.
     await callTool(ctx.baseUrl, 'send_prompt',
-      { id: targetId, text: 'go', wait: true, waitTimeoutMs: 5000 });
+      { sessionId: targetId, text: 'go', wait: true, waitTimeoutMs: 5000 });
     // If we got here without an unhandled rejection / crash, the test passes.
-    assert.equal(ctx.instances.get(targetId).status, 'idle');
+    assert.equal(instForSession(ctx.instances, targetId).status, 'idle');
   } finally { await ctx.close(); }
 });
 
@@ -199,15 +199,15 @@ test('target removed before turn_end: subscription is purged', async () => {
     const targetId = await spawnReady(ctx, 'p');
 
     await callTool(ctx.baseUrl, 'subscribe_to_idle',
-      { targetId }, { caller: callerId });
+      { sessionId: targetId }, { caller: callerId });
     assert.deepEqual(ctx.instances._idleSubscriberSnapshot(),
       { [targetId]: [callerId] });
 
-    await callTool(ctx.baseUrl, 'kill_instance', { id: targetId });
+    await callTool(ctx.baseUrl, 'kill_instance', { sessionId: targetId });
     assert.deepEqual(ctx.instances._idleSubscriberSnapshot(), {});
 
     // Caller is still alive and untouched.
-    const caller = ctx.instances.get(callerId);
+    const caller = instForSession(ctx.instances, callerId);
     assert.equal(caller.status, 'idle');
     assert.equal(countUserEchoes(caller), 0);
   } finally { await ctx.close(); }
@@ -221,22 +221,22 @@ test('unsubscribe_from_idle cancels a pending subscription', async () => {
     const targetId = await spawnReady(ctx, 'p');
 
     await callTool(ctx.baseUrl, 'subscribe_to_idle',
-      { targetId }, { caller: callerId });
+      { sessionId: targetId }, { caller: callerId });
     const unsub = unwrap(await callTool(ctx.baseUrl, 'unsubscribe_from_idle',
-      { targetId }, { caller: callerId }));
+      { sessionId: targetId }, { caller: callerId }));
     assert.equal(unsub.removed, true);
     assert.deepEqual(ctx.instances._idleSubscriberSnapshot(), {});
 
     // Driving the target now should not deliver a stub.
     await callTool(ctx.baseUrl, 'send_prompt',
-      { id: targetId, text: 'go', wait: true, waitTimeoutMs: 5000 });
+      { sessionId: targetId, text: 'go', wait: true, waitTimeoutMs: 5000 });
     await new Promise(r => setTimeout(r, 200));
-    const caller = ctx.instances.get(callerId);
+    const caller = instForSession(ctx.instances, callerId);
     assert.equal(findStubFor(caller, targetId), undefined);
 
     // Re-unsubscribe is idempotent (removed:false).
     const again = unwrap(await callTool(ctx.baseUrl, 'unsubscribe_from_idle',
-      { targetId }, { caller: callerId }));
+      { sessionId: targetId }, { caller: callerId }));
     assert.equal(again.removed, false);
   } finally { await ctx.close(); }
 });
@@ -249,10 +249,10 @@ test('subscribe is idempotent: re-registering the same pair reports already:true
     const targetId = await spawnReady(ctx, 'p');
 
     const first = unwrap(await callTool(ctx.baseUrl, 'subscribe_to_idle',
-      { targetId }, { caller: callerId }));
+      { sessionId: targetId }, { caller: callerId }));
     assert.equal(first.already, false);
     const second = unwrap(await callTool(ctx.baseUrl, 'subscribe_to_idle',
-      { targetId }, { caller: callerId }));
+      { sessionId: targetId }, { caller: callerId }));
     assert.equal(second.already, true);
     // Still exactly one entry — the set dedupes.
     assert.deepEqual(ctx.instances._idleSubscriberSnapshot(),
@@ -280,9 +280,9 @@ test('timeoutMs: fires with a timeout stub when turn_end does not arrive in time
 
     // Subscribe with a short watchdog — don't drive the target so turn_end never fires.
     await callTool(ctx.baseUrl, 'subscribe_to_idle',
-      { targetId, timeoutMs: 150 }, { caller: callerId });
+      { sessionId: targetId, timeoutMs: 150 }, { caller: callerId });
 
-    const caller = ctx.instances.get(callerId);
+    const caller = instForSession(ctx.instances, callerId);
     // The 150ms watchdog fires the stub; inherit the default deadline so a
     // CPU-starved timer + async delivery still lands within the catch window.
     await waitFor(() => !!findTimeoutStubFor(caller, targetId));
@@ -308,13 +308,13 @@ test('timeoutMs: turn_end before timeout wins; timer is cancelled, only one stub
 
     // Long watchdog — turn_end should fire well before it.
     await callTool(ctx.baseUrl, 'subscribe_to_idle',
-      { targetId, timeoutMs: 2000 }, { caller: callerId });
+      { sessionId: targetId, timeoutMs: 2000 }, { caller: callerId });
 
     // Drive the target to turn_end before the watchdog fires.
     await callTool(ctx.baseUrl, 'send_prompt',
-      { id: targetId, text: 'go', wait: true, waitTimeoutMs: 5000 });
+      { sessionId: targetId, text: 'go', wait: true, waitTimeoutMs: 5000 });
 
-    const caller = ctx.instances.get(callerId);
+    const caller = instForSession(ctx.instances, callerId);
     await waitFor(() => !!findStubFor(caller, targetId));
 
     const completionStub = findStubFor(caller, targetId);
@@ -342,27 +342,27 @@ test('list() sets hasIdleSubscriber on the caller (conductor), not the target (w
 
     // Before subscribe: both false.
     let listed = ctx.instances.list();
-    assert.equal(listed.find(i => i.id === callerId)?.hasIdleSubscriber, false);
-    assert.equal(listed.find(i => i.id === targetId)?.hasIdleSubscriber, false);
+    assert.equal(listed.find(i => i.sessionId === callerId)?.hasIdleSubscriber, false);
+    assert.equal(listed.find(i => i.sessionId === targetId)?.hasIdleSubscriber, false);
 
     // After subscribe: caller=true, target=false.
     await callTool(ctx.baseUrl, 'subscribe_to_idle',
-      { targetId }, { caller: callerId });
+      { sessionId: targetId }, { caller: callerId });
     listed = ctx.instances.list();
-    assert.equal(listed.find(i => i.id === callerId)?.hasIdleSubscriber, true,
+    assert.equal(listed.find(i => i.sessionId === callerId)?.hasIdleSubscriber, true,
       'caller (conductor) must show hasIdleSubscriber:true while awaiting');
-    assert.equal(listed.find(i => i.id === targetId)?.hasIdleSubscriber, false,
+    assert.equal(listed.find(i => i.sessionId === targetId)?.hasIdleSubscriber, false,
       'target (worker) must NOT show hasIdleSubscriber:true');
 
     // After the subscription fires (target completes a turn): caller goes false.
     await callTool(ctx.baseUrl, 'send_prompt',
-      { id: targetId, text: 'go', wait: true, waitTimeoutMs: 5000 });
-    const caller = ctx.instances.get(callerId);
+      { sessionId: targetId, text: 'go', wait: true, waitTimeoutMs: 5000 });
+    const caller = instForSession(ctx.instances, callerId);
     await waitFor(() => !!findStubFor(caller, targetId));
     listed = ctx.instances.list();
-    assert.equal(listed.find(i => i.id === callerId)?.hasIdleSubscriber, false,
+    assert.equal(listed.find(i => i.sessionId === callerId)?.hasIdleSubscriber, false,
       'hasIdleSubscriber must be false after subscription is consumed');
-    assert.equal(listed.find(i => i.id === targetId)?.hasIdleSubscriber, false);
+    assert.equal(listed.find(i => i.sessionId === targetId)?.hasIdleSubscriber, false);
   } finally { await ctx.close(); }
 });
 
@@ -374,12 +374,12 @@ test('list() hasIdleSubscriber goes false after unsubscribe', async () => {
     const targetId = await spawnReady(ctx, 'p');
 
     await callTool(ctx.baseUrl, 'subscribe_to_idle',
-      { targetId }, { caller: callerId });
-    assert.equal(ctx.instances.list().find(i => i.id === callerId)?.hasIdleSubscriber, true);
+      { sessionId: targetId }, { caller: callerId });
+    assert.equal(ctx.instances.list().find(i => i.sessionId === callerId)?.hasIdleSubscriber, true);
 
     await callTool(ctx.baseUrl, 'unsubscribe_from_idle',
-      { targetId }, { caller: callerId });
-    assert.equal(ctx.instances.list().find(i => i.id === callerId)?.hasIdleSubscriber, false,
+      { sessionId: targetId }, { caller: callerId });
+    assert.equal(ctx.instances.list().find(i => i.sessionId === callerId)?.hasIdleSubscriber, false,
       'hasIdleSubscriber must be false after manual unsubscribe');
   } finally { await ctx.close(); }
 });
@@ -392,18 +392,18 @@ test('timeoutMs: unsubscribe clears the watchdog timer — no stub delivered aft
     const targetId = await spawnReady(ctx, 'p');
 
     await callTool(ctx.baseUrl, 'subscribe_to_idle',
-      { targetId, timeoutMs: 150 }, { caller: callerId });
+      { sessionId: targetId, timeoutMs: 150 }, { caller: callerId });
 
     // Unsubscribe immediately — should clear the timer.
     const unsub = unwrap(await callTool(ctx.baseUrl, 'unsubscribe_from_idle',
-      { targetId }, { caller: callerId }));
+      { sessionId: targetId }, { caller: callerId }));
     assert.equal(unsub.removed, true);
     assert.deepEqual(ctx.instances._idleSubscriberSnapshot(), {});
 
     // Wait well past the 150ms window.
     await new Promise(r => setTimeout(r, 300));
 
-    const caller = ctx.instances.get(callerId);
+    const caller = instForSession(ctx.instances, callerId);
     assert.equal(findTimeoutStubFor(caller, targetId), undefined,
       'no timeout stub after unsubscribe');
     assert.equal(findStubFor(caller, targetId), undefined,

@@ -1,12 +1,16 @@
 // Integration tests for the sub-agent panel feature.
-// Verifies that spawn_instance with a ?caller=<id> stores callerInstanceId
-// on the spawned worker and exposes it via summary() and GET /api/instances.
+// Verifies that spawn_instance with ?caller=<conductor sessionId> stores the
+// conductor's *instanceId* as callerInstanceId on the spawned worker (the
+// caller suffix is a sessionId on the wire, resolved back to an instanceId
+// internally) and exposes it via summary() and GET /api/instances. The MCP
+// spawn return is the scrubbed conductor view (sessionId, no id /
+// callerInstanceId), so worker internals are inspected via instForSession.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { bootServer, api, waitFor } from './helpers.mjs';
+import { bootServer, api, waitFor, instForSession } from './helpers.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO_WS = path.join(__dirname, 'fixtures', 'scenario-ws.json');
@@ -39,7 +43,7 @@ function unwrap(result) {
   return JSON.parse(text);
 }
 
-test('spawn_instance with ?caller sets callerInstanceId on the worker instance', async () => {
+test('spawn_instance with ?caller=<sessionId> sets callerInstanceId (instanceId) on the worker', async () => {
   const { baseUrl, instances, close } = await bootServer({ scenarioPath: SCENARIO_WS });
   try {
     await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
@@ -48,37 +52,42 @@ test('spawn_instance with ?caller sets callerInstanceId on the worker instance',
     const conductor = unwrap(await callTool(baseUrl, 'spawn_instance', {
       project: 'p', mode: 'bypassPermissions',
     }));
-    assert.ok(conductor.id, 'conductor instance has id');
-    assert.equal(conductor.callerInstanceId, null, 'conductor has no callerInstanceId');
+    assert.ok(conductor.sessionId, 'conductor has a sessionId');
+    assert.equal(conductor.id, undefined, 'conductor view does not leak instanceId');
+    const conductorInst = instForSession(instances, conductor.sessionId);
+    assert.equal(conductorInst.callerInstanceId, null, 'conductor has no callerInstanceId');
 
-    // Now spawn a worker with ?caller=<conductorId>.
+    // Now spawn a worker with ?caller=<conductor sessionId>.
     const worker = unwrap(await callTool(baseUrl, 'spawn_instance', {
       project: 'p', mode: 'bypassPermissions',
-    }, { caller: conductor.id }));
+    }, { caller: conductor.sessionId }));
 
-    assert.ok(worker.id, 'worker instance has id');
-    assert.equal(worker.callerInstanceId, conductor.id,
-      'worker.callerInstanceId equals the conductor id');
+    assert.ok(worker.sessionId, 'worker has a sessionId');
+    const workerInst = instForSession(instances, worker.sessionId);
+    assert.equal(workerInst.callerInstanceId, conductorInst.id,
+      'worker.callerInstanceId equals the conductor instanceId');
   } finally { await close(); }
 });
 
-test('Instance.summary() includes callerInstanceId', async () => {
+test('Instance.summary() includes callerInstanceId (resolved to instanceId)', async () => {
   const { baseUrl, instances, close } = await bootServer({ scenarioPath: SCENARIO_WS });
   try {
     await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
 
-    // Spawn a conductor.
-    const conductorId = 'test-caller-id-abc123';
-    // We simulate a caller by passing it as the query param to a plain spawn.
+    // Spawn a conductor, then a worker that names it via ?caller=<sessionId>.
+    const conductor = unwrap(await callTool(baseUrl, 'spawn_instance', {
+      project: 'p', mode: 'bypassPermissions',
+    }));
+    const conductorInst = instForSession(instances, conductor.sessionId);
     const worker = unwrap(await callTool(baseUrl, 'spawn_instance', {
       project: 'p', mode: 'bypassPermissions',
-    }, { caller: conductorId }));
+    }, { caller: conductor.sessionId }));
 
-    const inst = instances.get(worker.id);
+    const inst = instForSession(instances, worker.sessionId);
     assert.ok(inst, 'instance exists in manager');
     const summary = inst.summary();
-    assert.equal(summary.callerInstanceId, conductorId,
-      'summary() exposes callerInstanceId');
+    assert.equal(summary.callerInstanceId, conductorInst.id,
+      'summary() exposes callerInstanceId as the conductor instanceId');
   } finally { await close(); }
 });
 
@@ -91,22 +100,23 @@ test('GET /api/instances includes callerInstanceId for spawned worker', async ()
     const conductor = unwrap(await callTool(baseUrl, 'spawn_instance', {
       project: 'p', mode: 'bypassPermissions',
     }));
+    const conductorInst = instForSession(instances, conductor.sessionId);
 
-    // Spawn a worker with the conductor as caller.
+    // Spawn a worker with the conductor as caller (by sessionId).
     const worker = unwrap(await callTool(baseUrl, 'spawn_instance', {
       project: 'p', mode: 'bypassPermissions',
-    }, { caller: conductor.id }));
+    }, { caller: conductor.sessionId }));
 
-    // GET /api/instances should include callerInstanceId on the worker.
+    // GET /api/instances (REST path) still exposes id + callerInstanceId.
     const { status, body: insts } = await api(baseUrl, 'GET', '/api/instances');
     assert.equal(status, 200);
-    const workerEntry = insts.find(i => i.id === worker.id);
+    const workerEntry = insts.find(i => i.sessionId === worker.sessionId);
     assert.ok(workerEntry, 'worker appears in /api/instances');
-    assert.equal(workerEntry.callerInstanceId, conductor.id,
-      '/api/instances worker entry has callerInstanceId');
+    assert.equal(workerEntry.callerInstanceId, conductorInst.id,
+      '/api/instances worker entry has callerInstanceId (instanceId)');
 
     // The conductor should have callerInstanceId: null.
-    const conductorEntry = insts.find(i => i.id === conductor.id);
+    const conductorEntry = insts.find(i => i.sessionId === conductor.sessionId);
     assert.ok(conductorEntry, 'conductor appears in /api/instances');
     assert.equal(conductorEntry.callerInstanceId, null,
       '/api/instances conductor entry has callerInstanceId: null');

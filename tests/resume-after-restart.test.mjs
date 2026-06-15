@@ -398,9 +398,10 @@ test('drainToManifest: idle conductor parked on a subscription is wasBusy:true; 
 
     // Park `parked` on the worker's idle: an OUTGOING subscription (parked is the
     // caller) ⇒ isIdleCaller(parked) true. `idleNoSub` has no subscription.
-    instances.subscribeIdle(parked.id, worker.id);
-    assert.equal(instances.isIdleCaller(parked.id), true, 'parked conductor is an idle caller');
-    assert.equal(instances.isIdleCaller(idleNoSub.id), false, 'idle-no-sub conductor is not a caller');
+    // The idle-subscription graph is keyed by sessionId.
+    instances.subscribeIdle(parked.sessionId, worker.sessionId);
+    assert.equal(instances.isIdleCaller(parked.sessionId), true, 'parked conductor is an idle caller');
+    assert.equal(instances.isIdleCaller(idleNoSub.sessionId), false, 'idle-no-sub conductor is not a caller');
 
     // Drive only `midTurn` into a turn (NO_TURN scenario keeps it open).
     await midTurn.prompt('go');
