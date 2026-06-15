@@ -1,15 +1,21 @@
-import { test } from 'node:test';
+import { test, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { WebSocket } from 'ws';
-import { bootServer, api, waitFor } from './helpers.mjs';
+import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-plan.json');
 const SCENARIO_BYPASS_INIT = path.join(__dirname, 'fixtures', 'scenario-plan-bypass-init.json');
+
+let ctx, baseUrl, wsUrl, instances, home;
+before(async () => { ctx = await bootServer({ scenarioPath: SCENARIO }); ({ baseUrl, wsUrl, instances } = ctx); });
+after(async () => { await ctx.close(); });
+beforeEach(async () => { ({ home } = await freshProjectsRoot()); });
+afterEach(async () => { await instances.shutdown(); await rmrf(home); });
 
 function wsClient(url) {
   return new Promise((resolve) => {
@@ -41,12 +47,11 @@ test('auto-approve fires server-side without any subscribed client', async () =>
   // the Instance — no client needed. Drives the same flow as a manual
   // Approve click, just without the human in the loop.
   const tmpDir = await seedPlanFile();
-  const ctx = await bootServer({ scenarioPath: SCENARIO });
   try {
-    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'p' });
-    const r = await api(ctx.baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'plan' });
+    await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'plan' });
     const id = r.body.id;
-    const inst = ctx.instances.get(id);
+    const inst = instances.get(id);
     await waitFor(() => inst.status === 'idle');
     inst.setAutoApprovePlan(true);
     assert.equal(inst.autoApprovePlan, true);
@@ -64,21 +69,19 @@ test('auto-approve fires server-side without any subscribed client', async () =>
     assert.equal(plan.autoApproved, true, 'plan_request is annotated with autoApproved');
   } finally {
     delete process.env.FAKE_PLAN_FILE;
-    await ctx.close();
     await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
   }
 });
 
 test('auto_approve_plan WS message round-trips and broadcasts via status', async () => {
   const tmpDir = await seedPlanFile();
-  const ctx = await bootServer({ scenarioPath: SCENARIO });
   try {
-    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'p' });
-    const r = await api(ctx.baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'plan' });
+    await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'plan' });
     const id = r.body.id;
-    await waitFor(() => ctx.instances.get(id).status === 'idle');
+    await waitFor(() => instances.get(id).status === 'idle');
 
-    const c = await wsClient(ctx.wsUrl);
+    const c = await wsClient(wsUrl);
     c.send({ t: 'subscribe', id });
     const snap = await c.wait(m => m.t === 'snapshot');
     assert.equal(snap.autoApprovePlan, false, 'snapshot defaults to false');
@@ -87,7 +90,7 @@ test('auto_approve_plan WS message round-trips and broadcasts via status', async
     await c.wait(m => m.t === 'ack' && m.reqId === 'a1' && m.ok === true);
     const on = await c.wait(m => m.t === 'status' && m.id === id && m.autoApprovePlan === true);
     assert.equal(on.autoApprovePlan, true);
-    assert.equal(ctx.instances.get(id).autoApprovePlan, true);
+    assert.equal(instances.get(id).autoApprovePlan, true);
 
     c.send({ t: 'auto_approve_plan', id, enabled: false, reqId: 'a2' });
     await c.wait(m => m.t === 'ack' && m.reqId === 'a2' && m.ok === true);
@@ -97,30 +100,27 @@ test('auto_approve_plan WS message round-trips and broadcasts via status', async
     await c.close();
   } finally {
     delete process.env.FAKE_PLAN_FILE;
-    await ctx.close();
     await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
   }
 });
 
 test('snapshot carries autoApprovePlan when a fresh client subscribes', async () => {
   const tmpDir = await seedPlanFile();
-  const ctx = await bootServer({ scenarioPath: SCENARIO });
   try {
-    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'p' });
-    const r = await api(ctx.baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'plan' });
+    await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'plan' });
     const id = r.body.id;
-    const inst = ctx.instances.get(id);
+    const inst = instances.get(id);
     await waitFor(() => inst.status === 'idle');
     inst.setAutoApprovePlan(true);
 
-    const c = await wsClient(ctx.wsUrl);
+    const c = await wsClient(wsUrl);
     c.send({ t: 'subscribe', id });
     const snap = await c.wait(m => m.t === 'snapshot');
     assert.equal(snap.autoApprovePlan, true);
     await c.close();
   } finally {
     delete process.env.FAKE_PLAN_FILE;
-    await ctx.close();
     await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
   }
 });
@@ -130,15 +130,14 @@ test('POST /api/instances with autoApprovePlan:true arms the flag before spawn',
   // body so the server sets the flag synchronously before the subprocess
   // emits its first ExitPlanMode — no client-side WS race.
   const tmpDir = await seedPlanFile();
-  const ctx = await bootServer({ scenarioPath: SCENARIO });
   try {
-    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'p' });
-    const r = await api(ctx.baseUrl, 'POST', '/api/instances', {
+    await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
+    const r = await api(baseUrl, 'POST', '/api/instances', {
       project: 'p', mode: 'plan', temp: true, autoApprovePlan: true,
     });
     const id = r.body.id;
     assert.equal(r.body.autoApprovePlan, true, 'summary reflects the flag');
-    const inst = ctx.instances.get(id);
+    const inst = instances.get(id);
     assert.equal(inst.autoApprovePlan, true,
       'flag is set synchronously, not after a WS round-trip');
 
@@ -153,23 +152,17 @@ test('POST /api/instances with autoApprovePlan:true arms the flag before spawn',
     ));
   } finally {
     delete process.env.FAKE_PLAN_FILE;
-    await ctx.close();
     await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
   }
 });
 
 test('POST /api/instances without autoApprovePlan leaves the flag false', async () => {
-  const ctx = await bootServer({ scenarioPath: SCENARIO });
-  try {
-    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'p' });
-    const r = await api(ctx.baseUrl, 'POST', '/api/instances', {
-      project: 'p', mode: 'plan', temp: true,
-    });
-    assert.equal(r.body.autoApprovePlan, false);
-    assert.equal(ctx.instances.get(r.body.id).autoApprovePlan, false);
-  } finally {
-    await ctx.close();
-  }
+  await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
+  const r = await api(baseUrl, 'POST', '/api/instances', {
+    project: 'p', mode: 'plan', temp: true,
+  });
+  assert.equal(r.body.autoApprovePlan, false);
+  assert.equal(instances.get(r.body.id).autoApprovePlan, false);
 });
 
 test('flag does not fire auto-approve when instance is not in plan mode', async () => {
@@ -177,12 +170,13 @@ test('flag does not fire auto-approve when instance is not in plan mode', async 
   // so by the time plan_request would otherwise land, the mode-gating
   // check in _handleStdoutLine sees a non-plan mode and refuses to fire.
   const tmpDir = await seedPlanFile();
-  const ctx = await bootServer({ scenarioPath: SCENARIO_BYPASS_INIT });
+  const prevScenario = process.env.FAKE_CLAUDE_SCENARIO;
+  process.env.FAKE_CLAUDE_SCENARIO = SCENARIO_BYPASS_INIT;
   try {
-    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'p' });
-    const r = await api(ctx.baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions' });
+    await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions' });
     const id = r.body.id;
-    const inst = ctx.instances.get(id);
+    const inst = instances.get(id);
     await waitFor(() => inst.status === 'idle');
     inst.setAutoApprovePlan(true);
 
@@ -199,8 +193,8 @@ test('flag does not fire auto-approve when instance is not in plan mode', async 
     assert.equal(inst.mode, 'bypassPermissions',
       'mode must remain bypassPermissions');
   } finally {
+    process.env.FAKE_CLAUDE_SCENARIO = prevScenario;
     delete process.env.FAKE_PLAN_FILE;
-    await ctx.close();
     await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
   }
 });
