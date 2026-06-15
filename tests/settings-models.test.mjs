@@ -1,9 +1,9 @@
-import { test } from 'node:test';
+import { test, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { bootServer, api } from './helpers.mjs';
+import { bootServer, api, freshProjectsRoot, rmrf } from './helpers.mjs';
 import {
   MODEL_FAMILIES, DEFAULT_VERSIONS, isKnownFamily, isKnownVersion, defaultVersion,
 } from '../src/modelVersions.js';
@@ -35,6 +35,18 @@ async function withEnv(overrides, fn) {
     }
   }
 }
+
+// The REST endpoint tests below share ONE server (booted once here) instead of
+// booting per test. Each test still gets a fresh PROJECTS_ROOT via beforeEach —
+// the appSettings cache keys by settingsPath(), so a new root means every test
+// reads pristine catalog defaults regardless of run order, and a mutating test
+// can't leak settings into the next. The unit tests (mkTmp()+withEnv()) are
+// self-isolating; these hooks only add a harmless extra temp dir for them.
+let ctx, baseUrl, instances, home;
+before(async () => { ctx = await bootServer(); ({ baseUrl, instances } = ctx); });
+after(async () => { await ctx.close(); });
+beforeEach(async () => { ({ home } = await freshProjectsRoot()); });
+afterEach(async () => { await instances.shutdown(); await rmrf(home); });
 
 // ── Catalog ────────────────────────────────────────────────────────────
 test('modelVersions catalog: families, defaults, and validators', () => {
@@ -82,8 +94,7 @@ test('appSettings: models namespace does not clobber transcribe', async () => {
 
 // ── REST endpoints ──────────────────────────────────────────────────────
 test('GET /api/settings/models returns catalog + active defaults', async () => {
-  const { baseUrl, close } = await bootServer();
-  try {
+  {  // shared server (before/after) + fresh PROJECTS_ROOT per test (beforeEach)
     const r = await api(baseUrl, 'GET', '/api/settings/models');
     assert.equal(r.status, 200);
     assert.deepEqual(r.body.families.map(f => f.family), ['fable', 'opus', 'sonnet', 'haiku']);
@@ -92,24 +103,22 @@ test('GET /api/settings/models returns catalog + active defaults', async () => {
     assert.equal(r.body.active.sonnet, 'claude-sonnet-4-6');
     assert.equal(r.body.active.opus, 'claude-opus-4-8');
     assert.equal(r.body.active.haiku, 'claude-haiku-4-5');
-  } finally { await close(); }
+  }
 });
 
 test('POST /api/settings/models switches a family version and persists', async () => {
-  const { baseUrl, close } = await bootServer();
-  try {
+  {  // shared server (before/after) + fresh PROJECTS_ROOT per test (beforeEach)
     const r = await api(baseUrl, 'POST', '/api/settings/models', { family: 'sonnet', version: 'claude-sonnet-4-5' });
     assert.equal(r.status, 200);
     assert.equal(r.body.active.sonnet, 'claude-sonnet-4-5');
     assert.equal(r.body.active.opus, 'claude-opus-4-8'); // untouched
     const g = await api(baseUrl, 'GET', '/api/settings/models');
     assert.equal(g.body.active.sonnet, 'claude-sonnet-4-5');
-  } finally { await close(); }
+  }
 });
 
 test('POST /api/settings/models rejects unknown family + version', async () => {
-  const { baseUrl, close } = await bootServer();
-  try {
+  {  // shared server (before/after) + fresh PROJECTS_ROOT per test (beforeEach)
     const badFamily = await api(baseUrl, 'POST', '/api/settings/models', { family: 'gpt', version: 'claude-opus-4-8' });
     assert.equal(badFamily.status, 400);
     const badVersion = await api(baseUrl, 'POST', '/api/settings/models', { family: 'opus', version: 'nope' });
@@ -117,7 +126,7 @@ test('POST /api/settings/models rejects unknown family + version', async () => {
     // Cross-family version is also rejected.
     const crossFamily = await api(baseUrl, 'POST', '/api/settings/models', { family: 'sonnet', version: 'claude-opus-4-8' });
     assert.equal(crossFamily.status, 400);
-  } finally { await close(); }
+  }
 });
 
 // ── autoStopOnOverage ───────────────────────────────────────────────────
@@ -159,17 +168,15 @@ test('appSettings: autoStopOnOverage does not clobber model versions', async () 
 });
 
 test('GET /api/settings/models includes autoStopOnOverage defaulting false', async () => {
-  const { baseUrl, close } = await bootServer();
-  try {
+  {  // shared server (before/after) + fresh PROJECTS_ROOT per test (beforeEach)
     const r = await api(baseUrl, 'GET', '/api/settings/models');
     assert.equal(r.status, 200);
     assert.equal(r.body.autoStopOnOverage, false);
-  } finally { await close(); }
+  }
 });
 
 test('POST /api/settings/models/prefs toggles autoStopOnOverage and persists', async () => {
-  const { baseUrl, close } = await bootServer();
-  try {
+  {  // shared server (before/after) + fresh PROJECTS_ROOT per test (beforeEach)
     const on = await api(baseUrl, 'POST', '/api/settings/models/prefs', { autoStopOnOverage: true });
     assert.equal(on.status, 200);
     assert.equal(on.body.autoStopOnOverage, true);
@@ -179,16 +186,15 @@ test('POST /api/settings/models/prefs toggles autoStopOnOverage and persists', a
     // Toggle back off.
     const off = await api(baseUrl, 'POST', '/api/settings/models/prefs', { autoStopOnOverage: false });
     assert.equal(off.body.autoStopOnOverage, false);
-  } finally { await close(); }
+  }
 });
 
 test('POST /api/settings/models/prefs ignores unknown keys gracefully', async () => {
-  const { baseUrl, close } = await bootServer();
-  try {
+  {  // shared server (before/after) + fresh PROJECTS_ROOT per test (beforeEach)
     const r = await api(baseUrl, 'POST', '/api/settings/models/prefs', { randomField: 'foo' });
     assert.equal(r.status, 200);
     assert.equal(r.body.autoStopOnOverage, false);
-  } finally { await close(); }
+  }
 });
 
 // ── conductorCompactWindow ──────────────────────────────────────────────
@@ -278,19 +284,17 @@ test('appSettings: setConductorCompactWindow does not clobber autoStopOnOverage 
 });
 
 test('GET /api/settings/models includes conductorCompactWindow defaulting {enabled:false}', async () => {
-  const { baseUrl, close } = await bootServer();
-  try {
+  {  // shared server (before/after) + fresh PROJECTS_ROOT per test (beforeEach)
     const r = await api(baseUrl, 'GET', '/api/settings/models');
     assert.equal(r.status, 200);
     assert.ok('conductorCompactWindow' in r.body, 'conductorCompactWindow must be present');
     assert.equal(r.body.conductorCompactWindow.enabled, false);
     assert.equal(typeof r.body.conductorCompactWindow.value, 'number');
-  } finally { await close(); }
+  }
 });
 
 test('POST /api/settings/models/prefs saves conductorCompactWindow without clobbering autoStopOnOverage', async () => {
-  const { baseUrl, close } = await bootServer();
-  try {
+  {  // shared server (before/after) + fresh PROJECTS_ROOT per test (beforeEach)
     // Enable auto-stop first.
     await api(baseUrl, 'POST', '/api/settings/models/prefs', { autoStopOnOverage: true });
     // Now set compact window.
@@ -305,7 +309,7 @@ test('POST /api/settings/models/prefs saves conductorCompactWindow without clobb
     const g = await api(baseUrl, 'GET', '/api/settings/models');
     assert.equal(g.body.conductorCompactWindow.enabled, true);
     assert.equal(g.body.conductorCompactWindow.value, 400);
-  } finally { await close(); }
+  }
 });
 
 // ── sonnetContextWindow ─────────────────────────────────────────────────
@@ -355,17 +359,15 @@ test('appSettings: setSonnetContextWindow does not clobber other model settings'
 });
 
 test('GET /api/settings/models includes sonnetContextWindow defaulting "1m"', async () => {
-  const { baseUrl, close } = await bootServer();
-  try {
+  {  // shared server (before/after) + fresh PROJECTS_ROOT per test (beforeEach)
     const r = await api(baseUrl, 'GET', '/api/settings/models');
     assert.equal(r.status, 200);
     assert.equal(r.body.sonnetContextWindow, '1m');
-  } finally { await close(); }
+  }
 });
 
 test('POST /api/settings/models/prefs sets sonnetContextWindow to "200k" and persists', async () => {
-  const { baseUrl, close } = await bootServer();
-  try {
+  {  // shared server (before/after) + fresh PROJECTS_ROOT per test (beforeEach)
     const r = await api(baseUrl, 'POST', '/api/settings/models/prefs', { sonnetContextWindow: '200k' });
     assert.equal(r.status, 200);
     assert.equal(r.body.sonnetContextWindow, '200k');
@@ -375,18 +377,17 @@ test('POST /api/settings/models/prefs sets sonnetContextWindow to "200k" and per
     // Toggle back to 1m.
     const r2 = await api(baseUrl, 'POST', '/api/settings/models/prefs', { sonnetContextWindow: '1m' });
     assert.equal(r2.body.sonnetContextWindow, '1m');
-  } finally { await close(); }
+  }
 });
 
 test('POST /api/settings/models/prefs sonnetContextWindow does not clobber autoStopOnOverage', async () => {
-  const { baseUrl, close } = await bootServer();
-  try {
+  {  // shared server (before/after) + fresh PROJECTS_ROOT per test (beforeEach)
     await api(baseUrl, 'POST', '/api/settings/models/prefs', { autoStopOnOverage: true });
     const r = await api(baseUrl, 'POST', '/api/settings/models/prefs', { sonnetContextWindow: '200k' });
     assert.equal(r.status, 200);
     assert.equal(r.body.sonnetContextWindow, '200k');
     assert.equal(r.body.autoStopOnOverage, true, 'autoStopOnOverage must not be clobbered');
-  } finally { await close(); }
+  }
 });
 
 // ── enabledFamilies ─────────────────────────────────────────────────────
@@ -467,17 +468,15 @@ test('appSettings: setFamilyEnabled auto-reassigns default when disabling the de
 });
 
 test('GET /api/settings/models includes enabledFamilies defaulting all-true', async () => {
-  const { baseUrl, close } = await bootServer();
-  try {
+  {  // shared server (before/after) + fresh PROJECTS_ROOT per test (beforeEach)
     const r = await api(baseUrl, 'GET', '/api/settings/models');
     assert.equal(r.status, 200);
     assert.deepEqual(r.body.enabledFamilies, { fable: true, opus: true, sonnet: true, haiku: true });
-  } finally { await close(); }
+  }
 });
 
 test('POST /api/settings/models/prefs with familyEnabled toggles a family and persists', async () => {
-  const { baseUrl, close } = await bootServer();
-  try {
+  {  // shared server (before/after) + fresh PROJECTS_ROOT per test (beforeEach)
     const off = await api(baseUrl, 'POST', '/api/settings/models/prefs', { familyEnabled: { family: 'fable', enabled: false } });
     assert.equal(off.status, 200);
     assert.equal(off.body.enabledFamilies.fable, false);
@@ -485,24 +484,22 @@ test('POST /api/settings/models/prefs with familyEnabled toggles a family and pe
     assert.equal(g.body.enabledFamilies.fable, false);
     const on = await api(baseUrl, 'POST', '/api/settings/models/prefs', { familyEnabled: { family: 'fable', enabled: true } });
     assert.equal(on.body.enabledFamilies.fable, true);
-  } finally { await close(); }
+  }
 });
 
 test('POST /api/settings/models/prefs rejects disabling the last enabled family', async () => {
-  const { baseUrl, close } = await bootServer();
-  try {
+  {  // shared server (before/after) + fresh PROJECTS_ROOT per test (beforeEach)
     await api(baseUrl, 'POST', '/api/settings/models/prefs', { familyEnabled: { family: 'fable', enabled: false } });
     await api(baseUrl, 'POST', '/api/settings/models/prefs', { familyEnabled: { family: 'sonnet', enabled: false } });
     await api(baseUrl, 'POST', '/api/settings/models/prefs', { familyEnabled: { family: 'haiku', enabled: false } });
     // Only opus remains — disabling it must return 4xx.
     const r = await api(baseUrl, 'POST', '/api/settings/models/prefs', { familyEnabled: { family: 'opus', enabled: false } });
     assert.ok(r.status >= 400, `expected 4xx but got ${r.status}`);
-  } finally { await close(); }
+  }
 });
 
 test('POST /api/settings/models/prefs rejects unknown or missing family in familyEnabled', async () => {
-  const { baseUrl, close } = await bootServer();
-  try {
+  {  // shared server (before/after) + fresh PROJECTS_ROOT per test (beforeEach)
     // Unknown family name must be rejected with 400.
     const bad = await api(baseUrl, 'POST', '/api/settings/models/prefs', { familyEnabled: { family: 'gpt', enabled: false } });
     assert.equal(bad.status, 400);
@@ -516,7 +513,7 @@ test('POST /api/settings/models/prefs rejects unknown or missing family in famil
     const ok = await api(baseUrl, 'POST', '/api/settings/models/prefs', { familyEnabled: { family: 'fable', enabled: false } });
     assert.equal(ok.status, 200);
     assert.equal(ok.body.enabledFamilies.fable, false);
-  } finally { await close(); }
+  }
 });
 
 // ── defaultSpawnFamily ──────────────────────────────────────────────────
@@ -545,17 +542,15 @@ test('appSettings: setDefaultSpawnFamily round-trips valid families', async () =
 });
 
 test('GET /api/settings/models includes defaultSpawnFamily defaulting "opus"', async () => {
-  const { baseUrl, close } = await bootServer();
-  try {
+  {  // shared server (before/after) + fresh PROJECTS_ROOT per test (beforeEach)
     const r = await api(baseUrl, 'GET', '/api/settings/models');
     assert.equal(r.status, 200);
     assert.equal(r.body.defaultSpawnFamily, 'opus');
-  } finally { await close(); }
+  }
 });
 
 test('POST /api/settings/models/prefs sets defaultSpawnFamily and persists', async () => {
-  const { baseUrl, close } = await bootServer();
-  try {
+  {  // shared server (before/after) + fresh PROJECTS_ROOT per test (beforeEach)
     const r = await api(baseUrl, 'POST', '/api/settings/models/prefs', { defaultSpawnFamily: 'fable' });
     assert.equal(r.status, 200);
     assert.equal(r.body.defaultSpawnFamily, 'fable');
@@ -564,5 +559,5 @@ test('POST /api/settings/models/prefs sets defaultSpawnFamily and persists', asy
     // Reset.
     const r2 = await api(baseUrl, 'POST', '/api/settings/models/prefs', { defaultSpawnFamily: 'opus' });
     assert.equal(r2.body.defaultSpawnFamily, 'opus');
-  } finally { await close(); }
+  }
 });

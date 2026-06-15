@@ -1,9 +1,9 @@
-import { test } from 'node:test';
+import { test, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { bootServer, api, waitFor } from './helpers.mjs';
+import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
 import { encodeCwd, orchStoreRoot } from '../src/projects.js';
 import {
   pendingTempCleanupPath,
@@ -14,6 +14,19 @@ import { loadAllArchived, isArchived } from '../src/archivedSessions.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-basic.json');
+
+// One server shared across the file; each test gets a fresh PROJECTS_ROOT (so
+// archived-sessions / temp sidecars start empty) and spawned instances are
+// cleared between tests. Tests use the per-test `claudeProjectsRoot` var set in
+// beforeEach when planting jsonl, NOT the boot-time root.
+let ctx, baseUrl, instances, claudeProjectsRoot, home;
+before(async () => {
+  ctx = await bootServer({ scenarioPath: SCENARIO });
+  ({ baseUrl, instances } = ctx);
+});
+after(async () => { await ctx.close(); });
+beforeEach(async () => { ({ home, claudeProjectsRoot } = await freshProjectsRoot()); });
+afterEach(async () => { await instances.shutdown(); await rmrf(home); });
 
 // Helper: materialise a fake .jsonl for an instance (fake-claude doesn't write
 // to ~/.claude/projects, so we do it ourselves to test the archive path).
@@ -26,8 +39,7 @@ async function materializeJsonl(claudeProjectsRoot, inst, content = '{"type":"us
 }
 
 test('killing a temp instance archives the session — .jsonl kept, archived flag set', async () => {
-  const { baseUrl, instances, claudeProjectsRoot, close } = await bootServer({ scenarioPath: SCENARIO });
-  try {
+  {
     await api(baseUrl, 'POST', '/api/projects', { name: 'archivetest' });
 
     const res = await api(baseUrl, 'POST', '/api/instances', { project: 'archivetest', temp: true });
@@ -53,12 +65,11 @@ test('killing a temp instance archives the session — .jsonl kept, archived fla
     // temp-sessions.json must NOT contain it any more.
     const { loadAllTemps } = await import('../src/tempSessions.js');
     assert.equal((await loadAllTemps()).has(sid), false);
-  } finally { await close(); }
+  }
 });
 
 test('archived session appears in list_sessions with archived:true, excluded from summarizeSessions count', async () => {
-  const { baseUrl, instances, claudeProjectsRoot, close } = await bootServer({ scenarioPath: SCENARIO });
-  try {
+  {
     await api(baseUrl, 'POST', '/api/projects', { name: 'archivelist' });
 
     const res = await api(baseUrl, 'POST', '/api/instances', { project: 'archivelist', temp: true });
@@ -89,12 +100,11 @@ test('archived session appears in list_sessions with archived:true, excluded fro
     assert.equal(proj.sessions?.count ?? 0, 0, 'archived session must not count toward summary');
     // archivedCount should be 1 so the sidebar still shows the node.
     assert.equal(proj.sessions?.archivedCount ?? 0, 1, 'archivedCount should be 1');
-  } finally { await close(); }
+  }
 });
 
 test('restore endpoint unmarks archived and session reappears as normal', async () => {
-  const { baseUrl, instances, claudeProjectsRoot, close } = await bootServer({ scenarioPath: SCENARIO });
-  try {
+  {
     await api(baseUrl, 'POST', '/api/projects', { name: 'archiverestore' });
 
     const res = await api(baseUrl, 'POST', '/api/instances', { project: 'archiverestore', temp: true });
@@ -119,12 +129,11 @@ test('restore endpoint unmarks archived and session reappears as normal', async 
     const found = listRes.body.find(s => s.sessionId === sid);
     assert.ok(found, 'session should still exist after restore');
     assert.equal(found.archived, false, 'archived flag should be false after restore');
-  } finally { await close(); }
+  }
 });
 
 test('killing a non-temp instance does NOT archive it', async () => {
-  const { baseUrl, instances, claudeProjectsRoot, close } = await bootServer({ scenarioPath: SCENARIO });
-  try {
+  {
     await api(baseUrl, 'POST', '/api/projects', { name: 'archivenotemp' });
 
     const res = await api(baseUrl, 'POST', '/api/instances', { project: 'archivenotemp', temp: false });
@@ -140,12 +149,11 @@ test('killing a non-temp instance does NOT archive it', async () => {
     await new Promise(r => setTimeout(r, 100));
 
     assert.equal(await isArchived(sid), false, 'non-temp session must NOT be archived on kill');
-  } finally { await close(); }
+  }
 });
 
 test('MCP kill_instance archives temp session', async () => {
-  const { baseUrl, instances, claudeProjectsRoot, close } = await bootServer({ scenarioPath: SCENARIO });
-  try {
+  {
     await api(baseUrl, 'POST', '/api/projects', { name: 'archivemcp' });
 
     const res = await api(baseUrl, 'POST', '/api/instances', { project: 'archivemcp', temp: true });
@@ -163,12 +171,11 @@ test('MCP kill_instance archives temp session', async () => {
     await fs.access(jsonlFile);
     await waitFor(async () => (await isArchived(sid)));
     assert.equal(await isArchived(sid), true);
-  } finally { await close(); }
+  }
 });
 
 test('shutdownTempSync archives temp sessions — .jsonl kept, manifest carries action:archive', async () => {
-  const { baseUrl, instances, claudeProjectsRoot, close } = await bootServer({ scenarioPath: SCENARIO });
-  try {
+  {
     await api(baseUrl, 'POST', '/api/projects', { name: 'archivesync' });
 
     const res = await api(baseUrl, 'POST', '/api/instances', { project: 'archivesync', temp: true });
@@ -190,12 +197,11 @@ test('shutdownTempSync archives temp sessions — .jsonl kept, manifest carries 
     await fs.access(jsonlFile);
     // Subagent dir is still cleaned up.
     await assert.rejects(() => fs.access(subagentsDir), 'subagent dir must be removed');
-  } finally { await close(); }
+  }
 });
 
 test('sweepPendingTempCleanup with action:archive keeps .jsonl and marks archived', async () => {
-  const { claudeProjectsRoot, close } = await bootServer({ scenarioPath: SCENARIO });
-  try {
+  {
     const cwd = '/tmp/cc-archive-sweep-' + Math.random().toString(36).slice(2);
     const sid = 'aaaaaaaa-bbbb-cccc-dddd-ffffffffffff';
     const dir = path.join(claudeProjectsRoot, encodeCwd(cwd));
@@ -225,12 +231,11 @@ test('sweepPendingTempCleanup with action:archive keeps .jsonl and marks archive
     await assert.rejects(() => fs.access(subagentsDir), 'subagent dir swept');
     // Manifest removed.
     await assert.rejects(() => fs.access(manifest), 'manifest removed after sweep');
-  } finally { await close(); }
+  }
 });
 
 test('sweepPendingTempCleanup with no action (legacy) now archives instead of deleting', async () => {
-  const { claudeProjectsRoot, close } = await bootServer({ scenarioPath: SCENARIO });
-  try {
+  {
     const cwd = '/tmp/cc-legacy-sweep-' + Math.random().toString(36).slice(2);
     const sid = 'bbbbbbbb-cccc-dddd-eeee-000000000000';
     const dir = path.join(claudeProjectsRoot, encodeCwd(cwd));
@@ -256,12 +261,11 @@ test('sweepPendingTempCleanup with no action (legacy) now archives instead of de
     await assert.rejects(() => fs.access(subagentsDir), 'subagent dir swept');
     await waitFor(async () => (await isArchived(sid)));
     assert.equal(await isArchived(sid), true);
-  } finally { await close(); }
+  }
 });
 
 test('restore endpoint with missing .jsonl degrades gracefully (idempotent unmark)', async () => {
-  const { baseUrl, close } = await bootServer({ scenarioPath: SCENARIO });
-  try {
+  {
     await api(baseUrl, 'POST', '/api/projects', { name: 'archiveghost' });
 
     // Manually mark a session as archived without a .jsonl file.
@@ -275,5 +279,5 @@ test('restore endpoint with missing .jsonl degrades gracefully (idempotent unmar
     assert.equal(restoreRes.status, 200);
     assert.equal(restoreRes.body.ok, true);
     assert.equal(await isArchived(ghostSid), false);
-  } finally { await close(); }
+  }
 });

@@ -4,16 +4,33 @@
 // giant-turn degenerate case (gap, never duplication), cursor termination,
 // forward (`after`) mode, limit clamping, and error statuses.
 
-import { test } from 'node:test';
+import { test, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { bootServer, api, waitFor } from './helpers.mjs';
+import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
 import { encodeCwd } from '../src/projects.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-resume.json');
+const SCENARIO_INSTANCE = path.join(__dirname, 'fixtures', 'scenario-instance.json');
+
+// One server shared across the file. Each test gets a fresh PROJECTS_ROOT;
+// rather than re-thread it through every helper, we mutate ctx.projectsRoot /
+// ctx.claudeProjectsRoot in beforeEach so existing `ctx.*` references resolve to
+// the per-test roots (ctx.baseUrl / ctx.instances stay stable). Spawned
+// instances are cleared between tests. See helpers → freshProjectsRoot.
+let ctx, home;
+before(async () => { ctx = await bootServer({ scenarioPath: SCENARIO }); });
+after(async () => { await ctx.close(); });
+beforeEach(async () => {
+  const r = await freshProjectsRoot();
+  home = r.home;
+  ctx.projectsRoot = r.projectsRoot;
+  ctx.claudeProjectsRoot = r.claudeProjectsRoot;
+});
+afterEach(async () => { await ctx.instances.shutdown(); await rmrf(home); });
 
 async function seedSession({ ctx, projectName, sid, lines }) {
   await api(ctx.baseUrl, 'POST', '/api/projects', { name: projectName });
@@ -67,8 +84,7 @@ async function pageAll(ctx, id, { limit = 10 } = {}) {
 }
 
 test('untrimmed ring: backward pages reproduce the full ring, cursor terminates', async () => {
-  const ctx = await bootServer({ scenarioPath: SCENARIO });
-  try {
+  {
     const sid = 'aaaaaaaa-2222-3333-4444-555555555555';
     const id = await bootResumed({ ctx, projectName: 'pageable', sid, lines: turnLines(4) });
 
@@ -78,13 +94,12 @@ test('untrimmed ring: backward pages reproduce the full ring, cursor terminates'
     assert.deepEqual(all.map(e => e._seq), ring.map(e => e._seq), 'pages cover the ring exactly');
     // Oldest-first within and across pages.
     for (let i = 1; i < all.length; i++) assert.ok(all[i]._seq > all[i - 1]._seq);
-  } finally { await ctx.close(); }
+  }
 });
 
 test('trimmed ring: archive fallback yields no overlap and no gap at prompt granularity', async () => {
   const prevCap = process.env.ORCH_EVENT_RING_CAP;
   process.env.ORCH_EVENT_RING_CAP = '10';
-  const ctx = await bootServer({ scenarioPath: SCENARIO });
   try {
     const sid = 'bbbbbbbb-2222-3333-4444-555555555555';
     const id = await bootResumed({ ctx, projectName: 'archived', sid, lines: turnLines(12) });
@@ -106,9 +121,7 @@ test('trimmed ring: archive fallback yields no overlap and no gap at prompt gran
     for (const e of all.filter(e => e.kind === 'user_echo')) {
       assert.ok(Number.isInteger(e.userIndex));
     }
-  } finally {
-    await ctx.close();
-    if (prevCap === undefined) delete process.env.ORCH_EVENT_RING_CAP;
+  } finally {    if (prevCap === undefined) delete process.env.ORCH_EVENT_RING_CAP;
     else process.env.ORCH_EVENT_RING_CAP = prevCap;
   }
 });
@@ -116,7 +129,6 @@ test('trimmed ring: archive fallback yields no overlap and no gap at prompt gran
 test('giant single turn: paging produces a gap, never duplication', async () => {
   const prevCap = process.env.ORCH_EVENT_RING_CAP;
   process.env.ORCH_EVENT_RING_CAP = '10';
-  const ctx = await bootServer({ scenarioPath: SCENARIO });
   try {
     const sid = 'cccccccc-2222-3333-4444-555555555555';
     // One prompt, then a single assistant message with 40 text blocks —
@@ -143,9 +155,7 @@ test('giant single turn: paging produces a gap, never duplication', async () => 
     assert.ok(texts.length < 40, 'gap exists (partial turn was evicted, not reconstructed)');
     // The retained tail is intact through to the newest event.
     assert.ok(texts.includes('block 39'));
-  } finally {
-    await ctx.close();
-    if (prevCap === undefined) delete process.env.ORCH_EVENT_RING_CAP;
+  } finally {    if (prevCap === undefined) delete process.env.ORCH_EVENT_RING_CAP;
     else process.env.ORCH_EVENT_RING_CAP = prevCap;
   }
 });
@@ -153,7 +163,11 @@ test('giant single turn: paging produces a gap, never duplication', async () => 
 test('trimmed ring without a jsonl (nothing to replay): cursor terminates cleanly', async () => {
   const prevCap = process.env.ORCH_EVENT_RING_CAP;
   process.env.ORCH_EVENT_RING_CAP = '10';
-  const ctx = await bootServer({ scenarioPath: path.join(__dirname, 'fixtures', 'scenario-instance.json') });
+  // This case needs the scenario-instance fixture (fake-claude writes no jsonl);
+  // the shared server booted with scenario-resume, so swap the env for this
+  // spawn — the subprocess reads FAKE_CLAUDE_SCENARIO live at spawn time.
+  const prevScenario = process.env.FAKE_CLAUDE_SCENARIO;
+  process.env.FAKE_CLAUDE_SCENARIO = SCENARIO_INSTANCE;
   try {
     await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'nojsonl' });
     const r = await api(ctx.baseUrl, 'POST', '/api/instances', { project: 'nojsonl', mode: 'bypassPermissions' });
@@ -171,15 +185,14 @@ test('trimmed ring without a jsonl (nothing to replay): cursor terminates cleanl
     // Only the retained ring could be served.
     assert.equal(all[0]._seq, inst.ring.trimmedBefore);
   } finally {
-    await ctx.close();
+    process.env.FAKE_CLAUDE_SCENARIO = prevScenario;
     if (prevCap === undefined) delete process.env.ORCH_EVENT_RING_CAP;
     else process.env.ORCH_EVENT_RING_CAP = prevCap;
   }
 });
 
 test('after= pages forward, mirroring sinceSeq semantics', async () => {
-  const ctx = await bootServer({ scenarioPath: SCENARIO });
-  try {
+  {
     const sid = 'dddddddd-2222-3333-4444-555555555555';
     const id = await bootResumed({ ctx, projectName: 'forward', sid, lines: turnLines(4) });
     const ring = ctx.instances.get(id).ringSnapshot();
@@ -193,7 +206,7 @@ test('after= pages forward, mirroring sinceSeq semantics', async () => {
     const r2 = await api(ctx.baseUrl, 'GET', `/api/instances/${id}/events?after=${lastSeq}&limit=3`);
     assert.deepEqual(r2.body.events, []);
     assert.equal(r2.body.hasMore, false);
-  } finally { await ctx.close(); }
+  }
 });
 
 // Returns each backward page as its own array (not flattened).
@@ -231,8 +244,7 @@ function assertGroupIntegrity(events, label = '') {
 }
 
 test('group integrity: backward paging never splits a sub-agent tool-call group across page boundaries', async () => {
-  const ctx = await bootServer({ scenarioPath: SCENARIO });
-  try {
+  {
     await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'grouppage' });
     const r = await api(ctx.baseUrl, 'POST', '/api/instances', { project: 'grouppage', mode: 'bypassPermissions' });
     assert.equal(r.status, 201);
@@ -257,13 +269,12 @@ test('group integrity: backward paging never splits a sub-agent tool-call group 
     for (let p = 0; p < pages.length; p++) {
       assertGroupIntegrity(pages[p], `page[${p}] `);
     }
-  } finally { await ctx.close(); }
+  }
 });
 
 test('group integrity: snapshotTail never includes orphaned sub-agent children', async () => {
   const prevTail = process.env.ORCH_SNAPSHOT_TAIL;
   process.env.ORCH_SNAPSHOT_TAIL = '8';
-  const ctx = await bootServer({ scenarioPath: SCENARIO });
   try {
     await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'groupsnap' });
     const r = await api(ctx.baseUrl, 'POST', '/api/instances', { project: 'groupsnap', mode: 'bypassPermissions' });
@@ -287,16 +298,13 @@ test('group integrity: snapshotTail never includes orphaned sub-agent children',
     const snap = inst.snapshotTail();
     assert.ok(snap.length > 0, 'snapshot is non-empty');
     assertGroupIntegrity(snap, 'snapshot ');
-  } finally {
-    await ctx.close();
-    if (prevTail === undefined) delete process.env.ORCH_SNAPSHOT_TAIL;
+  } finally {    if (prevTail === undefined) delete process.env.ORCH_SNAPSHOT_TAIL;
     else process.env.ORCH_SNAPSHOT_TAIL = prevTail;
   }
 });
 
 test('limit is clamped; bad params 400; unknown instance 404', async () => {
-  const ctx = await bootServer({ scenarioPath: SCENARIO });
-  try {
+  {
     const sid = 'eeeeeeee-2222-3333-4444-555555555555';
     const id = await bootResumed({ ctx, projectName: 'clampy', sid, lines: turnLines(2) });
 
@@ -310,5 +318,5 @@ test('limit is clamped; bad params 400; unknown instance 404', async () => {
 
     const missing = await api(ctx.baseUrl, 'GET', `/api/instances/nope/events`);
     assert.equal(missing.status, 404);
-  } finally { await ctx.close(); }
+  }
 });
