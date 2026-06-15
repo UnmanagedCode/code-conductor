@@ -164,7 +164,7 @@ test('MCP kill_instance archives temp session', async () => {
 
     // Use the MCP kill_instance handler directly (same code path as the tool).
     const { killInstance } = await import('../src/mcp/handlers.js');
-    await killInstance({ id: inst.id }, { instances });
+    await killInstance({ sessionId: inst.sessionId }, { instances });
     await waitFor(() => !instances.get(inst.id));
 
     // .jsonl must still exist.
