@@ -38,7 +38,7 @@ export function prependTranscribedTag(text, hasTranscript) {
   return `<transcribed>\n${text}`;
 }
 
-export function attachComposer({ form, textarea, sendBtn, attachBtn, fileInput, chipsContainer, onSubmit }) {
+export function attachComposer({ form, textarea, sendBtn, attachBtn, fileInput, chipsContainer, onSubmit, onResize }) {
   // Pending attachments, in the order the user added them. Each entry:
   //   { id, name, size, mediaType, isImage, dataBase64, objectUrl, error }
   const pending = [];
@@ -118,6 +118,7 @@ export function attachComposer({ form, textarea, sendBtn, attachBtn, fileInput, 
     const capped = textarea.scrollHeight > 240;
     textarea.style.overflowY = capped ? 'auto' : 'hidden';
     textarea.style.height = Math.min(textarea.scrollHeight, 240) + 'px';
+    if (onResize) onResize();
   }
 
   textarea.addEventListener('input', updateButton);

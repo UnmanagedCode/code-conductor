@@ -432,6 +432,7 @@ const composer = attachComposer({
     if (Array.isArray(attachments) && attachments.length) payload.attachments = attachments;
     send('prompt', payload);
   },
+  onResize: () => conversation._maybeScroll(),
 });
 
 // Enable the Send button's hold-to-record mic affordance only when the
