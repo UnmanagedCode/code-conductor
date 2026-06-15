@@ -635,3 +635,69 @@ test('Regular (non-temp) session rows do NOT show the promote button', async () 
   const promoteBtn = root.querySelector('.session-promote');
   assert.equal(promoteBtn, null, 'no promote button on non-temp rows');
 });
+
+// Regression: after a host crash + restart, sessions are re-discovered from
+// disk with NO live instance. The durable temp/conducted flags (from
+// temp-sessions.json / conducted-sessions.json, surfaced by listSessionsForCwd
+// as `temp` / `conducted`) must still drive the sidebar grouping — previously
+// the temp grouping keyed off the live-only `instanceTemp` and dropped exited
+// temp sessions into the normal group until they were resumed.
+
+test('Re-discovered temp session with NO live instance groups under — temp —', async () => {
+  const now = Date.now();
+  const { root, sidebar } = await setupSidebar({
+    onLoadSessions: async () => [
+      { sessionId: 'sid-normal', firstPrompt: 'normal', temp: false, mtime: now - 30_000, size: 10 },
+      { sessionId: 'sid-temp', firstPrompt: 'a temp one', temp: true, mtime: now - 60_000, size: 10 },
+    ],
+  });
+  sidebar.setProjects([{
+    name: 'demo', path: '/p/demo', instanceIds: [], isGitRepo: false, worktrees: [],
+    sessions: { count: 2, lastMtime: now - 30_000 },
+  }]);
+  sidebar.setInstances([]); // no live instances — the post-restart state
+  await new Promise(r => setTimeout(r, 0));
+
+  const sep = [...root.querySelectorAll('.sessions-separator')].find(n => n.textContent === '— temp —');
+  assert.ok(sep, 'a — temp — separator must render for the durable temp session');
+
+  const tempRow = [...root.querySelectorAll('.session-row')].find(r => r.classList.contains('temp'));
+  assert.ok(tempRow, 'the exited temp session row carries the .temp class from the durable flag');
+  // It must sit AFTER the temp separator (i.e. in the temp group, not normal).
+  const items = [...root.querySelectorAll('.sessions-list > li')];
+  const sepIdx = items.indexOf(sep.closest('li'));
+  const tempIdx = items.indexOf(tempRow.closest('li'));
+  assert.ok(sepIdx >= 0 && tempIdx > sepIdx, 'temp row is grouped under the — temp — separator');
+  // The non-temp row stays out of the temp group (no .temp class).
+  const normalRow = [...root.querySelectorAll('.session-row')].find(r => !r.classList.contains('temp'));
+  assert.ok(normalRow, 'the non-temp session row is rendered without the .temp class');
+});
+
+// (The conducted-from-disk path is already covered by the existing
+// "On-disk conducted metadata (no live instance) still groups under
+// — conducted —" test above — conducted grouping keys off the durable
+// `conducted` flag and was never affected by this bug.)
+
+test('A just-promoted live session (inst.temp=false) overrides a stale on-disk temp:true', async () => {
+  const now = Date.now();
+  const { root, sidebar } = await setupSidebar({
+    onLoadSessions: async () => [
+      // Disk sidecar not yet unmarked — listSessionsForCwd still reports temp:true.
+      { sessionId: 'sid-promoted', firstPrompt: 'promoted', temp: true, mtime: now - 60_000, size: 10 },
+    ],
+  });
+  sidebar.setProjects([{
+    name: 'demo', path: '/p/demo', instanceIds: [], isGitRepo: false, worktrees: [],
+    sessions: { count: 1, lastMtime: now - 60_000 },
+  }]);
+  // Live instance reports temp:false (the authoritative just-promoted state).
+  sidebar.setInstances([
+    { id: 'inst-p', project: 'demo', sessionId: 'sid-promoted', status: 'idle', mode: 'plan', worktree: null, temp: false },
+  ]);
+  await new Promise(r => setTimeout(r, 0));
+
+  const tempSep = [...root.querySelectorAll('.sessions-separator')].find(n => n.textContent === '— temp —');
+  assert.equal(tempSep, undefined, 'no — temp — separator: the live temp:false overrides the stale on-disk temp:true');
+  const row = root.querySelector('.session-row');
+  assert.ok(row && !row.classList.contains('temp'), 'the promoted row is not styled as temp');
+});

@@ -24,7 +24,12 @@ function formatAgo(ms) {
 // disk yet (e.g. a freshly-spawned instance before its first turn) are
 // added as synthetic "fresh" entries at the top.
 function mergeLive(onDisk, liveInstances) {
-  const byId = new Map((onDisk ?? []).map(s => [s.sessionId, { ...s }]));
+  // Seed instanceTemp from the durable on-disk `temp` flag (set by
+  // listSessionsForCwd from temp-sessions.json) so an exited/re-discovered
+  // temp session classifies correctly even with no live instance. The live
+  // overlay below overrides this with the authoritative inst.temp when an
+  // instance exists (so a just-promoted session de-temps immediately).
+  const byId = new Map((onDisk ?? []).map(s => [s.sessionId, { ...s, instanceTemp: !!s.temp }]));
   for (const inst of liveInstances) {
     if (!inst.sessionId) continue;
     if (byId.has(inst.sessionId)) {
