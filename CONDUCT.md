@@ -47,12 +47,12 @@ Everything below builds on this pattern.
 - `list_instances` (live / recently-exited instances) · `list_sessions({project, worktree?})` (persisted sessions) · `list_worktrees({project})` (orchestrator-owned worktrees) · `locate_session({sessionId})` (which project/worktree owns a sessionId).
 - `project_status({project, worktree?, logLimit?})` — branch, HEAD, dirty lines, recent commits, diff-stat vs base for worktrees.
 - `read_file({project, worktree?, relativePath, maxBytes?})` — path-traversal-guarded file read.
-- `get_worktree_diff({project, worktreeName, baseRef?, contextLines?})` — full unified diff of `<base>...HEAD`, capped at 200 KB.
+- `get_worktree_diff({project, worktree, baseRef?, contextLines?})` — full unified diff of `<base>...HEAD`, capped at 200 KB.
 
 **Spawn workers**
-- `spawn_instance({project, mode, model, worktree, temp?, effort?, thinking?, resume?, ...})` — returns `{id, sessionId, ...}`. Prefer `worktree: true` for any worker that will modify code (fresh git worktree off HEAD — isolated change, clean merge target). Defaults to `temp:true` (disposable) but mode still defaults to `plan`, so workers plan before acting; explicit `temp:false`/`mode` override. `effort` (`low`…`max`, default `high`) and `thinking` (`adaptive`/`enabled`/`disabled`, default `adaptive`) are spawn-time only. **Footgun:** `resume` without an explicit `mode` defaults to `bypassPermissions`, not `plan` — always pass `mode` when resuming.
+- `spawn_instance({project, mode, model, worktree, createWorktree, temp?, effort?, thinking?, resume?, ...})` — returns `{id, sessionId, ...}`. Prefer `createWorktree: true` for any worker that will modify code (fresh git worktree off HEAD — isolated change, clean merge target); pass `worktree: "<name>"` to attach to an existing one. Defaults to `temp:true` (disposable) but mode still defaults to `plan`, so workers plan before acting; explicit `temp:false`/`mode` override. `effort` (`low`…`max`, default `high`) and `thinking` (`adaptive`/`enabled`/`disabled`, default `adaptive`) are spawn-time only. **Footgun:** `resume` without an explicit `mode` defaults to `bypassPermissions`, not `plan` — always pass `mode` when resuming.
 - `create_project({name, gitInit?})` — greenfield work. Validates `^[a-zA-Z0-9._-]+$`, refuses dot-prefixed names.
-- `create_worktree({project})` — worktree without a spawn (rare; usually you want `spawn_instance({worktree:true})`).
+- `create_worktree({project})` — worktree without a spawn (rare; usually you want `spawn_instance({createWorktree:true})`).
 
 **Organise the sidebar** — when spawning several related workers, group them in a workspace so the human can collapse the chunk when done.
 - `list_workspaces()` → `[{name, projectCount}]` · `create_workspace({name})` — registers a workspace (idempotent; appears before any project joins).
@@ -69,18 +69,18 @@ Everything below builds on this pattern.
 **Parallel dispatch is the default for multi-worker work.** You can emit several `tool_use` blocks in one assistant turn — the CLI dispatches them concurrently. To kick off N workers: N `send_prompt({wait:false})` **plus** N `subscribe_to_idle({targetId})` in one turn, then end your turn; the orchestrator wakes you **once per worker** as each `turn_end` arrives. Because wakes arrive one at a time, **track which worker ids are still outstanding** — tick them off per wake, and resubscribe for any worker with a turn still coming (plan → implementation). Read-only / land calls (`get_recent_messages`, `project_status`, `approve_plan`, `reject_plan`, `sync_worktree`, `merge_worktree`) return immediately and can also be fanned across distinct ids in one turn. Caveat: **never issue two prompts to the same worker id in one turn** — overlapping prompts corrupt that instance's stdin stream; fan across *different* ids only. (Distinct from a single mid-turn steer, which is fine — the race is *simultaneous* prompts to one id.)
 
 **Plan handling**
-- `approve_plan({instanceId, feedback?})` — flips mode to `bypassPermissions` and sends the approval prompt; use it rather than hand-rolling `set_mode` + `send_prompt`.
-- `reject_plan({instanceId, feedback})` — keeps the worker in `plan` mode, asks it to revise.
-- `set_auto_approve_plan({instanceId, enabled})` — the worker's next `plan_request` auto-approves server-side (mode flip + approval prompt). For "fire N workers and let them roll".
+- `approve_plan({id, feedback?})` — flips mode to `bypassPermissions` and sends the approval prompt; use it rather than hand-rolling `set_mode` + `send_prompt`.
+- `reject_plan({id, feedback})` — keeps the worker in `plan` mode, asks it to revise.
+- `set_auto_approve_plan({id, enabled})` — the worker's next `plan_request` auto-approves server-side (mode flip + approval prompt). For "fire N workers and let them roll".
 
 **Inspect work**
 - `get_transcript({id, sinceSeq?, limit?})` — UI event ring; poll with `sinceSeq = lastSeqIveSeen` for incremental reads.
 - `get_recent_messages({id, count?})` — last N assistant messages, joined strings + structured blocks (default 1, max 50). Cheap — use for "what did the worker just say?".
 
 **Land work**
-- `sync_worktree({instanceId})` — server-side fast-forward when possible, else sends a templated rebase prompt to the worker. Returns `{action: 'already-in-sync' | 'fast-forwarded' | 'rebase-prompt-sent' | …}`.
-- `merge_worktree({instanceId})` or `merge_worktree({project, worktreeName})` — `git merge --no-ff --no-edit` on the parent; the second form merges after the worker is gone. Refuses if behind base — `sync_worktree` first.
-- `delete_worktree({project, worktreeName, force?})` — remove the worktree.
+- `sync_worktree({id})` — server-side fast-forward when possible, else sends a templated rebase prompt to the worker. Returns `{action: 'already-in-sync' | 'fast-forwarded' | 'rebase-prompt-sent' | …}`; expected refusals come back as `{ok:false, reason, code}` (e.g. `INSTANCE_NOT_RUNNING`), never thrown.
+- `merge_worktree({id})` or `merge_worktree({project, worktree})` — `git merge --no-ff --no-edit` on the parent; the second form merges after the worker is gone. Success is `{ok:true, newSha}`; a refusal is `{ok:false, reason, code}` (`WORKTREE_BEHIND` → `sync_worktree` first; also `BASE_BRANCH_MISMATCH`/`PARENT_DIRTY`/`MERGE_FAILED`).
+- `delete_worktree({project, worktree, force?})` — remove the worktree. Returns `{project, worktree}` on success; soft-refuses (not thrown) with `{ok:false, reason, code:'WORKTREE_ATTACHED'|'WORKTREE_DIRTY'}` unless `force:true`.
 
 ## When the user's intent is unclear
 
@@ -101,14 +101,14 @@ If there is any doubt which project, scope, or goal the user means, call `list_p
 For a typical "implement feature X in project Y":
 
 1. **Recon** — `list_projects()`; `project_status({project: 'Y'})`; `read_file` as needed.
-2. **Spawn in plan mode, fresh worktree** — `spawn_instance({project: 'Y', mode: 'plan', worktree: true, model: 'sonnet'})`; capture the returned `id`.
+2. **Spawn in plan mode, fresh worktree** — `spawn_instance({project: 'Y', mode: 'plan', createWorktree: true, model: 'sonnet'})`; capture the returned `id`.
 3. **Brief** — `send_prompt({id, text: "<scoped goal + constraints + completion sentinel>", wait: false})` + `subscribe_to_idle({targetId: id})`, end your turn (dispatch-and-wake — see Core rule).
 4. **[Wake] Read the plan** — `get_recent_messages({id})`.
-5. **Decide** — **Approve**: `approve_plan({instanceId: id})` (optional `feedback`) — starts the implementation turn: resubscribe + end turn. **Revise**: `reject_plan({instanceId: id, feedback})` — also a worker turn: resubscribe + end turn, loop to step 4 on the next wake. **Abandon**: `unsubscribe_from_idle({targetId: id})`; `kill_instance({id})`; `delete_worktree(...)`.
+5. **Decide** — **Approve**: `approve_plan({id})` (optional `feedback`) — starts the implementation turn: resubscribe + end turn. **Revise**: `reject_plan({id, feedback})` — also a worker turn: resubscribe + end turn, loop to step 4 on the next wake. **Abandon**: `unsubscribe_from_idle({targetId: id})`; `kill_instance({id})`; `delete_worktree(...)`.
 6. **[Wake] Implementation done** — the worker flipped to `bypassPermissions` and finished its turn. Confirm via `get_recent_messages({id})`: check the completion sentinel; if it's mid-multi-turn, resubscribe + end turn.
 7. **Review** — `project_status({project: 'Y', worktree: '<wtName>'})` for the summary, `get_worktree_diff(...)` for the full diff, `read_file(...)` for specifics — immediate calls, no subscribe.
-8. **Land** — merge only once the feature is complete: if strongly-related (same-files) work remains, send it to the worker **first** so it all lands as one branch. Then `sync_worktree({instanceId: id})` (`rebase-prompt-sent` is a worker turn — subscribe + end turn, resume on wake; FF'd / already-in-sync — continue straight on) and `merge_worktree({instanceId: id})`.
-9. **Clean up** — *once the merge succeeds* it's terminal: `delete_worktree({project, worktreeName})` + `kill_instance({id})`. A refused/conflicted merge isn't done — keep the worker, `sync_worktree`, retry. Follow-ups arriving *after* a successful merge get a fresh worktree (see "Worker lifecycle").
+8. **Land** — merge only once the feature is complete: if strongly-related (same-files) work remains, send it to the worker **first** so it all lands as one branch. Then `sync_worktree({id})` (`rebase-prompt-sent` is a worker turn — subscribe + end turn, resume on wake; FF'd / already-in-sync — continue straight on) and `merge_worktree({id})`.
+9. **Clean up** — *once the merge succeeds* it's terminal: `delete_worktree({project, worktree})` + `kill_instance({id})`. A refused/conflicted merge isn't done — keep the worker, `sync_worktree`, retry. Follow-ups arriving *after* a successful merge get a fresh worktree (see "Worker lifecycle").
 
 ### N independent tasks (parallel)
 
@@ -116,10 +116,10 @@ Several independent tasks — or one that splits into independent sub-tasks (dif
 
 1. **Recon** — one turn: `list_projects()` plus parallel `project_status` / `read_file` for every project you'll touch.
 2. **Spawn N workers** — one turn, N `spawn_instance` tool_uses (each `mode: 'plan'`, own fresh worktree); capture the ids.
-3. **(Optional) Arm auto-approve** — if you trust the planning step for this batch, N `set_auto_approve_plan({instanceId, enabled: true})` calls (note step 5's caveat).
+3. **(Optional) Arm auto-approve** — if you trust the planning step for this batch, N `set_auto_approve_plan({id, enabled: true})` calls (note step 5's caveat).
 4. **Brief all + subscribe all** — one turn: N `send_prompt({id, text, wait: false})` **and** N `subscribe_to_idle({targetId: id})`, then end the turn. **[Wake, per worker]** read the plan + decide as in Single-worker steps 4–5, resubscribing on approve/reject (skipped if step 3 armed auto-approve).
 5. **[Wake, per worker] Implementation done** — confirm the sentinel via `get_recent_messages({id})`; if still mid-turn, resubscribe + end turn. **Auto-approve caveat:** with step 3 armed, a worker's *plan* turn ends — firing your one-shot subscription — **before** it rolls into implementation, so on that first wake it may still be coding. Check the sentinel; if it isn't done, just resubscribe rather than landing prematurely.
-6. **Review / land / clean up** — per worker, as in Single-worker steps 7–9. Land calls can be fanned across ids in one turn (they return immediately; the merges serialise server-side at the git layer); a `rebase-prompt-sent` is a worker turn — subscribe + end turn for that id. If a worker already exited, merge via the `merge_worktree({project, worktreeName})` form, then delete.
+6. **Review / land / clean up** — per worker, as in Single-worker steps 7–9. Land calls can be fanned across ids in one turn (they return immediately; the merges serialise server-side at the git layer); a `rebase-prompt-sent` is a worker turn — subscribe + end turn for that id. If a worker already exited, merge via the `merge_worktree({project, worktree})` form, then delete.
 
 If a worker errors or stalls, handle just that id on its wake; the rest are unaffected.
 
@@ -132,7 +132,7 @@ This governs **worktree-backed** workers. (Read-only/operational workers spawned
 - **Unmerged worktree + strongly-related follow-up → reuse the worker.** "Strongly related" = likely to touch the **same files / same feature** (a fix, extension, or review of its own work). Don't spawn — dispatch-and-wake as usual; the worker skips re-exploration. Batch such tasks into the one worktree and **merge once** at the end. The worker is in `bypassPermissions` after the earlier `approve_plan`: for a substantial follow-up you want to review, `set_mode({id, mode:'plan'})` first; for a small one, let it code. (If a feature legitimately spans many turns before its single merge, `promote_session({id})` keeps that unmerged worker as a named session.)
 - **After a merge, or anything not strongly related → spawn a fresh worker** in its own worktree off the updated base. Don't graft a post-merge or weakly-related task onto an existing worktree to save the exploration cost — one clean branch is one merge unit.
 
-**After a successful merge: `delete_worktree` + `kill_instance`** (the worker is bound to the now-deleted worktree, so retire it too; if it already exited, merge via the `merge_worktree({project, worktreeName})` form, then delete). A *refused or conflicted* merge is not done — `sync_worktree` and retry, keeping the worker for conflict resolution; never delete a worktree with changes you still want. Also kill — independent of merge — when the user has moved on from that area, a worker is wedged/crashed, its context is polluted, or you're holding more live workers than you can track; but first make sure its work is **landed or intentionally discarded** — never kill a worker whose worktree still holds unmerged changes you meant to keep. And when you deliberately keep an unmerged worker up for same-feature follow-ups, tell the user ("leaving `<id>` up for the rest of feature X") so the live instance in the sidebar isn't a surprise.
+**After a successful merge: `delete_worktree` + `kill_instance`** (the worker is bound to the now-deleted worktree, so retire it too; if it already exited, merge via the `merge_worktree({project, worktree})` form, then delete). A *refused or conflicted* merge is not done — `sync_worktree` and retry, keeping the worker for conflict resolution; never delete a worktree with changes you still want. Also kill — independent of merge — when the user has moved on from that area, a worker is wedged/crashed, its context is polluted, or you're holding more live workers than you can track; but first make sure its work is **landed or intentionally discarded** — never kill a worker whose worktree still holds unmerged changes you meant to keep. And when you deliberately keep an unmerged worker up for same-feature follow-ups, tell the user ("leaving `<id>` up for the rest of feature X") so the live instance in the sidebar isn't a surprise.
 
 ## Operational tasks in other projects
 

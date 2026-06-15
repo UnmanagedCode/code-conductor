@@ -18,6 +18,7 @@ export function buildTools() {
         'live instance ids, and a session-count summary.',
       inputSchema: { type: 'object', properties: {}, required: [] },
       handler: h.listProjects,
+      annotations: { readOnlyHint: true },
     },
     {
       name: 'list_instances',
@@ -27,6 +28,7 @@ export function buildTools() {
         '`conducted:true` marks a session spawned via this `spawn_instance` tool.',
       inputSchema: { type: 'object', properties: {}, required: [] },
       handler: h.listInstances,
+      annotations: { readOnlyHint: true },
     },
     {
       name: 'list_sessions',
@@ -46,13 +48,14 @@ export function buildTools() {
         required: ['project'],
       },
       handler: h.listSessions,
+      annotations: { readOnlyHint: true },
     },
     {
       name: 'locate_session',
       description:
         'Find which project (and optionally which worktree) owns a given sessionId, by ' +
         'probing the conventional ~/.claude/projects/<encoded-cwd>/<sid>.jsonl path against ' +
-        'every known project + worktree. Returns {project, worktreeName: string|null}. ' +
+        'every known project + worktree. Returns {project, worktree: string|null}. ' +
         'Errors with "session not found" when nothing matches.',
       inputSchema: {
         type: 'object',
@@ -62,18 +65,20 @@ export function buildTools() {
         required: ['sessionId'],
       },
       handler: h.locateSession,
+      annotations: { readOnlyHint: true },
     },
     {
       name: 'list_worktrees',
       description:
         'List orchestrator-owned git worktrees for a project. Each entry includes ' +
-        '{worktreeName, branch, baseBranch, baseSha, parentPath, createdAt}.',
+        '{worktree, branch, baseBranch, baseSha, parentPath, createdAt}.',
       inputSchema: {
         type: 'object',
         properties: { project: { type: 'string' } },
         required: ['project'],
       },
       handler: h.listWorktrees,
+      annotations: { readOnlyHint: true },
     },
     {
       name: 'get_transcript',
@@ -85,18 +90,21 @@ export function buildTools() {
         type: 'object',
         properties: {
           id: { type: 'string', description: 'Instance id.' },
-          sinceSeq: { type: 'integer', description: 'Return only events with _seq > sinceSeq. Default -1 (all).' },
-          limit: { type: 'integer', description: 'Cap on number of events returned. Default 200.' },
+          sinceSeq: { type: 'integer', default: -1, description: 'Return only events with _seq > sinceSeq. Default -1 (all).' },
+          limit: { type: 'integer', default: 200, description: 'Cap on number of events returned. Default 200.' },
         },
         required: ['id'],
       },
       handler: h.getTranscript,
+      annotations: { readOnlyHint: true },
     },
     {
       name: 'spawn_instance',
       description:
         'Spawn a new Claude subprocess inside a project (optionally inside a new or existing git worktree of it). ' +
-        'Returns the instance summary. Defaults to temp:true (disposable worker) but mode still defaults to plan ' +
+        'Returns the instance summary. Pass createWorktree:true to create a fresh worktree off HEAD, or ' +
+        'worktree:"<name>" to attach to an existing one (createWorktree wins if both are given). ' +
+        'Defaults to temp:true (disposable worker) but mode still defaults to plan ' +
         '(NOT bypassPermissions) so workers plan before acting — promote with promote_session to keep one. ' +
         'CAUTION: an instance with the code-conductor MCP registered can in turn spawn ' +
         'further instances — guard against runaway recursion by keeping child agents in plan mode.',
@@ -118,10 +126,14 @@ export function buildTools() {
           },
           resume: { type: 'string', description: 'Optional sessionId to resume (vs. spawning a fresh session).' },
           worktree: {
-            type: ['boolean', 'string'],
-            description: 'true → create a fresh worktree off the project\'s HEAD. <name> → spawn into an existing worktree.',
+            type: 'string',
+            description: 'Name of an existing worktree to spawn into. To create a fresh one instead, use createWorktree:true.',
           },
-          temp: { type: 'boolean', description: 'If true, the session jsonl is removed on subprocess exit. Defaults to true for MCP spawns; pass false to keep the session (or promote_session later).' },
+          createWorktree: {
+            type: 'boolean',
+            description: 'If true, create a fresh worktree off the project\'s HEAD and spawn into it. Takes precedence over worktree.',
+          },
+          temp: { type: 'boolean', default: true, description: 'If true, the session jsonl is removed on subprocess exit. Defaults to true for MCP spawns; pass false to keep the session (or promote_session later).' },
           debug: { type: 'boolean', description: 'If true, raw CLI traffic is mirrored to .code-conductor/debug/<id>/.' },
         },
         required: ['project'],
@@ -139,8 +151,8 @@ export function buildTools() {
         properties: {
           id: { type: 'string' },
           text: { type: 'string' },
-          wait: { type: 'boolean', description: 'Block until turn_end. Default false.' },
-          waitTimeoutMs: { type: 'integer', description: 'Per-call wait cap (default 600000 = 10 min).' },
+          wait: { type: 'boolean', default: false, description: 'Block until turn_end. Default false.' },
+          waitTimeoutMs: { type: 'integer', default: 600000, description: 'Per-call wait cap (default 600000 = 10 min).' },
         },
         required: ['id', 'text'],
       },
@@ -155,7 +167,7 @@ export function buildTools() {
         type: 'object',
         properties: {
           id: { type: 'string' },
-          timeoutMs: { type: 'integer', description: 'Default 600000 (10 min) — matches send_prompt\'s wait cap.' },
+          timeoutMs: { type: 'integer', default: 600000, description: 'Default 600000 (10 min) — matches send_prompt\'s wait cap.' },
         },
         required: ['id'],
       },
@@ -175,6 +187,7 @@ export function buildTools() {
         required: ['id', 'mode'],
       },
       handler: h.setMode,
+      annotations: { idempotentHint: true },
     },
     {
       name: 'approve_plan',
@@ -185,10 +198,10 @@ export function buildTools() {
       inputSchema: {
         type: 'object',
         properties: {
-          instanceId: { type: 'string', description: 'Instance id of the worker whose plan you\'re approving.' },
+          id: { type: 'string', description: 'Instance id of the worker whose plan you\'re approving.' },
           feedback: { type: 'string', description: 'Optional additional notes appended to the approval message.' },
         },
-        required: ['instanceId'],
+        required: ['id'],
       },
       handler: h.approvePlan,
     },
@@ -201,10 +214,10 @@ export function buildTools() {
       inputSchema: {
         type: 'object',
         properties: {
-          instanceId: { type: 'string', description: 'Instance id of the worker whose plan you\'re rejecting.' },
+          id: { type: 'string', description: 'Instance id of the worker whose plan you\'re rejecting.' },
           feedback: { type: 'string', description: 'What you want the worker to change. Strongly recommended.' },
         },
-        required: ['instanceId'],
+        required: ['id'],
       },
       handler: h.rejectPlan,
     },
@@ -218,12 +231,13 @@ export function buildTools() {
       inputSchema: {
         type: 'object',
         properties: {
-          instanceId: { type: 'string' },
+          id: { type: 'string' },
           enabled: { type: 'boolean' },
         },
-        required: ['instanceId', 'enabled'],
+        required: ['id', 'enabled'],
       },
       handler: h.setAutoApprovePlan,
+      annotations: { idempotentHint: true },
     },
     {
       name: 'subscribe_to_idle',
@@ -245,6 +259,7 @@ export function buildTools() {
           targetId: { type: 'string', description: 'Instance id of the worker to watch for turn_end.' },
           timeoutMs: {
             type: 'number',
+            minimum: 1,
             description:
               'Optional watchdog: fire the subscription after this many ms even if turn_end has not ' +
               'arrived. Must be a positive finite number; ignored otherwise. The stub injected on ' +
@@ -267,6 +282,7 @@ export function buildTools() {
         required: ['targetId'],
       },
       handler: h.unsubscribeFromIdle,
+      annotations: { idempotentHint: true },
     },
     {
       name: 'interrupt_turn',
@@ -275,7 +291,7 @@ export function buildTools() {
         type: 'object',
         properties: {
           id: { type: 'string' },
-          force: { type: 'boolean', description: 'true = hard abort; omitted/false = soft graceful stop' },
+          force: { type: 'boolean', default: false, description: 'true = hard abort; omitted/false = soft graceful stop' },
         },
         required: ['id'],
       },
@@ -290,6 +306,7 @@ export function buildTools() {
         required: ['id'],
       },
       handler: h.killInstance,
+      annotations: { destructiveHint: true, idempotentHint: true },
     },
     {
       name: 'respawn_instance',
@@ -337,12 +354,13 @@ export function buildTools() {
         type: 'object',
         properties: {
           project: { type: 'string' },
-          worktreeName: { type: 'string' },
+          worktree: { type: 'string' },
           force: { type: 'boolean' },
         },
-        required: ['project', 'worktreeName'],
+        required: ['project', 'worktree'],
       },
       handler: h.deleteWorktree,
+      annotations: { destructiveHint: true },
     },
     {
       name: 'sync_worktree',
@@ -352,8 +370,8 @@ export function buildTools() {
         'live agent when conflicts block the rebase. Caller passes the worktree\'s attached instance id.',
       inputSchema: {
         type: 'object',
-        properties: { instanceId: { type: 'string' } },
-        required: ['instanceId'],
+        properties: { id: { type: 'string', description: 'Instance id attached to the worktree.' } },
+        required: ['id'],
       },
       handler: h.syncWorktree,
     },
@@ -362,17 +380,18 @@ export function buildTools() {
       description:
         'Merge a worktree\'s branch into its parent repo with a real merge commit (--no-ff). ' +
         'Refuses with a friendly reason if the worktree hasn\'t been synced first. ' +
-        'Pass either {instanceId} or {project, worktreeName} — the latter form lets you ' +
+        'Pass either {id} or {project, worktree} — the latter form lets you ' +
         'merge a worktree whose instance has already been killed.',
       inputSchema: {
         type: 'object',
         properties: {
-          instanceId: { type: 'string', description: 'Live or dead instance attached to the worktree.' },
-          project: { type: 'string', description: 'Parent project — required if instanceId is omitted.' },
-          worktreeName: { type: 'string', description: 'Worktree dir name — required if instanceId is omitted.' },
+          id: { type: 'string', description: 'Live or dead instance attached to the worktree.' },
+          project: { type: 'string', description: 'Parent project — required if id is omitted.' },
+          worktree: { type: 'string', description: 'Worktree dir name — required if id is omitted.' },
         },
       },
       handler: h.mergeWorktree,
+      annotations: { destructiveHint: true },
     },
     {
       name: 'list_workspaces',
@@ -382,6 +401,7 @@ export function buildTools() {
         '[{name, projectCount}] sorted alphabetically. Empty workspaces appear with projectCount 0.',
       inputSchema: { type: 'object', properties: {}, required: [] },
       handler: h.listWorkspaces,
+      annotations: { readOnlyHint: true },
     },
     {
       name: 'create_workspace',
@@ -391,10 +411,11 @@ export function buildTools() {
         'spaces, slashes, dots, hyphens, underscores (1–40 chars, no control chars).',
       inputSchema: {
         type: 'object',
-        properties: { name: { type: 'string' } },
+        properties: { name: { type: 'string', minLength: 1, maxLength: 40 } },
         required: ['name'],
       },
       handler: h.createWorkspace,
+      annotations: { idempotentHint: true },
     },
     {
       name: 'delete_workspace',
@@ -408,6 +429,7 @@ export function buildTools() {
         required: ['name'],
       },
       handler: h.deleteWorkspace,
+      annotations: { idempotentHint: true },
     },
     {
       name: 'rename_workspace',
@@ -424,6 +446,7 @@ export function buildTools() {
         required: ['oldName', 'newName'],
       },
       handler: h.renameWorkspace,
+      annotations: { idempotentHint: true },
     },
     {
       name: 'set_project_workspace',
@@ -443,6 +466,7 @@ export function buildTools() {
         required: ['project'],
       },
       handler: h.setProjectWorkspace,
+      annotations: { idempotentHint: true },
     },
     {
       name: 'create_project',
@@ -452,8 +476,8 @@ export function buildTools() {
       inputSchema: {
         type: 'object',
         properties: {
-          name: { type: 'string', description: 'Project name. Must match ^[a-zA-Z0-9._-]+$.' },
-          gitInit: { type: 'boolean', description: 'If true, run `git init` in the new project dir. Default false.' },
+          name: { type: 'string', pattern: '^[a-zA-Z0-9._-]+$', description: 'Project name. Must match ^[a-zA-Z0-9._-]+$.' },
+          gitInit: { type: 'boolean', default: false, description: 'If true, run `git init` in the new project dir. Default false.' },
         },
         required: ['name'],
       },
@@ -474,18 +498,23 @@ export function buildTools() {
         'tool-call-only messages with none of those are excluded. Set `includeToolCalls` to true to ' +
         'include every assistant message regardless. Thinking blocks are excluded by default; ' +
         'set `includeThinking` to true to include them in `blocks[]`. `count` applies to the filtered set. ' +
-        'Returns a `messages[]` array, oldest-first (default 1, max 50). Empty messages[] if no matching content has arrived yet.',
+        'OUTPUT: a compact-JSON metadata block (content[0]) {id, messages:[{index, msgId, hasToolUse, textChars, ' +
+        'textTruncated, plan?, questions?, blocks?}]} oldest-first, PLUS one raw, un-escaped text block per message ' +
+        '(content[k+1] is the prose for messages[k]; empty for plan/question-only turns). Large message text is ' +
+        'capped (textTruncated flag); blocks[].input is capped inline (inputTruncated). Empty messages[] (just the ' +
+        'metadata block) if no matching content has arrived yet. Default count 1, max 50.',
       inputSchema: {
         type: 'object',
         properties: {
           id: { type: 'string', description: 'Instance id.' },
-          count: { type: 'integer', description: 'Number of recent messages to return (from the filtered set). Default 1, clamped to [1, 50].' },
-          includeToolCalls: { type: 'boolean', description: 'When true, include tool-call-only messages (no text blocks) in the result. Default false.' },
-          includeThinking: { type: 'boolean', description: 'When true, include thinking blocks in blocks[]. Default false.' },
+          count: { type: 'integer', minimum: 1, maximum: 50, default: 1, description: 'Number of recent messages to return (from the filtered set). Default 1, clamped to [1, 50].' },
+          includeToolCalls: { type: 'boolean', default: false, description: 'When true, include tool-call-only messages (no text blocks) in the result. Default false.' },
+          includeThinking: { type: 'boolean', default: false, description: 'When true, include thinking blocks in blocks[]. Default false.' },
         },
         required: ['id'],
       },
       handler: h.getRecentMessages,
+      annotations: { readOnlyHint: true },
     },
     {
       name: 'project_status',
@@ -500,11 +529,12 @@ export function buildTools() {
         properties: {
           project: { type: 'string' },
           worktree: { type: 'string', description: 'Optional worktree name to scope into.' },
-          logLimit: { type: 'integer', description: 'Number of recent commits to include. Default 20. 0 disables.' },
+          logLimit: { type: 'integer', default: 20, description: 'Number of recent commits to include. Default 20. 0 disables.' },
         },
         required: ['project'],
       },
       handler: h.projectStatus,
+      annotations: { readOnlyHint: true },
     },
     {
       name: 'get_worktree_diff',
@@ -513,51 +543,56 @@ export function buildTools() {
         'baseBranch (the branch it was created from); contextLines (0-50, default 3) sets hunk context. Three modes ' +
         'keep this usable at any size: (1) summary:true returns a structured per-file stat ' +
         '{totals, files:[{path,status,oldPath?,additions,deletions,binary}]} instead of a diff — always small, never ' +
-        'truncated. (2) paths:[...] scopes the diff (or summary) to specific file paths. (3) the diff is paginated by ' +
-        'LINE INDEX: each call returns at most ~200 KB of whole lines starting at offset (0-based line index, default 0) ' +
-        'with {diff, truncated, nextOffset, totalLines, totalBytes}; when truncated, re-call with offset:nextOffset until ' +
+        'truncated, single JSON block. (2) paths:[...] scopes the diff (or summary) to specific file paths. (3) the diff is ' +
+        'paginated by LINE INDEX: each call returns at most ~200 KB of whole lines starting at offset (0-based line index, ' +
+        'default 0). In diff mode the OUTPUT is a compact-JSON metadata block (content[0]) {project, worktree, baseRef, ' +
+        'head:<sha>, contextLines, offset, truncated, nextOffset, totalLines, totalBytes, includedFiles?, omittedFiles?} PLUS ' +
+        'a separate raw, un-escaped diff text block (content[1]); when truncated, re-call with offset:nextOffset until ' +
         'truncated:false. Mid-file pages re-emit the file/hunk headers so each page parses standalone, and a truncated ' +
         'page lists includedFiles/omittedFiles. Never silently cuts. Complements project_status.',
       inputSchema: {
         type: 'object',
         properties: {
           project: { type: 'string' },
-          worktreeName: { type: 'string' },
+          worktree: { type: 'string' },
           baseRef: { type: 'string', description: 'Optional ref to diff against. Defaults to the worktree\'s baseBranch.' },
-          contextLines: { type: 'integer', description: 'Lines of context around each hunk (0-50, default 3).' },
-          summary: { type: 'boolean', description: 'Return a per-file stat (totals + files[]) instead of a diff. Always small; never truncated.' },
+          contextLines: { type: 'integer', minimum: 0, maximum: 50, default: 3, description: 'Lines of context around each hunk (0-50, default 3).' },
+          summary: { type: 'boolean', default: false, description: 'Return a per-file stat (totals + files[]) instead of a diff. Always small; never truncated.' },
           paths: { type: 'array', items: { type: 'string' }, description: 'Limit the diff (or summary) to these file paths.' },
-          offset: { type: 'integer', description: '0-based line index into the diff to start this page at (default 0). Use nextOffset from the previous call to paginate.' },
+          offset: { type: 'integer', minimum: 0, default: 0, description: '0-based line index into the diff to start this page at (default 0). Use nextOffset from the previous call to paginate.' },
         },
-        required: ['project', 'worktreeName'],
+        required: ['project', 'worktree'],
       },
       handler: h.getWorktreeDiff,
+      annotations: { readOnlyHint: true },
     },
     {
       name: 'read_file',
       description:
         'Read a file from a project or worktree by its project-relative path. Path-traversal ' +
-        'guarded. UTF-8 text returned inline with a `lineCount` field; supports `offset` ' +
-        '(1-based start line, default 1) and `limit` (max lines, default: to EOF) for range ' +
-        'reads. Set `lineNumbers:true` to prefix each line with a right-aligned number and tab ' +
-        '(cat -n style, absolute to the full file). Response includes `startLine`/`endLine` ' +
-        'when a range is requested. Binary files come back base64-encoded — line params are ' +
-        'ignored for binary. Content is byte-capped at maxBytes (default 256 KB); the ' +
-        '`truncated` flag tells you when that happened.',
+        'guarded. OUTPUT: a compact-JSON metadata block (content[0]) {path, size, truncated, encoding, lineCount, ' +
+        'lineCountExact, startLine?, endLine?} PLUS a separate raw, un-escaped text block (content[1]) carrying the ' +
+        'file body. `lineCountExact` is false when the fast byte-capped read may have a partial final line. Supports ' +
+        '`offset` (1-based start line, default 1) and `limit` (max lines, default: to EOF) for range reads. Set ' +
+        '`lineNumbers:true` to prefix each line with a right-aligned number and tab (cat -n style, absolute to the ' +
+        'full file). Metadata includes `startLine`/`endLine` when a range is requested. Binary files come back as a ' +
+        'base64 body with encoding:"base64" — line params are ignored for binary. Content is byte-capped at maxBytes ' +
+        '(default 256 KB); the `truncated` flag tells you when that happened.',
       inputSchema: {
         type: 'object',
         properties: {
           project: { type: 'string' },
           worktree: { type: 'string', description: 'Optional worktree name to scope into.' },
           relativePath: { type: 'string', description: 'Path relative to the project / worktree root.' },
-          maxBytes: { type: 'integer', description: 'Cap on bytes returned. Default 262144 (256 KB). For text with line params, applied as a final byte-cap on the assembled slice.' },
-          lineNumbers: { type: 'boolean', description: 'When true, prefix each line with a right-aligned line number and tab (cat -n style). Numbers are absolute to the full file. Ignored for binary files. Default false.' },
-          offset: { type: 'integer', description: '1-based line number to start at (default 1). Ignored for binary files.' },
-          limit: { type: 'integer', description: 'Maximum number of lines to return (default: to end of file). Ignored for binary files.' },
+          maxBytes: { type: 'integer', minimum: 1, default: 262144, description: 'Cap on bytes returned. Default 262144 (256 KB). For text with line params, applied as a final byte-cap on the assembled slice.' },
+          lineNumbers: { type: 'boolean', default: false, description: 'When true, prefix each line with a right-aligned line number and tab (cat -n style). Numbers are absolute to the full file. Ignored for binary files. Default false.' },
+          offset: { type: 'integer', minimum: 1, default: 1, description: '1-based line number to start at (default 1). Ignored for binary files.' },
+          limit: { type: 'integer', minimum: 1, description: 'Maximum number of lines to return (default: to end of file). Ignored for binary files.' },
         },
         required: ['project', 'relativePath'],
       },
       handler: h.readFile,
+      annotations: { readOnlyHint: true },
     },
   ];
 }

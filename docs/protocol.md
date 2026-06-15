@@ -113,3 +113,29 @@ Outbound: `system` + `subtype:"init"` (bundled with first turn's response, not a
 | `GET` | `/api/settings/workspace-claudemd` | `{status, conflict, targetExists, targetPath, vendorPath, baselinePath}` — reconcile status of `<PROJECTS_ROOT>/CLAUDE.md` (`created`/`up-to-date`/`updated`/`kept`/`conflict`). |
 | `GET` | `/api/settings/workspace-claudemd/diff` | `{diff}` — unified diff of the projects-root `CLAUDE.md` (your copy) vs the bundled canonical. Empty when identical. |
 | `POST` | `/api/settings/workspace-claudemd/resolve` | `{action}` — `keep` (baseline := canonical, file unchanged) or `overwrite` (back up to `<target>.bak-<ts>`, copy canonical in, bump baseline). 400 on any other action. Returns refreshed status. |
+
+## MCP tool protocol
+
+Mounted at `POST /mcp` (Streamable HTTP, JSON-RPC 2.0). Tools are listed in [features.md → MCP interface](features.md#mcp-interface). This section specifies the wire contract — a **clean break** with no backwards-compatibility aliases.
+
+**Input params.** Instance id is always `id` (never `instanceId`); worktree is always `worktree` (never `worktreeName`). `subscribe_to_idle`/`unsubscribe_from_idle` keep `targetId` (the watched instance, distinct from the caller). `spawn_instance` takes `createWorktree:true` (fresh worktree off HEAD) and/or `worktree:"<name>"` (attach existing) — the old `worktree: boolean|string` overload is removed.
+
+**Input validation (`validateArgs`).** Beyond type/enum/required, the server enforces the declared `pattern`, `minLength`/`maxLength`, `minimum`/`maximum`, and array `items.type`. **Unknown properties are rejected** (not silently dropped): `unexpected argument '<k>' — not a recognized parameter for <tool>. Allowed: <keys>`. Validation failures return `isError:true` with the message as a single text block. Schemas also declare `default`s mirroring handler defaults (documentation; handlers still apply them).
+
+<a name="mcp-result-format"></a>
+**Result format.** `content[0]` is always a **compact** JSON block (no pretty-print). Pure-metadata tools emit just that one block. **Text-payload tools** append separate raw, **un-escaped** text blocks in `content[1..]`:
+
+| Tool | content[0] metadata | content[1..] bodies |
+|---|---|---|
+| `read_file` | `{path, size, truncated, encoding, lineCount, lineCountExact, startLine?, endLine?}` | one block: utf8 file text, or base64 (binary) |
+| `get_worktree_diff` (diff mode) | `{project, worktree, baseRef, head:<sha>, contextLines, offset, truncated, nextOffset, totalLines, totalBytes, includedFiles?, omittedFiles?}` | one block: raw unified diff (empty string when no diff) |
+| `get_worktree_diff` (summary mode) | single JSON block `{project, worktree, baseRef, head:<sha>, summary:true, totals, files[]}` | — |
+| `get_recent_messages` | `{id, messages:[{index, msgId, hasToolUse, textChars, textTruncated, plan?, questions?, blocks?}]}` | one raw prose block **per message**, block k+1 ↔ messages[k] (empty for plan/question-only) |
+
+**Annotations.** `tools/list` entries carry `annotations`: `readOnlyHint` (all `list_*`, `read_file`, `project_status`, `get_*`, `locate_session`), `destructiveHint` (`kill_instance`, `delete_worktree`, `merge_worktree`), `idempotentHint` (`set_mode`, `set_auto_approve_plan`, `set_project_workspace`, `unsubscribe_from_idle`, `create_workspace`, `delete_workspace`, `rename_workspace`, `kill_instance`).
+
+**`ok` / refusals.** `ok` is reserved for **soft refusals** only. Acknowledgement tools (`send_prompt`, `kill_instance`, `subscribe_to_idle`/`unsubscribe_from_idle`, `approve_plan`/`reject_plan`, `set_auto_approve_plan`, the workspace tools, `set_project_workspace`, `delete_worktree` success) return bare data with **no `ok`**. Expected business refusals return `{ok:false, reason, code}` and are **not thrown**, with stable codes: `WORKTREE_ATTACHED`, `WORKTREE_DIRTY` (`delete_worktree`); `INSTANCE_NOT_RUNNING` (`sync_worktree`); `WORKTREE_BEHIND`, `BASE_BRANCH_MISMATCH`, `PARENT_DIRTY`, `MERGE_FAILED` (`merge_worktree`). The only constant `ok:true` is `merge_worktree`/`sync_worktree` success (shape shared with the REST land endpoints).
+
+**Errors.** True faults are caught and returned `isError:true` as a prose block — `<message> (HTTP <statusCode>)` when the handler set a `statusCode` — followed by a structured `{error, code, statusCode}` block. `code` derives from `statusCode` (`400→BAD_REQUEST`, `404→NOT_FOUND`, `409→CONFLICT`, `500→INTERNAL`). Example sources: `locate_session`/`read_file` 404, invalid `baseRef`/`promote_session` non-temp 400.
+
+Note: the REST endpoints above keep their own `worktreeName` field — they are a separate contract from the MCP tools and were not renamed.

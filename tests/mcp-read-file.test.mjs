@@ -31,10 +31,12 @@ async function callTool(baseUrl, name, args) {
   return body.result;
 }
 
+// read_file is multi-block: content[0] is JSON metadata, content[1] is the
+// raw body. Merge the body back onto the metadata as `content` for assertions.
 function unwrap(result) {
   assert.ok(Array.isArray(result.content), 'tool result has content[]');
-  const text = result.content.map(c => c.text).join('');
-  return JSON.parse(text);
+  const meta = JSON.parse(result.content[0].text);
+  return { ...meta, content: result.content.slice(1).map(c => c.text).join('') };
 }
 
 function git(cwd, ...args) {

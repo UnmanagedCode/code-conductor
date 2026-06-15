@@ -332,6 +332,7 @@ export async function mergeWorktreeIntoParent(projectName, worktreeName) {
   if (head.branch !== meta.baseBranch) {
     return {
       ok: false,
+      code: 'BASE_BRANCH_MISMATCH',
       reason: `parent repo is on '${head.branch}', but this worktree was branched from '${meta.baseBranch}'. ` +
         `Switch the parent back to '${meta.baseBranch}' before merging.`,
     };
@@ -342,6 +343,7 @@ export async function mergeWorktreeIntoParent(projectName, worktreeName) {
   if (dirty.code === 0 && dirty.stdout.trim().length > 0) {
     return {
       ok: false,
+      code: 'PARENT_DIRTY',
       reason: `parent repo has uncommitted changes — commit or stash them before merging`,
     };
   }
@@ -352,6 +354,7 @@ export async function mergeWorktreeIntoParent(projectName, worktreeName) {
   if (merge.code !== 0) {
     return {
       ok: false,
+      code: 'MERGE_FAILED',
       reason: (merge.stderr.trim() || merge.stdout.trim() ||
         `git merge --no-ff ${meta.branch} failed`),
     };
