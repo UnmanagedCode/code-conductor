@@ -13,7 +13,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { bootServer, api, waitFor } from './helpers.mjs';
+import { bootServer, api, waitFor, instForSession } from './helpers.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO_WS = path.join(__dirname, 'fixtures', 'scenario-ws.json');
@@ -99,11 +99,11 @@ test('validateArgs enforces minimum/maximum (get_worktree_diff contextLines, get
     assert.equal(hi.body.result.isError, true);
     assert.match(hi.body.result.content[0].text, /<= 50/);
 
-    const lo = await rpc(baseUrl, 'tools/call', { name: 'get_recent_messages', arguments: { id: 'x', count: 0 } });
+    const lo = await rpc(baseUrl, 'tools/call', { name: 'get_recent_messages', arguments: { sessionId: 'x', count: 0 } });
     assert.equal(lo.body.result.isError, true);
     assert.match(lo.body.result.content[0].text, />= 1/);
 
-    const big = await rpc(baseUrl, 'tools/call', { name: 'get_recent_messages', arguments: { id: 'x', count: 99 } });
+    const big = await rpc(baseUrl, 'tools/call', { name: 'get_recent_messages', arguments: { sessionId: 'x', count: 99 } });
     assert.equal(big.body.result.isError, true);
     assert.match(big.body.result.content[0].text, /<= 50/);
   } finally { await close(); }
@@ -138,7 +138,7 @@ test('dropped legacy aliases (instanceId / worktreeName) are rejected as unknown
   const { baseUrl, close } = await bootServer({ scenarioPath: SCENARIO_WS });
   try {
     const a = await rpc(baseUrl, 'tools/call', {
-      name: 'approve_plan', arguments: { id: 'x', instanceId: 'x' },
+      name: 'approve_plan', arguments: { sessionId: 'x', instanceId: 'x' },
     });
     assert.equal(a.body.result.isError, true);
     assert.match(a.body.result.content[0].text, /unexpected argument 'instanceId'/);
@@ -148,6 +148,29 @@ test('dropped legacy aliases (instanceId / worktreeName) are rejected as unknown
     });
     assert.equal(w.body.result.isError, true);
     assert.match(w.body.result.content[0].text, /unexpected argument 'worktreeName'/);
+  } finally { await close(); }
+});
+
+test('legacy {id} worker handle is rejected (clean break — sessionId only)', async () => {
+  const { baseUrl, close } = await bootServer({ scenarioPath: SCENARIO_WS });
+  try {
+    // The pure-legacy shape {id} fails the now-required sessionId.
+    const legacy = await rpc(baseUrl, 'tools/call', {
+      name: 'kill_instance', arguments: { id: 'x' },
+    });
+    assert.equal(legacy.body.result.isError, true);
+    assert.match(legacy.body.result.content[0].text, /missing required argument: sessionId/);
+
+    // And `id` alongside sessionId is explicitly rejected as unexpected — there
+    // is no accept-both shim.
+    for (const name of ['send_prompt', 'get_recent_messages', 'kill_instance', 'set_mode']) {
+      const r = await rpc(baseUrl, 'tools/call', {
+        name, arguments: { sessionId: 'x', id: 'x', text: 'hi', mode: 'plan' },
+      });
+      assert.equal(r.body.result.isError, true, `${name} should reject legacy {id}`);
+      assert.match(r.body.result.content[0].text, /unexpected argument 'id'/,
+        `${name} should name 'id' as unexpected`);
+    }
   } finally { await close(); }
 });
 
@@ -229,17 +252,17 @@ test('get_recent_messages → metadata + one raw body block per message (block k
   try {
     await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'a' });
     const spawn = meta(await callTool(ctx.baseUrl, 'spawn_instance', { project: 'a', mode: 'bypassPermissions' }));
-    await waitFor(() => ctx.instances.get(spawn.id).status === 'idle' && ctx.instances.get(spawn.id).sessionId);
+    await waitFor(() => instForSession(ctx.instances, spawn.sessionId)?.status === 'idle');
 
     // Empty → just the metadata block, no body blocks.
-    const empty = await callTool(ctx.baseUrl, 'get_recent_messages', { id: spawn.id });
+    const empty = await callTool(ctx.baseUrl, 'get_recent_messages', { sessionId: spawn.sessionId });
     assert.equal(empty.content.length, 1);
     assert.deepEqual(meta(empty).messages, []);
 
-    await callTool(ctx.baseUrl, 'send_prompt', { id: spawn.id, text: 'one', wait: true, waitTimeoutMs: 5000 });
-    await callTool(ctx.baseUrl, 'send_prompt', { id: spawn.id, text: 'two', wait: true, waitTimeoutMs: 5000 });
+    await callTool(ctx.baseUrl, 'send_prompt', { sessionId: spawn.sessionId, text: 'one', wait: true, waitTimeoutMs: 5000 });
+    await callTool(ctx.baseUrl, 'send_prompt', { sessionId: spawn.sessionId, text: 'two', wait: true, waitTimeoutMs: 5000 });
 
-    const res = await callTool(ctx.baseUrl, 'get_recent_messages', { id: spawn.id, count: 2 });
+    const res = await callTool(ctx.baseUrl, 'get_recent_messages', { sessionId: spawn.sessionId, count: 2 });
     const m = meta(res);
     assert.equal(m.messages.length, 2);
     // One raw body per message, in order.
@@ -262,19 +285,19 @@ test('acknowledgement tools no longer carry a constant ok:true', async () => {
   try {
     await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'a' });
     const spawn = meta(await callTool(ctx.baseUrl, 'spawn_instance', { project: 'a', mode: 'bypassPermissions' }));
-    await waitFor(() => ctx.instances.get(spawn.id).sessionId);
+    await waitFor(() => instForSession(ctx.instances, spawn.sessionId));
 
-    const sent = meta(await callTool(ctx.baseUrl, 'send_prompt', { id: spawn.id, text: 'go' }));
+    const sent = meta(await callTool(ctx.baseUrl, 'send_prompt', { sessionId: spawn.sessionId, text: 'go' }));
     assert.equal(sent.ok, undefined);
-    assert.equal(sent.id, spawn.id);
+    assert.equal(sent.sessionId, spawn.sessionId);
 
     const ws = meta(await callTool(ctx.baseUrl, 'create_workspace', { name: 'WS' }));
     assert.equal(ws.ok, undefined);
     assert.equal(ws.added, true);
 
-    const killed = meta(await callTool(ctx.baseUrl, 'kill_instance', { id: spawn.id }));
+    const killed = meta(await callTool(ctx.baseUrl, 'kill_instance', { sessionId: spawn.sessionId }));
     assert.equal(killed.ok, undefined);
-    assert.equal(killed.id, spawn.id);
+    assert.equal(killed.sessionId, spawn.sessionId);
   } finally { await ctx.close(); }
 });
 
@@ -287,14 +310,14 @@ test('delete_worktree soft-refuses (ok:false + code) on dirty and attached, neve
     const spawn = meta(await callTool(ctx.baseUrl, 'spawn_instance', {
       project: 'demo', mode: 'bypassPermissions', createWorktree: true,
     }));
-    await waitFor(() => ctx.instances.get(spawn.id).sessionId);
-    const wtName = ctx.instances.get(spawn.id).worktree.worktreeName;
+    await waitFor(() => instForSession(ctx.instances, spawn.sessionId)?.worktree);
+    const wtName = instForSession(ctx.instances, spawn.sessionId).worktree.worktreeName;
 
     const attached = meta(await callTool(ctx.baseUrl, 'delete_worktree', { project: 'demo', worktree: wtName }));
     assert.equal(attached.ok, false);
     assert.equal(attached.code, 'WORKTREE_ATTACHED');
 
-    await callTool(ctx.baseUrl, 'kill_instance', { id: spawn.id });
+    await callTool(ctx.baseUrl, 'kill_instance', { sessionId: spawn.sessionId });
 
     // Dirty: uncommitted change in the worktree.
     await fs.writeFile(path.join(ctx.projectsRoot, wtName, 'dirty.txt'), 'uncommitted\n');
@@ -345,8 +368,8 @@ test('promote_session on a non-temp session surfaces statusCode 400', async () =
   try {
     await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'demo' });
     const spawn = meta(await callTool(ctx.baseUrl, 'spawn_instance', { project: 'demo', temp: false }));
-    await waitFor(() => ctx.instances.get(spawn.id).status === 'idle');
-    const { body } = await rpc(ctx.baseUrl, 'tools/call', { name: 'promote_session', arguments: { id: spawn.id } });
+    await waitFor(() => instForSession(ctx.instances, spawn.sessionId)?.status === 'idle');
+    const { body } = await rpc(ctx.baseUrl, 'tools/call', { name: 'promote_session', arguments: { sessionId: spawn.sessionId } });
     assert.equal(body.result.isError, true);
     assert.match(errText(body.result), /not temp.*\(HTTP 400\)/);
     assert.equal(JSON.parse(body.result.content[1].text).code, 'BAD_REQUEST');

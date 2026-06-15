@@ -53,20 +53,50 @@ function capText(s, cap) {
 
 // ---------- helpers ----------
 
-function getInst(instances, id) {
+// Project an internal instance summary down to the conductor-facing view:
+// strip the per-process `id` (instanceId) and `callerInstanceId` so the
+// conductor never sees — nor can come to depend on — a handle that dies on
+// restart. `sessionId` (stable across respawn / --resume / full restart) is
+// the only worker handle the MCP surface speaks.
+function toConductorView({ id, callerInstanceId, ...rest }) {
+  return rest;
+}
+
+// The ONLY public worker lookup. LIVE-only + soft-erroring: resolves a
+// stable sessionId to its single running (proc-attached) instance, or returns
+// a soft-refusal object the handler hands straight back (isError stays false,
+// matching the deleteWorktree/mergeWorktree soft-refusal convention). NEVER
+// auto-respawns and never special-cases reads — a dead session is a refusal,
+// not a resurrection.
+//   - SESSION_NOT_LIVE: the session is known (in byId or on disk) but has no
+//     running process → tell the conductor to spawn_instance({resume}).
+//   - SESSION_UNKNOWN: no such session anywhere.
+// The disk probe (findSessionLocation) runs ONLY on the not-live path, so the
+// hot path stays a pure in-memory lookup.
+async function getInst(instances, sessionId) {
   if (!instances) {
     const err = new Error('orchestrator was started without an InstanceManager');
     err.statusCode = 500;
     throw err;
   }
-  if (typeof id !== 'string' || !id) {
-    throw Object.assign(new Error('id required'), { statusCode: 400 });
+  if (typeof sessionId !== 'string' || !sessionId) {
+    return { soft: { ok: false, code: 'SESSION_UNKNOWN', sessionId: sessionId ?? null,
+      reason: `no session ${sessionId} is known to the orchestrator.` } };
   }
-  const inst = instances.get(id);
-  if (!inst) {
-    throw Object.assign(new Error(`instance not found: ${id}`), { statusCode: 404 });
+  const matches = instances.idsForSession(sessionId).map(id => instances.get(id)).filter(Boolean);
+  const live = matches.find(i => i.proc);
+  if (live) return { inst: live };
+  // Not live — pay for the disk probe only here so the hot path is in-memory.
+  // NOTE: findSessionLocation may not match a session whose worktree is
+  // unregistered; such an edge resolves to SESSION_UNKNOWN rather than
+  // SESSION_NOT_LIVE. Accepted — it never throws.
+  const known = matches.length > 0 || !!(await findSessionLocation(sessionId).catch(() => null));
+  if (known) {
+    return { soft: { ok: false, code: 'SESSION_NOT_LIVE', sessionId,
+      reason: `session ${sessionId} has no running process — call spawn_instance({resume:"${sessionId}"}) to bring it back.` } };
   }
-  return inst;
+  return { soft: { ok: false, code: 'SESSION_UNKNOWN', sessionId,
+    reason: `no session ${sessionId} is known to the orchestrator.` } };
 }
 
 // Resolve when `inst.status` first satisfies predicate, or reject on timeout.
@@ -148,7 +178,9 @@ export async function listProjects(_args, { instances }) {
 }
 
 export async function listInstances(_args, { instances }) {
-  return instances ? instances.list() : [];
+  // Scrub instanceId + callerInstanceId from every row; sessionId is the
+  // conductor-facing handle. hasIdleSubscriber (added by list()) is preserved.
+  return instances ? instances.list().map(toConductorView) : [];
 }
 
 export async function listSessions({ project, worktree }) {
@@ -198,15 +230,16 @@ export async function locateSession({ sessionId }) {
 // NOTE: a single turn larger than the ring cap can leave a mid-turn gap (the
 // archive's dense _seq space can't overlap the live ring); get_transcript
 // covers dropped PRIOR turns — for prose mid-giant-turn use get_recent_messages.
-export async function getTranscript({ id, sinceSeq = -1, limit = 200 }, { instances }) {
-  const inst = getInst(instances, id);
+export async function getTranscript({ sessionId, sinceSeq = -1, limit = 200 }, { instances }) {
+  const r = await getInst(instances, sessionId);
+  if (r.soft) return r.soft;
+  const inst = r.inst;
   const page = sinceSeq >= 0
     ? await pageInstanceEvents(inst, { after: sinceSeq, limit })
     : await pageInstanceEvents(inst, { limit });
   const events = page.events;
   const nextAfter = events.length ? events[events.length - 1]._seq : sinceSeq;
   return {
-    id,
     status: inst.status,
     sessionId: inst.sessionId,
     events,
@@ -223,6 +256,11 @@ export async function getTranscript({ id, sinceSeq = -1, limit = 200 }, { instan
 
 export async function spawnInstance(args, { instances, callerId }) {
   if (!instances) throw new Error('orchestrator has no InstanceManager');
+  // callerId is the conductor's stable sessionId (?caller=). Resolve it to the
+  // conductor's live instanceId so callerInstanceId stays an instanceId.
+  const callerInst = callerId
+    ? instances.idsForSession(callerId).map(id => instances.get(id)).find(i => i && i.proc)
+    : null;
   // Resolve family alias (opus/sonnet/haiku/fable) to the concrete version
   // configured in Settings → Models. Full model ids pass through unchanged.
   let model = args.model;
@@ -256,39 +294,49 @@ export async function spawnInstance(args, { instances, callerId }) {
     conducted: true,
     // Record which conductor spawned this worker so the frontend can
     // show a live sub-agent panel scoped to that conductor's view.
-    callerInstanceId: callerId ?? null,
+    // `callerId` is now the conductor's stable sessionId (from ?caller=) —
+    // resolve it back to the conductor's live instanceId so the internal
+    // Instance.callerInstanceId field stays an instanceId (consumers:
+    // public/subagents.js, conductedWorkersOf — both match on instanceId).
+    callerInstanceId: callerInst?.id ?? null,
   });
-  return inst.summary();
+  return toConductorView(inst.summary());
 }
 
-export async function sendPrompt({ id, text, wait = false, waitTimeoutMs = 600_000 }, { instances }) {
-  const inst = getInst(instances, id);
-  if (!inst.proc) throw new Error(`instance ${id} is not running (status=${inst.status})`);
+export async function sendPrompt({ sessionId, text, wait = false, waitTimeoutMs = 600_000 }, { instances }) {
+  const r = await getInst(instances, sessionId);
+  if (r.soft) return r.soft;
+  const inst = r.inst;
+  // getInst is LIVE-only, so inst.proc is guaranteed here.
   if (wait) {
     // Attach the listener *before* sending so we can't miss a fast turn_end.
     const waiter = waitForEvent(inst, (ev) => ev.kind === 'turn_end', waitTimeoutMs);
     await inst.prompt(text);
     const ev = await waiter;
-    return { id, sessionId: inst.sessionId, turnEnd: ev };
+    return { sessionId: inst.sessionId, turnEnd: ev };
   }
   await inst.prompt(text);
-  return { id, sessionId: inst.sessionId, status: inst.status };
+  return { sessionId: inst.sessionId, status: inst.status };
 }
 
-export async function waitForIdle({ id, timeoutMs = 600_000 }, { instances }) {
-  const inst = getInst(instances, id);
+export async function waitForIdle({ sessionId, timeoutMs = 600_000 }, { instances }) {
+  const r = await getInst(instances, sessionId);
+  if (r.soft) return r.soft;
+  const inst = r.inst;
   const { status } = await waitForStatus(
     inst,
     (s) => s === 'idle' || s === 'exited' || s === 'crashed',
     timeoutMs,
   );
-  return { id, status, summary: inst.summary() };
+  return { sessionId: inst.sessionId, status, summary: toConductorView(inst.summary()) };
 }
 
-export async function setMode({ id, mode }, { instances }) {
-  const inst = getInst(instances, id);
+export async function setMode({ sessionId, mode }, { instances }) {
+  const r = await getInst(instances, sessionId);
+  if (r.soft) return r.soft;
+  const inst = r.inst;
   await inst.setMode(mode);
-  return { id, mode: inst.mode };
+  return { sessionId: inst.sessionId, mode: inst.mode };
 }
 
 // Register the calling instance to receive a one-shot stub user prompt
@@ -297,60 +345,74 @@ export async function setMode({ id, mode }, { instances }) {
 // by InstanceManager.mcpServerUrl). The stub names the target and
 // points at get_recent_messages so the conductor can inspect the
 // result. Re-subscribe after every callback to keep getting pings.
-export async function subscribeToIdle({ targetId, timeoutMs }, { instances, callerId }) {
+export async function subscribeToIdle({ sessionId, timeoutMs }, { instances, callerId }) {
   if (!instances) throw new Error('orchestrator has no InstanceManager');
   if (!callerId) {
     throw new Error(
-      'caller identity missing — the MCP URL must include ?caller=<callerInstanceId>. ' +
-      'Spawn this instance through the orchestrator so its MCP config carries the caller id.',
+      'caller identity missing — the MCP URL must include ?caller=<sessionId>. ' +
+      'Spawn this instance through the orchestrator so its MCP config carries the caller sessionId.',
     );
   }
-  if (typeof targetId !== 'string' || !targetId) {
-    throw new Error('targetId required');
-  }
-  // Existence check before registering, so the error surfaces here
-  // rather than as a silent drop at callback time.
-  getInst(instances, targetId);
-  const res = instances.subscribeIdle(callerId, targetId, timeoutMs);
-  return { callerId, targetId, already: res.already };
+  // Existence check before registering, so a not-live target surfaces here
+  // (soft) rather than as a silent drop at callback time.
+  const r = await getInst(instances, sessionId);
+  if (r.soft) return r.soft;
+  const res = instances.subscribeIdle(callerId, sessionId, timeoutMs);
+  return { sessionId, already: res.already };
 }
 
-export async function unsubscribeFromIdle({ targetId }, { instances, callerId }) {
+export async function unsubscribeFromIdle({ sessionId }, { instances, callerId }) {
   if (!instances) throw new Error('orchestrator has no InstanceManager');
   if (!callerId) throw new Error('caller identity missing — MCP URL lacks ?caller=…');
-  if (typeof targetId !== 'string' || !targetId) {
-    throw new Error('targetId required');
-  }
-  const res = instances.unsubscribeIdle(callerId, targetId);
-  return { callerId, targetId, removed: res.removed };
+  // Idempotent + must work even on a dead target (to clean up), so no getInst.
+  const res = instances.unsubscribeIdle(callerId, sessionId);
+  return { sessionId, removed: res.removed };
 }
 
-export async function interruptTurn({ id, force }, { instances }) {
-  const inst = getInst(instances, id);
+export async function interruptTurn({ sessionId, force }, { instances }) {
+  const r = await getInst(instances, sessionId);
+  if (r.soft) return r.soft;
+  const inst = r.inst;
   await inst.interrupt({ force: !!force });
-  return { id, status: inst.status, interrupting: !!inst.interrupting };
+  return { sessionId: inst.sessionId, status: inst.status, interrupting: !!inst.interrupting };
 }
 
-export async function killInstance({ id }, { instances }) {
-  if (!instances) throw new Error('orchestrator has no InstanceManager');
-  await instances.remove(id);
-  return { id };
+export async function killInstance({ sessionId }, { instances }) {
+  const r = await getInst(instances, sessionId);
+  if (r.soft) return r.soft;
+  const inst = r.inst;
+  // LIVE-only: getInst resolves only running instances, so kill_instance can no
+  // longer reap an already-exited non-temp instance by sessionId (it is already
+  // gone from the process table; resume it first if you need to act on it).
+  // Accepted under the strict-live contract.
+  await instances.remove(inst.id);
+  return { sessionId };
 }
 
-export async function respawnInstance({ id }, { instances }) {
+// Respawn an exited/crashed instance. SPECIAL CASE: it targets a NON-live
+// instance, so it cannot use the LIVE-only getInst. Resolve the sessionId to
+// its in-byId instance regardless of proc; instances.respawn() 409s if it's
+// actually running. No in-byId match → SESSION_NOT_LIVE soft refusal.
+export async function respawnInstance({ sessionId }, { instances }) {
   if (!instances) throw new Error('orchestrator has no InstanceManager');
-  const inst = await instances.respawn(id);
-  return inst.summary();
+  const inst = instances.idsForSession(sessionId).map(id => instances.get(id)).find(Boolean);
+  if (!inst) {
+    return { ok: false, code: 'SESSION_NOT_LIVE', sessionId,
+      reason: `no in-memory instance for session ${sessionId} — call spawn_instance({resume:"${sessionId}"}) to bring it back.` };
+  }
+  const respawned = await instances.respawn(inst.id);
+  return toConductorView(respawned.summary());
 }
 
 // Promote a temp session to a persistent one — reuses the same
-// Instance.promoteToNormal() the REST endpoint calls. getInst throws
-// "instance not found: <id>" for an unknown id (the 404 equivalent);
-// promoteToNormal throws "instance is not temp" (statusCode 400). Both
-// surface as structured isError MCP responses rather than crashes.
-export async function promoteSession({ id }, { instances }) {
-  const inst = getInst(instances, id);
-  return inst.promoteToNormal();
+// Instance.promoteToNormal() the REST endpoint calls. getInst returns a soft
+// SESSION_NOT_LIVE/SESSION_UNKNOWN for a non-live/unknown session;
+// promoteToNormal throws "instance is not temp" (statusCode 400) → isError.
+export async function promoteSession({ sessionId }, { instances }) {
+  const r = await getInst(instances, sessionId);
+  if (r.soft) return r.soft;
+  const inst = r.inst;
+  return toConductorView(await inst.promoteToNormal());
 }
 
 // ---------- mutating: plan approval ----------
@@ -361,39 +423,43 @@ export async function promoteSession({ id }, { instances }) {
 // button (public/app.js onPlanDecision) — phrasing comes from the
 // shared planApproval module so the three entry points (UI click,
 // server-side auto-approve, MCP) all look identical to the worker.
-export async function approvePlan({ id, feedback }, { instances }) {
-  const inst = getInst(instances, id);
-  if (!inst.proc) throw new Error(`instance ${id} is not running (status=${inst.status})`);
+export async function approvePlan({ sessionId, feedback }, { instances }) {
+  const r = await getInst(instances, sessionId);
+  if (r.soft) return r.soft;
+  const inst = r.inst;
   if (inst.mode === 'plan') {
     try { await inst.setMode('bypassPermissions'); }
     catch (e) {
-      throw new Error(`failed to switch instance ${id} to bypassPermissions: ${e.message}`);
+      throw new Error(`failed to switch session ${sessionId} to bypassPermissions: ${e.message}`);
     }
   }
   const text = buildApprovePrompt(feedback);
   await inst.prompt(text, [], { annotateIfMidTurn: false });
-  return { id, mode: inst.mode, sentText: text };
+  return { sessionId: inst.sessionId, mode: inst.mode, sentText: text };
 }
 
 // Reject a worker's plan: stay in plan mode, send the refinement prompt.
 // The worker will produce a revised plan; the conductor loops back to
 // reviewing get_recent_messages and either approves or rejects again.
-export async function rejectPlan({ id, feedback }, { instances }) {
-  const inst = getInst(instances, id);
-  if (!inst.proc) throw new Error(`instance ${id} is not running (status=${inst.status})`);
+export async function rejectPlan({ sessionId, feedback }, { instances }) {
+  const r = await getInst(instances, sessionId);
+  if (r.soft) return r.soft;
+  const inst = r.inst;
   const text = buildRejectPrompt(feedback);
   await inst.prompt(text, [], { annotateIfMidTurn: false });
-  return { id, mode: inst.mode, sentText: text };
+  return { sessionId: inst.sessionId, mode: inst.mode, sentText: text };
 }
 
 // Flip the per-instance auto-approve-plan flag. While enabled, the next
 // plan_request emitted by the worker auto-fires the same setMode +
 // approval-prompt path as approvePlan above, server-side, without any
 // further intervention. Useful for "fire N workers and let them roll".
-export async function setAutoApprovePlan({ id, enabled }, { instances }) {
-  const inst = getInst(instances, id);
+export async function setAutoApprovePlan({ sessionId, enabled }, { instances }) {
+  const r = await getInst(instances, sessionId);
+  if (r.soft) return r.soft;
+  const inst = r.inst;
   inst.setAutoApprovePlan(!!enabled);
-  return { id, autoApprovePlan: inst.autoApprovePlan };
+  return { sessionId: inst.sessionId, autoApprovePlan: inst.autoApprovePlan };
 }
 
 // ---------- read-only: worktree diff ----------
@@ -671,18 +737,15 @@ export async function deleteWorktree({ project, worktree, force = false }, { ins
   return { project, worktree };
 }
 
-export async function syncWorktree({ id }, { instances }) {
-  const inst = getInst(instances, id);
-  if (!inst.worktree) throw new Error(`instance ${id} is not attached to a worktree`);
+export async function syncWorktree({ sessionId }, { instances }) {
+  const r = await getInst(instances, sessionId);
+  if (r.soft) return r.soft;
+  const inst = r.inst;
+  if (!inst.worktree) throw new Error(`session ${sessionId} is not attached to a worktree`);
   const result = await fsSyncWorktree(inst.project, inst.worktree.worktreeName);
   if (result.ok && result.action === 'rebase-required') {
-    if (!inst.proc) {
-      return {
-        ok: false,
-        code: 'INSTANCE_NOT_RUNNING',
-        reason: 'instance is not running — Resume it before calling sync_worktree so the agent can rebase',
-      };
-    }
+    // getInst is LIVE-only, so inst.proc is guaranteed — the agent is here to
+    // drive the rebase prompt.
     await inst.prompt(buildRebasePrompt(inst.worktree), [], { annotateIfMidTurn: false });
     return {
       ok: true, action: 'rebase-prompt-sent',
@@ -692,17 +755,19 @@ export async function syncWorktree({ id }, { instances }) {
   return result;
 }
 
-export async function mergeWorktree({ id, project, worktree }, { instances }) {
+export async function mergeWorktree({ sessionId, project, worktree }, { instances }) {
   let projectName, wtName, meta;
-  if (id) {
-    const inst = getInst(instances, id);
-    if (!inst.worktree) throw new Error(`instance ${id} is not attached to a worktree`);
+  if (sessionId) {
+    const r = await getInst(instances, sessionId);
+    if (r.soft) return r.soft;
+    const inst = r.inst;
+    if (!inst.worktree) throw new Error(`session ${sessionId} is not attached to a worktree`);
     projectName = inst.project;
     wtName = inst.worktree.worktreeName;
     meta = inst.worktree;
   } else {
     if (!project || !worktree) {
-      throw new Error('merge_worktree requires either id or both {project, worktree}');
+      throw new Error('merge_worktree requires either sessionId or both {project, worktree}');
     }
     projectName = project;
     wtName = worktree;
@@ -844,8 +909,10 @@ async function mergeRecentWithDisk(inst, ringMessages, includeThinking) {
 // trimmed do we read back into the on-disk transcript — so ring eviction never
 // produces a false-empty result. Output is the multi-block payload: a metadata
 // block + one raw text body per message (block k+1 ↔ messages[k]).
-export async function getRecentMessages({ id, count, includeToolCalls = false, includeThinking = false }, { instances }) {
-  const inst = getInst(instances, id);
+export async function getRecentMessages({ sessionId, count, includeToolCalls = false, includeThinking = false }, { instances }) {
+  const r = await getInst(instances, sessionId);
+  if (r.soft) return r.soft;
+  const inst = r.inst;
   const n = Math.max(1, Math.min(Number.isInteger(count) ? count : 1, 50));
 
   const ring = inst.ringSnapshot();
@@ -884,7 +951,7 @@ export async function getRecentMessages({ id, count, includeToolCalls = false, i
 
   const lastSeq = ring.length ? ring[ring.length - 1]._seq : -1;
   const meta = {
-    id,
+    sessionId: inst.sessionId,
     messages: metaMessages,
     source,
     omittedToolOnly,

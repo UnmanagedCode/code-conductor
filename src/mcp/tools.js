@@ -23,8 +23,9 @@ export function buildTools() {
     {
       name: 'list_instances',
       description:
-        'List every live or recently-exited orchestrator instance. Each entry carries ' +
-        '{id, project, sessionId, status, mode, effort, thinking, model, pid, worktree, temp, conducted, debug}. ' +
+        'List every live or recently-exited orchestrator worker. Each entry carries ' +
+        '{project, sessionId, status, mode, effort, thinking, model, pid, worktree, temp, conducted, debug, hasIdleSubscriber}. ' +
+        'sessionId is the stable handle for every worker-addressing tool. ' +
         '`conducted:true` marks a session spawned via this `spawn_instance` tool.',
       inputSchema: { type: 'object', properties: {}, required: [] },
       handler: h.listInstances,
@@ -94,11 +95,11 @@ export function buildTools() {
       inputSchema: {
         type: 'object',
         properties: {
-          id: { type: 'string', description: 'Instance id.' },
+          sessionId: { type: 'string', description: 'Worker sessionId.' },
           sinceSeq: { type: 'integer', default: -1, description: 'Return events with _seq > sinceSeq (forward, oldest-first). Default -1 → newest page. Pass the previous call\'s nextAfter to poll incrementally.' },
           limit: { type: 'integer', minimum: 1, maximum: 500, default: 200, description: 'Max events returned per call (clamped to [1, 500]). Use nextAfter + hasMore to page.' },
         },
-        required: ['id'],
+        required: ['sessionId'],
       },
       handler: h.getTranscript,
       annotations: { readOnlyHint: true },
@@ -107,7 +108,8 @@ export function buildTools() {
       name: 'spawn_instance',
       description:
         'Spawn a new Claude subprocess inside a project (optionally inside a new or existing git worktree of it). ' +
-        'Returns the instance summary. Pass createWorktree:true to create a fresh worktree off HEAD, or ' +
+        'Returns the worker summary — capture the returned `sessionId`, the stable handle every other ' +
+        'worker-addressing tool takes. Pass createWorktree:true to create a fresh worktree off HEAD, or ' +
         'worktree:"<name>" to attach to an existing one (createWorktree wins if both are given). ' +
         'Defaults to temp:true (disposable worker) but mode still defaults to plan ' +
         '(NOT bypassPermissions) so workers plan before acting — promote with promote_session to keep one. ' +
@@ -154,12 +156,12 @@ export function buildTools() {
       inputSchema: {
         type: 'object',
         properties: {
-          id: { type: 'string' },
+          sessionId: { type: 'string', description: 'Worker sessionId.' },
           text: { type: 'string' },
           wait: { type: 'boolean', default: false, description: 'Block until turn_end. Default false.' },
           waitTimeoutMs: { type: 'integer', default: 600000, description: 'Per-call wait cap (default 600000 = 10 min).' },
         },
-        required: ['id', 'text'],
+        required: ['sessionId', 'text'],
       },
       handler: h.sendPrompt,
     },
@@ -171,10 +173,10 @@ export function buildTools() {
       inputSchema: {
         type: 'object',
         properties: {
-          id: { type: 'string' },
+          sessionId: { type: 'string', description: 'Worker sessionId.' },
           timeoutMs: { type: 'integer', default: 600000, description: 'Default 600000 (10 min) — matches send_prompt\'s wait cap.' },
         },
-        required: ['id'],
+        required: ['sessionId'],
       },
       handler: h.waitForIdle,
     },
@@ -186,10 +188,10 @@ export function buildTools() {
       inputSchema: {
         type: 'object',
         properties: {
-          id: { type: 'string' },
+          sessionId: { type: 'string', description: 'Worker sessionId.' },
           mode: { type: 'string', enum: VALID_MODES },
         },
-        required: ['id', 'mode'],
+        required: ['sessionId', 'mode'],
       },
       handler: h.setMode,
       annotations: { idempotentHint: true },
@@ -203,10 +205,10 @@ export function buildTools() {
       inputSchema: {
         type: 'object',
         properties: {
-          id: { type: 'string', description: 'Instance id of the worker whose plan you\'re approving.' },
+          sessionId: { type: 'string', description: 'Worker sessionId of the worker whose plan you\'re approving.' },
           feedback: { type: 'string', description: 'Optional additional notes appended to the approval message.' },
         },
-        required: ['id'],
+        required: ['sessionId'],
       },
       handler: h.approvePlan,
     },
@@ -219,10 +221,10 @@ export function buildTools() {
       inputSchema: {
         type: 'object',
         properties: {
-          id: { type: 'string', description: 'Instance id of the worker whose plan you\'re rejecting.' },
+          sessionId: { type: 'string', description: 'Worker sessionId of the worker whose plan you\'re rejecting.' },
           feedback: { type: 'string', description: 'What you want the worker to change. Strongly recommended.' },
         },
-        required: ['id'],
+        required: ['sessionId'],
       },
       handler: h.rejectPlan,
     },
@@ -236,10 +238,10 @@ export function buildTools() {
       inputSchema: {
         type: 'object',
         properties: {
-          id: { type: 'string' },
+          sessionId: { type: 'string', description: 'Worker sessionId.' },
           enabled: { type: 'boolean' },
         },
-        required: ['id', 'enabled'],
+        required: ['sessionId', 'enabled'],
       },
       handler: h.setAutoApprovePlan,
       annotations: { idempotentHint: true },
@@ -251,7 +253,7 @@ export function buildTools() {
         'injects a short stub user prompt into the *calling* instance pointing at get_recent_messages. ' +
         'Use this right after send_prompt({wait:false}) so you can hand control back to the user but still ' +
         'be re-woken when the worker finishes. The subscription is consumed on fire — call again to watch ' +
-        'further turns. Caller identity is taken from the MCP URL (?caller=<id>), so this only works for ' +
+        'further turns. Caller identity is taken from the MCP URL (?caller=<sessionId>), so this only works for ' +
         'orchestrator-spawned instances. ' +
         'Optional timeoutMs watchdog: if the worker has not hit turn_end within that many milliseconds, ' +
         'the subscription fires early with a timeout-flagged stub that says the worker did NOT finish, ' +
@@ -261,7 +263,7 @@ export function buildTools() {
       inputSchema: {
         type: 'object',
         properties: {
-          targetId: { type: 'string', description: 'Instance id of the worker to watch for turn_end.' },
+          sessionId: { type: 'string', description: 'Worker sessionId to watch for turn_end.' },
           timeoutMs: {
             type: 'number',
             minimum: 1,
@@ -272,7 +274,7 @@ export function buildTools() {
               'distinguish a timed-out worker from a finished one.',
           },
         },
-        required: ['targetId'],
+        required: ['sessionId'],
       },
       handler: h.subscribeToIdle,
     },
@@ -283,8 +285,8 @@ export function buildTools() {
         'subscription was active for this caller/target pair.',
       inputSchema: {
         type: 'object',
-        properties: { targetId: { type: 'string' } },
-        required: ['targetId'],
+        properties: { sessionId: { type: 'string', description: 'Worker sessionId.' } },
+        required: ['sessionId'],
       },
       handler: h.unsubscribeFromIdle,
       annotations: { idempotentHint: true },
@@ -295,20 +297,21 @@ export function buildTools() {
       inputSchema: {
         type: 'object',
         properties: {
-          id: { type: 'string' },
+          sessionId: { type: 'string', description: 'Worker sessionId.' },
           force: { type: 'boolean', default: false, description: 'true = hard abort; omitted/false = soft graceful stop' },
         },
-        required: ['id'],
+        required: ['sessionId'],
       },
       handler: h.interruptTurn,
     },
     {
       name: 'kill_instance',
-      description: 'Terminate an instance subprocess and remove it from the manager.',
+      description: 'Terminate a running worker subprocess and remove it from the manager. ' +
+        'LIVE-only: addresses the worker by sessionId and only acts on a running instance.',
       inputSchema: {
         type: 'object',
-        properties: { id: { type: 'string' } },
-        required: ['id'],
+        properties: { sessionId: { type: 'string', description: 'Worker sessionId.' } },
+        required: ['sessionId'],
       },
       handler: h.killInstance,
       annotations: { destructiveHint: true, idempotentHint: true },
@@ -316,12 +319,14 @@ export function buildTools() {
     {
       name: 'respawn_instance',
       description:
-        'Respawn an exited/crashed instance against its last sessionId (--resume). The in-memory ' +
-        'event ring is preserved across the respawn.',
+        'Respawn an exited/crashed worker against its sessionId (--resume). The in-memory ' +
+        'event ring is preserved across the respawn. Requires an in-memory instance for the ' +
+        'session (a recently-exited one); to bring back a session with no in-memory instance ' +
+        'use spawn_instance({resume:sessionId}).',
       inputSchema: {
         type: 'object',
-        properties: { id: { type: 'string' } },
-        required: ['id'],
+        properties: { sessionId: { type: 'string', description: 'Worker sessionId.' } },
+        required: ['sessionId'],
       },
       handler: h.respawnInstance,
     },
@@ -329,12 +334,12 @@ export function buildTools() {
       name: 'promote_session',
       description:
         'Promote a temp session to a persistent one: flips temp=false and writes last-prompt + ' +
-        'permission-mode so `claude --resume` finds it (emits a status update). Errors if the ' +
-        'instance id is unknown or the instance is not temp.',
+        'permission-mode so `claude --resume` finds it (emits a status update). Refuses if the ' +
+        'session is unknown / not live, and errors if the session is not temp.',
       inputSchema: {
         type: 'object',
-        properties: { id: { type: 'string', description: 'Instance id of the temp session to keep.' } },
-        required: ['id'],
+        properties: { sessionId: { type: 'string', description: 'Worker sessionId of the temp session to keep.' } },
+        required: ['sessionId'],
       },
       handler: h.promoteSession,
     },
@@ -372,11 +377,11 @@ export function buildTools() {
       description:
         'Bring a worktree up to date with its base branch — server-side fast-forward when possible; ' +
         'otherwise attempts an automatic git rebase and only sends a rebase prompt to the worktree\'s ' +
-        'live agent when conflicts block the rebase. Caller passes the worktree\'s attached instance id.',
+        'live agent when conflicts block the rebase. Caller passes the worktree\'s attached worker sessionId.',
       inputSchema: {
         type: 'object',
-        properties: { id: { type: 'string', description: 'Instance id attached to the worktree.' } },
-        required: ['id'],
+        properties: { sessionId: { type: 'string', description: 'Worker sessionId attached to the worktree.' } },
+        required: ['sessionId'],
       },
       handler: h.syncWorktree,
     },
@@ -385,14 +390,14 @@ export function buildTools() {
       description:
         'Merge a worktree\'s branch into its parent repo with a real merge commit (--no-ff). ' +
         'Refuses with a friendly reason if the worktree hasn\'t been synced first. ' +
-        'Pass either {id} or {project, worktree} — the latter form lets you ' +
-        'merge a worktree whose instance has already been killed.',
+        'Pass either {sessionId} (live worker) or {project, worktree} — the latter form lets you ' +
+        'merge a worktree whose worker has already been killed.',
       inputSchema: {
         type: 'object',
         properties: {
-          id: { type: 'string', description: 'Live or dead instance attached to the worktree.' },
-          project: { type: 'string', description: 'Parent project — required if id is omitted.' },
-          worktree: { type: 'string', description: 'Worktree dir name — required if id is omitted.' },
+          sessionId: { type: 'string', description: 'Live worker sessionId attached to the worktree.' },
+          project: { type: 'string', description: 'Parent project — required if sessionId is omitted.' },
+          worktree: { type: 'string', description: 'Worktree dir name — required if sessionId is omitted.' },
         },
       },
       handler: h.mergeWorktree,
@@ -506,7 +511,7 @@ export function buildTools() {
         'DISK-BACKED & ring-first: served from the in-memory ring on the hot path; if the ring\'s retained ' +
         'tail can\'t satisfy the requested recent TEXT messages (tool-event volume evicted them) it transparently ' +
         'reads back into the on-disk session transcript — so ring eviction never yields a false-empty result. ' +
-        'OUTPUT: a compact-JSON metadata block (content[0]) {id, messages:[{index, msgId, hasToolUse, textChars, ' +
+        'OUTPUT: a compact-JSON metadata block (content[0]) {sessionId, messages:[{index, msgId, hasToolUse, textChars, ' +
         'textTruncated, plan?, questions?, blocks?}], source:"ring"|"disk", omittedToolOnly:int, retained:{firstSeq, ' +
         'lastSeq, trimmed}, hint?} oldest-first, PLUS one raw, un-escaped text block per message (content[k+1] is the ' +
         'prose for messages[k]; empty for plan/question-only turns). `omittedToolOnly` counts recent tool-call-only ' +
@@ -516,12 +521,12 @@ export function buildTools() {
       inputSchema: {
         type: 'object',
         properties: {
-          id: { type: 'string', description: 'Instance id.' },
+          sessionId: { type: 'string', description: 'Worker sessionId.' },
           count: { type: 'integer', minimum: 1, maximum: 50, default: 1, description: 'Number of recent messages to return (from the filtered set). Default 1, clamped to [1, 50].' },
           includeToolCalls: { type: 'boolean', default: false, description: 'When true, include tool-call-only messages (no text blocks) in the result. Default false.' },
           includeThinking: { type: 'boolean', default: false, description: 'When true, include thinking blocks in blocks[]. Default false.' },
         },
-        required: ['id'],
+        required: ['sessionId'],
       },
       handler: h.getRecentMessages,
       annotations: { readOnlyHint: true },
