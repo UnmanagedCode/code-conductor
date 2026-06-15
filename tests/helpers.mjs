@@ -81,6 +81,27 @@ export async function bootServer({ scenarioPath, useRealClaude = false } = {}) {
 export const instForSession = (instances, sid) =>
   instances.get(instances.idsForSession(sid)[0]);
 
+// Point PROJECTS_ROOT/CLAUDE_PROJECTS_ROOT at a fresh temp home so a server
+// shared across a file (booted once in before(), torn down in after()) still
+// sees a pristine settings/sidecar/project namespace each test. Mirrors the
+// per-server tmpHome setup bootServer does internally — projectsRoot() /
+// orchStoreRoot() / claudeProjectsRoot() all read process.env live, and the
+// appSettings cache keys by settingsPath(), so swapping the root here gives
+// each test fresh on-disk + cached state without rebooting the server. Pair
+// with `await instances.shutdown()` (clears the in-memory byId map, the only
+// non-root-keyed state) and `await rmrf(home)` in afterEach.
+export async function freshProjectsRoot() {
+  resetProjectsCache(0);
+  const home = await makeTmpHome();
+  process.env.PROJECTS_ROOT = path.join(home, 'project');
+  process.env.CLAUDE_PROJECTS_ROOT = path.join(home, '.claude', 'projects');
+  return {
+    home,
+    projectsRoot: process.env.PROJECTS_ROOT,
+    claudeProjectsRoot: process.env.CLAUDE_PROJECTS_ROOT,
+  };
+}
+
 export async function api(baseUrl, method, urlPath, body) {
   const res = await fetch(baseUrl + urlPath, {
     method,
