@@ -81,16 +81,23 @@ export class ImageBlock {
 export class ThinkingBlock {
   constructor() {
     this.body = el('div', { class: 'body' });
-    const det = el('details', { class: 'block thinking' },
-      el('summary', {}, 'thinking'),
-      this.body,
-    );
+    this._summary = el('summary', {}, 'thinking');
+    const det = el('details', { class: 'block thinking' }, this._summary, this.body);
     this.node = det;
     this.redacted = false;
+    this._thinkingTokens = 0;
   }
   appendDelta(text) { this.body.appendChild(document.createTextNode(text)); }
+  updateThinkingTokens(n) {
+    this._thinkingTokens = n;
+    if (!this.redacted) {
+      this._summary.textContent = `thinking… ${n.toLocaleString()} tokens`;
+    }
+  }
   markRedacted() {
-    const flat = el('div', { class: 'block thinking redacted' }, 'thinking (redacted)');
+    const tokenSuffix = this._thinkingTokens > 0
+      ? `, ~${this._thinkingTokens.toLocaleString()} tokens` : '';
+    const flat = el('div', { class: 'block thinking redacted' }, `thinking (redacted${tokenSuffix})`);
     this.node.replaceWith(flat);
     this.node = flat;
     this.body = flat;
@@ -99,8 +106,7 @@ export class ThinkingBlock {
   finalize() {
     if (this.redacted) return;
     const len = this.body.textContent.length;
-    const summary = this.node.querySelector('summary');
-    summary.textContent = `thinking (${len} chars)`;
+    this._summary.textContent = `thinking (${len} chars)`;
   }
 }
 
