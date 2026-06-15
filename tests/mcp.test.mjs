@@ -41,11 +41,26 @@ async function callTool(baseUrl, name, args) {
   return body.result;
 }
 
-// MCP wraps tool returns as content[].text JSON — unwrap to the underlying object.
+// MCP wraps tool returns as content[]: content[0] is always compact JSON
+// metadata; content[1..] are raw text bodies (multi-block tools). unwrap reads
+// the metadata block; the payload helpers also expose the raw bodies.
 function unwrap(result) {
   assert.ok(Array.isArray(result.content), 'tool result has content[]');
-  const text = result.content.map(c => c.text).join('');
-  return JSON.parse(text);
+  return JSON.parse(result.content[0].text);
+}
+function unwrapPayload(result) {
+  assert.ok(Array.isArray(result.content), 'tool result has content[]');
+  return { meta: JSON.parse(result.content[0].text), bodies: result.content.slice(1).map(c => c.text) };
+}
+// read_file convenience: merge the body back onto the metadata as `content`.
+function unwrapFile(result) {
+  const { meta, bodies } = unwrapPayload(result);
+  return { ...meta, content: bodies[0] ?? '' };
+}
+// get_recent_messages convenience: reattach each message's text from its body.
+function unwrapMessages(result) {
+  const { meta, bodies } = unwrapPayload(result);
+  return { id: meta.id, messages: meta.messages.map((m, i) => ({ ...m, text: bodies[i] ?? '' })) };
 }
 
 function git(cwd, ...args) {
@@ -183,7 +198,7 @@ test('spawn_instance + send_prompt(wait:true) + get_transcript round-trip', asyn
       id: spawn.id, text: 'go', wait: true, waitTimeoutMs: 5000,
     });
     const promptBody = unwrap(promptRes);
-    assert.equal(promptBody.ok, true);
+    assert.equal(promptBody.id, spawn.id);
     assert.ok(promptBody.turnEnd, 'wait:true returns the turn_end event');
     assert.equal(promptBody.turnEnd.kind, 'turn_end');
 
@@ -225,13 +240,18 @@ test('get_transcript + get_recent_messages survive a trimmed ring', async () => 
 
     const tx = unwrap(await callTool(baseUrl, 'get_transcript', { id: spawn.id }));
     assert.equal(tx.trimmedBefore, inst.ring.trimmedBefore);
-    // sinceSeq below trimmedBefore: only retained events come back — the
-    // caller detects the gap via trimmedBefore and pages the REST endpoint.
-    const below = unwrap(await callTool(baseUrl, 'get_transcript', { id: spawn.id, sinceSeq: 0, limit: 0 }));
+    // sinceSeq below trimmedBefore: this fixture has no on-disk jsonl (the fake
+    // CLI doesn't write one), so disk-fallback finds nothing and the dropped
+    // range is served from the ring only — events start at trimmedBefore.
+    // (Real disk-backed paging into a dropped range is covered in
+    // tests/mcp-recent-disk.test.mjs.)
+    const below = unwrap(await callTool(baseUrl, 'get_transcript', { id: spawn.id, sinceSeq: 0 }));
     assert.ok(below.events.length > 0);
     assert.ok(below.events[0]._seq >= below.trimmedBefore);
+    assert.equal(typeof below.hasMore, 'boolean');
+    assert.equal(typeof below.nextAfter, 'number');
 
-    const recent = unwrap(await callTool(baseUrl, 'get_recent_messages', { id: spawn.id }));
+    const recent = unwrapMessages(await callTool(baseUrl, 'get_recent_messages', { id: spawn.id }));
     assert.equal(recent.messages.length, 1);
     assert.ok(recent.messages[0].text.includes('the latest words'));
   } finally {
@@ -304,7 +324,7 @@ test('kill_instance removes the instance from the manager', async () => {
     const spawn = unwrap(await callTool(baseUrl, 'spawn_instance', { project: 'a', mode: 'bypassPermissions' }));
     await waitFor(() => instances.get(spawn.id).sessionId);
     const killRes = unwrap(await callTool(baseUrl, 'kill_instance', { id: spawn.id }));
-    assert.equal(killRes.ok, true);
+    assert.equal(killRes.id, spawn.id);
     assert.equal(instances.get(spawn.id), undefined);
   } finally { await close(); }
 });
@@ -445,7 +465,7 @@ test('locate_session finds an on-disk session by id, 404s when missing', async (
     await fs.copyFile(FIXTURE_JSONL, path.join(dir, `${sid}.jsonl`));
 
     const hit = unwrap(await callTool(ctx.baseUrl, 'locate_session', { sessionId: sid }));
-    assert.deepEqual(hit, { project: 'host', worktreeName: null });
+    assert.deepEqual(hit, { project: 'host', worktree: null });
 
     const { body: miss } = await rpc(ctx.baseUrl, 'tools/call', {
       name: 'locate_session', arguments: { sessionId: '00000000-0000-0000-0000-000000000000' },
@@ -465,17 +485,17 @@ test('create_worktree + list_worktrees + delete_worktree against a real git repo
   try {
     await makeRealRepo(ctx.projectsRoot, 'demo');
     const createRes = unwrap(await callTool(ctx.baseUrl, 'create_worktree', { project: 'demo' }));
-    assert.match(createRes.worktreeName, /^demo_worktree_[a-f0-9]{6}$/);
+    assert.match(createRes.worktree, /^demo_worktree_[a-f0-9]{6}$/);
     assert.equal(createRes.baseBranch, 'main');
 
     const wts = unwrap(await callTool(ctx.baseUrl, 'list_worktrees', { project: 'demo' }));
     assert.equal(wts.length, 1);
-    assert.equal(wts[0].worktreeName, createRes.worktreeName);
+    assert.equal(wts[0].worktree, createRes.worktree);
 
     const del = unwrap(await callTool(ctx.baseUrl, 'delete_worktree', {
-      project: 'demo', worktreeName: createRes.worktreeName,
+      project: 'demo', worktree: createRes.worktree,
     }));
-    assert.equal(del.ok, true);
+    assert.equal(del.worktree, createRes.worktree);
     const wts2 = unwrap(await callTool(ctx.baseUrl, 'list_worktrees', { project: 'demo' }));
     assert.equal(wts2.length, 0);
   } finally { await ctx.close(); }
@@ -487,7 +507,7 @@ test('merge_worktree refuses with friendly reason when the worktree is behind', 
     const repoPath = await makeRealRepo(ctx.projectsRoot, 'demo');
     // Spawn an instance into a fresh worktree.
     const spawn = unwrap(await callTool(ctx.baseUrl, 'spawn_instance', {
-      project: 'demo', mode: 'bypassPermissions', worktree: true,
+      project: 'demo', mode: 'bypassPermissions', createWorktree: true,
     }));
     await waitFor(() => ctx.instances.get(spawn.id).sessionId);
 
@@ -496,20 +516,21 @@ test('merge_worktree refuses with friendly reason when the worktree is behind', 
     await git(repoPath, 'add', '.');
     await git(repoPath, 'commit', '-q', '-m', 'second');
 
-    const mergeRes = unwrap(await callTool(ctx.baseUrl, 'merge_worktree', { instanceId: spawn.id }));
+    const mergeRes = unwrap(await callTool(ctx.baseUrl, 'merge_worktree', { id: spawn.id }));
     assert.equal(mergeRes.ok, false);
+    assert.equal(mergeRes.code, 'WORKTREE_BEHIND');
     assert.match(mergeRes.reason, /behind .* click Sync first|call sync_worktree first/i);
   } finally { await ctx.close(); }
 });
 
-test('merge_worktree accepts {project, worktreeName} when the instance is gone', async () => {
+test('merge_worktree accepts {project, worktree} when the instance is gone', async () => {
   const ctx = await bootServer({ scenarioPath: SCENARIO_WS });
   try {
     await makeRealRepo(ctx.projectsRoot, 'demo');
     // Create a worktree, attach an instance, kill the instance — the
     // worktree itself stays around.
     const spawn = unwrap(await callTool(ctx.baseUrl, 'spawn_instance', {
-      project: 'demo', mode: 'bypassPermissions', worktree: true,
+      project: 'demo', mode: 'bypassPermissions', createWorktree: true,
     }));
     await waitFor(() => ctx.instances.get(spawn.id).sessionId);
     const wtName = ctx.instances.get(spawn.id).worktree.worktreeName;
@@ -519,21 +540,21 @@ test('merge_worktree accepts {project, worktreeName} when the instance is gone',
     // The worktree is up-to-date with main (no commits yet on either side),
     // so a merge with --no-ff produces an empty-but-valid merge commit.
     const mergeRes = unwrap(await callTool(ctx.baseUrl, 'merge_worktree', {
-      project: 'demo', worktreeName: wtName,
+      project: 'demo', worktree: wtName,
     }));
     assert.equal(mergeRes.ok, true);
     assert.ok(mergeRes.newSha, 'merge produced a new HEAD sha');
   } finally { await ctx.close(); }
 });
 
-test('merge_worktree rejects calls without instanceId or {project, worktreeName}', async () => {
+test('merge_worktree rejects calls without id or {project, worktree}', async () => {
   const ctx = await bootServer({ scenarioPath: SCENARIO_WS });
   try {
     const { body } = await rpc(ctx.baseUrl, 'tools/call', {
       name: 'merge_worktree', arguments: {},
     });
     assert.equal(body.result.isError, true);
-    assert.match(body.result.content[0].text, /requires either instanceId or both/);
+    assert.match(body.result.content[0].text, /requires either id or both/);
   } finally { await ctx.close(); }
 });
 
@@ -555,12 +576,12 @@ test('create_project creates the directory, seeds CLAUDE.md, and optionally init
     const gitStat = await fs.stat(path.join(ctx.projectsRoot, 'with-git', '.git'));
     assert.ok(gitStat.isDirectory());
 
-    // Name validation flows through to MCP isError.
+    // Name validation now fires at the schema layer (pattern) before the handler.
     const { body } = await rpc(ctx.baseUrl, 'tools/call', {
       name: 'create_project', arguments: { name: 'bad name with spaces' },
     });
     assert.equal(body.result.isError, true);
-    assert.match(body.result.content[0].text, /invalid project name/);
+    assert.match(body.result.content[0].text, /must match \^\[a-zA-Z0-9/);
 
     // EEXIST surfaces as isError too.
     const { body: dup } = await rpc(ctx.baseUrl, 'tools/call', {
@@ -581,12 +602,12 @@ test('get_recent_messages reads the most recent assistant text from the ring', a
     await waitFor(() => ctx.instances.get(spawn.id).status === 'idle' && ctx.instances.get(spawn.id).sessionId);
 
     // Before any turn — no assistant content yet.
-    const before = unwrap(await callTool(ctx.baseUrl, 'get_recent_messages', { id: spawn.id }));
+    const before = unwrapMessages(await callTool(ctx.baseUrl, 'get_recent_messages', { id: spawn.id }));
     assert.equal(before.messages.length, 0);
 
     // First turn: text "First " + Bash tool_use.
     await callTool(ctx.baseUrl, 'send_prompt', { id: spawn.id, text: 'one', wait: true, waitTimeoutMs: 5000 });
-    const first = unwrap(await callTool(ctx.baseUrl, 'get_recent_messages', { id: spawn.id }));
+    const first = unwrapMessages(await callTool(ctx.baseUrl, 'get_recent_messages', { id: spawn.id }));
     assert.equal(first.messages[0].text, 'First ');
     assert.equal(first.messages[0].hasToolUse, true);
     assert.ok(first.messages[0].blocks.some(b => b.type === 'tool_use' && b.name === 'Bash'));
@@ -594,20 +615,20 @@ test('get_recent_messages reads the most recent assistant text from the ring', a
 
     // Second turn: just text "Second!" — should now be the latest.
     await callTool(ctx.baseUrl, 'send_prompt', { id: spawn.id, text: 'two', wait: true, waitTimeoutMs: 5000 });
-    const second = unwrap(await callTool(ctx.baseUrl, 'get_recent_messages', { id: spawn.id }));
+    const second = unwrapMessages(await callTool(ctx.baseUrl, 'get_recent_messages', { id: spawn.id }));
     assert.equal(second.messages[0].text, 'Second!');
     assert.notEqual(second.messages[0].msgId, first.messages[0].msgId);
     assert.ok(!Object.hasOwn(second.messages[0], 'blocks'), 'pure-text message omits blocks field');
 
     // count:2 returns both turns, oldest-first.
-    const both = unwrap(await callTool(ctx.baseUrl, 'get_recent_messages', { id: spawn.id, count: 2 }));
+    const both = unwrapMessages(await callTool(ctx.baseUrl, 'get_recent_messages', { id: spawn.id, count: 2 }));
     assert.equal(both.messages.length, 2);
     assert.equal(both.messages[0].text, 'First ');
     assert.equal(both.messages[0].hasToolUse, true);
     assert.equal(both.messages[1].text, 'Second!');
 
     // count larger than available — returns what's there.
-    const cap = unwrap(await callTool(ctx.baseUrl, 'get_recent_messages', { id: spawn.id, count: 10 }));
+    const cap = unwrapMessages(await callTool(ctx.baseUrl, 'get_recent_messages', { id: spawn.id, count: 10 }));
     assert.equal(cap.messages.length, 2);
   } finally { await ctx.close(); }
 });
@@ -623,7 +644,7 @@ test('get_recent_messages filters tool-call-only messages by default', async () 
 
     // Turn 1: tool-only. Default filter → messages[] is empty.
     await callTool(ctx.baseUrl, 'send_prompt', { id: spawn.id, text: 'one', wait: true, waitTimeoutMs: 5000 });
-    const afterToolOnly = unwrap(await callTool(ctx.baseUrl, 'get_recent_messages', { id: spawn.id }));
+    const afterToolOnly = unwrapMessages(await callTool(ctx.baseUrl, 'get_recent_messages', { id: spawn.id }));
     assert.equal(afterToolOnly.messages.length, 0);
 
     // Turn 2: text "Hello".
@@ -632,12 +653,12 @@ test('get_recent_messages filters tool-call-only messages by default', async () 
     await callTool(ctx.baseUrl, 'send_prompt', { id: spawn.id, text: 'three', wait: true, waitTimeoutMs: 5000 });
 
     // Default filter: count:3 yields only the one message with text.
-    const filtered = unwrap(await callTool(ctx.baseUrl, 'get_recent_messages', { id: spawn.id, count: 3 }));
+    const filtered = unwrapMessages(await callTool(ctx.baseUrl, 'get_recent_messages', { id: spawn.id, count: 3 }));
     assert.equal(filtered.messages.length, 1);
     assert.equal(filtered.messages[0].text, 'Hello');
 
     // includeToolCalls:true restores all three messages, oldest-first.
-    const all = unwrap(await callTool(ctx.baseUrl, 'get_recent_messages', { id: spawn.id, count: 3, includeToolCalls: true }));
+    const all = unwrapMessages(await callTool(ctx.baseUrl, 'get_recent_messages', { id: spawn.id, count: 3, includeToolCalls: true }));
     assert.equal(all.messages.length, 3);
     assert.equal(all.messages[0].text, '');
     assert.equal(all.messages[0].hasToolUse, true);
@@ -660,13 +681,13 @@ test('get_recent_messages strips thinking blocks by default, includeThinking res
     await callTool(ctx.baseUrl, 'send_prompt', { id: spawn.id, text: 'one', wait: true, waitTimeoutMs: 5000 });
 
     // Default: thinking stripped, text-bearing message still returned.
-    const stripped = unwrap(await callTool(ctx.baseUrl, 'get_recent_messages', { id: spawn.id }));
+    const stripped = unwrapMessages(await callTool(ctx.baseUrl, 'get_recent_messages', { id: spawn.id }));
     assert.equal(stripped.messages.length, 1, 'text-bearing message returned even when thinking stripped');
     assert.equal(stripped.messages[0].text, '42');
     assert.ok(!Object.hasOwn(stripped.messages[0], 'blocks'), 'no blocks field when thinking stripped');
 
     // includeThinking: true reveals the thinking block.
-    const withThinking = unwrap(await callTool(ctx.baseUrl, 'get_recent_messages', { id: spawn.id, includeThinking: true }));
+    const withThinking = unwrapMessages(await callTool(ctx.baseUrl, 'get_recent_messages', { id: spawn.id, includeThinking: true }));
     assert.equal(withThinking.messages[0].text, '42');
     assert.ok(Object.hasOwn(withThinking.messages[0], 'blocks'), 'blocks present with includeThinking');
     assert.equal(withThinking.messages[0].blocks.length, 1);
@@ -684,12 +705,12 @@ test('get_recent_messages returns plan-bearing messages by default', async () =>
     }));
     await waitFor(() => ctx.instances.get(spawn.id).status === 'idle' && ctx.instances.get(spawn.id).sessionId);
 
-    const before = unwrap(await callTool(ctx.baseUrl, 'get_recent_messages', { id: spawn.id }));
+    const before = unwrapMessages(await callTool(ctx.baseUrl, 'get_recent_messages', { id: spawn.id }));
     assert.equal(before.messages.length, 0);
 
     await callTool(ctx.baseUrl, 'send_prompt', { id: spawn.id, text: 'plan this', wait: true, waitTimeoutMs: 5000 });
 
-    const after = unwrap(await callTool(ctx.baseUrl, 'get_recent_messages', { id: spawn.id }));
+    const after = unwrapMessages(await callTool(ctx.baseUrl, 'get_recent_messages', { id: spawn.id }));
     assert.equal(after.messages.length, 1, 'plan-bearing message returned by default');
     assert.equal(after.messages[0].text, '', 'text is empty for plan-only turn');
     assert.equal(after.messages[0].plan, 'Step 1\nStep 2', 'plan field populated');
@@ -707,12 +728,12 @@ test('get_recent_messages returns question-bearing messages by default', async (
     }));
     await waitFor(() => ctx.instances.get(spawn.id).status === 'idle' && ctx.instances.get(spawn.id).sessionId);
 
-    const before = unwrap(await callTool(ctx.baseUrl, 'get_recent_messages', { id: spawn.id }));
+    const before = unwrapMessages(await callTool(ctx.baseUrl, 'get_recent_messages', { id: spawn.id }));
     assert.equal(before.messages.length, 0);
 
     await callTool(ctx.baseUrl, 'send_prompt', { id: spawn.id, text: 'ask me something', wait: true, waitTimeoutMs: 5000 });
 
-    const after = unwrap(await callTool(ctx.baseUrl, 'get_recent_messages', { id: spawn.id }));
+    const after = unwrapMessages(await callTool(ctx.baseUrl, 'get_recent_messages', { id: spawn.id }));
     assert.equal(after.messages.length, 1, 'question-bearing message returned by default');
     assert.equal(after.messages[0].text, '', 'text is empty for question-only turn');
     assert.ok(Array.isArray(after.messages[0].questions) && after.messages[0].questions.length > 0, 'questions field populated');
@@ -731,7 +752,7 @@ test('get_recent_messages: reconciled ExitPlanMode not duplicated in blocks[]', 
     }));
     await waitFor(() => ctx.instances.get(spawn.id).status === 'idle' && ctx.instances.get(spawn.id).sessionId);
     await callTool(ctx.baseUrl, 'send_prompt', { id: spawn.id, text: 'plan this', wait: true, waitTimeoutMs: 5000 });
-    const result = unwrap(await callTool(ctx.baseUrl, 'get_recent_messages', { id: spawn.id }));
+    const result = unwrapMessages(await callTool(ctx.baseUrl, 'get_recent_messages', { id: spawn.id }));
     assert.equal(result.messages.length, 1, 'plan-bearing message returned (reconciled path)');
     assert.equal(result.messages[0].plan, 'Step 1\nStep 2', 'plan field populated (reconciled path)');
     assert.equal(result.messages[0].hasToolUse, true);
@@ -748,7 +769,7 @@ test('get_recent_messages: reconciled AskUserQuestion not duplicated in blocks[]
     }));
     await waitFor(() => ctx.instances.get(spawn.id).status === 'idle' && ctx.instances.get(spawn.id).sessionId);
     await callTool(ctx.baseUrl, 'send_prompt', { id: spawn.id, text: 'ask me', wait: true, waitTimeoutMs: 5000 });
-    const result = unwrap(await callTool(ctx.baseUrl, 'get_recent_messages', { id: spawn.id }));
+    const result = unwrapMessages(await callTool(ctx.baseUrl, 'get_recent_messages', { id: spawn.id }));
     assert.equal(result.messages.length, 1, 'question-bearing message returned (reconciled path)');
     assert.ok(Array.isArray(result.messages[0].questions) && result.messages[0].questions.length > 0, 'questions field populated (reconciled path)');
     assert.equal(result.messages[0].hasToolUse, true);
@@ -787,22 +808,22 @@ test('project_status scoped to a worktree returns mergeStatus + diffStat vs base
     const repoPath = await makeRealRepo(ctx.projectsRoot, 'demo');
     const wt = unwrap(await callTool(ctx.baseUrl, 'create_worktree', { project: 'demo' }));
     // Commit a change inside the worktree so it's `ahead` of main.
-    const wtPath = path.join(ctx.projectsRoot, wt.worktreeName);
+    const wtPath = path.join(ctx.projectsRoot, wt.worktree);
     await fs.writeFile(path.join(wtPath, 'new.txt'), 'fresh\n');
     await git(wtPath, 'add', '.');
     await git(wtPath, 'commit', '-q', '-m', 'add new.txt');
 
     const st = unwrap(await callTool(ctx.baseUrl, 'project_status', {
-      project: 'demo', worktree: wt.worktreeName,
+      project: 'demo', worktree: wt.worktree,
     }));
-    assert.equal(st.worktree, wt.worktreeName);
+    assert.equal(st.worktree, wt.worktree);
     assert.equal(st.baseBranch, 'main');
     assert.equal(st.mergeStatus.ahead, 1);
     assert.equal(st.mergeStatus.behind, 0);
     assert.match(st.diffStat, /new\.txt/);
     // logLimit:0 disables recentCommits.
     const noLog = unwrap(await callTool(ctx.baseUrl, 'project_status', {
-      project: 'demo', worktree: wt.worktreeName, logLimit: 0,
+      project: 'demo', worktree: wt.worktree, logLimit: 0,
     }));
     assert.equal(noLog.recentCommits, undefined);
   } finally { await ctx.close(); }
@@ -826,7 +847,7 @@ test('read_file reads UTF-8 by relative path, rejects traversal, caps at maxByte
     const repoPath = await makeRealRepo(ctx.projectsRoot, 'demo');
     await fs.writeFile(path.join(repoPath, 'hello.txt'), 'hello world\n');
 
-    const ok = unwrap(await callTool(ctx.baseUrl, 'read_file', {
+    const ok = unwrapFile(await callTool(ctx.baseUrl, 'read_file', {
       project: 'demo', relativePath: 'hello.txt',
     }));
     assert.equal(ok.encoding, 'utf8');
@@ -834,7 +855,7 @@ test('read_file reads UTF-8 by relative path, rejects traversal, caps at maxByte
     assert.equal(ok.truncated, false);
 
     // Truncation: maxBytes:5 caps to "hello".
-    const cut = unwrap(await callTool(ctx.baseUrl, 'read_file', {
+    const cut = unwrapFile(await callTool(ctx.baseUrl, 'read_file', {
       project: 'demo', relativePath: 'hello.txt', maxBytes: 5,
     }));
     assert.equal(cut.content, 'hello');
@@ -870,15 +891,15 @@ test('read_file scoped to a worktree reads from the worktree root, not the paren
     const wt = unwrap(await callTool(ctx.baseUrl, 'create_worktree', { project: 'demo' }));
     // Same filename on both sides, different content.
     await fs.writeFile(path.join(repoPath, 'shared.txt'), 'parent\n');
-    const wtPath = path.join(ctx.projectsRoot, wt.worktreeName);
+    const wtPath = path.join(ctx.projectsRoot, wt.worktree);
     await fs.writeFile(path.join(wtPath, 'shared.txt'), 'worktree\n');
 
-    const fromWt = unwrap(await callTool(ctx.baseUrl, 'read_file', {
-      project: 'demo', worktree: wt.worktreeName, relativePath: 'shared.txt',
+    const fromWt = unwrapFile(await callTool(ctx.baseUrl, 'read_file', {
+      project: 'demo', worktree: wt.worktree, relativePath: 'shared.txt',
     }));
     assert.equal(fromWt.content, 'worktree\n');
 
-    const fromParent = unwrap(await callTool(ctx.baseUrl, 'read_file', {
+    const fromParent = unwrapFile(await callTool(ctx.baseUrl, 'read_file', {
       project: 'demo', relativePath: 'shared.txt',
     }));
     assert.equal(fromParent.content, 'parent\n');

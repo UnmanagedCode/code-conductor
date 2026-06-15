@@ -29,6 +29,27 @@ import {
 import { buildApprovePrompt, buildRejectPrompt } from '../planApproval.js';
 import { isKnownFamily, defaultVersion } from '../modelVersions.js';
 import { getModelVersion } from '../appSettings.js';
+import { textPayload } from './content.js';
+import { pageInstanceEvents } from '../eventArchive.js';
+import { loadPersistedTranscript } from '../transcript.js';
+
+// Per-message text cap for get_recent_messages raw blocks, and dirty-line cap
+// for project_status — mirror read_file/get_worktree_diff's bounded-output
+// pattern so no tool can emit an unbounded body.
+const MSG_TEXT_CAP = 32 * 1024;
+const DIRTY_CAP = 500;
+// Upper bound on how many trailing on-disk events get_recent_messages
+// reconstructs in its (rare) disk-fallback path, so a multi-MB session jsonl
+// can't make the call pathological. We only need the last ≤50 messages, which
+// fit comfortably in this many events.
+const DISK_REPLAY_TAIL_CAP = 5000;
+
+// Cap a string to `cap` bytes, returning { text, truncated }.
+function capText(s, cap) {
+  const str = typeof s === 'string' ? s : '';
+  if (Buffer.byteLength(str, 'utf8') <= cap) return { text: str, truncated: false };
+  return { text: Buffer.from(str, 'utf8').subarray(0, cap).toString('utf8'), truncated: true };
+}
 
 // ---------- helpers ----------
 
@@ -39,11 +60,11 @@ function getInst(instances, id) {
     throw err;
   }
   if (typeof id !== 'string' || !id) {
-    throw new Error('id required');
+    throw Object.assign(new Error('id required'), { statusCode: 400 });
   }
   const inst = instances.get(id);
   if (!inst) {
-    throw new Error(`instance not found: ${id}`);
+    throw Object.assign(new Error(`instance not found: ${id}`), { statusCode: 404 });
   }
   return inst;
 }
@@ -139,8 +160,16 @@ export async function listSessions({ project, worktree }) {
   return fsListSessions(project);
 }
 
+// Map the shared worktree-metadata shape (whose property is `worktreeName`)
+// to the MCP contract's `worktree` key. The internal/REST field stays
+// `worktreeName`; this is a boundary mapping, not an alias.
+function toMcpWorktree({ worktreeName, ...rest }) {
+  return { worktree: worktreeName, ...rest };
+}
+
 export async function listWorktrees({ project }) {
-  return fsListWorktrees(project);
+  const wts = await fsListWorktrees(project);
+  return wts.map(toMcpWorktree);
 }
 
 export async function locateSession({ sessionId }) {
@@ -153,29 +182,40 @@ export async function locateSession({ sessionId }) {
     err.statusCode = 404;
     throw err;
   }
-  return hit;
+  // {project, worktreeName} → {project, worktree} (MCP contract).
+  return { project: hit.project, worktree: hit.worktreeName ?? null };
 }
 
+// Disk-backed event paging. RING-FIRST: pageInstanceEvents serves from the
+// in-memory ring and only reads the on-disk session transcript when the
+// requested window crosses trimmedBefore (i.e. asks for evicted history) —
+// reconciling disk + ring by _seq with no gap/dup at the seam. So ring
+// eviction is invisible to the caller: a sinceSeq below trimmedBefore now
+// returns the dropped range from disk instead of a silent gap.
+//   - sinceSeq >= 0 → forward page (events with _seq > sinceSeq, oldest-first).
+//     Incremental polling: pass nextAfter back as the next sinceSeq.
+//   - sinceSeq omitted/-1 → newest page (last `limit` events).
+// NOTE: a single turn larger than the ring cap can leave a mid-turn gap (the
+// archive's dense _seq space can't overlap the live ring); get_transcript
+// covers dropped PRIOR turns — for prose mid-giant-turn use get_recent_messages.
 export async function getTranscript({ id, sinceSeq = -1, limit = 200 }, { instances }) {
   const inst = getInst(instances, id);
-  const all = inst.ringSnapshot();
-  const filtered = sinceSeq >= 0
-    ? all.filter(e => typeof e._seq === 'number' && e._seq > sinceSeq)
-    : all;
-  const lastSeq = all.length ? all[all.length - 1]._seq : -1;
-  const events = limit > 0 ? filtered.slice(-limit) : filtered;
+  const page = sinceSeq >= 0
+    ? await pageInstanceEvents(inst, { after: sinceSeq, limit })
+    : await pageInstanceEvents(inst, { limit });
+  const events = page.events;
+  const nextAfter = events.length ? events[events.length - 1]._seq : sinceSeq;
   return {
     id,
     status: inst.status,
     sessionId: inst.sessionId,
     events,
-    lastSeq,
-    truncated: filtered.length > events.length,
-    // First retained _seq — the ring is capped (drop-oldest), so a
-    // sinceSeq below this points at evicted history: the gap is silent
-    // here, but callers can detect it and page the missing range via
-    // GET /api/instances/:id/events (jsonl-replay fallback).
-    trimmedBefore: inst.ring.trimmedBefore,
+    lastSeq: page.lastSeq,
+    trimmedBefore: page.trimmedBefore,
+    hasMore: page.hasMore,
+    // Forward cursor for the next incremental poll: poll again with
+    // sinceSeq = nextAfter to get only events since this batch.
+    nextAfter,
   };
 }
 
@@ -189,6 +229,11 @@ export async function spawnInstance(args, { instances, callerId }) {
   if (model && isKnownFamily(model)) {
     model = getModelVersion(model) ?? defaultVersion(model);
   }
+  // createWorktree:true → create a fresh worktree (passed to create() as the
+  // boolean `true`); worktree:"<name>" → attach to an existing one.
+  // createWorktree wins if both are given. create() still accepts the
+  // boolean|string internal contract unchanged.
+  const worktree = args.createWorktree === true ? true : args.worktree;
   const inst = await instances.create({
     project: args.project,
     mode: args.mode,
@@ -196,7 +241,7 @@ export async function spawnInstance(args, { instances, callerId }) {
     thinking: args.thinking,
     model,
     resume: args.resume,
-    worktree: args.worktree,
+    worktree,
     // Conductor workers default to temp (disposable). Unlike the UI's temp
     // checkbox (which the REST route maps to bypassPermissions), temp here
     // does NOT affect the mode default — create() leaves it at plan, so
@@ -224,10 +269,10 @@ export async function sendPrompt({ id, text, wait = false, waitTimeoutMs = 600_0
     const waiter = waitForEvent(inst, (ev) => ev.kind === 'turn_end', waitTimeoutMs);
     await inst.prompt(text);
     const ev = await waiter;
-    return { ok: true, id, sessionId: inst.sessionId, turnEnd: ev };
+    return { id, sessionId: inst.sessionId, turnEnd: ev };
   }
   await inst.prompt(text);
-  return { ok: true, id, sessionId: inst.sessionId, status: inst.status };
+  return { id, sessionId: inst.sessionId, status: inst.status };
 }
 
 export async function waitForIdle({ id, timeoutMs = 600_000 }, { instances }) {
@@ -267,7 +312,7 @@ export async function subscribeToIdle({ targetId, timeoutMs }, { instances, call
   // rather than as a silent drop at callback time.
   getInst(instances, targetId);
   const res = instances.subscribeIdle(callerId, targetId, timeoutMs);
-  return { ok: true, callerId, targetId, already: res.already };
+  return { callerId, targetId, already: res.already };
 }
 
 export async function unsubscribeFromIdle({ targetId }, { instances, callerId }) {
@@ -277,7 +322,7 @@ export async function unsubscribeFromIdle({ targetId }, { instances, callerId })
     throw new Error('targetId required');
   }
   const res = instances.unsubscribeIdle(callerId, targetId);
-  return { ok: true, callerId, targetId, removed: res.removed };
+  return { callerId, targetId, removed: res.removed };
 }
 
 export async function interruptTurn({ id, force }, { instances }) {
@@ -289,7 +334,7 @@ export async function interruptTurn({ id, force }, { instances }) {
 export async function killInstance({ id }, { instances }) {
   if (!instances) throw new Error('orchestrator has no InstanceManager');
   await instances.remove(id);
-  return { ok: true, id };
+  return { id };
 }
 
 export async function respawnInstance({ id }, { instances }) {
@@ -316,39 +361,39 @@ export async function promoteSession({ id }, { instances }) {
 // button (public/app.js onPlanDecision) — phrasing comes from the
 // shared planApproval module so the three entry points (UI click,
 // server-side auto-approve, MCP) all look identical to the worker.
-export async function approvePlan({ instanceId, feedback }, { instances }) {
-  const inst = getInst(instances, instanceId);
-  if (!inst.proc) throw new Error(`instance ${instanceId} is not running (status=${inst.status})`);
+export async function approvePlan({ id, feedback }, { instances }) {
+  const inst = getInst(instances, id);
+  if (!inst.proc) throw new Error(`instance ${id} is not running (status=${inst.status})`);
   if (inst.mode === 'plan') {
     try { await inst.setMode('bypassPermissions'); }
     catch (e) {
-      throw new Error(`failed to switch instance ${instanceId} to bypassPermissions: ${e.message}`);
+      throw new Error(`failed to switch instance ${id} to bypassPermissions: ${e.message}`);
     }
   }
   const text = buildApprovePrompt(feedback);
   await inst.prompt(text, [], { annotateIfMidTurn: false });
-  return { ok: true, id: instanceId, mode: inst.mode, sentText: text };
+  return { id, mode: inst.mode, sentText: text };
 }
 
 // Reject a worker's plan: stay in plan mode, send the refinement prompt.
 // The worker will produce a revised plan; the conductor loops back to
 // reviewing get_recent_messages and either approves or rejects again.
-export async function rejectPlan({ instanceId, feedback }, { instances }) {
-  const inst = getInst(instances, instanceId);
-  if (!inst.proc) throw new Error(`instance ${instanceId} is not running (status=${inst.status})`);
+export async function rejectPlan({ id, feedback }, { instances }) {
+  const inst = getInst(instances, id);
+  if (!inst.proc) throw new Error(`instance ${id} is not running (status=${inst.status})`);
   const text = buildRejectPrompt(feedback);
   await inst.prompt(text, [], { annotateIfMidTurn: false });
-  return { ok: true, id: instanceId, mode: inst.mode, sentText: text };
+  return { id, mode: inst.mode, sentText: text };
 }
 
 // Flip the per-instance auto-approve-plan flag. While enabled, the next
 // plan_request emitted by the worker auto-fires the same setMode +
 // approval-prompt path as approvePlan above, server-side, without any
 // further intervention. Useful for "fire N workers and let them roll".
-export async function setAutoApprovePlan({ instanceId, enabled }, { instances }) {
-  const inst = getInst(instances, instanceId);
+export async function setAutoApprovePlan({ id, enabled }, { instances }) {
+  const inst = getInst(instances, id);
   inst.setAutoApprovePlan(!!enabled);
-  return { ok: true, id: instanceId, autoApprovePlan: inst.autoApprovePlan };
+  return { id, autoApprovePlan: inst.autoApprovePlan };
 }
 
 // ---------- read-only: worktree diff ----------
@@ -493,12 +538,15 @@ function paginateDiff(lines, offset, cap, idx) {
   return { diff, cutoff, prefixLines };
 }
 
-export async function getWorktreeDiff({ project, worktreeName, baseRef, contextLines = 3, summary = false, paths, offset = 0 }) {
-  if (!project || !worktreeName) {
-    throw new Error('get_worktree_diff requires {project, worktreeName}');
+export async function getWorktreeDiff({ project, worktree, baseRef, contextLines = 3, summary = false, paths, offset = 0 }) {
+  if (!project || !worktree) {
+    throw new Error('get_worktree_diff requires {project, worktree}');
   }
-  const wt = await getWorktree(project, worktreeName);
-  if (!wt) throw new Error(`worktree '${worktreeName}' not found under project '${project}'`);
+  const wt = await getWorktree(project, worktree);
+  if (!wt) throw new Error(`worktree '${worktree}' not found under project '${project}'`);
+  // Resolve the worktree's current HEAD sha (the right edge of the diff).
+  const headR = await runGitInDir(wt.worktreePath, ['rev-parse', 'HEAD']);
+  const head = headR.code === 0 ? headR.stdout.trim() : null;
   const ref = (typeof baseRef === 'string' && baseRef.trim()) ? baseRef.trim() : wt.baseBranch;
   if (typeof baseRef === 'string' && baseRef.trim() && (ref.startsWith('-') || !/^[A-Za-z0-9._/-]+$/.test(ref))) {
     throw Object.assign(new Error('invalid baseRef'), { statusCode: 400 });
@@ -532,7 +580,7 @@ export async function getWorktreeDiff({ project, worktreeName, baseRef, contextL
       additions: files.reduce((acc, f) => acc + f.additions, 0),
       deletions: files.reduce((acc, f) => acc + f.deletions, 0),
     };
-    return { project, worktreeName, baseRef: ref, head: 'HEAD', summary: true, totals, files };
+    return { project, worktree, baseRef: ref, head, summary: true, totals, files };
   }
 
   // ---- diff mode: full diff with line-based pagination ----
@@ -555,16 +603,14 @@ export async function getWorktreeDiff({ project, worktreeName, baseRef, contextL
   const truncated = cutoff < totalLines;
   const nextOffset = truncated ? cutoff : null;
 
-  const result = {
-    project, worktreeName, baseRef: ref, head: 'HEAD',
+  const meta = {
+    project, worktree, baseRef: ref, head,
     contextLines: ctx,
     offset: startLine,
-    diff,
     truncated,
     nextOffset,
     totalLines,
     totalBytes,
-    sizeBytes: totalBytes, // back-compat alias
   };
   // Explicit truncation metadata: which files this page covers vs omits.
   if (truncated) {
@@ -574,44 +620,66 @@ export async function getWorktreeDiff({ project, worktreeName, baseRef, contextL
       if (fi >= 0 && idx.files[fi].path) included.add(idx.files[fi].path);
     }
     const allPaths = idx.files.map(f => f.path).filter(Boolean);
-    result.includedFiles = allPaths.filter(p => included.has(p));
-    result.omittedFiles = allPaths.filter(p => !included.has(p));
+    meta.includedFiles = allPaths.filter(p => included.has(p));
+    meta.omittedFiles = allPaths.filter(p => !included.has(p));
   }
-  return result;
+  // Metadata block + a separate raw, un-escaped diff text block.
+  return textPayload(meta, diff);
 }
 
 // ---------- mutating: worktrees ----------
 
 export async function createWorktree({ project }) {
-  return fsCreateWorktree(project);
+  return toMcpWorktree(await fsCreateWorktree(project));
 }
 
-export async function deleteWorktree({ project, worktreeName, force = false }, { instances }) {
+export async function deleteWorktree({ project, worktree, force = false }, { instances }) {
+  let running = [];
   if (instances) {
-    const running = instances.idsForWorktree(project, worktreeName)
+    running = instances.idsForWorktree(project, worktree)
       .map(id => instances.get(id))
       .filter(i => i && i.proc);
+    // Expected business refusal (not a fault): attached live instance.
     if (running.length > 0 && !force) {
-      throw new Error(
-        `worktree '${worktreeName}' has ${running.length} running instance(s) — kill them first or pass force=true`,
-      );
-    }
-    if (force) {
-      await Promise.all(running.map(i => i.kill({ graceMs: 300 }).catch(() => {})));
+      return {
+        ok: false,
+        code: 'WORKTREE_ATTACHED',
+        reason: `worktree '${worktree}' has ${running.length} running instance(s) — kill them first or pass force=true`,
+      };
     }
   }
-  await removeWorktree(project, worktreeName, { force });
-  return { ok: true, project, worktreeName };
+  // Expected business refusal: uncommitted changes. Pre-check here so it
+  // returns soft rather than throwing out of removeWorktree (which stays as
+  // a true-fault backstop, called with force below).
+  if (!force) {
+    const wt = await getWorktree(project, worktree);
+    if (wt) {
+      const dirty = await worktreeDirtyLines(wt.worktreePath);
+      if (dirty.ok && dirty.lines.length > 0) {
+        return {
+          ok: false,
+          code: 'WORKTREE_DIRTY',
+          reason: `worktree '${worktree}' has uncommitted changes — commit / discard them, or pass force=true`,
+        };
+      }
+    }
+  }
+  if (force && running.length > 0) {
+    await Promise.all(running.map(i => i.kill({ graceMs: 300 }).catch(() => {})));
+  }
+  await removeWorktree(project, worktree, { force });
+  return { project, worktree };
 }
 
-export async function syncWorktree({ instanceId }, { instances }) {
-  const inst = getInst(instances, instanceId);
-  if (!inst.worktree) throw new Error(`instance ${instanceId} is not attached to a worktree`);
+export async function syncWorktree({ id }, { instances }) {
+  const inst = getInst(instances, id);
+  if (!inst.worktree) throw new Error(`instance ${id} is not attached to a worktree`);
   const result = await fsSyncWorktree(inst.project, inst.worktree.worktreeName);
   if (result.ok && result.action === 'rebase-required') {
     if (!inst.proc) {
       return {
         ok: false,
+        code: 'INSTANCE_NOT_RUNNING',
         reason: 'instance is not running — Resume it before calling sync_worktree so the agent can rebase',
       };
     }
@@ -624,20 +692,20 @@ export async function syncWorktree({ instanceId }, { instances }) {
   return result;
 }
 
-export async function mergeWorktree({ instanceId, project, worktreeName }, { instances }) {
+export async function mergeWorktree({ id, project, worktree }, { instances }) {
   let projectName, wtName, meta;
-  if (instanceId) {
-    const inst = getInst(instances, instanceId);
-    if (!inst.worktree) throw new Error(`instance ${instanceId} is not attached to a worktree`);
+  if (id) {
+    const inst = getInst(instances, id);
+    if (!inst.worktree) throw new Error(`instance ${id} is not attached to a worktree`);
     projectName = inst.project;
     wtName = inst.worktree.worktreeName;
     meta = inst.worktree;
   } else {
-    if (!project || !worktreeName) {
-      throw new Error('merge_worktree requires either instanceId or both {project, worktreeName}');
+    if (!project || !worktree) {
+      throw new Error('merge_worktree requires either id or both {project, worktree}');
     }
     projectName = project;
-    wtName = worktreeName;
+    wtName = worktree;
     meta = await getWorktree(projectName, wtName);
     if (!meta) throw new Error(`worktree '${wtName}' not found under project '${projectName}'`);
   }
@@ -645,6 +713,7 @@ export async function mergeWorktree({ instanceId, project, worktreeName }, { ins
   if (status.behind != null && status.behind > 0) {
     return {
       ok: false,
+      code: 'WORKTREE_BEHIND',
       reason: `worktree is behind '${meta.baseBranch}' by ${status.behind} commit(s) — call sync_worktree first to fast-forward / rebase`,
     };
   }
@@ -675,18 +744,15 @@ export async function listWorkspaces() {
 }
 
 export async function createWorkspace({ name }) {
-  const result = await fsAddWorkspace(name);
-  return { ok: true, ...result };
+  return fsAddWorkspace(name);
 }
 
 export async function deleteWorkspace({ name }) {
-  const result = await fsRemoveWorkspace(name);
-  return { ok: true, ...result };
+  return fsRemoveWorkspace(name);
 }
 
 export async function renameWorkspace({ oldName, newName }) {
-  const result = await fsRenameWorkspace(oldName, newName);
-  return { ok: true, ...result };
+  return fsRenameWorkspace(oldName, newName);
 }
 
 // Assign or clear a project's workspace. `workspace: null` or "" clears
@@ -705,7 +771,7 @@ export async function setProjectWorkspace({ project, workspace }) {
   if (meta.workspace) {
     try { await fsAddWorkspace(meta.workspace); } catch { /* validateWorkspace already ran */ }
   }
-  return { ok: true, project, workspace: meta.workspace ?? null };
+  return { project, workspace: meta.workspace ?? null };
 }
 
 // ---------- create / introspect ----------
@@ -721,28 +787,14 @@ export async function createProject({ name, gitInit = false }) {
   return { ...created, gitInit: !!gitInit };
 }
 
-// Walk the event ring backward, find the most recent N assistant messages,
-// and return each as joined text (concatenation of all text blocks in that
-// msgId, in stream order) plus structured blocks. Useful when a coordinating
-// agent just wants to read what the spawned agent said without parsing the
-// raw event stream. `count` defaults to 1 (last message only); clamped to
-// [1, 50]. Returns `{ id, messages }` — oldest-first.
-export async function getRecentMessages({ id, count, includeToolCalls = false, includeThinking = false }, { instances }) {
-  const inst = getInst(instances, id);
-  // The ring is capped (drop-oldest, ≥2000 by default) but this walks
-  // backward for at most the last 50 messages, which comfortably fit in
-  // the retained tail. Under extreme trims the OLDEST returned message can
-  // be partial (its early deltas evicted) — buildMessageFromRing already
-  // prefers the trailing assistant_message envelope when present, which
-  // covers the common shape.
-  const ring = inst.ringSnapshot();
-  const n = Math.max(1, Math.min(Number.isInteger(count) ? count : 1, 50));
-  // Collect all distinct msgIds from the ring, walking backward.
-  // No early stop — filtering happens after building messages.
+// Reconstruct ordered assistant messages from an event array (ring or disk-
+// replayed — both carry the same UI-event shape). Collects distinct top-level
+// msgIds (skipping sub-agent content) then rebuilds each message.
+function reconstructMessages(events, includeThinking) {
   const seen = new Set();
   const reverseIds = [];
-  for (let i = ring.length - 1; i >= 0; i--) {
-    const ev = ring[i];
+  for (let i = events.length - 1; i >= 0; i--) {
+    const ev = events[i];
     if (ev.parentToolUseId) continue; // ignore sub-agent content
     if (!ev.msgId) continue;
     if (ev.kind !== 'text_delta' && ev.kind !== 'text_end'
@@ -752,13 +804,124 @@ export async function getRecentMessages({ id, count, includeToolCalls = false, i
     reverseIds.push(ev.msgId);
   }
   const orderedIds = reverseIds.reverse();
-  const allMessages = orderedIds.map(msgId => buildMessageFromRing(ring, msgId, includeThinking));
-  // By default, exclude tool-call-only messages (no text content).
-  const filtered = includeToolCalls
-    ? allMessages
-    : allMessages.filter(m => m.text.length > 0 || m.plan || (Array.isArray(m.questions) && m.questions.length > 0));
+  return orderedIds.map(msgId => buildMessageFromRing(events, msgId, includeThinking));
+}
+
+function isTextBearing(m) {
+  return m.text.length > 0 || m.plan || (Array.isArray(m.questions) && m.questions.length > 0);
+}
+
+// Disk-fallback for getRecentMessages: load the on-disk transcript tail and
+// merge its reconstructed messages with the ring's, keyed by msgId. The ring
+// entry wins on collision (freshest / in-flight); disk fills evicted and
+// completed-but-evicted current-turn messages. Bounded by DISK_REPLAY_TAIL_CAP.
+// Returns null when no transcript exists (e.g. exited temp session) so the
+// caller degrades gracefully to ring-only.
+async function mergeRecentWithDisk(inst, ringMessages, includeThinking) {
+  const result = await loadPersistedTranscript({
+    cwd: inst.cwd, sessionId: inst.sessionId, seqHint: 0,
+  }).catch(() => null);
+  if (!result) return null;
+  let diskEvents = [];
+  for (const line of result.lines) for (const ev of line.events) diskEvents.push(ev);
+  if (diskEvents.length > DISK_REPLAY_TAIL_CAP) diskEvents = diskEvents.slice(-DISK_REPLAY_TAIL_CAP);
+  const diskMessages = reconstructMessages(diskEvents, includeThinking);
+  // Ordered merge by msgId: disk first (chronological), ring overrides in place
+  // / appends newer (Map keeps first-insert position, updates value).
+  const byId = new Map();
+  for (const m of diskMessages) byId.set(m.msgId, m);
+  for (const m of ringMessages) byId.set(m.msgId, m);
+  return [...byId.values()];
+}
+
+// Return the most recent N assistant messages as joined text + structured
+// blocks, so a coordinating agent can read what a worker said without parsing
+// the raw event stream. `count` defaults to 1, clamped to [1, 50].
+//
+// RING-FIRST, DISK-FALLBACK-ON-DEMAND: served from the in-memory ring on the
+// hot path; only when the ring's retained tail can't satisfy the requested
+// recent TEXT messages (tool-event volume evicted them) AND the ring has been
+// trimmed do we read back into the on-disk transcript — so ring eviction never
+// produces a false-empty result. Output is the multi-block payload: a metadata
+// block + one raw text body per message (block k+1 ↔ messages[k]).
+export async function getRecentMessages({ id, count, includeToolCalls = false, includeThinking = false }, { instances }) {
+  const inst = getInst(instances, id);
+  const n = Math.max(1, Math.min(Number.isInteger(count) ? count : 1, 50));
+
+  const ring = inst.ringSnapshot();
+  let all = reconstructMessages(ring, includeThinking);
+  let source = 'ring';
+
+  // Disk-fallback only when the ring genuinely can't satisfy the request.
+  const ringSatisfies = (includeToolCalls ? all : all.filter(isTextBearing)).length >= n;
+  if (!ringSatisfies && inst.sessionId && inst.ring.trimmedBefore > 0) {
+    const merged = await mergeRecentWithDisk(inst, all, includeThinking);
+    if (merged) { all = merged; source = 'disk'; }
+  }
+
+  const filtered = includeToolCalls ? all : all.filter(isTextBearing);
   const messages = filtered.slice(-n);
-  return { id, messages };
+  const omittedToolOnly = includeToolCalls ? 0 : (all.length - filtered.length);
+
+  // Multi-block: metadata block describes each message; one raw text block per
+  // message carries its (capped) prose, in order — block k+1 ↔ messages[k].
+  const bodies = [];
+  const metaMessages = messages.map((m, index) => {
+    const capped = capText(m.text ?? '', MSG_TEXT_CAP);
+    bodies.push(capped.text);
+    const entry = {
+      index,
+      msgId: m.msgId,
+      hasToolUse: m.hasToolUse,
+      textChars: (m.text ?? '').length,
+      textTruncated: capped.truncated,
+    };
+    if (m.plan) entry.plan = m.plan;
+    if (m.questions) entry.questions = m.questions;
+    if (m.blocks) entry.blocks = m.blocks.map(capBlockInput);
+    return entry;
+  });
+
+  const lastSeq = ring.length ? ring[ring.length - 1]._seq : -1;
+  const meta = {
+    id,
+    messages: metaMessages,
+    source,
+    omittedToolOnly,
+    retained: { firstSeq: inst.ring.trimmedBefore, lastSeq, trimmed: inst.ring.trimmedBefore > 0 },
+  };
+  // Never a bare ambiguous result: when we couldn't fill the request, say why.
+  if (messages.length < n) {
+    if (omittedToolOnly > 0) {
+      meta.hint = `Showing ${messages.length} text message(s); ${omittedToolOnly} recent assistant message(s) had only tool calls — the agent is active. Pass includeToolCalls:true, or use get_transcript to inspect tool activity.`;
+    } else if (messages.length === 0) {
+      meta.hint = inst.ring.trimmedBefore > 0 && source !== 'disk'
+        ? 'No assistant messages retained in memory and the session transcript was unavailable (e.g. an exited temp session). Try get_transcript.'
+        : 'No assistant text messages have arrived yet.';
+    }
+  }
+  return textPayload(meta, bodies);
+}
+
+// Cap a block's large field for inline inclusion in the metadata block. A
+// tool_use input stays a structured object when small; when oversized it
+// becomes a truncated JSON string flagged with inputTruncated. A thinking
+// block's text is capped the same way.
+function capBlockInput(b) {
+  if (b.type === 'tool_use') {
+    const json = JSON.stringify(b.input ?? null);
+    const { text, truncated } = capText(json, MSG_TEXT_CAP);
+    return {
+      type: 'tool_use', name: b.name, toolUseId: b.toolUseId,
+      input: truncated ? text : b.input,
+      inputTruncated: truncated,
+    };
+  }
+  if (b.type === 'thinking') {
+    const { text, truncated } = capText(b.text ?? '', MSG_TEXT_CAP);
+    return { type: 'thinking', text, inputTruncated: truncated };
+  }
+  return b;
 }
 
 function buildMessageFromRing(ring, targetMsgId, includeThinking = false) {
@@ -924,6 +1087,15 @@ export async function projectStatus({ project, worktree, logLimit = 20 }) {
       ? d.stdout.split('\n').map(s => s.trim()).filter(Boolean)
       : [];
   }
+  // Cap the dirty list so a pathological working tree can't blow up the
+  // response (mirrors read_file / get_worktree_diff's bounded-output pattern).
+  if (out.dirty.length > DIRTY_CAP) {
+    out.dirtyTotal = out.dirty.length;
+    out.dirty = out.dirty.slice(0, DIRTY_CAP);
+    out.dirtyTruncated = true;
+  } else {
+    out.dirtyTruncated = false;
+  }
   // Recent commits (oneline). Negative or 0 logLimit → skip.
   if (Number.isInteger(logLimit) && logLimit > 0) {
     const logR = await runGitInDir(cwd, ['log', `-${logLimit}`, '--pretty=%h %s']);
@@ -999,11 +1171,11 @@ export async function readFile({ project, worktree, relativePath,
   const probe = buf.slice(0, Math.min(4096, buf.length));
   const isBinary = probe.includes(0);
   if (isBinary) {
-    // Binary: line params are ignored; behaviour identical to before.
-    return {
-      path: relativePath, size: stat.size, truncated: truncatedByBytes,
-      encoding: 'base64', content: buf.toString('base64'),
-    };
+    // Binary: line params ignored. Metadata block + a base64 body block.
+    return textPayload(
+      { path: relativePath, size: stat.size, truncated: truncatedByBytes, encoding: 'base64' },
+      buf.toString('base64'),
+    );
   }
 
   // Fast path: no line params requested — preserve the byte-capped read.
@@ -1014,10 +1186,12 @@ export async function readFile({ project, worktree, relativePath,
     const text = buf.toString('utf8');
     const rawLines = text.split('\n');
     const lineCount = text.endsWith('\n') ? rawLines.length - 1 : rawLines.length;
-    return {
-      path: relativePath, size: stat.size, truncated: truncatedByBytes,
-      encoding: 'utf8', content: text, lineCount,
-    };
+    // lineCountExact:false → the byte cap may have cut a partial final line.
+    return textPayload(
+      { path: relativePath, size: stat.size, truncated: truncatedByBytes,
+        encoding: 'utf8', lineCount, lineCountExact: !truncatedByBytes },
+      text,
+    );
   }
 
   // Slow path: line params active — read the full file for accurate line ops.
@@ -1061,13 +1235,14 @@ export async function readFile({ project, worktree, relativePath,
     truncated = true;
   }
 
-  const result = {
+  // Slow path read the full file, so lineCount covers the whole file.
+  const meta = {
     path: relativePath, size: stat.size, truncated, encoding: 'utf8',
-    content, lineCount,
+    lineCount, lineCountExact: true,
   };
   if (offset !== 1 || limit != null) {
-    result.startLine = startLine;
-    result.endLine = endLine;
+    meta.startLine = startLine;
+    meta.endLine = endLine;
   }
-  return result;
+  return textPayload(meta, content);
 }

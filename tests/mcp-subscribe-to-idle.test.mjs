@@ -43,8 +43,7 @@ async function callTool(baseUrl, name, args, opts) {
 
 function unwrap(result) {
   assert.ok(Array.isArray(result.content), 'tool result has content[]');
-  const text = result.content.map(c => c.text).join('');
-  return JSON.parse(text);
+  return JSON.parse(result.content[0].text);
 }
 
 async function spawnReady(ctx, project) {
@@ -80,7 +79,6 @@ test('happy path: caller receives a stub user_echo when target hits turn_end', a
 
     const sub = unwrap(await callTool(ctx.baseUrl, 'subscribe_to_idle',
       { targetId }, { caller: callerId }));
-    assert.equal(sub.ok, true);
     assert.equal(sub.callerId, callerId);
     assert.equal(sub.targetId, targetId);
     assert.equal(sub.already, false);
@@ -226,7 +224,6 @@ test('unsubscribe_from_idle cancels a pending subscription', async () => {
       { targetId }, { caller: callerId });
     const unsub = unwrap(await callTool(ctx.baseUrl, 'unsubscribe_from_idle',
       { targetId }, { caller: callerId }));
-    assert.equal(unsub.ok, true);
     assert.equal(unsub.removed, true);
     assert.deepEqual(ctx.instances._idleSubscriberSnapshot(), {});
 

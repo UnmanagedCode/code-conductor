@@ -9,6 +9,7 @@
 
 import express from 'express';
 import { buildTools } from './tools.js';
+import { isTextPayload, codeForStatus } from './content.js';
 
 const PROTOCOL_VERSION = '2025-06-18';
 const SERVER_NAME = 'code-conductor';
@@ -25,10 +26,12 @@ function rpcError(id, code, message, data) {
 }
 
 // Shallow JSON-Schema validation. Covers the shapes we use: object with
-// named properties, scalar types, required keys. Returns null on success
-// or a string describing the first violation. No $ref / oneOf / anyOf —
-// the registry doesn't use those.
-function validateArgs(schema, args) {
+// named properties, scalar types, required keys, plus the constraint keywords
+// our schemas declare (enum, pattern, min/maxLength, minimum/maximum, array
+// items.type). Returns null on success or a string describing the first
+// violation. No $ref / oneOf / anyOf — the registry doesn't use those.
+// Unknown properties are rejected (clean MCP contract — no silent drops).
+function validateArgs(schema, args, toolName) {
   if (!schema || schema.type !== 'object') return null;
   const a = args ?? {};
   if (typeof a !== 'object' || Array.isArray(a)) return 'arguments must be an object';
@@ -39,13 +42,51 @@ function validateArgs(schema, args) {
   const props = schema.properties ?? {};
   for (const [k, v] of Object.entries(a)) {
     const p = props[k];
-    if (!p) continue; // tolerant of extras
-    const t = p.type;
-    if (t && !typeMatches(t, v)) {
-      return `argument '${k}' must be ${Array.isArray(t) ? t.join(' | ') : t}`;
+    if (!p) {
+      const allowed = Object.keys(props).join(', ') || '(none)';
+      return `unexpected argument '${k}' — not a recognized parameter for ${toolName ?? 'this tool'}. Allowed: ${allowed}`;
     }
-    if (p.enum && !p.enum.includes(v)) {
-      return `argument '${k}' must be one of ${JSON.stringify(p.enum)}`;
+    const viol = checkConstraints(k, v, p);
+    if (viol) return viol;
+  }
+  return null;
+}
+
+// Validate a single value against its property schema. Returns a violation
+// string or null. Skips constraint checks when the type doesn't match the
+// constraint's domain (the type error already fired, or the keyword is N/A).
+function checkConstraints(k, v, p) {
+  const t = p.type;
+  if (t && !typeMatches(t, v)) {
+    return `argument '${k}' must be ${Array.isArray(t) ? t.join(' | ') : t}`;
+  }
+  if (p.enum && !p.enum.includes(v)) {
+    return `argument '${k}' must be one of ${JSON.stringify(p.enum)}`;
+  }
+  if (typeof v === 'string') {
+    if (typeof p.minLength === 'number' && v.length < p.minLength) {
+      return `argument '${k}' must be at least ${p.minLength} character(s)`;
+    }
+    if (typeof p.maxLength === 'number' && v.length > p.maxLength) {
+      return `argument '${k}' must be at most ${p.maxLength} character(s)`;
+    }
+    if (typeof p.pattern === 'string' && !new RegExp(p.pattern).test(v)) {
+      return `argument '${k}' must match ${p.pattern}`;
+    }
+  }
+  if (typeof v === 'number') {
+    if (typeof p.minimum === 'number' && v < p.minimum) {
+      return `argument '${k}' must be >= ${p.minimum}`;
+    }
+    if (typeof p.maximum === 'number' && v > p.maximum) {
+      return `argument '${k}' must be <= ${p.maximum}`;
+    }
+  }
+  if (Array.isArray(v) && p.items && p.items.type) {
+    for (let i = 0; i < v.length; i++) {
+      if (!typeMatches(p.items.type, v[i])) {
+        return `argument '${k}[${i}]' must be ${p.items.type}`;
+      }
     }
   }
   return null;
@@ -93,6 +134,7 @@ async function dispatch(msg, ctx) {
         name: t.name,
         description: t.description,
         inputSchema: t.inputSchema,
+        ...(t.annotations ? { annotations: t.annotations } : {}),
       }));
       return rpcResult(id, { tools });
     }
@@ -106,7 +148,7 @@ async function dispatch(msg, ctx) {
           isError: true,
         });
       }
-      const v = validateArgs(tool.inputSchema, args);
+      const v = validateArgs(tool.inputSchema, args, name);
       if (v) {
         return rpcResult(id, {
           content: [{ type: 'text', text: v }],
@@ -115,12 +157,29 @@ async function dispatch(msg, ctx) {
       }
       try {
         const result = await tool.handler(args, ctx);
-        return rpcResult(id, {
-          content: [{ type: 'text', text: JSON.stringify(result ?? null, null, 2) }],
-        });
+        let content;
+        if (isTextPayload(result)) {
+          // Multi-block: compact-JSON metadata block, then one raw text block
+          // per body, in order. Lets the LLM read file/diff/message bodies
+          // un-escaped while still parsing structured metadata from content[0].
+          content = [{ type: 'text', text: JSON.stringify(result.meta ?? null) }];
+          for (const b of result.bodies) content.push({ type: 'text', text: String(b) });
+        } else {
+          content = [{ type: 'text', text: JSON.stringify(result ?? null) }];
+        }
+        return rpcResult(id, { content });
       } catch (e) {
+        // Errors read best as prose for an LLM (content[0]); a structured
+        // {error, code, statusCode} block follows for machine handling.
+        const sc = typeof e?.statusCode === 'number' ? e.statusCode : null;
+        const code = e?.code ?? codeForStatus(sc);
+        const msg = e?.message ?? String(e);
+        const prose = sc ? `${msg} (HTTP ${sc})` : msg;
         return rpcResult(id, {
-          content: [{ type: 'text', text: e?.message ?? String(e) }],
+          content: [
+            { type: 'text', text: prose },
+            { type: 'text', text: JSON.stringify({ error: msg, ...(code ? { code } : {}), ...(sc ? { statusCode: sc } : {}) }) },
+          ],
           isError: true,
         });
       }

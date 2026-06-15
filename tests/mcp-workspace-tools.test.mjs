@@ -31,7 +31,7 @@ async function callTool(baseUrl, name, args) {
 }
 function unwrap(result) {
   assert.ok(Array.isArray(result.content));
-  return JSON.parse(result.content.map(c => c.text).join(''));
+  return JSON.parse(result.content[0].text);
 }
 
 test('tools/list exposes all five workspace tools', async () => {
@@ -52,7 +52,6 @@ test('create_workspace registers a name; second call is a no-op', async () => {
   const ctx = await bootServer({ scenarioPath: SCENARIO_WS });
   try {
     const first = unwrap(await callTool(ctx.baseUrl, 'create_workspace', { name: 'Refactor' }));
-    assert.equal(first.ok, true);
     assert.equal(first.added, true);
     assert.equal(first.name, 'Refactor');
 
@@ -95,7 +94,6 @@ test('set_project_workspace assigns, clears with null, and auto-registers the ne
     const a = unwrap(await callTool(ctx.baseUrl, 'set_project_workspace', {
       project: 'alpha', workspace: 'Side projects',
     }));
-    assert.equal(a.ok, true);
     assert.equal(a.workspace, 'Side projects');
 
     const list1 = unwrap(await callTool(ctx.baseUrl, 'list_workspaces', {}));
