@@ -30,12 +30,19 @@ import { buildApprovePrompt, buildRejectPrompt } from '../planApproval.js';
 import { isKnownFamily, defaultVersion } from '../modelVersions.js';
 import { getModelVersion } from '../appSettings.js';
 import { textPayload } from './content.js';
+import { pageInstanceEvents } from '../eventArchive.js';
+import { loadPersistedTranscript } from '../transcript.js';
 
 // Per-message text cap for get_recent_messages raw blocks, and dirty-line cap
 // for project_status — mirror read_file/get_worktree_diff's bounded-output
 // pattern so no tool can emit an unbounded body.
 const MSG_TEXT_CAP = 32 * 1024;
 const DIRTY_CAP = 500;
+// Upper bound on how many trailing on-disk events get_recent_messages
+// reconstructs in its (rare) disk-fallback path, so a multi-MB session jsonl
+// can't make the call pathological. We only need the last ≤50 messages, which
+// fit comfortably in this many events.
+const DISK_REPLAY_TAIL_CAP = 5000;
 
 // Cap a string to `cap` bytes, returning { text, truncated }.
 function capText(s, cap) {
@@ -179,26 +186,36 @@ export async function locateSession({ sessionId }) {
   return { project: hit.project, worktree: hit.worktreeName ?? null };
 }
 
+// Disk-backed event paging. RING-FIRST: pageInstanceEvents serves from the
+// in-memory ring and only reads the on-disk session transcript when the
+// requested window crosses trimmedBefore (i.e. asks for evicted history) —
+// reconciling disk + ring by _seq with no gap/dup at the seam. So ring
+// eviction is invisible to the caller: a sinceSeq below trimmedBefore now
+// returns the dropped range from disk instead of a silent gap.
+//   - sinceSeq >= 0 → forward page (events with _seq > sinceSeq, oldest-first).
+//     Incremental polling: pass nextAfter back as the next sinceSeq.
+//   - sinceSeq omitted/-1 → newest page (last `limit` events).
+// NOTE: a single turn larger than the ring cap can leave a mid-turn gap (the
+// archive's dense _seq space can't overlap the live ring); get_transcript
+// covers dropped PRIOR turns — for prose mid-giant-turn use get_recent_messages.
 export async function getTranscript({ id, sinceSeq = -1, limit = 200 }, { instances }) {
   const inst = getInst(instances, id);
-  const all = inst.ringSnapshot();
-  const filtered = sinceSeq >= 0
-    ? all.filter(e => typeof e._seq === 'number' && e._seq > sinceSeq)
-    : all;
-  const lastSeq = all.length ? all[all.length - 1]._seq : -1;
-  const events = limit > 0 ? filtered.slice(-limit) : filtered;
+  const page = sinceSeq >= 0
+    ? await pageInstanceEvents(inst, { after: sinceSeq, limit })
+    : await pageInstanceEvents(inst, { limit });
+  const events = page.events;
+  const nextAfter = events.length ? events[events.length - 1]._seq : sinceSeq;
   return {
     id,
     status: inst.status,
     sessionId: inst.sessionId,
     events,
-    lastSeq,
-    truncated: filtered.length > events.length,
-    // First retained _seq — the ring is capped (drop-oldest), so a
-    // sinceSeq below this points at evicted history: the gap is silent
-    // here, but callers can detect it and page the missing range via
-    // GET /api/instances/:id/events (jsonl-replay fallback).
-    trimmedBefore: inst.ring.trimmedBefore,
+    lastSeq: page.lastSeq,
+    trimmedBefore: page.trimmedBefore,
+    hasMore: page.hasMore,
+    // Forward cursor for the next incremental poll: poll again with
+    // sinceSeq = nextAfter to get only events since this batch.
+    nextAfter,
   };
 }
 
@@ -770,28 +787,14 @@ export async function createProject({ name, gitInit = false }) {
   return { ...created, gitInit: !!gitInit };
 }
 
-// Walk the event ring backward, find the most recent N assistant messages,
-// and return each as joined text (concatenation of all text blocks in that
-// msgId, in stream order) plus structured blocks. Useful when a coordinating
-// agent just wants to read what the spawned agent said without parsing the
-// raw event stream. `count` defaults to 1 (last message only); clamped to
-// [1, 50]. Returns `{ id, messages }` — oldest-first.
-export async function getRecentMessages({ id, count, includeToolCalls = false, includeThinking = false }, { instances }) {
-  const inst = getInst(instances, id);
-  // The ring is capped (drop-oldest, ≥2000 by default) but this walks
-  // backward for at most the last 50 messages, which comfortably fit in
-  // the retained tail. Under extreme trims the OLDEST returned message can
-  // be partial (its early deltas evicted) — buildMessageFromRing already
-  // prefers the trailing assistant_message envelope when present, which
-  // covers the common shape.
-  const ring = inst.ringSnapshot();
-  const n = Math.max(1, Math.min(Number.isInteger(count) ? count : 1, 50));
-  // Collect all distinct msgIds from the ring, walking backward.
-  // No early stop — filtering happens after building messages.
+// Reconstruct ordered assistant messages from an event array (ring or disk-
+// replayed — both carry the same UI-event shape). Collects distinct top-level
+// msgIds (skipping sub-agent content) then rebuilds each message.
+function reconstructMessages(events, includeThinking) {
   const seen = new Set();
   const reverseIds = [];
-  for (let i = ring.length - 1; i >= 0; i--) {
-    const ev = ring[i];
+  for (let i = events.length - 1; i >= 0; i--) {
+    const ev = events[i];
     if (ev.parentToolUseId) continue; // ignore sub-agent content
     if (!ev.msgId) continue;
     if (ev.kind !== 'text_delta' && ev.kind !== 'text_end'
@@ -801,12 +804,65 @@ export async function getRecentMessages({ id, count, includeToolCalls = false, i
     reverseIds.push(ev.msgId);
   }
   const orderedIds = reverseIds.reverse();
-  const allMessages = orderedIds.map(msgId => buildMessageFromRing(ring, msgId, includeThinking));
-  // By default, exclude tool-call-only messages (no text content).
-  const filtered = includeToolCalls
-    ? allMessages
-    : allMessages.filter(m => m.text.length > 0 || m.plan || (Array.isArray(m.questions) && m.questions.length > 0));
+  return orderedIds.map(msgId => buildMessageFromRing(events, msgId, includeThinking));
+}
+
+function isTextBearing(m) {
+  return m.text.length > 0 || m.plan || (Array.isArray(m.questions) && m.questions.length > 0);
+}
+
+// Disk-fallback for getRecentMessages: load the on-disk transcript tail and
+// merge its reconstructed messages with the ring's, keyed by msgId. The ring
+// entry wins on collision (freshest / in-flight); disk fills evicted and
+// completed-but-evicted current-turn messages. Bounded by DISK_REPLAY_TAIL_CAP.
+// Returns null when no transcript exists (e.g. exited temp session) so the
+// caller degrades gracefully to ring-only.
+async function mergeRecentWithDisk(inst, ringMessages, includeThinking) {
+  const result = await loadPersistedTranscript({
+    cwd: inst.cwd, sessionId: inst.sessionId, seqHint: 0,
+  }).catch(() => null);
+  if (!result) return null;
+  let diskEvents = [];
+  for (const line of result.lines) for (const ev of line.events) diskEvents.push(ev);
+  if (diskEvents.length > DISK_REPLAY_TAIL_CAP) diskEvents = diskEvents.slice(-DISK_REPLAY_TAIL_CAP);
+  const diskMessages = reconstructMessages(diskEvents, includeThinking);
+  // Ordered merge by msgId: disk first (chronological), ring overrides in place
+  // / appends newer (Map keeps first-insert position, updates value).
+  const byId = new Map();
+  for (const m of diskMessages) byId.set(m.msgId, m);
+  for (const m of ringMessages) byId.set(m.msgId, m);
+  return [...byId.values()];
+}
+
+// Return the most recent N assistant messages as joined text + structured
+// blocks, so a coordinating agent can read what a worker said without parsing
+// the raw event stream. `count` defaults to 1, clamped to [1, 50].
+//
+// RING-FIRST, DISK-FALLBACK-ON-DEMAND: served from the in-memory ring on the
+// hot path; only when the ring's retained tail can't satisfy the requested
+// recent TEXT messages (tool-event volume evicted them) AND the ring has been
+// trimmed do we read back into the on-disk transcript — so ring eviction never
+// produces a false-empty result. Output is the multi-block payload: a metadata
+// block + one raw text body per message (block k+1 ↔ messages[k]).
+export async function getRecentMessages({ id, count, includeToolCalls = false, includeThinking = false }, { instances }) {
+  const inst = getInst(instances, id);
+  const n = Math.max(1, Math.min(Number.isInteger(count) ? count : 1, 50));
+
+  const ring = inst.ringSnapshot();
+  let all = reconstructMessages(ring, includeThinking);
+  let source = 'ring';
+
+  // Disk-fallback only when the ring genuinely can't satisfy the request.
+  const ringSatisfies = (includeToolCalls ? all : all.filter(isTextBearing)).length >= n;
+  if (!ringSatisfies && inst.sessionId && inst.ring.trimmedBefore > 0) {
+    const merged = await mergeRecentWithDisk(inst, all, includeThinking);
+    if (merged) { all = merged; source = 'disk'; }
+  }
+
+  const filtered = includeToolCalls ? all : all.filter(isTextBearing);
   const messages = filtered.slice(-n);
+  const omittedToolOnly = includeToolCalls ? 0 : (all.length - filtered.length);
+
   // Multi-block: metadata block describes each message; one raw text block per
   // message carries its (capped) prose, in order — block k+1 ↔ messages[k].
   const bodies = [];
@@ -825,7 +881,26 @@ export async function getRecentMessages({ id, count, includeToolCalls = false, i
     if (m.blocks) entry.blocks = m.blocks.map(capBlockInput);
     return entry;
   });
-  return textPayload({ id, messages: metaMessages }, bodies);
+
+  const lastSeq = ring.length ? ring[ring.length - 1]._seq : -1;
+  const meta = {
+    id,
+    messages: metaMessages,
+    source,
+    omittedToolOnly,
+    retained: { firstSeq: inst.ring.trimmedBefore, lastSeq, trimmed: inst.ring.trimmedBefore > 0 },
+  };
+  // Never a bare ambiguous result: when we couldn't fill the request, say why.
+  if (messages.length < n) {
+    if (omittedToolOnly > 0) {
+      meta.hint = `Showing ${messages.length} text message(s); ${omittedToolOnly} recent assistant message(s) had only tool calls — the agent is active. Pass includeToolCalls:true, or use get_transcript to inspect tool activity.`;
+    } else if (messages.length === 0) {
+      meta.hint = inst.ring.trimmedBefore > 0 && source !== 'disk'
+        ? 'No assistant messages retained in memory and the session transcript was unavailable (e.g. an exited temp session). Try get_transcript.'
+        : 'No assistant text messages have arrived yet.';
+    }
+  }
+  return textPayload(meta, bodies);
 }
 
 // Cap a block's large field for inline inclusion in the metadata block. A

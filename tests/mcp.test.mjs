@@ -240,11 +240,16 @@ test('get_transcript + get_recent_messages survive a trimmed ring', async () => 
 
     const tx = unwrap(await callTool(baseUrl, 'get_transcript', { id: spawn.id }));
     assert.equal(tx.trimmedBefore, inst.ring.trimmedBefore);
-    // sinceSeq below trimmedBefore: only retained events come back — the
-    // caller detects the gap via trimmedBefore and pages the REST endpoint.
-    const below = unwrap(await callTool(baseUrl, 'get_transcript', { id: spawn.id, sinceSeq: 0, limit: 0 }));
+    // sinceSeq below trimmedBefore: this fixture has no on-disk jsonl (the fake
+    // CLI doesn't write one), so disk-fallback finds nothing and the dropped
+    // range is served from the ring only — events start at trimmedBefore.
+    // (Real disk-backed paging into a dropped range is covered in
+    // tests/mcp-recent-disk.test.mjs.)
+    const below = unwrap(await callTool(baseUrl, 'get_transcript', { id: spawn.id, sinceSeq: 0 }));
     assert.ok(below.events.length > 0);
     assert.ok(below.events[0]._seq >= below.trimmedBefore);
+    assert.equal(typeof below.hasMore, 'boolean');
+    assert.equal(typeof below.nextAfter, 'number');
 
     const recent = unwrapMessages(await callTool(baseUrl, 'get_recent_messages', { id: spawn.id }));
     assert.equal(recent.messages.length, 1);

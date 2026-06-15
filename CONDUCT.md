@@ -74,8 +74,8 @@ Everything below builds on this pattern.
 - `set_auto_approve_plan({id, enabled})` — the worker's next `plan_request` auto-approves server-side (mode flip + approval prompt). For "fire N workers and let them roll".
 
 **Inspect work**
-- `get_transcript({id, sinceSeq?, limit?})` — UI event ring; poll with `sinceSeq = lastSeqIveSeen` for incremental reads.
-- `get_recent_messages({id, count?})` — last N assistant messages, joined strings + structured blocks (default 1, max 50). Cheap — use for "what did the worker just say?".
+- `get_transcript({id, sinceSeq?, limit?})` — UI event stream (disk-backed, ring-first). Poll incrementally by passing the returned `nextAfter` as the next `sinceSeq`; `hasMore` says more remain. Ring eviction is invisible — a `sinceSeq` into an evicted range is served from the on-disk transcript.
+- `get_recent_messages({id, count?})` — last N assistant messages, joined strings + structured blocks (default 1, max 50). Cheap — use for "what did the worker just say?". Disk-backed: a busy worker mid-long-turn won't return a false-empty result even after the ring evicts its prose; `omittedToolOnly`/`hint` in the metadata flag "active but tool-only", so empty-but-active is distinguishable from idle.
 
 **Land work**
 - `sync_worktree({id})` — server-side fast-forward when possible, else sends a templated rebase prompt to the worker. Returns `{action: 'already-in-sync' | 'fast-forwarded' | 'rebase-prompt-sent' | …}`; expected refusals come back as `{ok:false, reason, code}` (e.g. `INSTANCE_NOT_RUNNING`), never thrown.
@@ -170,7 +170,7 @@ If `list_instances` ever shows you running *inside* a worker session (your `cwd`
 
 ## Reading the event stream
 
-`get_transcript({id, sinceSeq})` returns events with monotonic `_seq` — pass the last seen seq as `sinceSeq` to poll incrementally without re-reading the whole ring. Meaningful kinds: `text_delta`/`text_end` (assistant prose); `tool_use` (`Bash`, `Edit`, `Write`, `Read`, `Task`, …); `tool_result` (may carry `is_error: true`); `plan_request` (worker called `ExitPlanMode`; `plan` is the proposed plan); `user_question` (worker called `AskUserQuestion` — denied by the hook, see Best practices; drive forward with a follow-up `send_prompt`); `turn_end` (`duration_ms`, `usage`, `total_cost_usd`, `is_error`). For most decisions `get_recent_messages` is enough.
+`get_transcript({id, sinceSeq})` returns events with monotonic `_seq` — poll incrementally by passing the previous call's `nextAfter` as `sinceSeq` (forward, oldest-first; `hasMore` flags more to drain). The stream is disk-backed and ring-first: a `sinceSeq` below `trimmedBefore` is served from the on-disk transcript rather than silently skipped, so eviction never loses history. Meaningful kinds: `text_delta`/`text_end` (assistant prose); `tool_use` (`Bash`, `Edit`, `Write`, `Read`, `Task`, …); `tool_result` (may carry `is_error: true`); `plan_request` (worker called `ExitPlanMode`; `plan` is the proposed plan); `user_question` (worker called `AskUserQuestion` — denied by the hook, see Best practices; drive forward with a follow-up `send_prompt`); `turn_end` (`duration_ms`, `usage`, `total_cost_usd`, `is_error`). For most decisions `get_recent_messages` is enough.
 
 ## Talking to the user
 

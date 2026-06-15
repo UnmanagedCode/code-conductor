@@ -83,15 +83,20 @@ export function buildTools() {
     {
       name: 'get_transcript',
       description:
-        'Return the orchestrator UI-event ring for an instance. Each event carries _seq so ' +
-        'you can poll incrementally with sinceSeq. Events include text_delta, tool_use, ' +
-        'tool_result, turn_end, etc. — same shape as the WebSocket snapshot.',
+        'Return the instance UI-event stream. DISK-BACKED & ring-first: events are served from the ' +
+        'in-memory ring, and when sinceSeq points into a range the ring has already evicted (below ' +
+        'trimmedBefore) the dropped range is transparently served from the on-disk session transcript — ' +
+        'ring eviction is invisible to you. Events carry _seq; poll incrementally by passing the returned ' +
+        '`nextAfter` back as the next sinceSeq (forward paging, oldest-first). Returns {id, status, ' +
+        'sessionId, events, lastSeq, trimmedBefore, hasMore, nextAfter}. Event kinds: text_delta, tool_use, ' +
+        'tool_result, turn_end, etc. — same shape as the WebSocket snapshot. (Caveat: a single turn larger ' +
+        'than the ring cap can leave a mid-turn gap; for prose mid-long-turn use get_recent_messages.)',
       inputSchema: {
         type: 'object',
         properties: {
           id: { type: 'string', description: 'Instance id.' },
-          sinceSeq: { type: 'integer', default: -1, description: 'Return only events with _seq > sinceSeq. Default -1 (all).' },
-          limit: { type: 'integer', default: 200, description: 'Cap on number of events returned. Default 200.' },
+          sinceSeq: { type: 'integer', default: -1, description: 'Return events with _seq > sinceSeq (forward, oldest-first). Default -1 → newest page. Pass the previous call\'s nextAfter to poll incrementally.' },
+          limit: { type: 'integer', minimum: 1, maximum: 500, default: 200, description: 'Max events returned per call (clamped to [1, 500]). Use nextAfter + hasMore to page.' },
         },
         required: ['id'],
       },
@@ -498,11 +503,16 @@ export function buildTools() {
         'tool-call-only messages with none of those are excluded. Set `includeToolCalls` to true to ' +
         'include every assistant message regardless. Thinking blocks are excluded by default; ' +
         'set `includeThinking` to true to include them in `blocks[]`. `count` applies to the filtered set. ' +
+        'DISK-BACKED & ring-first: served from the in-memory ring on the hot path; if the ring\'s retained ' +
+        'tail can\'t satisfy the requested recent TEXT messages (tool-event volume evicted them) it transparently ' +
+        'reads back into the on-disk session transcript — so ring eviction never yields a false-empty result. ' +
         'OUTPUT: a compact-JSON metadata block (content[0]) {id, messages:[{index, msgId, hasToolUse, textChars, ' +
-        'textTruncated, plan?, questions?, blocks?}]} oldest-first, PLUS one raw, un-escaped text block per message ' +
-        '(content[k+1] is the prose for messages[k]; empty for plan/question-only turns). Large message text is ' +
-        'capped (textTruncated flag); blocks[].input is capped inline (inputTruncated). Empty messages[] (just the ' +
-        'metadata block) if no matching content has arrived yet. Default count 1, max 50.',
+        'textTruncated, plan?, questions?, blocks?}], source:"ring"|"disk", omittedToolOnly:int, retained:{firstSeq, ' +
+        'lastSeq, trimmed}, hint?} oldest-first, PLUS one raw, un-escaped text block per message (content[k+1] is the ' +
+        'prose for messages[k]; empty for plan/question-only turns). `omittedToolOnly` counts recent tool-call-only ' +
+        'messages excluded by the default filter (the agent is active even when messages[] is empty); `hint` explains ' +
+        'a short/empty result. Large message text is capped (textTruncated); blocks[].input is capped inline ' +
+        '(inputTruncated). Default count 1, max 50.',
       inputSchema: {
         type: 'object',
         properties: {
