@@ -184,7 +184,7 @@ export function formatResetTime(unixSecs) {
 // Build the rate-limit chip element.
 // info: rate_limit_info from the most recent rate_limit_event (or null).
 // accountUsage: OAuth account-level usage object (or null) — used as fallback
-//   when no per-session event has arrived yet (shows five_hour bucket).
+//   when no per-session event has arrived yet (shows tightest available bucket).
 // Returns null when both are null (slot stays hidden).
 // Returns a <button> so it can open the detail popup on click.
 export function renderRateLimitChip(info, accountUsage) {
@@ -197,16 +197,22 @@ export function renderRateLimitChip(info, accountUsage) {
     frac = util;  // 0-1 fraction from the CLI
     resetStr = formatResetTime(info.resetsAt);
     isOverage = info.isUsingOverage === true;
-  } else if (accountUsage?.five_hour) {
-    const fh = accountUsage.five_hour;
-    typeLabel = '5h';
-    util = typeof fh.utilization === 'number' ? fh.utilization / 100 : null;
-    frac = util;  // normalize 0-100 → 0-1 (OAuth API returns percentage integers)
-    // five_hour.resets_at is ISO-8601; convert to Unix seconds for formatResetTime.
-    resetStr = fh.resets_at ? formatResetTime(new Date(fh.resets_at).getTime() / 1000) : null;
-    isOverage = false;
   } else {
-    return null;
+    // OAuth fallback: pick the tightest available bucket in priority order.
+    // five_hour is most restrictive, but some plan tiers omit it; fall through
+    // to seven_day / seven_day_sonnet / seven_day_opus rather than hiding the chip.
+    const BUCKET_PRIORITY = ['five_hour', 'seven_day', 'seven_day_sonnet', 'seven_day_opus'];
+    const key = accountUsage && BUCKET_PRIORITY.find(k => accountUsage[k]);
+    const bucket = key && accountUsage[key];
+    if (!bucket) return null;  // no usable data from either source
+    typeLabel = RATE_LIMIT_TYPE_LABELS[key] ?? key;
+    util = typeof bucket.utilization === 'number' ? bucket.utilization / 100 : null;
+    frac = util;  // normalize 0-100 → 0-1 (OAuth API returns percentage integers)
+    // resets_at is ISO-8601; convert to Unix seconds for formatResetTime.
+    resetStr = bucket.resets_at
+      ? formatResetTime(new Date(bucket.resets_at).getTime() / 1000)
+      : null;
+    isOverage = false;
   }
 
   const el = document.createElement('button');

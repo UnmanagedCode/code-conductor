@@ -1478,10 +1478,29 @@ test('DOM: chip accountUsage branch: utilization 90 → ih-usage-high, not 9000%
   assert.ok(chip.className.includes('ih-usage-high'), 'high colour class for 90%');
 });
 
-test('DOM: chip accountUsage branch: null info + no five_hour bucket → chip hidden', async () => {
+test('DOM: chip accountUsage branch: falls back to seven_day when five_hour is absent', async () => {
   const { renderRateLimitChip } = await setupChipDOM();
   const chip = renderRateLimitChip(null, { seven_day: { utilization: 40, resets_at: null } });
-  assert.equal(chip, null, 'returns null when five_hour is absent');
+  assert.ok(chip, 'chip returned when seven_day data is present and five_hour is absent');
+  assert.ok(chip.textContent.includes('7d'), 'seven_day bucket label present');
+  assert.ok(chip.textContent.includes('40%'), 'utilization renders as 40% (normalized from 40/100)');
+});
+
+test('DOM: chip accountUsage branch: falls back to seven_day_sonnet when neither five_hour nor seven_day present', async () => {
+  const { renderRateLimitChip } = await setupChipDOM();
+  const chip = renderRateLimitChip(null, {
+    seven_day_sonnet: { utilization: 20, resets_at: '2026-06-14T00:59:59+00:00' },
+  });
+  assert.ok(chip, 'chip returned when only seven_day_sonnet bucket is available');
+  assert.ok(chip.textContent.includes('7d Sonnet'), 'seven_day_sonnet label present');
+  assert.ok(chip.textContent.includes('20%'), 'utilization renders as 20%');
+});
+
+test('DOM: chip accountUsage branch: null info + no usable bucket → chip hidden', async () => {
+  const { renderRateLimitChip } = await setupChipDOM();
+  // All known buckets absent or null — nothing to show.
+  const chip = renderRateLimitChip(null, { seven_day_opus: null });
+  assert.equal(chip, null, 'returns null when all buckets are absent/null');
 });
 
 test('DOM: chip accountUsage branch: null info + null accountUsage → chip hidden', async () => {
