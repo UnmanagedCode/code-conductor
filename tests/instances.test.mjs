@@ -1,27 +1,50 @@
-import { test } from 'node:test';
+import { test, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { bootServer, api, waitFor } from './helpers.mjs';
+import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
 import { encodeCwd } from '../src/projects.js';
 import { isArchived } from '../src/archivedSessions.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-instance.json');
+const SCENARIO_RESUME = path.join(__dirname, 'fixtures', 'scenario-resume.json');
+
+let ctx, baseUrl, instances, home;
+// Handlers registered by collectEvents/direct instances.on() are gathered here
+// and removed in afterEach so stale listeners don't accumulate on the shared emitter.
+const cleanupListeners = [];
+
+before(async () => {
+  ctx = await bootServer({ scenarioPath: SCENARIO });
+  ({ baseUrl, instances } = ctx);
+});
+after(async () => { await ctx.close(); });
+beforeEach(async () => {
+  const r = await freshProjectsRoot();
+  home = r.home;
+  ctx.projectsRoot = r.projectsRoot;
+  ctx.claudeProjectsRoot = r.claudeProjectsRoot;
+});
+afterEach(async () => {
+  await instances.shutdown();
+  for (const fn of cleanupListeners.splice(0)) fn();
+  await rmrf(home);
+});
 
 function collectEvents(instances) {
   const events = [];
-  instances.on('event', ({ id, ev }) => events.push({ id, ev }));
+  const handler = ({ id, ev }) => events.push({ id, ev });
+  instances.on('event', handler);
+  cleanupListeners.push(() => instances.off('event', handler));
   return events;
 }
 
 async function setupWithProject(name = 'demo') {
-  const ctx = await bootServer({ scenarioPath: SCENARIO });
-  const created = await api(ctx.baseUrl, 'POST', '/api/projects', { name });
+  const created = await api(baseUrl, 'POST', '/api/projects', { name });
   assert.equal(created.status, 201);
-  return ctx;
 }
 
 test('instance reaches idle immediately after spawn (before any output from claude)', async () => {
@@ -29,95 +52,88 @@ test('instance reaches idle immediately after spawn (before any output from clau
   // is sent — `init` does NOT arrive at startup. The orchestrator must flip
   // to `idle` as soon as the subprocess is alive, otherwise prompts can never
   // be sent and the instance stays stuck in `spawning` forever.
-  const { baseUrl, instances, close } = await setupWithProject();
-  try {
-    const events = collectEvents(instances);
-    const r = await api(baseUrl, 'POST', '/api/instances', {
-      project: 'demo',
-      mode: 'bypassPermissions',
-    });
-    assert.equal(r.status, 201);
-    const id = r.body.id;
+  await setupWithProject();
+  const events = collectEvents(instances);
+  const r = await api(baseUrl, 'POST', '/api/instances', {
+    project: 'demo',
+    mode: 'bypassPermissions',
+  });
+  assert.equal(r.status, 201);
+  const id = r.body.id;
 
-    await waitFor(() => instances.get(id).status === 'idle');
+  await waitFor(() => instances.get(id).status === 'idle');
 
-    // Pre-generated sessionId is present even though init hasn't arrived.
-    const inst = instances.get(id);
-    assert.ok(inst.sessionId, 'sessionId set via --session-id at spawn time');
-    assert.equal(inst.mode, 'bypassPermissions');
+  // Pre-generated sessionId is present even though init hasn't arrived.
+  const inst = instances.get(id);
+  assert.ok(inst.sessionId, 'sessionId set via --session-id at spawn time');
+  assert.equal(inst.mode, 'bypassPermissions');
 
-    // No init event yet — it should be silent.
-    const initEvents = events.filter(e => e.id === id && e.ev.kind === 'system' && e.ev.subtype === 'init');
-    assert.equal(initEvents.length, 0, 'init has not arrived yet (claude is silent until first prompt)');
+  // No init event yet — it should be silent.
+  const initEvents = events.filter(e => e.id === id && e.ev.kind === 'system' && e.ev.subtype === 'init');
+  assert.equal(initEvents.length, 0, 'init has not arrived yet (claude is silent until first prompt)');
 
-    const list = await api(baseUrl, 'GET', '/api/instances');
-    assert.equal(list.body[0].status, 'idle');
-  } finally { await close(); }
+  const list = await api(baseUrl, 'GET', '/api/instances');
+  assert.equal(list.body[0].status, 'idle');
 });
 
 test('init event arrives bundled with first turn response', async () => {
-  const { baseUrl, instances, close } = await setupWithProject();
-  try {
-    const events = collectEvents(instances);
-    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', mode: 'bypassPermissions' });
-    const id = r.body.id;
-    await waitFor(() => instances.get(id).status === 'idle');
+  await setupWithProject();
+  const events = collectEvents(instances);
+  const r = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', mode: 'bypassPermissions' });
+  const id = r.body.id;
+  await waitFor(() => instances.get(id).status === 'idle');
 
-    instances.get(id).prompt('hello');
-    await waitFor(() => events.some(e => e.id === id && e.ev.kind === 'system' && e.ev.subtype === 'init'));
+  instances.get(id).prompt('hello');
+  await waitFor(() => events.some(e => e.id === id && e.ev.kind === 'system' && e.ev.subtype === 'init'));
 
-    const seq = events.filter(e => e.id === id).map(e => e.ev.kind);
-    const initIdx = seq.findIndex(k => k === 'system');
-    const userIdx = seq.findIndex(k => k === 'user_echo');
-    assert.ok(userIdx < initIdx, 'user_echo emitted by orchestrator before init arrives from claude');
-  } finally { await close(); }
+  const seq = events.filter(e => e.id === id).map(e => e.ev.kind);
+  const initIdx = seq.findIndex(k => k === 'system');
+  const userIdx = seq.findIndex(k => k === 'user_echo');
+  assert.ok(userIdx < initIdx, 'user_echo emitted by orchestrator before init arrives from claude');
 });
 
 test('prompt round-trip emits ordered ui events and returns to idle', async () => {
-  const { baseUrl, instances, close } = await setupWithProject();
-  try {
-    const events = collectEvents(instances);
-    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', mode: 'bypassPermissions' });
-    const id = r.body.id;
-    await waitFor(() => instances.get(id).status === 'idle' && instances.get(id).sessionId);
+  await setupWithProject();
+  const events = collectEvents(instances);
+  const r = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', mode: 'bypassPermissions' });
+  const id = r.body.id;
+  await waitFor(() => instances.get(id).status === 'idle' && instances.get(id).sessionId);
 
-    instances.get(id).prompt('hello there');
-    assert.equal(instances.get(id).status, 'turn');
+  instances.get(id).prompt('hello there');
+  assert.equal(instances.get(id).status, 'turn');
 
-    await waitFor(() => events.some(e => e.id === id && e.ev.kind === 'turn_end'));
+  await waitFor(() => events.some(e => e.id === id && e.ev.kind === 'turn_end'));
 
-    const mine = events.filter(e => e.id === id).map(e => e.ev);
-    const kinds = mine.map(e => e.kind);
+  const mine = events.filter(e => e.id === id).map(e => e.ev);
+  const kinds = mine.map(e => e.kind);
 
-    const firstTextDelta = kinds.indexOf('text_delta');
-    const firstToolUseStart = kinds.indexOf('tool_use_start');
-    const firstToolUse = kinds.indexOf('tool_use');
-    const firstToolResult = kinds.indexOf('tool_result');
-    const turnEnd = kinds.indexOf('turn_end');
+  const firstTextDelta = kinds.indexOf('text_delta');
+  const firstToolUseStart = kinds.indexOf('tool_use_start');
+  const firstToolUse = kinds.indexOf('tool_use');
+  const firstToolResult = kinds.indexOf('tool_result');
+  const turnEnd = kinds.indexOf('turn_end');
 
-    assert.ok(firstTextDelta >= 0, 'has text_delta');
-    assert.ok(firstToolUseStart >= 0, 'has tool_use_start');
-    assert.ok(firstToolUse > firstToolUseStart, 'tool_use comes after tool_use_start');
-    assert.ok(firstToolResult > firstToolUse, 'tool_result after tool_use');
-    assert.ok(turnEnd > firstToolResult, 'turn_end last');
+  assert.ok(firstTextDelta >= 0, 'has text_delta');
+  assert.ok(firstToolUseStart >= 0, 'has tool_use_start');
+  assert.ok(firstToolUse > firstToolUseStart, 'tool_use comes after tool_use_start');
+  assert.ok(firstToolResult > firstToolUse, 'tool_result after tool_use');
+  assert.ok(turnEnd > firstToolResult, 'turn_end last');
 
-    const finalToolUse = mine.find(e => e.kind === 'tool_use');
-    assert.deepEqual(finalToolUse.input, { command: 'ls' });
+  const finalToolUse = mine.find(e => e.kind === 'tool_use');
+  assert.deepEqual(finalToolUse.input, { command: 'ls' });
 
-    const result = mine.find(e => e.kind === 'turn_end');
-    assert.equal(result.subtype, 'success');
-    assert.equal(result.isError, false);
+  const result = mine.find(e => e.kind === 'turn_end');
+  assert.equal(result.subtype, 'success');
+  assert.equal(result.isError, false);
 
-    assert.equal(instances.get(id).status, 'idle');
-  } finally { await close(); }
+  assert.equal(instances.get(id).status, 'idle');
 });
 
 test('setMode writes control_request and resolves on control_response', async () => {
-  const { baseUrl, instances, tmpHome, close } = await setupWithProject();
+  await setupWithProject();
+  const transcriptPath = path.join(home, 'transcript.log');
+  process.env.FAKE_CLAUDE_TRANSCRIPT = transcriptPath;
   try {
-    const transcriptPath = path.join(tmpHome, 'transcript.log');
-    process.env.FAKE_CLAUDE_TRANSCRIPT = transcriptPath;
-
     const r = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', mode: 'bypassPermissions' });
     const id = r.body.id;
     const inst = instances.get(id);
@@ -134,45 +150,44 @@ test('setMode writes control_request and resolves on control_response', async ()
     assert.ok(modeReq.request_id, 'request_id present');
   } finally {
     delete process.env.FAKE_CLAUDE_TRANSCRIPT;
-    await close();
   }
 });
 
 test('forced interrupt (force:true) mid-turn emits turn_end and returns to idle', async () => {
-  const { baseUrl, instances, close } = await setupWithProject();
-  try {
-    const events = collectEvents(instances);
-    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', mode: 'bypassPermissions' });
-    const id = r.body.id;
-    const inst = instances.get(id);
-    await waitFor(() => inst.status === 'idle' && inst.sessionId);
+  await setupWithProject();
+  const events = collectEvents(instances);
+  const r = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', mode: 'bypassPermissions' });
+  const id = r.body.id;
+  const inst = instances.get(id);
+  await waitFor(() => inst.status === 'idle' && inst.sessionId);
 
-    inst.prompt('first turn');
-    await waitFor(() => events.some(e => e.id === id && e.ev.kind === 'turn_end'));
-    const beforeInterrupt = events.length;
+  inst.prompt('first turn');
+  await waitFor(() => events.some(e => e.id === id && e.ev.kind === 'turn_end'));
+  const beforeInterrupt = events.length;
 
-    inst.prompt('second turn please be slow');
-    assert.equal(inst.status, 'turn');
-    // The "slow" scenario turn waits 80ms per event; interrupt before it finishes.
-    await waitFor(() => events.slice(beforeInterrupt).some(e => e.id === id && e.ev.kind === 'text_delta'));
-    await inst.interrupt({ force: true }); // hard abort — control_request
+  inst.prompt('second turn please be slow');
+  assert.equal(inst.status, 'turn');
+  // The "slow" scenario turn waits 80ms per event; interrupt before it finishes.
+  await waitFor(() => events.slice(beforeInterrupt).some(e => e.id === id && e.ev.kind === 'text_delta'));
+  await inst.interrupt({ force: true }); // hard abort — control_request
 
-    await waitFor(() => inst.status === 'idle');
-    const last = events.filter(e => e.id === id && e.ev.kind === 'turn_end').slice(-1)[0];
-    assert.equal(last.ev.subtype, 'error_during_execution');
-    assert.equal(last.ev.stopReason, 'interrupted');
-    assert.equal(inst.interrupting, false, 'interrupting flag cleared on turn exit');
-  } finally { await close(); }
+  await waitFor(() => inst.status === 'idle');
+  const last = events.filter(e => e.id === id && e.ev.kind === 'turn_end').slice(-1)[0];
+  assert.equal(last.ev.subtype, 'error_during_execution');
+  assert.equal(last.ev.stopReason, 'interrupted');
+  assert.equal(inst.interrupting, false, 'interrupting flag cleared on turn exit');
 });
 
 test('soft interrupt (default) injects a hidden steer, sets interrupting, leaves no bubble', async () => {
-  const { baseUrl, instances, tmpHome, close } = await setupWithProject();
-  const transcriptPath = path.join(tmpHome, 'soft-stdin.log');
+  await setupWithProject();
+  const transcriptPath = path.join(home, 'soft-stdin.log');
   process.env.FAKE_CLAUDE_TRANSCRIPT = transcriptPath;
+  const statuses = [];
+  const statusHandler = (s) => statuses.push(s);
+  instances.on('status', statusHandler);
+  cleanupListeners.push(() => instances.off('status', statusHandler));
   try {
     const events = collectEvents(instances);
-    const statuses = [];
-    instances.on('status', (s) => statuses.push(s));
     const r = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', mode: 'bypassPermissions' });
     const id = r.body.id;
     const inst = instances.get(id);
@@ -218,13 +233,12 @@ test('soft interrupt (default) injects a hidden steer, sets interrupting, leaves
     assert.equal(inst.interrupting, false, 'interrupting cleared after turn_end');
   } finally {
     delete process.env.FAKE_CLAUDE_TRANSCRIPT;
-    await close();
   }
 });
 
 test('soft interrupt is a no-op when not in a turn', async () => {
-  const { baseUrl, instances, tmpHome, close } = await setupWithProject();
-  const transcriptPath = path.join(tmpHome, 'soft-noop-stdin.log');
+  await setupWithProject();
+  const transcriptPath = path.join(home, 'soft-noop-stdin.log');
   process.env.FAKE_CLAUDE_TRANSCRIPT = transcriptPath;
   try {
     const events = collectEvents(instances);
@@ -242,16 +256,14 @@ test('soft interrupt is a no-op when not in a turn', async () => {
     assert.ok(!stdin.includes('[[cc:soft-interrupt]]'), 'no steer written when idle');
   } finally {
     delete process.env.FAKE_CLAUDE_TRANSCRIPT;
-    await close();
   }
 });
 
 test('crash + respawn preserves sessionId, ring buffer, and uses --resume', async () => {
-  const { baseUrl, instances, tmpHome, close } = await setupWithProject();
+  await setupWithProject();
+  const transcriptPath = path.join(home, 'transcript.log');
+  process.env.FAKE_CLAUDE_TRANSCRIPT = transcriptPath;
   try {
-    const transcriptPath = path.join(tmpHome, 'transcript.log');
-    process.env.FAKE_CLAUDE_TRANSCRIPT = transcriptPath;
-
     const r = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', mode: 'bypassPermissions' });
     const id = r.body.id;
     const inst = instances.get(id);
@@ -281,7 +293,6 @@ test('crash + respawn preserves sessionId, ring buffer, and uses --resume', asyn
     assert.equal(inst.sessionId, sid, 'sessionId unchanged after respawn');
   } finally {
     delete process.env.FAKE_CLAUDE_TRANSCRIPT;
-    await close();
   }
 });
 
@@ -290,12 +301,11 @@ test('respawn wipes the ring so loadHistory does not pile on top of the prior ru
   // run's events would replay the persisted transcript on top, doubling
   // every message in the UI. The wipe lives in InstanceManager.respawn() and
   // mirrors what the rewind path does.
-  const ctx = await bootServer({
-    scenarioPath: path.join(__dirname, 'fixtures', 'scenario-resume.json'),
-  });
+  const prevScenario = process.env.FAKE_CLAUDE_SCENARIO;
+  process.env.FAKE_CLAUDE_SCENARIO = SCENARIO_RESUME;
   try {
     const sid = 'cccc1234-2222-3333-4444-555555555555';
-    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'respawnproj' });
+    await api(baseUrl, 'POST', '/api/projects', { name: 'respawnproj' });
     const projectPath = path.join(ctx.projectsRoot, 'respawnproj');
     const sessionDir = path.join(ctx.claudeProjectsRoot, encodeCwd(projectPath));
     await fs.mkdir(sessionDir, { recursive: true });
@@ -313,73 +323,72 @@ test('respawn wipes the ring so loadHistory does not pile on top of the prior ru
       ].map(l => JSON.stringify(l)).join('\n') + '\n',
     );
 
-    const r = await api(ctx.baseUrl, 'POST', '/api/instances', {
+    const r = await api(baseUrl, 'POST', '/api/instances', {
       project: 'respawnproj', mode: 'bypassPermissions', resume: sid,
     });
     const id = r.body.id;
-    await waitFor(() => ctx.instances.get(id).status === 'idle');
+    await waitFor(() => instances.get(id).status === 'idle');
     assert.equal(
-      ctx.instances.get(id).ringSnapshot().filter(e => e.kind === 'user_echo').length,
+      instances.get(id).ringSnapshot().filter(e => e.kind === 'user_echo').length,
       2,
     );
 
-    await ctx.instances.get(id).kill({ graceMs: 50 });
+    await instances.get(id).kill({ graceMs: 50 });
     await waitFor(() => {
-      const s = ctx.instances.get(id).status;
+      const s = instances.get(id).status;
       return s === 'exited' || s === 'crashed';
     });
 
     let resetSeen = 0;
-    ctx.instances.on('snapshot_reset', (snap) => {
-      if (snap.id === id) resetSeen++;
-    });
-    const rs = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/respawn`);
+    const snapshotHandler = (snap) => { if (snap.id === id) resetSeen++; };
+    instances.on('snapshot_reset', snapshotHandler);
+    cleanupListeners.push(() => instances.off('snapshot_reset', snapshotHandler));
+
+    const rs = await api(baseUrl, 'POST', `/api/instances/${id}/respawn`);
     assert.equal(rs.status, 200);
-    await waitFor(() => ctx.instances.get(id).status === 'idle');
+    await waitFor(() => instances.get(id).status === 'idle');
 
     assert.equal(resetSeen, 1, 'respawn broadcasts snapshot_reset so subscribers clear their view');
 
-    const echoes = ctx.instances.get(id).ringSnapshot()
+    const echoes = instances.get(id).ringSnapshot()
       .filter(e => e.kind === 'user_echo')
       .map(e => e.text);
     assert.deepEqual(
       echoes, ['first prompt', 'second prompt'],
       'history replayed exactly once after respawn',
     );
-  } finally { await ctx.close(); }
+  } finally {
+    process.env.FAKE_CLAUDE_SCENARIO = prevScenario;
+  }
 });
 
 test('DELETE /api/instances/:id kills subprocess and removes it', async () => {
-  const { baseUrl, instances, close } = await setupWithProject();
-  try {
-    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', mode: 'bypassPermissions' });
-    const id = r.body.id;
-    await waitFor(() => instances.get(id)?.sessionId);
+  await setupWithProject();
+  const r = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', mode: 'bypassPermissions' });
+  const id = r.body.id;
+  await waitFor(() => instances.get(id)?.sessionId);
 
-    const del = await api(baseUrl, 'DELETE', `/api/instances/${id}`);
-    assert.equal(del.status, 200);
-    assert.equal(instances.get(id), undefined);
-  } finally { await close(); }
+  const del = await api(baseUrl, 'DELETE', `/api/instances/${id}`);
+  assert.equal(del.status, 200);
+  assert.equal(instances.get(id), undefined);
 });
 
 test('rejects invalid mode and unknown project', async () => {
-  const { baseUrl, close } = await setupWithProject();
-  try {
-    const r1 = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', mode: 'wat' });
-    assert.equal(r1.status, 400);
-    const r2 = await api(baseUrl, 'POST', '/api/instances', { project: 'missing', mode: 'bypassPermissions' });
-    assert.equal(r2.status, 404);
-    const r3 = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', effort: 'bogus' });
-    assert.equal(r3.status, 400);
-  } finally { await close(); }
+  await setupWithProject();
+  const r1 = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', mode: 'wat' });
+  assert.equal(r1.status, 400);
+  const r2 = await api(baseUrl, 'POST', '/api/instances', { project: 'missing', mode: 'bypassPermissions' });
+  assert.equal(r2.status, 404);
+  const r3 = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', effort: 'bogus' });
+  assert.equal(r3.status, 400);
 });
 
 test('default spawn passes --permission-mode plan, --effort high, --thinking adaptive', async () => {
-  const { baseUrl, instances, tmpHome, close } = await setupWithProject();
+  await setupWithProject();
   const fsp = (await import('node:fs')).promises;
+  const argvPath = `${home}/argv.txt`;
+  process.env.FAKE_CLAUDE_ARGV_DUMP = argvPath;
   try {
-    const argvPath = `${tmpHome}/argv.txt`;
-    process.env.FAKE_CLAUDE_ARGV_DUMP = argvPath;
     const r = await api(baseUrl, 'POST', '/api/instances', { project: 'demo' }); // no mode / effort / thinking
     const id = r.body.id;
     await waitFor(() => instances.get(id).status === 'idle');
@@ -460,18 +469,16 @@ test('default spawn passes --permission-mode plan, --effort high, --thinking ada
     );
   } finally {
     delete process.env.FAKE_CLAUDE_ARGV_DUMP;
-    await close();
   }
 });
 
 test('ORCH_DISABLE_MCP_AUTOREGISTER=1 omits --mcp-config from spawn argv', async () => {
-  const { baseUrl, instances, tmpHome, close } = await setupWithProject();
+  await setupWithProject();
   const fsp = (await import('node:fs')).promises;
+  const argvPath = `${home}/argv.txt`;
+  process.env.FAKE_CLAUDE_ARGV_DUMP = argvPath;
+  process.env.ORCH_DISABLE_MCP_AUTOREGISTER = '1';
   try {
-    const argvPath = `${tmpHome}/argv.txt`;
-    process.env.FAKE_CLAUDE_ARGV_DUMP = argvPath;
-    process.env.ORCH_DISABLE_MCP_AUTOREGISTER = '1';
-
     const r = await api(baseUrl, 'POST', '/api/instances', { project: 'demo' });
     const id = r.body.id;
     await waitFor(() => instances.get(id).status === 'idle');
@@ -483,17 +490,15 @@ test('ORCH_DISABLE_MCP_AUTOREGISTER=1 omits --mcp-config from spawn argv', async
   } finally {
     delete process.env.FAKE_CLAUDE_ARGV_DUMP;
     delete process.env.ORCH_DISABLE_MCP_AUTOREGISTER;
-    await close();
   }
 });
 
 test('ask mode: --permission-mode is bypassPermissions at the CLI level, orchestrator-tracked mode stays "ask"', async () => {
-  const { baseUrl, instances, tmpHome, close } = await setupWithProject();
+  await setupWithProject();
   const fsp = (await import('node:fs')).promises;
+  const argvPath = `${home}/argv.txt`;
+  process.env.FAKE_CLAUDE_ARGV_DUMP = argvPath;
   try {
-    const argvPath = `${tmpHome}/argv.txt`;
-    process.env.FAKE_CLAUDE_ARGV_DUMP = argvPath;
-
     const r = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', mode: 'ask' });
     const id = r.body.id;
     await waitFor(() => instances.get(id).status === 'idle');
@@ -506,16 +511,14 @@ test('ask mode: --permission-mode is bypassPermissions at the CLI level, orchest
       `ask maps to CLI bypassPermissions (CLI doesn't know about ask); argv was: ${argv.join(' ')}`);
   } finally {
     delete process.env.FAKE_CLAUDE_ARGV_DUMP;
-    await close();
   }
 });
 
 test('setMode("ask") flips orchestrator mode to ask while sending bypassPermissions to the CLI', async () => {
-  const { baseUrl, instances, tmpHome, close } = await setupWithProject();
+  await setupWithProject();
+  const transcriptPath = `${home}/transcript.log`;
+  process.env.FAKE_CLAUDE_TRANSCRIPT = transcriptPath;
   try {
-    const transcriptPath = `${tmpHome}/transcript.log`;
-    process.env.FAKE_CLAUDE_TRANSCRIPT = transcriptPath;
-
     const r = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', mode: 'plan' });
     const id = r.body.id;
     const inst = instances.get(id);
@@ -532,7 +535,6 @@ test('setMode("ask") flips orchestrator mode to ask while sending bypassPermissi
       'CLI receives the bypassPermissions equivalent — it doesn\'t know about ask');
   } finally {
     delete process.env.FAKE_CLAUDE_TRANSCRIPT;
-    await close();
   }
 });
 
@@ -541,10 +543,11 @@ test('resuming an existing session replays the persisted transcript into the rin
   // spawn an instance with resume=<sid> and assert the orchestrator
   // populates its ring buffer with UI events derived from those persisted
   // user/assistant lines (text, thinking, tool_use, tool_result).
-  const ctx = await bootServer({ scenarioPath: path.join(__dirname, 'fixtures', 'scenario-resume.json') });
+  const prevScenario = process.env.FAKE_CLAUDE_SCENARIO;
+  process.env.FAKE_CLAUDE_SCENARIO = SCENARIO_RESUME;
   const fsp = (await import('node:fs')).promises;
   try {
-    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'resume-me' });
+    await api(baseUrl, 'POST', '/api/projects', { name: 'resume-me' });
     const projectPath = path.join(ctx.projectsRoot, 'resume-me');
     const sid = '11111111-2222-3333-4444-555555555555';
     const sessionDir = path.join(ctx.claudeProjectsRoot, encodeCwd(projectPath));
@@ -572,12 +575,12 @@ test('resuming an existing session replays the persisted transcript into the rin
       lines.map(l => JSON.stringify(l)).join('\n') + '\n',
     );
 
-    const events = collectEvents(ctx.instances);
-    const r = await api(ctx.baseUrl, 'POST', '/api/instances', {
+    const events = collectEvents(instances);
+    const r = await api(baseUrl, 'POST', '/api/instances', {
       project: 'resume-me', mode: 'bypassPermissions', resume: sid,
     });
     const id = r.body.id;
-    const inst = ctx.instances.get(id);
+    const inst = instances.get(id);
     await waitFor(() => inst.status === 'idle');
 
     const mine = events.filter(e => e.id === id).map(e => e.ev);
@@ -606,7 +609,9 @@ test('resuming an existing session replays the persisted transcript into the rin
 
     // sessionId on the instance equals the resume sid.
     assert.equal(inst.sessionId, sid);
-  } finally { await ctx.close(); }
+  } finally {
+    process.env.FAKE_CLAUDE_SCENARIO = prevScenario;
+  }
 });
 
 test('resume without explicit model passes --model from the session jsonl (preserves Sonnet across server restart)', async () => {
@@ -617,10 +622,11 @@ test('resume without explicit model passes --model from the session jsonl (prese
   // the most-recent assistant.message.model from the jsonl on resume and
   // re-passes it via --model — canonicalised to the family's fixed window
   // (Sonnet → 1M via the CLI-native [1m] suffix).
-  const ctx = await bootServer({ scenarioPath: path.join(__dirname, 'fixtures', 'scenario-resume.json') });
+  const prevScenario = process.env.FAKE_CLAUDE_SCENARIO;
+  process.env.FAKE_CLAUDE_SCENARIO = SCENARIO_RESUME;
   const fsp = (await import('node:fs')).promises;
   try {
-    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'resume-model' });
+    await api(baseUrl, 'POST', '/api/projects', { name: 'resume-model' });
     const projectPath = path.join(ctx.projectsRoot, 'resume-model');
     const sid = '99999999-aaaa-bbbb-cccc-dddddddddddd';
     const sessionDir = path.join(ctx.claudeProjectsRoot, encodeCwd(projectPath));
@@ -637,34 +643,37 @@ test('resume without explicit model passes --model from the session jsonl (prese
       lines.map(l => JSON.stringify(l)).join('\n') + '\n',
     );
 
-    const argvPath = `${ctx.tmpHome}/argv-resume.txt`;
+    const argvPath = `${home}/argv-resume.txt`;
     process.env.FAKE_CLAUDE_ARGV_DUMP = argvPath;
     try {
-      const r = await api(ctx.baseUrl, 'POST', '/api/instances', {
+      const r = await api(baseUrl, 'POST', '/api/instances', {
         project: 'resume-model', resume: sid,
         // intentionally no `model` — mirrors the auto-resume flow
       });
       const id = r.body.id;
-      await waitFor(() => ctx.instances.get(id)?.status === 'idle');
+      await waitFor(() => instances.get(id)?.status === 'idle');
       await waitFor(async () => { try { await fsp.stat(argvPath); return true; } catch { return false; } });
       const argv = (await fsp.readFile(argvPath, 'utf8')).split('\n').filter(Boolean);
       const m = argv.indexOf('--model');
       assert.ok(m >= 0, `--model should be passed on resume; argv was: ${argv.join(' ')}`);
       assert.equal(argv[m + 1], 'claude-sonnet-4-6[1m]');
-      assert.equal(ctx.instances.get(id).model, 'claude-sonnet-4-6[1m]');
+      assert.equal(instances.get(id).model, 'claude-sonnet-4-6[1m]');
     } finally {
       delete process.env.FAKE_CLAUDE_ARGV_DUMP;
     }
-  } finally { await ctx.close(); }
+  } finally {
+    process.env.FAKE_CLAUDE_SCENARIO = prevScenario;
+  }
 });
 
 test('resume with explicit model overrides the model recorded in the jsonl', async () => {
   // Caller can still force a different model on resume — the jsonl-derived
   // model is only a fallback when the caller didn't pass one.
-  const ctx = await bootServer({ scenarioPath: path.join(__dirname, 'fixtures', 'scenario-resume.json') });
+  const prevScenario = process.env.FAKE_CLAUDE_SCENARIO;
+  process.env.FAKE_CLAUDE_SCENARIO = SCENARIO_RESUME;
   const fsp = (await import('node:fs')).promises;
   try {
-    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'resume-model-override' });
+    await api(baseUrl, 'POST', '/api/projects', { name: 'resume-model-override' });
     const projectPath = path.join(ctx.projectsRoot, 'resume-model-override');
     const sid = '88888888-aaaa-bbbb-cccc-dddddddddddd';
     const sessionDir = path.join(ctx.claudeProjectsRoot, encodeCwd(projectPath));
@@ -680,15 +689,15 @@ test('resume with explicit model overrides the model recorded in the jsonl', asy
       lines.map(l => JSON.stringify(l)).join('\n') + '\n',
     );
 
-    const argvPath = `${ctx.tmpHome}/argv-override.txt`;
+    const argvPath = `${home}/argv-override.txt`;
     process.env.FAKE_CLAUDE_ARGV_DUMP = argvPath;
     try {
-      const r = await api(ctx.baseUrl, 'POST', '/api/instances', {
+      const r = await api(baseUrl, 'POST', '/api/instances', {
         project: 'resume-model-override', resume: sid,
         model: 'claude-haiku-4-5',
       });
       const id = r.body.id;
-      await waitFor(() => ctx.instances.get(id)?.status === 'idle');
+      await waitFor(() => instances.get(id)?.status === 'idle');
       await waitFor(async () => { try { await fsp.stat(argvPath); return true; } catch { return false; } });
       const argv = (await fsp.readFile(argvPath, 'utf8')).split('\n').filter(Boolean);
       const m = argv.indexOf('--model');
@@ -696,7 +705,9 @@ test('resume with explicit model overrides the model recorded in the jsonl', asy
     } finally {
       delete process.env.FAKE_CLAUDE_ARGV_DUMP;
     }
-  } finally { await ctx.close(); }
+  } finally {
+    process.env.FAKE_CLAUDE_SCENARIO = prevScenario;
+  }
 });
 
 
@@ -707,10 +718,11 @@ test('resume: AskUserQuestion and ExitPlanMode tool calls from history replay as
   // tool_use_start + tool_use, so resumed sessions showed those tool
   // calls as plain collapsed tool blocks — no question card, no
   // plan-approval card.
-  const ctx = await bootServer({ scenarioPath: path.join(__dirname, 'fixtures', 'scenario-resume.json') });
+  const prevScenario = process.env.FAKE_CLAUDE_SCENARIO;
+  process.env.FAKE_CLAUDE_SCENARIO = SCENARIO_RESUME;
   const fsp = (await import('node:fs')).promises;
   try {
-    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'with-cards' });
+    await api(baseUrl, 'POST', '/api/projects', { name: 'with-cards' });
     const projectPath = path.join(ctx.projectsRoot, 'with-cards');
     const sid = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
     const sessionDir = path.join(ctx.claudeProjectsRoot, encodeCwd(projectPath));
@@ -740,12 +752,12 @@ test('resume: AskUserQuestion and ExitPlanMode tool calls from history replay as
       lines.map(l => JSON.stringify(l)).join('\n') + '\n',
     );
 
-    const events = collectEvents(ctx.instances);
-    const r = await api(ctx.baseUrl, 'POST', '/api/instances', {
+    const events = collectEvents(instances);
+    const r = await api(baseUrl, 'POST', '/api/instances', {
       project: 'with-cards', mode: 'plan', resume: sid,
     });
     const id = r.body.id;
-    await waitFor(() => ctx.instances.get(id).status === 'idle');
+    await waitFor(() => instances.get(id).status === 'idle');
 
     const mine = events.filter(e => e.id === id).map(e => e.ev);
 
@@ -760,7 +772,9 @@ test('resume: AskUserQuestion and ExitPlanMode tool calls from history replay as
     const pr = mine.find(e => e.kind === 'plan_request' && e.toolUseId === 'tu_plan_replay');
     assert.ok(pr, 'plan_request for replayed ExitPlanMode missing');
     assert.match(pr.plan, /Step 1/);
-  } finally { await ctx.close(); }
+  } finally {
+    process.env.FAKE_CLAUDE_SCENARIO = prevScenario;
+  }
 });
 
 test('resume: an Agent tool_use replays its sub-agent transcript from subagents/agent-<id>.jsonl, tagged with parent_tool_use_id', async () => {
@@ -772,10 +786,11 @@ test('resume: an Agent tool_use replays its sub-agent transcript from subagents/
   // parent_tool_use_id:null. Live streams those events over stdout with
   // parent_tool_use_id set (parser tags them, conversation nests them under
   // the Agent block) — replay needs to load + tag them explicitly.
-  const ctx = await bootServer({ scenarioPath: path.join(__dirname, 'fixtures', 'scenario-resume.json') });
+  const prevScenario = process.env.FAKE_CLAUDE_SCENARIO;
+  process.env.FAKE_CLAUDE_SCENARIO = SCENARIO_RESUME;
   const fsp = (await import('node:fs')).promises;
   try {
-    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'agent-replay' });
+    await api(baseUrl, 'POST', '/api/projects', { name: 'agent-replay' });
     const projectPath = path.join(ctx.projectsRoot, 'agent-replay');
     const sid = 'cccccccc-1111-2222-3333-444444444444';
     const sessionDir = path.join(ctx.claudeProjectsRoot, encodeCwd(projectPath));
@@ -829,12 +844,12 @@ test('resume: an Agent tool_use replays its sub-agent transcript from subagents/
       subLines.map(l => JSON.stringify(l)).join('\n') + '\n',
     );
 
-    const events = collectEvents(ctx.instances);
-    const r = await api(ctx.baseUrl, 'POST', '/api/instances', {
+    const events = collectEvents(instances);
+    const r = await api(baseUrl, 'POST', '/api/instances', {
       project: 'agent-replay', mode: 'bypassPermissions', resume: sid,
     });
     const id = r.body.id;
-    await waitFor(() => ctx.instances.get(id).status === 'idle');
+    await waitFor(() => instances.get(id).status === 'idle');
 
     const mine = events.filter(e => e.id === id).map(e => e.ev);
 
@@ -871,33 +886,38 @@ test('resume: an Agent tool_use replays its sub-agent transcript from subagents/
     const idxSubBash = mine.indexOf(subBash);
     const idxOuterResult = mine.indexOf(outerResult);
     assert.ok(idxSubBash < idxOuterResult, 'sub-agent events come before the outer Agent tool_result');
-  } finally { await ctx.close(); }
+  } finally {
+    process.env.FAKE_CLAUDE_SCENARIO = prevScenario;
+  }
 });
 
 test('resuming when no jsonl exists is a no-op (still reaches idle)', async () => {
-  const ctx = await bootServer({ scenarioPath: path.join(__dirname, 'fixtures', 'scenario-resume.json') });
+  const prevScenario = process.env.FAKE_CLAUDE_SCENARIO;
+  process.env.FAKE_CLAUDE_SCENARIO = SCENARIO_RESUME;
   try {
-    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'nope' });
+    await api(baseUrl, 'POST', '/api/projects', { name: 'nope' });
     const sid = 'deadbeef-0000-0000-0000-000000000000';
-    const r = await api(ctx.baseUrl, 'POST', '/api/instances', {
+    const r = await api(baseUrl, 'POST', '/api/instances', {
       project: 'nope', mode: 'bypassPermissions', resume: sid,
     });
     const id = r.body.id;
-    await waitFor(() => ctx.instances.get(id).status === 'idle');
-    assert.equal(ctx.instances.get(id).sessionId, sid);
-  } finally { await ctx.close(); }
+    await waitFor(() => instances.get(id).status === 'idle');
+    assert.equal(instances.get(id).sessionId, sid);
+  } finally {
+    process.env.FAKE_CLAUDE_SCENARIO = prevScenario;
+  }
 });
 
 test('writes last-prompt + permission-mode jsonl markers after each turn (so claude --resume sees the session)', async () => {
-  const scenario = path.join(__dirname, 'fixtures', 'scenario-resume.json');
-  const ctx = await bootServer({ scenarioPath: scenario });
+  const prevScenario = process.env.FAKE_CLAUDE_SCENARIO;
+  process.env.FAKE_CLAUDE_SCENARIO = SCENARIO_RESUME;
   const fsp = (await import('node:fs')).promises;
   try {
-    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'r' });
-    const events = collectEvents(ctx.instances);
-    const r = await api(ctx.baseUrl, 'POST', '/api/instances', { project: 'r', mode: 'bypassPermissions' });
+    await api(baseUrl, 'POST', '/api/projects', { name: 'r' });
+    const events = collectEvents(instances);
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'r', mode: 'bypassPermissions' });
     const id = r.body.id;
-    const inst = ctx.instances.get(id);
+    const inst = instances.get(id);
     await waitFor(() => inst.status === 'idle');
     inst.prompt('hi');
     await waitFor(() => events.some(e => e.id === id && e.ev.kind === 'turn_end'));
@@ -918,16 +938,16 @@ test('writes last-prompt + permission-mode jsonl markers after each turn (so cla
     assert.ok(last.leafUuid, 'leafUuid present');
     assert.ok(mode, 'permission-mode line was appended');
     assert.equal(mode.permissionMode, 'bypassPermissions');
-  } finally { await ctx.close(); }
+  } finally {
+    process.env.FAKE_CLAUDE_SCENARIO = prevScenario;
+  }
 });
 
 test('rejects invalid thinking mode', async () => {
-  const { baseUrl, close } = await setupWithProject();
-  try {
-    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', thinking: 'wrong' });
-    assert.equal(r.status, 400);
-    assert.match(r.body.error, /thinking/);
-  } finally { await close(); }
+  await setupWithProject();
+  const r = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', thinking: 'wrong' });
+  assert.equal(r.status, 400);
+  assert.match(r.body.error, /thinking/);
 });
 
 test('sending a prompt emits exactly one user_echo (no duplicate from --replay)', async () => {
@@ -935,12 +955,11 @@ test('sending a prompt emits exactly one user_echo (no duplicate from --replay)'
   // message back as a `type:"user"` event on stdout, which the parser turned
   // into a second user_echo on top of the orchestrator's optimistic one.
   // The fix was dropping --replay-user-messages from the spawn args.
-  const { baseUrl, instances, tmpHome, close } = await setupWithProject();
+  await setupWithProject();
   const fsp = (await import('node:fs')).promises;
+  const argvPath = `${home}/argv.txt`;
+  process.env.FAKE_CLAUDE_ARGV_DUMP = argvPath;
   try {
-    const argvPath = `${tmpHome}/argv.txt`;
-    process.env.FAKE_CLAUDE_ARGV_DUMP = argvPath;
-
     const events = collectEvents(instances);
     const r = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', mode: 'bypassPermissions' });
     const id = r.body.id;
@@ -959,17 +978,17 @@ test('sending a prompt emits exactly one user_echo (no duplicate from --replay)'
     assert.ok(!argv.includes('--replay-user-messages'), `--replay-user-messages must not be passed; argv was: ${argv.join(' ')}`);
   } finally {
     delete process.env.FAKE_CLAUDE_ARGV_DUMP;
-    await close();
   }
 });
 
 test('resume defaults to bypassPermissions (code) mode; fresh spawn still defaults to plan', async () => {
   // A resume is almost always continuing real work, so plan mode would be
   // the wrong starting point. Fresh spawns keep plan as the safer default.
-  const ctx = await bootServer({ scenarioPath: path.join(__dirname, 'fixtures', 'scenario-resume.json') });
+  const prevScenario = process.env.FAKE_CLAUDE_SCENARIO;
+  process.env.FAKE_CLAUDE_SCENARIO = SCENARIO_RESUME;
   const fsp = (await import('node:fs')).promises;
   try {
-    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'resume-default' });
+    await api(baseUrl, 'POST', '/api/projects', { name: 'resume-default' });
     const projectPath = path.join(ctx.projectsRoot, 'resume-default');
     const sid = '99999999-8888-7777-6666-555555555555';
     const sessionDir = path.join(ctx.claudeProjectsRoot, encodeCwd(projectPath));
@@ -983,52 +1002,52 @@ test('resume defaults to bypassPermissions (code) mode; fresh spawn still defaul
       lines.map(l => JSON.stringify(l)).join('\n') + '\n',
     );
 
-    const resumed = await api(ctx.baseUrl, 'POST', '/api/instances', {
+    const resumed = await api(baseUrl, 'POST', '/api/instances', {
       project: 'resume-default', resume: sid,
     });
     assert.equal(resumed.status, 201);
-    const resumedInst = ctx.instances.get(resumed.body.id);
+    const resumedInst = instances.get(resumed.body.id);
     await waitFor(() => resumedInst.status === 'idle');
     assert.equal(resumedInst.mode, 'bypassPermissions', 'resume default is code mode, not plan');
 
-    const fresh = await api(ctx.baseUrl, 'POST', '/api/instances', {
+    const fresh = await api(baseUrl, 'POST', '/api/instances', {
       project: 'resume-default',
     });
     assert.equal(fresh.status, 201);
-    const freshInst = ctx.instances.get(fresh.body.id);
+    const freshInst = instances.get(fresh.body.id);
     await waitFor(() => freshInst.status === 'idle');
     assert.equal(freshInst.mode, 'plan', 'fresh spawn default is still plan mode');
-  } finally { await ctx.close(); }
+  } finally {
+    process.env.FAKE_CLAUDE_SCENARIO = prevScenario;
+  }
 });
 
 test('temp: spawn defaults mode to bypassPermissions but explicit mode wins', async () => {
-  const { baseUrl, instances, close } = await setupWithProject();
-  try {
-    const r1 = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', temp: true });
-    assert.equal(r1.status, 201);
-    const inst1 = instances.get(r1.body.id);
-    assert.equal(inst1.mode, 'bypassPermissions', 'temp default is code mode');
-    assert.equal(inst1.temp, true);
-    assert.equal(r1.body.temp, true, 'summary.temp round-trips through REST');
+  await setupWithProject();
+  const r1 = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', temp: true });
+  assert.equal(r1.status, 201);
+  const inst1 = instances.get(r1.body.id);
+  assert.equal(inst1.mode, 'bypassPermissions', 'temp default is code mode');
+  assert.equal(inst1.temp, true);
+  assert.equal(r1.body.temp, true, 'summary.temp round-trips through REST');
 
-    const r2 = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', temp: true, mode: 'plan' });
-    assert.equal(r2.status, 201);
-    const inst2 = instances.get(r2.body.id);
-    assert.equal(inst2.mode, 'plan', 'explicit mode overrides the temp default');
-    assert.equal(inst2.temp, true);
-  } finally { await close(); }
+  const r2 = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', temp: true, mode: 'plan' });
+  assert.equal(r2.status, 201);
+  const inst2 = instances.get(r2.body.id);
+  assert.equal(inst2.mode, 'plan', 'explicit mode overrides the temp default');
+  assert.equal(inst2.temp, true);
 });
 
 test('temp: skips last-prompt / permission-mode metadata writes after a turn', async () => {
-  const scenario = path.join(__dirname, 'fixtures', 'scenario-resume.json');
-  const ctx = await bootServer({ scenarioPath: scenario });
+  const prevScenario = process.env.FAKE_CLAUDE_SCENARIO;
+  process.env.FAKE_CLAUDE_SCENARIO = SCENARIO_RESUME;
   const fsp = (await import('node:fs')).promises;
   try {
-    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'tmp' });
-    const events = collectEvents(ctx.instances);
-    const r = await api(ctx.baseUrl, 'POST', '/api/instances', { project: 'tmp', temp: true });
+    await api(baseUrl, 'POST', '/api/projects', { name: 'tmp' });
+    const events = collectEvents(instances);
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'tmp', temp: true });
     const id = r.body.id;
-    const inst = ctx.instances.get(id);
+    const inst = instances.get(id);
     await waitFor(() => inst.status === 'idle');
     inst.prompt('hi');
     await waitFor(() => events.some(e => e.id === id && e.ev.kind === 'turn_end'));
@@ -1044,37 +1063,37 @@ test('temp: skips last-prompt / permission-mode metadata writes after a turn', a
       assert.equal(txt.includes('"type":"last-prompt"'), false, 'no last-prompt for temp');
       assert.equal(txt.includes('"type":"permission-mode"'), false, 'no permission-mode for temp');
     }
-  } finally { await ctx.close(); }
+  } finally {
+    process.env.FAKE_CLAUDE_SCENARIO = prevScenario;
+  }
 });
 
 test('temp: archives session jsonl + removes subagents dir on subprocess exit', async () => {
-  const { baseUrl, instances, claudeProjectsRoot, close } = await setupWithProject();
+  await setupWithProject();
   const fsp = (await import('node:fs')).promises;
-  try {
-    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', temp: true });
-    const id = r.body.id;
-    const inst = instances.get(id);
-    await waitFor(() => inst.status === 'idle' && inst.sessionId);
+  const r = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', temp: true });
+  const id = r.body.id;
+  const inst = instances.get(id);
+  await waitFor(() => inst.status === 'idle' && inst.sessionId);
 
-    // Simulate the CLI having written its transcript + a sub-agent dir.
-    const dir = path.join(claudeProjectsRoot, encodeCwd(inst.cwd));
-    const file = path.join(dir, `${inst.sessionId}.jsonl`);
-    const subDir = path.join(dir, inst.sessionId, 'subagents');
-    await fsp.mkdir(subDir, { recursive: true });
-    await fsp.writeFile(file, '{"type":"user","uuid":"u1"}\n');
-    await fsp.writeFile(path.join(subDir, 'agent-x.jsonl'), '{}\n');
+  // Simulate the CLI having written its transcript + a sub-agent dir.
+  const dir = path.join(ctx.claudeProjectsRoot, encodeCwd(inst.cwd));
+  const file = path.join(dir, `${inst.sessionId}.jsonl`);
+  const subDir = path.join(dir, inst.sessionId, 'subagents');
+  await fsp.mkdir(subDir, { recursive: true });
+  await fsp.writeFile(file, '{"type":"user","uuid":"u1"}\n');
+  await fsp.writeFile(path.join(subDir, 'agent-x.jsonl'), '{}\n');
 
-    const del = await api(baseUrl, 'DELETE', `/api/instances/${id}`);
-    assert.equal(del.status, 200);
-    // Wait for _archiveTempSession to complete — markArchived is the last write.
-    await waitFor(() => isArchived(inst.sessionId));
-    // .jsonl is retained for resumability — must still be on disk.
-    await fsp.access(file);
-    // Sub-agent dir is ephemeral and must be cleaned up.
-    let subStillThere = true;
-    try { await fsp.access(path.join(dir, inst.sessionId)); } catch { subStillThere = false; }
-    assert.equal(subStillThere, false, 'sub-agent dir for the session was removed');
-  } finally { await close(); }
+  const del = await api(baseUrl, 'DELETE', `/api/instances/${id}`);
+  assert.equal(del.status, 200);
+  // Wait for _archiveTempSession to complete — markArchived is the last write.
+  await waitFor(() => isArchived(inst.sessionId));
+  // .jsonl is retained for resumability — must still be on disk.
+  await fsp.access(file);
+  // Sub-agent dir is ephemeral and must be cleaned up.
+  let subStillThere = true;
+  try { await fsp.access(path.join(dir, inst.sessionId)); } catch { subStillThere = false; }
+  assert.equal(subStillThere, false, 'sub-agent dir for the session was removed');
 });
 
 test('temp: instance is auto-removed from byId on subprocess exit (no ghost row)', async () => {
@@ -1082,42 +1101,40 @@ test('temp: instance is auto-removed from byId on subprocess exit (no ghost row)
   // DELETE /api/instances/:id. Without auto-removal the temp Instance would
   // sit in byId with status='exited' forever — the sidebar's Temp Sessions
   // subnode would keep a dim ghost row that the user had to delete by hand.
-  const { baseUrl, instances, close } = await setupWithProject();
-  try {
-    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', temp: true });
-    const id = r.body.id;
-    const inst = instances.get(id);
-    await waitFor(() => inst.status === 'idle' && inst.sessionId);
+  await setupWithProject();
+  const r = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', temp: true });
+  const id = r.body.id;
+  const inst = instances.get(id);
+  await waitFor(() => inst.status === 'idle' && inst.sessionId);
 
-    let listChangedSeen = 0;
-    instances.on('list_changed', () => { listChangedSeen++; });
+  let listChangedSeen = 0;
+  const listChangedHandler = () => { listChangedSeen++; };
+  instances.on('list_changed', listChangedHandler);
+  cleanupListeners.push(() => instances.off('list_changed', listChangedHandler));
 
-    await inst.kill({ graceMs: 50 });
-    await waitFor(() => instances.get(id) === undefined);
+  await inst.kill({ graceMs: 50 });
+  await waitFor(() => instances.get(id) === undefined);
 
-    assert.equal(instances.get(id), undefined, 'temp instance removed from byId after exit');
-    assert.ok(!instances.list().some(s => s.id === id), 'temp instance no longer in list()');
-    assert.ok(listChangedSeen >= 1, 'list_changed fired so wsHub can broadcast {t:"instances"}');
-  } finally { await close(); }
+  assert.equal(instances.get(id), undefined, 'temp instance removed from byId after exit');
+  assert.ok(!instances.list().some(s => s.id === id), 'temp instance no longer in list()');
+  assert.ok(listChangedSeen >= 1, 'list_changed fired so wsHub can broadcast {t:"instances"}');
 });
 
 test('non-temp: instance survives in byId after kill (Resume from the sidebar still works)', async () => {
   // Guard the temp-only gate. Normal sessions need to stay in byId after their
   // subprocess dies so the sidebar's Resume button has something to call
   // `/api/instances/:id/respawn` against.
-  const { baseUrl, instances, close } = await setupWithProject();
-  try {
-    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', mode: 'bypassPermissions' });
-    const id = r.body.id;
-    const inst = instances.get(id);
-    await waitFor(() => inst.status === 'idle' && inst.sessionId);
+  await setupWithProject();
+  const r = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', mode: 'bypassPermissions' });
+  const id = r.body.id;
+  const inst = instances.get(id);
+  await waitFor(() => inst.status === 'idle' && inst.sessionId);
 
-    await inst.kill({ graceMs: 50 });
-    await waitFor(() => inst.status === 'exited' || inst.status === 'crashed');
+  await inst.kill({ graceMs: 50 });
+  await waitFor(() => inst.status === 'exited' || inst.status === 'crashed');
 
-    assert.ok(instances.get(id), 'non-temp instance stays in byId after exit');
-    assert.equal(instances.get(id).temp, false);
-  } finally { await close(); }
+  assert.ok(instances.get(id), 'non-temp instance stays in byId after exit');
+  assert.equal(instances.get(id).temp, false);
 });
 
 test('promoted temp: instance survives in byId after kill (promote disables the auto-removal)', async () => {
@@ -1125,39 +1142,41 @@ test('promoted temp: instance survives in byId after kill (promote disables the 
   // of the Temp Sessions subnode into the regular Sessions list. Killing
   // it should now behave like any other session — stays in byId so Resume
   // is offered.
-  const scenario = path.join(__dirname, 'fixtures', 'scenario-resume.json');
-  const ctx = await bootServer({ scenarioPath: scenario });
+  const prevScenario = process.env.FAKE_CLAUDE_SCENARIO;
+  process.env.FAKE_CLAUDE_SCENARIO = SCENARIO_RESUME;
   try {
-    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'promo-kill' });
-    const events = collectEvents(ctx.instances);
-    const r = await api(ctx.baseUrl, 'POST', '/api/instances', { project: 'promo-kill', temp: true });
+    await api(baseUrl, 'POST', '/api/projects', { name: 'promo-kill' });
+    const events = collectEvents(instances);
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'promo-kill', temp: true });
     const id = r.body.id;
-    const inst = ctx.instances.get(id);
+    const inst = instances.get(id);
     await waitFor(() => inst.status === 'idle');
     inst.prompt('hi');
     await waitFor(() => events.some(e => e.id === id && e.ev.kind === 'turn_end'));
 
-    const promote = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/promote`);
+    const promote = await api(baseUrl, 'POST', `/api/instances/${id}/promote`);
     assert.equal(promote.status, 200);
     assert.equal(inst.temp, false);
 
     await inst.kill({ graceMs: 50 });
     await waitFor(() => inst.status === 'exited' || inst.status === 'crashed');
 
-    assert.ok(ctx.instances.get(id), 'promoted-then-killed instance stays in byId');
-  } finally { await ctx.close(); }
+    assert.ok(instances.get(id), 'promoted-then-killed instance stays in byId');
+  } finally {
+    process.env.FAKE_CLAUDE_SCENARIO = prevScenario;
+  }
 });
 
 test('promote: flips temp flag, writes resume-picker metadata, skips on-exit cleanup', async () => {
-  const scenario = path.join(__dirname, 'fixtures', 'scenario-resume.json');
-  const ctx = await bootServer({ scenarioPath: scenario });
+  const prevScenario = process.env.FAKE_CLAUDE_SCENARIO;
+  process.env.FAKE_CLAUDE_SCENARIO = SCENARIO_RESUME;
   const fsp = (await import('node:fs')).promises;
   try {
-    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'promo' });
-    const events = collectEvents(ctx.instances);
-    const r = await api(ctx.baseUrl, 'POST', '/api/instances', { project: 'promo', temp: true });
+    await api(baseUrl, 'POST', '/api/projects', { name: 'promo' });
+    const events = collectEvents(instances);
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'promo', temp: true });
     const id = r.body.id;
-    const inst = ctx.instances.get(id);
+    const inst = instances.get(id);
     await waitFor(() => inst.status === 'idle');
     // Run one turn so the CLI flushes its jsonl to disk — that's the
     // file the on-exit cleanup would otherwise delete, and the file the
@@ -1168,7 +1187,7 @@ test('promote: flips temp flag, writes resume-picker metadata, skips on-exit cle
     const dir = path.join(ctx.claudeProjectsRoot, encodeCwd(inst.cwd));
     const file = path.join(dir, `${inst.sessionId}.jsonl`);
 
-    const promote = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/promote`);
+    const promote = await api(baseUrl, 'POST', `/api/instances/${id}/promote`);
     assert.equal(promote.status, 200);
     assert.equal(promote.body.ok, true);
     assert.equal(promote.body.instance.temp, false, 'summary reflects the flag flip');
@@ -1188,171 +1207,159 @@ test('promote: flips temp flag, writes resume-picker metadata, skips on-exit cle
 
     // Kill the instance and assert the jsonl SURVIVES — promote should have
     // disabled the temp on-exit cleanup.
-    const del = await api(ctx.baseUrl, 'DELETE', `/api/instances/${id}`);
+    const del = await api(baseUrl, 'DELETE', `/api/instances/${id}`);
     assert.equal(del.status, 200);
     await new Promise(r => setTimeout(r, 50));
     await fsp.access(file); // throws if missing — must not throw
-  } finally { await ctx.close(); }
+  } finally {
+    process.env.FAKE_CLAUDE_SCENARIO = prevScenario;
+  }
 });
 
 test('promote: 400 when the instance is not temp', async () => {
-  const { baseUrl, instances, close } = await setupWithProject();
-  try {
-    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', mode: 'bypassPermissions' });
-    const id = r.body.id;
-    await waitFor(() => instances.get(id).status === 'idle');
-    const promote = await api(baseUrl, 'POST', `/api/instances/${id}/promote`);
-    assert.equal(promote.status, 400);
-    assert.match(promote.body.error, /not temp/);
-  } finally { await close(); }
+  await setupWithProject();
+  const r = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', mode: 'bypassPermissions' });
+  const id = r.body.id;
+  await waitFor(() => instances.get(id).status === 'idle');
+  const promote = await api(baseUrl, 'POST', `/api/instances/${id}/promote`);
+  assert.equal(promote.status, 400);
+  assert.match(promote.body.error, /not temp/);
 });
 
 test('promote: 404 when the instance id is unknown', async () => {
-  const { baseUrl, close } = await setupWithProject();
-  try {
-    const promote = await api(baseUrl, 'POST', '/api/instances/no-such-id/promote');
-    assert.equal(promote.status, 404);
-  } finally { await close(); }
+  await setupWithProject();
+  const promote = await api(baseUrl, 'POST', '/api/instances/no-such-id/promote');
+  assert.equal(promote.status, 404);
 });
 
 test('non-temp: jsonl is left in place on exit', async () => {
-  const { baseUrl, instances, claudeProjectsRoot, close } = await setupWithProject();
+  await setupWithProject();
   const fsp = (await import('node:fs')).promises;
-  try {
-    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', mode: 'bypassPermissions' });
-    const id = r.body.id;
-    const inst = instances.get(id);
-    await waitFor(() => inst.status === 'idle' && inst.sessionId);
+  const r = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', mode: 'bypassPermissions' });
+  const id = r.body.id;
+  const inst = instances.get(id);
+  await waitFor(() => inst.status === 'idle' && inst.sessionId);
 
-    const dir = path.join(claudeProjectsRoot, encodeCwd(inst.cwd));
-    const file = path.join(dir, `${inst.sessionId}.jsonl`);
-    await fsp.mkdir(dir, { recursive: true });
-    await fsp.writeFile(file, '{"type":"user","uuid":"u1"}\n');
+  const dir = path.join(ctx.claudeProjectsRoot, encodeCwd(inst.cwd));
+  const file = path.join(dir, `${inst.sessionId}.jsonl`);
+  await fsp.mkdir(dir, { recursive: true });
+  await fsp.writeFile(file, '{"type":"user","uuid":"u1"}\n');
 
-    const del = await api(baseUrl, 'DELETE', `/api/instances/${id}`);
-    assert.equal(del.status, 200);
-    // Give exit handlers a tick; then assert the jsonl is still there.
-    await new Promise(r => setTimeout(r, 50));
-    await fsp.access(file); // throws if missing
-  } finally { await close(); }
+  const del = await api(baseUrl, 'DELETE', `/api/instances/${id}`);
+  assert.equal(del.status, 200);
+  // Give exit handlers a tick; then assert the jsonl is still there.
+  await new Promise(r => setTimeout(r, 50));
+  await fsp.access(file); // throws if missing
 });
 
 test('debug: enabling debug mode writes stdin/stdout/stderr + meta.json under the central-store debug dir', async () => {
-  const { baseUrl, instances, close } = await setupWithProject();
+  await setupWithProject();
   const fsp = (await import('node:fs')).promises;
-  try {
-    const r = await api(baseUrl, 'POST', '/api/instances', {
-      project: 'demo',
-      mode: 'bypassPermissions',
-      debug: true,
-    });
-    assert.equal(r.status, 201);
-    assert.equal(r.body.debug, true, 'summary echoes debug=true');
-    const id = r.body.id;
-    const inst = instances.get(id);
-    await waitFor(() => inst.status === 'idle' && inst.debugDir);
+  const r = await api(baseUrl, 'POST', '/api/instances', {
+    project: 'demo',
+    mode: 'bypassPermissions',
+    debug: true,
+  });
+  assert.equal(r.status, 201);
+  assert.equal(r.body.debug, true, 'summary echoes debug=true');
+  const id = r.body.id;
+  const inst = instances.get(id);
+  await waitFor(() => inst.status === 'idle' && inst.debugDir);
 
-    // The debug dir lives in the workspace-wide central store:
-    // <root>/.code-conductor/projects/demo/debug/<id>/
-    const debugDir = inst.debugDir;
-    const expectedTail = path.join('.code-conductor', 'projects', 'demo', 'debug', id);
-    assert.ok(debugDir.endsWith(expectedTail),
-      `debugDir should end with ${expectedTail}, got ${debugDir}`);
+  // The debug dir lives in the workspace-wide central store:
+  // <root>/.code-conductor/projects/demo/debug/<id>/
+  const debugDir = inst.debugDir;
+  const expectedTail = path.join('.code-conductor', 'projects', 'demo', 'debug', id);
+  assert.ok(debugDir.endsWith(expectedTail),
+    `debugDir should end with ${expectedTail}, got ${debugDir}`);
 
-    // meta.json captures the spawn shape — useful when sharing debug bundles
-    // back to a maintainer who didn't observe the spawn-time options.
-    const meta = JSON.parse(await fsp.readFile(path.join(debugDir, 'meta.json'), 'utf8'));
-    assert.equal(meta.instanceId, id);
-    assert.equal(meta.mode, 'bypassPermissions');
-    assert.ok(Array.isArray(meta.cliArgs) && meta.cliArgs.length > 0);
+  // meta.json captures the spawn shape — useful when sharing debug bundles
+  // back to a maintainer who didn't observe the spawn-time options.
+  const meta = JSON.parse(await fsp.readFile(path.join(debugDir, 'meta.json'), 'utf8'));
+  assert.equal(meta.instanceId, id);
+  assert.equal(meta.mode, 'bypassPermissions');
+  assert.ok(Array.isArray(meta.cliArgs) && meta.cliArgs.length > 0);
 
-    // Send a prompt so the fake claude produces stdout and we exercise stdin
-    // capture too.
-    await api(baseUrl, 'POST', `/api/instances/${id}/respawn` /* no-op route presence check */)
-      .catch(() => {}); // ignore; we only care about prompt() below
-    await inst.prompt('hello debug');
-    await waitFor(() => inst.status === 'idle', 5000);
+  // Send a prompt so the fake claude produces stdout and we exercise stdin
+  // capture too.
+  await api(baseUrl, 'POST', `/api/instances/${id}/respawn` /* no-op route presence check */)
+    .catch(() => {}); // ignore; we only care about prompt() below
+  await inst.prompt('hello debug');
+  await waitFor(() => inst.status === 'idle', 5000);
 
-    // stdin contains the JSON-line user message we sent to the CLI.
-    const stdinTxt = await fsp.readFile(path.join(debugDir, 'claude-stdin.jsonl'), 'utf8');
-    assert.ok(stdinTxt.includes('"hello debug"'), 'stdin log captured the user message');
-    assert.ok(stdinTxt.trim().split('\n').every(l => { try { JSON.parse(l); return true; } catch { return false; } }),
-      'every stdin line is valid JSON');
+  // stdin contains the JSON-line user message we sent to the CLI.
+  const stdinTxt = await fsp.readFile(path.join(debugDir, 'claude-stdin.jsonl'), 'utf8');
+  assert.ok(stdinTxt.includes('"hello debug"'), 'stdin log captured the user message');
+  assert.ok(stdinTxt.trim().split('\n').every(l => { try { JSON.parse(l); return true; } catch { return false; } }),
+    'every stdin line is valid JSON');
 
-    // stdout contains at least one line from the fake CLI's scenario.
-    const stdoutTxt = await fsp.readFile(path.join(debugDir, 'claude-stdout.jsonl'), 'utf8');
-    assert.ok(stdoutTxt.trim().length > 0, 'stdout log captured at least one line');
+  // stdout contains at least one line from the fake CLI's scenario.
+  const stdoutTxt = await fsp.readFile(path.join(debugDir, 'claude-stdout.jsonl'), 'utf8');
+  assert.ok(stdoutTxt.trim().length > 0, 'stdout log captured at least one line');
 
-    // stderr file exists even when there's no stderr — debug mode opens
-    // all three streams unconditionally so the bundle is self-describing.
-    await fsp.access(path.join(debugDir, 'claude-stderr.log'));
-  } finally { await close(); }
+  // stderr file exists even when there's no stderr — debug mode opens
+  // all three streams unconditionally so the bundle is self-describing.
+  await fsp.access(path.join(debugDir, 'claude-stderr.log'));
 });
 
 test('debug: omitting the flag leaves debug=false and writes nothing', async () => {
-  const { baseUrl, instances, close } = await setupWithProject();
+  await setupWithProject();
   const fsp = (await import('node:fs')).promises;
-  try {
-    const r = await api(baseUrl, 'POST', '/api/instances', {
-      project: 'demo', mode: 'bypassPermissions',
-    });
-    const id = r.body.id;
-    const inst = instances.get(id);
-    await waitFor(() => inst.status === 'idle');
-    assert.equal(inst.debug, false);
-    assert.equal(inst.debugDir, null);
-    // No debug dir created in the central store.
-    const projectsRoot = process.env.PROJECTS_ROOT;
-    const debugDirGuess = path.join(projectsRoot, '.code-conductor', 'projects', 'demo', 'debug');
-    let exists = true;
-    try { await fsp.access(debugDirGuess); } catch { exists = false; }
-    assert.equal(exists, false, 'debug dir is not created when the flag is omitted');
-  } finally { await close(); }
+  const r = await api(baseUrl, 'POST', '/api/instances', {
+    project: 'demo', mode: 'bypassPermissions',
+  });
+  const id = r.body.id;
+  const inst = instances.get(id);
+  await waitFor(() => inst.status === 'idle');
+  assert.equal(inst.debug, false);
+  assert.equal(inst.debugDir, null);
+  // No debug dir created in the central store.
+  const projectsRoot = process.env.PROJECTS_ROOT;
+  const debugDirGuess = path.join(projectsRoot, '.code-conductor', 'projects', 'demo', 'debug');
+  let exists = true;
+  try { await fsp.access(debugDirGuess); } catch { exists = false; }
+  assert.equal(exists, false, 'debug dir is not created when the flag is omitted');
 });
 
 test('debug: POST /api/instances/:id/debug enables capture on a running instance', async () => {
-  const { baseUrl, instances, close } = await setupWithProject();
+  await setupWithProject();
   const fsp = (await import('node:fs')).promises;
-  try {
-    // Spawn WITHOUT debug.
-    const r = await api(baseUrl, 'POST', '/api/instances', {
-      project: 'demo', mode: 'bypassPermissions',
-    });
-    const id = r.body.id;
-    const inst = instances.get(id);
-    await waitFor(() => inst.status === 'idle');
-    assert.equal(inst.debug, false);
+  // Spawn WITHOUT debug.
+  const r = await api(baseUrl, 'POST', '/api/instances', {
+    project: 'demo', mode: 'bypassPermissions',
+  });
+  const id = r.body.id;
+  const inst = instances.get(id);
+  await waitFor(() => inst.status === 'idle');
+  assert.equal(inst.debug, false);
 
-    // Flip debug on at runtime.
-    const enable = await api(baseUrl, 'POST', `/api/instances/${id}/debug`);
-    assert.equal(enable.status, 200);
-    assert.equal(enable.body.ok, true);
-    assert.equal(enable.body.alreadyOn, false);
-    assert.ok(enable.body.debugDir.endsWith(path.join('.code-conductor', 'projects', 'demo', 'debug', id)));
-    assert.equal(inst.debug, true);
+  // Flip debug on at runtime.
+  const enable = await api(baseUrl, 'POST', `/api/instances/${id}/debug`);
+  assert.equal(enable.status, 200);
+  assert.equal(enable.body.ok, true);
+  assert.equal(enable.body.alreadyOn, false);
+  assert.ok(enable.body.debugDir.endsWith(path.join('.code-conductor', 'projects', 'demo', 'debug', id)));
+  assert.equal(inst.debug, true);
 
-    // Future prompts get mirrored even though spawn was non-debug.
-    await inst.prompt('after debug enable');
-    await waitFor(() => inst.status === 'idle', 5000);
-    const stdinTxt = await fsp.readFile(path.join(enable.body.debugDir, 'claude-stdin.jsonl'), 'utf8');
-    assert.ok(stdinTxt.includes('"after debug enable"'),
-      'lines after the toggle are captured');
+  // Future prompts get mirrored even though spawn was non-debug.
+  await inst.prompt('after debug enable');
+  await waitFor(() => inst.status === 'idle', 5000);
+  const stdinTxt = await fsp.readFile(path.join(enable.body.debugDir, 'claude-stdin.jsonl'), 'utf8');
+  assert.ok(stdinTxt.includes('"after debug enable"'),
+    'lines after the toggle are captured');
 
-    // meta.json shows the spawn argv we cached.
-    const meta = JSON.parse(await fsp.readFile(path.join(enable.body.debugDir, 'meta.json'), 'utf8'));
-    assert.ok(Array.isArray(meta.cliArgs) && meta.cliArgs.length > 0);
+  // meta.json shows the spawn argv we cached.
+  const meta = JSON.parse(await fsp.readFile(path.join(enable.body.debugDir, 'meta.json'), 'utf8'));
+  assert.ok(Array.isArray(meta.cliArgs) && meta.cliArgs.length > 0);
 
-    // Calling it a second time is idempotent.
-    const second = await api(baseUrl, 'POST', `/api/instances/${id}/debug`);
-    assert.equal(second.status, 200);
-    assert.equal(second.body.alreadyOn, true);
-  } finally { await close(); }
+  // Calling it a second time is idempotent.
+  const second = await api(baseUrl, 'POST', `/api/instances/${id}/debug`);
+  assert.equal(second.status, 200);
+  assert.equal(second.body.alreadyOn, true);
 });
 
 test('debug: POST /api/instances/:id/debug 404s for unknown instance', async () => {
-  const { baseUrl, close } = await setupWithProject();
-  try {
-    const r = await api(baseUrl, 'POST', '/api/instances/does-not-exist/debug');
-    assert.equal(r.status, 404);
-  } finally { await close(); }
+  await setupWithProject();
+  const r = await api(baseUrl, 'POST', '/api/instances/does-not-exist/debug');
+  assert.equal(r.status, 404);
 });
