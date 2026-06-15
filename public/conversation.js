@@ -86,6 +86,7 @@ export class Conversation {
     // sequential tool calls renders as one bordered envelope with one label
     // instead of a new box per action.
     this._activeAssistantWrap = null;
+    this._activeThinkingKey = null;
     this.stickyBottom = true;
     if (!this.isSub) {
       this.root.addEventListener('scroll', () => {
@@ -119,6 +120,7 @@ export class Conversation {
     this.planBlocks.clear();
     this.permissionBlocks.clear();
     this._activeAssistantWrap = null;
+    this._activeThinkingKey = null;
     this._pendingAnswerUQId = null;
     this.stickyBottom = true;
     this._setEmpty();
@@ -214,6 +216,13 @@ export class Conversation {
         this._maybeScroll();
         break;
       case 'system':
+        if (ev.subtype === 'thinking_tokens') {
+          const n = ev.data?.estimated_tokens ?? 0;
+          const block = this._activeThinkingKey
+            ? this.blocksByKey.get(this._activeThinkingKey) : null;
+          if (block?.updateThinkingTokens) block.updateThinkingTokens(n);
+          break;
+        }
         if (ev.subtype === 'history_replayed') { this._renderHistoryDivider(ev); break; }
         if (!shouldRenderSystem(ev)) break; // drop status/rate_limit/etc. noise
         this._renderSystem(ev); break;
@@ -264,6 +273,7 @@ export class Conversation {
     this.blocksByKey.set(key, block);
     const wrap = this._ensureMessageWrap(ev.msgId, 'assistant');
     wrap.body.appendChild(block.node);
+    this._activeThinkingKey = key;
   }
 
   _renderThinkingRedacted(ev) {
@@ -375,6 +385,7 @@ export class Conversation {
     const key = `${ev.msgId ?? '?'}:${ev.blockIdx ?? 0}:${t}`;
     const block = this.blocksByKey.get(key);
     if (block?.finalize) block.finalize();
+    if (t === 'thinking') this._activeThinkingKey = null;
     // Auto-speak finalized assistant text (outer conversation only — sub-agent
     // chatter isn't read aloud). Gating on enabled/availability/user-gesture
     // lives in the callback (autoSpeakBlock).
