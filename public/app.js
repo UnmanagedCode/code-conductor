@@ -1711,10 +1711,8 @@ function renderCombinedChip(inst) {
   const { text: rlText, frac: rlFrac, isOverage: rlIsOverage } =
     rlChipSegment(globalRLTracker.info, accountUsage);
 
-  // Worst-case color: chip turns amber/red based on whichever metric is higher.
-  const worstFrac = (ctxFrac != null || rlFrac != null)
-    ? Math.max(ctxFrac ?? 0, rlFrac ?? 0)
-    : null;
+  // Chip color is driven solely by context usage, not rate-limit %.
+  const worstFrac = ctxFrac;
 
   const el = document.createElement('button');
   el.type = 'button';
@@ -1905,6 +1903,9 @@ function buildCombinedPopover(inst) {
   }
 
   // ── Usage limits ──
+  const usageLimitsGap = document.createElement('div');
+  usageLimitsGap.className = 'ih-usage-section-gap';
+  node.appendChild(usageLimitsGap);
   node.appendChild(section('Usage limits'));
   if (!accountUsage) {
     const empty = document.createElement('div');
