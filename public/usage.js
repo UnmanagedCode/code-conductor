@@ -181,14 +181,6 @@ export function formatResetTime(unixSecs) {
   return 'resets ' + d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 }
 
-// Friendly short labels for rateLimitType values from CLI / OAuth API.
-export const RATE_LIMIT_TYPE_LABELS = {
-  five_hour:        '5h',
-  seven_day:        '7d',
-  seven_day_opus:   '7d Opus',
-  seven_day_sonnet: '7d Sonnet',
-};
-
 // Pure helper: derive the rate-limit half of the combined chip from the two
 // available sources (no DOM, easily testable).
 //   info        – globalRLTracker.info (from rate_limit_event; may be null)
@@ -198,7 +190,6 @@ const RL_BUCKET_PRIORITY = ['five_hour', 'seven_day', 'seven_day_sonnet', 'seven
 
 export function rlChipSegment(info, accountUsage) {
   if (info) {
-    const label = RATE_LIMIT_TYPE_LABELS[info.rateLimitType] ?? info.rateLimitType ?? '?';
     const util = typeof info.utilization === 'number' ? info.utilization : null;
     const text = util != null ? `rl ${Math.round(util * 100)}%` : 'rl --';
     return { text, frac: util, isOverage: info.isUsingOverage === true };
@@ -207,7 +198,6 @@ export function rlChipSegment(info, accountUsage) {
   const key = accountUsage && RL_BUCKET_PRIORITY.find(k => accountUsage[k]);
   const bucket = key && accountUsage[key];
   if (!bucket) return { text: 'rl --', frac: null, isOverage: false };
-  const label = RATE_LIMIT_TYPE_LABELS[key] ?? key;
   const util = typeof bucket.utilization === 'number' ? bucket.utilization / 100 : null;
   const text = util != null ? `rl ${Math.round(util * 100)}%` : 'rl --';
   return { text, frac: util, isOverage: false };

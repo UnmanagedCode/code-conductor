@@ -11,7 +11,7 @@ import { SubagentPanel } from './subagents.js';
 import {
   UsageTracker, contextWindowFor,
   formatTokens, formatPct, formatDuration, fillClass,
-  RateLimitTracker, formatResetTime, rlChipSegment, RATE_LIMIT_TYPE_LABELS,
+  RateLimitTracker, formatResetTime, rlChipSegment,
 } from './usage.js';
 import {
   NotificationState, ensurePermission, setGlobalEnabled,
