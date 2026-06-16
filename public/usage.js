@@ -162,7 +162,14 @@ export class RateLimitTracker {
     if (ev?.kind !== 'system' || ev.subtype !== 'rate_limit_event') return;
     const raw = ev.data ?? {};
     // Accept both nested (rate_limit_info) and flat shapes defensively.
-    this.info = raw.rate_limit_info ?? (Object.keys(raw).length ? raw : null);
+    const incoming = raw.rate_limit_info ?? (Object.keys(raw).length ? raw : null);
+    if (incoming) {
+      // Merge onto existing info: incoming wins for keys it carries, but skip
+      // null/undefined values so a field the message didn't really know about
+      // doesn't clobber a good value from a prior detailed event.
+      const patch = Object.fromEntries(Object.entries(incoming).filter(([, v]) => v != null));
+      this.info = this.info ? { ...this.info, ...patch } : patch;
+    }
   }
 }
 
@@ -185,8 +192,8 @@ export function formatResetTime(unixSecs) {
 // info: rate_limit_info from the most recent rate_limit_event (or null).
 // accountUsage: OAuth account-level usage object (or null) — used as fallback
 //   when no per-session event has arrived yet (shows tightest available bucket).
-// Returns null when both are null (slot stays hidden).
-// Returns a <button> so it can open the detail popup on click.
+// Always returns a <button> (never null) so the slot is always visible.
+// When no data is available at all, renders a muted "rl --" placeholder.
 export function renderRateLimitChip(info, accountUsage) {
   // Derive display values from the best available source.
   let typeLabel, util, frac, resetStr, isOverage;
@@ -204,15 +211,20 @@ export function renderRateLimitChip(info, accountUsage) {
     const BUCKET_PRIORITY = ['five_hour', 'seven_day', 'seven_day_sonnet', 'seven_day_opus'];
     const key = accountUsage && BUCKET_PRIORITY.find(k => accountUsage[k]);
     const bucket = key && accountUsage[key];
-    if (!bucket) return null;  // no usable data from either source
-    typeLabel = RATE_LIMIT_TYPE_LABELS[key] ?? key;
-    util = typeof bucket.utilization === 'number' ? bucket.utilization / 100 : null;
-    frac = util;  // normalize 0-100 → 0-1 (OAuth API returns percentage integers)
-    // resets_at is ISO-8601; convert to Unix seconds for formatResetTime.
-    resetStr = bucket.resets_at
-      ? formatResetTime(new Date(bucket.resets_at).getTime() / 1000)
-      : null;
-    isOverage = false;
+    if (!bucket) {
+      // No data from either source yet — render a grayed-out placeholder so
+      // the slot is always present in the bottom bar.
+      typeLabel = '--'; util = null; frac = null; resetStr = null; isOverage = false;
+    } else {
+      typeLabel = RATE_LIMIT_TYPE_LABELS[key] ?? key;
+      util = typeof bucket.utilization === 'number' ? bucket.utilization / 100 : null;
+      frac = util;  // normalize 0-100 → 0-1 (OAuth API returns percentage integers)
+      // resets_at is ISO-8601; convert to Unix seconds for formatResetTime.
+      resetStr = bucket.resets_at
+        ? formatResetTime(new Date(bucket.resets_at).getTime() / 1000)
+        : null;
+      isOverage = false;
+    }
   }
 
   const el = document.createElement('button');
