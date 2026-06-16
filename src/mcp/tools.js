@@ -37,14 +37,14 @@ export function buildTools() {
         'List persisted Claude sessions for a project, or for a specific worktree inside it. ' +
         'Returns [{sessionId, firstPrompt, title, conducted, archived, mtime, size}] newest-first. ' +
         '`conducted:true` marks a session spawned via the `spawn_instance` tool (orchestrator-driven). ' +
-        '`archived:true` marks a session that was killed and archived rather than deleted — its ' +
-        'transcript is retained and it is resumable, but hidden from the normal active list. ' +
-        'All sessions are returned regardless of these flags — they are grouping flags, not filters.',
+        'Archived sessions (killed and retained but hidden from the active list) are excluded by default. ' +
+        'Pass `includeArchived:true` to include them; they will have `archived:true` in the result.',
       inputSchema: {
         type: 'object',
         properties: {
           project: { type: 'string', description: 'Project name under ~/project/.' },
           worktree: { type: 'string', description: 'Optional worktree name (the sibling dir, e.g. "demo_worktree_abc123").' },
+          includeArchived: { type: 'boolean', description: 'Include archived sessions in the result (default false).' },
         },
         required: ['project'],
       },

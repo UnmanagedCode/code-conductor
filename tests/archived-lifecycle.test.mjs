@@ -42,11 +42,12 @@ test('archive endpoint keeps .jsonl, marks archived, and the session leaves the 
     await waitFor(async () => (await isArchived(sid)));
     assert.equal(await isArchived(sid), true);
 
-    // Still appears in list_sessions but flagged archived (the sidebar
-    // filters these out client-side); summary count excludes it.
+    // Excluded from the default session list; visible via includeArchived=1.
     const listRes = await api(baseUrl, 'GET', '/api/projects/arclife/sessions');
-    const found = listRes.body.find(s => s.sessionId === sid);
-    assert.ok(found && found.archived === true, 'session flagged archived in list');
+    assert.ok(!listRes.body.find(s => s.sessionId === sid), 'archived session absent from default list');
+    const inclRes = await api(baseUrl, 'GET', '/api/projects/arclife/sessions?includeArchived=1');
+    const found = inclRes.body.find(s => s.sessionId === sid);
+    assert.ok(found && found.archived === true, 'session flagged archived with includeArchived=1');
 
     // GET /api/archived groups it under its project.
     const arch = await api(baseUrl, 'GET', '/api/archived');
