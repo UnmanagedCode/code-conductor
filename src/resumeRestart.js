@@ -194,6 +194,7 @@ export async function drainToManifest({ server, wss, instances, log = console, g
       conducted: !!s.conducted,
       debug: !!s.debug,
       title: s.title ?? null,
+      firstPrompt: s.firstPrompt ?? null,
       autoApprovePlan: !!s.autoApprovePlan,
       group,
       wasBusy: busyAtDrain.has(inst.id),
@@ -273,6 +274,10 @@ export async function restoreFromResumeManifest({ instances, log = console, stag
         callerInstanceId: null,
       });
       if (e.title) inst.setTitle(e.title);
+      if (e.firstPrompt && !inst.firstPrompt) {
+        inst.firstPrompt = e.firstPrompt;
+        inst.emit('status', inst.summary());
+      }
       const st = await waitForIdleOnce(inst);
       if (st !== 'idle') {
         log.warn?.(`resume-restart: ${e.sessionId} came up '${st}'; skipping resume notification`);
