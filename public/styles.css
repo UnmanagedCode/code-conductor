@@ -1200,6 +1200,7 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
    stays so mobile can still reach the sidebar). The group-nav + content
    scaffold is built to take additional groups beyond Transcribe. */
 #main.settings-open #conversation,
+#main.settings-open #subagent-panel,
 #main.settings-open #task-panel,
 #main.settings-open #turn-indicator,
 #main.settings-open #composer,
@@ -1341,17 +1342,20 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
 /* Full-page diff browser, same pattern as settings. While open the instance-
    specific children of #main are hidden. The ± sidebar button opens it. */
 #main.review-open #conversation,
+#main.review-open #subagent-panel,
 #main.review-open #task-panel,
 #main.review-open #turn-indicator,
 #main.review-open #composer,
 #main.review-open #instance-controls,
 #main.commits-open #conversation,
+#main.commits-open #subagent-panel,
 #main.commits-open #task-panel,
 #main.commits-open #turn-indicator,
 #main.commits-open #composer,
 #main.commits-open #instance-controls { display: none !important; }
 
 #main.costs-open #conversation,
+#main.costs-open #subagent-panel,
 #main.costs-open #task-panel,
 #main.costs-open #turn-indicator,
 #main.costs-open #composer,
