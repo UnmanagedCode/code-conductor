@@ -981,7 +981,7 @@ export class SystemBlock {
       if (subtype === 'history_load_error') return `couldn't replay history: ${data?.message ?? ''}`;
       if (subtype === 'permission_denied') return data?.message ?? data?.reason ?? '';
       if (subtype === 'compacting') return 'auto-compacting context…';
-      if (subtype === 'auto_stop_overage') return '⛔ Stopped: session entered overage (overtime) usage — auto-stop is enabled.';
+      if (subtype === 'auto_stop_overage') return '⛔ Stopped: session entered overage usage — auto-stop is enabled.';
       try { return JSON.stringify(data).slice(0, 200); } catch { return ''; }
     })();
     this.node = el('div', { class: 'block system' },
