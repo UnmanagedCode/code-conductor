@@ -489,6 +489,10 @@ export class Instance extends EventEmitter {
     const { command, prefixArgs } = resolveClaudeBin();
     if (resume) this.sessionId = resume;
     else if (!this.sessionId) this.sessionId = randomUUID();
+    // Persist the temp marker at spawn time so it survives a SIGKILL that
+    // happens before the first turn_end (where _writeSessionMetadata also
+    // calls markTemp). Fire-and-forget — spawn() must stay synchronous.
+    if (this.temp && this.sessionId) markTemp(this.sessionId).catch(() => {});
     this._hydrateTitle().catch(() => {});
     const args = [
       ...prefixArgs,

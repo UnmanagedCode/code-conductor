@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor } from './helpers.mjs';
 import { encodeCwd, orchStoreRoot } from '../src/projects.js';
+import { isTemp } from '../src/tempSessions.js';
 import {
   pendingTempCleanupPath,
   writePendingTempCleanup,
@@ -163,5 +164,32 @@ test('shutdownTempSync is a safe no-op when there are no temp instances', async 
 
     assert.doesNotThrow(() => instances.shutdownTempSync());
     await fs.access(jsonl);
+  } finally { await close(); }
+});
+
+test('temp marker is written at spawn time, before any turn_end', async () => {
+  // Regression: markTemp() was only called at turn_end. A SIGKILL before
+  // the first turn completed left the sessionId absent from temp-sessions.json,
+  // so the orphaned .jsonl was re-adopted as a persistent session on the next
+  // boot. The fix calls markTemp() at spawn time (fire-and-forget) so the
+  // sidecar is durable from the moment the subprocess starts.
+  const { baseUrl, instances, close } = await bootServer({ scenarioPath: SCENARIO });
+  try {
+    await api(baseUrl, 'POST', '/api/projects', { name: 'spawnmarker' });
+    const tempRes = await api(baseUrl, 'POST', '/api/instances', { project: 'spawnmarker', temp: true });
+    assert.equal(tempRes.status, 201);
+    const tempInst = instances.get(tempRes.body.id);
+
+    // Wait only for sessionId to be set — that is the synchronous part of
+    // spawn(). Do NOT wait for idle (which would imply a turn completed).
+    await waitFor(() => !!tempInst.sessionId);
+    const sid = tempInst.sessionId;
+
+    // The markTemp() fire-and-forget write should land almost immediately
+    // (local file write). Poll until it does — no artificial sleep needed.
+    await waitFor(async () => isTemp(sid), { timeout: 3000 });
+
+    assert.equal(await isTemp(sid), true,
+      'temp marker must be in temp-sessions.json before any turn_end fires');
   } finally { await close(); }
 });
