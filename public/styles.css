@@ -424,19 +424,20 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
 .ih-chip.ih-temp { background: rgba(223, 132, 90, .25); color: #ffc7a3; text-transform: uppercase; font-size: 10px; letter-spacing: .5px; }
 .ih-chip.ih-debug { background: rgba(110, 168, 255, .25); color: #b6d1ff; text-transform: uppercase; font-size: 10px; letter-spacing: .5px; }
 
-/* Context-usage chip — `ctx N%` toggleable button. Color-graded by
- * fill: green under 50%, amber 50-80%, red over 80%. Empty state
- * (no turn yet) is muted grey. */
-.ih-chip.ih-usage, .ih-chip.ih-ratelimit {
+/* Combined ctx+rl chip — toggleable button. Color-graded by the worse of
+ * context fill and rate-limit utilization: green under 50%, amber 50-80%,
+ * red over 80%. Empty state (no data yet) is muted grey. */
+.ih-chip.ih-combined {
   border: 0; cursor: pointer; padding: 2px 6px; line-height: inherit;
   font-family: ui-monospace, monospace; font-size: 11px;
+  font-variant-numeric: tabular-nums;
 }
-.ih-chip.ih-usage:hover, .ih-chip.ih-ratelimit:hover { filter: brightness(1.15); }
-.ih-chip.ih-usage[aria-expanded="true"], .ih-chip.ih-ratelimit[aria-expanded="true"] { outline: 1px solid var(--border); }
-.ih-chip.ih-usage.ih-usage-empty { background: var(--panel-2); color: var(--muted); }
-.ih-chip.ih-usage.ih-usage-low { background: rgba(74, 222, 128, .18); color: var(--green); }
-.ih-chip.ih-usage.ih-usage-mid { background: rgba(245, 158, 11, .22); color: var(--amber); }
-.ih-chip.ih-usage.ih-usage-high { background: rgba(248, 113, 113, .22); color: var(--red); }
+.ih-chip.ih-combined:hover { filter: brightness(1.15); }
+.ih-chip.ih-combined[aria-expanded="true"] { outline: 1px solid var(--border); }
+.ih-chip.ih-combined.ih-usage-empty { background: var(--panel-2); color: var(--muted); }
+.ih-chip.ih-combined.ih-usage-low { background: rgba(74, 222, 128, .18); color: var(--green); }
+.ih-chip.ih-combined.ih-usage-mid { background: rgba(245, 158, 11, .22); color: var(--amber); }
+.ih-chip.ih-combined.ih-usage-high { background: rgba(248, 113, 113, .22); color: var(--red); }
 
 .ih-usage-popover {
   position: fixed; z-index: 50;
@@ -1175,16 +1176,6 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
   .ih-chip.ih-status-interrupting { animation: none; opacity: 1; }
 }
 
-/* Rate-limit chip — left side of the bottom bar, sibling of #ti-left and
-   #ti-usage-slot. Hidden until the first rate_limit_event arrives so it
-   doesn't affect layout in sessions that never hit a rate limit. Reuses
-   ih-chip and ih-usage-* colour classes from the context chip. */
-.ti-ratelimit-slot {
-  display: flex;
-  align-items: center;
-}
-.ti-ratelimit-slot[hidden] { display: none; }
-.ih-ratelimit { font-variant-numeric: tabular-nums; }
 .rl-overage-badge {
   margin-left: 4px;
   font-weight: 700;
