@@ -469,6 +469,7 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
 .ih-usage-row .ih-usage-k { color: var(--muted); }
 .ih-usage-row .ih-usage-v { font-family: ui-monospace, monospace; }
 .ih-usage-empty-msg { color: var(--muted); font-style: italic; }
+.ih-usage-section-gap { height: 0.75rem; }
 #instance-controls {
   display: flex; gap: 6px; align-items: center; flex-wrap: wrap;
   /* Stay right-aligned even when the controls row wraps below the title

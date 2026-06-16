@@ -200,7 +200,7 @@ export function rlChipSegment(info, accountUsage) {
   if (info) {
     const label = RATE_LIMIT_TYPE_LABELS[info.rateLimitType] ?? info.rateLimitType ?? '?';
     const util = typeof info.utilization === 'number' ? info.utilization : null;
-    const text = util != null ? `rl ${Math.round(util * 100)}% ${label}` : `rl ${label}`;
+    const text = util != null ? `rl ${Math.round(util * 100)}%` : 'rl --';
     return { text, frac: util, isOverage: info.isUsingOverage === true };
   }
   // accountUsage fallback — tightest non-null bucket
@@ -209,6 +209,6 @@ export function rlChipSegment(info, accountUsage) {
   if (!bucket) return { text: 'rl --', frac: null, isOverage: false };
   const label = RATE_LIMIT_TYPE_LABELS[key] ?? key;
   const util = typeof bucket.utilization === 'number' ? bucket.utilization / 100 : null;
-  const text = util != null ? `rl ${Math.round(util * 100)}% ${label}` : `rl ${label}`;
+  const text = util != null ? `rl ${Math.round(util * 100)}%` : 'rl --';
   return { text, frac: util, isOverage: false };
 }
