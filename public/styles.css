@@ -224,6 +224,9 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
   color: var(--amber);
 }
 .quick-spawn-models .qs-model.qs-selected .qs-ctx { color: inherit; opacity: .8; }
+/* Restore hidden behaviour: the `display: flex` rule above outranks the UA's
+   `[hidden] { display: none }` — same trap as .turn-indicator[hidden]. */
+.quick-spawn-models .qs-model[hidden] { display: none; }
 /* Advanced options expander */
 #spawn-dialog details { margin: 10px 0 2px; }
 #spawn-dialog details > summary {

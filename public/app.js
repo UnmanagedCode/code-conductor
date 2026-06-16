@@ -1096,6 +1096,15 @@ function syncFamilyVisibility() {
       btn.hidden = !enabled;
     });
   }
+  // Guard: if every family ended up hidden (unreachable via the Settings UI,
+  // which blocks disabling the last enabled family, but possible via a manual
+  // settings.json edit), un-hide the fallback so the picker is never empty.
+  if (['fable', 'opus', 'sonnet', 'haiku'].every(f => !getActiveFamilyEnabled(f))) {
+    const fallback = defaultSpawnFamily();
+    document.querySelectorAll(`.qs-model[data-family="${fallback}"]`).forEach(btn => {
+      btn.hidden = false;
+    });
+  }
   if (!getActiveFamilyEnabled(selectedSpawnFamily)) {
     selectedSpawnFamily = defaultSpawnFamily();
     updateSpawnModelSelection();
