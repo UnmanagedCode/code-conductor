@@ -83,12 +83,17 @@ test('archived session appears in list_sessions with archived:true, excluded fro
     await waitFor(() => !instances.get(inst.id));
     await waitFor(async () => (await isArchived(sid)));
 
-    // list_sessions returns the session with archived:true.
+    // Archived sessions are excluded from the default list.
     const listRes = await api(baseUrl, 'GET', `/api/projects/archivelist/sessions`);
     assert.equal(listRes.status, 200);
     const sessions = listRes.body;
-    const found = sessions.find(s => s.sessionId === sid);
-    assert.ok(found, 'archived session should appear in list');
+    assert.ok(!sessions.find(s => s.sessionId === sid), 'archived session must not appear in default list');
+
+    // With includeArchived=1 the session appears with archived:true.
+    const inclRes = await api(baseUrl, 'GET', `/api/projects/archivelist/sessions?includeArchived=1`);
+    assert.equal(inclRes.status, 200);
+    const found = inclRes.body.find(s => s.sessionId === sid);
+    assert.ok(found, 'archived session should appear with includeArchived=1');
     assert.equal(found.archived, true, 'archived flag must be true');
 
     // The projects summary count excludes archived sessions.
@@ -98,7 +103,7 @@ test('archived session appears in list_sessions with archived:true, excluded fro
     assert.ok(proj, 'project should exist');
     // sessions.count should be 0 (the only session is archived).
     assert.equal(proj.sessions?.count ?? 0, 0, 'archived session must not count toward summary');
-    // archivedCount should be 1 so the sidebar still shows the node.
+    // archivedCount should be 1 (tracked separately for the archived-sessions view).
     assert.equal(proj.sessions?.archivedCount ?? 0, 1, 'archivedCount should be 1');
   }
 });

@@ -281,7 +281,7 @@ export class Sidebar {
     }
     const total = onDiskCount + extra;
     const archivedCount = summary?.archivedCount ?? 0;
-    if (total === 0 && archivedCount === 0) return null;
+    if (total === 0) return null;
 
     const det = el('details', { class: 'sessions-group' });
     if (!this.collapsedSessions.has(key)) det.setAttribute('open', '');

@@ -183,13 +183,16 @@ export async function listInstances(_args, { instances }) {
   return instances ? instances.list().map(toConductorView) : [];
 }
 
-export async function listSessions({ project, worktree }) {
+export async function listSessions({ project, worktree, includeArchived = false }) {
+  let sessions;
   if (worktree) {
     const wt = await getWorktree(project, worktree);
     if (!wt) throw new Error(`worktree '${worktree}' not found under project '${project}'`);
-    return listSessionsForCwd(wt.worktreePath);
+    sessions = await listSessionsForCwd(wt.worktreePath);
+  } else {
+    sessions = await fsListSessions(project);
   }
-  return fsListSessions(project);
+  return includeArchived ? sessions : sessions.filter(s => !s.archived);
 }
 
 // Map the shared worktree-metadata shape (whose property is `worktreeName`)

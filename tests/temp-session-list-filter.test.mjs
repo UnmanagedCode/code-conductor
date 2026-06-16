@@ -68,8 +68,8 @@ test('temp session jsonl is filtered out of GET /api/projects/:name/sessions whi
     assert.equal(proj.sessions.count, 1, 'count excludes live-temp jsonl, includes normal one');
 
     // After the temp instance is killed, it is archived: the .jsonl is kept
-    // but the session appears with archived:true in the list (not in the
-    // normal active section). It no longer shows as a plain active session.
+    // but the session is excluded from the default list (archived sessions are
+    // filtered server-side). It appears only with ?includeArchived=1.
     const del = await api(baseUrl, 'DELETE', `/api/instances/${tempId}`);
     assert.equal(del.status, 200);
     await waitFor(() => !instances.get(tempId));
@@ -80,11 +80,16 @@ test('temp session jsonl is filtered out of GET /api/projects/:name/sessions whi
     // .jsonl is kept (archived, not deleted).
     await fs.access(path.join(dir, `${tempSid}.jsonl`));
 
+    // Default list excludes archived sessions.
     const list2 = await api(baseUrl, 'GET', '/api/projects/tempfilter/sessions');
-    const entry = list2.body.find(s => s.sessionId === tempSid);
-    assert.ok(entry, 'archived session should still appear in list');
-    assert.equal(entry.archived, true, 'temp session is archived after kill');
+    assert.ok(!list2.body.find(s => s.sessionId === tempSid), 'archived temp session absent from default list');
     assert.ok(list2.body.find(s => s.sessionId === normalSid), 'normal sessionId still there');
+
+    // With includeArchived=1 it appears with archived:true.
+    const list2incl = await api(baseUrl, 'GET', '/api/projects/tempfilter/sessions?includeArchived=1');
+    const entry = list2incl.body.find(s => s.sessionId === tempSid);
+    assert.ok(entry, 'archived temp session appears with includeArchived=1');
+    assert.equal(entry.archived, true, 'temp session is archived after kill');
   } finally { await close(); }
 });
 
@@ -105,8 +110,12 @@ test('temp session jsonl that survives on disk reappears in the list after the l
     assert.equal(list.body.find(s => s.sessionId === tempSid), undefined);
 
     // Kill, then re-create a jsonl by hand with the same sid.
+    // Killing a temp instance archives the session, so it is excluded from
+    // the default list but visible via ?includeArchived=1.
     await api(baseUrl, 'DELETE', `/api/instances/${tempRes.body.id}`);
     await waitFor(() => instances.get(tempRes.body.id) === undefined);
+    const { isArchived } = await import('../src/archivedSessions.js');
+    await waitFor(async () => isArchived(tempSid));
     const dir = path.join(claudeProjectsRoot, encodeCwd(cwd));
     await fs.mkdir(dir, { recursive: true });
     await fs.writeFile(
@@ -114,8 +123,12 @@ test('temp session jsonl that survives on disk reappears in the list after the l
       '{"type":"user","uuid":"u1","message":{"role":"user","content":"resurrected"}}\n',
     );
 
+    // Default list excludes it (it is archived).
     list = await api(baseUrl, 'GET', '/api/projects/tempfilter2/sessions');
-    const sids = list.body.map(s => s.sessionId);
-    assert.ok(sids.includes(tempSid), 'jsonl appears once no live temp instance owns it');
+    assert.equal(list.body.find(s => s.sessionId === tempSid), undefined, 'archived session absent from default list');
+    // But it is reachable via includeArchived=1.
+    const listIncl = await api(baseUrl, 'GET', '/api/projects/tempfilter2/sessions?includeArchived=1');
+    const sids = listIncl.body.map(s => s.sessionId);
+    assert.ok(sids.includes(tempSid), 'jsonl accessible via includeArchived=1 once no live temp instance owns it');
   } finally { await close(); }
 });
