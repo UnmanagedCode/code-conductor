@@ -1603,21 +1603,17 @@ function updateActiveHeader() {
   // controls onto a third row on mobile.
   dom.tiUsageSlot.textContent = '';
   dom.tiUsageSlot.appendChild(renderUsageChip(inst));
-  // Rate-limit chip: left side of the bottom bar. Hidden when neither a
-  // rate_limit_event nor account-level OAuth data is available.
+  // Rate-limit chip: left side of the bottom bar. Always visible; shows a
+  // muted "rl --" placeholder until the first rate_limit_event or OAuth data.
   const rlInfo = getRateLimit(inst.id).info;
   dom.tiRatelimitSlot.textContent = '';
   const rlChip = renderRateLimitChip(rlInfo, accountUsage);
-  if (rlChip) {
-    rlChip.addEventListener('click', (e) => {
-      e.stopPropagation();
-      toggleRateLimitPopover(rlChip);
-    });
-    dom.tiRatelimitSlot.hidden = false;
-    dom.tiRatelimitSlot.appendChild(rlChip);
-  } else {
-    dom.tiRatelimitSlot.hidden = true;
-  }
+  rlChip.addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleRateLimitPopover(rlChip);
+  });
+  dom.tiRatelimitSlot.hidden = false;
+  dom.tiRatelimitSlot.appendChild(rlChip);
   dom.modeSelect.value = inst.mode;
   dom.modeSelect.disabled = inst.status === 'turn' || inst.status === 'crashed' || inst.status === 'exited';
   dom.killBtn.textContent = inst.status === 'turn' ? '⏸ Interrupt' : '🛑 Terminate';
