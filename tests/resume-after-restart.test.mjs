@@ -388,6 +388,43 @@ test('drainToManifest excludes exited instances still retained in byId', async (
   clearResumeManifest();
 });
 
+// --- 12. firstPrompt round-trips through manifest (temp session title bug) ---
+
+test('drainToManifest captures firstPrompt; restoreFromResumeManifest restores it on a temp session', async () => {
+  await api(baseUrl, 'POST', '/api/projects', { name: 'fp-roundtrip' });
+  const res = await api(baseUrl, 'POST', '/api/instances', { project: 'fp-roundtrip', temp: true });
+  const inst = instances.get(res.body.id);
+  await waitFor(() => inst.status === 'idle' && inst.sessionId);
+
+  // Sending a prompt caches firstPrompt on the instance.
+  await inst.prompt('my first test prompt');
+  await waitFor(() => inst.status === 'idle');
+  assert.equal(inst.firstPrompt, 'my first test prompt', 'firstPrompt set in memory after prompt');
+
+  // Materialize a jsonl so --resume can find the session on restore.
+  const dir = path.join(claudeProjectsRoot, encodeCwd(inst.cwd));
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(path.join(dir, `${inst.sessionId}.jsonl`), '{"type":"user","uuid":"u1"}\n');
+
+  const entries = await drainToManifest({ server: null, wss: null, instances, log: { warn() {}, log() {}, error() {} }, graceMs: 100 });
+  assert.equal(entries.length, 1, 'one entry in manifest');
+  assert.equal(entries[0].firstPrompt, 'my first test prompt', 'firstPrompt persisted to manifest');
+  assert.equal(entries[0].temp, true, 'temp flag preserved in manifest');
+
+  // Wait for the process to die after shutdownForResumeSync.
+  await waitFor(() => inst.proc === null, { timeout: 20000 });
+
+  const { restored } = await restoreFromResumeManifest({ instances, log: { log() {}, warn() {} }, staggerMs: 0 });
+  assert.equal(restored, 1, 'one session restored');
+
+  // The restored instance is a fresh object (new id) with the same sessionId.
+  const newInst = [...instances.byId.values()].find(i => i.sessionId === inst.sessionId && i.id !== inst.id);
+  assert.ok(newInst, 'new instance created for the restored temp session');
+  assert.equal(newInst.firstPrompt, 'my first test prompt', 'firstPrompt restored on new instance');
+  assert.equal(newInst.temp, true, 'temp flag preserved on restored instance');
+  clearResumeManifest();
+});
+
 // --- 11. a parked (idle, waiting-on-worker) conductor is treated as busy ----
 // The regression fix: an idle conductor that ended its turn and is parked on an
 // OUTGOING idle-subscription (waiting on a worker) has durable re-conduct work,
