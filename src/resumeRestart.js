@@ -21,9 +21,11 @@ import {
 } from './resumeManifest.js';
 import { CONDUCT_PROJECT_NAME, ensureConductProject } from './conduct.js';
 
-// Force-then-proceed grace: after wind-down, wait at most this long (60 s) for
-// every live instance to leave its turn; then force-interrupt stragglers and
-// proceed (resume is clean regardless of how the turn was cut).
+// Wait-and-retry grace: after wind-down, wait this long (60 s) for every live
+// instance to leave its turn on its own. If the grace elapses, log a warning
+// and keep waiting (re-arming the grace) — it never force-interrupts. If an
+// agent is wedged and won't finish its turn, the user can manually interrupt
+// that turn (e.g. via the UI's interrupt control) to unblock the drain.
 export const RESUME_DRAIN_GRACE_MS = 60000;
 // Gap between staggered respawns on boot — N concurrent claude spawns is a
 // resource spike on Termux/Android.
