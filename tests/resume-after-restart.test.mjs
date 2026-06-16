@@ -249,9 +249,9 @@ test('buildConductorResumeText lists each worker sessionId + worktree', () => {
   assert.ok(buildConductorResumeText([]).includes('(none recorded)'));
 });
 
-// --- 7. drain force-timeout ------------------------------------------------
+// --- 7. drain: mid-turn instance wound down to idle, written to manifest ----
 
-test('drainToManifest force-interrupts stragglers past the grace and still writes the manifest', async () => {
+test('drainToManifest winds a mid-turn instance down to idle and writes it to the manifest', async () => {
   const prevScenario = process.env.FAKE_CLAUDE_SCENARIO;
   process.env.FAKE_CLAUDE_SCENARIO = DRAIN;
   try {
