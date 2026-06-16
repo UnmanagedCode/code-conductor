@@ -11,10 +11,17 @@
 //
 // Atomic writes (write tmp + rename), mirroring `conductedSessions.js`.
 // Missing file = empty set.
+//
+// Mutation safety: each write is protected by a cross-process advisory
+// lockfile (`archived-sessions.json.lock`) so concurrent processes (e.g.
+// old server exiting + new server booting during a hot restart) cannot
+// clobber each other's entries. Within a single process, `writeChain`
+// serialises calls to avoid redundant lock contention.
 
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { orchStoreRoot } from './projects.js';
+import { withLock } from './storeLock.js';
 
 function archivedFile() {
   return path.join(orchStoreRoot(), 'archived-sessions.json');
@@ -44,6 +51,28 @@ export async function isArchived(sessionId) {
   return set.has(sessionId);
 }
 
+// Like loadAllArchived but used inside mutations (under the cross-process lock).
+// Throws on I/O errors and JSON corruption rather than returning an empty set,
+// so we never overwrite the store based on a failed read.
+// ENOENT is the one legitimate empty-base case: the file has never been written
+// or was correctly unlinked when the last entry was removed.
+async function loadArchivedStrict() {
+  try {
+    const raw = await fs.readFile(archivedFile(), 'utf8');
+    const obj = JSON.parse(raw); // throws SyntaxError on corrupt JSON
+    const arr = Array.isArray(obj?.sessions) ? obj.sessions : null;
+    if (!arr) return new Set();
+    const out = new Set();
+    for (const sid of arr) {
+      if (typeof sid === 'string' && sid) out.add(sid);
+    }
+    return out;
+  } catch (e) {
+    if (e.code === 'ENOENT') return new Set(); // legitimately empty
+    throw e; // I/O error or corrupt JSON — abort the mutation
+  }
+}
+
 // Serialise concurrent writers behind a per-process promise chain. We
 // load → mutate → write the whole set, so without this two concurrent
 // writers could race on the read-modify-write and lose an entry.
@@ -70,21 +99,25 @@ async function writeSet(set) {
 export function markArchived(sessionId) {
   return serialize(async () => {
     if (typeof sessionId !== 'string' || !sessionId) return false;
-    const set = await loadAllArchived();
-    if (set.has(sessionId)) return true;
-    set.add(sessionId);
-    await writeSet(set);
-    return true;
+    return withLock(archivedFile(), async () => {
+      const set = await loadArchivedStrict(); // canonical re-read under lock
+      if (set.has(sessionId)) return true;
+      set.add(sessionId);
+      await writeSet(set);
+      return true;
+    });
   });
 }
 
 export function unmarkArchived(sessionId) {
   return serialize(async () => {
     if (typeof sessionId !== 'string' || !sessionId) return false;
-    const set = await loadAllArchived();
-    if (!set.has(sessionId)) return false;
-    set.delete(sessionId);
-    await writeSet(set);
-    return true;
+    return withLock(archivedFile(), async () => {
+      const set = await loadArchivedStrict(); // canonical re-read under lock
+      if (!set.has(sessionId)) return false;
+      set.delete(sessionId);
+      await writeSet(set);
+      return true;
+    });
   });
 }
