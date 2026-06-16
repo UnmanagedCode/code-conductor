@@ -148,14 +148,15 @@ export function fillClass(frac) {
 }
 
 // ── Rate-limit tracker ──────────────────────────────────────────────────
-// Per-instance tracker for the latest rate_limit_event payload. Mirrors
-// UsageTracker's reset() + apply(ev) shape so app.js drives it identically.
+// Single global tracker for rate_limit_event payloads (rate limits are
+// account-wide, not per-session). app.js instantiates one and feeds all
+// events + periodic fetch results through it.
 
 export class RateLimitTracker {
   constructor() { this.reset(); }
 
   reset() {
-    this.info = null; // latest rate_limit_info object (null until first event)
+    this.info = null; // latest merged rate_limit_info (null until first event)
   }
 
   apply(ev) {
@@ -165,21 +166,13 @@ export class RateLimitTracker {
     const incoming = raw.rate_limit_info ?? (Object.keys(raw).length ? raw : null);
     if (incoming) {
       // Merge onto existing info: incoming wins for keys it carries, but skip
-      // null/undefined values so a field the message didn't really know about
-      // doesn't clobber a good value from a prior detailed event.
+      // null/undefined so a field the message didn't know about never clobbers
+      // a good value from a prior event (e.g. isUsingOverage survives re-fetch).
       const patch = Object.fromEntries(Object.entries(incoming).filter(([, v]) => v != null));
       this.info = this.info ? { ...this.info, ...patch } : patch;
     }
   }
 }
-
-// Friendly labels for the rateLimitType values the CLI emits.
-const RATE_LIMIT_TYPE_LABELS = {
-  five_hour: '5h',
-  seven_day: '7d',
-  seven_day_opus: '7d Opus',
-  seven_day_sonnet: '7d Sonnet',
-};
 
 // Format the resetsAt Unix timestamp as a local time string, e.g. "resets 6:40pm".
 export function formatResetTime(unixSecs) {
@@ -188,68 +181,34 @@ export function formatResetTime(unixSecs) {
   return 'resets ' + d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 }
 
-// Build the rate-limit chip element.
-// info: rate_limit_info from the most recent rate_limit_event (or null).
-// accountUsage: OAuth account-level usage object (or null) — used as fallback
-//   when no per-session event has arrived yet (shows tightest available bucket).
-// Always returns a <button> (never null) so the slot is always visible.
-// When no data is available at all, renders a muted "rl --" placeholder.
-export function renderRateLimitChip(info, accountUsage) {
-  // Derive display values from the best available source.
-  let typeLabel, util, frac, resetStr, isOverage;
+// Friendly short labels for rateLimitType values from CLI / OAuth API.
+export const RATE_LIMIT_TYPE_LABELS = {
+  five_hour:        '5h',
+  seven_day:        '7d',
+  seven_day_opus:   '7d Opus',
+  seven_day_sonnet: '7d Sonnet',
+};
 
+// Pure helper: derive the rate-limit half of the combined chip from the two
+// available sources (no DOM, easily testable).
+//   info        – globalRLTracker.info (from rate_limit_event; may be null)
+//   accountUsage – OAuth fetch result keyed by bucket (may be null)
+// Returns { text, frac, isOverage } where frac is 0–1 or null.
+const RL_BUCKET_PRIORITY = ['five_hour', 'seven_day', 'seven_day_sonnet', 'seven_day_opus'];
+
+export function rlChipSegment(info, accountUsage) {
   if (info) {
-    typeLabel = RATE_LIMIT_TYPE_LABELS[info.rateLimitType] ?? info.rateLimitType ?? '?';
-    util = typeof info.utilization === 'number' ? info.utilization : null;
-    frac = util;  // 0-1 fraction from the CLI
-    resetStr = formatResetTime(info.resetsAt);
-    isOverage = info.isUsingOverage === true;
-  } else {
-    // OAuth fallback: pick the tightest available bucket in priority order.
-    // five_hour is most restrictive, but some plan tiers omit it; fall through
-    // to seven_day / seven_day_sonnet / seven_day_opus rather than hiding the chip.
-    const BUCKET_PRIORITY = ['five_hour', 'seven_day', 'seven_day_sonnet', 'seven_day_opus'];
-    const key = accountUsage && BUCKET_PRIORITY.find(k => accountUsage[k]);
-    const bucket = key && accountUsage[key];
-    if (!bucket) {
-      // No data from either source yet — render a grayed-out placeholder so
-      // the slot is always present in the bottom bar.
-      typeLabel = '--'; util = null; frac = null; resetStr = null; isOverage = false;
-    } else {
-      typeLabel = RATE_LIMIT_TYPE_LABELS[key] ?? key;
-      util = typeof bucket.utilization === 'number' ? bucket.utilization / 100 : null;
-      frac = util;  // normalize 0-100 → 0-1 (OAuth API returns percentage integers)
-      // resets_at is ISO-8601; convert to Unix seconds for formatResetTime.
-      resetStr = bucket.resets_at
-        ? formatResetTime(new Date(bucket.resets_at).getTime() / 1000)
-        : null;
-      isOverage = false;
-    }
+    const label = RATE_LIMIT_TYPE_LABELS[info.rateLimitType] ?? info.rateLimitType ?? '?';
+    const util = typeof info.utilization === 'number' ? info.utilization : null;
+    const text = util != null ? `rl ${Math.round(util * 100)}% ${label}` : `rl ${label}`;
+    return { text, frac: util, isOverage: info.isUsingOverage === true };
   }
-
-  const el = document.createElement('button');
-  el.type = 'button';
-  el.className = `ih-chip ih-ratelimit ${fillClass(frac)}`;
-  el.setAttribute('aria-haspopup', 'dialog');
-  el.setAttribute('aria-expanded', 'false');
-  el.title = [
-    `Rate limit: ${typeLabel}`,
-    util != null ? `Utilization: ${Math.round(util * 100)}%` : null,
-    resetStr,
-    isOverage ? 'OVERAGE active' : null,
-    'Tap for details',
-  ].filter(Boolean).join(' · ');
-
-  let text = `rl ${typeLabel}`;
-  if (util != null) text += ` · ${Math.round(util * 100)}%`;
-  el.textContent = text;
-
-  if (isOverage) {
-    const badge = document.createElement('span');
-    badge.className = 'rl-overage-badge';
-    badge.textContent = 'OVERAGE';
-    el.appendChild(badge);
-  }
-
-  return el;
+  // accountUsage fallback — tightest non-null bucket
+  const key = accountUsage && RL_BUCKET_PRIORITY.find(k => accountUsage[k]);
+  const bucket = key && accountUsage[key];
+  if (!bucket) return { text: 'rl --', frac: null, isOverage: false };
+  const label = RATE_LIMIT_TYPE_LABELS[key] ?? key;
+  const util = typeof bucket.utilization === 'number' ? bucket.utilization / 100 : null;
+  const text = util != null ? `rl ${Math.round(util * 100)}% ${label}` : `rl ${label}`;
+  return { text, frac: util, isOverage: false };
 }

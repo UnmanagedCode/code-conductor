@@ -1353,81 +1353,56 @@ test('DOM: plain (non-transcribed) user message has no mic badge', async () => {
   assert.equal(userMsg.querySelector('.block.text').textContent, 'hello');
 });
 
-// ── Rate-limit chip rendering ────────────────────────────────────────────
-async function setupChipDOM() {
-  const window = new Window({ url: 'http://localhost/' });
-  globalThis.window = window;
-  globalThis.document = window.document;
-  globalThis.HTMLElement = window.HTMLElement;
-  globalThis.Element = window.Element;
-  globalThis.Node = window.Node;
-  const { renderRateLimitChip, RateLimitTracker } = await import(
-    pathToFileURL(path.join(PUB, 'usage.js')).href
-  );
-  return { renderRateLimitChip, RateLimitTracker };
+// ── Rate-limit chip segment (rlChipSegment) ──────────────────────────────
+// renderRateLimitChip was removed when the rl chip was merged into the
+// combined ctx+rl chip (renderCombinedChip in app.js). The pure derivation
+// logic lives in usage.js as rlChipSegment and is tested here. DOM setup is
+// not needed — rlChipSegment returns a plain { text, frac, isOverage } object.
+
+let _rlChipSegment, _RateLimitTracker, _fillClass;
+async function setupRLHelpers() {
+  if (!_rlChipSegment) {
+    const mod = await import(pathToFileURL(path.join(PUB, 'usage.js')).href);
+    _rlChipSegment = mod.rlChipSegment;
+    _RateLimitTracker = mod.RateLimitTracker;
+    _fillClass = mod.fillClass;
+  }
+  return { rlChipSegment: _rlChipSegment, RateLimitTracker: _RateLimitTracker, fillClass: _fillClass };
 }
 
-test('DOM: rate-limit chip with utilization shows percentage and colour class', async () => {
-  const { renderRateLimitChip } = await setupChipDOM();
-  const chip = renderRateLimitChip({
-    rateLimitType: 'five_hour',
-    utilization: 0.72,
-    resetsAt: 1729281600,
-  });
-  assert.ok(chip, 'chip element returned');
-  // Text includes bucket label and percentage
-  assert.ok(chip.textContent.includes('5h'), 'bucket label present');
-  assert.ok(chip.textContent.includes('72%'), 'utilization percentage present');
-  // fraction 0.72 → frac 0.72 → ih-usage-mid (0.5 ≤ frac < 0.8)
-  assert.ok(chip.className.includes('ih-usage-mid'), 'mid colour class applied');
-  // No overage badge
-  assert.equal(chip.querySelector('.rl-overage-badge'), null, 'no overage badge');
+test('rl segment: info with utilization → correct text and frac', async () => {
+  const { rlChipSegment } = await setupRLHelpers();
+  const seg = rlChipSegment({ rateLimitType: 'five_hour', utilization: 0.72 }, null);
+  assert.ok(seg.text.includes('5h'), 'bucket label present');
+  assert.ok(seg.text.includes('72%'), 'utilization percentage present');
+  assert.ok(Math.abs(seg.frac - 0.72) < 0.001, 'frac is 0-1 fraction');
+  assert.equal(seg.isOverage, false, 'isOverage false by default');
 });
 
-test('DOM: rate-limit chip without utilization shows no percentage and uses empty class', async () => {
-  const { renderRateLimitChip } = await setupChipDOM();
-  const chip = renderRateLimitChip({
-    rateLimitType: 'seven_day',
-    resetsAt: 1729281600,
-  });
-  assert.ok(chip, 'chip element returned');
-  assert.ok(chip.textContent.includes('7d'), 'bucket label present');
-  assert.ok(!chip.textContent.includes('%'), 'no percentage when utilization absent');
-  // frac = null → ih-usage-empty
-  assert.ok(chip.className.includes('ih-usage-empty'), 'empty colour class when no utilization');
+test('rl segment: info without utilization → no percentage, frac null', async () => {
+  const { rlChipSegment } = await setupRLHelpers();
+  const seg = rlChipSegment({ rateLimitType: 'seven_day' }, null);
+  assert.ok(seg.text.includes('7d'), 'bucket label present');
+  assert.ok(!seg.text.includes('%'), 'no percentage when utilization absent');
+  assert.equal(seg.frac, null, 'frac is null when utilization absent');
 });
 
-test('DOM: rate-limit chip: utilization 0.9 (fraction) → displays 90%, ih-usage-high', async () => {
-  const { renderRateLimitChip } = await setupChipDOM();
-  const chip = renderRateLimitChip({
-    rateLimitType: 'five_hour',
-    utilization: 0.9,
-    resetsAt: 1729281600,
-  });
-  assert.ok(chip, 'chip element returned');
-  assert.ok(chip.textContent.includes('90%'), 'fraction 0.9 must display as 90%, not 0% or 9000%');
-  assert.ok(chip.className.includes('ih-usage-high'), 'high colour class at 90% utilization');
-  assert.ok(chip.title.includes('90%'), 'tooltip also shows 90%');
+test('rl segment: utilization 0.9 displays as 90%, not 9% or 9000%', async () => {
+  const { rlChipSegment } = await setupRLHelpers();
+  const seg = rlChipSegment({ rateLimitType: 'five_hour', utilization: 0.9 }, null);
+  assert.ok(seg.text.includes('90%'), 'fraction 0.9 must display as 90%');
+  assert.ok(Math.abs(seg.frac - 0.9) < 0.001);
 });
 
-test('DOM: rate-limit chip with isUsingOverage shows OVERAGE badge and high colour', async () => {
-  const { renderRateLimitChip } = await setupChipDOM();
-  const chip = renderRateLimitChip({
-    rateLimitType: 'five_hour',
-    utilization: 0.95,
-    isUsingOverage: true,
-    overageStatus: 'allowed',
-  });
-  assert.ok(chip, 'chip element returned');
-  // 95% → ih-usage-high
-  assert.ok(chip.className.includes('ih-usage-high'), 'high colour class at 95%');
-  const badge = chip.querySelector('.rl-overage-badge');
-  assert.ok(badge, 'overage badge element present');
-  assert.equal(badge.textContent, 'OVERAGE', 'badge text correct');
+test('rl segment: isUsingOverage reflected in isOverage flag', async () => {
+  const { rlChipSegment } = await setupRLHelpers();
+  const seg = rlChipSegment({ rateLimitType: 'five_hour', utilization: 0.95, isUsingOverage: true }, null);
+  assert.equal(seg.isOverage, true, 'isOverage true when isUsingOverage set');
+  assert.ok(seg.text.includes('95%'));
 });
 
 test('DOM: RateLimitTracker applies rate_limit_event and ignores other events', async () => {
-  const { RateLimitTracker } = await setupChipDOM();
+  const { RateLimitTracker } = await setupRLHelpers();
   const tracker = new RateLimitTracker();
   assert.equal(tracker.info, null, 'starts null');
   // Irrelevant event — should not update info
@@ -1451,59 +1426,54 @@ test('DOM: RateLimitTracker applies rate_limit_event and ignores other events', 
 
 // ── accountUsage fallback branch ─────────────────────────────────────────────
 // The OAuth API returns utilization on a 0-100 scale (integer %). These tests
-// lock the normalization (/ 100) applied in the else-if (accountUsage?.five_hour)
-// branch against regression. buildRateLimitPopover() in app.js applies the same
-// / 100 normalization; it is not exported so cannot be DOM-tested here.
+// lock the normalization (÷100) applied in the accountUsage fallback branch
+// of rlChipSegment against regression.
 
-test('DOM: chip accountUsage branch: utilization 67 (0-100 scale) renders as 67%', async () => {
-  const { renderRateLimitChip } = await setupChipDOM();
-  const chip = renderRateLimitChip(null, {
+test('rl segment: accountUsage utilization 67 (0-100 scale) renders as 67%', async () => {
+  const { rlChipSegment } = await setupRLHelpers();
+  const seg = rlChipSegment(null, {
     five_hour: { utilization: 67, resets_at: '2026-06-11T21:09:59+00:00' },
   });
-  assert.ok(chip, 'chip returned for accountUsage fallback');
-  assert.ok(chip.textContent.includes('5h'), 'bucket label present');
-  assert.ok(chip.textContent.includes('67%'), 'renders 67% not 6700%');
-  assert.ok(chip.title.includes('67%'), 'tooltip also shows 67%');
-  // 67% → frac 0.67 → ih-usage-mid (0.5 ≤ frac < 0.8)
-  assert.ok(chip.className.includes('ih-usage-mid'), 'mid colour class for 67%');
+  assert.ok(seg.text.includes('5h'), 'bucket label present');
+  assert.ok(seg.text.includes('67%'), 'renders 67% not 6700%');
+  assert.ok(Math.abs(seg.frac - 0.67) < 0.001, 'frac normalized from 0-100 to 0-1');
 });
 
-test('DOM: chip accountUsage branch: utilization 90 → ih-usage-high, not 9000%', async () => {
-  const { renderRateLimitChip } = await setupChipDOM();
-  const chip = renderRateLimitChip(null, {
+test('rl segment: accountUsage utilization 90 → frac 0.9, text shows 90%', async () => {
+  const { rlChipSegment } = await setupRLHelpers();
+  const seg = rlChipSegment(null, {
     five_hour: { utilization: 90, resets_at: '2026-06-11T21:09:59+00:00' },
   });
-  assert.ok(chip, 'chip returned');
-  assert.ok(chip.textContent.includes('90%'), 'displays 90%, not 9000%');
-  assert.ok(chip.className.includes('ih-usage-high'), 'high colour class for 90%');
+  assert.ok(seg.text.includes('90%'), 'displays 90%, not 9000%');
+  assert.ok(Math.abs(seg.frac - 0.9) < 0.001);
 });
 
-test('DOM: chip accountUsage branch: falls back to seven_day when five_hour is absent', async () => {
-  const { renderRateLimitChip } = await setupChipDOM();
-  const chip = renderRateLimitChip(null, { seven_day: { utilization: 40, resets_at: null } });
-  assert.ok(chip, 'chip returned when seven_day data is present and five_hour is absent');
-  assert.ok(chip.textContent.includes('7d'), 'seven_day bucket label present');
-  assert.ok(chip.textContent.includes('40%'), 'utilization renders as 40% (normalized from 40/100)');
+test('rl segment: falls back to seven_day when five_hour absent', async () => {
+  const { rlChipSegment } = await setupRLHelpers();
+  const seg = rlChipSegment(null, { seven_day: { utilization: 40, resets_at: null } });
+  assert.ok(seg.text.includes('7d'), 'seven_day label present');
+  assert.ok(seg.text.includes('40%'), 'utilization normalized from 40/100');
 });
 
-test('DOM: chip accountUsage branch: falls back to seven_day_sonnet when neither five_hour nor seven_day present', async () => {
-  const { renderRateLimitChip } = await setupChipDOM();
-  const chip = renderRateLimitChip(null, {
+test('rl segment: falls back to seven_day_sonnet when neither five_hour nor seven_day present', async () => {
+  const { rlChipSegment } = await setupRLHelpers();
+  const seg = rlChipSegment(null, {
     seven_day_sonnet: { utilization: 20, resets_at: '2026-06-14T00:59:59+00:00' },
   });
-  assert.ok(chip, 'chip returned when only seven_day_sonnet bucket is available');
-  assert.ok(chip.textContent.includes('7d Sonnet'), 'seven_day_sonnet label present');
-  assert.ok(chip.textContent.includes('20%'), 'utilization renders as 20%');
+  assert.ok(seg.text.includes('7d Sonnet'), 'seven_day_sonnet label present');
+  assert.ok(seg.text.includes('20%'));
 });
 
-test('DOM: chip accountUsage branch: null info + no usable bucket → chip hidden', async () => {
-  const { renderRateLimitChip } = await setupChipDOM();
-  // All known buckets absent or null — nothing to show.
-  const chip = renderRateLimitChip(null, { seven_day_opus: null });
-  assert.equal(chip, null, 'returns null when all buckets are absent/null');
+test('rl segment: null info + no usable bucket → placeholder text, null frac', async () => {
+  const { rlChipSegment } = await setupRLHelpers();
+  const seg = rlChipSegment(null, { seven_day_opus: null });
+  assert.equal(seg.text, 'rl --', 'placeholder when all buckets absent/null');
+  assert.equal(seg.frac, null);
 });
 
-test('DOM: chip accountUsage branch: null info + null accountUsage → chip hidden', async () => {
-  const { renderRateLimitChip } = await setupChipDOM();
-  assert.equal(renderRateLimitChip(null, null), null, 'returns null when both args are null');
+test('rl segment: null info + null accountUsage → placeholder', async () => {
+  const { rlChipSegment } = await setupRLHelpers();
+  const seg = rlChipSegment(null, null);
+  assert.equal(seg.text, 'rl --', 'placeholder when both args null');
+  assert.equal(seg.frac, null);
 });

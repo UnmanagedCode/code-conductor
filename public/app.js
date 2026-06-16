@@ -11,7 +11,7 @@ import { SubagentPanel } from './subagents.js';
 import {
   UsageTracker, contextWindowFor,
   formatTokens, formatPct, formatDuration, fillClass,
-  RateLimitTracker, renderRateLimitChip, formatResetTime,
+  RateLimitTracker, formatResetTime, rlChipSegment, RATE_LIMIT_TYPE_LABELS,
 } from './usage.js';
 import {
   NotificationState, ensurePermission, setGlobalEnabled,
@@ -52,6 +52,27 @@ async function refreshAccountUsage() {
     if (!r.ok) return;
     const j = await r.json();
     accountUsage = j.usage ?? null;
+    // Merge the tightest bucket from the fetch into globalRLTracker so the
+    // combined chip shows real data even before a rate_limit_event arrives.
+    // fetch = richer base; messages are sparse patches on top. Both use the
+    // same apply() null-guard so neither clobbers the other's unique fields
+    // (isUsingOverage is message-only and survives re-fetches because it is
+    // intentionally absent from this synthetic event).
+    if (accountUsage) {
+      const BUCKET_PRIORITY = ['five_hour', 'seven_day', 'seven_day_sonnet', 'seven_day_opus'];
+      const key = BUCKET_PRIORITY.find(k => accountUsage[k]);
+      if (key) {
+        const b = accountUsage[key];
+        globalRLTracker.apply({
+          kind: 'system', subtype: 'rate_limit_event',
+          data: { rate_limit_info: {
+            rateLimitType: key,
+            utilization: typeof b.utilization === 'number' ? b.utilization / 100 : undefined,
+            resetsAt: b.resets_at ? new Date(b.resets_at).getTime() / 1000 : undefined,
+          }},
+        });
+      }
+    }
     if (state.activeId) updateActiveHeader();
   } catch { /* ignore — chip degrades silently */ }
 }
@@ -75,7 +96,6 @@ const dom = {
   tiLeft: document.getElementById('ti-left'),
   tiLabel: document.getElementById('ti-label'),
   tiInterruptNow: document.getElementById('ti-interrupt-now'),
-  tiRatelimitSlot: document.getElementById('ti-ratelimit-slot'),
   tiUsageSlot: document.getElementById('ti-usage-slot'),
   newProjectBtn: document.getElementById('new-project-btn'),
   newProjectDialog: document.getElementById('new-project-dialog'),
@@ -158,14 +178,12 @@ function getUsage(instanceId) {
   return u;
 }
 
-// Per-instance rate-limit trackers. Stores the latest rate_limit_event
-// payload per instance; drives the left-side rate-limit chip in the bottom bar.
-const rateLimitTrackersByInstance = new Map();
-function getRateLimit(instanceId) {
-  let r = rateLimitTrackersByInstance.get(instanceId);
-  if (!r) { r = new RateLimitTracker(); rateLimitTrackersByInstance.set(instanceId, r); }
-  return r;
-}
+// Single global rate-limit tracker. Rate limits are account-wide (not
+// per-session), so one tracker accumulates events from every instance and
+// the periodic /api/usage fetch result. Both sources merge through
+// RateLimitTracker.apply() with null-guard semantics: incoming non-null
+// fields win; absent/undefined fields never clobber existing values.
+const globalRLTracker = new RateLimitTracker();
 
 // Pending user-question answers waiting for the active instance to reach
 // idle. If the user picks an option while a turn is still running, the
@@ -1552,7 +1570,7 @@ function updateActiveHeader() {
   // The header gets rebuilt from scratch on every call, which discards
   // the existing chip nodes. Close any open popover first so it's not
   // left hanging off a detached anchor.
-  closeUsagePopover();
+  closeCombinedPopover();
   closeOverflow();
   const inst = state.instances.find(i => i.id === state.activeId);
   if (!inst) {
@@ -1607,22 +1625,10 @@ function updateActiveHeader() {
   }
   if (inst.temp) dom.instanceTitle.appendChild(chip('ih-temp', 'temp'));
   if (inst.debug) dom.instanceTitle.appendChild(chip('ih-debug', 'debug'));
-  // The ctx chip lives in the bottom bar's right slot rather than the header,
-  // so a filled `ctx 6% · 62k/1.0M` readout doesn't push the right-side
-  // controls onto a third row on mobile.
+  // Combined ctx+rl chip: right slot of the bottom bar. ctx half is
+  // per-session; rl half reads from globalRLTracker (account-wide).
   dom.tiUsageSlot.textContent = '';
-  dom.tiUsageSlot.appendChild(renderUsageChip(inst));
-  // Rate-limit chip: left side of the bottom bar. Always visible; shows a
-  // muted "rl --" placeholder until the first rate_limit_event or OAuth data.
-  const rlInfo = getRateLimit(inst.id).info;
-  dom.tiRatelimitSlot.textContent = '';
-  const rlChip = renderRateLimitChip(rlInfo, accountUsage);
-  rlChip.addEventListener('click', (e) => {
-    e.stopPropagation();
-    toggleRateLimitPopover(rlChip);
-  });
-  dom.tiRatelimitSlot.hidden = false;
-  dom.tiRatelimitSlot.appendChild(rlChip);
+  dom.tiUsageSlot.appendChild(renderCombinedChip(inst));
   dom.modeSelect.value = inst.mode;
   dom.modeSelect.disabled = inst.status === 'turn' || inst.status === 'crashed' || inst.status === 'exited';
   dom.killBtn.textContent = inst.status === 'turn' ? '⏸ Interrupt' : '🛑 Terminate';
@@ -1683,73 +1689,98 @@ function updateActiveHeader() {
         : 'Send a message — Enter to send, Shift+Enter for newline';
 }
 
-// Build the `ctx N%` header chip for the given instance. Click toggles
-// the session-totals popover. When no turn has landed yet the chip
-// reads `ctx —` so it doesn't pop into existence after the first turn.
-function renderUsageChip(inst) {
+// Combined ctx + rl chip. ctx half is per-session; rl half reads from
+// globalRLTracker (account-wide) with accountUsage as a fallback source.
+// Color-graded by the worse of the two fractions so a near-limit rate-limit
+// turns the chip amber/red even when context usage is low.
+function renderCombinedChip(inst) {
+  // ── ctx half ──
   const usage = getUsage(inst.id);
-  const frac = usage.currentFillPct(inst.model);
-  const used = usage.currentContextSize();
-  const window = contextWindowFor(usage.effectiveModel(inst.model));
+  const ctxFrac = usage.currentFillPct(inst.model);
+  const ctxUsed = usage.currentContextSize();
+  const ctxWindow = contextWindowFor(usage.effectiveModel(inst.model));
+
+  let ctxText;
+  if (ctxUsed == null) {
+    ctxText = 'ctx —';
+  } else {
+    ctxText = `ctx ${formatPct(ctxFrac)} · ${formatTokens(ctxUsed)}/${formatTokens(ctxWindow)}`;
+  }
+
+  // ── rl half (global) — pure derivation via rlChipSegment ──
+  const { text: rlText, frac: rlFrac, isOverage: rlIsOverage } =
+    rlChipSegment(globalRLTracker.info, accountUsage);
+
+  // Worst-case color: chip turns amber/red based on whichever metric is higher.
+  const worstFrac = (ctxFrac != null || rlFrac != null)
+    ? Math.max(ctxFrac ?? 0, rlFrac ?? 0)
+    : null;
+
   const el = document.createElement('button');
   el.type = 'button';
-  el.className = `ih-chip ih-usage ${fillClass(frac)}`;
+  el.className = `ih-chip ih-combined ${fillClass(worstFrac)}`;
   el.setAttribute('aria-haspopup', 'dialog');
   el.setAttribute('aria-expanded', 'false');
-  if (used == null) {
-    el.textContent = 'ctx —';
-    el.title = 'Context usage will appear after the first turn ends.';
-  } else {
-    el.textContent = `ctx ${formatPct(frac)} · ${formatTokens(used)}/${formatTokens(window)}`;
-    el.title = `Last turn used ${used.toLocaleString()} of ${window.toLocaleString()} context tokens. Tap for session totals.`;
+  el.title = [
+    ctxUsed != null
+      ? `Context: ${ctxUsed.toLocaleString()}/${ctxWindow.toLocaleString()} tokens`
+      : 'Context usage appears after the first turn.',
+    rlFrac != null ? `Rate limit: ${Math.round(rlFrac * 100)}% used` : null,
+    rlIsOverage ? 'OVERAGE active' : null,
+    'Tap for details',
+  ].filter(Boolean).join(' · ');
+
+  el.textContent = `${ctxText} · ${rlText}`;
+  if (rlIsOverage) {
+    const badge = document.createElement('span');
+    badge.className = 'rl-overage-badge';
+    badge.textContent = 'OVERAGE';
+    el.appendChild(badge);
   }
+
   el.addEventListener('click', (e) => {
     e.stopPropagation();
-    toggleUsagePopover(el, inst);
+    toggleCombinedPopover(el, inst);
   });
   return el;
 }
 
-let openUsagePopover = null;
-function closeUsagePopover() {
-  if (!openUsagePopover) return;
-  const { node, anchor, dismiss } = openUsagePopover;
+let openCombinedPopover = null;
+function closeCombinedPopover() {
+  if (!openCombinedPopover) return;
+  const { node, anchor, dismiss } = openCombinedPopover;
   node.remove();
   anchor.setAttribute('aria-expanded', 'false');
   document.removeEventListener('pointerdown', dismiss, true);
   document.removeEventListener('keydown', dismiss, true);
-  openUsagePopover = null;
+  openCombinedPopover = null;
 }
-function toggleUsagePopover(anchor, inst) {
-  if (openUsagePopover && openUsagePopover.anchor === anchor) {
-    closeUsagePopover();
+function toggleCombinedPopover(anchor, inst) {
+  if (openCombinedPopover && openCombinedPopover.anchor === anchor) {
+    closeCombinedPopover();
     return;
   }
-  closeUsagePopover();
-  const node = buildUsagePopover(inst);
+  closeCombinedPopover();
+  const node = buildCombinedPopover(inst);
   document.body.appendChild(node);
-  // Position above the chip (popover lives in the bottom footer bar, so
-  // popping down would run off the viewport). Right-align so the panel
-  // doesn't run off mobile screens.
+  // Position above the chip — the bar is at the bottom of the viewport.
   const r = anchor.getBoundingClientRect();
   node.style.top = `${Math.round(r.top - node.offsetHeight - 6)}px`;
-  // Clamp left edge so the popover stays on-screen — anchor on the chip's
-  // right edge so the panel grows to the left instead of clipping off-screen.
   const desiredLeft = r.right - node.offsetWidth;
   const maxLeft = window.innerWidth - node.offsetWidth - 8;
   node.style.left = `${Math.max(8, Math.min(desiredLeft, maxLeft))}px`;
   anchor.setAttribute('aria-expanded', 'true');
   const dismiss = (ev) => {
     if (ev.type === 'keydown') {
-      if (ev.key === 'Escape') closeUsagePopover();
+      if (ev.key === 'Escape') closeCombinedPopover();
       return;
     }
     if (node.contains(ev.target) || anchor.contains(ev.target)) return;
-    closeUsagePopover();
+    closeCombinedPopover();
   };
   document.addEventListener('pointerdown', dismiss, true);
   document.addEventListener('keydown', dismiss, true);
-  openUsagePopover = { node, anchor, dismiss };
+  openCombinedPopover = { node, anchor, dismiss };
 }
 
 // Header ⋮ overflow menu — currently hosts the Debug button so it doesn't
@@ -1814,69 +1845,23 @@ function toggleSidebarOverflow() {
 }
 dom.sidebarOverflowToggle.addEventListener('click', toggleSidebarOverflow);
 
-function buildUsagePopover(inst) {
-  const usage = getUsage(inst.id);
-  const c = usage.cum;
-  const window = contextWindowFor(usage.effectiveModel(inst.model));
-  const modelLabel = usage.effectiveModel(inst.model) ?? '(default)';
-  const totalCacheIn = c.cacheRead + c.cacheCreation;
-  const totalIn = c.inputTokens + totalCacheIn;
-  const cacheHit = totalIn > 0 ? c.cacheRead / totalIn : 0;
-  const node = document.createElement('div');
-  node.className = 'ih-usage-popover';
-  node.setAttribute('role', 'dialog');
-  node.setAttribute('aria-label', 'Session usage totals');
-  const row = (label, value) => {
-    const r = document.createElement('div');
-    r.className = 'ih-usage-row';
-    const k = document.createElement('span'); k.className = 'ih-usage-k'; k.textContent = label;
-    const v = document.createElement('span'); v.className = 'ih-usage-v'; v.textContent = value;
-    r.appendChild(k); r.appendChild(v);
-    return r;
-  };
-  const header = document.createElement('div');
-  header.className = 'ih-usage-popover-header';
-  header.textContent = 'Session totals';
-  node.appendChild(header);
-  const meta = document.createElement('div');
-  meta.className = 'ih-usage-meta';
-  meta.textContent = `${modelLabel} · ${formatTokens(window)} context`;
-  node.appendChild(meta);
-  if (c.turns === 0) {
-    const empty = document.createElement('div');
-    empty.className = 'ih-usage-empty-msg';
-    empty.textContent = 'No turns have completed yet.';
-    node.appendChild(empty);
-    return node;
-  }
-  node.appendChild(row('Turns', String(c.turns)));
-  node.appendChild(row('Duration', formatDuration(c.durationMs)));
-  node.appendChild(row('Cost', `$${c.cost.toFixed(4)}`));
-  node.appendChild(row('Input (uncached)', formatTokens(c.inputTokens)));
-  node.appendChild(row('Output', formatTokens(c.outputTokens)));
-  node.appendChild(row('Cache reads', `${formatTokens(c.cacheRead)} (${formatPct(cacheHit)} hit)`));
-  node.appendChild(row('Cache creation', formatTokens(c.cacheCreation)));
-  return node;
-}
-
-// ── Rate-limit detail popover ────────────────────────────────────────────────
-// Mirrors closeUsagePopover / toggleUsagePopover / buildUsagePopover exactly.
-
+// Combined popover: "Session totals" section above, "Usage limits" section
+// below. ctx data is per-session; usage-limit data is account-wide.
 const OAUTH_BUCKET_LABELS = {
-  five_hour:       '5-hour',
-  seven_day:       '7-day',
+  five_hour:        '5-hour',
+  seven_day:        '7-day',
   seven_day_sonnet: '7-day (Sonnet)',
-  seven_day_opus:  '7-day (Opus)',
+  seven_day_opus:   '7-day (Opus)',
 };
 
-function buildRateLimitPopover() {
+function buildCombinedPopover(inst) {
   const node = document.createElement('div');
   node.className = 'ih-usage-popover';
   node.setAttribute('role', 'dialog');
-  node.setAttribute('aria-label', 'Usage limits');
+  node.setAttribute('aria-label', 'Usage details');
+
   const row = (label, value, valueClass) => {
-    const r = document.createElement('div');
-    r.className = 'ih-usage-row';
+    const r = document.createElement('div'); r.className = 'ih-usage-row';
     const k = document.createElement('span'); k.className = 'ih-usage-k'; k.textContent = label;
     const v = document.createElement('span'); v.className = 'ih-usage-v';
     if (valueClass) v.classList.add(valueClass);
@@ -1884,79 +1869,71 @@ function buildRateLimitPopover() {
     r.appendChild(k); r.appendChild(v);
     return r;
   };
-  const header = document.createElement('div');
-  header.className = 'ih-usage-popover-header';
-  header.textContent = 'Usage limits';
-  node.appendChild(header);
+  const section = (title) => {
+    const h = document.createElement('div');
+    h.className = 'ih-usage-popover-header';
+    h.textContent = title;
+    return h;
+  };
 
+  // ── Session totals ──
+  node.appendChild(section('Session totals'));
+  const usage = getUsage(inst.id);
+  const c = usage.cum;
+  const ctxWindow = contextWindowFor(usage.effectiveModel(inst.model));
+  const modelLabel = usage.effectiveModel(inst.model) ?? '(default)';
+  const meta = document.createElement('div');
+  meta.className = 'ih-usage-meta';
+  meta.textContent = `${modelLabel} · ${formatTokens(ctxWindow)} context`;
+  node.appendChild(meta);
+  if (c.turns === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'ih-usage-empty-msg';
+    empty.textContent = 'No turns have completed yet.';
+    node.appendChild(empty);
+  } else {
+    const totalCacheIn = c.cacheRead + c.cacheCreation;
+    const totalIn = c.inputTokens + totalCacheIn;
+    const cacheHit = totalIn > 0 ? c.cacheRead / totalIn : 0;
+    node.appendChild(row('Turns', String(c.turns)));
+    node.appendChild(row('Duration', formatDuration(c.durationMs)));
+    node.appendChild(row('Cost', `$${c.cost.toFixed(4)}`));
+    node.appendChild(row('Input (uncached)', formatTokens(c.inputTokens)));
+    node.appendChild(row('Output', formatTokens(c.outputTokens)));
+    node.appendChild(row('Cache reads', `${formatTokens(c.cacheRead)} (${formatPct(cacheHit)} hit)`));
+    node.appendChild(row('Cache creation', formatTokens(c.cacheCreation)));
+  }
+
+  // ── Usage limits ──
+  node.appendChild(section('Usage limits'));
   if (!accountUsage) {
     const empty = document.createElement('div');
     empty.className = 'ih-usage-empty-msg';
     empty.textContent = 'Usage data unavailable.';
     node.appendChild(empty);
-    return node;
-  }
-
-  for (const key of ['five_hour', 'seven_day', 'seven_day_sonnet', 'seven_day_opus']) {
-    const bucket = accountUsage[key];
-    if (!bucket) continue;
-    const label = OAUTH_BUCKET_LABELS[key] ?? key;
-    const util = typeof bucket.utilization === 'number' ? bucket.utilization / 100 : null;
-    const reset = bucket.resets_at
-      ? formatResetTime(new Date(bucket.resets_at).getTime() / 1000)
-      : null;
-    const utilStr = util != null ? `${Math.round(util * 100)}%` : '—';
-    const resetStr = reset ? ` · ${reset}` : '';
-    const frac = util;  // normalized 0-1 (API returns 0-100)
-    node.appendChild(row(label, utilStr + resetStr, fillClass(frac)));
-  }
-
-  const ex = accountUsage.extra_usage;
-  if (ex?.is_enabled) {
-    const used = typeof ex.used_credits === 'number' ? (ex.used_credits / 100).toFixed(2) : '?';
-    const limit = typeof ex.monthly_limit === 'number' ? (ex.monthly_limit / 100).toFixed(2) : '?';
-    const currency = ex.currency ?? '';
-    node.appendChild(row('Extra credits', `${used} / ${limit} ${currency}`.trim()));
+  } else {
+    for (const key of ['five_hour', 'seven_day', 'seven_day_sonnet', 'seven_day_opus']) {
+      const bucket = accountUsage[key];
+      if (!bucket) continue;
+      const label = OAUTH_BUCKET_LABELS[key] ?? key;
+      const util = typeof bucket.utilization === 'number' ? bucket.utilization / 100 : null;
+      const reset = bucket.resets_at
+        ? formatResetTime(new Date(bucket.resets_at).getTime() / 1000)
+        : null;
+      const utilStr = util != null ? `${Math.round(util * 100)}%` : '—';
+      const resetStr = reset ? ` · ${reset}` : '';
+      node.appendChild(row(label, utilStr + resetStr, fillClass(util)));
+    }
+    const ex = accountUsage.extra_usage;
+    if (ex?.is_enabled) {
+      const used = typeof ex.used_credits === 'number' ? (ex.used_credits / 100).toFixed(2) : '?';
+      const limit = typeof ex.monthly_limit === 'number' ? (ex.monthly_limit / 100).toFixed(2) : '?';
+      const currency = ex.currency ?? '';
+      node.appendChild(row('Extra credits', `${used} / ${limit} ${currency}`.trim()));
+    }
   }
 
   return node;
-}
-
-let openRateLimitPopover = null;
-function closeRateLimitPopover() {
-  if (!openRateLimitPopover) return;
-  const { node, anchor, dismiss } = openRateLimitPopover;
-  node.remove();
-  anchor.setAttribute('aria-expanded', 'false');
-  document.removeEventListener('pointerdown', dismiss, true);
-  document.removeEventListener('keydown', dismiss, true);
-  openRateLimitPopover = null;
-}
-function toggleRateLimitPopover(anchor) {
-  if (openRateLimitPopover && openRateLimitPopover.anchor === anchor) {
-    closeRateLimitPopover();
-    return;
-  }
-  closeRateLimitPopover();
-  const node = buildRateLimitPopover();
-  document.body.appendChild(node);
-  const r = anchor.getBoundingClientRect();
-  node.style.top = `${Math.round(r.top - node.offsetHeight - 6)}px`;
-  const desiredLeft = r.right - node.offsetWidth;
-  const maxLeft = window.innerWidth - node.offsetWidth - 8;
-  node.style.left = `${Math.max(8, Math.min(desiredLeft, maxLeft))}px`;
-  anchor.setAttribute('aria-expanded', 'true');
-  const dismiss = (ev) => {
-    if (ev.type === 'keydown') {
-      if (ev.key === 'Escape') closeRateLimitPopover();
-      return;
-    }
-    if (node.contains(ev.target) || anchor.contains(ev.target)) return;
-    closeRateLimitPopover();
-  };
-  document.addEventListener('pointerdown', dismiss, true);
-  document.addEventListener('keydown', dismiss, true);
-  openRateLimitPopover = { node, anchor, dismiss };
 }
 
 bus.addEventListener('snapshot', (e) => {
@@ -1971,7 +1948,8 @@ bus.addEventListener('snapshot', (e) => {
   tracker.reset();
   const usage = getUsage(m.id);
   usage.reset();
-  getRateLimit(m.id).reset();
+  // Rate limits are account-wide — do NOT reset globalRLTracker per snapshot.
+  // Replayed rate_limit_events still update it so the chip reflects history.
   const isActive = m.id === state.activeId;
   if (isActive) conversation.clear();
   if (isActive) conversation._replayMode = true;
@@ -1979,7 +1957,7 @@ bus.addEventListener('snapshot', (e) => {
     const prevCount = tracker.completedBatches.length;
     tracker.apply(ev);
     usage.apply(ev);
-    getRateLimit(m.id).apply(ev);
+    globalRLTracker.apply(ev);
     if (isActive) {
       conversation.apply(ev);
       if (tracker.completedBatches.length > prevCount) {
@@ -2024,7 +2002,7 @@ bus.addEventListener('reset_snapshot', (e) => {
   tracker.reset();
   const usage = getUsage(m.id);
   usage.reset();
-  getRateLimit(m.id).reset();
+  // Rate limits are account-wide — do NOT reset globalRLTracker on rewind.
   const isActive = m.id === state.activeId;
   if (isActive) { conversation.reset(); lazyReset(); }
   if (isActive) conversation._replayMode = true;
@@ -2032,7 +2010,7 @@ bus.addEventListener('reset_snapshot', (e) => {
     const prevCount = tracker.completedBatches.length;
     tracker.apply(ev);
     usage.apply(ev);
-    getRateLimit(m.id).apply(ev);
+    globalRLTracker.apply(ev);
     if (isActive) {
       conversation.apply(ev);
       if (tracker.completedBatches.length > prevCount) {
@@ -2060,7 +2038,7 @@ bus.addEventListener('event', (e) => {
   const prevCount = tracker.completedBatches.length;
   tracker.apply(m.ev);
   getUsage(m.id).apply(m.ev);
-  getRateLimit(m.id).apply(m.ev);
+  globalRLTracker.apply(m.ev);
   if (m.id !== state.activeId) return;
   conversation.apply(m.ev);
   // When the tracker records a newly-completed batch, append a permanent
