@@ -151,7 +151,7 @@ function render(data) {
       label.textContent = day.date;
       const bar = document.createElement('div');
       bar.className = 'costs-bar';
-      bar.style.setProperty('--costs-bar-pct', `${Math.round((day.cost_usd / maxDay) * 100)}%`);
+      bar.style.setProperty('--costs-bar-pct', maxDay > 0 ? `${Math.round((day.cost_usd / maxDay) * 100)}%` : '0%');
       const val = document.createElement('span');
       val.className = 'costs-bar-val';
       val.textContent = fmtExact(day.cost_usd);
