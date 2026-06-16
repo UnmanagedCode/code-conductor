@@ -1,0 +1,17 @@
+{
+  "events": [
+    { "type": "system", "subtype": "init", "session_id": "$SID", "cwd": "$CWD", "model": "claude-sonnet-4-6", "permissionMode": "$MODE" }
+  ],
+  "turns": [
+    {
+      "on": { "type": "prompt" },
+      "emit": []
+    },
+    {
+      "on": { "type": "prompt" },
+      "emit": [
+        { "type": "result", "subtype": "success", "stop_reason": "end_turn", "duration_ms": 1, "total_cost_usd": 0, "is_error": false, "usage": { "input_tokens": 1, "output_tokens": 1 } }
+      ]
+    }
+  ]
+}

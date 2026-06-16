@@ -1,11 +1,11 @@
-import { test } from 'node:test';
+import { test, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { bootServer, api, waitFor } from './helpers.mjs';
+import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
 import { encodeCwd, orchStoreRoot } from '../src/projects.js';
 import { SOFT_INTERRUPT_MARKER } from '../src/parser.js';
 import {
@@ -27,74 +27,91 @@ import { ensureConductProject, CONDUCT_PROJECT_NAME } from '../src/conduct.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BASIC = path.join(__dirname, 'fixtures', 'scenario-basic.json');
 const NO_TURN = path.join(__dirname, 'fixtures', 'scenario-no-turn.json');
+// Two-prompt scenario: first prompt keeps instance in 'turn' (empty emit),
+// second prompt (the windDown user message) emits a result so drainToManifest's
+// waitAllIdle loop can resolve without looping forever.
+const DRAIN = path.join(__dirname, 'fixtures', 'scenario-drain.json');
+
+let ctx, baseUrl, instances, home, projectsRoot, claudeProjectsRoot;
+
+before(async () => {
+  ctx = await bootServer({ scenarioPath: BASIC });
+  ({ baseUrl, instances } = ctx);
+});
+after(async () => { await ctx.close(); });
+beforeEach(async () => {
+  ({ home, projectsRoot, claudeProjectsRoot } = await freshProjectsRoot());
+  ctx.projectsRoot = projectsRoot;
+  ctx.claudeProjectsRoot = claudeProjectsRoot;
+});
+afterEach(async () => {
+  await instances.shutdown();
+  instances._idleSubscribers?.clear();
+  await rmrf(home);
+});
 
 // --- 1. manifest round-trip ------------------------------------------------
 
 test('resume manifest write/read/clear round-trip + corrupt handling', async () => {
-  const { close } = await bootServer({ scenarioPath: BASIC });
-  try {
-    await fs.mkdir(orchStoreRoot(), { recursive: true });
-    // Absent → empty.
-    assert.deepEqual(readResumeManifest({ log: { warn() {} } }).instances, []);
+  await fs.mkdir(orchStoreRoot(), { recursive: true });
+  // Absent → empty.
+  assert.deepEqual(readResumeManifest({ log: { warn() {} } }).instances, []);
 
-    const entries = [{ project: 'p', sessionId: 'sid-1', cwd: '/c', mode: 'plan', group: 'other' }];
-    writeResumeManifest(entries);
-    await fs.access(resumeManifestPath());
-    assert.deepEqual(readResumeManifest().instances, entries);
+  const entries = [{ project: 'p', sessionId: 'sid-1', cwd: '/c', mode: 'plan', group: 'other' }];
+  writeResumeManifest(entries);
+  await fs.access(resumeManifestPath());
+  assert.deepEqual(readResumeManifest().instances, entries);
 
-    // Corrupt → empty + file removed.
-    await fs.writeFile(resumeManifestPath(), 'not json{');
-    assert.deepEqual(readResumeManifest({ log: { warn() {} } }).instances, []);
-    await assert.rejects(() => fs.access(resumeManifestPath()));
+  // Corrupt → empty + file removed.
+  await fs.writeFile(resumeManifestPath(), 'not json{');
+  assert.deepEqual(readResumeManifest({ log: { warn() {} } }).instances, []);
+  await assert.rejects(() => fs.access(resumeManifestPath()));
 
-    // Empty list is a no-op write.
-    writeResumeManifest([]);
-    await assert.rejects(() => fs.access(resumeManifestPath()));
+  // Empty list is a no-op write.
+  writeResumeManifest([]);
+  await assert.rejects(() => fs.access(resumeManifestPath()));
 
-    writeResumeManifest(entries);
-    clearResumeManifest();
-    await assert.rejects(() => fs.access(resumeManifestPath()));
-  } finally { await close(); }
+  writeResumeManifest(entries);
+  clearResumeManifest();
+  await assert.rejects(() => fs.access(resumeManifestPath()));
 });
 
 // --- 2. shutdownForResumeSync preserves temp jsonl -------------------------
 
 test('shutdownForResumeSync SIGKILLs subprocesses but preserves temp + normal jsonl', async () => {
-  const { baseUrl, instances, claudeProjectsRoot, close } = await bootServer({ scenarioPath: BASIC });
-  try {
-    await api(baseUrl, 'POST', '/api/projects', { name: 'resumekeep' });
-    const tempRes = await api(baseUrl, 'POST', '/api/instances', { project: 'resumekeep', temp: true });
-    const tempInst = instances.get(tempRes.body.id);
-    await waitFor(() => tempInst.status === 'idle' && tempInst.sessionId);
-    const normalRes = await api(baseUrl, 'POST', '/api/instances', { project: 'resumekeep' });
-    const normalInst = instances.get(normalRes.body.id);
-    await waitFor(() => normalInst.status === 'idle' && normalInst.sessionId);
+  await api(baseUrl, 'POST', '/api/projects', { name: 'resumekeep' });
+  const tempRes = await api(baseUrl, 'POST', '/api/instances', { project: 'resumekeep', temp: true });
+  const tempInst = instances.get(tempRes.body.id);
+  await waitFor(() => tempInst.status === 'idle' && tempInst.sessionId);
+  const normalRes = await api(baseUrl, 'POST', '/api/instances', { project: 'resumekeep' });
+  const normalInst = instances.get(normalRes.body.id);
+  await waitFor(() => normalInst.status === 'idle' && normalInst.sessionId);
 
-    const dir = path.join(claudeProjectsRoot, encodeCwd(tempInst.cwd));
-    await fs.mkdir(dir, { recursive: true });
-    const tempJsonl = path.join(dir, `${tempInst.sessionId}.jsonl`);
-    const normalJsonl = path.join(dir, `${normalInst.sessionId}.jsonl`);
-    await fs.writeFile(tempJsonl, '{"type":"user","uuid":"u1"}\n');
-    await fs.writeFile(normalJsonl, '{"type":"user","uuid":"u2"}\n');
+  const dir = path.join(claudeProjectsRoot, encodeCwd(tempInst.cwd));
+  await fs.mkdir(dir, { recursive: true });
+  const tempJsonl = path.join(dir, `${tempInst.sessionId}.jsonl`);
+  const normalJsonl = path.join(dir, `${normalInst.sessionId}.jsonl`);
+  await fs.writeFile(tempJsonl, '{"type":"user","uuid":"u1"}\n');
+  await fs.writeFile(normalJsonl, '{"type":"user","uuid":"u2"}\n');
 
-    instances.shutdownForResumeSync();
-    // Wait for the async _handleExit to fire (clears proc) — the
-    // _suppressTempDelete guard must keep it from deleting the jsonl. Poll the
-    // real signal instead of a fixed sleep.
-    await waitFor(() => tempInst.proc === null && normalInst.proc === null, { timeout: 20000 });
+  instances.shutdownForResumeSync();
+  // Wait for the async _handleExit to fire (clears proc) — the
+  // _suppressTempDelete guard must keep it from deleting the jsonl. Poll the
+  // real signal instead of a fixed sleep.
+  await waitFor(() => tempInst.proc === null && normalInst.proc === null, { timeout: 20000 });
 
-    await fs.access(tempJsonl);   // temp jsonl PRESERVED (contrast shutdownTempSync)
-    await fs.access(normalJsonl);
-  } finally { await close(); }
+  await fs.access(tempJsonl);   // temp jsonl PRESERVED (contrast shutdownTempSync)
+  await fs.access(normalJsonl);
 });
 
 // --- 3. windDown semantics -------------------------------------------------
 
 test('windDown is a no-op when idle and injects the hidden marker mid-turn', async () => {
   const transcript = path.join(os.tmpdir(), `cc-winddown-${randomUUID()}.log`);
-  const prev = process.env.FAKE_CLAUDE_TRANSCRIPT;
+  const prevTranscript = process.env.FAKE_CLAUDE_TRANSCRIPT;
+  const prevScenario = process.env.FAKE_CLAUDE_SCENARIO;
   process.env.FAKE_CLAUDE_TRANSCRIPT = transcript;
-  const { baseUrl, instances, close } = await bootServer({ scenarioPath: NO_TURN });
+  process.env.FAKE_CLAUDE_SCENARIO = NO_TURN;
   try {
     await api(baseUrl, 'POST', '/api/projects', { name: 'winddown' });
     const res = await api(baseUrl, 'POST', '/api/instances', { project: 'winddown' });
@@ -119,9 +136,10 @@ test('windDown is a no-op when idle and injects the hidden marker mid-turn', asy
     assert.ok(dump.includes(SOFT_INTERRUPT_MARKER), 'marker injected to stdin');
     assert.ok(dump.includes('about to restart'), 'wind-down text injected');
   } finally {
-    await close();
-    if (prev === undefined) delete process.env.FAKE_CLAUDE_TRANSCRIPT;
-    else process.env.FAKE_CLAUDE_TRANSCRIPT = prev;
+    if (prevTranscript === undefined) delete process.env.FAKE_CLAUDE_TRANSCRIPT;
+    else process.env.FAKE_CLAUDE_TRANSCRIPT = prevTranscript;
+    if (prevScenario === undefined) delete process.env.FAKE_CLAUDE_SCENARIO;
+    else process.env.FAKE_CLAUDE_SCENARIO = prevScenario;
     await fs.rm(transcript, { force: true });
   }
 });
@@ -129,32 +147,28 @@ test('windDown is a no-op when idle and injects the hidden marker mid-turn', asy
 // --- 4. conductedWorkersOf -------------------------------------------------
 
 test('conductedWorkersOf enumerates a conductor\'s live workers', async () => {
-  const { baseUrl, instances, close } = await bootServer({ scenarioPath: BASIC });
-  try {
-    await api(baseUrl, 'POST', '/api/projects', { name: 'cwproj' });
-    const conductor = await instances.create({ project: 'cwproj' });
-    await waitFor(() => conductor.sessionId);
-    const w1 = await instances.create({ project: 'cwproj', callerInstanceId: conductor.id, conducted: true });
-    const w2 = await instances.create({ project: 'cwproj', callerInstanceId: conductor.id, conducted: true });
-    await waitFor(() => w1.sessionId && w2.sessionId);
+  await api(baseUrl, 'POST', '/api/projects', { name: 'cwproj' });
+  const conductor = await instances.create({ project: 'cwproj' });
+  await waitFor(() => conductor.sessionId);
+  const w1 = await instances.create({ project: 'cwproj', callerInstanceId: conductor.id, conducted: true });
+  const w2 = await instances.create({ project: 'cwproj', callerInstanceId: conductor.id, conducted: true });
+  await waitFor(() => w1.sessionId && w2.sessionId);
 
-    const workers = instances.conductedWorkersOf(conductor.id);
-    assert.equal(workers.length, 2);
-    const sids = workers.map(w => w.sessionId).sort();
-    assert.deepEqual(sids, [w1.sessionId, w2.sessionId].sort());
-    assert.ok(workers.every(w => w.worktreeName === null));
-    assert.ok(workers.every(w => w.project === 'cwproj'), 'each worker carries its project');
-    assert.equal(instances.conductedWorkersOf('nobody').length, 0);
-  } finally { await close(); }
+  const workers = instances.conductedWorkersOf(conductor.id);
+  assert.equal(workers.length, 2);
+  const sids = workers.map(w => w.sessionId).sort();
+  assert.deepEqual(sids, [w1.sessionId, w2.sessionId].sort());
+  assert.ok(workers.every(w => w.worktreeName === null));
+  assert.ok(workers.every(w => w.project === 'cwproj'), 'each worker carries its project');
+  assert.equal(instances.conductedWorkersOf('nobody').length, 0);
 });
 
 // --- 5+6. boot restore: three-group split + conductor worker injection -----
 
 test('restoreFromResumeManifest resumes conductors + others, skips workers, injects worker list', async () => {
   const transcript = path.join(os.tmpdir(), `cc-restore-${randomUUID()}.log`);
-  const prev = process.env.FAKE_CLAUDE_TRANSCRIPT;
+  const prevTranscript = process.env.FAKE_CLAUDE_TRANSCRIPT;
   process.env.FAKE_CLAUDE_TRANSCRIPT = transcript;
-  const { baseUrl, instances, projectsRoot, claudeProjectsRoot, close } = await bootServer({ scenarioPath: BASIC });
   try {
     await api(baseUrl, 'POST', '/api/projects', { name: 'realproj' });
 
@@ -219,9 +233,8 @@ test('restoreFromResumeManifest resumes conductors + others, skips workers, inje
     assert.ok(dump.includes('project `realproj`'), 'conductor prompt embeds worker project');
     assert.ok(dump.includes('resume conducting your workers'), 'conductor resume text injected');
   } finally {
-    await close();
-    if (prev === undefined) delete process.env.FAKE_CLAUDE_TRANSCRIPT;
-    else process.env.FAKE_CLAUDE_TRANSCRIPT = prev;
+    if (prevTranscript === undefined) delete process.env.FAKE_CLAUDE_TRANSCRIPT;
+    else process.env.FAKE_CLAUDE_TRANSCRIPT = prevTranscript;
     await fs.rm(transcript, { force: true });
   }
 });
@@ -239,7 +252,8 @@ test('buildConductorResumeText lists each worker sessionId + worktree', () => {
 // --- 7. drain force-timeout ------------------------------------------------
 
 test('drainToManifest force-interrupts stragglers past the grace and still writes the manifest', async () => {
-  const { baseUrl, instances, close } = await bootServer({ scenarioPath: NO_TURN });
+  const prevScenario = process.env.FAKE_CLAUDE_SCENARIO;
+  process.env.FAKE_CLAUDE_SCENARIO = DRAIN;
   try {
     await api(baseUrl, 'POST', '/api/projects', { name: 'drainproj' });
     const res = await api(baseUrl, 'POST', '/api/instances', { project: 'drainproj' });
@@ -263,7 +277,10 @@ test('drainToManifest force-interrupts stragglers past the grace and still write
     // returns. Wait on that real signal rather than asserting synchronously.
     await waitFor(() => inst.proc === null, { timeout: 20000 });
     clearResumeManifest();
-  } finally { await close(); }
+  } finally {
+    if (prevScenario === undefined) delete process.env.FAKE_CLAUDE_SCENARIO;
+    else process.env.FAKE_CLAUDE_SCENARIO = prevScenario;
+  }
 });
 
 // --- 8. manifest excludes non-live (exited) instances ----------------------
@@ -271,7 +288,8 @@ test('drainToManifest force-interrupts stragglers past the grace and still write
 // --- 9. wasBusy captured correctly at drain time ---------------------------
 
 test('drainToManifest sets wasBusy:true for mid-turn and wasBusy:false for idle', async () => {
-  const { baseUrl, instances, close } = await bootServer({ scenarioPath: NO_TURN });
+  const prevScenario = process.env.FAKE_CLAUDE_SCENARIO;
+  process.env.FAKE_CLAUDE_SCENARIO = DRAIN;
   try {
     await api(baseUrl, 'POST', '/api/projects', { name: 'busycheck' });
 
@@ -293,16 +311,18 @@ test('drainToManifest sets wasBusy:true for mid-turn and wasBusy:false for idle'
     assert.equal(byId[idleInst.sessionId].wasBusy, false, 'idle session → wasBusy:false');
     assert.equal(byId[busyInst.sessionId].wasBusy, true,  'busy session → wasBusy:true');
     clearResumeManifest();
-  } finally { await close(); }
+  } finally {
+    if (prevScenario === undefined) delete process.env.FAKE_CLAUDE_SCENARIO;
+    else process.env.FAKE_CLAUDE_SCENARIO = prevScenario;
+  }
 });
 
 // --- 10. idle sessions resurrected silently, busy sessions re-prompted -----
 
 test('restoreFromResumeManifest prompts busy sessions but not idle sessions', async () => {
   const transcript = path.join(os.tmpdir(), `cc-wasBusy-${randomUUID()}.log`);
-  const prev = process.env.FAKE_CLAUDE_TRANSCRIPT;
+  const prevTranscript = process.env.FAKE_CLAUDE_TRANSCRIPT;
   process.env.FAKE_CLAUDE_TRANSCRIPT = transcript;
-  const { baseUrl, instances, projectsRoot, claudeProjectsRoot, close } = await bootServer({ scenarioPath: BASIC });
   try {
     await api(baseUrl, 'POST', '/api/projects', { name: 'busygate' });
     const busySid = randomUUID();
@@ -339,9 +359,8 @@ test('restoreFromResumeManifest prompts busy sessions but not idle sessions', as
     const promptCount = (dump.match(new RegExp(RESUME_TEXT.slice(0, 30).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')) || []).length;
     assert.equal(promptCount, 1, 'exactly one resume prompt sent (to the busy session)');
   } finally {
-    await close();
-    if (prev === undefined) delete process.env.FAKE_CLAUDE_TRANSCRIPT;
-    else process.env.FAKE_CLAUDE_TRANSCRIPT = prev;
+    if (prevTranscript === undefined) delete process.env.FAKE_CLAUDE_TRANSCRIPT;
+    else process.env.FAKE_CLAUDE_TRANSCRIPT = prevTranscript;
     await fs.rm(transcript, { force: true });
   }
 });
@@ -349,27 +368,24 @@ test('restoreFromResumeManifest prompts busy sessions but not idle sessions', as
 // --- 8. manifest excludes non-live (exited) instances ----------------------
 
 test('drainToManifest excludes exited instances still retained in byId', async () => {
-  const { baseUrl, instances, close } = await bootServer({ scenarioPath: BASIC });
-  try {
-    await api(baseUrl, 'POST', '/api/projects', { name: 'liveonly' });
-    const deadRes = await api(baseUrl, 'POST', '/api/instances', { project: 'liveonly' });
-    const dead = instances.get(deadRes.body.id);
-    await waitFor(() => dead.status === 'idle' && dead.sessionId);
-    const liveRes = await api(baseUrl, 'POST', '/api/instances', { project: 'liveonly' });
-    const live = instances.get(liveRes.body.id);
-    await waitFor(() => live.status === 'idle' && live.sessionId);
+  await api(baseUrl, 'POST', '/api/projects', { name: 'liveonly' });
+  const deadRes = await api(baseUrl, 'POST', '/api/instances', { project: 'liveonly' });
+  const dead = instances.get(deadRes.body.id);
+  await waitFor(() => dead.status === 'idle' && dead.sessionId);
+  const liveRes = await api(baseUrl, 'POST', '/api/instances', { project: 'liveonly' });
+  const live = instances.get(liveRes.body.id);
+  await waitFor(() => live.status === 'idle' && live.sessionId);
 
-    // Kill one (non-temp) instance: proc becomes null but it stays in byId.
-    await dead.kill({ graceMs: 50 });
-    assert.equal(dead.proc, null);
-    assert.ok(instances.byId.has(dead.id), 'exited non-temp instance retained in byId');
+  // Kill one (non-temp) instance: proc becomes null but it stays in byId.
+  await dead.kill({ graceMs: 50 });
+  assert.equal(dead.proc, null);
+  assert.ok(instances.byId.has(dead.id), 'exited non-temp instance retained in byId');
 
-    const entries = await drainToManifest({ server: null, wss: null, instances, log: { warn() {}, log() {}, error() {} }, graceMs: 100 });
-    const sids = entries.map(e => e.sessionId);
-    assert.ok(sids.includes(live.sessionId), 'live instance included');
-    assert.ok(!sids.includes(dead.sessionId), 'exited instance excluded');
-    clearResumeManifest();
-  } finally { await close(); }
+  const entries = await drainToManifest({ server: null, wss: null, instances, log: { warn() {}, log() {}, error() {} }, graceMs: 100 });
+  const sids = entries.map(e => e.sessionId);
+  assert.ok(sids.includes(live.sessionId), 'live instance included');
+  assert.ok(!sids.includes(dead.sessionId), 'exited instance excluded');
+  clearResumeManifest();
 });
 
 // --- 11. a parked (idle, waiting-on-worker) conductor is treated as busy ----
@@ -381,9 +397,10 @@ test('drainToManifest excludes exited instances still retained in byId', async (
 
 test('drainToManifest: idle conductor parked on a subscription is wasBusy:true; idle-no-sub stays silent; windDown is mid-turn-only', async () => {
   const transcript = path.join(os.tmpdir(), `cc-parked-${randomUUID()}.log`);
-  const prev = process.env.FAKE_CLAUDE_TRANSCRIPT;
+  const prevTranscript = process.env.FAKE_CLAUDE_TRANSCRIPT;
+  const prevScenario = process.env.FAKE_CLAUDE_SCENARIO;
   process.env.FAKE_CLAUDE_TRANSCRIPT = transcript;
-  const { baseUrl, instances, close } = await bootServer({ scenarioPath: NO_TURN });
+  process.env.FAKE_CLAUDE_SCENARIO = DRAIN;
   try {
     await ensureConductProject();
     await api(baseUrl, 'POST', '/api/projects', { name: 'workproj' });
@@ -403,11 +420,21 @@ test('drainToManifest: idle conductor parked on a subscription is wasBusy:true; 
     assert.equal(instances.isIdleCaller(parked.sessionId), true, 'parked conductor is an idle caller');
     assert.equal(instances.isIdleCaller(idleNoSub.sessionId), false, 'idle-no-sub conductor is not a caller');
 
-    // Drive only `midTurn` into a turn (NO_TURN scenario keeps it open).
+    // Drive only `midTurn` into a turn (DRAIN scenario keeps it open until windDown).
     await midTurn.prompt('go');
     await waitFor(() => midTurn.status === 'turn');
 
+    // Capture windDown invocation via status event: drainToManifest's step 2 calls
+    // windDown() which sets interrupting=true and emits 'status'. Step 3 then waits
+    // for the instance to go idle (result event from the DRAIN scenario's second
+    // turn), which transitions status away from 'turn' and resets interrupting=false
+    // via _setStatus(). We must capture the flag before that reset.
+    let midTurnWoundDown = false;
+    const captureWindDown = (s) => { if (s.interrupting) midTurnWoundDown = true; };
+    midTurn.on('status', captureWindDown);
+
     const entries = await drainToManifest({ server: null, wss: null, instances, log: { warn() {}, log() {}, error() {} }, graceMs: 200 });
+    midTurn.off('status', captureWindDown);
     const byId = Object.fromEntries(entries.map(e => [e.sessionId, e]));
 
     // wasBusy (the predicate Edit 1 widened): mid-turn OR parked ⇒ true.
@@ -418,7 +445,7 @@ test('drainToManifest: idle conductor parked on a subscription is wasBusy:true; 
     assert.equal(byId[worker.sessionId].wasBusy,    false, 'idle worker with no outgoing subscription → wasBusy:false');
 
     // Shutdown side (Bug 1, unchanged): windDown fires ONLY for the mid-turn one.
-    assert.equal(midTurn.interrupting,   true,  'mid-turn conductor wound down');
+    assert.equal(midTurnWoundDown,        true,  'mid-turn conductor wound down');
     assert.equal(parked.interrupting,    false, 'idle parked conductor NOT wound down');
     assert.equal(idleNoSub.interrupting, false, 'idle conductor NOT wound down');
     assert.equal(worker.interrupting,    false, 'idle worker NOT wound down');
@@ -435,9 +462,10 @@ test('drainToManifest: idle conductor parked on a subscription is wasBusy:true; 
 
     clearResumeManifest();
   } finally {
-    await close();
-    if (prev === undefined) delete process.env.FAKE_CLAUDE_TRANSCRIPT;
-    else process.env.FAKE_CLAUDE_TRANSCRIPT = prev;
+    if (prevTranscript === undefined) delete process.env.FAKE_CLAUDE_TRANSCRIPT;
+    else process.env.FAKE_CLAUDE_TRANSCRIPT = prevTranscript;
+    if (prevScenario === undefined) delete process.env.FAKE_CLAUDE_SCENARIO;
+    else process.env.FAKE_CLAUDE_SCENARIO = prevScenario;
     await fs.rm(transcript, { force: true });
   }
 });
