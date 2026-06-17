@@ -381,11 +381,11 @@ function renderBashCommand(input) {
   });
   wrap.appendChild(btn);
 
-  wrap.appendChild(el('pre', { class: 'bash-cmd' }, input.command));
-
   if (typeof input.description === 'string' && input.description.trim()) {
     wrap.appendChild(el('div', { class: 'bash-cmd-desc' }, input.description.trim()));
   }
+
+  wrap.appendChild(el('pre', { class: 'bash-cmd' }, input.command));
 
   return wrap;
 }
