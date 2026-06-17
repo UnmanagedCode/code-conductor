@@ -153,6 +153,7 @@ Any action that runs *inside* another project — even read-only work like verif
 - **Never** call `approve_plan` / `reject_plan` / `set_mode` on your *own* sessionId. If `list_instances` shows you among the results, yours is the one whose `cwd` ends in `.conduct` — leave it alone.
 - Default workers to `mode: 'plan'` so they can't take destructive actions before you've reviewed.
 - **Observe each worker step before letting it proceed** — read `get_recent_messages` on every wake and decide before resubscribing or landing. Via dispatch-and-wake, not by blocking (see Core rule).
+- **Only drive workers you spawned.** Never address an instance this conductor session didn't create (owned by another conductor, launched by the human, or left over from a previous run) with any worker-driving tool — act only on sessionIds from your own `spawn_instance` / `respawn_instance`. If you need a worker, spawn your own.
 
 If `list_instances` ever shows you running *inside* a worker session (your `cwd` isn't `.conduct`), stop immediately and report it to the user — the safety contract has been violated.
 
