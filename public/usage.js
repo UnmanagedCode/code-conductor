@@ -187,11 +187,19 @@ export function formatResetTime(unixSecs) {
 //   accountUsage – OAuth fetch result keyed by bucket (may be null)
 // Returns { text, frac, isOverage } where frac is 0–1 or null.
 const RL_BUCKET_PRIORITY = ['five_hour', 'seven_day', 'seven_day_sonnet', 'seven_day_opus'];
+const RL_BUCKET_LABEL = {
+  five_hour:        '5h',
+  seven_day:        '7d',
+  seven_day_sonnet: '7d Sonnet',
+  seven_day_opus:   '7d Opus',
+};
 
 export function rlChipSegment(info, accountUsage) {
   if (info) {
     const util = typeof info.utilization === 'number' ? info.utilization : null;
-    const text = util != null ? `rl ${Math.round(util * 100)}%` : 'rl --';
+    const label = RL_BUCKET_LABEL[info.rateLimitType];
+    const prefix = label ? `rl ${label}` : 'rl';
+    const text = util != null ? `${prefix} ${Math.round(util * 100)}%` : `${prefix} --`;
     return { text, frac: util, isOverage: info.isUsingOverage === true };
   }
   // accountUsage fallback — tightest non-null bucket
@@ -199,6 +207,8 @@ export function rlChipSegment(info, accountUsage) {
   const bucket = key && accountUsage[key];
   if (!bucket) return { text: 'rl --', frac: null, isOverage: false };
   const util = typeof bucket.utilization === 'number' ? bucket.utilization / 100 : null;
-  const text = util != null ? `rl ${Math.round(util * 100)}%` : 'rl --';
+  const label = RL_BUCKET_LABEL[key];
+  const prefix = label ? `rl ${label}` : 'rl';
+  const text = util != null ? `${prefix} ${Math.round(util * 100)}%` : `${prefix} --`;
   return { text, frac: util, isOverage: false };
 }
