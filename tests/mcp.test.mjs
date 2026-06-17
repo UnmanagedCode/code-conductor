@@ -176,7 +176,7 @@ test('list_projects sees projects created via REST', async () => {
   for (const p of projects) {
     assert.ok('isGitRepo' in p);
     assert.ok(Array.isArray(p.worktrees));
-    assert.ok(Array.isArray(p.instanceIds));
+    assert.ok(Array.isArray(p.sessionIds));
   }
 });
 

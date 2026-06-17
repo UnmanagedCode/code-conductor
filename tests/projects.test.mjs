@@ -61,7 +61,7 @@ test('POST /api/projects creates a directory and lists it', async () => {
   assert.equal(list.status, 200);
   assert.equal(list.body.length, 1);
   assert.equal(list.body[0].name, 'demo');
-  assert.deepEqual(list.body[0].instanceIds, []);
+  assert.deepEqual(list.body[0].sessionIds, []);
 });
 
 test('POST /api/projects seeds CLAUDE.md that imports the workspace-wide one', async () => {

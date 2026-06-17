@@ -168,7 +168,7 @@ export async function listProjects(_args, { instances }) {
     })));
     return {
       ...p,
-      instanceIds: instances ? instances.idsForProject(p.name) : [],
+      sessionIds: instances ? instances.sessionIdsForProject(p.name) : [],
       isGitRepo: await isGitRepo(p.path),
       worktrees: worktreesWithSessions,
       sessions: await summarizeSessions(p.path).catch(() => ({ count: 0, lastMtime: 0 })),

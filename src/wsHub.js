@@ -82,7 +82,7 @@ export function attachWsHub({ wss, instances }) {
   });
 
   instances.on('list_changed', () => {
-    // Instance spawn/exit changes instanceIds; clear all cached git facts so
+    // Instance spawn/exit changes sessionIds; clear all cached git facts so
     // the next /api/projects fetch reflects the new instance assignment. This
     // also covers worktree creation (which is tied to instance spawn).
     invalidateAll();

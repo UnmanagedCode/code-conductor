@@ -15,7 +15,7 @@ export function buildTools() {
       name: 'list_projects',
       description:
         'List every project under ~/project/, with each project\'s git status, worktrees, ' +
-        'live instance ids, and a session-count summary.',
+        'live session ids, and a session-count summary.',
       inputSchema: { type: 'object', properties: {}, required: [] },
       handler: h.listProjects,
       annotations: { readOnlyHint: true },

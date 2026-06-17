@@ -1269,6 +1269,15 @@ export class InstanceManager extends EventEmitter {
       .filter(i => i.project === project && i.worktree?.worktreeName === worktreeName)
       .map(i => i.id);
   }
+  sessionIdsForProject(name) {
+    return [...this.byId.values()].filter(i => i.project === name).map(i => i.sessionId).filter(Boolean);
+  }
+  sessionIdsForWorktree(project, worktreeName) {
+    return [...this.byId.values()]
+      .filter(i => i.project === project && i.worktree?.worktreeName === worktreeName)
+      .map(i => i.sessionId)
+      .filter(Boolean);
+  }
   idsForSession(sessionId) {
     return [...this.byId.values()]
       .filter(i => i.sessionId === sessionId)

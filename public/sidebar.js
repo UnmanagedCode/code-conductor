@@ -555,7 +555,7 @@ export class Sidebar {
         worktrees: [],
         sessions: { count: this.conductSessionCount, lastMtime: this.conductSessionLastMtime },
         mergeStatus: { ahead: null, behind: null, upstream: null },
-        instanceIds: conductInstances.map(i => i.id),
+        sessionIds: conductInstances.map(i => i.sessionId),
         isConduct: true,
       };
       this.list.appendChild(this._projectItem({
