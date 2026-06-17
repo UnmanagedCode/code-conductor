@@ -45,7 +45,7 @@ async function setupSidebar() {
 test('no synthetic Conduct row when there is no live .conduct instance', async () => {
   const { root, sidebar } = await setupSidebar();
   sidebar.setProjects([{
-    name: 'demo', path: '/p/demo', instanceIds: [],
+    name: 'demo', path: '/p/demo', sessionIds: [],
     isGitRepo: false, worktrees: [],
     sessions: { count: 0, lastMtime: 0 },
   }]);
@@ -59,7 +59,7 @@ test('no synthetic Conduct row when there is no live .conduct instance', async (
 test('synthetic 🎼 Conduct row appears at the top when a live .conduct instance exists', async () => {
   const { root, sidebar } = await setupSidebar();
   sidebar.setProjects([{
-    name: 'demo', path: '/p/demo', instanceIds: [],
+    name: 'demo', path: '/p/demo', sessionIds: [],
     isGitRepo: false, worktrees: [],
     sessions: { count: 0, lastMtime: 0 },
   }]);

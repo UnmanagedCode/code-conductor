@@ -96,7 +96,7 @@ export function buildRoutes({ instances, serverCtx } = {}) {
 
   // Compute the git-heavy facts for one project. Called via getOrCompute() so
   // results are cached for TTL_MS and concurrent callers share one in-flight
-  // execution. Does NOT include instanceIds or session counts — those are cheap
+  // execution. Does NOT include sessionIds or session counts — those are cheap
   // and always computed fresh so they stay live across status changes.
   async function computeGitFacts(p) {
     const worktrees = await listWorktrees(p.name).catch(() => []);
@@ -133,7 +133,7 @@ export function buildRoutes({ instances, serverCtx } = {}) {
         const projTempSids = instances ? instances.tempSessionIdsForCwd(p.path) : null;
         return {
           ...p,
-          instanceIds: instances ? instances.idsForProject(p.name) : [],
+          sessionIds: instances ? instances.sessionIdsForProject(p.name) : [],
           isGitRepo: gitFacts.isGitRepo,
           worktrees: worktreesWithSessions,
           sessions: await summarizeSessions(p.path, projTempSids).catch(() => ({ count: 0, archivedCount: 0, lastMtime: 0 })),
@@ -289,13 +289,13 @@ export function buildRoutes({ instances, serverCtx } = {}) {
 
   // List worktrees that belong to a project. Returns the same metadata
   // shape that's stored in each worktree's .code-conductor/worktree.json,
-  // augmented with the currently-running instance id (if any).
+  // augmented with the currently-running session id(s) (if any).
   r.get('/projects/:name/worktrees', async (req, res, next) => {
     try {
       const wts = await listWorktrees(req.params.name);
       const enriched = wts.map(w => ({
         ...w,
-        instanceIds: instances ? instances.idsForWorktree(req.params.name, w.worktreeName) : [],
+        sessionIds: instances ? instances.sessionIdsForWorktree(req.params.name, w.worktreeName) : [],
       }));
       res.json(enriched);
     } catch (e) { next(e); }
