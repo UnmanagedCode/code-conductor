@@ -86,13 +86,14 @@ test('DOM: a Bash tool call renders a tool block with the command visible', asyn
   assert.ok(result, 'tool_result must be attached under the tool_use block');
   assert.match(result.textContent, /file1/);
 
-  // The raw-JSON input is wrapped in its own collapsible <details>, mirroring
-  // the tool_result pattern. Default-closed.
-  const input = tool.querySelector('.block.tool-args');
-  assert.ok(input, 'raw-JSON input must be wrapped in a .block.tool-args details');
-  assert.equal(input.hasAttribute('open') || input.open, false, 'tool_args should be collapsed by default');
-  assert.match(input.querySelector('summary')?.textContent ?? '', /tool_args/);
-  assert.match(input.textContent, /ls -la/, 'tool_args body still contains the JSON-rendered command');
+  // Bash uses a dedicated command renderer: .bash-cmd-wrap with a <pre> and a copy button.
+  const cmdWrap = body.querySelector('.bash-cmd-wrap');
+  assert.ok(cmdWrap, 'Bash body must have a .bash-cmd-wrap element');
+  const cmdPre = cmdWrap.querySelector('pre.bash-cmd');
+  assert.ok(cmdPre, '.bash-cmd-wrap must contain a <pre class="bash-cmd">');
+  assert.match(cmdPre.textContent, /ls -la/, 'bash-cmd pre must contain the command');
+  const copyBtn = cmdWrap.querySelector('.bash-cmd-copy');
+  assert.ok(copyBtn, '.bash-cmd-wrap must have a copy button (.bash-cmd-copy)');
 });
 
 function editToolCallStream() {

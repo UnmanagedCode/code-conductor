@@ -320,6 +320,10 @@ export class ToolUseBlock {
       this.body.appendChild(renderNotebookEdit(input));
       return;
     }
+    if (this.name === 'Bash' && typeof input.command === 'string') {
+      this.body.appendChild(renderBashCommand(input));
+      return;
+    }
     let pre;
     try { pre = el('pre', {}, JSON.stringify(input, null, 2)); }
     catch { pre = el('pre', {}, this.partialJson); }
@@ -332,6 +336,58 @@ function wrapToolInputPre(pre) {
     el('summary', {}, '↪ tool_args'),
     pre,
   );
+}
+
+function copyToClipboard(text) {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    return navigator.clipboard.writeText(text);
+  }
+  // Fallback for Android WebView / insecure contexts
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.cssText = 'position:fixed;top:-9999px;left:-9999px;opacity:0';
+    document.body.appendChild(ta);
+    ta.focus(); ta.select();
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    return ok ? Promise.resolve() : Promise.reject(new Error('execCommand failed'));
+  } catch (e) {
+    return Promise.reject(e);
+  }
+}
+
+function renderBashCommand(input) {
+  const wrap = el('div', { class: 'bash-cmd-wrap' });
+
+  const btn = el('button', { type: 'button', class: 'bash-cmd-copy' }, 'Copy');
+  let resetTimer = null;
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const flash = (label, cls) => {
+      btn.textContent = label;
+      btn.classList.remove('copied', 'failed');
+      if (cls) btn.classList.add(cls);
+      if (resetTimer) clearTimeout(resetTimer);
+      resetTimer = setTimeout(() => {
+        btn.textContent = 'Copy';
+        btn.classList.remove('copied', 'failed');
+        resetTimer = null;
+      }, 1200);
+    };
+    copyToClipboard(input.command)
+      .then(() => flash('Copied', 'copied'))
+      .catch(() => flash('Failed', 'failed'));
+  });
+  wrap.appendChild(btn);
+
+  wrap.appendChild(el('pre', { class: 'bash-cmd' }, input.command));
+
+  if (typeof input.description === 'string' && input.description.trim()) {
+    wrap.appendChild(el('div', { class: 'bash-cmd-desc' }, input.description.trim()));
+  }
+
+  return wrap;
 }
 
 function renderEditDiff(input) {
