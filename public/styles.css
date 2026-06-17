@@ -603,7 +603,7 @@ input:focus, textarea:focus, select:focus { outline: 2px solid var(--accent); ou
 .bash-cmd-wrap > .bash-cmd-copy:hover { opacity: 1; color: var(--text); }
 .bash-cmd-wrap > .bash-cmd-copy.copied { color: var(--green); border-color: var(--green); opacity: 1; }
 .bash-cmd-wrap > .bash-cmd-copy.failed  { color: var(--amber); border-color: var(--amber); opacity: 1; }
-.bash-cmd-desc { font-size: 11px; color: var(--muted); padding: 2px 60px 4px 2px; font-style: italic; }
+.bash-cmd-desc { font-size: 11px; color: var(--muted); padding: 2px 60px 4px 0; font-style: italic; }
 .diff {
   background: #0a0c12; border-radius: 4px; margin: 4px 0 0 0;
   font-family: ui-monospace, monospace; font-size: 11px;
