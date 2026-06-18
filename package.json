@@ -12,6 +12,6 @@
     "ws": "^8.18.0"
   },
   "devDependencies": {
-    "happy-dom": "^20.9.0"
+    "happy-dom": "^20.10.6"
   }
 }
