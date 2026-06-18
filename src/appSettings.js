@@ -119,19 +119,34 @@ export async function setTtsRate(rate) {
   return clamped;
 }
 
-// Models group: auto-stop on overage (overtime). When true the server
-// interrupts a running turn the moment it receives a rate_limit_event with
-// isUsingOverage === true. Off by default — strictly opt-in.
-export function getAutoStopOnOverage() {
+// Models group: action on overage (overtime). Enum 'none' | 'stop' |
+// 'stop-resume'. When the server receives a rate_limit_event with
+// isUsingOverage === true it soft-interrupts the running turn for both 'stop'
+// and 'stop-resume'; 'stop-resume' additionally schedules an in-memory timer
+// that resumes the (still-alive) session at the rate-limit reset time. Off
+// ('none') by default — strictly opt-in.
+//
+// Read-time DATA migration (not request/route compat): a user who had the
+// legacy boolean `autoStopOnOverage: true` and has never set the new enum key
+// maps to 'stop' so they don't silently lose the behavior. The legacy key is
+// removed on the next setOnOverageAction() write.
+const VALID_ON_OVERAGE = ['none', 'stop', 'stop-resume'];
+
+export function getOnOverageAction() {
   const s = loadSync();
-  return s.models?.autoStopOnOverage ?? false;
+  const v = s.models?.onOverage;
+  if (v === 'stop' || v === 'stop-resume') return v;
+  if (v === undefined && s.models?.autoStopOnOverage === true) return 'stop'; // migrate legacy ON
+  return 'none';
 }
 
-export async function setAutoStopOnOverage(enabled) {
+export async function setOnOverageAction(action) {
+  const val = VALID_ON_OVERAGE.includes(action) ? action : 'none';
   const cur = loadSync();
-  const next = { ...cur, models: { ...(cur.models || {}), autoStopOnOverage: !!enabled } };
-  await writeSettings(next);
-  return !!enabled;
+  const models = { ...(cur.models || {}), onOverage: val };
+  delete models.autoStopOnOverage; // one-time cleanup of the legacy key
+  await writeSettings({ ...cur, models });
+  return val;
 }
 
 // Models group: Sonnet context-window preference. '1m' (default) keeps the

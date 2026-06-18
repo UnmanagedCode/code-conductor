@@ -49,7 +49,7 @@ RUN_REAL_CLAUDE=1 npm test   # also runs opt-in real-claude smoke
 - **Resume after restart** — restarting with live sessions offers a graceful drain → restart → resurrect: wind every turn down to idle, carry sessions (incl. temps) over via `<store>/pending-resume.json`, then on boot re-spawn (`--resume`) and notify each one (conductors re-spawn their workers from an injected project+sessionId+worktree list). See [docs/features.md](docs/features.md).
 - **Spawn options** — mode (`plan` / `ask` / `code`), effort, thinking, model family (Haiku 200k / Sonnet 200k or 1M per stored preference / Opus 1M / Fable 5 1M; Fable 5 can be disabled in Settings → Models), temp session, debug capture.
 - **Live conversation** — streaming markdown, TTS read-aloud (Piper, per-sentence), thinking blocks, tool diffs, plan-mode approval cards, AskUserQuestion cards, ask-mode permission cards; long histories load tail-first with scroll-up lazy-load of earlier messages.
-- **UI elements** — task panel, context-usage chip (live, colour-graded), rate-limit chip (live bucket/utilization/reset-time, left side of bottom bar; shows OVERAGE badge when `isUsingOverage`), voice dictation (whisper.cpp — tap empty-composer mic or hold Send to append), settings page (models incl. Fable 5 toggle + default spawn model + auto-stop-on-overage toggle, transcribe, TTS, workspace conventions, archived sessions), OS notifications via Service Worker.
+- **UI elements** — task panel, context-usage chip (live, colour-graded), rate-limit chip (live bucket/utilization/reset-time, left side of bottom bar; shows OVERAGE badge when `isUsingOverage`), voice dictation (whisper.cpp — tap empty-composer mic or hold Send to append), settings page (models incl. Fable 5 toggle + default spawn model + **Action on overage** control, transcribe, TTS, workspace conventions, archived sessions), OS notifications via Service Worker.
 - **Conduct mode** — `🎼 Conduct` spawns a conductor temp session in `.conduct` project, pre-loaded with `CONDUCT.md` role prompt, orchestrates workers via MCP. While viewing the conductor, a **Sub-agents** strip above the task panel lists each spawned worker with live status and is tap-to-navigate.
 - **MCP interface** — 20+ tools (`mcp__code-conductor__*`) auto-registered at spawn: read, create, workspaces, spawn/drive (incl. `promote_session` to keep a temp worker), plan handling, worktrees. MCP `spawn_instance` defaults to temp:true but keeps mode at plan (use `createWorktree:true` for a fresh worktree, `worktree:"<name>"` to attach). Standardized contract: the worker handle is always `sessionId` (stable across respawn/restart — the per-process `instanceId` never appears on, nor is accepted by, the conductor-facing surface), worktree always `worktree`; strict-live worker resolution (soft `{ok:false, code:'SESSION_NOT_LIVE'|'SESSION_UNKNOWN'}`, never auto-respawns); schema-validated inputs (unknown args rejected, so legacy `{id}` hard-fails); text-payload tools (`read_file`/`get_worktree_diff`/`get_recent_messages`) return a JSON metadata block plus raw un-escaped body blocks; `ok:false`+`code` for soft refusals, prose+`statusCode` for errors. See [docs/protocol.md](docs/protocol.md#mcp-tool-protocol).
 
@@ -66,6 +66,15 @@ See [docs/features.md](docs/features.md) for the exhaustive feature and UI-eleme
 - Control-request timeout: 5 s. Kill grace: stdin closed → 2 s → SIGTERM → 5 s → SIGKILL.
 
 ## Known limitations
+- **Overage auto-resume is in-memory & global** — **Settings → Models → Action on overage** is one
+  of `Off` / `Stop` / `Stop & resume`. It's a **global** setting (not per-session). `Stop` and
+  `Stop & resume` both soft-interrupt a session the moment it starts using paid overage credits
+  (`rate_limit_event` with `isUsingOverage:true`); the session stays idle-but-alive and manually
+  resumable. `Stop & resume` additionally schedules an **in-memory** timer that resumes the still-alive
+  session (sends a "continue" prompt) ~5s after the rate-limit window resets (`resetsAt`). The timer
+  is lost on orchestrator restart — the session simply stays manually resumable, no silent retry. If
+  the reset time is missing/past, or the process is gone by fire time, the resume is skipped (logged
+  as `auto_resume_skipped`); the feature never kills or respawns a process.
 - **Opus 4.7/4.8 thinking is redacted** — no readable content (4.7 sends only `signature_delta`; 4.8 sends empty `thinking_delta`s). Both render as `thinking (redacted)`. Pick `claude-sonnet-4-6` for the full stream.
 - **AskUserQuestion answered via next prompt** — PreToolUse hook denies; tool_result is `is_error:true`; answer is fed in as a normal user prompt. Functionally fine, but the original tool_result is still an error for diagnostics.
 - **`--effort` / `--thinking` are spawn-time only** — switching mid-session needs respawn + resume. Only `mode` is live-switchable.

@@ -111,6 +111,7 @@ export class ThinkingBlock {
 }
 
 import { lineDiff, diffStats } from './diff.js';
+import { formatResetTime } from './usage.js';
 import { renderMarkdownInto } from './markdown.js';
 import { isTtsAvailable, requestSpeak, getCurrentSpeakToken, onSpeakingChange, stop, maybeAutoSpeak } from './tts.js';
 
@@ -1015,6 +1016,7 @@ function imageSrcFromSource(source) {
 const SHOWN_SYSTEM_SUBTYPES = new Set([
   'init', 'stderr', 'exit', 'spawn_error', 'crashed',
   'permission_denied', 'compacting', 'history_load_error', 'auto_stop_overage',
+  'auto_resume_skipped',
 ]);
 
 export function shouldRenderSystem(ev) {
@@ -1037,7 +1039,14 @@ export class SystemBlock {
       if (subtype === 'history_load_error') return `couldn't replay history: ${data?.message ?? ''}`;
       if (subtype === 'permission_denied') return data?.message ?? data?.reason ?? '';
       if (subtype === 'compacting') return 'auto-compacting context…';
-      if (subtype === 'auto_stop_overage') return '⛔ Stopped: session entered overage usage — auto-stop is enabled.';
+      if (subtype === 'auto_stop_overage') {
+        if (data?.resume) {
+          const at = formatResetTime(data.resetsAt)?.replace('resets ', '');
+          return `⛔ Stopped: overage usage — auto-resuming at ${at ?? 'reset'}.`;
+        }
+        return '⛔ Stopped: session entered overage usage — auto-stop is enabled.';
+      }
+      if (subtype === 'auto_resume_skipped') return `⚠ Auto-resume skipped: ${data?.reason ?? ''}.`;
       try { return JSON.stringify(data).slice(0, 200); } catch { return ''; }
     })();
     this.node = el('div', { class: 'block system' },

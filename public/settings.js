@@ -26,7 +26,8 @@ export function installSettings({
   // Models group elements.
   const smStatusEl = document.getElementById('sm-status');
   const smListEl = document.getElementById('sm-family-list');
-  const smAutoStopEl = document.getElementById('sm-auto-stop');
+  const smOverageEl = document.getElementById('sm-overage');
+  const smOverageBtns = [...(smOverageEl?.querySelectorAll('[data-overage]') || [])];
   const smCompactWindowEnabledEl = document.getElementById('sm-compact-window-enabled');
   const smCompactWindowRowEl     = document.getElementById('sm-compact-window-row');
   const smCompactWindowSliderEl  = document.getElementById('sm-compact-window');
@@ -347,7 +348,10 @@ export function installSettings({
       smListEl.appendChild(li);
     }
 
-    if (smAutoStopEl) smAutoStopEl.checked = data.autoStopOnOverage ?? false;
+    const overage = data.onOverage ?? 'none';
+    for (const btn of smOverageBtns) {
+      btn.setAttribute('aria-pressed', btn.dataset.overage === overage ? 'true' : 'false');
+    }
     if (smCompactWindowEnabledEl) {
       const cw = data.conductorCompactWindow ?? { enabled: false, value: 200 };
       smCompactWindowEnabledEl.checked = cw.enabled;
@@ -399,14 +403,16 @@ export function installSettings({
     }
   }
 
-  smAutoStopEl?.addEventListener('change', () => onPickAutoStop(smAutoStopEl.checked));
+  for (const btn of smOverageBtns) {
+    btn.addEventListener('click', () => onPickOverageAction(btn.dataset.overage));
+  }
 
-  async function onPickAutoStop(enabled) {
+  async function onPickOverageAction(action) {
     try {
       const r = await fetch('/api/settings/models/prefs', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ autoStopOnOverage: enabled }),
+        body: JSON.stringify({ onOverage: action }),
       });
       const data = await r.json();
       if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);

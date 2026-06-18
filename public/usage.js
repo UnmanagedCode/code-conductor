@@ -181,6 +181,13 @@ export function formatResetTime(unixSecs) {
   return 'resets ' + d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 }
 
+// Format an overage auto-resume time, e.g. "auto-resumes 6:40pm".
+export function formatAutoResumeTime(unixSecs) {
+  if (!unixSecs || !Number.isFinite(unixSecs)) return null;
+  const d = new Date(unixSecs * 1000);
+  return 'auto-resumes ' + d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+}
+
 // Pure helper: derive the rate-limit half of the combined chip from the two
 // available sources (no DOM, easily testable).
 //   info        – globalRLTracker.info (from rate_limit_event; may be null)
