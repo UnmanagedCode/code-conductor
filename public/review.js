@@ -4,6 +4,8 @@
 // The same renderer serves both worktree diffs and per-commit diffs — only the
 // title and the fetch URL differ, supplied by the caller via open().
 
+import { diffLine } from './blocks.js';
+
 let _title = '';
 let _url = null;
 let _onBack = null;
@@ -149,19 +151,8 @@ function renderFile(file) {
       body.appendChild(hdrEl);
 
       for (const ln of hunk.lines) {
-        const lineEl = document.createElement('div');
-        lineEl.className = `diff-line ${ln.type === 'add' ? 'add' : ln.type === 'del' ? 'del' : 'ctx'}`;
-
-        const marker = document.createElement('span');
-        marker.className = 'diff-marker';
-        marker.textContent = ln.type === 'add' ? '+' : ln.type === 'del' ? '-' : ' ';
-
-        const text = document.createElement('span');
-        text.className = 'diff-text';
-        text.textContent = ln.content;
-
-        lineEl.append(marker, text);
-        body.appendChild(lineEl);
+        const type = ln.type === 'add' ? 'add' : ln.type === 'del' ? 'del' : 'ctx';
+        body.appendChild(diffLine(type, ln.content));
       }
     }
     details.appendChild(body);
