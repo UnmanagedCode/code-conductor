@@ -244,6 +244,9 @@ export class ToolUseBlock {
     this.partialJson = '';
     this.input = null;
     this.status = 'streaming…';
+    this._startedAt = null;
+    this._timer = null;
+    this._doneElapsed = null;
 
     this.summary = el('summary', {});
     this.body = el('div', { class: 'tool-body' });
@@ -282,11 +285,18 @@ export class ToolUseBlock {
   finalizeInput(input) {
     this.input = input;
     this.status = 'running';
+    this._startedAt = Date.now();
+    this._timer = setInterval(() => this._renderSummary(), 1000);
     this._renderSummary();
     this._renderBody();
   }
 
   attachResult(resultBlock) {
+    if (this._timer) { clearInterval(this._timer); this._timer = null; }
+    if (this._startedAt) {
+      const s = Math.floor((Date.now() - this._startedAt) / 1000);
+      this._doneElapsed = s > 0 ? formatElapsed(s * 1000) : null;
+    }
     this.node.appendChild(resultBlock.node);
     this.status = resultBlock.isError ? 'errored' : 'done';
     this._renderSummary();
@@ -297,7 +307,15 @@ export class ToolUseBlock {
     this.summary.textContent = '';
     this.summary.append('🔧 ', el('span', { class: 'tool-name' }, this.name ?? 'tool'));
     if (desc) this.summary.append(' · ', el('span', { class: 'tool-arg' }, desc));
-    this.summary.append(el('span', { class: 'tool-status' }, ` · ${this.status}`));
+    let statusText;
+    if (this.status === 'running' && this._startedAt) {
+      statusText = ` · running ${formatElapsed(Date.now() - this._startedAt)}`;
+    } else if (this._doneElapsed) {
+      statusText = ` · ${this.status} · ${this._doneElapsed}`;
+    } else {
+      statusText = ` · ${this.status}`;
+    }
+    this.summary.append(el('span', { class: 'tool-status' }, statusText));
   }
 
   _renderBody() {
@@ -358,8 +376,23 @@ function copyToClipboard(text) {
   }
 }
 
+function formatElapsed(ms) {
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return `${s}s`;
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+}
+
 function renderBashCommand(input) {
   const wrap = el('div', { class: 'bash-cmd-wrap' });
+
+  // Description renders above the command box as a sibling — not inside the
+  // position:relative box — so absolute button positioning anchors to the box.
+  if (typeof input.description === 'string' && input.description.trim()) {
+    wrap.appendChild(el('div', { class: 'bash-cmd-desc' }, input.description.trim()));
+  }
+
+  // Inner box is position:relative so the Copy button anchors to its corner.
+  const box = el('div', { class: 'bash-cmd-box' });
 
   const btn = el('button', { type: 'button', class: 'bash-cmd-copy' }, 'Copy');
   let resetTimer = null;
@@ -380,13 +413,9 @@ function renderBashCommand(input) {
       .then(() => flash('Copied', 'copied'))
       .catch(() => flash('Failed', 'failed'));
   });
-  wrap.appendChild(btn);
-
-  if (typeof input.description === 'string' && input.description.trim()) {
-    wrap.appendChild(el('div', { class: 'bash-cmd-desc' }, input.description.trim()));
-  }
-
-  wrap.appendChild(el('pre', { class: 'bash-cmd' }, input.command));
+  box.appendChild(btn);
+  box.appendChild(el('pre', { class: 'bash-cmd' }, input.command));
+  wrap.appendChild(box);
 
   return wrap;
 }
