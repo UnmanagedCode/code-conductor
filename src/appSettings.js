@@ -166,7 +166,15 @@ export async function setSonnetContextWindow(window) {
 // Models group: per-family visibility toggle. When a family is false it is
 // hidden from all spawn pickers. All families default to true (opt-out).
 // Migrates the legacy scalar `fable5Enabled` key on first read.
-const ENABLED_FAMILIES_DEFAULTS = { fable: true, opus: true, sonnet: true, haiku: true };
+//
+// Derived from MODEL_FAMILIES so the family enum has a single source of truth;
+// callers spread/index the result, so key order is irrelevant.
+const ENABLED_FAMILIES_DEFAULTS = Object.fromEntries(MODEL_FAMILIES.map(f => [f.family, true]));
+
+// Default spawn family used as the fallback wherever no valid family is set.
+// Family-selection policy (MODEL_FAMILIES has no "default family" marker), so
+// it's a single named constant rather than a derived value.
+const DEFAULT_SPAWN_FAMILY = 'opus';
 
 export function getEnabledFamilies() {
   const s = loadSync();
@@ -194,8 +202,10 @@ export async function setFamilyEnabled(family, enabled) {
 
   const nextEnabled = { ...current, [family]: !!enabled };
 
-  let nextDefault = cur.models?.defaultFamily ?? 'opus';
+  let nextDefault = cur.models?.defaultFamily ?? DEFAULT_SPAWN_FAMILY;
   if (!enabled && nextDefault === family) {
+    // Deliberate fallback-preference order (NOT the MODEL_FAMILIES catalog
+    // order) — mirrored client-side in public/app.js defaultSpawnFamily().
     nextDefault = ['sonnet', 'haiku', 'opus', 'fable'].find(f => f !== family && nextEnabled[f] !== false) ?? 'sonnet';
   }
 
@@ -207,16 +217,18 @@ export async function setFamilyEnabled(family, enabled) {
 
 // Models group: default spawn model family. Controls which model card is
 // pre-selected when the spawn dialog opens. Defaults to 'opus' when unset.
-const VALID_SPAWN_FAMILIES = ['haiku', 'sonnet', 'opus', 'fable'];
+// Membership is derived from MODEL_FAMILIES (used only via .includes(), so
+// catalog order is irrelevant).
+const VALID_SPAWN_FAMILIES = MODEL_FAMILIES.map(f => f.family);
 
 export function getDefaultSpawnFamily() {
   const s = loadSync();
   const v = s.models?.defaultFamily;
-  return VALID_SPAWN_FAMILIES.includes(v) ? v : 'opus';
+  return VALID_SPAWN_FAMILIES.includes(v) ? v : DEFAULT_SPAWN_FAMILY;
 }
 
 export async function setDefaultSpawnFamily(family) {
-  const val = VALID_SPAWN_FAMILIES.includes(family) ? family : 'opus';
+  const val = VALID_SPAWN_FAMILIES.includes(family) ? family : DEFAULT_SPAWN_FAMILY;
   const cur = loadSync();
   const next = { ...cur, models: { ...(cur.models || {}), defaultFamily: val } };
   await writeSettings(next);
