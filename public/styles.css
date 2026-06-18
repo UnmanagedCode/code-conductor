@@ -595,8 +595,9 @@ input:focus, textarea:focus, select:focus { outline: 2px solid var(--accent); ou
   white-space: pre-wrap; word-break: break-word; max-height: 360px; overflow-y: auto;
   font-family: ui-monospace, monospace; font-size: 11px; margin: 4px 0 0 0;
 }
-.bash-cmd-wrap { position: relative; margin: 4px 0 0 0; }
-.bash-cmd-wrap > pre.bash-cmd {
+.bash-cmd-wrap { margin: 4px 0 0 0; }
+.bash-cmd-box { position: relative; }
+.bash-cmd-box > pre.bash-cmd {
   background: #0a0c12; border-radius: 4px;
   padding: 8px 56px 8px 8px;
   overflow-x: auto; white-space: pre-wrap; word-break: break-word;
@@ -604,17 +605,17 @@ input:focus, textarea:focus, select:focus { outline: 2px solid var(--accent); ou
   font-family: ui-monospace, monospace; font-size: 11px; margin: 0;
   border-left: 2px solid var(--tool);
 }
-.bash-cmd-wrap > .bash-cmd-copy {
+.bash-cmd-box > .bash-cmd-copy {
   position: absolute; top: 6px; right: 6px;
   padding: 2px 8px; font-size: 11px;
   background: #1b1f2c; color: var(--muted);
   border: 1px solid var(--border); border-radius: 3px;
   cursor: pointer; opacity: .75;
 }
-.bash-cmd-wrap > .bash-cmd-copy:hover { opacity: 1; color: var(--text); }
-.bash-cmd-wrap > .bash-cmd-copy.copied { color: var(--green); border-color: var(--green); opacity: 1; }
-.bash-cmd-wrap > .bash-cmd-copy.failed  { color: var(--amber); border-color: var(--amber); opacity: 1; }
-.bash-cmd-desc { font-size: 11px; color: var(--muted); padding: 2px 60px 4px 0; font-style: italic; }
+.bash-cmd-box > .bash-cmd-copy:hover { opacity: 1; color: var(--text); }
+.bash-cmd-box > .bash-cmd-copy.copied { color: var(--green); border-color: var(--green); opacity: 1; }
+.bash-cmd-box > .bash-cmd-copy.failed  { color: var(--amber); border-color: var(--amber); opacity: 1; }
+.bash-cmd-desc { font-size: 11px; color: var(--muted); padding: 2px 0 4px 0; font-style: italic; }
 .diff {
   background: #0a0c12; border-radius: 4px; margin: 4px 0 0 0;
   font-family: ui-monospace, monospace; font-size: 11px;
@@ -877,6 +878,9 @@ input:focus, textarea:focus, select:focus { outline: 2px solid var(--accent); ou
 .perm-deny:hover:not(:disabled) { background: rgba(245,158,11,.25); }
 .block.tool-result,
 .block.tool-args { margin-left: 18px; }
+/* When nested directly inside a tool card, align left edge with the command box. */
+.block.tool > .block.tool-result,
+.block.tool > .block.tool-args { margin-left: 0; }
 .block.tool-result summary,
 .block.tool-args summary { font-family: ui-monospace, monospace; font-size: 11px; color: var(--muted); }
 .block.tool-result.error summary { color: var(--red); }
