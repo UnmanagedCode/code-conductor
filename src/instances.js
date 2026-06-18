@@ -1503,24 +1503,44 @@ export class InstanceManager extends EventEmitter {
     const fireAtMs = atMs + BUFFER_MS;
     inst.autoResumeAt = Math.round(fireAtMs / 1000); // epoch secs for the badge
     const sid = inst.sessionId;
-    const t = setTimeout(() => {
-      if (inst.proc) {
-        // prompt() synchronously emits 'user_prompt' → _cancelAutoResume performs
-        // the single teardown (clearTimeout of this already-fired timer is a no-op,
-        // deletes the Map entry, clears the flags, emits status to drop the badge);
-        // then the resume message sends. _cancelAutoResume is the sole owner of
-        // teardown — do NOT pre-clear here or it double-runs.
-        inst.prompt(AUTO_RESUME_TEXT).catch(() => {});
-      } else {
-        // Process gone (crashed / killed externally) — no send means no
-        // user_prompt, so tear down explicitly. Keep it simple: no respawn.
-        this._cancelAutoResume(sid);
-        inst._emitUi({ kind: 'system', subtype: 'auto_resume_skipped',
-          data: { reason: 'session no longer running' } });
-      }
-    }, Math.max(0, fireAtMs - nowMs));
+    const t = setTimeout(() => this._runAutoResume(inst, sid), Math.max(0, fireAtMs - nowMs));
     this._autoResumeTimers.set(sid, t);
     this.emit('status', inst.summary()); // push autoResumeAt → client (badge)
+  }
+
+  // The body the armed timer fires (extracted so it can also be triggered
+  // on-demand via _fireAutoResumeNow). Resumes the still-live session, or tears
+  // down with a notice if the process vanished. No respawn, ever.
+  _runAutoResume(inst, sid) {
+    if (inst.proc) {
+      // prompt() synchronously emits 'user_prompt' → _cancelAutoResume performs
+      // the single teardown (clearTimeout of this already-fired timer is a no-op,
+      // deletes the Map entry, clears the flags, emits status to drop the badge);
+      // then the resume message sends. _cancelAutoResume is the sole owner of
+      // teardown — do NOT pre-clear here or it double-runs.
+      inst.prompt(AUTO_RESUME_TEXT).catch(() => {});
+    } else {
+      // Process gone (crashed / killed externally) — no send means no
+      // user_prompt, so tear down explicitly. Keep it simple: no respawn.
+      this._cancelAutoResume(sid);
+      inst._emitUi({ kind: 'system', subtype: 'auto_resume_skipped',
+        data: { reason: 'session no longer running' } });
+    }
+  }
+
+  // Test/control seam: fire a pending overage auto-resume immediately rather than
+  // waiting out the wall-clock timer (lets tests exercise the full arm→fire path
+  // without a real multi-second sleep). Clears the real timer first so it can't
+  // double-fire. Returns false if nothing was armed for this session.
+  _fireAutoResumeNow(sessionId) {
+    const t = this._autoResumeTimers.get(sessionId);
+    if (!t) return false;
+    clearTimeout(t);
+    this._autoResumeTimers.delete(sessionId);
+    const inst = [...this.byId.values()].find(i => i.sessionId === sessionId);
+    if (!inst) return false;
+    this._runAutoResume(inst, sessionId);
+    return true;
   }
 
   // Cancel a pending overage auto-resume timer and clear the instance flags.

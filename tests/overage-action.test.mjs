@@ -110,11 +110,13 @@ test('onOverage "stop": soft-interrupts, session stays idle-but-alive, no resume
 });
 
 test('onOverage "stop-resume": stays alive, arms timer, delivers resume prompt at reset', async () => {
-  // resetsAt is emitted by the fake as ($NOWSEC at emit time)+3 — i.e. relative
-  // to the arm moment, not test-start — so it can't go stale under runner load.
-  // buffer is forced to 0, so the timer fires ~3s after the overage event. The
-  // resume prompt is observed via the orchestrator's user_echo (text === AUTO_RESUME_TEXT).
-  await boot(scenario([overageEvent({ resetsAt: '$NOWSEC+3' }), RESULT]), 'stop-resume');
+  // resetsAt is far in the future so arming is unambiguous (no race between the
+  // turn round-trip and resetsAt going stale). We assert the timer ARMS — the
+  // real behavior under test — then fire it on-demand via the _fireAutoResumeNow
+  // seam instead of sleeping out the wall-clock timer, so the only remaining wait
+  // is the inherent subprocess resume round-trip. The resume prompt is observed
+  // via the orchestrator's user_echo (text === AUTO_RESUME_TEXT).
+  await boot(scenario([overageEvent({ resetsAt: nowSec() + 3600 }), RESULT]), 'stop-resume');
   const inst = await spawnIdle();
   const evs = collect(inst);
   inst.prompt('go');
@@ -126,7 +128,9 @@ test('onOverage "stop-resume": stays alive, arms timer, delivers resume prompt a
   assert.equal(ctx.instances._autoResumeTimers.has(inst.sessionId), true, 'timer armed');
   assert.equal(inst.proc != null, true, 'session alive while waiting to resume');
 
-  // Timer fires: the resume prompt is delivered to the still-live session.
+  // Fire the armed timer deterministically: the resume prompt is delivered to the
+  // still-live session, just as the wall-clock fire would.
+  assert.equal(ctx.instances._fireAutoResumeNow(inst.sessionId), true, 'pending resume fired');
   await waitFor(() => evs.some(e => e.kind === 'user_echo' && e.text === AUTO_RESUME_TEXT),
     { timeout: 10000 });
 
