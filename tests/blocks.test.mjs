@@ -21,7 +21,7 @@ globalThis.fetch = async () => ({
 
 // Import blocks.js (which also imports tts.js as a side-effect) and tts.js
 // directly so tests can drive speaking state.
-const { describeToolInput, ToolResultBlock, TextBlock } = await import(pathToFileURL(path.resolve(__dirname, '..', 'public', 'blocks.js')).href);
+const { describeToolInput, ToolResultBlock, TextBlock, ToolUseBlock } = await import(pathToFileURL(path.resolve(__dirname, '..', 'public', 'blocks.js')).href);
 const { setTtsAvailable, getCurrentSpeakToken, stop: ttsStop } = await import(pathToFileURL(path.resolve(__dirname, '..', 'public', 'tts.js')).href);
 
 function setupDOM() {
@@ -343,4 +343,30 @@ test('TTS button: natural end (empty stream, no sources) reverts button automati
   assert.equal(btn.textContent, '🔊');
   assert.equal(btn.title, 'Read aloud');
   assert.equal(getCurrentSpeakToken(), null);
+});
+
+test('ToolUseBlock: rich parsers (Edit/Write/Bash) render inside expanded details.block.tool-args', () => {
+  setupDOM();
+  const cases = [
+    { name: 'Edit',  input: { file_path: 'a.js', old_string: 'x', new_string: 'y' } },
+    { name: 'Write', input: { file_path: 'a.js', content: 'hello' } },
+    { name: 'Bash',  input: { command: 'ls' } },
+  ];
+  for (const { name, input } of cases) {
+    const block = new ToolUseBlock({ name, toolUseId: 'tu_1' });
+    block.finalizeInput(input);
+    const details = block.body.querySelector('details.block.tool-args');
+    assert.ok(details, `${name}: expected details.block.tool-args`);
+    assert.ok(details.hasAttribute('open'), `${name}: details should be open`);
+  }
+});
+
+test('ToolUseBlock: unknown tool renders collapsed details.block.tool-args with JSON', () => {
+  setupDOM();
+  const block = new ToolUseBlock({ name: 'SomeFutureTool', toolUseId: 'tu_2' });
+  block.finalizeInput({ foo: 'bar' });
+  const details = block.body.querySelector('details.block.tool-args');
+  assert.ok(details, 'expected details.block.tool-args');
+  assert.ok(!details.hasAttribute('open'), 'details should be collapsed for unknown tool');
+  assert.ok(details.querySelector('pre').textContent.includes('"foo"'), 'should contain JSON');
 });
