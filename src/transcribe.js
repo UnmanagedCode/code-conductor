@@ -37,7 +37,6 @@ export function modelPathForName(name) {
 function defaultPaths() {
   return {
     cli: path.join(whisperRoot(), 'build', 'bin', 'whisper-cli'),
-    model: modelPathForName(DEFAULT_MODEL),
     ffmpeg: 'ffmpeg',
   };
 }

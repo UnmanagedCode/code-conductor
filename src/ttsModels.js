@@ -7,14 +7,12 @@
 //
 // `name` is the Piper voice id (HF rhasspy/piper-voices file stem); the
 // on-disk files are `<name>.onnx` (model) + `<name>.onnx.json` (config).
-// `hfDir` is the voice's subdirectory under the HF repo, stored explicitly so
-// the installer needn't parse the name (parsing is fragile across regions).
 
 export const TTS_VOICES = [
-  { name: 'en_US-lessac-medium', label: 'Lessac (US, medium)', sizeLabel: '~63 MB', hfDir: 'en/en_US/lessac/medium' },
-  { name: 'en_US-amy-medium',    label: 'Amy (US, medium)',    sizeLabel: '~63 MB', hfDir: 'en/en_US/amy/medium' },
-  { name: 'en_US-ryan-high',     label: 'Ryan (US, high)',     sizeLabel: '~114 MB', hfDir: 'en/en_US/ryan/high' },
-  { name: 'en_GB-alba-medium',   label: 'Alba (GB, medium)',   sizeLabel: '~63 MB', hfDir: 'en/en_GB/alba/medium' },
+  { name: 'en_US-lessac-medium', label: 'Lessac (US, medium)', sizeLabel: '~63 MB' },
+  { name: 'en_US-amy-medium',    label: 'Amy (US, medium)',    sizeLabel: '~63 MB' },
+  { name: 'en_US-ryan-high',     label: 'Ryan (US, high)',     sizeLabel: '~114 MB' },
+  { name: 'en_GB-alba-medium',   label: 'Alba (GB, medium)',   sizeLabel: '~63 MB' },
 ];
 
 export const DEFAULT_VOICE = 'en_US-lessac-medium';

@@ -25,7 +25,7 @@ import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { projectsRoot, orchStoreRoot } from './projects.js';
+import { projectsRoot, orchStoreRoot, writeFileAtomic } from './projects.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -87,13 +87,6 @@ async function readFileOrNull(p) {
 
 async function fileExists(p) {
   try { return (await fs.stat(p)).isFile(); } catch { return false; }
-}
-
-async function writeFileAtomic(p, text) {
-  await fs.mkdir(path.dirname(p), { recursive: true });
-  const tmp = `${p}.${process.pid}.tmp`;
-  await fs.writeFile(tmp, text);
-  await fs.rename(tmp, p);
 }
 
 async function readBaseline() {
