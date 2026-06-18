@@ -288,40 +288,7 @@ export class Parser {
       return [{ kind: 'user_echo', text: content }];
     }
     if (!Array.isArray(content)) return [];
-    const out = [];
-    // Group text blocks of a single user message into one user_echo so
-    // the bubble renders text and attachments together. Text blocks may
-    // contain `Attached file:` marker lines that we wrote at send time
-    // — extract those into attachment entries so the replayed bubble
-    // shows a thumbnail / file chip instead of the raw path text.
-    // Tool_result blocks remain their own events.
-    const echoTexts = [];
-    const echoAttachments = [];
-    for (const block of content) {
-      if (!block || typeof block !== 'object') continue;
-      if (block.type === 'tool_result') {
-        out.push({
-          kind: 'tool_result',
-          toolUseId: block.tool_use_id ?? null,
-          content: block.content ?? '',
-          isError: !!block.is_error,
-        });
-      } else if (block.type === 'text') {
-        if (typeof block.text !== 'string') continue;
-        if (isMidTurnNoteContent(block.text)) continue;
-        const { text: leftover, attachments } = extractAttachedMarkers(block.text);
-        if (leftover.length) echoTexts.push(leftover);
-        for (const a of attachments) echoAttachments.push(a);
-      }
-    }
-    if (echoTexts.length || echoAttachments.length) {
-      out.push({
-        kind: 'user_echo',
-        text: echoTexts.join('\n'),
-        attachments: echoAttachments,
-      });
-    }
-    return out;
+    return consolidateUserContent(content);
   }
 
   _handleResult(obj) {
@@ -402,6 +369,95 @@ export function extractAttachedMarkers(text) {
   // preserve interior structure so leading prose stays intact.
   while (keptLines.length && keptLines[keptLines.length - 1].trim() === '') keptLines.pop();
   return { text: keptLines.join('\n'), attachments };
+}
+
+// Consolidate one user message's content blocks into UI events: each
+// tool_result becomes its own event, and all text blocks (minus mid-turn
+// notes and `Attached file:` marker lines) are joined into a single
+// `user_echo` carrying any extracted attachments. Shared by the live path
+// (Parser._handleUser) and both jsonl-replay branches in transcript.js so
+// live vs replay rendering stays byte-for-byte identical.
+export function consolidateUserContent(contentBlocks) {
+  const out = [];
+  const echoTexts = [];
+  const echoAttachments = [];
+  for (const block of contentBlocks) {
+    if (!block || typeof block !== 'object') continue;
+    if (block.type === 'tool_result') {
+      out.push({
+        kind: 'tool_result',
+        toolUseId: block.tool_use_id ?? null,
+        content: block.content ?? '',
+        isError: !!block.is_error,
+      });
+    } else if (block.type === 'text') {
+      if (typeof block.text !== 'string') continue;
+      if (isMidTurnNoteContent(block.text)) continue;
+      const { text: leftover, attachments } = extractAttachedMarkers(block.text);
+      if (leftover.length) echoTexts.push(leftover);
+      for (const a of attachments) echoAttachments.push(a);
+    }
+  }
+  if (echoTexts.length || echoAttachments.length) {
+    out.push({
+      kind: 'user_echo',
+      text: echoTexts.join('\n'),
+      attachments: echoAttachments,
+    });
+  }
+  return out;
+}
+
+// A `user_echo` for a top-level (non-sub-agent) user prompt — i.e. one that
+// marks a turn boundary. Sub-agent echoes carry a parentToolUseId. Shared by
+// the event ring (instances.js) and the paging/archive code (eventArchive.js).
+export function isOuterUserEcho(ev) {
+  return ev?.kind === 'user_echo' && !ev.parentToolUseId;
+}
+
+// Snap a window-start index forward/backward so no sub-agent child event in
+// [start, end) is orphaned — i.e. every child's owning tool-call head is also
+// in range. For each orphan: if its head sits below `start`, pull `start` back
+// to include it; if the head is gone entirely (evicted from the ring), advance
+// `start` past all of that group's children so the window stays consistent.
+// Loops because one adjustment can expose another straddling group. Shared by
+// instances.js snapshotTail and eventArchive.js pageInstanceEvents.
+export function snapStartToGroupBoundary(arr, start, end) {
+  if (start <= 0) return start;
+  let changed = true;
+  while (changed) {
+    changed = false;
+    const headIds = new Set();
+    for (let i = start; i < end; i++) {
+      if (arr[i].toolUseId &&
+          (arr[i].kind === 'tool_use_start' || arr[i].kind === 'tool_use')) {
+        headIds.add(arr[i].toolUseId);
+      }
+    }
+    for (let i = start; i < end; i++) {
+      const pid = arr[i].parentToolUseId;
+      if (!pid || headIds.has(pid)) continue;
+      headIds.add(pid); // don't re-process this group in the same pass
+      let headIdx = -1;
+      for (let j = start - 1; j >= 0; j--) {
+        if (arr[j].toolUseId === pid &&
+            (arr[j].kind === 'tool_use_start' || arr[j].kind === 'tool_use')) {
+          headIdx = j; break;
+        }
+      }
+      if (headIdx >= 0) {
+        start = headIdx; // head is below — extend backward to include it
+      } else {
+        // Head is evicted — advance past all children of this group.
+        for (let j = start; j < end; j++) {
+          if (arr[j].parentToolUseId === pid) start = j + 1;
+        }
+      }
+      changed = true;
+      break; // restart with updated start
+    }
+  }
+  return start;
 }
 
 export default Parser;

@@ -11,7 +11,7 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { encodeCwd, claudeProjectsRoot } from './projects.js';
-import { extractAttachedMarkers, isSoftInterruptContent, isMidTurnNoteContent } from './parser.js';
+import { consolidateUserContent, isSoftInterruptContent } from './parser.js';
 
 // Predicate: does this persisted jsonl object emit at least one `user_echo`
 // UI event when replayed? Mirrors the live-path emission in
@@ -89,32 +89,7 @@ export function replayPersistedLine(obj, { seqHint = 0, parentToolUseId = null, 
       // the bubble renders text and attachments together — mirrors the
       // live `parser.js:_handleUser` consolidation. tool_result blocks
       // remain their own events.
-      const echoTexts = [];
-      const echoAttachments = [];
-      for (const block of content) {
-        if (!block || typeof block !== 'object') continue;
-        if (block.type === 'tool_result') {
-          events.push({
-            kind: 'tool_result',
-            toolUseId: block.tool_use_id ?? null,
-            content: block.content ?? '',
-            isError: !!block.is_error,
-          });
-        } else if (block.type === 'text') {
-          if (typeof block.text !== 'string') continue;
-          if (isMidTurnNoteContent(block.text)) continue;
-          const { text: leftover, attachments } = extractAttachedMarkers(block.text);
-          if (leftover.length) echoTexts.push(leftover);
-          for (const a of attachments) echoAttachments.push(a);
-        }
-      }
-      if (echoTexts.length || echoAttachments.length) {
-        events.push({
-          kind: 'user_echo',
-          text: echoTexts.join('\n'),
-          attachments: echoAttachments,
-        });
-      }
+      for (const ev of consolidateUserContent(content)) events.push(ev);
     }
     return tagAndReturn();
   }
@@ -129,22 +104,9 @@ export function replayPersistedLine(obj, { seqHint = 0, parentToolUseId = null, 
     const prompt = obj.attachment.prompt;
     if (!Array.isArray(prompt)) return tagAndReturn();
     if (isSoftInterruptContent(prompt)) return tagAndReturn(); // hidden soft-interrupt steer
-    const echoTexts = [];
-    const echoAttachments = [];
-    for (const block of prompt) {
-      if (!block || block.type !== 'text' || typeof block.text !== 'string') continue;
-      if (isMidTurnNoteContent(block.text)) continue;
-      const { text: leftover, attachments } = extractAttachedMarkers(block.text);
-      if (leftover.length) echoTexts.push(leftover);
-      for (const a of attachments) echoAttachments.push(a);
-    }
-    if (echoTexts.length || echoAttachments.length) {
-      events.push({
-        kind: 'user_echo',
-        text: echoTexts.join('\n'),
-        attachments: echoAttachments,
-      });
-    }
+    // queued_command prompts are orchestrator-authored text blocks (no
+    // tool_result), so consolidateUserContent emits just the one user_echo.
+    for (const ev of consolidateUserContent(prompt)) events.push(ev);
     return tagAndReturn();
   }
 
