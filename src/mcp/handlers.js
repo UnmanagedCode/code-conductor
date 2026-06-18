@@ -4,7 +4,6 @@
 
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
-import { execFile } from 'node:child_process';
 import {
   listProjects as fsListProjects,
   listSessions as fsListSessions,
@@ -13,7 +12,7 @@ import {
   createProject as fsCreateProject,
   getProject,
   findSessionLocation,
-  listWorkspaces as fsListWorkspaces,
+  summarizeWorkspaces,
   addWorkspace as fsAddWorkspace,
   removeWorkspace as fsRemoveWorkspace,
   renameWorkspace as fsRenameWorkspace,
@@ -24,7 +23,7 @@ import {
   isGitRepo, listWorktrees as fsListWorktrees, getWorktreeMergeStatus,
   createWorktree as fsCreateWorktree, removeWorktree, getWorktree,
   syncWorktree as fsSyncWorktree, mergeWorktreeIntoParent, buildRebasePrompt,
-  worktreeDirtyLines,
+  worktreeDirtyLines, runGit, DIFF_BYTE_CAP, assertValidBaseRef,
 } from '../worktrees.js';
 import { buildApprovePrompt, buildRejectPrompt } from '../planApproval.js';
 import { isKnownFamily, defaultVersion } from '../modelVersions.js';
@@ -83,14 +82,13 @@ async function getInst(instances, sessionId) {
     return { soft: { ok: false, code: 'SESSION_UNKNOWN', sessionId: sessionId ?? null,
       reason: `no session ${sessionId} is known to the orchestrator.` } };
   }
-  const matches = instances.idsForSession(sessionId).map(id => instances.get(id)).filter(Boolean);
-  const live = matches.find(i => i.proc);
+  const live = instances.liveForSession(sessionId);
   if (live) return { inst: live };
   // Not live — pay for the disk probe only here so the hot path is in-memory.
   // NOTE: findSessionLocation may not match a session whose worktree is
   // unregistered; such an edge resolves to SESSION_UNKNOWN rather than
   // SESSION_NOT_LIVE. Accepted — it never throws.
-  const known = matches.length > 0 || !!(await findSessionLocation(sessionId).catch(() => null));
+  const known = !!instances.anyForSession(sessionId) || !!(await findSessionLocation(sessionId).catch(() => null));
   if (known) {
     return { soft: { ok: false, code: 'SESSION_NOT_LIVE', sessionId,
       reason: `session ${sessionId} has no running process — call spawn_instance({resume:"${sessionId}"}) to bring it back.` } };
@@ -261,9 +259,7 @@ export async function spawnInstance(args, { instances, callerId }) {
   if (!instances) throw new Error('orchestrator has no InstanceManager');
   // callerId is the conductor's stable sessionId (?caller=). Resolve it to the
   // conductor's live instanceId so callerInstanceId stays an instanceId.
-  const callerInst = callerId
-    ? instances.idsForSession(callerId).map(id => instances.get(id)).find(i => i && i.proc)
-    : null;
+  const callerInst = callerId ? instances.liveForSession(callerId) : null;
   // Resolve family alias (opus/sonnet/haiku/fable) to the concrete version
   // configured in Settings → Models. Full model ids pass through unchanged.
   let model = args.model;
@@ -398,7 +394,7 @@ export async function killInstance({ sessionId }, { instances }) {
 // actually running. No in-byId match → SESSION_NOT_LIVE soft refusal.
 export async function respawnInstance({ sessionId }, { instances }) {
   if (!instances) throw new Error('orchestrator has no InstanceManager');
-  const inst = instances.idsForSession(sessionId).map(id => instances.get(id)).find(Boolean);
+  const inst = instances.anyForSession(sessionId);
   if (!inst) {
     return { ok: false, code: 'SESSION_NOT_LIVE', sessionId,
       reason: `no in-memory instance for session ${sessionId} — call spawn_instance({resume:"${sessionId}"}) to bring it back.` };
@@ -476,7 +472,7 @@ export async function setAutoApprovePlan({ sessionId, enabled }, { instances }) 
 //                       of whole lines, mid-file pages re-emit file/hunk
 //                       headers so each page parses standalone.
 // The byte cap is the per-page ceiling, never a silent terminal cut.
-const DIFF_BYTE_CAP = 200 * 1024;
+// DIFF_BYTE_CAP is imported from ../worktrees.js (single source of truth).
 
 // Parse `git diff --numstat` output into per-file {additions, deletions,
 // binary}. Binary files render as "-\t-\t<path>". File order matches
@@ -614,12 +610,10 @@ export async function getWorktreeDiff({ project, worktree, baseRef, contextLines
   const wt = await getWorktree(project, worktree);
   if (!wt) throw new Error(`worktree '${worktree}' not found under project '${project}'`);
   // Resolve the worktree's current HEAD sha (the right edge of the diff).
-  const headR = await runGitInDir(wt.worktreePath, ['rev-parse', 'HEAD']);
+  const headR = await runGit(wt.worktreePath, ['rev-parse', 'HEAD']);
   const head = headR.code === 0 ? headR.stdout.trim() : null;
   const ref = (typeof baseRef === 'string' && baseRef.trim()) ? baseRef.trim() : wt.baseBranch;
-  if (typeof baseRef === 'string' && baseRef.trim() && (ref.startsWith('-') || !/^[A-Za-z0-9._/-]+$/.test(ref))) {
-    throw Object.assign(new Error('invalid baseRef'), { statusCode: 400 });
-  }
+  if (typeof baseRef === 'string' && baseRef.trim()) assertValidBaseRef(ref);
   const ctx = Number.isInteger(contextLines) && contextLines >= 0 && contextLines <= 50 ? contextLines : 3;
   const pathArgs = Array.isArray(paths) ? paths.filter(p => typeof p === 'string' && p.trim()) : [];
   const pathspec = pathArgs.length ? ['--', ...pathArgs] : [];
@@ -631,8 +625,8 @@ export async function getWorktreeDiff({ project, worktree, baseRef, contextLines
     const numArgs = ['diff', '--numstat', '-M', `${ref}...HEAD`, ...pathspec];
     const nsArgs = ['diff', '--name-status', '-M', `${ref}...HEAD`, ...pathspec];
     const [rn, rns] = await Promise.all([
-      runGitInDir(wt.worktreePath, numArgs),
-      runGitInDir(wt.worktreePath, nsArgs),
+      runGit(wt.worktreePath, numArgs),
+      runGit(wt.worktreePath, nsArgs),
     ]);
     if (rn.code !== 0) throw new Error(`git diff --numstat failed in ${wt.worktreePath}: ${rn.stderr.trim() || rn.stdout.trim()}`);
     if (rns.code !== 0) throw new Error(`git diff --name-status failed in ${wt.worktreePath}: ${rns.stderr.trim() || rns.stdout.trim()}`);
@@ -653,7 +647,7 @@ export async function getWorktreeDiff({ project, worktree, baseRef, contextLines
   }
 
   // ---- diff mode: full diff with line-based pagination ----
-  const r = await runGitInDir(wt.worktreePath, ['diff', `--unified=${ctx}`, `${ref}...HEAD`, ...pathspec]);
+  const r = await runGit(wt.worktreePath, ['diff', `--unified=${ctx}`, `${ref}...HEAD`, ...pathspec]);
   if (r.code !== 0) {
     throw new Error(`git diff failed in ${wt.worktreePath}: ${r.stderr.trim() || r.stdout.trim()}`);
   }
@@ -777,15 +771,17 @@ export async function mergeWorktree({ sessionId, project, worktree }, { instance
     meta = await getWorktree(projectName, wtName);
     if (!meta) throw new Error(`worktree '${wtName}' not found under project '${projectName}'`);
   }
-  const status = await getWorktreeMergeStatus(meta);
-  if (status.behind != null && status.behind > 0) {
+  // The behind-guard now lives inside mergeWorktreeIntoParent (shared with the
+  // REST route); map its typed refusal to this surface's exact wording.
+  const result = await mergeWorktreeIntoParent(projectName, wtName);
+  if (result.code === 'WORKTREE_BEHIND') {
     return {
       ok: false,
       code: 'WORKTREE_BEHIND',
-      reason: `worktree is behind '${meta.baseBranch}' by ${status.behind} commit(s) — call sync_worktree first to fast-forward / rebase`,
+      reason: `worktree is behind '${result.baseBranch}' by ${result.behind} commit(s) — call sync_worktree first to fast-forward / rebase`,
     };
   }
-  return mergeWorktreeIntoParent(projectName, wtName);
+  return result;
 }
 
 // ---------- workspaces ----------
@@ -797,18 +793,7 @@ export async function mergeWorktree({ sessionId, project, worktree }, { instance
 // up its own organisation alongside the human.
 
 export async function listWorkspaces() {
-  const registered = await fsListWorkspaces();
-  const projects = await fsListProjects();
-  const counts = new Map();
-  const derived = new Set();
-  for (const p of projects) {
-    if (p.workspace) {
-      derived.add(p.workspace);
-      counts.set(p.workspace, (counts.get(p.workspace) ?? 0) + 1);
-    }
-  }
-  const names = [...new Set([...registered, ...derived])].sort((a, b) => a.localeCompare(b));
-  return names.map(name => ({ name, projectCount: counts.get(name) ?? 0 }));
+  return summarizeWorkspaces();
 }
 
 export async function createWorkspace({ name }) {
@@ -847,7 +832,7 @@ export async function setProjectWorkspace({ project, workspace }) {
 export async function createProject({ name, gitInit = false }) {
   const created = await fsCreateProject(name);
   if (gitInit) {
-    const r = await runGitInDir(created.path, ['init', '-q']);
+    const r = await runGit(created.path, ['init', '-q']);
     if (r.code !== 0) {
       throw new Error(`git init failed in ${created.path}: ${r.stderr.trim() || r.stdout.trim()}`);
     }
@@ -1086,22 +1071,6 @@ async function resolveProjectCwd(projectName, worktreeName) {
   return { cwd: proj.path, worktreeMeta: null, projectPath: proj.path };
 }
 
-// Run `git` with the standard execFile wrapper, never throwing — always
-// returns {stdout, stderr, code}. Mirrors src/worktrees.js's runGit.
-function runGitInDir(cwd, args) {
-  return new Promise((resolve) => {
-    execFile('git', ['-C', cwd, ...args], {
-      encoding: 'utf8', maxBuffer: 16 * 1024 * 1024,
-    }, (err, stdout, stderr) => {
-      if (err) {
-        resolve({ stdout: stdout ?? '', stderr: stderr ?? err.message ?? '', code: typeof err.code === 'number' ? err.code : 1 });
-      } else {
-        resolve({ stdout, stderr, code: 0 });
-      }
-    });
-  });
-}
-
 // Read the top-level directory listing, hiding dotfiles by default.
 // Used by project_status for a quick "what's in this dir?" snapshot.
 // Errors return an empty list.
@@ -1137,10 +1106,10 @@ export async function projectStatus({ project, worktree, logLimit = 20 }) {
   }
   out.isGitRepo = true;
   // Branch (may be null on detached HEAD).
-  const branchR = await runGitInDir(cwd, ['symbolic-ref', '--quiet', '--short', 'HEAD']);
+  const branchR = await runGit(cwd, ['symbolic-ref', '--quiet', '--short', 'HEAD']);
   out.branch = branchR.code === 0 ? branchR.stdout.trim() || null : null;
   // HEAD sha + subject.
-  const headR = await runGitInDir(cwd, ['log', '-1', '--pretty=%H%n%s']);
+  const headR = await runGit(cwd, ['log', '-1', '--pretty=%H%n%s']);
   if (headR.code === 0) {
     const [sha, ...subj] = headR.stdout.trim().split('\n');
     out.head = { sha: sha ?? null, subject: subj.join('\n') || null };
@@ -1152,7 +1121,7 @@ export async function projectStatus({ project, worktree, logLimit = 20 }) {
     const d = await worktreeDirtyLines(cwd);
     out.dirty = d.ok ? d.lines : [];
   } else {
-    const d = await runGitInDir(cwd, ['status', '--porcelain']);
+    const d = await runGit(cwd, ['status', '--porcelain']);
     out.dirty = d.code === 0
       ? d.stdout.split('\n').map(s => s.trim()).filter(Boolean)
       : [];
@@ -1168,7 +1137,7 @@ export async function projectStatus({ project, worktree, logLimit = 20 }) {
   }
   // Recent commits (oneline). Negative or 0 logLimit → skip.
   if (Number.isInteger(logLimit) && logLimit > 0) {
-    const logR = await runGitInDir(cwd, ['log', `-${logLimit}`, '--pretty=%h %s']);
+    const logR = await runGit(cwd, ['log', `-${logLimit}`, '--pretty=%h %s']);
     out.recentCommits = logR.code === 0
       ? logR.stdout.split('\n').map(s => s.trim()).filter(Boolean)
       : [];
@@ -1178,7 +1147,7 @@ export async function projectStatus({ project, worktree, logLimit = 20 }) {
     out.baseBranch = worktreeMeta.baseBranch;
     out.baseSha = worktreeMeta.baseSha;
     out.mergeStatus = await getWorktreeMergeStatus(worktreeMeta).catch(() => ({ ahead: null, behind: null }));
-    const diffR = await runGitInDir(cwd, ['diff', '--stat', `${worktreeMeta.baseBranch}...HEAD`]);
+    const diffR = await runGit(cwd, ['diff', '--stat', `${worktreeMeta.baseBranch}...HEAD`]);
     out.diffStat = diffR.code === 0 ? diffR.stdout.trim() : '';
   }
   return out;

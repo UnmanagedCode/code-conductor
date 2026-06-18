@@ -30,7 +30,7 @@ function execFileP(file, args, options = {}) {
   });
 }
 
-export const WORKTREE_META_FILENAME = 'worktree.json';
+const WORKTREE_META_FILENAME = 'worktree.json';
 
 // Where this project / worktree's central-store entry lives. Pass
 // `worktreeName: null` for the project root.
@@ -66,7 +66,7 @@ function worktreeDirName(project, id) {
   return `${project}_worktree_${id}`;
 }
 
-async function runGit(cwd, args) {
+export async function runGit(cwd, args) {
   try {
     const { stdout, stderr } = await execFileP('git', ['-C', cwd, ...args], {
       encoding: 'utf8',
@@ -118,7 +118,7 @@ async function writeMeta(project, worktreeName, meta) {
   await fs.writeFile(metaPath(project, worktreeName), JSON.stringify(meta, null, 2) + '\n', 'utf8');
 }
 
-export async function readMeta(project, worktreeName) {
+async function readMeta(project, worktreeName) {
   let text;
   try { text = await fs.readFile(metaPath(project, worktreeName), 'utf8'); }
   catch (e) { if (e.code === 'ENOENT') return null; throw e; }
@@ -326,6 +326,18 @@ export async function mergeWorktreeIntoParent(projectName, worktreeName) {
     err.statusCode = 404;
     throw err;
   }
+  // 0. Refuse if the worktree branch is behind its base — the merge would
+  //    still work, but conflicts would surface on the parent side instead of
+  //    being resolved inside the worktree (where the agent can help). Checked
+  //    first so it takes precedence over the branch-mismatch / dirty gates,
+  //    matching the order the REST + MCP callers used before this moved in.
+  //    Returns data fields only; each caller maps the code to its own
+  //    audience-specific reason string (REST "click Sync first" / MCP "call
+  //    sync_worktree first").
+  const status = await getWorktreeMergeStatus(meta);
+  if (status.behind != null && status.behind > 0) {
+    return { ok: false, code: 'WORKTREE_BEHIND', behind: status.behind, baseBranch: meta.baseBranch };
+  }
   // 1. Parent must currently be on the captured base branch — otherwise
   //    the merge would land work somewhere unexpected.
   const head = await getHeadBranchAndSha(meta.parentPath);
@@ -476,9 +488,26 @@ export async function removeAllWorktreesForProject(projectName) {
   }
 }
 
-// Maximum bytes of raw git diff output to keep. Matches the cap in the
-// MCP get_worktree_diff handler so both surfaces behave consistently.
-const DIFF_BYTE_CAP = 200 * 1024;
+// Maximum bytes of raw git diff output to keep. Shared by both diff surfaces
+// (REST structured diff here + the MCP get_worktree_diff handler) so they
+// behave consistently.
+export const DIFF_BYTE_CAP = 200 * 1024;
+
+// Security-relevant allow-list for a user-supplied diff base ref. The single
+// definition of this regex — both the REST and MCP diff surfaces validate
+// through assertValidBaseRef so the option-injection guard can't drift apart.
+// Rejects leading '-' (would be parsed as a git flag) and anything outside the
+// conservative ref-name character set.
+const BASE_REF_RE = /^[A-Za-z0-9._/-]+$/;
+
+// Throw a 400 if `ref` isn't a safe base ref. Callers decide WHEN to validate
+// (each surface has its own "a baseRef was supplied" trigger) — this owns only
+// the check + the canonical error.
+export function assertValidBaseRef(ref) {
+  if (ref.startsWith('-') || !BASE_REF_RE.test(ref)) {
+    throw Object.assign(new Error('invalid baseRef'), { statusCode: 400 });
+  }
+}
 
 // Parse a raw unified diff string (from `git diff --unified=N base...HEAD`)
 // into a per-file array of structured objects. Pure string-walking, no deps.
@@ -556,11 +585,7 @@ export async function getWorktreeDiff(projectName, worktreeName, { baseRef, cont
   }
   const ctx = Math.max(0, Math.min(50, Number.isFinite(Number(contextLines)) ? Math.floor(Number(contextLines)) : 3));
   const ref = baseRef || meta.baseBranch;
-  if (baseRef && (ref.startsWith('-') || !/^[A-Za-z0-9._/-]+$/.test(ref))) {
-    const err = new Error('invalid baseRef');
-    err.statusCode = 400;
-    throw err;
-  }
+  if (baseRef) assertValidBaseRef(ref);
   const r = await runGit(meta.worktreePath, ['diff', `--unified=${ctx}`, `${ref}...HEAD`]);
   if (r.code !== 0) {
     const msg = (r.stderr || r.stdout).trim() || `git diff ${ref}...HEAD failed`;
@@ -728,11 +753,3 @@ export async function getProjectUncommittedDiff(projectName, { contextLines = 3 
   const totalDels = files.reduce((s, f) => s + f.dels, 0);
   return { project: projectName, files, totalAdds, totalDels, truncated };
 }
-
-// Re-exported for tests / route handlers.
-export const _internal = {
-  worktreeBranchName,
-  worktreeDirName,
-  runGit,
-  shortId,
-};

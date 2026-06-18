@@ -6,8 +6,8 @@ import {
   summarizeSessions, deleteProject, deleteSessionForCwd, archiveSessionForCwd,
   listArchivedGroupedByProject, getProject,
   findSessionLocation, writeProjectMeta,
-  listWorkspaces, addWorkspace, removeWorkspace, renameWorkspace,
-  validateName,
+  addWorkspace, removeWorkspace, renameWorkspace,
+  summarizeWorkspaces, validateName,
 } from './projects.js';
 import { WebSocket } from 'ws';
 import {
@@ -52,6 +52,15 @@ import { setTitle as setSessionTitle, MAX_TITLE_LEN } from './sessionTitles.js';
 import { getAccountUsage } from './accountUsage.js';
 import { getCostSummary } from './costTracking.js';
 import { unmarkArchived } from './archivedSessions.js';
+
+// Session ids are user-supplied path params on many routes; this is the single
+// allow-list + rejection (400 "invalid sessionId") they all share.
+const SID_RE = /^[A-Za-z0-9_-]+$/;
+function assertValidSid(sid) {
+  if (!SID_RE.test(sid)) {
+    throw Object.assign(new Error('invalid sessionId'), { statusCode: 400 });
+  }
+}
 
 const CONTENT_TYPE_BY_EXT = {
   png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg',
@@ -237,18 +246,7 @@ export function buildRoutes({ instances, serverCtx } = {}) {
 
   r.get('/workspaces', async (req, res, next) => {
     try {
-      const registered = await listWorkspaces();
-      const projects = await listProjects();
-      const derived = new Set();
-      const counts = new Map();
-      for (const p of projects) {
-        if (p.workspace) {
-          derived.add(p.workspace);
-          counts.set(p.workspace, (counts.get(p.workspace) ?? 0) + 1);
-        }
-      }
-      const names = [...new Set([...registered, ...derived])].sort((a, b) => a.localeCompare(b));
-      res.json(names.map(name => ({ name, projectCount: counts.get(name) ?? 0 })));
+      res.json(await summarizeWorkspaces());
     } catch (e) { next(e); }
   });
 
@@ -305,26 +303,32 @@ export function buildRoutes({ instances, serverCtx } = {}) {
   // running instance has this sessionId — `claude --resume <sid>`
   // would otherwise be looking at a deleted jsonl mid-turn. ?force=1
   // kills attached instances first, then deletes.
-  async function deleteSessionAtCwd({ cwd, sessionId, force }) {
-    if (instances) {
-      const attached = instances.idsForSession(sessionId)
-        .map(id => instances.get(id))
-        .filter(Boolean);
-      const running = attached.filter(i => i.proc);
-      if (running.length > 0 && !force) {
-        throw Object.assign(new Error(
-          `session ${sessionId} is attached to a running instance — kill it first or pass force=1`,
-        ), { statusCode: 409 });
-      }
-      if (force) {
-        await Promise.all(running.map(i => instances.remove(i.id).catch(() => {})));
-      }
-      // Also drop exited/crashed instances pointing at this sessionId:
-      // the jsonl is about to be removed so Resume would no longer work,
-      // and leaving them in byId surfaces as a ghost row in the sidebar.
-      const stale = attached.filter(i => !i.proc);
-      await Promise.all(stale.map(i => instances.remove(i.id).catch(() => {})));
+  // Detach every instance pointing at `sessionId` before its jsonl is
+  // deleted/archived: 409 if a running one is attached (unless force), else
+  // force-remove running ones and always drop the exited/crashed ones (leaving
+  // them in byId would surface as a ghost sidebar row / let Resume reattach a
+  // jsonl that's about to change). `verb` is the action phrase in the 409 (the
+  // only difference between the delete and archive paths).
+  async function detachInstancesForSession({ sessionId, force, verb }) {
+    if (!instances) return;
+    const attached = instances.idsForSession(sessionId)
+      .map(id => instances.get(id))
+      .filter(Boolean);
+    const running = attached.filter(i => i.proc);
+    if (running.length > 0 && !force) {
+      throw Object.assign(new Error(
+        `session ${sessionId} is attached to a running instance — ${verb} or pass force=1`,
+      ), { statusCode: 409 });
     }
+    if (force) {
+      await Promise.all(running.map(i => instances.remove(i.id).catch(() => {})));
+    }
+    const stale = attached.filter(i => !i.proc);
+    await Promise.all(stale.map(i => instances.remove(i.id).catch(() => {})));
+  }
+
+  async function deleteSessionAtCwd({ cwd, sessionId, force }) {
+    await detachInstancesForSession({ sessionId, force, verb: 'kill it first' });
     const removed = await deleteSessionForCwd(cwd, sessionId);
     if (!removed) {
       throw Object.assign(new Error(`session ${sessionId} not found`), { statusCode: 404 });
@@ -334,7 +338,7 @@ export function buildRoutes({ instances, serverCtx } = {}) {
   r.delete('/projects/:name/sessions/:sid', async (req, res, next) => {
     try {
       const sid = String(req.params.sid || '');
-      if (!/^[A-Za-z0-9_-]+$/.test(sid)) throw Object.assign(new Error('invalid sessionId'), { statusCode: 400 });
+      assertValidSid(sid);
       const proj = await getProject(req.params.name);
       const force = req.query.force === '1' || req.query.force === 'true';
       await deleteSessionAtCwd({ cwd: proj.path, sessionId: sid, force });
@@ -345,7 +349,7 @@ export function buildRoutes({ instances, serverCtx } = {}) {
   r.delete('/projects/:name/worktrees/:wt/sessions/:sid', async (req, res, next) => {
     try {
       const sid = String(req.params.sid || '');
-      if (!/^[A-Za-z0-9_-]+$/.test(sid)) throw Object.assign(new Error('invalid sessionId'), { statusCode: 400 });
+      assertValidSid(sid);
       const wt = await getWorktree(req.params.name, req.params.wt);
       if (!wt) throw Object.assign(new Error('worktree not found'), { statusCode: 404 });
       const force = req.query.force === '1' || req.query.force === 'true';
@@ -361,22 +365,7 @@ export function buildRoutes({ instances, serverCtx } = {}) {
   // Unlike delete, this keeps the jsonl — it only records the sessionId
   // in the global archived set.
   async function archiveSessionAtCwd({ cwd, sessionId, force }) {
-    if (instances) {
-      const attached = instances.idsForSession(sessionId)
-        .map(id => instances.get(id))
-        .filter(Boolean);
-      const running = attached.filter(i => i.proc);
-      if (running.length > 0 && !force) {
-        throw Object.assign(new Error(
-          `session ${sessionId} is attached to a running instance — stop it first or pass force=1`,
-        ), { statusCode: 409 });
-      }
-      if (force) {
-        await Promise.all(running.map(i => instances.remove(i.id).catch(() => {})));
-      }
-      const stale = attached.filter(i => !i.proc);
-      await Promise.all(stale.map(i => instances.remove(i.id).catch(() => {})));
-    }
+    await detachInstancesForSession({ sessionId, force, verb: 'stop it first' });
     const archived = await archiveSessionForCwd(cwd, sessionId);
     if (!archived) {
       throw Object.assign(new Error(`session ${sessionId} not found`), { statusCode: 404 });
@@ -386,7 +375,7 @@ export function buildRoutes({ instances, serverCtx } = {}) {
   r.post('/projects/:name/sessions/:sid/archive', async (req, res, next) => {
     try {
       const sid = String(req.params.sid || '');
-      if (!/^[A-Za-z0-9_-]+$/.test(sid)) throw Object.assign(new Error('invalid sessionId'), { statusCode: 400 });
+      assertValidSid(sid);
       const proj = await getProject(req.params.name);
       const force = req.query.force === '1' || req.query.force === 'true';
       await archiveSessionAtCwd({ cwd: proj.path, sessionId: sid, force });
@@ -397,7 +386,7 @@ export function buildRoutes({ instances, serverCtx } = {}) {
   r.post('/projects/:name/worktrees/:wt/sessions/:sid/archive', async (req, res, next) => {
     try {
       const sid = String(req.params.sid || '');
-      if (!/^[A-Za-z0-9_-]+$/.test(sid)) throw Object.assign(new Error('invalid sessionId'), { statusCode: 400 });
+      assertValidSid(sid);
       const wt = await getWorktree(req.params.name, req.params.wt);
       if (!wt) throw Object.assign(new Error('worktree not found'), { statusCode: 404 });
       const force = req.query.force === '1' || req.query.force === 'true';
@@ -419,7 +408,7 @@ export function buildRoutes({ instances, serverCtx } = {}) {
   r.post('/projects/:name/sessions/:sid/restore', async (req, res, next) => {
     try {
       const sid = String(req.params.sid || '');
-      if (!/^[A-Za-z0-9_-]+$/.test(sid)) throw Object.assign(new Error('invalid sessionId'), { statusCode: 400 });
+      assertValidSid(sid);
       await unmarkArchived(sid);
       res.json({ ok: true });
     } catch (e) { next(e); }
@@ -428,7 +417,7 @@ export function buildRoutes({ instances, serverCtx } = {}) {
   r.post('/projects/:name/worktrees/:wt/sessions/:sid/restore', async (req, res, next) => {
     try {
       const sid = String(req.params.sid || '');
-      if (!/^[A-Za-z0-9_-]+$/.test(sid)) throw Object.assign(new Error('invalid sessionId'), { statusCode: 400 });
+      assertValidSid(sid);
       await unmarkArchived(sid);
       res.json({ ok: true });
     } catch (e) { next(e); }
@@ -532,9 +521,7 @@ export function buildRoutes({ instances, serverCtx } = {}) {
   r.put('/sessions/:sessionId/title', async (req, res, next) => {
     try {
       const sid = String(req.params.sessionId || '');
-      if (!/^[A-Za-z0-9_-]+$/.test(sid)) {
-        throw Object.assign(new Error('invalid sessionId'), { statusCode: 400 });
-      }
+      assertValidSid(sid);
       const raw = req.body?.title;
       if (raw != null && typeof raw !== 'string') {
         throw Object.assign(new Error('title must be a string'), { statusCode: 400 });
@@ -554,9 +541,7 @@ export function buildRoutes({ instances, serverCtx } = {}) {
   r.get('/sessions/:sessionId/locate', async (req, res, next) => {
     try {
       const sid = String(req.params.sessionId || '');
-      if (!/^[A-Za-z0-9_-]+$/.test(sid)) {
-        throw Object.assign(new Error('invalid sessionId'), { statusCode: 400 });
-      }
+      assertValidSid(sid);
       const hit = await findSessionLocation(sid);
       if (!hit) throw Object.assign(new Error('session not found'), { statusCode: 404 });
       res.json(hit);
@@ -766,15 +751,17 @@ export function buildRoutes({ instances, serverCtx } = {}) {
         const inst = instances.get(req.params.id);
         if (!inst) throw Object.assign(new Error('instance not found'), { statusCode: 404 });
         if (!inst.worktree) throw Object.assign(new Error('instance is not attached to a worktree'), { statusCode: 400 });
-        const status = await getWorktreeMergeStatus(inst.worktree);
-        if (status.behind != null && status.behind > 0) {
+        // The behind-guard now lives inside mergeWorktreeIntoParent (shared with
+        // the MCP handler); map its typed refusal to this surface's exact wording
+        // + status (HTTP 200, no cache invalidation — nothing changed).
+        const result = await mergeWorktreeIntoParent(inst.project, inst.worktree.worktreeName);
+        if (result.code === 'WORKTREE_BEHIND') {
           res.json({
             ok: false,
-            reason: `worktree is behind '${inst.worktree.baseBranch}' by ${status.behind} commit(s) — click Sync first to fast-forward / rebase`,
+            reason: `worktree is behind '${result.baseBranch}' by ${result.behind} commit(s) — click Sync first to fast-forward / rebase`,
           });
           return;
         }
-        const result = await mergeWorktreeIntoParent(inst.project, inst.worktree.worktreeName);
         invalidate(inst.project);
         res.json(result);
       } catch (e) { next(e); }
