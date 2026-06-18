@@ -29,6 +29,7 @@
 // `nextBefore` cursor that works across the boundary.
 
 import { loadPersistedTranscript } from './transcript.js';
+import { isOuterUserEcho, snapStartToGroupBoundary } from './parser.js';
 
 const LIMIT_DEFAULT = 200;
 const LIMIT_MAX = 500;
@@ -36,10 +37,6 @@ const LIMIT_MAX = 500;
 export function clampLimit(n) {
   if (!Number.isInteger(n) || n < 1) return LIMIT_DEFAULT;
   return Math.min(n, LIMIT_MAX);
-}
-
-function isOuterUserEcho(ev) {
-  return ev?.kind === 'user_echo' && !ev.parentToolUseId;
 }
 
 // First index in a `_seq`-sorted array whose seq is >= `seq`.
@@ -167,35 +164,10 @@ export async function pageInstanceEvents(inst, { before = null, after = null, li
     // child event in [start..end) has its owning tool-call head present in
     // the same range. A child whose head is missing would be silently
     // orphaned by the renderer (conversation.js:apply → toolBlocks lookup).
-    // Loop because pulling start back can expose deeper nesting.
-    if (start > 0) {
-      let changed = true;
-      while (changed) {
-        changed = false;
-        const headIds = new Set();
-        for (let i = start; i < end; i++) {
-          if (combined[i].toolUseId &&
-              (combined[i].kind === 'tool_use_start' || combined[i].kind === 'tool_use')) {
-            headIds.add(combined[i].toolUseId);
-          }
-        }
-        for (let i = start; i < end; i++) {
-          const pid = combined[i].parentToolUseId;
-          if (!pid || headIds.has(pid)) continue;
-          // Search backward for the owning head event.
-          for (let j = start - 1; j >= 0; j--) {
-            if (combined[j].toolUseId === pid &&
-                (combined[j].kind === 'tool_use_start' || combined[j].kind === 'tool_use')) {
-              start = j;
-              changed = true;
-              headIds.add(pid);
-              break;
-            }
-          }
-          if (changed) break; // restart with wider window
-        }
-      }
-    }
+    // The owning head is always present below the window here (combined is a
+    // full archive+ring, and cuts land on turn boundaries), so the shared
+    // helper only ever pulls start back — its evicted-head branch is unused.
+    start = snapStartToGroupBoundary(combined, start, end);
     events = combined.slice(start, end);
     hasMore = start > 0
       // Served down to the very start of what we have. With the archive

@@ -19,6 +19,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { encodeCwd, claudeProjectsRoot } from './projects.js';
 import { isPureUserPromptLine, writeSessionMetadata } from './transcript.js';
+import { extractAttachedMarkers } from './parser.js';
 
 function sessionFilePath(cwd, sessionId) {
   return path.join(claudeProjectsRoot(), encodeCwd(cwd), `${sessionId}.jsonl`);
@@ -32,11 +33,11 @@ function tryParse(line) {
 }
 
 // Pull the prompt text that produced a user_echo when this object is
-// replayed. Used to prefill the composer after a rewind/fork. Mirrors
-// the consolidation logic in transcript.js (text blocks joined with
-// newlines, attachment markers stripped — `extractAttachedMarkers` lives
-// in parser.js but here we keep it simple and return the joined raw text
-// minus the `Attached file:` lines).
+// replayed. Used to prefill the composer after a rewind/fork. Mirrors the
+// consolidation logic in transcript.js: text blocks joined with newlines,
+// attachment markers stripped via parser.js's `extractAttachedMarkers` (the
+// same store-path-anchored matcher the live/replay path uses, so prefill
+// can never diverge from what the bubble showed).
 function extractUserPromptText(obj) {
   // `type:"attachment"` queued_command lines stash the text blocks under
   // `attachment.prompt` instead of `message.content` — same block shape,
@@ -55,10 +56,8 @@ function extractUserPromptText(obj) {
     if (!b || b.type !== 'text' || typeof b.text !== 'string') continue;
     // Strip attachment marker lines we wrote at send time so they don't
     // get prefilled back into the composer as visible prose.
-    const lines = b.text.split('\n').filter(l => !/^Attached file:\s*`[^`]+`\s*$/.test(l));
-    // Drop trailing blank lines left by stripped markers.
-    while (lines.length && lines[lines.length - 1].trim() === '') lines.pop();
-    if (lines.length) parts.push(lines.join('\n'));
+    const { text: leftover } = extractAttachedMarkers(b.text);
+    if (leftover.length) parts.push(leftover);
   }
   return parts.join('\n');
 }
@@ -127,7 +126,6 @@ async function readAndSplit({ cwd, sessionId, userMessageIndex }) {
   return {
     prefix,
     dropped,
-    target,
     droppedText: extractUserPromptText(target),
     lastSurvivingUuid,
   };
@@ -227,6 +225,5 @@ export async function forkSessionAtUserMessage({ cwd, sessionId, userMessageInde
     newSessionId: newSid,
     droppedText,
     lastSurvivingUuid,
-    prefixLineCount: prefix.length,
   };
 }

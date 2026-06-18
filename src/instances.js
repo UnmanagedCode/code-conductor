@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import readline from 'node:readline';
 import { promises as fsp, readFileSync, mkdirSync, createWriteStream, writeFileSync, rmSync } from 'node:fs';
 import path from 'node:path';
-import { Parser, SOFT_INTERRUPT_MARKER } from './parser.js';
+import { Parser, SOFT_INTERRUPT_MARKER, isOuterUserEcho, snapStartToGroupBoundary } from './parser.js';
 import { getProject, claudeProjectsRoot, encodeCwd } from './projects.js';
 import { createWorktree, getWorktree, debugBaseDir } from './worktrees.js';
 import { getTitle as getSessionTitle, deleteTitle as deleteSessionTitle } from './sessionTitles.js';
@@ -110,10 +110,6 @@ const RING_TRIM_SLACK = 256;
 // Matches the long-documented "500 events" figure, so sessions under 500
 // events behave exactly as before. Override with ORCH_SNAPSHOT_TAIL.
 const DEFAULT_SNAPSHOT_TAIL = 500;
-
-function isOuterUserEcho(ev) {
-  return ev?.kind === 'user_echo' && !ev.parentToolUseId;
-}
 
 export class EventLog {
   constructor({ cap } = {}) {
@@ -235,7 +231,7 @@ export class Instance extends EventEmitter {
     // "stopping…" marker + the "Interrupt now" escalate affordance.
     this.interrupting = false;
     // Set true by the resume-restart path before SIGKILL so _handleExit
-    // skips _deleteTempArtifacts() — the temp jsonl must survive to be
+    // skips _archiveTempSession() — the temp jsonl must survive to be
     // resumed on the next boot. Never persisted.
     this._suppressTempDelete = false;
     // Auto-stop / auto-resume on overage state. `autoStoppedForOverage` is
@@ -342,44 +338,7 @@ export class Instance extends EventEmitter {
     //   - Head evicted (not in ring) → advance start past all children of
     //     that group; they will be served later via lazy paging alongside
     //     their head from the combined archive+ring.
-    // Re-runs after every adjustment because fixing one group can expose
-    // a different group that also straddles the new start boundary.
-    {
-      let gChanged = true;
-      while (gChanged) {
-        gChanged = false;
-        const headIds = new Set();
-        for (let i = start; i < buf.length; i++) {
-          if (buf[i].toolUseId &&
-              (buf[i].kind === 'tool_use_start' || buf[i].kind === 'tool_use')) {
-            headIds.add(buf[i].toolUseId);
-          }
-        }
-        for (let i = start; i < buf.length; i++) {
-          const pid = buf[i].parentToolUseId;
-          if (!pid || headIds.has(pid)) continue;
-          headIds.add(pid); // don't re-process this group in the same pass
-          let headIdx = -1;
-          for (let j = start - 1; j >= 0; j--) {
-            if (buf[j].toolUseId === pid &&
-                (buf[j].kind === 'tool_use_start' || buf[j].kind === 'tool_use')) {
-              headIdx = j; break;
-            }
-          }
-          if (headIdx >= 0) {
-            start = headIdx; // head is in ring — extend backward to include it
-          } else {
-            // Head is evicted — advance past all children of this group so
-            // the snapshot stays consistent; they'll come via lazy paging.
-            for (let j = start; j < buf.length; j++) {
-              if (buf[j].parentToolUseId === pid) start = j + 1;
-            }
-          }
-          gChanged = true;
-          break; // restart with updated start
-        }
-      }
-    }
+    start = snapStartToGroupBoundary(buf, start, buf.length);
     return buf.slice(start);
   }
 
@@ -1458,10 +1417,11 @@ export class InstanceManager extends EventEmitter {
         this._armAutoResume(inst);
       }
       // Temp sessions are disposable: once the subprocess is gone the
-      // jsonl has been wiped by _deleteTempArtifacts(), so Resume can
-      // never recover them. Drop them from byId on exit/crash so the
-      // sidebar's Temp Sessions subnode collapses instead of piling up
-      // dim ghost rows the user would have to delete by hand.
+      // session is archived by _archiveTempSession() (the jsonl is retained
+      // and stays resumable, just moved into the — archived — section), so
+      // there's nothing live left to track here. Drop them from byId on
+      // exit/crash so the sidebar's Temp Sessions subnode collapses instead
+      // of piling up dim ghost rows the user would have to delete by hand.
       // `inst.temp` is read at event time, so a session promoted via
       // /promote (which flips temp=false) survives this path.
       if (inst.temp && !inst.proc &&
@@ -1635,7 +1595,7 @@ export class InstanceManager extends EventEmitter {
 
   // Synchronously kill every live temp subprocess and delete its persisted
   // jsonl + sub-agent dir. The async `shutdown()` above relies on subprocess
-  // `exit` events to fire `_deleteTempArtifacts()`, which races process.exit()
+  // `exit` events to fire `_archiveTempSession()`, which races process.exit()
   // during the restart path — so the restart path calls this first to
   // guarantee on-disk cleanup before we exit.
   //
@@ -1698,7 +1658,7 @@ export class InstanceManager extends EventEmitter {
   // subprocess (temp AND non-temp) via stdin EOF — all turns are already done
   // before this is called, so no orphan can still be writing the jsonl we are
   // about to carry over. DO NOT delete any jsonl. Set `_suppressTempDelete`
-  // first so each temp instance's _handleExit skips _deleteTempArtifacts(),
+  // first so each temp instance's _handleExit skips _archiveTempSession(),
   // preserving the transcript for `--resume` on boot.
   shutdownForResumeSync() {
     const live = [];
