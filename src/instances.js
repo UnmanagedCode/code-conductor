@@ -1192,7 +1192,7 @@ export class InstanceManager extends EventEmitter {
 
   _deliverIdleCallback(callerSessionId, targetSessionId, opts) {
     // Resolve the live caller instance from its sessionId.
-    const caller = this.idsForSession(callerSessionId).map(id => this.byId.get(id)).find(i => i && i.proc);
+    const caller = this.liveForSession(callerSessionId);
     if (!caller) return; // caller gone — drop silently.
     const stub = opts?.timedOut
       ? `Worker \`${targetSessionId}\` did NOT finish — timed out after ${opts.timeoutMs}ms; ` +
@@ -1292,6 +1292,17 @@ export class InstanceManager extends EventEmitter {
     return [...this.byId.values()]
       .filter(i => i.sessionId === sessionId)
       .map(i => i.id);
+  }
+  // The single live (proc-attached) instance for a sessionId, or null. Folds
+  // the `idsForSession(sid).map(get).find(i => i && i.proc)` idiom scattered
+  // across the MCP handlers + idle-callback delivery.
+  liveForSession(sessionId) {
+    return this.idsForSession(sessionId).map(id => this.byId.get(id)).find(i => i && i.proc) ?? null;
+  }
+  // Any instance (live or exited) for a sessionId, or null — the `.find(Boolean)`
+  // counterpart used where a non-running instance is still a valid target.
+  anyForSession(sessionId) {
+    return this.idsForSession(sessionId).map(id => this.byId.get(id)).find(Boolean) ?? null;
   }
   // SessionIds of live (proc-attached) temp instances whose cwd matches.
   // Routes use this to strip running temp jsonls from the regular Sessions

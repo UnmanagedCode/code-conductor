@@ -217,6 +217,25 @@ export async function listWorkspaces() {
   }
 }
 
+// The sidebar workspace summary: the union of registered workspace names and
+// names derived from project membership, each with its member count, sorted by
+// name. Shared by the REST GET /workspaces route and the MCP list_workspaces
+// tool so the union/count logic lives in one place.
+export async function summarizeWorkspaces() {
+  const registered = await listWorkspaces();
+  const projects = await listProjects();
+  const derived = new Set();
+  const counts = new Map();
+  for (const p of projects) {
+    if (p.workspace) {
+      derived.add(p.workspace);
+      counts.set(p.workspace, (counts.get(p.workspace) ?? 0) + 1);
+    }
+  }
+  const names = [...new Set([...registered, ...derived])].sort((a, b) => a.localeCompare(b));
+  return names.map(name => ({ name, projectCount: counts.get(name) ?? 0 }));
+}
+
 async function writeWorkspacesRegistry(names) {
   const file = workspacesFile();
   const cleaned = [...new Set(names.map(n => (typeof n === 'string' ? n.trim() : '')).filter(Boolean))]
