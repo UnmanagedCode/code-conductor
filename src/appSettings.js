@@ -8,9 +8,9 @@
 // whisper model in transcribe.js, are not hot). Writes are atomic
 // (tmp → rename) and refresh the cache.
 
-import { promises as fs, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import { orchStoreRoot } from './projects.js';
+import { orchStoreRoot, writeFileAtomic } from './projects.js';
 import { MODEL_FAMILIES } from './modelVersions.js';
 
 function settingsPath() {
@@ -38,10 +38,7 @@ export function readSettings() {
 
 async function writeSettings(next) {
   const p = settingsPath();
-  await fs.mkdir(path.dirname(p), { recursive: true });
-  const tmp = `${p}.${process.pid}.tmp`;
-  await fs.writeFile(tmp, JSON.stringify(next, null, 2));
-  await fs.rename(tmp, p);
+  await writeFileAtomic(p, JSON.stringify(next, null, 2));
   cache = next;
   cachedFor = p;
 }

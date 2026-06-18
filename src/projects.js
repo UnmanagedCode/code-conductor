@@ -180,11 +180,20 @@ export async function writeProjectMeta(name, patch) {
     try { await fs.unlink(file); } catch (e) { if (e.code !== 'ENOENT') throw e; }
     return next;
   }
-  await fs.mkdir(dir, { recursive: true });
-  const tmp = `${file}.tmp-${process.pid}`;
-  await fs.writeFile(tmp, JSON.stringify(next, null, 2) + '\n');
-  await fs.rename(tmp, file);
+  await writeFileAtomic(file, JSON.stringify(next, null, 2) + '\n');
   return next;
+}
+
+// Shared mkdir-parent → write tmp(.pid) → rename helper. The tmp file is
+// created and atomically renamed away, so its exact name is unobservable;
+// the .pid suffix just keeps concurrent same-process writers from colliding.
+// Homed here because projects.js is the lowest module already imported by the
+// other call sites (appSettings.js, rootClaudeMd.js) — no import cycle.
+export async function writeFileAtomic(filePath, data) {
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  const tmp = `${filePath}.${process.pid}.tmp`;
+  await fs.writeFile(tmp, data);
+  await fs.rename(tmp, filePath);
 }
 
 // ── Workspace registry ────────────────────────────────────────────────
@@ -244,10 +253,7 @@ async function writeWorkspacesRegistry(names) {
     try { await fs.unlink(file); } catch (e) { if (e.code !== 'ENOENT') throw e; }
     return cleaned;
   }
-  await fs.mkdir(orchStoreRoot(), { recursive: true });
-  const tmp = `${file}.tmp-${process.pid}`;
-  await fs.writeFile(tmp, JSON.stringify({ workspaces: cleaned }, null, 2) + '\n');
-  await fs.rename(tmp, file);
+  await writeFileAtomic(file, JSON.stringify({ workspaces: cleaned }, null, 2) + '\n');
   return cleaned;
 }
 

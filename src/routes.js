@@ -70,6 +70,69 @@ const CONTENT_TYPE_BY_EXT = {
   csv: 'text/csv; charset=utf-8', md: 'text/markdown; charset=utf-8',
 };
 
+// Mounts the four parallel routes shared by the Settings → Transcribe and
+// Settings → TTS groups: GET the catalog state, POST to switch the active item
+// (allow-list + on-disk gate), POST to start an install, GET install status.
+// cfg.itemKey ('model' | 'voice') drives the URL segment, the request-body
+// field, and the active/list state keys; the on-disk-before-activate check is
+// the allow-list enforcement point.
+function mountInstallableCatalog(r, cfg) {
+  const { prefix, itemKey, catalog, pathForName, isKnown, getActive, setActive,
+          defaultName, available, installer, extraState } = cfg;
+  const activeKey = `active${itemKey[0].toUpperCase()}${itemKey.slice(1)}`;
+  const listKey = `${itemKey}s`;
+
+  async function state() {
+    const items = await Promise.all(catalog.map(async (it) => {
+      let installed = false;
+      try { installed = (await fs.stat(pathForName(it.name))).isFile(); } catch { /* missing */ }
+      return { ...it, installed };
+    }));
+    return {
+      available: await available(),
+      [activeKey]: getActive() || defaultName,
+      [listKey]: items,
+      install: installer.status(),
+      ...(extraState ? extraState() : {}),
+    };
+  }
+
+  r.get(`/settings/${prefix}`, async (req, res, next) => {
+    try { res.json(await state()); } catch (e) { next(e); }
+  });
+
+  r.post(`/settings/${prefix}/${itemKey}`, async (req, res, next) => {
+    try {
+      const name = req.body?.[itemKey];
+      if (!isKnown(name)) {
+        throw Object.assign(new Error(`unknown ${itemKey}`), { statusCode: 400 });
+      }
+      let onDisk = false;
+      try { onDisk = (await fs.stat(pathForName(name))).isFile(); } catch { /* missing */ }
+      if (!onDisk) {
+        throw Object.assign(new Error(`${itemKey} not installed — install it first`), { statusCode: 400 });
+      }
+      await setActive(name);
+      res.json(await state());
+    } catch (e) { next(e); }
+  });
+
+  r.post(`/settings/${prefix}/install`, async (req, res, next) => {
+    try {
+      const result = installer.start(req.body?.[itemKey]);
+      if (!result.started) return res.status(409).json({ ok: false, running: true });
+      res.json({ ok: true, started: true });
+    } catch (e) { next(e); }
+  });
+
+  r.get(`/settings/${prefix}/install/status`, (req, res) => {
+    res.json(installer.status());
+  });
+
+  // Returned so sibling routes (e.g. tts /prefs) can reuse the exact state shape.
+  return { state };
+}
+
 export function buildRoutes({ instances, serverCtx } = {}) {
   const r = express.Router();
   r.use(express.json({ limit: '1mb' }));
@@ -851,55 +914,20 @@ export function buildRoutes({ instances, serverCtx } = {}) {
   });
 
   // Settings → Transcribe group. Reports the curated model catalog (with
-  // per-model on-disk presence), the active model, and lets the UI switch
-  // models / kick off an install of whisper.cpp + a chosen model.
-  async function transcribeSettingsState() {
-    // The model the server would actually use (see resolveModelPath): the
-    // explicit choice, else the built-in default.
-    const active = getTranscribeModel() || DEFAULT_MODEL;
-    const models = await Promise.all(WHISPER_MODELS.map(async (m) => {
-      let installed = false;
-      try { installed = (await fs.stat(modelPathForName(m.name))).isFile(); } catch { /* missing */ }
-      return { ...m, installed };
-    }));
-    return {
-      available: await transcribeAvailable(),
-      activeModel: active,
-      models,
-      install: whisperInstall.status(),
-    };
-  }
-
-  r.get('/settings/transcribe', async (req, res, next) => {
-    try { res.json(await transcribeSettingsState()); } catch (e) { next(e); }
-  });
-
-  r.post('/settings/transcribe/model', async (req, res, next) => {
-    try {
-      const model = req.body?.model;
-      if (!isKnownModel(model)) {
-        throw Object.assign(new Error('unknown model'), { statusCode: 400 });
-      }
-      let onDisk = false;
-      try { onDisk = (await fs.stat(modelPathForName(model))).isFile(); } catch { /* missing */ }
-      if (!onDisk) {
-        throw Object.assign(new Error('model not installed — install it first'), { statusCode: 400 });
-      }
-      await setTranscribeModel(model);
-      res.json(await transcribeSettingsState());
-    } catch (e) { next(e); }
-  });
-
-  r.post('/settings/transcribe/install', async (req, res, next) => {
-    try {
-      const result = whisperInstall.start(req.body?.model);
-      if (!result.started) return res.status(409).json({ ok: false, running: true });
-      res.json({ ok: true, started: true });
-    } catch (e) { next(e); }
-  });
-
-  r.get('/settings/transcribe/install/status', (req, res) => {
-    res.json(whisperInstall.status());
+  // per-model on-disk presence), the active model (the explicit choice else the
+  // built-in default, per resolveModelPath), and lets the UI switch models /
+  // kick off an install of whisper.cpp + a chosen model.
+  mountInstallableCatalog(r, {
+    prefix: 'transcribe',
+    itemKey: 'model',
+    catalog: WHISPER_MODELS,
+    pathForName: modelPathForName,
+    isKnown: isKnownModel,
+    getActive: getTranscribeModel,
+    setActive: setTranscribeModel,
+    defaultName: DEFAULT_MODEL,
+    available: transcribeAvailable,
+    installer: whisperInstall,
   });
 
   // Settings → Models group. Reports the curated per-family version catalog
@@ -1002,41 +1030,18 @@ export function buildRoutes({ instances, serverCtx } = {}) {
   // Settings → TTS group. Reports the curated voice catalog (with per-voice
   // on-disk presence), the active voice, the auto-speak/rate prefs, and lets
   // the UI switch voices / kick off an install of piper + a chosen voice.
-  async function ttsSettingsState() {
-    const active = getTtsVoice() || DEFAULT_VOICE;
-    const voices = await Promise.all(TTS_VOICES.map(async (v) => {
-      let installed = false;
-      try { installed = (await fs.stat(voicePathForName(v.name))).isFile(); } catch { /* missing */ }
-      return { ...v, installed };
-    }));
-    return {
-      available: await ttsAvailable(),
-      activeVoice: active,
-      voices,
-      install: ttsInstall.status(),
-      enabled: getTtsEnabled(),
-      rate: getTtsRate(),
-    };
-  }
-
-  r.get('/settings/tts', async (req, res, next) => {
-    try { res.json(await ttsSettingsState()); } catch (e) { next(e); }
-  });
-
-  r.post('/settings/tts/voice', async (req, res, next) => {
-    try {
-      const voice = req.body?.voice;
-      if (!isKnownVoice(voice)) {
-        throw Object.assign(new Error('unknown voice'), { statusCode: 400 });
-      }
-      let onDisk = false;
-      try { onDisk = (await fs.stat(voicePathForName(voice))).isFile(); } catch { /* missing */ }
-      if (!onDisk) {
-        throw Object.assign(new Error('voice not installed — install it first'), { statusCode: 400 });
-      }
-      await setTtsVoice(voice);
-      res.json(await ttsSettingsState());
-    } catch (e) { next(e); }
+  const tts = mountInstallableCatalog(r, {
+    prefix: 'tts',
+    itemKey: 'voice',
+    catalog: TTS_VOICES,
+    pathForName: voicePathForName,
+    isKnown: isKnownVoice,
+    getActive: getTtsVoice,
+    setActive: setTtsVoice,
+    defaultName: DEFAULT_VOICE,
+    available: ttsAvailable,
+    installer: ttsInstall,
+    extraState: () => ({ enabled: getTtsEnabled(), rate: getTtsRate() }),
   });
 
   // Persist the auto-speak toggle and/or playback rate.
@@ -1044,20 +1049,8 @@ export function buildRoutes({ instances, serverCtx } = {}) {
     try {
       if (req.body?.enabled !== undefined) await setTtsEnabled(req.body.enabled);
       if (req.body?.rate !== undefined) await setTtsRate(req.body.rate);
-      res.json(await ttsSettingsState());
+      res.json(await tts.state());
     } catch (e) { next(e); }
-  });
-
-  r.post('/settings/tts/install', async (req, res, next) => {
-    try {
-      const result = ttsInstall.start(req.body?.voice);
-      if (!result.started) return res.status(409).json({ ok: false, running: true });
-      res.json({ ok: true, started: true });
-    } catch (e) { next(e); }
-  });
-
-  r.get('/settings/tts/install/status', (req, res) => {
-    res.json(ttsInstall.status());
   });
 
   // Settings → Workspace conventions group. code-conductor owns the

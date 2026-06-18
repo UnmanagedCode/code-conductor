@@ -73,11 +73,3 @@ export function buildMcpConfigJSON({ url, name = 'code-conductor' } = {}) {
     mcpServers: { [name]: { type: 'http', url } },
   });
 }
-
-// Exported for tests that want to assert the deny reason makes it
-// into the rendered hookSpecificOutput.
-export const _internal = {
-  HOOK_DENY_REASON_BLOCKING_TOOL,
-  ASK_GATED_TOOL_MATCHER,
-  buildBlockingToolHookCommand,
-};
