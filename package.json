@@ -8,10 +8,10 @@
     "test": "NODE_OPTIONS=--max-old-space-size=512 node tests/run.mjs"
   },
   "dependencies": {
-    "express": "^4.21.2",
-    "ws": "^8.18.0"
+    "express": "^4.22.2",
+    "ws": "^8.21.0"
   },
   "devDependencies": {
-    "happy-dom": "^20.9.0"
+    "happy-dom": "^20.10.6"
   }
 }
