@@ -322,40 +322,35 @@ export class ToolUseBlock {
     this.body.textContent = '';
     const input = this.input;
     if (!input) {
-      // While streaming the JSON, show what we have raw.
-      if (this.partialJson) this.body.appendChild(wrapToolInputPre(el('pre', {}, this.partialJson)));
+      if (this.partialJson) this.body.appendChild(wrapToolArgs(el('pre', {}, this.partialJson)));
       return;
     }
-    // Specialty renderers per tool. Fall back to pretty-printed JSON.
-    if (this.name === 'Edit' && typeof input.old_string === 'string' && typeof input.new_string === 'string') {
-      this.body.appendChild(renderEditDiff(input));
-      return;
-    }
-    if (this.name === 'Write' && typeof input.content === 'string') {
-      this.body.appendChild(renderWritePreview(input));
-      return;
-    }
-    if (this.name === 'NotebookEdit' && typeof input.new_source === 'string') {
-      this.body.appendChild(renderNotebookEdit(input));
-      return;
-    }
-    if (this.name === 'Bash' && typeof input.command === 'string') {
-      this.body.appendChild(renderBashCommand(input));
+    const renderer = TOOL_INPUT_RENDERERS[this.name];
+    const parsed = renderer ? renderer(input) : null;
+    if (parsed) {
+      this.body.appendChild(wrapToolArgs(parsed, { open: true }));
       return;
     }
     let pre;
     try { pre = el('pre', {}, JSON.stringify(input, null, 2)); }
     catch { pre = el('pre', {}, this.partialJson); }
-    this.body.appendChild(wrapToolInputPre(pre));
+    this.body.appendChild(wrapToolArgs(pre));
   }
 }
 
-function wrapToolInputPre(pre) {
-  return el('details', { class: 'block tool-args' },
+function wrapToolArgs(node, { open = false } = {}) {
+  return el('details', { class: 'block tool-args', open },
     el('summary', {}, '↪ tool_args'),
-    pre,
+    node,
   );
 }
+
+const TOOL_INPUT_RENDERERS = {
+  Bash: (input) => typeof input.command === 'string' ? renderBashCommand(input) : null,
+  Edit: (input) => (typeof input.old_string === 'string' && typeof input.new_string === 'string') ? renderEditDiff(input) : null,
+  Write: (input) => typeof input.content === 'string' ? renderWritePreview(input) : null,
+  NotebookEdit: (input) => typeof input.new_source === 'string' ? renderNotebookEdit(input) : null,
+};
 
 function copyToClipboard(text) {
   if (navigator.clipboard && navigator.clipboard.writeText) {

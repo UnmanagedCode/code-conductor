@@ -595,7 +595,7 @@ input:focus, textarea:focus, select:focus { outline: 2px solid var(--accent); ou
   white-space: pre-wrap; word-break: break-word; max-height: 360px; overflow-y: auto;
   font-family: ui-monospace, monospace; font-size: 11px; margin: 4px 0 0 0;
 }
-.bash-cmd-wrap { margin: 4px 0 0 18px; }
+.bash-cmd-wrap { margin: 4px 0 0 0; }
 .bash-cmd-box { position: relative; }
 .bash-cmd-box > pre.bash-cmd {
   background: #0a0c12; border-radius: 4px;
@@ -603,7 +603,6 @@ input:focus, textarea:focus, select:focus { outline: 2px solid var(--accent); ou
   overflow-x: auto; white-space: pre-wrap; word-break: break-word;
   max-height: 360px; overflow-y: auto;
   font-family: ui-monospace, monospace; font-size: 11px; margin: 0;
-  border-left: 2px solid var(--tool);
 }
 .bash-cmd-box > .bash-cmd-copy {
   position: absolute; top: 6px; right: 6px;
