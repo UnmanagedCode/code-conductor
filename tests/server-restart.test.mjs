@@ -115,7 +115,7 @@ test('POST /api/admin/restart respawns the server on the same port with a new pi
       return;
     }
     child.once('exit', (code) => resolve(code));
-    setTimeout(() => resolve('timeout'), 15_000);
+    setTimeout(() => resolve('timeout'), 8_000);
   });
   assert.notEqual(exitCode, 'timeout', `original server did not exit after restart\nstdout=${captured.stdout}\nstderr=${captured.stderr}`);
   assert.equal(exitCode, 0, `original server exit code: ${exitCode}`);
@@ -209,7 +209,7 @@ test('restart sweeps a pending-temp-cleanup manifest on the next boot (archives 
   await new Promise((resolve) => {
     if (child.exitCode != null || child.signalCode != null) return resolve();
     child.once('exit', resolve);
-    setTimeout(resolve, 15_000);
+    setTimeout(resolve, 8_000);
   });
 
   const m = captured.stdout.match(/restart: spawned replacement pid=(\d+)/);
