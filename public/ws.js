@@ -63,5 +63,3 @@ export function send(t, payload = {}, { ack = false } = {}) {
   }
   ws.send(JSON.stringify(msg));
 }
-
-export function isOpen() { return ws && ws.readyState === WebSocket.OPEN; }

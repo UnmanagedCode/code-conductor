@@ -925,7 +925,6 @@ body.lightbox-open { overflow: hidden; }
   word-break: break-word;
 }
 .block.system .subtype { color: var(--amber); margin-right: 4px; }
-.block.system { display: block; }
 
 .history-divider {
   text-align: center;

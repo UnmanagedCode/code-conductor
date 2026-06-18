@@ -227,8 +227,10 @@ export function describeToolInput(name, input, ctx = {}) {
       return join(head, description, statusSuffix);
     }
     case 'AskUserQuestion': return trunc(input.questions?.[0]?.question);
-    case 'TodoWrite':
-    case 'Write':      return trunc(input.file_path ?? '');
+    case 'TodoWrite': {
+      const n = Array.isArray(input.todos) ? input.todos.length : 0;
+      return n ? `${n} todo${n === 1 ? '' : 's'}` : '';
+    }
   }
   // Generic fallback: first string-valued field.
   for (const [k, v] of Object.entries(input)) {
@@ -416,42 +418,45 @@ function renderBashCommand(input) {
   return wrap;
 }
 
+// Shared diff DOM builders. Used by the Edit/Write/Notebook renderers below
+// and re-used by review.js so the per-line markup stays in sync. `type` is
+// 'add' | 'del' | 'ctx'; `marker` defaults to the unified-diff glyph for the
+// type but can be overridden (e.g. line numbers for a Write preview).
+export function diffLine(type, text, marker) {
+  const m = marker !== undefined ? marker
+    : type === 'add' ? '+' : type === 'del' ? '-' : ' ';
+  return el('div', { class: `diff-line ${type}` },
+    el('span', { class: 'diff-marker' }, m),
+    el('span', { class: 'diff-text' }, text),
+  );
+}
+
+export function buildDiffTable(headLabel, statsLabel, lines) {
+  const wrap = el('div', { class: 'diff' },
+    el('div', { class: 'diff-head' },
+      el('span', { class: 'diff-path' }, headLabel),
+      el('span', { class: 'diff-stats' }, statsLabel),
+    ));
+  const body = el('div', { class: 'diff-body' });
+  for (const ln of lines) body.appendChild(ln);
+  wrap.appendChild(body);
+  return wrap;
+}
+
+function opType(op) { return op === '+' ? 'add' : op === '-' ? 'del' : 'ctx'; }
+
 function renderEditDiff(input) {
   const ops = lineDiff(input.old_string, input.new_string);
   const { adds, dels } = diffStats(ops);
-  const wrap = el('div', { class: 'diff' },
-    el('div', { class: 'diff-head' },
-      el('span', { class: 'diff-path' }, input.file_path ?? ''),
-      el('span', { class: 'diff-stats' }, `+${adds} −${dels}`),
-    ));
-  const body = el('div', { class: 'diff-body' });
-  for (const o of ops) {
-    body.appendChild(el('div', { class: `diff-line ${o.op === '+' ? 'add' : o.op === '-' ? 'del' : 'ctx'}` },
-      el('span', { class: 'diff-marker' }, o.op === '+' ? '+' : o.op === '-' ? '-' : ' '),
-      el('span', { class: 'diff-text' }, o.text),
-    ));
-  }
-  wrap.appendChild(body);
-  return wrap;
+  const lines = ops.map(o => diffLine(opType(o.op), o.text));
+  return buildDiffTable(input.file_path ?? '', `+${adds} −${dels}`, lines);
 }
 
 function renderWritePreview(input) {
   const lines = (input.content ?? '').split('\n');
   if (lines.length && lines[lines.length - 1] === '') lines.pop();
-  const wrap = el('div', { class: 'diff' },
-    el('div', { class: 'diff-head' },
-      el('span', { class: 'diff-path' }, input.file_path ?? ''),
-      el('span', { class: 'diff-stats' }, `${lines.length} line${lines.length === 1 ? '' : 's'}`),
-    ));
-  const body = el('div', { class: 'diff-body' });
-  for (let i = 0; i < lines.length; i++) {
-    body.appendChild(el('div', { class: 'diff-line ctx' },
-      el('span', { class: 'diff-marker' }, String(i + 1).padStart(3, ' ')),
-      el('span', { class: 'diff-text' }, lines[i]),
-    ));
-  }
-  wrap.appendChild(body);
-  return wrap;
+  const rows = lines.map((text, i) => diffLine('ctx', text, String(i + 1).padStart(3, ' ')));
+  return buildDiffTable(input.file_path ?? '', `${lines.length} line${lines.length === 1 ? '' : 's'}`, rows);
 }
 
 function renderNotebookEdit(input) {
@@ -460,20 +465,8 @@ function renderNotebookEdit(input) {
   const ops = lineDiff(oldSrc, newSrc);
   const { adds, dels } = diffStats(ops);
   const label = `${input.notebook_path ?? ''}${input.cell_id ? ` · cell ${input.cell_id}` : ''}${input.edit_mode ? ` · ${input.edit_mode}` : ''}`;
-  const wrap = el('div', { class: 'diff' },
-    el('div', { class: 'diff-head' },
-      el('span', { class: 'diff-path' }, label),
-      el('span', { class: 'diff-stats' }, `+${adds} −${dels}`),
-    ));
-  const body = el('div', { class: 'diff-body' });
-  for (const o of ops) {
-    body.appendChild(el('div', { class: `diff-line ${o.op === '+' ? 'add' : o.op === '-' ? 'del' : 'ctx'}` },
-      el('span', { class: 'diff-marker' }, o.op === '+' ? '+' : o.op === '-' ? '-' : ' '),
-      el('span', { class: 'diff-text' }, o.text),
-    ));
-  }
-  wrap.appendChild(body);
-  return wrap;
+  const lines = ops.map(o => diffLine(opType(o.op), o.text));
+  return buildDiffTable(label, `+${adds} −${dels}`, lines);
 }
 
 export const _internalRenderers = { renderEditDiff, renderWritePreview, renderNotebookEdit };

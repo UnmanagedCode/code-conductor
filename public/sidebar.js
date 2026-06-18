@@ -4,7 +4,7 @@ import { formatAutoResumeTime } from './usage.js';
 // Compact "X min/hr/days ago" formatter. Used by the Sessions subnode
 // so the user can see at-a-glance which sessions are recent enough to
 // be worth resuming.
-function formatAgo(ms) {
+export function formatAgo(ms) {
   if (!ms) return 'never';
   const secs = Math.max(0, Math.floor((Date.now() - ms) / 1000));
   if (secs < 60) return `${secs}s ago`;

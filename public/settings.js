@@ -7,6 +7,8 @@
 // hash (it knows the active session to restore on close) and passes a
 // `requestClose` callback; we just translate hashchange into show/hide.
 
+import { formatAgo } from './sidebar.js';
+
 const POLL_MS = 1500;
 
 export function installSettings({
@@ -726,21 +728,6 @@ export function installSettings({
   // Lists every archived session grouped by project (collapsed by
   // default), each with Restore (back to the sidebar) and Delete
   // (permanent jsonl removal, confirmed). Backed by GET /api/archived.
-  function formatAgo(ms) {
-    if (!ms) return 'never';
-    const secs = Math.max(0, Math.floor((Date.now() - ms) / 1000));
-    if (secs < 60) return `${secs}s ago`;
-    const mins = Math.floor(secs / 60);
-    if (mins < 60) return `${mins}m ago`;
-    const hrs = Math.floor(mins / 60);
-    if (hrs < 24) return `${hrs}h ago`;
-    const days = Math.floor(hrs / 24);
-    if (days < 30) return `${days}d ago`;
-    const months = Math.floor(days / 30);
-    if (months < 12) return `${months}mo ago`;
-    return `${Math.floor(months / 12)}y ago`;
-  }
-
   function sessionUrl(project, worktreeName, sessionId, suffix) {
     const enc = encodeURIComponent;
     const base = worktreeName
