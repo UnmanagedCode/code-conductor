@@ -1230,6 +1230,7 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
   font-weight: 600;
 }
 .sm-prefs .qs-mode-toggle { width: fit-content; }
+.sm-prefs .qs-mode-toggle .qs-mode-opt { white-space: nowrap; }
 
 /* Settings — full-page view filling #main. While open, the instance-specific
    children of #main are hidden (the burger ≡ sidebar toggle in the header
