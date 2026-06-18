@@ -595,7 +595,7 @@ input:focus, textarea:focus, select:focus { outline: 2px solid var(--accent); ou
   white-space: pre-wrap; word-break: break-word; max-height: 360px; overflow-y: auto;
   font-family: ui-monospace, monospace; font-size: 11px; margin: 4px 0 0 0;
 }
-.bash-cmd-wrap { margin: 4px 0 0 0; }
+.bash-cmd-wrap { margin: 4px 0 0 18px; }
 .bash-cmd-box { position: relative; }
 .bash-cmd-box > pre.bash-cmd {
   background: #0a0c12; border-radius: 4px;
@@ -878,9 +878,6 @@ input:focus, textarea:focus, select:focus { outline: 2px solid var(--accent); ou
 .perm-deny:hover:not(:disabled) { background: rgba(245,158,11,.25); }
 .block.tool-result,
 .block.tool-args { margin-left: 18px; }
-/* When nested directly inside a tool card, align left edge with the command box. */
-.block.tool > .block.tool-result,
-.block.tool > .block.tool-args { margin-left: 0; }
 .block.tool-result summary,
 .block.tool-args summary { font-family: ui-monospace, monospace; font-size: 11px; color: var(--muted); }
 .block.tool-result.error summary { color: var(--red); }
