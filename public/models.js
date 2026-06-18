@@ -11,6 +11,11 @@
 //            persisted server-side so all spawn paths and resume inherit it.
 // The server re-derives the same window on resume using the stored preference.
 
+// Minimal pre-fetch fallback (one id per family — already the floor). The
+// server ships the authoritative catalog in /api/settings/models, which
+// overwrites activeVersions via setActiveVersions() on every successful fetch;
+// this only seeds resolveSpawnModel() in the brief window before the boot fetch
+// resolves, so an early spawn never sends an empty model id.
 export const DEFAULT_VERSIONS = {
   fable: 'claude-fable-5',
   sonnet: 'claude-sonnet-4-6',
@@ -22,9 +27,13 @@ let activeVersions = { ...DEFAULT_VERSIONS };
 let activeSonnetWindow = '1m';
 let activeFamilyEnabled = { fable: true, opus: true, sonnet: true, haiku: true };
 let activeDefaultSpawnFamily = 'opus';
+// Family enum/order, sourced from the shipped catalog (data.families) so the
+// client doesn't re-hardcode it. Seeded non-empty from DEFAULT_VERSIONS keys so
+// getFamilyList() is never empty even before the boot fetch resolves.
+let familyList = Object.keys(DEFAULT_VERSIONS);
 
-export function getActiveVersions() {
-  return activeVersions;
+export function getFamilyList() {
+  return familyList;
 }
 
 export function setActiveVersions(map) {
@@ -63,6 +72,9 @@ export async function loadModelVersions() {
     const r = await fetch('/api/settings/models', { cache: 'no-store' });
     if (r.ok) {
       const data = await r.json();
+      if (Array.isArray(data.families) && data.families.length) {
+        familyList = data.families.map(f => f.family);
+      }
       setActiveVersions(data.active);
       setActiveSonnetWindow(data.sonnetContextWindow);
       if (data.enabledFamilies) setActiveFamilyEnabled(data.enabledFamilies);

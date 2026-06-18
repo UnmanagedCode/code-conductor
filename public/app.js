@@ -30,7 +30,7 @@ import { installReview } from './review.js';
 import { installCommits } from './commits.js';
 import { installCosts } from './costs.js';
 import { loadModelVersions, setActiveVersions, setActiveSonnetWindow, getActiveSonnetWindow, resolveSpawnModel,
-  setActiveFamilyEnabled, getActiveFamilyEnabled,
+  setActiveFamilyEnabled, getActiveFamilyEnabled, getFamilyList,
   setActiveDefaultSpawnFamily, getActiveDefaultSpawnFamily } from './models.js';
 import { setTtsAvailable, setTtsEnabled, setTtsRate } from './tts.js';
 
@@ -1108,7 +1108,11 @@ function syncSonnetPickerLabels() {
 // Shows or hides every family button across all dialogs. If the currently
 // selected family gets disabled, resets selection to the resolved default.
 function syncFamilyVisibility() {
-  for (const family of ['fable', 'opus', 'sonnet', 'haiku']) {
+  // Family enum from the shipped catalog (getFamilyList() is seeded non-empty,
+  // and these calls run only after loadModelVersions() resolves). Order is
+  // irrelevant here: per-family visibility toggle + an all-disabled check.
+  const families = getFamilyList();
+  for (const family of families) {
     const enabled = getActiveFamilyEnabled(family);
     document.querySelectorAll(`.qs-model[data-family="${family}"]`).forEach(btn => {
       btn.hidden = !enabled;
@@ -1117,7 +1121,7 @@ function syncFamilyVisibility() {
   // Guard: if every family ended up hidden (unreachable via the Settings UI,
   // which blocks disabling the last enabled family, but possible via a manual
   // settings.json edit), un-hide the fallback so the picker is never empty.
-  if (['fable', 'opus', 'sonnet', 'haiku'].every(f => !getActiveFamilyEnabled(f))) {
+  if (families.every(f => !getActiveFamilyEnabled(f))) {
     const fallback = defaultSpawnFamily();
     document.querySelectorAll(`.qs-model[data-family="${fallback}"]`).forEach(btn => {
       btn.hidden = false;
@@ -1134,6 +1138,8 @@ function syncFamilyVisibility() {
 function defaultSpawnFamily() {
   const d = getActiveDefaultSpawnFamily();
   if (getActiveFamilyEnabled(d)) return d;
+  // Deliberate fallback-preference order (NOT the catalog order) — mirrors the
+  // server's reassign policy in src/appSettings.js setFamilyEnabled().
   for (const f of ['sonnet', 'haiku', 'opus', 'fable']) {
     if (getActiveFamilyEnabled(f)) return f;
   }
