@@ -340,7 +340,10 @@ export class ToolUseBlock {
       return;
     }
     if (this.name === 'Bash' && typeof input.command === 'string') {
-      this.body.appendChild(renderBashCommand(input));
+      this.body.appendChild(el('details', { class: 'block tool-args', open: true },
+        el('summary', {}, '↪ tool_args'),
+        renderBashCommand(input),
+      ));
       return;
     }
     let pre;
