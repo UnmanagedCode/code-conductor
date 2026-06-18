@@ -13,7 +13,7 @@ import { isTemp, markTemp, unmarkTemp } from './tempSessions.js';
 import { markArchived } from './archivedSessions.js';
 import { CONDUCT_PROJECT_NAME } from './conduct.js';
 import { buildSettingsJSON, buildMcpConfigJSON } from './settings.js';
-import { getAutoStopOnOverage, getConductorCompactWindow, getSonnetContextWindow } from './appSettings.js';
+import { getOnOverageAction, getConductorCompactWindow, getSonnetContextWindow } from './appSettings.js';
 import { HookBroker } from './hookBroker.js';
 import { loadPersistedTranscript, writeSessionMetadata, readLastSessionModel } from './transcript.js';
 import { canonicalizeModel } from './modelVersions.js';
@@ -48,6 +48,11 @@ export const MID_TURN_NOTE =
   'This may be new direction or a reaction to earlier work — weigh it accordingly; ' +
   'don\'t assume it refers to your latest action.\n' +
   '</system-reminder>';
+
+// Prompt delivered by the overage auto-resume timer to a still-alive session
+// once the rate-limit window has reset (onOverage: 'stop-resume').
+export const AUTO_RESUME_TEXT =
+  'The rate-limit window has reset. Please continue where you left off.';
 
 // Returns true when a rate_limit_event signals the session is now using
 // paid overage credits. Defensive: matches isUsingOverage at either
@@ -233,6 +238,17 @@ export class Instance extends EventEmitter {
     // skips _deleteTempArtifacts() — the temp jsonl must survive to be
     // resumed on the next boot. Never persisted.
     this._suppressTempDelete = false;
+    // Auto-stop / auto-resume on overage state. `autoStoppedForOverage` is
+    // set true when an `onOverage: 'stop-resume'` overage event soft-interrupts
+    // the turn; the manager arms a per-session resume timer on the next idle
+    // transition and stamps `autoResumeAt` (epoch SECONDS) for the UI badge.
+    // `_overageResetsAt` carries the reset time from the rate_limit_event to
+    // the manager's arm step; `_overageHandled` is a one-shot guard so repeated
+    // rate_limit_events don't re-trigger. All reset on (re)spawn.
+    this.autoStoppedForOverage = false;
+    this.autoResumeAt = null;
+    this._overageResetsAt = null;
+    this._overageHandled = false;
   }
 
   summary() {
@@ -264,6 +280,7 @@ export class Instance extends EventEmitter {
       title: this.title,
       autoApprovePlan: this.autoApprovePlan,
       interrupting: this.interrupting,
+      autoResumeAt: this.autoResumeAt,
     };
   }
 
@@ -486,6 +503,12 @@ export class Instance extends EventEmitter {
 
   spawn({ resume } = {}) {
     if (this.proc) throw new Error('already running');
+    // Clear any overage auto-stop/resume state from a prior run — a fresh
+    // process can re-trigger and any pending timer was cancelled at respawn.
+    this.autoStoppedForOverage = false;
+    this.autoResumeAt = null;
+    this._overageResetsAt = null;
+    this._overageHandled = false;
     const { command, prefixArgs } = resolveClaudeBin();
     if (resume) this.sessionId = resume;
     else if (!this.sessionId) this.sessionId = randomUUID();
@@ -680,13 +703,30 @@ export class Instance extends EventEmitter {
       }
       this._emitUi(ev);
       if (autoApproveFire) this._fireAutoApprovePlan();
-      // Auto-stop on overage: if the setting is enabled and this event
-      // signals the session crossed into paid overage credits, emit a
-      // visible notice and interrupt the running turn immediately.
+      // Action on overage: when this event signals the session crossed into
+      // paid overage credits, apply the configured action. `stop` and
+      // `stop-resume` share the identical soft-interrupt path; `stop-resume`
+      // additionally marks the instance so the manager arms a per-session
+      // resume timer on the next idle transition (see InstanceManager
+      // _armAutoResume). One-shot per run via _overageHandled.
       if (ev.kind === 'system' && ev.subtype === 'rate_limit_event'
-          && isOverageEvent(ev.data) && getAutoStopOnOverage()) {
-        this._emitUi({ kind: 'system', subtype: 'auto_stop_overage', data: {} });
-        this.interrupt().catch(() => {});
+          && isOverageEvent(ev.data) && !this._overageHandled) {
+        const action = getOnOverageAction();
+        if (action === 'stop' || action === 'stop-resume') {
+          this._overageHandled = true;
+          const resume = action === 'stop-resume';
+          let resetsAt = null;
+          if (resume) {
+            resetsAt = ev.data?.rate_limit_info?.resetsAt ?? ev.data?.resetsAt ?? null;
+            this.autoStoppedForOverage = true;
+            this._overageResetsAt = resetsAt;
+          }
+          this._emitUi({ kind: 'system', subtype: 'auto_stop_overage', data: { resume, resetsAt } });
+          // rate_limit_event only arrives mid-turn → interrupt always has a turn
+          // to wind down, and the manager arms the resume timer off the resulting
+          // turn→idle status transition.
+          this.interrupt().catch(() => {});
+        }
       }
     }
   }
@@ -801,6 +841,11 @@ export class Instance extends EventEmitter {
   // keeps the prompt-cache prefix stable.
   async prompt(text, attachments = [], { annotateIfMidTurn = true } = {}) {
     if (!this.proc) throw new Error('not running');
+    // Any prompt cancels a pending overage auto-resume — the session is being
+    // driven again. When the auto-resume timer itself fires this is a harmless
+    // no-op: the callback deletes its timer + clears the flags BEFORE calling
+    // prompt(), so the resume message still sends (see _armAutoResume).
+    this.emit('user_prompt');
     const safeText = typeof text === 'string' ? text : '';
     const atts = Array.isArray(attachments) ? attachments : [];
     if (!safeText.length && atts.length === 0) {
@@ -1069,6 +1114,12 @@ export class InstanceManager extends EventEmitter {
     // Keyed by targetSessionId → Map<callerSessionId, { timerId: Timeout | null }>.
     // sessionId (not instanceId) so the graph survives respawn / restart.
     this._idleSubscribers = new Map();
+    // Pending overage auto-resume timers, keyed by sessionId (survives the
+    // instanceId churn the way _idleSubscribers does). Armed on the idle
+    // transition after an `onOverage: 'stop-resume'` soft-interrupt; fires a
+    // resume prompt at the rate-limit reset time. In-memory only — lost on
+    // restart (the session just stays manually resumable).
+    this._autoResumeTimers = new Map(); // sessionId → Timeout
     this.on('event', ({ id: targetInstanceId, ev }) => {
       if (ev?.kind !== 'turn_end') return;
       // The event payload carries the instanceId; resolve its sessionId, which
@@ -1395,8 +1446,17 @@ export class InstanceManager extends EventEmitter {
     });
 
     inst.on('event', (ev) => this.emit('event', { id, ev }));
+    // A user/MCP-driven turn cancels any pending overage auto-resume.
+    inst.on('user_prompt', () => this._cancelAutoResume(inst.sessionId));
     inst.on('status', (summary) => {
       this.emit('status', summary);
+      // Overage auto-resume: arm the per-session timer on the idle transition
+      // that follows a `stop-resume` soft-interrupt (the session stays alive;
+      // we never reach 'exited'). Guarded so it arms exactly once.
+      if (inst.autoStoppedForOverage && summary.status === 'idle' && inst.proc &&
+          !this._autoResumeTimers.has(inst.sessionId)) {
+        this._armAutoResume(inst);
+      }
       // Temp sessions are disposable: once the subprocess is gone the
       // jsonl has been wiped by _deleteTempArtifacts(), so Resume can
       // never recover them. Drop them from byId on exit/crash so the
@@ -1421,6 +1481,67 @@ export class InstanceManager extends EventEmitter {
     return inst;
   }
 
+  // Arm a per-session overage auto-resume timer. Called from the status
+  // handler on the idle transition after a `stop-resume` soft-interrupt. Fires
+  // at `resetsAt + BUFFER` seconds with a resume prompt to the still-alive
+  // session. Skips (with a notice) when resetsAt is missing or already past —
+  // we never arm a negative/NaN timer.
+  _armAutoResume(inst) {
+    // Slack past the reported reset time before resuming. Overridable via env
+    // (a test seam — lets integration tests fire the resume promptly).
+    const envBuf = Number(process.env.ORCH_OVERAGE_RESUME_BUFFER_MS);
+    const BUFFER_MS = Number.isFinite(envBuf) ? envBuf : 5000;
+    const nowMs = Date.now();
+    const atMs = inst._overageResetsAt * 1000; // resetsAt is epoch SECONDS
+    if (!Number.isFinite(atMs) || atMs <= nowMs) {
+      inst._emitUi({ kind: 'system', subtype: 'auto_resume_skipped',
+        data: { reason: 'missing or past resetsAt' } });
+      inst.autoStoppedForOverage = false;
+      inst._overageHandled = false;
+      return;
+    }
+    const fireAtMs = atMs + BUFFER_MS;
+    inst.autoResumeAt = Math.round(fireAtMs / 1000); // epoch secs for the badge
+    const sid = inst.sessionId;
+    const t = setTimeout(() => {
+      if (inst.proc) {
+        // prompt() synchronously emits 'user_prompt' → _cancelAutoResume performs
+        // the single teardown (clearTimeout of this already-fired timer is a no-op,
+        // deletes the Map entry, clears the flags, emits status to drop the badge);
+        // then the resume message sends. _cancelAutoResume is the sole owner of
+        // teardown — do NOT pre-clear here or it double-runs.
+        inst.prompt(AUTO_RESUME_TEXT).catch(() => {});
+      } else {
+        // Process gone (crashed / killed externally) — no send means no
+        // user_prompt, so tear down explicitly. Keep it simple: no respawn.
+        this._cancelAutoResume(sid);
+        inst._emitUi({ kind: 'system', subtype: 'auto_resume_skipped',
+          data: { reason: 'session no longer running' } });
+      }
+    }, Math.max(0, fireAtMs - nowMs));
+    this._autoResumeTimers.set(sid, t);
+    this.emit('status', inst.summary()); // push autoResumeAt → client (badge)
+  }
+
+  // Cancel a pending overage auto-resume timer and clear the instance flags.
+  // Idempotent. Called on user takeover, manual respawn/kill/remove, shutdown,
+  // and once the timer itself fires.
+  _cancelAutoResume(sessionId) {
+    const t = this._autoResumeTimers.get(sessionId);
+    if (t) {
+      clearTimeout(t);
+      this._autoResumeTimers.delete(sessionId);
+    }
+    for (const inst of this.byId.values()) {
+      if (inst.sessionId !== sessionId) continue;
+      const had = inst.autoResumeAt !== null || inst.autoStoppedForOverage;
+      inst.autoResumeAt = null;
+      inst.autoStoppedForOverage = false;
+      inst._overageHandled = false;
+      if (had) this.emit('status', inst.summary()); // clear the badge
+    }
+  }
+
   async respawn(id) {
     const inst = this.byId.get(id);
     if (!inst) {
@@ -1429,6 +1550,8 @@ export class InstanceManager extends EventEmitter {
     if (inst.proc) {
       throw Object.assign(new Error('instance still running'), { statusCode: 409 });
     }
+    // A manual respawn supersedes any pending auto-resume for this session.
+    this._cancelAutoResume(inst.sessionId);
     if (!inst.sessionId) {
       throw Object.assign(new Error('no sessionId to resume'), { statusCode: 400 });
     }
@@ -1448,6 +1571,7 @@ export class InstanceManager extends EventEmitter {
     }
     if (inst.proc) await inst.kill({ graceMs: 500 });
     this.byId.delete(id);
+    this._cancelAutoResume(inst.sessionId);
     this._purgeIdleFor(inst.sessionId);
     this.emit('list_changed');
   }
@@ -1461,6 +1585,7 @@ export class InstanceManager extends EventEmitter {
     await Promise.all(victims.map(async (i) => {
       try { if (i.proc) await i.kill({ graceMs: 200 }); } catch { /* ignore */ }
       this.byId.delete(i.id);
+      this._cancelAutoResume(i.sessionId);
       this._purgeIdleFor(i.sessionId);
     }));
     if (victims.length > 0) this.emit('list_changed');
@@ -1468,6 +1593,8 @@ export class InstanceManager extends EventEmitter {
   }
 
   async shutdown() {
+    for (const t of this._autoResumeTimers.values()) clearTimeout(t);
+    this._autoResumeTimers.clear();
     const all = [...this.byId.values()];
     this.byId.clear();
     await Promise.all(all.map(i => i.kill({ graceMs: 200 }).catch(() => {})));

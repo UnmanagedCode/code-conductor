@@ -327,6 +327,17 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
   line-height: 1.4;
 }
 .session-row.has-unread .session-preview { color: var(--text); font-weight: 600; }
+/* Overage auto-resume badge — shown on a stopped session awaiting resume. */
+.session-resume-badge {
+  font-size: 10px;
+  color: var(--amber, #e0a000);
+  padding: 0 5px;
+  border: 1px solid var(--amber, #e0a000);
+  border-radius: 8px;
+  flex: 0 0 auto;
+  line-height: 1.4;
+  white-space: nowrap;
+}
 .session-delete {
   background: none; border: none; color: var(--muted);
   cursor: pointer; padding: 0 4px; font-size: 13px; line-height: 1;
@@ -1209,6 +1220,12 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
   font-size: 11px;
   color: var(--muted);
 }
+.sm-overage-label {
+  margin-bottom: 6px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.sm-prefs .qs-mode-toggle { width: fit-content; }
 
 /* Settings — full-page view filling #main. While open, the instance-specific
    children of #main are hidden (the burger ≡ sidebar toggle in the header

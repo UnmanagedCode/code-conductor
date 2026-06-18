@@ -1,4 +1,5 @@
 import { el } from './blocks.js';
+import { formatAutoResumeTime } from './usage.js';
 
 // Compact "X min/hr/days ago" formatter. Used by the Sessions subnode
 // so the user can see at-a-glance which sessions are recent enough to
@@ -39,6 +40,7 @@ function mergeLive(onDisk, liveInstances) {
       row.instanceMode = inst.mode;
       row.instanceTemp = !!inst.temp;
       row.instanceHasIdleSubscriber = !!inst.hasIdleSubscriber;
+      row.autoResumeAt = inst.autoResumeAt ?? null;
       // Conducted is durable on-disk metadata (row.conducted may already
       // be set from the API). A live conducted instance is authoritative;
       // OR the two so a UI-resumed conducted session stays grouped.
@@ -59,6 +61,7 @@ function mergeLive(onDisk, liveInstances) {
         instanceMode: inst.mode,
         instanceTemp: !!inst.temp,
         instanceHasIdleSubscriber: !!inst.hasIdleSubscriber,
+        autoResumeAt: inst.autoResumeAt ?? null,
         conducted: !!inst.conducted,
         synthetic: true,
       });
@@ -225,6 +228,13 @@ export class Sidebar {
         class: 'session-unread',
         title: `${unread} new turn${unread === 1 ? '' : 's'} since you last viewed this session`,
       }, String(unread)));
+    }
+    const resumeLabel = session.autoResumeAt ? formatAutoResumeTime(session.autoResumeAt) : null;
+    if (resumeLabel) {
+      row.appendChild(el('span', {
+        class: 'session-resume-badge',
+        title: 'auto-stopped on overage — will resume when the rate-limit window resets',
+      }, resumeLabel));
     }
     if (session.instanceTemp && session.instanceId) {
       // Live temp instance → show the promote button to the left of ×.

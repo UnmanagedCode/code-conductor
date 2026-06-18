@@ -11,7 +11,7 @@ import { SubagentPanel } from './subagents.js';
 import {
   UsageTracker, contextWindowFor,
   formatTokens, formatPct, formatDuration, fillClass,
-  RateLimitTracker, formatResetTime, rlChipSegment,
+  RateLimitTracker, formatResetTime, formatAutoResumeTime, rlChipSegment,
 } from './usage.js';
 import {
   NotificationState, ensurePermission, setGlobalEnabled,
@@ -1625,6 +1625,11 @@ function updateActiveHeader() {
   }
   if (inst.temp) dom.instanceTitle.appendChild(chip('ih-temp', 'temp'));
   if (inst.debug) dom.instanceTitle.appendChild(chip('ih-debug', 'debug'));
+  if (inst.autoResumeAt) {
+    const rc = chip('ih-status ih-auto-resume', formatAutoResumeTime(inst.autoResumeAt));
+    rc.title = 'auto-stopped on overage — will resume when the rate-limit window resets';
+    dom.instanceTitle.appendChild(rc);
+  }
   // Combined ctx+rl chip: right slot of the bottom bar. ctx half is
   // per-session; rl half reads from globalRLTracker (account-wide).
   dom.tiUsageSlot.textContent = '';

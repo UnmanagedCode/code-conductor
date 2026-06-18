@@ -9,7 +9,7 @@ import {
 } from '../src/modelVersions.js';
 import {
   getModelVersion, setModelVersion, getTranscribeModel, setTranscribeModel,
-  getAutoStopOnOverage, setAutoStopOnOverage,
+  getOnOverageAction, setOnOverageAction,
   getConductorCompactWindow, setConductorCompactWindow,
   getSonnetContextWindow, setSonnetContextWindow,
   getEnabledFamilies, setFamilyEnabled,
@@ -129,63 +129,116 @@ test('POST /api/settings/models rejects unknown family + version', async () => {
   }
 });
 
-// ── autoStopOnOverage ───────────────────────────────────────────────────
-test('appSettings: getAutoStopOnOverage defaults false, setAutoStopOnOverage round-trips', async () => {
+// ── onOverage (action on overage) ───────────────────────────────────────
+test('appSettings: getOnOverageAction defaults "none", setOnOverageAction round-trips all three', async () => {
   const root = await mkTmp();
   try {
     await withEnv({ PROJECTS_ROOT: root }, async () => {
-      assert.equal(getAutoStopOnOverage(), false);
-      await setAutoStopOnOverage(true);
-      assert.equal(getAutoStopOnOverage(), true);
-      await setAutoStopOnOverage(false);
-      assert.equal(getAutoStopOnOverage(), false);
+      assert.equal(getOnOverageAction(), 'none');
+      assert.equal(await setOnOverageAction('stop'), 'stop');
+      assert.equal(getOnOverageAction(), 'stop');
+      assert.equal(await setOnOverageAction('stop-resume'), 'stop-resume');
+      assert.equal(getOnOverageAction(), 'stop-resume');
+      assert.equal(await setOnOverageAction('none'), 'none');
+      assert.equal(getOnOverageAction(), 'none');
     });
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
 
-test('appSettings: autoStopOnOverage coerces to boolean', async () => {
+test('appSettings: setOnOverageAction coerces unknown values to "none"', async () => {
   const root = await mkTmp();
   try {
     await withEnv({ PROJECTS_ROOT: root }, async () => {
-      await setAutoStopOnOverage(1);
-      assert.equal(getAutoStopOnOverage(), true);
-      await setAutoStopOnOverage(0);
-      assert.equal(getAutoStopOnOverage(), false);
+      assert.equal(await setOnOverageAction('garbage'), 'none');
+      assert.equal(getOnOverageAction(), 'none');
     });
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
 
-test('appSettings: autoStopOnOverage does not clobber model versions', async () => {
+test('appSettings: onOverage migrates legacy autoStopOnOverage:true → "stop" (new key absent)', async () => {
+  const root = await mkTmp();
+  try {
+    await withEnv({ PROJECTS_ROOT: root }, async () => {
+      const { orchStoreRoot } = await import('../src/projects.js');
+      const p = path.join(orchStoreRoot(), 'settings.json');
+      await fs.mkdir(path.dirname(p), { recursive: true });
+      await fs.writeFile(p, JSON.stringify({ models: { autoStopOnOverage: true } }));
+      assert.equal(getOnOverageAction(), 'stop', 'legacy ON maps to stop');
+    });
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test('appSettings: legacy autoStopOnOverage:false (new key absent) → "none"', async () => {
+  const root = await mkTmp();
+  try {
+    await withEnv({ PROJECTS_ROOT: root }, async () => {
+      const { orchStoreRoot } = await import('../src/projects.js');
+      const p = path.join(orchStoreRoot(), 'settings.json');
+      await fs.mkdir(path.dirname(p), { recursive: true });
+      await fs.writeFile(p, JSON.stringify({ models: { autoStopOnOverage: false } }));
+      assert.equal(getOnOverageAction(), 'none');
+    });
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test('appSettings: once onOverage is set the legacy key is removed and no longer consulted', async () => {
+  const root = await mkTmp();
+  try {
+    await withEnv({ PROJECTS_ROOT: root }, async () => {
+      const { orchStoreRoot } = await import('../src/projects.js');
+      const p = path.join(orchStoreRoot(), 'settings.json');
+      await fs.mkdir(path.dirname(p), { recursive: true });
+      // Legacy ON present; user explicitly chooses 'none'.
+      await fs.writeFile(p, JSON.stringify({ models: { autoStopOnOverage: true } }));
+      await setOnOverageAction('none');
+      assert.equal(getOnOverageAction(), 'none', 'explicit none wins, legacy not consulted');
+      // The legacy key must be gone from disk.
+      const onDisk = JSON.parse(await fs.readFile(p, 'utf8'));
+      assert.equal(onDisk.models.onOverage, 'none');
+      assert.ok(!('autoStopOnOverage' in onDisk.models), 'legacy key removed on write');
+    });
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test('appSettings: onOverage does not clobber model versions', async () => {
   const root = await mkTmp();
   try {
     await withEnv({ PROJECTS_ROOT: root }, async () => {
       await setModelVersion('sonnet', 'claude-sonnet-4-5');
-      await setAutoStopOnOverage(true);
+      await setOnOverageAction('stop-resume');
       assert.equal(getModelVersion('sonnet'), 'claude-sonnet-4-5');
-      assert.equal(getAutoStopOnOverage(), true);
+      assert.equal(getOnOverageAction(), 'stop-resume');
     });
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
 
-test('GET /api/settings/models includes autoStopOnOverage defaulting false', async () => {
+test('GET /api/settings/models includes onOverage defaulting "none"', async () => {
   {  // shared server (before/after) + fresh PROJECTS_ROOT per test (beforeEach)
     const r = await api(baseUrl, 'GET', '/api/settings/models');
     assert.equal(r.status, 200);
-    assert.equal(r.body.autoStopOnOverage, false);
+    assert.equal(r.body.onOverage, 'none');
   }
 });
 
-test('POST /api/settings/models/prefs toggles autoStopOnOverage and persists', async () => {
+test('POST /api/settings/models/prefs sets onOverage and persists', async () => {
   {  // shared server (before/after) + fresh PROJECTS_ROOT per test (beforeEach)
-    const on = await api(baseUrl, 'POST', '/api/settings/models/prefs', { autoStopOnOverage: true });
+    const on = await api(baseUrl, 'POST', '/api/settings/models/prefs', { onOverage: 'stop-resume' });
     assert.equal(on.status, 200);
-    assert.equal(on.body.autoStopOnOverage, true);
+    assert.equal(on.body.onOverage, 'stop-resume');
     // Verify GET reflects the persisted state.
     const g = await api(baseUrl, 'GET', '/api/settings/models');
-    assert.equal(g.body.autoStopOnOverage, true);
-    // Toggle back off.
-    const off = await api(baseUrl, 'POST', '/api/settings/models/prefs', { autoStopOnOverage: false });
-    assert.equal(off.body.autoStopOnOverage, false);
+    assert.equal(g.body.onOverage, 'stop-resume');
+    // Back to off.
+    const off = await api(baseUrl, 'POST', '/api/settings/models/prefs', { onOverage: 'none' });
+    assert.equal(off.body.onOverage, 'none');
+  }
+});
+
+test('POST /api/settings/models/prefs ignores a legacy autoStopOnOverage boolean in the body', async () => {
+  {  // shared server (before/after) + fresh PROJECTS_ROOT per test (beforeEach)
+    const r = await api(baseUrl, 'POST', '/api/settings/models/prefs', { autoStopOnOverage: true });
+    assert.equal(r.status, 200);
+    assert.equal(r.body.onOverage, 'none', 'route does not honor the legacy request key');
   }
 });
 
@@ -193,7 +246,7 @@ test('POST /api/settings/models/prefs ignores unknown keys gracefully', async ()
   {  // shared server (before/after) + fresh PROJECTS_ROOT per test (beforeEach)
     const r = await api(baseUrl, 'POST', '/api/settings/models/prefs', { randomField: 'foo' });
     assert.equal(r.status, 200);
-    assert.equal(r.body.autoStopOnOverage, false);
+    assert.equal(r.body.onOverage, 'none');
   }
 });
 
@@ -269,15 +322,15 @@ test('appSettings: settings.json value wins over env seed', async () => {
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
 
-test('appSettings: setConductorCompactWindow does not clobber autoStopOnOverage or model versions', async () => {
+test('appSettings: setConductorCompactWindow does not clobber onOverage or model versions', async () => {
   const root = await mkTmp();
   try {
     await withEnv({ PROJECTS_ROOT: root, CLAUDE_CODE_AUTO_COMPACT_WINDOW: undefined }, async () => {
       await setModelVersion('sonnet', 'claude-sonnet-4-5');
-      await setAutoStopOnOverage(true);
+      await setOnOverageAction('stop');
       await setConductorCompactWindow({ enabled: true, value: 400 });
       assert.equal(getModelVersion('sonnet'), 'claude-sonnet-4-5');
-      assert.equal(getAutoStopOnOverage(), true);
+      assert.equal(getOnOverageAction(), 'stop');
       assert.equal(getConductorCompactWindow().value, 400);
     });
   } finally { await fs.rm(root, { recursive: true, force: true }); }
@@ -293,10 +346,10 @@ test('GET /api/settings/models includes conductorCompactWindow defaulting {enabl
   }
 });
 
-test('POST /api/settings/models/prefs saves conductorCompactWindow without clobbering autoStopOnOverage', async () => {
+test('POST /api/settings/models/prefs saves conductorCompactWindow without clobbering onOverage', async () => {
   {  // shared server (before/after) + fresh PROJECTS_ROOT per test (beforeEach)
-    // Enable auto-stop first.
-    await api(baseUrl, 'POST', '/api/settings/models/prefs', { autoStopOnOverage: true });
+    // Set the overage action first.
+    await api(baseUrl, 'POST', '/api/settings/models/prefs', { onOverage: 'stop' });
     // Now set compact window.
     const r = await api(baseUrl, 'POST', '/api/settings/models/prefs', {
       conductorCompactWindow: { enabled: true, value: 400 },
@@ -304,7 +357,7 @@ test('POST /api/settings/models/prefs saves conductorCompactWindow without clobb
     assert.equal(r.status, 200);
     assert.equal(r.body.conductorCompactWindow.enabled, true);
     assert.equal(r.body.conductorCompactWindow.value, 400);
-    assert.equal(r.body.autoStopOnOverage, true, 'autoStopOnOverage must not be clobbered');
+    assert.equal(r.body.onOverage, 'stop', 'onOverage must not be clobbered');
     // Verify persistence via GET.
     const g = await api(baseUrl, 'GET', '/api/settings/models');
     assert.equal(g.body.conductorCompactWindow.enabled, true);
@@ -349,10 +402,10 @@ test('appSettings: setSonnetContextWindow does not clobber other model settings'
   try {
     await withEnv({ PROJECTS_ROOT: root }, async () => {
       await setModelVersion('sonnet', 'claude-sonnet-4-5');
-      await setAutoStopOnOverage(true);
+      await setOnOverageAction('stop');
       await setSonnetContextWindow('200k');
       assert.equal(getModelVersion('sonnet'), 'claude-sonnet-4-5');
-      assert.equal(getAutoStopOnOverage(), true);
+      assert.equal(getOnOverageAction(), 'stop');
       assert.equal(getSonnetContextWindow(), '200k');
     });
   } finally { await fs.rm(root, { recursive: true, force: true }); }
@@ -380,13 +433,13 @@ test('POST /api/settings/models/prefs sets sonnetContextWindow to "200k" and per
   }
 });
 
-test('POST /api/settings/models/prefs sonnetContextWindow does not clobber autoStopOnOverage', async () => {
+test('POST /api/settings/models/prefs sonnetContextWindow does not clobber onOverage', async () => {
   {  // shared server (before/after) + fresh PROJECTS_ROOT per test (beforeEach)
-    await api(baseUrl, 'POST', '/api/settings/models/prefs', { autoStopOnOverage: true });
+    await api(baseUrl, 'POST', '/api/settings/models/prefs', { onOverage: 'stop' });
     const r = await api(baseUrl, 'POST', '/api/settings/models/prefs', { sonnetContextWindow: '200k' });
     assert.equal(r.status, 200);
     assert.equal(r.body.sonnetContextWindow, '200k');
-    assert.equal(r.body.autoStopOnOverage, true, 'autoStopOnOverage must not be clobbered');
+    assert.equal(r.body.onOverage, 'stop', 'onOverage must not be clobbered');
   }
 });
 

@@ -77,6 +77,11 @@ function substitute(obj) {
     if (obj === '$SID') return SID;
     if (obj === '$CWD') return CWD;
     if (obj === '$MODE') return MODE;
+    // `$NOWSEC` / `$NOWSEC+N` / `$NOWSEC-N` → a NUMBER (epoch seconds at emit
+    // time, ± offset). Used for time-relative fields like a rate_limit_event's
+    // resetsAt so tests don't race wall-clock between scenario build and emit.
+    const nowsec = /^\$NOWSEC([+-]\d+)?$/.exec(obj);
+    if (nowsec) return Math.floor(Date.now() / 1000) + (nowsec[1] ? parseInt(nowsec[1], 10) : 0);
     return obj
       .replaceAll('$SID', SID)
       .replaceAll('$CWD', CWD)
