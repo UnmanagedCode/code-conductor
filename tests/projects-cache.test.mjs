@@ -7,13 +7,13 @@
 // integration tests always see exact, live data — the same correctness guarantee
 // as the uncached baseline.
 
-import { test } from 'node:test';
+import { test, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { bootServer, api } from './helpers.mjs';
+import { bootServer, api, freshProjectsRoot, rmrf } from './helpers.mjs';
 import { getOrCompute, invalidate, invalidateAll, _resetForTest } from '../src/projectsCache.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -40,6 +40,19 @@ async function makeRealRepo(projectsRoot, name) {
   await git(repoPath, 'commit', '-q', '-m', 'initial');
   return repoPath;
 }
+
+// Shared server for integration tests; unit tests don't use it.
+let ctx, instances, home, projectsRoot;
+before(async () => { ctx = await bootServer({ scenarioPath: SCENARIO }); ({ instances } = ctx); });
+after(async () => { await ctx.close(); });
+beforeEach(async () => {
+  const r = await freshProjectsRoot();
+  home = r.home;
+  projectsRoot = r.projectsRoot;
+  ctx.projectsRoot = r.projectsRoot;
+  ctx.claudeProjectsRoot = r.claudeProjectsRoot;
+});
+afterEach(async () => { await instances.shutdown(); await rmrf(home); });
 
 // ── Unit-level cache tests ─────────────────────────────────────────────────────
 // These call _resetForTest(ttlMs) directly to control TTL per-test.
@@ -140,97 +153,85 @@ test('invalidateAll clears all TTL-cached entries', async () => {
 // receive exact, live data (pure-coalescing mode).
 
 test('concurrent GET /api/projects requests return consistent data (coalescing)', async () => {
-  const ctx = await bootServer();
-  try {
-    await makeRealRepo(ctx.projectsRoot, 'demo');
-    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'demo' });
+  await makeRealRepo(projectsRoot, 'demo');
+  await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'demo' });
 
-    // Fire several requests in parallel — they should all receive the same
-    // result; the in-flight coalescing ensures only one git fan-out runs.
-    const results = await Promise.all(
-      Array.from({ length: 6 }, () => api(ctx.baseUrl, 'GET', '/api/projects')),
-    );
+  // Fire several requests in parallel — they should all receive the same
+  // result; the in-flight coalescing ensures only one git fan-out runs.
+  const results = await Promise.all(
+    Array.from({ length: 6 }, () => api(ctx.baseUrl, 'GET', '/api/projects')),
+  );
 
-    for (const r of results) {
-      assert.equal(r.status, 200);
-      assert.equal(r.body.length, 1);
-      assert.equal(r.body[0].name, 'demo');
-      assert.equal(r.body[0].isGitRepo, true);
-    }
+  for (const r of results) {
+    assert.equal(r.status, 200);
+    assert.equal(r.body.length, 1);
+    assert.equal(r.body[0].name, 'demo');
+    assert.equal(r.body[0].isGitRepo, true);
+  }
 
-    // All responses should be structurally identical.
-    const first = JSON.stringify(results[0].body);
-    for (const r of results.slice(1)) {
-      assert.equal(JSON.stringify(r.body), first, 'all concurrent responses are identical');
-    }
-  } finally { await ctx.close(); }
+  // All responses should be structurally identical.
+  const first = JSON.stringify(results[0].body);
+  for (const r of results.slice(1)) {
+    assert.equal(JSON.stringify(r.body), first, 'all concurrent responses are identical');
+  }
 });
 
 test('GET /api/projects returns correct shape with cached git facts', async () => {
-  const ctx = await bootServer();
-  try {
-    await makeRealRepo(ctx.projectsRoot, 'alpha');
-    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'alpha' });
+  await makeRealRepo(projectsRoot, 'alpha');
+  await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'alpha' });
 
-    const first = await api(ctx.baseUrl, 'GET', '/api/projects');
-    assert.equal(first.status, 200);
-    assert.equal(first.body[0].isGitRepo, true);
-    assert.ok(Array.isArray(first.body[0].worktrees));
-    assert.ok('mergeStatus' in first.body[0]);
+  const first = await api(ctx.baseUrl, 'GET', '/api/projects');
+  assert.equal(first.status, 200);
+  assert.equal(first.body[0].isGitRepo, true);
+  assert.ok(Array.isArray(first.body[0].worktrees));
+  assert.ok('mergeStatus' in first.body[0]);
 
-    // Second sequential call — exercises the code path, verifies shape.
-    const second = await api(ctx.baseUrl, 'GET', '/api/projects');
-    assert.equal(second.status, 200);
-    assert.equal(second.body[0].isGitRepo, true);
-  } finally { await ctx.close(); }
+  // Second sequential call — exercises the code path, verifies shape.
+  const second = await api(ctx.baseUrl, 'GET', '/api/projects');
+  assert.equal(second.status, 200);
+  assert.equal(second.body[0].isGitRepo, true);
 });
 
 test('cache invalidated after DELETE worktree — subsequent fetch returns fresh state', async () => {
-  const ctx = await bootServer({ scenarioPath: SCENARIO });
-  try {
-    await makeRealRepo(ctx.projectsRoot, 'demo');
-    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'demo' });
+  await makeRealRepo(projectsRoot, 'demo');
+  await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'demo' });
 
-    // Create an instance with worktree:true so the orchestrator creates a git
-    // worktree and registers it.
-    const spawn = await api(ctx.baseUrl, 'POST', '/api/instances', {
-      project: 'demo', mode: 'bypassPermissions', worktree: true,
-    });
-    assert.equal(spawn.status, 201);
-    const worktreeName = spawn.body.worktree.worktreeName;
+  // Create an instance with worktree:true so the orchestrator creates a git
+  // worktree and registers it.
+  const spawn = await api(ctx.baseUrl, 'POST', '/api/instances', {
+    project: 'demo', mode: 'bypassPermissions', worktree: true,
+  });
+  assert.equal(spawn.status, 201);
+  const worktreeName = spawn.body.worktree.worktreeName;
 
-    // Warm the path — verify the worktree is present.
-    const before = await api(ctx.baseUrl, 'GET', '/api/projects');
-    assert.equal(before.status, 200);
-    assert.equal(before.body[0].worktrees.length, 1, 'worktree present before delete');
+  // Warm the path — verify the worktree is present.
+  const before = await api(ctx.baseUrl, 'GET', '/api/projects');
+  assert.equal(before.status, 200);
+  assert.equal(before.body[0].worktrees.length, 1, 'worktree present before delete');
 
-    // Kill the live instance so DELETE doesn't refuse due to an attached proc.
-    await api(ctx.baseUrl, 'DELETE', `/api/instances/${spawn.body.id}`);
+  // Kill the live instance so DELETE doesn't refuse due to an attached proc.
+  await api(ctx.baseUrl, 'DELETE', `/api/instances/${spawn.body.id}`);
 
-    // DELETE must invalidate the cache synchronously (before sending 200) so
-    // the immediately following GET cannot race a stale entry.
-    const del = await api(ctx.baseUrl, 'DELETE', `/api/projects/demo/worktrees/${worktreeName}`);
-    assert.equal(del.status, 200);
+  // DELETE must invalidate the cache synchronously (before sending 200) so
+  // the immediately following GET cannot race a stale entry.
+  const del = await api(ctx.baseUrl, 'DELETE', `/api/projects/demo/worktrees/${worktreeName}`);
+  assert.equal(del.status, 200);
 
-    const after = await api(ctx.baseUrl, 'GET', '/api/projects');
-    assert.equal(after.status, 200);
-    assert.equal(after.body[0].worktrees.length, 0, 'worktree absent after delete + cache invalidation');
-  } finally { await ctx.close(); }
+  const after = await api(ctx.baseUrl, 'GET', '/api/projects');
+  assert.equal(after.status, 200);
+  assert.equal(after.body[0].worktrees.length, 0, 'worktree absent after delete + cache invalidation');
 });
 
 test('cache invalidated after DELETE project — subsequent fetch returns empty list', async () => {
-  const ctx = await bootServer();
-  try {
-    await makeRealRepo(ctx.projectsRoot, 'beta');
-    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'beta' });
+  await makeRealRepo(projectsRoot, 'beta');
+  await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'beta' });
 
-    const before = await api(ctx.baseUrl, 'GET', '/api/projects');
-    assert.equal(before.body.length, 1);
+  const before = await api(ctx.baseUrl, 'GET', '/api/projects');
+  assert.equal(before.body.length, 1);
 
-    await api(ctx.baseUrl, 'DELETE', '/api/projects/beta');
+  await api(ctx.baseUrl, 'DELETE', '/api/projects/beta');
 
-    const after = await api(ctx.baseUrl, 'GET', '/api/projects');
-    assert.equal(after.status, 200);
-    assert.equal(after.body.length, 0, 'project absent after delete + cache invalidation');
-  } finally { await ctx.close(); }
+  const after = await api(ctx.baseUrl, 'GET', '/api/projects');
+  assert.equal(after.status, 200);
+  assert.equal(after.body.length, 0, 'project absent after delete + cache invalidation');
 });
