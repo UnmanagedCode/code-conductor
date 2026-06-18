@@ -287,6 +287,7 @@ export class ToolUseBlock {
     this.status = 'running';
     this._startedAt = Date.now();
     this._timer = setInterval(() => this._renderSummary(), 1000);
+    this._timer?.unref?.();
     this._renderSummary();
     this._renderBody();
   }
