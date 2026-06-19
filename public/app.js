@@ -34,6 +34,7 @@ import { installRestart } from './restartFlow.js';
 import { installNewProjectDialog } from './newProjectDialog.js';
 import { installWorkspaceDialog } from './workspaceDialog.js';
 import { installSpawnDialog } from './spawnDialog.js';
+import { installSessionActions } from './sessionActions.js';
 import { loadModelVersions, setActiveVersions, setActiveSonnetWindow,
   setActiveFamilyEnabled, setActiveDefaultSpawnFamily } from './models.js';
 import { setTtsAvailable, setTtsEnabled, setTtsRate } from './tts.js';
@@ -264,6 +265,14 @@ function sendOrQueuePrompt(instanceId, text) {
   }
 }
 
+// Handles returned by installSessionActions ({ promoteSession, loadSessions,
+// resumeSession, rewindActiveSession, forkActiveSession, deleteProject,
+// deleteSession, removeWorktree, consumePendingPrefill }). Declared here —
+// before conversationOptions and the Sidebar, both of which forward to it via
+// lazy arrows — and assigned later, once its deps (sidebar et al.) are in scope.
+// Every call site fires only after init (user interaction / async WS open).
+let sessionActions = null;
+
 // Shared by the main conversation AND the detached batch renderers used
 // for lazy-loaded older history (see loadEarlier below) — batches reuse the
 // exact same block-rendering path, minus TTS auto-speak.
@@ -327,8 +336,8 @@ const conversationOptions = {
       sendOrQueuePrompt(activeId, text);
     }
   },
-  onRewind: (userMessageIndex) => rewindActiveSession(userMessageIndex),
-  onFork: (userMessageIndex) => forkActiveSession(userMessageIndex),
+  onRewind: (userMessageIndex) => sessionActions.rewindActiveSession(userMessageIndex),
+  onFork: (userMessageIndex) => sessionActions.forkActiveSession(userMessageIndex),
   // Read finalized assistant messages aloud when TTS auto-speak is enabled.
   onAssistantText: (block) => autoSpeakBlock(block),
 };
@@ -363,13 +372,13 @@ const sidebar = new Sidebar({
   rootList: dom.projectList,
   onSelectInstance: selectInstance,
   onCreateInstanceClick: (projectName, opts) => spawnHandles.openSpawnDialog(projectName, opts),
-  onRemoveWorktree: removeWorktree,
-  onDeleteProject: deleteProject,
-  onResumeSession: resumeSession,
-  onLoadSessions: loadSessions,
-  onDeleteSession: deleteSession,
+  onRemoveWorktree: (...a) => sessionActions.removeWorktree(...a),
+  onDeleteProject: (...a) => sessionActions.deleteProject(...a),
+  onResumeSession: (...a) => sessionActions.resumeSession(...a),
+  onLoadSessions: (...a) => sessionActions.loadSessions(...a),
+  onDeleteSession: (...a) => sessionActions.deleteSession(...a),
   onEditWorkspace: (name) => workspaceHandles.openEdit(name),
-  onPromoteSession: promoteSession,
+  onPromoteSession: (...a) => sessionActions.promoteSession(...a),
 });
 // Seed the sidebar with any unread counts restored from localStorage so
 // the pills appear on the first render after a page reload — without
@@ -783,233 +792,23 @@ installRestart({
   setSidebarStatus,
 });
 
-// Promote a live temp session into a regular one. The server flips the
-// temp flag, writes the resume-picker metadata, and broadcasts the
-// status change — the sidebar's `instances` re-fetch then migrates the
-// row from the Temp Sessions subnode into the regular Sessions list.
-async function promoteSession({ projectName, instanceId, preview }) {
-  if (!instanceId) return;
-  const ok = confirm(
-    `Promote this temp session to a normal session in '${projectName}'?\n\n` +
-    `${preview || '(no preview yet)'}\n\n` +
-    `The transcript will be preserved when the session ends.`,
-  );
-  if (!ok) return;
-  try {
-    const r = await fetch(`/api/instances/${encodeURIComponent(instanceId)}/promote`, {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-    });
-    if (!r.ok) throw new Error((await r.json()).error);
-    await refreshInstances();
-  } catch (e) {
-    alert(`Failed to promote: ${e.message}`);
-  }
-}
-
-// Fetches sessions for a project (or for a specific worktree under it).
-// Called by the sidebar when the user expands the "Sessions" subnode.
-async function loadSessions(projectName, worktreeName) {
-  const url = worktreeName
-    ? `/api/projects/${encodeURIComponent(projectName)}/worktrees/${encodeURIComponent(worktreeName)}/sessions`
-    : `/api/projects/${encodeURIComponent(projectName)}/sessions`;
-  const r = await fetch(url);
-  if (!r.ok) throw new Error((await r.json()).error);
-  return r.json();
-}
-
-// One-click resume from the sidebar. We POST with worktree carried
-// through (so resuming a worktree session lands in the same worktree
-// cwd) and use orchestrator defaults for mode/effort/thinking. The
-// orchestrator's resume default is `code` (bypassPermissions) — fresh
-// spawns default to plan, but a resume is almost always continuing
-// real work. Switch via the header mode dropdown if needed.
-async function resumeSession({ projectName, worktreeName, sessionId }) {
-  try {
-    const r = await fetch('/api/instances', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        project: projectName,
-        resume: sessionId,
-        worktree: worktreeName || undefined,
-      }),
-    });
-    if (!r.ok) throw new Error((await r.json()).error);
-    const inst = await r.json();
-    await refreshProjects();
-    await refreshInstances();
-    selectInstance(inst.id);
-  } catch (e) {
-    alert(`resume failed: ${e.message}`);
-  }
-}
-
-// Rewind the active instance's session to before the Nth user prompt. The
-// orchestrator kills the subprocess, truncates the jsonl, broadcasts a
-// `reset_snapshot` (handled below) so this view clears, and respawns
-// against the truncated history. We prefill the composer with the
-// dropped prompt so the user can edit and re-send.
-async function rewindActiveSession(userMessageIndex) {
-  const id = state.activeId;
-  if (!id) return;
-  if (!confirm('Rewind to here? Everything after this message will be discarded; the composer will be prefilled with this prompt so you can edit and resend.')) return;
-  try {
-    const r = await fetch(`/api/instances/${encodeURIComponent(id)}/rewind`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ userMessageIndex }),
-    });
-    if (!r.ok) throw new Error((await r.json()).error);
-    // Prefill rides on the `reset_snapshot` WS frame (carries droppedText
-    // directly) so there's no race between this HTTP response and the
-    // server-side emit. Just drain the body to release the connection.
-    await r.json();
-  } catch (e) {
-    alert(`rewind failed: ${e.message}`);
-  }
-}
-
-// Fork the active instance's session: copy the prefix into a new
-// sessionId, spawn a new instance against it, switch focus to the
-// new instance, and prefill the composer with the dropped prompt.
-async function forkActiveSession(userMessageIndex) {
-  const id = state.activeId;
-  if (!id) return;
-  if (!confirm('Fork from here? A new session is created from the prefix; the original session is left intact and the composer is prefilled with this prompt.')) return;
-  try {
-    const r = await fetch(`/api/instances/${encodeURIComponent(id)}/fork`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ userMessageIndex }),
-    });
-    if (!r.ok) throw new Error((await r.json()).error);
-    const { instance: newInst, droppedText } = await r.json();
-    pendingPrefill = { instanceId: newInst.id, text: droppedText ?? '' };
-    await refreshProjects();
-    await refreshInstances();
-    selectInstance(newInst.id);
-  } catch (e) {
-    alert(`fork failed: ${e.message}`);
-  }
-}
-
-// Set by rewindActiveSession / forkActiveSession; consumed by the snapshot
-// or status handler once the relevant instance comes back online. Held
-// outside any closure so a focus switch (fork case) doesn't lose it.
-let pendingPrefill = null;
-
-async function deleteProject(project) {
-  const insts = state.instances.filter(i => i.project === project.name);
-  const wts = project.worktrees ?? [];
-  const summary = [
-    `Delete project '${project.name}'?`,
-    `Path: ${project.path}`,
-    ``,
-    `This will:`,
-    `  • kill ${insts.length} running instance${insts.length === 1 ? '' : 's'}`,
-    `  • remove ${wts.length} worktree${wts.length === 1 ? '' : 's'} (dir + branch)`,
-    `  • rm -rf the project directory itself`,
-    ``,
-    `(Your ~/.claude/projects/ session history is left in place.)`,
-    `Type the project name to confirm:`,
-  ].join('\n');
-  const typed = window.prompt(summary, '');
-  if (typed !== project.name) {
-    if (typed !== null) alert(`Name mismatch — nothing deleted.`);
-    return;
-  }
-  try {
-    const r = await fetch(`/api/projects/${encodeURIComponent(project.name)}`, { method: 'DELETE' });
-    if (!r.ok) throw new Error((await r.json()).error);
-    if (state.activeId && insts.some(i => i.id === state.activeId)) {
-      state.activeId = null;
-    }
-    await refreshProjects();
-    await refreshInstances();
-  } catch (e) {
-    alert(`delete project failed: ${e.message}`);
-  }
-}
-
-// The sidebar × action archives a session (keeps its transcript) rather
-// than deleting it — it moves to Settings → Archived, where it can be
-// restored or permanently deleted. Sessions are never deleted from here.
-async function deleteSession({ projectName, worktreeName, sessionId, preview, synthetic }) {
-  const label = preview && preview !== '(new session)' && preview !== `${sessionId.slice(0, 8)}…`
-    ? `"${preview}"`
-    : sessionId.slice(0, 8) + '…';
-  if (!confirm(`Archive session ${label}?\nIt moves to Settings → Archived (transcript kept, still resumable).`)) return;
-
-  // Synthetic sessions have no persisted .jsonl yet — the archive endpoint
-  // would return 404. Just kill the running instance (if any) and clean up.
-  if (synthetic) {
-    try {
-      const inst = state.instances.find(i => i.sessionId === sessionId);
-      if (inst) await fetch(`/api/instances/${encodeURIComponent(inst.id)}`, { method: 'DELETE' });
-      if (inst && state.activeId === inst.id) state.activeId = null;
-      if (sidebar.sessionsCache) {
-        const key = worktreeName ? `${projectName}:${worktreeName}` : projectName;
-        sidebar.sessionsCache.delete(key);
-      }
-      clearUnread(sessionId);
-      await refreshProjects();
-      await refreshInstances();
-    } catch (e) {
-      alert(`archive session failed: ${e.message}`);
-    }
-    return;
-  }
-
-  const base = worktreeName
-    ? `/api/projects/${encodeURIComponent(projectName)}/worktrees/${encodeURIComponent(worktreeName)}/sessions/${encodeURIComponent(sessionId)}/archive`
-    : `/api/projects/${encodeURIComponent(projectName)}/sessions/${encodeURIComponent(sessionId)}/archive`;
-  try {
-    let r = await fetch(base, { method: 'POST' });
-    if (r.status === 409) {
-      // Session is attached to a live instance; the user already confirmed
-      // the archive, so stop the instance and retry without a second prompt.
-      r = await fetch(`${base}?force=1`, { method: 'POST' });
-    }
-    if (!r.ok) {
-      let errMsg;
-      try { errMsg = (await r.json()).error; } catch { errMsg = `HTTP ${r.status}`; }
-      throw new Error(errMsg);
-    }
-    // If we were focused on this session's instance, drop the focus.
-    const inst = state.instances.find(i => i.sessionId === sessionId);
-    if (inst && state.activeId === inst.id) state.activeId = null;
-    // Drop any cached sessions for the affected scope so the
-    // subnode re-fetches on next render (archived rows are hidden).
-    if (sidebar.sessionsCache) {
-      const key = worktreeName ? `${projectName}:${worktreeName}` : projectName;
-      sidebar.sessionsCache.delete(key);
-    }
-    // Don't keep an unread entry for a session that's left the sidebar.
-    clearUnread(sessionId);
-    await refreshProjects();
-    await refreshInstances();
-  } catch (e) {
-    alert(`archive session failed: ${e.message}`);
-  }
-}
-
-async function removeWorktree(project, worktreeName) {
-  if (!confirm(`Remove worktree '${worktreeName}'?\nThis will delete the directory and branch.`)) return;
-  try {
-    let r = await fetch(`/api/projects/${encodeURIComponent(project)}/worktrees/${encodeURIComponent(worktreeName)}`, { method: 'DELETE' });
-    if (r.status === 409) {
-      // Either a running instance or uncommitted changes — offer force.
-      const { error } = await r.json();
-      if (!confirm(`${error}\n\nForce remove anyway?`)) return;
-      r = await fetch(`/api/projects/${encodeURIComponent(project)}/worktrees/${encodeURIComponent(worktreeName)}?force=1`, { method: 'DELETE' });
-    }
-    if (!r.ok) throw new Error((await r.json()).error);
-    await refreshProjects();
-    await refreshInstances();
-  } catch (e) {
-    alert(`remove worktree failed: ${e.message}`);
-  }
-}
+// Per-session / per-project action helpers (promote / resume / load-sessions /
+// rewind / fork / delete-project / delete-session / remove-worktree) live in
+// public/sessionActions.js. Returned handles are held in `sessionActions`
+// (declared above) so the Sidebar callbacks, conversationOptions onRewind/onFork,
+// the boot-time auto-resume, and the snapshot prefill-consume all forward to it.
+// pendingPrefill is owned inside the module (set by forkActiveSession, read once
+// by the snapshot handler via consumePendingPrefill).
+sessionActions = installSessionActions({
+  getActiveId: () => state.activeId,
+  setActiveId: (v) => { state.activeId = v; },
+  getInstances: () => state.instances,
+  refreshProjects,
+  refreshInstances,
+  selectInstance,
+  sidebar,
+  clearUnread,
+});
 
 async function refreshProjects() {
   const [projects, workspaces, conductSessions] = await Promise.all([
@@ -1466,11 +1265,11 @@ bus.addEventListener('snapshot', (e) => {
   lazyController.init(m);
   // Fork case: the newly-spawned instance's first snapshot is our cue to
   // prefill the composer with the dropped user prompt. (Rewind goes
-  // through reset_snapshot below instead.)
-  if (pendingPrefill && pendingPrefill.instanceId === m.id) {
-    composer.prefill(pendingPrefill.text);
-    pendingPrefill = null;
-  }
+  // through reset_snapshot below instead.) The fork-prefill state is owned
+  // by sessionActions; consumePendingPrefill returns { text } (possibly '')
+  // on a match for this instance, or null otherwise — clears on read.
+  const pf = sessionActions.consumePendingPrefill(m.id);
+  if (pf) composer.prefill(pf.text);
 });
 
 // Server-issued reset: the active instance's ring buffer was just wiped by
@@ -1630,7 +1429,7 @@ bus.addEventListener('open', async () => {
             const { project, worktreeName } = await r.json();
             setSidebarStatus('resuming session…', { warn: true });
             try {
-              await resumeSession({ projectName: project, worktreeName, sessionId: anchor });
+              await sessionActions.resumeSession({ projectName: project, worktreeName, sessionId: anchor });
             } finally { setSidebarStatus(''); }
             return;
           }
