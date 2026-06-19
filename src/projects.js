@@ -548,6 +548,16 @@ export async function findSessionLocation(sessionId) {
 export async function listArchivedGroupedByProject() {
   const { listWorktrees } = await import('./worktrees.js');
   const projects = await listProjects();
+
+  // Include .conduct (the hidden conductor project) in the archive view only.
+  // listProjects() intentionally skips dot-prefixed dirs; we add .conduct here
+  // so its archived temp sessions are visible in Settings → Archived.
+  const conductPath = path.join(projectsRoot(), '.conduct');
+  try {
+    const s = await fs.stat(conductPath);
+    if (s.isDirectory()) projects.push({ name: '.conduct', path: conductPath });
+  } catch { /* .conduct doesn't exist yet — skip */ }
+
   const groups = [];
   for (const proj of projects) {
     const sessions = [];
