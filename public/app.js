@@ -23,6 +23,7 @@ import {
   stashCurrentAnchorForRelaunch, consumeStashedAnchor,
 } from './anchor.js';
 import { installExternalLinkOpener } from './external-links.js';
+import { makeDismissable } from './dismissable.js';
 import { renderEventBatch, prependBatch } from './lazyHistory.js';
 import { installLightbox } from './lightbox.js';
 import { installSettings } from './settings.js';
@@ -1757,11 +1758,10 @@ function renderCombinedChip(inst) {
 let openCombinedPopover = null;
 function closeCombinedPopover() {
   if (!openCombinedPopover) return;
-  const { node, anchor, dismiss } = openCombinedPopover;
+  const { node, anchor, ctl } = openCombinedPopover;
   node.remove();
   anchor.setAttribute('aria-expanded', 'false');
-  document.removeEventListener('pointerdown', dismiss, true);
-  document.removeEventListener('keydown', dismiss, true);
+  ctl.disarm();
   openCombinedPopover = null;
 }
 function toggleCombinedPopover(anchor, inst) {
@@ -1779,78 +1779,55 @@ function toggleCombinedPopover(anchor, inst) {
   const maxLeft = window.innerWidth - node.offsetWidth - 8;
   node.style.left = `${Math.max(8, Math.min(desiredLeft, maxLeft))}px`;
   anchor.setAttribute('aria-expanded', 'true');
-  const dismiss = (ev) => {
-    if (ev.type === 'keydown') {
-      if (ev.key === 'Escape') closeCombinedPopover();
-      return;
-    }
-    if (node.contains(ev.target) || anchor.contains(ev.target)) return;
-    closeCombinedPopover();
-  };
-  document.addEventListener('pointerdown', dismiss, true);
-  document.addEventListener('keydown', dismiss, true);
-  openCombinedPopover = { node, anchor, dismiss };
+  // node/anchor differ per open, so the controller is created per-open
+  // (mirrors the original, which defined `dismiss` inside this function).
+  const ctl = makeDismissable({
+    isInside: (t) => node.contains(t) || anchor.contains(t),
+    onDismiss: () => closeCombinedPopover(),
+  });
+  ctl.arm();
+  openCombinedPopover = { node, anchor, ctl };
 }
 
 // Header ⋮ overflow menu — currently hosts the Debug button so it doesn't
 // occupy primary-control real estate. Mirrors the usage popover's dismiss
 // behavior (click outside / Escape).
-let openOverflow = null;
+const overflowCtl = makeDismissable({
+  isInside: (t) => dom.overflowPanel.contains(t) || dom.overflowToggle.contains(t),
+  onDismiss: () => closeOverflow(),
+});
 function closeOverflow() {
-  if (!openOverflow) return;
-  const { dismiss } = openOverflow;
+  if (!overflowCtl.armed) return;
   dom.overflowPanel.hidden = true;
   dom.overflowToggle.setAttribute('aria-expanded', 'false');
-  document.removeEventListener('pointerdown', dismiss, true);
-  document.removeEventListener('keydown', dismiss, true);
-  openOverflow = null;
+  overflowCtl.disarm();
 }
 function toggleOverflow() {
-  if (openOverflow) { closeOverflow(); return; }
+  if (overflowCtl.armed) { closeOverflow(); return; }
   dom.overflowPanel.hidden = false;
   dom.overflowToggle.setAttribute('aria-expanded', 'true');
-  const dismiss = (ev) => {
-    if (ev.type === 'keydown') {
-      if (ev.key === 'Escape') closeOverflow();
-      return;
-    }
-    if (dom.overflowPanel.contains(ev.target) || dom.overflowToggle.contains(ev.target)) return;
-    closeOverflow();
-  };
-  document.addEventListener('pointerdown', dismiss, true);
-  document.addEventListener('keydown', dismiss, true);
-  openOverflow = { dismiss };
+  overflowCtl.arm();
 }
 dom.overflowToggle.addEventListener('click', toggleOverflow);
 
 // Sidebar ≡ hamburger — mirrors the header overflow pattern. Hosts
 // secondary project actions (currently just "+ Group") so the primary
 // "+ New project" button gets the full action-row width.
-let openSidebarOverflow = null;
+const sidebarOverflowCtl = makeDismissable({
+  isInside: (t) => dom.sidebarOverflowPanel.contains(t) || dom.sidebarOverflowToggle.contains(t),
+  onDismiss: () => closeSidebarOverflow(),
+});
 function closeSidebarOverflow() {
-  if (!openSidebarOverflow) return;
-  const { dismiss } = openSidebarOverflow;
+  if (!sidebarOverflowCtl.armed) return;
   dom.sidebarOverflowPanel.hidden = true;
   dom.sidebarOverflowToggle.setAttribute('aria-expanded', 'false');
-  document.removeEventListener('pointerdown', dismiss, true);
-  document.removeEventListener('keydown', dismiss, true);
-  openSidebarOverflow = null;
+  sidebarOverflowCtl.disarm();
 }
 function toggleSidebarOverflow() {
-  if (openSidebarOverflow) { closeSidebarOverflow(); return; }
+  if (sidebarOverflowCtl.armed) { closeSidebarOverflow(); return; }
   dom.sidebarOverflowPanel.hidden = false;
   dom.sidebarOverflowToggle.setAttribute('aria-expanded', 'true');
-  const dismiss = (ev) => {
-    if (ev.type === 'keydown') {
-      if (ev.key === 'Escape') closeSidebarOverflow();
-      return;
-    }
-    if (dom.sidebarOverflowPanel.contains(ev.target) || dom.sidebarOverflowToggle.contains(ev.target)) return;
-    closeSidebarOverflow();
-  };
-  document.addEventListener('pointerdown', dismiss, true);
-  document.addEventListener('keydown', dismiss, true);
-  openSidebarOverflow = { dismiss };
+  sidebarOverflowCtl.arm();
 }
 dom.sidebarOverflowToggle.addEventListener('click', toggleSidebarOverflow);
 
