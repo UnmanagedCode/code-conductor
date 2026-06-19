@@ -31,6 +31,7 @@ import { installReview } from './review.js';
 import { installCommits } from './commits.js';
 import { installCosts } from './costs.js';
 import { installRestart } from './restartFlow.js';
+import { installNewProjectDialog } from './newProjectDialog.js';
 import { loadModelVersions, setActiveVersions, setActiveSonnetWindow, getActiveSonnetWindow, resolveSpawnModel,
   setActiveFamilyEnabled, getActiveFamilyEnabled, getFamilyList,
   setActiveDefaultSpawnFamily, getActiveDefaultSpawnFamily } from './models.js';
@@ -708,28 +709,16 @@ dom.resumeBtn.addEventListener('click', async () => {
   } catch (e) { alert(`resume failed: ${e.message}`); }
 });
 
-dom.newProjectBtn.addEventListener('click', () => {
-  closeSidebarOverflow();
-  dom.npName.value = '';
-  dom.npError.textContent = '';
-  dom.npPreview.textContent = '~/project/<name>';
-  dom.newProjectDialog.showModal();
-});
-dom.npName.addEventListener('input', () => {
-  dom.npPreview.textContent = `~/project/${dom.npName.value || '<name>'}`;
-});
-dom.newProjectDialog.addEventListener('close', async () => {
-  if (dom.newProjectDialog.returnValue !== 'create') return;
-  const name = dom.npName.value.trim();
-  if (!name) return;
-  try {
-    const r = await fetch('/api/projects', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name }) });
-    if (!r.ok) throw new Error((await r.json()).error);
-    await refreshProjects();
-  } catch (e) {
-    dom.npError.textContent = e.message;
-    dom.newProjectDialog.showModal();
-  }
+installNewProjectDialog({
+  dom: {
+    newProjectBtn: dom.newProjectBtn,
+    newProjectDialog: dom.newProjectDialog,
+    npName: dom.npName,
+    npError: dom.npError,
+    npPreview: dom.npPreview,
+  },
+  refreshProjects,
+  closeSidebarOverflow,
 });
 
 // Workspace dialog. Double-duty for new + edit:
