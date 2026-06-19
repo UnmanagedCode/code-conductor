@@ -287,4 +287,43 @@ test('GET /commits for a worktree returns aheadCount vs base branch', async () =
   assert.equal(r.status, 200, `expected 200, got ${r.status}: ${JSON.stringify(r.body)}`);
   assert.equal(r.body.aheadCount, 1, 'one commit ahead of base branch');
   assert.equal(r.body.aheadOf, 'main', 'ahead of the parent branch (main)');
+  assert.equal(r.body.hasUncommitted, false, 'clean worktree → hasUncommitted:false');
+});
+
+test('GET /commits for a worktree returns hasUncommitted:true when worktree is dirty', async () => {
+  const parentPath = await makeRealRepo('myapp');
+
+  const wtId = 'def456';
+  const wtName = `myapp_worktree_${wtId}`;
+  const wtPath = path.join(projectsRoot, wtName);
+  const wtBranch = `code-conductor/${wtId}`;
+  const { stdout: headShaOut } = await git(parentPath, 'rev-parse', 'HEAD');
+  const headSha = headShaOut.trim();
+  await git(parentPath, 'worktree', 'add', wtPath, '-b', wtBranch, headSha);
+
+  const metaDir = path.join(
+    projectsRoot, '.code-conductor', 'projects', 'myapp', 'worktrees', wtName,
+  );
+  await fs.mkdir(metaDir, { recursive: true });
+  await fs.writeFile(path.join(metaDir, 'worktree.json'), JSON.stringify({
+    parentProject: 'myapp',
+    parentPath,
+    worktreeName: wtName,
+    worktreePath: wtPath,
+    branch: wtBranch,
+    baseBranch: 'main',
+    baseSha: headSha,
+    createdAt: new Date().toISOString(),
+  }));
+
+  await git(wtPath, 'config', 'user.email', 'test@example.com');
+  await git(wtPath, 'config', 'user.name', 'test');
+  await git(wtPath, 'config', 'commit.gpgsign', 'false');
+
+  // Make an unstaged change in the worktree — no commit.
+  await fs.writeFile(path.join(wtPath, 'README.md'), '# modified in worktree\n');
+
+  const r = await api(baseUrl, 'GET', `/api/projects/${encodeURIComponent(wtName)}/commits`);
+  assert.equal(r.status, 200, `expected 200, got ${r.status}: ${JSON.stringify(r.body)}`);
+  assert.equal(r.body.hasUncommitted, true, 'dirty worktree → hasUncommitted:true');
 });
