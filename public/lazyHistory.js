@@ -47,3 +47,109 @@ export function prependBatch(root, holder, anchorNode = null) {
   while (holder.firstChild) root.insertBefore(holder.firstChild, before);
   root.scrollTop = prevScrollTop + (root.scrollHeight - prevHeight);
 }
+
+// --- Lazy-load of older history (scroll-to-top) controller ----------------
+// The WS snapshot carries only the ring TAIL (tailStartSeq > 0 ⇒ older
+// events exist); the user pages backward through
+// GET /api/instances/:id/events?before=<cursor> as they scroll up. `epoch`
+// guards against a fetch resolving after the view was cleared or switched
+// (its nodes would otherwise land in the wrong conversation) — bumped on
+// every snapshot / reset_snapshot / instance switch.
+//
+// Injected deps:
+//   conversationEl      — dom.conversation: scroll container + sentinel mount + prepend root
+//   conversation        — live Conversation instance (for setUserActionsEnabled after a prepend)
+//   conversationOptions — same callbacks the live view was built with
+//   getActiveId         — () => state.activeId
+//   getInstances        — () => state.instances
+// Returns { reset, init } — the snapshot / reset_snapshot / selectInstance call sites.
+export function installLazyHistoryController({
+  conversationEl,
+  conversation,
+  conversationOptions,
+  getActiveId,
+  getInstances,
+}) {
+  const lazy = { epoch: 0, hasMore: false, nextBefore: 0, loading: false };
+  let lazySentinel = null;
+
+  function reset() {
+    lazy.epoch += 1;
+    lazy.hasMore = false;
+    lazy.nextBefore = 0;
+    lazy.loading = false;
+    lazySentinel = null; // the conversation DOM is cleared wholesale alongside
+  }
+
+  // Called from the snapshot handler for the active instance, after the tail
+  // has been rendered.
+  function init(frame) {
+    lazy.epoch += 1;
+    lazy.loading = false;
+    lazy.nextBefore = frame.tailStartSeq
+      ?? (frame.events?.length ? frame.events[0]._seq : 0);
+    lazy.hasMore = lazy.nextBefore > 0;
+    lazySentinel = null;
+    if (lazy.hasMore) ensureSentinel();
+  }
+
+  // "⋯ earlier messages" / "loading earlier…" affordance pinned above the
+  // oldest rendered content. Tappable as a manual fallback to the scroll
+  // trigger; removed once history is exhausted.
+  function ensureSentinel() {
+    if (!lazySentinel) {
+      lazySentinel = document.createElement('div');
+      lazySentinel.className = 'history-sentinel';
+      lazySentinel.addEventListener('click', () => loadEarlier());
+    }
+    if (lazySentinel.parentNode !== conversationEl) {
+      conversationEl.insertBefore(lazySentinel, conversationEl.firstChild);
+    }
+    lazySentinel.textContent = lazy.loading ? 'loading earlier…' : '⋯ earlier messages';
+  }
+
+  async function loadEarlier() {
+    if (!lazy.hasMore || lazy.loading || !getActiveId()) return;
+    const id = getActiveId();
+    const epoch = lazy.epoch;
+    lazy.loading = true;
+    ensureSentinel();
+    try {
+      const r = await fetch(
+        `/api/instances/${encodeURIComponent(id)}/events?before=${lazy.nextBefore}&limit=200`);
+      if (!r.ok) throw new Error((await r.json()).error ?? `HTTP ${r.status}`);
+      const page = await r.json();
+      if (epoch !== lazy.epoch || id !== getActiveId()) return; // stale — view changed mid-fetch
+      if (page.events.length) {
+        // Render through the standard Conversation pipeline on a detached
+        // node (isolated streaming/tool-pairing state), then splice above
+        // the live content, preserving the viewport.
+        const holder = renderEventBatch(page.events, conversationOptions);
+        prependBatch(conversationEl, holder, lazySentinel);
+        // Freshly-created rewind/fork buttons default to enabled; re-sync
+        // them with the instance's current status.
+        const inst = getInstances().find(i => i.id === id);
+        conversation.setUserActionsEnabled(inst?.status === 'idle');
+      }
+      lazy.nextBefore = page.nextBefore;
+      lazy.hasMore = !!page.hasMore && page.events.length > 0; // empty page always terminates
+    } catch (e) {
+      console.warn('load earlier failed:', e);
+      // keep hasMore — the sentinel stays tappable for a retry
+    } finally {
+      if (epoch === lazy.epoch) {
+        lazy.loading = false;
+        if (lazy.hasMore) ensureSentinel();
+        else if (lazySentinel) { lazySentinel.remove(); lazySentinel = null; }
+      }
+    }
+  }
+
+  // Auto-trigger when the user scrolls near the top (loadEarlier no-ops
+  // unless there is actually more history and no fetch is in flight).
+  conversationEl.addEventListener('scroll', () => {
+    if (conversationEl.scrollTop < 200) loadEarlier();
+  });
+
+  return { reset, init };
+}
