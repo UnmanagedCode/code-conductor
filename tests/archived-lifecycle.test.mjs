@@ -4,8 +4,8 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor } from './helpers.mjs';
-import { encodeCwd } from '../src/projects.js';
-import { isArchived } from '../src/archivedSessions.js';
+import { encodeCwd, projectsRoot } from '../src/projects.js';
+import { isArchived, markArchived } from '../src/archivedSessions.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-basic.json');
@@ -123,5 +123,45 @@ test('archive of a non-existent session returns 404', async () => {
     const r = await api(baseUrl, 'POST', `/api/projects/arclife4/sessions/${ghost}/archive`);
     assert.equal(r.status, 404);
     assert.equal(await isArchived(ghost), false, 'a missing session must not be marked archived');
+  } finally { await close(); }
+});
+
+test('.conduct archived sessions appear in /api/archived and are restorable', async () => {
+  const { baseUrl, claudeProjectsRoot, close } = await bootServer({ scenarioPath: SCENARIO });
+  try {
+    // Create the .conduct dir (normally created by Conduct mode on first spawn).
+    const conductDir = path.join(projectsRoot(), '.conduct');
+    await fs.mkdir(conductDir, { recursive: true });
+
+    // Plant a fake .jsonl in the encoded .conduct session dir.
+    const sid = 'eeeeeeee-ffff-0000-1111-222222222222';
+    const encoded = encodeCwd(conductDir);
+    const sessionDir = path.join(claudeProjectsRoot, encoded);
+    await fs.mkdir(sessionDir, { recursive: true });
+    await fs.writeFile(path.join(sessionDir, `${sid}.jsonl`), '{"type":"user","uuid":"u1"}\n');
+
+    // Mark it archived (simulates what happens when a conductor temp session is killed).
+    await markArchived(sid);
+    assert.equal(await isArchived(sid), true);
+
+    // /api/archived must include a group for .conduct containing our session.
+    const arch = await api(baseUrl, 'GET', '/api/archived');
+    assert.equal(arch.status, 200);
+    const group = arch.body.groups.find(g => g.project === '.conduct');
+    assert.ok(group, '.conduct group must appear in /api/archived');
+    const gs = group.sessions.find(s => s.sessionId === sid);
+    assert.ok(gs, 'conductor session must appear in the .conduct group');
+    assert.equal(gs.worktreeName, null);
+
+    // Restore must work — the route doesn't look up the project, just unmmarks.
+    const restore = await api(baseUrl, 'POST', `/api/projects/.conduct/sessions/${sid}/restore`);
+    assert.equal(restore.status, 200);
+    assert.equal(restore.body.ok, true);
+    assert.equal(await isArchived(sid), false, 'session must no longer be archived after restore');
+
+    // /api/archived must no longer include .conduct once its only session is restored.
+    const arch2 = await api(baseUrl, 'GET', '/api/archived');
+    assert.ok(!arch2.body.groups.find(g => g.project === '.conduct'),
+      '.conduct group absent from /api/archived after restore');
   } finally { await close(); }
 });
