@@ -20,6 +20,13 @@ import { canonicalizeModel } from './modelVersions.js';
 import { truncateSessionAtUserMessage } from './sessionEdit.js';
 import { saveAttachment, isImageType } from './attachments.js';
 import { buildApprovePrompt } from './planApproval.js';
+import { IdleSubscriptionHub } from './idleSubscriptions.js';
+import { OverageResumeController } from './overageResume.js';
+
+// `AUTO_RESUME_TEXT` now lives with the overage timer machine in
+// overageResume.js; re-export it here so existing importers (and tests) that
+// reach for `instances.js` keep resolving it unchanged.
+export { AUTO_RESUME_TEXT } from './overageResume.js';
 
 // Three user-facing modes:
 //   - `plan`              — read-only planning; CLI is in plan mode
@@ -48,11 +55,6 @@ export const MID_TURN_NOTE =
   'This may be new direction or a reaction to earlier work — weigh it accordingly; ' +
   'don\'t assume it refers to your latest action.\n' +
   '</system-reminder>';
-
-// Prompt delivered by the overage auto-resume timer to a still-alive session
-// once the rate-limit window has reset (onOverage: 'stop-resume').
-export const AUTO_RESUME_TEXT =
-  'The rate-limit window has reset. Please continue where you left off.';
 
 // Returns true when a rate_limit_event signals the session is now using
 // paid overage credits. Defensive: matches isUsingOverage at either
@@ -1068,166 +1070,35 @@ export class InstanceManager extends EventEmitter {
     // spawned without a port set get null hookCallbackUrl, which disables
     // the interactive http hook (ask mode falls back to auto-allow).
     this.serverPort = null;
-    // One-shot idle subscriptions: when target hits turn_end, deliver
-    // a stub user prompt to every registered caller and clear the set.
-    // Keyed by targetSessionId → Map<callerSessionId, { timerId: Timeout | null }>.
-    // sessionId (not instanceId) so the graph survives respawn / restart.
-    this._idleSubscribers = new Map();
-    // Pending overage auto-resume timers, keyed by sessionId (survives the
-    // instanceId churn the way _idleSubscribers does). Armed on the idle
-    // transition after an `onOverage: 'stop-resume'` soft-interrupt; fires a
-    // resume prompt at the rate-limit reset time. In-memory only — lost on
-    // restart (the session just stays manually resumable).
-    this._autoResumeTimers = new Map(); // sessionId → Timeout
-    this.on('event', ({ id: targetInstanceId, ev }) => {
-      if (ev?.kind !== 'turn_end') return;
-      // The event payload carries the instanceId; resolve its sessionId, which
-      // is what the subscription graph is keyed by.
-      const tSid = this.byId.get(targetInstanceId)?.sessionId;
-      const subs = tSid && this._idleSubscribers.get(tSid);
-      if (!subs || subs.size === 0) return;
-      const entries = [...subs.entries()];
-      subs.clear();
-      this._idleSubscribers.delete(tSid);
-      for (const [callerSid, { timerId }] of entries) {
-        clearTimeout(timerId); // cancel watchdog — turn_end arrived first
-        this._deliverIdleCallback(callerSid, tSid);
-      }
-    });
+    // Two self-contained subsystems composed as collaborators. Each owns its
+    // backing state (the idle-subscription graph map / the auto-resume timer
+    // map) and resolves cross-instance lookups + event emission back through
+    // `this`. The manager keeps thin delegating methods (and live-map getters)
+    // so every external caller sees an unchanged surface.
+    this._idleHub = new IdleSubscriptionHub(this);
+    this._overageResume = new OverageResumeController(this);
+    this.on('event', (e) => this._idleHub.onTurnEnd(e));
   }
 
-  // Register a one-shot callback: when targetId's next turn_end fires,
-  // a stub user prompt lands in callerId pointing at get_recent_messages.
-  // Re-subscribing the same pair before the callback fires is a no-op.
-  // Optional timeoutMs: arm a watchdog that fires the subscription early
-  // (with a timeout-flagged stub) if turn_end hasn't arrived in time.
-  // Only armed when timeoutMs is a finite number > 0; ignored otherwise.
+  // Live backing maps exposed for the subsystems' callers (tests reach for
+  // `_idleSubscribers.clear()` / `_autoResumeTimers.has()/.size` directly, and
+  // the maps must be the same objects the collaborators mutate).
+  get _idleSubscribers() { return this._idleHub.subscribers; }
+  get _autoResumeTimers() { return this._overageResume.timers; }
+
+  // Idle-subscription graph — see src/idleSubscriptions.js. The manager keeps
+  // these names/signatures and forwards to the hub so MCP handlers, wsHub, the
+  // resume path, and tests see an unchanged surface.
   subscribeIdle(callerSessionId, targetSessionId, timeoutMs) {
-    if (typeof callerSessionId !== 'string' || !callerSessionId) {
-      throw new Error('callerSessionId required');
-    }
-    if (typeof targetSessionId !== 'string' || !targetSessionId) {
-      throw new Error('targetSessionId required');
-    }
-    if (callerSessionId === targetSessionId) {
-      throw new Error('cannot subscribe to self');
-    }
-    // Both must resolve to a LIVE (proc-attached) instance.
-    const isLive = (sid) => this.idsForSession(sid).some(id => this.byId.get(id)?.proc);
-    if (!isLive(callerSessionId)) {
-      throw new Error(`caller session not live: ${callerSessionId}`);
-    }
-    if (!isLive(targetSessionId)) {
-      throw new Error(`target session not live: ${targetSessionId}`);
-    }
-    let subs = this._idleSubscribers.get(targetSessionId);
-    if (!subs) {
-      subs = new Map();
-      this._idleSubscribers.set(targetSessionId, subs);
-    }
-    const already = subs.has(callerSessionId);
-    if (!already) {
-      const useTimeout = typeof timeoutMs === 'number' && isFinite(timeoutMs) && timeoutMs > 0;
-      let timerId = null;
-      if (useTimeout) {
-        timerId = setTimeout(() => {
-          const s = this._idleSubscribers.get(targetSessionId);
-          if (s) {
-            s.delete(callerSessionId);
-            if (s.size === 0) this._idleSubscribers.delete(targetSessionId);
-          }
-          this.emit('subscription_changed', { targetId: targetSessionId });
-          this._deliverIdleCallback(callerSessionId, targetSessionId, { timedOut: true, timeoutMs });
-        }, timeoutMs);
-      }
-      subs.set(callerSessionId, { timerId });
-      this.emit('subscription_changed', { targetId: targetSessionId });
-    }
-    return { already };
+    return this._idleHub.subscribe(callerSessionId, targetSessionId, timeoutMs);
   }
-
-  // Cancel a pending subscription. Idempotent. Clears any watchdog timer.
   unsubscribeIdle(callerSessionId, targetSessionId) {
-    const subs = this._idleSubscribers.get(targetSessionId);
-    if (!subs) return { removed: false };
-    const entry = subs.get(callerSessionId);
-    if (!entry) return { removed: false };
-    clearTimeout(entry.timerId);
-    subs.delete(callerSessionId);
-    if (subs.size === 0) this._idleSubscribers.delete(targetSessionId);
-    this.emit('subscription_changed', { targetId: targetSessionId });
-    return { removed: true };
+    return this._idleHub.unsubscribe(callerSessionId, targetSessionId);
   }
-
-  // Snapshot of the current idle-subscription graph. Test-only — gives
-  // tests a way to assert that purging on remove() actually happened.
-  _idleSubscriberSnapshot() {
-    const out = {};
-    for (const [target, callers] of this._idleSubscribers) {
-      out[target] = [...callers.keys()];
-    }
-    return out;
-  }
-
-  // Drop a sessionId from every subscription map (as caller) AND drop any
-  // entry where it was the target. Clears watchdog timers. Called on instance
-  // removal so dead sessions can't accumulate subscriptions. Guards null
-  // sessionId (an instance may exit before ever minting one).
-  _purgeIdleFor(sessionId) {
-    if (!sessionId) return;
-    const asTarget = this._idleSubscribers.get(sessionId);
-    if (asTarget) {
-      for (const [, { timerId }] of asTarget) clearTimeout(timerId);
-      this._idleSubscribers.delete(sessionId);
-    }
-    for (const [target, subs] of this._idleSubscribers) {
-      const entry = subs.get(sessionId);
-      if (entry) {
-        clearTimeout(entry.timerId);
-        subs.delete(sessionId);
-        if (subs.size === 0) this._idleSubscribers.delete(target);
-      }
-    }
-  }
-
+  _idleSubscriberSnapshot() { return this._idleHub.snapshot(); }
+  _purgeIdleFor(sessionId) { return this._idleHub.purge(sessionId); }
   _deliverIdleCallback(callerSessionId, targetSessionId, opts) {
-    // Resolve the live caller instance from its sessionId.
-    const caller = this.liveForSession(callerSessionId);
-    if (!caller) return; // caller gone — drop silently.
-    const stub = opts?.timedOut
-      ? `Worker \`${targetSessionId}\` did NOT finish — timed out after ${opts.timeoutMs}ms; ` +
-        `it may still be busy or stuck. ` +
-        `Call \`mcp__code-conductor__get_recent_messages({sessionId:"${targetSessionId}"})\` ` +
-        `to check its current state, then decide whether to resubscribe, ` +
-        `call interrupt_turn, or escalate.`
-      : `Worker \`${targetSessionId}\` finished its turn. ` +
-        `Call \`mcp__code-conductor__get_recent_messages({sessionId:"${targetSessionId}"})\` ` +
-        `to inspect the result.`;
-    const deliver = async () => {
-      try {
-        if (!caller.proc) return;
-        await caller.prompt(stub);
-      } catch (err) {
-        caller._emitUi({
-          kind: 'system', subtype: 'stderr',
-          data: { line: `idle-callback delivery failed: ${err.message}` },
-        });
-      }
-    };
-    if (caller.status === 'turn') {
-      // Wait for the caller to finish its own turn before injecting the
-      // stub, so we don't try to write to stdin while another turn is
-      // in flight. One-shot listener.
-      const onStatus = (s) => {
-        if (s.status === 'turn' || s.status === 'spawning') return;
-        caller.off('status', onStatus);
-        if (s.status === 'idle') queueMicrotask(deliver);
-        // exited/crashed → drop silently.
-      };
-      caller.on('status', onStatus);
-      return;
-    }
-    queueMicrotask(deliver);
+    return this._idleHub.deliver(callerSessionId, targetSessionId, opts);
   }
 
   setServerPort(port) {
@@ -1250,19 +1121,11 @@ export class InstanceManager extends EventEmitter {
     return `http://127.0.0.1:${this.serverPort}/mcp`;
   }
 
-  hasIdleSubscriber(sessionId) {
-    const subs = this._idleSubscribers.get(sessionId);
-    return subs != null && subs.size > 0;
-  }
+  hasIdleSubscriber(sessionId) { return this._idleHub.hasSubscriber(sessionId); }
 
   // Returns true when sessionId is the *caller* (conductor) in any pending
   // subscription — i.e. this session is actively waiting for a worker to finish.
-  isIdleCaller(sessionId) {
-    for (const callers of this._idleSubscribers.values()) {
-      if (callers.has(sessionId)) return true;
-    }
-    return false;
-  }
+  isIdleCaller(sessionId) { return this._idleHub.isCaller(sessionId); }
 
   list() {
     return [...this.byId.values()].map(i => ({
@@ -1452,86 +1315,13 @@ export class InstanceManager extends EventEmitter {
     return inst;
   }
 
-  // Arm a per-session overage auto-resume timer. Called from the status
-  // handler on the idle transition after a `stop-resume` soft-interrupt. Fires
-  // at `resetsAt + BUFFER` seconds with a resume prompt to the still-alive
-  // session. Skips (with a notice) when resetsAt is missing or already past —
-  // we never arm a negative/NaN timer.
-  _armAutoResume(inst) {
-    // Slack past the reported reset time before resuming. Overridable via env
-    // (a test seam — lets integration tests fire the resume promptly).
-    const envBuf = Number(process.env.ORCH_OVERAGE_RESUME_BUFFER_MS);
-    const BUFFER_MS = Number.isFinite(envBuf) ? envBuf : 5000;
-    const nowMs = Date.now();
-    const atMs = inst._overageResetsAt * 1000; // resetsAt is epoch SECONDS
-    if (!Number.isFinite(atMs) || atMs <= nowMs) {
-      inst._emitUi({ kind: 'system', subtype: 'auto_resume_skipped',
-        data: { reason: 'missing or past resetsAt' } });
-      inst.autoStoppedForOverage = false;
-      inst._overageHandled = false;
-      return;
-    }
-    const fireAtMs = atMs + BUFFER_MS;
-    inst.autoResumeAt = Math.round(fireAtMs / 1000); // epoch secs for the badge
-    const sid = inst.sessionId;
-    const t = setTimeout(() => this._runAutoResume(inst, sid), Math.max(0, fireAtMs - nowMs));
-    this._autoResumeTimers.set(sid, t);
-    this.emit('status', inst.summary()); // push autoResumeAt → client (badge)
-  }
-
-  // The body the armed timer fires (extracted so it can also be triggered
-  // on-demand via _fireAutoResumeNow). Resumes the still-live session, or tears
-  // down with a notice if the process vanished. No respawn, ever.
-  _runAutoResume(inst, sid) {
-    if (inst.proc) {
-      // prompt() synchronously emits 'user_prompt' → _cancelAutoResume performs
-      // the single teardown (clearTimeout of this already-fired timer is a no-op,
-      // deletes the Map entry, clears the flags, emits status to drop the badge);
-      // then the resume message sends. _cancelAutoResume is the sole owner of
-      // teardown — do NOT pre-clear here or it double-runs.
-      inst.prompt(AUTO_RESUME_TEXT).catch(() => {});
-    } else {
-      // Process gone (crashed / killed externally) — no send means no
-      // user_prompt, so tear down explicitly. Keep it simple: no respawn.
-      this._cancelAutoResume(sid);
-      inst._emitUi({ kind: 'system', subtype: 'auto_resume_skipped',
-        data: { reason: 'session no longer running' } });
-    }
-  }
-
-  // Test/control seam: fire a pending overage auto-resume immediately rather than
-  // waiting out the wall-clock timer (lets tests exercise the full arm→fire path
-  // without a real multi-second sleep). Clears the real timer first so it can't
-  // double-fire. Returns false if nothing was armed for this session.
-  _fireAutoResumeNow(sessionId) {
-    const t = this._autoResumeTimers.get(sessionId);
-    if (!t) return false;
-    clearTimeout(t);
-    this._autoResumeTimers.delete(sessionId);
-    const inst = [...this.byId.values()].find(i => i.sessionId === sessionId);
-    if (!inst) return false;
-    this._runAutoResume(inst, sessionId);
-    return true;
-  }
-
-  // Cancel a pending overage auto-resume timer and clear the instance flags.
-  // Idempotent. Called on user takeover, manual respawn/kill/remove, shutdown,
-  // and once the timer itself fires.
-  _cancelAutoResume(sessionId) {
-    const t = this._autoResumeTimers.get(sessionId);
-    if (t) {
-      clearTimeout(t);
-      this._autoResumeTimers.delete(sessionId);
-    }
-    for (const inst of this.byId.values()) {
-      if (inst.sessionId !== sessionId) continue;
-      const had = inst.autoResumeAt !== null || inst.autoStoppedForOverage;
-      inst.autoResumeAt = null;
-      inst.autoStoppedForOverage = false;
-      inst._overageHandled = false;
-      if (had) this.emit('status', inst.summary()); // clear the badge
-    }
-  }
+  // Overage auto-resume timer machine — see src/overageResume.js. The manager
+  // keeps these names/signatures and forwards to the controller (internal
+  // callers + the overage tests reach for them on the manager).
+  _armAutoResume(inst) { return this._overageResume.arm(inst); }
+  _runAutoResume(inst, sid) { return this._overageResume.run(inst, sid); }
+  _fireAutoResumeNow(sessionId) { return this._overageResume.fireNow(sessionId); }
+  _cancelAutoResume(sessionId) { return this._overageResume.cancel(sessionId); }
 
   async respawn(id) {
     const inst = this.byId.get(id);
@@ -1584,8 +1374,7 @@ export class InstanceManager extends EventEmitter {
   }
 
   async shutdown() {
-    for (const t of this._autoResumeTimers.values()) clearTimeout(t);
-    this._autoResumeTimers.clear();
+    this._overageResume.clearAll();
     const all = [...this.byId.values()];
     this.byId.clear();
     await Promise.all(all.map(i => i.kill({ graceMs: 200 }).catch(() => {})));
