@@ -1,6 +1,8 @@
 // Cost dashboard view — full-page breakdown of spend by project, model, and
-// time. Mount point: <section id="costs-view">. Follows the installCommits /
-// installReview pattern: installCosts() returns { open(), close() }.
+// time. Mount point: <section id="costs-view">. Built on the shared
+// installHashView scaffold: installCosts() returns { open(), close() }.
+
+import { installHashView } from './hashView.js';
 
 let _onClose = null;
 
@@ -192,45 +194,17 @@ function makeTable(headers, rows) {
   return table;
 }
 
-function show() {
-  getEl('costs-view').hidden = false;
-  getEl('main').classList.add('costs-open');
-}
-
-function hide() {
-  getEl('costs-view').hidden = true;
-  getEl('main').classList.remove('costs-open');
-}
-
-function open() {
-  if (!getEl('costs-view')) return;
-  history.pushState({}, '', '#costs');
-  show();
-  load();
-}
-
-function close() {
-  if (!getEl('costs-view')) return;
-  hide();
-  _onClose?.();
-}
-
 export function installCosts({ onClose } = {}) {
   _onClose = onClose;
 
-  getEl('costs-back')?.addEventListener('click', () => history.back());
-
-  window.addEventListener('keydown', e => {
-    if (e.key === 'Escape' && !getEl('costs-view')?.hidden) {
-      history.back();
-    }
-  }, true);
-
-  window.addEventListener('hashchange', () => {
-    if (location.hash !== '#costs' && !getEl('costs-view')?.hidden) {
-      close();
-    }
+  // guard: the #costs-view element may be absent in some layouts; gate both
+  // open() and teardown on its presence (matches the originals' getEl checks).
+  return installHashView({
+    name: 'costs',
+    escapeCapture: true,
+    guard: () => !!getEl('costs-view'),
+    navigate: () => history.pushState({}, '', '#costs'),
+    onShow: () => load(),
+    onTeardown: () => { _onClose?.(); },
   });
-
-  return { open, close };
 }

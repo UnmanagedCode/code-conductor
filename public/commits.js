@@ -1,8 +1,10 @@
 // Commit history view — a scrollable list of a project's commits (current
-// branch / HEAD). Mirrors the review.js module pattern: installCommits()
+// branch / HEAD). Built on the shared installHashView scaffold: installCommits()
 // returns { open(project), close() }. Tapping a commit row delegates to
 // onOpenCommit(project, commit), which opens the shared diff renderer
 // (review.js) on top, showing just that commit's change.
+
+import { installHashView } from './hashView.js';
 
 let _project = null;
 let _onClose = null;
@@ -189,31 +191,6 @@ function buildRail(layout, maxCols, { node = true, dotClass = '' } = {}) {
   return rail;
 }
 
-function show() {
-  getEl('commits-view').hidden = false;
-  getEl('main').classList.add('commits-open');
-}
-
-function hide() {
-  getEl('commits-view').hidden = true;
-  getEl('main').classList.remove('commits-open');
-}
-
-function close() {
-  hide();
-  _project = null;
-  _onClose?.();
-}
-
-function open(project) {
-  _project = project;
-  // pushState updates the URL without firing hashchange, so no event handler
-  // can race with show()/loadCommits() and accidentally close the view.
-  history.pushState(null, '', '#commits');
-  show();
-  loadCommits();
-}
-
 // Synthetic "working tree" row for uncommitted changes. Visually distinct
 // from real commits: amber accent, no SHA, no date.
 function renderUncommittedRow(project, onOpenCommit, { headCol = null, maxCols = 0 } = {}) {
@@ -371,31 +348,31 @@ async function loadCommits() {
   }
 }
 
-// Public handle. onOpenCommit is assigned by the caller after install.
-const api = { open, close, onOpenCommit: null };
+// Public handle. open/close are wired in installCommits; onOpenCommit is
+// assigned by the caller after install (and read here by loadCommits), so the
+// SAME object identity must be returned from installCommits.
+const api = { open: null, close: null, onOpenCommit: null };
 
 export function installCommits({ onClose } = {}) {
   _onClose = onClose;
 
-  getEl('commits-back')?.addEventListener('click', () => history.back());
-
-  // Capture phase: runs before review.js's bubble-phase handler, so when the
-  // diff is layered on top (review-view visible) we bail and let review handle
-  // Escape; otherwise we close the commit list.
-  window.addEventListener('keydown', e => {
-    if (e.key === 'Escape' && !getEl('commits-view')?.hidden && getEl('review-view')?.hidden) {
-      history.back();
-    }
-  }, true);
-
-  window.addEventListener('hashchange', () => {
-    // Stay open while the diff view (#review) is layered on top; only tear
-    // down when navigating somewhere unrelated.
-    const h = location.hash;
-    if (h !== '#commits' && h !== '#review' && !getEl('commits-view')?.hidden) {
-      close();
-    }
+  // Capture-phase Escape (escapeCapture:true) runs before review.js's
+  // bubble-phase handler, so when the diff is layered on top (review-view
+  // visible) we bail (canEscape) and let review handle Escape; otherwise we
+  // close the commit list. keepOpenHashes keeps us open while #review is
+  // layered on top — only tear down when navigating somewhere unrelated.
+  // pushState (in navigate) updates the URL without firing hashchange, so no
+  // handler can race with show()/loadCommits() and accidentally close the view.
+  const { open, close } = installHashView({
+    name: 'commits',
+    escapeCapture: true,
+    keepOpenHashes: ['#review'],
+    canEscape: () => getEl('review-view')?.hidden,
+    navigate: () => history.pushState(null, '', '#commits'),
+    onShow: (project) => { _project = project; loadCommits(); },
+    onTeardown: () => { _project = null; _onClose?.(); },
   });
-
+  api.open = open;
+  api.close = close;
   return api;
 }

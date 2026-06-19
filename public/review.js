@@ -1,48 +1,17 @@
 // Review view — renders a structured unified diff (per-file, collapsible).
-// Activated via location.hash = '#review'; mirrors the settings.js pattern:
-// installReview() returns { open({ title, url, onBack }), close() }.
+// Activated via location.hash = '#review'; built on the shared installHashView
+// scaffold: installReview() returns { open({ title, url, onBack }), close() }.
 // The same renderer serves both worktree diffs and per-commit diffs — only the
 // title and the fetch URL differ, supplied by the caller via open().
 
 import { diffLine } from './blocks.js';
+import { installHashView } from './hashView.js';
 
 let _title = '';
 let _url = null;
 let _onBack = null;
 
 function getEl(id) { return document.getElementById(id); }
-
-function show() {
-  getEl('review-view').hidden = false;
-  getEl('main').classList.add('review-open');
-}
-
-function hide() {
-  getEl('review-view').hidden = true;
-  getEl('main').classList.remove('review-open');
-}
-
-function goBack() {
-  hide();
-  const cb = _onBack;
-  _title = '';
-  _url = null;
-  _onBack = null;
-  cb?.();
-}
-
-function close() {
-  goBack();
-}
-
-function open({ title, url, onBack } = {}) {
-  _title = title || '';
-  _url = url || null;
-  _onBack = onBack || null;
-  location.hash = '#review';
-  show();
-  loadDiff();
-}
 
 async function loadDiff() {
   const url = _url;
@@ -162,19 +131,26 @@ function renderFile(file) {
 }
 
 export function installReview() {
-  getEl('review-back')?.addEventListener('click', () => history.back());
-
-  window.addEventListener('keydown', e => {
-    if (e.key === 'Escape' && !getEl('review-view')?.hidden) history.back();
+  // Bubble-phase Escape (escapeCapture:false) so commits.js's capture-phase
+  // handler runs first and can bail while this diff is layered on top.
+  return installHashView({
+    name: 'review',
+    escapeCapture: false,
+    navigate: () => { location.hash = '#review'; },
+    onShow: ({ title, url, onBack } = {}) => {
+      _title = title || '';
+      _url = url || null;
+      _onBack = onBack || null;
+      loadDiff();
+    },
+    // Hash navigated away (hardware/browser back or commits-back) — run the
+    // full teardown so the onBack callback (e.g. closeReview) still fires.
+    onTeardown: () => {
+      const cb = _onBack;
+      _title = '';
+      _url = null;
+      _onBack = null;
+      cb?.();
+    },
   });
-
-  window.addEventListener('hashchange', () => {
-    if (location.hash !== '#review' && !getEl('review-view')?.hidden) {
-      // Hash navigated away (hardware/browser back or commits-back) — run the
-      // full goBack() so the onBack callback (e.g. closeReview) still fires.
-      goBack();
-    }
-  });
-
-  return { open, close };
 }
