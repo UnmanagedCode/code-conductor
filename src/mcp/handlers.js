@@ -30,25 +30,15 @@ import { isKnownFamily, defaultVersion } from '../modelVersions.js';
 import { getModelVersion } from '../appSettings.js';
 import { textPayload } from './content.js';
 import { pageInstanceEvents } from '../eventArchive.js';
-import { loadPersistedTranscript } from '../transcript.js';
+import { parseNumstat, parseNameStatus, indexDiffLines, paginateDiff } from './diffPaging.js';
+import {
+  capText, MSG_TEXT_CAP, reconstructMessages, mergeRecentWithDisk, capBlockInput,
+} from './messageReconstruction.js';
 
-// Per-message text cap for get_recent_messages raw blocks, and dirty-line cap
-// for project_status — mirror read_file/get_worktree_diff's bounded-output
-// pattern so no tool can emit an unbounded body.
-const MSG_TEXT_CAP = 32 * 1024;
+// Dirty-line cap for project_status — mirror read_file/get_worktree_diff's
+// bounded-output pattern so no tool can emit an unbounded body. (The
+// per-message text cap MSG_TEXT_CAP now lives in ./messageReconstruction.js.)
 const DIRTY_CAP = 500;
-// Upper bound on how many trailing on-disk events get_recent_messages
-// reconstructs in its (rare) disk-fallback path, so a multi-MB session jsonl
-// can't make the call pathological. We only need the last ≤50 messages, which
-// fit comfortably in this many events.
-const DISK_REPLAY_TAIL_CAP = 5000;
-
-// Cap a string to `cap` bytes, returning { text, truncated }.
-function capText(s, cap) {
-  const str = typeof s === 'string' ? s : '';
-  if (Buffer.byteLength(str, 'utf8') <= cap) return { text: str, truncated: false };
-  return { text: Buffer.from(str, 'utf8').subarray(0, cap).toString('utf8'), truncated: true };
-}
 
 // ---------- helpers ----------
 
@@ -473,135 +463,9 @@ export async function setAutoApprovePlan({ sessionId, enabled }, { instances }) 
 //                       headers so each page parses standalone.
 // The byte cap is the per-page ceiling, never a silent terminal cut.
 // DIFF_BYTE_CAP is imported from ../worktrees.js (single source of truth).
-
-// Parse `git diff --numstat` output into per-file {additions, deletions,
-// binary}. Binary files render as "-\t-\t<path>". File order matches
-// --name-status given identical flags, so callers zip the two by index.
-function parseNumstat(out) {
-  const rows = [];
-  for (const line of (out ?? '').split('\n')) {
-    if (!line) continue;
-    const tab1 = line.indexOf('\t');
-    const tab2 = line.indexOf('\t', tab1 + 1);
-    if (tab1 < 0 || tab2 < 0) continue;
-    const addsField = line.slice(0, tab1);
-    const delsField = line.slice(tab1 + 1, tab2);
-    const binary = addsField === '-';
-    rows.push({
-      additions: binary ? 0 : (Number(addsField) || 0),
-      deletions: binary ? 0 : (Number(delsField) || 0),
-      binary,
-    });
-  }
-  return rows;
-}
-
-// Parse `git diff --name-status` output into per-file {status, path,
-// oldPath?}. Rename/copy rows (R###/C###) carry the old path first.
-function parseNameStatus(out) {
-  const rows = [];
-  for (const line of (out ?? '').split('\n')) {
-    if (!line) continue;
-    const parts = line.split('\t');
-    const code = parts[0] ?? '';
-    const status = (code[0] || 'M').toUpperCase();
-    if ((status === 'R' || status === 'C') && parts.length >= 3) {
-      rows.push({ status, oldPath: parts[1], path: parts[2] });
-    } else {
-      rows.push({ status, path: parts[parts.length - 1] });
-    }
-  }
-  return rows;
-}
-
-// Walk a unified-diff line array once, recording for each line the file it
-// belongs to: {path, preambleLines, hunkAt} where preambleLines are the
-// lines from "diff --git" up to (not including) the first "@@", and
-// hunkAt[i] is the index of the active "@@" header for line i (or -1).
-function indexDiffLines(lines) {
-  const fileOf = new Array(lines.length).fill(-1);   // index into files[]
-  const hunkAt = new Array(lines.length).fill(-1);   // index of active @@ line
-  const files = [];                                  // {path, start, preEnd}
-  let cur = null;
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    if (line.startsWith('diff --git ')) {
-      const m = line.match(/^diff --git a\/(.+) b\/(.+)$/);
-      cur = { path: m ? m[2] : null, start: i, preEnd: i + 1, sawHunk: false };
-      files.push(cur);
-    }
-    if (cur) {
-      fileOf[i] = files.length - 1;
-      if (line.startsWith('@@ ')) {
-        cur.sawHunk = true;
-        hunkAt[i] = i;
-      } else if (!cur.sawHunk) {
-        cur.preEnd = i + 1; // still in the file preamble
-      } else {
-        // body line — inherits the most recent @@ within this file
-        let h = -1;
-        for (let j = i - 1; j >= cur.start; j--) {
-          if (lines[j].startsWith('@@ ')) { h = j; break; }
-        }
-        hunkAt[i] = h;
-      }
-    }
-  }
-  return { fileOf, hunkAt, files };
-}
-
-// Line-based pager. Returns a page of whole lines starting at `offset`,
-// filling until the next line would exceed `cap` bytes. Mid-file pages are
-// prefixed with the file's preamble + active hunk header so they parse
-// standalone. Snaps the cutoff back to a hunk boundary when cheap.
-function paginateDiff(lines, offset, cap, idx) {
-  const { fileOf, hunkAt, files } = idx;
-  const total = lines.length;
-  if (offset >= total) {
-    return { diff: '', cutoff: total, prefixLines: [] };
-  }
-  // Re-emit headers when the page starts mid-file (not on the diff --git line).
-  const prefixLines = [];
-  const fi = fileOf[offset];
-  if (offset > 0 && fi >= 0) {
-    const f = files[fi];
-    const startsAtPreamble = offset === f.start;
-    if (!startsAtPreamble) {
-      for (let j = f.start; j < f.preEnd; j++) prefixLines.push(lines[j]);
-      const h = hunkAt[offset];
-      // Only re-add the @@ header if the offset line isn't itself that header.
-      if (h >= 0 && h !== offset) prefixLines.push(lines[h]);
-    }
-  }
-  let bytes = 0;
-  for (const p of prefixLines) bytes += Buffer.byteLength(p, 'utf8') + 1;
-
-  let cutoff = offset;
-  while (cutoff < total) {
-    const lineBytes = Buffer.byteLength(lines[cutoff], 'utf8') + 1;
-    if (bytes + lineBytes > cap && cutoff > offset) break;
-    bytes += lineBytes;
-    cutoff++;
-    if (bytes >= cap && cutoff > offset) break;
-  }
-
-  // Hunk-snap (nice-to-have): if a later line in the page opened a new hunk,
-  // snap the cutoff back to it so the page ends on a hunk boundary — but
-  // only when it keeps most of the budget and still makes progress.
-  if (cutoff < total && cutoff - offset > 1) {
-    const window = Math.max(1, Math.floor((cutoff - offset) * 0.1));
-    for (let j = cutoff - 1; j >= cutoff - window && j > offset; j--) {
-      if (lines[j].startsWith('@@ ') || lines[j].startsWith('diff --git ')) {
-        cutoff = j;
-        break;
-      }
-    }
-  }
-
-  const body = lines.slice(offset, cutoff);
-  const diff = prefixLines.length ? prefixLines.concat(body).join('\n') : body.join('\n');
-  return { diff, cutoff, prefixLines };
-}
+// The numstat/name-status parsing + line-index + pager engine lives in
+// ./diffPaging.js (parseNumstat / parseNameStatus / indexDiffLines /
+// paginateDiff), imported above.
 
 export async function getWorktreeDiff({ project, worktree, baseRef, contextLines = 3, summary = false, paths, offset = 0 }) {
   if (!project || !worktree) {
@@ -840,51 +704,12 @@ export async function createProject({ name, gitInit = false }) {
   return { ...created, gitInit: !!gitInit };
 }
 
-// Reconstruct ordered assistant messages from an event array (ring or disk-
-// replayed — both carry the same UI-event shape). Collects distinct top-level
-// msgIds (skipping sub-agent content) then rebuilds each message.
-function reconstructMessages(events, includeThinking) {
-  const seen = new Set();
-  const reverseIds = [];
-  for (let i = events.length - 1; i >= 0; i--) {
-    const ev = events[i];
-    if (ev.parentToolUseId) continue; // ignore sub-agent content
-    if (!ev.msgId) continue;
-    if (ev.kind !== 'text_delta' && ev.kind !== 'text_end'
-        && ev.kind !== 'assistant_message' && ev.kind !== 'tool_use') continue;
-    if (seen.has(ev.msgId)) continue;
-    seen.add(ev.msgId);
-    reverseIds.push(ev.msgId);
-  }
-  const orderedIds = reverseIds.reverse();
-  return orderedIds.map(msgId => buildMessageFromRing(events, msgId, includeThinking));
-}
-
+// reconstructMessages / buildMessageFromRing / mergeRecentWithDisk /
+// capBlockInput (+ capText / MSG_TEXT_CAP) live in ./messageReconstruction.js,
+// imported above. isTextBearing stays here — it's a handler-side filter, not
+// part of the reconstruction engine.
 function isTextBearing(m) {
   return m.text.length > 0 || m.plan || (Array.isArray(m.questions) && m.questions.length > 0);
-}
-
-// Disk-fallback for getRecentMessages: load the on-disk transcript tail and
-// merge its reconstructed messages with the ring's, keyed by msgId. The ring
-// entry wins on collision (freshest / in-flight); disk fills evicted and
-// completed-but-evicted current-turn messages. Bounded by DISK_REPLAY_TAIL_CAP.
-// Returns null when no transcript exists (e.g. exited temp session) so the
-// caller degrades gracefully to ring-only.
-async function mergeRecentWithDisk(inst, ringMessages, includeThinking) {
-  const result = await loadPersistedTranscript({
-    cwd: inst.cwd, sessionId: inst.sessionId, seqHint: 0,
-  }).catch(() => null);
-  if (!result) return null;
-  let diskEvents = [];
-  for (const line of result.lines) for (const ev of line.events) diskEvents.push(ev);
-  if (diskEvents.length > DISK_REPLAY_TAIL_CAP) diskEvents = diskEvents.slice(-DISK_REPLAY_TAIL_CAP);
-  const diskMessages = reconstructMessages(diskEvents, includeThinking);
-  // Ordered merge by msgId: disk first (chronological), ring overrides in place
-  // / appends newer (Map keeps first-insert position, updates value).
-  const byId = new Map();
-  for (const m of diskMessages) byId.set(m.msgId, m);
-  for (const m of ringMessages) byId.set(m.msgId, m);
-  return [...byId.values()];
 }
 
 // Return the most recent N assistant messages as joined text + structured
@@ -956,107 +781,6 @@ export async function getRecentMessages({ sessionId, count, includeToolCalls = f
     }
   }
   return textPayload(meta, bodies);
-}
-
-// Cap a block's large field for inline inclusion in the metadata block. A
-// tool_use input stays a structured object when small; when oversized it
-// becomes a truncated JSON string flagged with inputTruncated. A thinking
-// block's text is capped the same way.
-function capBlockInput(b) {
-  if (b.type === 'tool_use') {
-    const json = JSON.stringify(b.input ?? null);
-    const { text, truncated } = capText(json, MSG_TEXT_CAP);
-    return {
-      type: 'tool_use', name: b.name, toolUseId: b.toolUseId,
-      input: truncated ? text : b.input,
-      inputTruncated: truncated,
-    };
-  }
-  if (b.type === 'thinking') {
-    const { text, truncated } = capText(b.text ?? '', MSG_TEXT_CAP);
-    return { type: 'thinking', text, inputTruncated: truncated };
-  }
-  return b;
-}
-
-function buildMessageFromRing(ring, targetMsgId, includeThinking = false) {
-  const byBlock = new Map();
-  const blockOrder = [];
-  const otherBlocks = []; // tool_use blocks etc, for context
-  let hasToolUse = false;
-  let assistantMessage = null;
-  let plan = null;
-  let questions = null;
-  for (const ev of ring) {
-    if (ev.parentToolUseId) continue;
-    if (ev.msgId !== targetMsgId) continue;
-    if (ev.kind === 'text_delta') {
-      if (!byBlock.has(ev.blockIdx)) {
-        byBlock.set(ev.blockIdx, '');
-        blockOrder.push(ev.blockIdx);
-      }
-      byBlock.set(ev.blockIdx, byBlock.get(ev.blockIdx) + (ev.text ?? ''));
-    } else if (ev.kind === 'tool_use') {
-      hasToolUse = true;
-      let hoisted = false;
-      if (ev.name === 'ExitPlanMode') {
-        const p = ev.input?.plan;
-        if (typeof p === 'string' && p.length > 0) {
-          plan = p;
-          hoisted = true;
-        } else {
-          const fp = ev.input?.planFilePath ?? ev.input?.planPath;
-          if (typeof fp === 'string' && fp.length > 0) { plan = `(plan at ${fp})`; hoisted = true; }
-        }
-      } else if (ev.name === 'AskUserQuestion') {
-        const q = ev.input?.questions;
-        if (Array.isArray(q) && q.length > 0) { questions = q; hoisted = true; }
-      }
-      if (!hoisted) {
-        otherBlocks.push({ type: 'tool_use', name: ev.name, input: ev.input, toolUseId: ev.toolUseId });
-      }
-    } else if (ev.kind === 'assistant_message') {
-      assistantMessage = ev.message ?? null;
-    }
-  }
-  // If a reconciled assistant_message arrived (real CLI), it's the
-  // authoritative source — extract text blocks from it instead of the
-  // delta accumulation (handles edge cases like deltas trimmed by the ring).
-  if (assistantMessage && Array.isArray(assistantMessage.content)) {
-    const textParts = [];
-    const blocks = [];
-    for (const block of assistantMessage.content) {
-      if (block?.type === 'text' && typeof block.text === 'string') {
-        textParts.push(block.text);
-      } else if (block?.type === 'tool_use') {
-        hasToolUse = true;
-        let hoisted = false;
-        if (block.name === 'ExitPlanMode') {
-          const p = block.input?.plan;
-          if (typeof p === 'string' && p.length > 0) {
-            plan = p;
-            hoisted = true;
-          } else {
-            const fp = block.input?.planFilePath ?? block.input?.planPath;
-            if (typeof fp === 'string' && fp.length > 0) { plan = `(plan at ${fp})`; hoisted = true; }
-          }
-        } else if (block.name === 'AskUserQuestion') {
-          const q = block.input?.questions;
-          if (Array.isArray(q) && q.length > 0) { questions = q; hoisted = true; }
-        }
-        if (!hoisted) {
-          blocks.push({ type: 'tool_use', name: block.name, input: block.input, toolUseId: block.id });
-        }
-      } else if (block?.type === 'thinking' && includeThinking) {
-        blocks.push({ type: 'thinking', text: block.thinking ?? '' });
-      }
-    }
-    return { msgId: targetMsgId, text: textParts.join(''), ...(blocks.length ? { blocks } : {}), hasToolUse,
-      ...(plan ? { plan } : {}), ...(questions ? { questions } : {}) };
-  }
-  const text = blockOrder.map(idx => byBlock.get(idx)).join('');
-  return { msgId: targetMsgId, text, ...(otherBlocks.length ? { blocks: otherBlocks } : {}), hasToolUse,
-    ...(plan ? { plan } : {}), ...(questions ? { questions } : {}) };
 }
 
 // Resolve { project, worktree? } to an absolute cwd, throwing with a
