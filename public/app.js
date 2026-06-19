@@ -8,11 +8,7 @@ import { attachComposer } from './composer.js';
 import { formatUserQuestionAnswers, autoSpeakBlock } from './blocks.js';
 import { TaskTracker, TaskPanel } from './tasks.js';
 import { SubagentPanel } from './subagents.js';
-import {
-  UsageTracker, contextWindowFor,
-  formatTokens, formatPct, formatDuration, fillClass,
-  RateLimitTracker, formatResetTime, formatAutoResumeTime, rlChipSegment,
-} from './usage.js';
+import { UsageTracker, RateLimitTracker } from './usage.js';
 import {
   NotificationState, ensurePermission, setGlobalEnabled,
   maybeNotifyTurnEnd, isNotificationAPIAvailable, registerServiceWorker,
@@ -35,6 +31,7 @@ import { installNewProjectDialog } from './newProjectDialog.js';
 import { installWorkspaceDialog } from './workspaceDialog.js';
 import { installSpawnDialog } from './spawnDialog.js';
 import { installSessionActions } from './sessionActions.js';
+import { installHeader } from './header.js';
 import { loadModelVersions, setActiveVersions, setActiveSonnetWindow,
   setActiveFamilyEnabled, setActiveDefaultSpawnFamily } from './models.js';
 import { setTtsAvailable, setTtsEnabled, setTtsRate } from './tts.js';
@@ -78,7 +75,7 @@ async function refreshAccountUsage() {
         });
       }
     }
-    if (state.activeId) updateActiveHeader();
+    if (state.activeId) headerHandle.update();
   } catch { /* ignore — chip degrades silently */ }
 }
 
@@ -273,6 +270,15 @@ function sendOrQueuePrompt(instanceId, text) {
 // Every call site fires only after init (user interaction / async WS open).
 let sessionActions = null;
 
+// Handle returned by installHeader ({ update }, the renamed updateActiveHeader).
+// Declared here — before selectInstance/refreshInstances and the WS-router
+// handlers, all of which call headerHandle.update() — and assigned at the
+// installHeader() call below, once its deps (composer, conversation) are in
+// scope. Every update() call site fires only after init (user interaction,
+// async REST, or a WS frame arriving after connect()), so the holder is always
+// assigned first.
+let headerHandle = null;
+
 // Shared by the main conversation AND the detached batch renderers used
 // for lazy-loaded older history (see loadEarlier below) — batches reuse the
 // exact same block-rendering path, minus TTS auto-speak.
@@ -400,6 +406,26 @@ const composer = attachComposer({
     send('prompt', payload);
   },
   onResize: () => conversation._maybeScroll(),
+});
+
+// Active-instance header / chips / combined-usage popover (see public/header.js).
+// Wired here once composer + conversation exist; closeOverflow is a hoisted
+// function declaration (defined further down) so the reference is valid now.
+// getAccountUsage is a getter because `accountUsage` is reassigned by the
+// periodic /api/usage fetch. setActiveStatus/setActiveMode mirror onto the same
+// live `state` object the killBtn handler reads.
+headerHandle = installHeader({
+  dom,
+  getActiveId: () => state.activeId,
+  getInstances: () => state.instances,
+  setActiveStatus: (v) => { state.activeStatus = v; },
+  setActiveMode: (v) => { state.activeMode = v; },
+  getUsage,
+  globalRLTracker,
+  getAccountUsage: () => accountUsage,
+  composer,
+  conversation,
+  closeOverflow,
 });
 
 // Enable the Send button's hold-to-record mic affordance only when the
@@ -551,7 +577,7 @@ dom.autoApprovePlanBtn.addEventListener('click', () => {
   // pressed-state updates without waiting for the status round-trip.
   // The next `status` frame will reassert the authoritative value.
   if (inst) inst.autoApprovePlan = next;
-  updateActiveHeader();
+  headerHandle.update();
   send('auto_approve_plan', { id: state.activeId, enabled: next });
 });
 
@@ -578,7 +604,7 @@ dom.renameSessionBtn.addEventListener('click', async () => {
     const result = await r.json();
     // Optimistic local mirror — the broadcast `status` frame will reassert.
     inst.title = result.title ?? null;
-    updateActiveHeader();
+    headerHandle.update();
     await refreshProjects();
   } catch (e) {
     alert('Rename failed: ' + e.message);
@@ -596,12 +622,12 @@ dom.debugBtn.addEventListener('click', async () => {
     if (!r.ok || !result.ok) {
       throw new Error(result.error ?? result.reason ?? 'failed to enable debug');
     }
-    // Reflect the new state locally so updateActiveHeader can flip the
+    // Reflect the new state locally so headerHandle.update() can flip the
     // button label immediately. A status event will follow anyway and
     // overwrite this with the authoritative summary.
     const inst = state.instances.find(i => i.id === state.activeId);
     if (inst) { inst.debug = true; inst.debugDir = result.debugDir; }
-    updateActiveHeader();
+    headerHandle.update();
     alert(`Debug capture started. Writing to:\n${result.debugDir}`);
   } catch (e) {
     alert('Failed to enable debug: ' + e.message);
@@ -830,7 +856,7 @@ async function refreshInstances() {
   state.instances = await (await fetch('/api/instances')).json();
   sidebar.setInstances(state.instances);
   subagentPanel.setInstances(state.instances, state.activeId);
-  updateActiveHeader();
+  headerHandle.update();
 }
 
 function selectInstance(id, opts = {}) {
@@ -839,7 +865,7 @@ function selectInstance(id, opts = {}) {
   sidebar.setActive(id);
   conversation.clear();
   lazyController.reset(); // invalidate any in-flight earlier-history fetch
-  updateActiveHeader();
+  headerHandle.update();
   // Swap the task panel onto whichever instance just became active.
   taskPanel.attach(id ? getTracker(id) : null);
   subagentPanel.setInstances(state.instances, id);
@@ -865,222 +891,6 @@ function selectInstance(id, opts = {}) {
   if (leavingSettings) settings.close();
   if (leavingCommits)  commits.close();
   if (window.matchMedia('(max-width: 720px)').matches) setSidebarOpen(false);
-}
-
-function updateActiveHeader() {
-  // The header gets rebuilt from scratch on every call, which discards
-  // the existing chip nodes. Close any open popover first so it's not
-  // left hanging off a detached anchor.
-  closeCombinedPopover();
-  closeOverflow();
-  const inst = state.instances.find(i => i.id === state.activeId);
-  if (!inst) {
-    dom.instanceTitle.textContent = 'no instance selected';
-    dom.modeSelect.disabled = true;
-    dom.killBtn.textContent = 'Interrupt';
-    dom.killBtn.disabled = true;
-    dom.resumeBtn.hidden = true;
-    composer.disable();
-    dom.composerInput.placeholder = 'select or spawn an instance to start chatting';
-    dom.turnIndicator.hidden = true;
-    dom.tiLeft.hidden = true;
-    dom.tiUsageSlot.textContent = '';
-    return;
-  }
-  state.activeStatus = inst.status;
-  state.activeMode = inst.mode;
-  // Build the title as discrete chips so it wraps cleanly on mobile —
-  // a single text string was wrapping at the `·` separators and landing
-  // them alone on lines.
-  dom.instanceTitle.textContent = '';
-  const chip = (cls, text) => {
-    const e = document.createElement('span');
-    e.className = `ih-chip ${cls}`;
-    e.textContent = text;
-    return e;
-  };
-  // Custom session title (set via ⋮ → Rename session) leads the chip row
-  // when present, so the human label is the first thing the user reads.
-  if (inst.title) {
-    const titleChip = chip('ih-title', inst.title);
-    titleChip.title = 'custom session title — change via ⋮ → Rename session';
-    dom.instanceTitle.appendChild(titleChip);
-  }
-  // Project chip carries the full session id as a tooltip — long-press on
-  // mobile / hover on desktop — instead of taking a dedicated header chip.
-  const projectChip = chip('ih-project', inst.project);
-  projectChip.title = `session ${inst.sessionId ?? '?'}`;
-  dom.instanceTitle.appendChild(projectChip);
-  if (inst.worktree?.worktreeName) {
-    const wtShort = inst.worktree.worktreeName.replace(`${inst.project}_worktree_`, 'wt:');
-    dom.instanceTitle.appendChild(chip('ih-worktree',
-      `${wtShort} (← ${inst.worktree.baseBranch})`));
-  }
-  // Status chip only when it's signalling something actionable. `idle` is
-  // the no-op state; turn / spawning / crashed / exited still surface. A
-  // soft interrupt mid-turn shows a distinct "stopping…" chip.
-  if (inst.status === 'turn' && inst.interrupting) {
-    dom.instanceTitle.appendChild(chip('ih-status ih-status-interrupting', 'stopping…'));
-  } else if (inst.status !== 'idle') {
-    dom.instanceTitle.appendChild(chip(`ih-status ih-status-${inst.status}`, inst.status));
-  }
-  if (inst.temp) dom.instanceTitle.appendChild(chip('ih-temp', 'temp'));
-  if (inst.debug) dom.instanceTitle.appendChild(chip('ih-debug', 'debug'));
-  if (inst.autoResumeAt) {
-    const rc = chip('ih-status ih-auto-resume', formatAutoResumeTime(inst.autoResumeAt));
-    rc.title = 'auto-stopped on overage — will resume when the rate-limit window resets';
-    dom.instanceTitle.appendChild(rc);
-  }
-  // Combined ctx+rl chip: right slot of the bottom bar. ctx half is
-  // per-session; rl half reads from globalRLTracker (account-wide).
-  dom.tiUsageSlot.textContent = '';
-  dom.tiUsageSlot.appendChild(renderCombinedChip(inst));
-  dom.modeSelect.value = inst.mode;
-  dom.modeSelect.disabled = inst.status === 'turn' || inst.status === 'crashed' || inst.status === 'exited';
-  dom.killBtn.textContent = inst.status === 'turn' ? '⏸ Interrupt' : '🛑 Terminate';
-  dom.killBtn.disabled = !['idle', 'turn', 'spawning'].includes(inst.status);
-  dom.resumeBtn.hidden = !(inst.status === 'crashed' || inst.status === 'exited');
-  dom.turnIndicator.hidden = false;
-  dom.tiLeft.hidden = inst.status !== 'turn';
-  const interrupting = inst.status === 'turn' && !!inst.interrupting;
-  dom.tiLabel.textContent = interrupting ? 'Stopping…' : 'Claude is working';
-  dom.tiInterruptNow.hidden = !interrupting;
-  const hasWorktree = !!inst.worktree?.worktreeName;
-  dom.syncBtn.hidden = !hasWorktree;
-  dom.syncBtn.disabled = !hasWorktree;
-  dom.mergeBtn.hidden = !hasWorktree;
-  dom.mergeBtn.disabled = !hasWorktree;
-  // Overflow menu (⋮) hosts secondary actions: Interrupt/Kill + Debug
-  // capture. The whole trigger is hidden when no items apply (i.e. the
-  // instance isn't alive). Debug button: shown while alive; once enabled
-  // it flips to a disabled '🐛 capturing' indicator — there's no off
-  // path (the CLI stays mirrored for the rest of its life). Auto-approve
-  // plans lives in the controls row (sibling of #mode-select), not in
-  // this menu, so the toggle is one click from anywhere — including
-  // mid-turn.
-  const canMenu = ['idle', 'turn', 'spawning'].includes(inst.status);
-  dom.debugBtn.hidden = !canMenu;
-  dom.renameSessionBtn.hidden = !canMenu;
-  dom.renameSessionBtn.disabled = !canMenu || !inst.sessionId;
-  // Auto-approve only applies to plan mode (it short-circuits the
-  // ExitPlanMode confirmation card). Hide it in code/ask mode so the
-  // controls row stays uncluttered.
-  const showAutoApprove = canMenu && inst.mode === 'plan';
-  dom.autoApprovePlanBtn.hidden = !showAutoApprove;
-  dom.autoApprovePlanBtn.disabled = !showAutoApprove;
-  dom.overflowMenu.hidden = !canMenu;
-  if (inst.debug) {
-    dom.debugBtn.textContent = '🐛 capturing';
-    dom.debugBtn.disabled = true;
-    dom.debugBtn.title = `mirroring to ${inst.debugDir ?? '(unknown path)'}`;
-  } else {
-    dom.debugBtn.textContent = '🐛 Debug';
-    dom.debugBtn.disabled = false;
-    dom.debugBtn.title = 'Start mirroring CLI stdin/stdout/stderr to the orchestrator debug dir';
-  }
-  dom.autoApprovePlanBtn.setAttribute('aria-pressed', inst.autoApprovePlan ? 'true' : 'false');
-  const canType = ['idle', 'turn', 'spawning'].includes(inst.status);
-  const canSend = ['idle', 'turn'].includes(inst.status);
-  composer.set({ canType, canSend });
-  // Rewind/fork buttons are only safe between turns — the server refuses
-  // a rewind during `turn` status anyway, but disabling them here keeps
-  // the UX honest (no clickable button that just throws a 409).
-  conversation.setUserActionsEnabled(inst.status === 'idle');
-  dom.composerInput.placeholder = inst.status === 'turn'
-    ? 'turn running — type to steer the running turn'
-    : inst.status === 'spawning'
-      ? 'instance is starting…'
-      : inst.status === 'crashed' || inst.status === 'exited'
-        ? 'instance is not running — click Resume'
-        : 'Send a message — Enter to send, Shift+Enter for newline';
-}
-
-// Combined ctx + rl chip. ctx half is per-session; rl half reads from
-// globalRLTracker (account-wide) with accountUsage as a fallback source.
-// Color-graded by the worse of the two fractions so a near-limit rate-limit
-// turns the chip amber/red even when context usage is low.
-function renderCombinedChip(inst) {
-  // ── ctx half ──
-  const usage = getUsage(inst.id);
-  const ctxFrac = usage.currentFillPct(inst.model);
-  const ctxUsed = usage.currentContextSize();
-  const ctxWindow = contextWindowFor(usage.effectiveModel(inst.model));
-
-  let ctxText;
-  if (ctxUsed == null) {
-    ctxText = 'ctx —';
-  } else {
-    ctxText = `ctx ${formatPct(ctxFrac)} · ${formatTokens(ctxUsed)}/${formatTokens(ctxWindow)}`;
-  }
-
-  // ── rl half (global) — pure derivation via rlChipSegment ──
-  const { text: rlText, frac: rlFrac, isOverage: rlIsOverage } =
-    rlChipSegment(globalRLTracker.info, accountUsage);
-
-  // Chip color is driven solely by context usage, not rate-limit %.
-  const worstFrac = ctxFrac;
-
-  const el = document.createElement('button');
-  el.type = 'button';
-  el.className = `ih-chip ih-combined ${fillClass(worstFrac)}`;
-  el.setAttribute('aria-haspopup', 'dialog');
-  el.setAttribute('aria-expanded', 'false');
-  el.title = [
-    ctxUsed != null
-      ? `Context: ${ctxUsed.toLocaleString()}/${ctxWindow.toLocaleString()} tokens`
-      : 'Context usage appears after the first turn.',
-    rlFrac != null ? `Rate limit: ${Math.round(rlFrac * 100)}% used` : null,
-    rlIsOverage ? 'OVERAGE active' : null,
-    'Tap for details',
-  ].filter(Boolean).join(' · ');
-
-  el.textContent = `${ctxText} · ${rlText}`;
-  if (rlIsOverage) {
-    const badge = document.createElement('span');
-    badge.className = 'rl-overage-badge';
-    badge.textContent = 'OVERAGE';
-    el.appendChild(badge);
-  }
-
-  el.addEventListener('click', (e) => {
-    e.stopPropagation();
-    toggleCombinedPopover(el, inst);
-  });
-  return el;
-}
-
-let openCombinedPopover = null;
-function closeCombinedPopover() {
-  if (!openCombinedPopover) return;
-  const { node, anchor, ctl } = openCombinedPopover;
-  node.remove();
-  anchor.setAttribute('aria-expanded', 'false');
-  ctl.disarm();
-  openCombinedPopover = null;
-}
-function toggleCombinedPopover(anchor, inst) {
-  if (openCombinedPopover && openCombinedPopover.anchor === anchor) {
-    closeCombinedPopover();
-    return;
-  }
-  closeCombinedPopover();
-  const node = buildCombinedPopover(inst);
-  document.body.appendChild(node);
-  // Position above the chip — the bar is at the bottom of the viewport.
-  const r = anchor.getBoundingClientRect();
-  node.style.top = `${Math.round(r.top - node.offsetHeight - 6)}px`;
-  const desiredLeft = r.right - node.offsetWidth;
-  const maxLeft = window.innerWidth - node.offsetWidth - 8;
-  node.style.left = `${Math.max(8, Math.min(desiredLeft, maxLeft))}px`;
-  anchor.setAttribute('aria-expanded', 'true');
-  // node/anchor differ per open, so the controller is created per-open
-  // (mirrors the original, which defined `dismiss` inside this function).
-  const ctl = makeDismissable({
-    isInside: (t) => node.contains(t) || anchor.contains(t),
-    onDismiss: () => closeCombinedPopover(),
-  });
-  ctl.arm();
-  openCombinedPopover = { node, anchor, ctl };
 }
 
 // Header ⋮ overflow menu — currently hosts the Debug button so it doesn't
@@ -1125,100 +935,6 @@ function toggleSidebarOverflow() {
 }
 dom.sidebarOverflowToggle.addEventListener('click', toggleSidebarOverflow);
 
-// Combined popover: "Session totals" section above, "Usage limits" section
-// below. ctx data is per-session; usage-limit data is account-wide.
-const OAUTH_BUCKET_LABELS = {
-  five_hour:        '5-hour',
-  seven_day:        '7-day',
-  seven_day_sonnet: '7-day (Sonnet)',
-  seven_day_opus:   '7-day (Opus)',
-};
-
-function buildCombinedPopover(inst) {
-  const node = document.createElement('div');
-  node.className = 'ih-usage-popover';
-  node.setAttribute('role', 'dialog');
-  node.setAttribute('aria-label', 'Usage details');
-
-  const row = (label, value, valueClass) => {
-    const r = document.createElement('div'); r.className = 'ih-usage-row';
-    const k = document.createElement('span'); k.className = 'ih-usage-k'; k.textContent = label;
-    const v = document.createElement('span'); v.className = 'ih-usage-v';
-    if (valueClass) v.classList.add(valueClass);
-    v.textContent = value;
-    r.appendChild(k); r.appendChild(v);
-    return r;
-  };
-  const section = (title) => {
-    const h = document.createElement('div');
-    h.className = 'ih-usage-popover-header';
-    h.textContent = title;
-    return h;
-  };
-
-  // ── Session totals ──
-  node.appendChild(section('Session totals'));
-  const usage = getUsage(inst.id);
-  const c = usage.cum;
-  const ctxWindow = contextWindowFor(usage.effectiveModel(inst.model));
-  const modelLabel = usage.effectiveModel(inst.model) ?? '(default)';
-  const meta = document.createElement('div');
-  meta.className = 'ih-usage-meta';
-  meta.textContent = `${modelLabel} · ${formatTokens(ctxWindow)} context`;
-  node.appendChild(meta);
-  if (c.turns === 0) {
-    const empty = document.createElement('div');
-    empty.className = 'ih-usage-empty-msg';
-    empty.textContent = 'No turns have completed yet.';
-    node.appendChild(empty);
-  } else {
-    const totalCacheIn = c.cacheRead + c.cacheCreation;
-    const totalIn = c.inputTokens + totalCacheIn;
-    const cacheHit = totalIn > 0 ? c.cacheRead / totalIn : 0;
-    node.appendChild(row('Turns', String(c.turns)));
-    node.appendChild(row('Duration', formatDuration(c.durationMs)));
-    node.appendChild(row('Cost', `$${c.cost.toFixed(4)}`));
-    node.appendChild(row('Input (uncached)', formatTokens(c.inputTokens)));
-    node.appendChild(row('Output', formatTokens(c.outputTokens)));
-    node.appendChild(row('Cache reads', `${formatTokens(c.cacheRead)} (${formatPct(cacheHit)} hit)`));
-    node.appendChild(row('Cache creation', formatTokens(c.cacheCreation)));
-  }
-
-  // ── Usage limits ──
-  const usageLimitsGap = document.createElement('div');
-  usageLimitsGap.className = 'ih-usage-section-gap';
-  node.appendChild(usageLimitsGap);
-  node.appendChild(section('Usage limits'));
-  if (!accountUsage) {
-    const empty = document.createElement('div');
-    empty.className = 'ih-usage-empty-msg';
-    empty.textContent = 'Usage data unavailable.';
-    node.appendChild(empty);
-  } else {
-    for (const key of ['five_hour', 'seven_day', 'seven_day_sonnet', 'seven_day_opus']) {
-      const bucket = accountUsage[key];
-      if (!bucket) continue;
-      const label = OAUTH_BUCKET_LABELS[key] ?? key;
-      const util = typeof bucket.utilization === 'number' ? bucket.utilization / 100 : null;
-      const reset = bucket.resets_at
-        ? formatResetTime(new Date(bucket.resets_at).getTime() / 1000)
-        : null;
-      const utilStr = util != null ? `${Math.round(util * 100)}%` : '—';
-      const resetStr = reset ? ` · ${reset}` : '';
-      node.appendChild(row(label, utilStr + resetStr, fillClass(util)));
-    }
-    const ex = accountUsage.extra_usage;
-    if (ex?.is_enabled) {
-      const used = typeof ex.used_credits === 'number' ? (ex.used_credits / 100).toFixed(2) : '?';
-      const limit = typeof ex.monthly_limit === 'number' ? (ex.monthly_limit / 100).toFixed(2) : '?';
-      const currency = ex.currency ?? '';
-      node.appendChild(row('Extra credits', `${used} / ${limit} ${currency}`.trim()));
-    }
-  }
-
-  return node;
-}
-
 bus.addEventListener('snapshot', (e) => {
   const m = e.detail;
   // Rebuild task tracker from the snapshot for any instance we observe
@@ -1259,7 +975,7 @@ bus.addEventListener('snapshot', (e) => {
     inst.interrupting = !!m.interrupting;
   }
   if (!isActive) return;
-  updateActiveHeader();
+  headerHandle.update();
   // Tail-only snapshot: arm the scroll-up lazy-load when older history
   // exists below the rendered tail.
   lazyController.init(m);
@@ -1304,7 +1020,7 @@ bus.addEventListener('reset_snapshot', (e) => {
   }
   if (isActive) conversation._replayMode = false;
   if (!isActive) return;
-  updateActiveHeader();
+  headerHandle.update();
   // Rewind carries the dropped prompt directly on the frame so the
   // composer is prefilled regardless of when the rewind HTTP response
   // returns. Fork still uses the legacy pendingPrefill handshake — its
@@ -1339,7 +1055,7 @@ bus.addEventListener('event', (e) => {
       || m.ev?.kind === 'message_start'
       || (m.ev?.kind === 'system' && m.ev?.subtype === 'init')
       || (m.ev?.kind === 'system' && m.ev?.subtype === 'rate_limit_event')) {
-    updateActiveHeader();
+    headerHandle.update();
   }
 });
 
@@ -1369,7 +1085,7 @@ bus.addEventListener('status', (e) => {
     inst.interrupting = !!m.interrupting;
     sidebar.setInstances(state.instances);
     subagentPanel.setInstances(state.instances, state.activeId);
-    if (m.id === state.activeId) updateActiveHeader();
+    if (m.id === state.activeId) headerHandle.update();
   }
   // Now that this instance is idle again, drain any queued user-question
   // answers that came in while a turn was running.
