@@ -429,6 +429,10 @@ export class Sidebar {
       onclick: (e) => { e.stopPropagation(); this.onReviewWorktree?.(project.name, wt.worktreeName); },
     }, '±'));
     head.appendChild(el('button', {
+      class: 'commit-log', title: 'commit history',
+      onclick: (e) => { e.stopPropagation(); this.onShowCommits?.(wt.worktreeName); },
+    }, '≡'));
+    head.appendChild(el('button', {
       class: 'wt-spawn', title: 'new session in this worktree',
       onclick: (e) => { e.stopPropagation(); this.onCreateInstanceClick(project.name, { worktreeName: wt.worktreeName }); },
     }, '+'));
