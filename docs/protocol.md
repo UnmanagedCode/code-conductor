@@ -113,6 +113,8 @@ Outbound: `system` + `subtype:"init"` (bundled with first turn's response, not a
 | `GET` | `/api/settings/workspace-claudemd` | `{status, conflict, targetExists, targetPath, vendorPath, baselinePath}` — reconcile status of `<PROJECTS_ROOT>/CLAUDE.md` (`created`/`up-to-date`/`updated`/`kept`/`conflict`). |
 | `GET` | `/api/settings/workspace-claudemd/diff` | `{diff}` — unified diff of the projects-root `CLAUDE.md` (your copy) vs the bundled canonical. Empty when identical. |
 | `POST` | `/api/settings/workspace-claudemd/resolve` | `{action}` — `keep` (baseline := canonical, file unchanged) or `overwrite` (back up to `<target>.bak-<ts>`, copy canonical in, bump baseline). 400 on any other action. Returns refreshed status. |
+| `GET` | `/api/usage` | `{usage}` — account-level usage from the Anthropic OAuth endpoint (`src/accountUsage.js`), cached server-side 60 s. `usage` is `null` on any error (missing creds, 401, network — common on Termux where Node DNS fails); the token is never exposed to the browser. Drives the rate-limit/usage chip. |
+| `GET` | `/api/costs/summary` | Aggregated spend from `<store>/costs.jsonl` (`src/costTracking.js`, one row per turn). `{total_usd, row_count, by_project:[{project, cost_usd, turns, by_model:[{model, cost_usd, input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens, turns}]}], by_model:[…same shape…], daily_trend:[{date, cost_usd}]}`. Zeroed empty shape when no `costs.jsonl` yet. Backs the `#costs` dashboard (`public/costs.js`). |
 
 ## MCP tool protocol
 
