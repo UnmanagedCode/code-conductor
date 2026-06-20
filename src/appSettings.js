@@ -285,16 +285,14 @@ export async function setConductorCompactWindow({ enabled, value }) {
 // `utilization` crosses this percentage — before paid overage credits are
 // reached. Independent of (and additive to) the always-on `isUsingOverage`
 // hard-flag trip. Value is an integer percent, clamped+snapped to [50,99]
-// step 5. Off by default — strictly opt-in. Follows the conductorCompactWindow
+// Off by default — strictly opt-in. Follows the conductorCompactWindow
 // opt-in precedent above.
 const OVERAGE_PCT_MIN     = 50;
 const OVERAGE_PCT_MAX     = 99;
-const OVERAGE_PCT_STEP    = 5;
 const OVERAGE_PCT_DEFAULT = 85;
 
 function snapOveragePct(p) {
-  const snapped = Math.round(p / OVERAGE_PCT_STEP) * OVERAGE_PCT_STEP;
-  return Math.max(OVERAGE_PCT_MIN, Math.min(OVERAGE_PCT_MAX, snapped));
+  return Math.max(OVERAGE_PCT_MIN, Math.min(OVERAGE_PCT_MAX, Math.round(p)));
 }
 
 export function getOverageThreshold() {
