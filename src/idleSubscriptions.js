@@ -149,7 +149,11 @@ export class IdleSubscriptionHub {
     const deliver = async () => {
       try {
         if (!caller.proc) return;
-        await caller.prompt(stub);
+        // `internal:true` — this is an orchestrator-injected wake, not a user
+        // takeover, so it must NOT cancel a pending overage auto-resume armed on
+        // the caller (an overage-stopped conductor still gets woken when its
+        // worker finishes).
+        await caller.prompt(stub, [], { internal: true });
       } catch (err) {
         caller._emitUi({
           kind: 'system', subtype: 'stderr',

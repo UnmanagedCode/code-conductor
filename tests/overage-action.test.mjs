@@ -18,11 +18,11 @@ import { setOnOverageAction, setOverageThreshold } from '../src/appSettings.js';
 import { AUTO_RESUME_TEXT } from '../src/instances.js';
 
 const nowSec = () => Math.floor(Date.now() / 1000);
-// The live rate-limit payload delivers the window reset as the snake_case
-// `resets_at` ISO-8601 string (see public/header.js `new Date(bucket.resets_at)`),
-// NOT a camelCase epoch `resetsAt`. Emit that shape so the test exercises the
-// real CLI event the orchestrator must parse.
-const resetIso = (sec) => new Date(sec * 1000).toISOString();
+// The live `rate_limit_event` delivers the window reset as the camelCase
+// epoch-seconds `resetsAt` (confirmed against a real CLI capture), alongside
+// `status`, `rateLimitType`, and — on an overage trip — a far-future overage
+// window `overageResetsAt`. We emit that real shape; resume timing must key off
+// the five-hour `resetsAt`, NOT `overageResetsAt`.
 
 const INIT = { type: 'system', subtype: 'init', session_id: '$SID', cwd: '$CWD',
   model: 'claude-sonnet-4-6', permissionMode: '$MODE', tools: ['Bash'], uuid: 'init-1' };
@@ -30,18 +30,23 @@ const RESULT = { type: 'result', subtype: 'success', stop_reason: 'end_turn',
   duration_ms: 10, total_cost_usd: 0.0001, is_error: false };
 
 function overageEvent({ resetsAt } = {}) {
-  const info = { isUsingOverage: true };
-  // `resetsAt` here is an epoch-seconds value from the caller; serialise it the
-  // way the live CLI does — snake_case `resets_at` as an ISO-8601 string.
-  if (resetsAt !== undefined) info.resets_at = resetIso(resetsAt);
+  // Real overage trip: status:"rejected" + isUsingOverage:true, carrying the
+  // five-hour window `resetsAt` (epoch secs) AND a much later overage window
+  // `overageResetsAt`. The orchestrator must resume on the five-hour `resetsAt`.
+  const info = { status: 'rejected', rateLimitType: 'five_hour',
+    overageStatus: 'allowed', isUsingOverage: true };
+  if (resetsAt !== undefined) {
+    info.resetsAt = resetsAt;
+    info.overageResetsAt = resetsAt + 10 * 86400; // overage window ~10 days out
+  }
   return { type: 'system', subtype: 'rate_limit_event', uuid: 'rl-1', rate_limit_info: info };
 }
 
 // A rate_limit_event with NO hard overage flag — only a utilization fraction
 // (and optional window type). Used to exercise the optional usage threshold.
 function utilEvent({ util, resetsAt, rateLimitType } = {}) {
-  const info = { utilization: util };
-  if (resetsAt !== undefined) info.resets_at = resetIso(resetsAt);
+  const info = { status: 'allowed_warning', utilization: util };
+  if (resetsAt !== undefined) info.resetsAt = resetsAt;
   if (rateLimitType !== undefined) info.rateLimitType = rateLimitType;
   return { type: 'system', subtype: 'rate_limit_event', uuid: 'rl-1', rate_limit_info: info };
 }
@@ -158,14 +163,14 @@ test('onOverage "stop-resume": stays alive, arms timer, delivers resume prompt a
   assert.equal(inst.proc != null, true, 'never killed/respawned');
 });
 
-// Back-compat for the normaliser: a camelCase epoch-seconds `resetsAt` (rather
-// than the snake_case ISO `resets_at`) must still arm the resume timer.
+// Minimal shape: bare isUsingOverage + camelCase epoch `resetsAt` (no
+// status/rateLimitType/overageResetsAt companions) must still arm the timer.
 function overageEventCamelEpoch(resetsAt) {
   return { type: 'system', subtype: 'rate_limit_event', uuid: 'rl-1',
     rate_limit_info: { isUsingOverage: true, resetsAt } };
 }
 
-test('onOverage "stop-resume": camelCase epoch resetsAt also arms (back-compat)', async () => {
+test('onOverage "stop-resume": bare camelCase epoch resetsAt also arms', async () => {
   await boot(scenario([overageEventCamelEpoch(nowSec() + 3600), RESULT]), 'stop-resume');
   const inst = await spawnIdle();
   const evs = collect(inst);
@@ -370,4 +375,93 @@ test('stop-resume: a user prompt before the timer fires cancels the pending resu
   // The cancelled resume was never delivered.
   assert.equal(evs.some(e => e.kind === 'user_echo' && e.text === AUTO_RESUME_TEXT), false,
     'cancelled ⇒ no resume prompt delivered');
+});
+
+// ── Conducted stop-resume: resume must arm through the routing paths ───────
+// The routing tests above all use action 'stop' — they never exercised whether
+// a `stop-resume` overage trip ARMS a resume when the stop is routed through a
+// conductor. These cover that gap. Unlike routingScenario(), generic prompt
+// turns here emit a RESULT so the steered/wound-down conductor reaches idle
+// (the transition that arms the per-session resume timer).
+function resumeRoutingScenario() {
+  return {
+    events: [INIT],
+    turns: [
+      { on: { type: 'prompt', text: 'TRIP' }, emit: [overageEvent({ resetsAt: nowSec() + 3600 }), RESULT] },
+      { on: { type: 'prompt', text: 'STAY' }, emit: [] },   // hold a conductor mid-turn
+      { on: { type: 'prompt' }, emit: [RESULT] },           // steer / windDown / resume → idle
+      { on: { type: 'prompt' }, emit: [RESULT] },
+      { on: { type: 'prompt' }, emit: [RESULT] },
+      { on: { type: 'prompt' }, emit: [RESULT] },
+    ],
+  };
+}
+
+// REGRESSION (fails before the fix): a worker trips while its conductor is
+// idle + subscribed (the CONDUCT.md `subscribe_to_idle` pattern). The conductor
+// is steered via a fresh prompt() — whose synchronous user_prompt runs
+// _cancelAutoResume — so the resume flags must be set AFTER the prompt or no
+// timer ever arms. This asserts the timer arms ON THE CONDUCTOR and fires.
+test('routing stop-resume: idle+subscribed conductor is steered AND a resume timer arms', async () => {
+  await boot(resumeRoutingScenario(), 'stop-resume');
+  const conductor = await createInst({});
+  const worker = await createInst({ conducted: true, callerInstanceId: conductor.id });
+  const cEvs = collect(conductor);
+
+  // Conductor parked idle, subscribed to the worker.
+  ctx.instances.subscribeIdle(conductor.sessionId, worker.sessionId);
+  assert.equal(ctx.instances.isIdleCaller(conductor.sessionId), true);
+
+  worker.prompt('TRIP go');
+
+  // Conductor is steered, resume-aware.
+  await waitFor(() => sub(cEvs, 'auto_stop_overage').some(e => e.data.steered === true && e.data.resume === true));
+  // The resume flag survives the steer prompt's synchronous user_prompt, and the
+  // conductor's steer turn → idle arms the per-session timer.
+  await waitFor(() => ctx.instances._autoResumeTimers.has(conductor.sessionId));
+  assert.equal(conductor.autoStoppedForOverage, true, 'flag survived the steer prompt');
+  assert.equal(conductor.autoResumeAt != null, true, 'conductor resume badge set');
+
+  // Firing it delivers the resume prompt to the still-live conductor.
+  assert.equal(ctx.instances._fireAutoResumeNow(conductor.sessionId), true, 'pending resume fired');
+  await waitFor(() => cEvs.some(e => e.kind === 'user_echo' && e.text === AUTO_RESUME_TEXT),
+    { timeout: 10000 });
+  assert.equal(conductor.proc != null, true, 'conductor never killed');
+});
+
+// Guard the mid-turn conductor branch under stop-resume (windDown arms resume).
+test('routing stop-resume: mid-turn conductor windDown arms a resume timer', async () => {
+  await boot(resumeRoutingScenario(), 'stop-resume');
+  const conductor = await createInst({});
+  const worker = await createInst({ conducted: true, callerInstanceId: conductor.id });
+  const cEvs = collect(conductor);
+
+  // Put the conductor mid-turn first (STAY emits nothing → stays in 'turn').
+  conductor.prompt('STAY');
+  await waitFor(() => conductor.status === 'turn');
+
+  worker.prompt('TRIP go');
+
+  await waitFor(() => sub(cEvs, 'auto_stop_overage').some(e => e.data.steered === true && e.data.resume === true));
+  // windDown injects a steer user-message; the fake answers it with a RESULT, so
+  // the conductor reaches idle and arms.
+  await waitFor(() => ctx.instances._autoResumeTimers.has(conductor.sessionId));
+  assert.equal(conductor.autoStoppedForOverage, true);
+});
+
+// Guard the fallback (no in-control conductor) direct-stop under stop-resume.
+test('routing stop-resume: fallback worker direct-stop arms a resume timer', async () => {
+  await boot(resumeRoutingScenario(), 'stop-resume');
+  const conductor = await createInst({});
+  const worker = await createInst({ conducted: true, callerInstanceId: conductor.id });
+  const wEvs = collect(worker);
+
+  // Conductor gone → no in-control owner → worker is direct-stopped.
+  await ctx.instances.remove(conductor.id);
+
+  worker.prompt('TRIP go');
+  await waitFor(() => sub(wEvs, 'auto_stop_overage').length > 0);
+  assert.notEqual(sub(wEvs, 'auto_stop_overage')[0].data.steered, true, 'fallback is a direct stop');
+  await waitFor(() => ctx.instances._autoResumeTimers.has(worker.sessionId));
+  assert.equal(worker.autoStoppedForOverage, true);
 });
