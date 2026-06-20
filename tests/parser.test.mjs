@@ -80,12 +80,14 @@ test('parser: tool_use input streams via input_json_delta and finalizes parsed',
   assert.equal(finals.length, 1);
   assert.deepEqual(finals[0].input, { command: 'ls -la' });
   assert.equal(finals[0].toolUseId, 'toolu_a1');
+  assert.equal(typeof finals[0].startedAt, 'number', 'tool_use carries server-side startedAt ms');
 
   const results = events.filter(e => e.kind === 'tool_result');
   assert.equal(results.length, 1);
   assert.equal(results[0].toolUseId, 'toolu_a1');
   assert.match(results[0].content, /total 0/);
   assert.equal(results[0].isError, false);
+  assert.equal(typeof results[0].finishedAt, 'number', 'tool_result carries server-side finishedAt ms');
 
   const turn = events.filter(e => e.kind === 'turn_end');
   assert.equal(turn.length, 1);
