@@ -8,6 +8,7 @@ When `README.md` doesn't go deep enough, load the relevant detail file:
 - **Feature / UI behavior** → `docs/features.md`
 - **Subprocess protocol, WebSocket messages, REST endpoints** → `docs/protocol.md`
 - **Component layout, instance lifecycle, on-disk state, migrations, testing** → `docs/architecture.md`
+- **Conductor role prompt / orchestration contract** → `CONDUCT.md`
 
 ## Code conventions
 

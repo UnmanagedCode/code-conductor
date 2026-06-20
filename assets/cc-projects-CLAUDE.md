@@ -1,6 +1,6 @@
 # Project workspace conventions
 
-These instructions apply to every project under `~/cc-projects/`. They are imported into each project's local `CLAUDE.md` via `@../CLAUDE.md`.
+These instructions apply to every project under the projects root. They are imported into each project's local `CLAUDE.md` via `@../CLAUDE.md`.
 
 ## Git hygiene
 
@@ -14,14 +14,14 @@ These instructions apply to every project under `~/cc-projects/`. They are impor
 
 ## README maintenance
 
-- **Read `README.md` before interacting with a project.** You MUST read the project's `README.md` (if one exists) before doing anything that touches the project's behavior *or* its contents — running or starting scripts, binaries, servers, or services; invoking build/test commands; calling project tooling; making code/config changes; **or exploring the codebase** (reading source files, grepping, globbing, listing directories beyond the repo root). Pure git actions (`status`, `log`, `diff`, `add`, `commit`, branch inspection) are fine without it. The point is to load documented gotchas, defaults, and the project's purpose into context before you investigate or act, so exploration is framed by what the README already explains.
-- **Create a `README.md` when the project has a meaningful purpose.** If the project is more than a one-off scratchpad — i.e. it has a real reason to exist, even just for the user themselves — write a `README.md` at the project root. It must cover **both**:
+- **Read `README.md` before interacting with a project.** Read the project's `README.md` (if one exists) before anything that touches its behavior *or* contents — running scripts/servers, build/test commands, project tooling, code/config changes, **or exploring the codebase** (reading sources, grepping, globbing, listing dirs beyond the repo root). Pure git actions (`status`, `log`, `diff`, `add`, `commit`, branch inspection) are fine without it.
+- **Create a `README.md` when the project has a meaningful purpose** (more than a one-off scratchpad). Write it at the project root, covering **both**:
   - a **functional description** (what the project does, who it's for, how to use it, the user-facing surface), and
   - a **technical description** (stack, architecture, key components, how to run / test / extend, important defaults, known limitations).
   Keep it scannable: a short top-level summary, then sections. A diagram or directory tree helps if the layout isn't obvious.
-- **Update `README.md` after a prompt when the change warrants it.** If a turn meaningfully changes user-facing behavior (a new feature or removed feature, a new command, a changed flag default, a new endpoint, a different setup step, a new known limitation), update the README in the same turn — before committing. Skip README updates for refactors, internal bug fixes, test-only changes, or other work that doesn't alter what's documented.
+- **Update `README.md` in the same turn — before committing — when a change warrants it:** a new/removed feature, a new command, a changed flag default, a new endpoint, a different setup step, a new known limitation. Skip for refactors, internal bug fixes, test-only changes, or anything that doesn't alter what's documented.
 - **Keep functional and technical sections in sync.** When you change one half (e.g. add a flag), check whether the other half needs updating too (e.g. the architecture section that lists defaults).
-- **Be precise and compact.** Prefer short, fact-dense sentences over narrative prose. Name exact paths, commands, flags, regexes, constants, and refusal codes when they exist — those are the load-bearing details a reader actually needs. Don't pad with rationale paragraphs unless the *why* is non-obvious; rules-of-thumb and re-explanations of what the code already shows are noise. Bullets and tables beat prose for enumerable facts (endpoints, message types, defaults). When tempted to write a paragraph, ask whether a one-line bullet plus a code snippet would carry the same information.
+- **Be precise and compact.** Short, fact-dense sentences over prose. Name exact paths, commands, flags, regexes, constants, and refusal codes. Skip rationale unless the *why* is non-obvious. Bullets and tables beat prose for enumerable facts (endpoints, message types, defaults).
 
 ## Opening URLs
 
