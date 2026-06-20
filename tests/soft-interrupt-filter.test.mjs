@@ -25,12 +25,17 @@ test('isSoftInterruptContent detects the marker in string + array shapes', () =>
   assert.equal(isSoftInterruptContent(undefined), false);
 });
 
-test('live parser drops a soft-interrupt user message (no bubble)', () => {
+test('live parser emits soft_interrupted system event for a soft-interrupt steer (no user bubble)', () => {
   const p = new Parser();
-  assert.deepEqual(p.handleObject(userLine(STEER)), []);
+  const evs = p.handleObject(userLine(STEER));
+  assert.equal(evs.length, 1);
+  assert.equal(evs[0].kind, 'system');
+  assert.equal(evs[0].subtype, 'soft_interrupted');
+  // Must not bubble as a user_echo.
+  assert.equal(evs.filter(e => e.kind === 'user_echo').length, 0);
   // A normal user message still produces a user_echo.
-  const evs = new Parser().handleObject(userLine('real prompt'));
-  assert.equal(evs.filter(e => e.kind === 'user_echo').length, 1);
+  const normal = new Parser().handleObject(userLine('real prompt'));
+  assert.equal(normal.filter(e => e.kind === 'user_echo').length, 1);
 });
 
 test('replay drops the steer from both persisted shapes, keeps real prompts', () => {
