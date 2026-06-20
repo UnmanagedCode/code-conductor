@@ -1000,9 +1000,6 @@ export class Instance extends EventEmitter {
     if (this._mutating) {
       throw Object.assign(new Error('another rewind/fork is in progress'), { statusCode: 409 });
     }
-    if (this.temp) {
-      throw Object.assign(new Error('temp sessions cannot be rewound'), { statusCode: 400 });
-    }
     if (!this.sessionId) {
       throw Object.assign(new Error('no sessionId — instance has not yet received a turn'), { statusCode: 400 });
     }

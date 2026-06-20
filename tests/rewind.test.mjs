@@ -189,16 +189,26 @@ test('rewind during a running turn is refused 409', async () => {
   }
 });
 
-test('rewind on a temp session is refused 400', async () => {
-  await api(baseUrl, 'POST', '/api/projects', { name: 'tempd' });
+test('rewind on a temp session succeeds', async () => {
+  const sid = 'tttttttt-2222-3333-4444-666666666666';
+  await seedSession({
+    projectName: 'tempd', sid,
+    lines: [
+      { type: 'user', uuid: 'u1', message: { role: 'user', content: 'first prompt' } },
+      { type: 'assistant', uuid: 'a1', message: { id: 'm1', role: 'assistant', content: [
+        { type: 'text', text: 'first reply' },
+      ] } },
+    ],
+  });
   const r = await api(baseUrl, 'POST', '/api/instances', {
-    project: 'tempd', temp: true,
+    project: 'tempd', temp: true, resume: sid,
   });
   const id = r.body.id;
-  await waitFor(() => instances.get(id).status === 'idle' && instances.get(id).sessionId);
+  await waitFor(() => instances.get(id).status === 'idle');
 
   const rew = await api(baseUrl, 'POST', `/api/instances/${id}/rewind`, { userMessageIndex: 0 });
-  assert.equal(rew.status, 400, 'temp session rewinds are refused');
+  assert.equal(rew.status, 200, 'temp session rewind is allowed');
+  assert.equal(rew.body.droppedText, 'first prompt');
 });
 
 test('user_echo events carry absolute userIndex; rewind by stamp survives ring trimming', async () => {
