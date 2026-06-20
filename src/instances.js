@@ -1437,6 +1437,11 @@ export class InstanceManager extends EventEmitter {
       if (inst.temp && !inst.proc &&
           (summary.status === 'exited' || summary.status === 'crashed') &&
           this.byId.has(id)) {
+        // Cancel any pending overage auto-resume before dropping the instance:
+        // otherwise its wall-clock deadline outlives the session as an orphan
+        // (and the badge would outlive the timer). Done while inst is still in
+        // byId so cancel can clear its flags + emit the badge-drop status.
+        this._cancelAutoResume(inst.sessionId);
         this.byId.delete(id);
         this._purgeIdleFor(inst.sessionId);
         this.emit('list_changed');
