@@ -73,7 +73,13 @@ See [docs/features.md](docs/features.md) for the exhaustive feature and UI-eleme
 - **Overage auto-stop is global & conductor-aware; auto-resume is in-memory** — **Settings → Models →
   Action on overage** is `Off` / `Stop` / `Stop & resume` (a **global** setting, not per-session). A trip
   fires on a `rate_limit_event` with `isUsingOverage:true` — or, with the optional **usage-threshold**
-  toggle on, when any window's `utilization` crosses the configured percent (default 85%, range 50–99).
+  toggle on, when `utilization` crosses the configured percent (default 85%, range **10–99**). The
+  threshold is watched from **two** equal-footing sources: the live `rate_limit_event` stream (which
+  Anthropic only emits near its own ~90% mark) **and** a periodic server-side usage poll
+  (`src/usageOverageMonitor.js`; cadence `ORCH_USAGE_POLL_MS`, default 60 s) of the **five-hour** window —
+  so a *low* threshold (e.g. 25%) trips even though the stream never reports that low. Both sources drive
+  the same machinery and are deduped by the global one-shot (`_overageActive`), so they never double-trip;
+  the poll degrades silently (no trip) when its usage fetch fails/times out.
   Stopped sessions stay idle-but-alive and manually resumable; `Stop & resume` schedules an **in-memory**
   resume timer (~5 s after the five-hour window's `resetsAt`, **not** the far-future overage window) that
   is **lost on orchestrator restart**. The timer is armed for direct-stopped sessions **and** steered

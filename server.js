@@ -94,6 +94,11 @@ export async function start({ port = 8787, host = '127.0.0.1' } = {}) {
   // PreToolUse http hook URL — feed it back into the manager now that
   // listen has resolved (port may have been auto-assigned via 0).
   if (instances) instances.setServerPort(addr.port);
+  // Start the server-side usage poller (overage auto-stop's second trigger
+  // source). Its timer lifecycle tracks the server's, like the bound port; the
+  // monitor itself stays unit-testable without a server (tests call _tick()
+  // directly). Stopped in both manager shutdown paths.
+  if (instances) instances._usageMonitor.start();
   // Resurrect sessions carried over by a "Resume after restart". Fire-and-forget
   // (like the readiness check) so boot returns fast and the reloaded UI can
   // connect while sessions re-spawn + get their resume notifications, staggered.
