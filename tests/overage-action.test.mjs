@@ -18,6 +18,11 @@ import { setOnOverageAction, setOverageThreshold } from '../src/appSettings.js';
 import { AUTO_RESUME_TEXT } from '../src/instances.js';
 
 const nowSec = () => Math.floor(Date.now() / 1000);
+// The live rate-limit payload delivers the window reset as the snake_case
+// `resets_at` ISO-8601 string (see public/header.js `new Date(bucket.resets_at)`),
+// NOT a camelCase epoch `resetsAt`. Emit that shape so the test exercises the
+// real CLI event the orchestrator must parse.
+const resetIso = (sec) => new Date(sec * 1000).toISOString();
 
 const INIT = { type: 'system', subtype: 'init', session_id: '$SID', cwd: '$CWD',
   model: 'claude-sonnet-4-6', permissionMode: '$MODE', tools: ['Bash'], uuid: 'init-1' };
@@ -26,7 +31,9 @@ const RESULT = { type: 'result', subtype: 'success', stop_reason: 'end_turn',
 
 function overageEvent({ resetsAt } = {}) {
   const info = { isUsingOverage: true };
-  if (resetsAt !== undefined) info.resetsAt = resetsAt;
+  // `resetsAt` here is an epoch-seconds value from the caller; serialise it the
+  // way the live CLI does — snake_case `resets_at` as an ISO-8601 string.
+  if (resetsAt !== undefined) info.resets_at = resetIso(resetsAt);
   return { type: 'system', subtype: 'rate_limit_event', uuid: 'rl-1', rate_limit_info: info };
 }
 
@@ -34,7 +41,7 @@ function overageEvent({ resetsAt } = {}) {
 // (and optional window type). Used to exercise the optional usage threshold.
 function utilEvent({ util, resetsAt, rateLimitType } = {}) {
   const info = { utilization: util };
-  if (resetsAt !== undefined) info.resetsAt = resetsAt;
+  if (resetsAt !== undefined) info.resets_at = resetIso(resetsAt);
   if (rateLimitType !== undefined) info.rateLimitType = rateLimitType;
   return { type: 'system', subtype: 'rate_limit_event', uuid: 'rl-1', rate_limit_info: info };
 }
@@ -149,6 +156,24 @@ test('onOverage "stop-resume": stays alive, arms timer, delivers resume prompt a
   assert.equal(inst.autoStoppedForOverage, false);
   assert.equal(inst._overageHandled, false);
   assert.equal(inst.proc != null, true, 'never killed/respawned');
+});
+
+// Back-compat for the normaliser: a camelCase epoch-seconds `resetsAt` (rather
+// than the snake_case ISO `resets_at`) must still arm the resume timer.
+function overageEventCamelEpoch(resetsAt) {
+  return { type: 'system', subtype: 'rate_limit_event', uuid: 'rl-1',
+    rate_limit_info: { isUsingOverage: true, resetsAt } };
+}
+
+test('onOverage "stop-resume": camelCase epoch resetsAt also arms (back-compat)', async () => {
+  await boot(scenario([overageEventCamelEpoch(nowSec() + 3600), RESULT]), 'stop-resume');
+  const inst = await spawnIdle();
+  const evs = collect(inst);
+  inst.prompt('go');
+  await waitFor(() => sub(evs, 'auto_stop_overage').length > 0);
+  assert.equal(sub(evs, 'auto_stop_overage')[0].data.resume, true);
+  await waitFor(() => inst.autoResumeAt != null);
+  assert.equal(ctx.instances._autoResumeTimers.has(inst.sessionId), true, 'timer armed from epoch resetsAt');
 });
 
 test('onOverage "stop-resume": missing/past resetsAt is skipped, not armed', async () => {
