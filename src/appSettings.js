@@ -280,14 +280,17 @@ export async function setConductorCompactWindow({ enabled, value }) {
   return { enabled: !!enabled, value: snapped };
 }
 
-// Models group: optional usage-threshold overage trip (window-agnostic). When
-// enabled, the overage auto-stop also fires once any rate-limit window's
-// `utilization` crosses this percentage — before paid overage credits are
-// reached. Independent of (and additive to) the always-on `isUsingOverage`
-// hard-flag trip. Value is an integer percent, clamped+snapped to [50,99]
-// Off by default — strictly opt-in. Follows the conductorCompactWindow
-// opt-in precedent above.
-const OVERAGE_PCT_MIN     = 50;
+// Models group: optional UTILIZATION-based overage stop threshold — the single
+// unified knob shared by BOTH trigger sources. When enabled, the overage auto-stop
+// fires once a rate-limit window's live `utilization` crosses this percentage —
+// before paid overage credits are reached. It is read by the stream-event path
+// (instances.js `_isOverageTrip`, where it only fires near Anthropic's own ~90%
+// reporting) AND by the server-side usage poller (usageOverageMonitor.js), which is
+// what makes LOW thresholds actionable. Utilization-based, NOT tied to Anthropic's
+// paid-overage flag — that hard `isUsingOverage` trip is always-on and independent.
+// Value is an integer percent, clamped to [10,99] (floor lowered from 50 so
+// conserve-early targets like 25% are settable). Off by default — strictly opt-in.
+const OVERAGE_PCT_MIN     = 10;
 const OVERAGE_PCT_MAX     = 99;
 const OVERAGE_PCT_DEFAULT = 85;
 

@@ -22,6 +22,7 @@ import { saveAttachment, isImageType } from './attachments.js';
 import { buildApprovePrompt } from './planApproval.js';
 import { IdleSubscriptionHub } from './idleSubscriptions.js';
 import { OverageResumeController } from './overageResume.js';
+import { UsageOverageMonitor } from './usageOverageMonitor.js';
 
 // `AUTO_RESUME_TEXT` now lives with the overage timer machine in
 // overageResume.js; re-export it here so existing importers (and tests) that
@@ -100,7 +101,7 @@ function isOverageEvent(data) {
 // raw epoch number are accepted only as defensive fallbacks. The overage
 // auto-resume timer (overageResume.js arm()) and the global clear timer both
 // expect epoch seconds, so this is the single place the shape is reconciled.
-function parseResetEpochSecs(info) {
+export function parseResetEpochSecs(info) {
   const v = info?.resetsAt ?? info?.resets_at ?? null;
   if (v == null) return null;
   if (typeof v === 'number') return Number.isFinite(v) ? v : null; // already epoch secs
@@ -1181,6 +1182,13 @@ export class InstanceManager extends EventEmitter {
     // so every external caller sees an unchanged surface.
     this._idleHub = new IdleSubscriptionHub(this);
     this._overageResume = new OverageResumeController(this);
+    // Server-side usage poller: a second, equal-footing source for the overage
+    // auto-stop. The stream `rate_limit_event` only reports near Anthropic's own
+    // ~90% threshold, so a LOW configured threshold (e.g. 25%) is invisible to
+    // it — only a live usage poll sees it. The poller drives the SAME
+    // `_handleOverageTrip` machinery (deduped via `_overageActive`). Its timer is
+    // started by the server after listen() and stopped in both shutdown paths.
+    this._usageMonitor = new UsageOverageMonitor(this);
     this.on('event', (e) => this._idleHub.onTurnEnd(e));
     // Global overage auto-stop state. The decision moved off the per-Instance
     // handler (which can't reach the idle-subscription graph) up to here:
@@ -1629,6 +1637,7 @@ export class InstanceManager extends EventEmitter {
 
   async shutdown() {
     if (this._overageClearTimer) { clearTimeout(this._overageClearTimer); this._overageClearTimer = null; }
+    this._usageMonitor.stop();
     this._overageResume.clearAll();
     const all = [...this.byId.values()];
     this.byId.clear();
@@ -1716,6 +1725,7 @@ export class InstanceManager extends EventEmitter {
   // first so each temp instance's _handleExit skips _archiveTempSession(),
   // preserving the transcript for `--resume` on boot.
   shutdownForResumeSync() {
+    this._usageMonitor.stop();
     const live = [];
     for (const inst of this.byId.values()) {
       if (!inst.proc) continue;

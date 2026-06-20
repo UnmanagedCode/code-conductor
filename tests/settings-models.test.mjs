@@ -349,17 +349,18 @@ test('appSettings: getOverageThreshold defaults {enabled:false,value:85} when un
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
 
-test('appSettings: setOverageThreshold clamps+snaps to [50,99] step 5', async () => {
+test('appSettings: setOverageThreshold clamps to [10,99] and rounds to integer', async () => {
   const root = await mkTmp();
   try {
     await withEnv({ PROJECTS_ROOT: root }, async () => {
-      assert.equal((await setOverageThreshold({ enabled: true, value: 47 })).value, 50); // clamp low + snap
+      assert.equal((await setOverageThreshold({ enabled: true, value: 5 })).value, 10);   // clamp low (floor 10)
       assert.equal((await setOverageThreshold({ enabled: true, value: 100 })).value, 99); // clamp high
-      assert.equal((await setOverageThreshold({ enabled: true, value: 83 })).value, 85); // snap to step 5
-      assert.equal((await setOverageThreshold({ enabled: true, value: 72 })).value, 70); // snap down
+      assert.equal((await setOverageThreshold({ enabled: true, value: 25 })).value, 25);  // low target now settable
+      assert.equal((await setOverageThreshold({ enabled: true, value: 83 })).value, 83);  // no step snap — exact
+      assert.equal((await setOverageThreshold({ enabled: true, value: 72.4 })).value, 72); // rounds to integer
       const t = getOverageThreshold();
       assert.equal(t.enabled, true);
-      assert.equal(t.value, 70);
+      assert.equal(t.value, 72);
     });
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
@@ -388,19 +389,19 @@ test('GET /api/settings/models includes overageThreshold defaulting {enabled:fal
   }
 });
 
-test('POST /api/settings/models/prefs saves overageThreshold (clamp/snap) without clobbering onOverage', async () => {
+test('POST /api/settings/models/prefs saves overageThreshold (clamp) without clobbering onOverage', async () => {
   {  // shared server (before/after) + fresh PROJECTS_ROOT per test (beforeEach)
     await api(baseUrl, 'POST', '/api/settings/models/prefs', { onOverage: 'stop' });
     const r = await api(baseUrl, 'POST', '/api/settings/models/prefs', {
-      overageThreshold: { enabled: true, value: 83 },
+      overageThreshold: { enabled: true, value: 25 },
     });
     assert.equal(r.status, 200);
     assert.equal(r.body.overageThreshold.enabled, true);
-    assert.equal(r.body.overageThreshold.value, 85, '83 snaps to 85');
+    assert.equal(r.body.overageThreshold.value, 25, 'low target persists unsnapped');
     assert.equal(r.body.onOverage, 'stop', 'onOverage must not be clobbered');
     const g = await api(baseUrl, 'GET', '/api/settings/models');
     assert.equal(g.body.overageThreshold.enabled, true);
-    assert.equal(g.body.overageThreshold.value, 85);
+    assert.equal(g.body.overageThreshold.value, 25);
   }
 });
 

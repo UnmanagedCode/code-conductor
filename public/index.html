@@ -143,10 +143,10 @@
               </div>
               <p class="settings-hint">What to do the moment a session starts using paid overage credits. <strong>Stop</strong> soft-interrupts the turn (stays idle, manually resumable). <strong>Stop &amp; resume</strong> also auto-resumes the session ~5s after the rate-limit window resets. Off by default.</p>
               <label class="tt-toggle"><input id="sm-overage-threshold-enabled" type="checkbox" /> Also stop at a usage threshold (any rate-limit window)</label>
-              <p class="settings-hint">When on, the chosen overage action also fires the moment any rate-limit window's utilization crosses this percentage — before paid overage begins. Independent of the paid-overage trip above. Has no effect when the action is <strong>Off</strong>. Off by default.</p>
+              <p class="settings-hint">When on, the chosen overage action also fires once utilization crosses this percentage — before paid overage begins. Checked two ways: the live rate-limit stream (near Anthropic's own ~90% mark) and a periodic server-side usage poll of the 5-hour window, so low thresholds (e.g. 25%) trip even though the stream never reports that low. Independent of the paid-overage trip above. Has no effect when the action is <strong>Off</strong>. Off by default.</p>
               <div id="sm-overage-threshold-row" class="sm-compact-row" hidden>
                 <label class="sm-compact-label">Stop at
-                  <input id="sm-overage-threshold" type="range" min="50" max="99" step="1" value="85" />
+                  <input id="sm-overage-threshold" type="range" min="10" max="99" step="1" value="85" />
                   <span id="sm-overage-threshold-val">85%</span>
                 </label>
               </div>

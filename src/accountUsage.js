@@ -37,6 +37,10 @@ async function fetchFromApi(token) {
     headers: {
       'Authorization': `Bearer ${token}`,
     },
+    // Bound the request so a hung connection can't pile up across the server-side
+    // usage-poll cycles (or stall a chip refresh). Abort surfaces as a thrown
+    // error → getAccountUsage()'s catch returns null.
+    signal: AbortSignal.timeout(10_000),
   });
   if (!res.ok) {
     console.warn(`[accountUsage] Anthropic OAuth usage API returned ${res.status} — chip will be hidden until this resolves`);
