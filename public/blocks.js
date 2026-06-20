@@ -1034,7 +1034,7 @@ function imageSrcFromSource(source) {
 const SHOWN_SYSTEM_SUBTYPES = new Set([
   'init', 'stderr', 'exit', 'spawn_error', 'crashed',
   'permission_denied', 'compacting', 'history_load_error', 'auto_stop_overage',
-  'auto_resume_skipped',
+  'auto_resume_skipped', 'soft_interrupted',
 ]);
 
 export function shouldRenderSystem(ev) {
@@ -1065,6 +1065,7 @@ export class SystemBlock {
         return '⛔ Stopped: session entered overage usage — auto-stop is enabled.';
       }
       if (subtype === 'auto_resume_skipped') return `⚠ Auto-resume skipped: ${data?.reason ?? ''}.`;
+      if (subtype === 'soft_interrupted') return '⏸ Turn interrupted';
       try { return JSON.stringify(data).slice(0, 200); } catch { return ''; }
     })();
     this.node = el('div', { class: 'block system' },
