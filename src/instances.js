@@ -45,6 +45,22 @@ const VALID_MODES = new Set(['plan', 'ask', 'bypassPermissions']);
 const SOFT_INTERRUPT_TEXT =
   'Stop now. Do not make any more tool calls. End your turn immediately. And don\'t reply in any way.';
 
+// After a hard abort, the CLI's internal input queue is not cleared. Any
+// messages written to stdin before the abort (the soft steer, or several
+// prompts sent mid-turn) remain queued; the CLI dequeues them after the abort
+// and starts a SPURIOUS NEW TURN for each one. The drain window catches these
+// by listening for system/init on the 'event' channel (the earliest per-turn-
+// start signal, firing ~39ms before the API round-trip) and immediately firing
+// another control_request interrupt to sever the spurious turn.
+//
+// POST_ABORT_DRAIN_WINDOW_MS — how long to watch after a hard abort. Increase
+// if spurious turns are observed arriving later; decrease if the window blocks
+// intentional follow-up prompts that come in very quickly after an abort.
+const POST_ABORT_DRAIN_WINDOW_MS = 3000;
+// Safety cap: max spurious turns killed per window. Guards against a
+// misbehaving subprocess that emits system/init in a tight loop.
+const POST_ABORT_DRAIN_MAX = 20;
+
 // Steering message injected into a CONDUCTOR (not its workers) when an overage
 // auto-stop fires while the conductor is in control of conducted workers. The
 // orchestrator deliberately does NOT interrupt the workers directly — the
@@ -245,6 +261,11 @@ export class Instance extends EventEmitter {
     // exit from `turn` (turn_end → idle, crash, exit). Drives the
     // "stopping…" marker + the "Interrupt now" escalate affordance.
     this.interrupting = false;
+    // Post-hard-abort drain window: timer handle + listener for killing
+    // spurious turns the CLI starts from its leftover input queue after a
+    // hard abort. Both null when the window is closed. See _openDrainWindow.
+    this._drainTimer = null;
+    this._drainListener = null;
     // Set true by the resume-restart path before SIGKILL so _handleExit
     // skips _archiveTempSession() — the temp jsonl must survive to be
     // resumed on the next boot. Never persisted.
@@ -762,6 +783,7 @@ export class Instance extends EventEmitter {
   _handleExit(code, signal) {
     this.pid = null;
     this.proc = null;
+    this._closeDrainWindow();
     const crashed = !(code === 0 && !signal);
     this._emitUi({ kind: 'system', subtype: 'exit', data: { code, signal } });
     this._setStatus(crashed ? 'crashed' : 'exited');
@@ -818,6 +840,9 @@ export class Instance extends EventEmitter {
   // keeps the prompt-cache prefix stable.
   async prompt(text, attachments = [], { annotateIfMidTurn = true } = {}) {
     if (!this.proc) throw new Error('not running');
+    // An explicit new turn closes the drain window immediately so an intentional
+    // follow-up prompt is never intercepted by the post-hard-abort drain logic.
+    this._closeDrainWindow();
     // Any prompt cancels a pending overage auto-resume — the session is being
     // driven again. When the auto-resume timer itself fires this is a harmless
     // no-op: the callback deletes its timer + clears the flags BEFORE calling
@@ -931,6 +956,12 @@ export class Instance extends EventEmitter {
     if (this.status !== 'turn') return;
     if (force) {
       await this._controlRequest({ subtype: 'interrupt' });
+      // Open the drain window synchronously in the same microtask as the ACK.
+      // Any system/init that follows (the CLI dequeuing its leftover input queue)
+      // will be caught before the spurious API round-trip begins. Opening here
+      // (not before the await) is safe because the CLI emits system/init only
+      // AFTER the result/interrupted events that follow the control_response ACK.
+      this._openDrainWindow();
       return;
     }
     if (this.interrupting) return; // idempotent — one steer per turn
@@ -968,6 +999,48 @@ export class Instance extends EventEmitter {
     });
     this.interrupting = true;
     this.emit('status', this.summary());
+  }
+
+  // Open a drain window after a hard abort. Attaches a one-time-per-event
+  // listener on 'event' that watches for system/init — the earliest signal
+  // that the CLI has dequeued a leftover message and started a spurious new
+  // turn. On each hit, fires _controlRequest interrupt immediately (before
+  // the API round-trip) and slides the window deadline so a queue of N
+  // messages is fully drained. Closes automatically when the window elapses
+  // with no new turn-start, or earlier when an explicit prompt() is called.
+  _openDrainWindow() {
+    this._closeDrainWindow(); // cancel any prior window
+    let drainCount = 0;
+
+    const onEvent = (ev) => {
+      if (ev.kind !== 'system' || ev.subtype !== 'init') return;
+      if (drainCount >= POST_ABORT_DRAIN_MAX) {
+        console.error(
+          `[code-conductor] post-abort drain safety cap (${POST_ABORT_DRAIN_MAX}) reached on instance ${this.id} — closing window`,
+        );
+        this._closeDrainWindow();
+        return;
+      }
+      drainCount += 1;
+      this._emitUi({ kind: 'system', subtype: 'drain_abort', data: { count: drainCount } });
+      // Slide the window: another queued message could follow, extend deadline.
+      clearTimeout(this._drainTimer);
+      this._drainTimer = setTimeout(() => this._closeDrainWindow(), POST_ABORT_DRAIN_WINDOW_MS);
+      this._drainTimer.unref?.();
+      // Kill the spurious turn immediately, before any API round-trip.
+      this._controlRequest({ subtype: 'interrupt' }).catch(() => {});
+    };
+
+    this._drainListener = onEvent;
+    this.on('event', onEvent);
+
+    this._drainTimer = setTimeout(() => this._closeDrainWindow(), POST_ABORT_DRAIN_WINDOW_MS);
+    this._drainTimer.unref?.(); // don't keep the process alive for the window alone
+  }
+
+  _closeDrainWindow() {
+    if (this._drainTimer) { clearTimeout(this._drainTimer); this._drainTimer = null; }
+    if (this._drainListener) { this.off('event', this._drainListener); this._drainListener = null; }
   }
 
   async kill({ graceMs = 2000 } = {}) {
