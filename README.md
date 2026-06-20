@@ -75,7 +75,10 @@ See [docs/features.md](docs/features.md) for the exhaustive feature and UI-eleme
   fires on a `rate_limit_event` with `isUsingOverage:true` — or, with the optional **usage-threshold**
   toggle on, when any window's `utilization` crosses the configured percent (default 85%, range 50–99).
   Stopped sessions stay idle-but-alive and manually resumable; `Stop & resume` schedules an **in-memory**
-  resume timer (~5 s after the window resets) that is **lost on orchestrator restart**. Routing
+  resume timer (~5 s after the five-hour window's `resetsAt`, **not** the far-future overage window) that
+  is **lost on orchestrator restart**. The timer is armed for direct-stopped sessions **and** steered
+  conductors (both mid-turn and idle-subscribed); orchestrator-injected prompts (the idle-subscription
+  wake, the conductor steer) don't cancel a pending resume — only a genuine user takeover does. Routing
   (direct-interrupt vs steer-the-conductor) and clear semantics: see [docs/architecture.md](docs/architecture.md) → overage trip detection + central routing.
 - **Opus 4.7/4.8 thinking is redacted** — no readable content (4.7 sends only `signature_delta`; 4.8 sends empty `thinking_delta`s). Both render as `thinking (redacted)`. Pick `claude-sonnet-4-6` for the full stream.
 - **AskUserQuestion answered via next prompt** — PreToolUse hook denies; tool_result is `is_error:true`; answer is fed in as a normal user prompt. Functionally fine, but the original tool_result is still an error for diagnostics.

@@ -94,14 +94,14 @@ function isOverageEvent(data) {
 }
 
 // Normalise the rate-limit window reset time to epoch SECONDS, or null.
-// The canonical field across the codebase is the snake_case `resets_at`, which
-// the account-usage payload delivers as an ISO-8601 string (see header.js's
-// `new Date(bucket.resets_at)`). Also accept the camelCase `resetsAt` and a
-// raw epoch number for forward/back compatibility. The overage auto-resume
-// timer (overageResume.js arm()) and the global clear timer both expect epoch
-// seconds, so this is the single place the shape is reconciled.
+// The live `rate_limit_event` field is the camelCase epoch-seconds `resetsAt`
+// (confirmed against a real CLI capture). The snake_case ISO `resets_at` (as in
+// the account-usage payload / header.js's `new Date(bucket.resets_at)`) and a
+// raw epoch number are accepted only as defensive fallbacks. The overage
+// auto-resume timer (overageResume.js arm()) and the global clear timer both
+// expect epoch seconds, so this is the single place the shape is reconciled.
 function parseResetEpochSecs(info) {
-  const v = info?.resets_at ?? info?.resetsAt ?? null;
+  const v = info?.resetsAt ?? info?.resets_at ?? null;
   if (v == null) return null;
   if (typeof v === 'number') return Number.isFinite(v) ? v : null; // already epoch secs
   const ms = Date.parse(v);                                        // ISO-8601 string
@@ -853,16 +853,19 @@ export class Instance extends EventEmitter {
   // vision content) and arbitrary file bytes on demand. This avoids
   // re-paying the base64 token cost on every subsequent turn and
   // keeps the prompt-cache prefix stable.
-  async prompt(text, attachments = [], { annotateIfMidTurn = true } = {}) {
+  async prompt(text, attachments = [], { annotateIfMidTurn = true, internal = false } = {}) {
     if (!this.proc) throw new Error('not running');
     // An explicit new turn closes the drain window immediately so an intentional
     // follow-up prompt is never intercepted by the post-hard-abort drain logic.
     this._closeDrainWindow();
-    // Any prompt cancels a pending overage auto-resume — the session is being
-    // driven again. When the auto-resume timer itself fires this is a harmless
-    // no-op: the callback deletes its timer + clears the flags BEFORE calling
-    // prompt(), so the resume message still sends (see _armAutoResume).
-    this.emit('user_prompt');
+    // A genuine (user/MCP-driven) prompt cancels a pending overage auto-resume —
+    // the session is being driven again. Orchestrator-injected prompts
+    // (`internal:true` — the idle-subscription wake stub, the conductor overage
+    // steer) must NOT cancel it: an overage-stopped conductor still gets woken
+    // when its worker finishes, and that wake must not discard the pending
+    // resume. When the auto-resume timer itself fires it sends a NON-internal
+    // prompt, so its callback's teardown still runs (see _armAutoResume).
+    this.emit('user_prompt', { internal });
     const safeText = typeof text === 'string' ? text : '';
     const atts = Array.isArray(attachments) ? attachments : [];
     if (!safeText.length && atts.length === 0) {
@@ -1395,9 +1398,13 @@ export class InstanceManager extends EventEmitter {
     // A user/MCP-driven turn cancels any pending overage auto-resume. If the
     // turn is a manual takeover of an overage-stopped session, it also clears
     // the global overage flag so the stop can trip again. Capture the flag
-    // BEFORE cancel (which resets it); the idle-conductor steer-prompt path
-    // never sets autoStoppedForOverage, so it can't self-clear here.
-    inst.on('user_prompt', () => {
+    // BEFORE cancel (which resets it). Orchestrator-injected prompts
+    // (`internal` — idle-subscription wake, conductor overage steer) skip this:
+    // they must not discard a pending resume armed for an overage-stopped
+    // session (the auto-resume's own fire sends a non-internal prompt, so its
+    // teardown still runs).
+    inst.on('user_prompt', (meta) => {
+      if (meta?.internal) return;
       const wasOverageStopped = inst.autoStoppedForOverage;
       this._cancelAutoResume(inst.sessionId);
       if (wasOverageStopped && this._overageActive) this._clearOverage();
@@ -1517,8 +1524,12 @@ export class InstanceManager extends EventEmitter {
 
   // Steer a conductor (never its workers) to halt the work it's conducting.
   // Mid-turn → windDown (visible, soft); idle+subscribed → inject a fresh
-  // prompt, same shape as the idle-subscription wake stub. Only the windDown
-  // (mid-turn) path arms resume — an idle conductor is being woken to act now.
+  // prompt, same shape as the idle-subscription wake stub. For `stop-resume`
+  // BOTH branches arm a resume: the conductor is the orchestrating brain, so
+  // resuming it after the window resets re-drives its workers (the protected
+  // worker is intentionally left un-armed). Resume is armed via the
+  // autoStoppedForOverage flag, which the status→idle handler turns into a
+  // per-session timer.
   _steerConductor(conductor, { resume, resetsAt }) {
     if (conductor.status === 'turn') {
       if (resume) {
@@ -1527,7 +1538,15 @@ export class InstanceManager extends EventEmitter {
       }
       conductor.windDown(OVERAGE_CONDUCTOR_STEER_TEXT);
     } else {
-      conductor.prompt(OVERAGE_CONDUCTOR_STEER_TEXT).catch(() => {});
+      // `internal:true` so the steer's user_prompt doesn't cancel the resume we
+      // arm next; set the flags AFTER the call regardless, so the steer turn's
+      // turn→idle transition arms the timer (same mechanism as the windDown
+      // branch above).
+      conductor.prompt(OVERAGE_CONDUCTOR_STEER_TEXT, [], { internal: true }).catch(() => {});
+      if (resume) {
+        conductor.autoStoppedForOverage = true;
+        conductor._overageResetsAt = resetsAt;
+      }
     }
     conductor._emitUi({ kind: 'system', subtype: 'auto_stop_overage', data: { resume, resetsAt, steered: true } });
   }
