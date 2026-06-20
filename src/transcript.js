@@ -33,8 +33,9 @@ export function isPureUserPromptLine(obj) {
   if (obj.isSidechain) return false;
   if (obj.type === 'user') {
     const content = obj.message?.content;
-    // Hidden soft-interrupt steer never produced a visible bubble — don't
-    // count it, or fork/rewind indices would drift past the user_echo count.
+    // Soft-interrupt steer never produces a user_echo bubble (it renders as a
+    // system/soft_interrupted annotation instead) — don't count it, or
+    // fork/rewind indices would drift past the user_echo count.
     if (isSoftInterruptContent(content)) return false;
     if (typeof content === 'string') return content.length > 0;
     if (!Array.isArray(content)) return false;
@@ -43,7 +44,7 @@ export function isPureUserPromptLine(obj) {
   if (obj.type === 'attachment' && obj.attachment?.type === 'queued_command') {
     const prompt = obj.attachment.prompt;
     if (!Array.isArray(prompt)) return false;
-    if (isSoftInterruptContent(prompt)) return false; // hidden soft-interrupt steer
+    if (isSoftInterruptContent(prompt)) return false; // system annotation, not a user_echo
     return prompt.some((b) => b && b.type === 'text' && typeof b.text === 'string' && b.text.length > 0);
   }
   return false;
@@ -78,8 +79,11 @@ export function replayPersistedLine(obj, { seqHint = 0, parentToolUseId = null, 
   if (obj.type === 'user') {
     const msg = obj.message ?? {};
     const content = msg.content;
-    // Hidden soft-interrupt steer — never rendered live, never replayed.
-    if (isSoftInterruptContent(content)) return tagAndReturn();
+    // Soft-interrupt steer — show as a system annotation, not a user bubble.
+    if (isSoftInterruptContent(content)) {
+      events.push({ kind: 'system', subtype: 'soft_interrupted' });
+      return tagAndReturn();
+    }
     if (typeof content === 'string') {
       events.push({ kind: 'user_echo', text: content });
       return tagAndReturn();
@@ -103,7 +107,10 @@ export function replayPersistedLine(obj, { seqHint = 0, parentToolUseId = null, 
     // string `prompt` — they never produced a user_echo live, so skip.
     const prompt = obj.attachment.prompt;
     if (!Array.isArray(prompt)) return tagAndReturn();
-    if (isSoftInterruptContent(prompt)) return tagAndReturn(); // hidden soft-interrupt steer
+    if (isSoftInterruptContent(prompt)) {
+      events.push({ kind: 'system', subtype: 'soft_interrupted' });
+      return tagAndReturn();
+    }
     // queued_command prompts are orchestrator-authored text blocks (no
     // tool_result), so consolidateUserContent emits just the one user_echo.
     for (const ev of consolidateUserContent(prompt)) events.push(ev);

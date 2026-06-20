@@ -281,9 +281,9 @@ export class Parser {
   _handleUser(obj) {
     const msg = obj.message ?? {};
     const content = msg.content;
-    // Defensive: if the CLI ever echoes the hidden soft-interrupt steer
-    // back on stdout, drop it so it never renders as a user bubble.
-    if (isSoftInterruptContent(content)) return [];
+    // If the CLI echoes the soft-interrupt steer back on stdout, surface it
+    // as a system annotation so the user can see a stop was requested.
+    if (isSoftInterruptContent(content)) return [{ kind: 'system', subtype: 'soft_interrupted' }];
     if (typeof content === 'string') {
       return [{ kind: 'user_echo', text: content }];
     }
@@ -319,13 +319,13 @@ export class Parser {
 const IMG_EXT = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp']);
 const ATT_LINE_RE = /^Attached file:\s*`([^`]*?\/\.code-conductor\/[^`]+?\/attachments\/[^`]+)`\s*$/;
 
-// Sentinel prefix on the hidden steering message a SOFT interrupt injects
-// mid-turn (Instance.interrupt() without force). The CLI persists the
-// injected prompt to the session jsonl — as a `type:"user"` line live, or a
+// Sentinel on the steering message a SOFT interrupt injects mid-turn
+// (Instance.interrupt() without force). The CLI persists the injected prompt
+// to the session jsonl — as a `type:"user"` line live, or a
 // `type:"attachment"` queued_command line when received mid-turn — so this
 // marker lets the live parser, the transcript replay, and the rewind/fork
-// prompt-counter all recognise and skip it. It must never render as a user
-// bubble or shift the user-message index.
+// prompt-counter all recognise it. It renders as a `system/soft_interrupted`
+// annotation rather than a user bubble, and never shifts the user-message index.
 export const SOFT_INTERRUPT_MARKER = '[[cc:soft-interrupt]]';
 
 // True when a user-message `content` (string or block array) or a
