@@ -284,20 +284,21 @@ export class ToolUseBlock {
     this._renderBody();
   }
 
-  finalizeInput(input) {
+  finalizeInput(input, startedAt) {
     this.input = input;
     this.status = 'running';
-    this._startedAt = Date.now();
+    this._startedAt = startedAt ?? Date.now();
     this._timer = setInterval(() => this._renderSummary(), 1000);
     this._timer?.unref?.();
     this._renderSummary();
     this._renderBody();
   }
 
-  attachResult(resultBlock) {
+  attachResult(resultBlock, finishedAt) {
     if (this._timer) { clearInterval(this._timer); this._timer = null; }
     if (this._startedAt) {
-      const s = Math.floor((Date.now() - this._startedAt) / 1000);
+      const endMs = finishedAt ?? Date.now();
+      const s = Math.floor((endMs - this._startedAt) / 1000);
       this._doneElapsed = s > 0 ? formatElapsed(s * 1000) : null;
     }
     this.node.appendChild(resultBlock.node);

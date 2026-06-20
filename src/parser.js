@@ -211,6 +211,7 @@ export class Parser {
             toolUseId: block.toolUseId,
             name: block.name,
             input,
+            startedAt: Date.now(),
           }];
           // AskUserQuestion gets a structured UI event so the conversation
           // view can render the questions as buttons. The CLI in stream-json
@@ -389,6 +390,7 @@ export function consolidateUserContent(contentBlocks) {
         toolUseId: block.tool_use_id ?? null,
         content: block.content ?? '',
         isError: !!block.is_error,
+        finishedAt: Date.now(),
       });
     } else if (block.type === 'text') {
       if (typeof block.text !== 'string') continue;

@@ -432,14 +432,14 @@ export class Conversation {
     }
     if (block) {
       block.setName(ev.name);
-      block.finalizeInput(ev.input);
+      block.finalizeInput(ev.input, ev.startedAt);
     }
   }
 
   _renderToolResult(ev) {
     const block = this.toolBlocks.get(ev.toolUseId);
     const result = new ToolResultBlock(ev);
-    if (block) block.attachResult(result);
+    if (block) block.attachResult(result, ev.finishedAt);
     else {
       const wrap = this._ensureMessageWrap(null, 'assistant');
       wrap.body.appendChild(result.node);
