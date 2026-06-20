@@ -20,7 +20,7 @@ That's it — nothing to install in `code-conductor/debug/` itself. Imports reso
 Boot a sandboxed scratch orchestrator, snap, tear down — one process:
 
 ```bash
-cd ~/project/code-conductor/debug
+cd code-conductor/debug
 node snap.mjs --boot ./home.png
 # [boot] http://127.0.0.1:<ephemeral>
 # ./home.png   (PNG, headless, viewport 1280×800)
@@ -62,4 +62,4 @@ The sibling harness's "[growing the harness while debugging](../../termux-playwr
 
 ## Why no Playwright test runner?
 
-The project's existing test suite (`tests/`, node:test) covers unit + integration. This harness exists for *visual* verification — eyes on a screenshot, or interactive scripting — which the headless test runner doesn't help with. If a Playwright assertion is ever worth committing, fold it into `tests/` rather than growing a second runner here.
+Visual-only — eyes on a screenshot / interactive scripting, which the headless `tests/` (node:test) runner can't do. Commit any reusable Playwright assertion into `tests/` rather than growing a second runner here.

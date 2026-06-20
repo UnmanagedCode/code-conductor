@@ -7,21 +7,7 @@ on server startup** via `migrations/index.mjs`, which is invoked by
 
 ## How auto-run works
 
-`server.js` calls `runMigrations({ root: projectsRoot() })` once at boot:
-
-- Each migration runs in order (oldest first).
-- A migration that detects "already applied" returns
-  `{ applied: false }` and exits in a few milliseconds — the normal case on
-  every boot after the first.
-- A migration that does real work returns `{ applied: true, summary }` and
-  the runner logs a one-line summary like
-  `migration 0001-centralize-orchestrator-state: applied — {"projectsMigrated":3,...}`.
-- A migration that throws **aborts the boot**. Fix the error and restart.
-
-## When to apply a migration
-
-You don't — they apply themselves the next time you start the server. If a
-release ships with a new migration, just `git pull && npm start`.
+`server.js` calls `runMigrations({ root: projectsRoot() })` once at boot. Migrations run in order (oldest first); each self-checks "already applied?" and returns `{ applied: false }` as a fast no-op (steady state) or `{ applied: true, summary }` (logged one-line, e.g. `migration 0001-centralize-orchestrator-state: applied — {…}`). A migration that **throws aborts the boot** — fix and restart. You never run them by hand; a new release's migration applies itself on the next `git pull && npm start`.
 
 ## Adding a new migration
 
@@ -47,8 +33,8 @@ release ships with a new migration, just `git pull && npm start`.
 - **Don't destroy data you can't reconstruct.** When in doubt, move
   artifacts into `<root>/.code-conductor/migrated-backup-<stamp>/...`
   instead of `rm`-ing them.
-- **Respect `PROJECTS_ROOT`.** The runner passes `root` in — never hard-
-  code `~/cc-projects` or `~/project`.
+- **Respect `PROJECTS_ROOT`.** The runner passes `root` in — never hard-code
+  an absolute projects-root path (e.g. a home-anchored `~/…`).
 
 ## Running outside the server
 

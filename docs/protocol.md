@@ -13,6 +13,8 @@ claude -p \
   --session-id <fresh-uuid> | --resume <existing-uuid>
 ```
 
+The `--mcp-config` line is omitted when `ORCH_DISABLE_MCP_AUTOREGISTER=1` (no MCP toolbelt auto-registered into the spawned process).
+
 `--allow-dangerously-skip-permissions` is **always** passed at spawn — even for `plan`-mode instances — because without it the CLI rejects any later runtime `set_permission_mode bypassPermissions` (i.e. the plan-approve flow). The flag only *permits* the switch; it doesn't activate bypass on its own.
 
 Two `PreToolUse` hooks via inline `--settings` JSON:
@@ -77,7 +79,7 @@ Outbound: `system` + `subtype:"init"` (bundled with first turn's response, not a
 | `DELETE` | `/api/instances/:id` | SIGTERM + remove. |
 | `POST` | `/api/instances/:id/promote` | Promote a live temp session to a normal one: flips `instance.temp = false`, writes `last-prompt` + `permission-mode` so `claude --resume`'s picker can find it, emits `status` so the sidebar moves the row above the `— temp —` separator. 400 if not temp, 404 unknown id. |
 | `POST` | `/api/instances/:id/debug` | Flip debug capture **ON** for a running instance (idempotent — `alreadyOn:true`). **No "off" endpoint** — kill the instance to stop. |
-| `POST` | `/api/instances/:id/sync` | Returns `action: already-in-sync | fast-forwarded | rebase-prompt-sent`. FF runs server-side; rebase sends templated prompt to the live agent. 400 if no worktree; `ok:false, reason:"…not running…"` if instance is dead. |
+| `POST` | `/api/instances/:id/sync` | Returns `action: already-in-sync | fast-forwarded | rebase-prompt-sent`. FF runs server-side; rebase sends templated prompt to the live agent. 400 if no worktree; for a dead instance returns a prose `ok:false, reason:"…not running…"` with **no stable `code`** — unlike the MCP `sync_worktree` path, which soft-refuses `{ok:false, code:'SESSION_NOT_LIVE'}` (cross-surface contract gap). |
 | `POST` | `/api/instances/:id/merge` | Parent-side merge. Refusals return 200 with `ok:false, reason` so the UI can render inline. |
 | `GET` | `/api/projects/:name/worktrees` | List with metadata. |
 | `GET` | `/api/projects/:name/worktrees/:wt/sessions` | Worktree-scoped session list. |
@@ -136,11 +138,11 @@ Mounted at `POST /mcp` (Streamable HTTP, JSON-RPC 2.0). Tools are listed in [fea
 | `read_file` | `{path, size, truncated, encoding, lineCount, lineCountExact, startLine?, endLine?}` | one block: utf8 file text, or base64 (binary) |
 | `get_worktree_diff` (diff mode) | `{project, worktree, baseRef, head:<sha>, contextLines, offset, truncated, nextOffset, totalLines, totalBytes, includedFiles?, omittedFiles?}` | one block: raw unified diff (empty string when no diff) |
 | `get_worktree_diff` (summary mode) | single JSON block `{project, worktree, baseRef, head:<sha>, summary:true, totals, files[]}` | — |
-| `get_recent_messages` | `{id, messages:[{index, msgId, hasToolUse, textChars, textTruncated, plan?, questions?, blocks?}], source:"ring"\|"disk", omittedToolOnly, retained:{firstSeq,lastSeq,trimmed}, hint?}` | one raw prose block **per message**, block k+1 ↔ messages[k] (empty for plan/question-only) |
+| `get_recent_messages` | `{sessionId, messages:[{index, msgId, hasToolUse, textChars, textTruncated, plan?, questions?, blocks?}], source:"ring"\|"disk", omittedToolOnly, retained:{firstSeq,lastSeq,trimmed}, hint?}` | one raw prose block **per message**, block k+1 ↔ messages[k] (empty for plan/question-only) |
 
 **Annotations.** `tools/list` entries carry `annotations`: `readOnlyHint` (all `list_*`, `read_file`, `project_status`, `get_*`, `locate_session`), `destructiveHint` (`kill_instance`, `delete_worktree`, `merge_worktree`), `idempotentHint` (`set_mode`, `set_auto_approve_plan`, `set_project_workspace`, `unsubscribe_from_idle`, `create_workspace`, `delete_workspace`, `rename_workspace`, `kill_instance`).
 
-**`ok` / refusals.** `ok` is reserved for **soft refusals** only. Acknowledgement tools (`send_prompt`, `kill_instance`, `subscribe_to_idle`/`unsubscribe_from_idle`, `approve_plan`/`reject_plan`, `set_auto_approve_plan`, the workspace tools, `set_project_workspace`, `delete_worktree` success) return bare data with **no `ok`**. Expected business refusals return `{ok:false, reason, code}` and are **not thrown**, with stable codes: `WORKTREE_ATTACHED`, `WORKTREE_DIRTY` (`delete_worktree`); `INSTANCE_NOT_RUNNING` (`sync_worktree`); `WORKTREE_BEHIND`, `BASE_BRANCH_MISMATCH`, `PARENT_DIRTY`, `MERGE_FAILED` (`merge_worktree`). The only constant `ok:true` is `merge_worktree`/`sync_worktree` success (shape shared with the REST land endpoints).
+**`ok` / refusals.** `ok` is reserved for **soft refusals** only. Acknowledgement tools (`send_prompt`, `kill_instance`, `subscribe_to_idle`/`unsubscribe_from_idle`, `approve_plan`/`reject_plan`, `set_auto_approve_plan`, the workspace tools, `set_project_workspace`, `delete_worktree` success) return bare data with **no `ok`**. Expected business refusals return `{ok:false, reason, code}` and are **not thrown**, with stable codes: `WORKTREE_ATTACHED`, `WORKTREE_DIRTY` (`delete_worktree`); `SESSION_NOT_LIVE` / `SESSION_UNKNOWN` (`sync_worktree` and every worker-addressing tool, from strict-live resolution); `WORKTREE_BEHIND`, `BASE_BRANCH_MISMATCH`, `PARENT_DIRTY`, `MERGE_FAILED` (`merge_worktree`). The only constant `ok:true` is `merge_worktree`/`sync_worktree` success (shape shared with the REST land endpoints).
 
 **Errors.** True faults are caught and returned `isError:true` as a prose block — `<message> (HTTP <statusCode>)` when the handler set a `statusCode` — followed by a structured `{error, code, statusCode}` block. `code` derives from `statusCode` (`400→BAD_REQUEST`, `404→NOT_FOUND`, `409→CONFLICT`, `500→INTERNAL`). Example sources: `locate_session`/`read_file` 404, invalid `baseRef`/`promote_session` non-temp 400.
 
