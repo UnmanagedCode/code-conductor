@@ -92,6 +92,21 @@ function isOverageEvent(data) {
   return data?.rate_limit_info?.isUsingOverage === true
       || data?.isUsingOverage === true;
 }
+
+// Normalise the rate-limit window reset time to epoch SECONDS, or null.
+// The canonical field across the codebase is the snake_case `resets_at`, which
+// the account-usage payload delivers as an ISO-8601 string (see header.js's
+// `new Date(bucket.resets_at)`). Also accept the camelCase `resetsAt` and a
+// raw epoch number for forward/back compatibility. The overage auto-resume
+// timer (overageResume.js arm()) and the global clear timer both expect epoch
+// seconds, so this is the single place the shape is reconciled.
+function parseResetEpochSecs(info) {
+  const v = info?.resets_at ?? info?.resetsAt ?? null;
+  if (v == null) return null;
+  if (typeof v === 'number') return Number.isFinite(v) ? v : null; // already epoch secs
+  const ms = Date.parse(v);                                        // ISO-8601 string
+  return Number.isFinite(ms) ? Math.floor(ms / 1000) : null;
+}
 // Start fresh instances in read-only plan mode by default. The user can pick
 // `ask` or `code` (= bypassPermissions) in the new-instance dialog, or
 // approve a plan to flip the running instance to bypassPermissions
@@ -709,7 +724,7 @@ export class Instance extends EventEmitter {
       if (ev.kind === 'system' && ev.subtype === 'rate_limit_event'
           && !this._overageHandled && this._isOverageTrip(ev.data)) {
         this._overageHandled = true;
-        const resetsAt = ev.data?.rate_limit_info?.resetsAt ?? ev.data?.resetsAt ?? null;
+        const resetsAt = parseResetEpochSecs(ev.data?.rate_limit_info) ?? parseResetEpochSecs(ev.data);
         this.emit('overage', { resetsAt });
       }
     }
