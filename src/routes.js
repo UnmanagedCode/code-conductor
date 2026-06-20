@@ -37,6 +37,7 @@ import {
   getTranscribeModel, setTranscribeModel, getModelVersion, setModelVersion,
   getTtsEnabled, setTtsEnabled, getTtsVoice, setTtsVoice, getTtsRate, setTtsRate,
   getOnOverageAction, setOnOverageAction,
+  getOverageThreshold, setOverageThreshold,
   getConductorCompactWindow, setConductorCompactWindow,
   getSonnetContextWindow, setSonnetContextWindow,
   getEnabledFamilies, setFamilyEnabled,
@@ -939,6 +940,7 @@ export function buildRoutes({ instances, serverCtx } = {}) {
       active[f.family] = getModelVersion(f.family) || f.default;
     }
     return { families: MODEL_FAMILIES, active, onOverage: getOnOverageAction(),
+      overageThreshold: getOverageThreshold(),
       conductorCompactWindow: getConductorCompactWindow(),
       sonnetContextWindow: getSonnetContextWindow(),
       enabledFamilies: getEnabledFamilies(),
@@ -966,9 +968,10 @@ export function buildRoutes({ instances, serverCtx } = {}) {
 
   r.post('/settings/models/prefs', async (req, res, next) => {
     try {
-      const { onOverage, conductorCompactWindow, sonnetContextWindow,
+      const { onOverage, overageThreshold, conductorCompactWindow, sonnetContextWindow,
               familyEnabled, defaultSpawnFamily } = req.body ?? {};
       if (typeof onOverage === 'string') await setOnOverageAction(onOverage);
+      if (overageThreshold !== undefined) await setOverageThreshold(overageThreshold);
       if (conductorCompactWindow !== undefined) await setConductorCompactWindow(conductorCompactWindow);
       if (sonnetContextWindow !== undefined) await setSonnetContextWindow(sonnetContextWindow);
       if (familyEnabled !== undefined) {

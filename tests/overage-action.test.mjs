@@ -14,7 +14,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { bootServer, api, waitFor } from './helpers.mjs';
-import { setOnOverageAction } from '../src/appSettings.js';
+import { setOnOverageAction, setOverageThreshold } from '../src/appSettings.js';
 import { AUTO_RESUME_TEXT } from '../src/instances.js';
 
 const nowSec = () => Math.floor(Date.now() / 1000);
@@ -27,6 +27,15 @@ const RESULT = { type: 'result', subtype: 'success', stop_reason: 'end_turn',
 function overageEvent({ resetsAt } = {}) {
   const info = { isUsingOverage: true };
   if (resetsAt !== undefined) info.resetsAt = resetsAt;
+  return { type: 'system', subtype: 'rate_limit_event', uuid: 'rl-1', rate_limit_info: info };
+}
+
+// A rate_limit_event with NO hard overage flag — only a utilization fraction
+// (and optional window type). Used to exercise the optional usage threshold.
+function utilEvent({ util, resetsAt, rateLimitType } = {}) {
+  const info = { utilization: util };
+  if (resetsAt !== undefined) info.resetsAt = resetsAt;
+  if (rateLimitType !== undefined) info.rateLimitType = rateLimitType;
   return { type: 'system', subtype: 'rate_limit_event', uuid: 'rl-1', rate_limit_info: info };
 }
 
@@ -151,6 +160,168 @@ test('onOverage "stop-resume": missing/past resetsAt is skipped, not armed', asy
   assert.match(sub(evs, 'auto_resume_skipped')[0].data.reason, /resetsAt/);
   assert.equal(inst.autoResumeAt, null, 'nothing armed');
   assert.equal(ctx.instances._autoResumeTimers.size, 0);
+});
+
+// ── Optional usage threshold (window-agnostic) ───────────────────────────
+
+test('threshold enabled: a utilization>=pct event trips even without isUsingOverage', async () => {
+  await boot(scenario([utilEvent({ util: 0.9, resetsAt: nowSec() + 1 }), RESULT]), 'stop');
+  await setOverageThreshold({ enabled: true, value: 85 });
+  const inst = await spawnIdle();
+  const evs = collect(inst);
+  inst.prompt('go');
+  await waitFor(() => sub(evs, 'auto_stop_overage').length > 0);
+  assert.equal(sub(evs, 'auto_stop_overage')[0].data.resume, false, 'plain stop');
+  await waitFor(() => inst.status === 'idle');
+  assert.equal(inst.proc != null, true, 'session not killed');
+});
+
+test('threshold DISABLED: a utilization-only event (no hard flag) is ignored', async () => {
+  await boot(scenario([utilEvent({ util: 0.95, resetsAt: nowSec() + 1 }), RESULT]), 'stop');
+  // threshold left off (default)
+  const inst = await spawnIdle();
+  const evs = collect(inst);
+  inst.prompt('go');
+  await waitFor(() => inst.status === 'idle' && sub(evs, 'init').length > 0);
+  assert.equal(sub(evs, 'auto_stop_overage').length, 0, 'no stop without the hard flag when threshold off');
+});
+
+test('threshold trip is window-agnostic: a seven_day event still trips', async () => {
+  await boot(scenario([utilEvent({ util: 0.92, resetsAt: nowSec() + 1, rateLimitType: 'seven_day' }), RESULT]), 'stop');
+  await setOverageThreshold({ enabled: true, value: 85 });
+  const inst = await spawnIdle();
+  const evs = collect(inst);
+  inst.prompt('go');
+  await waitFor(() => sub(evs, 'auto_stop_overage').length > 0);
+});
+
+test('threshold below the bar does not trip; the hard flag still trips regardless', async () => {
+  // utilization 0.6 < 0.85 ⇒ no threshold trip, AND no hard flag ⇒ nothing.
+  await boot(scenario([utilEvent({ util: 0.6, resetsAt: nowSec() + 1 }), RESULT]), 'stop');
+  await setOverageThreshold({ enabled: true, value: 85 });
+  const inst = await spawnIdle();
+  const evs = collect(inst);
+  inst.prompt('go');
+  await waitFor(() => inst.status === 'idle' && sub(evs, 'init').length > 0);
+  assert.equal(sub(evs, 'auto_stop_overage').length, 0, 'below threshold, no flag ⇒ no stop');
+});
+
+// ── Central routing: global flag + conductor-aware steering ───────────────
+
+// Shared scenario for routing tests. Text-matched turns let one scenario drive
+// differentiated behavior across instances loaded from the same fake-claude:
+//   prompt containing 'TRIP' → emit a hard overage event + result (the trigger)
+//   prompt containing 'STAY' → emit nothing (keeps that session mid-turn)
+//   any other prompt         → emit nothing (absorbs steer prompts / interrupts)
+// resetsAt is far in the future so the global clear timer can't fire mid-test.
+function routingScenario() {
+  return {
+    events: [INIT],
+    turns: [
+      { on: { type: 'prompt', text: 'TRIP' }, emit: [overageEvent({ resetsAt: nowSec() + 3600 }), RESULT] },
+      { on: { type: 'prompt', text: 'STAY' }, emit: [] },
+      { on: { type: 'prompt' }, emit: [] },
+      { on: { type: 'prompt' }, emit: [] },
+      { on: { type: 'prompt' }, emit: [] },
+      { on: { type: 'prompt' }, emit: [] },
+    ],
+  };
+}
+
+async function createInst(opts) {
+  const inst = await ctx.instances.create({ project: 'demo', mode: 'bypassPermissions', ...opts });
+  await waitFor(() => inst.status === 'idle');
+  return inst;
+}
+
+test('routing: conductor mid-turn → conductor is steered (windDown), worker untouched', async () => {
+  await boot(routingScenario(), 'stop');
+  const conductor = await createInst({});
+  const worker = await createInst({ conducted: true, callerInstanceId: conductor.id });
+  const cEvs = collect(conductor);
+  const wEvs = collect(worker);
+
+  // Put the conductor mid-turn first.
+  conductor.prompt('STAY');
+  await waitFor(() => conductor.status === 'turn');
+
+  // Worker trips overage.
+  worker.prompt('TRIP go');
+
+  // Conductor is steered; the steer notice carries steered:true.
+  await waitFor(() => sub(cEvs, 'auto_stop_overage').some(e => e.data.steered === true));
+  // windDown surfaces a visible user_echo with the steer instructions.
+  await waitFor(() => cEvs.some(e => e.kind === 'user_echo' && /interrupt_turn/.test(e.text || '')));
+  // Worker was NOT interrupted and got no stop notice.
+  await waitFor(() => worker.status === 'idle');
+  assert.equal(sub(wEvs, 'auto_stop_overage').length, 0, 'worker must not be stopped directly');
+  assert.equal(worker.interrupting, false, 'worker turn was not interrupted');
+});
+
+test('routing: conductor idle+subscribed → conductor is steered via injected prompt, worker untouched', async () => {
+  await boot(routingScenario(), 'stop');
+  const conductor = await createInst({});
+  const worker = await createInst({ conducted: true, callerInstanceId: conductor.id });
+  const cEvs = collect(conductor);
+  const wEvs = collect(worker);
+
+  // Conductor stays idle but is parked waiting on the worker (isIdleCaller).
+  ctx.instances.subscribeIdle(conductor.sessionId, worker.sessionId);
+  assert.equal(ctx.instances.isIdleCaller(conductor.sessionId), true);
+
+  worker.prompt('TRIP go');
+
+  await waitFor(() => sub(cEvs, 'auto_stop_overage').some(e => e.data.steered === true));
+  await waitFor(() => cEvs.some(e => e.kind === 'user_echo' && /interrupt_turn/.test(e.text || '')));
+  await waitFor(() => worker.status === 'idle');
+  assert.equal(sub(wEvs, 'auto_stop_overage').length, 0, 'worker must not be stopped directly');
+});
+
+test('routing: conducted worker with NO in-control conductor → fallback direct interrupt', async () => {
+  await boot(routingScenario(), 'stop');
+  const conductor = await createInst({});
+  const worker = await createInst({ conducted: true, callerInstanceId: conductor.id });
+  const wEvs = collect(worker);
+
+  // Conductor gone → no in-control owner → fallback path.
+  await ctx.instances.remove(conductor.id);
+
+  worker.prompt('TRIP go');
+  await waitFor(() => sub(wEvs, 'auto_stop_overage').length > 0);
+  assert.notEqual(sub(wEvs, 'auto_stop_overage')[0].data.steered, true, 'fallback is a direct stop, not a steer');
+});
+
+test('routing: global flag is one-shot while active; clears so it can trip again', async () => {
+  await boot(routingScenario(), 'stop');
+  const a = await createInst({});
+  const b = await createInst({});
+  const aEvs = collect(a);
+  const bEvs = collect(b);
+
+  a.prompt('TRIP go');
+  await waitFor(() => sub(aEvs, 'auto_stop_overage').length > 0);
+  assert.equal(ctx.instances._overageActive, true, 'flag set on first trip');
+
+  // Second instance trips while active → routing does not run for it.
+  b.prompt('TRIP go');
+  await waitFor(() => b.status === 'idle');
+  assert.equal(sub(bEvs, 'auto_stop_overage').length, 0, 'one-shot: no second routing while active');
+
+  // Clearing releases the flag and re-enables per-instance trip detection.
+  ctx.instances._clearOverage();
+  assert.equal(ctx.instances._overageActive, false);
+  assert.equal(a._overageHandled, false, 'per-instance throttle reset on clear');
+  assert.equal(b._overageHandled, false);
+});
+
+test('routing: action "none" never flips the global flag', async () => {
+  await boot(routingScenario(), 'none');
+  const inst = await createInst({});
+  const evs = collect(inst);
+  inst.prompt('TRIP go');
+  await waitFor(() => inst.status === 'idle' && sub(evs, 'init').length > 0);
+  assert.equal(ctx.instances._overageActive, false, 'none ⇒ no flag flip');
+  assert.equal(sub(evs, 'auto_stop_overage').length, 0, 'none ⇒ no routing');
 });
 
 test('stop-resume: a user prompt before the timer fires cancels the pending resume', async () => {

@@ -113,11 +113,24 @@ async function recordStdin(line) {
   await transcriptHandle.write(line + '\n');
 }
 
+// Extract the plain text of a user (prompt) input so a turn can optionally
+// match only prompts whose text contains a given substring (`on.text`). Lets a
+// single shared scenario drive differentiated behavior across instances
+// (e.g. one worker trips overage while its conductor stays mid-turn).
+function userText(input) {
+  const c = input?.message?.content;
+  if (typeof c === 'string') return c;
+  if (Array.isArray(c)) return c.map(p => (typeof p?.text === 'string' ? p.text : '')).join(' ');
+  return '';
+}
+
 function matchTurn(input) {
   for (let i = 0; i < turns.length; i++) {
     const t = turns[i];
     const on = t.on ?? {};
     if (on.type === 'prompt' && input.type === 'user') {
+      // Optional substring filter — when absent the turn matches any prompt.
+      if (on.text && !userText(input).includes(on.text)) continue;
       turns.splice(i, 1);
       return t;
     }

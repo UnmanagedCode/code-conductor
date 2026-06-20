@@ -279,3 +279,44 @@ export async function setConductorCompactWindow({ enabled, value }) {
   await writeSettings(next);
   return { enabled: !!enabled, value: snapped };
 }
+
+// Models group: optional usage-threshold overage trip (window-agnostic). When
+// enabled, the overage auto-stop also fires once any rate-limit window's
+// `utilization` crosses this percentage — before paid overage credits are
+// reached. Independent of (and additive to) the always-on `isUsingOverage`
+// hard-flag trip. Value is an integer percent, clamped+snapped to [50,99]
+// step 5. Off by default — strictly opt-in. Follows the conductorCompactWindow
+// opt-in precedent above.
+const OVERAGE_PCT_MIN     = 50;
+const OVERAGE_PCT_MAX     = 99;
+const OVERAGE_PCT_STEP    = 5;
+const OVERAGE_PCT_DEFAULT = 85;
+
+function snapOveragePct(p) {
+  const snapped = Math.round(p / OVERAGE_PCT_STEP) * OVERAGE_PCT_STEP;
+  return Math.max(OVERAGE_PCT_MIN, Math.min(OVERAGE_PCT_MAX, snapped));
+}
+
+export function getOverageThreshold() {
+  const s = loadSync();
+  return {
+    enabled: s.models?.overageThresholdEnabled ?? false,
+    value:   s.models?.overageThresholdPct     ?? OVERAGE_PCT_DEFAULT,
+  };
+}
+
+export async function setOverageThreshold({ enabled, value }) {
+  const n = Number(value);
+  const snapped = snapOveragePct(Number.isFinite(n) ? n : OVERAGE_PCT_DEFAULT);
+  const cur  = loadSync();
+  const next = {
+    ...cur,
+    models: {
+      ...(cur.models || {}),
+      overageThresholdEnabled: !!enabled,
+      overageThresholdPct:     snapped,
+    },
+  };
+  await writeSettings(next);
+  return { enabled: !!enabled, value: snapped };
+}

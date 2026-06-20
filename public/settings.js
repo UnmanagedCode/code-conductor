@@ -34,6 +34,10 @@ export function installSettings({
   const smCompactWindowRowEl     = document.getElementById('sm-compact-window-row');
   const smCompactWindowSliderEl  = document.getElementById('sm-compact-window');
   const smCompactWindowValEl     = document.getElementById('sm-compact-window-val');
+  const smOverageThreshEnabledEl = document.getElementById('sm-overage-threshold-enabled');
+  const smOverageThreshRowEl     = document.getElementById('sm-overage-threshold-row');
+  const smOverageThreshSliderEl  = document.getElementById('sm-overage-threshold');
+  const smOverageThreshValEl     = document.getElementById('sm-overage-threshold-val');
   // TTS group elements.
   const ttStatusEl = document.getElementById('tt-status');
   const ttListEl = document.getElementById('tt-voice-list');
@@ -361,6 +365,13 @@ export function installSettings({
       if (smCompactWindowValEl)    smCompactWindowValEl.textContent = `${cw.value}k`;
       if (smCompactWindowRowEl)    smCompactWindowRowEl.hidden = !cw.enabled;
     }
+    if (smOverageThreshEnabledEl) {
+      const ot = data.overageThreshold ?? { enabled: false, value: 85 };
+      smOverageThreshEnabledEl.checked = ot.enabled;
+      if (smOverageThreshSliderEl) smOverageThreshSliderEl.value = String(ot.value);
+      if (smOverageThreshValEl)    smOverageThreshValEl.textContent = `${ot.value}%`;
+      if (smOverageThreshRowEl)    smOverageThreshRowEl.hidden = !ot.enabled;
+    }
   }
 
   function labelFor(family, id) {
@@ -464,6 +475,14 @@ export function installSettings({
     if (smCompactWindowValEl) smCompactWindowValEl.textContent = `${smCompactWindowSliderEl.value}k`;
   });
   smCompactWindowSliderEl?.addEventListener('change', onSaveCompactWindow);
+  smOverageThreshEnabledEl?.addEventListener('change', () => {
+    if (smOverageThreshRowEl) smOverageThreshRowEl.hidden = !smOverageThreshEnabledEl.checked;
+    onSaveOverageThreshold();
+  });
+  smOverageThreshSliderEl?.addEventListener('input', () => {
+    if (smOverageThreshValEl) smOverageThreshValEl.textContent = `${smOverageThreshSliderEl.value}%`;
+  });
+  smOverageThreshSliderEl?.addEventListener('change', onSaveOverageThreshold);
   document.getElementById('sm-cost-dashboard-btn')?.addEventListener('click', () => {
     onOpenCostDashboard?.();
   });
@@ -476,6 +495,23 @@ export function installSettings({
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ conductorCompactWindow: { enabled, value } }),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+      renderModels(data);
+    } catch (e) {
+      if (smStatusEl) smStatusEl.textContent = `Update failed: ${e.message || e}`;
+    }
+  }
+
+  async function onSaveOverageThreshold() {
+    const enabled = smOverageThreshEnabledEl?.checked ?? false;
+    const value   = Number(smOverageThreshSliderEl?.value ?? 85);
+    try {
+      const r = await fetch('/api/settings/models/prefs', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ overageThreshold: { enabled, value } }),
       });
       const data = await r.json();
       if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
