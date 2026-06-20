@@ -13,7 +13,7 @@ import { isTemp, markTemp, unmarkTemp } from './tempSessions.js';
 import { markArchived } from './archivedSessions.js';
 import { CONDUCT_PROJECT_NAME } from './conduct.js';
 import { buildSettingsJSON, buildMcpConfigJSON } from './settings.js';
-import { getOnOverageAction, getConductorCompactWindow, getSonnetContextWindow } from './appSettings.js';
+import { getOnOverageAction, getOverageThreshold, getConductorCompactWindow, getSonnetContextWindow } from './appSettings.js';
 import { HookBroker } from './hookBroker.js';
 import { loadPersistedTranscript, writeSessionMetadata, readLastSessionModel } from './transcript.js';
 import { canonicalizeModel } from './modelVersions.js';
@@ -44,6 +44,19 @@ const VALID_MODES = new Set(['plan', 'ask', 'bypassPermissions']);
 // SOFT_INTERRUPT_MARKER at send time so it never renders / replays.
 const SOFT_INTERRUPT_TEXT =
   'Stop now. Do not make any more tool calls. End your turn immediately. And don\'t reply in any way.';
+
+// Steering message injected into a CONDUCTOR (not its workers) when an overage
+// auto-stop fires while the conductor is in control of conducted workers. The
+// orchestrator deliberately does NOT interrupt the workers directly — the
+// conductor owns them, so it must wind them down itself. Delivered mid-turn via
+// windDown(), or as a fresh prompt() when the conductor is idle+subscribed.
+const OVERAGE_CONDUCTOR_STEER_TEXT =
+  '⚠️ An overage auto-stop just fired: the account has crossed its rate-limit ' +
+  'threshold. STOP dispatching work and halt every worker you are conducting ' +
+  'now — for each live worker call `mcp__code-conductor__interrupt_turn` (or ' +
+  '`mcp__code-conductor__kill_instance` if it must be torn down), do not send ' +
+  'them any more prompts, and then end your own turn. Do not start new workers ' +
+  'until the rate-limit window has reset.';
 
 // Prepended to user messages delivered while the worker is mid-turn. Keeps
 // the user's text verbatim but gives the worker timing context: the message
@@ -664,32 +677,35 @@ export class Instance extends EventEmitter {
       }
       this._emitUi(ev);
       if (autoApproveFire) this._fireAutoApprovePlan();
-      // Action on overage: when this event signals the session crossed into
-      // paid overage credits, apply the configured action. `stop` and
-      // `stop-resume` share the identical soft-interrupt path; `stop-resume`
-      // additionally marks the instance so the manager arms a per-session
-      // resume timer on the next idle transition (see InstanceManager
-      // _armAutoResume). One-shot per run via _overageHandled.
+      // Action on overage: detect the trip here, but route it centrally. The
+      // Instance has no reference to the manager / idle-subscription graph, so
+      // it can't make a conductor-aware stop decision — it just SIGNALS the
+      // manager (`overage` emit), which owns the global one-shot flag and the
+      // routing (see InstanceManager._handleOverageTrip). `_overageHandled`
+      // throttles re-emits within a run; it's reset at spawn() and by the
+      // resume controller on cancel/skip. The trip fires on the always-on
+      // `isUsingOverage` hard flag OR the optional usage threshold (any window).
       if (ev.kind === 'system' && ev.subtype === 'rate_limit_event'
-          && isOverageEvent(ev.data) && !this._overageHandled) {
-        const action = getOnOverageAction();
-        if (action === 'stop' || action === 'stop-resume') {
-          this._overageHandled = true;
-          const resume = action === 'stop-resume';
-          let resetsAt = null;
-          if (resume) {
-            resetsAt = ev.data?.rate_limit_info?.resetsAt ?? ev.data?.resetsAt ?? null;
-            this.autoStoppedForOverage = true;
-            this._overageResetsAt = resetsAt;
-          }
-          this._emitUi({ kind: 'system', subtype: 'auto_stop_overage', data: { resume, resetsAt } });
-          // rate_limit_event only arrives mid-turn → interrupt always has a turn
-          // to wind down, and the manager arms the resume timer off the resulting
-          // turn→idle status transition.
-          this.interrupt().catch(() => {});
-        }
+          && !this._overageHandled && this._isOverageTrip(ev.data)) {
+        this._overageHandled = true;
+        const resetsAt = ev.data?.rate_limit_info?.resetsAt ?? ev.data?.resetsAt ?? null;
+        this.emit('overage', { resetsAt });
       }
     }
+  }
+
+  // True when a rate_limit_event should trip the overage auto-stop: the
+  // always-on `isUsingOverage` hard flag, OR (when the optional threshold is
+  // enabled) the event's `utilization` crossing the configured percentage —
+  // for WHICHEVER window the event reports (no rateLimitType filtering). The
+  // two triggers are independent; the hard flag fires regardless of the
+  // threshold setting.
+  _isOverageTrip(data) {
+    if (isOverageEvent(data)) return true;
+    const t = getOverageThreshold();
+    if (!t.enabled) return false;
+    const u = data?.rate_limit_info?.utilization;
+    return typeof u === 'number' && u >= t.value / 100;
   }
 
   _fireAutoApprovePlan() {
@@ -1078,6 +1094,15 @@ export class InstanceManager extends EventEmitter {
     this._idleHub = new IdleSubscriptionHub(this);
     this._overageResume = new OverageResumeController(this);
     this.on('event', (e) => this._idleHub.onTurnEnd(e));
+    // Global overage auto-stop state. The decision moved off the per-Instance
+    // handler (which can't reach the idle-subscription graph) up to here:
+    // `_overageActive` is a one-shot guard held from the first trip until the
+    // rate-limit window resets (or a manual resume), so routing runs exactly
+    // once per window. `_overageResetsAt` is the window reset (epoch secs) used
+    // to arm the clear timer and the per-session resume timers.
+    this._overageActive = false;
+    this._overageResetsAt = null;
+    this._overageClearTimer = null;
   }
 
   // Live backing maps exposed for the subsystems' callers (tests reach for
@@ -1279,8 +1304,19 @@ export class InstanceManager extends EventEmitter {
     });
 
     inst.on('event', (ev) => this.emit('event', { id, ev }));
-    // A user/MCP-driven turn cancels any pending overage auto-resume.
-    inst.on('user_prompt', () => this._cancelAutoResume(inst.sessionId));
+    // The Instance signals (rather than self-handles) an overage trip — central
+    // routing lives on the manager where the idle-subscription graph is reachable.
+    inst.on('overage', (info) => this._handleOverageTrip(inst, info));
+    // A user/MCP-driven turn cancels any pending overage auto-resume. If the
+    // turn is a manual takeover of an overage-stopped session, it also clears
+    // the global overage flag so the stop can trip again. Capture the flag
+    // BEFORE cancel (which resets it); the idle-conductor steer-prompt path
+    // never sets autoStoppedForOverage, so it can't self-clear here.
+    inst.on('user_prompt', () => {
+      const wasOverageStopped = inst.autoStoppedForOverage;
+      this._cancelAutoResume(inst.sessionId);
+      if (wasOverageStopped && this._overageActive) this._clearOverage();
+    });
     inst.on('status', (summary) => {
       this.emit('status', summary);
       // Overage auto-resume: arm the per-session timer on the idle transition
@@ -1322,6 +1358,120 @@ export class InstanceManager extends EventEmitter {
   _runAutoResume(inst, sid) { return this._overageResume.run(inst, sid); }
   _fireAutoResumeNow(sessionId) { return this._overageResume.fireNow(sessionId); }
   _cancelAutoResume(sessionId) { return this._overageResume.cancel(sessionId); }
+
+  // ---- Global overage auto-stop routing -----------------------------------
+  // The central handler an Instance's `overage` signal lands in. One-shot per
+  // rate-limit window via `_overageActive`. Honours getOnOverageAction():
+  // 'none' does nothing at all (no flag flip, no routing). Otherwise it flips
+  // the flag, routes the stop across every live instance, and arms the clear
+  // timer so the flag releases when the window resets.
+  _handleOverageTrip(inst, info) {
+    const action = getOnOverageAction();
+    if (action === 'none') return;          // no flag flip, no routing
+    if (this._overageActive) return;        // one-shot while active
+    this._overageActive = true;
+    this._overageResetsAt = info?.resetsAt ?? null;
+    const resume = action === 'stop-resume';
+    this._routeOverageStop({ resume, resetsAt: this._overageResetsAt });
+    this._armOverageClear(this._overageResetsAt);
+  }
+
+  // Route a single overage stop across all live instances. Steer-first: a
+  // conductor that owns an in-control conducted worker is steered to halt its
+  // own workers (and the worker is left untouched), which takes precedence over
+  // the generic direct-interrupt — otherwise a mid-turn conductor would be
+  // plain-interrupted as an "active session" before it could be told to stop
+  // its workers. Everything else still mid-turn gets a direct soft-interrupt.
+  _routeOverageStop({ resume, resetsAt }) {
+    const live = [...this.byId.values()].filter(i => i.proc);
+    // Pass 1: resolve which conductors to steer and which workers they protect.
+    const steerConductors = new Map();  // conductor id → conductor instance
+    const protectedWorkers = new Set(); // worker ids owned by a steered conductor
+    for (const inst of live) {
+      if (!inst.conducted) continue;
+      const conductor = this._ownerConductor(inst);
+      const inControl = conductor && conductor.proc &&
+        (conductor.status === 'turn' || this.isIdleCaller(conductor.sessionId));
+      if (inControl) {
+        steerConductors.set(conductor.id, conductor);
+        protectedWorkers.add(inst.id);
+      }
+    }
+    // Pass 2: steer each in-control conductor once.
+    for (const conductor of steerConductors.values()) {
+      this._steerConductor(conductor, { resume, resetsAt });
+    }
+    // Pass 3: direct-stop every other mid-turn instance — plain sessions, a
+    // conductor with no in-control workers (incl. one that tripped itself), and
+    // conducted workers with NO in-control conductor (dead / idle-unsubscribed
+    // → fallback). Skips steered conductors and the workers they own.
+    for (const inst of live) {
+      if (steerConductors.has(inst.id) || protectedWorkers.has(inst.id)) continue;
+      if (inst.status === 'turn') this._directOverageStop(inst, { resume, resetsAt });
+    }
+  }
+
+  // The owning conductor of a conducted worker: callerInstanceId is the
+  // conductor's instanceId, mapped back through the live registry. Its
+  // sessionId is what isIdleCaller() keys on. Null when the conductor is gone.
+  _ownerConductor(worker) {
+    return (worker.callerInstanceId && this.byId.get(worker.callerInstanceId)) || null;
+  }
+
+  // Direct soft-interrupt path (the preserved pre-refactor behavior). For
+  // stop-resume, mark the instance so the status handler arms its per-session
+  // resume timer on the resulting turn→idle transition.
+  _directOverageStop(inst, { resume, resetsAt }) {
+    if (resume) {
+      inst.autoStoppedForOverage = true;
+      inst._overageResetsAt = resetsAt;
+    }
+    inst._emitUi({ kind: 'system', subtype: 'auto_stop_overage', data: { resume, resetsAt } });
+    inst.interrupt().catch(() => {});
+  }
+
+  // Steer a conductor (never its workers) to halt the work it's conducting.
+  // Mid-turn → windDown (visible, soft); idle+subscribed → inject a fresh
+  // prompt, same shape as the idle-subscription wake stub. Only the windDown
+  // (mid-turn) path arms resume — an idle conductor is being woken to act now.
+  _steerConductor(conductor, { resume, resetsAt }) {
+    if (conductor.status === 'turn') {
+      if (resume) {
+        conductor.autoStoppedForOverage = true;
+        conductor._overageResetsAt = resetsAt;
+      }
+      conductor.windDown(OVERAGE_CONDUCTOR_STEER_TEXT);
+    } else {
+      conductor.prompt(OVERAGE_CONDUCTOR_STEER_TEXT).catch(() => {});
+    }
+    conductor._emitUi({ kind: 'system', subtype: 'auto_stop_overage', data: { resume, resetsAt, steered: true } });
+  }
+
+  // Arm the global clear: release `_overageActive` when the rate-limit window
+  // resets, so a later overage can trip again. Covers the plain-`stop` case
+  // (no resume timer) and is the backstop for stop-resume too. Skips when
+  // resetsAt is missing/past (the flag then clears only on manual resume).
+  // ORCH_OVERAGE_RESUME_BUFFER_MS doubles as the test seam (shared with the
+  // resume controller) so tests don't sleep out the wall clock.
+  _armOverageClear(resetsAt) {
+    if (this._overageClearTimer) { clearTimeout(this._overageClearTimer); this._overageClearTimer = null; }
+    const atMs = Number(resetsAt) * 1000; // epoch seconds → ms
+    if (!Number.isFinite(atMs)) return;
+    const envBuf = Number(process.env.ORCH_OVERAGE_RESUME_BUFFER_MS);
+    const bufMs = Number.isFinite(envBuf) ? envBuf : 5000;
+    const delay = Math.max(0, atMs + bufMs - Date.now());
+    this._overageClearTimer = setTimeout(() => this._clearOverage(), delay);
+  }
+
+  // Release the global overage one-shot and re-enable per-instance trip
+  // detection. Called by the clear timer (window reset) and on manual resume of
+  // an overage-stopped session.
+  _clearOverage() {
+    if (this._overageClearTimer) { clearTimeout(this._overageClearTimer); this._overageClearTimer = null; }
+    this._overageActive = false;
+    this._overageResetsAt = null;
+    for (const inst of this.byId.values()) inst._overageHandled = false;
+  }
 
   async respawn(id) {
     const inst = this.byId.get(id);
@@ -1374,6 +1524,7 @@ export class InstanceManager extends EventEmitter {
   }
 
   async shutdown() {
+    if (this._overageClearTimer) { clearTimeout(this._overageClearTimer); this._overageClearTimer = null; }
     this._overageResume.clearAll();
     const all = [...this.byId.values()];
     this.byId.clear();

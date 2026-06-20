@@ -10,6 +10,7 @@ import {
 import {
   getModelVersion, setModelVersion, getTranscribeModel, setTranscribeModel,
   getOnOverageAction, setOnOverageAction,
+  getOverageThreshold, setOverageThreshold,
   getConductorCompactWindow, setConductorCompactWindow,
   getSonnetContextWindow, setSonnetContextWindow,
   getEnabledFamilies, setFamilyEnabled,
@@ -334,6 +335,73 @@ test('appSettings: setConductorCompactWindow does not clobber onOverage or model
       assert.equal(getConductorCompactWindow().value, 400);
     });
   } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+// ── overageThreshold ────────────────────────────────────────────────────
+test('appSettings: getOverageThreshold defaults {enabled:false,value:85} when unset', async () => {
+  const root = await mkTmp();
+  try {
+    await withEnv({ PROJECTS_ROOT: root }, async () => {
+      const t = getOverageThreshold();
+      assert.equal(t.enabled, false);
+      assert.equal(t.value, 85);
+    });
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test('appSettings: setOverageThreshold clamps+snaps to [50,99] step 5', async () => {
+  const root = await mkTmp();
+  try {
+    await withEnv({ PROJECTS_ROOT: root }, async () => {
+      assert.equal((await setOverageThreshold({ enabled: true, value: 47 })).value, 50); // clamp low + snap
+      assert.equal((await setOverageThreshold({ enabled: true, value: 100 })).value, 99); // clamp high
+      assert.equal((await setOverageThreshold({ enabled: true, value: 83 })).value, 85); // snap to step 5
+      assert.equal((await setOverageThreshold({ enabled: true, value: 72 })).value, 70); // snap down
+      const t = getOverageThreshold();
+      assert.equal(t.enabled, true);
+      assert.equal(t.value, 70);
+    });
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test('appSettings: setOverageThreshold does not clobber onOverage or compact window', async () => {
+  const root = await mkTmp();
+  try {
+    await withEnv({ PROJECTS_ROOT: root, CLAUDE_CODE_AUTO_COMPACT_WINDOW: undefined }, async () => {
+      await setOnOverageAction('stop');
+      await setConductorCompactWindow({ enabled: true, value: 400 });
+      await setOverageThreshold({ enabled: true, value: 90 });
+      assert.equal(getOnOverageAction(), 'stop');
+      assert.equal(getConductorCompactWindow().value, 400);
+      assert.equal(getOverageThreshold().value, 90);
+    });
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test('GET /api/settings/models includes overageThreshold defaulting {enabled:false}', async () => {
+  {  // shared server (before/after) + fresh PROJECTS_ROOT per test (beforeEach)
+    const r = await api(baseUrl, 'GET', '/api/settings/models');
+    assert.equal(r.status, 200);
+    assert.ok('overageThreshold' in r.body, 'overageThreshold must be present');
+    assert.equal(r.body.overageThreshold.enabled, false);
+    assert.equal(typeof r.body.overageThreshold.value, 'number');
+  }
+});
+
+test('POST /api/settings/models/prefs saves overageThreshold (clamp/snap) without clobbering onOverage', async () => {
+  {  // shared server (before/after) + fresh PROJECTS_ROOT per test (beforeEach)
+    await api(baseUrl, 'POST', '/api/settings/models/prefs', { onOverage: 'stop' });
+    const r = await api(baseUrl, 'POST', '/api/settings/models/prefs', {
+      overageThreshold: { enabled: true, value: 83 },
+    });
+    assert.equal(r.status, 200);
+    assert.equal(r.body.overageThreshold.enabled, true);
+    assert.equal(r.body.overageThreshold.value, 85, '83 snaps to 85');
+    assert.equal(r.body.onOverage, 'stop', 'onOverage must not be clobbered');
+    const g = await api(baseUrl, 'GET', '/api/settings/models');
+    assert.equal(g.body.overageThreshold.enabled, true);
+    assert.equal(g.body.overageThreshold.value, 85);
+  }
 });
 
 test('GET /api/settings/models includes conductorCompactWindow defaulting {enabled:false}', async () => {

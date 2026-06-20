@@ -142,6 +142,14 @@
                 <button type="button" class="qs-mode-opt" data-overage="stop-resume" aria-pressed="false">Stop &amp; resume</button>
               </div>
               <p class="settings-hint">What to do the moment a session starts using paid overage credits. <strong>Stop</strong> soft-interrupts the turn (stays idle, manually resumable). <strong>Stop &amp; resume</strong> also auto-resumes the session ~5s after the rate-limit window resets. Off by default.</p>
+              <label class="tt-toggle"><input id="sm-overage-threshold-enabled" type="checkbox" /> Also stop at a usage threshold (any rate-limit window)</label>
+              <p class="settings-hint">When on, the chosen overage action also fires the moment any rate-limit window's utilization crosses this percentage — before paid overage begins. Independent of the paid-overage trip above. Has no effect when the action is <strong>Off</strong>. Off by default.</p>
+              <div id="sm-overage-threshold-row" class="sm-compact-row" hidden>
+                <label class="sm-compact-label">Stop at
+                  <input id="sm-overage-threshold" type="range" min="50" max="99" step="5" value="85" />
+                  <span id="sm-overage-threshold-val">85%</span>
+                </label>
+              </div>
               <label class="tt-toggle"><input id="sm-compact-window-enabled" type="checkbox" /> Override compact window for the Conduct orchestrator session</label>
               <p class="settings-hint">Sets the effective context-window size at which the 🎼 Conduct orchestrator session (.conduct) auto-compacts. Does not affect worker agents it spawns. Off by default.</p>
               <div id="sm-compact-window-row" class="sm-compact-row" hidden>
