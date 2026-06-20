@@ -67,11 +67,21 @@ async function writeScenario(obj) {
   return p;
 }
 
-let savedBuf;
-before(() => { savedBuf = process.env.ORCH_OVERAGE_RESUME_BUFFER_MS; process.env.ORCH_OVERAGE_RESUME_BUFFER_MS = '0'; });
+let savedBuf, savedSweep;
+before(() => {
+  savedBuf = process.env.ORCH_OVERAGE_RESUME_BUFFER_MS;
+  process.env.ORCH_OVERAGE_RESUME_BUFFER_MS = '0';
+  // Drive the wall-clock sweep fast so the wake-after-suspend test fires off the
+  // real sweep (not a setTimeout) within the round-trip budget. Harmless to the
+  // fireNow-based tests (their far-future deadlines never come due).
+  savedSweep = process.env.ORCH_OVERAGE_RESUME_SWEEP_MS;
+  process.env.ORCH_OVERAGE_RESUME_SWEEP_MS = '40';
+});
 after(() => {
   if (savedBuf === undefined) delete process.env.ORCH_OVERAGE_RESUME_BUFFER_MS;
   else process.env.ORCH_OVERAGE_RESUME_BUFFER_MS = savedBuf;
+  if (savedSweep === undefined) delete process.env.ORCH_OVERAGE_RESUME_SWEEP_MS;
+  else process.env.ORCH_OVERAGE_RESUME_SWEEP_MS = savedSweep;
 });
 
 // Each test boots its own server (its scenario is fixed at boot via env) and
@@ -189,6 +199,70 @@ test('onOverage "stop-resume": missing/past resetsAt is skipped, not armed', asy
   await waitFor(() => sub(evs, 'auto_resume_skipped').length > 0);
   assert.match(sub(evs, 'auto_resume_skipped')[0].data.reason, /resetsAt/);
   assert.equal(inst.autoResumeAt, null, 'nothing armed');
+  assert.equal(ctx.instances._autoResumeTimers.size, 0);
+});
+
+// ── Wall-clock sweep: fires on real time, survives suspension ─────────────
+// REGRESSION for the non-firing-resume bug: the resume used to be a single
+// per-session setTimeout, which rides the libuv MONOTONIC clock — frozen while
+// the process is suspended (Android Doze / Termux backgrounding), so a deadline
+// could lapse in wall-clock terms yet never fire. The controller now records a
+// wall-clock deadline and a shared sweep fires it once now >= deadline. Here we
+// arm a near-future deadline (buffer 0, resetsAt now+2s) and let the REAL sweep
+// (40ms cadence) fire it — NO _fireAutoResumeNow — proving the fire is driven by
+// the wall clock, not a setTimeout. A deadline that elapsed during suspension is
+// the same case: due on the next tick after wake.
+test('stop-resume: the wall-clock sweep (not a setTimeout) fires the resume when due', async () => {
+  await boot(scenario([overageEvent({ resetsAt: nowSec() + 2 }), RESULT]), 'stop-resume');
+  const inst = await spawnIdle();
+  const evs = collect(inst);
+  // Capture manager-level status pushes to prove the badge-drop is emitted.
+  const statuses = [];
+  ctx.instances.on('status', (s) => { if (s.id === inst.id) statuses.push(s); });
+
+  inst.prompt('go');
+
+  // Deadline arms (badge set) — but we never call the fire seam.
+  await waitFor(() => inst.autoResumeAt != null);
+  assert.equal(ctx.instances._autoResumeTimers.has(inst.sessionId), true, 'deadline recorded');
+  assert.equal(inst.proc != null, true, 'session alive while waiting to resume');
+
+  // The real wall-clock sweep delivers the resume prompt once now >= deadline.
+  await waitFor(() => evs.some(e => e.kind === 'user_echo' && e.text === AUTO_RESUME_TEXT),
+    { timeout: 10000 });
+
+  // Regression: after fire the badge no longer outlives the timer — deadline
+  // gone, flags cleared, and a status with autoResumeAt:null was emitted.
+  await waitFor(() => !ctx.instances._autoResumeTimers.has(inst.sessionId));
+  assert.equal(inst.autoResumeAt, null, 'badge cleared after sweep fire');
+  assert.equal(inst.autoStoppedForOverage, false);
+  assert.equal(statuses.some(s => s.autoResumeAt === null), true, 'badge-drop status emitted');
+  assert.equal(inst.proc != null, true, 'never killed/respawned');
+});
+
+// FIX #3: a temp session whose subprocess exits before its resume is due must
+// not leave an orphaned deadline (nor a badge that outlives the timer). Killing
+// the proc directly hits the temp-exit branch (NOT remove(), which cancels on
+// its own); the branch now cancels the pending resume.
+test('stop-resume: temp-session exit cancels the pending resume (no orphan deadline)', async () => {
+  // Far-future deadline so it can't fire on its own before we kill the proc.
+  await boot(scenario([overageEvent({ resetsAt: nowSec() + 3600 }), RESULT]), 'stop-resume');
+  const r = await api(ctx.baseUrl, 'POST', '/api/instances', { project: 'demo', mode: 'bypassPermissions', temp: true });
+  assert.equal(r.status, 201);
+  const inst = ctx.instances.get(r.body.id);
+  await waitFor(() => inst.status === 'idle');
+  const sid = inst.sessionId;
+
+  inst.prompt('go');
+  await waitFor(() => inst.autoResumeAt != null);
+  assert.equal(ctx.instances._autoResumeTimers.has(sid), true, 'deadline armed for the temp session');
+
+  // Subprocess exits → temp-exit branch fires (instance dropped from byId).
+  await inst.kill({ graceMs: 100 });
+  await waitFor(() => !ctx.instances.get(r.body.id)); // temp row collapsed
+
+  // No orphaned deadline survives; sweep has nothing left to fire.
+  assert.equal(ctx.instances._autoResumeTimers.has(sid), false, 'no orphan deadline after temp exit');
   assert.equal(ctx.instances._autoResumeTimers.size, 0);
 });
 
