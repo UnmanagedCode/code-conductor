@@ -18,6 +18,10 @@ export class IdleSubscriptionHub {
     // Keyed by targetSessionId → Map<callerSessionId, { timerId: Timeout | null }>.
     // sessionId (not instanceId) so the graph survives respawn / restart.
     this.subscribers = new Map();
+    // Short-lived set populated in onTurnEnd() BEFORE subscribers is cleared,
+    // so the synchronously-following wsHub turn_notification handler can read it.
+    // A queueMicrotask cleanup runs after both synchronous listeners complete.
+    this._justConsumed = new Set();
   }
 
   // Driven by InstanceManager's `event` listener. When a target instance's
@@ -31,6 +35,11 @@ export class IdleSubscriptionHub {
     const subs = tSid && this.subscribers.get(tSid);
     if (!subs || subs.size === 0) return;
     const entries = [...subs.entries()];
+    // Mark BEFORE clearing so the wsHub 'event' listener (registered after
+    // this one in server.js: new InstanceManager() then attachWsHub()) can
+    // still detect that tSid had a watcher when its turn_end fired.
+    this._justConsumed.add(tSid);
+    queueMicrotask(() => this._justConsumed.delete(tSid));
     subs.clear();
     this.subscribers.delete(tSid);
     for (const [callerSid, { timerId }] of entries) {
@@ -180,6 +189,12 @@ export class IdleSubscriptionHub {
   hasSubscriber(sessionId) {
     const subs = this.subscribers.get(sessionId);
     return subs != null && subs.size > 0;
+  }
+
+  // Returns true when sessionId was the *target* of a subscription that fired
+  // this synchronous event-dispatch cycle (populated before subscribers clears).
+  wasConsumed(sessionId) {
+    return this._justConsumed.has(sessionId);
   }
 
   // Returns true when sessionId is the *caller* (conductor) in any pending
