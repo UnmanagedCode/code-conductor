@@ -64,6 +64,8 @@
           <div id="overflow-menu" class="overflow-menu" hidden>
             <button id="overflow-toggle" type="button" aria-haspopup="menu" aria-expanded="false" title="More actions">⋮</button>
             <div id="overflow-panel" class="overflow-panel" hidden role="menu">
+              <button id="summarize-session-btn" type="button" role="menuitem"
+                      title="Generate an AI summary of this session">📝 Summarize session</button>
               <button id="rename-session-btn" type="button" role="menuitem"
                       title="Give this session a custom label shown in the sidebar (clears on empty)">✎ Rename session</button>
               <button id="kill-btn" type="button" role="menuitem" disabled>Interrupt</button>
@@ -359,6 +361,26 @@
       <p class="error" id="cd-error"></p>
       <menu>
         <button value="cancel">Cancel</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <dialog id="summary-dialog" class="summary-dialog">
+    <form method="dialog">
+      <div class="summary-dialog-head">
+        <h3>Session summary</h3>
+        <span id="summary-stale-badge" class="summary-stale hint" hidden>⚠ Session has grown since this summary</span>
+      </div>
+      <div class="summary-tier-selector" role="group" aria-label="Summary length">
+        <button type="button" data-len="short">Short</button>
+        <button type="button" data-len="medium" class="active">Medium</button>
+        <button type="button" data-len="long">Long</button>
+      </div>
+      <div id="summary-content" class="md summary-content"></div>
+      <p id="summary-error" class="error" hidden></p>
+      <menu>
+        <button type="button" id="summary-generate-btn">Generate summary</button>
+        <button value="close">Close</button>
       </menu>
     </form>
   </dialog>

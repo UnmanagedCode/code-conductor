@@ -50,6 +50,8 @@ import {
   resolve as rootClaudeMdResolve,
 } from './rootClaudeMd.js';
 import { setTitle as setSessionTitle, MAX_TITLE_LEN } from './sessionTitles.js';
+import { getSummary, setSummary, deleteSummary } from './sessionSummaries.js';
+import { generateSummary, countMessages } from './summarize.js';
 import { getAccountUsage } from './accountUsage.js';
 import { getCostSummary } from './costTracking.js';
 import { unmarkArchived } from './archivedSessions.js';
@@ -397,6 +399,8 @@ export function buildRoutes({ instances, serverCtx } = {}) {
     if (!removed) {
       throw Object.assign(new Error(`session ${sessionId} not found`), { statusCode: 404 });
     }
+    // Best-effort — a missing summary never fails a delete.
+    deleteSummary(sessionId).catch(() => {});
   }
 
   r.delete('/projects/:name/sessions/:sid', async (req, res, next) => {
@@ -599,6 +603,60 @@ export function buildRoutes({ instances, serverCtx } = {}) {
       }
       broadcastProjects();
       res.json({ ok: true, sessionId: sid, title: stored, maxLength: MAX_TITLE_LEN });
+    } catch (e) { next(e); }
+  });
+
+  // Resolve the filesystem cwd for a session from findSessionLocation's result.
+  async function cwdForHit(hit) {
+    if (!hit) return null;
+    if (hit.worktreeName) {
+      const wt = await getWorktree(hit.project, hit.worktreeName);
+      return wt?.worktreePath ?? null;
+    }
+    const proj = await getProject(hit.project);
+    return proj.path;
+  }
+
+  // Retrieve the stored summary for a session, with a staleness flag.
+  // isStale is true when the session has grown (more user+assistant lines)
+  // since the summary was generated.
+  r.get('/sessions/:sessionId/summary', async (req, res, next) => {
+    try {
+      const sid = String(req.params.sessionId || '');
+      assertValidSid(sid);
+      const stored = await getSummary(sid);
+      if (!stored) return res.json({ ok: true, sessionId: sid, data: null });
+      const hit = await findSessionLocation(sid);
+      let isStale = false;
+      if (hit) {
+        const cwd = await cwdForHit(hit);
+        if (cwd) {
+          const current = await countMessages(sid, cwd).catch(() => 0);
+          isStale = current > stored.messageCount;
+        }
+      }
+      res.json({ ok: true, sessionId: sid, data: { ...stored, isStale } });
+    } catch (e) { next(e); }
+  });
+
+  // Generate (or regenerate) a summary for a session via a one-shot Haiku
+  // subprocess call. Persists the result and broadcasts so sidebars refetch.
+  r.post('/sessions/:sessionId/summary', async (req, res, next) => {
+    try {
+      const sid = String(req.params.sessionId || '');
+      assertValidSid(sid);
+      const length = req.body?.length;
+      if (!['short', 'medium', 'long'].includes(length)) {
+        throw Object.assign(new Error('length must be short, medium, or long'), { statusCode: 400 });
+      }
+      const hit = await findSessionLocation(sid);
+      if (!hit) throw Object.assign(new Error('session not found'), { statusCode: 404 });
+      const cwd = await cwdForHit(hit);
+      if (!cwd) throw Object.assign(new Error('session not found'), { statusCode: 404 });
+      const { summary, messageCount } = await generateSummary(sid, cwd, length);
+      const stored = await setSummary(sid, { summary, length, generatedAt: Date.now(), messageCount });
+      broadcastProjects();
+      res.json({ ok: true, sessionId: sid, data: stored });
     } catch (e) { next(e); }
   });
 

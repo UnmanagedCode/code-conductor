@@ -86,6 +86,25 @@ export async function flattenTranscript(sessionId, cwd) {
   return { conversationText, messageCount };
 }
 
+// Count user+assistant message lines in a session jsonl. Used by the GET
+// summary endpoint to detect staleness without loading the full transcript.
+// Returns 0 if the file is missing (archived/deleted session).
+export async function countMessages(sessionId, cwd) {
+  const file = path.join(claudeProjectsRoot(), encodeCwd(cwd), `${sessionId}.jsonl`);
+  let raw;
+  try { raw = await fs.readFile(file, 'utf8'); }
+  catch (e) { if (e.code === 'ENOENT') return 0; throw e; }
+  let count = 0;
+  for (const line of raw.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    let obj;
+    try { obj = JSON.parse(trimmed); } catch { continue; }
+    if (obj && (obj.type === 'user' || obj.type === 'assistant')) count++;
+  }
+  return count;
+}
+
 // Generate a summary of a session by running `claude -p` as a one-shot
 // subprocess. Returns { summary, messageCount, durationMs, costUsd }.
 export async function generateSummary(sessionId, cwd, length = 'medium') {

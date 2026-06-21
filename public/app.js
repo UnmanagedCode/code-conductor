@@ -31,6 +31,7 @@ import { installWorkspaceDialog } from './workspaceDialog.js';
 import { installSpawnDialog } from './spawnDialog.js';
 import { installSessionActions } from './sessionActions.js';
 import { installHeader } from './header.js';
+import { installSessionSummary } from './sessionSummary.js';
 import { installWsRouter } from './wsRouter.js';
 import { loadModelVersions, setActiveVersions, setActiveSonnetWindow,
   setActiveFamilyEnabled, setActiveDefaultSpawnFamily } from './models.js';
@@ -134,6 +135,8 @@ const dom = {
   syncBtn: document.getElementById('sync-btn'),
   mergeBtn: document.getElementById('merge-btn'),
   debugBtn: document.getElementById('debug-btn'),
+  summarizeSessionBtn: document.getElementById('summarize-session-btn'),
+  summaryDialog: document.getElementById('summary-dialog'),
   renameSessionBtn: document.getElementById('rename-session-btn'),
   autoApprovePlanBtn: document.getElementById('auto-approve-plan-btn'),
   overflowMenu: document.getElementById('overflow-menu'),
@@ -611,6 +614,11 @@ dom.renameSessionBtn.addEventListener('click', async () => {
   }
 });
 
+dom.summarizeSessionBtn.addEventListener('click', () => {
+  closeOverflow();
+  summaryHandle.open();
+});
+
 dom.debugBtn.addEventListener('click', async () => {
   if (!state.activeId) return;
   closeOverflow();
@@ -825,6 +833,14 @@ installRestart({
 // the boot-time auto-resume, and the snapshot prefill-consume all forward to it.
 // pendingPrefill is owned inside the module (set by forkActiveSession, read once
 // by the snapshot handler via consumePendingPrefill).
+const summaryHandle = installSessionSummary({
+  dom,
+  getActiveSid: () => {
+    const inst = state.instances.find(i => i.id === state.activeId);
+    return inst?.sessionId ?? null;
+  },
+});
+
 sessionActions = installSessionActions({
   getActiveId: () => state.activeId,
   setActiveId: (v) => { state.activeId = v; },

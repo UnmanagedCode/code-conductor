@@ -1121,6 +1121,22 @@ dialog .error { color: var(--red); font-size: 12px; min-height: 1em; }
 dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; margin: 0; }
 #restart-dialog menu { gap: 12px; margin-top: 14px; }
 #restart-dialog menu button { padding: 8px 14px; flex: 1; }
+#summary-dialog { min-width: 340px; max-width: min(600px, 92vw); }
+.summary-dialog-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+.summary-dialog-head h3 { margin: 0; }
+.summary-stale { color: var(--amber); }
+.summary-tier-selector { display: flex; gap: 4px; margin-bottom: 10px; }
+.summary-tier-selector button {
+  flex: 1; padding: 4px 8px; font-size: 12px; cursor: pointer;
+  background: var(--panel-2); color: var(--muted);
+  border: 1px solid var(--border); border-radius: 4px;
+}
+.summary-tier-selector button.active {
+  background: var(--panel); color: var(--text); border-color: var(--accent);
+}
+.summary-content { max-height: 55vh; overflow-y: auto; margin: 0 0 10px 0; min-height: 2em; }
+.summary-loading { color: var(--muted); font-size: 13px; }
+#summary-dialog menu { margin-top: 4px; }
 
 @media (max-width: 720px) {
   #app { grid-template-columns: 1fr; }
