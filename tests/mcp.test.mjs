@@ -132,6 +132,7 @@ test('tools/list returns the full expected tool catalog', async () => {
     'create_project', 'create_workspace', 'create_worktree',
     'delete_workspace', 'delete_worktree',
     'get_recent_messages', 'get_transcript', 'get_worktree_diff',
+    'glob', 'grep',
     'interrupt_turn',
     'kill_instance',
     'list_instances', 'list_projects', 'list_sessions',
