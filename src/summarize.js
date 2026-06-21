@@ -11,16 +11,16 @@ import { DEFAULT_VERSIONS } from './modelVersions.js';
 
 const LENGTH_INSTRUCTIONS = {
   short: {
-    sizing: 'at most 2-3 short sentences; be terse',
-    structure: 'Plain prose blurb only — no headings or bullets at this size.',
+    depth: 'a one-glance gist — just what the session was about and the outcome. Highest altitude.',
+    structure: 'Plain prose only. No headings, bullets, or tables at this size.',
   },
   medium: {
-    sizing: '5-8 sentences total',
-    structure: 'Light markdown structure is encouraged where it aids readability: a few bullet points for enumerable items (e.g. what changed, key decisions) or a short heading if it helps, but stay compact. Don\'t over-structure.',
+    depth: 'a scannable recap of the essentials — the goal, the main changes, key decisions, and the outcome. Compact but complete.',
+    structure: 'Use bullets or a table for any enumerable information (list of changes, decisions, files). Reserve flowing prose for narrative or rationale. One or two short headings are fine if they help, but don\'t over-structure.',
   },
   long: {
-    sizing: '3-4 paragraphs worth of content',
-    structure: 'Use clear markdown structure: short section headings (##) and bullet lists to organize the recap. Suggested sections: what the user wanted, what was built/changed, key decisions, outcome/status.',
+    depth: 'a thorough recap — cover all notable changes, decisions, and outcomes in detail.',
+    structure: 'Lean heavily on markdown structure: ## section headings, bullet lists, and tables for enumerable information (commits, files changed, decisions, test results). Reserve prose for narrative and rationale. A table is better than a run-on sentence for any list of three or more items.',
   },
 };
 
@@ -91,11 +91,13 @@ export async function generateSummary(sessionId, cwd, length = 'medium') {
 
   const { conversationText, messageCount } = await flattenTranscript(sessionId, cwd);
 
-  const prompt = `Summarize the following Claude Code session conversation in ${tier.sizing}.
+  const prompt = `Summarize the following Claude Code session. Depth: ${tier.depth}
 
 Focus on: what the user wanted to accomplish, what was built or changed, key decisions made. Skip tool call details; describe outcomes and results.
 
 ${tier.structure}
+
+Important: markdown structure (headings, bullets, tables) is scaffolding — it does not count toward how long or short the summary is. Use structure freely to aid scannability; only the substantive content determines the depth.
 
 CONVERSATION:
 ${conversationText}
