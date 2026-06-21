@@ -39,6 +39,13 @@ export { AUTO_RESUME_TEXT } from './overageResume.js';
 // --print (no SDK canUseTool callback), so we don't expose them.
 const VALID_MODES = new Set(['plan', 'ask', 'bypassPermissions']);
 
+// Minimum length for a sessionId PREFIX to be eligible for resolution (see
+// InstanceManager.resolveSessionRef). An exact full-id match bypasses this floor;
+// it only guards non-exact prefixes against absurdly short, fragile matches
+// (a 1–3 char hit that the next spawn could collide with). Uniqueness within the
+// in-memory universe remains the real guard — this is just a sanity floor.
+export const SESSION_PREFIX_MIN = 4;
+
 // The hidden steering instruction a SOFT interrupt injects mid-turn. It
 // must forbid any further output and direct the model to end its turn
 // silently — a graceful stop, not a hard abort. Prefixed with
@@ -1307,6 +1314,32 @@ export class InstanceManager extends EventEmitter {
   // counterpart used where a non-running instance is still a valid target.
   anyForSession(sessionId) {
     return this.idsForSession(sessionId).map(id => this.byId.get(id)).find(Boolean) ?? null;
+  }
+  // Resolve an MCP input that is either a full sessionId or an unambiguous PREFIX
+  // to a canonical full sessionId. The MCP dispatch layer (src/mcp/server.js) uses
+  // this to let conductors address workers by a short prefix (e.g. first 8 chars)
+  // instead of the error-prone 36-char UUID. Universe = the distinct sessionIds
+  // across ALL byId instances (live AND exited) — broader than live-only, so a
+  // prefix unique among live workers but shared with an exited in-memory session
+  // resolves AMBIGUOUS rather than silently mis-resolving. Historical disk-only
+  // sessions are intentionally NOT in scope (they stay addressable by full id).
+  // Returns one of:
+  //   null                              → no match (caller leaves the arg untouched,
+  //                                         so the handler's existing SESSION_UNKNOWN /
+  //                                         SESSION_NOT_LIVE / disk-probe path runs)
+  //   { sessionId }                     → exact full-id match (always wins), or a
+  //                                         unique prefix >= SESSION_PREFIX_MIN chars
+  //   { ambiguous:[fullIds], tooShort } → prefix matches >1 id, OR a too-short
+  //                                         (< SESSION_PREFIX_MIN) prefix matches >=1
+  resolveSessionRef(input) {
+    if (typeof input !== 'string' || !input) return null;
+    const all = [...new Set([...this.byId.values()].map(i => i.sessionId).filter(Boolean))];
+    if (all.includes(input)) return { sessionId: input }; // exact match always wins
+    const matches = all.filter(s => s.startsWith(input));
+    if (matches.length === 0) return null;
+    if (input.length < SESSION_PREFIX_MIN) return { ambiguous: matches, tooShort: true };
+    if (matches.length === 1) return { sessionId: matches[0] };
+    return { ambiguous: matches, tooShort: false };
   }
   // SessionIds of live (proc-attached) temp instances whose cwd matches.
   // Routes use this to strip running temp jsonls from the regular Sessions

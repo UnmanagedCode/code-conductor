@@ -10,6 +10,7 @@
 import express from 'express';
 import { buildTools } from './tools.js';
 import { isTextPayload, codeForStatus } from './content.js';
+import { SESSION_PREFIX_MIN } from '../instances.js';
 
 const PROTOCOL_VERSION = '2025-06-18';
 const SERVER_NAME = 'code-conductor';
@@ -140,7 +141,7 @@ async function dispatch(msg, ctx) {
     }
     if (method === 'tools/call') {
       const name = params?.name;
-      const args = params?.arguments ?? {};
+      let args = params?.arguments ?? {};
       const tool = ctx.tools.find(t => t.name === name);
       if (!tool) {
         return rpcResult(id, {
@@ -154,6 +155,33 @@ async function dispatch(msg, ctx) {
           content: [{ type: 'text', text: v }],
           isError: true,
         });
+      }
+      // sessionId prefix resolution — the single, uniform chokepoint for every
+      // worker-addressing tool. Accept any unambiguous prefix of a sessionId in
+      // place of the full 36-char UUID, resolved to the canonical full id before
+      // the handler touches the registry. Non-destructive: only rewrites on a
+      // confident prefix→full resolution; exact ids and no-matches pass through
+      // unchanged so the handler's existing SESSION_NOT_LIVE / SESSION_UNKNOWN /
+      // on-disk lookup paths still run. The only new outcome is SESSION_AMBIGUOUS,
+      // serialized exactly like a handler soft-refusal (no isError).
+      if (ctx.instances?.resolveSessionRef
+          && tool.inputSchema?.properties?.sessionId
+          && typeof args.sessionId === 'string' && args.sessionId) {
+        const ref = ctx.instances.resolveSessionRef(args.sessionId);
+        if (ref?.ambiguous) {
+          const matches = ref.ambiguous.map(s => s.slice(0, 8));
+          const reason = ref.tooShort
+            ? `session prefix "${args.sessionId}" is too short — pass at least ${SESSION_PREFIX_MIN} characters or a full sessionId. Candidates: ${matches.join(', ')}.`
+            : `session prefix "${args.sessionId}" matches ${ref.ambiguous.length} sessions — pass more characters or a full sessionId. Candidates: ${matches.join(', ')}.`;
+          return rpcResult(id, {
+            content: [{ type: 'text', text: JSON.stringify({
+              ok: false, code: 'SESSION_AMBIGUOUS', sessionId: args.sessionId, reason, matches,
+            }) }],
+          });
+        }
+        if (ref?.sessionId && ref.sessionId !== args.sessionId) {
+          args = { ...args, sessionId: ref.sessionId };
+        }
       }
       try {
         const result = await tool.handler(args, ctx);
