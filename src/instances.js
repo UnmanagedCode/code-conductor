@@ -1222,6 +1222,26 @@ export class InstanceManager extends EventEmitter {
     return this._idleHub.deliver(callerSessionId, targetSessionId, opts);
   }
 
+  // Returns true when a turn_notification for instanceId should be suppressed:
+  //   Condition 1 — session is a conductor mid-orchestration (subscribed as caller
+  //                 to a worker); isCaller() is reliable here because the caller's
+  //                 subscription is only consumed on the TARGET's turn_end.
+  //   Condition 2 — session is a worker whose turn_end just woke a subscribed
+  //                 conductor; wasConsumed() reads _justConsumed, populated in
+  //                 IdleSubscriptionHub.onTurnEnd() BEFORE subscribers clears.
+  // ORDERING DEPENDENCY: the idle hub's 'event' listener (registered in the
+  // InstanceManager constructor, instances.js) must run before wsHub's listener
+  // (registered by attachWsHub in server.js). wasConsumed() is only valid during
+  // the same synchronous dispatch cycle as onTurnEnd(). Do not reorder those
+  // registrations without revisiting this method.
+  shouldSuppressTurnNotification(instanceId) {
+    const sid = this.byId.get(instanceId)?.sessionId;
+    if (!sid) return false;
+    if (this._idleHub.isCaller(sid)) return true;   // Condition 1
+    if (this._idleHub.wasConsumed(sid)) return true; // Condition 2
+    return false;
+  }
+
   setServerPort(port) {
     this.serverPort = port;
   }
