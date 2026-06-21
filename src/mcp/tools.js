@@ -575,10 +575,65 @@ export function buildTools() {
           summary: { type: 'boolean', default: false, description: 'Return a per-file stat (totals + files[]) instead of a diff. Always small; never truncated.' },
           paths: { type: 'array', items: { type: 'string' }, description: 'Limit the diff (or summary) to these file paths.' },
           offset: { type: 'integer', minimum: 0, default: 0, description: '0-based line index into the diff to start this page at (default 0). Use nextOffset from the previous call to paginate.' },
+          includeWorkingTree: { type: 'boolean', default: false, description: 'When true, also surface staged + unstaged changes vs HEAD (git diff HEAD) after the committed diff, plus a list of untracked files. Default false (back-compat). Metadata gains includeWorkingTree:true, hasUncommittedChanges:bool, untracked:[paths].' },
         },
         required: ['project', 'worktree'],
       },
       handler: h.getWorktreeDiff,
+      annotations: { readOnlyHint: true },
+    },
+    {
+      name: 'grep',
+      description:
+        'Search file contents by regex across a project or worktree tree. Path-traversal guarded; ' +
+        'excludes .git/ and node_modules/; never follows symlinks. Prefers ripgrep when on PATH, ' +
+        'otherwise pure JS. Three outputModes: (1) "files_with_matches" (default) — single JSON ' +
+        '{project, worktree, pattern, outputMode, files:[relPath,...], fileCount, truncated}. ' +
+        '(2) "count" — single JSON {…, files:[{path,count},...], totalMatches, truncated}. ' +
+        '(3) "content" — multi-block: compact-JSON metadata {…, matchCount, fileCount, truncated} ' +
+        '(content[0]) + a raw text body (content[1]) in grep style (path:line:content for matches, ' +
+        'path:line-content for context lines, -- between groups); capped at ~200 KB. ' +
+        'Use glob/type to narrow the file set; use headLimit to cap result count (default 250). ' +
+        'truncated:true means results were clipped — caller should assume incomplete coverage.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          project:         { type: 'string' },
+          worktree:        { type: 'string', description: 'Optional worktree name to scope into.' },
+          pattern:         { type: 'string', description: 'Regex pattern to search for.' },
+          glob:            { type: 'string', description: 'Glob pattern to restrict which files are searched (e.g. "**/*.ts").' },
+          type:            { type: 'string', description: 'File-type shorthand (js|ts|jsx|py|json|md|html|css|sh|yaml|toml|go|rust|java|c|cpp). Expands to matching extensions.' },
+          outputMode:      { type: 'string', enum: ['files_with_matches', 'content', 'count'], default: 'files_with_matches', description: 'Output shape. Default "files_with_matches".' },
+          caseInsensitive: { type: 'boolean', default: false, description: 'Case-insensitive match. Default false.' },
+          before:          { type: 'integer', minimum: 0, default: 0, description: 'Lines of context before each match (-B). Ignored when context > 0.' },
+          after:           { type: 'integer', minimum: 0, default: 0, description: 'Lines of context after each match (-A). Ignored when context > 0.' },
+          context:         { type: 'integer', minimum: 0, default: 0, description: 'Lines of context before and after each match (-C). Overrides before/after when > 0.' },
+          headLimit:       { type: 'integer', minimum: 1, default: 250, description: 'Max matched files (files_with_matches/count) or matched files in content mode to return. Default 250.' },
+        },
+        required: ['project', 'pattern'],
+      },
+      handler: h.grepProject,
+      annotations: { readOnlyHint: true },
+    },
+    {
+      name: 'glob',
+      description:
+        'Find files by glob pattern within a project or worktree tree. Path-traversal guarded; ' +
+        'excludes .git/ and node_modules/; never follows symlinks. Returns project-relative paths ' +
+        'sorted newest-first by mtime. OUTPUT: single JSON {project, worktree, pattern, ' +
+        'files:[relPath,...], total, truncated}. truncated:true when more files matched than ' +
+        'headLimit — caller should assume incomplete coverage.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          project:   { type: 'string' },
+          worktree:  { type: 'string', description: 'Optional worktree name to scope into.' },
+          pattern:   { type: 'string', description: 'Glob pattern e.g. "**/*.test.mjs", "src/**/*.ts".' },
+          headLimit: { type: 'integer', minimum: 1, default: 1000, description: 'Max files to return. Default 1000.' },
+        },
+        required: ['project', 'pattern'],
+      },
+      handler: h.globProject,
       annotations: { readOnlyHint: true },
     },
     {
