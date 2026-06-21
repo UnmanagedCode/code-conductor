@@ -63,6 +63,22 @@ export class OverageResumeController {
     this.manager.emit('status', inst.summary()); // push autoResumeAt → client (badge)
   }
 
+  // Re-arm a deadline restored from the resume manifest on boot. Unlike arm(),
+  // does NOT recompute from resetsAt and does NOT skip a past deadline — a
+  // deadline that elapsed while the orchestrator was down is re-inserted as-is
+  // and the wall-clock sweep fires it on the first tick (the suspension-survival
+  // property, applied across a full restart). Caller guarantees the session is
+  // live + idle (re-armed AFTER spawn()'s flag-clear, so the clear can't wipe
+  // it). No-op on a non-finite deadline.
+  armRestored(inst, fireAtMs) {
+    if (!Number.isFinite(fireAtMs)) return;
+    inst.autoStoppedForOverage = true;
+    inst.autoResumeAt = Math.round(fireAtMs / 1000); // epoch secs for the badge
+    this.timers.set(inst.sessionId, fireAtMs);
+    this._ensureSweep();
+    this.manager.emit('status', inst.summary()); // push autoResumeAt → client (badge)
+  }
+
   // Ensure the single shared wall-clock sweep is running. Idempotent. Cadence
   // overridable via ORCH_OVERAGE_RESUME_SWEEP_MS (ms) — a test seam so the sweep
   // can be driven fast. Mirrors the unref()'d-interval idiom in

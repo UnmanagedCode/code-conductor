@@ -1460,6 +1460,7 @@ export class InstanceManager extends EventEmitter {
   // keeps these names/signatures and forwards to the controller (internal
   // callers + the overage tests reach for them on the manager).
   _armAutoResume(inst) { return this._overageResume.arm(inst); }
+  _armRestoredAutoResume(inst, fireAtMs) { return this._overageResume.armRestored(inst, fireAtMs); }
   _runAutoResume(inst, sid) { return this._overageResume.run(inst, sid); }
   _fireAutoResumeNow(sessionId) { return this._overageResume.fireNow(sessionId); }
   _cancelAutoResume(sessionId) { return this._overageResume.cancel(sessionId); }

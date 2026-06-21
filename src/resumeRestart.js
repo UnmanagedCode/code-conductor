@@ -198,6 +198,15 @@ export async function drainToManifest({ server, wss, instances, log = console, g
       autoApprovePlan: !!s.autoApprovePlan,
       group,
       wasBusy: busyAtDrain.has(inst.id),
+      // Pending overage auto-resume (in-memory-only until now). `autoResumeAt`
+      // is the already-computed fire DEADLINE (epoch secs = resetsAt+buffer),
+      // present iff a resume was armed; `overageStopped` is the stop-resume
+      // intent. On boot these re-arm the wall-clock sweep (see
+      // restoreFromResumeManifest); a deadline that elapsed during the restart
+      // fires on the first post-boot tick. Both falsy for non-overage sessions.
+      overageResumeAt: s.autoResumeAt ?? null,
+      overageStopped: !!inst.autoStoppedForOverage,
+      overageResetsAt: inst._overageResetsAt ?? null,
     };
     if (group === 'conductor') entry.workers = workersByConductor.get(inst.id) ?? [];
     entries.push(entry);
@@ -283,9 +292,22 @@ export async function restoreFromResumeManifest({ instances, log = console, stag
         log.warn?.(`resume-restart: ${e.sessionId} came up '${st}'; skipping resume notification`);
         continue;
       }
+      // Re-arm a pending overage auto-resume. Done AFTER the session is live +
+      // idle (well past create()→spawn()'s flag-clear, so the clear can't wipe
+      // it) and fire-and-forget like the resume notification below — no new
+      // await on the boot hot path. armRestored re-inserts the persisted
+      // deadline as-is; the wall-clock sweep fires it on the first tick if it
+      // already elapsed during the restart.
+      if (e.overageStopped && Number.isFinite(e.overageResumeAt)) {
+        inst._overageResetsAt = e.overageResetsAt ?? null;
+        try { instances._armRestoredAutoResume(inst, e.overageResumeAt * 1000); }
+        catch (err) { log.warn?.('resume-restart: overage re-arm failed', err?.message); }
+      }
       // Only re-prompt sessions that were mid-turn when the drain began.
       // Idle sessions are resurrected silently — they have nothing to resume.
-      if (e.wasBusy !== false) {
+      // Skip overage-stopped sessions: the sweep delivers AUTO_RESUME_TEXT once
+      // the window resets, so a RESUME_TEXT here would double-prompt.
+      if (e.wasBusy !== false && !e.overageStopped) {
         const text = e.group === 'conductor' ? buildConductorResumeText(e.workers) : RESUME_TEXT;
         try { await inst.prompt(text); } catch (err) { log.warn?.('resume-restart: notify failed', err?.message); }
       }

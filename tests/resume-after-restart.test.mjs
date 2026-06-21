@@ -23,6 +23,9 @@ import {
   RESUME_TEXT,
 } from '../src/resumeRestart.js';
 import { ensureConductProject, CONDUCT_PROJECT_NAME } from '../src/conduct.js';
+import { AUTO_RESUME_TEXT } from '../src/instances.js';
+
+const nowSec = () => Math.floor(Date.now() / 1000);
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BASIC = path.join(__dirname, 'fixtures', 'scenario-basic.json');
@@ -503,6 +506,145 @@ test('drainToManifest: idle conductor parked on a subscription is wasBusy:true; 
     else process.env.FAKE_CLAUDE_TRANSCRIPT = prevTranscript;
     if (prevScenario === undefined) delete process.env.FAKE_CLAUDE_SCENARIO;
     else process.env.FAKE_CLAUDE_SCENARIO = prevScenario;
+    await fs.rm(transcript, { force: true });
+  }
+});
+
+// --- 13. overage resume survives a restart: manifest round-trip -------------
+// A pending overage auto-resume (in-memory-only sweep deadline) must be captured
+// in the manifest so boot can re-arm it. Arm a real resume via _armAutoResume,
+// then drain and assert the deadline + intent round-trip into the entry.
+
+test('drainToManifest persists a pending overage auto-resume (overageResumeAt/overageStopped)', async () => {
+  await api(baseUrl, 'POST', '/api/projects', { name: 'ovg-rt' });
+  const res = await api(baseUrl, 'POST', '/api/instances', { project: 'ovg-rt' });
+  const inst = instances.get(res.body.id);
+  await waitFor(() => inst.status === 'idle' && inst.sessionId);
+
+  // Materialize a jsonl so the entry is a valid resume target.
+  const dir = path.join(claudeProjectsRoot, encodeCwd(inst.cwd));
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(path.join(dir, `${inst.sessionId}.jsonl`), '{"type":"user","uuid":"u1"}\n');
+
+  // Arm a real overage resume: stamp the reset time + intent, then let the
+  // controller compute the fire deadline (resetsAt + buffer) exactly as the
+  // live idle-transition path does.
+  inst.autoStoppedForOverage = true;
+  inst._overageResetsAt = nowSec() + 100;          // 100s out, comfortably future
+  instances._armAutoResume(inst);
+  assert.ok(Number.isFinite(inst.autoResumeAt), 'resume deadline armed');
+  assert.ok(instances._autoResumeTimers.has(inst.sessionId), 'sweep deadline set');
+
+  const entries = await drainToManifest({ server: null, wss: null, instances, log: { warn() {}, log() {}, error() {} }, graceMs: 100 });
+  const e = entries.find(x => x.sessionId === inst.sessionId);
+  assert.ok(e, 'session captured in manifest');
+  assert.equal(e.overageStopped, true, 'stop-resume intent persisted');
+  assert.equal(e.overageResumeAt, inst.autoResumeAt, 'fire deadline (epoch secs) persisted');
+  assert.equal(e.overageResetsAt, inst._overageResetsAt, 'reset time persisted');
+  await waitFor(() => inst.proc === null, { timeout: 20000 });
+  clearResumeManifest();
+});
+
+// --- 14. CRITICAL: a PAST-DUE overage resume fires on the first boot tick ----
+// The whole point: a window that reset while the orchestrator was down must
+// resume immediately after boot. armRestored re-inserts the (already-past)
+// deadline as-is; the wall-clock sweep fires it on the first tick. We drive the
+// sweep fast via ORCH_OVERAGE_RESUME_SWEEP_MS and assert AUTO_RESUME_TEXT lands.
+
+test('restoreFromResumeManifest fires a PAST-DUE overage resume promptly on boot', async () => {
+  const transcript = path.join(os.tmpdir(), `cc-ovg-past-${randomUUID()}.log`);
+  const prevTranscript = process.env.FAKE_CLAUDE_TRANSCRIPT;
+  const prevSweep = process.env.ORCH_OVERAGE_RESUME_SWEEP_MS;
+  process.env.FAKE_CLAUDE_TRANSCRIPT = transcript;
+  process.env.ORCH_OVERAGE_RESUME_SWEEP_MS = '40'; // drive the sweep fast
+  try {
+    await api(baseUrl, 'POST', '/api/projects', { name: 'ovg-past' });
+    const sid = randomUUID();
+    const cwd = path.join(projectsRoot, 'ovg-past');
+    const dir = path.join(claudeProjectsRoot, encodeCwd(cwd));
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(path.join(dir, `${sid}.jsonl`), '{"type":"user","uuid":"u1"}\n');
+
+    await fs.mkdir(orchStoreRoot(), { recursive: true });
+    writeResumeManifest([{
+      project: 'ovg-past', sessionId: sid, cwd, mode: 'plan', effort: 'high',
+      thinking: 'adaptive', model: null, worktreeName: null, temp: false,
+      conducted: false, debug: false, title: null, autoApprovePlan: false,
+      group: 'other', wasBusy: false,
+      overageStopped: true, overageResumeAt: nowSec() - 10, overageResetsAt: nowSec() - 15,
+    }]);
+
+    const { restored } = await restoreFromResumeManifest({ instances, log: { log() {}, warn() {} }, staggerMs: 0 });
+    assert.equal(restored, 1, 'session restored');
+
+    // The sweep fires the past-due deadline → AUTO_RESUME_TEXT is sent.
+    await waitFor(async () => {
+      try { return (await fs.readFile(transcript, 'utf8')).includes(AUTO_RESUME_TEXT); }
+      catch { return false; }
+    }, { timeout: 8000 });
+    const dump = await fs.readFile(transcript, 'utf8');
+    assert.ok(dump.includes(AUTO_RESUME_TEXT), 'AUTO_RESUME_TEXT delivered on boot');
+    // Firing tears the deadline down (the resume prompt's user_prompt cancels it).
+    await waitFor(() => !instances._autoResumeTimers.has(sid));
+    assert.ok(!instances._autoResumeTimers.has(sid), 'deadline cleared after firing');
+  } finally {
+    if (prevTranscript === undefined) delete process.env.FAKE_CLAUDE_TRANSCRIPT;
+    else process.env.FAKE_CLAUDE_TRANSCRIPT = prevTranscript;
+    if (prevSweep === undefined) delete process.env.ORCH_OVERAGE_RESUME_SWEEP_MS;
+    else process.env.ORCH_OVERAGE_RESUME_SWEEP_MS = prevSweep;
+    await fs.rm(transcript, { force: true });
+  }
+});
+
+// --- 15. FUTURE deadline re-arms but does NOT fire; non-overage unaffected ---
+// One restore with two entries: (a) overage-stopped with a far-future deadline
+// → timer armed + badge set, AUTO_RESUME_TEXT NOT sent and no RESUME_TEXT;
+// (b) plain wasBusy session → unchanged RESUME_TEXT, no overage timer.
+
+test('restoreFromResumeManifest arms a FUTURE overage deadline without firing; leaves non-overage sessions unchanged', async () => {
+  const transcript = path.join(os.tmpdir(), `cc-ovg-future-${randomUUID()}.log`);
+  const prevTranscript = process.env.FAKE_CLAUDE_TRANSCRIPT;
+  process.env.FAKE_CLAUDE_TRANSCRIPT = transcript;
+  try {
+    await api(baseUrl, 'POST', '/api/projects', { name: 'ovg-fut' });
+    const ovgSid = randomUUID();
+    const plainSid = randomUUID();
+    const cwd = path.join(projectsRoot, 'ovg-fut');
+    const dir = path.join(claudeProjectsRoot, encodeCwd(cwd));
+    await fs.mkdir(dir, { recursive: true });
+    for (const sid of [ovgSid, plainSid]) {
+      await fs.writeFile(path.join(dir, `${sid}.jsonl`), '{"type":"user","uuid":"u1"}\n');
+    }
+
+    const futureAt = nowSec() + 3600; // 1h out — never fires within the test
+    const base = { project: 'ovg-fut', cwd, mode: 'plan', effort: 'high', thinking: 'adaptive', model: null, worktreeName: null, temp: false, conducted: false, debug: false, title: null, autoApprovePlan: false, group: 'other' };
+    await fs.mkdir(orchStoreRoot(), { recursive: true });
+    writeResumeManifest([
+      { ...base, sessionId: ovgSid, wasBusy: false, overageStopped: true, overageResumeAt: futureAt, overageResetsAt: futureAt - 5 },
+      { ...base, sessionId: plainSid, wasBusy: true }, // no overage fields
+    ]);
+
+    const { restored } = await restoreFromResumeManifest({ instances, log: { log() {}, warn() {} }, staggerMs: 0 });
+    assert.equal(restored, 2, 'both restored');
+
+    // (a) Overage session: deadline armed + badge set, but not fired.
+    assert.ok(instances._autoResumeTimers.has(ovgSid), 'future overage deadline armed');
+    const ovgInst = [...instances.byId.values()].find(i => i.sessionId === ovgSid);
+    assert.equal(ovgInst.autoResumeAt, futureAt, 'badge deadline set to persisted value');
+
+    // (b) Plain session: gets RESUME_TEXT, no overage timer.
+    await waitFor(async () => {
+      try { return (await fs.readFile(transcript, 'utf8')).includes(RESUME_TEXT); }
+      catch { return false; }
+    });
+    await new Promise(r => setTimeout(r, 300)); // let any stray prompt surface
+    const dump = await fs.readFile(transcript, 'utf8');
+    assert.ok(dump.includes(RESUME_TEXT), 'plain session re-prompted with RESUME_TEXT');
+    assert.ok(!dump.includes(AUTO_RESUME_TEXT), 'future overage deadline did NOT fire');
+    assert.ok(!instances._autoResumeTimers.has(plainSid), 'non-overage session has no resume timer');
+  } finally {
+    if (prevTranscript === undefined) delete process.env.FAKE_CLAUDE_TRANSCRIPT;
+    else process.env.FAKE_CLAUDE_TRANSCRIPT = prevTranscript;
     await fs.rm(transcript, { force: true });
   }
 });
