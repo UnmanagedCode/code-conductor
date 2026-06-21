@@ -10,9 +10,18 @@ import { resolveClaudeBin } from './instances.js';
 import { DEFAULT_VERSIONS } from './modelVersions.js';
 
 const LENGTH_INSTRUCTIONS = {
-  short: 'at most 2-3 short sentences; be terse',
-  medium: '5-8 sentences',
-  long: '3-4 paragraphs',
+  short: {
+    sizing: 'at most 2-3 short sentences; be terse',
+    structure: 'Plain prose blurb only — no headings or bullets at this size.',
+  },
+  medium: {
+    sizing: '5-8 sentences total',
+    structure: 'Light markdown structure is encouraged where it aids readability: a few bullet points for enumerable items (e.g. what changed, key decisions) or a short heading if it helps, but stay compact. Don\'t over-structure.',
+  },
+  long: {
+    sizing: '3-4 paragraphs worth of content',
+    structure: 'Use clear markdown structure: short section headings (##) and bullet lists to organize the recap. Suggested sections: what the user wanted, what was built/changed, key decisions, outcome/status.',
+  },
 };
 
 const INPUT_CAP = 80_000;
@@ -77,16 +86,16 @@ export async function flattenTranscript(sessionId, cwd) {
 // Generate a summary of a session by running `claude -p` as a one-shot
 // subprocess. Returns { summary, messageCount, durationMs, costUsd }.
 export async function generateSummary(sessionId, cwd, length = 'medium') {
-  const instruction = LENGTH_INSTRUCTIONS[length];
-  if (!instruction) throw Object.assign(new Error(`invalid length: ${length}`), { statusCode: 400 });
+  const tier = LENGTH_INSTRUCTIONS[length];
+  if (!tier) throw Object.assign(new Error(`invalid length: ${length}`), { statusCode: 400 });
 
   const { conversationText, messageCount } = await flattenTranscript(sessionId, cwd);
 
-  const prompt = `Summarize the following Claude Code session conversation in ${instruction}.
+  const prompt = `Summarize the following Claude Code session conversation in ${tier.sizing}.
 
 Focus on: what the user wanted to accomplish, what was built or changed, key decisions made. Skip tool call details; describe outcomes and results.
 
-Output must be plain prose only — no markdown headers, no bullet points, no numbered lists, no bold or italic text. Just sentences and paragraphs.
+${tier.structure}
 
 CONVERSATION:
 ${conversationText}
