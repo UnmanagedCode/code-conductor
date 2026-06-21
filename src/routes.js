@@ -50,7 +50,7 @@ import {
   resolve as rootClaudeMdResolve,
 } from './rootClaudeMd.js';
 import { setTitle as setSessionTitle, MAX_TITLE_LEN } from './sessionTitles.js';
-import { getSummary, setSummary, deleteSummary } from './sessionSummaries.js';
+import { getSummaries, setSummary, deleteSummaries } from './sessionSummaries.js';
 import { generateSummary, countMessages } from './summarize.js';
 import { getAccountUsage } from './accountUsage.js';
 import { getCostSummary } from './costTracking.js';
@@ -400,7 +400,7 @@ export function buildRoutes({ instances, serverCtx } = {}) {
       throw Object.assign(new Error(`session ${sessionId} not found`), { statusCode: 404 });
     }
     // Best-effort — a missing summary never fails a delete.
-    deleteSummary(sessionId).catch(() => {});
+    deleteSummaries(sessionId).catch(() => {});
   }
 
   r.delete('/projects/:name/sessions/:sid', async (req, res, next) => {
@@ -617,30 +617,44 @@ export function buildRoutes({ instances, serverCtx } = {}) {
     return proj.path;
   }
 
-  // Retrieve the stored summary for a session, with a staleness flag.
-  // isStale is true when the session has grown (more user+assistant lines)
-  // since the summary was generated.
+  // Build the three-tier response data object, adding per-tier isStale.
+  // currentCount should be pre-fetched (once) and passed in.
+  function buildTierData(tiers, currentCount) {
+    const LENGTHS = ['short', 'medium', 'long'];
+    const data = {};
+    for (const len of LENGTHS) {
+      const t = tiers[len];
+      data[len] = t
+        ? { ...t, isStale: currentCount > t.messageCount }
+        : null;
+    }
+    return data;
+  }
+
+  // Retrieve all stored summaries for a session, with per-tier staleness.
+  // Returns { short, medium, long } where each tier is null when absent.
   r.get('/sessions/:sessionId/summary', async (req, res, next) => {
     try {
       const sid = String(req.params.sessionId || '');
       assertValidSid(sid);
-      const stored = await getSummary(sid);
-      if (!stored) return res.json({ ok: true, sessionId: sid, data: null });
-      const hit = await findSessionLocation(sid);
-      let isStale = false;
-      if (hit) {
-        const cwd = await cwdForHit(hit);
-        if (cwd) {
-          const current = await countMessages(sid, cwd).catch(() => 0);
-          isStale = current > stored.messageCount;
+      const tiers = await getSummaries(sid);
+      let currentCount = 0;
+      const hasTiers = Object.keys(tiers).length > 0;
+      if (hasTiers) {
+        const hit = await findSessionLocation(sid);
+        if (hit) {
+          const cwd = await cwdForHit(hit);
+          if (cwd) currentCount = await countMessages(sid, cwd).catch(() => 0);
         }
       }
-      res.json({ ok: true, sessionId: sid, data: { ...stored, isStale } });
+      res.json({ ok: true, sessionId: sid, data: buildTierData(tiers, currentCount) });
     } catch (e) { next(e); }
   });
 
-  // Generate (or regenerate) a summary for a session via a one-shot Haiku
-  // subprocess call. Persists the result and broadcasts so sidebars refetch.
+  // Generate (or regenerate) one tier for a session via a one-shot Haiku call.
+  // Merges the new tier into the session's existing record without clobbering
+  // other tiers. Returns the same full three-tier data shape as GET so the
+  // client can refresh its cache in one round-trip.
   r.post('/sessions/:sessionId/summary', async (req, res, next) => {
     try {
       const sid = String(req.params.sessionId || '');
@@ -654,9 +668,12 @@ export function buildRoutes({ instances, serverCtx } = {}) {
       const cwd = await cwdForHit(hit);
       if (!cwd) throw Object.assign(new Error('session not found'), { statusCode: 404 });
       const { summary, messageCount } = await generateSummary(sid, cwd, length);
-      const stored = await setSummary(sid, { summary, length, generatedAt: Date.now(), messageCount });
+      await setSummary(sid, length, { summary, generatedAt: Date.now(), messageCount });
       broadcastProjects();
-      res.json({ ok: true, sessionId: sid, data: stored });
+      // Re-fetch all tiers so the response mirrors the GET shape.
+      const tiers = await getSummaries(sid);
+      const currentCount = await countMessages(sid, cwd).catch(() => 0);
+      res.json({ ok: true, sessionId: sid, data: buildTierData(tiers, currentCount) });
     } catch (e) { next(e); }
   });
 

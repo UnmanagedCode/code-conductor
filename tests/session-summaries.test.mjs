@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, freshProjectsRoot, rmrf } from './helpers.mjs';
 import {
-  setSummary, getSummary, deleteSummary, loadAll,
+  setSummary, getSummaries, deleteSummaries, loadAll,
 } from '../src/sessionSummaries.js';
 import { orchStoreRoot } from '../src/projects.js';
 
@@ -13,8 +13,6 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-basic.json');
 const FAKE_SUMMARIZE = path.join(__dirname, 'fake-claude-summarize.mjs');
 
-// One server shared across the file; fresh home dir per test (same pattern as
-// session-titles.test.mjs).
 let ctx, baseUrl, instances, home, projectsRoot, claudeProjectsRoot;
 before(async () => {
   ctx = await bootServer({ scenarioPath: SCENARIO });
@@ -25,134 +23,171 @@ beforeEach(async () => { ({ home, projectsRoot, claudeProjectsRoot } = await fre
 afterEach(async () => { await instances.shutdown(); await rmrf(home); });
 
 // ---------------------------------------------------------------------------
-// Store layer (no HTTP)
+// Store layer
 // ---------------------------------------------------------------------------
 
-test('sessionSummaries: set / get round-trip persists to disk', async () => {
-  assert.equal(await getSummary('sid-A'), null);
+test('setSummary / getSummaries round-trip persists to disk', async () => {
+  assert.deepEqual(await getSummaries('sid-A'), {});
 
-  const rec = { summary: 'A test summary.', length: 'short', generatedAt: 1000, messageCount: 5 };
-  const stored = await setSummary('sid-A', rec);
-  assert.equal(stored.summary, 'A test summary.');
-  assert.equal(stored.length, 'short');
+  const rec = { summary: 'Short gist.', generatedAt: 1000, messageCount: 5 };
+  const stored = await setSummary('sid-A', 'short', rec);
+  assert.equal(stored.summary, 'Short gist.');
+  assert.equal(stored.messageCount, 5);
 
-  const got = await getSummary('sid-A');
-  assert.deepEqual(got, stored);
+  const tiers = await getSummaries('sid-A');
+  assert.ok(tiers.short);
+  assert.equal(tiers.short.summary, 'Short gist.');
+  assert.equal(tiers.medium, undefined);
+  assert.equal(tiers.long, undefined);
 
-  // Verify disk shape
+  // Disk shape
   const file = path.join(orchStoreRoot(), 'session-summaries.json');
   const raw = JSON.parse(await fs.readFile(file, 'utf8'));
-  assert.equal(raw.summaries['sid-A'].summary, 'A test summary.');
+  assert.equal(raw.summaries['sid-A'].short.summary, 'Short gist.');
+  assert.equal(raw.summaries['sid-A'].medium, undefined);
 });
 
-test('sessionSummaries: getSummary returns null on miss', async () => {
-  assert.equal(await getSummary('nonexistent-sid'), null);
+test('multiple tiers coexist for one session; setSummary does not clobber others', async () => {
+  await setSummary('sid-A', 'short', { summary: 'Short.', generatedAt: 1, messageCount: 2 });
+  await setSummary('sid-A', 'long', { summary: 'Long detailed.', generatedAt: 2, messageCount: 2 });
+
+  const tiers = await getSummaries('sid-A');
+  assert.equal(tiers.short.summary, 'Short.');
+  assert.equal(tiers.long.summary, 'Long detailed.');
+  assert.equal(tiers.medium, undefined);
 });
 
-test('sessionSummaries: overwrite updates the entry', async () => {
-  await setSummary('sid-A', { summary: 'First.', length: 'short', generatedAt: 1000, messageCount: 3 });
-  await setSummary('sid-A', { summary: 'Second.', length: 'long', generatedAt: 2000, messageCount: 10 });
-  const got = await getSummary('sid-A');
-  assert.equal(got.summary, 'Second.');
-  assert.equal(got.length, 'long');
-  assert.equal(got.messageCount, 10);
+test('overwrite one tier does not affect other tiers', async () => {
+  await setSummary('sid-A', 'short', { summary: 'First short.', generatedAt: 1, messageCount: 1 });
+  await setSummary('sid-A', 'medium', { summary: 'Medium.', generatedAt: 2, messageCount: 1 });
+  await setSummary('sid-A', 'short', { summary: 'Updated short.', generatedAt: 3, messageCount: 2 });
+
+  const tiers = await getSummaries('sid-A');
+  assert.equal(tiers.short.summary, 'Updated short.');
+  assert.equal(tiers.medium.summary, 'Medium.');
 });
 
-test('sessionSummaries: concurrent writes do not lose entries', async () => {
+test('concurrent writes do not lose entries', async () => {
   await Promise.all([
-    setSummary('sid-1', { summary: 'one', length: 'short', generatedAt: 1, messageCount: 1 }),
-    setSummary('sid-2', { summary: 'two', length: 'medium', generatedAt: 2, messageCount: 2 }),
-    setSummary('sid-3', { summary: 'three', length: 'long', generatedAt: 3, messageCount: 3 }),
-    setSummary('sid-4', { summary: 'four', length: 'short', generatedAt: 4, messageCount: 4 }),
-    setSummary('sid-5', { summary: 'five', length: 'medium', generatedAt: 5, messageCount: 5 }),
+    setSummary('sid-1', 'short', { summary: 'one', generatedAt: 1, messageCount: 1 }),
+    setSummary('sid-2', 'medium', { summary: 'two', generatedAt: 2, messageCount: 2 }),
+    setSummary('sid-3', 'long', { summary: 'three', generatedAt: 3, messageCount: 3 }),
+    setSummary('sid-1', 'medium', { summary: 'one-med', generatedAt: 4, messageCount: 1 }),
+    setSummary('sid-2', 'long', { summary: 'two-long', generatedAt: 5, messageCount: 2 }),
   ]);
   const all = await loadAll();
-  assert.equal(all.get('sid-1').summary, 'one');
-  assert.equal(all.get('sid-2').summary, 'two');
-  assert.equal(all.get('sid-3').summary, 'three');
-  assert.equal(all.get('sid-4').summary, 'four');
-  assert.equal(all.get('sid-5').summary, 'five');
+  assert.equal(all.get('sid-1').short.summary, 'one');
+  assert.equal(all.get('sid-1').medium.summary, 'one-med');
+  assert.equal(all.get('sid-2').medium.summary, 'two');
+  assert.equal(all.get('sid-2').long.summary, 'two-long');
+  assert.equal(all.get('sid-3').long.summary, 'three');
 });
 
-test('sessionSummaries: deleting last entry removes the sidecar file', async () => {
-  await setSummary('sid-A', { summary: 'only one', length: 'medium', generatedAt: 1, messageCount: 1 });
-  await deleteSummary('sid-A');
-  assert.equal(await getSummary('sid-A'), null);
+test('deleteSummaries removes all tiers and unlinks file when empty', async () => {
+  await setSummary('sid-A', 'short', { summary: 'x', generatedAt: 1, messageCount: 1 });
+  await setSummary('sid-A', 'long', { summary: 'y', generatedAt: 2, messageCount: 1 });
+
+  await deleteSummaries('sid-A');
+  assert.deepEqual(await getSummaries('sid-A'), {});
+
   const file = path.join(orchStoreRoot(), 'session-summaries.json');
   let exists = true;
   try { await fs.stat(file); } catch (e) { if (e.code === 'ENOENT') exists = false; else throw e; }
   assert.equal(exists, false, 'sidecar should be unlinked when empty');
 });
 
+test('backward-compat: old single-summary shape is migrated on read', async () => {
+  // Write an old-style entry directly to the sidecar file.
+  const file = path.join(orchStoreRoot(), 'session-summaries.json');
+  await fs.mkdir(orchStoreRoot(), { recursive: true });
+  await fs.writeFile(file, JSON.stringify({
+    summaries: {
+      'old-sid': { summary: 'Old summary.', length: 'medium', generatedAt: 999, messageCount: 7 },
+    },
+  }) + '\n');
+
+  const tiers = await getSummaries('old-sid');
+  assert.equal(tiers.medium?.summary, 'Old summary.');
+  assert.equal(tiers.medium?.messageCount, 7);
+  assert.equal(tiers.short, undefined);
+  assert.equal(tiers.long, undefined);
+});
+
 // ---------------------------------------------------------------------------
 // HTTP endpoints
 // ---------------------------------------------------------------------------
 
-// Plant a minimal jsonl and return the sid + encoded dir.
 async function plantJsonl(projPath, sid, lines) {
   const encoded = projPath.replace(/[^A-Za-z0-9-]/g, '-');
   const dir = path.join(claudeProjectsRoot, encoded);
   await fs.mkdir(dir, { recursive: true });
-  const content = lines.map(l => JSON.stringify(l)).join('\n') + '\n';
-  await fs.writeFile(path.join(dir, `${sid}.jsonl`), content);
-  return { encoded, dir };
+  await fs.writeFile(path.join(dir, `${sid}.jsonl`), lines.map(l => JSON.stringify(l)).join('\n') + '\n');
 }
 
-test('GET /api/sessions/:sid/summary returns {data:null} when no summary', async () => {
-  const r = await api(baseUrl, 'GET', '/api/sessions/no-summary-sid/summary');
+test('GET /api/sessions/:sid/summary returns all-null when no summaries exist', async () => {
+  const r = await api(baseUrl, 'GET', '/api/sessions/no-sum-sid/summary');
   assert.equal(r.status, 200);
   assert.equal(r.body.ok, true);
-  assert.equal(r.body.data, null);
+  assert.equal(r.body.data.short, null);
+  assert.equal(r.body.data.medium, null);
+  assert.equal(r.body.data.long, null);
 });
 
-test('GET /api/sessions/:sid/summary returns data with isStale:false when counts match', async () => {
-  // Create a project + jsonl with 2 user+assistant lines.
-  await api(baseUrl, 'POST', '/api/projects', { name: 'sum-fresh' });
-  const sid = 'sid-fresh-1';
-  await plantJsonl(path.join(projectsRoot, 'sum-fresh'), sid, [
-    { type: 'user', message: { role: 'user', content: 'hello' } },
-    { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'hi' }] } },
+test('GET returns per-tier data with isStale:false when counts match', async () => {
+  await api(baseUrl, 'POST', '/api/projects', { name: 'get-fresh' });
+  const sid = 'sid-get-fresh';
+  await plantJsonl(path.join(projectsRoot, 'get-fresh'), sid, [
+    { type: 'user', message: { role: 'user', content: 'q' } },
+    { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'a' }] } },
   ]);
 
-  // Persist a summary with messageCount=2 (matches).
-  await setSummary(sid, { summary: 'A fresh summary.', length: 'medium', generatedAt: Date.now(), messageCount: 2 });
+  await setSummary(sid, 'short', { summary: 'S.', generatedAt: 1, messageCount: 2 });
+  await setSummary(sid, 'long', { summary: 'L.', generatedAt: 2, messageCount: 2 });
 
   const r = await api(baseUrl, 'GET', `/api/sessions/${sid}/summary`);
   assert.equal(r.status, 200);
-  assert.equal(r.body.ok, true);
-  assert.equal(r.body.data.summary, 'A fresh summary.');
-  assert.equal(r.body.data.isStale, false);
+  assert.equal(r.body.data.short.summary, 'S.');
+  assert.equal(r.body.data.short.isStale, false);
+  assert.equal(r.body.data.medium, null);
+  assert.equal(r.body.data.long.summary, 'L.');
+  assert.equal(r.body.data.long.isStale, false);
 });
 
-test('GET /api/sessions/:sid/summary returns isStale:true when session has grown', async () => {
-  await api(baseUrl, 'POST', '/api/projects', { name: 'sum-stale' });
-  const sid = 'sid-stale-1';
-  await plantJsonl(path.join(projectsRoot, 'sum-stale'), sid, [
-    { type: 'user', message: { role: 'user', content: 'hello' } },
-    { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'hi' }] } },
-    { type: 'user', message: { role: 'user', content: 'more' } },
+test('GET returns isStale:true per tier when session has grown', async () => {
+  await api(baseUrl, 'POST', '/api/projects', { name: 'get-stale' });
+  const sid = 'sid-get-stale';
+  // 4 lines in jsonl now, but summaries were generated at messageCount=1.
+  await plantJsonl(path.join(projectsRoot, 'get-stale'), sid, [
+    { type: 'user', message: { role: 'user', content: 'a' } },
+    { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'b' }] } },
+    { type: 'user', message: { role: 'user', content: 'c' } },
+    { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'd' }] } },
   ]);
 
-  // Stored messageCount=1 but current is 3 → stale.
-  await setSummary(sid, { summary: 'Old summary.', length: 'short', generatedAt: Date.now(), messageCount: 1 });
+  await setSummary(sid, 'short', { summary: 'S.', generatedAt: 1, messageCount: 1 });
+  await setSummary(sid, 'medium', { summary: 'M.', generatedAt: 2, messageCount: 4 }); // fresh
 
   const r = await api(baseUrl, 'GET', `/api/sessions/${sid}/summary`);
-  assert.equal(r.status, 200);
-  assert.equal(r.body.data.isStale, true);
+  assert.equal(r.body.data.short.isStale, true);
+  assert.equal(r.body.data.medium.isStale, false);
+  assert.equal(r.body.data.long, null);
 });
 
-test('POST /api/sessions/:sid/summary returns 400 on invalid length', async () => {
+test('POST returns 400 on invalid length', async () => {
   const r = await api(baseUrl, 'POST', '/api/sessions/abc-123/summary', { length: 'huge' });
   assert.equal(r.status, 400);
 });
 
-test('POST /api/sessions/:sid/summary generates and saves using fake CLI', async () => {
-  await api(baseUrl, 'POST', '/api/projects', { name: 'sum-gen' });
-  const sid = 'sid-gen-1';
-  await plantJsonl(path.join(projectsRoot, 'sum-gen'), sid, [
-    { type: 'user', message: { role: 'user', content: 'build a thing' } },
-    { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'done' }] } },
+test('POST generates, saves under the right tier, and does NOT clobber other tiers', async () => {
+  await api(baseUrl, 'POST', '/api/projects', { name: 'post-gen' });
+  const sid = 'sid-post-gen';
+  await plantJsonl(path.join(projectsRoot, 'post-gen'), sid, [
+    { type: 'user', message: { role: 'user', content: 'hello' } },
+    { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'hi' }] } },
   ]);
+
+  // Pre-seed a long summary.
+  await setSummary(sid, 'long', { summary: 'Pre-existing long.', generatedAt: 1, messageCount: 2 });
 
   const origBin = process.env.CLAUDE_BIN;
   process.env.CLAUDE_BIN = `${process.execPath} ${FAKE_SUMMARIZE}`;
@@ -160,34 +195,36 @@ test('POST /api/sessions/:sid/summary generates and saves using fake CLI', async
     const r = await api(baseUrl, 'POST', `/api/sessions/${sid}/summary`, { length: 'short' });
     assert.equal(r.status, 200);
     assert.equal(r.body.ok, true);
-    assert.equal(r.body.data.summary, 'This is a canned test summary of the session.');
-    assert.equal(r.body.data.length, 'short');
-    assert.ok(typeof r.body.data.messageCount === 'number');
-    assert.ok(typeof r.body.data.generatedAt === 'number');
 
-    // Persisted to sidecar.
-    const persisted = await getSummary(sid);
-    assert.equal(persisted.summary, 'This is a canned test summary of the session.');
+    // The generated short tier is in the response.
+    assert.equal(r.body.data.short.summary, 'This is a canned test summary of the session.');
+    // The pre-existing long tier is still there (not clobbered).
+    assert.equal(r.body.data.long.summary, 'Pre-existing long.');
+    assert.equal(r.body.data.medium, null);
+
+    // Persisted correctly.
+    const tiers = await getSummaries(sid);
+    assert.equal(tiers.short.summary, 'This is a canned test summary of the session.');
+    assert.equal(tiers.long.summary, 'Pre-existing long.');
   } finally {
     if (origBin === undefined) delete process.env.CLAUDE_BIN;
     else process.env.CLAUDE_BIN = origBin;
   }
 });
 
-test('DELETE /api/projects/:name/sessions/:sid also removes summary', async () => {
-  await api(baseUrl, 'POST', '/api/projects', { name: 'sum-del' });
-  const sid = 'sid-del-1';
-  await plantJsonl(path.join(projectsRoot, 'sum-del'), sid, [
-    { type: 'user', message: { role: 'user', content: 'hello' } },
+test('DELETE /api/projects/:name/sessions/:sid removes all tiers', async () => {
+  await api(baseUrl, 'POST', '/api/projects', { name: 'del-sum' });
+  const sid = 'sid-del-sum';
+  await plantJsonl(path.join(projectsRoot, 'del-sum'), sid, [
+    { type: 'user', message: { role: 'user', content: 'x' } },
   ]);
 
-  await setSummary(sid, { summary: 'will be deleted', length: 'short', generatedAt: Date.now(), messageCount: 1 });
-  assert.equal((await getSummary(sid)).summary, 'will be deleted');
+  await setSummary(sid, 'short', { summary: 'S.', generatedAt: 1, messageCount: 1 });
+  await setSummary(sid, 'medium', { summary: 'M.', generatedAt: 2, messageCount: 1 });
 
-  const del = await api(baseUrl, 'DELETE', `/api/projects/sum-del/sessions/${sid}`);
+  const del = await api(baseUrl, 'DELETE', `/api/projects/del-sum/sessions/${sid}`);
   assert.equal(del.status, 200);
 
-  // Allow the best-effort async deleteSummary to complete.
   await new Promise(r => setTimeout(r, 50));
-  assert.equal(await getSummary(sid), null);
+  assert.deepEqual(await getSummaries(sid), {});
 });
