@@ -8,6 +8,24 @@
 
 import { generateSummary, flattenTranscript } from '../src/summarize.js';
 
+// Strip markdown scaffolding and count remaining content words.
+// Removes: heading markers (#), table pipes (|) and separator rows (|---|),
+// bullet/list markers (- / * / + at line start), bold/italic (**/__/*/_),
+// code fences (```), inline backticks (keep content inside).
+function contentWordCount(text) {
+  let s = text;
+  s = s.replace(/^```[^\n]*\n[\s\S]*?^```/gm, '');    // fenced code blocks
+  s = s.replace(/^\|[-| :]+\|$/gm, '');                // table separator rows  |---|---|
+  s = s.replace(/\|/g, ' ');                            // table pipes
+  s = s.replace(/^#{1,6}\s*/gm, '');                   // heading markers
+  s = s.replace(/^[\s]*[-*+]\s+/gm, '');               // bullet markers
+  s = s.replace(/^\s*\d+\.\s+/gm, '');                 // numbered list markers
+  s = s.replace(/\*{1,3}|_{1,3}/g, '');                // bold/italic markers
+  s = s.replace(/`([^`]*)`/g, '$1');                   // inline code (keep text)
+  s = s.replace(/`/g, '');                              // stray backticks
+  return s.trim().split(/\s+/).filter(w => w.length > 0).length;
+}
+
 const SESSIONS = [
   {
     label: 'LARGE SESSION (752 turns, 3.1 MB)',
@@ -44,7 +62,8 @@ async function runSession({ label, sessionId, cwd, jsonl }) {
 
     console.log(result.summary);
     console.log();
-    console.log(`  messageCount: ${result.messageCount}  |  inputChars: ${conversationText.length.toLocaleString()}  |  durationMs: ${result.durationMs}  |  costUsd: ${result.costUsd}`);
+    const cwc = contentWordCount(result.summary);
+    console.log(`  contentWords: ${cwc}  |  messageCount: ${result.messageCount}  |  inputChars: ${conversationText.length.toLocaleString()}  |  durationMs: ${result.durationMs}  |  costUsd: ${result.costUsd}`);
     console.log();
   }
 }

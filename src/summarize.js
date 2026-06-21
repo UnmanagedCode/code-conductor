@@ -12,14 +12,17 @@ import { DEFAULT_VERSIONS } from './modelVersions.js';
 const LENGTH_INSTRUCTIONS = {
   short: {
     depth: 'a one-glance gist — just what the session was about and the outcome. Highest altitude.',
-    structure: 'Plain prose only. No headings, bullets, or tables at this size.',
+    budget: '~40 content words maximum',
+    structure: 'Plain prose only — no headings, bullets, or tables at this size.',
   },
   medium: {
     depth: 'a scannable recap of the essentials — the goal, the main changes, key decisions, and the outcome. Compact but complete.',
+    budget: '~150 content words maximum',
     structure: 'Use bullets or a table for any enumerable information (list of changes, decisions, files). Reserve flowing prose for narrative or rationale. One or two short headings are fine if they help, but don\'t over-structure.',
   },
   long: {
     depth: 'a thorough recap — cover all notable changes, decisions, and outcomes in detail.',
+    budget: '~400 content words maximum',
     structure: 'Lean heavily on markdown structure: ## section headings, bullet lists, and tables for enumerable information (commits, files changed, decisions, test results). Reserve prose for narrative and rationale. A table is better than a run-on sentence for any list of three or more items.',
   },
 };
@@ -91,13 +94,16 @@ export async function generateSummary(sessionId, cwd, length = 'medium') {
 
   const { conversationText, messageCount } = await flattenTranscript(sessionId, cwd);
 
-  const prompt = `Summarize the following Claude Code session. Depth: ${tier.depth}
+  const prompt = `Summarize the following Claude Code session.
+
+Coverage: ${tier.depth}
+Word budget: ${tier.budget} of CONTENT words.
 
 Focus on: what the user wanted to accomplish, what was built or changed, key decisions made. Skip tool call details; describe outcomes and results.
 
 ${tier.structure}
 
-Important: markdown structure (headings, bullets, tables) is scaffolding — it does not count toward how long or short the summary is. Use structure freely to aid scannability; only the substantive content determines the depth.
+Critical word-count rule: the word budget counts CONTENT words only — the actual words of information you write. Markdown scaffolding (#, ##, |, -, *, ** markers, table pipes and dashes) does NOT count toward the budget. Judge your length by the informational words, not the formatting. A compact table with 30 content words is not "over budget" because of its pipes. This means: use markdown structure freely to improve scannability; only the substance counts.
 
 CONVERSATION:
 ${conversationText}
