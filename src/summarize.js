@@ -10,7 +10,7 @@ import { resolveClaudeBin } from './instances.js';
 import { DEFAULT_VERSIONS } from './modelVersions.js';
 
 const LENGTH_INSTRUCTIONS = {
-  short: '2-3 sentences',
+  short: 'at most 2-3 short sentences; be terse',
   medium: '5-8 sentences',
   long: '3-4 paragraphs',
 };
@@ -85,6 +85,8 @@ export async function generateSummary(sessionId, cwd, length = 'medium') {
   const prompt = `Summarize the following Claude Code session conversation in ${instruction}.
 
 Focus on: what the user wanted to accomplish, what was built or changed, key decisions made. Skip tool call details; describe outcomes and results.
+
+Output must be plain prose only — no markdown headers, no bullet points, no numbered lists, no bold or italic text. Just sentences and paragraphs.
 
 CONVERSATION:
 ${conversationText}
