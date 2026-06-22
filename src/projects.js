@@ -318,7 +318,7 @@ export async function renameWorkspace(oldName, newName) {
   return { renamed: true, name: newV, movedProjects: members };
 }
 
-export async function createProject(name) {
+export async function createProject(name, { appendToCLAUDEmd = '' } = {}) {
   validateName(name);
   const root = projectsRoot();
   const full = path.join(root, name);
@@ -335,9 +335,11 @@ export async function createProject(name) {
   // Seed a CLAUDE.md that imports the workspace-wide one at ~/project/CLAUDE.md.
   // Using @../CLAUDE.md so Claude Code's import resolver pulls the workspace
   // file in regardless of where the project ends up being mounted.
+  // appendToCLAUDEmd is an inline snapshot of selected optional rule bodies;
+  // callers compute it via optionalRules.composeRulesBlock (no circular dep).
   const claudeMdPath = path.join(full, 'CLAUDE.md');
   try {
-    await fs.writeFile(claudeMdPath, '@../CLAUDE.md\n', { flag: 'wx' });
+    await fs.writeFile(claudeMdPath, '@../CLAUDE.md\n' + appendToCLAUDEmd, { flag: 'wx' });
   } catch (e) {
     if (e.code !== 'EEXIST') throw e;
   }

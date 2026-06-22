@@ -482,16 +482,33 @@ export function buildTools() {
       name: 'create_project',
       description:
         'Create a new empty project under ~/project/<name>. Seeds CLAUDE.md with @../CLAUDE.md ' +
-        'so workspace-wide conventions are inherited. Optionally runs `git init` in the new dir.',
+        'so workspace-wide conventions are inherited. Optionally runs `git init` in the new dir. ' +
+        'Optional rule modules (inline CLAUDE.md sections) can be appended by passing their slugs — ' +
+        'call list_optional_rules to discover available slugs.',
       inputSchema: {
         type: 'object',
         properties: {
           name: { type: 'string', pattern: '^[a-zA-Z0-9._-]+$', description: 'Project name. Must match ^[a-zA-Z0-9._-]+$.' },
           gitInit: { type: 'boolean', default: false, description: 'If true, run `git init` in the new project dir. Default false.' },
+          rules: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Slugs of optional rule modules to append to CLAUDE.md — call list_optional_rules to discover available slugs.',
+          },
         },
         required: ['name'],
       },
       handler: h.createProject,
+    },
+    {
+      name: 'list_optional_rules',
+      description:
+        'List the available optional rule modules (slug, name, description, builtin) that can be ' +
+        'passed to create_project\'s `rules` param. Built-in seeds have builtin:true and are read-only; ' +
+        'custom rules (builtin:false) are managed via the Settings → Rule modules panel.',
+      inputSchema: { type: 'object', properties: {}, required: [] },
+      handler: h.listOptionalRules,
+      annotations: { readOnlyHint: true },
     },
     {
       name: 'get_recent_messages',

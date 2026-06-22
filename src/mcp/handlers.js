@@ -27,6 +27,7 @@ import {
   worktreeDirtyLines, runGit, DIFF_BYTE_CAP, assertValidBaseRef,
 } from '../worktrees.js';
 import { buildApprovePrompt, buildRejectPrompt } from '../planApproval.js';
+import { getCatalog as getOptionalRulesCatalog, composeRulesBlock } from '../optionalRules.js';
 import { isKnownFamily, defaultVersion } from '../modelVersions.js';
 import { getModelVersion } from '../appSettings.js';
 import { textPayload } from './content.js';
@@ -748,8 +749,9 @@ export async function setProjectWorkspace({ project, workspace }) {
 
 // ---------- create / introspect ----------
 
-export async function createProject({ name, gitInit = false }) {
-  const created = await fsCreateProject(name);
+export async function createProject({ name, gitInit = false, rules = [] }) {
+  const appendToCLAUDEmd = await composeRulesBlock(rules);
+  const created = await fsCreateProject(name, { appendToCLAUDEmd });
   if (gitInit) {
     const r = await runGit(created.path, ['init', '-q']);
     if (r.code !== 0) {
@@ -757,6 +759,11 @@ export async function createProject({ name, gitInit = false }) {
     }
   }
   return { ...created, gitInit: !!gitInit };
+}
+
+export async function listOptionalRules() {
+  const catalog = await getOptionalRulesCatalog();
+  return catalog.map(({ slug, name, description, builtin }) => ({ slug, name, description, builtin }));
 }
 
 // reconstructMessages / buildMessageFromRing / mergeRecentWithDisk /
