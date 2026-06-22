@@ -38,9 +38,21 @@ export const SEED_RULES = [
   {
     slug: 'doc-hygiene',
     name: 'Documentation hygiene',
-    description: 'Update the most-specific doc when behavior changes',
+    description: 'Layered docs (README + docs/features/protocol/architecture); update the most-specific file when behavior changes',
     body: `## Documentation hygiene
-- When a turn meaningfully changes user-facing behavior, update the most specific doc file for that change — not just the README. Reserve direct README edits for quick-start steps, key defaults, and known limitations.`,
+Keep docs layered, and on any behavior change update the most specific file — not just the README.
+- \`README.md\` — overview (functional + technical), quick start, key defaults, known limitations. The entry point.
+- \`docs/features.md\` — user-facing features and UI behavior.
+- \`docs/protocol.md\` — external interface contracts: API/REST endpoints, message types, protocol flags, wire formats.
+- \`docs/architecture.md\` — internals: component layout, lifecycle, on-disk state, migrations, testing patterns.
+
+Route each change to the right file:
+- User-facing feature / UI / new tool → \`docs/features.md\` (+ a one-line README note only if it adds a new top-level subsystem).
+- New/changed endpoint, message type, or protocol flag → \`docs/protocol.md\`.
+- New source file, wiring, lifecycle/state/migration/test-pattern change → \`docs/architecture.md\`.
+- Quick-start step, key default, or known limitation → \`README.md\` directly.
+
+Keep functional and technical descriptions in sync; be precise — name exact paths, commands, flags, and defaults, and prefer bullets/tables for enumerable facts.`,
     builtin: true,
   },
 ];
