@@ -4,10 +4,18 @@
 
 import { spawn } from 'node:child_process';
 import { promises as fs } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { claudeProjectsRoot, encodeCwd } from './projects.js';
 import { resolveClaudeBin } from './instances.js';
 import { DEFAULT_VERSIONS } from './modelVersions.js';
+
+// Dedicated scratch directory for one-shot summary subprocesses.
+// Using a path that is never a tracked project prevents the CLI from
+// creating listable session jsonls under any real project's dir.
+// Exported so tests can introspect the expected artifact path.
+export const SCRATCH_DIR = path.join(os.tmpdir(), 'cc-summary-scratch');
 
 const LENGTH_INSTRUCTIONS = {
   short: {
@@ -130,55 +138,74 @@ ${conversationText}
 Provide the summary only, no preamble:`;
 
   const { command, prefixArgs } = resolveClaudeBin();
+  // Each generation gets a throwaway session id so the CLI doesn't resume
+  // a previous scratch session. The jsonl is deleted in the finally block.
+  const scratchId = randomUUID();
   const args = [
     ...prefixArgs,
     '-p',
     '--output-format=json',
     '--model', DEFAULT_VERSIONS.haiku,
+    '--session-id', scratchId,
   ];
 
+  // Ensure the scratch dir exists before spawning. It is deliberately NOT a
+  // tracked project path, so the CLI's session jsonl won't appear in any
+  // project's session list.
+  await fs.mkdir(SCRATCH_DIR, { recursive: true });
+
   const startMs = Date.now();
+  let parsed;
 
-  const result = await new Promise((resolve, reject) => {
-    const child = spawn(command, args, { stdio: ['pipe', 'pipe', 'pipe'] });
+  try {
+    parsed = await new Promise((resolve, reject) => {
+      const child = spawn(command, args, {
+        cwd: SCRATCH_DIR,
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
 
-    const stdoutChunks = [];
-    const stderrChunks = [];
-    child.stdout.on('data', chunk => stdoutChunks.push(chunk));
-    child.stderr.on('data', chunk => stderrChunks.push(chunk));
+      const stdoutChunks = [];
+      const stderrChunks = [];
+      child.stdout.on('data', chunk => stdoutChunks.push(chunk));
+      child.stderr.on('data', chunk => stderrChunks.push(chunk));
 
-    const timer = setTimeout(() => {
-      child.kill();
-      reject(new Error('summary generation timed out after 60s'));
-    }, 60_000);
+      const timer = setTimeout(() => {
+        child.kill();
+        reject(new Error('summary generation timed out after 60s'));
+      }, 60_000);
 
-    child.on('close', (code) => {
-      clearTimeout(timer);
-      if (code !== 0) {
-        const stderr = Buffer.concat(stderrChunks).toString().trim();
-        return reject(new Error(`claude exited with code ${code}: ${stderr.slice(0, 500)}`));
-      }
-      const stdout = Buffer.concat(stdoutChunks).toString().trim();
-      let parsed;
-      try { parsed = JSON.parse(stdout); }
-      catch (e) { return reject(new Error(`failed to parse claude output: ${stdout.slice(0, 200)}`)); }
-      resolve(parsed);
+      child.on('close', (code) => {
+        clearTimeout(timer);
+        if (code !== 0) {
+          const stderr = Buffer.concat(stderrChunks).toString().trim();
+          return reject(new Error(`claude exited with code ${code}: ${stderr.slice(0, 500)}`));
+        }
+        const stdout = Buffer.concat(stdoutChunks).toString().trim();
+        let out;
+        try { out = JSON.parse(stdout); }
+        catch (e) { return reject(new Error(`failed to parse claude output: ${stdout.slice(0, 200)}`)); }
+        resolve(out);
+      });
+
+      child.stdin.write(prompt);
+      child.stdin.end();
     });
-
-    child.stdin.write(prompt);
-    child.stdin.end();
-  });
+  } finally {
+    // Best-effort cleanup of the scratch jsonl. Runs on success AND failure.
+    const artifact = path.join(claudeProjectsRoot(), encodeCwd(SCRATCH_DIR), `${scratchId}.jsonl`);
+    fs.unlink(artifact).catch(() => {});
+  }
 
   const durationMs = Date.now() - startMs;
-  const summary = result.result;
+  const summary = parsed.result;
   if (typeof summary !== 'string' || !summary.trim()) {
-    throw new Error(`unexpected claude output shape: ${JSON.stringify(result).slice(0, 200)}`);
+    throw new Error(`unexpected claude output shape: ${JSON.stringify(parsed).slice(0, 200)}`);
   }
 
   return {
     summary: summary.trim(),
     messageCount,
     durationMs,
-    costUsd: result.total_cost_usd ?? result.cost_usd ?? null,
+    costUsd: parsed.total_cost_usd ?? parsed.cost_usd ?? null,
   };
 }

@@ -1,13 +1,15 @@
 import { test, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, freshProjectsRoot, rmrf } from './helpers.mjs';
 import {
   setSummary, getSummaries, deleteSummaries, loadAll,
 } from '../src/sessionSummaries.js';
-import { orchStoreRoot } from '../src/projects.js';
+import { orchStoreRoot, claudeProjectsRoot as getClaudeProjectsRoot } from '../src/projects.js';
+import { SCRATCH_DIR } from '../src/summarize.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-basic.json');
@@ -227,4 +229,70 @@ test('DELETE /api/projects/:name/sessions/:sid removes all tiers', async () => {
 
   await new Promise(r => setTimeout(r, 50));
   assert.deepEqual(await getSummaries(sid), {});
+});
+
+// ---------------------------------------------------------------------------
+// Scratch-dir isolation: POST must use SCRATCH_DIR as cwd, not a real project.
+// ---------------------------------------------------------------------------
+
+test('POST spawns subprocess in scratch dir (not a real project cwd)', async () => {
+  await api(baseUrl, 'POST', '/api/projects', { name: 'scratch-cwd' });
+  const sid = 'sid-scratch-cwd';
+  await plantJsonl(path.join(projectsRoot, 'scratch-cwd'), sid, [
+    { type: 'user', message: { role: 'user', content: 'hi' } },
+    { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'hey' }] } },
+  ]);
+
+  // Use a temp file to capture the subprocess's cwd.
+  const cwdOut = path.join(os.tmpdir(), `cc-test-cwd-${Date.now()}.txt`);
+  const origBin = process.env.CLAUDE_BIN;
+  process.env.CLAUDE_BIN = `${process.execPath} ${FAKE_SUMMARIZE}`;
+  process.env.FAKE_SUMMARIZE_CWD_OUT = cwdOut;
+  try {
+    const r = await api(baseUrl, 'POST', `/api/sessions/${sid}/summary`, { length: 'short' });
+    assert.equal(r.status, 200);
+
+    const spawnedCwd = (await fs.readFile(cwdOut, 'utf8').catch(() => '')).trim();
+    assert.equal(spawnedCwd, SCRATCH_DIR,
+      `subprocess cwd should be SCRATCH_DIR, got: ${spawnedCwd}`);
+  } finally {
+    if (origBin === undefined) delete process.env.CLAUDE_BIN;
+    else process.env.CLAUDE_BIN = origBin;
+    delete process.env.FAKE_SUMMARIZE_CWD_OUT;
+    await fs.unlink(cwdOut).catch(() => {});
+  }
+});
+
+test('POST cleans up scratch jsonl artifact after generation', async () => {
+  await api(baseUrl, 'POST', '/api/projects', { name: 'scratch-cleanup' });
+  const sid = 'sid-scratch-cleanup';
+  await plantJsonl(path.join(projectsRoot, 'scratch-cleanup'), sid, [
+    { type: 'user', message: { role: 'user', content: 'hi' } },
+    { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'hey' }] } },
+  ]);
+
+  const origBin = process.env.CLAUDE_BIN;
+  process.env.CLAUDE_BIN = `${process.execPath} ${FAKE_SUMMARIZE}`;
+  // Tell the fake to actually create the artifact jsonl so cleanup is testable.
+  process.env.FAKE_SUMMARIZE_WRITE_JSONL = '1';
+  try {
+    const r = await api(baseUrl, 'POST', `/api/sessions/${sid}/summary`, { length: 'medium' });
+    assert.equal(r.status, 200);
+
+    // Give the best-effort cleanup a moment to complete.
+    await new Promise(res => setTimeout(res, 100));
+
+    // The scratch project dir should have no lingering jsonls.
+    const scratchEncoded = SCRATCH_DIR.replace(/[^A-Za-z0-9-]/g, '-');
+    const scratchProjDir = path.join(getClaudeProjectsRoot(), scratchEncoded);
+    let files = [];
+    try { files = await fs.readdir(scratchProjDir); } catch (e) { if (e.code !== 'ENOENT') throw e; }
+    const jsonls = files.filter(f => f.endsWith('.jsonl'));
+    assert.equal(jsonls.length, 0,
+      `scratch dir should have no leftover jsonls, found: ${jsonls.join(', ')}`);
+  } finally {
+    if (origBin === undefined) delete process.env.CLAUDE_BIN;
+    else process.env.CLAUDE_BIN = origBin;
+    delete process.env.FAKE_SUMMARIZE_WRITE_JSONL;
+  }
 });
