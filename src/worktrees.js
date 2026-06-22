@@ -5,7 +5,7 @@
 // `<projectsRoot>/.code-conductor/projects/<project>/worktrees/<worktreeDir>/`
 // — the worktree dir itself stays clean.
 
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
@@ -125,6 +125,119 @@ async function readMeta(project, worktreeName) {
   try { return JSON.parse(text); } catch { return null; }
 }
 
+// Cap on hook output kept in memory — tail of this many bytes is retained.
+// Chatty scripts (npm ci, etc.) can emit MBs; keep only the tail so the
+// result field stays network-friendly. ~16 KB is generous for diagnostics.
+const HOOK_OUTPUT_CAP = 16 * 1024;
+
+// Run `.code-conductor/post-worktree-create.sh` inside the new worktree
+// if the file exists. Always resolves — never rejects — so a broken hook
+// cannot abort a successful worktree create. Result is attached to the
+// createWorktree() return value as `postWorktreeCreate`.
+async function runPostWorktreeHook(meta) {
+  if (process.env.ORCH_DISABLE_POST_WORKTREE_HOOK === '1') {
+    return { ran: false, skipped: 'disabled' };
+  }
+
+  const scriptPath = path.join(
+    meta.worktreePath, '.code-conductor', 'post-worktree-create.sh',
+  );
+  try {
+    await fs.access(scriptPath);
+  } catch {
+    return { ran: false };
+  }
+
+  // Ensure the executable bit is set — the script may have been committed
+  // without it (e.g. on Windows / FAT filesystems). Non-fatal if chmod fails.
+  try {
+    const stat = await fs.stat(scriptPath);
+    if (!(stat.mode & 0o111)) {
+      await fs.chmod(scriptPath, stat.mode | 0o111);
+    }
+  } catch { /* best-effort */ }
+
+  const timeoutMs = Number(process.env.ORCH_POST_WORKTREE_TIMEOUT_MS) || 120_000;
+  const env = {
+    ...process.env,
+    CC_WORKTREE_PATH: meta.worktreePath,
+    CC_PROJECT_NAME: meta.parentProject,
+    CC_BRANCH: meta.branch,
+    CC_BASE_BRANCH: meta.baseBranch,
+    CC_PARENT_PATH: meta.parentPath,
+  };
+
+  return new Promise((resolve) => {
+    const start = Date.now();
+    let timedOut = false;
+    const chunks = [];
+
+    // detached=true puts bash + all its children in their own process group so
+    // we can kill the whole group (including long-running child processes like
+    // `npm ci`) with a single process.kill(-pid, signal) on timeout.
+    const proc = spawn('bash', [scriptPath], {
+      cwd: meta.worktreePath,
+      env,
+      detached: true,
+    });
+
+    const onData = (chunk) => chunks.push(chunk);
+    proc.stdout?.on('data', onData);
+    proc.stderr?.on('data', onData);
+
+    const killGroup = () => {
+      try { process.kill(-proc.pid, 'SIGTERM'); } catch { proc.kill('SIGTERM'); }
+      // SIGKILL backstop: sends SIGKILL if the process group doesn't die
+      // from SIGTERM within 100 ms (e.g. `sleep` ignoring SIGTERM on some
+      // platforms). Unref'd so it can't keep the process alive.
+      setTimeout(() => {
+        try { process.kill(-proc.pid, 'SIGKILL'); } catch { proc.kill('SIGKILL'); }
+      }, 100).unref();
+    };
+
+    const timer = setTimeout(() => {
+      timedOut = true;
+      killGroup();
+    }, timeoutMs);
+
+    proc.on('close', (code) => {
+      clearTimeout(timer);
+      const durationMs = Date.now() - start;
+      const raw = Buffer.concat(chunks).toString('utf8');
+      const truncated = raw.length > HOOK_OUTPUT_CAP;
+      let output;
+      if (truncated) {
+        const tail = raw.slice(raw.length - HOOK_OUTPUT_CAP);
+        // Start at the next newline so output begins on a clean line.
+        const nl = tail.indexOf('\n');
+        output = '… [truncated]\n' + (nl >= 0 ? tail.slice(nl + 1) : tail);
+      } else {
+        output = raw;
+      }
+      const result = {
+        ran: true,
+        exitCode: timedOut ? null : (code ?? null),
+        durationMs,
+        output: output.trimEnd(),
+      };
+      if (truncated) result.truncated = true;
+      if (timedOut) result.timedOut = true;
+      resolve(result);
+    });
+
+    proc.on('error', (err) => {
+      clearTimeout(timer);
+      resolve({
+        ran: true,
+        exitCode: null,
+        durationMs: Date.now() - start,
+        output: err.message,
+        error: true,
+      });
+    });
+  });
+}
+
 // Create a fresh worktree off the parent repo's current HEAD. Returns
 // the metadata that was written to disk.
 export async function createWorktree(projectName) {
@@ -168,7 +281,12 @@ export async function createWorktree(projectName) {
     createdAt: new Date().toISOString(),
   };
   await writeMeta(projectName, dirName, meta);
-  return meta;
+  // Run the per-project post-worktree-create hook. Runs AFTER the worktree
+  // dir + branch + metadata are written, BEFORE the instance subprocess is
+  // created — so a slow hook never interferes with the 5 s control-request
+  // timeout. Non-fatal: a failure warns but does not roll back the worktree.
+  const postWorktreeCreate = await runPostWorktreeHook(meta);
+  return { ...meta, postWorktreeCreate };
 }
 
 // List every worktree on disk that we own for a given project. Reads

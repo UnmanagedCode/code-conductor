@@ -239,6 +239,7 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
 #spawn-dialog details[open] > summary::after { transform: rotate(-180deg); }
 #spawn-dialog details > summary::-webkit-details-marker { display: none; }
 .sd-advanced-body { padding-top: 6px; }
+.sd-hook-output { font-size: 11px; max-height: 200px; overflow-y: auto; white-space: pre-wrap; word-break: break-all; margin: 4px 0 0; }
 /* Pin both spawn dialogs to the same fixed width so they match each other
    and so #spawn-dialog doesn't jump when Advanced options is expanded. */
 #spawn-dialog,

@@ -190,7 +190,12 @@ export function installSpawnDialog({ dom, getProjects, refreshProjects, refreshI
   }
 
   dom.spawnDialog.addEventListener('close', async () => {
+    // Restore the Spawn button after a hook-result re-open (non-spawn close).
+    dom.sdSpawn.disabled = false;
     if (dom.spawnDialog.returnValue !== 'spawn') return;
+    // Clear any previous hook result from a prior spawn.
+    dom.sdHookResult.hidden = true;
+    dom.sdError.textContent = '';
     const project  = pendingSpawnProject;
     const mode     = sdModeValue;
     const model    = resolveSpawnModel(selectedSpawnFamily);
@@ -213,6 +218,20 @@ export function installSpawnDialog({ dom, getProjects, refreshProjects, refreshI
       await refreshProjects();
       await refreshInstances();
       selectInstance(inst.id);
+      // If a post-worktree-create hook ran, show its result in the dialog.
+      const hook = inst.worktree?.postWorktreeCreate;
+      if (hook?.ran) {
+        const exitLabel = hook.timedOut ? 'timed out'
+          : hook.exitCode === 0 ? 'exit 0 ✓'
+          : `exit ${hook.exitCode} ⚠`;
+        const timeLabel = hook.durationMs != null ? ` (${hook.durationMs}ms)` : '';
+        const truncLabel = hook.truncated ? ' — output truncated' : '';
+        dom.sdHookSummary.textContent = `Hook: ${exitLabel}${timeLabel}${truncLabel}`;
+        dom.sdHookOutput.textContent = hook.output || '';
+        dom.sdHookResult.hidden = false;
+        dom.sdSpawn.disabled = true;
+        dom.spawnDialog.showModal();
+      }
     } catch (e) {
       dom.sdError.textContent = e.message;
       dom.spawnDialog.showModal();
