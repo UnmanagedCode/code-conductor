@@ -106,6 +106,7 @@
               <option value="tts">TTS</option>
               <option value="workspace">Workspace conventions</option>
               <option value="archived">Archived</option>
+              <option value="rules">Rule modules</option>
             </select>
           </header>
           <div id="settings-transcribe" class="settings-group" hidden>
@@ -211,6 +212,28 @@
             <div id="ar-status" class="st-status" aria-live="polite">Loading…</div>
             <div id="ar-list" class="ar-list"></div>
           </div>
+          <div id="settings-rules" class="settings-group" hidden>
+            <p class="settings-desc">
+              Optional CLAUDE.md sections selectable at project creation. Built-in seeds are
+              read-only; custom rules can be added, edited, and deleted here.
+            </p>
+            <div id="or-status" class="st-status" aria-live="polite">Loading…</div>
+            <ul id="or-rule-list" class="or-rule-list"></ul>
+            <div id="or-add-form" class="or-add-form" hidden>
+              <input id="or-add-slug" type="text" placeholder="slug (e.g. my-rule)" />
+              <input id="or-add-name" type="text" placeholder="Short name" />
+              <input id="or-add-desc" type="text" placeholder="One-line description" />
+              <textarea id="or-add-body" rows="6" placeholder="Markdown body appended to CLAUDE.md"></textarea>
+              <div class="or-add-actions">
+                <button id="or-add-save" type="button">Save</button>
+                <button id="or-add-cancel" type="button">Cancel</button>
+              </div>
+              <p class="error" id="or-add-error"></p>
+            </div>
+            <div class="st-actions">
+              <button id="or-add-btn" type="button">+ Add custom rule</button>
+            </div>
+          </div>
         </div>
       </section>
       <section id="review-view" hidden aria-label="Review changes">
@@ -249,6 +272,10 @@
       <h3>New project</h3>
       <label>Name <input id="np-name" pattern="[a-zA-Z0-9._-]+" required autofocus /></label>
       <p class="hint">Creates <code id="np-preview">~/project/&lt;name&gt;</code></p>
+      <div id="np-rules" class="np-rules" hidden>
+        <p class="np-rules-label">CLAUDE.md rule modules</p>
+        <ul id="np-rules-list" class="np-rules-list"></ul>
+      </div>
       <p class="error" id="np-error"></p>
       <menu>
         <button value="cancel" formnovalidate>Cancel</button>

@@ -56,6 +56,18 @@ export function installSettings({
   // Archived group elements.
   const arStatusEl = document.getElementById('ar-status');
   const arListEl = document.getElementById('ar-list');
+  // Optional rules group elements.
+  const orStatusEl = document.getElementById('or-status');
+  const orRuleListEl = document.getElementById('or-rule-list');
+  const orAddBtn = document.getElementById('or-add-btn');
+  const orAddForm = document.getElementById('or-add-form');
+  const orAddSlug = document.getElementById('or-add-slug');
+  const orAddName = document.getElementById('or-add-name');
+  const orAddDesc = document.getElementById('or-add-desc');
+  const orAddBody = document.getElementById('or-add-body');
+  const orAddSave = document.getElementById('or-add-save');
+  const orAddCancel = document.getElementById('or-add-cancel');
+  const orAddError = document.getElementById('or-add-error');
   if (!view) return { open() {}, close() {} };
 
   let isOpen = false;
@@ -84,6 +96,7 @@ export function installSettings({
     loadTts();
     loadWorkspace();
     loadArchived();
+    loadOptionalRules();
   }
 
   function hide() {
@@ -859,6 +872,134 @@ export function installSettings({
       if (arListEl) arListEl.innerHTML = '';
     }
   }
+
+  // ── Optional rules group ────────────────────────────────────────────────
+
+  // Tracks which slug is being edited (null = add mode).
+  let orEditingSlug = null;
+
+  function renderOptionalRules(rules) {
+    if (orStatusEl) orStatusEl.textContent = '';
+    if (!orRuleListEl) return;
+    orRuleListEl.innerHTML = '';
+    for (const rule of rules) {
+      const li = document.createElement('li');
+      li.className = 'or-rule-item';
+      const titleEl = document.createElement('span');
+      titleEl.className = 'or-rule-name';
+      titleEl.textContent = rule.name;
+      const descEl = document.createElement('span');
+      descEl.className = 'or-rule-desc';
+      descEl.textContent = rule.description;
+      const tagEl = document.createElement('span');
+      tagEl.className = 'or-rule-slug';
+      tagEl.textContent = rule.slug;
+      li.appendChild(titleEl);
+      li.appendChild(tagEl);
+      li.appendChild(descEl);
+      if (!rule.builtin) {
+        const editBtn = document.createElement('button');
+        editBtn.type = 'button';
+        editBtn.textContent = 'Edit';
+        editBtn.addEventListener('click', () => openEditForm(rule));
+        const delBtn = document.createElement('button');
+        delBtn.type = 'button';
+        delBtn.textContent = 'Delete';
+        delBtn.addEventListener('click', () => deleteOptionalRule(rule.slug));
+        li.appendChild(editBtn);
+        li.appendChild(delBtn);
+      } else {
+        const badge = document.createElement('span');
+        badge.className = 'or-builtin-badge';
+        badge.textContent = 'built-in';
+        li.appendChild(badge);
+      }
+      orRuleListEl.appendChild(li);
+    }
+  }
+
+  function openAddForm() {
+    orEditingSlug = null;
+    if (orAddSlug) { orAddSlug.value = ''; orAddSlug.disabled = false; }
+    if (orAddName) orAddName.value = '';
+    if (orAddDesc) orAddDesc.value = '';
+    if (orAddBody) orAddBody.value = '';
+    if (orAddError) orAddError.textContent = '';
+    if (orAddForm) orAddForm.hidden = false;
+    if (orAddBtn) orAddBtn.hidden = true;
+    orAddSlug?.focus();
+  }
+
+  function openEditForm(rule) {
+    orEditingSlug = rule.slug;
+    if (orAddSlug) { orAddSlug.value = rule.slug; orAddSlug.disabled = true; }
+    if (orAddName) orAddName.value = rule.name;
+    if (orAddDesc) orAddDesc.value = rule.description;
+    if (orAddBody) orAddBody.value = rule.body || '';
+    if (orAddError) orAddError.textContent = '';
+    if (orAddForm) orAddForm.hidden = false;
+    if (orAddBtn) orAddBtn.hidden = true;
+    orAddName?.focus();
+  }
+
+  function closeAddForm() {
+    orEditingSlug = null;
+    if (orAddForm) orAddForm.hidden = true;
+    if (orAddBtn) orAddBtn.hidden = false;
+    if (orAddError) orAddError.textContent = '';
+  }
+
+  async function saveOptionalRule() {
+    const slug = orAddSlug?.value.trim();
+    const name = orAddName?.value.trim();
+    const description = orAddDesc?.value.trim();
+    const body = orAddBody?.value;
+    if (orAddError) orAddError.textContent = '';
+    try {
+      if (orEditingSlug) {
+        await fetch(`/api/settings/optional-rules/${encodeURIComponent(orEditingSlug)}`, {
+          method: 'PUT', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ name, description, body }),
+        }).then(async r => { if (!r.ok) throw new Error((await r.json()).error); });
+      } else {
+        await fetch('/api/settings/optional-rules', {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ slug, name, description, body }),
+        }).then(async r => { if (!r.ok) throw new Error((await r.json()).error); });
+      }
+      closeAddForm();
+      loadOptionalRules();
+    } catch (e) {
+      if (orAddError) orAddError.textContent = e.message || String(e);
+    }
+  }
+
+  async function deleteOptionalRule(slug) {
+    if (!confirm(`Delete rule "${slug}"?`)) return;
+    try {
+      const r = await fetch(`/api/settings/optional-rules/${encodeURIComponent(slug)}`, { method: 'DELETE' });
+      if (!r.ok) throw new Error((await r.json()).error);
+      loadOptionalRules();
+    } catch (e) {
+      if (orStatusEl) orStatusEl.textContent = `Delete failed: ${e.message || e}`;
+    }
+  }
+
+  async function loadOptionalRules() {
+    if (orStatusEl) orStatusEl.textContent = 'Loading…';
+    try {
+      const r = await fetch('/api/settings/optional-rules', { cache: 'no-store' });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const { rules } = await r.json();
+      renderOptionalRules(rules);
+    } catch (e) {
+      if (orStatusEl) orStatusEl.textContent = `Failed: ${e.message || e}`;
+    }
+  }
+
+  orAddBtn?.addEventListener('click', openAddForm);
+  orAddCancel?.addEventListener('click', closeAddForm);
+  orAddSave?.addEventListener('click', saveOptionalRule);
 
   window.addEventListener('hashchange', sync);
   window.addEventListener('keydown', e => {
