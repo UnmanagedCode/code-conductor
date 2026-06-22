@@ -404,6 +404,10 @@ export class Sidebar {
 
   _worktreeNode({ project, wt, liveInstances }) {
     const head = el('div', { class: 'worktree-row' },
+      el('button', {
+        class: 'commit-log', title: 'commit history',
+        onclick: (e) => { e.stopPropagation(); this.onShowCommits?.(wt.worktreeName); },
+      }, '≡'),
       el('span', { class: 'worktree-name', title: `${wt.branch}\nfrom ${wt.baseBranch} @ ${wt.baseSha?.slice(0, 12) ?? '?'}` },
         wt.worktreeName.replace(`${project.name}_worktree_`, ''),
       ),
@@ -428,10 +432,6 @@ export class Sidebar {
       class: 'wt-review', title: 'review changes',
       onclick: (e) => { e.stopPropagation(); this.onReviewWorktree?.(project.name, wt.worktreeName); },
     }, '±'));
-    head.appendChild(el('button', {
-      class: 'commit-log', title: 'commit history',
-      onclick: (e) => { e.stopPropagation(); this.onShowCommits?.(wt.worktreeName); },
-    }, '≡'));
     head.appendChild(el('button', {
       class: 'wt-spawn', title: 'new session in this worktree',
       onclick: (e) => { e.stopPropagation(); this.onCreateInstanceClick(project.name, { worktreeName: wt.worktreeName }); },
