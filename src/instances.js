@@ -324,6 +324,7 @@ export class Instance extends EventEmitter {
             branch: this.worktree.branch,
             baseBranch: this.worktree.baseBranch,
             baseSha: this.worktree.baseSha,
+            postWorktreeCreate: this.worktree.postWorktreeCreate ?? null,
           }
         : null,
       temp: this.temp,
