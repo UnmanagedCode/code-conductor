@@ -30,7 +30,7 @@ export function installNewProjectDialog({ dom, refreshProjects, closeSidebarOver
           for (const rule of rules) {
             const li = document.createElement('li');
             const id = `np-rule-${rule.slug}`;
-            li.innerHTML = `<label><input type="checkbox" id="${id}" value="${rule.slug}" /><span class="np-rule-name">${rule.name}</span><span class="np-rule-desc">${rule.description}</span></label>`;
+            li.innerHTML = `<label><input type="checkbox" id="${id}" value="${rule.slug}" /><span class="np-rule-text"><span class="np-rule-name">${rule.name}</span><span class="np-rule-desc">${rule.description}</span></span></label>`;
             dom.npRulesList.appendChild(li);
           }
           dom.npRules.hidden = false;
