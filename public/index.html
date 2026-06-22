@@ -106,7 +106,6 @@
               <option value="tts">TTS</option>
               <option value="workspace">Workspace conventions</option>
               <option value="archived">Archived</option>
-              <option value="rules">Rule modules</option>
             </select>
           </header>
           <div id="settings-transcribe" class="settings-group" hidden>
@@ -188,6 +187,7 @@
             <pre id="tt-install-log" class="st-install-log" hidden aria-live="polite"></pre>
           </div>
           <div id="settings-workspace" class="settings-group" hidden>
+            <h3 class="settings-subheading">Baseline (applies to all projects)</h3>
             <p class="settings-desc">
               code-conductor owns the projects-root <code>CLAUDE.md</code> — the workspace conventions
               every project imports via <code>@../CLAUDE.md</code>. On startup it mirrors a bundled
@@ -202,25 +202,15 @@
               <span id="wc-action-hint" class="st-action-hint"></span>
             </div>
             <pre id="wc-diff" class="st-install-log" hidden aria-live="polite"></pre>
-          </div>
-          <div id="settings-archived" class="settings-group" hidden>
+            <h3 class="settings-subheading">Optional guidelines (opt-in per project)</h3>
             <p class="settings-desc">
-              Archived sessions keep their transcript and stay resumable. Use the
-              <strong>×</strong> on a sidebar session to archive it. Restore returns one to the
-              sidebar; Delete permanently removes its transcript jsonl (cannot be undone).
-            </p>
-            <div id="ar-status" class="st-status" aria-live="polite">Loading…</div>
-            <div id="ar-list" class="ar-list"></div>
-          </div>
-          <div id="settings-rules" class="settings-group" hidden>
-            <p class="settings-desc">
-              Optional CLAUDE.md sections selectable at project creation. Built-in seeds are
-              read-only; custom rules can be added, edited, and deleted here.
+              Named CLAUDE.md sections selectable at project creation. Built-in seeds are
+              read-only; custom guidelines can be added, edited, and deleted here.
             </p>
             <div id="or-status" class="st-status" aria-live="polite">Loading…</div>
             <ul id="or-rule-list" class="or-rule-list"></ul>
             <div id="or-add-form" class="or-add-form" hidden>
-              <input id="or-add-slug" type="text" placeholder="slug (e.g. my-rule)" />
+              <input id="or-add-slug" type="text" placeholder="slug (e.g. my-guideline)" />
               <input id="or-add-name" type="text" placeholder="Short name" />
               <input id="or-add-desc" type="text" placeholder="One-line description" />
               <textarea id="or-add-body" rows="6" placeholder="Markdown body appended to CLAUDE.md"></textarea>
@@ -231,8 +221,17 @@
               <p class="error" id="or-add-error"></p>
             </div>
             <div class="st-actions">
-              <button id="or-add-btn" type="button">+ Add custom rule</button>
+              <button id="or-add-btn" type="button">+ Add custom guideline</button>
             </div>
+          </div>
+          <div id="settings-archived" class="settings-group" hidden>
+            <p class="settings-desc">
+              Archived sessions keep their transcript and stay resumable. Use the
+              <strong>×</strong> on a sidebar session to archive it. Restore returns one to the
+              sidebar; Delete permanently removes its transcript jsonl (cannot be undone).
+            </p>
+            <div id="ar-status" class="st-status" aria-live="polite">Loading…</div>
+            <div id="ar-list" class="ar-list"></div>
           </div>
         </div>
       </section>
@@ -272,9 +271,9 @@
       <h3>New project</h3>
       <label>Name <input id="np-name" pattern="[a-zA-Z0-9._-]+" required autofocus /></label>
       <p class="hint">Creates <code id="np-preview">~/project/&lt;name&gt;</code></p>
-      <div id="np-rules" class="np-rules" hidden>
-        <p class="np-rules-label">CLAUDE.md rule modules</p>
-        <ul id="np-rules-list" class="np-rules-list"></ul>
+      <div id="np-guidelines" class="np-rules" hidden>
+        <p class="np-rules-label">CLAUDE.md guidelines</p>
+        <ul id="np-guidelines-list" class="np-rules-list"></ul>
       </div>
       <p class="error" id="np-error"></p>
       <menu>

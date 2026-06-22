@@ -96,7 +96,7 @@ export function installSettings({
     loadTts();
     loadWorkspace();
     loadArchived();
-    loadOptionalRules();
+    loadOptionalGuidelines();
   }
 
   function hide() {
@@ -873,12 +873,12 @@ export function installSettings({
     }
   }
 
-  // ── Optional rules group ────────────────────────────────────────────────
+  // ── Optional guidelines group ────────────────────────────────────────────────
 
   // Tracks which slug is being edited (null = add mode).
   let orEditingSlug = null;
 
-  function renderOptionalRules(rules) {
+  function renderOptionalGuidelines(rules) {
     if (orStatusEl) orStatusEl.textContent = '';
     if (!orRuleListEl) return;
     orRuleListEl.innerHTML = '';
@@ -905,7 +905,7 @@ export function installSettings({
         const delBtn = document.createElement('button');
         delBtn.type = 'button';
         delBtn.textContent = 'Delete';
-        delBtn.addEventListener('click', () => deleteOptionalRule(rule.slug));
+        delBtn.addEventListener('click', () => deleteOptionalGuideline(rule.slug));
         li.appendChild(editBtn);
         li.appendChild(delBtn);
       } else {
@@ -949,7 +949,7 @@ export function installSettings({
     if (orAddError) orAddError.textContent = '';
   }
 
-  async function saveOptionalRule() {
+  async function saveOptionalGuideline() {
     const slug = orAddSlug?.value.trim();
     const name = orAddName?.value.trim();
     const description = orAddDesc?.value.trim();
@@ -957,41 +957,41 @@ export function installSettings({
     if (orAddError) orAddError.textContent = '';
     try {
       if (orEditingSlug) {
-        await fetch(`/api/settings/optional-rules/${encodeURIComponent(orEditingSlug)}`, {
+        await fetch(`/api/settings/optional-guidelines/${encodeURIComponent(orEditingSlug)}`, {
           method: 'PUT', headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ name, description, body }),
         }).then(async r => { if (!r.ok) throw new Error((await r.json()).error); });
       } else {
-        await fetch('/api/settings/optional-rules', {
+        await fetch('/api/settings/optional-guidelines', {
           method: 'POST', headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ slug, name, description, body }),
         }).then(async r => { if (!r.ok) throw new Error((await r.json()).error); });
       }
       closeAddForm();
-      loadOptionalRules();
+      loadOptionalGuidelines();
     } catch (e) {
       if (orAddError) orAddError.textContent = e.message || String(e);
     }
   }
 
-  async function deleteOptionalRule(slug) {
-    if (!confirm(`Delete rule "${slug}"?`)) return;
+  async function deleteOptionalGuideline(slug) {
+    if (!confirm(`Delete guideline "${slug}"?`)) return;
     try {
-      const r = await fetch(`/api/settings/optional-rules/${encodeURIComponent(slug)}`, { method: 'DELETE' });
+      const r = await fetch(`/api/settings/optional-guidelines/${encodeURIComponent(slug)}`, { method: 'DELETE' });
       if (!r.ok) throw new Error((await r.json()).error);
-      loadOptionalRules();
+      loadOptionalGuidelines();
     } catch (e) {
       if (orStatusEl) orStatusEl.textContent = `Delete failed: ${e.message || e}`;
     }
   }
 
-  async function loadOptionalRules() {
+  async function loadOptionalGuidelines() {
     if (orStatusEl) orStatusEl.textContent = 'Loading…';
     try {
-      const r = await fetch('/api/settings/optional-rules', { cache: 'no-store' });
+      const r = await fetch('/api/settings/optional-guidelines', { cache: 'no-store' });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const { rules } = await r.json();
-      renderOptionalRules(rules);
+      renderOptionalGuidelines(rules);
     } catch (e) {
       if (orStatusEl) orStatusEl.textContent = `Failed: ${e.message || e}`;
     }
@@ -999,7 +999,7 @@ export function installSettings({
 
   orAddBtn?.addEventListener('click', openAddForm);
   orAddCancel?.addEventListener('click', closeAddForm);
-  orAddSave?.addEventListener('click', saveOptionalRule);
+  orAddSave?.addEventListener('click', saveOptionalGuideline);
 
   window.addEventListener('hashchange', sync);
   window.addEventListener('keydown', e => {

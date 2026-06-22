@@ -335,8 +335,8 @@ export async function createProject(name, { appendToCLAUDEmd = '' } = {}) {
   // Seed a CLAUDE.md that imports the workspace-wide one at ~/project/CLAUDE.md.
   // Using @../CLAUDE.md so Claude Code's import resolver pulls the workspace
   // file in regardless of where the project ends up being mounted.
-  // appendToCLAUDEmd is an inline snapshot of selected optional rule bodies;
-  // callers compute it via optionalRules.composeRulesBlock (no circular dep).
+  // appendToCLAUDEmd is an inline snapshot of selected optional guideline bodies;
+  // callers compute it via optionalGuidelines.composeGuidelinesBlock (no circular dep).
   const claudeMdPath = path.join(full, 'CLAUDE.md');
   try {
     await fs.writeFile(claudeMdPath, '@../CLAUDE.md\n' + appendToCLAUDEmd, { flag: 'wx' });

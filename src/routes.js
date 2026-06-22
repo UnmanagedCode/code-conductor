@@ -56,10 +56,10 @@ import { getAccountUsage } from './accountUsage.js';
 import { getCostSummary } from './costTracking.js';
 import { unmarkArchived } from './archivedSessions.js';
 import {
-  getCatalog as getOptionalRulesCatalog,
-  composeRulesBlock,
-  addCustomRule, updateCustomRule, deleteCustomRule,
-} from './optionalRules.js';
+  getCatalog as getOptionalGuidelinesCatalog,
+  composeGuidelinesBlock,
+  addCustomGuideline, updateCustomGuideline, deleteCustomGuideline,
+} from './optionalGuidelines.js';
 
 // Session ids are user-supplied path params on many routes; this is the single
 // allow-list + rejection (400 "invalid sessionId") they all share.
@@ -226,7 +226,7 @@ export function buildRoutes({ instances, serverCtx } = {}) {
 
   r.post('/projects', async (req, res, next) => {
     try {
-      const { name, rules } = req.body ?? {};
+      const { name, guidelines } = req.body ?? {};
       // Validate the regex first so callers that hit BOTH conditions
       // (e.g. "../escape" — starts with "." AND contains "/") get the
       // canonical "invalid project name" error rather than the dot-prefix
@@ -240,10 +240,10 @@ export function buildRoutes({ instances, serverCtx } = {}) {
           { statusCode: 400 },
         );
       }
-      if (rules !== undefined && !Array.isArray(rules)) {
-        throw Object.assign(new Error('rules must be an array of slug strings'), { statusCode: 400 });
+      if (guidelines !== undefined && !Array.isArray(guidelines)) {
+        throw Object.assign(new Error('guidelines must be an array of slug strings'), { statusCode: 400 });
       }
-      const appendToCLAUDEmd = await composeRulesBlock(rules ?? []);
+      const appendToCLAUDEmd = await composeGuidelinesBlock(guidelines ?? []);
       const created = await createProject(name, { appendToCLAUDEmd });
       res.status(201).json(created);
     } catch (e) { next(e); }
@@ -1162,32 +1162,32 @@ export function buildRoutes({ instances, serverCtx } = {}) {
     } catch (e) { next(e); }
   });
 
-  // Optional rule modules — catalog read + custom-rule CRUD.
-  r.get('/settings/optional-rules', async (req, res, next) => {
-    try { res.json({ rules: await getOptionalRulesCatalog() }); } catch (e) { next(e); }
+  // Optional guideline modules — catalog read + custom-guideline CRUD.
+  r.get('/settings/optional-guidelines', async (req, res, next) => {
+    try { res.json({ rules: await getOptionalGuidelinesCatalog() }); } catch (e) { next(e); }
   });
 
-  r.post('/settings/optional-rules', async (req, res, next) => {
+  r.post('/settings/optional-guidelines', async (req, res, next) => {
     try {
       const { slug, name, description, body } = req.body ?? {};
-      const rule = await addCustomRule({ slug, name, description, body });
+      const rule = await addCustomGuideline({ slug, name, description, body });
       res.status(201).json({ rule });
     } catch (e) { next(e); }
   });
 
-  r.put('/settings/optional-rules/:slug', async (req, res, next) => {
+  r.put('/settings/optional-guidelines/:slug', async (req, res, next) => {
     try {
       const { slug } = req.params;
       const { name, description, body } = req.body ?? {};
-      const rule = await updateCustomRule(slug, { name, description, body });
+      const rule = await updateCustomGuideline(slug, { name, description, body });
       res.json({ rule });
     } catch (e) { next(e); }
   });
 
-  r.delete('/settings/optional-rules/:slug', async (req, res, next) => {
+  r.delete('/settings/optional-guidelines/:slug', async (req, res, next) => {
     try {
       const { slug } = req.params;
-      const result = await deleteCustomRule(slug);
+      const result = await deleteCustomGuideline(slug);
       res.json(result);
     } catch (e) { next(e); }
   });

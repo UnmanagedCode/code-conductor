@@ -118,10 +118,10 @@ Outbound: `system` + `subtype:"init"` (bundled with first turn's response, not a
 | `POST` | `/api/settings/tts/prefs` | `{enabled?, rate?}` — persist the auto-speak toggle and/or playback rate (rate clamped 0.5–2.0). Returns refreshed state. |
 | `POST` | `/api/settings/tts/install` | `{voice}` — start `bin/install-piper.sh` for that voice (one at a time). 200 `{started}`, 409 `{running}` if busy, 400 on unknown voice. On clean exit the voice is set active. |
 | `GET` | `/api/settings/tts/install/status` | `{running, voice, exitCode, log}` — polled by the Settings page to stream install progress. |
-| `GET` | `/api/settings/optional-rules` | `{rules:[{slug,name,description,body,builtin}]}` — merged catalog: 3 built-in seeds (`builtin:true`) + custom rules from `<store>/optional-rules.json` (`builtin:false`). |
-| `POST` | `/api/settings/optional-rules` | `{slug,name,description,body}` — add custom rule. Slug `^[a-z][a-z0-9-]*$` max 40 chars; 409 on duplicate/builtin slug. Returns `{rule}`. |
-| `PUT` | `/api/settings/optional-rules/:slug` | `{name?,description?,body?}` — update custom rule. 400 on builtin, 404 not found. Returns `{rule}`. |
-| `DELETE` | `/api/settings/optional-rules/:slug` | Remove custom rule. 400 on builtin, 404 not found. Returns `{slug}`. |
+| `GET` | `/api/settings/optional-guidelines` | `{rules:[{slug,name,description,body,builtin}]}` — merged catalog: 3 built-in seeds (`builtin:true`) + custom guidelines from `<store>/optional-guidelines.json` (`builtin:false`). |
+| `POST` | `/api/settings/optional-guidelines` | `{slug,name,description,body}` — add custom guideline. Slug `^[a-z][a-z0-9-]*$` max 40 chars; 409 on duplicate/builtin slug. Returns `{rule}`. |
+| `PUT` | `/api/settings/optional-guidelines/:slug` | `{name?,description?,body?}` — update custom guideline. 400 on builtin, 404 not found. Returns `{rule}`. |
+| `DELETE` | `/api/settings/optional-guidelines/:slug` | Remove custom guideline. 400 on builtin, 404 not found. Returns `{slug}`. |
 | `GET` | `/api/settings/workspace-claudemd` | `{status, conflict, targetExists, targetPath, vendorPath, baselinePath}` — reconcile status of `<PROJECTS_ROOT>/CLAUDE.md` (`created`/`up-to-date`/`updated`/`kept`/`conflict`). |
 | `GET` | `/api/settings/workspace-claudemd/diff` | `{diff}` — unified diff of the projects-root `CLAUDE.md` (your copy) vs the bundled canonical. Empty when identical. |
 | `POST` | `/api/settings/workspace-claudemd/resolve` | `{action}` — `keep` (baseline := canonical, file unchanged) or `overwrite` (back up to `<target>.bak-<ts>`, copy canonical in, bump baseline). 400 on any other action. Returns refreshed status. |

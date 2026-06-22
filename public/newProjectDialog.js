@@ -1,5 +1,5 @@
 // New-project dialog: the sidebar ⋮ "+ New project" button, the live
-// name→path preview, optional rule-module checkboxes, and the dialog's
+// name→path preview, optional guideline-module checkboxes, and the dialog's
 // close handler that POSTs the create and refreshes the project list.
 // Follows the installX({...}) pattern. No module-owned state — the dialog
 // reads its inputs on close.
@@ -9,7 +9,7 @@
 //
 // Injected interface:
 //   - dom:                    { newProjectBtn, newProjectDialog, npName,
-//                               npError, npPreview, npRules, npRulesList } els.
+//                               npError, npPreview, npGuidelines, npGuidelinesList } els.
 //   - refreshProjects():      reloads the sidebar project list after a create
 //                            (stays in app.js — drives state/sidebar).
 //   - closeSidebarOverflow(): dismisses the sidebar ⋮ menu the dialog opens
@@ -22,26 +22,26 @@ export function installNewProjectDialog({ dom, refreshProjects, closeSidebarOver
     dom.npPreview.textContent = '~/project/<name>';
     // Fetch catalog and render checkboxes (unchecked by default).
     try {
-      const r = await fetch('/api/settings/optional-rules');
+      const r = await fetch('/api/settings/optional-guidelines');
       if (r.ok) {
         const { rules } = await r.json();
-        dom.npRulesList.innerHTML = '';
+        dom.npGuidelinesList.innerHTML = '';
         if (rules && rules.length > 0) {
           for (const rule of rules) {
             const li = document.createElement('li');
-            const id = `np-rule-${rule.slug}`;
+            const id = `np-guideline-${rule.slug}`;
             li.innerHTML = `<label><input type="checkbox" id="${id}" value="${rule.slug}" /><span class="np-rule-text"><span class="np-rule-name">${rule.name}</span><span class="np-rule-desc">${rule.description}</span></span></label>`;
-            dom.npRulesList.appendChild(li);
+            dom.npGuidelinesList.appendChild(li);
           }
-          dom.npRules.hidden = false;
+          dom.npGuidelines.hidden = false;
         } else {
-          dom.npRules.hidden = true;
+          dom.npGuidelines.hidden = true;
         }
       } else {
-        dom.npRules.hidden = true;
+        dom.npGuidelines.hidden = true;
       }
     } catch {
-      dom.npRules.hidden = true;
+      dom.npGuidelines.hidden = true;
     }
     dom.newProjectDialog.showModal();
   });
@@ -52,10 +52,10 @@ export function installNewProjectDialog({ dom, refreshProjects, closeSidebarOver
     if (dom.newProjectDialog.returnValue !== 'create') return;
     const name = dom.npName.value.trim();
     if (!name) return;
-    const checked = [...dom.npRulesList.querySelectorAll('input[type="checkbox"]:checked')];
-    const rules = checked.map(cb => cb.value);
+    const checked = [...dom.npGuidelinesList.querySelectorAll('input[type="checkbox"]:checked')];
+    const guidelines = checked.map(cb => cb.value);
     try {
-      const body = rules.length > 0 ? { name, rules } : { name };
+      const body = guidelines.length > 0 ? { name, guidelines } : { name };
       const r = await fetch('/api/projects', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
       if (!r.ok) throw new Error((await r.json()).error);
       await refreshProjects();
