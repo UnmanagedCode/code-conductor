@@ -52,7 +52,8 @@ Route each change to the right file:
 - New source file, wiring, lifecycle/state/migration/test-pattern change → \`docs/architecture.md\`.
 - Quick-start step, key default, or known limitation → \`README.md\` directly.
 
-Keep functional and technical descriptions in sync; be precise — name exact paths, commands, flags, and defaults, and prefer bullets/tables for enumerable facts.`,
+Keep functional and technical descriptions in sync.
+- Write fact-dense, not prose: short declarative statements, no filler or marketing language. Name exact paths, commands, flags, constants, and defaults. Skip rationale unless the *why* is non-obvious. Prefer bullets and tables over paragraphs for enumerable facts.`,
     builtin: true,
   },
 ];
