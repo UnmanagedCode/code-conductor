@@ -1653,3 +1653,52 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
   border-radius: 4px; font-size: 13px;
 }
 .sm-cost-row button:hover { background: var(--panel-1); border-color: var(--muted); }
+
+/* ── Optional rules settings group ── */
+.or-rule-list { list-style: none; margin: 0; padding: 0; }
+.or-rule-item {
+  display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
+  padding: 8px 0; border-bottom: 1px solid var(--border);
+}
+.or-rule-name { font-weight: 600; font-size: 13px; }
+.or-rule-slug { font-family: ui-monospace, monospace; font-size: 11px; color: var(--muted); }
+.or-rule-desc { font-size: 12px; color: var(--muted); flex: 1 1 100%; }
+.or-rule-item button {
+  font-size: 11px; padding: 2px 8px; cursor: pointer;
+  background: var(--panel-2); border: 1px solid var(--border);
+  border-radius: 3px; color: var(--text);
+}
+.or-rule-item button:hover { background: var(--panel-1); }
+.or-builtin-badge {
+  font-size: 10px; padding: 1px 6px; border-radius: 10px;
+  background: var(--panel-2); color: var(--muted); border: 1px solid var(--border);
+}
+.or-add-form:not([hidden]) {
+  display: flex; flex-direction: column; gap: 8px;
+  margin: 16px 0 8px; padding: 12px; background: var(--panel-2);
+  border: 1px solid var(--border); border-radius: 6px; max-width: 600px;
+}
+.or-add-form input, .or-add-form textarea {
+  background: var(--panel-1); border: 1px solid var(--border);
+  color: var(--text); padding: 6px 8px; border-radius: 4px;
+  font-size: 12px; font-family: inherit; width: 100%; box-sizing: border-box;
+}
+.or-add-form textarea { font-family: ui-monospace, monospace; resize: vertical; }
+.or-add-actions { display: flex; gap: 8px; }
+.or-add-actions button {
+  padding: 5px 14px; cursor: pointer; font-size: 12px; border-radius: 4px;
+  border: 1px solid var(--border); background: var(--panel-1); color: var(--text);
+}
+.or-add-actions button:first-child { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* ── New-project dialog rule checkboxes ── */
+.np-rules { margin: 10px 0 4px; }
+.np-rules-label { font-size: 12px; color: var(--muted); font-weight: 600; margin-bottom: 4px; }
+.np-rules-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.np-rules-list li label { display: flex; align-items: flex-start; gap: 8px; cursor: pointer; font-size: 13px; }
+/* Override `dialog input { width:100% }` — checkbox must stay its natural size */
+.np-rules-list li label input[type="checkbox"] { flex: 0 0 auto; width: auto; margin: 0; margin-top: 2px; }
+/* Column wrapper: shrinks to fit, wraps long descriptions below the name */
+.np-rule-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.np-rule-name { font-weight: 600; }
+.np-rule-desc { color: var(--muted); font-size: 12px; overflow-wrap: break-word; }
