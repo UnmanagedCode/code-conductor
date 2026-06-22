@@ -50,6 +50,8 @@ import {
   resolve as rootClaudeMdResolve,
 } from './rootClaudeMd.js';
 import { setTitle as setSessionTitle, MAX_TITLE_LEN } from './sessionTitles.js';
+import { getSummaries, setSummary, deleteSummaries } from './sessionSummaries.js';
+import { generateSummary, countMessages } from './summarize.js';
 import { getAccountUsage } from './accountUsage.js';
 import { getCostSummary } from './costTracking.js';
 import { unmarkArchived } from './archivedSessions.js';
@@ -397,6 +399,8 @@ export function buildRoutes({ instances, serverCtx } = {}) {
     if (!removed) {
       throw Object.assign(new Error(`session ${sessionId} not found`), { statusCode: 404 });
     }
+    // Best-effort — a missing summary never fails a delete.
+    deleteSummaries(sessionId).catch(() => {});
   }
 
   r.delete('/projects/:name/sessions/:sid', async (req, res, next) => {
@@ -599,6 +603,77 @@ export function buildRoutes({ instances, serverCtx } = {}) {
       }
       broadcastProjects();
       res.json({ ok: true, sessionId: sid, title: stored, maxLength: MAX_TITLE_LEN });
+    } catch (e) { next(e); }
+  });
+
+  // Resolve the filesystem cwd for a session from findSessionLocation's result.
+  async function cwdForHit(hit) {
+    if (!hit) return null;
+    if (hit.worktreeName) {
+      const wt = await getWorktree(hit.project, hit.worktreeName);
+      return wt?.worktreePath ?? null;
+    }
+    const proj = await getProject(hit.project);
+    return proj.path;
+  }
+
+  // Build the three-tier response data object, adding per-tier isStale.
+  // currentCount should be pre-fetched (once) and passed in.
+  function buildTierData(tiers, currentCount) {
+    const LENGTHS = ['short', 'medium', 'long'];
+    const data = {};
+    for (const len of LENGTHS) {
+      const t = tiers[len];
+      data[len] = t
+        ? { ...t, isStale: currentCount > t.messageCount }
+        : null;
+    }
+    return data;
+  }
+
+  // Retrieve all stored summaries for a session, with per-tier staleness.
+  // Returns { short, medium, long } where each tier is null when absent.
+  r.get('/sessions/:sessionId/summary', async (req, res, next) => {
+    try {
+      const sid = String(req.params.sessionId || '');
+      assertValidSid(sid);
+      const tiers = await getSummaries(sid);
+      let currentCount = 0;
+      const hasTiers = Object.keys(tiers).length > 0;
+      if (hasTiers) {
+        const hit = await findSessionLocation(sid);
+        if (hit) {
+          const cwd = await cwdForHit(hit);
+          if (cwd) currentCount = await countMessages(sid, cwd).catch(() => 0);
+        }
+      }
+      res.json({ ok: true, sessionId: sid, data: buildTierData(tiers, currentCount) });
+    } catch (e) { next(e); }
+  });
+
+  // Generate (or regenerate) one tier for a session via a one-shot Haiku call.
+  // Merges the new tier into the session's existing record without clobbering
+  // other tiers. Returns the same full three-tier data shape as GET so the
+  // client can refresh its cache in one round-trip.
+  r.post('/sessions/:sessionId/summary', async (req, res, next) => {
+    try {
+      const sid = String(req.params.sessionId || '');
+      assertValidSid(sid);
+      const length = req.body?.length;
+      if (!['short', 'medium', 'long'].includes(length)) {
+        throw Object.assign(new Error('length must be short, medium, or long'), { statusCode: 400 });
+      }
+      const hit = await findSessionLocation(sid);
+      if (!hit) throw Object.assign(new Error('session not found'), { statusCode: 404 });
+      const cwd = await cwdForHit(hit);
+      if (!cwd) throw Object.assign(new Error('session not found'), { statusCode: 404 });
+      const { summary, messageCount } = await generateSummary(sid, cwd, length);
+      await setSummary(sid, length, { summary, generatedAt: Date.now(), messageCount });
+      broadcastProjects();
+      // Re-fetch all tiers so the response mirrors the GET shape.
+      const tiers = await getSummaries(sid);
+      const currentCount = await countMessages(sid, cwd).catch(() => 0);
+      res.json({ ok: true, sessionId: sid, data: buildTierData(tiers, currentCount) });
     } catch (e) { next(e); }
   });
 
