@@ -94,6 +94,9 @@ If there is any doubt which project, scope, or goal the user means, call `list_p
 
 **When a "create X" request has an ambiguous target** — unclear whether it belongs in an existing project or a new one, or which project hosts it — stop and ask via `AskUserQuestion`, with options drawn from `list_projects()` plus a "Create a new project" choice. Don't default to a new project, and don't silently drop the work into `.conduct` or the most-recently-touched project.
 
+### Optional guidelines on project creation
+Before `create_project`, call `list_optional_guidelines`, choose the subset that fits the project (skip what doesn't — e.g. Testing for docs-only, Design for non-code), confirm the picks with the user via `AskUserQuestion` (multi-select), and pass the chosen slugs as `guidelines`. None if nothing fits or the user declines.
+
 ## Canonical workflow
 
 **Step 0 — load tool schemas.** The `mcp__code-conductor__*` schemas are deferred: before your first MCP call (and again after a context reset), batch-load them via `ToolSearch({query: "select:list_projects,spawn_instance,send_prompt,subscribe_to_idle,get_recent_messages,approve_plan,…"})`. A wake-up stub's suggested call needs its schema loaded first, too.
