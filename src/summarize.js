@@ -4,18 +4,22 @@
 
 import { spawn } from 'node:child_process';
 import { promises as fs } from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { claudeProjectsRoot, encodeCwd } from './projects.js';
+import { claudeProjectsRoot, encodeCwd, orchStoreRoot } from './projects.js'; // claudeProjectsRoot+encodeCwd used by countMessages/flattenTranscript
 import { resolveClaudeBin } from './instances.js';
 import { DEFAULT_VERSIONS } from './modelVersions.js';
 
-// Dedicated scratch directory for one-shot summary subprocesses.
-// Using a path that is never a tracked project prevents the CLI from
-// creating listable session jsonls under any real project's dir.
-// Exported so tests can introspect the expected artifact path.
-export const SCRATCH_DIR = path.join(os.tmpdir(), 'cc-summary-scratch');
+// Dedicated cwd for one-shot summary subprocesses: a subdirectory inside
+// the .code-conductor metadata dir. It is NOT under PROJECTS_ROOT as a
+// named project, so the CLI's session jsonl for the one-shot call lands
+// in an isolated encoded dir that never appears in the conductor sidebar.
+// We do NOT delete those jsonls — they are harmless litter in an opaque
+// metadata dir, and reaching into ~/.claude/projects/ to delete them is
+// fragile. Exported so tests can introspect the expected spawn cwd.
+export function summarySpawnDir() {
+  return path.join(orchStoreRoot(), 'summaries');
+}
 
 const LENGTH_INSTRUCTIONS = {
   short: {
@@ -138,8 +142,8 @@ ${conversationText}
 Provide the summary only, no preamble:`;
 
   const { command, prefixArgs } = resolveClaudeBin();
-  // Each generation gets a throwaway session id so the CLI doesn't resume
-  // a previous scratch session. The jsonl is deleted in the finally block.
+  // Throwaway session-id so each generation is independent (no accidental
+  // resume of a prior one-shot call).
   const scratchId = randomUUID();
   const args = [
     ...prefixArgs,
@@ -149,52 +153,46 @@ Provide the summary only, no preamble:`;
     '--session-id', scratchId,
   ];
 
-  // Ensure the scratch dir exists before spawning. It is deliberately NOT a
-  // tracked project path, so the CLI's session jsonl won't appear in any
-  // project's session list.
-  await fs.mkdir(SCRATCH_DIR, { recursive: true });
+  // Use a subdir inside the .code-conductor metadata dir as the spawn cwd.
+  // That path is not listed as a project under PROJECTS_ROOT, so the CLI's
+  // session jsonl never surfaces in the conductor sidebar.
+  const spawnDir = summarySpawnDir();
+  await fs.mkdir(spawnDir, { recursive: true });
 
   const startMs = Date.now();
-  let parsed;
 
-  try {
-    parsed = await new Promise((resolve, reject) => {
-      const child = spawn(command, args, {
-        cwd: SCRATCH_DIR,
-        stdio: ['pipe', 'pipe', 'pipe'],
-      });
-
-      const stdoutChunks = [];
-      const stderrChunks = [];
-      child.stdout.on('data', chunk => stdoutChunks.push(chunk));
-      child.stderr.on('data', chunk => stderrChunks.push(chunk));
-
-      const timer = setTimeout(() => {
-        child.kill();
-        reject(new Error('summary generation timed out after 60s'));
-      }, 60_000);
-
-      child.on('close', (code) => {
-        clearTimeout(timer);
-        if (code !== 0) {
-          const stderr = Buffer.concat(stderrChunks).toString().trim();
-          return reject(new Error(`claude exited with code ${code}: ${stderr.slice(0, 500)}`));
-        }
-        const stdout = Buffer.concat(stdoutChunks).toString().trim();
-        let out;
-        try { out = JSON.parse(stdout); }
-        catch (e) { return reject(new Error(`failed to parse claude output: ${stdout.slice(0, 200)}`)); }
-        resolve(out);
-      });
-
-      child.stdin.write(prompt);
-      child.stdin.end();
+  const parsed = await new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      cwd: spawnDir,
+      stdio: ['pipe', 'pipe', 'pipe'],
     });
-  } finally {
-    // Best-effort cleanup of the scratch jsonl. Runs on success AND failure.
-    const artifact = path.join(claudeProjectsRoot(), encodeCwd(SCRATCH_DIR), `${scratchId}.jsonl`);
-    fs.unlink(artifact).catch(() => {});
-  }
+
+    const stdoutChunks = [];
+    const stderrChunks = [];
+    child.stdout.on('data', chunk => stdoutChunks.push(chunk));
+    child.stderr.on('data', chunk => stderrChunks.push(chunk));
+
+    const timer = setTimeout(() => {
+      child.kill();
+      reject(new Error('summary generation timed out after 60s'));
+    }, 60_000);
+
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      if (code !== 0) {
+        const stderr = Buffer.concat(stderrChunks).toString().trim();
+        return reject(new Error(`claude exited with code ${code}: ${stderr.slice(0, 500)}`));
+      }
+      const stdout = Buffer.concat(stdoutChunks).toString().trim();
+      let out;
+      try { out = JSON.parse(stdout); }
+      catch (e) { return reject(new Error(`failed to parse claude output: ${stdout.slice(0, 200)}`)); }
+      resolve(out);
+    });
+
+    child.stdin.write(prompt);
+    child.stdin.end();
+  });
 
   const durationMs = Date.now() - startMs;
   const summary = parsed.result;
