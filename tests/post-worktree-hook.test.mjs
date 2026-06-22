@@ -138,9 +138,11 @@ test('hook ran inside worktree cwd (sentinel in cwd)', async () => {
 
 test('hook timeout: timedOut=true, non-fatal, worktree exists', async () => {
   const repoPath = await makeRealRepo('demo');
-  await installHook(repoPath, '#!/bin/sh\nsleep 5\n');
+  // sleep 1 is the worst-case bound; the 100ms timeout+SIGKILL kills it
+  // at ~200ms so the test returns in well under 1 second.
+  await installHook(repoPath, '#!/bin/sh\nsleep 1\n');
   const prev = process.env.ORCH_POST_WORKTREE_TIMEOUT_MS;
-  process.env.ORCH_POST_WORKTREE_TIMEOUT_MS = '200'; // 200ms — much shorter than 5s sleep
+  process.env.ORCH_POST_WORKTREE_TIMEOUT_MS = '100'; // 100ms — much shorter than 1s sleep
   try {
     const meta = await createWorktree('demo');
     const h = meta.postWorktreeCreate;

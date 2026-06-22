@@ -157,10 +157,7 @@ async function runPostWorktreeHook(meta) {
     }
   } catch { /* best-effort */ }
 
-  const timeoutMs = Math.max(
-    1000,
-    Number(process.env.ORCH_POST_WORKTREE_TIMEOUT_MS) || 120_000,
-  );
+  const timeoutMs = Number(process.env.ORCH_POST_WORKTREE_TIMEOUT_MS) || 120_000;
   const env = {
     ...process.env,
     CC_WORKTREE_PATH: meta.worktreePath,
@@ -190,10 +187,12 @@ async function runPostWorktreeHook(meta) {
 
     const killGroup = () => {
       try { process.kill(-proc.pid, 'SIGTERM'); } catch { proc.kill('SIGTERM'); }
-      // SIGKILL backstop after 500 ms for hooks that ignore SIGTERM.
+      // SIGKILL backstop: sends SIGKILL if the process group doesn't die
+      // from SIGTERM within 100 ms (e.g. `sleep` ignoring SIGTERM on some
+      // platforms). Unref'd so it can't keep the process alive.
       setTimeout(() => {
         try { process.kill(-proc.pid, 'SIGKILL'); } catch { proc.kill('SIGKILL'); }
-      }, 500).unref();
+      }, 100).unref();
     };
 
     const timer = setTimeout(() => {
