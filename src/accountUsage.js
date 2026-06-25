@@ -106,12 +106,14 @@ export async function getAccountUsage({ home, _now = Date.now, _random = Math.ra
     }
 
     // Non-OK response: honour Retry-After if present, else exponential backoff.
+    // Floor at BASE_RETRY_MS so Retry-After: 0 (or any sub-floor value) never
+    // produces an immediate re-poll.
     const retryAfterMs = parseRetryAfter(retryAfterHeader, now);
-    const delay = retryAfterMs !== null
+    const delay = Math.max(BASE_RETRY_MS, retryAfterMs !== null
       ? Math.min(retryAfterMs, MAX_RETRY_MS)
-      : computeBackoff(_retryState.failureCount, _random());
+      : computeBackoff(_retryState.failureCount, _random()));
     _retryState = { failureCount: _retryState.failureCount + 1, nextAllowedAt: now + delay };
-    console.warn(`[accountUsage] Anthropic OAuth usage API returned ${status} — chip will be hidden until this resolves. Next retry in ${Math.round(delay / 1000)}s`);
+    console.warn(`${new Date().toISOString()} [accountUsage] Anthropic OAuth usage API returned ${status} — chip will be hidden until this resolves. Next retry in ${Math.round(delay / 1000)}s (failure #${_retryState.failureCount})`);
     return null;
 
   } catch {

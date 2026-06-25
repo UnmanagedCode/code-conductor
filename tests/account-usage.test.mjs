@@ -300,6 +300,59 @@ test('Retry-After HTTP-date format honored on 429', async () => {
   }
 });
 
+test('Retry-After: 0 is floored to BASE_RETRY_MS (never immediate re-poll)', async () => {
+  await makeTmpHome(CREDS);
+  const t0   = 1_000_000_000;
+  const stub = stubFetch({ error: 'rate limited' }, 429, { 'retry-after': '0' });
+  _resetCache();
+  try {
+    // Failure: Retry-After: 0 — without floor this would allow immediate re-poll
+    await getAccountUsage({ home: tmpHome, _now: () => t0, _random: NO_JITTER });
+    assert.equal(stub.calls, 1);
+
+    // Must still be blocked one millisecond before BASE_RETRY_MS
+    const blocked = await getAccountUsage({ home: tmpHome, _now: () => t0 + BASE_RETRY_MS - 1, _random: NO_JITTER });
+    assert.equal(blocked, null);
+    assert.equal(stub.calls, 1, 'Retry-After: 0 should be floored to BASE_RETRY_MS — still blocked');
+
+    // Exactly at BASE_RETRY_MS — window elapsed, should retry
+    await getAccountUsage({ home: tmpHome, _now: () => t0 + BASE_RETRY_MS, _random: NO_JITTER });
+    assert.equal(stub.calls, 2, 'should retry at BASE_RETRY_MS after Retry-After: 0');
+  } finally {
+    stub.restore();
+    await cleanTmpHome();
+  }
+});
+
+test('tiny Retry-After (1 s) is floored to BASE_RETRY_MS', async () => {
+  await makeTmpHome(CREDS);
+  const t0   = 1_000_000_000;
+  // 1 s = 1 000 ms, which is well below BASE_RETRY_MS (10 000 ms)
+  const stub = stubFetch({ error: 'rate limited' }, 429, { 'retry-after': '1' });
+  _resetCache();
+  try {
+    await getAccountUsage({ home: tmpHome, _now: () => t0, _random: NO_JITTER });
+    assert.equal(stub.calls, 1);
+
+    // Still blocked at 1s (what an unflored Retry-After: 1 would have allowed)
+    const blockedAt1s = await getAccountUsage({ home: tmpHome, _now: () => t0 + 1_000, _random: NO_JITTER });
+    assert.equal(blockedAt1s, null);
+    assert.equal(stub.calls, 1, 'Retry-After: 1 should be floored — still blocked at 1s');
+
+    // Still blocked just before BASE_RETRY_MS
+    const blockedAtFloor = await getAccountUsage({ home: tmpHome, _now: () => t0 + BASE_RETRY_MS - 1, _random: NO_JITTER });
+    assert.equal(blockedAtFloor, null);
+    assert.equal(stub.calls, 1, 'still blocked one ms before floor elapses');
+
+    // Unblocked at BASE_RETRY_MS
+    await getAccountUsage({ home: tmpHome, _now: () => t0 + BASE_RETRY_MS, _random: NO_JITTER });
+    assert.equal(stub.calls, 2, 'should retry at BASE_RETRY_MS after tiny Retry-After');
+  } finally {
+    stub.restore();
+    await cleanTmpHome();
+  }
+});
+
 test('503 response also respects Retry-After', async () => {
   await makeTmpHome(CREDS);
   const t0   = 1_000_000_000;
