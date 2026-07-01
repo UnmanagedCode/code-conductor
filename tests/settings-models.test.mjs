@@ -101,7 +101,7 @@ test('GET /api/settings/models returns catalog + active defaults', async () => {
     assert.deepEqual(r.body.families.map(f => f.family), ['fable', 'opus', 'sonnet', 'haiku']);
     // Unset → catalog defaults.
     assert.equal(r.body.active.fable, 'claude-fable-5');
-    assert.equal(r.body.active.sonnet, 'claude-sonnet-4-6');
+    assert.equal(r.body.active.sonnet, 'claude-sonnet-5');
     assert.equal(r.body.active.opus, 'claude-opus-4-8');
     assert.equal(r.body.active.haiku, 'claude-haiku-4-5');
   }
