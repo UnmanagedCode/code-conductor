@@ -34,6 +34,7 @@ export const MODEL_FAMILIES = [
     label: 'Sonnet',
     default: 'claude-sonnet-4-6',
     versions: [
+      { id: 'claude-sonnet-5', label: 'Sonnet 5' },
       { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6' },
       { id: 'claude-sonnet-4-5', label: 'Sonnet 4.5' },
     ],
