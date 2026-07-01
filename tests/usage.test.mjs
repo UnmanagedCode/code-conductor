@@ -172,18 +172,21 @@ test('UsageTracker: ignores unrelated event kinds', async () => {
   assert.equal(t.cum.turns, 0);
 });
 
-test('contextWindowFor: one fixed window per family, suffix-robust', async () => {
+test('contextWindowFor: one fixed window per non-Sonnet family; Sonnet suffix-authoritative', async () => {
   const { contextWindowFor } = await import(USAGE_URL);
-  // Opus → 1M; Sonnet → 1M; Haiku → 200k. Any [200k]/[1m] suffix the CLI
-  // might echo is stripped before lookup, so the family alone decides.
+  // Opus/Fable → 1M, Haiku → 200k, regardless of any stray suffix.
   assert.equal(contextWindowFor('claude-opus-4-8'), 1_000_000);
   assert.equal(contextWindowFor('claude-opus-4-8[1m]'), 1_000_000);
   assert.equal(contextWindowFor('claude-opus-4-8[200k]'), 1_000_000);
   assert.equal(contextWindowFor('claude-opus-4-7'), 1_000_000);
-  assert.equal(contextWindowFor('claude-sonnet-4-6'), 1_000_000);
-  assert.equal(contextWindowFor('claude-sonnet-4-6[1m]'), 1_000_000);
-  assert.equal(contextWindowFor('claude-sonnet-4-5'), 1_000_000);
   assert.equal(contextWindowFor('claude-haiku-4-5'), 200_000);
+  // Sonnet: suffix decides. Bare = 200k preference; [1m] = 1M preference.
+  assert.equal(contextWindowFor('claude-sonnet-5'), 200_000);
+  assert.equal(contextWindowFor('claude-sonnet-5[1m]'), 1_000_000);
+  assert.equal(contextWindowFor('claude-sonnet-5[200k]'), 200_000);
+  assert.equal(contextWindowFor('claude-sonnet-4-6'), 200_000);
+  assert.equal(contextWindowFor('claude-sonnet-4-6[1m]'), 1_000_000);
+  assert.equal(contextWindowFor('claude-sonnet-4-5'), 200_000);
   // Unknown model → default.
   assert.equal(contextWindowFor('some-future-model'), 200_000);
   // Empty/null → default.
