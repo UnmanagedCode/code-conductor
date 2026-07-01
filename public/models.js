@@ -18,7 +18,7 @@
 // resolves, so an early spawn never sends an empty model id.
 export const DEFAULT_VERSIONS = {
   fable: 'claude-fable-5',
-  sonnet: 'claude-sonnet-4-6',
+  sonnet: 'claude-sonnet-5',
   opus: 'claude-opus-4-8',
   haiku: 'claude-haiku-4-5',
 };

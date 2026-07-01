@@ -32,7 +32,7 @@ export const MODEL_FAMILIES = [
   {
     family: 'sonnet',
     label: 'Sonnet',
-    default: 'claude-sonnet-4-6',
+    default: 'claude-sonnet-5',
     versions: [
       { id: 'claude-sonnet-5', label: 'Sonnet 5' },
       { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6' },
