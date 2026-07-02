@@ -518,6 +518,17 @@ export async function findSessionLocation(sessionId) {
   // worktrees.js already imports from projects.js (encodeCwd, etc.).
   const { listWorktrees } = await import('./worktrees.js');
   const projects = await listProjects();
+
+  // Include .conduct (the hidden conductor project) — listProjects() skips
+  // dot-prefixed dirs, but conductor sessions live there and must still be
+  // locatable for summaries/staleness-checks/locate. Mirrors the same
+  // append in listArchivedGroupedByProject below.
+  const conductPath = path.join(projectsRoot(), '.conduct');
+  try {
+    const s = await fs.stat(conductPath);
+    if (s.isDirectory()) projects.push({ name: '.conduct', path: conductPath });
+  } catch { /* .conduct doesn't exist yet — skip */ }
+
   for (const proj of projects) {
     const file = path.join(claudeProjectsRoot(), encodeCwd(proj.path), `${sessionId}.jsonl`);
     try {
