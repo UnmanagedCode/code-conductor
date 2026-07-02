@@ -113,12 +113,15 @@ export function buildTools() {
         'worktree:"<name>" to attach to an existing one (createWorktree wins if both are given). ' +
         'Defaults to temp:true (disposable worker) but mode still defaults to plan ' +
         '(NOT bypassPermissions) so workers plan before acting — promote with promote_session to keep one. ' +
+        'project is required for a fresh spawn, but optional when resume is given: if worktree is also ' +
+        'omitted, the session\'s recorded project + worktree are recovered automatically so ' +
+        'spawn_instance({resume:sessionId}) alone re-attaches the right cwd/branch and its prior history. ' +
         'CAUTION: an instance with the code-conductor MCP registered can in turn spawn ' +
         'further instances — guard against runaway recursion by keeping child agents in plan mode.',
       inputSchema: {
         type: 'object',
         properties: {
-          project: { type: 'string' },
+          project: { type: 'string', description: 'Required for a fresh spawn. Optional when resume is given — recovered from the session\'s recorded location if worktree is also omitted.' },
           mode: { type: 'string', enum: VALID_MODES, description: 'plan / ask / bypassPermissions. Defaults to plan, independent of temp (resume defaults to bypassPermissions).' },
           effort: { type: 'string', enum: VALID_EFFORTS },
           thinking: { type: 'string', enum: VALID_THINKING },
@@ -143,7 +146,7 @@ export function buildTools() {
           temp: { type: 'boolean', default: true, description: 'If true, the session jsonl is removed on subprocess exit. Defaults to true for MCP spawns; pass false to keep the session (or promote_session later).' },
           debug: { type: 'boolean', description: 'If true, raw CLI traffic is mirrored to .code-conductor/debug/<id>/.' },
         },
-        required: ['project'],
+        required: [],
       },
       handler: h.spawnInstance,
     },

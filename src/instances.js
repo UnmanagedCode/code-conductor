@@ -5,7 +5,7 @@ import readline from 'node:readline';
 import { promises as fsp, readFileSync, mkdirSync, createWriteStream, writeFileSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { Parser, SOFT_INTERRUPT_MARKER, isOuterUserEcho, snapStartToGroupBoundary } from './parser.js';
-import { getProject, claudeProjectsRoot, encodeCwd } from './projects.js';
+import { getProject, claudeProjectsRoot, encodeCwd, findSessionLocation } from './projects.js';
 import { createWorktree, getWorktree, debugBaseDir } from './worktrees.js';
 import { getTitle as getSessionTitle, deleteTitle as deleteSessionTitle } from './sessionTitles.js';
 import { isConducted, markConducted, unmarkConducted } from './conductedSessions.js';
@@ -1354,6 +1354,20 @@ export class InstanceManager extends EventEmitter {
   }
 
   async create({ project, resume, mode, effort, thinking, model, worktree, temp, conducted, callerInstanceId, debug, autoApprovePlan } = {}) {
+    // On resume, when the caller didn't pin an explicit worktree, recover the
+    // session's recorded project + worktree via findSessionLocation. This is
+    // what makes spawn_instance({resume}) "just work" for an MCP conductor
+    // that only knows the sessionId — and it's not cosmetic: spawn() below
+    // launches the subprocess with this cwd, and the CLI derives the
+    // transcript path from cwd, so a wrong cwd silently drops prior history
+    // even though --resume <id> is passed correctly.
+    if (resume && worktree === undefined) {
+      const hit = await findSessionLocation(resume).catch(() => null);
+      if (hit) {
+        project = hit.project;
+        if (hit.worktreeName) worktree = hit.worktreeName;
+      }
+    }
     if (!project) {
       throw Object.assign(new Error('project required'), { statusCode: 400 });
     }

@@ -19,6 +19,7 @@ const SCENARIO_EXIT_PLAN_INLINE = path.join(__dirname, 'fixtures', 'scenario-exi
 const SCENARIO_ASK_USER_QUESTION_INLINE = path.join(__dirname, 'fixtures', 'scenario-ask-user-question-inline.json');
 const SCENARIO_EXIT_PLAN_RECONCILED = path.join(__dirname, 'fixtures', 'scenario-exit-plan-inline-reconciled.json');
 const SCENARIO_ASK_USER_QUESTION_RECONCILED = path.join(__dirname, 'fixtures', 'scenario-ask-user-question-inline-reconciled.json');
+const SCENARIO_RESUME = path.join(__dirname, 'fixtures', 'scenario-resume.json');
 
 let nextRpcId = 1;
 
@@ -1109,4 +1110,101 @@ test('send_prompt on an exited non-temp session soft-refuses SESSION_NOT_LIVE an
     if (prev === undefined) delete process.env.FAKE_CLAUDE_SCENARIO;
     else process.env.FAKE_CLAUDE_SCENARIO = prev;
   }
+});
+
+// ---------- spawn_instance({resume}) worktree re-attachment ----------
+
+test('spawn_instance({resume}) re-attaches the recorded worktree, cwd, and replays prior history', async () => {
+  const prev = process.env.FAKE_CLAUDE_SCENARIO;
+  process.env.FAKE_CLAUDE_SCENARIO = SCENARIO_RESUME;
+  try {
+    const { encodeCwd } = await import('../src/projects.js');
+    await makeRealRepo(projectsRoot, 'demo');
+
+    // Spawn a persistent (non-temp) instance into a fresh worktree.
+    const spawn = unwrap(await callTool(baseUrl, 'spawn_instance', {
+      project: 'demo', mode: 'bypassPermissions', createWorktree: true, temp: false,
+    }));
+    await waitFor(() => instForSession(instances, spawn.sessionId)?.status === 'idle');
+    const sessionId = spawn.sessionId;
+    const worktreeName = spawn.worktree.worktreeName;
+    const branch = spawn.worktree.branch;
+    const worktreePath = spawn.cwd;
+    assert.notEqual(worktreePath, path.join(projectsRoot, 'demo'),
+      'sanity: the worktree cwd differs from the base project path');
+
+    // Run a real turn so a jsonl actually exists under the WORKTREE's
+    // encoded cwd (writeSessionMetadata's last-prompt/permission-mode lines,
+    // written fire-and-forget off turn_end — wait for it to land on disk).
+    await callTool(baseUrl, 'send_prompt', { sessionId, text: 'go', wait: true, waitTimeoutMs: 5000 });
+    const sessionDir = path.join(claudeProjectsRoot, encodeCwd(worktreePath));
+    const jsonlPath = path.join(sessionDir, `${sessionId}.jsonl`);
+    await waitFor(async () => { try { await fs.stat(jsonlPath); return true; } catch { return false; } });
+
+    // Seed a distinguishable "prior conversation" line — what a resumed
+    // process must actually find and replay for history to load.
+    await fs.appendFile(jsonlPath,
+      JSON.stringify({ type: 'user', uuid: 'prior-1', message: { role: 'user', content: 'prior context' } }) + '\n');
+
+    // Simulate the session's process having exited: fully drop the in-memory
+    // instance so the next resume goes through InstanceManager.create()'s
+    // fresh resolution path rather than respawn() (which would reuse the
+    // already-correct in-memory cwd and mask the bug).
+    await callTool(baseUrl, 'kill_instance', { sessionId });
+    assert.equal(instForSession(instances, sessionId), undefined);
+
+    // The bug scenario: resume with ONLY the sessionId — no project, no
+    // worktree. Must "just work": recover the recorded project + worktree.
+    const resumeSpawn = unwrap(await callTool(baseUrl, 'spawn_instance', { resume: sessionId }));
+    await waitFor(() => instForSession(instances, sessionId)?.status === 'idle');
+
+    assert.equal(resumeSpawn.cwd, worktreePath,
+      'resumed instance cwd must match the session\'s recorded worktree path, not the base project');
+    assert.ok(resumeSpawn.worktree, 'resumed instance must carry worktree metadata');
+    assert.equal(resumeSpawn.worktree.worktreeName, worktreeName);
+    assert.equal(resumeSpawn.worktree.branch, branch);
+    assert.equal(resumeSpawn.temp, false, 'resume must not silently force a persistent session to temp:true');
+
+    // The whole point: prior history must actually be found and replayed —
+    // not merely that the cwd/worktree fields look right. history_replayed
+    // only fires when loadPersistedTranscript found the jsonl at the
+    // (now correctly resolved) cwd.
+    const tx = unwrap(await callTool(baseUrl, 'get_transcript', { sessionId }));
+    assert.ok(
+      tx.events.some(e => e.kind === 'system' && e.subtype === 'history_replayed'),
+      'resumed instance must replay prior persisted history from the correctly-resolved worktree cwd',
+    );
+    assert.ok(
+      tx.events.some(e => e.kind === 'user_echo' && e.text === 'prior context'),
+      'the seeded prior conversation line must actually appear in the replayed transcript',
+    );
+  } finally {
+    if (prev === undefined) delete process.env.FAKE_CLAUDE_SCENARIO;
+    else process.env.FAKE_CLAUDE_SCENARIO = prev;
+  }
+});
+
+test('spawn_instance({resume}) recovers temp:true from the durable sidecar after a SIGKILL-survived exit', async () => {
+  // A graceful kill_instance runs _handleExit → _archiveTempSession(), which
+  // intentionally unmarks temp (the session becomes an archived-but-resumable
+  // regular session) — that's existing, correct behavior, not this bug. The
+  // scenario this test guards is the *other* one tempSessions.js exists for:
+  // an orchestrator SIGKILL where _handleExit never runs, so the jsonl and
+  // the durable temp sidecar marker both survive with no in-memory record.
+  // Resuming that session must recover temp:true from the sidecar — not get
+  // silently forced true by a blanket default, and not silently dropped to
+  // false either.
+  const { markTemp } = await import('../src/tempSessions.js');
+  const { encodeCwd } = await import('../src/projects.js');
+  await api(baseUrl, 'POST', '/api/projects', { name: 'a' });
+
+  const survivedSid = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+  await markTemp(survivedSid);
+  const dir = path.join(claudeProjectsRoot, encodeCwd(path.join(projectsRoot, 'a')));
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(path.join(dir, `${survivedSid}.jsonl`),
+    '{"type":"user","uuid":"u","message":{"role":"user","content":"hi"}}\n');
+
+  const resumeSpawn = unwrap(await callTool(baseUrl, 'spawn_instance', { project: 'a', resume: survivedSid }));
+  assert.equal(resumeSpawn.temp, true, 'temp recovered from the durable sidecar on resume, not forced or dropped');
 });

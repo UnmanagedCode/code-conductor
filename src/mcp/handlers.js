@@ -275,8 +275,11 @@ export async function spawnInstance(args, { instances, callerId }) {
     // checkbox (which the REST route maps to bypassPermissions), temp here
     // does NOT affect the mode default — create() leaves it at plan, so
     // workers plan before acting. Explicit temp:false / mode from the
-    // caller win.
-    temp: args.temp === undefined ? true : args.temp,
+    // caller win. On resume, leave it undefined instead of forcing true —
+    // create()'s sidecar recovery (isTemp(resume)) decides the session's
+    // actual persisted state; forcing true here would silently convert a
+    // persistent session into a disposable one on every MCP resume.
+    temp: args.temp !== undefined ? args.temp : (args.resume ? undefined : true),
     debug: args.debug,
     // Sessions spawned through the MCP tool are "conducted" sessions
     // (the worker agents an orchestrator conducts). This is the ONLY
