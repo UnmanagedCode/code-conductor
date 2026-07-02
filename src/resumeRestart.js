@@ -207,6 +207,9 @@ export async function drainToManifest({ server, wss, instances, log = console, g
       overageResumeAt: s.autoResumeAt ?? null,
       overageStopped: !!inst.autoStoppedForOverage,
       overageResetsAt: inst._overageResetsAt ?? null,
+      // Messages queued during the wait window — carried across the restart so
+      // they still flush with the resume once the deadline fires.
+      overageQueue: Array.isArray(inst._overageQueue) ? inst._overageQueue : [],
     };
     if (group === 'conductor') entry.workers = workersByConductor.get(inst.id) ?? [];
     entries.push(entry);
@@ -300,6 +303,9 @@ export async function restoreFromResumeManifest({ instances, log = console, stag
       // already elapsed during the restart.
       if (e.overageStopped && Number.isFinite(e.overageResumeAt)) {
         inst._overageResetsAt = e.overageResetsAt ?? null;
+        // Restore queued messages BEFORE re-arming so armRestored's status emit
+        // carries the restored queuedCount (badge shows "· N queued").
+        inst._overageQueue = Array.isArray(e.overageQueue) ? e.overageQueue : [];
         try { instances._armRestoredAutoResume(inst, e.overageResumeAt * 1000); }
         catch (err) { log.warn?.('resume-restart: overage re-arm failed', err?.message); }
       }

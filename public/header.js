@@ -295,8 +295,12 @@ export function installHeader({
     if (inst.temp) dom.instanceTitle.appendChild(chip('ih-temp', 'temp'));
     if (inst.debug) dom.instanceTitle.appendChild(chip('ih-debug', 'debug'));
     if (inst.autoResumeAt) {
-      const rc = chip('ih-status ih-auto-resume', formatAutoResumeTime(inst.autoResumeAt));
-      rc.title = 'auto-stopped on overage — will resume when the rate-limit window resets';
+      const n = inst.queuedCount || 0;
+      const label = formatAutoResumeTime(inst.autoResumeAt) + (n > 0 ? ` · ${n} queued` : '');
+      const rc = chip('ih-status ih-auto-resume', label);
+      rc.title = n > 0
+        ? `auto-stopped on overage — ${n} message${n === 1 ? '' : 's'} queued; will resume when the window resets`
+        : 'auto-stopped on overage — will resume when the rate-limit window resets';
       dom.instanceTitle.appendChild(rc);
     }
     // Combined ctx+rl chip: right slot of the bottom bar. ctx half is
@@ -349,7 +353,12 @@ export function installHeader({
     dom.autoApprovePlanBtn.setAttribute('aria-pressed', inst.autoApprovePlan ? 'true' : 'false');
     const canType = ['idle', 'turn', 'spawning'].includes(inst.status);
     const canSend = ['idle', 'turn'].includes(inst.status);
-    composer.set({ canType, canSend });
+    // While auto-stopped-and-armed for overage resume the composer stays
+    // usable, but sending QUEUES the message (delivered when the window
+    // resets). Signal that so the composer shows the paused banner + "Queue".
+    composer.set({ canType, canSend,
+      overagePaused: !!inst.autoResumeAt,
+      resumeAt: inst.autoResumeAt ?? null });
     // Rewind/fork buttons are only safe between turns — the server refuses
     // a rewind during `turn` status anyway, but disabling them here keeps
     // the UX honest (no clickable button that just throws a 409).

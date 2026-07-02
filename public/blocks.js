@@ -1035,7 +1035,7 @@ function imageSrcFromSource(source) {
 const SHOWN_SYSTEM_SUBTYPES = new Set([
   'init', 'stderr', 'exit', 'spawn_error', 'crashed',
   'permission_denied', 'compacting', 'history_load_error', 'auto_stop_overage',
-  'auto_resume_skipped', 'soft_interrupted', 'drain_abort',
+  'auto_resume', 'auto_resume_skipped', 'soft_interrupted', 'drain_abort',
 ]);
 
 export function shouldRenderSystem(ev) {
@@ -1065,6 +1065,7 @@ export class SystemBlock {
         }
         return '⛔ Stopped: session entered overage usage — auto-stop is enabled.';
       }
+      if (subtype === 'auto_resume') return `Window reset — delivered ${data?.count ?? 0} queued`;
       if (subtype === 'auto_resume_skipped') return `⚠ Auto-resume skipped: ${data?.reason ?? ''}.`;
       if (subtype === 'soft_interrupted') return data?.text ? `⏸ Turn interrupted: ${data.text}` : '⏸ Turn interrupted';
       if (subtype === 'drain_abort') return `⏹ Drained queued turn after interrupt (${data?.count ?? 1})`;
@@ -1074,6 +1075,29 @@ export class SystemBlock {
       el('span', { class: 'subtype' }, subtype),
       detail ? ` ${detail}` : '',
     );
+  }
+}
+
+// A message the user typed while the session was auto-stopped-and-armed for
+// overage resume: not delivered yet, just queued. Rendered as a muted/ghost
+// bubble (terse "queued" chip + clock) so it's clear it hasn't been sent. When
+// the resume fires the conversation adds a `.delivered` class to collapse it.
+export class QueuedMessageBlock {
+  constructor({ data }) {
+    const ts = data?.ts;
+    let clock = '';
+    if (ts) {
+      try { clock = new Date(ts).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); }
+      catch { clock = ''; }
+    }
+    const meta = el('span', { class: 'queued-meta' },
+      el('span', { class: 'queued-chip' }, 'queued'),
+      clock ? el('span', { class: 'queued-clock' }, clock) : null);
+    const kids = [meta, el('div', { class: 'queued-body' }, data?.text ?? '')];
+    if (data?.attachmentCount > 0) {
+      kids.push(el('span', { class: 'queued-atts' }, `📎 ${data.attachmentCount}`));
+    }
+    this.node = el('div', { class: 'block queued', dataset: { queuedTs: String(ts ?? '') } }, ...kids);
   }
 }
 

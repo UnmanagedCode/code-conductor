@@ -531,6 +531,7 @@ test('drainToManifest persists a pending overage auto-resume (overageResumeAt/ov
   // live idle-transition path does.
   inst.autoStoppedForOverage = true;
   inst._overageResetsAt = nowSec() + 100;          // 100s out, comfortably future
+  inst._overageQueue = [{ text: 'hold this for me', attachments: [], ts: Date.now() }];
   instances._armAutoResume(inst);
   assert.ok(Number.isFinite(inst.autoResumeAt), 'resume deadline armed');
   assert.ok(instances._autoResumeTimers.has(inst.sessionId), 'sweep deadline set');
@@ -541,6 +542,7 @@ test('drainToManifest persists a pending overage auto-resume (overageResumeAt/ov
   assert.equal(e.overageStopped, true, 'stop-resume intent persisted');
   assert.equal(e.overageResumeAt, inst.autoResumeAt, 'fire deadline (epoch secs) persisted');
   assert.equal(e.overageResetsAt, inst._overageResetsAt, 'reset time persisted');
+  assert.deepEqual(e.overageQueue, inst._overageQueue, 'queued messages persisted');
   await waitFor(() => inst.proc === null, { timeout: 20000 });
   clearResumeManifest();
 });
@@ -620,7 +622,8 @@ test('restoreFromResumeManifest arms a FUTURE overage deadline without firing; l
     const base = { project: 'ovg-fut', cwd, mode: 'plan', effort: 'high', thinking: 'adaptive', model: null, worktreeName: null, temp: false, conducted: false, debug: false, title: null, autoApprovePlan: false, group: 'other' };
     await fs.mkdir(orchStoreRoot(), { recursive: true });
     writeResumeManifest([
-      { ...base, sessionId: ovgSid, wasBusy: false, overageStopped: true, overageResumeAt: futureAt, overageResetsAt: futureAt - 5 },
+      { ...base, sessionId: ovgSid, wasBusy: false, overageStopped: true, overageResumeAt: futureAt, overageResetsAt: futureAt - 5,
+        overageQueue: [{ text: 'queued while paused', attachments: [], ts: Date.now() }] },
       { ...base, sessionId: plainSid, wasBusy: true }, // no overage fields
     ]);
 
@@ -631,6 +634,8 @@ test('restoreFromResumeManifest arms a FUTURE overage deadline without firing; l
     assert.ok(instances._autoResumeTimers.has(ovgSid), 'future overage deadline armed');
     const ovgInst = [...instances.byId.values()].find(i => i.sessionId === ovgSid);
     assert.equal(ovgInst.autoResumeAt, futureAt, 'badge deadline set to persisted value');
+    assert.equal(ovgInst._overageQueue.length, 1, 'queued messages restored');
+    assert.equal(ovgInst.summary().queuedCount, 1, 'restored queuedCount surfaced on summary');
 
     // (b) Plain session: gets RESUME_TEXT, no overage timer.
     await waitFor(async () => {
