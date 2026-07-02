@@ -8,7 +8,7 @@ import { bootServer, api, freshProjectsRoot, rmrf } from './helpers.mjs';
 import {
   setSummary, getSummaries, deleteSummaries, loadAll,
 } from '../src/sessionSummaries.js';
-import { orchStoreRoot } from '../src/projects.js';
+import { orchStoreRoot, findSessionLocation } from '../src/projects.js';
 import { summarySpawnDir } from '../src/summarize.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -261,5 +261,45 @@ test('POST spawns subprocess in .code-conductor/summaries dir (not a real projec
     else process.env.CLAUDE_BIN = origBin;
     delete process.env.FAKE_SUMMARIZE_CWD_OUT;
     await fs.unlink(cwdOut).catch(() => {});
+  }
+});
+
+// ---------------------------------------------------------------------------
+// .conduct (hidden conductor project) regression — listProjects() skips
+// dot-prefixed dirs, so findSessionLocation must special-case .conduct or
+// conductor-session summaries 404 as "session not found".
+// ---------------------------------------------------------------------------
+
+test('findSessionLocation resolves a session under the hidden .conduct project', async () => {
+  const conductPath = path.join(projectsRoot, '.conduct');
+  await fs.mkdir(conductPath, { recursive: true });
+  const sid = 'sid-conduct-locate';
+  await plantJsonl(conductPath, sid, [
+    { type: 'user', message: { role: 'user', content: 'hi' } },
+  ]);
+
+  const hit = await findSessionLocation(sid);
+  assert.deepEqual(hit, { project: '.conduct', worktreeName: null });
+});
+
+test('POST /api/sessions/:sid/summary succeeds for a .conduct session', async () => {
+  const conductPath = path.join(projectsRoot, '.conduct');
+  await fs.mkdir(conductPath, { recursive: true });
+  const sid = 'sid-conduct-summary';
+  await plantJsonl(conductPath, sid, [
+    { type: 'user', message: { role: 'user', content: 'hello' } },
+    { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'hi' }] } },
+  ]);
+
+  const origBin = process.env.CLAUDE_BIN;
+  process.env.CLAUDE_BIN = `${process.execPath} ${FAKE_SUMMARIZE}`;
+  try {
+    const r = await api(baseUrl, 'POST', `/api/sessions/${sid}/summary`, { length: 'short' });
+    assert.equal(r.status, 200);
+    assert.equal(r.body.ok, true);
+    assert.equal(r.body.data.short.summary, 'This is a canned test summary of the session.');
+  } finally {
+    if (origBin === undefined) delete process.env.CLAUDE_BIN;
+    else process.env.CLAUDE_BIN = origBin;
   }
 });
