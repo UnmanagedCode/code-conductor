@@ -152,6 +152,54 @@ test('subscribe sends only the ring tail, snapped to a turn boundary', async () 
   }
 });
 
+test('snapshot carries tasksAtTailStart for a batch created below the tail', async () => {
+  // A still-incomplete batch whose TaskCreate sits below the ring tail must be
+  // recoverable by the client panel via the snapshot's tasksAtTailStart seed
+  // (src/instances.js reconstructActiveTasks → src/taskReconstruct.js).
+  const prevTail = process.env.ORCH_SNAPSHOT_TAIL;
+  const prevCap = process.env.ORCH_EVENT_RING_CAP;
+  process.env.ORCH_SNAPSHOT_TAIL = '8';
+  process.env.ORCH_EVENT_RING_CAP = '200'; // no trim — the create stays in the ring, below the tail
+  const { baseUrl, wsUrl, instances, close } = await setup();
+  try {
+    const created = await api(baseUrl, 'POST', '/api/instances', { project: 'a', mode: 'bypassPermissions' });
+    const id = created.body.id;
+    await waitFor(() => instances.get(id).status === 'idle' && instances.get(id).sessionId);
+    const inst = instances.get(id);
+
+    // Open an in-flight batch at the very start of history…
+    inst._emitUi({ kind: 'user_echo', text: 'start' });
+    inst._emitUi({ kind: 'tool_use', name: 'TaskCreate', toolUseId: 'tc', input: { subject: 'Big batch' } });
+    inst._emitUi({ kind: 'tool_result', toolUseId: 'tc', content: 'Task #1 created successfully: Big batch', isError: false });
+    inst._emitUi({ kind: 'tool_use', name: 'TaskUpdate', toolUseId: 'tu', input: { taskId: '1', status: 'in_progress' } });
+    // …then a long tail of unrelated turns that pushes the batch below the tail.
+    for (let i = 0; i < 30; i++) {
+      inst._emitUi(i % 5 === 0
+        ? { kind: 'user_echo', text: `turn ${i / 5}` }
+        : { kind: 'text_delta', msgId: 'm', blockIdx: 0, text: `e${i}` });
+    }
+
+    const c = await wsClient(wsUrl);
+    c.send({ t: 'subscribe', id });
+    const snap = await c.wait(m => m.t === 'snapshot' && m.id === id);
+
+    // The TaskCreate is genuinely below the tail window.
+    assert.ok(snap.tailStartSeq > 3, 'tail starts after the task events');
+    assert.ok(!snap.events.some(e => e.name === 'TaskCreate'), 'create is not in the tail');
+    // …but the in-flight batch is delivered for the panel seed.
+    assert.ok(Array.isArray(snap.tasksAtTailStart));
+    assert.deepEqual(snap.tasksAtTailStart.map(t => ({ id: t.id, status: t.status, subject: t.subject })),
+      [{ id: '1', status: 'in_progress', subject: 'Big batch' }]);
+    await c.close();
+  } finally {
+    await close();
+    if (prevTail === undefined) delete process.env.ORCH_SNAPSHOT_TAIL;
+    else process.env.ORCH_SNAPSHOT_TAIL = prevTail;
+    if (prevCap === undefined) delete process.env.ORCH_EVENT_RING_CAP;
+    else process.env.ORCH_EVENT_RING_CAP = prevCap;
+  }
+});
+
 test('two clients on two instances stream concurrently and independently', async () => {
   const { baseUrl, wsUrl, instances, close } = await setup();
   try {

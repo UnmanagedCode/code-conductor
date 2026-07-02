@@ -320,3 +320,74 @@ test('limit is clamped; bad params 400; unknown instance 404', async () => {
     assert.equal(missing.status, 404);
   }
 });
+
+// A task batch that lives in older history must render its finished-task bubble
+// when paged back — the server injects a synthetic {kind:'task_completion'}
+// after the completing TaskUpdate (client no longer synthesizes it for the
+// lazy path). See src/eventArchive.js injectTaskCompletions + taskReconstruct.js.
+function taskBatchLines() {
+  return [
+    { type: 'user', uuid: 'utc', message: { role: 'user', content: 'do the tasks' } },
+    { type: 'assistant', uuid: 'atc', message: { id: 'mtc', role: 'assistant', content: [
+      { type: 'tool_use', id: 'tc1', name: 'TaskCreate', input: { subject: 'Alpha' } },
+    ] } },
+    { type: 'user', uuid: 'urc', message: { role: 'user', content: [
+      { type: 'tool_result', tool_use_id: 'tc1', content: 'Task #1 created successfully: Alpha' },
+    ] } },
+    { type: 'assistant', uuid: 'atu1', message: { id: 'mtu1', role: 'assistant', content: [
+      { type: 'tool_use', id: 'tu1', name: 'TaskUpdate', input: { taskId: '1', status: 'in_progress' } },
+    ] } },
+    { type: 'assistant', uuid: 'atu2', message: { id: 'mtu2', role: 'assistant', content: [
+      { type: 'tool_use', id: 'tu2', name: 'TaskUpdate', input: { taskId: '1', status: 'completed' } },
+    ] } },
+  ];
+}
+
+function findCompletionAfterUpdate(events) {
+  for (let i = 0; i < events.length; i++) {
+    const e = events[i];
+    if (e.kind === 'tool_use' && e.name === 'TaskUpdate' && e.input?.status === 'completed') {
+      return events[i + 1] ?? null;
+    }
+  }
+  return null;
+}
+
+test('paged history injects a task_completion bubble after the completing update', async () => {
+  {
+    const sid = 'ffffffff-2222-3333-4444-555555555555';
+    // Batch is older; trailing turns push it back so it is genuinely history.
+    const id = await bootResumed({ ctx, projectName: 'tasky',
+      sid, lines: [...taskBatchLines(), ...turnLines(3)] });
+
+    const { all } = await pageAll(ctx, id, { limit: 50 });
+    const completions = all.filter(e => e.kind === 'task_completion');
+    assert.equal(completions.length, 1, 'exactly one synthesized bubble');
+    assert.deepEqual(completions[0].tasks.map(t => ({ id: t.id, status: t.status })),
+      [{ id: '1', status: 'completed' }]);
+    // Placed immediately after the completing TaskUpdate, in chronological order.
+    const after = findCompletionAfterUpdate(all);
+    assert.ok(after && after.kind === 'task_completion',
+      'bubble sits right after the completing update');
+    // Synthetic bubbles carry no _seq (like the client synthesis), so they
+    // never collide with real event dedup.
+    assert.equal(completions[0]._seq, undefined);
+  }
+});
+
+test('a batch spanning a page boundary still gets its bubble in the completing page', async () => {
+  {
+    const sid = 'ffffffff-3333-4444-5555-666666666666';
+    const id = await bootResumed({ ctx, projectName: 'tasky2',
+      sid, lines: [...taskBatchLines(), ...turnLines(3)] });
+
+    // A small limit splits the create and the completing update across pages;
+    // injection derives over the full combined history, so the bubble still
+    // lands with the completing update (verified via the reassembled stream).
+    const { all } = await pageAll(ctx, id, { limit: 2 });
+    const completions = all.filter(e => e.kind === 'task_completion');
+    assert.equal(completions.length, 1, 'no dup / no drop across page seams');
+    const after = findCompletionAfterUpdate(all);
+    assert.ok(after && after.kind === 'task_completion');
+  }
+});

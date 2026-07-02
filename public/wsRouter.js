@@ -55,6 +55,10 @@ export function installWsRouter({
     // so completed-batch records land inline at the right position.
     const tracker = getTracker(m.id);
     tracker.reset();
+    // Seed the in-flight batch as of the tail start (server: tasksAtTailStart)
+    // BEFORE replaying the tail, so a batch whose TaskCreate is below the tail
+    // still drives the panel and completes correctly if it finishes in-tail.
+    if (m.tasksAtTailStart?.length) tracker.seedActive(m.tasksAtTailStart);
     const usage = getUsage(m.id);
     usage.reset();
     // Rate limits are account-wide — do NOT reset globalRLTracker per snapshot.
