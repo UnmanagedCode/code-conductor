@@ -428,11 +428,10 @@ test('routing: action "none" never flips the global flag', async () => {
   assert.equal(sub(evs, 'auto_stop_overage').length, 0, 'none ⇒ no routing');
 });
 
-test('stop-resume: a user prompt before the timer fires cancels the pending resume', async () => {
-  // resetsAt far in the future so the real timer never fires during the test —
-  // we assert the timer ARMS, then prove a user takeover CANCELS it (no
-  // _fireAutoResumeNow, no wall-clock wait on a fire). Deterministic by
-  // construction: the only awaits are the inherent turn round-trips.
+// BEHAVIOR FLIP: a user prompt during the wait window used to CANCEL the pending
+// resume and drive the session immediately. It now QUEUES the message — the
+// resume stays armed and only the deadline (or _fireAutoResumeNow) resumes.
+test('stop-resume: a user prompt during the wait window is QUEUED, not delivered, and does NOT cancel the resume', async () => {
   await boot(scenario([overageEvent({ resetsAt: nowSec() + 3600 }), RESULT]), 'stop-resume');
   const inst = await spawnIdle();
   const evs = collect(inst);
@@ -440,15 +439,80 @@ test('stop-resume: a user prompt before the timer fires cancels the pending resu
   await waitFor(() => inst.autoResumeAt != null);
   assert.equal(ctx.instances._autoResumeTimers.has(inst.sessionId), true, 'timer armed');
 
-  // User takes over — their prompt must cancel the pending resume.
-  inst.prompt('actually do this instead');
-  await waitFor(() => !ctx.instances._autoResumeTimers.has(inst.sessionId));
-  assert.equal(inst.autoResumeAt, null, 'badge cleared on user takeover');
-  assert.equal(inst.autoStoppedForOverage, false);
-  assert.equal(ctx.instances._autoResumeTimers.size, 0);
-  // The cancelled resume was never delivered.
+  // User types during the paused window — the message is queued, not sent.
+  await inst.prompt('actually do this instead');
+  await waitFor(() => evs.some(e => e.kind === 'overage_message_queued'));
+  // Resume stays armed; nothing was cancelled.
+  assert.equal(ctx.instances._autoResumeTimers.has(inst.sessionId), true, 'timer still armed after typing');
+  assert.equal(inst.autoResumeAt != null, true, 'badge still set');
+  assert.equal(inst.autoStoppedForOverage, true, 'still auto-stopped');
+  assert.equal(inst._overageQueue.length, 1, 'message queued');
+  assert.equal(inst._overageQueue[0].text, 'actually do this instead');
+  assert.equal(inst.summary().queuedCount, 1, 'queuedCount surfaced on summary');
+  // Neither the queued text nor the resume text was delivered to the CLI yet.
   assert.equal(evs.some(e => e.kind === 'user_echo' && e.text === AUTO_RESUME_TEXT), false,
-    'cancelled ⇒ no resume prompt delivered');
+    'resume not delivered while paused');
+  assert.equal(evs.some(e => e.kind === 'user_echo' && e.text === 'actually do this instead'), false,
+    'queued message not delivered on its own');
+});
+
+test('stop-resume: queued messages flush as ONE combined prompt when the resume fires', async () => {
+  await boot(scenario([overageEvent({ resetsAt: nowSec() + 3600 }), RESULT]), 'stop-resume');
+  const inst = await spawnIdle();
+  const evs = collect(inst);
+  inst.prompt('go');
+  await waitFor(() => inst.autoResumeAt != null);
+
+  await inst.prompt('first queued');
+  await inst.prompt('second queued');
+  await waitFor(() => inst._overageQueue.length === 2);
+
+  // Fire the armed resume deterministically.
+  assert.equal(ctx.instances._fireAutoResumeNow(inst.sessionId), true, 'pending resume fired');
+
+  // Exactly one delivered turn carrying the resume text AND both queued messages.
+  await waitFor(() => evs.some(e => e.kind === 'user_echo' &&
+    e.text.includes(AUTO_RESUME_TEXT) && e.text.includes('first queued') && e.text.includes('second queued')),
+    { timeout: 10000 });
+  const echoes = evs.filter(e => e.kind === 'user_echo' && e.text.includes(AUTO_RESUME_TEXT));
+  assert.equal(echoes.length, 1, 'single combined resume turn');
+
+  // A system line records the flush, the queue is drained, flags cleared, alive.
+  assert.equal(sub(evs, 'auto_resume').some(e => e.data.count === 2), true, 'auto_resume line with count=2');
+  await waitFor(() => !ctx.instances._autoResumeTimers.has(inst.sessionId));
+  assert.equal(inst._overageQueue.length, 0, 'queue drained');
+  assert.equal(inst.autoResumeAt, null, 'badge cleared');
+  assert.equal(inst.autoStoppedForOverage, false);
+  assert.equal(inst.proc != null, true, 'never killed');
+});
+
+test('stop-resume: an internal prompt during the wait window is NOT queued and does not cancel', async () => {
+  await boot(scenario([overageEvent({ resetsAt: nowSec() + 3600 }), RESULT]), 'stop-resume');
+  const inst = await spawnIdle();
+  const evs = collect(inst);
+  inst.prompt('go');
+  await waitFor(() => inst.autoResumeAt != null);
+
+  // Orchestrator-injected (internal) prompt — e.g. an idle-subscription wake.
+  await inst.prompt('internal wake', [], { internal: true });
+  // It resumes/steers normally: not queued, and it fell through to a real turn.
+  assert.equal(inst._overageQueue.length, 0, 'internal prompt not queued');
+  assert.equal(evs.some(e => e.kind === 'overage_message_queued'), false, 'no queued event for internal');
+  await waitFor(() => evs.some(e => e.kind === 'user_echo' && e.text === 'internal wake'));
+});
+
+test('stop-resume: queued attachments are concatenated into the single resume prompt', async () => {
+  await boot(scenario([overageEvent({ resetsAt: nowSec() + 3600 }), RESULT]), 'stop-resume');
+  const inst = await spawnIdle();
+  inst.prompt('go');
+  await waitFor(() => inst.autoResumeAt != null);
+
+  const att = (name) => ({ name, mediaType: 'text/plain', dataBase64: Buffer.from(name).toString('base64') });
+  await inst.prompt('with file A', [att('a.txt')]);
+  await inst.prompt('with file B', [att('b.txt')]);
+  await waitFor(() => inst._overageQueue.length === 2);
+  // Both queued entries retain their attachment for the combined delivery.
+  assert.equal(inst._overageQueue.flatMap(e => e.attachments).length, 2, 'two attachments queued for one send');
 });
 
 // ── Conducted stop-resume: resume must arm through the routing paths ───────

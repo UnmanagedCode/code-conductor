@@ -20,6 +20,26 @@
 export const AUTO_RESUME_TEXT =
   'The rate-limit window has reset. Please continue where you left off.';
 
+// Build the single prompt the resume delivers. With no queued messages it is
+// just AUTO_RESUME_TEXT (the unchanged single-resume behavior). With queued
+// messages it prepends the reset preamble, then lists each queued message as a
+// short numbered, clock-stamped item so the model sees what the user typed
+// while the session was paused.
+function buildCombinedResumeText(queue) {
+  if (!queue.length) return AUTO_RESUME_TEXT;
+  const fmt = (ts) => {
+    try { return new Date(ts).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); }
+    catch { return ''; }
+  };
+  const lines = queue.map((e, i) => {
+    const stamp = e.ts ? ` [${fmt(e.ts)}]` : '';
+    const body = (e.text && e.text.trim()) ? e.text.trim()
+      : (e.attachments?.length ? '(attachment)' : '(empty)');
+    return `${i + 1}.${stamp} ${body}`;
+  });
+  return `${AUTO_RESUME_TEXT}\n\nWhile paused you queued ${queue.length} message${queue.length === 1 ? '' : 's'}:\n${lines.join('\n')}`;
+}
+
 export class OverageResumeController {
   constructor(manager) {
     this.manager = manager;
@@ -120,12 +140,23 @@ export class OverageResumeController {
   // if the process vanished. No respawn, ever.
   run(inst, sid) {
     if (inst.proc) {
-      // prompt() synchronously emits 'user_prompt' → cancel performs
-      // the single teardown (deletes the Map entry, clears the flags, emits
-      // status to drop the badge, stops the sweep if it was the last one);
-      // then the resume message sends. cancel is the sole owner of
-      // teardown — do NOT pre-delete here or it double-runs.
-      inst.prompt(AUTO_RESUME_TEXT).catch(() => {});
+      // Deliver any messages the user queued during the wait window as ONE
+      // combined prompt alongside the resume text. Snapshot + empty the queue
+      // FIRST, then cancel() (which clears autoStoppedForOverage/autoResumeAt)
+      // so the follow-on non-internal prompt() send is NOT re-queued by the
+      // prompt() intercept. cancel performs the single teardown (deletes the
+      // Map entry, clears flags, emits status to drop the badge + queuedCount,
+      // stops the sweep if last); the resume prompt()'s own user_prompt→cancel
+      // is then a harmless idempotent no-op. Do NOT pre-delete the timer here.
+      const queue = inst._overageQueue.slice();
+      inst._overageQueue = [];
+      const attachments = queue.flatMap(e => Array.isArray(e.attachments) ? e.attachments : []);
+      const text = buildCombinedResumeText(queue);
+      this.cancel(sid);
+      if (queue.length) {
+        inst._emitUi({ kind: 'system', subtype: 'auto_resume', data: { count: queue.length } });
+      }
+      inst.prompt(text, attachments).catch(() => {});
     } else {
       // Process gone (crashed / killed externally) — no send means no
       // user_prompt, so tear down explicitly. Keep it simple: no respawn.
@@ -159,11 +190,16 @@ export class OverageResumeController {
     }
     for (const inst of this.manager.byId.values()) {
       if (inst.sessionId !== sessionId) continue;
-      const had = inst.autoResumeAt !== null || inst.autoStoppedForOverage;
+      const had = inst.autoResumeAt !== null || inst.autoStoppedForOverage ||
+        inst._overageQueue.length > 0;
       inst.autoResumeAt = null;
       inst.autoStoppedForOverage = false;
       inst._overageHandled = false;
-      if (had) this.manager.emit('status', inst.summary()); // clear the badge
+      // Drop any queued messages — the session is being torn down or resumed
+      // (run() already snapshot-emptied the queue before this call, so this is
+      // the kill/remove/temp-exit/shutdown cleanup path).
+      inst._overageQueue = [];
+      if (had) this.manager.emit('status', inst.summary()); // clear the badge + queuedCount
     }
   }
 

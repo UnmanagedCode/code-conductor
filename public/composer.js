@@ -6,6 +6,8 @@
 // Soft cap so the WS payload stays sane. base64 inflates by ~33%, and the
 // `ws` lib's default maxPayload is 100MB, so 10MB raw / ~13MB encoded is a
 // comfortable ceiling for screenshots and small docs.
+import { formatAutoResumeTime } from './usage.js';
+
 const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 
 async function fileToBase64(file) {
@@ -46,6 +48,20 @@ export function attachComposer({ form, textarea, sendBtn, attachBtn, fileInput, 
 
   let canType = false;
   let canSend = false;
+  // Overage-paused: the session is auto-stopped and armed for resume. The
+  // composer stays usable, but sending QUEUES the message (delivered when the
+  // window resets) — surfaced via a banner + "Queue" send label.
+  let overagePaused = false;
+  let resumeAt = null;
+
+  // Inline paused banner, prepended into the form and hidden by default.
+  const overageBanner = document.createElement('div');
+  overageBanner.className = 'composer-overage-banner';
+  overageBanner.hidden = true;
+  form.prepend(overageBanner);
+
+  // The send button's text label span (index.html: <span class="cs-label">).
+  const sendLabel = sendBtn.querySelector('.cs-label');
 
   // Whether the server has whisper.cpp + the model on disk. Flipped by
   // app.js via setMicAvailable() once /api/transcribe/status resolves. When
@@ -69,11 +85,16 @@ export function attachComposer({ form, textarea, sendBtn, attachBtn, fileInput, 
   let holdDidRecord = false;        // suppress post-hold click from sending
   let recordingCancelled = false;   // abort without transcribing (pointercancel etc.)
 
-  function setState({ canType: ct, canSend: cs }) {
+  function setState({ canType: ct, canSend: cs, overagePaused: op = false, resumeAt: ra = null }) {
     canType = ct; canSend = cs;
+    overagePaused = !!op; resumeAt = ra;
     textarea.disabled = !ct;
     if (attachBtn) attachBtn.disabled = !ct;
     if (fileInput) fileInput.disabled = !ct;
+    const at = overagePaused ? formatAutoResumeTime(resumeAt)?.replace('auto-resumes ', '') : null;
+    overageBanner.textContent = overagePaused
+      ? `Paused${at ? ` until ${at}` : ''} — messages are queued` : '';
+    overageBanner.hidden = !overagePaused;
     updateButton();
   }
   setState({ canType: false, canSend: false });
@@ -90,10 +111,14 @@ export function attachComposer({ form, textarea, sendBtn, attachBtn, fileInput, 
     else if (canType) mode = 'mic';
     else mode = 'send';
 
+    // In send mode while overage-paused the button QUEUES rather than sends.
+    const queueMode = mode === 'send' && overagePaused;
     sendBtn.classList.toggle('mode-mic', mode === 'mic');
     sendBtn.classList.toggle('mode-send', mode === 'send');
+    sendBtn.classList.toggle('mode-queue', queueMode);
     sendBtn.classList.toggle('recording', mode === 'recording');
     sendBtn.classList.toggle('transcribing', mode === 'transcribing');
+    if (sendLabel) sendLabel.textContent = queueMode ? 'Queue' : 'Send';
 
     if (mode === 'recording') {
       sendBtn.disabled = false;
@@ -108,7 +133,9 @@ export function attachComposer({ form, textarea, sendBtn, attachBtn, fileInput, 
         : 'Install Whisper to enable voice dictation (Settings → Transcribe)';
     } else {
       sendBtn.disabled = !canSend || !hasContent;
-      sendBtn.title = micAvailable ? 'Send message (hold to dictate)' : 'Send message';
+      sendBtn.title = queueMode
+        ? 'Queue message — delivered when the rate-limit window resets'
+        : (micAvailable ? 'Send message (hold to dictate)' : 'Send message');
     }
   }
   // Alias so the existing call sites keep reading naturally.

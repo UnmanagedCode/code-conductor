@@ -3,7 +3,7 @@
 // replays don't duplicate prior content.
 
 import { TextBlock, ThinkingBlock, ToolUseBlock, ToolResultBlock, SystemBlock, TurnEndBlock,
-  TaskCompletionBlock, UserQuestionBlock, PlanRequestBlock, PermissionRequestBlock, ImageBlock,
+  TaskCompletionBlock, QueuedMessageBlock, UserQuestionBlock, PlanRequestBlock, PermissionRequestBlock, ImageBlock,
   shouldRenderSystem, el, parseUserQuestionAnswers } from './blocks.js';
 
 function renderFileChip(a) {
@@ -215,6 +215,10 @@ export class Conversation {
         this.root.appendChild(new TaskCompletionBlock(ev).node);
         this._maybeScroll();
         break;
+      case 'overage_message_queued':
+        this.root.appendChild(new QueuedMessageBlock(ev).node);
+        this._maybeScroll();
+        break;
       case 'system':
         if (ev.subtype === 'thinking_tokens') {
           const n = ev.data?.estimated_tokens ?? 0;
@@ -224,6 +228,13 @@ export class Conversation {
           break;
         }
         if (ev.subtype === 'history_replayed') { this._renderHistoryDivider(ev); break; }
+        // Resume fired: collapse the ghost queued bubbles — they're folding into
+        // the single delivered turn that follows.
+        if (ev.subtype === 'auto_resume') {
+          for (const n of this.root.querySelectorAll('.block.queued:not(.delivered)')) {
+            n.classList.add('delivered');
+          }
+        }
         if (!shouldRenderSystem(ev)) break; // drop status/rate_limit/etc. noise
         this._renderSystem(ev); break;
       case 'hook':           /* dimmed hook lines dropped from the conversation */ break;

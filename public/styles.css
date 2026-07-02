@@ -928,6 +928,27 @@ body.lightbox-open { overflow: hidden; }
 }
 .block.system .subtype { color: var(--amber); margin-right: 4px; }
 
+/* Ghost bubble: a message queued while overage-paused, not yet delivered. */
+.block.queued {
+  margin: 6px 0; padding: 6px 10px;
+  border: 1px dashed var(--border); border-radius: 10px;
+  background: var(--panel-2); opacity: .72;
+  word-break: break-word;
+}
+.block.queued .queued-meta { display: flex; align-items: center; gap: 6px; margin-bottom: 3px; }
+.block.queued .queued-chip {
+  font-size: 10px; text-transform: uppercase; letter-spacing: .04em;
+  color: #0f1117; background: var(--muted);
+  border-radius: 6px; padding: 1px 5px;
+}
+.block.queued .queued-clock { font-size: 10px; color: var(--muted); }
+.block.queued .queued-clock::before { content: "🕒 "; }
+.block.queued .queued-body { white-space: pre-wrap; font-size: 13px; }
+.block.queued .queued-atts { font-size: 11px; color: var(--muted); }
+/* Collapsed once the resume delivers them as one turn. */
+.block.queued.delivered { opacity: .4; }
+.block.queued.delivered .queued-chip { text-decoration: line-through; }
+
 .history-divider {
   text-align: center;
   margin: 18px 0;
@@ -1065,6 +1086,16 @@ body.lightbox-open { overflow: hidden; }
   #composer-send.recording { animation: none; }
   #composer-send.transcribing .cs-mic { animation: none; }
 }
+
+/* Overage-paused: composer stays usable but sends QUEUE. */
+.composer-overage-banner {
+  font-size: 11px; color: var(--amber);
+  padding: 4px 6px 2px; line-height: 1.3;
+}
+#composer-send.mode-queue {
+  background: var(--amber); color: #0f1117; border-color: var(--amber);
+}
+#composer-send.mode-queue:hover:not(:disabled) { filter: brightness(1.08); }
 
 .composer-attachments {
   display: flex; flex-wrap: wrap; gap: 6px;

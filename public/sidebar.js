@@ -41,6 +41,7 @@ function mergeLive(onDisk, liveInstances) {
       row.instanceTemp = !!inst.temp;
       row.instanceHasIdleSubscriber = !!inst.hasIdleSubscriber;
       row.autoResumeAt = inst.autoResumeAt ?? null;
+      row.queuedCount = inst.queuedCount ?? 0;
       // Conducted is durable on-disk metadata (row.conducted may already
       // be set from the API). A live conducted instance is authoritative;
       // OR the two so a UI-resumed conducted session stays grouped.
@@ -62,6 +63,7 @@ function mergeLive(onDisk, liveInstances) {
         instanceTemp: !!inst.temp,
         instanceHasIdleSubscriber: !!inst.hasIdleSubscriber,
         autoResumeAt: inst.autoResumeAt ?? null,
+        queuedCount: inst.queuedCount ?? 0,
         conducted: !!inst.conducted,
         synthetic: true,
       });
@@ -231,10 +233,13 @@ export class Sidebar {
     }
     const resumeLabel = session.autoResumeAt ? formatAutoResumeTime(session.autoResumeAt) : null;
     if (resumeLabel) {
+      const n = session.queuedCount || 0;
       row.appendChild(el('span', {
         class: 'session-resume-badge',
-        title: 'auto-stopped on overage — will resume when the rate-limit window resets',
-      }, resumeLabel));
+        title: n > 0
+          ? `auto-stopped on overage — ${n} queued; will resume when the window resets`
+          : 'auto-stopped on overage — will resume when the rate-limit window resets',
+      }, resumeLabel + (n > 0 ? ` · ${n} queued` : '')));
     }
     if (session.instanceTemp && session.instanceId) {
       // Live temp instance → show the promote button to the left of ×.

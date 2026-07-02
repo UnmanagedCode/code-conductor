@@ -304,6 +304,12 @@ export class Instance extends EventEmitter {
     this.autoResumeAt = null;
     this._overageResetsAt = null;
     this._overageHandled = false;
+    // Messages typed while auto-stopped-and-armed for overage resume are
+    // QUEUED here (entries `{text, attachments, ts}`) instead of resuming the
+    // still-throttled session; the auto-resume delivers them as one combined
+    // prompt when the window-reset deadline fires. Reset on (re)spawn and
+    // cleared on cancel/flush. Persisted across a resume-restart.
+    this._overageQueue = [];
   }
 
   summary() {
@@ -337,6 +343,7 @@ export class Instance extends EventEmitter {
       autoApprovePlan: this.autoApprovePlan,
       interrupting: this.interrupting,
       autoResumeAt: this.autoResumeAt,
+      queuedCount: this._overageQueue.length,
     };
   }
 
@@ -528,6 +535,7 @@ export class Instance extends EventEmitter {
     this.autoResumeAt = null;
     this._overageResetsAt = null;
     this._overageHandled = false;
+    this._overageQueue = [];
     const { command, prefixArgs } = resolveClaudeBin();
     if (resume) this.sessionId = resume;
     else if (!this.sessionId) this.sessionId = randomUUID();
@@ -906,6 +914,29 @@ export class Instance extends EventEmitter {
     // An explicit new turn closes the drain window immediately so an intentional
     // follow-up prompt is never intercepted by the post-hard-abort drain logic.
     this._closeDrainWindow();
+    // While auto-stopped AND armed for overage resume, a genuine (user/MCP-driven)
+    // prompt must NOT resume the still-throttled session — it is QUEUED and
+    // delivered as one combined prompt when the resume deadline fires (see
+    // OverageResumeController.run). Return BEFORE emitting `user_prompt` so the
+    // manager's resume-cancel handler never runs. Internal prompts (idle-wake
+    // stub, conductor steer, and the auto-resume's own send — which first clears
+    // these flags via cancel) fall through and resume normally.
+    if (!internal && this.autoStoppedForOverage && this.autoResumeAt) {
+      const entry = {
+        text: typeof text === 'string' ? text : '',
+        attachments: Array.isArray(attachments) ? attachments : [],
+        ts: Date.now(),
+      };
+      this._overageQueue.push(entry);
+      this._emitUi({ kind: 'overage_message_queued', data: {
+        text: entry.text,
+        attachmentCount: entry.attachments.length,
+        ts: entry.ts,
+        queuedCount: this._overageQueue.length,
+      } });
+      this.emit('status', this.summary()); // push queuedCount → badges
+      return;
+    }
     // A genuine (user/MCP-driven) prompt cancels a pending overage auto-resume —
     // the session is being driven again. Orchestrator-injected prompts
     // (`internal:true` — the idle-subscription wake stub, the conductor overage
