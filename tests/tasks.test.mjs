@@ -345,3 +345,51 @@ test('snapshot replay: feeding a long stream rebuilds state deterministically', 
     [{ id: '1', status: 'completed' }, { id: '2', status: 'in_progress' }]);
   assert.equal(t.isVisible(), true);
 });
+
+// --- seedActive: seed the in-flight batch from the server's tasksAtTailStart ---
+// (server sibling: src/taskReconstruct.js). The snapshot handler calls this
+// after reset() and before replaying the tail.
+
+test('seedActive populates tasks + _infoHistory and shows the panel', () => {
+  const t = new TaskTracker();
+  t.seedActive([
+    { id: '5', subject: 'Below-tail A', description: 'da', activeForm: 'Doing A', status: 'in_progress' },
+    { id: '6', subject: 'Below-tail B', status: 'pending' },
+  ]);
+  assert.equal(t.isVisible(), true);
+  assert.deepEqual(t.list().map(x => ({ id: x.id, status: x.status })),
+    [{ id: '5', status: 'in_progress' }, { id: '6', status: 'pending' }]);
+  // _infoHistory is seeded too, so tool-block subject resolution works for
+  // below-tail TaskUpdate blocks.
+  assert.equal(t.getSubject('5'), 'Below-tail A');
+  assert.equal(t.getDescription('5'), 'da');
+});
+
+test('seedActive with empty / missing list is a no-op', () => {
+  const t = new TaskTracker();
+  t.seedActive([]);
+  t.seedActive(undefined);
+  assert.equal(t.list().length, 0);
+  assert.equal(t.isVisible(), false);
+});
+
+test('a completing TaskUpdate after seedActive fires the completion edge', () => {
+  // Reproduces the below-tail-create / completes-in-tail case: the batch is
+  // seeded, then the tail carries the final TaskUpdate.
+  const t = new TaskTracker();
+  t.seedActive([{ id: '9', subject: 'Ship it', status: 'in_progress' }]);
+  assert.equal(t.completedBatches.length, 0);
+  t.apply({ kind: 'tool_use', name: 'TaskUpdate', toolUseId: 'tu', input: { taskId: '9', status: 'completed' } });
+  assert.equal(t.completedBatches.length, 1, 'completion edge fires on the seeded task');
+  assert.equal(t.completedBatches[0].tasks[0].id, '9');
+  assert.equal(t.isVisible(), false, 'panel hides once the seeded batch is done');
+});
+
+test('seedActive then a fresh TaskCreate merges only while the seed is in-flight', () => {
+  // Matches continuous-feed rollover semantics: a new create joins the current
+  // batch unless everything in it is already completed.
+  const t = new TaskTracker();
+  t.seedActive([{ id: '1', subject: 'Open', status: 'in_progress' }]);
+  feedCreate(t, { toolUseId: 'tu2', taskId: '2', subject: 'New in same batch' });
+  assert.equal(t.list().length, 2, 'joins the seeded in-flight batch');
+});

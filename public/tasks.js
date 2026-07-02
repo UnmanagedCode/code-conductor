@@ -7,6 +7,10 @@
 // arrives.
 //
 // The tracker is pure state — DOM rendering lives in TaskPanel.
+//
+// The batch-rollover + completion-edge rules here are MIRRORED server-side in
+// src/taskReconstruct.js (used to reconstruct out-of-tail task state). Keep the
+// two in sync when changing create-id binding, rollover, or the completion edge.
 
 const CREATE_ID_RE = /Task #(\d+) created/;
 
@@ -58,6 +62,30 @@ export class TaskTracker {
     this._pendingResults.clear();
     this._infoHistory.clear();
     this.completedBatches = [];
+    this._notify();
+  }
+
+  // Seed the current in-flight batch from the server's `tasksAtTailStart`
+  // (see src/taskReconstruct.js — the server sibling of this tracker). Called
+  // by the snapshot handler after reset() and BEFORE replaying the tail, so a
+  // batch whose TaskCreate is below the tail is present when the tail's
+  // TaskUpdates arrive — the panel shows and, if the batch completes inside the
+  // tail, the completion edge fires and the inline bubble is synthesized.
+  seedActive(list) {
+    if (!Array.isArray(list) || list.length === 0) return;
+    for (const t of list) {
+      const id = String(t.id);
+      this.tasks.set(id, {
+        subject: t.subject ?? '(no subject)',
+        description: t.description ?? '',
+        activeForm: t.activeForm ?? null,
+        status: t.status ?? 'pending',
+      });
+      this._infoHistory.set(id, {
+        subject: t.subject ?? '(no subject)',
+        description: t.description ?? '',
+      });
+    }
     this._notify();
   }
 

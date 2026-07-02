@@ -146,6 +146,7 @@ export function attachWsHub({ wss, instances }) {
             // tells the client older history exists — it lazy-loads it via
             // GET /api/instances/:id/events?before=<seq>.
             const events = inst.snapshotTail();
+            const tailStartSeq = events.length ? events[0]._seq : inst.ring.trimmedBefore;
             safeSend(ws, JSON.stringify({
               t: 'snapshot',
               id: inst.id,
@@ -156,8 +157,11 @@ export function attachWsHub({ wss, instances }) {
               autoApprovePlan: !!inst.autoApprovePlan,
               interrupting: !!inst.interrupting,
               events,
-              tailStartSeq: events.length ? events[0]._seq : inst.ring.trimmedBefore,
+              tailStartSeq,
               trimmedBefore: inst.ring.trimmedBefore,
+              // In-flight task batch as of the tail start, so the client panel
+              // reflects a batch whose TaskCreate is below the tail.
+              tasksAtTailStart: inst.reconstructActiveTasks(tailStartSeq),
             }));
             reply(true);
             return;

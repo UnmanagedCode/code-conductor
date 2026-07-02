@@ -30,6 +30,7 @@
 
 import { loadPersistedTranscript } from './transcript.js';
 import { isOuterUserEcho, snapStartToGroupBoundary } from './parser.js';
+import { reconstructTasks } from './taskReconstruct.js';
 
 const LIMIT_DEFAULT = 200;
 const LIMIT_MAX = 500;
@@ -181,5 +182,33 @@ export async function pageInstanceEvents(inst, { before = null, after = null, li
   }
 
   const nextBefore = events.length ? events[0]._seq : Math.max(0, Math.min(before ?? 0, tb));
-  return { events, hasMore, nextBefore, trimmedBefore: tb, lastSeq };
+  // Inject synthetic `task_completion` bubbles below the tail. Derived over the
+  // full `combined` history (so batches spanning page boundaries are correct),
+  // spliced into the served slice after the completing TaskUpdate. Completions
+  // at seq >= tailStartSeq are never served here (pages page strictly below the
+  // tail), so this never doubles the tail's client-synthesized bubbles.
+  const { completions } = reconstructTasks(combined);
+  return {
+    events: injectTaskCompletions(events, completions),
+    hasMore, nextBefore, trimmedBefore: tb, lastSeq,
+  };
+}
+
+// Splice `{kind:'task_completion', tasks}` (no `_seq`, matching the client's own
+// synthesis) into `events` immediately after each event whose `_seq` is the
+// completing update of a batch. Unmatched completions (outside this slice) drop.
+function injectTaskCompletions(events, completions) {
+  if (!completions.length || !events.length) return events;
+  const bySeq = new Map();
+  for (const c of completions) {
+    if (c.afterSeq != null) bySeq.set(c.afterSeq, c.tasks);
+  }
+  if (bySeq.size === 0) return events;
+  const out = [];
+  for (const ev of events) {
+    out.push(ev);
+    const tasks = bySeq.get(ev._seq);
+    if (tasks) out.push({ kind: 'task_completion', tasks });
+  }
+  return out;
 }

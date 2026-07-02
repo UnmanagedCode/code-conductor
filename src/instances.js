@@ -20,6 +20,7 @@ import { canonicalizeModel } from './modelVersions.js';
 import { truncateSessionAtUserMessage } from './sessionEdit.js';
 import { saveAttachment, isImageType } from './attachments.js';
 import { buildApprovePrompt } from './planApproval.js';
+import { reconstructTasks } from './taskReconstruct.js';
 import { IdleSubscriptionHub } from './idleSubscriptions.js';
 import { OverageResumeController } from './overageResume.js';
 import { UsageOverageMonitor } from './usageOverageMonitor.js';
@@ -407,6 +408,18 @@ export class Instance extends EventEmitter {
     //     their head from the combined archive+ring.
     start = snapStartToGroupBoundary(buf, start, buf.length);
     return buf.slice(start);
+  }
+
+  // Task-batch state as of `beforeSeq` — the in-flight batch that was open when
+  // the snapshot tail begins. The client seeds its TaskTracker with this before
+  // replaying the tail, so a batch whose TaskCreate sits below the tail still
+  // shows the active panel (and completes correctly if it finishes inside the
+  // tail). Reconstructed from the retained ring only: a create evicted below
+  // the ring (created > cap events ago) is not recovered here — deep lazy pages
+  // that load the jsonl archive reconstruct it instead.
+  reconstructActiveTasks(beforeSeq) {
+    const events = this.ring.buf.filter(ev => ev._seq < beforeSeq);
+    return reconstructTasks(events).activeAtEnd;
   }
 
   // Open log files for the raw CLI streams when debug mode is on. Called
