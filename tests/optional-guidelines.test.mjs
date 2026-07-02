@@ -63,6 +63,11 @@ test('SEED_GUIDELINES bodies have correct ## headings', () => {
   assert.ok(docs.body.startsWith('## Documentation guidelines'));
 });
 
+test('design-guidelines body includes a YAGNI bullet', () => {
+  const design = SEED_GUIDELINES.find(r => r.slug === 'design-guidelines');
+  assert.match(design.body, /YAGNI/);
+});
+
 test('getCatalog returns seeds only when no custom guidelines', async () => {
   const catalog = await getCatalog();
   assert.equal(catalog.length, SEED_GUIDELINES.length);

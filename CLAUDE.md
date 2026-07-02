@@ -14,6 +14,7 @@ When `README.md` doesn't go deep enough, load the relevant detail file:
 
 Load-bearing rules — stay inside them when writing code. Rationale + examples in `docs/architecture.md` → "Conventions"; don't restate it here.
 
+- **YAGNI** — implement only what a current, concrete requirement needs; no speculative abstractions/config/extension points "for later." If code isn't exercised by a real caller or test, remove it rather than keep it "just in case."
 - Feature logic lives in a `public/` `installX({...})` module (or a stateful class); **app.js is bootstrap/wiring only** — build state + DOM, call each installX once, inject live state via getters. Don't grow app.js with feature logic.
 - **No god-modules** — when a module takes on a second responsibility, extract it as a composed collaborator with a stable delegating surface (cf. InstanceManager→IdleSubscriptionHub/OverageResumeController, handlers.js→diffPaging/messageReconstruction, whisper/tts→installRunner).
 - **REST and MCP share one service layer** — git/worktree/diff/session logic lives once (`src/worktrees.js` + siblings), imported by both `routes.js` and `mcp/handlers.js`; never reimplement per surface.
