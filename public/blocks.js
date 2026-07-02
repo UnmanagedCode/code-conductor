@@ -1066,7 +1066,7 @@ export class SystemBlock {
         return '⛔ Stopped: session entered overage usage — auto-stop is enabled.';
       }
       if (subtype === 'auto_resume_skipped') return `⚠ Auto-resume skipped: ${data?.reason ?? ''}.`;
-      if (subtype === 'soft_interrupted') return '⏸ Turn interrupted';
+      if (subtype === 'soft_interrupted') return data?.text ? `⏸ Turn interrupted: ${data.text}` : '⏸ Turn interrupted';
       if (subtype === 'drain_abort') return `⏹ Drained queued turn after interrupt (${data?.count ?? 1})`;
       try { return JSON.stringify(data).slice(0, 200); } catch { return ''; }
     })();
