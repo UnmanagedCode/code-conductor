@@ -178,7 +178,7 @@ test('forced interrupt (force:true) mid-turn emits turn_end and returns to idle'
   assert.equal(inst.interrupting, false, 'interrupting flag cleared on turn exit');
 });
 
-test('soft interrupt (default) injects a hidden steer, sets interrupting, leaves no bubble', async () => {
+test('soft interrupt (default) injects a hidden steer, sets interrupting, shows a visible annotation without shifting the user-prompt index', async () => {
   await setupWithProject();
   const transcriptPath = path.join(home, 'soft-stdin.log');
   process.env.FAKE_CLAUDE_TRANSCRIPT = transcriptPath;
@@ -202,6 +202,7 @@ test('soft interrupt (default) injects a hidden steer, sets interrupting, leaves
     assert.equal(inst.status, 'turn');
     await waitFor(() => events.slice(beforeSecond).some(e => e.id === id && e.ev.kind === 'text_delta'));
     const ringBefore = inst.ring.toArray().length;
+    const userEchoCountBefore = inst._userEchoCount;
 
     await inst.interrupt(); // SOFT (no force)
     assert.equal(inst.status, 'turn', 'soft interrupt does NOT change status');
@@ -210,9 +211,20 @@ test('soft interrupt (default) injects a hidden steer, sets interrupting, leaves
     assert.ok(statuses.some(s => s.id === id && s.interrupting === true),
       'a status event was broadcast with interrupting:true');
 
-    // No new user_echo bubble entered the ring for the steer.
-    const newEchoes = inst.ring.toArray().slice(ringBefore).filter(e => e.kind === 'user_echo');
+    // No new user_echo bubble entered the ring for the steer — a system
+    // annotation is used instead so the live userIndex counter (which
+    // rewind/fork key off of) isn't shifted out of sync with the
+    // JSONL-derived count (which deliberately excludes the steer).
+    const newEvents = inst.ring.toArray().slice(ringBefore);
+    const newEchoes = newEvents.filter(e => e.kind === 'user_echo');
     assert.equal(newEchoes.length, 0, 'soft steer emits no user_echo');
+    assert.equal(inst._userEchoCount, userEchoCountBefore, 'soft steer does not shift the user-echo index');
+
+    // A visible system/soft_interrupted annotation carries the steer text.
+    const STEER_TEXT = 'Stop now. Do not make any more tool calls. End your turn immediately. And don\'t reply in any way.';
+    const annotations = newEvents.filter(e => e.kind === 'system' && e.subtype === 'soft_interrupted');
+    assert.equal(annotations.length, 1, 'exactly one soft_interrupted annotation is emitted live');
+    assert.equal(annotations[0].data?.text, STEER_TEXT, 'annotation carries the steer text');
 
     // The hidden steer WAS written to the subprocess stdin (with marker).
     // fake-claude appends stdin to the transcript asynchronously, so poll.
@@ -223,9 +235,16 @@ test('soft interrupt (default) injects a hidden steer, sets interrupting, leaves
     assert.equal(parsed.type, 'user');
 
     // Idempotent: a second soft while already interrupting writes nothing more.
+    // (The ring's overall length isn't a stable baseline here — the slow
+    // second turn keeps streaming text_delta events in the background — so
+    // check specifically for a second soft_interrupted annotation instead.)
+    const ringBeforeSecond = inst.ring.toArray().length;
     await inst.interrupt();
     await new Promise(r => setTimeout(r, 60));
     assert.equal((await steerLines()).length, 1, 'second soft is a no-op (idempotent)');
+    const secondAnnotations = inst.ring.toArray().slice(ringBeforeSecond)
+      .filter(e => e.kind === 'system' && e.subtype === 'soft_interrupted');
+    assert.equal(secondAnnotations.length, 0, 'second soft emits no additional annotation');
 
     // Escalate to forced — turn ends, interrupting clears.
     await inst.interrupt({ force: true });

@@ -1015,9 +1015,14 @@ export class Instance extends EventEmitter {
   // discarding partial work. SOFT (default) injects a hidden steering
   // user message mid-turn — the CLI delivers it into the live turn (it is
   // NOT queued until turn_end) — telling the model to stop all work and
-  // end its turn without responding, so it winds down gracefully. The
-  // steer is never echoed to the UI and is filtered from replay (see
-  // SOFT_INTERRUPT_MARKER in parser.js / transcript.js).
+  // end its turn without responding, so it winds down gracefully. The steer
+  // itself is never echoed to the UI as a user_echo (that would shift the
+  // live userIndex rewind/fork keys off from the JSONL-derived count, which
+  // deliberately excludes it — see isPureUserPromptLine in transcript.js).
+  // Instead we emit a live system/soft_interrupted annotation carrying the
+  // text, so the human sees what was said without affecting prompt indices.
+  // JSONL replay independently produces the same bare annotation (no text)
+  // via SOFT_INTERRUPT_MARKER filtering in parser.js / transcript.js.
   async interrupt({ force = false } = {}) {
     if (this.status !== 'turn') return;
     if (force) {
@@ -1031,6 +1036,7 @@ export class Instance extends EventEmitter {
       return;
     }
     if (this.interrupting) return; // idempotent — one steer per turn
+    this._emitUi({ kind: 'system', subtype: 'soft_interrupted', data: { text: SOFT_INTERRUPT_TEXT } });
     this._sendRaw({
       type: 'user',
       message: {
