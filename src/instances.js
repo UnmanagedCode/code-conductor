@@ -12,7 +12,7 @@ import { isConducted, markConducted, unmarkConducted } from './conductedSessions
 import { isTemp, markTemp, unmarkTemp } from './tempSessions.js';
 import { markArchived } from './archivedSessions.js';
 import { CONDUCT_PROJECT_NAME } from './conduct.js';
-import { buildSettingsJSON, buildMcpConfigJSON } from './settings.js';
+import { buildSettingsJSON, buildMcpConfigJSON, AWAITING_INPUT_MESSAGE } from './settings.js';
 import { getOnOverageAction, getOverageThreshold, getConductorCompactWindow, getSonnetContextWindow } from './appSettings.js';
 import { HookBroker } from './hookBroker.js';
 import { loadPersistedTranscript, writeSessionMetadata, readLastSessionModel } from './transcript.js';
@@ -561,6 +561,18 @@ export class Instance extends EventEmitter {
       // orchestrator-tracked mode (ask = prompt user, otherwise = allow).
       '--settings', buildSettingsJSON({ hookCallbackUrl: this.hookCallbackUrl }),
     ];
+    // Route tool-permission prompts over the stream-json control channel as
+    // `can_use_tool` control_requests. THIS is what un-strips the interactive
+    // tools (ExitPlanMode / EnterPlanMode / AskUserQuestion) under CLI 2.1.x:
+    // a headless `-p` session serves the coordinator/agent tool profile with
+    // those tools removed UNLESS the client presents as a permission consumer.
+    // Verified additive to --allow-dangerously-skip-permissions above (normal
+    // tools stay auto-allowed; only the interactive tools reach can_use_tool,
+    // which we answer in _handleStdoutLine). Kill-switch:
+    // ORCH_DISABLE_STDIO_PERMISSIONS=1 reverts to the fail-closed behavior.
+    if (process.env.ORCH_DISABLE_STDIO_PERMISSIONS !== '1') {
+      args.push('--permission-prompt-tool', 'stdio');
+    }
     // Auto-register the orchestrator's own MCP server so any spawned
     // session can drive `mcp__code-conductor__*` tools without a prior
     // `claude mcp add` step. Disabled when ORCH_DISABLE_MCP_AUTOREGISTER=1
@@ -679,6 +691,34 @@ export class Instance extends EventEmitter {
           }
         }
       }
+      // With `--permission-prompt-tool stdio`, the CLI routes tool-permission
+      // prompts to us as `can_use_tool` control_requests. The interactive tools
+      // (ExitPlanMode / EnterPlanMode / AskUserQuestion) are DENIED with a
+      // friendly message: the deny ends the turn (verified: stop_reason
+      // end_turn), so the plan_request / user_question card already emitted from
+      // the tool-use surfaces and the orchestrator drives forward exactly as
+      // before (subscribe_to_idle wakes on turn_end → approve_plan/reject_plan,
+      // or questions via the next prompt). Holding the request open for an
+      // in-turn answer would break that contract — no turn_end, so a conductor's
+      // subscribe_to_idle never wakes. Any OTHER tool arriving here (rare —
+      // --allow-dangerously-skip-permissions auto-allows normal tools, so they
+      // don't reach can_use_tool) is allowed through unchanged.
+      if (ev.kind === 'system' && ev.subtype === 'control_request'
+          && ev.data?.request?.subtype === 'can_use_tool') {
+        const req = ev.data.request;
+        const gated = req?.tool_name === 'ExitPlanMode'
+          || req?.tool_name === 'EnterPlanMode'
+          || req?.tool_name === 'AskUserQuestion';
+        const decision = gated
+          ? { behavior: 'deny', message: AWAITING_INPUT_MESSAGE }
+          : { behavior: 'allow', updatedInput: req?.input };
+        try {
+          this._sendRaw({
+            type: 'control_response',
+            response: { subtype: 'success', request_id: ev.data.request_id, response: decision },
+          });
+        } catch { /* stdin gone — CLI will time the permission out */ }
+      }
       if (ev.kind === 'control_response') {
         const p = this._pending.get(ev.requestId);
         if (p) {
@@ -756,11 +796,10 @@ export class Instance extends EventEmitter {
   _fireAutoApprovePlan() {
     // Run after the current stdout line has finished dispatching so the
     // plan_request event reaches subscribers before the resulting mode
-    // flip / user_echo / turn-start events do. ExitPlanMode is held off
-    // by the static PreToolUse command-deny hook in settings.js (the
-    // CLI auto-errors the tool in stream-json --print mode regardless),
-    // so we drive the model forward with setMode + an explicit approval
-    // prompt — same flow as a manual Approve click in the UI.
+    // flip / user_echo / turn-start events do. ExitPlanMode's can_use_tool
+    // request was denied in _handleStdoutLine (ending the turn), so we
+    // drive the model forward with setMode + an explicit approval prompt —
+    // same flow as a manual Approve click in the UI.
     queueMicrotask(async () => {
       try {
         if (!this.proc) return;

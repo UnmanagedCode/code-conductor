@@ -420,24 +420,26 @@ test('default spawn passes --permission-mode plan, --effort high, --thinking ada
       `--allow-dangerously-skip-permissions missing; argv was: ${argv.join(' ')}`,
     );
 
-    // PreToolUse hook denying AskUserQuestion + ExitPlanMode. The CLI
-    // auto-errors both tools in stream-json --print mode anyway; the
-    // static deny just gives them a friendlier reason and lets the
-    // orchestrator drive the conversation forward via the next user
-    // prompt (plus setMode for plan approval).
+    // The interactive tools (ExitPlanMode / EnterPlanMode / AskUserQuestion)
+    // are enabled via `--permission-prompt-tool stdio` (routes their permission
+    // prompts to us as `can_use_tool` control_requests) and gated at that layer
+    // by a deny control_response — NOT by a PreToolUse command hook anymore.
+    assert.ok(
+      argv.includes('--permission-prompt-tool') &&
+        argv[argv.indexOf('--permission-prompt-tool') + 1] === 'stdio',
+      `--permission-prompt-tool stdio missing; argv was: ${argv.join(' ')}`,
+    );
+
     const s = argv.indexOf('--settings');
     assert.ok(s >= 0, `--settings not passed; argv was: ${argv.join(' ')}`);
     const settings = JSON.parse(argv[s + 1]);
     const preToolUse = settings.hooks?.PreToolUse;
-    assert.ok(Array.isArray(preToolUse) && preToolUse.length >= 1, 'settings.hooks.PreToolUse is non-empty');
-    const matcherRow = preToolUse.find(h => /AskUserQuestion/.test(h.matcher) && /ExitPlanMode/.test(h.matcher));
-    assert.ok(matcherRow, 'PreToolUse matcher covers AskUserQuestion + ExitPlanMode');
-    const cmd = matcherRow.hooks?.[0];
-    assert.equal(cmd.type, 'command');
-    assert.match(cmd.command, /printf/);
-    assert.match(cmd.command, /permissionDecision.*deny/);
+    assert.ok(Array.isArray(preToolUse), 'settings.hooks.PreToolUse is an array');
+    // The old static AskUserQuestion|ExitPlanMode command-deny hook is gone.
+    const cmdDenyRow = preToolUse.find(h => /AskUserQuestion|ExitPlanMode/.test(h.matcher || ''));
+    assert.ok(!cmdDenyRow, 'no PreToolUse command-deny hook for the interactive tools anymore');
 
-    // The interactive PreToolUse http hook is also registered so that a
+    // The interactive PreToolUse http hook is still registered so that a
     // plan→ask runtime switch starts gating destructive tools without
     // requiring a respawn. The hook targets the orchestrator's REST
     // callback for this specific instance.
