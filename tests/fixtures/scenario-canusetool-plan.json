@@ -1,0 +1,25 @@
+{
+  "events": [
+    { "type": "system", "subtype": "init", "session_id": "$SID", "cwd": "$CWD", "permissionMode": "plan" }
+  ],
+  "turns": [
+    {
+      "on": { "type": "prompt" },
+      "emit": [
+        { "type": "stream_event", "event": { "type": "message_start", "message": { "id": "msg_c1", "role": "assistant" } } },
+        { "type": "stream_event", "event": { "type": "content_block_start", "index": 0, "content_block": { "type": "tool_use", "id": "tu_exit", "name": "ExitPlanMode", "input": {} } } },
+        { "type": "stream_event", "event": { "type": "content_block_delta", "index": 0, "delta": { "type": "input_json_delta", "partial_json": "{\"plan\":\"# Plan\\n- do X\"}" } } },
+        { "type": "stream_event", "event": { "type": "content_block_stop", "index": 0 } },
+        { "type": "control_request", "request_id": "ct_exit", "request": { "subtype": "can_use_tool", "tool_name": "ExitPlanMode", "input": { "plan": "# Plan\n- do X" } } }
+      ]
+    },
+    {
+      "on": { "type": "control_response", "request_id": "ct_exit", "behavior": "deny" },
+      "emit": [
+        { "type": "user", "message": { "role": "user", "content": [ { "type": "tool_result", "tool_use_id": "tu_exit", "content": "Awaiting user input via the orchestrator UI — please stop and wait for the next user message.", "is_error": true } ] } },
+        { "type": "stream_event", "event": { "type": "message_stop" } },
+        { "type": "result", "subtype": "success", "stop_reason": "end_turn", "duration_ms": 5, "total_cost_usd": 0.0, "is_error": false }
+      ]
+    }
+  ]
+}

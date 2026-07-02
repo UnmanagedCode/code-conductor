@@ -1,24 +1,27 @@
 // Builds the inline `--settings` JSON the orchestrator passes to every
-// claude subprocess. Two PreToolUse hooks are registered:
+// claude subprocess. One PreToolUse hook is registered:
 //
-//   1. A static `command` deny on AskUserQuestion|ExitPlanMode that
-//      tells the model to stop and wait for the user. The CLI auto-
-//      errors both tools in stream-json --print mode anyway (no SDK
-//      `canUseTool` callback to satisfy), so we just give them a
-//      friendlier deny reason. The orchestrator surfaces the
-//      corresponding UI card and, on the user's decision, drives the
-//      conversation forward via the next user prompt (plus, for plan
-//      approval, a setMode(bypassPermissions) control_request first).
+//   - (Optional, when hookCallbackUrl is provided) An interactive
+//     `http` hook on the destructive tools that POSTs back to the
+//     orchestrator's hook-callback endpoint. The endpoint auto-allows
+//     in non-ask modes, or surfaces a permission_request to the UI in
+//     ask mode and holds the response open until the user clicks.
 //
-//   2. (Optional, when hookCallbackUrl is provided) An interactive
-//      `http` hook on the destructive tools that POSTs back to the
-//      orchestrator's hook-callback endpoint. The endpoint auto-allows
-//      in non-ask modes, or surfaces a permission_request to the UI in
-//      ask mode and holds the response open until the user clicks.
+// The interactive tools (AskUserQuestion / ExitPlanMode / EnterPlanMode)
+// are NO LONGER gated by a static PreToolUse deny hook. Under CLI 2.1.x
+// they are enabled via `--permission-prompt-tool stdio` (see Instance.spawn)
+// and gated at the `can_use_tool` control-request layer instead: the
+// orchestrator answers with a `deny` control_response carrying
+// AWAITING_INPUT_MESSAGE, which ends the turn so the existing plan_request /
+// user_question card + approve_plan/reject_plan drive-forward path is
+// unchanged. See Instance._handleStdoutLine.
 //
 // All inputs are pure JS values — no Instance state involved.
 
-const HOOK_DENY_REASON_BLOCKING_TOOL =
+// Message returned to the model when the orchestrator denies an interactive
+// tool's `can_use_tool` request — tells it to stop and wait for the user.
+// Shared with the can_use_tool responder in instances.js.
+export const AWAITING_INPUT_MESSAGE =
   'Awaiting user input via the orchestrator UI — please stop and wait for the next user message.';
 
 // Destructive tools gated by the interactive PreToolUse http hook in
@@ -33,22 +36,8 @@ const ASK_GATED_TOOL_MATCHER = 'Edit|Write|NotebookEdit|Bash';
 // there to avoid the CLI cutting off a slow human.
 export const HOOK_HTTP_TIMEOUT_S = 660;
 
-// printf-friendly literal: single-quote the outer JSON so the shell
-// doesn't interpolate, escape internal double-quotes by hand.
-function buildBlockingToolHookCommand() {
-  const reason = HOOK_DENY_REASON_BLOCKING_TOOL.replace(/"/g, '\\"');
-  return `printf '%s' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"${reason}"}}'`;
-}
-
 export function buildSettingsJSON({ hookCallbackUrl } = {}) {
-  const preToolUse = [{
-    matcher: 'AskUserQuestion|ExitPlanMode',
-    hooks: [{
-      type: 'command',
-      timeout: 5,
-      command: buildBlockingToolHookCommand(),
-    }],
-  }];
+  const preToolUse = [];
   if (hookCallbackUrl) {
     preToolUse.push({
       matcher: ASK_GATED_TOOL_MATCHER,
