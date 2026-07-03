@@ -306,6 +306,26 @@ export function getOverageThreshold() {
   };
 }
 
+// Single source of truth for "is the account still over the overage bar?", given
+// an account-usage payload (src/accountUsage.js shape: five_hour.utilization is a
+// 0–100 PERCENT). Used by BOTH the server-side poll trip (usageOverageMonitor) and
+// the usage-verified auto-resume (overageResume) so the trip and the resume never
+// disagree. Returns:
+//   true  — still over: the five-hour window is fully consumed (utilization >= 100,
+//           the usage-payload proxy for the stream-only `isUsingOverage` hard flag,
+//           checked even when the optional threshold is off), OR the configured
+//           threshold is enabled and its percent is still crossed.
+//   false — clear: window has reset / dropped below the bar.
+//   null  — can't tell: payload missing/malformed (caller treats like a failed fetch).
+export function usageOverThreshold(usage) {
+  const win = usage?.five_hour;
+  if (!win || typeof win.utilization !== 'number') return null;
+  if (win.utilization >= 100) return true; // hard-overage proxy (window not reset)
+  const t = getOverageThreshold();
+  if (t.enabled && win.utilization >= t.value) return true;
+  return false;
+}
+
 export async function setOverageThreshold({ enabled, value }) {
   const n = Number(value);
   const snapped = snapOveragePct(Number.isFinite(n) ? n : OVERAGE_PCT_DEFAULT);

@@ -550,8 +550,10 @@ test('drainToManifest persists a pending overage auto-resume (overageResumeAt/ov
 // --- 14. CRITICAL: a PAST-DUE overage resume fires on the first boot tick ----
 // The whole point: a window that reset while the orchestrator was down must
 // resume immediately after boot. armRestored re-inserts the (already-past)
-// deadline as-is; the wall-clock sweep fires it on the first tick. We drive the
-// sweep fast via ORCH_OVERAGE_RESUME_SWEEP_MS and assert AUTO_RESUME_TEXT lands.
+// deadline as-is; the wall-clock sweep fires it on the first tick — now routed
+// through the usage-verified fire, so we inject an under-threshold usage fetcher
+// (the window HAS reset) and assert AUTO_RESUME_TEXT lands. We drive the sweep
+// fast via ORCH_OVERAGE_RESUME_SWEEP_MS.
 
 test('restoreFromResumeManifest fires a PAST-DUE overage resume promptly on boot', async () => {
   const transcript = path.join(os.tmpdir(), `cc-ovg-past-${randomUUID()}.log`);
@@ -575,6 +577,14 @@ test('restoreFromResumeManifest fires a PAST-DUE overage resume promptly on boot
       group: 'other', wasBusy: false,
       overageStopped: true, overageResumeAt: nowSec() - 10, overageResetsAt: nowSec() - 15,
     }]);
+
+    // Fire-time verify sees the window clear (util 10 < 100) ⇒ the restored resume
+    // actually fires rather than parking for a recheck.
+    instances._overageResume.fetchUsage = async () => ({
+      five_hour: { utilization: 10, resets_at: new Date((nowSec() + 3600) * 1000).toISOString() },
+      seven_day: { utilization: 0, resets_at: new Date((nowSec() + 90000) * 1000).toISOString() },
+      extra_usage: { is_enabled: false },
+    });
 
     const { restored } = await restoreFromResumeManifest({ instances, log: { log() {}, warn() {} }, staggerMs: 0 });
     assert.equal(restored, 1, 'session restored');

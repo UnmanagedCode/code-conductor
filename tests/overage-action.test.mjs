@@ -67,7 +67,7 @@ async function writeScenario(obj) {
   return p;
 }
 
-let savedBuf, savedSweep;
+let savedBuf, savedSweep, savedRecheck;
 before(() => {
   savedBuf = process.env.ORCH_OVERAGE_RESUME_BUFFER_MS;
   process.env.ORCH_OVERAGE_RESUME_BUFFER_MS = '0';
@@ -76,12 +76,18 @@ before(() => {
   // fireNow-based tests (their far-future deadlines never come due).
   savedSweep = process.env.ORCH_OVERAGE_RESUME_SWEEP_MS;
   process.env.ORCH_OVERAGE_RESUME_SWEEP_MS = '40';
+  // Short recheck cadence so a still-over / can't-confirm park re-checks fast enough
+  // to observe within a test (production default is 60s, aligned with the usage cache).
+  savedRecheck = process.env.ORCH_OVERAGE_RECHECK_MS;
+  process.env.ORCH_OVERAGE_RECHECK_MS = '60';
 });
 after(() => {
   if (savedBuf === undefined) delete process.env.ORCH_OVERAGE_RESUME_BUFFER_MS;
   else process.env.ORCH_OVERAGE_RESUME_BUFFER_MS = savedBuf;
   if (savedSweep === undefined) delete process.env.ORCH_OVERAGE_RESUME_SWEEP_MS;
   else process.env.ORCH_OVERAGE_RESUME_SWEEP_MS = savedSweep;
+  if (savedRecheck === undefined) delete process.env.ORCH_OVERAGE_RECHECK_MS;
+  else process.env.ORCH_OVERAGE_RECHECK_MS = savedRecheck;
 });
 
 // Each test boots its own server (its scenario is fixed at boot via env) and
@@ -112,6 +118,22 @@ function collect(inst) {
 }
 
 const sub = (evs, subtype) => evs.filter(e => e.kind === 'system' && e.subtype === subtype);
+
+// Account-usage payload shape (src/accountUsage.js): five_hour carries a 0–100
+// PERCENT `utilization` and an ISO `resets_at`. The fire-time resume verify reads it.
+function usagePayload(fiveHourUtilPct, resetsAtSec) {
+  return {
+    five_hour: { utilization: fiveHourUtilPct, resets_at: new Date(resetsAtSec * 1000).toISOString() },
+    seven_day: { utilization: 0, resets_at: new Date((resetsAtSec + 86400) * 1000).toISOString() },
+    extra_usage: { is_enabled: false },
+  };
+}
+// Inject the resume controller's usage-verify seam. util < 100 (and under any enabled
+// threshold) ⇒ "clear" ⇒ the due resume proceeds; util >= 100 ⇒ "still over" ⇒ it parks.
+function setResumeUsage(utilPct) {
+  ctx.instances._overageResume.fetchUsage = async () => usagePayload(utilPct, nowSec() + 3600);
+}
+const UNDER = 10, OVER = 100;
 
 test('onOverage "none": overage event is ignored — no notice, no interrupt', async () => {
   await boot(scenario([overageEvent({ resetsAt: nowSec() + 1 }), RESULT]), 'none');
@@ -149,6 +171,7 @@ test('onOverage "stop-resume": stays alive, arms timer, delivers resume prompt a
   // via the orchestrator's user_echo (text === AUTO_RESUME_TEXT).
   await boot(scenario([overageEvent({ resetsAt: nowSec() + 3600 }), RESULT]), 'stop-resume');
   const inst = await spawnIdle();
+  setResumeUsage(UNDER); // fire-time verify sees the window clear ⇒ resume proceeds
   const evs = collect(inst);
   inst.prompt('go');
 
@@ -159,8 +182,8 @@ test('onOverage "stop-resume": stays alive, arms timer, delivers resume prompt a
   assert.equal(ctx.instances._autoResumeTimers.has(inst.sessionId), true, 'timer armed');
   assert.equal(inst.proc != null, true, 'session alive while waiting to resume');
 
-  // Fire the armed timer deterministically: the resume prompt is delivered to the
-  // still-live session, just as the wall-clock fire would.
+  // Fire the armed timer deterministically: usage verifies clear, so the resume
+  // prompt is delivered to the still-live session, just as the wall-clock fire would.
   assert.equal(ctx.instances._fireAutoResumeNow(inst.sessionId), true, 'pending resume fired');
   await waitFor(() => evs.some(e => e.kind === 'user_echo' && e.text === AUTO_RESUME_TEXT),
     { timeout: 10000 });
@@ -191,15 +214,23 @@ test('onOverage "stop-resume": bare camelCase epoch resetsAt also arms', async (
   assert.equal(ctx.instances._autoResumeTimers.has(inst.sessionId), true, 'timer armed from epoch resetsAt');
 });
 
-test('onOverage "stop-resume": missing/past resetsAt is skipped, not armed', async () => {
+// (c) A past/missing resetsAt is NOT a dead-end anymore: arm() schedules a usage
+// recheck instead of emitting auto_resume_skipped + giving up. Here the verify keeps
+// reporting "still over", so the session stays parked-and-rechecking (never skipped),
+// which is exactly what fixes the boundary re-trip.
+test('onOverage "stop-resume": past resetsAt schedules a recheck, not a skip', async () => {
   await boot(scenario([overageEvent({ resetsAt: nowSec() - 100 }), RESULT]), 'stop-resume');
   const inst = await spawnIdle();
+  setResumeUsage(OVER); // still throttled ⇒ each recheck reschedules, no resume
   const evs = collect(inst);
   inst.prompt('go');
-  await waitFor(() => sub(evs, 'auto_resume_skipped').length > 0);
-  assert.match(sub(evs, 'auto_resume_skipped')[0].data.reason, /resetsAt/);
-  assert.equal(inst.autoResumeAt, null, 'nothing armed');
-  assert.equal(ctx.instances._autoResumeTimers.size, 0);
+  // A deadline IS armed (recheck ~now+recheck) even though resetsAt was in the past.
+  await waitFor(() => inst.autoResumeAt != null);
+  assert.equal(ctx.instances._autoResumeTimers.has(inst.sessionId), true, 'recheck deadline armed');
+  assert.equal(inst.autoStoppedForOverage, true, 'stays flagged auto-stopped (not given up)');
+  // Let a couple of recheck cycles run; it must never emit the give-up notice.
+  await waitFor(() => ctx.instances._autoResumeTimers.has(inst.sessionId)); // still parked
+  assert.equal(sub(evs, 'auto_resume_skipped').length, 0, 'no give-up while still throttled');
 });
 
 // ── Wall-clock sweep: fires on real time, survives suspension ─────────────
@@ -215,6 +246,7 @@ test('onOverage "stop-resume": missing/past resetsAt is skipped, not armed', asy
 test('stop-resume: the wall-clock sweep (not a setTimeout) fires the resume when due', async () => {
   await boot(scenario([overageEvent({ resetsAt: nowSec() + 2 }), RESULT]), 'stop-resume');
   const inst = await spawnIdle();
+  setResumeUsage(UNDER); // sweep's fire-time verify sees the window clear ⇒ resumes
   const evs = collect(inst);
   // Capture manager-level status pushes to prove the badge-drop is emitted.
   const statuses = [];
@@ -459,6 +491,7 @@ test('stop-resume: a user prompt during the wait window is QUEUED, not delivered
 test('stop-resume: queued messages flush as ONE combined prompt when the resume fires', async () => {
   await boot(scenario([overageEvent({ resetsAt: nowSec() + 3600 }), RESULT]), 'stop-resume');
   const inst = await spawnIdle();
+  setResumeUsage(UNDER); // verify sees the window clear ⇒ resume + flush
   const evs = collect(inst);
   inst.prompt('go');
   await waitFor(() => inst.autoResumeAt != null);
@@ -603,6 +636,7 @@ test('stop-resume GLOBAL: a queued-only session flushes with the SOFTENED preamb
   await waitFor(() => b._overageQueue.length === 1);
   assert.equal(b._overageWasStopped, false, 'queued-only');
 
+  setResumeUsage(UNDER); // verify clear ⇒ resume + flush
   assert.equal(ctx.instances._fireAutoResumeNow(b.sessionId), true, 'resume fired for B');
   await waitFor(() => bEvs.some(e => e.kind === 'user_echo' && e.text.includes('please do X')),
     { timeout: 10000 });
@@ -699,7 +733,8 @@ test('routing stop-resume: idle+subscribed conductor is steered AND a resume tim
   assert.equal(conductor.autoStoppedForOverage, true, 'flag survived the steer prompt');
   assert.equal(conductor.autoResumeAt != null, true, 'conductor resume badge set');
 
-  // Firing it delivers the resume prompt to the still-live conductor.
+  // Firing it delivers the resume prompt to the still-live conductor (verify clear).
+  setResumeUsage(UNDER);
   assert.equal(ctx.instances._fireAutoResumeNow(conductor.sessionId), true, 'pending resume fired');
   await waitFor(() => cEvs.some(e => e.kind === 'user_echo' && e.text === AUTO_RESUME_TEXT),
     { timeout: 10000 });
@@ -741,4 +776,118 @@ test('routing stop-resume: fallback worker direct-stop arms a resume timer', asy
   assert.notEqual(sub(wEvs, 'auto_stop_overage')[0].data.steered, true, 'fallback is a direct stop');
   await waitFor(() => ctx.instances._autoResumeTimers.has(worker.sessionId));
   assert.equal(worker.autoStoppedForOverage, true);
+});
+
+// ── Usage-verified resume: poll before resuming ──────────────────────────────
+
+// (a) A due deadline whose usage-verify still reports OVER the bar does NOT resume —
+// it reschedules ~recheck out and stays parked. This is what prevents the boundary
+// re-trip (we never send a resume turn while still throttled). resetsAt is in the past
+// (the window "reset" on our clock) so the fire is due immediately, yet usage says the
+// account is still throttled.
+test('stop-resume: fire while still-over-threshold reschedules, no resume sent', async () => {
+  await boot(scenario([overageEvent({ resetsAt: nowSec() - 100 }), RESULT]), 'stop-resume');
+  const inst = await spawnIdle();
+  setResumeUsage(OVER); // window still fully consumed ⇒ verify says "still over"
+  const evs = collect(inst);
+  inst.prompt('go');
+  // Past resetsAt ⇒ arm() schedules a near-now recheck rather than dead-ending.
+  await waitFor(() => inst.autoResumeAt != null);
+  assert.ok(inst.autoResumeAt < nowSec() + 30, 'recheck deadline is near-now, not a far-future clock');
+
+  // Let the real sweep fire + re-check several times; it must never resume while OVER.
+  await new Promise(r => setTimeout(r, 250)); // ~6 sweep cycles (40ms) × recheck (60ms)
+  assert.equal(evs.some(e => e.kind === 'user_echo' && e.text === AUTO_RESUME_TEXT), false,
+    'no resume prompt delivered while still throttled');
+  assert.equal(ctx.instances._autoResumeTimers.has(inst.sessionId), true, 'still parked (re-armed each cycle)');
+  assert.equal(inst.autoStoppedForOverage, true, 'still auto-stopped');
+  assert.equal(ctx.instances._overageActive, true, 'global lockout still engaged while parked');
+});
+
+// (d) Fetch failure is "can't confirm": reschedule (do NOT resume blindly) until the
+// bounded fallback trips (FAIL_OPEN_AFTER consecutive failures), then fail open and
+// resume so a persistently-down usage API can't park the session forever.
+test('stop-resume: fetch-failure fallback reschedules, then fails open and resumes', async () => {
+  await boot(scenario([overageEvent({ resetsAt: nowSec() - 100 }), RESULT]), 'stop-resume');
+  const inst = await spawnIdle();
+  // Usage API unavailable (null) on every check → can't confirm, every time.
+  ctx.instances._overageResume.fetchUsage = async () => null;
+  const evs = collect(inst);
+  inst.prompt('go');
+  await waitFor(() => inst.autoResumeAt != null);
+  // No resume yet (parks on the first can't-confirm rather than resuming blindly)...
+  assert.equal(evs.some(e => e.kind === 'user_echo' && e.text === AUTO_RESUME_TEXT), false,
+    'no blind resume on a can\'t-confirm fetch');
+  // ...then the sweep re-checks each cycle and fails open on the Nth consecutive failure.
+  await waitFor(() => evs.some(e => e.kind === 'user_echo' && e.text === AUTO_RESUME_TEXT),
+    { timeout: 10000 });
+  assert.equal(inst.proc != null, true, 'resumed via fail-open, never killed');
+});
+
+// (e) The global lockout must NOT lift while a session is still parked over-threshold;
+// it releases only once the (usage-verified) resume actually fires. Ties the lockout
+// release to the same sweep that resumes the session.
+test('stop-resume GLOBAL: lockout held while parked over-threshold, lifts on verified resume', async () => {
+  // Far-enough-future resetsAt that the gate's future-resetsAt rail is unambiguously
+  // active regardless of subprocess round-trip latency (and stays future across a
+  // reschedule). We drive the fire via fireNow, so we don't wait out this deadline.
+  await boot(scenario([overageEvent({ resetsAt: nowSec() + 30 }), RESULT]), 'stop-resume');
+  const inst = await spawnIdle();
+  setResumeUsage(OVER);
+  const evs = collect(inst);
+  inst.prompt('go');
+  await waitFor(() => ctx.instances._overageActive === true && inst.autoResumeAt != null);
+  assert.equal(inst._overageGate().active, true, 'gate active while the window is pending');
+
+  // Force a fire while usage still reports OVER ⇒ it reschedules, does NOT resume,
+  // and the lockout + gate stay engaged.
+  ctx.instances._fireAutoResumeNow(inst.sessionId);
+  await new Promise(r => setTimeout(r, 150));
+  assert.equal(ctx.instances._overageActive, true, 'lockout held while parked over-threshold');
+  assert.equal(ctx.instances._autoResumeTimers.has(inst.sessionId), true, 'still parked');
+  assert.equal(inst._overageGate().active, true, 'gate active while parked (resetsAt kept future)');
+  assert.equal(evs.some(e => e.kind === 'user_echo' && e.text === AUTO_RESUME_TEXT), false,
+    'not resumed while still over');
+
+  // Window clears ⇒ the next (verified) fire resumes it, and only THEN the lockout lifts.
+  setResumeUsage(UNDER);
+  ctx.instances._fireAutoResumeNow(inst.sessionId);
+  await waitFor(() => evs.some(e => e.kind === 'user_echo' && e.text === AUTO_RESUME_TEXT), { timeout: 10000 });
+  await waitFor(() => ctx.instances._overageActive === false, { timeout: 10000 });
+  assert.equal(ctx.instances._autoResumeTimers.has(inst.sessionId), false, 'nothing parked once released');
+  assert.equal(inst._overageGate().active, false, 'gate lifts with the lockout');
+});
+
+// (f) Coalescing: many parked sessions coming due in one sweep cycle share ONE
+// underlying usage fetch (accountUsage.js has no in-flight dedup — the controller
+// must not open a fetch per session).
+test('stop-resume: one usage fetch per sweep cycle across all due sessions', async () => {
+  // Suppress the fast background sweep for this test so the single manual _tick() is
+  // the only cycle — otherwise a background tick could steal the fetch and race the count.
+  const savedLocal = process.env.ORCH_OVERAGE_RESUME_SWEEP_MS;
+  process.env.ORCH_OVERAGE_RESUME_SWEEP_MS = '600000';
+  try {
+    await boot(scenario([overageEvent({ resetsAt: nowSec() + 3600 }), RESULT]), 'stop-resume');
+    const a = await spawnIdle();
+    a.prompt('go');
+    await waitFor(() => a.autoResumeAt != null);
+    const b = await spawnIdle();
+    await b.prompt('queued while paused');
+    await waitFor(() => b.autoResumeAt != null);
+
+    // Force both deadlines due right now.
+    const timers = ctx.instances._overageResume.timers;
+    for (const sid of [...timers.keys()]) timers.set(sid, Date.now() - 1);
+
+    // Counting fetcher returning still-over (so they reschedule, staying around).
+    let calls = 0;
+    ctx.instances._overageResume.fetchUsage = async () => { calls++; return usagePayload(OVER, nowSec() + 3600); };
+
+    await ctx.instances._overageResume._tick(); // ONE sweep cycle, two due sessions
+    assert.equal(calls, 1, 'exactly one underlying fetch for the whole cycle');
+    assert.equal(timers.size, 2, 'both rescheduled, still parked');
+  } finally {
+    if (savedLocal === undefined) delete process.env.ORCH_OVERAGE_RESUME_SWEEP_MS;
+    else process.env.ORCH_OVERAGE_RESUME_SWEEP_MS = savedLocal;
+  }
 });
