@@ -1036,6 +1036,7 @@ const SHOWN_SYSTEM_SUBTYPES = new Set([
   'init', 'stderr', 'exit', 'spawn_error', 'crashed',
   'permission_denied', 'compacting', 'history_load_error', 'auto_stop_overage',
   'auto_resume', 'auto_resume_skipped', 'soft_interrupted', 'drain_abort',
+  'model_changed',
 ]);
 
 export function shouldRenderSystem(ev) {
@@ -1069,6 +1070,7 @@ export class SystemBlock {
       if (subtype === 'auto_resume_skipped') return `⚠ Auto-resume skipped: ${data?.reason ?? ''}.`;
       if (subtype === 'soft_interrupted') return data?.text ? `⏸ Turn interrupted: ${data.text}` : '⏸ Turn interrupted';
       if (subtype === 'drain_abort') return `⏹ Drained queued turn after interrupt (${data?.count ?? 1})`;
+      if (subtype === 'model_changed') return `Model changed: ${data?.from ?? '?'} → ${data?.to ?? '?'}`;
       try { return JSON.stringify(data).slice(0, 200); } catch { return ''; }
     })();
     this.node = el('div', { class: 'block system' },

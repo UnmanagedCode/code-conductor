@@ -58,13 +58,23 @@ export class UsageTracker {
       if (m) this.model = m;
       return;
     }
+    // model_changed fires when the CLI switches models interactively
+    // mid-session (see src/instances.js _trackModel) — flip immediately.
+    if (ev.kind === 'system' && ev.subtype === 'model_changed') {
+      const m = ev.data?.to;
+      if (m) this.model = m;
+      return;
+    }
     // message_start is the AUTHORITATIVE source for "current context
     // size" — it fires once per agent-loop LLM call and its `usage`
     // carries that single call's prompt size (input + cache_read +
     // cache_creation). Each step within a long multi-tool turn sends
     // its own, so currentContextSize tracks the growing prompt live.
+    // It also carries the model, which flips at the true turn boundary
+    // rather than a turn later once the next init lands.
     if (ev.kind === 'message_start' && ev.usage) {
       this.lastUsage = ev.usage;
+      if (ev.model) this.model = ev.model;
       return;
     }
     // turn_end's `usage`, by contrast, is the per-turn SUM across every
@@ -99,17 +109,19 @@ export class UsageTracker {
   }
 
   // Fraction in [0, 1+]. `modelOverride` lets the caller pass the
-  // instance's spawn-time model when system/init hasn't arrived yet.
+  // instance's spawn-time model as a FALLBACK for before system/init has
+  // arrived — the live tracker wins once it has a value, since the model
+  // can switch mid-session and the spawn record never updates.
   currentFillPct(modelOverride) {
     const used = this.currentContextSize();
     if (used == null) return null;
-    return used / contextWindowFor(modelOverride || this.model);
+    return used / contextWindowFor(this.model || modelOverride);
   }
 
   // Effective model used by currentFillPct(), surfaced so the popover
   // can label the limit accurately.
   effectiveModel(modelOverride) {
-    return modelOverride || this.model || null;
+    return this.model || modelOverride || null;
   }
 }
 

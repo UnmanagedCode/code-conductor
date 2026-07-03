@@ -171,9 +171,12 @@ export function installWsRouter({
     // update (each agent-loop step fires its own with cumulative counts),
     // turn_end finalizes both current + cumulative totals.
     // rate_limit_event updates the left-side rate-limit chip independently.
+    // model_changed covers a mid-session model switch before the next
+    // message_start/turn_end would otherwise refresh it.
     if (m.ev?.kind === 'turn_end'
         || m.ev?.kind === 'message_start'
         || (m.ev?.kind === 'system' && m.ev?.subtype === 'init')
+        || (m.ev?.kind === 'system' && m.ev?.subtype === 'model_changed')
         || (m.ev?.kind === 'system' && m.ev?.subtype === 'rate_limit_event')) {
       headerHandle.update();
     }

@@ -535,6 +535,28 @@ export class Instance extends EventEmitter {
     this.emit('event', wrapped);
   }
 
+  // Track the model the CLI is actually running, live. `this.model` starts
+  // as the spawn-time request but the CLI can switch models interactively
+  // mid-session with no discrete event of its own — system/init (and
+  // message_start) just start reporting a different id. Canonicalize before
+  // comparing: the CLI reports a bare id, while this.model already carries
+  // the [1m]/[200k] suffix from spawn-time canonicalization, so a raw-string
+  // compare would false-positive on every single init.
+  _trackModel(rawModel) {
+    if (!rawModel) return;
+    const canonical = canonicalizeModel(rawModel, { sonnetWindow: getSonnetContextWindow() });
+    if (canonical === this.model) return;
+    if (this.model) {
+      const from = this.model;
+      this.model = canonical;
+      this._emitUi({ kind: 'system', subtype: 'model_changed', data: { from, to: canonical } });
+    } else {
+      // No explicit spawn-time model (account default) — this is discovery
+      // of the resolved default, not a user-visible switch. Adopt silently.
+      this.model = canonical;
+    }
+  }
+
   async loadHistory(sessionId) {
     const result = await loadPersistedTranscript({
       cwd: this.cwd, sessionId, seqHint: this.ring.nextSeq,
@@ -724,6 +746,12 @@ export class Instance extends EventEmitter {
             this.mode = mode;
           }
         }
+        this._trackModel(ev.data?.model);
+      }
+      // message_start reports the model too, and fires at the actual turn
+      // boundary rather than a turn later once the next init lands.
+      if (ev.kind === 'message_start' && ev.model) {
+        this._trackModel(ev.model);
       }
       // With `--permission-prompt-tool stdio`, the CLI routes tool-permission
       // prompts to us as `can_use_tool` control_requests. The interactive tools

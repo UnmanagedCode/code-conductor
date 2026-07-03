@@ -195,3 +195,108 @@ test('resume recovers the bare model and re-derives the window (Sonnet → [1m])
     await ctx.close();
   }
 });
+
+// --- Live mid-session model switch (system/init reporting a different model
+// than the one the instance was spawned/last known with) ---
+
+const SWITCH_SCENARIO = path.join(__dirname, 'fixtures', 'scenario-model-switch.json');
+
+test('mid-session system/init model flip emits model_changed once, updates inst.model, and persists across respawn', async () => {
+  const ctx = await bootServer({ scenarioPath: SWITCH_SCENARIO });
+  const argvDumpFile = path.join(os.tmpdir(), `model-switch-argv-${process.pid}.txt`);
+  const prevArgvDump = process.env.FAKE_CLAUDE_ARGV_DUMP;
+
+  try {
+    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'demo' });
+
+    const r1 = await api(ctx.baseUrl, 'POST', '/api/instances', {
+      project: 'demo',
+      mode: 'bypassPermissions',
+      model: 'claude-sonnet-4-6',
+    });
+    assert.equal(r1.status, 201);
+    const id = r1.body.id;
+    await waitFor(() => ctx.instances.get(id).status === 'idle');
+
+    const inst = ctx.instances.get(id);
+    assert.equal(inst.model, 'claude-sonnet-4-6[1m]', 'spawn canonicalises Sonnet to [1m]');
+
+    const modelChangedEvents = [];
+    inst.on('event', (ev) => {
+      if (ev.kind === 'system' && ev.subtype === 'model_changed') modelChangedEvents.push(ev);
+    });
+
+    // Turn 1: fixture's init reports the same model the instance was spawned
+    // with (bare 'claude-sonnet-4-6' canonicalises back to the same [1m] id)
+    // — no switch, no event.
+    inst.prompt('turn one');
+    await waitFor(() => ctx.instances.get(id).status === 'idle');
+    assert.equal(modelChangedEvents.length, 0, 'no model_changed when init repeats the current model');
+    assert.equal(ctx.instances.get(id).model, 'claude-sonnet-4-6[1m]');
+
+    // Turn 2: fixture's init reports a different model — the CLI switched
+    // interactively mid-session. Exactly one model_changed must fire, and
+    // inst.model (the field respawn/resume-manifest/fork all read) must
+    // update to the new model.
+    inst.prompt('turn two');
+    await waitFor(() => ctx.instances.get(id).status === 'idle');
+    assert.equal(modelChangedEvents.length, 1, 'exactly one model_changed for the actual switch');
+    assert.deepEqual(modelChangedEvents[0].data, { from: 'claude-sonnet-4-6[1m]', to: 'claude-opus-4-8' });
+    assert.equal(ctx.instances.get(id).model, 'claude-opus-4-8', 'inst.model tracks the live switch');
+
+    // Kill the subprocess (simulating a crash) without removing the Instance
+    // from InstanceManager.byId, then respawn — the primary bug path this
+    // fix targets: respawn() reads inst.model directly with no transcript
+    // re-read, so it must now launch with the SWITCHED model, not the
+    // original spawn-time one.
+    inst.proc.kill('SIGKILL');
+    await waitFor(() => !ctx.instances.get(id).proc);
+
+    process.env.FAKE_CLAUDE_ARGV_DUMP = argvDumpFile;
+    await ctx.instances.respawn(id);
+    await waitFor(async () => { try { await fs.stat(argvDumpFile); return true; } catch { return false; } });
+    const argv = (await fs.readFile(argvDumpFile, 'utf8')).split('\n').filter(Boolean);
+    const mi = argv.indexOf('--model');
+    assert.ok(mi >= 0 && argv[mi + 1] === 'claude-opus-4-8',
+      'respawn launches with the switched model, not the stale spawn-time one');
+  } finally {
+    if (prevArgvDump === undefined) delete process.env.FAKE_CLAUDE_ARGV_DUMP;
+    else process.env.FAKE_CLAUDE_ARGV_DUMP = prevArgvDump;
+    try { await fs.rm(argvDumpFile, { force: true }); } catch { /* best-effort */ }
+    await ctx.close();
+  }
+});
+
+test('system/init repeating the current model does not re-emit model_changed', async () => {
+  const ctx = await bootServer({ scenarioPath: SWITCH_SCENARIO });
+  try {
+    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'demo' });
+
+    const r1 = await api(ctx.baseUrl, 'POST', '/api/instances', {
+      project: 'demo',
+      mode: 'bypassPermissions',
+      model: 'claude-sonnet-4-6',
+    });
+    assert.equal(r1.status, 201);
+    const id = r1.body.id;
+    await waitFor(() => ctx.instances.get(id).status === 'idle');
+
+    const inst = ctx.instances.get(id);
+    const modelChangedEvents = [];
+    inst.on('event', (ev) => {
+      if (ev.kind === 'system' && ev.subtype === 'model_changed') modelChangedEvents.push(ev);
+    });
+
+    inst.prompt('turn one'); // sonnet, matches spawn — no event
+    await waitFor(() => ctx.instances.get(id).status === 'idle');
+    inst.prompt('turn two'); // opus — the switch, one event
+    await waitFor(() => ctx.instances.get(id).status === 'idle');
+    assert.equal(modelChangedEvents.length, 1);
+
+    inst.prompt('turn three'); // opus again — repeats the now-current model
+    await waitFor(() => ctx.instances.get(id).status === 'idle');
+    assert.equal(modelChangedEvents.length, 1, 'no additional model_changed for a repeated model');
+  } finally {
+    await ctx.close();
+  }
+});

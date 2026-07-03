@@ -34,6 +34,34 @@ test('UsageTracker: system/init captures model authoritatively', async () => {
   assert.equal(t.effectiveModel(), 'claude-opus-4-8[1m]');
 });
 
+test('UsageTracker: live-tracked model wins over a stale spawn-time modelOverride', async () => {
+  const { UsageTracker, contextWindowFor } = await import(USAGE_URL);
+  const t = new UsageTracker();
+  const spawnOverride = 'claude-sonnet-4-6[1m]';
+  // Before any stream event, the spawn-time override is the only info we have.
+  assert.equal(t.effectiveModel(spawnOverride), spawnOverride);
+
+  t.apply({ kind: 'system', subtype: 'init', data: { model: 'claude-sonnet-4-6[1m]' } });
+  assert.equal(t.effectiveModel(spawnOverride), 'claude-sonnet-4-6[1m]');
+
+  // Mid-session switch via model_changed — the live tracker must now win
+  // over the stale spawn-time override, including for the context window.
+  t.apply({ kind: 'system', subtype: 'model_changed', data: { from: 'claude-sonnet-4-6[1m]', to: 'claude-opus-4-8' } });
+  assert.equal(t.effectiveModel(spawnOverride), 'claude-opus-4-8',
+    'live tracker beats the stale spawn override once populated');
+  assert.equal(contextWindowFor(t.effectiveModel(spawnOverride)), 1_000_000,
+    'ctx window reflects the switched model, not the spawn-time Sonnet[1m] window');
+});
+
+test('UsageTracker: message_start also updates the live model (flips at the true turn boundary)', async () => {
+  const { UsageTracker } = await import(USAGE_URL);
+  const t = new UsageTracker();
+  t.apply({ kind: 'system', subtype: 'init', data: { model: 'claude-sonnet-4-6[1m]' } });
+  t.apply({ kind: 'message_start', usage: { input_tokens: 10 }, model: 'claude-opus-4-8' });
+  assert.equal(t.effectiveModel(), 'claude-opus-4-8');
+  assert.equal(t.currentContextSize(), 10, 'message_start usage tracking is unaffected by the model field');
+});
+
 test('UsageTracker: turn_end accumulates cum but does NOT touch lastUsage', async () => {
   const { UsageTracker } = await import(USAGE_URL);
   const t = new UsageTracker();
