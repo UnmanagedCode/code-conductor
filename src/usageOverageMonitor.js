@@ -15,7 +15,7 @@
 // no-ops until the window-reset clear timer releases the flag.
 
 import { getAccountUsage } from './accountUsage.js';
-import { getOverageThreshold, getOnOverageAction } from './appSettings.js';
+import { getOverageThreshold, getOnOverageAction, usageOverThreshold } from './appSettings.js';
 import { parseResetEpochSecs } from './instances.js';
 
 // Default poll cadence. Aligned with the 60 s success cache in accountUsage.js so a
@@ -67,10 +67,12 @@ export class UsageOverageMonitor {
     if (!usage) return;                             // null on error/timeout → bail (no trip)
     const win = usage.five_hour;
     if (!win || typeof win.utilization !== 'number') return;
-    // Usage-payload utilization is a 0–100 PERCENT; the threshold value is also a
-    // percent (10–99), so compare directly. (The stream path divides by 100 because
-    // its rate_limit_info.utilization is a 0–1 fraction — a different shape.)
-    if (win.utilization < t.value) return;
+    // Same "still over the bar?" logic the resume verify uses (usageOverThreshold):
+    // five_hour utilization is a 0–100 PERCENT compared directly against the percent
+    // threshold. (The stream path divides by 100 — its rate_limit_info.utilization is
+    // a 0–1 fraction, a different shape.) Equivalent to the old `util < t.value` guard
+    // here since the threshold is enabled (value ≤ 99, so the >=100 proxy is subsumed).
+    if (usageOverThreshold(usage) !== true) return;
 
     const resetsAt = parseResetEpochSecs(win);      // five_hour.resets_at (ISO) → epoch secs
     m._handleOverageTrip(null, { resetsAt });       // SAME machinery as the stream trip

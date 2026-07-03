@@ -1821,7 +1821,32 @@ export class InstanceManager extends EventEmitter {
     const envBuf = Number(process.env.ORCH_OVERAGE_RESUME_BUFFER_MS);
     const bufMs = Number.isFinite(envBuf) ? envBuf : 5000;
     const delay = Math.max(0, atMs + bufMs - Date.now());
-    this._overageClearTimer = setTimeout(() => this._clearOverage(), delay);
+    // BACKSTOP only: fires _maybeReleaseOverageLock, which no-ops while any session
+    // is still parked-and-rechecking (its resume verify drives the real release) and
+    // clears only the "no session ever armed a deadline" case (e.g. plain `stop`, or
+    // a stop-resume trip whose sole live session died before arming). This is the fix
+    // for the old bug where the clock lifted the lockout at the ORIGINAL resetsAt while
+    // sessions were still throttled: parked sessions keep timers, so this now no-ops.
+    this._overageClearTimer = setTimeout(() => this._maybeReleaseOverageLock(), delay);
+  }
+
+  // Release the global overage lockout iff nothing is parked anymore — i.e. every
+  // per-session resume has resolved (usage-verified resumed, failed-open resumed, or
+  // torn down because the process vanished). Ties the global release to the SAME
+  // usage-verified sweep that resumes sessions, so the lockout and the resumes can't
+  // disagree. Called by the resume controller after each deadline-removing outcome
+  // and by the clock backstop.
+  _maybeReleaseOverageLock() {
+    if (!this._overageActive) return;
+    if (this._overageResume.timers.size > 0) return; // sessions still parked/rechecking
+    // A session soft-interrupted for overage but not yet at idle (so no deadline armed
+    // yet) will arm imminently — don't lift the lockout out from under it. This also
+    // closes the backstop race when resetsAt is past/immediate: autoStoppedForOverage
+    // is set synchronously at trip time, before the session round-trips to idle.
+    for (const inst of this.byId.values()) {
+      if (inst.proc && inst.autoStoppedForOverage) return;
+    }
+    this._clearOverage();
   }
 
   // Release the global overage one-shot and re-enable per-instance trip

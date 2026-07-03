@@ -256,6 +256,8 @@ test('poll stop-resume: arms a timer off five_hour reset and delivers the resume
   assert.equal(ctx.instances._autoResumeTimers.has(inst.sessionId), true, 'resume timer armed');
   assert.equal(inst.autoResumeAt, resetsAt, 'armed off the five_hour resets_at (buffer 0)');
 
+  // The fire-time verify must see the window clear to actually resume (else it parks).
+  ctx.instances._overageResume.fetchUsage = async () => usagePayload(10, nowSec() + 3600);
   assert.equal(ctx.instances._fireAutoResumeNow(inst.sessionId), true, 'pending resume fired');
   await waitFor(() => evs.some(e => e.kind === 'user_echo' && e.text === AUTO_RESUME_TEXT),
     { timeout: 10000 });
