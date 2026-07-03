@@ -84,11 +84,15 @@ See [docs/features.md](docs/features.md) for the exhaustive feature and UI-eleme
   resume timer (~5 s after the five-hour window's `resetsAt`, **not** the far-future overage window) that
   is **persisted in the resume manifest** across a graceful restart. The timer is armed for direct-stopped
   sessions **and** steered conductors (both mid-turn and idle-subscribed); orchestrator-injected prompts
-  (the idle-subscription wake, the conductor steer) don't cancel a pending resume. **Messages typed during
-  the wait window are queued** (not resumed inside the still-throttled window) and delivered as one combined
-  prompt when the deadline fires — the composer shows a paused banner + a **"Queue"** send button, queued
-  messages render as ghost bubbles, and the auto-resume badge appends `· N queued`. There is no early-resume
-  button. Routing
+  (the idle-subscription wake, the conductor steer) don't cancel a pending resume. **`Stop & resume` is a
+  GLOBAL hard lockout:** while the window is active EVERY session queues its sends — the one stopped
+  mid-turn, an idle/existing chat, and a brand-new chat started during the window (a queued-only session
+  arms its resume deadline immediately). Queued messages are delivered as one combined prompt when the
+  deadline fires — the composer shows a paused banner + a **"Queue"** send button, queued messages render
+  as ghost bubbles, and the auto-resume badge appends `· N queued`. There is **no** early-resume/override —
+  a session queues until the window-reset timer flushes it. A **safety rail** gates global queueing on a
+  valid *future* reset time (a missing/past reset means sends flow normally, never a permanent lockout).
+  Plain `Stop` never queues (no flush path). Routing
   (direct-interrupt vs steer-the-conductor) and clear semantics: see [docs/architecture.md](docs/architecture.md) → overage trip detection + central routing.
 - **Opus 4.7/4.8 thinking is redacted** — no readable content (4.7 sends only `signature_delta`; 4.8 sends empty `thinking_delta`s). Both render as `thinking (redacted)`. Pick `claude-sonnet-4-6` for the full stream.
 - **AskUserQuestion answered via next prompt** — PreToolUse hook denies; tool_result is `is_error:true`; answer is fed in as a normal user prompt. Functionally fine, but the original tool_result is still an error for diagnostics.

@@ -20,13 +20,21 @@
 export const AUTO_RESUME_TEXT =
   'The rate-limit window has reset. Please continue where you left off.';
 
+// Softened preamble for a queued-only session (idle/new — never stopped
+// mid-work), so it doesn't get told to "continue where you left off".
+const QUEUED_ONLY_RESUME_TEXT =
+  'The rate-limit window has reset. Delivering the messages you queued while paused:';
+
 // Build the single prompt the resume delivers. With no queued messages it is
 // just AUTO_RESUME_TEXT (the unchanged single-resume behavior). With queued
 // messages it prepends the reset preamble, then lists each queued message as a
 // short numbered, clock-stamped item so the model sees what the user typed
-// while the session was paused.
-function buildCombinedResumeText(queue) {
+// while the session was paused. `wasStopped` picks the preamble: a session
+// stopped mid-work resumes with "continue where you left off"; a queued-only
+// session gets the softened line.
+function buildCombinedResumeText(queue, wasStopped = true) {
   if (!queue.length) return AUTO_RESUME_TEXT;
+  const preamble = wasStopped ? AUTO_RESUME_TEXT : QUEUED_ONLY_RESUME_TEXT;
   const fmt = (ts) => {
     try { return new Date(ts).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); }
     catch { return ''; }
@@ -37,7 +45,7 @@ function buildCombinedResumeText(queue) {
       : (e.attachments?.length ? '(attachment)' : '(empty)');
     return `${i + 1}.${stamp} ${body}`;
   });
-  return `${AUTO_RESUME_TEXT}\n\nWhile paused you queued ${queue.length} message${queue.length === 1 ? '' : 's'}:\n${lines.join('\n')}`;
+  return `${preamble}\n\nWhile paused you queued ${queue.length} message${queue.length === 1 ? '' : 's'}:\n${lines.join('\n')}`;
 }
 
 export class OverageResumeController {
@@ -142,21 +150,23 @@ export class OverageResumeController {
     if (inst.proc) {
       // Deliver any messages the user queued during the wait window as ONE
       // combined prompt alongside the resume text. Snapshot + empty the queue
-      // FIRST, then cancel() (which clears autoStoppedForOverage/autoResumeAt)
-      // so the follow-on non-internal prompt() send is NOT re-queued by the
-      // prompt() intercept. cancel performs the single teardown (deletes the
-      // Map entry, clears flags, emits status to drop the badge + queuedCount,
-      // stops the sweep if last); the resume prompt()'s own user_prompt→cancel
-      // is then a harmless idempotent no-op. Do NOT pre-delete the timer here.
+      // FIRST, then cancel() (the single teardown: deletes the Map entry, clears
+      // flags, emits status to drop the badge + queuedCount, stops the sweep if
+      // last). The resume send is `internal:true` so it BYPASSES the prompt()
+      // queue intercept — critical for the global lockout: the window may still
+      // be active with a future resetsAt when this fires (the _fireAutoResumeNow
+      // path, or a per-session deadline that beats the global clear), and the
+      // GLOBAL gate would otherwise re-queue the resume prompt forever. internal
+      // also skips the user_prompt emit — fine, cancel() already did the teardown.
       const queue = inst._overageQueue.slice();
       inst._overageQueue = [];
       const attachments = queue.flatMap(e => Array.isArray(e.attachments) ? e.attachments : []);
-      const text = buildCombinedResumeText(queue);
+      const text = buildCombinedResumeText(queue, inst._overageWasStopped);
       this.cancel(sid);
       if (queue.length) {
         inst._emitUi({ kind: 'system', subtype: 'auto_resume', data: { count: queue.length } });
       }
-      inst.prompt(text, attachments).catch(() => {});
+      inst.prompt(text, attachments, { internal: true }).catch(() => {});
     } else {
       // Process gone (crashed / killed externally) — no send means no
       // user_prompt, so tear down explicitly. Keep it simple: no respawn.
@@ -194,6 +204,7 @@ export class OverageResumeController {
         inst._overageQueue.length > 0;
       inst.autoResumeAt = null;
       inst.autoStoppedForOverage = false;
+      inst._overageWasStopped = false;
       inst._overageHandled = false;
       // Drop any queued messages — the session is being torn down or resumed
       // (run() already snapshot-emptied the queue before this call, so this is
