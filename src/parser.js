@@ -111,7 +111,7 @@ export class Parser {
         // for fixtures that omit it).
         const usage = ev.message?.usage ?? null;
         if (!usage) return [];
-        return [{ kind: 'message_start', msgId: this.currentMsgId, usage }];
+        return [{ kind: 'message_start', msgId: this.currentMsgId, usage, model: ev.message?.model ?? null }];
       }
       case 'content_block_start': {
         const idx = ev.index ?? 0;
