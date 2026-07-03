@@ -61,8 +61,13 @@ export function installWsRouter({
     if (m.tasksAtTailStart?.length) tracker.seedActive(m.tasksAtTailStart);
     const usage = getUsage(m.id);
     usage.reset();
-    // Rate limits are account-wide — do NOT reset globalRLTracker per snapshot.
-    // Replayed rate_limit_events still update it so the chip reflects history.
+    // Rate limits are account-wide — do NOT reset globalRLTracker per snapshot,
+    // and do NOT feed it from this replay loop either. A session's replayed
+    // history is only time-ordered within that session, so a stale historical
+    // rate_limit_event (e.g. from a long-idle session) would clobber a fresher
+    // account-wide value already set by a live event or the periodic
+    // /api/usage fetch. globalRLTracker is fed ONLY by the live 'event'
+    // handler below and by refreshAccountUsage() in app.js.
     const isActive = m.id === state.activeId;
     if (isActive) conversation.clear();
     if (isActive) conversation._replayMode = true;
@@ -70,7 +75,6 @@ export function installWsRouter({
       const prevCount = tracker.completedBatches.length;
       tracker.apply(ev);
       usage.apply(ev);
-      globalRLTracker.apply(ev);
       if (isActive) {
         conversation.apply(ev);
         if (tracker.completedBatches.length > prevCount) {
@@ -115,7 +119,10 @@ export function installWsRouter({
     tracker.reset();
     const usage = getUsage(m.id);
     usage.reset();
-    // Rate limits are account-wide — do NOT reset globalRLTracker on rewind.
+    // Rate limits are account-wide — do NOT reset globalRLTracker on rewind,
+    // and (same reasoning as the snapshot handler above) do NOT feed it from
+    // this replay loop either; it stays fed only by live events + the
+    // periodic /api/usage fetch.
     const isActive = m.id === state.activeId;
     if (isActive) { conversation.reset(); lazyController.reset(); }
     if (isActive) conversation._replayMode = true;
@@ -123,7 +130,6 @@ export function installWsRouter({
       const prevCount = tracker.completedBatches.length;
       tracker.apply(ev);
       usage.apply(ev);
-      globalRLTracker.apply(ev);
       if (isActive) {
         conversation.apply(ev);
         if (tracker.completedBatches.length > prevCount) {
