@@ -206,6 +206,10 @@ export async function drainToManifest({ server, wss, instances, log = console, g
       // fires on the first post-boot tick. Both falsy for non-overage sessions.
       overageResumeAt: s.autoResumeAt ?? null,
       overageStopped: !!inst.autoStoppedForOverage,
+      // Was this session stopped mid-work (full "continue" preamble) vs.
+      // queued-only (softened preamble)? Carried so the resume text is right
+      // after a restart.
+      overageWasStopped: !!inst._overageWasStopped,
       overageResetsAt: inst._overageResetsAt ?? null,
       // Messages queued during the wait window — carried across the restart so
       // they still flush with the resume once the deadline fires.
@@ -303,6 +307,7 @@ export async function restoreFromResumeManifest({ instances, log = console, stag
       // already elapsed during the restart.
       if (e.overageStopped && Number.isFinite(e.overageResumeAt)) {
         inst._overageResetsAt = e.overageResetsAt ?? null;
+        inst._overageWasStopped = !!e.overageWasStopped; // preamble select survives restart
         // Restore queued messages BEFORE re-arming so armRestored's status emit
         // carries the restored queuedCount (badge shows "· N queued").
         inst._overageQueue = Array.isArray(e.overageQueue) ? e.overageQueue : [];

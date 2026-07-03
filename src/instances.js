@@ -305,6 +305,12 @@ export class Instance extends EventEmitter {
     this.autoResumeAt = null;
     this._overageResetsAt = null;
     this._overageHandled = false;
+    // True when this session was genuinely stopped MID-WORK (direct interrupt /
+    // conductor steer) vs. queued-only (idle/new session that queued while the
+    // global window was active). Softens the resume preamble for queued-only —
+    // buildCombinedResumeText drops "continue where you left off". Reset on
+    // (re)spawn; persisted across a resume-restart.
+    this._overageWasStopped = false;
     // Messages typed while auto-stopped-and-armed for overage resume are
     // QUEUED here (entries `{text, attachments, ts}`) instead of resuming the
     // still-throttled session; the auto-resume delivers them as one combined
@@ -314,6 +320,10 @@ export class Instance extends EventEmitter {
   }
 
   summary() {
+    // Live global-overage gate (injected by the manager at create). Surfaces the
+    // paused state to the client BEFORE the first message is typed on a session
+    // that hasn't queued yet. Absent (no manager wiring) ⇒ not paused.
+    const gate = this._overageGate ? this._overageGate() : { active: false, resetsAt: null };
     return {
       id: this.id,
       project: this.project,
@@ -345,6 +355,8 @@ export class Instance extends EventEmitter {
       interrupting: this.interrupting,
       autoResumeAt: this.autoResumeAt,
       queuedCount: this._overageQueue.length,
+      overageActive: !!gate.active,
+      overageResetsAt: gate.active ? gate.resetsAt : null,
     };
   }
 
@@ -548,6 +560,7 @@ export class Instance extends EventEmitter {
     this.autoResumeAt = null;
     this._overageResetsAt = null;
     this._overageHandled = false;
+    this._overageWasStopped = false;
     this._overageQueue = [];
     const { command, prefixArgs } = resolveClaudeBin();
     if (resume) this.sessionId = resume;
@@ -927,14 +940,19 @@ export class Instance extends EventEmitter {
     // An explicit new turn closes the drain window immediately so an intentional
     // follow-up prompt is never intercepted by the post-hard-abort drain logic.
     this._closeDrainWindow();
-    // While auto-stopped AND armed for overage resume, a genuine (user/MCP-driven)
-    // prompt must NOT resume the still-throttled session — it is QUEUED and
-    // delivered as one combined prompt when the resume deadline fires (see
-    // OverageResumeController.run). Return BEFORE emitting `user_prompt` so the
+    // While the overage window is active, a genuine (user/MCP-driven) prompt must
+    // NOT resume/hit the still-throttled account — it is QUEUED and delivered as
+    // one combined prompt when the resume deadline fires (see
+    // OverageResumeController.run). Two ways in: this session was stopped mid-turn
+    // and armed (autoStoppedForOverage+autoResumeAt), OR the GLOBAL gate is active
+    // (idle/never-stopped/brand-new session sending during the window). The gate
+    // enforces the safety rail (only a valid FUTURE resetsAt engages it) — see
+    // InstanceManager._overageGate. Return BEFORE emitting `user_prompt` so the
     // manager's resume-cancel handler never runs. Internal prompts (idle-wake
     // stub, conductor steer, and the auto-resume's own send — which first clears
     // these flags via cancel) fall through and resume normally.
-    if (!internal && this.autoStoppedForOverage && this.autoResumeAt) {
+    const gate = this._overageGate ? this._overageGate() : { active: false, resetsAt: null };
+    if (!internal && (gate.active || (this.autoStoppedForOverage && this.autoResumeAt))) {
       const entry = {
         text: typeof text === 'string' ? text : '',
         attachments: Array.isArray(attachments) ? attachments : [],
@@ -947,16 +965,20 @@ export class Instance extends EventEmitter {
         ts: entry.ts,
         queuedCount: this._overageQueue.length,
       } });
+      // Queued-only (idle/new) session with no armed deadline yet: ask the
+      // manager to arm one at the window reset NOW (there's no turn→idle
+      // transition to arm on, since the session may already be idle).
+      if (!this.autoResumeAt) this.emit('overage_queued', { resetsAt: gate.resetsAt });
       this.emit('status', this.summary()); // push queuedCount → badges
       return;
     }
     // A genuine (user/MCP-driven) prompt cancels a pending overage auto-resume —
     // the session is being driven again. Orchestrator-injected prompts
     // (`internal:true` — the idle-subscription wake stub, the conductor overage
-    // steer) must NOT cancel it: an overage-stopped conductor still gets woken
-    // when its worker finishes, and that wake must not discard the pending
-    // resume. When the auto-resume timer itself fires it sends a NON-internal
-    // prompt, so its callback's teardown still runs (see _armAutoResume).
+    // steer, and the auto-resume's own send) must NOT cancel it and must skip the
+    // global queue intercept above: the auto-resume already tore down its own
+    // deadline via cancel() before sending, and the global window may still be
+    // active when it fires.
     this.emit('user_prompt', { internal });
     const safeText = typeof text === 'string' ? text : '';
     const atts = Array.isArray(attachments) ? attachments : [];
@@ -1296,6 +1318,10 @@ export class InstanceManager extends EventEmitter {
     this._overageActive = false;
     this._overageResetsAt = null;
     this._overageClearTimer = null;
+    // True while the active window's action is `stop-resume` (has a flush path).
+    // GLOBAL queueing engages only in this mode — plain `stop` never queues.
+    // Set in _handleOverageTrip, cleared in _clearOverage.
+    this._overageResumeMode = false;
   }
 
   // Live backing maps exposed for the subsystems' callers (tests reach for
@@ -1560,6 +1586,23 @@ export class InstanceManager extends EventEmitter {
     // The Instance signals (rather than self-handles) an overage trip — central
     // routing lives on the manager where the idle-subscription graph is reachable.
     inst.on('overage', (info) => this._handleOverageTrip(inst, info));
+    // Live GLOBAL-overage gate, injected as a small callback (not a manager ref).
+    // active ⇒ this session must queue every non-internal send. SAFETY RAIL: only
+    // engages when the window is active in stop-resume mode AND there is a valid
+    // FUTURE resetsAt with an armed clear timer — a queued send bypasses the
+    // manual-resume clear path, so a missing/past/NaN resetsAt must mean
+    // active:false (sends flow normally) or every session would lock out forever.
+    inst._overageGate = () => {
+      const resetsAt = this._overageResetsAt;
+      const atMs = Number(resetsAt) * 1000;
+      const active = this._overageActive && this._overageResumeMode &&
+        Number.isFinite(atMs) && atMs > Date.now();
+      return { active, resetsAt: active ? resetsAt : null };
+    };
+    // A queued-only (idle/new) session signals it needs a resume deadline armed
+    // immediately — it has no mid-turn→idle transition for the status handler to
+    // arm on.
+    inst.on('overage_queued', (info) => this._armQueuedOnly(inst, info?.resetsAt));
     // A user/MCP-driven turn cancels any pending overage auto-resume. If the
     // turn is a manual takeover of an overage-stopped session, it also clears
     // the global overage flag so the stop can trip again. Capture the flag
@@ -1617,6 +1660,16 @@ export class InstanceManager extends EventEmitter {
   // keeps these names/signatures and forwards to the controller (internal
   // callers + the overage tests reach for them on the manager).
   _armAutoResume(inst) { return this._overageResume.arm(inst); }
+  // Arm a resume deadline for a queued-only session (idle/new — it queued a send
+  // while the global window was active but was never stopped mid-work). The
+  // status→idle arm path can't fire for it, so arm here off the window reset.
+  // Leaves `_overageWasStopped` false so the resume preamble stays softened.
+  _armQueuedOnly(inst, resetsAt) {
+    if (inst.autoResumeAt || this._autoResumeTimers.has(inst.sessionId)) return; // already armed
+    inst._overageResetsAt = Number.isFinite(Number(resetsAt)) ? resetsAt : this._overageResetsAt;
+    inst.autoStoppedForOverage = true; // so cancel/flush treats it like an armed session
+    this._armAutoResume(inst);         // arm() re-checks the future-resetsAt safety rail
+  }
   _armRestoredAutoResume(inst, fireAtMs) { return this._overageResume.armRestored(inst, fireAtMs); }
   _runAutoResume(inst, sid) { return this._overageResume.run(inst, sid); }
   _fireAutoResumeNow(sessionId) { return this._overageResume.fireNow(sessionId); }
@@ -1635,6 +1688,8 @@ export class InstanceManager extends EventEmitter {
     this._overageActive = true;
     this._overageResetsAt = info?.resetsAt ?? null;
     const resume = action === 'stop-resume';
+    // Global queueing engages ONLY in stop-resume mode (it has a flush path).
+    this._overageResumeMode = resume;
     this._routeOverageStop({ resume, resetsAt: this._overageResetsAt });
     this._armOverageClear(this._overageResetsAt);
   }
@@ -1687,6 +1742,7 @@ export class InstanceManager extends EventEmitter {
   _directOverageStop(inst, { resume, resetsAt }) {
     if (resume) {
       inst.autoStoppedForOverage = true;
+      inst._overageWasStopped = true; // genuinely stopped mid-work → full preamble
       inst._overageResetsAt = resetsAt;
     }
     inst._emitUi({ kind: 'system', subtype: 'auto_stop_overage', data: { resume, resetsAt } });
@@ -1705,6 +1761,7 @@ export class InstanceManager extends EventEmitter {
     if (conductor.status === 'turn') {
       if (resume) {
         conductor.autoStoppedForOverage = true;
+        conductor._overageWasStopped = true; // stopped mid-work → full preamble
         conductor._overageResetsAt = resetsAt;
       }
       conductor.windDown(OVERAGE_CONDUCTOR_STEER_TEXT);
@@ -1716,6 +1773,7 @@ export class InstanceManager extends EventEmitter {
       conductor.prompt(OVERAGE_CONDUCTOR_STEER_TEXT, [], { internal: true }).catch(() => {});
       if (resume) {
         conductor.autoStoppedForOverage = true;
+        conductor._overageWasStopped = true; // stopped mid-work → full preamble
         conductor._overageResetsAt = resetsAt;
       }
     }
@@ -1745,7 +1803,16 @@ export class InstanceManager extends EventEmitter {
     if (this._overageClearTimer) { clearTimeout(this._overageClearTimer); this._overageClearTimer = null; }
     this._overageActive = false;
     this._overageResetsAt = null;
-    for (const inst of this.byId.values()) inst._overageHandled = false;
+    this._overageResumeMode = false;
+    // Drop the paused state everywhere: re-enable per-instance trip detection and
+    // push a fresh summary for every session so composers that were showing the
+    // paused banner (incl. not-yet-queued sessions surfacing it via the gate)
+    // drop it now. Armed sessions with queued messages are flushed independently
+    // by the resume sweep — this is just the banner/gate teardown.
+    for (const inst of this.byId.values()) {
+      inst._overageHandled = false;
+      this.emit('status', inst.summary());
+    }
   }
 
   async respawn(id) {

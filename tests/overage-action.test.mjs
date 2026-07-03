@@ -515,6 +515,145 @@ test('stop-resume: queued attachments are concatenated into the single resume pr
   assert.equal(inst._overageQueue.flatMap(e => e.attachments).length, 2, 'two attachments queued for one send');
 });
 
+// ── GLOBAL stop-and-queue lockout ──────────────────────────────────────────
+// While the window is active in stop-resume mode, EVERY session queues its
+// sends — not just the one stopped mid-turn. An idle/never-stopped session and a
+// brand-new session both queue; each arms a resume deadline immediately (no
+// mid-turn→idle transition to arm on). Hard lockout: no override, no early
+// resume. Plain `stop` mode never queues (it has no flush path).
+
+test('stop-resume GLOBAL: an existing idle, never-stopped session queues while the window is active', async () => {
+  await boot(scenario([overageEvent({ resetsAt: nowSec() + 3600 }), RESULT]), 'stop-resume');
+  // A trips the overage; B is an existing idle session that was never stopped.
+  const b = await spawnIdle();
+  const a = await spawnIdle();
+  a.prompt('go');
+  await waitFor(() => ctx.instances._overageActive === true && a.autoResumeAt != null);
+  assert.equal(ctx.instances._overageResumeMode, true, 'stop-resume ⇒ resume mode');
+  // B never stopped: not armed, but the gate surfaces the paused state.
+  assert.equal(b.autoResumeAt, null, 'B not armed before it sends');
+  assert.equal(b.summary().overageActive, true, 'B sees paused state via the gate');
+
+  const bEvs = collect(b);
+  await b.prompt('idle send during window');
+  await waitFor(() => bEvs.some(e => e.kind === 'overage_message_queued'));
+  assert.equal(b._overageQueue.length, 1, 'idle session queued');
+  assert.equal(b._overageQueue[0].text, 'idle send during window');
+  assert.equal(b.autoResumeAt != null, true, 'armed immediately via overage_queued');
+  assert.equal(ctx.instances._autoResumeTimers.has(b.sessionId), true, 'timer armed for B');
+  assert.equal(b._overageWasStopped, false, 'queued-only, not stopped mid-work');
+  assert.equal(b.summary().queuedCount, 1, 'queuedCount surfaced');
+  // Nothing delivered to B's CLI while paused.
+  assert.equal(bEvs.some(e => e.kind === 'user_echo' && e.text === 'idle send during window'), false,
+    'queued message not delivered while paused');
+});
+
+test('stop-resume GLOBAL: a brand-new session started during the window queues its first prompt', async () => {
+  await boot(scenario([overageEvent({ resetsAt: nowSec() + 3600 }), RESULT]), 'stop-resume');
+  const a = await spawnIdle();
+  a.prompt('go');
+  await waitFor(() => ctx.instances._overageActive === true && a.autoResumeAt != null);
+
+  // Brand-new session created AFTER the trip — inherits the gate at create().
+  const fresh = await spawnIdle();
+  assert.equal(fresh.summary().overageActive, true, 'new session shows paused before any input');
+  const fEvs = collect(fresh);
+  await fresh.prompt('first message ever');
+  await waitFor(() => fEvs.some(e => e.kind === 'overage_message_queued'));
+  assert.equal(fresh._overageQueue.length, 1, 'first prompt queued');
+  assert.equal(fresh.autoResumeAt != null, true, 'armed immediately');
+  assert.equal(fresh._overageWasStopped, false, 'queued-only');
+});
+
+// SAFETY RAIL: a queued send bypasses the manual-resume clear path, so if the
+// gate engaged without a valid FUTURE resetsAt every session would lock out
+// PERMANENTLY. A missing/past/NaN resetsAt must mean gate inactive ⇒ sends flow.
+test('SAFETY RAIL: global-active but past/missing resetsAt ⇒ NO queueing, sends flow normally', async () => {
+  await boot(scenario([RESULT]), 'stop-resume'); // plain turn, no overage
+  const inst = await spawnIdle();
+  // Simulate the dangerous state directly: window "active" in resume mode but the
+  // reset time is already PAST (as if the clear timer hadn't fired yet).
+  ctx.instances._overageActive = true;
+  ctx.instances._overageResumeMode = true;
+  ctx.instances._overageResetsAt = nowSec() - 100; // PAST
+  assert.equal(inst._overageGate().active, false, 'past resetsAt ⇒ gate inactive');
+  ctx.instances._overageResetsAt = null;           // missing
+  assert.equal(inst._overageGate().active, false, 'missing resetsAt ⇒ gate inactive');
+  ctx.instances._overageResetsAt = NaN;            // NaN
+  assert.equal(inst._overageGate().active, false, 'NaN resetsAt ⇒ gate inactive');
+
+  // A send flows through as a real turn — never locked out.
+  ctx.instances._overageResetsAt = nowSec() - 100;
+  const evs = collect(inst);
+  await inst.prompt('should flow through');
+  assert.equal(inst._overageQueue.length, 0, 'not queued');
+  assert.equal(evs.some(e => e.kind === 'overage_message_queued'), false, 'nothing queued');
+  await waitFor(() => evs.some(e => e.kind === 'user_echo' && e.text === 'should flow through'));
+});
+
+test('stop-resume GLOBAL: a queued-only session flushes with the SOFTENED preamble', async () => {
+  await boot(scenario([overageEvent({ resetsAt: nowSec() + 3600 }), RESULT]), 'stop-resume');
+  const a = await spawnIdle();
+  a.prompt('go');
+  await waitFor(() => ctx.instances._overageActive === true && a.autoResumeAt != null);
+
+  const b = await spawnIdle();
+  const bEvs = collect(b);
+  await b.prompt('please do X');
+  await waitFor(() => b._overageQueue.length === 1);
+  assert.equal(b._overageWasStopped, false, 'queued-only');
+
+  assert.equal(ctx.instances._fireAutoResumeNow(b.sessionId), true, 'resume fired for B');
+  await waitFor(() => bEvs.some(e => e.kind === 'user_echo' && e.text.includes('please do X')),
+    { timeout: 10000 });
+  const echo = bEvs.find(e => e.kind === 'user_echo' && e.text.includes('please do X'));
+  assert.equal(echo.text.includes('Delivering the messages you queued while paused'), true,
+    'softened preamble used');
+  assert.equal(echo.text.includes('continue where you left off'), false,
+    'no mid-work "continue" line for a queued-only session');
+  assert.equal(b._overageQueue.length, 0, 'queue drained');
+  assert.equal(b.autoResumeAt, null, 'badge cleared');
+});
+
+test('stop mode (not stop-resume): GLOBAL queueing does NOT engage', async () => {
+  await boot(scenario([overageEvent({ resetsAt: nowSec() + 3600 }), RESULT]), 'stop');
+  const a = await spawnIdle();
+  a.prompt('go');
+  await waitFor(() => ctx.instances._overageActive === true);
+  assert.equal(ctx.instances._overageResumeMode, false, 'plain stop ⇒ not resume mode');
+
+  const b = await spawnIdle();
+  assert.equal(b._overageGate().active, false, 'gate inactive in plain stop');
+  assert.equal(b.summary().overageActive, false, 'no paused state in plain stop');
+  const bEvs = collect(b);
+  await b.prompt('flows through in stop mode');
+  assert.equal(b._overageQueue.length, 0, 'not queued in stop mode');
+  assert.equal(bEvs.some(e => e.kind === 'overage_message_queued'), false, 'nothing queued');
+  await waitFor(() => bEvs.some(e => e.kind === 'user_echo' && e.text === 'flows through in stop mode'));
+});
+
+// The window reset drops the paused state everywhere: _clearOverage emits a
+// fresh status (overageActive:false) for every session, including not-yet-queued
+// ones surfacing the banner via the gate.
+test('stop-resume GLOBAL: window-reset clear drops the paused state on a not-yet-queued session', async () => {
+  await boot(scenario([overageEvent({ resetsAt: nowSec() + 3600 }), RESULT]), 'stop-resume');
+  const a = await spawnIdle();
+  a.prompt('go');
+  await waitFor(() => ctx.instances._overageActive === true);
+
+  const b = await spawnIdle(); // never queues; sees paused only via the gate
+  assert.equal(b.summary().overageActive, true, 'B paused via gate');
+  const statuses = [];
+  ctx.instances.on('status', (s) => { if (s.id === b.id) statuses.push(s); });
+
+  ctx.instances._clearOverage(); // window reset
+  assert.equal(ctx.instances._overageResumeMode, false, 'resume mode cleared');
+  assert.equal(b._overageGate().active, false, 'gate inactive after clear');
+  assert.equal(b.summary().overageActive, false, 'B no longer paused');
+  assert.equal(statuses.some(s => s.overageActive === false), true,
+    'a status with overageActive:false was emitted for B');
+});
+
 // ── Conducted stop-resume: resume must arm through the routing paths ───────
 // The routing tests above all use action 'stop' — they never exercised whether
 // a `stop-resume` overage trip ARMS a resume when the stop is routed through a
