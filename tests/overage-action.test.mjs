@@ -951,3 +951,71 @@ test('stop-resume: one usage fetch per sweep cycle across all due sessions', asy
     else process.env.ORCH_OVERAGE_RESUME_SWEEP_MS = savedLocal;
   }
 });
+
+// ── Settings → Models Apply: bidirectional on-demand re-evaluation ───────
+// POST /api/settings/models/prefs, when it touches onOverage/overageThreshold,
+// force-reevaluates whatever is happening right now instead of waiting for the
+// next ~60s poll tick (lower threshold) or the resume deadline (raised/disabled
+// threshold, which can be hours away). See src/routes.js's prefs handler.
+
+test('Apply raising the threshold force-resumes a parked stop-resume session under the new bar', async () => {
+  await boot(scenario([utilEvent({ util: 0.9, resetsAt: nowSec() + 3600 }), RESULT]), 'stop-resume');
+  await setOverageThreshold({ enabled: true, value: 85 }); // stream utilization 0.9 >= 0.85 ⇒ trips
+  const inst = await spawnIdle();
+  const evs = collect(inst);
+  inst.prompt('go');
+
+  await waitFor(() => inst.autoResumeAt != null);
+  assert.equal(ctx.instances._autoResumeTimers.has(inst.sessionId), true, 'parked under the old threshold');
+
+  // Baseline: usage sits at 87% — still over the OLD 85% bar, so a check right now
+  // (with no settings change) finds it still throttled. Proves the later resume is
+  // caused by Apply's threshold change, not just any usage recheck.
+  ctx.instances._overageResume.fetchUsage = async () => usagePayload(87, nowSec() + 3600);
+  ctx.instances._fireAutoResumeNow(inst.sessionId);
+  await new Promise((r) => setTimeout(r, 150));
+  assert.equal(ctx.instances._autoResumeTimers.has(inst.sessionId), true, 'still parked under the old bar');
+  assert.equal(evs.some((e) => e.kind === 'user_echo' && e.text === AUTO_RESUME_TEXT), false, 'not resumed yet');
+
+  // Apply raises the threshold to 90% — the SAME 87% usage now reads "under bar".
+  const r = await api(ctx.baseUrl, 'POST', '/api/settings/models/prefs',
+    { overageThreshold: { enabled: true, value: 90 } });
+  assert.equal(r.status, 200);
+
+  await waitFor(() => evs.some((e) => e.kind === 'user_echo' && e.text === AUTO_RESUME_TEXT), { timeout: 10000 });
+  assert.equal(ctx.instances._autoResumeTimers.has(inst.sessionId), false,
+    'resumed promptly by Apply, not the far-off deadline');
+});
+
+test('Apply lowering the threshold force-stops a live mid-turn session via the poll tick', async () => {
+  // A single turn that never emits a result — the instance stays mid-turn
+  // (status:'turn') for the whole test, which is what the poll tick requires.
+  await boot(scenario([], 0), 'none');
+  const inst = await spawnIdle();
+  const evs = collect(inst);
+  inst.prompt('go');
+  await waitFor(() => inst.status === 'turn');
+
+  // Test harness never starts the real ORCH_USAGE_POLL_MS interval (bootServer
+  // calls createServer() directly, not server.js's start()) — forceTick() via the
+  // route is the only thing that can trip this before the test times out.
+  ctx.instances._usageMonitor.fetchUsage = async () => usagePayload(90, nowSec() + 3600);
+
+  const r = await api(ctx.baseUrl, 'POST', '/api/settings/models/prefs',
+    { onOverage: 'stop', overageThreshold: { enabled: true, value: 50 } });
+  assert.equal(r.status, 200);
+
+  await waitFor(() => sub(evs, 'auto_stop_overage').length > 0);
+  assert.equal(sub(evs, 'auto_stop_overage')[0].data.resume, false, 'plain stop, no resume armed');
+  assert.equal(inst.autoResumeAt, null);
+  assert.equal(inst.proc != null, true, 'soft-interrupted, not killed');
+});
+
+test('Apply with nothing live or parked is a clean no-op', async () => {
+  await boot(scenario([], 0), 'none');
+  const r = await api(ctx.baseUrl, 'POST', '/api/settings/models/prefs',
+    { onOverage: 'stop', overageThreshold: { enabled: true, value: 50 } });
+  assert.equal(r.status, 200);
+  assert.equal(ctx.instances._autoResumeTimers.size, 0);
+  assert.equal(ctx.instances._overageActive, false);
+});

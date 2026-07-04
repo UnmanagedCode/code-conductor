@@ -38,6 +38,8 @@ export function installSettings({
   const smOverageThreshRowEl     = document.getElementById('sm-overage-threshold-row');
   const smOverageThreshSliderEl  = document.getElementById('sm-overage-threshold');
   const smOverageThreshValEl     = document.getElementById('sm-overage-threshold-val');
+  const smOverageApplyEl         = document.getElementById('sm-overage-apply');
+  const smOverageDirtyEl         = document.getElementById('sm-overage-dirty');
   // TTS group elements.
   const ttStatusEl = document.getElementById('tt-status');
   const ttListEl = document.getElementById('tt-voice-list');
@@ -78,6 +80,18 @@ export function installSettings({
   let ttSelected = null;
   let ttInstalling = false;
   let ttInstallTarget = null;
+  // Overage-prefs group: staged locally, committed only via the Apply button.
+  let smOverageDirty = false;
+  function markOverageDirty() {
+    smOverageDirty = true;
+    if (smOverageApplyEl) smOverageApplyEl.disabled = false;
+    if (smOverageDirtyEl) smOverageDirtyEl.hidden = false;
+  }
+  function clearOverageDirty() {
+    smOverageDirty = false;
+    if (smOverageApplyEl) smOverageApplyEl.disabled = true;
+    if (smOverageDirtyEl) smOverageDirtyEl.hidden = true;
+  }
 
   // ── Group nav ───────────────────────────────────────────────────────
   function showGroup(group) {
@@ -92,6 +106,7 @@ export function installSettings({
     main.classList.add('settings-open');
     view.hidden = false;
     load();
+    clearOverageDirty(); // discard any un-applied edit from a prior open before refetching
     loadModels();
     loadTts();
     loadWorkspace();
@@ -367,9 +382,21 @@ export function installSettings({
       smListEl.appendChild(li);
     }
 
-    const overage = data.onOverage ?? 'none';
-    for (const btn of smOverageBtns) {
-      btn.setAttribute('aria-pressed', btn.dataset.overage === overage ? 'true' : 'false');
+    // Skip re-syncing the overage group while it has un-applied local edits (e.g. an
+    // unrelated save elsewhere on this page, like a family toggle, also calls
+    // renderModels — it must not clobber a staged-but-not-yet-Applied overage edit).
+    if (!smOverageDirty) {
+      const overage = data.onOverage ?? 'none';
+      for (const btn of smOverageBtns) {
+        btn.setAttribute('aria-pressed', btn.dataset.overage === overage ? 'true' : 'false');
+      }
+      if (smOverageThreshEnabledEl) {
+        const ot = data.overageThreshold ?? { enabled: false, value: 85 };
+        smOverageThreshEnabledEl.checked = ot.enabled;
+        if (smOverageThreshSliderEl) smOverageThreshSliderEl.value = String(ot.value);
+        if (smOverageThreshValEl)    smOverageThreshValEl.textContent = `${ot.value}%`;
+        if (smOverageThreshRowEl)    smOverageThreshRowEl.hidden = !ot.enabled;
+      }
     }
     if (smCompactWindowEnabledEl) {
       const cw = data.conductorCompactWindow ?? { enabled: false, value: 200 };
@@ -377,13 +404,6 @@ export function installSettings({
       if (smCompactWindowSliderEl) smCompactWindowSliderEl.value = String(cw.value);
       if (smCompactWindowValEl)    smCompactWindowValEl.textContent = `${cw.value}k`;
       if (smCompactWindowRowEl)    smCompactWindowRowEl.hidden = !cw.enabled;
-    }
-    if (smOverageThreshEnabledEl) {
-      const ot = data.overageThreshold ?? { enabled: false, value: 85 };
-      smOverageThreshEnabledEl.checked = ot.enabled;
-      if (smOverageThreshSliderEl) smOverageThreshSliderEl.value = String(ot.value);
-      if (smOverageThreshValEl)    smOverageThreshValEl.textContent = `${ot.value}%`;
-      if (smOverageThreshRowEl)    smOverageThreshRowEl.hidden = !ot.enabled;
     }
   }
 
@@ -429,23 +449,13 @@ export function installSettings({
     }
   }
 
+  // Staged, not saved: a click only updates the local pressed state and marks the
+  // overage group dirty. Committed together with the threshold via Apply.
   for (const btn of smOverageBtns) {
-    btn.addEventListener('click', () => onPickOverageAction(btn.dataset.overage));
-  }
-
-  async function onPickOverageAction(action) {
-    try {
-      const r = await fetch('/api/settings/models/prefs', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ onOverage: action }),
-      });
-      const data = await r.json();
-      if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
-      renderModels(data);
-    } catch (e) {
-      if (smStatusEl) smStatusEl.textContent = `Update failed: ${e.message || e}`;
-    }
+    btn.addEventListener('click', () => {
+      for (const b of smOverageBtns) b.setAttribute('aria-pressed', b === btn ? 'true' : 'false');
+      markOverageDirty();
+    });
   }
 
   async function onPickFamilyEnabled(family, enabled) {
@@ -490,12 +500,13 @@ export function installSettings({
   smCompactWindowSliderEl?.addEventListener('change', onSaveCompactWindow);
   smOverageThreshEnabledEl?.addEventListener('change', () => {
     if (smOverageThreshRowEl) smOverageThreshRowEl.hidden = !smOverageThreshEnabledEl.checked;
-    onSaveOverageThreshold();
+    markOverageDirty();
   });
   smOverageThreshSliderEl?.addEventListener('input', () => {
     if (smOverageThreshValEl) smOverageThreshValEl.textContent = `${smOverageThreshSliderEl.value}%`;
+    markOverageDirty();
   });
-  smOverageThreshSliderEl?.addEventListener('change', onSaveOverageThreshold);
+  smOverageApplyEl?.addEventListener('click', onApplyOveragePrefs);
   document.getElementById('sm-cost-dashboard-btn')?.addEventListener('click', () => {
     onOpenCostDashboard?.();
   });
@@ -517,18 +528,21 @@ export function installSettings({
     }
   }
 
-  async function onSaveOverageThreshold() {
+  async function onApplyOveragePrefs() {
+    const action  = smOverageBtns.find(b => b.getAttribute('aria-pressed') === 'true')?.dataset.overage || 'none';
     const enabled = smOverageThreshEnabledEl?.checked ?? false;
     const value   = Number(smOverageThreshSliderEl?.value ?? 85);
     try {
       const r = await fetch('/api/settings/models/prefs', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ overageThreshold: { enabled, value } }),
+        body: JSON.stringify({ onOverage: action, overageThreshold: { enabled, value } }),
       });
       const data = await r.json();
       if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
-      renderModels(data);
+      clearOverageDirty();   // before renderModels, so its (now-unguarded) sync applies
+      renderModels(data);    // re-syncs from the server's clamped/snapped values
+      if (smStatusEl) smStatusEl.textContent = 'Overage settings applied';
     } catch (e) {
       if (smStatusEl) smStatusEl.textContent = `Update failed: ${e.message || e}`;
     }

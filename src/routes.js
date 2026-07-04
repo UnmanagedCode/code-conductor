@@ -1080,6 +1080,17 @@ export function buildRoutes({ instances, serverCtx } = {}) {
         await setFamilyEnabled(familyEnabled.family, !!familyEnabled.enabled);
       }
       if (defaultSpawnFamily !== undefined) await setDefaultSpawnFamily(defaultSpawnFamily);
+      // Bidirectional on-demand re-evaluation: a save that touched the overage action
+      // or threshold should take effect on whatever is happening right now, not wait
+      // for the next ~60s poll tick (lower threshold) or the resume deadline, which
+      // can be hours away (raised/disabled threshold). Best-effort only — the setting
+      // itself is already persisted above regardless of outcome here.
+      try {
+        if (instances && (onOverage !== undefined || overageThreshold !== undefined)) {
+          await instances._usageMonitor.forceTick(); // stop direction: lower threshold trips now
+          instances.reevaluateOverageResumes();      // release direction: raised/disabled threshold resumes now
+        }
+      } catch { /* best-effort re-evaluation */ }
       res.json(modelsSettingsState());
     } catch (e) { next(e); }
   });

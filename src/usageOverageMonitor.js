@@ -47,6 +47,14 @@ export class UsageOverageMonitor {
     if (this.timer) { clearInterval(this.timer); this.timer = null; }
   }
 
+  // Force one poll cycle on demand (Settings → Models Apply, when a lower threshold
+  // may already be crossed) rather than waiting up to ORCH_USAGE_POLL_MS for the next
+  // tick. Reuses _tick() so the forced check goes through the exact same
+  // _handleOverageTrip path as the periodic poll — no parallel stop logic.
+  forceTick() {
+    return this._tick();
+  }
+
   // One poll cycle. Heavily gated so we don't fetch (or false-trip) when there's
   // nothing to do; resolves without throwing on any error. Trips on the FIVE-HOUR
   // window ONLY, and derives the resume reset from that SAME window — keeping the
