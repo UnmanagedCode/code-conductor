@@ -129,6 +129,7 @@ test('tools/list returns the full expected tool catalog', async () => {
   assert.ok(Array.isArray(body.result.tools));
   const names = body.result.tools.map(t => t.name).sort();
   const expected = [
+    'answer_question',
     'approve_plan',
     'create_project', 'create_workspace', 'create_worktree',
     'delete_workspace', 'delete_worktree',

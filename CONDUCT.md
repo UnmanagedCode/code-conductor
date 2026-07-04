@@ -21,7 +21,7 @@ A message the human types mid-turn is delivered **live into your running turn** 
 **The dispatch-and-wake pattern — how you drive *every* worker turn:**
 
 ```
-send_prompt({sessionId, text, wait:false})   // or approve_plan / reject_plan — each starts a worker turn
+send_prompt({sessionId, text, wait:false})   // or approve_plan / reject_plan / answer_question — each starts a worker turn
 subscribe_to_idle({sessionId})     // one-shot callback
 // End your turn — the human is free to talk to you.
 // On turn_end the orchestrator wakes you with a stub naming the worker:
@@ -63,6 +63,7 @@ Everything below builds on this pattern.
 - `send_prompt({sessionId, text, wait?, waitTimeoutMs?})` — send a turn (`wait:false`). **Mid-turn steering:** a single `send_prompt` to a mid-turn worker is delivered live into the running turn (not queued). (Two prompts to the *same* sessionId in one turn race — see the Parallel-dispatch caveat.)
 - `subscribe_to_idle({sessionId, timeoutMs?})` — one-shot wake on the next `turn_end`; `timeoutMs` is the watchdog (see Core rule) · `unsubscribe_from_idle({sessionId})` — cancel a pending subscription.
 - `wait_for_idle({sessionId, timeoutMs?})` — blocking fallback; discouraged (see Core rule).
+- `approve_plan` / `reject_plan` / `answer_question({sessionId, answers})` — drive a worker forward off a `plan_request` / `questions` wake (see Plan handling / Question handling). Each starts a worker turn — resubscribe + end turn.
 - `set_mode({sessionId, mode})` (runtime switch: plan / ask / bypassPermissions) · `interrupt_turn({sessionId})` (abort current turn) · `kill_instance({sessionId})` (terminate + remove) · `respawn_instance({sessionId})` (resume an exited/crashed instance from its sessionId).
 - `promote_session({sessionId})` — promote a temp worker to a persistent session: flips `temp=false` and writes resume-picker metadata so `claude --resume` finds it. Soft-refuses (`{ok:false, code:'SESSION_NOT_LIVE'|'SESSION_UNKNOWN'}`) if the session is not live / unknown; errors if the session is not temp.
 
@@ -74,6 +75,9 @@ Everything below builds on this pattern.
 - `approve_plan({sessionId, feedback?})` — flips mode to `bypassPermissions` and sends the approval prompt; use it rather than hand-rolling `set_mode` + `send_prompt`.
 - `reject_plan({sessionId, feedback})` — keeps the worker in `plan` mode, asks it to revise.
 - `set_auto_approve_plan({sessionId, enabled})` — the worker's next `plan_request` auto-approves server-side (mode flip + approval prompt). For "fire N workers and let them roll".
+
+**Question handling**
+- `answer_question({sessionId, answers})` — a worker's `AskUserQuestion` is denied at the `can_use_tool` layer, which *ends its turn* (same yield-and-wake shape as a plan). On a wake showing a `questions` field, answer with this rather than a free-text `send_prompt`: it delivers text byte-identical to the UI question card. `answers` aligns by index to the `questions` array (in order); each entry is `{option}` (single), `{options:[…]}` (multiSelect), `{text}` (custom), or `{}` (skip), with an optional `note`.
 
 **Inspect work**
 - `get_transcript({sessionId, sinceSeq?, limit?})` — UI event stream (disk-backed, ring-first). Poll incrementally by passing the returned `nextAfter` as the next `sinceSeq`; `hasMore` says more remain. Ring eviction is invisible — a `sinceSeq` into an evicted range is served from the on-disk transcript.
@@ -99,7 +103,7 @@ Before `create_project`, call `list_optional_guidelines`, choose the subset that
 
 ## Canonical workflow
 
-**Step 0 — load tool schemas.** The `mcp__code-conductor__*` schemas are deferred: before your first MCP call (and again after a context reset), batch-load them via `ToolSearch({query: "select:list_projects,spawn_instance,send_prompt,subscribe_to_idle,get_recent_messages,approve_plan,…"})`. A wake-up stub's suggested call needs its schema loaded first, too.
+**Step 0 — load tool schemas.** The `mcp__code-conductor__*` schemas are deferred: before your first MCP call (and again after a context reset), batch-load them via `ToolSearch({query: "select:list_projects,spawn_instance,send_prompt,subscribe_to_idle,get_recent_messages,approve_plan,answer_question,…"})`. A wake-up stub's suggested call needs its schema loaded first, too.
 
 ### Single worker
 
@@ -109,7 +113,7 @@ For a typical "implement feature X in project Y":
 2. **Spawn in plan mode, fresh worktree** — `spawn_instance({project: 'Y', mode: 'plan', createWorktree: true, model: 'sonnet'})`; capture the returned `sessionId`.
 3. **Brief** — `send_prompt({sessionId, text: "<scoped goal + constraints + completion sentinel>", wait: false})` + `subscribe_to_idle({sessionId})`, end your turn (dispatch-and-wake — see Core rule).
 4. **[Wake] Read the plan** — `get_recent_messages({sessionId})`.
-5. **Decide** — **Approve**: `approve_plan({sessionId})` (optional `feedback`) — starts the implementation turn: resubscribe + end turn. **Revise**: `reject_plan({sessionId, feedback})` — also a worker turn: resubscribe + end turn, loop to step 4 on the next wake. **Abandon**: `unsubscribe_from_idle({sessionId})`; `kill_instance({sessionId})`; `delete_worktree(...)`.
+5. **Decide** — **Approve**: `approve_plan({sessionId})` (optional `feedback`) — starts the implementation turn: resubscribe + end turn. **Revise**: `reject_plan({sessionId, feedback})` — also a worker turn: resubscribe + end turn, loop to step 4 on the next wake. **Answer a question**: if the wake shows a `questions` field instead of a plan, `answer_question({sessionId, answers})` — a worker turn: resubscribe + end turn. **Abandon**: `unsubscribe_from_idle({sessionId})`; `kill_instance({sessionId})`; `delete_worktree(...)`.
 6. **[Wake] Implementation done** — the worker flipped to `bypassPermissions` and finished its turn. Confirm via `get_recent_messages({sessionId})`: check the completion sentinel; if it's mid-multi-turn, resubscribe + end turn.
 7. **Review** — `project_status({project: 'Y', worktree: '<wtName>'})` for the summary, `get_worktree_diff(...)` for the full diff, `read_file(...)` for specifics — immediate calls, no subscribe.
 8. **Land** — merge only once the feature is complete: if strongly-related (same-files) work remains, send it to the worker **first** so it all lands as one branch. Then `sync_worktree({sessionId})` (`rebase-prompt-sent` is a worker turn — subscribe + end turn, resume on wake; FF'd / already-in-sync — continue straight on) and `merge_worktree({sessionId})`.
@@ -160,7 +164,7 @@ If `list_instances` ever shows you running *inside* a worker session (your `cwd`
 
 ## Best practices for worker prompts
 
-- **Scope explicitly.** Workers can't block on clarifying questions: a spawn-time PreToolUse deny hook (see `src/settings.js`) errors any `AskUserQuestion` call. The attempted question is still surfaced — as a `user_question` event and a `questions` field in `get_recent_messages` — so on a wake showing `questions`, answer via `send_prompt` or relay to the user. Better to pre-empt it: state the goal, the constraints, the success criteria, and the *non*-goals up front.
+- **Scope explicitly.** A worker's `AskUserQuestion` is a legitimate yield-and-wake, same shape as a plan: it's denied at the `can_use_tool` layer (see `src/instances.js`), which *ends the worker's turn* and wakes you via your idle subscription. The question surfaces as a `user_question` event and a `questions` field in `get_recent_messages`; answer it with `answer_question({sessionId, answers})` (structured, byte-identical to the UI card) or relay to the user. Still worth pre-empting for **efficiency** — every question is an extra round-trip — so state the goal, the constraints, the success criteria, and the *non*-goals up front.
 - **Declare the environment.** Workers don't automatically know they're in a worktree. Say: "You are working in a git worktree branched from `<baseBranch>`. Implement your changes here; do not switch branches."
 - **Agree on a sentinel.** Ask the worker to say a specific phrase (e.g. `IMPLEMENTATION_COMPLETE`) when finished, then check `get_recent_messages` for it on each wake. A turn ending only means the turn ended — the agent may still have more to do across multiple turns.
 - **One concern per worker.** Independent parts (frontend + backend, two unrelated modules) → separate workers in separate worktrees, driven in parallel (see "N independent tasks"). *Sequential, same-files* follow-ups → reuse *one* worker on its unmerged worktree and merge once (see "Worker lifecycle").
@@ -174,7 +178,7 @@ If `list_instances` ever shows you running *inside* a worker session (your `cwd`
 
 ## Reading the event stream
 
-`get_transcript({sessionId, sinceSeq})` returns events with monotonic `_seq` — poll incrementally by passing the previous call's `nextAfter` as `sinceSeq` (forward, oldest-first; `hasMore` flags more to drain). The stream is disk-backed and ring-first: a `sinceSeq` below `trimmedBefore` is served from the on-disk transcript rather than silently skipped, so eviction never loses history. Meaningful kinds: `text_delta`/`text_end` (assistant prose); `tool_use` (`Bash`, `Edit`, `Write`, `Read`, `Task`, …); `tool_result` (may carry `is_error: true`); `plan_request` (worker called `ExitPlanMode`; `plan` is the proposed plan); `user_question` (worker called `AskUserQuestion` — denied by the hook, see Best practices; drive forward with a follow-up `send_prompt`); `turn_end` (`duration_ms`, `usage`, `total_cost_usd`, `is_error`). For most decisions `get_recent_messages` is enough.
+`get_transcript({sessionId, sinceSeq})` returns events with monotonic `_seq` — poll incrementally by passing the previous call's `nextAfter` as `sinceSeq` (forward, oldest-first; `hasMore` flags more to drain). The stream is disk-backed and ring-first: a `sinceSeq` below `trimmedBefore` is served from the on-disk transcript rather than silently skipped, so eviction never loses history. Meaningful kinds: `text_delta`/`text_end` (assistant prose); `tool_use` (`Bash`, `Edit`, `Write`, `Read`, `Task`, …); `tool_result` (may carry `is_error: true`); `plan_request` (worker called `ExitPlanMode`; `plan` is the proposed plan); `user_question` (worker called `AskUserQuestion` — denied at the `can_use_tool` layer, which ends the turn; answer with `answer_question`, see Best practices); `turn_end` (`duration_ms`, `usage`, `total_cost_usd`, `is_error`). For most decisions `get_recent_messages` is enough.
 
 ## Talking to the user
 

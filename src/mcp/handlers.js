@@ -27,6 +27,10 @@ import {
   worktreeDirtyLines, runGit, DIFF_BYTE_CAP, assertValidBaseRef,
 } from '../worktrees.js';
 import { buildApprovePrompt, buildRejectPrompt } from '../planApproval.js';
+// DOM-free formatter shared with the UI question card (public/blocks.js
+// re-exports it) so an answer_question MCP answer is byte-identical to a UI
+// submit — one canonical function, no fork. See public/userQuestionAnswers.js.
+import { formatUserQuestionAnswers } from '../../public/userQuestionAnswers.js';
 import { getCatalog as getOptionalGuidelinesCatalog, composeGuidelinesBlock } from '../optionalGuidelines.js';
 import { isKnownFamily, defaultVersion } from '../modelVersions.js';
 import { getModelVersion } from '../appSettings.js';
@@ -440,6 +444,83 @@ export async function rejectPlan({ sessionId, feedback }, { instances }) {
   if (r.soft) return r.soft;
   const inst = r.inst;
   const text = buildRejectPrompt(feedback);
+  await inst.prompt(text, [], { annotateIfMidTurn: false });
+  return { sessionId: inst.sessionId, mode: inst.mode, sentText: text };
+}
+
+// Answer a worker's AskUserQuestion with a STRUCTURED answer. Mirrors the UI
+// question card's submit (public/app.js onUserQuestionSubmit → formatUserQuestionAnswers):
+// the worker's turn ended on the can_use_tool deny, so it's idle and we send the
+// consolidated answer as a normal user turn — byte-identical to a UI answer
+// because both call the same public/userQuestionAnswers.js formatter.
+//
+// `answers` is aligned BY INDEX to the pending questions (the same ordered array
+// the conductor read from get_recent_messages). Each entry is one of:
+//   { option: <label> [, note] }   — single choice
+//   { options: [<label>,…] [, note] } — multi-select (requires question.multiSelect)
+//   { text: <string> }             — custom typed answer
+//   {}                             — no answer for that question
+// The pending questions are re-derived from the ring via reconstructMessages —
+// the SAME source get_recent_messages uses — so we format against exactly what
+// the conductor saw. Soft-refuses (never throws) on mismatch.
+export async function answerQuestion({ sessionId, answers }, { instances }) {
+  const r = await getInst(instances, sessionId);
+  if (r.soft) return r.soft;
+  const inst = r.inst;
+
+  const msgs = reconstructMessages(inst.ringSnapshot(), false);
+  let questions = null;
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    if (Array.isArray(msgs[i].questions) && msgs[i].questions.length > 0) {
+      questions = msgs[i].questions;
+      break;
+    }
+  }
+  if (!questions) {
+    return { ok: false, code: 'NO_PENDING_QUESTION', sessionId: inst.sessionId,
+      reason: 'No pending AskUserQuestion found for this worker. Check get_recent_messages for a `questions` field first.' };
+  }
+  if (!Array.isArray(answers) || answers.length !== questions.length) {
+    return { ok: false, code: 'ANSWER_COUNT_MISMATCH', sessionId: inst.sessionId,
+      expected: questions.length, got: Array.isArray(answers) ? answers.length : 0,
+      reason: `Provide exactly one answer per question, in order (${questions.length} expected).` };
+  }
+
+  const states = [];
+  for (let i = 0; i < questions.length; i++) {
+    const q = questions[i];
+    const a = answers[i] ?? {};
+    const validLabels = new Set((q?.options ?? []).map(o => o.label));
+    const note = typeof a.note === 'string' && a.note.trim() ? a.note : undefined;
+    if (typeof a.text === 'string' && a.text.trim()) {
+      states.push({ kind: 'custom', text: a.text });
+    } else if (Array.isArray(a.options)) {
+      if (!q?.multiSelect) {
+        return { ok: false, code: 'NOT_MULTISELECT', sessionId: inst.sessionId, questionIndex: i,
+          reason: `Question ${i} is single-choice; use { option } not { options }.` };
+      }
+      const invalid = a.options.filter(l => !validLabels.has(l));
+      if (invalid.length) {
+        return { ok: false, code: 'INVALID_OPTION', sessionId: inst.sessionId, questionIndex: i, invalid,
+          reason: `Labels not offered for question ${i}: ${invalid.join(', ')}.` };
+      }
+      states.push(note ? { kind: 'multi', labels: a.options, note } : { kind: 'multi', labels: a.options });
+    } else if (typeof a.option === 'string') {
+      if (!validLabels.has(a.option)) {
+        return { ok: false, code: 'INVALID_OPTION', sessionId: inst.sessionId, questionIndex: i, invalid: [a.option],
+          reason: `"${a.option}" is not an offered option for question ${i}.` };
+      }
+      states.push(note ? { kind: 'option', label: a.option, note } : { kind: 'option', label: a.option });
+    } else {
+      states.push({ kind: 'none' });
+    }
+  }
+  if (states.every(s => s.kind === 'none')) {
+    return { ok: false, code: 'EMPTY_ANSWER', sessionId: inst.sessionId,
+      reason: 'No answers provided — every entry was empty.' };
+  }
+
+  const text = formatUserQuestionAnswers(questions, states);
   await inst.prompt(text, [], { annotateIfMidTurn: false });
   return { sessionId: inst.sessionId, mode: inst.mode, sentText: text };
 }
