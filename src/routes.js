@@ -19,6 +19,7 @@ import {
 } from './worktrees.js';
 import { scheduleRestart } from './restart.js';
 import { drainAndScheduleRestart } from './resumeRestart.js';
+import { BOOT_ID } from './bootId.js';
 import { getOrCompute, invalidate, invalidateAll } from './projectsCache.js';
 import { pageInstanceEvents } from './eventArchive.js';
 import { ensureConductProject, CONDUCT_PROJECT_NAME } from './conduct.js';
@@ -164,6 +165,13 @@ export function buildRoutes({ instances, serverCtx } = {}) {
   // a detached replacement node process and exits. Frontend's existing
   // 1s WS reconnect loop handles the brief downtime. No-op if the
   // server context wasn't wired (in-process test boot).
+  // Cheap liveness + per-process identity probe. The client restart flow polls
+  // this for a CHANGED bootId to confirm it's talking to the replacement
+  // process, not the old one still up during a resume drain (see bootId.js).
+  r.get('/health', (req, res) => {
+    res.json({ ok: true, bootId: BOOT_ID });
+  });
+
   r.post('/admin/restart', (req, res) => {
     res.status(202).json({ ok: true });
     if (!serverCtx) return;

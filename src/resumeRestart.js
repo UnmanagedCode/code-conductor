@@ -45,11 +45,10 @@ export const WIND_DOWN_TEXT_CONDUCTOR =
   '⚙️ CodeConductor is about to restart to apply changes. Stop now — do not ' +
   'send any further messages to your workers, and end your current turn ' +
   'immediately without replying. Every worker you are conducting has been sent ' +
-  'the same stop-and-wait notice, so do not message them. Your pending ' +
-  'subscribe-to-idle callbacks are being dropped by the restart — you will NOT ' +
-  'receive their idle notifications. Your session and all your workers\' ' +
-  'sessions are being preserved; you will be sent a message to resume (and to ' +
-  'resume your workers) once the restart completes.';
+  'the same stop-and-wait notice, so do not message them. Idle callbacks will ' +
+  'not fire across the restart. Your session and all your workers\' sessions ' +
+  'are being preserved; you will be sent a message to resume (and to resume ' +
+  'your workers) once the restart completes.';
 
 export const RESUME_TEXT =
   '✅ CodeConductor has restarted successfully. You may resume activity now — ' +
@@ -63,9 +62,12 @@ export function buildConductorResumeText(workers = []) {
   const list = lines.length ? lines.join('\n') : '- (none recorded)';
   return (
     '✅ CodeConductor has restarted successfully. You may resume activity now, ' +
-    'and you should resume conducting your workers. Your pending ' +
-    'subscribe-to-idle callbacks were dropped during the restart — re-establish ' +
-    'any subscriptions you still need.\n\n' +
+    'and you should resume conducting your workers. Idle callbacks from before ' +
+    'the restart were dropped, but dispatch-and-wake re-arms itself: your next ' +
+    'send_prompt / approve_plan / reject_plan / answer_question to each worker ' +
+    'auto-subscribes to its idle callback again, so just resume conducting — no ' +
+    'manual re-subscribe step is needed. (A standalone subscribe_to_idle is ' +
+    'only for re-arming without sending a new prompt.)\n\n' +
     'Your previously-conducted workers are listed below; each session has been ' +
     'preserved and can be resumed with `mcp__code-conductor__spawn_instance` ' +
     'using the matching `resume` sessionId and `worktree`:\n' +

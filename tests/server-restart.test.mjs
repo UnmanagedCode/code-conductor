@@ -102,6 +102,11 @@ test('POST /api/admin/restart respawns the server on the same port with a new pi
     throw new Error(`initial start failed: ${e.message}\nstdout=${captured.stdout}\nstderr=${captured.stderr}`);
   }
 
+  // Capture the original process's boot id (the client restart flow polls
+  // /api/health for a CHANGED bootId to detect the replacement process).
+  const healthBefore = await (await fetch(`http://127.0.0.1:${port}/api/health`)).json();
+  assert.ok(healthBefore?.bootId, 'GET /api/health returns a bootId');
+
   // Trigger the restart. The server may exit before the fetch resolves
   // (response is sent immediately, then process.exit kicks in ~50ms
   // later) — that's fine; either response or aborted connection is OK.
@@ -136,6 +141,11 @@ test('POST /api/admin/restart respawns the server on the same port with a new pi
   assert.equal(probe.status, 200);
   const body = await probe.json();
   assert.ok(Array.isArray(body));
+  // The replacement process must report a DIFFERENT bootId — this is what the
+  // client polls for to know it's talking to the new process, not the old one.
+  const healthAfter = await (await fetch(`http://127.0.0.1:${port}/api/health`)).json();
+  assert.ok(healthAfter?.bootId, 'replacement /api/health returns a bootId');
+  assert.notEqual(healthAfter.bootId, healthBefore.bootId, 'bootId must change across restart');
   // Grandchild process must be alive.
   assert.doesNotThrow(() => process.kill(grandchildPid, 0));
 });

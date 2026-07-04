@@ -67,6 +67,7 @@ Outbound: `system` + `subtype:"init"` (bundled with first turn's response, not a
 ## REST endpoints
 | Method | Path | Purpose |
 |---|---|---|
+| `GET` | `/api/health` | Liveness + per-process identity: `{ok:true, bootId}`. `bootId` (`src/bootId.js`) is minted once per process, so the client restart flow polls for a *changed* value to confirm it's on the replacement process, not the old server still up during a resume drain. |
 | `GET` | `/api/projects` | List with workspace, git status, sessions, worktrees. |
 | `POST` | `/api/projects` | `{name, rules?:[slug,…]}` — create, seeds `CLAUDE.md` with `@../CLAUDE.md` plus any selected rule bodies appended inline. 400 on unknown slug. |
 | `DELETE` | `/api/projects/:name` | Cascade: kill instances → remove worktrees → `rm -rf`. Sessions persist under `~/.claude/projects/`. |
