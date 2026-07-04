@@ -137,33 +137,40 @@
             </div>
             <ul id="sm-family-list" class="sm-family-list"></ul>
             <div class="sm-prefs">
-              <div class="sm-overage-label">Action on overage</div>
-              <div class="qs-mode-toggle" id="sm-overage" role="group" aria-label="Action on overage">
-                <button type="button" class="qs-mode-opt" data-overage="none" aria-pressed="true">Off</button>
-                <button type="button" class="qs-mode-opt" data-overage="stop" aria-pressed="false">Stop</button>
-                <button type="button" class="qs-mode-opt" data-overage="stop-resume" aria-pressed="false">Stop &amp; resume</button>
-              </div>
-              <p class="settings-hint">What to do the moment a session starts using paid overage credits. <strong>Stop</strong> soft-interrupts the turn (stays idle, manually resumable). <strong>Stop &amp; resume</strong> also auto-resumes the session ~5s after the rate-limit window resets. Off by default.</p>
-              <label class="tt-toggle"><input id="sm-overage-threshold-enabled" type="checkbox" /> Also stop at a usage threshold (any rate-limit window)</label>
-              <p class="settings-hint">When on, the chosen overage action also fires once utilization crosses this percentage — before paid overage begins. Checked two ways: the live rate-limit stream (near Anthropic's own ~90% mark) and a periodic server-side usage poll of the 5-hour window, so low thresholds (e.g. 25%) trip even though the stream never reports that low. Independent of the paid-overage trip above. Has no effect when the action is <strong>Off</strong>. Off by default.</p>
-              <div id="sm-overage-threshold-row" class="sm-compact-row" hidden>
-                <label class="sm-compact-label">Stop at
-                  <input id="sm-overage-threshold" type="range" min="10" max="99" step="1" value="85" />
-                  <span id="sm-overage-threshold-val">85%</span>
-                </label>
-              </div>
-              <div class="sm-apply-row">
-                <span id="sm-overage-dirty" class="sm-dirty-hint" hidden>Unsaved changes</span>
-                <button id="sm-overage-apply" type="button" class="sm-apply-btn" disabled>Apply</button>
-              </div>
-              <label class="tt-toggle"><input id="sm-compact-window-enabled" type="checkbox" /> Override compact window for the Conduct orchestrator session</label>
-              <p class="settings-hint">Sets the effective context-window size at which the 🎼 Conduct orchestrator session (.conduct) auto-compacts. Does not affect worker agents it spawns. Off by default.</p>
-              <div id="sm-compact-window-row" class="sm-compact-row" hidden>
-                <label class="sm-compact-label">Window
-                  <input id="sm-compact-window" type="range" min="20" max="1000" step="10" value="200" />
-                  <span id="sm-compact-window-val">200k</span>
-                </label>
-              </div>
+              <fieldset class="sm-group">
+                <legend>Overage protection</legend>
+                <div class="sm-overage-label">Action on overage</div>
+                <div class="qs-mode-toggle" id="sm-overage" role="group" aria-label="Action on overage">
+                  <button type="button" class="qs-mode-opt" data-overage="none" aria-pressed="true">Off</button>
+                  <button type="button" class="qs-mode-opt" data-overage="stop" aria-pressed="false">Stop</button>
+                  <button type="button" class="qs-mode-opt" data-overage="stop-resume" aria-pressed="false">Stop &amp; resume</button>
+                </div>
+                <p class="settings-hint">What to do the moment a session starts using paid overage credits. <strong>Stop</strong> soft-interrupts the turn (stays idle, manually resumable). <strong>Stop &amp; resume</strong> also auto-resumes the session ~5s after the rate-limit window resets. Off by default.</p>
+                <label class="tt-toggle"><input id="sm-overage-threshold-enabled" type="checkbox" /> Also stop at a usage threshold (any rate-limit window)</label>
+                <p class="settings-hint">When on, the chosen overage action also fires once utilization crosses this percentage — before paid overage begins. Checked two ways: the live rate-limit stream (near Anthropic's own ~90% mark) and a periodic server-side usage poll of the 5-hour window, so low thresholds (e.g. 25%) trip even though the stream never reports that low. Independent of the paid-overage trip above. Has no effect when the action is <strong>Off</strong>. Off by default.</p>
+                <div id="sm-overage-threshold-row" class="sm-compact-row" hidden>
+                  <label class="sm-compact-label">Stop at
+                    <input id="sm-overage-threshold" type="range" min="10" max="99" step="1" value="85" />
+                    <span id="sm-overage-threshold-val">85%</span>
+                  </label>
+                </div>
+                <div class="sm-apply-row">
+                  <span id="sm-overage-dirty" class="sm-dirty-hint" hidden>Unsaved changes</span>
+                  <span id="sm-overage-status" class="sm-status-inline" hidden></span>
+                  <button id="sm-overage-apply" type="button" class="sm-apply-btn" disabled>Apply</button>
+                </div>
+              </fieldset>
+              <fieldset class="sm-group">
+                <legend>Conductor session</legend>
+                <label class="tt-toggle"><input id="sm-compact-window-enabled" type="checkbox" /> Override compact window for the Conduct orchestrator session</label>
+                <p class="settings-hint">Sets the effective context-window size at which the 🎼 Conduct orchestrator session (.conduct) auto-compacts. Does not affect worker agents it spawns. Off by default.</p>
+                <div id="sm-compact-window-row" class="sm-compact-row" hidden>
+                  <label class="sm-compact-label">Window
+                    <input id="sm-compact-window" type="range" min="20" max="1000" step="10" value="200" />
+                    <span id="sm-compact-window-val">200k</span>
+                  </label>
+                </div>
+              </fieldset>
             </div>
             <div class="sm-cost-row">
               <button id="sm-cost-dashboard-btn" type="button">Cost dashboard</button>

@@ -1273,10 +1273,26 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
   font-size: 13px;
   font-weight: 600;
 }
+.sm-group {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 4px 14px 14px;
+  margin: 14px 0;
+  min-width: 0; /* reset fieldset's intrinsic min-width */
+}
+.sm-group > legend {
+  padding: 0 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
 .sm-prefs .qs-mode-toggle { width: fit-content; }
 .sm-prefs .qs-mode-toggle .qs-mode-opt { white-space: nowrap; }
 .sm-apply-row { display: flex; align-items: center; gap: 10px; margin: 10px 0 4px; }
 .sm-dirty-hint { font-size: 11px; color: var(--amber); }
+.sm-status-inline { font-size: 11px; }
+.sm-status-inline.sm-status-ok { color: var(--green); }
+.sm-status-inline.sm-status-err { color: var(--red); }
 .sm-apply-btn {
   background: var(--accent); color: #0a0c12; font-weight: 600;
   border-color: var(--accent); padding: 6px 16px;
