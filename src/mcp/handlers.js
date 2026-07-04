@@ -589,7 +589,7 @@ export async function setAutoApprovePlan({ sessionId, enabled }, { instances }) 
 // ./diffPaging.js (parseNumstat / parseNameStatus / indexDiffLines /
 // paginateDiff), imported above.
 
-export async function getWorktreeDiff({ project, worktree, baseRef, contextLines = 3, summary = false, paths, offset = 0, includeWorkingTree = false }) {
+export async function getWorktreeDiff({ project, worktree, baseRef, contextLines = 3, summary = false, paths, offset = 0 }) {
   if (!project || !worktree) {
     throw new Error('get_worktree_diff requires {project, worktree}');
   }
@@ -632,32 +632,29 @@ export async function getWorktreeDiff({ project, worktree, baseRef, contextLines
     };
     const result = { project, worktree, baseRef: ref, head, summary: true, totals, files };
 
-    if (includeWorkingTree) {
-      // Staged + unstaged changes vs HEAD (does not include untracked files)
-      const [rnu, rnsu] = await Promise.all([
-        runGit(wt.worktreePath, ['diff', '--numstat', 'HEAD', ...pathspec]),
-        runGit(wt.worktreePath, ['diff', '--name-status', 'HEAD', ...pathspec]),
-      ]);
-      const uNums = rnu.code === 0 ? parseNumstat(rnu.stdout) : [];
-      const uStats = rnsu.code === 0 ? parseNameStatus(rnsu.stdout) : [];
-      const uFiles = uStats.map((s, i) => {
-        const n = uNums[i] ?? { additions: 0, deletions: 0, binary: false };
-        const entry = { path: s.path, status: s.status, additions: n.additions, deletions: n.deletions, binary: n.binary };
-        if (s.oldPath) entry.oldPath = s.oldPath;
-        return entry;
-      });
-      const uTotals = {
-        files: uFiles.length,
-        additions: uFiles.reduce((acc, f) => acc + f.additions, 0),
-        deletions: uFiles.reduce((acc, f) => acc + f.deletions, 0),
-      };
-      const utR = await runGit(wt.worktreePath, ['ls-files', '--others', '--exclude-standard', ...lsPathspec]);
-      const untracked = utR.code === 0
-        ? utR.stdout.split('\n').map(s => s.trim()).filter(Boolean)
-        : [];
-      result.includeWorkingTree = true;
-      result.uncommitted = { totals: uTotals, files: uFiles, untracked };
-    }
+    // Staged + unstaged changes vs HEAD (does not include untracked files)
+    const [rnu, rnsu] = await Promise.all([
+      runGit(wt.worktreePath, ['diff', '--numstat', 'HEAD', ...pathspec]),
+      runGit(wt.worktreePath, ['diff', '--name-status', 'HEAD', ...pathspec]),
+    ]);
+    const uNums = rnu.code === 0 ? parseNumstat(rnu.stdout) : [];
+    const uStats = rnsu.code === 0 ? parseNameStatus(rnsu.stdout) : [];
+    const uFiles = uStats.map((s, i) => {
+      const n = uNums[i] ?? { additions: 0, deletions: 0, binary: false };
+      const entry = { path: s.path, status: s.status, additions: n.additions, deletions: n.deletions, binary: n.binary };
+      if (s.oldPath) entry.oldPath = s.oldPath;
+      return entry;
+    });
+    const uTotals = {
+      files: uFiles.length,
+      additions: uFiles.reduce((acc, f) => acc + f.additions, 0),
+      deletions: uFiles.reduce((acc, f) => acc + f.deletions, 0),
+    };
+    const utR = await runGit(wt.worktreePath, ['ls-files', '--others', '--exclude-standard', ...lsPathspec]);
+    const untracked = utR.code === 0
+      ? utR.stdout.split('\n').map(s => s.trim()).filter(Boolean)
+      : [];
+    result.uncommitted = { totals: uTotals, files: uFiles, untracked };
     return result;
   }
 
@@ -671,20 +668,18 @@ export async function getWorktreeDiff({ project, worktree, baseRef, contextLines
   let uncommittedDiff = '';
   let untracked = [];
 
-  if (includeWorkingTree) {
-    // Staged + unstaged vs HEAD. git diff HEAD does NOT include untracked files,
-    // so list those separately via ls-files --others.
-    const wu = await runGit(wt.worktreePath, ['diff', `--unified=${ctx}`, 'HEAD', ...pathspec]);
-    uncommittedDiff = wu.code === 0 ? (wu.stdout ?? '') : '';
-    const utR = await runGit(wt.worktreePath, ['ls-files', '--others', '--exclude-standard', ...lsPathspec]);
-    untracked = utR.code === 0
-      ? utR.stdout.split('\n').map(s => s.trim()).filter(Boolean)
-      : [];
-    if (uncommittedDiff.trim()) {
-      // Append uncommitted section; separator is visually distinct from any diff
-      // marker (starts with @@@ not @@ ) so indexDiffLines treats it as body text.
-      full = full + '@@@ uncommitted working tree changes (git diff HEAD) @@@\n' + uncommittedDiff;
-    }
+  // Staged + unstaged vs HEAD. git diff HEAD does NOT include untracked files,
+  // so list those separately via ls-files --others.
+  const wu = await runGit(wt.worktreePath, ['diff', `--unified=${ctx}`, 'HEAD', ...pathspec]);
+  uncommittedDiff = wu.code === 0 ? (wu.stdout ?? '') : '';
+  const utR = await runGit(wt.worktreePath, ['ls-files', '--others', '--exclude-standard', ...lsPathspec]);
+  untracked = utR.code === 0
+    ? utR.stdout.split('\n').map(s => s.trim()).filter(Boolean)
+    : [];
+  if (uncommittedDiff.trim()) {
+    // Append uncommitted section; separator is visually distinct from any diff
+    // marker (starts with @@@ not @@ ) so indexDiffLines treats it as body text.
+    full = full + '@@@ uncommitted working tree changes (git diff HEAD) @@@\n' + uncommittedDiff;
   }
 
   const totalBytes = Buffer.byteLength(full, 'utf8');
@@ -709,12 +704,9 @@ export async function getWorktreeDiff({ project, worktree, baseRef, contextLines
     nextOffset,
     totalLines,
     totalBytes,
+    hasUncommittedChanges: uncommittedDiff.trim().length > 0,
+    untracked,
   };
-  if (includeWorkingTree) {
-    meta.includeWorkingTree = true;
-    meta.hasUncommittedChanges = uncommittedDiff.trim().length > 0;
-    meta.untracked = untracked;
-  }
   // Explicit truncation metadata: which files this page covers vs omits.
   if (truncated) {
     const included = new Set();
