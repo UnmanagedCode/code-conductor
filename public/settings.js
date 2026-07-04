@@ -40,6 +40,7 @@ export function installSettings({
   const smOverageThreshValEl     = document.getElementById('sm-overage-threshold-val');
   const smOverageApplyEl         = document.getElementById('sm-overage-apply');
   const smOverageDirtyEl         = document.getElementById('sm-overage-dirty');
+  const smOverageStatusEl        = document.getElementById('sm-overage-status');
   // TTS group elements.
   const ttStatusEl = document.getElementById('tt-status');
   const ttListEl = document.getElementById('tt-voice-list');
@@ -86,11 +87,25 @@ export function installSettings({
     smOverageDirty = true;
     if (smOverageApplyEl) smOverageApplyEl.disabled = false;
     if (smOverageDirtyEl) smOverageDirtyEl.hidden = false;
+    clearOverageStatus(); // a new edit invalidates any prior applied/failed message
   }
   function clearOverageDirty() {
     smOverageDirty = false;
     if (smOverageApplyEl) smOverageApplyEl.disabled = true;
     if (smOverageDirtyEl) smOverageDirtyEl.hidden = true;
+  }
+  function clearOverageStatus() {
+    if (!smOverageStatusEl) return;
+    smOverageStatusEl.hidden = true;
+    smOverageStatusEl.textContent = '';
+    smOverageStatusEl.classList.remove('sm-status-ok', 'sm-status-err');
+  }
+  function setOverageStatus(text, ok) {
+    if (!smOverageStatusEl) return;
+    smOverageStatusEl.textContent = text;
+    smOverageStatusEl.hidden = false;
+    smOverageStatusEl.classList.toggle('sm-status-ok', ok);
+    smOverageStatusEl.classList.toggle('sm-status-err', !ok);
   }
 
   // ── Group nav ───────────────────────────────────────────────────────
@@ -107,6 +122,7 @@ export function installSettings({
     view.hidden = false;
     load();
     clearOverageDirty(); // discard any un-applied edit from a prior open before refetching
+    clearOverageStatus(); // discard any stale applied/failed message from a prior open
     loadModels();
     loadTts();
     loadWorkspace();
@@ -542,9 +558,9 @@ export function installSettings({
       if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
       clearOverageDirty();   // before renderModels, so its (now-unguarded) sync applies
       renderModels(data);    // re-syncs from the server's clamped/snapped values
-      if (smStatusEl) smStatusEl.textContent = 'Overage settings applied';
+      setOverageStatus('Overage settings applied', true);
     } catch (e) {
-      if (smStatusEl) smStatusEl.textContent = `Update failed: ${e.message || e}`;
+      setOverageStatus(`Update failed: ${e.message || e}`, false);
     }
   }
 
