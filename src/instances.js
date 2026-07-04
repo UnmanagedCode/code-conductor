@@ -294,6 +294,12 @@ export class Instance extends EventEmitter {
     // exit from `turn` (turn_end → idle, crash, exit). Drives the
     // "stopping…" marker + the "Interrupt now" escalate affordance.
     this.interrupting = false;
+    // Fork drops the dropped user prompt here so it can ride the new
+    // instance's first `snapshot` frame as `droppedText` — the inline
+    // analogue of rewind's `reset_snapshot` droppedText. Consumed once by
+    // the wsHub subscribe handler (consumePrefill), so a later re-subscribe
+    // never re-prefills and clobbers the user's edits.
+    this.pendingPrefill = null;
     // Post-hard-abort drain window: timer handle + listener for killing
     // spurious turns the CLI starts from its leftover input queue after a
     // hard abort. Both null when the window is closed. See _openDrainWindow.
@@ -1319,6 +1325,15 @@ export class Instance extends EventEmitter {
     this.emit('snapshot_reset', { ...this._snapshotForReset(), ...extra });
   }
 
+  // Read-and-clear the fork prefill. Returns the dropped prompt text (may be
+  // '') the first time, then null — so the very first `snapshot` frame after a
+  // fork carries `droppedText` and every later subscribe does not.
+  consumePrefill() {
+    const t = this.pendingPrefill;
+    this.pendingPrefill = null;
+    return t;
+  }
+
   // Snapshot frame used at rewind broadcast time. Mirrors the shape of the
   // `snapshot` WS frame so the client can apply it through the same path.
   _snapshotForReset() {
@@ -1515,7 +1530,7 @@ export class InstanceManager extends EventEmitter {
     return out;
   }
 
-  async create({ project, resume, mode, effort, thinking, model, worktree, temp, conducted, callerInstanceId, debug, autoApprovePlan } = {}) {
+  async create({ project, resume, mode, effort, thinking, model, worktree, temp, conducted, callerInstanceId, debug, autoApprovePlan, prefill } = {}) {
     // On resume, when the caller didn't pin an explicit worktree, recover the
     // session's recorded project + worktree via findSessionLocation. This is
     // what makes spawn_instance({resume}) "just work" for an MCP conductor
@@ -1698,6 +1713,9 @@ export class InstanceManager extends EventEmitter {
 
     this.byId.set(id, inst);
     if (autoApprovePlan) inst.autoApprovePlan = true;
+    // Fork prefill: the dropped prompt rides the new instance's first
+    // `snapshot` frame (see Instance.consumePrefill / wsHub subscribe).
+    if (typeof prefill === 'string') inst.pendingPrefill = prefill;
     inst.spawn({ resume });
     this.emit('list_changed');
     return inst;

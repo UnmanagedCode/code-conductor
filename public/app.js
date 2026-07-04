@@ -273,7 +273,7 @@ function sendOrQueuePrompt(instanceId, text) {
 
 // Handles returned by installSessionActions ({ promoteSession, loadSessions,
 // resumeSession, rewindActiveSession, forkActiveSession, deleteProject,
-// deleteSession, removeWorktree, consumePendingPrefill }). Declared here —
+// deleteSession, removeWorktree }). Declared here —
 // before conversationOptions and the Sidebar, both of which forward to it via
 // lazy arrows — and assigned later, once its deps (sidebar et al.) are in scope.
 // Every call site fires only after init (user interaction / async WS open).
@@ -842,9 +842,9 @@ installRestart({
 // rewind / fork / delete-project / delete-session / remove-worktree) live in
 // public/sessionActions.js. Returned handles are held in `sessionActions`
 // (declared above) so the Sidebar callbacks, conversationOptions onRewind/onFork,
-// the boot-time auto-resume, and the snapshot prefill-consume all forward to it.
-// pendingPrefill is owned inside the module (set by forkActiveSession, read once
-// by the snapshot handler via consumePendingPrefill).
+// and the boot-time auto-resume all forward to it. Fork/rewind composer prefill
+// rides `droppedText` inline on the WS snapshot/reset_snapshot frame (handled in
+// wsRouter.js) — no client-side prefill state lives in sessionActions.
 const summaryHandle = installSessionSummary({
   dom,
   getActiveSid: () => {

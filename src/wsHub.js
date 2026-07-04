@@ -13,9 +13,10 @@
 // Server → client:
 //   { t: "snapshot",       id, status, mode, sessionId, project, autoApprovePlan,
 //                          events: [...],            // ring TAIL only (≤ ORCH_SNAPSHOT_TAIL, default 500)
-//                          tailStartSeq, trimmedBefore } // >0 ⇒ older history exists; page it via
+//                          tailStartSeq, trimmedBefore, // >0 ⇒ older history exists; page it via
 //                                                        // GET /api/instances/:id/events?before=<seq>
-//   { t: "reset_snapshot", id, status, mode, sessionId, project, events: [...] }
+//                          droppedText? }            // present once on a fork's first snapshot ⇒ composer prefill
+//   { t: "reset_snapshot", id, status, mode, sessionId, project, events: [...], droppedText? } // droppedText ⇒ rewind prefill
 //   { t: "event",          id, ev }
 //   { t: "status",         id, status, sessionId, mode, autoApprovePlan }
 //   { t: "closed",         id, code, signal }
@@ -147,6 +148,10 @@ export function attachWsHub({ wss, instances }) {
             // GET /api/instances/:id/events?before=<seq>.
             const events = inst.snapshotTail();
             const tailStartSeq = events.length ? events[0]._seq : inst.ring.trimmedBefore;
+            // Fork prefill rides the new instance's first snapshot as
+            // `droppedText` (consumed once — later subscribes get null),
+            // the inline analogue of rewind's `reset_snapshot` droppedText.
+            const droppedText = inst.consumePrefill();
             safeSend(ws, JSON.stringify({
               t: 'snapshot',
               id: inst.id,
@@ -162,6 +167,7 @@ export function attachWsHub({ wss, instances }) {
               // In-flight task batch as of the tail start, so the client panel
               // reflects a batch whose TaskCreate is below the tail.
               tasksAtTailStart: inst.reconstructActiveTasks(tailStartSeq),
+              ...(droppedText != null ? { droppedText } : {}),
             }));
             reply(true);
             return;
