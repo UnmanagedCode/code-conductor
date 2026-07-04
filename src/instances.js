@@ -1352,6 +1352,15 @@ export class InstanceManager extends EventEmitter {
   constructor() {
     super();
     this.byId = new Map();
+    // In-flight resume coalescing: sessionId → Promise<Instance> for a create()
+    // that is currently resuming that session but has not yet reached spawn()
+    // (create() awaits findSessionLocation/getProject/… before it sets .proc).
+    // A second concurrent resume of the same sid returns this promise instead
+    // of spawning a colliding `--resume` subprocess — covers the restart anchor
+    // auto-resume racing the manifest restore, and manual stop+resume. Entries
+    // are deleted when the create settles (success OR failure), by which point
+    // .proc is set and the live-guard in create() takes over.
+    this._resuming = new Map();
     // Set by the server after `server.listen()` resolves. New instances
     // spawned without a port set get null hookCallbackUrl, which disables
     // the interactive http hook (ask mode falls back to auto-allow).
@@ -1530,7 +1539,41 @@ export class InstanceManager extends EventEmitter {
     return out;
   }
 
-  async create({ project, resume, mode, effort, thinking, model, worktree, temp, conducted, callerInstanceId, debug, autoApprovePlan, prefill } = {}) {
+  // Thin wrapper over _doCreate that serialises concurrent resumes of the same
+  // session. The corruption-prevention checks live HERE, in the synchronous
+  // prefix (no `await` before they run), so two concurrent resume calls — the
+  // restart anchor auto-resume racing the manifest restore, or a manual
+  // stop+resume — can't both slip past during the await gap _doCreate opens
+  // before spawn() attaches `.proc`.
+  create(opts = {}) {
+    const { resume } = opts;
+    if (!resume) return this._doCreate(opts);
+    // Already fully live: a running instance owns this session. `claude
+    // --resume <sid>` would otherwise race two subprocesses on one jsonl.
+    const conflict = [...this.byId.values()].find(i => i.sessionId === resume && i.proc);
+    if (conflict) {
+      throw Object.assign(
+        new Error(`session ${resume} is already attached to a running instance (${conflict.id.slice(0, 8)}…)`),
+        { statusCode: 409 },
+      );
+    }
+    // In-flight: a concurrent create() is already resuming this sid but hasn't
+    // spawned yet (so the live-guard above can't see it). Coalesce onto that
+    // promise — both callers get the same restored instance, one subprocess.
+    const inflight = this._resuming.get(resume);
+    if (inflight) return inflight;
+    const p = this._doCreate(opts);
+    this._resuming.set(resume, p);
+    // Release when the create settles — success OR failure. On success `.proc`
+    // is set, so the live-guard above covers subsequent resumes; on failure
+    // (bad sid / spawn throw) we must clear the entry so it doesn't wedge
+    // future resumes of this session.
+    const release = () => { if (this._resuming.get(resume) === p) this._resuming.delete(resume); };
+    p.then(release, release);
+    return p;
+  }
+
+  async _doCreate({ project, resume, mode, effort, thinking, model, worktree, temp, conducted, callerInstanceId, debug, autoApprovePlan, prefill } = {}) {
     // On resume, when the caller didn't pin an explicit worktree, recover the
     // session's recorded project + worktree via findSessionLocation. This is
     // what makes spawn_instance({resume}) "just work" for an MCP conductor
@@ -1547,18 +1590,6 @@ export class InstanceManager extends EventEmitter {
     }
     if (!project) {
       throw Object.assign(new Error('project required'), { statusCode: 400 });
-    }
-    // Refuse to spawn a second live instance against the same session id.
-    // `claude --resume <sid>` would otherwise race two subprocesses
-    // writing the same jsonl, with predictable corruption.
-    if (resume) {
-      const conflict = [...this.byId.values()].find(i => i.sessionId === resume && i.proc);
-      if (conflict) {
-        throw Object.assign(
-          new Error(`session ${resume} is already attached to a running instance (${conflict.id.slice(0, 8)}…)`),
-          { statusCode: 409 },
-        );
-      }
     }
     const proj = await getProject(project);
     // create() is policy-light: mode never depends on temp here. The UI's

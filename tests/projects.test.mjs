@@ -9,6 +9,7 @@ import {
   encodeCwd, findSessionLocation,
   readProjectMeta, writeProjectMeta,
 } from '../src/projects.js';
+import { markArchived } from '../src/archivedSessions.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURE_JSONL = path.join(__dirname, 'fixtures', 'session-sample.jsonl');
@@ -402,7 +403,22 @@ test('GET /api/sessions/:sid/locate returns the owning project (project-root)', 
   await fs.copyFile(FIXTURE_JSONL, path.join(dir, `${sid}.jsonl`));
   const r = await api(baseUrl, 'GET', `/api/sessions/${sid}/locate`);
   assert.equal(r.status, 200);
-  assert.deepEqual(r.body, { project: 'host', worktreeName: null });
+  assert.deepEqual(r.body, { project: 'host', worktreeName: null, archived: false });
+});
+
+test('GET /api/sessions/:sid/locate reports archived:true for an archived session', async () => {
+  // Archiving retains the .jsonl (so locate still 200s), so the response must
+  // carry archived:true — that's the signal the anchor auto-resume uses to
+  // skip a session cleaned up on a plain restart instead of resurrecting it.
+  await api(baseUrl, 'POST', '/api/projects', { name: 'host' });
+  const dir = path.join(claudeProjectsRoot, encodeCwd(path.join(projectsRoot, 'host')));
+  await fs.mkdir(dir, { recursive: true });
+  const sid = '77777777-8888-9999-aaaa-bbbbbbbbbbbb';
+  await fs.copyFile(FIXTURE_JSONL, path.join(dir, `${sid}.jsonl`));
+  await markArchived(sid);
+  const r = await api(baseUrl, 'GET', `/api/sessions/${sid}/locate`);
+  assert.equal(r.status, 200);
+  assert.deepEqual(r.body, { project: 'host', worktreeName: null, archived: true });
 });
 
 test('GET /api/sessions/:sid/locate 404s when nothing matches', async () => {
