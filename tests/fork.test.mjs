@@ -10,11 +10,35 @@ import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { WebSocket } from 'ws';
 import { bootServer, api, waitFor } from './helpers.mjs';
 import { encodeCwd } from '../src/projects.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-resume.json');
+
+// Minimal WS client (mirrors tests/ws.test.mjs) so we can assert what the
+// subscribe `snapshot` frame carries.
+function wsClient(url) {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(url);
+    const messages = [];
+    ws.on('message', (raw) => {
+      try { messages.push(JSON.parse(raw.toString())); }
+      catch { messages.push(raw.toString()); }
+    });
+    ws.once('open', () => resolve({
+      ws,
+      messages,
+      send(obj) { ws.send(JSON.stringify(obj)); },
+      close() { return new Promise(r => { ws.once('close', r); ws.close(); }); },
+      wait(predicate, timeout = 4000) {
+        return waitFor(() => messages.find(predicate), { timeout });
+      },
+    }));
+    ws.once('error', reject);
+  });
+}
 
 async function seedSession({ ctx, projectName, sid, lines }) {
   await api(ctx.baseUrl, 'POST', '/api/projects', { name: projectName });
@@ -84,6 +108,59 @@ test('fork preserves original session and spawns a new instance against the pref
     const originalEchoes = original.ringSnapshot().filter(ev => ev.kind === 'user_echo').map(ev => ev.text);
     assert.deepEqual(originalEchoes, ['first', 'second'],
       'original instance ring buffer is untouched');
+  } finally { await ctx.close(); }
+});
+
+test('fork prefill rides the new instance\'s first snapshot frame, consumed once', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO });
+  try {
+    const sid = 'fffffff2-2222-3333-4444-555555555555';
+    await seedSession({
+      ctx, projectName: 'forkprefill', sid,
+      lines: [
+        { type: 'user', uuid: 'u1', message: { role: 'user', content: 'first' } },
+        { type: 'assistant', uuid: 'a1', message: { id: 'm1', role: 'assistant', content: [
+          { type: 'text', text: 'first reply' },
+        ] } },
+        { type: 'user', uuid: 'u2', message: { role: 'user', content: 'second' } },
+        { type: 'assistant', uuid: 'a2', message: { id: 'm2', role: 'assistant', content: [
+          { type: 'text', text: 'second reply' },
+        ] } },
+      ],
+    });
+
+    const r = await api(ctx.baseUrl, 'POST', '/api/instances', {
+      project: 'forkprefill', mode: 'bypassPermissions', resume: sid,
+    });
+    const id = r.body.id;
+    await waitFor(() => ctx.instances.get(id).status === 'idle');
+
+    const fk = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/fork`, { userMessageIndex: 1 });
+    assert.equal(fk.status, 201);
+    const newId = fk.body.instance.id;
+    // Server stored the prefill on the new instance for its first snapshot.
+    assert.equal(ctx.instances.get(newId).pendingPrefill, 'second',
+      'dropped prompt stashed on the new instance server-side');
+
+    // First subscribe: the snapshot carries droppedText inline (no HTTP-body
+    // handshake needed) — this is the fork composer prefill.
+    const c1 = await wsClient(ctx.wsUrl);
+    c1.send({ t: 'subscribe', id: newId });
+    const snap1 = await c1.wait(m => m.t === 'snapshot' && m.id === newId);
+    assert.equal(snap1.droppedText, 'second',
+      'fork prefill rides the new instance\'s first snapshot frame');
+    await c1.close();
+
+    // Consumed once: a fresh subscribe must NOT re-deliver droppedText, so a
+    // page reload / reconnect after the first snapshot never clobbers edits.
+    assert.equal(ctx.instances.get(newId).pendingPrefill, null,
+      'prefill cleared after the first snapshot');
+    const c2 = await wsClient(ctx.wsUrl);
+    c2.send({ t: 'subscribe', id: newId });
+    const snap2 = await c2.wait(m => m.t === 'snapshot' && m.id === newId);
+    assert.equal('droppedText' in snap2, false,
+      'second snapshot omits droppedText (consumed once)');
+    await c2.close();
   } finally { await ctx.close(); }
 });
 

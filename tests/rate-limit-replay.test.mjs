@@ -39,7 +39,7 @@ test('replayed session history never clobbers the account-wide global rate-limit
     conversation: { clear: noop, reset: noop, apply: noop, _replayMode: false },
     headerHandle: { update: noop },
     lazyController: { init: noop, reset: noop },
-    sessionActions: { consumePendingPrefill: () => null, resumeSession: async () => {} },
+    sessionActions: { resumeSession: async () => {} },
     composer: { prefill: noop },
     sidebar: { setInstances: noop },
     subagentPanel: { setInstances: noop },

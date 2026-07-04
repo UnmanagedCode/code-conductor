@@ -9,14 +9,12 @@
 // constructed BEFORE this install runs, so they use the holder + lazy-arrow
 // pattern — see app.js).
 //
-// pendingPrefill ownership: this module OWNS the fork-prefill handshake state.
-// forkActiveSession (the only writer) sets `pendingPrefill = { instanceId, text }`;
-// the `snapshot` WS handler — which STAYS in app.js — reads it back exactly once
-// via consumePendingPrefill(id). The accessor returns `{ text }` on a match (text
-// may be the empty string) or `null` when no pending prefill targets that
-// instance, preserving the original clear-after-read semantics byte-for-byte.
-// rewindActiveSession does NOT use this: rewind's prefill rides the
-// `reset_snapshot` frame's droppedText, handled in app.js.
+// Composer prefill: fork and rewind share ONE inline mechanism — the dropped
+// prompt rides `droppedText` on a WS frame (fork: the new instance's first
+// `snapshot`; rewind: `reset_snapshot`), consumed once server-side. Neither
+// action stashes any client-side prefill state here; the wsRouter handlers do
+// the composer.prefill() off the frame. These helpers just fire the HTTP
+// mutation and switch focus.
 //
 // Injected interface:
 //   - getActiveId()/setActiveId(v): read + (delete cascades) null the active id.
@@ -26,8 +24,7 @@
 //   - sidebar:                     for sidebar.sessionsCache eviction in deleteSession.
 //   - clearUnread(sessionId):      drop the unread badge for an archived session.
 //
-// Returns the eight action handles plus consumePendingPrefill (for the staying
-// snapshot handler).
+// Returns the eight action handles.
 
 export function installSessionActions({
   getActiveId, setActiveId, getInstances,
@@ -121,8 +118,10 @@ export function installSessionActions({
   }
 
   // Fork the active instance's session: copy the prefix into a new
-  // sessionId, spawn a new instance against it, switch focus to the
-  // new instance, and prefill the composer with the dropped prompt.
+  // sessionId, spawn a new instance against it, and switch focus to it.
+  // The composer prefill (the dropped prompt) rides the new instance's
+  // first `snapshot` WS frame as `droppedText` — no client-side handshake;
+  // the wsRouter snapshot handler applies it.
   async function forkActiveSession(userMessageIndex) {
     const id = getActiveId();
     if (!id) return;
@@ -134,32 +133,13 @@ export function installSessionActions({
         body: JSON.stringify({ userMessageIndex }),
       });
       if (!r.ok) throw new Error((await r.json()).error);
-      const { instance: newInst, droppedText } = await r.json();
-      pendingPrefill = { instanceId: newInst.id, text: droppedText ?? '' };
+      const { instance: newInst } = await r.json();
       await refreshProjects();
       await refreshInstances();
       selectInstance(newInst.id);
     } catch (e) {
       alert(`fork failed: ${e.message}`);
     }
-  }
-
-  // Set by forkActiveSession; consumed by app.js's snapshot handler once the
-  // newly-spawned instance comes back online. Held outside any closure so a
-  // focus switch (fork case) doesn't lose it.
-  let pendingPrefill = null;
-
-  // Read-and-clear accessor for the staying snapshot handler. Returns
-  // `{ text }` (text may be '') when a pending prefill targets `instanceId`,
-  // or `null` otherwise — mirrors the original
-  // `if (pendingPrefill && pendingPrefill.instanceId === m.id)` guard exactly.
-  function consumePendingPrefill(instanceId) {
-    if (pendingPrefill && pendingPrefill.instanceId === instanceId) {
-      const text = pendingPrefill.text;
-      pendingPrefill = null;
-      return { text };
-    }
-    return null;
   }
 
   async function deleteProject(project) {
@@ -279,6 +259,5 @@ export function installSessionActions({
     promoteSession, loadSessions, resumeSession,
     rewindActiveSession, forkActiveSession,
     deleteProject, deleteSession, removeWorktree,
-    consumePendingPrefill,
   };
 }

@@ -771,9 +771,11 @@ export function buildRoutes({ instances, serverCtx } = {}) {
     // Fork the session of the named instance: copy the prefix of its
     // jsonl up to (excluding) the Nth user prompt into a new sessionId,
     // leave the original session intact, and spawn a fresh instance
-    // resuming the forked jsonl. Returns the new instance summary plus
-    // { newSessionId, droppedText } for composer prefill + URL-anchor
-    // navigation in the frontend.
+    // resuming the forked jsonl. The composer prefill rides the new
+    // instance's first `snapshot` frame as `droppedText` (stored via
+    // create({prefill}); consumed once in wsHub) — the inline analogue of
+    // rewind's `reset_snapshot`. Returns the new instance summary plus
+    // { newSessionId, droppedText } (informational; symmetric with /rewind).
     r.post('/instances/:id/fork', async (req, res, next) => {
       try {
         const inst = instances.get(req.params.id);
@@ -805,6 +807,7 @@ export function buildRoutes({ instances, serverCtx } = {}) {
           thinking: inst.thinking,
           model: inst.model,
           worktree: inst.worktree?.worktreeName ?? null,
+          prefill: droppedText,
         });
         res.status(201).json({
           ok: true,

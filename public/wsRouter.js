@@ -97,13 +97,11 @@ export function installWsRouter({
     // Tail-only snapshot: arm the scroll-up lazy-load when older history
     // exists below the rendered tail.
     lazyController.init(m);
-    // Fork case: the newly-spawned instance's first snapshot is our cue to
-    // prefill the composer with the dropped user prompt. (Rewind goes
-    // through reset_snapshot below instead.) The fork-prefill state is owned
-    // by sessionActions; consumePendingPrefill returns { text } (possibly '')
-    // on a match for this instance, or null otherwise — clears on read.
-    const pf = sessionActions.consumePendingPrefill(m.id);
-    if (pf) composer.prefill(pf.text);
+    // Fork case: the newly-spawned instance's first snapshot carries the
+    // dropped user prompt inline as `droppedText` (server consumes it once,
+    // so a later re-subscribe never re-prefills). Same inline mechanism as
+    // rewind's `reset_snapshot` below — non-fork snapshots omit the field.
+    if (typeof m.droppedText === 'string') composer.prefill(m.droppedText);
   });
 
   // Server-issued reset: the active instance's ring buffer was just wiped by
@@ -143,9 +141,8 @@ export function installWsRouter({
     headerHandle.update();
     // Rewind carries the dropped prompt directly on the frame so the
     // composer is prefilled regardless of when the rewind HTTP response
-    // returns. Fork still uses the legacy pendingPrefill handshake — its
-    // prefill lands on the *new* instance's first `snapshot` frame, not
-    // here.
+    // returns. Fork uses the same inline mechanism — its prefill rides the
+    // *new* instance's first `snapshot` frame (handled above) instead.
     if (typeof m.droppedText === 'string') {
       composer.prefill(m.droppedText);
     }
