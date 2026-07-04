@@ -71,7 +71,12 @@ export function installSessionActions({
   // orchestrator's resume default is `code` (bypassPermissions) — fresh
   // spawns default to plan, but a resume is almost always continuing
   // real work. Switch via the header mode dropdown if needed.
-  async function resumeSession({ projectName, worktreeName, sessionId }) {
+  // `silent` is used by the anchor auto-resume: a concurrent resume (the
+  // server's manifest restore, or a manual stop+resume) may already own this
+  // session, so the POST can 409 ("already attached") even though the session
+  // IS coming up. Rather than alert, re-sync and select whatever instance now
+  // owns the sessionId; only clear focus if it truly didn't come up.
+  async function resumeSession({ projectName, worktreeName, sessionId, silent = false }) {
     try {
       const r = await fetch('/api/instances', {
         method: 'POST',
@@ -82,12 +87,22 @@ export function installSessionActions({
           worktree: worktreeName || undefined,
         }),
       });
-      if (!r.ok) throw new Error((await r.json()).error);
+      if (!r.ok) {
+        if (silent) {
+          // Someone else is/just resumed it — find and select that instance.
+          await refreshInstances();
+          const live = getInstances().find(i => i.sessionId === sessionId);
+          if (live) selectInstance(live.id);
+          return;
+        }
+        throw new Error((await r.json()).error);
+      }
       const inst = await r.json();
       await refreshProjects();
       await refreshInstances();
       selectInstance(inst.id);
     } catch (e) {
+      if (silent) { console.warn('anchor auto-resume failed', e); return; }
       alert(`resume failed: ${e.message}`);
     }
   }

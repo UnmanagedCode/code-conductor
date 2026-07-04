@@ -76,7 +76,7 @@ Outbound: `system` + `subtype:"init"` (bundled with first turn's response, not a
 | `PUT` | `/api/workspaces/:name` | `{name: newName}` — atomic rename across all members. |
 | `DELETE` | `/api/workspaces/:name` | Removes the entry **and** clears `workspace` on every member (projects stay). |
 | `GET` | `/api/projects/:name/sessions` | Session metadata list. |
-| `GET` | `/api/sessions/:sid/locate` | `{project, worktreeName}`; drives anchor auto-resume. 404 if not found. |
+| `GET` | `/api/sessions/:sid/locate` | `{project, worktreeName, archived}`; drives anchor auto-resume (which **skips** + clears the anchor when `archived:true` — the jsonl is retained after archiving so locate still 200s). 404 if not found. |
 | `PUT` | `/api/sessions/:sid/title` | `{title}` — set custom session label (≤100 chars; empty/whitespace clears). Returns `{ok, sessionId, title, maxLength}`. Broadcasts `projects` hint + pushes updated summary to any live instance with this `sessionId`. |
 | `POST` | `/api/instances` | Spawn. Returns summary. When `worktree:true` and the repo has `.code-conductor/post-worktree-create.sh`, the summary's `worktree.postWorktreeCreate` field carries the hook result (see below). |
 | `GET` | `/api/instances` | List live. |

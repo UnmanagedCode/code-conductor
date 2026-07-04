@@ -635,6 +635,77 @@ test('resuming an existing session replays the persisted transcript into the rin
   }
 });
 
+test('two concurrent resumes of one session coalesce to a single instance (no duplicate --resume)', async () => {
+  // Regression: on a resume-restart the boot-time manifest restore and the
+  // reloaded frontend's anchor auto-resume both call create({resume:<sid>}).
+  // The old i.proc-only guard sat AFTER create()'s awaits, so both slipped
+  // past and spawned colliding subprocesses → "already attached" exception.
+  // The synchronous in-flight guard now coalesces them onto one instance.
+  const prevScenario = process.env.FAKE_CLAUDE_SCENARIO;
+  process.env.FAKE_CLAUDE_SCENARIO = SCENARIO_RESUME;
+  const fsp = (await import('node:fs')).promises;
+  try {
+    await api(baseUrl, 'POST', '/api/projects', { name: 'resume-me' });
+    const projectPath = path.join(ctx.projectsRoot, 'resume-me');
+    const sid = '33333333-4444-5555-6666-777777777777';
+    const sessionDir = path.join(ctx.claudeProjectsRoot, encodeCwd(projectPath));
+    await fsp.mkdir(sessionDir, { recursive: true });
+    await fsp.writeFile(
+      path.join(sessionDir, `${sid}.jsonl`),
+      JSON.stringify({ type: 'user', uuid: 'u1', message: { role: 'user', content: 'hi' } }) + '\n',
+    );
+
+    // Fire both in the same tick so the second reaches create() before the
+    // first has spawned (the exact race the guard closes).
+    const [a, b] = await Promise.all([
+      instances.create({ project: 'resume-me', mode: 'bypassPermissions', resume: sid }),
+      instances.create({ project: 'resume-me', mode: 'bypassPermissions', resume: sid }),
+    ]);
+    assert.equal(a.id, b.id, 'concurrent resumes returned the same instance');
+
+    const forSid = [...instances.byId.values()].filter(i => i.sessionId === sid);
+    assert.equal(forSid.length, 1, 'exactly one instance exists for the session');
+    await waitFor(() => instances.get(a.id).status === 'idle');
+    // In-flight reservation released once .proc is set (live-guard now covers it).
+    assert.equal(instances._resuming.has(sid), false, 'reservation released after settle');
+  } finally {
+    process.env.FAKE_CLAUDE_SCENARIO = prevScenario;
+  }
+});
+
+test('resuming a session that is already live returns a clean 409, not a crash', async () => {
+  const prevScenario = process.env.FAKE_CLAUDE_SCENARIO;
+  process.env.FAKE_CLAUDE_SCENARIO = SCENARIO_RESUME;
+  const fsp = (await import('node:fs')).promises;
+  try {
+    await api(baseUrl, 'POST', '/api/projects', { name: 'resume-me' });
+    const projectPath = path.join(ctx.projectsRoot, 'resume-me');
+    const sid = '44444444-5555-6666-7777-888888888888';
+    const sessionDir = path.join(ctx.claudeProjectsRoot, encodeCwd(projectPath));
+    await fsp.mkdir(sessionDir, { recursive: true });
+    await fsp.writeFile(
+      path.join(sessionDir, `${sid}.jsonl`),
+      JSON.stringify({ type: 'user', uuid: 'u1', message: { role: 'user', content: 'hi' } }) + '\n',
+    );
+
+    const r1 = await api(baseUrl, 'POST', '/api/instances', {
+      project: 'resume-me', mode: 'bypassPermissions', resume: sid,
+    });
+    assert.equal(r1.status, 201);
+    await waitFor(() => instances.get(r1.body.id)?.status === 'idle');
+
+    // Sequential resume while the first is fully live → 409, not the old
+    // uncaught "can't be resumed twice" exception.
+    const r2 = await api(baseUrl, 'POST', '/api/instances', {
+      project: 'resume-me', mode: 'bypassPermissions', resume: sid,
+    });
+    assert.equal(r2.status, 409);
+    assert.match(r2.body.error, /already attached to a running instance/);
+  } finally {
+    process.env.FAKE_CLAUDE_SCENARIO = prevScenario;
+  }
+});
+
 test('resume without explicit model passes --model from the session jsonl (preserves Sonnet across server restart)', async () => {
   // Regression: spawning with model=claude-sonnet-4-6, restarting the server,
   // then auto-resuming via the URL anchor used to silently flip the session

@@ -262,10 +262,22 @@ export function installWsRouter({
           try {
             const r = await fetch(`/api/sessions/${encodeURIComponent(anchor)}/locate`);
             if (r.ok) {
-              const { project, worktreeName } = await r.json();
+              const { project, worktreeName, archived } = await r.json();
+              // Archived (e.g. a temp session cleaned up on a plain restart):
+              // do NOT silently resurrect it via the anchor. Clear the stale
+              // anchor and fall through to the placeholder. Deliberate resume
+              // from the "— archived —" section still works (it's not this path).
+              if (archived) {
+                writeSessionAnchor(null);
+                return;
+              }
               setSidebarStatus('resuming session…', { warn: true });
               try {
-                await sessionActions.resumeSession({ projectName: project, worktreeName, sessionId: anchor });
+                // `silent`: a concurrent resume (the server's manifest restore
+                // after a resume-restart) may already own this session — coalesced
+                // or 409'd server-side. Don't alert; just re-sync and select the
+                // instance that now owns the anchor.
+                await sessionActions.resumeSession({ projectName: project, worktreeName, sessionId: anchor, silent: true });
               } finally { setSidebarStatus(''); }
               return;
             }

@@ -54,7 +54,7 @@ import { getSummaries, setSummary, deleteSummaries } from './sessionSummaries.js
 import { generateSummary, countMessages } from './summarize.js';
 import { getAccountUsage } from './accountUsage.js';
 import { getCostSummary } from './costTracking.js';
-import { unmarkArchived } from './archivedSessions.js';
+import { isArchived, unmarkArchived } from './archivedSessions.js';
 import {
   getCatalog as getOptionalGuidelinesCatalog,
   composeGuidelinesBlock,
@@ -692,7 +692,11 @@ export function buildRoutes({ instances, serverCtx } = {}) {
       assertValidSid(sid);
       const hit = await findSessionLocation(sid);
       if (!hit) throw Object.assign(new Error('session not found'), { statusCode: 404 });
-      res.json(hit);
+      // Report archived-ness so the client's anchor auto-resume can skip a
+      // session that was archived on a plain restart (its jsonl is retained,
+      // so locate still 200s) instead of silently resurrecting it. Deliberate
+      // resume-from-archived stays allowed — this only feeds the automatic path.
+      res.json({ ...hit, archived: await isArchived(sid) });
     } catch (e) { next(e); }
   });
 
