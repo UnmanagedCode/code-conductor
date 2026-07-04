@@ -155,7 +155,9 @@ export function buildTools() {
       description:
         'Send a user turn to a running instance. Defaults to wait:false (returns immediately). ' +
         'Pass wait:true to block until the turn ends and return the turn_end event inline. ' +
-        'A mid-turn send_prompt is delivered live into the running turn (not queued), so it can steer a worker in flight.',
+        'A mid-turn send_prompt is delivered live into the running turn (not queued), so it can steer a worker in flight. ' +
+        'Also auto-subscribes to the worker\'s idle callback by default (dispatch-and-wake) — see `subscribe`. ' +
+        'Skipped automatically when wait:true, since the turn already resolves inline.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -163,6 +165,14 @@ export function buildTools() {
           text: { type: 'string' },
           wait: { type: 'boolean', default: false, description: 'Block until turn_end. Default false.' },
           waitTimeoutMs: { type: 'integer', default: 600000, description: 'Per-call wait cap (default 600000 = 10 min).' },
+          subscribe: {
+            type: 'boolean', default: true,
+            description: "Also register a one-shot idle callback (dispatch-and-wake) so you're re-woken on the worker's next turn_end. Default true. Pass false for mid-turn steers / fire-and-forget. Ignored (never subscribes) when wait:true.",
+          },
+          subscribeTimeoutMs: {
+            type: 'integer',
+            description: 'Optional watchdog: wake early if turn_end does not arrive in time (same semantics as subscribe_to_idle timeoutMs).',
+          },
         },
         required: ['sessionId', 'text'],
       },
@@ -204,12 +214,21 @@ export function buildTools() {
       description:
         'Approve a worker\'s plan: flips the instance to bypassPermissions and sends the canonical approval ' +
         'prompt as a normal user turn. Mirrors the UI\'s Approve & Implement button — use this rather than ' +
-        'driving set_mode + send_prompt by hand. Optional `feedback` is appended to the approval message.',
+        'driving set_mode + send_prompt by hand. Optional `feedback` is appended to the approval message. ' +
+        'Also auto-subscribes to the worker\'s idle callback by default (dispatch-and-wake) — see `subscribe`.',
       inputSchema: {
         type: 'object',
         properties: {
           sessionId: { type: 'string', description: 'Worker sessionId of the worker whose plan you\'re approving.' },
           feedback: { type: 'string', description: 'Optional additional notes appended to the approval message.' },
+          subscribe: {
+            type: 'boolean', default: true,
+            description: "Also register a one-shot idle callback (dispatch-and-wake) so you're re-woken on the worker's next turn_end. Default true.",
+          },
+          subscribeTimeoutMs: {
+            type: 'integer',
+            description: 'Optional watchdog: wake early if turn_end does not arrive in time (same semantics as subscribe_to_idle timeoutMs).',
+          },
         },
         required: ['sessionId'],
       },
@@ -220,12 +239,21 @@ export function buildTools() {
       description:
         'Reject a worker\'s plan and ask for refinement. The instance stays in plan mode; the worker will ' +
         'produce a revised plan in its next turn. `feedback` is recommended — without it the worker has no ' +
-        'guidance for what to change.',
+        'guidance for what to change. Also auto-subscribes to the worker\'s idle callback by default ' +
+        '(dispatch-and-wake) — see `subscribe`.',
       inputSchema: {
         type: 'object',
         properties: {
           sessionId: { type: 'string', description: 'Worker sessionId of the worker whose plan you\'re rejecting.' },
           feedback: { type: 'string', description: 'What you want the worker to change. Strongly recommended.' },
+          subscribe: {
+            type: 'boolean', default: true,
+            description: "Also register a one-shot idle callback (dispatch-and-wake) so you're re-woken on the worker's next turn_end. Default true.",
+          },
+          subscribeTimeoutMs: {
+            type: 'integer',
+            description: 'Optional watchdog: wake early if turn_end does not arrive in time (same semantics as subscribe_to_idle timeoutMs).',
+          },
         },
         required: ['sessionId'],
       },
@@ -238,7 +266,8 @@ export function buildTools() {
         'question card, so the worker can\'t tell a UI answer from an MCP one. Use this rather than a free-text ' +
         'send_prompt when a wake shows a `questions` field. `answers` is aligned by index to those questions ' +
         '(in order); each entry is { option } for single-choice, { options: [...] } for multiSelect, ' +
-        '{ text } for a custom typed answer, or {} to skip — with an optional `note` on option/options.',
+        '{ text } for a custom typed answer, or {} to skip — with an optional `note` on option/options. ' +
+        'Also auto-subscribes to the worker\'s idle callback by default (dispatch-and-wake) — see `subscribe`.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -255,6 +284,14 @@ export function buildTools() {
                 note: { type: 'string', description: 'Optional note appended to an option/options answer.' },
               },
             },
+          },
+          subscribe: {
+            type: 'boolean', default: true,
+            description: "Also register a one-shot idle callback (dispatch-and-wake) so you're re-woken on the worker's next turn_end. Default true.",
+          },
+          subscribeTimeoutMs: {
+            type: 'integer',
+            description: 'Optional watchdog: wake early if turn_end does not arrive in time (same semantics as subscribe_to_idle timeoutMs).',
           },
         },
         required: ['sessionId', 'answers'],

@@ -374,3 +374,21 @@ test('tools/list emits readOnly / destructive / idempotent annotations', async (
   // A mutating, non-idempotent tool carries no hints.
   assert.deepEqual(byName.send_prompt, {});
 });
+
+// ---------- auto-subscribe schema (send_prompt / approve_plan / reject_plan / answer_question) ----------
+
+test('send_prompt, approve_plan, reject_plan, answer_question all expose subscribe + subscribeTimeoutMs', async () => {
+  const { body } = await rpc('tools/list');
+  const byName = Object.fromEntries(body.result.tools.map(t => [t.name, t.inputSchema.properties]));
+  for (const name of ['send_prompt', 'approve_plan', 'reject_plan', 'answer_question']) {
+    const props = byName[name];
+    assert.ok(props, `tools/list missing ${name}`);
+    assert.equal(props.subscribe?.type, 'boolean', `${name}.subscribe should be boolean`);
+    assert.equal(props.subscribe?.default, true, `${name}.subscribe should default true`);
+    assert.equal(props.subscribeTimeoutMs?.type, 'integer', `${name}.subscribeTimeoutMs should be integer`);
+    // Neither param is required — both are opt-in overrides of the default-on behavior.
+    const required = body.result.tools.find(t => t.name === name).inputSchema.required ?? [];
+    assert.ok(!required.includes('subscribe'), `${name}.subscribe must not be required`);
+    assert.ok(!required.includes('subscribeTimeoutMs'), `${name}.subscribeTimeoutMs must not be required`);
+  }
+});

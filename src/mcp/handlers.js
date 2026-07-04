@@ -301,20 +301,44 @@ export async function spawnInstance(args, { instances, callerId }) {
   return toConductorView(inst.summary());
 }
 
-export async function sendPrompt({ sessionId, text, wait = false, waitTimeoutMs = 600_000 }, { instances }) {
+// Fold the idle-subscription registration into every turn-starting call, so a
+// conductor's single send_prompt/approve_plan/reject_plan/answer_question call
+// both starts the turn AND re-arms the dispatch-and-wake callback (CONDUCT.md's
+// Core rule). A failure to subscribe (e.g. the caller died in between) must
+// never turn a successful prompt-send into an error — it degrades to
+// subscribed:false with a reason instead.
+async function maybeSubscribeIdle({ instances, callerId }, sessionId, { subscribe, subscribeTimeoutMs }) {
+  if (!subscribe) return { subscribed: false };
+  if (!callerId) return { subscribed: false, subscribeSkipped: 'no-caller' };
+  if (callerId === sessionId) return { subscribed: false, subscribeSkipped: 'self' };
+  try {
+    const { already } = instances.subscribeIdle(callerId, sessionId, subscribeTimeoutMs);
+    return { subscribed: true, already };
+  } catch (e) {
+    return { subscribed: false, subscribeSkipped: e.message };
+  }
+}
+
+export async function sendPrompt(
+  { sessionId, text, wait = false, waitTimeoutMs = 600_000, subscribe = true, subscribeTimeoutMs },
+  { instances, callerId },
+) {
   const r = await getInst(instances, sessionId);
   if (r.soft) return r.soft;
   const inst = r.inst;
   // getInst is LIVE-only, so inst.proc is guaranteed here.
   if (wait) {
     // Attach the listener *before* sending so we can't miss a fast turn_end.
+    // A one-shot subscription registered here would fire on the *next* turn
+    // (this one is already being awaited inline), so skip it entirely.
     const waiter = waitForEvent(inst, (ev) => ev.kind === 'turn_end', waitTimeoutMs);
     await inst.prompt(text);
     const ev = await waiter;
-    return { sessionId: inst.sessionId, turnEnd: ev };
+    return { sessionId: inst.sessionId, turnEnd: ev, subscribed: false, subscribeSkipped: 'wait' };
   }
   await inst.prompt(text);
-  return { sessionId: inst.sessionId, status: inst.status };
+  const sub = await maybeSubscribeIdle({ instances, callerId }, inst.sessionId, { subscribe, subscribeTimeoutMs });
+  return { sessionId: inst.sessionId, status: inst.status, ...sub };
 }
 
 export async function waitForIdle({ sessionId, timeoutMs = 600_000 }, { instances }) {
@@ -421,7 +445,10 @@ export async function promoteSession({ sessionId }, { instances }) {
 // button (public/app.js onPlanDecision) — phrasing comes from the
 // shared planApproval module so the three entry points (UI click,
 // server-side auto-approve, MCP) all look identical to the worker.
-export async function approvePlan({ sessionId, feedback }, { instances }) {
+export async function approvePlan(
+  { sessionId, feedback, subscribe = true, subscribeTimeoutMs },
+  { instances, callerId },
+) {
   const r = await getInst(instances, sessionId);
   if (r.soft) return r.soft;
   const inst = r.inst;
@@ -433,19 +460,24 @@ export async function approvePlan({ sessionId, feedback }, { instances }) {
   }
   const text = buildApprovePrompt(feedback);
   await inst.prompt(text, [], { annotateIfMidTurn: false });
-  return { sessionId: inst.sessionId, mode: inst.mode, sentText: text };
+  const sub = await maybeSubscribeIdle({ instances, callerId }, inst.sessionId, { subscribe, subscribeTimeoutMs });
+  return { sessionId: inst.sessionId, mode: inst.mode, sentText: text, ...sub };
 }
 
 // Reject a worker's plan: stay in plan mode, send the refinement prompt.
 // The worker will produce a revised plan; the conductor loops back to
 // reviewing get_recent_messages and either approves or rejects again.
-export async function rejectPlan({ sessionId, feedback }, { instances }) {
+export async function rejectPlan(
+  { sessionId, feedback, subscribe = true, subscribeTimeoutMs },
+  { instances, callerId },
+) {
   const r = await getInst(instances, sessionId);
   if (r.soft) return r.soft;
   const inst = r.inst;
   const text = buildRejectPrompt(feedback);
   await inst.prompt(text, [], { annotateIfMidTurn: false });
-  return { sessionId: inst.sessionId, mode: inst.mode, sentText: text };
+  const sub = await maybeSubscribeIdle({ instances, callerId }, inst.sessionId, { subscribe, subscribeTimeoutMs });
+  return { sessionId: inst.sessionId, mode: inst.mode, sentText: text, ...sub };
 }
 
 // Answer a worker's AskUserQuestion with a STRUCTURED answer. Mirrors the UI
@@ -463,7 +495,10 @@ export async function rejectPlan({ sessionId, feedback }, { instances }) {
 // The pending questions are re-derived from the ring via reconstructMessages —
 // the SAME source get_recent_messages uses — so we format against exactly what
 // the conductor saw. Soft-refuses (never throws) on mismatch.
-export async function answerQuestion({ sessionId, answers }, { instances }) {
+export async function answerQuestion(
+  { sessionId, answers, subscribe = true, subscribeTimeoutMs },
+  { instances, callerId },
+) {
   const r = await getInst(instances, sessionId);
   if (r.soft) return r.soft;
   const inst = r.inst;
@@ -522,7 +557,8 @@ export async function answerQuestion({ sessionId, answers }, { instances }) {
 
   const text = formatUserQuestionAnswers(questions, states);
   await inst.prompt(text, [], { annotateIfMidTurn: false });
-  return { sessionId: inst.sessionId, mode: inst.mode, sentText: text };
+  const sub = await maybeSubscribeIdle({ instances, callerId }, inst.sessionId, { subscribe, subscribeTimeoutMs });
+  return { sessionId: inst.sessionId, mode: inst.mode, sentText: text, ...sub };
 }
 
 // Flip the per-instance auto-approve-plan flag. While enabled, the next
