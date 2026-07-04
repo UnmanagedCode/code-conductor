@@ -91,9 +91,9 @@ export function attachComposer({ form, textarea, sendBtn, attachBtn, fileInput, 
     textarea.disabled = !ct;
     if (attachBtn) attachBtn.disabled = !ct;
     if (fileInput) fileInput.disabled = !ct;
-    const at = overagePaused ? formatAutoResumeTime(resumeAt)?.replace('auto-resumes ', '') : null;
+    const at = overagePaused ? formatAutoResumeTime(resumeAt)?.replace('resumes at ', '') : null;
     overageBanner.textContent = overagePaused
-      ? `Paused${at ? ` until ${at}` : ''} — messages are queued` : '';
+      ? `Paused${at ? ` until ${at}` : ''} — new messages will be queued` : '';
     overageBanner.hidden = !overagePaused;
     updateButton();
   }
