@@ -8,15 +8,23 @@
 // Designed to mirror TaskTracker so app.js can drive it with the same
 // reset() + apply(ev) shape from the snapshot/event listeners.
 
+import { getActiveSonnetWindow } from './models.js';
+
 // Hardcoded lookup — there's no API surface that reports each model's
 // context-window size, and the CLI doesn't carry it in system/init.
 //
 // One fixed window per non-Sonnet family (mirrors canonicalizeModel in
 // src/modelVersions.js): Opus → 1M, Fable → 1M, Haiku → 200k. Sonnet is the
-// only family with a user-selectable window (Settings → Models), so for it
-// the CLI-native `[1m]`/`[200k]` suffix on the canonical id is authoritative
-// — bare Sonnet means the 200k preference. Any suffix on a non-Sonnet id is
-// stale/incidental data and is ignored (that family's window never varies).
+// only family with a user-selectable window (Settings → Models); the
+// CLI-native `[1m]`/`[200k]` suffix on the canonical id is authoritative
+// when present. But the Anthropic API strips that suffix in its
+// `message_start` stream event (reports bare `claude-sonnet-5` even for a
+// session spawned with `[1m]`), and UsageTracker.apply adopts that bare id
+// as the live model — so a bare Sonnet id here does NOT mean "200k", it
+// means "the API didn't tell us." Fall back to the persisted Settings →
+// Models preference (getActiveSonnetWindow(), default `1m`) in that case.
+// Any suffix on a non-Sonnet id is stale/incidental data and is ignored
+// (that family's window never varies).
 const CONTEXT_WINDOWS = {
   'claude-fable-5':  1_000_000,
   'claude-opus-4-8': 1_000_000,
@@ -28,7 +36,9 @@ const DEFAULT_CONTEXT_WINDOW = 200_000;
 export function contextWindowFor(model) {
   if (!model) return DEFAULT_CONTEXT_WINDOW;
   if (model.startsWith('claude-sonnet')) {
-    return model.endsWith('[1m]') ? 1_000_000 : 200_000;
+    if (model.endsWith('[1m]')) return 1_000_000;
+    if (model.endsWith('[200k]')) return 200_000;
+    return getActiveSonnetWindow() === '200k' ? 200_000 : 1_000_000;
   }
   const bare = model.replace(/\[(200k|1m)\]$/, '');
   return CONTEXT_WINDOWS[bare] ?? DEFAULT_CONTEXT_WINDOW;

@@ -200,21 +200,32 @@ test('UsageTracker: ignores unrelated event kinds', async () => {
   assert.equal(t.cum.turns, 0);
 });
 
-test('contextWindowFor: one fixed window per non-Sonnet family; Sonnet suffix-authoritative', async () => {
+test('contextWindowFor: one fixed window per non-Sonnet family; Sonnet suffix-authoritative, bare falls back to preference', async () => {
   const { contextWindowFor } = await import(USAGE_URL);
+  const { setActiveSonnetWindow } = await import(pathToFileURL(path.join(PUB, 'models.js')).href);
   // Opus/Fable → 1M, Haiku → 200k, regardless of any stray suffix.
   assert.equal(contextWindowFor('claude-opus-4-8'), 1_000_000);
   assert.equal(contextWindowFor('claude-opus-4-8[1m]'), 1_000_000);
   assert.equal(contextWindowFor('claude-opus-4-8[200k]'), 1_000_000);
   assert.equal(contextWindowFor('claude-opus-4-7'), 1_000_000);
   assert.equal(contextWindowFor('claude-haiku-4-5'), 200_000);
-  // Sonnet: suffix decides. Bare = 200k preference; [1m] = 1M preference.
-  assert.equal(contextWindowFor('claude-sonnet-5'), 200_000);
+  // Sonnet: explicit suffix is always authoritative.
   assert.equal(contextWindowFor('claude-sonnet-5[1m]'), 1_000_000);
   assert.equal(contextWindowFor('claude-sonnet-5[200k]'), 200_000);
-  assert.equal(contextWindowFor('claude-sonnet-4-6'), 200_000);
   assert.equal(contextWindowFor('claude-sonnet-4-6[1m]'), 1_000_000);
-  assert.equal(contextWindowFor('claude-sonnet-4-5'), 200_000);
+  // Bare Sonnet (API stripped the suffix) — falls back to the stored
+  // preference, which defaults to '1m'.
+  assert.equal(contextWindowFor('claude-sonnet-5'), 1_000_000);
+  assert.equal(contextWindowFor('claude-sonnet-4-6'), 1_000_000);
+  assert.equal(contextWindowFor('claude-sonnet-4-5'), 1_000_000);
+  try {
+    setActiveSonnetWindow('200k');
+    assert.equal(contextWindowFor('claude-sonnet-5'), 200_000);
+    // Explicit suffix still wins over the preference.
+    assert.equal(contextWindowFor('claude-sonnet-5[1m]'), 1_000_000);
+  } finally {
+    setActiveSonnetWindow('1m'); // restore default so later tests can't leak this
+  }
   // Unknown model → default.
   assert.equal(contextWindowFor('some-future-model'), 200_000);
   // Empty/null → default.
