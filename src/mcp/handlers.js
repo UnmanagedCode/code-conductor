@@ -852,10 +852,13 @@ export async function listOptionalGuidelines() {
 
 // reconstructMessages / buildMessageFromRing / mergeRecentWithDisk /
 // capBlockInput (+ capText / MSG_TEXT_CAP) live in ./messageReconstruction.js,
-// imported above. isTextBearing stays here — it's a handler-side filter, not
-// part of the reconstruction engine.
+// imported above. isTextBearing/hasPlanOrQuestions stay here — they're
+// handler-side filters, not part of the reconstruction engine.
+function hasPlanOrQuestions(m) {
+  return !!m.plan || (Array.isArray(m.questions) && m.questions.length > 0);
+}
 function isTextBearing(m) {
-  return m.text.length > 0 || m.plan || (Array.isArray(m.questions) && m.questions.length > 0);
+  return m.text.length > 0 || hasPlanOrQuestions(m);
 }
 
 // Return the most recent N assistant messages as joined text + structured
@@ -868,25 +871,47 @@ function isTextBearing(m) {
 // trimmed do we read back into the on-disk transcript — so ring eviction never
 // produces a false-empty result. Output is the multi-block payload: a metadata
 // block + one raw text body per message (block k+1 ↔ messages[k]).
+//
+// DEFAULT-CALL BONDING: when `count` was omitted (not merely passed as 1), a
+// turn can split its prose and its ExitPlanMode/AskUserQuestion tool call
+// across two separate assistant messages (the CLI starts a fresh message
+// after the tool_result denial). If the last message is pure prose and the
+// one immediately before it carries a plan/questions, that predecessor is
+// bonded in too — at most one extra message, never walked back further. A
+// message that already carries its own plan/questions is always returned
+// alone. Explicit `count` (including `count:1`) is always literal.
 export async function getRecentMessages({ sessionId, count, includeToolCalls = false, includeThinking = false }, { instances }) {
   const r = await getInst(instances, sessionId);
   if (r.soft) return r.soft;
   const inst = r.inst;
+  const isDefaultCount = count === undefined;
   const n = Math.max(1, Math.min(Number.isInteger(count) ? count : 1, 50));
+  // A defaulted call may bond in one preceding plan/question message, so the
+  // ring must satisfy n+1 text messages before we trust it over disk.
+  const bondNeed = isDefaultCount ? n + 1 : n;
 
   const ring = inst.ringSnapshot();
   let all = reconstructMessages(ring, includeThinking);
   let source = 'ring';
 
   // Disk-fallback only when the ring genuinely can't satisfy the request.
-  const ringSatisfies = (includeToolCalls ? all : all.filter(isTextBearing)).length >= n;
+  const ringSatisfies = (includeToolCalls ? all : all.filter(isTextBearing)).length >= bondNeed;
   if (!ringSatisfies && inst.sessionId && inst.ring.trimmedBefore > 0) {
     const merged = await mergeRecentWithDisk(inst, all, includeThinking);
     if (merged) { all = merged; source = 'disk'; }
   }
 
   const filtered = includeToolCalls ? all : all.filter(isTextBearing);
-  const messages = filtered.slice(-n);
+  let messages = filtered.slice(-n);
+  if (isDefaultCount && messages.length === 1) {
+    const lastIdx = filtered.length - 1;
+    const last = filtered[lastIdx];
+    const lastIsPureProse = !hasPlanOrQuestions(last) && (last.text ?? '').length > 0;
+    const prev = filtered[lastIdx - 1];
+    if (lastIsPureProse && prev && hasPlanOrQuestions(prev)) {
+      messages = [prev, last];
+    }
+  }
   const omittedToolOnly = includeToolCalls ? 0 : (all.length - filtered.length);
 
   // Multi-block: metadata block describes each message; one raw text block per

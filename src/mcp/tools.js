@@ -567,7 +567,12 @@ export function buildTools() {
         'prose for messages[k]; empty for plan/question-only turns). `omittedToolOnly` counts recent tool-call-only ' +
         'messages excluded by the default filter (the agent is active even when messages[] is empty); `hint` explains ' +
         'a short/empty result. Large message text is capped (textTruncated); blocks[].input is capped inline ' +
-        '(inputTruncated). Default count 1, max 50.',
+        '(inputTruncated). Default count 1, max 50. ' +
+        'DEFAULT-CALL BONDING: on the default call only (no `count` passed), if the last message is plain prose ' +
+        'and the message immediately before it carries a `plan`/`questions`, that preceding message is included ' +
+        'too (2 messages instead of 1) — the plan/questions is self-contained and not walked back into further, ' +
+        'and a message that already carries its own `plan`/`questions` is always returned alone. Passing an ' +
+        'explicit `count` (including `count:1`) disables this and returns exactly that many messages, literally.',
       inputSchema: {
         type: 'object',
         properties: {
