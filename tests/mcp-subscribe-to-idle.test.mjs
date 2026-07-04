@@ -18,6 +18,7 @@ import { bootServer, api, waitFor, instForSession, freshProjectsRoot, rmrf } fro
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO_WS = path.join(__dirname, 'fixtures', 'scenario-ws.json');
+const SCENARIO_QUESTION = path.join(__dirname, 'fixtures', 'scenario-question.json');
 
 let ctx, baseUrl, instances, home;
 before(async () => { ctx = await bootServer({ scenarioPath: SCENARIO_WS }); ({ baseUrl, instances } = ctx); });
@@ -382,4 +383,120 @@ test('timeoutMs: unsubscribe clears the watchdog timer — no stub delivered aft
     'no timeout stub after unsubscribe');
   assert.equal(findStubFor(caller, targetId), undefined,
     'no completion stub either');
+});
+
+// ── auto-subscribe folded into send_prompt / approve_plan / reject_plan /
+//    answer_question ──────────────────────────────────────────────────────
+
+test('send_prompt default (subscribe unset) auto-subscribes the caller', async () => {
+  await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
+  const callerId = await spawnReady('p');
+  const targetId = await spawnReady('p');
+
+  const res = unwrap(await callTool('send_prompt',
+    { sessionId: targetId, text: 'go' }, { caller: callerId }));
+  assert.equal(res.subscribed, true);
+  assert.equal(res.already, false);
+
+  const caller = instForSession(instances, callerId);
+  await waitFor(() => !!findStubFor(caller, targetId));
+  assert.ok(findStubFor(caller, targetId), 'stub delivered from the auto-registered subscription');
+});
+
+test('send_prompt subscribe:false does not register a subscription', async () => {
+  await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
+  const callerId = await spawnReady('p');
+  const targetId = await spawnReady('p');
+
+  const res = unwrap(await callTool('send_prompt',
+    { sessionId: targetId, text: 'go', subscribe: false },
+    { caller: callerId }));
+  assert.equal(res.subscribed, false);
+  assert.equal(res.subscribeSkipped, undefined);
+  assert.deepEqual(instances._idleSubscriberSnapshot(), {});
+
+  const target = instForSession(instances, targetId);
+  await waitFor(() => target.status === 'idle');
+  const caller = instForSession(instances, callerId);
+  await new Promise(r => setTimeout(r, 200));
+  assert.equal(findStubFor(caller, targetId), undefined, 'no stub without a subscription');
+});
+
+test('send_prompt wait:true never subscribes, even with subscribe left at its default', async () => {
+  await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
+  const callerId = await spawnReady('p');
+  const targetId = await spawnReady('p');
+
+  const res = unwrap(await callTool('send_prompt',
+    { sessionId: targetId, text: 'go', wait: true, waitTimeoutMs: 5000 },
+    { caller: callerId }));
+  assert.equal(res.subscribed, false);
+  assert.equal(res.subscribeSkipped, 'wait');
+  assert.deepEqual(instances._idleSubscriberSnapshot(), {});
+});
+
+test('send_prompt with no caller still succeeds; subscribed:false, subscribeSkipped:no-caller', async () => {
+  await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
+  const targetId = await spawnReady('p');
+
+  // No `caller` opt — the MCP URL carries no ?caller=.
+  const res = unwrap(await callTool('send_prompt', { sessionId: targetId, text: 'go' }));
+  assert.equal(res.sessionId, targetId);
+  assert.equal(res.subscribed, false);
+  assert.equal(res.subscribeSkipped, 'no-caller');
+});
+
+test('approve_plan auto-subscribes the caller by default', async () => {
+  await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
+  const callerId = await spawnReady('p');
+  const targetId = await spawnReady('p');
+
+  const res = unwrap(await callTool('approve_plan',
+    { sessionId: targetId }, { caller: callerId }));
+  assert.equal(res.subscribed, true);
+  assert.equal(res.already, false);
+
+  const caller = instForSession(instances, callerId);
+  await waitFor(() => !!findStubFor(caller, targetId));
+});
+
+test('reject_plan auto-subscribes the caller by default', async () => {
+  await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
+  const callerId = await spawnReady('p');
+  const targetId = await spawnReady('p');
+
+  const res = unwrap(await callTool('reject_plan',
+    { sessionId: targetId, feedback: 'simpler please' }, { caller: callerId }));
+  assert.equal(res.subscribed, true);
+  assert.equal(res.already, false);
+
+  const caller = instForSession(instances, callerId);
+  await waitFor(() => !!findStubFor(caller, targetId));
+});
+
+test('answer_question auto-subscribes the caller by default', async () => {
+  await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
+  const callerId = await spawnReady('p');
+
+  // Spawn the target against the question scenario so it has a pending
+  // AskUserQuestion to answer (scenario-ws, this file's default, never asks).
+  const prevScenario = process.env.FAKE_CLAUDE_SCENARIO;
+  process.env.FAKE_CLAUDE_SCENARIO = SCENARIO_QUESTION;
+  let targetId;
+  try {
+    targetId = await spawnReady('p');
+    await callTool('send_prompt', { sessionId: targetId, text: 'go', wait: true, waitTimeoutMs: 5000, subscribe: false });
+  } finally {
+    process.env.FAKE_CLAUDE_SCENARIO = prevScenario;
+  }
+  const target = instForSession(instances, targetId);
+  await waitFor(() => target.ringSnapshot().some(ev => ev.kind === 'user_question'));
+
+  const res = unwrap(await callTool('answer_question',
+    { sessionId: targetId, answers: [{ option: 'Apple' }] }, { caller: callerId }));
+  assert.equal(res.subscribed, true);
+  assert.equal(res.already, false);
+
+  const caller = instForSession(instances, callerId);
+  await waitFor(() => !!findStubFor(caller, targetId));
 });
