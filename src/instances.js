@@ -70,18 +70,27 @@ const POST_ABORT_DRAIN_WINDOW_MS = 3000;
 // misbehaving subprocess that emits system/init in a tight loop.
 const POST_ABORT_DRAIN_MAX = 20;
 
-// Steering message injected into a CONDUCTOR (not its workers) when an overage
-// auto-stop fires while the conductor is in control of conducted workers. The
-// orchestrator deliberately does NOT interrupt the workers directly — the
-// conductor owns them, so it must wind them down itself. Delivered mid-turn via
-// windDown(), or as a fresh prompt() when the conductor is idle+subscribed.
-const OVERAGE_CONDUCTOR_STEER_TEXT =
-  '⚠️ An overage auto-stop just fired: the account has crossed its rate-limit ' +
-  'threshold. STOP dispatching work and halt every worker you are conducting ' +
-  'now — for each live worker call `mcp__code-conductor__interrupt_turn` (or ' +
-  '`mcp__code-conductor__kill_instance` if it must be torn down), do not send ' +
-  'them any more prompts, and then end your own turn. Do not start new workers ' +
-  'until the rate-limit window has reset.';
+// Steering message injected into the CONDUCTOR (never its workers) when an
+// overage auto-stop fires. One frame — why (rate-limit crossed) + when (no new
+// workers until the window resets) — with a single conditional clause: when the
+// conductor still owns live in-control workers it's told to halt each of them
+// itself (the orchestrator deliberately does NOT interrupt the workers
+// directly); when it has nothing in flight (it tripped itself, or its workers
+// were momentarily idle) that sentence is dropped so it isn't sent chasing
+// phantom workers (which would waste a list_instances recon round-trip).
+// Delivered mid-turn via windDown(), or as a fresh prompt() when the conductor
+// is idle+subscribed.
+function overageConductorSteerText({ hasWorkers }) {
+  const halt = hasWorkers
+    ? 'halt every worker you are conducting now — for each live worker call ' +
+      '`mcp__code-conductor__interrupt_turn` (or `mcp__code-conductor__kill_instance` ' +
+      'if it must be torn down), do not send them any more prompts, and then end ' +
+      'your own turn'
+    : 'end your own turn now (you have no workers in flight)';
+  return '⚠️ An overage auto-stop just fired: the account has crossed its rate-limit ' +
+    `threshold. STOP dispatching work and ${halt}. Do not start new workers ` +
+    'until the rate-limit window has reset.';
+}
 
 // Prepended to user messages delivered while the worker is mid-turn. Keeps
 // the user's text verbatim but gives the worker timing context: the message
@@ -1753,17 +1762,26 @@ export class InstanceManager extends EventEmitter {
         protectedWorkers.add(inst.id);
       }
     }
-    // Pass 2: steer each in-control conductor once.
+    // Pass 2: steer each in-control conductor once (it owns ≥1 protected worker).
     for (const conductor of steerConductors.values()) {
-      this._steerConductor(conductor, { resume, resetsAt });
+      this._steerConductor(conductor, { resume, resetsAt, hasWorkers: true });
     }
-    // Pass 3: direct-stop every other mid-turn instance — plain sessions, a
-    // conductor with no in-control workers (incl. one that tripped itself), and
-    // conducted workers with NO in-control conductor (dead / idle-unsubscribed
-    // → fallback). Skips steered conductors and the workers they own.
+    // Pass 3: stop every other mid-turn instance — plain sessions, conducted
+    // workers with NO in-control conductor (dead / idle-unsubscribed → fallback),
+    // and the Conduct orchestrator when it has no in-control workers (it tripped
+    // itself, or its workers were momentarily idle). The orchestrator ALWAYS gets
+    // the graceful conductor steer — it's the brain that reconstructs state on
+    // resume, so the terse leaf-worker soft-interrupt is semantically wrong for
+    // it; hasWorkers is false here because any in-control workers would have
+    // routed it through Pass 2 above. Skips steered conductors and their workers.
     for (const inst of live) {
       if (steerConductors.has(inst.id) || protectedWorkers.has(inst.id)) continue;
-      if (inst.status === 'turn') this._directOverageStop(inst, { resume, resetsAt });
+      if (inst.status !== 'turn') continue;
+      if (inst.project === CONDUCT_PROJECT_NAME) {
+        this._steerConductor(inst, { resume, resetsAt, hasWorkers: false });
+      } else {
+        this._directOverageStop(inst, { resume, resetsAt });
+      }
     }
   }
 
@@ -1795,20 +1813,21 @@ export class InstanceManager extends EventEmitter {
   // worker is intentionally left un-armed). Resume is armed via the
   // autoStoppedForOverage flag, which the status→idle handler turns into a
   // per-session timer.
-  _steerConductor(conductor, { resume, resetsAt }) {
+  _steerConductor(conductor, { resume, resetsAt, hasWorkers }) {
+    const steerText = overageConductorSteerText({ hasWorkers });
     if (conductor.status === 'turn') {
       if (resume) {
         conductor.autoStoppedForOverage = true;
         conductor._overageWasStopped = true; // stopped mid-work → full preamble
         conductor._overageResetsAt = resetsAt;
       }
-      conductor.windDown(OVERAGE_CONDUCTOR_STEER_TEXT);
+      conductor.windDown(steerText);
     } else {
       // `internal:true` so the steer's user_prompt doesn't cancel the resume we
       // arm next; set the flags AFTER the call regardless, so the steer turn's
       // turn→idle transition arms the timer (same mechanism as the windDown
       // branch above).
-      conductor.prompt(OVERAGE_CONDUCTOR_STEER_TEXT, [], { internal: true }).catch(() => {});
+      conductor.prompt(steerText, [], { internal: true }).catch(() => {});
       if (resume) {
         conductor.autoStoppedForOverage = true;
         conductor._overageWasStopped = true; // stopped mid-work → full preamble

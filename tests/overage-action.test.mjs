@@ -16,6 +16,7 @@ import os from 'node:os';
 import { bootServer, api, waitFor } from './helpers.mjs';
 import { setOnOverageAction, setOverageThreshold } from '../src/appSettings.js';
 import { AUTO_RESUME_TEXT } from '../src/instances.js';
+import { ensureConductProject, CONDUCT_PROJECT_NAME } from '../src/conduct.js';
 
 const nowSec = () => Math.floor(Date.now() / 1000);
 // The live `rate_limit_event` delivers the window reset as the camelCase
@@ -776,6 +777,65 @@ test('routing stop-resume: fallback worker direct-stop arms a resume timer', asy
   assert.notEqual(sub(wEvs, 'auto_stop_overage')[0].data.steered, true, 'fallback is a direct stop');
   await waitFor(() => ctx.instances._autoResumeTimers.has(worker.sessionId));
   assert.equal(worker.autoStoppedForOverage, true);
+});
+
+// ── Conduct orchestrator with NO in-control workers ───────────────────────
+// The bug this fixes: a `.conduct` orchestrator that trips overage while owning
+// no in-control workers (it tripped itself, or its workers were momentarily
+// idle) used to fall into the terse Pass-3 `_directOverageStop` path and receive
+// the leaf-worker soft-interrupt ("don't reply in any way") — semantically wrong
+// for the brain that must reconstruct state on resume. It's now ALWAYS steered
+// gracefully (hasWorkers:false ⇒ no worker-halting clause). Identified durably by
+// project === '.conduct', not the (opposite) `conducted` worker flag.
+async function createConductor() {
+  await ensureConductProject();
+  const inst = await ctx.instances.create({ project: CONDUCT_PROJECT_NAME, mode: 'bypassPermissions' });
+  await waitFor(() => inst.status === 'idle');
+  return inst;
+}
+
+test('routing: no-workers Conduct orchestrator gets the graceful steer, not the terse soft-interrupt', async () => {
+  await boot(routingScenario(), 'stop');
+  const conductor = await createConductor();
+  const cEvs = collect(conductor);
+
+  // The orchestrator trips overage itself, with no workers in flight.
+  conductor.prompt('TRIP go');
+
+  // Steered (not direct-interrupted): steer notice + a VISIBLE graceful user_echo.
+  await waitFor(() => sub(cEvs, 'auto_stop_overage').some(e => e.data.steered === true));
+  await waitFor(() => cEvs.some(e => e.kind === 'user_echo' && /no workers in flight/.test(e.text || '')));
+  const echo = cEvs.find(e => e.kind === 'user_echo' && /overage auto-stop/.test(e.text || ''));
+  assert.ok(echo, 'graceful conductor steer surfaced as a visible user_echo');
+  assert.equal(/interrupt_turn/.test(echo.text), false, 'no worker-halting clause when nothing is in flight');
+  assert.equal(/don't reply in any way/.test(echo.text), false, 'not the terse leaf-worker soft-interrupt');
+  // The terse direct path (a hidden soft_interrupted annotation) was NOT taken.
+  assert.equal(sub(cEvs, 'soft_interrupted').length, 0, 'orchestrator not direct-interrupted');
+});
+
+test('routing stop-resume: no-workers Conduct orchestrator is steered AND arms a resume timer', async () => {
+  await boot(resumeRoutingScenario(), 'stop-resume');
+  const conductor = await createConductor();
+  const cEvs = collect(conductor);
+
+  conductor.prompt('TRIP go');
+
+  // Steered, resume-aware, with the graceful no-workers frame.
+  await waitFor(() => sub(cEvs, 'auto_stop_overage').some(e => e.data.steered === true && e.data.resume === true));
+  await waitFor(() => cEvs.some(e => e.kind === 'user_echo' && /no workers in flight/.test(e.text || '')));
+  // The steer turn → idle arms the per-session resume timer (full preamble — it
+  // was genuinely stopped mid-work), exactly as the direct path would have.
+  await waitFor(() => ctx.instances._autoResumeTimers.has(conductor.sessionId));
+  assert.equal(conductor.autoStoppedForOverage, true, 'flagged auto-stopped');
+  assert.equal(conductor._overageWasStopped, true, 'full preamble — stopped mid-work');
+  assert.equal(conductor.autoResumeAt != null, true, 'resume badge set');
+
+  // Firing it delivers the resume prompt to the still-live orchestrator.
+  setResumeUsage(UNDER);
+  assert.equal(ctx.instances._fireAutoResumeNow(conductor.sessionId), true, 'pending resume fired');
+  await waitFor(() => cEvs.some(e => e.kind === 'user_echo' && e.text === AUTO_RESUME_TEXT),
+    { timeout: 10000 });
+  assert.equal(conductor.proc != null, true, 'orchestrator never killed');
 });
 
 // ── Usage-verified resume: poll before resuming ──────────────────────────────
