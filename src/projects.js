@@ -294,9 +294,7 @@ export async function removeWorkspace(name) {
 }
 
 // Atomically rename a workspace: rewrite every member project's
-// `workspace` field and swap the entry in the registry. If the old name
-// isn't in the registry but has members on disk (legacy path), still
-// rewrites the members and adds the new name.
+// `workspace` field and swap the entry in the registry.
 export async function renameWorkspace(oldName, newName) {
   const oldV = validateWorkspace(oldName);
   const newV = validateWorkspace(newName);
@@ -306,13 +304,18 @@ export async function renameWorkspace(oldName, newName) {
     throw err;
   }
   if (oldV === newV) return { renamed: false, name: newV, movedProjects: [] };
+  const current = await listWorkspaces();
+  if (!current.includes(oldV)) {
+    const err = new Error(`workspace '${oldV}' not found`);
+    err.statusCode = 404;
+    throw err;
+  }
   const projects = await listProjects();
   const members = projects.filter(p => p.workspace === oldV).map(p => p.name);
   for (const m of members) {
     try { await writeProjectMeta(m, { workspace: newV }); }
     catch (e) { console.warn(`renameWorkspace: failed rewriting '${m}': ${e.message}`); }
   }
-  const current = await listWorkspaces();
   const next = [...new Set(current.filter(n => n !== oldV).concat(newV))];
   await writeWorkspacesRegistry(next);
   return { renamed: true, name: newV, movedProjects: members };

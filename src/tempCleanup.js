@@ -26,15 +26,13 @@ export function pendingTempCleanupPath() {
 }
 
 // Synchronously write the manifest. Must be sync — the restart path calls
-// this immediately before `process.exit(0)`.
-// `action` defaults to "archive": keep the .jsonl, mark session archived.
-// Pass "delete" only for legacy callers that explicitly want removal.
-export function writePendingTempCleanup(entries, action = 'archive') {
+// this immediately before `process.exit(0)`. Sweeping always archives: keeps
+// the .jsonl, marks the session archived.
+export function writePendingTempCleanup(entries) {
   if (!Array.isArray(entries) || entries.length === 0) return;
   const file = pendingTempCleanupPath();
   const payload = {
     writtenAt: new Date().toISOString(),
-    action,
     entries: entries.map(({ cwd, sessionId }) => ({ cwd, sessionId })),
   };
   writeFileSync(file, JSON.stringify(payload));
@@ -60,11 +58,10 @@ export function sweepPendingTempCleanup({ log = console } = {}) {
   for (const { cwd, sessionId } of entries) {
     if (!cwd || !sessionId) continue;
     const dir = path.join(root, encodeCwd(cwd));
-    // Always archive — never delete the .jsonl. Both modern ('archive')
-    // and legacy ('delete') manifests now keep the transcript and only
-    // clean up the ephemeral subagent dir, so a temp session that exited
-    // during a restart is recoverable from Settings → Archived. Sidecar
-    // updates are fire-and-forget from the sync boot context.
+    // Always archive — never delete the .jsonl. Only the ephemeral subagent
+    // dir is cleaned up, so a temp session that exited during a restart is
+    // recoverable from Settings → Archived. Sidecar updates are
+    // fire-and-forget from the sync boot context.
     try { rmSync(path.join(dir, sessionId), { recursive: true, force: true }); } catch { /* ignore */ }
     unmarkTemp(sessionId).catch(() => {});
     markArchived(sessionId).catch(() => {});

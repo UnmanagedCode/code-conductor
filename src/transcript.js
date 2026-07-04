@@ -71,9 +71,11 @@ export function replayPersistedLine(obj, { seqHint = 0, parentToolUseId = null, 
     return events;
   };
   if (!obj || typeof obj !== 'object') return events;
-  // Parent jsonls used to occasionally include inline isSidechain traces; the
-  // CLI now keeps them in a sibling `subagents/` directory instead. Default
-  // is to skip — callers replaying a sub-agent file explicitly opt in.
+  // Input hygiene for the CLI-owned transcript format, not backwards compat:
+  // old parent jsonls contain inline isSidechain traces, but the CLI now
+  // writes those to a sibling `subagents/` directory instead. Skip by
+  // default — callers replaying a sub-agent file explicitly opt in via
+  // allowSidechain.
   if (obj.isSidechain && !allowSidechain) return events;
 
   if (obj.type === 'user') {

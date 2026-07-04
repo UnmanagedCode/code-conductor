@@ -566,6 +566,11 @@ test('Workspace registry endpoints: GET/POST/PUT/DELETE /api/workspaces', async 
   await assert.rejects(fs.stat(regFile), { code: 'ENOENT' });
 });
 
+test('PUT /api/workspaces/:name 404s when the workspace is not registered', async () => {
+  const r = await api(baseUrl, 'PUT', '/api/workspaces/NoSuchWorkspace', { name: 'New' });
+  assert.equal(r.status, 404);
+});
+
 test('POST /api/instances refuses to resume a session already attached to a live instance', async () => {
   await api(baseUrl, 'POST', '/api/projects', { name: 'dup' });
   // Spawn fresh — gets a fresh sessionId.

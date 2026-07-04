@@ -13,15 +13,10 @@
 // This test models the storeLock read-modify-write pattern that
 // archivedSessions.js uses (strict-load → mutate → atomic write, under withLock)
 // with a HOLDER process that acquires the lock, is slow, and whose lock has aged
-// past the threshold, while a WAITER process concurrently adds its own entries.
-//
-//   • FIX (default): live owners are never evicted on age → the waiter waits the
-//     holder out → all entries survive. This case FAILS on the pre-fix code
-//     (which evicts the aged-but-live lock) and PASSES after the fix.
-//   • LEGACY (ORCH_STORE_LOCK_STALE_MS set): age eviction is re-enabled, so the
-//     waiter reclaims the live holder's lock and the lost update happens — the
-//     entries the losing writer committed are dropped. This reproduces the exact
-//     data loss on the current binary.
+// past the old pre-fix threshold, while a WAITER process concurrently adds its
+// own entries. Live owners are never evicted on age → the waiter waits the
+// holder out → all entries survive. This case FAILS on the pre-fix code (which
+// evicted the aged-but-live lock) and PASSES after the fix.
 
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -83,9 +78,8 @@ function waitExit(proc) {
   });
 }
 
-// Run one HOLDER + WAITER race. `waiterEnv` lets us flip the storeLock behavior
-// (legacy age-eviction) for the WAITER process only.
-async function runRace({ waiterEnv = {} } = {}) {
+// Run one HOLDER + WAITER race.
+async function runRace() {
   const dir = await fs.mkdtemp(path.join(tmp, 'race-'));
   const dataFile = path.join(dir, 'store.json');
   const lockFile = dataFile + '.lock';
@@ -105,7 +99,7 @@ async function runRace({ waiterEnv = {} } = {}) {
     { stdio: 'inherit' });
   const waiter = spawn(process.execPath,
     [waiterPath, dataFile, readyFile, ...waiterIds],
-    { stdio: 'inherit', env: { ...process.env, ...waiterEnv } });
+    { stdio: 'inherit' });
 
   await Promise.all([waitExit(holder), waitExit(waiter)]);
 
@@ -113,29 +107,13 @@ async function runRace({ waiterEnv = {} } = {}) {
   return { got: new Set(items), seed, holderIds, waiterIds };
 }
 
-// ── The fix: a live-but-slow holder is waited out; no entry is lost. ─────────
 // FAILS on pre-fix storeLock.js (evicts the aged-but-live lock → lost update);
 // PASSES after the fix (evicts only dead owners).
 test('live-but-slow lock holder is never evicted → no lost update', { timeout: 30000 }, async () => {
-  const { got, seed, holderIds, waiterIds } = await runRace(); // default env → fix behavior
+  const { got, seed, holderIds, waiterIds } = await runRace();
   for (const id of [...seed, ...holderIds, ...waiterIds]) {
     assert.ok(got.has(id), `entry '${id}' was lost; got [${[...got].join(', ')}]`);
   }
   assert.equal(got.size, seed.length + holderIds.length + waiterIds.length,
     'every entry from both writers plus the pre-existing set must survive');
-});
-
-// ── The bug, reproduced on the current binary via the legacy toggle. ─────────
-// With age-eviction re-enabled the waiter reclaims the live holder's lock and
-// one writer's entries are silently dropped — the exact subset loss.
-test('legacy age-eviction reproduces the subset loss (lost update)', { timeout: 30000 }, async () => {
-  const { got, seed, holderIds, waiterIds } =
-    await runRace({ waiterEnv: { ORCH_STORE_LOCK_STALE_MS: '150' } });
-  // The pre-existing set is on disk before either writer runs, so it survives;
-  // one of the two concurrent writers' contributions is clobbered.
-  for (const id of seed) assert.ok(got.has(id), `pre-existing '${id}' should survive`);
-  const holderKept = holderIds.every((id) => got.has(id));
-  const waiterKept = waiterIds.every((id) => got.has(id));
-  assert.ok(!(holderKept && waiterKept),
-    `expected a lost update (one writer's entries dropped); got [${[...got].join(', ')}]`);
 });
