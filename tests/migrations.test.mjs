@@ -22,6 +22,22 @@ async function writeJson(p, obj) {
   await fs.writeFile(p, JSON.stringify(obj, null, 2));
 }
 
+async function withEnv(overrides, fn) {
+  const keys = Object.keys(overrides);
+  const saved = Object.fromEntries(keys.map(k => [k, process.env[k]]));
+  for (const k of keys) {
+    if (overrides[k] === undefined) delete process.env[k];
+    else process.env[k] = overrides[k];
+  }
+  try { return await fn(); }
+  finally {
+    for (const k of keys) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+  }
+}
+
 test('0001 migration: moves project + worktree state into the central store', async () => {
   const root = await mkTempRoot();
   try {
@@ -175,7 +191,11 @@ test('0001 migration: no candidates → applied:false, no log output', async () 
     await fs.mkdir(path.join(root, 'epsilon'), { recursive: true });
 
     const logs = [];
-    await runMigrations({ root, log: (...args) => logs.push(args.join(' ')) });
+    // Pin 0009's legacy-baseline lookup off the real machine's home dir —
+    // this test wants a truly empty workspace with no migration output.
+    await withEnv({ TCC_LEGACY_BASELINE: path.join(root, 'no-legacy') }, async () => {
+      await runMigrations({ root, log: (...args) => logs.push(args.join(' ')) });
+    });
 
     assert.deepEqual(logs, []);
   } finally {

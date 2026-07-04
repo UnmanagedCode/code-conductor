@@ -1,7 +1,9 @@
 // Tests for code-conductor's ownership of the projects-root CLAUDE.md.
 // Covers the four-case reconcile (create / up-to-date / silent-update / keep /
-// conflict), the keep + overwrite resolutions, the legacy-baseline migration
-// seed, and the HTTP endpoints. Mirrors TCC scripts/lib.sh::sync_workspace_claudemd.
+// conflict), the keep + overwrite resolutions, the vendor baseline seed, and
+// the HTTP endpoints. Mirrors TCC scripts/lib.sh::sync_workspace_claudemd.
+// The legacy shell-installer baseline seed is now a boot-time migration —
+// see tests/migration-seed-legacy-baseline.test.mjs.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -10,7 +12,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { bootServer, api } from './helpers.mjs';
 import {
-  vendorText, targetPath, baselinePath, legacyBaselinePath,
+  vendorText, targetPath, baselinePath,
   classify, seedBaselineIfNeeded, reconcile, getStatus, getDiff, resolve,
   unifiedDiff,
 } from '../src/rootClaudeMd.js';
@@ -59,7 +61,7 @@ test('classify covers all five cases', () => {
 test('reconcile: target missing → create (copy vendor→target, baseline written)', async () => {
   const root = await mkTmp();
   try {
-    await withEnv({ PROJECTS_ROOT: root, TCC_LEGACY_BASELINE: path.join(root, 'no-legacy') }, async () => {
+    await withEnv({ PROJECTS_ROOT: root }, async () => {
       const res = await reconcile();
       assert.equal(res.status, 'created');
       assert.equal(res.conflict, false);
@@ -74,7 +76,7 @@ test('reconcile: target missing → create (copy vendor→target, baseline writt
 test('reconcile: target == vendor → up-to-date (baseline bumped, file unchanged)', async () => {
   const root = await mkTmp();
   try {
-    await withEnv({ PROJECTS_ROOT: root, TCC_LEGACY_BASELINE: path.join(root, 'no-legacy') }, async () => {
+    await withEnv({ PROJECTS_ROOT: root }, async () => {
       await writeFileMk(targetPath(), vendorText());
       const res = await reconcile();
       assert.equal(res.status, 'up-to-date');
@@ -89,7 +91,7 @@ test('reconcile: target == vendor → up-to-date (baseline bumped, file unchange
 test('reconcile: untouched target + moved vendor → silent update', async () => {
   const root = await mkTmp();
   try {
-    await withEnv({ PROJECTS_ROOT: root, TCC_LEGACY_BASELINE: path.join(root, 'no-legacy') }, async () => {
+    await withEnv({ PROJECTS_ROOT: root }, async () => {
       // baseline == target == an OLD canonical that differs from the real vendor.
       await writeFileMk(baselinePath(), 'OLD CANONICAL\n');
       await writeFileMk(targetPath(), 'OLD CANONICAL\n');
@@ -106,7 +108,7 @@ test('reconcile: untouched target + moved vendor → silent update', async () =>
 test('reconcile: user-edited target + unchanged vendor → keep (no-op)', async () => {
   const root = await mkTmp();
   try {
-    await withEnv({ PROJECTS_ROOT: root, TCC_LEGACY_BASELINE: path.join(root, 'no-legacy') }, async () => {
+    await withEnv({ PROJECTS_ROOT: root }, async () => {
       await writeFileMk(baselinePath(), vendorText()); // baseline == vendor
       await writeFileMk(targetPath(), 'MY LOCAL EDITS\n');
       const res = await reconcile();
@@ -122,7 +124,7 @@ test('reconcile: user-edited target + unchanged vendor → keep (no-op)', async 
 test('reconcile: both changed → conflict (file untouched, status reports conflict)', async () => {
   const root = await mkTmp();
   try {
-    await withEnv({ PROJECTS_ROOT: root, TCC_LEGACY_BASELINE: path.join(root, 'no-legacy') }, async () => {
+    await withEnv({ PROJECTS_ROOT: root }, async () => {
       await writeFileMk(baselinePath(), 'OLD CANONICAL\n');
       await writeFileMk(targetPath(), 'MY LOCAL EDITS\n');
       const res = await reconcile();
@@ -141,7 +143,7 @@ test('reconcile: both changed → conflict (file untouched, status reports confl
 test('resolve overwrite: backs up to .bak-<ts>, copies vendor→target, bumps baseline', async () => {
   const root = await mkTmp();
   try {
-    await withEnv({ PROJECTS_ROOT: root, TCC_LEGACY_BASELINE: path.join(root, 'no-legacy') }, async () => {
+    await withEnv({ PROJECTS_ROOT: root }, async () => {
       await writeFileMk(baselinePath(), 'OLD CANONICAL\n');
       await writeFileMk(targetPath(), 'MY LOCAL EDITS\n');
       await reconcile(); // → conflict
@@ -164,7 +166,7 @@ test('resolve overwrite: backs up to .bak-<ts>, copies vendor→target, bumps ba
 test('resolve keep: bumps baseline to vendor without changing the file', async () => {
   const root = await mkTmp();
   try {
-    await withEnv({ PROJECTS_ROOT: root, TCC_LEGACY_BASELINE: path.join(root, 'no-legacy') }, async () => {
+    await withEnv({ PROJECTS_ROOT: root }, async () => {
       await writeFileMk(baselinePath(), 'OLD CANONICAL\n');
       await writeFileMk(targetPath(), 'MY LOCAL EDITS\n');
       await reconcile(); // → conflict
@@ -180,49 +182,12 @@ test('resolve keep: bumps baseline to vendor without changing the file', async (
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
 
-// ── legacy-baseline migration seed ──────────────────────────────────────────
+// ── baseline seed ────────────────────────────────────────────────────────────
 
-test('seedBaselineIfNeeded migrates from the legacy TCC baseline when present', async () => {
-  const root = await mkTmp();
-  const legacyDir = await mkTmp();
-  const legacy = path.join(legacyDir, 'CLAUDE.md.installed');
-  await fs.writeFile(legacy, 'LEGACY CANONICAL\n');
-  try {
-    await withEnv({ PROJECTS_ROOT: root, TCC_LEGACY_BASELINE: legacy }, async () => {
-      const r = await seedBaselineIfNeeded();
-      assert.deepEqual(r, { seeded: true, from: 'legacy' });
-      assert.equal(await read(baselinePath()), 'LEGACY CANONICAL\n');
-    });
-  } finally {
-    await fs.rm(root, { recursive: true, force: true });
-    await fs.rm(legacyDir, { recursive: true, force: true });
-  }
-});
-
-test('legacy seed avoids a spurious conflict: untouched target == legacy + moved vendor → updated', async () => {
-  const root = await mkTmp();
-  const legacyDir = await mkTmp();
-  const legacy = path.join(legacyDir, 'CLAUDE.md.installed');
-  await fs.writeFile(legacy, 'LEGACY CANONICAL\n');
-  try {
-    await withEnv({ PROJECTS_ROOT: root, TCC_LEGACY_BASELINE: legacy }, async () => {
-      // The user never touched the file the old installer wrote.
-      await writeFileMk(targetPath(), 'LEGACY CANONICAL\n');
-      const res = await reconcile();
-      assert.equal(res.status, 'updated'); // silent update, NOT conflict
-      assert.equal(await read(targetPath()), vendorText());
-      assert.equal(await read(baselinePath()), vendorText());
-    });
-  } finally {
-    await fs.rm(root, { recursive: true, force: true });
-    await fs.rm(legacyDir, { recursive: true, force: true });
-  }
-});
-
-test('seedBaselineIfNeeded seeds from vendor when no legacy baseline exists', async () => {
+test('seedBaselineIfNeeded seeds from vendor when absent, and is idempotent', async () => {
   const root = await mkTmp();
   try {
-    await withEnv({ PROJECTS_ROOT: root, TCC_LEGACY_BASELINE: path.join(root, 'no-legacy') }, async () => {
+    await withEnv({ PROJECTS_ROOT: root }, async () => {
       const r = await seedBaselineIfNeeded();
       assert.deepEqual(r, { seeded: true, from: 'vendor' });
       assert.equal(await read(baselinePath()), vendorText());

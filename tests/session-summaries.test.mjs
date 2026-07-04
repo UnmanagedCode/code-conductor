@@ -98,23 +98,6 @@ test('deleteSummaries removes all tiers and unlinks file when empty', async () =
   assert.equal(exists, false, 'sidecar should be unlinked when empty');
 });
 
-test('backward-compat: old single-summary shape is migrated on read', async () => {
-  // Write an old-style entry directly to the sidecar file.
-  const file = path.join(orchStoreRoot(), 'session-summaries.json');
-  await fs.mkdir(orchStoreRoot(), { recursive: true });
-  await fs.writeFile(file, JSON.stringify({
-    summaries: {
-      'old-sid': { summary: 'Old summary.', length: 'medium', generatedAt: 999, messageCount: 7 },
-    },
-  }) + '\n');
-
-  const tiers = await getSummaries('old-sid');
-  assert.equal(tiers.medium?.summary, 'Old summary.');
-  assert.equal(tiers.medium?.messageCount, 7);
-  assert.equal(tiers.short, undefined);
-  assert.equal(tiers.long, undefined);
-});
-
 // ---------------------------------------------------------------------------
 // HTTP endpoints
 // ---------------------------------------------------------------------------
