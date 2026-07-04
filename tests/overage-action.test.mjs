@@ -13,9 +13,10 @@ import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { bootServer, api, waitFor } from './helpers.mjs';
+import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
 import { setOnOverageAction, setOverageThreshold } from '../src/appSettings.js';
 import { AUTO_RESUME_TEXT } from '../src/instances.js';
+import { getAccountUsage } from '../src/accountUsage.js';
 import { ensureConductProject, CONDUCT_PROJECT_NAME } from '../src/conduct.js';
 
 const nowSec = () => Math.floor(Date.now() / 1000);
@@ -68,8 +69,14 @@ async function writeScenario(obj) {
   return p;
 }
 
+// Boot the server ONCE for the whole file (each test injects its own fake-claude
+// scenario via FAKE_CLAUDE_SCENARIO before spawning, and gets a pristine
+// projects/settings namespace via freshProjectsRoot) — 38 per-test bootServer()
+// calls otherwise dominate the wall-clock under the concurrent runner on a
+// throttled Termux box and blow the 60s per-file ceiling.
 let savedBuf, savedSweep, savedRecheck;
-before(() => {
+let ctx, instances, home;
+before(async () => {
   savedBuf = process.env.ORCH_OVERAGE_RESUME_BUFFER_MS;
   process.env.ORCH_OVERAGE_RESUME_BUFFER_MS = '0';
   // Drive the wall-clock sweep fast so the wake-after-suspend test fires off the
@@ -81,8 +88,14 @@ before(() => {
   // to observe within a test (production default is 60s, aligned with the usage cache).
   savedRecheck = process.env.ORCH_OVERAGE_RECHECK_MS;
   process.env.ORCH_OVERAGE_RECHECK_MS = '60';
+  // No scenario at boot — each test's boot() sets FAKE_CLAUDE_SCENARIO before it
+  // spawns (Instance.spawn snapshots process.env per subprocess; fake-claude reads
+  // the var at its own startup), so the shared server serves per-test scenarios.
+  ctx = await bootServer({});
+  instances = ctx.instances;
 });
-after(() => {
+after(async () => {
+  await ctx.close();
   if (savedBuf === undefined) delete process.env.ORCH_OVERAGE_RESUME_BUFFER_MS;
   else process.env.ORCH_OVERAGE_RESUME_BUFFER_MS = savedBuf;
   if (savedSweep === undefined) delete process.env.ORCH_OVERAGE_RESUME_SWEEP_MS;
@@ -91,14 +104,27 @@ after(() => {
   else process.env.ORCH_OVERAGE_RECHECK_MS = savedRecheck;
 });
 
-// Each test boots its own server (its scenario is fixed at boot via env) and
-// tears it down. The scenario temp dirs are left to the OS tmp reaper.
-let ctx;
-beforeEach(() => { ctx = null; });
-afterEach(async () => { if (ctx) await ctx.close(); ctx = null; });
+beforeEach(async () => {
+  // Fresh projects/settings namespace per test (projectsRoot()/orchStoreRoot()/
+  // claudeProjectsRoot() read process.env live; appSettings caches by settingsPath()).
+  ({ home } = await freshProjectsRoot());
+  // Reset the shared manager's GLOBAL overage state so nothing leaks between tests.
+  // _clearOverage() resets _overageActive/_overageResumeMode/_overageResetsAt + the
+  // clear timer; clearAll() drops the deadline map/sweep/checking/failCount. Restoring
+  // the injected fetchUsage seams to the real getAccountUsage reproduces exactly the
+  // fresh-manager-per-test default this file used to get from a per-test reboot.
+  instances._clearOverage();
+  instances._overageResume.clearAll();
+  instances._overageResume.fetchUsage = getAccountUsage;
+  instances._usageMonitor.fetchUsage = getAccountUsage;
+});
+afterEach(async () => {
+  await instances.shutdown();
+  await rmrf(home);
+});
 
 async function boot(scenarioObj, action) {
-  ctx = await bootServer({ scenarioPath: await writeScenario(scenarioObj) });
+  process.env.FAKE_CLAUDE_SCENARIO = await writeScenario(scenarioObj);
   await setOnOverageAction(action);
   await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'demo' });
   return ctx;
