@@ -53,6 +53,18 @@ Layer docs; on any behavior change, update the most specific file — not just t
 Be precise: name exact paths, commands, flags, and defaults; prefer bullets/tables over prose; keep functional and technical descriptions in sync.`,
     builtin: true,
   },
+  {
+    slug: 'migrations-over-compat',
+    name: 'Migrations over backwards compatibility',
+    description: 'One-shot startup migrations, not read-time compat shims; no legacy aliases or dual-shape parsing; unstable APIs owe no back-compat',
+    body: `## Migrations over backwards compatibility
+- When a persisted data or config format changes, write a one-shot, idempotent migration that runs at startup and upgrades old state in place — don't scatter format checks through application code.
+- Application code assumes the current format only: no read-time dual-shape parsing, no legacy key aliases, no "back-compat" defaults.
+- Migrations must self-check "already applied" and no-op if so; never destroy data you can't reconstruct — move it aside instead of deleting it.
+- APIs with no external consumers owe no stability guarantee — change the API and its callers together instead of keeping an old shape alive "just in case."
+- Exception: tolerate read-time variance only for formats owned by external tools you can't migrate (e.g. a third-party CLI's session files); everything you own gets migrated, not shimmed.`,
+    builtin: true,
+  },
 ];
 
 // ── Persistence ───────────────────────────────────────────────────────────────
