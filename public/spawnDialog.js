@@ -22,8 +22,8 @@
 // Returns { openSpawnDialog, syncSonnetPickerLabels, syncFamilyVisibility } — the
 // only handles with external callers; openConductDialog/makeModeToggle/
 // spawnInstance/defaultSpawnFamily stay internal.
-import { resolveSpawnModel, getActiveSonnetWindow, getFamilyList,
-  getActiveFamilyEnabled, getActiveDefaultSpawnFamily } from './models.js';
+import { resolveSpawnModel, getActiveSonnetWindow, getActiveVersion, isSonnetFixedWindowVersion,
+  getFamilyList, getActiveFamilyEnabled, getActiveDefaultSpawnFamily } from './models.js';
 
 export function installSpawnDialog({ dom, getProjects, refreshProjects, refreshInstances, selectInstance, closeSidebarOverflow }) {
   // ── Shared spawn-dialog helpers ───────────────────────────────────────
@@ -61,10 +61,14 @@ export function installSpawnDialog({ dom, getProjects, refreshProjects, refreshI
     }
   }
 
-  // Updates the Sonnet button labels in all spawn pickers to match the stored
-  // context-window preference, so the UI reflects what will actually be spawned.
+  // Updates the Sonnet button labels in all spawn pickers to match the active
+  // version's context window, so the UI reflects what will actually be
+  // spawned. Sonnet 5 has no 200k build (always 1M); Sonnet 4.x reflects the
+  // stored preference.
   function syncSonnetPickerLabels() {
-    const w = getActiveSonnetWindow() === '200k' ? '200k' : '1M';
+    const w = isSonnetFixedWindowVersion(getActiveVersion('sonnet'))
+      ? '1M'
+      : (getActiveSonnetWindow() === '200k' ? '200k' : '1M');
     document.querySelectorAll('.qs-model[data-family="sonnet"] .qs-ctx')
       .forEach(el => { el.textContent = w; });
   }

@@ -200,7 +200,7 @@ test('UsageTracker: ignores unrelated event kinds', async () => {
   assert.equal(t.cum.turns, 0);
 });
 
-test('contextWindowFor: one fixed window per non-Sonnet family; Sonnet suffix-authoritative, bare falls back to preference', async () => {
+test('contextWindowFor: one fixed window per non-Sonnet family; Sonnet 5 always 1M, Sonnet 4.x suffix-authoritative/preference-fallback', async () => {
   const { contextWindowFor } = await import(USAGE_URL);
   const { setActiveSonnetWindow } = await import(pathToFileURL(path.join(PUB, 'models.js')).href);
   // Opus/Fable → 1M, Haiku → 200k, regardless of any stray suffix.
@@ -213,16 +213,21 @@ test('contextWindowFor: one fixed window per non-Sonnet family; Sonnet suffix-au
   assert.equal(contextWindowFor('claude-sonnet-5[1m]'), 1_000_000);
   assert.equal(contextWindowFor('claude-sonnet-5[200k]'), 200_000);
   assert.equal(contextWindowFor('claude-sonnet-4-6[1m]'), 1_000_000);
-  // Bare Sonnet (API stripped the suffix) — falls back to the stored
-  // preference, which defaults to '1m'.
+  // Bare Sonnet 5 (no 200k build) — always 1M, unambiguous.
   assert.equal(contextWindowFor('claude-sonnet-5'), 1_000_000);
+  // Bare Sonnet 4.x (API stripped the suffix) — falls back to the stored
+  // preference, which defaults to '1m'.
   assert.equal(contextWindowFor('claude-sonnet-4-6'), 1_000_000);
   assert.equal(contextWindowFor('claude-sonnet-4-5'), 1_000_000);
   try {
     setActiveSonnetWindow('200k');
-    assert.equal(contextWindowFor('claude-sonnet-5'), 200_000);
-    // Explicit suffix still wins over the preference.
+    // Sonnet 5 ignores the preference entirely.
+    assert.equal(contextWindowFor('claude-sonnet-5'), 1_000_000);
+    // Sonnet 4.6 still honours the preference.
+    assert.equal(contextWindowFor('claude-sonnet-4-6'), 200_000);
+    // Explicit suffix still wins over the preference for either version.
     assert.equal(contextWindowFor('claude-sonnet-5[1m]'), 1_000_000);
+    assert.equal(contextWindowFor('claude-sonnet-4-6[1m]'), 1_000_000);
   } finally {
     setActiveSonnetWindow('1m'); // restore default so later tests can't leak this
   }

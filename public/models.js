@@ -7,8 +7,10 @@
 // Context-window policy (mirrors canonicalizeModel in src/modelVersions.js):
 //   Opus  → 1M bare (CLI native default)
 //   Haiku → 200k bare (no 1M build)
-//   Sonnet → user-selectable (200k or 1M) via Settings → Models; preference
-//            persisted server-side so all spawn paths and resume inherit it.
+//   Sonnet → per-version: Sonnet 5 has no 200k build, so it's pinned to 1M
+//            (fixedWindow in the catalog); Sonnet 4.x has both builds and
+//            remains user-selectable via Settings → Models, persisted
+//            server-side so all spawn paths and resume inherit it.
 // The server re-derives the same window on resume using the stored preference.
 
 // Minimal pre-fetch fallback (one id per family — already the floor). The
@@ -27,6 +29,11 @@ let activeVersions = { ...DEFAULT_VERSIONS };
 let activeSonnetWindow = '1m';
 let activeFamilyEnabled = { fable: true, opus: true, sonnet: true, haiku: true };
 let activeDefaultSpawnFamily = 'opus';
+// Minimal pre-fetch fallback mirroring the `fixedWindow` flag on
+// claude-sonnet-5 in MODEL_FAMILIES (src/modelVersions.js). Overwritten by
+// the authoritative catalog in loadModelVersions() on every successful
+// fetch, so this only matters in the brief window before boot resolves.
+let sonnetFixedWindowByVersion = { 'claude-sonnet-5': '1m' };
 // Family enum/order, sourced from the shipped catalog (data.families) so the
 // client doesn't re-hardcode it. Seeded non-empty from DEFAULT_VERSIONS keys so
 // getFamilyList() is never empty even before the boot fetch resolves.
@@ -39,6 +46,14 @@ export function getFamilyList() {
 export function setActiveVersions(map) {
   activeVersions = { ...DEFAULT_VERSIONS, ...(map || {}) };
   return activeVersions;
+}
+
+export function getActiveVersion(family) {
+  return activeVersions[family] || DEFAULT_VERSIONS[family];
+}
+
+export function isSonnetFixedWindowVersion(id) {
+  return !!sonnetFixedWindowByVersion[id];
 }
 
 export function getActiveSonnetWindow() {
@@ -74,6 +89,10 @@ export async function loadModelVersions() {
       const data = await r.json();
       if (Array.isArray(data.families) && data.families.length) {
         familyList = data.families.map(f => f.family);
+        const sonnetFamily = data.families.find(f => f.family === 'sonnet');
+        sonnetFixedWindowByVersion = Object.fromEntries(
+          (sonnetFamily?.versions || []).filter(v => v.fixedWindow).map(v => [v.id, v.fixedWindow]),
+        );
       }
       setActiveVersions(data.active);
       setActiveSonnetWindow(data.sonnetContextWindow);
@@ -85,11 +104,15 @@ export async function loadModelVersions() {
 }
 
 // family: 'fable' | 'sonnet' | 'opus' | 'haiku'. Returns the model string to
-// send on spawn. Sonnet obeys the user's context-window preference; all
-// others use the bare id (1M for Fable/Opus via CLI default, 200k for Haiku).
+// send on spawn. Sonnet 5 is always 1M (no 200k build); Sonnet 4.x obeys the
+// user's context-window preference; all others use the bare id (1M for
+// Fable/Opus via CLI default, 200k for Haiku).
 export function resolveSpawnModel(family) {
-  const base = activeVersions[family] || DEFAULT_VERSIONS[family];
+  const base = getActiveVersion(family);
   if (!base) return '';
-  if (family === 'sonnet') return activeSonnetWindow === '200k' ? base : `${base}[1m]`;
+  if (family === 'sonnet') {
+    if (isSonnetFixedWindowVersion(base)) return `${base}[1m]`;
+    return activeSonnetWindow === '200k' ? base : `${base}[1m]`;
+  }
   return base;
 }
