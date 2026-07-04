@@ -111,7 +111,7 @@ export class ThinkingBlock {
 }
 
 import { lineDiff, diffStats } from './diff.js';
-import { formatResetTime } from './usage.js';
+import { formatResetTime, formatResetWhen, RL_WINDOW_LABEL } from './usage.js';
 import { renderMarkdownInto } from './markdown.js';
 import { isTtsAvailable, requestSpeak, getCurrentSpeakToken, onSpeakingChange, stop, maybeAutoSpeak } from './tts.js';
 
@@ -959,6 +959,8 @@ const SHOWN_SYSTEM_SUBTYPES = new Set([
   'model_changed',
 ]);
 
+const OVERAGE_DISABLED_LABEL = { out_of_credits: 'out of credits' };
+
 export function shouldRenderSystem(ev) {
   const sub = ev.subtype;
   if (sub === 'rate_limit_event') {
@@ -991,6 +993,25 @@ export class SystemBlock {
       if (subtype === 'soft_interrupted') return data?.text ? `⏸ Turn interrupted: ${data.text}` : '⏸ Turn interrupted';
       if (subtype === 'drain_abort') return `⏹ Drained queued turn after interrupt (${data?.count ?? 1})`;
       if (subtype === 'model_changed') return `Model changed: ${data?.from ?? '?'} → ${data?.to ?? '?'}`;
+      if (subtype === 'rate_limit_event') {
+        const info = data?.rate_limit_info ?? {};
+        const window = RL_WINDOW_LABEL[info.rateLimitType] ?? info.rateLimitType ?? 'usage';
+        const resetWhen = formatResetWhen(info.resetsAt);
+        if (info.status === 'allowed_warning') {
+          const util = typeof info.utilization === 'number' ? Math.round(info.utilization * 100) : null;
+          return `⚠ Usage${util != null ? ` ${util}% of` : ''} ${window} limit${resetWhen ? ` · ${resetWhen}` : ''}`;
+        }
+        if (info.status === 'rejected') {
+          let line = `⛔ ${window} limit reached${resetWhen ? ` · ${resetWhen}` : ''}`;
+          if (info.isUsingOverage) line += ' · on overage';
+          else if (info.overageStatus === 'rejected') {
+            const reason = OVERAGE_DISABLED_LABEL[info.overageDisabledReason] ?? info.overageDisabledReason ?? 'unavailable';
+            line += ` · overage unavailable (${reason})`;
+          }
+          return line;
+        }
+        return `${info.status ?? 'rate limit'} · ${window}${resetWhen ? ` · ${resetWhen}` : ''}`;
+      }
       try { return JSON.stringify(data).slice(0, 200); } catch { return ''; }
     })();
     this.node = el('div', { class: 'block system' },

@@ -557,6 +557,88 @@ test('DOM: noisy system events (status, rate_limit_event:allowed) are dropped fr
   assert.equal(systems.length, 0, `expected no system blocks, got ${systems.length}`);
 });
 
+test('DOM: rate_limit_event allowed_warning renders a parsed one-liner, not raw JSON', async () => {
+  const { root, Parser, Conversation } = await setupDOM();
+  const conv = new Conversation(root);
+  const p = new Parser();
+  const resetsAt = Math.floor(Date.now() / 1000) + 3600; // 1h out — near-term branch
+  const events = [
+    {
+      type: 'rate_limit_event',
+      rate_limit_info: {
+        status: 'allowed_warning',
+        rateLimitType: 'five_hour',
+        utilization: 0.75,
+        surpassedThreshold: 0.75,
+        resetsAt,
+        isUsingOverage: false,
+      },
+      uuid: 'u1',
+      session_id: 's',
+    },
+  ];
+  for (const e of events) for (const ev of p.handleObject(e)) conv.apply(ev);
+
+  const systems = root.querySelectorAll('.block.system');
+  assert.equal(systems.length, 1, `expected one system block, got ${systems.length}`);
+  const text = systems[0].textContent;
+  assert.match(text, /Usage 75% of 5-hour limit/);
+  assert.ok(!text.includes('"uuid"'), `expected no raw JSON, got: ${text}`);
+  assert.ok(text.length < 100, `expected a short one-liner, got ${text.length} chars: ${text}`);
+});
+
+test('DOM: rate_limit_event rejected renders a parsed one-liner with overage detail', async () => {
+  const { root, Parser, Conversation } = await setupDOM();
+  const conv = new Conversation(root);
+  const p = new Parser();
+  const resetsAt = Math.floor(Date.now() / 1000) + 3600;
+
+  // Plain rejection, on overage.
+  const overageEvent = {
+    type: 'rate_limit_event',
+    rate_limit_info: {
+      status: 'rejected',
+      rateLimitType: 'seven_day',
+      resetsAt,
+      isUsingOverage: true,
+    },
+    uuid: 'u2',
+    session_id: 's',
+  };
+  for (const ev of p.handleObject(overageEvent)) conv.apply(ev);
+
+  let systems = root.querySelectorAll('.block.system');
+  assert.equal(systems.length, 1, `expected one system block, got ${systems.length}`);
+  let text = systems[0].textContent;
+  assert.match(text, /7-day limit reached/);
+  assert.match(text, /on overage/);
+  assert.ok(!text.includes('"uuid"'), `expected no raw JSON, got: ${text}`);
+
+  // Rejection with overage unavailable (out of credits) — overage was
+  // attempted but not granted, so isUsingOverage is false here.
+  const noOverageEvent = {
+    type: 'rate_limit_event',
+    rate_limit_info: {
+      status: 'rejected',
+      rateLimitType: 'seven_day',
+      resetsAt,
+      isUsingOverage: false,
+      overageStatus: 'rejected',
+      overageDisabledReason: 'out_of_credits',
+    },
+    uuid: 'u3',
+    session_id: 's',
+  };
+  for (const ev of p.handleObject(noOverageEvent)) conv.apply(ev);
+
+  systems = root.querySelectorAll('.block.system');
+  assert.equal(systems.length, 2, `expected two system blocks, got ${systems.length}`);
+  text = systems[1].textContent;
+  assert.match(text, /7-day limit reached/);
+  assert.match(text, /overage unavailable \(out of credits\)/);
+  assert.ok(!text.includes('"uuid"'), `expected no raw JSON, got: ${text}`);
+});
+
 test('DOM: kept system events render inline in chronological order (no shared __system__ wrap)', async () => {
   const { document, root, Parser, Conversation } = await setupDOM();
   const conv = new Conversation(root);
