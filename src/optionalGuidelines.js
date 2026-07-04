@@ -55,9 +55,9 @@ Be precise: name exact paths, commands, flags, and defaults; prefer bullets/tabl
   },
   {
     slug: 'migrations-over-compat',
-    name: 'Migrations over backwards compatibility',
+    name: 'Migration guidelines',
     description: 'One-shot startup migrations, not read-time compat shims; no legacy aliases or dual-shape parsing; unstable APIs owe no back-compat',
-    body: `## Migrations over backwards compatibility
+    body: `## Migration guidelines
 - When a persisted data or config format changes, write a one-shot, idempotent migration that runs at startup and upgrades old state in place — don't scatter format checks through application code.
 - Application code assumes the current format only: no read-time dual-shape parsing, no legacy key aliases, no "back-compat" defaults.
 - Migrations must self-check "already applied" and no-op if so; never destroy data you can't reconstruct — move it aside instead of deleting it.

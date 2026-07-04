@@ -64,7 +64,7 @@ test('SEED_GUIDELINES bodies have correct ## headings', () => {
   assert.ok(design.body.startsWith('## Design guidelines'));
   assert.ok(testing.body.startsWith('## Testing guidelines'));
   assert.ok(docs.body.startsWith('## Documentation guidelines'));
-  assert.ok(migrations.body.startsWith('## Migrations over backwards compatibility'));
+  assert.ok(migrations.body.startsWith('## Migration guidelines'));
 });
 
 test('design-guidelines body includes a YAGNI bullet', () => {
