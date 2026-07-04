@@ -179,7 +179,7 @@ test('MCP kill_instance archives temp session', async () => {
   }
 });
 
-test('shutdownTempSync archives temp sessions — .jsonl kept, manifest carries action:archive', async () => {
+test('shutdownTempSync archives temp sessions — .jsonl kept, subagents dir removed', async () => {
   {
     await api(baseUrl, 'POST', '/api/projects', { name: 'archivesync' });
 
@@ -205,7 +205,7 @@ test('shutdownTempSync archives temp sessions — .jsonl kept, manifest carries 
   }
 });
 
-test('sweepPendingTempCleanup with action:archive keeps .jsonl and marks archived', async () => {
+test('sweepPendingTempCleanup keeps .jsonl and marks archived', async () => {
   {
     const cwd = '/tmp/cc-archive-sweep-' + Math.random().toString(36).slice(2);
     const sid = 'aaaaaaaa-bbbb-cccc-dddd-ffffffffffff';
@@ -218,14 +218,9 @@ test('sweepPendingTempCleanup with action:archive keeps .jsonl and marks archive
     await fs.writeFile(path.join(subagentsDir, 'a.jsonl'), '{}\n');
 
     await fs.mkdir(orchStoreRoot(), { recursive: true });
-    // Write manifest with action:archive.
-    writePendingTempCleanup([{ cwd, sessionId: sid }], 'archive');
+    writePendingTempCleanup([{ cwd, sessionId: sid }]);
     const manifest = pendingTempCleanupPath();
     await fs.access(manifest);
-
-    // Verify manifest contains action:archive.
-    const manifestData = JSON.parse(await fs.readFile(manifest, 'utf8'));
-    assert.equal(manifestData.action, 'archive');
 
     const result = sweepPendingTempCleanup({ log: { warn() {}, log() {} } });
     assert.equal(result.swept, 1);
@@ -239,7 +234,7 @@ test('sweepPendingTempCleanup with action:archive keeps .jsonl and marks archive
   }
 });
 
-test('sweepPendingTempCleanup with no action (legacy) now archives instead of deleting', async () => {
+test('sweepPendingTempCleanup archives from a hand-written manifest with only entries', async () => {
   {
     const cwd = '/tmp/cc-legacy-sweep-' + Math.random().toString(36).slice(2);
     const sid = 'bbbbbbbb-cccc-dddd-eeee-000000000000';
@@ -252,7 +247,6 @@ test('sweepPendingTempCleanup with no action (legacy) now archives instead of de
     await fs.writeFile(path.join(subagentsDir, 'a.jsonl'), '{}\n');
 
     await fs.mkdir(orchStoreRoot(), { recursive: true });
-    // Write manifest WITHOUT action field (legacy format).
     const file = pendingTempCleanupPath();
     const payload = { writtenAt: new Date().toISOString(), entries: [{ cwd, sessionId: sid }] };
     const { writeFileSync } = await import('node:fs');
@@ -260,8 +254,7 @@ test('sweepPendingTempCleanup with no action (legacy) now archives instead of de
 
     const result = sweepPendingTempCleanup({ log: { warn() {}, log() {} } });
     assert.equal(result.swept, 1);
-    // Always-archive policy: the legacy path no longer deletes the .jsonl —
-    // it keeps the transcript, cleans the subagent dir, and marks archived.
+    // Sweeping keeps the transcript, cleans the subagent dir, and marks archived.
     await fs.access(jsonlFile);
     await assert.rejects(() => fs.access(subagentsDir), 'subagent dir swept');
     await waitFor(async () => (await isArchived(sid)));

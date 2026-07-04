@@ -27,10 +27,6 @@ import path from 'node:path';
 // timing deterministically and unusually slow filesystems get headroom.
 const LOCK_RETRY_MAX = Number(process.env.ORCH_STORE_LOCK_RETRY_MAX) || 25;
 const LOCK_RETRY_BASE_MS = Number(process.env.ORCH_STORE_LOCK_RETRY_BASE_MS) || 30;
-// Opt-in legacy age-based eviction (ms). Default 0 = DISABLED — live owners are
-// never evicted on age. Retained ONLY so tests can reproduce the pre-fix
-// lost-update by re-enabling age eviction; production always leaves it off.
-const LOCK_AGE_EVICT_MS = Number(process.env.ORCH_STORE_LOCK_STALE_MS) || 0;
 
 function sleep(ms) {
   return new Promise(r => setTimeout(r, ms));
@@ -62,18 +58,15 @@ async function acquireLock(lockPath) {
       if (e.code !== 'EEXIST') throw e;
 
       // Lock already held — reclaim ONLY if the owner is gone (dead PID). A
-      // live owner is respected no matter how old/slow (see file header). The
-      // age path is disabled by default and exists only for tests.
+      // live owner is respected no matter how old/slow (see file header).
       try {
         const raw = await fs.readFile(lockPath, 'utf8');
-        const { pid, ts } = JSON.parse(raw);
-        const dead = !isProcessAlive(pid);
-        const ageEvict = LOCK_AGE_EVICT_MS > 0 && (Date.now() - ts) > LOCK_AGE_EVICT_MS;
-        if (dead || ageEvict) {
+        const { pid } = JSON.parse(raw);
+        if (!isProcessAlive(pid)) {
           // Race: two waiters may both decide to reclaim simultaneously; the
           // unlink that loses is harmless (ENOENT swallowed).
           await fs.unlink(lockPath).catch(() => {});
-          continue; // retry immediately after clearing the reclaimable lock
+          continue; // retry immediately after clearing the dead owner's lock
         }
       } catch {
         // Lock file disappeared or is unreadable — just retry.

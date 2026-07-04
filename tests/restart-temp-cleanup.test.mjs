@@ -97,7 +97,6 @@ test('writePendingTempCleanup + sweepPendingTempCleanup round-trip archives sess
 
   // Manifest dir must exist (orchStoreRoot lives under projectsRoot).
   await fs.mkdir(orchStoreRoot(), { recursive: true });
-  // Default action is now 'archive': keep .jsonl, remove subagents dir.
   writePendingTempCleanup([{ cwd, sessionId: sid }]);
 
   const manifest = pendingTempCleanupPath();
@@ -113,16 +112,15 @@ test('writePendingTempCleanup + sweepPendingTempCleanup round-trip archives sess
   await assert.rejects(() => fs.access(manifest));
 });
 
-test('sweepPendingTempCleanup with archive action keeps any surviving .jsonl and removes subagent dir', async () => {
-  // The archive sweep no longer deletes the .jsonl — it marks the session
-  // archived and leaves the transcript for restore. The subagent dir is
-  // still cleaned. Any .jsonl on disk (including orphaned writes) survives.
+test('sweepPendingTempCleanup keeps any surviving .jsonl and removes subagent dir', async () => {
+  // The sweep never deletes the .jsonl — it marks the session archived and
+  // leaves the transcript for restore. The subagent dir is still cleaned.
+  // Any .jsonl on disk (including orphaned writes) survives.
   const cwd = '/tmp/cc-orphaned-' + Math.random().toString(36).slice(2);
   const sid = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
   const dir = path.join(claudeProjectsRoot, encodeCwd(cwd));
 
   await fs.mkdir(orchStoreRoot(), { recursive: true });
-  // Default action is archive.
   writePendingTempCleanup([{ cwd, sessionId: sid }]);
 
   // Simulate a .jsonl that survived (either was never deleted or reappeared).
