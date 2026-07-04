@@ -1,7 +1,9 @@
 // Context-window policy: Opus always 1M (bare), Haiku always 200k (bare),
-// Sonnet user-selectable (1M via CLI `[1m]` suffix or 200k bare), all pinned
-// via canonicalizeModel() in src/modelVersions.js. The orchestrator never
-// injects CLAUDE_CODE_DISABLE_1M_CONTEXT — that env flag must never appear.
+// all pinned via canonicalizeModel() in src/modelVersions.js. Sonnet is
+// per-version: Sonnet 4.x is user-selectable (1M via CLI `[1m]` suffix or
+// 200k bare); Sonnet 5 is pinned to `[1m]` regardless of the preference (no
+// 200k build). The orchestrator never injects CLAUDE_CODE_DISABLE_1M_CONTEXT
+// — that env flag must never appear.
 
 import { test, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
@@ -91,6 +93,12 @@ test('canonicalizeModel pins each family to its window — default (1m)', () => 
   assert.equal(canonicalizeModel(null), null);
 });
 
+test('canonicalizeModel: Sonnet 5 is pinned to [1m] regardless of the sonnetWindow preference', () => {
+  assert.equal(canonicalizeModel('claude-sonnet-5'), 'claude-sonnet-5[1m]');
+  assert.equal(canonicalizeModel('claude-sonnet-5', { sonnetWindow: '200k' }), 'claude-sonnet-5[1m]');
+  assert.equal(canonicalizeModel('claude-sonnet-5[1m]', { sonnetWindow: '200k' }), 'claude-sonnet-5[1m]');
+});
+
 test('canonicalizeModel with { sonnetWindow: "200k" } returns bare Sonnet id', () => {
   // Sonnet → bare (200k) when preference is '200k'.
   assert.equal(canonicalizeModel('claude-sonnet-4-6', { sonnetWindow: '200k' }), 'claude-sonnet-4-6');
@@ -154,6 +162,29 @@ test('Sonnet spawns bare (200k) when sonnetContextWindow preference is "200k"', 
     assert.equal(modelFromArgv(argv), 'claude-sonnet-4-6',
       'Sonnet must spawn bare (no [1m]) when preference is 200k');
     assert.equal(instances.get(id).model, 'claude-sonnet-4-6');
+  } finally {
+    delete process.env.FAKE_CLAUDE_ARGV_DUMP;
+    await fs.rm(tmp, { recursive: true, force: true }).catch(() => {});
+  }
+});
+
+test('Sonnet 5 always spawns [1m] even when sonnetContextWindow preference is "200k"', async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'ctxwin-'));
+  const argvDump = path.join(tmp, 'argv.txt');
+  process.env.FAKE_CLAUDE_ARGV_DUMP = argvDump;
+  try {
+    await setSonnetContextWindow('200k');
+    await api(baseUrl, 'POST', '/api/projects', { name: 'p3' });
+    const r = await api(baseUrl, 'POST', '/api/instances', {
+      project: 'p3', mode: 'bypassPermissions', model: 'claude-sonnet-5',
+    });
+    const id = r.body.id;
+    await waitFor(() => instances.get(id).status === 'idle');
+    await waitFor(async () => { try { await fs.stat(argvDump); return true; } catch { return false; } });
+    const argv = (await fs.readFile(argvDump, 'utf8')).split('\n').filter(Boolean);
+    assert.equal(modelFromArgv(argv), 'claude-sonnet-5[1m]',
+      'Sonnet 5 must spawn with [1m] regardless of the stored preference');
+    assert.equal(instances.get(id).model, 'claude-sonnet-5[1m]');
   } finally {
     delete process.env.FAKE_CLAUDE_ARGV_DUMP;
     await fs.rm(tmp, { recursive: true, force: true }).catch(() => {});

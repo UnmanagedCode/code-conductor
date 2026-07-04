@@ -6,10 +6,13 @@
 // may be activated via Settings.
 //
 // `id` is the bare CLI model identifier. Context-window policy is one fixed
-// window per family (no per-spawn choice): Opus → 1M (bare CLI default),
-// Sonnet → 1M (CLI-native `[1m]` suffix, since bare Sonnet is 200k), Haiku →
-// 200k. `canonicalizeModel()` below applies that policy and is the single
-// source of truth; the client mirrors it in public/models.js.
+// window per family (no per-spawn choice), except Sonnet, which is
+// per-version: Opus → 1M (bare CLI default); Haiku → 200k (no 1M build);
+// Sonnet 5 has no 200k build, so it's pinned to `[1m]` via the `fixedWindow`
+// flag on its catalog entry below; Sonnet 4.x has both builds and remains
+// user-selectable via the stored `sonnetContextWindow` preference.
+// `canonicalizeModel()` below applies that policy and is the single source
+// of truth; the client mirrors it in public/models.js.
 
 export const MODEL_FAMILIES = [
   {
@@ -34,7 +37,7 @@ export const MODEL_FAMILIES = [
     label: 'Sonnet',
     default: 'claude-sonnet-5',
     versions: [
-      { id: 'claude-sonnet-5', label: 'Sonnet 5' },
+      { id: 'claude-sonnet-5', label: 'Sonnet 5', fixedWindow: '1m' },
       { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6' },
       { id: 'claude-sonnet-4-5', label: 'Sonnet 4.5' },
     ],
@@ -77,14 +80,25 @@ export function familyOf(modelId) {
   return null;
 }
 
-// Single source of truth for context-window policy. Strips any stale
-// `[200k]`/`[1m]` suffix first so recovered/older ids normalise cleanly.
-// Opus → 1M bare (CLI default); Haiku → 200k bare (no 1M build).
-// Sonnet → user-selectable: '1m' (default, CLI `[1m]` suffix) or '200k'
-// (bare). Unknown ids pass through unchanged.
+// Returns the pinned suffix for a specific (family, bare-id) version, if the
+// catalog fixes it (e.g. Sonnet 5 has no 200k build), or undefined if the
+// version defers to the sonnetWindow preference instead.
+function fixedWindowFor(family, id) {
+  const v = MODEL_FAMILIES.find(f => f.family === family)?.versions.find(x => x.id === id);
+  return v?.fixedWindow;
+}
+
+// Single source of truth for context-window policy. Strips any existing
+// `[200k]`/`[1m]` suffix first so recovered ids normalise cleanly.
+// Opus → 1M bare (CLI default); Haiku → 200k bare (no 1M build). Sonnet's
+// window is per-version: a version can pin `fixedWindow` in the catalog
+// (Sonnet 5 — no 200k build, always `[1m]`) or defer to the `sonnetWindow`
+// preference (Sonnet 4.x — user-selectable via Settings → Models).
 export function canonicalizeModel(modelId, { sonnetWindow = '1m' } = {}) {
   if (typeof modelId !== 'string' || !modelId) return modelId;
   const bare = modelId.replace(/\[(200k|1m)\]$/, '');
-  if (familyOf(bare) !== 'sonnet') return bare;
-  return sonnetWindow === '200k' ? bare : `${bare}[1m]`;
+  const family = familyOf(bare);
+  if (family !== 'sonnet') return bare;
+  const window = fixedWindowFor('sonnet', bare) || sonnetWindow;
+  return window === '200k' ? bare : `${bare}[1m]`;
 }

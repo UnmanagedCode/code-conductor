@@ -319,9 +319,12 @@ export function installSettings({
     if (smStatusEl) {
       smStatusEl.innerHTML = families.map(f => {
         const vLabel = labelFor(f, active[f.family]);
-        const extra = f.family === 'sonnet'
-          ? ` — ${sonnetWindow === '200k' ? '200k' : '1M'}`
-          : '';
+        let extra = '';
+        if (f.family === 'sonnet') {
+          const activeEntry = f.versions.find(v => v.id === active[f.family]);
+          const win = activeEntry?.fixedWindow || sonnetWindow;
+          extra = ` — ${win === '200k' ? '200k' : '1M'}`;
+        }
         const isDefault = f.family === defaultFamily;
         return `${f.label}: <strong>${vLabel}${extra}</strong>${isDefault ? ' <em>(default)</em>' : ''}`;
       }).join(' · ');
@@ -359,18 +362,30 @@ export function installSettings({
       sel.disabled = !isEnabled || f.versions.length < 2;
       if (f.family === 'sonnet') {
         for (const v of f.versions) {
-          for (const w of ['200k', '1m']) {
+          if (v.fixedWindow) {
+            // Fixed-window version (Sonnet 5, no 200k build) — plain single
+            // option, same shape as the generic non-Sonnet branch below.
             const opt = document.createElement('option');
             opt.value = v.id;
-            opt.dataset.window = w;
-            opt.textContent = `${v.label} — ${w === '200k' ? '200k' : '1M'}`;
-            if (v.id === active[f.family] && w === sonnetWindow) opt.selected = true;
+            opt.textContent = v.label;
+            if (v.id === active[f.family]) opt.selected = true;
             sel.appendChild(opt);
+          } else {
+            // Preference-driven version (Sonnet 4.x) — existing 200k/1m sub-choice.
+            for (const w of ['200k', '1m']) {
+              const opt = document.createElement('option');
+              opt.value = v.id;
+              opt.dataset.window = w;
+              opt.textContent = `${v.label} — ${w === '200k' ? '200k' : '1M'}`;
+              if (v.id === active[f.family] && w === sonnetWindow) opt.selected = true;
+              sel.appendChild(opt);
+            }
           }
         }
         sel.addEventListener('change', () => {
           const opt = sel.options[sel.selectedIndex];
-          onPickSonnetVersionAndWindow(opt.value, opt.dataset.window);
+          if (opt.dataset.window) onPickSonnetVersionAndWindow(opt.value, opt.dataset.window);
+          else onPickVersion('sonnet', opt.value);
         });
       } else {
         for (const v of f.versions) {

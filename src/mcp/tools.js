@@ -129,7 +129,7 @@ export function buildTools() {
             type: 'string',
             description:
               'Family alias (opus / sonnet / haiku / fable) — resolves to the version configured in ' +
-              'Settings → Models, including the Sonnet 1M/200k context-window preference. ' +
+              "Settings → Models, including Sonnet's 1M/200k preference for 4.x versions (Sonnet 5 is always 1M). " +
               'A full model id (e.g. claude-sonnet-4-6) is also accepted as a pass-through. ' +
               'Empty/omitted uses the account default. ' +
               'Disabled families are still resolved when passed explicitly.',
