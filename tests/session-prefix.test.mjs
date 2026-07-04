@@ -8,7 +8,7 @@
 //   A. unit — resolveSessionRef branch coverage on a manager with controlled
 //      byId entries (deterministic ids that real random UUIDs can't reproduce).
 //   B. integration — through the real MCP tools/call dispatch: full-UUID
-//      back-compat, unique-prefix resolves, ambiguous-prefix soft-refuses,
+//      (exact match), unique-prefix resolves, ambiguous-prefix soft-refuses,
 //      unknown stays unknown.
 
 import { test, before, after, beforeEach, afterEach } from 'node:test';
@@ -65,7 +65,7 @@ test('resolveSessionRef: no match returns null (caller falls through to SESSION_
   assert.equal(im.resolveSessionRef('zzzz'), null);
 });
 
-test('resolveSessionRef: full id back-compat resolves to itself', () => {
+test('resolveSessionRef: full id resolves to itself (exact match)', () => {
   const full = '1234abcd-5678-90ef-1234-567890abcdef';
   const im = managerWith([full, 'bbbb2222-aaaa']);
   assert.deepEqual(im.resolveSessionRef(full), { sessionId: full });
@@ -130,7 +130,7 @@ async function spawnLiveWorker() {
   return spawn.sessionId;
 }
 
-test('full UUID still addresses the worker (back-compat)', async () => {
+test('full UUID addresses the worker (exact match)', async () => {
   const full = await spawnLiveWorker();
   const body = unwrap(await callTool(baseUrl, 'send_prompt', {
     sessionId: full, text: 'go', wait: true, waitTimeoutMs: 5000,

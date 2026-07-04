@@ -1027,7 +1027,7 @@ test('spawn_instance: sonnet alias resolves to concrete model id with context-wi
   }
 });
 
-test('spawn_instance: full model id passes through unchanged (backward compat)', async () => {
+test('spawn_instance: full model id passes through unchanged (deliberate Settings override)', async () => {
   const prev = process.env.FAKE_CLAUDE_SCENARIO;
   process.env.FAKE_CLAUDE_SCENARIO = SCENARIO_INSTANCE;
   try {
