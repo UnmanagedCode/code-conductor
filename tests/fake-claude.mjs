@@ -70,10 +70,10 @@ if (transcriptPath) transcriptHandle = await fs.open(transcriptPath, 'a');
 
 function substitute(obj) {
   if (typeof obj === 'string') {
-    // Whole-string sentinels keep working for backwards compat, but we
-    // also do substring replacement so placeholders inside an
-    // `input_json_delta` partial_json (which is itself a JSON-string)
-    // get resolved.
+    // The harness supports both whole-string sentinels and substring
+    // replacement for convenience in existing tests. This allows
+    // placeholders inside an `input_json_delta` partial_json (which is
+    // itself a JSON-string) to get resolved.
     if (obj === '$SID') return SID;
     if (obj === '$CWD') return CWD;
     if (obj === '$MODE') return MODE;
