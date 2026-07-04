@@ -232,6 +232,36 @@ export function buildTools() {
       handler: h.rejectPlan,
     },
     {
+      name: 'answer_question',
+      description:
+        'Answer a worker\'s AskUserQuestion with a STRUCTURED answer — the byte-identical analog of the UI ' +
+        'question card, so the worker can\'t tell a UI answer from an MCP one. Use this rather than a free-text ' +
+        'send_prompt when a wake shows a `questions` field. `answers` is aligned by index to those questions ' +
+        '(in order); each entry is { option } for single-choice, { options: [...] } for multiSelect, ' +
+        '{ text } for a custom typed answer, or {} to skip — with an optional `note` on option/options.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          sessionId: { type: 'string', description: 'Worker sessionId whose question you\'re answering.' },
+          answers: {
+            type: 'array',
+            description: 'One entry per pending question, in the order returned by get_recent_messages\' `questions` field.',
+            items: {
+              type: 'object',
+              properties: {
+                option: { type: 'string', description: 'Chosen option label (single-choice question).' },
+                options: { type: 'array', items: { type: 'string' }, description: 'Chosen option labels (multiSelect question).' },
+                text: { type: 'string', description: 'Custom free-text answer (overrides option/options).' },
+                note: { type: 'string', description: 'Optional note appended to an option/options answer.' },
+              },
+            },
+          },
+        },
+        required: ['sessionId', 'answers'],
+      },
+      handler: h.answerQuestion,
+    },
+    {
       name: 'set_auto_approve_plan',
       description:
         'Toggle the per-instance auto-approve-plan flag. While enabled, the next plan_request emitted by the ' +
