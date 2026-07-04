@@ -646,17 +646,22 @@ export function buildTools() {
     {
       name: 'get_worktree_diff',
       description:
-        'Return the unified diff of <baseRef>...HEAD in a worktree. baseRef defaults to the worktree\'s recorded ' +
-        'baseBranch (the branch it was created from); contextLines (0-50, default 3) sets hunk context. Three modes ' +
-        'keep this usable at any size: (1) summary:true returns a structured per-file stat ' +
-        '{totals, files:[{path,status,oldPath?,additions,deletions,binary}]} instead of a diff — always small, never ' +
-        'truncated, single JSON block. (2) paths:[...] scopes the diff (or summary) to specific file paths. (3) the diff is ' +
-        'paginated by LINE INDEX: each call returns at most ~200 KB of whole lines starting at offset (0-based line index, ' +
-        'default 0). In diff mode the OUTPUT is a compact-JSON metadata block (content[0]) {project, worktree, baseRef, ' +
-        'head:<sha>, contextLines, offset, truncated, nextOffset, totalLines, totalBytes, includedFiles?, omittedFiles?} PLUS ' +
+        'Return the unified diff of <baseRef>...HEAD in a worktree, PLUS the working tree\'s uncommitted state. ' +
+        'baseRef defaults to the worktree\'s recorded baseBranch (the branch it was created from); contextLines ' +
+        '(0-50, default 3) sets hunk context. Three modes keep this usable at any size: (1) summary:true returns a ' +
+        'structured per-file stat {totals, files:[{path,status,oldPath?,additions,deletions,binary}]} instead of a ' +
+        'diff — always small, never truncated, single JSON block. (2) paths:[...] scopes the diff (or summary) to ' +
+        'specific file paths. (3) the diff is paginated by LINE INDEX: each call returns at most ~200 KB of whole ' +
+        'lines starting at offset (0-based line index, default 0). In diff mode the OUTPUT is a compact-JSON metadata ' +
+        'block (content[0]) {project, worktree, baseRef, head:<sha>, contextLines, offset, truncated, nextOffset, ' +
+        'totalLines, totalBytes, hasUncommittedChanges:bool, untracked:[paths], includedFiles?, omittedFiles?} PLUS ' +
         'a separate raw, un-escaped diff text block (content[1]); when truncated, re-call with offset:nextOffset until ' +
         'truncated:false. Mid-file pages re-emit the file/hunk headers so each page parses standalone, and a truncated ' +
-        'page lists includedFiles/omittedFiles. Never silently cuts. Complements project_status.',
+        'page lists includedFiles/omittedFiles. Never silently cuts. Staged + unstaged changes vs HEAD (git diff HEAD) ' +
+        'are always appended after the committed diff behind a `@@@ uncommitted working tree changes (git diff HEAD) @@@` ' +
+        'separator whenever any exist (absent on a clean tree); untracked files never-git-added are always listed in ' +
+        '`untracked`. summary:true likewise always includes an `uncommitted:{totals, files, untracked}` section. ' +
+        'Complements project_status.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -667,7 +672,6 @@ export function buildTools() {
           summary: { type: 'boolean', default: false, description: 'Return a per-file stat (totals + files[]) instead of a diff. Always small; never truncated.' },
           paths: { type: 'array', items: { type: 'string' }, description: 'Limit the diff (or summary) to these file paths.' },
           offset: { type: 'integer', minimum: 0, default: 0, description: '0-based line index into the diff to start this page at (default 0). Use nextOffset from the previous call to paginate.' },
-          includeWorkingTree: { type: 'boolean', default: false, description: 'When true, also surface staged + unstaged changes vs HEAD (git diff HEAD) after the committed diff, plus a list of untracked files. Default false (back-compat). Metadata gains includeWorkingTree:true, hasUncommittedChanges:bool, untracked:[paths].' },
         },
         required: ['project', 'worktree'],
       },
