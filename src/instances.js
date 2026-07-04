@@ -750,8 +750,18 @@ export class Instance extends EventEmitter {
       }
       // message_start reports the model too, and fires at the actual turn
       // boundary rather than a turn later once the next init lands.
-      if (ev.kind === 'message_start' && ev.model) {
-        this._trackModel(ev.model);
+      if (ev.kind === 'message_start') {
+        if (ev.model) this._trackModel(ev.model);
+        // A turn we didn't initiate (e.g. a ScheduleWakeup fire re-invoking the
+        // turn internally) never went through prompt()'s _setStatus('turn').
+        // message_start is the earliest turn-start signal on the stream, so flip
+        // idle→turn here. Guarded to 'idle' so spawn ('spawning') and dead
+        // ('crashed'/'exited') states are untouched, and so it's a no-op for
+        // prompt-initiated turns (already 'turn') and mid-turn re-emits. Unlike
+        // system/init, message_start doesn't fire at spawn and isn't the drain
+        // window's trigger — so no spurious post-spawn turn and no fight with
+        // the post-abort drain (which severs on init, before any API round-trip).
+        if (this.status === 'idle') this._setStatus('turn');
       }
       // With `--permission-prompt-tool stdio`, the CLI routes tool-permission
       // prompts to us as `can_use_tool` control_requests. The interactive tools
