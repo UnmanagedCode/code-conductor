@@ -202,6 +202,28 @@ export function formatAutoResumeTime(unixSecs) {
   return 'resumes at ' + d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 }
 
+// Long-form window label, for contexts where "5h"/"7d" (RL_BUCKET_LABEL) reads
+// too terse — e.g. a parsed rate_limit_event line in the conversation.
+export const RL_WINDOW_LABEL = {
+  five_hour:        '5-hour',
+  seven_day:        '7-day',
+  seven_day_sonnet: '7-day Sonnet',
+  seven_day_opus:   '7-day Opus',
+};
+
+// Like formatResetTime, but includes the weekday when the reset is more than
+// ~24h out (e.g. "resets Sat 5:00pm") — a bare time-of-day is ambiguous once
+// it's not "later today".
+export function formatResetWhen(unixSecs) {
+  if (!unixSecs || !Number.isFinite(unixSecs)) return null;
+  const d = new Date(unixSecs * 1000);
+  const time = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  const farOut = unixSecs * 1000 - Date.now() > 24 * 60 * 60 * 1000;
+  if (!farOut) return 'resets ' + time;
+  const weekday = d.toLocaleDateString([], { weekday: 'short' });
+  return `resets ${weekday} ${time}`;
+}
+
 // Pure helper: derive the rate-limit half of the combined chip from the two
 // available sources (no DOM, easily testable).
 //   info        – globalRLTracker.info (from rate_limit_event; may be null)

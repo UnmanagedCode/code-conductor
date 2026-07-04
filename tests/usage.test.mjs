@@ -268,6 +268,21 @@ test('formatDuration: seconds / minutes / hours', async () => {
   assert.equal(formatDuration(3_660_000), '1h 1m');
 });
 
+test('formatResetWhen: near reset matches formatResetTime; far reset (>24h) adds weekday', async () => {
+  const { formatResetWhen, formatResetTime } = await import(USAGE_URL);
+  assert.equal(formatResetWhen(null), null);
+  assert.equal(formatResetWhen(NaN), null);
+
+  const nearSecs = Math.floor(Date.now() / 1000) + 3600; // 1h out
+  assert.equal(formatResetWhen(nearSecs), formatResetTime(nearSecs));
+
+  const farSecs = Math.floor(Date.now() / 1000) + 3 * 24 * 60 * 60; // 3 days out
+  const far = formatResetWhen(farSecs);
+  const d = new Date(farSecs * 1000);
+  const weekday = d.toLocaleDateString([], { weekday: 'short' });
+  assert.ok(far.startsWith(`resets ${weekday} `), `expected weekday prefix, got "${far}"`);
+});
+
 // --- DOM-level test: chip threshold transitions ---
 
 async function setupDOM() {
