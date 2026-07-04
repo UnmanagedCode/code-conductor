@@ -122,26 +122,18 @@ export async function setTtsRate(rate) {
 // and 'stop-resume'; 'stop-resume' additionally schedules an in-memory timer
 // that resumes the (still-alive) session at the rate-limit reset time. Off
 // ('none') by default — strictly opt-in.
-//
-// Read-time DATA migration (not request/route compat): a user who had the
-// legacy boolean `autoStopOnOverage: true` and has never set the new enum key
-// maps to 'stop' so they don't silently lose the behavior. The legacy key is
-// removed on the next setOnOverageAction() write.
 const VALID_ON_OVERAGE = ['none', 'stop', 'stop-resume'];
 
 export function getOnOverageAction() {
   const s = loadSync();
   const v = s.models?.onOverage;
-  if (v === 'stop' || v === 'stop-resume') return v;
-  if (v === undefined && s.models?.autoStopOnOverage === true) return 'stop'; // migrate legacy ON
-  return 'none';
+  return v === 'stop' || v === 'stop-resume' ? v : 'none';
 }
 
 export async function setOnOverageAction(action) {
   const val = VALID_ON_OVERAGE.includes(action) ? action : 'none';
   const cur = loadSync();
   const models = { ...(cur.models || {}), onOverage: val };
-  delete models.autoStopOnOverage; // one-time cleanup of the legacy key
   await writeSettings({ ...cur, models });
   return val;
 }
@@ -165,7 +157,6 @@ export async function setSonnetContextWindow(window) {
 
 // Models group: per-family visibility toggle. When a family is false it is
 // hidden from all spawn pickers. All families default to true (opt-out).
-// Migrates the legacy scalar `fable5Enabled` key on first read.
 //
 // Derived from MODEL_FAMILIES so the family enum has a single source of truth;
 // callers spread/index the result, so key order is irrelevant.
@@ -181,14 +172,11 @@ export function getEnabledFamilies() {
   if (s.models?.enabledFamilies !== undefined) {
     return { ...ENABLED_FAMILIES_DEFAULTS, ...s.models.enabledFamilies };
   }
-  // Migration: honour legacy fable5Enabled: false
-  if (s.models?.fable5Enabled === false) return { ...ENABLED_FAMILIES_DEFAULTS, fable: false };
   return { ...ENABLED_FAMILIES_DEFAULTS };
 }
 
 // Disable/enable one family. Guards against disabling the last enabled family.
 // Auto-reassigns defaultFamily when the disabled family is the current default.
-// Cleans up the legacy fable5Enabled key on write.
 export async function setFamilyEnabled(family, enabled) {
   const cur = loadSync();
   const current = getEnabledFamilies();
@@ -210,7 +198,6 @@ export async function setFamilyEnabled(family, enabled) {
   }
 
   const models = { ...(cur.models || {}), enabledFamilies: nextEnabled, defaultFamily: nextDefault };
-  delete models.fable5Enabled; // remove legacy key
   await writeSettings({ ...cur, models });
   return { enabledFamilies: nextEnabled, defaultSpawnFamily: nextDefault };
 }

@@ -156,51 +156,6 @@ test('appSettings: setOnOverageAction coerces unknown values to "none"', async (
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
 
-test('appSettings: onOverage migrates legacy autoStopOnOverage:true → "stop" (new key absent)', async () => {
-  const root = await mkTmp();
-  try {
-    await withEnv({ PROJECTS_ROOT: root }, async () => {
-      const { orchStoreRoot } = await import('../src/projects.js');
-      const p = path.join(orchStoreRoot(), 'settings.json');
-      await fs.mkdir(path.dirname(p), { recursive: true });
-      await fs.writeFile(p, JSON.stringify({ models: { autoStopOnOverage: true } }));
-      assert.equal(getOnOverageAction(), 'stop', 'legacy ON maps to stop');
-    });
-  } finally { await fs.rm(root, { recursive: true, force: true }); }
-});
-
-test('appSettings: legacy autoStopOnOverage:false (new key absent) → "none"', async () => {
-  const root = await mkTmp();
-  try {
-    await withEnv({ PROJECTS_ROOT: root }, async () => {
-      const { orchStoreRoot } = await import('../src/projects.js');
-      const p = path.join(orchStoreRoot(), 'settings.json');
-      await fs.mkdir(path.dirname(p), { recursive: true });
-      await fs.writeFile(p, JSON.stringify({ models: { autoStopOnOverage: false } }));
-      assert.equal(getOnOverageAction(), 'none');
-    });
-  } finally { await fs.rm(root, { recursive: true, force: true }); }
-});
-
-test('appSettings: once onOverage is set the legacy key is removed and no longer consulted', async () => {
-  const root = await mkTmp();
-  try {
-    await withEnv({ PROJECTS_ROOT: root }, async () => {
-      const { orchStoreRoot } = await import('../src/projects.js');
-      const p = path.join(orchStoreRoot(), 'settings.json');
-      await fs.mkdir(path.dirname(p), { recursive: true });
-      // Legacy ON present; user explicitly chooses 'none'.
-      await fs.writeFile(p, JSON.stringify({ models: { autoStopOnOverage: true } }));
-      await setOnOverageAction('none');
-      assert.equal(getOnOverageAction(), 'none', 'explicit none wins, legacy not consulted');
-      // The legacy key must be gone from disk.
-      const onDisk = JSON.parse(await fs.readFile(p, 'utf8'));
-      assert.equal(onDisk.models.onOverage, 'none');
-      assert.ok(!('autoStopOnOverage' in onDisk.models), 'legacy key removed on write');
-    });
-  } finally { await fs.rm(root, { recursive: true, force: true }); }
-});
-
 test('appSettings: onOverage does not clobber model versions', async () => {
   const root = await mkTmp();
   try {
@@ -232,14 +187,6 @@ test('POST /api/settings/models/prefs sets onOverage and persists', async () => 
     // Back to off.
     const off = await api(baseUrl, 'POST', '/api/settings/models/prefs', { onOverage: 'none' });
     assert.equal(off.body.onOverage, 'none');
-  }
-});
-
-test('POST /api/settings/models/prefs ignores a legacy autoStopOnOverage boolean in the body', async () => {
-  {  // shared server (before/after) + fresh PROJECTS_ROOT per test (beforeEach)
-    const r = await api(baseUrl, 'POST', '/api/settings/models/prefs', { autoStopOnOverage: true });
-    assert.equal(r.status, 200);
-    assert.equal(r.body.onOverage, 'none', 'route does not honor the legacy request key');
   }
 });
 
@@ -519,25 +466,6 @@ test('appSettings: getEnabledFamilies defaults all-true when unset', async () =>
     await withEnv({ PROJECTS_ROOT: root }, async () => {
       const ef = getEnabledFamilies();
       assert.equal(ef.fable, true);
-      assert.equal(ef.opus, true);
-      assert.equal(ef.sonnet, true);
-      assert.equal(ef.haiku, true);
-    });
-  } finally { await fs.rm(root, { recursive: true, force: true }); }
-});
-
-test('appSettings: migration — legacy fable5Enabled:false → enabledFamilies.fable=false', async () => {
-  const root = await mkTmp();
-  try {
-    await withEnv({ PROJECTS_ROOT: root }, async () => {
-      // Write a settings.json that uses the old format.
-      const { orchStoreRoot } = await import('../src/projects.js');
-      const p = path.join(orchStoreRoot(), 'settings.json');
-      await fs.mkdir(path.dirname(p), { recursive: true });
-      await fs.writeFile(p, JSON.stringify({ models: { fable5Enabled: false } }));
-      // Force cache invalidation by temporarily changing env (already in withEnv).
-      const ef = getEnabledFamilies();
-      assert.equal(ef.fable, false, 'fable should be disabled after migration');
       assert.equal(ef.opus, true);
       assert.equal(ef.sonnet, true);
       assert.equal(ef.haiku, true);

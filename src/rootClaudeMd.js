@@ -22,7 +22,6 @@
 
 import { promises as fs, readFileSync } from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { projectsRoot, orchStoreRoot, writeFileAtomic } from './projects.js';
@@ -52,13 +51,6 @@ export function baselinePath() {
 
 function statePath() {
   return path.join(storeDir(), 'state.json');
-}
-
-// The legacy TCC baseline (last-applied canonical from the old shell installer).
-// `TCC_LEGACY_BASELINE` overrides it for tests; default is the real path.
-export function legacyBaselinePath() {
-  return process.env.TCC_LEGACY_BASELINE
-    ?? path.join(os.homedir(), '.cache', 'code-conductor-bootstrap', 'CLAUDE.md.installed');
 }
 
 // ── Vendor text (cached by resolved path, like appSettings) ────────────────
@@ -131,18 +123,13 @@ function statusFromClass(cls) {
   }
 }
 
-// ── Seeding / migration ────────────────────────────────────────────────────
+// ── Seeding ──────────────────────────────────────────────────────────────
 
-// Seed our baseline if absent: migrate from the legacy TCC baseline when it
-// exists (so existing installs don't see a spurious first-run conflict),
-// otherwise seed from vendor. Idempotent.
+// Seed our baseline from vendor if absent. Idempotent. (A prior legacy TCC
+// baseline, if any, was already migrated in by a boot-time migration —
+// see migrations/0009-seed-legacy-shell-installer-baseline.mjs.)
 export async function seedBaselineIfNeeded() {
   if (await fileExists(baselinePath())) return { seeded: false };
-  const legacy = await readFileOrNull(legacyBaselinePath());
-  if (legacy != null) {
-    await writeBaseline(legacy);
-    return { seeded: true, from: 'legacy' };
-  }
   await writeBaseline(vendorText());
   return { seeded: true, from: 'vendor' };
 }
@@ -199,11 +186,8 @@ export async function getStatus() {
   const target = await readFileOrNull(tPath);
   const targetExists = target != null;
   // If never seeded (e.g. status queried before any reconcile), emulate the
-  // seed in-memory without writing: legacy baseline if present, else vendor.
-  let baseline = await readBaseline();
-  if (baseline == null) {
-    baseline = (await readFileOrNull(legacyBaselinePath())) ?? vendor;
-  }
+  // seed in-memory without writing: vendor.
+  const baseline = (await readBaseline()) ?? vendor;
   const cls = classify({
     targetExists,
     targetSha: targetExists ? sha256(target) : null,

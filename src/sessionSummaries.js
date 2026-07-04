@@ -1,14 +1,9 @@
 // Sidecar JSON store mapping sessionId → per-tier summary records.
 // Single global file at `<store>/session-summaries.json`.
 //
-// New shape: { summaries: { "<sid>": { short?: {summary,generatedAt,messageCount},
-//                                      medium?: {...}, long?: {...} } } }
+// Shape: { summaries: { "<sid>": { short?: {summary,generatedAt,messageCount},
+//                                  medium?: {...}, long?: {...} } } }
 // The `length` key IS the tier; it is not stored inside the record.
-//
-// Backward compat: entries written by the old single-summary shape
-// { summary, length, generatedAt, messageCount } are migrated on read to
-// { [length]: { summary, generatedAt, messageCount } } so the shared store
-// doesn't crash when it holds a mix of old and new entries.
 //
 // Atomic writes (write tmp + rename). Missing file = empty map.
 // Concurrent writers serialised behind a per-process promise chain.
@@ -34,19 +29,9 @@ function normalizeTierRecord(rec) {
 }
 
 // Normalise a raw per-session entry to { short?, medium?, long? }.
-// Handles both the new multi-tier shape and the old single-record shape.
 function normalizeEntry(raw) {
   if (!raw || typeof raw !== 'object') return null;
 
-  // Old shape: has a top-level `summary` string and `length` field.
-  if (typeof raw.summary === 'string' && typeof raw.length === 'string') {
-    const len = raw.length;
-    if (!VALID_LENGTHS.has(len)) return null;
-    const rec = normalizeTierRecord(raw);
-    return rec ? { [len]: rec } : null;
-  }
-
-  // New shape: keyed by tier.
   const entry = {};
   for (const len of VALID_LENGTHS) {
     if (raw[len]) {
