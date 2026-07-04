@@ -19,6 +19,7 @@ Load-bearing rules — stay inside them when writing code. Rationale + examples 
 - **No god-modules** — when a module takes on a second responsibility, extract it as a composed collaborator with a stable delegating surface (cf. InstanceManager→IdleSubscriptionHub/OverageResumeController, handlers.js→diffPaging/messageReconstruction, whisper/tts→installRunner).
 - **REST and MCP share one service layer** — git/worktree/diff/session logic lives once (`src/worktrees.js` + siblings), imported by both `routes.js` and `mcp/handlers.js`; never reimplement per surface.
 - **Single-source-of-truth catalogs shipped to the client** — `modelVersions`/`whisperModels`/`ttsModels` own the authoritative list + allow-list server-side and are fetched by the client; never hardcode the canonical set as client literals (a first-paint fallback is fine — it's a fallback, not a second source).
+- **No read-time backwards compatibility** — the conductor has no external API clients, so there's no stable-API obligation. When a persisted format or config key changes, ship a one-shot migration in `migrations/` (see `migrations/migrations.md`) and make application code assume the current format; never keep legacy aliases, dual-shape parsing, or "back-compat" defaults on the MCP/REST surface. Exception: read-time tolerance is allowed for formats owned by external tools (e.g. the Claude CLI's session jsonls) that we can't migrate.
 
 ## Documentation updates
 

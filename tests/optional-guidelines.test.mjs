@@ -34,12 +34,13 @@ afterEach(async () => {
 
 // ── Catalog (unit) ─────────────────────────────────────────────────────────
 
-test('SEED_GUIDELINES has 3 entries with expected slugs', () => {
-  assert.equal(SEED_GUIDELINES.length, 3);
+test('SEED_GUIDELINES has 4 entries with expected slugs', () => {
+  assert.equal(SEED_GUIDELINES.length, 4);
   const slugs = SEED_GUIDELINES.map(r => r.slug);
   assert.ok(slugs.includes('design-guidelines'));
   assert.ok(slugs.includes('testing-guidelines'));
   assert.ok(slugs.includes('documentation-guidelines'));
+  assert.ok(slugs.includes('migrations-over-compat'));
   for (const r of SEED_GUIDELINES) {
     assert.equal(r.builtin, true);
     assert.ok(r.name, 'seed guideline has name');
@@ -48,19 +49,22 @@ test('SEED_GUIDELINES has 3 entries with expected slugs', () => {
   }
 });
 
-test('SEED_GUIDELINES order is design → testing → documentation', () => {
+test('SEED_GUIDELINES order is design → testing → documentation → migrations-over-compat', () => {
   assert.equal(SEED_GUIDELINES[0].slug, 'design-guidelines');
   assert.equal(SEED_GUIDELINES[1].slug, 'testing-guidelines');
   assert.equal(SEED_GUIDELINES[2].slug, 'documentation-guidelines');
+  assert.equal(SEED_GUIDELINES[3].slug, 'migrations-over-compat');
 });
 
 test('SEED_GUIDELINES bodies have correct ## headings', () => {
   const design = SEED_GUIDELINES.find(r => r.slug === 'design-guidelines');
   const testing = SEED_GUIDELINES.find(r => r.slug === 'testing-guidelines');
   const docs = SEED_GUIDELINES.find(r => r.slug === 'documentation-guidelines');
+  const migrations = SEED_GUIDELINES.find(r => r.slug === 'migrations-over-compat');
   assert.ok(design.body.startsWith('## Design guidelines'));
   assert.ok(testing.body.startsWith('## Testing guidelines'));
   assert.ok(docs.body.startsWith('## Documentation guidelines'));
+  assert.ok(migrations.body.startsWith('## Migrations over backwards compatibility'));
 });
 
 test('design-guidelines body includes a YAGNI bullet', () => {
@@ -174,7 +178,7 @@ test('createProject with guidelines appends guideline bodies', async () => {
 
 // ── REST API ───────────────────────────────────────────────────────────────
 
-test('GET /api/settings/optional-guidelines returns 3 seed guidelines', async () => {
+test('GET /api/settings/optional-guidelines returns 4 seed guidelines', async () => {
   const r = await api(baseUrl, 'GET', '/api/settings/optional-guidelines');
   assert.equal(r.status, 200);
   assert.ok(Array.isArray(r.body.rules));
