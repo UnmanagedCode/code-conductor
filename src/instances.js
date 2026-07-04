@@ -1771,6 +1771,20 @@ export class InstanceManager extends EventEmitter {
   _fireAutoResumeNow(sessionId) { return this._overageResume.fireNow(sessionId); }
   _cancelAutoResume(sessionId) { return this._overageResume.cancel(sessionId); }
 
+  // Force-reevaluate every parked overage auto-resume session against the CURRENT
+  // threshold — called after Settings → Models Apply raises/disables the threshold so
+  // a session parked under the OLD bar doesn't wait out its full deadline (which can
+  // be hours away, armed at window-reset). Reuses fireNow's usage-verified resolve
+  // unchanged; a session still over the new bar just reschedules, exactly like a
+  // normal sweep tick. Snapshot the keys first — fireNow synchronously deletes its own
+  // timers entry before doing anything async, so iterating the live map would skip
+  // entries.
+  reevaluateOverageResumes() {
+    for (const sid of [...this._overageResume.timers.keys()]) {
+      this._overageResume.fireNow(sid);
+    }
+  }
+
   // ---- Global overage auto-stop routing -----------------------------------
   // The central handler an Instance's `overage` signal lands in. One-shot per
   // rate-limit window via `_overageActive`. Honours getOnOverageAction():

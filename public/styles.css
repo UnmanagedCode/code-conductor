@@ -1275,6 +1275,14 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
 }
 .sm-prefs .qs-mode-toggle { width: fit-content; }
 .sm-prefs .qs-mode-toggle .qs-mode-opt { white-space: nowrap; }
+.sm-apply-row { display: flex; align-items: center; gap: 10px; margin: 10px 0 4px; }
+.sm-dirty-hint { font-size: 11px; color: var(--amber); }
+.sm-apply-btn {
+  background: var(--accent); color: #0a0c12; font-weight: 600;
+  border-color: var(--accent); padding: 6px 16px;
+}
+.sm-apply-btn:hover:not(:disabled) { background: #8cb9ff; border-color: #8cb9ff; }
+.sm-apply-btn:disabled { background: var(--panel-2); color: var(--muted); border-color: var(--border); font-weight: 400; }
 
 /* Settings — full-page view filling #main. While open, the instance-specific
    children of #main are hidden (the burger ≡ sidebar toggle in the header
