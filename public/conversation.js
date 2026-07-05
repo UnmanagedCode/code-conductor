@@ -304,11 +304,27 @@ export class Conversation {
     const blocks = el('div', { class: 'blocks' });
     let text = ev.text ?? '';
 
+    // Skill-content injection: the CLI dumps the invoked skill's SKILL.md
+    // back as a plain user message. The parser only sets `skillLoad` when it
+    // has correlated this message with a preceding Skill tool_use (see
+    // attachSkillLoad in src/parser.js) — isSynthetic alone isn't reliable,
+    // since the CLI reuses it for compaction-continuation and Stop-hook
+    // feedback text too. Render a collapsed bubble named after the actual
+    // invoked skill; the raw content goes in an expandable body.
+    const skill = ev.skillLoad;
+    if (skill) {
+      const details = el('details', { class: 'block skill' },
+        el('summary', {}, '📘 ', el('span', { class: 'skill-name' }, `Loading skill: ${skill.skill ?? 'skill'}`)),
+        el('pre', { class: 'block text' }, text),
+      );
+      blocks.appendChild(details);
+    }
+
     // Idle-subscription wake callback: the orchestrator folds the worker's
     // recent output into the injected prompt. Render a collapsed bubble — the
     // summary line stays visible, the folded get_recent_messages payload goes in
     // an expandable body (default collapsed). Marker sentinels never render.
-    const wake = parseWakeCallback(text);
+    const wake = skill ? null : parseWakeCallback(text);
     if (wake) {
       // Badge marks this as an orchestrator-injected wake, not a user message
       // (mirrors the transcribed-badge pattern below).
@@ -329,10 +345,10 @@ export class Conversation {
     // Strip the <transcribed> marker for display — the agent still receives it
     // in the sent payload so it knows the message came from speech-to-text.
     const TRANSCRIBED_PREFIX = '<transcribed>\n';
-    const isTranscribed = !wake && text.startsWith(TRANSCRIBED_PREFIX);
+    const isTranscribed = !skill && !wake && text.startsWith(TRANSCRIBED_PREFIX);
     if (isTranscribed) text = text.slice(TRANSCRIBED_PREFIX.length);
 
-    if (!wake && text.length) blocks.appendChild(el('div', { class: 'block text' }, text));
+    if (!skill && !wake && text.length) blocks.appendChild(el('div', { class: 'block text' }, text));
     for (const a of (ev.attachments ?? [])) {
       if (a?.kind === 'image') {
         if (typeof a.dataBase64 === 'string') {

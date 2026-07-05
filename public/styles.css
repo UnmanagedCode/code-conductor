@@ -598,6 +598,30 @@ input:focus, textarea:focus, select:focus { outline: 2px solid var(--accent); ou
   font-family: ui-monospace, monospace; font-size: 11px;
 }
 
+/* Skill-content injection bubble. The CLI dumps the invoked skill's SKILL.md
+   back as a plain user message; the server correlates it with the preceding
+   Skill tool_use (see attachSkillLoad in src/parser.js) and the client
+   renders it as a collapsed <details> named after the invoked skill, with
+   the raw content in an expandable body. Caret mirrors .block.wake/.block.tool. */
+.block.skill { border-left: 3px solid var(--accent); padding: 2px 0 2px 8px; }
+.block.skill > summary {
+  cursor: pointer; list-style: none; color: var(--accent);
+  display: flex; align-items: baseline; gap: 0; word-break: break-word;
+}
+.block.skill > summary::-webkit-details-marker { display: none; }
+.block.skill > summary::before {
+  content: "▸"; display: inline-block; color: var(--accent);
+  margin-right: 6px; transition: transform .12s;
+}
+.block.skill[open] > summary::before { transform: rotate(90deg); }
+.block.skill .skill-name { font-weight: 600; }
+.block.skill > pre.block.text {
+  margin: 6px 0 0 0; padding: 8px; border-radius: 4px;
+  background: #0a0c12; color: var(--text);
+  max-height: 360px; overflow-y: auto; white-space: pre-wrap; word-break: break-word;
+  font-family: ui-monospace, monospace; font-size: 11px;
+}
+
 .block.tool { border-left: 3px solid var(--tool); padding: 4px 0 4px 8px; }
 .block.tool summary {
   font-family: ui-monospace, monospace; font-size: 12px; cursor: pointer;

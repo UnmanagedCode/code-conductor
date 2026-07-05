@@ -11,7 +11,7 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { encodeCwd, claudeProjectsRoot } from './projects.js';
-import { consolidateUserContent, isSoftInterruptContent } from './parser.js';
+import { consolidateUserContent, isSoftInterruptContent, attachSkillLoad } from './parser.js';
 
 // Predicate: does this persisted jsonl object emit at least one `user_echo`
 // UI event when replayed? Mirrors the live-path emission in
@@ -59,7 +59,7 @@ export function isPureUserPromptLine(obj) {
 // whose original message had no `id` and no `uuid` (rare but
 // possible) — passing the ring's current length keeps replays
 // reproducible across reruns.
-export function replayPersistedLine(obj, { seqHint = 0, parentToolUseId = null, allowSidechain = false, blockCursor = null } = {}) {
+export function replayPersistedLine(obj, { seqHint = 0, parentToolUseId = null, allowSidechain = false, blockCursor = null, pendingSkillLoads = null } = {}) {
   const events = [];
   const tagAndReturn = () => {
     // Mirror parser.handleObject's contract: every emitted UI event carries a
@@ -95,7 +95,9 @@ export function replayPersistedLine(obj, { seqHint = 0, parentToolUseId = null, 
       // the bubble renders text and attachments together — mirrors the
       // live `parser.js:_handleUser` consolidation. tool_result blocks
       // remain their own events.
-      for (const ev of consolidateUserContent(content)) events.push(ev);
+      const userEvents = consolidateUserContent(content);
+      attachSkillLoad(userEvents, obj.isSynthetic === true, pendingSkillLoads);
+      for (const ev of userEvents) events.push(ev);
     }
     return tagAndReturn();
   }
@@ -169,6 +171,12 @@ export function replayPersistedLine(obj, { seqHint = 0, parentToolUseId = null, 
             planPath: null,
           });
         }
+        // Track Skill invocations — mirrors parser.js so the isSynthetic
+        // content-injection user line that follows can be identified and
+        // titled with the actual invoked skill id (see attachSkillLoad).
+        if (b.name === 'Skill' && pendingSkillLoads) {
+          pendingSkillLoads.push({ toolUseId: b.id ?? null, skill: b.input?.skill ?? null });
+        }
       }
     }
     return tagAndReturn();
@@ -194,13 +202,14 @@ export async function loadSubAgentTranscript({ cwd, sessionId, agentId, parentTo
   const out = [];
   let seq = seqHint;
   const blockCursor = new Map();
+  const pendingSkillLoads = [];
   for (const raw of text.split('\n')) {
     const trimmed = raw.trim();
     if (!trimmed) continue;
     let obj;
     try { obj = JSON.parse(trimmed); } catch { continue; }
     const lineEvents = replayPersistedLine(obj, {
-      seqHint: seq, parentToolUseId, allowSidechain: true, blockCursor,
+      seqHint: seq, parentToolUseId, allowSidechain: true, blockCursor, pendingSkillLoads,
     });
     for (const ev of lineEvents) out.push(ev);
     seq += lineEvents.length;
@@ -239,6 +248,7 @@ export async function loadPersistedTranscript({ cwd, sessionId, seqHint = 0 }) {
   let replayedCount = 0;
   let seq = seqHint;
   const blockCursor = new Map();
+  const pendingSkillLoads = [];
   for (const raw of text.split('\n')) {
     const trimmed = raw.trim();
     if (!trimmed) continue;
@@ -267,7 +277,7 @@ export async function loadPersistedTranscript({ cwd, sessionId, seqHint = 0 }) {
         seq += subEvents.length;
       }
     }
-    const ownEvents = replayPersistedLine(obj, { seqHint: seq, blockCursor });
+    const ownEvents = replayPersistedLine(obj, { seqHint: seq, blockCursor, pendingSkillLoads });
     for (const ev of ownEvents) events.push(ev);
 
     if (events.length > 0) {
