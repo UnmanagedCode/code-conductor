@@ -94,7 +94,7 @@ function buildMessageFromRing(ring, targetMsgId, includeThinking = false) {
   const blockOrder = [];
   const otherBlocks = []; // tool_use blocks etc, for context
   let hasToolUse = false;
-  let assistantMessage = null;
+  let assistantContent = null; // content blocks merged across all assistant_message envelopes for this msgId
   let plan = null;
   let questions = null;
   for (const ev of ring) {
@@ -126,16 +126,21 @@ function buildMessageFromRing(ring, targetMsgId, includeThinking = false) {
         otherBlocks.push({ type: 'tool_use', name: ev.name, input: ev.input, toolUseId: ev.toolUseId });
       }
     } else if (ev.kind === 'assistant_message') {
-      assistantMessage = ev.message ?? null;
+      const content = ev.message?.content;
+      if (Array.isArray(content) && content.length) (assistantContent ??= []).push(...content);
     }
   }
-  // If a reconciled assistant_message arrived (real CLI), it's the
-  // authoritative source — extract text blocks from it instead of the
+  // If reconciled assistant_message envelopes arrived (real CLI), they're the
+  // authoritative source — extract text blocks from them instead of the
   // delta accumulation (handles edge cases like deltas trimmed by the ring).
-  if (assistantMessage && Array.isArray(assistantMessage.content)) {
+  // A message may arrive as ONE multi-block envelope (legacy CLI) or as N
+  // single-block envelopes sharing the msgId, one per finalized content block
+  // (async-worker CLI); both are the concatenation of envelope content in
+  // arrival order, which matches block order.
+  if (assistantContent) {
     const textParts = [];
     const blocks = [];
-    for (const block of assistantMessage.content) {
+    for (const block of assistantContent) {
       if (block?.type === 'text' && typeof block.text === 'string') {
         textParts.push(block.text);
       } else if (block?.type === 'tool_use') {
@@ -161,7 +166,11 @@ function buildMessageFromRing(ring, targetMsgId, includeThinking = false) {
         blocks.push({ type: 'thinking', text: block.thinking ?? '' });
       }
     }
-    return { msgId: targetMsgId, text: textParts.join(''), ...(blocks.length ? { blocks } : {}), hasToolUse,
+    let text = textParts.join('');
+    // Never regress below what the deltas captured: if the envelopes carried
+    // no text block but deltas streamed one, prefer the delta accumulation.
+    if (!text) text = blockOrder.map(idx => byBlock.get(idx)).join('');
+    return { msgId: targetMsgId, text, ...(blocks.length ? { blocks } : {}), hasToolUse,
       ...(plan ? { plan } : {}), ...(questions ? { questions } : {}) };
   }
   const text = blockOrder.map(idx => byBlock.get(idx)).join('');
