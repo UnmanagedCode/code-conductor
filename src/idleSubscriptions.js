@@ -10,6 +10,10 @@
 // (idsForSession / byId / liveForSession) and event emission go through the
 // owning InstanceManager passed in at construction.
 
+import { buildRecentMessages } from './mcp/handlers.js';
+import { flattenPayload } from './mcp/content.js';
+import { buildWakeStub } from '../public/wakeCallback.js';
+
 export class IdleSubscriptionHub {
   constructor(manager) {
     this.manager = manager;
@@ -146,18 +150,18 @@ export class IdleSubscriptionHub {
     // Resolve the live caller instance from its sessionId.
     const caller = this.manager.liveForSession(callerSessionId);
     if (!caller) return; // caller gone — drop silently.
-    const stub = opts?.timedOut
-      ? `Worker \`${targetSessionId}\` did NOT finish — timed out after ${opts.timeoutMs}ms; ` +
-        `it may still be busy or stuck. ` +
-        `Call \`mcp__code-conductor__get_recent_messages({sessionId:"${targetSessionId}"})\` ` +
-        `to check its current state, then decide whether to resubscribe, ` +
-        `call interrupt_turn, or escalate.`
-      : `Worker \`${targetSessionId}\` finished its turn. ` +
-        `Call \`mcp__code-conductor__get_recent_messages({sessionId:"${targetSessionId}"})\` ` +
-        `to inspect the result.`;
+    // Fold the worker's recent output into the stub ONLY on a real turn_end
+    // delivered to an already-idle caller. The timeout-watchdog path and the
+    // mid-turn (deferred) path keep the plain pointer stub — decided here,
+    // synchronously, so the mid-turn deferral is honored even though the caller
+    // is idle by the time the deferred send actually fires.
+    const fold = !opts?.timedOut && caller.status !== 'turn';
     const deliver = async () => {
       try {
         if (!caller.proc) return;
+        const stub = fold
+          ? await this._buildFoldedStub(targetSessionId)
+          : this._plainStub(targetSessionId, opts);
         // `internal:true` — this is an orchestrator-injected wake, not a user
         // takeover, so it must NOT cancel a pending overage auto-resume armed on
         // the caller (an overage-stopped conductor still gets woken when its
@@ -184,6 +188,30 @@ export class IdleSubscriptionHub {
       return;
     }
     queueMicrotask(deliver);
+  }
+
+  // The plain pointer stub — unchanged text for the timeout-watchdog path and
+  // the mid-turn deferred path. Tells the caller to go call get_recent_messages.
+  _plainStub(targetSessionId, opts) {
+    return opts?.timedOut
+      ? `Worker \`${targetSessionId}\` did NOT finish — timed out after ${opts.timeoutMs}ms; ` +
+        `it may still be busy or stuck. ` +
+        `Call \`mcp__code-conductor__get_recent_messages({sessionId:"${targetSessionId}"})\` ` +
+        `to check its current state, then decide whether to resubscribe, ` +
+        `call interrupt_turn, or escalate.`
+      : `Worker \`${targetSessionId}\` finished its turn. ` +
+        `Call \`mcp__code-conductor__get_recent_messages({sessionId:"${targetSessionId}"})\` ` +
+        `to inspect the result.`;
+  }
+
+  // The folded stub — reuses buildRecentMessages (the SAME selection/bonding a
+  // default get_recent_messages call runs) and flattens it inline so the caller
+  // doesn't need the follow-up MCP round-trip. Falls back to the plain stub on a
+  // soft-refusal (e.g. the worker went away between turn_end and delivery).
+  async _buildFoldedStub(targetSessionId) {
+    const r = await buildRecentMessages({ sessionId: targetSessionId }, { instances: this.manager });
+    if (r.soft) return this._plainStub(targetSessionId);
+    return buildWakeStub({ targetSessionId, payloadText: flattenPayload(r.meta, r.bodies) });
   }
 
   hasSubscriber(sessionId) {

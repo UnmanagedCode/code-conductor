@@ -908,9 +908,21 @@ function isTextBearing(m) {
 // bonded in too — at most one extra message, never walked back further. A
 // message that already carries its own plan/questions is always returned
 // alone. Explicit `count` (including `count:1`) is always literal.
-export async function getRecentMessages({ sessionId, count, includeToolCalls = false, includeThinking = false }, { instances }) {
-  const r = await getInst(instances, sessionId);
+export async function getRecentMessages(args, ctx) {
+  const r = await buildRecentMessages(args, ctx);
   if (r.soft) return r.soft;
+  return textPayload(r.meta, r.bodies);
+}
+
+// Core of get_recent_messages: resolve the session, reconstruct + bond + cap the
+// recent assistant messages, and return `{ meta, bodies }` (or `{ soft }` for a
+// soft-refusal). Split out so the idle-subscription wake-callback can fold the
+// SAME content a default get_recent_messages call returns into its stub without
+// re-deriving the selection/bonding logic. `getRecentMessages` wraps this in a
+// textPayload; the wake path flattens it (see src/mcp/content.js flattenPayload).
+export async function buildRecentMessages({ sessionId, count, includeToolCalls = false, includeThinking = false }, { instances }) {
+  const r = await getInst(instances, sessionId);
+  if (r.soft) return r;
   const inst = r.inst;
   const isDefaultCount = count === undefined;
   const n = Math.max(1, Math.min(Number.isInteger(count) ? count : 1, 50));
@@ -983,7 +995,7 @@ export async function getRecentMessages({ sessionId, count, includeToolCalls = f
         : 'No assistant text messages have arrived yet.';
     }
   }
-  return textPayload(meta, bodies);
+  return { meta, bodies };
 }
 
 // Resolve { project, worktree? } to an absolute cwd, throwing with a

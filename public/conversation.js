@@ -5,6 +5,7 @@
 import { TextBlock, ThinkingBlock, ToolUseBlock, ToolResultBlock, SystemBlock, TurnEndBlock,
   TaskCompletionBlock, QueuedMessageBlock, UserQuestionBlock, PlanRequestBlock, PermissionRequestBlock, ImageBlock,
   shouldRenderSystem, el, parseUserQuestionAnswers } from './blocks.js';
+import { parseWakeCallback } from './wakeCallback.js';
 
 function renderFileChip(a) {
   return el('div', { class: 'block file-attachment' },
@@ -303,13 +304,27 @@ export class Conversation {
     const blocks = el('div', { class: 'blocks' });
     let text = ev.text ?? '';
 
+    // Idle-subscription wake callback: the orchestrator folds the worker's
+    // recent output into the injected prompt. Render a collapsed bubble — the
+    // summary line stays visible, the folded get_recent_messages payload goes in
+    // an expandable body (default collapsed). Marker sentinels never render.
+    const wake = parseWakeCallback(text);
+    if (wake) {
+      const body = el('div', { class: 'block text' }, wake.body);
+      const details = el('details', { class: 'block wake' },
+        el('summary', {}, wake.summary),
+        body,
+      );
+      blocks.appendChild(details);
+    }
+
     // Strip the <transcribed> marker for display — the agent still receives it
     // in the sent payload so it knows the message came from speech-to-text.
     const TRANSCRIBED_PREFIX = '<transcribed>\n';
-    const isTranscribed = text.startsWith(TRANSCRIBED_PREFIX);
+    const isTranscribed = !wake && text.startsWith(TRANSCRIBED_PREFIX);
     if (isTranscribed) text = text.slice(TRANSCRIBED_PREFIX.length);
 
-    if (text.length) blocks.appendChild(el('div', { class: 'block text' }, text));
+    if (!wake && text.length) blocks.appendChild(el('div', { class: 'block text' }, text));
     for (const a of (ev.attachments ?? [])) {
       if (a?.kind === 'image') {
         if (typeof a.dataBase64 === 'string') {
@@ -340,10 +355,11 @@ export class Conversation {
     if (isTranscribed) {
       roleEl.appendChild(el('span', { class: 'transcribed-badge', title: 'Transcribed from voice' }, '🎤'));
     }
+    const cls = wake ? 'msg user wake-callback' : 'msg user';
     const wrap = el('div',
       userIndex != null
-        ? { class: 'msg user', 'data-user-index': String(userIndex) }
-        : { class: 'msg user' },
+        ? { class: cls, 'data-user-index': String(userIndex) }
+        : { class: cls },
       roleEl,
       blocks,
     );
