@@ -572,11 +572,15 @@ input:focus, textarea:focus, select:focus { outline: 2px solid var(--accent); ou
 .block.thinking summary { font-style: normal; font-weight: 600; cursor: pointer; }
 .block.thinking .body { padding-top: 4px; }
 
-/* Idle-subscription wake-callback bubble: a collapsed <details> whose summary
-   (worker finished + what to do) stays visible and whose body holds the folded
-   get_recent_messages payload. Caret mirrors .block.tool. */
+/* Idle-subscription wake-callback bubble. Folded stub → a collapsed <details>
+   whose summary (worker finished + what to do) stays visible and whose body
+   holds the folded get_recent_messages payload (caret mirrors .block.tool).
+   Plain stub (timeout / mid-turn) → a body-less .plain summary line, no caret.
+   Both carry the orchestrator badge. */
 .msg.user.wake-callback { border-style: dashed; }
+.wake-badge { display: inline-flex; align-items: center; font-size: 10px; padding: 1px 5px; margin-right: 6px; border-radius: 8px; background: var(--panel-2); color: var(--muted); vertical-align: middle; cursor: default; user-select: none; }
 .block.wake { border-left: 3px solid var(--muted); padding: 2px 0 2px 8px; }
+.block.wake.plain { color: var(--muted); display: flex; align-items: baseline; gap: 0; word-break: break-word; }
 .block.wake > summary {
   cursor: pointer; list-style: none; color: var(--muted);
   display: flex; align-items: baseline; gap: 0; word-break: break-word;

@@ -28,6 +28,15 @@ export function buildWakeStub({ targetSessionId, payloadText }) {
   return `${WAKE_CALLBACK_MARKER}${summary}${WAKE_BODY_SEP}${payloadText}`;
 }
 
+// Wrap a body-less wake stub (the timeout-watchdog and mid-turn deferred
+// pointers) with the marker so the UI renders it as a wake bubble WITHOUT a
+// collapsible body — no WAKE_BODY_SEP, nothing to fold. parseWakeCallback
+// degrades the separator-less result to { summary, body:'' }, which the client
+// uses to pick a plain summary line over a <details>.
+export function markPlainStub(summary) {
+  return `${WAKE_CALLBACK_MARKER}${summary}`;
+}
+
 // Parse a user-echo text into { summary, body } when it is a wake-callback stub,
 // else null. A stub without the body separator degrades to summary-only.
 export function parseWakeCallback(text) {

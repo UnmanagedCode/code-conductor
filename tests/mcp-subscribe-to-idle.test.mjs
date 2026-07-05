@@ -15,7 +15,7 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, instForSession, freshProjectsRoot, rmrf } from './helpers.mjs';
-import { WAKE_CALLBACK_MARKER } from '../public/wakeCallback.js';
+import { WAKE_CALLBACK_MARKER, WAKE_BODY_SEP } from '../public/wakeCallback.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO_WS = path.join(__dirname, 'fixtures', 'scenario-ws.json');
@@ -144,6 +144,8 @@ test('fold: real turn_end to an idle caller folds the recent-messages payload in
   // still says it finished its turn.
   assert.ok(stub.text.startsWith(WAKE_CALLBACK_MARKER),
     'idle-delivery stub is tagged as a wake-callback');
+  assert.ok(stub.text.includes(WAKE_BODY_SEP),
+    'folded stub carries the body separator — the real "folded" signal');
   assert.match(stub.text, /finished its turn/);
   assert.ok(stub.text.includes(targetId));
   // The folded body carries the SAME content a default get_recent_messages
@@ -173,8 +175,10 @@ test('carve-out: caller mid-turn at delivery keeps the plain (un-folded) stub', 
   // The stub is delivered once the caller's own slow turn drains.
   await waitFor(() => !!findStubFor(caller, targetId));
   const stub = findStubFor(caller, targetId);
-  assert.ok(!stub.text.startsWith(WAKE_CALLBACK_MARKER),
-    'mid-turn delivery must not fold — plain stub only');
+  assert.ok(stub.text.startsWith(WAKE_CALLBACK_MARKER),
+    'mid-turn stub is tagged as a wake-callback (renders as the bubble)');
+  assert.ok(!stub.text.includes(WAKE_BODY_SEP),
+    'mid-turn delivery must not fold — marked but body-less');
   assert.match(stub.text, /to inspect the result/);
   assert.ok(!stub.text.includes('First'), 'plain stub carries no folded worker output');
 });
@@ -346,8 +350,10 @@ test('timeoutMs: fires with a timeout stub when turn_end does not arrive in time
   assert.match(stub.text, /timed out after 150ms/);
   assert.match(stub.text, /get_recent_messages/);
   assert.ok(stub.text.includes(targetId));
-  // Carve-out: the timeout-watchdog stub is never folded.
-  assert.ok(!stub.text.startsWith(WAKE_CALLBACK_MARKER), 'timeout stub must not fold');
+  // Carve-out: the timeout-watchdog stub is marked as a wake bubble but never folded.
+  assert.ok(stub.text.startsWith(WAKE_CALLBACK_MARKER),
+    'timeout stub is tagged as a wake-callback (renders as the bubble)');
+  assert.ok(!stub.text.includes(WAKE_BODY_SEP), 'timeout stub must not fold — body-less');
 
   // Subscription consumed — map is empty.
   assert.deepEqual(instances._idleSubscriberSnapshot(), {});
