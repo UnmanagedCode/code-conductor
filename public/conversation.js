@@ -310,12 +310,20 @@ export class Conversation {
     // an expandable body (default collapsed). Marker sentinels never render.
     const wake = parseWakeCallback(text);
     if (wake) {
-      const body = el('div', { class: 'block text' }, wake.body);
-      const details = el('details', { class: 'block wake' },
-        el('summary', {}, wake.summary),
-        body,
-      );
-      blocks.appendChild(details);
+      // Badge marks this as an orchestrator-injected wake, not a user message
+      // (mirrors the transcribed-badge pattern below).
+      const badge = el('span', { class: 'wake-badge', title: 'Orchestrator wake' }, '🔔');
+      if (wake.body) {
+        // Folded stub — collapsible <details> holding the get_recent_messages payload.
+        const details = el('details', { class: 'block wake' },
+          el('summary', {}, badge, wake.summary),
+          el('div', { class: 'block text' }, wake.body),
+        );
+        blocks.appendChild(details);
+      } else {
+        // Body-less plain stub (timeout / mid-turn) — just the summary line, no caret.
+        blocks.appendChild(el('div', { class: 'block wake plain' }, badge, wake.summary));
+      }
     }
 
     // Strip the <transcribed> marker for display — the agent still receives it

@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Window } from 'happy-dom';
-import { buildWakeStub, WAKE_CALLBACK_MARKER } from '../public/wakeCallback.js';
+import { buildWakeStub, markPlainStub, WAKE_CALLBACK_MARKER } from '../public/wakeCallback.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUB = path.resolve(__dirname, '..', 'public');
@@ -66,10 +66,43 @@ test('wake-callback echo renders a collapsed <details> bubble', async () => {
   assert.match(summary.textContent, /finished its turn/);
   assert.ok(summary.textContent.includes('abc12345'), 'summary names the worker');
 
+  // Orchestrator badge lives on the summary line.
+  assert.ok(summary.querySelector('.wake-badge'), 'orchestrator badge present on summary');
+
   // The folded payload is in the (collapsed) body, not the summary.
   const body = details.querySelector('.block.text');
   assert.ok(body.textContent.includes('First worker output line.'),
     'folded payload appears in the body');
+});
+
+test('a body-less (plain) marked stub renders the bubble with no collapsible body', async () => {
+  setupDOM();
+  const Conversation = await importConversation();
+  const root = document.createElement('div');
+  const conv = new Conversation(root, {});
+
+  const PLAIN = markPlainStub(
+    'Worker `abc12345` finished its turn. ' +
+    'Call `mcp__code-conductor__get_recent_messages({sessionId:"abc12345"})` to inspect the result.');
+  conv.apply({ kind: 'user_echo', text: PLAIN, userIndex: 0 });
+
+  const wrap = root.querySelector('.msg.user.wake-callback');
+  assert.ok(wrap, 'plain stub still carries the wake-callback class');
+
+  // No collapsible <details> — plain stubs have nothing to fold.
+  assert.equal(wrap.querySelector('details.block.wake'), null, 'no <details> for a body-less stub');
+
+  const plain = wrap.querySelector('.block.wake.plain');
+  assert.ok(plain, 'renders a body-less .block.wake.plain summary line');
+  assert.match(plain.textContent, /finished its turn/);
+  assert.ok(plain.textContent.includes('abc12345'), 'plain line names the worker');
+
+  // Badge is present on the plain line too.
+  assert.ok(plain.querySelector('.wake-badge'), 'orchestrator badge present on plain line');
+
+  // Marker sentinel never renders.
+  assert.ok(!wrap.textContent.includes(WAKE_CALLBACK_MARKER),
+    'the wake-callback marker is stripped from display');
 });
 
 test('marker sentinels never appear in the rendered text', async () => {

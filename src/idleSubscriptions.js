@@ -12,7 +12,7 @@
 
 import { buildRecentMessages } from './mcp/handlers.js';
 import { flattenPayload } from './mcp/content.js';
-import { buildWakeStub } from '../public/wakeCallback.js';
+import { buildWakeStub, markPlainStub } from '../public/wakeCallback.js';
 
 export class IdleSubscriptionHub {
   constructor(manager) {
@@ -192,8 +192,10 @@ export class IdleSubscriptionHub {
 
   // The plain pointer stub — unchanged text for the timeout-watchdog path and
   // the mid-turn deferred path. Tells the caller to go call get_recent_messages.
+  // Tagged with the wake marker (body-less, no WAKE_BODY_SEP) so the conductor
+  // UI renders it as a wake bubble too — just the summary line, no fold.
   _plainStub(targetSessionId, opts) {
-    return opts?.timedOut
+    const summary = opts?.timedOut
       ? `Worker \`${targetSessionId}\` did NOT finish — timed out after ${opts.timeoutMs}ms; ` +
         `it may still be busy or stuck. ` +
         `Call \`mcp__code-conductor__get_recent_messages({sessionId:"${targetSessionId}"})\` ` +
@@ -202,6 +204,7 @@ export class IdleSubscriptionHub {
       : `Worker \`${targetSessionId}\` finished its turn. ` +
         `Call \`mcp__code-conductor__get_recent_messages({sessionId:"${targetSessionId}"})\` ` +
         `to inspect the result.`;
+    return markPlainStub(summary);
   }
 
   // The folded stub — reuses buildRecentMessages (the SAME selection/bonding a
