@@ -1114,6 +1114,57 @@ test('DOM: outer-turn assistant envelope does not duplicate text or tool blocks 
   assert.match(status.textContent, /running/, `streamed tool block reaches 'running' on its own content_block_stop (got: ${status.textContent})`);
 });
 
+test('DOM: async-worker per-block envelopes with a mid-message tool_result render one bubble, ordered blocks, correctly attached results', async () => {
+  // Pins the async-worker CLI wire shape (verbatim ordering from a real
+  // trace, msg_016rp1PWBbDQxmZKPTkc1hEx): each finalized content block
+  // arrives as its OWN single-block assistant envelope BEFORE that block's
+  // content_block_stop, and the first tool's tool_result lands while block 2
+  // is still streaming — sandwiched between two envelopes of the same msgId.
+  // The outer renderer must not split/duplicate the bubble, reorder blocks,
+  // or attach a result to the wrong tool call.
+  const { document, root, Parser, Conversation } = await setupDOM();
+  const conversation = new Conversation(root);
+  const msgId = 'msg_async_sandwich';
+  feed(new Parser(), conversation, [
+    { type: 'stream_event', event: { type: 'message_start', message: { id: msgId, role: 'assistant' } } },
+    // Text @ index 0 — envelope arrives before cb_stop.
+    { type: 'stream_event', event: { type: 'content_block_start', index: 0, content_block: { type: 'text' } } },
+    { type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Reading both files.' } } },
+    { type: 'assistant', message: { id: msgId, role: 'assistant', content: [{ type: 'text', text: 'Reading both files.' }] } },
+    { type: 'stream_event', event: { type: 'content_block_stop', index: 0 } },
+    // Read tool @ index 1.
+    { type: 'stream_event', event: { type: 'content_block_start', index: 1, content_block: { type: 'tool_use', id: 'tu_r1', name: 'Read', input: {} } } },
+    { type: 'stream_event', event: { type: 'content_block_delta', index: 1, delta: { type: 'input_json_delta', partial_json: '{"file_path":"/a"}' } } },
+    { type: 'assistant', message: { id: msgId, role: 'assistant', content: [{ type: 'tool_use', id: 'tu_r1', name: 'Read', input: { file_path: '/a' } }] } },
+    { type: 'stream_event', event: { type: 'content_block_stop', index: 1 } },
+    // Read tool @ index 2 starts streaming — and tool 1's result lands NOW,
+    // mid-message, before block 2's envelope.
+    { type: 'stream_event', event: { type: 'content_block_start', index: 2, content_block: { type: 'tool_use', id: 'tu_r2', name: 'Read', input: {} } } },
+    { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu_r1', content: 'contents of a', is_error: false }] } },
+    { type: 'stream_event', event: { type: 'content_block_delta', index: 2, delta: { type: 'input_json_delta', partial_json: '{"file_path":"/b"}' } } },
+    { type: 'assistant', message: { id: msgId, role: 'assistant', content: [{ type: 'tool_use', id: 'tu_r2', name: 'Read', input: { file_path: '/b' } }] } },
+    { type: 'stream_event', event: { type: 'content_block_stop', index: 2 } },
+    { type: 'stream_event', event: { type: 'message_stop' } },
+    { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu_r2', content: 'contents of b', is_error: false }] } },
+  ]);
+
+  // One assistant bubble; the interleaved tool_result must not split it.
+  assert.equal(root.querySelectorAll('.msg.assistant').length, 1, 'single assistant bubble');
+  // Exactly the streamed blocks, in stream order — no duplicates from the
+  // per-block envelopes, no dropped blocks.
+  const body = root.querySelector('.msg.assistant .blocks');
+  const kinds = [...body.children].map(n =>
+    n.classList.contains('text') ? 'text' : n.classList.contains('tool') ? 'tool' : n.className);
+  assert.deepEqual(kinds, ['text', 'tool', 'tool'], 'blocks render once each, in stream order');
+  // Each result nests under its OWN tool block regardless of arrival timing.
+  const toolBlocks = [...body.querySelectorAll('.block.tool')];
+  assert.match(toolBlocks[0].querySelector('.block.tool-result')?.textContent ?? '', /contents of a/,
+    'tool 1 keeps its own (sandwiched) result');
+  assert.match(toolBlocks[1].querySelector('.block.tool-result')?.textContent ?? '', /contents of b/,
+    'tool 2 keeps its own result');
+  assert.equal(root.querySelectorAll('.block.tool-result').length, 2, 'no floating/duplicated results');
+});
+
 test('DOM: tool block always shows its command in the summary even while streaming', async () => {
   // Specifically a regression guard — the user-facing complaint was that
   // the command wasn't visible. We feed the stream up to (but not past) the

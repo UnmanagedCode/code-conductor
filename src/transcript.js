@@ -59,7 +59,7 @@ export function isPureUserPromptLine(obj) {
 // whose original message had no `id` and no `uuid` (rare but
 // possible) — passing the ring's current length keeps replays
 // reproducible across reruns.
-export function replayPersistedLine(obj, { seqHint = 0, parentToolUseId = null, allowSidechain = false } = {}) {
+export function replayPersistedLine(obj, { seqHint = 0, parentToolUseId = null, allowSidechain = false, blockCursor = null } = {}) {
   const events = [];
   const tagAndReturn = () => {
     // Mirror parser.handleObject's contract: every emitted UI event carries a
@@ -123,21 +123,33 @@ export function replayPersistedLine(obj, { seqHint = 0, parentToolUseId = null, 
     const msg = obj.message ?? {};
     const msgId = msg.id ?? obj.uuid ?? `replay-${seqHint}`;
     const blocks = Array.isArray(msg.content) ? msg.content : [];
+    // The async-worker CLI persists one logical message as N single-block
+    // assistant lines sharing message.id. The per-line array index alone
+    // would give every block of a fragmented message blockIdx 0, colliding
+    // same-type blocks on the UI's `${msgId}:${blockIdx}:${type}` dedup key
+    // (two thinking blocks merge into one on replay). `blockCursor` — a
+    // per-file Map(msgId → blocks seen so far) threaded in by the
+    // load*Transcript loops — continues the index across lines so replayed
+    // indices match the live stream's content_block_start indices. Callers
+    // replaying a single line in isolation omit it (per-line indexing).
+    const base = blockCursor?.get(msgId) ?? 0;
+    if (blockCursor && blocks.length) blockCursor.set(msgId, base + blocks.length);
     for (let i = 0; i < blocks.length; i++) {
       const b = blocks[i];
+      const blockIdx = base + i;
       if (!b || typeof b !== 'object') continue;
       if (b.type === 'text') {
-        events.push({ kind: 'text_delta', msgId, blockIdx: i, text: b.text ?? '' });
-        events.push({ kind: 'text_end', msgId, blockIdx: i });
+        events.push({ kind: 'text_delta', msgId, blockIdx, text: b.text ?? '' });
+        events.push({ kind: 'text_end', msgId, blockIdx });
       } else if (b.type === 'thinking') {
         const text = b.thinking ?? b.text ?? '';
-        events.push({ kind: 'thinking_start', msgId, blockIdx: i });
-        if (text) events.push({ kind: 'thinking_delta', msgId, blockIdx: i, text });
-        else events.push({ kind: 'thinking_redacted', msgId, blockIdx: i });
-        events.push({ kind: 'thinking_end', msgId, blockIdx: i });
+        events.push({ kind: 'thinking_start', msgId, blockIdx });
+        if (text) events.push({ kind: 'thinking_delta', msgId, blockIdx, text });
+        else events.push({ kind: 'thinking_redacted', msgId, blockIdx });
+        events.push({ kind: 'thinking_end', msgId, blockIdx });
       } else if (b.type === 'tool_use') {
-        events.push({ kind: 'tool_use_start', msgId, blockIdx: i, toolUseId: b.id ?? null, name: b.name ?? null });
-        events.push({ kind: 'tool_use', msgId, blockIdx: i, toolUseId: b.id ?? null, name: b.name ?? null, input: b.input ?? {} });
+        events.push({ kind: 'tool_use_start', msgId, blockIdx, toolUseId: b.id ?? null, name: b.name ?? null });
+        events.push({ kind: 'tool_use', msgId, blockIdx, toolUseId: b.id ?? null, name: b.name ?? null, input: b.input ?? {} });
         // Mirror the parser's structured event emission for the live
         // path — a replayed AskUserQuestion / ExitPlanMode should
         // render as a question / plan card, not just a collapsed
@@ -181,13 +193,14 @@ export async function loadSubAgentTranscript({ cwd, sessionId, agentId, parentTo
   catch (e) { if (e.code === 'ENOENT') return []; throw e; }
   const out = [];
   let seq = seqHint;
+  const blockCursor = new Map();
   for (const raw of text.split('\n')) {
     const trimmed = raw.trim();
     if (!trimmed) continue;
     let obj;
     try { obj = JSON.parse(trimmed); } catch { continue; }
     const lineEvents = replayPersistedLine(obj, {
-      seqHint: seq, parentToolUseId, allowSidechain: true,
+      seqHint: seq, parentToolUseId, allowSidechain: true, blockCursor,
     });
     for (const ev of lineEvents) out.push(ev);
     seq += lineEvents.length;
@@ -225,6 +238,7 @@ export async function loadPersistedTranscript({ cwd, sessionId, seqHint = 0 }) {
   let lastLeafUuid = null;
   let replayedCount = 0;
   let seq = seqHint;
+  const blockCursor = new Map();
   for (const raw of text.split('\n')) {
     const trimmed = raw.trim();
     if (!trimmed) continue;
@@ -253,7 +267,7 @@ export async function loadPersistedTranscript({ cwd, sessionId, seqHint = 0 }) {
         seq += subEvents.length;
       }
     }
-    const ownEvents = replayPersistedLine(obj, { seqHint: seq });
+    const ownEvents = replayPersistedLine(obj, { seqHint: seq, blockCursor });
     for (const ev of ownEvents) events.push(ev);
 
     if (events.length > 0) {
