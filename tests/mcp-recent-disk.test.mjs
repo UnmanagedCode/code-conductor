@@ -86,6 +86,27 @@ function textThenToolLines(toolCount) {
   return lines;
 }
 
+// Async-worker CLI persisted shape: ONE message written as two single-block
+// assistant lines sharing message.id (text line, then tool_use line), followed
+// by `toolCount` tool-only filler turns so a small ring cap evicts the text.
+function splitMessageThenToolLines(toolCount) {
+  const lines = [
+    { type: 'user', uuid: 'u0', message: { role: 'user', content: 'do the work' } },
+    { type: 'assistant', uuid: 'a0', message: { id: 'm_split', role: 'assistant', content: [{ type: 'text', text: 'prose from disk' }] } },
+    { type: 'assistant', uuid: 'a1', message: { id: 'm_split', role: 'assistant', content: [{ type: 'tool_use', id: 'tu_split', name: 'Bash', input: { command: 'true' } }] } },
+    { type: 'user', uuid: 'u1', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu_split', content: 'ok\n', is_error: false }] } },
+  ];
+  for (let i = 0; i < toolCount; i++) {
+    lines.push({ type: 'assistant', uuid: `at${i}`, message: { id: `mt${i}`, role: 'assistant', content: [
+      { type: 'tool_use', id: `tu${i}`, name: 'Bash', input: { command: `echo ${i}` } },
+    ] } });
+    lines.push({ type: 'user', uuid: `ut${i}`, message: { role: 'user', content: [
+      { type: 'tool_result', tool_use_id: `tu${i}`, content: 'ok\n', is_error: false },
+    ] } });
+  }
+  return lines;
+}
+
 function turnLines(n) {
   const lines = [];
   for (let i = 0; i < n; i++) {
@@ -115,6 +136,29 @@ test('get_recent_messages: ring-evicted text is served from disk (not a false em
     assert.equal(res.messages.length, 1, 'disk-fallback returns the evicted text message');
     assert.equal(res.messages[0].text, 'hello from disk');
     assert.equal(res.meta.source, 'disk', 'served from disk');
+  } finally {
+    await ctx.close();
+    if (prevCap === undefined) delete process.env.ORCH_EVENT_RING_CAP;
+    else process.env.ORCH_EVENT_RING_CAP = prevCap;
+  }
+});
+
+test('get_recent_messages: a message split across single-block assistant lines reconstructs whole from disk', async () => {
+  const prevCap = process.env.ORCH_EVENT_RING_CAP;
+  process.env.ORCH_EVENT_RING_CAP = '10';
+  const ctx = await bootServer({ scenarioPath: SCENARIO_RESUME });
+  try {
+    const sid = 'abcdabcd-1111-2222-3333-444444444444';
+    const id = await bootResumed({ ctx, projectName: 'splitmsg', sid, lines: splitMessageThenToolLines(30) });
+    const inst = ctx.instances.get(id);
+    assert.ok(inst.ring.trimmedBefore > 0, 'ring actually trimmed');
+
+    const res = unwrapMsgs(await callTool(ctx.baseUrl, 'get_recent_messages', { sessionId: sid }));
+    assert.equal(res.meta.source, 'disk', 'served from disk');
+    assert.equal(res.messages.length, 1);
+    assert.equal(res.messages[0].text, 'prose from disk', 'text line and tool_use line merge into one message');
+    assert.equal(res.messages[0].hasToolUse, true);
+    assert.ok(res.messages[0].blocks?.some(b => b.type === 'tool_use' && b.name === 'Bash'));
   } finally {
     await ctx.close();
     if (prevCap === undefined) delete process.env.ORCH_EVENT_RING_CAP;

@@ -931,6 +931,10 @@ export async function getRecentMessages({ sessionId, count, includeToolCalls = f
 
   const filtered = includeToolCalls ? all : all.filter(isTextBearing);
   let messages = filtered.slice(-n);
+  // Known latent gap (not reproduced): a turn whose trailing prose spans TWO+
+  // messages after the plan/questions message, or a text message interleaved
+  // between them, defeats this one-step bond. Deliberately unhandled — "at
+  // most one extra message" is the documented, test-pinned contract.
   if (isDefaultCount && messages.length === 1) {
     const lastIdx = filtered.length - 1;
     const last = filtered[lastIdx];
