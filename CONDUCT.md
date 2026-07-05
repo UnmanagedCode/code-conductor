@@ -24,16 +24,19 @@ A message the human types mid-turn is delivered **live into your running turn** 
 send_prompt({sessionId, text})   // or approve_plan / reject_plan / answer_question — each starts a worker
                                   // turn AND auto-subscribes to its idle callback (subscribe:true by default)
 // End your turn — the human is free to talk to you.
-// On turn_end the orchestrator wakes you with a stub naming the worker:
-//   "Worker `<sessionId>` finished its turn. Call get_recent_messages({sessionId:"<sessionId>"}) …"
-// Your next turn fires automatically — review and proceed:
-get_recent_messages({sessionId})       // then approve_plan / sync_worktree / merge_worktree / kill_instance
+// On turn_end the orchestrator wakes you with a stub naming the worker; when you
+// were idle waiting, the worker's recent output is FOLDED into the stub already
+// (same content a default get_recent_messages({sessionId}) returns):
+//   "Worker `<sessionId>` finished its turn. Its recent output is folded in below …"
+// Your next turn fires automatically — read the folded output and proceed:
+approve_plan / sync_worktree / merge_worktree / kill_instance   // no extra get_recent_messages needed
 ```
 
 - **One call, not two.** `send_prompt`, `approve_plan`, `reject_plan`, and `answer_question` all subscribe by default — no separate `subscribe_to_idle` needed for the common case. Pass `subscribe:false` for a mid-turn steer or fire-and-forget send you don't want to be woken for. `send_prompt({wait:true})` never subscribes (see below) — the turn already resolves inline.
 - **One-shot.** Consumed on the first `turn_end`. A worker's plan → implementation → rebase are *separate* turns — **resubscribe inside each wake-up turn** while work remains (i.e. keep passing `subscribe:true`, the default, on the next call that starts a turn — or `subscribe_to_idle({sessionId})` standalone if you're not sending a new prompt, e.g. re-arming after an auto-approved plan). `unsubscribe_from_idle({sessionId})` to drop a pending callback when abandoning a worker.
-- **You still observe every step** — between turns, not during a held-open one. On each wake, read `get_recent_messages` (or `get_transcript`), check the completion sentinel, then proceed or resubscribe.
-- **Default `get_recent_messages` call now bonds plan/questions with prose.** When a worker splits its plan/`AskUserQuestion` and its trailing prose across two assistant messages, the default (no `count`) call returns both together — no need for `count:2` to see the plan/questions alongside the accompanying prose.
+- **You still observe every step** — between turns, not during a held-open one. On each wake, read the folded output (or `get_transcript` for more), check the completion sentinel, then proceed or resubscribe.
+- **The completion wake folds the worker's output in.** When the wake finds you idle, the stub already carries what a default `get_recent_messages({sessionId})` would return — read it inline; a follow-up `get_recent_messages` is only needed if you want more (`count:N`, `includeToolCalls`, `get_transcript`). Two carve-outs are *not* folded and still point you at `get_recent_messages`: a **"did NOT finish"** timeout stub, and a wake that landed while you were mid-turn.
+- **Default `get_recent_messages` call bonds plan/questions with prose.** When a worker splits its plan/`AskUserQuestion` and its trailing prose across two assistant messages, the default (no `count`) call — and therefore the folded wake — returns both together; no `count:2` needed.
 - **Recon / review / land calls** (`list_*`, `project_status`, `read_file`, `grep`, `glob`, `get_recent_messages`, `get_worktree_diff`, `merge_worktree`, …) return immediately and don't hold your turn — run them synchronously within a wake-up turn. Only worker *turns* need subscribe-and-end-turn.
 - **Watchdog, never timers.** `subscribeTimeoutMs` (on any of the four turn-starting calls, or `subscribe_to_idle({sessionId, timeoutMs})` standalone) also wakes you if the worker never reaches `turn_end` (hangs on a gate, crashes); the timeout stub is labelled "did NOT finish" so you never mistake it for completion — on such a wake, `interrupt_turn` or escalate rather than landing. Never poll a worker with timers (`ScheduleWakeup`, `/loop`, sleep loops) — the subscription is push-based and already covers hangs/crashes.
 - `wait:true` / `wait_for_idle` are **discouraged fallbacks** — only for a send you expect to return near-instantly *and* where you have nothing else to do. Never for an implementation wait.

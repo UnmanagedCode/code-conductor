@@ -21,6 +21,16 @@ export function isTextPayload(v) {
   return !!v && typeof v === 'object' && v[PAYLOAD] === true;
 }
 
+// Flatten a (meta, bodies) payload into the single string an LLM would read off
+// the wire: the compact-JSON metadata block followed by each raw body block, in
+// order — mirroring how the MCP server emits them as separate content[] blocks
+// (src/mcp/server.js). Used to fold a default get_recent_messages result inline
+// into the idle-subscription wake stub without re-deriving its shape.
+export function flattenPayload(meta, bodies) {
+  const arr = bodies == null ? [] : (Array.isArray(bodies) ? bodies : [bodies]);
+  return [JSON.stringify(meta ?? null), ...arr.map(String)].join('\n\n');
+}
+
 // Map a handler error's HTTP-ish statusCode to a stable machine code. Returns
 // null when there's no recognized status (the error surfaces as prose only).
 export function codeForStatus(s) {

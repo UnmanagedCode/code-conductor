@@ -572,6 +572,28 @@ input:focus, textarea:focus, select:focus { outline: 2px solid var(--accent); ou
 .block.thinking summary { font-style: normal; font-weight: 600; cursor: pointer; }
 .block.thinking .body { padding-top: 4px; }
 
+/* Idle-subscription wake-callback bubble: a collapsed <details> whose summary
+   (worker finished + what to do) stays visible and whose body holds the folded
+   get_recent_messages payload. Caret mirrors .block.tool. */
+.msg.user.wake-callback { border-style: dashed; }
+.block.wake { border-left: 3px solid var(--muted); padding: 2px 0 2px 8px; }
+.block.wake > summary {
+  cursor: pointer; list-style: none; color: var(--muted);
+  display: flex; align-items: baseline; gap: 0; word-break: break-word;
+}
+.block.wake > summary::-webkit-details-marker { display: none; }
+.block.wake > summary::before {
+  content: "▸"; display: inline-block; color: var(--muted);
+  margin-right: 6px; transition: transform .12s;
+}
+.block.wake[open] > summary::before { transform: rotate(90deg); }
+.block.wake > .block.text {
+  margin-top: 6px; padding: 8px; border-radius: 4px;
+  background: #0a0c12; color: var(--text);
+  max-height: 360px; overflow-y: auto;
+  font-family: ui-monospace, monospace; font-size: 11px;
+}
+
 .block.tool { border-left: 3px solid var(--tool); padding: 4px 0 4px 8px; }
 .block.tool summary {
   font-family: ui-monospace, monospace; font-size: 12px; cursor: pointer;

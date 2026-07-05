@@ -15,10 +15,12 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, instForSession, freshProjectsRoot, rmrf } from './helpers.mjs';
+import { WAKE_CALLBACK_MARKER } from '../public/wakeCallback.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO_WS = path.join(__dirname, 'fixtures', 'scenario-ws.json');
 const SCENARIO_QUESTION = path.join(__dirname, 'fixtures', 'scenario-question.json');
+const SCENARIO_SLOW = path.join(__dirname, 'fixtures', 'scenario-slow-turn.json');
 
 let ctx, baseUrl, instances, home;
 before(async () => { ctx = await bootServer({ scenarioPath: SCENARIO_WS }); ({ baseUrl, instances } = ctx); });
@@ -69,6 +71,16 @@ async function spawnReady(project) {
   return spawn.sessionId;
 }
 
+async function spawnReadyWithScenario(project, scenarioPath) {
+  const prev = process.env.FAKE_CLAUDE_SCENARIO;
+  process.env.FAKE_CLAUDE_SCENARIO = scenarioPath;
+  try {
+    return await spawnReady(project);
+  } finally {
+    process.env.FAKE_CLAUDE_SCENARIO = prev;
+  }
+}
+
 function countUserEchoes(inst, predicate = () => true) {
   return inst.ringSnapshot().filter(ev => ev.kind === 'user_echo' && predicate(ev)).length;
 }
@@ -111,6 +123,60 @@ test('happy path: caller receives a stub user_echo when target hits turn_end', a
   assert.ok(stub.text.includes(`get_recent_messages({sessionId:"${targetId}"})`),
     'stub references get_recent_messages({sessionId:"<target sid>"})');
   assert.ok(stub.text.includes(targetId));
+});
+
+test('fold: real turn_end to an idle caller folds the recent-messages payload into the stub', async () => {
+  await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
+  const callerId = await spawnReady('p');
+  const targetId = await spawnReady('p');
+
+  await callTool('subscribe_to_idle', { sessionId: targetId }, { caller: callerId });
+
+  // Drive the target through turn 1 of scenario-ws (emits the prose "First ").
+  await callTool('send_prompt',
+    { sessionId: targetId, text: 'go', wait: true, waitTimeoutMs: 5000 });
+
+  const caller = instForSession(instances, callerId);
+  await waitFor(() => !!findStubFor(caller, targetId));
+  const stub = findStubFor(caller, targetId);
+
+  // Folded: tagged with the wake-callback marker, still names the worker and
+  // still says it finished its turn.
+  assert.ok(stub.text.startsWith(WAKE_CALLBACK_MARKER),
+    'idle-delivery stub is tagged as a wake-callback');
+  assert.match(stub.text, /finished its turn/);
+  assert.ok(stub.text.includes(targetId));
+  // The folded body carries the SAME content a default get_recent_messages
+  // returns: the flattened meta block (with the target sessionId) + the prose.
+  assert.ok(stub.text.includes('"sessionId"'), 'folded body includes the meta block');
+  assert.ok(stub.text.includes('First'), 'folded body includes the reconstructed prose');
+});
+
+test('carve-out: caller mid-turn at delivery keeps the plain (un-folded) stub', async () => {
+  await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
+  // Caller runs a slow turn so it is still `status:'turn'` when the target
+  // finishes — the delivery is deferred and must NOT fold.
+  const callerId = await spawnReadyWithScenario('p', SCENARIO_SLOW);
+  const targetId = await spawnReady('p');
+
+  await callTool('subscribe_to_idle', { sessionId: targetId }, { caller: callerId });
+
+  // Kick the caller into its slow turn (no ?caller → no auto-subscribe).
+  await callTool('send_prompt', { sessionId: callerId, text: 'busy', subscribe: false });
+  const caller = instForSession(instances, callerId);
+  await waitFor(() => caller.status === 'turn');
+
+  // Fire the target's turn_end while the caller is still mid-turn.
+  await callTool('send_prompt',
+    { sessionId: targetId, text: 'go', wait: true, waitTimeoutMs: 5000 });
+
+  // The stub is delivered once the caller's own slow turn drains.
+  await waitFor(() => !!findStubFor(caller, targetId));
+  const stub = findStubFor(caller, targetId);
+  assert.ok(!stub.text.startsWith(WAKE_CALLBACK_MARKER),
+    'mid-turn delivery must not fold — plain stub only');
+  assert.match(stub.text, /to inspect the result/);
+  assert.ok(!stub.text.includes('First'), 'plain stub carries no folded worker output');
 });
 
 test('one-shot: a second target turn does not re-fire the callback', async () => {
@@ -280,6 +346,8 @@ test('timeoutMs: fires with a timeout stub when turn_end does not arrive in time
   assert.match(stub.text, /timed out after 150ms/);
   assert.match(stub.text, /get_recent_messages/);
   assert.ok(stub.text.includes(targetId));
+  // Carve-out: the timeout-watchdog stub is never folded.
+  assert.ok(!stub.text.startsWith(WAKE_CALLBACK_MARKER), 'timeout stub must not fold');
 
   // Subscription consumed — map is empty.
   assert.deepEqual(instances._idleSubscriberSnapshot(), {});
