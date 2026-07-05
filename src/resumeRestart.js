@@ -62,15 +62,10 @@ export function buildConductorResumeText(workers = []) {
   const list = lines.length ? lines.join('\n') : '- (none recorded)';
   return (
     '✅ CodeConductor has restarted successfully. You may resume activity now, ' +
-    'and you should resume conducting your workers. Idle callbacks from before ' +
-    'the restart were dropped, but dispatch-and-wake re-arms itself: your next ' +
-    'send_prompt / approve_plan / reject_plan / answer_question to each worker ' +
-    'auto-subscribes to its idle callback again, so just resume conducting — no ' +
-    'manual re-subscribe step is needed. (A standalone subscribe_to_idle is ' +
-    'only for re-arming without sending a new prompt.)\n\n' +
+    'and you should resume conducting your workers.\n\n' +
     'Your previously-conducted workers are listed below; each session has been ' +
     'preserved and can be resumed with `mcp__code-conductor__spawn_instance` ' +
-    'using the matching `resume` sessionId and `worktree`:\n' +
+    'using the matching `resume` sessionId:\n' +
     list
   );
 }
