@@ -100,6 +100,13 @@ export class Parser {
     const ev = obj.event ?? {};
     switch (ev.type) {
       case 'message_start': {
+        // Single-writer assumption: only the top-level agent's partials ever
+        // arrive as stream_event frames — the CLI hardcodes
+        // parent_tool_use_id:null on every stream_event it emits and forwards
+        // sub-agent turns as finals-only assistant/user envelopes (their
+        // partial forwarding, forwardSubagentText, is SDK-only with no CLI
+        // flag). So resetting the shared currentMsgId/blocks here can never
+        // clobber an interleaved sub-agent message.
         this.currentMsgId = ev.message?.id ?? `msg_${randomUUID()}`;
         this.blocks.clear();
         // Surface the usage block. Each agent-loop step within a turn
