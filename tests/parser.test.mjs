@@ -458,3 +458,80 @@ test('parser: non-synthetic assistant message does not emit text events', () => 
   assert.equal(out.filter(e => e.kind === 'text_end').length, 0);
   assert.equal(out.filter(e => e.kind === 'assistant_message').length, 1);
 });
+
+test('parser: isSynthetic user_echo following a Skill tool_use gets a skillLoad tag', () => {
+  const p = new Parser();
+  p.handleObject({ type: 'stream_event', event: { type: 'message_start', message: { id: 'm', role: 'assistant' } } });
+  p.handleObject({
+    type: 'stream_event',
+    event: { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'tu_skill', name: 'Skill', input: {} } },
+  });
+  p.handleObject({
+    type: 'stream_event',
+    event: { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '{"skill":"keybindings-help","args":"what keys?"}' } },
+  });
+  const toolEvs = p.handleObject({ type: 'stream_event', event: { type: 'content_block_stop', index: 0 } });
+  assert.equal(toolEvs.find(e => e.kind === 'tool_use')?.name, 'Skill');
+
+  // Short tool_result confirming the launch — unaffected, stays a plain tool_result.
+  const resultEvs = p.handleObject({
+    type: 'user',
+    message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu_skill', content: 'Launching skill: keybindings-help' }] },
+  });
+  assert.equal(resultEvs.length, 1);
+  assert.equal(resultEvs[0].kind, 'tool_result');
+
+  // The big content-injection message: isSynthetic:true, no tool_use_id link.
+  const contentEvs = p.handleObject({
+    type: 'user',
+    isSynthetic: true,
+    message: { role: 'user', content: [{ type: 'text', text: '# Keybindings Skill\n\nfull reference text here' }] },
+  });
+  const echo = contentEvs.find(e => e.kind === 'user_echo');
+  assert.ok(echo, 'still emits a user_echo');
+  assert.deepEqual(echo.skillLoad, { skill: 'keybindings-help' });
+});
+
+test('parser: isSynthetic user_echo with no pending Skill tool_use is NOT tagged as a skill load', () => {
+  const p = new Parser();
+  // Stop-hook feedback and compaction-continuation messages are also
+  // isSynthetic:true on this CLI — without a preceding Skill tool_use they
+  // must render as ordinary user_echo, not get mislabeled "Loading skill".
+  const out = p.handleObject({
+    type: 'user',
+    isSynthetic: true,
+    message: { role: 'user', content: [{ type: 'text', text: 'Stop hook feedback:\n[decrease the value once per turn]' }] },
+  });
+  const echo = out.find(e => e.kind === 'user_echo');
+  assert.ok(echo);
+  assert.equal(echo.skillLoad, undefined);
+});
+
+test('parser: a second Skill invocation in the same session correlates independently (FIFO)', () => {
+  const p = new Parser();
+  const invokeSkill = (toolUseId, skillName) => {
+    p.handleObject({ type: 'stream_event', event: { type: 'message_start', message: { id: `m_${toolUseId}`, role: 'assistant' } } });
+    p.handleObject({
+      type: 'stream_event',
+      event: { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: toolUseId, name: 'Skill', input: {} } },
+    });
+    p.handleObject({
+      type: 'stream_event',
+      event: { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: JSON.stringify({ skill: skillName, args: 'x' }) } },
+    });
+    p.handleObject({ type: 'stream_event', event: { type: 'content_block_stop', index: 0 } });
+  };
+  invokeSkill('tu_1', 'keybindings-help');
+  const first = p.handleObject({
+    type: 'user', isSynthetic: true,
+    message: { role: 'user', content: [{ type: 'text', text: '# Keybindings Skill\n\n...' }] },
+  }).find(e => e.kind === 'user_echo');
+  assert.deepEqual(first.skillLoad, { skill: 'keybindings-help' });
+
+  invokeSkill('tu_2', 'deep-research');
+  const second = p.handleObject({
+    type: 'user', isSynthetic: true,
+    message: { role: 'user', content: [{ type: 'text', text: '# Deep Research\n\n...' }] },
+  }).find(e => e.kind === 'user_echo');
+  assert.deepEqual(second.skillLoad, { skill: 'deep-research' });
+});

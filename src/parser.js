@@ -14,7 +14,7 @@
 //   tool_use_input_delta    { msgId, blockIdx, toolUseId, partialJson }
 //   tool_use                { msgId, blockIdx, toolUseId, name, input }
 //   tool_result             { toolUseId, content, isError }
-//   user_echo               { text, attachments?: [{kind:'image'|'file', ...}] }
+//   user_echo               { text, attachments?: [{kind:'image'|'file', ...}], skillLoad?: {skill} }
 //   system                  { subtype, data }
 //   hook                    { event, data }
 //   assistant_message       { msgId, message }              // final reconciled message
@@ -29,12 +29,14 @@ export class Parser {
     this.currentMsgId = null;
     this.blocks = new Map(); // blockIdx -> { type, accumText, accumJson, toolUseId, name }
     this._lastCost = 0; // tracks cumulative cost to compute per-turn delta
+    this._pendingSkillLoads = []; // FIFO of {toolUseId, skill} awaiting their content injection
   }
 
   reset() {
     this.currentMsgId = null;
     this.blocks.clear();
     this._lastCost = 0;
+    this._pendingSkillLoads = [];
   }
 
   handleLine(line) {
@@ -245,6 +247,12 @@ export class Parser {
               planPath: null,
             });
           }
+          // Track Skill invocations so the isSynthetic content-injection user
+          // message that follows can be identified and titled — see
+          // _handleUser for why isSynthetic alone isn't a reliable signal.
+          if (block.name === 'Skill') {
+            this._pendingSkillLoads.push({ toolUseId: block.toolUseId, skill: input?.skill ?? null });
+          }
           return out;
         }
         return [];
@@ -296,7 +304,8 @@ export class Parser {
       return [{ kind: 'user_echo', text: content }];
     }
     if (!Array.isArray(content)) return [];
-    return consolidateUserContent(content);
+    const events = consolidateUserContent(content);
+    return attachSkillLoad(events, obj.isSynthetic === true, this._pendingSkillLoads);
   }
 
   _handleResult(obj) {
@@ -415,6 +424,26 @@ export function consolidateUserContent(contentBlocks) {
     });
   }
   return out;
+}
+
+// The CLI marks the Skill-content injection (the SKILL.md dumped back as a
+// plain user message right after a Skill tool_use/tool_result) with
+// `isSynthetic:true` — but it reuses that same flag for unrelated messages
+// (compaction-continuation summaries, Stop-hook feedback), so `isSynthetic`
+// alone isn't a reliable "this is skill content" signal. Only treat it as a
+// skill load when it immediately follows a Skill tool_use nothing else has
+// claimed yet (FIFO — matches the CLI's synchronous
+// tool_use -> tool_result -> content-injection ordering). `pendingSkillLoads`
+// is a per-stream/per-file queue of `{toolUseId, skill}` the caller pushes to
+// when it sees a Skill tool_use. Shared by the live path (Parser._handleUser)
+// and transcript.js replay so live vs replay rendering stays identical.
+export function attachSkillLoad(events, isSynthetic, pendingSkillLoads) {
+  if (!isSynthetic || !pendingSkillLoads?.length) return events;
+  const echo = events.find((e) => e.kind === 'user_echo');
+  if (!echo) return events;
+  const pending = pendingSkillLoads.shift();
+  echo.skillLoad = { skill: pending.skill };
+  return events;
 }
 
 // A `user_echo` for a top-level (non-sub-agent) user prompt — i.e. one that
