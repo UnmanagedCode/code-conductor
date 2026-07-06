@@ -15,7 +15,7 @@ import { CONDUCT_PROJECT_NAME } from './conduct.js';
 import { buildSettingsJSON, buildMcpConfigJSON, AWAITING_INPUT_MESSAGE } from './settings.js';
 import { getOnOverageAction, getOverageThreshold, getConductorCompactWindow, getSonnetContextWindow } from './appSettings.js';
 import { HookBroker } from './hookBroker.js';
-import { loadPersistedTranscript, writeSessionMetadata, readLastSessionModel } from './transcript.js';
+import { loadPersistedTranscript, writeSessionMetadata, readLastSessionModel, hasResumableConversation } from './transcript.js';
 import { canonicalizeModel } from './modelVersions.js';
 import { truncateSessionAtUserMessage } from './sessionEdit.js';
 import { saveAttachment, isImageType } from './attachments.js';
@@ -1704,6 +1704,21 @@ export class InstanceManager extends EventEmitter {
         throw Object.assign(new Error(`worktree '${worktree}' not found under project '${project}'`), { statusCode: 404 });
       }
       cwd = worktreeMeta.worktreePath;
+    }
+
+    // Resume pre-flight: refuse a resume id that has no resumable conversation
+    // at the resolved cwd BEFORE constructing an Instance or spawning. The
+    // earlier findSessionLocation net (above) only runs when the caller left
+    // worktree undefined; a caller that pins project+worktree (e.g. an MCP
+    // conductor retrying a mistyped sessionId) skips it, and would otherwise
+    // spawn `claude --resume <bogus>` → exit 1 "No conversation found" →
+    // crash, repeatably. Bailing here means no phantom crashed Instance is
+    // registered, so a follow-up respawn_instance also soft-refuses cleanly.
+    if (resume && !(await hasResumableConversation({ cwd, sessionId: resume }))) {
+      throw Object.assign(
+        new Error(`no resumable conversation for session ${resume} in ${cwd}`),
+        { statusCode: 404, code: 'SESSION_UNKNOWN' },
+      );
     }
 
     // On resume without an explicit model, recover the model the session

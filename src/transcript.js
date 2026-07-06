@@ -320,6 +320,30 @@ export async function readLastSessionModel({ cwd, sessionId }) {
   return lastModel;
 }
 
+// True iff the session jsonl exists AND contains at least one real
+// conversation record (user/assistant) — i.e. `claude --resume <sid>` would
+// find a conversation rather than exit 1 with "No conversation found".
+// Marker-only stubs (last-prompt/permission-mode/ai-title) do NOT count: a
+// crash-during-resume can leave a jsonl holding only our best-effort markers,
+// and the CLI treats that as a non-existent session. Used as a resume
+// pre-flight so a mistyped/bogus resume id is refused before we spawn a
+// subprocess that would only crash-loop.
+export async function hasResumableConversation({ cwd, sessionId }) {
+  if (!cwd || !sessionId) return false;
+  const file = path.join(claudeProjectsRoot(), encodeCwd(cwd), `${sessionId}.jsonl`);
+  let text;
+  try { text = await fs.readFile(file, 'utf8'); }
+  catch (e) { if (e.code === 'ENOENT') return false; throw e; }
+  for (const raw of text.split('\n')) {
+    const trimmed = raw.trim();
+    if (!trimmed) continue;
+    let obj;
+    try { obj = JSON.parse(trimmed); } catch { continue; }
+    if (obj && (obj.type === 'user' || obj.type === 'assistant')) return true;
+  }
+  return false;
+}
+
 // Append metadata markers to the session jsonl so `claude --resume`'s
 // shell picker can discover and label the session. Best-effort — caller
 // swallows errors. permissionMode is the CLI-level value (the

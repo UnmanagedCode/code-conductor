@@ -267,7 +267,7 @@ export async function spawnInstance(args, { instances, callerId }) {
   // createWorktree wins if both are given. create() still accepts the
   // boolean|string internal contract unchanged.
   const worktree = args.createWorktree === true ? true : args.worktree;
-  const inst = await instances.create({
+  const createArgs = {
     project: args.project,
     mode: args.mode,
     effort: args.effort,
@@ -297,7 +297,25 @@ export async function spawnInstance(args, { instances, callerId }) {
     // Instance.callerInstanceId field stays an instanceId (consumers:
     // public/subagents.js, conductedWorkersOf — both match on instanceId).
     callerInstanceId: callerInst?.id ?? null,
-  });
+  };
+  let inst;
+  try {
+    inst = await instances.create(createArgs);
+  } catch (e) {
+    // A resume id with no resumable conversation on disk (mistyped/bogus, or a
+    // marker-only crash stub) is soft-refused rather than surfaced as a raw
+    // spawn error — mirrors respawnInstance's SESSION_NOT_LIVE shape so the
+    // conductor gets an actionable hint instead of a crashed worker.
+    if (e?.code === 'SESSION_UNKNOWN') {
+      return {
+        ok: false,
+        code: 'SESSION_UNKNOWN',
+        sessionId: args.resume,
+        reason: `no resumable conversation for session ${args.resume} — verify the id via list_sessions`,
+      };
+    }
+    throw e;
+  }
   return toConductorView(inst.summary());
 }
 
