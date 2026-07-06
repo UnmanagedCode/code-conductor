@@ -68,8 +68,10 @@ export class IdleSubscriptionHub {
     this._justConsumed.add(tSid);
     queueMicrotask(() => this._justConsumed.delete(tSid));
     // Defer while background subagents are still running — keep the subscription
-    // and its watchdog armed; the follow-up turn_end (count 0) delivers.
-    if ((target.activeAgentTaskCount ?? 0) > 0) return;
+    // and its watchdog armed; the follow-up turn_end (count 0) delivers. `target`
+    // is a live Instance here (a falsy `subs` above already returned when it was
+    // absent), so the getter is always present.
+    if (target.activeAgentTaskCount > 0) return;
     const entries = [...subs.entries()];
     subs.clear();
     this.subscribers.delete(tSid);

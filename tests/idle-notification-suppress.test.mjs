@@ -32,13 +32,16 @@ function makeFakeWss() {
 
 // Inject a minimal fake instance into the manager's byId map.
 // `proc` is truthy so IdleSubscriptionHub.isLive() treats it as live.
-function injectFakeInstance(instances, { id, sessionId }) {
+function injectFakeInstance(instances, { id, sessionId, activeAgentTaskCount = 0 }) {
   const inst = {
     id,
     sessionId,
     project: 'test-project',
     proc: { pid: 999 },   // marks as "live" for subscribe() isLive() check
     status: 'idle',
+    // Real Instances expose this getter; IdleSubscriptionHub.onTurnEnd reads it
+    // to gate the wake on the worker's live background-subagent count.
+    activeAgentTaskCount,
     prompt: async () => {},   // no-op; called by deliver() in a microtask
   };
   instances.byId.set(id, inst);
