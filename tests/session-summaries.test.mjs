@@ -4,16 +4,20 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { bootServer, api, freshProjectsRoot, rmrf } from './helpers.mjs';
+import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
 import {
-  setSummary, getSummaries, deleteSummaries, loadAll,
+  setSummary, getSummaries, deleteSummaries, loadAll, migrateSummaries,
 } from '../src/sessionSummaries.js';
-import { orchStoreRoot, findSessionLocation } from '../src/projects.js';
+import { orchStoreRoot, findSessionLocation, encodeCwd } from '../src/projects.js';
 import { summarySpawnDir } from '../src/summarize.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-basic.json');
 const FAKE_SUMMARIZE = path.join(__dirname, 'fake-claude-summarize.mjs');
+// Init event carries a hardcoded session_id different from the spawned id,
+// forcing the resume rekey branch (the default mock keeps the id stable).
+const REKEY = path.join(__dirname, 'fixtures', 'scenario-rekey.json');
+const REKEY_NEW_SID = '11111111-1111-1111-1111-111111111111';
 
 let ctx, baseUrl, instances, home, projectsRoot, claudeProjectsRoot;
 before(async () => {
@@ -96,6 +100,28 @@ test('deleteSummaries removes all tiers and unlinks file when empty', async () =
   let exists = true;
   try { await fs.stat(file); } catch (e) { if (e.code === 'ENOENT') exists = false; else throw e; }
   assert.equal(exists, false, 'sidecar should be unlinked when empty');
+});
+
+test('migrateSummaries moves all tiers old→new and is a no-op for missing/same id', async () => {
+  await setSummary('sid-old', 'short', { summary: 'carry short', generatedAt: 1, messageCount: 2 });
+  await setSummary('sid-old', 'long', { summary: 'carry long', generatedAt: 2, messageCount: 2 });
+
+  // Missing source → no-op.
+  assert.equal(await migrateSummaries('sid-absent', 'sid-new'), null);
+  assert.deepEqual(await getSummaries('sid-new'), {});
+
+  // Same id → no-op (entry untouched).
+  assert.equal(await migrateSummaries('sid-old', 'sid-old'), null);
+  assert.equal((await getSummaries('sid-old')).short.summary, 'carry short');
+
+  // Real move — whole entry (all tiers) carried.
+  const moved = await migrateSummaries('sid-old', 'sid-new');
+  assert.equal(moved.short.summary, 'carry short');
+  assert.equal(moved.long.summary, 'carry long');
+  const at = await getSummaries('sid-new');
+  assert.equal(at.short.summary, 'carry short');
+  assert.equal(at.long.summary, 'carry long');
+  assert.deepEqual(await getSummaries('sid-old'), {}, 'old key removed (move, not copy)');
 });
 
 // ---------------------------------------------------------------------------
@@ -284,5 +310,49 @@ test('POST /api/sessions/:sid/summary succeeds for a .conduct session', async ()
   } finally {
     if (origBin === undefined) delete process.env.CLAUDE_BIN;
     else process.env.CLAUDE_BIN = origBin;
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Resume rekey — `claude --resume` mints a new session_id at init; the entry
+// (keyed by sessionId) must MOVE to the new id, not orphan under the old.
+// ---------------------------------------------------------------------------
+
+test('resume rekey migrates session summaries from the old sessionId to the new', async () => {
+  const OLD_SID = '99999999-9999-9999-9999-999999999999';
+  const prevScenario = process.env.FAKE_CLAUDE_SCENARIO;
+  process.env.FAKE_CLAUDE_SCENARIO = REKEY;
+  try {
+    await api(baseUrl, 'POST', '/api/projects', { name: 'rekey-summed' });
+
+    // Summaries generated under the session's current (old) id.
+    await setSummary(OLD_SID, 'short', { summary: 'Old-id short.', generatedAt: 1, messageCount: 2 });
+    await setSummary(OLD_SID, 'long', { summary: 'Old-id long.', generatedAt: 2, messageCount: 2 });
+
+    // Plant a jsonl for the old id so a real --resume would find it (the mock
+    // ignores it, but this mirrors the live layout).
+    const cwd = path.join(projectsRoot, 'rekey-summed');
+    const dir = path.join(claudeProjectsRoot, encodeCwd(cwd));
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(path.join(dir, `${OLD_SID}.jsonl`), '{"type":"user","uuid":"u1"}\n');
+
+    // Resume: spawn sets sessionId=OLD_SID; the fixture's init then reports a
+    // NEW session_id, driving the rekey branch (the real --resume behaviour).
+    const inst = await instances.create({ project: 'rekey-summed', resume: OLD_SID });
+    await waitFor(() => inst.status === 'idle' && inst.sessionId === OLD_SID);
+    // The fake CLI (like the real one) is silent until the first stdin line —
+    // the init event carrying the new session_id arrives with the first turn.
+    await inst.prompt('go');
+    await waitFor(() => inst.sessionId === REKEY_NEW_SID);
+
+    // Entry MOVED to the live (new) id, all tiers intact; old id cleared.
+    await waitFor(async () => (await getSummaries(REKEY_NEW_SID)).short?.summary === 'Old-id short.');
+    const at = await getSummaries(REKEY_NEW_SID);
+    assert.equal(at.short.summary, 'Old-id short.', 'short tier migrated to new id');
+    assert.equal(at.long.summary, 'Old-id long.', 'long tier migrated to new id');
+    assert.deepEqual(await getSummaries(OLD_SID), {}, 'old id cleared (move, not copy)');
+  } finally {
+    if (prevScenario === undefined) delete process.env.FAKE_CLAUDE_SCENARIO;
+    else process.env.FAKE_CLAUDE_SCENARIO = prevScenario;
   }
 });
