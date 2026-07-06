@@ -113,17 +113,23 @@ function renderFile(file) {
   if (file.hunks && file.hunks.length > 0) {
     const body = document.createElement('div');
     body.className = 'review-diff-body';
+    // Rows go inside an inner wrapper (not directly in the scroll container)
+    // so they can all share the wrapper's shrink-to-fit width — see
+    // .review-diff-inner in styles.css for why.
+    const inner = document.createElement('div');
+    inner.className = 'review-diff-inner';
     for (const hunk of file.hunks) {
       const hdrEl = document.createElement('div');
       hdrEl.className = 'review-hunk-header';
       hdrEl.textContent = hunk.header;
-      body.appendChild(hdrEl);
+      inner.appendChild(hdrEl);
 
       for (const ln of hunk.lines) {
         const type = ln.type === 'add' ? 'add' : ln.type === 'del' ? 'del' : 'ctx';
-        body.appendChild(diffLine(type, ln.content));
+        inner.appendChild(diffLine(type, ln.content));
       }
     }
+    body.appendChild(inner);
     details.appendChild(body);
   }
 
