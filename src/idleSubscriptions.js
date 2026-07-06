@@ -2,7 +2,10 @@
 // collaborator. This is the orchestrator's dispatch-and-wake lifeline: a
 // conductor calls `subscribe_to_idle` (MCP) on a worker's sessionId, and when
 // that worker's next `turn_end` fires, a wake-stub user prompt is injected into
-// the conductor so it re-wakes and inspects the result.
+// the conductor so it re-wakes and inspects the result. An idle conductor gets
+// the worker's recent output folded into the stub; a conductor that is itself
+// mid-turn gets a plain stub delivered live into its running turn as a steering
+// callback.
 //
 // Keyed by sessionId (NOT instanceId) so the graph survives respawn / restart.
 // One-shot: a subscription is consumed when it fires (turn_end OR the optional
@@ -184,9 +187,8 @@ export class IdleSubscriptionHub {
     if (!caller) return; // caller gone — drop silently.
     // Fold the worker's recent output into the stub ONLY on a real turn_end
     // delivered to an already-idle caller. The timeout-watchdog path and the
-    // mid-turn (deferred) path keep the plain pointer stub — decided here,
-    // synchronously, so the mid-turn deferral is honored even though the caller
-    // is idle by the time the deferred send actually fires.
+    // live mid-turn steering path keep the plain pointer stub. Decided here,
+    // synchronously, on the caller's status at delivery time.
     const fold = !opts?.timedOut && caller.status !== 'turn';
     const deliver = async () => {
       try {
@@ -197,8 +199,12 @@ export class IdleSubscriptionHub {
         // `internal:true` — this is an orchestrator-injected wake, not a user
         // takeover, so it must NOT cancel a pending overage auto-resume armed on
         // the caller (an overage-stopped conductor still gets woken when its
-        // worker finishes).
-        await caller.prompt(stub, [], { internal: true });
+        // worker finishes). `annotateIfMidTurn:false` — MID_TURN_NOTE says "the
+        // user sent this message", which is wrong for an orchestrator wake; a
+        // mid-turn wake is delivered live into the caller's running turn as a
+        // clean steering stub (its WAKE_CALLBACK_MARKER still leads the echoed
+        // text, so the UI renders the wake bubble unchanged).
+        await caller.prompt(stub, [], { internal: true, annotateIfMidTurn: false });
       } catch (err) {
         caller._emitUi({
           kind: 'system', subtype: 'stderr',
@@ -206,24 +212,13 @@ export class IdleSubscriptionHub {
         });
       }
     };
-    if (caller.status === 'turn') {
-      // Wait for the caller to finish its own turn before injecting the
-      // stub, so we don't try to write to stdin while another turn is
-      // in flight. One-shot listener.
-      const onStatus = (s) => {
-        if (s.status === 'turn' || s.status === 'spawning') return;
-        caller.off('status', onStatus);
-        if (s.status === 'idle') queueMicrotask(deliver);
-        // exited/crashed → drop silently.
-      };
-      caller.on('status', onStatus);
-      return;
-    }
+    // A mid-turn caller receives the wake live (steering); an idle caller gets
+    // it folded. Either way it goes out on the next microtask.
     queueMicrotask(deliver);
   }
 
-  // The plain pointer stub — unchanged text for the timeout-watchdog path and
-  // the mid-turn deferred path. Tells the caller to go call get_recent_messages.
+  // The plain pointer stub — text for the timeout-watchdog path and the live
+  // mid-turn steering path. Tells the caller to go call get_recent_messages.
   // Tagged with the wake marker (body-less, no WAKE_BODY_SEP) so the conductor
   // UI renders it as a wake bubble too — just the summary line, no fold.
   _plainStub(targetSessionId, opts) {
