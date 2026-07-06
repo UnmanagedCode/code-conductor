@@ -1,0 +1,25 @@
+{
+  "events": [
+    { "type": "system", "subtype": "init", "session_id": "$SID", "cwd": "$CWD", "model": "claude-sonnet-4-6", "permissionMode": "$MODE", "tools": ["Bash", "Agent"], "uuid": "init-1" }
+  ],
+  "turns": [
+    {
+      "on": { "type": "prompt" },
+      "delay_ms": 20,
+      "emit": [
+        { "type": "stream_event", "event": { "type": "message_start", "message": { "id": "msg_p1", "role": "assistant" } } },
+        { "type": "stream_event", "event": { "type": "content_block_start", "index": 0, "content_block": { "type": "tool_use", "id": "tu_agent1", "name": "Agent", "input": {} } } },
+        { "type": "stream_event", "event": { "type": "content_block_delta", "index": 0, "delta": { "type": "input_json_delta", "partial_json": "{\"description\":\"bg task\",\"subagent_type\":\"Explore\",\"prompt\":\"look around\",\"run_in_background\":true}" } } },
+        { "type": "stream_event", "event": { "type": "content_block_stop", "index": 0 } },
+        { "type": "stream_event", "event": { "type": "message_stop" } },
+        { "type": "system", "subtype": "task_started", "task_id": "bgtask1", "tool_use_id": "tu_agent1", "description": "bg task", "subagent_type": "Explore", "task_type": "local_agent", "prompt": "look around" },
+        {
+          "type": "user",
+          "tool_use_result": { "isAsync": true, "status": "async_launched", "agentId": "bgtask1" },
+          "message": { "role": "user", "content": [ { "type": "tool_result", "tool_use_id": "tu_agent1", "content": [ { "type": "text", "text": "agentId: bgtask1\nThe agent is working in the background." } ], "is_error": false } ] }
+        },
+        { "type": "result", "subtype": "success", "stop_reason": "end_turn", "duration_ms": 20, "total_cost_usd": 0.0001, "is_error": false }
+      ]
+    }
+  ]
+}

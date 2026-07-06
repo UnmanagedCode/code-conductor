@@ -351,6 +351,12 @@ export class Instance extends EventEmitter {
     this._activeAgentTasks = new Map();
   }
 
+  // Live count of in-flight background Agent-tool (subagent) tasks. Read by
+  // IdleSubscriptionHub.onTurnEnd to defer the idle wake until a worker's turn
+  // ends with no subagents still running. Mirrors summary().activeAgentTasks
+  // without building the whole summary object.
+  get activeAgentTaskCount() { return this._activeAgentTasks.size; }
+
   summary() {
     // Live global-overage gate (injected by the manager at create). Surfaces the
     // paused state to the client BEFORE the first message is typed on a session
@@ -1480,9 +1486,13 @@ export class InstanceManager extends EventEmitter {
   //   Condition 1 — session is a conductor mid-orchestration (subscribed as caller
   //                 to a worker); isCaller() is reliable here because the caller's
   //                 subscription is only consumed on the TARGET's turn_end.
-  //   Condition 2 — session is a worker whose turn_end just woke a subscribed
-  //                 conductor; wasConsumed() reads _justConsumed, populated in
-  //                 IdleSubscriptionHub.onTurnEnd() BEFORE subscribers clears.
+  //   Condition 2 — session is a worker whose turn_end fired with a subscribed
+  //                 conductor watching (whether it woke the conductor now or was
+  //                 deferred pending the worker's background subagents);
+  //                 wasConsumed() reads _justConsumed, populated in
+  //                 IdleSubscriptionHub.onTurnEnd() before the defer check /
+  //                 before subscribers clears, so the worker's ping stays
+  //                 suppressed across the whole deferral.
   // ORDERING DEPENDENCY: the idle hub's 'event' listener (registered in the
   // InstanceManager constructor, instances.js) must run before wsHub's listener
   // (registered by attachWsHub in server.js). wasConsumed() is only valid during

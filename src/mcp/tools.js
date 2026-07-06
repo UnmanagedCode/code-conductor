@@ -171,7 +171,7 @@ export function buildTools() {
           },
           subscribeTimeoutMs: {
             type: 'integer',
-            description: 'Optional watchdog: wake early if turn_end does not arrive in time (same semantics as subscribe_to_idle timeoutMs).',
+            description: 'Watchdog: wake with a non-completion "did NOT finish" stub if the worker+subagents-done state is never reached (hang/crash). Defaults to 30 min (ORCH_SUBSCRIBE_TIMEOUT_MS) when omitted; an explicit value overrides. Same semantics as subscribe_to_idle timeoutMs.',
           },
         },
         required: ['sessionId', 'text'],
@@ -227,7 +227,7 @@ export function buildTools() {
           },
           subscribeTimeoutMs: {
             type: 'integer',
-            description: 'Optional watchdog: wake early if turn_end does not arrive in time (same semantics as subscribe_to_idle timeoutMs).',
+            description: 'Watchdog: wake with a non-completion "did NOT finish" stub if the worker+subagents-done state is never reached (hang/crash). Defaults to 30 min (ORCH_SUBSCRIBE_TIMEOUT_MS) when omitted; an explicit value overrides. Same semantics as subscribe_to_idle timeoutMs.',
           },
         },
         required: ['sessionId'],
@@ -252,7 +252,7 @@ export function buildTools() {
           },
           subscribeTimeoutMs: {
             type: 'integer',
-            description: 'Optional watchdog: wake early if turn_end does not arrive in time (same semantics as subscribe_to_idle timeoutMs).',
+            description: 'Watchdog: wake with a non-completion "did NOT finish" stub if the worker+subagents-done state is never reached (hang/crash). Defaults to 30 min (ORCH_SUBSCRIBE_TIMEOUT_MS) when omitted; an explicit value overrides. Same semantics as subscribe_to_idle timeoutMs.',
           },
         },
         required: ['sessionId'],
@@ -291,7 +291,7 @@ export function buildTools() {
           },
           subscribeTimeoutMs: {
             type: 'integer',
-            description: 'Optional watchdog: wake early if turn_end does not arrive in time (same semantics as subscribe_to_idle timeoutMs).',
+            description: 'Watchdog: wake with a non-completion "did NOT finish" stub if the worker+subagents-done state is never reached (hang/crash). Defaults to 30 min (ORCH_SUBSCRIBE_TIMEOUT_MS) when omitted; an explicit value overrides. Same semantics as subscribe_to_idle timeoutMs.',
           },
         },
         required: ['sessionId', 'answers'],
@@ -319,17 +319,20 @@ export function buildTools() {
     {
       name: 'subscribe_to_idle',
       description:
-        'Register a one-shot callback: when the target instance next emits turn_end, the orchestrator ' +
-        'injects a short stub user prompt into the *calling* instance pointing at get_recent_messages. ' +
+        'Register a one-shot callback: when the target instance next ends a turn WITH no live background ' +
+        'subagents (its own backgrounded Agent-tool calls all finished), the orchestrator injects a short ' +
+        'stub user prompt into the *calling* instance pointing at get_recent_messages. The wake thus means ' +
+        'the worker AND all its subagents are done — a turn_end while a subagent is still running defers the ' +
+        'wake until the follow-up turn_end after that subagent completes. ' +
         'Use this right after send_prompt({wait:false}) so you can hand control back to the user but still ' +
         'be re-woken when the worker finishes. The subscription is consumed on fire — call again to watch ' +
         'further turns. Caller identity is taken from the MCP URL (?caller=<sessionId>), so this only works for ' +
         'orchestrator-spawned instances. ' +
-        'Optional timeoutMs watchdog: if the worker has not hit turn_end within that many milliseconds, ' +
-        'the subscription fires early with a timeout-flagged stub that says the worker did NOT finish, ' +
-        'so the conductor can distinguish a hung or crashed worker from a completed one. Whichever fires ' +
-        'first (turn_end or timeout) consumes the subscription and cancels the other. ' +
-        'Omitting timeoutMs preserves the original behaviour (no timer, fire only on turn_end).',
+        'A timeoutMs watchdog is ALWAYS armed (default 30 min, ORCH_SUBSCRIBE_TIMEOUT_MS; an explicit value ' +
+        'overrides): if the agent+subagents-done state is not reached in time, the subscription fires with a ' +
+        'timeout-flagged stub that says the worker did NOT finish, so a hung/crashed worker (or a stuck ' +
+        'subagent) still wakes you. Whichever fires first (completion or timeout) consumes the subscription ' +
+        'and cancels the other.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -338,10 +341,11 @@ export function buildTools() {
             type: 'number',
             minimum: 1,
             description:
-              'Optional watchdog: fire the subscription after this many ms even if turn_end has not ' +
-              'arrived. Must be a positive finite number; ignored otherwise. The stub injected on ' +
-              'timeout is clearly labelled as a timeout (not a completion) so the conductor can ' +
-              'distinguish a timed-out worker from a finished one.',
+              'Watchdog override: fire the subscription after this many ms even if the agent+subagents-done ' +
+              'state has not been reached. Must be a positive finite number; omitted/invalid falls back to ' +
+              'the 30-min default (ORCH_SUBSCRIBE_TIMEOUT_MS). The stub injected on timeout is clearly ' +
+              'labelled as a timeout (not a completion) so the conductor can distinguish a timed-out worker ' +
+              'from a finished one.',
           },
         },
         required: ['sessionId'],

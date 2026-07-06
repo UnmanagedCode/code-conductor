@@ -14,6 +14,15 @@ import { buildRecentMessages } from './mcp/handlers.js';
 import { flattenPayload } from './mcp/content.js';
 import { buildWakeStub, markPlainStub } from '../public/wakeCallback.js';
 
+// Default watchdog for EVERY idle subscription. Delivery is deferred until the
+// worker's turn ends AND all its background subagents have finished (see
+// onTurnEnd), so a subscription with no explicit timeout could otherwise hang
+// forever on a stuck/hung subagent. This guarantees the "always has a timeout"
+// safety net — a subscription with no caller-supplied timeoutMs still eventually
+// wakes the conductor with the non-completion "did NOT finish" stub. Tunable via
+// ORCH_SUBSCRIBE_TIMEOUT_MS; an explicit finite subscribe timeoutMs wins.
+const DEFAULT_SUBSCRIBE_TIMEOUT_MS = Number(process.env.ORCH_SUBSCRIBE_TIMEOUT_MS) || 1_800_000;
+
 export class IdleSubscriptionHub {
   constructor(manager) {
     this.manager = manager;
@@ -31,19 +40,39 @@ export class IdleSubscriptionHub {
   // Driven by InstanceManager's `event` listener. When a target instance's
   // turn_end fires, deliver to every caller subscribed to its sessionId and
   // consume the subscription set (cancelling each watchdog — turn_end won).
+  //
+  // Deferral: a backgrounded Agent-tool call resolves its tool_result
+  // immediately (isAsync:true), so a worker's turn_end can fire while it still
+  // has live subagents (Instance._activeAgentTasks non-empty). We want the wake
+  // to mean "the agent AND all its subagents finished," so we DEFER delivery
+  // while activeAgentTaskCount > 0 and keep the subscription (and its watchdog)
+  // armed. When the last subagent completes its terminal task event decrements
+  // the count and re-invokes the worker (via the CLI's task-notification),
+  // producing a follow-up turn_end that lands here with the count at 0 — the
+  // decrement always precedes that re-invoked turn_end, so this fires exactly
+  // once, at true completion. A never-finishing subagent is caught by the
+  // watchdog (always armed in subscribe()).
   onTurnEnd({ id: targetInstanceId, ev }) {
     if (ev?.kind !== 'turn_end') return;
-    // The event payload carries the instanceId; resolve its sessionId, which
-    // is what the subscription graph is keyed by.
-    const tSid = this.manager.byId.get(targetInstanceId)?.sessionId;
+    // The event payload carries the instanceId; resolve the live instance and
+    // its sessionId, which is what the subscription graph is keyed by.
+    const target = this.manager.byId.get(targetInstanceId);
+    const tSid = target?.sessionId;
     const subs = tSid && this.subscribers.get(tSid);
     if (!subs || subs.size === 0) return;
-    const entries = [...subs.entries()];
-    // Mark BEFORE clearing so the wsHub 'event' listener (registered after
-    // this one in server.js: new InstanceManager() then attachWsHub()) can
-    // still detect that tSid had a watcher when its turn_end fired.
+    // Mark BEFORE the defer check / clearing so the wsHub 'event' listener
+    // (registered after this one in server.js: new InstanceManager() then
+    // attachWsHub()) can still detect that tSid had a watcher when its turn_end
+    // fired — on the deferred intermediate turn_end as well as the final one, so
+    // the worker's turn_notification stays suppressed across the whole deferral.
     this._justConsumed.add(tSid);
     queueMicrotask(() => this._justConsumed.delete(tSid));
+    // Defer while background subagents are still running — keep the subscription
+    // and its watchdog armed; the follow-up turn_end (count 0) delivers. `target`
+    // is a live Instance here (a falsy `subs` above already returned when it was
+    // absent), so the getter is always present.
+    if (target.activeAgentTaskCount > 0) return;
+    const entries = [...subs.entries()];
     subs.clear();
     this.subscribers.delete(tSid);
     for (const [callerSid, { timerId }] of entries) {
@@ -52,12 +81,15 @@ export class IdleSubscriptionHub {
     }
   }
 
-  // Register a one-shot callback: when targetId's next turn_end fires,
-  // a stub user prompt lands in callerId pointing at get_recent_messages.
-  // Re-subscribing the same pair before the callback fires is a no-op.
-  // Optional timeoutMs: arm a watchdog that fires the subscription early
-  // (with a timeout-flagged stub) if turn_end hasn't arrived in time.
-  // Only armed when timeoutMs is a finite number > 0; ignored otherwise.
+  // Register a one-shot callback: when targetId's next turn_end fires (with no
+  // live background subagents — see onTurnEnd), a stub user prompt lands in
+  // callerId pointing at get_recent_messages. Re-subscribing the same pair
+  // before the callback fires is a no-op.
+  // A watchdog is ALWAYS armed: an explicit finite timeoutMs > 0 wins, otherwise
+  // DEFAULT_SUBSCRIBE_TIMEOUT_MS. It fires the subscription early (with a
+  // timeout-flagged "did NOT finish" stub) if the agent+subagents-done state is
+  // never reached — the safety net for a hung subagent that would otherwise
+  // defer forever. .unref()'d so a lone watchdog never keeps the process alive.
   subscribe(callerSessionId, targetSessionId, timeoutMs) {
     if (typeof callerSessionId !== 'string' || !callerSessionId) {
       throw new Error('callerSessionId required');
@@ -83,19 +115,19 @@ export class IdleSubscriptionHub {
     }
     const already = subs.has(callerSessionId);
     if (!already) {
-      const useTimeout = typeof timeoutMs === 'number' && isFinite(timeoutMs) && timeoutMs > 0;
-      let timerId = null;
-      if (useTimeout) {
-        timerId = setTimeout(() => {
-          const s = this.subscribers.get(targetSessionId);
-          if (s) {
-            s.delete(callerSessionId);
-            if (s.size === 0) this.subscribers.delete(targetSessionId);
-          }
-          this.manager.emit('subscription_changed', { targetId: targetSessionId });
-          this.deliver(callerSessionId, targetSessionId, { timedOut: true, timeoutMs });
-        }, timeoutMs);
-      }
+      const effTimeout = (typeof timeoutMs === 'number' && isFinite(timeoutMs) && timeoutMs > 0)
+        ? timeoutMs
+        : DEFAULT_SUBSCRIBE_TIMEOUT_MS;
+      const timerId = setTimeout(() => {
+        const s = this.subscribers.get(targetSessionId);
+        if (s) {
+          s.delete(callerSessionId);
+          if (s.size === 0) this.subscribers.delete(targetSessionId);
+        }
+        this.manager.emit('subscription_changed', { targetId: targetSessionId });
+        this.deliver(callerSessionId, targetSessionId, { timedOut: true, timeoutMs: effTimeout });
+      }, effTimeout);
+      timerId.unref?.(); // a lone watchdog must not keep the event loop alive
       subs.set(callerSessionId, { timerId });
       this.manager.emit('subscription_changed', { targetId: targetSessionId });
     }
