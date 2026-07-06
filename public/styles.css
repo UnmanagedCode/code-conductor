@@ -1591,10 +1591,11 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
   overflow-x: auto; font-family: ui-monospace, monospace;
   font-size: 12px; background: var(--panel-2);
 }
-.review-diff-body .diff-line { white-space: pre; word-break: normal; }
+.review-diff-body .diff-line { white-space: pre; word-break: normal; width: max-content; min-width: 100%; }
 .review-hunk-header {
   color: var(--tool); background: rgba(122, 213, 211, 0.06);
   padding: 2px 8px; font-size: 11px; white-space: pre;
+  width: max-content; min-width: 100%;
 }
 .review-loading, .review-empty { padding: 24px; color: var(--muted); text-align: center; font-size: 13px; }
 .review-error { padding: 24px; color: var(--red); text-align: center; font-size: 13px; }
