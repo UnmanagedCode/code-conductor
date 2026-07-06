@@ -88,6 +88,27 @@ export function setTitle(sessionId, title) {
   });
 }
 
+// Move a custom title from one sessionId to another. `claude --resume` forks
+// history into a new `<newId>.jsonl` and mints a new session_id, so the title
+// (keyed by the old id) would otherwise orphan under the stale fork. MOVE, not
+// copy: the old `<oldId>.jsonl` remains on disk as a separate list row, and
+// titling both would render a duplicate name — the title follows the live
+// session. No-op when the old id has no entry (fresh, non-resumed sessions).
+export function migrateTitle(oldSessionId, newSessionId) {
+  return serialize(async () => {
+    if (typeof oldSessionId !== 'string' || !oldSessionId) return null;
+    if (typeof newSessionId !== 'string' || !newSessionId) return null;
+    if (oldSessionId === newSessionId) return null;
+    const map = await loadAll();
+    const v = map.get(oldSessionId);
+    if (!v) return null;
+    map.delete(oldSessionId);
+    map.set(newSessionId, v);
+    await writeMap(map);
+    return v;
+  });
+}
+
 export function deleteTitle(sessionId) {
   return serialize(async () => {
     if (typeof sessionId !== 'string' || !sessionId) return false;
