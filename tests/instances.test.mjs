@@ -1028,18 +1028,20 @@ test('turn_end while a backgrounded Agent task is still running: status stays id
   }
 });
 
-test('resuming when no jsonl exists is a no-op (still reaches idle)', async () => {
+test('resuming a session with no jsonl is refused (404), never spawns a doomed --resume', async () => {
   const prevScenario = process.env.FAKE_CLAUDE_SCENARIO;
   process.env.FAKE_CLAUDE_SCENARIO = SCENARIO_RESUME;
   try {
     await api(baseUrl, 'POST', '/api/projects', { name: 'nope' });
     const sid = 'deadbeef-0000-0000-0000-000000000000';
+    // No jsonl exists for `sid`. The real CLI would exit 1 "No conversation
+    // found" and crash-loop; the resume pre-flight refuses it up front instead.
     const r = await api(baseUrl, 'POST', '/api/instances', {
       project: 'nope', mode: 'bypassPermissions', resume: sid,
     });
-    const id = r.body.id;
-    await waitFor(() => instances.get(id).status === 'idle');
-    assert.equal(instances.get(id).sessionId, sid);
+    assert.equal(r.status, 404, 'a resume id with no resumable conversation is refused');
+    assert.match(r.body.error, /no resumable conversation/);
+    assert.equal(instances.anyForSession(sid), null, 'no phantom Instance is registered');
   } finally {
     process.env.FAKE_CLAUDE_SCENARIO = prevScenario;
   }
