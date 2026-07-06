@@ -11,6 +11,7 @@ import { isArchived } from '../src/archivedSessions.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-instance.json');
 const SCENARIO_RESUME = path.join(__dirname, 'fixtures', 'scenario-resume.json');
+const SCENARIO_BACKGROUND_TASK = path.join(__dirname, 'fixtures', 'scenario-background-task.json');
 
 let ctx, baseUrl, instances, home;
 // Handlers registered by collectEvents/direct instances.on() are gathered here
@@ -978,6 +979,50 @@ test('resume: an Agent tool_use replays its sub-agent transcript from subagents/
     const idxSubBash = mine.indexOf(subBash);
     const idxOuterResult = mine.indexOf(outerResult);
     assert.ok(idxSubBash < idxOuterResult, 'sub-agent events come before the outer Agent tool_result');
+  } finally {
+    process.env.FAKE_CLAUDE_SCENARIO = prevScenario;
+  }
+});
+
+test('turn_end while a backgrounded Agent task is still running: status stays idle but displayStatus/activeAgentTasks report it as busy, then clears on task_updated', async () => {
+  // Reproduces the reported bug: a backgrounded Agent tool_use resolves its
+  // tool_result immediately (isAsync:true), so the outer turn reaches
+  // `result` (turn_end → status:'idle') while the CLI's own task-tracking
+  // (`system/task_started` ... `system/task_updated`) is still open. The raw
+  // `status` field must stay the true process lifecycle value (idle) — only
+  // the additive `displayStatus`/`activeAgentTasks` summary fields should
+  // reflect the still-running background task.
+  await setupWithProject();
+  const prevScenario = process.env.FAKE_CLAUDE_SCENARIO;
+  process.env.FAKE_CLAUDE_SCENARIO = SCENARIO_BACKGROUND_TASK;
+  try {
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', mode: 'bypassPermissions' });
+    const id = r.body.id;
+    await waitFor(() => instances.get(id).status === 'idle');
+
+    instances.get(id).prompt('kick off a background agent');
+    // The scenario's `result` event (turn_end) lands before its trailing
+    // `task_updated` (both in the same `emit` array, spaced by delay_ms) —
+    // waitFor here catches the window where turn_end already fired but the
+    // background task hasn't been marked done yet.
+    await waitFor(() => instances.get(id).status === 'idle' && instances.get(id).summary().activeAgentTasks === 1);
+
+    const inst = instances.get(id);
+    assert.equal(inst.status, 'idle', 'raw status is the true process lifecycle value');
+    const summary = inst.summary();
+    assert.equal(summary.activeAgentTasks, 1, 'task_started was tracked');
+    assert.equal(summary.displayStatus, 'running', 'displayStatus overlays running while a background task is active');
+
+    // list_instances / GET /api/instances must carry the same overlay.
+    const list = await api(baseUrl, 'GET', '/api/instances');
+    const row = list.body.find(i => i.id === id);
+    assert.equal(row.status, 'idle');
+    assert.equal(row.displayStatus, 'running');
+
+    // The scenario's task_updated (patch.status:"completed") arrives after
+    // turn_end — once processed, the overlay clears back to plain idle.
+    await waitFor(() => instances.get(id).summary().activeAgentTasks === 0);
+    assert.equal(instances.get(id).summary().displayStatus, 'idle', 'displayStatus reverts once the task completes');
   } finally {
     process.env.FAKE_CLAUDE_SCENARIO = prevScenario;
   }

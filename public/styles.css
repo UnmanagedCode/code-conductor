@@ -249,6 +249,7 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
 .dot.idle { background: var(--muted); }
 .dot.idle.subscribed { background: var(--accent); }
 .dot.turn { background: var(--green); animation: pulse 1s infinite alternate; }
+.dot.running { background: var(--green); animation: pulse 1s infinite alternate; }
 .dot.spawning { background: var(--amber); }
 .dot.crashed, .dot.exited { background: var(--red); }
 @keyframes pulse { from { opacity: .4 } to { opacity: 1 } }
@@ -431,6 +432,7 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
 .ih-chip.ih-mode { color: var(--text); }
 .ih-chip.ih-status { color: var(--muted); }
 .ih-chip.ih-status-turn { color: var(--green); }
+.ih-chip.ih-status-running { color: var(--green); }
 .ih-chip.ih-status-spawning { color: var(--amber); }
 .ih-chip.ih-status-interrupting { color: var(--amber); animation: pulse 1s infinite alternate; }
 .ih-chip.ih-status-crashed, .ih-chip.ih-status-exited { color: var(--red); }

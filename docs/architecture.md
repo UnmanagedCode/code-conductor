@@ -139,6 +139,8 @@ create → spawning → idle ←─ turn ─→ turn_end ─┐
 
 On **resume**: `loadHistory(sessionId)` runs before flipping to `idle` — replays jsonl into UI events and emits a `system/history_replayed` divider. A history longer than the ring cap trims during the replay itself; the evicted prefix stays reachable via `GET /api/instances/:id/events`. On **turn end** or **mode change**: append `{"type":"last-prompt", …}` + `{"type":"permission-mode", …}` lines so `claude --resume`'s interactive picker can discover the session.
 
+**`displayStatus` overlay (additive, not a 6th state).** The diagram above is the real `status` enum — untouched. A backgrounded `Agent` tool call's tool_result resolves immediately (`isAsync:true`), so `turn_end` (→ `idle`) can fire while the CLI's own `system/task_started`/`task_updated` task-tracking is still open for that call. `Instance._activeAgentTasks` (a `Map<task_id, tool_use_id>`) tracks this: incremented on `task_started`, decremented on a terminal `task_updated` (`patch.status` one of `completed|failed|cancelled|error` — an unrecognized status is treated as non-terminal on purpose, to avoid flipping back to idle early) or on `task_notification` (belt-and-suspenders). `summary().displayStatus` reads `'running'` instead of `'idle'` while the map is non-empty; every other `status` value passes through unchanged. Reset on (re)spawn. `IdleSubscriptionHub.onTurnEnd` and every status-gated frontend control still key off the real `status`/raw `turn_end` event — only the cosmetic surfaces (sidebar dot, sub-agents strip, header chip) read `displayStatus`.
+
 ## On-disk state
 All orchestrator-owned state in a single workspace-wide dotfolder — the central store `<store>` (= `<projectsRoot>/.code-conductor/`):
 ```
