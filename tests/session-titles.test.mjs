@@ -7,11 +7,15 @@ import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs
 import {
   setTitle, getTitle, deleteTitle, loadAll, MAX_TITLE_LEN,
 } from '../src/sessionTitles.js';
-import { orchStoreRoot } from '../src/projects.js';
+import { orchStoreRoot, encodeCwd } from '../src/projects.js';
 import { isArchived } from '../src/archivedSessions.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-basic.json');
+// Init event carries a hardcoded session_id different from the spawned id,
+// forcing the resume rekey branch (the default mock keeps the id stable).
+const REKEY = path.join(__dirname, 'fixtures', 'scenario-rekey.json');
+const REKEY_NEW_SID = '11111111-1111-1111-1111-111111111111';
 
 // One server shared across the file; each test gets a fresh PROJECTS_ROOT
 // (so the session-titles / archived-sessions sidecars start empty — the
@@ -82,6 +86,21 @@ test('sessionTitles: concurrent writes do not lose entries', async () => {
     assert.equal(all.get('sid-4'), 'four');
     assert.equal(all.get('sid-5'), 'five');
   }
+});
+
+test('migrateTitle moves the entry old→new and is a no-op for missing/same id', async () => {
+  const { migrateTitle } = await import('../src/sessionTitles.js');
+  await setTitle('sid-old', 'carry me');
+  // Missing source → no-op.
+  assert.equal(await migrateTitle('sid-absent', 'sid-new'), null);
+  assert.equal(await getTitle('sid-new'), null);
+  // Same id → no-op (title untouched).
+  assert.equal(await migrateTitle('sid-old', 'sid-old'), null);
+  assert.equal(await getTitle('sid-old'), 'carry me');
+  // Real move.
+  assert.equal(await migrateTitle('sid-old', 'sid-new'), 'carry me');
+  assert.equal(await getTitle('sid-new'), 'carry me');
+  assert.equal(await getTitle('sid-old'), null, 'old key removed (move, not copy)');
 });
 
 test('sessionTitles: deleting last entry removes the sidecar file', async () => {
@@ -208,5 +227,42 @@ test('temp session exit preserves its custom title in the sidecar', async () => 
     await waitFor(() => isArchived(sid));
     // Title is retained — still meaningful on an archived session.
     assert.equal(await getTitle(sid), 'ephemeral');
+  }
+});
+
+test('resume rekey migrates the custom title from the old sessionId to the new', async () => {
+  const OLD_SID = '99999999-9999-9999-9999-999999999999';
+  const prevScenario = process.env.FAKE_CLAUDE_SCENARIO;
+  process.env.FAKE_CLAUDE_SCENARIO = REKEY;
+  try {
+    await api(baseUrl, 'POST', '/api/projects', { name: 'rekey-titled' });
+
+    // The user named the session under its current (old) id.
+    await setTitle(OLD_SID, 'My custom name');
+
+    // Plant a jsonl for the old id so a real --resume would find it (the mock
+    // ignores it, but this mirrors the live layout).
+    const cwd = path.join(projectsRoot, 'rekey-titled');
+    const dir = path.join(claudeProjectsRoot, encodeCwd(cwd));
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(path.join(dir, `${OLD_SID}.jsonl`), '{"type":"user","uuid":"u1"}\n');
+
+    // Resume: spawn sets sessionId=OLD_SID; the fixture's init then reports a
+    // NEW session_id, driving the rekey branch (the real --resume behaviour).
+    const inst = await instances.create({ project: 'rekey-titled', resume: OLD_SID });
+    await waitFor(() => inst.status === 'idle' && inst.sessionId === OLD_SID);
+    // The fake CLI (like the real one) is silent until the first stdin line —
+    // the init event carrying the new session_id arrives with the first turn.
+    await inst.prompt('go');
+    await waitFor(() => inst.sessionId === REKEY_NEW_SID);
+
+    // Title MOVED to the live (new) id; old key cleared; in-memory chip intact.
+    await waitFor(async () => (await getTitle(REKEY_NEW_SID)) === 'My custom name');
+    assert.equal(await getTitle(REKEY_NEW_SID), 'My custom name', 'title migrated to new id');
+    assert.equal(await getTitle(OLD_SID), null, 'old id no longer titled (move, not copy)');
+    assert.equal(inst.summary().title, 'My custom name', 'header chip survives the rekey');
+  } finally {
+    if (prevScenario === undefined) delete process.env.FAKE_CLAUDE_SCENARIO;
+    else process.env.FAKE_CLAUDE_SCENARIO = prevScenario;
   }
 });
