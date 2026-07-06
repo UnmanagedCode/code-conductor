@@ -213,10 +213,11 @@ test('subscribe_to_idle delivers exactly once after the subagent completes and a
   assert.equal(instances._idleHub.hasSubscriber(targetId), false);
 });
 
-test('carve-out: caller mid-turn at delivery keeps the plain (un-folded) stub', async () => {
+test('steering: caller mid-turn at delivery gets the plain stub delivered LIVE', async () => {
   await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
   // Caller runs a slow turn so it is still `status:'turn'` when the target
-  // finishes — the delivery is deferred and must NOT fold.
+  // finishes — the wake is delivered LIVE into the running turn (steering) and
+  // must NOT fold.
   const callerId = await spawnReadyWithScenario('p', SCENARIO_SLOW);
   const targetId = await spawnReady('p');
 
@@ -227,12 +228,35 @@ test('carve-out: caller mid-turn at delivery keeps the plain (un-folded) stub', 
   const caller = instForSession(instances, callerId);
   await waitFor(() => caller.status === 'turn');
 
-  // Fire the target's turn_end while the caller is still mid-turn.
-  await callTool('send_prompt',
-    { sessionId: targetId, text: 'go', wait: true, waitTimeoutMs: 5000 });
+  // Capture the caller's status at the exact moment the wake stub is delivered.
+  // prompt() fires the user_echo event BEFORE its own _setStatus('turn'), so the
+  // captured status reflects the caller's still-running slow turn: 'turn' proves
+  // the wake landed live (the old deferred path would have captured 'idle').
+  let statusAtDelivery = null;
+  const onEvent = (ev) => {
+    if (statusAtDelivery === null &&
+        ev.kind === 'user_echo' &&
+        typeof ev.text === 'string' &&
+        ev.text.includes(targetId) &&
+        ev.text.includes('get_recent_messages')) {
+      statusAtDelivery = caller.status;
+    }
+  };
+  caller.on('event', onEvent);
 
-  // The stub is delivered once the caller's own slow turn drains.
-  await waitFor(() => !!findStubFor(caller, targetId));
+  try {
+    // Fire the target's turn_end while the caller is still mid-turn.
+    await callTool('send_prompt',
+      { sessionId: targetId, text: 'go', wait: true, waitTimeoutMs: 5000 });
+    // The stub is delivered live — no waiting for the caller's slow turn to drain.
+    await waitFor(() => statusAtDelivery !== null);
+  } finally {
+    caller.off('event', onEvent);
+  }
+
+  assert.equal(statusAtDelivery, 'turn',
+    'wake stub delivered live while the caller is still mid-turn (steering, not deferred)');
+
   const stub = findStubFor(caller, targetId);
   assert.ok(stub.text.startsWith(WAKE_CALLBACK_MARKER),
     'mid-turn stub is tagged as a wake-callback (renders as the bubble)');

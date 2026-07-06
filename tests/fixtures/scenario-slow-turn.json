@@ -5,7 +5,7 @@
   "turns": [
     {
       "on": { "type": "prompt" },
-      "delay_ms": 150,
+      "delay_ms": 1500,
       "emit": [
         { "type": "stream_event", "event": { "type": "message_start", "message": { "id": "msg_slow", "role": "assistant" } } },
         { "type": "stream_event", "event": { "type": "content_block_start", "index": 0, "content_block": { "type": "text", "text": "" } } },

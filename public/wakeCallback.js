@@ -28,7 +28,7 @@ export function buildWakeStub({ targetSessionId, payloadText }) {
   return `${WAKE_CALLBACK_MARKER}${summary}${WAKE_BODY_SEP}${payloadText}`;
 }
 
-// Wrap a body-less wake stub (the timeout-watchdog and mid-turn deferred
+// Wrap a body-less wake stub (the timeout-watchdog and live mid-turn steering
 // pointers) with the marker so the UI renders it as a wake bubble WITHOUT a
 // collapsible body — no WAKE_BODY_SEP, nothing to fold. parseWakeCallback
 // degrades the separator-less result to { summary, body:'' }, which the client
