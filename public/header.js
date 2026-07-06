@@ -27,6 +27,9 @@
 //   - getAccountUsage(): reads the `accountUsage` let (reassigned by the periodic
 //                        /api/usage fetch) — a getter so the chip/popover always
 //                        render the current value, identical to the old closure.
+//   - getAccountUsageStale(): true when the current accountUsage value was served
+//                        stale by the server (backoff/failure window) rather than
+//                        freshly fetched — drives the popover's "(stale)" suffix.
 //   - composer/conversation: enablement toggles.
 //   - closeOverflow():   the header ⋮ menu close (overflow controller STAYS in app.js).
 
@@ -54,6 +57,7 @@ export function installHeader({
   getUsage,
   globalRLTracker,
   getAccountUsage,
+  getAccountUsageStale,
   composer,
   conversation,
   closeOverflow,
@@ -149,7 +153,7 @@ export function installHeader({
     const usageLimitsGap = document.createElement('div');
     usageLimitsGap.className = 'ih-usage-section-gap';
     node.appendChild(usageLimitsGap);
-    node.appendChild(section('Usage limits'));
+    node.appendChild(section(accountUsage && getAccountUsageStale() ? 'Usage limits (stale)' : 'Usage limits'));
     if (!accountUsage) {
       const empty = document.createElement('div');
       empty.className = 'ih-usage-empty-msg';

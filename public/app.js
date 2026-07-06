@@ -45,39 +45,42 @@ const state = {
   activeMode: null,
 };
 
-// Account-level usage fetched from /api/usage (OAuth endpoint, 60 s server cache).
-// null until the first successful fetch; stays null on errors (chip degrades silently).
+// Account-level usage fetched from /api/usage (OAuth endpoint, 180 s server cache).
+// null until the first successful fetch. A failed/null refresh keeps the last-good
+// value instead of blanking it — the server already retains last-good data on
+// failure (allowStale), so a transient miss here shouldn't clobber a good render.
 let accountUsage = null;
+let accountUsageStale = false;
 
 async function refreshAccountUsage() {
   try {
     const r = await fetch('/api/usage', { cache: 'no-store' });
     if (!r.ok) return;
     const j = await r.json();
-    accountUsage = j.usage ?? null;
+    if (j.usage == null) return; // keep last-good accountUsage, don't blank it
+    accountUsage = j.usage;
+    accountUsageStale = !!j.stale;
     // Merge the tightest bucket from the fetch into globalRLTracker so the
     // combined chip shows real data even before a rate_limit_event arrives.
     // fetch = richer base; messages are sparse patches on top. Both use the
     // same apply() null-guard so neither clobbers the other's unique fields
     // (isUsingOverage is message-only and survives re-fetches because it is
     // intentionally absent from this synthetic event).
-    if (accountUsage) {
-      const BUCKET_PRIORITY = ['five_hour', 'seven_day', 'seven_day_sonnet', 'seven_day_opus'];
-      const key = BUCKET_PRIORITY.find(k => accountUsage[k]);
-      if (key) {
-        const b = accountUsage[key];
-        globalRLTracker.apply({
-          kind: 'system', subtype: 'rate_limit_event',
-          data: { rate_limit_info: {
-            rateLimitType: key,
-            utilization: typeof b.utilization === 'number' ? b.utilization / 100 : undefined,
-            resetsAt: b.resets_at ? new Date(b.resets_at).getTime() / 1000 : undefined,
-          }},
-        });
-      }
+    const BUCKET_PRIORITY = ['five_hour', 'seven_day', 'seven_day_sonnet', 'seven_day_opus'];
+    const key = BUCKET_PRIORITY.find(k => accountUsage[k]);
+    if (key) {
+      const b = accountUsage[key];
+      globalRLTracker.apply({
+        kind: 'system', subtype: 'rate_limit_event',
+        data: { rate_limit_info: {
+          rateLimitType: key,
+          utilization: typeof b.utilization === 'number' ? b.utilization / 100 : undefined,
+          resetsAt: b.resets_at ? new Date(b.resets_at).getTime() / 1000 : undefined,
+        }},
+      });
     }
     if (state.activeId) headerHandle.update();
-  } catch { /* ignore — chip degrades silently */ }
+  } catch { /* ignore — keep last-good accountUsage */ }
 }
 
 const dom = {
@@ -432,6 +435,7 @@ headerHandle = installHeader({
   getUsage,
   globalRLTracker,
   getAccountUsage: () => accountUsage,
+  getAccountUsageStale: () => accountUsageStale,
   composer,
   conversation,
   closeOverflow,
@@ -1000,4 +1004,4 @@ installWsRouter({
 connect();
 
 refreshAccountUsage();
-setInterval(refreshAccountUsage, 60_000);
+setInterval(refreshAccountUsage, 180_000);

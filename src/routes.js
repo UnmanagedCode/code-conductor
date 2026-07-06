@@ -1219,12 +1219,15 @@ export function buildRoutes({ instances, serverCtx } = {}) {
   });
 
   // Account-level usage from the Anthropic OAuth endpoint. Cached server-side
-  // for 60 s. Returns { usage: <data> } or { usage: null } — never exposes
-  // the raw token to the browser.
+  // for 180 s. allowStale lets this route serve the last retained payload
+  // (with stale: true) when a fresh fetch isn't available, instead of
+  // blanking the chip — see src/accountUsage.js. Returns
+  // { usage: <data>|null, stale, fetchedAt } — never exposes the raw token.
   r.get('/usage', async (req, res, next) => {
     try {
-      const usage = await getAccountUsage();
-      res.json({ usage });
+      const result = await getAccountUsage({ allowStale: true });
+      if (!result) return res.json({ usage: null, stale: false, fetchedAt: null });
+      res.json({ usage: result.data, stale: result.stale, fetchedAt: result.fetchedAt });
     } catch (e) { next(e); }
   });
 

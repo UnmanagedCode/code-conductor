@@ -76,7 +76,7 @@ See [docs/features.md](docs/features.md) for the exhaustive feature and UI-eleme
   toggle on, when `utilization` crosses the configured percent (default 85%, range **10–99**). The
   threshold is watched from **two** equal-footing sources: the live `rate_limit_event` stream (which
   Anthropic only emits near its own ~90% mark) **and** a periodic server-side usage poll
-  (`src/usageOverageMonitor.js`; cadence `ORCH_USAGE_POLL_MS`, default 60 s) of the **five-hour** window —
+  (`src/usageOverageMonitor.js`; cadence `ORCH_USAGE_POLL_MS`, default 180 s) of the **five-hour** window —
   so a *low* threshold (e.g. 25%) trips even though the stream never reports that low. Both sources drive
   the same machinery and are deduped by the global one-shot (`_overageActive`), so they never double-trip;
   the poll degrades silently (no trip) when its usage fetch fails/times out.

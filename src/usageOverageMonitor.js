@@ -18,9 +18,9 @@ import { getAccountUsage } from './accountUsage.js';
 import { getOverageThreshold, getOnOverageAction, usageOverThreshold } from './appSettings.js';
 import { parseResetEpochSecs } from './instances.js';
 
-// Default poll cadence. Aligned with the 60 s success cache in accountUsage.js so a
+// Default poll cadence. Aligned with the 180 s success cache in accountUsage.js so a
 // tick rarely forces a real network fetch beyond what the chip already triggers.
-const DEFAULT_POLL_MS = 60_000;
+const DEFAULT_POLL_MS = 180_000;
 
 export class UsageOverageMonitor {
   // `fetchUsage` is injectable purely as a test seam (defaults to the real

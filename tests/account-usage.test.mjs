@@ -1,6 +1,7 @@
 // Integration tests for src/accountUsage.js
-// Tests the OAuth fetch, 60 s caching, and graceful error handling.
-// Uses a temporary credentials file and a stubbed global fetch.
+// Tests the OAuth fetch, 180 s caching, allowStale serve-last-good behavior,
+// and graceful error handling. Uses a temporary credentials file and a
+// stubbed global fetch.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -77,7 +78,7 @@ test('returns usage data on successful fetch', async () => {
   }
 });
 
-test('cache hit — second call within 60 s makes no additional API request', async () => {
+test('cache hit — second call within 180 s makes no additional API request', async () => {
   await makeTmpHome({ claudeAiOauth: { accessToken: 'sk-ant-oat01-test' } });
   const stub = stubFetch(SAMPLE_USAGE);
   _resetCache();
@@ -400,20 +401,20 @@ test('successful fetch after failures resets backoff to base', async () => {
   }
 
   // Phase 3: one more failure after success — delay should be base 10s, not 40s
-  // (Expire the 60s success cache first by advancing time past it.)
+  // (Expire the 180s success cache first by advancing time past it.)
   const failAgainStub = stubFetch({ error: 'rate limited' }, 429);
   try {
-    // t0 + 30_000 + 60_000 = past the success cache
-    await getAccountUsage({ home: tmpHome, _now: () => t0 + 90_000, _random: NO_JITTER });
+    // t0 + 30_000 + 180_000 = past the success cache
+    await getAccountUsage({ home: tmpHome, _now: () => t0 + 210_000, _random: NO_JITTER });
     assert.equal(failAgainStub.calls, 1);
 
-    // Blocked at t0 + 90_000 + BASE_RETRY_MS - 1
-    const blocked = await getAccountUsage({ home: tmpHome, _now: () => t0 + 90_000 + BASE_RETRY_MS - 1, _random: NO_JITTER });
+    // Blocked at t0 + 210_000 + BASE_RETRY_MS - 1
+    const blocked = await getAccountUsage({ home: tmpHome, _now: () => t0 + 210_000 + BASE_RETRY_MS - 1, _random: NO_JITTER });
     assert.equal(blocked, null);
     assert.equal(failAgainStub.calls, 1, 'delay after reset should be base 10s, not 40s');
 
-    // Unblocked at t0 + 90_000 + BASE_RETRY_MS
-    await getAccountUsage({ home: tmpHome, _now: () => t0 + 90_000 + BASE_RETRY_MS, _random: NO_JITTER });
+    // Unblocked at t0 + 210_000 + BASE_RETRY_MS
+    await getAccountUsage({ home: tmpHome, _now: () => t0 + 210_000 + BASE_RETRY_MS, _random: NO_JITTER });
     assert.equal(failAgainStub.calls, 2, 'should retry after base 10s backoff');
   } finally {
     failAgainStub.restore();
@@ -448,6 +449,114 @@ test('_resetCache() also resets retry state', async () => {
     // Unblocked at base
     await getAccountUsage({ home: tmpHome, _now: () => t0 + 110_000 + BASE_RETRY_MS, _random: NO_JITTER });
     assert.equal(stub.calls, 5, 'should retry at base 10s after reset');
+  } finally {
+    stub.restore();
+    await cleanTmpHome();
+  }
+});
+
+// ── allowStale (opt-in serve-last-good) ─────────────────────────────────────
+
+test('allowStale — fresh cache hit returns { data, stale: false, fetchedAt }', async () => {
+  await makeTmpHome(CREDS);
+  const t0 = 1_000_000_000;
+  const stub = stubFetch(SAMPLE_USAGE);
+  _resetCache();
+  try {
+    await getAccountUsage({ home: tmpHome, _now: () => t0, _random: NO_JITTER });
+    const result = await getAccountUsage({ home: tmpHome, _now: () => t0 + 1000, _random: NO_JITTER, allowStale: true });
+    assert.deepEqual(result, { data: SAMPLE_USAGE, stale: false, fetchedAt: t0 });
+    assert.equal(stub.calls, 1, 'second call should be served from cache, not refetch');
+  } finally {
+    stub.restore();
+    await cleanTmpHome();
+  }
+});
+
+test('allowStale — serves last-good data as stale during a backoff window, while a plain call still returns null', async () => {
+  await makeTmpHome(CREDS);
+  const t0 = 1_000_000_000;
+
+  // Phase 1: a successful fetch populates the cache.
+  const successStub = stubFetch(SAMPLE_USAGE, 200);
+  _resetCache();
+  try {
+    await getAccountUsage({ home: tmpHome, _now: () => t0, _random: NO_JITTER });
+  } finally {
+    successStub.restore();
+  }
+
+  // Phase 2: expire the 180s success cache, then a failure enters backoff.
+  const failStub = stubFetch({ error: 'rate limited' }, 429);
+  try {
+    const tFail = t0 + 180_000;
+    await getAccountUsage({ home: tmpHome, _now: () => tFail, _random: NO_JITTER });
+    assert.equal(failStub.calls, 1);
+
+    // Still inside the backoff window: plain call → null, allowStale → last-good data marked stale.
+    const tCheck = tFail + BASE_RETRY_MS - 1;
+    const plain = await getAccountUsage({ home: tmpHome, _now: () => tCheck, _random: NO_JITTER });
+    assert.equal(plain, null, 'default (allowStale: false) must stay strict fresh-or-null');
+    assert.equal(failStub.calls, 1, 'the plain call must not have forced a refetch');
+
+    const stale = await getAccountUsage({ home: tmpHome, _now: () => tCheck, _random: NO_JITTER, allowStale: true });
+    assert.deepEqual(stale, { data: SAMPLE_USAGE, stale: true, fetchedAt: t0 });
+    assert.equal(failStub.calls, 1, 'the allowStale call must not have forced a refetch either');
+  } finally {
+    failStub.restore();
+    await cleanTmpHome();
+  }
+});
+
+test('allowStale — returns null once the retained data ages past maxStaleMs', async () => {
+  await makeTmpHome(CREDS);
+  const t0 = 1_000_000_000;
+
+  const successStub = stubFetch(SAMPLE_USAGE, 200);
+  _resetCache();
+  try {
+    await getAccountUsage({ home: tmpHome, _now: () => t0, _random: NO_JITTER });
+  } finally {
+    successStub.restore();
+  }
+
+  const failStub = stubFetch({ error: 'rate limited' }, 429);
+  try {
+    const tFail = t0 + 180_000; // past the success cache
+    await getAccountUsage({ home: tmpHome, _now: () => tFail, _random: NO_JITTER });
+
+    // Same clock reading (still well inside the BASE_RETRY_MS backoff window, so
+    // no further fetch is attempted) — only maxStaleMs differs, isolating the age
+    // cap from backoff timing. Age of the retained data at this instant is fixed
+    // at tFail - t0 = 180_000.
+    const tCheck = tFail + 1000;
+    const age = tCheck - t0; // 181_000
+
+    const withinCap = await getAccountUsage({
+      home: tmpHome, _now: () => tCheck, _random: NO_JITTER,
+      allowStale: true, maxStaleMs: age + 1,
+    });
+    assert.deepEqual(withinCap, { data: SAMPLE_USAGE, stale: true, fetchedAt: t0 });
+
+    const pastCap = await getAccountUsage({
+      home: tmpHome, _now: () => tCheck, _random: NO_JITTER,
+      allowStale: true, maxStaleMs: age,
+    });
+    assert.equal(pastCap, null, 'data whose age has reached maxStaleMs must not be served');
+  } finally {
+    failStub.restore();
+    await cleanTmpHome();
+  }
+});
+
+test('allowStale — returns null when there is no prior successful fetch to serve', async () => {
+  await makeTmpHome(CREDS);
+  const t0 = 1_000_000_000;
+  const stub = stubFetch({ error: 'rate limited' }, 429);
+  _resetCache();
+  try {
+    const result = await getAccountUsage({ home: tmpHome, _now: () => t0, _random: NO_JITTER, allowStale: true });
+    assert.equal(result, null);
   } finally {
     stub.restore();
     await cleanTmpHome();

@@ -1,7 +1,17 @@
 // Fetches account-level usage from the Anthropic OAuth endpoint and caches
-// the result for 60 s so the chip/popup don't hammer the API on every render.
+// the result for 180 s so the chip/popup don't hammer the API on every render
+// (the endpoint itself only replenishes ~once per 120 s and exposes no useful
+// ratelimit headers, so polling less often is the only lever that works).
 // Credentials are read from ~/.claude/.credentials.json (claudeAiOauth.accessToken).
 // Returns null on any error (missing file, 401, network) — never throws.
+//
+// Callers get strict fresh-or-null by default. Passing `allowStale: true`
+// (used only by the GET /api/usage route, for the UI chip) additionally serves
+// the last retained payload — wrapped as { data, stale, fetchedAt } — when a
+// fresh fetch isn't available, capped at `maxStaleMs` so the chip never shows
+// arbitrarily old data. The overage-trip monitor and auto-resume controller
+// must never see stale data (it could mis-trip a threshold or resume a session
+// still under a limit), so they call getAccountUsage() with no options.
 //
 // No anthropic-beta header is sent: the OAuth usage endpoint graduated from
 // beta (originally oauth-2025-04-20) and now rejects the stale header.
@@ -11,7 +21,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage';
-const CACHE_TTL_MS  = 60_000;
+const CACHE_TTL_MS  = 180_000;
 const BASE_RETRY_MS = 10_000;       // base backoff delay after a failed fetch
 const MAX_RETRY_MS  = 5 * 60_000;   // ceiling for both Retry-After and exponential backoff
 
@@ -79,30 +89,49 @@ async function fetchFromApi(token) {
   return { data: await res.json(), status: res.status, retryAfterHeader: null };
 }
 
+// When a fresh fetch isn't available and allowStale is set, serve the last
+// retained payload as long as it isn't older than maxStaleMs. Returns null
+// otherwise (nothing usable to serve, stale or fresh).
+function maybeServeStale(now, maxStaleMs) {
+  if (_cache.data !== null && now - _cache.fetchedAt < maxStaleMs) {
+    return { data: _cache.data, stale: true, fetchedAt: _cache.fetchedAt };
+  }
+  return null;
+}
+
 // _now and _random are test seams — production callers omit them.
-export async function getAccountUsage({ home, _now = Date.now, _random = Math.random } = {}) {
+//
+// allowStale/maxStaleMs are opt-in (default: strict fresh-or-null, unchanged
+// from before). With allowStale: true the return shape becomes
+// { data, stale, fetchedAt } | null instead of the raw data | null — only the
+// GET /api/usage route opts in; every other caller must keep seeing the plain
+// strict shape.
+export async function getAccountUsage({
+  home, _now = Date.now, _random = Math.random,
+  allowStale = false, maxStaleMs = 15 * 60_000,
+} = {}) {
   const now = _now();
 
   // 1. Valid success cache.
   if (_cache.data !== null && now - _cache.fetchedAt < CACHE_TTL_MS) {
-    return _cache.data;
+    return allowStale ? { data: _cache.data, stale: false, fetchedAt: _cache.fetchedAt } : _cache.data;
   }
 
   // 2. Still inside a backoff / Retry-After window.
   if (now < _retryState.nextAllowedAt) {
-    return null;
+    return allowStale ? maybeServeStale(now, maxStaleMs) : null;
   }
 
   try {
     const token = await readOauthToken(home);
-    if (!token) return null;
+    if (!token) return allowStale ? maybeServeStale(now, maxStaleMs) : null;
 
     const { data, status, retryAfterHeader } = await fetchFromApi(token);
 
     if (data !== null) {
       _cache      = { data, fetchedAt: now };
       _retryState = { failureCount: 0, nextAllowedAt: 0 };
-      return data;
+      return allowStale ? { data, stale: false, fetchedAt: now } : data;
     }
 
     // Non-OK response: honour Retry-After if present, else exponential backoff.
@@ -114,13 +143,13 @@ export async function getAccountUsage({ home, _now = Date.now, _random = Math.ra
       : computeBackoff(_retryState.failureCount, _random()));
     _retryState = { failureCount: _retryState.failureCount + 1, nextAllowedAt: now + delay };
     console.warn(`${new Date().toISOString()} [accountUsage] Anthropic OAuth usage API returned ${status} — chip will be hidden until this resolves. Next retry in ${Math.round(delay / 1000)}s (failure #${_retryState.failureCount})`);
-    return null;
+    return allowStale ? maybeServeStale(now, maxStaleMs) : null;
 
   } catch {
     // Network error / timeout — apply backoff silently (no status to report).
     const delay = computeBackoff(_retryState.failureCount, _random());
     _retryState = { failureCount: _retryState.failureCount + 1, nextAllowedAt: now + delay };
-    return null;
+    return allowStale ? maybeServeStale(now, maxStaleMs) : null;
   }
 }
 
