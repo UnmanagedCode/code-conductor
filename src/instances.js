@@ -1126,6 +1126,9 @@ export class Instance extends EventEmitter {
       throw new Error('prompt requires non-empty text or at least one valid attachment');
     }
 
+    // A real prompt is a genuine turn boundary — any Skill invocation still
+    // awaiting its content injection is stale (see parser.js:attachSkillLoad).
+    this.parser.expirePendingSkillLoads();
     this._emitUi({ kind: 'user_echo', text: safeText, attachments: echoAttachments });
     if (this.firstPrompt == null && safeText.length) {
       this.firstPrompt = safeText.slice(0, 200);
@@ -1234,6 +1237,8 @@ export class Instance extends EventEmitter {
     if (this.status !== 'turn') return;
     if (this.interrupting) return;
     const body = typeof text === 'string' && text.trim() ? text : SOFT_INTERRUPT_TEXT;
+    // Same turn-boundary rationale as prompt() above.
+    this.parser.expirePendingSkillLoads();
     this._emitUi({ kind: 'user_echo', text: body });
     this._sendRaw({
       type: 'user',

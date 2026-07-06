@@ -72,3 +72,49 @@ test('loadPersistedTranscript: isSynthetic content-injection line correlates wit
   assert.ok(toolResult);
   assert.equal(toolResult.toolUseId, 'tu_skill');
 });
+
+function orphanedSkillSessionLines() {
+  return [
+    { type: 'user', uuid: 'u0', message: { role: 'user', content: 'what are the default keybindings?' } },
+    {
+      type: 'assistant', uuid: 'a0',
+      message: {
+        id: 'm_skill', role: 'assistant',
+        content: [{ type: 'tool_use', id: 'tu_skill', name: 'Skill', input: { skill: 'keybindings-help', args: 'what are the default keybindings?' } }],
+      },
+    },
+    // The skill lookup fails — tool_result errors, no content-injection
+    // line ever follows for tu_skill.
+    {
+      type: 'user', uuid: 'u1',
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu_skill', content: 'skill not found', is_error: true }] },
+    },
+    { type: 'assistant', uuid: 'a1', message: { id: 'm_reply', role: 'assistant', content: [{ type: 'text', text: 'Sorry, that skill was not found.' }] } },
+    // Conversation continues normally with a genuine user turn.
+    { type: 'user', uuid: 'u2', message: { role: 'user', content: 'no worries, what else can you do?' } },
+    { type: 'assistant', uuid: 'a2', message: { id: 'm_reply2', role: 'assistant', content: [{ type: 'text', text: 'Here are some options...' }] } },
+    // A later, unrelated isSynthetic message (Stop-hook feedback style) must
+    // not inherit the orphaned tu_skill entry.
+    {
+      type: 'user', uuid: 'u3', isSynthetic: true,
+      message: { role: 'user', content: [{ type: 'text', text: 'Stop hook feedback:\n[wrap up the conversation]' }] },
+    },
+  ];
+}
+
+test('loadPersistedTranscript: an orphaned Skill tool_use (errored, no content injection) does not mislabel a later unrelated isSynthetic message', async () => {
+  await seedTranscript(orphanedSkillSessionLines());
+  const result = await loadPersistedTranscript({ cwd: CWD, sessionId: SID });
+  assert.ok(result, 'transcript loaded');
+  const events = flatEvents(result);
+
+  const toolResult = events.find(ev => ev.kind === 'tool_result' && ev.toolUseId === 'tu_skill');
+  assert.ok(toolResult);
+  assert.equal(toolResult.isError, true);
+
+  const echoes = events.filter(ev => ev.kind === 'user_echo');
+  assert.equal(echoes.length, 3, 'the two real prompts and the later unrelated synthetic line each produce a user_echo');
+  const laterSynthetic = echoes[echoes.length - 1];
+  assert.match(laterSynthetic.text, /Stop hook feedback/);
+  assert.equal(laterSynthetic.skillLoad, undefined, 'the orphaned entry must not attach to this unrelated message');
+});

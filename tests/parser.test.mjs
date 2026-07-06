@@ -535,3 +535,66 @@ test('parser: a second Skill invocation in the same session correlates independe
   }).find(e => e.kind === 'user_echo');
   assert.deepEqual(second.skillLoad, { skill: 'deep-research' });
 });
+
+test('parser: a Skill tool_use whose tool_result errors does not leave a stale FIFO entry to mislabel a later isSynthetic message', () => {
+  const p = new Parser();
+  p.handleObject({ type: 'stream_event', event: { type: 'message_start', message: { id: 'm', role: 'assistant' } } });
+  p.handleObject({
+    type: 'stream_event',
+    event: { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'tu_bad', name: 'Skill', input: {} } },
+  });
+  p.handleObject({
+    type: 'stream_event',
+    event: { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '{"skill":"no-such-skill","args":"x"}' } },
+  });
+  p.handleObject({ type: 'stream_event', event: { type: 'content_block_stop', index: 0 } });
+
+  // The skill lookup fails: tool_result errors, no content injection follows.
+  const resultEvs = p.handleObject({
+    type: 'user',
+    message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu_bad', content: 'skill not found', is_error: true }] },
+  });
+  assert.equal(resultEvs[0].kind, 'tool_result');
+  assert.equal(resultEvs[0].isError, true);
+
+  // A later, unrelated isSynthetic message (e.g. Stop-hook feedback) must
+  // not inherit the orphaned pending entry.
+  const later = p.handleObject({
+    type: 'user', isSynthetic: true,
+    message: { role: 'user', content: [{ type: 'text', text: 'Stop hook feedback:\n[do the thing]' }] },
+  }).find(e => e.kind === 'user_echo');
+  assert.ok(later);
+  assert.equal(later.skillLoad, undefined);
+});
+
+test('parser: a Skill tool_use interrupted with no tool_result is expired by the next real user turn, so a later isSynthetic message is not mislabeled', () => {
+  const p = new Parser();
+  p.handleObject({ type: 'stream_event', event: { type: 'message_start', message: { id: 'm', role: 'assistant' } } });
+  p.handleObject({
+    type: 'stream_event',
+    event: { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'tu_interrupted', name: 'Skill', input: {} } },
+  });
+  p.handleObject({
+    type: 'stream_event',
+    event: { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '{"skill":"keybindings-help","args":"x"}' } },
+  });
+  p.handleObject({ type: 'stream_event', event: { type: 'content_block_stop', index: 0 } });
+  // Turn is interrupted: no tool_result, no content injection ever arrives.
+
+  // The conversation continues normally with a genuine real prompt.
+  const realEcho = p.handleObject({
+    type: 'user',
+    message: { role: 'user', content: [{ type: 'text', text: 'never mind, let\'s do something else' }] },
+  }).find(e => e.kind === 'user_echo');
+  assert.ok(realEcho);
+  assert.equal(realEcho.skillLoad, undefined);
+
+  // A later, unrelated isSynthetic message (e.g. compaction-continuation)
+  // must not inherit the orphaned pending entry.
+  const later = p.handleObject({
+    type: 'user', isSynthetic: true,
+    message: { role: 'user', content: [{ type: 'text', text: 'This session is being continued from a previous conversation...' }] },
+  }).find(e => e.kind === 'user_echo');
+  assert.ok(later);
+  assert.equal(later.skillLoad, undefined);
+});
