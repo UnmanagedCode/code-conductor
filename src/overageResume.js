@@ -89,8 +89,10 @@ export class OverageResumeController {
 
   // Recheck cadence for a parked (still-over / can't-confirm) session. Overridable
   // via ORCH_OVERAGE_RECHECK_MS (a test seam, like the sweep/buffer envs). Default
-  // 60s aligns with accountUsage.js's 60s success cache — a recheck rarely forces a
-  // real network fetch beyond what the chip already triggers.
+  // 60s is independent of accountUsage.js's 180s success cache — most recheck ticks
+  // just re-read the cached value (cheap no-op), so a shorter cadence here doesn't
+  // add real network pressure; it just keeps FAIL_OPEN_AFTER's ~5-minute bound
+  // aligned with accountUsage.js's MAX_RETRY_MS ceiling (see FAIL_OPEN_AFTER above).
   _recheckMs() {
     const env = Number(process.env.ORCH_OVERAGE_RECHECK_MS);
     return Number.isFinite(env) && env > 0 ? env : 60_000;
