@@ -285,12 +285,14 @@ export function installHeader({
         `${wtShort} (← ${inst.worktree.baseBranch})`));
     }
     // Status chip only when it's signalling something actionable. `idle` is
-    // the no-op state; turn / spawning / crashed / exited still surface. A
-    // soft interrupt mid-turn shows a distinct "stopping…" chip.
+    // the no-op state; turn / spawning / crashed / exited / running (a
+    // background subagent is still working) still surface. A soft interrupt
+    // mid-turn shows a distinct "stopping…" chip. Cosmetic only — the real
+    // `inst.status` (not `displayStatus`) still gates every action below.
     if (inst.status === 'turn' && inst.interrupting) {
       dom.instanceTitle.appendChild(chip('ih-status ih-status-interrupting', 'stopping…'));
-    } else if (inst.status !== 'idle') {
-      dom.instanceTitle.appendChild(chip(`ih-status ih-status-${inst.status}`, inst.status));
+    } else if (inst.displayStatus !== 'idle') {
+      dom.instanceTitle.appendChild(chip(`ih-status ih-status-${inst.displayStatus}`, inst.displayStatus));
     }
     if (inst.temp) dom.instanceTitle.appendChild(chip('ih-temp', 'temp'));
     if (inst.debug) dom.instanceTitle.appendChild(chip('ih-debug', 'debug'));

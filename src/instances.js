@@ -40,6 +40,13 @@ export { AUTO_RESUME_TEXT } from './overageResume.js';
 // --print (no SDK canUseTool callback), so we don't expose them.
 const VALID_MODES = new Set(['plan', 'ask', 'bypassPermissions']);
 
+// `system/task_updated` patch.status values that mean an Agent-tool task is
+// actually done (vs. an in-flight progress patch). Unrecognized statuses are
+// treated as non-terminal on purpose — better to briefly over-report
+// `displayStatus:'running'` than to prematurely flip back to `idle` while a
+// backgrounded subagent is still working.
+const TERMINAL_TASK_STATUSES = new Set(['completed', 'failed', 'cancelled', 'error']);
+
 // Minimum length for a sessionId PREFIX to be eligible for resolution (see
 // InstanceManager.resolveSessionRef). An exact full-id match bypasses this floor;
 // it only guards non-exact prefixes against absurdly short, fragile matches
@@ -332,6 +339,16 @@ export class Instance extends EventEmitter {
     // prompt when the window-reset deadline fires. Reset on (re)spawn and
     // cleared on cancel/flush. Persisted across a resume-restart.
     this._overageQueue = [];
+    // In-flight Agent-tool (subagent) tasks, keyed by task_id → tool_use_id.
+    // Populated from the raw `system/task_started` event and cleared on a
+    // terminal `system/task_updated` / `task_notification` (see the stdout
+    // event loop in _handleStdoutLine). A backgrounded Agent call's tool_use
+    // resolves immediately (`isAsync:true`), so `turn_end` can legitimately
+    // fire while this is still non-empty — that's the whole point: `status`
+    // stays the true process lifecycle value, while `summary().displayStatus`
+    // (see below) overlays `running` for as long as this map is non-empty.
+    // Reset on (re)spawn so a stale entry never survives a respawn/resume.
+    this._activeAgentTasks = new Map();
   }
 
   summary() {
@@ -349,6 +366,13 @@ export class Instance extends EventEmitter {
       model: this.model,
       sessionId: this.sessionId,
       status: this.status,
+      // Additive, display-only overlay: `status` itself is never repurposed
+      // (every existing gate — composer enabled, kill/resume buttons, mode
+      // select, idle subscriptions — keeps reading `status`). `displayStatus`
+      // only ever overrides the literal `'idle'` value, so it can't mask a
+      // crash or collide with `'turn'`.
+      activeAgentTasks: this._activeAgentTasks.size,
+      displayStatus: (this.status === 'idle' && this._activeAgentTasks.size > 0) ? 'running' : this.status,
       pid: this.pid,
       worktree: this.worktree
         ? {
@@ -599,6 +623,9 @@ export class Instance extends EventEmitter {
     this._overageHandled = false;
     this._overageWasStopped = false;
     this._overageQueue = [];
+    // A fresh process starts with no in-flight Agent tasks — any entries
+    // from a prior run's background subagents are gone with that process.
+    this._activeAgentTasks = new Map();
     const { command, prefixArgs } = resolveClaudeBin();
     if (resume) this.sessionId = resume;
     else if (!this.sessionId) this.sessionId = randomUUID();
@@ -818,6 +845,34 @@ export class Instance extends EventEmitter {
       if (ev.kind === 'turn_end') {
         this._setStatus('idle');
         this._writeSessionMetadata().catch(() => {});
+      }
+      // Agent-tool (subagent) task lifecycle. `task_started` fires the moment
+      // the tool_use dispatches — for a backgrounded call (`run_in_background:
+      // true`) its tool_result resolves immediately, so `turn_end` above can
+      // fire while the task is still running. Track it here so `summary()`
+      // can report `displayStatus:'running'` through that window; a
+      // foreground call's task_started/task_updated pair always resolves
+      // before the model can reach turn_end, so this never affects the
+      // ordinary idle case.
+      if (ev.kind === 'system' && ev.subtype === 'task_started' && ev.data?.task_id) {
+        const grew = this._activeAgentTasks.size === 0;
+        this._activeAgentTasks.set(ev.data.task_id, ev.data.tool_use_id ?? null);
+        if (grew) this.emit('status', this.summary());
+      }
+      if (ev.kind === 'system' && ev.subtype === 'task_updated' && ev.data?.task_id
+          && TERMINAL_TASK_STATUSES.has(ev.data.patch?.status)) {
+        if (this._activeAgentTasks.delete(ev.data.task_id) && this._activeAgentTasks.size === 0) {
+          this.emit('status', this.summary());
+        }
+      }
+      // Belt-and-suspenders: task_notification always carries a terminal
+      // top-level `status` (it's the human/model-facing "it's done" ping),
+      // so delete unconditionally here in case task_updated was ever missed
+      // for a given completion. Map.delete is a no-op if already gone.
+      if (ev.kind === 'system' && ev.subtype === 'task_notification' && ev.data?.task_id) {
+        if (this._activeAgentTasks.delete(ev.data.task_id) && this._activeAgentTasks.size === 0) {
+          this.emit('status', this.summary());
+        }
       }
       // Track the most recent plan file the model wrote, so we can enrich
       // an upcoming ExitPlanMode plan_request with the saved plan text

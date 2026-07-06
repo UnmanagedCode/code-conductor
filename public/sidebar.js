@@ -37,6 +37,7 @@ function mergeLive(onDisk, liveInstances) {
       const row = byId.get(inst.sessionId);
       row.instanceId = inst.id;
       row.instanceStatus = inst.status;
+      row.instanceDisplayStatus = inst.displayStatus;
       row.instanceMode = inst.mode;
       row.instanceTemp = !!inst.temp;
       row.instanceHasIdleSubscriber = !!inst.hasIdleSubscriber;
@@ -59,6 +60,7 @@ function mergeLive(onDisk, liveInstances) {
         size: 0,
         instanceId: inst.id,
         instanceStatus: inst.status,
+        instanceDisplayStatus: inst.displayStatus,
         instanceMode: inst.mode,
         instanceTemp: !!inst.temp,
         instanceHasIdleSubscriber: !!inst.hasIdleSubscriber,
@@ -206,7 +208,7 @@ export class Sidebar {
     const preview = (session.firstPrompt ?? '').slice(0, 80).replace(/\s+/g, ' ').trim();
     const liveLabel = customTitle || preview || (session.synthetic ? '(new session)' : `${session.sessionId.slice(0, 8)}…`);
     const isLive = !!session.instanceId;
-    const status = session.instanceStatus ?? 'offline';
+    const status = session.instanceDisplayStatus ?? session.instanceStatus ?? 'offline';
     const isActive = session.instanceId === this.activeInstanceId;
     const unread = this.unreadBySessionId.get(session.sessionId) ?? 0;
     const tooltipParts = [session.sessionId];

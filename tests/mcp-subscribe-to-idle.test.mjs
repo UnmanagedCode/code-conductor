@@ -21,6 +21,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO_WS = path.join(__dirname, 'fixtures', 'scenario-ws.json');
 const SCENARIO_QUESTION = path.join(__dirname, 'fixtures', 'scenario-question.json');
 const SCENARIO_SLOW = path.join(__dirname, 'fixtures', 'scenario-slow-turn.json');
+const SCENARIO_BACKGROUND_TASK = path.join(__dirname, 'fixtures', 'scenario-background-task.json');
 
 let ctx, baseUrl, instances, home;
 before(async () => { ctx = await bootServer({ scenarioPath: SCENARIO_WS }); ({ baseUrl, instances } = ctx); });
@@ -152,6 +153,32 @@ test('fold: real turn_end to an idle caller folds the recent-messages payload in
   // returns: the flattened meta block (with the target sessionId) + the prose.
   assert.ok(stub.text.includes('"sessionId"'), 'folded body includes the meta block');
   assert.ok(stub.text.includes('First'), 'folded body includes the reconstructed prose');
+});
+
+test('subscribe_to_idle still delivers on turn_end even while the target has an active background Agent task', async () => {
+  // Regression guard for the displayStatus/activeAgentTasks overlay: the
+  // wake/dispatch contract must key off the raw turn_end event only, NOT
+  // instance.status or the new activeAgentTasks counter. This drives the
+  // target through the backgrounded-Agent scenario (turn_end fires before
+  // its trailing task_updated) via the real subscribe/deliver path (no
+  // wait:true) and confirms the caller still gets its wake stub.
+  await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
+  const callerId = await spawnReady('p');
+  const targetId = await spawnReadyWithScenario('p', SCENARIO_BACKGROUND_TASK);
+
+  await callTool('subscribe_to_idle', { sessionId: targetId }, { caller: callerId });
+  await callTool('send_prompt', { sessionId: targetId, text: 'kick off a background agent' });
+
+  const target = instForSession(instances, targetId);
+  // turn_end has fired (status back to idle) while the scenario's trailing
+  // task_updated hasn't landed yet — the target is displayStatus:'running'.
+  await waitFor(() => target.status === 'idle' && target.summary().activeAgentTasks === 1);
+  assert.equal(target.summary().displayStatus, 'running');
+
+  // The idle-subscription wake fired off the raw turn_end regardless.
+  const caller = instForSession(instances, callerId);
+  await waitFor(() => !!findStubFor(caller, targetId));
+  assert.match(findStubFor(caller, targetId).text, /finished its turn/);
 });
 
 test('carve-out: caller mid-turn at delivery keeps the plain (un-folded) stub', async () => {

@@ -33,11 +33,11 @@ export class SubagentPanel {
 
     for (const w of workers) {
       const li = document.createElement('li');
-      li.className = `task-row ${this._rowClass(w.status)}`;
+      li.className = `task-row ${this._rowClass(w.displayStatus)}`;
 
       const marker = document.createElement('span');
       marker.className = 'task-marker';
-      marker.textContent = this._marker(w.status);
+      marker.textContent = this._marker(w.displayStatus);
 
       const text = document.createElement('span');
       text.className = 'task-text';
@@ -63,6 +63,7 @@ export class SubagentPanel {
   _rowClass(status) {
     switch (status) {
       case 'turn':     return 'task-in_progress';
+      case 'running':  return 'task-in_progress'; // idle but a background subagent is still working
       case 'idle':     return 'task-in_progress subagent-idle';
       case 'exited':   return 'task-completed';
       case 'crashed':  return 'subagent-crashed';
@@ -73,6 +74,7 @@ export class SubagentPanel {
   _marker(status) {
     switch (status) {
       case 'turn':    return '▶';
+      case 'running': return '▶'; // idle but a background subagent is still working
       case 'idle':    return '●';
       case 'exited':  return '✓';
       case 'crashed': return '✗';
