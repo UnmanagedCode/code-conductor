@@ -8,6 +8,7 @@ import { Parser, SOFT_INTERRUPT_MARKER, isOuterUserEcho, snapStartToGroupBoundar
 import { getProject, claudeProjectsRoot, encodeCwd, findSessionLocation } from './projects.js';
 import { createWorktree, getWorktree, debugBaseDir } from './worktrees.js';
 import { getTitle as getSessionTitle, deleteTitle as deleteSessionTitle, migrateTitle as migrateSessionTitle } from './sessionTitles.js';
+import { migrateSummaries } from './sessionSummaries.js';
 import { isConducted, markConducted, unmarkConducted } from './conductedSessions.js';
 import { isTemp, markTemp, unmarkTemp } from './tempSessions.js';
 import { markArchived } from './archivedSessions.js';
@@ -791,6 +792,10 @@ export class Instance extends EventEmitter {
           const prevSid = this.sessionId;
           this.sessionId = sid;
           if (prevSid) migrateSessionTitle(prevSid, sid).catch(() => {});
+          // Same rekey rationale for the summaries sidecar (also keyed by
+          // sessionId): MOVE the whole per-tier entry old→new so a resumed
+          // session's summaries don't orphan under the stale fork jsonl.
+          if (prevSid) migrateSummaries(prevSid, sid).catch(() => {});
           this._hydrateTitle().catch(() => {});
         }
         const mode = ev.data?.permissionMode;

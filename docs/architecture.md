@@ -148,6 +148,7 @@ All orchestrator-owned state in a single workspace-wide dotfolder — the centra
 ├── .code-conductor/                        # central store
 │   ├── workspaces.json                     # registry of known workspace names
 │   ├── session-titles.json                 # {sessionId: customLabel} sidecar (migrated old→new id on resume rekey)
+│   ├── session-summaries.json              # {sessionId: {short?,medium?,long?}} AI-summary sidecar (migrated old→new id on resume rekey)
 │   ├── conducted-sessions.json             # {sessions:[sid,…]} — durable conducted-session markers
 │   ├── pending-resume.json                  # transient — "Resume after restart" manifest; written on drain, read+unlinked on boot
 │   ├── pending-temp-cleanup.json            # transient — temp-cleanup manifest (normal restart); swept+unlinked on boot
