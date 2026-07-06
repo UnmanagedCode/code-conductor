@@ -117,7 +117,12 @@ export function replayPersistedLine(obj, { seqHint = 0, parentToolUseId = null, 
     }
     // queued_command prompts are orchestrator-authored text blocks (no
     // tool_result), so consolidateUserContent emits just the one user_echo.
-    for (const ev of consolidateUserContent(prompt)) events.push(ev);
+    const queuedEvents = consolidateUserContent(prompt);
+    // A queued prompt is a genuine (non-synthetic) turn boundary — expires
+    // any Skill invocation still awaiting its content injection, same as
+    // the primary `type:"user"` branch above.
+    attachSkillLoad(queuedEvents, false, pendingSkillLoads);
+    for (const ev of queuedEvents) events.push(ev);
     return tagAndReturn();
   }
 

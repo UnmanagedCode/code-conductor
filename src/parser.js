@@ -39,6 +39,14 @@ export class Parser {
     this._pendingSkillLoads = [];
   }
 
+  // Signal a genuine turn boundary (a real prompt or interrupt emitted
+  // directly by Instance, bypassing _handleUser/attachSkillLoad) so any
+  // Skill invocation still awaiting its content injection is dropped rather
+  // than surviving to mislabel a later, unrelated isSynthetic message.
+  expirePendingSkillLoads() {
+    expireSkillLoads(this._pendingSkillLoads);
+  }
+
   handleLine(line) {
     line = typeof line === 'string' ? line.trim() : '';
     if (!line) return [];
@@ -437,10 +445,40 @@ export function consolidateUserContent(contentBlocks) {
 // is a per-stream/per-file queue of `{toolUseId, skill}` the caller pushes to
 // when it sees a Skill tool_use. Shared by the live path (Parser._handleUser)
 // and transcript.js replay so live vs replay rendering stays identical.
+//
+// The FIFO has no identity link to the content-injection message (it carries
+// no `tool_use_id`), so a pending entry left over from a Skill invocation
+// whose injection never arrived (the skill errored, or the turn was
+// interrupted) would otherwise sit in the queue indefinitely and could
+// mislabel a later, unrelated isSynthetic message. Two bounds close the
+// realistic causes: (1) an erroring tool_result for the pending entry's
+// toolUseId drops it immediately — no injection is coming; (2) a genuine
+// (non-synthetic) user_echo — a real prompt — clears the whole queue, since
+// the synchronous-ordering guarantee is broken for every still-pending entry
+// once a new real turn begins. This can't close a truly adjacent orphan (no
+// tool_result at all, immediately followed by an unrelated isSynthetic
+// message with no intervening real turn) — there's no signal to distinguish
+// that from a real skill load — but that case is a narrow race rather than
+// the unbounded, anywhere-later-in-the-file risk this closes.
+export function expireSkillLoads(pendingSkillLoads) {
+  if (pendingSkillLoads) pendingSkillLoads.length = 0;
+}
+
 export function attachSkillLoad(events, isSynthetic, pendingSkillLoads) {
-  if (!isSynthetic || !pendingSkillLoads?.length) return events;
+  if (!pendingSkillLoads) return events;
+  for (const ev of events) {
+    if (ev.kind === 'tool_result' && ev.isError) {
+      const idx = pendingSkillLoads.findIndex((p) => p.toolUseId === ev.toolUseId);
+      if (idx !== -1) pendingSkillLoads.splice(idx, 1);
+    }
+  }
   const echo = events.find((e) => e.kind === 'user_echo');
   if (!echo) return events;
+  if (!isSynthetic) {
+    expireSkillLoads(pendingSkillLoads);
+    return events;
+  }
+  if (!pendingSkillLoads.length) return events;
   const pending = pendingSkillLoads.shift();
   echo.skillLoad = { skill: pending.skill };
   return events;
