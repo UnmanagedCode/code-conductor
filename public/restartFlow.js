@@ -84,7 +84,7 @@ export function installRestart({ dom, bus, getInstances, setSidebarStatus }) {
     const n = getInstances().length;
     if (dom.restartBlurb) {
       dom.restartBlurb.textContent =
-        `${n} active session${n === 1 ? '' : 's'}. Resume them after the restart, or restart only (sessions are dropped — temp sessions are cleaned up)?`;
+        `${n} active session${n === 1 ? '' : 's'}. Resume them after the restart, or restart only (sessions are dropped — temp sessions are archived)?`;
     }
     dom.restartDialog.showModal();
   });
