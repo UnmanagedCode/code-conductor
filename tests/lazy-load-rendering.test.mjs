@@ -9,6 +9,7 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Window } from 'happy-dom';
+import { pageInstanceEvents } from '../src/eventArchive.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUB = path.resolve(__dirname, '..', 'public');
@@ -154,6 +155,107 @@ test('sub-agent group: head and children in the same batch nest children under t
     }
   }
   assert.ok(!foundOrphaned, 'sub-agent text is not directly in outer blocks (not orphaned)');
+});
+
+// --- Turn-aligned seams (the split-assistant-bubble regression) ------------
+
+function seq(events) { events.forEach((e, i) => { e._seq = i; }); return events; }
+
+// Three turns; the middle one is far longer than the page limit below, so
+// before turn-aligned paging it straddled a lazy seam: two assistant bubbles,
+// a thinking block stuck un-finalized, a tool head cut from its result.
+function longHistoryRing() {
+  const ev = [];
+  ev.push({ kind: 'user_echo', text: 'prompt 0', userIndex: 0, parentToolUseId: null });
+  ev.push({ kind: 'text_delta', msgId: 'm0', blockIdx: 0, text: 'reply 0', parentToolUseId: null });
+  ev.push({ kind: 'text_end', msgId: 'm0', blockIdx: 0, parentToolUseId: null });
+  ev.push({ kind: 'user_echo', text: 'prompt 1', userIndex: 1, parentToolUseId: null });
+  ev.push({ kind: 'thinking_start', msgId: 'm1', blockIdx: 0, parentToolUseId: null });
+  ev.push({ kind: 'thinking_delta', msgId: 'm1', blockIdx: 0, text: 'pondering hard', parentToolUseId: null });
+  ev.push({ kind: 'thinking_end', msgId: 'm1', blockIdx: 0, parentToolUseId: null });
+  ev.push({ kind: 'tool_use_start', msgId: 'm1', blockIdx: 1, toolUseId: 'tu1', name: 'Bash', parentToolUseId: null });
+  ev.push({ kind: 'tool_use', msgId: 'm1', blockIdx: 1, toolUseId: 'tu1', name: 'Bash', input: { command: 'ls' }, parentToolUseId: null });
+  ev.push({ kind: 'tool_result', toolUseId: 'tu1', content: 'ok', isError: false, parentToolUseId: null });
+  for (let i = 0; i < 10; i++) {
+    ev.push({ kind: 'text_delta', msgId: 'm1', blockIdx: 2 + i, text: `part ${i} `, parentToolUseId: null });
+    ev.push({ kind: 'text_end', msgId: 'm1', blockIdx: 2 + i, parentToolUseId: null });
+  }
+  ev.push({ kind: 'user_echo', text: 'prompt 2', userIndex: 2, parentToolUseId: null });
+  ev.push({ kind: 'text_delta', msgId: 'm2', blockIdx: 0, text: 'reply 2', parentToolUseId: null });
+  ev.push({ kind: 'text_end', msgId: 'm2', blockIdx: 0, parentToolUseId: null });
+  return seq(ev);
+}
+
+test('a turn straddling the old page window renders as ONE assistant bubble with finalized blocks', async () => {
+  const { root, Conversation, renderEventBatch, prependBatch } = await setupDOM();
+  const ring = longHistoryRing();
+  const tailStart = ring.findIndex(e => e.kind === 'user_echo' && e.text === 'prompt 2');
+  // Minimal duck-typed instance: ring-only paging (trimmedBefore 0 ⇒ the
+  // archive branch never engages, no fs access).
+  const inst = {
+    ringSnapshot: () => ring,
+    ring: { trimmedBefore: 0 },
+    sessionId: null, cwd: null, _userEchoCount: 3,
+  };
+
+  // Live tail (turn-aligned, as snapshotTail now guarantees) into the main view…
+  const main = new Conversation(root, {});
+  for (const e of ring.slice(tailStart)) main.apply(e);
+  // …then page backward through the REAL pageInstanceEvents and splice each
+  // page above, exactly as wsRouter + lazyHistory do. limit=6 is far smaller
+  // than the 27-event middle turn.
+  let before = ring[tailStart]._seq;
+  for (let guard = 0; guard < 20; guard++) {
+    const page = await pageInstanceEvents(inst, { before, limit: 6 });
+    if (!page.events.length) break;
+    prependBatch(root, renderEventBatch(page.events, {}), null);
+    before = page.nextBefore;
+    if (!page.hasMore) break;
+  }
+
+  // One bubble per turn — the long turn did not split at a lazy seam.
+  assert.equal(root.querySelectorAll('.msg.assistant').length, 3, 'one assistant bubble per turn');
+  assert.equal(root.querySelectorAll('.msg.user').length, 3);
+  const text = root.textContent;
+  assert.ok(text.indexOf('prompt 0') < text.indexOf('prompt 1'), 'pages spliced in order');
+  assert.ok(text.indexOf('prompt 1') < text.indexOf('prompt 2'));
+  // Straddle-sensitive blocks are finalized, not stuck streaming.
+  assert.match(root.querySelector('.block.thinking summary').textContent,
+    /^thinking \(\d+ chars\)$/, 'thinking block finalized');
+  assert.ok(!text.includes('streaming…'), 'no tool stuck streaming');
+  assert.ok(root.querySelector('.block.tool .tool-status').textContent.includes('done'),
+    'tool result attached within its page');
+});
+
+test('a batch cut mid-turn (archive gap case) finalizes its dangling visuals', async () => {
+  const { renderEventBatch } = await setupDOM();
+  // No thinking_end / text_end / tool_use / tool_result — the finalizing
+  // events fell into the gap and will never be applied to this batch.
+  const holder = renderEventBatch(seq([
+    { kind: 'user_echo', text: 'gap prompt', userIndex: 0, parentToolUseId: null },
+    { kind: 'thinking_start', msgId: 'mg', blockIdx: 0, parentToolUseId: null },
+    { kind: 'thinking_delta', msgId: 'mg', blockIdx: 0, text: 'cut off mid', parentToolUseId: null },
+    { kind: 'system', subtype: 'thinking_tokens', data: { estimated_tokens: 512 }, parentToolUseId: null },
+    { kind: 'text_delta', msgId: 'mg', blockIdx: 1, text: 'partial reply', parentToolUseId: null },
+    { kind: 'tool_use_start', msgId: 'mg', blockIdx: 2, toolUseId: 'tu_gap', name: 'Bash', parentToolUseId: null },
+  ]));
+  assert.match(holder.querySelector('.block.thinking summary').textContent,
+    /^thinking \(\d+ chars\)$/, 'not stuck at "thinking… N tokens"');
+  const txt = [...holder.querySelectorAll('.block.text')]
+    .find(n => n.textContent.includes('partial reply'));
+  assert.ok(txt.classList.contains('md'), 'partial text markdown-finalized');
+  assert.equal(holder.querySelector('.block.tool .tool-status').textContent.trim(),
+    '· incomplete', 'input-less tool gets a terminal status');
+});
+
+test('finalizeDanglingBlocks is idempotent on already-finalized content', async () => {
+  const { root, Conversation } = await setupDOM();
+  const conv = new Conversation(root, {});
+  for (const e of archivePage()) conv.apply(e); // complete turn: real *_end + tool_result
+  conv.finalizeDanglingBlocks();
+  const rendered = root.innerHTML;
+  conv.finalizeDanglingBlocks();
+  assert.equal(root.innerHTML, rendered, 'second pass changes nothing');
 });
 
 test('prependBatch falls back to the top when no sentinel is given', async () => {

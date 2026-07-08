@@ -22,6 +22,11 @@ export function renderEventBatch(events, options = {}) {
   batch._replayMode = true;
   batch.applyEvents(events);
   batch._replayMode = false;
+  // Static content: an event that would finalize a straddling block lives
+  // outside this batch (archive gap / turn-snap backstop) and will never be
+  // applied here — finalize the visuals so nothing sticks at "streaming…" /
+  // "thinking… N tokens".
+  batch.finalizeDanglingBlocks();
   // The constructor seeds a "no messages yet" placeholder; never let it
   // ride into the live conversation.
   holder.querySelector('.empty')?.remove();

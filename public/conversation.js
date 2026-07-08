@@ -145,6 +145,19 @@ export class Conversation {
     this._activeAssistantWrap = null;
   }
 
+  // Finalize every block that is still visually streaming. For STATIC batches
+  // (lazy-history pages) only: server pages are turn-aligned, but the archive
+  // gap case and the turn-snap backstop can still cut mid-turn — the events
+  // that would finalize those blocks live outside the batch and will never be
+  // applied to this instance, so "thinking… N tokens" / "streaming…" would
+  // otherwise stick forever. finalize() is idempotent; markIncomplete() only
+  // touches tools still awaiting input or a result.
+  finalizeDanglingBlocks() {
+    for (const block of this.blocksByKey.values()) block.finalize?.();
+    for (const block of this.toolBlocks.values()) block.markIncomplete?.();
+    for (const sub of this.subConvs.values()) sub.finalizeDanglingBlocks();
+  }
+
   applyEvents(events) {
     for (const ev of events) this.apply(ev);
   }

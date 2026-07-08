@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import readline from 'node:readline';
 import { promises as fsp, readFileSync, mkdirSync, createWriteStream, writeFileSync, rmSync } from 'node:fs';
 import path from 'node:path';
-import { Parser, SOFT_INTERRUPT_MARKER, isOuterUserEcho, snapStartToGroupBoundary } from './parser.js';
+import { Parser, SOFT_INTERRUPT_MARKER, isOuterUserEcho, snapStartToTurnStart } from './parser.js';
 import { getProject, claudeProjectsRoot, encodeCwd, findSessionLocation } from './projects.js';
 import { createWorktree, getWorktree, debugBaseDir } from './worktrees.js';
 import { getTitle as getSessionTitle, deleteTitle as deleteSessionTitle, migrateTitle as migrateSessionTitle } from './sessionTitles.js';
@@ -450,27 +450,24 @@ export class Instance extends EventEmitter {
   // Trailing slice of the ring for the WS `subscribe` snapshot — tabs no
   // longer receive the whole ring on every subscribe; older events are
   // lazy-loaded via GET /api/instances/:id/events. The window start is
-  // snapped forward to the first outer user_echo inside it (a turn
-  // boundary) so the initial render doesn't begin mid-message; if the
-  // window holds no echo (one giant turn), the plain slice is sent and the
-  // client renders the partial turn as-is.
+  // snapped to a turn boundary (an outer user_echo): the first one inside
+  // the window when present, else extended BACKWARD to the echo that owns
+  // the straddling turn (floor 0 — worst case is the whole ring, the
+  // pre-tail-snapshot payload). A mid-turn tail would make the first lazy
+  // page end mid-turn, splitting the assistant bubble across the isolated
+  // page renderer and the live view — and would strand a live tool_result
+  // whose head fell below the tail. Only a turn whose echo was already
+  // evicted from the ring stays mid-turn (the archive gap case — the client
+  // finalizes its dangling visuals). The helper also enforces sub-agent
+  // group integrity (an evicted head advances the start past its children;
+  // they are served later via lazy paging alongside their head).
   snapshotTail(max) {
     const envMax = Number(process.env.ORCH_SNAPSHOT_TAIL);
     const cap = Number.isInteger(max) && max > 0 ? max
       : (Number.isInteger(envMax) && envMax > 0 ? envMax : DEFAULT_SNAPSHOT_TAIL);
     const buf = this.ring.buf;
     if (buf.length <= cap) return buf.slice();
-    let start = buf.length - cap;
-    for (let i = start; i < buf.length; i++) {
-      if (isOuterUserEcho(buf[i])) { start = i; break; }
-    }
-    // Group-integrity snap: ensure the snapshot never begins with sub-agent
-    // child events whose owning tool-call head is absent from the window.
-    //   - Head present in ring before start → pull start back to include it.
-    //   - Head evicted (not in ring) → advance start past all children of
-    //     that group; they will be served later via lazy paging alongside
-    //     their head from the combined archive+ring.
-    start = snapStartToGroupBoundary(buf, start, buf.length);
+    const start = snapStartToTurnStart(buf, buf.length - cap, buf.length, 0);
     return buf.slice(start);
   }
 
