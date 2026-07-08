@@ -536,4 +536,49 @@ export function snapStartToGroupBoundary(arr, start, end) {
   return start;
 }
 
+// Snap a window-start index so the window opens on a turn boundary (an outer
+// user_echo) whenever one is reachable, then enforce sub-agent group
+// integrity. Echo search order: the first echo INSIDE [start, end) (keeps the
+// window small when a boundary is already in it), else the nearest echo BELOW
+// start down to `floor` (extends the window so a turn longer than it is
+// served whole — the client renders each page/tail through an isolated
+// Conversation instance, so a mid-turn cut splits an assistant bubble and
+// strands its trailing block un-finalized). No echo in [floor, end) ⇒ the raw
+// start stands: the bounded mid-turn cut is the backstop, not an error.
+//
+// After the echo snap, snapStartToGroupBoundary runs. A BACKWARD pull (a
+// child's head below the window — e.g. a background Task from an earlier
+// turn) re-triggers the backward echo snap so the window still opens on that
+// head's turn boundary; a FORWARD move (head evicted entirely — the archive
+// gap case) is final. Group integrity ignores `floor` (an orphaned child is
+// silently dropped by the renderer, so the head must be included at any
+// cost); only the echo extension is bounded by it. Shared by instances.js
+// snapshotTail and eventArchive.js pageInstanceEvents.
+export function snapStartToTurnStart(arr, start, end, floor = 0) {
+  floor = Math.max(0, floor);
+  const backToEcho = (s) => {
+    for (let i = s; i >= floor; i--) {
+      if (isOuterUserEcho(arr[i])) return i;
+    }
+    return s;
+  };
+  if (start > floor && !isOuterUserEcho(arr[start])) {
+    let inWindow = -1;
+    for (let i = start + 1; i < end; i++) {
+      if (isOuterUserEcho(arr[i])) { inWindow = i; break; }
+    }
+    start = inWindow !== -1 ? inWindow : backToEcho(start);
+  }
+  // Fixpoint loop: each backward group pull re-snaps to an echo, which can
+  // expose another straddling group. Backward moves are monotonic (bounded by
+  // floor / index 0); the iteration cap is a defensive net only.
+  for (let iter = 0; iter < 20; iter++) {
+    const snapped = snapStartToGroupBoundary(arr, start, end);
+    if (snapped >= start) return snapped;
+    start = isOuterUserEcho(arr[snapped]) ? snapped : backToEcho(snapped);
+    if (start === snapped) return snapped; // no echo below the pulled-in head
+  }
+  return snapStartToGroupBoundary(arr, start, end);
+}
+
 export default Parser;

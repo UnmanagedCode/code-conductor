@@ -23,13 +23,16 @@ export class TextBlock {
     this.body = el('div', { class: 'block text' });
     this.node = this.body;
     this.buffer = '';
+    this.finalized = false;
   }
   appendDelta(text) {
     this.buffer += text;
     this.body.appendChild(document.createTextNode(text));
   }
   finalize() {
+    if (this.finalized) return; // idempotent — a re-run would double the 🔊 button
     if (!this.buffer.trim()) return;
+    this.finalized = true;
     this.body.classList.add('md');
     renderMarkdownInto(this.body, this.buffer);
     // Attach a 🔊 speak affordance when server-side Piper TTS is available.
@@ -85,6 +88,7 @@ export class ThinkingBlock {
     const det = el('details', { class: 'block thinking' }, this._summary, this.body);
     this.node = det;
     this.redacted = false;
+    this.finalized = false;
     this._thinkingTokens = 0;
   }
   appendDelta(text) { this.body.appendChild(document.createTextNode(text)); }
@@ -104,7 +108,8 @@ export class ThinkingBlock {
     this.redacted = true;
   }
   finalize() {
-    if (this.redacted) return;
+    if (this.redacted || this.finalized) return;
+    this.finalized = true;
     const len = this.body.textContent.length;
     this._summary.textContent = `thinking (${len} chars)`;
   }
@@ -292,6 +297,18 @@ export class ToolUseBlock {
     this._timer?.unref?.();
     this._renderSummary();
     this._renderBody();
+  }
+
+  // Terminal state for a tool in a STATIC batch (a lazy-history page): its
+  // finalizing tool_use / tool_result lives outside the batch (archive gap or
+  // snap backstop) and will never be applied to this instance — without this
+  // it would show "streaming…" or a frozen "running Ns" forever. Also stops
+  // the finalizeInput elapsed-ticker so the discarded batch stops rendering.
+  markIncomplete() {
+    if (this.status !== 'streaming…' && this.status !== 'running') return;
+    if (this._timer) { clearInterval(this._timer); this._timer = null; }
+    this.status = 'incomplete';
+    this._renderSummary();
   }
 
   attachResult(resultBlock, finishedAt) {

@@ -29,11 +29,15 @@
 // `nextBefore` cursor that works across the boundary.
 
 import { loadPersistedTranscript } from './transcript.js';
-import { isOuterUserEcho, snapStartToGroupBoundary } from './parser.js';
+import { isOuterUserEcho, snapStartToTurnStart } from './parser.js';
 import { reconstructTasks } from './taskReconstruct.js';
 
 const LIMIT_DEFAULT = 200;
 const LIMIT_MAX = 500;
+// Backward pages extend past `limit` to open on a turn boundary (see
+// pageInstanceEvents); this caps the extension so a pathological runaway turn
+// can't pull an unbounded page.
+const TURN_SNAP_MULT = 5;
 
 export function clampLimit(n) {
   if (!Number.isInteger(n) || n < 1) return LIMIT_DEFAULT;
@@ -137,8 +141,11 @@ export async function pageInstanceEvents(inst, { before = null, after = null, li
   if (before == null && after == null) before = lastSeq + 1;
   if (before != null) after = null; // before wins
 
+  // Backward pages may extend up to TURN_SNAP_MULT × max below `before` to
+  // land on a turn boundary — load the archive whenever that reach could
+  // cross into it.
   const needArchive = tb > 0 && !!inst.sessionId
-    && (before != null ? before - max < tb : after < tb);
+    && (before != null ? before - max * TURN_SNAP_MULT < tb : after < tb);
 
   let combined = ring;
   if (needArchive) {
@@ -153,22 +160,19 @@ export async function pageInstanceEvents(inst, { before = null, after = null, li
   if (before != null) {
     const end = firstIndexAtOrAbove(combined, before);
     let start = Math.max(0, end - max);
-    // Turn-aligned page seams: advance the window start to the first outer
-    // user_echo inside it (only when older events remain below — never
-    // empties the page since the echo is strictly before `end`).
-    if (start > 0) {
-      for (let i = start; i < end; i++) {
-        if (isOuterUserEcho(combined[i])) { start = i; break; }
-      }
-    }
-    // Group-integrity snap: extend start backward so that every sub-agent
-    // child event in [start..end) has its owning tool-call head present in
-    // the same range. A child whose head is missing would be silently
-    // orphaned by the renderer (conversation.js:apply → toolBlocks lookup).
-    // The owning head is always present below the window here (combined is a
-    // full archive+ring, and cuts land on turn boundaries), so the shared
-    // helper only ever pulls start back — its evicted-head branch is unused.
-    start = snapStartToGroupBoundary(combined, start, end);
+    // Turn-aligned page seams: open the window on an outer user_echo — the
+    // first one inside it when present, else extend backward (bounded by
+    // TURN_SNAP_MULT × max) to the echo owning the straddling turn. Every
+    // page is then a whole number of complete turns, so the client's
+    // isolated per-page renderer never splits an assistant bubble mid-turn
+    // and every straddling block finalizes / tool pairs within its page.
+    // Since the client echoes `nextBefore` (= this page's first seq), the
+    // NEXT page ends exactly where this one starts — page ends are aligned
+    // for free once page starts are. The helper also enforces sub-agent
+    // group integrity (a child whose head is missing would be silently
+    // orphaned by the renderer — conversation.js:apply → toolBlocks lookup).
+    start = snapStartToTurnStart(combined, start, end,
+      Math.max(0, end - max * TURN_SNAP_MULT));
     events = combined.slice(start, end);
     hasMore = start > 0
       // Served down to the very start of what we have. With the archive
