@@ -17,7 +17,7 @@ import { buildSettingsJSON, buildMcpConfigJSON, AWAITING_INPUT_MESSAGE } from '.
 import { getOnOverageAction, getOverageThreshold, getConductorCompactWindow, getSonnetContextWindow } from './appSettings.js';
 import { HookBroker } from './hookBroker.js';
 import { loadPersistedTranscript, writeSessionMetadata, readLastSessionModel, hasResumableConversation } from './transcript.js';
-import { canonicalizeModel } from './modelVersions.js';
+import { canonicalizeModel, familyOf } from './modelVersions.js';
 import { truncateSessionAtUserMessage } from './sessionEdit.js';
 import { saveAttachment, isImageType } from './attachments.js';
 import { buildApprovePrompt } from './planApproval.js';
@@ -1191,6 +1191,15 @@ export class Instance extends EventEmitter {
     this.emit('status', this.summary());
     this._writeSessionMetadata().catch(() => {});
     return this.mode;
+  }
+
+  async setModel(model) {
+    if (!model || !familyOf(model)) throw new Error('invalid model');
+    await this._controlRequest({ subtype: 'set_model', model });
+    this.model = model;
+    this.emit('status', this.summary());
+    this._writeSessionMetadata().catch(() => {});
+    return this.model;
   }
 
   // Promote a temp session to a normal one: stop suppressing the
