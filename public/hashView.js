@@ -17,6 +17,8 @@
 //   - `canEscape` — an extra Escape guard (commits: only when review-view hidden).
 //   - `guard` — gates open()/teardown when the view element may be absent (costs).
 //   - `onShow` / `onTeardown` — the per-view data load and state reset + callback.
+//   - `matchHash` — optional predicate replacing the default exact-hash check
+//     for views that own a hash *space* (plugin view: `#plugin/<id>/<subpath>`).
 //
 // settings.js intentionally does NOT use this helper — it syncs bidirectionally
 // on hashchange, closes via close() (not history.back()), guards re-entrant
@@ -32,6 +34,7 @@ export function installHashView({
   navigate,
   onShow,
   onTeardown,
+  matchHash,
 } = {}) {
   const getEl = id => document.getElementById(id);
   const viewId = `${name}-view`;
@@ -79,8 +82,10 @@ export function installHashView({
     }
   }, escapeCapture);
 
+  const matches = matchHash ?? (h => [hash, ...keepOpenHashes].includes(h));
+
   window.addEventListener('hashchange', () => {
-    if (![hash, ...keepOpenHashes].includes(location.hash) && isVisible()) {
+    if (!matches(location.hash) && isVisible()) {
       teardown();
     }
   });

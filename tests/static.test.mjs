@@ -24,7 +24,8 @@ test('serves index.html with module entry', async () => {
 test('serves each public asset', async () => {
   const { baseUrl, close } = await bootServer();
   try {
-    for (const asset of ['/app.js', '/ws.js', '/sidebar.js', '/conversation.js', '/blocks.js', '/composer.js', '/styles.css', '/sw.js', '/notifications.js', '/diff.js']) {
+    for (const asset of ['/app.js', '/ws.js', '/sidebar.js', '/conversation.js', '/blocks.js', '/composer.js', '/styles.css', '/sw.js', '/notifications.js', '/diff.js',
+      '/appSwitcher.js', '/pluginView.js', '/pluginBridge.js', '/pluginManager.js']) {
       const r = await fetch(baseUrl + asset);
       assert.equal(r.status, 200, `expected 200 for ${asset}`);
       const len = Number(r.headers.get('content-length') ?? 0);
@@ -99,6 +100,26 @@ test('spawn dialog hosts a Code / Plan & Approve segmented toggle, default Code'
   const togglePos = models.compareDocumentPosition(code);
   assert.ok(togglePos & window.Node.DOCUMENT_POSITION_FOLLOWING,
     'toggle must come after the model row');
+});
+
+test('plugin UI anchors: app switcher in sidebar header, plugin view in #main, settings group', async () => {
+  const html = await fs.readFile(INDEX_HTML, 'utf8');
+  const window = new Window({ url: 'http://localhost/' });
+  window.document.documentElement.innerHTML = html;
+  const doc = window.document;
+  const switcher = doc.getElementById('app-switcher');
+  assert.ok(switcher, '#app-switcher must exist');
+  assert.ok(switcher.querySelector('h1'), 'plain <h1> stays for the zero-plugin case');
+  const select = doc.getElementById('app-switcher-select');
+  assert.ok(select?.hasAttribute('hidden'), 'switcher select starts hidden');
+  const view = doc.getElementById('plugin-view');
+  assert.ok(view, '#plugin-view must exist');
+  assert.equal(view.parentElement?.id, 'main', 'plugin view lives inside #main');
+  assert.ok(view.hasAttribute('hidden'), 'plugin view starts hidden');
+  assert.ok(doc.getElementById('settings-plugins')?.classList.contains('settings-group'),
+    'settings has a Plugins group panel');
+  assert.ok([...doc.querySelectorAll('#settings-group-select option')].some(o => o.value === 'plugins'),
+    'settings group select offers Plugins');
 });
 
 test('DOM-free public modules import cleanly in Node', async () => {

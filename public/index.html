@@ -14,7 +14,10 @@
     <div id="sidebar-scrim"></div>
     <aside id="sidebar">
       <header>
-        <h1>CodeConductor</h1>
+        <div id="app-switcher">
+          <h1>CodeConductor</h1>
+          <select id="app-switcher-select" hidden aria-label="Switch app"></select>
+        </div>
         <div class="sidebar-header-btns">
           <button id="notify-toggle" title="Browser notifications when a turn finishes" aria-pressed="false">🔕</button>
           <button id="settings-btn" type="button" title="Open settings" aria-label="Open settings">⚙️</button>
@@ -107,6 +110,7 @@
               <option value="transcribe">Transcribe</option>
               <option value="tts">TTS</option>
               <option value="workspace">Workspace conventions</option>
+              <option value="plugins">Plugins</option>
               <option value="archived">Archived</option>
             </select>
           </header>
@@ -237,6 +241,19 @@
               <button id="or-add-btn" type="button">+ Add custom guideline</button>
             </div>
           </div>
+          <div id="settings-plugins" class="settings-group" hidden>
+            <p class="settings-desc">
+              Sibling projects with a <code>conductor.plugin.json</code> run as embedded apps:
+              a proxied backend under <code>/plugins/&lt;id&gt;/</code>, an entry in the sidebar
+              app switcher, and (optionally) MCP tools forwarded to sessions in the plugin's
+              project. Plugins are trusted code — same-origin, same access as the conductor UI.
+            </p>
+            <div id="pl-status" class="st-status" aria-live="polite">Loading…</div>
+            <ul id="pl-list" class="pl-list"></ul>
+            <div class="st-actions">
+              <button id="pl-rescan-btn" type="button" title="Re-scan the projects root for conductor.plugin.json manifests">↻ Rescan</button>
+            </div>
+          </div>
           <div id="settings-archived" class="settings-group" hidden>
             <p class="settings-desc">
               Archived sessions keep their transcript and stay resumable. Use the
@@ -276,6 +293,7 @@
         </div>
         <div id="costs-body"></div>
       </section>
+      <section id="plugin-view" hidden aria-label="Plugin"></section>
     </main>
   </div>
 

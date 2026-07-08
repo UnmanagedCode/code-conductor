@@ -175,33 +175,53 @@ test('settings: close() hides panel even when hash drifted via replaceState', as
 
 // ── sidebar collapse on open ─────────────────────────────────────────────────
 
-test('settings: opening settings collapses the sidebar', async () => {
-  // On mobile (max-width: 720px) the sidebar is position:fixed z-index:10.
-  // The settings button lives inside the sidebar, so when the user taps it
-  // the sidebar must be dismissed first (setSidebarOpen(false)) so it doesn't
-  // layer in front of the settings page.
-  //
-  // app.js does:
-  //   dom.settingsBtn.addEventListener('click', () => {
-  //     ...
-  //     else { setSidebarOpen(false); settings.open(); }
-  //   });
-  //
-  // This test verifies the contract: calling setSidebarOpen(false) removes
-  // the .open class from #sidebar before settings opens.
+// app.js does:
+//   dom.settingsBtn.addEventListener('click', () => {
+//     ...
+//     else { closeSidebarOnMobile(); settings.open(); }
+//   });
+// where closeSidebarOnMobile() only calls setSidebarOpen(false) when
+// `window.matchMedia('(max-width: 720px)').matches` — above that breakpoint
+// '.open' has no visual effect (styles.css gates the drawer transform to the
+// same query) so the sidebar must be left untouched. These tests mirror that
+// exact helper (not the pre-fix unconditional call) to verify both branches.
+function closeSidebarOnMobile(window, sidebar) {
+  if (window.matchMedia('(max-width: 720px)').matches) sidebar.classList.remove('open');
+}
+
+test('settings: opening settings collapses the sidebar on mobile', async () => {
   const { window, mod, main, sidebar } = await setup();
   mod.installSettings({ requestClose: () => {} });
+  window.matchMedia = () => ({ matches: true });
 
   // Sidebar starts open (user tapped the hamburger on mobile)
   sidebar.classList.add('open');
   assert.equal(sidebar.classList.contains('open'), true);
 
   // Simulate what app.js click handler does: collapse sidebar, then open settings
-  sidebar.classList.remove('open');           // setSidebarOpen(false)
+  closeSidebarOnMobile(window, sidebar);
   window.location.hash = '#settings';        // settings.open()
   await window.happyDOM.waitUntilComplete();
 
   assert.equal(sidebar.classList.contains('open'), false, 'sidebar must be collapsed');
   assert.equal(main.classList.contains('settings-open'), true, 'settings panel must be open');
+  window.happyDOM.abort();
+});
+
+test('settings: opening settings on desktop leaves the always-visible sidebar column alone', async () => {
+  const { window, mod, main, sidebar } = await setup();
+  mod.installSettings({ requestClose: () => {} });
+  window.matchMedia = () => ({ matches: false });
+
+  // Desktop sidebar isn't a drawer — '.open' shouldn't even be present, but
+  // if it were, closeSidebarOnMobile() must not touch it above the breakpoint.
+  sidebar.classList.add('open');
+
+  closeSidebarOnMobile(window, sidebar);
+  window.location.hash = '#settings';
+  await window.happyDOM.waitUntilComplete();
+
+  assert.equal(sidebar.classList.contains('open'), true, 'desktop sidebar must be untouched');
+  assert.equal(main.classList.contains('settings-open'), true, 'settings panel must still open');
   window.happyDOM.abort();
 });

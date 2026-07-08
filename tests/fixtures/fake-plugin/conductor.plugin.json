@@ -1,0 +1,46 @@
+{
+  "id": "fake-plugin",
+  "name": "Fake Plugin",
+  "version": "1.0.0",
+  "pluginApi": 1,
+  "backend": {
+    "start": "node server.mjs",
+    "healthPath": "/health"
+  },
+  "frontend": { "path": "/", "navLabel": "Fake" },
+  "mcp": {
+    "endpoint": "/api/mcp",
+    "timeoutMs": 30000,
+    "tools": [
+      {
+        "name": "echo",
+        "description": "Echo back the message",
+        "inputSchema": {
+          "type": "object",
+          "properties": { "message": { "type": "string" } },
+          "required": ["message"],
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "sleep",
+        "description": "Sleep for ms milliseconds, then return",
+        "inputSchema": {
+          "type": "object",
+          "properties": { "ms": { "type": "integer", "minimum": 0 } },
+          "required": ["ms"]
+        }
+      },
+      {
+        "name": "fail",
+        "description": "Declared but unhandled — the child answers 200 + {error} (tool-level failure)",
+        "inputSchema": { "type": "object" }
+      },
+      {
+        "name": "transport-bug",
+        "description": "The child answers HTTP 500 (transport-level failure)",
+        "inputSchema": { "type": "object" }
+      }
+    ]
+  }
+}

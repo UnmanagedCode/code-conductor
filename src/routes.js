@@ -17,6 +17,7 @@ import {
   getProjectUpstreamStatus, getWorktreeDiff,
   getProjectCommits, getCommitDiff, getProjectUncommittedDiff,
 } from './worktrees.js';
+import { buildPluginApi } from './plugins/api.js';
 import { scheduleRestart } from './restart.js';
 import { drainAndScheduleRestart } from './resumeRestart.js';
 import { BOOT_ID } from './bootId.js';
@@ -142,9 +143,13 @@ function mountInstallableCatalog(r, cfg) {
   return { state };
 }
 
-export function buildRoutes({ instances, serverCtx } = {}) {
+export function buildRoutes({ instances, serverCtx, pluginHost } = {}) {
   const r = express.Router();
   r.use(express.json({ limit: '1mb' }));
+  // Plugin management API (GET /, rescan, enable/disable/start/stop/status/
+  // version) — delegates to the registry, errors bubble to the middleware
+  // at the bottom of this router.
+  r.use('/plugins', buildPluginApi({ pluginHost }));
 
   // Nudge every connected client to re-fetch /api/projects. Mirrors the
   // hint that wsHub.js broadcasts on instance lifecycle events — used

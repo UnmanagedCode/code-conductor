@@ -22,6 +22,8 @@ import { makeDismissable } from './dismissable.js';
 import { installLazyHistoryController } from './lazyHistory.js';
 import { installLightbox } from './lightbox.js';
 import { installSettings } from './settings.js';
+import { installAppSwitcher } from './appSwitcher.js';
+import { installPluginView } from './pluginView.js';
 import { installReview } from './review.js';
 import { installCommits } from './commits.js';
 import { installCosts } from './costs.js';
@@ -484,9 +486,37 @@ function closeSettings() {
   const inst = state.instances.find(i => i.id === state.activeId);
   writeSessionAnchor(inst?.sessionId || null);
 }
+// App switcher (sidebar header dropdown) + plugin iframe view. The switcher
+// re-fetches the catalog after any pluginManager action via onPluginsChanged
+// and re-syncs its selection after every plugin-view teardown (onClosed),
+// which reads location.hash to decide Conductor vs a plugin. Settings and
+// review navigate via a plain `location.hash =` assignment, which fires
+// hashchange BEFORE pluginView's own listener tears it down — hash is
+// already correct by the time sync() runs. replaceState/pushState-based
+// navigation (this Conductor entry; commits open, below) fires no
+// hashchange, so those paths close the plugin view explicitly — and MUST
+// update the hash first, or sync() reads the stale `#plugin/...` hash and
+// re-selects the plugin (see selectInstance's session-select path, which
+// gets this ordering right already). onShown fires once per entry into the
+// plugin space (dropdown select, deep link, boot) — collapse the mobile
+// drawer there too, same idiom as selectInstance revealing a session.
+let appSwitcher = null;
+const pluginView = installPluginView({
+  onClosed: () => appSwitcher?.sync(),
+  onShown: () => closeSidebarOnMobile(),
+});
+appSwitcher = installAppSwitcher({
+  onExitToConductor: () => {
+    const inst = state.instances.find(i => i.id === state.activeId);
+    writeSessionAnchor(inst?.sessionId || null);
+    pluginView.close();
+    closeSidebarOnMobile();
+  },
+});
 const settings = installSettings({
   requestClose: closeSettings,
   onAvailabilityChange: setMicAvailable,
+  onPluginsChanged: () => appSwitcher.refresh(),
   onModelsChange: data => {
     setActiveVersions(data.active);
     setActiveSonnetWindow(data.sonnetContextWindow);
@@ -513,7 +543,7 @@ dom.settingsBtn?.addEventListener('click', () => {
   closeSidebarOverflow();
   if (location.hash === '#settings') settings.close();
   else {
-    setSidebarOpen(false);
+    closeSidebarOnMobile();
     settings.open();
   }
 });
@@ -525,7 +555,7 @@ function closeReview() {
 }
 const review = installReview();
 sidebar.onReviewWorktree = (project, wt) => {
-  setSidebarOpen(false);
+  closeSidebarOnMobile();
   const short = wt.replace(`${project}_worktree_`, '');
   review.open({
     title: `${project} / ${short}`,
@@ -542,8 +572,14 @@ const commits = installCommits({ onClose: () => {
   writeSessionAnchor(inst?.sessionId || null);
 } });
 sidebar.onShowCommits = (project) => {
-  setSidebarOpen(false);
+  closeSidebarOnMobile();
+  // commits opens via pushState (no hashchange — unlike review's hash
+  // assignment), so the plugin view must be closed explicitly or the two
+  // full-page sections stack. Open commits FIRST so the hash already reads
+  // '#commits' by the time close() fires the switcher's re-sync — otherwise
+  // sync() reads the still-stale '#plugin/...' hash and re-selects the plugin.
   commits.open(project);
+  pluginView.close();
 };
 commits.onOpenCommit = (project, c) => {
   const url = c.diffUrl
@@ -783,6 +819,15 @@ function setSidebarOpen(open) {
 dom.sidebarToggle.addEventListener('click', () => {
   setSidebarOpen(!dom.sidebar.classList.contains('open'));
 });
+// The sidebar is a slide-over drawer only below the 720px breakpoint (see
+// styles.css); above it, '.open' has no visual effect. Navigating to another
+// view (settings/review/commits/a session) should dismiss that mobile drawer
+// so the destination is visible, but must never collapse the always-visible
+// desktop column. Every navigation call site routes through this instead of
+// calling setSidebarOpen(false) directly, so the guard lives in one place.
+function closeSidebarOnMobile() {
+  if (window.matchMedia('(max-width: 720px)').matches) setSidebarOpen(false);
+}
 
 function renderNotifyToggle() {
   const on = NotificationState.globalEnabled && NotificationState.permission === 'granted';
@@ -918,6 +963,7 @@ function selectInstance(id, opts = {}) {
   // to the conductor; replaceState for all other navigation to avoid clutter.
   const leavingSettings = location.hash === '#settings';
   const leavingCommits  = location.hash === '#commits';
+  const leavingPlugin   = location.hash.startsWith('#plugin/');
   const inst = id ? state.instances.find(i => i.id === id) : null;
   if (opts.push) {
     pushSessionAnchor(inst?.sessionId || null);
@@ -932,7 +978,8 @@ function selectInstance(id, opts = {}) {
   // replaced the hash, so we check flags captured before that call.
   if (leavingSettings) settings.close();
   if (leavingCommits)  commits.close();
-  if (window.matchMedia('(max-width: 720px)').matches) setSidebarOpen(false);
+  if (leavingPlugin)   pluginView.close();
+  closeSidebarOnMobile();
 }
 
 // Header ⋮ overflow menu — currently hosts the Debug button so it doesn't

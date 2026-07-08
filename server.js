@@ -14,29 +14,49 @@ import { checkClaudeReadiness, formatReadiness } from './src/health.js';
 import { sweepPendingTempCleanup } from './src/tempCleanup.js';
 import { reconcile as reconcileRootClaudeMd } from './src/rootClaudeMd.js';
 import { restoreFromResumeManifest } from './src/resumeRestart.js';
+import { createPluginHost } from './src/plugins/registry.js';
+import { buildPluginProxy } from './src/plugins/proxy.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export function createServer({ withInstances = true } = {}) {
   const app = express();
   const instances = withInstances ? new InstanceManager() : null;
+  const pluginHost = withInstances ? createPluginHost({ instances }) : null;
 
   // serverCtx is a shared mutable handle so route handlers (POST
   // /admin/restart) can reach the http server + wss without those
   // existing at route-build time. Populated below once they do.
   const serverCtx = {};
-  app.use('/api', buildRoutes({ instances, serverCtx }));
-  app.use('/mcp', buildMcpRouter({ instances }));
+  app.use('/api', buildRoutes({ instances, serverCtx, pluginHost }));
+  app.use('/mcp', buildMcpRouter({ instances, pluginHost }));
+  const pluginProxy = buildPluginProxy({ pluginHost });
+  app.use('/plugins', pluginProxy.handler);
   app.use(express.static(path.join(__dirname, 'public')));
 
   const server = http.createServer(app);
-  const wss = new WebSocketServer({ server, path: '/ws' });
+  // noServer + manual dispatch: the wsHub keeps /ws, plugin WebSockets pipe
+  // through the reverse proxy, anything else is refused. (With noServer the
+  // ws lib never touches `server`, so no error forwarding to guard against.)
+  const wss = new WebSocketServer({ noServer: true });
+  server.on('upgrade', (req, socket, head) => {
+    let pathname;
+    try { pathname = new URL(req.url, 'http://placeholder').pathname; }
+    catch { socket.destroy(); return; }
+    if (pathname === '/ws') {
+      wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
+    } else if (pathname.startsWith('/plugins/')) {
+      pluginProxy.handleUpgrade(req, socket, head);
+    } else {
+      socket.destroy();
+    }
+  });
   if (instances) attachWsHub({ wss, instances });
   if (instances) initCostTracking(instances);
   serverCtx.server = server;
   serverCtx.wss = wss;
 
-  return { app, server, instances, wss };
+  return { app, server, instances, wss, pluginHost };
 }
 
 // `listen` with retry-on-EADDRINUSE — the self-respawn restart path
@@ -79,21 +99,20 @@ export async function start({ port = 8787, host = '127.0.0.1' } = {}) {
   // abort boot — unlike a migration, this is a convenience sync.
   try { await reconcileRootClaudeMd({ log: console }); }
   catch (e) { console.warn('root CLAUDE.md reconcile failed:', e); }
-  const { server, instances, wss } = createServer();
-  // ws 8.20.1 registers `server.on('error', wss.emit.bind(wss, 'error'))` during
-  // WebSocketServer construction, before listenWithRetry's own once('error') is
-  // registered. On EADDRINUSE that forwarding fires first; with no wss 'error'
-  // listener Node throws an unhandled event and kills the process before the retry
-  // loop can run. Guard the wss during the retry window only, then remove it.
-  const _wssErrGuard = () => {};
-  wss.on('error', _wssErrGuard);
+  const { server, instances, wss, pluginHost } = createServer();
   await listenWithRetry(server, port, host);
-  wss.off('error', _wssErrGuard);
   const addr = server.address();
   // Instance subprocesses need the actual bound port to construct the
   // PreToolUse http hook URL — feed it back into the manager now that
   // listen has resolved (port may have been auto-assigned via 0).
   if (instances) instances.setServerPort(addr.port);
+  // Plugin children get CONDUCTOR_URL from the bound port; init() runs the
+  // adopt-don't-drain reconciliation of children that survived a restart.
+  // Fire-and-forget like the resume restore — boot must not gate on it.
+  if (pluginHost) {
+    pluginHost.setServerPort(addr.port);
+    pluginHost.init().catch((e) => console.warn('plugin registry init failed:', e?.message || e));
+  }
   // Start the server-side usage poller (overage auto-stop's second trigger
   // source). Its timer lifecycle tracks the server's, like the bound port; the
   // monitor itself stays unit-testable without a server (tests call _tick()
@@ -115,7 +134,7 @@ export async function start({ port = 8787, host = '127.0.0.1' } = {}) {
   checkClaudeReadiness()
     .then((readiness) => process.stderr.write(formatReadiness(readiness) + '\n'))
     .catch((e) => process.stderr.write(`claude readiness check failed: ${e?.message || e}\n`));
-  return { server, instances, wss, port: addr.port, host: addr.address };
+  return { server, instances, wss, pluginHost, port: addr.port, host: addr.address };
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
