@@ -33,6 +33,7 @@ import { installSessionActions } from './sessionActions.js';
 import { installHeader } from './header.js';
 import { installSessionSummary } from './sessionSummary.js';
 import { installWsRouter } from './wsRouter.js';
+import { latestOnly } from './latestOnly.js';
 import { loadModelVersions, setActiveVersions, setActiveSonnetWindow,
   setActiveFamilyEnabled, setActiveDefaultSpawnFamily } from './models.js';
 import { setTtsAvailable, setTtsEnabled, setTtsRate } from './tts.js';
@@ -887,11 +888,17 @@ async function refreshProjects() {
     : 0;
   sidebar.setConductSessions({ count, lastMtime });
 }
+const instancesGuard = latestOnly();
 async function refreshInstances() {
-  state.instances = await (await fetch('/api/instances')).json();
-  sidebar.setInstances(state.instances);
-  subagentPanel.setInstances(state.instances, state.activeId);
-  headerHandle.update();
+  await instancesGuard(
+    () => fetch('/api/instances').then(r => r.json()),
+    (data) => {
+      state.instances = data;
+      sidebar.setInstances(state.instances);
+      subagentPanel.setInstances(state.instances, state.activeId);
+      headerHandle.update();
+    },
+  );
 }
 
 function selectInstance(id, opts = {}) {
