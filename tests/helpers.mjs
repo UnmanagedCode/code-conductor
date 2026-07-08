@@ -51,20 +51,24 @@ export async function bootServer({ scenarioPath, useRealClaude = false } = {}) {
     else delete process.env.FAKE_CLAUDE_SCENARIO;
   }
 
-  const { server, instances } = createServer();
+  const { server, instances, pluginHost } = createServer();
   await new Promise((resolve, reject) => {
     server.once('error', reject);
     server.listen(0, '127.0.0.1', resolve);
   });
   const { port } = server.address();
   // Mirror server.js's start() flow — instances need the bound port to
-  // construct the PreToolUse http hook callback URL.
+  // construct the PreToolUse http hook callback URL, plugin children get
+  // CONDUCTOR_URL from it. (No pluginHost.init() here — it's lazy on first
+  // use, and eager discovery would race tests that build projects later.)
   if (instances) instances.setServerPort(port);
+  if (pluginHost) pluginHost.setServerPort(port);
   const baseUrl = `http://127.0.0.1:${port}`;
   const wsUrl = `ws://127.0.0.1:${port}/ws`;
 
   async function close() {
     if (instances && typeof instances.shutdown === 'function') await instances.shutdown();
+    if (pluginHost) await pluginHost.stopAll();
     await new Promise(r => server.close(r));
     for (const [k, v] of Object.entries(prev)) {
       if (v === undefined) delete process.env[k];
@@ -73,7 +77,7 @@ export async function bootServer({ scenarioPath, useRealClaude = false } = {}) {
     await rmrf(tmpHome);
   }
 
-  return { baseUrl, wsUrl, server, instances, tmpHome, projectsRoot, claudeProjectsRoot, close };
+  return { baseUrl, wsUrl, server, instances, pluginHost, tmpHome, projectsRoot, claudeProjectsRoot, close };
 }
 
 // MCP returns no longer carry the instanceId — resolve a live instance from
