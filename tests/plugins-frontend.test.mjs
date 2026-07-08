@@ -88,46 +88,131 @@ test('hashView: default exact-hash behavior unchanged without matchHash', async 
 
 // ── pluginView ──────────────────────────────────────────────────────────
 
+// Loading is fetch-driven (status → optional start → src), so tests stub
+// the REST surface and settle the promise chain with macrotask ticks.
+const tick = async (n = 5) => { for (let i = 0; i < n; i++) await new Promise(r => setTimeout(r, 0)); };
+
+function stubPluginViewApi({ state = 'ready', startResult } = {}) {
+  const calls = [];
+  globalThis.fetch = (url, opts = {}) => {
+    calls.push(`${opts.method || 'GET'} ${url}`);
+    if (String(url).endsWith('/status')) {
+      return Promise.resolve({ ok: true, json: async () => ({ state, name: 'Fake' }) });
+    }
+    if (String(url).endsWith('/start')) {
+      if (startResult === 'fail') {
+        return Promise.resolve({ ok: false, status: 502, json: async () => ({ error: 'start blew up', tail: 'boom tail' }) });
+      }
+      if (startResult instanceof Promise) return startResult;
+      return Promise.resolve({ ok: true, json: async () => ({ state: 'ready' }) });
+    }
+    return Promise.resolve({ ok: true, json: async () => ([]) });
+  };
+  return calls;
+}
+
 test('pluginView: opens on #plugin hash, swaps plugins, avoids reload on subpath, teardown blanks', async () => {
   const window = makeWindow('http://localhost/#');
   const { view } = buildViewDom(window.document);
+  const calls = stubPluginViewApi({ state: 'ready' });
   await freshImport('hashView.js');
   const { installPluginView } = await freshImport('pluginView.js');
-  installPluginView();
+  let closed = 0;
+  installPluginView({ onClosed: () => { closed++; } });
 
   window.location.hash = '#plugin/fake-plugin/';
   await window.happyDOM.waitUntilComplete();
+  await tick();
   assert.equal(view.hidden, false);
   const iframe = window.document.getElementById('plugin-frame');
   assert.ok(iframe, 'iframe created on demand');
   assert.match(iframe.getAttribute('src'), /^\/plugins\/fake-plugin\/$/);
+  assert.ok(calls.includes('GET /api/plugins/fake-plugin/status'));
+  assert.ok(!calls.some(c => c.includes('/start')), 'ready plugin needs no start');
 
   // Subpath change within the same plugin: steer via bridge, no src reload.
   window.location.hash = '#plugin/fake-plugin/sub';
   await window.happyDOM.waitUntilComplete();
+  await tick();
   assert.match(iframe.getAttribute('src'), /^\/plugins\/fake-plugin\/$/, 'src untouched on subpath change');
 
   // Different plugin: reload.
   window.location.hash = '#plugin/other/';
   await window.happyDOM.waitUntilComplete();
+  await tick();
   assert.match(iframe.getAttribute('src'), /^\/plugins\/other\/$/);
 
-  // Leaving the space: teardown blanks the iframe and hides the view.
+  // Leaving the space: teardown blanks the iframe, hides the view, and
+  // notifies onClosed (the switcher re-sync hook).
   window.location.hash = '#';
   await window.happyDOM.waitUntilComplete();
   assert.equal(view.hidden, true);
   assert.equal(iframe.getAttribute('src'), 'about:blank');
+  assert.ok(closed >= 1, 'onClosed fired on teardown');
 });
 
 test('pluginView: boot directly on a plugin hash opens the view', async () => {
   const window = makeWindow('http://localhost/#plugin/fake-plugin/dashboard');
   const { view } = buildViewDom(window.document);
+  stubPluginViewApi({ state: 'ready' });
   const { installPluginView } = await freshImport('pluginView.js');
   installPluginView();
   await window.happyDOM.waitUntilComplete();
+  await tick();
   assert.equal(view.hidden, false);
   assert.match(window.document.getElementById('plugin-frame').getAttribute('src'),
     /^\/plugins\/fake-plugin\/dashboard$/);
+});
+
+test('pluginView: enabled-but-stopped plugin auto-starts with a visible affordance', async () => {
+  const window = makeWindow('http://localhost/#');
+  buildViewDom(window.document);
+  let resolveStart;
+  const startResult = new Promise((res) => {
+    resolveStart = () => res({ ok: true, json: async () => ({ state: 'ready' }) });
+  });
+  const calls = stubPluginViewApi({ state: 'stopped', startResult });
+  const { installPluginView } = await freshImport('pluginView.js');
+  installPluginView();
+
+  window.location.hash = '#plugin/fake-plugin/';
+  await window.happyDOM.waitUntilComplete();
+  await tick();
+  // Mid-start: overlay shows the affordance, src not yet set.
+  const overlay = window.document.getElementById('plugin-overlay');
+  assert.equal(overlay.hidden, false);
+  assert.match(overlay.textContent, /Starting Fake/);
+  const iframe = window.document.getElementById('plugin-frame');
+  assert.ok(!iframe.getAttribute('src'), 'iframe not loaded until the child is ready');
+  assert.ok(calls.includes('POST /api/plugins/fake-plugin/start'), 'switch triggered the lazy start');
+
+  resolveStart();
+  await tick();
+  assert.match(iframe.getAttribute('src'), /^\/plugins\/fake-plugin\/$/);
+});
+
+test('pluginView: start failure shows the error + tail with a Retry button, not the raw 503', async () => {
+  const window = makeWindow('http://localhost/#');
+  buildViewDom(window.document);
+  stubPluginViewApi({ state: 'crashed', startResult: 'fail' });
+  const { installPluginView } = await freshImport('pluginView.js');
+  installPluginView();
+
+  window.location.hash = '#plugin/fake-plugin/';
+  await window.happyDOM.waitUntilComplete();
+  await tick();
+  const overlay = window.document.getElementById('plugin-overlay');
+  assert.equal(overlay.hidden, false);
+  assert.match(overlay.textContent, /start blew up/);
+  assert.match(overlay.textContent, /boom tail/);
+  assert.ok(overlay.querySelector('button'), 'Retry affordance present');
+  assert.ok(!window.document.getElementById('plugin-frame').getAttribute('src'));
+
+  // Retry with a now-ready plugin loads the frame.
+  stubPluginViewApi({ state: 'ready' });
+  overlay.querySelector('button').click();
+  await tick();
+  assert.match(window.document.getElementById('plugin-frame').getAttribute('src'), /^\/plugins\/fake-plugin\/$/);
 });
 
 // ── pluginBridge (scripted fake window — proves classic-script semantics) ──
@@ -232,7 +317,8 @@ test('appSwitcher: renders Conductor + plugins, navigates into the hash space, s
     { id: 'disabled-one', name: 'Off', enabled: false, hasFrontend: true },
   ]);
   const { installAppSwitcher } = await freshImport('appSwitcher.js');
-  const switcher = installAppSwitcher();
+  let exits = 0;
+  const switcher = installAppSwitcher({ onExitToConductor: () => { exits++; } });
   await new Promise(r => setTimeout(r, 0));
   assert.equal(select.hidden, false);
   assert.equal(h1.hidden, true);
@@ -249,6 +335,18 @@ test('appSwitcher: renders Conductor + plugins, navigates into the hash space, s
   window.location.hash = '#plugin/fake-plugin/sub';
   await window.happyDOM.waitUntilComplete();
   assert.equal(select.value, 'fake-plugin');
+
+  // Selecting Conductor while inside a plugin view delegates to the exit
+  // callback (deterministic — never history.back()).
+  select.value = 'conductor';
+  select.dispatchEvent(new window.Event('change', { bubbles: true }));
+  assert.equal(exits, 1);
+  // Outside the plugin space it's a no-op.
+  window.location.hash = '#';
+  await window.happyDOM.waitUntilComplete();
+  select.value = 'conductor';
+  select.dispatchEvent(new window.Event('change', { bubbles: true }));
+  assert.equal(exits, 1);
 
   // refresh() drops entries that lost their frontend/enabled bit.
   stubPluginsFetch([]);

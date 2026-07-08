@@ -1,16 +1,18 @@
 // Sidebar app switcher — the `<h1>CodeConductor</h1>` becomes a dropdown
 // when at least one enabled plugin contributes a frontend. Selecting a
 // plugin enters its iframe view via the `#plugin/<id>/` hash space (owned
-// by pluginView.js); selecting Conductor while inside a plugin view goes
-// history.back() so the plugin entry costs exactly one history step.
-// With zero plugins the plain <h1> stays — no visual change.
+// by pluginView.js); selecting Conductor delegates to `onExitToConductor`
+// (app.js closes the plugin view and restores the session anchor) — never
+// history.back(), which has no usable entry on a deep link or after the
+// bridge's pushState→replaceState patch. With zero plugins the plain <h1>
+// stays — no visual change.
 
 const CONDUCTOR = 'conductor';
 
-export function installAppSwitcher() {
+export function installAppSwitcher({ onExitToConductor } = {}) {
   const select = document.getElementById('app-switcher-select');
   const title = document.querySelector('#app-switcher h1');
-  if (!select || !title) return { refresh() {} };
+  if (!select || !title) return { refresh() {}, sync() {} };
 
   let plugins = [];
 
@@ -52,7 +54,7 @@ export function installAppSwitcher() {
   select.addEventListener('change', () => {
     const v = select.value;
     if (v === CONDUCTOR) {
-      if (currentPluginId()) history.back();
+      if (currentPluginId()) onExitToConductor?.();
     } else {
       location.hash = `#plugin/${v}/`;
     }
@@ -71,5 +73,5 @@ export function installAppSwitcher() {
   }
 
   refresh();
-  return { refresh };
+  return { refresh, sync };
 }

@@ -1835,9 +1835,21 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
 #main.plugin-open #composer,
 #main.plugin-open #instance-controls { display: none !important; }
 
-#plugin-view { flex: 1 1 auto; min-height: 0; display: flex; }
+#plugin-view { flex: 1 1 auto; min-height: 0; display: flex; position: relative; }
 #plugin-view[hidden] { display: none; }
 #plugin-frame { flex: 1 1 auto; width: 100%; height: 100%; border: none; background: #fff; }
+
+/* Lazy-start affordance: covers the frame while the child starts; on a
+   start failure it carries the error + crash tail and a Retry button. */
+#plugin-overlay {
+  position: absolute; inset: 0; z-index: 1;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 12px; padding: 24px; text-align: center;
+  background: var(--panel-1); color: var(--text);
+}
+#plugin-overlay[hidden] { display: none; }
+#plugin-overlay .plugin-overlay-msg { margin: 0; font-size: 14px; white-space: pre-wrap; word-break: break-word; max-width: 70ch; }
+#plugin-overlay.plugin-overlay-error .plugin-overlay-msg { color: #f85149; font-family: ui-monospace, monospace; font-size: 12px; }
 
 /* Settings → Plugins group */
 .pl-list { list-style: none; margin: 12px 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }

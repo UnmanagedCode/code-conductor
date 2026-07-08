@@ -487,9 +487,20 @@ function closeSettings() {
   writeSessionAnchor(inst?.sessionId || null);
 }
 // App switcher (sidebar header dropdown) + plugin iframe view. The switcher
-// re-fetches the catalog after any pluginManager action via onPluginsChanged.
-const appSwitcher = installAppSwitcher();
-installPluginView();
+// re-fetches the catalog after any pluginManager action via onPluginsChanged
+// and re-syncs its selection after every plugin-view teardown (onClosed).
+// Navigation that goes through replaceState/pushState (session select,
+// review open, the Conductor entry) never fires hashchange, so those paths
+// close the plugin view explicitly — same idiom as settings/commits below.
+let appSwitcher = null;
+const pluginView = installPluginView({ onClosed: () => appSwitcher?.sync() });
+appSwitcher = installAppSwitcher({
+  onExitToConductor: () => {
+    pluginView.close();
+    const inst = state.instances.find(i => i.id === state.activeId);
+    writeSessionAnchor(inst?.sessionId || null);
+  },
+});
 const settings = installSettings({
   requestClose: closeSettings,
   onAvailabilityChange: setMicAvailable,
@@ -550,6 +561,10 @@ const commits = installCommits({ onClose: () => {
 } });
 sidebar.onShowCommits = (project) => {
   setSidebarOpen(false);
+  // commits opens via pushState (no hashchange — unlike review's hash
+  // assignment), so the plugin view must be closed explicitly or the two
+  // full-page sections stack.
+  pluginView.close();
   commits.open(project);
 };
 commits.onOpenCommit = (project, c) => {
@@ -925,6 +940,7 @@ function selectInstance(id, opts = {}) {
   // to the conductor; replaceState for all other navigation to avoid clutter.
   const leavingSettings = location.hash === '#settings';
   const leavingCommits  = location.hash === '#commits';
+  const leavingPlugin   = location.hash.startsWith('#plugin/');
   const inst = id ? state.instances.find(i => i.id === id) : null;
   if (opts.push) {
     pushSessionAnchor(inst?.sessionId || null);
@@ -939,6 +955,7 @@ function selectInstance(id, opts = {}) {
   // replaced the hash, so we check flags captured before that call.
   if (leavingSettings) settings.close();
   if (leavingCommits)  commits.close();
+  if (leavingPlugin)   pluginView.close();
   if (window.matchMedia('(max-width: 720px)').matches) setSidebarOpen(false);
 }
 
