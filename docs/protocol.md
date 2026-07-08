@@ -187,3 +187,84 @@ All three keep `internal:true` semantics (bypass the overage queue intercept, ne
 - `get_recent_messages` is ring-first; only when the retained tail can't satisfy the requested recent **text** messages (and the ring was trimmed) does it read the on-disk transcript and merge by `msgId` (ring entry wins; bounded to the last `DISK_REPLAY_TAIL_CAP=5000` disk events). `source` reports `"ring"` vs `"disk"`. A missing transcript (exited temp session) degrades to ring-only + a `hint`; never crashes. On a **defaulted** call (no `count` passed) the ring must satisfy `n+1` text messages, not `n`, since the default path may bond in one preceding plan/question message (see below) — this raises the bar for staying ring-only before falling back to disk.
 
 Note: the REST endpoints above keep their own `worktreeName` field — they are a separate contract from the MCP tools and were not renamed.
+
+## Plugin system
+
+### Manifest — `conductor.plugin.json` at the plugin project root
+
+```jsonc
+{
+  "id": "code-hub",             // REQUIRED ^[a-z][a-z0-9-]*$ ≤40 chars, unique across the projects root
+  "name": "Code Hub",           // REQUIRED display name
+  "version": "0.3.0",           // REQUIRED informational
+  "pluginApi": 1,               // REQUIRED int; conductor supports [1], anything else ⇒ state "incompatible"
+  "backend": {                  // OPTIONAL (manifest-only/library plugins omit)
+    "start": "npm start",       // bash -lc, cwd = active checkout, $PORT injected
+    "healthPath": "/api/health",// optional readiness probe + on-demand liveness probe
+    "readyWhen": "listening"    // optional stdout/stderr regex (precedence: readyWhen → healthPath → TCP)
+  },
+  "frontend": {                 // OPTIONAL, requires backend
+    "path": "/",                // default "/"
+    "navLabel": "Hub"           // default = name
+  },
+  "mcp": {                      // OPTIONAL, requires backend
+    "endpoint": "/api/mcp",     // single POST endpoint on the child
+    "scope": "project",         // "project" (default) | "global"
+    "timeoutMs": 30000,         // per-call cap, clamped to 120000
+    "tools": [{ "name": "...", "description": "...", "inputSchema": { "type": "object", ... } }]
+  }
+  // "settings" / "guidelines": reserved, validated-but-inert in v1
+}
+```
+
+Unknown top-level keys are rejected. Every `inputSchema` must stay inside the conductor's `validateArgs` subset — a **flat** `type:"object"` schema (per-property `type`/`enum`/`minLength`/`maxLength`/`pattern`/`minimum`/`maximum`/`items.type`; boolean `additionalProperties` accepted and ignored). `$ref`/`oneOf`/`anyOf`/`allOf`/`not` and nested object `properties` are rejected at manifest load, so an unvalidatable schema can never register. Invalid ⇒ state `invalid`, listed with errors, never startable.
+
+Child env: `$PORT` (conductor-allocated; default your own port when absent so the plugin stays standalone-runnable), `CONDUCTOR_PLUGIN_ID`, `CONDUCTOR_URL` (`http://127.0.0.1:<conductor-port>`). No fixed-port option in v1.
+
+### Reverse proxy — `/plugins/<id>/*`
+
+- `/plugins/<id>/foo?q=1` → child `/foo?q=1` (prefix strip). Injected headers: `X-Forwarded-Prefix: /plugins/<id>`, `X-Forwarded-Host`, `X-Forwarded-Proto`, `X-Forwarded-For`.
+- `GET /plugins/<id>` → `301 /plugins/<id>/` (query preserved). Child `Location:` headers starting with `/` get the prefix re-added — the only header rewrite.
+- Bodies are never parsed — pure req→upstream→res streaming (SSE works). WebSocket upgrades are raw-socket piped with the original header order/casing replayed.
+- Requests to an enabled-but-stopped plugin wait through the lazy start (≤30 s). Unknown/disabled id → 404 JSON; `failed` → `503 {error, status:"failed", tail}`; crash-backoff window → `503 {error, status:"crashed", retryAfter, tail?}`; child unreachable mid-request → 502.
+
+### Bridge protocol — `/pluginBridge.js`
+
+Plugin frontends include `<script src="/pluginBridge.js" defer></script>` (served by the conductor; harmless 404 standalone, no-op when not iframed). Envelope `{cc:1, type, ...}` over `postMessage`, same-origin both ways. Exactly three messages:
+
+| Direction | Type | Payload | Meaning |
+|---|---|---|---|
+| child → parent | `ready` | — | bridge alive (initial `route` follows) |
+| child → parent | `route` | `{path}` | child-relative path (incl. search+hash); parent mirrors it into `#plugin/<id><path>` via `replaceState` |
+| parent → child | `navigate` | `{path}` | external navigation; bridge `replaceState`s `<prefix><path>` and dispatches a synthetic `popstate` |
+
+Inside the iframe the bridge patches `history.pushState` → `replaceState`, so a plugin visit adds exactly one joint-history entry (hardware Back exits to the conductor). Multi-page plugins bypass this and pollute history.
+
+### REST — `/api/plugins`
+
+| Method + path | Meaning |
+|---|---|
+| `GET /api/plugins` | merged discovery+registry+runtime rows: `{id, name, project, version, state, enabled, activeVersion, hasFrontend, navLabel, frontendPath, hasMcp, port, pid, startedAt, gitHead, errors, crashTail}` |
+| `POST /api/plugins/rescan` | re-scan the projects root; returns the list |
+| `POST /api/plugins/:id/enable` | record + enable (first enable auto-assigns an unassigned project to workspace `CC-Dev`); recovery path out of `failed` |
+| `POST /api/plugins/:id/disable` | stop the child + disable |
+| `POST /api/plugins/:id/start` | explicit start (clears crash history); 502 + `tail` on start failure |
+| `POST /api/plugins/:id/stop` | SIGTERM the process group (SIGKILL after 3 s) |
+| `GET /api/plugins/:id/status` | row + live probe (flips a silently-dead child to `crashed`) |
+| `POST /api/plugins/:id/version` | `{type:"main"}` \| `{type:"worktree", name}`; validates the target checkout (400 keeps previous state), restarts if running |
+
+Errors: `{error}` JSON with 400/404/409/502/503 per the registry rules above.
+
+### Plugin MCP forwarding — child wire contract (pinned)
+
+The conductor POSTs `{tool, arguments, caller:{sessionId, project}}` (JSON) to the manifest `mcp.endpoint`. The child returns **HTTP 200 for EVERY well-formed tool invocation** with body `{result: <any JSON>}` or `{error: "<message>"}` — unknown tool, bad arguments and tool-level failures are all `200 + {error}`. A **non-200 means a transport-level failure only** (malformed envelope, plugin bug) and surfaces to the MCP client as an HTTP-coded error; `200 + {error}` surfaces as a plain tool error. Calls are aborted at `mcp.timeoutMs`. Tool names are namespaced `<plugin-id>__<tool>`; argument validation against the declared `inputSchema` happens in the conductor **before** any forward.
+
+### Plugin-compliance checklist
+
+1. `conductor.plugin.json` at the repo root (schema above); keep `id` stable.
+2. Respect `$PORT` when set; default your own port so the app stays standalone-runnable.
+3. Base-path compliance: reachable under `X-Forwarded-Prefix` — relative asset URLs (or honor the prefix), root-relative redirects only (they get rewritten).
+4. `<script src="/pluginBridge.js" defer></script>` in the frontend + SPA routing via pushState/replaceState (the bridge reports routes for you).
+5. A `healthPath` endpoint (any HTTP response counts as alive).
+6. Optional MCP endpoint following the 200-always contract above, tools declared in the manifest with flat schemas.
+7. Expect to be killed at any time (Doze) and restarted lazily — persist state, start fast.
