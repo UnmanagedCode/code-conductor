@@ -19,14 +19,18 @@
 // replaceState/pushState (sidebar session select, review open, the
 // switcher's Conductor entry) — those never fire hashchange, so the
 // hashchange teardown can't cover them; `onClosed` fires after every
-// teardown (the app switcher re-syncs its dropdown off it).
+// teardown (the app switcher re-syncs its dropdown off it). `onShown` fires
+// once per entry into the `#plugin/` space (dropdown select, deep link,
+// page-load boot) — NOT on a plugin-to-plugin switch within an already-open
+// view (app.js uses it to collapse the mobile sidebar drawer, same idiom as
+// selectInstance revealing a picked session).
 
 import { installHashView } from './hashView.js';
 
 const PREFIX = '#plugin/';
 const HASH_RE = /^#plugin\/([a-z][a-z0-9-]*)(\/.*)?$/;
 
-export function installPluginView({ onClosed } = {}) {
+export function installPluginView({ onClosed, onShown } = {}) {
   const view = document.getElementById('plugin-view');
   if (!view) return { close() {} };
 
@@ -118,6 +122,7 @@ export function installPluginView({ onClosed } = {}) {
     onShow: () => {
       const target = parseHash(location.hash);
       if (target) load(target);
+      onShown?.();
     },
     onTeardown: () => {
       current = null;

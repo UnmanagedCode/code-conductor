@@ -428,3 +428,100 @@ test('appSwitcher + pluginView: opening Commits (pushState-based) while a plugin
   pluginView.close();
   assert.equal(select.value, 'conductor', 'switcher reflects Conductor once Commits owns the hash');
 });
+
+// ── app.js wiring: mobile sidebar collapse on plugin enter/exit ───────────
+// app.js's closeSidebarOnMobile() gates setSidebarOpen(false) behind the
+// same `(max-width: 720px)` query the CSS drawer uses; entering a plugin
+// (pluginView's onShown) and exiting back to Conductor (onExitToConductor)
+// both call it so the drawer reveals the destination view on mobile, while
+// leaving the always-visible desktop column untouched. Mirrors app.js's own
+// setSidebarOpen/closeSidebarOnMobile exactly (not a divergent stub) so the
+// test proves the real contract, not a stand-in for it.
+function buildSidebarDom(document) {
+  const sidebar = document.createElement('aside');
+  sidebar.id = 'sidebar';
+  document.body.appendChild(sidebar);
+  return sidebar;
+}
+function wireSidebarMobileGate(window, sidebar, { mobile }) {
+  window.matchMedia = () => ({ matches: mobile });
+  function setSidebarOpen(open) { sidebar.classList.toggle('open', open); }
+  function closeSidebarOnMobile() {
+    if (window.matchMedia('(max-width: 720px)').matches) setSidebarOpen(false);
+  }
+  return { setSidebarOpen, closeSidebarOnMobile };
+}
+
+test('appSwitcher + pluginView: entering a plugin collapses the mobile drawer', async () => {
+  const window = makeWindow('http://localhost/#');
+  buildViewDom(window.document);
+  buildSwitcherDom(window.document);
+  const sidebar = buildSidebarDom(window.document);
+  sidebar.classList.add('open'); // drawer open before the switch
+  const { closeSidebarOnMobile } = wireSidebarMobileGate(window, sidebar, { mobile: true });
+  stubPluginViewApi({ state: 'ready' });
+  await freshImport('hashView.js');
+  const { installPluginView } = await freshImport('pluginView.js');
+  installPluginView({ onShown: () => closeSidebarOnMobile() });
+
+  window.location.hash = '#plugin/fake-plugin/';
+  await window.happyDOM.waitUntilComplete();
+  await new Promise(r => setTimeout(r, 0));
+  assert.equal(sidebar.classList.contains('open'), false, 'mobile drawer collapses to reveal the plugin');
+});
+
+test('appSwitcher + pluginView: entering a plugin leaves the desktop sidebar open', async () => {
+  const window = makeWindow('http://localhost/#');
+  buildViewDom(window.document);
+  buildSwitcherDom(window.document);
+  const sidebar = buildSidebarDom(window.document);
+  sidebar.classList.add('open');
+  const { closeSidebarOnMobile } = wireSidebarMobileGate(window, sidebar, { mobile: false });
+  stubPluginViewApi({ state: 'ready' });
+  await freshImport('hashView.js');
+  const { installPluginView } = await freshImport('pluginView.js');
+  installPluginView({ onShown: () => closeSidebarOnMobile() });
+
+  window.location.hash = '#plugin/fake-plugin/';
+  await window.happyDOM.waitUntilComplete();
+  await new Promise(r => setTimeout(r, 0));
+  assert.equal(sidebar.classList.contains('open'), true, 'desktop sidebar is untouched — .open has no visual effect above 720px');
+});
+
+test('appSwitcher + pluginView: returning to Conductor collapses the mobile drawer too', async () => {
+  const window = makeWindow('http://localhost/#');
+  buildViewDom(window.document);
+  const { select } = buildSwitcherDom(window.document);
+  const sidebar = buildSidebarDom(window.document);
+  const { closeSidebarOnMobile } = wireSidebarMobileGate(window, sidebar, { mobile: true });
+  stubPluginViewApi({ state: 'ready' });
+  await freshImport('hashView.js');
+  const { installPluginView } = await freshImport('pluginView.js');
+  const { installAppSwitcher } = await freshImport('appSwitcher.js');
+
+  let appSwitcher = null;
+  const pluginView = installPluginView({
+    onClosed: () => appSwitcher?.sync(),
+    onShown: () => closeSidebarOnMobile(),
+  });
+  appSwitcher = installAppSwitcher({
+    onExitToConductor: () => {
+      window.history.replaceState(null, '', '/#session=abc123');
+      pluginView.close();
+      closeSidebarOnMobile();
+    },
+  });
+  stubPluginsFetch([
+    { id: 'fake-plugin', name: 'Fake Plugin', navLabel: 'Fake', enabled: true, hasFrontend: true },
+  ]);
+  await appSwitcher.refresh();
+
+  window.location.hash = '#plugin/fake-plugin/';
+  await window.happyDOM.waitUntilComplete();
+  await new Promise(r => setTimeout(r, 0));
+  sidebar.classList.add('open'); // simulate the user re-opening the drawer while viewing the plugin
+
+  select.value = 'conductor';
+  select.dispatchEvent(new window.Event('change', { bubbles: true }));
+  assert.equal(sidebar.classList.contains('open'), false, 'mobile drawer collapses to reveal the conductor view');
+});

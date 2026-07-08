@@ -497,14 +497,20 @@ function closeSettings() {
 // hashchange, so those paths close the plugin view explicitly — and MUST
 // update the hash first, or sync() reads the stale `#plugin/...` hash and
 // re-selects the plugin (see selectInstance's session-select path, which
-// gets this ordering right already).
+// gets this ordering right already). onShown fires once per entry into the
+// plugin space (dropdown select, deep link, boot) — collapse the mobile
+// drawer there too, same idiom as selectInstance revealing a session.
 let appSwitcher = null;
-const pluginView = installPluginView({ onClosed: () => appSwitcher?.sync() });
+const pluginView = installPluginView({
+  onClosed: () => appSwitcher?.sync(),
+  onShown: () => closeSidebarOnMobile(),
+});
 appSwitcher = installAppSwitcher({
   onExitToConductor: () => {
     const inst = state.instances.find(i => i.id === state.activeId);
     writeSessionAnchor(inst?.sessionId || null);
     pluginView.close();
+    closeSidebarOnMobile();
   },
 });
 const settings = installSettings({
