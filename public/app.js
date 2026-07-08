@@ -488,17 +488,23 @@ function closeSettings() {
 }
 // App switcher (sidebar header dropdown) + plugin iframe view. The switcher
 // re-fetches the catalog after any pluginManager action via onPluginsChanged
-// and re-syncs its selection after every plugin-view teardown (onClosed).
-// Navigation that goes through replaceState/pushState (session select,
-// review open, the Conductor entry) never fires hashchange, so those paths
-// close the plugin view explicitly — same idiom as settings/commits below.
+// and re-syncs its selection after every plugin-view teardown (onClosed),
+// which reads location.hash to decide Conductor vs a plugin. Settings and
+// review navigate via a plain `location.hash =` assignment, which fires
+// hashchange BEFORE pluginView's own listener tears it down — hash is
+// already correct by the time sync() runs. replaceState/pushState-based
+// navigation (this Conductor entry; commits open, below) fires no
+// hashchange, so those paths close the plugin view explicitly — and MUST
+// update the hash first, or sync() reads the stale `#plugin/...` hash and
+// re-selects the plugin (see selectInstance's session-select path, which
+// gets this ordering right already).
 let appSwitcher = null;
 const pluginView = installPluginView({ onClosed: () => appSwitcher?.sync() });
 appSwitcher = installAppSwitcher({
   onExitToConductor: () => {
-    pluginView.close();
     const inst = state.instances.find(i => i.id === state.activeId);
     writeSessionAnchor(inst?.sessionId || null);
+    pluginView.close();
   },
 });
 const settings = installSettings({
@@ -531,7 +537,7 @@ dom.settingsBtn?.addEventListener('click', () => {
   closeSidebarOverflow();
   if (location.hash === '#settings') settings.close();
   else {
-    setSidebarOpen(false);
+    closeSidebarOnMobile();
     settings.open();
   }
 });
@@ -543,7 +549,7 @@ function closeReview() {
 }
 const review = installReview();
 sidebar.onReviewWorktree = (project, wt) => {
-  setSidebarOpen(false);
+  closeSidebarOnMobile();
   const short = wt.replace(`${project}_worktree_`, '');
   review.open({
     title: `${project} / ${short}`,
@@ -560,12 +566,14 @@ const commits = installCommits({ onClose: () => {
   writeSessionAnchor(inst?.sessionId || null);
 } });
 sidebar.onShowCommits = (project) => {
-  setSidebarOpen(false);
+  closeSidebarOnMobile();
   // commits opens via pushState (no hashchange — unlike review's hash
   // assignment), so the plugin view must be closed explicitly or the two
-  // full-page sections stack.
-  pluginView.close();
+  // full-page sections stack. Open commits FIRST so the hash already reads
+  // '#commits' by the time close() fires the switcher's re-sync — otherwise
+  // sync() reads the still-stale '#plugin/...' hash and re-selects the plugin.
   commits.open(project);
+  pluginView.close();
 };
 commits.onOpenCommit = (project, c) => {
   const url = c.diffUrl
@@ -805,6 +813,15 @@ function setSidebarOpen(open) {
 dom.sidebarToggle.addEventListener('click', () => {
   setSidebarOpen(!dom.sidebar.classList.contains('open'));
 });
+// The sidebar is a slide-over drawer only below the 720px breakpoint (see
+// styles.css); above it, '.open' has no visual effect. Navigating to another
+// view (settings/review/commits/a session) should dismiss that mobile drawer
+// so the destination is visible, but must never collapse the always-visible
+// desktop column. Every navigation call site routes through this instead of
+// calling setSidebarOpen(false) directly, so the guard lives in one place.
+function closeSidebarOnMobile() {
+  if (window.matchMedia('(max-width: 720px)').matches) setSidebarOpen(false);
+}
 
 function renderNotifyToggle() {
   const on = NotificationState.globalEnabled && NotificationState.permission === 'granted';
@@ -956,7 +973,7 @@ function selectInstance(id, opts = {}) {
   if (leavingSettings) settings.close();
   if (leavingCommits)  commits.close();
   if (leavingPlugin)   pluginView.close();
-  if (window.matchMedia('(max-width: 720px)').matches) setSidebarOpen(false);
+  closeSidebarOnMobile();
 }
 
 // Header ⋮ overflow menu — currently hosts the Debug button so it doesn't

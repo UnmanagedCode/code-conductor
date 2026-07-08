@@ -354,3 +354,77 @@ test('appSwitcher: renders Conductor + plugins, navigates into the hash space, s
   assert.equal(select.hidden, true);
   assert.equal(h1.hidden, false);
 });
+
+// ── app.js wiring: switcher selection after a round-trip ──────────────────
+// app.js wires `installPluginView({ onClosed: () => appSwitcher.sync() })`
+// and every explicit `pluginView.close()` call site (the switcher's own
+// Conductor entry, sidebar Commits) must update location.hash BEFORE
+// calling close() — otherwise sync() reads the still-stale '#plugin/...'
+// hash and re-selects the plugin instead of Conductor. These tests wire the
+// two real modules together (not app.js itself, which is DOM/fetch-heavy
+// bootstrap) and replay each call site's fixed statement order.
+
+test('appSwitcher + pluginView: exiting to Conductor (replaceState-based) re-syncs to conductor, not the stale plugin', async () => {
+  const window = makeWindow('http://localhost/#');
+  buildViewDom(window.document);
+  const { select } = buildSwitcherDom(window.document);
+  stubPluginViewApi({ state: 'ready' });
+  await freshImport('hashView.js');
+  const { installPluginView } = await freshImport('pluginView.js');
+  const { installAppSwitcher } = await freshImport('appSwitcher.js');
+
+  let appSwitcher = null;
+  const pluginView = installPluginView({ onClosed: () => appSwitcher?.sync() });
+  appSwitcher = installAppSwitcher({
+    onExitToConductor: () => {
+      // Fixed order (app.js onExitToConductor): write the destination hash
+      // FIRST, close() second — matches the writeSessionAnchor/pluginView.close()
+      // order in public/app.js.
+      window.history.replaceState(null, '', '/#session=abc123');
+      pluginView.close();
+    },
+  });
+  stubPluginsFetch([
+    { id: 'fake-plugin', name: 'Fake Plugin', navLabel: 'Fake', enabled: true, hasFrontend: true },
+  ]);
+  await appSwitcher.refresh();
+
+  window.location.hash = '#plugin/fake-plugin/';
+  await window.happyDOM.waitUntilComplete();
+  await new Promise(r => setTimeout(r, 0));
+  assert.equal(select.value, 'fake-plugin', 'sanity: plugin selected while its view is open');
+
+  select.value = 'conductor';
+  select.dispatchEvent(new window.Event('change', { bubbles: true }));
+  assert.equal(window.location.hash, '#session=abc123', 'exit path already wrote the destination hash');
+  assert.equal(select.value, 'conductor', 'switcher reflects Conductor, not the torn-down plugin');
+});
+
+test('appSwitcher + pluginView: opening Commits (pushState-based) while a plugin is active re-syncs to conductor', async () => {
+  const window = makeWindow('http://localhost/#');
+  buildViewDom(window.document);
+  const { select } = buildSwitcherDom(window.document);
+  stubPluginViewApi({ state: 'ready' });
+  await freshImport('hashView.js');
+  const { installPluginView } = await freshImport('pluginView.js');
+  const { installAppSwitcher } = await freshImport('appSwitcher.js');
+
+  let appSwitcher = null;
+  const pluginView = installPluginView({ onClosed: () => appSwitcher?.sync() });
+  appSwitcher = installAppSwitcher({ onExitToConductor: () => pluginView.close() });
+  stubPluginsFetch([
+    { id: 'fake-plugin', name: 'Fake Plugin', navLabel: 'Fake', enabled: true, hasFrontend: true },
+  ]);
+  await appSwitcher.refresh();
+
+  window.location.hash = '#plugin/fake-plugin/';
+  await window.happyDOM.waitUntilComplete();
+  await new Promise(r => setTimeout(r, 0));
+  assert.equal(select.value, 'fake-plugin');
+
+  // Fixed order (app.js sidebar.onShowCommits): open Commits (pushState)
+  // FIRST, close() second.
+  window.history.pushState(null, '', '/#commits');
+  pluginView.close();
+  assert.equal(select.value, 'conductor', 'switcher reflects Conductor once Commits owns the hash');
+});
