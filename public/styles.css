@@ -1815,3 +1815,51 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
 .np-rule-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
 .np-rule-name { font-weight: 600; }
 .np-rule-desc { color: var(--muted); font-size: 12px; overflow-wrap: break-word; }
+
+/* ── Plugins ─────────────────────────────────────────────────────────────── */
+/* App switcher: the sidebar <h1> swaps for this dropdown once an enabled
+   plugin contributes a frontend (appSwitcher.js toggles the hidden attrs). */
+#app-switcher { min-width: 0; }
+#app-switcher-select {
+  font-size: 14px; font-weight: 600; color: var(--text);
+  background: transparent; border: none; padding: 0; margin: 0;
+  max-width: 160px; cursor: pointer;
+}
+#app-switcher-select:focus { outline: 1px solid var(--border); }
+
+/* Plugin iframe view: same full-page pattern as review/commits/costs. */
+#main.plugin-open #conversation,
+#main.plugin-open #subagent-panel,
+#main.plugin-open #task-panel,
+#main.plugin-open #turn-indicator,
+#main.plugin-open #composer,
+#main.plugin-open #instance-controls { display: none !important; }
+
+#plugin-view { flex: 1 1 auto; min-height: 0; display: flex; }
+#plugin-view[hidden] { display: none; }
+#plugin-frame { flex: 1 1 auto; width: 100%; height: 100%; border: none; background: #fff; }
+
+/* Settings → Plugins group */
+.pl-list { list-style: none; margin: 12px 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.pl-row { border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; background: var(--panel-1); }
+.pl-row-head { display: flex; align-items: center; gap: 8px; }
+.pl-name { font-weight: 600; }
+.pl-badge {
+  font-size: 11px; padding: 1px 8px; border-radius: 10px;
+  border: 1px solid var(--border); color: var(--muted); text-transform: lowercase;
+}
+.pl-badge-ready { color: #3fb950; border-color: #3fb95055; }
+.pl-badge-crashed, .pl-badge-failed, .pl-badge-invalid, .pl-badge-conflict,
+.pl-badge-incompatible { color: #f85149; border-color: #f8514955; }
+.pl-meta { margin-top: 4px; font-size: 12px; color: var(--muted); }
+.pl-errors { margin-top: 6px; font-size: 12px; color: #f85149; }
+.pl-tail { margin-top: 6px; }
+.pl-tail summary { font-size: 12px; color: var(--muted); cursor: pointer; }
+.pl-tail pre {
+  margin: 6px 0 0; padding: 8px; font-size: 11px; max-height: 200px; overflow: auto;
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: 4px;
+  white-space: pre-wrap; word-break: break-word;
+}
+.pl-actions { margin-top: 8px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.pl-version { font-size: 12px; }
+.pl-status-err { color: #f85149; }

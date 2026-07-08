@@ -22,6 +22,8 @@ import { makeDismissable } from './dismissable.js';
 import { installLazyHistoryController } from './lazyHistory.js';
 import { installLightbox } from './lightbox.js';
 import { installSettings } from './settings.js';
+import { installAppSwitcher } from './appSwitcher.js';
+import { installPluginView } from './pluginView.js';
 import { installReview } from './review.js';
 import { installCommits } from './commits.js';
 import { installCosts } from './costs.js';
@@ -484,9 +486,14 @@ function closeSettings() {
   const inst = state.instances.find(i => i.id === state.activeId);
   writeSessionAnchor(inst?.sessionId || null);
 }
+// App switcher (sidebar header dropdown) + plugin iframe view. The switcher
+// re-fetches the catalog after any pluginManager action via onPluginsChanged.
+const appSwitcher = installAppSwitcher();
+installPluginView();
 const settings = installSettings({
   requestClose: closeSettings,
   onAvailabilityChange: setMicAvailable,
+  onPluginsChanged: () => appSwitcher.refresh(),
   onModelsChange: data => {
     setActiveVersions(data.active);
     setActiveSonnetWindow(data.sonnetContextWindow);

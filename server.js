@@ -28,7 +28,7 @@ export function createServer({ withInstances = true } = {}) {
   // /admin/restart) can reach the http server + wss without those
   // existing at route-build time. Populated below once they do.
   const serverCtx = {};
-  app.use('/api', buildRoutes({ instances, serverCtx }));
+  app.use('/api', buildRoutes({ instances, serverCtx, pluginHost }));
   app.use('/mcp', buildMcpRouter({ instances }));
   const pluginProxy = buildPluginProxy({ pluginHost });
   app.use('/plugins', pluginProxy.handler);

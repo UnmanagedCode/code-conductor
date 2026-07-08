@@ -8,13 +8,14 @@
 // `requestClose` callback; we just translate hashchange into show/hide.
 
 import { formatAgo } from './sidebar.js';
+import { installPluginManager } from './pluginManager.js';
 
 const POLL_MS = 1500;
 
 export function installSettings({
   requestClose, onAvailabilityChange, onModelsChange,
   onTtsAvailabilityChange, onTtsPrefsChange, onOpenCostDashboard,
-  onArchivedChanged,
+  onArchivedChanged, onPluginsChanged,
 } = {}) {
   const main = document.getElementById('main');
   const view = document.getElementById('settings-view');
@@ -73,6 +74,10 @@ export function installSettings({
   const orAddError = document.getElementById('or-add-error');
   if (!view) return { open() {}, close() {} };
 
+  // Plugins group — feature logic lives in its own module; settings only
+  // owns the group panel + calls load() on open.
+  const pluginManager = installPluginManager({ onCatalogChange: onPluginsChanged });
+
   let isOpen = false;
   let selected = null;     // model name highlighted by the user
   let installing = false;  // an install is in flight (controls disabled)
@@ -128,6 +133,7 @@ export function installSettings({
     loadWorkspace();
     loadArchived();
     loadOptionalGuidelines();
+    pluginManager.load();
   }
 
   function hide() {
