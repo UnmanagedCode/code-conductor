@@ -30,6 +30,16 @@
           "properties": { "ms": { "type": "integer", "minimum": 0 } },
           "required": ["ms"]
         }
+      },
+      {
+        "name": "fail",
+        "description": "Declared but unhandled — the child answers 200 + {error} (tool-level failure)",
+        "inputSchema": { "type": "object" }
+      },
+      {
+        "name": "transport-bug",
+        "description": "The child answers HTTP 500 (transport-level failure)",
+        "inputSchema": { "type": "object" }
       }
     ]
   }

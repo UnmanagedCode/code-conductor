@@ -89,6 +89,12 @@ const server = http.createServer(async (req, res) => {
       setTimeout(() => reply({ result: { slept: ms } }), ms);
       return;
     }
+    if (body.tool === 'transport-bug') {
+      res.writeHead(500, { 'content-type': 'text/plain' });
+      res.end('deliberate 500 from the mcp endpoint');
+      return;
+    }
+    // 'fail' (and anything undeclared) lands here: tool-level failure.
     return reply({ error: `unknown tool '${body.tool}'` });
   }
   res.writeHead(404, { 'content-type': 'application/json' });

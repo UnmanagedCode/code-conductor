@@ -6,6 +6,7 @@ import {
 } from '../projects.js';
 import { readManifest } from './manifest.js';
 import { createSupervisor, httpOk } from './supervisor.js';
+import { createMcpBridge } from './mcpBridge.js';
 import { pidAlive, waitForPort } from './ports.js';
 
 // Plugin registry — the single service layer behind the REST api
@@ -485,8 +486,17 @@ export function createPluginHost({
     return describe(id);
   }
 
-  // Seam filled by the MCP-forwarding phase.
-  function toolsFor() { return []; }
+  // MCP forwarding lives in a composed collaborator; the registry only
+  // hands it narrow accessors over its own state.
+  const mcpBridge = createMcpBridge({
+    instances,
+    listMcpPlugins: () => [...byId.values()].filter(e =>
+      e.discoveryState === 'ok' && persisted.plugins[e.id]?.enabled === true && e.manifest.mcp),
+    ensureStarted,
+    portFor: (id) => runtimeRecords[id]?.port ?? null,
+    reportUpstreamFailure,
+  });
+  const toolsFor = (callerId) => mcpBridge.toolsFor(callerId);
 
   function runtimeInfo(id) {
     const rec = runtimeRecords[id];
@@ -510,6 +520,5 @@ export function createPluginHost({
     list, rescan, enable, disable, start, stop, status,
     ensureStarted, setActiveVersion, toolsFor, runtimeInfo,
     reportUpstreamFailure, setServerPort, stopAll,
-    _instances: instances,
   };
 }

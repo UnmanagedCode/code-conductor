@@ -220,11 +220,11 @@ async function dispatch(msg, ctx) {
   }
 }
 
-export function buildMcpRouter({ instances }) {
+export function buildMcpRouter({ instances, pluginHost }) {
   const r = express.Router();
   r.use(express.json({ limit: '8mb' }));
 
-  const tools = buildTools();
+  const coreTools = buildTools();
 
   r.post('/', async (req, res) => {
     // Each spawned worker registers the MCP URL with its own stable sessionId
@@ -234,6 +234,20 @@ export function buildMcpRouter({ instances }) {
     // caller-dependent tool errors with a clear message.
     const callerId = typeof req.query.caller === 'string' && req.query.caller
       ? req.query.caller : null;
+    // Per-request tool composition: core tools + the plugin tools visible to
+    // this caller (scoping + dynamism land in this one line; tools/list and
+    // tools/call read ctx.tools unchanged). init() is memoized — after the
+    // first request it's a resolved promise. A plugin-subsystem failure must
+    // never take the core tools down with it.
+    let tools = coreTools;
+    if (pluginHost) {
+      try {
+        await pluginHost.init();
+        tools = [...coreTools, ...pluginHost.toolsFor(callerId)];
+      } catch (e) {
+        console.warn('mcp: plugin tool composition failed:', e?.message || e);
+      }
+    }
     const ctx = { instances, tools, callerId };
     const body = req.body;
     // Batch: array of requests → array of responses (notifications dropped).

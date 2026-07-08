@@ -29,7 +29,7 @@ export function createServer({ withInstances = true } = {}) {
   // existing at route-build time. Populated below once they do.
   const serverCtx = {};
   app.use('/api', buildRoutes({ instances, serverCtx, pluginHost }));
-  app.use('/mcp', buildMcpRouter({ instances }));
+  app.use('/mcp', buildMcpRouter({ instances, pluginHost }));
   const pluginProxy = buildPluginProxy({ pluginHost });
   app.use('/plugins', pluginProxy.handler);
   app.use(express.static(path.join(__dirname, 'public')));
