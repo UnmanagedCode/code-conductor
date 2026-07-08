@@ -124,6 +124,54 @@ test('switch while stopped does not start; the next start uses the new cwd', asy
   }
 });
 
+test('bootstrap: worktree-only plugin starts from its worktree; switch-to-main gated on a main manifest', async () => {
+  const env = await makePluginRoot();
+  const host = createPluginHost();
+  try {
+    // Main checkout: fixture files but NO manifest (first-time plugin-ification
+    // — the manifest exists only in an unmerged worktree).
+    const dir = await env.addPluginProject('wtplug');
+    await fs.rm(path.join(dir, 'conductor.plugin.json'));
+    await git(dir, 'init', '-q');
+    await git(dir, 'config', 'user.email', 'test@test');
+    await git(dir, 'config', 'user.name', 'test');
+    await git(dir, 'add', '-A');
+    await git(dir, 'commit', '-q', '-m', 'no manifest yet');
+    const { createWorktree } = await import('../src/worktrees.js');
+    const meta = await createWorktree('wtplug');
+    await fs.writeFile(path.join(meta.worktreePath, 'conductor.plugin.json'), JSON.stringify(MANIFEST));
+
+    const rows = await host.rescan();
+    const row = rows.find(r => r.id === 'wtplug');
+    assert.equal(row.state, 'discovered');
+    assert.deepEqual(row.manifestSource, { type: 'worktree', name: meta.worktreeName });
+
+    const en = await host.enable('wtplug');
+    assert.deepEqual(en.activeVersion, { type: 'worktree', name: meta.worktreeName });
+    await host.start('wtplug'); // succeeds ⇒ cwd is the worktree (main has no manifest to start from)
+    assert.equal(await healthPlugin(host), 'fake-plugin');
+
+    // Main still has no manifest → switching to main is refused.
+    await assert.rejects(
+      host.setActiveVersion('wtplug', { type: 'main' }),
+      (e) => e.statusCode === 400 && /no conductor\.plugin\.json/.test(e.message),
+    );
+    assert.equal((await host.status('wtplug')).state, 'ready', 'refusal kept the child running');
+
+    // Once main gains the manifest (worktree merged), main becomes switchable
+    // — and discovery flips back to main-sourced.
+    await fs.writeFile(path.join(dir, 'conductor.plugin.json'), JSON.stringify(MANIFEST));
+    await host.rescan();
+    const back = await host.setActiveVersion('wtplug', { type: 'main' });
+    assert.deepEqual(back.activeVersion, { type: 'main' });
+    assert.equal(back.state, 'ready');
+    assert.deepEqual(back.manifestSource, { type: 'main' });
+  } finally {
+    await host.stopAll();
+    await env.restore();
+  }
+});
+
 test('version guards: unknown worktree 404, bad shape 400, no registry entry 409', async () => {
   const env = await makePluginRoot();
   const host = createPluginHost();

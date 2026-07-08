@@ -4,8 +4,22 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { createPluginHost } from '../src/plugins/registry.js';
 import { pidAlive } from '../src/plugins/ports.js';
-import { readProjectMeta, writeProjectMeta, listWorkspaces } from '../src/projects.js';
-import { makePluginRoot, readFixtureManifest, waitFor } from './plugin-helpers.mjs';
+import { readProjectMeta, writeProjectMeta, listWorkspaces, projectStoreDir } from '../src/projects.js';
+import { makePluginRoot, readFixtureManifest, waitFor, FAKE_PLUGIN_DIR } from './plugin-helpers.mjs';
+
+// Fabricate a worktree checkout + its store metadata without git — the
+// discovery fallback reads the store meta directly (no git verification).
+async function fabricateWorktree(env, project, worktreeName, { manifest } = {}) {
+  const worktreePath = path.join(env.root, worktreeName);
+  await fs.cp(FAKE_PLUGIN_DIR, worktreePath, { recursive: true });
+  if (manifest !== undefined) {
+    await fs.writeFile(path.join(worktreePath, 'conductor.plugin.json'), JSON.stringify(manifest));
+  }
+  const metaFile = path.join(projectStoreDir(project), 'worktrees', worktreeName, 'worktree.json');
+  await fs.mkdir(path.dirname(metaFile), { recursive: true });
+  await fs.writeFile(metaFile, JSON.stringify({ parentProject: project, worktreeName, worktreePath }));
+  return worktreePath;
+}
 
 async function rejectsWithStatus(promise, statusCode) {
   try { await promise; }
@@ -220,6 +234,62 @@ test('status() live-probe flips a silently-dead child to crashed', async () => {
     assert.equal(host.runtimeInfo('fake-plugin').status, 'ready');
   } finally {
     await host.stopAll();
+    await env.restore();
+  }
+});
+
+test('worktree-only plugin bootstraps: discovered via fallback, enable defaults activeVersion', async () => {
+  const env = await makePluginRoot();
+  try {
+    await env.addProject('wtonly'); // main checkout: no manifest at all
+    await fabricateWorktree(env, 'wtonly', 'wtonly_worktree_b');
+    await fabricateWorktree(env, 'wtonly', 'wtonly_worktree_a'); // sorted first — deterministic pick
+    const host = createPluginHost();
+    const row = (await host.list()).find(r => r.id === 'fake-plugin');
+    assert.ok(row, 'discovered from the worktree checkout');
+    assert.equal(row.project, 'wtonly');
+    assert.equal(row.state, 'discovered');
+    assert.deepEqual(row.manifestSource, { type: 'worktree', name: 'wtonly_worktree_a' });
+
+    const en = await host.enable('fake-plugin');
+    assert.deepEqual(en.activeVersion, { type: 'worktree', name: 'wtonly_worktree_a' },
+      'first start must run from the checkout that actually has the manifest');
+  } finally {
+    await env.restore();
+  }
+});
+
+test('a main-checkout manifest always wins over worktree manifests', async () => {
+  const env = await makePluginRoot();
+  try {
+    await env.addPluginProject('both'); // main manifest present (id fake-plugin)
+    await fabricateWorktree(env, 'both', 'both_worktree_a', {
+      manifest: { id: 'other-id', name: 'Other', version: '1', pluginApi: 1 },
+    });
+    const host = createPluginHost();
+    const rows = await host.list();
+    const row = rows.find(r => r.project === 'both');
+    assert.equal(row.id, 'fake-plugin');
+    assert.deepEqual(row.manifestSource, { type: 'main' });
+    assert.ok(!rows.some(r => r.id === 'other-id'), 'worktree manifest ignored when main has one');
+  } finally {
+    await env.restore();
+  }
+});
+
+test('an invalid main manifest is never masked by a valid worktree one', async () => {
+  const env = await makePluginRoot();
+  try {
+    await env.addPluginProject('brokenmain', { manifest: { id: 'brokenmain', pluginApi: 1 } }); // invalid: no name/version
+    await fabricateWorktree(env, 'brokenmain', 'brokenmain_worktree_a');
+    const host = createPluginHost();
+    const rows = await host.list();
+    const row = rows.find(r => r.project === 'brokenmain');
+    assert.equal(row.state, 'invalid');
+    assert.deepEqual(row.manifestSource, { type: 'main' });
+    assert.ok(!rows.some(r => r.project === 'brokenmain' && r.state === 'discovered'),
+      'no shadow ok-entry from the worktree');
+  } finally {
     await env.restore();
   }
 });

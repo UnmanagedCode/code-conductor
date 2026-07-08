@@ -124,6 +124,10 @@ async function readMeta(project, worktreeName) {
   catch (e) { if (e.code === 'ENOENT') return null; throw e; }
   try { return JSON.parse(text); } catch { return null; }
 }
+// Store-only read (no `git worktree list` verification) — for scans that
+// must stay cheap across many projects (plugin manifest discovery). A stale
+// entry's worktreePath simply won't resolve for the caller.
+export { readMeta as readWorktreeMeta };
 
 // Cap on hook output kept in memory — tail of this many bytes is retained.
 // Chatty scripts (npm ci, etc.) can emit MBs; keep only the tail so the

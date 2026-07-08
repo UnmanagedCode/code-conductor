@@ -1,7 +1,7 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import {
-  projectsRoot, orchStoreRoot, writeFileAtomic, listProjects,
+  projectsRoot, orchStoreRoot, writeFileAtomic, listProjects, projectStoreDir,
   readProjectMeta, writeProjectMeta, addWorkspace,
 } from '../projects.js';
 import { readManifest } from './manifest.js';
@@ -113,19 +113,28 @@ export function createPluginHost({
     const projects = await listProjects();
     const found = [];
     for (const p of projects) {
-      const result = await readManifest(p.path);
+      let result = await readManifest(p.path);
+      let manifestSource = { type: 'main' };
+      // Bootstrap fallback: a project whose main checkout has NO manifest
+      // file at all may still be a plugin-in-progress living in an unmerged
+      // worktree (first-time plugin-ification). A present-but-invalid main
+      // manifest keeps its `invalid` state — never masked by a worktree.
+      if (result === null) {
+        const fallback = await worktreeManifestFallback(p.name);
+        if (fallback) ({ result, manifestSource } = fallback);
+      }
       if (result === null) continue;
-      found.push({ project: p.name, dir: p.path, result });
+      found.push({ project: p.name, dir: p.path, result, manifestSource });
     }
     // Deterministic conflict resolution: first alphabetical project wins.
     found.sort((a, b) => a.project.localeCompare(b.project));
     const next = [];
     const nextById = new Map();
     for (const f of found) {
-      const { result } = f;
+      const { result, manifestSource } = f;
       if (result.errors) {
         next.push({
-          id: result.id ?? null, project: f.project, dir: f.dir, manifest: null,
+          id: result.id ?? null, project: f.project, dir: f.dir, manifest: null, manifestSource,
           discoveryState: result.incompatible ? 'incompatible' : 'invalid',
           errors: result.errors,
         });
@@ -133,15 +142,37 @@ export function createPluginHost({
       }
       const m = result.manifest;
       if (nextById.has(m.id)) {
-        next.push({ id: m.id, project: f.project, dir: f.dir, manifest: m, discoveryState: 'conflict', errors: [`duplicate id '${m.id}' — already provided by project '${nextById.get(m.id).project}'`] });
+        next.push({ id: m.id, project: f.project, dir: f.dir, manifest: m, manifestSource, discoveryState: 'conflict', errors: [`duplicate id '${m.id}' — already provided by project '${nextById.get(m.id).project}'`] });
         continue;
       }
-      const entry = { id: m.id, project: f.project, dir: f.dir, manifest: m, discoveryState: 'ok', errors: [] };
+      const entry = { id: m.id, project: f.project, dir: f.dir, manifest: m, manifestSource, discoveryState: 'ok', errors: [] };
       next.push(entry);
       nextById.set(m.id, entry);
     }
     entries = next;
     byId = nextById;
+  }
+
+  // First VALID manifest among the project's worktrees, in sorted-name order.
+  // Reads the worktree store metadata directly (no git spawns — this runs
+  // for every manifest-less project on every rescan); a stale entry's
+  // worktreePath has no manifest and is skipped.
+  async function worktreeManifestFallback(projectName) {
+    const wtDir = path.join(projectStoreDir(projectName), 'worktrees');
+    let names;
+    try { names = (await fs.readdir(wtDir)).sort((a, b) => a.localeCompare(b)); }
+    catch (e) { if (e.code === 'ENOENT') return null; throw e; }
+    if (names.length === 0) return null;
+    const { readWorktreeMeta } = await import('../worktrees.js');
+    for (const name of names) {
+      const meta = await readWorktreeMeta(projectName, name).catch(() => null);
+      if (!meta?.worktreePath) continue;
+      const result = await readManifest(meta.worktreePath);
+      if (result && !result.errors) {
+        return { result, manifestSource: { type: 'worktree', name } };
+      }
+    }
+    return null;
   }
 
   // Adopt-don't-drain: a recorded child whose pid is alive and answering on
@@ -235,10 +266,16 @@ export function createPluginHost({
     await ensureInit();
     const entry = requireEntry(id);
     const prev = persisted.plugins[id];
+    // A worktree-sourced plugin (manifest only in an unmerged worktree)
+    // must default its active version to that worktree — the main checkout
+    // has nothing to start.
+    const defaultVersion = entry.manifestSource?.type === 'worktree'
+      ? { type: 'worktree', name: entry.manifestSource.name }
+      : { type: 'main' };
     persisted.plugins[id] = {
       project: entry.project,
       enabled: true,
-      activeVersion: prev?.activeVersion ?? { type: 'main' },
+      activeVersion: prev?.activeVersion ?? defaultVersion,
     };
     await saveRegistry();
     // Manual re-enable is the recovery path out of `failed`.
@@ -394,6 +431,7 @@ export function createPluginHost({
       state,
       enabled: reg?.enabled === true,
       activeVersion: reg?.activeVersion ?? { type: 'main' },
+      manifestSource: entry.manifestSource ?? { type: 'main' },
       hasFrontend: !!entry.manifest?.frontend,
       navLabel: entry.manifest?.frontend?.navLabel ?? null,
       frontendPath: entry.manifest?.frontend?.path ?? null,
@@ -461,6 +499,13 @@ export function createPluginHost({
     if (!persisted.plugins[id]) throw httpError(409, `plugin '${id}' has no registry entry — enable it first`);
     let next;
     if (v?.type === 'main') {
+      // Same pre-validation as the worktree target: the main checkout must
+      // actually BE this plugin (a worktree-sourced plugin's main checkout
+      // has no manifest until the worktree lands).
+      const result = await readManifest(entry.dir);
+      if (!result) throw httpError(400, `the main checkout of '${entry.project}' has no conductor.plugin.json`);
+      if (result.errors) throw httpError(400, `manifest in the main checkout is invalid: ${result.errors.join('; ')}`);
+      if (result.manifest.id !== id) throw httpError(400, `manifest id '${result.manifest.id}' in the main checkout does not match plugin '${id}'`);
       next = { type: 'main' };
     } else if (v?.type === 'worktree') {
       if (typeof v.name !== 'string' || v.name === '') throw httpError(400, "worktree version requires a 'name'");

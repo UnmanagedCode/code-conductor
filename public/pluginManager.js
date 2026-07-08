@@ -98,6 +98,9 @@ export function installPluginManager({ onCatalogChange } = {}) {
       } else if ((row.activeVersion?.type ?? 'main') === 'worktree') {
         bits.push(`version ${versionLabel(row)}`);
       }
+      if (row.manifestSource?.type === 'worktree') {
+        bits.push(`manifest from worktree ${row.manifestSource.name}`);
+      }
       meta.textContent = bits.join(' · ');
       li.appendChild(meta);
 

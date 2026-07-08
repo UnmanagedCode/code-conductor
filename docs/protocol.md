@@ -221,6 +221,8 @@ Unknown top-level keys are rejected. Every `inputSchema` must stay inside the co
 
 Child env: `$PORT` (conductor-allocated; default your own port when absent so the plugin stays standalone-runnable), `CONDUCTOR_PLUGIN_ID`, `CONDUCTOR_URL` (`http://127.0.0.1:<conductor-port>`). No fixed-port option in v1.
 
+**Discovery rules.** The manifest is read from each project's main checkout. When the main checkout has **no manifest file at all**, the project's worktrees (sorted by name) are checked and the first **valid** manifest wins — so a plugin whose manifest exists only in an unmerged worktree (first-time plugin-ification) can bootstrap. Rows carry `manifestSource: {type:"main"} | {type:"worktree", name}`; enabling a worktree-sourced plugin defaults `activeVersion` to that worktree. A present-but-invalid main manifest keeps its `invalid` state (never masked by a worktree), and `POST /api/plugins/:id/version {type:"main"}` is refused with 400 while the main checkout lacks a valid matching manifest.
+
 ### Reverse proxy — `/plugins/<id>/*`
 
 - `/plugins/<id>/foo?q=1` → child `/foo?q=1` (prefix strip). Injected headers: `X-Forwarded-Prefix: /plugins/<id>`, `X-Forwarded-Host`, `X-Forwarded-Proto`, `X-Forwarded-For`.
@@ -244,7 +246,7 @@ Inside the iframe the bridge patches `history.pushState` → `replaceState`, so 
 
 | Method + path | Meaning |
 |---|---|
-| `GET /api/plugins` | merged discovery+registry+runtime rows: `{id, name, project, version, state, enabled, activeVersion, hasFrontend, navLabel, frontendPath, hasMcp, port, pid, startedAt, gitHead, errors, crashTail}` |
+| `GET /api/plugins` | merged discovery+registry+runtime rows: `{id, name, project, version, state, enabled, activeVersion, manifestSource, hasFrontend, navLabel, frontendPath, hasMcp, port, pid, startedAt, gitHead, errors, crashTail}` |
 | `POST /api/plugins/rescan` | re-scan the projects root; returns the list |
 | `POST /api/plugins/:id/enable` | record + enable (first enable auto-assigns an unassigned project to workspace `CC-Dev`); recovery path out of `failed` |
 | `POST /api/plugins/:id/disable` | stop the child + disable |
