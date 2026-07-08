@@ -363,8 +363,8 @@ export function buildRoutes({ instances, serverCtx } = {}) {
     try {
       const proj = await getProject(req.params.name);
       const tempSids = instances ? instances.tempSessionIdsForCwd(proj.path) : null;
-      const sessions = await listSessionsForCwd(proj.path, tempSids);
-      res.json(req.query.includeArchived ? sessions : sessions.filter(s => !s.archived));
+      const sessions = await listSessionsForCwd(proj.path, tempSids, { includeArchived: !!req.query.includeArchived });
+      res.json(sessions);
     } catch (e) { next(e); }
   });
 
@@ -516,8 +516,8 @@ export function buildRoutes({ instances, serverCtx } = {}) {
       const wt = await getWorktree(req.params.name, req.params.wt);
       if (!wt) throw Object.assign(new Error('worktree not found'), { statusCode: 404 });
       const tempSids = instances ? instances.tempSessionIdsForCwd(wt.worktreePath) : null;
-      const wtSessions = await listSessionsForCwd(wt.worktreePath, tempSids);
-      res.json(req.query.includeArchived ? wtSessions : wtSessions.filter(s => !s.archived));
+      const wtSessions = await listSessionsForCwd(wt.worktreePath, tempSids, { includeArchived: !!req.query.includeArchived });
+      res.json(wtSessions);
     } catch (e) { next(e); }
   });
 

@@ -421,7 +421,7 @@ async function readFirstPrompt(jsonlPath) {
   }
 }
 
-export async function listSessionsForCwd(absCwd, excludeSessionIds = null) {
+export async function listSessionsForCwd(absCwd, excludeSessionIds = null, { includeArchived = true } = {}) {
   const encoded = encodeCwd(absCwd);
   const dir = path.join(claudeProjectsRoot(), encoded);
   let entries;
@@ -440,6 +440,7 @@ export async function listSessionsForCwd(absCwd, excludeSessionIds = null) {
     if (!name.endsWith('.jsonl')) continue;
     const sid = name.replace(/\.jsonl$/, '');
     if (excludeSessionIds && excludeSessionIds.has(sid)) continue;
+    if (!includeArchived && archived.has(sid)) continue;
     const full = path.join(dir, name);
     let stat;
     try { stat = await fs.stat(full); } catch { continue; }
