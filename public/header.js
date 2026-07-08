@@ -218,7 +218,14 @@ export function installHeader({
     const node = buildModelPopover(inst);
     document.body.appendChild(node);
     const r = anchor.getBoundingClientRect();
-    node.style.top = `${Math.round(r.top - node.offsetHeight - 6)}px`;
+    // Anchor (⋮ trigger) sits near the top of the viewport, so open below by
+    // default; flip above only if there's no room below but room above.
+    let top = r.bottom + 6;
+    if (top + node.offsetHeight > window.innerHeight && r.top - node.offsetHeight - 6 >= 0) {
+      top = r.top - node.offsetHeight - 6;
+    }
+    top = Math.max(8, Math.min(top, window.innerHeight - node.offsetHeight - 8));
+    node.style.top = `${Math.round(top)}px`;
     const desiredLeft = r.right - node.offsetWidth;
     const maxLeft = window.innerWidth - node.offsetWidth - 8;
     node.style.left = `${Math.max(8, Math.min(desiredLeft, maxLeft))}px`;
