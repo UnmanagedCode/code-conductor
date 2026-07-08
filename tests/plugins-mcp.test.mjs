@@ -56,9 +56,10 @@ async function spawnWorker(boot, body) {
   return waitFor(() => boot.instances.get(r.body.id)?.sessionId);
 }
 
-test('scoping: conductor sees all; project callers see their project + globals', async () => {
+test('visibility: every enabled plugin\'s tools are global — conductor, any-project workers, stale callers', async () => {
   const boot = await setup();
   try {
+    // A manifest `scope` field is accepted (compat) but inert.
     await addPlugin(boot, 'globalplug', { id: 'globalplug', name: 'Global', mcp: { scope: 'global' } });
     await fs.mkdir(path.join(boot.projectsRoot, 'other'), { recursive: true });
 
@@ -69,26 +70,29 @@ test('scoping: conductor sees all; project callers see their project + globals',
     assert.ok(all.includes('globalplug__echo'));
     assert.ok(all.includes('list_instances'), 'core tools still present');
 
-    // Worker in the plugin's own project: project-scoped + global tools.
+    // Worker in the plugin's own project: everything.
     const inPlug = await spawnWorker(boot, { project: 'fakeplug' });
     const plugTools = await listToolNames(boot.baseUrl, inPlug);
     assert.ok(plugTools.includes('fake-plugin__echo'));
     assert.ok(plugTools.includes('globalplug__echo'));
 
-    // Worker in an unrelated project: global tools only.
+    // Worker in an unrelated project: ALSO everything — plugin tools are
+    // globally visible, not gated to the plugin's project.
     const inOther = await spawnWorker(boot, { project: 'other' });
     const otherTools = await listToolNames(boot.baseUrl, inOther);
-    assert.ok(!otherTools.includes('fake-plugin__echo'), 'project-scoped tool hidden');
+    assert.ok(otherTools.includes('fake-plugin__echo'), 'plugin tool visible from any project');
     assert.ok(otherTools.includes('globalplug__echo'));
 
-    // Scoped-out call = unknown tool (same predicate gates tools/call).
-    const denied = await callTool(boot.baseUrl, 'fake-plugin__echo', { message: 'hi' }, inOther);
-    assert.equal(denied.isError, true);
-    assert.match(denied.content[0].text, /unknown tool/);
+    // ...and callable, with the caller attributed on the forward.
+    const r = await callTool(boot.baseUrl, 'fake-plugin__echo', { message: 'hi' }, inOther);
+    assert.ok(!r.isError, JSON.stringify(r));
+    const payload = JSON.parse(r.content[0].text);
+    assert.equal(payload.message, 'hi');
+    assert.deepEqual(payload.caller, { sessionId: inOther, project: 'other' });
 
-    // Unresolvable caller: only global tools.
+    // Unresolvable caller (stale ?caller=): still everything.
     const stale = await listToolNames(boot.baseUrl, 'not-a-live-session');
-    assert.ok(!stale.includes('fake-plugin__echo'));
+    assert.ok(stale.includes('fake-plugin__echo'));
     assert.ok(stale.includes('globalplug__echo'));
 
     // Disabling removes the tools for new lists.

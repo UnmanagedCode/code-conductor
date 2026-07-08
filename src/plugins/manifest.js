@@ -153,6 +153,8 @@ function validateMcp(m, backend, errors) {
   if (typeof m.endpoint !== 'string' || !m.endpoint.startsWith('/')) {
     errors.push("'mcp.endpoint' is required and must be a path starting with '/'");
   }
+  // `scope` is accepted for manifest compatibility but INERT — plugin MCP
+  // tools are always visible to every caller (see mcpBridge.js).
   if (m.scope !== undefined && !['project', 'global'].includes(m.scope)) {
     errors.push("'mcp.scope' must be 'project' or 'global'");
   }

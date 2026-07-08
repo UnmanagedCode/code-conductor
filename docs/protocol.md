@@ -209,7 +209,7 @@ Note: the REST endpoints above keep their own `worktreeName` field — they are 
   },
   "mcp": {                      // OPTIONAL, requires backend
     "endpoint": "/api/mcp",     // single POST endpoint on the child
-    "scope": "project",         // "project" (default) | "global"
+    "scope": "project",         // accepted ("project" | "global") but INERT — tools are always globally visible
     "timeoutMs": 30000,         // per-call cap, clamped to 120000
     "tools": [{ "name": "...", "description": "...", "inputSchema": { "type": "object", ... } }]
   }
@@ -259,7 +259,7 @@ Errors: `{error}` JSON with 400/404/409/502/503 per the registry rules above.
 
 ### Plugin MCP forwarding — child wire contract (pinned)
 
-The conductor POSTs `{tool, arguments, caller:{sessionId, project}}` (JSON) to the manifest `mcp.endpoint`. The child returns **HTTP 200 for EVERY well-formed tool invocation** with body `{result: <any JSON>}` or `{error: "<message>"}` — unknown tool, bad arguments and tool-level failures are all `200 + {error}`. A **non-200 means a transport-level failure only** (malformed envelope, plugin bug) and surfaces to the MCP client as an HTTP-coded error; `200 + {error}` surfaces as a plain tool error. Calls are aborted at `mcp.timeoutMs`. Tool names are namespaced `<plugin-id>__<tool>`; argument validation against the declared `inputSchema` happens in the conductor **before** any forward.
+The conductor POSTs `{tool, arguments, caller:{sessionId, project}}` (JSON) to the manifest `mcp.endpoint`. The child returns **HTTP 200 for EVERY well-formed tool invocation** with body `{result: <any JSON>}` or `{error: "<message>"}` — unknown tool, bad arguments and tool-level failures are all `200 + {error}`. A **non-200 means a transport-level failure only** (malformed envelope, plugin bug) and surfaces to the MCP client as an HTTP-coded error; `200 + {error}` surfaces as a plain tool error. Calls are aborted at `mcp.timeoutMs`. Tool names are namespaced `<plugin-id>__<tool>`; argument validation against the declared `inputSchema` happens in the conductor **before** any forward. Visibility: every enabled plugin's tools are offered to **every** MCP caller — the conductor UI and workers in any project (`scope` is inert); a disabled plugin's tools are absent, so calling one refuses as an unknown tool.
 
 ### Plugin-compliance checklist
 

@@ -2,8 +2,9 @@
 // into entries shaped exactly like the core tools in src/mcp/tools.js
 // (`{name, description, inputSchema, handler}`), namespaced
 // `<plugin-id>__<tool>`. The MCP server composes them per request via
-// pluginHost.toolsFor(callerId); scoped-out tools are simply absent, so
-// tools/call refuses them as unknown with zero extra code.
+// pluginHost.toolsFor(callerId); tools of every enabled plugin are visible
+// to every caller (disabled plugins' tools are simply absent, so tools/call
+// refuses them as unknown with zero extra code).
 //
 // Wire contract with the child (pinned): POST <endpoint> with
 // {tool, arguments, caller:{sessionId, project}} → HTTP 200 for EVERY
@@ -15,23 +16,22 @@
 
 export function createMcpBridge({ instances, listMcpPlugins, ensureStarted, portFor, reportUpstreamFailure }) {
   // callerId → project of the live/known session, or undefined when the
-  // caller can't be resolved (stale ?caller= — sees only global tools).
+  // caller can't be resolved (stale ?caller=). Used only to attribute the
+  // forwarded call — never for visibility.
   function callerProject(callerId) {
     return instances?.anyForSession?.(callerId)?.project;
   }
 
-  // Visibility predicate (same rule gates list and call, by construction):
-  // callerId null (conductor/UI) sees everything; scope:'global' widens to
-  // every caller; default 'project' scope requires the caller's project —
-  // for a worktree worker, Instance.project is already the parent project.
-  function toolsFor(callerId) {
-    const conductor = callerId == null;
-    const project = conductor ? null : callerProject(callerId);
+  // Every enabled plugin's tools are visible to EVERY caller — the
+  // conductor/UI and workers in any project. (v1 shipped per-project
+  // scoping; live validation showed plugin tools are wanted everywhere, so
+  // the manifest `scope` field is accepted but inert.) The callerId param
+  // stays in the signature — it's the registry's stable surface and keeps
+  // the per-request composition site in mcp/server.js unchanged.
+  function toolsFor(_callerId) {
     const out = [];
     for (const entry of listMcpPlugins()) {
-      const mcp = entry.manifest.mcp;
-      if (!conductor && mcp.scope !== 'global' && entry.project !== project) continue;
-      for (const t of mcp.tools) {
+      for (const t of entry.manifest.mcp.tools) {
         out.push({
           name: `${entry.id}__${t.name}`,
           description: t.description,
