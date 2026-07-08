@@ -381,6 +381,7 @@ export function installHeader({
       dom.killBtn.textContent = 'Interrupt';
       dom.killBtn.disabled = true;
       dom.resumeBtn.hidden = true;
+      dom.overflowMenu.hidden = true;
       composer.disable();
       dom.composerInput.placeholder = 'select or spawn an instance to start chatting';
       dom.turnIndicator.hidden = true;
@@ -476,10 +477,7 @@ export function installHeader({
     dom.renameSessionBtn.disabled = !canMenu || !inst.sessionId;
     dom.changeModelBtn.hidden = !canMenu;
     dom.changeModelBtn.disabled = !canMenu || !inst.sessionId;
-    const curFamily = familyOf(inst.model);
-    dom.changeModelBtn.textContent = curFamily
-      ? `🧠 Change model (${curFamily[0].toUpperCase()}${curFamily.slice(1)})`
-      : '🧠 Change model';
+    dom.changeModelBtn.textContent = '🧠 Change model';
     // Auto-approve only applies to plan mode (it short-circuits the
     // ExitPlanMode confirmation card). Hide it in code/ask mode so the
     // controls row stays uncluttered.
