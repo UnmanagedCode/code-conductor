@@ -251,6 +251,41 @@ test('mode switch via WS updates instance.mode and acks', async () => {
   } finally { await close(); }
 });
 
+test('model switch via WS updates instance.model and acks', async () => {
+  const { baseUrl, wsUrl, instances, close } = await setup();
+  try {
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'a', mode: 'bypassPermissions' });
+    const id = r.body.id;
+    await waitFor(() => instances.get(id).sessionId);
+
+    const c = await wsClient(wsUrl);
+    c.send({ t: 'subscribe', id });
+    await c.wait(m => m.t === 'snapshot');
+    c.send({ t: 'model', id, model: 'claude-sonnet-5[1m]', reqId: 'm1' });
+    const ack = await c.wait(m => m.t === 'ack' && m.reqId === 'm1');
+    assert.equal(ack.ok, true);
+    assert.equal(instances.get(id).model, 'claude-sonnet-5[1m]');
+    await c.close();
+  } finally { await close(); }
+});
+
+test('model switch via WS with an unknown model acks false', async () => {
+  const { baseUrl, wsUrl, instances, close } = await setup();
+  try {
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'a', mode: 'bypassPermissions' });
+    const id = r.body.id;
+    await waitFor(() => instances.get(id).sessionId);
+
+    const c = await wsClient(wsUrl);
+    c.send({ t: 'subscribe', id });
+    await c.wait(m => m.t === 'snapshot');
+    c.send({ t: 'model', id, model: 'not-a-model', reqId: 'm2' });
+    const ack = await c.wait(m => m.t === 'ack' && m.reqId === 'm2');
+    assert.equal(ack.ok, false);
+    await c.close();
+  } finally { await close(); }
+});
+
 test('turn_notification is broadcast to every connected client (not just subscribers)', async () => {
   // Background instances should still ping the user (via the
   // turn_notification channel) even if the foreground tab is subscribed to a

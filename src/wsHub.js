@@ -197,6 +197,12 @@ export function attachWsHub({ wss, instances }) {
             reply(true);
             return;
           }
+          case 'model': {
+            if (!inst) { reply(false, 'unknown instance'); return; }
+            await inst.setModel(String(msg.model));
+            reply(true);
+            return;
+          }
           case 'interrupt': {
             if (!inst) { reply(false, 'unknown instance'); return; }
             await inst.interrupt({ force: !!msg.force });

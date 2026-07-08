@@ -149,6 +149,7 @@ const dom = {
   summarizeSessionBtn: document.getElementById('summarize-session-btn'),
   summaryDialog: document.getElementById('summary-dialog'),
   renameSessionBtn: document.getElementById('rename-session-btn'),
+  changeModelBtn: document.getElementById('change-model-btn'),
   autoApprovePlanBtn: document.getElementById('auto-approve-plan-btn'),
   overflowMenu: document.getElementById('overflow-menu'),
   overflowToggle: document.getElementById('overflow-toggle'),

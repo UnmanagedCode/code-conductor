@@ -200,6 +200,7 @@ export function installWsRouter({
     if (inst) {
       inst.status = m.status;
       inst.mode = m.mode;
+      inst.model = m.model;
       inst.sessionId = m.sessionId;
       if (typeof m.autoApprovePlan === 'boolean') inst.autoApprovePlan = m.autoApprovePlan;
       inst.interrupting = !!m.interrupting;

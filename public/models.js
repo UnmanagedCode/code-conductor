@@ -43,6 +43,18 @@ export function getFamilyList() {
   return familyList;
 }
 
+// Infer the family from a bare or suffixed model id, by prefix. Mirrors
+// familyOf() in src/modelVersions.js — duplicated client-side since the
+// client only ever receives the catalog data, not the server module itself.
+export function familyOf(modelId) {
+  if (typeof modelId !== 'string') return null;
+  if (modelId.startsWith('claude-fable')) return 'fable';
+  if (modelId.startsWith('claude-opus')) return 'opus';
+  if (modelId.startsWith('claude-sonnet')) return 'sonnet';
+  if (modelId.startsWith('claude-haiku')) return 'haiku';
+  return null;
+}
+
 export function setActiveVersions(map) {
   activeVersions = { ...DEFAULT_VERSIONS, ...(map || {}) };
   return activeVersions;

@@ -154,6 +154,40 @@ test('setMode writes control_request and resolves on control_response', async ()
   }
 });
 
+test('setModel writes control_request and resolves on control_response', async () => {
+  await setupWithProject();
+  const transcriptPath = path.join(home, 'transcript.log');
+  process.env.FAKE_CLAUDE_TRANSCRIPT = transcriptPath;
+  try {
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', mode: 'bypassPermissions' });
+    const id = r.body.id;
+    const inst = instances.get(id);
+    await waitFor(() => inst.status === 'idle' && inst.sessionId);
+
+    await inst.setModel('claude-opus-4-8');
+    assert.equal(inst.model, 'claude-opus-4-8');
+
+    const lines = (await fs.readFile(transcriptPath, 'utf8')).trim().split('\n').filter(Boolean);
+    const parsed = lines.map(l => JSON.parse(l));
+    const modelReq = parsed.find(p => p.type === 'control_request' && p.request?.subtype === 'set_model');
+    assert.ok(modelReq, 'control_request written to fake-claude stdin');
+    assert.equal(modelReq.request.model, 'claude-opus-4-8');
+    assert.ok(modelReq.request_id, 'request_id present');
+  } finally {
+    delete process.env.FAKE_CLAUDE_TRANSCRIPT;
+  }
+});
+
+test('setModel rejects an unknown model without contacting the CLI', async () => {
+  await setupWithProject();
+  const r = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', mode: 'bypassPermissions' });
+  const id = r.body.id;
+  const inst = instances.get(id);
+  await waitFor(() => inst.status === 'idle' && inst.sessionId);
+
+  await assert.rejects(() => inst.setModel('not-a-model'), /invalid model/);
+});
+
 test('forced interrupt (force:true) mid-turn emits turn_end and returns to idle', async () => {
   await setupWithProject();
   const events = collectEvents(instances);

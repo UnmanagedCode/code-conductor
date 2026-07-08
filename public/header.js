@@ -42,6 +42,8 @@ import {
 } from './usage.js';
 import { makeDismissable } from './dismissable.js';
 import { formatAgo } from './sidebar.js';
+import { send } from './ws.js';
+import { resolveSpawnModel, getFamilyList, getActiveFamilyEnabled, familyOf } from './models.js';
 
 // Combined popover: "Session totals" section above, "Usage limits" section
 // below. ctx data is per-session; usage-limit data is account-wide.
@@ -67,6 +69,8 @@ export function installHeader({
   closeOverflow,
 }) {
   let openCombinedPopover = null;
+  let openModelPopover = null;
+  let currentInst = null;
 
   function closeCombinedPopover() {
     if (!openCombinedPopover) return;
@@ -188,6 +192,89 @@ export function installHeader({
     return node;
   }
 
+  // "Change model" popover: a family picker anchored off the ⋮ trigger,
+  // reusing the exact catalog + markup the spawn dialog uses (getFamilyList,
+  // getActiveFamilyEnabled, resolveSpawnModel, .quick-spawn-models/.qs-model)
+  // so switching a live session's model stays visually consistent with
+  // spawning one. Selecting a family sends a live control_request over WS
+  // (subtype:set_model, via Instance.setModel) — no optimistic mutation of
+  // inst.model here; the status broadcast (wsRouter.js) is what actually
+  // flips it once the CLI acks.
+  function closeModelPopover() {
+    if (!openModelPopover) return;
+    const { node, anchor, ctl } = openModelPopover;
+    node.remove();
+    anchor.setAttribute('aria-expanded', 'false');
+    ctl.disarm();
+    openModelPopover = null;
+  }
+
+  function toggleModelPopover(anchor, inst) {
+    if (openModelPopover && openModelPopover.anchor === anchor) {
+      closeModelPopover();
+      return;
+    }
+    closeModelPopover();
+    const node = buildModelPopover(inst);
+    document.body.appendChild(node);
+    const r = anchor.getBoundingClientRect();
+    node.style.top = `${Math.round(r.top - node.offsetHeight - 6)}px`;
+    const desiredLeft = r.right - node.offsetWidth;
+    const maxLeft = window.innerWidth - node.offsetWidth - 8;
+    node.style.left = `${Math.max(8, Math.min(desiredLeft, maxLeft))}px`;
+    anchor.setAttribute('aria-expanded', 'true');
+    const ctl = makeDismissable({
+      isInside: (t) => node.contains(t) || anchor.contains(t),
+      onDismiss: () => closeModelPopover(),
+    });
+    ctl.arm();
+    openModelPopover = { node, anchor, ctl };
+  }
+
+  function buildModelPopover(inst) {
+    const node = document.createElement('div');
+    node.className = 'ih-usage-popover';
+    node.setAttribute('role', 'dialog');
+    node.setAttribute('aria-label', 'Change model');
+
+    const header = document.createElement('div');
+    header.className = 'ih-usage-popover-header';
+    header.textContent = 'Change model';
+    node.appendChild(header);
+
+    const curFamily = familyOf(inst.model);
+    const row = document.createElement('div');
+    row.className = 'quick-spawn-models';
+    for (const family of getFamilyList()) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'qs-model';
+      btn.dataset.family = family;
+      btn.hidden = !getActiveFamilyEnabled(family);
+      btn.classList.toggle('qs-selected', family === curFamily);
+      btn.textContent = family[0].toUpperCase() + family.slice(1);
+      btn.addEventListener('click', async () => {
+        const model = resolveSpawnModel(family);
+        try {
+          await send('model', { id: inst.id, model }, { ack: true });
+          closeModelPopover();
+          closeOverflow();
+        } catch (e) {
+          alert('Change model failed: ' + e.message);
+        }
+      });
+      row.appendChild(btn);
+    }
+    node.appendChild(row);
+
+    return node;
+  }
+
+  dom.changeModelBtn.addEventListener('click', () => {
+    closeOverflow();
+    if (currentInst) toggleModelPopover(dom.overflowToggle, currentInst);
+  });
+
   // Combined ctx + rl chip. ctx half is per-session; rl half reads from
   // globalRLTracker (account-wide) with accountUsage as a fallback source.
   // Color-graded by the worse of the two fractions so a near-limit rate-limit
@@ -284,8 +371,10 @@ export function installHeader({
     // the existing chip nodes. Close any open popover first so it's not
     // left hanging off a detached anchor.
     closeCombinedPopover();
+    closeModelPopover();
     closeOverflow();
     const inst = getInstances().find(i => i.id === getActiveId());
+    currentInst = inst ?? null;
     if (!inst) {
       dom.instanceTitle.textContent = 'no instance selected';
       dom.modeSelect.disabled = true;
@@ -385,6 +474,12 @@ export function installHeader({
     dom.debugBtn.hidden = !canMenu;
     dom.renameSessionBtn.hidden = !canMenu;
     dom.renameSessionBtn.disabled = !canMenu || !inst.sessionId;
+    dom.changeModelBtn.hidden = !canMenu;
+    dom.changeModelBtn.disabled = !canMenu || !inst.sessionId;
+    const curFamily = familyOf(inst.model);
+    dom.changeModelBtn.textContent = curFamily
+      ? `🧠 Change model (${curFamily[0].toUpperCase()}${curFamily.slice(1)})`
+      : '🧠 Change model';
     // Auto-approve only applies to plan mode (it short-circuits the
     // ExitPlanMode confirmation card). Hide it in code/ask mode so the
     // controls row stays uncluttered.
