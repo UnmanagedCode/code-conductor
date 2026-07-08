@@ -258,6 +258,11 @@ export class Instance extends EventEmitter {
     this.sessionId = null;
     this.pid = null;
     this.status = 'idle';
+    // Wall-clock time of the most recent turn_end (i.e. the last completed
+    // assistant response), stamped in _handleStdoutLine. Null until the
+    // first turn completes. Surfaced in summary() for the messages view's
+    // live "time since last response" indicator.
+    this.lastResponseAt = null;
     this.proc = null;
     this.parser = new Parser();
     this.ring = new EventLog();
@@ -397,6 +402,7 @@ export class Instance extends EventEmitter {
       debugDir: this.debugDir,
       firstPrompt: this.firstPrompt,
       title: this.title,
+      lastResponseAt: this.lastResponseAt,
       autoApprovePlan: this.autoApprovePlan,
       interrupting: this.interrupting,
       autoResumeAt: this.autoResumeAt,
@@ -863,6 +869,7 @@ export class Instance extends EventEmitter {
         }
       }
       if (ev.kind === 'turn_end') {
+        this.lastResponseAt = Date.now();
         this._setStatus('idle');
         this._writeSessionMetadata().catch(() => {});
       }

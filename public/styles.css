@@ -1278,6 +1278,8 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
   animation: pulse 1s infinite alternate;
   align-self: center;
 }
+.turn-indicator .ti-dot[hidden] { display: none; }
+.turn-indicator .ti-ellipsis[hidden] { display: none; }
 .turn-indicator .ti-ellipsis span {
   display: inline-block;
   animation: ti-blink 1.2s infinite both;

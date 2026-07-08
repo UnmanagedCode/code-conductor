@@ -100,7 +100,9 @@ const dom = {
   subagentPanel: document.getElementById('subagent-panel'),
   turnIndicator: document.getElementById('turn-indicator'),
   tiLeft: document.getElementById('ti-left'),
+  tiDot: document.getElementById('ti-dot'),
   tiLabel: document.getElementById('ti-label'),
+  tiEllipsis: document.getElementById('ti-ellipsis'),
   tiInterruptNow: document.getElementById('ti-interrupt-now'),
   tiUsageSlot: document.getElementById('ti-usage-slot'),
   newProjectBtn: document.getElementById('new-project-btn'),
@@ -1005,3 +1007,8 @@ connect();
 
 refreshAccountUsage();
 setInterval(refreshAccountUsage, 180_000);
+
+// Keep the turn-indicator's idle "last response Xm ago" label ticking
+// without a network round-trip or a full header rebuild (tickIdleAgo is a
+// no-op mid-turn and while no instance is active).
+setInterval(() => headerHandle.tickIdleAgo(), 15_000);

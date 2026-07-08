@@ -12,8 +12,11 @@
 //
 // The combined chip + popover builders have NO external callers — they are
 // reached only from inside update()'s render flow (the chip's click handler
-// cascades into toggle → build → close). So this module exposes a single
-// external handle: `update`.
+// cascades into toggle → build → close). This module exposes two external
+// handles: `update` (full rebuild) and `tickIdleAgo` (a cheap idle-only
+// refresh of the turn-indicator's "last response Xm ago" label, called on
+// a timer from app.js so it doesn't re-run update()'s popover-closing side
+// effects every tick).
 //
 // Injected interface:
 //   - dom:               the live dom singleton (header reads ~16 elements off it).
@@ -38,6 +41,7 @@ import {
   fillClass, formatResetTime, formatAutoResumeTime, rlChipSegment,
 } from './usage.js';
 import { makeDismissable } from './dismissable.js';
+import { formatAgo } from './sidebar.js';
 
 // Combined popover: "Session totals" section above, "Usage limits" section
 // below. ctx data is per-session; usage-limit data is account-wide.
@@ -239,6 +243,42 @@ export function installHeader({
     return el;
   }
 
+  // The turn-indicator's left slot doubles as: the "Claude is working"
+  // spinner during a turn, and — when idle — a live "last response Xm ago"
+  // label (hidden entirely for a session that hasn't completed a turn yet,
+  // so a fresh session shows nothing rather than a misleading "never").
+  // Split out from update() so the 15s idle tick (tickIdleAgo) can refresh
+  // just this label without update()'s side effects (closing popovers/menus).
+  function renderTiLeft(inst) {
+    const interrupting = inst.status === 'turn' && !!inst.interrupting;
+    if (inst.status === 'turn') {
+      dom.tiLeft.hidden = false;
+      dom.tiDot.hidden = false;
+      dom.tiEllipsis.hidden = false;
+      dom.tiLabel.textContent = interrupting ? 'Stopping…' : 'Claude is working';
+      dom.tiInterruptNow.hidden = !interrupting;
+    } else if (inst.lastResponseAt) {
+      dom.tiLeft.hidden = false;
+      dom.tiDot.hidden = true;
+      dom.tiEllipsis.hidden = true;
+      dom.tiLabel.textContent = `last response ${formatAgo(inst.lastResponseAt)}`;
+      dom.tiInterruptNow.hidden = true;
+    } else {
+      dom.tiLeft.hidden = true;
+    }
+  }
+
+  // Ticks the idle "last response Xm ago" label every 15s (see app.js)
+  // without running update()'s full rebuild — that also closes any open
+  // usage/overflow popover, which would be a jarring side effect of a
+  // background timer. No-ops while a turn is active (renderTiLeft inside
+  // update() already owns the label then) or when no instance is active.
+  function tickIdleAgo() {
+    const inst = getInstances().find(i => i.id === getActiveId());
+    if (!inst || inst.status === 'turn') return;
+    renderTiLeft(inst);
+  }
+
   function update() {
     // The header gets rebuilt from scratch on every call, which discards
     // the existing chip nodes. Close any open popover first so it's not
@@ -327,10 +367,7 @@ export function installHeader({
     dom.killBtn.disabled = !['idle', 'turn', 'spawning'].includes(inst.status);
     dom.resumeBtn.hidden = !(inst.status === 'crashed' || inst.status === 'exited');
     dom.turnIndicator.hidden = false;
-    dom.tiLeft.hidden = inst.status !== 'turn';
-    const interrupting = inst.status === 'turn' && !!inst.interrupting;
-    dom.tiLabel.textContent = interrupting ? 'Stopping…' : 'Claude is working';
-    dom.tiInterruptNow.hidden = !interrupting;
+    renderTiLeft(inst);
     const hasWorktree = !!inst.worktree?.worktreeName;
     dom.syncBtn.hidden = !hasWorktree;
     dom.syncBtn.disabled = !hasWorktree;
@@ -388,5 +425,5 @@ export function installHeader({
           : 'Send a message — Enter to send, Shift+Enter for newline';
   }
 
-  return { update };
+  return { update, tickIdleAgo };
 }
