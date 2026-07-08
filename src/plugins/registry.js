@@ -450,8 +450,42 @@ export function createPluginHost({
     if (!pidAlive(rec.pid)) markDead(id, s.tail ?? `process ${rec.pid} died (upstream connection failed)`);
   }
 
-  // Placeholder seams filled by later phases.
-  async function setActiveVersion() { throw httpError(501, 'not implemented yet'); }
+  // Worktree-version activation: which checkout the supervisor cwd points
+  // at. Guard: the target checkout must contain a valid manifest with a
+  // matching id, else 400 and the previous state is kept. Restarts the
+  // child when it was running so the switch takes effect immediately.
+  async function setActiveVersion(id, v) {
+    await ensureInit();
+    const entry = requireEntry(id);
+    if (!persisted.plugins[id]) throw httpError(409, `plugin '${id}' has no registry entry — enable it first`);
+    let next;
+    if (v?.type === 'main') {
+      next = { type: 'main' };
+    } else if (v?.type === 'worktree') {
+      if (typeof v.name !== 'string' || v.name === '') throw httpError(400, "worktree version requires a 'name'");
+      const { getWorktree } = await import('../worktrees.js');
+      const meta = await getWorktree(entry.project, v.name);
+      if (!meta?.worktreePath) throw httpError(404, `worktree '${v.name}' of project '${entry.project}' not found`);
+      const result = await readManifest(meta.worktreePath);
+      if (!result) throw httpError(400, `no conductor.plugin.json in worktree '${v.name}'`);
+      if (result.errors) throw httpError(400, `manifest in worktree '${v.name}' is invalid: ${result.errors.join('; ')}`);
+      if (result.manifest.id !== id) throw httpError(400, `manifest id '${result.manifest.id}' in worktree '${v.name}' does not match plugin '${id}'`);
+      next = { type: 'worktree', name: v.name };
+    } else {
+      throw httpError(400, "version must be {type:'main'} or {type:'worktree', name}");
+    }
+    persisted.plugins[id].activeVersion = next;
+    await saveRegistry();
+    const s = runtimeState(id);
+    if (s.status === 'ready' || s.status === 'starting') {
+      if (s.startPromise) await s.startPromise.catch(() => {});
+      await stopInternal(id);
+      await doStart(id);
+    }
+    return describe(id);
+  }
+
+  // Seam filled by the MCP-forwarding phase.
   function toolsFor() { return []; }
 
   function runtimeInfo(id) {
