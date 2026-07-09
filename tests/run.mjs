@@ -3,7 +3,7 @@
 // node:test runner via its public API instead.
 import { run } from 'node:test';
 import { spec } from 'node:test/reporters';
-import { promises as fs } from 'node:fs';
+import { promises as fs, readdirSync, readFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -46,6 +46,37 @@ if (files.length === 0) {
   process.exit(1);
 }
 
+// Process-count guardrail. Tests default to an IN-PROCESS fake claude (see
+// helpers.mjs bootServer), so a normal run should fork essentially no
+// `fake-claude.mjs` subprocesses — only the handful of `realProcess:true` tests
+// do. Sample the peak concurrent count via /proc and fail if it blows past a
+// small budget, catching a regression where the default flips back to
+// subprocess (which the Android phantom-process killer punishes) or a new test
+// spawns real processes without opting in. /proc reads are safe on this host;
+// pkill/lsof are not — do not use them here.
+const FAKE_CLAUDE_BUDGET = 12;
+function countFakeClaudeProcs() {
+  let pids;
+  try { pids = readdirSync('/proc'); } catch { return -1; } // no /proc (non-Linux)
+  let n = 0;
+  for (const pid of pids) {
+    if (!/^\d+$/.test(pid)) continue;
+    try {
+      if (readFileSync(`/proc/${pid}/cmdline`, 'utf8').includes('fake-claude.mjs')) n++;
+    } catch { /* vanished or unreadable — skip */ }
+  }
+  return n;
+}
+let peakFakeClaude = 0;
+let sampledProcs = false;
+const procSampler = setInterval(() => {
+  const n = countFakeClaudeProcs();
+  if (n < 0) return; // /proc unavailable
+  sampledProcs = true;
+  if (n > peakFakeClaude) peakFakeClaude = n;
+}, 100);
+procSampler.unref?.();
+
 const concurrency = resolveConcurrency();
 // 60s per-file ceiling: proportionate headroom for heavy subprocess files that
 // chain several 10s `waitFor`s (see helpers.mjs) when co-scheduled under
@@ -60,4 +91,21 @@ stream.on('test:fail', (data) => {
 const reporter = stream.compose(new spec());
 reporter.pipe(process.stdout);
 await new Promise((resolve) => reporter.on('end', resolve));
-process.exit(failed === 0 ? 0 : 1);
+
+clearInterval(procSampler);
+let guardrailFailed = false;
+if (sampledProcs) {
+  console.log(`\nguardrail: peak concurrent fake-claude subprocesses = ${peakFakeClaude} (budget ${FAKE_CLAUDE_BUDGET})`);
+  // RUN_REAL_CLAUDE runs extra real-binary smoke tests; don't enforce there.
+  if (process.env.RUN_REAL_CLAUDE !== '1' && peakFakeClaude > FAKE_CLAUDE_BUDGET) {
+    console.error(
+      `guardrail FAILED: peak ${peakFakeClaude} exceeded budget ${FAKE_CLAUDE_BUDGET}. ` +
+      'A test likely spawns real fake-claude subprocesses without bootServer({realProcess:true}) ' +
+      '— the default must stay in-process.',
+    );
+    guardrailFailed = true;
+  }
+} else {
+  console.log('\nguardrail: /proc unavailable — peak subprocess sampling skipped');
+}
+process.exit(failed === 0 && !guardrailFailed ? 0 : 1);

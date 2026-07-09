@@ -180,15 +180,21 @@ test('MCP kill_instance archives temp session', async () => {
 });
 
 test('shutdownTempSync archives temp sessions — .jsonl kept, subagents dir removed', async () => {
-  {
-    await api(baseUrl, 'POST', '/api/projects', { name: 'archivesync' });
+  // REAL OS PROCESS required: shutdownTempSync SIGKILLs live temp subprocesses
+  // via OS process.kill(pid). The in-process launcher has pid=null so that
+  // SIGKILL would be a silent skip — the archival would still run and the
+  // assertions would pass without exercising the kill. Boot a dedicated
+  // realProcess server so the SIGKILL+reap path is genuinely tested.
+  const rp = await bootServer({ scenarioPath: SCENARIO, realProcess: true });
+  try {
+    await api(rp.baseUrl, 'POST', '/api/projects', { name: 'archivesync' });
 
-    const res = await api(baseUrl, 'POST', '/api/instances', { project: 'archivesync', temp: true });
-    const inst = instances.get(res.body.id);
+    const res = await api(rp.baseUrl, 'POST', '/api/instances', { project: 'archivesync', temp: true });
+    const inst = rp.instances.get(res.body.id);
     await waitFor(() => inst.status === 'idle' && inst.sessionId);
     const sid = inst.sessionId;
 
-    const dir = path.join(claudeProjectsRoot, encodeCwd(inst.cwd));
+    const dir = path.join(rp.claudeProjectsRoot, encodeCwd(inst.cwd));
     await fs.mkdir(dir, { recursive: true });
     const jsonlFile = path.join(dir, `${sid}.jsonl`);
     const subagentsDir = path.join(dir, sid);
@@ -196,12 +202,14 @@ test('shutdownTempSync archives temp sessions — .jsonl kept, subagents dir rem
     await fs.mkdir(subagentsDir, { recursive: true });
     await fs.writeFile(path.join(subagentsDir, 'agent.jsonl'), '{}\n');
 
-    instances.shutdownTempSync();
+    rp.instances.shutdownTempSync();
 
     // .jsonl must survive (we archive, not delete).
     await fs.access(jsonlFile);
     // Subagent dir is still cleaned up.
     await assert.rejects(() => fs.access(subagentsDir), 'subagent dir must be removed');
+  } finally {
+    await rp.close();
   }
 });
 

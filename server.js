@@ -20,9 +20,9 @@ import { buildPluginProxy } from './src/plugins/proxy.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-export function createServer({ withInstances = true } = {}) {
+export function createServer({ withInstances = true, claudeLauncher } = {}) {
   const app = express();
-  const instances = withInstances ? new InstanceManager() : null;
+  const instances = withInstances ? new InstanceManager({ claudeLauncher }) : null;
   const pluginHost = withInstances ? createPluginHost({ instances }) : null;
 
   // serverCtx is a shared mutable handle so route handlers (POST
