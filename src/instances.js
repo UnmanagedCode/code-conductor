@@ -7,8 +7,7 @@ import path from 'node:path';
 import { Parser, SOFT_INTERRUPT_MARKER, isOuterUserEcho, snapStartToQuiescent, firstQuiescentAtOrAfter } from './parser.js';
 import { getProject, claudeProjectsRoot, encodeCwd, findSessionLocation, readFirstPrompt } from './projects.js';
 import { createWorktree, getWorktree, debugBaseDir } from './worktrees.js';
-import { getTitle as getSessionTitle, deleteTitle as deleteSessionTitle, migrateTitle as migrateSessionTitle } from './sessionTitles.js';
-import { migrateSummaries } from './sessionSummaries.js';
+import { getTitle as getSessionTitle, deleteTitle as deleteSessionTitle } from './sessionTitles.js';
 import { isConducted, markConducted, unmarkConducted } from './conductedSessions.js';
 import { isTemp, markTemp, unmarkTemp } from './tempSessions.js';
 import { markArchived } from './archivedSessions.js';
@@ -797,20 +796,7 @@ export class Instance extends EventEmitter {
       if (ev.kind === 'system' && ev.subtype === 'init') {
         const sid = ev.data?.session_id;
         if (sid && sid !== this.sessionId) {
-          // `claude --resume` forks history into a new `<sid>.jsonl` and mints
-          // a new session_id here. Capture the old id BEFORE overwriting and
-          // MOVE the persisted custom title old→new, so the sidebar/picker —
-          // which key the title by jsonl filename = sessionId — keep showing
-          // the user's name on the live session instead of orphaning it under
-          // the stale fork. (The in-memory chip already survived from spawn()'s
-          // hydrate; _hydrateTitle() below is a defensive no-op post-migrate.)
-          const prevSid = this.sessionId;
           this.sessionId = sid;
-          if (prevSid) migrateSessionTitle(prevSid, sid).catch(() => {});
-          // Same rekey rationale for the summaries sidecar (also keyed by
-          // sessionId): MOVE the whole per-tier entry old→new so a resumed
-          // session's summaries don't orphan under the stale fork jsonl.
-          if (prevSid) migrateSummaries(prevSid, sid).catch(() => {});
           this._hydrateTitle().catch(() => {});
         }
         const mode = ev.data?.permissionMode;
