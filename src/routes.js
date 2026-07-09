@@ -62,6 +62,13 @@ import {
   composeGuidelinesBlock,
   addCustomGuideline, updateCustomGuideline, deleteCustomGuideline,
 } from './optionalGuidelines.js';
+import {
+  CORE_META as CONDUCT_CORE_META,
+  getCatalog as getConductModulesCatalog,
+  getSelection as getConductSelection,
+  setSelection as setConductSelection,
+  addCustomModule, updateCustomModule, deleteCustomModule,
+} from './conductModules.js';
 
 // Session ids are user-supplied path params on many routes; this is the single
 // allow-list + rejection (400 "invalid sessionId") they all share.
@@ -1219,6 +1226,55 @@ export function buildRoutes({ instances, serverCtx, pluginHost } = {}) {
     try {
       const { slug } = req.params;
       const result = await deleteCustomGuideline(slug);
+      res.json(result);
+    } catch (e) { next(e); }
+  });
+
+  // Conductor convention modules — global (singleton conductor) selection +
+  // custom-module CRUD. Every mutation regenerates .conduct/CONDUCT.md so the
+  // next-spawned conductor session picks up the change.
+  r.get('/settings/conductor-modules', async (req, res, next) => {
+    try {
+      const [modules, enabled] = await Promise.all([getConductModulesCatalog(), getConductSelection()]);
+      res.json({ core: CONDUCT_CORE_META, modules, enabled });
+    } catch (e) { next(e); }
+  });
+
+  // Literal /selection must precede the /:slug route below so it isn't
+  // swallowed as a slug.
+  r.put('/settings/conductor-modules/selection', async (req, res, next) => {
+    try {
+      const { enabled } = req.body ?? {};
+      const saved = await setConductSelection(enabled);
+      await ensureConductProject();
+      res.json({ enabled: saved });
+    } catch (e) { next(e); }
+  });
+
+  r.post('/settings/conductor-modules', async (req, res, next) => {
+    try {
+      const { slug, name, description, body } = req.body ?? {};
+      const module = await addCustomModule({ slug, name, description, body });
+      await ensureConductProject();
+      res.status(201).json({ module });
+    } catch (e) { next(e); }
+  });
+
+  r.put('/settings/conductor-modules/:slug', async (req, res, next) => {
+    try {
+      const { slug } = req.params;
+      const { name, description, body } = req.body ?? {};
+      const module = await updateCustomModule(slug, { name, description, body });
+      await ensureConductProject();
+      res.json({ module });
+    } catch (e) { next(e); }
+  });
+
+  r.delete('/settings/conductor-modules/:slug', async (req, res, next) => {
+    try {
+      const { slug } = req.params;
+      const result = await deleteCustomModule(slug);
+      await ensureConductProject();
       res.json(result);
     } catch (e) { next(e); }
   });

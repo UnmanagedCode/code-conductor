@@ -1807,6 +1807,26 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
 }
 .or-add-actions button:first-child { background: var(--accent); color: #fff; border-color: var(--accent); }
 
+/* ── Conductor conventions modules (reuse or-* row styling) ── */
+.cc-module-list { list-style: none; margin: 0; padding: 0; }
+.cc-module-item {
+  display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
+  padding: 8px 0; border-bottom: 1px solid var(--border);
+}
+.cc-module-item .or-rule-desc { flex: 1 1 100%; }
+.cc-module-toggle { flex: 0 0 auto; align-self: center; cursor: pointer; }
+.cc-module-item button {
+  font-size: 11px; padding: 2px 8px; cursor: pointer;
+  background: var(--panel-2); border: 1px solid var(--border);
+  border-radius: 3px; color: var(--text);
+}
+.cc-module-item button:hover { background: var(--panel-1); }
+.cc-core-item { opacity: 0.85; }
+.cc-core-badge {
+  font-size: 10px; padding: 1px 6px; border-radius: 10px;
+  background: var(--accent); color: #fff; border: 1px solid var(--accent);
+}
+
 /* ── New-project dialog rule checkboxes ── */
 .np-rules { margin: 10px 0 4px; }
 .np-rules-label { font-size: 12px; color: var(--muted); font-weight: 600; margin-bottom: 4px; }

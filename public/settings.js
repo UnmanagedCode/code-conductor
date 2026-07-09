@@ -72,6 +72,18 @@ export function installSettings({
   const orAddSave = document.getElementById('or-add-save');
   const orAddCancel = document.getElementById('or-add-cancel');
   const orAddError = document.getElementById('or-add-error');
+  // Conductor conventions group elements.
+  const ccStatusEl = document.getElementById('cc-status');
+  const ccModuleListEl = document.getElementById('cc-module-list');
+  const ccAddBtn = document.getElementById('cc-add-btn');
+  const ccAddForm = document.getElementById('cc-add-form');
+  const ccAddSlug = document.getElementById('cc-add-slug');
+  const ccAddName = document.getElementById('cc-add-name');
+  const ccAddDesc = document.getElementById('cc-add-desc');
+  const ccAddBody = document.getElementById('cc-add-body');
+  const ccAddSave = document.getElementById('cc-add-save');
+  const ccAddCancel = document.getElementById('cc-add-cancel');
+  const ccAddError = document.getElementById('cc-add-error');
   if (!view) return { open() {}, close() {} };
 
   // Plugins group — feature logic lives in its own module; settings only
@@ -133,6 +145,7 @@ export function installSettings({
     loadWorkspace();
     loadArchived();
     loadOptionalGuidelines();
+    loadConductorModules();
     pluginManager.load();
   }
 
@@ -1051,6 +1064,176 @@ export function installSettings({
   orAddBtn?.addEventListener('click', openAddForm);
   orAddCancel?.addEventListener('click', closeAddForm);
   orAddSave?.addEventListener('click', saveOptionalGuideline);
+
+  // ── Conductor conventions group ──────────────────────────────────────────────
+
+  // Tracks which custom-module slug is being edited (null = add mode).
+  let ccEditingSlug = null;
+  let ccEnabled = new Set(); // enabled module slugs (mirrors the server selection)
+
+  function renderConductorModules(data) {
+    if (ccStatusEl) ccStatusEl.textContent = '';
+    if (!ccModuleListEl) return;
+    ccEnabled = new Set(data.enabled || []);
+    ccModuleListEl.innerHTML = '';
+
+    // Always-on core row (non-toggleable).
+    if (data.core) {
+      const coreLi = document.createElement('li');
+      coreLi.className = 'cc-module-item cc-core-item';
+      const titleEl = document.createElement('span');
+      titleEl.className = 'or-rule-name';
+      titleEl.textContent = data.core.name;
+      const descEl = document.createElement('span');
+      descEl.className = 'or-rule-desc';
+      descEl.textContent = data.core.description;
+      const badge = document.createElement('span');
+      badge.className = 'cc-core-badge';
+      badge.textContent = 'always on';
+      coreLi.appendChild(titleEl);
+      coreLi.appendChild(badge);
+      coreLi.appendChild(descEl);
+      ccModuleListEl.appendChild(coreLi);
+    }
+
+    for (const mod of data.modules || []) {
+      const li = document.createElement('li');
+      li.className = 'cc-module-item';
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.className = 'cc-module-toggle';
+      cb.checked = ccEnabled.has(mod.slug);
+      cb.setAttribute('aria-label', `Enable ${mod.name}`);
+      cb.addEventListener('change', () => toggleConductorModule(mod.slug, cb.checked));
+      const titleEl = document.createElement('span');
+      titleEl.className = 'or-rule-name';
+      titleEl.textContent = mod.name;
+      const tagEl = document.createElement('span');
+      tagEl.className = 'or-rule-slug';
+      tagEl.textContent = mod.slug;
+      const descEl = document.createElement('span');
+      descEl.className = 'or-rule-desc';
+      descEl.textContent = mod.description;
+      li.appendChild(cb);
+      li.appendChild(titleEl);
+      li.appendChild(tagEl);
+      li.appendChild(descEl);
+      if (!mod.builtin) {
+        const editBtn = document.createElement('button');
+        editBtn.type = 'button';
+        editBtn.textContent = 'Edit';
+        editBtn.addEventListener('click', () => openCcEditForm(mod));
+        const delBtn = document.createElement('button');
+        delBtn.type = 'button';
+        delBtn.textContent = 'Delete';
+        delBtn.addEventListener('click', () => deleteConductorModule(mod.slug));
+        li.appendChild(editBtn);
+        li.appendChild(delBtn);
+      } else {
+        const badge = document.createElement('span');
+        badge.className = 'or-builtin-badge';
+        badge.textContent = 'built-in';
+        li.appendChild(badge);
+      }
+      ccModuleListEl.appendChild(li);
+    }
+  }
+
+  async function toggleConductorModule(slug, on) {
+    if (on) ccEnabled.add(slug); else ccEnabled.delete(slug);
+    try {
+      const r = await fetch('/api/settings/conductor-modules/selection', {
+        method: 'PUT', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ enabled: [...ccEnabled] }),
+      });
+      if (!r.ok) throw new Error((await r.json()).error);
+    } catch (e) {
+      if (ccStatusEl) ccStatusEl.textContent = `Save failed: ${e.message || e}`;
+      loadConductorModules(); // resync from server on failure
+    }
+  }
+
+  function openCcAddForm() {
+    ccEditingSlug = null;
+    if (ccAddSlug) { ccAddSlug.value = ''; ccAddSlug.disabled = false; }
+    if (ccAddName) ccAddName.value = '';
+    if (ccAddDesc) ccAddDesc.value = '';
+    if (ccAddBody) ccAddBody.value = '';
+    if (ccAddError) ccAddError.textContent = '';
+    if (ccAddForm) ccAddForm.hidden = false;
+    if (ccAddBtn) ccAddBtn.hidden = true;
+    ccAddSlug?.focus();
+  }
+
+  function openCcEditForm(mod) {
+    ccEditingSlug = mod.slug;
+    if (ccAddSlug) { ccAddSlug.value = mod.slug; ccAddSlug.disabled = true; }
+    if (ccAddName) ccAddName.value = mod.name;
+    if (ccAddDesc) ccAddDesc.value = mod.description;
+    if (ccAddBody) ccAddBody.value = mod.body || '';
+    if (ccAddError) ccAddError.textContent = '';
+    if (ccAddForm) ccAddForm.hidden = false;
+    if (ccAddBtn) ccAddBtn.hidden = true;
+    ccAddName?.focus();
+  }
+
+  function closeCcAddForm() {
+    ccEditingSlug = null;
+    if (ccAddForm) ccAddForm.hidden = true;
+    if (ccAddBtn) ccAddBtn.hidden = false;
+    if (ccAddError) ccAddError.textContent = '';
+  }
+
+  async function saveConductorModule() {
+    const slug = ccAddSlug?.value.trim();
+    const name = ccAddName?.value.trim();
+    const description = ccAddDesc?.value.trim();
+    const body = ccAddBody?.value;
+    if (ccAddError) ccAddError.textContent = '';
+    try {
+      if (ccEditingSlug) {
+        await fetch(`/api/settings/conductor-modules/${encodeURIComponent(ccEditingSlug)}`, {
+          method: 'PUT', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ name, description, body }),
+        }).then(async r => { if (!r.ok) throw new Error((await r.json()).error); });
+      } else {
+        await fetch('/api/settings/conductor-modules', {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ slug, name, description, body }),
+        }).then(async r => { if (!r.ok) throw new Error((await r.json()).error); });
+      }
+      closeCcAddForm();
+      loadConductorModules();
+    } catch (e) {
+      if (ccAddError) ccAddError.textContent = e.message || String(e);
+    }
+  }
+
+  async function deleteConductorModule(slug) {
+    if (!confirm(`Delete conductor module "${slug}"?`)) return;
+    try {
+      const r = await fetch(`/api/settings/conductor-modules/${encodeURIComponent(slug)}`, { method: 'DELETE' });
+      if (!r.ok) throw new Error((await r.json()).error);
+      loadConductorModules();
+    } catch (e) {
+      if (ccStatusEl) ccStatusEl.textContent = `Delete failed: ${e.message || e}`;
+    }
+  }
+
+  async function loadConductorModules() {
+    if (ccStatusEl) ccStatusEl.textContent = 'Loading…';
+    try {
+      const r = await fetch('/api/settings/conductor-modules', { cache: 'no-store' });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      renderConductorModules(await r.json());
+    } catch (e) {
+      if (ccStatusEl) ccStatusEl.textContent = `Failed: ${e.message || e}`;
+    }
+  }
+
+  ccAddBtn?.addEventListener('click', openCcAddForm);
+  ccAddCancel?.addEventListener('click', closeCcAddForm);
+  ccAddSave?.addEventListener('click', saveConductorModule);
 
   window.addEventListener('hashchange', sync);
   window.addEventListener('keydown', e => {

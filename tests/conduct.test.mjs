@@ -18,7 +18,7 @@ after(async () => { await ctx.close(); });
 beforeEach(async () => { ({ home, projectsRoot } = await freshProjectsRoot()); });
 afterEach(async () => { await instances.shutdown(); await rmrf(home); });
 
-test('ensureConductProject creates .conduct/ + seeds CLAUDE.md with @CONDUCT.md import and CONDUCT.md symlink', async () => {
+test('ensureConductProject creates .conduct/ + seeds CLAUDE.md with @CONDUCT.md import and a generated CONDUCT.md', async () => {
   const r = await api(baseUrl, 'POST', '/api/projects/.conduct/ensure');
   assert.equal(r.status, 200);
   assert.equal(r.body.ok, true);
@@ -37,17 +37,19 @@ test('ensureConductProject creates .conduct/ + seeds CLAUDE.md with @CONDUCT.md 
   const claudeMd = await fs.readFile(path.join(conductDir, 'CLAUDE.md'), 'utf8');
   assert.equal(claudeMd, '@CONDUCT.md\n');
 
-  // CONDUCT.md must be a symlink resolving to the repo's CONDUCT.md.
-  const symlinkPath = path.join(conductDir, 'CONDUCT.md');
-  const lstat = await fs.lstat(symlinkPath);
-  assert.ok(lstat.isSymbolicLink(), 'CONDUCT.md must be a symlink');
-  const real = await fs.realpath(symlinkPath);
-  const realStat = await fs.stat(real);
-  assert.ok(realStat.isFile(), `symlink target must exist: ${real}`);
-  assert.equal(path.basename(real), 'CONDUCT.md');
+  // CONDUCT.md must now be a regular generated file (not a symlink) whose
+  // content is the composed core + enabled modules.
+  const conductMdPath = path.join(conductDir, 'CONDUCT.md');
+  const lstat = await fs.lstat(conductMdPath);
+  assert.ok(lstat.isFile() && !lstat.isSymbolicLink(), 'CONDUCT.md must be a regular file');
+  const content = await fs.readFile(conductMdPath, 'utf8');
+  assert.ok(content.startsWith('# Conductor role'), 'starts with core role');
+  assert.match(content, /## MCP toolbelt/, 'core toolbelt present');
+  assert.match(content, /## Canonical workflow/, 'a default-enabled module present');
+  assert.match(content, /generated from `conduct\/core\.md`/, 'footer present');
 });
 
-test('ensureConductProject is idempotent — second call leaves an existing CLAUDE.md alone', async () => {
+test('ensureConductProject is idempotent — second call leaves an existing CLAUDE.md alone, regenerates CONDUCT.md', async () => {
   const r1 = await api(baseUrl, 'POST', '/api/projects/.conduct/ensure');
   assert.equal(r1.body.created, true);
 
@@ -64,10 +66,28 @@ test('ensureConductProject is idempotent — second call leaves an existing CLAU
   const after = await fs.readFile(claudeMdPath, 'utf8');
   assert.equal(after, customContent, 'user edits preserved');
 
-  // Symlink survives the second ensure call.
-  const symlinkPath = path.join(projectsRoot, '.conduct', 'CONDUCT.md');
-  const lstat = await fs.lstat(symlinkPath);
-  assert.ok(lstat.isSymbolicLink(), 'CONDUCT.md symlink still present');
+  // Generated CONDUCT.md is a regular file on the second ensure too.
+  const conductMdPath = path.join(projectsRoot, '.conduct', 'CONDUCT.md');
+  const lstat = await fs.lstat(conductMdPath);
+  assert.ok(lstat.isFile() && !lstat.isSymbolicLink(), 'CONDUCT.md is a regular generated file');
+});
+
+test('ensureConductProject swaps a legacy CONDUCT.md symlink for a regular generated file', async () => {
+  const conductDir = path.join(projectsRoot, '.conduct');
+  await fs.mkdir(conductDir, { recursive: true });
+  // Simulate the pre-generation era: a symlink at .conduct/CONDUCT.md.
+  const conductMdPath = path.join(conductDir, 'CONDUCT.md');
+  await fs.symlink('/nonexistent/target/CONDUCT.md', conductMdPath);
+  const before = await fs.lstat(conductMdPath);
+  assert.ok(before.isSymbolicLink(), 'precondition: symlink present');
+
+  const r = await api(baseUrl, 'POST', '/api/projects/.conduct/ensure');
+  assert.equal(r.status, 200);
+
+  const lstat = await fs.lstat(conductMdPath);
+  assert.ok(lstat.isFile() && !lstat.isSymbolicLink(), 'symlink swapped for a regular file');
+  const content = await fs.readFile(conductMdPath, 'utf8');
+  assert.ok(content.startsWith('# Conductor role'));
 });
 
 test('listProjects() excludes .conduct from /api/projects', async () => {

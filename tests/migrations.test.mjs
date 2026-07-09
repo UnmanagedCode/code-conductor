@@ -264,3 +264,32 @@ test('0002 migration: prefers existing workspace field if both keys are present'
     await fs.rm(root, { recursive: true, force: true });
   }
 });
+
+test('0010 migration: removes a legacy .conduct/CONDUCT.md symlink + repairs @-import, idempotent', async () => {
+  const root = await mkTempRoot();
+  try {
+    const conductDir = path.join(root, '.conduct');
+    await fs.mkdir(conductDir, { recursive: true });
+    const conductMd = path.join(conductDir, 'CONDUCT.md');
+    const claudeMd = path.join(conductDir, 'CLAUDE.md');
+    // Simulate the 0003-era layout: a symlink + a broken external @-import.
+    await fs.symlink('/repo/CONDUCT.md', conductMd);
+    await fs.writeFile(claudeMd, '@../CONDUCT.md\nkeep this line\n');
+    assert.ok((await fs.lstat(conductMd)).isSymbolicLink(), 'precondition: symlink staged');
+
+    const logs = [];
+    await runMigrations({ root, log: (...a) => logs.push(a.join(' ')) });
+    // Symlink is gone (ensureConductProject regenerates the file at boot);
+    // broken import rewritten to @CONDUCT.md, other lines preserved.
+    assert.ok(!(await exists(conductMd)), 'symlink removed');
+    assert.equal(await fs.readFile(claudeMd, 'utf8'), '@CONDUCT.md\nkeep this line\n');
+    assert.ok(logs.some(l => l.includes('0010-conduct-md-generated-file')), 'logged applied');
+
+    // Second run: nothing to do (no symlink, import already in-project).
+    const logs2 = [];
+    await runMigrations({ root, log: (...a) => logs2.push(a.join(' ')) });
+    assert.ok(!logs2.some(l => l.includes('0010-conduct-md-generated-file')), 'idempotent no-op');
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});

@@ -136,6 +136,11 @@ Outbound: `system` + `subtype:"init"` (bundled with first turn's response, not a
 | `POST` | `/api/settings/optional-guidelines` | `{slug,name,description,body}` — add custom guideline. Slug `^[a-z][a-z0-9-]*$` max 40 chars; 409 on duplicate/builtin slug. Returns `{rule}`. |
 | `PUT` | `/api/settings/optional-guidelines/:slug` | `{name?,description?,body?}` — update custom guideline. 400 on builtin, 404 not found. Returns `{rule}`. |
 | `DELETE` | `/api/settings/optional-guidelines/:slug` | Remove custom guideline. 400 on builtin, 404 not found. Returns `{slug}`. |
+| `GET` | `/api/settings/conductor-modules` | `{core:{name,description}, modules:[{slug,name,description,body,builtin}], enabled:[slug,…]}` — conductor convention catalog + global enabled selection. 8 built-in seeds (`builtin:true`, bodies from `conduct/modules/*.md`) + custom modules from `<store>/conduct-modules.json` (`builtin:false`); the always-on core is not in `modules`. |
+| `PUT` | `/api/settings/conductor-modules/selection` | `{enabled:[slug,…]}` — set the global enabled module selection (unknown slug → 400). Regenerates `.conduct/CONDUCT.md`. Returns `{enabled}`. |
+| `POST` | `/api/settings/conductor-modules` | `{slug,name,description,body}` — add custom module. Slug `^[a-z][a-z0-9-]*$` max 40 chars; 409 on duplicate/builtin slug. Regenerates. Returns `{module}`. |
+| `PUT` | `/api/settings/conductor-modules/:slug` | `{name?,description?,body?}` — update custom module. 400 on builtin, 404 not found. Regenerates. Returns `{module}`. |
+| `DELETE` | `/api/settings/conductor-modules/:slug` | Remove custom module (also drops it from `enabled`). 400 on builtin, 404 not found. Regenerates. Returns `{slug}`. |
 | `GET` | `/api/settings/workspace-claudemd` | `{status, conflict, targetExists, targetPath, vendorPath, baselinePath}` — reconcile status of `<PROJECTS_ROOT>/CLAUDE.md` (`created`/`up-to-date`/`updated`/`kept`/`conflict`). |
 | `GET` | `/api/settings/workspace-claudemd/diff` | `{diff}` — unified diff of the projects-root `CLAUDE.md` (your copy) vs the bundled canonical. Empty when identical. |
 | `POST` | `/api/settings/workspace-claudemd/resolve` | `{action}` — `keep` (baseline := canonical, file unchanged) or `overwrite` (back up to `<target>.bak-<ts>`, copy canonical in, bump baseline). 400 on any other action. Returns refreshed status. |

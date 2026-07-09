@@ -41,11 +41,10 @@ test('SEED_GUIDELINES has 4 entries with expected slugs', () => {
   assert.ok(slugs.includes('testing-guidelines'));
   assert.ok(slugs.includes('documentation-guidelines'));
   assert.ok(slugs.includes('migrations-over-compat'));
+  // SEED_GUIDELINES is metadata-only now; bodies live in guidelines/<slug>.md.
   for (const r of SEED_GUIDELINES) {
-    assert.equal(r.builtin, true);
     assert.ok(r.name, 'seed guideline has name');
     assert.ok(r.description, 'seed guideline has description');
-    assert.ok(r.body, 'seed guideline has body');
   }
 });
 
@@ -56,19 +55,19 @@ test('SEED_GUIDELINES order is design → testing → documentation → migratio
   assert.equal(SEED_GUIDELINES[3].slug, 'migrations-over-compat');
 });
 
-test('SEED_GUIDELINES bodies have correct ## headings', () => {
-  const design = SEED_GUIDELINES.find(r => r.slug === 'design-guidelines');
-  const testing = SEED_GUIDELINES.find(r => r.slug === 'testing-guidelines');
-  const docs = SEED_GUIDELINES.find(r => r.slug === 'documentation-guidelines');
-  const migrations = SEED_GUIDELINES.find(r => r.slug === 'migrations-over-compat');
-  assert.ok(design.body.startsWith('## Design guidelines'));
-  assert.ok(testing.body.startsWith('## Testing guidelines'));
-  assert.ok(docs.body.startsWith('## Documentation guidelines'));
-  assert.ok(migrations.body.startsWith('## Migration guidelines'));
+test('getCatalog seed bodies (loaded from .md fragments) have correct ## headings', async () => {
+  const catalog = await getCatalog();
+  const byslug = Object.fromEntries(catalog.map(r => [r.slug, r]));
+  for (const r of catalog) assert.ok(r.body, 'catalog entry has body');
+  assert.ok(byslug['design-guidelines'].body.startsWith('## Design guidelines'));
+  assert.ok(byslug['testing-guidelines'].body.startsWith('## Testing guidelines'));
+  assert.ok(byslug['documentation-guidelines'].body.startsWith('## Documentation guidelines'));
+  assert.ok(byslug['migrations-over-compat'].body.startsWith('## Migration guidelines'));
 });
 
-test('design-guidelines body includes a YAGNI bullet', () => {
-  const design = SEED_GUIDELINES.find(r => r.slug === 'design-guidelines');
+test('design-guidelines body includes a YAGNI bullet', async () => {
+  const catalog = await getCatalog();
+  const design = catalog.find(r => r.slug === 'design-guidelines');
   assert.match(design.body, /YAGNI/);
 });
 

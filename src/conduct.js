@@ -6,42 +6,40 @@
 
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { projectsRoot } from './projects.js';
+import { composeCurrentConduct } from './conductModules.js';
 
 export const CONDUCT_PROJECT_NAME = '.conduct';
-
-// Absolute path to the repo-root CONDUCT.md. Resolved once at module load
-// from import.meta.url so it follows wherever the orchestrator is checked
-// out — no environment variable, no hardcoded user path.
-export const CONDUCT_MD_PATH = path.resolve(
-  path.dirname(fileURLToPath(import.meta.url)),
-  '..',
-  'CONDUCT.md',
-);
 
 export function conductProjectPath() {
   return path.join(projectsRoot(), CONDUCT_PROJECT_NAME);
 }
 
-// Idempotent: creates the .conduct dir (if missing), drops a symlink at
-// .conduct/CONDUCT.md pointing at the repo's CONDUCT.md, and seeds
-// CLAUDE.md with a single in-project @CONDUCT.md import.
+// Idempotent: creates the .conduct dir (if missing), (re)generates
+// .conduct/CONDUCT.md from the current core + enabled convention modules,
+// and seeds CLAUDE.md with a single in-project @CONDUCT.md import.
 //
-// Why the symlink: Claude Code gates @-import paths that resolve outside
-// the project root behind an "external includes approved" dialog that
-// never fires in headless / `-p` mode (which is how every conductor
+// The composed doc is a fully-owned generated artifact: it is overwritten
+// on every call (boot, Conduct-dialog-open, conductor resume, and after a
+// settings change), so selection edits take effect for newly-spawned /
+// next-context-refresh conductor sessions. Edit paths for its content are
+// the `conduct/*.md` fragments (built-in text) and Settings → Conductor
+// conventions (toggles + custom modules) — never the generated file.
+//
+// A legacy `.conduct/CONDUCT.md` *symlink* (from migration 0003, the
+// pre-generation era) is swapped for a regular file idempotently.
+//
+// Why the in-project @import: Claude Code gates @-import paths that resolve
+// outside the project root behind an "external includes approved" dialog
+// that never fires in headless / `-p` mode (which is how every conductor
 // session is spawned), so external imports silently no-op. Keeping the
-// import path in-project bypasses that gate while the symlink keeps the
-// content tracking the committed file. The workspace-wide ../CLAUDE.md
-// is omitted on purpose — Claude Code's ancestor walk-up already pulls
-// in cc-projects/CLAUDE.md.
+// import path in-project (`@CONDUCT.md`) bypasses that gate. The
+// workspace-wide ../CLAUDE.md is omitted on purpose — Claude Code's
+// ancestor walk-up already pulls in cc-projects/CLAUDE.md.
 //
 // The `wx` flag preserves any user-customised CLAUDE.md once it exists.
-// Symlink creation is best-effort: if a non-symlink file is already at
-// .conduct/CONDUCT.md (user override) it is left alone. Returns {path,
-// created, claudeMdPath, claudeMdSeeded} so callers (and tests) can
-// tell what happened.
+// Returns {path, created, conductMdPath, claudeMdPath, claudeMdSeeded} so
+// callers (and tests) can tell what happened.
 export async function ensureConductProject() {
   const dir = conductProjectPath();
   let created = false;
@@ -52,14 +50,15 @@ export async function ensureConductProject() {
     if (e.code !== 'EEXIST') throw e;
   }
 
-  const conductMdSymlinkPath = path.join(dir, 'CONDUCT.md');
-  const conductMdRel = path.relative(dir, CONDUCT_MD_PATH);
+  const conductMdPath = path.join(dir, 'CONDUCT.md');
+  const content = await composeCurrentConduct();
   try {
-    await fs.symlink(conductMdRel, conductMdSymlinkPath);
+    const st = await fs.lstat(conductMdPath);
+    if (st.isSymbolicLink()) await fs.unlink(conductMdPath);
   } catch (e) {
-    if (e.code !== 'EEXIST') throw e;
-    // Already present — user override or prior run. Leave alone.
+    if (e.code !== 'ENOENT') throw e;
   }
+  await fs.writeFile(conductMdPath, content);
 
   const claudeMdPath = path.join(dir, 'CLAUDE.md');
   const seedContent = '@CONDUCT.md\n';
@@ -72,5 +71,5 @@ export async function ensureConductProject() {
     // Existing CLAUDE.md left alone — user may have customised it.
   }
 
-  return { path: dir, created, claudeMdPath, claudeMdSeeded };
+  return { path: dir, created, conductMdPath, claudeMdPath, claudeMdSeeded };
 }
