@@ -393,7 +393,7 @@ export async function getProject(name) {
   }
 }
 
-async function readFirstPrompt(jsonlPath) {
+export async function readFirstPrompt(jsonlPath) {
   const fh = await fs.open(jsonlPath, 'r');
   try {
     const buf = Buffer.alloc(64 * 1024);

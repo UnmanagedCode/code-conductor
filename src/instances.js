@@ -5,7 +5,7 @@ import readline from 'node:readline';
 import { promises as fsp, readFileSync, mkdirSync, createWriteStream, writeFileSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { Parser, SOFT_INTERRUPT_MARKER, isOuterUserEcho, snapStartToTurnStart } from './parser.js';
-import { getProject, claudeProjectsRoot, encodeCwd, findSessionLocation } from './projects.js';
+import { getProject, claudeProjectsRoot, encodeCwd, findSessionLocation, readFirstPrompt } from './projects.js';
 import { createWorktree, getWorktree, debugBaseDir } from './worktrees.js';
 import { getTitle as getSessionTitle, deleteTitle as deleteSessionTitle, migrateTitle as migrateSessionTitle } from './sessionTitles.js';
 import { migrateSummaries } from './sessionSummaries.js';
@@ -1771,6 +1771,21 @@ export class InstanceManager extends EventEmitter {
     if (!temp && resume) {
       try { if (await isTemp(resume)) temp = true; } catch { /* best-effort */ }
     }
+    // Recover firstPrompt from the on-disk jsonl on resume. A resumed session
+    // gets a BRAND NEW Instance object (firstPrompt starts null) — unlike the
+    // manifest-driven restart-resume path (resumeRestart.js), which seeds it
+    // from its own in-memory snapshot, every OTHER resume (a UI "resume dead
+    // session" click, crash/anchor auto-resume, respawn_instance) had nothing
+    // recovering it, so the next prompt()'s fallback-when-null guard
+    // (see prompt() below) would clobber the label with whatever was just
+    // typed. `--resume` does not fork history into a new jsonl (verified:
+    // same sessionId, same file, across a real resume) — the original file
+    // still holds the true first line, so this is reliable.
+    let recoveredFirstPrompt = null;
+    if (resume) {
+      try { recoveredFirstPrompt = await readFirstPrompt(path.join(claudeProjectsRoot(), encodeCwd(cwd), `${resume}.jsonl`)); }
+      catch { /* best-effort */ }
+    }
 
     const id = randomUUID();
     const inst = new Instance({
@@ -1786,6 +1801,7 @@ export class InstanceManager extends EventEmitter {
       callerInstanceId: callerInstanceId ?? null,
       debug: !!debug,
     });
+    if (recoveredFirstPrompt) inst.firstPrompt = recoveredFirstPrompt;
 
     inst.on('event', (ev) => this.emit('event', { id, ev }));
     // The Instance signals (rather than self-handles) an overage trip — central

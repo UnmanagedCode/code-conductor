@@ -266,3 +266,40 @@ test('resume rekey migrates the custom title from the old sessionId to the new',
     else process.env.FAKE_CLAUDE_SCENARIO = prevScenario;
   }
 });
+
+test('resuming a crashed session recovers firstPrompt from disk instead of losing it to the next message', async () => {
+  await api(baseUrl, 'POST', '/api/projects', { name: 'crash-resumed' });
+
+  const r1 = await api(baseUrl, 'POST', '/api/instances', { project: 'crash-resumed' });
+  const sid = r1.body.sessionId;
+  const inst = instances.get(r1.body.id);
+  await waitFor(() => inst.status === 'idle' && inst.sessionId === sid);
+
+  // Plant the original first-turn content on disk — the fake CLI (like a
+  // real crash) never gets to write this itself; this mirrors what a real
+  // session's jsonl holds after its actual first prompt.
+  const cwd = path.join(projectsRoot, 'crash-resumed');
+  const dir = path.join(claudeProjectsRoot, encodeCwd(cwd));
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(
+    path.join(dir, `${sid}.jsonl`),
+    `${JSON.stringify({ type: 'user', message: { role: 'user', content: 'Foo bar' } })}\n`,
+  );
+
+  // Simulate a crash: kill the subprocess without going through the normal
+  // exit/cleanup path, leaving the Instance in byId with proc === null.
+  inst.proc.kill('SIGKILL');
+  await waitFor(() => !inst.proc);
+
+  // Resume via the generic path (a UI "resume dead session" click, crash/
+  // anchor auto-resume, respawn_instance all go through create({resume})
+  // with a BRAND NEW Instance object — unlike the restart-manifest path,
+  // nothing else seeds firstPrompt for it).
+  const inst2 = await instances.create({ project: 'crash-resumed', resume: sid });
+  assert.equal(inst2.firstPrompt, 'Foo bar', 'firstPrompt recovered from disk immediately on resume');
+
+  await waitFor(() => inst2.status === 'idle');
+  await inst2.prompt('please continue');
+  await waitFor(() => inst2.status === 'idle');
+  assert.equal(inst2.firstPrompt, 'Foo bar', 'the next real message must not clobber the recovered label');
+});
