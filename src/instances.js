@@ -1,4 +1,3 @@
-import { spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import readline from 'node:readline';
@@ -24,6 +23,7 @@ import { reconstructTasks } from './taskReconstruct.js';
 import { IdleSubscriptionHub } from './idleSubscriptions.js';
 import { OverageResumeController } from './overageResume.js';
 import { UsageOverageMonitor } from './usageOverageMonitor.js';
+import { defaultClaudeLauncher } from './claudeLauncher.js';
 
 // `AUTO_RESUME_TEXT` now lives with the overage timer machine in
 // overageResume.js; re-export it here so existing importers (and tests) that
@@ -225,9 +225,12 @@ export class EventLog {
 }
 
 export class Instance extends EventEmitter {
-  constructor({ id, project, cwd, mode, effort, thinking, model, hookCallbackUrl = null, mcpServerUrl = null, worktree = null, temp = false, conducted = false, callerInstanceId = null, debug = false }) {
+  constructor({ id, project, cwd, mode, effort, thinking, model, hookCallbackUrl = null, mcpServerUrl = null, worktree = null, temp = false, conducted = false, callerInstanceId = null, debug = false, launcher = defaultClaudeLauncher }) {
     super();
     this.id = id;
+    // The ClaudeLauncher used to spawn the subprocess. Defaults to the real
+    // launcher (child_process.spawn); tests inject an in-process one.
+    this._launcher = launcher;
     this.project = project;
     this.cwd = cwd;
     this.mode = mode;
@@ -733,11 +736,7 @@ export class Instance extends EventEmitter {
     this._spawnArgv = [command, ...args];
     this._openDebugStreams(this._spawnArgv);
 
-    this.proc = spawn(command, args, {
-      cwd: this.cwd,
-      env: spawnEnv,
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
+    this.proc = this._launcher.launch({ command, args, cwd: this.cwd, env: spawnEnv });
     this.pid = this.proc.pid;
 
     const outRl = readline.createInterface({ input: this.proc.stdout, crlfDelay: Infinity });
@@ -1440,9 +1439,13 @@ export class Instance extends EventEmitter {
 }
 
 export class InstanceManager extends EventEmitter {
-  constructor() {
+  constructor({ claudeLauncher = defaultClaudeLauncher } = {}) {
     super();
     this.byId = new Map();
+    // Injected launcher, passed to every Instance so it spawns through the
+    // seam rather than child_process.spawn directly. Production default is the
+    // real launcher; tests inject an in-process one via createServer().
+    this._claudeLauncher = claudeLauncher;
     // In-flight resume coalescing: sessionId → Promise<Instance> for a create()
     // that is currently resuming that session but has not yet reached spawn()
     // (create() awaits findSessionLocation/getProject/… before it sets .proc).
@@ -1798,6 +1801,7 @@ export class InstanceManager extends EventEmitter {
       conducted: conductedFlag,
       callerInstanceId: callerInstanceId ?? null,
       debug: !!debug,
+      launcher: this._claudeLauncher,
     });
     if (recoveredFirstPrompt) inst.firstPrompt = recoveredFirstPrompt;
 
