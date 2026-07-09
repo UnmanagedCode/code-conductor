@@ -38,39 +38,49 @@ beforeEach(async () => {
 afterEach(async () => { await instances.shutdown(); await rmrf(home); });
 
 test('shutdownTempSync archives temp session (jsonl kept, subagents dir deleted) and leaves non-temp alone', async () => {
-  const created = await api(baseUrl, 'POST', '/api/projects', { name: 'restartcleanup' });
-  assert.equal(created.status, 201);
+  // REAL OS PROCESS required: shutdownTempSync SIGKILLs live temp subprocesses
+  // via OS process.kill(pid) + busy-waits on the reap. With the in-process
+  // launcher (pid=null) that SIGKILL/reap is skipped and the assertions would
+  // pass off the pid-independent archival alone — not the path under test. Boot
+  // a dedicated realProcess server so the kill+reap is genuinely exercised.
+  const rp = await bootServer({ scenarioPath: SCENARIO, realProcess: true });
+  try {
+    const created = await api(rp.baseUrl, 'POST', '/api/projects', { name: 'restartcleanup' });
+    assert.equal(created.status, 201);
 
-  const tempRes = await api(baseUrl, 'POST', '/api/instances', { project: 'restartcleanup', temp: true });
-  assert.equal(tempRes.status, 201);
-  const tempInst = instances.get(tempRes.body.id);
-  await waitFor(() => tempInst.status === 'idle' && tempInst.sessionId);
-  const tempSid = tempInst.sessionId;
+    const tempRes = await api(rp.baseUrl, 'POST', '/api/instances', { project: 'restartcleanup', temp: true });
+    assert.equal(tempRes.status, 201);
+    const tempInst = rp.instances.get(tempRes.body.id);
+    await waitFor(() => tempInst.status === 'idle' && tempInst.sessionId);
+    const tempSid = tempInst.sessionId;
 
-  const normalRes = await api(baseUrl, 'POST', '/api/instances', { project: 'restartcleanup' });
-  assert.equal(normalRes.status, 201);
-  const normalInst = instances.get(normalRes.body.id);
-  await waitFor(() => normalInst.status === 'idle' && normalInst.sessionId);
-  const normalSid = normalInst.sessionId;
+    const normalRes = await api(rp.baseUrl, 'POST', '/api/instances', { project: 'restartcleanup' });
+    assert.equal(normalRes.status, 201);
+    const normalInst = rp.instances.get(normalRes.body.id);
+    await waitFor(() => normalInst.status === 'idle' && normalInst.sessionId);
+    const normalSid = normalInst.sessionId;
 
-  // Materialize both jsonls (fake-claude doesn't write to ~/.claude/projects).
-  const dir = path.join(claudeProjectsRoot, encodeCwd(tempInst.cwd));
-  await fs.mkdir(dir, { recursive: true });
-  const tempJsonl = path.join(dir, `${tempSid}.jsonl`);
-  const tempSubagents = path.join(dir, tempSid);
-  const normalJsonl = path.join(dir, `${normalSid}.jsonl`);
-  await fs.writeFile(tempJsonl, '{"type":"user","uuid":"u1"}\n');
-  await fs.mkdir(tempSubagents, { recursive: true });
-  await fs.writeFile(path.join(tempSubagents, 'agent.jsonl'), '{}\n');
-  await fs.writeFile(normalJsonl, '{"type":"user","uuid":"u2"}\n');
+    // Materialize both jsonls (fake-claude doesn't write to ~/.claude/projects).
+    const dir = path.join(rp.claudeProjectsRoot, encodeCwd(tempInst.cwd));
+    await fs.mkdir(dir, { recursive: true });
+    const tempJsonl = path.join(dir, `${tempSid}.jsonl`);
+    const tempSubagents = path.join(dir, tempSid);
+    const normalJsonl = path.join(dir, `${normalSid}.jsonl`);
+    await fs.writeFile(tempJsonl, '{"type":"user","uuid":"u1"}\n');
+    await fs.mkdir(tempSubagents, { recursive: true });
+    await fs.writeFile(path.join(tempSubagents, 'agent.jsonl'), '{}\n');
+    await fs.writeFile(normalJsonl, '{"type":"user","uuid":"u2"}\n');
 
-  instances.shutdownTempSync();
+    rp.instances.shutdownTempSync();
 
-  // Archive behavior: .jsonl is KEPT (the transcript is preserved for restore).
-  await fs.access(tempJsonl); // must still exist
-  // Subagent dir is still cleaned up (ephemeral, not needed for restore).
-  await assert.rejects(() => fs.access(tempSubagents), 'temp subagents dir must be deleted');
-  await fs.access(normalJsonl); // non-temp jsonl untouched
+    // Archive behavior: .jsonl is KEPT (the transcript is preserved for restore).
+    await fs.access(tempJsonl); // must still exist
+    // Subagent dir is still cleaned up (ephemeral, not needed for restore).
+    await assert.rejects(() => fs.access(tempSubagents), 'temp subagents dir must be deleted');
+    await fs.access(normalJsonl); // non-temp jsonl untouched
+  } finally {
+    await rp.close();
+  }
 });
 
 test('tempCleanupSnapshot only includes live temp instances with a sessionId', async () => {

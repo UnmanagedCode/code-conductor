@@ -4,6 +4,7 @@ import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { createServer } from '../server.js';
 import { _resetForTest as resetProjectsCache } from '../src/projectsCache.js';
+import { InProcessClaudeLauncher } from './inProcessLauncher.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FAKE_CLAUDE = path.join(__dirname, 'fake-claude.mjs');
@@ -24,7 +25,16 @@ export async function rmrf(p) {
   await fs.rm(p, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
 }
 
-export async function bootServer({ scenarioPath, useRealClaude = false } = {}) {
+// Launcher selection:
+//   default            → InProcessClaudeLauncher: the fake-claude engine runs on
+//                        the event loop, ZERO OS subprocesses per instance. This
+//                        is the forget-proof default so any normally-written test
+//                        spawns no processes (the phantom-process-killer defense).
+//   realProcess: true  → real subprocess launcher spawning `node fake-claude.mjs`;
+//                        for the handful of tests that need a real .pid / OS
+//                        `process.kill` / sync-shutdown SIGKILL+reap.
+//   useRealClaude:true → the real `claude` binary (RUN_REAL_CLAUDE smoke suite).
+export async function bootServer({ scenarioPath, useRealClaude = false, realProcess = false } = {}) {
   // Reset the projects git-facts cache so stale entries from a previous test
   // can't bleed into this one. TTL=0 gives pure-coalescing semantics:
   // concurrent requests coalesce but sequential requests always recompute,
@@ -42,16 +52,26 @@ export async function bootServer({ scenarioPath, useRealClaude = false } = {}) {
   };
   process.env.PROJECTS_ROOT = projectsRoot;
   process.env.CLAUDE_PROJECTS_ROOT = claudeProjectsRoot;
+  let claudeLauncher; // undefined ⇒ createServer uses the production RealClaudeLauncher
   if (useRealClaude) {
     delete process.env.CLAUDE_BIN;
     delete process.env.FAKE_CLAUDE_SCENARIO;
-  } else {
+  } else if (realProcess) {
     process.env.CLAUDE_BIN = `${process.execPath} ${FAKE_CLAUDE}`;
     if (scenarioPath) process.env.FAKE_CLAUDE_SCENARIO = scenarioPath;
     else delete process.env.FAKE_CLAUDE_SCENARIO;
+  } else {
+    // In-process default. A BARE sentinel CLAUDE_BIN (no script path) keeps
+    // resolveClaudeBin's prefixArgs empty, so the argv the engine sees equals
+    // the real CLI flag set — otherwise the fake-claude.mjs path would pollute
+    // FAKE_CLAUDE_ARGV_DUMP. The launcher ignores `command` entirely.
+    process.env.CLAUDE_BIN = 'claude';
+    if (scenarioPath) process.env.FAKE_CLAUDE_SCENARIO = scenarioPath;
+    else delete process.env.FAKE_CLAUDE_SCENARIO;
+    claudeLauncher = new InProcessClaudeLauncher();
   }
 
-  const { server, instances, pluginHost } = createServer();
+  const { server, instances, pluginHost } = createServer({ claudeLauncher });
   await new Promise((resolve, reject) => {
     server.once('error', reject);
     server.listen(0, '127.0.0.1', resolve);

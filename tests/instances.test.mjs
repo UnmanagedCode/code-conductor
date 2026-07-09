@@ -314,13 +314,19 @@ test('soft interrupt is a no-op when not in a turn', async () => {
 });
 
 test('crash + respawn preserves sessionId, ring buffer, and uses --resume', async () => {
-  await setupWithProject();
-  const transcriptPath = path.join(home, 'transcript.log');
+  // REAL OS PROCESS required: this test SIGKILLs the subprocess via
+  // process.kill(pid) to simulate an external crash, so it boots a dedicated
+  // realProcess server instead of the file's default in-process launcher (which
+  // has pid=null and no OS process to signal). Only this test opts in — the rest
+  // of the file stays in-process.
+  const rp = await bootServer({ scenarioPath: SCENARIO, realProcess: true });
+  const transcriptPath = path.join(rp.tmpHome, 'transcript.log');
   process.env.FAKE_CLAUDE_TRANSCRIPT = transcriptPath;
   try {
-    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', mode: 'bypassPermissions' });
+    await api(rp.baseUrl, 'POST', '/api/projects', { name: 'demo' });
+    const r = await api(rp.baseUrl, 'POST', '/api/instances', { project: 'demo', mode: 'bypassPermissions' });
     const id = r.body.id;
-    const inst = instances.get(id);
+    const inst = rp.instances.get(id);
     await waitFor(() => inst.status === 'idle' && inst.sessionId);
     const sid = inst.sessionId;
     const originalPid = inst.pid;
@@ -334,7 +340,7 @@ test('crash + respawn preserves sessionId, ring buffer, and uses --resume', asyn
     assert.equal(inst.ring.toArray().length >= ringBefore, true, 'ring preserved across crash');
 
     // Respawn — uses scenario again (fresh fake-claude reads the same scenario file).
-    const resp = await api(baseUrl, 'POST', `/api/instances/${id}/respawn`);
+    const resp = await api(rp.baseUrl, 'POST', `/api/instances/${id}/respawn`);
     assert.equal(resp.status, 200);
     await waitFor(() => inst.status === 'idle' && inst.pid && inst.sessionId === sid);
     assert.notEqual(inst.pid, originalPid);
@@ -347,6 +353,7 @@ test('crash + respawn preserves sessionId, ring buffer, and uses --resume', asyn
     assert.equal(inst.sessionId, sid, 'sessionId unchanged after respawn');
   } finally {
     delete process.env.FAKE_CLAUDE_TRANSCRIPT;
+    await rp.close();
   }
 });
 
