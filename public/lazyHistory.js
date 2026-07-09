@@ -70,6 +70,53 @@ export function prependBatch(root, holder, anchorNode = null, afterInsert = null
   root.scrollTop = prevScrollTop + (root.scrollHeight - prevHeight);
 }
 
+// Splice a rendered batch above the existing content: viewport-preserving
+// prepend, seam-bubble merge, and sub-agent adoption — one operation so the
+// scroll compensation in prependBatch sees the final layout. Returns the new
+// oldest chunk's leading wrap (the next page's merge target).
+//
+//   batch             — renderEventBatch() result
+//   conversation      — the live Conversation (parked orphan child events);
+//                       optional for callers with no live view
+//   oldestLeadingWrap — the current oldest chunk's leading assistant wrap
+//                       (null when it starts on a turn boundary / gap)
+export function spliceBatchAbove({ root, batch, anchorNode = null, conversation = null, oldestLeadingWrap = null }) {
+  let merged = false;
+  prependBatch(root, batch.holder, anchorNode, () => {
+    // Bubble merge: the batch ends with an OPEN assistant segment and the
+    // chunk below begins with one — pages are contiguous, so both halves
+    // belong to one turn. Move the batch's trailing blocks to the FRONT of
+    // the below chunk's leading bubble (its node/body identity is what the
+    // live Conversation's maps point at) and drop the emptied batch bubble.
+    // Quiescent seams make this a pure concatenation of whole, finalized
+    // blocks — a moved Task block carries its nested sub-conversation along.
+    if (batch.trailingOpenWrap && oldestLeadingWrap
+        && batch.trailingOpenWrap !== oldestLeadingWrap) {
+      const dst = oldestLeadingWrap.body;
+      const src = batch.trailingOpenWrap.body;
+      const ref = dst.firstChild;
+      while (src.firstChild) dst.insertBefore(src.firstChild, ref);
+      batch.trailingOpenWrap.node.remove();
+      merged = true;
+    }
+    // Sub-agent adoption: live child events whose parent Task head was below
+    // the tail sit parked in the live conversation; if this batch carries
+    // the head's block, register it and replay them into its nested panel
+    // (arrival order preserved — multi-part nested blocks reconstruct whole).
+    if (conversation?.orphanChildEvents?.size) {
+      for (const pid of [...conversation.orphanChildEvents.keys()]) {
+        const block = batch.toolBlocks.get(pid);
+        if (block) conversation.adoptToolBlock(pid, block);
+      }
+    }
+  });
+  // When the whole batch was ONE open segment that just merged away, the top
+  // bubble is still the previous target — keep it.
+  return (merged && batch.leadingWrap === batch.trailingOpenWrap)
+    ? oldestLeadingWrap
+    : (batch.leadingWrap ?? null);
+}
+
 // --- Lazy-load of older history (scroll-to-top) controller ----------------
 // The WS snapshot carries only the ring TAIL (tailStartSeq > 0 ⇒ older
 // events exist); the user pages backward through
@@ -153,41 +200,13 @@ export function installLazyHistoryController({
       if (page.events.length) {
         // Render through the standard Conversation pipeline on a detached
         // node (isolated streaming/tool-pairing state), then splice above
-        // the live content, preserving the viewport.
+        // the live content — merging the seam bubbles and adopting parked
+        // sub-agent events — preserving the viewport.
         const batch = renderEventBatch(page.events, conversationOptions);
-        let merged = false;
-        prependBatch(conversationEl, batch.holder, lazySentinel, () => {
-          // Bubble merge: the batch ends with an OPEN assistant segment and
-          // the chunk below begins with one — pages are contiguous, so both
-          // halves belong to one turn. Move the batch's trailing blocks to
-          // the FRONT of the below chunk's leading bubble (its node/body
-          // identity is what the live Conversation's maps point at) and drop
-          // the emptied batch bubble. Quiescent seams make this a pure
-          // concatenation of whole, finalized blocks.
-          if (batch.trailingOpenWrap && oldestLeadingWrap
-              && batch.trailingOpenWrap !== oldestLeadingWrap) {
-            const dst = oldestLeadingWrap.body;
-            const src = batch.trailingOpenWrap.body;
-            const ref = dst.firstChild;
-            while (src.firstChild) dst.insertBefore(src.firstChild, ref);
-            batch.trailingOpenWrap.node.remove();
-            merged = true;
-          }
-          // Sub-agent adoption: live child events whose parent Task head was
-          // below the tail are parked in the live conversation; if this
-          // batch carries the head's block, register it and replay them into
-          // its nested panel (whole-block reconstruction — order preserved).
-          for (const pid of [...(conversation.orphanChildEvents?.keys() ?? [])]) {
-            const block = batch.toolBlocks.get(pid);
-            if (block) conversation.adoptToolBlock(pid, block);
-          }
+        oldestLeadingWrap = spliceBatchAbove({
+          root: conversationEl, batch, anchorNode: lazySentinel,
+          conversation, oldestLeadingWrap,
         });
-        // Advance the merge target to the new oldest chunk's leading bubble.
-        // When the whole batch was ONE open segment that just merged away,
-        // the top bubble is still the previous target — keep it.
-        oldestLeadingWrap = (merged && batch.leadingWrap === batch.trailingOpenWrap)
-          ? oldestLeadingWrap
-          : (batch.leadingWrap ?? null);
         // Freshly-created rewind/fork buttons default to enabled; re-sync
         // them with the instance's current status.
         const inst = getInstances().find(i => i.id === id);
