@@ -31,8 +31,17 @@ after(async () => {
 function storeFile() {
   return path.join(process.env.PROJECTS_ROOT, '.code-conductor', 'archived-sessions.json');
 }
+function bakFile() {
+  return storeFile() + '.bak';
+}
 function lockFile() {
   return storeFile() + '.lock';
+}
+// Reset must clear the primary AND the rolling backup — otherwise a missing
+// primary recovers from a prior test's `.bak` and the isolation is defeated.
+async function resetStore() {
+  await fs.rm(storeFile(), { force: true });
+  await fs.rm(bakFile(), { force: true });
 }
 
 function waitForExit(proc) {
@@ -48,7 +57,7 @@ function waitForExit(proc) {
 // ── Test 1: within-process concurrent writes ─────────────────────────────────
 
 test('concurrent within-process markArchived preserves all entries', async () => {
-  await fs.rm(storeFile(), { force: true });
+  await resetStore();
 
   const ids = Array.from({ length: 10 }, (_, i) => `wp-${i}`);
   await Promise.all(ids.map(id => markArchived(id)));
@@ -57,13 +66,13 @@ test('concurrent within-process markArchived preserves all entries', async () =>
   assert.equal(set.size, 10, 'all 10 concurrent writes should survive');
   for (const id of ids) assert.ok(set.has(id), `missing: ${id}`);
 
-  await fs.rm(storeFile(), { force: true });
+  await resetStore();
 });
 
 // ── Test 2: interleaved mark + unmark — other entries must not be clobbered ──
 
 test('unmarkArchived under concurrent writes does not clobber other entries', async () => {
-  await fs.rm(storeFile(), { force: true });
+  await resetStore();
 
   const toKeep = ['keep-1', 'keep-2', 'keep-3'];
   const toRemove = 'to-remove';
@@ -82,7 +91,7 @@ test('unmarkArchived under concurrent writes does not clobber other entries', as
     assert.ok(set.has(id), `expected ${id} in set; got [${[...set].join(', ')}]`);
   }
 
-  await fs.rm(storeFile(), { force: true });
+  await resetStore();
 });
 
 // ── Test 3: two concurrent child processes — the actual hot-restart race ─────
@@ -120,13 +129,18 @@ test('two concurrent child processes both markArchived → all entries preserved
   }
   assert.equal(got.size, 10, 'no entries should be lost or duplicated');
 
+  // The rolling backup must be a valid, non-empty snapshot after the race —
+  // it's the recovery source if the primary is ever lost.
+  const bak = JSON.parse(await fs.readFile(archivedFile + '.bak', 'utf8'));
+  assert.ok(Array.isArray(bak.sessions) && bak.sessions.length > 0, 'backup should hold a non-empty snapshot');
+
   await fs.rm(xTmp, { recursive: true, force: true });
 });
 
 // ── Test 4: stale lock file is detected and cleared ──────────────────────────
 
 test('stale lock file does not block markArchived', async () => {
-  await fs.rm(storeFile(), { force: true });
+  await resetStore();
   await fs.rm(lockFile(), { force: true });
   await fs.mkdir(path.dirname(lockFile()), { recursive: true });
 
@@ -145,5 +159,5 @@ test('stale lock file does not block markArchived', async () => {
     'lock file should have been removed after acquisition',
   );
 
-  await fs.rm(storeFile(), { force: true });
+  await resetStore();
 });

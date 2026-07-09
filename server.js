@@ -8,7 +8,8 @@ import { buildMcpRouter } from './src/mcp/server.js';
 import { InstanceManager } from './src/instances.js';
 import { attachWsHub } from './src/wsHub.js';
 import { initCostTracking } from './src/costTracking.js';
-import { projectsRoot } from './src/projects.js';
+import { projectsRoot, orchStoreRoot } from './src/projects.js';
+import { loadAllArchived } from './src/archivedSessions.js';
 import { runMigrations } from './migrations/index.mjs';
 import { checkClaudeReadiness, formatReadiness } from './src/health.js';
 import { sweepPendingTempCleanup } from './src/tempCleanup.js';
@@ -88,6 +89,14 @@ export async function start({ port = 8787, host = '127.0.0.1' } = {}) {
   // migration is idempotent and a no-op on an already-migrated workspace,
   // so this is fast in steady state. A migration that throws aborts boot.
   await runMigrations({ root: projectsRoot() });
+  // Diagnostic: log the resolved store path + archived count at boot so a
+  // path-divergence reset (a relaunch with a different PROJECTS_ROOT/cwd
+  // reading a *different*, empty store) is visible in the logs. Non-fatal.
+  try {
+    const n = (await loadAllArchived()).size;
+    const src = process.env.PROJECTS_ROOT ? 'PROJECTS_ROOT env' : 'default (repo parent)';
+    console.log(`store: ${orchStoreRoot()} [${src}] — ${n} archived session(s)`);
+  } catch { /* diagnostic only */ }
   // Belt-and-braces cleanup for temp sessions whose jsonl re-appeared after
   // the previous process exited (orphaned subagent writes etc.). The manifest
   // is written by scheduleRestart in src/restart.js.
