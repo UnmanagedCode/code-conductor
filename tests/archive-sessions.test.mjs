@@ -221,6 +221,10 @@ test('sweepPendingTempCleanup keeps .jsonl and marks archived', async () => {
     writePendingTempCleanup([{ cwd, sessionId: sid }]);
     const manifest = pendingTempCleanupPath();
     await fs.access(manifest);
+    // Atomic write: valid JSON, and no orphan tmp file left in the store dir.
+    JSON.parse(await fs.readFile(manifest, 'utf8'));
+    const residue = (await fs.readdir(orchStoreRoot())).filter(n => n.startsWith(path.basename(manifest) + '.tmp-'));
+    assert.equal(residue.length, 0, 'no orphan .tmp- manifest file after atomic write');
 
     const result = sweepPendingTempCleanup({ log: { warn() {}, log() {} } });
     assert.equal(result.swept, 1);

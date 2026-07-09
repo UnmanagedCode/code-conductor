@@ -20,7 +20,7 @@
 // writes runTempCleanup already attempted in src/restart.js).
 
 import path from 'node:path';
-import { writeFileSync, readFileSync, rmSync, existsSync } from 'node:fs';
+import { writeFileSync, readFileSync, rmSync, existsSync, renameSync } from 'node:fs';
 import { orchStoreRoot, claudeProjectsRoot, encodeCwd } from './projects.js';
 import { unmarkTemp } from './tempSessions.js';
 import { markArchived } from './archivedSessions.js';
@@ -41,7 +41,11 @@ export function writePendingTempCleanup(entries) {
     writtenAt: new Date().toISOString(),
     entries: entries.map(({ cwd, sessionId }) => ({ cwd, sessionId })),
   };
-  writeFileSync(file, JSON.stringify(payload));
+  // Atomic tmp-write + rename so an OOM/crash mid-write can't leave a torn
+  // manifest (writeFileSync truncates in place). Sync — see header.
+  const tmp = `${file}.tmp-${process.pid}-${Date.now()}`;
+  writeFileSync(tmp, JSON.stringify(payload));
+  renameSync(tmp, file);
 }
 
 export function sweepPendingTempCleanup({ log = console } = {}) {

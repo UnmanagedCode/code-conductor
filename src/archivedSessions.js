@@ -10,13 +10,17 @@
 // housekeeping: callers check for file existence before rendering or acting.
 //
 // Atomic writes (write tmp + rename), mirroring `conductedSessions.js`.
-// Missing file = empty set.
+// A rolling `.bak` holds the last non-empty snapshot; on a missing or corrupt
+// primary we recover from it rather than silently returning empty. A corrupt
+// primary is quarantined to `.corrupt-<pid>-<ts>` (under the lock) instead of
+// bricking archiving. Missing primary AND missing backup = legitimately empty.
 //
 // Mutation safety: each write is protected by a cross-process advisory
 // lockfile (`archived-sessions.json.lock`) so concurrent processes (e.g.
 // old server exiting + new server booting during a hot restart) cannot
 // clobber each other's entries. Within a single process, `writeChain`
-// serialises calls to avoid redundant lock contention.
+// serialises calls to avoid redundant lock contention. The `.bak` refresh
+// lives inside `writeSet` (under the same lock) so it can't race a writer.
 
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
@@ -27,21 +31,59 @@ function archivedFile() {
   return path.join(orchStoreRoot(), 'archived-sessions.json');
 }
 
-export async function loadAllArchived() {
+function backupFile() {
+  return archivedFile() + '.bak';
+}
+
+// Parse raw store JSON into a Set of sessionIds. Throws SyntaxError on corrupt
+// JSON (callers decide whether that's fatal). A well-formed doc with no
+// `sessions` array yields the empty set.
+function parseSet(raw) {
+  const obj = JSON.parse(raw); // throws SyntaxError on corrupt JSON
+  const arr = Array.isArray(obj?.sessions) ? obj.sessions : null;
+  if (!arr) return new Set();
+  const out = new Set();
+  for (const sid of arr) {
+    if (typeof sid === 'string' && sid) out.add(sid);
+  }
+  return out;
+}
+
+// Best-effort: rename a bad file aside for forensics. Only ever called on the
+// primary from within a mutation (under the lock) or on the backup, so it can't
+// race a concurrent writer's rename of a good file.
+async function quarantine(file) {
+  const dest = `${file}.corrupt-${process.pid}-${Date.now()}`;
+  try { await fs.rename(file, dest); } catch { /* best-effort */ }
+}
+
+// Read-only recovery for the non-fatal read path: return the backup's set, or
+// empty if the backup is absent/corrupt. Never writes, never throws.
+async function loadBackupSet() {
+  let raw;
   try {
-    const raw = await fs.readFile(archivedFile(), 'utf8');
-    const obj = JSON.parse(raw);
-    const arr = Array.isArray(obj?.sessions) ? obj.sessions : null;
-    if (!arr) return new Set();
-    const out = new Set();
-    for (const sid of arr) {
-      if (typeof sid === 'string' && sid) out.add(sid);
-    }
-    return out;
+    raw = await fs.readFile(backupFile(), 'utf8');
+  } catch { return new Set(); }
+  try { return parseSet(raw); } catch { return new Set(); }
+}
+
+export async function loadAllArchived() {
+  let raw;
+  try {
+    raw = await fs.readFile(archivedFile(), 'utf8');
   } catch (e) {
-    if (e.code === 'ENOENT') return new Set();
-    console.warn(`archivedSessions: failed to read ${archivedFile()}: ${e.message}`);
-    return new Set();
+    if (e.code === 'ENOENT') return loadBackupSet(); // absent → try backup
+    // I/O error on the read path is non-fatal — fall back to the backup.
+    console.warn(`archivedSessions: failed to read ${archivedFile()}: ${e.message}; trying backup`);
+    return loadBackupSet();
+  }
+  try {
+    return parseSet(raw);
+  } catch (e) {
+    // Corrupt primary — don't clobber it here (the read path isn't under the
+    // lock); just serve the backup. The next mutation quarantines + self-heals.
+    console.warn(`archivedSessions: corrupt ${archivedFile()} (${e.message}); recovering from backup`);
+    return loadBackupSet();
   }
 }
 
@@ -51,25 +93,47 @@ export async function isArchived(sessionId) {
   return set.has(sessionId);
 }
 
-// Like loadAllArchived but used inside mutations (under the cross-process lock).
-// Throws on I/O errors and JSON corruption rather than returning an empty set,
-// so we never overwrite the store based on a failed read.
-// ENOENT is the one legitimate empty-base case: the file has never been written
-// or was correctly unlinked when the last entry was removed.
-async function loadArchivedStrict() {
+// Recover a mutation's base set from the backup. Runs under the cross-process
+// lock. Absent backup → legitimately empty. Corrupt backup → quarantine it and
+// start clean (both copies are then preserved for forensics). A genuine I/O
+// error reading the backup (e.g. EACCES) propagates — abort the mutation rather
+// than risk overwriting a store we simply couldn't read.
+async function recoverBackupStrict() {
+  let raw;
   try {
-    const raw = await fs.readFile(archivedFile(), 'utf8');
-    const obj = JSON.parse(raw); // throws SyntaxError on corrupt JSON
-    const arr = Array.isArray(obj?.sessions) ? obj.sessions : null;
-    if (!arr) return new Set();
-    const out = new Set();
-    for (const sid of arr) {
-      if (typeof sid === 'string' && sid) out.add(sid);
-    }
-    return out;
+    raw = await fs.readFile(backupFile(), 'utf8');
   } catch (e) {
-    if (e.code === 'ENOENT') return new Set(); // legitimately empty
-    throw e; // I/O error or corrupt JSON — abort the mutation
+    if (e.code === 'ENOENT') return new Set(); // no backup → legitimately empty
+    throw e; // unrecoverable I/O — abort the mutation
+  }
+  try {
+    return parseSet(raw);
+  } catch {
+    await quarantine(backupFile()); // backup also corrupt → set aside, start clean
+    return new Set();
+  }
+}
+
+// Like loadAllArchived but used inside mutations (under the cross-process lock).
+// Corrupt JSON is quarantined and recovered from the backup rather than bricking
+// archiving; a genuine unrecoverable I/O error (EACCES etc.) still throws so we
+// never overwrite the store based on a failed read. ENOENT falls back to the
+// backup, then to a legitimately-empty base.
+async function loadArchivedStrict() {
+  let raw;
+  try {
+    raw = await fs.readFile(archivedFile(), 'utf8');
+  } catch (e) {
+    if (e.code === 'ENOENT') return recoverBackupStrict(); // absent → backup, else empty
+    throw e; // I/O error (EACCES etc.) — abort the mutation
+  }
+  try {
+    return parseSet(raw);
+  } catch {
+    // Corrupt primary — quarantine aside (race-safe under the lock) then
+    // recover from the backup. The ensuing writeSet rewrites a clean primary.
+    await quarantine(archivedFile());
+    return recoverBackupStrict();
   }
 }
 
@@ -85,15 +149,23 @@ function serialize(fn) {
 
 async function writeSet(set) {
   const file = archivedFile();
-  if (set.size === 0) {
-    try { await fs.unlink(file); } catch (e) { if (e.code !== 'ENOENT') throw e; }
-    return;
-  }
   await fs.mkdir(orchStoreRoot(), { recursive: true });
   const obj = { sessions: [...set].sort((a, b) => a.localeCompare(b)) };
+  const json = JSON.stringify(obj, null, 2) + '\n';
+  // Always write an explicit document (even `{"sessions":[]}`) — never unlink.
+  // An absent primary then unambiguously means external loss, and loads recover
+  // it from the backup.
   const tmp = `${file}.tmp-${process.pid}-${Date.now()}`;
-  await fs.writeFile(tmp, JSON.stringify(obj, null, 2) + '\n');
+  await fs.writeFile(tmp, json);
   await fs.rename(tmp, file);
+  // Refresh the rolling backup only from a non-empty write, so a drain-to-empty
+  // (or an errant empty write) can't erase the last recoverable snapshot. Runs
+  // under the same lock as the primary write (callers wrap in withLock).
+  if (set.size > 0) {
+    const btmp = `${file}.bak.tmp-${process.pid}-${Date.now()}`;
+    await fs.writeFile(btmp, json);
+    await fs.rename(btmp, backupFile());
+  }
 }
 
 export function markArchived(sessionId) {

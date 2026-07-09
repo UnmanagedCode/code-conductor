@@ -12,7 +12,7 @@
 // non-fatal — the file is removed and treated as empty.
 
 import path from 'node:path';
-import { writeFileSync, readFileSync, rmSync, existsSync, mkdirSync } from 'node:fs';
+import { writeFileSync, readFileSync, rmSync, existsSync, mkdirSync, renameSync } from 'node:fs';
 import { orchStoreRoot } from './projects.js';
 
 export const PENDING_RESUME_FILENAME = 'pending-resume.json';
@@ -31,7 +31,11 @@ export function writeResumeManifest(entries) {
     writtenAt: new Date().toISOString(),
     instances: entries,
   };
-  writeFileSync(file, JSON.stringify(payload));
+  // Atomic tmp-write + rename so an OOM/crash mid-write can't leave a torn
+  // manifest (writeFileSync truncates in place). Sync — see header.
+  const tmp = `${file}.tmp-${process.pid}-${Date.now()}`;
+  writeFileSync(tmp, JSON.stringify(payload));
+  renameSync(tmp, file);
 }
 
 // Read the manifest. Returns { instances: [] } when absent or corrupt (and
