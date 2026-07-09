@@ -11,16 +11,19 @@
 // its own dense seqs 0..H-1 (its array indices) and is CUT at a content
 // anchor so it never overlaps the retained ring:
 //
-//   - The ring trims onto turn boundaries (EventLog._trim snaps the head to
-//     an outer user_echo), and every outer user_echo carries an absolute
-//     `userIndex` matching the Nth pure-user-prompt jsonl line. When the
-//     ring head is the echo for prompt N, the archive is cut strictly
-//     before its own echo #N — no overlap, no gap.
-//   - When the head is mid-turn (trim snapping gave up — e.g. one giant
-//     turn), the archive is cut just AFTER the echo that started the turn
-//     containing the head: the prompt bubble survives, the turn's partial
-//     assistant content between the cut and the ring head is a gap. Gap,
-//     never duplication.
+//   - The ring trims onto turn boundaries when it can (EventLog._trim snaps
+//     the head to an outer user_echo, falling back to a quiescent point),
+//     and every outer user_echo carries an absolute `userIndex` matching the
+//     Nth pure-user-prompt jsonl line. When the ring head is the echo for
+//     prompt N, the archive is cut strictly before its own echo #N — no
+//     overlap, no gap. The echo ordinal is the ONLY correlator between the
+//     two seq spaces, which is why the stitch stays turn-anchored even
+//     though page seams themselves are quiescent-aligned.
+//   - When the head is mid-turn (no echo in the trim's reach — e.g. one
+//     giant turn), the archive is cut just AFTER the echo that started the
+//     turn containing the head: the prompt bubble survives, the turn's
+//     partial content between the cut and the ring head is a gap — marked
+//     with a `history_gap` event in the served page. Gap, never duplication.
 //
 // Served archive seqs are additionally clamped below ring.trimmedBefore so
 // the two spaces can never collide; both spaces are dense and the archive
@@ -29,15 +32,11 @@
 // `nextBefore` cursor that works across the boundary.
 
 import { loadPersistedTranscript } from './transcript.js';
-import { isOuterUserEcho, snapStartToTurnStart } from './parser.js';
+import { isOuterUserEcho, snapStartToQuiescent } from './parser.js';
 import { reconstructTasks } from './taskReconstruct.js';
 
 const LIMIT_DEFAULT = 200;
 const LIMIT_MAX = 500;
-// Backward pages extend past `limit` to open on a turn boundary (see
-// pageInstanceEvents); this caps the extension so a pathological runaway turn
-// can't pull an unbounded page.
-const TURN_SNAP_MULT = 5;
 
 export function clampLimit(n) {
   if (!Number.isInteger(n) || n < 1) return LIMIT_DEFAULT;
@@ -58,9 +57,13 @@ function firstIndexAtOrAbove(arr, seq) {
 // index, absolute `userIndex` stamped on outer echoes — same ordinal
 // semantics as Instance._emitUi) and compute `cut`: the number of leading
 // archive events that are safe to serve without overlapping the ring.
+// `gap` is true when the ring head is mid-turn (the trim couldn't reach a
+// turn boundary): the turn's content between the cut and the ring head was
+// evicted and cannot be recovered — pageInstanceEvents marks the seam with
+// a `history_gap` event.
 export async function buildArchive({ cwd, sessionId, ring, trimmedBefore, userEchoCount }) {
   const result = await loadPersistedTranscript({ cwd, sessionId, seqHint: 0 });
-  if (!result) return { events: [], cut: 0 };
+  if (!result) return { events: [], cut: 0, gap: false };
 
   const flat = [];
   let echoOrdinal = 0;
@@ -118,7 +121,7 @@ export async function buildArchive({ cwd, sessionId, ring, trimmedBefore, userEc
   }
   // Safety net: keep archive seqs strictly below the ring's seq space.
   cut = Math.min(cut, Math.max(0, trimmedBefore));
-  return { events: flat, cut };
+  return { events: flat, cut, gap: includeAnchorEcho };
 }
 
 // Page an instance's event history.
@@ -141,38 +144,44 @@ export async function pageInstanceEvents(inst, { before = null, after = null, li
   if (before == null && after == null) before = lastSeq + 1;
   if (before != null) after = null; // before wins
 
-  // Backward pages may extend up to TURN_SNAP_MULT × max below `before` to
-  // land on a turn boundary — load the archive whenever that reach could
-  // cross into it.
+  // Load the archive whenever the tentative window itself dips below the
+  // ring. The quiescent snap can never reach below the ring head from inside
+  // the ring (the trim keeps the head on a boundary, which terminates the
+  // backward search), so no extra reach margin is needed.
   const needArchive = tb > 0 && !!inst.sessionId
-    && (before != null ? before - max * TURN_SNAP_MULT < tb : after < tb);
+    && (before != null ? before - max < tb : after < tb);
 
   let combined = ring;
+  let seamIdx = -1; // index of the ring head inside `combined`
+  let gap = false;  // ring head is mid-turn — content before it was evicted
   if (needArchive) {
     const archive = await buildArchive({
       cwd: inst.cwd, sessionId: inst.sessionId,
       ring, trimmedBefore: tb, userEchoCount: inst._userEchoCount,
     });
     combined = archive.events.slice(0, archive.cut).concat(ring);
+    seamIdx = archive.cut;
+    gap = archive.gap;
   }
 
   let events, hasMore;
   if (before != null) {
     const end = firstIndexAtOrAbove(combined, before);
     let start = Math.max(0, end - max);
-    // Turn-aligned page seams: open the window on an outer user_echo — the
-    // first one inside it when present, else extend backward (bounded by
-    // TURN_SNAP_MULT × max) to the echo owning the straddling turn. Every
-    // page is then a whole number of complete turns, so the client's
-    // isolated per-page renderer never splits an assistant bubble mid-turn
-    // and every straddling block finalizes / tool pairs within its page.
-    // Since the client echoes `nextBefore` (= this page's first seq), the
-    // NEXT page ends exactly where this one starts — page ends are aligned
-    // for free once page starts are. The helper also enforces sub-agent
-    // group integrity (a child whose head is missing would be silently
-    // orphaned by the renderer — conversation.js:apply → toolBlocks lookup).
-    start = snapStartToTurnStart(combined, start, end,
-      Math.max(0, end - max * TURN_SNAP_MULT));
+    // Quiescent page seams: open the window where reconstruction has no open
+    // block and no unresolved tool — the first quiescent index inside the
+    // window when present, else the nearest one below it. Every page then
+    // contains only whole blocks and complete tool round-trips, so the
+    // client's isolated per-page renderer never shows a half block. Since
+    // the client echoes `nextBefore` (= this page's first seq), the NEXT
+    // page ends exactly where this one starts — page ends are aligned for
+    // free once page starts are. The helper also enforces sub-agent group
+    // integrity (a child whose head is missing would be silently orphaned by
+    // the renderer — conversation.js:apply → toolBlocks lookup), which is
+    // what keeps NESTED blocks whole across seams. The archive→ring seam
+    // (`resetIdx`) is a scan-opaque boundary: state is never computed across
+    // the possibly-missing events.
+    start = snapStartToQuiescent(combined, start, end, { resetIdx: seamIdx });
     events = combined.slice(start, end);
     hasMore = start > 0
       // Served down to the very start of what we have. With the archive
@@ -186,6 +195,16 @@ export async function pageInstanceEvents(inst, { before = null, after = null, li
   }
 
   const nextBefore = events.length ? events[0]._seq : Math.max(0, Math.min(before ?? 0, tb));
+
+  // Mark the evicted-content seam. When the ring head is mid-turn, the slice
+  // that carries the first ring event gets a `{kind:'history_gap'}` marker
+  // (no `_seq`, matching task_completion's synthesis) spliced right before
+  // it — the client renders an "earlier messages unavailable" divider there
+  // instead of silently gluing the surviving whole blocks together.
+  if (gap && events.length) {
+    const headIdx = events.findIndex(ev => ev._seq === tb);
+    if (headIdx !== -1) events.splice(headIdx, 0, { kind: 'history_gap' });
+  }
   // Inject synthetic `task_completion` bubbles below the tail. Derived over the
   // full `combined` history (so batches spanning page boundaries are correct),
   // spliced into the served slice after the completing TaskUpdate. Completions

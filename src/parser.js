@@ -536,47 +536,163 @@ export function snapStartToGroupBoundary(arr, start, end) {
   return start;
 }
 
-// Snap a window-start index so the window opens on a turn boundary (an outer
-// user_echo) whenever one is reachable, then enforce sub-agent group
-// integrity. Echo search order: the first echo INSIDE [start, end) (keeps the
-// window small when a boundary is already in it), else the nearest echo BELOW
-// start down to `floor` (extends the window so a turn longer than it is
-// served whole — the client renders each page/tail through an isolated
-// Conversation instance, so a mid-turn cut splits an assistant bubble and
-// strands its trailing block un-finalized). No echo in [floor, end) ⇒ the raw
-// start stands: the bounded mid-turn cut is the backstop, not an error.
+// --- Quiescent-point chunking ----------------------------------------------
 //
-// After the echo snap, snapStartToGroupBoundary runs. A BACKWARD pull (a
-// child's head below the window — e.g. a background Task from an earlier
-// turn) re-triggers the backward echo snap so the window still opens on that
-// head's turn boundary; a FORWARD move (head evicted entirely — the archive
-// gap case) is final. Group integrity ignores `floor` (an orphaned child is
-// silently dropped by the renderer, so the head must be included at any
-// cost); only the echo extension is bounded by it. Shared by instances.js
-// snapshotTail and eventArchive.js pageInstanceEvents.
-export function snapStartToTurnStart(arr, start, end, floor = 0) {
-  floor = Math.max(0, floor);
-  const backToEcho = (s) => {
-    for (let i = s; i >= floor; i--) {
-      if (isOuterUserEcho(arr[i])) return i;
-    }
-    return s;
-  };
-  if (start > floor && !isOuterUserEcho(arr[start])) {
-    let inWindow = -1;
-    for (let i = start + 1; i < end; i++) {
-      if (isOuterUserEcho(arr[i])) { inWindow = i; break; }
-    }
-    start = inWindow !== -1 ? inWindow : backToEcho(start);
+// A cut index i is QUIESCENT when reconstruction state is empty at the seam:
+// no outer text/thinking/tool block is mid-stream (text blocks open at their
+// first text_delta — there is no text_start) and every outer tool_use seen
+// has received its tool_result. A page/tail sliced at a quiescent index
+// contains only whole outer blocks and complete tool round-trips, so the
+// client's isolated per-chunk renderer never shows a half block. Quiescent
+// points are dense — at least one after every resolved tool round-trip and
+// between blocks of one message — so a boundary snap normally moves a few
+// indices, never a whole turn.
+//
+// Outer user_echo / turn_end FORCE-RESET the state: they are always
+// boundaries. Without the reset, a hard-interrupted turn (a tool_use whose
+// tool_result never arrives) would poison every later index forever; the
+// dangling tool renders `· incomplete` via the client's finalize backstop.
+// A running foreground Task is an open tool span, so no quiescent point
+// exists anywhere inside it.
+//
+// SUB-AGENT events (parentToolUseId != null) are deliberately IGNORED by this
+// scan. Async sub-agents interleave their block PARTS with the outer turn's
+// (and each other's), so nested-block wholeness CANNOT come from a linear
+// quiescence scan — it comes from snapStartToGroupBoundary: any child event
+// in the window pulls the start down to the owning Task head, and because
+// chunks are contiguous slices the pulled chunk then contains the head plus
+// every group event up to its end, while the next-older page ends strictly
+// before the head. One group's events — hence every nested block — are never
+// split across chunks. Do NOT extend this state machine to nested blocks: it
+// would destroy quiescent density across every background-task region while
+// adding nothing the group snap doesn't already guarantee.
+
+function blockKey(ev, type) { return `${ev.msgId ?? '?'}:${ev.blockIdx ?? 0}:${type}`; }
+
+// An outer turn_end also force-resets (see header comment above).
+function isOuterTurnEnd(ev) {
+  return ev?.kind === 'turn_end' && !ev.parentToolUseId;
+}
+
+class QuiescenceScan {
+  constructor() {
+    this.openBlocks = new Set();   // `${msgId}:${blockIdx}:${type}` mid-stream
+    this.pendingTools = new Set(); // toolUseId awaiting its tool_result
   }
-  // Fixpoint loop: each backward group pull re-snaps to an echo, which can
-  // expose another straddling group. Backward moves are monotonic (bounded by
-  // floor / index 0); the iteration cap is a defensive net only.
+  get empty() { return this.openBlocks.size === 0 && this.pendingTools.size === 0; }
+  apply(ev) {
+    if (!ev || ev.parentToolUseId) return; // nested — group integrity covers these
+    switch (ev.kind) {
+      case 'user_echo':
+      case 'turn_end':
+        this.openBlocks.clear(); this.pendingTools.clear(); break;
+      case 'text_delta':     this.openBlocks.add(blockKey(ev, 'text')); break;
+      case 'text_end':       this.openBlocks.delete(blockKey(ev, 'text')); break;
+      case 'thinking_start':
+      case 'thinking_delta': this.openBlocks.add(blockKey(ev, 'thinking')); break;
+      case 'thinking_end':   this.openBlocks.delete(blockKey(ev, 'thinking')); break;
+      case 'tool_use_start':
+      case 'tool_use_input_delta':
+        this.openBlocks.add(blockKey(ev, 'tool'));
+        if (ev.toolUseId) this.pendingTools.add(ev.toolUseId);
+        break;
+      case 'tool_use': // block finalized; the SPAN stays open until tool_result
+        this.openBlocks.delete(blockKey(ev, 'tool'));
+        if (ev.toolUseId) this.pendingTools.add(ev.toolUseId);
+        break;
+      case 'tool_result':
+        if (ev.toolUseId) this.pendingTools.delete(ev.toolUseId);
+        break;
+      default: break; // message_start / system / assistant_message / … are state-neutral
+    }
+  }
+}
+
+// Nearest index <= i where the scan state is known: index 0 (array start),
+// `resetIdx` (an externally-declared discontinuity, e.g. the archive→ring
+// seam — state must never be scanned across it), or an outer
+// user_echo/turn_end (both force-reset).
+function nearestResetOrigin(arr, i, resetIdx) {
+  for (let j = i; j > 0; j--) {
+    if (j === resetIdx || isOuterUserEcho(arr[j]) || isOuterTurnEnd(arr[j])) return j;
+  }
+  return 0;
+}
+
+// Core quiescent search. Returns `start` when it is already quiescent, else
+// (allowForward) the first quiescent index inside (start, end) — keeps the
+// window small — else the nearest quiescent index below `start`. A backward
+// result always exists within the current turn (its reset origin is
+// reachable), so the reach is bounded by one turn / one giant block run,
+// never unbounded. Index 0, `resetIdx` and outer user_echo indices are
+// quiescent BY FIAT (cutting right before a turn boundary is the legacy
+// behavior; the seam and the array start are boundaries by construction).
+function quiesceStart(arr, start, end, resetIdx, allowForward) {
+  if (start <= 0) return 0;
+  if (start === resetIdx || isOuterUserEcho(arr[start])) return start;
+  const r = nearestResetOrigin(arr, start - 1, resetIdx);
+  // At a turn_end origin the state BEFORE the event is unknown — it only
+  // becomes known-empty after applying it, so index r itself is not claimable.
+  const originValid = r === 0 || r === resetIdx || isOuterUserEcho(arr[r]);
+  const scan = new QuiescenceScan();
+  let best = -1;
+  for (let i = r; i < end; i++) {
+    const fiat = i === resetIdx || isOuterUserEcho(arr[i]);
+    const quiescent = fiat || (scan.empty && (i > r || originValid));
+    if (quiescent) {
+      if (i === start) return start;
+      if (i < start) best = i;
+      else if (allowForward) return i;
+      else break;
+    } else if (i > start && !allowForward) break;
+    scan.apply(arr[i]);
+  }
+  return best !== -1 ? best : start; // nothing reachable — raw start stands
+}
+
+// Smallest quiescent index in [from, bound), or -1. Used by EventLog._trim
+// to keep the post-eviction ring head on whole blocks when no turn boundary
+// is in reach. Assumes arr[0] opens on a boundary (true by induction over
+// trims, except after a plain-cut last resort — a documented degradation).
+export function firstQuiescentAtOrAfter(arr, from, bound) {
+  if (from <= 0) return 0;
+  const r = nearestResetOrigin(arr, from, -1);
+  const originValid = r === 0 || isOuterUserEcho(arr[r]);
+  const scan = new QuiescenceScan();
+  for (let i = r; i < bound; i++) {
+    const fiat = isOuterUserEcho(arr[i]);
+    const quiescent = fiat || (scan.empty && (i > r || originValid));
+    if (quiescent && i >= from) return i;
+    scan.apply(arr[i]);
+  }
+  return -1;
+}
+
+// Snap a window-start index to a quiescent point, then enforce sub-agent
+// group integrity. `resetIdx` marks the archive→ring seam inside a combined
+// array (see eventArchive.js) — quiescent by fiat, opaque to the scan.
+//
+// After the quiescent snap, snapStartToGroupBoundary runs. A BACKWARD pull
+// (a child's head below the window — e.g. a background Task from an earlier
+// turn) re-triggers the backward quiescent snap so the window still opens on
+// a whole-block boundary at or below that head; a FORWARD move (head evicted
+// entirely — the archive gap case) is final. Group integrity is unbounded by
+// design (an orphaned child would be silently dropped by the renderer, so
+// the head must be included at any cost) — and it is the SOLE guarantee that
+// nested (sub-agent) blocks are never cut, since the quiescence scan ignores
+// child events (see the header comment above). Shared by instances.js
+// snapshotTail and eventArchive.js pageInstanceEvents.
+export function snapStartToQuiescent(arr, start, end, { resetIdx = -1 } = {}) {
+  start = quiesceStart(arr, start, end, resetIdx, true);
+  // Fixpoint loop: each backward group pull re-snaps to a quiescent point,
+  // which can expose another straddling group. Backward moves are monotonic
+  // (bounded by index 0); the iteration cap is a defensive net only.
   for (let iter = 0; iter < 20; iter++) {
     const snapped = snapStartToGroupBoundary(arr, start, end);
     if (snapped >= start) return snapped;
-    start = isOuterUserEcho(arr[snapped]) ? snapped : backToEcho(snapped);
-    if (start === snapped) return snapped; // no echo below the pulled-in head
+    const re = quiesceStart(arr, snapped, end, resetIdx, false);
+    if (re === snapped) return snapped; // no quiescent point below the pulled-in head
+    start = re;
   }
   return snapStartToGroupBoundary(arr, start, end);
 }

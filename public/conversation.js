@@ -88,6 +88,23 @@ export class Conversation {
     // instead of a new box per action.
     this._activeAssistantWrap = null;
     this._activeThinkingKey = null;
+    // Merge anchors for the lazy-history bubble merge (lazyHistory.js): the
+    // first assistant wrap created before ANY segment-closer rendered is
+    // this chunk's leading bubble. When the chunk rendered above ends with
+    // an open assistant segment, pages being contiguous means both halves
+    // belong to one turn — the upper chunk's trailing blocks merge into this
+    // wrap instead of leaving two adjacent assistant bubbles.
+    this.leadingAssistantWrap = null;
+    this._sawSegmentCloser = false;
+    // Live sub-agent events whose parent Task head sits below the rendered
+    // tail (a backgrounded Task from an evicted/unloaded turn): parked here
+    // per parent toolUseId instead of leaking to the outer level (a child
+    // user_echo would render as a fake outer user bubble). Replayed in
+    // arrival order by adoptToolBlock() when a lazy page brings the parent
+    // block in — order preservation is what lets a multi-part nested block
+    // (sub-agents interleave block parts with the outer stream) reconstruct
+    // whole via the sub-conversation's normal reconcile path.
+    this.orphanChildEvents = new Map();
     this.stickyBottom = true;
     if (!this.isSub) {
       this.root.addEventListener('scroll', () => {
@@ -122,6 +139,9 @@ export class Conversation {
     this.permissionBlocks.clear();
     this._activeAssistantWrap = null;
     this._activeThinkingKey = null;
+    this.leadingAssistantWrap = null;
+    this._sawSegmentCloser = false;
+    this.orphanChildEvents.clear();
     this._pendingAnswerUQId = null;
     this.stickyBottom = true;
     this._setEmpty();
@@ -143,19 +163,69 @@ export class Conversation {
 
   _closeAssistantSegment() {
     this._activeAssistantWrap = null;
+    this._sawSegmentCloser = true;
   }
 
   // Finalize every block that is still visually streaming. For STATIC batches
-  // (lazy-history pages) only: server pages are turn-aligned, but the archive
-  // gap case and the turn-snap backstop can still cut mid-turn — the events
-  // that would finalize those blocks live outside the batch and will never be
-  // applied to this instance, so "thinking… N tokens" / "streaming…" would
-  // otherwise stick forever. finalize() is idempotent; markIncomplete() only
-  // touches tools still awaiting input or a result.
+  // (lazy-history pages) only. Server pages are quiescent-aligned (whole
+  // blocks, resolved tools), so this is NOT a seam patch — it covers content
+  // that is genuinely dangling inside one chunk: a hard-interrupted turn
+  // whose tool_result never arrived (renders `· incomplete`), and the
+  // trim's plain-cut last resort (a giant non-quiescent span evicted
+  // mid-block). finalize() is idempotent; markIncomplete() only touches
+  // tools still awaiting input or a result.
   finalizeDanglingBlocks() {
     for (const block of this.blocksByKey.values()) block.finalize?.();
     for (const block of this.toolBlocks.values()) block.markIncomplete?.();
     for (const sub of this.subConvs.values()) sub.finalizeDanglingBlocks();
+  }
+
+  // Deliver a sub-agent event into the nested sub-conversation of its parent
+  // tool block. Returns false when the parent isn't rendered here. Does NOT
+  // consult seenSeq — adoptToolBlock replays parked events through this path
+  // after their seqs were already recorded by apply().
+  _routeChildEvent(ev) {
+    const parent = this.toolBlocks.get(ev.parentToolUseId);
+    if (!parent) return false;
+    let sub = this.subConvs.get(ev.parentToolUseId);
+    if (!sub) {
+      sub = new Conversation(parent.subRoot, {
+        isSub: true,
+        onUserQuestionSubmit: this.onUserQuestionSubmit,
+        onPlanDecision: this.onPlanDecision,
+        onPermissionDecision: this.onPermissionDecision,
+        describeToolCtx: this.describeToolCtx,
+        resolveAttachmentUrl: this.resolveAttachmentUrl,
+      });
+      this.subConvs.set(ev.parentToolUseId, sub);
+    }
+    parent.revealSubRoot();
+    sub.apply(ev);
+    return true;
+  }
+
+  _parkChildEvent(ev) {
+    let parked = this.orphanChildEvents.get(ev.parentToolUseId);
+    if (!parked) { parked = []; this.orphanChildEvents.set(ev.parentToolUseId, parked); }
+    parked.push(ev);
+    if (parked.length > 500) parked.shift(); // runaway-task cap, drop-oldest
+  }
+
+  // Adopt a parent tool block rendered by a lazy-history batch: register it
+  // so future live children route natively, then replay this parent's parked
+  // events IN ARRIVAL ORDER through the normal sub-conversation path. Order
+  // is what reconstructs a multi-part nested block whole — sub-agent
+  // envelopes carry one content block each and share a msgId, and the
+  // sub-conversation's reconcile cursor (reconcileCounts) assigns their
+  // block indices sequentially, so replaying out of order (or splitting the
+  // parked run) would fragment the nested blocks.
+  adoptToolBlock(toolUseId, block) {
+    if (!toolUseId || !block || this.toolBlocks.has(toolUseId)) return;
+    this.toolBlocks.set(toolUseId, block);
+    const parked = this.orphanChildEvents.get(toolUseId);
+    this.orphanChildEvents.delete(toolUseId);
+    if (!parked) return;
+    for (const ev of parked) this._routeChildEvent(ev);
   }
 
   applyEvents(events) {
@@ -168,26 +238,16 @@ export class Conversation {
       this.seenSeq.add(ev._seq);
     }
     // Route sub-agent events into a nested mini-conversation hosted inside
-    // the matching outer tool_use block (typically a Task call).
+    // the matching outer tool_use block (typically a Task call). Inside a
+    // sub-conversation, an unmatched parentToolUseId is the sub-agent's OWN
+    // Task id — the event renders locally (fall through). At the outer
+    // level an unmatched parent means the Task head sits below the rendered
+    // tail (backgrounded Task): PARK the event instead of leaking it to the
+    // outer level; adoptToolBlock() replays it when a lazy page brings the
+    // head's block in.
     if (ev.parentToolUseId) {
-      const parent = this.toolBlocks.get(ev.parentToolUseId);
-      if (parent) {
-        let sub = this.subConvs.get(ev.parentToolUseId);
-        if (!sub) {
-          sub = new Conversation(parent.subRoot, {
-            isSub: true,
-            onUserQuestionSubmit: this.onUserQuestionSubmit,
-            onPlanDecision: this.onPlanDecision,
-            onPermissionDecision: this.onPermissionDecision,
-            describeToolCtx: this.describeToolCtx,
-            resolveAttachmentUrl: this.resolveAttachmentUrl,
-          });
-          this.subConvs.set(ev.parentToolUseId, sub);
-        }
-        parent.revealSubRoot();
-        sub.apply(ev);
-        return;
-      }
+      if (this._routeChildEvent(ev)) return;
+      if (!this.isSub) { this._parkChildEvent(ev); return; }
     }
     if (ev.kind === 'user_question') { this._renderUserQuestion(ev); return; }
     if (ev.kind === 'plan_request') { this._renderPlanRequest(ev); return; }
@@ -229,6 +289,7 @@ export class Conversation {
         this.root.appendChild(new TaskCompletionBlock(ev).node);
         this._maybeScroll();
         break;
+      case 'history_gap':    this._renderHistoryGap(); break;
       case 'overage_message_queued':
         this.root.appendChild(new QueuedMessageBlock(ev).node);
         this._maybeScroll();
@@ -287,7 +348,14 @@ export class Conversation {
     this.root.appendChild(node);
     w = { node, body };
     this.messageWraps.set(msgId, w);
-    if (role === 'assistant') this._activeAssistantWrap = w;
+    if (role === 'assistant') {
+      this._activeAssistantWrap = w;
+      // First assistant wrap before any segment-closer = this chunk begins
+      // mid-turn; it is the merge target for the chunk rendered above.
+      if (!this._sawSegmentCloser && !this.leadingAssistantWrap) {
+        this.leadingAssistantWrap = w;
+      }
+    }
     return w;
   }
 
@@ -601,6 +669,17 @@ export class Conversation {
   _resolvePermissionRequest(ev) {
     const block = this.permissionBlocks.get(ev.toolUseId);
     if (block) block.markResolved(!!ev.allow);
+  }
+
+  // Evicted-content seam (server-injected `history_gap`, eventArchive.js):
+  // whole blocks are genuinely missing here — never a half block. Closing
+  // the assistant segment also makes this a merge barrier: content across a
+  // real gap must not glue into one bubble.
+  _renderHistoryGap() {
+    const node = el('div', { class: 'history-divider history-gap' },
+      el('span', {}, '── ⋯ earlier messages unavailable ──'));
+    this.root.appendChild(node);
+    this._closeAssistantSegment();
   }
 
   _renderHistoryDivider(ev) {

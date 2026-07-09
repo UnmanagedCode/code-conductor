@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import readline from 'node:readline';
 import { promises as fsp, readFileSync, mkdirSync, createWriteStream, writeFileSync, rmSync } from 'node:fs';
 import path from 'node:path';
-import { Parser, SOFT_INTERRUPT_MARKER, isOuterUserEcho, snapStartToTurnStart } from './parser.js';
+import { Parser, SOFT_INTERRUPT_MARKER, isOuterUserEcho, snapStartToQuiescent, firstQuiescentAtOrAfter } from './parser.js';
 import { getProject, claudeProjectsRoot, encodeCwd, findSessionLocation, readFirstPrompt } from './projects.js';
 import { createWorktree, getWorktree, debugBaseDir } from './worktrees.js';
 import { getTitle as getSessionTitle, deleteTitle as deleteSessionTitle, migrateTitle as migrateSessionTitle } from './sessionTitles.js';
@@ -174,8 +174,10 @@ export function resolveClaudeBin() {
 // cap + slack, the front is spliced down to cap, then "snapped" forward so
 // the surviving head is an outer user_echo — a turn boundary — which lets
 // the jsonl-replay archive be cut against the retained ring with no
-// overlap. Snapping gives up (plain cut) rather than drop below cap/2,
-// e.g. when a single giant turn spans the whole droppable region.
+// overlap. When no echo is within cap/2 of the tail (a single giant turn
+// spans the whole droppable region), the snap falls back to the nearest
+// QUIESCENT point (whole blocks only — see parser.js) so the gap-case head
+// still renders cleanly; only a giant non-quiescent span forces a plain cut.
 const DEFAULT_RING_CAP = 2000;
 const RING_TRIM_SLACK = 256;
 // Max events sent in a WS `subscribe` snapshot (see Instance.snapshotTail).
@@ -207,7 +209,16 @@ export class EventLog {
     const maxIdx = this.buf.length - Math.ceil(this.cap / 2);  // snap give-up bound
     let cut = base;
     while (cut < maxIdx && !isOuterUserEcho(this.buf[cut])) cut += 1;
-    if (cut >= maxIdx) cut = base; // no turn boundary in range — plain cut
+    if (cut >= maxIdx) {
+      // No turn boundary in reach (one giant turn). Fall back to the nearest
+      // quiescent point so the post-eviction ring head still opens on whole
+      // blocks — the evicted turn prefix becomes the archive gap case, and
+      // its history_gap marker sits above clean content instead of a half
+      // block. Last resort: plain cut (a single giant non-quiescent span);
+      // the client finalize backstop covers those visuals.
+      const q = firstQuiescentAtOrAfter(this.buf, base, maxIdx);
+      cut = q !== -1 ? q : base;
+    }
     this.buf.splice(0, cut);
   }
   toArray() { return this.buf.slice(); }
@@ -450,24 +461,25 @@ export class Instance extends EventEmitter {
   // Trailing slice of the ring for the WS `subscribe` snapshot — tabs no
   // longer receive the whole ring on every subscribe; older events are
   // lazy-loaded via GET /api/instances/:id/events. The window start is
-  // snapped to a turn boundary (an outer user_echo): the first one inside
-  // the window when present, else extended BACKWARD to the echo that owns
-  // the straddling turn (floor 0 — worst case is the whole ring, the
-  // pre-tail-snapshot payload). A mid-turn tail would make the first lazy
-  // page end mid-turn, splitting the assistant bubble across the isolated
-  // page renderer and the live view — and would strand a live tool_result
-  // whose head fell below the tail. Only a turn whose echo was already
-  // evicted from the ring stays mid-turn (the archive gap case — the client
-  // finalizes its dangling visuals). The helper also enforces sub-agent
-  // group integrity (an evicted head advances the start past its children;
-  // they are served later via lazy paging alongside their head).
+  // snapped to a QUIESCENT point (no open block, no unresolved tool — see
+  // snapStartToQuiescent in parser.js): the first one inside the window when
+  // present, else the nearest one below it. A non-quiescent tail start would
+  // strand a half block / a result-less tool across the isolated page
+  // renderer and the live view. Quiescent points are dense, so the snap
+  // normally moves a few events; the worst case (one giant non-quiescent
+  // span) is the whole ring, same as the old whole-turn extension. The
+  // helper also enforces sub-agent group integrity — an in-tail child pulls
+  // its Task head (and thus the whole group so far) into the tail, which is
+  // what keeps NESTED blocks whole; an evicted head advances the start past
+  // its children (they are served later via lazy paging alongside their
+  // head).
   snapshotTail(max) {
     const envMax = Number(process.env.ORCH_SNAPSHOT_TAIL);
     const cap = Number.isInteger(max) && max > 0 ? max
       : (Number.isInteger(envMax) && envMax > 0 ? envMax : DEFAULT_SNAPSHOT_TAIL);
     const buf = this.ring.buf;
     if (buf.length <= cap) return buf.slice();
-    const start = snapStartToTurnStart(buf, buf.length - cap, buf.length, 0);
+    const start = snapStartToQuiescent(buf, buf.length - cap, buf.length);
     return buf.slice(start);
   }
 

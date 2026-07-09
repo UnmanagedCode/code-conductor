@@ -10,7 +10,16 @@
 
 import { Conversation } from './conversation.js';
 
-// Render `events` (oldest-first) into a detached container and return it.
+// Render `events` (oldest-first) into a detached container. Returns
+// { holder, leadingWrap, trailingOpenWrap, toolBlocks }:
+//   holder          — the detached node whose children get spliced in
+//   leadingWrap     — the batch's leading assistant wrap (chunk begins
+//                     mid-turn) — the merge TARGET for the next-older page
+//   trailingOpenWrap— the still-open assistant wrap at the batch's end
+//                     (chunk ends mid-turn) — the merge SOURCE into the
+//                     chunk below
+//   toolBlocks      — toolUseId -> ToolUseBlock, for adopting parked live
+//                     sub-agent events whose parent head is in this batch
 // `options` should be the same callbacks the main conversation was built
 // with; `onAssistantText` is force-nulled — replaying old history must
 // never trigger TTS auto-speak.
@@ -22,20 +31,27 @@ export function renderEventBatch(events, options = {}) {
   batch._replayMode = true;
   batch.applyEvents(events);
   batch._replayMode = false;
-  // Static content: an event that would finalize a straddling block lives
-  // outside this batch (archive gap / turn-snap backstop) and will never be
-  // applied here — finalize the visuals so nothing sticks at "streaming…" /
-  // "thinking… N tokens".
+  // Static content: finalize blocks that are genuinely dangling INSIDE the
+  // batch (an interrupted turn's result-less tool, the trim's plain-cut
+  // last resort). Quiescent-aligned pages never cut a block at the seam.
   batch.finalizeDanglingBlocks();
   // The constructor seeds a "no messages yet" placeholder; never let it
   // ride into the live conversation.
   holder.querySelector('.empty')?.remove();
-  return holder;
+  return {
+    holder,
+    leadingWrap: batch.leadingAssistantWrap,
+    trailingOpenWrap: batch._activeAssistantWrap,
+    toolBlocks: batch.toolBlocks,
+  };
 }
 
 // Move the batch's children into `root` right after `anchorNode` (the
 // "earlier messages" sentinel; falls back to the very top), preserving the
 // user's viewport by compensating scrollTop with the height delta.
+// `afterInsert` (optional) runs between the splice and the height read —
+// DOM surgery that must be reflected in the compensation (the bubble merge,
+// sub-agent adoption) belongs there.
 //
 // prevScrollTop is captured before any DOM mutation so that the absolute
 // assignment on the last line is correct even when the browser's CSS scroll
@@ -43,14 +59,62 @@ export function renderEventBatch(events, options = {}) {
 // by reading scrollHeight after the insertBefore loop — which would otherwise
 // advance scrollTop by the same delta again, causing double-compensation and
 // a scroll jump toward the bottom of the conversation.
-export function prependBatch(root, holder, anchorNode = null) {
+export function prependBatch(root, holder, anchorNode = null, afterInsert = null) {
   const before = (anchorNode && anchorNode.parentNode === root)
     ? anchorNode.nextSibling
     : root.firstChild;
   const prevScrollTop = root.scrollTop;
   const prevHeight = root.scrollHeight;
   while (holder.firstChild) root.insertBefore(holder.firstChild, before);
+  if (afterInsert) afterInsert();
   root.scrollTop = prevScrollTop + (root.scrollHeight - prevHeight);
+}
+
+// Splice a rendered batch above the existing content: viewport-preserving
+// prepend, seam-bubble merge, and sub-agent adoption — one operation so the
+// scroll compensation in prependBatch sees the final layout. Returns the new
+// oldest chunk's leading wrap (the next page's merge target).
+//
+//   batch             — renderEventBatch() result
+//   conversation      — the live Conversation (parked orphan child events);
+//                       optional for callers with no live view
+//   oldestLeadingWrap — the current oldest chunk's leading assistant wrap
+//                       (null when it starts on a turn boundary / gap)
+export function spliceBatchAbove({ root, batch, anchorNode = null, conversation = null, oldestLeadingWrap = null }) {
+  let merged = false;
+  prependBatch(root, batch.holder, anchorNode, () => {
+    // Bubble merge: the batch ends with an OPEN assistant segment and the
+    // chunk below begins with one — pages are contiguous, so both halves
+    // belong to one turn. Move the batch's trailing blocks to the FRONT of
+    // the below chunk's leading bubble (its node/body identity is what the
+    // live Conversation's maps point at) and drop the emptied batch bubble.
+    // Quiescent seams make this a pure concatenation of whole, finalized
+    // blocks — a moved Task block carries its nested sub-conversation along.
+    if (batch.trailingOpenWrap && oldestLeadingWrap
+        && batch.trailingOpenWrap !== oldestLeadingWrap) {
+      const dst = oldestLeadingWrap.body;
+      const src = batch.trailingOpenWrap.body;
+      const ref = dst.firstChild;
+      while (src.firstChild) dst.insertBefore(src.firstChild, ref);
+      batch.trailingOpenWrap.node.remove();
+      merged = true;
+    }
+    // Sub-agent adoption: live child events whose parent Task head was below
+    // the tail sit parked in the live conversation; if this batch carries
+    // the head's block, register it and replay them into its nested panel
+    // (arrival order preserved — multi-part nested blocks reconstruct whole).
+    if (conversation?.orphanChildEvents?.size) {
+      for (const pid of [...conversation.orphanChildEvents.keys()]) {
+        const block = batch.toolBlocks.get(pid);
+        if (block) conversation.adoptToolBlock(pid, block);
+      }
+    }
+  });
+  // When the whole batch was ONE open segment that just merged away, the top
+  // bubble is still the previous target — keep it.
+  return (merged && batch.leadingWrap === batch.trailingOpenWrap)
+    ? oldestLeadingWrap
+    : (batch.leadingWrap ?? null);
 }
 
 // --- Lazy-load of older history (scroll-to-top) controller ----------------
@@ -77,6 +141,10 @@ export function installLazyHistoryController({
 }) {
   const lazy = { epoch: 0, hasMore: false, nextBefore: 0, loading: false };
   let lazySentinel = null;
+  // The current OLDEST chunk's leading assistant wrap (it begins mid-turn) —
+  // the merge target for the next prepended page's trailing open bubble.
+  // Starts as the live tail's, then advances page by page.
+  let oldestLeadingWrap = null;
 
   function reset() {
     lazy.epoch += 1;
@@ -84,6 +152,7 @@ export function installLazyHistoryController({
     lazy.nextBefore = 0;
     lazy.loading = false;
     lazySentinel = null; // the conversation DOM is cleared wholesale alongside
+    oldestLeadingWrap = null;
   }
 
   // Called from the snapshot handler for the active instance, after the tail
@@ -95,6 +164,9 @@ export function installLazyHistoryController({
       ?? (frame.events?.length ? frame.events[0]._seq : 0);
     lazy.hasMore = lazy.nextBefore > 0;
     lazySentinel = null;
+    // The tail is quiescent-aligned but can still begin mid-turn — its
+    // leading bubble is then the first merge target.
+    oldestLeadingWrap = conversation.leadingAssistantWrap ?? null;
     if (lazy.hasMore) ensureSentinel();
   }
 
@@ -128,9 +200,13 @@ export function installLazyHistoryController({
       if (page.events.length) {
         // Render through the standard Conversation pipeline on a detached
         // node (isolated streaming/tool-pairing state), then splice above
-        // the live content, preserving the viewport.
-        const holder = renderEventBatch(page.events, conversationOptions);
-        prependBatch(conversationEl, holder, lazySentinel);
+        // the live content — merging the seam bubbles and adopting parked
+        // sub-agent events — preserving the viewport.
+        const batch = renderEventBatch(page.events, conversationOptions);
+        oldestLeadingWrap = spliceBatchAbove({
+          root: conversationEl, batch, anchorNode: lazySentinel,
+          conversation, oldestLeadingWrap,
+        });
         // Freshly-created rewind/fork buttons default to enabled; re-sync
         // them with the instance's current status.
         const inst = getInstances().find(i => i.id === id);

@@ -155,6 +155,21 @@ test('giant single turn: paging produces a gap, never duplication', async () => 
     assert.ok(texts.length < 40, 'gap exists (partial turn was evicted, not reconstructed)');
     // The retained tail is intact through to the newest event.
     assert.ok(texts.includes('block 39'));
+    // The evicted span is MARKED: exactly one history_gap, no _seq (matching
+    // task_completion's synthesis), sitting immediately before the ring head.
+    const gaps = all.filter(e => e.kind === 'history_gap');
+    assert.equal(gaps.length, 1, 'exactly one gap marker served');
+    assert.equal(gaps[0]._seq, undefined, 'marker carries no _seq');
+    const gi = all.findIndex(e => e.kind === 'history_gap');
+    assert.equal(all[gi + 1]._seq, inst.ring.trimmedBefore,
+      'marker sits right before the first ring-side event');
+    // Quiescent trim fallback: only WHOLE blocks are missing — every served
+    // text_delta has its text_end (no half block on either side of the gap).
+    for (const d of all.filter(e => e.kind === 'text_delta')) {
+      assert.ok(all.some(e => e.kind === 'text_end'
+        && e.msgId === d.msgId && e.blockIdx === d.blockIdx),
+        `block ${d.text} served whole`);
+    }
   } finally {    if (prevCap === undefined) delete process.env.ORCH_EVENT_RING_CAP;
     else process.env.ORCH_EVENT_RING_CAP = prevCap;
   }

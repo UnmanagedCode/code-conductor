@@ -1008,6 +1008,9 @@ body.lightbox-open { overflow: hidden; }
   font-size: 11px;
   font-family: ui-monospace, monospace;
 }
+/* Evicted-content seam (`history_gap` event): content here is genuinely
+   missing from ring + archive — a whole-block gap, never a half block. */
+.history-gap { opacity: .8; font-style: italic; }
 
 /* "⋯ earlier messages" lazy-load affordance pinned above the oldest
    rendered content (see loadEarlier in app.js). Tappable fallback for
