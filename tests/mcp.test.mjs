@@ -137,6 +137,7 @@ test('tools/list returns the full expected tool catalog', async () => {
     'glob', 'grep',
     'interrupt_turn',
     'kill_instance',
+    'list_conductor_modules',
     'list_instances', 'list_optional_guidelines', 'list_projects', 'list_sessions',
     'list_workspaces', 'list_worktrees',
     'locate_session',
