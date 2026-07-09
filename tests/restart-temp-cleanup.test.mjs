@@ -5,12 +5,15 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
 import { encodeCwd, orchStoreRoot } from '../src/projects.js';
-import { isTemp } from '../src/tempSessions.js';
+import { isTemp, markTemp, orphanedTempIdsSync } from '../src/tempSessions.js';
+import { isArchived } from '../src/archivedSessions.js';
 import {
   pendingTempCleanupPath,
   writePendingTempCleanup,
   sweepPendingTempCleanup,
 } from '../src/tempCleanup.js';
+import { runTempCleanup } from '../src/restart.js';
+import { drainToManifest } from '../src/resumeRestart.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-basic.json');
@@ -179,4 +182,95 @@ test('temp marker is written at spawn time, before any turn_end', async () => {
 
   assert.equal(await isTemp(sid), true,
     'temp marker must be in temp-sessions.json before any turn_end fires');
+});
+
+// Crash-orphaned temps: recorded in temp-sessions.json but with no live
+// instance (e.g. a prior hard crash before this restart). shutdownTempSync's
+// kill/wipe loop never sees these since it only iterates live instances —
+// runTempCleanup must archive them too so a plain restart clears every
+// durable temp, not just the attached ones.
+
+test('orphanedTempIdsSync returns durable temp ids with no matching live instance', async () => {
+  const liveSid = 'ffffffff-0000-1111-2222-333333333333';
+  const orphanSid = '00000000-1111-2222-3333-444444444444';
+  await markTemp(liveSid);
+  await markTemp(orphanSid);
+
+  const orphaned = orphanedTempIdsSync([liveSid]);
+  assert.deepEqual(orphaned, [orphanSid]);
+});
+
+test('runTempCleanup archives a crash-orphaned temp session with no live instance', async () => {
+  const orphanSid = 'dddddddd-eeee-ffff-0000-111111111111';
+  await markTemp(orphanSid);
+  assert.equal(await isTemp(orphanSid), true);
+
+  runTempCleanup({ instances, log: { warn() {}, log() {} } });
+
+  await waitFor(async () => isArchived(orphanSid));
+  assert.equal(await isArchived(orphanSid), true, 'orphaned temp must be archived');
+  assert.equal(await isTemp(orphanSid), false, 'orphaned temp must be unmarked temp');
+});
+
+test('runTempCleanup archives a live temp and a crash-orphaned temp without double-processing', async () => {
+  await api(baseUrl, 'POST', '/api/projects', { name: 'runtempcleanup' });
+  const tempRes = await api(baseUrl, 'POST', '/api/instances', { project: 'runtempcleanup', temp: true });
+  const tempInst = instances.get(tempRes.body.id);
+  await waitFor(() => tempInst.status === 'idle' && tempInst.sessionId);
+  const liveSid = tempInst.sessionId;
+  await waitFor(async () => isTemp(liveSid));
+
+  const orphanSid = 'eeeeeeee-ffff-0000-1111-222222222222';
+  await markTemp(orphanSid);
+
+  // The live sessionId must be excluded from the orphaned set — it's handled
+  // by shutdownTempSync, not the orphan path — so it's never processed twice.
+  const orphaned = orphanedTempIdsSync([liveSid]);
+  assert.ok(!orphaned.includes(liveSid), 'live sessionId must not be treated as orphaned');
+  assert.ok(orphaned.includes(orphanSid), 'truly orphaned sessionId must be found');
+
+  runTempCleanup({ instances, log: { warn() {}, log() {} } });
+
+  await waitFor(async () => isArchived(liveSid));
+  await waitFor(async () => isArchived(orphanSid));
+  assert.equal(await isArchived(liveSid), true);
+  assert.equal(await isArchived(orphanSid), true);
+  assert.equal(await isTemp(liveSid), false);
+  assert.equal(await isTemp(orphanSid), false);
+});
+
+test('sweepPendingTempCleanup bookkeeps a cwd-less manifest entry (no dir to clean)', async () => {
+  const sid = '11111111-aaaa-bbbb-cccc-dddddddddddd';
+  await fs.mkdir(orchStoreRoot(), { recursive: true });
+  writePendingTempCleanup([{ sessionId: sid }]);
+
+  const result = sweepPendingTempCleanup({ log: { warn() {}, log() {} } });
+  assert.equal(result.swept, 1);
+  await waitFor(async () => isArchived(sid));
+  assert.equal(await isArchived(sid), true);
+  await assert.rejects(() => fs.access(pendingTempCleanupPath()));
+});
+
+test('Restart + Resume (drainToManifest) archives nothing — live and orphaned temps are both carried over', async () => {
+  await api(baseUrl, 'POST', '/api/projects', { name: 'resumecarry' });
+  const tempRes = await api(baseUrl, 'POST', '/api/instances', { project: 'resumecarry', temp: true });
+  const tempInst = instances.get(tempRes.body.id);
+  await waitFor(() => tempInst.status === 'idle' && tempInst.sessionId);
+  const liveSid = tempInst.sessionId;
+  await waitFor(async () => isTemp(liveSid));
+
+  const orphanSid = '22222222-bbbb-cccc-dddd-eeeeeeeeeeee';
+  await markTemp(orphanSid);
+
+  await drainToManifest({
+    server: null, wss: null, instances,
+    log: { warn() {}, log() {}, error() {} },
+    graceMs: 100,
+  });
+
+  assert.equal(await isTemp(liveSid), true, 'live temp must remain marked temp (carried over, not archived)');
+  assert.equal(await isTemp(orphanSid), true, 'orphaned temp must remain marked temp (carried over, not archived)');
+  assert.equal(await isArchived(liveSid), false);
+  assert.equal(await isArchived(orphanSid), false);
+  await assert.rejects(() => fs.access(pendingTempCleanupPath()), 'resume path must not write a pending-temp-cleanup manifest');
 });

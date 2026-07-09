@@ -11,7 +11,7 @@
 // Atomic writes (write tmp + rename), mirroring `conductedSessions.js`.
 // Missing file = empty set.
 
-import { promises as fs } from 'node:fs';
+import { promises as fs, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { orchStoreRoot } from './projects.js';
 
@@ -19,22 +19,49 @@ function tempFile() {
   return path.join(orchStoreRoot(), 'temp-sessions.json');
 }
 
+function parseTempsJson(raw) {
+  const obj = JSON.parse(raw);
+  const arr = Array.isArray(obj?.sessions) ? obj.sessions : null;
+  if (!arr) return new Set();
+  const out = new Set();
+  for (const sid of arr) {
+    if (typeof sid === 'string' && sid) out.add(sid);
+  }
+  return out;
+}
+
 export async function loadAllTemps() {
   try {
     const raw = await fs.readFile(tempFile(), 'utf8');
-    const obj = JSON.parse(raw);
-    const arr = Array.isArray(obj?.sessions) ? obj.sessions : null;
-    if (!arr) return new Set();
-    const out = new Set();
-    for (const sid of arr) {
-      if (typeof sid === 'string' && sid) out.add(sid);
-    }
-    return out;
+    return parseTempsJson(raw);
   } catch (e) {
     if (e.code === 'ENOENT') return new Set();
     console.warn(`tempSessions: failed to read ${tempFile()}: ${e.message}`);
     return new Set();
   }
+}
+
+// Sync twin of loadAllTemps(), for the restart path (src/restart.js), which
+// must stay fully synchronous up to process.exit() — see shutdownTempSync's
+// comment in src/instances.js for why.
+export function loadAllTempsSync() {
+  try {
+    return parseTempsJson(readFileSync(tempFile(), 'utf8'));
+  } catch (e) {
+    if (e.code === 'ENOENT') return new Set();
+    console.warn(`tempSessions: failed to read ${tempFile()}: ${e.message}`);
+    return new Set();
+  }
+}
+
+// Durable temp sessionIds with no matching live instance — i.e. sessions
+// that crashed before this process could clean them up itself, recorded
+// only in temp-sessions.json. `liveSessionIds` should be every sessionId
+// this process currently tracks as a live temp instance.
+export function orphanedTempIdsSync(liveSessionIds) {
+  const durable = loadAllTempsSync();
+  const live = new Set(liveSessionIds);
+  return [...durable].filter((id) => !live.has(id));
 }
 
 export async function isTemp(sessionId) {
