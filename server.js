@@ -14,6 +14,7 @@ import { runMigrations } from './migrations/index.mjs';
 import { checkClaudeReadiness, formatReadiness } from './src/health.js';
 import { sweepPendingTempCleanup } from './src/tempCleanup.js';
 import { reconcile as reconcileRootClaudeMd } from './src/rootClaudeMd.js';
+import { ensureConductProject } from './src/conduct.js';
 import { restoreFromResumeManifest } from './src/resumeRestart.js';
 import { createPluginHost } from './src/plugins/registry.js';
 import { buildPluginProxy } from './src/plugins/proxy.js';
@@ -108,6 +109,13 @@ export async function start({ port = 8787, host = '127.0.0.1' } = {}) {
   // abort boot — unlike a migration, this is a convenience sync.
   try { await reconcileRootClaudeMd({ log: console }); }
   catch (e) { console.warn('root CLAUDE.md reconcile failed:', e); }
+  // Regenerate the composed .conduct/CONDUCT.md from the current core +
+  // enabled convention modules. Runs after migrations (0010 clears any
+  // legacy symlink) so a fresh boot reflects the latest fragments and
+  // selection. Strictly non-fatal — a conductor is spawned lazily and the
+  // Conduct-dialog-open path re-ensures anyway.
+  try { await ensureConductProject(); }
+  catch (e) { console.warn('.conduct CONDUCT.md regenerate failed:', e); }
   const { server, instances, wss, pluginHost } = createServer();
   await listenWithRetry(server, port, host);
   const addr = server.address();

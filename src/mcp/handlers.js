@@ -32,6 +32,7 @@ import { buildApprovePrompt, buildRejectPrompt } from '../planApproval.js';
 // submit — one canonical function, no fork. See public/userQuestionAnswers.js.
 import { formatUserQuestionAnswers } from '../../public/userQuestionAnswers.js';
 import { getCatalog as getOptionalGuidelinesCatalog, composeGuidelinesBlock } from '../optionalGuidelines.js';
+import { getCatalog as getConductModulesCatalog, getSelection as getConductSelection } from '../conductModules.js';
 import { isKnownFamily, defaultVersion } from '../modelVersions.js';
 import { getModelVersion } from '../appSettings.js';
 import { textPayload } from './content.js';
@@ -894,6 +895,14 @@ export async function createProject({ name, gitInit = false, guidelines = [] }) 
 export async function listOptionalGuidelines() {
   const catalog = await getOptionalGuidelinesCatalog();
   return catalog.map(({ slug, name, description, builtin }) => ({ slug, name, description, builtin }));
+}
+
+export async function listConductorModules() {
+  const [catalog, enabled] = await Promise.all([getConductModulesCatalog(), getConductSelection()]);
+  const on = new Set(enabled);
+  return catalog.map(({ slug, name, description, builtin }) => ({
+    slug, name, description, builtin, enabled: on.has(slug),
+  }));
 }
 
 // reconstructMessages / buildMessageFromRing / mergeRecentWithDisk /

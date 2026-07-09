@@ -6,17 +6,22 @@
 
 import * as m0001 from './0001-centralize-orchestrator-state.mjs';
 import * as m0002 from './0002-rename-group-to-workspace.mjs';
-import * as m0003 from './0003-conduct-md-symlink.mjs';
+// 0003-conduct-md-symlink is intentionally NOT registered: it created a
+// .conduct/CONDUCT.md symlink, but that file is now a fully-owned generated
+// file (see 0010 + src/conduct.js). Leaving 0003 in the chain would make it
+// recreate the symlink / warn every boot. 0010 takes over its still-useful
+// jobs (drop the legacy symlink, repair a broken external @-import).
 import * as m0004 from './0004-relocate-av-installs.mjs';
 import * as m0005 from './0005-rename-conducted-marker.mjs';
 import * as m0006 from './0006-init-cost-tracking.mjs';
 import * as m0007 from './0007-migrate-legacy-model-settings.mjs';
 import * as m0008 from './0008-migrate-tiered-session-summaries.mjs';
 import * as m0009 from './0009-seed-legacy-shell-installer-baseline.mjs';
+import * as m0010 from './0010-conduct-md-generated-file.mjs';
 
 // Ordered list — append new migrations to the end. Order matters:
 // later migrations may assume earlier ones have run.
-const ALL = [m0001, m0002, m0003, m0004, m0005, m0006, m0007, m0008, m0009];
+const ALL = [m0001, m0002, m0004, m0005, m0006, m0007, m0008, m0009, m0010];
 
 export async function runMigrations({ root, log = console.log } = {}) {
   for (const m of ALL) {

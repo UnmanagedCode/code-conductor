@@ -8,7 +8,7 @@ When `README.md` doesn't go deep enough, load the relevant detail file:
 - **Feature / UI behavior** → `docs/features.md`
 - **Subprocess protocol, WebSocket messages, REST endpoints** → `docs/protocol.md`
 - **Component layout, instance lifecycle, on-disk state, migrations, testing** → `docs/architecture.md`
-- **Conductor role prompt / orchestration contract** → `CONDUCT.md`
+- **Conductor role prompt / orchestration contract** → `conduct/core.md` (always-on core) + `conduct/modules/*.md` (toggleable modules); composed into the live `.conduct/CONDUCT.md` by `src/conductModules.js`
 
 ## Code conventions
 

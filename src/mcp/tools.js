@@ -585,6 +585,17 @@ export function buildTools() {
       annotations: { readOnlyHint: true },
     },
     {
+      name: 'list_conductor_modules',
+      description:
+        'List the conductor convention modules (slug, name, description, builtin, enabled) composed into ' +
+        '.conduct/CONDUCT.md. Built-in seeds have builtin:true; custom modules (builtin:false) and the ' +
+        'enabled selection are managed via the Settings → Conductor conventions panel. The always-on core ' +
+        'is not listed here.',
+      inputSchema: { type: 'object', properties: {}, required: [] },
+      handler: h.listConductorModules,
+      annotations: { readOnlyHint: true },
+    },
+    {
       name: 'get_recent_messages',
       description:
         'Return the most recent assistant message(s) from an instance. Each message has: ' +

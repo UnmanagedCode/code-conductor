@@ -110,6 +110,7 @@
               <option value="transcribe">Transcribe</option>
               <option value="tts">TTS</option>
               <option value="workspace">Workspace conventions</option>
+              <option value="conductor-conventions">Conductor conventions</option>
               <option value="plugins">Plugins</option>
               <option value="archived">Archived</option>
             </select>
@@ -239,6 +240,32 @@
             </div>
             <div class="st-actions">
               <button id="or-add-btn" type="button">+ Add custom guideline</button>
+            </div>
+          </div>
+          <div id="settings-conductor-conventions" class="settings-group" hidden>
+            <p class="settings-desc">
+              The 🎼 Conduct orchestrator's guidance (<code>.conduct/CONDUCT.md</code>) is composed from an
+              always-on <strong>core</strong> plus the toggleable modules below. This selection is
+              <em>global</em> — it applies to every conductor session. Changes regenerate the doc and take
+              effect for the next-spawned conductor. Built-in modules are read-only; custom modules can be
+              added, edited, and deleted. Keep the enabled set lean — every module costs tokens in every
+              conductor session.
+            </p>
+            <div id="cc-status" class="st-status" aria-live="polite">Loading…</div>
+            <ul id="cc-module-list" class="cc-module-list"></ul>
+            <div id="cc-add-form" class="or-add-form" hidden>
+              <input id="cc-add-slug" type="text" placeholder="slug (e.g. my-module)" />
+              <input id="cc-add-name" type="text" placeholder="Short name" />
+              <input id="cc-add-desc" type="text" placeholder="One-line description" />
+              <textarea id="cc-add-body" rows="6" placeholder="Markdown body composed into CONDUCT.md"></textarea>
+              <div class="or-add-actions">
+                <button id="cc-add-save" type="button">Save</button>
+                <button id="cc-add-cancel" type="button">Cancel</button>
+              </div>
+              <p class="error" id="cc-add-error"></p>
+            </div>
+            <div class="st-actions">
+              <button id="cc-add-btn" type="button">+ Add custom module</button>
             </div>
           </div>
           <div id="settings-plugins" class="settings-group" hidden>
