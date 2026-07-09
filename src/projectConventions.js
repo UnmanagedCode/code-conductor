@@ -1,21 +1,23 @@
-// Optional guideline modules — a catalog of named CLAUDE.md sections that can be
+// Project convention modules — a catalog of named CLAUDE.md sections that can be
 // appended inline to a new project's CLAUDE.md at creation time.
 //
 // Seeds are read-only (builtin: true); their bodies live in committed `.md`
-// fragments under guidelines/<slug>.md. Custom guidelines (builtin: false) are
-// persisted at <orchStoreRoot>/optional-guidelines.json. Both the catalog and
-// the compose/CRUD logic are provided by the shared fragment-catalog helper,
-// which is also used by the conductor convention modules (src/conductModules.js).
+// fragments under project-conventions/<slug>.md. Custom conventions
+// (builtin: false) are persisted at <orchStoreRoot>/project-conventions.json.
+// Both the catalog and the compose/CRUD logic are provided by the shared
+// fragment-catalog helper, which is also used by the conductor convention
+// modules (src/conductModules.js) and the workspace convention modules
+// (src/workspaceModules.js).
 
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { orchStoreRoot } from './projects.js';
 import { createFragmentCatalog } from './fragmentCatalog.js';
 
-const GUIDELINES_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'guidelines');
+const CONVENTIONS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'project-conventions');
 
-// Seed metadata (bodies in guidelines/<slug>.md).
-export const SEED_GUIDELINES = [
+// Seed metadata (bodies in project-conventions/<slug>.md).
+export const SEED_PROJECT_CONVENTIONS = [
   { slug: 'design-guidelines', name: 'Design guidelines',
     description: 'YAGNI; no god-modules; single source of truth; thin bootstrap; shared service layer' },
   { slug: 'testing-guidelines', name: 'Testing guidelines',
@@ -27,21 +29,21 @@ export const SEED_GUIDELINES = [
 ];
 
 const catalog = createFragmentCatalog({
-  seeds: SEED_GUIDELINES,
-  seedDir: GUIDELINES_DIR,
-  storeFile: () => path.join(orchStoreRoot(), 'optional-guidelines.json'),
-  noun: 'guideline',
+  seeds: SEED_PROJECT_CONVENTIONS,
+  seedDir: CONVENTIONS_DIR,
+  storeFile: () => path.join(orchStoreRoot(), 'project-conventions.json'),
+  noun: 'convention',
 });
 
-// Merged catalog: SEED_GUIDELINES (builtin:true) + custom guidelines (builtin:false).
+// Merged catalog: SEED_PROJECT_CONVENTIONS (builtin:true) + custom conventions (builtin:false).
 // Each entry: { slug, name, description, body, builtin }.
 export const getCatalog = catalog.getCatalog;
 export const validateSlug = catalog.validateSlug;
-export const addCustomGuideline = catalog.addCustom;
-export const updateCustomGuideline = catalog.updateCustom;
-export const deleteCustomGuideline = catalog.deleteCustom;
+export const addCustomConvention = catalog.addCustom;
+export const updateCustomConvention = catalog.updateCustom;
+export const deleteCustomConvention = catalog.deleteCustom;
 
 // Resolves an array of slugs against the catalog and returns the markdown block
 // to append after `@../CLAUDE.md\n` in a new project's CLAUDE.md. Unknown slugs
 // produce a 400 error. Empty array → '' (no append).
-export const composeGuidelinesBlock = catalog.compose;
+export const composeProjectConventionsBlock = catalog.compose;

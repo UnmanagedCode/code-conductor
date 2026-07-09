@@ -47,10 +47,7 @@ import {
 } from './appSettings.js';
 import * as whisperInstall from './whisperInstall.js';
 import * as ttsInstall from './ttsInstall.js';
-import {
-  getStatus as rootClaudeMdStatus, getDiff as rootClaudeMdDiff,
-  resolve as rootClaudeMdResolve,
-} from './rootClaudeMd.js';
+import { ensureRootClaudeMd } from './rootClaudeMd.js';
 import { setTitle as setSessionTitle, MAX_TITLE_LEN } from './sessionTitles.js';
 import { getSummaries, setSummary, deleteSummaries } from './sessionSummaries.js';
 import { generateSummary, countMessages } from './summarize.js';
@@ -58,10 +55,10 @@ import { getAccountUsage } from './accountUsage.js';
 import { getCostSummary } from './costTracking.js';
 import { isArchived, unmarkArchived } from './archivedSessions.js';
 import {
-  getCatalog as getOptionalGuidelinesCatalog,
-  composeGuidelinesBlock,
-  addCustomGuideline, updateCustomGuideline, deleteCustomGuideline,
-} from './optionalGuidelines.js';
+  getCatalog as getProjectConventionsCatalog,
+  composeProjectConventionsBlock,
+  addCustomConvention, updateCustomConvention, deleteCustomConvention,
+} from './projectConventions.js';
 import {
   CORE_META as CONDUCT_CORE_META,
   getCatalog as getConductModulesCatalog,
@@ -69,6 +66,15 @@ import {
   setSelection as setConductSelection,
   addCustomModule, updateCustomModule, deleteCustomModule,
 } from './conductModules.js';
+import {
+  CORE_META as WORKSPACE_CORE_META,
+  getCatalog as getWorkspaceModulesCatalog,
+  getSelection as getWorkspaceSelection,
+  setSelection as setWorkspaceSelection,
+  addCustomModule as addWorkspaceModule,
+  updateCustomModule as updateWorkspaceModule,
+  deleteCustomModule as deleteWorkspaceModule,
+} from './workspaceModules.js';
 
 // Session ids are user-supplied path params on many routes; this is the single
 // allow-list + rejection (400 "invalid sessionId") they all share.
@@ -246,7 +252,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost } = {}) {
 
   r.post('/projects', async (req, res, next) => {
     try {
-      const { name, guidelines } = req.body ?? {};
+      const { name, conventions } = req.body ?? {};
       // Validate the regex first so callers that hit BOTH conditions
       // (e.g. "../escape" — starts with "." AND contains "/") get the
       // canonical "invalid project name" error rather than the dot-prefix
@@ -260,10 +266,10 @@ export function buildRoutes({ instances, serverCtx, pluginHost } = {}) {
           { statusCode: 400 },
         );
       }
-      if (guidelines !== undefined && !Array.isArray(guidelines)) {
-        throw Object.assign(new Error('guidelines must be an array of slug strings'), { statusCode: 400 });
+      if (conventions !== undefined && !Array.isArray(conventions)) {
+        throw Object.assign(new Error('conventions must be an array of slug strings'), { statusCode: 400 });
       }
-      const appendToCLAUDEmd = await composeGuidelinesBlock(guidelines ?? []);
+      const appendToCLAUDEmd = await composeProjectConventionsBlock(conventions ?? []);
       const created = await createProject(name, { appendToCLAUDEmd });
       res.status(201).json(created);
     } catch (e) { next(e); }
@@ -1178,54 +1184,84 @@ export function buildRoutes({ instances, serverCtx, pluginHost } = {}) {
     } catch (e) { next(e); }
   });
 
-  // Settings → Workspace conventions group. code-conductor owns the
-  // projects-root CLAUDE.md (the file every project imports via
-  // `@../CLAUDE.md`). Reports the reconcile status; on a "both changed"
-  // conflict the UI shows the diff and offers keep / overwrite(backup).
-  r.get('/settings/workspace-claudemd', async (req, res, next) => {
-    try { res.json(await rootClaudeMdStatus()); } catch (e) { next(e); }
-  });
-
-  r.get('/settings/workspace-claudemd/diff', async (req, res, next) => {
-    try { res.json(await rootClaudeMdDiff()); } catch (e) { next(e); }
-  });
-
-  r.post('/settings/workspace-claudemd/resolve', async (req, res, next) => {
+  // Settings → Conventions → Workspace block. code-conductor fully owns the
+  // projects-root CLAUDE.md (the file every project imports via `@../CLAUDE.md`),
+  // composed from an always-on core + toggleable modules. Every mutation
+  // regenerates that file so it takes effect immediately.
+  r.get('/settings/workspace-conventions', async (req, res, next) => {
     try {
-      const action = req.body?.action;
-      if (action !== 'keep' && action !== 'overwrite') {
-        throw Object.assign(new Error('unknown action — use keep or overwrite'), { statusCode: 400 });
-      }
-      res.json(await rootClaudeMdResolve(action));
+      const [modules, enabled] = await Promise.all([getWorkspaceModulesCatalog(), getWorkspaceSelection()]);
+      res.json({ core: WORKSPACE_CORE_META, modules, enabled });
     } catch (e) { next(e); }
   });
 
-  // Optional guideline modules — catalog read + custom-guideline CRUD.
-  r.get('/settings/optional-guidelines', async (req, res, next) => {
-    try { res.json({ rules: await getOptionalGuidelinesCatalog() }); } catch (e) { next(e); }
+  // Literal /selection must precede the /:slug route below so it isn't
+  // swallowed as a slug.
+  r.put('/settings/workspace-conventions/selection', async (req, res, next) => {
+    try {
+      const { enabled } = req.body ?? {};
+      const saved = await setWorkspaceSelection(enabled);
+      await ensureRootClaudeMd();
+      res.json({ enabled: saved });
+    } catch (e) { next(e); }
   });
 
-  r.post('/settings/optional-guidelines', async (req, res, next) => {
+  r.post('/settings/workspace-conventions', async (req, res, next) => {
     try {
       const { slug, name, description, body } = req.body ?? {};
-      const rule = await addCustomGuideline({ slug, name, description, body });
+      const module = await addWorkspaceModule({ slug, name, description, body });
+      await ensureRootClaudeMd();
+      res.status(201).json({ module });
+    } catch (e) { next(e); }
+  });
+
+  r.put('/settings/workspace-conventions/:slug', async (req, res, next) => {
+    try {
+      const { slug } = req.params;
+      const { name, description, body } = req.body ?? {};
+      const module = await updateWorkspaceModule(slug, { name, description, body });
+      await ensureRootClaudeMd();
+      res.json({ module });
+    } catch (e) { next(e); }
+  });
+
+  r.delete('/settings/workspace-conventions/:slug', async (req, res, next) => {
+    try {
+      const { slug } = req.params;
+      const result = await deleteWorkspaceModule(slug);
+      await ensureRootClaudeMd();
+      res.json(result);
+    } catch (e) { next(e); }
+  });
+
+  // Settings → Conventions → Project block — catalog read + custom CRUD.
+  // Selected per project at creation (snapshotted into the new project's
+  // CLAUDE.md); no global selection, no live regeneration.
+  r.get('/settings/project-conventions', async (req, res, next) => {
+    try { res.json({ rules: await getProjectConventionsCatalog() }); } catch (e) { next(e); }
+  });
+
+  r.post('/settings/project-conventions', async (req, res, next) => {
+    try {
+      const { slug, name, description, body } = req.body ?? {};
+      const rule = await addCustomConvention({ slug, name, description, body });
       res.status(201).json({ rule });
     } catch (e) { next(e); }
   });
 
-  r.put('/settings/optional-guidelines/:slug', async (req, res, next) => {
+  r.put('/settings/project-conventions/:slug', async (req, res, next) => {
     try {
       const { slug } = req.params;
       const { name, description, body } = req.body ?? {};
-      const rule = await updateCustomGuideline(slug, { name, description, body });
+      const rule = await updateCustomConvention(slug, { name, description, body });
       res.json({ rule });
     } catch (e) { next(e); }
   });
 
-  r.delete('/settings/optional-guidelines/:slug', async (req, res, next) => {
+  r.delete('/settings/project-conventions/:slug', async (req, res, next) => {
     try {
       const { slug } = req.params;
-      const result = await deleteCustomGuideline(slug);
+      const result = await deleteCustomConvention(slug);
       res.json(result);
     } catch (e) { next(e); }
   });

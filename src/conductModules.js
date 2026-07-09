@@ -26,7 +26,7 @@ const MODULES_DIR = path.join(CONDUCT_ROOT, 'modules');
 // non-toggleable row so users see what can't be turned off.
 export const CORE_META = {
   name: 'Core (always on)',
-  description: 'Role, hard boundary, dispatch-and-wake, MCP toolbelt, optional-guidelines on creation, safety',
+  description: 'Role, hard boundary, dispatch-and-wake, MCP toolbelt, project-conventions on creation, safety',
 };
 
 // Built-in module metadata (order = order they appear in the composed doc).

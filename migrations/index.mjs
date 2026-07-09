@@ -18,10 +18,11 @@ import * as m0007 from './0007-migrate-legacy-model-settings.mjs';
 import * as m0008 from './0008-migrate-tiered-session-summaries.mjs';
 import * as m0009 from './0009-seed-legacy-shell-installer-baseline.mjs';
 import * as m0010 from './0010-conduct-md-generated-file.mjs';
+import * as m0011 from './0011-rename-optional-guidelines-store.mjs';
 
 // Ordered list — append new migrations to the end. Order matters:
 // later migrations may assume earlier ones have run.
-const ALL = [m0001, m0002, m0004, m0005, m0006, m0007, m0008, m0009, m0010];
+const ALL = [m0001, m0002, m0004, m0005, m0006, m0007, m0008, m0009, m0010, m0011];
 
 export async function runMigrations({ root, log = console.log } = {}) {
   for (const m of ALL) {

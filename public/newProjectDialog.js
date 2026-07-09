@@ -1,5 +1,5 @@
 // New-project dialog: the sidebar ⋮ "+ New project" button, the live
-// name→path preview, optional guideline-module checkboxes, and the dialog's
+// name→path preview, project-convention checkboxes, and the dialog's
 // close handler that POSTs the create and refreshes the project list.
 // Follows the installX({...}) pattern. No module-owned state — the dialog
 // reads its inputs on close.
@@ -22,7 +22,7 @@ export function installNewProjectDialog({ dom, refreshProjects, closeSidebarOver
     dom.npPreview.textContent = '~/project/<name>';
     // Fetch catalog and render checkboxes (unchecked by default).
     try {
-      const r = await fetch('/api/settings/optional-guidelines');
+      const r = await fetch('/api/settings/project-conventions');
       if (r.ok) {
         const { rules } = await r.json();
         dom.npGuidelinesList.innerHTML = '';
@@ -53,9 +53,9 @@ export function installNewProjectDialog({ dom, refreshProjects, closeSidebarOver
     const name = dom.npName.value.trim();
     if (!name) return;
     const checked = [...dom.npGuidelinesList.querySelectorAll('input[type="checkbox"]:checked')];
-    const guidelines = checked.map(cb => cb.value);
+    const conventions = checked.map(cb => cb.value);
     try {
-      const body = guidelines.length > 0 ? { name, guidelines } : { name };
+      const body = conventions.length > 0 ? { name, conventions } : { name };
       const r = await fetch('/api/projects', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
       if (!r.ok) throw new Error((await r.json()).error);
       await refreshProjects();
