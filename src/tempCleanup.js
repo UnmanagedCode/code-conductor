@@ -12,6 +12,12 @@
 // that needs cleanup. On boot, `sweepPendingTempCleanup` reads the manifest,
 // deletes each entry's jsonl + subagents dir, then unlinks the manifest.
 // Idempotent and crash-safe.
+//
+// Entries may omit `cwd` — crash-orphaned temps (recorded in
+// temp-sessions.json with no live instance when the restart ran) have no
+// cwd on record. Those entries skip the dir cleanup and only get the
+// unmarkTemp/markArchived bookkeeping (a backup for the fire-and-forget
+// writes runTempCleanup already attempted in src/restart.js).
 
 import path from 'node:path';
 import { writeFileSync, readFileSync, rmSync, existsSync } from 'node:fs';
@@ -56,13 +62,17 @@ export function sweepPendingTempCleanup({ log = console } = {}) {
   const root = claudeProjectsRoot();
   let swept = 0;
   for (const { cwd, sessionId } of entries) {
-    if (!cwd || !sessionId) continue;
-    const dir = path.join(root, encodeCwd(cwd));
+    if (!sessionId) continue;
     // Always archive — never delete the .jsonl. Only the ephemeral subagent
     // dir is cleaned up, so a temp session that exited during a restart is
     // recoverable from Settings → Archived. Sidecar updates are
-    // fire-and-forget from the sync boot context.
-    try { rmSync(path.join(dir, sessionId), { recursive: true, force: true }); } catch { /* ignore */ }
+    // fire-and-forget from the sync boot context. cwd-less entries (crash-
+    // orphaned temps with no known cwd) have no dir to locate — bookkeeping
+    // only.
+    if (cwd) {
+      const dir = path.join(root, encodeCwd(cwd));
+      try { rmSync(path.join(dir, sessionId), { recursive: true, force: true }); } catch { /* ignore */ }
+    }
     unmarkTemp(sessionId).catch(() => {});
     markArchived(sessionId).catch(() => {});
     swept++;
