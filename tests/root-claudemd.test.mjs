@@ -1,9 +1,9 @@
 // Tests for code-conductor's ownership of the projects-root CLAUDE.md.
-// Covers the four-case reconcile (create / up-to-date / silent-update / keep /
-// conflict), the keep + overwrite resolutions, the vendor baseline seed, and
-// the HTTP endpoints. Mirrors TCC scripts/lib.sh::sync_workspace_claudemd.
-// The legacy shell-installer baseline seed is now a boot-time migration —
-// see tests/migration-seed-legacy-baseline.test.mjs.
+// The file is fully app-owned: regenerated (overwritten) from the composed
+// workspace convention modules on boot and on every Settings → Workspace
+// conventions change — no three-way reconcile, no conflict UI. The only
+// safety net is a ONE-TIME backup of a hand-edited copy on the first
+// app-owned regeneration (detected by an absent sentinel).
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -11,11 +11,8 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { bootServer, api } from './helpers.mjs';
-import {
-  vendorText, targetPath, baselinePath,
-  classify, seedBaselineIfNeeded, reconcile, getStatus, getDiff, resolve,
-  unifiedDiff,
-} from '../src/rootClaudeMd.js';
+import { ensureRootClaudeMd, targetPath } from '../src/rootClaudeMd.js';
+import { composeCurrentWorkspace } from '../src/workspaceModules.js';
 
 async function mkTmp() {
   return fs.mkdtemp(path.join(os.tmpdir(), 'cc-rootclaudemd-'));
@@ -46,207 +43,137 @@ async function read(p) {
   try { return await fs.readFile(p, 'utf8'); } catch { return null; }
 }
 
-// ── classify (pure) ─────────────────────────────────────────────────────────
+function storeDir(root) { return path.join(root, '.code-conductor', 'workspace-claudemd'); }
+function legacyBaseline(root) { return path.join(storeDir(root), 'baseline.md'); }
+function ownedMarker(root) { return path.join(storeDir(root), 'owned.json'); }
 
-test('classify covers all five cases', () => {
-  assert.equal(classify({ targetExists: false }), 'create');
-  assert.equal(classify({ targetExists: true, targetSha: 'V', vendorSha: 'V' }), 'up-to-date');
-  assert.equal(classify({ targetExists: true, targetSha: 'B', baselineSha: 'B', vendorSha: 'V' }), 'silent-update');
-  assert.equal(classify({ targetExists: true, targetSha: 'U', baselineSha: 'V', vendorSha: 'V' }), 'keep');
-  assert.equal(classify({ targetExists: true, targetSha: 'U', baselineSha: 'B', vendorSha: 'V' }), 'conflict');
-});
+async function baks(root) {
+  const entries = await fs.readdir(root);
+  return entries.filter(n => /^CLAUDE\.md\.bak-\d{8}-\d{6}$/.test(n));
+}
 
-// ── reconcile: create ───────────────────────────────────────────────────────
+// ── create ────────────────────────────────────────────────────────────────
 
-test('reconcile: target missing → create (copy vendor→target, baseline written)', async () => {
+test('ensureRootClaudeMd: target missing → creates it = composed workspace; sentinel written; no backup', async () => {
   const root = await mkTmp();
   try {
     await withEnv({ PROJECTS_ROOT: root }, async () => {
-      const res = await reconcile();
-      assert.equal(res.status, 'created');
-      assert.equal(res.conflict, false);
-      assert.equal(await read(targetPath()), vendorText());
-      assert.equal(await read(baselinePath()), vendorText());
+      const res = await ensureRootClaudeMd();
+      assert.equal(res.created, true);
+      assert.equal(res.backedUp, false);
+      assert.equal(await read(targetPath()), await composeCurrentWorkspace());
+      assert.ok(await read(ownedMarker(root)), 'sentinel written');
+      assert.equal((await baks(root)).length, 0);
     });
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
 
-// ── reconcile: up-to-date ───────────────────────────────────────────────────
+// ── unedited upgrade (no backup) ─────────────────────────────────────────────
 
-test('reconcile: target == vendor → up-to-date (baseline bumped, file unchanged)', async () => {
+test('ensureRootClaudeMd: unedited target (== legacy baseline) is overwritten with NO backup', async () => {
   const root = await mkTmp();
   try {
     await withEnv({ PROJECTS_ROOT: root }, async () => {
-      await writeFileMk(targetPath(), vendorText());
-      const res = await reconcile();
-      assert.equal(res.status, 'up-to-date');
-      assert.equal(await read(targetPath()), vendorText());
-      assert.equal(await read(baselinePath()), vendorText());
-    });
-  } finally { await fs.rm(root, { recursive: true, force: true }); }
-});
-
-// ── reconcile: silent-update ────────────────────────────────────────────────
-
-test('reconcile: untouched target + moved vendor → silent update', async () => {
-  const root = await mkTmp();
-  try {
-    await withEnv({ PROJECTS_ROOT: root }, async () => {
-      // baseline == target == an OLD canonical that differs from the real vendor.
-      await writeFileMk(baselinePath(), 'OLD CANONICAL\n');
+      // target == baseline == an OLD canonical that differs from composed.
+      await writeFileMk(legacyBaseline(root), 'OLD CANONICAL\n');
       await writeFileMk(targetPath(), 'OLD CANONICAL\n');
-      const res = await reconcile();
-      assert.equal(res.status, 'updated');
-      assert.equal(await read(targetPath()), vendorText());
-      assert.equal(await read(baselinePath()), vendorText());
+      const res = await ensureRootClaudeMd();
+      assert.equal(res.backedUp, false, 'unedited copy is not backed up');
+      assert.equal(await read(targetPath()), await composeCurrentWorkspace());
+      assert.equal((await baks(root)).length, 0);
     });
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
 
-// ── reconcile: keep ─────────────────────────────────────────────────────────
+// ── first-transition backup of a hand-edited copy ────────────────────────────
 
-test('reconcile: user-edited target + unchanged vendor → keep (no-op)', async () => {
+test('ensureRootClaudeMd: hand-edited target (!= legacy baseline) → one .bak, then overwritten', async () => {
   const root = await mkTmp();
   try {
     await withEnv({ PROJECTS_ROOT: root }, async () => {
-      await writeFileMk(baselinePath(), vendorText()); // baseline == vendor
+      await writeFileMk(legacyBaseline(root), 'OLD CANONICAL\n');
       await writeFileMk(targetPath(), 'MY LOCAL EDITS\n');
-      const res = await reconcile();
-      assert.equal(res.status, 'kept');
-      assert.equal(await read(targetPath()), 'MY LOCAL EDITS\n'); // untouched
-      assert.equal(await read(baselinePath()), vendorText());
+      const res = await ensureRootClaudeMd();
+      assert.equal(res.backedUp, true);
+      const bs = await baks(root);
+      assert.equal(bs.length, 1, `expected one .bak, got ${JSON.stringify(bs)}`);
+      assert.equal(await read(path.join(root, bs[0])), 'MY LOCAL EDITS\n');
+      assert.equal(await read(targetPath()), await composeCurrentWorkspace());
     });
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
 
-// ── reconcile: conflict ─────────────────────────────────────────────────────
-
-test('reconcile: both changed → conflict (file untouched, status reports conflict)', async () => {
+test('ensureRootClaudeMd: no legacy baseline + target differs from composed → backup (fallback oracle)', async () => {
   const root = await mkTmp();
   try {
     await withEnv({ PROJECTS_ROOT: root }, async () => {
-      await writeFileMk(baselinePath(), 'OLD CANONICAL\n');
-      await writeFileMk(targetPath(), 'MY LOCAL EDITS\n');
-      const res = await reconcile();
-      assert.equal(res.status, 'conflict');
-      assert.equal(res.conflict, true);
-      assert.equal(await read(targetPath()), 'MY LOCAL EDITS\n'); // untouched
-      const st = await getStatus();
-      assert.equal(st.status, 'conflict');
-      assert.equal(st.conflict, true);
+      await writeFileMk(targetPath(), 'SOME EXISTING FILE\n'); // no baseline.md present
+      const res = await ensureRootClaudeMd();
+      assert.equal(res.backedUp, true);
+      assert.equal((await baks(root)).length, 1);
     });
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
 
-// ── resolve: overwrite ──────────────────────────────────────────────────────
-
-test('resolve overwrite: backs up to .bak-<ts>, copies vendor→target, bumps baseline', async () => {
+test('ensureRootClaudeMd: no legacy baseline + target already == composed → NO backup', async () => {
   const root = await mkTmp();
   try {
     await withEnv({ PROJECTS_ROOT: root }, async () => {
-      await writeFileMk(baselinePath(), 'OLD CANONICAL\n');
-      await writeFileMk(targetPath(), 'MY LOCAL EDITS\n');
-      await reconcile(); // → conflict
-      const st = await resolve('overwrite');
-      assert.notEqual(st.status, 'conflict');
-      assert.equal(st.conflict, false);
-      assert.equal(await read(targetPath()), vendorText());
-      assert.equal(await read(baselinePath()), vendorText());
-      // A timestamped backup of the user's copy must exist alongside CLAUDE.md.
-      const entries = await fs.readdir(root);
-      const baks = entries.filter(n => /^CLAUDE\.md\.bak-\d{8}-\d{6}$/.test(n));
-      assert.equal(baks.length, 1, `expected one .bak file, got ${JSON.stringify(entries)}`);
-      assert.equal(await read(path.join(root, baks[0])), 'MY LOCAL EDITS\n');
+      await writeFileMk(targetPath(), await composeCurrentWorkspace());
+      const res = await ensureRootClaudeMd();
+      assert.equal(res.backedUp, false);
+      assert.equal((await baks(root)).length, 0);
     });
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
 
-// ── resolve: keep ───────────────────────────────────────────────────────────
+// ── one-time only: second run never backs up ─────────────────────────────────
 
-test('resolve keep: bumps baseline to vendor without changing the file', async () => {
+test('ensureRootClaudeMd: after the sentinel exists, a since-edited target is overwritten with NO new backup', async () => {
   const root = await mkTmp();
   try {
     await withEnv({ PROJECTS_ROOT: root }, async () => {
-      await writeFileMk(baselinePath(), 'OLD CANONICAL\n');
-      await writeFileMk(targetPath(), 'MY LOCAL EDITS\n');
-      await reconcile(); // → conflict
-      const st = await resolve('keep');
-      assert.equal(st.status, 'kept');
-      assert.equal(st.conflict, false);
-      assert.equal(await read(targetPath()), 'MY LOCAL EDITS\n'); // byte-identical
-      assert.equal(await read(baselinePath()), vendorText());     // baseline bumped
-      // No backup file created on keep.
-      const entries = await fs.readdir(root);
-      assert.equal(entries.some(n => /^CLAUDE\.md\.bak-/.test(n)), false);
+      await ensureRootClaudeMd();               // first transition: writes sentinel
+      await fs.writeFile(targetPath(), 'HAND EDIT AFTER OWNERSHIP\n');
+      const res = await ensureRootClaudeMd();   // second run
+      assert.equal(res.backedUp, false, 'one-time backup fires only on first transition');
+      assert.equal(await read(targetPath()), await composeCurrentWorkspace());
+      assert.equal((await baks(root)).length, 0);
     });
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
 
-// ── baseline seed ────────────────────────────────────────────────────────────
+// ── HTTP surface ─────────────────────────────────────────────────────────────
 
-test('seedBaselineIfNeeded seeds from vendor when absent, and is idempotent', async () => {
-  const root = await mkTmp();
-  try {
-    await withEnv({ PROJECTS_ROOT: root }, async () => {
-      const r = await seedBaselineIfNeeded();
-      assert.deepEqual(r, { seeded: true, from: 'vendor' });
-      assert.equal(await read(baselinePath()), vendorText());
-      // Idempotent: a second call is a no-op.
-      assert.deepEqual(await seedBaselineIfNeeded(), { seeded: false });
-    });
-  } finally { await fs.rm(root, { recursive: true, force: true }); }
-});
-
-// ── unified diff helper ─────────────────────────────────────────────────────
-
-test('unifiedDiff: identical inputs → empty; differing inputs → +/- lines', () => {
-  assert.equal(unifiedDiff('same\n', 'same\n'), '');
-  const d = unifiedDiff('a\nb\nc\n', 'a\nB\nc\n', 'a/x', 'b/x');
-  assert.match(d, /^--- a\/x\n\+\+\+ b\/x\n/);
-  assert.match(d, /-b/);
-  assert.match(d, /\+B/);
-});
-
-// ── HTTP endpoints ──────────────────────────────────────────────────────────
-
-test('GET /api/settings/workspace-claudemd reports status shape', async () => {
+test('GET /api/settings/workspace-conventions returns core + 4 modules + enabled (all on)', async () => {
   const { baseUrl, close } = await bootServer();
   try {
-    const r = await api(baseUrl, 'GET', '/api/settings/workspace-claudemd');
+    const r = await api(baseUrl, 'GET', '/api/settings/workspace-conventions');
     assert.equal(r.status, 200);
-    // Fresh temp PROJECTS_ROOT has no CLAUDE.md yet → would be created.
-    assert.equal(r.body.status, 'created');
-    assert.equal(r.body.targetExists, false);
-    assert.equal(typeof r.body.targetPath, 'string');
-    assert.equal(typeof r.body.vendorPath, 'string');
-    assert.equal(typeof r.body.baselinePath, 'string');
+    assert.ok(r.body.core && r.body.core.name);
+    assert.equal(r.body.modules.length, 4);
+    assert.equal(r.body.enabled.length, 4);
+    for (const m of r.body.modules) assert.equal(m.builtin, true);
   } finally { await close(); }
 });
 
-test('HTTP conflict flow: status conflict → diff non-empty → overwrite resolves', async () => {
+test('PUT selection regenerates the projects-root CLAUDE.md; built-in edit/delete → 400', async () => {
   const { baseUrl, projectsRoot, close } = await bootServer();
   try {
-    // Stage a both-changed conflict directly on disk.
-    const storeBaseline = path.join(projectsRoot, '.code-conductor', 'workspace-claudemd', 'baseline.md');
-    await writeFileMk(storeBaseline, 'OLD CANONICAL\n');
-    await writeFileMk(path.join(projectsRoot, 'CLAUDE.md'), 'MY LOCAL EDITS\n');
+    const r = await api(baseUrl, 'PUT', '/api/settings/workspace-conventions/selection', {
+      enabled: ['git-hygiene'],
+    });
+    assert.equal(r.status, 200);
+    const content = await read(path.join(projectsRoot, 'CLAUDE.md'));
+    assert.match(content, /## Git hygiene/);
+    assert.doesNotMatch(content, /## Opening URLs/);
+    assert.ok(content.startsWith('# Project workspace conventions'), 'core first');
 
-    const st = await api(baseUrl, 'GET', '/api/settings/workspace-claudemd');
-    assert.equal(st.body.status, 'conflict');
-    assert.equal(st.body.conflict, true);
-
-    const diff = await api(baseUrl, 'GET', '/api/settings/workspace-claudemd/diff');
-    assert.equal(diff.status, 200);
-    assert.match(diff.body.diff, /MY LOCAL EDITS/);
-
-    const bad = await api(baseUrl, 'POST', '/api/settings/workspace-claudemd/resolve', { action: 'merge' });
+    const put = await api(baseUrl, 'PUT', '/api/settings/workspace-conventions/git-hygiene', { name: 'X' });
+    assert.equal(put.status, 400);
+    const del = await api(baseUrl, 'DELETE', '/api/settings/workspace-conventions/git-hygiene');
+    assert.equal(del.status, 400);
+    const bad = await api(baseUrl, 'PUT', '/api/settings/workspace-conventions/selection', { enabled: ['nope'] });
     assert.equal(bad.status, 400);
-
-    const ok = await api(baseUrl, 'POST', '/api/settings/workspace-claudemd/resolve', { action: 'overwrite' });
-    assert.equal(ok.status, 200);
-    assert.equal(ok.body.conflict, false);
-
-    const after = await read(path.join(projectsRoot, 'CLAUDE.md'));
-    assert.equal(after, vendorText());
   } finally { await close(); }
 });

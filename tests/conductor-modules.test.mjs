@@ -55,7 +55,7 @@ test('composeConduct(all) = core + all module bodies + footer', async () => {
   const doc = await composeConduct(all);
   assert.ok(doc.startsWith('# Conductor role'), 'core first');
   assert.match(doc, /## MCP toolbelt/, 'core section');
-  assert.match(doc, /## Optional guidelines on project creation/, 'core-hoisted section');
+  assert.match(doc, /## Project conventions on project creation/, 'core-hoisted section');
   assert.match(doc, /## Canonical workflow/);
   assert.match(doc, /## Worker lifecycle/);
   assert.match(doc, /generated from `conduct\/core\.md`/, 'footer last');

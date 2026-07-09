@@ -13,7 +13,7 @@ import { loadAllArchived } from './src/archivedSessions.js';
 import { runMigrations } from './migrations/index.mjs';
 import { checkClaudeReadiness, formatReadiness } from './src/health.js';
 import { sweepPendingTempCleanup } from './src/tempCleanup.js';
-import { reconcile as reconcileRootClaudeMd } from './src/rootClaudeMd.js';
+import { ensureRootClaudeMd } from './src/rootClaudeMd.js';
 import { ensureConductProject } from './src/conduct.js';
 import { restoreFromResumeManifest } from './src/resumeRestart.js';
 import { createPluginHost } from './src/plugins/registry.js';
@@ -103,12 +103,13 @@ export async function start({ port = 8787, host = '127.0.0.1' } = {}) {
   // is written by scheduleRestart in src/restart.js.
   try { sweepPendingTempCleanup({ log: console }); }
   catch (e) { console.warn('temp-cleanup sweep failed:', e); }
-  // Mirror the bundled canonical workspace-conventions into
-  // <PROJECTS_ROOT>/CLAUDE.md (the file every project imports via
-  // `@../CLAUDE.md`). Strictly non-fatal: a reconcile failure must never
-  // abort boot — unlike a migration, this is a convenience sync.
-  try { await reconcileRootClaudeMd({ log: console }); }
-  catch (e) { console.warn('root CLAUDE.md reconcile failed:', e); }
+  // Regenerate the app-owned <PROJECTS_ROOT>/CLAUDE.md (the file every project
+  // imports via `@../CLAUDE.md`) from the composed workspace convention modules.
+  // Overwrites like .conduct/CONDUCT.md; a one-time backup of a hand-edited copy
+  // fires on the first app-owned regeneration. Strictly non-fatal: a failure
+  // must never abort boot — unlike a migration, this is a convenience sync.
+  try { await ensureRootClaudeMd({ log: console }); }
+  catch (e) { console.warn('root CLAUDE.md regenerate failed:', e); }
   // Regenerate the composed .conduct/CONDUCT.md from the current core +
   // enabled convention modules. Runs after migrations (0010 clears any
   // legacy symlink) so a fresh boot reflects the latest fragments and

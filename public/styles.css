@@ -1827,6 +1827,17 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
   background: var(--accent); color: #fff; border: 1px solid var(--accent);
 }
 
+/* ── Conventions page: three collapsible scope blocks ── */
+.conventions-block {
+  border: 1px solid var(--border); border-radius: 6px;
+  padding: 0 12px; margin: 12px 0; background: var(--panel-1);
+}
+.conventions-block[open] { padding-bottom: 12px; }
+.conventions-summary {
+  cursor: pointer; font-weight: 600; font-size: 14px;
+  padding: 12px 0; list-style: revert;
+}
+
 /* ── New-project dialog rule checkboxes ── */
 .np-rules { margin: 10px 0 4px; }
 .np-rules-label { font-size: 12px; color: var(--muted); font-weight: 600; margin-bottom: 4px; }

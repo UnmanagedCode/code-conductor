@@ -557,17 +557,17 @@ export function buildTools() {
       description:
         'Create a new empty project under ~/project/<name>. Seeds CLAUDE.md with @../CLAUDE.md ' +
         'so workspace-wide conventions are inherited. Optionally runs `git init` in the new dir. ' +
-        'Optional guideline modules (inline CLAUDE.md sections) can be appended by passing their slugs — ' +
-        'call list_optional_guidelines to discover available slugs.',
+        'Project convention modules (inline CLAUDE.md sections) can be appended by passing their slugs — ' +
+        'call list_project_conventions to discover available slugs.',
       inputSchema: {
         type: 'object',
         properties: {
           name: { type: 'string', pattern: '^[a-zA-Z0-9._-]+$', description: 'Project name. Must match ^[a-zA-Z0-9._-]+$.' },
           gitInit: { type: 'boolean', default: false, description: 'If true, run `git init` in the new project dir. Default false.' },
-          guidelines: {
+          conventions: {
             type: 'array',
             items: { type: 'string' },
-            description: 'Slugs of optional guideline modules to append to CLAUDE.md — call list_optional_guidelines to discover available slugs.',
+            description: 'Slugs of project convention modules to append to CLAUDE.md — call list_project_conventions to discover available slugs.',
           },
         },
         required: ['name'],
@@ -575,13 +575,13 @@ export function buildTools() {
       handler: h.createProject,
     },
     {
-      name: 'list_optional_guidelines',
+      name: 'list_project_conventions',
       description:
-        'List the available optional guideline modules (slug, name, description, builtin) that can be ' +
-        'passed to create_project\'s `guidelines` param. Built-in seeds have builtin:true and are read-only; ' +
-        'custom guidelines (builtin:false) are managed via the Settings → Workspace conventions panel.',
+        'List the available project convention modules (slug, name, description, builtin) that can be ' +
+        'passed to create_project\'s `conventions` param. Built-in seeds have builtin:true and are read-only; ' +
+        'custom conventions (builtin:false) are managed via the Settings → Conventions → Project panel.',
       inputSchema: { type: 'object', properties: {}, required: [] },
-      handler: h.listOptionalGuidelines,
+      handler: h.listProjectConventions,
       annotations: { readOnlyHint: true },
     },
     {

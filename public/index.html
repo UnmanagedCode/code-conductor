@@ -109,8 +109,7 @@
               <option value="models">Models</option>
               <option value="transcribe">Transcribe</option>
               <option value="tts">TTS</option>
-              <option value="workspace">Workspace conventions</option>
-              <option value="conductor-conventions">Conductor conventions</option>
+              <option value="conventions">Conventions</option>
               <option value="plugins">Plugins</option>
               <option value="archived">Archived</option>
             </select>
@@ -204,69 +203,86 @@
             </div>
             <pre id="tt-install-log" class="st-install-log" hidden aria-live="polite"></pre>
           </div>
-          <div id="settings-workspace" class="settings-group" hidden>
-            <h3 class="settings-subheading">Baseline (applies to all projects)</h3>
+          <div id="settings-conventions" class="settings-group" hidden>
             <p class="settings-desc">
-              code-conductor owns the projects-root <code>CLAUDE.md</code> — the workspace conventions
-              every project imports via <code>@../CLAUDE.md</code>. On startup it mirrors a bundled
-              canonical copy into <code>&lt;PROJECTS_ROOT&gt;/CLAUDE.md</code>. If you've edited that file
-              <em>and</em> the canonical has also changed, the sync stops and asks you to resolve the
-              conflict below.
+              Markdown guidance composed into Claude sessions, at three scopes that cascade
+              <strong>Conductor → Workspace → Project</strong>. Each scope has an always-on
+              <strong>core</strong> plus toggleable built-in modules (read-only) and custom modules you
+              can add, edit, and delete.
             </p>
-            <div id="wc-status" class="st-status" aria-live="polite">Loading…</div>
-            <div class="st-actions">
-              <button id="wc-keep" type="button" hidden>Keep my copy</button>
-              <button id="wc-overwrite" type="button" hidden>Overwrite (backs up your copy)</button>
-              <span id="wc-action-hint" class="st-action-hint"></span>
-            </div>
-            <pre id="wc-diff" class="st-install-log" hidden aria-live="polite"></pre>
-            <h3 class="settings-subheading">Optional guidelines (opt-in per project)</h3>
-            <p class="settings-desc">
-              Named CLAUDE.md sections selectable at project creation. Built-in seeds are
-              read-only; custom guidelines can be added, edited, and deleted here.
-            </p>
-            <div id="or-status" class="st-status" aria-live="polite">Loading…</div>
-            <ul id="or-rule-list" class="or-rule-list"></ul>
-            <div id="or-add-form" class="or-add-form" hidden>
-              <input id="or-add-slug" type="text" placeholder="slug (e.g. my-guideline)" />
-              <input id="or-add-name" type="text" placeholder="Short name" />
-              <input id="or-add-desc" type="text" placeholder="One-line description" />
-              <textarea id="or-add-body" rows="6" placeholder="Markdown body appended to CLAUDE.md"></textarea>
-              <div class="or-add-actions">
-                <button id="or-add-save" type="button">Save</button>
-                <button id="or-add-cancel" type="button">Cancel</button>
+            <details class="conventions-block" open>
+              <summary class="conventions-summary">Conductor conventions</summary>
+              <p class="settings-desc">
+                Composed into the 🎼 Conduct orchestrator's guidance (<code>.conduct/CONDUCT.md</code>).
+                Global — applies to every conductor session; changes regenerate the doc for the
+                next-spawned conductor. Keep the enabled set lean — every module costs tokens in every
+                conductor session.
+              </p>
+              <div id="cc-status" class="st-status" aria-live="polite">Loading…</div>
+              <ul id="cc-module-list" class="cc-module-list"></ul>
+              <div id="cc-add-form" class="or-add-form" hidden>
+                <input id="cc-add-slug" type="text" placeholder="slug (e.g. my-module)" />
+                <input id="cc-add-name" type="text" placeholder="Short name" />
+                <input id="cc-add-desc" type="text" placeholder="One-line description" />
+                <textarea id="cc-add-body" rows="6" placeholder="Markdown body composed into CONDUCT.md"></textarea>
+                <div class="or-add-actions">
+                  <button id="cc-add-save" type="button">Save</button>
+                  <button id="cc-add-cancel" type="button">Cancel</button>
+                </div>
+                <p class="error" id="cc-add-error"></p>
               </div>
-              <p class="error" id="or-add-error"></p>
-            </div>
-            <div class="st-actions">
-              <button id="or-add-btn" type="button">+ Add custom guideline</button>
-            </div>
-          </div>
-          <div id="settings-conductor-conventions" class="settings-group" hidden>
-            <p class="settings-desc">
-              The 🎼 Conduct orchestrator's guidance (<code>.conduct/CONDUCT.md</code>) is composed from an
-              always-on <strong>core</strong> plus the toggleable modules below. This selection is
-              <em>global</em> — it applies to every conductor session. Changes regenerate the doc and take
-              effect for the next-spawned conductor. Built-in modules are read-only; custom modules can be
-              added, edited, and deleted. Keep the enabled set lean — every module costs tokens in every
-              conductor session.
-            </p>
-            <div id="cc-status" class="st-status" aria-live="polite">Loading…</div>
-            <ul id="cc-module-list" class="cc-module-list"></ul>
-            <div id="cc-add-form" class="or-add-form" hidden>
-              <input id="cc-add-slug" type="text" placeholder="slug (e.g. my-module)" />
-              <input id="cc-add-name" type="text" placeholder="Short name" />
-              <input id="cc-add-desc" type="text" placeholder="One-line description" />
-              <textarea id="cc-add-body" rows="6" placeholder="Markdown body composed into CONDUCT.md"></textarea>
-              <div class="or-add-actions">
-                <button id="cc-add-save" type="button">Save</button>
-                <button id="cc-add-cancel" type="button">Cancel</button>
+              <div class="st-actions">
+                <button id="cc-add-btn" type="button">+ Add custom module</button>
               </div>
-              <p class="error" id="cc-add-error"></p>
-            </div>
-            <div class="st-actions">
-              <button id="cc-add-btn" type="button">+ Add custom module</button>
-            </div>
+            </details>
+            <details class="conventions-block">
+              <summary class="conventions-summary">Workspace conventions</summary>
+              <p class="settings-desc">
+                Composed into the app-owned projects-root <code>CLAUDE.md</code> — the file every project
+                imports via <code>@../CLAUDE.md</code>. Global; changes regenerate that file immediately
+                (it is fully owned by code-conductor, overwritten on boot and on change).
+              </p>
+              <div id="wk-status" class="st-status" aria-live="polite">Loading…</div>
+              <ul id="wk-module-list" class="cc-module-list"></ul>
+              <div id="wk-add-form" class="or-add-form" hidden>
+                <input id="wk-add-slug" type="text" placeholder="slug (e.g. my-module)" />
+                <input id="wk-add-name" type="text" placeholder="Short name" />
+                <input id="wk-add-desc" type="text" placeholder="One-line description" />
+                <textarea id="wk-add-body" rows="6" placeholder="Markdown body composed into the root CLAUDE.md"></textarea>
+                <div class="or-add-actions">
+                  <button id="wk-add-save" type="button">Save</button>
+                  <button id="wk-add-cancel" type="button">Cancel</button>
+                </div>
+                <p class="error" id="wk-add-error"></p>
+              </div>
+              <div class="st-actions">
+                <button id="wk-add-btn" type="button">+ Add custom module</button>
+              </div>
+            </details>
+            <details class="conventions-block">
+              <summary class="conventions-summary">Project conventions</summary>
+              <p class="settings-desc">
+                Named <code>CLAUDE.md</code> sections selectable per project at creation (snapshotted into
+                that project's <code>CLAUDE.md</code>). Built-in seeds are read-only; custom conventions
+                can be added, edited, and deleted here.
+              </p>
+              <div id="pc-status" class="st-status" aria-live="polite">Loading…</div>
+              <ul id="pc-module-list" class="or-rule-list"></ul>
+              <div id="pc-add-form" class="or-add-form" hidden>
+                <input id="pc-add-slug" type="text" placeholder="slug (e.g. my-convention)" />
+                <input id="pc-add-name" type="text" placeholder="Short name" />
+                <input id="pc-add-desc" type="text" placeholder="One-line description" />
+                <textarea id="pc-add-body" rows="6" placeholder="Markdown body appended to a new project's CLAUDE.md"></textarea>
+                <div class="or-add-actions">
+                  <button id="pc-add-save" type="button">Save</button>
+                  <button id="pc-add-cancel" type="button">Cancel</button>
+                </div>
+                <p class="error" id="pc-add-error"></p>
+              </div>
+              <div class="st-actions">
+                <button id="pc-add-btn" type="button">+ Add custom convention</button>
+              </div>
+            </details>
           </div>
           <div id="settings-plugins" class="settings-group" hidden>
             <p class="settings-desc">
@@ -330,7 +346,7 @@
       <label>Name <input id="np-name" pattern="[a-zA-Z0-9._-]+" required autofocus /></label>
       <p class="hint">Creates <code id="np-preview">~/project/&lt;name&gt;</code></p>
       <div id="np-guidelines" class="np-rules" hidden>
-        <p class="np-rules-label">CLAUDE.md guidelines</p>
+        <p class="np-rules-label">Project conventions</p>
         <ul id="np-guidelines-list" class="np-rules-list"></ul>
       </div>
       <p class="error" id="np-error"></p>

@@ -1,7 +1,7 @@
 // Settings page — a full-page view inside #main, shown when the URL hash is
-// `#settings`. Built as a group-nav + content scaffold with four groups today:
-// Transcribe, TTS, Models, and Workspace Conventions. Each adds a nav item +
-// a panel hanging off loadGroup().
+// `#settings`. Built as a group-nav + content scaffold: Models, Transcribe,
+// TTS, Conventions (Conductor / Workspace / Project blocks, each a reusable
+// conventionsPanel), Plugins, Archived. Each adds a nav item + a panel.
 //
 // Navigation is hash-driven so a refresh keeps the page. app.js owns the
 // hash (it knows the active session to restore on close) and passes a
@@ -9,6 +9,7 @@
 
 import { formatAgo } from './sidebar.js';
 import { installPluginManager } from './pluginManager.js';
+import { installConventionsPanel } from './conventionsPanel.js';
 
 const POLL_MS = 1500;
 
@@ -51,44 +52,30 @@ export function installSettings({
   const ttEnabledEl = document.getElementById('tt-enabled');
   const ttRateEl = document.getElementById('tt-rate');
   const ttRateValEl = document.getElementById('tt-rate-val');
-  // Workspace conventions (root CLAUDE.md) group elements.
-  const wcStatusEl = document.getElementById('wc-status');
-  const wcKeepBtn = document.getElementById('wc-keep');
-  const wcOverwriteBtn = document.getElementById('wc-overwrite');
-  const wcHintEl = document.getElementById('wc-action-hint');
-  const wcDiffEl = document.getElementById('wc-diff');
   // Archived group elements.
   const arStatusEl = document.getElementById('ar-status');
   const arListEl = document.getElementById('ar-list');
-  // Optional rules group elements.
-  const orStatusEl = document.getElementById('or-status');
-  const orRuleListEl = document.getElementById('or-rule-list');
-  const orAddBtn = document.getElementById('or-add-btn');
-  const orAddForm = document.getElementById('or-add-form');
-  const orAddSlug = document.getElementById('or-add-slug');
-  const orAddName = document.getElementById('or-add-name');
-  const orAddDesc = document.getElementById('or-add-desc');
-  const orAddBody = document.getElementById('or-add-body');
-  const orAddSave = document.getElementById('or-add-save');
-  const orAddCancel = document.getElementById('or-add-cancel');
-  const orAddError = document.getElementById('or-add-error');
-  // Conductor conventions group elements.
-  const ccStatusEl = document.getElementById('cc-status');
-  const ccModuleListEl = document.getElementById('cc-module-list');
-  const ccAddBtn = document.getElementById('cc-add-btn');
-  const ccAddForm = document.getElementById('cc-add-form');
-  const ccAddSlug = document.getElementById('cc-add-slug');
-  const ccAddName = document.getElementById('cc-add-name');
-  const ccAddDesc = document.getElementById('cc-add-desc');
-  const ccAddBody = document.getElementById('cc-add-body');
-  const ccAddSave = document.getElementById('cc-add-save');
-  const ccAddCancel = document.getElementById('cc-add-cancel');
-  const ccAddError = document.getElementById('cc-add-error');
   if (!view) return { open() {}, close() {} };
 
   // Plugins group — feature logic lives in its own module; settings only
   // owns the group panel + calls load() on open.
   const pluginManager = installPluginManager({ onCatalogChange: onPluginsChanged });
+
+  // Conventions group — one reusable widget mounted three times (cascade order
+  // Conductor → Workspace → Project). Each owns its own DOM (by id prefix) and
+  // its scope's REST endpoints; see public/conventionsPanel.js.
+  const conductorPanel = installConventionsPanel({
+    prefix: 'cc', base: '/api/settings/conductor-modules',
+    hasToggle: true, hasCoreRow: true, noun: 'conductor module',
+  });
+  const workspacePanel = installConventionsPanel({
+    prefix: 'wk', base: '/api/settings/workspace-conventions',
+    hasToggle: true, hasCoreRow: true, noun: 'workspace module',
+  });
+  const projectPanel = installConventionsPanel({
+    prefix: 'pc', base: '/api/settings/project-conventions',
+    hasToggle: false, hasCoreRow: false, noun: 'project convention',
+  });
 
   let isOpen = false;
   let selected = null;     // model name highlighted by the user
@@ -142,10 +129,10 @@ export function installSettings({
     clearOverageStatus(); // discard any stale applied/failed message from a prior open
     loadModels();
     loadTts();
-    loadWorkspace();
     loadArchived();
-    loadOptionalGuidelines();
-    loadConductorModules();
+    conductorPanel.load();
+    workspacePanel.load();
+    projectPanel.load();
     pluginManager.load();
   }
 
@@ -768,75 +755,6 @@ export function installSettings({
   });
   ttRateEl?.addEventListener('change', () => savePrefs({ rate: Number(ttRateEl.value) }));
 
-  // ── Workspace conventions group (root CLAUDE.md) ────────────────────────
-  const WC_STATUS_LABEL = {
-    'created': '✓ created — canonical copied in',
-    'up-to-date': '✓ up to date',
-    'updated': '✓ updated to the latest canonical',
-    'kept': '✓ your edits kept (canonical unchanged)',
-    'conflict': 'conflict — your copy and the canonical have both changed',
-  };
-
-  async function loadWorkspace() {
-    if (!wcStatusEl) return;
-    try {
-      const r = await fetch('/api/settings/workspace-claudemd', { cache: 'no-store' });
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      await renderWorkspace(await r.json());
-    } catch (e) {
-      wcStatusEl.textContent = `Failed to load: ${e.message || e}`;
-    }
-  }
-
-  async function renderWorkspace(data) {
-    const label = WC_STATUS_LABEL[data.status] || data.status || 'unknown';
-    if (data.conflict) {
-      wcStatusEl.innerHTML = `<span class="st-warn">${label}</span>`;
-    } else {
-      wcStatusEl.innerHTML = `<span class="st-ok">${label}</span>`;
-    }
-
-    if (data.conflict) {
-      if (wcKeepBtn) wcKeepBtn.hidden = false;
-      if (wcOverwriteBtn) wcOverwriteBtn.hidden = false;
-      if (wcHintEl) wcHintEl.textContent = '';
-      // Fetch and show the unified diff (your copy vs canonical).
-      try {
-        const dr = await fetch('/api/settings/workspace-claudemd/diff', { cache: 'no-store' });
-        const dd = await dr.json();
-        if (wcDiffEl) { wcDiffEl.textContent = dd.diff || ''; wcDiffEl.hidden = !dd.diff; }
-      } catch {
-        if (wcDiffEl) wcDiffEl.hidden = true;
-      }
-    } else {
-      if (wcKeepBtn) wcKeepBtn.hidden = true;
-      if (wcOverwriteBtn) wcOverwriteBtn.hidden = true;
-      if (wcDiffEl) { wcDiffEl.hidden = true; wcDiffEl.textContent = ''; }
-      if (wcHintEl) wcHintEl.textContent = '';
-    }
-  }
-
-  async function resolveWorkspace(action) {
-    if (wcKeepBtn) wcKeepBtn.disabled = true;
-    if (wcOverwriteBtn) wcOverwriteBtn.disabled = true;
-    if (wcHintEl) wcHintEl.textContent = 'Resolving…';
-    try {
-      const r = await fetch('/api/settings/workspace-claudemd/resolve', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ action }),
-      });
-      const data = await r.json();
-      if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
-      await renderWorkspace(data);
-    } catch (e) {
-      if (wcHintEl) wcHintEl.textContent = `Failed: ${e.message || e}`;
-    } finally {
-      if (wcKeepBtn) wcKeepBtn.disabled = false;
-      if (wcOverwriteBtn) wcOverwriteBtn.disabled = false;
-    }
-  }
-
   // ── Archived group ──────────────────────────────────────────────────
   // Lists every archived session grouped by project (collapsed by
   // default), each with Restore (back to the sidebar) and Delete
@@ -936,304 +854,6 @@ export function installSettings({
       if (arListEl) arListEl.innerHTML = '';
     }
   }
-
-  // ── Optional guidelines group ────────────────────────────────────────────────
-
-  // Tracks which slug is being edited (null = add mode).
-  let orEditingSlug = null;
-
-  function renderOptionalGuidelines(rules) {
-    if (orStatusEl) orStatusEl.textContent = '';
-    if (!orRuleListEl) return;
-    orRuleListEl.innerHTML = '';
-    for (const rule of rules) {
-      const li = document.createElement('li');
-      li.className = 'or-rule-item';
-      const titleEl = document.createElement('span');
-      titleEl.className = 'or-rule-name';
-      titleEl.textContent = rule.name;
-      const descEl = document.createElement('span');
-      descEl.className = 'or-rule-desc';
-      descEl.textContent = rule.description;
-      const tagEl = document.createElement('span');
-      tagEl.className = 'or-rule-slug';
-      tagEl.textContent = rule.slug;
-      li.appendChild(titleEl);
-      li.appendChild(tagEl);
-      li.appendChild(descEl);
-      if (!rule.builtin) {
-        const editBtn = document.createElement('button');
-        editBtn.type = 'button';
-        editBtn.textContent = 'Edit';
-        editBtn.addEventListener('click', () => openEditForm(rule));
-        const delBtn = document.createElement('button');
-        delBtn.type = 'button';
-        delBtn.textContent = 'Delete';
-        delBtn.addEventListener('click', () => deleteOptionalGuideline(rule.slug));
-        li.appendChild(editBtn);
-        li.appendChild(delBtn);
-      } else {
-        const badge = document.createElement('span');
-        badge.className = 'or-builtin-badge';
-        badge.textContent = 'built-in';
-        li.appendChild(badge);
-      }
-      orRuleListEl.appendChild(li);
-    }
-  }
-
-  function openAddForm() {
-    orEditingSlug = null;
-    if (orAddSlug) { orAddSlug.value = ''; orAddSlug.disabled = false; }
-    if (orAddName) orAddName.value = '';
-    if (orAddDesc) orAddDesc.value = '';
-    if (orAddBody) orAddBody.value = '';
-    if (orAddError) orAddError.textContent = '';
-    if (orAddForm) orAddForm.hidden = false;
-    if (orAddBtn) orAddBtn.hidden = true;
-    orAddSlug?.focus();
-  }
-
-  function openEditForm(rule) {
-    orEditingSlug = rule.slug;
-    if (orAddSlug) { orAddSlug.value = rule.slug; orAddSlug.disabled = true; }
-    if (orAddName) orAddName.value = rule.name;
-    if (orAddDesc) orAddDesc.value = rule.description;
-    if (orAddBody) orAddBody.value = rule.body || '';
-    if (orAddError) orAddError.textContent = '';
-    if (orAddForm) orAddForm.hidden = false;
-    if (orAddBtn) orAddBtn.hidden = true;
-    orAddName?.focus();
-  }
-
-  function closeAddForm() {
-    orEditingSlug = null;
-    if (orAddForm) orAddForm.hidden = true;
-    if (orAddBtn) orAddBtn.hidden = false;
-    if (orAddError) orAddError.textContent = '';
-  }
-
-  async function saveOptionalGuideline() {
-    const slug = orAddSlug?.value.trim();
-    const name = orAddName?.value.trim();
-    const description = orAddDesc?.value.trim();
-    const body = orAddBody?.value;
-    if (orAddError) orAddError.textContent = '';
-    try {
-      if (orEditingSlug) {
-        await fetch(`/api/settings/optional-guidelines/${encodeURIComponent(orEditingSlug)}`, {
-          method: 'PUT', headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ name, description, body }),
-        }).then(async r => { if (!r.ok) throw new Error((await r.json()).error); });
-      } else {
-        await fetch('/api/settings/optional-guidelines', {
-          method: 'POST', headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ slug, name, description, body }),
-        }).then(async r => { if (!r.ok) throw new Error((await r.json()).error); });
-      }
-      closeAddForm();
-      loadOptionalGuidelines();
-    } catch (e) {
-      if (orAddError) orAddError.textContent = e.message || String(e);
-    }
-  }
-
-  async function deleteOptionalGuideline(slug) {
-    if (!confirm(`Delete guideline "${slug}"?`)) return;
-    try {
-      const r = await fetch(`/api/settings/optional-guidelines/${encodeURIComponent(slug)}`, { method: 'DELETE' });
-      if (!r.ok) throw new Error((await r.json()).error);
-      loadOptionalGuidelines();
-    } catch (e) {
-      if (orStatusEl) orStatusEl.textContent = `Delete failed: ${e.message || e}`;
-    }
-  }
-
-  async function loadOptionalGuidelines() {
-    if (orStatusEl) orStatusEl.textContent = 'Loading…';
-    try {
-      const r = await fetch('/api/settings/optional-guidelines', { cache: 'no-store' });
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      const { rules } = await r.json();
-      renderOptionalGuidelines(rules);
-    } catch (e) {
-      if (orStatusEl) orStatusEl.textContent = `Failed: ${e.message || e}`;
-    }
-  }
-
-  orAddBtn?.addEventListener('click', openAddForm);
-  orAddCancel?.addEventListener('click', closeAddForm);
-  orAddSave?.addEventListener('click', saveOptionalGuideline);
-
-  // ── Conductor conventions group ──────────────────────────────────────────────
-
-  // Tracks which custom-module slug is being edited (null = add mode).
-  let ccEditingSlug = null;
-  let ccEnabled = new Set(); // enabled module slugs (mirrors the server selection)
-
-  function renderConductorModules(data) {
-    if (ccStatusEl) ccStatusEl.textContent = '';
-    if (!ccModuleListEl) return;
-    ccEnabled = new Set(data.enabled || []);
-    ccModuleListEl.innerHTML = '';
-
-    // Always-on core row (non-toggleable).
-    if (data.core) {
-      const coreLi = document.createElement('li');
-      coreLi.className = 'cc-module-item cc-core-item';
-      const titleEl = document.createElement('span');
-      titleEl.className = 'or-rule-name';
-      titleEl.textContent = data.core.name;
-      const descEl = document.createElement('span');
-      descEl.className = 'or-rule-desc';
-      descEl.textContent = data.core.description;
-      const badge = document.createElement('span');
-      badge.className = 'cc-core-badge';
-      badge.textContent = 'always on';
-      coreLi.appendChild(titleEl);
-      coreLi.appendChild(badge);
-      coreLi.appendChild(descEl);
-      ccModuleListEl.appendChild(coreLi);
-    }
-
-    for (const mod of data.modules || []) {
-      const li = document.createElement('li');
-      li.className = 'cc-module-item';
-      const cb = document.createElement('input');
-      cb.type = 'checkbox';
-      cb.className = 'cc-module-toggle';
-      cb.checked = ccEnabled.has(mod.slug);
-      cb.setAttribute('aria-label', `Enable ${mod.name}`);
-      cb.addEventListener('change', () => toggleConductorModule(mod.slug, cb.checked));
-      const titleEl = document.createElement('span');
-      titleEl.className = 'or-rule-name';
-      titleEl.textContent = mod.name;
-      const tagEl = document.createElement('span');
-      tagEl.className = 'or-rule-slug';
-      tagEl.textContent = mod.slug;
-      const descEl = document.createElement('span');
-      descEl.className = 'or-rule-desc';
-      descEl.textContent = mod.description;
-      li.appendChild(cb);
-      li.appendChild(titleEl);
-      li.appendChild(tagEl);
-      li.appendChild(descEl);
-      if (!mod.builtin) {
-        const editBtn = document.createElement('button');
-        editBtn.type = 'button';
-        editBtn.textContent = 'Edit';
-        editBtn.addEventListener('click', () => openCcEditForm(mod));
-        const delBtn = document.createElement('button');
-        delBtn.type = 'button';
-        delBtn.textContent = 'Delete';
-        delBtn.addEventListener('click', () => deleteConductorModule(mod.slug));
-        li.appendChild(editBtn);
-        li.appendChild(delBtn);
-      } else {
-        const badge = document.createElement('span');
-        badge.className = 'or-builtin-badge';
-        badge.textContent = 'built-in';
-        li.appendChild(badge);
-      }
-      ccModuleListEl.appendChild(li);
-    }
-  }
-
-  async function toggleConductorModule(slug, on) {
-    if (on) ccEnabled.add(slug); else ccEnabled.delete(slug);
-    try {
-      const r = await fetch('/api/settings/conductor-modules/selection', {
-        method: 'PUT', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ enabled: [...ccEnabled] }),
-      });
-      if (!r.ok) throw new Error((await r.json()).error);
-    } catch (e) {
-      if (ccStatusEl) ccStatusEl.textContent = `Save failed: ${e.message || e}`;
-      loadConductorModules(); // resync from server on failure
-    }
-  }
-
-  function openCcAddForm() {
-    ccEditingSlug = null;
-    if (ccAddSlug) { ccAddSlug.value = ''; ccAddSlug.disabled = false; }
-    if (ccAddName) ccAddName.value = '';
-    if (ccAddDesc) ccAddDesc.value = '';
-    if (ccAddBody) ccAddBody.value = '';
-    if (ccAddError) ccAddError.textContent = '';
-    if (ccAddForm) ccAddForm.hidden = false;
-    if (ccAddBtn) ccAddBtn.hidden = true;
-    ccAddSlug?.focus();
-  }
-
-  function openCcEditForm(mod) {
-    ccEditingSlug = mod.slug;
-    if (ccAddSlug) { ccAddSlug.value = mod.slug; ccAddSlug.disabled = true; }
-    if (ccAddName) ccAddName.value = mod.name;
-    if (ccAddDesc) ccAddDesc.value = mod.description;
-    if (ccAddBody) ccAddBody.value = mod.body || '';
-    if (ccAddError) ccAddError.textContent = '';
-    if (ccAddForm) ccAddForm.hidden = false;
-    if (ccAddBtn) ccAddBtn.hidden = true;
-    ccAddName?.focus();
-  }
-
-  function closeCcAddForm() {
-    ccEditingSlug = null;
-    if (ccAddForm) ccAddForm.hidden = true;
-    if (ccAddBtn) ccAddBtn.hidden = false;
-    if (ccAddError) ccAddError.textContent = '';
-  }
-
-  async function saveConductorModule() {
-    const slug = ccAddSlug?.value.trim();
-    const name = ccAddName?.value.trim();
-    const description = ccAddDesc?.value.trim();
-    const body = ccAddBody?.value;
-    if (ccAddError) ccAddError.textContent = '';
-    try {
-      if (ccEditingSlug) {
-        await fetch(`/api/settings/conductor-modules/${encodeURIComponent(ccEditingSlug)}`, {
-          method: 'PUT', headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ name, description, body }),
-        }).then(async r => { if (!r.ok) throw new Error((await r.json()).error); });
-      } else {
-        await fetch('/api/settings/conductor-modules', {
-          method: 'POST', headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ slug, name, description, body }),
-        }).then(async r => { if (!r.ok) throw new Error((await r.json()).error); });
-      }
-      closeCcAddForm();
-      loadConductorModules();
-    } catch (e) {
-      if (ccAddError) ccAddError.textContent = e.message || String(e);
-    }
-  }
-
-  async function deleteConductorModule(slug) {
-    if (!confirm(`Delete conductor module "${slug}"?`)) return;
-    try {
-      const r = await fetch(`/api/settings/conductor-modules/${encodeURIComponent(slug)}`, { method: 'DELETE' });
-      if (!r.ok) throw new Error((await r.json()).error);
-      loadConductorModules();
-    } catch (e) {
-      if (ccStatusEl) ccStatusEl.textContent = `Delete failed: ${e.message || e}`;
-    }
-  }
-
-  async function loadConductorModules() {
-    if (ccStatusEl) ccStatusEl.textContent = 'Loading…';
-    try {
-      const r = await fetch('/api/settings/conductor-modules', { cache: 'no-store' });
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      renderConductorModules(await r.json());
-    } catch (e) {
-      if (ccStatusEl) ccStatusEl.textContent = `Failed: ${e.message || e}`;
-    }
-  }
-
-  ccAddBtn?.addEventListener('click', openCcAddForm);
-  ccAddCancel?.addEventListener('click', closeCcAddForm);
-  ccAddSave?.addEventListener('click', saveConductorModule);
 
   window.addEventListener('hashchange', sync);
   window.addEventListener('keydown', e => {

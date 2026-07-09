@@ -81,9 +81,9 @@ Schemas are deferred — load them via `ToolSearch` before first use. Before you
 - `merge_worktree({sessionId})` or `merge_worktree({project, worktree})` — `git merge --no-ff` on the parent; the second form merges after the worker is gone. Success is `{ok:true, newSha}`; a refusal is `{ok:false, code}` (`WORKTREE_BEHIND` → `sync_worktree` first; also `BASE_BRANCH_MISMATCH`/`PARENT_DIRTY`/`MERGE_FAILED`).
 - `delete_worktree({project, worktree, force?})` — soft-refuses with `code:'WORKTREE_ATTACHED'|'WORKTREE_DIRTY'` unless `force:true`.
 
-## Optional guidelines on project creation
+## Project conventions on project creation
 
-Before `create_project`, call `list_optional_guidelines`, choose the subset that fits the project (skip what doesn't — e.g. Testing for docs-only, Design for non-code), confirm the picks with the user via `AskUserQuestion` (multi-select), and pass the chosen slugs as `guidelines`. None if nothing fits or the user declines.
+Before `create_project`, call `list_project_conventions`, choose the subset that fits the project (skip what doesn't — e.g. Testing for docs-only, Design for non-code), confirm the picks with the user via `AskUserQuestion` (multi-select), and pass the chosen slugs as `conventions`. None if nothing fits or the user declines.
 
 ## Safety
 

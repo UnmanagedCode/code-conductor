@@ -31,7 +31,7 @@ import { buildApprovePrompt, buildRejectPrompt } from '../planApproval.js';
 // re-exports it) so an answer_question MCP answer is byte-identical to a UI
 // submit — one canonical function, no fork. See public/userQuestionAnswers.js.
 import { formatUserQuestionAnswers } from '../../public/userQuestionAnswers.js';
-import { getCatalog as getOptionalGuidelinesCatalog, composeGuidelinesBlock } from '../optionalGuidelines.js';
+import { getCatalog as getProjectConventionsCatalog, composeProjectConventionsBlock } from '../projectConventions.js';
 import { getCatalog as getConductModulesCatalog, getSelection as getConductSelection } from '../conductModules.js';
 import { isKnownFamily, defaultVersion } from '../modelVersions.js';
 import { getModelVersion } from '../appSettings.js';
@@ -880,8 +880,8 @@ export async function setProjectWorkspace({ project, workspace }) {
 
 // ---------- create / introspect ----------
 
-export async function createProject({ name, gitInit = false, guidelines = [] }) {
-  const appendToCLAUDEmd = await composeGuidelinesBlock(guidelines);
+export async function createProject({ name, gitInit = false, conventions = [] }) {
+  const appendToCLAUDEmd = await composeProjectConventionsBlock(conventions);
   const created = await fsCreateProject(name, { appendToCLAUDEmd });
   if (gitInit) {
     const r = await runGit(created.path, ['init', '-q']);
@@ -892,8 +892,8 @@ export async function createProject({ name, gitInit = false, guidelines = [] }) 
   return { ...created, gitInit: !!gitInit };
 }
 
-export async function listOptionalGuidelines() {
-  const catalog = await getOptionalGuidelinesCatalog();
+export async function listProjectConventions() {
+  const catalog = await getProjectConventionsCatalog();
   return catalog.map(({ slug, name, description, builtin }) => ({ slug, name, description, builtin }));
 }
 
