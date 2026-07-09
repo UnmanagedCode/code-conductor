@@ -10,10 +10,17 @@
 //
 // Atomic writes (write tmp + rename), mirroring `conductedSessions.js`.
 // Missing file = empty set.
+//
+// Mutation safety: each write is protected by a cross-process advisory
+// lockfile (`temp-sessions.json.lock`) so concurrent processes (e.g. old
+// server exiting + new server booting during a hot restart) cannot clobber
+// each other's entries. Within a single process, `writeChain` serialises
+// calls to avoid redundant lock contention.
 
 import { promises as fs, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { orchStoreRoot } from './projects.js';
+import { withLock } from './storeLock.js';
 
 function tempFile() {
   return path.join(orchStoreRoot(), 'temp-sessions.json');
@@ -70,6 +77,21 @@ export async function isTemp(sessionId) {
   return set.has(sessionId);
 }
 
+// Like loadAllTemps but used inside mutations (under the cross-process lock).
+// Throws on I/O errors and JSON corruption rather than returning an empty set,
+// so we never overwrite the store based on a failed read.
+// ENOENT is the one legitimate empty-base case: the file has never been written
+// or was correctly unlinked when the last entry was removed.
+async function loadTempsStrict() {
+  try {
+    const raw = await fs.readFile(tempFile(), 'utf8');
+    return parseTempsJson(raw); // throws SyntaxError on corrupt JSON
+  } catch (e) {
+    if (e.code === 'ENOENT') return new Set(); // legitimately empty
+    throw e; // I/O error or corrupt JSON — abort the mutation
+  }
+}
+
 // Serialise concurrent writers behind a per-process promise chain. We
 // load → mutate → write the whole set, so without this two concurrent
 // writers could race on the read-modify-write and lose an entry.
@@ -96,21 +118,25 @@ async function writeSet(set) {
 export function markTemp(sessionId) {
   return serialize(async () => {
     if (typeof sessionId !== 'string' || !sessionId) return false;
-    const set = await loadAllTemps();
-    if (set.has(sessionId)) return true;
-    set.add(sessionId);
-    await writeSet(set);
-    return true;
+    return withLock(tempFile(), async () => {
+      const set = await loadTempsStrict(); // canonical re-read under lock
+      if (set.has(sessionId)) return true;
+      set.add(sessionId);
+      await writeSet(set);
+      return true;
+    });
   });
 }
 
 export function unmarkTemp(sessionId) {
   return serialize(async () => {
     if (typeof sessionId !== 'string' || !sessionId) return false;
-    const set = await loadAllTemps();
-    if (!set.has(sessionId)) return false;
-    set.delete(sessionId);
-    await writeSet(set);
-    return true;
+    return withLock(tempFile(), async () => {
+      const set = await loadTempsStrict(); // canonical re-read under lock
+      if (!set.has(sessionId)) return false;
+      set.delete(sessionId);
+      await writeSet(set);
+      return true;
+    });
   });
 }
