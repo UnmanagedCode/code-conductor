@@ -28,11 +28,19 @@ export const SEED_PROJECT_CONVENTIONS = [
     description: 'One-shot startup migrations, not read-time compat shims; no legacy aliases or dual-shape parsing; unstable APIs owe no back-compat' },
 ];
 
+// Plugin-contributed convention fragments join the catalog through this
+// provider. It is injected after construction (server.js wires it to the
+// plugin host) because the host is a runtime singleton, not importable here
+// without a cycle. Default is a no-op so tests/imports without plugins work.
+let pluginConventionsProvider = async () => [];
+export function setPluginConventionsProvider(fn) { pluginConventionsProvider = fn ?? (async () => []); }
+
 const catalog = createFragmentCatalog({
   seeds: SEED_PROJECT_CONVENTIONS,
   seedDir: CONVENTIONS_DIR,
   storeFile: () => path.join(orchStoreRoot(), 'project-conventions.json'),
   noun: 'convention',
+  extraProvider: () => pluginConventionsProvider(),
 });
 
 // Merged catalog: SEED_PROJECT_CONVENTIONS (builtin:true) + custom conventions (builtin:false).

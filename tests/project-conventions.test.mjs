@@ -315,3 +315,123 @@ test('create_project MCP tool with conventions appends bodies to CLAUDE.md', asy
   assert.ok(content.startsWith('@../CLAUDE.md\n'));
   assert.ok(content.includes('## Documentation guidelines'));
 });
+
+// ── Plugin-contributed conventions + project scaffolds ─────────────────────
+// These exercise the provider seams directly (no real plugin host): the
+// fragment-catalog extraProvider (projectConventions) and the scaffold
+// provider. Providers are module-level singletons — set per test, reset after.
+
+import {
+  setPluginConventionsProvider,
+} from '../src/projectConventions.js';
+import {
+  setPluginScaffoldsProvider, listProjectScaffolds, composeScaffold,
+} from '../src/projectScaffolds.js';
+
+afterEach(() => {
+  // Reset providers so a fake never leaks into a later test.
+  setPluginConventionsProvider(null);
+  setPluginScaffoldsProvider(null);
+});
+
+test('plugin conventions merge into the catalog with namespaced slugs', async () => {
+  setPluginConventionsProvider(async () => [
+    { slug: 'playwright-harness/visual-verification', name: 'Visual verification', description: 'verify UX', body: '## Visual verification\n- verify', plugin: 'playwright-harness' },
+  ]);
+  const catalog = await getCatalog();
+  const entry = catalog.find(r => r.slug === 'playwright-harness/visual-verification');
+  assert.ok(entry, 'plugin convention present in catalog');
+  assert.equal(entry.builtin, false);
+  assert.equal(entry.plugin, 'playwright-harness');
+  // Seeds still present alongside.
+  assert.ok(catalog.some(r => r.slug === 'design-guidelines'));
+});
+
+test('compose resolves a plugin convention slug; create_project snapshots it inline', async () => {
+  setPluginConventionsProvider(async () => [
+    { slug: 'playwright-harness/visual-verification', name: 'Visual verification', description: 'verify UX', body: '## Visual verification\n- always verify UX', plugin: 'playwright-harness' },
+  ]);
+  const block = await composeProjectConventionsBlock(['playwright-harness/visual-verification']);
+  assert.ok(block.includes('## Visual verification'));
+
+  await createProject('plugin-guided', { appendToCLAUDEmd: block });
+  const content = await fs.readFile(path.join(projectsRoot, 'plugin-guided', 'CLAUDE.md'), 'utf8');
+  assert.ok(content.includes('always verify UX'));
+
+  // Applied copy survives the plugin going away (provider empties).
+  setPluginConventionsProvider(async () => []);
+  const after = await fs.readFile(path.join(projectsRoot, 'plugin-guided', 'CLAUDE.md'), 'utf8');
+  assert.ok(after.includes('always verify UX'), 'snapshot survives disable/uninstall');
+  // And the catalog no longer offers it.
+  const catalog = await getCatalog();
+  assert.ok(!catalog.some(r => r.slug === 'playwright-harness/visual-verification'));
+});
+
+test('compose rejects an unknown/unavailable plugin slug (400)', async () => {
+  setPluginConventionsProvider(async () => []);
+  await assert.rejects(
+    () => composeProjectConventionsBlock(['playwright-harness/gone']),
+    (e) => e.statusCode === 400,
+  );
+});
+
+const FAKE_SCAFFOLDS = [
+  { slug: 'playwright-harness/harness-wrapper', name: 'Harness wrapper', description: 'build a wrapper', text: 'Build a project-local harness wrapper', plugin: 'playwright-harness' },
+  { slug: 'playwright-harness/seed-config', name: 'Seed config', description: 'seed config', text: 'Write a default config', plugin: 'playwright-harness' },
+];
+
+test('list_project_scaffolds surfaces provider offers without the text body', async () => {
+  setPluginScaffoldsProvider(async () => FAKE_SCAFFOLDS);
+  const list = await listProjectScaffolds();
+  assert.deepEqual(list, [
+    { slug: 'playwright-harness/harness-wrapper', name: 'Harness wrapper', description: 'build a wrapper', plugin: 'playwright-harness' },
+    { slug: 'playwright-harness/seed-config', name: 'Seed config', description: 'seed config', plugin: 'playwright-harness' },
+  ]);
+
+  // MCP tool mirrors it.
+  const { buildTools } = await import('../src/mcp/tools.js');
+  const tool = buildTools().find(t => t.name === 'list_project_scaffolds');
+  const viaTool = await tool.handler({}, { instances });
+  assert.equal(viaTool[0].slug, 'playwright-harness/harness-wrapper');
+  assert.equal(viaTool[0].text, undefined);
+});
+
+test('composeScaffold frames selected scaffolds in order; unknown slug → 400', async () => {
+  setPluginScaffoldsProvider(async () => FAKE_SCAFFOLDS);
+  // Selection order preserved (seed-config first).
+  const block = await composeScaffold('demo', ['playwright-harness/seed-config', 'playwright-harness/harness-wrapper']);
+  assert.match(block, /Project "demo" was created with these setup steps/);
+  assert.match(block, /1\) Write a default config/);
+  assert.match(block, /2\) Build a project-local harness wrapper/);
+  assert.ok(block.indexOf('Write a default config') < block.indexOf('Build a project-local harness wrapper'));
+
+  await assert.rejects(() => composeScaffold('demo', ['playwright-harness/gone']), (e) => e.statusCode === 400);
+});
+
+test('create_project RETURNS the composed scaffold directive (no persistence)', async () => {
+  setPluginScaffoldsProvider(async () => FAKE_SCAFFOLDS);
+  const { buildTools } = await import('../src/mcp/tools.js');
+  const tool = buildTools().find(t => t.name === 'create_project');
+  const result = await tool.handler({ name: 'sc-proj', scaffolds: ['playwright-harness/harness-wrapper', 'playwright-harness/seed-config'] }, { instances });
+  assert.match(result.scaffold, /Project "sc-proj" was created with these setup steps/);
+  assert.match(result.scaffold, /1\) Build a project-local harness wrapper/);
+  assert.match(result.scaffold, /2\) Write a default config/);
+  // Nothing persisted — the project meta stays clean, no spawn coupling.
+  const { readProjectMeta } = await import('../src/projects.js');
+  assert.deepEqual(await readProjectMeta('sc-proj'), { workspace: null });
+});
+
+test('REST POST /api/projects returns the scaffold directive in the 201 body', async () => {
+  setPluginScaffoldsProvider(async () => FAKE_SCAFFOLDS);
+  const r = await api(baseUrl, 'POST', '/api/projects', { name: 'sc-rest', scaffolds: ['playwright-harness/harness-wrapper'] });
+  assert.equal(r.status, 201);
+  assert.match(r.body.scaffold, /Build a project-local harness wrapper/);
+});
+
+test('create_project with no scaffolds omits the scaffold field', async () => {
+  setPluginScaffoldsProvider(async () => FAKE_SCAFFOLDS);
+  const { buildTools } = await import('../src/mcp/tools.js');
+  const tool = buildTools().find(t => t.name === 'create_project');
+  const result = await tool.handler({ name: 'sc-none' }, { instances });
+  assert.equal(result.scaffold, undefined);
+});

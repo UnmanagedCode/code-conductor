@@ -558,7 +558,10 @@ export function buildTools() {
         'Create a new empty project under ~/project/<name>. Seeds CLAUDE.md with @../CLAUDE.md ' +
         'so workspace-wide conventions are inherited. Optionally runs `git init` in the new dir. ' +
         'Project convention modules (inline CLAUDE.md sections) can be appended by passing their slugs — ' +
-        'call list_project_conventions to discover available slugs.',
+        'call list_project_conventions to discover available slugs. Plugin-offered project scaffolds can be ' +
+        'selected by passing their namespaced slugs as scaffolds — call list_project_scaffolds to discover them; ' +
+        'the composed setup directive is RETURNED as this tool\'s `scaffold` field, which YOU fold into your ' +
+        'FIRST send_prompt to the project\'s first worker (it is never auto-sent).',
       inputSchema: {
         type: 'object',
         properties: {
@@ -568,6 +571,11 @@ export function buildTools() {
             type: 'array',
             items: { type: 'string' },
             description: 'Slugs of project convention modules to append to CLAUDE.md — call list_project_conventions to discover available slugs.',
+          },
+          scaffolds: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Namespaced slugs (<plugin-id>/<slug>) of project scaffolds whose setup directive to return as `scaffold` — call list_project_scaffolds to discover them.',
           },
         },
         required: ['name'],
@@ -582,6 +590,17 @@ export function buildTools() {
         'custom conventions (builtin:false) are managed via the Settings → Conventions → Project panel.',
       inputSchema: { type: 'object', properties: {}, required: [] },
       handler: h.listProjectConventions,
+      annotations: { readOnlyHint: true },
+    },
+    {
+      name: 'list_project_scaffolds',
+      description:
+        'List project scaffolds offered by enabled plugins (namespaced slug, name, description) that can be ' +
+        'passed to create_project\'s `scaffolds` param. Each is a one-time setup directive (e.g. scaffold a ' +
+        'test harness) returned as create_project\'s `scaffold` field for you to fold into the first worker ' +
+        'brief. Only enabled plugins appear.',
+      inputSchema: { type: 'object', properties: {}, required: [] },
+      handler: h.listProjectScaffolds,
       annotations: { readOnlyHint: true },
     },
     {

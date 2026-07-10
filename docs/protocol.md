@@ -76,7 +76,7 @@ Outbound: `system` + `subtype:"init"` (bundled with first turn's response, not a
 |---|---|---|
 | `GET` | `/api/health` | Liveness + per-process identity: `{ok:true, bootId}`. `bootId` (`src/bootId.js`) is minted once per process, so the client restart flow polls for a *changed* value to confirm it's on the replacement process, not the old server still up during a resume drain. |
 | `GET` | `/api/projects` | List with workspace, git status, sessions, worktrees. |
-| `POST` | `/api/projects` | `{name, rules?:[slug,…]}` — create, seeds `CLAUDE.md` with `@../CLAUDE.md` plus any selected rule bodies appended inline. 400 on unknown slug. |
+| `POST` | `/api/projects` | `{name, conventions?:[slug,…], scaffolds?:[<plugin-id>/<slug>,…]}` — create, seeds `CLAUDE.md` with `@../CLAUDE.md` plus any selected convention bodies appended inline. `scaffolds` composes the selected setup directives into a framed block RETURNED in the 201 body under `scaffold` (nothing persisted). 400 on unknown slug. |
 | `DELETE` | `/api/projects/:name` | Cascade: kill instances → remove worktrees → `rm -rf`. Sessions persist under `~/.claude/projects/`. |
 | `PUT` | `/api/projects/:name/workspace` | `{workspace}` — assigns/clears; auto-registers new names. |
 | `GET` | `/api/workspaces` | Union of registry + referenced names. |
@@ -136,6 +136,7 @@ Outbound: `system` + `subtype:"init"` (bundled with first turn's response, not a
 | `POST` | `/api/settings/project-conventions` | `{slug,name,description,body}` — add custom convention. Slug `^[a-z][a-z0-9-]*$` max 40 chars; 409 on duplicate/builtin slug. Returns `{rule}`. |
 | `PUT` | `/api/settings/project-conventions/:slug` | `{name?,description?,body?}` — update custom convention. 400 on builtin, 404 not found. Returns `{rule}`. |
 | `DELETE` | `/api/settings/project-conventions/:slug` | Remove custom convention. 400 on builtin, 404 not found. Returns `{slug}`. |
+| `GET` | `/api/project-scaffolds` | `{scaffolds:[{slug,name,description,plugin}]}` — project scaffolds offered by **enabled** plugins (namespaced slug; directive text omitted), for the new-project dialog. |
 | `GET` | `/api/settings/conductor-modules` | `{core:{name,description}, modules:[{slug,name,description,body,builtin}], enabled:[slug,…]}` — conductor convention catalog + global enabled selection. 8 built-in seeds (`builtin:true`, bodies from `conduct/modules/*.md`) + custom modules from `<store>/conduct-modules.json` (`builtin:false`); the always-on core is not in `modules`. |
 | `PUT` | `/api/settings/conductor-modules/selection` | `{enabled:[slug,…]}` — set the global enabled module selection (unknown slug → 400). Regenerates `.conduct/CONDUCT.md`. Returns `{enabled}`. |
 | `POST` | `/api/settings/conductor-modules` | `{slug,name,description,body}` — add custom module. Slug `^[a-z][a-z0-9-]*$` max 40 chars; 409 on duplicate/builtin slug. Regenerates. Returns `{module}`. |
@@ -219,10 +220,32 @@ Note: the REST endpoints above keep their own `worktreeName` field — they are 
     "scope": "project",         // accepted ("project" | "global") but INERT — tools are always globally visible
     "timeoutMs": 30000,         // per-call cap, clamped to 120000
     "tools": [{ "name": "...", "description": "...", "inputSchema": { "type": "object", ... } }]
-  }
-  // "settings" / "guidelines": reserved, validated-but-inert in v1
+  },
+  "conventions": [              // OPTIONAL, NO backend required — project-convention fragments
+    { "slug": "visual-verification",           // ^[a-z][a-z0-9-]*$ ≤40, unique in this array
+      "name": "Visual UX verification",        // REQUIRED
+      "description": "verify UX via the harness", // REQUIRED
+      "file": "conventions/visual-verification.md", // relative .md path, no leading '/' or '..'
+      "scope": "project" }                     // REQUIRED enum — "project" only today (see below)
+  ],
+  "scaffolds": [                // OPTIONAL, NO backend required — one-time project-setup directives
+    { "slug": "harness-wrapper",               // ^[a-z][a-z0-9-]*$ ≤40, unique in this array
+      "name": "Scaffold visual harness wrapper", // REQUIRED
+      "description": "first agent builds a harness wrapper", // REQUIRED
+      "text": "Build a project-local harness wrapper ..." }  // EXACTLY ONE of "text" | "file"
+    // { ..., "file": "scaffolds/harness.md" }  // (same path rules as conventions.file)
+  ]
+  // "settings": reserved, validated-but-inert in v1
 }
 ```
+
+`conventions` and `scaffolds` are **active pluginApi:1 capabilities** (an additive extension of v1, not a version bump — an existing manifest without them stays valid). Both work with **no backend**, so a contributions-only plugin is `{id,name,version,pluginApi}` + these keys: it validates, enables, contributes, and is **never started** (its Settings row shows only Disable + contribution badges; `POST .../start` refuses 400). `conventions` entries join the project **Conventions** catalog namespaced `<plugin-id>/<slug>` (visible in the new-project dialog + `list_project_conventions`, applied inline to a project's CLAUDE.md at creation — the applied copy survives plugin disable/uninstall). `scaffolds` (also namespaced `<plugin-id>/<slug>`, each carrying a directive body via exactly one of `text` | `file`) are offered at project creation (`list_project_scaffolds`, selected via `create_project`'s `scaffolds` param). Bodies for `file` refs are resolved against the active checkout; a **missing/stale `file` at manifest load makes the plugin `invalid`** (fail loud). Only **enabled + `ok`** plugins contribute — a disabled/crashed plugin never surfaces conventions or scaffolds.
+
+**Convention `scope` (required, explicit).** Every `conventions` entry MUST carry a `scope` — there is no silent default. The accepted enum is currently **`"project"` only** (routes into the project-Conventions catalog described above). `"workspace"` and `"conductor"` are recognised-but-rejected at manifest load with a specific error (`scope "workspace" not yet supported (only "project" is currently accepted)`); any other value gets the standard invalid-enum error and marks the plugin `invalid`. Expansion is **additive with no migration**: move a scope from planned→supported in `SUPPORTED_CONVENTION_SCOPES` (`src/plugins/manifest.js`) and wire that scope's group (from the scope-keyed object `pluginHost.conventions()` returns) into its catalog's provider (`workspaceModules`/`conductModules` already exist in `fragmentCatalog.js`). No stored data changes shape.
+
+> ⚠️ **Conductor-scope conventions modify the orchestrator itself.** A future `scope:"conductor"` convention would inject a fragment into the conductor's **own** operating rules (the composed `.conduct/CONDUCT.md` modules) — i.e. a plugin could rewrite how the orchestrator delegates, reviews, and merges across every project. That is a deliberately powerful, trust-loaded capability, consistent with "plugins are trusted own code" but far beyond a per-project convention. It is intentionally **not** enabled yet; enabling it should come with a matching UX that makes the orchestrator-wide blast radius unmistakable.
+
+**Scaffold delivery (conductor-directive, no persistence).** At project creation the selected scaffolds' directive texts are composed **in selection order** into one framed orchestrator-guidance block (`Project "<name>" was created with these setup steps…`) that `create_project` (MCP) / `POST /api/projects` (REST) **RETURN** under a `scaffold` field. Nothing is persisted and nothing touches the spawn path. The conductor folds the returned `scaffold` into its **first** `send_prompt` to the project's first worker (see `conduct/core.md`); the UI shows it read-only in the create confirmation. Convention↔scaffold linkage is presentation-only (the dialog groups a plugin's items under one "Set up <plugin>" toggle) — there is **no** manifest linkage field, and a scaffold selects independently of its companion convention. `scaffolds` carry **no `scope` field** by design: a scaffold fires at *project creation*, so it is inherently project-scoped — workspaces and the conductor aren't "created", so there is no scaffold trigger for them. *(Future work: persist a lightweight pending-scaffold the conductor can pick up for UI-created projects.)*
 
 Unknown top-level keys are rejected. Every `inputSchema` must stay inside the conductor's `validateArgs` subset — a **flat** `type:"object"` schema (per-property `type`/`enum`/`minLength`/`maxLength`/`pattern`/`minimum`/`maximum`/`items.type`; boolean `additionalProperties` accepted and ignored). `$ref`/`oneOf`/`anyOf`/`allOf`/`not` and nested object `properties` are rejected at manifest load, so an unvalidatable schema can never register. Invalid ⇒ state `invalid`, listed with errors, never startable.
 
@@ -253,7 +276,7 @@ Inside the iframe the bridge patches `history.pushState` → `replaceState`, so 
 
 | Method + path | Meaning |
 |---|---|
-| `GET /api/plugins` | merged discovery+registry+runtime rows: `{id, name, project, version, state, enabled, activeVersion, manifestSource, hasFrontend, navLabel, frontendPath, hasMcp, port, pid, startedAt, gitHead, errors, crashTail}` |
+| `GET /api/plugins` | merged discovery+registry+runtime rows: `{id, name, project, version, state, enabled, activeVersion, manifestSource, hasBackend, hasFrontend, navLabel, frontendPath, hasMcp, conventions:[{slug,name,description}], scaffolds:[{slug,name,description}], port, pid, startedAt, gitHead, errors, crashTail}` (convention/scaffold slugs namespaced `<plugin-id>/<slug>`). A backendless (contributions-only) enabled plugin has `state:"enabled"` (never `"stopped"`). |
 | `POST /api/plugins/rescan` | re-scan the projects root; returns the list |
 | `POST /api/plugins/:id/enable` | record + enable (first enable auto-assigns an unassigned project to workspace `CC-Dev`); recovery path out of `failed` |
 | `POST /api/plugins/:id/disable` | stop the child + disable |
@@ -277,3 +300,4 @@ The conductor POSTs `{tool, arguments, caller:{sessionId, project}}` (JSON) to t
 5. A `healthPath` endpoint (any HTTP response counts as alive).
 6. Optional MCP endpoint following the 200-always contract above, tools declared in the manifest with flat schemas.
 7. Expect to be killed at any time (Doze) and restarted lazily — persist state, start fast.
+8. If a `conventions` entry depends on something a `scaffolds` directive sets up, **word the convention to degrade gracefully** when the scaffold wasn't run — they are selected independently, so the convention may land in a project where the scaffold never ran (e.g. "if a project-local harness wrapper exists, use it to visually verify UX changes; otherwise see the shared harness to create one"). There is no manifest linkage between them by design.

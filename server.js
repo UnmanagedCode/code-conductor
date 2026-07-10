@@ -18,6 +18,8 @@ import { ensureConductProject } from './src/conduct.js';
 import { restoreFromResumeManifest } from './src/resumeRestart.js';
 import { createPluginHost } from './src/plugins/registry.js';
 import { buildPluginProxy } from './src/plugins/proxy.js';
+import { setPluginConventionsProvider } from './src/projectConventions.js';
+import { setPluginScaffoldsProvider } from './src/projectScaffolds.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -25,6 +27,14 @@ export function createServer({ withInstances = true, claudeLauncher } = {}) {
   const app = express();
   const instances = withInstances ? new InstanceManager({ claudeLauncher }) : null;
   const pluginHost = withInstances ? createPluginHost({ instances }) : null;
+  // Enabled plugins contribute project conventions + scaffolds through these
+  // providers (the host is a runtime singleton, wired after construction).
+  // `conventions()` is grouped by scope; only the `project` group is routed
+  // today (workspace/conductor scopes aren't accepted yet — see manifest.js).
+  if (pluginHost) {
+    setPluginConventionsProvider(async () => (await pluginHost.conventions()).project);
+    setPluginScaffoldsProvider(() => pluginHost.scaffolds());
+  }
 
   // serverCtx is a shared mutable handle so route handlers (POST
   // /admin/restart) can reach the http server + wss without those

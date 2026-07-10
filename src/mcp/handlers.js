@@ -32,6 +32,7 @@ import { buildApprovePrompt, buildRejectPrompt } from '../planApproval.js';
 // submit — one canonical function, no fork. See public/userQuestionAnswers.js.
 import { formatUserQuestionAnswers } from '../../public/userQuestionAnswers.js';
 import { getCatalog as getProjectConventionsCatalog, composeProjectConventionsBlock } from '../projectConventions.js';
+import { listProjectScaffolds as listProjectScaffoldsSvc, composeScaffold } from '../projectScaffolds.js';
 import { getCatalog as getConductModulesCatalog, getSelection as getConductSelection } from '../conductModules.js';
 import { isKnownFamily, defaultVersion } from '../modelVersions.js';
 import { getModelVersion } from '../appSettings.js';
@@ -880,8 +881,9 @@ export async function setProjectWorkspace({ project, workspace }) {
 
 // ---------- create / introspect ----------
 
-export async function createProject({ name, gitInit = false, conventions = [] }) {
+export async function createProject({ name, gitInit = false, conventions = [], scaffolds = [] }) {
   const appendToCLAUDEmd = await composeProjectConventionsBlock(conventions);
+  const scaffold = await composeScaffold(name, scaffolds);
   const created = await fsCreateProject(name, { appendToCLAUDEmd });
   if (gitInit) {
     const r = await runGit(created.path, ['init', '-q']);
@@ -889,12 +891,18 @@ export async function createProject({ name, gitInit = false, conventions = [] })
       throw new Error(`git init failed in ${created.path}: ${r.stderr.trim() || r.stdout.trim()}`);
     }
   }
-  return { ...created, gitInit: !!gitInit };
+  // The scaffold directive is RETURNED, not persisted — fold it into your FIRST
+  // send_prompt to the project's first worker (see conduct/core.md).
+  return { ...created, gitInit: !!gitInit, ...(scaffold ? { scaffold } : {}) };
 }
 
 export async function listProjectConventions() {
   const catalog = await getProjectConventionsCatalog();
   return catalog.map(({ slug, name, description, builtin }) => ({ slug, name, description, builtin }));
+}
+
+export async function listProjectScaffolds() {
+  return listProjectScaffoldsSvc();
 }
 
 export async function listConductorModules() {

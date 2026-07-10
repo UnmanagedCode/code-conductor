@@ -80,7 +80,14 @@ export function installConventionsPanel({ prefix, base, hasToggle = false, hasCo
       li.appendChild(titleEl);
       li.appendChild(tagEl);
       li.appendChild(descEl);
-      if (!mod.builtin) {
+      if (mod.plugin) {
+        // Plugin-contributed convention: read-only here (managed by
+        // enabling/disabling the plugin), not in the custom store.
+        const badge = document.createElement('span');
+        badge.className = 'or-builtin-badge';
+        badge.textContent = `plugin: ${mod.plugin}`;
+        li.appendChild(badge);
+      } else if (!mod.builtin) {
         const editBtn = document.createElement('button');
         editBtn.type = 'button';
         editBtn.textContent = 'Edit';

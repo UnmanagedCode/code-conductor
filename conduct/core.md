@@ -83,7 +83,9 @@ Schemas are deferred — load them via `ToolSearch` before first use. Before you
 
 ## Project conventions on project creation
 
-Before `create_project`, call `list_project_conventions`, choose the subset that fits the project (skip what doesn't — e.g. Testing for docs-only, Design for non-code), confirm the picks with the user via `AskUserQuestion` (multi-select), and pass the chosen slugs as `conventions`. None if nothing fits or the user declines.
+Before `create_project`, call `list_project_conventions`, choose the subset that fits the project (skip what doesn't — e.g. Testing for docs-only, Design for non-code), confirm the picks with the user via `AskUserQuestion` (multi-select), and pass the chosen slugs as `conventions`. None if nothing fits or the user declines. (Enabled plugins may contribute conventions too — they appear in the same list with `<plugin-id>/<slug>` slugs.)
+
+Enabled plugins may also offer **project scaffolds** (`list_project_scaffolds` → pass namespaced slugs as `scaffolds`) — one-time setup directives for the project's first worker (e.g. scaffold a test harness). A plugin often pairs a scaffold with a companion convention (it sets up X *and* a convention to keep using X) — **propose them together** ("this plugin sets up X and adds a convention to keep using it — want both?"), while allowing either alone; they're independent selections. When you pass `scaffolds`, `create_project`'s result carries a composed `scaffold` directive string: **fold it into your FIRST `send_prompt` to the project's first worker** (combine it with your own scoping). It is never auto-sent — driving that turn stays yours, so `subscribe_to_idle` fires normally.
 
 ## Safety
 

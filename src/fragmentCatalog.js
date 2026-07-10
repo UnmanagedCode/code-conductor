@@ -42,8 +42,13 @@ function validateFields({ name, description, body }, noun) {
 // seedDir:  absolute dir holding the built-in `.md` fragments
 // storeFile: () => absolute path of the custom/state JSON (lazy so PROJECTS_ROOT
 //            overrides in tests are honoured per-call)
-// noun:     label used in validation error messages (e.g. 'guideline', 'module')
-export function createFragmentCatalog({ seeds, seedDir, storeFile, noun = 'entry' }) {
+// noun:     label used in validation error messages (e.g. 'convention', 'module')
+// extraProvider: optional async () => [{ slug, name, description, body, ...meta }]
+//            — a third body source merged after seeds+custom (e.g. enabled
+//            plugins' convention fragments). Entries are read-only (builtin:false)
+//            and bypass the custom-store CRUD; their slugs are namespaced by the
+//            provider so they never collide with seed/custom slugs.
+export function createFragmentCatalog({ seeds, seedDir, storeFile, noun = 'entry', extraProvider = null }) {
   const fragmentCache = new Map(); // slug -> body
 
   async function seedBody(slug) {
@@ -91,13 +96,19 @@ export function createFragmentCatalog({ seeds, seedDir, storeFile, noun = 'entry
     await saveStore({ ...store, ...patch });
   }
 
-  // Merged catalog: seeds (builtin:true, body from fragment) + custom (builtin:false, body from JSON).
+  // Merged catalog: seeds (builtin:true, body from fragment) + custom
+  // (builtin:false, body from JSON) + optional extraProvider entries (builtin:false).
   async function getCatalog() {
     const seedEntries = await Promise.all(
       seeds.map(async s => ({ ...s, body: await seedBody(s.slug), builtin: true })),
     );
     const custom = (await loadCustom()).map(r => ({ ...r, builtin: false }));
-    return [...seedEntries, ...custom];
+    let extra = [];
+    if (extraProvider) {
+      try { extra = (await extraProvider()).map(r => ({ ...r, builtin: false })); }
+      catch (e) { console.warn(`fragmentCatalog: extraProvider failed: ${e.message}`); }
+    }
+    return [...seedEntries, ...custom, ...extra];
   }
 
   const isSeed = slug => seeds.some(s => s.slug === slug);

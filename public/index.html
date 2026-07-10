@@ -341,18 +341,23 @@
   </div>
 
   <dialog id="new-project-dialog">
-    <form method="dialog">
+    <form method="dialog" id="np-form">
       <h3>New project</h3>
       <label>Name <input id="np-name" pattern="[a-zA-Z0-9._-]+" required autofocus /></label>
       <p class="hint">Creates <code id="np-preview">~/project/&lt;name&gt;</code></p>
-      <div id="np-guidelines" class="np-rules" hidden>
-        <p class="np-rules-label">Project conventions</p>
-        <ul id="np-guidelines-list" class="np-rules-list"></ul>
-      </div>
+      <div id="np-contributions"></div>
       <p class="error" id="np-error"></p>
       <menu>
         <button value="cancel" formnovalidate>Cancel</button>
         <button id="np-create" value="create">Create</button>
+      </menu>
+    </form>
+    <form method="dialog" id="np-confirm" hidden>
+      <h3>Project created</h3>
+      <p class="hint">This project was created with a setup directive. The conductor folds it into the first worker's brief automatically; a copy is shown here so it isn't lost:</p>
+      <textarea id="np-scaffold-text" readonly rows="8"></textarea>
+      <menu>
+        <button value="ack" autofocus>Done</button>
       </menu>
     </form>
   </dialog>
