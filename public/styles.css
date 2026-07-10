@@ -1366,7 +1366,8 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
 #main.settings-open #task-panel,
 #main.settings-open #turn-indicator,
 #main.settings-open #composer,
-#main.settings-open #instance-controls { display: none !important; }
+#main.settings-open #instance-controls,
+#main.settings-open #instance-title { display: none !important; }
 
 /* Explicit display below outranks UA `[hidden] { display: none }` (same trap
    as .turn-indicator) — restore the hidden behaviour. */
@@ -1509,19 +1510,22 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
 #main.review-open #turn-indicator,
 #main.review-open #composer,
 #main.review-open #instance-controls,
+#main.review-open #instance-title,
 #main.commits-open #conversation,
 #main.commits-open #subagent-panel,
 #main.commits-open #task-panel,
 #main.commits-open #turn-indicator,
 #main.commits-open #composer,
-#main.commits-open #instance-controls { display: none !important; }
+#main.commits-open #instance-controls,
+#main.commits-open #instance-title { display: none !important; }
 
 #main.costs-open #conversation,
 #main.costs-open #subagent-panel,
 #main.costs-open #task-panel,
 #main.costs-open #turn-indicator,
 #main.costs-open #composer,
-#main.costs-open #instance-controls { display: none !important; }
+#main.costs-open #instance-controls,
+#main.costs-open #instance-title { display: none !important; }
 
 /* The diff view layers on top of the commit list: hide the list while a
    per-commit diff is open, so backing out of the diff reveals it again. */
@@ -1874,7 +1878,8 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
 #main.plugin-open #task-panel,
 #main.plugin-open #turn-indicator,
 #main.plugin-open #composer,
-#main.plugin-open #instance-controls { display: none !important; }
+#main.plugin-open #instance-controls,
+#main.plugin-open #instance-title { display: none !important; }
 
 #plugin-view { flex: 1 1 auto; min-height: 0; display: flex; position: relative; }
 #plugin-view[hidden] { display: none; }
