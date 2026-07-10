@@ -1928,5 +1928,13 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
   white-space: pre-wrap; word-break: break-word;
 }
 .pl-actions { margin-top: 8px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-.pl-version { font-size: 12px; }
+.pl-version {
+  font-size: 12px;
+  min-width: 0;
+  max-width: 100%;
+  flex: 0 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .pl-status-err { color: #f85149; }
