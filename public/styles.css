@@ -1431,6 +1431,7 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
 .archived-group-summary::-webkit-details-marker { display: none; }
 .archived-group-summary::before { content: '▸ '; color: var(--muted); }
 .archived-group[open] > .archived-group-summary::before { content: '▾ '; }
+.archived-group-icon { margin-right: 4px; }
 .archived-row {
   display: flex; align-items: center; gap: 10px;
   padding: 8px 12px; border-top: 1px solid var(--border);
