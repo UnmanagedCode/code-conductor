@@ -104,6 +104,23 @@ export function installPluginManager({ onCatalogChange } = {}) {
       meta.textContent = bits.join(' · ');
       li.appendChild(meta);
 
+      // Contribution badges: what a plugin adds beyond a backend (so a
+      // backendless conventions-only plugin visibly earns its place).
+      const contribs = [];
+      if (row.guidelines?.length) contribs.push(`${row.guidelines.length} guideline${row.guidelines.length === 1 ? '' : 's'}`);
+      if (row.setupPrompt) contribs.push('setup prompt');
+      if (contribs.length) {
+        const c = document.createElement('div');
+        c.className = 'pl-contribs';
+        for (const label of contribs) {
+          const tag = document.createElement('span');
+          tag.className = 'pl-contrib';
+          tag.textContent = label;
+          c.appendChild(tag);
+        }
+        li.appendChild(c);
+      }
+
       if (row.errors?.length) {
         const errs = document.createElement('div');
         errs.className = 'pl-errors';
@@ -129,13 +146,17 @@ export function installPluginManager({ onCatalogChange } = {}) {
         if (!row.enabled) {
           actions.appendChild(btn('Enable', () => act(`Enabling ${row.id}`, () => api('POST', `/api/plugins/${row.id}/enable`))));
         } else {
-          if (row.state === 'ready' || row.state === 'starting') {
-            actions.appendChild(btn('Stop', () => act(`Stopping ${row.id}`, () => api('POST', `/api/plugins/${row.id}/stop`))));
-          } else {
-            actions.appendChild(btn('Start', () => act(`Starting ${row.id}`, () => api('POST', `/api/plugins/${row.id}/start`))));
+          // A backendless (conventions-only) plugin has no process lifecycle —
+          // no Start/Stop/version, only Disable.
+          if (row.hasBackend) {
+            if (row.state === 'ready' || row.state === 'starting') {
+              actions.appendChild(btn('Stop', () => act(`Stopping ${row.id}`, () => api('POST', `/api/plugins/${row.id}/stop`))));
+            } else {
+              actions.appendChild(btn('Start', () => act(`Starting ${row.id}`, () => api('POST', `/api/plugins/${row.id}/start`))));
+            }
           }
           actions.appendChild(btn('Disable', () => act(`Disabling ${row.id}`, () => api('POST', `/api/plugins/${row.id}/disable`))));
-          actions.appendChild(versionSelect(row, worktrees[row.project] || []));
+          if (row.hasBackend) actions.appendChild(versionSelect(row, worktrees[row.project] || []));
         }
       }
       if (actions.childElementCount > 0) li.appendChild(actions);

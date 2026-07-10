@@ -83,7 +83,9 @@ Schemas are deferred — load them via `ToolSearch` before first use. Before you
 
 ## Project conventions on project creation
 
-Before `create_project`, call `list_project_conventions`, choose the subset that fits the project (skip what doesn't — e.g. Testing for docs-only, Design for non-code), confirm the picks with the user via `AskUserQuestion` (multi-select), and pass the chosen slugs as `conventions`. None if nothing fits or the user declines.
+Before `create_project`, call `list_project_conventions`, choose the subset that fits the project (skip what doesn't — e.g. Testing for docs-only, Design for non-code), confirm the picks with the user via `AskUserQuestion` (multi-select), and pass the chosen slugs as `conventions`. None if nothing fits or the user declines. (Enabled plugins may contribute conventions too — they appear in the same list with `<plugin-id>/<slug>` slugs.)
+
+Enabled plugins may also offer **setup prompts** (`list_setup_prompts` → pass ids as `setupPrompts`) — a one-time instruction for the project's first worker (e.g. scaffold a test harness). When you pass them, `spawn_instance`'s result carries a `setupPrompt` string on the **first** spawn into that project: **fold it into your FIRST `send_prompt` to that worker** (combine it with your own scoping). It is never auto-sent — driving that turn stays yours, so `subscribe_to_idle` fires normally.
 
 ## Safety
 

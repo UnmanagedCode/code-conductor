@@ -32,6 +32,7 @@ import { buildApprovePrompt, buildRejectPrompt } from '../planApproval.js';
 // submit — one canonical function, no fork. See public/userQuestionAnswers.js.
 import { formatUserQuestionAnswers } from '../../public/userQuestionAnswers.js';
 import { getCatalog as getProjectConventionsCatalog, composeProjectConventionsBlock } from '../projectConventions.js';
+import { listSetupPrompts as listSetupPromptsSvc, composeSetupPrompt } from '../projectSetupPrompts.js';
 import { getCatalog as getConductModulesCatalog, getSelection as getConductSelection } from '../conductModules.js';
 import { isKnownFamily, defaultVersion } from '../modelVersions.js';
 import { getModelVersion } from '../appSettings.js';
@@ -317,7 +318,11 @@ export async function spawnInstance(args, { instances, callerId }) {
     }
     throw e;
   }
-  return toConductorView(inst.summary());
+  const view = toConductorView(inst.summary());
+  // A first fresh spawn into a project with a pending plugin setup prompt
+  // surfaces it here — fold it into your FIRST send_prompt to this worker.
+  if (inst.setupPrompt) view.setupPrompt = inst.setupPrompt;
+  return view;
 }
 
 // Fold the idle-subscription registration into every turn-starting call, so a
@@ -880,21 +885,29 @@ export async function setProjectWorkspace({ project, workspace }) {
 
 // ---------- create / introspect ----------
 
-export async function createProject({ name, gitInit = false, conventions = [] }) {
+export async function createProject({ name, gitInit = false, conventions = [], setupPrompts = [] }) {
   const appendToCLAUDEmd = await composeProjectConventionsBlock(conventions);
+  const setupPrompt = await composeSetupPrompt(setupPrompts);
   const created = await fsCreateProject(name, { appendToCLAUDEmd });
+  // Persist the setup prompt as pending — consumed on the first fresh spawn
+  // and folded into that worker's opening prompt.
+  if (setupPrompt) await writeProjectMeta(name, { setupPrompt });
   if (gitInit) {
     const r = await runGit(created.path, ['init', '-q']);
     if (r.code !== 0) {
       throw new Error(`git init failed in ${created.path}: ${r.stderr.trim() || r.stdout.trim()}`);
     }
   }
-  return { ...created, gitInit: !!gitInit };
+  return { ...created, gitInit: !!gitInit, setupPromptPending: !!setupPrompt };
 }
 
 export async function listProjectConventions() {
   const catalog = await getProjectConventionsCatalog();
   return catalog.map(({ slug, name, description, builtin }) => ({ slug, name, description, builtin }));
+}
+
+export async function listSetupPrompts() {
+  return listSetupPromptsSvc();
 }
 
 export async function listConductorModules() {

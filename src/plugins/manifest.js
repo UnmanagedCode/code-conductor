@@ -12,13 +12,17 @@ export const MANIFEST_FILENAME = 'conductor.plugin.json';
 export const SUPPORTED_PLUGIN_APIS = [1];
 
 const ID_RE = /^[a-z][a-z0-9-]*$/;
+const SLUG_RE = /^[a-z][a-z0-9-]*$/;
+const SLUG_MAX = 40;
 const TOOL_NAME_RE = /^[a-zA-Z0-9_-]+$/;
 const MCP_TIMEOUT_DEFAULT = 30000;
 const MCP_TIMEOUT_CAP = 120000;
 
-// Top-level keys `settings` and `guidelines` are reserved for deferred
-// features: validated-but-inert (accepted, never acted on).
-const KNOWN_TOP_KEYS = new Set(['id', 'name', 'version', 'pluginApi', 'backend', 'frontend', 'mcp', 'settings', 'guidelines']);
+// `guidelines` (project-convention fragments) and `setupPrompt` (a one-time
+// first-agent prompt) are active pluginApi:1 capabilities — neither requires
+// a backend, so a conventions-only plugin is valid. `settings` stays reserved
+// (validated-but-inert; accepted, never acted on).
+const KNOWN_TOP_KEYS = new Set(['id', 'name', 'version', 'pluginApi', 'backend', 'frontend', 'mcp', 'settings', 'guidelines', 'setupPrompt']);
 
 // Result: null (no manifest file) | { manifest } | { errors, incompatible? }
 export async function readManifest(dir) {
@@ -32,7 +36,29 @@ export async function readManifest(dir) {
   let json;
   try { json = JSON.parse(raw); }
   catch (e) { return { errors: [`manifest is not valid JSON: ${e.message}`] }; }
-  return validateManifest(json);
+  const result = validateManifest(json);
+  if (result.manifest) {
+    // Fragment file refs are validated for shape in validateManifest; existence
+    // is checked here (we have the checkout dir) — a stale path is a load-time
+    // error, consistent with the module's strict-at-load stance.
+    const fileErrors = await checkFragmentFiles(dir, result.manifest);
+    if (fileErrors.length > 0) return { errors: fileErrors, id: result.manifest.id };
+  }
+  return result;
+}
+
+// Verify every guideline/setupPrompt `file` ref resolves to a readable file
+// under `dir`. Returns a (possibly empty) list of errors.
+async function checkFragmentFiles(dir, manifest) {
+  const refs = [];
+  for (const g of manifest.guidelines ?? []) refs.push([`guidelines '${g.slug}' file`, g.file]);
+  if (manifest.setupPrompt?.file) refs.push(['setupPrompt file', manifest.setupPrompt.file]);
+  const errors = [];
+  for (const [label, rel] of refs) {
+    try { await fs.access(path.join(dir, rel)); }
+    catch { errors.push(`${label} '${rel}' not found`); }
+  }
+  return errors;
 }
 
 // → { manifest } (normalized, defaults applied) or { errors: [..], incompatible? }.
@@ -68,6 +94,8 @@ export function validateManifest(json) {
   const backend = validateBackend(json.backend, errors);
   const frontend = validateFrontend(json.frontend, backend, json.name, errors);
   const mcp = validateMcp(json.mcp, backend, errors);
+  const guidelines = validateGuidelines(json.guidelines, errors);
+  const setupPrompt = validateSetupPrompt(json.setupPrompt, errors);
 
   if (errors.length > 0) return { errors, id: displayId(json) };
   return {
@@ -79,7 +107,93 @@ export function validateManifest(json) {
       ...(backend ? { backend } : {}),
       ...(frontend ? { frontend } : {}),
       ...(mcp ? { mcp } : {}),
+      ...(guidelines ? { guidelines } : {}),
+      ...(setupPrompt ? { setupPrompt } : {}),
     },
+  };
+}
+
+// A plugin-relative fragment path: must be a relative `.md` path with no `..`
+// segment and no leading '/'. Resolved against the plugin checkout at read time.
+function validateFragmentPath(value, label, errors) {
+  if (typeof value !== 'string' || value.trim() === '') {
+    errors.push(`'${label}' is required (relative .md path)`);
+    return false;
+  }
+  if (value.startsWith('/') || value.includes('..') || path.isAbsolute(value)) {
+    errors.push(`'${label}' must be a relative path with no '..' segment`);
+    return false;
+  }
+  if (!value.endsWith('.md')) {
+    errors.push(`'${label}' must end with '.md'`);
+    return false;
+  }
+  return true;
+}
+
+// guidelines: [{ slug, name, description, file }] — project-convention fragments
+// contributed to the Conventions catalog (namespaced <plugin-id>/<slug> there).
+// No backend required. Returns a normalized array or null.
+function validateGuidelines(g, errors) {
+  if (g === undefined) return null;
+  if (!Array.isArray(g) || g.length === 0) {
+    errors.push("'guidelines' must be a non-empty array");
+    return null;
+  }
+  const out = [];
+  const seen = new Set();
+  g.forEach((entry, i) => {
+    const label = `guidelines[${i}]`;
+    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
+      errors.push(`'${label}' must be an object`);
+      return;
+    }
+    for (const k of Object.keys(entry)) {
+      if (!['slug', 'name', 'description', 'file'].includes(k)) errors.push(`unknown key '${label}.${k}'`);
+    }
+    if (typeof entry.slug !== 'string' || !SLUG_RE.test(entry.slug) || entry.slug.length > SLUG_MAX) {
+      errors.push(`'${label}.slug' is required and must match ^[a-z][a-z0-9-]*$ (max 40 chars)`);
+    } else if (seen.has(entry.slug)) {
+      errors.push(`duplicate guideline slug '${entry.slug}'`);
+    } else {
+      seen.add(entry.slug);
+    }
+    if (typeof entry.name !== 'string' || entry.name.trim() === '') errors.push(`'${label}.name' is required (non-empty string)`);
+    if (typeof entry.description !== 'string' || entry.description.trim() === '') errors.push(`'${label}.description' is required (non-empty string)`);
+    validateFragmentPath(entry.file, `${label}.file`, errors);
+    out.push({ slug: entry.slug, name: typeof entry.name === 'string' ? entry.name.trim() : '', description: typeof entry.description === 'string' ? entry.description.trim() : '', file: entry.file });
+  });
+  return out;
+}
+
+// setupPrompt: { name, description, text | file } — a one-time prompt offered
+// at project creation, folded into the new project's first agent turn. Exactly
+// one of `text` | `file`. No backend required. Returns normalized object or null.
+function validateSetupPrompt(sp, errors) {
+  if (sp === undefined) return null;
+  if (typeof sp !== 'object' || sp === null || Array.isArray(sp)) {
+    errors.push("'setupPrompt' must be an object");
+    return null;
+  }
+  for (const k of Object.keys(sp)) {
+    if (!['name', 'description', 'text', 'file'].includes(k)) errors.push(`unknown key 'setupPrompt.${k}'`);
+  }
+  if (typeof sp.name !== 'string' || sp.name.trim() === '') errors.push("'setupPrompt.name' is required (non-empty string)");
+  if (typeof sp.description !== 'string' || sp.description.trim() === '') errors.push("'setupPrompt.description' is required (non-empty string)");
+  const hasText = sp.text !== undefined;
+  const hasFile = sp.file !== undefined;
+  if (hasText === hasFile) {
+    errors.push("'setupPrompt' requires exactly one of 'text' or 'file'");
+  } else if (hasText && (typeof sp.text !== 'string' || sp.text.trim() === '')) {
+    errors.push("'setupPrompt.text' must be a non-empty string");
+  } else if (hasFile) {
+    validateFragmentPath(sp.file, 'setupPrompt.file', errors);
+  }
+  return {
+    name: typeof sp.name === 'string' ? sp.name.trim() : '',
+    description: typeof sp.description === 'string' ? sp.description.trim() : '',
+    ...(hasText ? { text: sp.text } : {}),
+    ...(hasFile ? { file: sp.file } : {}),
   };
 }
 

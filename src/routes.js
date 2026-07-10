@@ -59,6 +59,7 @@ import {
   composeProjectConventionsBlock,
   addCustomConvention, updateCustomConvention, deleteCustomConvention,
 } from './projectConventions.js';
+import { listSetupPrompts, composeSetupPrompt } from './projectSetupPrompts.js';
 import {
   CORE_META as CONDUCT_CORE_META,
   getCatalog as getConductModulesCatalog,
@@ -252,7 +253,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost } = {}) {
 
   r.post('/projects', async (req, res, next) => {
     try {
-      const { name, conventions } = req.body ?? {};
+      const { name, conventions, setupPrompts } = req.body ?? {};
       // Validate the regex first so callers that hit BOTH conditions
       // (e.g. "../escape" — starts with "." AND contains "/") get the
       // canonical "invalid project name" error rather than the dot-prefix
@@ -269,8 +270,13 @@ export function buildRoutes({ instances, serverCtx, pluginHost } = {}) {
       if (conventions !== undefined && !Array.isArray(conventions)) {
         throw Object.assign(new Error('conventions must be an array of slug strings'), { statusCode: 400 });
       }
+      if (setupPrompts !== undefined && !Array.isArray(setupPrompts)) {
+        throw Object.assign(new Error('setupPrompts must be an array of plugin-id strings'), { statusCode: 400 });
+      }
       const appendToCLAUDEmd = await composeProjectConventionsBlock(conventions ?? []);
+      const setupPrompt = await composeSetupPrompt(setupPrompts ?? []);
       const created = await createProject(name, { appendToCLAUDEmd });
+      if (setupPrompt) await writeProjectMeta(name, { setupPrompt });
       res.status(201).json(created);
     } catch (e) { next(e); }
   });
@@ -1264,6 +1270,12 @@ export function buildRoutes({ instances, serverCtx, pluginHost } = {}) {
       const result = await deleteCustomConvention(slug);
       res.json(result);
     } catch (e) { next(e); }
+  });
+
+  // Setup prompts offered by enabled plugins, for the new-project dialog.
+  // Only enabled+ok plugins surface here (crashed/disabled never appear).
+  r.get('/setup-prompts', async (req, res, next) => {
+    try { res.json({ setupPrompts: await listSetupPrompts() }); } catch (e) { next(e); }
   });
 
   // Conductor convention modules — global (singleton conductor) selection +

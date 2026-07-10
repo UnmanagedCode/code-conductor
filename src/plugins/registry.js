@@ -419,9 +419,13 @@ export function createPluginHost({
     const reg = id ? persisted.plugins[id] : null;
     const s = id ? runtimeState(id) : null;
     const rec = id ? runtimeRecords[id] : null;
+    const hasBackend = !!entry.manifest?.backend;
     let state;
     if (entry.discoveryState !== 'ok') state = entry.discoveryState;
     else if (!reg?.enabled) state = reg ? 'disabled' : 'discovered';
+    // A backendless (conventions-only) plugin has no process lifecycle — it is
+    // simply 'enabled', never 'stopped', so the UI shows no (broken) Start button.
+    else if (!hasBackend) state = 'enabled';
     else state = s.status;
     return {
       id,
@@ -432,10 +436,14 @@ export function createPluginHost({
       enabled: reg?.enabled === true,
       activeVersion: reg?.activeVersion ?? { type: 'main' },
       manifestSource: entry.manifestSource ?? { type: 'main' },
+      hasBackend,
       hasFrontend: !!entry.manifest?.frontend,
       navLabel: entry.manifest?.frontend?.navLabel ?? null,
       frontendPath: entry.manifest?.frontend?.path ?? null,
       hasMcp: !!entry.manifest?.mcp,
+      // Contribution metadata (guideline slugs namespaced <plugin-id>/<slug>).
+      guidelines: (entry.manifest?.guidelines ?? []).map(g => ({ slug: `${id}/${g.slug}`, name: g.name, description: g.description })),
+      setupPrompt: entry.manifest?.setupPrompt ? { name: entry.manifest.setupPrompt.name, description: entry.manifest.setupPrompt.description } : null,
       port: rec?.port ?? null,
       pid: rec?.pid ?? null,
       startedAt: rec?.startedAt ?? null,
@@ -549,6 +557,65 @@ export function createPluginHost({
     return { status: s?.status ?? 'stopped', port: rec?.port ?? null };
   }
 
+  // ── convention / setup-prompt contributions ─────────────────────────
+  // Only enabled + `ok` plugins contribute (a crashed/disabled/invalid plugin
+  // never surfaces its conventions or setup prompt). Bodies are resolved from
+  // the active checkout; a fragment path that vanished after load is skipped
+  // with a warning (manifest load already rejects missing files).
+  const fragmentBodyCache = new Map(); // abs path -> body
+  async function readFragment(abs) {
+    if (fragmentBodyCache.has(abs)) return fragmentBodyCache.get(abs);
+    const body = (await fs.readFile(abs, 'utf8')).replace(/\s+$/, '');
+    fragmentBodyCache.set(abs, body);
+    return body;
+  }
+
+  function contributingEntries() {
+    return [...byId.values()].filter(e => e.discoveryState === 'ok' && persisted.plugins[e.id]?.enabled === true);
+  }
+
+  // Guideline fragments merged into the project Conventions catalog. Each entry:
+  // { slug:'<plugin-id>/<slug>', name, description, body, plugin:id }.
+  async function guidelines() {
+    await ensureInit();
+    const out = [];
+    for (const entry of contributingEntries()) {
+      const list = entry.manifest.guidelines ?? [];
+      if (list.length === 0) continue;
+      let cwd;
+      try { cwd = await resolveCwd(entry); } catch (e) { console.warn(`plugins: guidelines cwd for '${entry.id}' failed: ${e.message}`); continue; }
+      for (const g of list) {
+        try {
+          const body = await readFragment(path.join(cwd, g.file));
+          out.push({ slug: `${entry.id}/${g.slug}`, name: g.name, description: g.description, body, plugin: entry.id });
+        } catch (e) {
+          console.warn(`plugins: guideline '${entry.id}/${g.slug}' body unreadable: ${e.message}`);
+        }
+      }
+    }
+    return out;
+  }
+
+  // Setup prompts offered at project creation. Each entry:
+  // { pluginId, name, description, text }.
+  async function setupPrompts() {
+    await ensureInit();
+    const out = [];
+    for (const entry of contributingEntries()) {
+      const sp = entry.manifest.setupPrompt;
+      if (!sp) continue;
+      let text = sp.text;
+      if (text === undefined) {
+        let cwd;
+        try { cwd = await resolveCwd(entry); } catch (e) { console.warn(`plugins: setupPrompt cwd for '${entry.id}' failed: ${e.message}`); continue; }
+        try { text = await readFragment(path.join(cwd, sp.file)); }
+        catch (e) { console.warn(`plugins: setupPrompt for '${entry.id}' unreadable: ${e.message}`); continue; }
+      }
+      out.push({ pluginId: entry.id, name: sp.name, description: sp.description, text });
+    }
+    return out;
+  }
+
   function setServerPort(p) { serverPort = p; }
 
   // Test/shutdown teardown: kill every child this host started or adopted.
@@ -564,6 +631,7 @@ export function createPluginHost({
     init: ensureInit,
     list, rescan, enable, disable, start, stop, status,
     ensureStarted, setActiveVersion, toolsFor, runtimeInfo,
+    guidelines, setupPrompts,
     reportUpstreamFailure, setServerPort, stopAll,
   };
 }

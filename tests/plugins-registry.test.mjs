@@ -309,3 +309,65 @@ test('registry entry whose project vanished still lists as invalid', async () =>
     await env.restore();
   }
 });
+
+// A conventions-only manifest: no backend/frontend/mcp, only guidelines +
+// setupPrompt referencing fixture files. Must validate, enable, and never
+// start a process; describeRow flags it hasBackend:false, state 'enabled'.
+const CONVENTIONS_ONLY = {
+  id: 'conv-plugin', name: 'Conv Plugin', version: '1.0.0', pluginApi: 1,
+  guidelines: [{ slug: 'vis-check', name: 'Visual check', description: 'verify UX', file: 'guidelines/sample.md' }],
+  setupPrompt: { name: 'Scaffold harness', description: 'build wrapper', file: 'setup/sample.md' },
+};
+
+test('conventions-only plugin: enables without a backend, state=enabled, no child', async () => {
+  const env = await makePluginRoot();
+  try {
+    await env.addPluginProject('convp', { manifest: CONVENTIONS_ONLY });
+    const host = createPluginHost();
+    const discovered = (await host.list()).find(r => r.id === 'conv-plugin');
+    assert.equal(discovered.state, 'discovered');
+    assert.equal(discovered.hasBackend, false);
+    assert.equal(discovered.guidelines.length, 1);
+    assert.equal(discovered.guidelines[0].slug, 'conv-plugin/vis-check');
+    assert.deepEqual(discovered.setupPrompt, { name: 'Scaffold harness', description: 'build wrapper' });
+
+    const row = await host.enable('conv-plugin');
+    assert.equal(row.enabled, true);
+    assert.equal(row.state, 'enabled'); // never 'stopped' — no process lifecycle
+    // start must refuse (no backend), and nothing should ever be recorded live.
+    await rejectsWithStatus(host.start('conv-plugin'), 400);
+    assert.equal(host.runtimeInfo('conv-plugin').port, null);
+  } finally {
+    await env.restore();
+  }
+});
+
+test('guidelines()/setupPrompts() surface only enabled+ok plugins', async () => {
+  const env = await makePluginRoot();
+  try {
+    await env.addPluginProject('convp', { manifest: CONVENTIONS_ONLY });
+    const host = createPluginHost();
+
+    // Not enabled yet → no contributions.
+    assert.deepEqual(await host.guidelines(), []);
+    assert.deepEqual(await host.setupPrompts(), []);
+
+    await host.enable('conv-plugin');
+    const g = await host.guidelines();
+    assert.equal(g.length, 1);
+    assert.equal(g[0].slug, 'conv-plugin/vis-check');
+    assert.equal(g[0].plugin, 'conv-plugin');
+    assert.match(g[0].body, /Visual UX verification/);
+    const sp = await host.setupPrompts();
+    assert.equal(sp.length, 1);
+    assert.equal(sp[0].pluginId, 'conv-plugin');
+    assert.match(sp[0].text, /harness wrapper/);
+
+    // Disable → contributions drop.
+    await host.disable('conv-plugin');
+    assert.deepEqual(await host.guidelines(), []);
+    assert.deepEqual(await host.setupPrompts(), []);
+  } finally {
+    await env.restore();
+  }
+});

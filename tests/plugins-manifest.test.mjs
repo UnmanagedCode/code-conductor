@@ -48,11 +48,68 @@ test('unsupported pluginApi is flagged incompatible, not merely invalid', () => 
   assert.ok(r.errors[0].includes('unsupported pluginApi 2'));
 });
 
-test('unknown top-level keys rejected; settings/guidelines inert-allowed', () => {
+test('unknown top-level keys rejected; settings still inert-allowed', () => {
   assert.ok(validateManifest(base({ bogus: 1 })).errors.some(e => e.includes("unknown key 'bogus'")));
-  const r = validateManifest(base({ settings: {}, guidelines: [] }));
+  const r = validateManifest(base({ settings: {} }));
   assert.equal(r.errors, undefined);
   assert.equal(r.manifest.settings, undefined); // inert: validated-but-not-normalized
+});
+
+test('guidelines: conventions-only manifest (no backend) validates and normalizes', () => {
+  const guidelines = [{ slug: 'vis-check', name: 'Visual check', description: 'verify UX', file: 'guidelines/vis.md' }];
+  const r = validateManifest(base({ guidelines }));
+  assert.equal(r.errors, undefined);
+  assert.deepEqual(r.manifest.guidelines, guidelines);
+  assert.equal(r.manifest.backend, undefined);
+});
+
+test('guidelines: invalid shapes rejected', () => {
+  const g = (entry) => validateManifest(base({ guidelines: [entry] }));
+  assert.ok(g({ slug: 'Bad', name: 'n', description: 'd', file: 'g.md' }).errors.some(e => e.includes('.slug')));
+  assert.ok(g({ slug: 'ok', name: '', description: 'd', file: 'g.md' }).errors.some(e => e.includes('.name')));
+  assert.ok(g({ slug: 'ok', name: 'n', description: '', file: 'g.md' }).errors.some(e => e.includes('.description')));
+  assert.ok(g({ slug: 'ok', name: 'n', description: 'd', file: 'g.txt' }).errors.some(e => e.includes("must end with '.md'")));
+  assert.ok(g({ slug: 'ok', name: 'n', description: 'd', file: '../escape.md' }).errors.some(e => e.includes("no '..'")));
+  assert.ok(g({ slug: 'ok', name: 'n', description: 'd', file: '/abs.md' }).errors.some(e => e.includes("no '..'")));
+  assert.ok(validateManifest(base({ guidelines: [] })).errors.some(e => e.includes('non-empty array')));
+  const dup = [{ slug: 's', name: 'n', description: 'd', file: 'a.md' }, { slug: 's', name: 'n', description: 'd', file: 'b.md' }];
+  assert.ok(validateManifest(base({ guidelines: dup })).errors.some(e => e.includes("duplicate guideline slug 's'")));
+});
+
+test('setupPrompt: inline text and file forms validate; exactly-one enforced', () => {
+  const inline = validateManifest(base({ setupPrompt: { name: 'Scaffold', description: 'do it', text: 'go build' } }));
+  assert.equal(inline.errors, undefined);
+  assert.deepEqual(inline.manifest.setupPrompt, { name: 'Scaffold', description: 'do it', text: 'go build' });
+  const filed = validateManifest(base({ setupPrompt: { name: 'Scaffold', description: 'do it', file: 'setup/s.md' } }));
+  assert.equal(filed.errors, undefined);
+  assert.equal(filed.manifest.setupPrompt.file, 'setup/s.md');
+  // both
+  assert.ok(validateManifest(base({ setupPrompt: { name: 'n', description: 'd', text: 't', file: 's.md' } })).errors.some(e => e.includes("exactly one of 'text' or 'file'")));
+  // neither
+  assert.ok(validateManifest(base({ setupPrompt: { name: 'n', description: 'd' } })).errors.some(e => e.includes("exactly one of 'text' or 'file'")));
+  // missing name/description
+  assert.ok(validateManifest(base({ setupPrompt: { description: 'd', text: 't' } })).errors.some(e => e.includes("'setupPrompt.name'")));
+  // bad file shape
+  assert.ok(validateManifest(base({ setupPrompt: { name: 'n', description: 'd', file: 'x.txt' } })).errors.some(e => e.includes("must end with '.md'")));
+});
+
+test('readManifest: missing guideline/setup file → invalid', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'manif-frag-'));
+  try {
+    const manifest = base({ guidelines: [{ slug: 'g', name: 'n', description: 'd', file: 'guidelines/g.md' }] });
+    await fs.writeFile(path.join(dir, 'conductor.plugin.json'), JSON.stringify(manifest));
+    // File does not exist yet → invalid.
+    let r = await readManifest(dir);
+    assert.ok(r.errors.some(e => e.includes("guidelines 'g' file")), 'missing guideline file should be a load error');
+    // Create it → valid.
+    await fs.mkdir(path.join(dir, 'guidelines'), { recursive: true });
+    await fs.writeFile(path.join(dir, 'guidelines', 'g.md'), '## G\n');
+    r = await readManifest(dir);
+    assert.equal(r.errors, undefined);
+    assert.equal(r.manifest.guidelines[0].slug, 'g');
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
 });
 
 test('frontend and mcp require backend', () => {

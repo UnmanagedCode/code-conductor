@@ -558,7 +558,10 @@ export function buildTools() {
         'Create a new empty project under ~/project/<name>. Seeds CLAUDE.md with @../CLAUDE.md ' +
         'so workspace-wide conventions are inherited. Optionally runs `git init` in the new dir. ' +
         'Project convention modules (inline CLAUDE.md sections) can be appended by passing their slugs — ' +
-        'call list_project_conventions to discover available slugs.',
+        'call list_project_conventions to discover available slugs. Plugin-offered setup prompts can be ' +
+        'selected by passing their plugin ids as setupPrompts — call list_setup_prompts to discover them; ' +
+        'the combined text is returned to the first worker via spawn_instance\'s setupPrompt, which YOU fold ' +
+        'into your FIRST send_prompt to that worker (it is never auto-sent).',
       inputSchema: {
         type: 'object',
         properties: {
@@ -568,6 +571,11 @@ export function buildTools() {
             type: 'array',
             items: { type: 'string' },
             description: 'Slugs of project convention modules to append to CLAUDE.md — call list_project_conventions to discover available slugs.',
+          },
+          setupPrompts: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Plugin ids whose setup prompts to fold into the first worker turn — call list_setup_prompts to discover them.',
           },
         },
         required: ['name'],
@@ -582,6 +590,16 @@ export function buildTools() {
         'custom conventions (builtin:false) are managed via the Settings → Conventions → Project panel.',
       inputSchema: { type: 'object', properties: {}, required: [] },
       handler: h.listProjectConventions,
+      annotations: { readOnlyHint: true },
+    },
+    {
+      name: 'list_setup_prompts',
+      description:
+        'List setup prompts offered by enabled plugins (pluginId, name, description) that can be passed ' +
+        'to create_project\'s `setupPrompts` param. Each is a one-time instruction folded into the new ' +
+        'project\'s first worker turn (e.g. scaffold a test harness). Only enabled plugins appear.',
+      inputSchema: { type: 'object', properties: {}, required: [] },
+      handler: h.listSetupPrompts,
       annotations: { readOnlyHint: true },
     },
     {

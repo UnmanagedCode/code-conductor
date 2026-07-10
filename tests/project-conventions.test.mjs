@@ -315,3 +315,104 @@ test('create_project MCP tool with conventions appends bodies to CLAUDE.md', asy
   assert.ok(content.startsWith('@../CLAUDE.md\n'));
   assert.ok(content.includes('## Documentation guidelines'));
 });
+
+// ── Plugin-contributed guidelines + setup prompts ──────────────────────────
+// These exercise the provider seams directly (no real plugin host): the
+// fragment-catalog extraProvider (projectConventions) and the setup-prompt
+// provider. Providers are module-level singletons — set per test, reset after.
+
+import {
+  setPluginGuidelinesProvider,
+} from '../src/projectConventions.js';
+import {
+  setPluginSetupPromptsProvider, listSetupPrompts, composeSetupPrompt,
+} from '../src/projectSetupPrompts.js';
+import { readProjectMeta, writeProjectMeta } from '../src/projects.js';
+
+afterEach(() => {
+  // Reset providers so a fake never leaks into a later test.
+  setPluginGuidelinesProvider(null);
+  setPluginSetupPromptsProvider(null);
+});
+
+test('plugin guidelines merge into the catalog with namespaced slugs', async () => {
+  setPluginGuidelinesProvider(async () => [
+    { slug: 'playwright-harness/visual-verification', name: 'Visual verification', description: 'verify UX', body: '## Visual verification\n- verify', plugin: 'playwright-harness' },
+  ]);
+  const catalog = await getCatalog();
+  const entry = catalog.find(r => r.slug === 'playwright-harness/visual-verification');
+  assert.ok(entry, 'plugin guideline present in catalog');
+  assert.equal(entry.builtin, false);
+  assert.equal(entry.plugin, 'playwright-harness');
+  // Seeds still present alongside.
+  assert.ok(catalog.some(r => r.slug === 'design-guidelines'));
+});
+
+test('compose resolves a plugin guideline slug; create_project snapshots it inline', async () => {
+  setPluginGuidelinesProvider(async () => [
+    { slug: 'playwright-harness/visual-verification', name: 'Visual verification', description: 'verify UX', body: '## Visual verification\n- always verify UX', plugin: 'playwright-harness' },
+  ]);
+  const block = await composeProjectConventionsBlock(['playwright-harness/visual-verification']);
+  assert.ok(block.includes('## Visual verification'));
+
+  await createProject('plugin-guided', { appendToCLAUDEmd: block });
+  const content = await fs.readFile(path.join(projectsRoot, 'plugin-guided', 'CLAUDE.md'), 'utf8');
+  assert.ok(content.includes('always verify UX'));
+
+  // Applied copy survives the plugin going away (provider empties).
+  setPluginGuidelinesProvider(async () => []);
+  const after = await fs.readFile(path.join(projectsRoot, 'plugin-guided', 'CLAUDE.md'), 'utf8');
+  assert.ok(after.includes('always verify UX'), 'snapshot survives disable/uninstall');
+  // And the catalog no longer offers it.
+  const catalog = await getCatalog();
+  assert.ok(!catalog.some(r => r.slug === 'playwright-harness/visual-verification'));
+});
+
+test('compose rejects an unknown/unavailable plugin slug (400)', async () => {
+  setPluginGuidelinesProvider(async () => []);
+  await assert.rejects(
+    () => composeProjectConventionsBlock(['playwright-harness/gone']),
+    (e) => e.statusCode === 400,
+  );
+});
+
+test('list_setup_prompts surfaces provider offers without the text body', async () => {
+  setPluginSetupPromptsProvider(async () => [
+    { pluginId: 'playwright-harness', name: 'Scaffold wrapper', description: 'build a wrapper', text: 'go build the wrapper' },
+  ]);
+  const list = await listSetupPrompts();
+  assert.deepEqual(list, [{ pluginId: 'playwright-harness', name: 'Scaffold wrapper', description: 'build a wrapper' }]);
+
+  // MCP tool mirrors it.
+  const { buildTools } = await import('../src/mcp/tools.js');
+  const tool = buildTools().find(t => t.name === 'list_setup_prompts');
+  const viaTool = await tool.handler({}, { instances });
+  assert.equal(viaTool[0].pluginId, 'playwright-harness');
+  assert.equal(viaTool[0].text, undefined);
+});
+
+test('create_project persists a selected setup prompt to project.json', async () => {
+  setPluginSetupPromptsProvider(async () => [
+    { pluginId: 'playwright-harness', name: 'Scaffold wrapper', description: 'build a wrapper', text: 'go build the wrapper' },
+  ]);
+  const { buildTools } = await import('../src/mcp/tools.js');
+  const tool = buildTools().find(t => t.name === 'create_project');
+  const result = await tool.handler({ name: 'sp-proj', setupPrompts: ['playwright-harness'] }, { instances });
+  assert.equal(result.setupPromptPending, true);
+  const meta = await readProjectMeta('sp-proj');
+  assert.equal(meta.setupPrompt, 'go build the wrapper');
+});
+
+test('first fresh spawn consumes the setup prompt; resume does not', async () => {
+  await createProject('consume-proj');
+  await writeProjectMeta('consume-proj', { setupPrompt: 'go build the wrapper' });
+
+  const inst = await instances.create({ project: 'consume-proj' });
+  assert.equal(inst.setupPrompt, 'go build the wrapper', 'surfaced on the instance');
+  assert.equal(inst.pendingPrefill, 'go build the wrapper', 'drives UI composer prefill');
+  // Consumed: cleared from project.json so a second spawn gets nothing.
+  assert.equal((await readProjectMeta('consume-proj')).setupPrompt, null);
+
+  const inst2 = await instances.create({ project: 'consume-proj' });
+  assert.equal(inst2.setupPrompt, null, 'already consumed');
+});

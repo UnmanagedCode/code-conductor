@@ -1849,6 +1849,8 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
 .np-rule-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
 .np-rule-name { font-weight: 600; }
 .np-rule-desc { color: var(--muted); font-size: 12px; overflow-wrap: break-word; }
+/* Origin tag for a plugin-contributed convention / setup prompt */
+.np-rule-tag { font-weight: 400; font-size: 11px; color: var(--muted); border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; }
 
 /* ── Plugins ─────────────────────────────────────────────────────────────── */
 /* App switcher: the sidebar <h1> swaps for this dropdown once an enabled
@@ -1894,10 +1896,13 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
   font-size: 11px; padding: 1px 8px; border-radius: 10px;
   border: 1px solid var(--border); color: var(--muted); text-transform: lowercase;
 }
-.pl-badge-ready { color: #3fb950; border-color: #3fb95055; }
+.pl-badge-ready, .pl-badge-enabled { color: #3fb950; border-color: #3fb95055; }
 .pl-badge-crashed, .pl-badge-failed, .pl-badge-invalid, .pl-badge-conflict,
 .pl-badge-incompatible { color: #f85149; border-color: #f8514955; }
 .pl-meta { margin-top: 4px; font-size: 12px; color: var(--muted); }
+/* Contribution badges (guidelines / setup prompt) — what a plugin adds */
+.pl-contribs { margin-top: 4px; display: flex; flex-wrap: wrap; gap: 4px; }
+.pl-contrib { font-size: 11px; color: var(--muted); border: 1px solid var(--border); border-radius: 4px; padding: 0 5px; }
 .pl-errors { margin-top: 6px; font-size: 12px; color: #f85149; }
 .pl-tail { margin-top: 6px; }
 .pl-tail summary { font-size: 12px; color: var(--muted); cursor: pointer; }
