@@ -701,3 +701,77 @@ test('A just-promoted live session (inst.temp=false) overrides a stale on-disk t
   const row = root.querySelector('.session-row');
   assert.ok(row && !row.classList.contains('temp'), 'the promoted row is not styled as temp');
 });
+
+test('tickAgo() recomputes "Xs/Xm ago" labels for an idle session without a full re-render', async () => {
+  const realNow = Date.now;
+  try {
+    const base = 1_000_000_000_000;
+    Date.now = () => base;
+    const { root, sidebar } = await setupSidebar({
+      onLoadSessions: async () => [
+        { sessionId: 'sid-x', firstPrompt: 'hi', mtime: base - 2_000, size: 10 },
+      ],
+    });
+    sidebar.setProjects([{
+      name: 'demo', path: '/p/demo', sessionIds: [], isGitRepo: false, worktrees: [],
+      sessions: { count: 1, lastMtime: base - 2_000 },
+    }]);
+    await new Promise(r => setTimeout(r, 0));
+
+    const agoSpan = root.querySelector('.session-ago');
+    const lastAgoSpan = root.querySelector('.sessions-last-ago');
+    assert.equal(agoSpan.textContent, '2s ago');
+    assert.equal(lastAgoSpan.textContent, ' · last 2s ago');
+
+    // No setProjects/setInstances/render() call in between — this is the
+    // idle-session freeze scenario the bug report described. Only wall-clock
+    // time advances, then tickAgo() runs (as app.js's 15s interval would).
+    Date.now = () => base + 63_000;
+    sidebar.tickAgo();
+
+    assert.equal(agoSpan.textContent, '1m ago', 'session-ago re-ticks from data-mtime instead of staying frozen');
+    assert.equal(lastAgoSpan.textContent, ' · last 1m ago');
+  } finally {
+    Date.now = realNow;
+  }
+});
+
+test('a live temp session (excluded from the on-disk list while alive) uses inst.lastResponseAt, not Date.now(), across repeated full re-renders', async () => {
+  const realNow = Date.now;
+  try {
+    const base = 1_000_000_000_000;
+    Date.now = () => base;
+    // onLoadSessions returns [] — mirrors the server excluding a live temp
+    // session's jsonl from the on-disk list (tempSessionIdsForCwd), so this
+    // instance's sessionId is never in `onDisk` for as long as it's alive.
+    const { root, sidebar } = await setupSidebar({ onLoadSessions: async () => [] });
+    sidebar.setProjects([{
+      name: 'demo', path: '/p/demo', sessionIds: [], isGitRepo: false, worktrees: [],
+      sessions: { count: 1, lastMtime: 0 },
+    }]);
+    const liveTempInstance = {
+      id: 'inst-temp', project: 'demo', sessionId: 'sid-temp', status: 'idle',
+      mode: 'plan', worktree: null, temp: true, lastResponseAt: base - 5_000,
+    };
+    sidebar.setInstances([liveTempInstance]);
+    await new Promise(r => setTimeout(r, 0));
+
+    const agoSpan = root.querySelector('.session-ago');
+    assert.equal(agoSpan.textContent, '5s ago', 'uses inst.lastResponseAt, not Date.now(), for the synthetic row');
+
+    // Advance the clock and force several MORE full re-renders (setInstances
+    // unconditionally calls render(), which re-runs mergeLive from scratch —
+    // this is what happens on every unrelated instance's status broadcast).
+    // Before the fix, each of these re-stamped mtime to Date.now(), pinning
+    // the label at ~0s forever.
+    Date.now = () => base + 20_000;
+    sidebar.setInstances([{ ...liveTempInstance }]);
+    sidebar.setInstances([{ ...liveTempInstance }]);
+    await new Promise(r => setTimeout(r, 0));
+
+    const agoSpanAfter = root.querySelector('.session-ago');
+    assert.equal(agoSpanAfter.textContent, '25s ago', 'label reflects real elapsed time since lastResponseAt across repeated re-renders, not reset to ~0s');
+  } finally {
+    Date.now = realNow;
+  }
+});

@@ -1071,3 +1071,8 @@ setInterval(refreshAccountUsage, 180_000);
 // without a network round-trip or a full header rebuild (tickIdleAgo is a
 // no-op mid-turn and while no instance is active).
 setInterval(() => headerHandle.tickIdleAgo(), 15_000);
+
+// Same fix for the sidebar's per-session "Xs/Xm ago" labels, which were
+// otherwise frozen at whatever formatAgo() returned during the last
+// data-triggered render (see Sidebar.tickAgo).
+setInterval(() => sidebar.tickAgo(), 15_000);
