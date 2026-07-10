@@ -210,6 +210,30 @@
               <strong>core</strong> plus toggleable built-in modules (read-only) and custom modules you
               can add, edit, and delete.
             </p>
+            <details class="conventions-block">
+              <summary class="conventions-summary">Workspace conventions</summary>
+              <p class="settings-desc">
+                Composed into the app-owned projects-root <code>CLAUDE.md</code> — the file every project
+                imports via <code>@../CLAUDE.md</code>. Global; changes regenerate that file immediately
+                (it is fully owned by code-conductor, overwritten on boot and on change).
+              </p>
+              <div id="wk-status" class="st-status" aria-live="polite">Loading…</div>
+              <ul id="wk-module-list" class="cc-module-list"></ul>
+              <div id="wk-add-form" class="or-add-form" hidden>
+                <input id="wk-add-slug" type="text" placeholder="slug (e.g. my-module)" />
+                <input id="wk-add-name" type="text" placeholder="Short name" />
+                <input id="wk-add-desc" type="text" placeholder="One-line description" />
+                <textarea id="wk-add-body" rows="6" placeholder="Markdown body composed into the root CLAUDE.md"></textarea>
+                <div class="or-add-actions">
+                  <button id="wk-add-save" type="button">Save</button>
+                  <button id="wk-add-cancel" type="button">Cancel</button>
+                </div>
+                <p class="error" id="wk-add-error"></p>
+              </div>
+              <div class="st-actions">
+                <button id="wk-add-btn" type="button">+ Add custom module</button>
+              </div>
+            </details>
             <details class="conventions-block" open>
               <summary class="conventions-summary">Conductor conventions</summary>
               <p class="settings-desc">
@@ -233,30 +257,6 @@
               </div>
               <div class="st-actions">
                 <button id="cc-add-btn" type="button">+ Add custom module</button>
-              </div>
-            </details>
-            <details class="conventions-block">
-              <summary class="conventions-summary">Workspace conventions</summary>
-              <p class="settings-desc">
-                Composed into the app-owned projects-root <code>CLAUDE.md</code> — the file every project
-                imports via <code>@../CLAUDE.md</code>. Global; changes regenerate that file immediately
-                (it is fully owned by code-conductor, overwritten on boot and on change).
-              </p>
-              <div id="wk-status" class="st-status" aria-live="polite">Loading…</div>
-              <ul id="wk-module-list" class="cc-module-list"></ul>
-              <div id="wk-add-form" class="or-add-form" hidden>
-                <input id="wk-add-slug" type="text" placeholder="slug (e.g. my-module)" />
-                <input id="wk-add-name" type="text" placeholder="Short name" />
-                <input id="wk-add-desc" type="text" placeholder="One-line description" />
-                <textarea id="wk-add-body" rows="6" placeholder="Markdown body composed into the root CLAUDE.md"></textarea>
-                <div class="or-add-actions">
-                  <button id="wk-add-save" type="button">Save</button>
-                  <button id="wk-add-cancel" type="button">Cancel</button>
-                </div>
-                <p class="error" id="wk-add-error"></p>
-              </div>
-              <div class="st-actions">
-                <button id="wk-add-btn" type="button">+ Add custom module</button>
               </div>
             </details>
             <details class="conventions-block">
