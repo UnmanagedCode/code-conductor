@@ -2,15 +2,33 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { createPluginHost } from '../src/plugins/registry.js';
 import { pidAlive } from '../src/plugins/ports.js';
 import { readProjectMeta, writeProjectMeta, listWorkspaces, projectStoreDir } from '../src/projects.js';
 import { makePluginRoot, readFixtureManifest, waitFor, FAKE_PLUGIN_DIR } from './plugin-helpers.mjs';
 
-// Fabricate a worktree checkout + its store metadata without git — the
-// discovery fallback reads the store meta directly (no git verification).
+const run = promisify(execFile);
+async function git(cwd, ...args) { await run('git', ['-C', cwd, ...args]); }
+
+// Fabricate a worktree checkout + its store metadata, backed by a real git
+// worktree — getWorktree()/listWorktrees() cross-check `git worktree list`
+// against the store metadata, so a purely-synthetic directory + metadata
+// file isn't enough to count as "existing" (only discovery's
+// worktreeManifestFallback reads the store meta directly, with no git
+// verification).
 async function fabricateWorktree(env, project, worktreeName, { manifest } = {}) {
+  const projectDir = path.join(env.root, project);
   const worktreePath = path.join(env.root, worktreeName);
+  const isRepo = await fs.access(path.join(projectDir, '.git')).then(() => true, () => false);
+  if (!isRepo) {
+    await git(projectDir, 'init', '-q');
+    await git(projectDir, 'config', 'user.email', 'test@test');
+    await git(projectDir, 'config', 'user.name', 'test');
+    await git(projectDir, 'commit', '-q', '--allow-empty', '-m', 'root');
+  }
+  await git(projectDir, 'worktree', 'add', '-q', worktreePath, '-b', `wt-${worktreeName}`);
   await fs.cp(FAKE_PLUGIN_DIR, worktreePath, { recursive: true });
   if (manifest !== undefined) {
     await fs.writeFile(path.join(worktreePath, 'conductor.plugin.json'), JSON.stringify(manifest));
