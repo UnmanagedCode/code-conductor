@@ -368,14 +368,30 @@ export class Instance extends EventEmitter {
     // (see below) overlays `running` for as long as this map is non-empty.
     // Reset on (re)spawn so a stale entry never survives a respawn/resume.
     this._activeAgentTasks = new Map();
-    // True when a background subagent's terminal `task_notification` fired
-    // DURING the current turn (status === 'turn'). Such a mid-turn completion
-    // decrements _activeAgentTasks to 0 before the turn's turn_end, yet the CLI
-    // still owes the worker an unprompted re-invocation turn to process that
-    // result — so the idle-wake gate must keep deferring past this turn_end.
-    // Set in the task_notification handler, reset on every idle→turn transition
-    // (see _setStatus), and reset on (re)spawn.
-    this._subagentCompletedThisTurn = false;
+    // True when a `task_notification` fired mid-turn (status === 'turn') and no
+    // delivery edge has consumed it yet. Mirrors the CLI's internal message
+    // queue, which is unobservable on stdout — but its state is fully inferable
+    // from event order. A completed task's notification reaches the model in
+    // exactly one of three ways (verified against the CLI 2.1.198 queue-
+    // operation records across ~150 real completions):
+    //   1. Sync-delivered: the launching tool_use's held-open tool_result (the
+    //      full output) lands right after the notification, in-turn. Nothing
+    //      queued, nothing owed. Covers fast/foreground Agent calls AND
+    //      long-running Bash promoted to a task (e.g. a full test run).
+    //   2. Attached: an async (ack'd) task completes mid-turn and the model
+    //      makes another tool round-trip — the CLI attaches the queued
+    //      notification to that top-level tool_result. Consumed, nothing owed.
+    //   3. Queued re-invocation: an async task completes with NO subsequent
+    //      top-level tool_result — the notification stays queued and the CLI
+    //      opens an unprompted re-invocation turn (immediately when idle, at
+    //      turn_end when mid-turn). Only THIS case owes another turn.
+    // Hence the flag: SET on a mid-turn task_notification, CLEARED by any
+    // top-level tool_result (cases 1+2 — attach is batched, one result flushes
+    // the queue), by the next idle→turn transition (case 3 — the dequeued
+    // notification IS that turn's input; see _setStatus), and on (re)spawn.
+    // Read by IdleSubscriptionHub.onTurnEnd: still-set at turn_end means a
+    // re-invocation turn is genuinely owed, so the idle wake defers to it.
+    this._taskNotificationPending = false;
   }
 
   // Live count of in-flight background Agent-tool (subagent) tasks. Read by
@@ -384,10 +400,11 @@ export class Instance extends EventEmitter {
   // without building the whole summary object.
   get activeAgentTaskCount() { return this._activeAgentTasks.size; }
 
-  // True when a background subagent finished mid-turn (so a re-invocation turn
-  // is still owed). Read by IdleSubscriptionHub.onTurnEnd as a second defer
-  // reason alongside activeAgentTaskCount.
-  get subagentCompletedThisTurn() { return this._subagentCompletedThisTurn; }
+  // True when a mid-turn task_notification is still unconsumed (so a
+  // re-invocation turn is owed — see the _taskNotificationPending comment).
+  // Read by IdleSubscriptionHub.onTurnEnd as a second defer reason alongside
+  // activeAgentTaskCount.
+  get taskNotificationPending() { return this._taskNotificationPending; }
 
   summary() {
     // Live global-overage gate (injected by the manager at create). Surfaces the
@@ -597,9 +614,12 @@ export class Instance extends EventEmitter {
     if (next !== 'turn') this.interrupting = false;
     // A new turn is starting (the early-return above means this is a real
     // transition INTO 'turn', covering both prompt()-initiated and unprompted
-    // re-invocation turns) — clear the mid-turn subagent-completion flag so it
-    // only ever reflects completions during the turn now beginning.
-    if (next === 'turn') this._subagentCompletedThisTurn = false;
+    // re-invocation turns) — clear the pending task-notification flag: the CLI
+    // flushes its queue into every new turn's input, so whatever was queued
+    // (the re-invocation payload) is being delivered right now. Mid-turn
+    // message_starts never reach here (status is already 'turn'), so agent-loop
+    // steps inside a turn can't falsely clear it.
+    if (next === 'turn') this._taskNotificationPending = false;
     this.emit('status', this.summary());
   }
 
@@ -668,7 +688,7 @@ export class Instance extends EventEmitter {
     // A fresh process starts with no in-flight Agent tasks — any entries
     // from a prior run's background subagents are gone with that process.
     this._activeAgentTasks = new Map();
-    this._subagentCompletedThisTurn = false;
+    this._taskNotificationPending = false;
     const { command, prefixArgs } = resolveClaudeBin();
     if (resume) this.sessionId = resume;
     else if (!this.sessionId) this.sessionId = randomUUID();
@@ -910,16 +930,27 @@ export class Instance extends EventEmitter {
       // so delete unconditionally here in case task_updated was ever missed
       // for a given completion. Map.delete is a no-op if already gone.
       if (ev.kind === 'system' && ev.subtype === 'task_notification' && ev.data?.task_id) {
-        // task_notification is emitted ONLY for background (async) subagents —
-        // it's the "re-invoke the idle worker" ping (carries output_file);
-        // foreground calls resolve inline and never emit it. If it fires while
-        // we're still mid-turn, the subagent completed before this turn's
-        // turn_end and the CLI owes an unprompted re-invocation turn to process
-        // its result — flag it so the idle-wake gate defers past this turn_end.
-        if (this.status === 'turn') this._subagentCompletedThisTurn = true;
+        // A mid-turn notification MAY owe an unprompted re-invocation turn —
+        // or may be consumed in-turn (sync-delivered / attached). Assume owed
+        // until a delivery edge (top-level tool_result below, or the next
+        // idle→turn transition) proves otherwise — see the
+        // _taskNotificationPending comment for the full protocol model. A
+        // completion while idle never sets it: the CLI dequeues immediately
+        // and the re-invocation turn's start would clear it anyway.
+        if (this.status === 'turn') this._taskNotificationPending = true;
         if (this._activeAgentTasks.delete(ev.data.task_id) && this._activeAgentTasks.size === 0) {
           this.emit('status', this.summary());
         }
+      }
+      // Any top-level tool_result going back to the model consumes whatever
+      // the CLI had queued: a sync-delivered task's own result arrives as the
+      // (held-open) tool_result right after its notification, and for async
+      // completions the CLI attaches ALL queued notifications to the next
+      // outer tool round-trip (batched). Nested (subagent-forwarded) results
+      // carry parentToolUseId and ride the subagent's own loop, not the outer
+      // conversation — they must not clear the flag.
+      if (ev.kind === 'tool_result' && !ev.parentToolUseId) {
+        this._taskNotificationPending = false;
       }
       // Track the most recent plan file the model wrote, so we can enrich
       // an upcoming ExitPlanMode plan_request with the saved plan text
