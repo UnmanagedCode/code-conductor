@@ -56,7 +56,16 @@ function mergeLive(onDisk, liveInstances) {
         sessionId: inst.sessionId,
         firstPrompt: inst.firstPrompt ?? null,
         title: inst.title ?? null,
-        mtime: Date.now(),
+        // A live temp instance's jsonl is excluded from `onDisk` for as long
+        // as it's alive (see tempSessionIdsForCwd), so it lands in this
+        // synthetic branch on EVERY render, not just its first. Falling back
+        // to Date.now() here would re-stamp mtime to "now" on every render,
+        // freezing its "ago" label at ~0s forever. inst.lastResponseAt (set
+        // once per completed turn, same field header.js uses for its own
+        // "last response Xm ago" label) is stable across renders and only
+        // advances on genuine new activity. Date.now() remains the fallback
+        // only before the session's first turn has completed.
+        mtime: inst.lastResponseAt ?? Date.now(),
         size: 0,
         instanceId: inst.id,
         instanceStatus: inst.status,
@@ -200,6 +209,21 @@ export class Sidebar {
   }
   setActive(id) { this.activeInstanceId = id; this.render(); }
 
+  // Refreshes every live "Xs/Xm/Xh ago" label in place from its cached
+  // data-mtime, without rebuilding the DOM (unlike render(), this doesn't
+  // disturb <details> open/collapsed state or scroll position). Driven by
+  // a timer in app.js — mirrors header.js's tickIdleAgo(), which solves the
+  // identical "formatAgo is a snapshot, nothing re-ticks it" problem for the
+  // turn-indicator's idle label.
+  tickAgo() {
+    for (const node of this.list.querySelectorAll('.session-ago[data-mtime]')) {
+      node.textContent = formatAgo(Number(node.dataset.mtime));
+    }
+    for (const node of this.list.querySelectorAll('.sessions-last-ago[data-mtime]')) {
+      node.textContent = ` · last ${formatAgo(Number(node.dataset.mtime))}`;
+    }
+  }
+
   // Build a session row. The status dot reflects the running-instance
   // status when one is attached; otherwise we render a dim "○" so the
   // user can tell at a glance which sessions are alive.
@@ -213,6 +237,10 @@ export class Sidebar {
     const unread = this.unreadBySessionId.get(session.sessionId) ?? 0;
     const tooltipParts = [session.sessionId];
     if (customTitle && preview) tooltipParts.push(preview);
+    // Carries the raw mtime in a data attribute so tickAgo() can recompute
+    // the label on a timer without a full re-render (see Sidebar.tickAgo).
+    const agoSpan = el('span', { class: 'session-ago' }, formatAgo(session.mtime));
+    if (session.mtime) agoSpan.dataset.mtime = String(session.mtime);
     const row = el('div', {
       class: 'session-row' + (isActive ? ' active' : '') + (isLive ? ' live' : '') + (unread > 0 ? ' has-unread' : '') + (session.instanceTemp ? ' temp' : '') + (session.conducted ? ' conducted' : '') + (session.archived ? ' archived' : '') + (customTitle ? ' has-title' : ''),
       title: tooltipParts.join('\n'),
@@ -224,7 +252,7 @@ export class Sidebar {
       },
     },
       el('span', { class: `dot ${status}${status === 'idle' && session.instanceHasIdleSubscriber ? ' subscribed' : ''}`, title: status }),
-      el('span', { class: 'session-ago' }, formatAgo(session.mtime)),
+      agoSpan,
       el('span', { class: 'session-preview' }, liveLabel),
     );
     if (unread > 0) {
@@ -306,9 +334,16 @@ export class Sidebar {
     const liveSummary = liveInstances.length > 0
       ? ` · ${liveInstances.length} live`
       : '';
-    const lastLabel = summary?.lastMtime ? ` · last ${formatAgo(summary.lastMtime)}` : '';
     const summaryEl = el('summary', { class: 'sessions-summary' },
-      `Sessions (${total})${liveSummary}${lastLabel}`);
+      `Sessions (${total})${liveSummary}`);
+    if (summary?.lastMtime) {
+      // Own span (not a plain text-node concat) carrying the raw mtime so
+      // tickAgo() can recompute this segment on a timer — see _sessionRow's
+      // agoSpan for the matching pattern.
+      const lastAgo = el('span', { class: 'sessions-last-ago' }, ` · last ${formatAgo(summary.lastMtime)}`);
+      lastAgo.dataset.mtime = String(summary.lastMtime);
+      summaryEl.appendChild(lastAgo);
+    }
     const listEl = el('ul', { class: 'sessions-list' });
     det.appendChild(summaryEl);
     det.appendChild(listEl);
