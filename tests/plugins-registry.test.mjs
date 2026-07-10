@@ -316,7 +316,7 @@ test('registry entry whose project vanished still lists as invalid', async () =>
 // hasBackend:false, state 'enabled'.
 const CONTRIB_ONLY = {
   id: 'conv-plugin', name: 'Conv Plugin', version: '1.0.0', pluginApi: 1,
-  conventions: [{ slug: 'vis-check', name: 'Visual check', description: 'verify UX', file: 'conventions/sample.md' }],
+  conventions: [{ slug: 'vis-check', name: 'Visual check', description: 'verify UX', file: 'conventions/sample.md', scope: 'project' }],
   scaffolds: [
     { slug: 'harness-wrapper', name: 'Harness wrapper', description: 'build wrapper', file: 'scaffolds/sample.md' },
     { slug: 'seed-config', name: 'Seed config', description: 'seed the config', text: 'write a default config file' },
@@ -353,12 +353,12 @@ test('conventions()/scaffolds() surface only enabled+ok plugins', async () => {
     await env.addPluginProject('convp', { manifest: CONTRIB_ONLY });
     const host = createPluginHost();
 
-    // Not enabled yet → no contributions.
-    assert.deepEqual(await host.conventions(), []);
+    // Not enabled yet → no contributions (conventions() is grouped by scope).
+    assert.deepEqual(await host.conventions(), { project: [] });
     assert.deepEqual(await host.scaffolds(), []);
 
     await host.enable('conv-plugin');
-    const g = await host.conventions();
+    const g = (await host.conventions()).project;
     assert.equal(g.length, 1);
     assert.equal(g[0].slug, 'conv-plugin/vis-check');
     assert.equal(g[0].plugin, 'conv-plugin');
@@ -373,7 +373,7 @@ test('conventions()/scaffolds() surface only enabled+ok plugins', async () => {
 
     // Disable → contributions drop.
     await host.disable('conv-plugin');
-    assert.deepEqual(await host.conventions(), []);
+    assert.deepEqual(await host.conventions(), { project: [] });
     assert.deepEqual(await host.scaffolds(), []);
   } finally {
     await env.restore();

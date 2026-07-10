@@ -29,8 +29,10 @@ export function createServer({ withInstances = true, claudeLauncher } = {}) {
   const pluginHost = withInstances ? createPluginHost({ instances }) : null;
   // Enabled plugins contribute project conventions + scaffolds through these
   // providers (the host is a runtime singleton, wired after construction).
+  // `conventions()` is grouped by scope; only the `project` group is routed
+  // today (workspace/conductor scopes aren't accepted yet — see manifest.js).
   if (pluginHost) {
-    setPluginConventionsProvider(() => pluginHost.conventions());
+    setPluginConventionsProvider(async () => (await pluginHost.conventions()).project);
     setPluginScaffoldsProvider(() => pluginHost.scaffolds());
   }
 

@@ -18,6 +18,15 @@ const TOOL_NAME_RE = /^[a-zA-Z0-9_-]+$/;
 const MCP_TIMEOUT_DEFAULT = 30000;
 const MCP_TIMEOUT_CAP = 120000;
 
+// A convention's `scope` is REQUIRED and explicit (no silent default). Only
+// SUPPORTED scopes route today; PLANNED scopes are recognised so authors get a
+// specific "not yet supported" error instead of a bare invalid-enum. Enabling a
+// planned scope later is a one-line move from PLANNED → SUPPORTED here (+ wiring
+// its catalog provider in server.js) — no other file hardcodes the set.
+export const SUPPORTED_CONVENTION_SCOPES = ['project'];
+const PLANNED_CONVENTION_SCOPES = ['workspace', 'conductor'];
+const quotedScopes = SUPPORTED_CONVENTION_SCOPES.map(s => `"${s}"`).join(', ');
+
 // `conventions` (project-convention fragments) and `scaffolds` (one-time
 // project-setup directives offered at creation) are active pluginApi:1
 // capabilities — neither requires a backend, so a conventions/scaffolds-only
@@ -132,9 +141,11 @@ function validateFragmentPath(value, label, errors) {
   return true;
 }
 
-// conventions: [{ slug, name, description, file }] — project-convention fragments
-// contributed to the Conventions catalog (namespaced <plugin-id>/<slug> there).
-// No backend required. Returns a normalized array or null.
+// conventions: [{ slug, name, description, file, scope }] — project-convention
+// fragments contributed to the Conventions catalog (namespaced <plugin-id>/<slug>
+// there). `scope` is required and routes the entry (project only today; see
+// SUPPORTED_CONVENTION_SCOPES). No backend required. Returns a normalized array
+// or null.
 function validateConventions(g, errors) {
   if (g === undefined) return null;
   if (!Array.isArray(g) || g.length === 0) {
@@ -150,7 +161,7 @@ function validateConventions(g, errors) {
       return;
     }
     for (const k of Object.keys(entry)) {
-      if (!['slug', 'name', 'description', 'file'].includes(k)) errors.push(`unknown key '${label}.${k}'`);
+      if (!['slug', 'name', 'description', 'file', 'scope'].includes(k)) errors.push(`unknown key '${label}.${k}'`);
     }
     if (typeof entry.slug !== 'string' || !SLUG_RE.test(entry.slug) || entry.slug.length > SLUG_MAX) {
       errors.push(`'${label}.slug' is required and must match ^[a-z][a-z0-9-]*$ (max 40 chars)`);
@@ -162,9 +173,26 @@ function validateConventions(g, errors) {
     if (typeof entry.name !== 'string' || entry.name.trim() === '') errors.push(`'${label}.name' is required (non-empty string)`);
     if (typeof entry.description !== 'string' || entry.description.trim() === '') errors.push(`'${label}.description' is required (non-empty string)`);
     validateFragmentPath(entry.file, `${label}.file`, errors);
-    out.push({ slug: entry.slug, name: typeof entry.name === 'string' ? entry.name.trim() : '', description: typeof entry.description === 'string' ? entry.description.trim() : '', file: entry.file });
+    validateConventionScope(entry.scope, label, errors);
+    out.push({ slug: entry.slug, name: typeof entry.name === 'string' ? entry.name.trim() : '', description: typeof entry.description === 'string' ? entry.description.trim() : '', file: entry.file, scope: entry.scope });
   });
   return out;
+}
+
+// Required, explicit scope. A recognised-but-not-yet-wired scope gets a specific
+// message; anything else gets the standard invalid-enum error.
+function validateConventionScope(scope, label, errors) {
+  if (typeof scope !== 'string' || scope === '') {
+    errors.push(`'${label}.scope' is required (one of: ${SUPPORTED_CONVENTION_SCOPES.join(', ')})`);
+    return;
+  }
+  if (SUPPORTED_CONVENTION_SCOPES.includes(scope)) return;
+  if (PLANNED_CONVENTION_SCOPES.includes(scope)) {
+    const verb = SUPPORTED_CONVENTION_SCOPES.length === 1 ? 'is' : 'are';
+    errors.push(`scope "${scope}" not yet supported (only ${quotedScopes} ${verb} currently accepted)`);
+  } else {
+    errors.push(`'${label}.scope' must be one of: ${SUPPORTED_CONVENTION_SCOPES.join(', ')}`);
+  }
 }
 
 // scaffolds: [{ slug, name, description, text | file }] — one-time project-setup

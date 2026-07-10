@@ -56,7 +56,7 @@ test('unknown top-level keys rejected; settings still inert-allowed', () => {
 });
 
 test('conventions: contributions-only manifest (no backend) validates and normalizes', () => {
-  const conventions = [{ slug: 'vis-check', name: 'Visual check', description: 'verify UX', file: 'conventions/vis.md' }];
+  const conventions = [{ slug: 'vis-check', name: 'Visual check', description: 'verify UX', file: 'conventions/vis.md', scope: 'project' }];
   const r = validateManifest(base({ conventions }));
   assert.equal(r.errors, undefined);
   assert.deepEqual(r.manifest.conventions, conventions);
@@ -65,15 +65,35 @@ test('conventions: contributions-only manifest (no backend) validates and normal
 
 test('conventions: invalid shapes rejected', () => {
   const g = (entry) => validateManifest(base({ conventions: [entry] }));
-  assert.ok(g({ slug: 'Bad', name: 'n', description: 'd', file: 'g.md' }).errors.some(e => e.includes('.slug')));
-  assert.ok(g({ slug: 'ok', name: '', description: 'd', file: 'g.md' }).errors.some(e => e.includes('.name')));
-  assert.ok(g({ slug: 'ok', name: 'n', description: '', file: 'g.md' }).errors.some(e => e.includes('.description')));
-  assert.ok(g({ slug: 'ok', name: 'n', description: 'd', file: 'g.txt' }).errors.some(e => e.includes("must end with '.md'")));
-  assert.ok(g({ slug: 'ok', name: 'n', description: 'd', file: '../escape.md' }).errors.some(e => e.includes("no '..'")));
-  assert.ok(g({ slug: 'ok', name: 'n', description: 'd', file: '/abs.md' }).errors.some(e => e.includes("no '..'")));
+  assert.ok(g({ slug: 'Bad', name: 'n', description: 'd', file: 'g.md', scope: 'project' }).errors.some(e => e.includes('.slug')));
+  assert.ok(g({ slug: 'ok', name: '', description: 'd', file: 'g.md', scope: 'project' }).errors.some(e => e.includes('.name')));
+  assert.ok(g({ slug: 'ok', name: 'n', description: '', file: 'g.md', scope: 'project' }).errors.some(e => e.includes('.description')));
+  assert.ok(g({ slug: 'ok', name: 'n', description: 'd', file: 'g.txt', scope: 'project' }).errors.some(e => e.includes("must end with '.md'")));
+  assert.ok(g({ slug: 'ok', name: 'n', description: 'd', file: '../escape.md', scope: 'project' }).errors.some(e => e.includes("no '..'")));
+  assert.ok(g({ slug: 'ok', name: 'n', description: 'd', file: '/abs.md', scope: 'project' }).errors.some(e => e.includes("no '..'")));
+  assert.ok(g({ slug: 'ok', name: 'n', description: 'd', file: 'g.md', scope: 'project', bogus: 1 }).errors.some(e => e.includes("unknown key 'conventions[0].bogus'")));
   assert.ok(validateManifest(base({ conventions: [] })).errors.some(e => e.includes('non-empty array')));
-  const dup = [{ slug: 's', name: 'n', description: 'd', file: 'a.md' }, { slug: 's', name: 'n', description: 'd', file: 'b.md' }];
+  const dup = [{ slug: 's', name: 'n', description: 'd', file: 'a.md', scope: 'project' }, { slug: 's', name: 'n', description: 'd', file: 'b.md', scope: 'project' }];
   assert.ok(validateManifest(base({ conventions: dup })).errors.some(e => e.includes("duplicate convention slug 's'")));
+});
+
+test('conventions: scope is required and explicit', () => {
+  const mk = (scope) => validateManifest(base({ conventions: [{ slug: 'ok', name: 'n', description: 'd', file: 'g.md', ...(scope !== undefined ? { scope } : {}) }] }));
+  // Missing scope → required error (no silent default).
+  assert.ok(mk(undefined).errors.some(e => e.includes("'conventions[0].scope' is required")));
+  assert.ok(mk('').errors.some(e => e.includes("'conventions[0].scope' is required")));
+  // project → valid.
+  assert.equal(mk('project').errors, undefined);
+});
+
+test('conventions: workspace/conductor scopes rejected as not-yet-supported', () => {
+  const mk = (scope) => validateManifest(base({ conventions: [{ slug: 'ok', name: 'n', description: 'd', file: 'g.md', scope }] }));
+  assert.ok(mk('workspace').errors.some(e => e === 'scope "workspace" not yet supported (only "project" is currently accepted)'));
+  assert.ok(mk('conductor').errors.some(e => e === 'scope "conductor" not yet supported (only "project" is currently accepted)'));
+  // An unrecognised value gets the standard invalid-enum error, not the planned-scope hint.
+  const bogus = mk('galaxy');
+  assert.ok(bogus.errors.some(e => e.includes("'conventions[0].scope' must be one of: project")));
+  assert.ok(!bogus.errors.some(e => e.includes('not yet supported')));
 });
 
 test('scaffolds: multiple per plugin, inline text + file forms, exactly-one enforced', () => {
@@ -112,7 +132,7 @@ test('readManifest: missing convention/scaffold file → invalid', async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'manif-frag-'));
   try {
     const manifest = base({
-      conventions: [{ slug: 'g', name: 'n', description: 'd', file: 'conventions/g.md' }],
+      conventions: [{ slug: 'g', name: 'n', description: 'd', file: 'conventions/g.md', scope: 'project' }],
       scaffolds: [{ slug: 'sc', name: 'n', description: 'd', file: 'scaffolds/sc.md' }],
     });
     await fs.writeFile(path.join(dir, 'conductor.plugin.json'), JSON.stringify(manifest));

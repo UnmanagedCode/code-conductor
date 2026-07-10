@@ -4,7 +4,7 @@ import {
   projectsRoot, orchStoreRoot, writeFileAtomic, listProjects, projectStoreDir,
   readProjectMeta, writeProjectMeta, addWorkspace,
 } from '../projects.js';
-import { readManifest } from './manifest.js';
+import { readManifest, SUPPORTED_CONVENTION_SCOPES } from './manifest.js';
 import { createSupervisor, httpOk } from './supervisor.js';
 import { createMcpBridge } from './mcpBridge.js';
 import { pidAlive, waitForPort } from './ports.js';
@@ -574,26 +574,32 @@ export function createPluginHost({
     return [...byId.values()].filter(e => e.discoveryState === 'ok' && persisted.plugins[e.id]?.enabled === true);
   }
 
-  // Convention fragments merged into the project Conventions catalog. Each entry:
-  // { slug:'<plugin-id>/<slug>', name, description, body, plugin:id }.
+  // Convention fragments contributed by enabled plugins, GROUPED BY SCOPE so
+  // each scope routes to its own catalog. Only `project` is wired today (into
+  // the project-conventions catalog via server.js); the workspace/conductor
+  // groups already exist here (empty until their scope is enabled in
+  // manifest.js + a provider is wired), so future routing is a localized add,
+  // not a redesign. Each entry: { slug:'<plugin-id>/<slug>', name, description,
+  // body, plugin:id }.
   async function conventions() {
     await ensureInit();
-    const out = [];
+    const byScope = Object.fromEntries(SUPPORTED_CONVENTION_SCOPES.map(s => [s, []]));
     for (const entry of contributingEntries()) {
       const list = entry.manifest.conventions ?? [];
       if (list.length === 0) continue;
       let cwd;
       try { cwd = await resolveCwd(entry); } catch (e) { console.warn(`plugins: conventions cwd for '${entry.id}' failed: ${e.message}`); continue; }
       for (const g of list) {
+        if (!byScope[g.scope]) continue; // scope not routed yet — skip defensively
         try {
           const body = await readFragment(path.join(cwd, g.file));
-          out.push({ slug: `${entry.id}/${g.slug}`, name: g.name, description: g.description, body, plugin: entry.id });
+          byScope[g.scope].push({ slug: `${entry.id}/${g.slug}`, name: g.name, description: g.description, body, plugin: entry.id });
         } catch (e) {
           console.warn(`plugins: convention '${entry.id}/${g.slug}' body unreadable: ${e.message}`);
         }
       }
     }
-    return out;
+    return byScope;
   }
 
   // Scaffolds (one-time project-setup directives) offered at project creation.

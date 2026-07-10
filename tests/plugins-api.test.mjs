@@ -120,7 +120,7 @@ test('contributions-only plugin flows through to /api/settings/project-conventio
     await fs.cp(FAKE_PLUGIN_DIR, dir, { recursive: true }); // brings conventions/sample.md + scaffolds/sample.md
     await fs.writeFile(path.join(dir, 'conductor.plugin.json'), JSON.stringify({
       id: 'conv-plugin', name: 'Conv Plugin', version: '1.0.0', pluginApi: 1,
-      conventions: [{ slug: 'vis-check', name: 'Visual check', description: 'verify UX', file: 'conventions/sample.md' }],
+      conventions: [{ slug: 'vis-check', name: 'Visual check', description: 'verify UX', file: 'conventions/sample.md', scope: 'project' }],
       scaffolds: [{ slug: 'harness-wrapper', name: 'Scaffold harness', description: 'build wrapper', file: 'scaffolds/sample.md' }],
     }));
 
