@@ -18,12 +18,12 @@ const TOOL_NAME_RE = /^[a-zA-Z0-9_-]+$/;
 const MCP_TIMEOUT_DEFAULT = 30000;
 const MCP_TIMEOUT_CAP = 120000;
 
-// `guidelines` (project-convention fragments) and `scaffolds` (one-time
+// `conventions` (project-convention fragments) and `scaffolds` (one-time
 // project-setup directives offered at creation) are active pluginApi:1
 // capabilities — neither requires a backend, so a conventions/scaffolds-only
 // plugin is valid. `settings` stays reserved (validated-but-inert; accepted,
 // never acted on).
-const KNOWN_TOP_KEYS = new Set(['id', 'name', 'version', 'pluginApi', 'backend', 'frontend', 'mcp', 'settings', 'guidelines', 'scaffolds']);
+const KNOWN_TOP_KEYS = new Set(['id', 'name', 'version', 'pluginApi', 'backend', 'frontend', 'mcp', 'settings', 'conventions', 'scaffolds']);
 
 // Result: null (no manifest file) | { manifest } | { errors, incompatible? }
 export async function readManifest(dir) {
@@ -48,11 +48,11 @@ export async function readManifest(dir) {
   return result;
 }
 
-// Verify every guideline/scaffold `file` ref resolves to a readable file
+// Verify every convention/scaffold `file` ref resolves to a readable file
 // under `dir`. Returns a (possibly empty) list of errors.
 async function checkFragmentFiles(dir, manifest) {
   const refs = [];
-  for (const g of manifest.guidelines ?? []) refs.push([`guidelines '${g.slug}' file`, g.file]);
+  for (const g of manifest.conventions ?? []) refs.push([`conventions '${g.slug}' file`, g.file]);
   for (const sc of manifest.scaffolds ?? []) if (sc.file) refs.push([`scaffolds '${sc.slug}' file`, sc.file]);
   const errors = [];
   for (const [label, rel] of refs) {
@@ -95,7 +95,7 @@ export function validateManifest(json) {
   const backend = validateBackend(json.backend, errors);
   const frontend = validateFrontend(json.frontend, backend, json.name, errors);
   const mcp = validateMcp(json.mcp, backend, errors);
-  const guidelines = validateGuidelines(json.guidelines, errors);
+  const conventions = validateConventions(json.conventions, errors);
   const scaffolds = validateScaffolds(json.scaffolds, errors);
 
   if (errors.length > 0) return { errors, id: displayId(json) };
@@ -108,7 +108,7 @@ export function validateManifest(json) {
       ...(backend ? { backend } : {}),
       ...(frontend ? { frontend } : {}),
       ...(mcp ? { mcp } : {}),
-      ...(guidelines ? { guidelines } : {}),
+      ...(conventions ? { conventions } : {}),
       ...(scaffolds ? { scaffolds } : {}),
     },
   };
@@ -132,19 +132,19 @@ function validateFragmentPath(value, label, errors) {
   return true;
 }
 
-// guidelines: [{ slug, name, description, file }] — project-convention fragments
+// conventions: [{ slug, name, description, file }] — project-convention fragments
 // contributed to the Conventions catalog (namespaced <plugin-id>/<slug> there).
 // No backend required. Returns a normalized array or null.
-function validateGuidelines(g, errors) {
+function validateConventions(g, errors) {
   if (g === undefined) return null;
   if (!Array.isArray(g) || g.length === 0) {
-    errors.push("'guidelines' must be a non-empty array");
+    errors.push("'conventions' must be a non-empty array");
     return null;
   }
   const out = [];
   const seen = new Set();
   g.forEach((entry, i) => {
-    const label = `guidelines[${i}]`;
+    const label = `conventions[${i}]`;
     if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
       errors.push(`'${label}' must be an object`);
       return;
@@ -155,7 +155,7 @@ function validateGuidelines(g, errors) {
     if (typeof entry.slug !== 'string' || !SLUG_RE.test(entry.slug) || entry.slug.length > SLUG_MAX) {
       errors.push(`'${label}.slug' is required and must match ^[a-z][a-z0-9-]*$ (max 40 chars)`);
     } else if (seen.has(entry.slug)) {
-      errors.push(`duplicate guideline slug '${entry.slug}'`);
+      errors.push(`duplicate convention slug '${entry.slug}'`);
     } else {
       seen.add(entry.slug);
     }
@@ -169,7 +169,7 @@ function validateGuidelines(g, errors) {
 
 // scaffolds: [{ slug, name, description, text | file }] — one-time project-setup
 // directives offered at creation (composed into orchestrator guidance the
-// conductor folds into the first worker brief). Symmetric with guidelines
+// conductor folds into the first worker brief). Symmetric with conventions
 // (namespaced <plugin-id>/<slug>, unique in the array), except each carries a
 // directive body via exactly one of `text` | `file`. No backend required.
 // Returns a normalized array or null.

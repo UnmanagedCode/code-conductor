@@ -117,10 +117,10 @@ test('contributions-only plugin flows through to /api/settings/project-conventio
   const boot = await bootServer();
   try {
     const dir = path.join(boot.projectsRoot, 'convplug');
-    await fs.cp(FAKE_PLUGIN_DIR, dir, { recursive: true }); // brings guidelines/sample.md + scaffolds/sample.md
+    await fs.cp(FAKE_PLUGIN_DIR, dir, { recursive: true }); // brings conventions/sample.md + scaffolds/sample.md
     await fs.writeFile(path.join(dir, 'conductor.plugin.json'), JSON.stringify({
       id: 'conv-plugin', name: 'Conv Plugin', version: '1.0.0', pluginApi: 1,
-      guidelines: [{ slug: 'vis-check', name: 'Visual check', description: 'verify UX', file: 'guidelines/sample.md' }],
+      conventions: [{ slug: 'vis-check', name: 'Visual check', description: 'verify UX', file: 'conventions/sample.md' }],
       scaffolds: [{ slug: 'harness-wrapper', name: 'Scaffold harness', description: 'build wrapper', file: 'scaffolds/sample.md' }],
     }));
 
@@ -135,13 +135,13 @@ test('contributions-only plugin flows through to /api/settings/project-conventio
     const row = (await api(boot.baseUrl, 'GET', '/api/plugins')).body.find(p => p.id === 'conv-plugin');
     assert.equal(row.hasBackend, false);
     assert.equal(row.state, 'enabled');
-    assert.equal(row.guidelines[0].slug, 'conv-plugin/vis-check');
+    assert.equal(row.conventions[0].slug, 'conv-plugin/vis-check');
     assert.deepEqual(row.scaffolds, [{ slug: 'conv-plugin/harness-wrapper', name: 'Scaffold harness', description: 'build wrapper' }]);
 
-    // After enable: guideline merged (namespaced, plugin-tagged) + scaffold offered.
+    // After enable: convention merged (namespaced, plugin-tagged) + scaffold offered.
     conv = await api(boot.baseUrl, 'GET', '/api/settings/project-conventions');
     const g = conv.body.rules.find(r => r.slug === 'conv-plugin/vis-check');
-    assert.ok(g, 'plugin guideline in the catalog');
+    assert.ok(g, 'plugin convention in the catalog');
     assert.equal(g.plugin, 'conv-plugin');
     assert.equal(g.builtin, false);
     sc = await api(boot.baseUrl, 'GET', '/api/project-scaffolds');

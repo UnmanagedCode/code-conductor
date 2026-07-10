@@ -18,7 +18,7 @@ import { ensureConductProject } from './src/conduct.js';
 import { restoreFromResumeManifest } from './src/resumeRestart.js';
 import { createPluginHost } from './src/plugins/registry.js';
 import { buildPluginProxy } from './src/plugins/proxy.js';
-import { setPluginGuidelinesProvider } from './src/projectConventions.js';
+import { setPluginConventionsProvider } from './src/projectConventions.js';
 import { setPluginScaffoldsProvider } from './src/projectScaffolds.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -30,7 +30,7 @@ export function createServer({ withInstances = true, claudeLauncher } = {}) {
   // Enabled plugins contribute project conventions + scaffolds through these
   // providers (the host is a runtime singleton, wired after construction).
   if (pluginHost) {
-    setPluginGuidelinesProvider(() => pluginHost.guidelines());
+    setPluginConventionsProvider(() => pluginHost.conventions());
     setPluginScaffoldsProvider(() => pluginHost.scaffolds());
   }
 

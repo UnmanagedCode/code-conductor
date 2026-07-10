@@ -221,24 +221,24 @@ Note: the REST endpoints above keep their own `worktreeName` field — they are 
     "timeoutMs": 30000,         // per-call cap, clamped to 120000
     "tools": [{ "name": "...", "description": "...", "inputSchema": { "type": "object", ... } }]
   },
-  "guidelines": [               // OPTIONAL, NO backend required — project-convention fragments
+  "conventions": [              // OPTIONAL, NO backend required — project-convention fragments
     { "slug": "visual-verification",           // ^[a-z][a-z0-9-]*$ ≤40, unique in this array
       "name": "Visual UX verification",        // REQUIRED
       "description": "verify UX via the harness", // REQUIRED
-      "file": "guidelines/visual-verification.md" } // relative .md path, no leading '/' or '..'
+      "file": "conventions/visual-verification.md" } // relative .md path, no leading '/' or '..'
   ],
   "scaffolds": [                // OPTIONAL, NO backend required — one-time project-setup directives
     { "slug": "harness-wrapper",               // ^[a-z][a-z0-9-]*$ ≤40, unique in this array
       "name": "Scaffold visual harness wrapper", // REQUIRED
       "description": "first agent builds a harness wrapper", // REQUIRED
       "text": "Build a project-local harness wrapper ..." }  // EXACTLY ONE of "text" | "file"
-    // { ..., "file": "scaffolds/harness.md" }  // (same path rules as guidelines.file)
+    // { ..., "file": "scaffolds/harness.md" }  // (same path rules as conventions.file)
   ]
   // "settings": reserved, validated-but-inert in v1
 }
 ```
 
-`guidelines` and `scaffolds` are **active pluginApi:1 capabilities** (an additive extension of v1, not a version bump — an existing manifest without them stays valid). Both work with **no backend**, so a contributions-only plugin is `{id,name,version,pluginApi}` + these keys: it validates, enables, contributes, and is **never started** (its Settings row shows only Disable + contribution badges; `POST .../start` refuses 400). `guidelines` entries join the project **Conventions** catalog namespaced `<plugin-id>/<slug>` (visible in the new-project dialog + `list_project_conventions`, applied inline to a project's CLAUDE.md at creation — the applied copy survives plugin disable/uninstall). `scaffolds` (also namespaced `<plugin-id>/<slug>`, each carrying a directive body via exactly one of `text` | `file`) are offered at project creation (`list_project_scaffolds`, selected via `create_project`'s `scaffolds` param). Bodies for `file` refs are resolved against the active checkout; a **missing/stale `file` at manifest load makes the plugin `invalid`** (fail loud). Only **enabled + `ok`** plugins contribute — a disabled/crashed plugin never surfaces conventions or scaffolds.
+`conventions` and `scaffolds` are **active pluginApi:1 capabilities** (an additive extension of v1, not a version bump — an existing manifest without them stays valid). Both work with **no backend**, so a contributions-only plugin is `{id,name,version,pluginApi}` + these keys: it validates, enables, contributes, and is **never started** (its Settings row shows only Disable + contribution badges; `POST .../start` refuses 400). `conventions` entries join the project **Conventions** catalog namespaced `<plugin-id>/<slug>` (visible in the new-project dialog + `list_project_conventions`, applied inline to a project's CLAUDE.md at creation — the applied copy survives plugin disable/uninstall). `scaffolds` (also namespaced `<plugin-id>/<slug>`, each carrying a directive body via exactly one of `text` | `file`) are offered at project creation (`list_project_scaffolds`, selected via `create_project`'s `scaffolds` param). Bodies for `file` refs are resolved against the active checkout; a **missing/stale `file` at manifest load makes the plugin `invalid`** (fail loud). Only **enabled + `ok`** plugins contribute — a disabled/crashed plugin never surfaces conventions or scaffolds.
 
 **Scaffold delivery (conductor-directive, no persistence).** At project creation the selected scaffolds' directive texts are composed **in selection order** into one framed orchestrator-guidance block (`Project "<name>" was created with these setup steps…`) that `create_project` (MCP) / `POST /api/projects` (REST) **RETURN** under a `scaffold` field. Nothing is persisted and nothing touches the spawn path. The conductor folds the returned `scaffold` into its **first** `send_prompt` to the project's first worker (see `conduct/core.md`); the UI shows it read-only in the create confirmation. Convention↔scaffold linkage is presentation-only (the dialog groups a plugin's items under one "Set up <plugin>" toggle) — there is **no** manifest linkage field, and a scaffold selects independently of its companion convention. *(Future work: persist a lightweight pending-scaffold the conductor can pick up for UI-created projects.)*
 
@@ -271,7 +271,7 @@ Inside the iframe the bridge patches `history.pushState` → `replaceState`, so 
 
 | Method + path | Meaning |
 |---|---|
-| `GET /api/plugins` | merged discovery+registry+runtime rows: `{id, name, project, version, state, enabled, activeVersion, manifestSource, hasBackend, hasFrontend, navLabel, frontendPath, hasMcp, guidelines:[{slug,name,description}], scaffolds:[{slug,name,description}], port, pid, startedAt, gitHead, errors, crashTail}` (guideline/scaffold slugs namespaced `<plugin-id>/<slug>`). A backendless (contributions-only) enabled plugin has `state:"enabled"` (never `"stopped"`). |
+| `GET /api/plugins` | merged discovery+registry+runtime rows: `{id, name, project, version, state, enabled, activeVersion, manifestSource, hasBackend, hasFrontend, navLabel, frontendPath, hasMcp, conventions:[{slug,name,description}], scaffolds:[{slug,name,description}], port, pid, startedAt, gitHead, errors, crashTail}` (convention/scaffold slugs namespaced `<plugin-id>/<slug>`). A backendless (contributions-only) enabled plugin has `state:"enabled"` (never `"stopped"`). |
 | `POST /api/plugins/rescan` | re-scan the projects root; returns the list |
 | `POST /api/plugins/:id/enable` | record + enable (first enable auto-assigns an unassigned project to workspace `CC-Dev`); recovery path out of `failed` |
 | `POST /api/plugins/:id/disable` | stop the child + disable |
@@ -295,4 +295,4 @@ The conductor POSTs `{tool, arguments, caller:{sessionId, project}}` (JSON) to t
 5. A `healthPath` endpoint (any HTTP response counts as alive).
 6. Optional MCP endpoint following the 200-always contract above, tools declared in the manifest with flat schemas.
 7. Expect to be killed at any time (Doze) and restarted lazily — persist state, start fast.
-8. If a `guidelines` convention depends on something a `scaffolds` directive sets up, **word the convention to degrade gracefully** when the scaffold wasn't run — they are selected independently, so the convention may land in a project where the scaffold never ran (e.g. "if a project-local harness wrapper exists, use it to visually verify UX changes; otherwise see the shared harness to create one"). There is no manifest linkage between them by design.
+8. If a `conventions` entry depends on something a `scaffolds` directive sets up, **word the convention to degrade gracefully** when the scaffold wasn't run — they are selected independently, so the convention may land in a project where the scaffold never ran (e.g. "if a project-local harness wrapper exists, use it to visually verify UX changes; otherwise see the shared harness to create one"). There is no manifest linkage between them by design.

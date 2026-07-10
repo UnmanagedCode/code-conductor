@@ -316,13 +316,13 @@ test('create_project MCP tool with conventions appends bodies to CLAUDE.md', asy
   assert.ok(content.includes('## Documentation guidelines'));
 });
 
-// ── Plugin-contributed guidelines + project scaffolds ──────────────────────
+// ── Plugin-contributed conventions + project scaffolds ─────────────────────
 // These exercise the provider seams directly (no real plugin host): the
 // fragment-catalog extraProvider (projectConventions) and the scaffold
 // provider. Providers are module-level singletons — set per test, reset after.
 
 import {
-  setPluginGuidelinesProvider,
+  setPluginConventionsProvider,
 } from '../src/projectConventions.js';
 import {
   setPluginScaffoldsProvider, listProjectScaffolds, composeScaffold,
@@ -330,25 +330,25 @@ import {
 
 afterEach(() => {
   // Reset providers so a fake never leaks into a later test.
-  setPluginGuidelinesProvider(null);
+  setPluginConventionsProvider(null);
   setPluginScaffoldsProvider(null);
 });
 
-test('plugin guidelines merge into the catalog with namespaced slugs', async () => {
-  setPluginGuidelinesProvider(async () => [
+test('plugin conventions merge into the catalog with namespaced slugs', async () => {
+  setPluginConventionsProvider(async () => [
     { slug: 'playwright-harness/visual-verification', name: 'Visual verification', description: 'verify UX', body: '## Visual verification\n- verify', plugin: 'playwright-harness' },
   ]);
   const catalog = await getCatalog();
   const entry = catalog.find(r => r.slug === 'playwright-harness/visual-verification');
-  assert.ok(entry, 'plugin guideline present in catalog');
+  assert.ok(entry, 'plugin convention present in catalog');
   assert.equal(entry.builtin, false);
   assert.equal(entry.plugin, 'playwright-harness');
   // Seeds still present alongside.
   assert.ok(catalog.some(r => r.slug === 'design-guidelines'));
 });
 
-test('compose resolves a plugin guideline slug; create_project snapshots it inline', async () => {
-  setPluginGuidelinesProvider(async () => [
+test('compose resolves a plugin convention slug; create_project snapshots it inline', async () => {
+  setPluginConventionsProvider(async () => [
     { slug: 'playwright-harness/visual-verification', name: 'Visual verification', description: 'verify UX', body: '## Visual verification\n- always verify UX', plugin: 'playwright-harness' },
   ]);
   const block = await composeProjectConventionsBlock(['playwright-harness/visual-verification']);
@@ -359,7 +359,7 @@ test('compose resolves a plugin guideline slug; create_project snapshots it inli
   assert.ok(content.includes('always verify UX'));
 
   // Applied copy survives the plugin going away (provider empties).
-  setPluginGuidelinesProvider(async () => []);
+  setPluginConventionsProvider(async () => []);
   const after = await fs.readFile(path.join(projectsRoot, 'plugin-guided', 'CLAUDE.md'), 'utf8');
   assert.ok(after.includes('always verify UX'), 'snapshot survives disable/uninstall');
   // And the catalog no longer offers it.
@@ -368,7 +368,7 @@ test('compose resolves a plugin guideline slug; create_project snapshots it inli
 });
 
 test('compose rejects an unknown/unavailable plugin slug (400)', async () => {
-  setPluginGuidelinesProvider(async () => []);
+  setPluginConventionsProvider(async () => []);
   await assert.rejects(
     () => composeProjectConventionsBlock(['playwright-harness/gone']),
     (e) => e.statusCode === 400,

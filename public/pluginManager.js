@@ -107,7 +107,7 @@ export function installPluginManager({ onCatalogChange } = {}) {
       // Contribution badges: what a plugin adds beyond a backend (so a
       // backendless conventions/scaffolds-only plugin visibly earns its place).
       const contribs = [];
-      if (row.guidelines?.length) contribs.push(`${row.guidelines.length} guideline${row.guidelines.length === 1 ? '' : 's'}`);
+      if (row.conventions?.length) contribs.push(`${row.conventions.length} convention${row.conventions.length === 1 ? '' : 's'}`);
       if (row.scaffolds?.length) contribs.push(`Project scaffold: ${row.scaffolds.length}`);
       if (contribs.length) {
         const c = document.createElement('div');

@@ -525,3 +525,74 @@ test('appSwitcher + pluginView: returning to Conductor collapses the mobile draw
   select.dispatchEvent(new window.Event('change', { bubbles: true }));
   assert.equal(sidebar.classList.contains('open'), false, 'mobile drawer collapses to reveal the conductor view');
 });
+
+// ── new-project dialog: grouped conventions + scaffolds ─────────────────────
+function buildNewProjectDom(document) {
+  const mk = (tag, id) => { const el = document.createElement(tag); if (id) el.id = id; return el; };
+  const dialog = mk('dialog', 'new-project-dialog');
+  const form = mk('form', 'np-form');
+  const confirm = mk('form', 'np-confirm'); confirm.hidden = true;
+  const scaffoldText = mk('textarea', 'np-scaffold-text');
+  const contributions = mk('div', 'np-contributions');
+  const name = mk('input', 'np-name');
+  const preview = mk('code', 'np-preview');
+  const error = mk('p', 'np-error');
+  const btn = mk('button', 'np-btn');
+  form.append(name, preview, contributions, error);
+  confirm.append(scaffoldText);
+  dialog.append(form, confirm);
+  document.body.append(dialog, btn);
+  // happy-dom lacks a full modal impl in some versions — make showModal a no-op.
+  dialog.showModal = () => { dialog.open = true; };
+  dialog.close = () => { dialog.open = false; };
+  return {
+    newProjectBtn: btn, newProjectDialog: dialog, npName: name, npError: error,
+    npPreview: preview, npContributions: contributions, npForm: form,
+    npConfirm: confirm, npScaffoldText: scaffoldText,
+  };
+}
+
+test('new-project dialog groups core conventions + per-plugin conventions/scaffolds', async () => {
+  const window = makeWindow();
+  const dom = buildNewProjectDom(window.document);
+  const routes = {
+    '/api/settings/project-conventions': { rules: [
+      { slug: 'design-guidelines', name: 'Design guidelines', description: 'core', builtin: true },
+      { slug: 'playwright-harness/vis-check', name: 'Visual check', description: 'verify UX', plugin: 'playwright-harness', builtin: false },
+    ] },
+    '/api/project-scaffolds': { scaffolds: [
+      { slug: 'playwright-harness/harness-wrapper', name: 'Harness wrapper', description: 'build wrapper', plugin: 'playwright-harness' },
+    ] },
+  };
+  globalThis.fetch = async (url) => ({ ok: true, json: async () => routes[url] ?? {} });
+
+  const { installNewProjectDialog } = await freshImport('newProjectDialog.js');
+  installNewProjectDialog({ dom, refreshProjects: async () => {}, closeSidebarOverflow: () => {} });
+
+  dom.newProjectBtn.dispatchEvent(new window.Event('click', { bubbles: true }));
+  // Await the async open handler's two fetches.
+  for (let i = 0; i < 10 && dom.npContributions.children.length === 0; i++) await new Promise(r => setTimeout(r, 5));
+
+  const labels = [...dom.npContributions.querySelectorAll('.np-rules-label, .np-group-head')].map(e => e.textContent);
+  assert.ok(labels.some(t => /Project conventions/.test(t)), 'core conventions section rendered');
+  assert.ok(labels.some(t => /Set up playwright-harness/.test(t)), 'per-plugin group rendered');
+
+  // Core convention checkbox present and independent.
+  const core = dom.npContributions.querySelector('input[data-kind="convention"][value="design-guidelines"]');
+  assert.ok(core, 'core convention checkbox rendered');
+  // Plugin group bundles a convention AND a scaffold, each individually selectable.
+  const pluginConv = dom.npContributions.querySelector('input[data-kind="convention"][value="playwright-harness/vis-check"]');
+  const pluginScaffold = dom.npContributions.querySelector('input[data-kind="scaffold"][value="playwright-harness/harness-wrapper"]');
+  assert.ok(pluginConv, 'plugin convention checkbox rendered');
+  assert.ok(pluginScaffold, 'plugin scaffold checkbox rendered');
+
+  // Master toggle checks both children; each stays independently de-selectable.
+  const master = dom.npContributions.querySelector('.np-group-master');
+  master.checked = true;
+  master.dispatchEvent(new window.Event('change', { bubbles: true }));
+  assert.equal(pluginConv.checked, true);
+  assert.equal(pluginScaffold.checked, true);
+  pluginScaffold.checked = false; // de-select scaffold alone
+  pluginScaffold.dispatchEvent(new window.Event('change', { bubbles: true }));
+  assert.equal(pluginConv.checked, true, 'convention stays selected without its scaffold');
+});

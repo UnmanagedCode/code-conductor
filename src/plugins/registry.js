@@ -442,7 +442,7 @@ export function createPluginHost({
       frontendPath: entry.manifest?.frontend?.path ?? null,
       hasMcp: !!entry.manifest?.mcp,
       // Contribution metadata (slugs namespaced <plugin-id>/<slug>).
-      guidelines: (entry.manifest?.guidelines ?? []).map(g => ({ slug: `${id}/${g.slug}`, name: g.name, description: g.description })),
+      conventions: (entry.manifest?.conventions ?? []).map(g => ({ slug: `${id}/${g.slug}`, name: g.name, description: g.description })),
       scaffolds: (entry.manifest?.scaffolds ?? []).map(sc => ({ slug: `${id}/${sc.slug}`, name: sc.name, description: sc.description })),
       port: rec?.port ?? null,
       pid: rec?.pid ?? null,
@@ -574,22 +574,22 @@ export function createPluginHost({
     return [...byId.values()].filter(e => e.discoveryState === 'ok' && persisted.plugins[e.id]?.enabled === true);
   }
 
-  // Guideline fragments merged into the project Conventions catalog. Each entry:
+  // Convention fragments merged into the project Conventions catalog. Each entry:
   // { slug:'<plugin-id>/<slug>', name, description, body, plugin:id }.
-  async function guidelines() {
+  async function conventions() {
     await ensureInit();
     const out = [];
     for (const entry of contributingEntries()) {
-      const list = entry.manifest.guidelines ?? [];
+      const list = entry.manifest.conventions ?? [];
       if (list.length === 0) continue;
       let cwd;
-      try { cwd = await resolveCwd(entry); } catch (e) { console.warn(`plugins: guidelines cwd for '${entry.id}' failed: ${e.message}`); continue; }
+      try { cwd = await resolveCwd(entry); } catch (e) { console.warn(`plugins: conventions cwd for '${entry.id}' failed: ${e.message}`); continue; }
       for (const g of list) {
         try {
           const body = await readFragment(path.join(cwd, g.file));
           out.push({ slug: `${entry.id}/${g.slug}`, name: g.name, description: g.description, body, plugin: entry.id });
         } catch (e) {
-          console.warn(`plugins: guideline '${entry.id}/${g.slug}' body unreadable: ${e.message}`);
+          console.warn(`plugins: convention '${entry.id}/${g.slug}' body unreadable: ${e.message}`);
         }
       }
     }
@@ -633,7 +633,7 @@ export function createPluginHost({
     init: ensureInit,
     list, rescan, enable, disable, start, stop, status,
     ensureStarted, setActiveVersion, toolsFor, runtimeInfo,
-    guidelines, scaffolds,
+    conventions, scaffolds,
     reportUpstreamFailure, setServerPort, stopAll,
   };
 }

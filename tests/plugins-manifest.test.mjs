@@ -55,25 +55,25 @@ test('unknown top-level keys rejected; settings still inert-allowed', () => {
   assert.equal(r.manifest.settings, undefined); // inert: validated-but-not-normalized
 });
 
-test('guidelines: conventions-only manifest (no backend) validates and normalizes', () => {
-  const guidelines = [{ slug: 'vis-check', name: 'Visual check', description: 'verify UX', file: 'guidelines/vis.md' }];
-  const r = validateManifest(base({ guidelines }));
+test('conventions: contributions-only manifest (no backend) validates and normalizes', () => {
+  const conventions = [{ slug: 'vis-check', name: 'Visual check', description: 'verify UX', file: 'conventions/vis.md' }];
+  const r = validateManifest(base({ conventions }));
   assert.equal(r.errors, undefined);
-  assert.deepEqual(r.manifest.guidelines, guidelines);
+  assert.deepEqual(r.manifest.conventions, conventions);
   assert.equal(r.manifest.backend, undefined);
 });
 
-test('guidelines: invalid shapes rejected', () => {
-  const g = (entry) => validateManifest(base({ guidelines: [entry] }));
+test('conventions: invalid shapes rejected', () => {
+  const g = (entry) => validateManifest(base({ conventions: [entry] }));
   assert.ok(g({ slug: 'Bad', name: 'n', description: 'd', file: 'g.md' }).errors.some(e => e.includes('.slug')));
   assert.ok(g({ slug: 'ok', name: '', description: 'd', file: 'g.md' }).errors.some(e => e.includes('.name')));
   assert.ok(g({ slug: 'ok', name: 'n', description: '', file: 'g.md' }).errors.some(e => e.includes('.description')));
   assert.ok(g({ slug: 'ok', name: 'n', description: 'd', file: 'g.txt' }).errors.some(e => e.includes("must end with '.md'")));
   assert.ok(g({ slug: 'ok', name: 'n', description: 'd', file: '../escape.md' }).errors.some(e => e.includes("no '..'")));
   assert.ok(g({ slug: 'ok', name: 'n', description: 'd', file: '/abs.md' }).errors.some(e => e.includes("no '..'")));
-  assert.ok(validateManifest(base({ guidelines: [] })).errors.some(e => e.includes('non-empty array')));
+  assert.ok(validateManifest(base({ conventions: [] })).errors.some(e => e.includes('non-empty array')));
   const dup = [{ slug: 's', name: 'n', description: 'd', file: 'a.md' }, { slug: 's', name: 'n', description: 'd', file: 'b.md' }];
-  assert.ok(validateManifest(base({ guidelines: dup })).errors.some(e => e.includes("duplicate guideline slug 's'")));
+  assert.ok(validateManifest(base({ conventions: dup })).errors.some(e => e.includes("duplicate convention slug 's'")));
 });
 
 test('scaffolds: multiple per plugin, inline text + file forms, exactly-one enforced', () => {
@@ -108,26 +108,26 @@ test('scaffolds: invalid shapes rejected', () => {
   assert.ok(validateManifest(base({ scaffolds: dup })).errors.some(e => e.includes("duplicate scaffold slug 's'")));
 });
 
-test('readManifest: missing guideline/scaffold file → invalid', async () => {
+test('readManifest: missing convention/scaffold file → invalid', async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'manif-frag-'));
   try {
     const manifest = base({
-      guidelines: [{ slug: 'g', name: 'n', description: 'd', file: 'guidelines/g.md' }],
+      conventions: [{ slug: 'g', name: 'n', description: 'd', file: 'conventions/g.md' }],
       scaffolds: [{ slug: 'sc', name: 'n', description: 'd', file: 'scaffolds/sc.md' }],
     });
     await fs.writeFile(path.join(dir, 'conductor.plugin.json'), JSON.stringify(manifest));
     // Files do not exist yet → invalid, both refs reported.
     let r = await readManifest(dir);
-    assert.ok(r.errors.some(e => e.includes("guidelines 'g' file")), 'missing guideline file is a load error');
+    assert.ok(r.errors.some(e => e.includes("conventions 'g' file")), 'missing convention file is a load error');
     assert.ok(r.errors.some(e => e.includes("scaffolds 'sc' file")), 'missing scaffold file is a load error');
     // Create them → valid.
-    await fs.mkdir(path.join(dir, 'guidelines'), { recursive: true });
-    await fs.writeFile(path.join(dir, 'guidelines', 'g.md'), '## G\n');
+    await fs.mkdir(path.join(dir, 'conventions'), { recursive: true });
+    await fs.writeFile(path.join(dir, 'conventions', 'g.md'), '## G\n');
     await fs.mkdir(path.join(dir, 'scaffolds'), { recursive: true });
     await fs.writeFile(path.join(dir, 'scaffolds', 'sc.md'), 'do the thing\n');
     r = await readManifest(dir);
     assert.equal(r.errors, undefined);
-    assert.equal(r.manifest.guidelines[0].slug, 'g');
+    assert.equal(r.manifest.conventions[0].slug, 'g');
     assert.equal(r.manifest.scaffolds[0].slug, 'sc');
   } finally {
     await fs.rm(dir, { recursive: true, force: true });

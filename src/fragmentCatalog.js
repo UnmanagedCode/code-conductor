@@ -42,10 +42,10 @@ function validateFields({ name, description, body }, noun) {
 // seedDir:  absolute dir holding the built-in `.md` fragments
 // storeFile: () => absolute path of the custom/state JSON (lazy so PROJECTS_ROOT
 //            overrides in tests are honoured per-call)
-// noun:     label used in validation error messages (e.g. 'guideline', 'module')
+// noun:     label used in validation error messages (e.g. 'convention', 'module')
 // extraProvider: optional async () => [{ slug, name, description, body, ...meta }]
 //            — a third body source merged after seeds+custom (e.g. enabled
-//            plugins' guideline fragments). Entries are read-only (builtin:false)
+//            plugins' convention fragments). Entries are read-only (builtin:false)
 //            and bypass the custom-store CRUD; their slugs are namespaced by the
 //            provider so they never collide with seed/custom slugs.
 export function createFragmentCatalog({ seeds, seedDir, storeFile, noun = 'entry', extraProvider = null }) {
