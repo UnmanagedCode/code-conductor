@@ -368,6 +368,14 @@ export class Instance extends EventEmitter {
     // (see below) overlays `running` for as long as this map is non-empty.
     // Reset on (re)spawn so a stale entry never survives a respawn/resume.
     this._activeAgentTasks = new Map();
+    // True when a background subagent's terminal `task_notification` fired
+    // DURING the current turn (status === 'turn'). Such a mid-turn completion
+    // decrements _activeAgentTasks to 0 before the turn's turn_end, yet the CLI
+    // still owes the worker an unprompted re-invocation turn to process that
+    // result — so the idle-wake gate must keep deferring past this turn_end.
+    // Set in the task_notification handler, reset on every idle→turn transition
+    // (see _setStatus), and reset on (re)spawn.
+    this._subagentCompletedThisTurn = false;
   }
 
   // Live count of in-flight background Agent-tool (subagent) tasks. Read by
@@ -375,6 +383,11 @@ export class Instance extends EventEmitter {
   // ends with no subagents still running. Mirrors summary().activeAgentTasks
   // without building the whole summary object.
   get activeAgentTaskCount() { return this._activeAgentTasks.size; }
+
+  // True when a background subagent finished mid-turn (so a re-invocation turn
+  // is still owed). Read by IdleSubscriptionHub.onTurnEnd as a second defer
+  // reason alongside activeAgentTaskCount.
+  get subagentCompletedThisTurn() { return this._subagentCompletedThisTurn; }
 
   summary() {
     // Live global-overage gate (injected by the manager at create). Surfaces the
@@ -582,6 +595,11 @@ export class Instance extends EventEmitter {
     // Any exit from `turn` ends an in-flight soft interrupt — the model
     // either wound down (turn_end → idle) or the process died.
     if (next !== 'turn') this.interrupting = false;
+    // A new turn is starting (the early-return above means this is a real
+    // transition INTO 'turn', covering both prompt()-initiated and unprompted
+    // re-invocation turns) — clear the mid-turn subagent-completion flag so it
+    // only ever reflects completions during the turn now beginning.
+    if (next === 'turn') this._subagentCompletedThisTurn = false;
     this.emit('status', this.summary());
   }
 
@@ -650,6 +668,7 @@ export class Instance extends EventEmitter {
     // A fresh process starts with no in-flight Agent tasks — any entries
     // from a prior run's background subagents are gone with that process.
     this._activeAgentTasks = new Map();
+    this._subagentCompletedThisTurn = false;
     const { command, prefixArgs } = resolveClaudeBin();
     if (resume) this.sessionId = resume;
     else if (!this.sessionId) this.sessionId = randomUUID();
@@ -891,6 +910,13 @@ export class Instance extends EventEmitter {
       // so delete unconditionally here in case task_updated was ever missed
       // for a given completion. Map.delete is a no-op if already gone.
       if (ev.kind === 'system' && ev.subtype === 'task_notification' && ev.data?.task_id) {
+        // task_notification is emitted ONLY for background (async) subagents —
+        // it's the "re-invoke the idle worker" ping (carries output_file);
+        // foreground calls resolve inline and never emit it. If it fires while
+        // we're still mid-turn, the subagent completed before this turn's
+        // turn_end and the CLI owes an unprompted re-invocation turn to process
+        // its result — flag it so the idle-wake gate defers past this turn_end.
+        if (this.status === 'turn') this._subagentCompletedThisTurn = true;
         if (this._activeAgentTasks.delete(ev.data.task_id) && this._activeAgentTasks.size === 0) {
           this.emit('status', this.summary());
         }

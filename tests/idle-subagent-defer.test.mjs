@@ -21,7 +21,7 @@ after(() => instances.shutdown().catch(() => {}));
 
 // Fake instance: `proc` truthy so isLive()/liveForSession treat it as live;
 // `prompt` records deliveries; `activeAgentTaskCount` is the gate input.
-function makeFake({ id, sessionId, activeAgentTaskCount = 0 }) {
+function makeFake({ id, sessionId, activeAgentTaskCount = 0, subagentCompletedThisTurn = false }) {
   const _promptCalls = [];
   const inst = {
     id,
@@ -30,6 +30,7 @@ function makeFake({ id, sessionId, activeAgentTaskCount = 0 }) {
     proc: { pid: 999 },
     status: 'idle',
     activeAgentTaskCount,
+    subagentCompletedThisTurn,
     _emitUi() {},
     // Minimal ring surface so the folded-stub builder (buildRecentMessages)
     // resolves against this fake instead of throwing — the fold produces an
@@ -99,6 +100,32 @@ test('(c) multiple background subagents — delivery waits for the LAST', async 
   emitTurnEnd('w2'); await tick();
   assert.equal(cond._promptCalls.length, 1, 'count 0 → delivered exactly once');
   assert.equal(instances._idleHub.hasSubscriber('ws2'), false);
+
+  cleanup(cond, work);
+});
+
+test('(c2) mid-turn completion: count 0 but subagentCompletedThisTurn defers until the re-invocation turn', async () => {
+  // The observed bug: a background subagent completes DURING the turn, so
+  // activeAgentTaskCount is already 0 at this turn_end, yet the CLI still owes
+  // an unprompted re-invocation turn. The gate must defer on the flag alone.
+  const cond = makeFake({ id: 'c7', sessionId: 'cs7' });
+  const work = makeFake({ id: 'w7', sessionId: 'ws7', activeAgentTaskCount: 0, subagentCompletedThisTurn: true });
+  inject(cond, work);
+  instances.subscribeIdle('cs7', 'ws7');
+
+  // turn_end with count 0 but a mid-turn completion → deferred, subscription kept.
+  emitTurnEnd('w7'); await tick();
+  assert.equal(cond._promptCalls.length, 0,
+    'count 0 but a subagent completed this turn → defer (re-invocation turn owed)');
+  assert.equal(instances._idleHub.hasSubscriber('ws7'), true,
+    'a deferred turn_end must NOT consume the one-shot subscription');
+
+  // The re-invocation turn runs; _setStatus would have reset the flag at its
+  // start. Its turn_end (flag clear, count 0) delivers exactly once.
+  work.subagentCompletedThisTurn = false;
+  emitTurnEnd('w7'); await tick();
+  assert.equal(cond._promptCalls.length, 1, 'delivered once at the re-invocation turn_end');
+  assert.equal(instances._idleHub.hasSubscriber('ws7'), false, 'subscription consumed on delivery');
 
   cleanup(cond, work);
 });
