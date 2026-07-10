@@ -256,7 +256,7 @@ test('soft interrupt (default) injects a hidden steer, sets interrupting, shows 
     assert.equal(inst._userEchoCount, userEchoCountBefore, 'soft steer does not shift the user-echo index');
 
     // A visible system/soft_interrupted annotation carries the steer text.
-    const STEER_TEXT = 'Stop now. Do not make any more tool calls. End your turn immediately. And don\'t reply in any way.';
+    const STEER_TEXT = 'Stop now. Do not make any more tool calls or start any new work. Reply with one short line acknowledging you have stopped, then end your turn.';
     const annotations = newEvents.filter(e => e.kind === 'system' && e.subtype === 'soft_interrupted');
     assert.equal(annotations.length, 1, 'exactly one soft_interrupted annotation is emitted live');
     assert.equal(annotations[0].data?.text, STEER_TEXT, 'annotation carries the steer text');

@@ -55,11 +55,13 @@ const TERMINAL_TASK_STATUSES = new Set(['completed', 'failed', 'cancelled', 'err
 export const SESSION_PREFIX_MIN = 4;
 
 // The hidden steering instruction a SOFT interrupt injects mid-turn. It
-// must forbid any further output and direct the model to end its turn
-// silently — a graceful stop, not a hard abort. Prefixed with
+// tells the model to stop all work and wind down — a graceful stop, not a
+// hard abort — but still asks for one brief visible line of acknowledgement:
+// a fully silent turn makes the CLI inject a "no visible output" follow-up
+// prompt that re-engages the model, defeating the interrupt. Prefixed with
 // SOFT_INTERRUPT_MARKER at send time so it never renders / replays.
 const SOFT_INTERRUPT_TEXT =
-  'Stop now. Do not make any more tool calls. End your turn immediately. And don\'t reply in any way.';
+  'Stop now. Do not make any more tool calls or start any new work. Reply with one short line acknowledging you have stopped, then end your turn.';
 
 // After a hard abort, the CLI's internal input queue is not cleared. Any
 // messages written to stdin before the abort (the soft steer, or several
@@ -1279,7 +1281,8 @@ export class Instance extends EventEmitter {
   // discarding partial work. SOFT (default) injects a hidden steering
   // user message mid-turn — the CLI delivers it into the live turn (it is
   // NOT queued until turn_end) — telling the model to stop all work and
-  // end its turn without responding, so it winds down gracefully. The steer
+  // end its turn after one brief acknowledgement line, so it winds down
+  // gracefully without triggering the CLI's empty-turn follow-up. The steer
   // itself is never echoed to the UI as a user_echo (that would shift the
   // live userIndex rewind/fork keys off from the JSONL-derived count, which
   // deliberately excludes it — see isPureUserPromptLine in transcript.js).

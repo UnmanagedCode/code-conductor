@@ -810,7 +810,7 @@ test('routing stop-resume: fallback worker direct-stop arms a resume timer', asy
 // The bug this fixes: a `.conduct` orchestrator that trips overage while owning
 // no in-control workers (it tripped itself, or its workers were momentarily
 // idle) used to fall into the terse Pass-3 `_directOverageStop` path and receive
-// the leaf-worker soft-interrupt ("don't reply in any way") — semantically wrong
+// the leaf-worker soft-interrupt ("Do not make any more tool calls") — semantically wrong
 // for the brain that must reconstruct state on resume. It's now ALWAYS steered
 // gracefully (hasWorkers:false ⇒ no worker-halting clause). Identified durably by
 // project === '.conduct', not the (opposite) `conducted` worker flag.
@@ -835,7 +835,7 @@ test('routing: no-workers Conduct orchestrator gets the graceful steer, not the 
   const echo = cEvs.find(e => e.kind === 'user_echo' && /overage auto-stop/.test(e.text || ''));
   assert.ok(echo, 'graceful conductor steer surfaced as a visible user_echo');
   assert.equal(/interrupt_turn/.test(echo.text), false, 'no worker-halting clause when nothing is in flight');
-  assert.equal(/don't reply in any way/.test(echo.text), false, 'not the terse leaf-worker soft-interrupt');
+  assert.equal(/Do not make any more tool calls/.test(echo.text), false, 'not the terse leaf-worker soft-interrupt');
   // The terse direct path (a hidden soft_interrupted annotation) was NOT taken.
   assert.equal(sub(cEvs, 'soft_interrupted').length, 0, 'orchestrator not direct-interrupted');
 });
