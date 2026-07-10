@@ -186,3 +186,36 @@ test('version guards: unknown worktree 404, bad shape 400, no registry entry 409
     await env.restore();
   }
 });
+
+test('deleted active-version worktree self-heals to main on read and stays startable', async () => {
+  const env = await makePluginRoot();
+  const host = createPluginHost();
+  let host2;
+  try {
+    const { meta } = await setup(env);
+    await host.enable('wtplug');
+    await host.setActiveVersion('wtplug', { type: 'worktree', name: meta.worktreeName });
+    await host.disable('wtplug'); // reproduce the reported disabled+stale case
+
+    const { removeWorktree } = await import('../src/worktrees.js');
+    await removeWorktree('wtplug', meta.worktreeName, { force: true });
+
+    // A read must no longer show the dangling worktree, and the persisted
+    // registry.json must self-heal (not just compute a corrected value).
+    const row = (await host.list()).find(r => r.id === 'wtplug');
+    assert.deepEqual(row.activeVersion, { type: 'main' });
+
+    host2 = createPluginHost();
+    const row2 = (await host2.list()).find(r => r.id === 'wtplug');
+    assert.deepEqual(row2.activeVersion, { type: 'main' }, 'correction was persisted, not just computed');
+
+    // Recoverable without hand-editing registry.json: enable + start works.
+    await host2.enable('wtplug');
+    await host2.start('wtplug');
+    assert.equal(await healthPlugin(host2), 'fake-plugin');
+  } finally {
+    await host.stopAll();
+    await host2?.stopAll();
+    await env.restore();
+  }
+});

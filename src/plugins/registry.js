@@ -251,14 +251,29 @@ export function createPluginHost({
     return entry;
   }
 
-  async function resolveCwd(entry) {
-    const av = persisted.plugins[entry.id]?.activeVersion ?? { type: 'main' };
-    if (av.type !== 'worktree') return entry.dir;
+  // A persisted worktree activeVersion can outlive the worktree itself
+  // (deleted via removeWorktree, or its store entry pruned). Detect that
+  // here — the one place both describeRow (status) and resolveCwd (start)
+  // read activeVersion — and self-heal back to main so neither has to
+  // special-case staleness, and a plugin stuck on a dead worktree recovers
+  // without hand-editing registry.json.
+  async function reconcileActiveVersion(entry) {
+    const id = entry.id;
+    const reg = id ? persisted.plugins[id] : null;
+    const av = reg?.activeVersion ?? { type: 'main' };
+    if (av.type !== 'worktree') return { activeVersion: av, worktreeMeta: null };
     // Never string-assemble worktree paths — resolve via the store metadata.
     const { getWorktree } = await import('../worktrees.js');
     const meta = await getWorktree(entry.project, av.name);
-    if (!meta?.worktreePath) throw httpError(404, `active version worktree '${av.name}' of project '${entry.project}' not found`);
-    return meta.worktreePath;
+    if (meta?.worktreePath) return { activeVersion: av, worktreeMeta: meta };
+    reg.activeVersion = { type: 'main' };
+    await saveRegistry();
+    return { activeVersion: { type: 'main' }, worktreeMeta: null };
+  }
+
+  async function resolveCwd(entry) {
+    const { activeVersion, worktreeMeta } = await reconcileActiveVersion(entry);
+    return activeVersion.type === 'worktree' ? worktreeMeta.worktreePath : entry.dir;
   }
 
   // ── lifecycle ───────────────────────────────────────────────────────
@@ -414,7 +429,7 @@ export function createPluginHost({
     return describeRow(entry ?? { id, project: reg.project, dir: null, manifest: null, discoveryState: 'invalid', errors: ['project or manifest no longer present'] });
   }
 
-  function describeRow(entry) {
+  async function describeRow(entry) {
     const id = entry.id;
     const reg = id ? persisted.plugins[id] : null;
     const s = id ? runtimeState(id) : null;
@@ -427,6 +442,7 @@ export function createPluginHost({
     // simply 'enabled', never 'stopped', so the UI shows no (broken) Start button.
     else if (!hasBackend) state = 'enabled';
     else state = s.status;
+    const { activeVersion } = await reconcileActiveVersion(entry);
     return {
       id,
       name: entry.manifest?.name ?? entry.project,
@@ -434,7 +450,7 @@ export function createPluginHost({
       version: entry.manifest?.version ?? null,
       state,
       enabled: reg?.enabled === true,
-      activeVersion: reg?.activeVersion ?? { type: 'main' },
+      activeVersion,
       manifestSource: entry.manifestSource ?? { type: 'main' },
       hasBackend,
       hasFrontend: !!entry.manifest?.frontend,
@@ -455,15 +471,15 @@ export function createPluginHost({
 
   async function list() {
     await ensureInit();
-    const rows = entries.map(describeRow);
+    const rowPromises = entries.map(describeRow);
     // Registry entries whose project/manifest vanished still deserve a row
     // (they hold state the user may want to disable).
     for (const [id, reg] of Object.entries(persisted.plugins)) {
       if (!entries.some(e => e.id === id)) {
-        rows.push(describeRow({ id, project: reg.project, dir: null, manifest: null, discoveryState: 'invalid', errors: ['project or manifest no longer present'] }));
+        rowPromises.push(describeRow({ id, project: reg.project, dir: null, manifest: null, discoveryState: 'invalid', errors: ['project or manifest no longer present'] }));
       }
     }
-    return rows;
+    return Promise.all(rowPromises);
   }
 
   async function rescan() {
