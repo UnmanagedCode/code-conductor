@@ -791,7 +791,12 @@ export function installSettings({
   }
 
   function renderArchived({ groups }) {
-    const list = Array.isArray(groups) ? groups : [];
+    const list = Array.isArray(groups) ? groups.slice() : [];
+    const conductIdx = list.findIndex(g => g.project === '.conduct');
+    if (conductIdx > 0) {
+      const [conduct] = list.splice(conductIdx, 1);
+      list.unshift(conduct);
+    }
     const total = list.reduce((n, g) => n + g.sessions.length, 0);
     arStatusEl.innerHTML = total > 0
       ? `<span class="st-ok">${total} archived session${total === 1 ? '' : 's'}</span> across ${list.length} project${list.length === 1 ? '' : 's'}.`
@@ -803,7 +808,15 @@ export function installSettings({
       det.className = 'archived-group'; // collapsed by default (no `open`)
       const sum = document.createElement('summary');
       sum.className = 'archived-group-summary';
-      sum.textContent = `${g.project} (${g.sessions.length})`;
+      if (g.project === '.conduct') {
+        const icon = document.createElement('span');
+        icon.className = 'archived-group-icon';
+        icon.textContent = '🎼';
+        sum.appendChild(icon);
+        sum.appendChild(document.createTextNode(`Conductor (${g.sessions.length})`));
+      } else {
+        sum.textContent = `${g.project} (${g.sessions.length})`;
+      }
       det.appendChild(sum);
 
       for (const s of g.sessions) {
