@@ -145,3 +145,50 @@ test('firstConnect auto-resumes a non-archived anchored session with silent:true
   assert.equal(resumeArgs.worktreeName, 'wt');
   assert.equal(resumeArgs.silent, true, 'anchor auto-resume passes silent:true');
 });
+
+// ── wsRouter popstate anchor-restore ────────────────────────────────────────
+//
+// Regression test for: switching from an active session into the sidebar
+// app-switcher's plugin space fired a real-browser `popstate` (in addition to
+// `hashchange`) for the `location.hash =` assignment in appSwitcher.js. The
+// popstate handler read the *new* `#plugin/<id>/` hash, found no `session=`
+// key in it, and — since state.activeId was still the active instance —
+// called selectInstance(null), which cleared the session anchor out from
+// under the plugin navigation. See public/wsRouter.js's popstate handler.
+
+test('popstate while hash is in the #plugin/ space does not deselect the active instance', async () => {
+  installDom('#plugin/fake-plugin/');
+  const { installWsRouter } = await load('wsRouter.js');
+
+  const instances = [{ id: 'inst-1', sessionId: 'sid-1' }];
+  let selectedWith = 'never called';
+  installWsRouter({
+    ...baseDeps({ instances, resumeSpy: async () => {} }),
+    state: { activeId: 'inst-1', instances },
+    selectInstance: (id) => { selectedWith = id; },
+  });
+
+  window.dispatchEvent(new window.Event('popstate'));
+  await new Promise(r => setTimeout(r, 20));
+
+  assert.equal(selectedWith, 'never called', 'selectInstance must not fire while leaving/within the plugin hash space');
+});
+
+test('popstate back to a live session anchor still restores it (guard does not break the legit case)', async () => {
+  const sid = 'sid-2';
+  installDom(`#session=${sid}`);
+  const { installWsRouter } = await load('wsRouter.js');
+
+  const instances = [{ id: 'inst-2', sessionId: sid }];
+  let selectedWith = 'never called';
+  installWsRouter({
+    ...baseDeps({ instances, resumeSpy: async () => {} }),
+    state: { activeId: null, instances },
+    selectInstance: (id) => { selectedWith = id; },
+  });
+
+  window.dispatchEvent(new window.Event('popstate'));
+  await new Promise(r => setTimeout(r, 20));
+
+  assert.equal(selectedWith, 'inst-2', 'a genuine back-navigation onto a live session anchor still selects it');
+});

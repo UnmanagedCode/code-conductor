@@ -220,10 +220,16 @@ export function installWsRouter({
   // entry created by pushSessionAnchor (e.g. going back from a sub-agent to
   // the conductor session that opened it).
   window.addEventListener('popstate', () => {
-    // Settings/commits/review have their own handlers; don't interfere when
-    // the user navigates forward back into one of those views.
+    // Settings/commits/review/plugin have their own handlers; don't interfere
+    // when the user navigates into or within one of those views. Missing the
+    // plugin guard here used to null out state.activeId (and clobber the hash
+    // via writeSessionAnchor(null)) on the very next popstate after switching
+    // into a plugin from an active session — see appSwitcher.js's `location.hash =`
+    // assignment, which this app's real-browser navigation dispatches a
+    // popstate for in addition to hashchange.
     if (location.hash === '#settings') return;
     if (location.hash === '#commits' || location.hash === '#review') return;
+    if (location.hash.startsWith('#plugin/')) return;
     const anchor = readSessionAnchor();
     const live = anchor ? state.instances.find(i => i.sessionId === anchor) : null;
     const targetId = live?.id ?? null;
