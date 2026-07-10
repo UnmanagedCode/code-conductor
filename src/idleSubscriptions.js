@@ -47,20 +47,26 @@ export class IdleSubscriptionHub {
   // Deferral: a backgrounded Agent-tool call resolves its tool_result
   // immediately (isAsync:true), so a worker's turn_end can fire while it still
   // has live subagents (Instance._activeAgentTasks non-empty). We want the wake
-  // to mean "the agent AND all its subagents finished," so we DEFER for either
-  // of two reasons, keeping the subscription (and its watchdog) armed:
+  // to mean "the agent AND all its subagents finished, and no re-invocation
+  // turn is still owed," so we DEFER for either of two reasons, keeping the
+  // subscription (and its watchdog) armed:
   //   1. activeAgentTaskCount > 0 — a subagent is still running.
-  //   2. subagentCompletedThisTurn — a subagent's terminal task_notification
-  //      fired DURING the turn now ending. Its completion decrements the count
-  //      to 0 before this turn_end, but the CLI still owes the worker an
-  //      unprompted re-invocation turn to process the result (an init/turn
-  //      nobody prompted). Firing here would wake the caller one turn early
-  //      (the observed bug), so we wait for that re-invocation turn's turn_end.
+  //   2. taskNotificationPending — a task_notification fired during the turn
+  //      now ending and NO top-level tool_result followed it, which (per the
+  //      CLI's queue semantics — see the _taskNotificationPending comment in
+  //      instances.js) means the notification is still queued and the CLI WILL
+  //      open an unprompted re-invocation turn to deliver it. Firing here
+  //      would wake the caller one turn early (it would read the worker's
+  //      output from before the result was processed), so we wait for that
+  //      re-invocation turn's turn_end. A notification consumed in-turn (the
+  //      task's own held-open tool_result, or attached to a later tool
+  //      round-trip) clears the flag, so a turn that merely CONTAINED a task
+  //      completion — e.g. a long test-run Bash promoted to a task — wakes
+  //      normally at its turn_end, parked or not.
   // A completion between turns (worker idle) does NOT set the flag: the
   // immediate re-invocation turn IS its processing turn, and its turn_end
-  // fires the wake correctly. _setStatus resets the flag at each turn start, so
-  // it only reflects completions during the turn now ending. A never-finishing
-  // (or never-re-invoked) subagent is caught by the watchdog (always armed).
+  // fires the wake correctly. A never-finishing subagent — or a CLI that never
+  // flushes its queue — is caught by the watchdog (always armed).
   onTurnEnd({ id: targetInstanceId, ev }) {
     if (ev?.kind !== 'turn_end') return;
     // The event payload carries the instanceId; resolve the live instance and
@@ -76,12 +82,12 @@ export class IdleSubscriptionHub {
     // the worker's turn_notification stays suppressed across the whole deferral.
     this._justConsumed.add(tSid);
     queueMicrotask(() => this._justConsumed.delete(tSid));
-    // Defer while background subagents are still running OR one completed during
-    // this turn (a re-invocation turn is still owed) — keep the subscription and
-    // its watchdog armed; a later turn_end with both clear delivers. `target` is
-    // a live Instance here (a falsy `subs` above already returned when it was
-    // absent), so the getters are always present.
-    if (target.activeAgentTaskCount > 0 || target.subagentCompletedThisTurn) return;
+    // Defer while background subagents are still running OR an unconsumed
+    // mid-turn task notification means a re-invocation turn is still owed —
+    // keep the subscription and its watchdog armed; a later turn_end with both
+    // clear delivers. `target` is a live Instance here (a falsy `subs` above
+    // already returned when it was absent), so the getters are always present.
+    if (target.activeAgentTaskCount > 0 || target.taskNotificationPending) return;
     const entries = [...subs.entries()];
     subs.clear();
     this.subscribers.delete(tSid);
