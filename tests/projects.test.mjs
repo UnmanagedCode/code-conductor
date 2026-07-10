@@ -440,7 +440,7 @@ test('GET /api/sessions/:sid/locate 400s on malformed id', async () => {
 test('readProjectMeta returns {workspace:null} when the dotfile is absent', async () => {
   await api(baseUrl, 'POST', '/api/projects', { name: 'fresh' });
   const meta = await readProjectMeta('fresh');
-  assert.deepEqual(meta, { workspace: null, setupPrompt: null });
+  assert.deepEqual(meta, { workspace: null });
 });
 
 test('writeProjectMeta({workspace}) round-trips through listProjects/GET /api/projects', async () => {
@@ -466,7 +466,7 @@ test('writeProjectMeta({workspace:null}) clears the field and removes the now-em
   await writeProjectMeta('clearme', { workspace: null });
   await assert.rejects(fs.stat(file), { code: 'ENOENT' });
   const meta = await readProjectMeta('clearme');
-  assert.deepEqual(meta, { workspace: null, setupPrompt: null });
+  assert.deepEqual(meta, { workspace: null });
 });
 
 test('writeProjectMeta rejects invalid workspace strings', async () => {

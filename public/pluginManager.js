@@ -105,10 +105,10 @@ export function installPluginManager({ onCatalogChange } = {}) {
       li.appendChild(meta);
 
       // Contribution badges: what a plugin adds beyond a backend (so a
-      // backendless conventions-only plugin visibly earns its place).
+      // backendless conventions/scaffolds-only plugin visibly earns its place).
       const contribs = [];
       if (row.guidelines?.length) contribs.push(`${row.guidelines.length} guideline${row.guidelines.length === 1 ? '' : 's'}`);
-      if (row.setupPrompt) contribs.push('setup prompt');
+      if (row.scaffolds?.length) contribs.push(`Project scaffold: ${row.scaffolds.length}`);
       if (contribs.length) {
         const c = document.createElement('div');
         c.className = 'pl-contribs';
@@ -119,6 +119,24 @@ export function installPluginManager({ onCatalogChange } = {}) {
           c.appendChild(tag);
         }
         li.appendChild(c);
+      }
+      // Per-scaffold preview (name — what it does) so the user sees what a
+      // backendless plugin would set up.
+      if (row.scaffolds?.length) {
+        const prev = document.createElement('ul');
+        prev.className = 'pl-scaffold-preview';
+        for (const sc of row.scaffolds) {
+          const item = document.createElement('li');
+          const n = document.createElement('span');
+          n.className = 'pl-scaffold-name';
+          n.textContent = sc.name;
+          const d = document.createElement('span');
+          d.className = 'pl-scaffold-desc';
+          d.textContent = sc.description;
+          item.append(n, d);
+          prev.appendChild(item);
+        }
+        li.appendChild(prev);
       }
 
       if (row.errors?.length) {

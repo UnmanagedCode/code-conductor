@@ -76,37 +76,59 @@ test('guidelines: invalid shapes rejected', () => {
   assert.ok(validateManifest(base({ guidelines: dup })).errors.some(e => e.includes("duplicate guideline slug 's'")));
 });
 
-test('setupPrompt: inline text and file forms validate; exactly-one enforced', () => {
-  const inline = validateManifest(base({ setupPrompt: { name: 'Scaffold', description: 'do it', text: 'go build' } }));
-  assert.equal(inline.errors, undefined);
-  assert.deepEqual(inline.manifest.setupPrompt, { name: 'Scaffold', description: 'do it', text: 'go build' });
-  const filed = validateManifest(base({ setupPrompt: { name: 'Scaffold', description: 'do it', file: 'setup/s.md' } }));
-  assert.equal(filed.errors, undefined);
-  assert.equal(filed.manifest.setupPrompt.file, 'setup/s.md');
-  // both
-  assert.ok(validateManifest(base({ setupPrompt: { name: 'n', description: 'd', text: 't', file: 's.md' } })).errors.some(e => e.includes("exactly one of 'text' or 'file'")));
-  // neither
-  assert.ok(validateManifest(base({ setupPrompt: { name: 'n', description: 'd' } })).errors.some(e => e.includes("exactly one of 'text' or 'file'")));
-  // missing name/description
-  assert.ok(validateManifest(base({ setupPrompt: { description: 'd', text: 't' } })).errors.some(e => e.includes("'setupPrompt.name'")));
-  // bad file shape
-  assert.ok(validateManifest(base({ setupPrompt: { name: 'n', description: 'd', file: 'x.txt' } })).errors.some(e => e.includes("must end with '.md'")));
+test('scaffolds: multiple per plugin, inline text + file forms, exactly-one enforced', () => {
+  const scaffolds = [
+    { slug: 'harness-wrapper', name: 'Harness wrapper', description: 'build a wrapper', text: 'go build the wrapper' },
+    { slug: 'seed-config', name: 'Seed config', description: 'seed config', file: 'scaffolds/seed.md' },
+  ];
+  const r = validateManifest(base({ scaffolds }));
+  assert.equal(r.errors, undefined);
+  assert.equal(r.manifest.scaffolds.length, 2);
+  assert.deepEqual(r.manifest.scaffolds[0], { slug: 'harness-wrapper', name: 'Harness wrapper', description: 'build a wrapper', text: 'go build the wrapper' });
+  assert.equal(r.manifest.scaffolds[1].file, 'scaffolds/seed.md');
+  assert.equal(r.manifest.backend, undefined); // no backend required
 });
 
-test('readManifest: missing guideline/setup file → invalid', async () => {
+test('scaffolds: invalid shapes rejected', () => {
+  const s = (entry) => validateManifest(base({ scaffolds: [entry] }));
+  assert.ok(s({ slug: 'Bad', name: 'n', description: 'd', text: 't' }).errors.some(e => e.includes('.slug')));
+  assert.ok(s({ slug: 'ok', name: '', description: 'd', text: 't' }).errors.some(e => e.includes('.name')));
+  assert.ok(s({ slug: 'ok', name: 'n', description: '', text: 't' }).errors.some(e => e.includes('.description')));
+  // both text+file
+  assert.ok(s({ slug: 'ok', name: 'n', description: 'd', text: 't', file: 's.md' }).errors.some(e => e.includes("exactly one of 'text' or 'file'")));
+  // neither
+  assert.ok(s({ slug: 'ok', name: 'n', description: 'd' }).errors.some(e => e.includes("exactly one of 'text' or 'file'")));
+  // bad file shape
+  assert.ok(s({ slug: 'ok', name: 'n', description: 'd', file: 's.txt' }).errors.some(e => e.includes("must end with '.md'")));
+  assert.ok(s({ slug: 'ok', name: 'n', description: 'd', file: '../x.md' }).errors.some(e => e.includes("no '..'")));
+  // empty array
+  assert.ok(validateManifest(base({ scaffolds: [] })).errors.some(e => e.includes('non-empty array')));
+  // duplicate slug
+  const dup = [{ slug: 's', name: 'n', description: 'd', text: 't' }, { slug: 's', name: 'n', description: 'd', text: 'u' }];
+  assert.ok(validateManifest(base({ scaffolds: dup })).errors.some(e => e.includes("duplicate scaffold slug 's'")));
+});
+
+test('readManifest: missing guideline/scaffold file → invalid', async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'manif-frag-'));
   try {
-    const manifest = base({ guidelines: [{ slug: 'g', name: 'n', description: 'd', file: 'guidelines/g.md' }] });
+    const manifest = base({
+      guidelines: [{ slug: 'g', name: 'n', description: 'd', file: 'guidelines/g.md' }],
+      scaffolds: [{ slug: 'sc', name: 'n', description: 'd', file: 'scaffolds/sc.md' }],
+    });
     await fs.writeFile(path.join(dir, 'conductor.plugin.json'), JSON.stringify(manifest));
-    // File does not exist yet → invalid.
+    // Files do not exist yet → invalid, both refs reported.
     let r = await readManifest(dir);
-    assert.ok(r.errors.some(e => e.includes("guidelines 'g' file")), 'missing guideline file should be a load error');
-    // Create it → valid.
+    assert.ok(r.errors.some(e => e.includes("guidelines 'g' file")), 'missing guideline file is a load error');
+    assert.ok(r.errors.some(e => e.includes("scaffolds 'sc' file")), 'missing scaffold file is a load error');
+    // Create them → valid.
     await fs.mkdir(path.join(dir, 'guidelines'), { recursive: true });
     await fs.writeFile(path.join(dir, 'guidelines', 'g.md'), '## G\n');
+    await fs.mkdir(path.join(dir, 'scaffolds'), { recursive: true });
+    await fs.writeFile(path.join(dir, 'scaffolds', 'sc.md'), 'do the thing\n');
     r = await readManifest(dir);
     assert.equal(r.errors, undefined);
     assert.equal(r.manifest.guidelines[0].slug, 'g');
+    assert.equal(r.manifest.scaffolds[0].slug, 'sc');
   } finally {
     await fs.rm(dir, { recursive: true, force: true });
   }

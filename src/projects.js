@@ -137,9 +137,8 @@ export function validateWorkspace(workspace) {
 }
 
 // Read the project's optional metadata file from the central store.
-// Missing file or malformed JSON → {workspace: null, setupPrompt: null}. The
-// store dir may not exist yet — that's fine. `setupPrompt` is a pending
-// one-time first-agent prompt, consumed on the first fresh spawn.
+// Missing file or malformed JSON → {workspace: null}. The store dir may
+// not exist yet — that's fine.
 export async function readProjectMeta(name) {
   validateName(name);
   const file = path.join(projectStoreDir(name), 'project.json');
@@ -149,17 +148,14 @@ export async function readProjectMeta(name) {
     const workspace = typeof obj?.workspace === 'string' && obj.workspace.trim() !== ''
       ? obj.workspace.trim()
       : null;
-    const setupPrompt = typeof obj?.setupPrompt === 'string' && obj.setupPrompt.trim() !== ''
-      ? obj.setupPrompt
-      : null;
-    return { workspace, setupPrompt };
+    return { workspace };
   } catch (e) {
-    if (e.code === 'ENOENT') return { workspace: null, setupPrompt: null };
+    if (e.code === 'ENOENT') return { workspace: null };
     // Malformed JSON or unreadable — degrade to unassigned rather than
     // throwing. A single console.warn (not an error) so noisy systems
     // don't spam logs on every list.
     console.warn(`projects: failed to read ${file}: ${e.message}`);
-    return { workspace: null, setupPrompt: null };
+    return { workspace: null };
   }
 }
 

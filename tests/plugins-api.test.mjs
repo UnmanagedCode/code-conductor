@@ -110,25 +110,25 @@ test('error shapes: unknown 404, invalid manifest 409, disabled start 409', asyn
   } finally { await boot.close(); }
 });
 
-// End-to-end wiring: a real conventions-only plugin, enabled via the host,
+// End-to-end wiring: a real contributions-only plugin, enabled via the host,
 // must surface through server.js's provider hookup on the conventions +
-// setup-prompts REST endpoints (the paths the new-project dialog fetches).
-test('conventions-only plugin flows through to /api/settings/project-conventions + /api/setup-prompts', async () => {
+// project-scaffolds REST endpoints (the paths the new-project dialog fetches).
+test('contributions-only plugin flows through to /api/settings/project-conventions + /api/project-scaffolds', async () => {
   const boot = await bootServer();
   try {
     const dir = path.join(boot.projectsRoot, 'convplug');
-    await fs.cp(FAKE_PLUGIN_DIR, dir, { recursive: true }); // brings guidelines/sample.md + setup/sample.md
+    await fs.cp(FAKE_PLUGIN_DIR, dir, { recursive: true }); // brings guidelines/sample.md + scaffolds/sample.md
     await fs.writeFile(path.join(dir, 'conductor.plugin.json'), JSON.stringify({
       id: 'conv-plugin', name: 'Conv Plugin', version: '1.0.0', pluginApi: 1,
       guidelines: [{ slug: 'vis-check', name: 'Visual check', description: 'verify UX', file: 'guidelines/sample.md' }],
-      setupPrompt: { name: 'Scaffold harness', description: 'build wrapper', file: 'setup/sample.md' },
+      scaffolds: [{ slug: 'harness-wrapper', name: 'Scaffold harness', description: 'build wrapper', file: 'scaffolds/sample.md' }],
     }));
 
     // Before enable: not offered.
     let conv = await api(boot.baseUrl, 'GET', '/api/settings/project-conventions');
     assert.ok(!conv.body.rules.some(r => r.slug === 'conv-plugin/vis-check'));
-    let sp = await api(boot.baseUrl, 'GET', '/api/setup-prompts');
-    assert.deepEqual(sp.body.setupPrompts, []);
+    let sc = await api(boot.baseUrl, 'GET', '/api/project-scaffolds');
+    assert.deepEqual(sc.body.scaffolds, []);
 
     await boot.pluginHost.enable('conv-plugin');
     // Row: backendless, contribution metadata present.
@@ -136,32 +136,35 @@ test('conventions-only plugin flows through to /api/settings/project-conventions
     assert.equal(row.hasBackend, false);
     assert.equal(row.state, 'enabled');
     assert.equal(row.guidelines[0].slug, 'conv-plugin/vis-check');
-    assert.deepEqual(row.setupPrompt, { name: 'Scaffold harness', description: 'build wrapper' });
+    assert.deepEqual(row.scaffolds, [{ slug: 'conv-plugin/harness-wrapper', name: 'Scaffold harness', description: 'build wrapper' }]);
 
-    // After enable: guideline merged (namespaced, plugin-tagged) + setup prompt offered.
+    // After enable: guideline merged (namespaced, plugin-tagged) + scaffold offered.
     conv = await api(boot.baseUrl, 'GET', '/api/settings/project-conventions');
     const g = conv.body.rules.find(r => r.slug === 'conv-plugin/vis-check');
     assert.ok(g, 'plugin guideline in the catalog');
     assert.equal(g.plugin, 'conv-plugin');
     assert.equal(g.builtin, false);
-    sp = await api(boot.baseUrl, 'GET', '/api/setup-prompts');
-    assert.deepEqual(sp.body.setupPrompts, [{ pluginId: 'conv-plugin', name: 'Scaffold harness', description: 'build wrapper' }]);
+    sc = await api(boot.baseUrl, 'GET', '/api/project-scaffolds');
+    assert.deepEqual(sc.body.scaffolds, [{ slug: 'conv-plugin/harness-wrapper', name: 'Scaffold harness', description: 'build wrapper', plugin: 'conv-plugin' }]);
 
-    // Create a project selecting both, then verify snapshot + pending setup prompt.
-    const created = await api(boot.baseUrl, 'POST', '/api/projects', { name: 'usesconv', conventions: ['conv-plugin/vis-check'], setupPrompts: ['conv-plugin'] });
+    // Create a project selecting both: convention snapshots inline; scaffold
+    // directive is RETURNED (never persisted).
+    const created = await api(boot.baseUrl, 'POST', '/api/projects', { name: 'usesconv', conventions: ['conv-plugin/vis-check'], scaffolds: ['conv-plugin/harness-wrapper'] });
     assert.equal(created.status, 201);
+    assert.match(created.body.scaffold, /Project "usesconv" was created with these setup steps/);
+    assert.match(created.body.scaffold, /harness wrapper/);
     const claudeMd = await fs.readFile(path.join(boot.projectsRoot, 'usesconv', 'CLAUDE.md'), 'utf8');
     assert.match(claudeMd, /Visual UX verification/);
-    const meta = JSON.parse(await fs.readFile(path.join(boot.projectsRoot, '.code-conductor', 'projects', 'usesconv', 'project.json'), 'utf8'));
-    assert.match(meta.setupPrompt, /harness wrapper/);
+    // Scaffold is NOT persisted to project meta.
+    await assert.rejects(fs.stat(path.join(boot.projectsRoot, '.code-conductor', 'projects', 'usesconv', 'project.json')), { code: 'ENOENT' });
 
-    // Disable → both drop from the offering endpoints; snapshot survives.
+    // Disable → both drop from the offering endpoints; convention snapshot survives.
     await boot.pluginHost.disable('conv-plugin');
     conv = await api(boot.baseUrl, 'GET', '/api/settings/project-conventions');
     assert.ok(!conv.body.rules.some(r => r.slug === 'conv-plugin/vis-check'));
-    sp = await api(boot.baseUrl, 'GET', '/api/setup-prompts');
-    assert.deepEqual(sp.body.setupPrompts, []);
+    sc = await api(boot.baseUrl, 'GET', '/api/project-scaffolds');
+    assert.deepEqual(sc.body.scaffolds, []);
     const still = await fs.readFile(path.join(boot.projectsRoot, 'usesconv', 'CLAUDE.md'), 'utf8');
-    assert.match(still, /Visual UX verification/, 'applied snapshot survives disable');
+    assert.match(still, /Visual UX verification/, 'applied convention snapshot survives disable');
   } finally { await boot.close(); }
 });

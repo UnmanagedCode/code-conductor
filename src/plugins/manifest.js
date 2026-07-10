@@ -18,11 +18,12 @@ const TOOL_NAME_RE = /^[a-zA-Z0-9_-]+$/;
 const MCP_TIMEOUT_DEFAULT = 30000;
 const MCP_TIMEOUT_CAP = 120000;
 
-// `guidelines` (project-convention fragments) and `setupPrompt` (a one-time
-// first-agent prompt) are active pluginApi:1 capabilities — neither requires
-// a backend, so a conventions-only plugin is valid. `settings` stays reserved
-// (validated-but-inert; accepted, never acted on).
-const KNOWN_TOP_KEYS = new Set(['id', 'name', 'version', 'pluginApi', 'backend', 'frontend', 'mcp', 'settings', 'guidelines', 'setupPrompt']);
+// `guidelines` (project-convention fragments) and `scaffolds` (one-time
+// project-setup directives offered at creation) are active pluginApi:1
+// capabilities — neither requires a backend, so a conventions/scaffolds-only
+// plugin is valid. `settings` stays reserved (validated-but-inert; accepted,
+// never acted on).
+const KNOWN_TOP_KEYS = new Set(['id', 'name', 'version', 'pluginApi', 'backend', 'frontend', 'mcp', 'settings', 'guidelines', 'scaffolds']);
 
 // Result: null (no manifest file) | { manifest } | { errors, incompatible? }
 export async function readManifest(dir) {
@@ -47,12 +48,12 @@ export async function readManifest(dir) {
   return result;
 }
 
-// Verify every guideline/setupPrompt `file` ref resolves to a readable file
+// Verify every guideline/scaffold `file` ref resolves to a readable file
 // under `dir`. Returns a (possibly empty) list of errors.
 async function checkFragmentFiles(dir, manifest) {
   const refs = [];
   for (const g of manifest.guidelines ?? []) refs.push([`guidelines '${g.slug}' file`, g.file]);
-  if (manifest.setupPrompt?.file) refs.push(['setupPrompt file', manifest.setupPrompt.file]);
+  for (const sc of manifest.scaffolds ?? []) if (sc.file) refs.push([`scaffolds '${sc.slug}' file`, sc.file]);
   const errors = [];
   for (const [label, rel] of refs) {
     try { await fs.access(path.join(dir, rel)); }
@@ -95,7 +96,7 @@ export function validateManifest(json) {
   const frontend = validateFrontend(json.frontend, backend, json.name, errors);
   const mcp = validateMcp(json.mcp, backend, errors);
   const guidelines = validateGuidelines(json.guidelines, errors);
-  const setupPrompt = validateSetupPrompt(json.setupPrompt, errors);
+  const scaffolds = validateScaffolds(json.scaffolds, errors);
 
   if (errors.length > 0) return { errors, id: displayId(json) };
   return {
@@ -108,7 +109,7 @@ export function validateManifest(json) {
       ...(frontend ? { frontend } : {}),
       ...(mcp ? { mcp } : {}),
       ...(guidelines ? { guidelines } : {}),
-      ...(setupPrompt ? { setupPrompt } : {}),
+      ...(scaffolds ? { scaffolds } : {}),
     },
   };
 }
@@ -166,35 +167,56 @@ function validateGuidelines(g, errors) {
   return out;
 }
 
-// setupPrompt: { name, description, text | file } — a one-time prompt offered
-// at project creation, folded into the new project's first agent turn. Exactly
-// one of `text` | `file`. No backend required. Returns normalized object or null.
-function validateSetupPrompt(sp, errors) {
-  if (sp === undefined) return null;
-  if (typeof sp !== 'object' || sp === null || Array.isArray(sp)) {
-    errors.push("'setupPrompt' must be an object");
+// scaffolds: [{ slug, name, description, text | file }] — one-time project-setup
+// directives offered at creation (composed into orchestrator guidance the
+// conductor folds into the first worker brief). Symmetric with guidelines
+// (namespaced <plugin-id>/<slug>, unique in the array), except each carries a
+// directive body via exactly one of `text` | `file`. No backend required.
+// Returns a normalized array or null.
+function validateScaffolds(s, errors) {
+  if (s === undefined) return null;
+  if (!Array.isArray(s) || s.length === 0) {
+    errors.push("'scaffolds' must be a non-empty array");
     return null;
   }
-  for (const k of Object.keys(sp)) {
-    if (!['name', 'description', 'text', 'file'].includes(k)) errors.push(`unknown key 'setupPrompt.${k}'`);
-  }
-  if (typeof sp.name !== 'string' || sp.name.trim() === '') errors.push("'setupPrompt.name' is required (non-empty string)");
-  if (typeof sp.description !== 'string' || sp.description.trim() === '') errors.push("'setupPrompt.description' is required (non-empty string)");
-  const hasText = sp.text !== undefined;
-  const hasFile = sp.file !== undefined;
-  if (hasText === hasFile) {
-    errors.push("'setupPrompt' requires exactly one of 'text' or 'file'");
-  } else if (hasText && (typeof sp.text !== 'string' || sp.text.trim() === '')) {
-    errors.push("'setupPrompt.text' must be a non-empty string");
-  } else if (hasFile) {
-    validateFragmentPath(sp.file, 'setupPrompt.file', errors);
-  }
-  return {
-    name: typeof sp.name === 'string' ? sp.name.trim() : '',
-    description: typeof sp.description === 'string' ? sp.description.trim() : '',
-    ...(hasText ? { text: sp.text } : {}),
-    ...(hasFile ? { file: sp.file } : {}),
-  };
+  const out = [];
+  const seen = new Set();
+  s.forEach((entry, i) => {
+    const label = `scaffolds[${i}]`;
+    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
+      errors.push(`'${label}' must be an object`);
+      return;
+    }
+    for (const k of Object.keys(entry)) {
+      if (!['slug', 'name', 'description', 'text', 'file'].includes(k)) errors.push(`unknown key '${label}.${k}'`);
+    }
+    if (typeof entry.slug !== 'string' || !SLUG_RE.test(entry.slug) || entry.slug.length > SLUG_MAX) {
+      errors.push(`'${label}.slug' is required and must match ^[a-z][a-z0-9-]*$ (max 40 chars)`);
+    } else if (seen.has(entry.slug)) {
+      errors.push(`duplicate scaffold slug '${entry.slug}'`);
+    } else {
+      seen.add(entry.slug);
+    }
+    if (typeof entry.name !== 'string' || entry.name.trim() === '') errors.push(`'${label}.name' is required (non-empty string)`);
+    if (typeof entry.description !== 'string' || entry.description.trim() === '') errors.push(`'${label}.description' is required (non-empty string)`);
+    const hasText = entry.text !== undefined;
+    const hasFile = entry.file !== undefined;
+    if (hasText === hasFile) {
+      errors.push(`'${label}' requires exactly one of 'text' or 'file'`);
+    } else if (hasText && (typeof entry.text !== 'string' || entry.text.trim() === '')) {
+      errors.push(`'${label}.text' must be a non-empty string`);
+    } else if (hasFile) {
+      validateFragmentPath(entry.file, `${label}.file`, errors);
+    }
+    out.push({
+      slug: entry.slug,
+      name: typeof entry.name === 'string' ? entry.name.trim() : '',
+      description: typeof entry.description === 'string' ? entry.description.trim() : '',
+      ...(hasText ? { text: entry.text } : {}),
+      ...(hasFile ? { file: entry.file } : {}),
+    });
+  });
+  return out;
 }
 
 // Best-effort id for listing an invalid/incompatible manifest.

@@ -19,7 +19,7 @@ import { restoreFromResumeManifest } from './src/resumeRestart.js';
 import { createPluginHost } from './src/plugins/registry.js';
 import { buildPluginProxy } from './src/plugins/proxy.js';
 import { setPluginGuidelinesProvider } from './src/projectConventions.js';
-import { setPluginSetupPromptsProvider } from './src/projectSetupPrompts.js';
+import { setPluginScaffoldsProvider } from './src/projectScaffolds.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -27,11 +27,11 @@ export function createServer({ withInstances = true, claudeLauncher } = {}) {
   const app = express();
   const instances = withInstances ? new InstanceManager({ claudeLauncher }) : null;
   const pluginHost = withInstances ? createPluginHost({ instances }) : null;
-  // Enabled plugins contribute project conventions + setup prompts through
-  // these providers (the host is a runtime singleton, wired after construction).
+  // Enabled plugins contribute project conventions + scaffolds through these
+  // providers (the host is a runtime singleton, wired after construction).
   if (pluginHost) {
     setPluginGuidelinesProvider(() => pluginHost.guidelines());
-    setPluginSetupPromptsProvider(() => pluginHost.setupPrompts());
+    setPluginScaffoldsProvider(() => pluginHost.scaffolds());
   }
 
   // serverCtx is a shared mutable handle so route handlers (POST

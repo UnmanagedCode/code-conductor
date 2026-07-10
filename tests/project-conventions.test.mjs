@@ -316,23 +316,22 @@ test('create_project MCP tool with conventions appends bodies to CLAUDE.md', asy
   assert.ok(content.includes('## Documentation guidelines'));
 });
 
-// ── Plugin-contributed guidelines + setup prompts ──────────────────────────
+// ── Plugin-contributed guidelines + project scaffolds ──────────────────────
 // These exercise the provider seams directly (no real plugin host): the
-// fragment-catalog extraProvider (projectConventions) and the setup-prompt
+// fragment-catalog extraProvider (projectConventions) and the scaffold
 // provider. Providers are module-level singletons — set per test, reset after.
 
 import {
   setPluginGuidelinesProvider,
 } from '../src/projectConventions.js';
 import {
-  setPluginSetupPromptsProvider, listSetupPrompts, composeSetupPrompt,
-} from '../src/projectSetupPrompts.js';
-import { readProjectMeta, writeProjectMeta } from '../src/projects.js';
+  setPluginScaffoldsProvider, listProjectScaffolds, composeScaffold,
+} from '../src/projectScaffolds.js';
 
 afterEach(() => {
   // Reset providers so a fake never leaks into a later test.
   setPluginGuidelinesProvider(null);
-  setPluginSetupPromptsProvider(null);
+  setPluginScaffoldsProvider(null);
 });
 
 test('plugin guidelines merge into the catalog with namespaced slugs', async () => {
@@ -376,43 +375,63 @@ test('compose rejects an unknown/unavailable plugin slug (400)', async () => {
   );
 });
 
-test('list_setup_prompts surfaces provider offers without the text body', async () => {
-  setPluginSetupPromptsProvider(async () => [
-    { pluginId: 'playwright-harness', name: 'Scaffold wrapper', description: 'build a wrapper', text: 'go build the wrapper' },
+const FAKE_SCAFFOLDS = [
+  { slug: 'playwright-harness/harness-wrapper', name: 'Harness wrapper', description: 'build a wrapper', text: 'Build a project-local harness wrapper', plugin: 'playwright-harness' },
+  { slug: 'playwright-harness/seed-config', name: 'Seed config', description: 'seed config', text: 'Write a default config', plugin: 'playwright-harness' },
+];
+
+test('list_project_scaffolds surfaces provider offers without the text body', async () => {
+  setPluginScaffoldsProvider(async () => FAKE_SCAFFOLDS);
+  const list = await listProjectScaffolds();
+  assert.deepEqual(list, [
+    { slug: 'playwright-harness/harness-wrapper', name: 'Harness wrapper', description: 'build a wrapper', plugin: 'playwright-harness' },
+    { slug: 'playwright-harness/seed-config', name: 'Seed config', description: 'seed config', plugin: 'playwright-harness' },
   ]);
-  const list = await listSetupPrompts();
-  assert.deepEqual(list, [{ pluginId: 'playwright-harness', name: 'Scaffold wrapper', description: 'build a wrapper' }]);
 
   // MCP tool mirrors it.
   const { buildTools } = await import('../src/mcp/tools.js');
-  const tool = buildTools().find(t => t.name === 'list_setup_prompts');
+  const tool = buildTools().find(t => t.name === 'list_project_scaffolds');
   const viaTool = await tool.handler({}, { instances });
-  assert.equal(viaTool[0].pluginId, 'playwright-harness');
+  assert.equal(viaTool[0].slug, 'playwright-harness/harness-wrapper');
   assert.equal(viaTool[0].text, undefined);
 });
 
-test('create_project persists a selected setup prompt to project.json', async () => {
-  setPluginSetupPromptsProvider(async () => [
-    { pluginId: 'playwright-harness', name: 'Scaffold wrapper', description: 'build a wrapper', text: 'go build the wrapper' },
-  ]);
-  const { buildTools } = await import('../src/mcp/tools.js');
-  const tool = buildTools().find(t => t.name === 'create_project');
-  const result = await tool.handler({ name: 'sp-proj', setupPrompts: ['playwright-harness'] }, { instances });
-  assert.equal(result.setupPromptPending, true);
-  const meta = await readProjectMeta('sp-proj');
-  assert.equal(meta.setupPrompt, 'go build the wrapper');
+test('composeScaffold frames selected scaffolds in order; unknown slug → 400', async () => {
+  setPluginScaffoldsProvider(async () => FAKE_SCAFFOLDS);
+  // Selection order preserved (seed-config first).
+  const block = await composeScaffold('demo', ['playwright-harness/seed-config', 'playwright-harness/harness-wrapper']);
+  assert.match(block, /Project "demo" was created with these setup steps/);
+  assert.match(block, /1\) Write a default config/);
+  assert.match(block, /2\) Build a project-local harness wrapper/);
+  assert.ok(block.indexOf('Write a default config') < block.indexOf('Build a project-local harness wrapper'));
+
+  await assert.rejects(() => composeScaffold('demo', ['playwright-harness/gone']), (e) => e.statusCode === 400);
 });
 
-test('first fresh spawn consumes the setup prompt; resume does not', async () => {
-  await createProject('consume-proj');
-  await writeProjectMeta('consume-proj', { setupPrompt: 'go build the wrapper' });
+test('create_project RETURNS the composed scaffold directive (no persistence)', async () => {
+  setPluginScaffoldsProvider(async () => FAKE_SCAFFOLDS);
+  const { buildTools } = await import('../src/mcp/tools.js');
+  const tool = buildTools().find(t => t.name === 'create_project');
+  const result = await tool.handler({ name: 'sc-proj', scaffolds: ['playwright-harness/harness-wrapper', 'playwright-harness/seed-config'] }, { instances });
+  assert.match(result.scaffold, /Project "sc-proj" was created with these setup steps/);
+  assert.match(result.scaffold, /1\) Build a project-local harness wrapper/);
+  assert.match(result.scaffold, /2\) Write a default config/);
+  // Nothing persisted — the project meta stays clean, no spawn coupling.
+  const { readProjectMeta } = await import('../src/projects.js');
+  assert.deepEqual(await readProjectMeta('sc-proj'), { workspace: null });
+});
 
-  const inst = await instances.create({ project: 'consume-proj' });
-  assert.equal(inst.setupPrompt, 'go build the wrapper', 'surfaced on the instance');
-  assert.equal(inst.pendingPrefill, 'go build the wrapper', 'drives UI composer prefill');
-  // Consumed: cleared from project.json so a second spawn gets nothing.
-  assert.equal((await readProjectMeta('consume-proj')).setupPrompt, null);
+test('REST POST /api/projects returns the scaffold directive in the 201 body', async () => {
+  setPluginScaffoldsProvider(async () => FAKE_SCAFFOLDS);
+  const r = await api(baseUrl, 'POST', '/api/projects', { name: 'sc-rest', scaffolds: ['playwright-harness/harness-wrapper'] });
+  assert.equal(r.status, 201);
+  assert.match(r.body.scaffold, /Build a project-local harness wrapper/);
+});
 
-  const inst2 = await instances.create({ project: 'consume-proj' });
-  assert.equal(inst2.setupPrompt, null, 'already consumed');
+test('create_project with no scaffolds omits the scaffold field', async () => {
+  setPluginScaffoldsProvider(async () => FAKE_SCAFFOLDS);
+  const { buildTools } = await import('../src/mcp/tools.js');
+  const tool = buildTools().find(t => t.name === 'create_project');
+  const result = await tool.handler({ name: 'sc-none' }, { instances });
+  assert.equal(result.scaffold, undefined);
 });

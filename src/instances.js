@@ -4,7 +4,7 @@ import readline from 'node:readline';
 import { promises as fsp, readFileSync, mkdirSync, createWriteStream, writeFileSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { Parser, SOFT_INTERRUPT_MARKER, isOuterUserEcho, snapStartToQuiescent, firstQuiescentAtOrAfter } from './parser.js';
-import { getProject, claudeProjectsRoot, encodeCwd, findSessionLocation, readFirstPrompt, readProjectMeta, writeProjectMeta } from './projects.js';
+import { getProject, claudeProjectsRoot, encodeCwd, findSessionLocation, readFirstPrompt } from './projects.js';
 import { createWorktree, getWorktree, debugBaseDir } from './worktrees.js';
 import { getTitle as getSessionTitle, deleteTitle as deleteSessionTitle } from './sessionTitles.js';
 import { isConducted, markConducted, unmarkConducted } from './conductedSessions.js';
@@ -326,10 +326,6 @@ export class Instance extends EventEmitter {
     // the wsHub subscribe handler (consumePrefill), so a later re-subscribe
     // never re-prefills and clobbers the user's edits.
     this.pendingPrefill = null;
-    // Pending setup prompt consumed from the project at first fresh spawn.
-    // Read once off the create result (MCP spawn_instance surfaces it); not in
-    // summary() so it never rides later status broadcasts.
-    this.setupPrompt = null;
     // Post-hard-abort drain window: timer handle + listener for killing
     // spurious turns the CLI starts from its leftover input queue after a
     // hard abort. Both null when the window is closed. See _openDrainWindow.
@@ -1694,19 +1690,6 @@ export class InstanceManager extends EventEmitter {
       throw Object.assign(new Error('project required'), { statusCode: 400 });
     }
     const proj = await getProject(project);
-    // First fresh (non-resume) spawn into a project consumes its pending setup
-    // prompt (a plugin-offered one-time instruction persisted at creation).
-    // Read-and-clear atomically so it fires exactly once; surfaced on the
-    // instance for the UI composer prefill (pendingPrefill) and the MCP
-    // spawn_instance result (setupPrompt) — never auto-sent as a turn.
-    let pendingSetupPrompt = null;
-    if (!resume) {
-      const meta = await readProjectMeta(project).catch(() => ({ setupPrompt: null }));
-      if (meta.setupPrompt) {
-        pendingSetupPrompt = meta.setupPrompt;
-        await writeProjectMeta(project, { setupPrompt: null }).catch((e) => console.warn(`instances: clearing setupPrompt for '${project}' failed: ${e.message}`));
-      }
-    }
     // create() is policy-light: mode never depends on temp here. The UI's
     // temp⇒bypassPermissions shortcut is applied at the REST route
     // (POST /api/instances), not in this shared path.
@@ -1894,13 +1877,6 @@ export class InstanceManager extends EventEmitter {
     // Fork prefill: the dropped prompt rides the new instance's first
     // `snapshot` frame (see Instance.consumePrefill / wsHub subscribe).
     if (typeof prefill === 'string') inst.pendingPrefill = prefill;
-    // Pending setup prompt: same composer-prefill channel for the UI; also
-    // surfaced on `inst.setupPrompt` for the MCP spawn_instance result so a
-    // conductor folds it into its FIRST send_prompt.
-    if (pendingSetupPrompt) {
-      inst.setupPrompt = pendingSetupPrompt;
-      if (typeof inst.pendingPrefill !== 'string') inst.pendingPrefill = pendingSetupPrompt;
-    }
     inst.spawn({ resume });
     this.emit('list_changed');
     return inst;

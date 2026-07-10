@@ -310,26 +310,31 @@ test('registry entry whose project vanished still lists as invalid', async () =>
   }
 });
 
-// A conventions-only manifest: no backend/frontend/mcp, only guidelines +
-// setupPrompt referencing fixture files. Must validate, enable, and never
-// start a process; describeRow flags it hasBackend:false, state 'enabled'.
-const CONVENTIONS_ONLY = {
+// A contributions-only manifest: no backend/frontend/mcp, only guidelines +
+// scaffolds (two, one inline + one file) referencing fixture files. Must
+// validate, enable, and never start a process; describeRow flags
+// hasBackend:false, state 'enabled'.
+const CONTRIB_ONLY = {
   id: 'conv-plugin', name: 'Conv Plugin', version: '1.0.0', pluginApi: 1,
   guidelines: [{ slug: 'vis-check', name: 'Visual check', description: 'verify UX', file: 'guidelines/sample.md' }],
-  setupPrompt: { name: 'Scaffold harness', description: 'build wrapper', file: 'setup/sample.md' },
+  scaffolds: [
+    { slug: 'harness-wrapper', name: 'Harness wrapper', description: 'build wrapper', file: 'scaffolds/sample.md' },
+    { slug: 'seed-config', name: 'Seed config', description: 'seed the config', text: 'write a default config file' },
+  ],
 };
 
-test('conventions-only plugin: enables without a backend, state=enabled, no child', async () => {
+test('contributions-only plugin: enables without a backend, state=enabled, no child', async () => {
   const env = await makePluginRoot();
   try {
-    await env.addPluginProject('convp', { manifest: CONVENTIONS_ONLY });
+    await env.addPluginProject('convp', { manifest: CONTRIB_ONLY });
     const host = createPluginHost();
     const discovered = (await host.list()).find(r => r.id === 'conv-plugin');
     assert.equal(discovered.state, 'discovered');
     assert.equal(discovered.hasBackend, false);
     assert.equal(discovered.guidelines.length, 1);
     assert.equal(discovered.guidelines[0].slug, 'conv-plugin/vis-check');
-    assert.deepEqual(discovered.setupPrompt, { name: 'Scaffold harness', description: 'build wrapper' });
+    assert.equal(discovered.scaffolds.length, 2);
+    assert.deepEqual(discovered.scaffolds[0], { slug: 'conv-plugin/harness-wrapper', name: 'Harness wrapper', description: 'build wrapper' });
 
     const row = await host.enable('conv-plugin');
     assert.equal(row.enabled, true);
@@ -342,15 +347,15 @@ test('conventions-only plugin: enables without a backend, state=enabled, no chil
   }
 });
 
-test('guidelines()/setupPrompts() surface only enabled+ok plugins', async () => {
+test('guidelines()/scaffolds() surface only enabled+ok plugins', async () => {
   const env = await makePluginRoot();
   try {
-    await env.addPluginProject('convp', { manifest: CONVENTIONS_ONLY });
+    await env.addPluginProject('convp', { manifest: CONTRIB_ONLY });
     const host = createPluginHost();
 
     // Not enabled yet → no contributions.
     assert.deepEqual(await host.guidelines(), []);
-    assert.deepEqual(await host.setupPrompts(), []);
+    assert.deepEqual(await host.scaffolds(), []);
 
     await host.enable('conv-plugin');
     const g = await host.guidelines();
@@ -358,15 +363,18 @@ test('guidelines()/setupPrompts() surface only enabled+ok plugins', async () => 
     assert.equal(g[0].slug, 'conv-plugin/vis-check');
     assert.equal(g[0].plugin, 'conv-plugin');
     assert.match(g[0].body, /Visual UX verification/);
-    const sp = await host.setupPrompts();
-    assert.equal(sp.length, 1);
-    assert.equal(sp[0].pluginId, 'conv-plugin');
-    assert.match(sp[0].text, /harness wrapper/);
+    const sc = await host.scaffolds();
+    assert.equal(sc.length, 2);
+    assert.equal(sc[0].slug, 'conv-plugin/harness-wrapper');
+    assert.equal(sc[0].plugin, 'conv-plugin');
+    assert.match(sc[0].text, /harness wrapper/); // resolved from scaffolds/sample.md
+    assert.equal(sc[1].slug, 'conv-plugin/seed-config');
+    assert.match(sc[1].text, /default config/); // inline text
 
     // Disable → contributions drop.
     await host.disable('conv-plugin');
     assert.deepEqual(await host.guidelines(), []);
-    assert.deepEqual(await host.setupPrompts(), []);
+    assert.deepEqual(await host.scaffolds(), []);
   } finally {
     await env.restore();
   }
