@@ -10,6 +10,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
 import { encodeCwd } from '../src/projects.js';
+import { isTemp } from '../src/tempSessions.js';
+import { isArchived } from '../src/archivedSessions.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-resume.json');
@@ -209,6 +211,15 @@ test('rewind on a temp session succeeds', async () => {
   const rew = await api(baseUrl, 'POST', `/api/instances/${id}/rewind`, { userMessageIndex: 0 });
   assert.equal(rew.status, 200, 'temp session rewind is allowed');
   assert.equal(rew.body.droppedText, 'first prompt');
+
+  await waitFor(() => instances.get(id) && instances.get(id).status === 'idle');
+
+  // Killing the subprocess mid-rewind must not archive the temp session, and
+  // must not drop it from the manager's map either — it respawns right
+  // after and should stay live and temp, reachable via instances.get(id).
+  assert.ok(instances.get(id), 'instance survives the rewind in the manager (not dropped from byId)');
+  assert.equal(await isTemp(sid), true, 'session remains temp after rewind');
+  assert.equal(await isArchived(sid), false, 'session is not archived after rewind');
 });
 
 test('user_echo events carry absolute userIndex; rewind by stamp survives ring trimming', async () => {

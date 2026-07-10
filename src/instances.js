@@ -1423,8 +1423,14 @@ export class Instance extends EventEmitter {
     this._mutating = true;
     try {
       // Kill the subprocess first so the CLI can't flush a stale tail
-      // into the jsonl mid-truncate.
-      if (this.proc) await this.kill({ graceMs: 300 });
+      // into the jsonl mid-truncate. Suppress the temp-archive-on-exit
+      // behavior in _handleExit — a rewind respawns right after, so a temp
+      // session must stay live and temp, not get archived out from under it.
+      if (this.proc) {
+        this._suppressTempDelete = true;
+        try { await this.kill({ graceMs: 300 }); }
+        finally { this._suppressTempDelete = false; }
+      }
 
       const result = await truncateSessionAtUserMessage({
         cwd: this.cwd,
@@ -1916,8 +1922,12 @@ export class InstanceManager extends EventEmitter {
       // exit/crash so the sidebar's Temp Sessions subnode collapses instead
       // of piling up dim ghost rows the user would have to delete by hand.
       // `inst.temp` is read at event time, so a session promoted via
-      // /promote (which flips temp=false) survives this path.
-      if (inst.temp && !inst.proc &&
+      // /promote (which flips temp=false) survives this path. `_suppressTempDelete`
+      // is also checked here (not just in _handleExit's archive call) — a rewind's
+      // kill-then-respawn passes through this same exited/crashed transition, and
+      // without the guard the instance would vanish from byId before the respawn
+      // lands, even though it was never archived on disk.
+      if (inst.temp && !inst.proc && !inst._suppressTempDelete &&
           (summary.status === 'exited' || summary.status === 'crashed') &&
           this.byId.has(id)) {
         // Cancel any pending overage auto-resume before dropping the instance:
