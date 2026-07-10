@@ -23,6 +23,7 @@ const SCENARIO_QUESTION = path.join(__dirname, 'fixtures', 'scenario-question.js
 const SCENARIO_SLOW = path.join(__dirname, 'fixtures', 'scenario-slow-turn.json');
 const SCENARIO_BG_HANG = path.join(__dirname, 'fixtures', 'scenario-bg-task-hang.json');
 const SCENARIO_BG_COMPLETE = path.join(__dirname, 'fixtures', 'scenario-bg-task-complete.json');
+const SCENARIO_BG_MIDTURN = path.join(__dirname, 'fixtures', 'scenario-bg-task-midturn-complete.json');
 
 let ctx, baseUrl, instances, home;
 before(async () => { ctx = await bootServer({ scenarioPath: SCENARIO_WS }); ({ baseUrl, instances } = ctx); });
@@ -211,6 +212,48 @@ test('subscribe_to_idle delivers exactly once after the subagent completes and a
   assert.equal(stubs, 1, 'delivery fires exactly once, at the follow-up turn_end');
   // Subscription consumed.
   assert.equal(instances._idleHub.hasSubscriber(targetId), false);
+});
+
+test('subscribe_to_idle defers a MID-TURN subagent completion until the re-invocation turn', async () => {
+  // Regression for the observed bug: the subagent's task_notification fires
+  // DURING the turn, so activeAgentTasks is already 0 at that turn_end — yet the
+  // CLI still owes a re-invocation turn to process the result. Firing at the
+  // first turn_end would wake the caller a turn early. Pre-fix, the first
+  // turn_end delivers + consumes the subscription (the assertions below the
+  // first turn fail); post-fix it defers on subagentCompletedThisTurn and the
+  // wake lands only at the re-invocation turn's turn_end, exactly once.
+  await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
+  const callerId = await spawnReady('p');
+  const targetId = await spawnReadyWithScenario('p', SCENARIO_BG_MIDTURN);
+
+  await callTool('subscribe_to_idle', { sessionId: targetId }, { caller: callerId });
+  // Turn 1: spawns the agent and its task_notification fires MID-TURN, so
+  // activeAgentTasks is back to 0 by this turn_end.
+  await callTool('send_prompt', { sessionId: targetId, text: 'kick off a background agent' });
+
+  const target = instForSession(instances, targetId);
+  const caller = instForSession(instances, callerId);
+  await waitFor(() => target.status === 'idle');
+  // The completion happened mid-turn, so this turn_end must be DEFERRED even
+  // though the count is 0 — the subscription stays armed and no stub lands yet.
+  await new Promise(r => setTimeout(r, 300));
+  assert.equal(target.summary().activeAgentTasks, 0, 'count already drained (completion was mid-turn)');
+  assert.equal(findStubFor(caller, targetId), undefined,
+    'a mid-turn completion must NOT wake the caller at that turn_end (re-invocation turn owed)');
+  assert.equal(instances._idleHub.hasSubscriber(targetId), true,
+    'the deferred turn_end must keep the one-shot subscription armed');
+
+  // Turn 2 stands in for the re-invocation turn: it starts clean (flag reset on
+  // turn entry) and its turn_end delivers the deferred wake exactly once.
+  await callTool('send_prompt', { sessionId: targetId, text: 'process the result' });
+  await waitFor(() => !!findStubFor(caller, targetId));
+  assert.match(findStubFor(caller, targetId).text, /finished its turn/);
+
+  await new Promise(r => setTimeout(r, 200));
+  const stubs = countUserEchoes(caller,
+    ev => ev.text?.includes(targetId) && ev.text?.includes('get_recent_messages'));
+  assert.equal(stubs, 1, 'delivery fires exactly once, at the re-invocation turn_end');
+  assert.equal(instances._idleHub.hasSubscriber(targetId), false, 'subscription consumed on delivery');
 });
 
 test('steering: caller mid-turn at delivery gets the plain stub delivered LIVE', async () => {
