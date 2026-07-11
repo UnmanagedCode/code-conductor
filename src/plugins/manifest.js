@@ -23,8 +23,8 @@ const MCP_TIMEOUT_CAP = 120000;
 // specific "not yet supported" error instead of a bare invalid-enum. Enabling a
 // planned scope later is a one-line move from PLANNED → SUPPORTED here (+ wiring
 // its catalog provider in server.js) — no other file hardcodes the set.
-export const SUPPORTED_CONVENTION_SCOPES = ['project'];
-const PLANNED_CONVENTION_SCOPES = ['workspace', 'conductor'];
+export const SUPPORTED_CONVENTION_SCOPES = ['project', 'conductor'];
+const PLANNED_CONVENTION_SCOPES = ['workspace'];
 const quotedScopes = SUPPORTED_CONVENTION_SCOPES.map(s => `"${s}"`).join(', ');
 
 // `conventions` (project-convention fragments, optionally carrying a one-time
@@ -141,10 +141,11 @@ function validateFragmentPath(value, label, errors) {
 }
 
 // conventions: [{ slug, name, description, scope, file?, scaffold? }] —
-// project-convention entries contributed to the Conventions catalog (namespaced
-// <plugin-id>/<slug> there). `scope` is required and routes the entry (project
-// only today; see SUPPORTED_CONVENTION_SCOPES). An entry may carry a CLAUDE.md
-// fragment (`file`) and/or a one-time setup directive (`scaffold`, plugin-only),
+// convention entries contributed to a Conventions catalog (namespaced
+// <plugin-id>/<slug> there). `scope` is required and routes the entry to its
+// catalog (see SUPPORTED_CONVENTION_SCOPES). An entry may carry a fragment
+// (`file`) and/or a one-time setup directive (`scaffold`, plugin-only, project-
+// scope only in practice — no catalog outside project creation consumes it),
 // but MUST carry at least one of the two. No backend required. Returns a
 // normalized array or null.
 function validateConventions(g, errors) {

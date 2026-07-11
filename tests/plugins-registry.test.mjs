@@ -402,7 +402,7 @@ test('conventions() surfaces body + scaffold facet for enabled+ok plugins only',
     const host = createPluginHost();
 
     // Not enabled yet → no contributions (conventions() is grouped by scope).
-    assert.deepEqual(await host.conventions(), { project: [] });
+    assert.deepEqual(await host.conventions(), { project: [], conductor: [] });
 
     await host.enable('conv-plugin');
     const g = (await host.conventions()).project;
@@ -426,7 +426,38 @@ test('conventions() surfaces body + scaffold facet for enabled+ok plugins only',
 
     // Disable → contributions drop.
     await host.disable('conv-plugin');
-    assert.deepEqual(await host.conventions(), { project: [] });
+    assert.deepEqual(await host.conventions(), { project: [], conductor: [] });
+  } finally {
+    await env.restore();
+  }
+});
+
+// A manifest mixing project- and conductor-scope conventions, to verify
+// conventions() partitions strictly by scope with no cross-leak.
+const MIXED_SCOPE = {
+  id: 'mixed-plugin', name: 'Mixed Plugin', version: '1.0.0', pluginApi: 1,
+  conventions: [
+    { slug: 'proj-conv', name: 'Project conv', description: 'project scope', file: 'conventions/sample.md', scope: 'project' },
+    { slug: 'cond-conv', name: 'Conductor conv', description: 'conductor scope', file: 'conventions/sample.md', scope: 'conductor' },
+  ],
+};
+
+test('conventions() partitions project- and conductor-scope entries with no cross-leak', async () => {
+  const env = await makePluginRoot();
+  try {
+    await env.addPluginProject('mixp', { manifest: MIXED_SCOPE });
+    const host = createPluginHost();
+    await host.enable('mixed-plugin');
+
+    const byScope = await host.conventions();
+    assert.equal(byScope.project.length, 1);
+    assert.equal(byScope.project[0].slug, 'mixed-plugin/proj-conv');
+    assert.equal(byScope.conductor.length, 1);
+    assert.equal(byScope.conductor[0].slug, 'mixed-plugin/cond-conv');
+
+    // Neither group contains the other's entry.
+    assert.ok(!byScope.project.some(e => e.slug === 'mixed-plugin/cond-conv'));
+    assert.ok(!byScope.conductor.some(e => e.slug === 'mixed-plugin/proj-conv'));
   } finally {
     await env.restore();
   }

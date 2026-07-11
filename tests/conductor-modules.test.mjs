@@ -11,6 +11,7 @@ import { bootServer, api, freshProjectsRoot, rmrf } from './helpers.mjs';
 import {
   SEED_MODULES, getCatalog, getSelection, setSelection,
   addCustomModule, deleteCustomModule, composeConduct, composeCurrentConduct,
+  setPluginConductorConventionsProvider,
 } from '../src/conductModules.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -182,4 +183,45 @@ test('list_conductor_modules MCP tool returns modules with enabled flag, no body
     assert.equal(m.enabled, true); // default all-on
     assert.equal(m.body, undefined);
   }
+});
+
+// ── Plugin-contributed conductor conventions ──────────────────────────────
+// Exercises the provider seam directly (no real plugin host): the
+// fragment-catalog extraProvider (conductModules), mirroring the equivalent
+// project-conventions.test.mjs section. The provider is a module-level
+// singleton — set per test, reset after.
+
+afterEach(() => {
+  setPluginConductorConventionsProvider(null);
+});
+
+test('plugin conductor conventions merge into the catalog with namespaced slugs', async () => {
+  setPluginConductorConventionsProvider(async () => [
+    { slug: 'my-plugin/extra-rule', name: 'Extra rule', description: 'd', body: '## Extra rule\n- x', plugin: 'my-plugin' },
+  ]);
+  const cat = await getCatalog();
+  const entry = cat.find(m => m.slug === 'my-plugin/extra-rule');
+  assert.ok(entry, 'plugin conductor convention present in catalog');
+  assert.equal(entry.builtin, false);
+  assert.equal(entry.plugin, 'my-plugin');
+  // Built-ins still present alongside.
+  assert.ok(cat.some(m => m.slug === 'canonical-workflow'));
+});
+
+test('default selection (store absent) does NOT auto-include a plugin conductor convention', async () => {
+  setPluginConductorConventionsProvider(async () => [
+    { slug: 'my-plugin/extra-rule', name: 'Extra rule', description: 'd', body: '## Extra rule\n- x', plugin: 'my-plugin' },
+  ]);
+  const sel = await getSelection();
+  assert.ok(!sel.includes('my-plugin/extra-rule'));
+  assert.deepEqual([...sel].sort(), SEED_MODULES.map(m => m.slug).sort());
+});
+
+test('a plugin conductor convention, once explicitly selected, composes into CONDUCT.md', async () => {
+  setPluginConductorConventionsProvider(async () => [
+    { slug: 'my-plugin/extra-rule', name: 'Extra rule', description: 'd', body: '## Extra rule\n- x', plugin: 'my-plugin' },
+  ]);
+  const enabled = await setSelection([...SEED_MODULES.map(m => m.slug), 'my-plugin/extra-rule']);
+  const doc = await composeConduct(enabled);
+  assert.match(doc, /## Extra rule/);
 });
