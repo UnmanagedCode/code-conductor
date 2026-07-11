@@ -23,3 +23,9 @@ Several independent tasks — or one that splits into independent sub-tasks (dif
 - **Land calls can be fanned** across sessionIds in one turn; a rebase prompt sent by `sync_worktree` is a worker turn (subscribe + end). If a worker already exited, merge via `merge_worktree({project, worktree})`, then delete.
 
 If a worker errors or stalls, handle just that sessionId on its wake; the rest are unaffected.
+
+### Choosing the execution mode
+
+- **Plan + manual approval** (default for new work): worker drafts → you read → `approve_plan` / `reject_plan`. Slowest, safest.
+- **Plan + auto-approve** (`set_auto_approve_plan({enabled: true})`): for when you've validated the worker is sane on similar tasks.
+- **Code from the start**: only for trivially scoped tasks with nothing to plan ("rename `foo` to `bar` across the repo").

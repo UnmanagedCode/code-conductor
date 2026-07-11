@@ -34,16 +34,14 @@ export const CORE_META = {
 export const SEED_MODULES = [
   { slug: 'intent-disambiguation', name: 'Intent disambiguation',
     description: "Ground ambiguous asks in list_projects(); use MCP not shell to enumerate; ask before creating" },
-  { slug: 'canonical-workflow', name: 'Canonical workflow (single & parallel)',
+  { slug: 'canonical-workflow', name: 'Canonical workflow',
     description: 'The recon→spawn→brief→wake→review→land loop, single and N-parallel' },
   { slug: 'worker-lifecycle', name: 'Worker lifecycle',
     description: 'Reuse unmerged same-file workers; merge is terminal; retire after' },
   { slug: 'operational-tasks', name: 'Operational tasks in other projects',
     description: 'Route even read-only work through a spawned session' },
-  { slug: 'worker-prompts', name: 'Worker-prompt best practices',
+  { slug: 'worker-prompts', name: 'Worker prompt best practices',
     description: 'Scope, declare env, sentinel, one concern, model ladder' },
-  { slug: 'execution-modes', name: 'Execution modes',
-    description: 'Plan+manual / plan+auto-approve / code-from-start' },
   { slug: 'talking-to-user', name: 'Talking to the user',
     description: 'Be concise; reference workers by short sessionId' },
   { slug: 'capturing-learnings', name: 'Capturing learnings',
@@ -54,7 +52,7 @@ const catalog = createFragmentCatalog({
   seeds: SEED_MODULES,
   seedDir: MODULES_DIR,
   storeFile: () => path.join(orchStoreRoot(), 'conduct-modules.json'),
-  noun: 'module',
+  noun: 'convention',
 });
 
 // ── Fragment reads (core + footer are always-on, cached per resolved path) ──

@@ -33,8 +33,8 @@ afterEach(async () => {
 
 // ── Catalog + compose (unit) ─────────────────────────────────────────────────
 
-test('SEED_MODULES has 8 built-in modules with metadata (no inline body)', () => {
-  assert.equal(SEED_MODULES.length, 8);
+test('SEED_MODULES has 7 built-in modules with metadata (no inline body)', () => {
+  assert.equal(SEED_MODULES.length, 7);
   for (const m of SEED_MODULES) {
     assert.ok(m.slug && m.name && m.description);
     assert.equal(m.body, undefined);
@@ -43,7 +43,7 @@ test('SEED_MODULES has 8 built-in modules with metadata (no inline body)', () =>
 
 test('getCatalog loads bodies from conduct/modules/*.md, builtin:true', async () => {
   const cat = await getCatalog();
-  assert.equal(cat.length, 8);
+  assert.equal(cat.length, 7);
   for (const m of cat) {
     assert.equal(m.builtin, true);
     assert.ok(m.body && m.body.startsWith('## '), `${m.slug} has a heading body`);
@@ -92,7 +92,7 @@ test('setSelection with an unknown slug → 400', async () => {
 test('addCustomModule appears in catalog; enabling it composes its body', async () => {
   await addCustomModule({ slug: 'house-style', name: 'House style', description: 'd', body: '## House style\n- be nice' });
   const cat = await getCatalog();
-  assert.equal(cat.length, 9);
+  assert.equal(cat.length, 8);
   assert.equal(cat.find(c => c.slug === 'house-style').builtin, false);
   await setSelection(['house-style']);
   const doc = await composeCurrentConduct();
@@ -129,12 +129,12 @@ test('PUT selection regenerates .conduct/CONDUCT.md to match', async () => {
 
 // ── REST API ───────────────────────────────────────────────────────────────
 
-test('GET /api/settings/conductor-modules returns core + 8 modules + enabled', async () => {
+test('GET /api/settings/conductor-modules returns core + 7 modules + enabled', async () => {
   const r = await api(baseUrl, 'GET', '/api/settings/conductor-modules');
   assert.equal(r.status, 200);
   assert.ok(r.body.core && r.body.core.name);
-  assert.equal(r.body.modules.length, 8);
-  assert.equal(r.body.enabled.length, 8); // default all-on
+  assert.equal(r.body.modules.length, 7);
+  assert.equal(r.body.enabled.length, 7); // default all-on
   for (const m of r.body.modules) assert.equal(m.builtin, true);
 });
 
@@ -175,7 +175,7 @@ test('list_conductor_modules MCP tool returns modules with enabled flag, no body
   assert.ok(tool, 'list_conductor_modules tool registered');
   const result = await tool.handler({}, { instances });
   assert.ok(Array.isArray(result));
-  assert.equal(result.length, 8);
+  assert.equal(result.length, 7);
   for (const m of result) {
     assert.ok(m.slug && m.name && m.description);
     assert.equal(m.builtin, true);

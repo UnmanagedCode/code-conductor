@@ -53,7 +53,7 @@ test('getCatalog loads bodies from baseline/modules/*.md, builtin:true', async (
 test('composeWorkspace(all) = core + all module bodies', async () => {
   const all = SEED_MODULES.map(m => m.slug);
   const doc = await composeWorkspace(all);
-  assert.ok(doc.startsWith('# Project workspace conventions'), 'core first');
+  assert.ok(doc.startsWith('# Workspace conventions'), 'core first');
   assert.match(doc, /## Git hygiene/);
   assert.match(doc, /## README maintenance/);
   assert.match(doc, /## System-prompt docs/);
@@ -62,7 +62,7 @@ test('composeWorkspace(all) = core + all module bodies', async () => {
 
 test('composeWorkspace([]) = core only (no module headings)', async () => {
   const doc = await composeWorkspace([]);
-  assert.ok(doc.startsWith('# Project workspace conventions'));
+  assert.ok(doc.startsWith('# Workspace conventions'));
   assert.doesNotMatch(doc, /## Git hygiene/);
 });
 

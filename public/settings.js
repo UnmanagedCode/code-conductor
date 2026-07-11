@@ -66,11 +66,11 @@ export function installSettings({
   // its scope's REST endpoints; see public/conventionsPanel.js.
   const conductorPanel = installConventionsPanel({
     prefix: 'cc', base: '/api/settings/conductor-modules',
-    hasToggle: true, hasCoreRow: true, noun: 'conductor module',
+    hasToggle: true, hasCoreRow: true, noun: 'conductor convention',
   });
   const workspacePanel = installConventionsPanel({
     prefix: 'wk', base: '/api/settings/workspace-conventions',
-    hasToggle: true, hasCoreRow: true, noun: 'workspace module',
+    hasToggle: true, hasCoreRow: true, noun: 'workspace convention',
   });
   const projectPanel = installConventionsPanel({
     prefix: 'pc', base: '/api/settings/project-conventions',

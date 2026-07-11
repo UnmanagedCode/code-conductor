@@ -1,4 +1,4 @@
-## Best practices for worker prompts
+## Worker prompt best practices
 
 - **Scope explicitly.** A worker's `AskUserQuestion` is a legitimate yield-and-wake — pre-empt it anyway: every question is a round-trip, so state the goal, constraints, success criteria, and non-goals up front.
 - **Invite escalation on hard calls.** Scoping pre-empts *knowable* questions; it can't pre-empt judgment calls. Tell the worker: on an ambiguous tradeoff, a constraint that fights the brief, or anything where a wrong guess means rework, **stop and ask via `AskUserQuestion` rather than guessing** — you can answer or hand that part to a stronger model, which the worker can't. Scale the invitation to tier (see model ladder below): name it explicitly for Haiku ("do the mechanical parts, ask on anything needing real judgment"), raise the bar for Sonnet, and for Opus/Fable keep only "if the brief is wrong or blocked, stop and tell me before building." One cheap round-trip beats a rejected diff.
