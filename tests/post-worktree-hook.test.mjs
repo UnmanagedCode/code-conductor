@@ -44,7 +44,9 @@ async function makeRealRepo(name) {
 }
 
 // Install a hook script at .code-conductor/post-worktree-create.sh inside
-// the repo, commit it so it's available in the worktree off HEAD.
+// the repo. The hook is read from this parent checkout at run time, so
+// committing it isn't what makes it discoverable — it's committed here
+// only to keep these fixture repos' state simple to reason about.
 async function installHook(repoPath, scriptBody) {
   const hookDir = path.join(repoPath, '.code-conductor');
   await fs.mkdir(hookDir, { recursive: true });
@@ -187,6 +189,26 @@ test('hook not executable: chmod +x applied and hook still runs', async () => {
   assert.equal(h.ran, true);
   assert.equal(h.exitCode, 0);
   assert.ok(h.output.includes('chmod-test'));
+});
+
+test('hook present in parent only (uncommitted) — read from parent checkout, not worktree', async () => {
+  const repoPath = await makeRealRepo('demo');
+  const hookDir = path.join(repoPath, '.code-conductor');
+  await fs.mkdir(hookDir, { recursive: true });
+  await fs.writeFile(path.join(hookDir, 'post-worktree-create.sh'),
+    '#!/bin/sh\necho "parent-only-hook"\n', { mode: 0o755 });
+  // Intentionally not committed.
+  const meta = await createWorktree('demo');
+  const h = meta.postWorktreeCreate;
+  assert.equal(h.ran, true);
+  assert.equal(h.exitCode, 0);
+  assert.ok(h.output.includes('parent-only-hook'));
+  // Confirm the worktree's own checkout has no hook file — proves it
+  // wasn't read from there.
+  await assert.rejects(
+    fs.access(path.join(meta.worktreePath, '.code-conductor', 'post-worktree-create.sh')),
+    { code: 'ENOENT' },
+  );
 });
 
 // ── REST spawn integration: result in instance summary ────────────────────
