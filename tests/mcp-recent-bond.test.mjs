@@ -15,6 +15,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO_WS = path.join(__dirname, 'fixtures', 'scenario-ws.json');
 const SCENARIO_EXIT_PLAN_SPLIT = path.join(__dirname, 'fixtures', 'scenario-exit-plan-split.json');
 const SCENARIO_EXIT_PLAN_COMBINED = path.join(__dirname, 'fixtures', 'scenario-exit-plan-combined.json');
+const SCENARIO_EXIT_PLAN_MULTI_TRAILING = path.join(__dirname, 'fixtures', 'scenario-exit-plan-multi-trailing.json');
 const SCENARIO_QUESTION = path.join(__dirname, 'fixtures', 'scenario-question.json');
 const SCENARIO_PROSE_THEN_PLAN = path.join(__dirname, 'fixtures', 'scenario-prose-then-plan.json');
 
@@ -82,6 +83,30 @@ test('get_recent_messages: default call bonds a split ExitPlanMode + trailing pr
   assert.equal(res.messages[0].text, '');
   assert.ok(!Object.hasOwn(res.messages[1], 'plan'), 'second message has no plan of its own');
   assert.equal(res.messages[1].text, 'Standing by for approval.');
+});
+
+test('get_recent_messages: default call bonds a plan + TWO trailing prose messages in one turn', async () => {
+  const sessionId = await spawnWithScenario(SCENARIO_EXIT_PLAN_MULTI_TRAILING, 'a');
+  await callTool(baseUrl, 'send_prompt', { sessionId, text: 'plan this', wait: true, waitTimeoutMs: 5000 });
+
+  const res = unwrapMessages(await callTool(baseUrl, 'get_recent_messages', { sessionId }));
+  assert.equal(res.messages.length, 3, 'default call spans the plan message through the end of the turn');
+  assert.equal(res.messages[0].plan, 'Step 1\nStep 2');
+  assert.equal(res.messages[0].text, '');
+  assert.ok(!Object.hasOwn(res.messages[1], 'plan'));
+  assert.equal(res.messages[1].text, 'First trailing note.');
+  assert.ok(!Object.hasOwn(res.messages[2], 'plan'));
+  assert.equal(res.messages[2].text, 'Standing by for approval.');
+});
+
+test('get_recent_messages: explicit count:1 stays literal on a multi-trailing turn (no bonding)', async () => {
+  const sessionId = await spawnWithScenario(SCENARIO_EXIT_PLAN_MULTI_TRAILING, 'a');
+  await callTool(baseUrl, 'send_prompt', { sessionId, text: 'plan this', wait: true, waitTimeoutMs: 5000 });
+
+  const res = unwrapMessages(await callTool(baseUrl, 'get_recent_messages', { sessionId, count: 1 }));
+  assert.equal(res.messages.length, 1, 'explicit count:1 returns exactly one message, no bonding');
+  assert.equal(res.messages[0].text, 'Standing by for approval.');
+  assert.ok(!Object.hasOwn(res.messages[0], 'plan'));
 });
 
 test('get_recent_messages: explicit count:1 stays literal (no bonding) on a split ExitPlanMode turn', async () => {

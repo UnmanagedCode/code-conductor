@@ -4,7 +4,7 @@
 
 import { TextBlock, ThinkingBlock, ToolUseBlock, ToolResultBlock, SystemBlock, TurnEndBlock,
   TaskCompletionBlock, QueuedMessageBlock, UserQuestionBlock, PlanRequestBlock, PermissionRequestBlock, ImageBlock,
-  shouldRenderSystem, el, parseUserQuestionAnswers } from './blocks.js';
+  shouldRenderSystem, el, parseUserQuestionAnswers, isUserQuestionAnswerText } from './blocks.js';
 import { parseWakeCallback } from './wakeCallback.js';
 
 function renderFileChip(a) {
@@ -265,12 +265,20 @@ export class Conversation {
         // Without this guard an unrelated live echo — such as an idle-callback
         // prompt injected by subscribe_to_idle — would incorrectly lock an
         // unanswered card.
+        // Second guard: the echo must actually be in the answer format
+        // formatUserQuestionAnswers() emits. During replay an unrelated echo
+        // (e.g. a wake-callback stub) can be interleaved between the tool_result
+        // and the real answer echo; consuming it positionally would lock the
+        // card on garbage AND drop the real answer. Only a format match marks
+        // the card and consumes the slot; a non-match leaves the slot armed so
+        // the later matching echo still applies.
         if (this._pendingAnswerUQId) {
           const qBlock = this.userQuestionBlocks.get(this._pendingAnswerUQId);
-          if (qBlock && (this._replayMode || qBlock.submitted)) {
+          if (qBlock && (this._replayMode || qBlock.submitted)
+              && isUserQuestionAnswerText(qBlock.questions, ev.text)) {
             qBlock.markAnswered(parseUserQuestionAnswers(qBlock.questions, ev.text));
+            this._pendingAnswerUQId = null;
           }
-          this._pendingAnswerUQId = null;
         }
         this._renderUserEcho(ev);
         break;

@@ -640,9 +640,10 @@ export function buildTools() {
         'a short/empty result. Large message text is capped (textTruncated); blocks[].input is capped inline ' +
         '(inputTruncated). Default count 1, max 50. ' +
         'DEFAULT-CALL BONDING: on the default call only (no `count` passed), if the last message is plain prose ' +
-        'and the message immediately before it carries a `plan`/`questions`, that preceding message is included ' +
-        'too (2 messages instead of 1) — the plan/questions is self-contained and not walked back into further, ' +
-        'and a message that already carries its own `plan`/`questions` is always returned alone. Passing an ' +
+        'the selection is bonded back to the turn\'s `plan`/`questions` message and spans from it through the end ' +
+        'of that turn — so a turn whose trailing prose spans several messages still surfaces the plan/questions ' +
+        'together with all of it. The walk-back is scoped to the current turn (a plan from an earlier turn is never ' +
+        'pulled in), and a message that already carries its own `plan`/`questions` is returned alone. Passing an ' +
         'explicit `count` (including `count:1`) disables this and returns exactly that many messages, literally.',
       inputSchema: {
         type: 'object',

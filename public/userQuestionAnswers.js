@@ -42,6 +42,23 @@ export function formatUserQuestionAnswers(questions, answers) {
   return `My answers:\n${lines.join('\n')}`;
 }
 
+// True iff `text` is in the canonical form formatUserQuestionAnswers() emits,
+// so a replayed/echoed user prompt can be recognized as THIS card's answer
+// rather than an unrelated interleaved echo (e.g. an idle-callback wake stub).
+// DOM-free like its siblings — the two prefixes mirror formatUserQuestionAnswers
+// exactly (single-question short form / multi `My answers:\n`). A legit custom
+// answer still matches (it carries the `Answer to "…": ` prefix); only a
+// non-answer echo fails.
+export function isUserQuestionAnswerText(questions, text) {
+  if (!Array.isArray(questions) || questions.length === 0) return false;
+  if (typeof text !== 'string') return false;
+  if (questions.length === 1) {
+    const qText = (questions[0]?.question ?? 'Question').replace(/\s+/g, ' ').trim();
+    return text.startsWith(`Answer to "${qText}": `);
+  }
+  return text.startsWith('My answers:\n');
+}
+
 // Best-effort reverse of formatUserQuestionAnswers. Reconstructs the
 // per-question answer objects from the text that was sent to the model.
 // Exported so conversation.js can call it during session replay.
