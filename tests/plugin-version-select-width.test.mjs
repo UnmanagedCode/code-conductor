@@ -1,6 +1,6 @@
 // Live-browser regression test for the Settings → Plugins version-select
 // layout bug — skipped by default, opt-in via `RUN_PLAYWRIGHT=1` (needs the
-// termux-playwright-harness sibling repo + a system Chromium; see
+// code-playwright sibling repo + a system Chromium; see
 // debug/README.md). The import of that sibling repo is deferred into the
 // test body so this file loads cleanly (and shows as skipped) on machines
 // that don't have it cloned.
@@ -77,7 +77,7 @@ t('.pl-version select stays compact regardless of option content (stopped vs rea
     await api(boot.baseUrl, 'POST', '/api/plugins/longplug/enable');
     await api(boot.baseUrl, 'POST', '/api/plugins/longplug/start');
 
-    const { withPage } = await import('../../termux-playwright-harness/browser.mjs');
+    const { withPage } = await import('../../code-playwright/browser.mjs');
     await withPage(async (page) => {
       await page.goto(boot.baseUrl, { waitUntil: 'load' });
       // At mobile widths the sidebar (which hosts #settings-btn) starts

@@ -1,6 +1,6 @@
 // Live-browser regression test for the app-switcher "leave session → default
 // view" bug. Skipped by default — opt-in via `RUN_PLAYWRIGHT=1` (needs the
-// termux-playwright-harness sibling repo + a system Chromium; see
+// code-playwright sibling repo + a system Chromium; see
 // debug/README.md). The import of that sibling repo is deferred into the test
 // body so this file loads cleanly (and shows as skipped) on machines that
 // don't have it cloned.
@@ -44,7 +44,7 @@ async function switchToPlugin(page) {
 }
 
 t('picking a plugin from the app-switcher lands on it (not the placeholder) on the first try, from an active session', async () => {
-  const { withPage } = await import('../../termux-playwright-harness/browser.mjs');
+  const { withPage } = await import('../../code-playwright/browser.mjs');
   const boot = await bootServer({ scenarioPath: SCENARIO, realProcess: true });
   try {
     await fs.cp(FAKE_PLUGIN_DIR, path.join(boot.projectsRoot, 'fakeplug'), { recursive: true });
