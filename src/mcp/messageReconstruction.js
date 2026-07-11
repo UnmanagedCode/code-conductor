@@ -89,6 +89,63 @@ export function capBlockInput(b) {
   return b;
 }
 
+// A reconstructed message carries an actionable plan or questions (hoisted from
+// an ExitPlanMode / AskUserQuestion tool_use).
+export function hasPlanOrQuestions(m) {
+  return !!m.plan || (Array.isArray(m.questions) && m.questions.length > 0);
+}
+
+// Index the ring for turn-scoped bonding: map each top-level msgId to the _seq
+// of its first ring event, and collect the non-parent turn_end seqs. The
+// current turn's messages are always in the ring (they just streamed), so this
+// lets the default-count bond scope its walk-back to the turn that produced the
+// last message even when the surrounding message list came from the disk merge.
+export function ringTurnIndex(ring) {
+  const firstSeqByMsgId = new Map();
+  const turnEndSeqs = [];
+  for (const ev of ring) {
+    if (ev.parentToolUseId) continue;
+    if (ev.kind === 'turn_end') { if (ev._seq != null) turnEndSeqs.push(ev._seq); continue; }
+    if (ev.msgId && ev._seq != null && !firstSeqByMsgId.has(ev.msgId)) {
+      firstSeqByMsgId.set(ev.msgId, ev._seq);
+    }
+  }
+  return { firstSeqByMsgId, turnEndSeqs };
+}
+
+// Default-count selection for get_recent_messages / the wake fold. Given the
+// text-bearing `filtered` messages (oldest-first) and the ring turn index,
+// return the trailing slice to surface. When the last message is pure prose,
+// walk back WITHIN THE SAME TURN and bond from the nearest preceding
+// plan/question message through the end of the turn — so a turn whose trailing
+// prose spans 2+ messages still surfaces the plan/question the conductor must
+// act on. A plan from a previous turn is never pulled in (the walk stops at the
+// turn boundary), and a last message that already carries its own plan/question
+// is returned alone.
+export function bondTrailingTurn(filtered, ringTurn) {
+  const lastIdx = filtered.length - 1;
+  const last = filtered[lastIdx];
+  if (!last) return filtered;
+  const lastIsPureProse = !hasPlanOrQuestions(last) && (last.text ?? '').length > 0;
+  if (!lastIsPureProse) return [last];
+  const lastFirstSeq = ringTurn.firstSeqByMsgId.get(last.msgId);
+  if (lastFirstSeq == null) return [last]; // last off-ring (shouldn't happen) — no bond
+  // Turn boundary = the largest turn_end seq strictly before the last message's
+  // start; messages at/below it belong to an earlier turn.
+  let boundary = -1;
+  for (const s of ringTurn.turnEndSeqs) if (s < lastFirstSeq && s > boundary) boundary = s;
+  let startIdx = lastIdx;
+  for (let i = lastIdx - 1; i >= 0; i--) {
+    const fs = ringTurn.firstSeqByMsgId.get(filtered[i].msgId);
+    if (fs == null || fs <= boundary) break;    // crossed the turn boundary / off-ring
+    startIdx = i;
+    if (hasPlanOrQuestions(filtered[i])) break;  // include the plan/question msg and stop
+  }
+  // Only bond if we actually reached a plan/question message this turn.
+  if (startIdx === lastIdx || !hasPlanOrQuestions(filtered[startIdx])) return [last];
+  return filtered.slice(startIdx);
+}
+
 function buildMessageFromRing(ring, targetMsgId, includeThinking = false) {
   const byBlock = new Map();
   const blockOrder = [];

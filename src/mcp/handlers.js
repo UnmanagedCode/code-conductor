@@ -41,6 +41,7 @@ import { pageInstanceEvents } from '../eventArchive.js';
 import { parseNumstat, parseNameStatus, indexDiffLines, paginateDiff } from './diffPaging.js';
 import {
   capText, MSG_TEXT_CAP, reconstructMessages, mergeRecentWithDisk, capBlockInput,
+  hasPlanOrQuestions, ringTurnIndex, bondTrailingTurn,
 } from './messageReconstruction.js';
 
 // Dirty-line cap for project_status — mirror read_file/get_worktree_diff's
@@ -914,12 +915,10 @@ export async function listConductorModules() {
 }
 
 // reconstructMessages / buildMessageFromRing / mergeRecentWithDisk /
-// capBlockInput (+ capText / MSG_TEXT_CAP) live in ./messageReconstruction.js,
-// imported above. isTextBearing/hasPlanOrQuestions stay here — they're
-// handler-side filters, not part of the reconstruction engine.
-function hasPlanOrQuestions(m) {
-  return !!m.plan || (Array.isArray(m.questions) && m.questions.length > 0);
-}
+// capBlockInput / hasPlanOrQuestions / ringTurnIndex / bondTrailingTurn
+// (+ capText / MSG_TEXT_CAP) live in ./messageReconstruction.js, imported above.
+// isTextBearing stays here — it's a handler-side filter, not part of the
+// reconstruction engine.
 function isTextBearing(m) {
   return m.text.length > 0 || hasPlanOrQuestions(m);
 }
@@ -937,12 +936,14 @@ function isTextBearing(m) {
 //
 // DEFAULT-CALL BONDING: when `count` was omitted (not merely passed as 1), a
 // turn can split its prose and its ExitPlanMode/AskUserQuestion tool call
-// across two separate assistant messages (the CLI starts a fresh message
-// after the tool_result denial). If the last message is pure prose and the
-// one immediately before it carries a plan/questions, that predecessor is
-// bonded in too — at most one extra message, never walked back further. A
-// message that already carries its own plan/questions is always returned
-// alone. Explicit `count` (including `count:1`) is always literal.
+// across separate assistant messages (the CLI starts a fresh message after the
+// tool_result denial), and the trailing prose can itself span 2+ messages. If
+// the last message is pure prose, the selection is bonded back to the nearest
+// preceding plan/question message and spans from it through the end of that
+// turn (see bondTrailingTurn). The walk-back is scoped to the current turn via
+// the ring's turn_end seqs, so a plan from a previous turn is never pulled in.
+// A message that already carries its own plan/questions is returned alone.
+// Explicit `count` (including `count:1`) is always literal.
 export async function getRecentMessages(args, ctx) {
   const r = await buildRecentMessages(args, ctx);
   if (r.soft) return r.soft;
@@ -978,18 +979,11 @@ export async function buildRecentMessages({ sessionId, count, includeToolCalls =
 
   const filtered = includeToolCalls ? all : all.filter(isTextBearing);
   let messages = filtered.slice(-n);
-  // Known latent gap (not reproduced): a turn whose trailing prose spans TWO+
-  // messages after the plan/questions message, or a text message interleaved
-  // between them, defeats this one-step bond. Deliberately unhandled — "at
-  // most one extra message" is the documented, test-pinned contract.
+  // A defaulted single-message slice bonds back to the turn's plan/question
+  // message and spans through the end of the turn (turn-scoped via the ring's
+  // turn_end seqs). See bondTrailingTurn.
   if (isDefaultCount && messages.length === 1) {
-    const lastIdx = filtered.length - 1;
-    const last = filtered[lastIdx];
-    const lastIsPureProse = !hasPlanOrQuestions(last) && (last.text ?? '').length > 0;
-    const prev = filtered[lastIdx - 1];
-    if (lastIsPureProse && prev && hasPlanOrQuestions(prev)) {
-      messages = [prev, last];
-    }
+    messages = bondTrailingTurn(filtered, ringTurnIndex(ring));
   }
   const omittedToolOnly = includeToolCalls ? 0 : (all.length - filtered.length);
 

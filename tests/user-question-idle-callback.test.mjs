@@ -14,6 +14,7 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Window } from 'happy-dom';
+import { buildWakeStub } from '../public/wakeCallback.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUB = path.resolve(__dirname, '..', 'public');
@@ -123,6 +124,42 @@ test('replay mode: user_echo after tool_result DOES lock the card (snapshot repl
   assert.equal(qBlock.submitted, true, 'card must be locked after replay echo');
   assert.equal(qBlock.submitBtn.disabled, true, 'submit button disabled');
   // Selected option should be highlighted.
+  const applePick = [...qBlock.panes.querySelectorAll('button.uq-opt')]
+    .find(b => b.dataset.label === 'Apple');
+  assert.ok(applePick?.classList.contains('picked'), 'Apple option is marked as picked');
+});
+
+test('replay mode: an interleaved wake stub does NOT consume the answer slot; the later real answer echo still locks the card', async () => {
+  setupDOM();
+  const Conversation = await importConversation();
+  const root = document.createElement('div');
+  const conv = new Conversation(root, {});
+
+  // Snapshot replay: a wake-callback stub (another worker finished before the
+  // user answered) lands between the tool_result and the real answer echo.
+  const wakeStub = buildWakeStub({
+    targetSessionId: 'abc12345',
+    payloadText: '{"sessionId":"abc12345","messages":[]}\nsome recent output',
+  });
+
+  conv._replayMode = true;
+  conv.apply(UQ_EVENT);
+  conv.apply(TOOL_RESULT_EVENT);
+
+  const qBlock = conv.userQuestionBlocks.get(Q_TOOL_USE_ID);
+  assert.ok(qBlock, 'question block exists');
+
+  // Interleaved non-answer echo: must NOT lock the card and must leave the slot armed.
+  conv.apply({ kind: 'user_echo', text: wakeStub });
+  assert.equal(qBlock.submitted, false, 'card must stay unlocked after the interleaved wake stub');
+  assert.equal(conv._pendingAnswerUQId, Q_TOOL_USE_ID, 'answer slot stays armed for the real answer');
+
+  // The real answer echo arrives later — the still-armed slot now applies it.
+  conv.apply({ kind: 'user_echo', text: ANSWER_TEXT });
+  conv._replayMode = false;
+
+  assert.equal(qBlock.submitted, true, 'card locks on the real answer echo');
+  assert.equal(conv._pendingAnswerUQId, null, 'slot consumed only on the matching answer');
   const applePick = [...qBlock.panes.querySelectorAll('button.uq-opt')]
     .find(b => b.dataset.label === 'Apple');
   assert.ok(applePick?.classList.contains('picked'), 'Apple option is marked as picked');
