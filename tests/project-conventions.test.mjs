@@ -411,7 +411,7 @@ test('composeProjectScaffold frames scaffold-bearing conventions in order; unkno
   // Selection order preserved (seed-config first); a fragment-only convention in
   // the selection contributes no step.
   const block = await composeProjectScaffold('demo', ['playwright-harness/seed-config', 'playwright-harness/plain', 'playwright-harness/harness-wrapper']);
-  assert.match(block, /Project "demo" was created with these setup steps/);
+  assert.match(block, /Project "demo" was created with these scaffolding steps/);
   assert.match(block, /1\) Write a default config/);
   assert.match(block, /2\) Build a project-local harness wrapper/);
   assert.ok(block.indexOf('Write a default config') < block.indexOf('Build a project-local harness wrapper'));
@@ -427,7 +427,7 @@ test('create_project RETURNS the composed scaffold directive from picked convent
   const { buildTools } = await import('../src/mcp/tools.js');
   const tool = buildTools().find(t => t.name === 'create_project');
   const result = await tool.handler({ name: 'sc-proj', conventions: ['playwright-harness/harness-wrapper', 'playwright-harness/seed-config'] }, { instances });
-  assert.match(result.scaffold, /Project "sc-proj" was created with these setup steps/);
+  assert.match(result.scaffold, /Project "sc-proj" was created with these scaffolding steps/);
   assert.match(result.scaffold, /1\) Build a project-local harness wrapper/);
   assert.match(result.scaffold, /2\) Write a default config/);
   // The fragment-bearing convention still snapshots into CLAUDE.md.

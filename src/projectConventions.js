@@ -79,5 +79,5 @@ export async function composeProjectScaffold(projectName, slugs) {
   }
   if (steps.length === 0) return '';
   const numbered = steps.map((t, i) => `${i + 1}) ${t}`).join('\n\n');
-  return `Project "${projectName}" was created with these setup steps. Complete them first, before other work:\n\n${numbered}`;
+  return `Project "${projectName}" was created with these scaffolding steps. Complete them first, before other work:\n\n${numbered}`;
 }

@@ -813,7 +813,7 @@ function buildNewProjectDom(document) {
   };
 }
 
-test('new-project dialog groups core conventions + per-plugin conventions; scaffold facet shows a "sets up" tag', async () => {
+test('new-project dialog groups core conventions + per-plugin conventions as plain individually-selectable checkboxes', async () => {
   const window = makeWindow();
   const dom = buildNewProjectDom(window.document);
   const created = [];
@@ -830,7 +830,7 @@ test('new-project dialog groups core conventions + per-plugin conventions; scaff
   globalThis.fetch = async (url, opts) => {
     if (url === '/api/projects' && opts?.method === 'POST') {
       created.push(JSON.parse(opts.body));
-      return { ok: true, json: async () => ({ name: 'x' }) };
+      return { ok: true, json: async () => ({ name: 'x', scaffold: 'Build a harness wrapper' }) };
     }
     return { ok: true, json: async () => routes[url] ?? {} };
   };
@@ -842,35 +842,34 @@ test('new-project dialog groups core conventions + per-plugin conventions; scaff
   // Await the async open handler's fetch.
   for (let i = 0; i < 10 && dom.npContributions.children.length === 0; i++) await new Promise(r => setTimeout(r, 5));
 
-  const labels = [...dom.npContributions.querySelectorAll('.np-rules-label, .np-group-head')].map(e => e.textContent);
+  // Plain text headings only — no interactive master toggle anywhere.
+  const labels = [...dom.npContributions.querySelectorAll('.np-rules-label')].map(e => e.textContent);
   assert.ok(labels.some(t => /Project conventions/.test(t)), 'core conventions section rendered');
-  assert.ok(labels.some(t => /Set up playwright-harness/.test(t)), 'per-plugin group rendered');
+  assert.ok(labels.some(t => /playwright-harness/.test(t)), 'per-plugin heading rendered for provenance');
+  assert.equal(dom.npContributions.querySelector('.np-group-master'), null, 'no master toggle checkbox');
+  assert.equal(dom.npContributions.querySelector('.np-group-head'), null, 'no master toggle heading');
 
   // Core convention checkbox present.
   const core = dom.npContributions.querySelector('input[data-kind="convention"][value="design-guidelines"]');
   assert.ok(core, 'core convention checkbox rendered');
-  // One checkbox per plugin convention (no separate scaffold kind).
+  // One plain checkbox per plugin convention (no separate scaffold kind).
   const pluginConv = dom.npContributions.querySelector('input[data-kind="convention"][value="playwright-harness/vis-check"]');
   const plainConv = dom.npContributions.querySelector('input[data-kind="convention"][value="playwright-harness/plain"]');
   assert.ok(pluginConv, 'plugin convention checkbox rendered');
   assert.ok(plainConv, 'plain plugin convention checkbox rendered');
   assert.equal(dom.npContributions.querySelector('input[data-kind="scaffold"]'), null, 'no separate scaffold checkboxes');
 
-  // The scaffold-bearing convention shows a "sets up" tag; the plain one does not.
-  const tags = [...dom.npContributions.querySelectorAll('.np-rule-tag')].map(e => e.textContent);
-  assert.ok(tags.includes('sets up'), 'scaffold-bearing convention shows the "sets up" tag');
-  assert.equal(tags.length, 1, 'only the scaffold-bearing convention is tagged');
+  // No "sets up" tag anywhere — the scaffold facet rides along invisibly.
+  assert.equal(dom.npContributions.querySelector('.np-rule-tag'), null, 'no "sets up" tag rendered');
+  assert.ok(![...dom.npContributions.querySelectorAll('.np-rule-name')].some(e => /sets up/.test(e.textContent)), 'no "sets up" text anywhere');
 
-  // Master toggle selects all of the plugin's conventions.
-  const master = dom.npContributions.querySelector('.np-group-master');
-  master.checked = true;
-  master.dispatchEvent(new window.Event('change', { bubbles: true }));
-  assert.equal(pluginConv.checked, true);
-  assert.equal(plainConv.checked, true);
+  // Each checkbox is independently selectable — no all-or-nothing coupling.
+  pluginConv.checked = true;
+  assert.equal(plainConv.checked, false, 'selecting one plugin convention does not select its sibling');
 
-  // Submit: only `conventions` is sent (no `scaffolds` param).
+  // Submit: only `conventions` is sent (no `scaffolds` param); the picked
+  // scaffold-bearing convention still surfaces the returned scaffold panel.
   core.checked = true;
-  plainConv.checked = false;
   dom.npName.value = 'myproj';
   dom.newProjectDialog.returnValue = 'create';
   dom.newProjectDialog.dispatchEvent(new window.Event('close', { bubbles: true }));
@@ -878,4 +877,9 @@ test('new-project dialog groups core conventions + per-plugin conventions; scaff
   assert.equal(created.length, 1);
   assert.equal(created[0].scaffolds, undefined, 'no scaffolds param in the POST body');
   assert.deepEqual([...created[0].conventions].sort(), ['design-guidelines', 'playwright-harness/vis-check']);
+
+  // The returned scaffold directive shows in the read-only confirmation panel.
+  for (let i = 0; i < 10 && dom.npConfirm.hidden; i++) await new Promise(r => setTimeout(r, 5));
+  assert.equal(dom.npConfirm.hidden, false, 'confirmation panel shown for a scaffold-bearing pick');
+  assert.equal(dom.npScaffoldText.value, 'Build a harness wrapper');
 });
