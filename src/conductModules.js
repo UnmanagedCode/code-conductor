@@ -2,7 +2,7 @@
 // live .conduct/CONDUCT.md alongside the always-on core.
 //
 // CORE (conduct/core.md) + a footer note (conduct/footer.md) are always
-// present. The eight built-in modules (conduct/modules/<slug>.md) and any
+// present. The six built-in modules (conduct/modules/<slug>.md) and any
 // user-defined custom modules are toggled via a single GLOBAL selection
 // (the conductor is a singleton), persisted at
 // <orchStoreRoot>/conduct-modules.json as { enabled: [...], rules: [...] }.
@@ -26,7 +26,7 @@ const MODULES_DIR = path.join(CONDUCT_ROOT, 'modules');
 // non-toggleable row so users see what can't be turned off.
 export const CORE_META = {
   name: 'Core (always on)',
-  description: 'Role, hard boundary, dispatch-and-wake, MCP toolbelt, project-conventions on creation, safety',
+  description: 'Role, hard boundary, dispatch-and-wake, MCP toolbelt, project-conventions on creation, safety, talking to the user',
 };
 
 // Built-in module metadata (order = order they appear in the composed doc).
@@ -42,8 +42,6 @@ export const SEED_MODULES = [
     description: 'Route even read-only work through a spawned session' },
   { slug: 'worker-prompts', name: 'Worker prompt best practices',
     description: 'Scope, declare env, sentinel, one concern, model ladder' },
-  { slug: 'talking-to-user', name: 'Talking to the user',
-    description: 'Be concise; reference workers by short sessionId' },
   { slug: 'capturing-learnings', name: 'Capturing learnings',
     description: 'Where durable lessons go (auto-memory vs CLAUDE.md), always opt-in' },
 ];

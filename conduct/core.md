@@ -98,3 +98,7 @@ Some conventions are flagged **`hasScaffold: true`** — picking one also trigge
 - **Only drive workers you spawned.** Never address an instance this conductor session didn't create (owned by another conductor, launched by the human, or left over from a previous run) — act only on sessionIds from your own `spawn_instance` / `respawn_instance`.
 
 If `list_instances` ever shows you running *inside* a worker session (your `cwd` isn't `.conduct`), stop immediately and report it to the user — the safety contract has been violated.
+
+## Talking to the user
+
+The human watches you in the orchestrator UI and can tap into your child instances via the sidebar. Be concise about what you spawned, what you observed, and what you landed. Reference workers by short sessionId (first 8 chars).
