@@ -55,6 +55,13 @@ test('isPureUserPromptLine: counts only true user prompts', () => {
   assert.equal(isPureUserPromptLine({
     type: 'user', message: { content: '' },
   }), false);
+  // CLI-internal task-notification re-injection — a background subagent's
+  // completion ping persisted as a type:"user" line — never produced a
+  // user_echo live and must not count.
+  assert.equal(isPureUserPromptLine({
+    type: 'user',
+    message: { content: '<task-notification>\n<task-id>t1</task-id>\n</task-notification>' },
+  }), false);
 });
 
 test('truncate at N=1 drops everything from the 2nd user prompt onward', async () => {
@@ -292,6 +299,56 @@ test('fork targeting a queued_command auto-approve mid-session succeeds and pref
   assert.ok(after.some(l => l.uuid === 'a3'), 'assistant turn before Please start survives');
   assert.ok(!after.some(l => l.uuid === 'u3'), 'Please start prompt is dropped');
   assert.ok(!after.some(l => l.uuid === 'a4'), 'reply to Please start is dropped');
+});
+
+test('fork targeting a real prompt after a background-subagent task-notification stays aligned', async () => {
+  // A background Agent tool_use finishes mid-session and the CLI re-injects
+  // its completion ping as a type:"user" line with a bare <task-notification>
+  // string. Pre-fix, isPureUserPromptLine counted it as a real prompt, so
+  // the 2nd real prompt (the only bubble the UI ever showed at index 1)
+  // would be targeted by index 2 instead, and droppedText could even
+  // surface the raw tag text if the notification line itself were selected.
+  const lines = [
+    { type: 'user', uuid: 'u1', sessionId: 'orig', message: { role: 'user', content: 'first prompt' } },
+    { type: 'assistant', uuid: 'a1', sessionId: 'orig', message: { id: 'm1', role: 'assistant', content: [
+      { type: 'tool_use', id: 'agent1', name: 'Agent', input: { description: 'background work' } },
+    ] } },
+    { type: 'user', uuid: 'u_tr1', sessionId: 'orig', message: { role: 'user', content: [
+      { type: 'tool_result', tool_use_id: 'agent1', content: 'Async agent launched successfully.' },
+    ] } },
+    { type: 'assistant', uuid: 'a2', sessionId: 'orig', message: { id: 'm2', role: 'assistant', content: [
+      { type: 'text', text: 'working on it' },
+    ] } },
+    { type: 'user', uuid: 'u2', sessionId: 'orig', message: { role: 'user', content: 'second prompt' } },
+    { type: 'assistant', uuid: 'a3', sessionId: 'orig', message: { id: 'm3', role: 'assistant', content: [
+      { type: 'text', text: 'still working' },
+    ] } },
+    // The background subagent completes and its ping lands here, between
+    // the 2nd and 3rd real prompts.
+    { type: 'user', uuid: 'u_notif', sessionId: 'orig', message: { role: 'user',
+      content: '<task-notification>\n<task-id>agent1</task-id>\n<status>completed</status>\n</task-notification>' } },
+    { type: 'user', uuid: 'u3', sessionId: 'orig', message: { role: 'user', content: 'third prompt' } },
+    { type: 'assistant', uuid: 'a4', sessionId: 'orig', message: { id: 'm4', role: 'assistant', content: [
+      { type: 'text', text: 'done' },
+    ] } },
+  ];
+  const { cwd, sid, file, dir } = await makeFixture(lines);
+
+  // Bubble index 2 (0-based) is "third prompt" — the 3rd real user_echo the
+  // UI ever rendered. Must not drift because of the task-notification line.
+  const result = await forkSessionAtUserMessage({
+    cwd, sessionId: sid, userMessageIndex: 2,
+    permissionMode: 'bypassPermissions',
+  });
+  assert.equal(result.droppedText, 'third prompt',
+    'index 2 maps to the 3rd real user prompt, unaffected by the task-notification line');
+
+  const newFile = path.join(dir, `${result.newSessionId}.jsonl`);
+  const after = readJsonl(await fs.readFile(newFile, 'utf8'));
+  assert.ok(after.some(l => l.uuid === 'u_notif'), 'task-notification line survives in the fork prefix');
+  assert.ok(after.some(l => l.uuid === 'u2'), 'second real prompt survives');
+  assert.ok(!after.some(l => l.uuid === 'u3'), 'third prompt is dropped');
+  assert.ok(!after.some(l => l.uuid === 'a4'), 'reply to third prompt is dropped');
 });
 
 test('fork targeting the queued_command itself prefills the queued text and drops it forward', async () => {
