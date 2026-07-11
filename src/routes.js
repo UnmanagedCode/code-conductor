@@ -56,10 +56,9 @@ import { getCostSummary } from './costTracking.js';
 import { isArchived, unmarkArchived } from './archivedSessions.js';
 import {
   getCatalog as getProjectConventionsCatalog,
-  composeProjectConventionsBlock,
+  composeProjectConventionsBlock, composeProjectScaffold,
   addCustomConvention, updateCustomConvention, deleteCustomConvention,
 } from './projectConventions.js';
-import { listProjectScaffolds, composeScaffold } from './projectScaffolds.js';
 import {
   CORE_META as CONDUCT_CORE_META,
   getCatalog as getConductModulesCatalog,
@@ -253,7 +252,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
 
   r.post('/projects', async (req, res, next) => {
     try {
-      const { name, conventions, scaffolds } = req.body ?? {};
+      const { name, conventions } = req.body ?? {};
       // Validate the regex first so callers that hit BOTH conditions
       // (e.g. "../escape" — starts with "." AND contains "/") get the
       // canonical "invalid project name" error rather than the dot-prefix
@@ -270,11 +269,8 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
       if (conventions !== undefined && !Array.isArray(conventions)) {
         throw Object.assign(new Error('conventions must be an array of slug strings'), { statusCode: 400 });
       }
-      if (scaffolds !== undefined && !Array.isArray(scaffolds)) {
-        throw Object.assign(new Error('scaffolds must be an array of "<plugin-id>/<slug>" strings'), { statusCode: 400 });
-      }
       const appendToCLAUDEmd = await composeProjectConventionsBlock(conventions ?? []);
-      const scaffold = await composeScaffold(name, scaffolds ?? []);
+      const scaffold = await composeProjectScaffold(name, conventions ?? []);
       const created = await createProject(name, { appendToCLAUDEmd });
       // Scaffold directive is returned (not persisted) — the caller folds it
       // into the first worker brief. See conduct/core.md.
@@ -1271,12 +1267,6 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
       const result = await deleteCustomConvention(slug);
       res.json(result);
     } catch (e) { next(e); }
-  });
-
-  // Project scaffolds offered by enabled plugins, for the new-project dialog.
-  // Only enabled+ok plugins surface here (crashed/disabled never appear).
-  r.get('/project-scaffolds', async (req, res, next) => {
-    try { res.json({ scaffolds: await listProjectScaffolds() }); } catch (e) { next(e); }
   });
 
   // Conductor convention modules — global (singleton conductor) selection +

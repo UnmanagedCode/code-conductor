@@ -175,7 +175,9 @@ export function createFragmentCatalog({ seeds, seedDir, storeFile, noun = 'entry
   }
 
   // Resolve slugs against the catalog and join their bodies. Unknown slug → 400.
-  // Returns '\n' + bodies.join('\n\n') + '\n' (empty string for an empty list).
+  // Entries without a fragment body (e.g. a plugin convention that carries only
+  // a scaffold facet) contribute nothing. Returns '\n' + bodies.join('\n\n') +
+  // '\n' (empty string when no slugs or no surviving bodies).
   async function compose(slugs) {
     if (!Array.isArray(slugs) || slugs.length === 0) return '';
     const catalog = await getCatalog();
@@ -187,8 +189,9 @@ export function createFragmentCatalog({ seeds, seedDir, storeFile, noun = 'entry
         err.statusCode = 400;
         throw err;
       }
-      bodies.push(entry.body);
+      if (entry.body) bodies.push(entry.body);
     }
+    if (bodies.length === 0) return '';
     return '\n' + bodies.join('\n\n') + '\n';
   }
 

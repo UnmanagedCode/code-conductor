@@ -1,15 +1,16 @@
 // New-project dialog: the sidebar ⋮ "+ New project" button, the live
-// name→path preview, opt-in project-convention + project-scaffold checkboxes
-// (grouped per contributing plugin), the create POST, and a read-only
-// confirmation of the returned scaffold setup directive.
+// name→path preview, opt-in project-convention checkboxes (grouped per
+// contributing plugin), the create POST, and a read-only confirmation of the
+// returned scaffold setup directive.
 // Follows the installX({...}) pattern. No module-owned state — the dialog
 // reads its inputs on close.
 //
-// Contributions are GROUPED for presentation only (no schema coupling): core
-// conventions in their own section, then one section per plugin bundling that
-// plugin's conventions + scaffolds under a "Set up <plugin>" master toggle
-// that defaults both on when ticked; every item stays individually
-// de-selectable (a scaffold without its convention, or vice versa).
+// A convention may carry a CLAUDE.md fragment and/or a one-time scaffold
+// directive (hasScaffold) — it is one pick either way. Contributions are
+// GROUPED for presentation only: core conventions in their own section, then
+// one section per plugin under a "Set up <plugin>" master toggle; a convention
+// that sets something up shows a "sets up" tag. On create, a picked
+// scaffold-bearing convention's directive is returned in the `scaffold` field.
 //
 // Injected interface:
 //   - dom: { newProjectBtn, newProjectDialog, npName, npError, npPreview,
@@ -21,13 +22,13 @@ export function installNewProjectDialog({ dom, refreshProjects, closeSidebarOver
 
   // One opt-in checkbox row. textContent everywhere (never innerHTML) — plugin
   // names/descriptions are trusted own code but built safely for consistency.
-  function makeRow({ kind, value, name, description, tag }) {
+  function makeRow({ value, name, description, tag }) {
     const li = document.createElement('li');
     const label = document.createElement('label');
     const input = document.createElement('input');
     input.type = 'checkbox';
     input.value = value;
-    input.dataset.kind = kind; // 'convention' | 'scaffold'
+    input.dataset.kind = 'convention';
     const text = document.createElement('span');
     text.className = 'np-rule-text';
     const nameEl = document.createElement('span');
@@ -96,34 +97,30 @@ export function installNewProjectDialog({ dom, refreshProjects, closeSidebarOver
   async function buildContributions() {
     dom.npContributions.innerHTML = '';
     let conventions = [];
-    let scaffolds = [];
     try {
       const r = await fetch('/api/settings/project-conventions');
       if (r.ok) conventions = (await r.json()).rules ?? [];
     } catch { /* offline / no catalog — show nothing */ }
-    try {
-      const r = await fetch('/api/project-scaffolds');
-      if (r.ok) scaffolds = (await r.json()).scaffolds ?? [];
-    } catch { /* no plugins */ }
+
+    // A convention that carries a scaffold facet gets a "sets up" tag so the
+    // user knows picking it also runs a one-time setup directive.
+    const rowOf = (c) => ({ value: c.slug, name: c.name, description: c.description, ...(c.scaffold ? { tag: 'sets up' } : {}) });
 
     // Core conventions (no plugin) get their own section.
     const core = conventions.filter(c => !pluginOf(c.slug, c.plugin));
     if (core.length) {
       const { wrap, list } = makeSection('Project conventions');
-      for (const c of core) list.appendChild(makeRow({ kind: 'convention', value: c.slug, name: c.name, description: c.description }).li);
+      for (const c of core) list.appendChild(makeRow(rowOf(c)).li);
       dom.npContributions.appendChild(wrap);
     }
 
-    // Group each plugin's conventions + scaffolds under one master toggle.
+    // Group each plugin's conventions under one master toggle.
     const byPlugin = new Map(); // pluginId -> items[]
-    const push = (id, item) => { if (!byPlugin.has(id)) byPlugin.set(id, []); byPlugin.get(id).push(item); };
     for (const c of conventions) {
       const p = pluginOf(c.slug, c.plugin);
-      if (p) push(p, { kind: 'convention', value: c.slug, name: c.name, description: c.description, tag: 'convention' });
-    }
-    for (const s of scaffolds) {
-      const p = pluginOf(s.slug, s.plugin);
-      if (p) push(p, { kind: 'scaffold', value: s.slug, name: s.name, description: s.description, tag: 'scaffold' });
+      if (!p) continue;
+      if (!byPlugin.has(p)) byPlugin.set(p, []);
+      byPlugin.get(p).push(rowOf(c));
     }
     for (const plugin of [...byPlugin.keys()].sort()) {
       dom.npContributions.appendChild(makePluginGroup(plugin, byPlugin.get(plugin)));
@@ -151,13 +148,10 @@ export function installNewProjectDialog({ dom, refreshProjects, closeSidebarOver
     if (dom.newProjectDialog.returnValue !== 'create') return; // cancel / confirmation Done
     const name = dom.npName.value.trim();
     if (!name) return;
-    const checked = (kind) => [...dom.npContributions.querySelectorAll(`input[data-kind="${kind}"]:checked`)].map(cb => cb.value);
-    const conventions = checked('convention');
-    const scaffolds = checked('scaffold');
+    const conventions = [...dom.npContributions.querySelectorAll('input[data-kind="convention"]:checked')].map(cb => cb.value);
     try {
       const body = { name };
       if (conventions.length) body.conventions = conventions;
-      if (scaffolds.length) body.scaffolds = scaffolds;
       const r = await fetch('/api/projects', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
       if (!r.ok) throw new Error((await r.json()).error);
       const created = await r.json();

@@ -787,7 +787,7 @@ test('appSwitcher + pluginView: returning to Conductor collapses the mobile draw
   assert.equal(sidebar.classList.contains('open'), false, 'mobile drawer collapses to reveal the conductor view');
 });
 
-// ── new-project dialog: grouped conventions + scaffolds ─────────────────────
+// ── new-project dialog: grouped conventions (with optional scaffold facet) ──
 function buildNewProjectDom(document) {
   const mk = (tag, id) => { const el = document.createElement(tag); if (id) el.id = id; return el; };
   const dialog = mk('dialog', 'new-project-dialog');
@@ -813,47 +813,69 @@ function buildNewProjectDom(document) {
   };
 }
 
-test('new-project dialog groups core conventions + per-plugin conventions/scaffolds', async () => {
+test('new-project dialog groups core conventions + per-plugin conventions; scaffold facet shows a "sets up" tag', async () => {
   const window = makeWindow();
   const dom = buildNewProjectDom(window.document);
+  const created = [];
   const routes = {
     '/api/settings/project-conventions': { rules: [
       { slug: 'design-guidelines', name: 'Design guidelines', description: 'core', builtin: true },
-      { slug: 'playwright-harness/vis-check', name: 'Visual check', description: 'verify UX', plugin: 'playwright-harness', builtin: false },
-    ] },
-    '/api/project-scaffolds': { scaffolds: [
-      { slug: 'playwright-harness/harness-wrapper', name: 'Harness wrapper', description: 'build wrapper', plugin: 'playwright-harness' },
+      // A plugin convention carrying a scaffold facet: catalog entry exposes the
+      // resolved directive text under `scaffold`.
+      { slug: 'playwright-harness/vis-check', name: 'Visual check', description: 'verify UX', plugin: 'playwright-harness', builtin: false, scaffold: 'Build a harness wrapper' },
+      // A plugin convention without a scaffold facet.
+      { slug: 'playwright-harness/plain', name: 'Plain', description: 'fragment only', plugin: 'playwright-harness', builtin: false },
     ] },
   };
-  globalThis.fetch = async (url) => ({ ok: true, json: async () => routes[url] ?? {} });
+  globalThis.fetch = async (url, opts) => {
+    if (url === '/api/projects' && opts?.method === 'POST') {
+      created.push(JSON.parse(opts.body));
+      return { ok: true, json: async () => ({ name: 'x' }) };
+    }
+    return { ok: true, json: async () => routes[url] ?? {} };
+  };
 
   const { installNewProjectDialog } = await freshImport('newProjectDialog.js');
   installNewProjectDialog({ dom, refreshProjects: async () => {}, closeSidebarOverflow: () => {} });
 
   dom.newProjectBtn.dispatchEvent(new window.Event('click', { bubbles: true }));
-  // Await the async open handler's two fetches.
+  // Await the async open handler's fetch.
   for (let i = 0; i < 10 && dom.npContributions.children.length === 0; i++) await new Promise(r => setTimeout(r, 5));
 
   const labels = [...dom.npContributions.querySelectorAll('.np-rules-label, .np-group-head')].map(e => e.textContent);
   assert.ok(labels.some(t => /Project conventions/.test(t)), 'core conventions section rendered');
   assert.ok(labels.some(t => /Set up playwright-harness/.test(t)), 'per-plugin group rendered');
 
-  // Core convention checkbox present and independent.
+  // Core convention checkbox present.
   const core = dom.npContributions.querySelector('input[data-kind="convention"][value="design-guidelines"]');
   assert.ok(core, 'core convention checkbox rendered');
-  // Plugin group bundles a convention AND a scaffold, each individually selectable.
+  // One checkbox per plugin convention (no separate scaffold kind).
   const pluginConv = dom.npContributions.querySelector('input[data-kind="convention"][value="playwright-harness/vis-check"]');
-  const pluginScaffold = dom.npContributions.querySelector('input[data-kind="scaffold"][value="playwright-harness/harness-wrapper"]');
+  const plainConv = dom.npContributions.querySelector('input[data-kind="convention"][value="playwright-harness/plain"]');
   assert.ok(pluginConv, 'plugin convention checkbox rendered');
-  assert.ok(pluginScaffold, 'plugin scaffold checkbox rendered');
+  assert.ok(plainConv, 'plain plugin convention checkbox rendered');
+  assert.equal(dom.npContributions.querySelector('input[data-kind="scaffold"]'), null, 'no separate scaffold checkboxes');
 
-  // Master toggle checks both children; each stays independently de-selectable.
+  // The scaffold-bearing convention shows a "sets up" tag; the plain one does not.
+  const tags = [...dom.npContributions.querySelectorAll('.np-rule-tag')].map(e => e.textContent);
+  assert.ok(tags.includes('sets up'), 'scaffold-bearing convention shows the "sets up" tag');
+  assert.equal(tags.length, 1, 'only the scaffold-bearing convention is tagged');
+
+  // Master toggle selects all of the plugin's conventions.
   const master = dom.npContributions.querySelector('.np-group-master');
   master.checked = true;
   master.dispatchEvent(new window.Event('change', { bubbles: true }));
   assert.equal(pluginConv.checked, true);
-  assert.equal(pluginScaffold.checked, true);
-  pluginScaffold.checked = false; // de-select scaffold alone
-  pluginScaffold.dispatchEvent(new window.Event('change', { bubbles: true }));
-  assert.equal(pluginConv.checked, true, 'convention stays selected without its scaffold');
+  assert.equal(plainConv.checked, true);
+
+  // Submit: only `conventions` is sent (no `scaffolds` param).
+  core.checked = true;
+  plainConv.checked = false;
+  dom.npName.value = 'myproj';
+  dom.newProjectDialog.returnValue = 'create';
+  dom.newProjectDialog.dispatchEvent(new window.Event('close', { bubbles: true }));
+  for (let i = 0; i < 10 && created.length === 0; i++) await new Promise(r => setTimeout(r, 5));
+  assert.equal(created.length, 1);
+  assert.equal(created[0].scaffolds, undefined, 'no scaffolds param in the POST body');
+  assert.deepEqual([...created[0].conventions].sort(), ['design-guidelines', 'playwright-harness/vis-check']);
 });

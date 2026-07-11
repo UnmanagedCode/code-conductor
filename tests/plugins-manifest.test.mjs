@@ -96,59 +96,71 @@ test('conventions: workspace/conductor scopes rejected as not-yet-supported', ()
   assert.ok(!bogus.errors.some(e => e.includes('not yet supported')));
 });
 
-test('scaffolds: multiple per plugin, inline text + file forms, exactly-one enforced', () => {
-  const scaffolds = [
-    { slug: 'harness-wrapper', name: 'Harness wrapper', description: 'build a wrapper', text: 'go build the wrapper' },
-    { slug: 'seed-config', name: 'Seed config', description: 'seed config', file: 'scaffolds/seed.md' },
-  ];
-  const r = validateManifest(base({ scaffolds }));
-  assert.equal(r.errors, undefined);
-  assert.equal(r.manifest.scaffolds.length, 2);
-  assert.deepEqual(r.manifest.scaffolds[0], { slug: 'harness-wrapper', name: 'Harness wrapper', description: 'build a wrapper', text: 'go build the wrapper' });
-  assert.equal(r.manifest.scaffolds[1].file, 'scaffolds/seed.md');
-  assert.equal(r.manifest.backend, undefined); // no backend required
+test('conventions: scaffold facet — fragment-only, scaffold-only, both; "at least one" enforced', () => {
+  // fragment only (no scaffold facet) — unchanged shape.
+  const fragOnly = validateManifest(base({ conventions: [{ slug: 'frag', name: 'n', description: 'd', file: 'conventions/g.md', scope: 'project' }] }));
+  assert.equal(fragOnly.errors, undefined);
+  assert.equal(fragOnly.manifest.conventions[0].scaffold, undefined);
+
+  // scaffold only (no fragment file) — inline text.
+  const scaffoldOnly = validateManifest(base({ conventions: [{ slug: 'sc', name: 'n', description: 'd', scope: 'project', scaffold: { text: 'go build the wrapper' } }] }));
+  assert.equal(scaffoldOnly.errors, undefined);
+  assert.equal(scaffoldOnly.manifest.conventions[0].file, undefined);
+  assert.deepEqual(scaffoldOnly.manifest.conventions[0].scaffold, { text: 'go build the wrapper' });
+
+  // both facets, scaffold via file (mirrors code-playwright's real shape).
+  const both = validateManifest(base({ conventions: [{ slug: 'harness', name: 'Harness', description: 'd', file: 'conventions/harness.md', scope: 'project', scaffold: { file: 'scaffold/harness.md' } }] }));
+  assert.equal(both.errors, undefined);
+  assert.deepEqual(both.manifest.conventions[0], { slug: 'harness', name: 'Harness', description: 'd', file: 'conventions/harness.md', scope: 'project', scaffold: { file: 'scaffold/harness.md' } });
+  assert.equal(both.manifest.backend, undefined); // no backend required
+
+  // neither fragment nor scaffold → rejected.
+  assert.ok(validateManifest(base({ conventions: [{ slug: 'empty', name: 'n', description: 'd', scope: 'project' }] }))
+    .errors.some(e => e.includes("requires at least one of 'file' or 'scaffold'")));
 });
 
-test('scaffolds: invalid shapes rejected', () => {
-  const s = (entry) => validateManifest(base({ scaffolds: [entry] }));
-  assert.ok(s({ slug: 'Bad', name: 'n', description: 'd', text: 't' }).errors.some(e => e.includes('.slug')));
-  assert.ok(s({ slug: 'ok', name: '', description: 'd', text: 't' }).errors.some(e => e.includes('.name')));
-  assert.ok(s({ slug: 'ok', name: 'n', description: '', text: 't' }).errors.some(e => e.includes('.description')));
+test('conventions: scaffold facet invalid shapes rejected', () => {
+  const sc = (scaffold) => validateManifest(base({ conventions: [{ slug: 'ok', name: 'n', description: 'd', scope: 'project', scaffold }] }));
   // both text+file
-  assert.ok(s({ slug: 'ok', name: 'n', description: 'd', text: 't', file: 's.md' }).errors.some(e => e.includes("exactly one of 'text' or 'file'")));
+  assert.ok(sc({ text: 't', file: 's.md' }).errors.some(e => e.includes("scaffold' requires exactly one of 'text' or 'file'")));
   // neither
-  assert.ok(s({ slug: 'ok', name: 'n', description: 'd' }).errors.some(e => e.includes("exactly one of 'text' or 'file'")));
+  assert.ok(sc({}).errors.some(e => e.includes("scaffold' requires exactly one of 'text' or 'file'")));
+  // empty text
+  assert.ok(sc({ text: '   ' }).errors.some(e => e.includes("scaffold.text' must be a non-empty string")));
   // bad file shape
-  assert.ok(s({ slug: 'ok', name: 'n', description: 'd', file: 's.txt' }).errors.some(e => e.includes("must end with '.md'")));
-  assert.ok(s({ slug: 'ok', name: 'n', description: 'd', file: '../x.md' }).errors.some(e => e.includes("no '..'")));
-  // empty array
-  assert.ok(validateManifest(base({ scaffolds: [] })).errors.some(e => e.includes('non-empty array')));
-  // duplicate slug
-  const dup = [{ slug: 's', name: 'n', description: 'd', text: 't' }, { slug: 's', name: 'n', description: 'd', text: 'u' }];
-  assert.ok(validateManifest(base({ scaffolds: dup })).errors.some(e => e.includes("duplicate scaffold slug 's'")));
+  assert.ok(sc({ file: 's.txt' }).errors.some(e => e.includes("must end with '.md'")));
+  assert.ok(sc({ file: '../x.md' }).errors.some(e => e.includes("no '..'")));
+  // unknown key in facet
+  assert.ok(sc({ text: 't', bogus: 1 }).errors.some(e => e.includes("unknown key 'conventions[0].scaffold.bogus'")));
+  // non-object facet
+  assert.ok(sc('nope').errors.some(e => e.includes("scaffold' must be an object")));
 });
 
-test('readManifest: missing convention/scaffold file → invalid', async () => {
+test("scaffolds: the retired top-level 'scaffolds' key is now unknown", () => {
+  assert.ok(validateManifest(base({ scaffolds: [{ slug: 's', name: 'n', description: 'd', text: 't' }] }))
+    .errors.some(e => e === "unknown key 'scaffolds'"));
+});
+
+test('readManifest: missing convention fragment / scaffold file → invalid', async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'manif-frag-'));
   try {
     const manifest = base({
-      conventions: [{ slug: 'g', name: 'n', description: 'd', file: 'conventions/g.md', scope: 'project' }],
-      scaffolds: [{ slug: 'sc', name: 'n', description: 'd', file: 'scaffolds/sc.md' }],
+      conventions: [{ slug: 'g', name: 'n', description: 'd', file: 'conventions/g.md', scope: 'project', scaffold: { file: 'scaffold/g.md' } }],
     });
     await fs.writeFile(path.join(dir, 'conductor.plugin.json'), JSON.stringify(manifest));
     // Files do not exist yet → invalid, both refs reported.
     let r = await readManifest(dir);
-    assert.ok(r.errors.some(e => e.includes("conventions 'g' file")), 'missing convention file is a load error');
-    assert.ok(r.errors.some(e => e.includes("scaffolds 'sc' file")), 'missing scaffold file is a load error');
+    assert.ok(r.errors.some(e => e.includes("conventions 'g' file")), 'missing convention fragment is a load error');
+    assert.ok(r.errors.some(e => e.includes("conventions 'g' scaffold file")), 'missing scaffold file is a load error');
     // Create them → valid.
     await fs.mkdir(path.join(dir, 'conventions'), { recursive: true });
     await fs.writeFile(path.join(dir, 'conventions', 'g.md'), '## G\n');
-    await fs.mkdir(path.join(dir, 'scaffolds'), { recursive: true });
-    await fs.writeFile(path.join(dir, 'scaffolds', 'sc.md'), 'do the thing\n');
+    await fs.mkdir(path.join(dir, 'scaffold'), { recursive: true });
+    await fs.writeFile(path.join(dir, 'scaffold', 'g.md'), 'do the thing\n');
     r = await readManifest(dir);
     assert.equal(r.errors, undefined);
     assert.equal(r.manifest.conventions[0].slug, 'g');
-    assert.equal(r.manifest.scaffolds[0].slug, 'sc');
+    assert.deepEqual(r.manifest.conventions[0].scaffold, { file: 'scaffold/g.md' });
   } finally {
     await fs.rm(dir, { recursive: true, force: true });
   }

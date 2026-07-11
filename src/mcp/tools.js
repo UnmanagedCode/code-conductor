@@ -557,11 +557,11 @@ export function buildTools() {
       description:
         'Create a new empty project under ~/project/<name>. Seeds CLAUDE.md with @../CLAUDE.md ' +
         'so workspace-wide conventions are inherited. Optionally runs `git init` in the new dir. ' +
-        'Project convention modules (inline CLAUDE.md sections) can be appended by passing their slugs — ' +
-        'call list_project_conventions to discover available slugs. Plugin-offered project scaffolds can be ' +
-        'selected by passing their namespaced slugs as scaffolds — call list_project_scaffolds to discover them; ' +
-        'the composed setup directive is RETURNED as this tool\'s `scaffold` field, which YOU fold into your ' +
-        'FIRST send_prompt to the project\'s first worker (it is never auto-sent).',
+        'Project conventions can be attached by passing their slugs — call list_project_conventions to ' +
+        'discover available slugs. Each carries a CLAUDE.md fragment (appended inline) and/or a one-time ' +
+        'scaffold directive: a picked convention flagged hasScaffold:true composes a setup directive that is ' +
+        'RETURNED as this tool\'s `scaffold` field (empty when none), which YOU fold into your FIRST send_prompt ' +
+        'to the project\'s first worker (it is never auto-sent).',
       inputSchema: {
         type: 'object',
         properties: {
@@ -570,12 +570,7 @@ export function buildTools() {
           conventions: {
             type: 'array',
             items: { type: 'string' },
-            description: 'Slugs of project convention modules to append to CLAUDE.md — call list_project_conventions to discover available slugs.',
-          },
-          scaffolds: {
-            type: 'array',
-            items: { type: 'string' },
-            description: 'Namespaced slugs (<plugin-id>/<slug>) of project scaffolds whose setup directive to return as `scaffold` — call list_project_scaffolds to discover them.',
+            description: 'Slugs of project conventions to attach — call list_project_conventions to discover available slugs. Each appends its CLAUDE.md fragment (if any) and, when hasScaffold:true, contributes to the returned `scaffold` directive.',
           },
         },
         required: ['name'],
@@ -585,22 +580,13 @@ export function buildTools() {
     {
       name: 'list_project_conventions',
       description:
-        'List the available project convention modules (slug, name, description, builtin) that can be ' +
+        'List the available project conventions (slug, name, description, builtin, hasScaffold) that can be ' +
         'passed to create_project\'s `conventions` param. Built-in seeds have builtin:true and are read-only; ' +
-        'custom conventions (builtin:false) are managed via the Settings → Conventions → Project panel.',
+        'custom conventions (builtin:false) are managed via the Settings → Conventions → Project panel; ' +
+        'enabled-plugin conventions have namespaced <plugin-id>/<slug> slugs. hasScaffold:true means picking it ' +
+        'also triggers a one-time setup directive returned as create_project\'s `scaffold` field.',
       inputSchema: { type: 'object', properties: {}, required: [] },
       handler: h.listProjectConventions,
-      annotations: { readOnlyHint: true },
-    },
-    {
-      name: 'list_project_scaffolds',
-      description:
-        'List project scaffolds offered by enabled plugins (namespaced slug, name, description) that can be ' +
-        'passed to create_project\'s `scaffolds` param. Each is a one-time setup directive (e.g. scaffold a ' +
-        'test harness) returned as create_project\'s `scaffold` field for you to fold into the first worker ' +
-        'brief. Only enabled plugins appear.',
-      inputSchema: { type: 'object', properties: {}, required: [] },
-      handler: h.listProjectScaffolds,
       annotations: { readOnlyHint: true },
     },
     {

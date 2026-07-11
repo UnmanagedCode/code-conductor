@@ -132,10 +132,9 @@ export function installPluginManager({ onCatalogChange } = {}) {
       li.appendChild(meta);
 
       // Contribution badges: what a plugin adds beyond a backend (so a
-      // backendless conventions/scaffolds-only plugin visibly earns its place).
+      // backendless conventions-only plugin visibly earns its place).
       const contribs = [];
       if (row.conventions?.length) contribs.push(`${row.conventions.length} project convention${row.conventions.length === 1 ? '' : 's'}`);
-      if (row.scaffolds?.length) contribs.push(`Project scaffold: ${row.scaffolds.length}`);
       if (contribs.length) {
         const c = document.createElement('div');
         c.className = 'pl-contribs';
@@ -147,19 +146,19 @@ export function installPluginManager({ onCatalogChange } = {}) {
         }
         li.appendChild(c);
       }
-      // Per-scaffold preview (name — what it does) so the user sees what a
-      // backendless plugin would set up.
-      if (row.scaffolds?.length) {
+      // Per-convention preview (name — what it does, + "sets up" when it carries
+      // a one-time scaffold directive) so the user sees what enabling adds.
+      if (row.conventions?.length) {
         const prev = document.createElement('ul');
         prev.className = 'pl-scaffold-preview';
-        for (const sc of row.scaffolds) {
+        for (const conv of row.conventions) {
           const item = document.createElement('li');
           const n = document.createElement('span');
           n.className = 'pl-scaffold-name';
-          n.textContent = sc.name;
+          n.textContent = conv.hasScaffold ? `${conv.name} · sets up` : conv.name;
           const d = document.createElement('span');
           d.className = 'pl-scaffold-desc';
-          d.textContent = sc.description;
+          d.textContent = conv.description;
           item.append(n, d);
           prev.appendChild(item);
         }

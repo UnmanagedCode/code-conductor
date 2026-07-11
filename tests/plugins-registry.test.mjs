@@ -356,16 +356,17 @@ test('registry entry whose project vanished still lists as invalid', async () =>
   }
 });
 
-// A contributions-only manifest: no backend/frontend/mcp, only conventions +
-// scaffolds (two, one inline + one file) referencing fixture files. Must
-// validate, enable, and never start a process; describeRow flags
+// A contributions-only manifest: no backend/frontend/mcp, only conventions.
+// Three shapes exercised: fragment+scaffold (scaffold via file, mirrors
+// code-playwright), scaffold-only (inline text, no fragment), and fragment-only.
+// Must validate, enable, and never start a process; describeRow flags
 // hasBackend:false, state 'enabled'.
 const CONTRIB_ONLY = {
   id: 'conv-plugin', name: 'Conv Plugin', version: '1.0.0', pluginApi: 1,
-  conventions: [{ slug: 'vis-check', name: 'Visual check', description: 'verify UX', file: 'conventions/sample.md', scope: 'project' }],
-  scaffolds: [
-    { slug: 'harness-wrapper', name: 'Harness wrapper', description: 'build wrapper', file: 'scaffolds/sample.md' },
-    { slug: 'seed-config', name: 'Seed config', description: 'seed the config', text: 'write a default config file' },
+  conventions: [
+    { slug: 'vis-check', name: 'Visual check', description: 'verify UX', file: 'conventions/sample.md', scope: 'project', scaffold: { file: 'scaffolds/sample.md' } },
+    { slug: 'seed-config', name: 'Seed config', description: 'seed the config', scope: 'project', scaffold: { text: 'write a default config file' } },
+    { slug: 'plain-conv', name: 'Plain', description: 'fragment only', file: 'conventions/sample.md', scope: 'project' },
   ],
 };
 
@@ -377,10 +378,11 @@ test('contributions-only plugin: enables without a backend, state=enabled, no ch
     const discovered = (await host.list()).find(r => r.id === 'conv-plugin');
     assert.equal(discovered.state, 'discovered');
     assert.equal(discovered.hasBackend, false);
-    assert.equal(discovered.conventions.length, 1);
-    assert.equal(discovered.conventions[0].slug, 'conv-plugin/vis-check');
-    assert.equal(discovered.scaffolds.length, 2);
-    assert.deepEqual(discovered.scaffolds[0], { slug: 'conv-plugin/harness-wrapper', name: 'Harness wrapper', description: 'build wrapper' });
+    assert.equal(discovered.conventions.length, 3);
+    assert.equal(discovered.scaffolds, undefined); // no separate scaffolds array anymore
+    assert.deepEqual(discovered.conventions[0], { slug: 'conv-plugin/vis-check', name: 'Visual check', description: 'verify UX', hasScaffold: true });
+    assert.deepEqual(discovered.conventions[1], { slug: 'conv-plugin/seed-config', name: 'Seed config', description: 'seed the config', hasScaffold: true });
+    assert.deepEqual(discovered.conventions[2], { slug: 'conv-plugin/plain-conv', name: 'Plain', description: 'fragment only', hasScaffold: false });
 
     const row = await host.enable('conv-plugin');
     assert.equal(row.enabled, true);
@@ -393,7 +395,7 @@ test('contributions-only plugin: enables without a backend, state=enabled, no ch
   }
 });
 
-test('conventions()/scaffolds() surface only enabled+ok plugins', async () => {
+test('conventions() surfaces body + scaffold facet for enabled+ok plugins only', async () => {
   const env = await makePluginRoot();
   try {
     await env.addPluginProject('convp', { manifest: CONTRIB_ONLY });
@@ -401,26 +403,30 @@ test('conventions()/scaffolds() surface only enabled+ok plugins', async () => {
 
     // Not enabled yet → no contributions (conventions() is grouped by scope).
     assert.deepEqual(await host.conventions(), { project: [] });
-    assert.deepEqual(await host.scaffolds(), []);
 
     await host.enable('conv-plugin');
     const g = (await host.conventions()).project;
-    assert.equal(g.length, 1);
+    assert.equal(g.length, 3);
+
+    // fragment + scaffold (scaffold via file).
     assert.equal(g[0].slug, 'conv-plugin/vis-check');
     assert.equal(g[0].plugin, 'conv-plugin');
     assert.match(g[0].body, /Visual UX verification/);
-    const sc = await host.scaffolds();
-    assert.equal(sc.length, 2);
-    assert.equal(sc[0].slug, 'conv-plugin/harness-wrapper');
-    assert.equal(sc[0].plugin, 'conv-plugin');
-    assert.match(sc[0].text, /harness wrapper/); // resolved from scaffolds/sample.md
-    assert.equal(sc[1].slug, 'conv-plugin/seed-config');
-    assert.match(sc[1].text, /default config/); // inline text
+    assert.match(g[0].scaffold, /harness wrapper/); // resolved from scaffolds/sample.md
+
+    // scaffold only (inline text, no fragment body).
+    assert.equal(g[1].slug, 'conv-plugin/seed-config');
+    assert.equal(g[1].body, '');
+    assert.match(g[1].scaffold, /default config/);
+
+    // fragment only (no scaffold facet).
+    assert.equal(g[2].slug, 'conv-plugin/plain-conv');
+    assert.match(g[2].body, /Visual UX verification/);
+    assert.equal(g[2].scaffold, undefined);
 
     // Disable → contributions drop.
     await host.disable('conv-plugin');
     assert.deepEqual(await host.conventions(), { project: [] });
-    assert.deepEqual(await host.scaffolds(), []);
   } finally {
     await env.restore();
   }

@@ -27,12 +27,11 @@ export const SUPPORTED_CONVENTION_SCOPES = ['project'];
 const PLANNED_CONVENTION_SCOPES = ['workspace', 'conductor'];
 const quotedScopes = SUPPORTED_CONVENTION_SCOPES.map(s => `"${s}"`).join(', ');
 
-// `conventions` (project-convention fragments) and `scaffolds` (one-time
-// project-setup directives offered at creation) are active pluginApi:1
-// capabilities — neither requires a backend, so a conventions/scaffolds-only
-// plugin is valid. `settings` stays reserved (validated-but-inert; accepted,
-// never acted on).
-const KNOWN_TOP_KEYS = new Set(['id', 'name', 'version', 'pluginApi', 'backend', 'frontend', 'mcp', 'settings', 'conventions', 'scaffolds']);
+// `conventions` (project-convention fragments, optionally carrying a one-time
+// scaffold facet) is an active pluginApi:1 capability that requires no backend,
+// so a conventions-only plugin is valid. `settings` stays reserved
+// (validated-but-inert; accepted, never acted on).
+const KNOWN_TOP_KEYS = new Set(['id', 'name', 'version', 'pluginApi', 'backend', 'frontend', 'mcp', 'settings', 'conventions']);
 
 // Result: null (no manifest file) | { manifest } | { errors, incompatible? }
 export async function readManifest(dir) {
@@ -57,12 +56,14 @@ export async function readManifest(dir) {
   return result;
 }
 
-// Verify every convention/scaffold `file` ref resolves to a readable file
-// under `dir`. Returns a (possibly empty) list of errors.
+// Verify every convention fragment / scaffold-facet `file` ref resolves to a
+// readable file under `dir`. Returns a (possibly empty) list of errors.
 async function checkFragmentFiles(dir, manifest) {
   const refs = [];
-  for (const g of manifest.conventions ?? []) refs.push([`conventions '${g.slug}' file`, g.file]);
-  for (const sc of manifest.scaffolds ?? []) if (sc.file) refs.push([`scaffolds '${sc.slug}' file`, sc.file]);
+  for (const g of manifest.conventions ?? []) {
+    if (g.file) refs.push([`conventions '${g.slug}' file`, g.file]);
+    if (g.scaffold?.file) refs.push([`conventions '${g.slug}' scaffold file`, g.scaffold.file]);
+  }
   const errors = [];
   for (const [label, rel] of refs) {
     try { await fs.access(path.join(dir, rel)); }
@@ -105,7 +106,6 @@ export function validateManifest(json) {
   const frontend = validateFrontend(json.frontend, backend, json.name, errors);
   const mcp = validateMcp(json.mcp, backend, errors);
   const conventions = validateConventions(json.conventions, errors);
-  const scaffolds = validateScaffolds(json.scaffolds, errors);
 
   if (errors.length > 0) return { errors, id: displayId(json) };
   return {
@@ -118,7 +118,6 @@ export function validateManifest(json) {
       ...(frontend ? { frontend } : {}),
       ...(mcp ? { mcp } : {}),
       ...(conventions ? { conventions } : {}),
-      ...(scaffolds ? { scaffolds } : {}),
     },
   };
 }
@@ -141,11 +140,13 @@ function validateFragmentPath(value, label, errors) {
   return true;
 }
 
-// conventions: [{ slug, name, description, file, scope }] — project-convention
-// fragments contributed to the Conventions catalog (namespaced <plugin-id>/<slug>
-// there). `scope` is required and routes the entry (project only today; see
-// SUPPORTED_CONVENTION_SCOPES). No backend required. Returns a normalized array
-// or null.
+// conventions: [{ slug, name, description, scope, file?, scaffold? }] —
+// project-convention entries contributed to the Conventions catalog (namespaced
+// <plugin-id>/<slug> there). `scope` is required and routes the entry (project
+// only today; see SUPPORTED_CONVENTION_SCOPES). An entry may carry a CLAUDE.md
+// fragment (`file`) and/or a one-time setup directive (`scaffold`, plugin-only),
+// but MUST carry at least one of the two. No backend required. Returns a
+// normalized array or null.
 function validateConventions(g, errors) {
   if (g === undefined) return null;
   if (!Array.isArray(g) || g.length === 0) {
@@ -161,7 +162,7 @@ function validateConventions(g, errors) {
       return;
     }
     for (const k of Object.keys(entry)) {
-      if (!['slug', 'name', 'description', 'file', 'scope'].includes(k)) errors.push(`unknown key '${label}.${k}'`);
+      if (!['slug', 'name', 'description', 'file', 'scope', 'scaffold'].includes(k)) errors.push(`unknown key '${label}.${k}'`);
     }
     if (typeof entry.slug !== 'string' || !SLUG_RE.test(entry.slug) || entry.slug.length > SLUG_MAX) {
       errors.push(`'${label}.slug' is required and must match ^[a-z][a-z0-9-]*$ (max 40 chars)`);
@@ -172,11 +173,54 @@ function validateConventions(g, errors) {
     }
     if (typeof entry.name !== 'string' || entry.name.trim() === '') errors.push(`'${label}.name' is required (non-empty string)`);
     if (typeof entry.description !== 'string' || entry.description.trim() === '') errors.push(`'${label}.description' is required (non-empty string)`);
-    validateFragmentPath(entry.file, `${label}.file`, errors);
+    // `file` is optional; validate its shape only when present.
+    if (entry.file !== undefined) validateFragmentPath(entry.file, `${label}.file`, errors);
+    const scaffold = validateScaffoldFacet(entry.scaffold, label, errors);
+    // At least one of fragment / scaffold must be present.
+    if (entry.file === undefined && entry.scaffold === undefined) {
+      errors.push(`'${label}' requires at least one of 'file' or 'scaffold'`);
+    }
     validateConventionScope(entry.scope, label, errors);
-    out.push({ slug: entry.slug, name: typeof entry.name === 'string' ? entry.name.trim() : '', description: typeof entry.description === 'string' ? entry.description.trim() : '', file: entry.file, scope: entry.scope });
+    out.push({
+      slug: entry.slug,
+      name: typeof entry.name === 'string' ? entry.name.trim() : '',
+      description: typeof entry.description === 'string' ? entry.description.trim() : '',
+      ...(entry.file !== undefined ? { file: entry.file } : {}),
+      scope: entry.scope,
+      ...(scaffold ? { scaffold } : {}),
+    });
   });
   return out;
+}
+
+// scaffold facet: { text | file } — a one-time project-setup directive body via
+// exactly one of inline `text` or a fragment `file`. Optional; validated only
+// when present. Returns the normalized facet ({text}|{file}) or null.
+function validateScaffoldFacet(scaffold, label, errors) {
+  if (scaffold === undefined) return null;
+  const sl = `${label}.scaffold`;
+  if (typeof scaffold !== 'object' || scaffold === null || Array.isArray(scaffold)) {
+    errors.push(`'${sl}' must be an object`);
+    return null;
+  }
+  for (const k of Object.keys(scaffold)) {
+    if (!['text', 'file'].includes(k)) errors.push(`unknown key '${sl}.${k}'`);
+  }
+  const hasText = scaffold.text !== undefined;
+  const hasFile = scaffold.file !== undefined;
+  if (hasText === hasFile) {
+    errors.push(`'${sl}' requires exactly one of 'text' or 'file'`);
+    return null;
+  }
+  if (hasText) {
+    if (typeof scaffold.text !== 'string' || scaffold.text.trim() === '') {
+      errors.push(`'${sl}.text' must be a non-empty string`);
+      return null;
+    }
+    return { text: scaffold.text };
+  }
+  if (!validateFragmentPath(scaffold.file, `${sl}.file`, errors)) return null;
+  return { file: scaffold.file };
 }
 
 // Required, explicit scope. A recognised-but-not-yet-wired scope gets a specific
@@ -193,58 +237,6 @@ function validateConventionScope(scope, label, errors) {
   } else {
     errors.push(`'${label}.scope' must be one of: ${SUPPORTED_CONVENTION_SCOPES.join(', ')}`);
   }
-}
-
-// scaffolds: [{ slug, name, description, text | file }] — one-time project-setup
-// directives offered at creation (composed into orchestrator guidance the
-// conductor folds into the first worker brief). Symmetric with conventions
-// (namespaced <plugin-id>/<slug>, unique in the array), except each carries a
-// directive body via exactly one of `text` | `file`. No backend required.
-// Returns a normalized array or null.
-function validateScaffolds(s, errors) {
-  if (s === undefined) return null;
-  if (!Array.isArray(s) || s.length === 0) {
-    errors.push("'scaffolds' must be a non-empty array");
-    return null;
-  }
-  const out = [];
-  const seen = new Set();
-  s.forEach((entry, i) => {
-    const label = `scaffolds[${i}]`;
-    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
-      errors.push(`'${label}' must be an object`);
-      return;
-    }
-    for (const k of Object.keys(entry)) {
-      if (!['slug', 'name', 'description', 'text', 'file'].includes(k)) errors.push(`unknown key '${label}.${k}'`);
-    }
-    if (typeof entry.slug !== 'string' || !SLUG_RE.test(entry.slug) || entry.slug.length > SLUG_MAX) {
-      errors.push(`'${label}.slug' is required and must match ^[a-z][a-z0-9-]*$ (max 40 chars)`);
-    } else if (seen.has(entry.slug)) {
-      errors.push(`duplicate scaffold slug '${entry.slug}'`);
-    } else {
-      seen.add(entry.slug);
-    }
-    if (typeof entry.name !== 'string' || entry.name.trim() === '') errors.push(`'${label}.name' is required (non-empty string)`);
-    if (typeof entry.description !== 'string' || entry.description.trim() === '') errors.push(`'${label}.description' is required (non-empty string)`);
-    const hasText = entry.text !== undefined;
-    const hasFile = entry.file !== undefined;
-    if (hasText === hasFile) {
-      errors.push(`'${label}' requires exactly one of 'text' or 'file'`);
-    } else if (hasText && (typeof entry.text !== 'string' || entry.text.trim() === '')) {
-      errors.push(`'${label}.text' must be a non-empty string`);
-    } else if (hasFile) {
-      validateFragmentPath(entry.file, `${label}.file`, errors);
-    }
-    out.push({
-      slug: entry.slug,
-      name: typeof entry.name === 'string' ? entry.name.trim() : '',
-      description: typeof entry.description === 'string' ? entry.description.trim() : '',
-      ...(hasText ? { text: entry.text } : {}),
-      ...(hasFile ? { file: entry.file } : {}),
-    });
-  });
-  return out;
 }
 
 // Best-effort id for listing an invalid/incompatible manifest.
