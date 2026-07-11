@@ -103,6 +103,34 @@ test('enable persists, auto-assigns CC-Dev only when unassigned; disable persist
   }
 });
 
+test('discovery (rescan), not just enable, auto-assigns CC-Dev to a newly discovered plugin project', async () => {
+  const env = await makePluginRoot();
+  try {
+    await env.addPluginProject('aplug');
+    const host = createPluginHost();
+    await host.rescan();
+    assert.equal((await readProjectMeta('aplug')).workspace, 'CC-Dev');
+    assert.ok((await listWorkspaces()).includes('CC-Dev'));
+    // Never enabled — still just discovered, but already placed.
+    assert.equal((await host.list()).find(r => r.project === 'aplug').state, 'discovered');
+  } finally {
+    await env.restore();
+  }
+});
+
+test('discovery (rescan) never moves a plugin project already assigned to another workspace', async () => {
+  const env = await makePluginRoot();
+  try {
+    await env.addPluginProject('aplug');
+    await writeProjectMeta('aplug', { workspace: 'Mine' });
+    const host = createPluginHost();
+    await host.rescan();
+    assert.equal((await readProjectMeta('aplug')).workspace, 'Mine');
+  } finally {
+    await env.restore();
+  }
+});
+
 test('lazy ensureStarted → ready; repeat is a no-op; stop kills the child', async () => {
   const env = await makePluginRoot();
   const host = createPluginHost();

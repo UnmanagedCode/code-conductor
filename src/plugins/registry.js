@@ -32,7 +32,25 @@ const CRASH_LIMIT = 3;
 const CRASH_WINDOW_MS = 60_000;
 const BACKOFF_UNIT_MS = 1000;   // backoff = min(2^n, 30) * unit
 const BACKOFF_CAP_UNITS = 30;
-const WORKSPACE_AUTO_ASSIGN = 'CC-Dev';
+// Exported so server.js can reuse the same literal for the conductor's own
+// boot-time self-seed instead of duplicating it.
+export const WORKSPACE_AUTO_ASSIGN = 'CC-Dev';
+
+// First-class placement: an unassigned project joins the CC-Dev workspace
+// (same primitives as set_project_workspace). Never overrides a workspace
+// the user has deliberately assigned. Non-fatal — a failure here must never
+// block discovery or enable.
+async function autoAssignToCcDev(projectName) {
+  try {
+    const meta = await readProjectMeta(projectName);
+    if (meta.workspace == null) {
+      await writeProjectMeta(projectName, { workspace: WORKSPACE_AUTO_ASSIGN });
+      await addWorkspace(WORKSPACE_AUTO_ASSIGN);
+    }
+  } catch (e) {
+    console.warn(`plugins: workspace auto-assign for '${projectName}' failed: ${e.message}`);
+  }
+}
 
 // Exported for reuse by sibling collaborators (e.g. library.js) that need
 // the same statusCode-bearing Error shape without duplicating it.
@@ -127,6 +145,13 @@ export function createPluginHost({
       }
       if (result === null) continue;
       found.push({ project: p.name, dir: p.path, result, manifestSource });
+    }
+    // Every discovered plugin project (valid, invalid, or conflicting
+    // manifest — being discovered at all is what matters here) joins
+    // CC-Dev if it isn't assigned anywhere yet. Runs on every rescan/boot;
+    // the workspace==null guard inside makes repeats a no-op.
+    for (const f of found) {
+      await autoAssignToCcDev(f.project);
     }
     // Deterministic conflict resolution: first alphabetical project wins.
     found.sort((a, b) => a.project.localeCompare(b.project));
@@ -298,17 +323,7 @@ export function createPluginHost({
     // Manual re-enable is the recovery path out of `failed`.
     const s = runtimeState(id);
     if (s.status === 'failed' || s.status === 'crashed') { s.status = 'stopped'; s.crashTimes = []; s.backoffUntil = 0; }
-    // First-class placement: an unassigned plugin project joins the CC-Dev
-    // workspace (same primitives as set_project_workspace).
-    try {
-      const meta = await readProjectMeta(entry.project);
-      if (meta.workspace == null) {
-        await writeProjectMeta(entry.project, { workspace: WORKSPACE_AUTO_ASSIGN });
-        await addWorkspace(WORKSPACE_AUTO_ASSIGN);
-      }
-    } catch (e) {
-      console.warn(`plugins: workspace auto-assign for '${entry.project}' failed: ${e.message}`);
-    }
+    await autoAssignToCcDev(entry.project);
     return describe(id);
   }
 

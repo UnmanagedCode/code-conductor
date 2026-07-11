@@ -7,7 +7,8 @@ import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
 import {
   encodeCwd, findSessionLocation,
-  readProjectMeta, writeProjectMeta,
+  readProjectMeta, writeProjectMeta, listWorkspaces,
+  findSelfProject, ensureSelfProjectWorkspace,
 } from '../src/projects.js';
 import { markArchived } from '../src/archivedSessions.js';
 
@@ -601,4 +602,42 @@ test('POST /api/instances refuses to resume a session already attached to a live
   const second = await api(baseUrl, 'POST', '/api/instances', { project: 'dup', mode: 'bypassPermissions', resume: sid });
   assert.equal(second.status, 409);
   assert.match(second.body.error, /already attached/i);
+});
+
+test('findSelfProject matches the listProjects() entry whose path is the injected selfDir', async () => {
+  await api(baseUrl, 'POST', '/api/projects', { name: 'imself' });
+  const selfDir = path.join(projectsRoot, 'imself');
+  const found = await findSelfProject(selfDir);
+  assert.equal(found?.name, 'imself');
+});
+
+test('findSelfProject returns null when nothing matches (no guessing)', async () => {
+  await api(baseUrl, 'POST', '/api/projects', { name: 'someoneelse' });
+  const found = await findSelfProject(path.join(home, 'not-a-real-dir'));
+  assert.equal(found, null);
+});
+
+test('ensureSelfProjectWorkspace assigns CC-Dev when self is unassigned, and is a no-op once already set', async () => {
+  await api(baseUrl, 'POST', '/api/projects', { name: 'conductor-self' });
+  const selfDir = path.join(projectsRoot, 'conductor-self');
+
+  const assigned = await ensureSelfProjectWorkspace('CC-Dev', selfDir);
+  assert.equal(assigned, 'conductor-self');
+  assert.equal((await readProjectMeta('conductor-self')).workspace, 'CC-Dev');
+  assert.ok((await listWorkspaces()).includes('CC-Dev'));
+
+  // Already assigned — second call is a no-op and reports nothing done.
+  const again = await ensureSelfProjectWorkspace('CC-Dev', selfDir);
+  assert.equal(again, null);
+  assert.equal((await readProjectMeta('conductor-self')).workspace, 'CC-Dev');
+});
+
+test('ensureSelfProjectWorkspace never overrides a self project already assigned elsewhere', async () => {
+  await api(baseUrl, 'POST', '/api/projects', { name: 'conductor-self2' });
+  const selfDir = path.join(projectsRoot, 'conductor-self2');
+  await writeProjectMeta('conductor-self2', { workspace: 'Mine' });
+
+  const result = await ensureSelfProjectWorkspace('CC-Dev', selfDir);
+  assert.equal(result, null);
+  assert.equal((await readProjectMeta('conductor-self2')).workspace, 'Mine');
 });

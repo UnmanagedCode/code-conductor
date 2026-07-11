@@ -277,8 +277,8 @@ Inside the iframe the bridge patches `history.pushState` → `replaceState`, so 
 | Method + path | Meaning |
 |---|---|
 | `GET /api/plugins` | merged discovery+registry+runtime rows: `{id, name, project, version, state, enabled, activeVersion, manifestSource, hasBackend, hasFrontend, navLabel, frontendPath, hasMcp, conventions:[{slug,name,description}], scaffolds:[{slug,name,description}], port, pid, startedAt, gitHead, errors, crashTail}` (convention/scaffold slugs namespaced `<plugin-id>/<slug>`). A backendless (contributions-only) enabled plugin has `state:"enabled"` (never `"stopped"`). |
-| `POST /api/plugins/rescan` | re-scan the projects root; returns the list |
-| `POST /api/plugins/:id/enable` | record + enable (first enable auto-assigns an unassigned project to workspace `CC-Dev`); recovery path out of `failed` |
+| `POST /api/plugins/rescan` | re-scan the projects root (auto-assigns any unassigned discovered plugin project to workspace `CC-Dev`); returns the list |
+| `POST /api/plugins/:id/enable` | record + enable; recovery path out of `failed` (workspace auto-assign to `CC-Dev` happens on discovery, not enable specifically — see `rescan` below) |
 | `POST /api/plugins/:id/disable` | stop the child + disable |
 | `POST /api/plugins/:id/start` | explicit start (clears crash history); 502 + `tail` on start failure |
 | `POST /api/plugins/:id/stop` | SIGTERM the process group (SIGKILL after 3 s) |
