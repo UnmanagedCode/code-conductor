@@ -8,7 +8,7 @@ import { buildMcpRouter } from './src/mcp/server.js';
 import { InstanceManager } from './src/instances.js';
 import { attachWsHub } from './src/wsHub.js';
 import { initCostTracking } from './src/costTracking.js';
-import { projectsRoot, orchStoreRoot } from './src/projects.js';
+import { projectsRoot, orchStoreRoot, ensureSelfProjectWorkspace } from './src/projects.js';
 import { loadAllArchived } from './src/archivedSessions.js';
 import { runMigrations } from './migrations/index.mjs';
 import { checkClaudeReadiness, formatReadiness } from './src/health.js';
@@ -16,7 +16,7 @@ import { sweepPendingTempCleanup } from './src/tempCleanup.js';
 import { ensureRootClaudeMd } from './src/rootClaudeMd.js';
 import { ensureConductProject } from './src/conduct.js';
 import { restoreFromResumeManifest } from './src/resumeRestart.js';
-import { createPluginHost } from './src/plugins/registry.js';
+import { createPluginHost, WORKSPACE_AUTO_ASSIGN } from './src/plugins/registry.js';
 import { createPluginLibrary } from './src/plugins/library.js';
 import { buildPluginProxy } from './src/plugins/proxy.js';
 import { setPluginConventionsProvider } from './src/projectConventions.js';
@@ -129,6 +129,11 @@ export async function start({ port = 8787, host = '127.0.0.1' } = {}) {
   // Conduct-dialog-open path re-ensures anyway.
   try { await ensureConductProject(); }
   catch (e) { console.warn('.conduct CONDUCT.md regenerate failed:', e); }
+  // Seed the conductor's own project into CC-Dev, same placement plugins get
+  // on discovery — the conductor itself isn't a plugin so it never hits that
+  // path. Once-per-boot; no-op if already assigned or self can't be found.
+  try { await ensureSelfProjectWorkspace(WORKSPACE_AUTO_ASSIGN); }
+  catch (e) { console.warn('self workspace seed failed:', e); }
   const { server, instances, wss, pluginHost } = createServer();
   await listenWithRetry(server, port, host);
   const addr = server.address();

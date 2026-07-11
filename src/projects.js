@@ -17,6 +17,14 @@ const DEFAULT_PROJECTS_ROOT = path.resolve(
   '..', '..',
 );
 
+// The conductor's own repo root — one level up from src/, unlike
+// DEFAULT_PROJECTS_ROOT above which goes two levels up to the *parent* of
+// the repo (where sibling projects, including this one, live).
+const SELF_PROJECT_DIR = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '..',
+);
+
 const NAME_RE = /^[a-zA-Z0-9._-]+$/;
 // Workspace names are looser than project names: spaces and slashes are
 // allowed so users can type a natural label ("Work", "Side projects",
@@ -117,6 +125,35 @@ export async function listProjects() {
   }
   out.sort((a, b) => a.name.localeCompare(b.name));
   return out;
+}
+
+// Finds the listProjects() entry that IS this running conductor install, by
+// comparing realpaths (handles symlinked checkouts). Returns null if this
+// install isn't a direct child of projectsRoot() — e.g. running from an
+// unmerged worktree, which listProjects() already excludes — callers must
+// treat null as "skip silently," never guess which project is self.
+// `selfDir` is only ever overridden by tests.
+export async function findSelfProject(selfDir = SELF_PROJECT_DIR) {
+  let selfReal;
+  try { selfReal = await fs.realpath(selfDir); } catch { return null; }
+  for (const p of await listProjects()) {
+    let real;
+    try { real = await fs.realpath(p.path); } catch { continue; }
+    if (real === selfReal) return p;
+  }
+  return null;
+}
+
+// One-time boot seed: place the conductor's own project into `workspaceName`
+// if it isn't assigned anywhere yet. No-op if self can't be identified or is
+// already assigned — never overrides a deliberate move. Returns the assigned
+// project name, or null if nothing was done.
+export async function ensureSelfProjectWorkspace(workspaceName, selfDir = SELF_PROJECT_DIR) {
+  const self = await findSelfProject(selfDir);
+  if (!self || self.workspace != null) return null;
+  await writeProjectMeta(self.name, { workspace: workspaceName });
+  await addWorkspace(workspaceName);
+  return self.name;
 }
 
 export function validateWorkspace(workspace) {
