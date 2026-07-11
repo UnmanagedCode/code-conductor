@@ -57,10 +57,6 @@ export function installSettings({
   const arListEl = document.getElementById('ar-list');
   if (!view) return { open() {}, close() {} };
 
-  // Plugins group — feature logic lives in its own module; settings only
-  // owns the group panel + calls load() on open.
-  const pluginManager = installPluginManager({ onCatalogChange: onPluginsChanged });
-
   // Conventions group — one reusable widget mounted three times (cascade order
   // Conductor → Workspace → Project). Each owns its own DOM (by id prefix) and
   // its scope's REST endpoints; see public/conventionsPanel.js.
@@ -75,6 +71,19 @@ export function installSettings({
   const projectPanel = installConventionsPanel({
     prefix: 'pc', base: '/api/settings/project-conventions',
     hasToggle: false, hasCoreRow: false, noun: 'project convention',
+  });
+
+  // Plugins group — feature logic lives in its own module; settings only owns
+  // the group panel + calls load() on open. Enabling/disabling/installing a
+  // plugin can change what the conventions panels above show, so refresh them
+  // whenever the plugin catalog changes.
+  const pluginManager = installPluginManager({
+    onCatalogChange: () => {
+      conductorPanel.load();
+      workspacePanel.load();
+      projectPanel.load();
+      onPluginsChanged?.();
+    },
   });
 
   let isOpen = false;

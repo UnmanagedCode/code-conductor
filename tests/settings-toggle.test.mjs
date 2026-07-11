@@ -48,6 +48,26 @@ function buildDOM(document) {
     if (id === 'st-install-btn' || id === 'st-install-log') el.hidden = true;
     view.appendChild(el);
   }
+
+  // Plugins group DOM — `pl-list` must exist or installPluginManager() no-ops
+  // entirely (see public/pluginManager.js). Mirrors buildPluginManagerDom in
+  // tests/plugins-frontend.test.mjs.
+  for (const [id, tag] of [
+    ['pl-status', 'div'], ['pl-list', 'ul'], ['pl-rescan-btn', 'button'],
+    ['pll-status', 'div'], ['pll-list', 'ul'],
+  ]) {
+    const el = document.createElement(tag);
+    el.id = id;
+    view.appendChild(el);
+  }
+  const pllTail = document.createElement('details');
+  pllTail.id = 'pll-tail';
+  pllTail.hidden = true;
+  const pllTailPre = document.createElement('pre');
+  pllTailPre.id = 'pll-tail-pre';
+  pllTail.appendChild(pllTailPre);
+  view.appendChild(pllTail);
+
   main.appendChild(view);
 
   const sidebar = document.createElement('aside');
@@ -62,18 +82,21 @@ function buildDOM(document) {
 }
 
 let counter = 0;
-async function setup() {
+async function setup(fetchImpl) {
   const window = new Window({ url: 'http://localhost/#' });
   // Stub fetch so load() doesn't throw when the panel opens.
-  window.fetch = () => Promise.resolve({
+  window.fetch = fetchImpl || (() => Promise.resolve({
     ok: false, status: 503,
     json: () => Promise.resolve({}),
-  });
+  }));
 
   globalThis.window = window;
   globalThis.document = window.document;
   globalThis.location = window.location;
   globalThis.history = window.history;
+  // settings.js calls the ambient `fetch` global (module scope, not
+  // window-scoped), so it must be stubbed on globalThis too.
+  globalThis.fetch = window.fetch;
 
   const dom = buildDOM(window.document);
 
@@ -223,5 +246,70 @@ test('settings: opening settings on desktop leaves the always-visible sidebar co
 
   assert.equal(sidebar.classList.contains('open'), true, 'desktop sidebar must be untouched');
   assert.equal(main.classList.contains('settings-open'), true, 'settings panel must still open');
+  window.happyDOM.abort();
+});
+
+// ── plugin catalog change refreshes the conventions panels ──────────────────
+// Regression test: enabling a plugin used to leave the Conductor/Workspace/
+// Project conventions panels stale until Settings was reopened. Drives the
+// real Enable button (not a stubbed shortcut) and asserts the fix by counting
+// refetches of each convention endpoint.
+
+const tick = async (n = 10) => { for (let i = 0; i < n; i++) await new Promise(r => setTimeout(r, 0)); };
+
+function stubCatalogChangeFetch() {
+  const counts = {};
+  const bump = (url) => { counts[url] = (counts[url] || 0) + 1; };
+  const ok = (body) => Promise.resolve({ ok: true, json: () => Promise.resolve(body) });
+  const notFound = () => Promise.resolve({ ok: false, status: 503, json: () => Promise.resolve({}) });
+
+  const impl = (url, opts = {}) => {
+    const method = opts.method || 'GET';
+    if (method === 'GET') bump(url);
+    if (url === '/api/plugins') {
+      return ok([{
+        id: 'demo', name: 'Demo', project: 'demoproj', state: 'disabled',
+        enabled: false, hasBackend: false, conventions: [],
+      }]);
+    }
+    if (url === '/api/projects') return ok([]);
+    if (url === '/api/plugins/library') return ok([]);
+    if (url === '/api/plugins/demo/enable' && method === 'POST') return ok({});
+    if (url === '/api/settings/conductor-modules') return ok({});
+    if (url === '/api/settings/workspace-conventions') return ok({});
+    if (url === '/api/settings/project-conventions') return ok({});
+    return notFound();
+  };
+  return { impl, counts };
+}
+
+test('settings: enabling a plugin refreshes the conductor/workspace/project conventions panels', async () => {
+  const { impl, counts } = stubCatalogChangeFetch();
+  const { window, mod, view } = await setup(impl);
+  let externalCalled = 0;
+  mod.installSettings({ requestClose: () => {}, onPluginsChanged: () => { externalCalled++; } });
+
+  window.location.hash = '#settings';
+  await window.happyDOM.waitUntilComplete();
+  await tick();
+
+  const before = {
+    conductor: counts['/api/settings/conductor-modules'] || 0,
+    workspace: counts['/api/settings/workspace-conventions'] || 0,
+    project: counts['/api/settings/project-conventions'] || 0,
+  };
+  assert.equal(before.conductor, 1, 'sanity: conductor panel loaded once on open');
+  assert.equal(before.workspace, 1, 'sanity: workspace panel loaded once on open');
+  assert.equal(before.project, 1, 'sanity: project panel loaded once on open');
+
+  const enableBtn = [...view.querySelectorAll('#pl-list button')].find(b => b.textContent === 'Enable');
+  assert.ok(enableBtn, 'Enable button rendered for the disabled plugin');
+  click(enableBtn, window);
+  await tick(20);
+
+  assert.equal(counts['/api/settings/conductor-modules'], before.conductor + 1, 'conductor panel refetched after enable');
+  assert.equal(counts['/api/settings/workspace-conventions'], before.workspace + 1, 'workspace panel refetched after enable');
+  assert.equal(counts['/api/settings/project-conventions'], before.project + 1, 'project panel refetched after enable');
+  assert.equal(externalCalled, 1, 'existing onPluginsChanged hook still fires');
   window.happyDOM.abort();
 });
