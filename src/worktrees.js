@@ -134,17 +134,18 @@ export { readMeta as readWorktreeMeta };
 // result field stays network-friendly. ~16 KB is generous for diagnostics.
 const HOOK_OUTPUT_CAP = 16 * 1024;
 
-// Run `.code-conductor/post-worktree-create.sh` inside the new worktree
-// if the file exists. Always resolves — never rejects — so a broken hook
-// cannot abort a successful worktree create. Result is attached to the
-// createWorktree() return value as `postWorktreeCreate`.
+// Run `.code-conductor/post-worktree-create.sh`, read from the parent
+// checkout (it need not be committed), with cwd in the new worktree.
+// Always resolves — never rejects — so a broken hook cannot abort a
+// successful worktree create. Result is attached to the createWorktree()
+// return value as `postWorktreeCreate`.
 async function runPostWorktreeHook(meta) {
   if (process.env.ORCH_DISABLE_POST_WORKTREE_HOOK === '1') {
     return { ran: false, skipped: 'disabled' };
   }
 
   const scriptPath = path.join(
-    meta.worktreePath, '.code-conductor', 'post-worktree-create.sh',
+    meta.parentPath, '.code-conductor', 'post-worktree-create.sh',
   );
   try {
     await fs.access(scriptPath);
