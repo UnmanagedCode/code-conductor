@@ -146,7 +146,7 @@ export function installPluginManager({ onCatalogChange } = {}) {
         }
         li.appendChild(c);
       }
-      // Per-convention preview (name — what it does, + "sets up" when it carries
+      // Per-convention preview (name — what it does, + "scaffolds" when it carries
       // a one-time scaffold directive) so the user sees what enabling adds.
       if (row.conventions?.length) {
         const prev = document.createElement('ul');
@@ -155,7 +155,7 @@ export function installPluginManager({ onCatalogChange } = {}) {
           const item = document.createElement('li');
           const n = document.createElement('span');
           n.className = 'pl-scaffold-name';
-          n.textContent = conv.hasScaffold ? `${conv.name} · sets up` : conv.name;
+          n.textContent = conv.hasScaffold ? `${conv.name} · scaffolds` : conv.name;
           const d = document.createElement('span');
           d.className = 'pl-scaffold-desc';
           d.textContent = conv.description;

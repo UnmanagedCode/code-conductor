@@ -1909,7 +1909,7 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
 /* Contribution badges (project conventions) — what a plugin adds */
 .pl-contribs { margin-top: 4px; display: flex; flex-wrap: wrap; gap: 4px; }
 .pl-contrib { font-size: 11px; color: var(--muted); border: 1px solid var(--border); border-radius: 4px; padding: 0 5px; }
-/* Per-convention preview under a plugin row (name + "sets up" for scaffold facets) */
+/* Per-convention preview under a plugin row (name + "scaffolds" for scaffold facets) */
 .pl-scaffold-preview { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
 .pl-scaffold-preview li { display: flex; flex-direction: column; font-size: 12px; }
 .pl-scaffold-name { font-weight: 600; }

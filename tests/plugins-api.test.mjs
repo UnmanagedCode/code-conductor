@@ -225,7 +225,7 @@ test('contributions-only plugin (convention w/ scaffold facet) flows through to 
     // directive is RETURNED (never persisted).
     const created = await api(boot.baseUrl, 'POST', '/api/projects', { name: 'usesconv', conventions: ['conv-plugin/vis-check'] });
     assert.equal(created.status, 201);
-    assert.match(created.body.scaffold, /Project "usesconv" was created with these setup steps/);
+    assert.match(created.body.scaffold, /Project "usesconv" was created with these scaffolding steps/);
     assert.match(created.body.scaffold, /harness wrapper/);
     const claudeMd = await fs.readFile(path.join(boot.projectsRoot, 'usesconv', 'CLAUDE.md'), 'utf8');
     assert.match(claudeMd, /Visual UX verification/);
