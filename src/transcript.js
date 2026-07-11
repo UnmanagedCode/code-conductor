@@ -11,7 +11,7 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { encodeCwd, claudeProjectsRoot } from './projects.js';
-import { consolidateUserContent, isSoftInterruptContent, attachSkillLoad } from './parser.js';
+import { consolidateUserContent, isSoftInterruptContent, isTaskNotificationContent, attachSkillLoad } from './parser.js';
 
 // Predicate: does this persisted jsonl object emit at least one `user_echo`
 // UI event when replayed? Mirrors the live-path emission in
@@ -26,8 +26,9 @@ import { consolidateUserContent, isSoftInterruptContent, attachSkillLoad } from 
 // `type:"user"` line, so without recognising them here the fork/rewind
 // counter would drift below the live `user_echo` count (every queued
 // auto-approve / user-typed-during-busy prompt would shift indices by
-// one). CLI-internal `<task-notification>` queued commands carry a
-// string `prompt` and are excluded — they never produced a user_echo.
+// one). CLI-internal `<task-notification>` lines/queued commands (either
+// a `type:"user"` line or an attachment with a string `prompt`) are
+// excluded in both shapes — they never produced a user_echo.
 export function isPureUserPromptLine(obj) {
   if (!obj || typeof obj !== 'object') return false;
   if (obj.isSidechain) return false;
@@ -37,6 +38,9 @@ export function isPureUserPromptLine(obj) {
     // system/soft_interrupted annotation instead) — don't count it, or
     // fork/rewind indices would drift past the user_echo count.
     if (isSoftInterruptContent(content)) return false;
+    // Background-subagent completion ping — dropped silently, never a
+    // user_echo. See parser.js:_handleUser.
+    if (isTaskNotificationContent(content)) return false;
     if (typeof content === 'string') return content.length > 0;
     if (!Array.isArray(content)) return false;
     return content.some((b) => b && b.type === 'text' && typeof b.text === 'string');
@@ -86,6 +90,11 @@ export function replayPersistedLine(obj, { seqHint = 0, parentToolUseId = null, 
       events.push({ kind: 'system', subtype: 'soft_interrupted' });
       return tagAndReturn();
     }
+    // Background-subagent completion ping — drop silently, same as live
+    // (parser.js:_handleUser): it's a duplicate of the already-hidden
+    // streaming system/task_notification event, and never produced a
+    // user_echo live.
+    if (isTaskNotificationContent(content)) return tagAndReturn();
     if (typeof content === 'string') {
       events.push({ kind: 'user_echo', text: content });
       return tagAndReturn();

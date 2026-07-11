@@ -308,6 +308,12 @@ export class Parser {
     // If the CLI echoes the soft-interrupt steer back on stdout, surface it
     // as a system annotation so the user can see a stop was requested.
     if (isSoftInterruptContent(content)) return [{ kind: 'system', subtype: 'soft_interrupted' }];
+    // Background-subagent completion ping the CLI re-injects into a
+    // worker's own conversation as though it were a user turn. Drop
+    // silently — the streaming `system/task_notification` event already
+    // carries this (hidden from the feed by default), so this would be a
+    // duplicate, and it never produced a user_echo live.
+    if (isTaskNotificationContent(content)) return [];
     if (typeof content === 'string') {
       return [{ kind: 'user_echo', text: content }];
     }
@@ -364,6 +370,18 @@ export function isSoftInterruptContent(content) {
     (b) => b && b.type === 'text' && typeof b.text === 'string'
            && b.text.includes(SOFT_INTERRUPT_MARKER),
   );
+}
+
+// True when a user-message `content` (string or block array) is the CLI's
+// own "background subagent finished" ping, re-injected into a worker's own
+// conversation as though it were a user turn. Detected by tag shape, not a
+// marker, since the CLI — not this codebase — produces the string, so
+// there's nothing to append a marker to.
+export function isTaskNotificationContent(content) {
+  const isTag = (text) => typeof text === 'string' && text.trimStart().startsWith('<task-notification>');
+  if (typeof content === 'string') return isTag(content);
+  if (!Array.isArray(content)) return false;
+  return content.some((b) => b && b.type === 'text' && isTag(b.text));
 }
 
 // True when a single text block is the mid-turn annotation prepended by
