@@ -215,6 +215,223 @@ test('pluginView: start failure shows the error + tail with a Retry button, not 
   assert.match(window.document.getElementById('plugin-frame').getAttribute('src'), /^\/plugins\/fake-plugin\/$/);
 });
 
+// ── pluginManager (Settings → Plugins: installed list + Plugin Library) ──
+
+function buildPluginManagerDom(document) {
+  const mk = (tag, id) => { const el = document.createElement(tag); if (id) el.id = id; return el; };
+  const group = mk('div', 'settings-plugins');
+  const status = mk('div', 'pl-status');
+  const list = mk('ul', 'pl-list');
+  const rescan = mk('button', 'pl-rescan-btn');
+  const libStatus = mk('div', 'pll-status');
+  const libList = mk('ul', 'pll-list');
+  const tail = mk('details', 'pll-tail');
+  tail.hidden = true;
+  const tailPre = mk('pre', 'pll-tail-pre');
+  tail.appendChild(tailPre);
+  group.append(status, list, rescan, libStatus, libList, tail);
+  document.body.appendChild(group);
+  return { status, list, rescan, libStatus, libList, tail, tailPre };
+}
+
+// Fixed single library entry (code-share); `installed` flips true after a
+// successful install call, mirroring the real server's directory-exists check.
+function stubPluginManagerFetch({
+  initiallyInstalled = false, installResult, installPostClone = null, updateResult, updatePostPull = null,
+} = {}) {
+  const calls = [];
+  let installed = initiallyInstalled;
+  globalThis.fetch = (url, opts = {}) => {
+    const method = opts.method || 'GET';
+    calls.push(`${method} ${url}`);
+    if (url === '/api/plugins') return Promise.resolve({ ok: true, json: async () => [] });
+    if (url === '/api/projects') return Promise.resolve({ ok: true, json: async () => [] });
+    if (url === '/api/plugins/library') {
+      return Promise.resolve({ ok: true, json: async () => ([{
+        id: 'code-share', name: 'Code Share', description: 'Share code snippets.',
+        repo: 'https://github.com/UnmanagedCode/code-share', installed, installedAs: installed ? 'code-share' : null,
+      }]) });
+    }
+    if (url === '/api/plugins/library/code-share/install') {
+      if (installResult === 'fail') {
+        return Promise.resolve({ ok: false, status: 502, json: async () => ({ error: 'clone failed', tail: 'fatal: boom' }) });
+      }
+      installed = true;
+      return Promise.resolve({ ok: true, json: async () => ({ id: 'code-share', name: 'code-share', postClone: installPostClone }) });
+    }
+    if (url === '/api/plugins/library/code-share/update') {
+      if (updateResult === 'fail') {
+        return Promise.resolve({ ok: false, status: 502, json: async () => ({ error: 'git pull failed', tail: 'fatal: diverged' }) });
+      }
+      return Promise.resolve({ ok: true, json: async () => ({ id: 'code-share', name: 'code-share', postPull: updatePostPull }) });
+    }
+    return Promise.resolve({ ok: true, json: async () => ({}) });
+  };
+  return calls;
+}
+
+test('pluginManager: renders a library entry with an Install button when not installed', async () => {
+  const window = makeWindow();
+  const dom = buildPluginManagerDom(window.document);
+  stubPluginManagerFetch();
+  const { installPluginManager } = await freshImport('pluginManager.js');
+  const mgr = installPluginManager();
+  await mgr.load();
+
+  const row = dom.libList.querySelector('.pll-row');
+  assert.ok(row, 'library row rendered');
+  assert.match(row.querySelector('.pll-name').textContent, /Code Share/);
+  const installBtn = [...row.querySelectorAll('button')].find(b => b.textContent === 'Install');
+  assert.ok(installBtn, 'Install button present');
+  assert.ok(!row.querySelector('.pll-installed-as'));
+});
+
+test('pluginManager: Install shows progress, then relabels the entry as installed', async () => {
+  const window = makeWindow();
+  const dom = buildPluginManagerDom(window.document);
+  const calls = stubPluginManagerFetch();
+  const { installPluginManager } = await freshImport('pluginManager.js');
+  const mgr = installPluginManager();
+  await mgr.load();
+
+  const installBtn = [...dom.libList.querySelectorAll('button')].find(b => b.textContent === 'Install');
+  installBtn.click();
+  assert.match(dom.libStatus.textContent, /Installing Code Share/);
+  await tick();
+
+  assert.ok(calls.includes('POST /api/plugins/library/code-share/install'));
+  const row = dom.libList.querySelector('.pll-row');
+  assert.ok(row.querySelector('.pll-installed-as'), 'now shows installed-as');
+  assert.deepEqual([...row.querySelectorAll('button')].map(b => b.textContent), ['Update'], 'Install button replaced by Update once installed');
+});
+
+test('pluginManager: install failure surfaces the error and clone-output tail, not a raw exception', async () => {
+  const window = makeWindow();
+  const dom = buildPluginManagerDom(window.document);
+  stubPluginManagerFetch({ installResult: 'fail' });
+  const { installPluginManager } = await freshImport('pluginManager.js');
+  const mgr = installPluginManager();
+  await mgr.load();
+
+  const installBtn = [...dom.libList.querySelectorAll('button')].find(b => b.textContent === 'Install');
+  installBtn.click();
+  await tick();
+
+  assert.match(dom.libStatus.textContent, /clone failed/);
+  assert.equal(dom.libStatus.classList.contains('pl-status-err'), true);
+  assert.equal(dom.tail.hidden, false);
+  assert.match(dom.tailPre.textContent, /fatal: boom/);
+  // Entry stays installable — the failed attempt didn't mark it installed.
+  const row = dom.libList.querySelector('.pll-row');
+  assert.ok([...row.querySelectorAll('button')].some(b => b.textContent === 'Install'));
+});
+
+test('pluginManager: an installed entry renders an Update button, not Install', async () => {
+  const window = makeWindow();
+  const dom = buildPluginManagerDom(window.document);
+  stubPluginManagerFetch({ initiallyInstalled: true });
+  const { installPluginManager } = await freshImport('pluginManager.js');
+  const mgr = installPluginManager();
+  await mgr.load();
+
+  const row = dom.libList.querySelector('.pll-row');
+  assert.ok(row.querySelector('.pll-installed-as'));
+  const buttons = [...row.querySelectorAll('button')].map(b => b.textContent);
+  assert.deepEqual(buttons, ['Update']);
+});
+
+test('pluginManager: Update shows progress, then refreshes', async () => {
+  const window = makeWindow();
+  const dom = buildPluginManagerDom(window.document);
+  const calls = stubPluginManagerFetch({ initiallyInstalled: true });
+  const { installPluginManager } = await freshImport('pluginManager.js');
+  const mgr = installPluginManager();
+  await mgr.load();
+
+  const updateBtn = [...dom.libList.querySelectorAll('button')].find(b => b.textContent === 'Update');
+  updateBtn.click();
+  assert.match(dom.libStatus.textContent, /Updating Code Share/);
+  await tick();
+
+  assert.ok(calls.includes('POST /api/plugins/library/code-share/update'));
+  assert.equal(dom.libStatus.classList.contains('pl-status-err'), false);
+  const row = dom.libList.querySelector('.pll-row');
+  assert.ok(row.querySelector('.pll-installed-as'), 'still installed after update');
+});
+
+test('pluginManager: Update failure (git pull failed) surfaces the error and tail', async () => {
+  const window = makeWindow();
+  const dom = buildPluginManagerDom(window.document);
+  stubPluginManagerFetch({ initiallyInstalled: true, updateResult: 'fail' });
+  const { installPluginManager } = await freshImport('pluginManager.js');
+  const mgr = installPluginManager();
+  await mgr.load();
+
+  const updateBtn = [...dom.libList.querySelectorAll('button')].find(b => b.textContent === 'Update');
+  updateBtn.click();
+  await tick();
+
+  assert.match(dom.libStatus.textContent, /git pull failed/);
+  assert.equal(dom.libStatus.classList.contains('pl-status-err'), true);
+  assert.equal(dom.tail.hidden, false);
+  assert.match(dom.tailPre.textContent, /fatal: diverged/);
+});
+
+test('pluginManager: install succeeds but a failed postClone is surfaced as a warning, not an install failure', async () => {
+  const window = makeWindow();
+  const dom = buildPluginManagerDom(window.document);
+  stubPluginManagerFetch({ installPostClone: { ran: true, ok: false, code: 1, tail: 'npm ERR! boom' } });
+  const { installPluginManager } = await freshImport('pluginManager.js');
+  const mgr = installPluginManager();
+  await mgr.load();
+
+  const installBtn = [...dom.libList.querySelectorAll('button')].find(b => b.textContent === 'Install');
+  installBtn.click();
+  await tick();
+
+  // The install itself succeeded — the entry already shows installed —
+  // but the status line carries the post-install warning + tail.
+  const row = dom.libList.querySelector('.pll-row');
+  assert.ok(row.querySelector('.pll-installed-as'), 'install succeeded despite the postClone failure');
+  assert.match(dom.libStatus.textContent, /post-install command failed/);
+  assert.equal(dom.libStatus.classList.contains('pl-status-err'), true);
+  assert.equal(dom.tail.hidden, false);
+  assert.match(dom.tailPre.textContent, /npm ERR! boom/);
+});
+
+test('pluginManager: update succeeds but a failed postPull is surfaced as a warning, not an update failure', async () => {
+  const window = makeWindow();
+  const dom = buildPluginManagerDom(window.document);
+  stubPluginManagerFetch({ initiallyInstalled: true, updatePostPull: { ran: true, ok: false, code: 1, tail: 'npm ERR! boom again' } });
+  const { installPluginManager } = await freshImport('pluginManager.js');
+  const mgr = installPluginManager();
+  await mgr.load();
+
+  const updateBtn = [...dom.libList.querySelectorAll('button')].find(b => b.textContent === 'Update');
+  updateBtn.click();
+  await tick();
+
+  const row = dom.libList.querySelector('.pll-row');
+  assert.ok(row.querySelector('.pll-installed-as'), 'update (pull) itself succeeded');
+  assert.match(dom.libStatus.textContent, /post-update command failed/);
+  assert.equal(dom.libStatus.classList.contains('pl-status-err'), true);
+  assert.match(dom.tailPre.textContent, /npm ERR! boom again/);
+});
+
+test('pluginManager: empty library renders the empty-state message', async () => {
+  const window = makeWindow();
+  const dom = buildPluginManagerDom(window.document);
+  globalThis.fetch = (url) => {
+    if (url === '/api/plugins/library') return Promise.resolve({ ok: true, json: async () => [] });
+    return Promise.resolve({ ok: true, json: async () => [] });
+  };
+  const { installPluginManager } = await freshImport('pluginManager.js');
+  const mgr = installPluginManager();
+  await mgr.load();
+  assert.match(dom.libStatus.textContent, /No library entries/);
+  assert.equal(dom.libList.children.length, 0);
+});
+
 // ── pluginBridge (scripted fake window — proves classic-script semantics) ──
 
 async function runBridge({ pathname = '/plugins/fake-plugin/', embedded = true, readyState = 'complete' } = {}) {

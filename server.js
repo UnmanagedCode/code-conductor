@@ -17,6 +17,7 @@ import { ensureRootClaudeMd } from './src/rootClaudeMd.js';
 import { ensureConductProject } from './src/conduct.js';
 import { restoreFromResumeManifest } from './src/resumeRestart.js';
 import { createPluginHost } from './src/plugins/registry.js';
+import { createPluginLibrary } from './src/plugins/library.js';
 import { buildPluginProxy } from './src/plugins/proxy.js';
 import { setPluginConventionsProvider } from './src/projectConventions.js';
 import { setPluginScaffoldsProvider } from './src/projectScaffolds.js';
@@ -27,6 +28,7 @@ export function createServer({ withInstances = true, claudeLauncher } = {}) {
   const app = express();
   const instances = withInstances ? new InstanceManager({ claudeLauncher }) : null;
   const pluginHost = withInstances ? createPluginHost({ instances }) : null;
+  const pluginLibrary = withInstances ? createPluginLibrary({ pluginHost }) : null;
   // Enabled plugins contribute project conventions + scaffolds through these
   // providers (the host is a runtime singleton, wired after construction).
   // `conventions()` is grouped by scope; only the `project` group is routed
@@ -40,7 +42,7 @@ export function createServer({ withInstances = true, claudeLauncher } = {}) {
   // /admin/restart) can reach the http server + wss without those
   // existing at route-build time. Populated below once they do.
   const serverCtx = {};
-  app.use('/api', buildRoutes({ instances, serverCtx, pluginHost }));
+  app.use('/api', buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }));
   app.use('/mcp', buildMcpRouter({ instances, pluginHost }));
   const pluginProxy = buildPluginProxy({ pluginHost });
   app.use('/plugins', pluginProxy.handler);
@@ -68,7 +70,7 @@ export function createServer({ withInstances = true, claudeLauncher } = {}) {
   serverCtx.server = server;
   serverCtx.wss = wss;
 
-  return { app, server, instances, wss, pluginHost };
+  return { app, server, instances, wss, pluginHost, pluginLibrary };
 }
 
 // `listen` with retry-on-EADDRINUSE — the self-respawn restart path

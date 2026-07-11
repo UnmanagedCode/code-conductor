@@ -34,7 +34,9 @@ const BACKOFF_UNIT_MS = 1000;   // backoff = min(2^n, 30) * unit
 const BACKOFF_CAP_UNITS = 30;
 const WORKSPACE_AUTO_ASSIGN = 'CC-Dev';
 
-function httpError(status, message, extra = {}) {
+// Exported for reuse by sibling collaborators (e.g. library.js) that need
+// the same statusCode-bearing Error shape without duplicating it.
+export function httpError(status, message, extra = {}) {
   const e = new Error(message);
   e.statusCode = status;
   Object.assign(e, extra);

@@ -284,8 +284,30 @@ Inside the iframe the bridge patches `history.pushState` → `replaceState`, so 
 | `POST /api/plugins/:id/stop` | SIGTERM the process group (SIGKILL after 3 s) |
 | `GET /api/plugins/:id/status` | row + live probe (flips a silently-dead child to `crashed`) |
 | `POST /api/plugins/:id/version` | `{type:"main"}` \| `{type:"worktree", name}`; validates the target checkout (400 keeps previous state), restarts if running |
+| `GET /api/plugins/library` | Plugin Library catalog: `{id, name, description, repo, installed, installedAs}[]` — `installed` is true when the repo's derived target directory already exists under `projectsRoot()`. |
+| `POST /api/plugins/library/:id/install` | clone the entry's `repo` into `<projectsRoot>/<name>` (name derived from the URL), rescan, then run `postClone` if set; **never enables/starts** the result. `{id, name, project, path, postClone}` on success (`postClone` is `null` when unset, else `{ran:true, ok, code, tail}` — **a failed `postClone` does NOT fail the request or remove the clone**, see below). 404 unknown library id, 400 invalid/disallowed repo URL scheme or a name that can't be derived, 409 already installed, 502 + `tail` on clone failure. |
+| `POST /api/plugins/library/:id/update` | `git pull --ff-only` in `<projectsRoot>/<name>`, rescan, then run `postPull` if set. `{id, name, project, path, postPull}` on success (same shape as `postClone`). 404 unknown library id or not installed, 502 + `tail` on pull failure (never attempts a merge). |
 
 Errors: `{error}` JSON with 400/404/409/502/503 per the registry rules above.
+
+#### Plugin Library — drop-in manifest, `<orchStoreRoot()>/plugins/library/*.json`
+
+One JSON object per file (any filename ending `.json`), registering an installable plugin entry:
+
+```jsonc
+{
+  "id": "my-plugin",             // REQUIRED, unique catalog key — overrides a built-in entry with the same id
+  "name": "My Plugin",           // REQUIRED display name
+  "description": "optional",     // OPTIONAL
+  "repo": "https://github.com/org/my-plugin", // REQUIRED clone URL — scheme must be http:, https:, or git:
+  "postClone": "bash install.sh", // OPTIONAL shell command, run via `bash -lc`, cwd = the cloned project dir
+  "postPull": "bash install.sh"   // OPTIONAL shell command, run via `bash -lc` after a successful Update pull
+}
+```
+
+A built-in `code-share` entry (`https://github.com/UnmanagedCode/code-share`, no post-hooks) and a `code-playwright` entry (`https://github.com/UnmanagedCode/code-playwright`, `postClone`/`postPull` both `bash install.sh` — Playwright + Chromium glue for visual UI debugging) are always present, even with no library dir. Malformed JSON or a file missing `id`/`name`/`repo` is skipped with a `console.warn` — never fatal to the list. The install target project name is the URL's last path segment with a trailing `.git` stripped (e.g. `.../org/my-plugin(.git)` → `my-plugin`), validated the same way as any other project name.
+
+**`postClone`/`postPull` execution.** Run bounded (5 min timeout) via a detached process group so a command that spawns children of its own (`npm install`, a browser-binary downloader) can be fully killed on timeout, not just its direct child; output is captured (16 KB running cap, 4000-char tail surfaced in the response). This is a code-execution surface — acceptable because built-in entries are trusted and drop-in files come from trusted local tooling (the same trust stance that already applies to a plugin's own manifest `backend.start`). **Asymmetric failure handling is intentional:** a failed `git clone`/`git pull` is a hard failure (the request rejects; a failed clone is also rolled back) because the underlying operation itself didn't succeed, whereas a failed `postClone`/`postPull` is reported as a **soft warning on an otherwise-successful response** — the clone/pull already succeeded and is already discoverable, only the convenience command failed. The documented retry path for a failed `postClone` is hitting **Update** (which reruns `postPull`) rather than reinstalling — `code-playwright` sets both fields to the identical command specifically so Update is a true retry.
 
 ### Plugin MCP forwarding — child wire contract (pinned)
 

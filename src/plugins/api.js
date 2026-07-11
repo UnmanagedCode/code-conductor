@@ -5,12 +5,27 @@ import express from 'express';
 // the reverse proxy and MCP forwarding. Mounted from src/routes.js at
 // /plugins (⇒ /api/plugins), inheriting its JSON body parser and its
 // trailing error middleware (err.statusCode → JSON).
-export function buildPluginApi({ pluginHost } = {}) {
+export function buildPluginApi({ pluginHost, pluginLibrary } = {}) {
   const r = express.Router();
 
   r.use((req, res, next) => {
     if (!pluginHost) return res.status(404).json({ error: 'plugins are not available' });
     next();
+  });
+
+  // Plugin Library — installable catalog (git repo URLs) + clone-to-install.
+  // Constructed alongside pluginHost (same withInstances gate in server.js),
+  // so the guard above already covers these too.
+  r.get('/library', async (req, res, next) => {
+    try { res.json(await pluginLibrary.list()); } catch (e) { next(e); }
+  });
+
+  r.post('/library/:id/install', async (req, res, next) => {
+    try { res.json(await pluginLibrary.install(req.params.id)); } catch (e) { next(e); }
+  });
+
+  r.post('/library/:id/update', async (req, res, next) => {
+    try { res.json(await pluginLibrary.update(req.params.id)); } catch (e) { next(e); }
   });
 
   r.get('/', async (req, res, next) => {

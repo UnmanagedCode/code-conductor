@@ -157,13 +157,13 @@ function mountInstallableCatalog(r, cfg) {
   return { state };
 }
 
-export function buildRoutes({ instances, serverCtx, pluginHost } = {}) {
+export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } = {}) {
   const r = express.Router();
   r.use(express.json({ limit: '1mb' }));
   // Plugin management API (GET /, rescan, enable/disable/start/stop/status/
-  // version) — delegates to the registry, errors bubble to the middleware
-  // at the bottom of this router.
-  r.use('/plugins', buildPluginApi({ pluginHost }));
+  // version, library list/install) — delegates to the registry/library,
+  // errors bubble to the middleware at the bottom of this router.
+  r.use('/plugins', buildPluginApi({ pluginHost, pluginLibrary }));
 
   // Nudge every connected client to re-fetch /api/projects. Mirrors the
   // hint that wsHub.js broadcasts on instance lifecycle events — used

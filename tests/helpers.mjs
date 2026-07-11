@@ -71,7 +71,7 @@ export async function bootServer({ scenarioPath, useRealClaude = false, realProc
     claudeLauncher = new InProcessClaudeLauncher();
   }
 
-  const { server, instances, pluginHost } = createServer({ claudeLauncher });
+  const { server, instances, pluginHost, pluginLibrary } = createServer({ claudeLauncher });
   await new Promise((resolve, reject) => {
     server.once('error', reject);
     server.listen(0, '127.0.0.1', resolve);
@@ -97,7 +97,7 @@ export async function bootServer({ scenarioPath, useRealClaude = false, realProc
     await rmrf(tmpHome);
   }
 
-  return { baseUrl, wsUrl, server, instances, pluginHost, tmpHome, projectsRoot, claudeProjectsRoot, close };
+  return { baseUrl, wsUrl, server, instances, pluginHost, pluginLibrary, tmpHome, projectsRoot, claudeProjectsRoot, close };
 }
 
 // MCP returns no longer carry the instanceId — resolve a live instance from
