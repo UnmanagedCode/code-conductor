@@ -167,7 +167,7 @@ test('PUT selection regenerates the projects-root CLAUDE.md; built-in edit/delet
     const content = await read(path.join(projectsRoot, 'CLAUDE.md'));
     assert.match(content, /## Git hygiene/);
     assert.doesNotMatch(content, /## Opening URLs/);
-    assert.ok(content.startsWith('# Project workspace conventions'), 'core first');
+    assert.ok(content.startsWith('# Workspace conventions'), 'core first');
 
     const put = await api(baseUrl, 'PUT', '/api/settings/workspace-conventions/git-hygiene', { name: 'X' });
     assert.equal(put.status, 400);

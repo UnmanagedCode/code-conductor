@@ -36,7 +36,7 @@ export const SEED_MODULES = [
     description: 'Init repo; git identity; commit-per-turn; .gitignore; no push; no hook bypass' },
   { slug: 'readme-maintenance', name: 'README maintenance',
     description: 'Read README before touching a project; create/update it; keep functional + technical in sync' },
-  { slug: 'system-prompt-docs', name: 'System-prompt docs: instruction, not color',
+  { slug: 'system-prompt-docs', name: 'System-prompt docs',
     description: 'CLAUDE.md/CONDUCT.md cost tokens every session — cut color, keep behavior-changing instruction' },
   { slug: 'opening-urls', name: 'Opening URLs',
     description: 'Render actionable URLs as tappable ▶ buttons; never open them yourself; use sparingly' },
@@ -46,7 +46,7 @@ const catalog = createFragmentCatalog({
   seeds: SEED_MODULES,
   seedDir: MODULES_DIR,
   storeFile: () => path.join(orchStoreRoot(), 'workspace-modules.json'),
-  noun: 'module',
+  noun: 'convention',
 });
 
 // ── Fragment read (core is always-on, cached per resolved path) ──────────────

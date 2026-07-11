@@ -1,4 +1,4 @@
-## System-prompt docs: instruction, not color
+## System-prompt docs
 
 This file, each project's `CLAUDE.md`, and everything they import (e.g. `CONDUCT.md`) load into the system prompt of every session — each sentence is a recurring per-session cost. When writing or editing any of them:
 

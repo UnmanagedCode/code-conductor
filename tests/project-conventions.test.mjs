@@ -46,18 +46,18 @@ test('SEED_PROJECT_CONVENTIONS has 4 entries with expected slugs', () => {
   assert.ok(slugs.includes('design-guidelines'));
   assert.ok(slugs.includes('testing-guidelines'));
   assert.ok(slugs.includes('documentation-guidelines'));
-  assert.ok(slugs.includes('migrations-over-compat'));
+  assert.ok(slugs.includes('migration-guidelines'));
   for (const r of SEED_PROJECT_CONVENTIONS) {
     assert.ok(r.name, 'seed convention has name');
     assert.ok(r.description, 'seed convention has description');
   }
 });
 
-test('SEED_PROJECT_CONVENTIONS order is design → testing → documentation → migrations-over-compat', () => {
+test('SEED_PROJECT_CONVENTIONS order is design → testing → documentation → migration-guidelines', () => {
   assert.equal(SEED_PROJECT_CONVENTIONS[0].slug, 'design-guidelines');
   assert.equal(SEED_PROJECT_CONVENTIONS[1].slug, 'testing-guidelines');
   assert.equal(SEED_PROJECT_CONVENTIONS[2].slug, 'documentation-guidelines');
-  assert.equal(SEED_PROJECT_CONVENTIONS[3].slug, 'migrations-over-compat');
+  assert.equal(SEED_PROJECT_CONVENTIONS[3].slug, 'migration-guidelines');
 });
 
 test('getCatalog seed bodies (loaded from .md fragments) have correct ## headings', async () => {
@@ -67,7 +67,7 @@ test('getCatalog seed bodies (loaded from .md fragments) have correct ## heading
   assert.ok(byslug['design-guidelines'].body.startsWith('## Design guidelines'));
   assert.ok(byslug['testing-guidelines'].body.startsWith('## Testing guidelines'));
   assert.ok(byslug['documentation-guidelines'].body.startsWith('## Documentation guidelines'));
-  assert.ok(byslug['migrations-over-compat'].body.startsWith('## Migration guidelines'));
+  assert.ok(byslug['migration-guidelines'].body.startsWith('## Migration guidelines'));
 });
 
 test('design-guidelines body includes a YAGNI bullet', async () => {

@@ -1,4 +1,4 @@
-## Capturing learnings (close the loop)
+## Capturing learnings
 
 When you (or a worker) hit a durable, reusable lesson — one that should reach **future sessions and workers**, not just this turn — don't let it die, but never write it anywhere binding without sign-off.
 

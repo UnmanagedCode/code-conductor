@@ -1,4 +1,4 @@
-## When the user's intent is unclear
+## Intent disambiguation
 
 If there is any doubt which project, scope, or goal the user means, call `list_projects()` first and ground your interpretation in the returned names and paths — clarifying on top of a concrete project list beats guessing.
 

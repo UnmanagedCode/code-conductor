@@ -207,7 +207,7 @@
             <p class="settings-desc">
               Markdown guidance composed into Claude sessions, at three scopes that cascade
               <strong>Conductor → Workspace → Project</strong>. Each scope has an always-on
-              <strong>core</strong> plus toggleable built-in modules (read-only) and custom modules you
+              <strong>core</strong> plus toggleable built-in conventions (read-only) and custom conventions you
               can add, edit, and delete.
             </p>
             <details class="conventions-block">
@@ -220,7 +220,7 @@
               <div id="wk-status" class="st-status" aria-live="polite">Loading…</div>
               <ul id="wk-module-list" class="cc-module-list"></ul>
               <div id="wk-add-form" class="or-add-form" hidden>
-                <input id="wk-add-slug" type="text" placeholder="slug (e.g. my-module)" />
+                <input id="wk-add-slug" type="text" placeholder="slug (e.g. my-convention)" />
                 <input id="wk-add-name" type="text" placeholder="Short name" />
                 <input id="wk-add-desc" type="text" placeholder="One-line description" />
                 <textarea id="wk-add-body" rows="6" placeholder="Markdown body composed into the root CLAUDE.md"></textarea>
@@ -231,7 +231,7 @@
                 <p class="error" id="wk-add-error"></p>
               </div>
               <div class="st-actions">
-                <button id="wk-add-btn" type="button">+ Add custom module</button>
+                <button id="wk-add-btn" type="button">+ Add custom convention</button>
               </div>
             </details>
             <details class="conventions-block">
@@ -239,13 +239,13 @@
               <p class="settings-desc">
                 Composed into the 🎼 Conduct orchestrator's guidance (<code>.conduct/CONDUCT.md</code>).
                 Global — applies to every conductor session; changes regenerate the doc for the
-                next-spawned conductor. Keep the enabled set lean — every module costs tokens in every
+                next-spawned conductor. Keep the enabled set lean — every convention costs tokens in every
                 conductor session.
               </p>
               <div id="cc-status" class="st-status" aria-live="polite">Loading…</div>
               <ul id="cc-module-list" class="cc-module-list"></ul>
               <div id="cc-add-form" class="or-add-form" hidden>
-                <input id="cc-add-slug" type="text" placeholder="slug (e.g. my-module)" />
+                <input id="cc-add-slug" type="text" placeholder="slug (e.g. my-convention)" />
                 <input id="cc-add-name" type="text" placeholder="Short name" />
                 <input id="cc-add-desc" type="text" placeholder="One-line description" />
                 <textarea id="cc-add-body" rows="6" placeholder="Markdown body composed into CONDUCT.md"></textarea>
@@ -256,7 +256,7 @@
                 <p class="error" id="cc-add-error"></p>
               </div>
               <div class="st-actions">
-                <button id="cc-add-btn" type="button">+ Add custom module</button>
+                <button id="cc-add-btn" type="button">+ Add custom convention</button>
               </div>
             </details>
             <details class="conventions-block">

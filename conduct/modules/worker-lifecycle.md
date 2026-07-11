@@ -1,4 +1,4 @@
-## Worker lifecycle: reuse before merge, retire after
+## Worker lifecycle
 
 This governs **worktree-backed** workers. (Read-only/operational workers have nothing to merge or pollute — keep those warm per "Operational tasks".)
 

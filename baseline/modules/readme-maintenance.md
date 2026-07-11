@@ -1,6 +1,6 @@
 ## README maintenance
 
-- **Read `README.md` before interacting with a project.** Read the project's `README.md` (if one exists) before anything that touches its behavior *or* contents — running scripts/servers, build/test commands, project tooling, code/config changes, **or exploring the codebase** (reading sources, grepping, globbing, listing dirs beyond the repo root). Pure git actions (`status`, `log`, `diff`, `add`, `commit`, branch inspection) are fine without it.
+- **Read `README.md` before interacting with a project.** Read the project's `README.md` (if one exists) before anything that touches its behavior *or* contents — running scripts/servers, build/test commands, project tooling, code/config changes. Pure exploration (reading sources, grepping, globbing, listing dirs) doesn't need it.
 - **Create a `README.md` when the project has a meaningful purpose** (more than a one-off scratchpad). Write it at the project root, covering **both**:
   - a **functional description** (what the project does, who it's for, how to use it, the user-facing surface), and
   - a **technical description** (stack, architecture, key components, how to run / test / extend, important defaults, known limitations).
