@@ -475,8 +475,9 @@ export function createPluginHost({
       frontendPath: entry.manifest?.frontend?.path ?? null,
       hasMcp: !!entry.manifest?.mcp,
       // Contribution metadata (slugs namespaced <plugin-id>/<slug>).
-      conventions: (entry.manifest?.conventions ?? []).map(g => ({ slug: `${id}/${g.slug}`, name: g.name, description: g.description })),
-      scaffolds: (entry.manifest?.scaffolds ?? []).map(sc => ({ slug: `${id}/${sc.slug}`, name: sc.name, description: sc.description })),
+      // `hasScaffold` flags a convention whose pick triggers a one-time setup
+      // directive (returned by create_project) in addition to any fragment.
+      conventions: (entry.manifest?.conventions ?? []).map(g => ({ slug: `${id}/${g.slug}`, name: g.name, description: g.description, hasScaffold: !!g.scaffold })),
       port: rec?.port ?? null,
       pid: rec?.pid ?? null,
       startedAt: rec?.startedAt ?? null,
@@ -590,11 +591,11 @@ export function createPluginHost({
     return { status: s?.status ?? 'stopped', port: rec?.port ?? null };
   }
 
-  // ── convention / scaffold contributions ─────────────────────────────
+  // ── convention contributions ────────────────────────────────────────
   // Only enabled + `ok` plugins contribute (a crashed/disabled/invalid plugin
-  // never surfaces its conventions or scaffolds). Bodies are resolved from
-  // the active checkout; a fragment path that vanished after load is skipped
-  // with a warning (manifest load already rejects missing files).
+  // never surfaces its conventions). Bodies are resolved from the active
+  // checkout; a fragment path that vanished after load is skipped with a
+  // warning (manifest load already rejects missing files).
   const fragmentBodyCache = new Map(); // abs path -> body
   async function readFragment(abs) {
     if (fragmentBodyCache.has(abs)) return fragmentBodyCache.get(abs);
@@ -607,13 +608,15 @@ export function createPluginHost({
     return [...byId.values()].filter(e => e.discoveryState === 'ok' && persisted.plugins[e.id]?.enabled === true);
   }
 
-  // Convention fragments contributed by enabled plugins, GROUPED BY SCOPE so
+  // Convention entries contributed by enabled plugins, GROUPED BY SCOPE so
   // each scope routes to its own catalog. Only `project` is wired today (into
   // the project-conventions catalog via server.js); the workspace/conductor
   // groups already exist here (empty until their scope is enabled in
   // manifest.js + a provider is wired), so future routing is a localized add,
   // not a redesign. Each entry: { slug:'<plugin-id>/<slug>', name, description,
-  // body, plugin:id }.
+  // body, scaffold?, plugin:id } — `body` is '' when the convention carries no
+  // fragment (scaffold-only); `scaffold` is the resolved directive text, present
+  // only when the entry carries a scaffold facet.
   async function conventions() {
     await ensureInit();
     const byScope = Object.fromEntries(SUPPORTED_CONVENTION_SCOPES.map(s => [s, []]));
@@ -624,37 +627,23 @@ export function createPluginHost({
       try { cwd = await resolveCwd(entry); } catch (e) { console.warn(`plugins: conventions cwd for '${entry.id}' failed: ${e.message}`); continue; }
       for (const g of list) {
         if (!byScope[g.scope]) continue; // scope not routed yet — skip defensively
-        try {
-          const body = await readFragment(path.join(cwd, g.file));
-          byScope[g.scope].push({ slug: `${entry.id}/${g.slug}`, name: g.name, description: g.description, body, plugin: entry.id });
-        } catch (e) {
-          console.warn(`plugins: convention '${entry.id}/${g.slug}' body unreadable: ${e.message}`);
+        let body = '';
+        if (g.file) {
+          try { body = await readFragment(path.join(cwd, g.file)); }
+          catch (e) { console.warn(`plugins: convention '${entry.id}/${g.slug}' body unreadable: ${e.message}`); continue; }
         }
+        let scaffold;
+        if (g.scaffold) {
+          if (g.scaffold.text !== undefined) scaffold = g.scaffold.text;
+          else {
+            try { scaffold = await readFragment(path.join(cwd, g.scaffold.file)); }
+            catch (e) { console.warn(`plugins: convention '${entry.id}/${g.slug}' scaffold unreadable: ${e.message}`); continue; }
+          }
+        }
+        byScope[g.scope].push({ slug: `${entry.id}/${g.slug}`, name: g.name, description: g.description, body, ...(scaffold !== undefined ? { scaffold } : {}), plugin: entry.id });
       }
     }
     return byScope;
-  }
-
-  // Scaffolds (one-time project-setup directives) offered at project creation.
-  // Each entry: { slug:'<plugin-id>/<slug>', name, description, text, plugin:id }.
-  async function scaffolds() {
-    await ensureInit();
-    const out = [];
-    for (const entry of contributingEntries()) {
-      const list = entry.manifest.scaffolds ?? [];
-      if (list.length === 0) continue;
-      let cwd;
-      try { cwd = await resolveCwd(entry); } catch (e) { console.warn(`plugins: scaffolds cwd for '${entry.id}' failed: ${e.message}`); continue; }
-      for (const sc of list) {
-        let text = sc.text;
-        if (text === undefined) {
-          try { text = await readFragment(path.join(cwd, sc.file)); }
-          catch (e) { console.warn(`plugins: scaffold '${entry.id}/${sc.slug}' body unreadable: ${e.message}`); continue; }
-        }
-        out.push({ slug: `${entry.id}/${sc.slug}`, name: sc.name, description: sc.description, text, plugin: entry.id });
-      }
-    }
-    return out;
   }
 
   function setServerPort(p) { serverPort = p; }
@@ -672,7 +661,7 @@ export function createPluginHost({
     init: ensureInit,
     list, rescan, enable, disable, start, stop, status,
     ensureStarted, setActiveVersion, toolsFor, runtimeInfo,
-    conventions, scaffolds,
+    conventions,
     reportUpstreamFailure, setServerPort, stopAll,
   };
 }

@@ -53,5 +53,31 @@ export const deleteCustomConvention = catalog.deleteCustom;
 
 // Resolves an array of slugs against the catalog and returns the markdown block
 // to append after `@../CLAUDE.md\n` in a new project's CLAUDE.md. Unknown slugs
-// produce a 400 error. Empty array → '' (no append).
+// produce a 400 error. Slugs whose convention carries only a scaffold facet (no
+// fragment body) contribute nothing. Empty array → '' (no append).
 export const composeProjectConventionsBlock = catalog.compose;
+
+// Resolves selected slugs against the catalog and composes the one-time setup
+// directives of those that carry a scaffold facet into a single orchestrator-
+// guidance block that `create_project` RETURNS (never persisted), for the
+// conductor to fold into its first worker brief. Slugs are resolved in
+// selection order; unknown slug → 400; a slug without a scaffold facet is
+// skipped. No scaffold facets among the selection → '' (no scaffold).
+export async function composeProjectScaffold(projectName, slugs) {
+  if (!Array.isArray(slugs) || slugs.length === 0) return '';
+  const entries = await getCatalog();
+  const bySlug = new Map(entries.map(e => [e.slug, e]));
+  const steps = [];
+  for (const slug of slugs) {
+    const entry = bySlug.get(slug);
+    if (!entry) {
+      const err = new Error(`unknown convention slug '${slug}'`);
+      err.statusCode = 400;
+      throw err;
+    }
+    if (entry.scaffold) steps.push(entry.scaffold);
+  }
+  if (steps.length === 0) return '';
+  const numbered = steps.map((t, i) => `${i + 1}) ${t}`).join('\n\n');
+  return `Project "${projectName}" was created with these setup steps. Complete them first, before other work:\n\n${numbered}`;
+}
