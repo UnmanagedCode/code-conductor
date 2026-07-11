@@ -84,15 +84,16 @@ test('conventions: scope is required and explicit', () => {
   assert.ok(mk('').errors.some(e => e.includes("'conventions[0].scope' is required")));
   // project → valid.
   assert.equal(mk('project').errors, undefined);
+  // conductor → valid.
+  assert.equal(mk('conductor').errors, undefined);
 });
 
-test('conventions: workspace/conductor scopes rejected as not-yet-supported', () => {
+test('conventions: workspace scope rejected as not-yet-supported', () => {
   const mk = (scope) => validateManifest(base({ conventions: [{ slug: 'ok', name: 'n', description: 'd', file: 'g.md', scope }] }));
-  assert.ok(mk('workspace').errors.some(e => e === 'scope "workspace" not yet supported (only "project" is currently accepted)'));
-  assert.ok(mk('conductor').errors.some(e => e === 'scope "conductor" not yet supported (only "project" is currently accepted)'));
+  assert.ok(mk('workspace').errors.some(e => e === 'scope "workspace" not yet supported (only "project", "conductor" are currently accepted)'));
   // An unrecognised value gets the standard invalid-enum error, not the planned-scope hint.
   const bogus = mk('galaxy');
-  assert.ok(bogus.errors.some(e => e.includes("'conventions[0].scope' must be one of: project")));
+  assert.ok(bogus.errors.some(e => e.includes("'conventions[0].scope' must be one of: project, conductor")));
   assert.ok(!bogus.errors.some(e => e.includes('not yet supported')));
 });
 

@@ -20,6 +20,7 @@ import { createPluginHost, WORKSPACE_AUTO_ASSIGN } from './src/plugins/registry.
 import { createPluginLibrary } from './src/plugins/library.js';
 import { buildPluginProxy } from './src/plugins/proxy.js';
 import { setPluginConventionsProvider } from './src/projectConventions.js';
+import { setPluginConductorConventionsProvider } from './src/conductModules.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -29,12 +30,13 @@ export function createServer({ withInstances = true, claudeLauncher } = {}) {
   const pluginHost = withInstances ? createPluginHost({ instances }) : null;
   const pluginLibrary = withInstances ? createPluginLibrary({ pluginHost }) : null;
   // Enabled plugins contribute project conventions (each optionally carrying a
-  // one-time scaffold facet) through this provider (the host is a runtime
-  // singleton, wired after construction). `conventions()` is grouped by scope;
-  // only the `project` group is routed today (workspace/conductor scopes aren't
-  // accepted yet — see manifest.js).
+  // one-time scaffold facet) and conductor conventions through these providers
+  // (the host is a runtime singleton, wired after construction).
+  // `conventions()` is grouped by scope; `project` and `conductor` are routed
+  // today (`workspace` isn't accepted yet — see manifest.js).
   if (pluginHost) {
     setPluginConventionsProvider(async () => (await pluginHost.conventions()).project);
+    setPluginConductorConventionsProvider(async () => (await pluginHost.conventions()).conductor);
   }
 
   // serverCtx is a shared mutable handle so route handlers (POST

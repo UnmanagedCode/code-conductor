@@ -48,11 +48,21 @@ export const SEED_MODULES = [
     description: 'Where durable lessons go (auto-memory vs CLAUDE.md), always opt-in' },
 ];
 
+// Plugin-contributed conductor-convention fragments join the catalog through
+// this provider, mirroring projectConventions.js's identical pattern. Injected
+// after construction (server.js wires it to the plugin host); default no-op
+// so plugin-less imports/tests work.
+let pluginConductorConventionsProvider = async () => [];
+export function setPluginConductorConventionsProvider(fn) {
+  pluginConductorConventionsProvider = fn ?? (async () => []);
+}
+
 const catalog = createFragmentCatalog({
   seeds: SEED_MODULES,
   seedDir: MODULES_DIR,
   storeFile: () => path.join(orchStoreRoot(), 'conduct-modules.json'),
   noun: 'convention',
+  extraProvider: () => pluginConductorConventionsProvider(),
 });
 
 // ── Fragment reads (core + footer are always-on, cached per resolved path) ──
