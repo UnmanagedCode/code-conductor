@@ -47,6 +47,12 @@ const VALID_MODES = new Set(['plan', 'ask', 'bypassPermissions']);
 // backgrounded subagent is still working.
 const TERMINAL_TASK_STATUSES = new Set(['completed', 'failed', 'cancelled', 'error']);
 
+// The task-lifecycle system subtypes. Events with any OTHER kind/subtype
+// arriving while the instance is idle mark the idle window "dirty" (see
+// _idleWindowDirty) — evidence that something beyond background-task
+// bookkeeping (e.g. an unprompted re-invocation turn opening) is happening.
+const TASK_LIFECYCLE_SUBTYPES = new Set(['task_started', 'task_updated', 'task_notification']);
+
 // Minimum length for a sessionId PREFIX to be eligible for resolution (see
 // InstanceManager.resolveSessionRef). An exact full-id match bypasses this floor;
 // it only guards non-exact prefixes against absurdly short, fragile matches
@@ -391,22 +397,42 @@ export class Instance extends EventEmitter {
     // top-level tool_result (cases 1+2 — attach is batched, one result flushes
     // the queue), by the next idle→turn transition (case 3 — the dequeued
     // notification IS that turn's input; see _setStatus), and on (re)spawn.
-    // Read by IdleSubscriptionHub.onTurnEnd: still-set at turn_end means a
+    // Read by IdleSubscriptionHub: still-set at turn_end means a
     // re-invocation turn is genuinely owed, so the idle wake defers to it.
+    // (Idle-time completions that get NO re-invocation turn at all are the
+    // hub's idle task-drain settle path — see IdleSubscriptionHub.onEvent.)
     this._taskNotificationPending = false;
+    // True when any NON-task-lifecycle event was processed while this
+    // instance was idle — i.e. the current idle window is not pure background-
+    // task bookkeeping. The load-bearing case: an unprompted re-invocation
+    // turn announces itself with CLI-local `system/init` + `system/status`
+    // lines long before its `message_start` (which waits on the API) flips
+    // status to 'turn'. A background task draining inside that window must NOT
+    // fire the idle task-drain wake (the opening turn's turn_end owns it), so
+    // the hub refuses to arm a settle while this is set. SET at the top of the
+    // _handleStdoutLine event loop for any idle-time event outside
+    // TASK_LIFECYCLE_SUBTYPES; CLEARED on turn_end (a fresh idle window starts
+    // clean) and on (re)spawn. Replayed history (loadHistory) bypasses
+    // _handleStdoutLine entirely, so replay can never corrupt it.
+    this._idleWindowDirty = false;
   }
 
   // Live count of in-flight background Agent-tool (subagent) tasks. Read by
-  // IdleSubscriptionHub.onTurnEnd to defer the idle wake until a worker's turn
+  // IdleSubscriptionHub to defer the idle wake until a worker's turn
   // ends with no subagents still running. Mirrors summary().activeAgentTasks
   // without building the whole summary object.
   get activeAgentTaskCount() { return this._activeAgentTasks.size; }
 
   // True when a mid-turn task_notification is still unconsumed (so a
   // re-invocation turn is owed — see the _taskNotificationPending comment).
-  // Read by IdleSubscriptionHub.onTurnEnd as a second defer reason alongside
+  // Read by IdleSubscriptionHub as a second defer reason alongside
   // activeAgentTaskCount.
   get taskNotificationPending() { return this._taskNotificationPending; }
+
+  // True when the current idle window contains non-task-lifecycle activity
+  // (see the _idleWindowDirty comment). Read by IdleSubscriptionHub to refuse
+  // arming an idle task-drain settle.
+  get idleWindowDirty() { return this._idleWindowDirty; }
 
   summary() {
     // Live global-overage gate (injected by the manager at create). Surfaces the
@@ -691,6 +717,7 @@ export class Instance extends EventEmitter {
     // from a prior run's background subagents are gone with that process.
     this._activeAgentTasks = new Map();
     this._taskNotificationPending = false;
+    this._idleWindowDirty = false;
     const { command, prefixArgs } = resolveClaudeBin();
     if (resume) this.sessionId = resume;
     else if (!this.sessionId) this.sessionId = randomUUID();
@@ -833,6 +860,14 @@ export class Instance extends EventEmitter {
     if (leafUuidThisLine) this._lastLeafUuid = leafUuidThisLine;
 
     for (const ev of events) {
+      // Idle-window dirty tracking (see the _idleWindowDirty comment):
+      // evaluated BEFORE the event's own state mutations so it reflects the
+      // status the event ARRIVED under. Any idle-time event that isn't pure
+      // task bookkeeping dirties the window; turn_end below starts it clean.
+      if (this.status === 'idle'
+          && !(ev.kind === 'system' && TASK_LIFECYCLE_SUBTYPES.has(ev.subtype))) {
+        this._idleWindowDirty = true;
+      }
       if (ev.kind === 'system' && ev.subtype === 'init') {
         const sid = ev.data?.session_id;
         if (sid && sid !== this.sessionId) {
@@ -906,6 +941,7 @@ export class Instance extends EventEmitter {
       if (ev.kind === 'turn_end') {
         this.lastResponseAt = Date.now();
         this._setStatus('idle');
+        this._idleWindowDirty = false; // fresh idle window starts clean
         this._writeSessionMetadata().catch(() => {});
       }
       // Agent-tool (subagent) task lifecycle. `task_started` fires the moment
@@ -1539,7 +1575,7 @@ export class InstanceManager extends EventEmitter {
     // `_handleOverageTrip` machinery (deduped via `_overageActive`). Its timer is
     // started by the server after listen() and stopped in both shutdown paths.
     this._usageMonitor = new UsageOverageMonitor(this);
-    this.on('event', (e) => this._idleHub.onTurnEnd(e));
+    this.on('event', (e) => this._idleHub.onEvent(e));
     // Global overage auto-stop state. The decision moved off the per-Instance
     // handler (which can't reach the idle-subscription graph) up to here:
     // `_overageActive` is a one-shot guard held from the first trip until the
@@ -1579,19 +1615,21 @@ export class InstanceManager extends EventEmitter {
   // Returns true when a turn_notification for instanceId should be suppressed:
   //   Condition 1 — session is a conductor mid-orchestration (subscribed as caller
   //                 to a worker); isCaller() is reliable here because the caller's
-  //                 subscription is only consumed on the TARGET's turn_end.
+  //                 subscription is only consumed when the TARGET finishes (its
+  //                 turn_end or the idle task-drain settle) or times out.
   //   Condition 2 — session is a worker whose turn_end fired with a subscribed
   //                 conductor watching (whether it woke the conductor now or was
   //                 deferred pending the worker's background subagents);
   //                 wasConsumed() reads _justConsumed, populated in
-  //                 IdleSubscriptionHub.onTurnEnd() before the defer check /
+  //                 IdleSubscriptionHub._onTurnEnd() before the defer check /
   //                 before subscribers clears, so the worker's ping stays
-  //                 suppressed across the whole deferral.
+  //                 suppressed across the whole deferral. (The settle path never
+  //                 marks it — no turn_notification exists at settle-fire time.)
   // ORDERING DEPENDENCY: the idle hub's 'event' listener (registered in the
   // InstanceManager constructor, instances.js) must run before wsHub's listener
   // (registered by attachWsHub in server.js). wasConsumed() is only valid during
-  // the same synchronous dispatch cycle as onTurnEnd(). Do not reorder those
-  // registrations without revisiting this method.
+  // the same synchronous dispatch cycle as the hub's turn_end handling. Do not
+  // reorder those registrations without revisiting this method.
   shouldSuppressTurnNotification(instanceId) {
     const sid = this.byId.get(instanceId)?.sessionId;
     if (!sid) return false;
