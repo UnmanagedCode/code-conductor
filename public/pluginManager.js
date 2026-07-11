@@ -2,21 +2,44 @@
 // GET /api/plugins with immediate lifecycle actions (enable/disable/
 // start/stop; staged-Apply is only for value edits, which this group has
 // none of), a crash-tail expander, and an active-version dropdown (main +
-// the project's worktrees from /api/projects). installed once by
+// the project's worktrees from /api/projects). Below it, the Plugin
+// Library: a catalog of installable plugins (GET /api/plugins/library)
+// with a clone-to-install action (POST .../library/:id/install) — install
+// only clones the repo, it never enables/starts it. installed once by
 // settings.js, which calls load() on every settings open.
 
 export function installPluginManager({ onCatalogChange } = {}) {
   const statusEl = document.getElementById('pl-status');
   const listEl = document.getElementById('pl-list');
   const rescanBtn = document.getElementById('pl-rescan-btn');
+  const libraryStatusEl = document.getElementById('pll-status');
+  const libraryListEl = document.getElementById('pll-list');
+  const libraryTailEl = document.getElementById('pll-tail');
+  const libraryTailPre = document.getElementById('pll-tail-pre');
   if (!listEl) return { load() {} };
 
   let busy = false;
 
+  function setStatusEl(el, text, isError = false) {
+    if (!el) return;
+    el.textContent = text;
+    el.classList.toggle('pl-status-err', isError);
+  }
+
   function setStatus(text, isError = false) {
-    if (!statusEl) return;
-    statusEl.textContent = text;
-    statusEl.classList.toggle('pl-status-err', isError);
+    setStatusEl(statusEl, text, isError);
+  }
+
+  function clearLibraryTail() {
+    if (!libraryTailEl) return;
+    libraryTailEl.hidden = true;
+    if (libraryTailPre) libraryTailPre.textContent = '';
+  }
+
+  function showLibraryTail(text) {
+    if (!libraryTailEl) return;
+    if (libraryTailPre) libraryTailPre.textContent = text;
+    libraryTailEl.hidden = false;
   }
 
   async function api(method, path, body) {
@@ -27,7 +50,11 @@ export function installPluginManager({ onCatalogChange } = {}) {
       cache: 'no-store',
     });
     const data = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+    if (!r.ok) {
+      const err = new Error(data.error || `HTTP ${r.status}`);
+      if (data.tail) err.tail = data.tail;
+      throw err;
+    }
     return data;
   }
 
@@ -215,10 +242,116 @@ export function installPluginManager({ onCatalogChange } = {}) {
     return sel;
   }
 
+  function renderLibrary(rows) {
+    if (!libraryListEl) return;
+    libraryListEl.innerHTML = '';
+    if (rows.length === 0) {
+      setStatusEl(libraryStatusEl, 'No library entries.');
+      return;
+    }
+    setStatusEl(libraryStatusEl, `${rows.length} available`);
+    for (const row of rows) {
+      const li = document.createElement('li');
+      li.className = 'pll-row';
+
+      const head = document.createElement('div');
+      head.className = 'pll-row-head';
+      const name = document.createElement('span');
+      name.className = 'pll-name';
+      name.textContent = row.name;
+      head.appendChild(name);
+      if (row.installed) {
+        const badge = document.createElement('span');
+        badge.className = 'pl-badge pl-badge-enabled';
+        badge.textContent = 'installed';
+        head.appendChild(badge);
+      }
+      li.appendChild(head);
+
+      if (row.description) {
+        const desc = document.createElement('div');
+        desc.className = 'pll-desc';
+        desc.textContent = row.description;
+        li.appendChild(desc);
+      }
+
+      const repo = document.createElement('div');
+      repo.className = 'pll-repo';
+      repo.textContent = row.repo;
+      li.appendChild(repo);
+
+      const actions = document.createElement('div');
+      actions.className = 'pll-actions st-actions';
+      if (row.installed) {
+        const span = document.createElement('span');
+        span.className = 'pll-installed-as';
+        span.textContent = `installed as ${row.installedAs}`;
+        actions.appendChild(span);
+        actions.appendChild(btn('Update', () => updateEntry(row)));
+      } else {
+        actions.appendChild(btn('Install', () => installEntry(row)));
+      }
+      li.appendChild(actions);
+
+      libraryListEl.appendChild(li);
+    }
+  }
+
+  // A postClone/postPull hook failure is reported by the server as a soft
+  // warning on an otherwise-successful response (never thrown) — the clone/
+  // pull itself succeeded, only the convenience command failed. Surfaced
+  // AFTER load() so it isn't clobbered by render()'s own status text.
+  function reportHookWarning(name, verb, hookLabel, hookResult) {
+    if (!hookResult?.ran || hookResult.ok) return;
+    setStatusEl(libraryStatusEl, `${verb} ${name}, but its ${hookLabel} command failed`, true);
+    showLibraryTail(hookResult.tail);
+  }
+
+  async function installEntry(row) {
+    if (busy) return;
+    busy = true;
+    setStatusEl(libraryStatusEl, `Installing ${row.name}…`);
+    clearLibraryTail();
+    try {
+      const result = await api('POST', `/api/plugins/library/${row.id}/install`);
+      await load();
+      onCatalogChange?.();
+      reportHookWarning(row.name, 'Installed', 'post-install', result.postClone);
+    } catch (e) {
+      setStatusEl(libraryStatusEl, `Installing ${row.name} failed: ${e.message || e}`, true);
+      if (e.tail) showLibraryTail(e.tail);
+      busy = false;
+      return;
+    }
+    busy = false;
+  }
+
+  async function updateEntry(row) {
+    if (busy) return;
+    busy = true;
+    setStatusEl(libraryStatusEl, `Updating ${row.name}…`);
+    clearLibraryTail();
+    try {
+      const result = await api('POST', `/api/plugins/library/${row.id}/update`);
+      await load();
+      onCatalogChange?.();
+      reportHookWarning(row.name, 'Updated', 'post-update', result.postPull);
+    } catch (e) {
+      setStatusEl(libraryStatusEl, `Updating ${row.name} failed: ${e.message || e}`, true);
+      if (e.tail) showLibraryTail(e.tail);
+      busy = false;
+      return;
+    }
+    busy = false;
+  }
+
   async function load() {
     try {
-      const [rows, worktrees] = await Promise.all([api('GET', '/api/plugins'), fetchWorktrees()]);
+      const [rows, worktrees, libraryRows] = await Promise.all([
+        api('GET', '/api/plugins'), fetchWorktrees(), api('GET', '/api/plugins/library'),
+      ]);
       render(rows, worktrees);
+      renderLibrary(libraryRows);
     } catch (e) {
       setStatus(`Failed to load plugins: ${e.message || e}`, true);
     }

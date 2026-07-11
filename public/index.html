@@ -296,6 +296,17 @@
             <div class="st-actions">
               <button id="pl-rescan-btn" type="button" title="Re-scan the projects root for conductor.plugin.json manifests">↻ Rescan</button>
             </div>
+            <h3 class="pll-heading">Plugin Library</h3>
+            <p class="settings-desc">
+              Installable plugins you can clone into your projects root. After installing,
+              it shows up above (rescan if needed) — enable it there once it's discovered.
+            </p>
+            <div id="pll-status" class="st-status" aria-live="polite">Loading…</div>
+            <ul id="pll-list" class="pll-list"></ul>
+            <details id="pll-tail" class="pl-tail" hidden>
+              <summary>Install output</summary>
+              <pre id="pll-tail-pre"></pre>
+            </details>
           </div>
           <div id="settings-archived" class="settings-group" hidden>
             <p class="settings-desc">

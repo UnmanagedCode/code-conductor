@@ -110,6 +110,80 @@ test('error shapes: unknown 404, invalid manifest 409, disabled start 409', asyn
   } finally { await boot.close(); }
 });
 
+test('GET /api/plugins/library lists the default code-share entry, unmarked installed', async () => {
+  const boot = await bootServer();
+  try {
+    const r = await api(boot.baseUrl, 'GET', '/api/plugins/library');
+    assert.equal(r.status, 200);
+    const row = r.body.find(e => e.id === 'code-share');
+    assert.ok(row, 'default entry present');
+    assert.equal(row.repo, 'https://github.com/UnmanagedCode/code-share');
+    assert.equal(row.installed, false);
+  } finally { await boot.close(); }
+});
+
+test('GET /api/plugins/library also lists the code-playwright default entry with its postClone/postPull command', async () => {
+  const boot = await bootServer();
+  try {
+    const r = await api(boot.baseUrl, 'GET', '/api/plugins/library');
+    const row = r.body.find(e => e.id === 'code-playwright');
+    assert.ok(row, 'default entry present');
+    assert.equal(row.repo, 'https://github.com/UnmanagedCode/code-playwright');
+    assert.equal(row.postClone, 'bash install.sh');
+    assert.equal(row.postPull, 'bash install.sh');
+  } finally { await boot.close(); }
+});
+
+test('POST /api/plugins/library/:id/update — unknown id 404, not-installed 404', async () => {
+  const boot = await bootServer();
+  try {
+    const ghost = await api(boot.baseUrl, 'POST', '/api/plugins/library/ghost/update');
+    assert.equal(ghost.status, 404);
+
+    const notInstalled = await api(boot.baseUrl, 'POST', '/api/plugins/library/code-share/update');
+    assert.equal(notInstalled.status, 404);
+    assert.match(notInstalled.body.error, /not installed/);
+  } finally { await boot.close(); }
+});
+
+test('GET /api/plugins/library marks an entry installed once its target dir exists', async () => {
+  const boot = await bootServer();
+  try {
+    await fs.mkdir(path.join(boot.projectsRoot, 'code-share'), { recursive: true });
+    const r = await api(boot.baseUrl, 'GET', '/api/plugins/library');
+    const row = r.body.find(e => e.id === 'code-share');
+    assert.equal(row.installed, true);
+    assert.equal(row.installedAs, 'code-share');
+  } finally { await boot.close(); }
+});
+
+test('POST /api/plugins/library/:id/install — unknown id 404, already-installed 409', async () => {
+  const boot = await bootServer();
+  try {
+    const ghost = await api(boot.baseUrl, 'POST', '/api/plugins/library/ghost/install');
+    assert.equal(ghost.status, 404);
+
+    await fs.mkdir(path.join(boot.projectsRoot, 'code-share'), { recursive: true });
+    const taken = await api(boot.baseUrl, 'POST', '/api/plugins/library/code-share/install');
+    assert.equal(taken.status, 409);
+    assert.match(taken.body.error, /already installed/);
+  } finally { await boot.close(); }
+});
+
+test('POST /api/plugins/library/:id/install — disallowed repo URL scheme rejects with 400 before any clone', async () => {
+  const boot = await bootServer();
+  try {
+    const libDir = path.join(boot.projectsRoot, '.code-conductor', 'plugins', 'library');
+    await fs.mkdir(libDir, { recursive: true });
+    await fs.writeFile(path.join(libDir, 'sketchy.json'), JSON.stringify({
+      id: 'sketchy', name: 'Sketchy', repo: 'ftp://example.com/org/sketchy',
+    }));
+    const r = await api(boot.baseUrl, 'POST', '/api/plugins/library/sketchy/install');
+    assert.equal(r.status, 400);
+    await assert.rejects(fs.stat(path.join(boot.projectsRoot, 'sketchy')), { code: 'ENOENT' });
+  } finally { await boot.close(); }
+});
+
 // End-to-end wiring: a real contributions-only plugin, enabled via the host,
 // must surface through server.js's provider hookup on the conventions +
 // project-scaffolds REST endpoints (the paths the new-project dialog fetches).
