@@ -8,9 +8,10 @@
 // A convention may carry a CLAUDE.md fragment and/or a one-time scaffold
 // directive (hasScaffold) — it is one pick either way. Contributions are
 // GROUPED for presentation only: core conventions in their own section, then
-// one section per plugin under a "Set up <plugin>" master toggle; a convention
-// that sets something up shows a "sets up" tag. On create, a picked
-// scaffold-bearing convention's directive is returned in the `scaffold` field.
+// one plain section per plugin (a text heading for provenance, no master
+// toggle). Every convention — core or plugin — renders as its own
+// individually-selectable checkbox. On create, a picked scaffold-bearing
+// convention's directive is returned in the `scaffold` field.
 //
 // Injected interface:
 //   - dom: { newProjectBtn, newProjectDialog, npName, npError, npPreview,
@@ -22,7 +23,7 @@ export function installNewProjectDialog({ dom, refreshProjects, closeSidebarOver
 
   // One opt-in checkbox row. textContent everywhere (never innerHTML) — plugin
   // names/descriptions are trusted own code but built safely for consistency.
-  function makeRow({ value, name, description, tag }) {
+  function makeRow({ value, name, description }) {
     const li = document.createElement('li');
     const label = document.createElement('label');
     const input = document.createElement('input');
@@ -34,12 +35,6 @@ export function installNewProjectDialog({ dom, refreshProjects, closeSidebarOver
     const nameEl = document.createElement('span');
     nameEl.className = 'np-rule-name';
     nameEl.textContent = name;
-    if (tag) {
-      const tagEl = document.createElement('span');
-      tagEl.className = 'np-rule-tag';
-      tagEl.textContent = tag;
-      nameEl.append(' ', tagEl);
-    }
     const descEl = document.createElement('span');
     descEl.className = 'np-rule-desc';
     descEl.textContent = description;
@@ -61,39 +56,6 @@ export function installNewProjectDialog({ dom, refreshProjects, closeSidebarOver
     return { wrap, list };
   }
 
-  // A plugin group: "Set up <plugin>" master toggle bundling its items.
-  function makePluginGroup(plugin, items) {
-    const { wrap, list } = makeSection('');
-    const label = wrap.querySelector('.np-rules-label');
-    const master = document.createElement('input');
-    master.type = 'checkbox';
-    master.className = 'np-group-master';
-    const masterLabel = document.createElement('label');
-    masterLabel.className = 'np-group-head';
-    const span = document.createElement('span');
-    span.textContent = `Set up ${plugin}`;
-    masterLabel.append(master, span);
-    label.replaceWith(masterLabel);
-
-    const inputs = [];
-    for (const it of items) {
-      const { li, input } = makeRow(it);
-      list.appendChild(li);
-      inputs.push(input);
-    }
-    const syncMaster = () => {
-      const on = inputs.filter(i => i.checked).length;
-      master.checked = on === inputs.length;
-      master.indeterminate = on > 0 && on < inputs.length;
-    };
-    master.addEventListener('change', () => {
-      for (const i of inputs) i.checked = master.checked;
-      master.indeterminate = false;
-    });
-    for (const i of inputs) i.addEventListener('change', syncMaster);
-    return wrap;
-  }
-
   async function buildContributions() {
     dom.npContributions.innerHTML = '';
     let conventions = [];
@@ -102,9 +64,7 @@ export function installNewProjectDialog({ dom, refreshProjects, closeSidebarOver
       if (r.ok) conventions = (await r.json()).rules ?? [];
     } catch { /* offline / no catalog — show nothing */ }
 
-    // A convention that carries a scaffold facet gets a "sets up" tag so the
-    // user knows picking it also runs a one-time setup directive.
-    const rowOf = (c) => ({ value: c.slug, name: c.name, description: c.description, ...(c.scaffold ? { tag: 'sets up' } : {}) });
+    const rowOf = (c) => ({ value: c.slug, name: c.name, description: c.description });
 
     // Core conventions (no plugin) get their own section.
     const core = conventions.filter(c => !pluginOf(c.slug, c.plugin));
@@ -114,7 +74,7 @@ export function installNewProjectDialog({ dom, refreshProjects, closeSidebarOver
       dom.npContributions.appendChild(wrap);
     }
 
-    // Group each plugin's conventions under one master toggle.
+    // One plain (non-interactive) heading per plugin, for provenance only.
     const byPlugin = new Map(); // pluginId -> items[]
     for (const c of conventions) {
       const p = pluginOf(c.slug, c.plugin);
@@ -123,7 +83,9 @@ export function installNewProjectDialog({ dom, refreshProjects, closeSidebarOver
       byPlugin.get(p).push(rowOf(c));
     }
     for (const plugin of [...byPlugin.keys()].sort()) {
-      dom.npContributions.appendChild(makePluginGroup(plugin, byPlugin.get(plugin)));
+      const { wrap, list } = makeSection(plugin);
+      for (const item of byPlugin.get(plugin)) list.appendChild(makeRow(item).li);
+      dom.npContributions.appendChild(wrap);
     }
   }
 
