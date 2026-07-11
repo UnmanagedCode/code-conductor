@@ -1,6 +1,6 @@
 // Live-browser regression test for the main-bar (#instance-header) not
 // clearing when navigating away from a session view. Skipped by default —
-// opt-in via `RUN_PLAYWRIGHT=1` (needs the termux-playwright-harness sibling
+// opt-in via `RUN_PLAYWRIGHT=1` (needs the code-playwright sibling
 // repo + a system Chromium; see debug/README.md). The import of that sibling
 // repo is deferred into the test body so this file loads cleanly (and shows
 // as skipped) on machines that don't have it cloned.
@@ -38,7 +38,7 @@ async function titleDisplay(page) {
 }
 
 t('main bar clears the session title/chips when navigating to Settings or a plugin view, and restores them on return', async () => {
-  const { withPage } = await import('../../termux-playwright-harness/browser.mjs');
+  const { withPage } = await import('../../code-playwright/browser.mjs');
   const boot = await bootServer({ scenarioPath: SCENARIO, realProcess: true });
   try {
     await fs.cp(FAKE_PLUGIN_DIR, path.join(boot.projectsRoot, 'fakeplug'), { recursive: true });

@@ -9,7 +9,7 @@
 //   node snap.mjs --boot                             # → screenshots/<timestamp>.png
 //   node snap.mjs --boot home.png
 //
-// Useful env vars (forwarded from termux-playwright-harness/snap.mjs):
+// Useful env vars (forwarded from code-playwright/snap.mjs):
 //   PLAYWRIGHT_CHROMIUM_BIN  — override chromium path
 //   SNAP_VIEWPORT            — "<w>x<h>" (default 1280x800)
 //   SNAP_WAIT                — CSS selector to wait for before snapping
@@ -17,7 +17,7 @@
 
 import path from 'node:path';
 import { mkdir } from 'node:fs/promises';
-import { withPage, waitForServer } from '../../termux-playwright-harness/browser.mjs';
+import { withPage, waitForServer } from '../../code-playwright/browser.mjs';
 import { bootOrch } from './boot-orch.mjs';
 
 const args = process.argv.slice(2);

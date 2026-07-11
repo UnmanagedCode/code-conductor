@@ -1,4 +1,4 @@
-// Orch-specific wrapper around termux-playwright-harness's generic
+// Orch-specific wrapper around code-playwright's generic
 // bootServer. Hardcodes the orchestrator's cwd (..) and entrypoint
 // (server.js), plus the sandbox shape that tests/fake-claude.mjs expects
 // (PROJECTS_ROOT + CLAUDE_PROJECTS_ROOT subdirs and CLAUDE_BIN pointing
@@ -16,7 +16,7 @@
 
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { bootServer } from '../../termux-playwright-harness/browser.mjs';
+import { bootServer } from '../../code-playwright/browser.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ORCH_ROOT = path.resolve(__dirname, '..');

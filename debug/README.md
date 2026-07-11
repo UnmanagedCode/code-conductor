@@ -1,6 +1,6 @@
 # Visual debug harness
 
-Orchestrator-specific glue around the generic [`termux-playwright-harness`](../../termux-playwright-harness/) — Playwright + system Chromium for visually verifying UI changes. The reusable plumbing (`launchBrowser`, `withPage`, `waitForServer`, `bootServer`) lives in the sibling repo so other Termux webapps can share it; this directory just bakes in the orchestrator's defaults (`server.js`, fake-claude, sandboxed `PROJECTS_ROOT` / `CLAUDE_PROJECTS_ROOT`).
+Orchestrator-specific glue around the generic [`code-playwright`](../../code-playwright/) — Playwright + system Chromium for visually verifying UI changes. The reusable plumbing (`launchBrowser`, `withPage`, `waitForServer`, `bootServer`) lives in the sibling repo so other Termux webapps can share it; this directory just bakes in the orchestrator's defaults (`server.js`, fake-claude, sandboxed `PROJECTS_ROOT` / `CLAUDE_PROJECTS_ROOT`).
 
 ## Prereqs
 
@@ -8,12 +8,12 @@ Clone the sibling repo to the parent directory of code-conductor and install its
 
 ```bash
 cd ..
-git clone git@github.com:UnmanagedCode/termux-playwright-harness.git
-cd termux-playwright-harness && npm install
+git clone git@github.com:UnmanagedCode/code-playwright.git
+cd code-playwright && npm install
 pkg install chromium                                            # Termux system browser
 ```
 
-That's it — nothing to install in `code-conductor/debug/` itself. Imports resolve via `../../termux-playwright-harness/`.
+That's it — nothing to install in `code-conductor/debug/` itself. Imports resolve via `../../code-playwright/`.
 
 ## Quick smoke test
 
@@ -32,7 +32,7 @@ Or point at an already-running server:
 node snap.mjs http://127.0.0.1:8787 ./home.png
 ```
 
-See the sibling [`termux-playwright-harness/README.md`](../../termux-playwright-harness/README.md) for the full `SNAP_VIEWPORT` / `SNAP_WAIT` / `SNAP_FULL_PAGE` env-var surface and troubleshooting.
+See the sibling [`code-playwright/README.md`](../../code-playwright/README.md) for the full `SNAP_VIEWPORT` / `SNAP_WAIT` / `SNAP_FULL_PAGE` env-var surface and troubleshooting.
 
 ## Writing a custom debug script
 
@@ -40,7 +40,7 @@ Use `bootOrch()` from this directory for the orch's sandboxed-spawn shape, or `b
 
 ```js
 // /tmp/repro-something.mjs
-import { withPage } from '../../termux-playwright-harness/browser.mjs';
+import { withPage } from '../../code-playwright/browser.mjs';
 import { bootOrch } from '../code-conductor/debug/boot-orch.mjs';
 
 const orch = await bootOrch({
@@ -58,7 +58,7 @@ try {
 }
 ```
 
-The sibling harness's "[growing the harness while debugging](../../termux-playwright-harness/README.md#growing-the-harness-while-debugging)" guidance applies here too: ephemeral one-off scripts stay in `/tmp/`, only genuinely reusable building blocks earn a place in this directory.
+The sibling harness's "[growing the harness while debugging](../../code-playwright/README.md#growing-the-harness-while-debugging)" guidance applies here too: ephemeral one-off scripts stay in `/tmp/`, only genuinely reusable building blocks earn a place in this directory.
 
 ## Why no Playwright test runner?
 
