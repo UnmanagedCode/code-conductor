@@ -20,8 +20,8 @@
 // switcher's Conductor entry) — those never fire hashchange, so the
 // hashchange teardown can't cover them; `onClosed` fires after every
 // teardown (the app switcher re-syncs its dropdown off it). `onShown` fires
-// once per entry into the `#plugin/` space (dropdown select, deep link,
-// page-load boot) — NOT on a plugin-to-plugin switch within an already-open
+// on every entry into the `#plugin/` space (dropdown select, deep link,
+// page-load boot) AND on a plugin-to-plugin switch within an already-open
 // view (app.js uses it to collapse the mobile sidebar drawer, same idiom as
 // selectInstance revealing a picked session).
 
@@ -137,7 +137,7 @@ export function installPluginView({ onClosed, onShown } = {}) {
     const target = parseHash(location.hash);
     if (!target) return; // leaving the space — hashView tears down
     if (!current) { hv.open(); return; }
-    if (target.id !== current.id) { load(target); return; }
+    if (target.id !== current.id) { load(target); onShown?.(); return; }
     if (target.subpath !== current.subpath) {
       // Same plugin, new subpath from outside the iframe: steer the child
       // instead of reloading it.

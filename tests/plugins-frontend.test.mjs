@@ -705,6 +705,50 @@ test('appSwitcher + pluginView: entering a plugin leaves the desktop sidebar ope
   assert.equal(sidebar.classList.contains('open'), true, 'desktop sidebar is untouched — .open has no visual effect above 720px');
 });
 
+test('pluginView: switching directly from one plugin to another collapses the mobile drawer', async () => {
+  const window = makeWindow('http://localhost/#');
+  buildViewDom(window.document);
+  buildSwitcherDom(window.document);
+  const sidebar = buildSidebarDom(window.document);
+  const { closeSidebarOnMobile } = wireSidebarMobileGate(window, sidebar, { mobile: true });
+  stubPluginViewApi({ state: 'ready' });
+  await freshImport('hashView.js');
+  const { installPluginView } = await freshImport('pluginView.js');
+  installPluginView({ onShown: () => closeSidebarOnMobile() });
+
+  window.location.hash = '#plugin/fake-plugin/';
+  await window.happyDOM.waitUntilComplete();
+  await tick();
+  assert.equal(sidebar.classList.contains('open'), false, 'sanity: drawer collapsed on entry');
+
+  sidebar.classList.add('open'); // simulate the user reopening the drawer while viewing the plugin
+  window.location.hash = '#plugin/other/';
+  await window.happyDOM.waitUntilComplete();
+  await tick();
+  assert.equal(sidebar.classList.contains('open'), false, 'mobile drawer collapses on a direct plugin-to-plugin switch too');
+});
+
+test('pluginView: switching directly from one plugin to another leaves the desktop sidebar open', async () => {
+  const window = makeWindow('http://localhost/#');
+  buildViewDom(window.document);
+  buildSwitcherDom(window.document);
+  const sidebar = buildSidebarDom(window.document);
+  sidebar.classList.add('open');
+  const { closeSidebarOnMobile } = wireSidebarMobileGate(window, sidebar, { mobile: false });
+  stubPluginViewApi({ state: 'ready' });
+  await freshImport('hashView.js');
+  const { installPluginView } = await freshImport('pluginView.js');
+  installPluginView({ onShown: () => closeSidebarOnMobile() });
+
+  window.location.hash = '#plugin/fake-plugin/';
+  await window.happyDOM.waitUntilComplete();
+  await tick();
+  window.location.hash = '#plugin/other/';
+  await window.happyDOM.waitUntilComplete();
+  await tick();
+  assert.equal(sidebar.classList.contains('open'), true, 'desktop sidebar is untouched on a plugin-to-plugin switch');
+});
+
 test('appSwitcher + pluginView: returning to Conductor collapses the mobile drawer too', async () => {
   const window = makeWindow('http://localhost/#');
   buildViewDom(window.document);
