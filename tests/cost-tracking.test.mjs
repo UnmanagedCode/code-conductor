@@ -31,8 +31,10 @@ function fakeInst({ project = 'proj-a', model = 'claude-opus-4-8', sessionId = '
   return { project, model, sessionId };
 }
 
-// Build a synthetic turn_end event.
-function turnEndEv({ costDelta = 0.01, usage } = {}) {
+// Build a synthetic turn_end event. The cacheFlush / firstReq* fields mirror
+// the decisive verdict instances.js enriches onto turn_end before it's
+// persisted (see appendCostRow).
+function turnEndEv({ costDelta = 0.01, usage, cacheFlush, firstReqCacheRead, firstReqCacheCreation } = {}) {
   return {
     kind: 'turn_end',
     cost: costDelta,      // cumulative total (same as delta for single-turn tests)
@@ -43,6 +45,9 @@ function turnEndEv({ costDelta = 0.01, usage } = {}) {
       cache_creation_input_tokens: 20,
       cache_read_input_tokens: 200,
     },
+    cacheFlush,
+    firstReqCacheRead,
+    firstReqCacheCreation,
   };
 }
 
@@ -64,8 +69,12 @@ test('cost-tracking: turn_end appends a valid JSONL row', async () => {
     emitter.get = () => fakeInst();
     initCostTracking(emitter);
 
-    // Emit a turn_end event.
-    emitter.emit('event', { id: 'inst-1', ev: turnEndEv({ costDelta: 0.0123 }) });
+    // Emit a turn_end event carrying a decisive cache-flush verdict.
+    emitter.emit('event', { id: 'inst-1', ev: turnEndEv({
+      costDelta: 0.0123, cacheFlush: true, firstReqCacheRead: 300, firstReqCacheCreation: 180000,
+    }) });
+    // And a plain turn_end with no verdict fields — should persist the defaults.
+    emitter.emit('event', { id: 'inst-1', ev: turnEndEv({ costDelta: 0.001 }) });
 
     // Wait briefly for the async appendFile to complete.
     await new Promise(r => setTimeout(r, 50));
@@ -74,7 +83,7 @@ test('cost-tracking: turn_end appends a valid JSONL row', async () => {
     await fs.mkdir(storeDir, { recursive: true }); // ensure readable even if absent
     const raw = await fs.readFile(costsPath(), 'utf8').catch(() => '');
     const lines = raw.split('\n').filter(Boolean);
-    assert.equal(lines.length, 1, 'one JSONL row written');
+    assert.equal(lines.length, 2, 'two JSONL rows written');
     const row = JSON.parse(lines[0]);
     assert.equal(row.project, 'proj-a');
     assert.equal(row.model, 'claude-opus-4-8');
@@ -85,6 +94,15 @@ test('cost-tracking: turn_end appends a valid JSONL row', async () => {
     assert.equal(row.cache_creation_tokens, 20);
     assert.equal(row.cache_read_tokens, 200);
     assert.ok(typeof row.ts === 'number' && row.ts > 0, 'ts should be a positive number');
+    // Decisive cache-flush fields persist from the enriched event.
+    assert.equal(row.cache_flush, true);
+    assert.equal(row.first_req_cache_read, 300);
+    assert.equal(row.first_req_cache_creation, 180000);
+    // The plain turn_end defaults to no-flush / zeroed evidence.
+    const row2 = JSON.parse(lines[1]);
+    assert.equal(row2.cache_flush, false);
+    assert.equal(row2.first_req_cache_read, 0);
+    assert.equal(row2.first_req_cache_creation, 0);
   } finally {
     process.env.PROJECTS_ROOT = prevRoot ?? '';
     if (!prevRoot) delete process.env.PROJECTS_ROOT;
@@ -197,9 +215,9 @@ test('cost-tracking: getCostSummary returns zeros when costs.jsonl is absent', a
   }
 });
 
-// ── 4. Cache-flush detection ──────────────────────────────────────────────────
+// ── 4. Cache-flush summary counts persisted flags ─────────────────────────────
 
-test('cost-tracking: cache-flush detection', async () => {
+test('cost-tracking: cache_flushes summary counts persisted cache_flush flags', async () => {
   const dir = await makeTmpDir();
   const prevRoot = process.env.PROJECTS_ROOT;
   process.env.PROJECTS_ROOT = dir;
@@ -214,46 +232,38 @@ test('cost-tracking: cache-flush detection', async () => {
     const T = (s) => new Date('2026-06-01T00:00:00Z').getTime() + s * 1000;
     const filler = { project: 'p', model: 'm', input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cost_usd: 0 };
 
+    // The summary is a pure count over the persisted `cache_flush` flag — the
+    // heuristic no longer runs at read time (it lives in migration 0014). Rows
+    // carry explicit flags; the summarizer must not re-derive them.
     const rows = [
-      // s1 — first-turn-excluded: huge first row must NOT be flagged.
-      { ts: T(0), sessionId: 's1', cache_creation_tokens: 200000, ...filler },
-      { ts: T(1), sessionId: 's1', cache_creation_tokens: 5000,   ...filler },
-      { ts: T(2), sessionId: 's1', cache_creation_tokens: 6000,   ...filler },
+      // s1 — 3 turns; the third is a flush. First row is a big non-flush.
+      { ts: T(0), sessionId: 's1', cache_flush: false, cache_creation_tokens: 200000, ...filler },
+      { ts: T(1), sessionId: 's1', cache_flush: false, cache_creation_tokens: 5000,   ...filler },
+      { ts: T(2), sessionId: 's1', cache_flush: true,  cache_creation_tokens: 180000, ...filler },
 
-      // s2 — genuine spike flagged: non-first median=4000, threshold=max(50000,16000)=50000; 200000 >= 50000.
-      { ts: T(3), sessionId: 's2', cache_creation_tokens: 3000,   ...filler },
-      { ts: T(4), sessionId: 's2', cache_creation_tokens: 4000,   ...filler },
-      { ts: T(5), sessionId: 's2', cache_creation_tokens: 5000,   ...filler },
-      { ts: T(6), sessionId: 's2', cache_creation_tokens: 200000, ...filler },
+      // s2 — single row (cold start only): non-first count 0, not flagged.
+      { ts: T(3), sessionId: 's2', cache_flush: false, cache_creation_tokens: 3000,   ...filler },
 
-      // s3 — normal extension not flagged: non-first median=21000, threshold=max(50000,84000)=84000; all below.
-      { ts: T(7),  sessionId: 's3', cache_creation_tokens: 3000,  ...filler },
-      { ts: T(8),  sessionId: 's3', cache_creation_tokens: 20000, ...filler },
-      { ts: T(9),  sessionId: 's3', cache_creation_tokens: 22000, ...filler },
-      { ts: T(10), sessionId: 's3', cache_creation_tokens: 25000, ...filler },
+      // s3 — 4 turns; one flush.
+      { ts: T(4), sessionId: 's3', cache_flush: false, cache_creation_tokens: 3000,   ...filler },
+      { ts: T(5), sessionId: 's3', cache_flush: false, cache_creation_tokens: 20000,  ...filler },
+      { ts: T(6), sessionId: 's3', cache_flush: true,  cache_creation_tokens: 250000, ...filler },
+      { ts: T(7), sessionId: 's3', cache_flush: false, cache_creation_tokens: 22000,  ...filler },
 
-      // s4 — second flush session, for multi-session aggregation: non-first median=9000,
-      // threshold=max(50000,36000)=50000; 250000 flagged.
-      { ts: T(11), sessionId: 's4', cache_creation_tokens: 3000,   ...filler },
-      { ts: T(12), sessionId: 's4', cache_creation_tokens: 8000,   ...filler },
-      { ts: T(13), sessionId: 's4', cache_creation_tokens: 9000,   ...filler },
-      { ts: T(14), sessionId: 's4', cache_creation_tokens: 10000,  ...filler },
-      { ts: T(15), sessionId: 's4', cache_creation_tokens: 250000, ...filler },
-
-      // Null sessionId — must be excluded entirely (neither non_first_turns nor count).
-      { ts: T(16), sessionId: null, cache_creation_tokens: 999999, ...filler },
+      // Null sessionId — excluded from non_first_turns and sessions_affected.
+      { ts: T(8), sessionId: null, cache_flush: false, cache_creation_tokens: 999999, ...filler },
     ];
     await fs.writeFile(costsPath(), rows.map(r => JSON.stringify(r)).join('\n') + '\n');
 
     const summary = await getCostSummary();
     const cf = summary.cache_flushes;
 
-    assert.equal(cf.count, 2, 'only the s2 and s4 spikes are flagged');
-    assert.equal(cf.sessions_affected, 2);
-    // non-first turns: s1=2, s2=3, s3=3, s4=4 (null-sessionId row excluded)
-    assert.equal(cf.non_first_turns, 12);
-    assert.ok(Math.abs(cf.rate - 2 / 12) < 1e-9);
-    assert.equal(cf.flush_cache_creation_tokens, 200000 + 250000);
+    assert.equal(cf.count, 2, 'two rows carry cache_flush:true');
+    assert.equal(cf.sessions_affected, 2, 's1 and s3');
+    // non-first turns via plain group-count: s1=2, s2=0, s3=3 (null row excluded).
+    assert.equal(cf.non_first_turns, 5);
+    assert.ok(Math.abs(cf.rate - 2 / 5) < 1e-9);
+    assert.equal(cf.flush_cache_creation_tokens, 180000 + 250000);
   } finally {
     process.env.PROJECTS_ROOT = prevRoot ?? '';
     if (!prevRoot) delete process.env.PROJECTS_ROOT;
