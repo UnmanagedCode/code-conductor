@@ -415,6 +415,21 @@ export class Instance extends EventEmitter {
     // clean) and on (re)spawn. Replayed history (loadHistory) bypasses
     // _handleStdoutLine entirely, so replay can never corrupt it.
     this._idleWindowDirty = false;
+    // Decisive cache-flush detection. The first `message_start` of a turn
+    // carries per-request usage: a warm continuation serves the prior prefix
+    // from cache (cache_read large, cache_creation small); a flush (prompt-
+    // cache TTL lapsed) re-writes the prefix (cache_creation large, cache_read
+    // ~0). So on a turn's first request, `cache_creation > cache_read` is a
+    // flush — EXCEPT the process's first observed turn (a cold start / post-
+    // resume re-warm, which also has creation>read but is expected). Per-turn
+    // fields are reset in _setStatus's into-'turn' branch; the process-level
+    // `_firstTurnObserved` latch is reset in spawn() and _wipeForResume() so a
+    // resumed session's first (cold) turn is exempted. `null` cache-read means
+    // "no first request seen yet this turn".
+    this._firstTurnObserved = false;
+    this._turnFirstReqCacheRead = null;
+    this._turnFirstReqCacheCreation = null;
+    this._turnFlushDetected = false;
   }
 
   // Live count of in-flight background Agent-tool (subagent) tasks. Read by
@@ -648,6 +663,16 @@ export class Instance extends EventEmitter {
     // message_starts never reach here (status is already 'turn'), so agent-loop
     // steps inside a turn can't falsely clear it.
     if (next === 'turn') this._taskNotificationPending = false;
+    // A new turn starts: clear the per-turn cache-flush capture so the next
+    // message_start is treated as this turn's first request (see the
+    // constructor comment). Fires exactly once per turn start, for both
+    // prompt-initiated (prompt() → _setStatus) and unprompted (message_start
+    // flips idle→turn) turns.
+    if (next === 'turn') {
+      this._turnFirstReqCacheRead = null;
+      this._turnFirstReqCacheCreation = null;
+      this._turnFlushDetected = false;
+    }
     this.emit('status', this.summary());
   }
 
@@ -718,6 +743,13 @@ export class Instance extends EventEmitter {
     this._activeAgentTasks = new Map();
     this._taskNotificationPending = false;
     this._idleWindowDirty = false;
+    // A fresh process (spawn OR resume) re-warms the prompt cache, so its first
+    // observed turn is a cold start (creation>read expected) and must be exempt
+    // from flush detection. Reset the latch + per-turn capture here.
+    this._firstTurnObserved = false;
+    this._turnFirstReqCacheRead = null;
+    this._turnFirstReqCacheCreation = null;
+    this._turnFlushDetected = false;
     const { command, prefixArgs } = resolveClaudeBin();
     if (resume) this.sessionId = resume;
     else if (!this.sessionId) this.sessionId = randomUUID();
@@ -900,6 +932,31 @@ export class Instance extends EventEmitter {
         // window's trigger — so no spurious post-spawn turn and no fight with
         // the post-abort drain (which severs on init, before any API round-trip).
         if (this.status === 'idle') this._setStatus('turn');
+        // Decisive cache-flush detection. Capture the FIRST message_start of
+        // this turn (the reset above/in _setStatus left `_turnFirstReqCacheRead`
+        // null); later message_starts in the same turn are cumulative and
+        // skipped. The parser only emits message_start when usage is present
+        // (src/parser.js), so ev.usage is always defined here.
+        if (this._turnFirstReqCacheRead === null) {
+          const read = ev.usage.cache_read_input_tokens ?? 0;
+          const creation = ev.usage.cache_creation_input_tokens ?? 0;
+          this._turnFirstReqCacheRead = read;
+          this._turnFirstReqCacheCreation = creation;
+          if (this._firstTurnObserved) {
+            if (creation > read && !this._turnFlushDetected) {
+              this._turnFlushDetected = true;
+              // Informational in-session notice — one per flushed turn. Mirrors
+              // the overage/rate-limit notice surface (an inline SystemBlock);
+              // no server-side action, unlike overage.
+              this._emitUi({ kind: 'system', subtype: 'cache_flush',
+                data: { cacheRead: read, cacheCreation: creation } });
+            }
+          } else {
+            // Cold start / post-resume re-warm: creation>read is expected here,
+            // not a flush. Exempt it, but arm detection for every later turn.
+            this._firstTurnObserved = true;
+          }
+        }
       }
       // With `--permission-prompt-tool stdio`, the CLI routes tool-permission
       // prompts to us as `can_use_tool` control_requests. The interactive tools
@@ -939,6 +996,12 @@ export class Instance extends EventEmitter {
         }
       }
       if (ev.kind === 'turn_end') {
+        // Enrich with the decisive cache-flush verdict + evidence BEFORE the
+        // shared _emitUi(ev) below persists the event (costTracking writes
+        // these as cache_flush / first_req_cache_read / first_req_cache_creation).
+        ev.cacheFlush = this._turnFlushDetected;
+        ev.firstReqCacheRead = this._turnFirstReqCacheRead ?? 0;
+        ev.firstReqCacheCreation = this._turnFirstReqCacheCreation ?? 0;
         this.lastResponseAt = Date.now();
         this._setStatus('idle');
         this._idleWindowDirty = false; // fresh idle window starts clean
@@ -1514,6 +1577,13 @@ export class Instance extends EventEmitter {
     this._lastLeafUuid = null;
     this._lastPlanFilePath = null;
     this._hooks.discardAll();
+    // Rewind/fork replays history from scratch against a truncated jsonl; the
+    // respawn that follows re-warms the cache. Reset flush tracking so the
+    // replayed first turn is exempted exactly like a fresh spawn.
+    this._firstTurnObserved = false;
+    this._turnFirstReqCacheRead = null;
+    this._turnFirstReqCacheCreation = null;
+    this._turnFlushDetected = false;
     this.emit('snapshot_reset', { ...this._snapshotForReset(), ...extra });
   }
 
