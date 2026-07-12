@@ -704,21 +704,18 @@ export function buildTools() {
       description:
         'Run a bash command inside a project or worktree directory, using the exact same shell ' +
         'environment claude\'s own built-in Bash tool uses — the rg/find/grep shims and shell ' +
-        'functions/aliases from the captured shell snapshot (cached per claude version). Superset ' +
-        'of the built-in Bash tool: same command/description/timeout/run_in_background/' +
-        'dangerouslyDisableSandbox params, plus project/worktree for cwd scoping. Replaces grep/glob ' +
-        '— use rg/grep/find through this tool for search. NOT read-only: can write files, run git, ' +
-        'start processes. OUTPUT: single JSON {project, worktree, cwd, exitCode, durationMs, output, ' +
-        'truncated?, timedOut?, error?}. output is combined stdout+stderr in arrival order. A ' +
-        'non-zero exitCode is a normal result, not a tool error. truncated:true means retained ' +
-        'output was capped at ~200 KB — the command still ran to completion; assume later output ' +
-        'beyond the cap was lost, not that the process was killed. timeout is milliseconds (default ' +
-        '120000, max 600000 — larger values are clamped); on timeout (the only hard kill) the whole ' +
-        'process group is killed, exitCode is null, and timedOut:true. stdin is not connected — an ' +
-        'interactive command hangs until timeout. run_in_background and dangerouslyDisableSandbox ' +
-        'are accepted for schema parity with the built-in Bash tool but are NO-OPs in this version: ' +
-        'the command always runs synchronously to completion or timeout, and this server never ' +
-        'sandboxes commands.',
+        'functions/aliases from the captured shell snapshot (cached per claude version). Mirrors ' +
+        'the meaningful subset of the built-in Bash tool (command/description/timeout) plus ' +
+        'project/worktree for cwd scoping. Replaces grep/glob — use rg/grep/find through this tool ' +
+        'for search. NOT read-only: can write files, run git, start processes. OUTPUT: single JSON ' +
+        '{project, worktree, cwd, exitCode, durationMs, output, truncated?, timedOut?, error?}. ' +
+        'output is combined stdout+stderr in arrival order. A non-zero exitCode is a normal result, ' +
+        'not a tool error. truncated:true means retained output was capped at ~200 KB — the command ' +
+        'still ran to completion; assume later output beyond the cap was lost, not that the process ' +
+        'was killed. timeout is milliseconds (default 120000, max 600000 — larger values are ' +
+        'clamped); on timeout (the only hard kill) the whole process group is killed, exitCode is ' +
+        'null, and timedOut:true. stdin is not connected — an interactive command hangs until ' +
+        'timeout.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -727,8 +724,6 @@ export function buildTools() {
           command:  { type: 'string', description: 'The bash command to run.' },
           description: { type: 'string', description: 'Clear, concise description of what this command does in 5-10 words. Unused server-side; accepted for schema parity with the built-in Bash tool.' },
           timeout:  { type: 'integer', minimum: 1, default: 120000, description: 'Timeout in milliseconds (max 600000). Values above 600000 are clamped.' },
-          run_in_background: { type: 'boolean', default: false, description: 'Accepted for schema parity with the built-in Bash tool. NO-OP in v1 — always runs synchronously to completion or timeout.' },
-          dangerouslyDisableSandbox: { type: 'boolean', default: false, description: 'Accepted for schema parity with the built-in Bash tool. NO-OP — this server never sandboxes commands.' },
         },
         required: ['project', 'command'],
       },

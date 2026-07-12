@@ -1269,10 +1269,9 @@ function shQuote(p) {
 
 // Run a bash command inside a project/worktree cwd, in claude's own restored
 // shell environment (rg/find/grep shims + shell functions, via the cached
-// bundle from claudeShellEnv.js). NOT read-only. Schema is a superset of the
-// built-in Bash tool's; `description`/`run_in_background`/
-// `dangerouslyDisableSandbox` are accepted for schema parity but are no-ops
-// in this version (see the tool description in mcp/tools.js).
+// bundle from claudeShellEnv.js). NOT read-only. `description` is accepted
+// for schema parity with the built-in Bash tool but is unused server-side
+// (see the tool description in mcp/tools.js).
 export async function bashProject({ project, worktree, command, timeout }) {
   if (typeof command !== 'string' || !command.trim()) {
     throw new Error('project_bash requires a non-empty command string');
