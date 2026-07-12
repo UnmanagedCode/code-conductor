@@ -206,6 +206,12 @@ export function describeToolInput(name, input, ctx = {}) {
     const scope = input.worktree ? `${input.project}/${input.worktree}` : input.project;
     return trunc(`[${scope}] ${input.command}`);
   }
+  if (name === 'mcp__code-conductor__project_read') {
+    const scope = input.worktree ? `${input.project}/${input.worktree}` : input.project;
+    let out = trunc(`[${scope}] ${input.relativePath}`);
+    if (input.offset != null) out += `  [offset=${input.offset}, limit=${input.limit ?? '?'}]`;
+    return out;
+  }
   switch (renderKindFor(name)) {
     case 'Bash':       return trunc(input.command);
     case 'Edit':
