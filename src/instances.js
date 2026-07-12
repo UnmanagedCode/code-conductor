@@ -420,12 +420,14 @@ export class Instance extends EventEmitter {
     // from cache (cache_read large, cache_creation small); a flush (prompt-
     // cache TTL lapsed) re-writes the prefix (cache_creation large, cache_read
     // ~0). So on a turn's first request, `cache_creation > cache_read` is a
-    // flush — EXCEPT the process's first observed turn (a cold start / post-
-    // resume re-warm, which also has creation>read but is expected). Per-turn
+    // flush — EXCEPT a genuinely FRESH session's first turn (its cache-creation
+    // is the unavoidable baseline system prompt + first message, with no prior
+    // prefix to lose). A resume/rewind first turn IS detected: it re-writes a
+    // prefix that was cached before the process died — a real paid miss. Per-turn
     // fields are reset in _setStatus's into-'turn' branch; the process-level
-    // `_firstTurnObserved` latch is reset in spawn() and _wipeForResume() so a
-    // resumed session's first (cold) turn is exempted. `null` cache-read means
-    // "no first request seen yet this turn".
+    // `_firstTurnObserved` latch is set by spawn() (`!!resume`: fresh→exempt,
+    // resume→armed) — the sole authority. `null` cache-read means "no first
+    // request seen yet this turn".
     this._firstTurnObserved = false;
     this._turnFirstReqCacheRead = null;
     this._turnFirstReqCacheCreation = null;
@@ -743,10 +745,15 @@ export class Instance extends EventEmitter {
     this._activeAgentTasks = new Map();
     this._taskNotificationPending = false;
     this._idleWindowDirty = false;
-    // A fresh process (spawn OR resume) re-warms the prompt cache, so its first
-    // observed turn is a cold start (creation>read expected) and must be exempt
-    // from flush detection. Reset the latch + per-turn capture here.
-    this._firstTurnObserved = false;
+    // Only a genuinely FRESH spawn (no `resume`) exempts its first turn: its
+    // cache-creation is the unavoidable baseline (system prompt + first message)
+    // with no prior prefix to lose. A resume/rewind re-writes a prefix that was
+    // cached before the process died — a real paid miss — so we ARM detection
+    // and let the `creation>read` test on the first turn decide (a fast resume
+    // within the prompt-cache TTL (≈1h in this deployment) still hits the warm
+    // server-side cache → creation<read → correctly not flagged). spawn() is the sole authority for
+    // this latch (`_wipeForResume` no longer touches it). Per-turn capture resets here too.
+    this._firstTurnObserved = !!resume;
     this._turnFirstReqCacheRead = null;
     this._turnFirstReqCacheCreation = null;
     this._turnFlushDetected = false;
@@ -952,8 +959,9 @@ export class Instance extends EventEmitter {
                 data: { cacheRead: read, cacheCreation: creation } });
             }
           } else {
-            // Cold start / post-resume re-warm: creation>read is expected here,
-            // not a flush. Exempt it, but arm detection for every later turn.
+            // Reached only for a fresh session's first turn (spawn() left the
+            // latch false): creation>read is the expected baseline, not a flush.
+            // Exempt it, but arm detection for every later turn.
             this._firstTurnObserved = true;
           }
         }
@@ -1577,13 +1585,9 @@ export class Instance extends EventEmitter {
     this._lastLeafUuid = null;
     this._lastPlanFilePath = null;
     this._hooks.discardAll();
-    // Rewind/fork replays history from scratch against a truncated jsonl; the
-    // respawn that follows re-warms the cache. Reset flush tracking so the
-    // replayed first turn is exempted exactly like a fresh spawn.
-    this._firstTurnObserved = false;
-    this._turnFirstReqCacheRead = null;
-    this._turnFirstReqCacheCreation = null;
-    this._turnFlushDetected = false;
+    // Flush-detection state is NOT reset here: the spawn() that always follows a
+    // wipe owns it and decides the first-turn exemption from its `resume` arg
+    // (empty-prefix rewind → spawn({}) → fresh/exempt; resume/rewind → armed).
     this.emit('snapshot_reset', { ...this._snapshotForReset(), ...extra });
   }
 
