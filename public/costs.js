@@ -46,24 +46,6 @@ function render(data) {
 
   if (data.row_count === 0) return;
 
-  // Cache flushes
-  const flushSection = document.createElement('section');
-  flushSection.className = 'costs-section';
-  const flushH = document.createElement('h2');
-  flushH.textContent = 'Cache flushes';
-  flushSection.appendChild(flushH);
-  flushSection.appendChild(makeTable(
-    ['Metric', 'Value'],
-    [
-      ['Flushes detected', String(data.cache_flushes.count)],
-      ['Sessions affected', String(data.cache_flushes.sessions_affected)],
-      ['Non-first turns', String(data.cache_flushes.non_first_turns)],
-      ['Flush rate', `${(data.cache_flushes.rate * 100).toFixed(1)}%`],
-      ['Tokens re-written', fmtNum(data.cache_flushes.flush_cache_creation_tokens)],
-    ],
-  ));
-  bodyEl.appendChild(flushSection);
-
   // By project (expandable rows with per-model breakdown)
   const projSection = document.createElement('section');
   projSection.className = 'costs-section';
@@ -74,7 +56,7 @@ function render(data) {
   projTable.className = 'costs-table';
   const projThead = document.createElement('thead');
   const projHeadRow = document.createElement('tr');
-  for (const h of ['Project', 'Cost', 'Turns']) {
+  for (const h of ['Project', 'Cost', 'Turns', 'Flushes']) {
     const th = document.createElement('th');
     th.textContent = h;
     projHeadRow.appendChild(th);
@@ -102,13 +84,17 @@ function render(data) {
     turnsTd.textContent = String(p.turns);
     projRow.appendChild(turnsTd);
 
+    const flushesTd = document.createElement('td');
+    flushesTd.textContent = String(p.cache_flushes);
+    projRow.appendChild(flushesTd);
+
     const detailRow = document.createElement('tr');
     detailRow.className = 'costs-proj-detail';
     detailRow.hidden = true;
     const detailTd = document.createElement('td');
-    detailTd.colSpan = 3;
+    detailTd.colSpan = 4;
     detailTd.appendChild(makeTable(
-      ['Model', 'Cost', 'Input', 'Output', 'Cache create', 'Cache read', 'Turns'],
+      ['Model', 'Cost', 'Input', 'Output', 'Cache create', 'Cache read', 'Turns', 'Flushes'],
       (p.by_model ?? []).map(m => [
         m.model,
         fmtExact(m.cost_usd),
@@ -117,6 +103,7 @@ function render(data) {
         fmtNum(m.cache_creation_tokens),
         fmtNum(m.cache_read_tokens),
         String(m.turns),
+        String(m.cache_flushes),
       ]),
     ));
     detailRow.appendChild(detailTd);
@@ -140,7 +127,7 @@ function render(data) {
   modelH.textContent = 'By model';
   modelSection.appendChild(modelH);
   modelSection.appendChild(makeTable(
-    ['Model', 'Cost', 'Input', 'Output', 'Cache create', 'Cache read', 'Turns'],
+    ['Model', 'Cost', 'Input', 'Output', 'Cache create', 'Cache read', 'Turns', 'Flushes'],
     data.by_model.map(m => [
       m.model,
       fmtExact(m.cost_usd),
@@ -149,6 +136,7 @@ function render(data) {
       fmtNum(m.cache_creation_tokens),
       fmtNum(m.cache_read_tokens),
       String(m.turns),
+      String(m.cache_flushes),
     ]),
   ));
   bodyEl.appendChild(modelSection);
