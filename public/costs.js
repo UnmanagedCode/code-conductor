@@ -46,6 +46,24 @@ function render(data) {
 
   if (data.row_count === 0) return;
 
+  // Cache flushes
+  const flushSection = document.createElement('section');
+  flushSection.className = 'costs-section';
+  const flushH = document.createElement('h2');
+  flushH.textContent = 'Cache flushes';
+  flushSection.appendChild(flushH);
+  flushSection.appendChild(makeTable(
+    ['Metric', 'Value'],
+    [
+      ['Flushes detected', String(data.cache_flushes.count)],
+      ['Sessions affected', String(data.cache_flushes.sessions_affected)],
+      ['Non-first turns', String(data.cache_flushes.non_first_turns)],
+      ['Flush rate', `${(data.cache_flushes.rate * 100).toFixed(1)}%`],
+      ['Tokens re-written', fmtNum(data.cache_flushes.flush_cache_creation_tokens)],
+    ],
+  ));
+  bodyEl.appendChild(flushSection);
+
   // By project (expandable rows with per-model breakdown)
   const projSection = document.createElement('section');
   projSection.className = 'costs-section';

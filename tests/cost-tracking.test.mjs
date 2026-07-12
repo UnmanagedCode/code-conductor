@@ -4,7 +4,9 @@
 //  1. Row append — a synthetic turn_end via initCostTracking writes a valid JSONL row.
 //  2. Summary aggregation — by_project, by_model, daily_trend, total_usd.
 //  3. Missing file — getCostSummary() returns zeros/empty without throwing.
-//  4. Route smoke — GET /api/costs/summary returns 200 with the right shape.
+//  4. Cache-flush detection — first-turn exclusion, spike detection, normal
+//     extension, multi-session aggregation, null-sessionId exclusion.
+//  5. Route smoke — GET /api/costs/summary returns 200 with the right shape.
 
 import { test, after, before } from 'node:test';
 import assert from 'node:assert/strict';
@@ -155,6 +157,14 @@ test('cost-tracking: getCostSummary aggregates correctly', async () => {
     assert.ok(Math.abs(summary.daily_trend[0].cost_usd - 0.08) < 1e-9);
     assert.equal(summary.daily_trend[1].date, '2026-06-02');
     assert.ok(Math.abs(summary.daily_trend[1].cost_usd - 0.02) < 1e-9);
+
+    // cache_flushes — s1 has 1 non-first turn (5 tokens, well under any threshold),
+    // s2 is a single-row session (cold start only, contributes nothing)
+    assert.equal(summary.cache_flushes.count, 0);
+    assert.equal(summary.cache_flushes.sessions_affected, 0);
+    assert.equal(summary.cache_flushes.non_first_turns, 1);
+    assert.equal(summary.cache_flushes.rate, 0);
+    assert.equal(summary.cache_flushes.flush_cache_creation_tokens, 0);
   } finally {
     process.env.PROJECTS_ROOT = prevRoot ?? '';
     if (!prevRoot) delete process.env.PROJECTS_ROOT;
@@ -177,6 +187,9 @@ test('cost-tracking: getCostSummary returns zeros when costs.jsonl is absent', a
     assert.deepEqual(summary.by_project, []);
     assert.deepEqual(summary.by_model, []);
     assert.deepEqual(summary.daily_trend, []);
+    assert.deepEqual(summary.cache_flushes, {
+      count: 0, sessions_affected: 0, non_first_turns: 0, rate: 0, flush_cache_creation_tokens: 0,
+    });
   } finally {
     process.env.PROJECTS_ROOT = prevRoot ?? '';
     if (!prevRoot) delete process.env.PROJECTS_ROOT;
@@ -184,7 +197,71 @@ test('cost-tracking: getCostSummary returns zeros when costs.jsonl is absent', a
   }
 });
 
-// ── 4. Route smoke ────────────────────────────────────────────────────────────
+// ── 4. Cache-flush detection ──────────────────────────────────────────────────
+
+test('cost-tracking: cache-flush detection', async () => {
+  const dir = await makeTmpDir();
+  const prevRoot = process.env.PROJECTS_ROOT;
+  process.env.PROJECTS_ROOT = dir;
+
+  try {
+    const { getCostSummary, costsPath } = await import('../src/costTracking.js');
+
+    const storeDir = path.join(dir, '.code-conductor');
+    await fs.mkdir(storeDir, { recursive: true });
+
+    // ts spacing (seconds) fixes per-session ordering unambiguously.
+    const T = (s) => new Date('2026-06-01T00:00:00Z').getTime() + s * 1000;
+    const filler = { project: 'p', model: 'm', input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cost_usd: 0 };
+
+    const rows = [
+      // s1 — first-turn-excluded: huge first row must NOT be flagged.
+      { ts: T(0), sessionId: 's1', cache_creation_tokens: 200000, ...filler },
+      { ts: T(1), sessionId: 's1', cache_creation_tokens: 5000,   ...filler },
+      { ts: T(2), sessionId: 's1', cache_creation_tokens: 6000,   ...filler },
+
+      // s2 — genuine spike flagged: non-first median=4000, threshold=max(50000,16000)=50000; 200000 >= 50000.
+      { ts: T(3), sessionId: 's2', cache_creation_tokens: 3000,   ...filler },
+      { ts: T(4), sessionId: 's2', cache_creation_tokens: 4000,   ...filler },
+      { ts: T(5), sessionId: 's2', cache_creation_tokens: 5000,   ...filler },
+      { ts: T(6), sessionId: 's2', cache_creation_tokens: 200000, ...filler },
+
+      // s3 — normal extension not flagged: non-first median=21000, threshold=max(50000,84000)=84000; all below.
+      { ts: T(7),  sessionId: 's3', cache_creation_tokens: 3000,  ...filler },
+      { ts: T(8),  sessionId: 's3', cache_creation_tokens: 20000, ...filler },
+      { ts: T(9),  sessionId: 's3', cache_creation_tokens: 22000, ...filler },
+      { ts: T(10), sessionId: 's3', cache_creation_tokens: 25000, ...filler },
+
+      // s4 — second flush session, for multi-session aggregation: non-first median=9000,
+      // threshold=max(50000,36000)=50000; 250000 flagged.
+      { ts: T(11), sessionId: 's4', cache_creation_tokens: 3000,   ...filler },
+      { ts: T(12), sessionId: 's4', cache_creation_tokens: 8000,   ...filler },
+      { ts: T(13), sessionId: 's4', cache_creation_tokens: 9000,   ...filler },
+      { ts: T(14), sessionId: 's4', cache_creation_tokens: 10000,  ...filler },
+      { ts: T(15), sessionId: 's4', cache_creation_tokens: 250000, ...filler },
+
+      // Null sessionId — must be excluded entirely (neither non_first_turns nor count).
+      { ts: T(16), sessionId: null, cache_creation_tokens: 999999, ...filler },
+    ];
+    await fs.writeFile(costsPath(), rows.map(r => JSON.stringify(r)).join('\n') + '\n');
+
+    const summary = await getCostSummary();
+    const cf = summary.cache_flushes;
+
+    assert.equal(cf.count, 2, 'only the s2 and s4 spikes are flagged');
+    assert.equal(cf.sessions_affected, 2);
+    // non-first turns: s1=2, s2=3, s3=3, s4=4 (null-sessionId row excluded)
+    assert.equal(cf.non_first_turns, 12);
+    assert.ok(Math.abs(cf.rate - 2 / 12) < 1e-9);
+    assert.equal(cf.flush_cache_creation_tokens, 200000 + 250000);
+  } finally {
+    process.env.PROJECTS_ROOT = prevRoot ?? '';
+    if (!prevRoot) delete process.env.PROJECTS_ROOT;
+    await rmrf(dir);
+  }
+});
+
+// ── 5. Route smoke ────────────────────────────────────────────────────────────
 
 test('GET /api/costs/summary returns 200 with correct shape (no data)', async () => {
   const { baseUrl, close } = await bootServer();
