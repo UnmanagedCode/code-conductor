@@ -447,7 +447,7 @@ export class Instance extends EventEmitter {
     // and `_prefixBaselineInvalid` persist across the turn boundary (NOT in those resets).
     this._turnFirstReqCacheRead = null;
     this._turnFirstReqCacheCreation = null;
-    this._turnFlushDetected = false;
+    this._turnMissDetected = false;
     this._turnLastReqPrefix = null;    // running last-request prefix (read+creation) this turn
     this._turnEvicted = 0;             // P_{N-1} - read_N when a cross-turn miss fires
     this._prevTurnPrefix = null;       // P_{N-1}: prior turn's last-request full prefix
@@ -685,7 +685,7 @@ export class Instance extends EventEmitter {
     // message_starts never reach here (status is already 'turn'), so agent-loop
     // steps inside a turn can't falsely clear it.
     if (next === 'turn') this._taskNotificationPending = false;
-    // A new turn starts: clear the per-turn cache-flush capture so the next
+    // A new turn starts: clear the per-turn cache-miss capture so the next
     // message_start is treated as this turn's first request (see the
     // constructor comment). Fires exactly once per turn start, for both
     // prompt-initiated (prompt() → _setStatus) and unprompted (message_start
@@ -693,7 +693,7 @@ export class Instance extends EventEmitter {
     if (next === 'turn') {
       this._turnFirstReqCacheRead = null;
       this._turnFirstReqCacheCreation = null;
-      this._turnFlushDetected = false;
+      this._turnMissDetected = false;
       this._turnLastReqPrefix = null;
       this._turnEvicted = 0;
       // NOTE: _prevTurnPrefix and _prefixBaselineInvalid intentionally persist
@@ -779,7 +779,7 @@ export class Instance extends EventEmitter {
     // the constructor comment).
     this._turnFirstReqCacheRead = null;
     this._turnFirstReqCacheCreation = null;
-    this._turnFlushDetected = false;
+    this._turnMissDetected = false;
     this._turnLastReqPrefix = null;
     this._turnEvicted = 0;
     const { command, prefixArgs } = resolveClaudeBin();
@@ -966,7 +966,7 @@ export class Instance extends EventEmitter {
         if (this.status === 'idle') this._setStatus('turn');
         const reqRead = ev.usage.cache_read_input_tokens ?? 0;
         const reqCreation = ev.usage.cache_creation_input_tokens ?? 0;
-        // Cross-turn cache-flush detection. The FIRST message_start of this turn
+        // Cross-turn cache-miss detection. The FIRST message_start of this turn
         // (the reset above/in _setStatus left `_turnFirstReqCacheRead` null)
         // decides; later message_starts only keep P (`_turnLastReqPrefix`)
         // current. The parser only emits message_start when usage is present
@@ -995,8 +995,8 @@ export class Instance extends EventEmitter {
               this._turnEvicted = prevP - reqRead;
             }
           }
-          if (miss && !this._turnFlushDetected) {
-            this._turnFlushDetected = true;
+          if (miss && !this._turnMissDetected) {
+            this._turnMissDetected = true;
             // Informational in-session notice — one per turn. Mirrors the
             // overage/rate-limit notice surface (an inline SystemBlock); no
             // server-side action, unlike overage. The cross-turn path adds
@@ -1057,11 +1057,11 @@ export class Instance extends EventEmitter {
         }
       }
       if (ev.kind === 'turn_end') {
-        // Enrich with the cache-flush verdict + evidence BEFORE the shared
+        // Enrich with the cache-miss verdict + evidence BEFORE the shared
         // _emitUi(ev) below persists the event (costTracking writes these as
-        // cache_flush / first_req_cache_read / first_req_cache_creation /
+        // cache_miss / first_req_cache_read / first_req_cache_creation /
         // first_req_evicted).
-        ev.cacheFlush = this._turnFlushDetected;
+        ev.cacheMiss = this._turnMissDetected;
         ev.firstReqCacheRead = this._turnFirstReqCacheRead ?? 0;
         ev.firstReqCacheCreation = this._turnFirstReqCacheCreation ?? 0;
         ev.firstReqEvicted = this._turnEvicted ?? 0;

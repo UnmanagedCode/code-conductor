@@ -23,14 +23,14 @@ async function appendCostRow(inst, ev) {
     cache_read_tokens: usage.cache_read_input_tokens ?? 0,
     cost_usd: ev.costDelta ?? ev.cost ?? 0,
     // Cache-miss verdict + per-request evidence, captured live from the turn's
-    // first message_start (src/instances.js). `cache_flush` means "a cross-turn
+    // first message_start (src/instances.js). `cache_miss` means "a cross-turn
     // eviction (full or partial) was detected": the turn's first-request
     // cache_read was below the prior turn's cached prefix, or (turn 1 / after a
     // compaction/model-switch/rewind re-baseline) creation>read. `first_req_evicted`
     // is the evicted-token estimate (P_{N-1} - first read) on the cross-turn path,
     // 0 otherwise. Additive — rows written before these fields lack them; the
-    // cache_flush flag on legacy rows is backfilled (heuristically) by migration 0014.
-    cache_flush: ev.cacheFlush ?? false,
+    // cache_miss flag on legacy rows is backfilled (heuristically) by migration 0014.
+    cache_miss: ev.cacheMiss ?? false,
     first_req_cache_read: ev.firstReqCacheRead ?? 0,
     first_req_cache_creation: ev.firstReqCacheCreation ?? 0,
     first_req_evicted: ev.firstReqEvicted ?? 0,
@@ -79,17 +79,18 @@ export async function getCostSummary() {
   for (const r of rows) {
     const key = r.project ?? '(unknown)';
     if (!projectMap.has(key)) {
-      projectMap.set(key, { project: key, cost_usd: 0, turns: 0, cache_flushes: 0, _modelMap: new Map() });
+      projectMap.set(key, { project: key, cost_usd: 0, turns: 0, cache_misses: 0, _sessionSet: new Set(), _modelMap: new Map() });
     }
     const entry = projectMap.get(key);
     entry.cost_usd += r.cost_usd ?? 0;
     entry.turns += 1;
-    if (r.cache_flush === true) entry.cache_flushes += 1;
+    if (r.cache_miss === true) entry.cache_misses += 1;
+    if (r.sessionId != null) entry._sessionSet.add(r.sessionId);
 
     const mKey = r.model ?? '(unknown)';
     const mEntry = entry._modelMap.get(mKey) ?? {
       model: mKey, cost_usd: 0, input_tokens: 0, output_tokens: 0,
-      cache_creation_tokens: 0, cache_read_tokens: 0, turns: 0, cache_flushes: 0,
+      cache_creation_tokens: 0, cache_read_tokens: 0, turns: 0, cache_misses: 0, _sessionSet: new Set(),
     };
     mEntry.cost_usd += r.cost_usd ?? 0;
     mEntry.input_tokens += r.input_tokens ?? 0;
@@ -97,12 +98,16 @@ export async function getCostSummary() {
     mEntry.cache_creation_tokens += r.cache_creation_tokens ?? 0;
     mEntry.cache_read_tokens += r.cache_read_tokens ?? 0;
     mEntry.turns += 1;
-    if (r.cache_flush === true) mEntry.cache_flushes += 1;
+    if (r.cache_miss === true) mEntry.cache_misses += 1;
+    if (r.sessionId != null) mEntry._sessionSet.add(r.sessionId);
     entry._modelMap.set(mKey, mEntry);
   }
   const by_project = [...projectMap.values()].map(e => {
-    const by_model = [...e._modelMap.values()].sort((a, b) => b.cost_usd - a.cost_usd);
-    return { project: e.project, cost_usd: e.cost_usd, turns: e.turns, cache_flushes: e.cache_flushes, by_model };
+    const by_model = [...e._modelMap.values()].sort((a, b) => b.cost_usd - a.cost_usd).map(m => {
+      const { _sessionSet, ...rest } = m;
+      return { ...rest, sessions: _sessionSet.size };
+    });
+    return { project: e.project, cost_usd: e.cost_usd, turns: e.turns, cache_misses: e.cache_misses, sessions: e._sessionSet.size, by_model };
   }).sort((a, b) => b.cost_usd - a.cost_usd);
 
   // By model
@@ -111,7 +116,7 @@ export async function getCostSummary() {
     const key = r.model ?? '(unknown)';
     const entry = modelMap.get(key) ?? {
       model: key, cost_usd: 0, input_tokens: 0, output_tokens: 0,
-      cache_creation_tokens: 0, cache_read_tokens: 0, turns: 0, cache_flushes: 0,
+      cache_creation_tokens: 0, cache_read_tokens: 0, turns: 0, cache_misses: 0, _sessionSet: new Set(),
     };
     entry.cost_usd += r.cost_usd ?? 0;
     entry.input_tokens += r.input_tokens ?? 0;
@@ -119,10 +124,14 @@ export async function getCostSummary() {
     entry.cache_creation_tokens += r.cache_creation_tokens ?? 0;
     entry.cache_read_tokens += r.cache_read_tokens ?? 0;
     entry.turns += 1;
-    if (r.cache_flush === true) entry.cache_flushes += 1;
+    if (r.cache_miss === true) entry.cache_misses += 1;
+    if (r.sessionId != null) entry._sessionSet.add(r.sessionId);
     modelMap.set(key, entry);
   }
-  const by_model = [...modelMap.values()].sort((a, b) => b.cost_usd - a.cost_usd);
+  const by_model = [...modelMap.values()].sort((a, b) => b.cost_usd - a.cost_usd).map(m => {
+    const { _sessionSet, ...rest } = m;
+    return { ...rest, sessions: _sessionSet.size };
+  });
 
   // Daily trend — all days that have data, sorted chronologically
   const dayMap = new Map();

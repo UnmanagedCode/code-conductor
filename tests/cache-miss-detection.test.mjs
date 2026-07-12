@@ -57,7 +57,7 @@ function systemLine(subtype) {
 }
 
 async function makeInstance() {
-  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-flush-detect-'));
+  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-miss-detect-'));
   const inst = new Instance({
     id: 'inst-1', project: 'demo', cwd, mode: 'bypassPermissions',
     effort: 'medium', thinking: 'medium', model: MODEL,
@@ -68,7 +68,7 @@ async function makeInstance() {
   return { inst, events, cwd };
 }
 
-function flushNotices(events) {
+function missNotices(events) {
   return events.filter(e => e.kind === 'system' && e.subtype === 'cache_miss');
 }
 function turnEnds(events) {
@@ -82,27 +82,27 @@ test('a fresh session\'s first turn with creation>read IS flagged; warm turn is 
     // uniform rule (no first-turn exemption) this is a real miss and IS flagged.
     inst._handleStdoutLine(msgStartLine({ read: 0, creation: 200000, id: 'm1' }));
     inst._handleStdoutLine(resultLine());
-    assert.equal(flushNotices(events).length, 1, 'fresh first turn flagged');
-    assert.equal(turnEnds(events).at(-1).cacheFlush, true);
+    assert.equal(missNotices(events).length, 1, 'fresh first turn flagged');
+    assert.equal(turnEnds(events).at(-1).cacheMiss, true);
 
     // Turn 2 — warm continuation: read>>creation, not a miss.
     inst._handleStdoutLine(msgStartLine({ read: 200000, creation: 2000, id: 'm2' }));
     inst._handleStdoutLine(resultLine());
-    assert.equal(flushNotices(events).length, 1, 'warm turn not flagged');
+    assert.equal(missNotices(events).length, 1, 'warm turn not flagged');
     const te2 = turnEnds(events).at(-1);
-    assert.equal(te2.cacheFlush, false);
+    assert.equal(te2.cacheMiss, false);
     assert.equal(te2.firstReqCacheRead, 200000);
     assert.equal(te2.firstReqCacheCreation, 2000);
 
     // Turn 3 — another miss: creation>read on the first request.
     inst._handleStdoutLine(msgStartLine({ read: 100, creation: 180000, id: 'm3' }));
     inst._handleStdoutLine(resultLine());
-    const notices = flushNotices(events);
+    const notices = missNotices(events);
     assert.equal(notices.length, 2, 'second miss notice fired');
     assert.equal(notices[1].data.cacheCreation, 180000);
     assert.equal(notices[1].data.cacheRead, 100);
     const te3 = turnEnds(events).at(-1);
-    assert.equal(te3.cacheFlush, true);
+    assert.equal(te3.cacheMiss, true);
     assert.equal(te3.firstReqCacheRead, 100);
     assert.equal(te3.firstReqCacheCreation, 180000);
   } finally {
@@ -117,8 +117,8 @@ test('a fresh session with a content-addressed system-prompt hit is NOT flagged'
     // creation small ⇒ a real hit, correctly not flagged.
     inst._handleStdoutLine(msgStartLine({ read: 190000, creation: 500, id: 'h1' }));
     inst._handleStdoutLine(resultLine());
-    assert.equal(flushNotices(events).length, 0, 'content-addressed hit not flagged');
-    assert.equal(turnEnds(events).at(-1).cacheFlush, false);
+    assert.equal(missNotices(events).length, 0, 'content-addressed hit not flagged');
+    assert.equal(turnEnds(events).at(-1).cacheMiss, false);
   } finally {
     await fs.rm(cwd, { recursive: true, force: true });
   }
@@ -135,9 +135,9 @@ test('only the turn\'s FIRST request decides; the notice fires once per turn', a
     inst._handleStdoutLine(msgStartLine({ read: 160000, creation: 900, id: 'b3' }));  // cumulative
     inst._handleStdoutLine(resultLine());
 
-    assert.equal(flushNotices(events).length, 1, 'notice fires exactly once');
+    assert.equal(missNotices(events).length, 1, 'notice fires exactly once');
     const te = turnEnds(events).at(-1);
-    assert.equal(te.cacheFlush, true);
+    assert.equal(te.cacheMiss, true);
     assert.equal(te.firstReqCacheRead, 0, 'first request drove the verdict');
     assert.equal(te.firstReqCacheCreation, 150000);
   } finally {
@@ -153,11 +153,11 @@ test('a resumed session\'s first turn with creation>read IS flagged', async () =
     // flagged automatically; no arming latch to set (spawn() no longer sets one).
     inst._handleStdoutLine(msgStartLine({ read: 100, creation: 180000, id: 'r1' }));
     inst._handleStdoutLine(resultLine());
-    const notices = flushNotices(events);
+    const notices = missNotices(events);
     assert.equal(notices.length, 1, 'resumed first turn flagged');
     assert.equal(notices[0].data.cacheCreation, 180000);
     assert.equal(notices[0].data.cacheRead, 100);
-    assert.equal(turnEnds(events).at(-1).cacheFlush, true);
+    assert.equal(turnEnds(events).at(-1).cacheMiss, true);
   } finally {
     await fs.rm(cwd, { recursive: true, force: true });
   }
@@ -169,7 +169,7 @@ test('a rewind (_wipeForResume) first turn with creation>read IS flagged', async
     // Run a normal turn, then rewind.
     inst._handleStdoutLine(msgStartLine({ read: 10000, creation: 100, id: 'c1' }));
     inst._handleStdoutLine(resultLine());
-    assert.equal(flushNotices(events).length, 0, 'warm pre-rewind turn not flagged');
+    assert.equal(missNotices(events).length, 0, 'warm pre-rewind turn not flagged');
 
     // Rewind: _wipeForResume() clears in-memory state; the spawn({resume}) that
     // always follows re-clears the per-turn capture. The first replayed turn
@@ -179,8 +179,8 @@ test('a rewind (_wipeForResume) first turn with creation>read IS flagged', async
     inst._wipeForResume();
     inst._handleStdoutLine(msgStartLine({ read: 0, creation: 200000, id: 'd1' }));
     inst._handleStdoutLine(resultLine());
-    assert.equal(flushNotices(events).length, 1, 'first rewound turn flagged');
-    assert.equal(turnEnds(events).at(-1).cacheFlush, true);
+    assert.equal(missNotices(events).length, 1, 'first rewound turn flagged');
+    assert.equal(turnEnds(events).at(-1).cacheMiss, true);
   } finally {
     await fs.rm(cwd, { recursive: true, force: true });
   }
@@ -206,12 +206,12 @@ test('a partial minority eviction IS flagged by the cross-turn rule (old creatio
     // Cross-turn: 150000 < 200000 - tolerance ⇒ miss, ~50000 evicted.
     inst._handleStdoutLine(msgStartLine({ read: 150000, creation: 3000, id: 'p1' }));
     inst._handleStdoutLine(resultLine());
-    const notices = flushNotices(events);
+    const notices = missNotices(events);
     assert.equal(notices.length, 1, 'partial miss flagged');
     assert.equal(notices[0].data.prevPrefix, 200000);
     assert.equal(notices[0].data.evicted, 50000);
     const te = turnEnds(events).at(-1);
-    assert.equal(te.cacheFlush, true);
+    assert.equal(te.cacheMiss, true);
     assert.equal(te.firstReqEvicted, 50000);
     assert.ok(te.firstReqCacheRead > te.firstReqCacheCreation, 'read>creation: old rule would have missed this');
   } finally {
@@ -230,8 +230,8 @@ test('a warm multi-request turn is NOT flagged; the accumulated last-request pre
     inst._handleStdoutLine(msgStartLine({ read: 205000, creation: 8000, id: 'w2' }));
     inst._handleStdoutLine(msgStartLine({ read: 213000, creation: 2000, id: 'w3' }));
     inst._handleStdoutLine(resultLine());
-    assert.equal(flushNotices(events).length, 0, 'warm accumulating turn not flagged');
-    assert.equal(turnEnds(events).at(-1).cacheFlush, false);
+    assert.equal(missNotices(events).length, 0, 'warm accumulating turn not flagged');
+    assert.equal(turnEnds(events).at(-1).cacheMiss, false);
     // P is now the LAST request's full prefix (213000 + 2000 = 215000), NOT the
     // first request's 200000. Prove it: a partial miss next turn reading 205000
     // is < 215000 - tol (flag) but would be > 200000 - tol (no flag) under a
@@ -239,7 +239,7 @@ test('a warm multi-request turn is NOT flagged; the accumulated last-request pre
     events.length = 0;
     inst._handleStdoutLine(msgStartLine({ read: 205000, creation: 2000, id: 'w4' }));
     inst._handleStdoutLine(resultLine());
-    const notices = flushNotices(events);
+    const notices = missNotices(events);
     assert.equal(notices.length, 1, 'partial miss vs the accumulated prefix flagged');
     assert.equal(notices[0].data.prevPrefix, 215000, 'baseline tracked the last-request prefix');
     assert.equal(notices[0].data.evicted, 10000);
@@ -259,15 +259,15 @@ test('a compaction turn is NOT flagged and the baseline is re-established', asyn
     // (creation>read ⇒ 2000>80000 false) ⇒ NOT flagged.
     inst._handleStdoutLine(msgStartLine({ read: 80000, creation: 2000, id: 'x1' }));
     inst._handleStdoutLine(resultLine());
-    assert.equal(flushNotices(events).length, 0, 'compaction turn not flagged');
-    assert.equal(turnEnds(events).at(-1).cacheFlush, false);
+    assert.equal(missNotices(events).length, 0, 'compaction turn not flagged');
+    assert.equal(turnEnds(events).at(-1).cacheMiss, false);
     // Baseline re-established to the compacted prefix (82000). A warm follow-up
     // reading 82000 is not flagged — proof the stale 200000 was discarded (else
     // 82000 < 200000 - tol would false-fire).
     events.length = 0;
     inst._handleStdoutLine(msgStartLine({ read: 82000, creation: 1000, id: 'x2' }));
     inst._handleStdoutLine(resultLine());
-    assert.equal(flushNotices(events).length, 0, 'baseline re-established; warm follow-up not flagged');
+    assert.equal(missNotices(events).length, 0, 'baseline re-established; warm follow-up not flagged');
   } finally {
     await fs.rm(cwd, { recursive: true, force: true });
   }
@@ -282,13 +282,13 @@ test('a model-switch turn is NOT flagged and the baseline is re-established', as
     // so a warm-but-smaller prefix (read>creation) is NOT flagged as a miss.
     inst._handleStdoutLine(msgStartLine({ read: 80000, creation: 2000, id: 'y1', model: 'claude-sonnet-5' }));
     inst._handleStdoutLine(resultLine());
-    assert.equal(flushNotices(events).length, 0, 'model-switch turn not flagged');
-    assert.equal(turnEnds(events).at(-1).cacheFlush, false);
+    assert.equal(missNotices(events).length, 0, 'model-switch turn not flagged');
+    assert.equal(turnEnds(events).at(-1).cacheMiss, false);
     // Re-baselined to 82000: a warm follow-up on the new model is not flagged.
     events.length = 0;
     inst._handleStdoutLine(msgStartLine({ read: 82000, creation: 1000, id: 'y2', model: 'claude-sonnet-5' }));
     inst._handleStdoutLine(resultLine());
-    assert.equal(flushNotices(events).length, 0, 'baseline re-established on new model');
+    assert.equal(missNotices(events).length, 0, 'baseline re-established on new model');
   } finally {
     await fs.rm(cwd, { recursive: true, force: true });
   }
@@ -303,12 +303,12 @@ test('a rewind turn whose prefix is warm-but-smaller is NOT flagged (cf. the col
     // unlike a cold rewind (creation>read) which still flags via the fallback.
     inst._handleStdoutLine(msgStartLine({ read: 80000, creation: 2000, id: 'z1' }));
     inst._handleStdoutLine(resultLine());
-    assert.equal(flushNotices(events).length, 0, 'warm rewind turn not flagged');
-    assert.equal(turnEnds(events).at(-1).cacheFlush, false);
+    assert.equal(missNotices(events).length, 0, 'warm rewind turn not flagged');
+    assert.equal(turnEnds(events).at(-1).cacheMiss, false);
     events.length = 0;
     inst._handleStdoutLine(msgStartLine({ read: 82000, creation: 1000, id: 'z2' }));
     inst._handleStdoutLine(resultLine());
-    assert.equal(flushNotices(events).length, 0, 'baseline re-established after rewind');
+    assert.equal(missNotices(events).length, 0, 'baseline re-established after rewind');
   } finally {
     await fs.rm(cwd, { recursive: true, force: true });
   }

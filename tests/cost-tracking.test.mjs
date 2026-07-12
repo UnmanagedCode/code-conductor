@@ -4,7 +4,7 @@
 //  1. Row append — a synthetic turn_end via initCostTracking writes a valid JSONL row.
 //  2. Summary aggregation — by_project, by_model, daily_trend, total_usd.
 //  3. Missing file — getCostSummary() returns zeros/empty without throwing.
-//  4. Cache-flush detection — first-turn exclusion, spike detection, normal
+//  4. Cache-miss detection — first-turn exclusion, spike detection, normal
 //     extension, multi-session aggregation, null-sessionId exclusion.
 //  5. Route smoke — GET /api/costs/summary returns 200 with the right shape.
 
@@ -31,10 +31,10 @@ function fakeInst({ project = 'proj-a', model = 'claude-opus-4-8', sessionId = '
   return { project, model, sessionId };
 }
 
-// Build a synthetic turn_end event. The cacheFlush / firstReq* fields mirror
+// Build a synthetic turn_end event. The cacheMiss / firstReq* fields mirror
 // the decisive verdict instances.js enriches onto turn_end before it's
 // persisted (see appendCostRow).
-function turnEndEv({ costDelta = 0.01, usage, cacheFlush, firstReqCacheRead, firstReqCacheCreation } = {}) {
+function turnEndEv({ costDelta = 0.01, usage, cacheMiss, firstReqCacheRead, firstReqCacheCreation } = {}) {
   return {
     kind: 'turn_end',
     cost: costDelta,      // cumulative total (same as delta for single-turn tests)
@@ -45,7 +45,7 @@ function turnEndEv({ costDelta = 0.01, usage, cacheFlush, firstReqCacheRead, fir
       cache_creation_input_tokens: 20,
       cache_read_input_tokens: 200,
     },
-    cacheFlush,
+    cacheMiss,
     firstReqCacheRead,
     firstReqCacheCreation,
   };
@@ -69,9 +69,9 @@ test('cost-tracking: turn_end appends a valid JSONL row', async () => {
     emitter.get = () => fakeInst();
     initCostTracking(emitter);
 
-    // Emit a turn_end event carrying a decisive cache-flush verdict.
+    // Emit a turn_end event carrying a decisive cache-miss verdict.
     emitter.emit('event', { id: 'inst-1', ev: turnEndEv({
-      costDelta: 0.0123, cacheFlush: true, firstReqCacheRead: 300, firstReqCacheCreation: 180000,
+      costDelta: 0.0123, cacheMiss: true, firstReqCacheRead: 300, firstReqCacheCreation: 180000,
     }) });
     // And a plain turn_end with no verdict fields — should persist the defaults.
     emitter.emit('event', { id: 'inst-1', ev: turnEndEv({ costDelta: 0.001 }) });
@@ -94,13 +94,13 @@ test('cost-tracking: turn_end appends a valid JSONL row', async () => {
     assert.equal(row.cache_creation_tokens, 20);
     assert.equal(row.cache_read_tokens, 200);
     assert.ok(typeof row.ts === 'number' && row.ts > 0, 'ts should be a positive number');
-    // Decisive cache-flush fields persist from the enriched event.
-    assert.equal(row.cache_flush, true);
+    // Decisive cache-miss fields persist from the enriched event.
+    assert.equal(row.cache_miss, true);
     assert.equal(row.first_req_cache_read, 300);
     assert.equal(row.first_req_cache_creation, 180000);
-    // The plain turn_end defaults to no-flush / zeroed evidence.
+    // The plain turn_end defaults to no-miss / zeroed evidence.
     const row2 = JSON.parse(lines[1]);
-    assert.equal(row2.cache_flush, false);
+    assert.equal(row2.cache_miss, false);
     assert.equal(row2.first_req_cache_read, 0);
     assert.equal(row2.first_req_cache_creation, 0);
   } finally {
@@ -124,9 +124,9 @@ test('cost-tracking: getCostSummary aggregates correctly', async () => {
     await fs.mkdir(storeDir, { recursive: true });
 
     const rows = [
-      { ts: new Date('2026-06-01').getTime(), project: 'alpha', model: 'claude-opus-4-8',   sessionId: 's1', input_tokens: 100, output_tokens: 50, cache_creation_tokens: 10, cache_read_tokens: 200, cost_usd: 0.05, cache_flush: false },
-      { ts: new Date('2026-06-01').getTime(), project: 'alpha', model: 'claude-opus-4-8',   sessionId: 's1', input_tokens: 80,  output_tokens: 40, cache_creation_tokens:  5, cache_read_tokens: 100, cost_usd: 0.03, cache_flush: true },
-      { ts: new Date('2026-06-02').getTime(), project: 'beta',  model: 'claude-sonnet-4-6', sessionId: 's2', input_tokens: 200, output_tokens: 80, cache_creation_tokens: 20, cache_read_tokens: 300, cost_usd: 0.02, cache_flush: false },
+      { ts: new Date('2026-06-01').getTime(), project: 'alpha', model: 'claude-opus-4-8',   sessionId: 's1', input_tokens: 100, output_tokens: 50, cache_creation_tokens: 10, cache_read_tokens: 200, cost_usd: 0.05, cache_miss: false },
+      { ts: new Date('2026-06-01').getTime(), project: 'alpha', model: 'claude-opus-4-8',   sessionId: 's1', input_tokens: 80,  output_tokens: 40, cache_creation_tokens:  5, cache_read_tokens: 100, cost_usd: 0.03, cache_miss: true },
+      { ts: new Date('2026-06-02').getTime(), project: 'beta',  model: 'claude-sonnet-4-6', sessionId: 's2', input_tokens: 200, output_tokens: 80, cache_creation_tokens: 20, cache_read_tokens: 300, cost_usd: 0.02, cache_miss: false },
     ];
     await fs.writeFile(costsPath(), rows.map(r => JSON.stringify(r)).join('\n') + '\n');
 
@@ -139,9 +139,11 @@ test('cost-tracking: getCostSummary aggregates correctly', async () => {
     assert.equal(summary.by_project[0].project, 'alpha');
     assert.ok(Math.abs(summary.by_project[0].cost_usd - 0.08) < 1e-9);
     assert.equal(summary.by_project[0].turns, 2);
-    assert.equal(summary.by_project[0].cache_flushes, 1, 'alpha has 1 flush (row 2)');
+    assert.equal(summary.by_project[0].cache_misses, 1, 'alpha has 1 miss (row 2)');
+    assert.equal(summary.by_project[0].sessions, 1, 'alpha: both rows are session s1');
     assert.equal(summary.by_project[1].project, 'beta');
-    assert.equal(summary.by_project[1].cache_flushes, 0, 'beta has no flushes');
+    assert.equal(summary.by_project[1].cache_misses, 0, 'beta has no misses');
+    assert.equal(summary.by_project[1].sessions, 1);
 
     // by_project[*].by_model — nested per-model breakdown
     const alphaModels = summary.by_project[0].by_model;
@@ -154,13 +156,14 @@ test('cost-tracking: getCostSummary aggregates correctly', async () => {
     assert.equal(alphaModels[0].cache_creation_tokens, 15);
     assert.equal(alphaModels[0].cache_read_tokens, 300);
     assert.equal(alphaModels[0].turns, 2);
-    assert.equal(alphaModels[0].cache_flushes, 1);
+    assert.equal(alphaModels[0].cache_misses, 1);
+    assert.equal(alphaModels[0].sessions, 1);
 
     const betaModels = summary.by_project[1].by_model;
     assert.ok(Array.isArray(betaModels), 'beta.by_model should be an array');
     assert.equal(betaModels.length, 1, 'beta has 1 model');
     assert.equal(betaModels[0].model, 'claude-sonnet-4-6');
-    assert.equal(betaModels[0].cache_flushes, 0);
+    assert.equal(betaModels[0].cache_misses, 0);
 
     // by_model
     assert.equal(summary.by_model.length, 2);
@@ -172,7 +175,8 @@ test('cost-tracking: getCostSummary aggregates correctly', async () => {
     assert.equal(opus.cache_creation_tokens, 15);
     assert.equal(opus.cache_read_tokens, 300);
     assert.equal(opus.turns, 2);
-    assert.equal(opus.cache_flushes, 1);
+    assert.equal(opus.cache_misses, 1);
+    assert.equal(opus.sessions, 1);
 
     // daily_trend — sorted chronologically
     assert.equal(summary.daily_trend.length, 2);
@@ -209,9 +213,9 @@ test('cost-tracking: getCostSummary returns zeros when costs.jsonl is absent', a
   }
 });
 
-// ── 4. Per-model / per-project flush counts ───────────────────────────────────
+// ── 4. Per-model / per-project miss counts ───────────────────────────────────
 
-test('cost-tracking: by_model and by_project entries carry correct cache_flushes counts', async () => {
+test('cost-tracking: by_model and by_project entries carry correct cache_misses counts', async () => {
   const dir = await makeTmpDir();
   const prevRoot = process.env.PROJECTS_ROOT;
   process.env.PROJECTS_ROOT = dir;
@@ -225,56 +229,65 @@ test('cost-tracking: by_model and by_project entries carry correct cache_flushes
     const T = (s) => new Date('2026-06-01T00:00:00Z').getTime() + s * 1000;
     const filler = { input_tokens: 0, output_tokens: 0, cache_creation_tokens: 0, cache_read_tokens: 0, cost_usd: 0 };
 
-    // s1 — project alpha / model opus, 3 turns, 1 flush.
-    // s2 — project beta / model sonnet, 1 turn, 0 flushes.
-    // s3 — project alpha / model haiku (same project as s1, different model), 4 turns, 1 flush.
-    // null sessionId row — project gamma / model unknown-model, 0 flushes (still folds into
-    // its project/model bucket even without a sessionId — flush counting doesn't key on session).
+    // s1 — project alpha / model opus, 3 turns, 1 miss.
+    // s2 — project beta / model sonnet, 1 turn, 0 misses.
+    // s3 — project alpha / model haiku (same project as s1, different model), 4 turns, 1 miss.
+    // null sessionId row — project gamma / model unknown-model, 0 misses (still folds into
+    // its project/model bucket even without a sessionId — miss counting doesn't key on session).
     const rows = [
-      { ts: T(0), sessionId: 's1', project: 'alpha', model: 'opus',   cache_flush: false, ...filler },
-      { ts: T(1), sessionId: 's1', project: 'alpha', model: 'opus',   cache_flush: false, ...filler },
-      { ts: T(2), sessionId: 's1', project: 'alpha', model: 'opus',   cache_flush: true,  ...filler },
+      { ts: T(0), sessionId: 's1', project: 'alpha', model: 'opus',   cache_miss: false, ...filler },
+      { ts: T(1), sessionId: 's1', project: 'alpha', model: 'opus',   cache_miss: false, ...filler },
+      { ts: T(2), sessionId: 's1', project: 'alpha', model: 'opus',   cache_miss: true,  ...filler },
 
-      { ts: T(3), sessionId: 's2', project: 'beta',  model: 'sonnet', cache_flush: false, ...filler },
+      { ts: T(3), sessionId: 's2', project: 'beta',  model: 'sonnet', cache_miss: false, ...filler },
 
-      { ts: T(4), sessionId: 's3', project: 'alpha', model: 'haiku',  cache_flush: false, ...filler },
-      { ts: T(5), sessionId: 's3', project: 'alpha', model: 'haiku',  cache_flush: false, ...filler },
-      { ts: T(6), sessionId: 's3', project: 'alpha', model: 'haiku',  cache_flush: true,  ...filler },
-      { ts: T(7), sessionId: 's3', project: 'alpha', model: 'haiku',  cache_flush: false, ...filler },
+      { ts: T(4), sessionId: 's3', project: 'alpha', model: 'haiku',  cache_miss: false, ...filler },
+      { ts: T(5), sessionId: 's3', project: 'alpha', model: 'haiku',  cache_miss: false, ...filler },
+      { ts: T(6), sessionId: 's3', project: 'alpha', model: 'haiku',  cache_miss: true,  ...filler },
+      { ts: T(7), sessionId: 's3', project: 'alpha', model: 'haiku',  cache_miss: false, ...filler },
 
-      { ts: T(8), sessionId: null, project: 'gamma', model: 'unknown-model', cache_flush: false, ...filler },
+      { ts: T(8), sessionId: null, project: 'gamma', model: 'unknown-model', cache_miss: false, ...filler },
     ];
     await fs.writeFile(costsPath(), rows.map(r => JSON.stringify(r)).join('\n') + '\n');
 
     const summary = await getCostSummary();
 
-    // by_model — one entry per model, flushes counted regardless of project/session.
+    // by_model — one entry per model, misses/sessions counted regardless of project.
     const opus = summary.by_model.find(m => m.model === 'opus');
     const haiku = summary.by_model.find(m => m.model === 'haiku');
     const sonnet = summary.by_model.find(m => m.model === 'sonnet');
     const unknownModel = summary.by_model.find(m => m.model === 'unknown-model');
     assert.equal(opus.turns, 3);
-    assert.equal(opus.cache_flushes, 1);
+    assert.equal(opus.cache_misses, 1);
+    assert.equal(opus.sessions, 1, 'opus: all 3 rows are session s1');
     assert.equal(haiku.turns, 4);
-    assert.equal(haiku.cache_flushes, 1);
+    assert.equal(haiku.cache_misses, 1);
+    assert.equal(haiku.sessions, 1, 'haiku: all 4 rows are session s3');
     assert.equal(sonnet.turns, 1);
-    assert.equal(sonnet.cache_flushes, 0);
-    assert.equal(unknownModel.cache_flushes, 0);
+    assert.equal(sonnet.cache_misses, 0);
+    assert.equal(sonnet.sessions, 1);
+    assert.equal(unknownModel.cache_misses, 0);
+    assert.equal(unknownModel.sessions, 0, 'null sessionId is excluded from the count');
 
-    // by_project — alpha aggregates flushes across its two models (opus + haiku).
+    // by_project — alpha aggregates misses across its two models (opus + haiku).
     const alpha = summary.by_project.find(p => p.project === 'alpha');
     const beta = summary.by_project.find(p => p.project === 'beta');
     const gamma = summary.by_project.find(p => p.project === 'gamma');
     assert.equal(alpha.turns, 7);
-    assert.equal(alpha.cache_flushes, 2, 'alpha: 1 flush from opus + 1 from haiku');
-    assert.equal(beta.cache_flushes, 0);
-    assert.equal(gamma.cache_flushes, 0);
+    assert.equal(alpha.cache_misses, 2, 'alpha: 1 miss from opus + 1 from haiku');
+    assert.equal(alpha.sessions, 2, 'alpha: s1 (opus) + s3 (haiku) — distinct despite 7 turns');
+    assert.equal(beta.cache_misses, 0);
+    assert.equal(beta.sessions, 1);
+    assert.equal(gamma.cache_misses, 0);
+    assert.equal(gamma.sessions, 0, 'null sessionId is excluded from the count');
 
     // by_project[*].by_model — nested per-model breakdown carries its own count too.
     const alphaOpus = alpha.by_model.find(m => m.model === 'opus');
     const alphaHaiku = alpha.by_model.find(m => m.model === 'haiku');
-    assert.equal(alphaOpus.cache_flushes, 1);
-    assert.equal(alphaHaiku.cache_flushes, 1);
+    assert.equal(alphaOpus.cache_misses, 1);
+    assert.equal(alphaOpus.sessions, 1);
+    assert.equal(alphaHaiku.cache_misses, 1);
+    assert.equal(alphaHaiku.sessions, 1);
   } finally {
     process.env.PROJECTS_ROOT = prevRoot ?? '';
     if (!prevRoot) delete process.env.PROJECTS_ROOT;

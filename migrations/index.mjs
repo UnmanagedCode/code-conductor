@@ -21,7 +21,7 @@ import * as m0010 from './0010-conduct-md-generated-file.mjs';
 import * as m0011 from './0011-rename-optional-guidelines-store.mjs';
 import * as m0012 from './0012-drop-retired-execution-modes-slug.mjs';
 import * as m0013 from './0013-drop-retired-talking-to-user-slug.mjs';
-import * as m0014 from './0014-backfill-cache-flush-flags.mjs';
+import * as m0014 from './0014-backfill-cache-miss-flags.mjs';
 
 // Ordered list — append new migrations to the end. Order matters:
 // later migrations may assume earlier ones have run.
