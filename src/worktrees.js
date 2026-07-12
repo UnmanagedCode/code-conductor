@@ -612,7 +612,7 @@ export async function removeAllWorktreesForProject(projectName) {
 }
 
 // Maximum bytes of raw git diff output to keep. Shared by both diff surfaces
-// (REST structured diff here + the MCP get_worktree_diff handler) so they
+// (REST structured diff here + the MCP project_diff handler) so they
 // behave consistently.
 export const DIFF_BYTE_CAP = 200 * 1024;
 

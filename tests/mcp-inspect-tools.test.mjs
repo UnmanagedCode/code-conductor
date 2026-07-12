@@ -1,5 +1,5 @@
 // Tests for MCP inspection-tool additions:
-//   project_bash and get_worktree_diff's always-on working-tree section.
+//   project_bash and project_diff's always-on working-tree section.
 //
 // Mirrors the bootServer + rpc + callTool pattern from mcp-conduct-tools.test.mjs.
 
@@ -40,12 +40,12 @@ async function callTool(name, args) {
   assert.ok(body.result, `tools/call ${name} returned no result; body=${JSON.stringify(body)}`);
   return body.result;
 }
-// Single-block JSON result (project_bash, get_worktree_diff summary mode).
+// Single-block JSON result (project_bash, project_diff summary mode).
 function unwrap(result) {
   assert.ok(Array.isArray(result.content), 'tool result has content[]');
   return JSON.parse(result.content[0].text);
 }
-// get_worktree_diff: [meta, rawDiff?]
+// project_diff: [meta, rawDiff?]
 function unwrapDiff(result) {
   assert.ok(Array.isArray(result.content), 'tool result has content[]');
   const meta = JSON.parse(result.content[0].text);
@@ -196,9 +196,9 @@ describe('project_bash', () => {
   });
 });
 
-// ---- get_worktree_diff: always-on working-tree section ----
+// ---- project_diff: always-on working-tree section ----
 
-test('get_worktree_diff default now surfaces uncommitted changes', async () => {
+test('project_diff default now surfaces uncommitted changes', async () => {
   await makeRealRepo('demo');
   const wt = await makeWorktree('demo');
   const wtPath = path.join(projectsRoot, wt.worktree);
@@ -210,7 +210,7 @@ test('get_worktree_diff default now surfaces uncommitted changes', async () => {
   await fs.writeFile(path.join(wtPath, 'committed.txt'), 'committed\ndirty\n');
   await fs.writeFile(path.join(wtPath, 'uncommitted.txt'), 'brand new\n');
 
-  const r = unwrapDiff(await callTool('get_worktree_diff', {
+  const r = unwrapDiff(await callTool('project_diff', {
     project: 'demo', worktree: wt.worktree,
   }));
   assert.ok(r.diff.includes('committed.txt'), 'committed file should appear');
@@ -220,7 +220,7 @@ test('get_worktree_diff default now surfaces uncommitted changes', async () => {
   assert.ok(r.untracked.includes('uncommitted.txt'), 'new untracked file should be listed');
 });
 
-test('get_worktree_diff surfaces staged+unstaged changes', async () => {
+test('project_diff surfaces staged+unstaged changes', async () => {
   await makeRealRepo('demo');
   const wt = await makeWorktree('demo');
   const wtPath = path.join(projectsRoot, wt.worktree);
@@ -231,7 +231,7 @@ test('get_worktree_diff surfaces staged+unstaged changes', async () => {
   // Modify an existing committed file (without committing)
   await fs.writeFile(path.join(wtPath, 'committed.txt'), 'committed\nmodified\n');
 
-  const r = unwrapDiff(await callTool('get_worktree_diff', {
+  const r = unwrapDiff(await callTool('project_diff', {
     project: 'demo', worktree: wt.worktree,
   }));
   assert.equal(r.hasUncommittedChanges, true);
@@ -241,14 +241,14 @@ test('get_worktree_diff surfaces staged+unstaged changes', async () => {
   assert.match(r.diff, /modified/);
 });
 
-test('get_worktree_diff surfaces untracked files in metadata', async () => {
+test('project_diff surfaces untracked files in metadata', async () => {
   await makeRealRepo('demo');
   const wt = await makeWorktree('demo');
   const wtPath = path.join(projectsRoot, wt.worktree);
   // Drop a new untracked file (never git-added)
   await fs.writeFile(path.join(wtPath, 'brand-new.txt'), 'brand new content\n');
 
-  const r = unwrapDiff(await callTool('get_worktree_diff', {
+  const r = unwrapDiff(await callTool('project_diff', {
     project: 'demo', worktree: wt.worktree,
   }));
   // Untracked file must appear in the untracked list
@@ -256,7 +256,7 @@ test('get_worktree_diff surfaces untracked files in metadata', async () => {
   assert.ok(r.untracked.includes('brand-new.txt'), 'brand-new.txt should be listed as untracked');
 });
 
-test('get_worktree_diff with clean working tree: hasUncommittedChanges false', async () => {
+test('project_diff with clean working tree: hasUncommittedChanges false', async () => {
   await makeRealRepo('demo');
   const wt = await makeWorktree('demo');
   const wtPath = path.join(projectsRoot, wt.worktree);
@@ -265,7 +265,7 @@ test('get_worktree_diff with clean working tree: hasUncommittedChanges false', a
   await git(wtPath, 'commit', '-q', '-m', 'add committed.txt');
   // No uncommitted changes
 
-  const r = unwrapDiff(await callTool('get_worktree_diff', {
+  const r = unwrapDiff(await callTool('project_diff', {
     project: 'demo', worktree: wt.worktree,
   }));
   assert.equal(r.hasUncommittedChanges, false);
@@ -274,7 +274,7 @@ test('get_worktree_diff with clean working tree: hasUncommittedChanges false', a
   assert.ok(!r.diff.includes('@@@ uncommitted'), 'separator absent when no uncommitted changes');
 });
 
-test('get_worktree_diff summary:true adds uncommitted section', async () => {
+test('project_diff summary:true adds uncommitted section', async () => {
   await makeRealRepo('demo');
   const wt = await makeWorktree('demo');
   const wtPath = path.join(projectsRoot, wt.worktree);
@@ -286,7 +286,7 @@ test('get_worktree_diff summary:true adds uncommitted section', async () => {
   // Untracked
   await fs.writeFile(path.join(wtPath, 'new-file.txt'), 'new\n');
 
-  const r = unwrap(await callTool('get_worktree_diff', {
+  const r = unwrap(await callTool('project_diff', {
     project: 'demo', worktree: wt.worktree, summary: true,
   }));
   assert.equal(r.summary, true);

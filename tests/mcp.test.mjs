@@ -53,7 +53,7 @@ function unwrapPayload(result) {
   assert.ok(Array.isArray(result.content), 'tool result has content[]');
   return { meta: JSON.parse(result.content[0].text), bodies: result.content.slice(1).map(c => c.text) };
 }
-// read_file convenience: merge the body back onto the metadata as `content`.
+// project_read convenience: merge the body back onto the metadata as `content`.
 function unwrapFile(result) {
   const { meta, bodies } = unwrapPayload(result);
   return { ...meta, content: bodies[0] ?? '' };
@@ -133,7 +133,7 @@ test('tools/list returns the full expected tool catalog', async () => {
     'approve_plan',
     'create_project', 'create_workspace', 'create_worktree',
     'delete_workspace', 'delete_worktree',
-    'get_recent_messages', 'get_transcript', 'get_worktree_diff',
+    'get_recent_messages', 'get_transcript',
     'interrupt_turn',
     'kill_instance',
     'list_conductor_modules',
@@ -141,8 +141,8 @@ test('tools/list returns the full expected tool catalog', async () => {
     'list_workspaces', 'list_worktrees',
     'locate_session',
     'merge_worktree',
-    'project_bash', 'project_status', 'promote_session',
-    'read_file', 'reject_plan', 'rename_workspace', 'respawn_instance',
+    'project_bash', 'project_diff', 'project_read', 'project_status', 'promote_session',
+    'reject_plan', 'rename_workspace', 'respawn_instance',
     'send_prompt', 'set_auto_approve_plan', 'set_mode',
     'set_project_workspace',
     'spawn_instance', 'subscribe_to_idle', 'sync_worktree',
@@ -826,11 +826,11 @@ test('project_status on a non-git project returns isGitRepo:false but still list
   assert.equal(st.branch, undefined); // git fields omitted on non-repo
 });
 
-test('read_file reads UTF-8 by relative path, rejects traversal, caps at maxBytes', async () => {
+test('project_read reads UTF-8 by relative path, rejects traversal, caps at maxBytes', async () => {
   const repoPath = await makeRealRepo(projectsRoot, 'demo');
   await fs.writeFile(path.join(repoPath, 'hello.txt'), 'hello world\n');
 
-  const ok = unwrapFile(await callTool(baseUrl, 'read_file', {
+  const ok = unwrapFile(await callTool(baseUrl, 'project_read', {
     project: 'demo', relativePath: 'hello.txt',
   }));
   assert.equal(ok.encoding, 'utf8');
@@ -838,7 +838,7 @@ test('read_file reads UTF-8 by relative path, rejects traversal, caps at maxByte
   assert.equal(ok.truncated, false);
 
   // Truncation: maxBytes:5 caps to "hello".
-  const cut = unwrapFile(await callTool(baseUrl, 'read_file', {
+  const cut = unwrapFile(await callTool(baseUrl, 'project_read', {
     project: 'demo', relativePath: 'hello.txt', maxBytes: 5,
   }));
   assert.equal(cut.content, 'hello');
@@ -846,27 +846,27 @@ test('read_file reads UTF-8 by relative path, rejects traversal, caps at maxByte
 
   // Traversal: blocked.
   const { body: trav } = await rpc(baseUrl, 'tools/call', {
-    name: 'read_file', arguments: { project: 'demo', relativePath: '../../etc/hostname' },
+    name: 'project_read', arguments: { project: 'demo', relativePath: '../../etc/hostname' },
   });
   assert.equal(trav.result.isError, true);
   assert.match(trav.result.content[0].text, /escapes project root/);
 
   // Absolute path: blocked.
   const { body: abs } = await rpc(baseUrl, 'tools/call', {
-    name: 'read_file', arguments: { project: 'demo', relativePath: '/etc/hostname' },
+    name: 'project_read', arguments: { project: 'demo', relativePath: '/etc/hostname' },
   });
   assert.equal(abs.result.isError, true);
   assert.match(abs.result.content[0].text, /project-relative/);
 
   // Missing file → isError 404.
   const { body: miss } = await rpc(baseUrl, 'tools/call', {
-    name: 'read_file', arguments: { project: 'demo', relativePath: 'nope.txt' },
+    name: 'project_read', arguments: { project: 'demo', relativePath: 'nope.txt' },
   });
   assert.equal(miss.result.isError, true);
   assert.match(miss.result.content[0].text, /file not found/);
 });
 
-test('read_file scoped to a worktree reads from the worktree root, not the parent', async () => {
+test('project_read scoped to a worktree reads from the worktree root, not the parent', async () => {
   const repoPath = await makeRealRepo(projectsRoot, 'demo');
   const wt = unwrap(await callTool(baseUrl, 'create_worktree', { project: 'demo' }));
   // Same filename on both sides, different content.
@@ -874,12 +874,12 @@ test('read_file scoped to a worktree reads from the worktree root, not the paren
   const wtPath = path.join(projectsRoot, wt.worktree);
   await fs.writeFile(path.join(wtPath, 'shared.txt'), 'worktree\n');
 
-  const fromWt = unwrapFile(await callTool(baseUrl, 'read_file', {
+  const fromWt = unwrapFile(await callTool(baseUrl, 'project_read', {
     project: 'demo', worktree: wt.worktree, relativePath: 'shared.txt',
   }));
   assert.equal(fromWt.content, 'worktree\n');
 
-  const fromParent = unwrapFile(await callTool(baseUrl, 'read_file', {
+  const fromParent = unwrapFile(await callTool(baseUrl, 'project_read', {
     project: 'demo', relativePath: 'shared.txt',
   }));
   assert.equal(fromParent.content, 'parent\n');
