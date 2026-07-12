@@ -23,6 +23,16 @@
 // NEITHER key run through the heuristic. Rows that already carry `cache_miss`
 // are left untouched. Unparseable lines are preserved verbatim.
 //
+// Every row this migration decides via the heuristic (rather than preserving
+// a decisive verdict) gets `cache_miss_heuristic: true`, so downstream
+// consumers can tell a guess from a decisive live capture. Determined by the
+// PRESENCE of `first_req_cache_read` (a decisive row always carries it, even
+// as 0) — not its truthiness. A row with neither key is always heuristic. A
+// renamed old-`cache_flush` row is heuristic only if it lacks
+// `first_req_cache_read` (an old-migration verdict, not live-captured); if
+// that field is present the renamed row is decisive and gets no flag. Absence
+// of `cache_miss_heuristic` always means "decisive."
+//
 // Scope: a single file in the central store, `<root>/.code-conductor/costs.jsonl`.
 // Idempotent: a no-op once the file is absent, or every row has `cache_miss`
 // and no row still carries the old `cache_flush` key.
@@ -116,21 +126,28 @@ export async function run({ root, log = () => {} } = {}) {
 
   let rowsRenamed = 0;
   let rowsFlagged = 0;
+  let rowsMarkedHeuristic = 0;
   for (const r of parsedRows) {
     if ('cache_flush' in r) {
       r.cache_miss = r.cache_flush;
       delete r.cache_flush;
       rowsRenamed += 1;
+      if (!('first_req_cache_read' in r)) {
+        r.cache_miss_heuristic = true;
+        rowsMarkedHeuristic += 1;
+      }
       continue;
     }
     if ('cache_miss' in r) continue; // already decisive under the new name
     const isMiss = missed.has(r);
     r.cache_miss = isMiss;
+    r.cache_miss_heuristic = true;
+    rowsMarkedHeuristic += 1;
     if (isMiss) rowsFlagged += 1;
   }
 
   const out = entries.map(e => e.obj ? JSON.stringify(e.obj) : e.raw).join('\n') + '\n';
   await writeTextAtomic(file, out);
-  log(`  ✓ cache_miss on ${parsedRows.length} cost row${parsedRows.length === 1 ? '' : 's'} (${rowsRenamed} renamed from cache_flush, ${rowsFlagged} heuristically flagged) in ${file}`);
-  return { applied: true, summary: { rowsTotal: parsedRows.length, rowsRenamed, rowsFlagged } };
+  log(`  ✓ cache_miss on ${parsedRows.length} cost row${parsedRows.length === 1 ? '' : 's'} (${rowsRenamed} renamed from cache_flush, ${rowsFlagged} heuristically flagged, ${rowsMarkedHeuristic} marked cache_miss_heuristic) in ${file}`);
+  return { applied: true, summary: { rowsTotal: parsedRows.length, rowsRenamed, rowsFlagged, rowsMarkedHeuristic } };
 }
