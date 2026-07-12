@@ -90,9 +90,9 @@ test('validateArgs enforces minLength/maxLength (create_workspace name)', async 
   assert.match(long.body.result.content[0].text, /at most 40 character/);
 });
 
-test('validateArgs enforces minimum/maximum (get_worktree_diff contextLines, get_recent_messages count)', async () => {
+test('validateArgs enforces minimum/maximum (project_diff contextLines, get_recent_messages count)', async () => {
   const hi = await rpc('tools/call', {
-    name: 'get_worktree_diff', arguments: { project: 'x', worktree: 'y', contextLines: 99 },
+    name: 'project_diff', arguments: { project: 'x', worktree: 'y', contextLines: 99 },
   });
   assert.equal(hi.body.result.isError, true);
   assert.match(hi.body.result.content[0].text, /<= 50/);
@@ -106,9 +106,9 @@ test('validateArgs enforces minimum/maximum (get_worktree_diff contextLines, get
   assert.match(big.body.result.content[0].text, /<= 50/);
 });
 
-test('validateArgs enforces array items.type (get_worktree_diff paths)', async () => {
+test('validateArgs enforces array items.type (project_diff paths)', async () => {
   const { body } = await rpc('tools/call', {
-    name: 'get_worktree_diff', arguments: { project: 'x', worktree: 'y', paths: ['ok', 7] },
+    name: 'project_diff', arguments: { project: 'x', worktree: 'y', paths: ['ok', 7] },
   });
   assert.equal(body.result.isError, true);
   assert.match(body.result.content[0].text, /paths\[1\]' must be string/);
@@ -133,7 +133,7 @@ test('dropped legacy aliases (instanceId / worktreeName) are rejected as unknown
   assert.match(a.body.result.content[0].text, /unexpected argument 'instanceId'/);
 
   const w = await rpc('tools/call', {
-    name: 'get_worktree_diff', arguments: { project: 'p', worktree: 'w', worktreeName: 'w' },
+    name: 'project_diff', arguments: { project: 'p', worktree: 'w', worktreeName: 'w' },
   });
   assert.equal(w.body.result.isError, true);
   assert.match(w.body.result.content[0].text, /unexpected argument 'worktreeName'/);
@@ -161,12 +161,12 @@ test('legacy {id} worker handle is rejected (clean break — sessionId only)', a
 
 // ---------- multi-block output ----------
 
-test('read_file returns a metadata block + a raw UNESCAPED text body block', async () => {
+test('project_read returns a metadata block + a raw UNESCAPED text body block', async () => {
   const repoPath = await makeRealRepo('demo');
   const raw = 'line1\n"quoted" line\nline3\n';
   await fs.writeFile(path.join(repoPath, 'multi.txt'), raw);
 
-  const res = await callTool('read_file', { project: 'demo', relativePath: 'multi.txt' });
+  const res = await callTool('project_read', { project: 'demo', relativePath: 'multi.txt' });
   assert.equal(res.content.length, 2, 'metadata block + one body block');
   const m = meta(res);
   assert.equal(m.encoding, 'utf8');
@@ -178,25 +178,25 @@ test('read_file returns a metadata block + a raw UNESCAPED text body block', asy
   assert.equal(bodies(res)[0], raw);
 });
 
-test('read_file truncated fast path reports lineCountExact:false', async () => {
+test('project_read truncated fast path reports lineCountExact:false', async () => {
   const repoPath = await makeRealRepo('demo');
   await fs.writeFile(path.join(repoPath, 'big.txt'), 'abcdefghij\n'.repeat(100));
-  const res = await callTool('read_file', { project: 'demo', relativePath: 'big.txt', maxBytes: 25 });
+  const res = await callTool('project_read', { project: 'demo', relativePath: 'big.txt', maxBytes: 25 });
   const m = meta(res);
   assert.equal(m.truncated, true);
   assert.equal(m.lineCountExact, false, 'partial final line on the byte-capped fast path');
 });
 
-test('read_file binary returns a base64 body block', async () => {
+test('project_read binary returns a base64 body block', async () => {
   const repoPath = await makeRealRepo('demo');
   await fs.writeFile(path.join(repoPath, 'b.bin'), Buffer.from([0x00, 0x01, 0x02, 0xff]));
-  const res = await callTool('read_file', { project: 'demo', relativePath: 'b.bin' });
+  const res = await callTool('project_read', { project: 'demo', relativePath: 'b.bin' });
   const m = meta(res);
   assert.equal(m.encoding, 'base64');
   assert.equal(bodies(res)[0], Buffer.from([0x00, 0x01, 0x02, 0xff]).toString('base64'));
 });
 
-test('get_worktree_diff diff mode → 2 blocks, head is a SHA, no sizeBytes; summary → 1 block', async () => {
+test('project_diff diff mode → 2 blocks, head is a SHA, no sizeBytes; summary → 1 block', async () => {
   await makeRealRepo('demo');
   const wt = meta(await callTool('create_worktree', { project: 'demo' }));
   const wtPath = path.join(projectsRoot, wt.worktree);
@@ -204,7 +204,7 @@ test('get_worktree_diff diff mode → 2 blocks, head is a SHA, no sizeBytes; sum
   await git(wtPath, 'add', '.');
   await git(wtPath, 'commit', '-q', '-m', 'add new.txt');
 
-  const diff = await callTool('get_worktree_diff', { project: 'demo', worktree: wt.worktree });
+  const diff = await callTool('project_diff', { project: 'demo', worktree: wt.worktree });
   assert.equal(diff.content.length, 2);
   const dm = meta(diff);
   assert.match(dm.head, /^[0-9a-f]{40}$/);
@@ -213,7 +213,7 @@ test('get_worktree_diff diff mode → 2 blocks, head is a SHA, no sizeBytes; sum
   assert.equal(dm.worktree, wt.worktree);
   assert.match(bodies(diff)[0], /\+fresh/);
 
-  const summary = await callTool('get_worktree_diff', { project: 'demo', worktree: wt.worktree, summary: true });
+  const summary = await callTool('project_diff', { project: 'demo', worktree: wt.worktree, summary: true });
   assert.equal(summary.content.length, 1, 'summary mode is a single JSON block');
   const sm = meta(summary);
   assert.equal(sm.summary, true);
@@ -309,7 +309,7 @@ test('delete_worktree soft-refuses (ok:false + code) on dirty and attached, neve
 test('errors surface prose (HTTP <code>) plus a structured {code, statusCode} block', async () => {
   await makeRealRepo('demo');
   const { body } = await rpc('tools/call', {
-    name: 'read_file', arguments: { project: 'demo', relativePath: 'nope.txt' },
+    name: 'project_read', arguments: { project: 'demo', relativePath: 'nope.txt' },
   });
   assert.equal(body.result.isError, true);
   assert.match(body.result.content[0].text, /file not found.*\(HTTP 404\)/);
@@ -318,11 +318,11 @@ test('errors surface prose (HTTP <code>) plus a structured {code, statusCode} bl
   assert.equal(structured.code, 'NOT_FOUND');
 });
 
-test('get_worktree_diff invalid baseRef surfaces statusCode 400', async () => {
+test('project_diff invalid baseRef surfaces statusCode 400', async () => {
   await makeRealRepo('demo');
   const wt = meta(await callTool('create_worktree', { project: 'demo' }));
   const { body } = await rpc('tools/call', {
-    name: 'get_worktree_diff', arguments: { project: 'demo', worktree: wt.worktree, baseRef: '--evil' },
+    name: 'project_diff', arguments: { project: 'demo', worktree: wt.worktree, baseRef: '--evil' },
   });
   assert.equal(body.result.isError, true);
   assert.match(errText(body.result), /\(HTTP 400\)/);
@@ -363,9 +363,9 @@ test('project_status caps the dirty list with dirtyTruncated + dirtyTotal', asyn
 test('tools/list emits readOnly / destructive / idempotent annotations', async () => {
   const { body } = await rpc('tools/list');
   const byName = Object.fromEntries(body.result.tools.map(t => [t.name, t.annotations ?? {}]));
-  assert.equal(byName.read_file.readOnlyHint, true);
+  assert.equal(byName.project_read.readOnlyHint, true);
   assert.equal(byName.list_projects.readOnlyHint, true);
-  assert.equal(byName.get_worktree_diff.readOnlyHint, true);
+  assert.equal(byName.project_diff.readOnlyHint, true);
   assert.equal(byName.kill_instance.destructiveHint, true);
   assert.equal(byName.delete_worktree.destructiveHint, true);
   assert.equal(byName.merge_worktree.destructiveHint, true);

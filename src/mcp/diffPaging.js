@@ -1,4 +1,4 @@
-// Diff-pagination engine for get_worktree_diff. Pure functions (only the
+// Diff-pagination engine for project_diff. Pure functions (only the
 // `Buffer` global) lifted out of the handler shell in ./handlers.js: numstat /
 // name-status parsing, a one-pass line index, and a byte-bounded line pager.
 // The byte-cap / pagination / summary output shapes are a documented MCP

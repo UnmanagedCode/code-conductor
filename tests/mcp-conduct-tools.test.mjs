@@ -1,5 +1,5 @@
 // Tests for the four MCP tools added for Conduct mode:
-//   approve_plan, reject_plan, set_auto_approve_plan, get_worktree_diff.
+//   approve_plan, reject_plan, set_auto_approve_plan, project_diff.
 //
 // Mirrors the bootServer + rpc + unwrap pattern from tests/mcp.test.mjs.
 
@@ -44,7 +44,7 @@ function unwrap(result) {
   assert.ok(Array.isArray(result.content), 'tool result has content[]');
   return JSON.parse(result.content[0].text);
 }
-// get_worktree_diff: diff mode → [meta, rawDiff]; summary/clean → single JSON.
+// project_diff: diff mode → [meta, rawDiff]; summary/clean → single JSON.
 // Reattach the diff body onto the metadata for drop-in assertions.
 function unwrapDiff(result) {
   assert.ok(Array.isArray(result.content), 'tool result has content[]');
@@ -88,7 +88,7 @@ async function seedPlanFile() {
 test('tools/list includes the four new Conduct tools', async () => {
   const { body } = await rpc('tools/list');
   const names = body.result.tools.map(t => t.name);
-  for (const n of ['approve_plan', 'reject_plan', 'set_auto_approve_plan', 'get_worktree_diff']) {
+  for (const n of ['approve_plan', 'reject_plan', 'set_auto_approve_plan', 'project_diff']) {
     assert.ok(names.includes(n), `tools/list missing ${n}`);
     const t = body.result.tools.find(x => x.name === n);
     assert.equal(t.inputSchema.type, 'object', `${n} inputSchema is an object`);
@@ -201,7 +201,7 @@ test('set_auto_approve_plan flips the per-instance flag', async () => {
   assert.equal(inst.autoApprovePlan, false);
 });
 
-test('get_worktree_diff returns the unified diff of <base>...HEAD', async () => {
+test('project_diff returns the unified diff of <base>...HEAD', async () => {
   await makeRealRepo('demo');
   const wt = unwrap(await callTool('create_worktree', { project: 'demo' }));
   const wtPath = path.join(projectsRoot, wt.worktree);
@@ -209,7 +209,7 @@ test('get_worktree_diff returns the unified diff of <base>...HEAD', async () => 
   await git(wtPath, 'add', '.');
   await git(wtPath, 'commit', '-q', '-m', 'add new.txt');
 
-  const diffRes = unwrapDiff(await callTool('get_worktree_diff', {
+  const diffRes = unwrapDiff(await callTool('project_diff', {
     project: 'demo', worktree: wt.worktree,
   }));
   assert.equal(diffRes.baseRef, 'main');
@@ -224,10 +224,10 @@ test('get_worktree_diff returns the unified diff of <base>...HEAD', async () => 
   assert.match(diffRes.diff, /\+fresh content/);
 });
 
-test('get_worktree_diff returns an empty diff for a clean worktree', async () => {
+test('project_diff returns an empty diff for a clean worktree', async () => {
   await makeRealRepo('demo');
   const wt = unwrap(await callTool('create_worktree', { project: 'demo' }));
-  const diffRes = unwrapDiff(await callTool('get_worktree_diff', {
+  const diffRes = unwrapDiff(await callTool('project_diff', {
     project: 'demo', worktree: wt.worktree,
   }));
   assert.equal(diffRes.diff, '');
@@ -237,17 +237,17 @@ test('get_worktree_diff returns an empty diff for a clean worktree', async () =>
   assert.equal(diffRes.totalBytes, 0);
 });
 
-test('get_worktree_diff rejects unknown worktree', async () => {
+test('project_diff rejects unknown worktree', async () => {
   await makeRealRepo('demo');
   const { body } = await rpc('tools/call', {
-    name: 'get_worktree_diff',
+    name: 'project_diff',
     arguments: { project: 'demo', worktree: 'does-not-exist' },
   });
   assert.equal(body.result.isError, true);
   assert.match(body.result.content[0].text, /not found/i);
 });
 
-test('get_worktree_diff paginates a large diff losslessly by line index', async () => {
+test('project_diff paginates a large diff losslessly by line index', async () => {
   await makeRealRepo('demo');
   const wt = unwrap(await callTool('create_worktree', { project: 'demo' }));
   const wtPath = path.join(projectsRoot, wt.worktree);
@@ -268,7 +268,7 @@ test('get_worktree_diff paginates a large diff losslessly by line index', async 
   let firstTotalBytes = null;
   let truncatedSeen = false;
   while (true) {
-    const page = unwrapDiff(await callTool('get_worktree_diff', {
+    const page = unwrapDiff(await callTool('project_diff', {
       project: 'demo', worktree: wt.worktree, offset,
     }));
     pages++;
@@ -297,7 +297,7 @@ test('get_worktree_diff paginates a large diff losslessly by line index', async 
   for (let i = 0; i < fileCount; i++) assert.ok(seenFiles.has(`f${i}.txt`), `f${i}.txt missing from drained pages`);
 });
 
-test('get_worktree_diff re-emits file/hunk headers on a mid-file page', async () => {
+test('project_diff re-emits file/hunk headers on a mid-file page', async () => {
   await makeRealRepo('demo');
   const wt = unwrap(await callTool('create_worktree', { project: 'demo' }));
   const wtPath = path.join(projectsRoot, wt.worktree);
@@ -307,12 +307,12 @@ test('get_worktree_diff re-emits file/hunk headers on a mid-file page', async ()
   await git(wtPath, 'add', '.');
   await git(wtPath, 'commit', '-q', '-m', 'one big file');
 
-  const page1 = unwrapDiff(await callTool('get_worktree_diff', {
+  const page1 = unwrapDiff(await callTool('project_diff', {
     project: 'demo', worktree: wt.worktree,
   }));
   assert.equal(page1.truncated, true);
   assert.ok(page1.nextOffset > 0);
-  const page2 = unwrapDiff(await callTool('get_worktree_diff', {
+  const page2 = unwrapDiff(await callTool('project_diff', {
     project: 'demo', worktree: wt.worktree, offset: page1.nextOffset,
   }));
   // page2 begins mid-file → re-emitted header context makes it standalone.
@@ -320,7 +320,7 @@ test('get_worktree_diff re-emits file/hunk headers on a mid-file page', async ()
   assert.match(page2.diff, /@@ /);
 });
 
-test('get_worktree_diff makes progress even when a single line exceeds the cap', async () => {
+test('project_diff makes progress even when a single line exceeds the cap', async () => {
   await makeRealRepo('demo');
   const wt = unwrap(await callTool('create_worktree', { project: 'demo' }));
   const wtPath = path.join(projectsRoot, wt.worktree);
@@ -333,7 +333,7 @@ test('get_worktree_diff makes progress even when a single line exceeds the cap',
   let guard = 0;
   let sawHugeLine = false;
   while (guard++ < 20) {
-    const page = unwrapDiff(await callTool('get_worktree_diff', {
+    const page = unwrapDiff(await callTool('project_diff', {
       project: 'demo', worktree: wt.worktree, offset,
     }));
     if (/\+x{200000,}/.test(page.diff)) sawHugeLine = true;
@@ -344,7 +344,7 @@ test('get_worktree_diff makes progress even when a single line exceeds the cap',
   assert.ok(sawHugeLine, 'the oversized line is still emitted on its own page');
 });
 
-test('get_worktree_diff summary returns a per-file stat (add + modify)', async () => {
+test('project_diff summary returns a per-file stat (add + modify)', async () => {
   await makeRealRepo('demo');
   const wt = unwrap(await callTool('create_worktree', { project: 'demo' }));
   const wtPath = path.join(projectsRoot, wt.worktree);
@@ -353,7 +353,7 @@ test('get_worktree_diff summary returns a per-file stat (add + modify)', async (
   await git(wtPath, 'add', '.');
   await git(wtPath, 'commit', '-q', '-m', 'add + modify');
 
-  const res = unwrapDiff(await callTool('get_worktree_diff', {
+  const res = unwrapDiff(await callTool('project_diff', {
     project: 'demo', worktree: wt.worktree, summary: true,
   }));
   assert.equal(res.summary, true);
@@ -367,7 +367,7 @@ test('get_worktree_diff summary returns a per-file stat (add + modify)', async (
   assert.equal(res.totals.additions, res.files.reduce((s, f) => s + f.additions, 0));
 });
 
-test('get_worktree_diff summary flags deletes, renames and binary files', async () => {
+test('project_diff summary flags deletes, renames and binary files', async () => {
   await makeRealRepo('demo');
 
   // Rename test: pure rename so git reports R.
@@ -375,7 +375,7 @@ test('get_worktree_diff summary flags deletes, renames and binary files', async 
   const wtRPath = path.join(projectsRoot, wtR.worktree);
   await git(wtRPath, 'mv', 'README.md', 'DOC.md');
   await git(wtRPath, 'commit', '-q', '-m', 'rename');
-  const resR = unwrapDiff(await callTool('get_worktree_diff', {
+  const resR = unwrapDiff(await callTool('project_diff', {
     project: 'demo', worktree: wtR.worktree, summary: true,
   }));
   const rename = resR.files.find(f => f.path === 'DOC.md');
@@ -388,7 +388,7 @@ test('get_worktree_diff summary flags deletes, renames and binary files', async 
   const wtDPath = path.join(projectsRoot, wtD.worktree);
   await git(wtDPath, 'rm', '-q', 'README.md');
   await git(wtDPath, 'commit', '-q', '-m', 'delete');
-  const resD = unwrapDiff(await callTool('get_worktree_diff', {
+  const resD = unwrapDiff(await callTool('project_diff', {
     project: 'demo', worktree: wtD.worktree, summary: true,
   }));
   assert.equal(resD.files.find(f => f.path === 'README.md').status, 'D');
@@ -400,7 +400,7 @@ test('get_worktree_diff summary flags deletes, renames and binary files', async 
   await fs.writeFile(path.join(wtBPath, 'blob.bin'), bin);
   await git(wtBPath, 'add', '.');
   await git(wtBPath, 'commit', '-q', '-m', 'binary');
-  const resB = unwrapDiff(await callTool('get_worktree_diff', {
+  const resB = unwrapDiff(await callTool('project_diff', {
     project: 'demo', worktree: wtB.worktree, summary: true,
   }));
   const blob = resB.files.find(f => f.path === 'blob.bin');
@@ -409,10 +409,10 @@ test('get_worktree_diff summary flags deletes, renames and binary files', async 
   assert.equal(blob.deletions, 0);
 });
 
-test('get_worktree_diff summary is empty for a clean worktree', async () => {
+test('project_diff summary is empty for a clean worktree', async () => {
   await makeRealRepo('demo');
   const wt = unwrap(await callTool('create_worktree', { project: 'demo' }));
-  const res = unwrapDiff(await callTool('get_worktree_diff', {
+  const res = unwrapDiff(await callTool('project_diff', {
     project: 'demo', worktree: wt.worktree, summary: true,
   }));
   assert.deepEqual(res.files, []);
@@ -421,7 +421,7 @@ test('get_worktree_diff summary is empty for a clean worktree', async () => {
   assert.equal(res.totals.deletions, 0);
 });
 
-test('get_worktree_diff scopes the diff to the given paths', async () => {
+test('project_diff scopes the diff to the given paths', async () => {
   await makeRealRepo('demo');
   const wt = unwrap(await callTool('create_worktree', { project: 'demo' }));
   const wtPath = path.join(projectsRoot, wt.worktree);
@@ -430,13 +430,13 @@ test('get_worktree_diff scopes the diff to the given paths', async () => {
   await git(wtPath, 'add', '.');
   await git(wtPath, 'commit', '-q', '-m', 'two files');
 
-  const scoped = unwrapDiff(await callTool('get_worktree_diff', {
+  const scoped = unwrapDiff(await callTool('project_diff', {
     project: 'demo', worktree: wt.worktree, paths: ['a.txt'],
   }));
   assert.match(scoped.diff, /a\.txt/);
   assert.ok(!/b\.txt/.test(scoped.diff), 'b.txt should be excluded by path scoping');
 
-  const scopedSummary = unwrapDiff(await callTool('get_worktree_diff', {
+  const scopedSummary = unwrapDiff(await callTool('project_diff', {
     project: 'demo', worktree: wt.worktree, summary: true, paths: ['a.txt'],
   }));
   assert.equal(scopedSummary.totals.files, 1);

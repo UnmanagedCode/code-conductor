@@ -9,7 +9,7 @@
 import { loadPersistedTranscript } from '../transcript.js';
 
 // Per-message text cap for get_recent_messages raw blocks — mirror
-// read_file/get_worktree_diff's bounded-output pattern so no tool can emit an
+// project_read/project_diff's bounded-output pattern so no tool can emit an
 // unbounded body.
 export const MSG_TEXT_CAP = 32 * 1024;
 // Upper bound on how many trailing on-disk events get_recent_messages

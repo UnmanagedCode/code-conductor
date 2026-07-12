@@ -1,4 +1,4 @@
-// Integration tests for read_file line-param enhancements:
+// Integration tests for project_read line-param enhancements:
 // lineNumbers, offset/limit, lineCount, binary passthrough.
 // Kept in a separate file to avoid pushing mcp.test.mjs past its 30s budget.
 
@@ -31,7 +31,7 @@ async function callTool(baseUrl, name, args) {
   return body.result;
 }
 
-// read_file is multi-block: content[0] is JSON metadata, content[1] is the
+// project_read is multi-block: content[0] is JSON metadata, content[1] is the
 // raw body. Merge the body back onto the metadata as `content` for assertions.
 function unwrap(result) {
   assert.ok(Array.isArray(result.content), 'tool result has content[]');
@@ -60,7 +60,7 @@ async function makeRealRepo(projectsRoot, name) {
   return repoPath;
 }
 
-test('read_file: lineNumbers, offset/limit range, past-EOF grace, binary ignores params', async () => {
+test('project_read: lineNumbers, offset/limit range, past-EOF grace, binary ignores params', async () => {
   const ctx = await bootServer({ scenarioPath: SCENARIO_WS });
   try {
     const repoPath = await makeRealRepo(ctx.projectsRoot, 'demo');
@@ -68,7 +68,7 @@ test('read_file: lineNumbers, offset/limit range, past-EOF grace, binary ignores
     await fs.writeFile(path.join(repoPath, 'five.txt'), 'alpha\nbeta\ngamma\ndelta\nepsilon\n');
 
     // (1) lineCount present on basic read (fast path — no line params)
-    const basic = unwrap(await callTool(ctx.baseUrl, 'read_file', {
+    const basic = unwrap(await callTool(ctx.baseUrl, 'project_read', {
       project: 'demo', relativePath: 'five.txt',
     }));
     assert.equal(basic.lineCount, 5);
@@ -76,7 +76,7 @@ test('read_file: lineNumbers, offset/limit range, past-EOF grace, binary ignores
     assert.equal(basic.startLine, undefined); // no range → no startLine
 
     // (2) lineNumbers:true — verify cat-n prefix format
-    const numbered = unwrap(await callTool(ctx.baseUrl, 'read_file', {
+    const numbered = unwrap(await callTool(ctx.baseUrl, 'project_read', {
       project: 'demo', relativePath: 'five.txt', lineNumbers: true,
     }));
     assert.equal(numbered.lineCount, 5);
@@ -86,7 +86,7 @@ test('read_file: lineNumbers, offset/limit range, past-EOF grace, binary ignores
     assert.match(lines[4], /^\s*5\tepsilon$/);
 
     // (3) offset+limit range — lines 2–3; not at EOF so no trailing newline
-    const range = unwrap(await callTool(ctx.baseUrl, 'read_file', {
+    const range = unwrap(await callTool(ctx.baseUrl, 'project_read', {
       project: 'demo', relativePath: 'five.txt', offset: 2, limit: 2,
     }));
     assert.equal(range.startLine, 2);
@@ -95,7 +95,7 @@ test('read_file: lineNumbers, offset/limit range, past-EOF grace, binary ignores
     assert.equal(range.content, 'beta\ngamma');
 
     // (4) offset past EOF — graceful empty, lineCount still accurate
-    const pastEof = unwrap(await callTool(ctx.baseUrl, 'read_file', {
+    const pastEof = unwrap(await callTool(ctx.baseUrl, 'project_read', {
       project: 'demo', relativePath: 'five.txt', offset: 100,
     }));
     assert.equal(pastEof.lineCount, 5);
@@ -106,7 +106,7 @@ test('read_file: lineNumbers, offset/limit range, past-EOF grace, binary ignores
     // (5) binary file ignores line params — returns base64, no startLine/endLine/lineCount
     const binPath = path.join(repoPath, 'bytes.bin');
     await fs.writeFile(binPath, Buffer.from([0x89, 0x50, 0x00, 0x4e, 0x47]));
-    const bin = unwrap(await callTool(ctx.baseUrl, 'read_file', {
+    const bin = unwrap(await callTool(ctx.baseUrl, 'project_read', {
       project: 'demo', relativePath: 'bytes.bin',
       lineNumbers: true, offset: 2, limit: 1,
     }));

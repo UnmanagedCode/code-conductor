@@ -44,7 +44,7 @@ import {
   hasPlanOrQuestions, ringTurnIndex, bondTrailingTurn,
 } from './messageReconstruction.js';
 
-// Dirty-line cap for project_status — mirror read_file/get_worktree_diff's
+// Dirty-line cap for project_status — mirror project_read/project_diff's
 // bounded-output pattern so no tool can emit an unbounded body. (The
 // per-message text cap MSG_TEXT_CAP now lives in ./messageReconstruction.js.)
 const DIRTY_CAP = 500;
@@ -610,9 +610,9 @@ export async function setAutoApprovePlan({ sessionId, enabled }, { instances }) 
 // ./diffPaging.js (parseNumstat / parseNameStatus / indexDiffLines /
 // paginateDiff), imported above.
 
-export async function getWorktreeDiff({ project, worktree, baseRef, contextLines = 3, summary = false, paths, offset = 0 }) {
+export async function projectDiff({ project, worktree, baseRef, contextLines = 3, summary = false, paths, offset = 0 }) {
   if (!project || !worktree) {
-    throw new Error('get_worktree_diff requires {project, worktree}');
+    throw new Error('project_diff requires {project, worktree}');
   }
   const wt = await getWorktree(project, worktree);
   if (!wt) throw new Error(`worktree '${worktree}' not found under project '${project}'`);
@@ -1091,7 +1091,7 @@ export async function projectStatus({ project, worktree, logLimit = 20 }) {
       : [];
   }
   // Cap the dirty list so a pathological working tree can't blow up the
-  // response (mirrors read_file / get_worktree_diff's bounded-output pattern).
+  // response (mirrors project_read / project_diff's bounded-output pattern).
   if (out.dirty.length > DIRTY_CAP) {
     out.dirtyTotal = out.dirty.length;
     out.dirty = out.dirty.slice(0, DIRTY_CAP);
@@ -1124,7 +1124,7 @@ export async function projectStatus({ project, worktree, logLimit = 20 }) {
 // files are reported as base64 (line params ignored for binary).
 // Optional line params (text only): offset (1-based start line, default 1),
 // limit (max lines, default: to EOF), lineNumbers (cat-n prefix).
-export async function readFile({ project, worktree, relativePath,
+export async function projectRead({ project, worktree, relativePath,
   maxBytes = 256 * 1024, lineNumbers = false, offset = 1, limit }) {
   if (typeof relativePath !== 'string' || !relativePath) {
     throw new Error('relativePath required');

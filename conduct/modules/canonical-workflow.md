@@ -4,13 +4,13 @@
 
 For a typical "implement feature X in project Y":
 
-1. **Recon** — `list_projects()`; `project_status({project: 'Y'})`; `read_file` as needed.
+1. **Recon** — `list_projects()`; `project_status({project: 'Y'})`; `project_read` as needed.
 2. **Spawn in plan mode, fresh worktree** — `spawn_instance({project: 'Y', mode: 'plan', createWorktree: true, model: 'sonnet'})`; capture the returned `sessionId`.
 3. **Brief** — `send_prompt({sessionId, text: "<scoped goal + constraints + completion sentinel>"})`, end your turn.
 4. **[Wake] Read the plan** — from the folded wake output (it includes the plan/`AskUserQuestion` block with its trailing prose); `get_recent_messages({sessionId})` only for more or an un-folded wake.
 5. **Decide** — **Approve**: `approve_plan({sessionId})` (optional `feedback`) → resubscribe + end turn. **Revise**: `reject_plan({sessionId, feedback})` → resubscribe + end turn, loop to step 4. **Answer a question**: on a `questions` wake, `answer_question({sessionId, answers})` → resubscribe + end turn. **Abandon**: `unsubscribe_from_idle({sessionId})`; `kill_instance({sessionId})`; `delete_worktree(...)`.
 6. **[Wake] Implementation done** — confirm the sentinel from the folded wake output; if mid-multi-turn, resubscribe + end turn.
-7. **Review** — `project_status({project: 'Y', worktree: '<wtName>'})` for the summary, `get_worktree_diff(...)` for the full diff, `read_file(...)` for specifics — immediate calls, no subscribe.
+7. **Review** — `project_status({project: 'Y', worktree: '<wtName>'})` for the summary, `project_diff(...)` for the full diff, `project_read(...)` for specifics — immediate calls, no subscribe.
 8. **Land** — merge only once the feature is complete: if strongly-related (same-files) work remains, send it to the worker **first** so it all lands as one branch. Then `sync_worktree({sessionId})` (a rebase prompt sent to the worker is a worker turn — subscribe + end turn, resume on wake; fast-forwarded / already-in-sync — continue straight on) and `merge_worktree({sessionId})`.
 9. **Clean up** — see Worker lifecycle: successful merge → `delete_worktree` + `kill_instance`; refused or conflicted merge → keep the worker, `sync_worktree`, retry.
 

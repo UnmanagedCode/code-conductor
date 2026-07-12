@@ -665,7 +665,7 @@ export function buildTools() {
       annotations: { readOnlyHint: true },
     },
     {
-      name: 'get_worktree_diff',
+      name: 'project_diff',
       description:
         'Return the unified diff of <baseRef>...HEAD in a worktree, PLUS the working tree\'s uncommitted state. ' +
         'baseRef defaults to the worktree\'s recorded baseBranch (the branch it was created from); contextLines ' +
@@ -696,7 +696,7 @@ export function buildTools() {
         },
         required: ['project', 'worktree'],
       },
-      handler: h.getWorktreeDiff,
+      handler: h.projectDiff,
       annotations: { readOnlyHint: true },
     },
     {
@@ -731,7 +731,7 @@ export function buildTools() {
       // No readOnlyHint — arbitrary bash is not read-only.
     },
     {
-      name: 'read_file',
+      name: 'project_read',
       description:
         'Read a file from a project or worktree by its project-relative path. Path-traversal ' +
         'guarded. OUTPUT: a compact-JSON metadata block (content[0]) {path, size, truncated, encoding, lineCount, ' +
@@ -755,7 +755,7 @@ export function buildTools() {
         },
         required: ['project', 'relativePath'],
       },
-      handler: h.readFile,
+      handler: h.projectRead,
       annotations: { readOnlyHint: true },
     },
   ];
