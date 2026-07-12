@@ -202,6 +202,10 @@ export function describeToolInput(name, input, ctx = {}) {
     if (statusSuffix) out = out ? `${out} · ${statusSuffix}` : statusSuffix;
     return trunc(out, 160);
   };
+  if (name === 'mcp__code-conductor__project_bash') {
+    const scope = input.worktree ? `${input.project}/${input.worktree}` : input.project;
+    return trunc(`[${scope}] ${input.command}`);
+  }
   switch (renderKindFor(name)) {
     case 'Bash':       return trunc(input.command);
     case 'Edit':
