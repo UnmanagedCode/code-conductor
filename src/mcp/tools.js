@@ -700,58 +700,40 @@ export function buildTools() {
       annotations: { readOnlyHint: true },
     },
     {
-      name: 'grep',
+      name: 'project_bash',
       description:
-        'Search file contents by regex across a project or worktree tree. Path-traversal guarded; ' +
-        'excludes .git/ and node_modules/; never follows symlinks. Prefers ripgrep when on PATH, ' +
-        'otherwise pure JS. Three outputModes: (1) "files_with_matches" (default) — single JSON ' +
-        '{project, worktree, pattern, outputMode, files:[relPath,...], fileCount, truncated}. ' +
-        '(2) "count" — single JSON {…, files:[{path,count},...], totalMatches, truncated}. ' +
-        '(3) "content" — multi-block: compact-JSON metadata {…, matchCount, fileCount, truncated} ' +
-        '(content[0]) + a raw text body (content[1]) in grep style (path:line:content for matches, ' +
-        'path:line-content for context lines, -- between groups); capped at ~200 KB. ' +
-        'Use glob/type to narrow the file set; use headLimit to cap result count (default 250). ' +
-        'truncated:true means results were clipped — caller should assume incomplete coverage.',
+        'Run a bash command inside a project or worktree directory, using the exact same shell ' +
+        'environment claude\'s own built-in Bash tool uses — the rg/find/grep shims and shell ' +
+        'functions/aliases from the captured shell snapshot (cached per claude version). Superset ' +
+        'of the built-in Bash tool: same command/description/timeout/run_in_background/' +
+        'dangerouslyDisableSandbox params, plus project/worktree for cwd scoping. Replaces grep/glob ' +
+        '— use rg/grep/find through this tool for search. NOT read-only: can write files, run git, ' +
+        'start processes. OUTPUT: single JSON {project, worktree, cwd, exitCode, durationMs, output, ' +
+        'truncated?, timedOut?, error?}. output is combined stdout+stderr in arrival order. A ' +
+        'non-zero exitCode is a normal result, not a tool error. truncated:true means retained ' +
+        'output was capped at ~200 KB — the command still ran to completion; assume later output ' +
+        'beyond the cap was lost, not that the process was killed. timeout is milliseconds (default ' +
+        '120000, max 600000 — larger values are clamped); on timeout (the only hard kill) the whole ' +
+        'process group is killed, exitCode is null, and timedOut:true. stdin is not connected — an ' +
+        'interactive command hangs until timeout. run_in_background and dangerouslyDisableSandbox ' +
+        'are accepted for schema parity with the built-in Bash tool but are NO-OPs in this version: ' +
+        'the command always runs synchronously to completion or timeout, and this server never ' +
+        'sandboxes commands.',
       inputSchema: {
         type: 'object',
         properties: {
-          project:         { type: 'string' },
-          worktree:        { type: 'string', description: 'Optional worktree name to scope into.' },
-          pattern:         { type: 'string', description: 'Regex pattern to search for.' },
-          glob:            { type: 'string', description: 'Glob pattern to restrict which files are searched (e.g. "**/*.ts").' },
-          type:            { type: 'string', description: 'File-type shorthand (js|ts|jsx|py|json|md|html|css|sh|yaml|toml|go|rust|java|c|cpp). Expands to matching extensions.' },
-          outputMode:      { type: 'string', enum: ['files_with_matches', 'content', 'count'], default: 'files_with_matches', description: 'Output shape. Default "files_with_matches".' },
-          caseInsensitive: { type: 'boolean', default: false, description: 'Case-insensitive match. Default false.' },
-          before:          { type: 'integer', minimum: 0, default: 0, description: 'Lines of context before each match (-B). Ignored when context > 0.' },
-          after:           { type: 'integer', minimum: 0, default: 0, description: 'Lines of context after each match (-A). Ignored when context > 0.' },
-          context:         { type: 'integer', minimum: 0, default: 0, description: 'Lines of context before and after each match (-C). Overrides before/after when > 0.' },
-          headLimit:       { type: 'integer', minimum: 1, default: 250, description: 'Max matched files (files_with_matches/count) or matched files in content mode to return. Default 250.' },
+          project:  { type: 'string' },
+          worktree: { type: 'string', description: 'Optional worktree name to scope into.' },
+          command:  { type: 'string', description: 'The bash command to run.' },
+          description: { type: 'string', description: 'Clear, concise description of what this command does in 5-10 words. Unused server-side; accepted for schema parity with the built-in Bash tool.' },
+          timeout:  { type: 'integer', minimum: 1, default: 120000, description: 'Timeout in milliseconds (max 600000). Values above 600000 are clamped.' },
+          run_in_background: { type: 'boolean', default: false, description: 'Accepted for schema parity with the built-in Bash tool. NO-OP in v1 — always runs synchronously to completion or timeout.' },
+          dangerouslyDisableSandbox: { type: 'boolean', default: false, description: 'Accepted for schema parity with the built-in Bash tool. NO-OP — this server never sandboxes commands.' },
         },
-        required: ['project', 'pattern'],
+        required: ['project', 'command'],
       },
-      handler: h.grepProject,
-      annotations: { readOnlyHint: true },
-    },
-    {
-      name: 'glob',
-      description:
-        'Find files by glob pattern within a project or worktree tree. Path-traversal guarded; ' +
-        'excludes .git/ and node_modules/; never follows symlinks. Returns project-relative paths ' +
-        'sorted newest-first by mtime. OUTPUT: single JSON {project, worktree, pattern, ' +
-        'files:[relPath,...], total, truncated}. truncated:true when more files matched than ' +
-        'headLimit — caller should assume incomplete coverage.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          project:   { type: 'string' },
-          worktree:  { type: 'string', description: 'Optional worktree name to scope into.' },
-          pattern:   { type: 'string', description: 'Glob pattern e.g. "**/*.test.mjs", "src/**/*.ts".' },
-          headLimit: { type: 'integer', minimum: 1, default: 1000, description: 'Max files to return. Default 1000.' },
-        },
-        required: ['project', 'pattern'],
-      },
-      handler: h.globProject,
-      annotations: { readOnlyHint: true },
+      handler: h.bashProject,
+      // No readOnlyHint — arbitrary bash is not read-only.
     },
     {
       name: 'read_file',

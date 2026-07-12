@@ -1,15 +1,17 @@
-// Tests for the three MCP inspection-tool additions:
-//   grep, glob, and get_worktree_diff's always-on working-tree section.
+// Tests for MCP inspection-tool additions:
+//   project_bash and get_worktree_diff's always-on working-tree section.
 //
 // Mirrors the bootServer + rpc + callTool pattern from mcp-conduct-tools.test.mjs.
 
-import { test, before, after, beforeEach, afterEach } from 'node:test';
+import { test, describe, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { bootServer, freshProjectsRoot, rmrf } from './helpers.mjs';
+import { _resetForTest as resetShellEnvCache } from '../src/claudeShellEnv.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO_WS = path.join(__dirname, 'fixtures', 'scenario-ws.json');
@@ -38,17 +40,10 @@ async function callTool(name, args) {
   assert.ok(body.result, `tools/call ${name} returned no result; body=${JSON.stringify(body)}`);
   return body.result;
 }
-// Single-block JSON result (grep files_with_matches/count, glob).
+// Single-block JSON result (project_bash, get_worktree_diff summary mode).
 function unwrap(result) {
   assert.ok(Array.isArray(result.content), 'tool result has content[]');
   return JSON.parse(result.content[0].text);
-}
-// grep content mode: [meta, rawBody].
-function unwrapGrep(result) {
-  assert.ok(Array.isArray(result.content), 'tool result has content[]');
-  const meta = JSON.parse(result.content[0].text);
-  const body = result.content.length > 1 ? result.content.slice(1).map(c => c.text).join('') : '';
-  return { ...meta, body };
 }
 // get_worktree_diff: [meta, rawDiff?]
 function unwrapDiff(result) {
@@ -83,226 +78,123 @@ async function makeWorktree(project) {
   return JSON.parse(result.content[0].text);
 }
 
-// ---- grep: files_with_matches ----
-
-test('grep files_with_matches finds matching files and returns project-relative paths', async () => {
-  const repoPath = await makeRealRepo('demo');
-  await fs.writeFile(path.join(repoPath, 'a.js'), 'const x = require("foo");\n');
-  await fs.writeFile(path.join(repoPath, 'b.ts'), 'import foo from "bar";\n');
-  await fs.writeFile(path.join(repoPath, 'c.txt'), 'no match here\n');
-
-  const r = unwrap(await callTool('grep', { project: 'demo', pattern: 'require|import' }));
-  assert.equal(r.outputMode, 'files_with_matches');
-  assert.ok(Array.isArray(r.files));
-  assert.ok(r.files.includes('a.js'), 'a.js should match');
-  assert.ok(r.files.includes('b.ts'), 'b.ts should match');
-  assert.ok(!r.files.includes('c.txt'), 'c.txt should not match');
-  assert.equal(typeof r.fileCount, 'number');
-  assert.equal(r.truncated, false);
-});
-
-test('grep files_with_matches: no matches returns empty files array', async () => {
-  await makeRealRepo('demo');
-  const r = unwrap(await callTool('grep', { project: 'demo', pattern: 'ZZZNONEXISTENT' }));
-  assert.deepEqual(r.files, []);
-  assert.equal(r.fileCount, 0);
-  assert.equal(r.truncated, false);
-});
-
-// ---- grep: content mode ----
-
-test('grep content mode returns path:line:content formatted body', async () => {
-  const repoPath = await makeRealRepo('demo');
-  await fs.writeFile(path.join(repoPath, 'hello.js'), 'const x = 1;\nconst hello = "world";\nconst y = 2;\n');
-
-  const r = unwrapGrep(await callTool('grep', { project: 'demo', pattern: 'hello', outputMode: 'content' }));
-  assert.equal(r.outputMode, 'content');
-  assert.equal(typeof r.matchCount, 'number');
-  assert.ok(r.matchCount >= 1);
-  assert.equal(r.truncated, false);
-  // Body should contain path:linenum:content format
-  assert.match(r.body, /hello\.js:\d+:.*hello/);
-});
-
-test('grep content mode with context lines includes surrounding lines', async () => {
-  const repoPath = await makeRealRepo('demo');
-  await fs.writeFile(path.join(repoPath, 'src.txt'), 'line1\nline2\nMATCH\nline4\nline5\n');
-
-  const r = unwrapGrep(await callTool('grep', {
-    project: 'demo', pattern: 'MATCH', outputMode: 'content', context: 1,
-  }));
-  assert.ok(r.body.includes('line2'), 'context before match should appear');
-  assert.ok(r.body.includes('line4'), 'context after match should appear');
-  // Context lines use '-' separator, match lines use ':'
-  assert.match(r.body, /src\.txt:\d+-line2/);
-  assert.match(r.body, /src\.txt:\d+:MATCH/);
-  assert.match(r.body, /src\.txt:\d+-line4/);
-});
-
-// ---- grep: count mode ----
-
-test('grep count mode returns per-file match counts and totalMatches', async () => {
-  const repoPath = await makeRealRepo('demo');
-  await fs.writeFile(path.join(repoPath, 'a.txt'), 'foo\nfoo\nbar\n');
-  await fs.writeFile(path.join(repoPath, 'b.txt'), 'foo\nbaz\n');
-
-  const r = unwrap(await callTool('grep', { project: 'demo', pattern: 'foo', outputMode: 'count' }));
-  assert.equal(r.outputMode, 'count');
-  assert.ok(Array.isArray(r.files));
-  const aEntry = r.files.find(f => f.path === 'a.txt');
-  const bEntry = r.files.find(f => f.path === 'b.txt');
-  assert.ok(aEntry, 'a.txt should appear');
-  assert.ok(bEntry, 'b.txt should appear');
-  assert.equal(aEntry.count, 2);
-  assert.equal(bEntry.count, 1);
-  assert.equal(r.totalMatches, 3);
-  assert.equal(r.truncated, false);
-});
-
-// ---- grep: caseInsensitive ----
-
-test('grep caseInsensitive:true matches regardless of case', async () => {
-  const repoPath = await makeRealRepo('demo');
-  await fs.writeFile(path.join(repoPath, 'upper.txt'), 'HELLO WORLD\n');
-  await fs.writeFile(path.join(repoPath, 'lower.txt'), 'hello world\n');
-  await fs.writeFile(path.join(repoPath, 'mixed.txt'), 'Hello World\n');
-
-  // Without caseInsensitive: only exact-case match
-  const sensitive = unwrap(await callTool('grep', { project: 'demo', pattern: 'hello' }));
-  assert.ok(sensitive.files.includes('lower.txt'));
-  assert.ok(!sensitive.files.includes('upper.txt'), 'case-sensitive should not match HELLO');
-
-  // With caseInsensitive: all three match
-  const insens = unwrap(await callTool('grep', { project: 'demo', pattern: 'hello', caseInsensitive: true }));
-  assert.ok(insens.files.includes('lower.txt'));
-  assert.ok(insens.files.includes('upper.txt'));
-  assert.ok(insens.files.includes('mixed.txt'));
-});
-
-// ---- grep: glob filter ----
-
-test('grep glob filter restricts search to matching file patterns', async () => {
-  const repoPath = await makeRealRepo('demo');
-  await fs.writeFile(path.join(repoPath, 'app.ts'), 'const x = "target";\n');
-  await fs.writeFile(path.join(repoPath, 'app.js'), 'const x = "target";\n');
-  await fs.writeFile(path.join(repoPath, 'README.md'), 'target here too\n');
-
-  const r = unwrap(await callTool('grep', { project: 'demo', pattern: 'target', glob: '**/*.ts' }));
-  assert.ok(r.files.includes('app.ts'), 'app.ts should match');
-  assert.ok(!r.files.includes('app.js'), 'app.js excluded by glob');
-  assert.ok(!r.files.includes('README.md'), 'README.md excluded by glob');
-});
-
-// ---- grep: type filter ----
-
-test('grep type filter restricts search to file extension', async () => {
-  const repoPath = await makeRealRepo('demo');
-  await fs.writeFile(path.join(repoPath, 'app.ts'), 'const x = "target";\n');
-  await fs.writeFile(path.join(repoPath, 'app.js'), 'const x = "target";\n');
-
-  const r = unwrap(await callTool('grep', { project: 'demo', pattern: 'target', type: 'ts' }));
-  assert.ok(r.files.includes('app.ts'), 'app.ts should match ts type');
-  assert.ok(!r.files.includes('app.js'), 'app.js excluded by type:ts');
-});
-
-// ---- grep: node_modules exclusion ----
-
-test('grep does not descend into node_modules (even when symlinked)', async () => {
-  const repoPath = await makeRealRepo('demo');
-  // Plant a match inside node_modules — should NOT be returned
-  const nmDir = path.join(repoPath, 'node_modules', 'some-pkg');
-  await fs.mkdir(nmDir, { recursive: true });
-  await fs.writeFile(path.join(nmDir, 'index.js'), 'exports.SECRET = "shouldNotBeFound";\n');
-  // Also plant a match outside node_modules
-  await fs.writeFile(path.join(repoPath, 'src.js'), 'const x = "shouldNotBeFound";\n');
-
-  const r = unwrap(await callTool('grep', { project: 'demo', pattern: 'shouldNotBeFound' }));
-  assert.ok(r.files.includes('src.js'), 'src.js outside node_modules should match');
-  assert.ok(!r.files.some(f => f.includes('node_modules')), 'no node_modules files should appear');
-});
-
-// ---- grep: headLimit truncation ----
-
-test('grep headLimit caps results and sets truncated:true', async () => {
-  const repoPath = await makeRealRepo('demo');
-  for (let i = 0; i < 5; i++) {
-    await fs.writeFile(path.join(repoPath, `f${i}.txt`), 'NEEDLE\n');
+// ---- project_bash ----
+//
+// project_bash's own claudeShellEnv.js spawn is a separate codepath from the
+// instance-launching CLAUDE_BIN handled by bootServer's in-process launcher,
+// so it needs its own fake `claude` binary: one that answers --version and,
+// for a -p invocation, writes a canned bundle (defining a trivial `rg` shell
+// function so sourcing can be proven deterministically) to the path our
+// directive tells it to write to.
+const FAKE_CLAUDE_SHELL_ENV_SCRIPT = `
+const fs = require('fs');
+const argv = process.argv.slice(2);
+if (argv.includes('--version')) {
+  process.stdout.write('9.9.9 (Claude Code)\\n');
+  process.exit(0);
+}
+let input = '';
+process.stdin.on('data', (d) => { input += d; });
+process.stdin.on('end', () => {
+  const m = input.match(/> '([^']*)'/);
+  if (m) {
+    fs.writeFileSync(m[1], 'export CLAUDE_CODE_EXECPATH=/fake/claude\\nrg() { echo "RG-SHIM-CALLED $*"; }\\n');
   }
-
-  const r = unwrap(await callTool('grep', { project: 'demo', pattern: 'NEEDLE', headLimit: 3 }));
-  assert.ok(r.files.length <= 3, `expected ≤3 files, got ${r.files.length}`);
-  assert.equal(r.truncated, true);
+  process.exit(0);
 });
+`;
 
-// ---- grep: invalid regex ----
+describe('project_bash', () => {
+  let fakeBinPath, prevClaudeBin;
 
-test('grep rejects an invalid regex with isError:true', async () => {
-  await makeRealRepo('demo');
-  const { body } = await rpc('tools/call', {
-    name: 'grep', arguments: { project: 'demo', pattern: '[invalid' },
+  before(async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-fake-claude-shellenv-'));
+    fakeBinPath = path.join(dir, 'fake-claude.js');
+    await fs.writeFile(fakeBinPath, FAKE_CLAUDE_SHELL_ENV_SCRIPT, 'utf8');
   });
-  assert.equal(body.result.isError, true);
-  assert.match(body.result.content[0].text, /invalid pattern/i);
-});
+  beforeEach(() => {
+    prevClaudeBin = process.env.CLAUDE_BIN;
+    process.env.CLAUDE_BIN = `${process.execPath} ${fakeBinPath}`;
+  });
+  afterEach(() => {
+    if (prevClaudeBin === undefined) delete process.env.CLAUDE_BIN;
+    else process.env.CLAUDE_BIN = prevClaudeBin;
+    resetShellEnvCache();
+  });
 
-// ---- glob ----
+  test('project_bash runs a plain command and returns combined output', async () => {
+    await makeRealRepo('demo');
+    const r = unwrap(await callTool('project_bash', { project: 'demo', command: 'echo hello' }));
+    assert.match(r.output, /hello/);
+    assert.equal(r.exitCode, 0);
+    assert.ok(!r.truncated);
+    assert.ok(!r.timedOut);
+  });
 
-test('glob finds files matching a glob pattern and returns project-relative paths', async () => {
-  const repoPath = await makeRealRepo('demo');
-  const srcDir = path.join(repoPath, 'src');
-  await fs.mkdir(srcDir);
-  await fs.writeFile(path.join(srcDir, 'app.test.mjs'), '// test\n');
-  await fs.writeFile(path.join(srcDir, 'app.mjs'), '// src\n');
-  await fs.writeFile(path.join(repoPath, 'root.test.mjs'), '// root test\n');
+  test('project_bash runs inside a worktree cwd', async () => {
+    await makeRealRepo('demo');
+    const wt = await makeWorktree('demo');
+    const wtPath = path.join(projectsRoot, wt.worktree);
+    await fs.writeFile(path.join(wtPath, 'only-in-worktree.txt'), 'x\n');
 
-  const r = unwrap(await callTool('glob', { project: 'demo', pattern: '**/*.test.mjs' }));
-  assert.ok(Array.isArray(r.files));
-  assert.ok(r.files.some(f => f === 'src/app.test.mjs' || f.endsWith('app.test.mjs')));
-  assert.ok(r.files.some(f => f === 'root.test.mjs' || f.endsWith('root.test.mjs')));
-  assert.ok(!r.files.some(f => f.endsWith('app.mjs') && !f.includes('test')), 'non-test file should not match');
-  assert.equal(r.truncated, false);
-  assert.equal(typeof r.total, 'number');
-});
+    const r = unwrap(await callTool('project_bash', { project: 'demo', worktree: wt.worktree, command: 'ls' }));
+    assert.equal(r.cwd, wtPath);
+    assert.match(r.output, /only-in-worktree\.txt/);
+  });
 
-test('glob returns paths sorted newest-first by mtime', async () => {
-  const repoPath = await makeRealRepo('demo');
-  // Create older file then newer file with a delay to guarantee mtime difference
-  await fs.writeFile(path.join(repoPath, 'older.txt'), 'old\n');
-  // Set mtime of older.txt to 1 second in the past
-  const oldTime = new Date(Date.now() - 2000);
-  await fs.utimes(path.join(repoPath, 'older.txt'), oldTime, oldTime);
-  await fs.writeFile(path.join(repoPath, 'newer.txt'), 'new\n');
+  test('project_bash sources the shell-env bundle (rg shim fires)', async () => {
+    await makeRealRepo('demo');
+    const r = unwrap(await callTool('project_bash', { project: 'demo', command: 'rg foo' }));
+    assert.match(r.output, /RG-SHIM-CALLED foo/);
+    assert.equal(r.exitCode, 0);
+  });
 
-  const r = unwrap(await callTool('glob', { project: 'demo', pattern: '*.txt' }));
-  assert.ok(r.files.length >= 2);
-  const newerIdx = r.files.indexOf('newer.txt');
-  const olderIdx = r.files.indexOf('older.txt');
-  assert.ok(newerIdx >= 0 && olderIdx >= 0, 'both files should appear');
-  assert.ok(newerIdx < olderIdx, 'newer.txt should come before older.txt (sort by mtime desc)');
-});
+  test('project_bash non-zero exit is a normal result, not isError', async () => {
+    await makeRealRepo('demo');
+    const result = await callTool('project_bash', { project: 'demo', command: 'exit 3' });
+    assert.ok(!result.isError);
+    const r = unwrap(result);
+    assert.equal(r.exitCode, 3);
+  });
 
-test('glob excludes node_modules', async () => {
-  const repoPath = await makeRealRepo('demo');
-  const nmDir = path.join(repoPath, 'node_modules', 'some-pkg');
-  await fs.mkdir(nmDir, { recursive: true });
-  await fs.writeFile(path.join(nmDir, 'index.js'), '// nm\n');
-  await fs.writeFile(path.join(repoPath, 'real.js'), '// src\n');
+  test('project_bash timeout kills a long-running command', async () => {
+    await makeRealRepo('demo');
+    const startedAt = Date.now();
+    const r = unwrap(await callTool('project_bash', { project: 'demo', command: 'sleep 5', timeout: 200 }));
+    const elapsed = Date.now() - startedAt;
+    assert.equal(r.exitCode, null);
+    assert.equal(r.timedOut, true);
+    assert.ok(elapsed < 4000, `expected a quick timeout kill, took ${elapsed}ms`);
+  });
 
-  const r = unwrap(await callTool('glob', { project: 'demo', pattern: '**/*.js' }));
-  assert.ok(r.files.includes('real.js'), 'real.js should be found');
-  assert.ok(!r.files.some(f => f.includes('node_modules')), 'node_modules not included');
-});
+  test('project_bash caps retained output but lets the command finish (drain, not kill)', async () => {
+    await makeRealRepo('demo');
+    const r = unwrap(await callTool('project_bash', {
+      project: 'demo', command: 'yes x | head -c 500000; echo DONE_MARKER_$?',
+    }));
+    assert.equal(r.truncated, true);
+    assert.equal(r.exitCode, 0, 'command should run to completion, not be killed, on output cap');
+    assert.ok(r.output.length < 500000, 'retained output should be capped well below the full 500000 bytes');
+  });
 
-test('glob headLimit caps results and sets truncated:true', async () => {
-  const repoPath = await makeRealRepo('demo');
-  for (let i = 0; i < 5; i++) {
-    await fs.writeFile(path.join(repoPath, `file${i}.txt`), `${i}\n`);
-  }
+  test('project_bash rejects an empty command', async () => {
+    await makeRealRepo('demo');
+    const { body } = await rpc('tools/call', {
+      name: 'project_bash', arguments: { project: 'demo', command: '' },
+    });
+    assert.equal(body.result.isError, true);
+    assert.match(body.result.content[0].text, /non-empty/i);
+  });
 
-  const r = unwrap(await callTool('glob', { project: 'demo', pattern: '*.txt', headLimit: 3 }));
-  assert.ok(r.files.length <= 3);
-  assert.equal(r.truncated, true);
-  assert.ok(r.total >= 5, 'total reflects all matches');
+  test('project_bash run_in_background/dangerouslyDisableSandbox/description are accepted no-ops', async () => {
+    await makeRealRepo('demo');
+    const r = unwrap(await callTool('project_bash', {
+      project: 'demo', command: 'echo still-sync', description: 'echo a marker',
+      run_in_background: true, dangerouslyDisableSandbox: true,
+    }));
+    assert.match(r.output, /still-sync/);
+    assert.equal(r.exitCode, 0);
+  });
 });
 
 // ---- get_worktree_diff: always-on working-tree section ----
