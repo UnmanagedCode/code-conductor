@@ -1006,7 +1006,7 @@ export class Instance extends EventEmitter {
               data.prevPrefix = prevP;
               data.evicted = this._turnEvicted;
             }
-            this._emitUi({ kind: 'system', subtype: 'cache_flush', data });
+            this._emitUi({ kind: 'system', subtype: 'cache_miss', data });
           }
         }
         // Every message_start updates the running prefix; the turn's LAST one

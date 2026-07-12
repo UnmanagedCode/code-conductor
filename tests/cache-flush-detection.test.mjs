@@ -69,7 +69,7 @@ async function makeInstance() {
 }
 
 function flushNotices(events) {
-  return events.filter(e => e.kind === 'system' && e.subtype === 'cache_flush');
+  return events.filter(e => e.kind === 'system' && e.subtype === 'cache_miss');
 }
 function turnEnds(events) {
   return events.filter(e => e.kind === 'turn_end');
