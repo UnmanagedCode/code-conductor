@@ -4,7 +4,8 @@
 
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
-import { execFile } from 'node:child_process';
+import { spawn } from 'node:child_process';
+import { getShellEnvBundlePath } from '../claudeShellEnv.js';
 import {
   listProjects as fsListProjects,
   listSessions as fsListSessions,
@@ -1249,350 +1250,102 @@ export async function readFile({ project, worktree, relativePath,
   return textPayload(meta, content);
 }
 
-// ---- grep / glob helpers ----
+// ---- project_bash ----
 
-// File-type shorthand → extension list (mirrors ripgrep's built-in type system).
-const TYPE_EXTS = {
-  js:   ['.js', '.mjs', '.cjs'],
-  ts:   ['.ts', '.tsx', '.mts', '.cts'],
-  jsx:  ['.jsx'],
-  py:   ['.py', '.pyw'],
-  json: ['.json', '.jsonc'],
-  md:   ['.md', '.mdx'],
-  html: ['.html', '.htm'],
-  css:  ['.css', '.scss', '.sass', '.less'],
-  sh:   ['.sh', '.bash'],
-  yaml: ['.yaml', '.yml'],
-  toml: ['.toml'],
-  go:   ['.go'],
-  rust: ['.rs'],
-  java: ['.java'],
-  c:    ['.c', '.h'],
-  cpp:  ['.cpp', '.cc', '.cxx', '.hpp', '.hh'],
-};
+const BASH_OUTPUT_CAP = 200 * 1024; // matches the old grep content-mode cap (DIFF_BYTE_CAP)
+const BASH_DEFAULT_TIMEOUT_MS = 120_000; // matches the built-in Bash tool's default
+const BASH_MAX_TIMEOUT_MS = 600_000;     // matches the built-in Bash tool's documented max
 
-// Convert a minimatch-style glob to a RegExp.
-// Handles: **/ (zero or more path segments), ** (any), * (non-slash run), ? (one non-slash).
-function globToRegex(pattern) {
-  let s = '';
-  let i = 0;
-  while (i < pattern.length) {
-    const c = pattern[i];
-    if (c === '*' && pattern[i + 1] === '*') {
-      if (pattern[i + 2] === '/') { s += '(?:[^/]+/)*'; i += 3; }
-      else { s += '.*'; i += 2; }
-    } else if (c === '*') {
-      s += '[^/]*'; i++;
-    } else if (c === '?') {
-      s += '[^/]'; i++;
-    } else if (/[.+^${}()|[\]\\]/.test(c)) {
-      s += '\\' + c; i++;
-    } else {
-      s += c; i++;
-    }
-  }
-  return new RegExp('^' + s + '$');
+export function clampBashTimeoutMs(timeout) {
+  if (!Number.isFinite(timeout) || timeout <= 0) return BASH_DEFAULT_TIMEOUT_MS;
+  return Math.min(timeout, BASH_MAX_TIMEOUT_MS);
 }
 
-// Recursively collect { fullPath, relPath } under dir.
-// Skips .git/, node_modules/, and ALL symlinks (never follows them — on this
-// host worktrees have node_modules symlinked to the parent repo's tree, which
-// would cause a massive irrelevant descent).
-// Optionally filters by extFilter (lowercase ext array) and/or globRegex.
-async function walkProjectDir(dir, rootDir, { extFilter = null, globRegex = null } = {}) {
-  let entries;
-  try { entries = await fs.readdir(dir, { withFileTypes: true }); }
-  catch { return []; }
-  const results = [];
-  for (const entry of entries) {
-    if (entry.isSymbolicLink()) continue; // never follow symlinks
-    if (entry.name === '.git' || entry.name === 'node_modules') continue;
-    const fullPath = path.join(dir, entry.name);
-    const relPath = path.relative(rootDir, fullPath);
-    if (entry.isDirectory()) {
-      const sub = await walkProjectDir(fullPath, rootDir, { extFilter, globRegex });
-      for (const f of sub) results.push(f);
-    } else if (entry.isFile()) {
-      if (extFilter && !extFilter.includes(path.extname(entry.name).toLowerCase())) continue;
-      if (globRegex && !globRegex.test(relPath)) continue;
-      results.push({ fullPath, relPath });
-    }
-  }
-  return results;
+// Single-quote-escape for safe interpolation inside a single-quoted bash
+// string — orchStoreRoot() derives from user-configurable PROJECTS_ROOT.
+function shQuote(p) {
+  return `'${p.replace(/'/g, `'\\''`)}'`;
 }
 
-// Build non-overlapping match windows for context-line output.
-// Returns [{start, end, matchLines: Set<number>}] (0-based indices).
-function collectGrepGroups(lines, regex, beforeCtx, afterCtx) {
-  const groups = [];
-  let cur = null;
-  for (let i = 0; i < lines.length; i++) {
-    if (!regex.test(lines[i])) continue;
-    const winStart = Math.max(0, i - beforeCtx);
-    const winEnd = Math.min(lines.length - 1, i + afterCtx);
-    if (cur === null) {
-      cur = { start: winStart, end: winEnd, matchLines: new Set([i]) };
-    } else if (winStart <= cur.end + 1) {
-      cur.end = Math.max(cur.end, winEnd);
-      cur.matchLines.add(i);
-    } else {
-      groups.push(cur);
-      cur = { start: winStart, end: winEnd, matchLines: new Set([i]) };
-    }
+// Run a bash command inside a project/worktree cwd, in claude's own restored
+// shell environment (rg/find/grep shims + shell functions, via the cached
+// bundle from claudeShellEnv.js). NOT read-only. Schema is a superset of the
+// built-in Bash tool's; `description`/`run_in_background`/
+// `dangerouslyDisableSandbox` are accepted for schema parity but are no-ops
+// in this version (see the tool description in mcp/tools.js).
+export async function bashProject({ project, worktree, command, timeout }) {
+  if (typeof command !== 'string' || !command.trim()) {
+    throw new Error('project_bash requires a non-empty command string');
   }
-  if (cur) groups.push(cur);
-  return groups;
-}
-
-// Render a single file's grep groups into a text block.
-// Match lines use ':' separator; context lines use '-' (grep/rg style).
-function formatGrepGroups(relPath, lines, groups) {
-  const parts = [];
-  for (const g of groups) {
-    const chunk = [];
-    for (let i = g.start; i <= g.end; i++) {
-      const sep = g.matchLines.has(i) ? ':' : '-';
-      chunk.push(`${relPath}:${i + 1}${sep}${lines[i]}`);
-    }
-    parts.push(chunk.join('\n'));
-  }
-  return parts.join('\n--\n');
-}
-
-// Cached ripgrep availability (undefined = unchecked; null = absent; 'rg' = found).
-let _rgAvail = undefined;
-async function checkRg() {
-  if (_rgAvail !== undefined) return _rgAvail;
-  return new Promise(resolve => {
-    execFile('rg', ['--version'], { timeout: 3000 }, err => {
-      _rgAvail = err ? null : 'rg';
-      resolve(_rgAvail);
-    });
-  });
-}
-
-// Generic execFile wrapper → { code, stdout, stderr }.
-function runCmd(cmd, args, opts = {}) {
-  return new Promise(resolve => {
-    execFile(cmd, args, { encoding: 'utf8', maxBuffer: 50 * 1024 * 1024, ...opts }, (err, stdout, stderr) => {
-      const code = err ? (typeof err.code === 'number' ? err.code : 1) : 0;
-      resolve({ code, stdout: stdout ?? '', stderr: stderr ?? '' });
-    });
-  });
-}
-
-// Ripgrep backend for grepProject. Uses text output (not --json) so the
-// format is already identical to the JS path's output.
-async function grepWithRg(cwd, project, worktree, pattern, { mode, caseInsensitive, effBefore, effAfter, globPat, type, limit }) {
-  const args = ['--color=never', '--no-heading'];
-  if (caseInsensitive) args.push('-i');
-  // rg excludes .git by default; also exclude node_modules explicitly.
-  args.push('--glob=!node_modules/');
-  if (type && TYPE_EXTS[type]) {
-    for (const ext of TYPE_EXTS[type]) args.push(`--glob=*${ext}`);
-  }
-  if (globPat) args.push(`--glob=${globPat}`);
-
-  if (mode === 'files_with_matches') {
-    args.push('-l');
-  } else if (mode === 'count') {
-    args.push('-c');
-  } else { // content
-    args.push('-n');
-    if (effBefore > 0) args.push(`-B${effBefore}`);
-    if (effAfter > 0) args.push(`-A${effAfter}`);
-  }
-  args.push('--', pattern, '.');
-
-  const r = await runCmd('rg', args, { cwd });
-  // rg: exit 0 = matches found, 1 = no matches (not an error), 2 = real error.
-  if (r.code === 2) throw new Error(`rg failed: ${r.stderr.trim()}`);
-
-  if (mode === 'files_with_matches') {
-    const files = r.stdout.split('\n').map(s => s.trim()).filter(Boolean);
-    const truncated = files.length > limit;
-    const result = truncated ? files.slice(0, limit) : files;
-    return { project, worktree: worktree ?? null, pattern, outputMode: mode, files: result, fileCount: result.length, truncated };
-  }
-
-  if (mode === 'count') {
-    const entries = r.stdout.split('\n').map(s => s.trim()).filter(Boolean);
-    const files = [];
-    for (const e of entries) {
-      const col = e.lastIndexOf(':');
-      if (col < 0) continue;
-      const count = parseInt(e.slice(col + 1), 10);
-      if (!isNaN(count) && count > 0) files.push({ path: e.slice(0, col), count });
-    }
-    const truncated = files.length > limit;
-    const result = truncated ? files.slice(0, limit) : files;
-    const totalMatches = result.reduce((s, f) => s + f.count, 0);
-    return { project, worktree: worktree ?? null, pattern, outputMode: mode, files: result, totalMatches, truncated };
-  }
-
-  // content mode: apply byte cap
-  let body = r.stdout;
-  let truncated = false;
-  if (Buffer.byteLength(body, 'utf8') > DIFF_BYTE_CAP) {
-    const enc = Buffer.from(body, 'utf8').subarray(0, DIFF_BYTE_CAP);
-    body = enc.toString('utf8');
-    const lastNl = body.lastIndexOf('\n');
-    if (lastNl > 0) body = body.slice(0, lastNl + 1);
-    truncated = true;
-  }
-  const filesSeen = new Set();
-  let matchCount = 0;
-  for (const line of body.split('\n')) {
-    if (!line || line === '--') continue;
-    const m = line.match(/^([^:]+):\d+:/);
-    if (m) { filesSeen.add(m[1]); matchCount++; }
-  }
-  const meta = { project, worktree: worktree ?? null, pattern, outputMode: mode, matchCount, fileCount: filesSeen.size, truncated };
-  return textPayload(meta, body);
-}
-
-// Search file contents by regex across a project/worktree tree.
-// Path-traversal guarded (resolveProjectCwd anchors cwd; walk never leaves it).
-// Excludes .git/, node_modules/, and never follows symlinks.
-// Prefers ripgrep if available; otherwise pure JS.
-export async function grepProject({
-  project, worktree, pattern,
-  glob: globPat, type,
-  outputMode = 'files_with_matches',
-  caseInsensitive = false,
-  before: beforeCtx = 0, after: afterCtx = 0, context: ctxLines = 0,
-  headLimit = 250,
-}) {
-  if (typeof pattern !== 'string' || !pattern) throw new Error('grep requires a pattern');
-
-  let regex;
-  try { regex = new RegExp(pattern, caseInsensitive ? 'i' : ''); }
-  catch (e) { throw new Error(`invalid pattern: ${e.message}`); }
-
-  const mode = ['files_with_matches', 'content', 'count'].includes(outputMode) ? outputMode : 'files_with_matches';
-  const limit = Number.isInteger(headLimit) && headLimit >= 1 ? headLimit : 250;
-  const effBefore = ctxLines > 0 ? ctxLines : (Number.isInteger(beforeCtx) && beforeCtx > 0 ? beforeCtx : 0);
-  const effAfter = ctxLines > 0 ? ctxLines : (Number.isInteger(afterCtx) && afterCtx > 0 ? afterCtx : 0);
-
+  const timeoutMs = clampBashTimeoutMs(timeout);
   const { cwd } = await resolveProjectCwd(project, worktree);
+  const bundlePath = await getShellEnvBundlePath();
+  const wrapped = `source ${shQuote(bundlePath)} >/dev/null 2>&1; ${command}`;
 
-  const extFilter = (typeof type === 'string' && type) ? (TYPE_EXTS[type] ?? null) : null;
-  const globRegex = (typeof globPat === 'string' && globPat) ? globToRegex(globPat) : null;
+  return new Promise((resolve) => {
+    const start = Date.now();
+    let timedOut = false;
+    let capped = false;
+    const chunks = [];
+    let bytes = 0;
 
-  if (await checkRg()) {
-    return grepWithRg(cwd, project, worktree, pattern, { mode, caseInsensitive, effBefore, effAfter, globPat, type, limit });
-  }
-
-  // ---- pure JS path ----
-  const fileList = await walkProjectDir(cwd, cwd, { extFilter, globRegex });
-
-  if (mode === 'files_with_matches') {
-    const files = [];
-    let truncated = false;
-    for (const { fullPath, relPath } of fileList) {
-      let text;
-      try { text = await fs.readFile(fullPath, 'utf8'); } catch { continue; }
-      if (regex.test(text)) {
-        if (files.length < limit) {
-          files.push(relPath);
-        } else {
-          truncated = true;
-          break;
-        }
-      }
-    }
-    return { project, worktree: worktree ?? null, pattern, outputMode: mode, files, fileCount: files.length, truncated };
-  }
-
-  if (mode === 'count') {
-    const files = [];
-    let truncated = false;
-    for (const { fullPath, relPath } of fileList) {
-      let text;
-      try { text = await fs.readFile(fullPath, 'utf8'); } catch { continue; }
-      const lines = text.split('\n');
-      let count = 0;
-      for (const line of lines) if (regex.test(line)) count++;
-      if (count > 0) {
-        if (files.length < limit) {
-          files.push({ path: relPath, count });
-        } else {
-          truncated = true;
-          break;
-        }
-      }
-    }
-    const totalMatches = files.reduce((s, f) => s + f.count, 0);
-    return { project, worktree: worktree ?? null, pattern, outputMode: mode, files, totalMatches, truncated };
-  }
-
-  // content mode
-  const parts = [];
-  let totalBytes = 0;
-  let matchCount = 0;
-  let fileCount = 0;
-  let truncated = false;
-
-  for (const { fullPath, relPath } of fileList) {
-    if (fileCount >= limit) { truncated = true; break; }
-    let text;
-    try { text = await fs.readFile(fullPath, 'utf8'); } catch { continue; }
-    const lines = text.split('\n');
-    if (lines.length && lines[lines.length - 1] === '') lines.pop();
-
-    const groups = collectGrepGroups(lines, regex, effBefore, effAfter);
-    if (groups.length === 0) continue;
-
-    const chunk = formatGrepGroups(relPath, lines, groups);
-    const sep = parts.length > 0 ? '\n--\n' : '';
-    const needed = Buffer.byteLength(sep + chunk, 'utf8');
-    if (totalBytes + needed > DIFF_BYTE_CAP) { truncated = true; break; }
-
-    if (sep) parts.push(sep);
-    parts.push(chunk);
-    totalBytes += needed;
-    fileCount++;
-    for (const g of groups) matchCount += g.matchLines.size;
-  }
-
-  const body = parts.join('');
-  const meta = { project, worktree: worktree ?? null, pattern, outputMode: mode, matchCount, fileCount, truncated };
-  return textPayload(meta, body);
-}
-
-// Find files by glob pattern within a project/worktree tree.
-// Path-traversal guarded. Excludes .git/, node_modules/, and never follows symlinks.
-// Returns project-relative paths sorted newest-first by mtime.
-export async function globProject({ project, worktree, pattern, headLimit = 1000 }) {
-  if (typeof pattern !== 'string' || !pattern) throw new Error('glob requires a pattern');
-  const limit = Number.isInteger(headLimit) && headLimit >= 1 ? headLimit : 1000;
-  const { cwd } = await resolveProjectCwd(project, worktree);
-  const globRegex = globToRegex(pattern);
-
-  const fileList = await walkProjectDir(cwd, cwd, { globRegex });
-
-  // Stat each file for mtime; failures silently fall back to mtime = 0.
-  const withMtimes = await Promise.all(fileList.map(async ({ fullPath, relPath }) => {
+    let proc;
     try {
-      const s = await fs.stat(fullPath);
-      return { relPath, mtime: s.mtimeMs };
-    } catch {
-      return { relPath, mtime: 0 };
+      proc = spawn('bash', ['--noprofile', '--norc', '-c', wrapped], {
+        cwd,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        detached: true,
+      });
+    } catch (err) {
+      resolve({
+        project, worktree: worktree ?? null, cwd, exitCode: null,
+        durationMs: Date.now() - start, output: err.message, error: true,
+      });
+      return;
     }
-  }));
 
-  withMtimes.sort((a, b) => b.mtime - a.mtime);
+    const killGroup = () => {
+      try { process.kill(-proc.pid, 'SIGTERM'); } catch { proc.kill('SIGTERM'); }
+      setTimeout(() => {
+        try { process.kill(-proc.pid, 'SIGKILL'); } catch { proc.kill('SIGKILL'); }
+      }, 100).unref();
+    };
+    // Keep draining both pipes to completion (avoids backpressure stalling
+    // the process) but stop RETAINING bytes past the cap — matches the
+    // built-in Bash tool's semantics (truncate what's *shown*, let the
+    // command run to completion). timeoutMs is the only hard kill.
+    const onData = (chunk) => {
+      if (bytes >= BASH_OUTPUT_CAP) { capped = true; return; }
+      chunks.push(chunk);
+      bytes += chunk.length;
+      if (bytes >= BASH_OUTPUT_CAP) capped = true;
+    };
+    proc.stdout.on('data', onData);
+    proc.stderr.on('data', onData);
 
-  const total = withMtimes.length;
-  const truncated = total > limit;
-  const result = truncated ? withMtimes.slice(0, limit) : withMtimes;
+    const timer = setTimeout(() => { timedOut = true; killGroup(); }, timeoutMs);
 
-  return {
-    project,
-    worktree: worktree ?? null,
-    pattern,
-    files: result.map(f => f.relPath),
-    total,
-    truncated,
-  };
+    proc.on('close', (code) => {
+      clearTimeout(timer);
+      const durationMs = Date.now() - start;
+      const raw = Buffer.concat(chunks).toString('utf8');
+      const output = capped ? raw + '\n… [truncated at 200 KB]' : raw;
+      const result = {
+        project, worktree: worktree ?? null, cwd,
+        exitCode: timedOut ? null : (code ?? null),
+        durationMs, output: output.trimEnd(),
+      };
+      if (capped) result.truncated = true;
+      if (timedOut) result.timedOut = true;
+      resolve(result);
+    });
+
+    proc.on('error', (err) => {
+      clearTimeout(timer);
+      resolve({
+        project, worktree: worktree ?? null, cwd, exitCode: null,
+        durationMs: Date.now() - start, output: err.message, error: true,
+      });
+    });
+  });
 }
