@@ -415,20 +415,21 @@ export class Instance extends EventEmitter {
     // clean) and on (re)spawn. Replayed history (loadHistory) bypasses
     // _handleStdoutLine entirely, so replay can never corrupt it.
     this._idleWindowDirty = false;
-    // Decisive cache-flush detection. The first `message_start` of a turn
-    // carries per-request usage: a warm continuation serves the prior prefix
-    // from cache (cache_read large, cache_creation small); a flush (prompt-
-    // cache TTL lapsed) re-writes the prefix (cache_creation large, cache_read
-    // ~0). So on a turn's first request, `cache_creation > cache_read` is a
-    // flush — EXCEPT a genuinely FRESH session's first turn (its cache-creation
-    // is the unavoidable baseline system prompt + first message, with no prior
-    // prefix to lose). A resume/rewind first turn IS detected: it re-writes a
-    // prefix that was cached before the process died — a real paid miss. Per-turn
-    // fields are reset in _setStatus's into-'turn' branch; the process-level
-    // `_firstTurnObserved` latch is set by spawn() (`!!resume`: fresh→exempt,
-    // resume→armed) — the sole authority. `null` cache-read means "no first
-    // request seen yet this turn".
-    this._firstTurnObserved = false;
+    // Cache-miss detection — one uniform deterministic rule, applied to EVERY
+    // turn's first request with no exemption. The first `message_start` of a
+    // turn carries per-request usage: a warm continuation serves the prior
+    // prefix from cache (cache_read large, cache_creation small); a miss re-
+    // writes the prefix (cache_creation large, cache_read ~0). So on a turn's
+    // first request, `cache_creation > cache_read` ⇒ cache miss. This flags
+    // fresh cold-start system-prompt misses (read=0, creation≈system prompt),
+    // post-expiry, resume, and rewind alike; it does NOT flag warm continuations
+    // or a fresh session that got a content-addressed system-prompt hit
+    // (read big, creation small). `message_start.usage` carries no hit/miss
+    // flag — only the read/creation split and a `cache_creation` tier breakdown
+    // (1h ephemeral in this deployment) — so a single stateless signal cannot
+    // detect partial/minority misses. Per-turn fields reset in _setStatus's
+    // into-'turn' branch; `null` cache-read means "no first request seen yet
+    // this turn".
     this._turnFirstReqCacheRead = null;
     this._turnFirstReqCacheCreation = null;
     this._turnFlushDetected = false;
@@ -745,15 +746,9 @@ export class Instance extends EventEmitter {
     this._activeAgentTasks = new Map();
     this._taskNotificationPending = false;
     this._idleWindowDirty = false;
-    // Only a genuinely FRESH spawn (no `resume`) exempts its first turn: its
-    // cache-creation is the unavoidable baseline (system prompt + first message)
-    // with no prior prefix to lose. A resume/rewind re-writes a prefix that was
-    // cached before the process died — a real paid miss — so we ARM detection
-    // and let the `creation>read` test on the first turn decide (a fast resume
-    // within the prompt-cache TTL (≈1h in this deployment) still hits the warm
-    // server-side cache → creation<read → correctly not flagged). spawn() is the sole authority for
-    // this latch (`_wipeForResume` no longer touches it). Per-turn capture resets here too.
-    this._firstTurnObserved = !!resume;
+    // Per-turn cache-miss capture starts clean on every (re)spawn; detection
+    // is uniform (creation>read on any turn's first request — see the
+    // constructor comment), so there's no resume/rewind arming to set here.
     this._turnFirstReqCacheRead = null;
     this._turnFirstReqCacheCreation = null;
     this._turnFlushDetected = false;
@@ -949,20 +944,17 @@ export class Instance extends EventEmitter {
           const creation = ev.usage.cache_creation_input_tokens ?? 0;
           this._turnFirstReqCacheRead = read;
           this._turnFirstReqCacheCreation = creation;
-          if (this._firstTurnObserved) {
-            if (creation > read && !this._turnFlushDetected) {
-              this._turnFlushDetected = true;
-              // Informational in-session notice — one per flushed turn. Mirrors
-              // the overage/rate-limit notice surface (an inline SystemBlock);
-              // no server-side action, unlike overage.
-              this._emitUi({ kind: 'system', subtype: 'cache_flush',
-                data: { cacheRead: read, cacheCreation: creation } });
-            }
-          } else {
-            // Reached only for a fresh session's first turn (spawn() left the
-            // latch false): creation>read is the expected baseline, not a flush.
-            // Exempt it, but arm detection for every later turn.
-            this._firstTurnObserved = true;
+          // Uniform rule, no first-turn exemption: creation>read on the turn's
+          // first request ⇒ cache miss (cold-start system-prompt miss, expiry,
+          // resume, or rewind — all naturally; warm continuations and content-
+          // addressed hits have read≥creation).
+          if (creation > read && !this._turnFlushDetected) {
+            this._turnFlushDetected = true;
+            // Informational in-session notice — one per turn. Mirrors the
+            // overage/rate-limit notice surface (an inline SystemBlock); no
+            // server-side action, unlike overage.
+            this._emitUi({ kind: 'system', subtype: 'cache_flush',
+              data: { cacheRead: read, cacheCreation: creation } });
           }
         }
       }
@@ -1585,9 +1577,9 @@ export class Instance extends EventEmitter {
     this._lastLeafUuid = null;
     this._lastPlanFilePath = null;
     this._hooks.discardAll();
-    // Flush-detection state is NOT reset here: the spawn() that always follows a
-    // wipe owns it and decides the first-turn exemption from its `resume` arg
-    // (empty-prefix rewind → spawn({}) → fresh/exempt; resume/rewind → armed).
+    // Cache-miss per-turn capture is owned by _setStatus (into-'turn' reset)
+    // and the message_start handler; the spawn() that always follows a wipe
+    // re-clears it. Nothing to reset here.
     this.emit('snapshot_reset', { ...this._snapshotForReset(), ...extra });
   }
 

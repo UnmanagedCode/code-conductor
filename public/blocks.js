@@ -1011,7 +1011,7 @@ export class SystemBlock {
       if (subtype === 'drain_abort') return `⏹ Drained queued turn after interrupt (${data?.count ?? 1})`;
       if (subtype === 'model_changed') return `Model changed: ${data?.from ?? '?'} → ${data?.to ?? '?'}`;
       if (subtype === 'cache_flush') {
-        return `♻ Cache flush: prompt cache expired — prefix re-written (${(data?.cacheCreation ?? 0).toLocaleString()} tokens, ${(data?.cacheRead ?? 0).toLocaleString()} served from cache).`;
+        return `♻ Cache miss: ${(data?.cacheCreation ?? 0).toLocaleString()} tokens written to cache, ${(data?.cacheRead ?? 0).toLocaleString()} served.`;
       }
       if (subtype === 'rate_limit_event') {
         const info = data?.rate_limit_info ?? {};

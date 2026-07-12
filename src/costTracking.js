@@ -22,10 +22,12 @@ async function appendCostRow(inst, ev) {
     cache_creation_tokens: usage.cache_creation_input_tokens ?? 0,
     cache_read_tokens: usage.cache_read_input_tokens ?? 0,
     cost_usd: ev.costDelta ?? ev.cost ?? 0,
-    // Decisive cache-flush verdict + per-request evidence, captured live from
-    // the turn's first message_start (src/instances.js). Additive — rows
-    // written before this feature lack them and are backfilled (heuristically)
-    // by migration 0014.
+    // Cache-miss verdict + per-request evidence, captured live from the turn's
+    // first message_start (src/instances.js). `cache_flush` now means "the
+    // turn's first request was cache-miss-dominant (creation>read)", including
+    // fresh cold-start system-prompt misses — one uniform rule, no first-turn
+    // exemption. Additive — rows written before this feature lack them and are
+    // backfilled (heuristically) by migration 0014.
     cache_flush: ev.cacheFlush ?? false,
     first_req_cache_read: ev.firstReqCacheRead ?? 0,
     first_req_cache_creation: ev.firstReqCacheCreation ?? 0,
