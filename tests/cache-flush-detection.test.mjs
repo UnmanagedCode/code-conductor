@@ -4,8 +4,9 @@
 // continuation the prior prefix is served from cache (cache_read large,
 // cache_creation small); on a flush (prompt-cache TTL lapsed) the prefix is
 // re-written (cache_creation large, cache_read ~0). So `cache_creation >
-// cache_read` on the first request is a flush — EXCEPT the process's first
-// observed turn (cold start / post-resume re-warm), which is exempt.
+// cache_read` on the first request is a flush — EXCEPT a genuinely fresh
+// session's first turn (unavoidable baseline system prompt + first message).
+// A resume/rewind first turn IS detected (spawn() arms it via `!!resume`).
 //
 // Detection is driven deterministically by injecting synthetic stream-json
 // lines via inst._handleStdoutLine() — no subprocess. A bare Instance is
@@ -68,10 +69,12 @@ function turnEnds(events) {
 test('first observed turn is exempt; later flush is detected; normal turn is not', async () => {
   const { inst, events, cwd } = await makeInstance();
   try {
-    // Turn 1 — cold start: creation>read, but the process's FIRST turn is exempt.
+    // Turn 1 — fresh session's first turn (case b): creation>read but a bare
+    // Instance starts with _firstTurnObserved=false (as spawn({}) leaves it), so
+    // it is exempt.
     inst._handleStdoutLine(msgStartLine({ read: 0, creation: 200000, id: 'm1' }));
     inst._handleStdoutLine(resultLine());
-    assert.equal(flushNotices(events).length, 0, 'cold start not flagged');
+    assert.equal(flushNotices(events).length, 0, 'fresh first turn not flagged');
     assert.equal(turnEnds(events).at(-1).cacheFlush, false);
 
     // Turn 2 — warm continuation: read>>creation, not a flush.
@@ -125,24 +128,48 @@ test('only the turn\'s FIRST request decides; the notice fires once per turn', a
   }
 });
 
-test('the first-turn exemption resets on spawn (post-resume re-warm)', async () => {
+test('a resumed session\'s first turn with creation>read IS flagged', async () => {
   const { inst, events, cwd } = await makeInstance();
   try {
-    // Arm detection by observing a first turn, then a real flush.
+    // spawn({resume}) arms detection by setting _firstTurnObserved=true from the
+    // start (a resume re-writes a prefix cached before the process died — a real
+    // paid miss). The bare harness has no launcher, so we can't call spawn();
+    // set the latch exactly the way spawn({resume}) does.
+    inst._firstTurnObserved = true;
+    inst._handleStdoutLine(msgStartLine({ read: 100, creation: 180000, id: 'r1' }));
+    inst._handleStdoutLine(resultLine());
+    const notices = flushNotices(events);
+    assert.equal(notices.length, 1, 'resumed first turn flagged (was exempt under old semantics)');
+    assert.equal(notices[0].data.cacheCreation, 180000);
+    assert.equal(notices[0].data.cacheRead, 100);
+    assert.equal(turnEnds(events).at(-1).cacheFlush, true);
+  } finally {
+    await fs.rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test('a rewind (_wipeForResume + resume-spawn) first turn IS flagged', async () => {
+  const { inst, events, cwd } = await makeInstance();
+  try {
+    // Reach a live armed state: an exempt first turn, then a real flush.
     inst._handleStdoutLine(msgStartLine({ read: 10000, creation: 100, id: 'c1' }));
     inst._handleStdoutLine(resultLine());
     inst._handleStdoutLine(msgStartLine({ read: 0, creation: 90000, id: 'c2' }));
     inst._handleStdoutLine(resultLine());
     assert.equal(flushNotices(events).length, 1, 'flush detected once armed');
 
-    // Simulate a resume: _wipeForResume() (rewind path) must re-exempt the next
-    // (cold re-warm) turn even though creation>read.
+    // Rewind: _wipeForResume() clears in-memory state (and no longer touches the
+    // flush latch); the spawn({resume}) that always follows arms detection. The
+    // bare harness can't call spawn(), so set the latch the way spawn({resume}) does.
     events.length = 0;
     inst._wipeForResume();
+    inst._firstTurnObserved = true;
+    // First replayed turn re-writes the cached prefix (creation>read) → real
+    // paid miss → MUST be flagged now (exempt under the old semantics).
     inst._handleStdoutLine(msgStartLine({ read: 0, creation: 200000, id: 'd1' }));
     inst._handleStdoutLine(resultLine());
-    assert.equal(flushNotices(events).length, 0, 'first post-resume turn re-exempted');
-    assert.equal(turnEnds(events).at(-1).cacheFlush, false);
+    assert.equal(flushNotices(events).length, 1, 'first rewound turn flagged');
+    assert.equal(turnEnds(events).at(-1).cacheFlush, true);
   } finally {
     await fs.rm(cwd, { recursive: true, force: true });
   }
