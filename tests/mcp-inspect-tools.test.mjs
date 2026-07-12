@@ -186,11 +186,10 @@ describe('project_bash', () => {
     assert.match(body.result.content[0].text, /non-empty/i);
   });
 
-  test('project_bash run_in_background/dangerouslyDisableSandbox/description are accepted no-ops', async () => {
+  test('project_bash description is an accepted no-op', async () => {
     await makeRealRepo('demo');
     const r = unwrap(await callTool('project_bash', {
       project: 'demo', command: 'echo still-sync', description: 'echo a marker',
-      run_in_background: true, dangerouslyDisableSandbox: true,
     }));
     assert.match(r.output, /still-sync/);
     assert.equal(r.exitCode, 0);

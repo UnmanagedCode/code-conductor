@@ -5,7 +5,12 @@
 // run that dumps `declare -f; alias -p; shopt -p` + the resolved PATH /
 // CLAUDE_CODE_EXECPATH to a file; sourcing that file into a fresh bash
 // restores the same environment. Generated once per claude version and
-// cached on disk; project_bash (mcp/handlers.js) sources the result.
+// cached on disk; project_bash (mcp/handlers.js) sources the result. The
+// daemon runs fixed code between restarts, so a version change can only
+// happen across a restart — the resolved path is additionally memoized
+// in-memory for the life of the process (see `_singleton` below), skipping
+// the `claude --version` spawn and disk `stat` on every call after the
+// first.
 
 import { spawn } from 'node:child_process';
 import { promises as fs } from 'node:fs';
@@ -146,12 +151,7 @@ Then stop — do not summarize the output.`;
   return finalPath;
 }
 
-// In-flight coalescing only — the durable cache is the bundle file's
-// existence on disk. Two concurrent first-callers for the same not-yet-
-// cached version share one generateBundle() call via this map.
-const _inflight = new Map();
-
-export async function getShellEnvBundlePath() {
+async function resolveFresh() {
   const { command, prefixArgs } = resolveClaudeBin();
   const key = await getClaudeVersionKey(command, prefixArgs);
   const finalPath = path.join(shellEnvDir(), `bundle-${key}.sh`);
@@ -161,15 +161,26 @@ export async function getShellEnvBundlePath() {
     if (stat.size > 0) return finalPath;
   } catch { /* cache miss — fall through to generation */ }
 
-  if (_inflight.has(key)) return _inflight.get(key);
+  return generateBundle(finalPath, command, prefixArgs);
+}
 
-  const p = generateBundle(finalPath, command, prefixArgs)
-    .then((result) => { _inflight.delete(key); return result; })
-    .catch((err) => { _inflight.delete(key); throw err; });
-  _inflight.set(key, p);
+// Process-lifetime memo of the resolved bundle path. Holding the promise
+// (not just the settled value) means two synchronous back-to-back callers
+// share the same in-flight resolveFresh() call — `_singleton = p` is
+// assigned before either caller has awaited anything, so this doubles as
+// the concurrent-first-caller coalescer.
+let _singleton = null;
+
+export async function getShellEnvBundlePath() {
+  if (_singleton) return _singleton;
+  const p = resolveFresh();
+  _singleton = p;
+  // Side-effect only: a rejected resolution must not stay memoized, so the
+  // next call retries from scratch. Doesn't alter what callers of `p` see.
+  p.catch(() => { if (_singleton === p) _singleton = null; });
   return p;
 }
 
 export function _resetForTest() {
-  _inflight.clear();
+  _singleton = null;
 }

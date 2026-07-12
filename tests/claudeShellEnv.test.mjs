@@ -47,6 +47,12 @@ const version = process.env.FAKE_CLAUDE_VERSION || '9.9.9';
 
 if (argv.includes('--version')) {
   if (mode === 'versionfail') process.exit(1);
+  const vCounterFile = process.env.FAKE_CLAUDE_VERSION_COUNTER_FILE;
+  if (vCounterFile) {
+    let n = 0;
+    try { n = parseInt(readFileSync(vCounterFile, 'utf8'), 10) || 0; } catch {}
+    writeFileSync(vCounterFile, String(n + 1));
+  }
   process.stdout.write(version + ' (Claude Code)\\n');
   process.exit(0);
 }
@@ -95,21 +101,25 @@ test('happy path: resolves to an existing, validated bundle file', async () => {
   });
 });
 
-test('disk-cache hit avoids a second generation', async () => {
+test('disk-cache hit avoids a second generation, and the in-memory singleton avoids repeat --version calls', async () => {
   const home = await mkTmp();
   const bin = await writeFakeClaude(home);
   const counterFile = path.join(home, 'counter.txt');
+  const versionCounterFile = path.join(home, 'version-counter.txt');
   await withEnv({
     PROJECTS_ROOT: home, CLAUDE_BIN: bin,
     FAKE_CLAUDE_MODE: 'happy', FAKE_CLAUDE_VERSION: '9.9.9',
     FAKE_CLAUDE_COUNTER_FILE: counterFile,
+    FAKE_CLAUDE_VERSION_COUNTER_FILE: versionCounterFile,
   }, async () => {
     _resetForTest();
-    const p1 = await getShellEnvBundlePath();
-    const p2 = await getShellEnvBundlePath();
-    assert.equal(p1, p2);
+    const paths = [];
+    for (let i = 0; i < 5; i++) paths.push(await getShellEnvBundlePath());
+    assert.ok(paths.every((p) => p === paths[0]));
     const count = await fsp.readFile(counterFile, 'utf8');
     assert.equal(count, '1');
+    const versionCount = await fsp.readFile(versionCounterFile, 'utf8');
+    assert.equal(versionCount, '1', 'claude --version should be spawned at most once per process lifetime');
   });
 });
 
@@ -117,16 +127,24 @@ test('concurrent first-callers coalesce into a single generation', async () => {
   const home = await mkTmp();
   const bin = await writeFakeClaude(home);
   const counterFile = path.join(home, 'counter.txt');
+  const versionCounterFile = path.join(home, 'version-counter.txt');
   await withEnv({
     PROJECTS_ROOT: home, CLAUDE_BIN: bin,
     FAKE_CLAUDE_MODE: 'happy', FAKE_CLAUDE_VERSION: '9.9.9',
     FAKE_CLAUDE_COUNTER_FILE: counterFile, FAKE_CLAUDE_DELAY_MS: '150',
+    FAKE_CLAUDE_VERSION_COUNTER_FILE: versionCounterFile,
   }, async () => {
     _resetForTest();
     const [p1, p2] = await Promise.all([getShellEnvBundlePath(), getShellEnvBundlePath()]);
     assert.equal(p1, p2);
     const count = await fsp.readFile(counterFile, 'utf8');
     assert.equal(count, '1');
+    // The singleton is assigned synchronously to the first caller before
+    // either awaits anything, so the second concurrent caller never even
+    // reaches resolveClaudeBin()/getClaudeVersionKey() — only one --version
+    // spawn total, not one per caller.
+    const versionCount = await fsp.readFile(versionCounterFile, 'utf8');
+    assert.equal(versionCount, '1');
   });
 });
 
@@ -189,7 +207,7 @@ test('claude --version failure rejects before attempting generation', async () =
   });
 });
 
-test('a version change busts the cache and generates a fresh bundle', async () => {
+test('mid-lifetime version change is a no-op; only a restart (_resetForTest) generates a fresh bundle', async () => {
   const home = await mkTmp();
   const bin = await writeFakeClaude(home);
   const counterFile = path.join(home, 'counter.txt');
@@ -200,11 +218,41 @@ test('a version change busts the cache and generates a fresh bundle', async () =
   }, async () => {
     _resetForTest();
     const p1 = await getShellEnvBundlePath();
+    let count = await fsp.readFile(counterFile, 'utf8');
+    assert.equal(count, '1');
+
+    // Version flips mid-lifetime, but with no restart the in-memory
+    // singleton must win — no re-check, no regeneration.
     process.env.FAKE_CLAUDE_VERSION = '2.0.0';
     const p2 = await getShellEnvBundlePath();
-    assert.notEqual(p1, p2);
-    const count = await fsp.readFile(counterFile, 'utf8');
+    assert.equal(p1, p2);
+    count = await fsp.readFile(counterFile, 'utf8');
+    assert.equal(count, '1');
+
+    // Simulated daemon restart: only now does the new version take effect.
+    _resetForTest();
+    const p3 = await getShellEnvBundlePath();
+    assert.notEqual(p1, p3);
+    count = await fsp.readFile(counterFile, 'utf8');
     assert.equal(count, '2');
+  });
+});
+
+test('claude --version failure does not permanently poison the cache', async () => {
+  const home = await mkTmp();
+  const bin = await writeFakeClaude(home);
+  await withEnv({
+    PROJECTS_ROOT: home, CLAUDE_BIN: bin,
+    FAKE_CLAUDE_MODE: 'versionfail', FAKE_CLAUDE_VERSION: '9.9.9',
+  }, async () => {
+    _resetForTest();
+    await assert.rejects(() => getShellEnvBundlePath(), /version/i);
+
+    // No reset here — proving the failed resolution reset the memo itself.
+    process.env.FAKE_CLAUDE_MODE = 'happy';
+    const p = await getShellEnvBundlePath();
+    const contents = await fsp.readFile(p, 'utf8');
+    assert.match(contents, /CLAUDE_CODE_EXECPATH/);
   });
 });
 
