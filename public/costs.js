@@ -56,7 +56,7 @@ function render(data) {
   projTable.className = 'costs-table';
   const projThead = document.createElement('thead');
   const projHeadRow = document.createElement('tr');
-  for (const h of ['Project', 'Cost', 'Turns', 'Flushes']) {
+  for (const h of ['Project', 'Cost', 'Turns', 'Sessions', 'Cache misses']) {
     const th = document.createElement('th');
     th.textContent = h;
     projHeadRow.appendChild(th);
@@ -84,17 +84,21 @@ function render(data) {
     turnsTd.textContent = String(p.turns);
     projRow.appendChild(turnsTd);
 
-    const flushesTd = document.createElement('td');
-    flushesTd.textContent = String(p.cache_flushes);
-    projRow.appendChild(flushesTd);
+    const sessionsTd = document.createElement('td');
+    sessionsTd.textContent = String(p.sessions);
+    projRow.appendChild(sessionsTd);
+
+    const missesTd = document.createElement('td');
+    missesTd.textContent = String(p.cache_misses);
+    projRow.appendChild(missesTd);
 
     const detailRow = document.createElement('tr');
     detailRow.className = 'costs-proj-detail';
     detailRow.hidden = true;
     const detailTd = document.createElement('td');
-    detailTd.colSpan = 4;
+    detailTd.colSpan = 5;
     detailTd.appendChild(makeTable(
-      ['Model', 'Cost', 'Input', 'Output', 'Cache create', 'Cache read', 'Turns', 'Flushes'],
+      ['Model', 'Cost', 'Input', 'Output', 'Cache create', 'Cache read', 'Turns', 'Sessions', 'Cache misses'],
       (p.by_model ?? []).map(m => [
         m.model,
         fmtExact(m.cost_usd),
@@ -103,7 +107,8 @@ function render(data) {
         fmtNum(m.cache_creation_tokens),
         fmtNum(m.cache_read_tokens),
         String(m.turns),
-        String(m.cache_flushes),
+        String(m.sessions),
+        String(m.cache_misses),
       ]),
     ));
     detailRow.appendChild(detailTd);
@@ -127,7 +132,7 @@ function render(data) {
   modelH.textContent = 'By model';
   modelSection.appendChild(modelH);
   modelSection.appendChild(makeTable(
-    ['Model', 'Cost', 'Input', 'Output', 'Cache create', 'Cache read', 'Turns', 'Flushes'],
+    ['Model', 'Cost', 'Input', 'Output', 'Cache create', 'Cache read', 'Turns', 'Sessions', 'Cache misses'],
     data.by_model.map(m => [
       m.model,
       fmtExact(m.cost_usd),
@@ -136,7 +141,8 @@ function render(data) {
       fmtNum(m.cache_creation_tokens),
       fmtNum(m.cache_read_tokens),
       String(m.turns),
-      String(m.cache_flushes),
+      String(m.sessions),
+      String(m.cache_misses),
     ]),
   ));
   bodyEl.appendChild(modelSection);

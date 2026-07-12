@@ -973,7 +973,7 @@ const SHOWN_SYSTEM_SUBTYPES = new Set([
   'init', 'stderr', 'exit', 'spawn_error', 'crashed',
   'permission_denied', 'compacting', 'history_load_error', 'auto_stop_overage',
   'auto_resume', 'auto_resume_skipped', 'soft_interrupted', 'drain_abort',
-  'model_changed', 'cache_flush',
+  'model_changed', 'cache_miss',
 ]);
 
 const OVERAGE_DISABLED_LABEL = { out_of_credits: 'out of credits' };
@@ -1010,15 +1010,15 @@ export class SystemBlock {
       if (subtype === 'soft_interrupted') return data?.text ? `⏸ Turn interrupted: ${data.text}` : '⏸ Turn interrupted';
       if (subtype === 'drain_abort') return `⏹ Drained queued turn after interrupt (${data?.count ?? 1})`;
       if (subtype === 'model_changed') return `Model changed: ${data?.from ?? '?'} → ${data?.to ?? '?'}`;
-      if (subtype === 'cache_flush') {
+      if (subtype === 'cache_miss') {
         // Cross-turn path carries prevPrefix — show evicted vs served so a
         // partial eviction reads sensibly. Fallback (turn 1 / re-baseline) has
         // no prior prefix, so show the cold written/served split.
         if (data?.prevPrefix != null) {
           const evicted = data.evicted ?? Math.max(0, (data.prevPrefix ?? 0) - (data.cacheRead ?? 0));
-          return `♻ Cache miss: ~${evicted.toLocaleString()} tokens evicted (${(data?.cacheRead ?? 0).toLocaleString()} served of ${(data.prevPrefix ?? 0).toLocaleString()} cached).`;
+          return `♻ ~${evicted.toLocaleString()} tokens evicted (${(data?.cacheRead ?? 0).toLocaleString()} served of ${(data.prevPrefix ?? 0).toLocaleString()} cached).`;
         }
-        return `♻ Cache miss: ${(data?.cacheCreation ?? 0).toLocaleString()} tokens written to cache, ${(data?.cacheRead ?? 0).toLocaleString()} served.`;
+        return `♻ ${(data?.cacheCreation ?? 0).toLocaleString()} tokens written to cache, ${(data?.cacheRead ?? 0).toLocaleString()} served.`;
       }
       if (subtype === 'rate_limit_event') {
         const info = data?.rate_limit_info ?? {};
