@@ -705,8 +705,8 @@ export function buildTools() {
         'Run a bash command inside a project or worktree directory, using the exact same shell ' +
         'environment claude\'s own built-in Bash tool uses — the rg/find/grep shims and shell ' +
         'functions/aliases from the captured shell snapshot (cached per claude version). Mirrors ' +
-        'the meaningful subset of the built-in Bash tool (command/description/timeout) plus ' +
-        'project/worktree for cwd scoping. Replaces grep/glob — use rg/grep/find through this tool ' +
+        'project/worktree for cwd scoping plus the meaningful subset of the built-in Bash tool ' +
+        '(command/description/timeout). Replaces grep/glob — use rg/grep/find through this tool ' +
         'for search. NOT read-only: can write files, run git, start processes. OUTPUT: single JSON ' +
         '{project, worktree, cwd, exitCode, durationMs, output, truncated?, timedOut?, error?}. ' +
         'output is combined stdout+stderr in arrival order. A non-zero exitCode is a normal result, ' +

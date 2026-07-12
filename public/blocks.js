@@ -175,6 +175,14 @@ export function autoSpeakBlock(block) {
   maybeAutoSpeak(block.buffer, { onStart });
 }
 
+// Maps a tool's name to the identity used for choosing its render path —
+// e.g. the project_bash MCP tool shares Bash's command-box bubble even
+// though its label keeps showing the full MCP name.
+function renderKindFor(name) {
+  if (name === 'mcp__code-conductor__project_bash') return 'Bash';
+  return name;
+}
+
 // Per-tool one-line description for the collapsed summary.
 // Returns a short string with the most-useful argument for the tool.
 export function describeToolInput(name, input, ctx = {}) {
@@ -194,7 +202,11 @@ export function describeToolInput(name, input, ctx = {}) {
     if (statusSuffix) out = out ? `${out} · ${statusSuffix}` : statusSuffix;
     return trunc(out, 160);
   };
-  switch (name) {
+  if (name === 'mcp__code-conductor__project_bash') {
+    const scope = input.worktree ? `${input.project}/${input.worktree}` : input.project;
+    return trunc(`[${scope}] ${input.command}`);
+  }
+  switch (renderKindFor(name)) {
     case 'Bash':       return trunc(input.command);
     case 'Edit':
     case 'Write':
@@ -346,7 +358,7 @@ export class ToolUseBlock {
       if (this.partialJson) this.body.appendChild(wrapToolArgs(el('pre', {}, this.partialJson)));
       return;
     }
-    const renderer = TOOL_INPUT_RENDERERS[this.name];
+    const renderer = TOOL_INPUT_RENDERERS[renderKindFor(this.name)];
     const parsed = renderer ? renderer(input) : null;
     if (parsed) {
       this.body.appendChild(wrapToolArgs(parsed, { open: true }));
