@@ -1,13 +1,15 @@
-// Unit tests for uniform cache-miss detection in src/instances.js.
+// Unit tests for CROSS-TURN cache-miss detection in src/instances.js.
 //
-// The turn's FIRST message_start carries per-request usage. On a warm
-// continuation the prior prefix is served from cache (cache_read large,
-// cache_creation small); on a miss the prefix is (re-)written (cache_creation
-// large, cache_read ~0). One uniform rule, applied to EVERY turn's first
-// request with no exemption: `cache_creation > cache_read` ⇒ cache miss. This
-// flags fresh cold-start system-prompt misses (read=0/creation big), expiry,
-// resume, and rewind alike; it does NOT flag warm continuations or a fresh
-// session that got a content-addressed system-prompt hit (read≥creation).
+// A turn is one or more API requests; each message_start carries that request's
+// cumulative usage, and cache_read ACCUMULATES across a turn's tool-call
+// iterations. The detector compares:
+//   read_N  = this turn's FIRST-request cache_read (pre-tool-call)
+//   P_{N-1} = the previous turn's LAST-request full prefix (read + creation)
+// and flags a miss when read_N < P_{N-1} - tolerance (a full OR partial
+// eviction). Turn 1 (no prior P) and the turn after a compaction / model switch
+// / rewind (baseline invalidated) fall back to the stateless creation>read rule,
+// which still flags a genuinely cold prefix. Warm continuations read exactly
+// P_{N-1} (drop 0) and are never flagged. Tolerance = max(1024, 1% of P).
 //
 // Detection is driven deterministically by injecting synthetic stream-json
 // lines via inst._handleStdoutLine() — no subprocess. A bare Instance is
@@ -23,13 +25,13 @@ import { Instance } from '../src/instances.js';
 
 const MODEL = 'claude-opus-4-8';
 
-function msgStartLine({ read, creation, id = 'msg' }) {
+function msgStartLine({ read, creation, id = 'msg', model = MODEL }) {
   return JSON.stringify({
     type: 'stream_event',
     event: {
       type: 'message_start',
       message: {
-        id, role: 'assistant', model: MODEL,
+        id, role: 'assistant', model,
         usage: {
           input_tokens: 0, output_tokens: 0,
           cache_read_input_tokens: read,
@@ -46,6 +48,12 @@ function resultLine({ cost = 0.0001 } = {}) {
     duration_ms: 10, total_cost_usd: cost, is_error: false,
     usage: { input_tokens: 0, output_tokens: 0 },
   });
+}
+
+// A CLI system line (e.g. context compaction) — parser passes it through as
+// { kind:'system', subtype }.
+function systemLine(subtype) {
+  return JSON.stringify({ type: 'system', subtype });
 }
 
 async function makeInstance() {
@@ -173,6 +181,134 @@ test('a rewind (_wipeForResume) first turn with creation>read IS flagged', async
     inst._handleStdoutLine(resultLine());
     assert.equal(flushNotices(events).length, 1, 'first rewound turn flagged');
     assert.equal(turnEnds(events).at(-1).cacheFlush, true);
+  } finally {
+    await fs.rm(cwd, { recursive: true, force: true });
+  }
+});
+
+// ---- Cross-turn detection ----
+
+// Establish a prior-turn prefix P and clear the events buffer so subsequent
+// assertions see only the turn(s) under test. Turn 1 with read=0 flags (cold),
+// which is expected and irrelevant to what follows.
+function establishBaseline(inst, events, prefix) {
+  inst._handleStdoutLine(msgStartLine({ read: 0, creation: prefix, id: 'base' }));
+  inst._handleStdoutLine(resultLine());
+  events.length = 0;
+}
+
+test('a partial minority eviction IS flagged by the cross-turn rule (old creation>read would not)', async () => {
+  const { inst, events, cwd } = await makeInstance();
+  try {
+    establishBaseline(inst, events, 200000); // P = 200000
+    // Next turn: a chunk was evicted but most of the prefix stayed warm, so
+    // read (150000) still exceeds creation (3000) — the OLD rule would NOT flag.
+    // Cross-turn: 150000 < 200000 - tolerance ⇒ miss, ~50000 evicted.
+    inst._handleStdoutLine(msgStartLine({ read: 150000, creation: 3000, id: 'p1' }));
+    inst._handleStdoutLine(resultLine());
+    const notices = flushNotices(events);
+    assert.equal(notices.length, 1, 'partial miss flagged');
+    assert.equal(notices[0].data.prevPrefix, 200000);
+    assert.equal(notices[0].data.evicted, 50000);
+    const te = turnEnds(events).at(-1);
+    assert.equal(te.cacheFlush, true);
+    assert.equal(te.firstReqEvicted, 50000);
+    assert.ok(te.firstReqCacheRead > te.firstReqCacheCreation, 'read>creation: old rule would have missed this');
+  } finally {
+    await fs.rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test('a warm multi-request turn is NOT flagged; the accumulated last-request prefix becomes the new baseline', async () => {
+  const { inst, events, cwd } = await makeInstance();
+  try {
+    establishBaseline(inst, events, 200000); // P = 200000
+    // Warm turn with THREE requests: the FIRST reads exactly P (200000); the
+    // tool-call iterations accumulate read higher (205000, 213000). This is the
+    // case the accumulation must NOT false-trigger on.
+    inst._handleStdoutLine(msgStartLine({ read: 200000, creation: 5000, id: 'w1' }));
+    inst._handleStdoutLine(msgStartLine({ read: 205000, creation: 8000, id: 'w2' }));
+    inst._handleStdoutLine(msgStartLine({ read: 213000, creation: 2000, id: 'w3' }));
+    inst._handleStdoutLine(resultLine());
+    assert.equal(flushNotices(events).length, 0, 'warm accumulating turn not flagged');
+    assert.equal(turnEnds(events).at(-1).cacheFlush, false);
+    // P is now the LAST request's full prefix (213000 + 2000 = 215000), NOT the
+    // first request's 200000. Prove it: a partial miss next turn reading 205000
+    // is < 215000 - tol (flag) but would be > 200000 - tol (no flag) under a
+    // wrong first-request baseline.
+    events.length = 0;
+    inst._handleStdoutLine(msgStartLine({ read: 205000, creation: 2000, id: 'w4' }));
+    inst._handleStdoutLine(resultLine());
+    const notices = flushNotices(events);
+    assert.equal(notices.length, 1, 'partial miss vs the accumulated prefix flagged');
+    assert.equal(notices[0].data.prevPrefix, 215000, 'baseline tracked the last-request prefix');
+    assert.equal(notices[0].data.evicted, 10000);
+  } finally {
+    await fs.rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test('a compaction turn is NOT flagged and the baseline is re-established', async () => {
+  const { inst, events, cwd } = await makeInstance();
+  try {
+    establishBaseline(inst, events, 200000); // P = 200000
+    // CLI compacts the context between turns: prefix legitimately shrinks.
+    inst._handleStdoutLine(systemLine('compacting'));
+    // Post-compaction turn reads a smaller-but-warm prefix (80000 < P, yet
+    // read>creation). Cross-turn would false-fire; the guard forces the fallback
+    // (creation>read ⇒ 2000>80000 false) ⇒ NOT flagged.
+    inst._handleStdoutLine(msgStartLine({ read: 80000, creation: 2000, id: 'x1' }));
+    inst._handleStdoutLine(resultLine());
+    assert.equal(flushNotices(events).length, 0, 'compaction turn not flagged');
+    assert.equal(turnEnds(events).at(-1).cacheFlush, false);
+    // Baseline re-established to the compacted prefix (82000). A warm follow-up
+    // reading 82000 is not flagged — proof the stale 200000 was discarded (else
+    // 82000 < 200000 - tol would false-fire).
+    events.length = 0;
+    inst._handleStdoutLine(msgStartLine({ read: 82000, creation: 1000, id: 'x2' }));
+    inst._handleStdoutLine(resultLine());
+    assert.equal(flushNotices(events).length, 0, 'baseline re-established; warm follow-up not flagged');
+  } finally {
+    await fs.rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test('a model-switch turn is NOT flagged and the baseline is re-established', async () => {
+  const { inst, events, cwd } = await makeInstance();
+  try {
+    establishBaseline(inst, events, 200000); // P = 200000 (on MODEL)
+    // Switching models invalidates the (model-specific) cache. The switch is
+    // observed at this turn's first message_start; the guard forces the fallback,
+    // so a warm-but-smaller prefix (read>creation) is NOT flagged as a miss.
+    inst._handleStdoutLine(msgStartLine({ read: 80000, creation: 2000, id: 'y1', model: 'claude-sonnet-5' }));
+    inst._handleStdoutLine(resultLine());
+    assert.equal(flushNotices(events).length, 0, 'model-switch turn not flagged');
+    assert.equal(turnEnds(events).at(-1).cacheFlush, false);
+    // Re-baselined to 82000: a warm follow-up on the new model is not flagged.
+    events.length = 0;
+    inst._handleStdoutLine(msgStartLine({ read: 82000, creation: 1000, id: 'y2', model: 'claude-sonnet-5' }));
+    inst._handleStdoutLine(resultLine());
+    assert.equal(flushNotices(events).length, 0, 'baseline re-established on new model');
+  } finally {
+    await fs.rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test('a rewind turn whose prefix is warm-but-smaller is NOT flagged (cf. the cold-rewind case above)', async () => {
+  const { inst, events, cwd } = await makeInstance();
+  try {
+    establishBaseline(inst, events, 200000); // P = 200000
+    inst._wipeForResume(); // rewind/respawn invalidates the baseline
+    // Resumed prefix is smaller but served warm (read>creation) ⇒ NOT flagged,
+    // unlike a cold rewind (creation>read) which still flags via the fallback.
+    inst._handleStdoutLine(msgStartLine({ read: 80000, creation: 2000, id: 'z1' }));
+    inst._handleStdoutLine(resultLine());
+    assert.equal(flushNotices(events).length, 0, 'warm rewind turn not flagged');
+    assert.equal(turnEnds(events).at(-1).cacheFlush, false);
+    events.length = 0;
+    inst._handleStdoutLine(msgStartLine({ read: 82000, creation: 1000, id: 'z2' }));
+    inst._handleStdoutLine(resultLine());
+    assert.equal(flushNotices(events).length, 0, 'baseline re-established after rewind');
   } finally {
     await fs.rm(cwd, { recursive: true, force: true });
   }

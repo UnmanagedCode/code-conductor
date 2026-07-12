@@ -415,24 +415,43 @@ export class Instance extends EventEmitter {
     // clean) and on (re)spawn. Replayed history (loadHistory) bypasses
     // _handleStdoutLine entirely, so replay can never corrupt it.
     this._idleWindowDirty = false;
-    // Cache-miss detection — one uniform deterministic rule, applied to EVERY
-    // turn's first request with no exemption. The first `message_start` of a
-    // turn carries per-request usage: a warm continuation serves the prior
-    // prefix from cache (cache_read large, cache_creation small); a miss re-
-    // writes the prefix (cache_creation large, cache_read ~0). So on a turn's
-    // first request, `cache_creation > cache_read` ⇒ cache miss. This flags
-    // fresh cold-start system-prompt misses (read=0, creation≈system prompt),
-    // post-expiry, resume, and rewind alike; it does NOT flag warm continuations
-    // or a fresh session that got a content-addressed system-prompt hit
-    // (read big, creation small). `message_start.usage` carries no hit/miss
-    // flag — only the read/creation split and a `cache_creation` tier breakdown
-    // (1h ephemeral in this deployment) — so a single stateless signal cannot
-    // detect partial/minority misses. Per-turn fields reset in _setStatus's
-    // into-'turn' branch; `null` cache-read means "no first request seen yet
-    // this turn".
+    // Cache-miss detection — a CROSS-TURN rule that catches partial (minority)
+    // evictions the old stateless `creation>read` rule missed. Each turn is one
+    // or more API requests; `message_start` carries that request's cumulative
+    // usage (cache_read + cache_creation), and read ACCUMULATES across a turn's
+    // tool-call iterations. Two data points drive the verdict:
+    //   read_N  = this turn's FIRST request's cache_read (pre-tool-call, before
+    //             the cache re-warms) — `_turnFirstReqCacheRead`.
+    //   P_{N-1} = the PREVIOUS turn's LAST request's full prefix
+    //             (cache_read + cache_creation) — `_prevTurnPrefix`. Captured by
+    //             overwriting `_turnLastReqPrefix` on every message_start (no
+    //             per-iteration array exists; the CLI result.usage is passed
+    //             through verbatim by parser.js), then latched at turn_end.
+    // MISS ⇔ read_N < P_{N-1} - tolerance: this turn served less of the prefix
+    // than was demonstrably cached at the end of last turn ⇒ eviction (full OR
+    // partial). Warm continuation reads exactly P_{N-1} (drop 0). Tolerance
+    // (max(1024, 1% of P)) absorbs tokenization-boundary noise.
+    //   Turn 1 (no prior P) or a guard-invalidated turn (see _prefixBaselineInvalid)
+    //   falls back to the stateless `creation>read` rule — which still flags a
+    //   genuinely COLD prefix (cold start, expiry, resume, cold rewind).
+    // GUARDS: compaction/summarization, model switch, and rewind/respawn all
+    // legitimately shrink the prefix (read < P with no real eviction). Each sets
+    // `_prefixBaselineInvalid`; the next turn's first request consumes it, uses
+    // the fallback, and re-establishes P fresh — so the cross-turn rule never
+    // false-fires on a legitimate shrink.
+    // KNOWN LIMITATION: a miss on a request AFTER the first (e.g. a turn running
+    // past the ~1h cache TTL so a later request evicts) is not caught — detection
+    // is first-request-only. Rare; not built for.
+    // Per-turn fields reset in _setStatus's into-'turn' branch and on (re)spawn;
+    // `null` cache-read means "no first request seen yet this turn". `_prevTurnPrefix`
+    // and `_prefixBaselineInvalid` persist across the turn boundary (NOT in those resets).
     this._turnFirstReqCacheRead = null;
     this._turnFirstReqCacheCreation = null;
     this._turnFlushDetected = false;
+    this._turnLastReqPrefix = null;    // running last-request prefix (read+creation) this turn
+    this._turnEvicted = 0;             // P_{N-1} - read_N when a cross-turn miss fires
+    this._prevTurnPrefix = null;       // P_{N-1}: prior turn's last-request full prefix
+    this._prefixBaselineInvalid = false; // set by compaction/model-switch/rewind; consumed next turn
   }
 
   // Live count of in-flight background Agent-tool (subagent) tasks. Read by
@@ -675,6 +694,10 @@ export class Instance extends EventEmitter {
       this._turnFirstReqCacheRead = null;
       this._turnFirstReqCacheCreation = null;
       this._turnFlushDetected = false;
+      this._turnLastReqPrefix = null;
+      this._turnEvicted = 0;
+      // NOTE: _prevTurnPrefix and _prefixBaselineInvalid intentionally persist
+      // across the turn boundary — they are cross-turn state.
     }
     this.emit('status', this.summary());
   }
@@ -706,6 +729,9 @@ export class Instance extends EventEmitter {
     if (this.model) {
       const from = this.model;
       this.model = canonical;
+      // The cache is model-specific, so a switch legitimately shrinks/invalidates
+      // the prefix; re-baseline next turn instead of flagging a cross-turn miss.
+      this._prefixBaselineInvalid = true;
       this._emitUi({ kind: 'system', subtype: 'model_changed', data: { from, to: canonical } });
     } else {
       // No explicit spawn-time model (account default) — this is discovery
@@ -746,12 +772,16 @@ export class Instance extends EventEmitter {
     this._activeAgentTasks = new Map();
     this._taskNotificationPending = false;
     this._idleWindowDirty = false;
-    // Per-turn cache-miss capture starts clean on every (re)spawn; detection
-    // is uniform (creation>read on any turn's first request — see the
-    // constructor comment), so there's no resume/rewind arming to set here.
+    // Per-turn cache-miss capture starts clean on every (re)spawn. Cross-turn
+    // state (_prevTurnPrefix, _prefixBaselineInvalid) is NOT reset here: a
+    // respawn goes through _wipeForResume, which sets _prefixBaselineInvalid so
+    // the resumed session's first turn re-baselines via the fallback rule (see
+    // the constructor comment).
     this._turnFirstReqCacheRead = null;
     this._turnFirstReqCacheCreation = null;
     this._turnFlushDetected = false;
+    this._turnLastReqPrefix = null;
+    this._turnEvicted = 0;
     const { command, prefixArgs } = resolveClaudeBin();
     if (resume) this.sessionId = resume;
     else if (!this.sessionId) this.sessionId = randomUUID();
@@ -934,29 +964,60 @@ export class Instance extends EventEmitter {
         // window's trigger — so no spurious post-spawn turn and no fight with
         // the post-abort drain (which severs on init, before any API round-trip).
         if (this.status === 'idle') this._setStatus('turn');
-        // Decisive cache-flush detection. Capture the FIRST message_start of
-        // this turn (the reset above/in _setStatus left `_turnFirstReqCacheRead`
-        // null); later message_starts in the same turn are cumulative and
-        // skipped. The parser only emits message_start when usage is present
+        const reqRead = ev.usage.cache_read_input_tokens ?? 0;
+        const reqCreation = ev.usage.cache_creation_input_tokens ?? 0;
+        // Cross-turn cache-flush detection. The FIRST message_start of this turn
+        // (the reset above/in _setStatus left `_turnFirstReqCacheRead` null)
+        // decides; later message_starts only keep P (`_turnLastReqPrefix`)
+        // current. The parser only emits message_start when usage is present
         // (src/parser.js), so ev.usage is always defined here.
         if (this._turnFirstReqCacheRead === null) {
-          const read = ev.usage.cache_read_input_tokens ?? 0;
-          const creation = ev.usage.cache_creation_input_tokens ?? 0;
-          this._turnFirstReqCacheRead = read;
-          this._turnFirstReqCacheCreation = creation;
-          // Uniform rule, no first-turn exemption: creation>read on the turn's
-          // first request ⇒ cache miss (cold-start system-prompt miss, expiry,
-          // resume, or rewind — all naturally; warm continuations and content-
-          // addressed hits have read≥creation).
-          if (creation > read && !this._turnFlushDetected) {
+          this._turnFirstReqCacheRead = reqRead;
+          this._turnFirstReqCacheCreation = reqCreation;
+          // Consume the guard: a preceding compaction/model-switch/rewind (or
+          // turn 1, no prior P) forces the stateless fallback and re-baselines P.
+          const wasInvalid = this._prefixBaselineInvalid;
+          this._prefixBaselineInvalid = false;
+          const prevP = this._prevTurnPrefix;
+          let miss = false;
+          if (prevP === null || wasInvalid) {
+            // Fallback: creation>read ⇒ a genuinely cold prefix (cold start,
+            // expiry, resume, cold rewind). Warm/content-addressed hits (read≥
+            // creation) are not flagged.
+            miss = reqCreation > reqRead;
+          } else {
+            // Cross-turn: served less of the prefix than was cached at the end
+            // of last turn ⇒ eviction (full or partial). Tolerance absorbs
+            // tokenization-boundary noise; a warm continuation reads exactly P.
+            const tolerance = Math.max(1024, Math.round(prevP * 0.01));
+            if (reqRead < prevP - tolerance) {
+              miss = true;
+              this._turnEvicted = prevP - reqRead;
+            }
+          }
+          if (miss && !this._turnFlushDetected) {
             this._turnFlushDetected = true;
             // Informational in-session notice — one per turn. Mirrors the
             // overage/rate-limit notice surface (an inline SystemBlock); no
-            // server-side action, unlike overage.
-            this._emitUi({ kind: 'system', subtype: 'cache_flush',
-              data: { cacheRead: read, cacheCreation: creation } });
+            // server-side action, unlike overage. The cross-turn path adds
+            // prevPrefix/evicted so the notice can show partial evictions.
+            const data = { cacheRead: reqRead, cacheCreation: reqCreation };
+            if (prevP !== null && !wasInvalid) {
+              data.prevPrefix = prevP;
+              data.evicted = this._turnEvicted;
+            }
+            this._emitUi({ kind: 'system', subtype: 'cache_flush', data });
           }
         }
+        // Every message_start updates the running prefix; the turn's LAST one
+        // holds the fully-accumulated P latched at turn_end for next turn.
+        this._turnLastReqPrefix = reqRead + reqCreation;
+      }
+      // Context compaction/summarization rewrites the prefix — the CLI emits a
+      // system/compacting line. Re-baseline next turn instead of flagging the
+      // shrink as a cross-turn eviction.
+      if (ev.kind === 'system' && ev.subtype === 'compacting') {
+        this._prefixBaselineInvalid = true;
       }
       // With `--permission-prompt-tool stdio`, the CLI routes tool-permission
       // prompts to us as `can_use_tool` control_requests. The interactive tools
@@ -996,12 +1057,17 @@ export class Instance extends EventEmitter {
         }
       }
       if (ev.kind === 'turn_end') {
-        // Enrich with the decisive cache-flush verdict + evidence BEFORE the
-        // shared _emitUi(ev) below persists the event (costTracking writes
-        // these as cache_flush / first_req_cache_read / first_req_cache_creation).
+        // Enrich with the cache-flush verdict + evidence BEFORE the shared
+        // _emitUi(ev) below persists the event (costTracking writes these as
+        // cache_flush / first_req_cache_read / first_req_cache_creation /
+        // first_req_evicted).
         ev.cacheFlush = this._turnFlushDetected;
         ev.firstReqCacheRead = this._turnFirstReqCacheRead ?? 0;
         ev.firstReqCacheCreation = this._turnFirstReqCacheCreation ?? 0;
+        ev.firstReqEvicted = this._turnEvicted ?? 0;
+        // Latch this turn's fully-accumulated prefix as P for next turn's
+        // cross-turn comparison. A turn with no requests leaves P unchanged.
+        if (this._turnLastReqPrefix !== null) this._prevTurnPrefix = this._turnLastReqPrefix;
         this.lastResponseAt = Date.now();
         this._setStatus('idle');
         this._idleWindowDirty = false; // fresh idle window starts clean
@@ -1577,9 +1643,12 @@ export class Instance extends EventEmitter {
     this._lastLeafUuid = null;
     this._lastPlanFilePath = null;
     this._hooks.discardAll();
-    // Cache-miss per-turn capture is owned by _setStatus (into-'turn' reset)
-    // and the message_start handler; the spawn() that always follows a wipe
-    // re-clears it. Nothing to reset here.
+    // Per-turn cache-miss capture is owned by _setStatus (into-'turn' reset)
+    // and the spawn() that always follows a wipe. But a rewind/respawn rewrites
+    // the CLI's prefix, so the stale _prevTurnPrefix must NOT drive a cross-turn
+    // verdict next turn: invalidate the baseline (a cold rewind still flags via
+    // the fallback creation>read rule; a warm-but-smaller one is correctly not).
+    this._prefixBaselineInvalid = true;
     this.emit('snapshot_reset', { ...this._snapshotForReset(), ...extra });
   }
 

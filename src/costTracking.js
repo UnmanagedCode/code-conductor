@@ -23,14 +23,17 @@ async function appendCostRow(inst, ev) {
     cache_read_tokens: usage.cache_read_input_tokens ?? 0,
     cost_usd: ev.costDelta ?? ev.cost ?? 0,
     // Cache-miss verdict + per-request evidence, captured live from the turn's
-    // first message_start (src/instances.js). `cache_flush` now means "the
-    // turn's first request was cache-miss-dominant (creation>read)", including
-    // fresh cold-start system-prompt misses — one uniform rule, no first-turn
-    // exemption. Additive — rows written before this feature lack them and are
-    // backfilled (heuristically) by migration 0014.
+    // first message_start (src/instances.js). `cache_flush` means "a cross-turn
+    // eviction (full or partial) was detected": the turn's first-request
+    // cache_read was below the prior turn's cached prefix, or (turn 1 / after a
+    // compaction/model-switch/rewind re-baseline) creation>read. `first_req_evicted`
+    // is the evicted-token estimate (P_{N-1} - first read) on the cross-turn path,
+    // 0 otherwise. Additive — rows written before these fields lack them; the
+    // cache_flush flag on legacy rows is backfilled (heuristically) by migration 0014.
     cache_flush: ev.cacheFlush ?? false,
     first_req_cache_read: ev.firstReqCacheRead ?? 0,
     first_req_cache_creation: ev.firstReqCacheCreation ?? 0,
+    first_req_evicted: ev.firstReqEvicted ?? 0,
   };
   try {
     const p = costsPath();

@@ -1011,6 +1011,13 @@ export class SystemBlock {
       if (subtype === 'drain_abort') return `⏹ Drained queued turn after interrupt (${data?.count ?? 1})`;
       if (subtype === 'model_changed') return `Model changed: ${data?.from ?? '?'} → ${data?.to ?? '?'}`;
       if (subtype === 'cache_flush') {
+        // Cross-turn path carries prevPrefix — show evicted vs served so a
+        // partial eviction reads sensibly. Fallback (turn 1 / re-baseline) has
+        // no prior prefix, so show the cold written/served split.
+        if (data?.prevPrefix != null) {
+          const evicted = data.evicted ?? Math.max(0, (data.prevPrefix ?? 0) - (data.cacheRead ?? 0));
+          return `♻ Cache miss: ~${evicted.toLocaleString()} tokens evicted (${(data?.cacheRead ?? 0).toLocaleString()} served of ${(data.prevPrefix ?? 0).toLocaleString()} cached).`;
+        }
         return `♻ Cache miss: ${(data?.cacheCreation ?? 0).toLocaleString()} tokens written to cache, ${(data?.cacheRead ?? 0).toLocaleString()} served.`;
       }
       if (subtype === 'rate_limit_event') {
