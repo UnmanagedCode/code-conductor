@@ -8,6 +8,7 @@ import { getProject, claudeProjectsRoot, encodeCwd, findSessionLocation, readFir
 import { createWorktree, getWorktree, debugBaseDir } from './worktrees.js';
 import { getTitle as getSessionTitle, deleteTitle as deleteSessionTitle } from './sessionTitles.js';
 import { isConducted, markConducted, unmarkConducted } from './conductedSessions.js';
+import { SessionCompactController } from './sessionCompact.js';
 import { isTemp, markTemp, unmarkTemp } from './tempSessions.js';
 import { markArchived } from './archivedSessions.js';
 import { CONDUCT_PROJECT_NAME } from './conduct.js';
@@ -1389,6 +1390,24 @@ export class Instance extends EventEmitter {
     this._setStatus('turn');
   }
 
+  // Drive a server-managed `/clear` on this session: send the slash command on
+  // the SAME stdin path a user turn uses, which rotates the CLI's context in
+  // place — a fresh sessionId, SAME OS process/pid, and the old jsonl preserved.
+  // Deliberately bypasses prompt()'s user_echo + overage-queue intercept: this
+  // is a server-internal control send, not a user turn. The rotation is picked
+  // up by the system/init handler (which updates this.sessionId), and the
+  // SessionCompactController reseeds the cleared session on the following
+  // turn_end. See src/sessionCompact.js.
+  clearContext() {
+    if (!this.proc || !this.proc.stdin.writable) throw new Error('not running');
+    this._sendRaw({
+      type: 'user',
+      message: { role: 'user', content: [{ type: 'text', text: '/clear' }] },
+      parent_tool_use_id: null,
+    });
+    this._setStatus('turn');
+  }
+
   async _controlRequest(request, { timeout = 5000 } = {}) {
     const requestId = randomUUID();
     const p = new Promise((resolve, reject) => {
@@ -1703,6 +1722,11 @@ export class InstanceManager extends EventEmitter {
     // so every external caller sees an unchanged surface.
     this._idleHub = new IdleSubscriptionHub(this);
     this._overageResume = new OverageResumeController(this);
+    // Managed self-compaction (`compact_session` MCP tool): drives a server-side
+    // `/clear` at the caller's turn_end and reseeds the rotated session with a
+    // handoff summary. Keyed by instanceId so it tracks the caller across the
+    // sessionId rotation `/clear` performs. See src/sessionCompact.js.
+    this._sessionCompact = new SessionCompactController(this);
     // Server-side usage poller: a second, equal-footing source for the overage
     // auto-stop. The stream `rate_limit_event` only reports near Anthropic's own
     // ~90% threshold, so a LOW configured threshold (e.g. 25%) is invisible to
@@ -1711,6 +1735,7 @@ export class InstanceManager extends EventEmitter {
     // started by the server after listen() and stopped in both shutdown paths.
     this._usageMonitor = new UsageOverageMonitor(this);
     this.on('event', (e) => this._idleHub.onEvent(e));
+    this.on('event', (e) => this._sessionCompact.onEvent(e));
     // Global overage auto-stop state. The decision moved off the per-Instance
     // handler (which can't reach the idle-subscription graph) up to here:
     // `_overageActive` is a one-shot guard held from the first trip until the
@@ -1745,6 +1770,20 @@ export class InstanceManager extends EventEmitter {
   _purgeIdleFor(sessionId) { return this._idleHub.purge(sessionId); }
   _deliverIdleCallback(callerSessionId, targetSessionId, opts) {
     return this._idleHub.deliver(callerSessionId, targetSessionId, opts);
+  }
+
+  // Managed self-compaction — see src/sessionCompact.js. Arm a `/clear`+reseed
+  // on the given instance; the controller fires at the instance's next turn_end.
+  armSessionCompact(instanceId, opts) { return this._sessionCompact.arm(instanceId, opts); }
+
+  // Migrate sessionId-keyed side structures when a managed `/clear` rotates a
+  // session's id in place (same instanceId, new sessionId). The Instance itself
+  // follows the rotation via its system/init handler; these collaborators are
+  // keyed by sessionId and would otherwise strand their entries on the dead id.
+  rekeySession(oldSid, newSid) {
+    if (!oldSid || !newSid || oldSid === newSid) return;
+    this._idleHub.rekey(oldSid, newSid);
+    this._overageResume.rekey(oldSid, newSid);
   }
 
   // Returns true when a turn_notification for instanceId should be suppressed:
@@ -2364,6 +2403,7 @@ export class InstanceManager extends EventEmitter {
     this.byId.delete(id);
     this._cancelAutoResume(inst.sessionId);
     this._purgeIdleFor(inst.sessionId);
+    this._sessionCompact.purge(id);
     this.emit('list_changed');
   }
 

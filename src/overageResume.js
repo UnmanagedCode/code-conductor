@@ -87,6 +87,18 @@ export class OverageResumeController {
     this._sweep = null;
   }
 
+  // Carry a pending resume deadline (and its in-flight verify bookkeeping)
+  // across an in-place sessionId rotation (managed `/clear` via
+  // SessionCompactController). Keyed by sessionId; the deadline is instance work
+  // that must not be stranded on the dead id (the sweep would drop it as an
+  // orphan on its next tick). The single shared sweep interval is unaffected.
+  rekey(oldSid, newSid) {
+    if (!oldSid || !newSid || oldSid === newSid) return;
+    if (this.timers.has(oldSid)) { this.timers.set(newSid, this.timers.get(oldSid)); this.timers.delete(oldSid); }
+    if (this._checking.has(oldSid)) { this._checking.delete(oldSid); this._checking.add(newSid); }
+    if (this._failCount.has(oldSid)) { this._failCount.set(newSid, this._failCount.get(oldSid)); this._failCount.delete(oldSid); }
+  }
+
   // Recheck cadence for a parked (still-over / can't-confirm) session. Overridable
   // via ORCH_OVERAGE_RECHECK_MS (a test seam, like the sweep/buffer envs). Default
   // 60s is independent of accountUsage.js's 180s success cache — most recheck ticks

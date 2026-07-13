@@ -412,6 +412,41 @@ export async function unsubscribeFromIdle({ sessionId }, { instances, callerId }
   return { sessionId, removed: res.removed };
 }
 
+// Compact the CALLING session: capture a self-authored handoff summary, then
+// (at this turn's end) code-conductor drives a server-side `/clear` on the
+// caller — rotating its context in place (fresh sessionId, SAME process) — and
+// seeds the cleared session with the summary as its first user turn. Caller
+// identity comes from the MCP URL's ?caller=<sessionId>, so this only works for
+// a code-conductor-managed session and always acts on the caller's own session.
+// The `/clear` is deferred to turn_end (not fired now) so this tool call's turn
+// completes normally first — see src/sessionCompact.js.
+export async function compactSession({ summary }, { instances, callerId }) {
+  if (!instances) throw new Error('orchestrator has no InstanceManager');
+  if (!callerId) {
+    throw new Error(
+      'caller identity missing — the MCP URL must include ?caller=<sessionId>. ' +
+      'compact_session acts on the calling session, so it only works for a ' +
+      'code-conductor-managed instance whose MCP config carries the caller sessionId.',
+    );
+  }
+  if (typeof summary !== 'string' || !summary.trim()) {
+    return { ok: false, code: 'INVALID_SUMMARY', sessionId: callerId,
+      reason: 'summary must be a non-empty string — write the handoff context to seed the cleared session with.' };
+  }
+  const r = await getInst(instances, callerId);
+  if (r.soft) return r.soft;
+  instances.armSessionCompact(r.inst.id, { summary });
+  return {
+    ok: true,
+    sessionId: callerId,
+    willClearAtTurnEnd: true,
+    message:
+      'Checkpoint captured. Your context will be cleared when this turn ends, then ' +
+      'reseeded with your summary as the first turn of the fresh session. End your ' +
+      'turn now without starting new work.',
+  };
+}
+
 export async function interruptTurn({ sessionId, force }, { instances }) {
   const r = await getInst(instances, sessionId);
   if (r.soft) return r.soft;

@@ -324,6 +324,35 @@ export class IdleSubscriptionHub {
     return { removed: true };
   }
 
+  // Migrate every subscription entry from oldSid to newSid when a managed
+  // `/clear` rotates a session's id IN PLACE (same instance, new sessionId).
+  // Preserves watchdog timers — the subscription must SURVIVE the rotation, not
+  // be dropped like purge() does. Renames oldSid both as a TARGET (a conductor
+  // watching this worker, so its wake still fires on the reseeded turn_end) and
+  // as a CALLER (this session watching others — e.g. a conductor compacting
+  // itself). Also carries any pending idle-drain settle keyed by the target.
+  rekey(oldSid, newSid) {
+    if (!oldSid || !newSid || oldSid === newSid) return;
+    // As target: move the whole caller-set under the new id (merge if the new id
+    // somehow already has watchers).
+    const asTarget = this.subscribers.get(oldSid);
+    if (asTarget) {
+      this.subscribers.delete(oldSid);
+      const existing = this.subscribers.get(newSid);
+      if (existing) { for (const [caller, entry] of asTarget) existing.set(caller, entry); }
+      else this.subscribers.set(newSid, asTarget);
+    }
+    // As caller: rename across every target's caller-set.
+    for (const [, subs] of this.subscribers) {
+      const entry = subs.get(oldSid);
+      if (entry) { subs.delete(oldSid); subs.set(newSid, entry); }
+    }
+    // Pending idle-drain settle keyed by the target sessionId (the instance +
+    // proc it pins are unchanged by the in-place rotation, so it stays valid).
+    const settle = this._pendingSettles.get(oldSid);
+    if (settle) { this._pendingSettles.delete(oldSid); this._pendingSettles.set(newSid, settle); }
+  }
+
   // Snapshot of the current idle-subscription graph. Test-only — gives
   // tests a way to assert that purging on remove() actually happened.
   snapshot() {
