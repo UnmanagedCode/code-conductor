@@ -40,7 +40,7 @@ async function callTool(name, args) {
   assert.ok(body.result, `tools/call ${name} returned no result; body=${JSON.stringify(body)}`);
   return body.result;
 }
-// Single-block JSON result (project_bash, project_diff summary mode).
+// Single-block JSON result (project_diff summary mode).
 function unwrap(result) {
   assert.ok(Array.isArray(result.content), 'tool result has content[]');
   return JSON.parse(result.content[0].text);
@@ -51,6 +51,13 @@ function unwrapDiff(result) {
   const meta = JSON.parse(result.content[0].text);
   if (result.content.length > 1) return { ...meta, diff: result.content.slice(1).map(c => c.text).join('') };
   return meta;
+}
+// project_bash is multi-block: content[0] is JSON metadata, content[1] is
+// the raw stdout+stderr body. Merge the body back onto the metadata as `output`.
+function unwrapBash(result) {
+  assert.ok(Array.isArray(result.content), 'tool result has content[]');
+  const meta = JSON.parse(result.content[0].text);
+  return { ...meta, output: result.content.slice(1).map(c => c.text).join('') };
 }
 function git(cwd, ...args) {
   return new Promise((resolve, reject) => {
@@ -124,7 +131,7 @@ describe('project_bash', () => {
 
   test('project_bash runs a plain command and returns combined output', async () => {
     await makeRealRepo('demo');
-    const r = unwrap(await callTool('project_bash', { project: 'demo', command: 'echo hello' }));
+    const r = unwrapBash(await callTool('project_bash', { project: 'demo', command: 'echo hello' }));
     assert.match(r.output, /hello/);
     assert.equal(r.exitCode, 0);
     assert.ok(!r.truncated);
@@ -137,14 +144,14 @@ describe('project_bash', () => {
     const wtPath = path.join(projectsRoot, wt.worktree);
     await fs.writeFile(path.join(wtPath, 'only-in-worktree.txt'), 'x\n');
 
-    const r = unwrap(await callTool('project_bash', { project: 'demo', worktree: wt.worktree, command: 'ls' }));
+    const r = unwrapBash(await callTool('project_bash', { project: 'demo', worktree: wt.worktree, command: 'ls' }));
     assert.equal(r.cwd, wtPath);
     assert.match(r.output, /only-in-worktree\.txt/);
   });
 
   test('project_bash sources the shell-env bundle (rg shim fires)', async () => {
     await makeRealRepo('demo');
-    const r = unwrap(await callTool('project_bash', { project: 'demo', command: 'rg foo' }));
+    const r = unwrapBash(await callTool('project_bash', { project: 'demo', command: 'rg foo' }));
     assert.match(r.output, /RG-SHIM-CALLED foo/);
     assert.equal(r.exitCode, 0);
   });
@@ -153,14 +160,14 @@ describe('project_bash', () => {
     await makeRealRepo('demo');
     const result = await callTool('project_bash', { project: 'demo', command: 'exit 3' });
     assert.ok(!result.isError);
-    const r = unwrap(result);
+    const r = unwrapBash(result);
     assert.equal(r.exitCode, 3);
   });
 
   test('project_bash timeout kills a long-running command', async () => {
     await makeRealRepo('demo');
     const startedAt = Date.now();
-    const r = unwrap(await callTool('project_bash', { project: 'demo', command: 'sleep 5', timeout: 200 }));
+    const r = unwrapBash(await callTool('project_bash', { project: 'demo', command: 'sleep 5', timeout: 200 }));
     const elapsed = Date.now() - startedAt;
     assert.equal(r.exitCode, null);
     assert.equal(r.timedOut, true);
@@ -169,7 +176,7 @@ describe('project_bash', () => {
 
   test('project_bash caps retained output but lets the command finish (drain, not kill)', async () => {
     await makeRealRepo('demo');
-    const r = unwrap(await callTool('project_bash', {
+    const r = unwrapBash(await callTool('project_bash', {
       project: 'demo', command: 'yes x | head -c 500000; echo DONE_MARKER_$?',
     }));
     assert.equal(r.truncated, true);
@@ -188,7 +195,7 @@ describe('project_bash', () => {
 
   test('project_bash description is an accepted no-op', async () => {
     await makeRealRepo('demo');
-    const r = unwrap(await callTool('project_bash', {
+    const r = unwrapBash(await callTool('project_bash', {
       project: 'demo', command: 'echo still-sync', description: 'echo a marker',
     }));
     assert.match(r.output, /still-sync/);

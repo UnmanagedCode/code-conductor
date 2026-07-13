@@ -1296,10 +1296,11 @@ export async function bashProject({ project, worktree, command, timeout }) {
         detached: true,
       });
     } catch (err) {
-      resolve({
-        project, worktree: worktree ?? null, cwd, exitCode: null,
-        durationMs: Date.now() - start, output: err.message, error: true,
-      });
+      resolve(textPayload(
+        { project, worktree: worktree ?? null, cwd, exitCode: null,
+          durationMs: Date.now() - start, error: true },
+        err.message,
+      ));
       return;
     }
 
@@ -1329,22 +1330,23 @@ export async function bashProject({ project, worktree, command, timeout }) {
       const durationMs = Date.now() - start;
       const raw = Buffer.concat(chunks).toString('utf8');
       const output = capped ? raw + '\n… [truncated at 200 KB]' : raw;
-      const result = {
+      const meta = {
         project, worktree: worktree ?? null, cwd,
         exitCode: timedOut ? null : (code ?? null),
-        durationMs, output: output.trimEnd(),
+        durationMs,
       };
-      if (capped) result.truncated = true;
-      if (timedOut) result.timedOut = true;
-      resolve(result);
+      if (capped) meta.truncated = true;
+      if (timedOut) meta.timedOut = true;
+      resolve(textPayload(meta, output.trimEnd()));
     });
 
     proc.on('error', (err) => {
       clearTimeout(timer);
-      resolve({
-        project, worktree: worktree ?? null, cwd, exitCode: null,
-        durationMs: Date.now() - start, output: err.message, error: true,
-      });
+      resolve(textPayload(
+        { project, worktree: worktree ?? null, cwd, exitCode: null,
+          durationMs: Date.now() - start, error: true },
+        err.message,
+      ));
     });
   });
 }
