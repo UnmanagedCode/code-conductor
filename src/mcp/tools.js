@@ -707,9 +707,10 @@ export function buildTools() {
         'functions/aliases from the captured shell snapshot (cached per claude version). Mirrors ' +
         'project/worktree for cwd scoping plus the meaningful subset of the built-in Bash tool ' +
         '(command/description/timeout). Replaces grep/glob — use rg/grep/find through this tool ' +
-        'for search. NOT read-only: can write files, run git, start processes. OUTPUT: single JSON ' +
-        '{project, worktree, cwd, exitCode, durationMs, output, truncated?, timedOut?, error?}. ' +
-        'output is combined stdout+stderr in arrival order. A non-zero exitCode is a normal result, ' +
+        'for search. NOT read-only: can write files, run git, start processes. OUTPUT: a compact-JSON ' +
+        'metadata block (content[0]) {project, worktree, cwd, exitCode, durationMs, truncated?, ' +
+        'timedOut?, error?} PLUS a separate raw, un-escaped text block (content[1]) carrying the ' +
+        'combined stdout+stderr output, in arrival order. A non-zero exitCode is a normal result, ' +
         'not a tool error. truncated:true means retained output was capped at ~200 KB — the command ' +
         'still ran to completion; assume later output beyond the cap was lost, not that the process ' +
         'was killed. timeout is milliseconds (default 120000, max 600000 — larger values are ' +
