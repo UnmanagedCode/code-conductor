@@ -433,7 +433,7 @@ export function buildTools() {
       name: 'delete_worktree',
       description:
         'Remove a worktree (git deregister + branch delete + dir sweep). Refuses if a live instance ' +
-        'is attached or the working tree is dirty unless force:true.',
+        'is attached or the working tree is dirty unless force:true (which kills any attached instance first).',
       inputSchema: {
         type: 'object',
         properties: {
