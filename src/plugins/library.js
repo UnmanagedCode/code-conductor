@@ -48,6 +48,14 @@ const DEFAULT_ENTRIES = [
     postClone: 'bash install.sh',
     postPull: 'bash install.sh',
   },
+  {
+    id: 'code-hub',
+    name: 'Code Hub',
+    description: 'Launch, monitor, stop, and share the other webapps in your workspace — from your phone.',
+    repo: 'https://github.com/UnmanagedCode/code-hub',
+    postClone: 'npm install',
+    postPull: 'npm install',
+  },
 ];
 
 function libraryDir() {
