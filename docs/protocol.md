@@ -273,12 +273,13 @@ Inside the iframe the bridge patches `history.pushState` → `replaceState`, so 
 
 | Method + path | Meaning |
 |---|---|
-| `GET /api/plugins` | merged discovery+registry+runtime rows: `{id, name, project, version, state, enabled, activeVersion, manifestSource, hasBackend, hasFrontend, navLabel, frontendPath, hasMcp, conventions:[{slug,name,description,hasScaffold}], port, pid, startedAt, gitHead, errors, crashTail}` (convention slugs namespaced `<plugin-id>/<slug>`; `hasScaffold` flags a convention carrying a one-time scaffold directive). A backendless (contributions-only) enabled plugin has `state:"enabled"` (never `"stopped"`). |
+| `GET /api/plugins` | merged discovery+registry+runtime rows: `{id, name, project, version, state, enabled, activeVersion, manifestSource, hasBackend, hasFrontend, navLabel, frontendPath, hasMcp, conventions:[{slug,name,description,hasScaffold}], port, pid, startedAt, gitHead, stale, errors, crashTail}` (convention slugs namespaced `<plugin-id>/<slug>`; `hasScaffold` flags a convention carrying a one-time scaffold directive). A backendless (contributions-only) enabled plugin has `state:"enabled"` (never `"stopped"`). `stale` is true only while `state:"ready"` and the active checkout's current HEAD differs from `gitHead` (the sha the child was started at); a non-git checkout or an unreadable HEAD is never stale. |
 | `POST /api/plugins/rescan` | re-scan the projects root (auto-assigns any unassigned discovered plugin project to workspace `CC-Dev`); returns the list |
 | `POST /api/plugins/:id/enable` | record + enable; recovery path out of `failed` (workspace auto-assign to `CC-Dev` happens on discovery, not enable specifically — see `rescan` below) |
 | `POST /api/plugins/:id/disable` | stop the child + disable |
 | `POST /api/plugins/:id/start` | explicit start (clears crash history); 502 + `tail` on start failure |
 | `POST /api/plugins/:id/stop` | SIGTERM the process group (SIGKILL after 3 s) |
+| `POST /api/plugins/:id/restart` | stop + start the running child in place (picks up new code from the active checkout); 409 if not running |
 | `GET /api/plugins/:id/status` | row + live probe (flips a silently-dead child to `crashed`) |
 | `POST /api/plugins/:id/version` | `{type:"main"}` \| `{type:"worktree", name}`; validates the target checkout (400 keeps previous state), restarts if running |
 | `GET /api/plugins/library` | Plugin Library catalog: `{id, name, description, repo, installed, installedAs}[]` — `installed` is true when the repo's derived target directory already exists under `projectsRoot()`. |

@@ -52,6 +52,12 @@ export function buildPluginApi({ pluginHost, pluginLibrary } = {}) {
     try { res.json(await pluginHost.stop(req.params.id)); } catch (e) { next(e); }
   });
 
+  // Stop + start the running child in place — the pick-up path for a plugin
+  // whose active checkout moved past the sha it was started at.
+  r.post('/:id/restart', async (req, res, next) => {
+    try { res.json(await pluginHost.restart(req.params.id)); } catch (e) { next(e); }
+  });
+
   // Live probe: also flips a silently-dead child to crashed.
   r.get('/:id/status', async (req, res, next) => {
     try { res.json(await pluginHost.status(req.params.id)); } catch (e) { next(e); }

@@ -5,7 +5,7 @@ import {
   readProjectMeta, writeProjectMeta, addWorkspace,
 } from '../projects.js';
 import { readManifest, SUPPORTED_CONVENTION_SCOPES } from './manifest.js';
-import { createSupervisor, httpOk } from './supervisor.js';
+import { createSupervisor, httpOk, headSha } from './supervisor.js';
 import { createMcpBridge } from './mcpBridge.js';
 import { pidAlive, waitForPort } from './ports.js';
 
@@ -459,7 +459,15 @@ export function createPluginHost({
     // simply 'enabled', never 'stopped', so the UI shows no (broken) Start button.
     else if (!hasBackend) state = 'enabled';
     else state = s.status;
-    const { activeVersion } = await reconcileActiveVersion(entry);
+    const { activeVersion, worktreeMeta } = await reconcileActiveVersion(entry);
+    // Staleness: only worth a git spawn for a currently-running plugin — the
+    // running child's code may have moved past the sha it was started at.
+    let stale = false;
+    if (state === 'ready' && rec?.gitHead) {
+      const cwd = activeVersion.type === 'worktree' ? worktreeMeta.worktreePath : entry.dir;
+      const currentHead = await headSha(cwd);
+      stale = !!currentHead && currentHead !== rec.gitHead;
+    }
     return {
       id,
       name: entry.manifest?.name ?? entry.project,
@@ -482,6 +490,7 @@ export function createPluginHost({
       pid: rec?.pid ?? null,
       startedAt: rec?.startedAt ?? null,
       gitHead: rec?.gitHead ?? null,
+      stale,
       errors: entry.errors ?? [],
       crashTail: s?.tail ?? null,
     };
@@ -573,6 +582,21 @@ export function createPluginHost({
     return describe(id);
   }
 
+  // Manual pick-up of new code in the active checkout: stop the running
+  // child and start it again (re-reads the manifest + recomputes gitHead via
+  // doStart/supervisor.start, same as setActiveVersion's restart branch).
+  async function restart(id) {
+    await ensureInit();
+    requireEnabled(id);
+    const s = runtimeState(id);
+    if (s.status !== 'ready' && s.status !== 'starting') {
+      throw httpError(409, `plugin '${id}' is not running`);
+    }
+    if (s.startPromise) await s.startPromise.catch(() => {});
+    await stopInternal(id);
+    return doStart(id);
+  }
+
   // MCP forwarding lives in a composed collaborator; the registry only
   // hands it narrow accessors over its own state.
   const mcpBridge = createMcpBridge({
@@ -659,7 +683,7 @@ export function createPluginHost({
 
   return {
     init: ensureInit,
-    list, rescan, enable, disable, start, stop, status,
+    list, rescan, enable, disable, start, stop, restart, status,
     ensureStarted, setActiveVersion, toolsFor, runtimeInfo,
     conventions,
     reportUpstreamFailure, setServerPort, stopAll,
