@@ -121,6 +121,7 @@ export function installPluginManager({ onCatalogChange } = {}) {
       if (row.version) bits.push(`v${row.version}`);
       if (row.state === 'ready') {
         bits.push(`running ${versionLabel(row)}${row.gitHead ? ` @ ${row.gitHead.slice(0, 7)}` : ''}`);
+        if (row.stale) bits.push('update available');
         if (row.port) bits.push(`port ${row.port}`);
       } else if ((row.activeVersion?.type ?? 'main') === 'worktree') {
         bits.push(`version ${versionLabel(row)}`);
@@ -195,6 +196,9 @@ export function installPluginManager({ onCatalogChange } = {}) {
           if (row.hasBackend) {
             if (row.state === 'ready' || row.state === 'starting') {
               actions.appendChild(btn('Stop', () => act(`Stopping ${row.id}`, () => api('POST', `/api/plugins/${row.id}/stop`))));
+              if (row.state === 'ready' && row.stale) {
+                actions.appendChild(btn('Restart', () => act(`Restarting ${row.id}`, () => api('POST', `/api/plugins/${row.id}/restart`))));
+              }
             } else {
               actions.appendChild(btn('Start', () => act(`Starting ${row.id}`, () => api('POST', `/api/plugins/${row.id}/start`))));
             }

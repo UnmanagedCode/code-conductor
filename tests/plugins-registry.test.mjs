@@ -163,6 +163,46 @@ test('lazy ensureStarted → ready; repeat is a no-op; stop kills the child', as
   }
 });
 
+test('running plugin flags stale once its checkout moves past the started-at sha; restart picks it up', async () => {
+  const env = await makePluginRoot();
+  const host = createPluginHost();
+  try {
+    const dir = await env.addPluginProject('aplug');
+    await git(dir, 'init', '-q');
+    await git(dir, 'config', 'user.email', 'test@test');
+    await git(dir, 'config', 'user.name', 'test');
+    await git(dir, 'add', '-A');
+    await git(dir, 'commit', '-q', '-m', 'initial');
+
+    await rejectsWithStatus(host.restart('fake-plugin'), 409); // not enabled yet
+    await host.enable('fake-plugin');
+    await rejectsWithStatus(host.restart('fake-plugin'), 409); // not running yet
+
+    await host.ensureStarted('fake-plugin');
+    const before = await host.status('fake-plugin');
+    assert.ok(before.gitHead);
+    assert.equal(before.stale, false);
+    const pid = before.pid;
+
+    await fs.writeFile(path.join(dir, 'extra.txt'), 'change');
+    await git(dir, 'add', '-A');
+    await git(dir, 'commit', '-q', '-m', 'second');
+
+    const afterCommit = await host.status('fake-plugin');
+    assert.equal(afterCommit.stale, true);
+    assert.equal(afterCommit.gitHead, before.gitHead); // unchanged until restarted
+
+    const restarted = await host.restart('fake-plugin');
+    assert.equal(restarted.state, 'ready');
+    await waitFor(() => !pidAlive(pid)); // old child actually replaced
+    assert.notEqual(restarted.gitHead, before.gitHead);
+    assert.equal(restarted.stale, false);
+  } finally {
+    await host.stopAll();
+    await env.restore();
+  }
+});
+
 test('start guards: not enabled 409, unknown 404, manifest id mismatch 400', async () => {
   const env = await makePluginRoot();
   const host = createPluginHost();

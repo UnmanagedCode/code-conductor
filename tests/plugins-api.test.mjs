@@ -2,9 +2,14 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { bootServer, api, waitFor } from './helpers.mjs';
 import { FAKE_PLUGIN_DIR } from './plugin-helpers.mjs';
 import { pidAlive } from '../src/plugins/ports.js';
+
+const run = promisify(execFile);
+async function git(cwd, ...args) { await run('git', ['-C', cwd, ...args]); }
 
 async function setup() {
   const boot = await bootServer();
@@ -57,6 +62,40 @@ test('enable → start → status → stop → disable round-trip', async () => 
     const dis = await api(boot.baseUrl, 'POST', '/api/plugins/fake-plugin/disable');
     assert.equal(dis.body.state, 'disabled');
     assert.equal(dis.body.enabled, false);
+  } finally { await boot.close(); }
+});
+
+test('restart: 409 while not running; picks up a new commit and clears stale', async () => {
+  const boot = await setup();
+  try {
+    const dir = path.join(boot.projectsRoot, 'fakeplug');
+    await git(dir, 'init', '-q');
+    await git(dir, 'config', 'user.email', 'test@test');
+    await git(dir, 'config', 'user.name', 'test');
+    await git(dir, 'add', '-A');
+    await git(dir, 'commit', '-q', '-m', 'initial');
+
+    await api(boot.baseUrl, 'POST', '/api/plugins/fake-plugin/enable');
+    const notRunning = await api(boot.baseUrl, 'POST', '/api/plugins/fake-plugin/restart');
+    assert.equal(notRunning.status, 409);
+
+    const st = await api(boot.baseUrl, 'POST', '/api/plugins/fake-plugin/start');
+    assert.equal(st.body.stale, false);
+    const pid = st.body.pid;
+
+    await fs.writeFile(path.join(dir, 'extra.txt'), 'change');
+    await git(dir, 'add', '-A');
+    await git(dir, 'commit', '-q', '-m', 'second');
+
+    const staleRow = (await api(boot.baseUrl, 'GET', '/api/plugins')).body.find(p => p.id === 'fake-plugin');
+    assert.equal(staleRow.stale, true);
+
+    const restarted = await api(boot.baseUrl, 'POST', '/api/plugins/fake-plugin/restart');
+    assert.equal(restarted.status, 200);
+    assert.equal(restarted.body.state, 'ready');
+    assert.notEqual(restarted.body.pid, pid);
+    assert.equal(restarted.body.stale, false);
+    await waitFor(() => !pidAlive(pid));
   } finally { await boot.close(); }
 });
 
