@@ -833,12 +833,15 @@ export class Instance extends EventEmitter {
     // `claude mcp add` step. Disabled when ORCH_DISABLE_MCP_AUTOREGISTER=1
     // is set on the orchestrator (the URL comes through as null).
     if (this.mcpServerUrl) {
-      // Bake THIS worker's own stable sessionId into ?caller= so the MCP server
-      // can identify it when it calls caller-dependent tools (subscribe_to_idle).
-      // sessionId isn't known at create() time (the URL is built before spawn()
-      // mints it), so the caller suffix is appended here — stable across respawn
-      // (same sessionId) and full restart (resume reuses the sessionId).
-      const url = `${this.mcpServerUrl}?caller=${encodeURIComponent(this.sessionId)}`;
+      // Bake THIS worker's own stable INSTANCE id into ?caller= so the MCP server
+      // can identify it when it calls caller-dependent tools (subscribe_to_idle,
+      // compact_session). The instanceId (NOT the sessionId) is used deliberately:
+      // a managed /clear rotates the sessionId in place, but this URL is frozen in
+      // the subprocess's --mcp-config for the life of the process — a baked
+      // sessionId would go stale after the first self-compaction. The instanceId
+      // never rotates; the MCP boundary resolves it to the caller's CURRENT
+      // sessionId per request (see InstanceManager.callerSessionId / mcp/server.js).
+      const url = `${this.mcpServerUrl}?caller=${encodeURIComponent(this.id)}`;
       args.push('--mcp-config', buildMcpConfigJSON({ url }));
     }
     // Each family runs at one fixed context window, pinned via the model id
@@ -1817,6 +1820,18 @@ export class InstanceManager extends EventEmitter {
     if (!this.serverPort) return null;
     if (process.env.ORCH_DISABLE_MCP_AUTOREGISTER === '1') return null;
     return `http://127.0.0.1:${this.serverPort}/mcp`;
+  }
+
+  // Resolve a worker's `?caller=` handle (the stable instanceId baked into its MCP
+  // URL at spawn) to that instance's CURRENT sessionId. This is the single MCP
+  // boundary translation that keeps caller identity valid across a `/clear`
+  // rotation: the instanceId is frozen in the subprocess config, but its sessionId
+  // rotates, so we re-resolve the live value per request. Returns null when the
+  // handle names no live instance (or it has no sessionId yet) — callers then see
+  // the same "no caller" path as an absent `?caller=`.
+  callerSessionId(handle) {
+    if (!handle) return null;
+    return this.byId.get(handle)?.sessionId ?? null;
   }
 
   hasIdleSubscriber(instanceId) { return this._idleHub.hasSubscriber(instanceId); }

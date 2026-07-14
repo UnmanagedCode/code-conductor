@@ -375,8 +375,8 @@ export function buildTools() {
         'The clear happens when your CURRENT turn ends: after calling this, end your turn WITHOUT starting new ' +
         'work — anything you do after this call is discarded by the clear. Your summary is the ONLY thing ' +
         'carried across, so write everything the fresh session needs. Caller identity is taken from the MCP ' +
-        'URL (?caller=<sessionId>): this always acts on the calling session and only works for a ' +
-        'code-conductor-managed instance.',
+        'URL: this always acts on the calling session and only works for a code-conductor-managed instance. ' +
+        'It stays valid across repeated self-compaction, so a long-lived session can compact more than once.',
       inputSchema: {
         type: 'object',
         properties: {

@@ -42,7 +42,11 @@ let nextRpcId = 1;
 
 async function rpc(baseUrl, method, params, { caller } = {}) {
   const id = nextRpcId++;
-  const url = baseUrl + '/mcp' + (caller ? `?caller=${encodeURIComponent(caller)}` : '');
+  // `?caller=` now carries the stable instanceId (what Instance.spawn bakes);
+  // translate a caller sessionId to it. Unresolved values pass through so the
+  // no-caller / bogus-caller refusal paths still fire.
+  const handle = caller ? (instForSession(instances, caller)?.id ?? caller) : null;
+  const url = baseUrl + '/mcp' + (handle ? `?caller=${encodeURIComponent(handle)}` : '');
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },

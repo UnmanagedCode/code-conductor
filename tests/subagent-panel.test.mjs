@@ -16,10 +16,14 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO_WS = path.join(__dirname, 'fixtures', 'scenario-ws.json');
 
 let nextRpcId = 1;
+// Set per test. `?caller=` now carries the stable instanceId (what Instance.spawn
+// bakes); translate a caller sessionId to it (bogus/absent passes through).
+let mgr = null;
 
 async function rpc(baseUrl, method, params, { caller } = {}) {
   const id = nextRpcId++;
-  const url = baseUrl + '/mcp' + (caller ? `?caller=${encodeURIComponent(caller)}` : '');
+  const handle = caller ? (mgr?.liveForSession(caller)?.id ?? caller) : null;
+  const url = baseUrl + '/mcp' + (handle ? `?caller=${encodeURIComponent(handle)}` : '');
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -45,6 +49,7 @@ function unwrap(result) {
 
 test('spawn_instance with ?caller=<sessionId> sets callerInstanceId (instanceId) on the worker', async () => {
   const { baseUrl, instances, close } = await bootServer({ scenarioPath: SCENARIO_WS });
+  mgr = instances;
   try {
     await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
 
@@ -71,6 +76,7 @@ test('spawn_instance with ?caller=<sessionId> sets callerInstanceId (instanceId)
 
 test('Instance.summary() includes callerInstanceId (resolved to instanceId)', async () => {
   const { baseUrl, instances, close } = await bootServer({ scenarioPath: SCENARIO_WS });
+  mgr = instances;
   try {
     await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
 
@@ -93,6 +99,7 @@ test('Instance.summary() includes callerInstanceId (resolved to instanceId)', as
 
 test('GET /api/instances includes callerInstanceId for spawned worker', async () => {
   const { baseUrl, instances, close } = await bootServer({ scenarioPath: SCENARIO_WS });
+  mgr = instances;
   try {
     await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
 
