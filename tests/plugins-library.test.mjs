@@ -33,7 +33,7 @@ test('list(): default code-share entry present with no library dir', async () =>
   try {
     const lib = createPluginLibrary();
     const rows = await lib.list();
-    assert.equal(rows.length, 2);
+    assert.equal(rows.length, 3);
     assert.equal(rows[0].id, 'code-share');
     assert.equal(rows[0].repo, 'https://github.com/UnmanagedCode/code-share');
     assert.equal(rows[0].installed, false);
@@ -49,7 +49,7 @@ test('list(): code-playwright is a built-in entry alongside code-share, with its
     const lib = createPluginLibrary();
     const rows = await lib.list();
     const ids = rows.map(r => r.id).sort();
-    assert.deepEqual(ids, ['code-playwright', 'code-share']);
+    assert.deepEqual(ids, ['code-hub', 'code-playwright', 'code-share']);
     const cp = rows.find(r => r.id === 'code-playwright');
     assert.equal(cp.repo, 'https://github.com/UnmanagedCode/code-playwright');
     assert.equal(cp.postClone, 'bash install.sh');
@@ -73,7 +73,7 @@ test('list(): a dropped file adds an entry; malformed files are skipped, not fat
     const lib = createPluginLibrary();
     const rows = await lib.list();
     const ids = rows.map(r => r.id).sort();
-    assert.deepEqual(ids, ['code-playwright', 'code-share', 'extra-plugin']);
+    assert.deepEqual(ids, ['code-hub', 'code-playwright', 'code-share', 'extra-plugin']);
   } finally {
     await env.restore();
   }
@@ -85,7 +85,7 @@ test('list(): a dropped file whose id matches the built-in overrides it', async 
     await dropLibraryEntry('code-share.json', { id: 'code-share', name: 'Custom Code Share', repo: 'https://example.com/fork/code-share' });
     const lib = createPluginLibrary();
     const rows = await lib.list();
-    assert.equal(rows.length, 2);
+    assert.equal(rows.length, 3);
     assert.equal(rows[0].name, 'Custom Code Share');
     assert.equal(rows[0].repo, 'https://example.com/fork/code-share');
   } finally {
