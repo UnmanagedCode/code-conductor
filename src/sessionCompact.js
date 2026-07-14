@@ -9,16 +9,16 @@
 // Keyed by instanceId (NOT sessionId): the whole point is that the sessionId
 // rotates mid-operation, so only the stable instanceId (the `byId` key, which
 // `/clear` leaves untouched) can track the caller across the rotation. The
-// sessionId-keyed side structures (idle-subscription graph, overage timers) are
-// migrated separately via manager.rekeySession() at the moment of rotation.
+// other internal side structures (idle-subscription graph, overage timers) are
+// likewise instanceId-keyed, so the rotation needs no migration at all.
 //
 // One pending compaction per instance. State machine, driven by the manager's
 // `event` stream (turn_end only):
 //   armed    → the caller's turn_end (the turn the tool was called in): drive
 //              `/clear`, remember the pre-clear sessionId.            → clearing
 //   clearing → a turn_end where inst.sessionId has rotated off the pre-clear id
-//              (i.e. `/clear`'s own turn_end, after its system/init): migrate
-//              side structures, inject the seed, finish. A turn_end that has NOT
+//              (i.e. `/clear`'s own turn_end, after its system/init): inject the
+//              seed and finish. A turn_end that has NOT
 //              rotated (e.g. a user turn the CLI had queued mid-turn and ran
 //              before `/clear` took effect) is ignored, so an intervening turn
 //              can never make us reseed into the wrong session.
@@ -104,11 +104,10 @@ export class SessionCompactController {
     // turn_end that has NOT rotated (a mid-turn-queued user turn the CLI ran
     // before `/clear` took effect) — reseeding then would land in the old id.
     if (!inst.sessionId || inst.sessionId === p.oldSid) return;
-    const newSid = inst.sessionId;
-    // Migrate sessionId-keyed side structures so nothing is orphaned across the
-    // rotation (idle subscriptions, overage timers). The Instance itself already
-    // followed the rotation via system/init.
-    try { this.manager.rekeySession(p.oldSid, newSid); } catch { /* best effort */ }
+    // No side-structure migration is needed across the rotation: the
+    // idle-subscription graph and overage timers are keyed by the stable
+    // instanceId, which `/clear` preserves. The Instance itself already followed
+    // the sessionId rotation via its system/init handler.
     const seed = buildCompactSeed(p.opts);
     this._clear(id); // one-shot: settle state BEFORE the reseed turn opens
     // Seed the cleared session as its first user turn. internal:true so it does

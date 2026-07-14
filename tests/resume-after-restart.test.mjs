@@ -455,10 +455,11 @@ test('drainToManifest: idle conductor parked on a subscription is wasBusy:true; 
 
     // Park `parked` on the worker's idle: an OUTGOING subscription (parked is the
     // caller) ⇒ isIdleCaller(parked) true. `idleNoSub` has no subscription.
-    // The idle-subscription graph is keyed by sessionId.
+    // subscribeIdle takes sessionIds (MCP boundary); isIdleCaller is keyed by the
+    // stable instanceId.
     instances.subscribeIdle(parked.sessionId, worker.sessionId);
-    assert.equal(instances.isIdleCaller(parked.sessionId), true, 'parked conductor is an idle caller');
-    assert.equal(instances.isIdleCaller(idleNoSub.sessionId), false, 'idle-no-sub conductor is not a caller');
+    assert.equal(instances.isIdleCaller(parked.id), true, 'parked conductor is an idle caller');
+    assert.equal(instances.isIdleCaller(idleNoSub.id), false, 'idle-no-sub conductor is not a caller');
 
     // Drive only `midTurn` into a turn (DRAIN scenario keeps it open until windDown).
     await midTurn.prompt('go');
@@ -534,7 +535,7 @@ test('drainToManifest persists a pending overage auto-resume (overageResumeAt/ov
   inst._overageQueue = [{ text: 'hold this for me', attachments: [], ts: Date.now() }];
   instances._armAutoResume(inst);
   assert.ok(Number.isFinite(inst.autoResumeAt), 'resume deadline armed');
-  assert.ok(instances._autoResumeTimers.has(inst.sessionId), 'sweep deadline set');
+  assert.ok(instances._autoResumeTimers.has(inst.id), 'sweep deadline set');
 
   const entries = await drainToManifest({ server: null, wss: null, instances, log: { warn() {}, log() {}, error() {} }, graceMs: 100 });
   const e = entries.find(x => x.sessionId === inst.sessionId);
@@ -597,8 +598,10 @@ test('restoreFromResumeManifest fires a PAST-DUE overage resume promptly on boot
     const dump = await fs.readFile(transcript, 'utf8');
     assert.ok(dump.includes(AUTO_RESUME_TEXT), 'AUTO_RESUME_TEXT delivered on boot');
     // Firing tears the deadline down (the resume prompt's user_prompt cancels it).
-    await waitFor(() => !instances._autoResumeTimers.has(sid));
-    assert.ok(!instances._autoResumeTimers.has(sid), 'deadline cleared after firing');
+    // The restored session got a fresh instanceId, so assert on the map emptying
+    // (single session under test) rather than the manifest sessionId.
+    await waitFor(() => instances._autoResumeTimers.size === 0);
+    assert.equal(instances._autoResumeTimers.size, 0, 'deadline cleared after firing');
   } finally {
     if (prevTranscript === undefined) delete process.env.FAKE_CLAUDE_TRANSCRIPT;
     else process.env.FAKE_CLAUDE_TRANSCRIPT = prevTranscript;
@@ -640,9 +643,10 @@ test('restoreFromResumeManifest arms a FUTURE overage deadline without firing; l
     const { restored } = await restoreFromResumeManifest({ instances, log: { log() {}, warn() {} }, staggerMs: 0 });
     assert.equal(restored, 2, 'both restored');
 
-    // (a) Overage session: deadline armed + badge set, but not fired.
-    assert.ok(instances._autoResumeTimers.has(ovgSid), 'future overage deadline armed');
+    // (a) Overage session: deadline armed + badge set, but not fired. The
+    // restored session has a fresh instanceId, so probe the timer by that id.
     const ovgInst = [...instances.byId.values()].find(i => i.sessionId === ovgSid);
+    assert.ok(instances._autoResumeTimers.has(ovgInst.id), 'future overage deadline armed');
     assert.equal(ovgInst.autoResumeAt, futureAt, 'badge deadline set to persisted value');
     assert.equal(ovgInst._overageQueue.length, 1, 'queued messages restored');
     assert.equal(ovgInst.summary().queuedCount, 1, 'restored queuedCount surfaced on summary');
@@ -656,7 +660,8 @@ test('restoreFromResumeManifest arms a FUTURE overage deadline without firing; l
     const dump = await fs.readFile(transcript, 'utf8');
     assert.ok(dump.includes(RESUME_TEXT), 'plain session re-prompted with RESUME_TEXT');
     assert.ok(!dump.includes(AUTO_RESUME_TEXT), 'future overage deadline did NOT fire');
-    assert.ok(!instances._autoResumeTimers.has(plainSid), 'non-overage session has no resume timer');
+    const plainInst = [...instances.byId.values()].find(i => i.sessionId === plainSid);
+    assert.ok(!instances._autoResumeTimers.has(plainInst.id), 'non-overage session has no resume timer');
   } finally {
     if (prevTranscript === undefined) delete process.env.FAKE_CLAUDE_TRANSCRIPT;
     else process.env.FAKE_CLAUDE_TRANSCRIPT = prevTranscript;

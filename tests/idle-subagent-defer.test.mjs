@@ -78,7 +78,7 @@ test('(a)+(b) turn_end with an active subagent defers; delivery fires once after
   emitTurnEnd('w1');
   await tick();
   assert.equal(cond._promptCalls.length, 0, 'no delivery while a background subagent is active');
-  assert.equal(instances._idleHub.hasSubscriber('ws1'), true,
+  assert.equal(instances._idleHub.hasSubscriber('w1'), true,
     'a deferred turn_end must NOT consume the one-shot subscription');
 
   // (b) subagent finishes → follow-up turn_end at count 0 → deliver exactly once.
@@ -86,7 +86,7 @@ test('(a)+(b) turn_end with an active subagent defers; delivery fires once after
   emitTurnEnd('w1');
   await tick();
   assert.equal(cond._promptCalls.length, 1, 'delivered exactly once after the count drained');
-  assert.equal(instances._idleHub.hasSubscriber('ws1'), false, 'subscription consumed on delivery');
+  assert.equal(instances._idleHub.hasSubscriber('w1'), false, 'subscription consumed on delivery');
 
   cleanup(cond, work);
 });
@@ -107,7 +107,7 @@ test('(c) multiple background subagents — delivery waits for the LAST', async 
   work.activeAgentTaskCount = 0;
   emitTurnEnd('w2'); await tick();
   assert.equal(cond._promptCalls.length, 1, 'count 0 → delivered exactly once');
-  assert.equal(instances._idleHub.hasSubscriber('ws2'), false);
+  assert.equal(instances._idleHub.hasSubscriber('w2'), false);
 
   cleanup(cond, work);
 });
@@ -126,7 +126,7 @@ test('(c2) queued notification: count 0 but taskNotificationPending defers until
   emitTurnEnd('w7'); await tick();
   assert.equal(cond._promptCalls.length, 0,
     'count 0 but an unconsumed mid-turn notification → defer (re-invocation turn owed)');
-  assert.equal(instances._idleHub.hasSubscriber('ws7'), true,
+  assert.equal(instances._idleHub.hasSubscriber('w7'), true,
     'a deferred turn_end must NOT consume the one-shot subscription');
 
   // The re-invocation turn runs; _setStatus clears the flag at its start.
@@ -134,7 +134,7 @@ test('(c2) queued notification: count 0 but taskNotificationPending defers until
   work.taskNotificationPending = false;
   emitTurnEnd('w7'); await tick();
   assert.equal(cond._promptCalls.length, 1, 'delivered once at the re-invocation turn_end');
-  assert.equal(instances._idleHub.hasSubscriber('ws7'), false, 'subscription consumed on delivery');
+  assert.equal(instances._idleHub.hasSubscriber('w7'), false, 'subscription consumed on delivery');
 
   cleanup(cond, work);
 });
@@ -147,7 +147,7 @@ test('(e) regression: a normal no-subagent turn_end delivers immediately', async
 
   emitTurnEnd('w3'); await tick();
   assert.equal(cond._promptCalls.length, 1, 'no subagents → immediate single delivery');
-  assert.equal(instances._idleHub.hasSubscriber('ws3'), false);
+  assert.equal(instances._idleHub.hasSubscriber('w3'), false);
 
   cleanup(cond, work);
 });
@@ -158,7 +158,7 @@ test('every subscription arms a watchdog by default (no explicit timeoutMs)', ()
   inject(cond, work);
   instances.subscribeIdle('cs4', 'ws4'); // no timeoutMs
 
-  const entry = instances._idleSubscribers.get('ws4')?.get('cs4');
+  const entry = instances._idleSubscribers.get('w4')?.get('c4');
   assert.ok(entry, 'subscription registered');
   assert.notEqual(entry.timerId, null,
     'a default watchdog timer is armed even with no explicit timeoutMs');
@@ -183,7 +183,7 @@ test('(d) watchdog still fires across a deferral when a subagent never completes
   assert.equal(cond._promptCalls.length, 1, 'watchdog fired across the deferral');
   assert.match(cond._promptCalls[0].text, /did NOT finish/,
     'watchdog stub is the non-completion "did NOT finish" wording');
-  assert.equal(instances._idleHub.hasSubscriber('ws5'), false, 'watchdog consumed the subscription');
+  assert.equal(instances._idleHub.hasSubscriber('w5'), false, 'watchdog consumed the subscription');
 
   instances.byId.delete('c5');
   instances.byId.delete('w5');
@@ -199,11 +199,11 @@ test('a deferred turn_end still marks the worker consumed (turn_notification sta
   // wasConsumed() is set synchronously in onTurnEnd (before the microtask that
   // clears it) so the wsHub handler suppresses the worker's ping on the
   // deferred intermediate turn_end too.
-  assert.equal(instances._idleHub.wasConsumed('ws6'), true,
+  assert.equal(instances._idleHub.wasConsumed('w6'), true,
     'worker marked consumed on the deferred turn_end');
   await tick();
   assert.equal(cond._promptCalls.length, 0, 'still deferred (no delivery)');
-  assert.equal(instances._idleHub.hasSubscriber('ws6'), true);
+  assert.equal(instances._idleHub.hasSubscriber('w6'), true);
 
   cleanup(cond, work);
 });

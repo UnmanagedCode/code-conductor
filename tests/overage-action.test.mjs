@@ -207,17 +207,17 @@ test('onOverage "stop-resume": stays alive, arms timer, delivers resume prompt a
   await waitFor(() => sub(evs, 'auto_stop_overage').length > 0);
   assert.equal(sub(evs, 'auto_stop_overage')[0].data.resume, true, 'stop-resume ⇒ resume:true');
   await waitFor(() => inst.autoResumeAt != null);
-  assert.equal(ctx.instances._autoResumeTimers.has(inst.sessionId), true, 'timer armed');
+  assert.equal(ctx.instances._autoResumeTimers.has(inst.id), true, 'timer armed');
   assert.equal(inst.proc != null, true, 'session alive while waiting to resume');
 
   // Fire the armed timer deterministically: usage verifies clear, so the resume
   // prompt is delivered to the still-live session, just as the wall-clock fire would.
-  assert.equal(ctx.instances._fireAutoResumeNow(inst.sessionId), true, 'pending resume fired');
+  assert.equal(ctx.instances._fireAutoResumeNow(inst.id), true, 'pending resume fired');
   await waitFor(() => evs.some(e => e.kind === 'user_echo' && e.text === AUTO_RESUME_TEXT),
     { timeout: 10000 });
 
   // Single teardown: no timer remains, flags cleared, session never killed.
-  await waitFor(() => !ctx.instances._autoResumeTimers.has(inst.sessionId));
+  await waitFor(() => !ctx.instances._autoResumeTimers.has(inst.id));
   assert.equal(inst.autoResumeAt, null, 'badge cleared after resume');
   assert.equal(inst.autoStoppedForOverage, false);
   assert.equal(inst._overageHandled, false);
@@ -239,7 +239,7 @@ test('onOverage "stop-resume": bare camelCase epoch resetsAt also arms', async (
   await waitFor(() => sub(evs, 'auto_stop_overage').length > 0);
   assert.equal(sub(evs, 'auto_stop_overage')[0].data.resume, true);
   await waitFor(() => inst.autoResumeAt != null);
-  assert.equal(ctx.instances._autoResumeTimers.has(inst.sessionId), true, 'timer armed from epoch resetsAt');
+  assert.equal(ctx.instances._autoResumeTimers.has(inst.id), true, 'timer armed from epoch resetsAt');
 });
 
 // (c) A past/missing resetsAt is NOT a dead-end anymore: arm() schedules a usage
@@ -254,10 +254,10 @@ test('onOverage "stop-resume": past resetsAt schedules a recheck, not a skip', a
   inst.prompt('go');
   // A deadline IS armed (recheck ~now+recheck) even though resetsAt was in the past.
   await waitFor(() => inst.autoResumeAt != null);
-  assert.equal(ctx.instances._autoResumeTimers.has(inst.sessionId), true, 'recheck deadline armed');
+  assert.equal(ctx.instances._autoResumeTimers.has(inst.id), true, 'recheck deadline armed');
   assert.equal(inst.autoStoppedForOverage, true, 'stays flagged auto-stopped (not given up)');
   // Let a couple of recheck cycles run; it must never emit the give-up notice.
-  await waitFor(() => ctx.instances._autoResumeTimers.has(inst.sessionId)); // still parked
+  await waitFor(() => ctx.instances._autoResumeTimers.has(inst.id)); // still parked
   assert.equal(sub(evs, 'auto_resume_skipped').length, 0, 'no give-up while still throttled');
 });
 
@@ -284,7 +284,7 @@ test('stop-resume: the wall-clock sweep (not a setTimeout) fires the resume when
 
   // Deadline arms (badge set) — but we never call the fire seam.
   await waitFor(() => inst.autoResumeAt != null);
-  assert.equal(ctx.instances._autoResumeTimers.has(inst.sessionId), true, 'deadline recorded');
+  assert.equal(ctx.instances._autoResumeTimers.has(inst.id), true, 'deadline recorded');
   assert.equal(inst.proc != null, true, 'session alive while waiting to resume');
 
   // The real wall-clock sweep delivers the resume prompt once now >= deadline.
@@ -293,7 +293,7 @@ test('stop-resume: the wall-clock sweep (not a setTimeout) fires the resume when
 
   // Regression: after fire the badge no longer outlives the timer — deadline
   // gone, flags cleared, and a status with autoResumeAt:null was emitted.
-  await waitFor(() => !ctx.instances._autoResumeTimers.has(inst.sessionId));
+  await waitFor(() => !ctx.instances._autoResumeTimers.has(inst.id));
   assert.equal(inst.autoResumeAt, null, 'badge cleared after sweep fire');
   assert.equal(inst.autoStoppedForOverage, false);
   assert.equal(statuses.some(s => s.autoResumeAt === null), true, 'badge-drop status emitted');
@@ -311,18 +311,18 @@ test('stop-resume: temp-session exit cancels the pending resume (no orphan deadl
   assert.equal(r.status, 201);
   const inst = ctx.instances.get(r.body.id);
   await waitFor(() => inst.status === 'idle');
-  const sid = inst.sessionId;
+  const id = inst.id;
 
   inst.prompt('go');
   await waitFor(() => inst.autoResumeAt != null);
-  assert.equal(ctx.instances._autoResumeTimers.has(sid), true, 'deadline armed for the temp session');
+  assert.equal(ctx.instances._autoResumeTimers.has(id), true, 'deadline armed for the temp session');
 
   // Subprocess exits → temp-exit branch fires (instance dropped from byId).
   await inst.kill({ graceMs: 100 });
   await waitFor(() => !ctx.instances.get(r.body.id)); // temp row collapsed
 
   // No orphaned deadline survives; sweep has nothing left to fire.
-  assert.equal(ctx.instances._autoResumeTimers.has(sid), false, 'no orphan deadline after temp exit');
+  assert.equal(ctx.instances._autoResumeTimers.has(id), false, 'no orphan deadline after temp exit');
   assert.equal(ctx.instances._autoResumeTimers.size, 0);
 });
 
@@ -431,7 +431,7 @@ test('routing: conductor idle+subscribed → conductor is steered via injected p
 
   // Conductor stays idle but is parked waiting on the worker (isIdleCaller).
   ctx.instances.subscribeIdle(conductor.sessionId, worker.sessionId);
-  assert.equal(ctx.instances.isIdleCaller(conductor.sessionId), true);
+  assert.equal(ctx.instances.isIdleCaller(conductor.id), true);
 
   worker.prompt('TRIP go');
 
@@ -497,13 +497,13 @@ test('stop-resume: a user prompt during the wait window is QUEUED, not delivered
   const evs = collect(inst);
   inst.prompt('go');
   await waitFor(() => inst.autoResumeAt != null);
-  assert.equal(ctx.instances._autoResumeTimers.has(inst.sessionId), true, 'timer armed');
+  assert.equal(ctx.instances._autoResumeTimers.has(inst.id), true, 'timer armed');
 
   // User types during the paused window — the message is queued, not sent.
   await inst.prompt('actually do this instead');
   await waitFor(() => evs.some(e => e.kind === 'overage_message_queued'));
   // Resume stays armed; nothing was cancelled.
-  assert.equal(ctx.instances._autoResumeTimers.has(inst.sessionId), true, 'timer still armed after typing');
+  assert.equal(ctx.instances._autoResumeTimers.has(inst.id), true, 'timer still armed after typing');
   assert.equal(inst.autoResumeAt != null, true, 'badge still set');
   assert.equal(inst.autoStoppedForOverage, true, 'still auto-stopped');
   assert.equal(inst._overageQueue.length, 1, 'message queued');
@@ -529,7 +529,7 @@ test('stop-resume: queued messages flush as ONE combined prompt when the resume 
   await waitFor(() => inst._overageQueue.length === 2);
 
   // Fire the armed resume deterministically.
-  assert.equal(ctx.instances._fireAutoResumeNow(inst.sessionId), true, 'pending resume fired');
+  assert.equal(ctx.instances._fireAutoResumeNow(inst.id), true, 'pending resume fired');
 
   // Exactly one delivered turn carrying the resume text AND both queued messages.
   await waitFor(() => evs.some(e => e.kind === 'user_echo' &&
@@ -540,7 +540,7 @@ test('stop-resume: queued messages flush as ONE combined prompt when the resume 
 
   // A system line records the flush, the queue is drained, flags cleared, alive.
   assert.equal(sub(evs, 'auto_resume').some(e => e.data.count === 2), true, 'auto_resume line with count=2');
-  await waitFor(() => !ctx.instances._autoResumeTimers.has(inst.sessionId));
+  await waitFor(() => !ctx.instances._autoResumeTimers.has(inst.id));
   assert.equal(inst._overageQueue.length, 0, 'queue drained');
   assert.equal(inst.autoResumeAt, null, 'badge cleared');
   assert.equal(inst.autoStoppedForOverage, false);
@@ -601,7 +601,7 @@ test('stop-resume GLOBAL: an existing idle, never-stopped session queues while t
   assert.equal(b._overageQueue.length, 1, 'idle session queued');
   assert.equal(b._overageQueue[0].text, 'idle send during window');
   assert.equal(b.autoResumeAt != null, true, 'armed immediately via overage_queued');
-  assert.equal(ctx.instances._autoResumeTimers.has(b.sessionId), true, 'timer armed for B');
+  assert.equal(ctx.instances._autoResumeTimers.has(b.id), true, 'timer armed for B');
   assert.equal(b._overageWasStopped, false, 'queued-only, not stopped mid-work');
   assert.equal(b.summary().queuedCount, 1, 'queuedCount surfaced');
   // Nothing delivered to B's CLI while paused.
@@ -665,7 +665,7 @@ test('stop-resume GLOBAL: a queued-only session flushes with the SOFTENED preamb
   assert.equal(b._overageWasStopped, false, 'queued-only');
 
   setResumeUsage(UNDER); // verify clear ⇒ resume + flush
-  assert.equal(ctx.instances._fireAutoResumeNow(b.sessionId), true, 'resume fired for B');
+  assert.equal(ctx.instances._fireAutoResumeNow(b.id), true, 'resume fired for B');
   await waitFor(() => bEvs.some(e => e.kind === 'user_echo' && e.text.includes('please do X')),
     { timeout: 10000 });
   const echo = bEvs.find(e => e.kind === 'user_echo' && e.text.includes('please do X'));
@@ -749,7 +749,7 @@ test('routing stop-resume: idle+subscribed conductor is steered AND a resume tim
 
   // Conductor parked idle, subscribed to the worker.
   ctx.instances.subscribeIdle(conductor.sessionId, worker.sessionId);
-  assert.equal(ctx.instances.isIdleCaller(conductor.sessionId), true);
+  assert.equal(ctx.instances.isIdleCaller(conductor.id), true);
 
   worker.prompt('TRIP go');
 
@@ -757,13 +757,13 @@ test('routing stop-resume: idle+subscribed conductor is steered AND a resume tim
   await waitFor(() => sub(cEvs, 'auto_stop_overage').some(e => e.data.steered === true && e.data.resume === true));
   // The resume flag survives the steer prompt's synchronous user_prompt, and the
   // conductor's steer turn → idle arms the per-session timer.
-  await waitFor(() => ctx.instances._autoResumeTimers.has(conductor.sessionId));
+  await waitFor(() => ctx.instances._autoResumeTimers.has(conductor.id));
   assert.equal(conductor.autoStoppedForOverage, true, 'flag survived the steer prompt');
   assert.equal(conductor.autoResumeAt != null, true, 'conductor resume badge set');
 
   // Firing it delivers the resume prompt to the still-live conductor (verify clear).
   setResumeUsage(UNDER);
-  assert.equal(ctx.instances._fireAutoResumeNow(conductor.sessionId), true, 'pending resume fired');
+  assert.equal(ctx.instances._fireAutoResumeNow(conductor.id), true, 'pending resume fired');
   await waitFor(() => cEvs.some(e => e.kind === 'user_echo' && e.text === AUTO_RESUME_TEXT),
     { timeout: 10000 });
   assert.equal(conductor.proc != null, true, 'conductor never killed');
@@ -785,7 +785,7 @@ test('routing stop-resume: mid-turn conductor windDown arms a resume timer', asy
   await waitFor(() => sub(cEvs, 'auto_stop_overage').some(e => e.data.steered === true && e.data.resume === true));
   // windDown injects a steer user-message; the fake answers it with a RESULT, so
   // the conductor reaches idle and arms.
-  await waitFor(() => ctx.instances._autoResumeTimers.has(conductor.sessionId));
+  await waitFor(() => ctx.instances._autoResumeTimers.has(conductor.id));
   assert.equal(conductor.autoStoppedForOverage, true);
 });
 
@@ -802,7 +802,7 @@ test('routing stop-resume: fallback worker direct-stop arms a resume timer', asy
   worker.prompt('TRIP go');
   await waitFor(() => sub(wEvs, 'auto_stop_overage').length > 0);
   assert.notEqual(sub(wEvs, 'auto_stop_overage')[0].data.steered, true, 'fallback is a direct stop');
-  await waitFor(() => ctx.instances._autoResumeTimers.has(worker.sessionId));
+  await waitFor(() => ctx.instances._autoResumeTimers.has(worker.id));
   assert.equal(worker.autoStoppedForOverage, true);
 });
 
@@ -852,14 +852,14 @@ test('routing stop-resume: no-workers Conduct orchestrator is steered AND arms a
   await waitFor(() => cEvs.some(e => e.kind === 'user_echo' && /no workers in flight/.test(e.text || '')));
   // The steer turn → idle arms the per-session resume timer (full preamble — it
   // was genuinely stopped mid-work), exactly as the direct path would have.
-  await waitFor(() => ctx.instances._autoResumeTimers.has(conductor.sessionId));
+  await waitFor(() => ctx.instances._autoResumeTimers.has(conductor.id));
   assert.equal(conductor.autoStoppedForOverage, true, 'flagged auto-stopped');
   assert.equal(conductor._overageWasStopped, true, 'full preamble — stopped mid-work');
   assert.equal(conductor.autoResumeAt != null, true, 'resume badge set');
 
   // Firing it delivers the resume prompt to the still-live orchestrator.
   setResumeUsage(UNDER);
-  assert.equal(ctx.instances._fireAutoResumeNow(conductor.sessionId), true, 'pending resume fired');
+  assert.equal(ctx.instances._fireAutoResumeNow(conductor.id), true, 'pending resume fired');
   await waitFor(() => cEvs.some(e => e.kind === 'user_echo' && e.text === AUTO_RESUME_TEXT),
     { timeout: 10000 });
   assert.equal(conductor.proc != null, true, 'orchestrator never killed');
@@ -886,7 +886,7 @@ test('stop-resume: fire while still-over-threshold reschedules, no resume sent',
   await new Promise(r => setTimeout(r, 250)); // ~6 sweep cycles (40ms) × recheck (60ms)
   assert.equal(evs.some(e => e.kind === 'user_echo' && e.text === AUTO_RESUME_TEXT), false,
     'no resume prompt delivered while still throttled');
-  assert.equal(ctx.instances._autoResumeTimers.has(inst.sessionId), true, 'still parked (re-armed each cycle)');
+  assert.equal(ctx.instances._autoResumeTimers.has(inst.id), true, 'still parked (re-armed each cycle)');
   assert.equal(inst.autoStoppedForOverage, true, 'still auto-stopped');
   assert.equal(ctx.instances._overageActive, true, 'global lockout still engaged while parked');
 });
@@ -928,20 +928,20 @@ test('stop-resume GLOBAL: lockout held while parked over-threshold, lifts on ver
 
   // Force a fire while usage still reports OVER ⇒ it reschedules, does NOT resume,
   // and the lockout + gate stay engaged.
-  ctx.instances._fireAutoResumeNow(inst.sessionId);
+  ctx.instances._fireAutoResumeNow(inst.id);
   await new Promise(r => setTimeout(r, 150));
   assert.equal(ctx.instances._overageActive, true, 'lockout held while parked over-threshold');
-  assert.equal(ctx.instances._autoResumeTimers.has(inst.sessionId), true, 'still parked');
+  assert.equal(ctx.instances._autoResumeTimers.has(inst.id), true, 'still parked');
   assert.equal(inst._overageGate().active, true, 'gate active while parked (resetsAt kept future)');
   assert.equal(evs.some(e => e.kind === 'user_echo' && e.text === AUTO_RESUME_TEXT), false,
     'not resumed while still over');
 
   // Window clears ⇒ the next (verified) fire resumes it, and only THEN the lockout lifts.
   setResumeUsage(UNDER);
-  ctx.instances._fireAutoResumeNow(inst.sessionId);
+  ctx.instances._fireAutoResumeNow(inst.id);
   await waitFor(() => evs.some(e => e.kind === 'user_echo' && e.text === AUTO_RESUME_TEXT), { timeout: 10000 });
   await waitFor(() => ctx.instances._overageActive === false, { timeout: 10000 });
-  assert.equal(ctx.instances._autoResumeTimers.has(inst.sessionId), false, 'nothing parked once released');
+  assert.equal(ctx.instances._autoResumeTimers.has(inst.id), false, 'nothing parked once released');
   assert.equal(inst._overageGate().active, false, 'gate lifts with the lockout');
 });
 
@@ -993,15 +993,15 @@ test('Apply raising the threshold force-resumes a parked stop-resume session und
   inst.prompt('go');
 
   await waitFor(() => inst.autoResumeAt != null);
-  assert.equal(ctx.instances._autoResumeTimers.has(inst.sessionId), true, 'parked under the old threshold');
+  assert.equal(ctx.instances._autoResumeTimers.has(inst.id), true, 'parked under the old threshold');
 
   // Baseline: usage sits at 87% — still over the OLD 85% bar, so a check right now
   // (with no settings change) finds it still throttled. Proves the later resume is
   // caused by Apply's threshold change, not just any usage recheck.
   ctx.instances._overageResume.fetchUsage = async () => usagePayload(87, nowSec() + 3600);
-  ctx.instances._fireAutoResumeNow(inst.sessionId);
+  ctx.instances._fireAutoResumeNow(inst.id);
   await new Promise((r) => setTimeout(r, 150));
-  assert.equal(ctx.instances._autoResumeTimers.has(inst.sessionId), true, 'still parked under the old bar');
+  assert.equal(ctx.instances._autoResumeTimers.has(inst.id), true, 'still parked under the old bar');
   assert.equal(evs.some((e) => e.kind === 'user_echo' && e.text === AUTO_RESUME_TEXT), false, 'not resumed yet');
 
   // Apply raises the threshold to 90% — the SAME 87% usage now reads "under bar".
@@ -1010,7 +1010,7 @@ test('Apply raising the threshold force-resumes a parked stop-resume session und
   assert.equal(r.status, 200);
 
   await waitFor(() => evs.some((e) => e.kind === 'user_echo' && e.text === AUTO_RESUME_TEXT), { timeout: 10000 });
-  assert.equal(ctx.instances._autoResumeTimers.has(inst.sessionId), false,
+  assert.equal(ctx.instances._autoResumeTimers.has(inst.id), false,
     'resumed promptly by Apply, not the far-off deadline');
 });
 

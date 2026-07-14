@@ -7,7 +7,14 @@
 // mid-turn gets a plain stub delivered live into its running turn as a steering
 // callback.
 //
-// Keyed by sessionId (NOT instanceId) so the graph survives respawn / restart.
+// Keyed internally by the stable `instanceId` (NOT the rotating sessionId): the
+// event stream carries the instanceId, and an in-place `/clear` rotates a
+// session's sessionId while keeping its instanceId, so instanceId keying needs
+// no migration across a rotation. sessionId lives only at the boundary — the
+// MCP-supplied args to subscribe()/unsubscribe() (translated to instanceId on
+// entry), the sessionId woven into the wake stub in deliver(), and the
+// sessionId-shaped debug view from snapshot(). A subscription is NOT persisted
+// and is purged on remove(), so there is nothing to "survive a restart."
 // One-shot: a subscription is consumed when it fires — by whichever of THREE
 // trigger paths lands first:
 //   1. turn_end (the classic path — see _onTurnEnd and its defer gate),
@@ -50,23 +57,22 @@ export class IdleSubscriptionHub {
     this.manager = manager;
     // One-shot idle subscriptions: when target hits turn_end, deliver
     // a stub user prompt to every registered caller and clear the set.
-    // Keyed by targetSessionId → Map<callerSessionId, { timerId: Timeout | null }>.
-    // sessionId (not instanceId) so the graph survives respawn / restart.
+    // Keyed by targetInstanceId → Map<callerInstanceId, { timerId: Timeout | null }>.
     this.subscribers = new Map();
-    // Short-lived set populated in _onTurnEnd() BEFORE subscribers is cleared,
-    // so the synchronously-following wsHub turn_notification handler can read it.
-    // A queueMicrotask cleanup runs after both synchronous listeners complete.
-    // turn_end-ONLY by contract: the settle path never touches it (a settle
-    // fires while the worker is idle with a frozen stream, so no worker
-    // turn_notification exists to suppress).
+    // Short-lived set of targetInstanceIds populated in _onTurnEnd() BEFORE
+    // subscribers is cleared, so the synchronously-following wsHub
+    // turn_notification handler can read it. A queueMicrotask cleanup runs after
+    // both synchronous listeners complete. turn_end-ONLY by contract: the settle
+    // path never touches it (a settle fires while the worker is idle with a
+    // frozen stream, so no worker turn_notification exists to suppress).
     this._justConsumed = new Set();
-    // Pending idle task-drain settles, keyed by targetSessionId →
-    // { timerId, instanceId, proc, armSeq }. `proc` pins the arm to a specific
-    // subprocess run (respawn/rewind reuse the Instance AND its instanceId but
-    // mint a new proc and reset the ring, so seq comparisons across runs are
-    // meaningless); `armSeq` is the ring's nextSeq at arm time, so
-    // `nextSeq === armSeq` at fire time means literally zero events of any
-    // kind arrived since the arming task event.
+    // Pending idle task-drain settles, keyed by targetInstanceId →
+    // { timerId, proc, armSeq }. `proc` pins the arm to a specific subprocess
+    // run (respawn/rewind reuse the Instance AND its instanceId but mint a new
+    // proc and reset the ring, so seq comparisons across runs are meaningless);
+    // `armSeq` is the ring's nextSeq at arm time, so `nextSeq === armSeq` at
+    // fire time means literally zero events of any kind arrived since the
+    // arming task event.
     this._pendingSettles = new Map();
   }
 
@@ -91,8 +97,8 @@ export class IdleSubscriptionHub {
   }
 
   // When a target instance's turn_end fires, deliver to every caller
-  // subscribed to its sessionId and consume the subscription set (cancelling
-  // each watchdog — turn_end won).
+  // subscribed to it and consume the subscription set (cancelling each
+  // watchdog — turn_end won).
   //
   // Deferral: a backgrounded Agent-tool call resolves its tool_result
   // immediately (isAsync:true), so a worker's turn_end can fire while it still
@@ -120,25 +126,24 @@ export class IdleSubscriptionHub {
   // never-finishing subagent — or a CLI that never flushes its queue — is
   // caught by the watchdog (always armed).
   _onTurnEnd(targetInstanceId) {
-    // The event payload carries the instanceId; resolve the live instance and
-    // its sessionId, which is what the subscription graph is keyed by.
+    // The event payload carries the instanceId — the graph's key directly.
     const target = this.manager.byId.get(targetInstanceId);
-    const tSid = target?.sessionId;
-    if (!tSid) return;
+    if (!target) return;
     // A turn_end supersedes any pending idle-drain settle: either it consumes
     // the subscription right here, or its defer keeps the turn_end path in
     // charge (and the settle's fire-time freeze check would drop it anyway —
     // this cancel is the eager form of that).
-    this._cancelSettle(tSid);
-    const subs = this.subscribers.get(tSid);
+    this._cancelSettle(targetInstanceId);
+    const subs = this.subscribers.get(targetInstanceId);
     if (!subs || subs.size === 0) return;
     // Mark BEFORE the defer check / clearing so the wsHub 'event' listener
     // (registered after this one in server.js: new InstanceManager() then
-    // attachWsHub()) can still detect that tSid had a watcher when its turn_end
-    // fired — on the deferred intermediate turn_end as well as the final one, so
-    // the worker's turn_notification stays suppressed across the whole deferral.
-    this._justConsumed.add(tSid);
-    queueMicrotask(() => this._justConsumed.delete(tSid));
+    // attachWsHub()) can still detect that the target had a watcher when its
+    // turn_end fired — on the deferred intermediate turn_end as well as the
+    // final one, so the worker's turn_notification stays suppressed across the
+    // whole deferral.
+    this._justConsumed.add(targetInstanceId);
+    queueMicrotask(() => this._justConsumed.delete(targetInstanceId));
     // Defer while background subagents are still running OR an unconsumed
     // mid-turn task notification means a re-invocation turn is still owed —
     // keep the subscription and its watchdog armed; a later turn_end with both
@@ -147,10 +152,10 @@ export class IdleSubscriptionHub {
     if (target.activeAgentTaskCount > 0 || target.taskNotificationPending) return;
     const entries = [...subs.entries()];
     subs.clear();
-    this.subscribers.delete(tSid);
-    for (const [callerSid, { timerId }] of entries) {
+    this.subscribers.delete(targetInstanceId);
+    for (const [callerInstanceId, { timerId }] of entries) {
       clearTimeout(timerId); // cancel watchdog — turn_end arrived first
-      this.deliver(callerSid, tSid);
+      this.deliver(callerInstanceId, targetInstanceId);
     }
   }
 
@@ -172,9 +177,8 @@ export class IdleSubscriptionHub {
   // Deliberately task-shape agnostic: no task_type / nesting / init-counting.
   _onTaskEvent(targetInstanceId) {
     const target = this.manager.byId.get(targetInstanceId);
-    const tSid = target?.sessionId;
-    if (!tSid) return;
-    const subs = this.subscribers.get(tSid);
+    if (!target) return;
+    const subs = this.subscribers.get(targetInstanceId);
     if (!subs || subs.size === 0) return;
     const drained = target.status === 'idle'
       && target.activeAgentTaskCount === 0
@@ -186,15 +190,14 @@ export class IdleSubscriptionHub {
     if (!drained) {
       // The state moved (a new task started, a re-invocation is opening, …) —
       // whatever was pending is stale. turn_end / watchdog own the wake.
-      this._cancelSettle(tSid);
+      this._cancelSettle(targetInstanceId);
       return;
     }
-    this._cancelSettle(tSid); // re-arm: reset both the countdown and the baseline
-    const timerId = setTimeout(() => this._fireSettle(tSid), IDLE_DRAIN_SETTLE_MS);
+    this._cancelSettle(targetInstanceId); // re-arm: reset countdown and baseline
+    const timerId = setTimeout(() => this._fireSettle(targetInstanceId), IDLE_DRAIN_SETTLE_MS);
     timerId.unref?.(); // a lone settle must not keep the process alive
-    this._pendingSettles.set(tSid, {
+    this._pendingSettles.set(targetInstanceId, {
       timerId,
-      instanceId: target.id,
       proc: target.proc,
       armSeq: target.ring.nextSeq,
     });
@@ -204,14 +207,14 @@ export class IdleSubscriptionHub {
   // of them drops the settle silently — the subscription and its watchdog stay
   // armed, so the worst wrong outcome here is "wake later than ideal", never
   // "wake one turn early" or "wake twice".
-  _fireSettle(tSid) {
-    const pending = this._pendingSettles.get(tSid);
-    this._pendingSettles.delete(tSid); // always self-clean, even on drop
+  _fireSettle(targetInstanceId) {
+    const pending = this._pendingSettles.get(targetInstanceId);
+    this._pendingSettles.delete(targetInstanceId); // always self-clean, even on drop
     if (!pending) return;
-    const subs = this.subscribers.get(tSid);
+    const subs = this.subscribers.get(targetInstanceId);
     if (!subs || subs.size === 0) return; // consumed meanwhile (turn_end/watchdog)
-    const inst = this.manager.byId.get(pending.instanceId);
-    if (!inst || inst.sessionId !== tSid) return;
+    const inst = this.manager.byId.get(targetInstanceId);
+    if (!inst) return;
     // Same subprocess run: respawn/rewind mint a new proc (and reset the
     // ring), which would make the seq comparison below meaningless.
     if (inst.proc == null || inst.proc !== pending.proc) return;
@@ -224,20 +227,20 @@ export class IdleSubscriptionHub {
     // turn_end-only; no worker turn_notification is in flight right now).
     const entries = [...subs.entries()];
     subs.clear();
-    this.subscribers.delete(tSid);
-    this.manager.emit('subscription_changed', { targetId: tSid });
-    for (const [callerSid, { timerId }] of entries) {
+    this.subscribers.delete(targetInstanceId);
+    this.manager.emit('subscription_changed', { targetId: targetInstanceId });
+    for (const [callerInstanceId, { timerId }] of entries) {
       clearTimeout(timerId); // cancel watchdog — the settle won
-      this.deliver(callerSid, tSid);
+      this.deliver(callerInstanceId, targetInstanceId);
     }
   }
 
-  // Cancel the pending settle for a target sessionId, if any. Idempotent.
-  _cancelSettle(tSid) {
-    const pending = this._pendingSettles.get(tSid);
+  // Cancel the pending settle for a target instance, if any. Idempotent.
+  _cancelSettle(targetInstanceId) {
+    const pending = this._pendingSettles.get(targetInstanceId);
     if (!pending) return;
     clearTimeout(pending.timerId);
-    this._pendingSettles.delete(tSid);
+    this._pendingSettles.delete(targetInstanceId);
   }
 
   // Drop every pending settle. Test teardown hook — suites that reach into
@@ -268,118 +271,100 @@ export class IdleSubscriptionHub {
     if (callerSessionId === targetSessionId) {
       throw new Error('cannot subscribe to self');
     }
-    // Both must resolve to a LIVE (proc-attached) instance.
-    const isLive = (sid) => this.manager.idsForSession(sid).some(id => this.manager.byId.get(id)?.proc);
-    if (!isLive(callerSessionId)) {
+    // Boundary translation: each sessionId (from the MCP ?caller= / target arg)
+    // must resolve to a LIVE (proc-attached) instance; the graph is keyed by the
+    // stable instanceId thereafter.
+    const callerInstanceId = this.manager.liveForSession(callerSessionId)?.id ?? null;
+    if (!callerInstanceId) {
       throw new Error(`caller session not live: ${callerSessionId}`);
     }
-    if (!isLive(targetSessionId)) {
+    const targetInstanceId = this.manager.liveForSession(targetSessionId)?.id ?? null;
+    if (!targetInstanceId) {
       throw new Error(`target session not live: ${targetSessionId}`);
     }
-    let subs = this.subscribers.get(targetSessionId);
+    let subs = this.subscribers.get(targetInstanceId);
     if (!subs) {
       subs = new Map();
-      this.subscribers.set(targetSessionId, subs);
+      this.subscribers.set(targetInstanceId, subs);
     }
-    const already = subs.has(callerSessionId);
+    const already = subs.has(callerInstanceId);
     if (!already) {
       const effTimeout = (typeof timeoutMs === 'number' && isFinite(timeoutMs) && timeoutMs > 0)
         ? timeoutMs
         : DEFAULT_SUBSCRIBE_TIMEOUT_MS;
       const timerId = setTimeout(() => {
-        const s = this.subscribers.get(targetSessionId);
+        const s = this.subscribers.get(targetInstanceId);
         if (s) {
-          s.delete(callerSessionId);
+          s.delete(callerInstanceId);
           if (s.size === 0) {
-            this.subscribers.delete(targetSessionId);
+            this.subscribers.delete(targetInstanceId);
             // No watchers left — a pending idle-drain settle has nothing to
             // deliver to (its fire-time re-check would drop it; this is the
             // eager form so the map stays clean).
-            this._cancelSettle(targetSessionId);
+            this._cancelSettle(targetInstanceId);
           }
         }
-        this.manager.emit('subscription_changed', { targetId: targetSessionId });
-        this.deliver(callerSessionId, targetSessionId, { timedOut: true, timeoutMs: effTimeout });
+        this.manager.emit('subscription_changed', { targetId: targetInstanceId });
+        this.deliver(callerInstanceId, targetInstanceId, { timedOut: true, timeoutMs: effTimeout });
       }, effTimeout);
       timerId.unref?.(); // a lone watchdog must not keep the event loop alive
-      subs.set(callerSessionId, { timerId });
-      this.manager.emit('subscription_changed', { targetId: targetSessionId });
+      subs.set(callerInstanceId, { timerId });
+      this.manager.emit('subscription_changed', { targetId: targetInstanceId });
     }
     return { already };
   }
 
   // Cancel a pending subscription. Idempotent. Clears any watchdog timer.
+  // sessionId args are translated to instanceId at the boundary; an endpoint
+  // that no longer resolves to a live instance yields removed:false (it was
+  // already purged on remove()).
   unsubscribe(callerSessionId, targetSessionId) {
-    const subs = this.subscribers.get(targetSessionId);
+    const callerInstanceId = this.manager.liveForSession(callerSessionId)?.id ?? null;
+    const targetInstanceId = this.manager.liveForSession(targetSessionId)?.id ?? null;
+    if (!callerInstanceId || !targetInstanceId) return { removed: false };
+    const subs = this.subscribers.get(targetInstanceId);
     if (!subs) return { removed: false };
-    const entry = subs.get(callerSessionId);
+    const entry = subs.get(callerInstanceId);
     if (!entry) return { removed: false };
     clearTimeout(entry.timerId);
-    subs.delete(callerSessionId);
+    subs.delete(callerInstanceId);
     if (subs.size === 0) {
-      this.subscribers.delete(targetSessionId);
-      this._cancelSettle(targetSessionId); // no watchers left
+      this.subscribers.delete(targetInstanceId);
+      this._cancelSettle(targetInstanceId); // no watchers left
     }
-    this.manager.emit('subscription_changed', { targetId: targetSessionId });
+    this.manager.emit('subscription_changed', { targetId: targetInstanceId });
     return { removed: true };
   }
 
-  // Migrate every subscription entry from oldSid to newSid when a managed
-  // `/clear` rotates a session's id IN PLACE (same instance, new sessionId).
-  // Preserves watchdog timers — the subscription must SURVIVE the rotation, not
-  // be dropped like purge() does. Renames oldSid both as a TARGET (a conductor
-  // watching this worker, so its wake still fires on the reseeded turn_end) and
-  // as a CALLER (this session watching others — e.g. a conductor compacting
-  // itself). Also carries any pending idle-drain settle keyed by the target.
-  rekey(oldSid, newSid) {
-    if (!oldSid || !newSid || oldSid === newSid) return;
-    // As target: move the whole caller-set under the new id (merge if the new id
-    // somehow already has watchers).
-    const asTarget = this.subscribers.get(oldSid);
-    if (asTarget) {
-      this.subscribers.delete(oldSid);
-      const existing = this.subscribers.get(newSid);
-      if (existing) { for (const [caller, entry] of asTarget) existing.set(caller, entry); }
-      else this.subscribers.set(newSid, asTarget);
-    }
-    // As caller: rename across every target's caller-set.
-    for (const [, subs] of this.subscribers) {
-      const entry = subs.get(oldSid);
-      if (entry) { subs.delete(oldSid); subs.set(newSid, entry); }
-    }
-    // Pending idle-drain settle keyed by the target sessionId (the instance +
-    // proc it pins are unchanged by the in-place rotation, so it stays valid).
-    const settle = this._pendingSettles.get(oldSid);
-    if (settle) { this._pendingSettles.delete(oldSid); this._pendingSettles.set(newSid, settle); }
-  }
-
-  // Snapshot of the current idle-subscription graph. Test-only — gives
-  // tests a way to assert that purging on remove() actually happened.
+  // Snapshot of the current idle-subscription graph, projected back to
+  // sessionIds. Test/debug-only — the honest "which sessions subscribe to which"
+  // view (internal keys are instanceIds). Falls back to the raw key if the
+  // instance is already gone.
   snapshot() {
+    const sid = (id) => this.manager.byId.get(id)?.sessionId ?? id;
     const out = {};
-    for (const [target, callers] of this.subscribers) {
-      out[target] = [...callers.keys()];
+    for (const [targetId, callers] of this.subscribers) {
+      out[sid(targetId)] = [...callers.keys()].map(sid);
     }
     return out;
   }
 
-  // Drop a sessionId from every subscription map (as caller) AND drop any
+  // Drop an instanceId from every subscription map (as caller) AND drop any
   // entry where it was the target. Clears watchdog timers. Called on instance
-  // removal so dead sessions can't accumulate subscriptions. Guards null
-  // sessionId (an instance may exit before ever minting one).
-  purge(sessionId) {
-    if (!sessionId) return;
-    this._cancelSettle(sessionId); // as target: drop any pending idle-drain settle
-    const asTarget = this.subscribers.get(sessionId);
+  // removal so dead instances can't accumulate subscriptions. Guards a falsy id.
+  purge(instanceId) {
+    if (!instanceId) return;
+    this._cancelSettle(instanceId); // as target: drop any pending idle-drain settle
+    const asTarget = this.subscribers.get(instanceId);
     if (asTarget) {
       for (const [, { timerId }] of asTarget) clearTimeout(timerId);
-      this.subscribers.delete(sessionId);
+      this.subscribers.delete(instanceId);
     }
     for (const [target, subs] of this.subscribers) {
-      const entry = subs.get(sessionId);
+      const entry = subs.get(instanceId);
       if (entry) {
         clearTimeout(entry.timerId);
-        subs.delete(sessionId);
+        subs.delete(instanceId);
         if (subs.size === 0) {
           this.subscribers.delete(target);
           this._cancelSettle(target); // that target lost its last watcher
@@ -388,10 +373,14 @@ export class IdleSubscriptionHub {
     }
   }
 
-  deliver(callerSessionId, targetSessionId, opts) {
-    // Resolve the live caller instance from its sessionId.
-    const caller = this.manager.liveForSession(callerSessionId);
-    if (!caller) return; // caller gone — drop silently.
+  deliver(callerInstanceId, targetInstanceId, opts) {
+    // Resolve the live caller instance directly by instanceId.
+    const caller = this.manager.byId.get(callerInstanceId);
+    if (!caller || !caller.proc) return; // caller gone — drop silently.
+    // Boundary: the stub names the worker by sessionId and points at
+    // get_recent_messages (sessionId-addressed), so translate the target's
+    // CURRENT sessionId here (a /clear-rotated target resolves to its new id).
+    const targetSessionId = this.manager.byId.get(targetInstanceId)?.sessionId ?? targetInstanceId;
     // Fold the worker's recent output into the stub ONLY on a real turn_end
     // delivered to an already-idle caller. The timeout-watchdog path and the
     // live mid-turn steering path keep the plain pointer stub. Decided here,
@@ -451,22 +440,22 @@ export class IdleSubscriptionHub {
     return buildWakeStub({ targetSessionId, payloadText: flattenPayload(r.meta, r.bodies) });
   }
 
-  hasSubscriber(sessionId) {
-    const subs = this.subscribers.get(sessionId);
+  hasSubscriber(instanceId) {
+    const subs = this.subscribers.get(instanceId);
     return subs != null && subs.size > 0;
   }
 
-  // Returns true when sessionId was the *target* of a subscription that fired
+  // Returns true when instanceId was the *target* of a subscription that fired
   // this synchronous event-dispatch cycle (populated before subscribers clears).
-  wasConsumed(sessionId) {
-    return this._justConsumed.has(sessionId);
+  wasConsumed(instanceId) {
+    return this._justConsumed.has(instanceId);
   }
 
-  // Returns true when sessionId is the *caller* (conductor) in any pending
-  // subscription — i.e. this session is actively waiting for a worker to finish.
-  isCaller(sessionId) {
+  // Returns true when instanceId is the *caller* (conductor) in any pending
+  // subscription — i.e. this instance is actively waiting for a worker to finish.
+  isCaller(instanceId) {
     for (const callers of this.subscribers.values()) {
-      if (callers.has(sessionId)) return true;
+      if (callers.has(instanceId)) return true;
     }
     return false;
   }

@@ -116,13 +116,16 @@ test('compact_session preserves the conducted marker across the rotation', async
   }
 });
 
-test('compact_session re-keys the caller\'s outgoing idle subscription onto the rotated sessionId (no orphan)', async () => {
+test('compact_session: an outgoing idle subscription survives the caller\'s /clear with no migration', async () => {
   const srv = await bootServer({ scenarioPath: SCENARIO });
   try {
     await api(srv.baseUrl, 'POST', '/api/projects', { name: 'p' });
     // `worker` is watched; `sub` watches it and then compacts ITSELF — the
     // self-compact case where the caller's own sessionId rotates while it holds
-    // an outgoing subscription keyed by that (now dead) id.
+    // an outgoing subscription. Because the idle-subscription graph is keyed by
+    // the stable instanceId (which /clear preserves), the entry is untouched by
+    // the rotation — nothing to re-key. The snapshot is a sessionId-shaped view,
+    // so it simply reflects the caller's CURRENT (rotated) sessionId.
     const worker = await callTool(srv.baseUrl, 'spawn_instance', { project: 'p', mode: 'bypassPermissions' });
     const sub = await callTool(srv.baseUrl, 'spawn_instance', { project: 'p', mode: 'bypassPermissions' });
     const wSid = worker.sessionId, sSid = sub.sessionId;
@@ -138,8 +141,8 @@ test('compact_session re-keys the caller\'s outgoing idle subscription onto the 
     await waitFor(() => instForSession(srv.instances, NEW_SID)?.status === 'idle');
 
     snap = srv.instances._idleSubscriberSnapshot();
-    assert.ok(snap[wSid]?.includes(NEW_SID), 'subscription re-keyed onto the rotated caller sid');
-    assert.ok(!snap[wSid]?.includes(sSid), 'stale caller sid dropped — not orphaned on the dead id');
+    assert.ok(snap[wSid]?.includes(NEW_SID), 'subscription still present, now shown under the rotated caller sid');
+    assert.ok(!snap[wSid]?.includes(sSid), 'stale caller sid no longer resolves — not orphaned on the dead id');
   } finally {
     await srv.close();
   }
