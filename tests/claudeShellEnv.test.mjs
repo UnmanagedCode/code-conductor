@@ -13,7 +13,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import os from 'node:os';
 import path from 'node:path';
-import { getShellEnvBundlePath, _resetForTest } from '../src/claudeShellEnv.js';
+import { getShellEnvBundlePath, _resetForTest, bundleShellKind } from '../src/claudeShellEnv.js';
 import { orchStoreRoot } from '../src/projects.js';
 
 const execFileP = promisify(execFile);
@@ -37,13 +37,14 @@ async function mkTmp(prefix = 'cc-shellenv-') {
   return fsp.mkdtemp(path.join(os.tmpdir(), prefix));
 }
 
-// Modes (via FAKE_CLAUDE_MODE): happy | empty | nomarker | nonzero | hang | versionfail
+// Modes (via FAKE_CLAUDE_MODE): happy | empty | nomarker | noshellkind | nonzero | hang | versionfail
 const FAKE_CLAUDE_SCRIPT = `
 import { writeFileSync, readFileSync } from 'node:fs';
 
 const argv = process.argv.slice(2);
 const mode = process.env.FAKE_CLAUDE_MODE || 'happy';
 const version = process.env.FAKE_CLAUDE_VERSION || '9.9.9';
+const shellKind = process.env.FAKE_CLAUDE_SHELL_KIND || 'bash';
 
 if (argv.includes('--version')) {
   if (mode === 'versionfail') process.exit(1);
@@ -74,7 +75,8 @@ process.stdin.on('end', () => {
     if (mode === 'hang') { setInterval(() => {}, 1e9); return; }
     if (mode === 'empty') { if (targetPath) writeFileSync(targetPath, ''); process.exit(0); return; }
     if (mode === 'nomarker') { if (targetPath) writeFileSync(targetPath, 'hello world, no marker here\\n'); process.exit(0); return; }
-    if (targetPath) writeFileSync(targetPath, 'export CLAUDE_CODE_EXECPATH=/fake/claude\\nrg() { echo "RG-SHIM-CALLED $*"; }\\n');
+    if (mode === 'noshellkind') { if (targetPath) writeFileSync(targetPath, 'export CLAUDE_CODE_EXECPATH=/fake/claude\\nrg() { echo "RG-SHIM-CALLED $*"; }\\n'); process.exit(0); return; }
+    if (targetPath) writeFileSync(targetPath, 'export CLAUDE_CODE_EXECPATH=/fake/claude\\nexport CLAUDE_CODE_SHELL_KIND=' + shellKind + '\\nrg() { echo "RG-SHIM-CALLED $*"; }\\n');
     process.exit(0);
   };
 
@@ -98,7 +100,31 @@ test('happy path: resolves to an existing, validated bundle file', async () => {
     const p = await getShellEnvBundlePath();
     const contents = await fsp.readFile(p, 'utf8');
     assert.match(contents, /CLAUDE_CODE_EXECPATH/);
+    assert.match(p, /bundle-9\.9\.9-bash\.sh$/);
+    assert.equal(bundleShellKind(p), 'bash');
   });
+});
+
+test('happy path on a zsh host: bundle filename and shell-kind marker record zsh', async () => {
+  const home = await mkTmp();
+  const bin = await writeFakeClaude(home);
+  await withEnv({
+    PROJECTS_ROOT: home, CLAUDE_BIN: bin,
+    FAKE_CLAUDE_MODE: 'happy', FAKE_CLAUDE_VERSION: '9.9.9', FAKE_CLAUDE_SHELL_KIND: 'zsh',
+  }, async () => {
+    _resetForTest();
+    const p = await getShellEnvBundlePath();
+    const contents = await fsp.readFile(p, 'utf8');
+    assert.match(contents, /CLAUDE_CODE_SHELL_KIND=zsh/);
+    assert.match(p, /bundle-9\.9\.9-zsh\.sh$/);
+    assert.equal(bundleShellKind(p), 'zsh');
+  });
+});
+
+test('bundleShellKind parses the shell suffix from a bundle path, defaulting unrecognized/legacy names to bash', () => {
+  assert.equal(bundleShellKind('/x/bundle-9.9.9-zsh.sh'), 'zsh');
+  assert.equal(bundleShellKind('/x/bundle-9.9.9-bash.sh'), 'bash');
+  assert.equal(bundleShellKind('/x/bundle-9.9.9.sh'), 'bash');
 });
 
 test('disk-cache hit avoids a second generation, and the in-memory singleton avoids repeat --version calls', async () => {
@@ -148,14 +174,23 @@ test('concurrent first-callers coalesce into a single generation', async () => {
   });
 });
 
+// No bundle-9.9.9-*.sh (any shell suffix) should exist after a failed
+// generation — covers both the old flat unsuffixed name (never produced by
+// current code, so trivially absent) and the new per-shell names.
+async function assertNoBundleFileFor(version) {
+  const dir = path.join(orchStoreRoot(), 'shell-env');
+  await assert.rejects(() => fsp.stat(path.join(dir, `bundle-${version}.sh`)));
+  await assert.rejects(() => fsp.stat(path.join(dir, `bundle-${version}-bash.sh`)));
+  await assert.rejects(() => fsp.stat(path.join(dir, `bundle-${version}-zsh.sh`)));
+}
+
 test('empty generated output fails validation and leaves no cache file', async () => {
   const home = await mkTmp();
   const bin = await writeFakeClaude(home);
   await withEnv({ PROJECTS_ROOT: home, CLAUDE_BIN: bin, FAKE_CLAUDE_MODE: 'empty', FAKE_CLAUDE_VERSION: '9.9.9' }, async () => {
     _resetForTest();
     await assert.rejects(() => getShellEnvBundlePath(), /empty|validation/i);
-    const finalPath = path.join(orchStoreRoot(), 'shell-env', 'bundle-9.9.9.sh');
-    await assert.rejects(() => fsp.stat(finalPath));
+    await assertNoBundleFileFor('9.9.9');
   });
 });
 
@@ -165,8 +200,17 @@ test('missing CLAUDE_CODE_EXECPATH marker fails validation and leaves no cache f
   await withEnv({ PROJECTS_ROOT: home, CLAUDE_BIN: bin, FAKE_CLAUDE_MODE: 'nomarker', FAKE_CLAUDE_VERSION: '9.9.9' }, async () => {
     _resetForTest();
     await assert.rejects(() => getShellEnvBundlePath(), /CLAUDE_CODE_EXECPATH|validation/i);
-    const finalPath = path.join(orchStoreRoot(), 'shell-env', 'bundle-9.9.9.sh');
-    await assert.rejects(() => fsp.stat(finalPath));
+    await assertNoBundleFileFor('9.9.9');
+  });
+});
+
+test('missing CLAUDE_CODE_SHELL_KIND marker fails validation and leaves no cache file', async () => {
+  const home = await mkTmp();
+  const bin = await writeFakeClaude(home);
+  await withEnv({ PROJECTS_ROOT: home, CLAUDE_BIN: bin, FAKE_CLAUDE_MODE: 'noshellkind', FAKE_CLAUDE_VERSION: '9.9.9' }, async () => {
+    _resetForTest();
+    await assert.rejects(() => getShellEnvBundlePath(), /CLAUDE_CODE_SHELL_KIND|validation/i);
+    await assertNoBundleFileFor('9.9.9');
   });
 });
 
@@ -269,9 +313,11 @@ t('real claude: generated bundle restores rg/find as shell functions', async () 
   await withEnv({ PROJECTS_ROOT: home, CLAUDE_BIN: undefined }, async () => {
     _resetForTest();
     const bundlePath = await getShellEnvBundlePath();
+    const shell = bundleShellKind(bundlePath);
+    const [bin, args] = shell === 'zsh' ? ['zsh', ['--no-rcs']] : ['bash', ['--noprofile', '--norc']];
     const script = `unset CLAUDE_CODE_EXECPATH; source ${bundlePath}; type rg; type find`;
-    const { stdout } = await execFileP('bash', ['--noprofile', '--norc', '-c', script]);
-    assert.match(stdout, /rg is a function/);
-    assert.match(stdout, /find is a function/);
+    const { stdout } = await execFileP(bin, [...args, '-c', script]);
+    assert.match(stdout, /rg is a (shell )?function/);
+    assert.match(stdout, /find is a (shell )?function/);
   });
 });
