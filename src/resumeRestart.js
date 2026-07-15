@@ -141,7 +141,7 @@ export async function drainToManifest({ server, wss, instances, log = console, g
   // durable re-conduct work (re-spawn workers, re-establish subscriptions) even
   // though it's idle, so it must still receive its restart prompt.
   const busyAtDrain = new Set(
-    live.filter((i) => i.status === 'turn' || instances.isIdleCaller(i.sessionId)).map((i) => i.id),
+    live.filter((i) => i.status === 'turn' || instances.isIdleCaller(i.id)).map((i) => i.id),
   );
 
   // (2) Wind down mid-turn instances. wss/http stay UP throughout.

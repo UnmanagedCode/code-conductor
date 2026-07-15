@@ -131,6 +131,7 @@ test('tools/list returns the full expected tool catalog', async () => {
   const expected = [
     'answer_question',
     'approve_plan',
+    'compact_session',
     'create_project', 'create_workspace', 'create_worktree',
     'delete_workspace', 'delete_worktree',
     'get_recent_messages', 'get_transcript',

@@ -1,0 +1,43 @@
+{
+  "_comment": "Drives the compact_session flow. The `/clear` turn simulates a real /clear: it emits a system/init with a NEW (fixed) session_id so the Instance's rotation-follow (src/instances.js system/init handler) fires — same process, new sessionId — plus a result (turn_end). The generic catch-all turns handle the triggering prompt, the reseed, and any extra turns a test drives. matchTurn() consumes turns in array order, so the text-filtered /clear turn must precede the catch-alls.",
+  "events": [
+    { "type": "system", "subtype": "init", "session_id": "$SID", "cwd": "$CWD", "model": "claude-sonnet-4-6", "permissionMode": "$MODE" }
+  ],
+  "turns": [
+    {
+      "on": { "type": "prompt", "text": "/clear" },
+      "emit": [
+        { "type": "system", "subtype": "init", "session_id": "c0000000-0000-4000-8000-000000000001", "cwd": "$CWD", "model": "claude-sonnet-4-6", "permissionMode": "$MODE" },
+        { "type": "result", "subtype": "success", "stop_reason": "end_turn", "duration_ms": 5, "total_cost_usd": 0.0001, "is_error": false, "usage": { "input_tokens": 1, "output_tokens": 1 } }
+      ]
+    },
+    {
+      "on": { "type": "prompt" },
+      "emit": [
+        { "type": "assistant", "message": { "id": "msg_a", "role": "assistant", "content": [ { "type": "text", "text": "ok" } ] } },
+        { "type": "result", "subtype": "success", "stop_reason": "end_turn", "duration_ms": 10, "total_cost_usd": 0.0002, "is_error": false, "usage": { "input_tokens": 2, "output_tokens": 1 } }
+      ]
+    },
+    {
+      "on": { "type": "prompt" },
+      "emit": [
+        { "type": "assistant", "message": { "id": "msg_b", "role": "assistant", "content": [ { "type": "text", "text": "ok" } ] } },
+        { "type": "result", "subtype": "success", "stop_reason": "end_turn", "duration_ms": 10, "total_cost_usd": 0.0003, "is_error": false, "usage": { "input_tokens": 2, "output_tokens": 1 } }
+      ]
+    },
+    {
+      "on": { "type": "prompt" },
+      "emit": [
+        { "type": "assistant", "message": { "id": "msg_c", "role": "assistant", "content": [ { "type": "text", "text": "ok" } ] } },
+        { "type": "result", "subtype": "success", "stop_reason": "end_turn", "duration_ms": 10, "total_cost_usd": 0.0004, "is_error": false, "usage": { "input_tokens": 2, "output_tokens": 1 } }
+      ]
+    },
+    {
+      "on": { "type": "prompt" },
+      "emit": [
+        { "type": "assistant", "message": { "id": "msg_d", "role": "assistant", "content": [ { "type": "text", "text": "ok" } ] } },
+        { "type": "result", "subtype": "success", "stop_reason": "end_turn", "duration_ms": 10, "total_cost_usd": 0.0005, "is_error": false, "usage": { "input_tokens": 2, "output_tokens": 1 } }
+      ]
+    }
+  ]
+}

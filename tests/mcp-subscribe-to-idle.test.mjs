@@ -42,7 +42,11 @@ let nextRpcId = 1;
 
 async function rpc(baseUrl, method, params, { caller } = {}) {
   const id = nextRpcId++;
-  const url = baseUrl + '/mcp' + (caller ? `?caller=${encodeURIComponent(caller)}` : '');
+  // `?caller=` now carries the stable instanceId (what Instance.spawn bakes);
+  // translate a caller sessionId to it. Unresolved values pass through so the
+  // no-caller / bogus-caller refusal paths still fire.
+  const handle = caller ? (instForSession(instances, caller)?.id ?? caller) : null;
+  const url = baseUrl + '/mcp' + (handle ? `?caller=${encodeURIComponent(handle)}` : '');
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -182,7 +186,7 @@ test('subscribe_to_idle DEFERS the wake while the target has a live background A
   const caller = instForSession(instances, callerId);
   assert.equal(findStubFor(caller, targetId), undefined,
     'wake must be deferred while a background subagent is still running');
-  assert.equal(instances._idleHub.hasSubscriber(targetId), true,
+  assert.equal(instances._idleHub.hasSubscriber(instForSession(instances, targetId).id), true,
     'a deferred turn_end must NOT consume the one-shot subscription');
 });
 
@@ -212,7 +216,7 @@ test('subscribe_to_idle delivers exactly once after the subagent completes and a
     ev => ev.text?.includes(targetId) && ev.text?.includes('get_recent_messages'));
   assert.equal(stubs, 1, 'delivery fires exactly once, at the follow-up turn_end');
   // Subscription consumed.
-  assert.equal(instances._idleHub.hasSubscriber(targetId), false);
+  assert.equal(instances._idleHub.hasSubscriber(instForSession(instances, targetId).id), false);
 });
 
 test('subscribe_to_idle defers a MID-TURN subagent completion until the re-invocation turn', async () => {
@@ -242,7 +246,7 @@ test('subscribe_to_idle defers a MID-TURN subagent completion until the re-invoc
   assert.equal(target.summary().activeAgentTasks, 0, 'count already drained (completion was mid-turn)');
   assert.equal(findStubFor(caller, targetId), undefined,
     'a mid-turn completion must NOT wake the caller at that turn_end (re-invocation turn owed)');
-  assert.equal(instances._idleHub.hasSubscriber(targetId), true,
+  assert.equal(instances._idleHub.hasSubscriber(instForSession(instances, targetId).id), true,
     'the deferred turn_end must keep the one-shot subscription armed');
 
   // Turn 2 stands in for the re-invocation turn: it starts clean (flag reset on
@@ -255,7 +259,7 @@ test('subscribe_to_idle defers a MID-TURN subagent completion until the re-invoc
   const stubs = countUserEchoes(caller,
     ev => ev.text?.includes(targetId) && ev.text?.includes('get_recent_messages'));
   assert.equal(stubs, 1, 'delivery fires exactly once, at the re-invocation turn_end');
-  assert.equal(instances._idleHub.hasSubscriber(targetId), false, 'subscription consumed on delivery');
+  assert.equal(instances._idleHub.hasSubscriber(instForSession(instances, targetId).id), false, 'subscription consumed on delivery');
 });
 
 test('subscribe_to_idle wakes at turn_end when a MID-TURN completion was consumed in-turn', async () => {
@@ -289,7 +293,7 @@ test('subscribe_to_idle wakes at turn_end when a MID-TURN completion was consume
   const stubs = countUserEchoes(caller,
     ev => ev.text?.includes(targetId) && ev.text?.includes('get_recent_messages'));
   assert.equal(stubs, 1, 'wake fires exactly once, at the consuming turn\'s end');
-  assert.equal(instances._idleHub.hasSubscriber(targetId), false, 'subscription consumed on delivery');
+  assert.equal(instances._idleHub.hasSubscriber(instForSession(instances, targetId).id), false, 'subscription consumed on delivery');
 });
 
 test('steering: caller mid-turn at delivery gets the plain stub delivered LIVE', async () => {

@@ -227,13 +227,16 @@ export function buildMcpRouter({ instances, pluginHost }) {
   const coreTools = buildTools();
 
   r.post('/', async (req, res) => {
-    // Each spawned worker registers the MCP URL with its own stable sessionId
-    // baked into the query string (see Instance.spawn). Read it here so handlers
-    // like subscribe_to_idle know which worker is calling. callerId is therefore
-    // a sessionId. Callers without the param get callerId=null and any
-    // caller-dependent tool errors with a clear message.
-    const callerId = typeof req.query.caller === 'string' && req.query.caller
+    // Each spawned worker registers the MCP URL with its own stable INSTANCE id
+    // baked into `?caller=` (see Instance.spawn). Resolve it HERE — the single
+    // boundary — to that instance's CURRENT sessionId, so `callerId` stays a valid
+    // sessionId for every downstream handler even after a `/clear` rotates the
+    // session in place (the baked instanceId never changes; its sessionId does).
+    // An absent param, or a handle that names no live instance, yields callerId=null
+    // and any caller-dependent tool errors with a clear message.
+    const callerHandle = typeof req.query.caller === 'string' && req.query.caller
       ? req.query.caller : null;
+    const callerId = instances ? instances.callerSessionId(callerHandle) : null;
     // Per-request tool composition: core tools + the plugin tools visible to
     // this caller (scoping + dynamism land in this one line; tools/list and
     // tools/call read ctx.tools unchanged). init() is memoized — after the

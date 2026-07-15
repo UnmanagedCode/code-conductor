@@ -63,19 +63,19 @@ export class OverageResumeController {
   constructor(manager, { fetchUsage = getAccountUsage } = {}) {
     this.manager = manager;
     this.fetchUsage = fetchUsage;
-    // Pending overage auto-resume DEADLINES, keyed by sessionId (survives the
-    // instanceId churn the way the idle-subscription graph does), valued by the
-    // wall-clock epoch-MS instant the resume should fire. Armed on the idle
-    // transition after an `onOverage: 'stop-resume'` soft-interrupt; the sweep
-    // POLLS usage once due and only resumes when the account is verified under the
-    // overage bar (else it reschedules). In-memory only — lost on restart (the
-    // session just stays manually resumable).
-    this.timers = new Map(); // sessionId → fireAtMs (epoch ms)
-    // Sessions with an in-flight usage-verify (a deadline that came due and is
+    // Pending overage auto-resume DEADLINES, keyed by the stable instanceId,
+    // valued by the wall-clock epoch-MS instant the resume should fire. Armed on
+    // the idle transition after an `onOverage: 'stop-resume'` soft-interrupt; the
+    // sweep POLLS usage once due and only resumes when the account is verified
+    // under the overage bar (else it reschedules). In-memory only — lost on
+    // restart (restore re-arms off the freshly-created Instance's id, see
+    // resumeRestart.js; the session otherwise stays manually resumable).
+    this.timers = new Map(); // instanceId → fireAtMs (epoch ms)
+    // Instances with an in-flight usage-verify (a deadline that came due and is
     // awaiting the fetch result). Guards the sweep from re-firing them on the next
     // tick while the await is pending.
     this._checking = new Set();
-    // sessionId → consecutive "can't confirm" fetch count (reset on any resolved
+    // instanceId → consecutive "can't confirm" fetch count (reset on any resolved
     // verify). Drives the fail-open bound.
     this._failCount = new Map();
     // Re-entrancy guard so overlapping sweep ticks can't open a second usage fetch:
@@ -118,9 +118,8 @@ export class OverageResumeController {
       ? nowMs + this._recheckMs()
       : atMs + BUFFER_MS;
     inst.autoResumeAt = Math.round(fireAtMs / 1000); // epoch secs for the badge
-    const sid = inst.sessionId;
-    this.timers.set(sid, fireAtMs); // record the wall-clock deadline
-    this._ensureSweep();            // wall-clock sweep checks it when now >= deadline
+    this.timers.set(inst.id, fireAtMs); // record the wall-clock deadline
+    this._ensureSweep();                // wall-clock sweep checks it when now >= deadline
     this.manager.emit('status', inst.summary()); // push autoResumeAt → client (badge)
   }
 
@@ -135,7 +134,7 @@ export class OverageResumeController {
     if (!Number.isFinite(fireAtMs)) return;
     inst.autoStoppedForOverage = true;
     inst.autoResumeAt = Math.round(fireAtMs / 1000); // epoch secs for the badge
-    this.timers.set(inst.sessionId, fireAtMs);
+    this.timers.set(inst.id, fireAtMs);
     this._ensureSweep();
     this.manager.emit('status', inst.summary()); // push autoResumeAt → client (badge)
   }
@@ -172,24 +171,24 @@ export class OverageResumeController {
     if (this._ticking) return;
     const now = Date.now();
     const due = [];
-    for (const [sid, fireAtMs] of [...this.timers]) {
+    for (const [id, fireAtMs] of [...this.timers]) {
       if (now < fireAtMs) continue;
-      if (this._checking.has(sid)) continue;
-      const inst = [...this.manager.byId.values()].find(i => i.sessionId === sid);
-      if (!inst) { this.timers.delete(sid); continue; } // orphaned deadline → drop
-      due.push([sid, inst]);
+      if (this._checking.has(id)) continue;
+      const inst = this.manager.byId.get(id);
+      if (!inst) { this.timers.delete(id); continue; } // orphaned deadline → drop
+      due.push([id, inst]);
     }
     if (due.length) {
       this._ticking = true;
-      for (const [sid] of due) this._checking.add(sid);
+      for (const [id] of due) this._checking.add(id);
       let usage = null;
       // ONE fetch per cycle. getAccountUsage self-guards its cache/backoff and never
       // throws, but the injected test seam might — treat any error as "can't confirm".
       try { usage = await this.fetchUsage(); } catch { usage = null; }
-      for (const [sid, inst] of due) {
-        try { this._resolveDue(inst, sid, usage); }
+      for (const [id, inst] of due) {
+        try { this._resolveDue(inst, id, usage); }
         catch { /* never let one session's teardown abort the sweep */ }
-        finally { this._checking.delete(sid); }
+        finally { this._checking.delete(id); }
       }
       this._ticking = false;
     }
@@ -199,14 +198,14 @@ export class OverageResumeController {
   // Decide what a due deadline does given the shared usage snapshot: resume (verified
   // under the bar, or failed-open), or reschedule (still over / can't-confirm). The
   // process-gone case routes to run() which emits the sole surviving auto_resume_skipped.
-  _resolveDue(inst, sid, usage) {
+  _resolveDue(inst, id, usage) {
     if (inst.proc) {
       // Still alive → usage-gate the resume.
       const over = usage == null ? null : usageOverThreshold(usage);
-      if (over === true) { this._reschedule(inst, sid); return; } // still throttled — park on
+      if (over === true) { this._reschedule(inst, id); return; } // still throttled — park on
       if (over === null) {                                        // can't confirm (null/backoff/malformed)
-        const n = (this._failCount.get(sid) ?? 0) + 1;
-        if (n < FAIL_OPEN_AFTER) { this._failCount.set(sid, n); this._reschedule(inst, sid); return; }
+        const n = (this._failCount.get(id) ?? 0) + 1;
+        if (n < FAIL_OPEN_AFTER) { this._failCount.set(id, n); this._reschedule(inst, id); return; }
         // n >= FAIL_OPEN_AFTER → fail open: resume rather than park behind a dead API.
       }
     }
@@ -214,8 +213,8 @@ export class OverageResumeController {
     // + tears down the deadline (gone → emits the sole surviving auto_resume_skipped).
     // Either way a deadline was removed, so ask the manager to lift the global lockout
     // iff no sessions remain parked.
-    this._failCount.delete(sid);
-    this.run(inst, sid);
+    this._failCount.delete(id);
+    this.run(inst, id);
     this.manager._maybeReleaseOverageLock();
   }
 
@@ -224,11 +223,11 @@ export class OverageResumeController {
   // else recheck ~1 min out. Also pushes the manager's global _overageResetsAt forward
   // so the frontend/queue lockout gate (which requires a FUTURE resetsAt) stays engaged
   // while sessions are parked — the lockout must not lift out from under an active park.
-  _reschedule(inst, sid) {
+  _reschedule(inst, id) {
     const now = Date.now();
     const atMs = Number(inst._overageResetsAt) * 1000; // epoch secs → ms
     const fireAtMs = Math.max(Number.isFinite(atMs) ? atMs : 0, now + this._recheckMs());
-    this.timers.set(sid, fireAtMs);
+    this.timers.set(id, fireAtMs);
     inst.autoResumeAt = Math.round(fireAtMs / 1000); // badge reflects the next recheck
     this._ensureSweep();
     if (this.manager._overageResumeMode) this.manager._overageResetsAt = inst.autoResumeAt;
@@ -238,7 +237,7 @@ export class OverageResumeController {
   // The body the sweep fires (extracted so it can also be triggered on-demand
   // via fireNow). Resumes the still-live session, or tears down with a notice
   // if the process vanished. No respawn, ever.
-  run(inst, sid) {
+  run(inst, id) {
     if (inst.proc) {
       // Deliver any messages the user queued during the wait window as ONE
       // combined prompt alongside the resume text. Snapshot + empty the queue
@@ -254,7 +253,7 @@ export class OverageResumeController {
       inst._overageQueue = [];
       const attachments = queue.flatMap(e => Array.isArray(e.attachments) ? e.attachments : []);
       const text = buildCombinedResumeText(queue, inst._overageWasStopped);
-      this.cancel(sid);
+      this.cancel(id);
       if (queue.length) {
         inst._emitUi({ kind: 'system', subtype: 'auto_resume', data: { count: queue.length } });
       }
@@ -262,7 +261,7 @@ export class OverageResumeController {
     } else {
       // Process gone (crashed / killed externally) — no send means no
       // user_prompt, so tear down explicitly. Keep it simple: no respawn.
-      this.cancel(sid);
+      this.cancel(id);
       inst._emitUi({ kind: 'system', subtype: 'auto_resume_skipped',
         data: { reason: 'session no longer running' } });
     }
@@ -275,35 +274,38 @@ export class OverageResumeController {
   // resolve as the sweep (fire-and-forget the async fetch; the resume/reschedule lands
   // asynchronously — tests waitFor the outcome). Returns false if nothing was armed
   // (or the session vanished); true if a due deadline was picked up.
-  fireNow(sessionId) {
-    if (!this.timers.has(sessionId)) return false;
-    const inst = [...this.manager.byId.values()].find(i => i.sessionId === sessionId);
-    if (!inst) { this.timers.delete(sessionId); this._maybeStopSweep(); return false; }
-    if (this._checking.has(sessionId)) return true; // already resolving
-    this._checking.add(sessionId);
-    this.timers.delete(sessionId);
+  fireNow(instanceId) {
+    if (!this.timers.has(instanceId)) return false;
+    const inst = this.manager.byId.get(instanceId);
+    if (!inst) { this.timers.delete(instanceId); this._maybeStopSweep(); return false; }
+    if (this._checking.has(instanceId)) return true; // already resolving
+    this._checking.add(instanceId);
+    this.timers.delete(instanceId);
     this._maybeStopSweep();
     (async () => {
       let usage = null;
       try { usage = await this.fetchUsage(); } catch { usage = null; }
-      try { this._resolveDue(inst, sessionId, usage); }
+      try { this._resolveDue(inst, instanceId, usage); }
       catch { /* swallow — mirror the sweep's per-session isolation */ }
-      finally { this._checking.delete(sessionId); }
+      finally { this._checking.delete(instanceId); }
     })();
     return true;
   }
 
   // Cancel a pending overage auto-resume deadline and clear the instance flags.
   // Idempotent. Called on user takeover, manual respawn/kill/remove, temp-session
-  // exit, shutdown, and once the deadline itself fires.
-  cancel(sessionId) {
-    this._failCount.delete(sessionId);
-    if (this.timers.has(sessionId)) {
-      this.timers.delete(sessionId);
+  // exit, shutdown, and once the deadline itself fires. The flag-clear is skipped
+  // when the instance is already gone from byId (e.g. remove() deletes it before
+  // cancelling) — there is nothing left to update, and the deadline delete by
+  // instanceId still runs.
+  cancel(instanceId) {
+    this._failCount.delete(instanceId);
+    if (this.timers.has(instanceId)) {
+      this.timers.delete(instanceId);
       this._maybeStopSweep();
     }
-    for (const inst of this.manager.byId.values()) {
-      if (inst.sessionId !== sessionId) continue;
+    const inst = this.manager.byId.get(instanceId);
+    if (inst) {
       const had = inst.autoResumeAt !== null || inst.autoStoppedForOverage ||
         inst._overageQueue.length > 0;
       inst.autoResumeAt = null;

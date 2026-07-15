@@ -122,7 +122,7 @@ test('Condition 2: worker turn_end suppressed when a conductor is subscribed to 
     'worker turn_notification must be suppressed when a conductor is subscribed to it');
 
   // Subscription was consumed; confirm state is clean.
-  assert.equal(instances._idleHub.hasSubscriber(workSid), false);
+  assert.equal(instances._idleHub.hasSubscriber(workId), false);
 
   instances.byId.delete(condId);
   instances.byId.delete(workId);

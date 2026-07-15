@@ -366,6 +366,34 @@ export function buildTools() {
       annotations: { idempotentHint: true },
     },
     {
+      name: 'compact_session',
+      description:
+        'Compact your OWN session. Hand off a self-authored summary; code-conductor then clears your ' +
+        'accumulated context in place — SAME session process, fresh conversation (a managed /clear, not a ' +
+        'restart) — and seeds the cleared session with your summary as its first turn. Use this when context ' +
+        'from finished work no longer helps newer work and is just costing tokens. ' +
+        'The clear happens when your CURRENT turn ends: after calling this, end your turn WITHOUT starting new ' +
+        'work — anything you do after this call is discarded by the clear. Your summary is the ONLY thing ' +
+        'carried across, so write everything the fresh session needs. Caller identity is taken from the MCP ' +
+        'URL: this always acts on the calling session and only works for a code-conductor-managed instance. ' +
+        'It stays valid across repeated self-compaction, so a long-lived session can compact more than once.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          summary: {
+            type: 'string',
+            minLength: 1,
+            description:
+              'The handoff summary, seeded as the first user turn of the cleared session. Write it as a note ' +
+              'to your future self: the goal, key decisions and constraints, current state, and the exact next ' +
+              'steps. Everything not captured here is lost when the context clears.',
+          },
+        },
+        required: ['summary'],
+      },
+      handler: h.compactSession,
+    },
+    {
       name: 'interrupt_turn',
       description: 'Stop the current turn of a running instance. Default (soft) injects a hidden steering message asking the model to stop work and end its turn gracefully. Pass force:true for a hard control_request abort that severs the turn and discards partial work.',
       inputSchema: {

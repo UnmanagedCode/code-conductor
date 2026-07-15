@@ -35,8 +35,13 @@ async function addPlugin(boot, project, manifestPatch) {
 }
 
 let rpcId = 0;
+// Set per test. `?caller=` now carries the stable instanceId (what Instance.spawn
+// bakes); translate a caller sessionId to it. A bogus/stale caller passes through
+// unchanged (still unresolvable server-side → tools stay global).
+let mgr = null;
 async function rpc(baseUrl, method, params, caller) {
-  const url = baseUrl + '/mcp' + (caller ? `?caller=${encodeURIComponent(caller)}` : '');
+  const handle = caller ? (mgr?.liveForSession(caller)?.id ?? caller) : null;
+  const url = baseUrl + '/mcp' + (handle ? `?caller=${encodeURIComponent(handle)}` : '');
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -58,6 +63,7 @@ async function spawnWorker(boot, body) {
 
 test('visibility: every enabled plugin\'s tools are global — conductor, any-project workers, stale callers', async () => {
   const boot = await setup();
+  mgr = boot.instances;
   try {
     // A manifest `scope` field is accepted (compat) but inert.
     await addPlugin(boot, 'globalplug', { id: 'globalplug', name: 'Global', mcp: { scope: 'global' } });
@@ -103,6 +109,7 @@ test('visibility: every enabled plugin\'s tools are global — conductor, any-pr
 
 test('forwarding + pinned child contract: result, tool-error, transport-error, args gate, lazy restart', async () => {
   const boot = await setup();
+  mgr = boot.instances;
   try {
     // First call lazy-starts the child (plugin was never started).
     const ok = await callTool(boot.baseUrl, 'fake-plugin__echo', { message: 'hi' });
@@ -143,6 +150,7 @@ test('forwarding + pinned child contract: result, tool-error, transport-error, a
 
 test('timeout: a slow tool aborts at the manifest timeoutMs', async () => {
   const boot = await setup();
+  mgr = boot.instances;
   try {
     await addPlugin(boot, 'slowplug', { id: 'slowplug', name: 'Slow', mcp: { timeoutMs: 1000 } });
     const t0 = Date.now();
@@ -156,6 +164,7 @@ test('timeout: a slow tool aborts at the manifest timeoutMs', async () => {
 
 test('a worker spawned in a worktree sees its parent project\'s plugin tools', async () => {
   const boot = await setup();
+  mgr = boot.instances;
   try {
     const dir = path.join(boot.projectsRoot, 'fakeplug');
     await run('git', ['-C', dir, 'init', '-q']);
