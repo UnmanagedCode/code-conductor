@@ -68,14 +68,22 @@ export function isKnownFamily(family) {
   return MODEL_FAMILIES.some(f => f.family === family);
 }
 
+// --- Backends (providers) -----------------------------------------------
+// The two provider backends a capability tier can bind to. A tier binding is
+// {kind, model}: for 'claude' the model is a MODEL_FAMILIES version id; for
+// 'ollama' it's an Ollama tag (from Settings → Models custom models). This is
+// the single source of truth for the Settings backend selector.
+export const PROVIDERS = [
+  { kind: 'claude', label: 'Anthropic (Claude Code)' },
+  { kind: 'ollama', label: 'Ollama' },
+];
+
 // --- Capability tiers ---------------------------------------------------
 // Fixed, data-driven set of abstract capability tiers exposed to spawn
 // callers (UI pickers + MCP `spawn_instance`). Each tier is a bindable slot
-// that maps (via Settings, see appSettings.js `getTierBackend`) to one
-// backend from MODEL_FAMILIES above — today always a Claude family, but the
-// binding is looked up by id rather than hardcoded, so a future non-Claude
-// backend can slot in without touching tier resolution. Renaming a tier, or
-// changing the tier count, is a one-line change to this array.
+// that maps (via Settings, see appSettings.js `getTierBackend`) to a
+// {kind, model} pair. Renaming a tier, or changing the tier count, is a
+// one-line change to this array.
 export const CAPABILITY_TIERS = [
   { tier: 'fast',      label: 'Fast' },
   { tier: 'balanced',  label: 'Balanced' },
@@ -83,8 +91,14 @@ export const CAPABILITY_TIERS = [
   { tier: 'frontier',  label: 'Frontier' },
 ];
 
-// Default tier → backend binding (backend = a MODEL_FAMILIES key).
-export const DEFAULT_TIER_BACKEND = { fast: 'haiku', balanced: 'sonnet', powerful: 'opus', frontier: 'fable' };
+// Default tier → {kind, model} binding — each tier's Claude family default
+// version.
+export const DEFAULT_TIER_BACKEND = {
+  fast:     { kind: 'claude', model: DEFAULT_VERSIONS.haiku },
+  balanced: { kind: 'claude', model: DEFAULT_VERSIONS.sonnet },
+  powerful: { kind: 'claude', model: DEFAULT_VERSIONS.opus },
+  frontier: { kind: 'claude', model: DEFAULT_VERSIONS.fable },
+};
 
 export function isKnownTier(tier) {
   return CAPABILITY_TIERS.some(t => t.tier === tier);
@@ -95,30 +109,25 @@ export function isKnownVersion(family, id) {
   return !!f && f.versions.some(v => v.id === id);
 }
 
+// A model id is a known Claude version if any family lists it (family-agnostic
+// — a tier binding stores a concrete version id, not a family).
+export function isKnownClaudeModel(id) {
+  return MODEL_FAMILIES.some(f => f.versions.some(v => v.id === id));
+}
+
 export function defaultVersion(family) {
   return MODEL_FAMILIES.find(f => f.family === family)?.default ?? null;
 }
 
-// Namespace prefix for custom (Ollama-backed) backend ids stored in
-// Settings (`models.customBackends`) and bound to a tier via
-// `tierBackend[tier]`. The prefix keeps custom ids collision-proof against
-// Claude family keys and makes every discriminator a simple prefix test.
-export const OLLAMA_ID_PREFIX = 'ollama:';
-
-export function isOllamaBackendId(id) {
-  return typeof id === 'string' && id.startsWith(OLLAMA_ID_PREFIX);
-}
-
-// Infer the family from a bare or suffixed model id, by prefix. Returns the
-// 'ollama' sentinel for a custom-backend id (so cross-kind comparisons work);
-// null for anything genuinely unrecognized.
+// Infer the Claude family from a bare or suffixed model id, by prefix. Returns
+// null for anything that isn't a Claude id (an Ollama tag included) — which is
+// exactly what makes canonicalizeModel a no-op for non-Claude models.
 export function familyOf(modelId) {
   if (typeof modelId !== 'string') return null;
   if (modelId.startsWith('claude-fable')) return 'fable';
   if (modelId.startsWith('claude-opus')) return 'opus';
   if (modelId.startsWith('claude-sonnet')) return 'sonnet';
   if (modelId.startsWith('claude-haiku')) return 'haiku';
-  if (modelId.startsWith(OLLAMA_ID_PREFIX)) return 'ollama';
   return null;
 }
 

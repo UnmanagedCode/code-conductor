@@ -33,9 +33,9 @@ export function installSettings({
   const smCustomListEl = document.getElementById('sm-custom-list');
   const smCustomLabelEl = document.getElementById('sm-custom-label');
   const smCustomModelEl = document.getElementById('sm-custom-model');
-  const smCustomHostEl = document.getElementById('sm-custom-host');
   const smCustomAddEl = document.getElementById('sm-custom-add');
   const smCustomStatusEl = document.getElementById('sm-custom-status');
+  let lastModelsData = null;
   const smOverageEl = document.getElementById('sm-overage');
   const smOverageBtns = [...(smOverageEl?.querySelectorAll('[data-overage]') || [])];
   const smCompactWindowEnabledEl = document.getElementById('sm-compact-window-enabled');
@@ -330,38 +330,36 @@ export function installSettings({
   }
 
   function renderModels(data) {
+    lastModelsData = data; // latest catalog, read by the provider-switch handler
     const tiers = data.tiers || [];
-    const backends = data.backends || [];
-    const customBackends = data.customBackends || [];
-    const activeVersions = data.activeVersions || {};
-    const tierBackend = data.tierBackend || {};
+    const providers = data.providers || [{ kind: 'claude', label: 'Anthropic (Claude Code)' }, { kind: 'ollama', label: 'Ollama' }];
+    const backends = data.backends || []; // Claude version catalog (MODEL_FAMILIES)
+    const customBackends = data.customBackends || []; // [{label, model}]
+    const tierBackend = data.tierBackend || {}; // {tier: {kind, model}}
     const sonnetWindow = data.sonnetContextWindow ?? '1m';
     const enabledTiers = data.enabledTiers ?? {};
     const defaultTier = data.defaultSpawnTier ?? 'powerful';
     const enabledCount = tiers.filter(t => enabledTiers[t.tier] !== false).length;
 
-    const backendFor = (family) => backends.find(b => b.family === family);
-    const customFor = (id) => customBackends.find(c => c.id === id);
+    // Flattened Claude version catalog + a label lookup.
+    const claudeVersions = backends.flatMap(b => b.versions.map(v => ({ ...v, family: b.family })));
+    const versionLabel = (id) => claudeVersions.find(v => v.id === id)?.label || id;
+    const isSonnetFixed = (id) => !!claudeVersions.find(v => v.id === id && v.fixedWindow);
+    const providerLabel = (kind) => providers.find(p => p.kind === kind)?.label || kind;
+    const bindingFor = (tier) => tierBackend[tier] || { kind: 'claude', model: '' };
+    function describeBinding(b) {
+      if (b.kind === 'ollama') return `Ollama — ${b.model}`;
+      let extra = '';
+      if (b.model.startsWith('claude-sonnet')) extra = ` — ${isSonnetFixed(b.model) || sonnetWindow !== '200k' ? '1M' : '200k'}`;
+      return `${versionLabel(b.model)}${extra}`;
+    }
 
     renderCustomList(customBackends);
 
     if (smStatusEl) {
       smStatusEl.innerHTML = tiers.map(t => {
         const isDefault = t.tier === defaultTier;
-        const custom = customFor(tierBackend[t.tier]);
-        if (custom) {
-          return `${t.label}: <strong>${escapeHtml(custom.label)} — ${escapeHtml(custom.model)}</strong>${isDefault ? ' <em>(default)</em>' : ''}`;
-        }
-        const backend = backendFor(tierBackend[t.tier]);
-        if (!backend) return `${t.label}: <strong>—</strong>`;
-        const vLabel = labelFor(backend, activeVersions[backend.family]);
-        let extra = '';
-        if (backend.family === 'sonnet') {
-          const activeEntry = backend.versions.find(v => v.id === activeVersions[backend.family]);
-          const win = activeEntry?.fixedWindow || sonnetWindow;
-          extra = ` — ${win === '200k' ? '200k' : '1M'}`;
-        }
-        return `${t.label}: <strong>${backend.label} ${vLabel}${extra}</strong>${isDefault ? ' <em>(default)</em>' : ''}`;
+        return `${t.label}: <strong>${escapeHtml(describeBinding(bindingFor(t.tier)))}</strong>${isDefault ? ' <em>(default)</em>' : ''}`;
       }).join(' · ');
     }
 
@@ -370,10 +368,7 @@ export function installSettings({
       const isEnabled = enabledTiers[t.tier] !== false;
       const isDefault = t.tier === defaultTier;
       const isLastEnabled = isEnabled && enabledCount === 1;
-      const boundKey = tierBackend[t.tier];
-      const custom = customFor(boundKey);
-      const backend = custom ? null : (backendFor(boundKey) || backends[0]);
-      if (!custom && !backend) continue;
+      const b = bindingFor(t.tier); // {kind, model}
 
       const li = document.createElement('li');
       li.className = 'sm-family-row' + (isEnabled ? '' : ' sm-family-row--disabled');
@@ -394,93 +389,66 @@ export function installSettings({
       labelEl.textContent = t.label;
       li.appendChild(labelEl);
 
-      // Column 3: backend select — Claude families followed by custom (Ollama)
-      // backends. Option value = family key OR custom-backend id.
+      // Column 3: backend (provider) select — Anthropic (Claude Code) / Ollama.
       const backendSel = document.createElement('select');
       backendSel.className = 'sm-backend';
       backendSel.dataset.tier = t.tier;
       backendSel.disabled = !isEnabled;
-      for (const b of backends) {
+      for (const p of providers) {
         const opt = document.createElement('option');
-        opt.value = b.family;
-        opt.textContent = b.label;
-        if (!custom && b.family === backend.family) opt.selected = true;
+        opt.value = p.kind;
+        opt.textContent = p.label;
+        if (p.kind === b.kind) opt.selected = true;
         backendSel.appendChild(opt);
       }
-      for (const c of customBackends) {
-        const opt = document.createElement('option');
-        opt.value = c.id;
-        opt.textContent = `${c.label} (Ollama)`;
-        if (custom && c.id === custom.id) opt.selected = true;
-        backendSel.appendChild(opt);
-      }
-      backendSel.addEventListener('change', () => onPickTierBackend(t.tier, backendSel.value));
+      backendSel.addEventListener('change', () => onPickBackendKind(t.tier, backendSel.value));
       li.appendChild(backendSel);
 
-      // Column 4: version select. A custom (Ollama) backend has no versions and
-      // no context-window choice — render a single disabled option showing the
-      // tag, so the column stays aligned.
-      if (custom) {
-        const sel = document.createElement('select');
-        sel.className = 'sm-version';
-        sel.disabled = true;
-        const opt = document.createElement('option');
-        opt.textContent = custom.model;
-        sel.appendChild(opt);
-        li.appendChild(sel);
-        // Column 5: default radio
-        const radio = document.createElement('input');
-        radio.type = 'radio';
-        radio.name = 'sm-default-tier';
-        radio.className = 'sm-default-radio';
-        radio.value = t.tier;
-        radio.checked = isDefault;
-        radio.disabled = !isEnabled;
-        radio.addEventListener('change', () => { if (radio.checked) onPickDefaultTier(t.tier); });
-        li.appendChild(radio);
-        smListEl.appendChild(li);
-        continue;
-      }
+      // Column 4: model select, scoped to the row's backend kind.
       const sel = document.createElement('select');
       sel.className = 'sm-version';
-      sel.dataset.family = backend.family;
-      sel.disabled = !isEnabled || backend.versions.length < 2;
-      if (backend.family === 'sonnet') {
-        for (const v of backend.versions) {
-          if (v.fixedWindow) {
-            // Fixed-window version (Sonnet 5, no 200k build) — plain single
-            // option, same shape as the generic non-Sonnet branch below.
+      sel.disabled = !isEnabled;
+      if (b.kind === 'ollama') {
+        if (!customBackends.length) {
+          const opt = document.createElement('option');
+          opt.textContent = '(add a model below)';
+          sel.appendChild(opt);
+          sel.disabled = true;
+        } else {
+          for (const c of customBackends) {
             const opt = document.createElement('option');
-            opt.value = v.id;
-            opt.textContent = v.label;
-            if (v.id === activeVersions[backend.family]) opt.selected = true;
+            opt.value = c.model;
+            opt.textContent = `${c.label} — ${c.model}`;
+            if (c.model === b.model) opt.selected = true;
             sel.appendChild(opt);
-          } else {
-            // Preference-driven version (Sonnet 4.x) — existing 200k/1m sub-choice.
+          }
+          sel.addEventListener('change', () => onPickOllamaModel(t.tier, sel.value));
+        }
+      } else {
+        // Claude version list; Sonnet 4.x expands to 200k/1M sub-entries (which
+        // also set the global sonnetContextWindow), matching the window policy.
+        for (const v of claudeVersions) {
+          if (v.family === 'sonnet' && !v.fixedWindow) {
             for (const w of ['200k', '1m']) {
               const opt = document.createElement('option');
               opt.value = v.id;
               opt.dataset.window = w;
               opt.textContent = `${v.label} — ${w === '200k' ? '200k' : '1M'}`;
-              if (v.id === activeVersions[backend.family] && w === sonnetWindow) opt.selected = true;
+              if (v.id === b.model && w === sonnetWindow) opt.selected = true;
               sel.appendChild(opt);
             }
+          } else {
+            const opt = document.createElement('option');
+            opt.value = v.id;
+            opt.textContent = v.label;
+            if (v.id === b.model) opt.selected = true;
+            sel.appendChild(opt);
           }
         }
         sel.addEventListener('change', () => {
           const opt = sel.options[sel.selectedIndex];
-          if (opt.dataset.window) onPickSonnetVersionAndWindow(opt.value, opt.dataset.window);
-          else onPickVersion('sonnet', opt.value);
+          onPickClaudeModel(t.tier, opt.value, opt.dataset.window || null);
         });
-      } else {
-        for (const v of backend.versions) {
-          const opt = document.createElement('option');
-          opt.value = v.id;
-          opt.textContent = v.label;
-          if (v.id === activeVersions[backend.family]) opt.selected = true;
-          sel.appendChild(opt);
-        }
-        sel.addEventListener('change', () => onPickVersion(backend.family, sel.value));
       }
       li.appendChild(sel);
 
@@ -523,16 +491,17 @@ export function installSettings({
     }
   }
 
-  function labelFor(backend, id) {
-    return backend.versions.find(v => v.id === id)?.label || id;
-  }
 
-  async function onPickVersion(backend, version) {
+  // Persist a tier binding {kind, model} (and, for a Sonnet 4.x pick, the global
+  // context-window preference) in one /prefs POST.
+  async function saveTierBinding(tier, backend, sonnetContextWindow) {
     try {
-      const r = await fetch('/api/settings/models', {
+      const body = { tierBackend: { tier, backend } };
+      if (sonnetContextWindow) body.sonnetContextWindow = sonnetContextWindow;
+      const r = await fetch('/api/settings/models/prefs', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ backend, version }),
+        body: JSON.stringify(body),
       });
       const data = await r.json();
       if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
@@ -543,26 +512,26 @@ export function installSettings({
     }
   }
 
-  async function onPickSonnetVersionAndWindow(version, window) {
-    try {
-      const r1 = await fetch('/api/settings/models', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ backend: 'sonnet', version }),
-      });
-      if (!r1.ok) { const d = await r1.json().catch(() => ({})); throw new Error(d.error || `HTTP ${r1.status}`); }
-      const r2 = await fetch('/api/settings/models/prefs', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ sonnetContextWindow: window }),
-      });
-      const data = await r2.json();
-      if (!r2.ok) throw new Error(data.error || `HTTP ${r2.status}`);
-      renderModels(data);
-      onModelsChange?.(data);
-    } catch (e) {
-      if (smStatusEl) smStatusEl.textContent = `Switch failed: ${e.message || e}`;
+  // Switching a tier's provider: pick a sensible default model for the new kind
+  // (Sonnet default for Claude; the first custom model for Ollama).
+  function onPickBackendKind(tier, kind) {
+    if (kind === 'ollama') {
+      const first = lastModelsData?.customBackends?.[0];
+      if (!first) { if (smStatusEl) smStatusEl.textContent = 'Add an Ollama model below first.'; renderModels(lastModelsData); return; }
+      return saveTierBinding(tier, { kind: 'ollama', model: first.model });
     }
+    const backends = lastModelsData?.backends || [];
+    const sonnet = backends.find(b => b.family === 'sonnet') || backends[0];
+    const model = sonnet?.default || backends[0]?.versions?.[0]?.id;
+    return saveTierBinding(tier, { kind: 'claude', model });
+  }
+
+  function onPickClaudeModel(tier, model, window) {
+    return saveTierBinding(tier, { kind: 'claude', model }, window || undefined);
+  }
+
+  function onPickOllamaModel(tier, model) {
+    return saveTierBinding(tier, { kind: 'ollama', model });
   }
 
   // Staged, not saved: a click only updates the local pressed state and marks the
@@ -606,21 +575,6 @@ export function installSettings({
     }
   }
 
-  async function onPickTierBackend(tier, backend) {
-    try {
-      const r = await fetch('/api/settings/models/prefs', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ tierBackend: { tier, backend } }),
-      });
-      const data = await r.json();
-      if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
-      renderModels(data);
-      onModelsChange?.(data);
-    } catch (e) {
-      if (smStatusEl) smStatusEl.textContent = `Update failed: ${e.message || e}`;
-    }
-  }
 
   function escapeHtml(s) {
     return String(s ?? '').replace(/[&<>"']/g, c => (
@@ -643,13 +597,13 @@ export function installSettings({
       li.className = 'sm-custom-item';
       const meta = document.createElement('span');
       meta.className = 'sm-custom-meta';
-      meta.textContent = `${c.label} — ${c.model}${c.host ? ` @ ${c.host}` : ''}`;
+      meta.textContent = `${c.label} — ${c.model}`;
       li.appendChild(meta);
       const rm = document.createElement('button');
       rm.type = 'button';
       rm.className = 'btn sm-custom-remove';
       rm.textContent = 'Remove';
-      rm.addEventListener('click', () => onRemoveCustomBackend(c.id));
+      rm.addEventListener('click', () => onRemoveCustomBackend(c.model));
       li.appendChild(rm);
       smCustomListEl.appendChild(li);
     }
@@ -658,7 +612,6 @@ export function installSettings({
   async function onAddCustomBackend() {
     const label = smCustomLabelEl?.value?.trim();
     const model = smCustomModelEl?.value?.trim();
-    const host = smCustomHostEl?.value?.trim();
     if (!label || !model) {
       if (smCustomStatusEl) smCustomStatusEl.textContent = 'Label and Ollama tag are required.';
       return;
@@ -669,13 +622,12 @@ export function installSettings({
       const r = await fetch('/api/settings/models/custom', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ label, model, host }),
+        body: JSON.stringify({ label, model }),
       });
       const data = await r.json();
       if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
       if (smCustomLabelEl) smCustomLabelEl.value = '';
       if (smCustomModelEl) smCustomModelEl.value = '';
-      if (smCustomHostEl) smCustomHostEl.value = '';
       if (smCustomStatusEl) smCustomStatusEl.textContent = 'Added.';
       renderModels(data);
       onModelsChange?.(data);
@@ -686,9 +638,10 @@ export function installSettings({
     }
   }
 
-  async function onRemoveCustomBackend(id) {
+  // Remove by tag (the identity). The tag can contain ':' — encodeURIComponent.
+  async function onRemoveCustomBackend(tag) {
     try {
-      const r = await fetch(`/api/settings/models/custom/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      const r = await fetch(`/api/settings/models/custom/${encodeURIComponent(tag)}`, { method: 'DELETE' });
       const data = await r.json();
       if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
       renderModels(data);

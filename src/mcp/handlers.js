@@ -34,8 +34,8 @@ import { buildApprovePrompt, buildRejectPrompt } from '../planApproval.js';
 import { formatUserQuestionAnswers } from '../../public/userQuestionAnswers.js';
 import { getCatalog as getProjectConventionsCatalog, composeProjectConventionsBlock, composeProjectScaffold } from '../projectConventions.js';
 import { getCatalog as getConductModulesCatalog, getSelection as getConductSelection } from '../conductModules.js';
-import { isKnownFamily, isKnownTier, defaultVersion } from '../modelVersions.js';
-import { getModelVersion, getTierBackend, isKnownCustomBackend } from '../appSettings.js';
+import { isKnownFamily, isKnownTier, defaultVersion, familyOf } from '../modelVersions.js';
+import { getTierBackend, isKnownOllamaModel } from '../appSettings.js';
 import { textPayload } from './content.js';
 import { pageInstanceEvents } from '../eventArchive.js';
 import { parseNumstat, parseNameStatus, indexDiffLines, paginateDiff } from './diffPaging.js';
@@ -259,20 +259,31 @@ export async function spawnInstance(args, { instances, callerId }) {
   // callerId is the conductor's stable sessionId (?caller=). Resolve it to the
   // conductor's live instanceId so callerInstanceId stays an instanceId.
   const callerInst = callerId ? instances.liveForSession(callerId) : null;
-  // Resolve a capability tier (fast/balanced/powerful/frontier) to its bound
-  // backend's configured version. A legacy family alias (opus/sonnet/haiku/
-  // fable) resolves directly against that backend instead, independent of
-  // any tier→backend rebinding — existing callers keep exact pre-tier
-  // behavior even if a tier gets rebound later. Full model ids pass through
-  // unchanged.
+  // Resolve `args.model` to a concrete {model, backendKind} pair:
+  //   - a capability tier (fast/balanced/powerful/frontier) → its bound
+  //     {kind, model} (a Claude version id, or an Ollama tag);
+  //   - a legacy family alias (opus/sonnet/haiku/fable) → that family's default
+  //     Claude version, independent of any tier binding;
+  //   - a known Ollama tag passed directly → {kind:'ollama'} (robustness);
+  //   - a Claude model id (claude-…, incl. future ones) → pass-through claude;
+  //   - anything else → reject, rather than silently spawn a broken claude.
   let model = args.model;
+  let backendKind = 'claude';
   if (model && isKnownTier(model)) {
-    const backend = getTierBackend(model);
-    // A custom (Ollama-backed) backend id has no Claude version — pass it
-    // through unchanged; _doCreate resolves it to the ollama tag + host.
-    model = isKnownCustomBackend(backend) ? backend : (getModelVersion(backend) ?? defaultVersion(backend));
+    const binding = getTierBackend(model); // {kind, model}
+    backendKind = binding.kind;
+    model = binding.model;
   } else if (model && isKnownFamily(model)) {
-    model = getModelVersion(model) ?? defaultVersion(model);
+    model = defaultVersion(model);
+  } else if (model && isKnownOllamaModel(model)) {
+    backendKind = 'ollama';
+  } else if (model && !familyOf(model)) {
+    // A non-empty model that is not a tier, family alias, known Ollama tag, or
+    // Claude id — refuse instead of resolving to a broken bare-claude spawn.
+    throw Object.assign(
+      new Error(`unknown model '${model}' — pass a tier (fast/balanced/powerful/frontier), a Claude model id, or a configured Ollama tag`),
+      { statusCode: 400, code: 'BAD_MODEL' },
+    );
   }
   // createWorktree:true → create a fresh worktree (passed to create() as the
   // boolean `true`); worktree:"<name>" → attach to an existing one.
@@ -285,6 +296,7 @@ export async function spawnInstance(args, { instances, callerId }) {
     effort: args.effort,
     thinking: args.thinking,
     model,
+    backendKind,
     resume: args.resume,
     worktree,
     // Conductor workers default to temp (disposable). Unlike the UI's temp

@@ -1,144 +1,84 @@
-// Client-side cache + resolver for the configurable model catalog
-// (Settings → Models). The two spawn pickers (Conduct, new-instance dialog)
-// carry only a `tier` marker (fast/balanced/powerful/frontier); the tier
-// resolves to a backend (a Claude family) via the tier→backend binding, then
-// to a concrete base version id via the user's per-backend setting — both
-// fetched once at boot and refreshed when the Settings page changes either.
+// Client-side cache + resolver for the model catalog (Settings → Models). The
+// spawn pickers carry only a `tier` (fast/balanced/powerful/frontier); a tier
+// resolves via its {kind, model} binding to the spawn args {model, backendKind}
+// — kind 'claude' (model = a MODEL_FAMILIES version id) or 'ollama' (model = an
+// Ollama tag). Catalog fetched once at boot, refreshed on Settings changes.
 //
-// Context-window policy (mirrors canonicalizeModel in src/modelVersions.js):
-//   Opus  → 1M bare (CLI native default)
-//   Haiku → 200k bare (no 1M build)
-//   Sonnet → per-version: Sonnet 5 has no 200k build, so it's pinned to 1M
-//            (fixedWindow in the catalog); Sonnet 4.x has both builds and
-//            remains user-selectable via Settings → Models, persisted
-//            server-side so all spawn paths and resume inherit it.
-// The server re-derives the same window on resume using the stored preference.
+// Sonnet context-window policy (mirrors canonicalizeModel in
+// src/modelVersions.js): Sonnet 5 is pinned to 1M (fixedWindow); Sonnet 4.x
+// obeys the global sonnetContextWindow preference; Opus/Fable 1M, Haiku 200k.
 
-// Minimal pre-fetch fallback (one id per backend — already the floor). The
-// server ships the authoritative catalog in /api/settings/models, which
-// overwrites activeVersions via setActiveVersions() on every successful fetch;
-// this only seeds resolveSpawnModel() in the brief window before the boot fetch
-// resolves, so an early spawn never sends an empty model id.
-export const DEFAULT_VERSIONS = {
+// Pre-fetch fallback version ids (one per family) — only used to seed the
+// default tier bindings before the boot fetch resolves.
+const DEFAULT_VERSIONS = {
   fable: 'claude-fable-5',
   sonnet: 'claude-sonnet-5',
   opus: 'claude-opus-4-8',
   haiku: 'claude-haiku-4-5',
 };
 
-// Minimal pre-fetch fallback for the tier layer — mirrors CAPABILITY_TIERS /
-// DEFAULT_TIER_BACKEND in src/modelVersions.js. Overwritten by the
-// authoritative catalog in loadModelVersions() on every successful fetch.
-const DEFAULT_TIER_BACKEND = { fast: 'haiku', balanced: 'sonnet', powerful: 'opus', frontier: 'fable' };
+// Pre-fetch fallback tier→{kind,model} bindings (mirrors DEFAULT_TIER_BACKEND in
+// src/modelVersions.js). Overwritten by the shipped catalog at boot.
+const DEFAULT_TIER_BACKEND = {
+  fast:     { kind: 'claude', model: DEFAULT_VERSIONS.haiku },
+  balanced: { kind: 'claude', model: DEFAULT_VERSIONS.sonnet },
+  powerful: { kind: 'claude', model: DEFAULT_VERSIONS.opus },
+  frontier: { kind: 'claude', model: DEFAULT_VERSIONS.fable },
+};
 const DEFAULT_TIER_LABELS = { fast: 'Fast', balanced: 'Balanced', powerful: 'Powerful', frontier: 'Frontier' };
 
-let activeVersions = { ...DEFAULT_VERSIONS };
 let activeSonnetWindow = '1m';
 let activeTierEnabled = { fast: true, balanced: true, powerful: true, frontier: true };
 let activeDefaultSpawnTier = 'powerful';
 let activeTierBackend = { ...DEFAULT_TIER_BACKEND };
-// Minimal pre-fetch fallback mirroring the `fixedWindow` flag on
-// claude-sonnet-5 in MODEL_FAMILIES (src/modelVersions.js). Overwritten by
-// the authoritative catalog in loadModelVersions() on every successful
-// fetch, so this only matters in the brief window before boot resolves.
 let sonnetFixedWindowByVersion = { 'claude-sonnet-5': '1m' };
-// Tier enum/order + labels, sourced from the shipped catalog (data.tiers).
-// Seeded non-empty from DEFAULT_TIER_BACKEND keys.
 let tierList = Object.keys(DEFAULT_TIER_BACKEND);
 let tierLabels = { ...DEFAULT_TIER_LABELS };
+let providers = [{ kind: 'claude', label: 'Anthropic (Claude Code)' }, { kind: 'ollama', label: 'Ollama' }];
+let customBackends = []; // [{label, model}]
 
-export function getTierList() {
-  return tierList;
-}
+export function getTierList() { return tierList; }
+export function getTierLabel(tier) { return tierLabels[tier] || tier; }
+export function getProviders() { return providers; }
+export function getCustomBackends() { return customBackends; }
+export function setCustomBackends(list) { customBackends = Array.isArray(list) ? list : []; return customBackends; }
 
-export function getTierLabel(tier) {
-  return tierLabels[tier] || tier;
-}
-
-// Namespace prefix for custom (Ollama-backed) backend ids. Mirrors
-// OLLAMA_ID_PREFIX in src/modelVersions.js.
-export const OLLAMA_ID_PREFIX = 'ollama:';
-
-export function isCustomBackendId(id) {
-  return typeof id === 'string' && id.startsWith(OLLAMA_ID_PREFIX);
-}
-
-// Infer the backend from a bare or suffixed model id, by prefix. Mirrors
-// familyOf() in src/modelVersions.js — duplicated client-side since the client
-// only ever receives the catalog data, not the server module itself. Returns
-// the 'ollama' sentinel for a custom-backend id; null for anything else.
+// Infer the Claude family from a model id, by prefix. Mirrors familyOf() in
+// src/modelVersions.js. Returns null for a non-Claude id (an Ollama tag), which
+// is what makes the window suffix a no-op for tags.
 export function familyOf(modelId) {
   if (typeof modelId !== 'string') return null;
   if (modelId.startsWith('claude-fable')) return 'fable';
   if (modelId.startsWith('claude-opus')) return 'opus';
   if (modelId.startsWith('claude-sonnet')) return 'sonnet';
   if (modelId.startsWith('claude-haiku')) return 'haiku';
-  if (modelId.startsWith(OLLAMA_ID_PREFIX)) return 'ollama';
   return null;
 }
 
-// Kind of a backend key (family OR custom id): 'claude' | 'ollama'.
-export function backendKindOf(backendKey) {
-  return isCustomBackendId(backendKey) ? 'ollama' : 'claude';
+// Kind of a {kind, model} tier binding.
+export function backendKindOf(binding) {
+  return binding && binding.kind === 'ollama' ? 'ollama' : 'claude';
 }
 
-let customBackends = [];
-export function getCustomBackends() {
-  return customBackends;
-}
-export function getCustomBackend(id) {
-  return customBackends.find(b => b.id === id) || null;
-}
-export function setCustomBackends(list) {
-  customBackends = Array.isArray(list) ? list : [];
-  return customBackends;
-}
+export function isSonnetFixedWindowVersion(id) { return !!sonnetFixedWindowByVersion[id]; }
+export function getActiveSonnetWindow() { return activeSonnetWindow; }
+export function setActiveSonnetWindow(w) { activeSonnetWindow = w === '200k' ? '200k' : '1m'; return activeSonnetWindow; }
 
-export function setActiveVersions(map) {
-  activeVersions = { ...DEFAULT_VERSIONS, ...(map || {}) };
-  return activeVersions;
-}
+export function getActiveTierEnabled(tier) { return activeTierEnabled[tier] !== false; }
+export function setActiveTierEnabled(map) { activeTierEnabled = { ...activeTierEnabled, ...(map || {}) }; }
+export function getActiveDefaultSpawnTier() { return activeDefaultSpawnTier; }
+export function setActiveDefaultSpawnTier(v) { activeDefaultSpawnTier = v || 'powerful'; return activeDefaultSpawnTier; }
 
-export function getActiveVersion(family) {
-  return activeVersions[family] || DEFAULT_VERSIONS[family];
-}
+// Returns the tier's {kind, model} binding (fallback default if unset).
+export function getActiveTierBackend(tier) { return activeTierBackend[tier] || DEFAULT_TIER_BACKEND[tier]; }
+export function setActiveTierBackend(map) { activeTierBackend = { ...activeTierBackend, ...(map || {}) }; }
 
-export function isSonnetFixedWindowVersion(id) {
-  return !!sonnetFixedWindowByVersion[id];
-}
-
-export function getActiveSonnetWindow() {
-  return activeSonnetWindow;
-}
-
-export function setActiveSonnetWindow(w) {
-  activeSonnetWindow = w === '200k' ? '200k' : '1m';
-  return activeSonnetWindow;
-}
-
-export function getActiveTierEnabled(tier) {
-  return activeTierEnabled[tier] !== false;
-}
-
-export function setActiveTierEnabled(map) {
-  activeTierEnabled = { ...activeTierEnabled, ...(map || {}) };
-}
-
-export function getActiveDefaultSpawnTier() {
-  return activeDefaultSpawnTier;
-}
-
-export function setActiveDefaultSpawnTier(v) {
-  activeDefaultSpawnTier = v || 'powerful';
-  return activeDefaultSpawnTier;
-}
-
-export function getActiveTierBackend(tier) {
-  return activeTierBackend[tier] || DEFAULT_TIER_BACKEND[tier];
-}
-
-export function setActiveTierBackend(map) {
-  activeTierBackend = { ...activeTierBackend, ...(map || {}) };
+// Apply the Sonnet window suffix to a Claude version id (no-op for non-Sonnet
+// and non-Claude ids).
+function applyClaudeWindow(versionId) {
+  if (familyOf(versionId) !== 'sonnet') return versionId;
+  if (isSonnetFixedWindowVersion(versionId)) return `${versionId}[1m]`;
+  return activeSonnetWindow === '200k' ? versionId : `${versionId}[1m]`;
 }
 
 export async function loadModelVersions() {
@@ -156,7 +96,7 @@ export async function loadModelVersions() {
         tierList = data.tiers.map(t => t.tier);
         tierLabels = Object.fromEntries(data.tiers.map(t => [t.tier, t.label]));
       }
-      setActiveVersions(data.activeVersions);
+      if (Array.isArray(data.providers) && data.providers.length) providers = data.providers;
       setActiveSonnetWindow(data.sonnetContextWindow);
       if (data.tierBackend) setActiveTierBackend(data.tierBackend);
       if (data.enabledTiers) setActiveTierEnabled(data.enabledTiers);
@@ -164,25 +104,14 @@ export async function loadModelVersions() {
       setCustomBackends(data.customBackends);
     }
   } catch { /* keep defaults */ }
-  return activeVersions;
+  return activeTierBackend;
 }
 
-// tier: 'fast' | 'balanced' | 'powerful' | 'frontier'. Resolves to the bound
-// backend, then to the model string to send on spawn. Sonnet 5 is always 1M
-// (no 200k build); Sonnet 4.x obeys the user's context-window preference;
-// all others use the bare id (1M for Fable/Opus via CLI default, 200k for
-// Haiku).
+// Resolve a tier to the spawn args {model, backendKind}. For 'claude' the model
+// carries the Sonnet window suffix; for 'ollama' it's the bare tag.
 export function resolveSpawnModel(tier) {
-  const backend = getActiveTierBackend(tier);
-  // A tier bound to a custom (Ollama-backed) backend sends the custom id
-  // itself — the server resolves it to the ollama tag + host at spawn (no
-  // Claude version / context-window suffix applies).
-  if (isCustomBackendId(backend)) return backend;
-  const base = getActiveVersion(backend);
-  if (!base) return '';
-  if (backend === 'sonnet') {
-    if (isSonnetFixedWindowVersion(base)) return `${base}[1m]`;
-    return activeSonnetWindow === '200k' ? base : `${base}[1m]`;
-  }
-  return base;
+  const b = getActiveTierBackend(tier);
+  if (!b || !b.model) return { model: '', backendKind: 'claude' };
+  if (b.kind === 'ollama') return { model: b.model, backendKind: 'ollama' };
+  return { model: applyClaudeWindow(b.model), backendKind: 'claude' };
 }

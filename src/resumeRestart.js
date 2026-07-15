@@ -187,11 +187,10 @@ export async function drainToManifest({ server, wss, instances, log = console, g
       thinking: s.thinking,
       model: s.model ?? null,
       // Backend kind (Claude vs Ollama-backed). The durable session-backends
-      // sidecar is the authority on resume, but carry it here too as
-      // belt-and-braces so a restart reconstructs the binding directly.
+      // sidecar is the authority on resume; carried here too as belt-and-braces
+      // so a restart reconstructs the kind directly. The model itself rides in
+      // `model` above (recovered from jsonl uniformly for both kinds).
       backendKind: s.backendKind ?? 'claude',
-      ollamaModel: s.ollamaModel ?? null,
-      ollamaHost: s.ollamaHost ?? null,
       worktreeName: s.worktree?.worktreeName ?? null,
       temp: !!s.temp,
       conducted: !!s.conducted,
@@ -286,8 +285,6 @@ export async function restoreFromResumeManifest({ instances, log = console, stag
         thinking: e.thinking,
         model: e.model ?? undefined,
         backendKind: e.backendKind ?? undefined,
-        ollamaModel: e.ollamaModel ?? undefined,
-        ollamaHost: e.ollamaHost ?? undefined,
         worktree: e.worktreeName ?? null,
         temp: !!e.temp,
         conducted: !!e.conducted,

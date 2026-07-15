@@ -199,7 +199,7 @@ export function attachWsHub({ wss, instances }) {
           }
           case 'model': {
             if (!inst) { reply(false, 'unknown instance'); return; }
-            await inst.setModel(String(msg.model));
+            await inst.setModel(String(msg.model), msg.backendKind);
             reply(true);
             return;
           }

@@ -29,7 +29,7 @@ import {
 } from './transcribe.js';
 import { WHISPER_MODELS, isKnownModel, DEFAULT_MODEL } from './whisperModels.js';
 import {
-  MODEL_FAMILIES, CAPABILITY_TIERS, isKnownFamily, isKnownVersion, isKnownTier,
+  MODEL_FAMILIES, CAPABILITY_TIERS, PROVIDERS, isKnownTier,
 } from './modelVersions.js';
 import {
   isAvailable as ttsAvailable, synthesize, voicePathForName,
@@ -37,7 +37,7 @@ import {
 import { TTS_VOICES, isKnownVoice, DEFAULT_VOICE } from './ttsModels.js';
 import { preflightOllamaBackend } from './ollamaBackend.js';
 import {
-  getTranscribeModel, setTranscribeModel, getModelVersion, setModelVersion,
+  getTranscribeModel, setTranscribeModel,
   getTtsEnabled, setTtsEnabled, getTtsVoice, setTtsVoice, getTtsRate, setTtsRate,
   getOnOverageAction, setOnOverageAction,
   getOverageThreshold, setOverageThreshold,
@@ -46,7 +46,7 @@ import {
   getEnabledTiers, setTierEnabled,
   getDefaultSpawnTier, setDefaultSpawnTier,
   getTierBackend, setTierBackend,
-  getCustomBackends, addCustomBackend, removeCustomBackend, isKnownBackend,
+  getCustomBackends, addCustomBackend, removeCustomBackend,
 } from './appSettings.js';
 import * as whisperInstall from './whisperInstall.js';
 import * as ttsInstall from './ttsInstall.js';
@@ -739,13 +739,13 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
 
     r.post('/instances', async (req, res, next) => {
       try {
-        const { project, resume, mode, effort, thinking, model, worktree, temp, debug, autoApprovePlan } = req.body ?? {};
+        const { project, resume, mode, effort, thinking, model, backendKind, worktree, temp, debug, autoApprovePlan } = req.body ?? {};
         // UI shortcut: the temp checkbox implies bypassPermissions when no
         // mode is picked (a disposable session is almost always for *doing*,
         // not planning). create() is policy-light and no longer couples
         // these, so the mapping lives here. An explicit mode still wins.
         const effectiveMode = (mode == null && temp) ? 'bypassPermissions' : mode;
-        const inst = await instances.create({ project, resume, mode: effectiveMode, effort, thinking, model, worktree, temp, debug, autoApprovePlan });
+        const inst = await instances.create({ project, resume, mode: effectiveMode, effort, thinking, model, backendKind, worktree, temp, debug, autoApprovePlan });
         res.status(201).json(inst.summary());
       } catch (e) { next(e); }
     });
@@ -1055,21 +1055,16 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
     installer: whisperInstall,
   });
 
-  // Settings → Models group. Reports the curated per-backend version catalog
-  // (still keyed by Claude family — the backend catalog), the active
-  // concrete version id per backend (falling back to the catalog default
-  // when unset), the capability-tier list + their tier→backend binding, and
-  // lets the UI switch a backend's version or rebind a tier.
+  // Settings → Models group. Reports the two provider backends, the Claude
+  // version catalog (MODEL_FAMILIES — the Anthropic backend's model list), the
+  // user's custom Ollama models, the capability-tier list + each tier's
+  // {kind, model} binding, and the global Sonnet-window preference.
   function modelsSettingsState() {
-    const activeVersions = {};
-    for (const f of MODEL_FAMILIES) {
-      activeVersions[f.family] = getModelVersion(f.family) || f.default;
-    }
     const tierBackend = {};
     for (const t of CAPABILITY_TIERS) {
-      tierBackend[t.tier] = getTierBackend(t.tier);
+      tierBackend[t.tier] = getTierBackend(t.tier); // {kind, model}
     }
-    return { backends: MODEL_FAMILIES, activeVersions, onOverage: getOnOverageAction(),
+    return { providers: PROVIDERS, backends: MODEL_FAMILIES, onOverage: getOnOverageAction(),
       overageThreshold: getOverageThreshold(),
       conductorCompactWindow: getConductorCompactWindow(),
       sonnetContextWindow: getSonnetContextWindow(),
@@ -1082,21 +1077,6 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
 
   r.get('/settings/models', (req, res) => {
     res.json(modelsSettingsState());
-  });
-
-  r.post('/settings/models', async (req, res, next) => {
-    try {
-      const backend = req.body?.backend;
-      const version = req.body?.version;
-      if (!isKnownFamily(backend)) {
-        throw Object.assign(new Error('unknown backend'), { statusCode: 400 });
-      }
-      if (!isKnownVersion(backend, version)) {
-        throw Object.assign(new Error('unknown version for backend'), { statusCode: 400 });
-      }
-      await setModelVersion(backend, version);
-      res.json(modelsSettingsState());
-    } catch (e) { next(e); }
   });
 
   r.post('/settings/models/prefs', async (req, res, next) => {
@@ -1115,10 +1095,10 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
       }
       if (defaultSpawnTier !== undefined) await setDefaultSpawnTier(defaultSpawnTier);
       if (tierBackend !== undefined) {
-        // backend may be a Claude family key OR a custom (Ollama-backed)
-        // backend id — isKnownBackend accepts both.
-        if (!tierBackend || typeof tierBackend !== 'object' || !isKnownTier(tierBackend.tier) || !isKnownBackend(tierBackend.backend)) {
-          return res.status(400).json({ error: 'tierBackend must be {tier, backend} with a known tier and backend' });
+        // backend is a {kind, model} pair — setTierBackend validates it names a
+        // known Claude version or a configured Ollama tag (400 otherwise).
+        if (!tierBackend || typeof tierBackend !== 'object' || !isKnownTier(tierBackend.tier)) {
+          return res.status(400).json({ error: 'tierBackend must be {tier, backend:{kind,model}} with a known tier' });
         }
         await setTierBackend(tierBackend.tier, tierBackend.backend);
       }
@@ -1137,26 +1117,27 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
     } catch (e) { next(e); }
   });
 
-  // Custom (Ollama-backed) backends. Add runs a reachability + model preflight
-  // (GET <host>/api/version + /api/tags) so a bad host/tag fails fast with a
+  // Custom (Ollama-served) models. Add runs a reachability + model preflight
+  // (GET localhost:11434/api/version + /api/tags) so a bad tag fails fast with a
   // clear message instead of a silent `ollama launch` failure at spawn.
   r.post('/settings/models/custom', async (req, res, next) => {
     try {
-      const { label, model, host } = req.body ?? {};
+      const { label, model } = req.body ?? {};
       if (typeof label !== 'string' || !label.trim() || typeof model !== 'string' || !model.trim()) {
         return res.status(400).json({ error: 'label and model (ollama tag) are required' });
       }
-      const pre = await preflightOllamaBackend({ host, model });
+      const pre = await preflightOllamaBackend({ model });
       if (!pre.ok) return res.status(400).json({ error: pre.error });
-      const rec = await addCustomBackend({ label, model, host });
+      const rec = await addCustomBackend({ label, model });
       res.status(201).json({ ...modelsSettingsState(), added: rec });
     } catch (e) { next(e); }
   });
 
-  r.delete('/settings/models/custom/:id', async (req, res, next) => {
+  // Remove by tag (the identity); `:model` is URL-encoded (tags contain ':').
+  r.delete('/settings/models/custom/:model', async (req, res, next) => {
     try {
-      const ok = await removeCustomBackend(req.params.id);
-      if (!ok) return res.status(404).json({ error: 'custom backend not found' });
+      const ok = await removeCustomBackend(req.params.model);
+      if (!ok) return res.status(404).json({ error: 'custom model not found' });
       res.json(modelsSettingsState());
     } catch (e) { next(e); }
   });
