@@ -37,7 +37,7 @@ import { installSessionSummary } from './sessionSummary.js';
 import { installWsRouter } from './wsRouter.js';
 import { latestOnly } from './latestOnly.js';
 import { loadModelVersions, setActiveVersions, setActiveSonnetWindow,
-  setActiveFamilyEnabled, setActiveDefaultSpawnFamily } from './models.js';
+  setActiveTierEnabled, setActiveDefaultSpawnTier, setActiveTierBackend } from './models.js';
 import { setTtsAvailable, setTtsEnabled, setTtsRate } from './tts.js';
 
 const state = {
@@ -388,7 +388,7 @@ const lazyController = installLazyHistoryController({
 // user interaction, which can't fire until after full init runs the install.
 let workspaceHandles = null;
 // Handles returned by installSpawnDialog ({ openSpawnDialog, syncSonnetPickerLabels,
-// syncFamilyVisibility }). Declared before the Sidebar/Settings installs so their
+// syncTierVisibility }). Declared before the Sidebar/Settings installs so their
 // callbacks can forward to it; assigned later, once the dialog's deps
 // (refreshProjects et al.) are in scope. All three external callers fire only
 // after init (user click / settings change / async loadModelVersions().then).
@@ -521,12 +521,13 @@ const settings = installSettings({
   onAvailabilityChange: setMicAvailable,
   onPluginsChanged: () => appSwitcher.refresh(),
   onModelsChange: data => {
-    setActiveVersions(data.active);
+    setActiveVersions(data.activeVersions);
     setActiveSonnetWindow(data.sonnetContextWindow);
-    if (data.enabledFamilies) setActiveFamilyEnabled(data.enabledFamilies);
-    setActiveDefaultSpawnFamily(data.defaultSpawnFamily);
+    if (data.tierBackend) setActiveTierBackend(data.tierBackend);
+    if (data.enabledTiers) setActiveTierEnabled(data.enabledTiers);
+    setActiveDefaultSpawnTier(data.defaultSpawnTier);
     spawnHandles.syncSonnetPickerLabels();
-    spawnHandles.syncFamilyVisibility();
+    spawnHandles.syncTierVisibility();
   },
   onTtsAvailabilityChange: setTtsAvailable,
   onTtsPrefsChange: ({ enabled, rate }) => { setTtsEnabled(enabled); setTtsRate(rate); },
@@ -540,8 +541,8 @@ const settings = installSettings({
     refreshInstances();
   },
 });
-// Seed the per-family model-version cache the spawn pickers resolve against.
-loadModelVersions().then(() => { spawnHandles.syncSonnetPickerLabels(); spawnHandles.syncFamilyVisibility(); });
+// Seed the per-tier/per-backend model-version cache the spawn pickers resolve against.
+loadModelVersions().then(() => { spawnHandles.syncSonnetPickerLabels(); spawnHandles.syncTierVisibility(); });
 dom.settingsBtn?.addEventListener('click', () => {
   closeSidebarOverflow();
   if (location.hash === '#settings') settings.close();

@@ -6,6 +6,7 @@ import os from 'node:os';
 import { bootServer, api, freshProjectsRoot, rmrf } from './helpers.mjs';
 import {
   MODEL_FAMILIES, DEFAULT_VERSIONS, isKnownFamily, isKnownVersion, defaultVersion,
+  CAPABILITY_TIERS, DEFAULT_TIER_BACKEND, isKnownTier,
 } from '../src/modelVersions.js';
 import {
   getModelVersion, setModelVersion, getTranscribeModel, setTranscribeModel,
@@ -13,8 +14,9 @@ import {
   getOverageThreshold, setOverageThreshold,
   getConductorCompactWindow, setConductorCompactWindow,
   getSonnetContextWindow, setSonnetContextWindow,
-  getEnabledFamilies, setFamilyEnabled,
-  getDefaultSpawnFamily, setDefaultSpawnFamily,
+  getEnabledTiers, setTierEnabled,
+  getDefaultSpawnTier, setDefaultSpawnTier,
+  getTierBackend, setTierBackend,
 } from '../src/appSettings.js';
 
 async function mkTmp() {
@@ -49,10 +51,10 @@ after(async () => { await ctx.close(); });
 beforeEach(async () => { ({ home } = await freshProjectsRoot()); });
 afterEach(async () => { await instances.shutdown(); await rmrf(home); });
 
-// ── Catalog ────────────────────────────────────────────────────────────
-test('modelVersions catalog: families, defaults, and validators', () => {
+// ── Catalog (backend catalog — unchanged, still Claude family-keyed) ────
+test('modelVersions catalog: backends, defaults, and validators', () => {
   assert.deepEqual(MODEL_FAMILIES.map(f => f.family), ['fable', 'opus', 'sonnet', 'haiku']);
-  // Every family default is itself a known version of that family.
+  // Every backend default is itself a known version of that backend.
   for (const f of MODEL_FAMILIES) {
     assert.equal(DEFAULT_VERSIONS[f.family], f.default);
     assert.ok(isKnownVersion(f.family, f.default), `${f.family} default in catalog`);
@@ -67,6 +69,19 @@ test('modelVersions catalog: families, defaults, and validators', () => {
   assert.equal(defaultVersion('nope'), null);
 });
 
+// ── Catalog (capability-tier layer) ─────────────────────────────────────
+test('modelVersions catalog: tiers + default tier→backend binding', () => {
+  assert.deepEqual(CAPABILITY_TIERS.map(t => t.tier), ['fast', 'balanced', 'powerful', 'frontier']);
+  assert.deepEqual(DEFAULT_TIER_BACKEND, { fast: 'haiku', balanced: 'sonnet', powerful: 'opus', frontier: 'fable' });
+  // Every default tier→backend target is itself a known backend.
+  for (const t of CAPABILITY_TIERS) {
+    assert.ok(isKnownFamily(DEFAULT_TIER_BACKEND[t.tier]), `${t.tier}'s default backend must be known`);
+  }
+  assert.ok(isKnownTier('fast'));
+  assert.ok(!isKnownTier('sonnet'), 'a legacy family name is not a tier');
+  assert.ok(!isKnownTier('medium'), 'the effort vocabulary must not collide with tiers');
+});
+
 // ── appSettings ─────────────────────────────────────────────────────────
 test('appSettings: getModelVersion null when unset, setModelVersion round-trips', async () => {
   const root = await mkTmp();
@@ -75,7 +90,7 @@ test('appSettings: getModelVersion null when unset, setModelVersion round-trips'
       assert.equal(getModelVersion('opus'), null);
       await setModelVersion('opus', 'claude-opus-4-7');
       assert.equal(getModelVersion('opus'), 'claude-opus-4-7');
-      // Other families remain unset (independent keys).
+      // Other backends remain unset (independent keys).
       assert.equal(getModelVersion('sonnet'), null);
     });
   } finally { await fs.rm(root, { recursive: true, force: true }); }
@@ -94,39 +109,41 @@ test('appSettings: models namespace does not clobber transcribe', async () => {
 });
 
 // ── REST endpoints ──────────────────────────────────────────────────────
-test('GET /api/settings/models returns catalog + active defaults', async () => {
+test('GET /api/settings/models returns backend catalog + active defaults + tier catalog', async () => {
   {  // shared server (before/after) + fresh PROJECTS_ROOT per test (beforeEach)
     const r = await api(baseUrl, 'GET', '/api/settings/models');
     assert.equal(r.status, 200);
-    assert.deepEqual(r.body.families.map(f => f.family), ['fable', 'opus', 'sonnet', 'haiku']);
+    assert.deepEqual(r.body.backends.map(f => f.family), ['fable', 'opus', 'sonnet', 'haiku']);
     // Unset → catalog defaults.
-    assert.equal(r.body.active.fable, 'claude-fable-5');
-    assert.equal(r.body.active.sonnet, 'claude-sonnet-5');
-    assert.equal(r.body.active.opus, 'claude-opus-4-8');
-    assert.equal(r.body.active.haiku, 'claude-haiku-4-5');
+    assert.equal(r.body.activeVersions.fable, 'claude-fable-5');
+    assert.equal(r.body.activeVersions.sonnet, 'claude-sonnet-5');
+    assert.equal(r.body.activeVersions.opus, 'claude-opus-4-8');
+    assert.equal(r.body.activeVersions.haiku, 'claude-haiku-4-5');
+    assert.deepEqual(r.body.tiers.map(t => t.tier), ['fast', 'balanced', 'powerful', 'frontier']);
+    assert.deepEqual(r.body.tierBackend, { fast: 'haiku', balanced: 'sonnet', powerful: 'opus', frontier: 'fable' });
   }
 });
 
-test('POST /api/settings/models switches a family version and persists', async () => {
+test('POST /api/settings/models switches a backend version and persists', async () => {
   {  // shared server (before/after) + fresh PROJECTS_ROOT per test (beforeEach)
-    const r = await api(baseUrl, 'POST', '/api/settings/models', { family: 'sonnet', version: 'claude-sonnet-4-5' });
+    const r = await api(baseUrl, 'POST', '/api/settings/models', { backend: 'sonnet', version: 'claude-sonnet-4-5' });
     assert.equal(r.status, 200);
-    assert.equal(r.body.active.sonnet, 'claude-sonnet-4-5');
-    assert.equal(r.body.active.opus, 'claude-opus-4-8'); // untouched
+    assert.equal(r.body.activeVersions.sonnet, 'claude-sonnet-4-5');
+    assert.equal(r.body.activeVersions.opus, 'claude-opus-4-8'); // untouched
     const g = await api(baseUrl, 'GET', '/api/settings/models');
-    assert.equal(g.body.active.sonnet, 'claude-sonnet-4-5');
+    assert.equal(g.body.activeVersions.sonnet, 'claude-sonnet-4-5');
   }
 });
 
-test('POST /api/settings/models rejects unknown family + version', async () => {
+test('POST /api/settings/models rejects unknown backend + version', async () => {
   {  // shared server (before/after) + fresh PROJECTS_ROOT per test (beforeEach)
-    const badFamily = await api(baseUrl, 'POST', '/api/settings/models', { family: 'gpt', version: 'claude-opus-4-8' });
-    assert.equal(badFamily.status, 400);
-    const badVersion = await api(baseUrl, 'POST', '/api/settings/models', { family: 'opus', version: 'nope' });
+    const badBackend = await api(baseUrl, 'POST', '/api/settings/models', { backend: 'gpt', version: 'claude-opus-4-8' });
+    assert.equal(badBackend.status, 400);
+    const badVersion = await api(baseUrl, 'POST', '/api/settings/models', { backend: 'opus', version: 'nope' });
     assert.equal(badVersion.status, 400);
-    // Cross-family version is also rejected.
-    const crossFamily = await api(baseUrl, 'POST', '/api/settings/models', { family: 'sonnet', version: 'claude-opus-4-8' });
-    assert.equal(crossFamily.status, 400);
+    // Cross-backend version is also rejected.
+    const crossBackend = await api(baseUrl, 'POST', '/api/settings/models', { backend: 'sonnet', version: 'claude-opus-4-8' });
+    assert.equal(crossBackend.status, 400);
   }
 });
 
@@ -459,155 +476,211 @@ test('POST /api/settings/models/prefs sonnetContextWindow does not clobber onOve
   }
 });
 
-// ── enabledFamilies ─────────────────────────────────────────────────────
-test('appSettings: getEnabledFamilies defaults all-true when unset', async () => {
+// ── enabledTiers ─────────────────────────────────────────────────────────
+test('appSettings: getEnabledTiers defaults all-true when unset', async () => {
   const root = await mkTmp();
   try {
     await withEnv({ PROJECTS_ROOT: root }, async () => {
-      const ef = getEnabledFamilies();
-      assert.equal(ef.fable, true);
-      assert.equal(ef.opus, true);
-      assert.equal(ef.sonnet, true);
-      assert.equal(ef.haiku, true);
+      const et = getEnabledTiers();
+      assert.equal(et.fast, true);
+      assert.equal(et.balanced, true);
+      assert.equal(et.powerful, true);
+      assert.equal(et.frontier, true);
     });
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
 
-test('appSettings: setFamilyEnabled round-trips', async () => {
+test('appSettings: setTierEnabled round-trips', async () => {
   const root = await mkTmp();
   try {
     await withEnv({ PROJECTS_ROOT: root }, async () => {
-      const result = await setFamilyEnabled('fable', false);
-      assert.equal(result.enabledFamilies.fable, false);
-      assert.equal(getEnabledFamilies().fable, false);
-      await setFamilyEnabled('fable', true);
-      assert.equal(getEnabledFamilies().fable, true);
+      const result = await setTierEnabled('frontier', false);
+      assert.equal(result.enabledTiers.frontier, false);
+      assert.equal(getEnabledTiers().frontier, false);
+      await setTierEnabled('frontier', true);
+      assert.equal(getEnabledTiers().frontier, true);
     });
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
 
-test('appSettings: setFamilyEnabled prevents disabling the last enabled family', async () => {
+test('appSettings: setTierEnabled prevents disabling the last enabled tier', async () => {
   const root = await mkTmp();
   try {
     await withEnv({ PROJECTS_ROOT: root }, async () => {
-      await setFamilyEnabled('fable', false);
-      await setFamilyEnabled('sonnet', false);
-      await setFamilyEnabled('haiku', false);
-      // Only opus remains — disabling it must throw.
+      await setTierEnabled('frontier', false);
+      await setTierEnabled('balanced', false);
+      await setTierEnabled('fast', false);
+      // Only powerful remains — disabling it must throw.
       await assert.rejects(
-        () => setFamilyEnabled('opus', false),
-        /cannot disable the last enabled family/i,
+        () => setTierEnabled('powerful', false),
+        /cannot disable the last enabled tier/i,
       );
-      assert.equal(getEnabledFamilies().opus, true);
+      assert.equal(getEnabledTiers().powerful, true);
     });
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
 
-test('appSettings: setFamilyEnabled auto-reassigns default when disabling the default family', async () => {
+test('appSettings: setTierEnabled auto-reassigns default when disabling the default tier', async () => {
   const root = await mkTmp();
   try {
     await withEnv({ PROJECTS_ROOT: root }, async () => {
-      await setDefaultSpawnFamily('fable');
-      assert.equal(getDefaultSpawnFamily(), 'fable');
-      const result = await setFamilyEnabled('fable', false);
-      // Default must no longer be fable.
-      assert.notEqual(result.defaultSpawnFamily, 'fable');
-      assert.notEqual(getDefaultSpawnFamily(), 'fable');
+      await setDefaultSpawnTier('frontier');
+      assert.equal(getDefaultSpawnTier(), 'frontier');
+      const result = await setTierEnabled('frontier', false);
+      // Default must no longer be frontier.
+      assert.notEqual(result.defaultSpawnTier, 'frontier');
+      assert.notEqual(getDefaultSpawnTier(), 'frontier');
     });
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
 
-test('GET /api/settings/models includes enabledFamilies defaulting all-true', async () => {
+test('GET /api/settings/models includes enabledTiers defaulting all-true', async () => {
   {  // shared server (before/after) + fresh PROJECTS_ROOT per test (beforeEach)
     const r = await api(baseUrl, 'GET', '/api/settings/models');
     assert.equal(r.status, 200);
-    assert.deepEqual(r.body.enabledFamilies, { fable: true, opus: true, sonnet: true, haiku: true });
+    assert.deepEqual(r.body.enabledTiers, { fast: true, balanced: true, powerful: true, frontier: true });
   }
 });
 
-test('POST /api/settings/models/prefs with familyEnabled toggles a family and persists', async () => {
+test('POST /api/settings/models/prefs with tierEnabled toggles a tier and persists', async () => {
   {  // shared server (before/after) + fresh PROJECTS_ROOT per test (beforeEach)
-    const off = await api(baseUrl, 'POST', '/api/settings/models/prefs', { familyEnabled: { family: 'fable', enabled: false } });
+    const off = await api(baseUrl, 'POST', '/api/settings/models/prefs', { tierEnabled: { tier: 'frontier', enabled: false } });
     assert.equal(off.status, 200);
-    assert.equal(off.body.enabledFamilies.fable, false);
+    assert.equal(off.body.enabledTiers.frontier, false);
     const g = await api(baseUrl, 'GET', '/api/settings/models');
-    assert.equal(g.body.enabledFamilies.fable, false);
-    const on = await api(baseUrl, 'POST', '/api/settings/models/prefs', { familyEnabled: { family: 'fable', enabled: true } });
-    assert.equal(on.body.enabledFamilies.fable, true);
+    assert.equal(g.body.enabledTiers.frontier, false);
+    const on = await api(baseUrl, 'POST', '/api/settings/models/prefs', { tierEnabled: { tier: 'frontier', enabled: true } });
+    assert.equal(on.body.enabledTiers.frontier, true);
   }
 });
 
-test('POST /api/settings/models/prefs rejects disabling the last enabled family', async () => {
+test('POST /api/settings/models/prefs rejects disabling the last enabled tier', async () => {
   {  // shared server (before/after) + fresh PROJECTS_ROOT per test (beforeEach)
-    await api(baseUrl, 'POST', '/api/settings/models/prefs', { familyEnabled: { family: 'fable', enabled: false } });
-    await api(baseUrl, 'POST', '/api/settings/models/prefs', { familyEnabled: { family: 'sonnet', enabled: false } });
-    await api(baseUrl, 'POST', '/api/settings/models/prefs', { familyEnabled: { family: 'haiku', enabled: false } });
-    // Only opus remains — disabling it must return 4xx.
-    const r = await api(baseUrl, 'POST', '/api/settings/models/prefs', { familyEnabled: { family: 'opus', enabled: false } });
+    await api(baseUrl, 'POST', '/api/settings/models/prefs', { tierEnabled: { tier: 'frontier', enabled: false } });
+    await api(baseUrl, 'POST', '/api/settings/models/prefs', { tierEnabled: { tier: 'balanced', enabled: false } });
+    await api(baseUrl, 'POST', '/api/settings/models/prefs', { tierEnabled: { tier: 'fast', enabled: false } });
+    // Only powerful remains — disabling it must return 4xx.
+    const r = await api(baseUrl, 'POST', '/api/settings/models/prefs', { tierEnabled: { tier: 'powerful', enabled: false } });
     assert.ok(r.status >= 400, `expected 4xx but got ${r.status}`);
   }
 });
 
-test('POST /api/settings/models/prefs rejects unknown or missing family in familyEnabled', async () => {
+test('POST /api/settings/models/prefs rejects unknown or missing tier in tierEnabled', async () => {
   {  // shared server (before/after) + fresh PROJECTS_ROOT per test (beforeEach)
-    // Unknown family name must be rejected with 400.
-    const bad = await api(baseUrl, 'POST', '/api/settings/models/prefs', { familyEnabled: { family: 'gpt', enabled: false } });
+    // Unknown tier name must be rejected with 400.
+    const bad = await api(baseUrl, 'POST', '/api/settings/models/prefs', { tierEnabled: { tier: 'sonnet', enabled: false } });
     assert.equal(bad.status, 400);
-    // Missing family field must be rejected with 400.
-    const noFamily = await api(baseUrl, 'POST', '/api/settings/models/prefs', { familyEnabled: { enabled: false } });
-    assert.equal(noFamily.status, 400);
+    // Missing tier field must be rejected with 400.
+    const noTier = await api(baseUrl, 'POST', '/api/settings/models/prefs', { tierEnabled: { enabled: false } });
+    assert.equal(noTier.status, 400);
     // Non-object payload must be rejected with 400.
-    const nonObj = await api(baseUrl, 'POST', '/api/settings/models/prefs', { familyEnabled: 'fable' });
+    const nonObj = await api(baseUrl, 'POST', '/api/settings/models/prefs', { tierEnabled: 'frontier' });
     assert.equal(nonObj.status, 400);
-    // Valid family is still accepted (smoke-check route remains functional).
-    const ok = await api(baseUrl, 'POST', '/api/settings/models/prefs', { familyEnabled: { family: 'fable', enabled: false } });
+    // Valid tier is still accepted (smoke-check route remains functional).
+    const ok = await api(baseUrl, 'POST', '/api/settings/models/prefs', { tierEnabled: { tier: 'frontier', enabled: false } });
     assert.equal(ok.status, 200);
-    assert.equal(ok.body.enabledFamilies.fable, false);
+    assert.equal(ok.body.enabledTiers.frontier, false);
   }
 });
 
-// ── defaultSpawnFamily ──────────────────────────────────────────────────
-test('appSettings: getDefaultSpawnFamily defaults "opus" when unset', async () => {
+// ── defaultSpawnTier ─────────────────────────────────────────────────────
+test('appSettings: getDefaultSpawnTier defaults "powerful" when unset', async () => {
   const root = await mkTmp();
   try {
     await withEnv({ PROJECTS_ROOT: root }, async () => {
-      assert.equal(getDefaultSpawnFamily(), 'opus');
+      assert.equal(getDefaultSpawnTier(), 'powerful');
     });
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
 
-test('appSettings: setDefaultSpawnFamily round-trips valid families', async () => {
+test('appSettings: setDefaultSpawnTier round-trips valid tiers', async () => {
   const root = await mkTmp();
   try {
     await withEnv({ PROJECTS_ROOT: root }, async () => {
-      assert.equal(await setDefaultSpawnFamily('fable'), 'fable');
-      assert.equal(getDefaultSpawnFamily(), 'fable');
-      assert.equal(await setDefaultSpawnFamily('haiku'), 'haiku');
-      assert.equal(getDefaultSpawnFamily(), 'haiku');
-      // Invalid value falls back to opus.
-      assert.equal(await setDefaultSpawnFamily('gpt'), 'opus');
-      assert.equal(getDefaultSpawnFamily(), 'opus');
+      assert.equal(await setDefaultSpawnTier('frontier'), 'frontier');
+      assert.equal(getDefaultSpawnTier(), 'frontier');
+      assert.equal(await setDefaultSpawnTier('fast'), 'fast');
+      assert.equal(getDefaultSpawnTier(), 'fast');
+      // Invalid value falls back to powerful.
+      assert.equal(await setDefaultSpawnTier('gpt'), 'powerful');
+      assert.equal(getDefaultSpawnTier(), 'powerful');
     });
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
 
-test('GET /api/settings/models includes defaultSpawnFamily defaulting "opus"', async () => {
+test('GET /api/settings/models includes defaultSpawnTier defaulting "powerful"', async () => {
   {  // shared server (before/after) + fresh PROJECTS_ROOT per test (beforeEach)
     const r = await api(baseUrl, 'GET', '/api/settings/models');
     assert.equal(r.status, 200);
-    assert.equal(r.body.defaultSpawnFamily, 'opus');
+    assert.equal(r.body.defaultSpawnTier, 'powerful');
   }
 });
 
-test('POST /api/settings/models/prefs sets defaultSpawnFamily and persists', async () => {
+test('POST /api/settings/models/prefs sets defaultSpawnTier and persists', async () => {
   {  // shared server (before/after) + fresh PROJECTS_ROOT per test (beforeEach)
-    const r = await api(baseUrl, 'POST', '/api/settings/models/prefs', { defaultSpawnFamily: 'fable' });
+    const r = await api(baseUrl, 'POST', '/api/settings/models/prefs', { defaultSpawnTier: 'frontier' });
     assert.equal(r.status, 200);
-    assert.equal(r.body.defaultSpawnFamily, 'fable');
+    assert.equal(r.body.defaultSpawnTier, 'frontier');
     const g = await api(baseUrl, 'GET', '/api/settings/models');
-    assert.equal(g.body.defaultSpawnFamily, 'fable');
+    assert.equal(g.body.defaultSpawnTier, 'frontier');
     // Reset.
-    const r2 = await api(baseUrl, 'POST', '/api/settings/models/prefs', { defaultSpawnFamily: 'opus' });
-    assert.equal(r2.body.defaultSpawnFamily, 'opus');
+    const r2 = await api(baseUrl, 'POST', '/api/settings/models/prefs', { defaultSpawnTier: 'powerful' });
+    assert.equal(r2.body.defaultSpawnTier, 'powerful');
+  }
+});
+
+// ── tierBackend (tier→backend binding) ──────────────────────────────────
+test('appSettings: getTierBackend defaults to DEFAULT_TIER_BACKEND when unset', async () => {
+  const root = await mkTmp();
+  try {
+    await withEnv({ PROJECTS_ROOT: root }, async () => {
+      assert.equal(getTierBackend('fast'), 'haiku');
+      assert.equal(getTierBackend('balanced'), 'sonnet');
+      assert.equal(getTierBackend('powerful'), 'opus');
+      assert.equal(getTierBackend('frontier'), 'fable');
+    });
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test('appSettings: setTierBackend round-trips and rebinding one tier leaves others untouched', async () => {
+  const root = await mkTmp();
+  try {
+    await withEnv({ PROJECTS_ROOT: root }, async () => {
+      await setTierBackend('powerful', 'fable');
+      assert.equal(getTierBackend('powerful'), 'fable');
+      // Other tiers keep their default binding.
+      assert.equal(getTierBackend('fast'), 'haiku');
+      assert.equal(getTierBackend('balanced'), 'sonnet');
+      assert.equal(getTierBackend('frontier'), 'fable');
+    });
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test('appSettings: setTierBackend rejects unknown tier or backend', async () => {
+  const root = await mkTmp();
+  try {
+    await withEnv({ PROJECTS_ROOT: root }, async () => {
+      await assert.rejects(() => setTierBackend('medium', 'opus'));
+      await assert.rejects(() => setTierBackend('fast', 'gpt'));
+    });
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test('POST /api/settings/models/prefs with tierBackend rebinds a tier and persists', async () => {
+  {  // shared server (before/after) + fresh PROJECTS_ROOT per test (beforeEach)
+    const r = await api(baseUrl, 'POST', '/api/settings/models/prefs', { tierBackend: { tier: 'powerful', backend: 'fable' } });
+    assert.equal(r.status, 200);
+    assert.equal(r.body.tierBackend.powerful, 'fable');
+    const g = await api(baseUrl, 'GET', '/api/settings/models');
+    assert.equal(g.body.tierBackend.powerful, 'fable');
+  }
+});
+
+test('POST /api/settings/models/prefs rejects unknown tier or backend in tierBackend', async () => {
+  {  // shared server (before/after) + fresh PROJECTS_ROOT per test (beforeEach)
+    const badTier = await api(baseUrl, 'POST', '/api/settings/models/prefs', { tierBackend: { tier: 'medium', backend: 'opus' } });
+    assert.equal(badTier.status, 400);
+    const badBackend = await api(baseUrl, 'POST', '/api/settings/models/prefs', { tierBackend: { tier: 'fast', backend: 'gpt' } });
+    assert.equal(badBackend.status, 400);
   }
 });

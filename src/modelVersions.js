@@ -13,6 +13,13 @@
 // user-selectable via the stored `sonnetContextWindow` preference.
 // `canonicalizeModel()` below applies that policy and is the single source
 // of truth; the client mirrors it in public/models.js.
+//
+// This catalog is also the BACKEND CATALOG for the capability-tier layer
+// below: each tier binds to one of these families via Settings
+// (`getTierBackend`/`setTierBackend` in appSettings.js). A legacy caller
+// passing a family name directly (`opus`, `sonnet`, ...) still resolves here
+// unchanged, independent of any tier→backend binding — see spawnInstance in
+// src/mcp/handlers.js.
 
 export const MODEL_FAMILIES = [
   {
@@ -59,6 +66,28 @@ export const DEFAULT_VERSIONS = Object.fromEntries(
 
 export function isKnownFamily(family) {
   return MODEL_FAMILIES.some(f => f.family === family);
+}
+
+// --- Capability tiers ---------------------------------------------------
+// Fixed, data-driven set of abstract capability tiers exposed to spawn
+// callers (UI pickers + MCP `spawn_instance`). Each tier is a bindable slot
+// that maps (via Settings, see appSettings.js `getTierBackend`) to one
+// backend from MODEL_FAMILIES above — today always a Claude family, but the
+// binding is looked up by id rather than hardcoded, so a future non-Claude
+// backend can slot in without touching tier resolution. Renaming a tier, or
+// changing the tier count, is a one-line change to this array.
+export const CAPABILITY_TIERS = [
+  { tier: 'fast',      label: 'Fast' },
+  { tier: 'balanced',  label: 'Balanced' },
+  { tier: 'powerful',  label: 'Powerful' },
+  { tier: 'frontier',  label: 'Frontier' },
+];
+
+// Default tier → backend binding (backend = a MODEL_FAMILIES key).
+export const DEFAULT_TIER_BACKEND = { fast: 'haiku', balanced: 'sonnet', powerful: 'opus', frontier: 'fable' };
+
+export function isKnownTier(tier) {
+  return CAPABILITY_TIERS.some(t => t.tier === tier);
 }
 
 export function isKnownVersion(family, id) {

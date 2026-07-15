@@ -43,7 +43,7 @@ import {
 import { makeDismissable } from './dismissable.js';
 import { formatAgo } from './sidebar.js';
 import { send } from './ws.js';
-import { resolveSpawnModel, getFamilyList, getActiveFamilyEnabled, familyOf } from './models.js';
+import { resolveSpawnModel, getTierList, getActiveTierEnabled, getActiveTierBackend, getTierLabel, familyOf } from './models.js';
 
 // Combined popover: "Session totals" section above, "Usage limits" section
 // below. ctx data is per-session; usage-limit data is account-wide.
@@ -192,11 +192,11 @@ export function installHeader({
     return node;
   }
 
-  // "Change model" popover: a family picker anchored off the ⋮ trigger,
-  // reusing the exact catalog + markup the spawn dialog uses (getFamilyList,
-  // getActiveFamilyEnabled, resolveSpawnModel, .quick-spawn-models/.qs-model)
+  // "Change model" popover: a tier picker anchored off the ⋮ trigger,
+  // reusing the exact catalog + markup the spawn dialog uses (getTierList,
+  // getActiveTierEnabled, resolveSpawnModel, .quick-spawn-models/.qs-model)
   // so switching a live session's model stays visually consistent with
-  // spawning one. Selecting a family sends a live control_request over WS
+  // spawning one. Selecting a tier sends a live control_request over WS
   // (subtype:set_model, via Instance.setModel) — no optimistic mutation of
   // inst.model here; the status broadcast (wsRouter.js) is what actually
   // flips it once the CLI acks.
@@ -249,19 +249,19 @@ export function installHeader({
     header.textContent = 'Change model';
     node.appendChild(header);
 
-    const curFamily = familyOf(inst.model);
+    const curBackend = familyOf(inst.model);
     const row = document.createElement('div');
     row.className = 'quick-spawn-models';
-    for (const family of getFamilyList()) {
+    for (const tier of getTierList()) {
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.className = 'qs-model';
-      btn.dataset.family = family;
-      btn.hidden = !getActiveFamilyEnabled(family);
-      btn.classList.toggle('qs-selected', family === curFamily);
-      btn.textContent = family[0].toUpperCase() + family.slice(1);
+      btn.dataset.tier = tier;
+      btn.hidden = !getActiveTierEnabled(tier);
+      btn.classList.toggle('qs-selected', getActiveTierBackend(tier) === curBackend);
+      btn.textContent = getTierLabel(tier);
       btn.addEventListener('click', async () => {
-        const model = resolveSpawnModel(family);
+        const model = resolveSpawnModel(tier);
         try {
           await send('model', { id: inst.id, model }, { ack: true });
           closeModelPopover();

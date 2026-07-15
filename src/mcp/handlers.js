@@ -34,8 +34,8 @@ import { buildApprovePrompt, buildRejectPrompt } from '../planApproval.js';
 import { formatUserQuestionAnswers } from '../../public/userQuestionAnswers.js';
 import { getCatalog as getProjectConventionsCatalog, composeProjectConventionsBlock, composeProjectScaffold } from '../projectConventions.js';
 import { getCatalog as getConductModulesCatalog, getSelection as getConductSelection } from '../conductModules.js';
-import { isKnownFamily, defaultVersion } from '../modelVersions.js';
-import { getModelVersion } from '../appSettings.js';
+import { isKnownFamily, isKnownTier, defaultVersion } from '../modelVersions.js';
+import { getModelVersion, getTierBackend } from '../appSettings.js';
 import { textPayload } from './content.js';
 import { pageInstanceEvents } from '../eventArchive.js';
 import { parseNumstat, parseNameStatus, indexDiffLines, paginateDiff } from './diffPaging.js';
@@ -259,10 +259,17 @@ export async function spawnInstance(args, { instances, callerId }) {
   // callerId is the conductor's stable sessionId (?caller=). Resolve it to the
   // conductor's live instanceId so callerInstanceId stays an instanceId.
   const callerInst = callerId ? instances.liveForSession(callerId) : null;
-  // Resolve family alias (opus/sonnet/haiku/fable) to the concrete version
-  // configured in Settings → Models. Full model ids pass through unchanged.
+  // Resolve a capability tier (fast/balanced/powerful/frontier) to its bound
+  // backend's configured version. A legacy family alias (opus/sonnet/haiku/
+  // fable) resolves directly against that backend instead, independent of
+  // any tier→backend rebinding — existing callers keep exact pre-tier
+  // behavior even if a tier gets rebound later. Full model ids pass through
+  // unchanged.
   let model = args.model;
-  if (model && isKnownFamily(model)) {
+  if (model && isKnownTier(model)) {
+    const backend = getTierBackend(model);
+    model = getModelVersion(backend) ?? defaultVersion(backend);
+  } else if (model && isKnownFamily(model)) {
     model = getModelVersion(model) ?? defaultVersion(model);
   }
   // createWorktree:true → create a fresh worktree (passed to create() as the
