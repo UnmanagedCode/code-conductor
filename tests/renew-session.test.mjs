@@ -19,6 +19,9 @@ import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, instForSession } from './helpers.mjs';
 import { isConducted } from '../src/conductedSessions.js';
+import { isTemp } from '../src/tempSessions.js';
+import { isArchived } from '../src/archivedSessions.js';
+import { getTitle } from '../src/sessionTitles.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-renew.json');
@@ -101,16 +104,24 @@ test('renew_session drives a /clear that rotates the session in place and reseed
   }
 });
 
-test('renew_session preserves the conducted marker across the rotation', async () => {
+test('renew_session carries the durable temp + conducted markers onto the rotated id and archives the old one', async () => {
   const srv = await bootServer({ scenarioPath: SCENARIO });
   mgr = srv.instances;
   try {
     await api(srv.baseUrl, 'POST', '/api/projects', { name: 'p' });
+    // spawn_instance defaults to temp:true AND conducted:true — the one call that
+    // exercises BOTH durable sidecars in a single rotation.
     const spawn = await callTool(srv.baseUrl, 'spawn_instance', { project: 'p', mode: 'bypassPermissions' });
     const sid1 = spawn.sessionId;
     await waitFor(() => instForSession(srv.instances, sid1)?.status === 'idle');
-    const id = instForSession(srv.instances, sid1).id;
-    assert.equal(instForSession(srv.instances, sid1).conducted, true, 'spawn_instance yields a conducted worker');
+    const inst = instForSession(srv.instances, sid1);
+    const id = inst.id;
+    assert.equal(inst.conducted, true, 'spawn_instance yields a conducted worker');
+    assert.equal(inst.temp, true, 'spawn_instance yields a temp worker');
+    // temp is durably marked at spawn; conducted is marked on the first turn_end
+    // (_writeSessionMetadata), i.e. by the armed 'go1' turn below — so only assert
+    // the temp sidecar pre-renewal.
+    await waitFor(async () => await isTemp(sid1));
 
     await callTool(srv.baseUrl, 'renew_session', { summary: 'carry on with the migration' }, { caller: sid1 });
     await callTool(srv.baseUrl, 'send_prompt', { sessionId: sid1, text: 'go1' });
@@ -119,8 +130,47 @@ test('renew_session preserves the conducted marker across the rotation', async (
     const rotated = instForSession(srv.instances, NEW_SID);
     assert.equal(rotated.id, id, 'same Instance across the clear');
     assert.equal(rotated.conducted, true, 'rotated session is still conducted');
-    // The durable conducted marker followed the rotation onto the new sessionId.
-    await waitFor(async () => await isConducted(NEW_SID));
+    assert.equal(rotated.temp, true, 'rotated session is still temp');
+    // Both durable markers followed the rotation onto the new sessionId — the
+    // explicit carry at rotation, independent of the reseed turn_end's incidental
+    // _writeSessionMetadata re-write.
+    await waitFor(async () => (await isConducted(NEW_SID)) && (await isTemp(NEW_SID)));
+    // The abandoned pre-clear id is archived (retained-but-hidden) and its stale
+    // temp marker is cleaned. (We deliberately do NOT unmarkConducted the old id —
+    // mirroring _archiveTempSession, a conducted marker stays meaningful on an
+    // archived row — but the fixture never durably writes one on the old id, so
+    // there is nothing to assert there.)
+    await waitFor(async () => await isArchived(sid1));
+    assert.equal(await isTemp(sid1), false, 'stale temp marker on the old id was cleaned');
+  } finally {
+    await srv.close();
+  }
+});
+
+test('renew_session carries a custom session title onto the rotated id', async () => {
+  const srv = await bootServer({ scenarioPath: SCENARIO });
+  mgr = srv.instances;
+  try {
+    await api(srv.baseUrl, 'POST', '/api/projects', { name: 'p' });
+    const spawn = await api(srv.baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions' });
+    const sid1 = spawn.body.sessionId;
+    await waitFor(() => instForSession(srv.instances, sid1)?.status === 'idle');
+
+    // Persist a custom title on the pre-clear id (route sets both the sidecar and
+    // the instance's in-memory this.title, which the carry reads).
+    const TITLE = 'Migration follow-up';
+    const put = await api(srv.baseUrl, 'PUT', `/api/sessions/${sid1}/title`, { title: TITLE });
+    assert.equal(put.status, 200);
+    await waitFor(async () => (await getTitle(sid1)) === TITLE);
+
+    await callTool(srv.baseUrl, 'renew_session', { summary: 'keep the title' }, { caller: sid1 });
+    await callTool(srv.baseUrl, 'send_prompt', { sessionId: sid1, text: 'go1' });
+    await waitFor(() => instForSession(srv.instances, NEW_SID)?.status === 'idle');
+
+    // No turn_end path writes the title sidecar, so this is proof of the explicit
+    // carry — the rotated id inherits the title (and the in-memory title too).
+    await waitFor(async () => (await getTitle(NEW_SID)) === TITLE);
+    assert.equal(instForSession(srv.instances, NEW_SID).title, TITLE, 'in-memory title survived the rotation');
   } finally {
     await srv.close();
   }
