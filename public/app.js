@@ -36,8 +36,8 @@ import { installHeader } from './header.js';
 import { installSessionSummary } from './sessionSummary.js';
 import { installWsRouter } from './wsRouter.js';
 import { latestOnly } from './latestOnly.js';
-import { loadModelVersions, setActiveVersions, setActiveSonnetWindow,
-  setActiveTierEnabled, setActiveDefaultSpawnTier, setActiveTierBackend } from './models.js';
+import { loadModelVersions, setActiveSonnetWindow,
+  setActiveTierEnabled, setActiveDefaultSpawnTier, setActiveTierBackend, setCustomBackends } from './models.js';
 import { setTtsAvailable, setTtsEnabled, setTtsRate } from './tts.js';
 
 const state = {
@@ -521,11 +521,11 @@ const settings = installSettings({
   onAvailabilityChange: setMicAvailable,
   onPluginsChanged: () => appSwitcher.refresh(),
   onModelsChange: data => {
-    setActiveVersions(data.activeVersions);
     setActiveSonnetWindow(data.sonnetContextWindow);
     if (data.tierBackend) setActiveTierBackend(data.tierBackend);
     if (data.enabledTiers) setActiveTierEnabled(data.enabledTiers);
     setActiveDefaultSpawnTier(data.defaultSpawnTier);
+    setCustomBackends(data.customBackends);
     spawnHandles.syncSonnetPickerLabels();
     spawnHandles.syncTierVisibility();
   },

@@ -1122,7 +1122,7 @@ test('spawn_instance: rebinding a tier changes what that tier resolves to', asyn
   process.env.FAKE_CLAUDE_SCENARIO = SCENARIO_INSTANCE;
   try {
     await api(baseUrl, 'POST', '/api/projects', { name: 'demo' });
-    await setTierBackend('powerful', 'fable'); // was opus by default
+    await setTierBackend('powerful', { kind: 'claude', model: 'claude-fable-5' }); // was opus by default
     const summary = await spawnIdle({ project: 'demo', model: 'powerful', mode: 'bypassPermissions' });
     assert.ok(
       typeof summary.model === 'string' && summary.model.startsWith('claude-fable-'),
@@ -1142,7 +1142,7 @@ test('spawn_instance: legacy family alias pins to that literal backend even afte
   process.env.FAKE_CLAUDE_SCENARIO = SCENARIO_INSTANCE;
   try {
     await api(baseUrl, 'POST', '/api/projects', { name: 'demo' });
-    await setTierBackend('balanced', 'opus'); // rebind the tier that used to default to sonnet
+    await setTierBackend('balanced', { kind: 'claude', model: 'claude-opus-4-8' }); // rebind the tier that used to default to sonnet
     const summary = await spawnIdle({ project: 'demo', model: 'sonnet', mode: 'bypassPermissions' });
     assert.ok(
       typeof summary.model === 'string' && summary.model.startsWith('claude-sonnet-'),

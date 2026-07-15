@@ -1,60 +1,59 @@
-// Sidecar JSON store mapping sessionId → its non-Claude backend binding, so a
-// session spawned through `ollama launch claude` re-acquires that binding
-// across every resume path (UI resume, crash/anchor auto-resume,
-// respawn_instance, restart manifest) and a managed /clear renewal — the same
-// way conducted/temp markers survive. Claude-backed sessions store nothing.
-//
-// Single global file at `<store>/session-backends.json` (session IDs are
-// globally-unique UUIDs). Map-shaped, atomic tmp→rename writes, delete-when-
-// empty — mirrors sessionTitles.js. The value is a record
-// `{ kind:'ollama', model:<ollama tag>, host:<'' | host:port> }`.
+// Sidecar JSON store of sessionIds that are Ollama-backed (spawned through
+// `ollama launch claude`). A single bit per session — the model itself is
+// recovered from the jsonl on resume like any other, so the ONLY thing this
+// carries is the backend kind. Claude-backed sessions store nothing (absence =
+// 'claude'). Single global file `<store>/session-backends.json`, Set-shaped
+// (`{sessions:[…]}`); atomic writes + cross-process lock, mirroring
+// `conductedSessions.js` — the durable-marker pattern this is an instance of.
 
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { orchStoreRoot } from './projects.js';
+import { withLock } from './storeLock.js';
 
 function backendsFile() {
   return path.join(orchStoreRoot(), 'session-backends.json');
-}
-
-function normalizeRecord(rec) {
-  if (!rec || typeof rec !== 'object') return null;
-  if (rec.kind !== 'ollama') return null;
-  const model = typeof rec.model === 'string' ? rec.model.trim() : '';
-  if (!model) return null;
-  const host = typeof rec.host === 'string' ? rec.host.trim() : '';
-  return { kind: 'ollama', model, host };
 }
 
 export async function loadAll() {
   try {
     const raw = await fs.readFile(backendsFile(), 'utf8');
     const obj = JSON.parse(raw);
-    if (!obj || typeof obj !== 'object' || obj.backends === null || typeof obj.backends !== 'object') {
-      return new Map();
-    }
-    const out = new Map();
-    for (const [sid, rec] of Object.entries(obj.backends)) {
-      if (typeof sid !== 'string') continue;
-      const v = normalizeRecord(rec);
-      if (v) out.set(sid, v);
-    }
+    const arr = Array.isArray(obj?.sessions) ? obj.sessions : null;
+    if (!arr) return new Set();
+    const out = new Set();
+    for (const sid of arr) if (typeof sid === 'string' && sid) out.add(sid);
     return out;
   } catch (e) {
-    if (e.code === 'ENOENT') return new Map();
+    if (e.code === 'ENOENT') return new Set();
     console.warn(`sessionBackends: failed to read ${backendsFile()}: ${e.message}`);
-    return new Map();
+    return new Set();
   }
 }
 
-export async function getBackend(sessionId) {
-  if (typeof sessionId !== 'string' || !sessionId) return null;
-  const map = await loadAll();
-  return map.get(sessionId) ?? null;
+export async function isOllamaSession(sessionId) {
+  if (typeof sessionId !== 'string' || !sessionId) return false;
+  const set = await loadAll();
+  return set.has(sessionId);
 }
 
-// Serialise concurrent writers behind a per-process promise chain (read-modify-
-// write of the whole map would otherwise lose keys under concurrency).
+// Strict re-read inside a mutation (under the lock): throws on I/O / corrupt
+// JSON rather than returning empty, so a failed read never overwrites the store.
+async function loadStrict() {
+  try {
+    const raw = await fs.readFile(backendsFile(), 'utf8');
+    const obj = JSON.parse(raw);
+    const arr = Array.isArray(obj?.sessions) ? obj.sessions : null;
+    if (!arr) return new Set();
+    const out = new Set();
+    for (const sid of arr) if (typeof sid === 'string' && sid) out.add(sid);
+    return out;
+  } catch (e) {
+    if (e.code === 'ENOENT') return new Set();
+    throw e;
+  }
+}
+
 let writeChain = Promise.resolve();
 function serialize(fn) {
   const next = writeChain.then(fn, fn);
@@ -62,42 +61,41 @@ function serialize(fn) {
   return next;
 }
 
-async function writeMap(map) {
+async function writeSet(set) {
   const file = backendsFile();
-  if (map.size === 0) {
+  if (set.size === 0) {
     try { await fs.unlink(file); } catch (e) { if (e.code !== 'ENOENT') throw e; }
     return;
   }
   await fs.mkdir(orchStoreRoot(), { recursive: true });
-  const obj = { backends: Object.fromEntries([...map.entries()].sort(([a], [b]) => a.localeCompare(b))) };
+  const obj = { sessions: [...set].sort((a, b) => a.localeCompare(b)) };
   const tmp = `${file}.tmp-${process.pid}-${Date.now()}`;
   await fs.writeFile(tmp, JSON.stringify(obj, null, 2) + '\n');
   await fs.rename(tmp, file);
 }
 
-export function setBackend(sessionId, rec) {
+export function markOllamaSession(sessionId) {
   return serialize(async () => {
-    if (typeof sessionId !== 'string' || !sessionId) return null;
-    const v = normalizeRecord(rec);
-    const map = await loadAll();
-    if (!v) {
-      map.delete(sessionId);
-      await writeMap(map);
-      return null;
-    }
-    map.set(sessionId, v);
-    await writeMap(map);
-    return v;
+    if (typeof sessionId !== 'string' || !sessionId) return false;
+    return withLock(backendsFile(), async () => {
+      const set = await loadStrict();
+      if (set.has(sessionId)) return true;
+      set.add(sessionId);
+      await writeSet(set);
+      return true;
+    });
   });
 }
 
-export function deleteBackend(sessionId) {
+export function unmarkOllamaSession(sessionId) {
   return serialize(async () => {
     if (typeof sessionId !== 'string' || !sessionId) return false;
-    const map = await loadAll();
-    if (!map.has(sessionId)) return false;
-    map.delete(sessionId);
-    await writeMap(map);
-    return true;
+    return withLock(backendsFile(), async () => {
+      const set = await loadStrict();
+      if (!set.has(sessionId)) return false;
+      set.delete(sessionId);
+      await writeSet(set);
+      return true;
+    });
   });
 }

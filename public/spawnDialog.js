@@ -22,7 +22,7 @@
 // Returns { openSpawnDialog, syncSonnetPickerLabels, syncTierVisibility } — the
 // only handles with external callers; openConductDialog/makeModeToggle/
 // spawnInstance/defaultSpawnTier stay internal.
-import { resolveSpawnModel, getActiveSonnetWindow, getActiveVersion, isSonnetFixedWindowVersion,
+import { resolveSpawnModel, getActiveSonnetWindow, isSonnetFixedWindowVersion, familyOf,
   getTierList, getActiveTierEnabled, getActiveDefaultSpawnTier, getActiveTierBackend } from './models.js';
 
 export function installSpawnDialog({ dom, getProjects, refreshProjects, refreshInstances, selectInstance, closeSidebarOverflow }) {
@@ -41,14 +41,14 @@ export function installSpawnDialog({ dom, getProjects, refreshProjects, refreshI
 
   // POSTs a temp instance, closes the dialog, and selects the new session.
   // Used by the conduct dialog.
-  async function spawnInstance({ project, model, planMode, dialogEl, errorEl }) {
+  async function spawnInstance({ project, model, backendKind, planMode, dialogEl, errorEl }) {
     errorEl.textContent = '';
     try {
       const mode = planMode ? 'plan' : 'bypassPermissions';
       const r = await fetch('/api/instances', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ project, model, temp: true, mode, autoApprovePlan: planMode }),
+        body: JSON.stringify({ project, model, backendKind, temp: true, mode, autoApprovePlan: planMode }),
       });
       if (!r.ok) throw new Error((await r.json()).error);
       const inst = await r.json();
@@ -68,14 +68,17 @@ export function installSpawnDialog({ dom, getProjects, refreshProjects, refreshI
   // Fable are always 1M.
   function syncSonnetPickerLabels() {
     for (const tier of getTierList()) {
-      const backend = getActiveTierBackend(tier);
+      const b = getActiveTierBackend(tier); // {kind, model}
       let w;
-      if (backend === 'sonnet') {
-        w = isSonnetFixedWindowVersion(getActiveVersion('sonnet'))
-          ? '1M'
-          : (getActiveSonnetWindow() === '200k' ? '200k' : '1M');
+      if (b.kind === 'ollama') {
+        w = b.model; // Ollama tier: show the tag (no context-window concept)
       } else {
-        w = backend === 'haiku' ? '200k' : '1M';
+        const fam = familyOf(b.model);
+        if (fam === 'sonnet') {
+          w = isSonnetFixedWindowVersion(b.model) ? '1M' : (getActiveSonnetWindow() === '200k' ? '200k' : '1M');
+        } else {
+          w = fam === 'haiku' ? '200k' : '1M';
+        }
       }
       document.querySelectorAll(`.qs-model[data-tier="${tier}"] .qs-ctx`)
         .forEach(el => { el.textContent = w; });
@@ -211,7 +214,7 @@ export function installSpawnDialog({ dom, getProjects, refreshProjects, refreshI
     dom.sdError.textContent = '';
     const project  = pendingSpawnProject;
     const mode     = sdModeValue;
-    const model    = resolveSpawnModel(selectedSpawnTier);
+    const { model, backendKind } = resolveSpawnModel(selectedSpawnTier);
     const effort   = dom.sdEffort.value;
     const thinking = dom.sdThinking.value;
     const temp     = dom.sdTemp.checked || undefined;
@@ -224,7 +227,7 @@ export function installSpawnDialog({ dom, getProjects, refreshProjects, refreshI
       const r = await fetch('/api/instances', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ project, mode, effort, thinking, model, worktree, temp, debug, autoApprovePlan }),
+        body: JSON.stringify({ project, mode, effort, thinking, model, backendKind, worktree, temp, debug, autoApprovePlan }),
       });
       if (!r.ok) throw new Error((await r.json()).error);
       const inst = await r.json();
@@ -279,8 +282,8 @@ export function installSpawnDialog({ dom, getProjects, refreshProjects, refreshI
     e.preventDefault();
     const tier = btn.dataset.tier;
     if (!tier) return;
-    const model = resolveSpawnModel(tier);
-    if (model) spawnInstance({ project: '.conduct', model, planMode: cdMode.planMode, dialogEl: dom.conductDialog, errorEl: dom.cdError });
+    const { model, backendKind } = resolveSpawnModel(tier);
+    if (model) spawnInstance({ project: '.conduct', model, backendKind, planMode: cdMode.planMode, dialogEl: dom.conductDialog, errorEl: dom.cdError });
   });
 
   return { openSpawnDialog, syncSonnetPickerLabels, syncTierVisibility };

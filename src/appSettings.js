@@ -11,7 +11,7 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { orchStoreRoot, writeFileAtomic } from './projects.js';
-import { CAPABILITY_TIERS, DEFAULT_TIER_BACKEND, isKnownTier, isKnownFamily, OLLAMA_ID_PREFIX, isOllamaBackendId } from './modelVersions.js';
+import { CAPABILITY_TIERS, DEFAULT_TIER_BACKEND, isKnownTier, isKnownClaudeModel } from './modelVersions.js';
 
 function settingsPath() {
   return path.join(orchStoreRoot(), 'settings.json');
@@ -53,21 +53,6 @@ export async function setTranscribeModel(name) {
   const next = { ...cur, transcribe: { ...(cur.transcribe || {}), model: name } };
   await writeSettings(next);
   return name;
-}
-
-// Models group: the active concrete version id per Claude family
-// (`models.sonnet`, `models.opus`, `models.haiku`). Returns null when unset
-// so callers fall back to the catalog default (see modelVersions.js).
-export function getModelVersion(family) {
-  const s = loadSync();
-  return s.models?.[family] ?? null;
-}
-
-export async function setModelVersion(family, id) {
-  const cur = loadSync();
-  const next = { ...cur, models: { ...(cur.models || {}), [family]: id } };
-  await writeSettings(next);
-  return id;
 }
 
 // TTS group: the `tts` namespace holds { enabled, voice, rate }.
@@ -222,91 +207,75 @@ export async function setDefaultSpawnTier(tier) {
   return val;
 }
 
-// Models group: custom (Ollama-backed) backends. Persisted as
-// `models.customBackends: [{ id, label, model, host }]`, where `id` is
-// namespace-prefixed (`ollama:<slug>`) so it never collides with a Claude
-// family key. `model` is the Ollama tag; `host` is optional ('' ⇒ default
-// localhost:11434). These merge into the backend catalog so a tier can bind to
-// one just like a Claude family.
+// Models group: custom (Ollama-served) models. Persisted as
+// `models.customBackends: [{ label, model }]`, where `model` is the Ollama tag
+// (the identity — no separate id). Localhost-only; no host field. This is the
+// catalog the Settings Ollama model selector lists.
 export function getCustomBackends() {
   const s = loadSync();
   const list = s.models?.customBackends;
-  return Array.isArray(list) ? list.filter(b => b && typeof b.id === 'string') : [];
+  return Array.isArray(list) ? list.filter(b => b && typeof b.model === 'string') : [];
 }
 
-export function getCustomBackend(id) {
-  return getCustomBackends().find(b => b.id === id) ?? null;
+// A tag is a bindable Ollama model if the user has added it.
+export function isKnownOllamaModel(tag) {
+  return typeof tag === 'string' && !!tag && getCustomBackends().some(b => b.model === tag);
 }
 
-export function isKnownCustomBackend(id) {
-  return isOllamaBackendId(id) && getCustomBackends().some(b => b.id === id);
-}
-
-// A backend key is bindable if it's a known Claude family OR a known custom
-// backend. Used by the tier getter/setter and the Settings route validation.
-export function isKnownBackend(key) {
-  return isKnownFamily(key) || isKnownCustomBackend(key);
-}
-
-function slugifyLabel(label) {
-  const base = String(label || '').toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
-  return base || 'model';
-}
-
-export async function addCustomBackend({ label, model, host } = {}) {
+export async function addCustomBackend({ label, model } = {}) {
   const cleanLabel = String(label || '').trim();
   const cleanModel = String(model || '').trim();
-  const cleanHost = String(host || '').trim();
   if (!cleanLabel || !cleanModel) {
     throw Object.assign(new Error('label and model (ollama tag) are required'), { statusCode: 400 });
   }
   const cur = loadSync();
   const existing = getCustomBackends();
-  // Generate a collision-free prefixed id from the label slug.
-  const slug = slugifyLabel(cleanLabel);
-  let id = `${OLLAMA_ID_PREFIX}${slug}`;
-  let n = 2;
-  while (existing.some(b => b.id === id)) { id = `${OLLAMA_ID_PREFIX}${slug}-${n++}`; }
-  const rec = { id, label: cleanLabel, model: cleanModel, host: cleanHost };
-  const nextList = [...existing, rec];
+  // The tag is the identity — adding an existing tag just updates its label.
+  const nextList = existing.filter(b => b.model !== cleanModel).concat([{ label: cleanLabel, model: cleanModel }]);
   const next = { ...cur, models: { ...(cur.models || {}), customBackends: nextList } };
   await writeSettings(next);
-  return rec;
+  return { label: cleanLabel, model: cleanModel };
 }
 
-// Remove a custom backend. Any tier still bound to it falls back gracefully:
-// getTierBackend's isKnownBackend guard reverts the (now-unknown) binding to
-// the tier's default Claude family on the next read.
-export async function removeCustomBackend(id) {
+// Remove a custom model by tag. Any tier still bound to it falls back
+// gracefully: getTierBackend's validation reverts the now-unknown binding to
+// the tier's default Claude backend on the next read.
+export async function removeCustomBackend(tag) {
   const cur = loadSync();
   const existing = getCustomBackends();
-  const nextList = existing.filter(b => b.id !== id);
+  const nextList = existing.filter(b => b.model !== tag);
   if (nextList.length === existing.length) return false;
   const next = { ...cur, models: { ...(cur.models || {}), customBackends: nextList } };
   await writeSettings(next);
   return true;
 }
 
-// Models group: tier → backend binding. Each tier resolves to a MODEL_FAMILIES
-// entry OR a custom-backend id; rebinding a tier never affects a legacy caller
-// that passes a family name directly (see isKnownFamily branch in
-// src/mcp/handlers.js spawnInstance), only tier-based resolution.
+// True if a {kind, model} binding names a real, currently-available backend.
+function isValidBinding(b) {
+  if (!b || typeof b !== 'object') return false;
+  if (b.kind === 'claude') return isKnownClaudeModel(b.model);
+  if (b.kind === 'ollama') return isKnownOllamaModel(b.model);
+  return false;
+}
+
+// Models group: tier → {kind, model} binding. `kind` is 'claude' (model = a
+// MODEL_FAMILIES version id) or 'ollama' (model = an Ollama tag).
 //
-// IMPORTANT: the fallback guard uses isKnownBackend (family OR custom), NOT
-// isKnownFamily — otherwise a valid custom-backend binding would be silently
-// reverted to the Claude default on every read.
+// IMPORTANT: a valid binding is returned verbatim (no silent revert); only an
+// invalid/dead binding (unknown version, or a since-removed Ollama tag) falls
+// back to the tier's default Claude backend.
 export function getTierBackend(tier) {
   const s = loadSync();
   const stored = s.models?.tierBackend?.[tier];
-  return isKnownBackend(stored) ? stored : DEFAULT_TIER_BACKEND[tier];
+  return isValidBinding(stored) ? stored : DEFAULT_TIER_BACKEND[tier];
 }
 
 export async function setTierBackend(tier, backend) {
-  if (!isKnownTier(tier) || !isKnownBackend(backend)) {
-    throw Object.assign(new Error('unknown tier or backend'), { statusCode: 400 });
+  if (!isKnownTier(tier) || !isValidBinding(backend)) {
+    throw Object.assign(new Error('tierBackend must be {kind, model} naming a known backend'), { statusCode: 400 });
   }
   const cur = loadSync();
-  const nextTierBackend = { ...(cur.models?.tierBackend || {}), [tier]: backend };
+  const nextTierBackend = { ...(cur.models?.tierBackend || {}), [tier]: { kind: backend.kind, model: backend.model } };
   const next = { ...cur, models: { ...(cur.models || {}), tierBackend: nextTierBackend } };
   await writeSettings(next);
   return nextTierBackend;

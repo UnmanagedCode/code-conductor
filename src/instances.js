@@ -7,14 +7,14 @@ import { Parser, SOFT_INTERRUPT_MARKER, isOuterUserEcho, snapStartToQuiescent, f
 import { getProject, claudeProjectsRoot, encodeCwd, findSessionLocation, readFirstPrompt } from './projects.js';
 import { createWorktree, getWorktree, debugBaseDir } from './worktrees.js';
 import { getTitle as getSessionTitle, setTitle as setSessionTitle, deleteTitle as deleteSessionTitle } from './sessionTitles.js';
-import { getBackend as getSessionBackend, setBackend as setSessionBackend, deleteBackend as deleteSessionBackend } from './sessionBackends.js';
+import { isOllamaSession, markOllamaSession, unmarkOllamaSession } from './sessionBackends.js';
 import { isConducted, markConducted, unmarkConducted } from './conductedSessions.js';
 import { SessionRenewController } from './sessionRenew.js';
 import { isTemp, markTemp, unmarkTemp } from './tempSessions.js';
 import { markArchived } from './archivedSessions.js';
 import { CONDUCT_PROJECT_NAME } from './conduct.js';
 import { buildSettingsJSON, buildMcpConfigJSON, AWAITING_INPUT_MESSAGE } from './settings.js';
-import { getOnOverageAction, getOverageThreshold, getConductorCompactWindow, getSonnetContextWindow, getCustomBackend, isKnownCustomBackend } from './appSettings.js';
+import { getOnOverageAction, getOverageThreshold, getConductorCompactWindow, getSonnetContextWindow } from './appSettings.js';
 import { HookBroker } from './hookBroker.js';
 import { loadPersistedTranscript, writeSessionMetadata, readLastSessionModel, hasResumableConversation } from './transcript.js';
 import { canonicalizeModel, familyOf } from './modelVersions.js';
@@ -235,7 +235,7 @@ export class EventLog {
 }
 
 export class Instance extends EventEmitter {
-  constructor({ id, project, cwd, mode, effort, thinking, model, backendKind = 'claude', ollamaModel = null, ollamaHost = null, hookCallbackUrl = null, mcpServerUrl = null, worktree = null, temp = false, conducted = false, callerInstanceId = null, debug = false, launcher = defaultClaudeLauncher }) {
+  constructor({ id, project, cwd, mode, effort, thinking, model, backendKind = 'claude', hookCallbackUrl = null, mcpServerUrl = null, worktree = null, temp = false, conducted = false, callerInstanceId = null, debug = false, launcher = defaultClaudeLauncher }) {
     super();
     this.id = id;
     // The ClaudeLauncher used to spawn the subprocess. Defaults to the real
@@ -246,14 +246,13 @@ export class Instance extends EventEmitter {
     this.mode = mode;
     this.effort = effort;
     this.thinking = thinking;
+    // `model` holds the concrete id for BOTH kinds: a Claude version id
+    // ('claude-…', possibly with a [1m]/[200k] window suffix) or an Ollama tag
+    // ('gemma4:cloud'). `backendKind` ('claude' | 'ollama') is the sole
+    // discriminator — it selects the launch command; the claude args
+    // (including --model) are built uniformly.
     this.model = model;
-    // Backend kind: 'claude' (bare `claude` CLI) or 'ollama' (launched via
-    // `ollama launch claude --model <tag> -- <claude args>`). For an ollama
-    // backend `model` stays null at spawn (ollama launch injects `--model`
-    // itself — no duplicate) and the tag/host ride on these fields instead.
     this.backendKind = backendKind === 'ollama' ? 'ollama' : 'claude';
-    this.ollamaModel = ollamaModel;      // ollama tag, e.g. 'gemma4:cloud'
-    this.ollamaHost = ollamaHost || '';  // '' ⇒ default localhost:11434
     this.hookCallbackUrl = hookCallbackUrl;
     this.mcpServerUrl = mcpServerUrl;
     // null for a normal instance; otherwise the worktree metadata object
@@ -494,8 +493,6 @@ export class Instance extends EventEmitter {
       thinking: this.thinking,
       model: this.model,
       backendKind: this.backendKind,
-      ollamaModel: this.ollamaModel,
-      ollamaHost: this.ollamaHost,
       sessionId: this.sessionId,
       status: this.status,
       // Additive, display-only overlay: `status` itself is never repurposed
@@ -794,21 +791,31 @@ export class Instance extends EventEmitter {
     this._turnMissDetected = false;
     this._turnLastReqPrefix = null;
     this._turnEvicted = 0;
-    const { command, prefixArgs } = resolveClaudeBin();
-    // For an Ollama-backed spawn, launch through `ollama launch claude` instead
-    // of bare `claude`. `ollama launch` sets the Anthropic-compatible endpoint +
-    // auth internally and RE-INJECTS `--model <tag>` into the claude child, so
-    // we must NOT append our own `--model` (guarded below). `--yes` bypasses the
-    // non-agent-capable confirmation prompt, which would otherwise fail a piped
-    // spawn. Everything after `--` is the normal claude arg set (unchanged). A
-    // custom host is threaded via OLLAMA_HOST in spawnEnv — `ollama launch` has
-    // no --host flag. (Any CLAUDE_BIN prefix is intentionally dropped here:
-    // `ollama launch claude` owns which claude binary runs.)
-    let launchCommand = command;
-    let launchPrefix = prefixArgs;
+    // Backend-agnostic launch: compute ONLY command + prefix from backendKind,
+    // then append the SAME claude args (including --model) uniformly below.
+    //   claude  → command from resolveClaudeBin(); prefix = its prefixArgs
+    //             (empty in prod; the test CLAUDE_BIN="node fake.mjs" injection).
+    //   ollama  → `ollama launch claude --model <tag> --yes --` as a drop-in
+    //             substitute for `claude`. ollama sets the Anthropic endpoint +
+    //             auth internally and re-injects --model into the child; the
+    //             forwarded --model below is a matching no-op (verified). --yes
+    //             bypasses the non-agent-capable confirmation (else a piped
+    //             spawn fails). Localhost only — no host plumbing.
+    const { command: claudeCmd, prefixArgs } = resolveClaudeBin();
+    let command, launchPrefix;
     if (this.backendKind === 'ollama') {
-      launchCommand = 'ollama';
-      launchPrefix = ['launch', 'claude', '--model', this.ollamaModel, '--yes', '--'];
+      // Invariant: an ollama-backed instance always has a concrete tag in
+      // `model` (resolver + resume-guard enforce it) — never emit `--model
+      // undefined`.
+      if (!this.model) {
+        this._setStatus('crashed');
+        throw new Error('ollama-backed spawn requires a model (tag); none resolved — rebind the tier or resume with an explicit model');
+      }
+      command = 'ollama';
+      launchPrefix = ['launch', 'claude', '--model', this.model, '--yes', '--'];
+    } else {
+      command = claudeCmd;
+      launchPrefix = prefixArgs;
     }
     if (resume) this.sessionId = resume;
     else if (!this.sessionId) this.sessionId = randomUUID();
@@ -816,10 +823,10 @@ export class Instance extends EventEmitter {
     // happens before the first turn_end (where _writeSessionMetadata also
     // calls markTemp). Fire-and-forget — spawn() must stay synchronous.
     if (this.temp && this.sessionId) markTemp(this.sessionId).catch(() => {});
-    // Persist the Ollama backend binding durably (keyed by sessionId) so every
-    // resume path re-acquires kind/tag/host — mirrors the temp marker above.
+    // Persist the Ollama backend marker durably (the one bit jsonl can't carry)
+    // so every resume path re-acquires backendKind — mirrors the temp marker.
     if (this.backendKind === 'ollama' && this.sessionId) {
-      setSessionBackend(this.sessionId, { kind: 'ollama', model: this.ollamaModel, host: this.ollamaHost }).catch(() => {});
+      markOllamaSession(this.sessionId).catch(() => {});
     }
     this._hydrateTitle().catch(() => {});
     const args = [
@@ -892,16 +899,10 @@ export class Instance extends EventEmitter {
         spawnEnv.CLAUDE_CODE_AUTO_COMPACT_WINDOW = String(cw.value * 1000);
       }
     }
-    // Point `ollama launch` at a custom host (no --host flag exists). Empty ⇒
-    // ollama's own default (localhost:11434).
-    if (this.backendKind === 'ollama' && this.ollamaHost) {
-      spawnEnv.OLLAMA_HOST = this.ollamaHost;
-    }
-    // For an Ollama backend the tag rides on `ollama launch --model` (and is
-    // re-injected into the claude child by ollama), so never append our own
-    // --model — even if _trackModel adopted the CLI-reported tag into
-    // this.model for display, a second --model would duplicate it.
-    if (this.model && this.backendKind !== 'ollama') args.push('--model', this.model);
+    // Uniform --model append for BOTH kinds (no backendKind check). For ollama
+    // this duplicates the launch-slot --model with the same value — a confirmed
+    // no-op (ollama consumes its own copy and re-injects the tag).
+    if (this.model) args.push('--model', this.model);
     if (resume) args.push('--resume', this.sessionId);
     else args.push('--session-id', this.sessionId);
 
@@ -909,10 +910,10 @@ export class Instance extends EventEmitter {
     this.parser.reset();
     // Remember the full launch argv so a later runtime enableDebug()
     // call can still write an accurate meta.json bundle.
-    this._spawnArgv = [launchCommand, ...args];
+    this._spawnArgv = [command, ...args];
     this._openDebugStreams(this._spawnArgv);
 
-    this.proc = this._launcher.launch({ command: launchCommand, args, cwd: this.cwd, env: spawnEnv });
+    this.proc = this._launcher.launch({ command, args, cwd: this.cwd, env: spawnEnv });
     this.pid = this.proc.pid;
 
     const outRl = readline.createInterface({ input: this.proc.stdout, crlfDelay: Infinity });
@@ -1476,8 +1477,8 @@ export class Instance extends EventEmitter {
     try { if (this.title) await setSessionTitle(newSid, this.title); } catch { /* best-effort */ }
     try {
       if (this.backendKind === 'ollama') {
-        await setSessionBackend(newSid, { kind: 'ollama', model: this.ollamaModel, host: this.ollamaHost });
-        await deleteSessionBackend(oldSid);
+        await markOllamaSession(newSid);
+        await unmarkOllamaSession(oldSid);
       }
     } catch { /* best-effort */ }
     try { await unmarkTemp(oldSid); } catch { /* best-effort */ }
@@ -1506,22 +1507,20 @@ export class Instance extends EventEmitter {
     return this.mode;
   }
 
-  async setModel(model) {
-    if (!model || !familyOf(model)) throw new Error('invalid model');
+  async setModel(model, backendKind = 'claude') {
     // Live "Change model" sends a set_model control_request to the RUNNING
-    // process; its Anthropic endpoint + auth are fixed at launch time. A
-    // Claude↔Ollama switch can't be done live. We're deliberately conservative
-    // and also refuse Ollama↔Ollama (a different tag/host can't repoint the
-    // launched endpoint) — a silently-broken switch that keeps hitting the old
-    // model is worse than a clear block. Cross-kind kill+respawn is a separate,
-    // later enhancement.
-    const targetIsOllama = familyOf(model) === 'ollama';
-    if (this.backendKind === 'ollama' || targetIsOllama) {
+    // process, whose Anthropic endpoint + auth are fixed at launch time. Any
+    // switch that involves Ollama (Claude↔Ollama, or Ollama↔Ollama) can't be
+    // done live — refuse it with a clear message rather than a silently-broken
+    // switch that keeps hitting the old model. Cross-kind kill+respawn is a
+    // separate, later enhancement.
+    if (this.backendKind === 'ollama' || backendKind === 'ollama') {
       throw Object.assign(
         new Error('Cannot change model live for an Ollama-backed session — kill and respawn on that tier.'),
         { statusCode: 409, code: 'BACKEND_KIND_LOCKED' },
       );
     }
+    if (!model || !familyOf(model)) throw new Error('invalid model');
     await this._controlRequest({ subtype: 'set_model', model });
     this.model = model;
     this.emit('status', this.summary());
@@ -2043,7 +2042,7 @@ export class InstanceManager extends EventEmitter {
     return p;
   }
 
-  async _doCreate({ project, resume, mode, effort, thinking, model, backendKind: explicitBackendKind, ollamaModel: explicitOllamaModel, ollamaHost: explicitOllamaHost, worktree, temp, conducted, callerInstanceId, debug, autoApprovePlan, prefill } = {}) {
+  async _doCreate({ project, resume, mode, effort, thinking, model, backendKind: explicitBackendKind, worktree, temp, conducted, callerInstanceId, debug, autoApprovePlan, prefill } = {}) {
     // On resume, when the caller didn't pin an explicit worktree, recover the
     // session's recorded project + worktree via findSessionLocation. This is
     // what makes spawn_instance({resume}) "just work" for an MCP conductor
@@ -2080,38 +2079,18 @@ export class InstanceManager extends EventEmitter {
     }
     let finalModel = (typeof model === 'string' && model.trim()) ? model.trim() : null;
 
-    // Backend kind resolution (Claude vs Ollama-backed custom backend). An
-    // Ollama backend carries no Claude model, so it clears finalModel (no
-    // --model to claude — `ollama launch` sets the tag itself) and bypasses the
-    // canonicalize + jsonl model-recovery below. Sources, in priority order:
-    //   (a) explicit backendKind fields  — restart manifest restore.
-    //   (b) `model` is a custom-backend id (e.g. "ollama:foo") — fresh spawn /
-    //       tier resolution. A since-DELETED id resolves to null here → falls
-    //       back to the Claude account default (the tier getter already reverts
-    //       a dead binding, so this is only hit on a directly-passed dead id).
-    //   (c) resume with no explicit binding — recover from the durable sidecar,
-    //       covering UI resume / crash / anchor / respawn_instance uniformly.
-    let backendKind = 'claude';
-    let ollamaModel = null;
-    let ollamaHost = null;
-    const applyOllama = (mdl, host) => {
-      if (!mdl) return;
-      backendKind = 'ollama';
-      ollamaModel = mdl;
-      ollamaHost = host || '';
-      finalModel = null;
-    };
-    if (explicitBackendKind === 'ollama') {
-      applyOllama(explicitOllamaModel, explicitOllamaHost);
-    } else if (finalModel && isKnownCustomBackend(finalModel)) {
-      const rec = getCustomBackend(finalModel);
-      if (rec) applyOllama(rec.model, rec.host);
-      else finalModel = null; // deleted custom backend → Claude account default
-    } else if (resume) {
-      try {
-        const rec = await getSessionBackend(resume);
-        if (rec && rec.kind === 'ollama') applyOllama(rec.model, rec.host);
-      } catch { /* best-effort */ }
+    // Backend kind (Claude vs Ollama) — the sole discriminator. `model` is a
+    // plain id for BOTH kinds (Claude version id OR Ollama tag) and is NOT
+    // cleared for ollama, so the canonicalize + jsonl model-recovery below
+    // apply uniformly. Sources, in priority order:
+    //   (a) explicit backendKind param — fresh spawn (client/handlers resolved
+    //       the tier to {kind, model}) and restart-manifest restore.
+    //   (b) resume with no explicit kind — the durable sidecar marks
+    //       ollama-backed sessions (the one bit jsonl can't carry), covering UI
+    //       resume / crash / anchor / respawn_instance uniformly.
+    let backendKind = explicitBackendKind === 'ollama' ? 'ollama' : 'claude';
+    if (!explicitBackendKind && resume) {
+      try { if (await isOllamaSession(resume)) backendKind = 'ollama'; } catch { /* best-effort */ }
     }
 
     // Optional worktree attachment:
@@ -2151,7 +2130,7 @@ export class InstanceManager extends EventEmitter {
     // jsonl. Otherwise `claude --resume <sid>` falls back to the account
     // default (often Opus) and silently switches the model out from under
     // a session that was spawned with Sonnet/Haiku.
-    if (resume && !finalModel && backendKind !== 'ollama') {
+    if (resume && !finalModel) {
       try {
         const prev = await readLastSessionModel({ cwd, sessionId: resume });
         if (prev) finalModel = prev;
@@ -2160,10 +2139,20 @@ export class InstanceManager extends EventEmitter {
 
     // Re-derive the context-window suffix from the family + the user's Sonnet
     // window preference (Sonnet → '1m' or '200k'; Opus/Haiku always bare).
-    // Done on every spawn, including model-recovery from a resumed session's
-    // jsonl, so the preference is always honoured and stale `[200k]`/`[1m]`
-    // from older clients normalise cleanly.
+    // A no-op for a non-Claude id (familyOf(tag) === null → returned unchanged),
+    // so this runs uniformly for both backend kinds.
     if (finalModel) finalModel = canonicalizeModel(finalModel, { sonnetWindow: getSonnetContextWindow() });
+
+    // Null-model guard (note 1): an ollama-backed session with no resolvable
+    // model — e.g. a resume whose jsonl is empty/corrupt so readLastSessionModel
+    // returned nothing — must fail clearly here rather than emit `--model
+    // undefined` at spawn.
+    if (backendKind === 'ollama' && !finalModel) {
+      throw Object.assign(
+        new Error('ollama-backed session has no resolvable model (tag) — rebind the tier or resume with an explicit model'),
+        { statusCode: 422, code: 'OLLAMA_MODEL_MISSING' },
+      );
+    }
 
     // The conducted marker is set explicitly on the MCP spawn path. When
     // resuming a historical session, recover it from the durable sidecar
@@ -2198,7 +2187,7 @@ export class InstanceManager extends EventEmitter {
     const inst = new Instance({
       id, project, cwd,
       mode: finalMode, effort: finalEffort, thinking: finalThinking, model: finalModel,
-      backendKind, ollamaModel, ollamaHost,
+      backendKind,
       hookCallbackUrl: this.hookCallbackUrl(id),
       // Base MCP URL (no ?caller=) — the per-worker caller suffix is appended in
       // Instance.spawn() once the sessionId is known.

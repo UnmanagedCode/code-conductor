@@ -43,7 +43,7 @@ import {
 import { makeDismissable } from './dismissable.js';
 import { formatAgo } from './sidebar.js';
 import { send } from './ws.js';
-import { resolveSpawnModel, getTierList, getActiveTierEnabled, getActiveTierBackend, getTierLabel, familyOf, backendKindOf } from './models.js';
+import { resolveSpawnModel, getTierList, getActiveTierEnabled, getActiveTierBackend, getTierLabel, backendKindOf } from './models.js';
 
 // Combined popover: "Session totals" section above, "Usage limits" section
 // below. ctx data is per-session; usage-limit data is account-wide.
@@ -255,11 +255,12 @@ export function installHeader({
     // Ollama↔Ollama (a different tag/host can't repoint the launched endpoint).
     // The server enforces this too; here we disable the blocked tiers upfront.
     const runningKind = inst.backendKind === 'ollama' ? 'ollama' : 'claude';
-    const curBackend = familyOf(inst.model); // Claude family; null for Ollama
+    const curModel = typeof inst.model === 'string' ? inst.model.replace(/\[(200k|1m)\]$/, '') : null;
     const row = document.createElement('div');
     row.className = 'quick-spawn-models';
     for (const tier of getTierList()) {
-      const targetKind = backendKindOf(getActiveTierBackend(tier));
+      const binding = getActiveTierBackend(tier); // {kind, model}
+      const targetKind = backendKindOf(binding);
       const blocked = runningKind === 'ollama' || targetKind === 'ollama';
       const btn = document.createElement('button');
       btn.type = 'button';
@@ -268,13 +269,14 @@ export function installHeader({
       btn.hidden = !getActiveTierEnabled(tier);
       btn.disabled = blocked;
       if (blocked) btn.title = 'Kill and respawn on that tier to change backend kind';
-      btn.classList.toggle('qs-selected', runningKind === 'claude' && getActiveTierBackend(tier) === curBackend);
+      // Highlight the tier the running (Claude) worker is on — same kind + id.
+      btn.classList.toggle('qs-selected', runningKind === 'claude' && targetKind === 'claude' && binding.model === curModel);
       btn.textContent = getTierLabel(tier);
       if (!blocked) {
         btn.addEventListener('click', async () => {
-          const model = resolveSpawnModel(tier);
+          const { model, backendKind } = resolveSpawnModel(tier);
           try {
-            await send('model', { id: inst.id, model }, { ack: true });
+            await send('model', { id: inst.id, model, backendKind }, { ack: true });
             closeModelPopover();
             closeOverflow();
           } catch (e) {

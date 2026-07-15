@@ -5,11 +5,11 @@ import path from 'node:path';
 import os from 'node:os';
 import { bootServer, api, freshProjectsRoot, rmrf } from './helpers.mjs';
 import {
-  MODEL_FAMILIES, DEFAULT_VERSIONS, isKnownFamily, isKnownVersion, defaultVersion,
-  CAPABILITY_TIERS, DEFAULT_TIER_BACKEND, isKnownTier,
+  MODEL_FAMILIES, DEFAULT_VERSIONS, PROVIDERS, isKnownFamily, isKnownVersion, defaultVersion,
+  isKnownClaudeModel, CAPABILITY_TIERS, DEFAULT_TIER_BACKEND, isKnownTier,
 } from '../src/modelVersions.js';
 import {
-  getModelVersion, setModelVersion, getTranscribeModel, setTranscribeModel,
+  getTranscribeModel, setTranscribeModel,
   getOnOverageAction, setOnOverageAction,
   getOverageThreshold, setOverageThreshold,
   getConductorCompactWindow, setConductorCompactWindow,
@@ -70,12 +70,14 @@ test('modelVersions catalog: backends, defaults, and validators', () => {
 });
 
 // ── Catalog (capability-tier layer) ─────────────────────────────────────
-test('modelVersions catalog: tiers + default tier→backend binding', () => {
+test('modelVersions catalog: tiers, providers + default {kind,model} bindings', () => {
   assert.deepEqual(CAPABILITY_TIERS.map(t => t.tier), ['fast', 'balanced', 'powerful', 'frontier']);
-  assert.deepEqual(DEFAULT_TIER_BACKEND, { fast: 'haiku', balanced: 'sonnet', powerful: 'opus', frontier: 'fable' });
-  // Every default tier→backend target is itself a known backend.
+  assert.deepEqual(PROVIDERS.map(p => p.kind), ['claude', 'ollama']);
+  // Every default tier binding is claude + a known Claude version.
   for (const t of CAPABILITY_TIERS) {
-    assert.ok(isKnownFamily(DEFAULT_TIER_BACKEND[t.tier]), `${t.tier}'s default backend must be known`);
+    const b = DEFAULT_TIER_BACKEND[t.tier];
+    assert.equal(b.kind, 'claude');
+    assert.ok(isKnownClaudeModel(b.model), `${t.tier}'s default model must be known`);
   }
   assert.ok(isKnownTier('fast'));
   assert.ok(!isKnownTier('sonnet'), 'a legacy family name is not a tier');
@@ -83,67 +85,31 @@ test('modelVersions catalog: tiers + default tier→backend binding', () => {
 });
 
 // ── appSettings ─────────────────────────────────────────────────────────
-test('appSettings: getModelVersion null when unset, setModelVersion round-trips', async () => {
-  const root = await mkTmp();
-  try {
-    await withEnv({ PROJECTS_ROOT: root }, async () => {
-      assert.equal(getModelVersion('opus'), null);
-      await setModelVersion('opus', 'claude-opus-4-7');
-      assert.equal(getModelVersion('opus'), 'claude-opus-4-7');
-      // Other backends remain unset (independent keys).
-      assert.equal(getModelVersion('sonnet'), null);
-    });
-  } finally { await fs.rm(root, { recursive: true, force: true }); }
-});
-
 test('appSettings: models namespace does not clobber transcribe', async () => {
   const root = await mkTmp();
   try {
     await withEnv({ PROJECTS_ROOT: root }, async () => {
       await setTranscribeModel('base.en-q5_1');
-      await setModelVersion('sonnet', 'claude-sonnet-4-5');
+      await setTierBackend('balanced', { kind: 'claude', model: 'claude-sonnet-4-5' });
       assert.equal(getTranscribeModel(), 'base.en-q5_1');
-      assert.equal(getModelVersion('sonnet'), 'claude-sonnet-4-5');
+      assert.deepEqual(getTierBackend('balanced'), { kind: 'claude', model: 'claude-sonnet-4-5' });
     });
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
 
 // ── REST endpoints ──────────────────────────────────────────────────────
-test('GET /api/settings/models returns backend catalog + active defaults + tier catalog', async () => {
+test('GET /api/settings/models returns providers, catalog, and {kind,model} tier bindings', async () => {
   {  // shared server (before/after) + fresh PROJECTS_ROOT per test (beforeEach)
     const r = await api(baseUrl, 'GET', '/api/settings/models');
     assert.equal(r.status, 200);
+    assert.deepEqual(r.body.providers.map(p => p.kind), ['claude', 'ollama']);
     assert.deepEqual(r.body.backends.map(f => f.family), ['fable', 'opus', 'sonnet', 'haiku']);
-    // Unset → catalog defaults.
-    assert.equal(r.body.activeVersions.fable, 'claude-fable-5');
-    assert.equal(r.body.activeVersions.sonnet, 'claude-sonnet-5');
-    assert.equal(r.body.activeVersions.opus, 'claude-opus-4-8');
-    assert.equal(r.body.activeVersions.haiku, 'claude-haiku-4-5');
+    assert.equal(r.body.activeVersions, undefined); // removed
+    assert.deepEqual(r.body.customBackends, []);
     assert.deepEqual(r.body.tiers.map(t => t.tier), ['fast', 'balanced', 'powerful', 'frontier']);
-    assert.deepEqual(r.body.tierBackend, { fast: 'haiku', balanced: 'sonnet', powerful: 'opus', frontier: 'fable' });
-  }
-});
-
-test('POST /api/settings/models switches a backend version and persists', async () => {
-  {  // shared server (before/after) + fresh PROJECTS_ROOT per test (beforeEach)
-    const r = await api(baseUrl, 'POST', '/api/settings/models', { backend: 'sonnet', version: 'claude-sonnet-4-5' });
-    assert.equal(r.status, 200);
-    assert.equal(r.body.activeVersions.sonnet, 'claude-sonnet-4-5');
-    assert.equal(r.body.activeVersions.opus, 'claude-opus-4-8'); // untouched
-    const g = await api(baseUrl, 'GET', '/api/settings/models');
-    assert.equal(g.body.activeVersions.sonnet, 'claude-sonnet-4-5');
-  }
-});
-
-test('POST /api/settings/models rejects unknown backend + version', async () => {
-  {  // shared server (before/after) + fresh PROJECTS_ROOT per test (beforeEach)
-    const badBackend = await api(baseUrl, 'POST', '/api/settings/models', { backend: 'gpt', version: 'claude-opus-4-8' });
-    assert.equal(badBackend.status, 400);
-    const badVersion = await api(baseUrl, 'POST', '/api/settings/models', { backend: 'opus', version: 'nope' });
-    assert.equal(badVersion.status, 400);
-    // Cross-backend version is also rejected.
-    const crossBackend = await api(baseUrl, 'POST', '/api/settings/models', { backend: 'sonnet', version: 'claude-opus-4-8' });
-    assert.equal(crossBackend.status, 400);
+    // Unset → default {kind,model} bindings (each family's default version).
+    assert.deepEqual(r.body.tierBackend.powerful, { kind: 'claude', model: 'claude-opus-4-8' });
+    assert.deepEqual(r.body.tierBackend.balanced, { kind: 'claude', model: 'claude-sonnet-5' });
   }
 });
 
@@ -177,9 +143,9 @@ test('appSettings: onOverage does not clobber model versions', async () => {
   const root = await mkTmp();
   try {
     await withEnv({ PROJECTS_ROOT: root }, async () => {
-      await setModelVersion('sonnet', 'claude-sonnet-4-5');
+      await setTierBackend('balanced', { kind: 'claude', model: 'claude-sonnet-4-5' });
       await setOnOverageAction('stop-resume');
-      assert.equal(getModelVersion('sonnet'), 'claude-sonnet-4-5');
+      assert.deepEqual(getTierBackend('balanced'), { kind: 'claude', model: 'claude-sonnet-4-5' });
       assert.equal(getOnOverageAction(), 'stop-resume');
     });
   } finally { await fs.rm(root, { recursive: true, force: true }); }
@@ -291,10 +257,10 @@ test('appSettings: setConductorCompactWindow does not clobber onOverage or model
   const root = await mkTmp();
   try {
     await withEnv({ PROJECTS_ROOT: root, CLAUDE_CODE_AUTO_COMPACT_WINDOW: undefined }, async () => {
-      await setModelVersion('sonnet', 'claude-sonnet-4-5');
+      await setTierBackend('balanced', { kind: 'claude', model: 'claude-sonnet-4-5' });
       await setOnOverageAction('stop');
       await setConductorCompactWindow({ enabled: true, value: 400 });
-      assert.equal(getModelVersion('sonnet'), 'claude-sonnet-4-5');
+      assert.deepEqual(getTierBackend('balanced'), { kind: 'claude', model: 'claude-sonnet-4-5' });
       assert.equal(getOnOverageAction(), 'stop');
       assert.equal(getConductorCompactWindow().value, 400);
     });
@@ -434,10 +400,10 @@ test('appSettings: setSonnetContextWindow does not clobber other model settings'
   const root = await mkTmp();
   try {
     await withEnv({ PROJECTS_ROOT: root }, async () => {
-      await setModelVersion('sonnet', 'claude-sonnet-4-5');
+      await setTierBackend('balanced', { kind: 'claude', model: 'claude-sonnet-4-5' });
       await setOnOverageAction('stop');
       await setSonnetContextWindow('200k');
-      assert.equal(getModelVersion('sonnet'), 'claude-sonnet-4-5');
+      assert.deepEqual(getTierBackend('balanced'), { kind: 'claude', model: 'claude-sonnet-4-5' });
       assert.equal(getOnOverageAction(), 'stop');
       assert.equal(getSonnetContextWindow(), '200k');
     });
@@ -629,15 +595,13 @@ test('POST /api/settings/models/prefs sets defaultSpawnTier and persists', async
   }
 });
 
-// ── tierBackend (tier→backend binding) ──────────────────────────────────
+// ── tierBackend (tier→{kind,model} binding) ─────────────────────────────
 test('appSettings: getTierBackend defaults to DEFAULT_TIER_BACKEND when unset', async () => {
   const root = await mkTmp();
   try {
     await withEnv({ PROJECTS_ROOT: root }, async () => {
-      assert.equal(getTierBackend('fast'), 'haiku');
-      assert.equal(getTierBackend('balanced'), 'sonnet');
-      assert.equal(getTierBackend('powerful'), 'opus');
-      assert.equal(getTierBackend('frontier'), 'fable');
+      assert.deepEqual(getTierBackend('fast'), DEFAULT_TIER_BACKEND.fast);
+      assert.deepEqual(getTierBackend('powerful'), { kind: 'claude', model: 'claude-opus-4-8' });
     });
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
@@ -646,12 +610,11 @@ test('appSettings: setTierBackend round-trips and rebinding one tier leaves othe
   const root = await mkTmp();
   try {
     await withEnv({ PROJECTS_ROOT: root }, async () => {
-      await setTierBackend('powerful', 'fable');
-      assert.equal(getTierBackend('powerful'), 'fable');
+      await setTierBackend('powerful', { kind: 'claude', model: 'claude-fable-5' });
+      assert.deepEqual(getTierBackend('powerful'), { kind: 'claude', model: 'claude-fable-5' });
       // Other tiers keep their default binding.
-      assert.equal(getTierBackend('fast'), 'haiku');
-      assert.equal(getTierBackend('balanced'), 'sonnet');
-      assert.equal(getTierBackend('frontier'), 'fable');
+      assert.deepEqual(getTierBackend('fast'), DEFAULT_TIER_BACKEND.fast);
+      assert.deepEqual(getTierBackend('balanced'), DEFAULT_TIER_BACKEND.balanced);
     });
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
@@ -660,27 +623,27 @@ test('appSettings: setTierBackend rejects unknown tier or backend', async () => 
   const root = await mkTmp();
   try {
     await withEnv({ PROJECTS_ROOT: root }, async () => {
-      await assert.rejects(() => setTierBackend('medium', 'opus'));
-      await assert.rejects(() => setTierBackend('fast', 'gpt'));
+      await assert.rejects(() => setTierBackend('medium', { kind: 'claude', model: 'claude-opus-4-8' }));
+      await assert.rejects(() => setTierBackend('fast', { kind: 'claude', model: 'not-a-version' }));
     });
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
 
 test('POST /api/settings/models/prefs with tierBackend rebinds a tier and persists', async () => {
   {  // shared server (before/after) + fresh PROJECTS_ROOT per test (beforeEach)
-    const r = await api(baseUrl, 'POST', '/api/settings/models/prefs', { tierBackend: { tier: 'powerful', backend: 'fable' } });
+    const r = await api(baseUrl, 'POST', '/api/settings/models/prefs', { tierBackend: { tier: 'powerful', backend: { kind: 'claude', model: 'claude-fable-5' } } });
     assert.equal(r.status, 200);
-    assert.equal(r.body.tierBackend.powerful, 'fable');
+    assert.deepEqual(r.body.tierBackend.powerful, { kind: 'claude', model: 'claude-fable-5' });
     const g = await api(baseUrl, 'GET', '/api/settings/models');
-    assert.equal(g.body.tierBackend.powerful, 'fable');
+    assert.deepEqual(g.body.tierBackend.powerful, { kind: 'claude', model: 'claude-fable-5' });
   }
 });
 
 test('POST /api/settings/models/prefs rejects unknown tier or backend in tierBackend', async () => {
   {  // shared server (before/after) + fresh PROJECTS_ROOT per test (beforeEach)
-    const badTier = await api(baseUrl, 'POST', '/api/settings/models/prefs', { tierBackend: { tier: 'medium', backend: 'opus' } });
+    const badTier = await api(baseUrl, 'POST', '/api/settings/models/prefs', { tierBackend: { tier: 'medium', backend: { kind: 'claude', model: 'claude-opus-4-8' } } });
     assert.equal(badTier.status, 400);
-    const badBackend = await api(baseUrl, 'POST', '/api/settings/models/prefs', { tierBackend: { tier: 'fast', backend: 'gpt' } });
+    const badBackend = await api(baseUrl, 'POST', '/api/settings/models/prefs', { tierBackend: { tier: 'fast', backend: { kind: 'claude', model: 'nope' } } });
     assert.equal(badBackend.status, 400);
   }
 });
