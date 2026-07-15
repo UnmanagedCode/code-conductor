@@ -116,6 +116,14 @@ export async function start({ port = 8787, host = '127.0.0.1' } = {}) {
   // is written by scheduleRestart in src/restart.js.
   try { sweepPendingTempCleanup({ log: console }); }
   catch (e) { console.warn('temp-cleanup sweep failed:', e); }
+  const { server, instances, wss, pluginHost } = createServer();
+  // The boot-time convention regens below must run AFTER createServer(), which
+  // wires the plugin convention providers (setPluginConventionsProvider /
+  // setPluginConductorConventionsProvider). Before wiring those providers are
+  // no-op stubs returning [], so composing a selection that includes a
+  // plugin-namespaced slug (e.g. `code-karpathy-wiki/orchestrator-wiki`) throws
+  // 'unknown convention slug' in fragmentCatalog.compose(). They don't need the
+  // bound port, so they run here rather than after listen.
   // Regenerate the app-owned <PROJECTS_ROOT>/CLAUDE.md (the file every project
   // imports via `@../CLAUDE.md`) from the composed workspace convention modules.
   // Overwrites like .conduct/CONDUCT.md; a one-time backup of a hand-edited copy
@@ -135,7 +143,6 @@ export async function start({ port = 8787, host = '127.0.0.1' } = {}) {
   // path. Once-per-boot; no-op if already assigned or self can't be found.
   try { await ensureSelfProjectWorkspace(WORKSPACE_AUTO_ASSIGN); }
   catch (e) { console.warn('self workspace seed failed:', e); }
-  const { server, instances, wss, pluginHost } = createServer();
   await listenWithRetry(server, port, host);
   const addr = server.address();
   // Instance subprocesses need the actual bound port to construct the
