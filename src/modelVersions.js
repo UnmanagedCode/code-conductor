@@ -74,7 +74,7 @@ export function isKnownFamily(family) {
 // 'ollama' it's an Ollama tag (from Settings → Models custom models). This is
 // the single source of truth for the Settings backend selector.
 export const PROVIDERS = [
-  { kind: 'claude', label: 'Anthropic (Claude Code)' },
+  { kind: 'claude', label: 'Claude' },
   { kind: 'ollama', label: 'Ollama' },
 ];
 

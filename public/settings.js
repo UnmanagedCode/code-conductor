@@ -332,7 +332,7 @@ export function installSettings({
   function renderModels(data) {
     lastModelsData = data; // latest catalog, read by the provider-switch handler
     const tiers = data.tiers || [];
-    const providers = data.providers || [{ kind: 'claude', label: 'Anthropic (Claude Code)' }, { kind: 'ollama', label: 'Ollama' }];
+    const providers = data.providers || [{ kind: 'claude', label: 'Claude' }, { kind: 'ollama', label: 'Ollama' }];
     const backends = data.backends || []; // Claude version catalog (MODEL_FAMILIES)
     const customBackends = data.customBackends || []; // [{label, model}]
     const tierBackend = data.tierBackend || {}; // {tier: {kind, model}}
@@ -350,7 +350,7 @@ export function installSettings({
     function describeBinding(b) {
       if (b.kind === 'ollama') return `Ollama — ${b.model}`;
       let extra = '';
-      if (b.model.startsWith('claude-sonnet')) extra = ` — ${isSonnetFixed(b.model) || sonnetWindow !== '200k' ? '1M' : '200k'}`;
+      if (b.model.startsWith('claude-sonnet') && !isSonnetFixed(b.model)) extra = ` — ${sonnetWindow !== '200k' ? '1M' : '200k'}`;
       return `${versionLabel(b.model)}${extra}`;
     }
 
@@ -364,7 +364,10 @@ export function installSettings({
     }
 
     smListEl.innerHTML = '';
-    for (const t of tiers) {
+    // Render frontier → fast (most capable first) — reversed from `tiers`' catalog
+    // order, which the one-line summary above still uses unreversed.
+    const tiersForRows = [...tiers].reverse();
+    for (const t of tiersForRows) {
       const isEnabled = enabledTiers[t.tier] !== false;
       const isDefault = t.tier === defaultTier;
       const isLastEnabled = isEnabled && enabledCount === 1;
@@ -389,7 +392,7 @@ export function installSettings({
       labelEl.textContent = t.label;
       li.appendChild(labelEl);
 
-      // Column 3: backend (provider) select — Anthropic (Claude Code) / Ollama.
+      // Column 3: backend (provider) select — Claude / Ollama.
       const backendSel = document.createElement('select');
       backendSel.className = 'sm-backend';
       backendSel.dataset.tier = t.tier;

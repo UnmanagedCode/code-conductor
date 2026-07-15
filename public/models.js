@@ -34,7 +34,7 @@ let activeTierBackend = { ...DEFAULT_TIER_BACKEND };
 let sonnetFixedWindowByVersion = { 'claude-sonnet-5': '1m' };
 let tierList = Object.keys(DEFAULT_TIER_BACKEND);
 let tierLabels = { ...DEFAULT_TIER_LABELS };
-let providers = [{ kind: 'claude', label: 'Anthropic (Claude Code)' }, { kind: 'ollama', label: 'Ollama' }];
+let providers = [{ kind: 'claude', label: 'Claude' }, { kind: 'ollama', label: 'Ollama' }];
 let customBackends = []; // [{label, model}]
 
 export function getTierList() { return tierList; }
