@@ -128,11 +128,11 @@ export function buildTools() {
           model: {
             type: 'string',
             description:
-              'Family alias (opus / sonnet / haiku / fable) — resolves to the version configured in ' +
-              "Settings → Models, including Sonnet's 1M/200k preference for 4.x versions (Sonnet 5 is always 1M). " +
-              'A full model id (e.g. claude-sonnet-4-6) is also accepted as a pass-through. ' +
-              'Empty/omitted uses the account default. ' +
-              'Disabled families are still resolved when passed explicitly.',
+              'Capability tier — fast / balanced / powerful / frontier (the primary vocabulary); each resolves ' +
+              'via Settings → Models to its bound backend: a Claude version or a local Ollama model. Also ' +
+              "accepted: a legacy Claude family alias (opus / sonnet / haiku / fable) → that family's default " +
+              'version, or a full Claude model id (e.g. claude-sonnet-4-6) as pass-through. ' +
+              'Empty/omitted uses the account default.',
           },
           resume: { type: 'string', description: 'Optional sessionId to resume (vs. spawning a fresh session).' },
           worktree: {

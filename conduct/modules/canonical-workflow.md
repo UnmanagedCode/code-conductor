@@ -5,7 +5,7 @@
 For a typical "implement feature X in project Y":
 
 1. **Recon** — `list_projects()`; `project_status({project: 'Y'})`; `project_read` as needed.
-2. **Spawn in plan mode, fresh worktree** — `spawn_instance({project: 'Y', mode: 'plan', createWorktree: true, model: 'sonnet'})`; capture the returned `sessionId`.
+2. **Spawn in plan mode, fresh worktree** — `spawn_instance({project: 'Y', mode: 'plan', createWorktree: true, model: 'balanced'})`; capture the returned `sessionId`.
 3. **Brief** — `send_prompt({sessionId, text: "<scoped goal + constraints + completion sentinel>"})`, end your turn.
 4. **[Wake] Read the plan** — from the folded wake output (it includes the plan/`AskUserQuestion` block with its trailing prose); `get_recent_messages({sessionId})` only for more or an un-folded wake.
 5. **Decide** — **Approve**: `approve_plan({sessionId})` (optional `feedback`) → resubscribe + end turn. **Revise**: `reject_plan({sessionId, feedback})` → resubscribe + end turn, loop to step 4. **Answer a question**: on a `questions` wake, `answer_question({sessionId, answers})` → resubscribe + end turn. **Abandon**: `unsubscribe_from_idle({sessionId})`; `kill_instance({sessionId})`; `delete_worktree(...)`.
