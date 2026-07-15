@@ -106,6 +106,107 @@ test('list(): installed flips true once the derived target dir exists', async ()
   }
 });
 
+test('list(): installed but not a git repo -> updateAvailable false, never throws', async () => {
+  const env = await makePluginRoot();
+  try {
+    await env.addProject('code-share'); // plain dir, not a git repo
+    const lib = createPluginLibrary();
+    const rows = await lib.list();
+    assert.equal(rows[0].installed, true);
+    assert.equal(rows[0].updateAvailable, false);
+    assert.equal(rows[0].behind, null);
+  } finally {
+    await env.restore();
+  }
+});
+
+test('list(): installed git repo with no remote configured -> updateAvailable false, never throws', async () => {
+  const env = await makePluginRoot();
+  try {
+    const dir = await env.addProject('code-share');
+    await git(dir, '-c', 'init.defaultBranch=main', 'init', '-q');
+    await git(dir, 'config', 'user.email', 'test@test');
+    await git(dir, 'config', 'user.name', 'test');
+    await fs.writeFile(path.join(dir, 'file.txt'), 'v1');
+    await git(dir, 'add', '-A');
+    await git(dir, 'commit', '-q', '-m', 'v1');
+
+    const lib = createPluginLibrary();
+    const rows = await lib.list();
+    assert.equal(rows[0].installed, true);
+    assert.equal(rows[0].updateAvailable, false);
+    assert.equal(rows[0].behind, null);
+  } finally {
+    await env.restore();
+  }
+});
+
+test('list(): installed + up to date with origin -> updateAvailable false, behind 0', async () => {
+  const env = await makePluginRoot();
+  const remoteDir = await fs.mkdtemp(path.join(os.tmpdir(), 'lib-remote-'));
+  const seedDir = await fs.mkdtemp(path.join(os.tmpdir(), 'lib-seed-'));
+  try {
+    await git(remoteDir, '-c', 'init.defaultBranch=main', 'init', '-q', '--bare');
+    await git(seedDir, '-c', 'init.defaultBranch=main', 'init', '-q');
+    await git(seedDir, 'config', 'user.email', 'test@test');
+    await git(seedDir, 'config', 'user.name', 'test');
+    await fs.writeFile(path.join(seedDir, 'file.txt'), 'v1');
+    await git(seedDir, 'add', '-A');
+    await git(seedDir, 'commit', '-q', '-m', 'v1');
+    await git(seedDir, 'remote', 'add', 'origin', remoteDir);
+    await git(seedDir, 'push', '-q', 'origin', 'main');
+
+    await git(env.root, 'clone', '-q', remoteDir, 'code-share');
+
+    const lib = createPluginLibrary();
+    const rows = await lib.list();
+    assert.equal(rows[0].installed, true);
+    assert.equal(rows[0].updateAvailable, false);
+    assert.equal(rows[0].behind, 0);
+  } finally {
+    await env.restore();
+    await fs.rm(remoteDir, { recursive: true, force: true });
+    await fs.rm(seedDir, { recursive: true, force: true });
+  }
+});
+
+test('list(): installed + behind origin -> updateAvailable true, behind > 0 (fetches before comparing)', async () => {
+  const env = await makePluginRoot();
+  const remoteDir = await fs.mkdtemp(path.join(os.tmpdir(), 'lib-remote-'));
+  const seedDir = await fs.mkdtemp(path.join(os.tmpdir(), 'lib-seed-'));
+  try {
+    await git(remoteDir, '-c', 'init.defaultBranch=main', 'init', '-q', '--bare');
+    await git(seedDir, '-c', 'init.defaultBranch=main', 'init', '-q');
+    await git(seedDir, 'config', 'user.email', 'test@test');
+    await git(seedDir, 'config', 'user.name', 'test');
+    await fs.writeFile(path.join(seedDir, 'file.txt'), 'v1');
+    await git(seedDir, 'add', '-A');
+    await git(seedDir, 'commit', '-q', '-m', 'v1');
+    await git(seedDir, 'remote', 'add', 'origin', remoteDir);
+    await git(seedDir, 'push', '-q', 'origin', 'main');
+
+    await git(env.root, 'clone', '-q', remoteDir, 'code-share');
+
+    // A new commit lands upstream after the install-time clone — list()
+    // must fetch on its own (its comparison-only helper reads cached refs)
+    // to see this, not just report stale local knowledge.
+    await fs.writeFile(path.join(seedDir, 'file.txt'), 'v2');
+    await git(seedDir, 'add', '-A');
+    await git(seedDir, 'commit', '-q', '-m', 'v2');
+    await git(seedDir, 'push', '-q', 'origin', 'main');
+
+    const lib = createPluginLibrary();
+    const rows = await lib.list();
+    assert.equal(rows[0].installed, true);
+    assert.equal(rows[0].updateAvailable, true);
+    assert.equal(rows[0].behind, 1);
+  } finally {
+    await env.restore();
+    await fs.rm(remoteDir, { recursive: true, force: true });
+    await fs.rm(seedDir, { recursive: true, force: true });
+  }
+});
+
 test('install(): unknown id -> 404', async () => {
   const env = await makePluginRoot();
   try {
@@ -165,6 +266,45 @@ test('install(): happy path clones (fake impl) and triggers a rescan, never enab
 
     const rows = await lib.list();
     assert.equal(rows[0].installed, true);
+  } finally {
+    await env.restore();
+  }
+});
+
+test('install(): onValidated fires once, before the clone starts; onChunk streams clone + hook output', async () => {
+  const env = await makePluginRoot();
+  try {
+    const events = [];
+    const lib = createPluginLibrary({
+      _cloneImpl: async (url, destDir, { onChunk } = {}) => {
+        await fs.mkdir(destDir, { recursive: true });
+        onChunk?.('Cloning...\n');
+        onChunk?.('done.\n');
+        return { code: 0, stdout: '', stderr: '' };
+      },
+      _runHookImpl: async (command, cwd, { onChunk } = {}) => {
+        onChunk?.('deps installed\n');
+        return { code: 0, output: 'deps installed' };
+      },
+    });
+    const result = await lib.install('code-playwright', {
+      onValidated: () => events.push('validated'),
+      onChunk: (phase, text) => events.push(`${phase}:${text.trim()}`),
+    });
+    assert.equal(result.name, 'code-playwright');
+    assert.deepEqual(events, ['validated', 'clone:Cloning...', 'clone:done.', 'hook:deps installed']);
+  } finally {
+    await env.restore();
+  }
+});
+
+test('install(): onValidated never fires when validation rejects (unknown id)', async () => {
+  const env = await makePluginRoot();
+  try {
+    const lib = createPluginLibrary();
+    let validated = false;
+    await rejectsWithStatus(lib.install('nope', { onValidated: () => { validated = true; } }), 404);
+    assert.equal(validated, false);
   } finally {
     await env.restore();
   }
@@ -251,6 +391,45 @@ test('update(): not installed -> 404', async () => {
   try {
     const lib = createPluginLibrary();
     await rejectsWithStatus(lib.update('code-share'), 404);
+  } finally {
+    await env.restore();
+  }
+});
+
+test('update(): onValidated fires once, before the pull starts; onChunk streams pull + hook output', async () => {
+  const env = await makePluginRoot();
+  try {
+    await env.addProject('code-playwright');
+    const events = [];
+    const lib = createPluginLibrary({
+      _pullImpl: async (cwd, { onChunk } = {}) => {
+        onChunk?.('Updating...\n');
+        onChunk?.('Fast-forward\n');
+        return { code: 0, stdout: '', stderr: '' };
+      },
+      _runHookImpl: async (command, cwd, { onChunk } = {}) => {
+        onChunk?.('deps installed\n');
+        return { code: 0, output: 'deps installed' };
+      },
+    });
+    const result = await lib.update('code-playwright', {
+      onValidated: () => events.push('validated'),
+      onChunk: (phase, text) => events.push(`${phase}:${text.trim()}`),
+    });
+    assert.equal(result.name, 'code-playwright');
+    assert.deepEqual(events, ['validated', 'pull:Updating...', 'pull:Fast-forward', 'hook:deps installed']);
+  } finally {
+    await env.restore();
+  }
+});
+
+test('update(): onValidated never fires when validation rejects (not installed)', async () => {
+  const env = await makePluginRoot();
+  try {
+    const lib = createPluginLibrary();
+    let validated = false;
+    await rejectsWithStatus(lib.update('code-share', { onValidated: () => { validated = true; } }), 404);
+    assert.equal(validated, false);
   } finally {
     await env.restore();
   }

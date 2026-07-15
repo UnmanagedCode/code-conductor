@@ -58,6 +58,54 @@ export function installPluginManager({ onCatalogChange } = {}) {
     return data;
   }
 
+  const LIVE_OUTPUT_CAP = 8 * 1024;
+
+  // Install/update POST responses either stay a single plain JSON body (a
+  // validation failure the server caught before starting any work — same
+  // shape/errors as api() above) or switch to NDJSON chunk/result lines once
+  // real work (clone/pull/hook) starts. onChunk(text) is called live as
+  // output streams in; the resolved value is the final `result` payload
+  // (same shape api()'s POST calls used to return), or throws an Error
+  // (with .tail if present) on a post-validation failure.
+  async function streamAction(method, path, onChunk) {
+    const r = await fetch(path, { method, cache: 'no-store' });
+    const contentType = r.headers.get('content-type') || '';
+    if (!contentType.includes('ndjson')) {
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        const err = new Error(data.error || `HTTP ${r.status}`);
+        if (data.tail) err.tail = data.tail;
+        throw err;
+      }
+      return data;
+    }
+    const reader = r.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = '';
+    let finalResult = null;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (value) buf += decoder.decode(value, { stream: true });
+      let idx;
+      while ((idx = buf.indexOf('\n')) !== -1) {
+        const line = buf.slice(0, idx);
+        buf = buf.slice(idx + 1);
+        if (!line) continue;
+        const evt = JSON.parse(line);
+        if (evt.type === 'chunk') onChunk(evt.text);
+        else if (evt.type === 'result') finalResult = evt;
+      }
+      if (done) break;
+    }
+    if (!finalResult) throw new Error('stream ended unexpectedly');
+    if (!finalResult.ok) {
+      const err = new Error(finalResult.error || 'operation failed');
+      if (finalResult.tail) err.tail = finalResult.tail;
+      throw err;
+    }
+    return finalResult.result;
+  }
+
   // project → worktree names, for the version dropdowns.
   async function fetchWorktrees() {
     try {
@@ -288,16 +336,41 @@ export function installPluginManager({ onCatalogChange } = {}) {
       if (row.installed) {
         const span = document.createElement('span');
         span.className = 'pll-installed-as';
-        span.textContent = `installed as ${row.installedAs}`;
+        span.textContent = row.updateAvailable
+          ? `installed as ${row.installedAs}`
+          : `installed as ${row.installedAs} · up to date`;
         actions.appendChild(span);
-        actions.appendChild(btn('Update', () => updateEntry(row)));
+        if (row.updateAvailable) {
+          const updateBtn = btn('Update', () => updateEntry(row, li, updateBtn));
+          actions.appendChild(updateBtn);
+        }
       } else {
-        actions.appendChild(btn('Install', () => installEntry(row)));
+        const installBtn = btn('Install', () => installEntry(row, li, installBtn));
+        actions.appendChild(installBtn);
       }
       li.appendChild(actions);
 
       libraryListEl.appendChild(li);
     }
+  }
+
+  // Live output box for the row currently running install/update — created
+  // on demand, appended after the row's actions, capped so a chatty hook
+  // (npm install, browser-binary downloads) can't grow the DOM unbounded.
+  function ensureLiveOutput(li) {
+    let pre = li.querySelector('.pll-live');
+    if (!pre) {
+      pre = document.createElement('pre');
+      pre.className = 'pll-live';
+      li.appendChild(pre);
+    }
+    return pre;
+  }
+
+  function appendLive(pre, text) {
+    pre.textContent += text;
+    if (pre.textContent.length > LIVE_OUTPUT_CAP) pre.textContent = pre.textContent.slice(-LIVE_OUTPUT_CAP);
+    pre.scrollTop = pre.scrollHeight;
   }
 
   // A postClone/postPull hook failure is reported by the server as a soft
@@ -310,17 +383,22 @@ export function installPluginManager({ onCatalogChange } = {}) {
     showLibraryTail(hookResult.tail);
   }
 
-  async function installEntry(row) {
+  async function installEntry(row, li, buttonEl) {
     if (busy) return;
     busy = true;
+    buttonEl.disabled = true;
+    buttonEl.textContent = 'Installing…';
     setStatusEl(libraryStatusEl, `Installing ${row.name}…`);
     clearLibraryTail();
+    const livePre = ensureLiveOutput(li);
     try {
-      const result = await api('POST', `/api/plugins/library/${row.id}/install`);
+      const result = await streamAction('POST', `/api/plugins/library/${row.id}/install`, (text) => appendLive(livePre, text));
       await load();
       onCatalogChange?.();
       reportHookWarning(row.name, 'Installed', 'post-install', result.postClone);
     } catch (e) {
+      buttonEl.disabled = false;
+      buttonEl.textContent = 'Install';
       setStatusEl(libraryStatusEl, `Installing ${row.name} failed: ${e.message || e}`, true);
       if (e.tail) showLibraryTail(e.tail);
       busy = false;
@@ -329,17 +407,22 @@ export function installPluginManager({ onCatalogChange } = {}) {
     busy = false;
   }
 
-  async function updateEntry(row) {
+  async function updateEntry(row, li, buttonEl) {
     if (busy) return;
     busy = true;
+    buttonEl.disabled = true;
+    buttonEl.textContent = 'Updating…';
     setStatusEl(libraryStatusEl, `Updating ${row.name}…`);
     clearLibraryTail();
+    const livePre = ensureLiveOutput(li);
     try {
-      const result = await api('POST', `/api/plugins/library/${row.id}/update`);
+      const result = await streamAction('POST', `/api/plugins/library/${row.id}/update`, (text) => appendLive(livePre, text));
       await load();
       onCatalogChange?.();
       reportHookWarning(row.name, 'Updated', 'post-update', result.postPull);
     } catch (e) {
+      buttonEl.disabled = false;
+      buttonEl.textContent = 'Update';
       setStatusEl(libraryStatusEl, `Updating ${row.name} failed: ${e.message || e}`, true);
       if (e.tail) showLibraryTail(e.tail);
       busy = false;

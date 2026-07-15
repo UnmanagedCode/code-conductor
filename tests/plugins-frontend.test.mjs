@@ -234,10 +234,36 @@ function buildPluginManagerDom(document) {
   return { status, list, rescan, libStatus, libList, tail, tailPre };
 }
 
+// Fakes a fetch Response whose body streams NDJSON lines (one per `read()`
+// call, mirroring how the real chunked server response arrives), with a
+// content-type that pluginManager.js's streamAction() checks to decide
+// whether to parse the body as a stream vs. a single JSON blob.
+function ndjsonResponse(events) {
+  let i = 0;
+  return {
+    ok: true,
+    status: 200,
+    headers: { get: (h) => (String(h).toLowerCase() === 'content-type' ? 'application/x-ndjson' : null) },
+    body: {
+      getReader() {
+        return {
+          async read() {
+            if (i >= events.length) return { done: true, value: undefined };
+            const line = `${JSON.stringify(events[i++])}\n`;
+            return { done: false, value: new TextEncoder().encode(line) };
+          },
+        };
+      },
+    },
+  };
+}
+
 // Fixed single library entry (code-share); `installed` flips true after a
-// successful install call, mirroring the real server's directory-exists check.
+// successful install call, mirroring the real server's directory-exists
+// check. `updateAvailable` mirrors library.js's list() ahead/behind check.
 function stubPluginManagerFetch({
-  initiallyInstalled = false, installResult, installPostClone = null, updateResult, updatePostPull = null,
+  initiallyInstalled = false, updateAvailable = true,
+  installResult, installPostClone = null, updateResult, updatePostPull = null,
 } = {}) {
   const calls = [];
   let installed = initiallyInstalled;
@@ -250,20 +276,34 @@ function stubPluginManagerFetch({
       return Promise.resolve({ ok: true, json: async () => ([{
         id: 'code-share', name: 'Code Share', description: 'Share code snippets.',
         repo: 'https://github.com/UnmanagedCode/code-share', installed, installedAs: installed ? 'code-share' : null,
+        updateAvailable: installed && updateAvailable, behind: installed && updateAvailable ? 1 : 0,
       }]) });
     }
     if (url === '/api/plugins/library/code-share/install') {
       if (installResult === 'fail') {
-        return Promise.resolve({ ok: false, status: 502, json: async () => ({ error: 'clone failed', tail: 'fatal: boom' }) });
+        return Promise.resolve(ndjsonResponse([
+          { type: 'chunk', phase: 'clone', text: 'Cloning into code-share...\n' },
+          { type: 'result', ok: false, error: 'clone failed', tail: 'fatal: boom' },
+        ]));
       }
       installed = true;
-      return Promise.resolve({ ok: true, json: async () => ({ id: 'code-share', name: 'code-share', postClone: installPostClone }) });
+      return Promise.resolve(ndjsonResponse([
+        { type: 'chunk', phase: 'clone', text: 'Cloning into code-share...\n' },
+        { type: 'chunk', phase: 'clone', text: 'done.\n' },
+        { type: 'result', ok: true, result: { id: 'code-share', name: 'code-share', postClone: installPostClone } },
+      ]));
     }
     if (url === '/api/plugins/library/code-share/update') {
       if (updateResult === 'fail') {
-        return Promise.resolve({ ok: false, status: 502, json: async () => ({ error: 'git pull failed', tail: 'fatal: diverged' }) });
+        return Promise.resolve(ndjsonResponse([
+          { type: 'chunk', phase: 'pull', text: 'Updating code-share...\n' },
+          { type: 'result', ok: false, error: 'git pull failed', tail: 'fatal: diverged' },
+        ]));
       }
-      return Promise.resolve({ ok: true, json: async () => ({ id: 'code-share', name: 'code-share', postPull: updatePostPull }) });
+      return Promise.resolve(ndjsonResponse([
+        { type: 'chunk', phase: 'pull', text: 'Updating code-share...\n' },
+        { type: 'result', ok: true, result: { id: 'code-share', name: 'code-share', postPull: updatePostPull } },
+      ]));
     }
     return Promise.resolve({ ok: true, json: async () => ({}) });
   };
@@ -297,6 +337,8 @@ test('pluginManager: Install shows progress, then relabels the entry as installe
   const installBtn = [...dom.libList.querySelectorAll('button')].find(b => b.textContent === 'Install');
   installBtn.click();
   assert.match(dom.libStatus.textContent, /Installing Code Share/);
+  assert.equal(installBtn.disabled, true, 'row button disabled while the install streams');
+  assert.equal(installBtn.textContent, 'Installing…');
   await tick();
 
   assert.ok(calls.includes('POST /api/plugins/library/code-share/install'));
@@ -321,9 +363,14 @@ test('pluginManager: install failure surfaces the error and clone-output tail, n
   assert.equal(dom.libStatus.classList.contains('pl-status-err'), true);
   assert.equal(dom.tail.hidden, false);
   assert.match(dom.tailPre.textContent, /fatal: boom/);
-  // Entry stays installable — the failed attempt didn't mark it installed.
+  // Entry stays installable — the failed attempt didn't mark it installed —
+  // and its button is re-enabled rather than stuck on "Installing…".
   const row = dom.libList.querySelector('.pll-row');
-  assert.ok([...row.querySelectorAll('button')].some(b => b.textContent === 'Install'));
+  const restoredBtn = [...row.querySelectorAll('button')].find(b => b.textContent === 'Install');
+  assert.ok(restoredBtn);
+  assert.equal(restoredBtn.disabled, false);
+  // The row's live output box keeps the streamed clone output visible.
+  assert.match(row.querySelector('.pll-live').textContent, /Cloning into code-share/);
 });
 
 test('pluginManager: an installed entry renders an Update button, not Install', async () => {
@@ -340,6 +387,20 @@ test('pluginManager: an installed entry renders an Update button, not Install', 
   assert.deepEqual(buttons, ['Update']);
 });
 
+test('pluginManager: an installed, up-to-date entry renders no Update button', async () => {
+  const window = makeWindow();
+  const dom = buildPluginManagerDom(window.document);
+  stubPluginManagerFetch({ initiallyInstalled: true, updateAvailable: false });
+  const { installPluginManager } = await freshImport('pluginManager.js');
+  const mgr = installPluginManager();
+  await mgr.load();
+
+  const row = dom.libList.querySelector('.pll-row');
+  assert.match(row.querySelector('.pll-installed-as').textContent, /up to date/);
+  const buttons = [...row.querySelectorAll('button')].map(b => b.textContent);
+  assert.deepEqual(buttons, [], 'no Update button when nothing to pull');
+});
+
 test('pluginManager: Update shows progress, then refreshes', async () => {
   const window = makeWindow();
   const dom = buildPluginManagerDom(window.document);
@@ -351,6 +412,8 @@ test('pluginManager: Update shows progress, then refreshes', async () => {
   const updateBtn = [...dom.libList.querySelectorAll('button')].find(b => b.textContent === 'Update');
   updateBtn.click();
   assert.match(dom.libStatus.textContent, /Updating Code Share/);
+  assert.equal(updateBtn.disabled, true, 'row button disabled while the update streams');
+  assert.equal(updateBtn.textContent, 'Updating…');
   await tick();
 
   assert.ok(calls.includes('POST /api/plugins/library/code-share/update'));
@@ -375,6 +438,11 @@ test('pluginManager: Update failure (git pull failed) surfaces the error and tai
   assert.equal(dom.libStatus.classList.contains('pl-status-err'), true);
   assert.equal(dom.tail.hidden, false);
   assert.match(dom.tailPre.textContent, /fatal: diverged/);
+  const row = dom.libList.querySelector('.pll-row');
+  const restoredBtn = [...row.querySelectorAll('button')].find(b => b.textContent === 'Update');
+  assert.ok(restoredBtn);
+  assert.equal(restoredBtn.disabled, false);
+  assert.match(row.querySelector('.pll-live').textContent, /Updating code-share/);
 });
 
 test('pluginManager: install succeeds but a failed postClone is surfaced as a warning, not an install failure', async () => {
