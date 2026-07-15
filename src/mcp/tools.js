@@ -366,17 +366,20 @@ export function buildTools() {
       annotations: { idempotentHint: true },
     },
     {
-      name: 'compact_session',
+      name: 'renew_session',
       description:
-        'Compact your OWN session. Hand off a self-authored summary; code-conductor then clears your ' +
+        'Renew your OWN session. Hand off a self-authored summary; code-conductor then clears your ' +
         'accumulated context in place — SAME session process, fresh conversation (a managed /clear, not a ' +
-        'restart) — and seeds the cleared session with your summary as its first turn. Use this when context ' +
-        'from finished work no longer helps newer work and is just costing tokens. ' +
+        'restart) — and seeds the cleared session with your summary (plus a server-generated block of live ' +
+        'instance/subscription state, see below) as its first turn. ' +
+        'When to use: after landing and cleaning up a job, when history about finished work is dead weight ' +
+        'taxing every future turn — renew at lifecycle seams, not because context is "full". ' +
         'The clear happens when your CURRENT turn ends: after calling this, end your turn WITHOUT starting new ' +
-        'work — anything you do after this call is discarded by the clear. Your summary is the ONLY thing ' +
-        'carried across, so write everything the fresh session needs. Caller identity is taken from the MCP ' +
-        'URL: this always acts on the calling session and only works for a code-conductor-managed instance. ' +
-        'It stays valid across repeated self-compaction, so a long-lived session can compact more than once.',
+        'work — anything you do after this call is discarded by the clear. Your summary (plus the appended ' +
+        'mechanical state block) is the ONLY thing carried across, so write everything the fresh session needs. ' +
+        'Caller identity is taken from the MCP URL: this always acts on the calling session and only works for ' +
+        'a code-conductor-managed instance. It stays valid across repeated renewal, so a long-lived session ' +
+        'can renew more than once.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -384,14 +387,22 @@ export function buildTools() {
             type: 'string',
             minLength: 1,
             description:
-              'The handoff summary, seeded as the first user turn of the cleared session. Write it as a note ' +
-              'to your future self: the goal, key decisions and constraints, current state, and the exact next ' +
-              'steps. Everything not captured here is lost when the context clears.',
+              'The handoff summary, seeded as the first user turn of the cleared session (the server appends ' +
+              'a mechanical state block after it — do not re-enumerate live instances yourself, carry intent ' +
+              'and meaning instead). Structure it in three sections: ' +
+              '(1) Live work roster — per still-running worker: sessionId, project/worktree, task, state, ' +
+              'agreed sentinel, next action. ' +
+              '(2) Completed work index — one line per landed job: outcome + pointers to where details live ' +
+              '(merge sha, worktree name, worker sessionId — transcripts and diffs remain recoverable from ' +
+              'these). ' +
+              '(3) User context — stated preferences, decisions made, pending promises. ' +
+              'Write it as a note to your future self: everything not captured here is lost when the context ' +
+              'clears.',
           },
         },
         required: ['summary'],
       },
-      handler: h.compactSession,
+      handler: h.renewSession,
     },
     {
       name: 'interrupt_turn',

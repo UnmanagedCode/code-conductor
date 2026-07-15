@@ -22,10 +22,11 @@ import * as m0011 from './0011-rename-optional-guidelines-store.mjs';
 import * as m0012 from './0012-drop-retired-execution-modes-slug.mjs';
 import * as m0013 from './0013-drop-retired-talking-to-user-slug.mjs';
 import * as m0014 from './0014-backfill-cache-miss-flags.mjs';
+import * as m0015 from './0015-enable-context-renewal-module.mjs';
 
 // Ordered list — append new migrations to the end. Order matters:
 // later migrations may assume earlier ones have run.
-const ALL = [m0001, m0002, m0004, m0005, m0006, m0007, m0008, m0009, m0010, m0011, m0012, m0013, m0014];
+const ALL = [m0001, m0002, m0004, m0005, m0006, m0007, m0008, m0009, m0010, m0011, m0012, m0013, m0014, m0015];
 
 export async function runMigrations({ root, log = console.log } = {}) {
   for (const m of ALL) {

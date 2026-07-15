@@ -131,7 +131,6 @@ test('tools/list returns the full expected tool catalog', async () => {
   const expected = [
     'answer_question',
     'approve_plan',
-    'compact_session',
     'create_project', 'create_workspace', 'create_worktree',
     'delete_workspace', 'delete_worktree',
     'get_recent_messages', 'get_transcript',
@@ -143,7 +142,7 @@ test('tools/list returns the full expected tool catalog', async () => {
     'locate_session',
     'merge_worktree',
     'project_bash', 'project_diff', 'project_read', 'project_status', 'promote_session',
-    'reject_plan', 'rename_workspace', 'respawn_instance',
+    'reject_plan', 'rename_workspace', 'renew_session', 'respawn_instance',
     'send_prompt', 'set_auto_approve_plan', 'set_mode',
     'set_project_workspace',
     'spawn_instance', 'subscribe_to_idle', 'sync_worktree',

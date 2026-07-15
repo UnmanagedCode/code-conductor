@@ -459,4 +459,18 @@ export class IdleSubscriptionHub {
     }
     return false;
   }
+
+  // Inverse of snapshot(): the sessionIds of every target that callerInstanceId
+  // currently has a pending subscription on. Used by the renewal state block
+  // (src/sessionRenew.js) — instanceId-keyed throughout, since the caller's
+  // renewal already has direct instanceId access with no sessionId round-trip.
+  subscriptionsOf(callerInstanceId) {
+    const out = [];
+    for (const [targetId, callers] of this.subscribers) {
+      if (callers.has(callerInstanceId)) {
+        out.push(this.manager.byId.get(targetId)?.sessionId ?? targetId);
+      }
+    }
+    return out;
+  }
 }

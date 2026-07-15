@@ -44,6 +44,8 @@ export const SEED_MODULES = [
     description: 'Scope, declare env, sentinel, one concern, model ladder' },
   { slug: 'capturing-learnings', name: 'Capturing learnings',
     description: 'Where durable lessons go (private knowledge store vs CLAUDE.md), always opt-in' },
+  { slug: 'context-renewal', name: 'Context renewal',
+    description: 'Shed dead-weight history about landed jobs via renew_session at lifecycle seams' },
 ];
 
 // Plugin-contributed conductor-convention fragments join the catalog through
