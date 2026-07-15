@@ -29,7 +29,7 @@ export function installSettings({
   const groups = [...view?.querySelectorAll('.settings-group') || []];
   // Models group elements.
   const smStatusEl = document.getElementById('sm-status');
-  const smListEl = document.getElementById('sm-family-list');
+  const smListEl = document.getElementById('sm-tier-list');
   const smOverageEl = document.getElementById('sm-overage');
   const smOverageBtns = [...(smOverageEl?.querySelectorAll('[data-overage]') || [])];
   const smCompactWindowEnabledEl = document.getElementById('sm-compact-window-enabled');
@@ -324,32 +324,40 @@ export function installSettings({
   }
 
   function renderModels(data) {
-    const families = data.families || [];
-    const active = data.active || {};
+    const tiers = data.tiers || [];
+    const backends = data.backends || [];
+    const activeVersions = data.activeVersions || {};
+    const tierBackend = data.tierBackend || {};
     const sonnetWindow = data.sonnetContextWindow ?? '1m';
-    const enabledFamilies = data.enabledFamilies ?? {};
-    const defaultFamily = data.defaultSpawnFamily ?? 'opus';
-    const enabledCount = families.filter(f => enabledFamilies[f.family] !== false).length;
+    const enabledTiers = data.enabledTiers ?? {};
+    const defaultTier = data.defaultSpawnTier ?? 'powerful';
+    const enabledCount = tiers.filter(t => enabledTiers[t.tier] !== false).length;
+
+    const backendFor = (family) => backends.find(b => b.family === family);
 
     if (smStatusEl) {
-      smStatusEl.innerHTML = families.map(f => {
-        const vLabel = labelFor(f, active[f.family]);
+      smStatusEl.innerHTML = tiers.map(t => {
+        const backend = backendFor(tierBackend[t.tier]);
+        if (!backend) return `${t.label}: <strong>—</strong>`;
+        const vLabel = labelFor(backend, activeVersions[backend.family]);
         let extra = '';
-        if (f.family === 'sonnet') {
-          const activeEntry = f.versions.find(v => v.id === active[f.family]);
+        if (backend.family === 'sonnet') {
+          const activeEntry = backend.versions.find(v => v.id === activeVersions[backend.family]);
           const win = activeEntry?.fixedWindow || sonnetWindow;
           extra = ` — ${win === '200k' ? '200k' : '1M'}`;
         }
-        const isDefault = f.family === defaultFamily;
-        return `${f.label}: <strong>${vLabel}${extra}</strong>${isDefault ? ' <em>(default)</em>' : ''}`;
+        const isDefault = t.tier === defaultTier;
+        return `${t.label}: <strong>${backend.label} ${vLabel}${extra}</strong>${isDefault ? ' <em>(default)</em>' : ''}`;
       }).join(' · ');
     }
 
     smListEl.innerHTML = '';
-    for (const f of families) {
-      const isEnabled = enabledFamilies[f.family] !== false;
-      const isDefault = f.family === defaultFamily;
+    for (const t of tiers) {
+      const isEnabled = enabledTiers[t.tier] !== false;
+      const isDefault = t.tier === defaultTier;
       const isLastEnabled = isEnabled && enabledCount === 1;
+      const backend = backendFor(tierBackend[t.tier]) || backends[0];
+      if (!backend) continue;
 
       const li = document.createElement('li');
       li.className = 'sm-family-row' + (isEnabled ? '' : ' sm-family-row--disabled');
@@ -358,32 +366,47 @@ export function installSettings({
       const chk = document.createElement('input');
       chk.type = 'checkbox';
       chk.className = 'sm-enable';
-      chk.dataset.family = f.family;
+      chk.dataset.tier = t.tier;
       chk.checked = isEnabled;
       chk.disabled = isLastEnabled; // prevent disabling the last one
-      chk.addEventListener('change', () => onPickFamilyEnabled(f.family, chk.checked));
+      chk.addEventListener('change', () => onPickTierEnabled(t.tier, chk.checked));
       li.appendChild(chk);
 
-      // Column 2: family label
+      // Column 2: tier label
       const labelEl = document.createElement('span');
       labelEl.className = 'sm-family-label';
-      labelEl.textContent = f.label;
+      labelEl.textContent = t.label;
       li.appendChild(labelEl);
 
-      // Column 3: version select
+      // Column 3: backend select
+      const backendSel = document.createElement('select');
+      backendSel.className = 'sm-backend';
+      backendSel.dataset.tier = t.tier;
+      backendSel.disabled = !isEnabled;
+      for (const b of backends) {
+        const opt = document.createElement('option');
+        opt.value = b.family;
+        opt.textContent = b.label;
+        if (b.family === backend.family) opt.selected = true;
+        backendSel.appendChild(opt);
+      }
+      backendSel.addEventListener('change', () => onPickTierBackend(t.tier, backendSel.value));
+      li.appendChild(backendSel);
+
+      // Column 4: version select (versions of this row's currently-bound backend)
       const sel = document.createElement('select');
       sel.className = 'sm-version';
-      sel.dataset.family = f.family;
-      sel.disabled = !isEnabled || f.versions.length < 2;
-      if (f.family === 'sonnet') {
-        for (const v of f.versions) {
+      sel.dataset.family = backend.family;
+      sel.disabled = !isEnabled || backend.versions.length < 2;
+      if (backend.family === 'sonnet') {
+        for (const v of backend.versions) {
           if (v.fixedWindow) {
             // Fixed-window version (Sonnet 5, no 200k build) — plain single
             // option, same shape as the generic non-Sonnet branch below.
             const opt = document.createElement('option');
             opt.value = v.id;
             opt.textContent = v.label;
-            if (v.id === active[f.family]) opt.selected = true;
+            if (v.id === activeVersions[backend.family]) opt.selected = true;
             sel.appendChild(opt);
           } else {
             // Preference-driven version (Sonnet 4.x) — existing 200k/1m sub-choice.
@@ -392,7 +415,7 @@ export function installSettings({
               opt.value = v.id;
               opt.dataset.window = w;
               opt.textContent = `${v.label} — ${w === '200k' ? '200k' : '1M'}`;
-              if (v.id === active[f.family] && w === sonnetWindow) opt.selected = true;
+              if (v.id === activeVersions[backend.family] && w === sonnetWindow) opt.selected = true;
               sel.appendChild(opt);
             }
           }
@@ -403,33 +426,33 @@ export function installSettings({
           else onPickVersion('sonnet', opt.value);
         });
       } else {
-        for (const v of f.versions) {
+        for (const v of backend.versions) {
           const opt = document.createElement('option');
           opt.value = v.id;
           opt.textContent = v.label;
-          if (v.id === active[f.family]) opt.selected = true;
+          if (v.id === activeVersions[backend.family]) opt.selected = true;
           sel.appendChild(opt);
         }
-        sel.addEventListener('change', () => onPickVersion(f.family, sel.value));
+        sel.addEventListener('change', () => onPickVersion(backend.family, sel.value));
       }
       li.appendChild(sel);
 
-      // Column 4: default radio
+      // Column 5: default radio
       const radio = document.createElement('input');
       radio.type = 'radio';
-      radio.name = 'sm-default-family';
+      radio.name = 'sm-default-tier';
       radio.className = 'sm-default-radio';
-      radio.value = f.family;
+      radio.value = t.tier;
       radio.checked = isDefault;
       radio.disabled = !isEnabled;
-      radio.addEventListener('change', () => { if (radio.checked) onPickDefaultFamily(f.family); });
+      radio.addEventListener('change', () => { if (radio.checked) onPickDefaultTier(t.tier); });
       li.appendChild(radio);
 
       smListEl.appendChild(li);
     }
 
     // Skip re-syncing the overage group while it has un-applied local edits (e.g. an
-    // unrelated save elsewhere on this page, like a family toggle, also calls
+    // unrelated save elsewhere on this page, like a tier toggle, also calls
     // renderModels — it must not clobber a staged-but-not-yet-Applied overage edit).
     if (!smOverageDirty) {
       const overage = data.onOverage ?? 'none';
@@ -453,16 +476,16 @@ export function installSettings({
     }
   }
 
-  function labelFor(family, id) {
-    return family.versions.find(v => v.id === id)?.label || id;
+  function labelFor(backend, id) {
+    return backend.versions.find(v => v.id === id)?.label || id;
   }
 
-  async function onPickVersion(family, version) {
+  async function onPickVersion(backend, version) {
     try {
       const r = await fetch('/api/settings/models', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ family, version }),
+        body: JSON.stringify({ backend, version }),
       });
       const data = await r.json();
       if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
@@ -478,7 +501,7 @@ export function installSettings({
       const r1 = await fetch('/api/settings/models', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ family: 'sonnet', version }),
+        body: JSON.stringify({ backend: 'sonnet', version }),
       });
       if (!r1.ok) { const d = await r1.json().catch(() => ({})); throw new Error(d.error || `HTTP ${r1.status}`); }
       const r2 = await fetch('/api/settings/models/prefs', {
@@ -504,12 +527,12 @@ export function installSettings({
     });
   }
 
-  async function onPickFamilyEnabled(family, enabled) {
+  async function onPickTierEnabled(tier, enabled) {
     try {
       const r = await fetch('/api/settings/models/prefs', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ familyEnabled: { family, enabled } }),
+        body: JSON.stringify({ tierEnabled: { tier, enabled } }),
       });
       const data = await r.json();
       if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
@@ -520,12 +543,28 @@ export function installSettings({
     }
   }
 
-  async function onPickDefaultFamily(family) {
+  async function onPickDefaultTier(tier) {
     try {
       const r = await fetch('/api/settings/models/prefs', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ defaultSpawnFamily: family }),
+        body: JSON.stringify({ defaultSpawnTier: tier }),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+      renderModels(data);
+      onModelsChange?.(data);
+    } catch (e) {
+      if (smStatusEl) smStatusEl.textContent = `Update failed: ${e.message || e}`;
+    }
+  }
+
+  async function onPickTierBackend(tier, backend) {
+    try {
+      const r = await fetch('/api/settings/models/prefs', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ tierBackend: { tier, backend } }),
       });
       const data = await r.json();
       if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);

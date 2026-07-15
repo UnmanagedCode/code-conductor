@@ -19,11 +19,11 @@
 //                         + selection (drive app.js state/sidebar).
 //   - closeSidebarOverflow(): used by openConductDialog.
 //
-// Returns { openSpawnDialog, syncSonnetPickerLabels, syncFamilyVisibility } — the
+// Returns { openSpawnDialog, syncSonnetPickerLabels, syncTierVisibility } — the
 // only handles with external callers; openConductDialog/makeModeToggle/
-// spawnInstance/defaultSpawnFamily stay internal.
+// spawnInstance/defaultSpawnTier stay internal.
 import { resolveSpawnModel, getActiveSonnetWindow, getActiveVersion, isSonnetFixedWindowVersion,
-  getFamilyList, getActiveFamilyEnabled, getActiveDefaultSpawnFamily } from './models.js';
+  getTierList, getActiveTierEnabled, getActiveDefaultSpawnTier, getActiveTierBackend } from './models.js';
 
 export function installSpawnDialog({ dom, getProjects, refreshProjects, refreshInstances, selectInstance, closeSidebarOverflow }) {
   // ── Shared spawn-dialog helpers ───────────────────────────────────────
@@ -61,57 +61,66 @@ export function installSpawnDialog({ dom, getProjects, refreshProjects, refreshI
     }
   }
 
-  // Updates the Sonnet button labels in all spawn pickers to match the active
-  // version's context window, so the UI reflects what will actually be
-  // spawned. Sonnet 5 has no 200k build (always 1M); Sonnet 4.x reflects the
-  // stored preference.
+  // Updates every tier button's context-window label to match its currently
+  // bound backend's active version, so the UI reflects what will actually be
+  // spawned. Only Sonnet varies (Sonnet 5 has no 200k build, always 1M;
+  // Sonnet 4.x reflects the stored preference) — Haiku is always 200k, Opus/
+  // Fable are always 1M.
   function syncSonnetPickerLabels() {
-    const w = isSonnetFixedWindowVersion(getActiveVersion('sonnet'))
-      ? '1M'
-      : (getActiveSonnetWindow() === '200k' ? '200k' : '1M');
-    document.querySelectorAll('.qs-model[data-family="sonnet"] .qs-ctx')
-      .forEach(el => { el.textContent = w; });
+    for (const tier of getTierList()) {
+      const backend = getActiveTierBackend(tier);
+      let w;
+      if (backend === 'sonnet') {
+        w = isSonnetFixedWindowVersion(getActiveVersion('sonnet'))
+          ? '1M'
+          : (getActiveSonnetWindow() === '200k' ? '200k' : '1M');
+      } else {
+        w = backend === 'haiku' ? '200k' : '1M';
+      }
+      document.querySelectorAll(`.qs-model[data-tier="${tier}"] .qs-ctx`)
+        .forEach(el => { el.textContent = w; });
+    }
   }
 
-  // Shows or hides every family button across all dialogs. If the currently
-  // selected family gets disabled, resets selection to the resolved default.
-  function syncFamilyVisibility() {
-    // Family enum from the shipped catalog (getFamilyList() is seeded non-empty,
+  // Shows or hides every tier button across all dialogs. If the currently
+  // selected tier gets disabled, resets selection to the resolved default.
+  function syncTierVisibility() {
+    // Tier enum from the shipped catalog (getTierList() is seeded non-empty,
     // and these calls run only after loadModelVersions() resolves). Order is
-    // irrelevant here: per-family visibility toggle + an all-disabled check.
-    const families = getFamilyList();
-    for (const family of families) {
-      const enabled = getActiveFamilyEnabled(family);
-      document.querySelectorAll(`.qs-model[data-family="${family}"]`).forEach(btn => {
+    // irrelevant here: per-tier visibility toggle + an all-disabled check.
+    const tiers = getTierList();
+    for (const tier of tiers) {
+      const enabled = getActiveTierEnabled(tier);
+      document.querySelectorAll(`.qs-model[data-tier="${tier}"]`).forEach(btn => {
         btn.hidden = !enabled;
       });
     }
-    // Guard: if every family ended up hidden (unreachable via the Settings UI,
-    // which blocks disabling the last enabled family, but possible via a manual
+    // Guard: if every tier ended up hidden (unreachable via the Settings UI,
+    // which blocks disabling the last enabled tier, but possible via a manual
     // settings.json edit), un-hide the fallback so the picker is never empty.
-    if (families.every(f => !getActiveFamilyEnabled(f))) {
-      const fallback = defaultSpawnFamily();
-      document.querySelectorAll(`.qs-model[data-family="${fallback}"]`).forEach(btn => {
+    if (tiers.every(t => !getActiveTierEnabled(t))) {
+      const fallback = defaultSpawnTier();
+      document.querySelectorAll(`.qs-model[data-tier="${fallback}"]`).forEach(btn => {
         btn.hidden = false;
       });
     }
-    if (!getActiveFamilyEnabled(selectedSpawnFamily)) {
-      selectedSpawnFamily = defaultSpawnFamily();
+    if (!getActiveTierEnabled(selectedSpawnTier)) {
+      selectedSpawnTier = defaultSpawnTier();
       updateSpawnModelSelection();
     }
   }
 
-  // Resolves the configured default family for the spawn dialog initial selection,
-  // falling back to the first enabled family if the configured default is disabled.
-  function defaultSpawnFamily() {
-    const d = getActiveDefaultSpawnFamily();
-    if (getActiveFamilyEnabled(d)) return d;
+  // Resolves the configured default tier for the spawn dialog initial selection,
+  // falling back to the first enabled tier if the configured default is disabled.
+  function defaultSpawnTier() {
+    const d = getActiveDefaultSpawnTier();
+    if (getActiveTierEnabled(d)) return d;
     // Deliberate fallback-preference order (NOT the catalog order) — mirrors the
-    // server's reassign policy in src/appSettings.js setFamilyEnabled().
-    for (const f of ['sonnet', 'haiku', 'opus', 'fable']) {
-      if (getActiveFamilyEnabled(f)) return f;
+    // server's reassign policy in src/appSettings.js setTierEnabled().
+    for (const t of ['balanced', 'fast', 'powerful', 'frontier']) {
+      if (getActiveTierEnabled(t)) return t;
     }
-    return 'sonnet';
+    return 'balanced';
   }
 
   // ── Unified spawn dialog ──────────────────────────────────────────────
@@ -123,11 +132,11 @@ export function installSpawnDialog({ dom, getProjects, refreshProjects, refreshI
   let pendingSpawnProject = null;
   // null = project root | true = fresh worktree | '<name>' = existing worktree
   let pendingSpawnWorktreeIntent = null;
-  let selectedSpawnFamily = 'opus';
+  let selectedSpawnTier = 'powerful';
 
   function updateSpawnModelSelection() {
     dom.spawnDialog.querySelectorAll('.qs-model').forEach(btn => {
-      btn.classList.toggle('qs-selected', btn.dataset.family === selectedSpawnFamily);
+      btn.classList.toggle('qs-selected', btn.dataset.tier === selectedSpawnTier);
     });
   }
 
@@ -155,7 +164,7 @@ export function installSpawnDialog({ dom, getProjects, refreshProjects, refreshI
     const btn = e.target.closest('.qs-model');
     if (!btn) return;
     e.preventDefault();
-    selectedSpawnFamily = btn.dataset.family;
+    selectedSpawnTier = btn.dataset.tier;
     updateSpawnModelSelection();
   });
 
@@ -166,7 +175,7 @@ export function installSpawnDialog({ dom, getProjects, refreshProjects, refreshI
     dom.sdError.textContent = '';
     resetSdMode();
 
-    selectedSpawnFamily = defaultSpawnFamily();
+    selectedSpawnTier = defaultSpawnTier();
     updateSpawnModelSelection();
 
     dom.sdEffort.value = 'high';
@@ -202,7 +211,7 @@ export function installSpawnDialog({ dom, getProjects, refreshProjects, refreshI
     dom.sdError.textContent = '';
     const project  = pendingSpawnProject;
     const mode     = sdModeValue;
-    const model    = resolveSpawnModel(selectedSpawnFamily);
+    const model    = resolveSpawnModel(selectedSpawnTier);
     const effort   = dom.sdEffort.value;
     const thinking = dom.sdThinking.value;
     const temp     = dom.sdTemp.checked || undefined;
@@ -268,11 +277,11 @@ export function installSpawnDialog({ dom, getProjects, refreshProjects, refreshI
     const btn = e.target.closest('.cd-model');
     if (!btn) return;
     e.preventDefault();
-    const family = btn.dataset.family;
-    if (!family) return;
-    const model = resolveSpawnModel(family);
+    const tier = btn.dataset.tier;
+    if (!tier) return;
+    const model = resolveSpawnModel(tier);
     if (model) spawnInstance({ project: '.conduct', model, planMode: cdMode.planMode, dialogEl: dom.conductDialog, errorEl: dom.cdError });
   });
 
-  return { openSpawnDialog, syncSonnetPickerLabels, syncFamilyVisibility };
+  return { openSpawnDialog, syncSonnetPickerLabels, syncTierVisibility };
 }

@@ -9,6 +9,7 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, instForSession, freshProjectsRoot, rmrf } from './helpers.mjs';
+import { setTierBackend, setTierEnabled } from '../src/appSettings.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO_WS = path.join(__dirname, 'fixtures', 'scenario-ws.json');
@@ -1092,6 +1093,80 @@ test('spawn_instance: omitted model leaves summary.model null', async () => {
     await api(baseUrl, 'POST', '/api/projects', { name: 'demo' });
     const summary = await spawnIdle({ project: 'demo', mode: 'bypassPermissions' });
     assert.equal(summary.model, null, 'omitted model should leave model null (account default)');
+  } finally {
+    if (prev === undefined) delete process.env.FAKE_CLAUDE_SCENARIO;
+    else process.env.FAKE_CLAUDE_SCENARIO = prev;
+  }
+});
+
+// ---------- spawn_instance capability-tier resolution ----------
+
+test('spawn_instance: fast tier resolves through its bound backend (haiku) to a concrete model id', async () => {
+  const prev = process.env.FAKE_CLAUDE_SCENARIO;
+  process.env.FAKE_CLAUDE_SCENARIO = SCENARIO_INSTANCE;
+  try {
+    await api(baseUrl, 'POST', '/api/projects', { name: 'demo' });
+    const summary = await spawnIdle({ project: 'demo', model: 'fast', mode: 'bypassPermissions' });
+    assert.ok(
+      typeof summary.model === 'string' && summary.model.startsWith('claude-haiku-'),
+      `expected concrete haiku model id via the fast tier, got: ${summary.model}`,
+    );
+  } finally {
+    if (prev === undefined) delete process.env.FAKE_CLAUDE_SCENARIO;
+    else process.env.FAKE_CLAUDE_SCENARIO = prev;
+  }
+});
+
+test('spawn_instance: rebinding a tier changes what that tier resolves to', async () => {
+  const prev = process.env.FAKE_CLAUDE_SCENARIO;
+  process.env.FAKE_CLAUDE_SCENARIO = SCENARIO_INSTANCE;
+  try {
+    await api(baseUrl, 'POST', '/api/projects', { name: 'demo' });
+    await setTierBackend('powerful', 'fable'); // was opus by default
+    const summary = await spawnIdle({ project: 'demo', model: 'powerful', mode: 'bypassPermissions' });
+    assert.ok(
+      typeof summary.model === 'string' && summary.model.startsWith('claude-fable-'),
+      `expected the rebound backend (fable) to resolve, got: ${summary.model}`,
+    );
+  } finally {
+    if (prev === undefined) delete process.env.FAKE_CLAUDE_SCENARIO;
+    else process.env.FAKE_CLAUDE_SCENARIO = prev;
+  }
+});
+
+test('spawn_instance: legacy family alias pins to that literal backend even after its default tier is rebound', async () => {
+  // Regression test for the chosen backward-compat strategy: a legacy
+  // "sonnet" caller must keep getting Sonnet, unaffected by rebinding the
+  // 'balanced' tier (which defaults to sonnet) to a different backend.
+  const prev = process.env.FAKE_CLAUDE_SCENARIO;
+  process.env.FAKE_CLAUDE_SCENARIO = SCENARIO_INSTANCE;
+  try {
+    await api(baseUrl, 'POST', '/api/projects', { name: 'demo' });
+    await setTierBackend('balanced', 'opus'); // rebind the tier that used to default to sonnet
+    const summary = await spawnIdle({ project: 'demo', model: 'sonnet', mode: 'bypassPermissions' });
+    assert.ok(
+      typeof summary.model === 'string' && summary.model.startsWith('claude-sonnet-'),
+      `legacy "sonnet" alias must still resolve to Sonnet regardless of tier rebinding, got: ${summary.model}`,
+    );
+  } finally {
+    if (prev === undefined) delete process.env.FAKE_CLAUDE_SCENARIO;
+    else process.env.FAKE_CLAUDE_SCENARIO = prev;
+  }
+});
+
+test('spawn_instance: legacy family alias resolves even when every tier bound to it is disabled', async () => {
+  // "Disabled families are still resolved when passed explicitly" carries
+  // over unchanged to tiers — a legacy alias bypasses tier enablement too.
+  const prev = process.env.FAKE_CLAUDE_SCENARIO;
+  process.env.FAKE_CLAUDE_SCENARIO = SCENARIO_INSTANCE;
+  try {
+    await api(baseUrl, 'POST', '/api/projects', { name: 'demo' });
+    await setTierEnabled('frontier', false);
+    const summary = await spawnIdle({ project: 'demo', model: 'fable', mode: 'bypassPermissions' });
+    assert.ok(
+      typeof summary.model === 'string' && summary.model.startsWith('claude-fable-'),
+      `expected fable to resolve despite the frontier tier being disabled, got: ${summary.model}`,
+    );
   } finally {
     if (prev === undefined) delete process.env.FAKE_CLAUDE_SCENARIO;
     else process.env.FAKE_CLAUDE_SCENARIO = prev;

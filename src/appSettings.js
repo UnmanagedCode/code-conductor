@@ -11,7 +11,7 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { orchStoreRoot, writeFileAtomic } from './projects.js';
-import { MODEL_FAMILIES } from './modelVersions.js';
+import { CAPABILITY_TIERS, DEFAULT_TIER_BACKEND, isKnownTier, isKnownFamily } from './modelVersions.js';
 
 function settingsPath() {
   return path.join(orchStoreRoot(), 'settings.json');
@@ -155,71 +155,92 @@ export async function setSonnetContextWindow(window) {
   return val;
 }
 
-// Models group: per-family visibility toggle. When a family is false it is
-// hidden from all spawn pickers. All families default to true (opt-out).
+// Models group: per-tier visibility toggle. When a tier is false it is
+// hidden from all spawn pickers. All tiers default to true (opt-out).
 //
-// Derived from MODEL_FAMILIES so the family enum has a single source of truth;
-// callers spread/index the result, so key order is irrelevant.
-const ENABLED_FAMILIES_DEFAULTS = Object.fromEntries(MODEL_FAMILIES.map(f => [f.family, true]));
+// Derived from CAPABILITY_TIERS so the tier enum has a single source of
+// truth; callers spread/index the result, so key order is irrelevant.
+const ENABLED_TIERS_DEFAULTS = Object.fromEntries(CAPABILITY_TIERS.map(t => [t.tier, true]));
 
-// Default spawn family used as the fallback wherever no valid family is set.
-// Family-selection policy (MODEL_FAMILIES has no "default family" marker), so
-// it's a single named constant rather than a derived value.
-const DEFAULT_SPAWN_FAMILY = 'opus';
+// Default spawn tier used as the fallback wherever no valid tier is set.
+// Chosen to match today's fresh-install default family ('opus'), which sits
+// under the 'powerful' tier in DEFAULT_TIER_BACKEND.
+const DEFAULT_SPAWN_TIER = 'powerful';
 
-export function getEnabledFamilies() {
+export function getEnabledTiers() {
   const s = loadSync();
-  if (s.models?.enabledFamilies !== undefined) {
-    return { ...ENABLED_FAMILIES_DEFAULTS, ...s.models.enabledFamilies };
+  if (s.models?.enabledTiers !== undefined) {
+    return { ...ENABLED_TIERS_DEFAULTS, ...s.models.enabledTiers };
   }
-  return { ...ENABLED_FAMILIES_DEFAULTS };
+  return { ...ENABLED_TIERS_DEFAULTS };
 }
 
-// Disable/enable one family. Guards against disabling the last enabled family.
-// Auto-reassigns defaultFamily when the disabled family is the current default.
-export async function setFamilyEnabled(family, enabled) {
+// Disable/enable one tier. Guards against disabling the last enabled tier.
+// Auto-reassigns defaultTier when the disabled tier is the current default.
+export async function setTierEnabled(tier, enabled) {
   const cur = loadSync();
-  const current = getEnabledFamilies();
+  const current = getEnabledTiers();
 
   if (!enabled) {
-    const remaining = MODEL_FAMILIES.filter(f => f.family !== family && current[f.family] !== false);
+    const remaining = CAPABILITY_TIERS.filter(t => t.tier !== tier && current[t.tier] !== false);
     if (remaining.length === 0) {
-      throw Object.assign(new Error('cannot disable the last enabled family'), { statusCode: 400 });
+      throw Object.assign(new Error('cannot disable the last enabled tier'), { statusCode: 400 });
     }
   }
 
-  const nextEnabled = { ...current, [family]: !!enabled };
+  const nextEnabled = { ...current, [tier]: !!enabled };
 
-  let nextDefault = cur.models?.defaultFamily ?? DEFAULT_SPAWN_FAMILY;
-  if (!enabled && nextDefault === family) {
-    // Deliberate fallback-preference order (NOT the MODEL_FAMILIES catalog
-    // order) — mirrored client-side in public/app.js defaultSpawnFamily().
-    nextDefault = ['sonnet', 'haiku', 'opus', 'fable'].find(f => f !== family && nextEnabled[f] !== false) ?? 'sonnet';
+  let nextDefault = cur.models?.defaultTier ?? DEFAULT_SPAWN_TIER;
+  if (!enabled && nextDefault === tier) {
+    // Deliberate fallback-preference order (NOT the CAPABILITY_TIERS catalog
+    // order) — mirrored client-side in public/spawnDialog.js defaultSpawnTier().
+    nextDefault = ['balanced', 'fast', 'powerful', 'frontier'].find(t => t !== tier && nextEnabled[t] !== false) ?? 'balanced';
   }
 
-  const models = { ...(cur.models || {}), enabledFamilies: nextEnabled, defaultFamily: nextDefault };
+  const models = { ...(cur.models || {}), enabledTiers: nextEnabled, defaultTier: nextDefault };
   await writeSettings({ ...cur, models });
-  return { enabledFamilies: nextEnabled, defaultSpawnFamily: nextDefault };
+  return { enabledTiers: nextEnabled, defaultSpawnTier: nextDefault };
 }
 
-// Models group: default spawn model family. Controls which model card is
-// pre-selected when the spawn dialog opens. Defaults to 'opus' when unset.
-// Membership is derived from MODEL_FAMILIES (used only via .includes(), so
+// Models group: default spawn tier. Controls which model card is
+// pre-selected when the spawn dialog opens. Defaults to 'powerful' when unset.
+// Membership is derived from CAPABILITY_TIERS (used only via .includes(), so
 // catalog order is irrelevant).
-const VALID_SPAWN_FAMILIES = MODEL_FAMILIES.map(f => f.family);
+const VALID_SPAWN_TIERS = CAPABILITY_TIERS.map(t => t.tier);
 
-export function getDefaultSpawnFamily() {
+export function getDefaultSpawnTier() {
   const s = loadSync();
-  const v = s.models?.defaultFamily;
-  return VALID_SPAWN_FAMILIES.includes(v) ? v : DEFAULT_SPAWN_FAMILY;
+  const v = s.models?.defaultTier;
+  return VALID_SPAWN_TIERS.includes(v) ? v : DEFAULT_SPAWN_TIER;
 }
 
-export async function setDefaultSpawnFamily(family) {
-  const val = VALID_SPAWN_FAMILIES.includes(family) ? family : DEFAULT_SPAWN_FAMILY;
+export async function setDefaultSpawnTier(tier) {
+  const val = VALID_SPAWN_TIERS.includes(tier) ? tier : DEFAULT_SPAWN_TIER;
   const cur = loadSync();
-  const next = { ...cur, models: { ...(cur.models || {}), defaultFamily: val } };
+  const next = { ...cur, models: { ...(cur.models || {}), defaultTier: val } };
   await writeSettings(next);
   return val;
+}
+
+// Models group: tier → backend binding. Each tier resolves to one
+// MODEL_FAMILIES entry; rebinding a tier never affects a legacy caller that
+// passes a family name directly (see isKnownFamily branch in
+// src/mcp/handlers.js spawnInstance), only tier-based resolution.
+export function getTierBackend(tier) {
+  const s = loadSync();
+  const stored = s.models?.tierBackend?.[tier];
+  return isKnownFamily(stored) ? stored : DEFAULT_TIER_BACKEND[tier];
+}
+
+export async function setTierBackend(tier, backend) {
+  if (!isKnownTier(tier) || !isKnownFamily(backend)) {
+    throw Object.assign(new Error('unknown tier or backend'), { statusCode: 400 });
+  }
+  const cur = loadSync();
+  const nextTierBackend = { ...(cur.models?.tierBackend || {}), [tier]: backend };
+  const next = { ...cur, models: { ...(cur.models || {}), tierBackend: nextTierBackend } };
+  await writeSettings(next);
+  return nextTierBackend;
 }
 
 // Models group: conductor compact window override. When enabled, sets

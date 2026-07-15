@@ -1475,7 +1475,7 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
 }
 .tts-speak.speaking:hover { background: rgba(248, 113, 113, 0.25); }
 
-/* Settings → Models group: per-family grid (checkbox | name | version | default). */
+/* Settings → Models group: per-tier grid (checkbox | name | backend | version | default). */
 .sm-compact-row { margin-top: 6px; }
 .sm-compact-label { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
 .sm-compact-label input[type="range"] { flex: 1 1 auto; max-width: 240px; }
@@ -1483,7 +1483,7 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
 .sm-family-header,
 .sm-family-row {
   display: grid;
-  grid-template-columns: 20px 76px 1fr 48px;
+  grid-template-columns: 20px 76px 88px 1fr 48px;
   align-items: center;
   gap: 10px;
 }
@@ -1496,6 +1496,7 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
 }
 .sm-family-row--disabled { opacity: 0.45; }
 .sm-family-label { font-size: 13px; white-space: nowrap; }
+.sm-backend { min-width: 0; }
 .sm-version { min-width: 0; }
 .sm-family-row input[type="radio"] { justify-self: center; }
 @media (max-width: 720px) {

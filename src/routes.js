@@ -29,7 +29,7 @@ import {
 } from './transcribe.js';
 import { WHISPER_MODELS, isKnownModel, DEFAULT_MODEL } from './whisperModels.js';
 import {
-  MODEL_FAMILIES, isKnownFamily, isKnownVersion,
+  MODEL_FAMILIES, CAPABILITY_TIERS, isKnownFamily, isKnownVersion, isKnownTier,
 } from './modelVersions.js';
 import {
   isAvailable as ttsAvailable, synthesize, voicePathForName,
@@ -42,8 +42,9 @@ import {
   getOverageThreshold, setOverageThreshold,
   getConductorCompactWindow, setConductorCompactWindow,
   getSonnetContextWindow, setSonnetContextWindow,
-  getEnabledFamilies, setFamilyEnabled,
-  getDefaultSpawnFamily, setDefaultSpawnFamily,
+  getEnabledTiers, setTierEnabled,
+  getDefaultSpawnTier, setDefaultSpawnTier,
+  getTierBackend, setTierBackend,
 } from './appSettings.js';
 import * as whisperInstall from './whisperInstall.js';
 import * as ttsInstall from './ttsInstall.js';
@@ -1052,20 +1053,28 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
     installer: whisperInstall,
   });
 
-  // Settings → Models group. Reports the curated per-family version catalog
-  // and the active concrete version id per family (falling back to the
-  // catalog default when unset), and lets the UI switch a family's version.
+  // Settings → Models group. Reports the curated per-backend version catalog
+  // (still keyed by Claude family — the backend catalog), the active
+  // concrete version id per backend (falling back to the catalog default
+  // when unset), the capability-tier list + their tier→backend binding, and
+  // lets the UI switch a backend's version or rebind a tier.
   function modelsSettingsState() {
-    const active = {};
+    const activeVersions = {};
     for (const f of MODEL_FAMILIES) {
-      active[f.family] = getModelVersion(f.family) || f.default;
+      activeVersions[f.family] = getModelVersion(f.family) || f.default;
     }
-    return { families: MODEL_FAMILIES, active, onOverage: getOnOverageAction(),
+    const tierBackend = {};
+    for (const t of CAPABILITY_TIERS) {
+      tierBackend[t.tier] = getTierBackend(t.tier);
+    }
+    return { backends: MODEL_FAMILIES, activeVersions, onOverage: getOnOverageAction(),
       overageThreshold: getOverageThreshold(),
       conductorCompactWindow: getConductorCompactWindow(),
       sonnetContextWindow: getSonnetContextWindow(),
-      enabledFamilies: getEnabledFamilies(),
-      defaultSpawnFamily: getDefaultSpawnFamily() };
+      tiers: CAPABILITY_TIERS,
+      tierBackend,
+      enabledTiers: getEnabledTiers(),
+      defaultSpawnTier: getDefaultSpawnTier() };
   }
 
   r.get('/settings/models', (req, res) => {
@@ -1074,15 +1083,15 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
 
   r.post('/settings/models', async (req, res, next) => {
     try {
-      const family = req.body?.family;
+      const backend = req.body?.backend;
       const version = req.body?.version;
-      if (!isKnownFamily(family)) {
-        throw Object.assign(new Error('unknown family'), { statusCode: 400 });
+      if (!isKnownFamily(backend)) {
+        throw Object.assign(new Error('unknown backend'), { statusCode: 400 });
       }
-      if (!isKnownVersion(family, version)) {
-        throw Object.assign(new Error('unknown version for family'), { statusCode: 400 });
+      if (!isKnownVersion(backend, version)) {
+        throw Object.assign(new Error('unknown version for backend'), { statusCode: 400 });
       }
-      await setModelVersion(family, version);
+      await setModelVersion(backend, version);
       res.json(modelsSettingsState());
     } catch (e) { next(e); }
   });
@@ -1090,18 +1099,24 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
   r.post('/settings/models/prefs', async (req, res, next) => {
     try {
       const { onOverage, overageThreshold, conductorCompactWindow, sonnetContextWindow,
-              familyEnabled, defaultSpawnFamily } = req.body ?? {};
+              tierEnabled, defaultSpawnTier, tierBackend } = req.body ?? {};
       if (typeof onOverage === 'string') await setOnOverageAction(onOverage);
       if (overageThreshold !== undefined) await setOverageThreshold(overageThreshold);
       if (conductorCompactWindow !== undefined) await setConductorCompactWindow(conductorCompactWindow);
       if (sonnetContextWindow !== undefined) await setSonnetContextWindow(sonnetContextWindow);
-      if (familyEnabled !== undefined) {
-        if (!familyEnabled || typeof familyEnabled !== 'object' || !isKnownFamily(familyEnabled.family)) {
-          return res.status(400).json({ error: 'familyEnabled.family must be a known model family' });
+      if (tierEnabled !== undefined) {
+        if (!tierEnabled || typeof tierEnabled !== 'object' || !isKnownTier(tierEnabled.tier)) {
+          return res.status(400).json({ error: 'tierEnabled.tier must be a known capability tier' });
         }
-        await setFamilyEnabled(familyEnabled.family, !!familyEnabled.enabled);
+        await setTierEnabled(tierEnabled.tier, !!tierEnabled.enabled);
       }
-      if (defaultSpawnFamily !== undefined) await setDefaultSpawnFamily(defaultSpawnFamily);
+      if (defaultSpawnTier !== undefined) await setDefaultSpawnTier(defaultSpawnTier);
+      if (tierBackend !== undefined) {
+        if (!tierBackend || typeof tierBackend !== 'object' || !isKnownTier(tierBackend.tier) || !isKnownFamily(tierBackend.backend)) {
+          return res.status(400).json({ error: 'tierBackend must be {tier, backend} with a known tier and backend' });
+        }
+        await setTierBackend(tierBackend.tier, tierBackend.backend);
+      }
       // Bidirectional on-demand re-evaluation: a save that touched the overage action
       // or threshold should take effect on whatever is happening right now, not wait
       // for the next ~60s poll tick (lower threshold) or the resume deadline, which

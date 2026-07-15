@@ -129,19 +129,20 @@
           </div>
           <div id="settings-models" class="settings-group">
             <p class="settings-desc">
-              Pick the concrete model version used for each Claude family. The two spawn pickers
-              (Conduct, the new-session dialog) resolve each family to the version chosen here.
-              Haiku is always 200k; Opus is always 1M; Sonnet's context window (200k or 1M) is
-              a stored Settings preference displayed in the picker. Changes take effect immediately — no restart.
+              Each capability tier (Fast / Balanced / Powerful / Frontier) binds to a Claude backend below,
+              and the two spawn pickers (Conduct, the new-session dialog) resolve a tier to that backend's
+              chosen version. Haiku is always 200k; Opus/Fable are always 1M; Sonnet's context window (200k
+              or 1M) is a stored Settings preference displayed in the picker. Changes take effect immediately — no restart.
             </p>
             <div id="sm-status" class="st-status" aria-live="polite">Loading…</div>
             <div class="sm-family-header" aria-hidden="true">
               <span></span>
               <span></span>
+              <span class="sm-col-header">backend</span>
               <span class="sm-col-header">version</span>
               <span class="sm-col-header">default</span>
             </div>
-            <ul id="sm-family-list" class="sm-family-list"></ul>
+            <ul id="sm-tier-list" class="sm-family-list"></ul>
             <div class="sm-prefs">
               <fieldset class="sm-group">
                 <legend>Overage protection</legend>
@@ -407,10 +408,10 @@
     <form method="dialog">
       <h3>New session in <span id="sd-project"></span></h3>
       <div class="quick-spawn-models">
-        <button type="button" class="qs-model" data-family="haiku">Haiku<span class="qs-ctx">200k</span></button>
-        <button type="button" class="qs-model" data-family="sonnet">Sonnet<span class="qs-ctx">1M</span></button>
-        <button type="button" class="qs-model" data-family="opus">Opus<span class="qs-ctx">1M</span></button>
-        <button type="button" class="qs-model" data-family="fable">Fable<span class="qs-ctx">1M</span></button>
+        <button type="button" class="qs-model" data-tier="fast">Fast<span class="qs-ctx">200k</span></button>
+        <button type="button" class="qs-model" data-tier="balanced">Balanced<span class="qs-ctx">1M</span></button>
+        <button type="button" class="qs-model" data-tier="powerful">Powerful<span class="qs-ctx">1M</span></button>
+        <button type="button" class="qs-model" data-tier="frontier">Frontier<span class="qs-ctx">1M</span></button>
       </div>
       <div class="qs-mode-toggle" role="group" aria-label="Spawn mode">
         <button type="button" id="sd-mode-code" class="qs-mode-opt" data-mode="code" aria-pressed="true">Code</button>
@@ -469,10 +470,10 @@
       <h3>🎼 New Conduct session</h3>
       <p class="hint">Spawns a temp Claude session in the hidden <code>.conduct</code> project, pre-configured to orchestrate other sessions via MCP. The transcript is wiped on exit.</p>
       <div class="quick-spawn-models">
-        <button type="button" class="cd-model qs-model" data-family="haiku">Haiku<span class="qs-ctx">200k</span></button>
-        <button type="button" class="cd-model qs-model" data-family="sonnet">Sonnet<span class="qs-ctx">1M</span></button>
-        <button type="button" class="cd-model qs-model" data-family="opus">Opus<span class="qs-ctx">1M</span></button>
-        <button type="button" class="cd-model qs-model" data-family="fable">Fable<span class="qs-ctx">1M</span></button>
+        <button type="button" class="cd-model qs-model" data-tier="fast">Fast<span class="qs-ctx">200k</span></button>
+        <button type="button" class="cd-model qs-model" data-tier="balanced">Balanced<span class="qs-ctx">1M</span></button>
+        <button type="button" class="cd-model qs-model" data-tier="powerful">Powerful<span class="qs-ctx">1M</span></button>
+        <button type="button" class="cd-model qs-model" data-tier="frontier">Frontier<span class="qs-ctx">1M</span></button>
       </div>
       <div class="qs-mode-toggle" role="group" aria-label="Spawn mode">
         <button type="button" id="cd-mode-code" class="qs-mode-opt" data-mode="code" aria-pressed="true">Code</button>
