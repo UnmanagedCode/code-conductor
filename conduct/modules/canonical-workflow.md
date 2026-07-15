@@ -11,8 +11,8 @@ For a typical "implement feature X in project Y":
 5. **Decide** — **Approve**: `approve_plan({sessionId})` (optional `feedback`) → resubscribe + end turn. **Revise**: `reject_plan({sessionId, feedback})` → resubscribe + end turn, loop to step 4. **Answer a question**: on a `questions` wake, `answer_question({sessionId, answers})` → resubscribe + end turn. **Abandon**: `unsubscribe_from_idle({sessionId})`; `kill_instance({sessionId})`; `delete_worktree(...)`.
 6. **[Wake] Implementation done** — confirm the sentinel from the folded wake output; if mid-multi-turn, resubscribe + end turn.
 7. **Review** — `project_status({project: 'Y', worktree: '<wtName>'})` for the summary, `project_diff(...)` for the full diff, `project_read(...)` for specifics — immediate calls, no subscribe.
-8. **Land** — merge only once the feature is complete: if strongly-related (same-files) work remains, send it to the worker **first** so it all lands as one branch. Then `sync_worktree({sessionId})` (a rebase prompt sent to the worker is a worker turn — subscribe + end turn, resume on wake; fast-forwarded / already-in-sync — continue straight on) and `merge_worktree({sessionId})`.
-9. **Clean up** — see Worker lifecycle: successful merge → `delete_worktree` + `kill_instance`; refused or conflicted merge → keep the worker, `sync_worktree`, retry.
+8. **Land** — merge when the user needs the change on base or the feature is complete, not as a default end-of-turn move: `sync_worktree({sessionId})` (a rebase prompt sent to the worker is a worker turn — subscribe + end turn, resume on wake; fast-forwarded / already-in-sync — continue straight on) and `merge_worktree({sessionId})`, which fast-forwards the worktree onto the new base as part of the merge.
+9. **Continue or retire** — see Worker lifecycle: strongly-related follow-up remains → keep the worker and worktree, brief it, merge again later; thread of work done (or worker wedged/polluted) → `delete_worktree({force:true})`; refused or conflicted merge → keep the worker, `sync_worktree`, retry.
 
 ### N independent tasks (parallel)
 
@@ -20,7 +20,7 @@ Several independent tasks — or one that splits into independent sub-tasks (dif
 
 - **Batched turns** — one recon turn, then one spawn turn (N `spawn_instance`, each `mode:'plan'` + own fresh worktree; capture the sessionIds), then one brief turn (N `send_prompt`, each auto-subscribing), and end the turn. Optionally arm `set_auto_approve_plan({sessionId, enabled:true})` per worker if you trust this batch's planning.
 - **One wake per worker** — wakes arrive one at a time; **track which worker sessionIds are still outstanding**, tick them off per wake, and handle each exactly as Single-worker steps 4–9, resubscribing while a worker has turns left. **Auto-approve caveat:** an armed worker's *plan* turn fires your one-shot subscription **before** it rolls into implementation — check the sentinel on that first wake and just resubscribe if it isn't done.
-- **Land calls can be fanned** across sessionIds in one turn; a rebase prompt sent by `sync_worktree` is a worker turn (subscribe + end). If a worker already exited, merge via `merge_worktree({project, worktree})`, then delete.
+- **Land calls can be fanned** across sessionIds in one turn; a rebase prompt sent by `sync_worktree` is a worker turn (subscribe + end). If a worker already exited, merge via `merge_worktree({project, worktree})`, then `delete_worktree({force:true})` once that thread of work is done.
 
 If a worker errors or stalls, handle just that sessionId on its wake; the rest are unaffected.
 
