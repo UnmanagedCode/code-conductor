@@ -512,17 +512,62 @@ test('merge_worktree accepts {project, worktree} when the instance is gone', asy
     project: 'demo', mode: 'bypassPermissions', createWorktree: true,
   }));
   await waitFor(() => instForSession(instances, spawn.sessionId).sessionId);
-  const wtName = instForSession(instances, spawn.sessionId).worktree.worktreeName;
+  const wt = instForSession(instances, spawn.sessionId).worktree;
+  // Commit something in the worktree so it's ahead of base — an empty
+  // merge (ahead:0) is refused with NOTHING_TO_MERGE (see below).
+  await fs.writeFile(path.join(wt.worktreePath, 'agent.txt'), 'agent work\n');
+  await git(wt.worktreePath, 'config', 'user.email', 'agent@example.com');
+  await git(wt.worktreePath, 'config', 'user.name', 'agent');
+  await git(wt.worktreePath, 'config', 'commit.gpgsign', 'false');
+  await git(wt.worktreePath, 'add', '.');
+  await git(wt.worktreePath, 'commit', '-q', '-m', 'agent work');
   await callTool(baseUrl, 'kill_instance', { sessionId: spawn.sessionId });
   assert.equal(instForSession(instances, spawn.sessionId), undefined);
 
-  // The worktree is up-to-date with main (no commits yet on either side),
-  // so a merge with --no-ff produces an empty-but-valid merge commit.
   const mergeRes = unwrap(await callTool(baseUrl, 'merge_worktree', {
-    project: 'demo', worktree: wtName,
+    project: 'demo', worktree: wt.worktreeName,
   }));
-  assert.equal(mergeRes.ok, true);
+  assert.equal(mergeRes.ok, true, `merge failed: ${mergeRes.reason}`);
   assert.ok(mergeRes.newSha, 'merge produced a new HEAD sha');
+});
+
+test('merge_worktree refuses NOTHING_TO_MERGE when the worktree has no commits ahead of base', async () => {
+  await makeRealRepo(projectsRoot, 'demo');
+  const spawn = unwrap(await callTool(baseUrl, 'spawn_instance', {
+    project: 'demo', mode: 'bypassPermissions', createWorktree: true,
+  }));
+  await waitFor(() => instForSession(instances, spawn.sessionId).sessionId);
+
+  const mergeRes = unwrap(await callTool(baseUrl, 'merge_worktree', { sessionId: spawn.sessionId }));
+  assert.equal(mergeRes.ok, false);
+  assert.equal(mergeRes.code, 'NOTHING_TO_MERGE');
+});
+
+test('merge_worktree refuses WORKTREE_DIRTY when the worktree has uncommitted changes, allowDirty overrides', async () => {
+  await makeRealRepo(projectsRoot, 'demo');
+  const spawn = unwrap(await callTool(baseUrl, 'spawn_instance', {
+    project: 'demo', mode: 'bypassPermissions', createWorktree: true,
+  }));
+  await waitFor(() => instForSession(instances, spawn.sessionId).sessionId);
+  const wt = instForSession(instances, spawn.sessionId).worktree;
+
+  await git(wt.worktreePath, 'config', 'user.email', 'agent@example.com');
+  await git(wt.worktreePath, 'config', 'user.name', 'agent');
+  await git(wt.worktreePath, 'config', 'commit.gpgsign', 'false');
+  await fs.writeFile(path.join(wt.worktreePath, 'agent.txt'), 'agent work\n');
+  await git(wt.worktreePath, 'add', '.');
+  await git(wt.worktreePath, 'commit', '-q', '-m', 'agent work');
+  // Additional uncommitted file dirties the tree after the commit.
+  await fs.writeFile(path.join(wt.worktreePath, 'scratch.txt'), 'not committed\n');
+
+  const refused = unwrap(await callTool(baseUrl, 'merge_worktree', { sessionId: spawn.sessionId }));
+  assert.equal(refused.ok, false);
+  assert.equal(refused.code, 'WORKTREE_DIRTY');
+
+  const allowed = unwrap(await callTool(baseUrl, 'merge_worktree', {
+    sessionId: spawn.sessionId, allowDirty: true,
+  }));
+  assert.equal(allowed.ok, true, `merge failed: ${allowed.reason}`);
 });
 
 test('merge_worktree rejects calls without sessionId or {project, worktree}', async () => {

@@ -446,7 +446,7 @@ export async function getProjectUpstreamStatus(projectPath) {
 // worktreeFastForwarded} on success or {ok:false, reason} when the merge
 // can't proceed (parent on wrong branch, dirty parent, conflicts, etc.)
 // — caller surfaces the reason to the UI rather than throwing.
-export async function mergeWorktreeIntoParent(projectName, worktreeName) {
+export async function mergeWorktreeIntoParent(projectName, worktreeName, { allowDirty = false } = {}) {
   const meta = await getWorktree(projectName, worktreeName);
   if (!meta) {
     const err = new Error(`worktree '${worktreeName}' not found under project '${projectName}'`);
@@ -486,7 +486,31 @@ export async function mergeWorktreeIntoParent(projectName, worktreeName) {
       reason: `parent repo has uncommitted changes — commit or stash them before merging`,
     };
   }
-  // 3. Attempt the merge. --no-ff forces a merge commit even when FF would
+  // 3. The worktree's own tree must be clean too — only committed work gets
+  //    merged, so uncommitted/untracked changes there would silently not
+  //    land. Overridable: allowDirty:true merges anyway.
+  if (!allowDirty) {
+    const wtDirty = await worktreeDirtyLines(meta.worktreePath);
+    if (wtDirty.ok && wtDirty.lines.length > 0) {
+      return {
+        ok: false,
+        code: 'WORKTREE_DIRTY',
+        reason: `worktree has uncommitted or untracked changes that would not be included in the merge — ` +
+          `commit them first, or pass allowDirty:true to merge anyway`,
+      };
+    }
+  }
+  // 4. Nothing to do if the branch has no commits ahead of its base — a
+  //    --no-ff merge here would either no-op ("Already up to date") or,
+  //    depending on git version/state, still be a pointless call.
+  if (status.ahead != null && status.ahead === 0) {
+    return {
+      ok: false,
+      code: 'NOTHING_TO_MERGE',
+      reason: `worktree branch has no commits ahead of '${meta.baseBranch}' — nothing to merge`,
+    };
+  }
+  // 5. Attempt the merge. --no-ff forces a merge commit even when FF would
   //    be possible; --no-edit makes git use its default message non-
   //    interactively (we'd hang otherwise waiting on an editor).
   const merge = await runGit(meta.parentPath, ['merge', '--no-ff', '--no-edit', meta.branch]);
@@ -499,7 +523,7 @@ export async function mergeWorktreeIntoParent(projectName, worktreeName) {
     };
   }
   const newHead = await runGit(meta.parentPath, ['rev-parse', 'HEAD']);
-  // 4. Fast-forward the worktree's own branch up to the merge commit. The
+  // 6. Fast-forward the worktree's own branch up to the merge commit. The
   //    worktree branch is one of that commit's two parents, so it's always
   //    an ancestor of the new HEAD — --ff-only can't fail on divergence.
   //    Must run from inside the worktree dir: the branch is checked out
