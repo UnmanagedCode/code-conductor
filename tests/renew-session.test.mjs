@@ -1,9 +1,10 @@
-// Integration tests for the compact_session MCP tool — a managed, server-driven
+// Integration tests for the renew_session MCP tool — a managed, server-driven
 // `/clear` that rotates the calling session's context in place (same process,
-// new sessionId) and reseeds it with a self-authored summary. See
-// src/sessionCompact.js + src/mcp/handlers.js (compactSession).
+// new sessionId) and reseeds it with a self-authored summary plus a
+// server-generated mechanical state block. See src/sessionRenew.js +
+// src/mcp/handlers.js (renewSession).
 //
-// The fake CLI can't call MCP tools, so each test arms the compaction out of
+// The fake CLI can't call MCP tools, so each test arms the renewal out of
 // band (POST /mcp?caller=<sid>) and then drives a turn_end with send_prompt —
 // faithfully standing in for the model finishing the turn the tool was called
 // in. The fixture's `/clear` turn emits a system/init with a fixed NEW sessionId
@@ -20,8 +21,8 @@ import { bootServer, api, waitFor, instForSession } from './helpers.mjs';
 import { isConducted } from '../src/conductedSessions.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-compact.json');
-// Must match the session_id the `/clear` turn emits in scenario-compact.json.
+const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-renew.json');
+// Must match the session_id the `/clear` turn emits in scenario-renew.json.
 const NEW_SID = 'c0000000-0000-4000-8000-000000000001';
 
 let nextRpcId = 1;
@@ -50,8 +51,8 @@ const userTexts = (transcript) =>
     .filter((o) => o.type === 'user')
     .map((o) => (o.message?.content ?? []).map((c) => c.text ?? '').join(' '));
 
-test('compact_session drives a /clear that rotates the session in place and reseeds with the summary', async () => {
-  const transcript = path.join(os.tmpdir(), `compact-tx-${process.pid}.jsonl`);
+test('renew_session drives a /clear that rotates the session in place and reseeds with the summary', async () => {
+  const transcript = path.join(os.tmpdir(), `renew-tx-${process.pid}.jsonl`);
   await fs.rm(transcript, { force: true });
   process.env.FAKE_CLAUDE_TRANSCRIPT = transcript;
   const srv = await bootServer({ scenarioPath: SCENARIO, realProcess: true });
@@ -67,11 +68,11 @@ test('compact_session drives a /clear that rotates the session in place and rese
     await waitFor(() => instForSession(srv.instances, sid1)?.status === 'idle');
     const pidBefore = instForSession(srv.instances, sid1).pid;
 
-    const armed = await callTool(srv.baseUrl, 'compact_session', { summary: 'HANDOFF-XYZ: finish task Q' }, { caller: sid1 });
+    const armed = await callTool(srv.baseUrl, 'renew_session', { summary: 'HANDOFF-XYZ: finish task Q' }, { caller: sid1 });
     assert.equal(armed.ok, true);
     assert.equal(armed.willClearAtTurnEnd, true);
 
-    // End the turn the tool was "called in" → the compaction fires.
+    // End the turn the tool was "called in" → the renewal fires.
     await callTool(srv.baseUrl, 'send_prompt', { sessionId: sid1, text: 'go1' });
 
     await waitFor(() => instForSession(srv.instances, NEW_SID)?.status === 'idle');
@@ -84,6 +85,7 @@ test('compact_session drives a /clear that rotates the session in place and rese
     const seedEcho = rotated.ringSnapshot().find(
       (ev) => ev.kind === 'user_echo' && typeof ev.text === 'string' && ev.text.includes('HANDOFF-XYZ'));
     assert.ok(seedEcho, 'summary was injected as a user turn on the cleared session');
+    assert.ok(seedEcho.text.includes('MECHANICAL STATE'), 'mechanical state block was appended to the seed');
 
     await waitFor(async () => (await fs.readFile(transcript, 'utf8').catch(() => '')).includes('HANDOFF-XYZ'));
     const texts = userTexts(await fs.readFile(transcript, 'utf8'));
@@ -99,7 +101,7 @@ test('compact_session drives a /clear that rotates the session in place and rese
   }
 });
 
-test('compact_session preserves the conducted marker across the rotation', async () => {
+test('renew_session preserves the conducted marker across the rotation', async () => {
   const srv = await bootServer({ scenarioPath: SCENARIO });
   mgr = srv.instances;
   try {
@@ -110,7 +112,7 @@ test('compact_session preserves the conducted marker across the rotation', async
     const id = instForSession(srv.instances, sid1).id;
     assert.equal(instForSession(srv.instances, sid1).conducted, true, 'spawn_instance yields a conducted worker');
 
-    await callTool(srv.baseUrl, 'compact_session', { summary: 'carry on with the migration' }, { caller: sid1 });
+    await callTool(srv.baseUrl, 'renew_session', { summary: 'carry on with the migration' }, { caller: sid1 });
     await callTool(srv.baseUrl, 'send_prompt', { sessionId: sid1, text: 'go1' });
 
     await waitFor(() => instForSession(srv.instances, NEW_SID)?.status === 'idle');
@@ -124,13 +126,13 @@ test('compact_session preserves the conducted marker across the rotation', async
   }
 });
 
-test('compact_session: an outgoing idle subscription survives the caller\'s /clear with no migration', async () => {
+test('renew_session: an outgoing idle subscription survives the caller\'s /clear with no migration', async () => {
   const srv = await bootServer({ scenarioPath: SCENARIO });
   mgr = srv.instances;
   try {
     await api(srv.baseUrl, 'POST', '/api/projects', { name: 'p' });
-    // `worker` is watched; `sub` watches it and then compacts ITSELF — the
-    // self-compact case where the caller's own sessionId rotates while it holds
+    // `worker` is watched; `sub` watches it and then renews ITSELF — the
+    // self-renewal case where the caller's own sessionId rotates while it holds
     // an outgoing subscription. Because the idle-subscription graph is keyed by
     // the stable instanceId (which /clear preserves), the entry is untouched by
     // the rotation — nothing to re-key. The snapshot is a sessionId-shaped view,
@@ -145,7 +147,7 @@ test('compact_session: an outgoing idle subscription survives the caller\'s /cle
     let snap = srv.instances._idleSubscriberSnapshot();
     assert.ok(snap[wSid]?.includes(sSid), 'subscription registered under the caller\'s original sid');
 
-    await callTool(srv.baseUrl, 'compact_session', { summary: 'keep watching the worker' }, { caller: sSid });
+    await callTool(srv.baseUrl, 'renew_session', { summary: 'keep watching the worker' }, { caller: sSid });
     await callTool(srv.baseUrl, 'send_prompt', { sessionId: sSid, text: 'go1' });
     await waitFor(() => instForSession(srv.instances, NEW_SID)?.status === 'idle');
 
@@ -157,7 +159,7 @@ test('compact_session: an outgoing idle subscription survives the caller\'s /cle
   }
 });
 
-test('compact_session defers the /clear while an overage-queued turn is pending, then proceeds once it drains', async () => {
+test('renew_session defers the /clear while an overage-queued turn is pending, then proceeds once it drains', async () => {
   const srv = await bootServer({ scenarioPath: SCENARIO });
   mgr = srv.instances;
   try {
@@ -167,7 +169,7 @@ test('compact_session defers the /clear while an overage-queued turn is pending,
     await waitFor(() => instForSession(srv.instances, sid1)?.status === 'idle');
     const id = instForSession(srv.instances, sid1).id;
 
-    await callTool(srv.baseUrl, 'compact_session', { summary: 'compact me later' }, { caller: sid1 });
+    await callTool(srv.baseUrl, 'renew_session', { summary: 'renew me later' }, { caller: sid1 });
     const inst = instForSession(srv.instances, sid1);
     // Stand in for a user turn parked in the overage queue at turn_end (the real
     // stop→idle-with-queued-work case). We drive the armed turn_end DIRECTLY
@@ -178,15 +180,15 @@ test('compact_session defers the /clear while an overage-queued turn is pending,
     srv.instances.emit('event', { id, ev: { kind: 'turn_end' } });
     await new Promise((r) => setTimeout(r, 50));
     assert.equal(instForSession(srv.instances, NEW_SID), undefined, 'no rotation while a queued turn is pending');
-    const pend = srv.instances._sessionCompact.pending.get(id);
-    assert.ok(pend && pend.state === 'armed', 'compaction is still armed (deferred), not fired');
+    const pend = srv.instances._sessionRenew.pending.get(id);
+    assert.ok(pend && pend.state === 'armed', 'renewal is still armed (deferred), not fired');
 
-    // Drain the queue and drive another turn_end — the compaction now proceeds.
+    // Drain the queue and drive another turn_end — the renewal now proceeds.
     inst._overageQueue.length = 0;
     srv.instances.emit('event', { id, ev: { kind: 'turn_end' } });
     await waitFor(() => instForSession(srv.instances, NEW_SID)?.status === 'idle');
     assert.ok(instForSession(srv.instances, NEW_SID), 'rotation proceeds once the queue drains');
-    assert.ok(!srv.instances._sessionCompact.pending.has(id), 'pending compaction consumed');
+    assert.ok(!srv.instances._sessionRenew.pending.has(id), 'pending renewal consumed');
   } finally {
     await srv.close();
   }
@@ -194,10 +196,10 @@ test('compact_session defers the /clear while an overage-queued turn is pending,
 
 // The `?caller=` staleness regression: the baked caller handle is the stable
 // INSTANCE id, so it keeps resolving after a /clear rotates the sessionId in place
-// — repeated self-compaction works. On the old sessionId-baked behavior the second
+// — repeated renewal works. On the old sessionId-baked behavior the second
 // (post-rotation) call resolved to a rotated-away id and soft-refused. The rpc
 // helper passes `caller` through unchanged when it's already an instanceId.
-test('compact_session: the baked caller handle survives a /clear so a session can compact repeatedly', async () => {
+test('renew_session: the baked caller handle survives a /clear so a session can renew repeatedly', async () => {
   const srv = await bootServer({ scenarioPath: SCENARIO });
   mgr = srv.instances;
   try {
@@ -208,7 +210,7 @@ test('compact_session: the baked caller handle survives a /clear so a session ca
     await waitFor(() => instForSession(srv.instances, sid1)?.status === 'idle');
 
     // First caller-addressed call: the handle resolves to the pre-rotation sessionId.
-    const r1 = await callTool(srv.baseUrl, 'compact_session', { summary: 'first handoff' }, { caller: handle });
+    const r1 = await callTool(srv.baseUrl, 'renew_session', { summary: 'first handoff' }, { caller: handle });
     assert.equal(r1.ok, true);
     assert.equal(r1.sessionId, sid1, 'caller handle resolves to the current sessionId (pre-rotation)');
 
@@ -220,9 +222,103 @@ test('compact_session: the baked caller handle survives a /clear so a session ca
     // SECOND caller-addressed call with the SAME baked handle, AFTER the rotation.
     // This is the regression: it must resolve to the CURRENT (rotated) sessionId,
     // not soft-refuse SESSION_UNKNOWN on the stale id.
-    const r2 = await callTool(srv.baseUrl, 'compact_session', { summary: 'second handoff' }, { caller: handle });
+    const r2 = await callTool(srv.baseUrl, 'renew_session', { summary: 'second handoff' }, { caller: handle });
     assert.equal(r2.ok, true, 'caller still resolves after the rotation (not SESSION_UNKNOWN)');
     assert.equal(r2.sessionId, NEW_SID, 'caller handle now resolves to the rotated sessionId');
+  } finally {
+    await srv.close();
+  }
+});
+
+test('renew_session: the mechanical state block lists live spawned workers and idle subscriptions', async () => {
+  const srv = await bootServer({ scenarioPath: SCENARIO });
+  mgr = srv.instances;
+  try {
+    await api(srv.baseUrl, 'POST', '/api/projects', { name: 'p' });
+    // `conductor` spawns `worker` via spawn_instance with ?caller=conductor, so
+    // Instance.callerInstanceId links them — the ownership tracking liveOwnedBy()
+    // relies on.
+    const conductorSpawn = await api(srv.baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions' });
+    const conductorSid = conductorSpawn.body.sessionId;
+    await waitFor(() => instForSession(srv.instances, conductorSid)?.status === 'idle');
+
+    const worker = await callTool(srv.baseUrl, 'spawn_instance', { project: 'p', mode: 'bypassPermissions' }, { caller: conductorSid });
+    const workerSid = worker.sessionId;
+    await waitFor(() => instForSession(srv.instances, workerSid)?.status === 'idle');
+
+    // Conductor subscribes to the worker's idle callback.
+    await callTool(srv.baseUrl, 'subscribe_to_idle', { sessionId: workerSid }, { caller: conductorSid });
+
+    await callTool(srv.baseUrl, 'renew_session', { summary: 'HANDOFF-STATE-1' }, { caller: conductorSid });
+    await callTool(srv.baseUrl, 'send_prompt', { sessionId: conductorSid, text: 'go1' });
+    await waitFor(() => instForSession(srv.instances, NEW_SID)?.status === 'idle');
+
+    const rotated = instForSession(srv.instances, NEW_SID);
+    const seedEcho = rotated.ringSnapshot().find(
+      (ev) => ev.kind === 'user_echo' && typeof ev.text === 'string' && ev.text.includes('HANDOFF-STATE-1'));
+    assert.ok(seedEcho, 'summary was injected');
+    assert.ok(seedEcho.text.includes(workerSid), 'state block lists the live spawned worker by sessionId');
+    assert.ok(seedEcho.text.includes('project=p'), 'state block carries the worker project');
+    // The worker sessionId also appears as a pending idle subscription entry.
+    const subsSection = seedEcho.text.split('pending idle subscriptions')[1] ?? '';
+    assert.ok(subsSection.includes(workerSid), 'state block lists the pending idle subscription');
+  } finally {
+    await srv.close();
+  }
+});
+
+test('renew_session: the state block is composed at reseed time, not arm time', async () => {
+  const srv = await bootServer({ scenarioPath: SCENARIO });
+  mgr = srv.instances;
+  try {
+    await api(srv.baseUrl, 'POST', '/api/projects', { name: 'p' });
+    const conductorSpawn = await api(srv.baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions' });
+    const conductorSid = conductorSpawn.body.sessionId;
+    await waitFor(() => instForSession(srv.instances, conductorSid)?.status === 'idle');
+
+    // Arm renewal BEFORE the worker even exists.
+    await callTool(srv.baseUrl, 'renew_session', { summary: 'HANDOFF-STATE-2' }, { caller: conductorSid });
+
+    // Spawn the worker (and subscribe) AFTER arming, but before the turn ends.
+    const worker = await callTool(srv.baseUrl, 'spawn_instance', { project: 'p', mode: 'bypassPermissions' }, { caller: conductorSid });
+    const workerSid = worker.sessionId;
+    await waitFor(() => instForSession(srv.instances, workerSid)?.status === 'idle');
+    await callTool(srv.baseUrl, 'subscribe_to_idle', { sessionId: workerSid }, { caller: conductorSid });
+
+    // NOW end the turn — the clear (and state-block composition) fires here.
+    await callTool(srv.baseUrl, 'send_prompt', { sessionId: conductorSid, text: 'go1' });
+    await waitFor(() => instForSession(srv.instances, NEW_SID)?.status === 'idle');
+
+    const rotated = instForSession(srv.instances, NEW_SID);
+    const seedEcho = rotated.ringSnapshot().find(
+      (ev) => ev.kind === 'user_echo' && typeof ev.text === 'string' && ev.text.includes('HANDOFF-STATE-2'));
+    assert.ok(seedEcho, 'summary was injected');
+    assert.ok(seedEcho.text.includes(workerSid),
+      'worker spawned AFTER arm (before reseed) still appears — block reflects state at reseed time, not arm time');
+  } finally {
+    await srv.close();
+  }
+});
+
+test('renew_session: the state block renders (none) when there are no owned workers or subscriptions', async () => {
+  const srv = await bootServer({ scenarioPath: SCENARIO });
+  mgr = srv.instances;
+  try {
+    await api(srv.baseUrl, 'POST', '/api/projects', { name: 'p' });
+    const spawn = await api(srv.baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions' });
+    const sid1 = spawn.body.sessionId;
+    await waitFor(() => instForSession(srv.instances, sid1)?.status === 'idle');
+
+    await callTool(srv.baseUrl, 'renew_session', { summary: 'HANDOFF-EMPTY' }, { caller: sid1 });
+    await callTool(srv.baseUrl, 'send_prompt', { sessionId: sid1, text: 'go1' });
+    await waitFor(() => instForSession(srv.instances, NEW_SID)?.status === 'idle');
+
+    const rotated = instForSession(srv.instances, NEW_SID);
+    const seedEcho = rotated.ringSnapshot().find(
+      (ev) => ev.kind === 'user_echo' && typeof ev.text === 'string' && ev.text.includes('HANDOFF-EMPTY'));
+    assert.ok(seedEcho, 'summary was injected');
+    const noneCount = (seedEcho.text.match(/\(none\)/g) ?? []).length;
+    assert.equal(noneCount, 2, 'both the workers and subscriptions sections render (none)');
   } finally {
     await srv.close();
   }
@@ -231,7 +327,7 @@ test('compact_session: the baked caller handle survives a /clear so a session ca
 // Real-binary confirmation that `_sendRaw` of a `/clear` user message actually
 // rotates the session on the real claude CLI (the fake fixture only simulates
 // the rotation). Gated behind RUN_REAL_CLAUDE=1 — needs auth + network.
-test('compact_session against the real claude binary rotates the sessionId', { skip: process.env.RUN_REAL_CLAUDE !== '1' }, async () => {
+test('renew_session against the real claude binary rotates the sessionId', { skip: process.env.RUN_REAL_CLAUDE !== '1' }, async () => {
   const srv = await bootServer({ useRealClaude: true });
   mgr = srv.instances;
   try {
@@ -241,7 +337,7 @@ test('compact_session against the real claude binary rotates the sessionId', { s
     await waitFor(() => instForSession(srv.instances, sid1)?.status === 'idle', { timeout: 30000 });
     const pidBefore = instForSession(srv.instances, sid1).pid;
 
-    await callTool(srv.baseUrl, 'compact_session', { summary: 'REAL-SMOKE: continue' }, { caller: sid1 });
+    await callTool(srv.baseUrl, 'renew_session', { summary: 'REAL-SMOKE: continue' }, { caller: sid1 });
     await callTool(srv.baseUrl, 'send_prompt', { sessionId: sid1, text: 'hello' });
 
     await waitFor(() => {

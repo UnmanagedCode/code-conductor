@@ -412,20 +412,21 @@ export async function unsubscribeFromIdle({ sessionId }, { instances, callerId }
   return { sessionId, removed: res.removed };
 }
 
-// Compact the CALLING session: capture a self-authored handoff summary, then
+// Renew the CALLING session: capture a self-authored handoff summary, then
 // (at this turn's end) code-conductor drives a server-side `/clear` on the
 // caller — rotating its context in place (fresh sessionId, SAME process) — and
-// seeds the cleared session with the summary as its first user turn. Caller
+// seeds the cleared session with the summary (plus a server-generated
+// mechanical state block, built at reseed time) as its first user turn. Caller
 // identity comes from the MCP URL's ?caller=<sessionId>, so this only works for
 // a code-conductor-managed session and always acts on the caller's own session.
 // The `/clear` is deferred to turn_end (not fired now) so this tool call's turn
-// completes normally first — see src/sessionCompact.js.
-export async function compactSession({ summary }, { instances, callerId }) {
+// completes normally first — see src/sessionRenew.js.
+export async function renewSession({ summary }, { instances, callerId }) {
   if (!instances) throw new Error('orchestrator has no InstanceManager');
   if (!callerId) {
     throw new Error(
       'caller identity missing — the MCP URL must include ?caller=<sessionId>. ' +
-      'compact_session acts on the calling session, so it only works for a ' +
+      'renew_session acts on the calling session, so it only works for a ' +
       'code-conductor-managed instance whose MCP config carries the caller sessionId.',
     );
   }
@@ -435,7 +436,7 @@ export async function compactSession({ summary }, { instances, callerId }) {
   }
   const r = await getInst(instances, callerId);
   if (r.soft) return r.soft;
-  instances.armSessionCompact(r.inst.id, { summary });
+  instances.armSessionRenew(r.inst.id, { summary });
   return {
     ok: true,
     sessionId: callerId,

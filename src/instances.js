@@ -8,7 +8,7 @@ import { getProject, claudeProjectsRoot, encodeCwd, findSessionLocation, readFir
 import { createWorktree, getWorktree, debugBaseDir } from './worktrees.js';
 import { getTitle as getSessionTitle, deleteTitle as deleteSessionTitle } from './sessionTitles.js';
 import { isConducted, markConducted, unmarkConducted } from './conductedSessions.js';
-import { SessionCompactController } from './sessionCompact.js';
+import { SessionRenewController } from './sessionRenew.js';
 import { isTemp, markTemp, unmarkTemp } from './tempSessions.js';
 import { markArchived } from './archivedSessions.js';
 import { CONDUCT_PROJECT_NAME } from './conduct.js';
@@ -835,10 +835,10 @@ export class Instance extends EventEmitter {
     if (this.mcpServerUrl) {
       // Bake THIS worker's own stable INSTANCE id into ?caller= so the MCP server
       // can identify it when it calls caller-dependent tools (subscribe_to_idle,
-      // compact_session). The instanceId (NOT the sessionId) is used deliberately:
+      // renew_session). The instanceId (NOT the sessionId) is used deliberately:
       // a managed /clear rotates the sessionId in place, but this URL is frozen in
       // the subprocess's --mcp-config for the life of the process — a baked
-      // sessionId would go stale after the first self-compaction. The instanceId
+      // sessionId would go stale after the first renewal. The instanceId
       // never rotates; the MCP boundary resolves it to the caller's CURRENT
       // sessionId per request (see InstanceManager.callerSessionId / mcp/server.js).
       const url = `${this.mcpServerUrl}?caller=${encodeURIComponent(this.id)}`;
@@ -1399,8 +1399,8 @@ export class Instance extends EventEmitter {
   // Deliberately bypasses prompt()'s user_echo + overage-queue intercept: this
   // is a server-internal control send, not a user turn. The rotation is picked
   // up by the system/init handler (which updates this.sessionId), and the
-  // SessionCompactController reseeds the cleared session on the following
-  // turn_end. See src/sessionCompact.js.
+  // SessionRenewController reseeds the cleared session on the following
+  // turn_end. See src/sessionRenew.js.
   clearContext() {
     if (!this.proc || !this.proc.stdin.writable) throw new Error('not running');
     this._sendRaw({
@@ -1725,11 +1725,11 @@ export class InstanceManager extends EventEmitter {
     // so every external caller sees an unchanged surface.
     this._idleHub = new IdleSubscriptionHub(this);
     this._overageResume = new OverageResumeController(this);
-    // Managed self-compaction (`compact_session` MCP tool): drives a server-side
+    // Managed session renewal (`renew_session` MCP tool): drives a server-side
     // `/clear` at the caller's turn_end and reseeds the rotated session with a
     // handoff summary. Keyed by instanceId so it tracks the caller across the
-    // sessionId rotation `/clear` performs. See src/sessionCompact.js.
-    this._sessionCompact = new SessionCompactController(this);
+    // sessionId rotation `/clear` performs. See src/sessionRenew.js.
+    this._sessionRenew = new SessionRenewController(this);
     // Server-side usage poller: a second, equal-footing source for the overage
     // auto-stop. The stream `rate_limit_event` only reports near Anthropic's own
     // ~90% threshold, so a LOW configured threshold (e.g. 25%) is invisible to
@@ -1738,7 +1738,7 @@ export class InstanceManager extends EventEmitter {
     // started by the server after listen() and stopped in both shutdown paths.
     this._usageMonitor = new UsageOverageMonitor(this);
     this.on('event', (e) => this._idleHub.onEvent(e));
-    this.on('event', (e) => this._sessionCompact.onEvent(e));
+    this.on('event', (e) => this._sessionRenew.onEvent(e));
     // Global overage auto-stop state. The decision moved off the per-Instance
     // handler (which can't reach the idle-subscription graph) up to here:
     // `_overageActive` is a one-shot guard held from the first trip until the
@@ -1771,12 +1771,17 @@ export class InstanceManager extends EventEmitter {
   }
   _idleSubscriberSnapshot() { return this._idleHub.snapshot(); }
   _purgeIdleFor(instanceId) { return this._idleHub.purge(instanceId); }
+  // Sibling to _idleSubscriberSnapshot, but caller-indexed and sessionId-shaped
+  // — which targets THIS instanceId (as caller) currently watches. Used by the
+  // renewal state block (src/sessionRenew.js) to enumerate the caller's own
+  // pending idle subscriptions.
+  idleSubscriptionsOf(instanceId) { return this._idleHub.subscriptionsOf(instanceId); }
 
-  // Managed self-compaction — see src/sessionCompact.js. Arm a `/clear`+reseed
+  // Managed session renewal — see src/sessionRenew.js. Arm a `/clear`+reseed
   // on the given instance; the controller fires at the instance's next turn_end.
   // No sessionId-rotation bookkeeping is needed: the idle-subscription graph and
   // overage timers are keyed by the stable instanceId, which `/clear` preserves.
-  armSessionCompact(instanceId, opts) { return this._sessionCompact.arm(instanceId, opts); }
+  armSessionRenew(instanceId, opts) { return this._sessionRenew.arm(instanceId, opts); }
 
   // Returns true when a turn_notification for instanceId should be suppressed:
   //   Condition 1 — session is a conductor mid-orchestration (subscribed as caller
@@ -2405,7 +2410,7 @@ export class InstanceManager extends EventEmitter {
     this.byId.delete(id);
     this._cancelAutoResume(id);
     this._purgeIdleFor(id);
-    this._sessionCompact.purge(id);
+    this._sessionRenew.purge(id);
     this.emit('list_changed');
   }
 
@@ -2556,6 +2561,26 @@ export class InstanceManager extends EventEmitter {
         project: inst.project,
         sessionId: inst.sessionId,
         worktreeName: inst.worktree?.worktreeName ?? null,
+      });
+    }
+    return out;
+  }
+
+  // Live (proc-attached) instances spawned by conductorId, for the renewal
+  // state block (src/sessionRenew.js) — a safety net so a worker missing from
+  // a degraded self-authored summary is never orphaned. Distinct from
+  // conductedWorkersOf: this filters to LIVE only and carries `status`, since
+  // the resume manifest's use case (any-with-sessionId, no status) differs.
+  liveOwnedBy(conductorId) {
+    const out = [];
+    for (const inst of this.byId.values()) {
+      if (inst.id === conductorId) continue;
+      if (inst.callerInstanceId !== conductorId || !inst.proc) continue;
+      out.push({
+        sessionId: inst.sessionId,
+        project: inst.project,
+        worktree: inst.worktree?.worktreeName ?? null,
+        status: inst.status,
       });
     }
     return out;
