@@ -5,7 +5,7 @@
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import { spawn } from 'node:child_process';
-import { getShellEnvBundlePath } from '../claudeShellEnv.js';
+import { getShellEnvBundlePath, bundleShellKind } from '../claudeShellEnv.js';
 import {
   listProjects as fsListProjects,
   listSessions as fsListSessions,
@@ -1309,11 +1309,13 @@ function shQuote(p) {
   return `'${p.replace(/'/g, `'\\''`)}'`;
 }
 
-// Run a bash command inside a project/worktree cwd, in claude's own restored
-// shell environment (rg/find/grep shims + shell functions, via the cached
-// bundle from claudeShellEnv.js). Read-only inspection only (see the tool
-// description in mcp/tools.js). `description` is accepted for schema parity
-// with the built-in Bash tool but is unused server-side.
+// Run a shell command inside a project/worktree cwd, in claude's own
+// restored shell environment (rg/find/grep shims + shell functions, via the
+// cached bundle from claudeShellEnv.js). The bundle is sourced with the same
+// shell (bash or zsh) that produced it — see bundleShellKind(). Read-only
+// inspection only (see the tool description in mcp/tools.js). `description`
+// is accepted for schema parity with the built-in Bash tool but is unused
+// server-side.
 export async function bashProject({ project, worktree, command, timeout }) {
   if (typeof command !== 'string' || !command.trim()) {
     throw new Error('project_bash requires a non-empty command string');
@@ -1322,6 +1324,10 @@ export async function bashProject({ project, worktree, command, timeout }) {
   const { cwd } = await resolveProjectCwd(project, worktree);
   const bundlePath = await getShellEnvBundlePath();
   const wrapped = `source ${shQuote(bundlePath)} >/dev/null 2>&1; ${command}`;
+  const shell = bundleShellKind(bundlePath);
+  const [spawnCmd, spawnArgs] = shell === 'zsh'
+    ? ['zsh', ['--no-rcs', '-c', wrapped]]
+    : ['bash', ['--noprofile', '--norc', '-c', wrapped]];
 
   return new Promise((resolve) => {
     const start = Date.now();
@@ -1332,7 +1338,7 @@ export async function bashProject({ project, worktree, command, timeout }) {
 
     let proc;
     try {
-      proc = spawn('bash', ['--noprofile', '--norc', '-c', wrapped], {
+      proc = spawn(spawnCmd, spawnArgs, {
         cwd,
         stdio: ['ignore', 'pipe', 'pipe'],
         detached: true,

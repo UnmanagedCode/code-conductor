@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execFile } from 'node:child_process';
+import { execFile, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { bootServer, freshProjectsRoot, rmrf } from './helpers.mjs';
 import { _resetForTest as resetShellEnvCache } from '../src/claudeShellEnv.js';
@@ -105,11 +105,54 @@ process.stdin.on('data', (d) => { input += d; });
 process.stdin.on('end', () => {
   const m = input.match(/> '([^']*)'/);
   if (m) {
-    fs.writeFileSync(m[1], 'export CLAUDE_CODE_EXECPATH=/fake/claude\\nrg() { echo "RG-SHIM-CALLED $*"; }\\n');
+    fs.writeFileSync(m[1], 'export CLAUDE_CODE_EXECPATH=/fake/claude\\nexport CLAUDE_CODE_SHELL_KIND=bash\\nrg() { echo "RG-SHIM-CALLED $*"; }\\n');
   }
   process.exit(0);
 });
 `;
+
+// Simulates a zsh-hosted capture: the canned bundle is tagged
+// CLAUDE_CODE_SHELL_KIND=zsh and, ahead of the rg shim, embeds a genuine
+// zsh-only construct (an oh-my-zsh-style `(#b)` extended-glob backreference)
+// that is valid zsh but a hard *syntax* error under bash — verified: sourcing
+// this with plain bash aborts with "syntax error near '(#'" before ever
+// reaching the rg() definition, reproducing the real-world bug exactly.
+// project_bash must spawn zsh (not bash) to source it, or rg never fires.
+const FAKE_CLAUDE_SHELL_ENV_SCRIPT_ZSH = `
+const fs = require('fs');
+const argv = process.argv.slice(2);
+if (argv.includes('--version')) {
+  process.stdout.write('9.9.9 (Claude Code)\\n');
+  process.exit(0);
+}
+let input = '';
+process.stdin.on('data', (d) => { input += d; });
+process.stdin.on('end', () => {
+  const m = input.match(/> '([^']*)'/);
+  if (m) {
+    fs.writeFileSync(m[1], [
+      'export CLAUDE_CODE_EXECPATH=/fake/claude',
+      'export CLAUDE_CODE_SHELL_KIND=zsh',
+      '_ohmyzsh_internal_helper() {',
+      '  local MATCH MBEGIN MEND',
+      '  [[ "foo" = (#b)(f)(oo) ]] && echo "matched $match[1]"',
+      '}',
+      'rg() { echo "RG-SHIM-CALLED $*"; }',
+      '',
+    ].join('\\n'));
+  }
+  process.exit(0);
+});
+`;
+
+function hasZsh() {
+  try {
+    spawnSync('zsh', ['--version'], { stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 describe('project_bash', () => {
   let fakeBinPath, prevClaudeBin;
@@ -199,6 +242,36 @@ describe('project_bash', () => {
       project: 'demo', command: 'echo still-sync', description: 'echo a marker',
     }));
     assert.match(r.output, /still-sync/);
+    assert.equal(r.exitCode, 0);
+  });
+});
+
+describe('project_bash with a zsh-flavored bundle', { skip: !hasZsh() && 'zsh not available on this host' }, () => {
+  let fakeBinPath, prevClaudeBin;
+
+  before(async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-fake-claude-shellenv-zsh-'));
+    fakeBinPath = path.join(dir, 'fake-claude.js');
+    await fs.writeFile(fakeBinPath, FAKE_CLAUDE_SHELL_ENV_SCRIPT_ZSH, 'utf8');
+  });
+  beforeEach(() => {
+    prevClaudeBin = process.env.CLAUDE_BIN;
+    process.env.CLAUDE_BIN = `${process.execPath} ${fakeBinPath}`;
+  });
+  afterEach(() => {
+    if (prevClaudeBin === undefined) delete process.env.CLAUDE_BIN;
+    else process.env.CLAUDE_BIN = prevClaudeBin;
+    resetShellEnvCache();
+  });
+
+  // Regression test for the real bug: today's hardcoded `spawn('bash', ...)`
+  // would choke on the `(#b)` zsh-only syntax before ever reaching the rg()
+  // definition, so this fails against the pre-fix code and passes once
+  // bashProject() dispatches to zsh for a zsh-tagged bundle.
+  test('project_bash spawns zsh to source a zsh-flavored bundle (rg shim fires despite bash-hostile syntax)', async () => {
+    await makeRealRepo('demo-zsh');
+    const r = unwrapBash(await callTool('project_bash', { project: 'demo-zsh', command: 'rg foo' }));
+    assert.match(r.output, /RG-SHIM-CALLED foo/);
     assert.equal(r.exitCode, 0);
   });
 });
