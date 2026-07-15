@@ -735,7 +735,9 @@ export function buildTools() {
         'functions/aliases from the captured shell snapshot (cached per claude version). Mirrors ' +
         'project/worktree for cwd scoping plus the meaningful subset of the built-in Bash tool ' +
         '(command/description/timeout). Replaces grep/glob — use rg/grep/find through this tool ' +
-        'for search. NOT read-only: can write files, run git, start processes. OUTPUT: a compact-JSON ' +
+        'for search — read-only inspection only: run non-mutating commands (rg/grep/find, git ' +
+        'log/diff, wc, jq, …). Anything that writes files, installs dependencies, commits, or ' +
+        'starts long-lived processes belongs in a spawned worker instead. OUTPUT: a compact-JSON ' +
         'metadata block (content[0]) {project, worktree, cwd, exitCode, durationMs, truncated?, ' +
         'timedOut?, error?} PLUS a separate raw, un-escaped text block (content[1]) carrying the ' +
         'combined stdout+stderr output, in arrival order. A non-zero exitCode is a normal result, ' +
@@ -757,7 +759,7 @@ export function buildTools() {
         required: ['project', 'command'],
       },
       handler: h.bashProject,
-      // No readOnlyHint — arbitrary bash is not read-only.
+      // No readOnlyHint: doctrine-only — arbitrary bash isn't sandboxed, so a client shouldn't auto-approve it.
     },
     {
       name: 'project_read',

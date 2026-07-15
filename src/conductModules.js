@@ -37,13 +37,13 @@ export const SEED_MODULES = [
   { slug: 'canonical-workflow', name: 'Canonical workflow',
     description: 'The recon→spawn→brief→wake→review→land loop, single and N-parallel' },
   { slug: 'worker-lifecycle', name: 'Worker lifecycle',
-    description: 'Reuse unmerged same-file workers; merge is terminal; retire after' },
+    description: 'Reuse same-file workers across merges; retire when the thread ends' },
   { slug: 'operational-tasks', name: 'Operational tasks in other projects',
     description: 'Route even read-only work through a spawned session' },
   { slug: 'worker-prompts', name: 'Worker prompt best practices',
     description: 'Scope, declare env, sentinel, one concern, model ladder' },
   { slug: 'capturing-learnings', name: 'Capturing learnings',
-    description: 'Where durable lessons go (auto-memory vs CLAUDE.md), always opt-in' },
+    description: 'Where durable lessons go (private knowledge store vs CLAUDE.md), always opt-in' },
 ];
 
 // Plugin-contributed conductor-convention fragments join the catalog through
