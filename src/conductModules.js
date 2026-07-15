@@ -2,7 +2,7 @@
 // live .conduct/CONDUCT.md alongside the always-on core.
 //
 // CORE (conduct/core.md) + a footer note (conduct/footer.md) are always
-// present. The six built-in modules (conduct/modules/<slug>.md) and any
+// present. The built-in modules (conduct/modules/<slug>.md) and any
 // user-defined custom modules are toggled via a single GLOBAL selection
 // (the conductor is a singleton), persisted at
 // <orchStoreRoot>/conduct-modules.json as { enabled: [...], rules: [...] }.
@@ -46,6 +46,8 @@ export const SEED_MODULES = [
     description: 'Where durable lessons go (private knowledge store vs CLAUDE.md), always opt-in' },
   { slug: 'context-renewal', name: 'Context renewal',
     description: 'Shed dead-weight history about landed jobs via renew_session at lifecycle seams' },
+  { slug: 'system-prompt-gate', name: 'System-prompt text gate',
+    description: 'Audit system-prompt text diffs against the writing principles before approve/merge' },
 ];
 
 // Plugin-contributed conductor-convention fragments join the catalog through

@@ -1,0 +1,3 @@
+## System-prompt text gate
+
+Any change to a system-prompt surface — a `CLAUDE.md`, a `conduct/` or plugin-convention fragment, an MCP tool description — is audited sentence-by-sentence against the workspace "System-prompt docs" principles before you approve or merge it; name violations in the rejection feedback rather than fixing them after landing. Watch for the two recurring misses by name: an instruction duplicated across surfaces (grep the new instruction's key phrase — one home, cross-reference elsewhere) and an "emphasize X" edit that adds a sentence without removing the one it supersedes (move, not add).
