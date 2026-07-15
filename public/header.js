@@ -43,7 +43,7 @@ import {
 import { makeDismissable } from './dismissable.js';
 import { formatAgo } from './sidebar.js';
 import { send } from './ws.js';
-import { resolveSpawnModel, getTierList, getActiveTierEnabled, getActiveTierBackend, getTierLabel, familyOf } from './models.js';
+import { resolveSpawnModel, getTierList, getActiveTierEnabled, getActiveTierBackend, getTierLabel, familyOf, backendKindOf } from './models.js';
 
 // Combined popover: "Session totals" section above, "Usage limits" section
 // below. ctx data is per-session; usage-limit data is account-wide.
@@ -249,30 +249,48 @@ export function installHeader({
     header.textContent = 'Change model';
     node.appendChild(header);
 
-    const curBackend = familyOf(inst.model);
+    // A live "Change model" is a control_request to the RUNNING process, whose
+    // endpoint is fixed at launch — so a switch that changes backend KIND
+    // (Claude↔Ollama) can't be done live, and we conservatively also block
+    // Ollama↔Ollama (a different tag/host can't repoint the launched endpoint).
+    // The server enforces this too; here we disable the blocked tiers upfront.
+    const runningKind = inst.backendKind === 'ollama' ? 'ollama' : 'claude';
+    const curBackend = familyOf(inst.model); // Claude family; null for Ollama
     const row = document.createElement('div');
     row.className = 'quick-spawn-models';
     for (const tier of getTierList()) {
+      const targetKind = backendKindOf(getActiveTierBackend(tier));
+      const blocked = runningKind === 'ollama' || targetKind === 'ollama';
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.className = 'qs-model';
       btn.dataset.tier = tier;
       btn.hidden = !getActiveTierEnabled(tier);
-      btn.classList.toggle('qs-selected', getActiveTierBackend(tier) === curBackend);
+      btn.disabled = blocked;
+      if (blocked) btn.title = 'Kill and respawn on that tier to change backend kind';
+      btn.classList.toggle('qs-selected', runningKind === 'claude' && getActiveTierBackend(tier) === curBackend);
       btn.textContent = getTierLabel(tier);
-      btn.addEventListener('click', async () => {
-        const model = resolveSpawnModel(tier);
-        try {
-          await send('model', { id: inst.id, model }, { ack: true });
-          closeModelPopover();
-          closeOverflow();
-        } catch (e) {
-          alert('Change model failed: ' + e.message);
-        }
-      });
+      if (!blocked) {
+        btn.addEventListener('click', async () => {
+          const model = resolveSpawnModel(tier);
+          try {
+            await send('model', { id: inst.id, model }, { ack: true });
+            closeModelPopover();
+            closeOverflow();
+          } catch (e) {
+            alert('Change model failed: ' + e.message);
+          }
+        });
+      }
       row.appendChild(btn);
     }
     node.appendChild(row);
+    if (runningKind === 'ollama') {
+      const note = document.createElement('div');
+      note.className = 'ih-usage-popover-note';
+      note.textContent = 'Ollama-backed session — kill and respawn on a tier to change model.';
+      node.appendChild(note);
+    }
 
     return node;
   }

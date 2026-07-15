@@ -99,13 +99,26 @@ export function defaultVersion(family) {
   return MODEL_FAMILIES.find(f => f.family === family)?.default ?? null;
 }
 
-// Infer the family from a bare or suffixed model id, by prefix.
+// Namespace prefix for custom (Ollama-backed) backend ids stored in
+// Settings (`models.customBackends`) and bound to a tier via
+// `tierBackend[tier]`. The prefix keeps custom ids collision-proof against
+// Claude family keys and makes every discriminator a simple prefix test.
+export const OLLAMA_ID_PREFIX = 'ollama:';
+
+export function isOllamaBackendId(id) {
+  return typeof id === 'string' && id.startsWith(OLLAMA_ID_PREFIX);
+}
+
+// Infer the family from a bare or suffixed model id, by prefix. Returns the
+// 'ollama' sentinel for a custom-backend id (so cross-kind comparisons work);
+// null for anything genuinely unrecognized.
 export function familyOf(modelId) {
   if (typeof modelId !== 'string') return null;
   if (modelId.startsWith('claude-fable')) return 'fable';
   if (modelId.startsWith('claude-opus')) return 'opus';
   if (modelId.startsWith('claude-sonnet')) return 'sonnet';
   if (modelId.startsWith('claude-haiku')) return 'haiku';
+  if (modelId.startsWith(OLLAMA_ID_PREFIX)) return 'ollama';
   return null;
 }
 

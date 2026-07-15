@@ -55,17 +55,43 @@ export function getTierLabel(tier) {
   return tierLabels[tier] || tier;
 }
 
-// Infer the backend (Claude family) from a bare or suffixed model id, by
-// prefix. Mirrors familyOf() in src/modelVersions.js — duplicated
-// client-side since the client only ever receives the catalog data, not the
-// server module itself.
+// Namespace prefix for custom (Ollama-backed) backend ids. Mirrors
+// OLLAMA_ID_PREFIX in src/modelVersions.js.
+export const OLLAMA_ID_PREFIX = 'ollama:';
+
+export function isCustomBackendId(id) {
+  return typeof id === 'string' && id.startsWith(OLLAMA_ID_PREFIX);
+}
+
+// Infer the backend from a bare or suffixed model id, by prefix. Mirrors
+// familyOf() in src/modelVersions.js — duplicated client-side since the client
+// only ever receives the catalog data, not the server module itself. Returns
+// the 'ollama' sentinel for a custom-backend id; null for anything else.
 export function familyOf(modelId) {
   if (typeof modelId !== 'string') return null;
   if (modelId.startsWith('claude-fable')) return 'fable';
   if (modelId.startsWith('claude-opus')) return 'opus';
   if (modelId.startsWith('claude-sonnet')) return 'sonnet';
   if (modelId.startsWith('claude-haiku')) return 'haiku';
+  if (modelId.startsWith(OLLAMA_ID_PREFIX)) return 'ollama';
   return null;
+}
+
+// Kind of a backend key (family OR custom id): 'claude' | 'ollama'.
+export function backendKindOf(backendKey) {
+  return isCustomBackendId(backendKey) ? 'ollama' : 'claude';
+}
+
+let customBackends = [];
+export function getCustomBackends() {
+  return customBackends;
+}
+export function getCustomBackend(id) {
+  return customBackends.find(b => b.id === id) || null;
+}
+export function setCustomBackends(list) {
+  customBackends = Array.isArray(list) ? list : [];
+  return customBackends;
 }
 
 export function setActiveVersions(map) {
@@ -135,6 +161,7 @@ export async function loadModelVersions() {
       if (data.tierBackend) setActiveTierBackend(data.tierBackend);
       if (data.enabledTiers) setActiveTierEnabled(data.enabledTiers);
       setActiveDefaultSpawnTier(data.defaultSpawnTier);
+      setCustomBackends(data.customBackends);
     }
   } catch { /* keep defaults */ }
   return activeVersions;
@@ -147,6 +174,10 @@ export async function loadModelVersions() {
 // Haiku).
 export function resolveSpawnModel(tier) {
   const backend = getActiveTierBackend(tier);
+  // A tier bound to a custom (Ollama-backed) backend sends the custom id
+  // itself — the server resolves it to the ollama tag + host at spawn (no
+  // Claude version / context-window suffix applies).
+  if (isCustomBackendId(backend)) return backend;
   const base = getActiveVersion(backend);
   if (!base) return '';
   if (backend === 'sonnet') {

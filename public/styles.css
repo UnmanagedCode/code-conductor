@@ -1503,6 +1503,20 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
   .sm-family-row { padding: 7px 10px; }
 }
 
+/* Custom (Ollama) backends sub-panel inside the Models group. */
+.sm-custom { margin-top: 12px; }
+.sm-custom-list { list-style: none; margin: 6px 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.sm-custom-empty { font-size: 12px; color: var(--muted); }
+.sm-custom-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 6px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel);
+}
+.sm-custom-meta { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sm-custom-form { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+.sm-custom-form input { flex: 1 1 140px; min-width: 0; }
+.sm-custom-form .btn { flex: 0 0 auto; }
+.ih-usage-popover-note { font-size: 11px; color: var(--muted); padding: 6px 8px 2px; }
+
 /* ── Review view ─────────────────────────────────────────────────────────── */
 /* Full-page diff browser, same pattern as settings. While open the instance-
    specific children of #main are hidden. The ± sidebar button opens it. */
