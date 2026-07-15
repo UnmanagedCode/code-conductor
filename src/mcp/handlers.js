@@ -35,7 +35,7 @@ import { formatUserQuestionAnswers } from '../../public/userQuestionAnswers.js';
 import { getCatalog as getProjectConventionsCatalog, composeProjectConventionsBlock, composeProjectScaffold } from '../projectConventions.js';
 import { getCatalog as getConductModulesCatalog, getSelection as getConductSelection } from '../conductModules.js';
 import { isKnownFamily, isKnownTier, defaultVersion } from '../modelVersions.js';
-import { getModelVersion, getTierBackend } from '../appSettings.js';
+import { getModelVersion, getTierBackend, isKnownCustomBackend } from '../appSettings.js';
 import { textPayload } from './content.js';
 import { pageInstanceEvents } from '../eventArchive.js';
 import { parseNumstat, parseNameStatus, indexDiffLines, paginateDiff } from './diffPaging.js';
@@ -268,7 +268,9 @@ export async function spawnInstance(args, { instances, callerId }) {
   let model = args.model;
   if (model && isKnownTier(model)) {
     const backend = getTierBackend(model);
-    model = getModelVersion(backend) ?? defaultVersion(backend);
+    // A custom (Ollama-backed) backend id has no Claude version — pass it
+    // through unchanged; _doCreate resolves it to the ollama tag + host.
+    model = isKnownCustomBackend(backend) ? backend : (getModelVersion(backend) ?? defaultVersion(backend));
   } else if (model && isKnownFamily(model)) {
     model = getModelVersion(model) ?? defaultVersion(model);
   }

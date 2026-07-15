@@ -35,6 +35,7 @@ import {
   isAvailable as ttsAvailable, synthesize, voicePathForName,
 } from './tts.js';
 import { TTS_VOICES, isKnownVoice, DEFAULT_VOICE } from './ttsModels.js';
+import { preflightOllamaBackend } from './ollamaBackend.js';
 import {
   getTranscribeModel, setTranscribeModel, getModelVersion, setModelVersion,
   getTtsEnabled, setTtsEnabled, getTtsVoice, setTtsVoice, getTtsRate, setTtsRate,
@@ -45,6 +46,7 @@ import {
   getEnabledTiers, setTierEnabled,
   getDefaultSpawnTier, setDefaultSpawnTier,
   getTierBackend, setTierBackend,
+  getCustomBackends, addCustomBackend, removeCustomBackend, isKnownBackend,
 } from './appSettings.js';
 import * as whisperInstall from './whisperInstall.js';
 import * as ttsInstall from './ttsInstall.js';
@@ -1073,6 +1075,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
       sonnetContextWindow: getSonnetContextWindow(),
       tiers: CAPABILITY_TIERS,
       tierBackend,
+      customBackends: getCustomBackends(),
       enabledTiers: getEnabledTiers(),
       defaultSpawnTier: getDefaultSpawnTier() };
   }
@@ -1112,7 +1115,9 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
       }
       if (defaultSpawnTier !== undefined) await setDefaultSpawnTier(defaultSpawnTier);
       if (tierBackend !== undefined) {
-        if (!tierBackend || typeof tierBackend !== 'object' || !isKnownTier(tierBackend.tier) || !isKnownFamily(tierBackend.backend)) {
+        // backend may be a Claude family key OR a custom (Ollama-backed)
+        // backend id — isKnownBackend accepts both.
+        if (!tierBackend || typeof tierBackend !== 'object' || !isKnownTier(tierBackend.tier) || !isKnownBackend(tierBackend.backend)) {
           return res.status(400).json({ error: 'tierBackend must be {tier, backend} with a known tier and backend' });
         }
         await setTierBackend(tierBackend.tier, tierBackend.backend);
@@ -1128,6 +1133,30 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
           instances.reevaluateOverageResumes();      // release direction: raised/disabled threshold resumes now
         }
       } catch { /* best-effort re-evaluation */ }
+      res.json(modelsSettingsState());
+    } catch (e) { next(e); }
+  });
+
+  // Custom (Ollama-backed) backends. Add runs a reachability + model preflight
+  // (GET <host>/api/version + /api/tags) so a bad host/tag fails fast with a
+  // clear message instead of a silent `ollama launch` failure at spawn.
+  r.post('/settings/models/custom', async (req, res, next) => {
+    try {
+      const { label, model, host } = req.body ?? {};
+      if (typeof label !== 'string' || !label.trim() || typeof model !== 'string' || !model.trim()) {
+        return res.status(400).json({ error: 'label and model (ollama tag) are required' });
+      }
+      const pre = await preflightOllamaBackend({ host, model });
+      if (!pre.ok) return res.status(400).json({ error: pre.error });
+      const rec = await addCustomBackend({ label, model, host });
+      res.status(201).json({ ...modelsSettingsState(), added: rec });
+    } catch (e) { next(e); }
+  });
+
+  r.delete('/settings/models/custom/:id', async (req, res, next) => {
+    try {
+      const ok = await removeCustomBackend(req.params.id);
+      if (!ok) return res.status(404).json({ error: 'custom backend not found' });
       res.json(modelsSettingsState());
     } catch (e) { next(e); }
   });

@@ -30,6 +30,12 @@ export function installSettings({
   // Models group elements.
   const smStatusEl = document.getElementById('sm-status');
   const smListEl = document.getElementById('sm-tier-list');
+  const smCustomListEl = document.getElementById('sm-custom-list');
+  const smCustomLabelEl = document.getElementById('sm-custom-label');
+  const smCustomModelEl = document.getElementById('sm-custom-model');
+  const smCustomHostEl = document.getElementById('sm-custom-host');
+  const smCustomAddEl = document.getElementById('sm-custom-add');
+  const smCustomStatusEl = document.getElementById('sm-custom-status');
   const smOverageEl = document.getElementById('sm-overage');
   const smOverageBtns = [...(smOverageEl?.querySelectorAll('[data-overage]') || [])];
   const smCompactWindowEnabledEl = document.getElementById('sm-compact-window-enabled');
@@ -326,6 +332,7 @@ export function installSettings({
   function renderModels(data) {
     const tiers = data.tiers || [];
     const backends = data.backends || [];
+    const customBackends = data.customBackends || [];
     const activeVersions = data.activeVersions || {};
     const tierBackend = data.tierBackend || {};
     const sonnetWindow = data.sonnetContextWindow ?? '1m';
@@ -334,9 +341,17 @@ export function installSettings({
     const enabledCount = tiers.filter(t => enabledTiers[t.tier] !== false).length;
 
     const backendFor = (family) => backends.find(b => b.family === family);
+    const customFor = (id) => customBackends.find(c => c.id === id);
+
+    renderCustomList(customBackends);
 
     if (smStatusEl) {
       smStatusEl.innerHTML = tiers.map(t => {
+        const isDefault = t.tier === defaultTier;
+        const custom = customFor(tierBackend[t.tier]);
+        if (custom) {
+          return `${t.label}: <strong>${escapeHtml(custom.label)} — ${escapeHtml(custom.model)}</strong>${isDefault ? ' <em>(default)</em>' : ''}`;
+        }
         const backend = backendFor(tierBackend[t.tier]);
         if (!backend) return `${t.label}: <strong>—</strong>`;
         const vLabel = labelFor(backend, activeVersions[backend.family]);
@@ -346,7 +361,6 @@ export function installSettings({
           const win = activeEntry?.fixedWindow || sonnetWindow;
           extra = ` — ${win === '200k' ? '200k' : '1M'}`;
         }
-        const isDefault = t.tier === defaultTier;
         return `${t.label}: <strong>${backend.label} ${vLabel}${extra}</strong>${isDefault ? ' <em>(default)</em>' : ''}`;
       }).join(' · ');
     }
@@ -356,8 +370,10 @@ export function installSettings({
       const isEnabled = enabledTiers[t.tier] !== false;
       const isDefault = t.tier === defaultTier;
       const isLastEnabled = isEnabled && enabledCount === 1;
-      const backend = backendFor(tierBackend[t.tier]) || backends[0];
-      if (!backend) continue;
+      const boundKey = tierBackend[t.tier];
+      const custom = customFor(boundKey);
+      const backend = custom ? null : (backendFor(boundKey) || backends[0]);
+      if (!custom && !backend) continue;
 
       const li = document.createElement('li');
       li.className = 'sm-family-row' + (isEnabled ? '' : ' sm-family-row--disabled');
@@ -378,7 +394,8 @@ export function installSettings({
       labelEl.textContent = t.label;
       li.appendChild(labelEl);
 
-      // Column 3: backend select
+      // Column 3: backend select — Claude families followed by custom (Ollama)
+      // backends. Option value = family key OR custom-backend id.
       const backendSel = document.createElement('select');
       backendSel.className = 'sm-backend';
       backendSel.dataset.tier = t.tier;
@@ -387,13 +404,43 @@ export function installSettings({
         const opt = document.createElement('option');
         opt.value = b.family;
         opt.textContent = b.label;
-        if (b.family === backend.family) opt.selected = true;
+        if (!custom && b.family === backend.family) opt.selected = true;
+        backendSel.appendChild(opt);
+      }
+      for (const c of customBackends) {
+        const opt = document.createElement('option');
+        opt.value = c.id;
+        opt.textContent = `${c.label} (Ollama)`;
+        if (custom && c.id === custom.id) opt.selected = true;
         backendSel.appendChild(opt);
       }
       backendSel.addEventListener('change', () => onPickTierBackend(t.tier, backendSel.value));
       li.appendChild(backendSel);
 
-      // Column 4: version select (versions of this row's currently-bound backend)
+      // Column 4: version select. A custom (Ollama) backend has no versions and
+      // no context-window choice — render a single disabled option showing the
+      // tag, so the column stays aligned.
+      if (custom) {
+        const sel = document.createElement('select');
+        sel.className = 'sm-version';
+        sel.disabled = true;
+        const opt = document.createElement('option');
+        opt.textContent = custom.model;
+        sel.appendChild(opt);
+        li.appendChild(sel);
+        // Column 5: default radio
+        const radio = document.createElement('input');
+        radio.type = 'radio';
+        radio.name = 'sm-default-tier';
+        radio.className = 'sm-default-radio';
+        radio.value = t.tier;
+        radio.checked = isDefault;
+        radio.disabled = !isEnabled;
+        radio.addEventListener('change', () => { if (radio.checked) onPickDefaultTier(t.tier); });
+        li.appendChild(radio);
+        smListEl.appendChild(li);
+        continue;
+      }
       const sel = document.createElement('select');
       sel.className = 'sm-version';
       sel.dataset.family = backend.family;
@@ -574,6 +621,84 @@ export function installSettings({
       if (smStatusEl) smStatusEl.textContent = `Update failed: ${e.message || e}`;
     }
   }
+
+  function escapeHtml(s) {
+    return String(s ?? '').replace(/[&<>"']/g, c => (
+      { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+    ));
+  }
+
+  function renderCustomList(list) {
+    if (!smCustomListEl) return;
+    smCustomListEl.innerHTML = '';
+    if (!list.length) {
+      const li = document.createElement('li');
+      li.className = 'sm-custom-empty';
+      li.textContent = 'No custom models yet.';
+      smCustomListEl.appendChild(li);
+      return;
+    }
+    for (const c of list) {
+      const li = document.createElement('li');
+      li.className = 'sm-custom-item';
+      const meta = document.createElement('span');
+      meta.className = 'sm-custom-meta';
+      meta.textContent = `${c.label} — ${c.model}${c.host ? ` @ ${c.host}` : ''}`;
+      li.appendChild(meta);
+      const rm = document.createElement('button');
+      rm.type = 'button';
+      rm.className = 'btn sm-custom-remove';
+      rm.textContent = 'Remove';
+      rm.addEventListener('click', () => onRemoveCustomBackend(c.id));
+      li.appendChild(rm);
+      smCustomListEl.appendChild(li);
+    }
+  }
+
+  async function onAddCustomBackend() {
+    const label = smCustomLabelEl?.value?.trim();
+    const model = smCustomModelEl?.value?.trim();
+    const host = smCustomHostEl?.value?.trim();
+    if (!label || !model) {
+      if (smCustomStatusEl) smCustomStatusEl.textContent = 'Label and Ollama tag are required.';
+      return;
+    }
+    if (smCustomStatusEl) smCustomStatusEl.textContent = 'Checking Ollama…';
+    if (smCustomAddEl) smCustomAddEl.disabled = true;
+    try {
+      const r = await fetch('/api/settings/models/custom', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ label, model, host }),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+      if (smCustomLabelEl) smCustomLabelEl.value = '';
+      if (smCustomModelEl) smCustomModelEl.value = '';
+      if (smCustomHostEl) smCustomHostEl.value = '';
+      if (smCustomStatusEl) smCustomStatusEl.textContent = 'Added.';
+      renderModels(data);
+      onModelsChange?.(data);
+    } catch (e) {
+      if (smCustomStatusEl) smCustomStatusEl.textContent = `Add failed: ${e.message || e}`;
+    } finally {
+      if (smCustomAddEl) smCustomAddEl.disabled = false;
+    }
+  }
+
+  async function onRemoveCustomBackend(id) {
+    try {
+      const r = await fetch(`/api/settings/models/custom/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+      renderModels(data);
+      onModelsChange?.(data);
+    } catch (e) {
+      if (smCustomStatusEl) smCustomStatusEl.textContent = `Remove failed: ${e.message || e}`;
+    }
+  }
+
+  smCustomAddEl?.addEventListener('click', onAddCustomBackend);
 
   smCompactWindowEnabledEl?.addEventListener('change', () => {
     if (smCompactWindowRowEl) smCompactWindowRowEl.hidden = !smCompactWindowEnabledEl.checked;
