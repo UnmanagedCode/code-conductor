@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -221,6 +222,83 @@ test('POST /api/plugins/library/:id/install — disallowed repo URL scheme rejec
     assert.equal(r.status, 400);
     await assert.rejects(fs.stat(path.join(boot.projectsRoot, 'sketchy')), { code: 'ENOENT' });
   } finally { await boot.close(); }
+});
+
+// api()'s JSON.parse(text) can't parse multi-line NDJSON, so it falls back
+// to the raw string — split + parse each line ourselves to inspect the
+// chunk/result event stream the install/update routes now emit.
+function parseNdjson(body) {
+  return body.split('\n').filter(Boolean).map(line => JSON.parse(line));
+}
+
+test('POST /api/plugins/library/:id/install — streams NDJSON chunks, terminal ok:false on clone failure', async () => {
+  const boot = await bootServer();
+  try {
+    const libDir = path.join(boot.projectsRoot, '.code-conductor', 'plugins', 'library');
+    await fs.mkdir(libDir, { recursive: true });
+    // A scheme-valid but unreachable URL (nothing listens on 127.0.0.1:1) —
+    // git fails fast with connection-refused rather than a DNS timeout.
+    await fs.writeFile(path.join(libDir, 'unreachable.json'), JSON.stringify({
+      id: 'unreachable', name: 'Unreachable', repo: 'http://127.0.0.1:1/nowhere/repo.git',
+    }));
+
+    const r = await api(boot.baseUrl, 'POST', '/api/plugins/library/unreachable/install');
+    assert.equal(r.status, 200, 'validation passed — response is already streaming, not a 502');
+    const lines = parseNdjson(r.body);
+    assert.ok(lines.some(l => l.type === 'chunk'), 'clone output streamed as chunk events');
+    const result = lines.find(l => l.type === 'result');
+    assert.ok(result, 'terminal result event present');
+    assert.equal(result.ok, false);
+    assert.ok(result.tail, 'failure carries a stderr/stdout tail');
+    await assert.rejects(fs.stat(path.join(boot.projectsRoot, 'repo')), { code: 'ENOENT' }, 'partial clone cleaned up');
+  } finally { await boot.close(); }
+});
+
+test('POST /api/plugins/library/:id/update — streams NDJSON chunks, terminal ok:true, and actually fast-forwards', async () => {
+  const boot = await bootServer();
+  const remoteDir = await fs.mkdtemp(path.join(os.tmpdir(), 'lib-remote-'));
+  const seedDir = await fs.mkdtemp(path.join(os.tmpdir(), 'lib-seed-'));
+  try {
+    await git(remoteDir, '-c', 'init.defaultBranch=main', 'init', '-q', '--bare');
+    await git(seedDir, '-c', 'init.defaultBranch=main', 'init', '-q');
+    await git(seedDir, 'config', 'user.email', 'test@test');
+    await git(seedDir, 'config', 'user.name', 'test');
+    await fs.writeFile(path.join(seedDir, 'file.txt'), 'v1');
+    await git(seedDir, 'add', '-A');
+    await git(seedDir, 'commit', '-q', '-m', 'v1');
+    await git(seedDir, 'remote', 'add', 'origin', remoteDir);
+    await git(seedDir, 'push', '-q', 'origin', 'main');
+
+    await git(boot.projectsRoot, 'clone', '-q', remoteDir, 'code-x');
+
+    // A new commit lands upstream after the install-time clone.
+    await fs.writeFile(path.join(seedDir, 'file.txt'), 'v2');
+    await git(seedDir, 'add', '-A');
+    await git(seedDir, 'commit', '-q', '-m', 'v2');
+    await git(seedDir, 'push', '-q', 'origin', 'main');
+
+    const libDir = path.join(boot.projectsRoot, '.code-conductor', 'plugins', 'library');
+    await fs.mkdir(libDir, { recursive: true });
+    await fs.writeFile(path.join(libDir, 'code-x.json'), JSON.stringify({
+      id: 'code-x', name: 'Code X', repo: 'https://example.com/org/code-x',
+    }));
+
+    const r = await api(boot.baseUrl, 'POST', '/api/plugins/library/code-x/update');
+    assert.equal(r.status, 200);
+    const lines = parseNdjson(r.body);
+    assert.ok(lines.some(l => l.type === 'chunk'), 'pull output streamed as chunk events');
+    const result = lines.find(l => l.type === 'result');
+    assert.ok(result);
+    assert.equal(result.ok, true);
+    assert.equal(result.result.name, 'code-x');
+
+    const content = await fs.readFile(path.join(boot.projectsRoot, 'code-x', 'file.txt'), 'utf8');
+    assert.equal(content, 'v2', 'pull actually fast-forwarded');
+  } finally {
+    await boot.close();
+    await fs.rm(remoteDir, { recursive: true, force: true });
+    await fs.rm(seedDir, { recursive: true, force: true });
+  }
 });
 
 // End-to-end wiring: a real contributions-only plugin, enabled via the host,

@@ -3,7 +3,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { projectsRoot, orchStoreRoot, validateName } from '../projects.js';
 import { httpError } from './registry.js';
-import { runGit } from '../worktrees.js';
+import { getProjectUpstreamStatus } from '../worktrees.js';
 
 // Plugin Library — a catalog of installable plugins (git repo URLs) offered
 // alongside the discovered-plugins list in Settings → Plugins. Installing
@@ -32,6 +32,19 @@ const ALLOWED_SCHEMES = new Set(['http:', 'https:', 'git:']);
 const CLONE_TIMEOUT_MS = 120_000;
 const POST_HOOK_TIMEOUT_MS = 300_000; // longer than clone — installs pull deps (npm, browser binaries, ...)
 const HOOK_OUTPUT_CAP = 16 * 1024; // mirrors worktrees.js's HOOK_OUTPUT_CAP / supervisor.js's OUTPUT_CAP
+const LIBRARY_FETCH_TIMEOUT_MS = 8_000; // bounded pre-check fetch for list()'s update detection — must never block the list
+
+// Env for any git subprocess that talks to a remote outside an explicit
+// user action (the background fetch list() runs to freshen ahead/behind
+// data) — fail fast on missing credentials instead of hanging until the
+// timeout, which would otherwise be the common case for private repos.
+const NO_PROMPT_GIT_ENV = {
+  ...process.env,
+  GIT_TERMINAL_PROMPT: '0',
+  GIT_ASKPASS: '',
+  SSH_ASKPASS: '',
+  GIT_SSH_COMMAND: 'ssh -oBatchMode=yes',
+};
 
 const DEFAULT_ENTRIES = [
   {
@@ -109,24 +122,70 @@ function validateRepoUrl(repoUrl) {
   }
 }
 
-// Never throws — mirrors runGit's {code,stdout,stderr} shape (src/worktrees.js),
-// but can't reuse it directly since runGit always does `-C <existing cwd>`
-// and the clone destination doesn't exist yet.
-function cloneRepo(url, destDir) {
+// Shared streaming runner for git subcommands whose output the caller wants
+// to surface live (clone, pull) — spawn + 'data' handlers (rather than a
+// buffered execFile) so onChunk fires as output arrives, with the same
+// detached-process-group timeout/kill as runHookCommand below: git can spawn
+// credential-helper/hook grandchildren that a plain kill of the direct child
+// would orphan. Never rejects — resolves {code,stdout,stderr}, mirroring
+// runGit's shape (src/worktrees.js) plus the split stdout/stderr callers need
+// to build an error tail from stderr first.
+function runGitLive(args, cwd, { timeoutMs = CLONE_TIMEOUT_MS, onChunk } = {}) {
   return new Promise((resolve) => {
-    execFile('git', ['clone', '--', url, destDir], {
-      cwd: projectsRoot(),
-      timeout: CLONE_TIMEOUT_MS,
+    let stdout = '';
+    let stderr = '';
+    const proc = spawn('git', args, { cwd, detached: true });
+    const onOut = (d) => { const s = d.toString(); stdout += s; onChunk?.(s); };
+    const onErr = (d) => { const s = d.toString(); stderr += s; onChunk?.(s); };
+    proc.stdout?.on('data', onOut);
+    proc.stderr?.on('data', onErr);
+
+    let timedOut = false;
+    const killGroup = () => {
+      try { process.kill(-proc.pid, 'SIGTERM'); } catch { proc.kill('SIGTERM'); }
+      setTimeout(() => {
+        try { process.kill(-proc.pid, 'SIGKILL'); } catch { proc.kill('SIGKILL'); }
+      }, 100).unref();
+    };
+    const timer = setTimeout(() => { timedOut = true; killGroup(); }, timeoutMs);
+
+    proc.on('close', (code) => {
+      clearTimeout(timer);
+      resolve({ code: timedOut ? 124 : (code ?? 1), stdout, stderr });
+    });
+    proc.on('error', (e) => {
+      clearTimeout(timer);
+      resolve({ code: 1, stdout, stderr: stderr || e.message });
+    });
+  });
+}
+
+function cloneRepo(url, destDir, { onChunk } = {}) {
+  return runGitLive(['clone', '--', url, destDir], projectsRoot(), { timeoutMs: CLONE_TIMEOUT_MS, onChunk });
+}
+
+function pullRepo(cwd, { onChunk } = {}) {
+  return runGitLive(['pull', '--ff-only'], cwd, { timeoutMs: CLONE_TIMEOUT_MS, onChunk });
+}
+
+// Best-effort, timeout-bounded `git fetch` so getProjectUpstreamStatus's
+// cached-ref comparison (see list() below) reflects the real remote instead
+// of whatever was last fetched manually. Never throws; a timeout, missing
+// remote, or auth failure just means the subsequent status check falls back
+// to stale-or-null status — never crashes list(). Uses a raw execFile timeout
+// (not runGit, which has none) since a hung fetch must not block the whole
+// library list. NO_PROMPT_GIT_ENV makes credential failures fail fast rather
+// than hang until the timeout, the common case for private repos.
+function fetchOriginBounded(cwd) {
+  return new Promise((resolve) => {
+    execFile('git', ['-C', cwd, 'fetch', '--quiet'], {
+      cwd,
+      env: NO_PROMPT_GIT_ENV,
+      timeout: LIBRARY_FETCH_TIMEOUT_MS,
       killSignal: 'SIGKILL',
       maxBuffer: 16 * 1024 * 1024,
       encoding: 'utf8',
-    }, (err, stdout, stderr) => {
-      if (err) {
-        resolve({ code: typeof err.code === 'number' ? err.code : 1, stdout: stdout ?? '', stderr: stderr ?? err.message ?? '' });
-      } else {
-        resolve({ code: 0, stdout, stderr });
-      }
-    });
+    }, () => resolve()); // outcome ignored — getProjectUpstreamStatus reads whatever refs are now cached
   });
 }
 
@@ -137,13 +196,15 @@ function cloneRepo(url, destDir) {
 // execFile's built-in timeout, since a command like `npm install` or a
 // browser-binary downloader can spawn grandchildren that a plain kill of
 // the direct child would orphan. Never rejects.
-function runHookCommand(command, cwd, { timeoutMs = POST_HOOK_TIMEOUT_MS } = {}) {
+function runHookCommand(command, cwd, { timeoutMs = POST_HOOK_TIMEOUT_MS, onChunk } = {}) {
   return new Promise((resolve) => {
     let output = '';
     const proc = spawn('bash', ['-lc', command], { cwd, env: process.env, detached: true });
     const onData = (d) => {
-      output += d.toString();
+      const s = d.toString();
+      output += s;
       if (output.length > HOOK_OUTPUT_CAP) output = output.slice(-HOOK_OUTPUT_CAP);
+      onChunk?.(s);
     };
     proc.stdout?.on('data', onData);
     proc.stderr?.on('data', onData);
@@ -168,16 +229,17 @@ function runHookCommand(command, cwd, { timeoutMs = POST_HOOK_TIMEOUT_MS } = {})
   });
 }
 
-export function createPluginLibrary({ pluginHost = null, _cloneImpl = null, _runHookImpl = null } = {}) {
+export function createPluginLibrary({ pluginHost = null, _cloneImpl = null, _pullImpl = null, _runHookImpl = null } = {}) {
   const clone = _cloneImpl ?? cloneRepo;
+  const pull = _pullImpl ?? pullRepo;
   const runHookImpl = _runHookImpl ?? runHookCommand;
 
   // Never throws — `command` unset means "nothing to run" (null). A failed
   // hook is reported, never masked and never fatal to its caller (see
   // install()/update() below): the clone/pull it follows already succeeded.
-  async function runHook(command, cwd) {
+  async function runHook(command, cwd, onChunk) {
     if (!command) return null;
-    const r = await runHookImpl(command, cwd);
+    const r = await runHookImpl(command, cwd, { onChunk });
     return { ran: true, ok: r.code === 0, code: r.code, tail: (r.output ?? '').slice(-4000) };
   }
 
@@ -190,11 +252,23 @@ export function createPluginLibrary({ pluginHost = null, _cloneImpl = null, _run
         try { installed = (await fs.stat(path.join(projectsRoot(), name))).isDirectory(); }
         catch { /* not installed */ }
       }
-      return { ...entry, installed, installedAs: installed ? name : null };
+      let updateAvailable = false;
+      let behind = null;
+      if (installed) {
+        // Cached refs go stale between visits — a bounded, best-effort fetch
+        // first means "update available" reflects the real remote, not
+        // whatever was last fetched manually (see fetchOriginBounded above).
+        const target = path.join(projectsRoot(), name);
+        await fetchOriginBounded(target);
+        const status = await getProjectUpstreamStatus(target);
+        behind = status.behind;
+        updateAvailable = typeof status.behind === 'number' && status.behind > 0;
+      }
+      return { ...entry, installed, installedAs: installed ? name : null, updateAvailable, behind };
     }));
   }
 
-  async function install(id) {
+  async function install(id, { onChunk, onValidated } = {}) {
     const entries = await readLibraryEntries();
     const entry = entries.find(e => e.id === id);
     if (!entry) throw httpError(404, `unknown library plugin '${id}'`);
@@ -208,7 +282,11 @@ export function createPluginLibrary({ pluginHost = null, _cloneImpl = null, _run
     try { await fs.stat(target); exists = true; } catch { /* absent — good */ }
     if (exists) throw httpError(409, `'${name}' is already installed`);
 
-    const result = await clone(entry.repo, target);
+    // Past this point we're actually doing work (clone + hook) — the route
+    // uses this as the signal to switch its response into streaming mode.
+    onValidated?.();
+
+    const result = await clone(entry.repo, target, { onChunk: (text) => onChunk?.('clone', text) });
     if (result.code !== 0) {
       // A failed/timed-out clone can leave a partial dir — clear it so a
       // retry isn't permanently blocked by the "already installed" check.
@@ -224,11 +302,11 @@ export function createPluginLibrary({ pluginHost = null, _cloneImpl = null, _run
     // is reported, not fatal, and the clone is NOT rolled back (unlike a
     // failed clone above). The documented retry path is Update, which reruns
     // postPull (code-playwright sets both to the identical command).
-    const postClone = await runHook(entry.postClone, target);
+    const postClone = await runHook(entry.postClone, target, (text) => onChunk?.('hook', text));
     return { id, name, project: name, path: target, postClone };
   }
 
-  async function update(id) {
+  async function update(id, { onChunk, onValidated } = {}) {
     const entries = await readLibraryEntries();
     const entry = entries.find(e => e.id === id);
     if (!entry) throw httpError(404, `unknown library plugin '${id}'`);
@@ -239,18 +317,22 @@ export function createPluginLibrary({ pluginHost = null, _cloneImpl = null, _run
     try { await fs.stat(target); }
     catch { throw httpError(404, `'${name}' is not installed`); }
 
+    // Past this point we're actually doing work (pull + hook) — the route
+    // uses this as the signal to switch its response into streaming mode.
+    onValidated?.();
+
     // ff-only never mutates on failure (diverged/dirty/no-remote/not-a-repo
     // all refuse cleanly) — surface the tail rather than attempting a merge.
-    const pull = await runGit(target, ['pull', '--ff-only']);
-    if (pull.code !== 0) {
-      const tail = (pull.stderr || pull.stdout || '').slice(-4000);
+    const pullResult = await pull(target, { onChunk: (text) => onChunk?.('pull', text) });
+    if (pullResult.code !== 0) {
+      const tail = (pullResult.stderr || pullResult.stdout || '').slice(-4000);
       throw httpError(502, `git pull failed for '${name}'`, { tail });
     }
 
     // A pulled manifest/version bump should surface immediately, same as install().
     if (pluginHost) await pluginHost.rescan();
 
-    const postPull = await runHook(entry.postPull, target);
+    const postPull = await runHook(entry.postPull, target, (text) => onChunk?.('hook', text));
     return { id, name, project: name, path: target, postPull };
   }
 

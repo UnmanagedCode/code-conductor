@@ -5,6 +5,37 @@ import express from 'express';
 // the reverse proxy and MCP forwarding. Mounted from src/routes.js at
 // /plugins (⇒ /api/plugins), inheriting its JSON body parser and its
 // trailing error middleware (err.statusCode → JSON).
+
+// Runs an install/update call that reports progress via onChunk and flips
+// into streaming mode via onValidated (see pluginLibrary.install/update).
+// Before onValidated fires, a rejection is a normal thrown error — routed to
+// the shared trailing error middleware via `next`, same as every other route
+// here (preserves today's 404/409/400 status codes for validation failures).
+// After onValidated fires, response bytes are already committed as 200
+// NDJSON, so both success and failure resolve into a single terminal
+// {type:'result', ...} line instead of an HTTP status.
+function streamLibraryAction(res, next, run) {
+  let streaming = false;
+  const write = (obj) => { if (!res.writableEnded) res.write(`${JSON.stringify(obj)}\n`); };
+  const onValidated = () => {
+    streaming = true;
+    res.setHeader('Content-Type', 'application/x-ndjson');
+    res.setHeader('Cache-Control', 'no-store');
+    res.flushHeaders();
+  };
+  const onChunk = (phase, text) => write({ type: 'chunk', phase, text });
+  return run(onChunk, onValidated).then(
+    (result) => {
+      if (streaming) { write({ type: 'result', ok: true, result }); res.end(); }
+      else res.json(result);
+    },
+    (e) => {
+      if (streaming) { write({ type: 'result', ok: false, error: e.message, tail: e.tail }); res.end(); }
+      else next(e);
+    },
+  );
+}
+
 export function buildPluginApi({ pluginHost, pluginLibrary } = {}) {
   const r = express.Router();
 
@@ -20,13 +51,9 @@ export function buildPluginApi({ pluginHost, pluginLibrary } = {}) {
     try { res.json(await pluginLibrary.list()); } catch (e) { next(e); }
   });
 
-  r.post('/library/:id/install', async (req, res, next) => {
-    try { res.json(await pluginLibrary.install(req.params.id)); } catch (e) { next(e); }
-  });
+  r.post('/library/:id/install', (req, res, next) => streamLibraryAction(res, next, (onChunk, onValidated) => pluginLibrary.install(req.params.id, { onChunk, onValidated })));
 
-  r.post('/library/:id/update', async (req, res, next) => {
-    try { res.json(await pluginLibrary.update(req.params.id)); } catch (e) { next(e); }
-  });
+  r.post('/library/:id/update', (req, res, next) => streamLibraryAction(res, next, (onChunk, onValidated) => pluginLibrary.update(req.params.id, { onChunk, onValidated })));
 
   r.get('/', async (req, res, next) => {
     try { res.json(await pluginHost.list()); } catch (e) { next(e); }

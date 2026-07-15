@@ -1945,3 +1945,8 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
 .pll-repo { margin-top: 2px; font-size: 11px; color: var(--muted); font-family: ui-monospace, monospace; word-break: break-all; }
 .pll-actions { margin-top: 8px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .pll-installed-as { font-size: 12px; color: var(--muted); }
+.pll-live {
+  margin: 8px 0 0; padding: 8px; font-size: 11px; max-height: 160px; overflow: auto;
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: 4px;
+  white-space: pre-wrap; word-break: break-word; font-family: ui-monospace, monospace;
+}
