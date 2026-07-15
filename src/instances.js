@@ -6,7 +6,7 @@ import path from 'node:path';
 import { Parser, SOFT_INTERRUPT_MARKER, isOuterUserEcho, snapStartToQuiescent, firstQuiescentAtOrAfter } from './parser.js';
 import { getProject, claudeProjectsRoot, encodeCwd, findSessionLocation, readFirstPrompt } from './projects.js';
 import { createWorktree, getWorktree, debugBaseDir } from './worktrees.js';
-import { getTitle as getSessionTitle, deleteTitle as deleteSessionTitle } from './sessionTitles.js';
+import { getTitle as getSessionTitle, setTitle as setSessionTitle, deleteTitle as deleteSessionTitle } from './sessionTitles.js';
 import { isConducted, markConducted, unmarkConducted } from './conductedSessions.js';
 import { SessionRenewController } from './sessionRenew.js';
 import { isTemp, markTemp, unmarkTemp } from './tempSessions.js';
@@ -1409,6 +1409,33 @@ export class Instance extends EventEmitter {
       parent_tool_use_id: null,
     });
     this._setStatus('turn');
+  }
+
+  // Carry this instance's durable, sessionId-keyed state across a managed
+  // `/clear` renewal and retire the abandoned pre-clear id. Called by the
+  // SessionRenewController once the rotation is confirmed (this.sessionId is
+  // already the NEW id; `oldSid` is the pre-clear one). Why this is needed even
+  // though _writeSessionMetadata re-writes temp/conducted on the next turn_end:
+  //   - it closes the window between rotation and that reseed turn_end, during
+  //     which a spawn_instance({resume:newId}) would read isTemp/isConducted on
+  //     the new id and get false — silently dropping the flag;
+  //   - the title sidecar is carried by NO turn_end path, so without this a
+  //     renewed session with a custom title loses it on a later resume/restart;
+  //   - and it archives the old id (which `/clear` leaves as a stale, orphaned,
+  //     non-archived row) + drops its now-stale temp marker.
+  // ORDER MATTERS: mark the NEW id first, retire the old id last, so a crash
+  // mid-way can never leave the new id unmarked while the old id is archived.
+  // Best-effort throughout (never throws into the reseed path). Mirrors
+  // _archiveTempSession for the old id: unmarkTemp + markArchived, keeping the
+  // conducted/title markers — they stay meaningful on the archived row.
+  async carryMarkersAcrossRenewal(oldSid) {
+    const newSid = this.sessionId;
+    if (!newSid || !oldSid || newSid === oldSid) return;
+    try { if (this.temp) await markTemp(newSid); } catch { /* best-effort */ }
+    try { if (this.conducted) await markConducted(newSid); } catch { /* best-effort */ }
+    try { if (this.title) await setSessionTitle(newSid, this.title); } catch { /* best-effort */ }
+    try { await unmarkTemp(oldSid); } catch { /* best-effort */ }
+    try { await markArchived(oldSid); } catch { /* best-effort */ }
   }
 
   async _controlRequest(request, { timeout = 5000 } = {}) {

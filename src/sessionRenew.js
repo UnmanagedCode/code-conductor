@@ -146,7 +146,16 @@ export class SessionRenewController {
     // tool call and the actual clear firing.
     const stateBlock = buildStateBlock(this.manager, id);
     const seed = buildRenewSeed({ ...p.opts, stateBlock });
+    const oldSid = p.oldSid;
     this._clear(id); // one-shot: settle state BEFORE the reseed turn opens
+    // Carry the caller's durable, sessionId-keyed markers (temp/conducted/title)
+    // onto the rotated id and archive the abandoned pre-clear session. This is
+    // the ONE place holding both ids, so it owns the carry. Fire-and-forget: the
+    // method self-sequences (new id marked first, old id archived last) and is
+    // best-effort, so it never blocks or throws into the reseed below. See
+    // Instance.carryMarkersAcrossRenewal for why _writeSessionMetadata's
+    // incidental re-write on the next turn_end isn't sufficient.
+    inst.carryMarkersAcrossRenewal(oldSid).catch(() => {});
     // Seed the cleared session as its first user turn. internal:true so it does
     // not trip the overage resume-cancel path (the send itself is not throttled).
     inst.prompt(seed, [], { internal: true }).catch(() => {});
