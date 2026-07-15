@@ -438,10 +438,14 @@ export async function getProjectUpstreamStatus(projectPath) {
 // so each worktree's contribution is a visible branch in the parent's
 // history — easy to spot in `git log --graph` and revertable as a single
 // commit via `git revert -m 1 <mergeSha>`. The commit message uses git's
-// default ("Merge branch 'code-conductor/<id>'"). Returns {ok:true, newSha}
-// on success or {ok:false, reason} when the merge can't proceed (parent
-// on wrong branch, dirty parent, conflicts, etc.) — caller surfaces the
-// reason to the UI rather than throwing.
+// default ("Merge branch 'code-conductor/<id>'"). Once the merge commit
+// lands, fast-forwards the worktree's own branch up to it too (best-
+// effort — the worktree branch is always an ancestor of the new parent
+// HEAD, so this keeps a kept worktree at ahead:0/behind:0 instead of
+// looking permanently one commit behind). Returns {ok:true, newSha,
+// worktreeFastForwarded} on success or {ok:false, reason} when the merge
+// can't proceed (parent on wrong branch, dirty parent, conflicts, etc.)
+// — caller surfaces the reason to the UI rather than throwing.
 export async function mergeWorktreeIntoParent(projectName, worktreeName) {
   const meta = await getWorktree(projectName, worktreeName);
   if (!meta) {
@@ -495,10 +499,21 @@ export async function mergeWorktreeIntoParent(projectName, worktreeName) {
     };
   }
   const newHead = await runGit(meta.parentPath, ['rev-parse', 'HEAD']);
+  // 4. Fast-forward the worktree's own branch up to the merge commit. The
+  //    worktree branch is one of that commit's two parents, so it's always
+  //    an ancestor of the new HEAD — --ff-only can't fail on divergence.
+  //    Must run from inside the worktree dir: the branch is checked out
+  //    there, not in the parent repo, so `git branch -f` from the parent
+  //    would refuse. Best-effort — the merge already succeeded and the
+  //    parent is correct regardless of whether this step lands, so a
+  //    failure here (e.g. a worktree tree that went dirty mid-merge) must
+  //    not turn the overall result into a failure.
+  const ff = await runGit(meta.worktreePath, ['merge', '--ff-only', meta.baseBranch]);
   return {
     ok: true,
     output: merge.stdout.trim() || merge.stderr.trim(),
     newSha: newHead.stdout.trim(),
+    worktreeFastForwarded: ff.code === 0,
   };
 }
 

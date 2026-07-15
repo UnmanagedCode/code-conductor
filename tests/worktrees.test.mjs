@@ -9,7 +9,7 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
-import { listWorktrees, getWorktree } from '../src/worktrees.js';
+import { listWorktrees, getWorktree, getWorktreeMergeStatus } from '../src/worktrees.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-instance.json');
@@ -425,6 +425,40 @@ test('POST /merge creates a merge commit on the parent when worktree is ahead (-
   // Git's default merge message — we explicitly didn't customize it.
   const msg = (await git(repoPath, 'log', '-1', '--format=%s', parentSha)).stdout.trim();
   assert.match(msg, /^Merge branch 'code-conductor\//);
+});
+
+test('POST /merge fast-forwards the worktree branch so it is left at behind:0', async () => {
+  await makeRealRepo('demo');
+
+  const created = await api(baseUrl, 'POST', '/api/instances', {
+    project: 'demo', mode: 'bypassPermissions', worktree: true,
+  });
+  const wtName = created.body.worktree.worktreeName;
+  const id = created.body.id;
+  const wt = await getWorktree('demo', wtName);
+  await waitFor(() => instances.get(id)?.status === 'idle');
+
+  await instances.get(id).kill({ graceMs: 200 });
+  await commitInWorktree(wt.worktreePath, 'agent.txt', 'agent work\n', 'agent work');
+  const second = await api(baseUrl, 'POST', '/api/instances', {
+    project: 'demo', mode: 'bypassPermissions', worktree: wtName,
+  });
+  const id2 = second.body.id;
+  await waitFor(() => instances.get(id2)?.status === 'idle');
+
+  const r = await api(baseUrl, 'POST', `/api/instances/${id2}/merge`);
+  assert.equal(r.status, 200);
+  assert.equal(r.body.ok, true, `merge failed: ${r.body.reason}`);
+  assert.equal(r.body.worktreeFastForwarded, true);
+
+  // The worktree's branch should now point at the merge commit itself —
+  // it's no longer left one commit behind the parent's new HEAD.
+  const wtSha = (await git(wt.worktreePath, 'rev-parse', 'HEAD')).stdout.trim();
+  assert.equal(wtSha, r.body.newSha);
+
+  const refreshed = await getWorktree('demo', wtName);
+  const status = await getWorktreeMergeStatus(refreshed);
+  assert.deepEqual(status, { ahead: 0, behind: 0 });
 });
 
 test('POST /merge refuses with a Sync-first hint when the worktree is behind the parent', async () => {
