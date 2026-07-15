@@ -656,6 +656,11 @@ export async function projectDiff({ project, worktree, baseRef, contextLines = 3
   const head = headR.code === 0 ? headR.stdout.trim() : null;
   const ref = (typeof baseRef === 'string' && baseRef.trim()) ? baseRef.trim() : wt.baseBranch;
   if (typeof baseRef === 'string' && baseRef.trim()) assertValidBaseRef(ref);
+  // Commit count ref..HEAD — computed directly against `ref` (not via
+  // getWorktreeMergeStatus, which is pinned to the worktree's recorded
+  // baseBranch and ignores a caller-supplied baseRef override).
+  const aheadR = await runGit(wt.worktreePath, ['rev-list', '--count', `${ref}..HEAD`]);
+  const ahead = aheadR.code === 0 ? Number.parseInt(aheadR.stdout.trim(), 10) : null;
   const ctx = Number.isInteger(contextLines) && contextLines >= 0 && contextLines <= 50 ? contextLines : 3;
   const pathArgs = Array.isArray(paths) ? paths.filter(p => typeof p === 'string' && p.trim()) : [];
   const pathspec = pathArgs.length ? ['--', ...pathArgs] : [];
@@ -686,7 +691,7 @@ export async function projectDiff({ project, worktree, baseRef, contextLines = 3
       additions: files.reduce((acc, f) => acc + f.additions, 0),
       deletions: files.reduce((acc, f) => acc + f.deletions, 0),
     };
-    const result = { project, worktree, baseRef: ref, head, summary: true, totals, files };
+    const result = { project, worktree, baseRef: ref, head, summary: true, ahead, totals, files };
 
     // Staged + unstaged changes vs HEAD (does not include untracked files)
     const [rnu, rnsu] = await Promise.all([
@@ -762,6 +767,7 @@ export async function projectDiff({ project, worktree, baseRef, contextLines = 3
     totalBytes,
     hasUncommittedChanges: uncommittedDiff.trim().length > 0,
     untracked,
+    ahead,
   };
   // Explicit truncation metadata: which files this page covers vs omits.
   if (truncated) {
@@ -840,7 +846,7 @@ export async function syncWorktree({ sessionId }, { instances }) {
   return result;
 }
 
-export async function mergeWorktree({ sessionId, project, worktree }, { instances }) {
+export async function mergeWorktree({ sessionId, project, worktree, allowDirty }, { instances }) {
   let projectName, wtName, meta;
   if (sessionId) {
     const r = await getInst(instances, sessionId);
@@ -861,7 +867,7 @@ export async function mergeWorktree({ sessionId, project, worktree }, { instance
   }
   // The behind-guard now lives inside mergeWorktreeIntoParent (shared with the
   // REST route); map its typed refusal to this surface's exact wording.
-  const result = await mergeWorktreeIntoParent(projectName, wtName);
+  const result = await mergeWorktreeIntoParent(projectName, wtName, { allowDirty: allowDirty === true });
   if (result.code === 'WORKTREE_BEHIND') {
     return {
       ok: false,

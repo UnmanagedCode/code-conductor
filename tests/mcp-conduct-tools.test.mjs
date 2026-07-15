@@ -220,6 +220,7 @@ test('project_diff returns the unified diff of <base>...HEAD', async () => {
   assert.ok(diffRes.totalLines > 0);
   assert.ok(diffRes.totalBytes > 0);
   assert.equal(diffRes.sizeBytes, undefined, 'sizeBytes alias removed');
+  assert.equal(diffRes.ahead, 1);
   assert.match(diffRes.diff, /new\.txt/);
   assert.match(diffRes.diff, /\+fresh content/);
 });
@@ -235,6 +236,7 @@ test('project_diff returns an empty diff for a clean worktree', async () => {
   assert.equal(diffRes.nextOffset, null);
   assert.equal(diffRes.totalLines, 0);
   assert.equal(diffRes.totalBytes, 0);
+  assert.equal(diffRes.ahead, 0);
 });
 
 test('project_diff rejects unknown worktree', async () => {
@@ -358,6 +360,7 @@ test('project_diff summary returns a per-file stat (add + modify)', async () => 
   }));
   assert.equal(res.summary, true);
   assert.equal(res.diff, undefined); // no diff blob in summary mode
+  assert.equal(res.ahead, 1);
   assert.equal(res.totals.files, 2);
   const byPath = Object.fromEntries(res.files.map(f => [f.path, f]));
   assert.equal(byPath['README.md'].status, 'M');
@@ -419,6 +422,7 @@ test('project_diff summary is empty for a clean worktree', async () => {
   assert.equal(res.totals.files, 0);
   assert.equal(res.totals.additions, 0);
   assert.equal(res.totals.deletions, 0);
+  assert.equal(res.ahead, 0);
 });
 
 test('project_diff scopes the diff to the given paths', async () => {

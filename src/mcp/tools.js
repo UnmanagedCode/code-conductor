@@ -490,16 +490,21 @@ export function buildTools() {
     {
       name: 'merge_worktree',
       description:
-        'Merge a worktree\'s branch into its parent repo with a real merge commit (--no-ff). ' +
-        'Refuses with a friendly reason if the worktree hasn\'t been synced first. ' +
-        'Pass either {sessionId} (live worker) or {project, worktree} — the latter form lets you ' +
-        'merge a worktree whose worker has already been killed.',
+        'Merge a worktree\'s branch into its parent repo with a real merge commit (--no-ff), then ' +
+        'fast-forwards the worktree\'s own branch onto that merge commit so the same worktree stays ' +
+        'mergeable again later. Refuses with a friendly reason if the worktree hasn\'t been synced ' +
+        'first (WORKTREE_BEHIND), the parent is on the wrong branch or dirty (BASE_BRANCH_MISMATCH / ' +
+        'PARENT_DIRTY), the worktree\'s own tree has uncommitted or untracked changes that would not ' +
+        'land (WORKTREE_DIRTY — pass allowDirty:true to merge anyway), or the branch has no commits ' +
+        'to merge (NOTHING_TO_MERGE). Pass either {sessionId} (live worker) or {project, worktree} — ' +
+        'the latter form lets you merge a worktree whose worker has already been killed.',
       inputSchema: {
         type: 'object',
         properties: {
           sessionId: { type: 'string', description: 'Live worker sessionId attached to the worktree.' },
           project: { type: 'string', description: 'Parent project — required if sessionId is omitted.' },
           worktree: { type: 'string', description: 'Worktree dir name — required if sessionId is omitted.' },
+          allowDirty: { type: 'boolean', description: 'Merge even though the worktree has uncommitted/untracked changes (they will not be included in the merge commit).' },
         },
       },
       handler: h.mergeWorktree,
@@ -703,13 +708,15 @@ export function buildTools() {
         'specific file paths. (3) the diff is paginated by LINE INDEX: each call returns at most ~200 KB of whole ' +
         'lines starting at offset (0-based line index, default 0). In diff mode the OUTPUT is a compact-JSON metadata ' +
         'block (content[0]) {project, worktree, baseRef, head:<sha>, contextLines, offset, truncated, nextOffset, ' +
-        'totalLines, totalBytes, hasUncommittedChanges:bool, untracked:[paths], includedFiles?, omittedFiles?} PLUS ' +
-        'a separate raw, un-escaped diff text block (content[1]); when truncated, re-call with offset:nextOffset until ' +
-        'truncated:false. Mid-file pages re-emit the file/hunk headers so each page parses standalone, and a truncated ' +
-        'page lists includedFiles/omittedFiles. Never silently cuts. Staged + unstaged changes vs HEAD (git diff HEAD) ' +
-        'are always appended after the committed diff behind a `@@@ uncommitted working tree changes (git diff HEAD) @@@` ' +
-        'separator whenever any exist (absent on a clean tree); untracked files never-git-added are always listed in ' +
-        '`untracked`. summary:true likewise always includes an `uncommitted:{totals, files, untracked}` section. ' +
+        'totalLines, totalBytes, hasUncommittedChanges:bool, untracked:[paths], ahead, includedFiles?, omittedFiles?} ' +
+        'PLUS a separate raw, un-escaped diff text block (content[1]); when truncated, re-call with offset:nextOffset ' +
+        'until truncated:false. Mid-file pages re-emit the file/hunk headers so each page parses standalone, and a ' +
+        'truncated page lists includedFiles/omittedFiles. Never silently cuts. Staged + unstaged changes vs HEAD ' +
+        '(git diff HEAD) are always appended after the committed diff behind a `@@@ uncommitted working tree changes ' +
+        '(git diff HEAD) @@@` separator whenever any exist (absent on a clean tree); untracked files never-git-added ' +
+        'are always listed in `untracked`. summary:true likewise always includes `ahead` and an ' +
+        '`uncommitted:{totals, files, untracked}` section. `ahead` is the commit count baseRef..HEAD — ahead:0 plus ' +
+        'hasUncommittedChanges:true is the signal that nothing will land if you merge_worktree right now. ' +
         'Complements project_status.',
       inputSchema: {
         type: 'object',
@@ -730,14 +737,14 @@ export function buildTools() {
     {
       name: 'project_bash',
       description:
-        'Run a bash command inside a project or worktree directory, using the exact same shell ' +
-        'environment claude\'s own built-in Bash tool uses — the rg/find/grep shims and shell ' +
-        'functions/aliases from the captured shell snapshot (cached per claude version). Mirrors ' +
-        'project/worktree for cwd scoping plus the meaningful subset of the built-in Bash tool ' +
-        '(command/description/timeout). Replaces grep/glob — use rg/grep/find through this tool ' +
-        'for search — read-only inspection only: run non-mutating commands (rg/grep/find, git ' +
-        'log/diff, wc, jq, …). Anything that writes files, installs dependencies, commits, or ' +
-        'starts long-lived processes belongs in a spawned worker instead. OUTPUT: a compact-JSON ' +
+        'Read-only inspection only: run non-mutating commands (rg/grep/find, git log/diff, wc, jq, ' +
+        '…); anything that writes files, installs dependencies, commits, or starts long-lived ' +
+        'processes belongs in a spawned worker instead. Run a bash command inside a project or ' +
+        'worktree directory, using the exact same shell environment claude\'s own built-in Bash ' +
+        'tool uses — the rg/find/grep shims and shell functions/aliases from the captured shell ' +
+        'snapshot (cached per claude version). Mirrors project/worktree for cwd scoping plus the ' +
+        'meaningful subset of the built-in Bash tool (command/description/timeout). Replaces ' +
+        'grep/glob — use rg/grep/find through this tool for search. OUTPUT: a compact-JSON ' +
         'metadata block (content[0]) {project, worktree, cwd, exitCode, durationMs, truncated?, ' +
         'timedOut?, error?} PLUS a separate raw, un-escaped text block (content[1]) carrying the ' +
         'combined stdout+stderr output, in arrival order. A non-zero exitCode is a normal result, ' +

@@ -938,7 +938,8 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
         // The behind-guard now lives inside mergeWorktreeIntoParent (shared with
         // the MCP handler); map its typed refusal to this surface's exact wording
         // + status (HTTP 200, no cache invalidation — nothing changed).
-        const result = await mergeWorktreeIntoParent(inst.project, inst.worktree.worktreeName);
+        const allowDirty = req.body?.allowDirty === true;
+        const result = await mergeWorktreeIntoParent(inst.project, inst.worktree.worktreeName, { allowDirty });
         if (result.code === 'WORKTREE_BEHIND') {
           res.json({
             ok: false,

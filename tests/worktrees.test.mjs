@@ -497,6 +497,52 @@ test('POST /merge surfaces mergeWorktreeIntoParent\'s own refusal when parent ha
   assert.match(r.body.reason, /parent repo is on 'experimental'/);
 });
 
+test('POST /merge refuses NOTHING_TO_MERGE when the worktree has no commits ahead of base', async () => {
+  await makeRealRepo('demo');
+  const created = await api(baseUrl, 'POST', '/api/instances', {
+    project: 'demo', mode: 'bypassPermissions', worktree: true,
+  });
+  const id = created.body.id;
+  await waitFor(() => instances.get(id)?.status === 'idle');
+
+  // Nothing committed in the worktree, parent unchanged — ahead:0/behind:0.
+  const r = await api(baseUrl, 'POST', `/api/instances/${id}/merge`);
+  assert.equal(r.status, 200);
+  assert.equal(r.body.ok, false);
+  assert.equal(r.body.code, 'NOTHING_TO_MERGE');
+});
+
+test('POST /merge refuses WORKTREE_DIRTY when the worktree has uncommitted changes, allowDirty overrides', async () => {
+  await makeRealRepo('demo');
+  const created = await api(baseUrl, 'POST', '/api/instances', {
+    project: 'demo', mode: 'bypassPermissions', worktree: true,
+  });
+  const wtName = created.body.worktree.worktreeName;
+  const id = created.body.id;
+  const wt = await getWorktree('demo', wtName);
+  await waitFor(() => instances.get(id)?.status === 'idle');
+
+  await instances.get(id).kill({ graceMs: 200 });
+  // Commit something so the branch is ahead, then leave an *additional*
+  // uncommitted file dirtying the tree.
+  await commitInWorktree(wt.worktreePath, 'agent.txt', 'agent work\n', 'agent work');
+  await fs.writeFile(path.join(wt.worktreePath, 'scratch.txt'), 'not committed\n');
+  const second = await api(baseUrl, 'POST', '/api/instances', {
+    project: 'demo', mode: 'bypassPermissions', worktree: wtName,
+  });
+  const id2 = second.body.id;
+  await waitFor(() => instances.get(id2)?.status === 'idle');
+
+  const refused = await api(baseUrl, 'POST', `/api/instances/${id2}/merge`);
+  assert.equal(refused.status, 200);
+  assert.equal(refused.body.ok, false);
+  assert.equal(refused.body.code, 'WORKTREE_DIRTY');
+
+  const allowed = await api(baseUrl, 'POST', `/api/instances/${id2}/merge`, { allowDirty: true });
+  assert.equal(allowed.status, 200);
+  assert.equal(allowed.body.ok, true, `merge failed: ${allowed.body.reason}`);
+});
+
 test('GET /api/projects exposes mergeStatus tracking ahead/behind for each worktree', async () => {
   const repoPath = await makeRealRepo('demo');
   const created = await api(baseUrl, 'POST', '/api/instances', {
