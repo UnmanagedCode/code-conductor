@@ -17,6 +17,15 @@ const DEFAULT_VERSIONS = {
   haiku: 'claude-haiku-4-5',
 };
 
+// Friendly names for the pre-fetch fallback ids above — overwritten by the
+// shipped catalog's per-version `label` field once loadModelVersions() resolves.
+const DEFAULT_VERSION_LABELS = {
+  'claude-fable-5': 'Fable 5',
+  'claude-sonnet-5': 'Sonnet 5',
+  'claude-opus-4-8': 'Opus 4.8',
+  'claude-haiku-4-5': 'Haiku 4.5',
+};
+
 // Pre-fetch fallback tier→{kind,model} bindings (mirrors DEFAULT_TIER_BACKEND in
 // src/modelVersions.js). Overwritten by the shipped catalog at boot.
 const DEFAULT_TIER_BACKEND = {
@@ -32,6 +41,7 @@ let activeTierEnabled = { fast: true, balanced: true, powerful: true, frontier: 
 let activeDefaultSpawnTier = 'powerful';
 let activeTierBackend = { ...DEFAULT_TIER_BACKEND };
 let sonnetFixedWindowByVersion = { 'claude-sonnet-5': '1m' };
+let claudeVersionLabelById = {};
 let tierList = Object.keys(DEFAULT_TIER_BACKEND);
 let tierLabels = { ...DEFAULT_TIER_LABELS };
 let providers = [{ kind: 'claude', label: 'Claude' }, { kind: 'ollama', label: 'Ollama' }];
@@ -61,6 +71,9 @@ export function backendKindOf(binding) {
 }
 
 export function isSonnetFixedWindowVersion(id) { return !!sonnetFixedWindowByVersion[id]; }
+// Friendly display name for a Claude version id (e.g. "Opus 4.8"), falling
+// back to the pre-fetch default label, then the raw id itself.
+export function getVersionLabel(id) { return claudeVersionLabelById[id] || DEFAULT_VERSION_LABELS[id] || id; }
 export function getActiveSonnetWindow() { return activeSonnetWindow; }
 export function setActiveSonnetWindow(w) { activeSonnetWindow = w === '200k' ? '200k' : '1m'; return activeSonnetWindow; }
 
@@ -90,6 +103,9 @@ export async function loadModelVersions() {
         const sonnetFamily = data.backends.find(f => f.family === 'sonnet');
         sonnetFixedWindowByVersion = Object.fromEntries(
           (sonnetFamily?.versions || []).filter(v => v.fixedWindow).map(v => [v.id, v.fixedWindow]),
+        );
+        claudeVersionLabelById = Object.fromEntries(
+          data.backends.flatMap(b => b.versions || []).map(v => [v.id, v.label]),
         );
       }
       if (Array.isArray(data.tiers) && data.tiers.length) {

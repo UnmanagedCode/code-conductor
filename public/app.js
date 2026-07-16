@@ -387,7 +387,7 @@ const lazyController = installLazyHistoryController({
 // the dialog's deps (refreshProjects et al.) are in scope. Only reachable via
 // user interaction, which can't fire until after full init runs the install.
 let workspaceHandles = null;
-// Handles returned by installSpawnDialog ({ openSpawnDialog, syncSonnetPickerLabels,
+// Handles returned by installSpawnDialog ({ openSpawnDialog, syncTierModelLabels,
 // syncTierVisibility }). Declared before the Sidebar/Settings installs so their
 // callbacks can forward to it; assigned later, once the dialog's deps
 // (refreshProjects et al.) are in scope. All three external callers fire only
@@ -526,7 +526,7 @@ const settings = installSettings({
     if (data.enabledTiers) setActiveTierEnabled(data.enabledTiers);
     setActiveDefaultSpawnTier(data.defaultSpawnTier);
     setCustomBackends(data.customBackends);
-    spawnHandles.syncSonnetPickerLabels();
+    spawnHandles.syncTierModelLabels();
     spawnHandles.syncTierVisibility();
   },
   onTtsAvailabilityChange: setTtsAvailable,
@@ -547,7 +547,7 @@ const settings = installSettings({
     sessionActions.resumeSession({ projectName: project, worktreeName, sessionId }),
 });
 // Seed the per-tier/per-backend model-version cache the spawn pickers resolve against.
-loadModelVersions().then(() => { spawnHandles.syncSonnetPickerLabels(); spawnHandles.syncTierVisibility(); });
+loadModelVersions().then(() => { spawnHandles.syncTierModelLabels(); spawnHandles.syncTierVisibility(); });
 dom.settingsBtn?.addEventListener('click', () => {
   closeSidebarOverflow();
   if (location.hash === '#settings') settings.close();
