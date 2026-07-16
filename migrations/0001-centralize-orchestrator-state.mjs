@@ -36,6 +36,19 @@ async function readJsonSafe(p) {
   } catch { return null; }
 }
 
+// Artifacts this migration actually relocates. A `.code-conductor/`
+// dotfolder is only a migration candidate if it holds one of these — a
+// folder carrying only non-migratable residents (e.g. a live in-tree
+// `post-worktree-create.sh` hook) is already-applied and must not keep
+// re-triggering the migration every boot.
+const MIGRATABLE = ['project.json', 'worktree.json', 'attachments', 'debug'];
+async function hasMigratableArtifact(dotdir) {
+  for (const name of MIGRATABLE) {
+    if (await pathExists(path.join(dotdir, name))) return true;
+  }
+  return false;
+}
+
 // Move src → dst. Refuses to clobber: if dst already exists (file, or
 // non-empty directory) we leave src in place and return 'skipped'. An
 // empty destination directory is folded into. Returns 'moved',
@@ -111,7 +124,9 @@ export async function run({ root, log = console.log } = {}) {
     if (!e.isDirectory()) continue;
     if (e.name.startsWith('.')) continue; // central store + other dotfolders
     const dotdir = path.join(projectsRoot, e.name, DOTDIR);
-    if (await pathExists(dotdir)) candidates.push({ dir: e.name, dotdir });
+    if (await pathExists(dotdir) && await hasMigratableArtifact(dotdir)) {
+      candidates.push({ dir: e.name, dotdir });
+    }
   }
   if (candidates.length === 0) return { applied: false };
 

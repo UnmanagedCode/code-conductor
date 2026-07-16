@@ -11,6 +11,7 @@ import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, freshProjectsRoot, rmrf } from './helpers.mjs';
 import { createWorktree } from '../src/worktrees.js';
+import { projectStoreDir } from '../src/projects.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-instance.json');
@@ -57,6 +58,18 @@ async function installHook(repoPath, scriptBody) {
   return hookPath;
 }
 
+// Install a hook script in the central orchestrator store (out of the
+// tracked tree) at <projectStoreDir>/post-worktree-create.sh. The store
+// path resolves via PROJECTS_ROOT, which freshProjectsRoot() has pointed
+// at the temp home for this test.
+async function installStoreHook(project, scriptBody) {
+  const storeDir = projectStoreDir(project);
+  await fs.mkdir(storeDir, { recursive: true });
+  const hookPath = path.join(storeDir, 'post-worktree-create.sh');
+  await fs.writeFile(hookPath, scriptBody, { mode: 0o755 });
+  return hookPath;
+}
+
 // ── Direct createWorktree() unit-style tests ──────────────────────────────
 
 test('hook absent: postWorktreeCreate.ran is false', async () => {
@@ -65,6 +78,51 @@ test('hook absent: postWorktreeCreate.ran is false', async () => {
   assert.ok(meta.postWorktreeCreate, 'postWorktreeCreate field present');
   assert.equal(meta.postWorktreeCreate.ran, false);
   assert.equal(meta.postWorktreeCreate.skipped, undefined);
+  assert.equal(meta.postWorktreeCreate.source, undefined);
+});
+
+// ── Hook-source resolution: in-tree priority, central-store fallback ───────
+
+test('hook source: in-tree only → runs in-tree, source="in-tree"', async () => {
+  const repoPath = await makeRealRepo('demo');
+  await installHook(repoPath, '#!/bin/sh\necho "in-tree-hook"\n');
+  const meta = await createWorktree('demo');
+  const h = meta.postWorktreeCreate;
+  assert.equal(h.ran, true);
+  assert.equal(h.exitCode, 0);
+  assert.equal(h.source, 'in-tree');
+  assert.ok(h.output.includes('in-tree-hook'));
+});
+
+test('hook source: store only → runs store, source="store"', async () => {
+  await makeRealRepo('demo');
+  await installStoreHook('demo', '#!/bin/sh\necho "store-hook"\n');
+  const meta = await createWorktree('demo');
+  const h = meta.postWorktreeCreate;
+  assert.equal(h.ran, true);
+  assert.equal(h.exitCode, 0);
+  assert.equal(h.source, 'store');
+  assert.ok(h.output.includes('store-hook'));
+});
+
+test('hook source: both present → in-tree wins', async () => {
+  const repoPath = await makeRealRepo('demo');
+  await installHook(repoPath, '#!/bin/sh\necho "in-tree-hook"\n');
+  await installStoreHook('demo', '#!/bin/sh\necho "store-hook"\n');
+  const meta = await createWorktree('demo');
+  const h = meta.postWorktreeCreate;
+  assert.equal(h.ran, true);
+  assert.equal(h.source, 'in-tree');
+  assert.ok(h.output.includes('in-tree-hook'), `expected in-tree marker, got: ${h.output}`);
+  assert.ok(!h.output.includes('store-hook'), `store hook must not run when in-tree exists, got: ${h.output}`);
+});
+
+test('hook source: neither present → ran=false, no source', async () => {
+  await makeRealRepo('demo');
+  const meta = await createWorktree('demo');
+  const h = meta.postWorktreeCreate;
+  assert.equal(h.ran, false);
+  assert.equal(h.source, undefined);
 });
 
 test('kill-switch: ORCH_DISABLE_POST_WORKTREE_HOOK=1 skips hook', async () => {

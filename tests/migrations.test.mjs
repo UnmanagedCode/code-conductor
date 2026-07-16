@@ -8,6 +8,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { runMigrations } from '../migrations/index.mjs';
+import * as m0001 from '../migrations/0001-centralize-orchestrator-state.mjs';
 
 async function mkTempRoot() {
   return fs.mkdtemp(path.join(os.tmpdir(), 'orch-migration-'));
@@ -198,6 +199,62 @@ test('0001 migration: no candidates → applied:false, no log output', async () 
     });
 
     assert.deepEqual(logs, []);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test('0001 migration: dotfolder with only post-worktree-create.sh is not a candidate', async () => {
+  const root = await mkTempRoot();
+  try {
+    // A `.code-conductor/` folder that holds only a live in-tree hook — no
+    // migratable artifact. Must read as already-applied so run() logs nothing
+    // and doesn't re-fire the "left in place" warning every boot.
+    const hookDir = path.join(root, 'proj', '.code-conductor');
+    await fs.mkdir(hookDir, { recursive: true });
+    const hookPath = path.join(hookDir, 'post-worktree-create.sh');
+    await fs.writeFile(hookPath, '#!/bin/sh\necho hi\n');
+
+    const logs = [];
+    const res = await m0001.run({ root, log: (...a) => logs.push(a.join(' ')) });
+
+    assert.deepEqual(res, { applied: false });
+    assert.deepEqual(logs, []);
+    // Hook + dotfolder left untouched.
+    assert.ok(await exists(hookPath), 'hook script must remain in place');
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test('0001 migration: project.json still migrates while a hook-only sibling is skipped', async () => {
+  const root = await mkTempRoot();
+  try {
+    // Sibling dir with only a hook — must be ignored, not migrated.
+    const hookDir = path.join(root, 'hookonly', '.code-conductor');
+    await fs.mkdir(hookDir, { recursive: true });
+    await fs.writeFile(path.join(hookDir, 'post-worktree-create.sh'), '#!/bin/sh\n');
+    // Real project with a migratable artifact — must migrate.
+    await writeJson(path.join(root, 'real', '.code-conductor', 'project.json'), { group: 'R' });
+
+    const res = await m0001.run({ root, log: () => {} });
+
+    assert.equal(res.applied, true);
+    // Real project's metadata landed in the central store.
+    assert.ok(
+      await exists(path.join(root, '.code-conductor', 'projects', 'real', 'project.json')),
+      'real project.json should be migrated into the store',
+    );
+    // Hook-only sibling untouched — not treated as a candidate.
+    assert.ok(
+      await exists(path.join(hookDir, 'post-worktree-create.sh')),
+      'hook-only dotfolder must be left in place',
+    );
+    assert.equal(
+      await exists(path.join(root, '.code-conductor', 'projects', 'hookonly')),
+      false,
+      'hook-only dir must not get a store entry',
+    );
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }

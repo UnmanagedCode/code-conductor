@@ -134,24 +134,32 @@ export { readMeta as readWorktreeMeta };
 // result field stays network-friendly. ~16 KB is generous for diagnostics.
 const HOOK_OUTPUT_CAP = 16 * 1024;
 
-// Run `.code-conductor/post-worktree-create.sh`, read from the parent
-// checkout (it need not be committed), with cwd in the new worktree.
+async function fileExists(p) {
+  try { await fs.access(p); return true; }
+  catch { return false; }
+}
+
+// Run `post-worktree-create.sh` with cwd in the new worktree. Resolved
+// from two locations, in priority order:
+//   1. in-tree: `<parentPath>/.code-conductor/post-worktree-create.sh`
+//      (read from the parent checkout — need not be committed).
+//   2. store:   `<projectStoreDir>/post-worktree-create.sh` (the central
+//      orchestrator store, out of the tracked tree).
 // Always resolves — never rejects — so a broken hook cannot abort a
 // successful worktree create. Result is attached to the createWorktree()
-// return value as `postWorktreeCreate`.
+// return value as `postWorktreeCreate`; `source` records which location ran.
 async function runPostWorktreeHook(meta) {
   if (process.env.ORCH_DISABLE_POST_WORKTREE_HOOK === '1') {
     return { ran: false, skipped: 'disabled' };
   }
 
-  const scriptPath = path.join(
-    meta.parentPath, '.code-conductor', 'post-worktree-create.sh',
-  );
-  try {
-    await fs.access(scriptPath);
-  } catch {
-    return { ran: false };
-  }
+  const inTree = path.join(meta.parentPath, '.code-conductor', 'post-worktree-create.sh');
+  const inStore = path.join(projectStoreDir(meta.parentProject), 'post-worktree-create.sh');
+  let scriptPath = null;
+  let source = null;
+  if (await fileExists(inTree)) { scriptPath = inTree; source = 'in-tree'; }
+  else if (await fileExists(inStore)) { scriptPath = inStore; source = 'store'; }
+  if (!scriptPath) return { ran: false };
 
   // Ensure the executable bit is set — the script may have been committed
   // without it (e.g. on Windows / FAT filesystems). Non-fatal if chmod fails.
@@ -221,6 +229,7 @@ async function runPostWorktreeHook(meta) {
       }
       const result = {
         ran: true,
+        source,
         exitCode: timedOut ? null : (code ?? null),
         durationMs,
         output: output.trimEnd(),
@@ -234,6 +243,7 @@ async function runPostWorktreeHook(meta) {
       clearTimeout(timer);
       resolve({
         ran: true,
+        source,
         exitCode: null,
         durationMs: Date.now() - start,
         output: err.message,
