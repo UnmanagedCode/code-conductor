@@ -19,10 +19,10 @@
 //                         + selection (drive app.js state/sidebar).
 //   - closeSidebarOverflow(): used by openConductDialog.
 //
-// Returns { openSpawnDialog, syncSonnetPickerLabels, syncTierVisibility } — the
+// Returns { openSpawnDialog, syncTierModelLabels, syncTierVisibility } — the
 // only handles with external callers; openConductDialog/makeModeToggle/
 // spawnInstance/defaultSpawnTier stay internal.
-import { resolveSpawnModel, getActiveSonnetWindow, isSonnetFixedWindowVersion, familyOf,
+import { resolveSpawnModel, getVersionLabel,
   getTierList, getActiveTierEnabled, getActiveDefaultSpawnTier, getActiveTierBackend } from './models.js';
 
 export function installSpawnDialog({ dom, getProjects, refreshProjects, refreshInstances, selectInstance, closeSidebarOverflow }) {
@@ -61,27 +61,14 @@ export function installSpawnDialog({ dom, getProjects, refreshProjects, refreshI
     }
   }
 
-  // Updates every tier button's context-window label to match its currently
-  // bound backend's active version, so the UI reflects what will actually be
-  // spawned. Only Sonnet varies (Sonnet 5 has no 200k build, always 1M;
-  // Sonnet 4.x reflects the stored preference) — Haiku is always 200k, Opus/
-  // Fable are always 1M.
-  function syncSonnetPickerLabels() {
+  // Updates every tier button's sublabel to show the currently bound
+  // backend's model name, so the UI reflects what will actually be spawned.
+  function syncTierModelLabels() {
     for (const tier of getTierList()) {
       const b = getActiveTierBackend(tier); // {kind, model}
-      let w;
-      if (b.kind === 'ollama') {
-        w = b.model; // Ollama tier: show the tag (no context-window concept)
-      } else {
-        const fam = familyOf(b.model);
-        if (fam === 'sonnet') {
-          w = isSonnetFixedWindowVersion(b.model) ? '1M' : (getActiveSonnetWindow() === '200k' ? '200k' : '1M');
-        } else {
-          w = fam === 'haiku' ? '200k' : '1M';
-        }
-      }
-      document.querySelectorAll(`.qs-model[data-tier="${tier}"] .qs-ctx`)
-        .forEach(el => { el.textContent = w; });
+      const name = b.kind === 'ollama' ? b.model : getVersionLabel(b.model);
+      document.querySelectorAll(`.qs-model[data-tier="${tier}"] .qs-sublabel`)
+        .forEach(el => { el.textContent = name; });
     }
   }
 
@@ -286,5 +273,5 @@ export function installSpawnDialog({ dom, getProjects, refreshProjects, refreshI
     if (model) spawnInstance({ project: '.conduct', model, backendKind, planMode: cdMode.planMode, dialogEl: dom.conductDialog, errorEl: dom.cdError });
   });
 
-  return { openSpawnDialog, syncSonnetPickerLabels, syncTierVisibility };
+  return { openSpawnDialog, syncTierModelLabels, syncTierVisibility };
 }

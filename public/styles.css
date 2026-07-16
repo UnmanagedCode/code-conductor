@@ -181,7 +181,7 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
   cursor: pointer; padding: 2px 6px; font-size: 16px; line-height: 1;
 }
 .project-row .add-instance:hover { color: var(--text); }
-/* Quick-spawn model picker dialog: model rows + context badges. */
+/* Quick-spawn model picker dialog: model rows + model-name sublabels. */
 .quick-spawn-models { display: flex; gap: 8px; margin: 10px 0 0; }
 .quick-spawn-models .qs-model {
   flex: 1; padding: 8px 6px 6px; border-radius: 6px;
@@ -193,12 +193,12 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
 .quick-spawn-models .qs-model:hover {
   background: var(--panel); border-color: var(--amber); color: var(--amber);
 }
-/* Small context-window badge beneath each model name */
-.qs-ctx {
+/* Small model-name sublabel beneath each tier name */
+.qs-sublabel {
   font-size: 10px; font-weight: 400; color: var(--muted);
   letter-spacing: 0.04em; line-height: 1;
 }
-.qs-model:hover .qs-ctx { color: inherit; opacity: 0.8; }
+.qs-model:hover .qs-sublabel { color: inherit; opacity: 0.8; }
 /* Spawn-mode segmented toggle: two side-by-side options below the
    model row. The aria-pressed side is highlighted; the other is muted
    so it reads as the inactive choice. */
@@ -224,7 +224,7 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
   background: color-mix(in srgb, var(--amber) 12%, var(--panel-2));
   color: var(--amber);
 }
-.quick-spawn-models .qs-model.qs-selected .qs-ctx { color: inherit; opacity: .8; }
+.quick-spawn-models .qs-model.qs-selected .qs-sublabel { color: inherit; opacity: .8; }
 /* Restore hidden behaviour: the `display: flex` rule above outranks the UA's
    `[hidden] { display: none }` — same trap as .turn-indicator[hidden]. */
 .quick-spawn-models .qs-model[hidden] { display: none; }
