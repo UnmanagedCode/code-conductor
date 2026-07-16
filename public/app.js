@@ -540,6 +540,11 @@ const settings = installSettings({
     refreshProjects();
     refreshInstances();
   },
+  // Jump straight to the restored session: resumeSession() spawns/attaches
+  // the instance and selects it, which closes Settings automatically
+  // (selectInstance() detects location.hash === '#settings').
+  onSessionRestored: ({ project, worktreeName, sessionId }) =>
+    sessionActions.resumeSession({ projectName: project, worktreeName, sessionId }),
 });
 // Seed the per-tier/per-backend model-version cache the spawn pickers resolve against.
 loadModelVersions().then(() => { spawnHandles.syncSonnetPickerLabels(); spawnHandles.syncTierVisibility(); });
