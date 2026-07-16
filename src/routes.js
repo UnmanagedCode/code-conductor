@@ -36,6 +36,7 @@ import {
 } from './tts.js';
 import { TTS_VOICES, isKnownVoice, DEFAULT_VOICE } from './ttsModels.js';
 import { preflightOllamaBackend } from './ollamaBackend.js';
+import { OLLAMA_CLOUD_MODELS, OLLAMA_CLOUD_TIER_DEFAULTS } from './ollamaCloudModels.js';
 import {
   getTranscribeModel, setTranscribeModel,
   getTtsEnabled, setTtsEnabled, getTtsVoice, setTtsVoice, getTtsRate, setTtsRate,
@@ -1057,7 +1058,8 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
 
   // Settings → Models group. Reports the two provider backends, the Claude
   // version catalog (MODEL_FAMILIES — the Anthropic backend's model list), the
-  // user's custom Ollama models, the capability-tier list + each tier's
+  // user's custom Ollama models, the curated Ollama cloud preset catalog +
+  // its per-tier defaults, the capability-tier list + each tier's
   // {kind, model} binding, and the global Sonnet-window preference.
   function modelsSettingsState() {
     const tierBackend = {};
@@ -1071,6 +1073,8 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
       tiers: CAPABILITY_TIERS,
       tierBackend,
       customBackends: getCustomBackends(),
+      ollamaCloudModels: OLLAMA_CLOUD_MODELS,
+      ollamaCloudTierDefaults: OLLAMA_CLOUD_TIER_DEFAULTS,
       enabledTiers: getEnabledTiers(),
       defaultSpawnTier: getDefaultSpawnTier() };
   }

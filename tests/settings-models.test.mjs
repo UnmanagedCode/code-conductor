@@ -8,6 +8,7 @@ import {
   MODEL_FAMILIES, DEFAULT_VERSIONS, PROVIDERS, isKnownFamily, isKnownVersion, defaultVersion,
   isKnownClaudeModel, CAPABILITY_TIERS, DEFAULT_TIER_BACKEND, isKnownTier,
 } from '../src/modelVersions.js';
+import { OLLAMA_CLOUD_MODELS, OLLAMA_CLOUD_TIER_DEFAULTS, isKnownOllamaCloudModel } from '../src/ollamaCloudModels.js';
 import {
   getTranscribeModel, setTranscribeModel,
   getOnOverageAction, setOnOverageAction,
@@ -16,7 +17,7 @@ import {
   getSonnetContextWindow, setSonnetContextWindow,
   getEnabledTiers, setTierEnabled,
   getDefaultSpawnTier, setDefaultSpawnTier,
-  getTierBackend, setTierBackend,
+  getTierBackend, setTierBackend, isKnownOllamaModel,
 } from '../src/appSettings.js';
 
 async function mkTmp() {
@@ -84,6 +85,41 @@ test('modelVersions catalog: tiers, providers + default {kind,model} bindings', 
   assert.ok(!isKnownTier('medium'), 'the effort vocabulary must not collide with tiers');
 });
 
+// ── Ollama cloud preset catalog ─────────────────────────────────────────
+test('ollamaCloudModels: 7-model catalog, tags verbatim, tier defaults, no global-default change', () => {
+  assert.equal(OLLAMA_CLOUD_MODELS.length, 7);
+  const tags = OLLAMA_CLOUD_MODELS.map(m => m.model);
+  assert.ok(tags.includes('deepseek-v4-flash:cloud'));
+  assert.ok(tags.includes('qwen3.5:cloud'));
+  assert.ok(tags.includes('glm-5.2:cloud'));
+  assert.ok(tags.includes('mistral-large-3:675b-cloud'), 'Mistral stays size-pinned, not normalized to :cloud');
+  assert.ok(!tags.includes('gpt-oss:120b-cloud'), 'gpt-oss models were dropped from the catalog');
+  assert.deepEqual(OLLAMA_CLOUD_TIER_DEFAULTS, {
+    fast: 'deepseek-v4-flash:cloud',
+    balanced: 'qwen3.5:cloud',
+    powerful: 'glm-5.2:cloud',
+  });
+  assert.ok(isKnownOllamaCloudModel('glm-5.2:cloud'));
+  assert.ok(!isKnownOllamaCloudModel('totally-made-up:cloud'));
+
+  // Decided: the catalog does NOT change the true out-of-the-box default —
+  // every tier's DEFAULT_TIER_BACKEND stays Claude (unmodified assertion).
+  for (const t of CAPABILITY_TIERS) {
+    assert.equal(DEFAULT_TIER_BACKEND[t.tier].kind, 'claude');
+  }
+});
+
+test('appSettings: isKnownOllamaModel accepts a catalog preset with no prior addCustomBackend, and tiers can bind straight to one', async () => {
+  const root = await mkTmp();
+  try {
+    await withEnv({ PROJECTS_ROOT: root }, async () => {
+      assert.ok(isKnownOllamaModel('qwen3.5:cloud'));
+      await setTierBackend('fast', { kind: 'ollama', model: 'deepseek-v4-flash:cloud' });
+      assert.deepEqual(getTierBackend('fast'), { kind: 'ollama', model: 'deepseek-v4-flash:cloud' });
+    });
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
 // ── appSettings ─────────────────────────────────────────────────────────
 test('appSettings: models namespace does not clobber transcribe', async () => {
   const root = await mkTmp();
@@ -106,6 +142,11 @@ test('GET /api/settings/models returns providers, catalog, and {kind,model} tier
     assert.deepEqual(r.body.backends.map(f => f.family), ['fable', 'opus', 'sonnet', 'haiku']);
     assert.equal(r.body.activeVersions, undefined); // removed
     assert.deepEqual(r.body.customBackends, []);
+    assert.equal(r.body.ollamaCloudModels.length, 7);
+    assert.ok(r.body.ollamaCloudModels.some(m => m.model === 'glm-5.2:cloud'));
+    assert.deepEqual(r.body.ollamaCloudTierDefaults, {
+      fast: 'deepseek-v4-flash:cloud', balanced: 'qwen3.5:cloud', powerful: 'glm-5.2:cloud',
+    });
     assert.deepEqual(r.body.tiers.map(t => t.tier), ['fast', 'balanced', 'powerful', 'frontier']);
     // Unset → default {kind,model} bindings (each family's default version).
     assert.deepEqual(r.body.tierBackend.powerful, { kind: 'claude', model: 'claude-opus-4-8' });

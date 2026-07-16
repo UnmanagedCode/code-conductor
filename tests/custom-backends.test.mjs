@@ -36,6 +36,33 @@ test('ollama preflight targets localhost and fails cleanly when down', async () 
   assert.equal(checkModelAvailable.length, 1);
 });
 
+// checkModelAvailable's cloud-leniency only kicks in once Ollama itself is
+// reachable (its /api/tags call has to succeed first) — there's no live
+// Ollama in CI, so this stubs global fetch to simulate a reachable daemon
+// whose /api/tags does NOT list the tag, to isolate the leniency branch.
+test('checkModelAvailable treats bare :cloud AND size-pinned *-cloud tags as leniently available', async () => {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({ ok: true, json: async () => ({ models: [{ name: 'llama3' }] }) });
+  try {
+    const bareCloud = await checkModelAvailable('deepseek-v4-flash:cloud');
+    assert.deepEqual(bareCloud, { ok: true, available: true, models: ['llama3'] });
+
+    const sizePinnedCloud = await checkModelAvailable('mistral-large-3:675b-cloud');
+    assert.deepEqual(sizePinnedCloud, { ok: true, available: true, models: ['llama3'] });
+
+    // A genuinely local, non-cloud tag absent from /api/tags is NOT leniently available.
+    const localMissing = await checkModelAvailable('llama3:not-pulled');
+    assert.equal(localMissing.available, false);
+
+    // A tag that merely contains "cloud" mid-string (not as the last `:`-segment
+    // suffix) must not be misclassified as hosted.
+    const substringOnly = await checkModelAvailable('cloudy-local-model:latest');
+    assert.equal(substringOnly.available, false);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
 // ── appSettings custom models + tier bindings + sidecar (fresh store) ───────
 describe('backend-agnostic data model', () => {
   let home;

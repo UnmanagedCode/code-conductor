@@ -335,6 +335,7 @@ export function installSettings({
     const providers = data.providers || [{ kind: 'claude', label: 'Claude' }, { kind: 'ollama', label: 'Ollama' }];
     const backends = data.backends || []; // Claude version catalog (MODEL_FAMILIES)
     const customBackends = data.customBackends || []; // [{label, model}]
+    const ollamaCloudModels = data.ollamaCloudModels || []; // curated presets [{label, model}]
     const tierBackend = data.tierBackend || {}; // {tier: {kind, model}}
     const sonnetWindow = data.sonnetContextWindow ?? '1m';
     const enabledTiers = data.enabledTiers ?? {};
@@ -412,19 +413,27 @@ export function installSettings({
       sel.className = 'sm-version';
       sel.disabled = !isEnabled;
       if (b.kind === 'ollama') {
-        if (!customBackends.length) {
+        if (!ollamaCloudModels.length && !customBackends.length) {
           const opt = document.createElement('option');
           opt.textContent = '(add a model below)';
           sel.appendChild(opt);
           sel.disabled = true;
         } else {
-          for (const c of customBackends) {
-            const opt = document.createElement('option');
-            opt.value = c.model;
-            opt.textContent = `${c.label} — ${c.model}`;
-            if (c.model === b.model) opt.selected = true;
-            sel.appendChild(opt);
-          }
+          const addGroup = (label, list) => {
+            if (!list.length) return;
+            const grp = document.createElement('optgroup');
+            grp.label = label;
+            for (const c of list) {
+              const opt = document.createElement('option');
+              opt.value = c.model;
+              opt.textContent = `${c.label} — ${c.model}`;
+              if (c.model === b.model) opt.selected = true;
+              grp.appendChild(opt);
+            }
+            sel.appendChild(grp);
+          };
+          addGroup('Ollama Cloud', ollamaCloudModels);
+          addGroup('My Models', customBackends);
           sel.addEventListener('change', () => onPickOllamaModel(t.tier, sel.value));
         }
       } else {
@@ -516,12 +525,17 @@ export function installSettings({
   }
 
   // Switching a tier's provider: pick a sensible default model for the new kind
-  // (Sonnet default for Claude; the first custom model for Ollama).
+  // (Sonnet default for Claude; this tier's catalog cloud preset for Ollama —
+  // fast/balanced/powerful each have one, see ollamaCloudTierDefaults — else
+  // the first custom model).
   function onPickBackendKind(tier, kind) {
     if (kind === 'ollama') {
-      const first = lastModelsData?.customBackends?.[0];
-      if (!first) { if (smStatusEl) smStatusEl.textContent = 'Add an Ollama model below first.'; renderModels(lastModelsData); return; }
-      return saveTierBinding(tier, { kind: 'ollama', model: first.model });
+      const cloudModels = lastModelsData?.ollamaCloudModels || [];
+      const tierDefaults = lastModelsData?.ollamaCloudTierDefaults || {};
+      const preset = cloudModels.find(c => c.model === tierDefaults[tier]);
+      const chosen = preset || lastModelsData?.customBackends?.[0];
+      if (!chosen) { if (smStatusEl) smStatusEl.textContent = 'Add an Ollama model below first.'; renderModels(lastModelsData); return; }
+      return saveTierBinding(tier, { kind: 'ollama', model: chosen.model });
     }
     const backends = lastModelsData?.backends || [];
     const sonnet = backends.find(b => b.family === 'sonnet') || backends[0];

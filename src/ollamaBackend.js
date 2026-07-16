@@ -4,9 +4,10 @@
 // instead of spawning into a silent `ollama launch` failure.
 //
 // Endpoints: GET /api/version (liveness) and GET /api/tags (locally available
-// models). Cloud tags (e.g. `foo:cloud`) are account-served and may NOT appear
-// in /api/tags, so model-availability is lenient for `:cloud` tags —
-// reachability is the hard gate.
+// models). Cloud tags (e.g. `foo:cloud`, `foo:120b-cloud`) are account-served
+// and may NOT appear in /api/tags, so model-availability is lenient for any
+// tag whose last `:`-segment is (or ends with) `cloud` — reachability is the
+// hard gate.
 
 export const OLLAMA_BASE = 'http://localhost:11434';
 
@@ -43,7 +44,14 @@ export async function checkModelAvailable(tag) {
   const present = names.includes(wanted)
     || names.includes(`${wanted}:latest`)
     || (wanted.endsWith(':latest') && names.includes(wanted.slice(0, -':latest'.length)));
-  const available = present || wanted.endsWith(':cloud');
+  // Cloud tags are account-served and may be absent from /api/tags — treat
+  // any tag whose LAST `:`-segment is `cloud` or ends `-cloud` (e.g. plain
+  // `:cloud`, or size-pinned `:675b-cloud`) as leniently available. Checking
+  // only the last segment (not a bare substring match) avoids misclassifying
+  // a hypothetical local tag that merely contains "cloud" elsewhere.
+  const lastSegment = wanted.includes(':') ? wanted.slice(wanted.lastIndexOf(':') + 1) : '';
+  const isCloudTag = lastSegment === 'cloud' || lastSegment.endsWith('-cloud');
+  const available = present || isCloudTag;
   return { ok: true, available, models: names };
 }
 

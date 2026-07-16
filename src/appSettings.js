@@ -12,6 +12,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { orchStoreRoot, writeFileAtomic } from './projects.js';
 import { CAPABILITY_TIERS, DEFAULT_TIER_BACKEND, isKnownTier, isKnownClaudeModel } from './modelVersions.js';
+import { isKnownOllamaCloudModel } from './ollamaCloudModels.js';
 
 function settingsPath() {
   return path.join(orchStoreRoot(), 'settings.json');
@@ -217,9 +218,11 @@ export function getCustomBackends() {
   return Array.isArray(list) ? list.filter(b => b && typeof b.model === 'string') : [];
 }
 
-// A tag is a bindable Ollama model if the user has added it.
+// A tag is a bindable Ollama model if the user has added it, or if it's one
+// of the curated cloud presets (bindable with no prior "Add" step).
 export function isKnownOllamaModel(tag) {
-  return typeof tag === 'string' && !!tag && getCustomBackends().some(b => b.model === tag);
+  return typeof tag === 'string' && !!tag &&
+    (getCustomBackends().some(b => b.model === tag) || isKnownOllamaCloudModel(tag));
 }
 
 export async function addCustomBackend({ label, model } = {}) {
