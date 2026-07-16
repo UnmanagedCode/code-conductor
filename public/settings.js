@@ -16,7 +16,7 @@ const POLL_MS = 1500;
 export function installSettings({
   requestClose, onAvailabilityChange, onModelsChange,
   onTtsAvailabilityChange, onTtsPrefsChange, onOpenCostDashboard,
-  onArchivedChanged, onPluginsChanged,
+  onArchivedChanged, onPluginsChanged, onSessionRestored,
 } = {}) {
   const main = document.getElementById('main');
   const view = document.getElementById('settings-view');
@@ -902,6 +902,7 @@ export function installSettings({
       if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || `HTTP ${r.status}`);
       onArchivedChanged?.();
       await loadArchived();
+      onSessionRestored?.({ project, worktreeName: s.worktreeName, sessionId: s.sessionId });
     } catch (e) {
       alert(`restore failed: ${e.message || e}`);
     }
