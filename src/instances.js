@@ -14,7 +14,7 @@ import { isTemp, markTemp, unmarkTemp } from './tempSessions.js';
 import { markArchived } from './archivedSessions.js';
 import { CONDUCT_PROJECT_NAME } from './conduct.js';
 import { buildSettingsJSON, buildMcpConfigJSON, AWAITING_INPUT_MESSAGE } from './settings.js';
-import { getOnOverageAction, getOverageThreshold, getConductorCompactWindow, getSonnetContextWindow } from './appSettings.js';
+import { getOnOverageAction, getOverageThreshold, getConductorCompactWindow, getSonnetContextWindow, getOllamaContextWindow } from './appSettings.js';
 import { HookBroker } from './hookBroker.js';
 import { loadPersistedTranscript, writeSessionMetadata, readLastSessionModel, hasResumableConversation } from './transcript.js';
 import { canonicalizeModel, familyOf } from './modelVersions.js';
@@ -897,10 +897,22 @@ export class Instance extends EventEmitter {
     // downgrade our 1M Opus/Sonnet sessions to 200k.
     const spawnEnv = { ...process.env };
     delete spawnEnv.CLAUDE_CODE_DISABLE_1M_CONTEXT;
+    // Ollama-backed sessions: honour the model's native context window so the
+    // CLI auto-compacts at the real limit instead of its ~200k default. The
+    // value is already a raw token count (unlike the conductor override below,
+    // which stores k-tokens), so set it directly. A custom model with no
+    // declared window resolves to null → leave the var unset (CLI default).
+    // Runs for both fresh spawns and every resume path (single spawn() method;
+    // backendKind + model are recovered before this block).
+    if (this.backendKind === 'ollama' && this.model) {
+      const cw = getOllamaContextWindow(this.model);
+      if (cw) spawnEnv.CLAUDE_CODE_AUTO_COMPACT_WINDOW = String(cw);
+    }
     // Apply the compact-window override ONLY to the Conduct orchestrator session
     // (project === '.conduct'). Do NOT gate on this.conducted — that flag marks
     // MCP-spawned *worker* agents that the orchestrator spawns, which is the
-    // opposite of the orchestrator session itself.
+    // opposite of the orchestrator session itself. The explicit conductor knob
+    // wins over the Ollama window above when both apply.
     if (this.project === CONDUCT_PROJECT_NAME) {
       const cw = getConductorCompactWindow();
       if (cw.enabled) {

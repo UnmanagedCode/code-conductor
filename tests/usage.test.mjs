@@ -239,6 +239,40 @@ test('contextWindowFor: one fixed window per non-Sonnet family; Sonnet 5 always 
   assert.equal(contextWindowFor(undefined), 200_000);
 });
 
+test('contextWindowFor: resolves Ollama tags (full + bare base name) and custom overrides via models.js catalog', async () => {
+  const { contextWindowFor } = await import(USAGE_URL);
+  const { setOllamaCloudModels, setCustomBackends } = await import(pathToFileURL(path.join(PUB, 'models.js')).href);
+  try {
+    setOllamaCloudModels([
+      { label: 'DeepSeek V4 Flash', model: 'deepseek-v4-flash:cloud', contextWindow: 1_000_000 },
+      { label: 'Qwen3.5', model: 'qwen3.5:cloud', contextWindow: 256_000 },
+    ]);
+    setCustomBackends([
+      { label: 'Local Big', model: 'localbig:cloud', contextWindow: 128_000 },
+      { label: 'Local NoWin', model: 'localnowin:cloud' }, // no contextWindow
+    ]);
+    // Full tag resolves.
+    assert.equal(contextWindowFor('deepseek-v4-flash:cloud'), 1_000_000);
+    assert.equal(contextWindowFor('qwen3.5:cloud'), 256_000);
+    // Bare base name resolves too — the CLI reports Ollama models bare
+    // (dropping `:cloud`), and the tracker adopts that as the live model.
+    assert.equal(contextWindowFor('deepseek-v4-flash'), 1_000_000);
+    assert.equal(contextWindowFor('qwen3.5'), 256_000);
+    // Custom backend with a window resolves (full + bare).
+    assert.equal(contextWindowFor('localbig:cloud'), 128_000);
+    assert.equal(contextWindowFor('localbig'), 128_000);
+    // Custom backend without a window → 200k default.
+    assert.equal(contextWindowFor('localnowin:cloud'), 200_000);
+    // Unknown Ollama-looking tag → 200k default.
+    assert.equal(contextWindowFor('mystery:cloud'), 200_000);
+    // A Claude id is unaffected by the Ollama catalog.
+    assert.equal(contextWindowFor('claude-opus-4-8'), 1_000_000);
+  } finally {
+    setOllamaCloudModels([]);
+    setCustomBackends([]);
+  }
+});
+
 test('fillClass: thresholds at 50% and 80%', async () => {
   const { fillClass } = await import(USAGE_URL);
   assert.equal(fillClass(null), 'ih-usage-empty');

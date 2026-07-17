@@ -102,6 +102,13 @@ test('ollamaCloudModels: 7-model catalog, tags verbatim, tier defaults, no globa
   assert.ok(isKnownOllamaCloudModel('glm-5.2:cloud'));
   assert.ok(!isKnownOllamaCloudModel('totally-made-up:cloud'));
 
+  // Every curated model carries a positive native context window (raw tokens).
+  for (const m of OLLAMA_CLOUD_MODELS) {
+    assert.ok(Number.isFinite(m.contextWindow) && m.contextWindow > 0, `${m.model} has a contextWindow`);
+  }
+  assert.equal(OLLAMA_CLOUD_MODELS.find(m => m.model === 'minimax-m3:cloud').contextWindow, 1_000_000);
+  assert.equal(OLLAMA_CLOUD_MODELS.find(m => m.model === 'qwen3.5:cloud').contextWindow, 256_000);
+
   // Decided: the catalog does NOT change the true out-of-the-box default —
   // every tier's DEFAULT_TIER_BACKEND stays Claude (unmodified assertion).
   for (const t of CAPABILITY_TIERS) {
@@ -144,6 +151,17 @@ test('GET /api/settings/models returns providers, catalog, and {kind,model} tier
     assert.deepEqual(r.body.customBackends, []);
     assert.equal(r.body.ollamaCloudModels.length, 7);
     assert.ok(r.body.ollamaCloudModels.some(m => m.model === 'glm-5.2:cloud'));
+    // Each curated model ships its native context window (raw tokens).
+    const ctxByTag = Object.fromEntries(r.body.ollamaCloudModels.map(m => [m.model, m.contextWindow]));
+    assert.deepEqual(ctxByTag, {
+      'deepseek-v4-flash:cloud': 1_000_000,
+      'deepseek-v4-pro:cloud':   1_000_000,
+      'glm-5.2:cloud':           1_000_000,
+      'minimax-m3:cloud':        1_000_000,
+      'qwen3.5:cloud':             256_000,
+      'kimi-k2.7-code:cloud':      256_000,
+      'mistral-large-3:675b-cloud': 256_000,
+    });
     assert.deepEqual(r.body.ollamaCloudTierDefaults, {
       fast: 'deepseek-v4-flash:cloud', balanced: 'qwen3.5:cloud', powerful: 'glm-5.2:cloud',
     });

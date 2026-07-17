@@ -12,7 +12,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { orchStoreRoot, writeFileAtomic } from './projects.js';
 import { CAPABILITY_TIERS, DEFAULT_TIER_BACKEND, isKnownTier, isKnownClaudeModel } from './modelVersions.js';
-import { isKnownOllamaCloudModel } from './ollamaCloudModels.js';
+import { OLLAMA_CLOUD_MODELS, isKnownOllamaCloudModel } from './ollamaCloudModels.js';
 
 function settingsPath() {
   return path.join(orchStoreRoot(), 'settings.json');
@@ -225,19 +225,41 @@ export function isKnownOllamaModel(tag) {
     (getCustomBackends().some(b => b.model === tag) || isKnownOllamaCloudModel(tag));
 }
 
-export async function addCustomBackend({ label, model } = {}) {
+// Native context window (raw tokens) for an Ollama tag, or null when unknown.
+// Custom backends win over the curated catalog (a user override of a preset).
+// The server always holds the full tag in Instance.model, so exact-tag match
+// suffices here (the client resolver additionally tolerates the bare base name
+// the CLI reports — see ollamaContextWindowFor in public/models.js).
+export function getOllamaContextWindow(tag) {
+  if (typeof tag !== 'string' || !tag) return null;
+  const custom = getCustomBackends().find(b => b.model === tag);
+  if (custom && Number.isFinite(custom.contextWindow)) return custom.contextWindow;
+  const preset = OLLAMA_CLOUD_MODELS.find(m => m.model === tag);
+  if (preset && Number.isFinite(preset.contextWindow)) return preset.contextWindow;
+  return null;
+}
+
+// `contextWindow` (optional): native window in raw tokens. When a positive
+// number, it's stored (rounded) and used for the header ctx bar +
+// CLAUDE_CODE_AUTO_COMPACT_WINDOW at spawn. Blank/invalid → the key is omitted
+// and the model falls back to the 200k display default with no explicit compact
+// window at spawn.
+export async function addCustomBackend({ label, model, contextWindow } = {}) {
   const cleanLabel = String(label || '').trim();
   const cleanModel = String(model || '').trim();
   if (!cleanLabel || !cleanModel) {
     throw Object.assign(new Error('label and model (ollama tag) are required'), { statusCode: 400 });
   }
+  const cw = Number(contextWindow);
+  const entry = { label: cleanLabel, model: cleanModel };
+  if (Number.isFinite(cw) && cw > 0) entry.contextWindow = Math.round(cw);
   const cur = loadSync();
   const existing = getCustomBackends();
   // The tag is the identity — adding an existing tag just updates its label.
-  const nextList = existing.filter(b => b.model !== cleanModel).concat([{ label: cleanLabel, model: cleanModel }]);
+  const nextList = existing.filter(b => b.model !== cleanModel).concat([entry]);
   const next = { ...cur, models: { ...(cur.models || {}), customBackends: nextList } };
   await writeSettings(next);
-  return { label: cleanLabel, model: cleanModel };
+  return entry;
 }
 
 // Remove a custom model by tag. Any tier still bound to it falls back

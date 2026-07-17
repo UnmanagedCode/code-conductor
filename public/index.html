@@ -149,11 +149,12 @@
             <ul id="sm-tier-list" class="sm-family-list"></ul>
             <fieldset class="sm-group sm-custom">
               <legend>Custom models (Ollama)</legend>
-              <p class="settings-hint">Add an Ollama-served model (served on <code>localhost:11434</code>), then pick <strong>Ollama</strong> as a tier's backend above and select it. It launches via <code>ollama launch claude</code>; a bound tier resolves straight to the tag (no version or context-window choice).</p>
+              <p class="settings-hint">Add an Ollama-served model (served on <code>localhost:11434</code>), then pick <strong>Ollama</strong> as a tier's backend above and select it. It launches via <code>ollama launch claude</code>; a bound tier resolves straight to the tag. The <strong>context</strong> field (tokens, optional) sets the model's native window — it drives the context-usage bar and the CLI auto-compact point; leave blank to use the 200k default.</p>
               <ul id="sm-custom-list" class="sm-custom-list"></ul>
               <div class="sm-custom-form">
                 <input id="sm-custom-label" type="text" placeholder="Label (e.g. Local GPT)" autocomplete="off" />
                 <input id="sm-custom-model" type="text" placeholder="Ollama tag (e.g. gemma4:cloud)" autocomplete="off" />
+                <input id="sm-custom-context" type="number" min="1" step="1000" placeholder="Context (tokens, optional)" autocomplete="off" />
                 <button type="button" id="sm-custom-add" class="btn">Add</button>
               </div>
               <div id="sm-custom-status" class="st-status" aria-live="polite"></div>

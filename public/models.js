@@ -45,13 +45,32 @@ let claudeVersionLabelById = {};
 let tierList = Object.keys(DEFAULT_TIER_BACKEND);
 let tierLabels = { ...DEFAULT_TIER_LABELS };
 let providers = [{ kind: 'claude', label: 'Claude' }, { kind: 'ollama', label: 'Ollama' }];
-let customBackends = []; // [{label, model}]
+let customBackends = []; // [{label, model, contextWindow?}]
+let ollamaCloudModels = []; // curated catalog [{label, model, contextWindow}]
 
 export function getTierList() { return tierList; }
 export function getTierLabel(tier) { return tierLabels[tier] || tier; }
 export function getProviders() { return providers; }
 export function getCustomBackends() { return customBackends; }
 export function setCustomBackends(list) { customBackends = Array.isArray(list) ? list : []; return customBackends; }
+export function getOllamaCloudModels() { return ollamaCloudModels; }
+export function setOllamaCloudModels(list) { ollamaCloudModels = Array.isArray(list) ? list : []; return ollamaCloudModels; }
+
+// Native context window (raw tokens) for an Ollama tag, or null when unknown.
+// Custom backends win over the curated catalog. Matches the full tag OR its
+// bare base name: the CLI reports Ollama models bare (`qwen3.5`, dropping the
+// `:cloud` suffix) in system/init + message_start, and the UsageTracker adopts
+// that bare id as the live model — so contextWindowFor() often sees the base
+// name rather than the full tag. The curated bases are collision-free.
+export function ollamaContextWindowFor(tag) {
+  if (typeof tag !== 'string' || !tag) return null;
+  const match = (m) => m.model === tag || m.model.split(':')[0] === tag;
+  const custom = customBackends.find(match);
+  if (custom && Number.isFinite(custom.contextWindow)) return custom.contextWindow;
+  const preset = ollamaCloudModels.find(match);
+  if (preset && Number.isFinite(preset.contextWindow)) return preset.contextWindow;
+  return null;
+}
 
 // Infer the Claude family from a model id, by prefix. Mirrors familyOf() in
 // src/modelVersions.js. Returns null for a non-Claude id (an Ollama tag), which
@@ -118,6 +137,7 @@ export async function loadModelVersions() {
       if (data.enabledTiers) setActiveTierEnabled(data.enabledTiers);
       setActiveDefaultSpawnTier(data.defaultSpawnTier);
       setCustomBackends(data.customBackends);
+      setOllamaCloudModels(data.ollamaCloudModels);
     }
   } catch { /* keep defaults */ }
   return activeTierBackend;

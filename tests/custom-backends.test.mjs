@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import { bootServer, api, freshProjectsRoot, rmrf } from './helpers.mjs';
 import {
   addCustomBackend, getCustomBackends, removeCustomBackend, isKnownOllamaModel,
-  getTierBackend, setTierBackend,
+  getTierBackend, setTierBackend, getOllamaContextWindow,
 } from '../src/appSettings.js';
 import { familyOf, canonicalizeModel, isKnownClaudeModel, PROVIDERS, DEFAULT_TIER_BACKEND } from '../src/modelVersions.js';
 import { isOllamaSession, markOllamaSession, unmarkOllamaSession, loadAll } from '../src/sessionBackends.js';
@@ -89,6 +89,41 @@ describe('backend-agnostic data model', () => {
     await assert.rejects(() => addCustomBackend({ label: 'L', model: '' }), /required/);
   });
 
+  test('custom models: optional contextWindow persists (rounded) or is omitted when blank/invalid', async () => {
+    // Blank → entry is exactly {label, model}, no contextWindow key.
+    const bare = await addCustomBackend({ label: 'Bare', model: 'bare:cloud' });
+    assert.deepEqual(bare, { label: 'Bare', model: 'bare:cloud' });
+    assert.equal('contextWindow' in getCustomBackends().find(b => b.model === 'bare:cloud'), false);
+
+    // Valid positive → stored, rounded to an integer.
+    const big = await addCustomBackend({ label: 'Big', model: 'big:cloud', contextWindow: 512000.7 });
+    assert.deepEqual(big, { label: 'Big', model: 'big:cloud', contextWindow: 512001 });
+    assert.equal(getCustomBackends().find(b => b.model === 'big:cloud').contextWindow, 512001);
+
+    // Invalid/non-positive → omitted (defensive; the route also 400s these).
+    const zero = await addCustomBackend({ label: 'Zero', model: 'zero:cloud', contextWindow: 0 });
+    assert.equal('contextWindow' in zero, false);
+    const nan = await addCustomBackend({ label: 'Nan', model: 'nan:cloud', contextWindow: 'abc' });
+    assert.equal('contextWindow' in nan, false);
+  });
+
+  test('getOllamaContextWindow: custom entry wins over curated preset; unknown → null', async () => {
+    // Curated preset resolves with no prior add.
+    assert.equal(getOllamaContextWindow('deepseek-v4-flash:cloud'), 1_000_000);
+    assert.equal(getOllamaContextWindow('qwen3.5:cloud'), 256_000);
+    // A custom entry with its own window wins even when it shadows nothing.
+    await addCustomBackend({ label: 'Local', model: 'local:cloud', contextWindow: 128_000 });
+    assert.equal(getOllamaContextWindow('local:cloud'), 128_000);
+    // A custom override of a preset tag takes precedence over the catalog value.
+    await addCustomBackend({ label: 'Override', model: 'qwen3.5:cloud', contextWindow: 300_000 });
+    assert.equal(getOllamaContextWindow('qwen3.5:cloud'), 300_000);
+    // Custom with no window and unknown tag → null.
+    await addCustomBackend({ label: 'NoWin', model: 'nowin:cloud' });
+    assert.equal(getOllamaContextWindow('nowin:cloud'), null);
+    assert.equal(getOllamaContextWindow('ghost:tag'), null);
+    assert.equal(getOllamaContextWindow(''), null);
+  });
+
   test('tier binding: {kind,model}, no silent revert, dead binding falls back', async () => {
     // Claude binding to a concrete version — returned verbatim.
     await setTierBackend('powerful', { kind: 'claude', model: 'claude-opus-4-7' });
@@ -159,6 +194,19 @@ describe('models settings routes', () => {
     const r = await api(baseUrl, 'POST', '/api/settings/models/custom', { label: 'Bad', model: 'x:y' });
     assert.equal(r.status, 400);
     assert.match(r.body.error, /not reachable|not found/);
+    assert.equal(getCustomBackends().length, 0);
+  });
+
+  test('POST /settings/models/custom rejects a non-positive contextWindow before preflight', async () => {
+    // contextWindow validation runs before the Ollama preflight, so this 400s
+    // deterministically with no live daemon.
+    const zero = await api(baseUrl, 'POST', '/api/settings/models/custom', { label: 'Z', model: 'z:cloud', contextWindow: 0 });
+    assert.equal(zero.status, 400);
+    assert.match(zero.body.error, /contextWindow/);
+    const neg = await api(baseUrl, 'POST', '/api/settings/models/custom', { label: 'N', model: 'n:cloud', contextWindow: -5 });
+    assert.equal(neg.status, 400);
+    const nan = await api(baseUrl, 'POST', '/api/settings/models/custom', { label: 'X', model: 'x:cloud', contextWindow: 'huge' });
+    assert.equal(nan.status, 400);
     assert.equal(getCustomBackends().length, 0);
   });
 

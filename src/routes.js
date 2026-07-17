@@ -1126,13 +1126,22 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
   // clear message instead of a silent `ollama launch` failure at spawn.
   r.post('/settings/models/custom', async (req, res, next) => {
     try {
-      const { label, model } = req.body ?? {};
+      const { label, model, contextWindow } = req.body ?? {};
       if (typeof label !== 'string' || !label.trim() || typeof model !== 'string' || !model.trim()) {
         return res.status(400).json({ error: 'label and model (ollama tag) are required' });
       }
+      // Optional native context window (raw tokens). Validated before the
+      // preflight so a bad value fails fast without a live Ollama. Blank/omitted
+      // is fine — the model then falls back to the 200k default.
+      if (contextWindow !== undefined && contextWindow !== null && contextWindow !== '') {
+        const cw = Number(contextWindow);
+        if (!Number.isFinite(cw) || cw <= 0) {
+          return res.status(400).json({ error: 'contextWindow must be a positive number of tokens' });
+        }
+      }
       const pre = await preflightOllamaBackend({ model });
       if (!pre.ok) return res.status(400).json({ error: pre.error });
-      const rec = await addCustomBackend({ label, model });
+      const rec = await addCustomBackend({ label, model, contextWindow });
       res.status(201).json({ ...modelsSettingsState(), added: rec });
     } catch (e) { next(e); }
   });
