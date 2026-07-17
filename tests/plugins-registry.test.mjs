@@ -6,7 +6,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createPluginHost } from '../src/plugins/registry.js';
 import { pidAlive } from '../src/plugins/ports.js';
-import { readProjectMeta, writeProjectMeta, listWorkspaces, projectStoreDir } from '../src/projects.js';
+import { readProjectMeta, writeProjectMeta, listWorkspaces, projectStoreDir, selfProjectDir } from '../src/projects.js';
 import { makePluginRoot, readFixtureManifest, waitFor, FAKE_PLUGIN_DIR } from './plugin-helpers.mjs';
 
 const run = promisify(execFile);
@@ -157,6 +157,26 @@ test('lazy ensureStarted → ready; repeat is a no-op; stop kills the child', as
     await host.stop('fake-plugin');
     await waitFor(() => !pidAlive(pid));
     assert.equal((await host.status('fake-plugin')).state, 'stopped');
+  } finally {
+    await host.stopAll();
+    await env.restore();
+  }
+});
+
+test('started plugin backend receives PROJECTS_ROOT (resolved) + CONDUCTOR_PROJECT_DIR', async () => {
+  const env = await makePluginRoot();
+  const host = createPluginHost();
+  try {
+    await env.addPluginProject('aplug');
+    await host.enable('fake-plugin');
+    await host.ensureStarted('fake-plugin');
+    const { port } = host.runtimeInfo('fake-plugin');
+    const childEnv = await (await fetch(`http://127.0.0.1:${port}/env`)).json();
+    // projectsRoot() resolves to the temp PROJECTS_ROOT makePluginRoot() set.
+    assert.equal(childEnv.projectsRoot, env.root);
+    // The conductor's own running checkout dir — injected explicitly, not
+    // recomputed by the plugin.
+    assert.equal(childEnv.conductorProjectDir, selfProjectDir());
   } finally {
     await host.stopAll();
     await env.restore();

@@ -1,7 +1,7 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import {
-  projectsRoot, orchStoreRoot, writeFileAtomic, listProjects, projectStoreDir,
+  projectsRoot, selfProjectDir, orchStoreRoot, writeFileAtomic, listProjects, projectStoreDir,
   readProjectMeta, writeProjectMeta, addWorkspace,
 } from '../projects.js';
 import { readManifest, SUPPORTED_CONVENTION_SCOPES } from './manifest.js';
@@ -357,7 +357,16 @@ export function createPluginHost({
 
       s.status = 'starting';
       s.adopted = false;
-      const env = serverPort ? { CONDUCTOR_URL: `http://127.0.0.1:${serverPort}` } : {};
+      // Inject the conductor's *resolved* projects root + its own checkout dir
+      // explicitly (not via inheritance): a plugin reads projectsRoot()'s
+      // authoritative value even in the default case where the conductor's own
+      // env never set PROJECTS_ROOT, and locates the conductor even when its
+      // checkout lives outside projectsRoot().
+      const env = {
+        PROJECTS_ROOT: projectsRoot(),
+        CONDUCTOR_PROJECT_DIR: selfProjectDir(),
+        ...(serverPort ? { CONDUCTOR_URL: `http://127.0.0.1:${serverPort}` } : {}),
+      };
       const rec = await supervisor.start({ id, manifest: entry.manifest, cwd, env });
       runtimeRecords[id] = rec;
       await saveRuntimeRecords();

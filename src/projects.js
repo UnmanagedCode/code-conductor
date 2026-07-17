@@ -47,6 +47,14 @@ export function projectsRoot() {
   return process.env.PROJECTS_ROOT ?? DEFAULT_PROJECTS_ROOT;
 }
 
+// The conductor's own running checkout dir (the dir holding server.js /
+// package.json). Exposed so the plugin supervisor can hand it to backends as
+// CONDUCTOR_PROJECT_DIR — they surface the conductor as an app even when its
+// checkout isn't under projectsRoot().
+export function selfProjectDir() {
+  return SELF_PROJECT_DIR;
+}
+
 export function orchStoreRoot() {
   return path.join(projectsRoot(), ORCH_STORE_DIRNAME);
 }
