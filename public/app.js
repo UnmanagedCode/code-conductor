@@ -165,6 +165,7 @@ const dom = {
   sidebarToggle: document.getElementById('sidebar-toggle'),
   sidebar: document.getElementById('sidebar'),
   sidebarScrim: document.getElementById('sidebar-scrim'),
+  sidebarResizeHandle: document.getElementById('sidebar-resize-handle'),
   notifyToggle: document.getElementById('notify-toggle'),
   restartBtn: document.getElementById('restart-server-btn'),
   sidebarStatus: document.getElementById('sidebar-status'),
@@ -838,6 +839,53 @@ dom.sidebarToggle.addEventListener('click', () => {
 // calling setSidebarOpen(false) directly, so the guard lives in one place.
 function closeSidebarOnMobile() {
   if (window.matchMedia('(max-width: 720px)').matches) setSidebarOpen(false);
+}
+
+// Sidebar resize (desktop grid layout only — the mobile drawer has a fixed
+// width and hides the handle via the @media breakpoint in styles.css).
+const SIDEBAR_WIDTH_STORAGE_KEY = 'code-conductor:sidebar-width';
+const SIDEBAR_MIN_WIDTH = 220;
+const SIDEBAR_MAX_WIDTH = 560;
+
+function loadSidebarWidth() {
+  try {
+    const raw = localStorage.getItem(SIDEBAR_WIDTH_STORAGE_KEY);
+    const n = raw ? Number(raw) : NaN;
+    return Number.isFinite(n) ? Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, n)) : null;
+  } catch {
+    return null;
+  }
+}
+function saveSidebarWidth(px) {
+  try { localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(px)); } catch { /* private mode / quota — best-effort */ }
+}
+const savedSidebarWidth = loadSidebarWidth();
+if (savedSidebarWidth) document.documentElement.style.setProperty('--sidebar-width', `${savedSidebarWidth}px`);
+
+if (dom.sidebarResizeHandle) {
+  dom.sidebarResizeHandle.addEventListener('pointerdown', (e) => {
+    if (window.matchMedia('(max-width: 720px)').matches) return; // mobile drawer — handle is hidden/inert anyway
+    e.preventDefault();
+    const startX = e.clientX;
+    const startWidth = dom.sidebar.getBoundingClientRect().width;
+    dom.sidebarResizeHandle.setPointerCapture(e.pointerId);
+    dom.sidebarResizeHandle.classList.add('active');
+    document.body.style.userSelect = 'none';
+    const onMove = (moveEvent) => {
+      const width = Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, startWidth + (moveEvent.clientX - startX)));
+      document.documentElement.style.setProperty('--sidebar-width', `${width}px`);
+    };
+    const onUp = () => {
+      dom.sidebarResizeHandle.removeEventListener('pointermove', onMove);
+      dom.sidebarResizeHandle.removeEventListener('pointerup', onUp);
+      dom.sidebarResizeHandle.classList.remove('active');
+      document.body.style.userSelect = '';
+      const width = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--sidebar-width'));
+      if (Number.isFinite(width)) saveSidebarWidth(width);
+    };
+    dom.sidebarResizeHandle.addEventListener('pointermove', onMove);
+    dom.sidebarResizeHandle.addEventListener('pointerup', onUp);
+  });
 }
 
 function renderNotifyToggle() {
