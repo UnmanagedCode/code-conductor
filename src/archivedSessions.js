@@ -158,14 +158,43 @@ async function writeSet(set) {
   const tmp = `${file}.tmp-${process.pid}-${Date.now()}`;
   await fs.writeFile(tmp, json);
   await fs.rename(tmp, file);
-  // Refresh the rolling backup only from a non-empty write, so a drain-to-empty
-  // (or an errant empty write) can't erase the last recoverable snapshot. Runs
-  // under the same lock as the primary write (callers wrap in withLock).
-  if (set.size > 0) {
+  // Refresh the rolling backup only from a non-empty write that is a SUPERSET of
+  // the current backup — never a shrink. This blocks two failure modes: an
+  // intentional drain-to-empty (size 0) keeps the last non-empty snapshot, and a
+  // write from a wrongly-empty/tiny base (a leaked write, an OOM read blip that
+  // surfaced an empty primary) can't canonize a small set over the last-good
+  // backup. Tradeoff (conscious): a legitimate un-archive is not a superset, so
+  // `.bak` stops refreshing and may lag behind un-archives — the safe direction,
+  // since a recovery from a stale `.bak` only ever re-archives a few since-
+  // unarchived ids, never loses data. Runs under the same lock as the primary
+  // write (callers wrap in withLock), so the `.bak` read below can't race.
+  if (set.size > 0 && await backupIsSubsetOf(set)) {
     const btmp = `${file}.bak.tmp-${process.pid}-${Date.now()}`;
     await fs.writeFile(btmp, json);
     await fs.rename(btmp, backupFile());
   }
+}
+
+// True if refreshing `.bak` to `set` would not drop any entry it currently
+// holds (i.e. the on-disk `.bak` is a subset of `set`). Read-error handling
+// mirrors the recovery helpers: absent `.bak` → empty (any non-empty set is a
+// superset, so a first write creates it); corrupt `.bak` → treat as empty
+// (worthless — replace it); other I/O error → false (leave an unreadable `.bak`
+// untouched). Runs under the caller's lock.
+async function backupIsSubsetOf(set) {
+  let raw;
+  try {
+    raw = await fs.readFile(backupFile(), 'utf8');
+  } catch (e) {
+    if (e.code === 'ENOENT') return true; // no backup yet → create it
+    return false; // unreadable backup → don't overwrite what we can't verify
+  }
+  let bak;
+  try { bak = parseSet(raw); } catch { return true; } // corrupt backup → replace
+  for (const id of bak) {
+    if (!set.has(id)) return false;
+  }
+  return true;
 }
 
 export function markArchived(sessionId) {

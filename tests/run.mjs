@@ -7,8 +7,31 @@ import { promises as fs, readdirSync, readFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createSafeRoot, assertStoreIsolated } from './safeStoreRoot.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// Pin the whole run to a throwaway store root BEFORE any test file forks. The
+// sidecar stores (archived-sessions, etc.) resolve their on-disk root from
+// PROJECTS_ROOT, falling back to the REAL production store when unset. Every
+// child process inherits this env, so a test with no root of its own — and any
+// out-of-window fire-and-forget write — lands in the temp dir, never the live
+// store. Individual files still mkdtemp their own per-test roots under it.
+const safeRoot = createSafeRoot();
+process.env.PROJECTS_ROOT = safeRoot.projectsRoot;
+process.env.CLAUDE_PROJECTS_ROOT = safeRoot.claudeProjectsRoot;
+
+// Backstop: abort loudly if the resolved store still points into the real
+// workspace (env forced above, so this validates the default and catches a
+// future regression rather than silently corrupting production). Dynamic import
+// so it runs AFTER the env is set (static imports hoist above statements).
+const { orchStoreRoot } = await import('../src/projects.js');
+try {
+  assertStoreIsolated(orchStoreRoot());
+} catch (e) {
+  console.error(e.message);
+  process.exit(1);
+}
 
 // Each test file runs in its own child process (node:test `isolation: 'process'`
 // default), and the suite is already isolated: bootServer binds an ephemeral
@@ -93,6 +116,7 @@ reporter.pipe(process.stdout);
 await new Promise((resolve) => reporter.on('end', resolve));
 
 clearInterval(procSampler);
+await fs.rm(safeRoot.root, { recursive: true, force: true });
 let guardrailFailed = false;
 if (sampledProcs) {
   console.log(`\nguardrail: peak concurrent fake-claude subprocesses = ${peakFakeClaude} (budget ${FAKE_CLAUDE_BUDGET})`);

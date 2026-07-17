@@ -124,6 +124,27 @@ test('a stray orphan .tmp (crash mid-write) does not affect reads or writes', as
   assert.deepEqual((await readJson(storeFile(root))).sessions.sort(), ['a', 'b']);
 });
 
+test('a non-empty write from a wrongly-empty base does not clobber the backup', async () => {
+  const root = await freshRoot();
+  // Last-good backup with several entries, and a VALID empty primary — the shape
+  // a leaked write or an OOM read blip leaves behind (primary reads as empty, so
+  // loadArchivedStrict returns {} without consulting the backup).
+  await fs.writeFile(bakFile(root), doc('a', 'b', 'c'));
+  await fs.writeFile(storeFile(root), doc()); // {"sessions":[]}
+
+  await markArchived('x'); // base loads empty → set = {x}, a shrink vs the backup
+
+  // Primary self-heals to {x}, but the backup keeps the last-good {a,b,c} — a
+  // superset guard refuses to canonize the tiny set over it.
+  assert.deepEqual((await readJson(storeFile(root))).sessions, ['x']);
+  assert.deepEqual((await readJson(bakFile(root))).sessions.sort(), ['a', 'b', 'c'],
+    'backup must not shrink to the spurious empty-base write');
+
+  // External loss of the primary now recovers the real data, not the blip.
+  await fs.rm(storeFile(root), { force: true });
+  assert.deepEqual([...await loadAllArchived()].sort(), ['a', 'b', 'c']);
+});
+
 test('unrecoverable I/O error on the primary aborts the mutation (does not wipe)', async () => {
   const root = await freshRoot();
   await markArchived('a');
