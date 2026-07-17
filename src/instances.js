@@ -735,6 +735,14 @@ export class Instance extends EventEmitter {
     if (!rawModel) return;
     const canonical = canonicalizeModel(rawModel, { sonnetWindow: getSonnetContextWindow() });
     if (canonical === this.model) return;
+    // Ollama's inner CLI reports its model bare, dropping the `:tag` suffix
+    // (`ollama launch claude --model <tag>` still surfaces just the base name
+    // in system/init and message_start). canonicalizeModel is a no-op for
+    // non-Claude ids, so without this guard that bare report never matches
+    // this.model and looks like a genuine switch — overwriting this.model
+    // with the untagged id breaks the next resume's `ollama launch --model
+    // <tag>` (spawn() refuses to launch without the tag).
+    if (this.backendKind === 'ollama' && this.model && this.model.split(':')[0] === canonical) return;
     if (this.model) {
       const from = this.model;
       this.model = canonical;
