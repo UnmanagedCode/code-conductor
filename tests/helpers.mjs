@@ -5,9 +5,16 @@ import { fileURLToPath } from 'node:url';
 import { createServer } from '../server.js';
 import { _resetForTest as resetProjectsCache } from '../src/projectsCache.js';
 import { InProcessClaudeLauncher } from './inProcessLauncher.mjs';
+import { ensureSafeStoreEnv } from './safeStoreRoot.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FAKE_CLAUDE = path.join(__dirname, 'fake-claude.mjs');
+
+// A safe store root is in effect the moment this module loads (reuses the
+// run-level root inherited from run.mjs, or mints one when a file is run
+// standalone). bootServer's teardown restores to it so an out-of-window write
+// never falls through to the source-relative production store.
+const SAFE = ensureSafeStoreEnv();
 
 export async function makeTmpHome() {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'orch-'));
@@ -91,8 +98,14 @@ export async function bootServer({ scenarioPath, useRealClaude = false, realProc
     if (pluginHost) await pluginHost.stopAll();
     await new Promise(r => server.close(r));
     for (const [k, v] of Object.entries(prev)) {
-      if (v === undefined) delete process.env[k];
-      else process.env[k] = v;
+      if (v !== undefined) { process.env[k] = v; continue; }
+      // Never restore PROJECTS_ROOT/CLAUDE_PROJECTS_ROOT to unset — that would
+      // let an out-of-window store write fall through to the real production
+      // store. Restore to the safe run-level root instead. CLAUDE_BIN /
+      // FAKE_CLAUDE_SCENARIO are fine unset.
+      if (k === 'PROJECTS_ROOT') process.env[k] = SAFE.projectsRoot;
+      else if (k === 'CLAUDE_PROJECTS_ROOT') process.env[k] = SAFE.claudeProjectsRoot;
+      else delete process.env[k];
     }
     await rmrf(tmpHome);
   }
