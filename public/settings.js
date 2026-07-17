@@ -33,6 +33,7 @@ export function installSettings({
   const smCustomListEl = document.getElementById('sm-custom-list');
   const smCustomLabelEl = document.getElementById('sm-custom-label');
   const smCustomModelEl = document.getElementById('sm-custom-model');
+  const smCustomContextEl = document.getElementById('sm-custom-context');
   const smCustomAddEl = document.getElementById('sm-custom-add');
   const smCustomStatusEl = document.getElementById('sm-custom-status');
   let lastModelsData = null;
@@ -599,6 +600,13 @@ export function installSettings({
     ));
   }
 
+  // Compact token formatter for the custom-model list (e.g. 1000000 → "1M").
+  function fmtCtxTokens(n) {
+    if (n >= 1_000_000) return (n / 1_000_000).toFixed(n % 1_000_000 === 0 ? 0 : 1) + 'M';
+    if (n >= 1_000) return Math.round(n / 1_000) + 'k';
+    return String(n);
+  }
+
   function renderCustomList(list) {
     if (!smCustomListEl) return;
     smCustomListEl.innerHTML = '';
@@ -614,7 +622,8 @@ export function installSettings({
       li.className = 'sm-custom-item';
       const meta = document.createElement('span');
       meta.className = 'sm-custom-meta';
-      meta.textContent = `${c.label} — ${c.model}`;
+      const ctx = Number.isFinite(c.contextWindow) ? ` · ${fmtCtxTokens(c.contextWindow)} ctx` : '';
+      meta.textContent = `${c.label} — ${c.model}${ctx}`;
       li.appendChild(meta);
       const rm = document.createElement('button');
       rm.type = 'button';
@@ -633,18 +642,30 @@ export function installSettings({
       if (smCustomStatusEl) smCustomStatusEl.textContent = 'Label and Ollama tag are required.';
       return;
     }
+    // Optional context window (tokens). Only send when non-empty; validate > 0.
+    const ctxRaw = smCustomContextEl?.value?.trim();
+    const body = { label, model };
+    if (ctxRaw) {
+      const ctx = Number(ctxRaw);
+      if (!Number.isFinite(ctx) || ctx <= 0) {
+        if (smCustomStatusEl) smCustomStatusEl.textContent = 'Context must be a positive number of tokens.';
+        return;
+      }
+      body.contextWindow = ctx;
+    }
     if (smCustomStatusEl) smCustomStatusEl.textContent = 'Checking Ollama…';
     if (smCustomAddEl) smCustomAddEl.disabled = true;
     try {
       const r = await fetch('/api/settings/models/custom', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ label, model }),
+        body: JSON.stringify(body),
       });
       const data = await r.json();
       if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
       if (smCustomLabelEl) smCustomLabelEl.value = '';
       if (smCustomModelEl) smCustomModelEl.value = '';
+      if (smCustomContextEl) smCustomContextEl.value = '';
       if (smCustomStatusEl) smCustomStatusEl.textContent = 'Added.';
       renderModels(data);
       onModelsChange?.(data);

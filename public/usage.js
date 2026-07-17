@@ -8,7 +8,7 @@
 // Designed to mirror TaskTracker so app.js can drive it with the same
 // reset() + apply(ev) shape from the snapshot/event listeners.
 
-import { getActiveSonnetWindow, isSonnetFixedWindowVersion } from './models.js';
+import { getActiveSonnetWindow, isSonnetFixedWindowVersion, ollamaContextWindowFor } from './models.js';
 
 // Hardcoded lookup — there's no API surface that reports each model's
 // context-window size, and the CLI doesn't carry it in system/init.
@@ -43,7 +43,12 @@ export function contextWindowFor(model) {
     return getActiveSonnetWindow() === '200k' ? 200_000 : 1_000_000;
   }
   const bare = model.replace(/\[(200k|1m)\]$/, '');
-  return CONTEXT_WINDOWS[bare] ?? DEFAULT_CONTEXT_WINDOW;
+  if (CONTEXT_WINDOWS[bare]) return CONTEXT_WINDOWS[bare];
+  // Ollama tag (curated preset or user custom model). Resolves against the
+  // catalog shipped via GET /api/settings/models; null when unknown.
+  const ollama = ollamaContextWindowFor(bare);
+  if (ollama) return ollama;
+  return DEFAULT_CONTEXT_WINDOW;
 }
 
 export class UsageTracker {

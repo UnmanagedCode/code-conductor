@@ -13,7 +13,7 @@ import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
 import { canonicalizeModel, familyOf } from '../src/modelVersions.js';
-import { setSonnetContextWindow } from '../src/appSettings.js';
+import { setSonnetContextWindow, addCustomBackend } from '../src/appSettings.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-instance.json');
@@ -30,15 +30,15 @@ after(async () => { await ctx.close(); });
 beforeEach(async () => { ({ home } = await freshProjectsRoot()); });
 afterEach(async () => { await instances.shutdown(); await rmrf(home); });
 
-async function spawnAndDump(model) {
+async function spawnAndDump(model, { backendKind, project = 'p' } = {}) {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'ctxwin-'));
   const argvDump = path.join(tmp, 'argv.txt');
   const envDump = path.join(tmp, 'env.txt');
   process.env.FAKE_CLAUDE_ARGV_DUMP = argvDump;
   process.env.FAKE_CLAUDE_ENV_DUMP = envDump;
   try {
-    await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
-    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions', model });
+    await api(baseUrl, 'POST', '/api/projects', { name: project });
+    const r = await api(baseUrl, 'POST', '/api/instances', { project, mode: 'bypassPermissions', model, backendKind });
     const id = r.body.id;
     await waitFor(() => instances.get(id).status === 'idle');
     // fake-claude writes its argv/env dumps synchronously at process start
@@ -166,6 +166,36 @@ test('Sonnet spawns bare (200k) when sonnetContextWindow preference is "200k"', 
     delete process.env.FAKE_CLAUDE_ARGV_DUMP;
     await fs.rm(tmp, { recursive: true, force: true }).catch(() => {});
   }
+});
+
+test('Ollama-backed spawn sets CLAUDE_CODE_AUTO_COMPACT_WINDOW to the curated model window (raw tokens, no ×1000)', async () => {
+  const { env, id } = await spawnAndDump('deepseek-v4-flash:cloud', { backendKind: 'ollama', project: 'ollama-a' });
+  assert.equal(env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, '1000000',
+    'a 1M curated model sets the raw token count directly');
+  assert.equal(instances.get(id).backendKind, 'ollama');
+});
+
+test('Ollama-backed spawn honours a smaller curated window (256k)', async () => {
+  const { env } = await spawnAndDump('qwen3.5:cloud', { backendKind: 'ollama', project: 'ollama-b' });
+  assert.equal(env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, '256000');
+});
+
+test('Ollama-backed spawn uses a custom model\'s declared contextWindow', async () => {
+  await addCustomBackend({ label: 'Local Big', model: 'localbig:cloud', contextWindow: 300_000 });
+  const { env } = await spawnAndDump('localbig:cloud', { backendKind: 'ollama', project: 'ollama-c' });
+  assert.equal(env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, '300000');
+});
+
+test('Ollama-backed spawn with an unknown window leaves CLAUDE_CODE_AUTO_COMPACT_WINDOW unset', async () => {
+  await addCustomBackend({ label: 'Local NoWin', model: 'localnowin:cloud' }); // no contextWindow
+  const { env } = await spawnAndDump('localnowin:cloud', { backendKind: 'ollama', project: 'ollama-d' });
+  assert.ok(!('CLAUDE_CODE_AUTO_COMPACT_WINDOW' in env),
+    'no declared window → the CLI uses its own default, we set nothing');
+});
+
+test('a Claude-backed spawn never sets CLAUDE_CODE_AUTO_COMPACT_WINDOW', async () => {
+  const { env } = await spawnAndDump('claude-opus-4-8', { project: 'claude-x' });
+  assert.ok(!('CLAUDE_CODE_AUTO_COMPACT_WINDOW' in env));
 });
 
 test('Sonnet 5 always spawns [1m] even when sonnetContextWindow preference is "200k"', async () => {
