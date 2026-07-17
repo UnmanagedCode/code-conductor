@@ -300,3 +300,68 @@ test('system/init repeating the current model does not re-emit model_changed', a
     await ctx.close();
   }
 });
+
+// --- Ollama: the inner CLI reports its model bare, dropping the `:tag`
+// suffix `ollama launch claude --model <tag>` was given. That bare report
+// must not look like a model switch (see _trackModel in src/instances.js).
+
+const OLLAMA_BARE_MODEL_SCENARIO = path.join(__dirname, 'fixtures', 'scenario-ollama-bare-model.json');
+
+test('ollama CLI reporting the bare (tag-stripped) model does not emit model_changed and keeps the tagged model across respawn', async () => {
+  const ctx = await bootServer({ scenarioPath: OLLAMA_BARE_MODEL_SCENARIO });
+  const argvDumpFile = path.join(os.tmpdir(), `model-resume-ollama-argv-${process.pid}.txt`);
+  const prevArgvDump = process.env.FAKE_CLAUDE_ARGV_DUMP;
+
+  try {
+    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'demo' });
+
+    const r1 = await api(ctx.baseUrl, 'POST', '/api/instances', {
+      project: 'demo',
+      mode: 'bypassPermissions',
+      model: 'qwen2.5-coder:32b',
+      backendKind: 'ollama',
+    });
+    assert.equal(r1.status, 201);
+    const id = r1.body.id;
+    await waitFor(() => ctx.instances.get(id).status === 'idle');
+
+    const inst = ctx.instances.get(id);
+    assert.equal(inst.model, 'qwen2.5-coder:32b', 'spawn-time model keeps the tag');
+
+    const modelChangedEvents = [];
+    inst.on('event', (ev) => {
+      if (ev.kind === 'system' && ev.subtype === 'model_changed') modelChangedEvents.push(ev);
+    });
+
+    // The startup system/init already reports the bare model (fixture's
+    // top-level `events`) — must not have registered as a switch.
+    assert.equal(modelChangedEvents.length, 0, 'no model_changed from the startup init bare report');
+    assert.equal(inst.model, 'qwen2.5-coder:32b', 'tag survives the startup init bare report');
+
+    // A turn's message_start repeats the same bare report — still a no-op.
+    inst.prompt('hello');
+    await waitFor(() => ctx.instances.get(id).status === 'idle');
+    assert.equal(modelChangedEvents.length, 0, 'no model_changed from a mid-turn bare report');
+    assert.equal(inst.model, 'qwen2.5-coder:32b', 'tag survives a mid-turn bare report');
+
+    // Kill the subprocess and respawn — the primary bug path: respawn() reads
+    // inst.model directly and requires the tag to build `ollama launch
+    // --model <tag>`. If _trackModel had overwritten this.model with the
+    // bare id, this respawn would throw ("ollama-backed spawn requires a
+    // model (tag)").
+    inst.proc.kill('SIGKILL');
+    await waitFor(() => !ctx.instances.get(id).proc);
+
+    process.env.FAKE_CLAUDE_ARGV_DUMP = argvDumpFile;
+    await ctx.instances.respawn(id);
+    await waitFor(async () => { try { await fs.stat(argvDumpFile); return true; } catch { return false; } });
+    const argv = (await fs.readFile(argvDumpFile, 'utf8')).split('\n').filter(Boolean);
+    assert.deepEqual(argv.slice(0, 4), ['launch', 'claude', '--model', 'qwen2.5-coder:32b'],
+      'respawn launches ollama with the still-tagged model');
+  } finally {
+    if (prevArgvDump === undefined) delete process.env.FAKE_CLAUDE_ARGV_DUMP;
+    else process.env.FAKE_CLAUDE_ARGV_DUMP = prevArgvDump;
+    try { await fs.rm(argvDumpFile, { force: true }); } catch { /* best-effort */ }
+    await ctx.close();
+  }
+});
