@@ -41,6 +41,8 @@ const server = http.createServer(async (req, res) => {
       port: PORT,
       conductorUrl: process.env.CONDUCTOR_URL ?? null,
       pluginId: process.env.CONDUCTOR_PLUGIN_ID ?? null,
+      projectsRoot: process.env.PROJECTS_ROOT ?? null,
+      conductorProjectDir: process.env.CONDUCTOR_PROJECT_DIR ?? null,
       query: url.search,
     }));
     return;
