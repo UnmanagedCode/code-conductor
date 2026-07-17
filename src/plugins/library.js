@@ -69,6 +69,12 @@ const DEFAULT_ENTRIES = [
     postClone: 'npm install',
     postPull: 'npm install',
   },
+  {
+    id: 'code-karpathy-wiki',
+    name: 'Code Karpathy Wiki',
+    description: 'Durable-knowledge wiki conventions: a per-project .wiki/ plus the conductor\'s .conduct/wiki/.',
+    repo: 'https://github.com/UnmanagedCode/code-karpathy-wiki',
+  },
 ];
 
 function libraryDir() {
