@@ -22,10 +22,12 @@
 export function installRestart({ dom, bus, getInstances, setSidebarStatus }) {
   let restartInProgress = false;
   // Fetch this process's boot id, or null if the probe fails. cache:'no-store'
-  // so the SW/HTTP cache can't serve a stale id from before the restart.
+  // so the SW/HTTP cache can't serve a stale id from before the restart. Time-boxed
+  // so a proxy (e.g. VS Code port-forwarding) that holds the connection open during
+  // the restart's brief downtime can't wedge this on a hung request.
   async function getBootId() {
     try {
-      const r = await fetch('/api/health', { cache: 'no-store' });
+      const r = await fetch('/api/health', { cache: 'no-store', signal: AbortSignal.timeout(2000) });
       if (!r.ok) return null;
       const j = await r.json();
       return j?.bootId ?? null;
@@ -34,10 +36,12 @@ export function installRestart({ dom, bus, getInstances, setSidebarStatus }) {
   // Poll /api/health until the REPLACEMENT process answers — i.e. ok with a
   // bootId different from the one captured before the restart. If we never
   // captured a prior id (priorBootId null), accept any ok so we don't hang.
+  // Each probe is time-boxed so a hung request (e.g. a forwarding proxy holding
+  // the connection open through the downtime window) can't wedge the poll loop.
   async function waitForReplacement(priorBootId, { tries = 60, delayMs = 250 } = {}) {
     for (let i = 0; i < tries; i++) {
       try {
-        const r = await fetch('/api/health', { cache: 'no-store' });
+        const r = await fetch('/api/health', { cache: 'no-store', signal: AbortSignal.timeout(2000) });
         if (r.ok) {
           const j = await r.json().catch(() => null);
           const bootId = j?.bootId ?? null;
