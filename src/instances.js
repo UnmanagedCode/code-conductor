@@ -26,6 +26,7 @@ import { reconstructTasks } from './taskReconstruct.js';
 import { IdleSubscriptionHub } from './idleSubscriptions.js';
 import { OverageResumeController } from './overageResume.js';
 import { UsageOverageMonitor } from './usageOverageMonitor.js';
+import { usageDomainOfBackend, isMonitoredDomain } from './usageWindowDomains.js';
 import { defaultClaudeLauncher } from './claudeLauncher.js';
 
 // `AUTO_RESUME_TEXT` now lives with the overage timer machine in
@@ -2278,8 +2279,12 @@ export class InstanceManager extends EventEmitter {
     inst._overageGate = () => {
       const resetsAt = this._overageResetsAt;
       const atMs = Number(resetsAt) * 1000;
+      // `_inUsageWindowFlow(inst)` keeps an exempt (e.g. Ollama-only) session out
+      // of the gate: its sends flow normally AND its summary reports
+      // overageActive:false, so no overage/queued badge shows (summary() derives
+      // overageActive/overageResetsAt from this same gate).
       const active = this._overageActive && this._overageResumeMode &&
-        Number.isFinite(atMs) && atMs > Date.now();
+        Number.isFinite(atMs) && atMs > Date.now() && this._inUsageWindowFlow(inst);
       return { active, resetsAt: active ? resetsAt : null };
     };
     // A queued-only (idle/new) session signals it needs a resume deadline armed
@@ -2379,6 +2384,46 @@ export class InstanceManager extends EventEmitter {
     }
   }
 
+  // ---- Usage-window domain resolution (overage exemption seam) -------------
+  // The set of backend kinds used across an instance's AGENT TREE: its own
+  // backend plus every conducted-worker descendant (separate Instances linked by
+  // `callerInstanceId`, each with its own backendKind). In-process Agent-tool
+  // subagents run inside the parent CLI process — the backend (endpoint + auth)
+  // is fixed at `ollama launch claude` / `claude` launch time, so they share the
+  // parent's backend and add no new kind. Cycle-safe.
+  agentTreeBackends(inst) {
+    const kinds = new Set();
+    const seen = new Set();
+    const stack = [inst];
+    while (stack.length) {
+      const cur = stack.pop();
+      if (!cur || seen.has(cur.id)) continue;
+      seen.add(cur.id);
+      kinds.add(cur.backendKind === 'ollama' ? 'ollama' : 'claude');
+      for (const child of this.byId.values()) {
+        if (child.callerInstanceId === cur.id) stack.push(child);
+      }
+    }
+    return kinds;
+  }
+
+  // The usage-window domains an instance's agent tree belongs to.
+  usageWindowDomainsOf(inst) {
+    return new Set([...this.agentTreeBackends(inst)].map(usageDomainOfBackend));
+  }
+
+  // True iff the instance's agent tree touches a domain with an ACTIVE
+  // usage-window monitor — the single predicate the overage stop/resume flow
+  // consults. A purely-Ollama tree → {ollama} → unmonitored → EXEMPT (never
+  // auto-stopped, queued, or armed). A tree with any Claude agent → {anthropic}
+  // → in-flow (holds even for an Ollama conductor whose workers are Claude).
+  _inUsageWindowFlow(inst) {
+    for (const d of this.usageWindowDomainsOf(inst)) {
+      if (isMonitoredDomain(d)) return true;
+    }
+    return false;
+  }
+
   // ---- Global overage auto-stop routing -----------------------------------
   // The central handler an Instance's `overage` signal lands in. One-shot per
   // rate-limit window via `_overageActive`. Honours getOnOverageAction():
@@ -2388,6 +2433,10 @@ export class InstanceManager extends EventEmitter {
   _handleOverageTrip(inst, info) {
     const action = getOnOverageAction();
     if (action === 'none') return;          // no flag flip, no routing
+    // Domain scoping: a stream `rate_limit_event` from a purely-Ollama session
+    // belongs to the (unmonitored) ollama domain and must NOT trip the anthropic
+    // flow. The poll monitor passes inst=null (account-global) and is unaffected.
+    if (inst && !this._inUsageWindowFlow(inst)) return;
     if (this._overageActive) return;        // one-shot while active
     this._overageActive = true;
     this._overageResetsAt = info?.resetsAt ?? null;
@@ -2405,7 +2454,11 @@ export class InstanceManager extends EventEmitter {
   // plain-interrupted as an "active session" before it could be told to stop
   // its workers. Everything else still mid-turn gets a direct soft-interrupt.
   _routeOverageStop({ resume, resetsAt }) {
-    const live = [...this.byId.values()].filter(i => i.proc);
+    // Exempt instances whose agent tree is purely in an unmonitored usage-window
+    // domain (e.g. Ollama-only): they consume no monitored account window, so
+    // they are never stopped/steered/marked. A Claude conductor with an
+    // Ollama-only worker keeps the worker running and stops the conductor.
+    const live = [...this.byId.values()].filter(i => i.proc && this._inUsageWindowFlow(i));
     // Pass 1: resolve which conductors to steer and which workers they protect.
     const steerConductors = new Map();  // conductor id → conductor instance
     const protectedWorkers = new Set(); // worker ids owned by a steered conductor

@@ -308,7 +308,10 @@ export async function restoreFromResumeManifest({ instances, log = console, stag
       // await on the boot hot path. armRestored re-inserts the persisted
       // deadline as-is; the wall-clock sweep fires it on the first tick if it
       // already elapsed during the restart.
-      if (e.overageStopped && Number.isFinite(e.overageResumeAt)) {
+      // `_inUsageWindowFlow(inst)` guards against re-arming an auto-resume onto a
+      // now-exempt (e.g. Ollama-only) restored session — such a session never
+      // persisted overageStopped:true, so this is belt-and-braces.
+      if (e.overageStopped && Number.isFinite(e.overageResumeAt) && instances._inUsageWindowFlow(inst)) {
         inst._overageResetsAt = e.overageResetsAt ?? null;
         inst._overageWasStopped = !!e.overageWasStopped; // preamble select survives restart
         // Restore queued messages BEFORE re-arming so armRestored's status emit
