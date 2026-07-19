@@ -168,6 +168,7 @@ export function installLazyHistoryController({
     // leading bubble is then the first merge target.
     oldestLeadingWrap = conversation.leadingAssistantWrap ?? null;
     if (lazy.hasMore) ensureSentinel();
+    autoFillViewport(); // fire-and-forget; self-guards on hasMore/layout
   }
 
   // "⋯ earlier messages" / "loading earlier…" affordance pinned above the
@@ -223,6 +224,25 @@ export function installLazyHistoryController({
         if (lazy.hasMore) ensureSentinel();
         else if (lazySentinel) { lazySentinel.remove(); lazySentinel = null; }
       }
+    }
+  }
+
+  // After the tail (or a page) renders, the content can be shorter than the
+  // scroll viewport — then the "earlier messages" sentinel is all the user
+  // sees instead of actual history. Page earlier chunks in until the
+  // container is scrollable or history is exhausted. Guards: skip while the
+  // container has no layout (clientHeight 0, e.g. background tab) to avoid
+  // pulling the whole history; stop if a load makes no forward progress (a
+  // fetch error keeps hasMore true) so we never hot-loop the endpoint; and
+  // bail if the view switched mid-loop (epoch bump).
+  async function autoFillViewport() {
+    const epoch = lazy.epoch;
+    while (epoch === lazy.epoch && lazy.hasMore && !lazy.loading
+           && conversationEl.clientHeight > 0
+           && conversationEl.scrollHeight <= conversationEl.clientHeight) {
+      const before = lazy.nextBefore;
+      await loadEarlier();
+      if (epoch !== lazy.epoch || lazy.nextBefore === before) break;
     }
   }
 
