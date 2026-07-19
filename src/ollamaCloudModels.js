@@ -16,12 +16,12 @@
 // is 1M *max* (only 512k guaranteed-minimum, billed 2× above 512k) — we
 // deliberately advertise the 1M ceiling here.
 export const OLLAMA_CLOUD_MODELS = [
-  { model: 'deepseek-v4-flash:cloud',    label: 'DeepSeek V4 Flash (fast MoE)',   contextWindow: 1_000_000 },
-  { model: 'qwen3.5:cloud',              label: 'Qwen3.5 (flagship coder)',       contextWindow:   256_000 },
-  { model: 'glm-5.2:cloud',              label: 'GLM-5.2 (SWE-bench leader)',     contextWindow: 1_000_000 },
-  { model: 'deepseek-v4-pro:cloud',      label: 'DeepSeek V4 Pro (frontier, 1M ctx)', contextWindow: 1_000_000 },
+  { model: 'deepseek-v4-flash:cloud',    label: 'DeepSeek V4 Flash',         contextWindow: 1_000_000 },
+  { model: 'qwen3.5:cloud',              label: 'Qwen3.5',                  contextWindow:   256_000 },
+  { model: 'glm-5.2:cloud',              label: 'GLM-5.2',                  contextWindow: 1_000_000 },
+  { model: 'deepseek-v4-pro:cloud',      label: 'DeepSeek V4 Pro',          contextWindow: 1_000_000 },
   { model: 'kimi-k2.7-code:cloud',       label: 'Kimi K2.7 Code',                 contextWindow:   256_000 },
-  { model: 'minimax-m3:cloud',           label: 'MiniMax M3 (1M ctx)',            contextWindow: 1_000_000 },
+  { model: 'minimax-m3:cloud',           label: 'MiniMax M3',               contextWindow: 1_000_000 },
   { model: 'mistral-large-3:675b-cloud', label: 'Mistral Large 3',                contextWindow:   256_000 },
 ];
 
