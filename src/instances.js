@@ -8,6 +8,7 @@ import { getProject, claudeProjectsRoot, encodeCwd, findSessionLocation, readFir
 import { createWorktree, getWorktree, debugBaseDir } from './worktrees.js';
 import { getTitle as getSessionTitle, setTitle as setSessionTitle, deleteTitle as deleteSessionTitle } from './sessionTitles.js';
 import { isOllamaSession, markOllamaSession, unmarkOllamaSession } from './sessionBackends.js';
+import { preflightOllamaBackend } from './ollamaBackend.js';
 import { isConducted, markConducted, unmarkConducted } from './conductedSessions.js';
 import { SessionRenewController } from './sessionRenew.js';
 import { isTemp, markTemp, unmarkTemp } from './tempSessions.js';
@@ -351,6 +352,11 @@ export class Instance extends EventEmitter {
     // skips _archiveTempSession() — the temp jsonl must survive to be
     // resumed on the next boot. Never persisted.
     this._suppressTempDelete = false;
+    // Set true at the top of kill() so _handleExit can tell a COMMANDED
+    // teardown (user kill, project delete, shutdown, rewind — all route
+    // through kill()) from a spontaneous crash, and not mislabel the former
+    // as an ollama launch failure. Reset to false on every spawn().
+    this._killing = false;
     // Auto-stop / auto-resume on overage state. `autoStoppedForOverage` is
     // set true when an `onOverage: 'stop-resume'` overage event soft-interrupts
     // the turn; the manager arms a per-session resume timer on the next idle
@@ -776,6 +782,9 @@ export class Instance extends EventEmitter {
 
   spawn({ resume } = {}) {
     if (this.proc) throw new Error('already running');
+    // A reused instance object (respawn) may carry _killing from its prior
+    // teardown — clear it so this fresh launch's exit is judged on its own.
+    this._killing = false;
     // Clear any overage auto-stop/resume state from a prior run — a fresh
     // process can re-trigger and any pending timer was cancelled at respawn.
     this.autoStoppedForOverage = false;
@@ -1301,6 +1310,18 @@ export class Instance extends EventEmitter {
     this._closeDrainWindow();
     const crashed = !(code === 0 && !signal);
     this._emitUi({ kind: 'system', subtype: 'exit', data: { code, signal } });
+    // An ollama-backed subprocess that crashed on its own (not a commanded
+    // kill) is the silent-launch-failure case: `ollama launch claude …` died
+    // — server gone, cloud-auth 401, etc. Surface it distinctly from the bare
+    // `exit`, carrying the captured stderr so the reason is visible. Claude
+    // exits and clean/commanded ollama exits are untouched.
+    if (crashed && this.backendKind === 'ollama'
+        && !this._killing && !this._suppressTempDelete) {
+      this._emitUi({
+        kind: 'system', subtype: 'launch_failed',
+        data: { code, signal, stderr: this._stderr.trim() || null },
+      });
+    }
     this._setStatus(crashed ? 'crashed' : 'exited');
     for (const p of this._pending.values()) {
       clearTimeout(p.timer);
@@ -1679,6 +1700,9 @@ export class Instance extends EventEmitter {
 
   async kill({ graceMs = 2000 } = {}) {
     if (!this.proc) return;
+    // Mark this as a commanded teardown so _handleExit doesn't mistake the
+    // resulting signalled exit for a spontaneous ollama launch crash.
+    this._killing = true;
     try { this.proc.stdin.end(); } catch { /* ignore */ }
     const proc = this.proc;
     await new Promise((resolve) => {
@@ -2174,6 +2198,13 @@ export class InstanceManager extends EventEmitter {
       );
     }
 
+    // Reachability preflight for ollama-backed launches — fail here with a clear
+    // diagnostic instead of spawning into a silent `ollama launch` death. Runs
+    // for fresh spawns AND every resume path (backendKind was recovered above),
+    // before the Instance is created so a failure leaves nothing to unwind.
+    // No-op for Claude backends (zero added latency).
+    await this._preflightBackend(backendKind, finalModel);
+
     // The conducted marker is set explicitly on the MCP spawn path. When
     // resuming a historical session, recover it from the durable sidecar
     // so a UI-resumed conducted session re-acquires the marker (survives
@@ -2510,6 +2541,22 @@ export class InstanceManager extends EventEmitter {
     }
   }
 
+  // Ollama-only reachability + model-availability preflight, run before any
+  // subprocess is launched. No-op (zero added latency) for Claude backends, so
+  // it never touches the common spawn path. On failure it THROWS a shaped error
+  // (mirroring the null-model guard's style) so both surfaces render the reason:
+  // REST via next(e) → HTTP 503; MCP via server.js's catch → isError with the
+  // "Ollama not reachable at …" / "not found" prose. Reuses the same
+  // preflightOllamaBackend the add-custom-model route uses.
+  async _preflightBackend(backendKind, model) {
+    if (backendKind !== 'ollama') return;
+    const pre = await preflightOllamaBackend({ model });
+    if (!pre.ok) {
+      throw Object.assign(new Error(pre.error),
+        { statusCode: 503, code: 'OLLAMA_PREFLIGHT_FAILED' });
+    }
+  }
+
   async respawn(id) {
     const inst = this.byId.get(id);
     if (!inst) {
@@ -2523,6 +2570,9 @@ export class InstanceManager extends EventEmitter {
     if (!inst.sessionId) {
       throw Object.assign(new Error('no sessionId to resume'), { statusCode: 400 });
     }
+    // An ollama-backed respawn with Ollama down must fail clearly too — check
+    // before _wipeForResume() so a failed preflight never discards history.
+    await this._preflightBackend(inst.backendKind, inst.model);
     // Drop the prior run's events before loadHistory() replays the persisted
     // transcript into the ring — otherwise the replay piles up on top of the
     // existing conversation and every message renders twice.

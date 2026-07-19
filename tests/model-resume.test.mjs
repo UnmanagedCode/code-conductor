@@ -10,7 +10,7 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { bootServer, api, waitFor } from './helpers.mjs';
+import { bootServer, api, waitFor, fakeOllamaReachable } from './helpers.mjs';
 import { encodeCwd } from '../src/projects.js';
 import { readLastSessionModel, writeSessionMetadata } from '../src/transcript.js';
 
@@ -311,6 +311,9 @@ test('ollama CLI reporting the bare (tag-stripped) model does not emit model_cha
   const ctx = await bootServer({ scenarioPath: OLLAMA_BARE_MODEL_SCENARIO });
   const argvDumpFile = path.join(os.tmpdir(), `model-resume-ollama-argv-${process.pid}.txt`);
   const prevArgvDump = process.env.FAKE_CLAUDE_ARGV_DUMP;
+  // Spawn/respawn preflight reachability; simulate a live daemon with this
+  // (non-`:cloud`, so non-lenient) tag present.
+  const restoreFetch = fakeOllamaReachable({ models: [{ name: 'qwen2.5-coder:32b' }] });
 
   try {
     await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'demo' });
@@ -362,6 +365,7 @@ test('ollama CLI reporting the bare (tag-stripped) model does not emit model_cha
     if (prevArgvDump === undefined) delete process.env.FAKE_CLAUDE_ARGV_DUMP;
     else process.env.FAKE_CLAUDE_ARGV_DUMP = prevArgvDump;
     try { await fs.rm(argvDumpFile, { force: true }); } catch { /* best-effort */ }
+    restoreFetch();
     await ctx.close();
   }
 });
