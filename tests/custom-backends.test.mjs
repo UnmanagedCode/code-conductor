@@ -12,7 +12,7 @@ import {
   getTierBackend, setTierBackend, getOllamaContextWindow,
 } from '../src/appSettings.js';
 import { familyOf, canonicalizeModel, isKnownClaudeModel, PROVIDERS, DEFAULT_TIER_BACKEND } from '../src/modelVersions.js';
-import { isOllamaSession, markOllamaSession, unmarkOllamaSession, loadAll } from '../src/sessionBackends.js';
+import { isOllamaSession, getOllamaSession, markOllamaSession, unmarkOllamaSession, loadAll } from '../src/sessionBackends.js';
 import { checkOllamaReachable, checkModelAvailable, OLLAMA_BASE } from '../src/ollamaBackend.js';
 
 // ── modelVersions: Claude-only familyOf + no-regression ─────────────────────
@@ -145,13 +145,27 @@ describe('backend-agnostic data model', () => {
     await assert.rejects(() => setTierBackend('bogus', { kind: 'claude', model: 'claude-opus-4-8' }), /known backend/);
   });
 
-  test('ollama-session sidecar is a Set: mark / is / unmark / empty-cleanup', async () => {
+  test('ollama-session sidecar is a Map sid→model: mark / get / upsert / unmark / empty-cleanup', async () => {
     assert.equal(await isOllamaSession('sid-1'), false);
-    await markOllamaSession('sid-1');
+    assert.deepEqual(await getOllamaSession('sid-1'), { ollama: false, model: null });
+
+    await markOllamaSession('sid-1', 'gemma4:cloud');
     assert.equal(await isOllamaSession('sid-1'), true);
-    await markOllamaSession('sid-1'); // idempotent
+    assert.deepEqual(await getOllamaSession('sid-1'), { ollama: true, model: 'gemma4:cloud' });
+
+    await markOllamaSession('sid-1', 'gemma4:cloud'); // idempotent
     assert.equal((await loadAll()).size, 1);
+
+    // Re-mark with a different tag upserts (self-heal path).
+    await markOllamaSession('sid-1', 'deepseek-v4-flash:cloud');
+    assert.deepEqual(await getOllamaSession('sid-1'), { ollama: true, model: 'deepseek-v4-flash:cloud' });
+
+    // A mark with no model stores null (ollama-backed, tag-unknown).
+    await markOllamaSession('sid-2');
+    assert.deepEqual(await getOllamaSession('sid-2'), { ollama: true, model: null });
+
     assert.equal(await unmarkOllamaSession('sid-1'), true);
+    assert.equal(await unmarkOllamaSession('sid-2'), true);
     assert.equal(await isOllamaSession('sid-1'), false);
     assert.equal((await loadAll()).size, 0);
   });

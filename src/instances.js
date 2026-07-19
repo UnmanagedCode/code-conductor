@@ -7,7 +7,7 @@ import { Parser, SOFT_INTERRUPT_MARKER, isOuterUserEcho, snapStartToQuiescent, f
 import { getProject, claudeProjectsRoot, encodeCwd, findSessionLocation, readFirstPrompt } from './projects.js';
 import { createWorktree, getWorktree, debugBaseDir } from './worktrees.js';
 import { getTitle as getSessionTitle, setTitle as setSessionTitle, deleteTitle as deleteSessionTitle } from './sessionTitles.js';
-import { isOllamaSession, markOllamaSession, unmarkOllamaSession } from './sessionBackends.js';
+import { getOllamaSession, markOllamaSession, unmarkOllamaSession } from './sessionBackends.js';
 import { preflightOllamaBackend } from './ollamaBackend.js';
 import { isConducted, markConducted, unmarkConducted } from './conductedSessions.js';
 import { SessionRenewController } from './sessionRenew.js';
@@ -840,10 +840,12 @@ export class Instance extends EventEmitter {
     // happens before the first turn_end (where _writeSessionMetadata also
     // calls markTemp). Fire-and-forget — spawn() must stay synchronous.
     if (this.temp && this.sessionId) markTemp(this.sessionId).catch(() => {});
-    // Persist the Ollama backend marker durably (the one bit jsonl can't carry)
-    // so every resume path re-acquires backendKind — mirrors the temp marker.
+    // Persist the Ollama backend marker + tagged model durably (the two things
+    // jsonl can't carry — kind, and the model TAG the inner CLI drops) so every
+    // resume path re-acquires both. Runs on every spawn/resume, so a legacy
+    // tag-unknown entry self-heals once this.model holds a real tag.
     if (this.backendKind === 'ollama' && this.sessionId) {
-      markOllamaSession(this.sessionId).catch(() => {});
+      markOllamaSession(this.sessionId, this.model).catch(() => {});
     }
     this._hydrateTitle().catch(() => {});
     const args = [
@@ -1518,7 +1520,7 @@ export class Instance extends EventEmitter {
     try { if (this.title) await setSessionTitle(newSid, this.title); } catch { /* best-effort */ }
     try {
       if (this.backendKind === 'ollama') {
-        await markOllamaSession(newSid);
+        await markOllamaSession(newSid, this.model);
         await unmarkOllamaSession(oldSid);
       }
     } catch { /* best-effort */ }
@@ -2134,7 +2136,18 @@ export class InstanceManager extends EventEmitter {
     //       resume / crash / anchor / respawn_instance uniformly.
     let backendKind = explicitBackendKind === 'ollama' ? 'ollama' : 'claude';
     if (!explicitBackendKind && resume) {
-      try { if (await isOllamaSession(resume)) backendKind = 'ollama'; } catch { /* best-effort */ }
+      try {
+        const backend = await getOllamaSession(resume);
+        if (backend.ollama) {
+          backendKind = 'ollama';
+          // The backend store carries the FULL tagged model; the jsonl only
+          // holds the CLI's bare (tag-stripped) report. Prefer the store's tag
+          // — this is what stops `deepseek-v4-flash:cloud` resuming as the
+          // unpullable tagless `deepseek-v4-flash`. A null (legacy) entry falls
+          // through to the readLastSessionModel jsonl recovery below.
+          if (!finalModel && backend.model) finalModel = backend.model;
+        }
+      } catch { /* best-effort */ }
     }
 
     // Optional worktree attachment:

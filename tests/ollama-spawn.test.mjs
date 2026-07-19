@@ -1,7 +1,8 @@
 // Ollama-backed spawn: the uniform `{BACKEND_CMD} {CLAUDE_ARGS}` builder
 // (`ollama launch claude --model <tag> --yes --` + the SAME claude args, so
-// `--model <tag>` appears twice — confirmed harmless), no OLLAMA_HOST, the Set
-// sidecar written at spawn + recovered on resume, the setModel live-switch gate,
+// `--model <tag>` appears twice — confirmed harmless), no OLLAMA_HOST, the
+// sid→model sidecar written at spawn + the tagged model recovered on resume
+// (over the CLI's bare jsonl report), the setModel live-switch gate,
 // tier→{kind,model} MCP resolution, and the null-model guards (fresh + resume).
 
 import { test, describe, before, after, beforeEach, afterEach } from 'node:test';
@@ -14,7 +15,7 @@ import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf, fakeOllamaReachable, fakeOllamaUnreachable } from './helpers.mjs';
 import { addCustomBackend, setTierBackend } from '../src/appSettings.js';
-import { isOllamaSession, markOllamaSession } from '../src/sessionBackends.js';
+import { isOllamaSession, getOllamaSession, markOllamaSession } from '../src/sessionBackends.js';
 import { claudeProjectsRoot, encodeCwd } from '../src/projects.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -80,9 +81,10 @@ describe('ollama-backed spawn command/args', () => {
     assert.equal(summary.ollamaModel, undefined); // field collapsed away
   });
 
-  test('the ollama backend marker is written to the Set sidecar at spawn', async () => {
-    const { summary } = await spawnOllama();
+  test('the ollama backend marker + tagged model is written to the sidecar at spawn', async () => {
+    const { summary } = await spawnOllama({ model: 'gemma4:cloud' });
     assert.equal(await isOllamaSession(summary.sessionId), true);
+    assert.deepEqual(await getOllamaSession(summary.sessionId), { ollama: true, model: 'gemma4:cloud' });
   });
 });
 
@@ -148,7 +150,8 @@ describe('null-model guards', () => {
     const cwd = path.join(projectsRoot, 'p');
     const sid = 'aaaaaaaa-0000-0000-0000-000000000000';
     // A resumable jsonl (has a user line) but NO assistant model line, so
-    // readLastSessionModel returns null.
+    // readLastSessionModel returns null. Marked with no tag (legacy-null entry)
+    // so there's no store fallback either.
     const dir = path.join(claudeProjectsRoot(), encodeCwd(cwd));
     await fs.mkdir(dir, { recursive: true });
     await fs.writeFile(path.join(dir, `${sid}.jsonl`),
@@ -287,5 +290,44 @@ describe('launch_failed crash signal', () => {
     await cinst.get(id).kill({ graceMs: 5 }); // sets _killing → signalled exit is guarded
     await waitFor(() => !cinst.get(id)?.proc);
     assert.equal(hasLaunchFailed(), undefined, 'kill is not a launch failure');
+  });
+});
+
+describe('resume recovers the tagged model from the backend store', () => {
+  // The primary bug: the inner CLI records `message.model` BARE in the jsonl
+  // (`deepseek-v4-flash`), so a fresh-Instance resume that reads the jsonl would
+  // relaunch the unpullable tagless name. The store carries the full tag; resume
+  // must prefer it. (This path — a fresh `create({resume})` with no explicit
+  // model — is distinct from the live `respawn` covered in model-resume.test.mjs.)
+  test('a fresh resume launches with the store\'s `:cloud` tag, not the bare jsonl model', async () => {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'ollama-resume-'));
+    const argvDump = path.join(tmp, 'argv.txt');
+    process.env.FAKE_CLAUDE_ARGV_DUMP = argvDump;
+    try {
+      await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
+      const cwd = path.join(projectsRoot, 'p');
+      const sid = 'bbbbbbbb-0000-0000-0000-000000000000';
+      // Resumable jsonl whose assistant line reports the BARE model (what the
+      // Ollama-wrapped CLI actually persists — tag already dropped).
+      const dir = path.join(claudeProjectsRoot(), encodeCwd(cwd));
+      await fs.mkdir(dir, { recursive: true });
+      await fs.writeFile(path.join(dir, `${sid}.jsonl`),
+        JSON.stringify({ type: 'user', message: { role: 'user', content: 'hi' }, sessionId: sid }) + '\n' +
+        JSON.stringify({ type: 'assistant', message: { role: 'assistant', model: 'deepseek-v4-flash', content: [] }, sessionId: sid }) + '\n');
+      // Store holds the FULL tag (written at the original spawn).
+      await markOllamaSession(sid, 'deepseek-v4-flash:cloud');
+
+      const inst = await instances.create({ project: 'p', resume: sid }); // no explicit model
+      await waitFor(() => inst.status === 'idle');
+      assert.equal(inst.model, 'deepseek-v4-flash:cloud', 'recovered the tagged model, not the bare jsonl value');
+
+      await waitFor(async () => { try { await fs.stat(argvDump); return true; } catch { return false; } });
+      const argv = (await fs.readFile(argvDump, 'utf8')).split('\n').filter(Boolean);
+      assert.deepEqual(argv.slice(0, 6), ['launch', 'claude', '--model', 'deepseek-v4-flash:cloud', '--yes', '--'],
+        'resume relaunches ollama with the still-tagged model');
+    } finally {
+      delete process.env.FAKE_CLAUDE_ARGV_DUMP;
+      await fs.rm(tmp, { recursive: true, force: true }).catch(() => {});
+    }
   });
 });
