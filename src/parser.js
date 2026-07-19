@@ -18,7 +18,7 @@
 //   system                  { subtype, data }
 //   hook                    { event, data }
 //   assistant_message       { msgId, message }              // final reconciled message
-//   turn_end                { usage, durationMs, cost, costDelta, isError, stopReason, subtype }
+//   turn_end                { usage, durationMs, durationApiMs, cost, costDelta, isError, stopReason, subtype }
 //   control_response        { requestId, ok, response?, error? }
 //   raw                     { line }                        // fallback for unrecognized
 
@@ -332,7 +332,8 @@ export class Parser {
       kind: 'turn_end',
       subtype: obj.subtype ?? 'success',
       stopReason: obj.stop_reason ?? null,
-      durationMs: obj.duration_ms ?? null,
+      durationMs: obj.duration_ms ?? null,        // turn walltime (incl. tool exec)
+      durationApiMs: obj.duration_api_ms ?? null, // pure inference/API time
       cost,      // raw cumulative session total (kept for reference)
       costDelta, // actual cost of this turn
       usage: obj.usage ?? null,

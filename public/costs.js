@@ -3,6 +3,7 @@
 // installHashView scaffold: installCosts() returns { open(), close() }.
 
 import { installHashView } from './hashView.js';
+import { formatDuration } from './usage.js';
 
 let _onClose = null;
 
@@ -56,7 +57,7 @@ function render(data) {
   projTable.className = 'costs-table';
   const projThead = document.createElement('thead');
   const projHeadRow = document.createElement('tr');
-  for (const h of ['Project', 'Cost', 'Turns', 'Sessions', 'Cache misses']) {
+  for (const h of ['Project', 'Cost', 'Turns', 'Sessions', 'Cache misses', 'LLM time', 'Walltime']) {
     const th = document.createElement('th');
     th.textContent = h;
     projHeadRow.appendChild(th);
@@ -92,13 +93,21 @@ function render(data) {
     missesTd.textContent = String(p.cache_misses);
     projRow.appendChild(missesTd);
 
+    const apiTd = document.createElement('td');
+    apiTd.textContent = formatDuration(p.duration_api_ms);
+    projRow.appendChild(apiTd);
+
+    const wallTd = document.createElement('td');
+    wallTd.textContent = formatDuration(p.duration_ms);
+    projRow.appendChild(wallTd);
+
     const detailRow = document.createElement('tr');
     detailRow.className = 'costs-proj-detail';
     detailRow.hidden = true;
     const detailTd = document.createElement('td');
-    detailTd.colSpan = 5;
+    detailTd.colSpan = 7;
     detailTd.appendChild(makeTable(
-      ['Model', 'Cost', 'Input', 'Output', 'Cache create', 'Cache read', 'Turns', 'Sessions', 'Cache misses'],
+      ['Model', 'Cost', 'Input', 'Output', 'Cache create', 'Cache read', 'Turns', 'Sessions', 'Cache misses', 'LLM time', 'Walltime'],
       (p.by_model ?? []).map(m => [
         m.model,
         fmtExact(m.cost_usd),
@@ -109,6 +118,8 @@ function render(data) {
         String(m.turns),
         String(m.sessions),
         String(m.cache_misses),
+        formatDuration(m.duration_api_ms),
+        formatDuration(m.duration_ms),
       ]),
     ));
     detailRow.appendChild(detailTd);
@@ -132,7 +143,7 @@ function render(data) {
   modelH.textContent = 'By model';
   modelSection.appendChild(modelH);
   modelSection.appendChild(makeTable(
-    ['Model', 'Cost', 'Input', 'Output', 'Cache create', 'Cache read', 'Turns', 'Sessions', 'Cache misses'],
+    ['Model', 'Cost', 'Input', 'Output', 'Cache create', 'Cache read', 'Turns', 'Sessions', 'Cache misses', 'LLM time', 'Walltime'],
     data.by_model.map(m => [
       m.model,
       fmtExact(m.cost_usd),
@@ -143,6 +154,8 @@ function render(data) {
       String(m.turns),
       String(m.sessions),
       String(m.cache_misses),
+      formatDuration(m.duration_api_ms),
+      formatDuration(m.duration_ms),
     ]),
   ));
   bodyEl.appendChild(modelSection);

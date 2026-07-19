@@ -34,6 +34,7 @@ import { installSpawnDialog } from './spawnDialog.js';
 import { installSessionActions } from './sessionActions.js';
 import { installHeader } from './header.js';
 import { installSessionSummary } from './sessionSummary.js';
+import { installSessionStats } from './sessionStats.js';
 import { installWsRouter } from './wsRouter.js';
 import { latestOnly } from './latestOnly.js';
 import { loadModelVersions, setActiveSonnetWindow,
@@ -155,6 +156,8 @@ const dom = {
   summaryDialog: document.getElementById('summary-dialog'),
   renameSessionBtn: document.getElementById('rename-session-btn'),
   changeModelBtn: document.getElementById('change-model-btn'),
+  sessionStatsBtn: document.getElementById('session-stats-btn'),
+  statsDialog: document.getElementById('stats-dialog'),
   autoApprovePlanBtn: document.getElementById('auto-approve-plan-btn'),
   overflowMenu: document.getElementById('overflow-menu'),
   overflowToggle: document.getElementById('overflow-toggle'),
@@ -679,6 +682,11 @@ dom.summarizeSessionBtn.addEventListener('click', () => {
   summaryHandle.open();
 });
 
+dom.sessionStatsBtn.addEventListener('click', () => {
+  closeOverflow();
+  statsHandle.open();
+});
+
 dom.debugBtn.addEventListener('click', async () => {
   if (!state.activeId) return;
   closeOverflow();
@@ -957,13 +965,12 @@ installRestart({
 // and the boot-time auto-resume all forward to it. Fork/rewind composer prefill
 // rides `droppedText` inline on the WS snapshot/reset_snapshot frame (handled in
 // wsRouter.js) — no client-side prefill state lives in sessionActions.
-const summaryHandle = installSessionSummary({
-  dom,
-  getActiveSid: () => {
-    const inst = state.instances.find(i => i.id === state.activeId);
-    return inst?.sessionId ?? null;
-  },
-});
+const getActiveSid = () => {
+  const inst = state.instances.find(i => i.id === state.activeId);
+  return inst?.sessionId ?? null;
+};
+const summaryHandle = installSessionSummary({ dom, getActiveSid });
+const statsHandle = installSessionStats({ dom, getActiveSid });
 
 sessionActions = installSessionActions({
   getActiveId: () => state.activeId,

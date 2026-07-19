@@ -10,13 +10,22 @@ export function costsPath() {
   return path.join(orchStoreRoot(), 'costs.jsonl');
 }
 
-async function appendCostRow(inst, ev) {
+async function appendCostRow(inst, ev, parentSessionId) {
   const usage = ev.usage ?? {};
   const row = {
     ts: Date.now(),
     project: inst.project ?? null,
     model: inst.model ?? null,
     sessionId: inst.sessionId ?? null,
+    // Durable link to the spawning conductor's CURRENT sessionId (resolved at
+    // write-time from the ephemeral callerInstanceId). null for UI/HTTP-created
+    // sessions. Drives the tree rollup in getSessionStats. Additive.
+    parentSessionId: parentSessionId ?? null,
+    // Turn timing straight from the SDK result: duration_api_ms (pure
+    // inference) and duration_ms (turn walltime incl. tool exec). Additive —
+    // rows written before these fields lack them (treated as 0 in aggregates).
+    duration_ms: ev.durationMs ?? null,
+    duration_api_ms: ev.durationApiMs ?? null,
     input_tokens: usage.input_tokens ?? 0,
     output_tokens: usage.output_tokens ?? 0,
     cache_creation_tokens: usage.cache_creation_input_tokens ?? 0,
@@ -51,7 +60,12 @@ export function initCostTracking(instances) {
     if (ev.costDelta == null && ev.cost == null) return;
     const inst = instances.get(id);
     if (!inst) return;
-    appendCostRow(inst, ev);
+    // Resolve the spawning conductor's current sessionId from the worker's
+    // stable callerInstanceId (see InstanceManager.callerSessionId).
+    const parentSessionId = inst.callerInstanceId
+      ? instances.callerSessionId(inst.callerInstanceId)
+      : null;
+    appendCostRow(inst, ev, parentSessionId);
   });
 }
 
@@ -79,20 +93,24 @@ export async function getCostSummary() {
   for (const r of rows) {
     const key = r.project ?? '(unknown)';
     if (!projectMap.has(key)) {
-      projectMap.set(key, { project: key, cost_usd: 0, turns: 0, cache_misses: 0, _sessionSet: new Set(), _modelMap: new Map() });
+      projectMap.set(key, { project: key, cost_usd: 0, duration_ms: 0, duration_api_ms: 0, turns: 0, cache_misses: 0, _sessionSet: new Set(), _modelMap: new Map() });
     }
     const entry = projectMap.get(key);
     entry.cost_usd += r.cost_usd ?? 0;
+    entry.duration_ms += r.duration_ms ?? 0;
+    entry.duration_api_ms += r.duration_api_ms ?? 0;
     entry.turns += 1;
     if (r.cache_miss === true) entry.cache_misses += 1;
     if (r.sessionId != null) entry._sessionSet.add(r.sessionId);
 
     const mKey = r.model ?? '(unknown)';
     const mEntry = entry._modelMap.get(mKey) ?? {
-      model: mKey, cost_usd: 0, input_tokens: 0, output_tokens: 0,
+      model: mKey, cost_usd: 0, duration_ms: 0, duration_api_ms: 0, input_tokens: 0, output_tokens: 0,
       cache_creation_tokens: 0, cache_read_tokens: 0, turns: 0, cache_misses: 0, _sessionSet: new Set(),
     };
     mEntry.cost_usd += r.cost_usd ?? 0;
+    mEntry.duration_ms += r.duration_ms ?? 0;
+    mEntry.duration_api_ms += r.duration_api_ms ?? 0;
     mEntry.input_tokens += r.input_tokens ?? 0;
     mEntry.output_tokens += r.output_tokens ?? 0;
     mEntry.cache_creation_tokens += r.cache_creation_tokens ?? 0;
@@ -107,7 +125,7 @@ export async function getCostSummary() {
       const { _sessionSet, ...rest } = m;
       return { ...rest, sessions: _sessionSet.size };
     });
-    return { project: e.project, cost_usd: e.cost_usd, turns: e.turns, cache_misses: e.cache_misses, sessions: e._sessionSet.size, by_model };
+    return { project: e.project, cost_usd: e.cost_usd, duration_ms: e.duration_ms, duration_api_ms: e.duration_api_ms, turns: e.turns, cache_misses: e.cache_misses, sessions: e._sessionSet.size, by_model };
   }).sort((a, b) => b.cost_usd - a.cost_usd);
 
   // By model
@@ -115,10 +133,12 @@ export async function getCostSummary() {
   for (const r of rows) {
     const key = r.model ?? '(unknown)';
     const entry = modelMap.get(key) ?? {
-      model: key, cost_usd: 0, input_tokens: 0, output_tokens: 0,
+      model: key, cost_usd: 0, duration_ms: 0, duration_api_ms: 0, input_tokens: 0, output_tokens: 0,
       cache_creation_tokens: 0, cache_read_tokens: 0, turns: 0, cache_misses: 0, _sessionSet: new Set(),
     };
     entry.cost_usd += r.cost_usd ?? 0;
+    entry.duration_ms += r.duration_ms ?? 0;
+    entry.duration_api_ms += r.duration_api_ms ?? 0;
     entry.input_tokens += r.input_tokens ?? 0;
     entry.output_tokens += r.output_tokens ?? 0;
     entry.cache_creation_tokens += r.cache_creation_tokens ?? 0;
@@ -144,4 +164,71 @@ export async function getCostSummary() {
   const daily_trend = [...dayMap.values()].sort((a, b) => a.date.localeCompare(b.date));
 
   return { total_usd, row_count: rows.length, by_project, by_model, daily_trend };
+}
+
+// Read + JSON-parse the cost log into rows (empty array when the log is absent).
+async function readCostRows() {
+  let raw;
+  try {
+    raw = await fs.readFile(costsPath(), 'utf8');
+  } catch (e) {
+    if (e.code === 'ENOENT') return [];
+    throw e;
+  }
+  return raw.split('\n').filter(Boolean).map(line => {
+    try { return JSON.parse(line); } catch { return null; }
+  }).filter(Boolean);
+}
+
+// Per-session cost/timing, both for the session alone (`own`) and rolled up to
+// include every worker session it spawned, recursively (`rolled`, via the
+// parentSessionId tree). `workerSessions` counts the distinct descendant
+// sessions folded into the rollup.
+export async function getSessionStats(sessionId) {
+  const zero = () => ({ cost_usd: 0, duration_ms: 0, duration_api_ms: 0, turns: 0 });
+  const rows = await readCostRows();
+
+  // Per-session totals + the parent→children adjacency for the tree walk.
+  const bySession = new Map();
+  const children = new Map();
+  for (const r of rows) {
+    const sid = r.sessionId;
+    if (sid == null) continue;
+    const s = bySession.get(sid) ?? zero();
+    s.cost_usd += r.cost_usd ?? 0;
+    s.duration_ms += r.duration_ms ?? 0;
+    s.duration_api_ms += r.duration_api_ms ?? 0;
+    s.turns += 1;
+    bySession.set(sid, s);
+
+    const parent = r.parentSessionId;
+    if (parent != null && parent !== sid) {
+      if (!children.has(parent)) children.set(parent, new Set());
+      children.get(parent).add(sid);
+    }
+  }
+
+  const own = bySession.get(sessionId) ?? zero();
+
+  // DFS over the descendant tree; `visited` guards against cycles.
+  const rolled = zero();
+  const visited = new Set();
+  const stack = [sessionId];
+  while (stack.length) {
+    const sid = stack.pop();
+    if (visited.has(sid)) continue;
+    visited.add(sid);
+    const s = bySession.get(sid);
+    if (s) {
+      rolled.cost_usd += s.cost_usd;
+      rolled.duration_ms += s.duration_ms;
+      rolled.duration_api_ms += s.duration_api_ms;
+      rolled.turns += s.turns;
+    }
+    for (const child of children.get(sid) ?? []) {
+      if (!visited.has(child)) stack.push(child);
+    }
+  }
+
+  return { sessionId, own, rolled, workerSessions: Math.max(0, visited.size - 1) };
 }
