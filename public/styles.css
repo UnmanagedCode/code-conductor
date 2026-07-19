@@ -1244,6 +1244,14 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
 .summary-loading { color: var(--muted); font-size: 13px; }
 #summary-dialog menu { margin-top: 4px; }
 
+#stats-dialog { min-width: 320px; max-width: min(520px, 92vw); }
+.stats-content { margin: 0 0 10px 0; min-height: 2em; }
+.stats-loading { color: var(--muted); font-size: 13px; }
+.stats-table { border-collapse: collapse; width: 100%; font-size: 13px; }
+.stats-table th, .stats-table td { padding: 5px 10px; text-align: right; }
+.stats-table th:first-child, .stats-table td:first-child { text-align: left; color: var(--muted); }
+.stats-table thead th { border-bottom: 1px solid var(--border); font-weight: 600; }
+
 @media (max-width: 720px) {
   #app { grid-template-columns: 1fr; }
   #sidebar {

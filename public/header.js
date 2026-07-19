@@ -505,6 +505,8 @@ export function installHeader({
     dom.changeModelBtn.hidden = !canMenu;
     dom.changeModelBtn.disabled = !canMenu || !inst.sessionId;
     dom.changeModelBtn.textContent = '🧠 Change model';
+    dom.sessionStatsBtn.hidden = !canMenu;
+    dom.sessionStatsBtn.disabled = !canMenu || !inst.sessionId;
     // Auto-approve only applies to plan mode (it short-circuits the
     // ExitPlanMode confirmation card). Hide it in code/ask mode so the
     // controls row stays uncluttered.

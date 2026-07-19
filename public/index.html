@@ -74,6 +74,8 @@
                       title="Give this session a custom label shown in the sidebar (clears on empty)">✏️ Rename</button>
               <button id="change-model-btn" type="button" role="menuitem"
                       title="Switch this session's model without restarting">🧠 Change model</button>
+              <button id="session-stats-btn" type="button" role="menuitem"
+                      title="Cost & timing for this session and the workers it spawned">📊 Statistics</button>
               <button id="kill-btn" type="button" role="menuitem" disabled>Interrupt</button>
               <button id="debug-btn" type="button" role="menuitem" title="Start mirroring CLI stdin/stdout/stderr to .code-conductor/debug/&lt;id&gt;/ for offline inspection">🐛 Debug</button>
             </div>
@@ -517,6 +519,19 @@
       <p id="summary-error" class="error" hidden></p>
       <menu>
         <button type="button" id="summary-generate-btn">Generate summary</button>
+        <button value="close">Close</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <dialog id="stats-dialog" class="summary-dialog">
+    <form method="dialog">
+      <div class="summary-dialog-head">
+        <h3>Session statistics</h3>
+      </div>
+      <div id="stats-content" class="stats-content"></div>
+      <p id="stats-error" class="error" hidden></p>
+      <menu>
         <button value="close">Close</button>
       </menu>
     </form>

@@ -27,14 +27,14 @@ async function rmrf(p) {
 }
 
 // Build a minimal fake instance object.
-function fakeInst({ project = 'proj-a', model = 'claude-opus-4-8', sessionId = 'sess-1' } = {}) {
-  return { project, model, sessionId };
+function fakeInst({ project = 'proj-a', model = 'claude-opus-4-8', sessionId = 'sess-1', callerInstanceId = null } = {}) {
+  return { project, model, sessionId, callerInstanceId };
 }
 
 // Build a synthetic turn_end event. The cacheMiss / firstReq* fields mirror
 // the decisive verdict instances.js enriches onto turn_end before it's
 // persisted (see appendCostRow).
-function turnEndEv({ costDelta = 0.01, usage, cacheMiss, firstReqCacheRead, firstReqCacheCreation } = {}) {
+function turnEndEv({ costDelta = 0.01, usage, cacheMiss, firstReqCacheRead, firstReqCacheCreation, durationMs, durationApiMs } = {}) {
   return {
     kind: 'turn_end',
     cost: costDelta,      // cumulative total (same as delta for single-turn tests)
@@ -48,6 +48,8 @@ function turnEndEv({ costDelta = 0.01, usage, cacheMiss, firstReqCacheRead, firs
     cacheMiss,
     firstReqCacheRead,
     firstReqCacheCreation,
+    durationMs,
+    durationApiMs,
   };
 }
 
@@ -307,6 +309,196 @@ test('GET /api/costs/summary returns 200 with correct shape (no data)', async ()
     assert.ok(Array.isArray(body.by_project), 'by_project should be array');
     assert.ok(Array.isArray(body.by_model), 'by_model should be array');
     assert.ok(Array.isArray(body.daily_trend), 'daily_trend should be array');
+  } finally {
+    await close();
+  }
+});
+
+// ── 6. Timing persistence + parent-session resolution ────────────────────────
+
+test('cost-tracking: turn_end persists timing + resolves parentSessionId', async () => {
+  const dir = await makeTmpDir();
+  const prevRoot = process.env.PROJECTS_ROOT;
+  process.env.PROJECTS_ROOT = dir;
+
+  try {
+    const { initCostTracking, costsPath } = await import('../src/costTracking.js');
+
+    // Emitter doubling as InstanceManager: a worker whose callerInstanceId
+    // (the conductor's stable instanceId) resolves live to its current sessionId.
+    const worker = fakeInst({ sessionId: 'worker-1', callerInstanceId: 'cond-inst' });
+    const emitter = new EventEmitter();
+    emitter.get = () => worker;
+    emitter.callerSessionId = (handle) => (handle === 'cond-inst' ? 'conductor-1' : null);
+    initCostTracking(emitter);
+
+    // Turn with timing fields.
+    emitter.emit('event', { id: 'inst-1', ev: turnEndEv({ costDelta: 0.02, durationMs: 8000, durationApiMs: 3200 }) });
+    // Turn missing timing — should default to null (legacy shape).
+    emitter.emit('event', { id: 'inst-1', ev: turnEndEv({ costDelta: 0.01 }) });
+
+    await new Promise(r => setTimeout(r, 50));
+
+    const storeDir = path.join(dir, '.code-conductor');
+    await fs.mkdir(storeDir, { recursive: true });
+    const lines = (await fs.readFile(costsPath(), 'utf8').catch(() => '')).split('\n').filter(Boolean);
+    assert.equal(lines.length, 2);
+
+    const row = JSON.parse(lines[0]);
+    assert.equal(row.duration_ms, 8000);
+    assert.equal(row.duration_api_ms, 3200);
+    assert.equal(row.parentSessionId, 'conductor-1', 'callerInstanceId resolved to conductor sessionId');
+
+    const row2 = JSON.parse(lines[1]);
+    assert.equal(row2.duration_ms, null, 'missing timing defaults to null');
+    assert.equal(row2.duration_api_ms, null);
+  } finally {
+    process.env.PROJECTS_ROOT = prevRoot ?? '';
+    if (!prevRoot) delete process.env.PROJECTS_ROOT;
+    await rmrf(dir);
+  }
+});
+
+// ── 7. Summary timing aggregation (with legacy rows) ─────────────────────────
+
+test('cost-tracking: getCostSummary sums timing and tolerates legacy rows', async () => {
+  const dir = await makeTmpDir();
+  const prevRoot = process.env.PROJECTS_ROOT;
+  process.env.PROJECTS_ROOT = dir;
+
+  try {
+    const { getCostSummary, costsPath } = await import('../src/costTracking.js');
+    await fs.mkdir(path.join(dir, '.code-conductor'), { recursive: true });
+
+    const rows = [
+      { ts: Date.now(), project: 'alpha', model: 'opus', sessionId: 's1', cost_usd: 0.05, duration_ms: 6000, duration_api_ms: 2000 },
+      { ts: Date.now(), project: 'alpha', model: 'opus', sessionId: 's1', cost_usd: 0.03, duration_ms: 4000, duration_api_ms: 1500 },
+      // Legacy row — no duration fields at all.
+      { ts: Date.now(), project: 'alpha', model: 'opus', sessionId: 's1', cost_usd: 0.01 },
+    ];
+    await fs.writeFile(costsPath(), rows.map(r => JSON.stringify(r)).join('\n') + '\n');
+
+    const summary = await getCostSummary();
+    const alpha = summary.by_project.find(p => p.project === 'alpha');
+    assert.equal(alpha.duration_ms, 10000, 'walltime sums; legacy row contributes 0');
+    assert.equal(alpha.duration_api_ms, 3500, 'LLM time sums; legacy row contributes 0');
+    assert.equal(alpha.by_model[0].duration_ms, 10000);
+    assert.equal(alpha.by_model[0].duration_api_ms, 3500);
+
+    const opus = summary.by_model.find(m => m.model === 'opus');
+    assert.equal(opus.duration_ms, 10000);
+    assert.equal(opus.duration_api_ms, 3500);
+  } finally {
+    process.env.PROJECTS_ROOT = prevRoot ?? '';
+    if (!prevRoot) delete process.env.PROJECTS_ROOT;
+    await rmrf(dir);
+  }
+});
+
+// ── 8. Per-session stats + worker-tree rollup ────────────────────────────────
+
+test('cost-tracking: getSessionStats rolls up the worker tree', async () => {
+  const dir = await makeTmpDir();
+  const prevRoot = process.env.PROJECTS_ROOT;
+  process.env.PROJECTS_ROOT = dir;
+
+  try {
+    const { getSessionStats, costsPath } = await import('../src/costTracking.js');
+    await fs.mkdir(path.join(dir, '.code-conductor'), { recursive: true });
+
+    // Tree: conductor → w1, w2; w1 → w1a (grandchild). A legacy row (no
+    // timing/parent) belongs to the conductor and must still count.
+    const rows = [
+      { ts: Date.now(), sessionId: 'cond', parentSessionId: null, cost_usd: 0.10, duration_ms: 5000, duration_api_ms: 2000 },
+      { ts: Date.now(), sessionId: 'cond', cost_usd: 0.01 }, // legacy conductor row
+      { ts: Date.now(), sessionId: 'w1', parentSessionId: 'cond', cost_usd: 0.20, duration_ms: 8000, duration_api_ms: 3000 },
+      { ts: Date.now(), sessionId: 'w2', parentSessionId: 'cond', cost_usd: 0.30, duration_ms: 9000, duration_api_ms: 4000 },
+      { ts: Date.now(), sessionId: 'w1a', parentSessionId: 'w1', cost_usd: 0.05, duration_ms: 1000, duration_api_ms: 500 },
+    ];
+    await fs.writeFile(costsPath(), rows.map(r => JSON.stringify(r)).join('\n') + '\n');
+
+    const stats = await getSessionStats('cond');
+    // own = conductor's two rows only.
+    assert.ok(Math.abs(stats.own.cost_usd - 0.11) < 1e-9, `own cost 0.11, got ${stats.own.cost_usd}`);
+    assert.equal(stats.own.duration_ms, 5000, 'own walltime excludes legacy-null row');
+    assert.equal(stats.own.duration_api_ms, 2000);
+    assert.equal(stats.own.turns, 2);
+    // rolled = conductor + w1 + w2 + w1a (recursive).
+    assert.ok(Math.abs(stats.rolled.cost_usd - 0.66) < 1e-9, `rolled cost 0.66, got ${stats.rolled.cost_usd}`);
+    assert.equal(stats.rolled.duration_ms, 23000);
+    assert.equal(stats.rolled.duration_api_ms, 9500);
+    assert.equal(stats.rolled.turns, 5);
+    assert.equal(stats.workerSessions, 3, 'w1, w2, w1a folded into the rollup');
+
+    // A leaf session with no children: own == rolled, no workers.
+    const leaf = await getSessionStats('w2');
+    assert.ok(Math.abs(leaf.rolled.cost_usd - 0.30) < 1e-9);
+    assert.equal(leaf.workerSessions, 0);
+
+    // Unknown session: zeros, no throw.
+    const none = await getSessionStats('nope');
+    assert.equal(none.own.cost_usd, 0);
+    assert.equal(none.rolled.cost_usd, 0);
+    assert.equal(none.workerSessions, 0);
+  } finally {
+    process.env.PROJECTS_ROOT = prevRoot ?? '';
+    if (!prevRoot) delete process.env.PROJECTS_ROOT;
+    await rmrf(dir);
+  }
+});
+
+test('cost-tracking: getSessionStats terminates on a parent cycle', async () => {
+  const dir = await makeTmpDir();
+  const prevRoot = process.env.PROJECTS_ROOT;
+  process.env.PROJECTS_ROOT = dir;
+
+  try {
+    const { getSessionStats, costsPath } = await import('../src/costTracking.js');
+    await fs.mkdir(path.join(dir, '.code-conductor'), { recursive: true });
+
+    // a → b and b → a: a mutual cycle. Also a self-parent row.
+    const rows = [
+      { ts: Date.now(), sessionId: 'a', parentSessionId: 'b', cost_usd: 0.10, duration_ms: 1000, duration_api_ms: 500 },
+      { ts: Date.now(), sessionId: 'b', parentSessionId: 'a', cost_usd: 0.20, duration_ms: 2000, duration_api_ms: 900 },
+      { ts: Date.now(), sessionId: 'a', parentSessionId: 'a', cost_usd: 0.05 }, // self-parent ignored
+    ];
+    await fs.writeFile(costsPath(), rows.map(r => JSON.stringify(r)).join('\n') + '\n');
+
+    const stats = await getSessionStats('a');
+    // Walk from a visits {a, b} once each — no infinite loop.
+    assert.ok(Math.abs(stats.rolled.cost_usd - 0.35) < 1e-9, `rolled cost 0.35, got ${stats.rolled.cost_usd}`);
+    assert.equal(stats.rolled.duration_ms, 3000);
+    assert.equal(stats.workerSessions, 1, 'only b is a distinct descendant');
+  } finally {
+    process.env.PROJECTS_ROOT = prevRoot ?? '';
+    if (!prevRoot) delete process.env.PROJECTS_ROOT;
+    await rmrf(dir);
+  }
+});
+
+// ── 9. Session-stats route smoke ─────────────────────────────────────────────
+
+test('GET /api/costs/session/:sessionId returns own + rolled stats', async () => {
+  const { baseUrl, close, tmpHome } = await bootServer();
+  try {
+    const { costsPath } = await import('../src/costTracking.js');
+    const storeDir = path.join(tmpHome, 'project', '.code-conductor');
+    await fs.mkdir(storeDir, { recursive: true });
+
+    const rows = [
+      { ts: Date.now(), sessionId: 'c1', parentSessionId: null, cost_usd: 0.10, duration_ms: 4000, duration_api_ms: 1500 },
+      { ts: Date.now(), sessionId: 'w1', parentSessionId: 'c1', cost_usd: 0.20, duration_ms: 6000, duration_api_ms: 2500 },
+    ];
+    await fs.writeFile(path.join(storeDir, 'costs.jsonl'), rows.map(r => JSON.stringify(r)).join('\n') + '\n');
+
+    const { status, body } = await api(baseUrl, 'GET', '/api/costs/session/c1');
+    assert.equal(status, 200);
+    assert.equal(body.sessionId, 'c1');
+    assert.ok(Math.abs(body.own.cost_usd - 0.10) < 1e-9);
+    assert.ok(Math.abs(body.rolled.cost_usd - 0.30) < 1e-9);
+    assert.equal(body.rolled.duration_ms, 10000);
+    assert.equal(body.rolled.duration_api_ms, 4000);
+    assert.equal(body.workerSessions, 1);
   } finally {
     await close();
   }

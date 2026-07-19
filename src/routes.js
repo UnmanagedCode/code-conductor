@@ -56,7 +56,7 @@ import { setTitle as setSessionTitle, MAX_TITLE_LEN } from './sessionTitles.js';
 import { getSummaries, setSummary, deleteSummaries } from './sessionSummaries.js';
 import { generateSummary, countMessages } from './summarize.js';
 import { getAccountUsage } from './accountUsage.js';
-import { getCostSummary } from './costTracking.js';
+import { getCostSummary, getSessionStats } from './costTracking.js';
 import { isArchived, unmarkArchived } from './archivedSessions.js';
 import {
   getCatalog as getProjectConventionsCatalog,
@@ -1372,6 +1372,10 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
 
   r.get('/costs/summary', async (req, res, next) => {
     try { res.json(await getCostSummary()); } catch (e) { next(e); }
+  });
+
+  r.get('/costs/session/:sessionId', async (req, res, next) => {
+    try { res.json(await getSessionStats(req.params.sessionId)); } catch (e) { next(e); }
   });
 
   r.use((err, req, res, _next) => {
