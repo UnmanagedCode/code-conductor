@@ -11,7 +11,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
+import { bootServer, api, waitFor, freshProjectsRoot, rmrf, fakeOllamaReachable } from './helpers.mjs';
 import { canonicalizeModel, familyOf } from '../src/modelVersions.js';
 import { setSonnetContextWindow, addCustomBackend } from '../src/appSettings.js';
 
@@ -20,13 +20,15 @@ const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-instance.json');
 
 // One server shared across the file; each test gets a fresh PROJECTS_ROOT and
 // the spawned instance is cleared between tests. See helpers → freshProjectsRoot.
-let ctx, baseUrl, instances, home;
+let ctx, baseUrl, instances, home, restoreFetch;
 
 before(async () => {
+  // Ollama spawns preflight reachability; simulate a live daemon (no CI daemon).
+  restoreFetch = fakeOllamaReachable();
   ctx = await bootServer({ scenarioPath: SCENARIO });
   ({ baseUrl, instances } = ctx);
 });
-after(async () => { await ctx.close(); });
+after(async () => { await ctx.close(); restoreFetch(); });
 beforeEach(async () => { ({ home } = await freshProjectsRoot()); });
 afterEach(async () => { await instances.shutdown(); await rmrf(home); });
 
