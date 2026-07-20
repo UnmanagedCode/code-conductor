@@ -58,14 +58,16 @@ function mergeLive(onDisk, liveInstances) {
         title: inst.title ?? null,
         // A live temp instance's jsonl is excluded from `onDisk` for as long
         // as it's alive (see tempSessionIdsForCwd), so it lands in this
-        // synthetic branch on EVERY render, not just its first. Falling back
-        // to Date.now() here would re-stamp mtime to "now" on every render,
-        // freezing its "ago" label at ~0s forever. inst.lastResponseAt (set
-        // once per completed turn, same field header.js uses for its own
-        // "last response Xm ago" label) is stable across renders and only
-        // advances on genuine new activity. Date.now() remains the fallback
-        // only before the session's first turn has completed.
-        mtime: inst.lastResponseAt ?? Date.now(),
+        // synthetic branch on EVERY render, not just its first. Both fallbacks
+        // MUST be stable across renders: a per-render Date.now() here would
+        // re-stamp mtime to "now" on every render — freezing the "ago" label at
+        // ~0s and, worse, jumping every such row in lockstep to the exact
+        // timestamp of whichever session most recently completed a turn (its
+        // turn_end triggers the render). inst.lastResponseAt (set once per
+        // completed turn, same field header.js uses) covers post-first-turn;
+        // inst.createdAt (stamped once at spawn) covers the pre-first-turn case
+        // so a brand-new/idle session shows its true "created Xs ago" age.
+        mtime: inst.lastResponseAt ?? inst.createdAt,
         size: 0,
         instanceId: inst.id,
         instanceStatus: inst.status,
