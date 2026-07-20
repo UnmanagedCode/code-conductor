@@ -146,12 +146,11 @@ process.stdin.on('end', () => {
 `;
 
 function hasZsh() {
-  try {
-    spawnSync('zsh', ['--version'], { stdio: 'ignore' });
-    return true;
-  } catch {
-    return false;
-  }
+  // spawnSync does NOT throw on a missing binary — on ENOENT it returns a
+  // result object with `.error` set and `.status === null`. Inspect the result
+  // instead of relying on a throw, or the guard reports zsh present everywhere.
+  const res = spawnSync('zsh', ['--version'], { stdio: 'ignore' });
+  return !res.error && res.status === 0;
 }
 
 describe('project_bash', () => {
