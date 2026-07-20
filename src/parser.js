@@ -18,7 +18,7 @@
 //   system                  { subtype, data }
 //   hook                    { event, data }
 //   assistant_message       { msgId, message }              // final reconciled message
-//   turn_end                { usage, durationMs, durationApiMs, cost, costDelta, isError, stopReason, subtype }
+//   turn_end                { usage, durationMs, durationApiMs, durationApiMsDelta, cost, costDelta, isError, stopReason, subtype }
 //   control_response        { requestId, ok, response?, error? }
 //   raw                     { line }                        // fallback for unrecognized
 
@@ -29,6 +29,7 @@ export class Parser {
     this.currentMsgId = null;
     this.blocks = new Map(); // blockIdx -> { type, accumText, accumJson, toolUseId, name }
     this._lastCost = 0; // tracks cumulative cost to compute per-turn delta
+    this._lastApiMs = 0; // tracks cumulative duration_api_ms to compute per-turn delta
     this._pendingSkillLoads = []; // FIFO of {toolUseId, skill} awaiting their content injection
   }
 
@@ -36,6 +37,7 @@ export class Parser {
     this.currentMsgId = null;
     this.blocks.clear();
     this._lastCost = 0;
+    this._lastApiMs = 0;
     this._pendingSkillLoads = [];
   }
 
@@ -323,17 +325,23 @@ export class Parser {
   }
 
   _handleResult(obj) {
-    // total_cost_usd is the cumulative session total, not a per-turn cost.
-    // Compute the delta so callers can display / accumulate the actual turn cost.
+    // total_cost_usd and duration_api_ms are both cumulative session totals in
+    // the SDK result, not per-turn values. Convert each to a per-turn delta so
+    // callers can display / accumulate the actual turn cost and LLM time.
+    // (duration_ms — turn walltime — is genuinely per-turn and left as-is.)
     const cost = obj.total_cost_usd ?? null;
     const costDelta = cost != null ? cost - this._lastCost : null;
     if (cost != null) this._lastCost = cost;
+    const apiMs = obj.duration_api_ms ?? null;
+    const durationApiMsDelta = apiMs != null ? apiMs - this._lastApiMs : null;
+    if (apiMs != null) this._lastApiMs = apiMs;
     return [{
       kind: 'turn_end',
       subtype: obj.subtype ?? 'success',
       stopReason: obj.stop_reason ?? null,
-      durationMs: obj.duration_ms ?? null,        // turn walltime (incl. tool exec)
-      durationApiMs: obj.duration_api_ms ?? null, // pure inference/API time
+      durationMs: obj.duration_ms ?? null,        // turn walltime (incl. tool exec), per-turn
+      durationApiMs: apiMs,                        // raw cumulative session API time (kept for reference)
+      durationApiMsDelta,                          // per-turn LLM/inference time
       cost,      // raw cumulative session total (kept for reference)
       costDelta, // actual cost of this turn
       usage: obj.usage ?? null,

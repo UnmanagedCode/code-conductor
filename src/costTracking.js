@@ -21,11 +21,15 @@ async function appendCostRow(inst, ev, parentSessionId) {
     // write-time from the ephemeral callerInstanceId). null for UI/HTTP-created
     // sessions. Drives the tree rollup in getSessionStats. Additive.
     parentSessionId: parentSessionId ?? null,
-    // Turn timing straight from the SDK result: duration_api_ms (pure
-    // inference) and duration_ms (turn walltime incl. tool exec). Additive —
-    // rows written before these fields lack them (treated as 0 in aggregates).
+    // Turn timing from the SDK result. duration_ms is the turn walltime (incl.
+    // tool exec) and is genuinely per-turn. duration_api_ms (LLM/inference time)
+    // is stored as the PER-TURN DELTA the parser derives from a cumulative SDK
+    // counter (mirrors cost_usd/costDelta) — NOT the raw cumulative reading.
+    // Additive: summed directly in the aggregates. Rows written before these
+    // fields lack them (treated as 0); pre-fix rows carry the old cumulative
+    // duration_api_ms and are left as-is (fix-forward, no per-row repair).
     duration_ms: ev.durationMs ?? null,
-    duration_api_ms: ev.durationApiMs ?? null,
+    duration_api_ms: ev.durationApiMsDelta ?? ev.durationApiMs ?? null,
     input_tokens: usage.input_tokens ?? 0,
     output_tokens: usage.output_tokens ?? 0,
     cache_creation_tokens: usage.cache_creation_input_tokens ?? 0,

@@ -34,7 +34,7 @@ function fakeInst({ project = 'proj-a', model = 'claude-opus-4-8', sessionId = '
 // Build a synthetic turn_end event. The cacheMiss / firstReq* fields mirror
 // the decisive verdict instances.js enriches onto turn_end before it's
 // persisted (see appendCostRow).
-function turnEndEv({ costDelta = 0.01, usage, cacheMiss, firstReqCacheRead, firstReqCacheCreation, durationMs, durationApiMs } = {}) {
+function turnEndEv({ costDelta = 0.01, usage, cacheMiss, firstReqCacheRead, firstReqCacheCreation, durationMs, durationApiMs, durationApiMsDelta } = {}) {
   return {
     kind: 'turn_end',
     cost: costDelta,      // cumulative total (same as delta for single-turn tests)
@@ -49,7 +49,8 @@ function turnEndEv({ costDelta = 0.01, usage, cacheMiss, firstReqCacheRead, firs
     firstReqCacheRead,
     firstReqCacheCreation,
     durationMs,
-    durationApiMs,
+    durationApiMs,        // raw cumulative session API time
+    durationApiMsDelta,   // per-turn LLM time (preferred when persisting)
   };
 }
 
@@ -352,6 +353,35 @@ test('cost-tracking: turn_end persists timing + resolves parentSessionId', async
     const row2 = JSON.parse(lines[1]);
     assert.equal(row2.duration_ms, null, 'missing timing defaults to null');
     assert.equal(row2.duration_api_ms, null);
+  } finally {
+    process.env.PROJECTS_ROOT = prevRoot ?? '';
+    if (!prevRoot) delete process.env.PROJECTS_ROOT;
+    await rmrf(dir);
+  }
+});
+
+test('cost-tracking: persists per-turn durationApiMsDelta as duration_api_ms', async () => {
+  const dir = await makeTmpDir();
+  const prevRoot = process.env.PROJECTS_ROOT;
+  process.env.PROJECTS_ROOT = dir;
+
+  try {
+    const { initCostTracking, costsPath } = await import('../src/costTracking.js');
+    const emitter = new EventEmitter();
+    emitter.get = () => fakeInst();
+    initCostTracking(emitter);
+
+    // Both fields present: the per-turn delta wins over the raw cumulative value.
+    emitter.emit('event', { id: 'inst-1', ev: turnEndEv({ costDelta: 0.02, durationApiMs: 54626, durationApiMsDelta: 12430 }) });
+    // Only the raw cumulative present (legacy in-flight event): falls back to it.
+    emitter.emit('event', { id: 'inst-1', ev: turnEndEv({ costDelta: 0.01, durationApiMs: 3200 }) });
+
+    await new Promise(r => setTimeout(r, 50));
+
+    await fs.mkdir(path.join(dir, '.code-conductor'), { recursive: true });
+    const lines = (await fs.readFile(costsPath(), 'utf8').catch(() => '')).split('\n').filter(Boolean);
+    assert.equal(JSON.parse(lines[0]).duration_api_ms, 12430, 'stores the per-turn delta, not the cumulative total');
+    assert.equal(JSON.parse(lines[1]).duration_api_ms, 3200, 'falls back to raw when no delta present');
   } finally {
     process.env.PROJECTS_ROOT = prevRoot ?? '';
     if (!prevRoot) delete process.env.PROJECTS_ROOT;
