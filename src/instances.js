@@ -294,6 +294,12 @@ export class Instance extends EventEmitter {
     // first turn completes. Surfaced in summary() for the messages view's
     // live "time since last response" indicator.
     this.lastResponseAt = null;
+    // Wall-clock creation time, stamped once and never re-written. Surfaced in
+    // summary() so the sidebar's synthetic (not-yet-on-disk) session rows have a
+    // STABLE "last activity" fallback for the pre-first-turn case — before
+    // lastResponseAt is set — instead of a per-render Date.now() that would
+    // re-stamp in lockstep on every unrelated status broadcast (see mergeLive).
+    this.createdAt = Date.now();
     this.proc = null;
     this.parser = new Parser();
     this.ring = new EventLog();
@@ -527,6 +533,7 @@ export class Instance extends EventEmitter {
       firstPrompt: this.firstPrompt,
       title: this.title,
       lastResponseAt: this.lastResponseAt,
+      createdAt: this.createdAt,
       autoApprovePlan: this.autoApprovePlan,
       interrupting: this.interrupting,
       autoResumeAt: this.autoResumeAt,

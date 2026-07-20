@@ -775,3 +775,58 @@ test('a live temp session (excluded from the on-disk list while alive) uses inst
     Date.now = realNow;
   }
 });
+
+test('a synthetic session with no lastResponseAt (pre-first-turn) uses inst.createdAt, not a per-render Date.now() that locksteps to whichever session just finished', async () => {
+  const realNow = Date.now;
+  try {
+    const base = 1_000_000_000_000;
+    Date.now = () => base;
+    // Two live temp instances, both excluded from the on-disk list. NEITHER
+    // has completed a turn yet (lastResponseAt: null) — the exact case the old
+    // `?? Date.now()` fallback mishandled.
+    const { root, sidebar } = await setupSidebar({ onLoadSessions: async () => [] });
+    sidebar.setProjects([{
+      name: 'demo', path: '/p/demo', sessionIds: [], isGitRepo: false, worktrees: [],
+      sessions: { count: 0, lastMtime: 0 },
+    }]);
+    const instA = {
+      id: 'inst-a', project: 'demo', sessionId: 'sid-a', status: 'idle',
+      mode: 'plan', worktree: null, temp: true, lastResponseAt: null, createdAt: base - 10_000,
+    };
+    const instB = {
+      id: 'inst-b', project: 'demo', sessionId: 'sid-b', status: 'idle',
+      mode: 'plan', worktree: null, temp: true, lastResponseAt: null, createdAt: base - 300_000,
+    };
+    sidebar.setInstances([instA, instB]);
+    await new Promise(r => setTimeout(r, 0));
+
+    const agoBySid = () => {
+      const out = {};
+      for (const li of root.querySelectorAll('li')) {
+        const holder = li._holder;
+        const ago = li.querySelector('.session-ago');
+        if (holder?.session?.sessionId && ago) out[holder.session.sessionId] = ago.textContent;
+      }
+      return out;
+    };
+
+    const first = agoBySid();
+    assert.equal(first['sid-a'], '10s ago', 'row A shows its own createdAt age');
+    assert.equal(first['sid-b'], '5m ago', 'row B shows its own createdAt age — distinct value, not shared');
+
+    // Simulate an unrelated running session completing a turn: the clock jumps
+    // and setInstances fires another render (the turn_end broadcast). Before the
+    // fix, both synthetic rows re-stamped to Date.now() and snapped to ~0s in
+    // lockstep. Now each row keeps counting up from its own createdAt.
+    Date.now = () => base + 30_000;
+    sidebar.setInstances([{ ...instA }, { ...instB }]);
+    await new Promise(r => setTimeout(r, 0));
+
+    const after = agoBySid();
+    assert.equal(after['sid-a'], '40s ago', 'row A advanced by real elapsed time, not reset to ~0s');
+    assert.equal(after['sid-b'], '5m ago', 'row B stayed on its own age, not lockstepped to now');
+    assert.notEqual(after['sid-a'], after['sid-b'], 'the two rows never share a single timestamp');
+  } finally {
+    Date.now = realNow;
+  }
+});
