@@ -226,9 +226,9 @@ const MESSAGE_START = line({
   type: 'stream_event',
   event: { type: 'message_start', message: { id: 'msg_1', role: 'assistant', model: 'claude-sonnet-5', usage: { input_tokens: 1, output_tokens: 0 } } },
 });
-const taskStarted = (taskId, tu) => line({
+const taskStarted = (taskId, tu, taskType = 'local_agent') => line({
   type: 'system', subtype: 'task_started', task_id: taskId, tool_use_id: tu,
-  description: 'bg task', task_type: 'local_agent',
+  description: 'bg task', task_type: taskType,
 });
 const taskNotification = (taskId, tu) => line({
   type: 'system', subtype: 'task_notification', task_id: taskId, tool_use_id: tu,
@@ -328,6 +328,33 @@ test('lifecycle: queued notification survives turn_end; the re-invocation turn s
   assert.equal(inst.taskNotificationPending, false, 're-invocation turn start consumes it');
   inst._handleStdoutLine(TURN_END);
   assert.equal(inst.taskNotificationPending, false, 'its turn_end wakes subscribers');
+});
+
+test('lifecycle: a Bash task (task_type:local_bash) never enters the count — no defer for a promoted service', () => {
+  // The CLI fires the same task lifecycle for Bash tasks (run_in_background,
+  // or a timed-out foreground Bash it promotes). A long-lived command (a
+  // started server) never emits a terminal event, so tracking it would defer
+  // the idle wake until the watchdog. It must be excluded at task_started.
+  const inst = makeInstance();
+  inst._handleStdoutLine(MESSAGE_START);
+  inst._handleStdoutLine(taskStarted('b1', 'tu_b1', 'local_bash'));
+  assert.equal(inst.activeAgentTaskCount, 0, 'local_bash task_started is not tracked');
+  inst._handleStdoutLine(toolResult('tu_b1', { text: 'Command running in background with ID: b1' }));
+  inst._handleStdoutLine(TURN_END);
+  assert.equal(inst.status, 'idle');
+  assert.equal(inst.activeAgentTaskCount, 0, 'turn_end wakes: no live-subagent defer');
+  assert.equal(inst.summary().displayStatus, 'idle', 'no stuck running overlay');
+});
+
+test('lifecycle: an unknown task_type still counts (over-report-running polarity)', () => {
+  // Same conservatism as TERMINAL_TASK_STATUSES: only the known non-subagent
+  // type (local_bash) is excluded, so a future agent-ish type keeps deferring.
+  const inst = makeInstance();
+  inst._handleStdoutLine(MESSAGE_START);
+  inst._handleStdoutLine(taskStarted('r1', 'tu_r1', 'remote_agent'));
+  assert.equal(inst.activeAgentTaskCount, 1, 'unrecognized task_type is tracked');
+  inst._handleStdoutLine(taskNotification('r1', 'tu_r1'));
+  assert.equal(inst.activeAgentTaskCount, 0);
 });
 
 test('lifecycle: a notification while idle never sets the flag', () => {
