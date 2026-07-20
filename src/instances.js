@@ -1161,11 +1161,19 @@ export class Instance extends EventEmitter {
       // the tool_use dispatches — for a backgrounded call (`run_in_background:
       // true`) its tool_result resolves immediately, so `turn_end` above can
       // fire while the task is still running. Track it here so `summary()`
-      // can report `displayStatus:'running'` through that window; a
-      // foreground call's task_started/task_updated pair always resolves
-      // before the model can reach turn_end, so this never affects the
-      // ordinary idle case.
-      if (ev.kind === 'system' && ev.subtype === 'task_started' && ev.data?.task_id) {
+      // can report `displayStatus:'running'` through that window. ONLY
+      // subagent tasks are tracked: the CLI fires the same lifecycle for Bash
+      // tasks (`task_type:'local_bash'` — explicit run_in_background AND any
+      // foreground Bash it promotes on timeout/long runtime), and a
+      // deliberately started long-lived process (a server via a promoted
+      // `./start.sh`) never emits a terminal event — counting it would pin
+      // displayStatus:'running' and defer the idle wake / session renewal
+      // until their watchdogs. Unknown task_types stay tracked (same
+      // over-report-running polarity as TERMINAL_TASK_STATUSES). A completed
+      // Bash task that owes a re-invocation turn is still deferred correctly
+      // by _taskNotificationPending, which is task-type-agnostic on purpose.
+      if (ev.kind === 'system' && ev.subtype === 'task_started' && ev.data?.task_id
+          && ev.data.task_type !== 'local_bash') {
         const grew = this._activeAgentTasks.size === 0;
         this._activeAgentTasks.set(ev.data.task_id, ev.data.tool_use_id ?? null);
         if (grew) this.emit('status', this.summary());

@@ -12,6 +12,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-instance.json');
 const SCENARIO_RESUME = path.join(__dirname, 'fixtures', 'scenario-resume.json');
 const SCENARIO_BACKGROUND_TASK = path.join(__dirname, 'fixtures', 'scenario-background-task.json');
+const SCENARIO_BG_BASH_TASK = path.join(__dirname, 'fixtures', 'scenario-bg-bash-task.json');
 
 let ctx, baseUrl, instances, home;
 // Handlers registered by collectEvents/direct instances.on() are gathered here
@@ -1064,6 +1065,35 @@ test('turn_end while a backgrounded Agent task is still running: status stays id
     // turn_end — once processed, the overlay clears back to plain idle.
     await waitFor(() => instances.get(id).summary().activeAgentTasks === 0);
     assert.equal(instances.get(id).summary().displayStatus, 'idle', 'displayStatus reverts once the task completes');
+  } finally {
+    process.env.FAKE_CLAUDE_SCENARIO = prevScenario;
+  }
+});
+
+test('a Bash task (task_type:local_bash) is never tracked: turn_end with it still running reports plain idle', async () => {
+  // Reproduces the stuck-"running" bug: the CLI promotes a timed-out
+  // foreground Bash to a background task (task_type:'local_bash') and a
+  // long-lived command (a started service) never emits a terminal
+  // task_updated/task_notification. Counting it would pin
+  // displayStatus:'running' and defer the idle wake forever — so its
+  // task_started must not enter _activeAgentTasks at all.
+  await setupWithProject();
+  const prevScenario = process.env.FAKE_CLAUDE_SCENARIO;
+  process.env.FAKE_CLAUDE_SCENARIO = SCENARIO_BG_BASH_TASK;
+  try {
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', mode: 'bypassPermissions' });
+    const id = r.body.id;
+    await waitFor(() => instances.get(id).status === 'idle');
+
+    instances.get(id).prompt('start the service');
+    // The scenario ends its turn with the promoted Bash task still open —
+    // no terminal task event ever comes (the modeled command never exits).
+    await waitFor(() => instances.get(id).status === 'idle' && instances.get(id).lastResponseAt != null);
+
+    const summary = instances.get(id).summary();
+    assert.equal(summary.activeAgentTasks, 0, 'local_bash task_started was not tracked');
+    assert.equal(summary.displayStatus, 'idle', 'displayStatus stays plain idle');
+    assert.equal(instances.get(id).activeAgentTaskCount, 0, 'idle-wake gate sees zero live subagents');
   } finally {
     process.env.FAKE_CLAUDE_SCENARIO = prevScenario;
   }

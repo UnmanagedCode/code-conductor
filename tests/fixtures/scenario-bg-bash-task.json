@@ -1,0 +1,24 @@
+{
+  "events": [
+    { "type": "system", "subtype": "init", "session_id": "$SID", "cwd": "$CWD", "model": "claude-sonnet-4-6", "permissionMode": "$MODE", "tools": ["Bash", "Agent"], "uuid": "init-1" }
+  ],
+  "turns": [
+    {
+      "on": { "type": "prompt" },
+      "delay_ms": 20,
+      "emit": [
+        { "type": "stream_event", "event": { "type": "message_start", "message": { "id": "msg_p1", "role": "assistant" } } },
+        { "type": "stream_event", "event": { "type": "content_block_start", "index": 0, "content_block": { "type": "tool_use", "id": "tu_bash1", "name": "Bash", "input": {} } } },
+        { "type": "stream_event", "event": { "type": "content_block_delta", "index": 0, "delta": { "type": "input_json_delta", "partial_json": "{\"command\":\"./start.sh\",\"timeout\":30000}" } } },
+        { "type": "stream_event", "event": { "type": "content_block_stop", "index": 0 } },
+        { "type": "stream_event", "event": { "type": "message_stop" } },
+        { "type": "system", "subtype": "task_started", "task_id": "bgbash1", "tool_use_id": "tu_bash1", "description": "start.sh", "task_type": "local_bash" },
+        {
+          "type": "user",
+          "message": { "role": "user", "content": [ { "type": "tool_result", "tool_use_id": "tu_bash1", "content": "Command running in background with ID: bgbash1. Output is being written to: /tmp/fake-out.txt", "is_error": false } ] }
+        },
+        { "type": "result", "subtype": "success", "stop_reason": "end_turn", "duration_ms": 20, "total_cost_usd": 0.0001, "is_error": false }
+      ]
+    }
+  ]
+}
