@@ -281,7 +281,7 @@ export async function spawnInstance(args, { instances, callerId }) {
     // A non-empty model that is not a tier, family alias, known Ollama tag, or
     // Claude id — refuse instead of resolving to a broken bare-claude spawn.
     throw Object.assign(
-      new Error(`unknown model '${model}' — pass a tier (fast/balanced/powerful/frontier), a Claude model id, or a configured Ollama tag`),
+      new Error(`unknown model '${model}' — pass a capability tier (fast/balanced/powerful/frontier) or a specific model id`),
       { statusCode: 400, code: 'BAD_MODEL' },
     );
   }
