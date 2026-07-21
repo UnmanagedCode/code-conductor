@@ -29,7 +29,7 @@ import {
 } from './transcribe.js';
 import { WHISPER_MODELS, isKnownModel, DEFAULT_MODEL } from './whisperModels.js';
 import {
-  MODEL_FAMILIES, CAPABILITY_TIERS, PROVIDERS, isKnownTier,
+  MODEL_FAMILIES, CAPABILITY_TIERS, PROVIDERS, isKnownTier, ROLES, isKnownRole,
 } from './modelVersions.js';
 import {
   isAvailable as ttsAvailable, synthesize, voicePathForName,
@@ -47,6 +47,7 @@ import {
   getEnabledTiers, setTierEnabled,
   getDefaultSpawnTier, setDefaultSpawnTier,
   getTierBackend, setTierBackend,
+  getRoleBinding, setRoleBinding,
   getCustomBackends, addCustomBackend, removeCustomBackend,
 } from './appSettings.js';
 import * as whisperInstall from './whisperInstall.js';
@@ -1060,11 +1061,17 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
   // version catalog (MODEL_FAMILIES — the Anthropic backend's model list), the
   // user's custom Ollama models, the curated Ollama cloud preset catalog +
   // its per-tier defaults, the capability-tier list + each tier's
-  // {kind, model} binding, and the global Sonnet-window preference.
+  // {kind, model} binding, the role list + each role's stored binding (a tier
+  // binding {kind:'tier',tier} or a custom {kind,model}), and the global
+  // Sonnet-window preference.
   function modelsSettingsState() {
     const tierBackend = {};
     for (const t of CAPABILITY_TIERS) {
       tierBackend[t.tier] = getTierBackend(t.tier); // {kind, model}
+    }
+    const roleBackend = {};
+    for (const r of ROLES) {
+      roleBackend[r.role] = getRoleBinding(r.role); // {kind:'tier',tier} | {kind,model}
     }
     return { providers: PROVIDERS, backends: MODEL_FAMILIES, onOverage: getOnOverageAction(),
       overageThreshold: getOverageThreshold(),
@@ -1072,6 +1079,8 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
       sonnetContextWindow: getSonnetContextWindow(),
       tiers: CAPABILITY_TIERS,
       tierBackend,
+      roles: ROLES,
+      roleBackend,
       customBackends: getCustomBackends(),
       ollamaCloudModels: OLLAMA_CLOUD_MODELS,
       ollamaCloudTierDefaults: OLLAMA_CLOUD_TIER_DEFAULTS,
@@ -1086,7 +1095,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
   r.post('/settings/models/prefs', async (req, res, next) => {
     try {
       const { onOverage, overageThreshold, conductorCompactWindow, sonnetContextWindow,
-              tierEnabled, defaultSpawnTier, tierBackend } = req.body ?? {};
+              tierEnabled, defaultSpawnTier, tierBackend, roleBackend } = req.body ?? {};
       if (typeof onOverage === 'string') await setOnOverageAction(onOverage);
       if (overageThreshold !== undefined) await setOverageThreshold(overageThreshold);
       if (conductorCompactWindow !== undefined) await setConductorCompactWindow(conductorCompactWindow);
@@ -1105,6 +1114,14 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
           return res.status(400).json({ error: 'tierBackend must be {tier, backend:{kind,model}} with a known tier' });
         }
         await setTierBackend(tierBackend.tier, tierBackend.backend);
+      }
+      if (roleBackend !== undefined) {
+        // backend is a tier binding {kind:'tier',tier} or a {kind,model} custom
+        // backend — setRoleBinding validates it (400 otherwise).
+        if (!roleBackend || typeof roleBackend !== 'object' || !isKnownRole(roleBackend.role)) {
+          return res.status(400).json({ error: 'roleBackend must be {role, backend} with a known role' });
+        }
+        await setRoleBinding(roleBackend.role, roleBackend.backend);
       }
       // Bidirectional on-demand re-evaluation: a save that touched the overage action
       // or threshold should take effect on whatever is happening right now, not wait

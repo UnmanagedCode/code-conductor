@@ -150,6 +150,11 @@
               <span class="sm-col-header">default</span>
             </div>
             <ul id="sm-tier-list" class="sm-family-list"></ul>
+            <fieldset class="sm-group sm-roles">
+              <legend>Roles</legend>
+              <p class="settings-hint">A role binds to a capability tier (follows whatever that tier points at) or a <strong>Custom</strong> backend. Spawn callers resolve a role to its backend — the Conduct dialog uses the <strong>Conductor</strong> role.</p>
+              <ul id="sm-role-list" class="sm-role-list"></ul>
+            </fieldset>
             <fieldset class="sm-group sm-custom">
               <legend>Custom models (Ollama)</legend>
               <p class="settings-hint">Add an Ollama-served model (served on <code>localhost:11434</code>), then pick <strong>Ollama</strong> as a tier's backend above and select it. It launches via <code>ollama launch claude</code>; a bound tier resolves straight to the tag. The <strong>context</strong> field (tokens, optional) sets the model's native window — it drives the context-usage bar and the CLI auto-compact point; leave blank to use the 200k default.</p>
@@ -496,13 +501,7 @@
   <dialog id="conduct-dialog">
     <form method="dialog">
       <h3>🎼 New Conduct session</h3>
-      <p class="hint">Spawns a temp Claude session in the hidden <code>.conduct</code> project, pre-configured to orchestrate other sessions via MCP. The transcript is wiped on exit.</p>
-      <div class="quick-spawn-models">
-        <button type="button" class="cd-model qs-model" data-tier="fast">Fast<span class="qs-sublabel">Haiku 4.5</span></button>
-        <button type="button" class="cd-model qs-model" data-tier="balanced">Balanced<span class="qs-sublabel">Sonnet 5</span></button>
-        <button type="button" class="cd-model qs-model" data-tier="powerful">Powerful<span class="qs-sublabel">Opus 4.8</span></button>
-        <button type="button" class="cd-model qs-model" data-tier="frontier">Frontier<span class="qs-sublabel">Fable 5</span></button>
-      </div>
+      <p class="hint">Spawns a temp Claude session in the hidden <code>.conduct</code> project, pre-configured to orchestrate other sessions via MCP. It uses the <strong>Conductor</strong> role's model (set in Settings → Models). The transcript is wiped on exit.</p>
       <div class="qs-mode-toggle" role="group" aria-label="Spawn mode">
         <button type="button" id="cd-mode-code" class="qs-mode-opt" data-mode="code" aria-pressed="true">Code</button>
         <button type="button" id="cd-mode-plan" class="qs-mode-opt" data-mode="plan" aria-pressed="false">Plan &amp; Approve</button>
@@ -510,6 +509,7 @@
       <p class="error" id="cd-error"></p>
       <menu>
         <button value="cancel">Cancel</button>
+        <button type="button" id="cd-spawn">Start session</button>
       </menu>
     </form>
   </dialog>

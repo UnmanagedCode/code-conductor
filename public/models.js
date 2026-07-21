@@ -36,6 +36,14 @@ const DEFAULT_TIER_BACKEND = {
 };
 const DEFAULT_TIER_LABELS = { fast: 'Fast', balanced: 'Balanced', powerful: 'Powerful', frontier: 'Frontier' };
 
+// Pre-fetch fallback role→binding (mirrors DEFAULT_ROLE_BINDING in
+// src/modelVersions.js). A role binds to a tier ({kind:'tier',tier}) or a custom
+// {kind,model} backend. Overwritten by the shipped catalog at boot.
+const DEFAULT_ROLE_BINDING = {
+  conductor: { kind: 'tier', tier: 'powerful' },
+  reviewer:  { kind: 'tier', tier: 'powerful' },
+};
+
 let activeSonnetWindow = '1m';
 let activeTierEnabled = { fast: true, balanced: true, powerful: true, frontier: true };
 let activeDefaultSpawnTier = 'powerful';
@@ -44,12 +52,17 @@ let sonnetFixedWindowByVersion = { 'claude-sonnet-5': '1m' };
 let claudeVersionLabelById = {};
 let tierList = Object.keys(DEFAULT_TIER_BACKEND);
 let tierLabels = { ...DEFAULT_TIER_LABELS };
+let activeRoleBinding = { ...DEFAULT_ROLE_BINDING };
 let providers = [{ kind: 'claude', label: 'Claude' }, { kind: 'ollama', label: 'Ollama' }];
 let customBackends = []; // [{label, model, contextWindow?}]
 let ollamaCloudModels = []; // curated catalog [{label, model, contextWindow}]
 
 export function getTierList() { return tierList; }
 export function getTierLabel(tier) { return tierLabels[tier] || tier; }
+// Returns the role's binding (a tier binding {kind:'tier',tier} or a custom
+// {kind,model}), falling back to the pre-fetch default.
+export function getActiveRoleBinding(role) { return activeRoleBinding[role] || DEFAULT_ROLE_BINDING[role]; }
+export function setActiveRoleBindings(map) { activeRoleBinding = { ...activeRoleBinding, ...(map || {}) }; }
 export function getProviders() { return providers; }
 export function getCustomBackends() { return customBackends; }
 export function setCustomBackends(list) { customBackends = Array.isArray(list) ? list : []; return customBackends; }
@@ -134,6 +147,7 @@ export async function loadModelVersions() {
       if (Array.isArray(data.providers) && data.providers.length) providers = data.providers;
       setActiveSonnetWindow(data.sonnetContextWindow);
       if (data.tierBackend) setActiveTierBackend(data.tierBackend);
+      if (data.roleBackend) setActiveRoleBindings(data.roleBackend);
       if (data.enabledTiers) setActiveTierEnabled(data.enabledTiers);
       setActiveDefaultSpawnTier(data.defaultSpawnTier);
       setCustomBackends(data.customBackends);
@@ -147,6 +161,18 @@ export async function loadModelVersions() {
 // carries the Sonnet window suffix; for 'ollama' it's the bare tag.
 export function resolveSpawnModel(tier) {
   const b = getActiveTierBackend(tier);
+  if (!b || !b.model) return { model: '', backendKind: 'claude' };
+  if (b.kind === 'ollama') return { model: b.model, backendKind: 'ollama' };
+  return { model: applyClaudeWindow(b.model), backendKind: 'claude' };
+}
+
+// Resolve a role to the spawn args {model, backendKind}. A tier binding
+// delegates to resolveSpawnModel (mirrors the server's resolveRoleBackend); a
+// custom binding resolves like a tier's own {kind,model} (Claude window suffix
+// applied for claude, bare tag for ollama).
+export function resolveSpawnRole(role) {
+  const b = getActiveRoleBinding(role);
+  if (b && b.kind === 'tier') return resolveSpawnModel(b.tier);
   if (!b || !b.model) return { model: '', backendKind: 'claude' };
   if (b.kind === 'ollama') return { model: b.model, backendKind: 'ollama' };
   return { model: applyClaudeWindow(b.model), backendKind: 'claude' };

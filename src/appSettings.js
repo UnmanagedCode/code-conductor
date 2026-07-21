@@ -11,7 +11,8 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { orchStoreRoot, writeFileAtomic } from './projects.js';
-import { CAPABILITY_TIERS, DEFAULT_TIER_BACKEND, isKnownTier, isKnownClaudeModel } from './modelVersions.js';
+import { CAPABILITY_TIERS, DEFAULT_TIER_BACKEND, isKnownTier, isKnownClaudeModel,
+  DEFAULT_ROLE_BINDING, isKnownRole } from './modelVersions.js';
 import { OLLAMA_CLOUD_MODELS, isKnownOllamaCloudModel } from './ollamaCloudModels.js';
 
 function settingsPath() {
@@ -304,6 +305,46 @@ export async function setTierBackend(tier, backend) {
   const next = { ...cur, models: { ...(cur.models || {}), tierBackend: nextTierBackend } };
   await writeSettings(next);
   return nextTierBackend;
+}
+
+// Roles group: role → binding. A binding is EITHER a tier binding
+// ({kind:'tier', tier}) or a custom {kind, model} backend (same shape a tier
+// binds to). A tier binding validates via isKnownTier; a custom binding via
+// isValidBinding.
+function isValidRoleBinding(b) {
+  if (b && typeof b === 'object' && b.kind === 'tier') return isKnownTier(b.tier);
+  return isValidBinding(b);
+}
+
+// Stored role binding (revert dead/invalid binding to the role default on read,
+// like getTierBackend). A tier binding whose tier vanished, or a custom binding
+// whose backend was removed, falls back to DEFAULT_ROLE_BINDING[role].
+export function getRoleBinding(role) {
+  const s = loadSync();
+  const stored = s.models?.roleBackend?.[role];
+  return isValidRoleBinding(stored) ? stored : DEFAULT_ROLE_BINDING[role];
+}
+
+export async function setRoleBinding(role, binding) {
+  if (!isKnownRole(role) || !isValidRoleBinding(binding)) {
+    throw Object.assign(new Error('roleBackend must be a known tier binding {kind:"tier",tier} or a {kind,model} backend'), { statusCode: 400 });
+  }
+  const stored = binding.kind === 'tier'
+    ? { kind: 'tier', tier: binding.tier }
+    : { kind: binding.kind, model: binding.model };
+  const cur = loadSync();
+  const nextRoleBackend = { ...(cur.models?.roleBackend || {}), [role]: stored };
+  const next = { ...cur, models: { ...(cur.models || {}), roleBackend: nextRoleBackend } };
+  await writeSettings(next);
+  return nextRoleBackend;
+}
+
+// Resolve a role to a concrete {kind, model}. A tier binding delegates to
+// getTierBackend (so a role→tier→dead-custom chain still reverts correctly); a
+// custom binding is returned directly.
+export function resolveRoleBackend(role) {
+  const b = getRoleBinding(role);
+  return b.kind === 'tier' ? getTierBackend(b.tier) : { kind: b.kind, model: b.model };
 }
 
 // Models group: conductor compact window override. When enabled, sets

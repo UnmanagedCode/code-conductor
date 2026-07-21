@@ -104,6 +104,27 @@ export function isKnownTier(tier) {
   return CAPABILITY_TIERS.some(t => t.tier === tier);
 }
 
+// --- Roles --------------------------------------------------------------
+// Data-driven set of named roles, a second bindable layer parallel to the
+// capability tiers. A role binds (via Settings, see appSettings.js
+// `getRoleBinding`) to EITHER a capability tier ({kind:'tier', tier}) — follow
+// whatever that tier points at — or a custom backend ({kind, model}, the same
+// shape a tier uses). Adding a role is a one-line change to this array.
+export const ROLES = [
+  { role: 'conductor', label: 'Conductor' },
+  { role: 'reviewer',  label: 'Reviewer' },
+];
+
+// Default role → binding. Both point at the `powerful` tier out of the box.
+export const DEFAULT_ROLE_BINDING = {
+  conductor: { kind: 'tier', tier: 'powerful' },
+  reviewer:  { kind: 'tier', tier: 'powerful' },
+};
+
+export function isKnownRole(role) {
+  return ROLES.some(r => r.role === role);
+}
+
 export function isKnownVersion(family, id) {
   const f = MODEL_FAMILIES.find(x => x.family === family);
   return !!f && f.versions.some(v => v.id === id);

@@ -22,7 +22,7 @@
 // Returns { openSpawnDialog, syncTierModelLabels, syncTierVisibility } — the
 // only handles with external callers; openConductDialog/makeModeToggle/
 // spawnInstance/defaultSpawnTier stay internal.
-import { resolveSpawnModel, getVersionLabel,
+import { resolveSpawnModel, resolveSpawnRole, getVersionLabel,
   getTierList, getActiveTierEnabled, getActiveDefaultSpawnTier, getActiveTierBackend } from './models.js';
 
 export function installSpawnDialog({ dom, getProjects, refreshProjects, refreshInstances, selectInstance, closeSidebarOverflow }) {
@@ -263,13 +263,11 @@ export function installSpawnDialog({ dom, getProjects, refreshProjects, refreshI
     dom.conductDialog.showModal();
   }
   dom.conductBtn.addEventListener('click', openConductDialog);
-  dom.conductDialog.addEventListener('click', (e) => {
-    const btn = e.target.closest('.cd-model');
-    if (!btn) return;
+  // Start session: always spawns the .conduct session with the conductor role's
+  // resolved model (configured in Settings → Models), plus the Code/Plan toggle.
+  dom.cdSpawn.addEventListener('click', (e) => {
     e.preventDefault();
-    const tier = btn.dataset.tier;
-    if (!tier) return;
-    const { model, backendKind } = resolveSpawnModel(tier);
+    const { model, backendKind } = resolveSpawnRole('conductor');
     if (model) spawnInstance({ project: '.conduct', model, backendKind, planMode: cdMode.planMode, dialogEl: dom.conductDialog, errorEl: dom.cdError });
   });
 

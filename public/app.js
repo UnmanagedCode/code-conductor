@@ -38,7 +38,7 @@ import { installSessionStats } from './sessionStats.js';
 import { installWsRouter } from './wsRouter.js';
 import { latestOnly } from './latestOnly.js';
 import { loadModelVersions, setActiveSonnetWindow,
-  setActiveTierEnabled, setActiveDefaultSpawnTier, setActiveTierBackend, setCustomBackends } from './models.js';
+  setActiveTierEnabled, setActiveDefaultSpawnTier, setActiveTierBackend, setActiveRoleBindings, setCustomBackends } from './models.js';
 import { setTtsAvailable, setTtsEnabled, setTtsRate } from './tts.js';
 
 const state = {
@@ -148,6 +148,7 @@ const dom = {
   conductDialog: document.getElementById('conduct-dialog'),
   cdModeCode: document.getElementById('cd-mode-code'),
   cdModePlan: document.getElementById('cd-mode-plan'),
+  cdSpawn: document.getElementById('cd-spawn'),
   cdError: document.getElementById('cd-error'),
   syncBtn: document.getElementById('sync-btn'),
   mergeBtn: document.getElementById('merge-btn'),
@@ -527,6 +528,7 @@ const settings = installSettings({
   onModelsChange: data => {
     setActiveSonnetWindow(data.sonnetContextWindow);
     if (data.tierBackend) setActiveTierBackend(data.tierBackend);
+    if (data.roleBackend) setActiveRoleBindings(data.roleBackend);
     if (data.enabledTiers) setActiveTierEnabled(data.enabledTiers);
     setActiveDefaultSpawnTier(data.defaultSpawnTier);
     setCustomBackends(data.customBackends);
@@ -822,6 +824,7 @@ spawnHandles = installSpawnDialog({
     conductDialog: dom.conductDialog,
     cdModeCode: dom.cdModeCode,
     cdModePlan: dom.cdModePlan,
+    cdSpawn: dom.cdSpawn,
     cdError: dom.cdError,
   },
   getProjects: () => state.projects,
