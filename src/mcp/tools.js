@@ -128,12 +128,8 @@ export function buildTools() {
           model: {
             type: 'string',
             description:
-              'Capability tier — fast / balanced / powerful / frontier (the primary vocabulary); each resolves ' +
-              'via Settings → Models to its bound backend: a Claude version or a local Ollama model. Also ' +
-              "accepted: a legacy Claude family alias (opus / sonnet / haiku / fable) → that family's default " +
-              'version, a full Claude model id (e.g. claude-sonnet-4-6) as pass-through, or a configured/curated ' +
-              'Ollama tag (e.g. glm-5.2:cloud) to spawn directly on the Ollama backend. ' +
-              'Empty/omitted uses the account default.',
+              'Capability tier — fast / balanced / powerful / frontier (the primary vocabulary) — or a ' +
+              'specific model id to pin one exact model. Empty/omitted uses the account default.',
           },
           resume: { type: 'string', description: 'Optional sessionId to resume (vs. spawning a fresh session).' },
           worktree: {
