@@ -31,6 +31,7 @@ export function installSettings({
   // Models group elements.
   const smStatusEl = document.getElementById('sm-status');
   const smListEl = document.getElementById('sm-tier-list');
+  const smRoleListEl = document.getElementById('sm-role-list');
   const smCustomListEl = document.getElementById('sm-custom-list');
   const smCustomLabelEl = document.getElementById('sm-custom-label');
   const smCustomModelEl = document.getElementById('sm-custom-model');
@@ -359,6 +360,82 @@ export function installSettings({
       return `${versionLabel(b.model)}${extra}`;
     }
 
+    // Shared backend + model picker (Claude/Ollama), reused by both tier rows
+    // and role custom bindings. `b` is a {kind, model} binding; callbacks fire
+    // on a provider switch (onKind), a Claude version pick (onClaude(model,
+    // window)), or an Ollama tag pick (onOllama(model)). Returns the two <select>
+    // elements so the caller can place them.
+    function buildBackendPicker(b, enabled, { onKind, onClaude, onOllama }) {
+      // Backend (provider) select — Claude / Ollama.
+      const backendSel = document.createElement('select');
+      backendSel.className = 'sm-backend';
+      backendSel.disabled = !enabled;
+      for (const p of providers) {
+        const opt = document.createElement('option');
+        opt.value = p.kind;
+        opt.textContent = p.label;
+        if (p.kind === b.kind) opt.selected = true;
+        backendSel.appendChild(opt);
+      }
+      backendSel.addEventListener('change', () => onKind(backendSel.value));
+
+      // Model select, scoped to the row's backend kind.
+      const sel = document.createElement('select');
+      sel.className = 'sm-version';
+      sel.disabled = !enabled;
+      if (b.kind === 'ollama') {
+        if (!ollamaCloudModels.length && !customBackends.length) {
+          const opt = document.createElement('option');
+          opt.textContent = '(add a model below)';
+          sel.appendChild(opt);
+          sel.disabled = true;
+        } else {
+          const addGroup = (label, list) => {
+            if (!list.length) return;
+            const grp = document.createElement('optgroup');
+            grp.label = label;
+            for (const c of list) {
+              const opt = document.createElement('option');
+              opt.value = c.model;
+              opt.textContent = `${c.label} — ${c.model}`;
+              if (c.model === b.model) opt.selected = true;
+              grp.appendChild(opt);
+            }
+            sel.appendChild(grp);
+          };
+          addGroup('Ollama Cloud', ollamaCloudModels);
+          addGroup('My Models', customBackends);
+          sel.addEventListener('change', () => onOllama(sel.value));
+        }
+      } else {
+        // Claude version list; Sonnet 4.x expands to 200k/1M sub-entries (which
+        // also set the global sonnetContextWindow), matching the window policy.
+        for (const v of claudeVersions) {
+          if (v.family === 'sonnet' && !v.fixedWindow) {
+            for (const w of ['200k', '1m']) {
+              const opt = document.createElement('option');
+              opt.value = v.id;
+              opt.dataset.window = w;
+              opt.textContent = `${v.label} — ${w === '200k' ? '200k' : '1M'}`;
+              if (v.id === b.model && w === sonnetWindow) opt.selected = true;
+              sel.appendChild(opt);
+            }
+          } else {
+            const opt = document.createElement('option');
+            opt.value = v.id;
+            opt.textContent = v.label;
+            if (v.id === b.model) opt.selected = true;
+            sel.appendChild(opt);
+          }
+        }
+        sel.addEventListener('change', () => {
+          const opt = sel.options[sel.selectedIndex];
+          onClaude(opt.value, opt.dataset.window || null);
+        });
+      }
+      return { backendSel, modelSel: sel };
+    }
+
     renderCustomList(customBackends);
 
     if (smStatusEl) {
@@ -397,76 +474,15 @@ export function installSettings({
       labelEl.textContent = t.label;
       li.appendChild(labelEl);
 
-      // Column 3: backend (provider) select — Claude / Ollama.
-      const backendSel = document.createElement('select');
-      backendSel.className = 'sm-backend';
+      // Columns 3 & 4: backend (provider) + model selects (shared picker).
+      const { backendSel, modelSel } = buildBackendPicker(b, isEnabled, {
+        onKind: (kind) => onPickBackendKind(t.tier, kind),
+        onClaude: (model, window) => onPickClaudeModel(t.tier, model, window),
+        onOllama: (model) => onPickOllamaModel(t.tier, model),
+      });
       backendSel.dataset.tier = t.tier;
-      backendSel.disabled = !isEnabled;
-      for (const p of providers) {
-        const opt = document.createElement('option');
-        opt.value = p.kind;
-        opt.textContent = p.label;
-        if (p.kind === b.kind) opt.selected = true;
-        backendSel.appendChild(opt);
-      }
-      backendSel.addEventListener('change', () => onPickBackendKind(t.tier, backendSel.value));
       li.appendChild(backendSel);
-
-      // Column 4: model select, scoped to the row's backend kind.
-      const sel = document.createElement('select');
-      sel.className = 'sm-version';
-      sel.disabled = !isEnabled;
-      if (b.kind === 'ollama') {
-        if (!ollamaCloudModels.length && !customBackends.length) {
-          const opt = document.createElement('option');
-          opt.textContent = '(add a model below)';
-          sel.appendChild(opt);
-          sel.disabled = true;
-        } else {
-          const addGroup = (label, list) => {
-            if (!list.length) return;
-            const grp = document.createElement('optgroup');
-            grp.label = label;
-            for (const c of list) {
-              const opt = document.createElement('option');
-              opt.value = c.model;
-              opt.textContent = `${c.label} — ${c.model}`;
-              if (c.model === b.model) opt.selected = true;
-              grp.appendChild(opt);
-            }
-            sel.appendChild(grp);
-          };
-          addGroup('Ollama Cloud', ollamaCloudModels);
-          addGroup('My Models', customBackends);
-          sel.addEventListener('change', () => onPickOllamaModel(t.tier, sel.value));
-        }
-      } else {
-        // Claude version list; Sonnet 4.x expands to 200k/1M sub-entries (which
-        // also set the global sonnetContextWindow), matching the window policy.
-        for (const v of claudeVersions) {
-          if (v.family === 'sonnet' && !v.fixedWindow) {
-            for (const w of ['200k', '1m']) {
-              const opt = document.createElement('option');
-              opt.value = v.id;
-              opt.dataset.window = w;
-              opt.textContent = `${v.label} — ${w === '200k' ? '200k' : '1M'}`;
-              if (v.id === b.model && w === sonnetWindow) opt.selected = true;
-              sel.appendChild(opt);
-            }
-          } else {
-            const opt = document.createElement('option');
-            opt.value = v.id;
-            opt.textContent = v.label;
-            if (v.id === b.model) opt.selected = true;
-            sel.appendChild(opt);
-          }
-        }
-        sel.addEventListener('change', () => {
-          const opt = sel.options[sel.selectedIndex];
-          onPickClaudeModel(t.tier, opt.value, opt.dataset.window || null);
-        });
-      }
-      li.appendChild(sel);
+      li.appendChild(modelSel);
 
       // Column 5: default radio
       const radio = document.createElement('input');
@@ -480,6 +496,58 @@ export function installSettings({
       li.appendChild(radio);
 
       smListEl.appendChild(li);
+    }
+
+    // ── Roles ────────────────────────────────────────────────────────────
+    // Each role picks one of the tiers OR "Custom"; the backend + model pickers
+    // (shared with tier rows) show only when Custom is selected.
+    if (smRoleListEl) {
+      const roles = data.roles || [];
+      const roleBackend = data.roleBackend || {}; // {role: {kind:'tier',tier} | {kind,model}}
+      smRoleListEl.innerHTML = '';
+      for (const r of roles) {
+        const rb = roleBackend[r.role] || { kind: 'tier', tier: defaultTier };
+        const isCustom = rb.kind !== 'tier';
+
+        const li = document.createElement('li');
+        li.className = 'sm-role-row';
+
+        const labelEl = document.createElement('span');
+        labelEl.className = 'sm-family-label';
+        labelEl.textContent = r.label;
+        li.appendChild(labelEl);
+
+        // Binding select: one option per tier + a final "Custom".
+        const bindingSel = document.createElement('select');
+        bindingSel.className = 'sm-role-binding';
+        for (const t of tiers) {
+          const opt = document.createElement('option');
+          opt.value = `tier:${t.tier}`;
+          opt.textContent = t.label;
+          if (!isCustom && rb.tier === t.tier) opt.selected = true;
+          bindingSel.appendChild(opt);
+        }
+        const customOpt = document.createElement('option');
+        customOpt.value = 'custom';
+        customOpt.textContent = 'Custom';
+        if (isCustom) customOpt.selected = true;
+        bindingSel.appendChild(customOpt);
+        bindingSel.addEventListener('change', () => onPickRoleBinding(r.role, bindingSel.value));
+        li.appendChild(bindingSel);
+
+        // Custom backend + model pickers, only when Custom is selected.
+        if (isCustom) {
+          const { backendSel, modelSel } = buildBackendPicker(rb, true, {
+            onKind: (kind) => onPickRoleBackendKind(r.role, kind),
+            onClaude: (model, window) => saveRoleBinding(r.role, { kind: 'claude', model }, window || undefined),
+            onOllama: (model) => saveRoleBinding(r.role, { kind: 'ollama', model }),
+          });
+          li.appendChild(backendSel);
+          li.appendChild(modelSel);
+        }
+
+        smRoleListEl.appendChild(li);
+      }
     }
 
     // Overage prefs live on the Account page but ride in this same models payload,
@@ -528,10 +596,7 @@ export function installSettings({
       if (!chosen) { if (smStatusEl) smStatusEl.textContent = 'Add an Ollama model below first.'; renderModels(lastModelsData); return; }
       return saveTierBinding(tier, { kind: 'ollama', model: chosen.model });
     }
-    const backends = lastModelsData?.backends || [];
-    const sonnet = backends.find(b => b.family === 'sonnet') || backends[0];
-    const model = sonnet?.default || backends[0]?.versions?.[0]?.id;
-    return saveTierBinding(tier, { kind: 'claude', model });
+    return saveTierBinding(tier, { kind: 'claude', model: defaultClaudeModel() });
   }
 
   function onPickClaudeModel(tier, model, window) {
@@ -540,6 +605,52 @@ export function installSettings({
 
   function onPickOllamaModel(tier, model) {
     return saveTierBinding(tier, { kind: 'ollama', model });
+  }
+
+  // The Claude version a "switch to Custom" / "switch to Claude" pick defaults
+  // to (Sonnet default, else the first catalog version).
+  function defaultClaudeModel() {
+    const backends = lastModelsData?.backends || [];
+    const sonnet = backends.find(b => b.family === 'sonnet') || backends[0];
+    return sonnet?.default || backends[0]?.versions?.[0]?.id;
+  }
+
+  // Persist a role binding — a tier binding {kind:'tier',tier} or a custom
+  // {kind, model} (+ optional Sonnet window) — in one /prefs POST.
+  async function saveRoleBinding(role, backend, sonnetContextWindow) {
+    try {
+      const body = { roleBackend: { role, backend } };
+      if (sonnetContextWindow) body.sonnetContextWindow = sonnetContextWindow;
+      const r = await fetch('/api/settings/models/prefs', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+      renderModels(data);
+      onModelsChange?.(data);
+    } catch (e) {
+      if (smStatusEl) smStatusEl.textContent = `Switch failed: ${e.message || e}`;
+    }
+  }
+
+  // Role binding select: a `tier:<t>` value binds to that tier; `custom` seeds a
+  // default Claude custom binding so the pickers appear populated.
+  function onPickRoleBinding(role, value) {
+    if (value.startsWith('tier:')) return saveRoleBinding(role, { kind: 'tier', tier: value.slice(5) });
+    return saveRoleBinding(role, { kind: 'claude', model: defaultClaudeModel() });
+  }
+
+  // Switching a role's custom provider: pick a sensible default model for the
+  // new kind (Sonnet default for Claude; first cloud preset / custom for Ollama).
+  function onPickRoleBackendKind(role, kind) {
+    if (kind === 'ollama') {
+      const chosen = (lastModelsData?.ollamaCloudModels || [])[0] || lastModelsData?.customBackends?.[0];
+      if (!chosen) { if (smStatusEl) smStatusEl.textContent = 'Add an Ollama model below first.'; renderModels(lastModelsData); return; }
+      return saveRoleBinding(role, { kind: 'ollama', model: chosen.model });
+    }
+    return saveRoleBinding(role, { kind: 'claude', model: defaultClaudeModel() });
   }
 
   async function onPickTierEnabled(tier, enabled) {

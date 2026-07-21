@@ -128,8 +128,8 @@ export function buildTools() {
           model: {
             type: 'string',
             description:
-              'Capability tier — fast / balanced / powerful / frontier (the primary vocabulary) — or a ' +
-              'specific model id to pin one exact model. Empty/omitted uses the account default.',
+              'A capability tier (fast / balanced / powerful / frontier — the primary vocabulary), a role, ' +
+              'or a specific model id to pin one exact model. Empty/omitted uses the account default.',
           },
           resume: { type: 'string', description: 'Optional sessionId to resume (vs. spawning a fresh session).' },
           worktree: {

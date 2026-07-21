@@ -14,7 +14,7 @@ import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf, fakeOllamaReachable, fakeOllamaUnreachable } from './helpers.mjs';
-import { addCustomBackend, setTierBackend } from '../src/appSettings.js';
+import { addCustomBackend, setTierBackend, setRoleBinding } from '../src/appSettings.js';
 import { isOllamaSession, getOllamaSession, markOllamaSession } from '../src/sessionBackends.js';
 import { claudeProjectsRoot, encodeCwd } from '../src/projects.js';
 import { resolveBackendLaunch } from '../src/claudeLauncher.js';
@@ -148,6 +148,41 @@ describe('tier → {kind,model} resolution (MCP spawn)', () => {
     await setTierBackend('fast', { kind: 'claude', model: 'claude-haiku-4-5' });
     await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
     const spawned = await callTool('spawn_instance', { project: 'p', mode: 'bypassPermissions', model: 'fast' });
+    await waitFor(() => instances.idsForSession(spawned.sessionId).length > 0);
+    const inst = instances.get(instances.idsForSession(spawned.sessionId)[0]);
+    assert.equal(inst.backendKind, 'claude');
+    assert.equal(inst.model, 'claude-haiku-4-5');
+  });
+});
+
+describe('role → {kind,model} resolution (MCP spawn)', () => {
+  let rpcId = 1;
+  async function callTool(name, args) {
+    const res = await fetch(baseUrl + '/mcp', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: rpcId++, method: 'tools/call', params: { name, arguments: args } }),
+    });
+    const body = await res.json();
+    return JSON.parse(body.result.content[0].text);
+  }
+
+  test('a tier-bound role follows the tier (ollama)', async () => {
+    await addCustomBackend({ label: 'Local', model: 'gemma4:cloud' });
+    await setTierBackend('powerful', { kind: 'ollama', model: 'gemma4:cloud' });
+    await setRoleBinding('conductor', { kind: 'tier', tier: 'powerful' });
+    await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
+    const spawned = await callTool('spawn_instance', { project: 'p', mode: 'bypassPermissions', model: 'conductor' });
+    await waitFor(() => instances.idsForSession(spawned.sessionId).length > 0);
+    const inst = instances.get(instances.idsForSession(spawned.sessionId)[0]);
+    assert.equal(inst.backendKind, 'ollama');
+    assert.equal(inst.model, 'gemma4:cloud');
+  });
+
+  test('a custom Claude-bound role resolves to that claude model', async () => {
+    await setRoleBinding('reviewer', { kind: 'claude', model: 'claude-haiku-4-5' });
+    await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
+    const spawned = await callTool('spawn_instance', { project: 'p', mode: 'bypassPermissions', model: 'reviewer' });
     await waitFor(() => instances.idsForSession(spawned.sessionId).length > 0);
     const inst = instances.get(instances.idsForSession(spawned.sessionId)[0]);
     assert.equal(inst.backendKind, 'claude');

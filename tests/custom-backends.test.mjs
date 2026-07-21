@@ -10,8 +10,9 @@ import { bootServer, api, freshProjectsRoot, rmrf } from './helpers.mjs';
 import {
   addCustomBackend, getCustomBackends, removeCustomBackend, isKnownOllamaModel,
   getTierBackend, setTierBackend, getOllamaContextWindow,
+  getRoleBinding, setRoleBinding, resolveRoleBackend,
 } from '../src/appSettings.js';
-import { familyOf, canonicalizeModel, isKnownClaudeModel, PROVIDERS, DEFAULT_TIER_BACKEND } from '../src/modelVersions.js';
+import { familyOf, canonicalizeModel, isKnownClaudeModel, PROVIDERS, DEFAULT_TIER_BACKEND, DEFAULT_ROLE_BINDING } from '../src/modelVersions.js';
 import { isOllamaSession, getOllamaSession, markOllamaSession, unmarkOllamaSession, loadAll } from '../src/sessionBackends.js';
 import { checkOllamaReachable, checkModelAvailable, OLLAMA_BASE } from '../src/ollamaBackend.js';
 
@@ -145,6 +146,52 @@ describe('backend-agnostic data model', () => {
     await assert.rejects(() => setTierBackend('bogus', { kind: 'claude', model: 'claude-opus-4-8' }), /known backend/);
   });
 
+  test('role binding: default is a tier binding; tier vs custom, no silent revert', async () => {
+    // Out of the box, conductor binds to the powerful tier.
+    assert.deepEqual(getRoleBinding('conductor'), DEFAULT_ROLE_BINDING.conductor);
+    assert.equal(DEFAULT_ROLE_BINDING.conductor.kind, 'tier');
+
+    // Tier binding reads back verbatim.
+    await setRoleBinding('conductor', { kind: 'tier', tier: 'fast' });
+    assert.deepEqual(getRoleBinding('conductor'), { kind: 'tier', tier: 'fast' });
+
+    // Custom claude binding reads back verbatim.
+    await setRoleBinding('reviewer', { kind: 'claude', model: 'claude-opus-4-7' });
+    assert.deepEqual(getRoleBinding('reviewer'), { kind: 'claude', model: 'claude-opus-4-7' });
+
+    // Custom ollama binding reads back verbatim; removing the tag reverts to default.
+    await addCustomBackend({ label: 'Local', model: 'gemma4:cloud' });
+    await setRoleBinding('reviewer', { kind: 'ollama', model: 'gemma4:cloud' });
+    assert.deepEqual(getRoleBinding('reviewer'), { kind: 'ollama', model: 'gemma4:cloud' });
+    await removeCustomBackend('gemma4:cloud');
+    assert.deepEqual(getRoleBinding('reviewer'), DEFAULT_ROLE_BINDING.reviewer);
+  });
+
+  test('resolveRoleBackend: tier binding follows the tier (incl. dead-custom revert)', async () => {
+    // A custom claude role binding resolves to itself.
+    await setRoleBinding('reviewer', { kind: 'claude', model: 'claude-opus-4-7' });
+    assert.deepEqual(resolveRoleBackend('reviewer'), { kind: 'claude', model: 'claude-opus-4-7' });
+
+    // A tier binding follows whatever the tier currently points at.
+    await setTierBackend('powerful', { kind: 'claude', model: 'claude-opus-4-7' });
+    await setRoleBinding('conductor', { kind: 'tier', tier: 'powerful' });
+    assert.deepEqual(resolveRoleBackend('conductor'), { kind: 'claude', model: 'claude-opus-4-7' });
+
+    // role → tier → dead custom binding: the tier layer reverts, and the role
+    // resolver reflects that (delegation intact).
+    await addCustomBackend({ label: 'Local', model: 'gemma4:cloud' });
+    await setTierBackend('powerful', { kind: 'ollama', model: 'gemma4:cloud' });
+    assert.deepEqual(resolveRoleBackend('conductor'), { kind: 'ollama', model: 'gemma4:cloud' });
+    await removeCustomBackend('gemma4:cloud');
+    assert.deepEqual(resolveRoleBackend('conductor'), DEFAULT_TIER_BACKEND.powerful);
+  });
+
+  test('setRoleBinding rejects invalid bindings', async () => {
+    await assert.rejects(() => setRoleBinding('conductor', { kind: 'tier', tier: 'bogus' }), /known/);
+    await assert.rejects(() => setRoleBinding('conductor', { kind: 'claude', model: 'not-a-version' }), /known/);
+    await assert.rejects(() => setRoleBinding('bogus', { kind: 'tier', tier: 'fast' }), /known/);
+  });
+
   test('ollama-session sidecar is a Map sid→model: mark / get / upsert / unmark / empty-cleanup', async () => {
     assert.equal(await isOllamaSession('sid-1'), false);
     assert.deepEqual(await getOllamaSession('sid-1'), { ollama: false, model: null });
@@ -196,6 +243,29 @@ describe('models settings routes', () => {
     assert.deepEqual(ok.body.tierBackend.balanced, { kind: 'ollama', model: 'gemma4:cloud' });
     const bad = await api(baseUrl, 'POST', '/api/settings/models/prefs', { tierBackend: { tier: 'balanced', backend: { kind: 'ollama', model: 'ghost:tag' } } });
     assert.equal(bad.status, 400);
+  });
+
+  test('GET ships roles + roleBackend; prefs binds a role and rejects invalid', async () => {
+    const g = await api(baseUrl, 'GET', '/api/settings/models');
+    assert.equal(g.status, 200);
+    assert.ok(g.body.roles.some(r => r.role === 'conductor'));
+    assert.equal(g.body.roleBackend.conductor.kind, 'tier'); // default tier binding
+
+    // Bind conductor to a custom Claude backend.
+    const ok = await api(baseUrl, 'POST', '/api/settings/models/prefs', { roleBackend: { role: 'conductor', backend: { kind: 'claude', model: 'claude-opus-4-7' } } });
+    assert.equal(ok.status, 200);
+    assert.deepEqual(ok.body.roleBackend.conductor, { kind: 'claude', model: 'claude-opus-4-7' });
+
+    // Bind reviewer to a tier.
+    const okTier = await api(baseUrl, 'POST', '/api/settings/models/prefs', { roleBackend: { role: 'reviewer', backend: { kind: 'tier', tier: 'fast' } } });
+    assert.equal(okTier.status, 200);
+    assert.deepEqual(okTier.body.roleBackend.reviewer, { kind: 'tier', tier: 'fast' });
+
+    // Unknown role → 400; bad tier binding → 400.
+    const badRole = await api(baseUrl, 'POST', '/api/settings/models/prefs', { roleBackend: { role: 'ghost', backend: { kind: 'tier', tier: 'fast' } } });
+    assert.equal(badRole.status, 400);
+    const badTier = await api(baseUrl, 'POST', '/api/settings/models/prefs', { roleBackend: { role: 'conductor', backend: { kind: 'tier', tier: 'ghost' } } });
+    assert.equal(badTier.status, 400);
   });
 
   test('the removed POST /settings/models version route is gone (404)', async () => {
