@@ -110,6 +110,7 @@
             <span class="settings-title">Settings</span>
             <select id="settings-group-select">
               <option value="models">Models</option>
+              <option value="account">Account</option>
               <option value="transcribe">Transcribe</option>
               <option value="tts">TTS</option>
               <option value="conventions">Conventions</option>
@@ -163,6 +164,29 @@
             </fieldset>
             <div class="sm-prefs">
               <fieldset class="sm-group">
+                <legend>Conductor session</legend>
+                <label class="tt-toggle"><input id="sm-compact-window-enabled" type="checkbox" /> Override compact window for the Conduct orchestrator session</label>
+                <p class="settings-hint">Sets the effective context-window size at which the 🎼 Conduct orchestrator session (.conduct) auto-compacts. Does not affect worker agents it spawns. Off by default.</p>
+                <div id="sm-compact-window-row" class="sm-compact-row" hidden>
+                  <label class="sm-compact-label">Window
+                    <input id="sm-compact-window" type="range" min="20" max="1000" step="10" value="200" />
+                    <span id="sm-compact-window-val">200k</span>
+                  </label>
+                </div>
+              </fieldset>
+            </div>
+            <div class="sm-cost-row">
+              <button id="sm-cost-dashboard-btn" type="button">Cost dashboard</button>
+            </div>
+          </div>
+          <div id="settings-account" class="settings-group" hidden>
+            <p class="settings-desc">
+              Protect your Anthropic account from paid overage: choose what happens the moment a
+              session starts using overage credits, and optionally stop earlier once usage crosses a
+              threshold. Both are staged locally and committed together via <strong>Apply</strong>.
+            </p>
+            <div class="sm-prefs">
+              <fieldset class="sm-group">
                 <legend>Overage protection</legend>
                 <div class="sm-overage-label">Action on overage</div>
                 <div class="qs-mode-toggle" id="sm-overage" role="group" aria-label="Action on overage">
@@ -185,20 +209,6 @@
                   <button id="sm-overage-apply" type="button" class="sm-apply-btn" disabled>Apply</button>
                 </div>
               </fieldset>
-              <fieldset class="sm-group">
-                <legend>Conductor session</legend>
-                <label class="tt-toggle"><input id="sm-compact-window-enabled" type="checkbox" /> Override compact window for the Conduct orchestrator session</label>
-                <p class="settings-hint">Sets the effective context-window size at which the 🎼 Conduct orchestrator session (.conduct) auto-compacts. Does not affect worker agents it spawns. Off by default.</p>
-                <div id="sm-compact-window-row" class="sm-compact-row" hidden>
-                  <label class="sm-compact-label">Window
-                    <input id="sm-compact-window" type="range" min="20" max="1000" step="10" value="200" />
-                    <span id="sm-compact-window-val">200k</span>
-                  </label>
-                </div>
-              </fieldset>
-            </div>
-            <div class="sm-cost-row">
-              <button id="sm-cost-dashboard-btn" type="button">Cost dashboard</button>
             </div>
           </div>
           <div id="settings-tts" class="settings-group" hidden>
