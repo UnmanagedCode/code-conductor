@@ -43,7 +43,6 @@ const DEFAULT_ROLE_BINDING = {
   conductor: { kind: 'tier', tier: 'powerful' },
   reviewer:  { kind: 'tier', tier: 'powerful' },
 };
-const DEFAULT_ROLE_LABELS = { conductor: 'Conductor', reviewer: 'Reviewer' };
 
 let activeSonnetWindow = '1m';
 let activeTierEnabled = { fast: true, balanced: true, powerful: true, frontier: true };
@@ -53,8 +52,6 @@ let sonnetFixedWindowByVersion = { 'claude-sonnet-5': '1m' };
 let claudeVersionLabelById = {};
 let tierList = Object.keys(DEFAULT_TIER_BACKEND);
 let tierLabels = { ...DEFAULT_TIER_LABELS };
-let roleList = Object.keys(DEFAULT_ROLE_BINDING);
-let roleLabels = { ...DEFAULT_ROLE_LABELS };
 let activeRoleBinding = { ...DEFAULT_ROLE_BINDING };
 let providers = [{ kind: 'claude', label: 'Claude' }, { kind: 'ollama', label: 'Ollama' }];
 let customBackends = []; // [{label, model, contextWindow?}]
@@ -62,8 +59,6 @@ let ollamaCloudModels = []; // curated catalog [{label, model, contextWindow}]
 
 export function getTierList() { return tierList; }
 export function getTierLabel(tier) { return tierLabels[tier] || tier; }
-export function getRoleList() { return roleList; }
-export function getRoleLabel(role) { return roleLabels[role] || role; }
 // Returns the role's binding (a tier binding {kind:'tier',tier} or a custom
 // {kind,model}), falling back to the pre-fetch default.
 export function getActiveRoleBinding(role) { return activeRoleBinding[role] || DEFAULT_ROLE_BINDING[role]; }
@@ -148,10 +143,6 @@ export async function loadModelVersions() {
       if (Array.isArray(data.tiers) && data.tiers.length) {
         tierList = data.tiers.map(t => t.tier);
         tierLabels = Object.fromEntries(data.tiers.map(t => [t.tier, t.label]));
-      }
-      if (Array.isArray(data.roles) && data.roles.length) {
-        roleList = data.roles.map(r => r.role);
-        roleLabels = Object.fromEntries(data.roles.map(r => [r.role, r.label]));
       }
       if (Array.isArray(data.providers) && data.providers.length) providers = data.providers;
       setActiveSonnetWindow(data.sonnetContextWindow);

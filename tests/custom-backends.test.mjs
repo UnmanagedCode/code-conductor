@@ -189,6 +189,10 @@ describe('backend-agnostic data model', () => {
   test('setRoleBinding rejects invalid bindings', async () => {
     await assert.rejects(() => setRoleBinding('conductor', { kind: 'tier', tier: 'bogus' }), /known/);
     await assert.rejects(() => setRoleBinding('conductor', { kind: 'claude', model: 'not-a-version' }), /known/);
+    await assert.rejects(() => setRoleBinding('conductor', { kind: 'ollama', model: 'bogus-not-a-tag' }), /known/);
+    await assert.rejects(() => setRoleBinding('conductor', { kind: 'tier' }), /known/); // missing tier
+    await assert.rejects(() => setRoleBinding('conductor', null), /known/);
+    await assert.rejects(() => setRoleBinding('conductor', undefined), /known/);
     await assert.rejects(() => setRoleBinding('bogus', { kind: 'tier', tier: 'fast' }), /known/);
   });
 
@@ -266,6 +270,11 @@ describe('models settings routes', () => {
     assert.equal(badRole.status, 400);
     const badTier = await api(baseUrl, 'POST', '/api/settings/models/prefs', { roleBackend: { role: 'conductor', backend: { kind: 'tier', tier: 'ghost' } } });
     assert.equal(badTier.status, 400);
+    // Malformed custom backend → 400 (missing model, and a null backend).
+    const badModel = await api(baseUrl, 'POST', '/api/settings/models/prefs', { roleBackend: { role: 'conductor', backend: { kind: 'claude' } } });
+    assert.equal(badModel.status, 400);
+    const nullBackend = await api(baseUrl, 'POST', '/api/settings/models/prefs', { roleBackend: { role: 'conductor', backend: null } });
+    assert.equal(nullBackend.status, 400);
   });
 
   test('the removed POST /settings/models version route is gone (404)', async () => {

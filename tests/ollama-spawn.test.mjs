@@ -188,6 +188,18 @@ describe('role → {kind,model} resolution (MCP spawn)', () => {
     assert.equal(inst.backendKind, 'claude');
     assert.equal(inst.model, 'claude-haiku-4-5');
   });
+
+  test('a custom Ollama-bound role resolves straight to the tag (non-tier branch)', async () => {
+    // Bind reviewer directly to a custom ollama backend (a curated cloud tag),
+    // exercising resolveRoleBackend's non-tier branch.
+    await setRoleBinding('reviewer', { kind: 'ollama', model: 'deepseek-v4-flash:cloud' });
+    await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
+    const spawned = await callTool('spawn_instance', { project: 'p', mode: 'bypassPermissions', model: 'reviewer' });
+    await waitFor(() => instances.idsForSession(spawned.sessionId).length > 0);
+    const inst = instances.get(instances.idsForSession(spawned.sessionId)[0]);
+    assert.equal(inst.backendKind, 'ollama');
+    assert.equal(inst.model, 'deepseek-v4-flash:cloud');
+  });
 });
 
 describe('setModel live-switch gate', () => {
