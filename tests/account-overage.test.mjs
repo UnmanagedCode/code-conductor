@@ -246,3 +246,56 @@ test('account: a failed Apply keeps the edit staged (dirty preserved, error show
   assert.match(status.textContent, /failed/i);
   window.happyDOM.abort();
 });
+
+test('account: a prefs save elsewhere (e.g. a tier toggle) does not clobber a staged, un-applied overage edit', async () => {
+  // Two enabled tiers so the toggled checkbox isn't the last-enabled one (which
+  // renderModels would render disabled).
+  const initial = modelsPayload({ onOverage: 'none', overageThreshold: { enabled: false, value: 85 } });
+  initial.tiers = [{ tier: 'fast', label: 'Fast' }, { tier: 'powerful', label: 'Powerful' }];
+  initial.enabledTiers = { fast: true, powerful: true };
+
+  // What the tier-toggle POST echoes back — different onOverage/threshold than
+  // what we're about to stage locally, standing in for "server state moved
+  // elsewhere while this edit sat un-applied".
+  const refreshed = modelsPayload({ onOverage: 'stop-resume', overageThreshold: { enabled: true, value: 20 } });
+  refreshed.tiers = initial.tiers;
+  refreshed.enabledTiers = { fast: false, powerful: true };
+
+  const { impl, posts } = stubFetch(initial, refreshed);
+  const { window, mod } = await setup(impl);
+  mod.installSettings({ requestClose: () => {} });
+
+  window.location.hash = '#settings';
+  await window.happyDOM.waitUntilComplete();
+  await tick();
+
+  const d = window.document;
+
+  // Stage an Account edit without Apply — smOverageDirty becomes true.
+  click(d.querySelector('#sm-overage [data-overage="stop"]'), window);
+  d.getElementById('sm-overage-threshold-enabled').checked = true;
+  d.getElementById('sm-overage-threshold-enabled').dispatchEvent(new window.Event('change', { bubbles: true }));
+  const slider = d.getElementById('sm-overage-threshold');
+  slider.value = '60';
+  slider.dispatchEvent(new window.Event('input', { bubbles: true }));
+
+  assert.equal(d.querySelector('#sm-overage [data-overage="stop"]').getAttribute('aria-pressed'), 'true');
+  assert.equal(d.getElementById('sm-overage-dirty').hidden, false, 'dirty hint shown before the outside refresh');
+
+  // Something elsewhere — a tier-enable toggle on the Models page — POSTs prefs
+  // and re-renders from the response, which carries different overage values.
+  const fastCheckbox = d.querySelector('#sm-tier-list .sm-enable[data-tier="fast"]');
+  fastCheckbox.checked = false;
+  fastCheckbox.dispatchEvent(new window.Event('change', { bubbles: true }));
+  await tick();
+
+  assert.equal(posts.length, 1, 'the tier toggle posted prefs and triggered a renderModels refresh');
+
+  // The staged Account edit must still be in place — the guard blocked the clobber.
+  assert.equal(d.querySelector('#sm-overage [data-overage="stop"]').getAttribute('aria-pressed'), 'true', 'staged action preserved');
+  assert.equal(d.querySelector('#sm-overage [data-overage="stop-resume"]').getAttribute('aria-pressed'), 'false', 'server value from elsewhere did not overwrite the staged edit');
+  assert.equal(d.getElementById('sm-overage-threshold-enabled').checked, true, 'staged threshold-enabled preserved');
+  assert.equal(d.getElementById('sm-overage-threshold').value, '60', 'staged threshold value preserved');
+  assert.equal(d.getElementById('sm-overage-dirty').hidden, false, 'still dirty after the outside refresh');
+  window.happyDOM.abort();
+});
