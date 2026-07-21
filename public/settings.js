@@ -1,7 +1,8 @@
 // Settings page — a full-page view inside #main, shown when the URL hash is
-// `#settings`. Built as a group-nav + content scaffold: Models, Transcribe,
-// TTS, Conventions (Conductor / Workspace / Project blocks, each a reusable
-// conventionsPanel), Plugins, Archived. Each adds a nav item + a panel.
+// `#settings`. Built as a group-nav + content scaffold: Models, Account
+// (overage protection), Transcribe, TTS, Conventions (Conductor / Workspace /
+// Project blocks, each a reusable conventionsPanel), Plugins, Archived. Each
+// adds a nav item + a panel.
 //
 // Navigation is hash-driven so a refresh keeps the page. app.js owns the
 // hash (it knows the active session to restore on close) and passes a
@@ -37,12 +38,14 @@ export function installSettings({
   const smCustomAddEl = document.getElementById('sm-custom-add');
   const smCustomStatusEl = document.getElementById('sm-custom-status');
   let lastModelsData = null;
-  const smOverageEl = document.getElementById('sm-overage');
-  const smOverageBtns = [...(smOverageEl?.querySelectorAll('[data-overage]') || [])];
   const smCompactWindowEnabledEl = document.getElementById('sm-compact-window-enabled');
   const smCompactWindowRowEl     = document.getElementById('sm-compact-window-row');
   const smCompactWindowSliderEl  = document.getElementById('sm-compact-window');
   const smCompactWindowValEl     = document.getElementById('sm-compact-window-val');
+  // Account group elements (overage protection — lives on its own settings page,
+  // but its prefs ride in the shared /api/settings/models payload; see below).
+  const smOverageEl = document.getElementById('sm-overage');
+  const smOverageBtns = [...(smOverageEl?.querySelectorAll('[data-overage]') || [])];
   const smOverageThreshEnabledEl = document.getElementById('sm-overage-threshold-enabled');
   const smOverageThreshRowEl     = document.getElementById('sm-overage-threshold-row');
   const smOverageThreshSliderEl  = document.getElementById('sm-overage-threshold');
@@ -101,7 +104,7 @@ export function installSettings({
   let ttSelected = null;
   let ttInstalling = false;
   let ttInstallTarget = null;
-  // Overage-prefs group: staged locally, committed only via the Apply button.
+  // Account group (overage prefs): staged locally, committed only via Apply.
   let smOverageDirty = false;
   function markOverageDirty() {
     smOverageDirty = true;
@@ -479,22 +482,9 @@ export function installSettings({
       smListEl.appendChild(li);
     }
 
-    // Skip re-syncing the overage group while it has un-applied local edits (e.g. an
-    // unrelated save elsewhere on this page, like a tier toggle, also calls
-    // renderModels — it must not clobber a staged-but-not-yet-Applied overage edit).
-    if (!smOverageDirty) {
-      const overage = data.onOverage ?? 'none';
-      for (const btn of smOverageBtns) {
-        btn.setAttribute('aria-pressed', btn.dataset.overage === overage ? 'true' : 'false');
-      }
-      if (smOverageThreshEnabledEl) {
-        const ot = data.overageThreshold ?? { enabled: false, value: 85 };
-        smOverageThreshEnabledEl.checked = ot.enabled;
-        if (smOverageThreshSliderEl) smOverageThreshSliderEl.value = String(ot.value);
-        if (smOverageThreshValEl)    smOverageThreshValEl.textContent = `${ot.value}%`;
-        if (smOverageThreshRowEl)    smOverageThreshRowEl.hidden = !ot.enabled;
-      }
-    }
+    // Overage prefs live on the Account page but ride in this same models payload,
+    // so keep their controls in sync whenever it refreshes. See syncOverageControls.
+    syncOverageControls(data);
     if (smCompactWindowEnabledEl) {
       const cw = data.conductorCompactWindow ?? { enabled: false, value: 200 };
       smCompactWindowEnabledEl.checked = cw.enabled;
@@ -550,15 +540,6 @@ export function installSettings({
 
   function onPickOllamaModel(tier, model) {
     return saveTierBinding(tier, { kind: 'ollama', model });
-  }
-
-  // Staged, not saved: a click only updates the local pressed state and marks the
-  // overage group dirty. Committed together with the threshold via Apply.
-  for (const btn of smOverageBtns) {
-    btn.addEventListener('click', () => {
-      for (const b of smOverageBtns) b.setAttribute('aria-pressed', b === btn ? 'true' : 'false');
-      markOverageDirty();
-    });
   }
 
   async function onPickTierEnabled(tier, enabled) {
@@ -699,15 +680,6 @@ export function installSettings({
     if (smCompactWindowValEl) smCompactWindowValEl.textContent = `${smCompactWindowSliderEl.value}k`;
   });
   smCompactWindowSliderEl?.addEventListener('change', onSaveCompactWindow);
-  smOverageThreshEnabledEl?.addEventListener('change', () => {
-    if (smOverageThreshRowEl) smOverageThreshRowEl.hidden = !smOverageThreshEnabledEl.checked;
-    markOverageDirty();
-  });
-  smOverageThreshSliderEl?.addEventListener('input', () => {
-    if (smOverageThreshValEl) smOverageThreshValEl.textContent = `${smOverageThreshSliderEl.value}%`;
-    markOverageDirty();
-  });
-  smOverageApplyEl?.addEventListener('click', onApplyOveragePrefs);
   document.getElementById('sm-cost-dashboard-btn')?.addEventListener('click', () => {
     onOpenCostDashboard?.();
   });
@@ -728,6 +700,48 @@ export function installSettings({
       if (smStatusEl) smStatusEl.textContent = `Update failed: ${e.message || e}`;
     }
   }
+
+  // ── Account group ───────────────────────────────────────────────────
+  // Overage protection. Its prefs (onOverage, overageThreshold) ride in the
+  // shared /api/settings/models payload, so there's no separate Account fetch:
+  // renderModels() calls syncOverageControls() whenever that payload refreshes.
+
+  // Re-sync the overage controls from a models payload — but skip it while there
+  // are un-applied local edits (any prefs save elsewhere, e.g. a tier toggle on
+  // the Models page, also re-runs renderModels → this; it must not clobber a
+  // staged-but-not-yet-Applied overage edit).
+  function syncOverageControls(data) {
+    if (smOverageDirty) return;
+    const overage = data.onOverage ?? 'none';
+    for (const btn of smOverageBtns) {
+      btn.setAttribute('aria-pressed', btn.dataset.overage === overage ? 'true' : 'false');
+    }
+    if (smOverageThreshEnabledEl) {
+      const ot = data.overageThreshold ?? { enabled: false, value: 85 };
+      smOverageThreshEnabledEl.checked = ot.enabled;
+      if (smOverageThreshSliderEl) smOverageThreshSliderEl.value = String(ot.value);
+      if (smOverageThreshValEl)    smOverageThreshValEl.textContent = `${ot.value}%`;
+      if (smOverageThreshRowEl)    smOverageThreshRowEl.hidden = !ot.enabled;
+    }
+  }
+
+  // Staged, not saved: a click only updates the local pressed state and marks the
+  // overage group dirty. Committed together with the threshold via Apply.
+  for (const btn of smOverageBtns) {
+    btn.addEventListener('click', () => {
+      for (const b of smOverageBtns) b.setAttribute('aria-pressed', b === btn ? 'true' : 'false');
+      markOverageDirty();
+    });
+  }
+  smOverageThreshEnabledEl?.addEventListener('change', () => {
+    if (smOverageThreshRowEl) smOverageThreshRowEl.hidden = !smOverageThreshEnabledEl.checked;
+    markOverageDirty();
+  });
+  smOverageThreshSliderEl?.addEventListener('input', () => {
+    if (smOverageThreshValEl) smOverageThreshValEl.textContent = `${smOverageThreshSliderEl.value}%`;
+    markOverageDirty();
+  });
+  smOverageApplyEl?.addEventListener('click', onApplyOveragePrefs);
 
   async function onApplyOveragePrefs() {
     const action  = smOverageBtns.find(b => b.getAttribute('aria-pressed') === 'true')?.dataset.overage || 'none';
