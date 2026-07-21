@@ -8,7 +8,7 @@ import { spawn } from 'node:child_process';
 import { promises as fsp } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { resolveClaudeBin } from './instances.js';
+import { resolveClaudeBin } from './claudeLauncher.js';
 
 const DEFAULT_TIMEOUT_MS = 3000;
 

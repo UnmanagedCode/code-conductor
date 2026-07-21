@@ -66,3 +66,13 @@ export async function preflightOllamaBackend({ model } = {}) {
   }
   return { ok: true };
 }
+
+// Single shared error shape for every preflightOllamaBackend() failure site
+// (Instance spawn/respawn, bundle-gen, summary-gen) — REST surfaces it as a
+// 503, MCP surfaces it as an isError result carrying the same prose. `prefix`
+// lets a caller match its own module's error-message convention (e.g.
+// claudeShellEnv.js's "claudeShellEnv: ..." style) without forking the shape.
+export function ollamaPreflightError(pre, prefix) {
+  const message = prefix ? `${prefix}: ${pre.error}` : pre.error;
+  return Object.assign(new Error(message), { statusCode: 503, code: 'OLLAMA_PREFLIGHT_FAILED' });
+}

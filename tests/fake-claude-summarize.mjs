@@ -7,6 +7,10 @@
 //   FAKE_SUMMARIZE_WRITE_JSONL=1 — simulate the real CLI by creating a dummy
 //     artifact jsonl at <CLAUDE_PROJECTS_ROOT>/<encodedCwd>/<sessionId>.jsonl
 //     (so the cleanup test can verify it gets deleted).
+//   FAKE_SUMMARIZE_ARGV_FILE — path to dump the received argv as JSON (for
+//     asserting the composed command line, e.g. the ollama launch prefix).
+// Name-agnostic: this same script also stands in for `ollama` via OLLAMA_BIN,
+// since it only reacts to argv/stdin/env, never to which binary name invoked it.
 import { createInterface } from 'node:readline';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
@@ -17,6 +21,12 @@ const args = process.argv.slice(2);
 // Parse --session-id <id> from args.
 const sidIdx = args.indexOf('--session-id');
 const sessionId = sidIdx !== -1 ? args[sidIdx + 1] : null;
+
+// Dump argv for tests that assert the composed command line (e.g. the
+// ollama launch-prefix shape).
+if (process.env.FAKE_SUMMARIZE_ARGV_FILE) {
+  await fs.writeFile(process.env.FAKE_SUMMARIZE_ARGV_FILE, JSON.stringify(args)).catch(() => {});
+}
 
 // Drain stdin.
 const rl = createInterface({ input: process.stdin });

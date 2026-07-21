@@ -17,11 +17,44 @@ import { bootServer, api, waitFor, freshProjectsRoot, rmrf, fakeOllamaReachable,
 import { addCustomBackend, setTierBackend } from '../src/appSettings.js';
 import { isOllamaSession, getOllamaSession, markOllamaSession } from '../src/sessionBackends.js';
 import { claudeProjectsRoot, encodeCwd } from '../src/projects.js';
+import { resolveBackendLaunch } from '../src/claudeLauncher.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-instance.json');
 
 let ctx, baseUrl, instances, home, projectsRoot, restoreFetch;
+
+describe('resolveBackendLaunch (shared claude/ollama launch resolution)', () => {
+  test('ollama kind builds the launch prefix with the tag passed through verbatim', () => {
+    const { command, prefixArgs } = resolveBackendLaunch('ollama', 'deepseek-v4-flash:cloud', { command: '/usr/bin/claude', prefixArgs: [] });
+    assert.equal(command, 'ollama');
+    assert.deepEqual(prefixArgs, ['launch', 'claude', '--model', 'deepseek-v4-flash:cloud', '--yes', '--']);
+  });
+
+  test('claude kind passes the given claudeBin command/prefixArgs through unchanged', () => {
+    const claudeBin = { command: '/usr/bin/claude', prefixArgs: ['--extra'] };
+    const { command, prefixArgs } = resolveBackendLaunch('claude', 'claude-opus-4-7', claudeBin);
+    assert.equal(command, claudeBin.command);
+    assert.deepEqual(prefixArgs, claudeBin.prefixArgs);
+  });
+
+  test('ollama kind with no model throws — the helper owns this invariant for every caller', () => {
+    assert.throws(() => resolveBackendLaunch('ollama', null, { command: '/usr/bin/claude', prefixArgs: [] }), /requires a model/);
+  });
+
+  test('OLLAMA_BIN mirrors CLAUDE_BIN — lets tests point the literal `ollama` command at a fake script', () => {
+    const orig = process.env.OLLAMA_BIN;
+    process.env.OLLAMA_BIN = 'node /fake/ollama.mjs';
+    try {
+      const { command, prefixArgs } = resolveBackendLaunch('ollama', 'gemma4:cloud', { command: '/usr/bin/claude', prefixArgs: [] });
+      assert.equal(command, 'node');
+      assert.deepEqual(prefixArgs, ['/fake/ollama.mjs', 'launch', 'claude', '--model', 'gemma4:cloud', '--yes', '--']);
+    } finally {
+      if (orig === undefined) delete process.env.OLLAMA_BIN;
+      else process.env.OLLAMA_BIN = orig;
+    }
+  });
+});
 
 // Spawns/respawns preflight ollama reachability; simulate a live daemon for the
 // happy-path suites (the preflight-failure suite below restores real fetch).

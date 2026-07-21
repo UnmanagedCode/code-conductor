@@ -8,7 +8,7 @@ import { getProject, claudeProjectsRoot, encodeCwd, findSessionLocation, readFir
 import { createWorktree, getWorktree, debugBaseDir } from './worktrees.js';
 import { getTitle as getSessionTitle, setTitle as setSessionTitle, deleteTitle as deleteSessionTitle } from './sessionTitles.js';
 import { getOllamaSession, markOllamaSession, unmarkOllamaSession } from './sessionBackends.js';
-import { preflightOllamaBackend } from './ollamaBackend.js';
+import { preflightOllamaBackend, ollamaPreflightError } from './ollamaBackend.js';
 import { isConducted, markConducted, unmarkConducted } from './conductedSessions.js';
 import { SessionRenewController } from './sessionRenew.js';
 import { isTemp, markTemp, unmarkTemp } from './tempSessions.js';
@@ -27,7 +27,7 @@ import { IdleSubscriptionHub } from './idleSubscriptions.js';
 import { OverageResumeController } from './overageResume.js';
 import { UsageOverageMonitor } from './usageOverageMonitor.js';
 import { usageDomainOfBackend, isMonitoredDomain } from './usageWindowDomains.js';
-import { defaultClaudeLauncher } from './claudeLauncher.js';
+import { defaultClaudeLauncher, resolveClaudeBin, resolveBackendLaunch } from './claudeLauncher.js';
 
 // `AUTO_RESUME_TEXT` now lives with the overage timer machine in
 // overageResume.js; re-export it here so existing importers (and tests) that
@@ -165,14 +165,6 @@ const VALID_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
 const DEFAULT_EFFORT = 'high';
 const VALID_THINKING = new Set(['adaptive', 'enabled', 'disabled']);
 const DEFAULT_THINKING = 'adaptive';
-
-export function resolveClaudeBin() {
-  // CLAUDE_BIN may be "node /path/to/script.mjs" so callers can swap in the
-  // fake CLI used by tests; split on whitespace.
-  const raw = (process.env.CLAUDE_BIN ?? 'claude').trim();
-  const parts = raw.split(/\s+/);
-  return { command: parts[0], prefixArgs: parts.slice(1) };
-}
 
 // Bounded drop-oldest event log per instance. `_seq` is stamped here at
 // push time and stays monotonic for the life of the Instance — eviction
@@ -816,31 +808,21 @@ export class Instance extends EventEmitter {
     this._turnMissDetected = false;
     this._turnLastReqPrefix = null;
     this._turnEvicted = 0;
-    // Backend-agnostic launch: compute ONLY command + prefix from backendKind,
-    // then append the SAME claude args (including --model) uniformly below.
-    //   claude  → command from resolveClaudeBin(); prefix = its prefixArgs
-    //             (empty in prod; the test CLAUDE_BIN="node fake.mjs" injection).
-    //   ollama  → `ollama launch claude --model <tag> --yes --` as a drop-in
-    //             substitute for `claude`. ollama sets the Anthropic endpoint +
-    //             auth internally and re-injects --model into the child; the
-    //             forwarded --model below is a matching no-op (verified). --yes
-    //             bypasses the non-agent-capable confirmation (else a piped
-    //             spawn fails). Localhost only — no host plumbing.
-    const { command: claudeCmd, prefixArgs } = resolveClaudeBin();
+    // Backend-agnostic launch: resolveBackendLaunch() computes ONLY command +
+    // prefix from backendKind (and owns the ollama null-model invariant); the
+    // SAME claude args (including --model) are then appended uniformly below.
+    // Also used by claudeShellEnv.js's generateBundle() and summarize.js's
+    // generateSummary() for their own throwaway one-shot spawns.
     let command, launchPrefix;
-    if (this.backendKind === 'ollama') {
-      // Invariant: an ollama-backed instance always has a concrete tag in
-      // `model` (resolver + resume-guard enforce it) — never emit `--model
-      // undefined`.
-      if (!this.model) {
-        this._setStatus('crashed');
-        throw new Error('ollama-backed spawn requires a model (tag); none resolved — rebind the tier or resume with an explicit model');
-      }
-      command = 'ollama';
-      launchPrefix = ['launch', 'claude', '--model', this.model, '--yes', '--'];
-    } else {
-      command = claudeCmd;
-      launchPrefix = prefixArgs;
+    try {
+      ({ command, prefixArgs: launchPrefix } = resolveBackendLaunch(this.backendKind, this.model, resolveClaudeBin()));
+    } catch (err) {
+      // Instance-specific side effect on the shared helper's invariant
+      // failure — resolver + resume-guard are supposed to prevent this ever
+      // firing, but a bad caller must still land in 'crashed', not silently
+      // hang.
+      this._setStatus('crashed');
+      throw err;
     }
     if (resume) this.sessionId = resume;
     else if (!this.sessionId) this.sessionId = randomUUID();
@@ -2632,10 +2614,7 @@ export class InstanceManager extends EventEmitter {
   async _preflightBackend(backendKind, model) {
     if (backendKind !== 'ollama') return;
     const pre = await preflightOllamaBackend({ model });
-    if (!pre.ok) {
-      throw Object.assign(new Error(pre.error),
-        { statusCode: 503, code: 'OLLAMA_PREFLIGHT_FAILED' });
-    }
+    if (!pre.ok) throw ollamaPreflightError(pre);
   }
 
   async respawn(id) {
