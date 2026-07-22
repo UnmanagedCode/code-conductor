@@ -69,7 +69,7 @@ Schemas are deferred — load them via `ToolSearch` before first use. Before you
 - `approve_plan({sessionId, feedback?})` — flips mode to `bypassPermissions` and sends the approval prompt; use it rather than hand-rolling `set_mode` + `send_prompt`.
 - `reject_plan({sessionId, feedback})` — keeps the worker in `plan` mode, asks it to revise.
 
-**Question handling** — a worker's `AskUserQuestion` is denied at the tool layer, which *ends its turn* (same yield-and-wake shape as a plan). On a wake whose `get_recent_messages` message has `questionCount` set (questions rendered 1-based in that message's `--- questions ---` body section), answer via `answer_question({sessionId, answers})`, not a free-text `send_prompt`. `answers` is 0-based, aligned by index to those same questions (body question N → `answers[N-1]`); each entry is `{option}` (single), `{options:[…]}` (multiSelect), `{text}` (custom), or `{}` (skip), with an optional `note`.
+**Question handling** — a worker's `AskUserQuestion` is denied at the tool layer, which *ends its turn* (same yield-and-wake shape as a plan). Answer it via `answer_question` (see its schema for the answer shape), not a free-text `send_prompt`.
 
 **Inspect work**
 - `get_recent_messages({sessionId, count?})` — last N assistant messages; cheap, use for "what did the worker just say?". Disk-backed: a busy worker mid-long-turn never returns a false-empty; `omittedToolOnly`/`hint` distinguish "active but tool-only" from idle.
