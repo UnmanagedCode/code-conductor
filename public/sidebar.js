@@ -652,6 +652,7 @@ export class Sidebar {
           onclick: (e) => { e.stopPropagation(); this.onShowCommits?.(p.name); },
         }, '≡'));
       } else {
+        // Spacer glyph + box model must stay in sync with .commit-log button or alignment breaks.
         row.appendChild(el('span', {
           class: 'commit-log-spacer', 'aria-hidden': 'true',
         }, '≡'));

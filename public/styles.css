@@ -1751,7 +1751,7 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
 }
 .project-row .commit-log { cursor: pointer; }
 .project-row .commit-log:hover { color: var(--tool); }
-.project-row .commit-log-spacer { visibility: hidden; pointer-events: none; }
+.project-row .commit-log-spacer { visibility: hidden; }
 
 /* Cost dashboard — full-page view opened from Settings → Models. */
 #costs-view { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
