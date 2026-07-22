@@ -328,6 +328,14 @@ export class Instance extends EventEmitter {
     // bubbles — the client must NOT derive it by counting rendered bubbles.
     // Reset alongside the ring in _wipeForResume (replay recounts from 0).
     this._userEchoCount = 0;
+    // Ephemeral live thinking-token estimate for the OPEN thinking block, or
+    // null when none is streaming. The per-token system/thinking_tokens events
+    // are never retained in the ring (see EventLog.push), so this O(1)
+    // last-value-wins state lets a fresh subscriber's snapshot carry the
+    // CURRENT count alongside the coalesced partial thinking text. Cleared when
+    // the block closes so a completed/replayed block shows no stale live count
+    // (the finished block is viewed from disk). Reset on resume (see _wipeForResume).
+    this._liveThinkingTokens = null;
     this._pending = new Map(); // request_id -> { resolve, reject, timer }
     // Per-instance PreToolUse hook callback broker (held-open
     // responses + timeout fallbacks + the ask-mode permission_request
@@ -600,6 +608,13 @@ export class Instance extends EventEmitter {
 
   ringSnapshot() { return this.ring.toArray(); }
 
+  // Latest live thinking-token estimate for the OPEN thinking block, or null
+  // when none is streaming. The WS subscribe path re-attaches this as a
+  // seq-less system/thinking_tokens event on the snapshot so a client joining
+  // mid-thinking sees the current count immediately (the coalesced ring slot
+  // already carries the partial thinking text).
+  get liveThinkingTokens() { return this._liveThinkingTokens; }
+
   // Trailing slice of the ring for the WS `subscribe` snapshot — tabs no
   // longer receive the whole ring on every subscribe; older events are
   // lazy-loaded via GET /api/instances/:id/events. The window start is
@@ -748,6 +763,20 @@ export class Instance extends EventEmitter {
   }
 
   _emitUi(ev) {
+    // Track the ephemeral live thinking-token count for the OPEN thinking
+    // block (the per-token thinking_tokens events are never retained — see
+    // EventLog.push). Funneled here alongside userIndex so every emit path
+    // (live, jsonl replay, direct) stays consistent: a fresh start clears any
+    // prior value, each thinking_tokens updates it in place, and closing the
+    // block (or the turn) clears it so a finished/replayed block carries no
+    // stale live count. Re-attached to a fresh subscriber's snapshot (wsHub).
+    if (ev.kind === 'thinking_start') {
+      this._liveThinkingTokens = null;
+    } else if (ev.kind === 'system' && ev.subtype === 'thinking_tokens') {
+      this._liveThinkingTokens = ev.data?.estimated_tokens ?? null;
+    } else if (ev.kind === 'thinking_end' || ev.kind === 'turn_end') {
+      this._liveThinkingTokens = null;
+    }
     const wrapped = { ...ev };
     // Every outer user_echo funnels through here (live prompt(), parser
     // queued-prompt echoes, jsonl replay), so this counter matches the
@@ -1834,6 +1863,7 @@ export class Instance extends EventEmitter {
   _wipeForResume(extra = {}) {
     this.ring.clear();
     this._userEchoCount = 0;
+    this._liveThinkingTokens = null;
     this.parser.reset();
     this._lastLeafUuid = null;
     this._lastPlanFilePath = null;

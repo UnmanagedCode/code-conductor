@@ -148,6 +148,16 @@ export function attachWsHub({ wss, instances }) {
             // GET /api/instances/:id/events?before=<seq>.
             const events = inst.snapshotTail();
             const tailStartSeq = events.length ? events[0]._seq : inst.ring.trimmedBefore;
+            const tasksAtTailStart = inst.reconstructActiveTasks(tailStartSeq);
+            // Re-attach the ephemeral thinking-token counter when a block is
+            // still streaming (the per-token events aren't retained in the ring
+            // — see EventLog.push). Appended LAST so the client applies it to
+            // the reconstructed open thinking block; seq-less so it never enters
+            // dedup/paging. tailStartSeq/tasks are computed from ring events above.
+            if (inst.liveThinkingTokens != null) {
+              events.push({ kind: 'system', subtype: 'thinking_tokens',
+                data: { estimated_tokens: inst.liveThinkingTokens } });
+            }
             // Fork prefill rides the new instance's first snapshot as
             // `droppedText` (consumed once — later subscribes get null),
             // the inline analogue of rewind's `reset_snapshot` droppedText.
@@ -166,7 +176,7 @@ export function attachWsHub({ wss, instances }) {
               trimmedBefore: inst.ring.trimmedBefore,
               // In-flight task batch as of the tail start, so the client panel
               // reflects a batch whose TaskCreate is below the tail.
-              tasksAtTailStart: inst.reconstructActiveTasks(tailStartSeq),
+              tasksAtTailStart,
               ...(droppedText != null ? { droppedText } : {}),
             }));
             reply(true);
