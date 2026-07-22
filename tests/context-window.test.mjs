@@ -13,7 +13,7 @@ import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf, fakeOllamaReachable } from './helpers.mjs';
 import { canonicalizeModel, familyOf } from '../src/modelVersions.js';
-import { setSonnetContextWindow, addCustomBackend } from '../src/appSettings.js';
+import { addCustomBackend } from '../src/appSettings.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-instance.json');
@@ -145,25 +145,52 @@ test('a stale [200k] suffix is normalised away — Opus no longer downgrades to 
   assert.equal(instances.get(id).model, 'claude-opus-4-8');
 });
 
-test('Sonnet spawns bare (200k) when sonnetContextWindow preference is "200k"', async () => {
+test('Sonnet spawns bare (200k) when the spawn carries sonnetWindow:"200k" — and the live model does not false-flip to [1m]', async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'ctxwin-'));
   const argvDump = path.join(tmp, 'argv.txt');
   process.env.FAKE_CLAUDE_ARGV_DUMP = argvDump;
   try {
-    // Set the preference before spawning. appSettings reads PROJECTS_ROOT
-    // live, and beforeEach already pointed it at this test's fresh root.
-    await setSonnetContextWindow('200k');
+    // The window rides on the spawn request (resolved from the binding), not a
+    // global — pass it directly here.
     await api(baseUrl, 'POST', '/api/projects', { name: 'p2' });
     const r = await api(baseUrl, 'POST', '/api/instances', {
-      project: 'p2', mode: 'bypassPermissions', model: 'claude-sonnet-4-6',
+      project: 'p2', mode: 'bypassPermissions', model: 'claude-sonnet-4-6', sonnetWindow: '200k',
     });
     const id = r.body.id;
     await waitFor(() => instances.get(id).status === 'idle');
     await waitFor(async () => { try { await fs.stat(argvDump); return true; } catch { return false; } });
     const argv = (await fs.readFile(argvDump, 'utf8')).split('\n').filter(Boolean);
     assert.equal(modelFromArgv(argv), 'claude-sonnet-4-6',
-      'Sonnet must spawn bare (no [1m]) when preference is 200k');
+      'Sonnet must spawn bare (no [1m]) when the spawn window is 200k');
+    // The session records its window, and its model stays BARE: _trackModel
+    // canonicalizes the CLI's bare init report against this.sonnetWindow ('200k'),
+    // so it must NOT append [1m] and flip the tracked model.
+    assert.equal(instances.get(id).sonnetWindow, '200k');
     assert.equal(instances.get(id).model, 'claude-sonnet-4-6');
+  } finally {
+    delete process.env.FAKE_CLAUDE_ARGV_DUMP;
+    await fs.rm(tmp, { recursive: true, force: true }).catch(() => {});
+  }
+});
+
+test('two Sonnet 4.x spawns carry independent windows (200k vs 1M) — one does not affect the other', async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'ctxwin-'));
+  const argvDump = path.join(tmp, 'argv.txt');
+  process.env.FAKE_CLAUDE_ARGV_DUMP = argvDump;
+  try {
+    await api(baseUrl, 'POST', '/api/projects', { name: 'pind' });
+    const a = await api(baseUrl, 'POST', '/api/instances', {
+      project: 'pind', mode: 'bypassPermissions', model: 'claude-sonnet-4-6', sonnetWindow: '200k',
+    });
+    const b = await api(baseUrl, 'POST', '/api/instances', {
+      project: 'pind', mode: 'bypassPermissions', model: 'claude-sonnet-4-5', sonnetWindow: '1m',
+    });
+    await waitFor(() => instances.get(a.body.id).status === 'idle');
+    await waitFor(() => instances.get(b.body.id).status === 'idle');
+    assert.equal(instances.get(a.body.id).model, 'claude-sonnet-4-6', '200k spawn stays bare');
+    assert.equal(instances.get(a.body.id).sonnetWindow, '200k');
+    assert.equal(instances.get(b.body.id).model, 'claude-sonnet-4-5[1m]', '1M spawn keeps [1m]');
+    assert.equal(instances.get(b.body.id).sonnetWindow, '1m');
   } finally {
     delete process.env.FAKE_CLAUDE_ARGV_DUMP;
     await fs.rm(tmp, { recursive: true, force: true }).catch(() => {});
@@ -200,15 +227,14 @@ test('a Claude-backed spawn never sets CLAUDE_CODE_AUTO_COMPACT_WINDOW', async (
   assert.ok(!('CLAUDE_CODE_AUTO_COMPACT_WINDOW' in env));
 });
 
-test('Sonnet 5 always spawns [1m] even when sonnetContextWindow preference is "200k"', async () => {
+test('Sonnet 5 always spawns [1m] even when the spawn carries sonnetWindow:"200k"', async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'ctxwin-'));
   const argvDump = path.join(tmp, 'argv.txt');
   process.env.FAKE_CLAUDE_ARGV_DUMP = argvDump;
   try {
-    await setSonnetContextWindow('200k');
     await api(baseUrl, 'POST', '/api/projects', { name: 'p3' });
     const r = await api(baseUrl, 'POST', '/api/instances', {
-      project: 'p3', mode: 'bypassPermissions', model: 'claude-sonnet-5',
+      project: 'p3', mode: 'bypassPermissions', model: 'claude-sonnet-5', sonnetWindow: '200k',
     });
     const id = r.body.id;
     await waitFor(() => instances.get(id).status === 'idle');

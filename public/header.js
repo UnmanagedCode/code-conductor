@@ -133,7 +133,7 @@ export function installHeader({
     node.appendChild(section('Session totals'));
     const usage = getUsage(inst.id);
     const c = usage.cum;
-    const ctxWindow = contextWindowFor(usage.effectiveModel(inst.model));
+    const ctxWindow = contextWindowFor(usage.effectiveModel(inst.model), inst.sonnetWindow);
     const modelLabel = usage.effectiveModel(inst.model) ?? '(default)';
     const meta = document.createElement('div');
     meta.className = 'ih-usage-meta';
@@ -310,9 +310,9 @@ export function installHeader({
     const accountUsage = getAccountUsage();
     // ── ctx half ──
     const usage = getUsage(inst.id);
-    const ctxFrac = usage.currentFillPct(inst.model);
+    const ctxFrac = usage.currentFillPct(inst.model, inst.sonnetWindow);
     const ctxUsed = usage.currentContextSize();
-    const ctxWindow = contextWindowFor(usage.effectiveModel(inst.model));
+    const ctxWindow = contextWindowFor(usage.effectiveModel(inst.model), inst.sonnetWindow);
 
     let ctxText;
     if (ctxUsed == null) {

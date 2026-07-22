@@ -12,7 +12,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { orchStoreRoot, writeFileAtomic } from './projects.js';
 import { CAPABILITY_TIERS, DEFAULT_TIER_BACKEND, isKnownTier, isKnownClaudeModel,
-  DEFAULT_ROLE_BINDING, isKnownRole } from './modelVersions.js';
+  DEFAULT_ROLE_BINDING, isKnownRole, sonnetWindowSelectable } from './modelVersions.js';
 import { OLLAMA_CLOUD_MODELS, isKnownOllamaCloudModel } from './ollamaCloudModels.js';
 
 function settingsPath() {
@@ -122,23 +122,6 @@ export async function setOnOverageAction(action) {
   const cur = loadSync();
   const models = { ...(cur.models || {}), onOverage: val };
   await writeSettings({ ...cur, models });
-  return val;
-}
-
-// Models group: Sonnet context-window preference. '1m' (default) keeps the
-// CLI-native `[1m]` suffix so Sonnet spawns at 1M; '200k' uses the bare id
-// so Sonnet spawns at its CLI-native 200k default. Defaults to '1m' to
-// preserve pre-existing behaviour — change via Settings → Models.
-export function getSonnetContextWindow() {
-  const s = loadSync();
-  return s.models?.sonnetContextWindow === '200k' ? '200k' : '1m';
-}
-
-export async function setSonnetContextWindow(window) {
-  const val = window === '200k' ? '200k' : '1m';
-  const cur = loadSync();
-  const next = { ...cur, models: { ...(cur.models || {}), sonnetContextWindow: val } };
-  await writeSettings(next);
   return val;
 }
 
@@ -284,6 +267,19 @@ function isValidBinding(b) {
   return false;
 }
 
+// Reconstruct the persisted shape of a concrete {kind, model} binding, keeping
+// only the fields that matter. A Claude binding on a user-selectable-window
+// Sonnet (4.x) carries its chosen `window` ('1m'|'200k'); every other binding
+// (Ollama, Opus/Haiku/Fable, fixed-window Sonnet 5) stores no window — those
+// families ignore it, so persisting one would be misleading noise.
+function persistBinding(b) {
+  const out = { kind: b.kind, model: b.model };
+  if (b.kind === 'claude' && sonnetWindowSelectable(b.model) && (b.window === '1m' || b.window === '200k')) {
+    out.window = b.window;
+  }
+  return out;
+}
+
 // Models group: tier → {kind, model} binding. `kind` is 'claude' (model = a
 // MODEL_FAMILIES version id) or 'ollama' (model = an Ollama tag).
 //
@@ -301,7 +297,7 @@ export async function setTierBackend(tier, backend) {
     throw Object.assign(new Error('tierBackend must be {kind, model} naming a known backend'), { statusCode: 400 });
   }
   const cur = loadSync();
-  const nextTierBackend = { ...(cur.models?.tierBackend || {}), [tier]: { kind: backend.kind, model: backend.model } };
+  const nextTierBackend = { ...(cur.models?.tierBackend || {}), [tier]: persistBinding(backend) };
   const next = { ...cur, models: { ...(cur.models || {}), tierBackend: nextTierBackend } };
   await writeSettings(next);
   return nextTierBackend;
@@ -331,7 +327,7 @@ export async function setRoleBinding(role, binding) {
   }
   const stored = binding.kind === 'tier'
     ? { kind: 'tier', tier: binding.tier }
-    : { kind: binding.kind, model: binding.model };
+    : persistBinding(binding);
   const cur = loadSync();
   const nextRoleBackend = { ...(cur.models?.roleBackend || {}), [role]: stored };
   const next = { ...cur, models: { ...(cur.models || {}), roleBackend: nextRoleBackend } };
@@ -344,7 +340,7 @@ export async function setRoleBinding(role, binding) {
 // custom binding is returned directly.
 export function resolveRoleBackend(role) {
   const b = getRoleBinding(role);
-  return b.kind === 'tier' ? getTierBackend(b.tier) : { kind: b.kind, model: b.model };
+  return b.kind === 'tier' ? getTierBackend(b.tier) : persistBinding(b);
 }
 
 // Models group: conductor compact window override. When enabled, sets

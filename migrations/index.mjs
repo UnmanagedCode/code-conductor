@@ -26,10 +26,11 @@ import * as m0015 from './0015-enable-context-renewal-module.mjs';
 import * as m0016 from './0016-migrate-family-settings-to-tiers.mjs';
 import * as m0017 from './0017-collapse-tier-backend-to-kind-model.mjs';
 import * as m0018 from './0018-session-backends-carry-model.mjs';
+import * as m0019 from './0019-inline-sonnet-window-into-bindings.mjs';
 
 // Ordered list — append new migrations to the end. Order matters:
 // later migrations may assume earlier ones have run.
-const ALL = [m0001, m0002, m0004, m0005, m0006, m0007, m0008, m0009, m0010, m0011, m0012, m0013, m0014, m0015, m0016, m0017, m0018];
+const ALL = [m0001, m0002, m0004, m0005, m0006, m0007, m0008, m0009, m0010, m0011, m0012, m0013, m0014, m0015, m0016, m0017, m0018, m0019];
 
 export async function runMigrations({ root, log = console.log } = {}) {
   for (const m of ALL) {

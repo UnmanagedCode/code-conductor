@@ -6,7 +6,8 @@
 //
 // Sonnet context-window policy (mirrors canonicalizeModel in
 // src/modelVersions.js): Sonnet 5 is pinned to 1M (fixedWindow); Sonnet 4.x
-// obeys the global sonnetContextWindow preference; Opus/Fable 1M, Haiku 200k.
+// obeys the window on its own binding (`binding.window`, no global); Opus/Fable
+// 1M, Haiku 200k.
 
 // Pre-fetch fallback version ids (one per family) — only used to seed the
 // default tier bindings before the boot fetch resolves.
@@ -44,7 +45,6 @@ const DEFAULT_ROLE_BINDING = {
   reviewer:  { kind: 'tier', tier: 'powerful' },
 };
 
-let activeSonnetWindow = '1m';
 let activeTierEnabled = { fast: true, balanced: true, powerful: true, frontier: true };
 let activeDefaultSpawnTier = 'powerful';
 let activeTierBackend = { ...DEFAULT_TIER_BACKEND };
@@ -106,8 +106,6 @@ export function isSonnetFixedWindowVersion(id) { return !!sonnetFixedWindowByVer
 // Friendly display name for a Claude version id (e.g. "Opus 4.8"), falling
 // back to the pre-fetch default label, then the raw id itself.
 export function getVersionLabel(id) { return claudeVersionLabelById[id] || DEFAULT_VERSION_LABELS[id] || id; }
-export function getActiveSonnetWindow() { return activeSonnetWindow; }
-export function setActiveSonnetWindow(w) { activeSonnetWindow = w === '200k' ? '200k' : '1m'; return activeSonnetWindow; }
 
 export function getActiveTierEnabled(tier) { return activeTierEnabled[tier] !== false; }
 export function setActiveTierEnabled(map) { activeTierEnabled = { ...activeTierEnabled, ...(map || {}) }; }
@@ -118,12 +116,13 @@ export function setActiveDefaultSpawnTier(v) { activeDefaultSpawnTier = v || 'po
 export function getActiveTierBackend(tier) { return activeTierBackend[tier] || DEFAULT_TIER_BACKEND[tier]; }
 export function setActiveTierBackend(map) { activeTierBackend = { ...activeTierBackend, ...(map || {}) }; }
 
-// Apply the Sonnet window suffix to a Claude version id (no-op for non-Sonnet
-// and non-Claude ids).
-function applyClaudeWindow(versionId) {
+// Apply the Sonnet window suffix to a Claude version id from the binding's own
+// `window` ('1m'|'200k', default '1m') — no global. No-op for non-Sonnet and
+// non-Claude ids; fixed-window Sonnet (5) is always [1m] regardless of `window`.
+function applyClaudeWindow(versionId, window) {
   if (familyOf(versionId) !== 'sonnet') return versionId;
   if (isSonnetFixedWindowVersion(versionId)) return `${versionId}[1m]`;
-  return activeSonnetWindow === '200k' ? versionId : `${versionId}[1m]`;
+  return window === '200k' ? versionId : `${versionId}[1m]`;
 }
 
 export async function loadModelVersions() {
@@ -145,7 +144,6 @@ export async function loadModelVersions() {
         tierLabels = Object.fromEntries(data.tiers.map(t => [t.tier, t.label]));
       }
       if (Array.isArray(data.providers) && data.providers.length) providers = data.providers;
-      setActiveSonnetWindow(data.sonnetContextWindow);
       if (data.tierBackend) setActiveTierBackend(data.tierBackend);
       if (data.roleBackend) setActiveRoleBindings(data.roleBackend);
       if (data.enabledTiers) setActiveTierEnabled(data.enabledTiers);
@@ -163,7 +161,7 @@ export function resolveSpawnModel(tier) {
   const b = getActiveTierBackend(tier);
   if (!b || !b.model) return { model: '', backendKind: 'claude' };
   if (b.kind === 'ollama') return { model: b.model, backendKind: 'ollama' };
-  return { model: applyClaudeWindow(b.model), backendKind: 'claude' };
+  return { model: applyClaudeWindow(b.model, b.window), backendKind: 'claude', sonnetWindow: b.window === '200k' ? '200k' : '1m' };
 }
 
 // Resolve a role to the spawn args {model, backendKind}. A tier binding
@@ -175,5 +173,5 @@ export function resolveSpawnRole(role) {
   if (b && b.kind === 'tier') return resolveSpawnModel(b.tier);
   if (!b || !b.model) return { model: '', backendKind: 'claude' };
   if (b.kind === 'ollama') return { model: b.model, backendKind: 'ollama' };
-  return { model: applyClaudeWindow(b.model), backendKind: 'claude' };
+  return { model: applyClaudeWindow(b.model, b.window), backendKind: 'claude', sonnetWindow: b.window === '200k' ? '200k' : '1m' };
 }

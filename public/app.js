@@ -37,7 +37,7 @@ import { installSessionSummary } from './sessionSummary.js';
 import { installSessionStats } from './sessionStats.js';
 import { installWsRouter } from './wsRouter.js';
 import { latestOnly } from './latestOnly.js';
-import { loadModelVersions, setActiveSonnetWindow,
+import { loadModelVersions,
   setActiveTierEnabled, setActiveDefaultSpawnTier, setActiveTierBackend, setActiveRoleBindings, setCustomBackends } from './models.js';
 import { setTtsAvailable, setTtsEnabled, setTtsRate } from './tts.js';
 
@@ -526,7 +526,6 @@ const settings = installSettings({
   onAvailabilityChange: setMicAvailable,
   onPluginsChanged: () => appSwitcher.refresh(),
   onModelsChange: data => {
-    setActiveSonnetWindow(data.sonnetContextWindow);
     if (data.tierBackend) setActiveTierBackend(data.tierBackend);
     if (data.roleBackend) setActiveRoleBindings(data.roleBackend);
     if (data.enabledTiers) setActiveTierEnabled(data.enabledTiers);

@@ -43,7 +43,6 @@ import {
   getOnOverageAction, setOnOverageAction,
   getOverageThreshold, setOverageThreshold,
   getConductorCompactWindow, setConductorCompactWindow,
-  getSonnetContextWindow, setSonnetContextWindow,
   getEnabledTiers, setTierEnabled,
   getDefaultSpawnTier, setDefaultSpawnTier,
   getTierBackend, setTierBackend,
@@ -741,13 +740,13 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
 
     r.post('/instances', async (req, res, next) => {
       try {
-        const { project, resume, mode, effort, thinking, model, backendKind, worktree, temp, debug, autoApprovePlan } = req.body ?? {};
+        const { project, resume, mode, effort, thinking, model, sonnetWindow, backendKind, worktree, temp, debug, autoApprovePlan } = req.body ?? {};
         // UI shortcut: the temp checkbox implies bypassPermissions when no
         // mode is picked (a disposable session is almost always for *doing*,
         // not planning). create() is policy-light and no longer couples
         // these, so the mapping lives here. An explicit mode still wins.
         const effectiveMode = (mode == null && temp) ? 'bypassPermissions' : mode;
-        const inst = await instances.create({ project, resume, mode: effectiveMode, effort, thinking, model, backendKind, worktree, temp, debug, autoApprovePlan });
+        const inst = await instances.create({ project, resume, mode: effectiveMode, effort, thinking, model, sonnetWindow, backendKind, worktree, temp, debug, autoApprovePlan });
         res.status(201).json(inst.summary());
       } catch (e) { next(e); }
     });
@@ -844,6 +843,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
           effort: inst.effort,
           thinking: inst.thinking,
           model: inst.model,
+          sonnetWindow: inst.sonnetWindow,
           worktree: inst.worktree?.worktreeName ?? null,
           prefill: droppedText,
         });
@@ -1062,21 +1062,21 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
   // user's custom Ollama models, the curated Ollama cloud preset catalog +
   // its per-tier defaults, the capability-tier list + each tier's
   // {kind, model} binding, the role list + each role's stored binding (a tier
-  // binding {kind:'tier',tier} or a custom {kind,model}), and the global
-  // Sonnet-window preference.
+  // binding {kind:'tier',tier} or a custom {kind,model}). A Sonnet 4.x Claude
+  // binding carries its own context window as {kind:'claude',model,window} —
+  // there is no global Sonnet-window preference.
   function modelsSettingsState() {
     const tierBackend = {};
     for (const t of CAPABILITY_TIERS) {
-      tierBackend[t.tier] = getTierBackend(t.tier); // {kind, model}
+      tierBackend[t.tier] = getTierBackend(t.tier); // {kind, model, window?}
     }
     const roleBackend = {};
     for (const r of ROLES) {
-      roleBackend[r.role] = getRoleBinding(r.role); // {kind:'tier',tier} | {kind,model}
+      roleBackend[r.role] = getRoleBinding(r.role); // {kind:'tier',tier} | {kind,model,window?}
     }
     return { providers: PROVIDERS, backends: MODEL_FAMILIES, onOverage: getOnOverageAction(),
       overageThreshold: getOverageThreshold(),
       conductorCompactWindow: getConductorCompactWindow(),
-      sonnetContextWindow: getSonnetContextWindow(),
       tiers: CAPABILITY_TIERS,
       tierBackend,
       roles: ROLES,
@@ -1094,12 +1094,11 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
 
   r.post('/settings/models/prefs', async (req, res, next) => {
     try {
-      const { onOverage, overageThreshold, conductorCompactWindow, sonnetContextWindow,
+      const { onOverage, overageThreshold, conductorCompactWindow,
               tierEnabled, defaultSpawnTier, tierBackend, roleBackend } = req.body ?? {};
       if (typeof onOverage === 'string') await setOnOverageAction(onOverage);
       if (overageThreshold !== undefined) await setOverageThreshold(overageThreshold);
       if (conductorCompactWindow !== undefined) await setConductorCompactWindow(conductorCompactWindow);
-      if (sonnetContextWindow !== undefined) await setSonnetContextWindow(sonnetContextWindow);
       if (tierEnabled !== undefined) {
         if (!tierEnabled || typeof tierEnabled !== 'object' || !isKnownTier(tierEnabled.tier)) {
           return res.status(400).json({ error: 'tierEnabled.tier must be a known capability tier' });
@@ -1108,8 +1107,10 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
       }
       if (defaultSpawnTier !== undefined) await setDefaultSpawnTier(defaultSpawnTier);
       if (tierBackend !== undefined) {
-        // backend is a {kind, model} pair — setTierBackend validates it names a
-        // known Claude version or a configured Ollama tag (400 otherwise).
+        // backend is a {kind, model, window?} record (window meaningful only for
+        // a Sonnet 4.x Claude binding) — setTierBackend validates it names a
+        // known Claude version or a configured Ollama tag (400 otherwise) and
+        // persists the window on the binding.
         if (!tierBackend || typeof tierBackend !== 'object' || !isKnownTier(tierBackend.tier)) {
           return res.status(400).json({ error: 'tierBackend must be {tier, backend:{kind,model}} with a known tier' });
         }

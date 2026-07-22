@@ -22,7 +22,7 @@ function modelsPayload(over) {
     providers: [{ kind: 'claude', label: 'Claude' }, { kind: 'ollama', label: 'Ollama' }],
     backends: [], tiers: [], tierBackend: {}, customBackends: [],
     ollamaCloudModels: [], ollamaCloudTierDefaults: {},
-    enabledTiers: {}, defaultSpawnTier: 'powerful', sonnetContextWindow: '1m',
+    enabledTiers: {}, defaultSpawnTier: 'powerful',
     onOverage: over.onOverage,
     overageThreshold: over.overageThreshold,
   };
