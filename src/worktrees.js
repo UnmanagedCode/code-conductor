@@ -873,8 +873,11 @@ export async function getProjectCommits(projectName, { limit = COMMITS_DEFAULT_L
 // Return structured diff data for the change introduced by a single commit.
 // Mirrors getWorktreeDiff's response shape so the same frontend renderer works.
 // Validates the project via getProject; guards `sha` to a hex object name.
-// Uses `git show` (handles root commits automatically). Returns
-// { project, sha, files, totalAdds, totalDels, truncated }.
+// Uses `git show` (handles root commits automatically). For merge commits
+// (parents.length >= 2), uses `--first-parent` so the diff shows the full
+// aggregate the merged branch brought onto mainline instead of git's default
+// combined diff (conflict hunks only, empty for a clean --no-ff merge).
+// Returns { project, sha, commitMessage, files, totalAdds, totalDels, truncated }.
 export async function getCommitDiff(projectName, sha, { contextLines = 3 } = {}) {
   const proj = await getProject(projectName);
   if (!/^[0-9a-fA-F]{4,40}$/.test(String(sha))) {
@@ -883,10 +886,27 @@ export async function getCommitDiff(projectName, sha, { contextLines = 3 } = {})
     throw err;
   }
   const ctx = Math.max(0, Math.min(50, Number.isFinite(Number(contextLines)) ? Math.floor(Number(contextLines)) : 3));
-  const [r, msgR] = await Promise.all([
-    runGit(proj.path, ['show', `--unified=${ctx}`, '--format=', '--no-color', sha]),
-    runGit(proj.path, ['log', '-1', '--format=%B', sha]),
-  ]);
+
+  // Fetch message + parent SHAs together (need parent count before choosing
+  // the `git show` args below). %x1f separates the (possibly multi-line)
+  // body from the space-separated parent list.
+  const metaR = await runGit(proj.path, ['log', '-1', '--format=%B%x1f%P', sha]);
+  if (metaR.code !== 0) {
+    const stderr = (metaR.stderr || '').trim();
+    const notFound = /unknown revision|bad revision|ambiguous argument/i.test(stderr);
+    const err = new Error(stderr || `git log ${sha} failed`);
+    err.statusCode = notFound ? 404 : 500;
+    throw err;
+  }
+  const metaParts = metaR.stdout.split('\x1f');
+  const commitMessage = metaParts.slice(0, -1).join('\x1f').trim() || null;
+  const parents = (metaParts[metaParts.length - 1] || '').trim().split(/\s+/).filter(Boolean);
+  const isMerge = parents.length >= 2;
+
+  const showArgs = isMerge
+    ? ['show', '--first-parent', `--unified=${ctx}`, '--format=', '--no-color', sha]
+    : ['show', `--unified=${ctx}`, '--format=', '--no-color', sha];
+  const r = await runGit(proj.path, showArgs);
   if (r.code !== 0) {
     const stderr = (r.stderr || '').trim();
     const notFound = /unknown revision|bad revision|ambiguous argument/i.test(stderr);
@@ -894,7 +914,6 @@ export async function getCommitDiff(projectName, sha, { contextLines = 3 } = {})
     err.statusCode = notFound ? 404 : 500;
     throw err;
   }
-  const commitMessage = msgR.code === 0 ? (msgR.stdout.trim() || null) : null;
   const rawOutput = r.stdout;
   const truncated = rawOutput.length > DIFF_BYTE_CAP;
   const raw = truncated ? rawOutput.slice(0, DIFF_BYTE_CAP) : rawOutput;

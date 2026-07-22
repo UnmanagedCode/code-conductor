@@ -141,6 +141,32 @@ test('GET /commits/:sha/diff works for the root commit', async () => {
   assert.equal(r.body.commitMessage, 'initial', 'commitMessage should be present for the root commit');
 });
 
+test('GET /commits/:sha/diff for a merge commit returns the first-parent aggregate diff', async () => {
+  const repoPath = await makeRealRepo('demo');
+  // Branch off, commit a change on the branch, then no-ff merge back into
+  // main. A bare `git show` on the resulting merge commit would emit git's
+  // combined diff (conflict hunks only), which is empty for a clean merge
+  // like this one — the fix routes merges through `--first-parent` instead.
+  await git(repoPath, 'checkout', '-q', '-b', 'feature');
+  await commitFile(repoPath, 'feature.js', 'export const x = 1;\n', 'feature commit');
+  await git(repoPath, 'checkout', '-q', 'main');
+  await git(repoPath, 'merge', '--no-ff', '-q', '-m', 'merge feature', 'feature');
+
+  const list = await api(baseUrl, 'GET', '/api/projects/demo/commits');
+  const merge = list.body.commits[0];
+  assert.equal(merge.subject, 'merge feature');
+  assert.equal(merge.parents.length, 2, 'sanity: this is a merge commit');
+
+  const r = await api(baseUrl, 'GET', `/api/projects/demo/commits/${merge.sha}/diff`);
+  assert.equal(r.status, 200, `expected 200, got ${r.status}: ${JSON.stringify(r.body)}`);
+  assert.ok(Array.isArray(r.body.files) && r.body.files.length > 0, 'merge diff should not be empty');
+  const file = r.body.files.find(f => f.path === 'feature.js');
+  assert.ok(file, 'feature.js should appear in the merge diff');
+  assert.equal(file.status, 'added');
+  assert.ok(r.body.totalAdds > 0, 'totalAdds should be > 0');
+  assert.equal(r.body.commitMessage, 'merge feature');
+});
+
 test('GET /commits/:sha/diff rejects a non-hex sha with 400', async () => {
   await makeRealRepo('demo');
   const r = await api(baseUrl, 'GET', '/api/projects/demo/commits/zzz/diff');
