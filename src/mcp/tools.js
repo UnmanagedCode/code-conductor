@@ -296,24 +296,6 @@ export function buildTools() {
       handler: h.answerQuestion,
     },
     {
-      name: 'set_auto_approve_plan',
-      description:
-        'Toggle the per-instance auto-approve-plan flag. While enabled, the next plan_request emitted by the ' +
-        'worker auto-fires setMode(bypassPermissions) + the approval prompt server-side — no further calls ' +
-        'needed. Useful for spawning multiple workers and letting them roll forward without per-plan ' +
-        'intervention.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          sessionId: { type: 'string', description: 'Worker sessionId.' },
-          enabled: { type: 'boolean' },
-        },
-        required: ['sessionId', 'enabled'],
-      },
-      handler: h.setAutoApprovePlan,
-      annotations: { idempotentHint: true },
-    },
-    {
       name: 'subscribe_to_idle',
       description:
         'Register a one-shot callback: when the target instance next ends a turn WITH no live background ' +

@@ -1,5 +1,5 @@
-// Tests for the four MCP tools added for Conduct mode:
-//   approve_plan, reject_plan, set_auto_approve_plan, project_diff.
+// Tests for the MCP tools added for Conduct mode:
+//   approve_plan, reject_plan, project_diff.
 //
 // Mirrors the bootServer + rpc + unwrap pattern from tests/mcp.test.mjs.
 
@@ -85,10 +85,10 @@ async function seedPlanFile() {
   return tmpDir;
 }
 
-test('tools/list includes the four new Conduct tools', async () => {
+test('tools/list includes the new Conduct tools', async () => {
   const { body } = await rpc('tools/list');
   const names = body.result.tools.map(t => t.name);
-  for (const n of ['approve_plan', 'reject_plan', 'set_auto_approve_plan', 'project_diff']) {
+  for (const n of ['approve_plan', 'reject_plan', 'project_diff']) {
     assert.ok(names.includes(n), `tools/list missing ${n}`);
     const t = body.result.tools.find(x => x.name === n);
     assert.equal(t.inputSchema.type, 'object', `${n} inputSchema is an object`);
@@ -176,29 +176,6 @@ test('reject_plan keeps the worker in plan mode', async () => {
     delete process.env.FAKE_PLAN_FILE;
     await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
   }
-});
-
-test('set_auto_approve_plan flips the per-instance flag', async () => {
-  await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
-  const r = await api(baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'plan' });
-  const id = r.body.id;
-  const inst = instances.get(id);
-  await waitFor(() => inst.status === 'idle');
-  const sid = inst.sessionId;
-  assert.equal(inst.autoApprovePlan, false);
-
-  const on = unwrap(await callTool('set_auto_approve_plan', {
-    sessionId: sid, enabled: true,
-  }));
-  assert.equal(on.sessionId, sid);
-  assert.equal(on.autoApprovePlan, true);
-  assert.equal(inst.autoApprovePlan, true);
-
-  const off = unwrap(await callTool('set_auto_approve_plan', {
-    sessionId: sid, enabled: false,
-  }));
-  assert.equal(off.autoApprovePlan, false);
-  assert.equal(inst.autoApprovePlan, false);
 });
 
 test('project_diff returns the unified diff of <base>...HEAD', async () => {

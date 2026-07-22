@@ -653,18 +653,6 @@ export async function answerQuestion(
   return { sessionId: inst.sessionId, mode: inst.mode, sentText: text, ...sub };
 }
 
-// Flip the per-instance auto-approve-plan flag. While enabled, the next
-// plan_request emitted by the worker auto-fires the same setMode +
-// approval-prompt path as approvePlan above, server-side, without any
-// further intervention. Useful for "fire N workers and let them roll".
-export async function setAutoApprovePlan({ sessionId, enabled }, { instances }) {
-  const r = await getInst(instances, sessionId);
-  if (r.soft) return r.soft;
-  const inst = r.inst;
-  inst.setAutoApprovePlan(!!enabled);
-  return { sessionId: inst.sessionId, autoApprovePlan: inst.autoApprovePlan };
-}
-
 // ---------- read-only: worktree diff ----------
 
 // Tiered drill-down diff for a worktree relative to <baseRef>...HEAD.
