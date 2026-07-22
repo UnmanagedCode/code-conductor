@@ -217,14 +217,30 @@ test('Ollama-backed spawn uses a custom model\'s declared contextWindow', async 
 
 test('Ollama-backed spawn with an unknown window leaves CLAUDE_CODE_AUTO_COMPACT_WINDOW unset', async () => {
   await addCustomBackend({ label: 'Local NoWin', model: 'localnowin:cloud' }); // no contextWindow
-  const { env } = await spawnAndDump('localnowin:cloud', { backendKind: 'ollama', project: 'ollama-d' });
-  assert.ok(!('CLAUDE_CODE_AUTO_COMPACT_WINDOW' in env),
-    'no declared window → the CLI uses its own default, we set nothing');
+  const hadAmbient = 'CLAUDE_CODE_AUTO_COMPACT_WINDOW' in process.env;
+  const savedAmbient = process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW;
+  process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = '999999'; // poison: prove the strip, not ambient luck
+  try {
+    const { env } = await spawnAndDump('localnowin:cloud', { backendKind: 'ollama', project: 'ollama-d' });
+    assert.ok(!('CLAUDE_CODE_AUTO_COMPACT_WINDOW' in env),
+      'no declared window → the CLI uses its own default, we set nothing (even with an ambient value present)');
+  } finally {
+    if (hadAmbient) process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = savedAmbient;
+    else delete process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW;
+  }
 });
 
 test('a Claude-backed spawn never sets CLAUDE_CODE_AUTO_COMPACT_WINDOW', async () => {
-  const { env } = await spawnAndDump('claude-opus-4-8', { project: 'claude-x' });
-  assert.ok(!('CLAUDE_CODE_AUTO_COMPACT_WINDOW' in env));
+  const hadAmbient = 'CLAUDE_CODE_AUTO_COMPACT_WINDOW' in process.env;
+  const savedAmbient = process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW;
+  process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = '999999'; // poison: prove the strip, not ambient luck
+  try {
+    const { env } = await spawnAndDump('claude-opus-4-8', { project: 'claude-x' });
+    assert.ok(!('CLAUDE_CODE_AUTO_COMPACT_WINDOW' in env));
+  } finally {
+    if (hadAmbient) process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = savedAmbient;
+    else delete process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW;
+  }
 });
 
 test('Sonnet 5 always spawns [1m] even when the spawn carries sonnetWindow:"200k"', async () => {
