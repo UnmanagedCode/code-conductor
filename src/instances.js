@@ -244,6 +244,10 @@ export class EventLog {
     }
     this.buf.splice(0, cut);
   }
+  // INVARIANT: an OPEN thinking_delta slot keeps mutating in place (push folds
+  // later same-block deltas into it) until its block closes — ring elements are
+  // NOT immutable after creation. Callers must serialize this array synchronously
+  // (no await between the read and the send/JSON.stringify).
   toArray() { return this.buf.slice(); }
   clear() { this.buf.length = 0; this.nextSeq = 0; }
 }
@@ -629,7 +633,9 @@ export class Instance extends EventEmitter {
   // its Task head (and thus the whole group so far) into the tail, which is
   // what keeps NESTED blocks whole; an evicted head advances the start past
   // its children (they are served later via lazy paging alongside their
-  // head).
+  // head). INVARIANT (see EventLog.toArray): a still-open thinking_delta slot in
+  // the returned slice mutates in place until its block closes — the caller must
+  // serialize the snapshot synchronously (no await before the send).
   snapshotTail(max) {
     const envMax = Number(process.env.ORCH_SNAPSHOT_TAIL);
     const cap = Number.isInteger(max) && max > 0 ? max
