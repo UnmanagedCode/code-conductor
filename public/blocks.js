@@ -212,6 +212,11 @@ export function describeToolInput(name, input, ctx = {}) {
     if (input.offset != null) out += `  [offset=${input.offset}, limit=${input.limit ?? '?'}]`;
     return out;
   }
+  if (name === 'mcp__code-conductor__spawn_instance') {
+    let out = trunc(`[${input.project}]`);
+    if (input.model != null) out += ` model=${input.model}`;
+    return out;
+  }
   switch (renderKindFor(name)) {
     case 'Bash':       return trunc(input.command);
     case 'Edit':
@@ -389,6 +394,7 @@ const TOOL_INPUT_RENDERERS = {
   Edit: (input) => (typeof input.old_string === 'string' && typeof input.new_string === 'string') ? renderEditDiff(input) : null,
   Write: (input) => typeof input.content === 'string' ? renderWritePreview(input) : null,
   NotebookEdit: (input) => typeof input.new_source === 'string' ? renderNotebookEdit(input) : null,
+  'mcp__code-conductor__send_prompt': (input) => typeof input.text === 'string' ? renderSendPromptText(input) : null,
 };
 
 function copyToClipboard(text) {
@@ -449,6 +455,38 @@ function renderBashCommand(input) {
   });
   box.appendChild(btn);
   box.appendChild(el('pre', { class: 'bash-cmd' }, input.command));
+  wrap.appendChild(box);
+
+  return wrap;
+}
+
+function renderSendPromptText(input) {
+  const wrap = el('div', { class: 'bash-cmd-wrap' });
+
+  // Inner box is position:relative so the Copy button anchors to its corner.
+  const box = el('div', { class: 'bash-cmd-box' });
+
+  const btn = el('button', { type: 'button', class: 'bash-cmd-copy' }, 'Copy');
+  let resetTimer = null;
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const flash = (label, cls) => {
+      btn.textContent = label;
+      btn.classList.remove('copied', 'failed');
+      if (cls) btn.classList.add(cls);
+      if (resetTimer) clearTimeout(resetTimer);
+      resetTimer = setTimeout(() => {
+        btn.textContent = 'Copy';
+        btn.classList.remove('copied', 'failed');
+        resetTimer = null;
+      }, 1200);
+    };
+    copyToClipboard(input.text)
+      .then(() => flash('Copied', 'copied'))
+      .catch(() => flash('Failed', 'failed'));
+  });
+  box.appendChild(btn);
+  box.appendChild(el('pre', { class: 'bash-cmd' }, input.text));
   wrap.appendChild(box);
 
   return wrap;
