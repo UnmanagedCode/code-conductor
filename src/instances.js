@@ -201,7 +201,27 @@ export class EventLog {
   // First retained `_seq` — everything below it was evicted (0 when
   // nothing was). Equals nextSeq for an empty ring.
   get trimmedBefore() { return this.buf.length ? this.buf[0]._seq : this.nextSeq; }
+  // Retention is storage-only — it never gates what _emitUi emits to the live
+  // WS feed. A `v` this method declines to retain simply never receives a
+  // `_seq`, so _emitUi still emits it seq-less (the client renders seq-less
+  // events unconditionally — see public/conversation.js). Two live-stream
+  // floods on ollama-backed workers (one system/thinking_tokens per
+  // thinking_delta token) are kept OUT of the ring so a single long reasoning
+  // turn can't overflow it and strand the archive mid-turn (history_gap):
+  //   - thinking_tokens is a live-only counter (last-value-wins, never
+  //     persisted, no-op on replay) → never retained.
+  //   - consecutive thinking_delta of one block fold into ONE slot — the same
+  //     one-delta-per-block shape disk replay produces (src/transcript.js), so
+  //     ring + jsonl-archive reconstruct identically. The LIVE per-token stream
+  //     is untouched; only the retained representation coalesces.
   push(v) {
+    if (v.kind === 'system' && v.subtype === 'thinking_tokens') return;
+    const tail = this.buf[this.buf.length - 1];
+    if (v.kind === 'thinking_delta' && tail && tail.kind === 'thinking_delta'
+        && tail.msgId === v.msgId && tail.blockIdx === v.blockIdx) {
+      tail.text += v.text;
+      return;
+    }
     v._seq = this.nextSeq;
     this.nextSeq += 1;
     this.buf.push(v);
