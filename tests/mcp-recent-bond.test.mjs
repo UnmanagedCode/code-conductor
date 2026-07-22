@@ -9,7 +9,7 @@ import { test, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { bootServer, api, waitFor, instForSession, freshProjectsRoot, rmrf } from './helpers.mjs';
+import { bootServer, api, waitFor, instForSession, freshProjectsRoot, rmrf, stripMessageBoundaryHeader } from './helpers.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO_WS = path.join(__dirname, 'fixtures', 'scenario-ws.json');
@@ -43,7 +43,10 @@ function unwrapMessages(result) {
   assert.ok(Array.isArray(result.content), 'tool result has content[]');
   const meta = JSON.parse(result.content[0].text);
   const bodies = result.content.slice(1).map(c => c.text);
-  return { sessionId: meta.sessionId, messages: meta.messages.map((m, i) => ({ ...m, text: bodies[i] ?? '' })) };
+  return {
+    sessionId: meta.sessionId,
+    messages: meta.messages.map((m, i) => ({ ...m, text: stripMessageBoundaryHeader(bodies[i] ?? '') })),
+  };
 }
 
 let ctx, baseUrl, instances, home;
@@ -89,12 +92,19 @@ test('get_recent_messages: default call bonds a plan + TWO trailing prose messag
   const sessionId = await spawnWithScenario(SCENARIO_EXIT_PLAN_MULTI_TRAILING, 'a');
   await callTool(baseUrl, 'send_prompt', { sessionId, text: 'plan this', wait: true, waitTimeoutMs: 5000 });
 
-  const res = unwrapMessages(await callTool(baseUrl, 'get_recent_messages', { sessionId }));
+  const raw = await callTool(baseUrl, 'get_recent_messages', { sessionId });
+  const res = unwrapMessages(raw);
   assert.equal(res.messages.length, 3, 'default call spans the plan message through the end of the turn');
   assert.equal(res.messages[0].plan, 'Step 1\nStep 2');
   assert.equal(res.messages[0].text, '');
   assert.ok(!Object.hasOwn(res.messages[1], 'plan'));
   assert.equal(res.messages[1].text, 'First trailing note.');
+  // Raw (unstripped) bodies carry the boundary line once >1 message is
+  // returned — the text-less plan message's body is then just that line.
+  const rawBodies = raw.content.slice(1).map(c => c.text);
+  assert.match(rawBodies[0], /^--- message 1\/3 · .+ · 0 chars ---$/, 'text-less body is just the boundary line');
+  assert.match(rawBodies[1], /^--- message 2\/3 · .+ · \d+ chars ---\nFirst trailing note\.$/);
+  assert.match(rawBodies[2], /^--- message 3\/3 · .+ · \d+ chars ---\nStanding by for approval\.$/);
   assert.ok(!Object.hasOwn(res.messages[2], 'plan'));
   assert.equal(res.messages[2].text, 'Standing by for approval.');
 });

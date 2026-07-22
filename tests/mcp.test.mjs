@@ -8,7 +8,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { bootServer, api, waitFor, instForSession, freshProjectsRoot, rmrf } from './helpers.mjs';
+import { bootServer, api, waitFor, instForSession, freshProjectsRoot, rmrf, stripMessageBoundaryHeader } from './helpers.mjs';
 import { setTierBackend, setTierEnabled } from '../src/appSettings.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -59,10 +59,15 @@ function unwrapFile(result) {
   const { meta, bodies } = unwrapPayload(result);
   return { ...meta, content: bodies[0] ?? '' };
 }
-// get_recent_messages convenience: reattach each message's text from its body.
+// get_recent_messages convenience: reattach each message's text from its body,
+// stripping the boundary header get_recent_messages prefixes when it returns
+// more than one message (see stripMessageBoundaryHeader).
 function unwrapMessages(result) {
   const { meta, bodies } = unwrapPayload(result);
-  return { sessionId: meta.sessionId, messages: meta.messages.map((m, i) => ({ ...m, text: bodies[i] ?? '' })) };
+  return {
+    sessionId: meta.sessionId,
+    messages: meta.messages.map((m, i) => ({ ...m, text: stripMessageBoundaryHeader(bodies[i] ?? '') })),
+  };
 }
 
 function git(cwd, ...args) {
@@ -636,11 +641,16 @@ test('get_recent_messages reads the most recent assistant text from the ring', a
   assert.ok(!Object.hasOwn(second.messages[0], 'blocks'), 'pure-text message omits blocks field');
 
   // count:2 returns both turns, oldest-first.
-  const both = unwrapMessages(await callTool(baseUrl, 'get_recent_messages', { sessionId: spawn.sessionId, count: 2 }));
+  const bothRaw = await callTool(baseUrl, 'get_recent_messages', { sessionId: spawn.sessionId, count: 2 });
+  const both = unwrapMessages(bothRaw);
   assert.equal(both.messages.length, 2);
   assert.equal(both.messages[0].text, 'First ');
   assert.equal(both.messages[0].hasToolUse, true);
   assert.equal(both.messages[1].text, 'Second!');
+  // Raw (unstripped) bodies carry the boundary line once >1 message is returned.
+  const bothRawBodies = bothRaw.content.slice(1).map(c => c.text);
+  assert.match(bothRawBodies[0], /^--- message 1\/2 · .+ · 6 chars ---\nFirst /);
+  assert.match(bothRawBodies[1], /^--- message 2\/2 · .+ · 7 chars ---\nSecond!$/);
 
   // count larger than available — returns what's there.
   const cap = unwrapMessages(await callTool(baseUrl, 'get_recent_messages', { sessionId: spawn.sessionId, count: 10 }));

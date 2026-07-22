@@ -996,6 +996,14 @@ function isTextBearing(m) {
   return m.text.length > 0 || hasPlanOrQuestions(m);
 }
 
+// Boundary line prefixed into each get_recent_messages body when more than one
+// message is returned, so consecutive raw text blocks (content[k+1]) never
+// visually run together. Presentation-only — meta's textChars/index already
+// describe the raw prose.
+function messageBoundaryHeader(index, total, msgId, textChars) {
+  return `--- message ${index + 1}/${total} · ${msgId} · ${textChars} chars ---`;
+}
+
 // Return the most recent N assistant messages as joined text + structured
 // blocks, so a coordinating agent can read what a worker said without parsing
 // the raw event stream. `count` defaults to 1, clamped to [1, 50].
@@ -1062,15 +1070,25 @@ export async function buildRecentMessages({ sessionId, count, includeToolCalls =
 
   // Multi-block: metadata block describes each message; one raw text block per
   // message carries its (capped) prose, in order — block k+1 ↔ messages[k].
+  // When more than one message is returned, each body is prefixed with a
+  // boundary line (messageBoundaryHeader) so consecutive raw text blocks never
+  // visually run together — a text-less (plan/question-only) message's body is
+  // then just that line rather than ''. meta stays untouched either way:
+  // textChars/index/etc. always describe the raw prose, not the decorated body.
   const bodies = [];
+  const total = messages.length;
   const metaMessages = messages.map((m, index) => {
+    const textChars = (m.text ?? '').length;
     const capped = capText(m.text ?? '', MSG_TEXT_CAP);
-    bodies.push(capped.text);
+    const body = total > 1
+      ? messageBoundaryHeader(index, total, m.msgId, textChars) + (capped.text ? `\n${capped.text}` : '')
+      : capped.text;
+    bodies.push(body);
     const entry = {
       index,
       msgId: m.msgId,
       hasToolUse: m.hasToolUse,
-      textChars: (m.text ?? '').length,
+      textChars,
       textTruncated: capped.truncated,
     };
     if (m.plan) entry.plan = m.plan;
