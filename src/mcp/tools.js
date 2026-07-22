@@ -663,8 +663,8 @@ export function buildTools() {
         'textTruncated, plan?, questions?, blocks?}], source:"ring"|"disk", omittedToolOnly:int, retained:{firstSeq, ' +
         'lastSeq, trimmed}, hint?} oldest-first, PLUS one raw, un-escaped text block per message (content[k+1] is the ' +
         'prose for messages[k], empty for a plan/question-only turn — UNLESS more than one message is returned, in ' +
-        'which case each body is prefixed with "--- message i/N · msgId · textChars chars ---" so bodies stay visually ' +
-        'distinct, and a text-less message\'s body is then just that line). `omittedToolOnly` counts recent tool-call-only ' +
+        'which case each body is prefixed with "--- message i/N · msgId · textChars chars ---", and a text-less ' +
+        'message\'s body is then just that line). `omittedToolOnly` counts recent tool-call-only ' +
         'messages excluded by the default filter (the agent is active even when messages[] is empty); `hint` explains ' +
         'a short/empty result. Large message text is capped (textTruncated); blocks[].input is capped inline ' +
         '(inputTruncated). Default count 1, max 50. ' +
