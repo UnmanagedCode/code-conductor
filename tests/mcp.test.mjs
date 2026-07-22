@@ -149,7 +149,7 @@ test('tools/list returns the full expected tool catalog', async () => {
     'merge_worktree',
     'project_bash', 'project_diff', 'project_read', 'project_status', 'promote_session',
     'reject_plan', 'rename_workspace', 'renew_session', 'respawn_instance',
-    'send_prompt', 'set_auto_approve_plan', 'set_mode',
+    'send_prompt', 'set_mode',
     'set_project_workspace',
     'spawn_instance', 'subscribe_to_idle', 'sync_worktree',
     'unsubscribe_from_idle',
