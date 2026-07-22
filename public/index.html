@@ -135,8 +135,9 @@
             <p class="settings-desc">
               Each capability tier (Fast / Balanced / Powerful / Frontier) binds to a <strong>backend</strong>
               (Claude or Ollama) and a <strong>model</strong> scoped to it — a Claude version
-              or one of your custom Ollama models. The two spawn pickers (Conduct, the new-session dialog)
-              resolve a tier to that pair. For Claude, Sonnet's context window (200k or 1M) is a stored
+              or one of your custom Ollama models. The new-session dialog's tier picker resolves a tier
+              to that pair; the Conduct button resolves the Conductor role (Settings → Models → Roles)
+              to a backend/model instead. For Claude, Sonnet's context window (200k or 1M) is a stored
               preference set alongside the Sonnet 4.x model choice; Haiku is always 200k, Opus/Fable always 1M.
               An Ollama-bound tier resolves straight to its tag (no version/window choice) and launches via
               <code>ollama launch claude</code>. Changes take effect immediately — no restart.
@@ -152,7 +153,7 @@
             <ul id="sm-tier-list" class="sm-family-list"></ul>
             <fieldset class="sm-group sm-roles">
               <legend>Roles</legend>
-              <p class="settings-hint">A role binds to a capability tier (follows whatever that tier points at) or a <strong>Custom</strong> backend. Spawn callers resolve a role to its backend — the Conduct dialog uses the <strong>Conductor</strong> role.</p>
+              <p class="settings-hint">A role binds to a capability tier (follows whatever that tier points at) or a <strong>Custom</strong> backend. Spawn callers resolve a role to its backend — the Conduct button uses the <strong>Conductor</strong> role.</p>
               <ul id="sm-role-list" class="sm-role-list"></ul>
             </fieldset>
             <fieldset class="sm-group sm-custom">

@@ -792,7 +792,7 @@ dom.newWorkspaceBtn.addEventListener('click', () => {
   workspaceHandles.openNew();
 });
 
-// Spawn + Conduct dialogs and the model-picker sync helpers: see
+// Spawn dialog + Conduct button handler and the model-picker sync helpers: see
 // public/spawnDialog.js. The returned handles are held in `spawnHandles` (declared
 // above) so the Sidebar's onCreateInstanceClick, the Settings onModelsChange
 // callback, and the boot-time loadModelVersions().then can forward to them.

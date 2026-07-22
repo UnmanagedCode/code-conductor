@@ -216,6 +216,7 @@ export function installSpawnDialog({ dom, getProjects, refreshProjects, refreshI
   // that have no dialog of their own (resumeBtn/syncBtn/mergeBtn/debugBtn).
   dom.conductBtn.addEventListener('click', async () => {
     closeSidebarOverflow();
+    dom.conductBtn.disabled = true;
     try {
       const r = await fetch('/api/projects/.conduct/ensure', { method: 'POST' });
       if (!r.ok) {
@@ -223,7 +224,10 @@ export function installSpawnDialog({ dom, getProjects, refreshProjects, refreshI
         throw new Error(err.error || `ensure failed (${r.status})`);
       }
       const { model, backendKind, sonnetWindow } = resolveSpawnRole('conductor');
-      if (!model) return;
+      if (!model) {
+        alert('Conduct session failed to start: the Conductor role has no model configured. Set one in Settings → Models → Roles.');
+        return;
+      }
       const res = await fetch('/api/instances', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -236,6 +240,8 @@ export function installSpawnDialog({ dom, getProjects, refreshProjects, refreshI
       selectInstance(inst.id);
     } catch (e) {
       alert(`Conduct session failed to start: ${e.message}`);
+    } finally {
+      dom.conductBtn.disabled = false;
     }
   });
 
