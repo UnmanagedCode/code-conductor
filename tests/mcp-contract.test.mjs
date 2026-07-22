@@ -239,13 +239,20 @@ test('get_recent_messages → metadata + one raw body block per message (block k
   // One raw body per message, in order.
   assert.equal(res.content.length, 3); // meta + 2 bodies
   const b = bodies(res);
-  assert.equal(b[0], 'First ');
-  assert.equal(b[1], 'Second!');
-  // Metadata carries char counts + flags, not the prose itself.
+  // >1 message returned: each body is prefixed with a boundary line so
+  // consecutive raw text blocks (content[k+1]) never visually run together.
+  assert.equal(b[0], `--- message 1/2 · ${m.messages[0].msgId} · ${m.messages[0].textChars} chars ---\nFirst `);
+  assert.equal(b[1], `--- message 2/2 · ${m.messages[1].msgId} · ${m.messages[1].textChars} chars ---\nSecond!`);
+  // Metadata carries char counts + flags, not the prose itself, and is
+  // unaffected by the boundary line — textChars is the raw prose length.
   assert.equal(m.messages[0].textChars, 'First '.length);
   assert.equal(m.messages[0].textTruncated, false);
   assert.equal(m.messages[0].text, undefined);
   assert.equal(m.messages[0].index, 0);
+
+  // A single-message result stays byte-identical to before — no boundary line.
+  const single = await callTool('get_recent_messages', { sessionId: spawn.sessionId, count: 1 });
+  assert.equal(bodies(single)[0], 'Second!');
 });
 
 // ---------- ok / refusal normalization ----------

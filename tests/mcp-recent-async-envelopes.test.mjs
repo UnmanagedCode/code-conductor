@@ -12,7 +12,7 @@ import { test, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { bootServer, api, waitFor, instForSession, freshProjectsRoot, rmrf } from './helpers.mjs';
+import { bootServer, api, waitFor, instForSession, freshProjectsRoot, rmrf, stripMessageBoundaryHeader } from './helpers.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO_WS = path.join(__dirname, 'fixtures', 'scenario-ws.json');
@@ -42,7 +42,7 @@ function unwrapMessages(result) {
   assert.ok(Array.isArray(result.content), 'tool result has content[]');
   const meta = JSON.parse(result.content[0].text);
   const bodies = result.content.slice(1).map(c => c.text);
-  return { meta, messages: meta.messages.map((m, i) => ({ ...m, text: bodies[i] ?? '' })) };
+  return { meta, messages: meta.messages.map((m, i) => ({ ...m, text: stripMessageBoundaryHeader(bodies[i] ?? '') })) };
 }
 
 let ctx, baseUrl, instances, home;
@@ -104,9 +104,14 @@ test('single-block envelopes: explicit count returns both messages oldest-first 
   await callTool(baseUrl, 'send_prompt', { sessionId, text: 'one', wait: true, waitTimeoutMs: 5000 });
   await callTool(baseUrl, 'send_prompt', { sessionId, text: 'two', wait: true, waitTimeoutMs: 5000 });
 
-  const res = unwrapMessages(await callTool(baseUrl, 'get_recent_messages', { sessionId, count: 2 }));
+  const raw = await callTool(baseUrl, 'get_recent_messages', { sessionId, count: 2 });
+  const res = unwrapMessages(raw);
   assert.equal(res.messages.length, 2);
   assert.equal(res.messages[0].text, 'Let me check the config first.');
   assert.equal(res.messages[1].text, 'I dug through the reconstruction path; plan follows.');
   assert.equal(res.meta.source, 'ring');
+  // Raw (unstripped) bodies carry the boundary line once >1 message is returned.
+  const rawBodies = raw.content.slice(1).map(c => c.text);
+  assert.match(rawBodies[0], /^--- message 1\/2 · .+ · \d+ chars ---\nLet me check the config first\./);
+  assert.match(rawBodies[1], /^--- message 2\/2 · .+ · \d+ chars ---\nI dug through the reconstruction path; plan follows\.$/);
 });

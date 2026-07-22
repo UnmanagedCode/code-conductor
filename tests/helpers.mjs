@@ -210,3 +210,13 @@ export async function waitFor(predicate, { timeout = 10000, interval = 20 } = {}
     await new Promise(r => setTimeout(r, interval));
   }
 }
+
+// Strips the "--- message i/N · msgId · textChars chars ---" boundary line
+// get_recent_messages prefixes into each body when it returns more than one
+// message (src/mcp/handlers.js messageBoundaryHeader). No-op when absent, so
+// callers can run every body through this before asserting on prose content
+// regardless of how many messages came back.
+const BOUNDARY_HEADER_RE = /^--- message \d+\/\d+ · .*? · \d+ chars ---\n?/;
+export function stripMessageBoundaryHeader(body) {
+  return body.replace(BOUNDARY_HEADER_RE, '');
+}
