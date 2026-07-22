@@ -14,10 +14,9 @@ import {
   getOnOverageAction, setOnOverageAction,
   getOverageThreshold, setOverageThreshold,
   getConductorCompactWindow, setConductorCompactWindow,
-  getSonnetContextWindow, setSonnetContextWindow,
   getEnabledTiers, setTierEnabled,
   getDefaultSpawnTier, setDefaultSpawnTier,
-  getTierBackend, setTierBackend, isKnownOllamaModel,
+  getTierBackend, setTierBackend, getRoleBinding, setRoleBinding, isKnownOllamaModel,
 } from '../src/appSettings.js';
 
 async function mkTmp() {
@@ -423,82 +422,62 @@ test('POST /api/settings/models/prefs saves conductorCompactWindow without clobb
   }
 });
 
-// ── sonnetContextWindow ─────────────────────────────────────────────────
-test('appSettings: getSonnetContextWindow defaults to "1m" when unset', async () => {
+// ── per-binding Sonnet window (no global) ────────────────────────────────
+test('GET /api/settings/models no longer exposes a global sonnetContextWindow', async () => {
+  const r = await api(baseUrl, 'GET', '/api/settings/models');
+  assert.equal(r.status, 200);
+  assert.ok(!('sonnetContextWindow' in r.body), 'the global key is gone');
+});
+
+test('appSettings: a Sonnet 4.x tier binding persists its own window', async () => {
   const root = await mkTmp();
   try {
     await withEnv({ PROJECTS_ROOT: root }, async () => {
-      assert.equal(getSonnetContextWindow(), '1m');
+      await setTierBackend('balanced', { kind: 'claude', model: 'claude-sonnet-4-6', window: '200k' });
+      assert.deepEqual(getTierBackend('balanced'), { kind: 'claude', model: 'claude-sonnet-4-6', window: '200k' });
     });
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
 
-test('appSettings: setSonnetContextWindow round-trips "200k" and "1m"', async () => {
+test('appSettings: window is NOT persisted for non-selectable bindings (Opus, Sonnet 5)', async () => {
   const root = await mkTmp();
   try {
     await withEnv({ PROJECTS_ROOT: root }, async () => {
-      assert.equal(await setSonnetContextWindow('200k'), '200k');
-      assert.equal(getSonnetContextWindow(), '200k');
-      assert.equal(await setSonnetContextWindow('1m'), '1m');
-      assert.equal(getSonnetContextWindow(), '1m');
+      // Sonnet 5 is fixed-1M — the window is meaningless, so it is dropped.
+      await setTierBackend('balanced', { kind: 'claude', model: 'claude-sonnet-5', window: '200k' });
+      assert.deepEqual(getTierBackend('balanced'), { kind: 'claude', model: 'claude-sonnet-5' });
+      // Opus never varies its window.
+      await setTierBackend('powerful', { kind: 'claude', model: 'claude-opus-4-8', window: '200k' });
+      assert.deepEqual(getTierBackend('powerful'), { kind: 'claude', model: 'claude-opus-4-8' });
     });
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
 
-test('appSettings: setSonnetContextWindow coerces unknown values to "1m"', async () => {
+test('appSettings: two Sonnet 4.x bindings carry independent windows', async () => {
   const root = await mkTmp();
   try {
     await withEnv({ PROJECTS_ROOT: root }, async () => {
-      assert.equal(await setSonnetContextWindow('garbage'), '1m');
-      assert.equal(getSonnetContextWindow(), '1m');
+      await setTierBackend('balanced', { kind: 'claude', model: 'claude-sonnet-4-6', window: '200k' });
+      await setRoleBinding('reviewer', { kind: 'claude', model: 'claude-sonnet-4-5', window: '1m' });
+      // Setting the role binding did NOT touch the tier binding's window.
+      assert.equal(getTierBackend('balanced').window, '200k');
+      assert.equal(getRoleBinding('reviewer').window, '1m');
+      // …and flipping the tier binding to 1m leaves the role binding at 1m.
+      await setTierBackend('balanced', { kind: 'claude', model: 'claude-sonnet-4-6', window: '1m' });
+      assert.equal(getTierBackend('balanced').window, '1m');
+      assert.equal(getRoleBinding('reviewer').window, '1m');
     });
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
 
-test('appSettings: setSonnetContextWindow does not clobber other model settings', async () => {
-  const root = await mkTmp();
-  try {
-    await withEnv({ PROJECTS_ROOT: root }, async () => {
-      await setTierBackend('balanced', { kind: 'claude', model: 'claude-sonnet-4-5' });
-      await setOnOverageAction('stop');
-      await setSonnetContextWindow('200k');
-      assert.deepEqual(getTierBackend('balanced'), { kind: 'claude', model: 'claude-sonnet-4-5' });
-      assert.equal(getOnOverageAction(), 'stop');
-      assert.equal(getSonnetContextWindow(), '200k');
-    });
-  } finally { await fs.rm(root, { recursive: true, force: true }); }
-});
-
-test('GET /api/settings/models includes sonnetContextWindow defaulting "1m"', async () => {
-  {  // shared server (before/after) + fresh PROJECTS_ROOT per test (beforeEach)
-    const r = await api(baseUrl, 'GET', '/api/settings/models');
-    assert.equal(r.status, 200);
-    assert.equal(r.body.sonnetContextWindow, '1m');
-  }
-});
-
-test('POST /api/settings/models/prefs sets sonnetContextWindow to "200k" and persists', async () => {
-  {  // shared server (before/after) + fresh PROJECTS_ROOT per test (beforeEach)
-    const r = await api(baseUrl, 'POST', '/api/settings/models/prefs', { sonnetContextWindow: '200k' });
-    assert.equal(r.status, 200);
-    assert.equal(r.body.sonnetContextWindow, '200k');
-    // Verify GET reflects the persisted value.
-    const g = await api(baseUrl, 'GET', '/api/settings/models');
-    assert.equal(g.body.sonnetContextWindow, '200k');
-    // Toggle back to 1m.
-    const r2 = await api(baseUrl, 'POST', '/api/settings/models/prefs', { sonnetContextWindow: '1m' });
-    assert.equal(r2.body.sonnetContextWindow, '1m');
-  }
-});
-
-test('POST /api/settings/models/prefs sonnetContextWindow does not clobber onOverage', async () => {
-  {  // shared server (before/after) + fresh PROJECTS_ROOT per test (beforeEach)
-    await api(baseUrl, 'POST', '/api/settings/models/prefs', { onOverage: 'stop' });
-    const r = await api(baseUrl, 'POST', '/api/settings/models/prefs', { sonnetContextWindow: '200k' });
-    assert.equal(r.status, 200);
-    assert.equal(r.body.sonnetContextWindow, '200k');
-    assert.equal(r.body.onOverage, 'stop', 'onOverage must not be clobbered');
-  }
+test('POST /api/settings/models/prefs persists a Sonnet 4.x tier window on the binding', async () => {
+  const r = await api(baseUrl, 'POST', '/api/settings/models/prefs', {
+    tierBackend: { tier: 'balanced', backend: { kind: 'claude', model: 'claude-sonnet-4-6', window: '200k' } },
+  });
+  assert.equal(r.status, 200);
+  assert.deepEqual(r.body.tierBackend.balanced, { kind: 'claude', model: 'claude-sonnet-4-6', window: '200k' });
+  const g = await api(baseUrl, 'GET', '/api/settings/models');
+  assert.deepEqual(g.body.tierBackend.balanced, { kind: 'claude', model: 'claude-sonnet-4-6', window: '200k' });
 });
 
 // ── enabledTiers ─────────────────────────────────────────────────────────

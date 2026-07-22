@@ -15,7 +15,7 @@ import { isTemp, markTemp, unmarkTemp } from './tempSessions.js';
 import { markArchived } from './archivedSessions.js';
 import { CONDUCT_PROJECT_NAME } from './conduct.js';
 import { buildSettingsJSON, buildMcpConfigJSON, AWAITING_INPUT_MESSAGE } from './settings.js';
-import { getOnOverageAction, getOverageThreshold, getConductorCompactWindow, getSonnetContextWindow, getOllamaContextWindow } from './appSettings.js';
+import { getOnOverageAction, getOverageThreshold, getConductorCompactWindow, getOllamaContextWindow } from './appSettings.js';
 import { HookBroker } from './hookBroker.js';
 import { loadPersistedTranscript, writeSessionMetadata, readLastSessionModel, hasResumableConversation } from './transcript.js';
 import { canonicalizeModel, familyOf } from './modelVersions.js';
@@ -229,7 +229,7 @@ export class EventLog {
 }
 
 export class Instance extends EventEmitter {
-  constructor({ id, project, cwd, mode, effort, thinking, model, backendKind = 'claude', hookCallbackUrl = null, mcpServerUrl = null, worktree = null, temp = false, conducted = false, callerInstanceId = null, debug = false, launcher = defaultClaudeLauncher }) {
+  constructor({ id, project, cwd, mode, effort, thinking, model, sonnetWindow = '1m', backendKind = 'claude', hookCallbackUrl = null, mcpServerUrl = null, worktree = null, temp = false, conducted = false, callerInstanceId = null, debug = false, launcher = defaultClaudeLauncher }) {
     super();
     this.id = id;
     // The ClaudeLauncher used to spawn the subprocess. Defaults to the real
@@ -246,6 +246,12 @@ export class Instance extends EventEmitter {
     // discriminator — it selects the launch command; the claude args
     // (including --model) are built uniformly.
     this.model = model;
+    // The Sonnet context window this session runs at ('1m'|'200k'), snapshotted
+    // from the binding at spawn. It is the authority for re-deriving the model's
+    // [1m]/bare suffix on live re-canonicalization (a bare 200k Sonnet id can't
+    // carry the window in its suffix, so a global/suffix-only reader can't
+    // recover it — see _trackModel). Irrelevant for non-Sonnet / Sonnet-5 models.
+    this.sonnetWindow = sonnetWindow === '200k' ? '200k' : '1m';
     this.backendKind = backendKind === 'ollama' ? 'ollama' : 'claude';
     this.hookCallbackUrl = hookCallbackUrl;
     this.mcpServerUrl = mcpServerUrl;
@@ -497,6 +503,10 @@ export class Instance extends EventEmitter {
       effort: this.effort,
       thinking: this.thinking,
       model: this.model,
+      // The session's Sonnet window ('1m'|'200k'), so the client ctx bar can
+      // size a bare live Sonnet id (the API strips the [1m] suffix in its
+      // message_start stream) without a global preference.
+      sonnetWindow: this.sonnetWindow,
       backendKind: this.backendKind,
       sessionId: this.sessionId,
       status: this.status,
@@ -736,10 +746,13 @@ export class Instance extends EventEmitter {
   // message_start) just start reporting a different id. Canonicalize before
   // comparing: the CLI reports a bare id, while this.model already carries
   // the [1m]/[200k] suffix from spawn-time canonicalization, so a raw-string
-  // compare would false-positive on every single init.
+  // compare would false-positive on every single init. Canonicalize against
+  // this session's own window (this.sonnetWindow), NOT a global — a 200k
+  // Sonnet session is stored bare, so re-canonicalizing with a 1m default
+  // would append [1m] and false-fire model_changed on every bare report.
   _trackModel(rawModel) {
     if (!rawModel) return;
-    const canonical = canonicalizeModel(rawModel, { sonnetWindow: getSonnetContextWindow() });
+    const canonical = canonicalizeModel(rawModel, { sonnetWindow: this.sonnetWindow });
     if (canonical === this.model) return;
     // Ollama's inner CLI reports its model bare, dropping the `:tag` suffix
     // (`ollama launch claude --model <tag>` still surfaces just the base name
@@ -1564,6 +1577,11 @@ export class Instance extends EventEmitter {
     if (!model || !familyOf(model)) throw new Error('invalid model');
     await this._controlRequest({ subtype: 'set_model', model });
     this.model = model;
+    // Keep the session window in step with a live model change so _trackModel
+    // keeps comparing against the right suffix. The client baked the suffix via
+    // applyClaudeWindow, so it's authoritative for the new pick: a Sonnet with
+    // [1m] → '1m', a bare Sonnet → '200k'. Non-Sonnet leaves it untouched.
+    if (familyOf(model) === 'sonnet') this.sonnetWindow = model.endsWith('[1m]') ? '1m' : '200k';
     this.emit('status', this.summary());
     this._writeSessionMetadata().catch(() => {});
     return this.model;
@@ -2086,7 +2104,7 @@ export class InstanceManager extends EventEmitter {
     return p;
   }
 
-  async _doCreate({ project, resume, mode, effort, thinking, model, backendKind: explicitBackendKind, worktree, temp, conducted, callerInstanceId, debug, autoApprovePlan, prefill } = {}) {
+  async _doCreate({ project, resume, mode, effort, thinking, model, sonnetWindow, backendKind: explicitBackendKind, worktree, temp, conducted, callerInstanceId, debug, autoApprovePlan, prefill } = {}) {
     // On resume, when the caller didn't pin an explicit worktree, recover the
     // session's recorded project + worktree via findSessionLocation. This is
     // what makes spawn_instance({resume}) "just work" for an MCP conductor
@@ -2192,11 +2210,23 @@ export class InstanceManager extends EventEmitter {
       } catch { /* best-effort */ }
     }
 
-    // Re-derive the context-window suffix from the family + the user's Sonnet
-    // window preference (Sonnet → '1m' or '200k'; Opus/Haiku always bare).
+    // Resolve the Sonnet context window for this spawn, then re-derive the
+    // model's [1m]/bare suffix from it. An explicit `sonnetWindow` is passed on
+    // every path that knows the window: a fresh spawn (caller resolved the
+    // binding window), a restart-manifest restore, and a rewind/fork (carries
+    // the live instance's window) — the only faithful source for a 200k Sonnet,
+    // which is stored BARE and so can't carry its window in a suffix.
+    //
+    // Absent it, default to '1m'. This is reached on a bare COLD RESUME
+    // (historical/anchor resume in a fresh process: the model is recovered bare
+    // from the jsonl, which the CLI strips of any suffix, and no binding/window
+    // is at hand). DELIBERATE — 1M is the safe choice (larger window, never
+    // truncates); a 200k-bound session cold-resumed this way widens to 1M rather
+    // than erroring. Not an oversight.
+    const finalSonnetWindow = sonnetWindow === '200k' ? '200k' : '1m';
     // A no-op for a non-Claude id (familyOf(tag) === null → returned unchanged),
     // so this runs uniformly for both backend kinds.
-    if (finalModel) finalModel = canonicalizeModel(finalModel, { sonnetWindow: getSonnetContextWindow() });
+    if (finalModel) finalModel = canonicalizeModel(finalModel, { sonnetWindow: finalSonnetWindow });
 
     // Null-model guard (note 1): an ollama-backed session with no resolvable
     // model — e.g. a resume whose jsonl is empty/corrupt so readLastSessionModel
@@ -2249,6 +2279,7 @@ export class InstanceManager extends EventEmitter {
     const inst = new Instance({
       id, project, cwd,
       mode: finalMode, effort: finalEffort, thinking: finalThinking, model: finalModel,
+      sonnetWindow: finalSonnetWindow,
       backendKind,
       hookCallbackUrl: this.hookCallbackUrl(id),
       // Base MCP URL (no ?caller=) — the per-worker caller suffix is appended in

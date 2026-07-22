@@ -171,7 +171,7 @@ All orchestrator-owned state in a single workspace-wide dotfolder — the centra
 │   ├── conducted-sessions.json             # {sessions:[sid,…]} — durable conducted-session markers
 │   ├── pending-resume.json                  # transient — "Resume after restart" manifest; written on drain, read+unlinked on boot
 │   ├── pending-temp-cleanup.json            # transient — temp-cleanup manifest (normal restart); swept+unlinked on boot
-│   ├── settings.json                        # app settings, e.g. {transcribe:{model}, models:{fable,sonnet,opus,haiku,tierBackend,enabledTiers,defaultTier,onOverage,overageThresholdEnabled,overageThresholdPct,sonnetContextWindow,conductorCompactWindow}, tts:{enabled,voice,rate}}
+│   ├── settings.json                        # app settings, e.g. {transcribe:{model}, models:{tierBackend:{[tier]:{kind,model,window?}},roleBackend,customBackends,enabledTiers,defaultTier,onOverage,overageThresholdEnabled,overageThresholdPct,conductorCompactWindow}, tts:{enabled,voice,rate}}  (Sonnet 4.x window lives per-binding as `window`; no global sonnetContextWindow)
 │   ├── plugins/                              # plugin system state
 │   │   ├── registry.json                     # {plugins: {<id>: {project, enabled, activeVersion}}}
 │   │   ├── runtime.json                      # {<id>: {pid, pgid, port, startedAt, gitHead}} — adopt-don't-drain record

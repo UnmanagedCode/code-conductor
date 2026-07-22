@@ -41,14 +41,14 @@ export function installSpawnDialog({ dom, getProjects, refreshProjects, refreshI
 
   // POSTs a temp instance, closes the dialog, and selects the new session.
   // Used by the conduct dialog.
-  async function spawnInstance({ project, model, backendKind, planMode, dialogEl, errorEl }) {
+  async function spawnInstance({ project, model, backendKind, sonnetWindow, planMode, dialogEl, errorEl }) {
     errorEl.textContent = '';
     try {
       const mode = planMode ? 'plan' : 'bypassPermissions';
       const r = await fetch('/api/instances', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ project, model, backendKind, temp: true, mode, autoApprovePlan: planMode }),
+        body: JSON.stringify({ project, model, backendKind, sonnetWindow, temp: true, mode, autoApprovePlan: planMode }),
       });
       if (!r.ok) throw new Error((await r.json()).error);
       const inst = await r.json();
@@ -201,7 +201,7 @@ export function installSpawnDialog({ dom, getProjects, refreshProjects, refreshI
     dom.sdError.textContent = '';
     const project  = pendingSpawnProject;
     const mode     = sdModeValue;
-    const { model, backendKind } = resolveSpawnModel(selectedSpawnTier);
+    const { model, backendKind, sonnetWindow } = resolveSpawnModel(selectedSpawnTier);
     const effort   = dom.sdEffort.value;
     const thinking = dom.sdThinking.value;
     const temp     = dom.sdTemp.checked || undefined;
@@ -214,7 +214,7 @@ export function installSpawnDialog({ dom, getProjects, refreshProjects, refreshI
       const r = await fetch('/api/instances', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ project, mode, effort, thinking, model, backendKind, worktree, temp, debug, autoApprovePlan }),
+        body: JSON.stringify({ project, mode, effort, thinking, model, sonnetWindow, backendKind, worktree, temp, debug, autoApprovePlan }),
       });
       if (!r.ok) throw new Error((await r.json()).error);
       const inst = await r.json();
@@ -267,8 +267,8 @@ export function installSpawnDialog({ dom, getProjects, refreshProjects, refreshI
   // resolved model (configured in Settings → Models), plus the Code/Plan toggle.
   dom.cdSpawn.addEventListener('click', (e) => {
     e.preventDefault();
-    const { model, backendKind } = resolveSpawnRole('conductor');
-    if (model) spawnInstance({ project: '.conduct', model, backendKind, planMode: cdMode.planMode, dialogEl: dom.conductDialog, errorEl: dom.cdError });
+    const { model, backendKind, sonnetWindow } = resolveSpawnRole('conductor');
+    if (model) spawnInstance({ project: '.conduct', model, backendKind, sonnetWindow, planMode: cdMode.planMode, dialogEl: dom.conductDialog, errorEl: dom.cdError });
   });
 
   return { openSpawnDialog, syncTierModelLabels, syncTierVisibility };

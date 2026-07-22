@@ -341,8 +341,7 @@ export function installSettings({
     const backends = data.backends || []; // Claude version catalog (MODEL_FAMILIES)
     const customBackends = data.customBackends || []; // [{label, model}]
     const ollamaCloudModels = data.ollamaCloudModels || []; // curated presets [{label, model}]
-    const tierBackend = data.tierBackend || {}; // {tier: {kind, model}}
-    const sonnetWindow = data.sonnetContextWindow ?? '1m';
+    const tierBackend = data.tierBackend || {}; // {tier: {kind, model, window?}}
     const enabledTiers = data.enabledTiers ?? {};
     const defaultTier = data.defaultSpawnTier ?? 'powerful';
     const enabledCount = tiers.filter(t => enabledTiers[t.tier] !== false).length;
@@ -356,7 +355,9 @@ export function installSettings({
     function describeBinding(b) {
       if (b.kind === 'ollama') return `Ollama — ${b.model}`;
       let extra = '';
-      if (b.model.startsWith('claude-sonnet') && !isSonnetFixed(b.model)) extra = ` — ${sonnetWindow !== '200k' ? '1M' : '200k'}`;
+      // Per-binding window (Sonnet 4.x only) — this binding's own `window`, not a
+      // shared global, so two Sonnet bindings can show different windows.
+      if (b.model.startsWith('claude-sonnet') && !isSonnetFixed(b.model)) extra = ` — ${b.window === '200k' ? '200k' : '1M'}`;
       return `${versionLabel(b.model)}${extra}`;
     }
 
@@ -408,8 +409,11 @@ export function installSettings({
           sel.addEventListener('change', () => onOllama(sel.value));
         }
       } else {
-        // Claude version list; Sonnet 4.x expands to 200k/1M sub-entries (which
-        // also set the global sonnetContextWindow), matching the window policy.
+        // Claude version list; Sonnet 4.x expands to 200k/1M sub-entries. The
+        // chosen window rides on THIS binding (opt.dataset.window → the binding's
+        // own `window`), not a global — picking one binding's window never moves
+        // another's.
+        const bWindow = b.window === '200k' ? '200k' : '1m';
         for (const v of claudeVersions) {
           if (v.family === 'sonnet' && !v.fixedWindow) {
             for (const w of ['200k', '1m']) {
@@ -417,7 +421,7 @@ export function installSettings({
               opt.value = v.id;
               opt.dataset.window = w;
               opt.textContent = `${v.label} — ${w === '200k' ? '200k' : '1M'}`;
-              if (v.id === b.model && w === sonnetWindow) opt.selected = true;
+              if (v.id === b.model && w === bWindow) opt.selected = true;
               sel.appendChild(opt);
             }
           } else {
@@ -563,12 +567,12 @@ export function installSettings({
   }
 
 
-  // Persist a tier binding {kind, model} (and, for a Sonnet 4.x pick, the global
-  // context-window preference) in one /prefs POST.
-  async function saveTierBinding(tier, backend, sonnetContextWindow) {
+  // Persist a tier binding {kind, model} in one /prefs POST. For a Sonnet 4.x
+  // pick the chosen context window rides ON the binding ({kind,model,window}),
+  // not a sibling global — so it only affects this tier.
+  async function saveTierBinding(tier, backend, window) {
     try {
-      const body = { tierBackend: { tier, backend } };
-      if (sonnetContextWindow) body.sonnetContextWindow = sonnetContextWindow;
+      const body = { tierBackend: { tier, backend: window ? { ...backend, window } : backend } };
       const r = await fetch('/api/settings/models/prefs', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -616,11 +620,11 @@ export function installSettings({
   }
 
   // Persist a role binding — a tier binding {kind:'tier',tier} or a custom
-  // {kind, model} (+ optional Sonnet window) — in one /prefs POST.
-  async function saveRoleBinding(role, backend, sonnetContextWindow) {
+  // {kind, model} — in one /prefs POST. For a Sonnet 4.x custom pick the chosen
+  // window rides ON the binding ({kind,model,window}), not a sibling global.
+  async function saveRoleBinding(role, backend, window) {
     try {
-      const body = { roleBackend: { role, backend } };
-      if (sonnetContextWindow) body.sonnetContextWindow = sonnetContextWindow;
+      const body = { roleBackend: { role, backend: window ? { ...backend, window } : backend } };
       const r = await fetch('/api/settings/models/prefs', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },

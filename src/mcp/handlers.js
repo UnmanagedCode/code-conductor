@@ -271,14 +271,21 @@ export async function spawnInstance(args, { instances, callerId }) {
   //   - anything else → reject, rather than silently spawn a broken claude.
   let model = args.model;
   let backendKind = 'claude';
+  // The Sonnet context window ('1m'|'200k') carried by the resolved binding,
+  // threaded to create() explicitly — a 200k Sonnet is stored bare, so its
+  // window can't ride in the model-id suffix. Undefined for non-tier/role
+  // resolutions (family alias / raw id / ollama) → create() defaults to '1m'.
+  let sonnetWindow;
   if (model && isKnownTier(model)) {
-    const binding = getTierBackend(model); // {kind, model}
+    const binding = getTierBackend(model); // {kind, model, window?}
     backendKind = binding.kind;
     model = binding.model;
+    sonnetWindow = binding.window;
   } else if (model && isKnownRole(model)) {
-    const binding = resolveRoleBackend(model); // {kind, model}
+    const binding = resolveRoleBackend(model); // {kind, model, window?}
     backendKind = binding.kind;
     model = binding.model;
+    sonnetWindow = binding.window;
   } else if (model && isKnownFamily(model)) {
     model = defaultVersion(model);
   } else if (model && isKnownOllamaModel(model)) {
@@ -302,6 +309,7 @@ export async function spawnInstance(args, { instances, callerId }) {
     effort: args.effort,
     thinking: args.thinking,
     model,
+    sonnetWindow,
     backendKind,
     resume: args.resume,
     worktree,

@@ -10,7 +10,8 @@
 // per-version: Opus → 1M (bare CLI default); Haiku → 200k (no 1M build);
 // Sonnet 5 has no 200k build, so it's pinned to `[1m]` via the `fixedWindow`
 // flag on its catalog entry below; Sonnet 4.x has both builds and remains
-// user-selectable via the stored `sonnetContextWindow` preference.
+// user-selectable — the chosen window rides on the individual tier/role
+// binding (`binding.window`), not a global preference.
 // `canonicalizeModel()` below applies that policy and is the single source
 // of truth; the client mirrors it in public/models.js.
 //
@@ -173,4 +174,14 @@ export function canonicalizeModel(modelId, { sonnetWindow = '1m' } = {}) {
   if (family !== 'sonnet') return bare;
   const window = fixedWindowFor('sonnet', bare) || sonnetWindow;
   return window === '200k' ? bare : `${bare}[1m]`;
+}
+
+// True if a model id's context window is user-selectable — i.e. a Sonnet
+// version with no catalog-pinned `fixedWindow` (Sonnet 4.x). Used to gate
+// where a per-binding `window` is meaningful: Sonnet 5 (fixedWindow) and every
+// non-Sonnet family ignore any binding window, so we don't persist one there.
+export function sonnetWindowSelectable(id) {
+  if (typeof id !== 'string') return false;
+  const bare = id.replace(/\[(200k|1m)\]$/, '');
+  return familyOf(bare) === 'sonnet' && !fixedWindowFor('sonnet', bare);
 }
