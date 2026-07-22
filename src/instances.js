@@ -201,7 +201,27 @@ export class EventLog {
   // First retained `_seq` — everything below it was evicted (0 when
   // nothing was). Equals nextSeq for an empty ring.
   get trimmedBefore() { return this.buf.length ? this.buf[0]._seq : this.nextSeq; }
+  // Retention is storage-only — it never gates what _emitUi emits to the live
+  // WS feed. A `v` this method declines to retain simply never receives a
+  // `_seq`, so _emitUi still emits it seq-less (the client renders seq-less
+  // events unconditionally — see public/conversation.js). Two live-stream
+  // floods on ollama-backed workers (one system/thinking_tokens per
+  // thinking_delta token) are kept OUT of the ring so a single long reasoning
+  // turn can't overflow it and strand the archive mid-turn (history_gap):
+  //   - thinking_tokens is a live-only counter (last-value-wins, never
+  //     persisted, no-op on replay) → never retained.
+  //   - consecutive thinking_delta of one block fold into ONE slot — the same
+  //     one-delta-per-block shape disk replay produces (src/transcript.js), so
+  //     ring + jsonl-archive reconstruct identically. The LIVE per-token stream
+  //     is untouched; only the retained representation coalesces.
   push(v) {
+    if (v.kind === 'system' && v.subtype === 'thinking_tokens') return;
+    const tail = this.buf[this.buf.length - 1];
+    if (v.kind === 'thinking_delta' && tail && tail.kind === 'thinking_delta'
+        && tail.msgId === v.msgId && tail.blockIdx === v.blockIdx) {
+      tail.text += v.text;
+      return;
+    }
     v._seq = this.nextSeq;
     this.nextSeq += 1;
     this.buf.push(v);
@@ -224,6 +244,12 @@ export class EventLog {
     }
     this.buf.splice(0, cut);
   }
+  // INVARIANT: ring elements are not fully immutable — an OPEN thinking_delta
+  // slot's `.text` GROWS in place (push folds later same-block deltas in) until
+  // its block closes; it is never shrunk, replaced, or renumbered. Sync
+  // serialization is sufficient but not required; the only hazard is a consumer
+  // that re-reads the same `_seq` slot later expecting byte-stable text, or that
+  // merges/pages by array position instead of by `_seq`.
   toArray() { return this.buf.slice(); }
   clear() { this.buf.length = 0; this.nextSeq = 0; }
 }
@@ -308,6 +334,14 @@ export class Instance extends EventEmitter {
     // bubbles — the client must NOT derive it by counting rendered bubbles.
     // Reset alongside the ring in _wipeForResume (replay recounts from 0).
     this._userEchoCount = 0;
+    // Ephemeral live thinking-token estimate for the OPEN thinking block, or
+    // null when none is streaming. The per-token system/thinking_tokens events
+    // are never retained in the ring (see EventLog.push), so this O(1)
+    // last-value-wins state lets a fresh subscriber's snapshot carry the
+    // CURRENT count alongside the coalesced partial thinking text. Cleared when
+    // the block closes so a completed/replayed block shows no stale live count
+    // (the finished block is viewed from disk). Reset on resume (see _wipeForResume).
+    this._liveThinkingTokens = null;
     this._pending = new Map(); // request_id -> { resolve, reject, timer }
     // Per-instance PreToolUse hook callback broker (held-open
     // responses + timeout fallbacks + the ask-mode permission_request
@@ -580,6 +614,13 @@ export class Instance extends EventEmitter {
 
   ringSnapshot() { return this.ring.toArray(); }
 
+  // Latest live thinking-token estimate for the OPEN thinking block, or null
+  // when none is streaming. The WS subscribe path re-attaches this as a
+  // seq-less system/thinking_tokens event on the snapshot so a client joining
+  // mid-thinking sees the current count immediately (the coalesced ring slot
+  // already carries the partial thinking text).
+  get liveThinkingTokens() { return this._liveThinkingTokens; }
+
   // Trailing slice of the ring for the WS `subscribe` snapshot — tabs no
   // longer receive the whole ring on every subscribe; older events are
   // lazy-loaded via GET /api/instances/:id/events. The window start is
@@ -594,7 +635,10 @@ export class Instance extends EventEmitter {
   // its Task head (and thus the whole group so far) into the tail, which is
   // what keeps NESTED blocks whole; an evicted head advances the start past
   // its children (they are served later via lazy paging alongside their
-  // head).
+  // head). INVARIANT (see EventLog.toArray): a still-open thinking_delta slot in
+  // the returned slice keeps growing its `.text` in place until its block closes
+  // — safe to serialize async, only unsafe to re-read a slot expecting byte-stable
+  // text or to page/merge by array position rather than `_seq`.
   snapshotTail(max) {
     const envMax = Number(process.env.ORCH_SNAPSHOT_TAIL);
     const cap = Number.isInteger(max) && max > 0 ? max
@@ -728,6 +772,20 @@ export class Instance extends EventEmitter {
   }
 
   _emitUi(ev) {
+    // Track the ephemeral live thinking-token count for the OPEN thinking
+    // block (the per-token thinking_tokens events are never retained — see
+    // EventLog.push). Funneled here alongside userIndex so every emit path
+    // (live, jsonl replay, direct) stays consistent: a fresh start clears any
+    // prior value, each thinking_tokens updates it in place, and closing the
+    // block (or the turn) clears it so a finished/replayed block carries no
+    // stale live count. Re-attached to a fresh subscriber's snapshot (wsHub).
+    if (ev.kind === 'thinking_start') {
+      this._liveThinkingTokens = null;
+    } else if (ev.kind === 'system' && ev.subtype === 'thinking_tokens') {
+      this._liveThinkingTokens = ev.data?.estimated_tokens ?? null;
+    } else if (ev.kind === 'thinking_end' || ev.kind === 'turn_end') {
+      this._liveThinkingTokens = null;
+    }
     const wrapped = { ...ev };
     // Every outer user_echo funnels through here (live prompt(), parser
     // queued-prompt echoes, jsonl replay), so this counter matches the
@@ -1814,6 +1872,7 @@ export class Instance extends EventEmitter {
   _wipeForResume(extra = {}) {
     this.ring.clear();
     this._userEchoCount = 0;
+    this._liveThinkingTokens = null;
     this.parser.reset();
     this._lastLeafUuid = null;
     this._lastPlanFilePath = null;

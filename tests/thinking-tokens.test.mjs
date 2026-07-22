@@ -196,3 +196,62 @@ test('Conversation: redacted path — no tokens gives plain label', () => {
   const block = conv.blocksByKey.get(`${msgId}:0:thinking`);
   assert.equal(block.node.textContent, 'thinking (redacted)');
 });
+
+// ── Seq-less live frames (the ring-coalescing decoupling) ────────────────────
+// After the ring fix, thinking_tokens carries no _seq (it's never retained),
+// and folded thinking_deltas 2..N are also seq-less. The client must render
+// seq-less live frames unconditionally (no seenSeq dedup).
+
+test('Conversation: seq-less thinking_tokens still drives the live counter', () => {
+  setupDOM();
+  const conv = makeConv();
+  const msgId = 'msg_seqless_tok';
+
+  conv.apply({ kind: 'thinking_start', msgId, blockIdx: 0, _seq: 1 });
+  // No _seq — exactly how a live-only thinking_tokens frame now arrives.
+  conv.apply({ kind: 'system', subtype: 'thinking_tokens', data: { estimated_tokens: 512 } });
+  conv.apply({ kind: 'system', subtype: 'thinking_tokens', data: { estimated_tokens: 900 } });
+
+  const block = conv.blocksByKey.get(`${msgId}:0:thinking`);
+  assert.equal(block.node.querySelector('summary').textContent, 'thinking… 900 tokens');
+});
+
+test('Conversation: seq-less thinking_delta frames all append (no dedup drop)', () => {
+  setupDOM();
+  const conv = makeConv();
+  const msgId = 'msg_seqless_delta';
+
+  conv.apply({ kind: 'thinking_start', msgId, blockIdx: 0, _seq: 1 });
+  // Delta 1 anchors the ring slot (seq'd); 2..N stream seq-less. Identical
+  // seq==undefined must NOT collapse via seenSeq.
+  conv.apply({ kind: 'thinking_delta', msgId, blockIdx: 0, text: 'a', _seq: 2 });
+  conv.apply({ kind: 'thinking_delta', msgId, blockIdx: 0, text: 'b' });
+  conv.apply({ kind: 'thinking_delta', msgId, blockIdx: 0, text: 'c' });
+  conv.apply({ kind: 'thinking_end', msgId, blockIdx: 0, _seq: 3 });
+
+  const block = conv.blocksByKey.get(`${msgId}:0:thinking`);
+  assert.equal(block.body.textContent, 'abc');
+});
+
+test('Conversation: live per-token deltas and one coalesced replay delta render identically', () => {
+  setupDOM();
+  // Live path: many seq-less per-token deltas (the streaming feed).
+  const liveConv = makeConv();
+  liveConv.apply({ kind: 'thinking_start', msgId: 'mL', blockIdx: 0, _seq: 1 });
+  const parts = ['Let ', 'me ', 'think ', 'about ', 'this'];
+  parts.forEach((t, i) => liveConv.apply(
+    { kind: 'thinking_delta', msgId: 'mL', blockIdx: 0, text: t, ...(i === 0 ? { _seq: 2 } : {}) }));
+  liveConv.apply({ kind: 'thinking_end', msgId: 'mL', blockIdx: 0, _seq: 3 });
+
+  // Replay/snapshot path: one coalesced delta with the full text (exactly what
+  // both the coalesced ring slot and disk replay produce).
+  const replayConv = makeConv();
+  replayConv.apply({ kind: 'thinking_start', msgId: 'mR', blockIdx: 0, _seq: 1 });
+  replayConv.apply({ kind: 'thinking_delta', msgId: 'mR', blockIdx: 0, text: parts.join(''), _seq: 2 });
+  replayConv.apply({ kind: 'thinking_end', msgId: 'mR', blockIdx: 0, _seq: 3 });
+
+  const liveBody = liveConv.blocksByKey.get('mL:0:thinking').body.textContent;
+  const replayBody = replayConv.blocksByKey.get('mR:0:thinking').body.textContent;
+  assert.equal(liveBody, parts.join(''));
+  assert.equal(liveBody, replayBody, 'both arrival shapes yield identical thinking text');
+});

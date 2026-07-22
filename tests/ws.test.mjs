@@ -392,3 +392,80 @@ test('soft interrupt via WS broadcasts interrupting:true without ending the turn
     await c.close();
   } finally { await close(); }
 });
+
+test('a client subscribing mid-thinking gets the partial thinking text AND the live token count', async () => {
+  const { baseUrl, wsUrl, instances, close } = await setup();
+  try {
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'a', mode: 'bypassPermissions' });
+    const id = r.body.id;
+    await waitFor(() => instances.get(id).status === 'idle');
+    const inst = instances.get(id);
+
+    // Drive the instance into a mid-thinking state: an OPEN thinking block
+    // whose per-token deltas + thinking_tokens counter stream like ollama.
+    // (Direct _emitUi is the same funnel the live stdout path uses.)
+    inst._emitUi({ kind: 'user_echo', text: 'reason about it' });
+    inst._emitUi({ kind: 'thinking_start', msgId: 'm1', blockIdx: 0 });
+    for (let i = 0; i < 8; i++) {
+      inst._emitUi({ kind: 'thinking_delta', msgId: 'm1', blockIdx: 0, text: `part${i} ` });
+      inst._emitUi({ kind: 'system', subtype: 'thinking_tokens',
+        data: { estimated_tokens: (i + 1) * 3 } });
+    }
+    // No thinking_end yet — the block is still streaming.
+    assert.equal(inst.liveThinkingTokens, 24, 'server holds the latest count in O(1)');
+
+    const c = await wsClient(wsUrl);
+    c.send({ t: 'subscribe', id });
+    const snap = await c.wait(m => m.t === 'snapshot' && m.id === id);
+
+    // Partial thinking text is present (via the coalesced ring slot).
+    const delta = snap.events.find(e => e.kind === 'thinking_delta' && e.msgId === 'm1');
+    assert.ok(delta, 'the open thinking block is in the snapshot');
+    assert.equal(delta.text, 'part0 part1 part2 part3 part4 part5 part6 part7 ',
+      'full accumulated partial text from one coalesced slot');
+    // Only ONE thinking_delta slot for the block (no per-token ring flood).
+    assert.equal(snap.events.filter(e => e.kind === 'thinking_delta' && e.msgId === 'm1').length, 1);
+
+    // The current token count rides the snapshot as a trailing seq-less event,
+    // AFTER the open block so the client applies it to the reconstructed block.
+    const tok = snap.events.find(e => e.kind === 'system' && e.subtype === 'thinking_tokens');
+    assert.ok(tok, 'live token count re-attached to the snapshot');
+    assert.equal(tok.data.estimated_tokens, 24);
+    assert.equal(tok._seq, undefined, 'seq-less: never enters dedup/paging');
+    const tokIdx = snap.events.indexOf(tok);
+    const deltaIdx = snap.events.indexOf(delta);
+    assert.ok(tokIdx > deltaIdx, 'count comes after the block it annotates');
+    // tailStartSeq is computed from ring events, unperturbed by the trailing synthetic.
+    assert.equal(snap.tailStartSeq, snap.events[0]._seq);
+
+    await c.close();
+  } finally { await close(); }
+});
+
+test('a completed thinking block carries no stale live count on a fresh subscribe', async () => {
+  const { baseUrl, wsUrl, instances, close } = await setup();
+  try {
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'a', mode: 'bypassPermissions' });
+    const id = r.body.id;
+    await waitFor(() => instances.get(id).status === 'idle');
+    const inst = instances.get(id);
+
+    inst._emitUi({ kind: 'user_echo', text: 'reason then finish' });
+    inst._emitUi({ kind: 'thinking_start', msgId: 'm1', blockIdx: 0 });
+    inst._emitUi({ kind: 'thinking_delta', msgId: 'm1', blockIdx: 0, text: 'all done' });
+    inst._emitUi({ kind: 'system', subtype: 'thinking_tokens', data: { estimated_tokens: 500 } });
+    inst._emitUi({ kind: 'thinking_end', msgId: 'm1', blockIdx: 0 });
+    // Block closed → the ephemeral count is cleared.
+    assert.equal(inst.liveThinkingTokens, null, 'count cleared on thinking_end');
+
+    const c = await wsClient(wsUrl);
+    c.send({ t: 'subscribe', id });
+    const snap = await c.wait(m => m.t === 'snapshot' && m.id === id);
+    assert.ok(!snap.events.some(e => e.kind === 'system' && e.subtype === 'thinking_tokens'),
+      'no thinking_tokens re-attached for a finished block (viewed from disk)');
+    // The finished thinking text is still present.
+    assert.ok(snap.events.some(e => e.kind === 'thinking_delta' && e.text === 'all done'));
+
+    await c.close();
+  } finally { await close(); }
+});

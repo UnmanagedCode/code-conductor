@@ -104,3 +104,64 @@ test('default cap is 2000', () => {
     if (prev !== undefined) process.env.ORCH_EVENT_RING_CAP = prev;
   }
 });
+
+// ── Storage-only coalescing of the ollama thinking flood ─────────────────────
+
+test('system/thinking_tokens is never retained (live-only counter)', () => {
+  const log = new EventLog({ cap: 50 });
+  log.push({ kind: 'user_echo', text: 'go' });
+  const tok = { kind: 'system', subtype: 'thinking_tokens', data: { estimated_tokens: 42 } };
+  log.push(tok);
+  const arr = log.toArray();
+  assert.equal(arr.length, 1, 'thinking_tokens must not occupy a ring slot');
+  assert.equal(arr[0].kind, 'user_echo');
+  assert.equal(tok._seq, undefined, 'declined event gets no _seq → emitted seq-less');
+  assert.equal(log.nextSeq, 1, 'nextSeq unchanged by a declined event');
+});
+
+test('consecutive same-block thinking_delta fold into one slot', () => {
+  const log = new EventLog({ cap: 50 });
+  const d1 = { kind: 'thinking_delta', msgId: 'm1', blockIdx: 0, text: 'Hello' };
+  const d2 = { kind: 'thinking_delta', msgId: 'm1', blockIdx: 0, text: ' world' };
+  const d3 = { kind: 'thinking_delta', msgId: 'm1', blockIdx: 0, text: '!' };
+  log.push(d1); log.push(d2); log.push(d3);
+  const arr = log.toArray();
+  assert.equal(arr.length, 1, 'one ring slot per thinking block');
+  assert.equal(arr[0].text, 'Hello world!');
+  assert.equal(arr[0]._seq, 0);
+  assert.equal(d2._seq, undefined, 'folded delta stays seq-less for the live feed');
+  assert.equal(d3._seq, undefined);
+  assert.equal(log.nextSeq, 1, 'only the first delta advanced nextSeq');
+});
+
+test('coalescing does not span a new block or a non-thinking event', () => {
+  const log = new EventLog({ cap: 50 });
+  log.push({ kind: 'thinking_delta', msgId: 'm1', blockIdx: 0, text: 'a' });
+  // different blockIdx → new slot
+  log.push({ kind: 'thinking_delta', msgId: 'm1', blockIdx: 1, text: 'b' });
+  // interleaved content → breaks adjacency, next same-block delta opens a slot
+  log.push({ kind: 'text_delta', msgId: 'm1', blockIdx: 1, text: 'x' });
+  log.push({ kind: 'thinking_delta', msgId: 'm1', blockIdx: 1, text: 'c' });
+  const arr = log.toArray();
+  assert.deepEqual(arr.map((e) => e.text), ['a', 'b', 'x', 'c']);
+  arr.forEach((e, i) => assert.equal(e._seq, i));
+});
+
+test('a huge single reasoning turn cannot overflow the ring (no eviction)', () => {
+  const log = new EventLog({ cap: 10 });
+  log.push({ kind: 'user_echo', text: 'reason hard' });
+  log.push({ kind: 'thinking_start', msgId: 'm1', blockIdx: 0 });
+  // ollama-style: one thinking_tokens per thinking_delta, thousands of them.
+  for (let i = 0; i < 5000; i++) {
+    log.push({ kind: 'thinking_delta', msgId: 'm1', blockIdx: 0, text: `t${i} ` });
+    log.push({ kind: 'system', subtype: 'thinking_tokens', data: { estimated_tokens: i } });
+  }
+  log.push({ kind: 'thinking_end', msgId: 'm1', blockIdx: 0 });
+  const arr = log.toArray();
+  // user_echo + thinking_start + one coalesced delta + thinking_end = 4 slots.
+  assert.equal(arr.length, 4, 'turn footprint is O(blocks), not O(tokens)');
+  assert.equal(arr[0].kind, 'user_echo');
+  assert.equal(log.trimmedBefore, 0, 'nothing evicted → the turn boundary survives, no mid-turn gap');
+  assert.equal(arr[2].kind, 'thinking_delta');
+  assert.ok(arr[2].text.startsWith('t0 ') && arr[2].text.endsWith('t4999 '));
+});
