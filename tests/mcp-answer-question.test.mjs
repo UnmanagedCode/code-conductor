@@ -60,6 +60,27 @@ test('tools/list includes answer_question with an object inputSchema', async () 
   assert.ok(typeof t.description === 'string' && t.description.length > 20);
 });
 
+test('get_recent_messages drops question content from metadata, but answer_question still aligns by index', async () => {
+  const { inst, sid } = await spawnAtQuestion();
+
+  // get_recent_messages metadata now carries only a presence marker; the full
+  // question (options, multiSelect) lives in the body instead.
+  const grm = await callTool('get_recent_messages', { sessionId: sid });
+  const meta = JSON.parse(grm.content[0].text);
+  assert.equal(meta.messages[0].questionCount, 1, 'questionCount marker present');
+  assert.equal(meta.messages[0].questions, undefined, 'question content no longer duplicated in metadata');
+  // Default call bonds the question message with its trailing prose ack, so
+  // content[1] is boundary-prefixed (>1 message returned).
+  assert.match(grm.content[1].text, /--- questions ---\n1\. Pick a fruit/, 'question rendered into the body');
+
+  // answer_question re-derives pending questions from the ring independently
+  // of get_recent_messages' output, so it's unaffected by the metadata change.
+  const res = unwrap(await callTool('answer_question', { sessionId: sid, answers: [{ option: 'Apple' }] }));
+  assert.equal(res.sentText, 'Answer to "Pick a fruit": Apple');
+  await waitFor(() => inst.ring.toArray().some(
+    ev => ev.kind === 'user_echo' && ev.text === 'Answer to "Pick a fruit": Apple'));
+});
+
 test('answer_question sends the canonical single-option text and lands it as user_echo', async () => {
   const { inst, sid } = await spawnAtQuestion();
   const res = unwrap(await callTool('answer_question', { sessionId: sid, answers: [{ option: 'Apple' }] }));

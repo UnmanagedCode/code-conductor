@@ -992,6 +992,36 @@ function messageBoundaryHeader(index, total, msgId, textChars) {
   return `--- message ${index + 1}/${total} · ${msgId} · ${textChars} chars ---`;
 }
 
+// Render an AskUserQuestion payload into the get_recent_messages body, index-
+// numbered so a reader can answer_question by index against the SAME array
+// (answer_question re-derives it independently from the ring — see its
+// handler — this is just a readable rendering of that same shape).
+function renderQuestions(questions) {
+  const lines = ['--- questions ---'];
+  questions.forEach((q, i) => {
+    const headerSuffix = q.header ? ` · header: ${q.header}` : '';
+    lines.push(`${i + 1}. ${q.question ?? ''} (multiSelect: ${!!q.multiSelect})${headerSuffix}`);
+    for (const opt of q.options ?? []) {
+      lines.push(`   - ${opt.label ?? ''}${opt.description ? `: ${opt.description}` : ''}`);
+    }
+  });
+  return lines.join('\n');
+}
+
+// Assemble a message's body from its prose/plan/questions segments, ordered by
+// the arrival-order seq messageReconstruction.js records (textSeq/planSeq/
+// questionsSeq) — NOT hardcoded prose-then-plan — so the body reflects the
+// order those blocks actually occurred in the turn. A segment missing its seq
+// (shouldn't happen) sorts last rather than throwing.
+function renderMessageBody(m, cappedText) {
+  const segments = [];
+  if (cappedText) segments.push({ pos: m.textSeq ?? Infinity, text: cappedText });
+  if (m.plan) segments.push({ pos: m.planSeq ?? Infinity, text: `--- plan ---\n${m.plan}` });
+  if (m.questions) segments.push({ pos: m.questionsSeq ?? Infinity, text: renderQuestions(m.questions) });
+  segments.sort((a, b) => a.pos - b.pos);
+  return segments.map(s => s.text).join('\n');
+}
+
 // Return the most recent N assistant messages as joined text + structured
 // blocks, so a coordinating agent can read what a worker said without parsing
 // the raw event stream. `count` defaults to 1, clamped to [1, 50].
@@ -1057,20 +1087,24 @@ export async function buildRecentMessages({ sessionId, count, includeToolCalls =
   const omittedToolOnly = includeToolCalls ? 0 : (all.length - filtered.length);
 
   // Multi-block: metadata block describes each message; one raw text block per
-  // message carries its (capped) prose, in order — block k+1 ↔ messages[k].
-  // When more than one message is returned, each body is prefixed with a
-  // boundary line (messageBoundaryHeader) so consecutive raw text blocks never
-  // visually run together — a text-less (plan/question-only) message's body is
-  // then just that line rather than ''. meta stays untouched either way:
-  // textChars/index/etc. always describe the raw prose, not the decorated body.
+  // message carries its rendered body (prose + plan/questions, order-faithful
+  // — see renderMessageBody), in order — block k+1 ↔ messages[k]. When more
+  // than one message is returned, each body is prefixed with a boundary line
+  // (messageBoundaryHeader) so consecutive raw text blocks never visually run
+  // together. meta stays untouched either way: textChars/index/etc. always
+  // describe the raw prose, not the decorated body. plan/questions CONTENT
+  // lives only in the body now — meta carries just presence markers
+  // (hasPlan/questionCount) so a caller scanning metadata across a multi-
+  // message result can spot which index to read without opening every body.
   const bodies = [];
   const total = messages.length;
   const metaMessages = messages.map((m, index) => {
     const textChars = (m.text ?? '').length;
     const capped = capText(m.text ?? '', MSG_TEXT_CAP);
+    const rendered = renderMessageBody(m, capped.text);
     const body = total > 1
-      ? messageBoundaryHeader(index, total, m.msgId, textChars) + (capped.text ? `\n${capped.text}` : '')
-      : capped.text;
+      ? messageBoundaryHeader(index, total, m.msgId, textChars) + (rendered ? `\n${rendered}` : '')
+      : rendered;
     bodies.push(body);
     const entry = {
       index,
@@ -1079,8 +1113,8 @@ export async function buildRecentMessages({ sessionId, count, includeToolCalls =
       textChars,
       textTruncated: capped.truncated,
     };
-    if (m.plan) entry.plan = m.plan;
-    if (m.questions) entry.questions = m.questions;
+    if (m.plan) entry.hasPlan = true;
+    if (m.questions) entry.questionCount = m.questions.length;
     if (m.blocks) entry.blocks = m.blocks.map(capBlockInput);
     return entry;
   });

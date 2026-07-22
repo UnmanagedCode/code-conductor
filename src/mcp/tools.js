@@ -627,13 +627,14 @@ export function buildTools() {
       name: 'get_recent_messages',
       description:
         'Return the most recent assistant message(s) from an instance. Each message has: ' +
-        '`text` (full joined prose), `hasToolUse` (boolean), `msgId`, and optionally `blocks`, `plan`, `questions`. ' +
+        '`text` (full joined prose), `hasToolUse` (boolean), `msgId`, and optionally `blocks`, `hasPlan`, `questionCount`. ' +
         '`blocks` is present only when non-text blocks exist and contains only `tool_use` and ' +
         '`thinking` entries — text content is fully represented by `text` and is not duplicated ' +
         'in `blocks`; ExitPlanMode and AskUserQuestion tool_use blocks are likewise not duplicated ' +
-        'in `blocks[]` when their content is represented by `plan` / `questions`. ' +
-        '`plan` (string) is present when the turn called ExitPlanMode with an inline plan. ' +
-        '`questions` (array) is present when the turn called AskUserQuestion. ' +
+        'in `blocks[]` when their content is represented in the message body (see OUTPUT). ' +
+        '`hasPlan` (boolean) flags a turn that called ExitPlanMode with an inline plan; `questionCount` (int) ' +
+        'flags a turn that called AskUserQuestion, with the number of questions — these are presence markers only, ' +
+        'the actual plan text / question list (index-numbered, with options and multiSelect) is in the message body. ' +
         'By default, messages are returned when they have text, a plan, or questions — ' +
         'tool-call-only messages with none of those are excluded. Set `includeToolCalls` to true to ' +
         'include every assistant message regardless. Thinking blocks are excluded by default; ' +
@@ -642,19 +643,19 @@ export function buildTools() {
         'tail can\'t satisfy the requested recent TEXT messages (tool-event volume evicted them) it transparently ' +
         'reads back into the on-disk session transcript — so ring eviction never yields a false-empty result. ' +
         'OUTPUT: a compact-JSON metadata block (content[0]) {sessionId, messages:[{index, msgId, hasToolUse, textChars, ' +
-        'textTruncated, plan?, questions?, blocks?}], source:"ring"|"disk", omittedToolOnly:int, retained:{firstSeq, ' +
-        'lastSeq, trimmed}, hint?} oldest-first, PLUS one raw, un-escaped text block per message (content[k+1] is the ' +
-        'prose for messages[k], empty for a plan/question-only turn — UNLESS more than one message is returned, in ' +
-        'which case each body is prefixed with "--- message i/N · msgId · textChars chars ---", and a text-less ' +
-        'message\'s body is then just that line). `omittedToolOnly` counts recent tool-call-only ' +
-        'messages excluded by the default filter (the agent is active even when messages[] is empty); `hint` explains ' +
-        'a short/empty result. Large message text is capped (textTruncated); blocks[].input is capped inline ' +
-        '(inputTruncated). Default count 1, max 50. ' +
+        'textTruncated, hasPlan?, questionCount?, blocks?}], source:"ring"|"disk", omittedToolOnly:int, retained:{firstSeq, ' +
+        'lastSeq, trimmed}, hint?} oldest-first, PLUS one raw, un-escaped text block per message (content[k+1] is ' +
+        'messages[k]\'s body: its prose (if any) plus a "--- plan ---" or "--- questions ---" fenced section when the ' +
+        'turn produced one, in the order those blocks actually occurred — UNLESS more than one message is returned, in ' +
+        'which case each body is prefixed with "--- message i/N · msgId · textChars chars ---"). `omittedToolOnly` counts ' +
+        'recent tool-call-only messages excluded by the default filter (the agent is active even when messages[] is ' +
+        'empty); `hint` explains a short/empty result. Large message text is capped (textTruncated); blocks[].input is ' +
+        'capped inline (inputTruncated). Default count 1, max 50. ' +
         'DEFAULT-CALL BONDING: on the default call only (no `count` passed), if the last message is plain prose ' +
-        'the selection is bonded back to the turn\'s `plan`/`questions` message and spans from it through the end ' +
+        'the selection is bonded back to the turn\'s plan/questions message and spans from it through the end ' +
         'of that turn — so a turn whose trailing prose spans several messages still surfaces the plan/questions ' +
         'together with all of it. The walk-back is scoped to the current turn (a plan from an earlier turn is never ' +
-        'pulled in), and a message that already carries its own `plan`/`questions` is returned alone. Passing an ' +
+        'pulled in), and a message that already carries its own plan/questions is returned alone. Passing an ' +
         'explicit `count` (including `count:1`) disables this and returns exactly that many messages, literally.',
       inputSchema: {
         type: 'object',
