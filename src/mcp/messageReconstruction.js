@@ -154,6 +154,12 @@ function buildMessageFromRing(ring, targetMsgId, includeThinking = false) {
   let assistantContent = null; // content blocks merged across all assistant_message envelopes for this msgId
   let plan = null;
   let questions = null;
+  // seq/*Seq: arrival-order position of each segment within the message, so
+  // the body renderer (handlers.js) can interleave prose/plan/questions in the
+  // order the underlying blocks actually occurred instead of hardcoding
+  // "prose then plan" — set once, at each segment's first occurrence.
+  let seq = 0;
+  let textSeq = null, planSeq = null, questionsSeq = null;
   for (const ev of ring) {
     if (ev.parentToolUseId) continue;
     if (ev.msgId !== targetMsgId) continue;
@@ -161,6 +167,7 @@ function buildMessageFromRing(ring, targetMsgId, includeThinking = false) {
       if (!byBlock.has(ev.blockIdx)) {
         byBlock.set(ev.blockIdx, '');
         blockOrder.push(ev.blockIdx);
+        if (textSeq === null) textSeq = seq++;
       }
       byBlock.set(ev.blockIdx, byBlock.get(ev.blockIdx) + (ev.text ?? ''));
     } else if (ev.kind === 'tool_use') {
@@ -175,9 +182,11 @@ function buildMessageFromRing(ring, targetMsgId, includeThinking = false) {
           const fp = ev.input?.planFilePath ?? ev.input?.planPath;
           if (typeof fp === 'string' && fp.length > 0) { plan = `(plan at ${fp})`; hoisted = true; }
         }
+        if (hoisted && planSeq === null) planSeq = seq++;
       } else if (ev.name === 'AskUserQuestion') {
         const q = ev.input?.questions;
         if (Array.isArray(q) && q.length > 0) { questions = q; hoisted = true; }
+        if (hoisted && questionsSeq === null) questionsSeq = seq++;
       }
       if (!hoisted) {
         otherBlocks.push({ type: 'tool_use', name: ev.name, input: ev.input, toolUseId: ev.toolUseId });
@@ -197,9 +206,12 @@ function buildMessageFromRing(ring, targetMsgId, includeThinking = false) {
   if (assistantContent) {
     const textParts = [];
     const blocks = [];
+    let seq2 = 0;
+    let textSeq2 = null, planSeq2 = null, questionsSeq2 = null;
     for (const block of assistantContent) {
       if (block?.type === 'text' && typeof block.text === 'string') {
         textParts.push(block.text);
+        if (textSeq2 === null) textSeq2 = seq2++;
       } else if (block?.type === 'tool_use') {
         hasToolUse = true;
         let hoisted = false;
@@ -212,9 +224,11 @@ function buildMessageFromRing(ring, targetMsgId, includeThinking = false) {
             const fp = block.input?.planFilePath ?? block.input?.planPath;
             if (typeof fp === 'string' && fp.length > 0) { plan = `(plan at ${fp})`; hoisted = true; }
           }
+          if (hoisted && planSeq2 === null) planSeq2 = seq2++;
         } else if (block.name === 'AskUserQuestion') {
           const q = block.input?.questions;
           if (Array.isArray(q) && q.length > 0) { questions = q; hoisted = true; }
+          if (hoisted && questionsSeq2 === null) questionsSeq2 = seq2++;
         }
         if (!hoisted) {
           blocks.push({ type: 'tool_use', name: block.name, input: block.input, toolUseId: block.id });
@@ -226,11 +240,24 @@ function buildMessageFromRing(ring, targetMsgId, includeThinking = false) {
     let text = textParts.join('');
     // Never regress below what the deltas captured: if the envelopes carried
     // no text block but deltas streamed one, prefer the delta accumulation.
-    if (!text) text = blockOrder.map(idx => byBlock.get(idx)).join('');
+    // Its seq lives on a DIFFERENT counter (seq, not seq2) than the rest of
+    // this reconciled pass, so it can't be compared against planSeq2/
+    // questionsSeq2 by value — instead pin it to -1 (guaranteed to sort
+    // before any seq2, which starts at 0). This is also semantically right:
+    // an envelope-less text block can only be the delta stream's own block,
+    // which — per the arrival-order comment above — always finalizes before
+    // any block a reconciled envelope in THIS pass reports on.
+    if (!text) { text = blockOrder.map(idx => byBlock.get(idx)).join(''); if (text) textSeq2 = -1; }
     return { msgId: targetMsgId, text, ...(blocks.length ? { blocks } : {}), hasToolUse,
-      ...(plan ? { plan } : {}), ...(questions ? { questions } : {}) };
+      ...(plan ? { plan } : {}), ...(questions ? { questions } : {}),
+      ...(textSeq2 !== null ? { textSeq: textSeq2 } : {}),
+      ...(planSeq2 !== null ? { planSeq: planSeq2 } : {}),
+      ...(questionsSeq2 !== null ? { questionsSeq: questionsSeq2 } : {}) };
   }
   const text = blockOrder.map(idx => byBlock.get(idx)).join('');
   return { msgId: targetMsgId, text, ...(otherBlocks.length ? { blocks: otherBlocks } : {}), hasToolUse,
-    ...(plan ? { plan } : {}), ...(questions ? { questions } : {}) };
+    ...(plan ? { plan } : {}), ...(questions ? { questions } : {}),
+    ...(textSeq !== null ? { textSeq } : {}),
+    ...(planSeq !== null ? { planSeq } : {}),
+    ...(questionsSeq !== null ? { questionsSeq } : {}) };
 }

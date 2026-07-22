@@ -94,8 +94,14 @@ test('single-block envelopes: plan message keeps both its prose and the hoisted 
   const res = unwrapMessages(await callTool(baseUrl, 'get_recent_messages', { sessionId }));
   assert.equal(res.messages.length, 1, 'text+plan live in ONE message — returned alone, no bonding needed');
   const m = res.messages[0];
-  assert.equal(m.text, 'I dug through the reconstruction path; plan follows.', 'plan preamble preserved (was "")');
-  assert.equal(m.plan, 'Step A\nStep B');
+  // Order-faithful: the text envelope arrived before the ExitPlanMode
+  // envelope, so the prose renders before the "--- plan ---" fence.
+  assert.equal(
+    m.text,
+    'I dug through the reconstruction path; plan follows.\n--- plan ---\nStep A\nStep B',
+    'plan preamble preserved, plan rendered into the body',
+  );
+  assert.equal(m.hasPlan, true);
   assert.ok(!m.blocks?.some(b => b.name === 'ExitPlanMode'), 'hoisted plan is not duplicated in blocks[]');
 });
 
@@ -108,10 +114,10 @@ test('single-block envelopes: explicit count returns both messages oldest-first 
   const res = unwrapMessages(raw);
   assert.equal(res.messages.length, 2);
   assert.equal(res.messages[0].text, 'Let me check the config first.');
-  assert.equal(res.messages[1].text, 'I dug through the reconstruction path; plan follows.');
+  assert.equal(res.messages[1].text, 'I dug through the reconstruction path; plan follows.\n--- plan ---\nStep A\nStep B');
   assert.equal(res.meta.source, 'ring');
   // Raw (unstripped) bodies carry the boundary line once >1 message is returned.
   const rawBodies = raw.content.slice(1).map(c => c.text);
   assert.match(rawBodies[0], /^--- message 1\/2 · .+ · \d+ chars ---\nLet me check the config first\./);
-  assert.match(rawBodies[1], /^--- message 2\/2 · .+ · \d+ chars ---\nI dug through the reconstruction path; plan follows\.$/);
+  assert.match(rawBodies[1], /^--- message 2\/2 · .+ · \d+ chars ---\nI dug through the reconstruction path; plan follows\.\n--- plan ---\nStep A\nStep B$/);
 });

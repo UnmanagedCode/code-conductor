@@ -18,6 +18,8 @@ const SCENARIO_EXIT_PLAN_COMBINED = path.join(__dirname, 'fixtures', 'scenario-e
 const SCENARIO_EXIT_PLAN_MULTI_TRAILING = path.join(__dirname, 'fixtures', 'scenario-exit-plan-multi-trailing.json');
 const SCENARIO_QUESTION = path.join(__dirname, 'fixtures', 'scenario-question.json');
 const SCENARIO_PROSE_THEN_PLAN = path.join(__dirname, 'fixtures', 'scenario-prose-then-plan.json');
+const SCENARIO_EXIT_PLAN_AND_QUESTION = path.join(__dirname, 'fixtures', 'scenario-exit-plan-and-question.json');
+const SCENARIO_PLAN_BEFORE_PROSE = path.join(__dirname, 'fixtures', 'scenario-plan-before-prose.json');
 
 let nextRpcId = 1;
 async function rpc(baseUrl, method, params) {
@@ -82,9 +84,9 @@ test('get_recent_messages: default call bonds a split ExitPlanMode + trailing pr
 
   const res = unwrapMessages(await callTool(baseUrl, 'get_recent_messages', { sessionId }));
   assert.equal(res.messages.length, 2, 'default call bonds the plan message with the trailing prose');
-  assert.equal(res.messages[0].plan, 'Step 1\nStep 2');
-  assert.equal(res.messages[0].text, '');
-  assert.ok(!Object.hasOwn(res.messages[1], 'plan'), 'second message has no plan of its own');
+  assert.equal(res.messages[0].hasPlan, true);
+  assert.equal(res.messages[0].text, '--- plan ---\nStep 1\nStep 2');
+  assert.ok(!Object.hasOwn(res.messages[1], 'hasPlan'), 'second message has no plan of its own');
   assert.equal(res.messages[1].text, 'Standing by for approval.');
 });
 
@@ -95,17 +97,18 @@ test('get_recent_messages: default call bonds a plan + TWO trailing prose messag
   const raw = await callTool(baseUrl, 'get_recent_messages', { sessionId });
   const res = unwrapMessages(raw);
   assert.equal(res.messages.length, 3, 'default call spans the plan message through the end of the turn');
-  assert.equal(res.messages[0].plan, 'Step 1\nStep 2');
-  assert.equal(res.messages[0].text, '');
-  assert.ok(!Object.hasOwn(res.messages[1], 'plan'));
+  assert.equal(res.messages[0].hasPlan, true);
+  assert.equal(res.messages[0].text, '--- plan ---\nStep 1\nStep 2');
+  assert.ok(!Object.hasOwn(res.messages[1], 'hasPlan'));
   assert.equal(res.messages[1].text, 'First trailing note.');
   // Raw (unstripped) bodies carry the boundary line once >1 message is
-  // returned — the text-less plan message's body is then just that line.
+  // returned — the text-less plan message's body is the boundary line
+  // followed by the fenced plan (never empty for a plan-only turn).
   const rawBodies = raw.content.slice(1).map(c => c.text);
-  assert.match(rawBodies[0], /^--- message 1\/3 · .+ · 0 chars ---$/, 'text-less body is just the boundary line');
+  assert.match(rawBodies[0], /^--- message 1\/3 · .+ · 0 chars ---\n--- plan ---\nStep 1\nStep 2$/);
   assert.match(rawBodies[1], /^--- message 2\/3 · .+ · \d+ chars ---\nFirst trailing note\.$/);
   assert.match(rawBodies[2], /^--- message 3\/3 · .+ · \d+ chars ---\nStanding by for approval\.$/);
-  assert.ok(!Object.hasOwn(res.messages[2], 'plan'));
+  assert.ok(!Object.hasOwn(res.messages[2], 'hasPlan'));
   assert.equal(res.messages[2].text, 'Standing by for approval.');
 });
 
@@ -116,7 +119,7 @@ test('get_recent_messages: explicit count:1 stays literal on a multi-trailing tu
   const res = unwrapMessages(await callTool(baseUrl, 'get_recent_messages', { sessionId, count: 1 }));
   assert.equal(res.messages.length, 1, 'explicit count:1 returns exactly one message, no bonding');
   assert.equal(res.messages[0].text, 'Standing by for approval.');
-  assert.ok(!Object.hasOwn(res.messages[0], 'plan'));
+  assert.ok(!Object.hasOwn(res.messages[0], 'hasPlan'));
 });
 
 test('get_recent_messages: explicit count:1 stays literal (no bonding) on a split ExitPlanMode turn', async () => {
@@ -126,7 +129,7 @@ test('get_recent_messages: explicit count:1 stays literal (no bonding) on a spli
   const res = unwrapMessages(await callTool(baseUrl, 'get_recent_messages', { sessionId, count: 1 }));
   assert.equal(res.messages.length, 1, 'explicit count:1 returns exactly one message, no bonding');
   assert.equal(res.messages[0].text, 'Standing by for approval.');
-  assert.ok(!Object.hasOwn(res.messages[0], 'plan'));
+  assert.ok(!Object.hasOwn(res.messages[0], 'hasPlan'));
 });
 
 test('get_recent_messages: default call bonds a split AskUserQuestion + trailing prose', async () => {
@@ -135,9 +138,13 @@ test('get_recent_messages: default call bonds a split AskUserQuestion + trailing
 
   const res = unwrapMessages(await callTool(baseUrl, 'get_recent_messages', { sessionId }));
   assert.equal(res.messages.length, 2, 'default call bonds the question message with the trailing prose');
-  assert.ok(Array.isArray(res.messages[0].questions) && res.messages[0].questions.length > 0);
+  assert.equal(res.messages[0].questionCount, 1);
+  assert.equal(
+    res.messages[0].text,
+    '--- questions ---\n1. Pick a fruit (multiSelect: false) · header: Fruit\n   - Apple\n   - Banana',
+  );
   assert.equal(res.messages[1].text, 'Waiting for your response.');
-  assert.ok(!Object.hasOwn(res.messages[1], 'questions'));
+  assert.ok(!Object.hasOwn(res.messages[1], 'questionCount'));
 });
 
 test('get_recent_messages: bonding never walks back more than one message', async () => {
@@ -159,8 +166,10 @@ test('get_recent_messages: an already-combined message (text + plan together) is
 
   const res = unwrapMessages(await callTool(baseUrl, 'get_recent_messages', { sessionId }));
   assert.equal(res.messages.length, 1, 'no bonding attempted when the last message already carries its own plan');
-  assert.equal(res.messages[0].text, 'Here is my plan.');
-  assert.equal(res.messages[0].plan, 'Step 1\nStep 2');
+  // Order-faithful: the prose block preceded the ExitPlanMode tool_use in the
+  // turn's block stream, so it renders before the "--- plan ---" fence.
+  assert.equal(res.messages[0].text, 'Here is my plan.\n--- plan ---\nStep 1\nStep 2');
+  assert.equal(res.messages[0].hasPlan, true);
 });
 
 test('get_recent_messages: last message carrying its own plan is not bonded backward to earlier prose', async () => {
@@ -170,6 +179,37 @@ test('get_recent_messages: last message carrying its own plan is not bonded back
 
   const res = unwrapMessages(await callTool(baseUrl, 'get_recent_messages', { sessionId }));
   assert.equal(res.messages.length, 1, 'the plan message is returned alone, earlier prose is not pulled backward');
-  assert.equal(res.messages[0].plan, 'Only plan');
-  assert.equal(res.messages[0].text, '');
+  assert.equal(res.messages[0].hasPlan, true);
+  assert.equal(res.messages[0].text, '--- plan ---\nOnly plan');
+});
+
+test('get_recent_messages: a message carrying BOTH a plan and questions renders both, order-faithful', async () => {
+  const sessionId = await spawnWithScenario(SCENARIO_EXIT_PLAN_AND_QUESTION, 'a');
+  await callTool(baseUrl, 'send_prompt', { sessionId, text: 'plan and ask', wait: true, waitTimeoutMs: 5000 });
+
+  const res = unwrapMessages(await callTool(baseUrl, 'get_recent_messages', { sessionId }));
+  assert.equal(res.messages.length, 1, 'no bonding needed — the single message carries everything');
+  assert.equal(res.messages[0].hasPlan, true);
+  assert.equal(res.messages[0].questionCount, 1);
+  // Order-faithful across THREE segments: the turn's block stream was
+  // text, then ExitPlanMode, then AskUserQuestion, in that order.
+  assert.equal(
+    res.messages[0].text,
+    'Here is my plan and a question.\n' +
+    '--- plan ---\nStep 1\nStep 2\n' +
+    '--- questions ---\n1. Proceed? (multiSelect: false) · header: Confirm\n   - Yes: Go ahead\n   - No: Stop here',
+  );
+});
+
+test('get_recent_messages: a plan block that precedes prose renders the plan first (atypical order)', async () => {
+  const sessionId = await spawnWithScenario(SCENARIO_PLAN_BEFORE_PROSE, 'a');
+  await callTool(baseUrl, 'send_prompt', { sessionId, text: 'plan this', wait: true, waitTimeoutMs: 5000 });
+
+  const res = unwrapMessages(await callTool(baseUrl, 'get_recent_messages', { sessionId }));
+  assert.equal(res.messages.length, 1, 'the message carries its own plan — not bonded, not split');
+  assert.equal(res.messages[0].hasPlan, true);
+  // Order-faithful: ExitPlanMode's tool_use block preceded the trailing text
+  // block in this turn's stream, so the plan fence renders BEFORE the prose —
+  // not hardcoded prose-then-plan.
+  assert.equal(res.messages[0].text, '--- plan ---\nStep 1\nStep 2\nNoted, standing by for approval.');
 });

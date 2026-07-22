@@ -745,8 +745,9 @@ test('get_recent_messages returns plan-bearing messages by default', async () =>
 
     const after = unwrapMessages(await callTool(baseUrl, 'get_recent_messages', { sessionId: spawn.sessionId }));
     assert.equal(after.messages.length, 1, 'plan-bearing message returned by default');
-    assert.equal(after.messages[0].text, '', 'text is empty for plan-only turn');
-    assert.equal(after.messages[0].plan, 'Step 1\nStep 2', 'plan field populated');
+    assert.equal(after.messages[0].text, '--- plan ---\nStep 1\nStep 2', 'plan rendered into the body, fenced');
+    assert.equal(after.messages[0].hasPlan, true, 'hasPlan marker populated');
+    assert.equal(after.messages[0].plan, undefined, 'plan content no longer duplicated in metadata');
     assert.equal(after.messages[0].hasToolUse, true);
     assert.ok(!Object.hasOwn(after.messages[0], 'blocks'), 'ExitPlanMode block not duplicated in blocks[]');
   } finally {
@@ -772,9 +773,13 @@ test('get_recent_messages returns question-bearing messages by default', async (
 
     const after = unwrapMessages(await callTool(baseUrl, 'get_recent_messages', { sessionId: spawn.sessionId }));
     assert.equal(after.messages.length, 1, 'question-bearing message returned by default');
-    assert.equal(after.messages[0].text, '', 'text is empty for question-only turn');
-    assert.ok(Array.isArray(after.messages[0].questions) && after.messages[0].questions.length > 0, 'questions field populated');
-    assert.equal(after.messages[0].questions[0].question, 'Which approach?');
+    assert.equal(
+      after.messages[0].text,
+      '--- questions ---\n1. Which approach? (multiSelect: false) · header: Approach\n   - Option A: Fast\n   - Option B: Safe',
+      'questions rendered into the body, index-numbered with options and multiSelect',
+    );
+    assert.equal(after.messages[0].questionCount, 1, 'questionCount marker populated');
+    assert.equal(after.messages[0].questions, undefined, 'questions content no longer duplicated in metadata');
     assert.equal(after.messages[0].hasToolUse, true);
     assert.ok(!Object.hasOwn(after.messages[0], 'blocks'), 'AskUserQuestion block not duplicated in blocks[]');
   } finally {
@@ -795,7 +800,8 @@ test('get_recent_messages: reconciled ExitPlanMode not duplicated in blocks[]', 
     await callTool(baseUrl, 'send_prompt', { sessionId: spawn.sessionId, text: 'plan this', wait: true, waitTimeoutMs: 5000 });
     const result = unwrapMessages(await callTool(baseUrl, 'get_recent_messages', { sessionId: spawn.sessionId }));
     assert.equal(result.messages.length, 1, 'plan-bearing message returned (reconciled path)');
-    assert.equal(result.messages[0].plan, 'Step 1\nStep 2', 'plan field populated (reconciled path)');
+    assert.equal(result.messages[0].text, '--- plan ---\nStep 1\nStep 2', 'plan rendered into the body (reconciled path)');
+    assert.equal(result.messages[0].hasPlan, true, 'hasPlan marker populated (reconciled path)');
     assert.equal(result.messages[0].hasToolUse, true);
     assert.ok(!Object.hasOwn(result.messages[0], 'blocks'), 'ExitPlanMode not in blocks[] (reconciled path)');
   } finally {
@@ -816,7 +822,12 @@ test('get_recent_messages: reconciled AskUserQuestion not duplicated in blocks[]
     await callTool(baseUrl, 'send_prompt', { sessionId: spawn.sessionId, text: 'ask me', wait: true, waitTimeoutMs: 5000 });
     const result = unwrapMessages(await callTool(baseUrl, 'get_recent_messages', { sessionId: spawn.sessionId }));
     assert.equal(result.messages.length, 1, 'question-bearing message returned (reconciled path)');
-    assert.ok(Array.isArray(result.messages[0].questions) && result.messages[0].questions.length > 0, 'questions field populated (reconciled path)');
+    assert.equal(
+      result.messages[0].text,
+      '--- questions ---\n1. Which approach? (multiSelect: false) · header: Approach\n   - A: Fast\n   - B: Safe',
+      'questions rendered into the body (reconciled path)',
+    );
+    assert.equal(result.messages[0].questionCount, 1, 'questionCount marker populated (reconciled path)');
     assert.equal(result.messages[0].hasToolUse, true);
     assert.ok(!Object.hasOwn(result.messages[0], 'blocks'), 'AskUserQuestion not in blocks[] (reconciled path)');
   } finally {

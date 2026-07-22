@@ -1,0 +1,26 @@
+{
+  "events": [],
+  "turns": [
+    {
+      "on": { "type": "prompt" },
+      "emit": [
+        { "type": "stream_event", "event": { "type": "message_start", "message": { "id": "msg_pq_1", "role": "assistant" } } },
+        { "type": "stream_event", "event": { "type": "content_block_start", "index": 0, "content_block": { "type": "text", "text": "" } } },
+        { "type": "stream_event", "event": { "type": "content_block_delta", "index": 0, "delta": { "type": "text_delta", "text": "Here is my plan and a question." } } },
+        { "type": "stream_event", "event": { "type": "content_block_stop", "index": 0 } },
+        { "type": "stream_event", "event": { "type": "content_block_start", "index": 1, "content_block": { "type": "tool_use", "id": "tu_pq_plan", "name": "ExitPlanMode", "input": {} } } },
+        { "type": "stream_event", "event": { "type": "content_block_delta", "index": 1, "delta": { "type": "input_json_delta", "partial_json": "{\"plan\":\"Step 1\\nStep 2\"}" } } },
+        { "type": "stream_event", "event": { "type": "content_block_stop", "index": 1 } },
+        { "type": "stream_event", "event": { "type": "content_block_start", "index": 2, "content_block": { "type": "tool_use", "id": "tu_pq_q", "name": "AskUserQuestion", "input": {} } } },
+        { "type": "stream_event", "event": { "type": "content_block_delta", "index": 2, "delta": { "type": "input_json_delta", "partial_json": "{\"questions\":[{\"question\":\"Proceed?\",\"header\":\"Confirm\",\"options\":[{\"label\":\"Yes\",\"description\":\"Go ahead\"},{\"label\":\"No\",\"description\":\"Stop here\"}],\"multiSelect\":false}]}" } } },
+        { "type": "stream_event", "event": { "type": "content_block_stop", "index": 2 } },
+        { "type": "user", "message": { "role": "user", "content": [
+          { "type": "tool_result", "tool_use_id": "tu_pq_plan", "content": "Awaiting user input via the orchestrator UI — please stop and wait for the next user message.", "is_error": true },
+          { "type": "tool_result", "tool_use_id": "tu_pq_q", "content": "Awaiting user input via the orchestrator UI — please stop and wait for the next user message.", "is_error": true }
+        ] } },
+        { "type": "stream_event", "event": { "type": "message_stop" } },
+        { "type": "result", "subtype": "success", "stop_reason": "end_turn", "duration_ms": 5, "total_cost_usd": 0.0, "is_error": false }
+      ]
+    }
+  ]
+}
