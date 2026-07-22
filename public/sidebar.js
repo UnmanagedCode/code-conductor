@@ -644,10 +644,16 @@ export class Sidebar {
     if (!row) {
       row = el('div', { class: 'project-row' + (isConduct ? ' project-row-conduct' : '') });
       // Commit-log button goes first (left of the name) for git projects.
+      // Non-git projects and the Conduct row get an inert spacer of the same
+      // footprint so the name column stays aligned across all row kinds.
       if (!isConduct && p.isGitRepo) {
         row.appendChild(el('button', {
           class: 'commit-log', title: 'commit history',
           onclick: (e) => { e.stopPropagation(); this.onShowCommits?.(p.name); },
+        }, '≡'));
+      } else {
+        row.appendChild(el('span', {
+          class: 'commit-log-spacer', 'aria-hidden': 'true',
         }, '≡'));
       }
       const nameSpan = el('span', { class: 'project-name' }, isConduct ? '🎼 Conduct' : p.name);

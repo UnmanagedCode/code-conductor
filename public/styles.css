@@ -1745,11 +1745,14 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
   text-align: center;
 }
 
-.project-row .commit-log {
+.project-row .commit-log,
+.project-row .commit-log-spacer {
   background: transparent; color: var(--muted); border: none;
-  cursor: pointer; padding: 0 6px; font-size: 14px; line-height: 1;
+  padding: 0 6px; font-size: 14px; line-height: 1;
 }
+.project-row .commit-log { cursor: pointer; }
 .project-row .commit-log:hover { color: var(--tool); }
+.project-row .commit-log-spacer { visibility: hidden; pointer-events: none; }
 
 /* Cost dashboard — full-page view opened from Settings → Models. */
 #costs-view { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
