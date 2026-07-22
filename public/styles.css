@@ -259,10 +259,9 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
 #spawn-dialog details > summary::-webkit-details-marker { display: none; }
 .sd-advanced-body { padding-top: 6px; }
 .sd-hook-output { font-size: 11px; max-height: 200px; overflow-y: auto; white-space: pre-wrap; word-break: break-all; margin: 4px 0 0; }
-/* Pin both spawn dialogs to the same fixed width so they match each other
-   and so #spawn-dialog doesn't jump when Advanced options is expanded. */
-#spawn-dialog,
-#conduct-dialog { width: 360px; }
+/* Pin the spawn dialog to a fixed width so it doesn't jump when Advanced
+   options is expanded. */
+#spawn-dialog { width: 360px; }
 
 .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; background: var(--muted); }
 .dot.idle { background: var(--muted); }

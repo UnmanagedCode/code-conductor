@@ -25,7 +25,7 @@
       </header>
       <div id="sidebar-body">
         <div class="sidebar-actions">
-          <button id="conduct-btn" title="Start a Conduct session — a Claude that orchestrates other sessions via MCP">🎼 Conduct</button>
+          <button id="conduct-btn" title="Spawns a temp Claude session in the hidden .conduct project, pre-configured to orchestrate other sessions via MCP. Uses the Conductor role's model (Settings → Models). Transcript is wiped on exit.">🎼 Conduct</button>
           <div id="sidebar-overflow-menu" class="overflow-menu">
             <button id="sidebar-overflow-toggle" type="button"
                     aria-haspopup="menu" aria-expanded="false"
@@ -494,22 +494,6 @@
       <menu>
         <button value="cancel">Cancel</button>
         <button id="sd-spawn" value="spawn">Spawn</button>
-      </menu>
-    </form>
-  </dialog>
-
-  <dialog id="conduct-dialog">
-    <form method="dialog">
-      <h3>🎼 New Conduct session</h3>
-      <p class="hint">Spawns a temp Claude session in the hidden <code>.conduct</code> project, pre-configured to orchestrate other sessions via MCP. It uses the <strong>Conductor</strong> role's model (set in Settings → Models). The transcript is wiped on exit.</p>
-      <div class="qs-mode-toggle" role="group" aria-label="Spawn mode">
-        <button type="button" id="cd-mode-code" class="qs-mode-opt" data-mode="code" aria-pressed="true">Code</button>
-        <button type="button" id="cd-mode-plan" class="qs-mode-opt" data-mode="plan" aria-pressed="false">Plan &amp; Approve</button>
-      </div>
-      <p class="error" id="cd-error"></p>
-      <menu>
-        <button value="cancel">Cancel</button>
-        <button type="button" id="cd-spawn">Start session</button>
       </menu>
     </form>
   </dialog>

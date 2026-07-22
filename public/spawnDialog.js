@@ -1,5 +1,5 @@
-// Spawn + Conduct dialogs and the shared model-picker helpers, extracted from
-// app.js. Follows the installX({...}) pattern.
+// Spawn dialog + Conduct direct-spawn + the shared model-picker helpers,
+// extracted from app.js. Follows the installX({...}) pattern.
 //
 // The two model-picker sync helpers have callers OUTSIDE this module — app.js's
 // settings `onModelsChange` callback and the boot-time loadModelVersions().then.
@@ -12,54 +12,20 @@
 // getters always see fresh state.
 //
 // Injected interface:
-//   - dom:                the 17 spawn/conduct dialog els (see app.js dom map).
+//   - dom:                the spawn dialog els + conductBtn (see app.js dom map).
 //   - getProjects():      reads the live project list (state.projects in app.js)
 //                         for openSpawnDialog's git-repo lookup.
 //   - refreshProjects()/refreshInstances()/selectInstance(id): post-spawn refresh
 //                         + selection (drive app.js state/sidebar).
-//   - closeSidebarOverflow(): used by openConductDialog.
+//   - closeSidebarOverflow(): used by the Conduct button handler.
 //
 // Returns { openSpawnDialog, syncTierModelLabels, syncTierVisibility } — the
-// only handles with external callers; openConductDialog/makeModeToggle/
-// spawnInstance/defaultSpawnTier stay internal.
+// only handles with external callers; defaultSpawnTier stays internal.
 import { resolveSpawnModel, resolveSpawnRole, getVersionLabel,
   getTierList, getActiveTierEnabled, getActiveDefaultSpawnTier, getActiveTierBackend } from './models.js';
 
 export function installSpawnDialog({ dom, getProjects, refreshProjects, refreshInstances, selectInstance, closeSidebarOverflow }) {
   // ── Shared spawn-dialog helpers ───────────────────────────────────────
-  // The conduct dialog uses this two-button toggle helper.
-  function makeModeToggle(codeBtn, planBtn) {
-    let planMode = false;
-    function sync() {
-      codeBtn.setAttribute('aria-pressed', planMode ? 'false' : 'true');
-      planBtn.setAttribute('aria-pressed', planMode ? 'true' : 'false');
-    }
-    codeBtn.addEventListener('click', e => { e.preventDefault(); planMode = false; sync(); });
-    planBtn.addEventListener('click', e => { e.preventDefault(); planMode = true; sync(); });
-    return { get planMode() { return planMode; }, reset() { planMode = false; sync(); } };
-  }
-
-  // POSTs a temp instance, closes the dialog, and selects the new session.
-  // Used by the conduct dialog.
-  async function spawnInstance({ project, model, backendKind, sonnetWindow, planMode, dialogEl, errorEl }) {
-    errorEl.textContent = '';
-    try {
-      const mode = planMode ? 'plan' : 'bypassPermissions';
-      const r = await fetch('/api/instances', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ project, model, backendKind, sonnetWindow, temp: true, mode, autoApprovePlan: planMode }),
-      });
-      if (!r.ok) throw new Error((await r.json()).error);
-      const inst = await r.json();
-      dialogEl.close();
-      await refreshProjects();
-      await refreshInstances();
-      selectInstance(inst.id);
-    } catch (e) {
-      errorEl.textContent = e.message;
-    }
-  }
 
   // Updates every tier button's sublabel to show the currently bound
   // backend's model name, so the UI reflects what will actually be spawned.
@@ -242,33 +208,35 @@ export function installSpawnDialog({ dom, getProjects, refreshProjects, refreshI
   });
 
   // ── Conduct mode ─────────────────────────────────────────────────────
-  // The 🎼 Conduct button spawns a temp Claude session in the hidden
-  // `.conduct` project, lazy-created on first open via
-  // POST /api/projects/.conduct/ensure.
-  const cdMode = makeModeToggle(dom.cdModeCode, dom.cdModePlan);
-
-  async function openConductDialog() {
+  // The 🎼 Conduct button spawns a temp Claude session directly in code mode
+  // (bypassPermissions), no dialog. Ensures the hidden `.conduct` project
+  // exists (lazy-created via POST /api/projects/.conduct/ensure), then spawns
+  // using the conductor role's resolved model (Settings → Models → Roles).
+  // Failures surface via alert(), matching the other direct-click actions
+  // that have no dialog of their own (resumeBtn/syncBtn/mergeBtn/debugBtn).
+  dom.conductBtn.addEventListener('click', async () => {
     closeSidebarOverflow();
-    dom.cdError.textContent = '';
-    cdMode.reset();
     try {
       const r = await fetch('/api/projects/.conduct/ensure', { method: 'POST' });
       if (!r.ok) {
         const err = await r.json().catch(() => ({}));
-        dom.cdError.textContent = err.error || `ensure failed (${r.status})`;
+        throw new Error(err.error || `ensure failed (${r.status})`);
       }
+      const { model, backendKind, sonnetWindow } = resolveSpawnRole('conductor');
+      if (!model) return;
+      const res = await fetch('/api/instances', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ project: '.conduct', model, backendKind, sonnetWindow, temp: true, mode: 'bypassPermissions' }),
+      });
+      if (!res.ok) throw new Error((await res.json()).error);
+      const inst = await res.json();
+      await refreshProjects();
+      await refreshInstances();
+      selectInstance(inst.id);
     } catch (e) {
-      dom.cdError.textContent = e.message;
+      alert(`Conduct session failed to start: ${e.message}`);
     }
-    dom.conductDialog.showModal();
-  }
-  dom.conductBtn.addEventListener('click', openConductDialog);
-  // Start session: always spawns the .conduct session with the conductor role's
-  // resolved model (configured in Settings → Models), plus the Code/Plan toggle.
-  dom.cdSpawn.addEventListener('click', (e) => {
-    e.preventDefault();
-    const { model, backendKind, sonnetWindow } = resolveSpawnRole('conductor');
-    if (model) spawnInstance({ project: '.conduct', model, backendKind, sonnetWindow, planMode: cdMode.planMode, dialogEl: dom.conductDialog, errorEl: dom.cdError });
   });
 
   return { openSpawnDialog, syncTierModelLabels, syncTierVisibility };
