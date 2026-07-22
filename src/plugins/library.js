@@ -75,6 +75,14 @@ const DEFAULT_ENTRIES = [
     description: 'Durable-knowledge wiki conventions: a per-project .wiki/ plus the conductor\'s .conduct/wiki/.',
     repo: 'https://github.com/UnmanagedCode/code-karpathy-wiki',
   },
+  {
+    id: 'code-kanban',
+    name: 'Code Kanban',
+    description: 'A persistent, file-backed private task board for the conductor and its workers.',
+    repo: 'https://github.com/UnmanagedCode/code-kanban',
+    postClone: 'npm install',
+    postPull: 'npm install',
+  },
 ];
 
 function libraryDir() {
