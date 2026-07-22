@@ -908,9 +908,14 @@ export class Instance extends EventEmitter {
     // itself (Sonnet carries the CLI-native `[1m]` suffix; Opus/Haiku are
     // bare — see canonicalizeModel in modelVersions.js). Strip any ambient
     // CLAUDE_CODE_DISABLE_1M_CONTEXT so a user-level export can't silently
-    // downgrade our 1M Opus/Sonnet sessions to 200k.
+    // downgrade our 1M Opus/Sonnet sessions to 200k. Also strip any ambient
+    // CLAUDE_CODE_AUTO_COMPACT_WINDOW inherited from the conductor's own
+    // process env — only the two blocks below (Ollama native-window,
+    // .conduct override) are allowed to set it, and they must run after
+    // this strip so their values win.
     const spawnEnv = { ...process.env };
     delete spawnEnv.CLAUDE_CODE_DISABLE_1M_CONTEXT;
+    delete spawnEnv.CLAUDE_CODE_AUTO_COMPACT_WINDOW;
     // Ollama-backed sessions: honour the model's native context window so the
     // CLI auto-compacts at the real limit instead of its ~200k default. The
     // value is already a raw token count (unlike the conductor override below,

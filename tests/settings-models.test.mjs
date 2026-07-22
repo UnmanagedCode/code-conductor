@@ -395,30 +395,34 @@ test('POST /api/settings/models/prefs saves overageThreshold (clamp) without clo
 
 test('GET /api/settings/models includes conductorCompactWindow defaulting {enabled:false}', async () => {
   {  // shared server (before/after) + fresh PROJECTS_ROOT per test (beforeEach)
-    const r = await api(baseUrl, 'GET', '/api/settings/models');
-    assert.equal(r.status, 200);
-    assert.ok('conductorCompactWindow' in r.body, 'conductorCompactWindow must be present');
-    assert.equal(r.body.conductorCompactWindow.enabled, false);
-    assert.equal(typeof r.body.conductorCompactWindow.value, 'number');
+    await withEnv({ CLAUDE_CODE_AUTO_COMPACT_WINDOW: undefined }, async () => {
+      const r = await api(baseUrl, 'GET', '/api/settings/models');
+      assert.equal(r.status, 200);
+      assert.ok('conductorCompactWindow' in r.body, 'conductorCompactWindow must be present');
+      assert.equal(r.body.conductorCompactWindow.enabled, false);
+      assert.equal(typeof r.body.conductorCompactWindow.value, 'number');
+    });
   }
 });
 
 test('POST /api/settings/models/prefs saves conductorCompactWindow without clobbering onOverage', async () => {
   {  // shared server (before/after) + fresh PROJECTS_ROOT per test (beforeEach)
-    // Set the overage action first.
-    await api(baseUrl, 'POST', '/api/settings/models/prefs', { onOverage: 'stop' });
-    // Now set compact window.
-    const r = await api(baseUrl, 'POST', '/api/settings/models/prefs', {
-      conductorCompactWindow: { enabled: true, value: 400 },
+    await withEnv({ CLAUDE_CODE_AUTO_COMPACT_WINDOW: undefined }, async () => {
+      // Set the overage action first.
+      await api(baseUrl, 'POST', '/api/settings/models/prefs', { onOverage: 'stop' });
+      // Now set compact window.
+      const r = await api(baseUrl, 'POST', '/api/settings/models/prefs', {
+        conductorCompactWindow: { enabled: true, value: 400 },
+      });
+      assert.equal(r.status, 200);
+      assert.equal(r.body.conductorCompactWindow.enabled, true);
+      assert.equal(r.body.conductorCompactWindow.value, 400);
+      assert.equal(r.body.onOverage, 'stop', 'onOverage must not be clobbered');
+      // Verify persistence via GET.
+      const g = await api(baseUrl, 'GET', '/api/settings/models');
+      assert.equal(g.body.conductorCompactWindow.enabled, true);
+      assert.equal(g.body.conductorCompactWindow.value, 400);
     });
-    assert.equal(r.status, 200);
-    assert.equal(r.body.conductorCompactWindow.enabled, true);
-    assert.equal(r.body.conductorCompactWindow.value, 400);
-    assert.equal(r.body.onOverage, 'stop', 'onOverage must not be clobbered');
-    // Verify persistence via GET.
-    const g = await api(baseUrl, 'GET', '/api/settings/models');
-    assert.equal(g.body.conductorCompactWindow.enabled, true);
-    assert.equal(g.body.conductorCompactWindow.value, 400);
   }
 });
 
