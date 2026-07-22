@@ -239,9 +239,15 @@ function buildMessageFromRing(ring, targetMsgId, includeThinking = false) {
     }
     let text = textParts.join('');
     // Never regress below what the deltas captured: if the envelopes carried
-    // no text block but deltas streamed one, prefer the delta accumulation
-    // (and its seq, since that's the path the text actually came from).
-    if (!text) { text = blockOrder.map(idx => byBlock.get(idx)).join(''); if (text) textSeq2 = textSeq; }
+    // no text block but deltas streamed one, prefer the delta accumulation.
+    // Its seq lives on a DIFFERENT counter (seq, not seq2) than the rest of
+    // this reconciled pass, so it can't be compared against planSeq2/
+    // questionsSeq2 by value — instead pin it to -1 (guaranteed to sort
+    // before any seq2, which starts at 0). This is also semantically right:
+    // an envelope-less text block can only be the delta stream's own block,
+    // which — per the arrival-order comment above — always finalizes before
+    // any block a reconciled envelope in THIS pass reports on.
+    if (!text) { text = blockOrder.map(idx => byBlock.get(idx)).join(''); if (text) textSeq2 = -1; }
     return { msgId: targetMsgId, text, ...(blocks.length ? { blocks } : {}), hasToolUse,
       ...(plan ? { plan } : {}), ...(questions ? { questions } : {}),
       ...(textSeq2 !== null ? { textSeq: textSeq2 } : {}),

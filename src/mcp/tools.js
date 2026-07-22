@@ -261,8 +261,10 @@ export function buildTools() {
       description:
         'Answer a worker\'s AskUserQuestion with a STRUCTURED answer — the byte-identical analog of the UI ' +
         'question card, so the worker can\'t tell a UI answer from an MCP one. Use this rather than a free-text ' +
-        'send_prompt when a wake shows a `questions` field. `answers` is aligned by index to those questions ' +
-        '(in order); each entry is { option } for single-choice, { options: [...] } for multiSelect, ' +
+        'send_prompt when a get_recent_messages message has `questionCount` set (the questions themselves are ' +
+        'rendered in that message\'s body, fenced with "--- questions ---" and 1-based numbered). `answers` is ' +
+        'aligned by index to those SAME server-side pending questions — 0-based, so body question N is answers[N-1] ' +
+        '— each entry is { option } for single-choice, { options: [...] } for multiSelect, ' +
         '{ text } for a custom typed answer, or {} to skip — with an optional `note` on option/options. ' +
         'Also auto-subscribes to the worker\'s idle callback by default (dispatch-and-wake) — see `subscribe`.',
       inputSchema: {
@@ -271,7 +273,8 @@ export function buildTools() {
           sessionId: { type: 'string', description: 'Worker sessionId whose question you\'re answering.' },
           answers: {
             type: 'array',
-            description: 'One entry per pending question, in the order returned by get_recent_messages\' `questions` field.',
+            description: 'One entry per pending question, 0-based array index aligned to the body\'s 1-based ' +
+              '"--- questions ---" numbering (question 1 → answers[0], question 2 → answers[1], etc).',
             items: {
               type: 'object',
               properties: {

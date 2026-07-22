@@ -18,6 +18,8 @@ const SCENARIO_EXIT_PLAN_COMBINED = path.join(__dirname, 'fixtures', 'scenario-e
 const SCENARIO_EXIT_PLAN_MULTI_TRAILING = path.join(__dirname, 'fixtures', 'scenario-exit-plan-multi-trailing.json');
 const SCENARIO_QUESTION = path.join(__dirname, 'fixtures', 'scenario-question.json');
 const SCENARIO_PROSE_THEN_PLAN = path.join(__dirname, 'fixtures', 'scenario-prose-then-plan.json');
+const SCENARIO_EXIT_PLAN_AND_QUESTION = path.join(__dirname, 'fixtures', 'scenario-exit-plan-and-question.json');
+const SCENARIO_PLAN_BEFORE_PROSE = path.join(__dirname, 'fixtures', 'scenario-plan-before-prose.json');
 
 let nextRpcId = 1;
 async function rpc(baseUrl, method, params) {
@@ -179,4 +181,35 @@ test('get_recent_messages: last message carrying its own plan is not bonded back
   assert.equal(res.messages.length, 1, 'the plan message is returned alone, earlier prose is not pulled backward');
   assert.equal(res.messages[0].hasPlan, true);
   assert.equal(res.messages[0].text, '--- plan ---\nOnly plan');
+});
+
+test('get_recent_messages: a message carrying BOTH a plan and questions renders both, order-faithful', async () => {
+  const sessionId = await spawnWithScenario(SCENARIO_EXIT_PLAN_AND_QUESTION, 'a');
+  await callTool(baseUrl, 'send_prompt', { sessionId, text: 'plan and ask', wait: true, waitTimeoutMs: 5000 });
+
+  const res = unwrapMessages(await callTool(baseUrl, 'get_recent_messages', { sessionId }));
+  assert.equal(res.messages.length, 1, 'no bonding needed — the single message carries everything');
+  assert.equal(res.messages[0].hasPlan, true);
+  assert.equal(res.messages[0].questionCount, 1);
+  // Order-faithful across THREE segments: the turn's block stream was
+  // text, then ExitPlanMode, then AskUserQuestion, in that order.
+  assert.equal(
+    res.messages[0].text,
+    'Here is my plan and a question.\n' +
+    '--- plan ---\nStep 1\nStep 2\n' +
+    '--- questions ---\n1. Proceed? (multiSelect: false) · header: Confirm\n   - Yes: Go ahead\n   - No: Stop here',
+  );
+});
+
+test('get_recent_messages: a plan block that precedes prose renders the plan first (atypical order)', async () => {
+  const sessionId = await spawnWithScenario(SCENARIO_PLAN_BEFORE_PROSE, 'a');
+  await callTool(baseUrl, 'send_prompt', { sessionId, text: 'plan this', wait: true, waitTimeoutMs: 5000 });
+
+  const res = unwrapMessages(await callTool(baseUrl, 'get_recent_messages', { sessionId }));
+  assert.equal(res.messages.length, 1, 'the message carries its own plan — not bonded, not split');
+  assert.equal(res.messages[0].hasPlan, true);
+  // Order-faithful: ExitPlanMode's tool_use block preceded the trailing text
+  // block in this turn's stream, so the plan fence renders BEFORE the prose —
+  // not hardcoded prose-then-plan.
+  assert.equal(res.messages[0].text, '--- plan ---\nStep 1\nStep 2\nNoted, standing by for approval.');
 });

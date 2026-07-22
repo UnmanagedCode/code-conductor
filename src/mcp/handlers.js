@@ -578,8 +578,9 @@ export async function rejectPlan(
 // consolidated answer as a normal user turn — byte-identical to a UI answer
 // because both call the same public/userQuestionAnswers.js formatter.
 //
-// `answers` is aligned BY INDEX to the pending questions (the same ordered array
-// the conductor read from get_recent_messages). Each entry is one of:
+// `answers` is aligned BY INDEX (0-based) to the pending questions — the same
+// questions get_recent_messages renders 1-based in its "--- questions ---"
+// body section. Each entry is one of:
 //   { option: <label> [, note] }   — single choice
 //   { options: [<label>,…] [, note] } — multi-select (requires question.multiSelect)
 //   { text: <string> }             — custom typed answer
@@ -605,7 +606,7 @@ export async function answerQuestion(
   }
   if (!questions) {
     return { ok: false, code: 'NO_PENDING_QUESTION', sessionId: inst.sessionId,
-      reason: 'No pending AskUserQuestion found for this worker. Check get_recent_messages for a `questions` field first.' };
+      reason: 'No pending AskUserQuestion found for this worker. Check get_recent_messages for a `questionCount` field / a "--- questions ---" body section first.' };
   }
   if (!Array.isArray(answers) || answers.length !== questions.length) {
     return { ok: false, code: 'ANSWER_COUNT_MISMATCH', sessionId: inst.sessionId,
