@@ -37,6 +37,10 @@ export function reconstructTasks(events) {
   const pendingCreates = new Map(); // toolUseId -> { subject, description, activeForm }
   const pendingResults = new Map(); // toolUseId -> resultEv (replay ordering)
   const completions = [];
+  // True when a non-deleted TaskUpdate referenced an id whose TaskCreate is
+  // absent from the scanned events — the signal that the create was evicted
+  // below the ring and the caller should widen the scan to the jsonl archive.
+  let hadOrphanUpdate = false;
 
   const allCompleted = () => {
     for (const t of tasks.values()) if (t.status !== 'completed') return false;
@@ -86,7 +90,7 @@ export function reconstructTasks(events) {
         if (!id) continue;
         const t = tasks.get(id);
         if (input.status === 'deleted') { if (t) tasks.delete(id); continue; }
-        if (!t) continue;
+        if (!t) { hadOrphanUpdate = true; continue; }
         const wasVisible = isVisible();
         if (typeof input.subject === 'string') t.subject = input.subject;
         if (typeof input.description === 'string') t.description = input.description;
@@ -108,5 +112,5 @@ export function reconstructTasks(events) {
     }
   }
 
-  return { completions, activeAtEnd: isVisible() ? list() : [] };
+  return { completions, activeAtEnd: isVisible() ? list() : [], hadOrphanUpdate };
 }
