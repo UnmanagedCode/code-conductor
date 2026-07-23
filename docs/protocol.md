@@ -96,7 +96,7 @@ Notes on `assistant` envelope handling that don't table cleanly: `buildMessageFr
 - `hook` — hook lifecycle.
 - `turn_end` — turn boundary; carries timing + cache-miss fields (below).
 - `assistant_message` — reconciled assistant message.
-- `control_response` — reply to a `can_use_tool`.
+- `control_response` — the CLI's ACK to a conductor `control_request` (`set_permission_mode` / `set_model` / `interrupt`), resolved against the pending-request map; hidden from UI.
 - `user_question` — `toolUseId`, `questions[]`.
 - `plan_request` — `toolUseId`, `plan`, `planPath`, optional `autoApproved`.
 - `permission_request` — `toolUseId`, `toolName`, `toolInput`.
