@@ -1208,20 +1208,37 @@ test('turn_end while a backgrounded Agent task is still running: status stays id
     const id = r.body.id;
     await waitFor(() => instances.get(id).status === 'idle');
 
-    instances.get(id).prompt('kick off a background agent');
     // The scenario's `result` event (turn_end) lands before its trailing
-    // `task_updated` (both in the same `emit` array, spaced by delay_ms) —
-    // waitFor here catches the window where turn_end already fired but the
-    // background task hasn't been marked done yet.
-    await waitFor(() => instances.get(id).status === 'idle' && instances.get(id).summary().activeAgentTasks === 1);
+    // `task_updated` (both in the same `emit` array, spaced by delay_ms), so
+    // `status:'idle' && activeAgentTasks:1` is only true for a ~20ms window.
+    // `Instance` emits 'status' synchronously at the exact instant of each
+    // transition (_setStatus / task-tracking in src/instances.js), so
+    // awaiting that event — rather than polling live state on an interval —
+    // can't straddle or miss the window. Register the listener before
+    // prompting so the emit can't fire before we're subscribed.
+    const grown = await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        instances.off('status', handler);
+        reject(new Error('timed out waiting for status:idle + activeAgentTasks:1'));
+      }, 10000);
+      const handler = (s) => {
+        if (s.id === id && s.status === 'idle' && s.activeAgentTasks === 1) {
+          clearTimeout(timer);
+          instances.off('status', handler);
+          resolve(s);
+        }
+      };
+      instances.on('status', handler);
+      instances.get(id).prompt('kick off a background agent');
+    });
 
-    const inst = instances.get(id);
-    assert.equal(inst.status, 'idle', 'raw status is the true process lifecycle value');
-    const summary = inst.summary();
-    assert.equal(summary.activeAgentTasks, 1, 'task_started was tracked');
-    assert.equal(summary.displayStatus, 'running', 'displayStatus overlays running while a background task is active');
+    assert.equal(grown.status, 'idle', 'raw status is the true process lifecycle value');
+    assert.equal(grown.activeAgentTasks, 1, 'task_started was tracked');
+    assert.equal(grown.displayStatus, 'running', 'displayStatus overlays running while a background task is active');
 
     // list_instances / GET /api/instances must carry the same overlay.
+    // Issued right off the resolved event (no polling delay in between) to
+    // minimize any race against the scenario's trailing task_updated.
     const list = await api(baseUrl, 'GET', '/api/instances');
     const row = list.body.find(i => i.id === id);
     assert.equal(row.status, 'idle');
