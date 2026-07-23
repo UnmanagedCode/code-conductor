@@ -7,7 +7,7 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { projectsRoot } from './projects.js';
-import { composeCurrentConduct } from './conductModules.js';
+import { composeCurrentConduct } from './conductorConventions.js';
 
 export const CONDUCT_PROJECT_NAME = '.conduct';
 
@@ -16,15 +16,15 @@ export function conductProjectPath() {
 }
 
 // Idempotent: creates the .conduct dir (if missing), (re)generates
-// .conduct/CONDUCT.md from the current core + enabled convention modules,
+// .conduct/CONDUCT.md from the current core + enabled conventions,
 // and seeds CLAUDE.md with a single in-project @CONDUCT.md import.
 //
 // The composed doc is a fully-owned generated artifact: it is overwritten
 // on every call (boot, Conduct-dialog-open, conductor resume, and after a
 // settings change), so selection edits take effect for newly-spawned /
 // next-context-refresh conductor sessions. Edit paths for its content are
-// the `conduct/*.md` fragments (built-in text) and Settings → Conductor
-// conventions (toggles + custom modules) — never the generated file.
+// the `conventions/conductor/*.md` fragments (built-in text) and Settings →
+// Conductor conventions (toggles + custom conventions) — never the generated file.
 //
 // A legacy `.conduct/CONDUCT.md` *symlink* (from migration 0003, the
 // pre-generation era) is swapped for a regular file idempotently.

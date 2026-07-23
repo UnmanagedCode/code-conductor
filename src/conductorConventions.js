@@ -1,13 +1,14 @@
-// Conductor convention modules — the toggleable sections composed into the
+// Conductor conventions — the toggleable sections composed into the
 // live .conduct/CONDUCT.md alongside the always-on core.
 //
-// CORE (conduct/core.md) + a footer note (conduct/footer.md) are always
-// present. The built-in modules (conduct/modules/<slug>.md) and any
-// user-defined custom modules are toggled via a single GLOBAL selection
-// (the conductor is a singleton), persisted at
-// <orchStoreRoot>/conduct-modules.json as { enabled: [...], rules: [...] }.
+// CORE (conventions/conductor/core.md) + a footer note
+// (conventions/conductor/footer.md) are always present. The built-in
+// conventions (conventions/conductor/<slug>.md) and any user-defined custom
+// conventions are toggled via a single GLOBAL selection (the conductor is a
+// singleton), persisted at
+// <orchStoreRoot>/conventions/conductor.json as { enabled: [...], rules: [...] }.
 //
-// Every enabled module costs tokens in every conductor session's system
+// Every enabled convention costs tokens in every conductor session's system
 // prompt — keep the built-in set lean; project-specific detail belongs in
 // .conduct/tasks/*.md playbooks and the wiki, not here.
 
@@ -17,21 +18,20 @@ import { fileURLToPath } from 'node:url';
 import { orchStoreRoot } from './projects.js';
 import { createFragmentCatalog } from './fragmentCatalog.js';
 
-const CONDUCT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'conduct');
-const CORE_FILE = path.join(CONDUCT_ROOT, 'core.md');
-const FOOTER_FILE = path.join(CONDUCT_ROOT, 'footer.md');
-const MODULES_DIR = path.join(CONDUCT_ROOT, 'modules');
+const CONVENTIONS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'conventions', 'conductor');
+const CORE_FILE = path.join(CONVENTIONS_DIR, 'core.md');
+const FOOTER_FILE = path.join(CONVENTIONS_DIR, 'footer.md');
 
-// Always-on core (conduct/core.md) — surfaced to the settings UI as a
-// non-toggleable row so users see what can't be turned off.
+// Always-on core (conventions/conductor/core.md) — surfaced to the settings UI
+// as a non-toggleable row so users see what can't be turned off.
 export const CORE_META = {
   name: 'Core (always on)',
   description: 'Role, hard boundary, dispatch-and-wake, MCP toolbelt, project-conventions on creation, safety, talking to the user',
 };
 
-// Built-in module metadata (order = order they appear in the composed doc).
-// Bodies live in conduct/modules/<slug>.md.
-export const SEED_MODULES = [
+// Built-in convention metadata (order = order they appear in the composed doc).
+// Bodies live in conventions/conductor/<slug>.md.
+export const SEED_CONVENTIONS = [
   { slug: 'intent-disambiguation', name: 'Intent disambiguation',
     description: "Ground ambiguous asks in list_projects(); use MCP not shell to enumerate; ask before creating" },
   { slug: 'canonical-workflow', name: 'Canonical workflow',
@@ -60,9 +60,9 @@ export function setPluginConductorConventionsProvider(fn) {
 }
 
 const catalog = createFragmentCatalog({
-  seeds: SEED_MODULES,
-  seedDir: MODULES_DIR,
-  storeFile: () => path.join(orchStoreRoot(), 'conduct-modules.json'),
+  seeds: SEED_CONVENTIONS,
+  seedDir: CONVENTIONS_DIR,
+  storeFile: () => path.join(orchStoreRoot(), 'conventions', 'conductor.json'),
   noun: 'convention',
   extraProvider: () => pluginConductorConventionsProvider(),
 });
@@ -82,12 +82,12 @@ async function getFooter() {
 // ── Catalog + CRUD (delegated to the shared helper) ──────────────────────────
 
 export const getCatalog = catalog.getCatalog;
-export const addCustomModule = catalog.addCustom;
-export const updateCustomModule = catalog.updateCustom;
+export const addCustomConvention = catalog.addCustom;
+export const updateCustomConvention = catalog.updateCustom;
 export const validateSlug = catalog.validateSlug;
 
-// Deleting a custom module also drops it from the enabled selection.
-export async function deleteCustomModule(slug) {
+// Deleting a custom convention also drops it from the enabled selection.
+export async function deleteCustomConvention(slug) {
   const result = await catalog.deleteCustom(slug);
   const enabled = await getSelectionRaw();
   if (enabled?.includes(slug)) {
@@ -104,10 +104,10 @@ async function getSelectionRaw() {
   return Array.isArray(state.enabled) ? state.enabled : undefined;
 }
 
-// Enabled module slugs. Default (store absent/unset) = all built-ins, so a
+// Enabled convention slugs. Default (store absent/unset) = all built-ins, so a
 // fresh install renders guidance equivalent to the pre-carve CONDUCT.md.
 export async function getSelection() {
-  return (await getSelectionRaw()) ?? SEED_MODULES.map(m => m.slug);
+  return (await getSelectionRaw()) ?? SEED_CONVENTIONS.map(m => m.slug);
 }
 
 export async function setSelection(enabled) {
@@ -119,7 +119,7 @@ export async function setSelection(enabled) {
   const known = new Set((await getCatalog()).map(m => m.slug));
   for (const slug of enabled) {
     if (!known.has(slug)) {
-      const err = new Error(`unknown module slug '${slug}'`);
+      const err = new Error(`unknown convention slug '${slug}'`);
       err.statusCode = 400;
       throw err;
     }
@@ -130,7 +130,7 @@ export async function setSelection(enabled) {
 
 // ── Compose ───────────────────────────────────────────────────────────────────
 
-// core + enabled module bodies (catalog order) + footer.
+// core + enabled convention bodies (catalog order) + footer.
 export async function composeConduct(enabledSlugs) {
   const core = await getCore();
   const footer = await getFooter();

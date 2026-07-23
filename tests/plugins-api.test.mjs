@@ -305,7 +305,7 @@ test('POST /api/plugins/library/:id/update — streams NDJSON chunks, terminal o
 // must surface through server.js's provider hookup on the project-conventions
 // REST endpoint (the path the new-project dialog fetches), carrying the scaffold
 // facet, and create_project must return the composed scaffold directive.
-test('contributions-only plugin (convention w/ scaffold facet) flows through to /api/settings/project-conventions', async () => {
+test('contributions-only plugin (convention w/ scaffold facet) flows through to /api/settings/conventions/project', async () => {
   const boot = await bootServer();
   try {
     const dir = path.join(boot.projectsRoot, 'convplug');
@@ -318,8 +318,8 @@ test('contributions-only plugin (convention w/ scaffold facet) flows through to 
     }));
 
     // Before enable: not offered.
-    let conv = await api(boot.baseUrl, 'GET', '/api/settings/project-conventions');
-    assert.ok(!conv.body.rules.some(r => r.slug === 'conv-plugin/vis-check'));
+    let conv = await api(boot.baseUrl, 'GET', '/api/settings/conventions/project');
+    assert.ok(!conv.body.conventions.some(r => r.slug === 'conv-plugin/vis-check'));
 
     await boot.pluginHost.enable('conv-plugin');
     // Row: backendless, contribution metadata present with hasScaffold; no
@@ -331,8 +331,8 @@ test('contributions-only plugin (convention w/ scaffold facet) flows through to 
     assert.equal(row.scaffolds, undefined);
 
     // After enable: convention merged (namespaced, plugin-tagged, carries scaffold text).
-    conv = await api(boot.baseUrl, 'GET', '/api/settings/project-conventions');
-    const g = conv.body.rules.find(r => r.slug === 'conv-plugin/vis-check');
+    conv = await api(boot.baseUrl, 'GET', '/api/settings/conventions/project');
+    const g = conv.body.conventions.find(r => r.slug === 'conv-plugin/vis-check');
     assert.ok(g, 'plugin convention in the catalog');
     assert.equal(g.plugin, 'conv-plugin');
     assert.equal(g.builtin, false);
@@ -351,8 +351,8 @@ test('contributions-only plugin (convention w/ scaffold facet) flows through to 
 
     // Disable → convention drops from the catalog; the snapshot survives.
     await boot.pluginHost.disable('conv-plugin');
-    conv = await api(boot.baseUrl, 'GET', '/api/settings/project-conventions');
-    assert.ok(!conv.body.rules.some(r => r.slug === 'conv-plugin/vis-check'));
+    conv = await api(boot.baseUrl, 'GET', '/api/settings/conventions/project');
+    assert.ok(!conv.body.conventions.some(r => r.slug === 'conv-plugin/vis-check'));
     const still = await fs.readFile(path.join(boot.projectsRoot, 'usesconv', 'CLAUDE.md'), 'utf8');
     assert.match(still, /Visual UX verification/, 'applied convention snapshot survives disable');
   } finally { await boot.close(); }

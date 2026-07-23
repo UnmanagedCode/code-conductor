@@ -1,8 +1,8 @@
 // Ownership of the projects-root `CLAUDE.md` — the file every project imports
 // via `@../CLAUDE.md`. code-conductor now *fully owns* this file: it is
 // regenerated (overwritten) on boot and after every Settings → Workspace
-// conventions change from the composed workspace modules
-// (baseline/core.md + enabled baseline/modules/*.md), exactly like
+// conventions change from the composed workspace conventions
+// (conventions/workspace/core.md + enabled conventions/workspace/*.md), exactly like
 // .conduct/CONDUCT.md. There is no three-way reconcile and no conflict UI.
 //
 // Safety on the co-owned → app-owned transition: the FIRST time we take
@@ -18,7 +18,7 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { projectsRoot, orchStoreRoot, writeFileAtomic } from './projects.js';
-import { composeCurrentWorkspace } from './workspaceModules.js';
+import { composeCurrentWorkspace } from './workspaceConventions.js';
 
 // ── Paths ────────────────────────────────────────────────────────────────
 

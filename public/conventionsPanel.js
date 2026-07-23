@@ -1,22 +1,22 @@
-// Reusable "conventions" module-list widget — one implementation shared by all
-// three scopes on the Settings → Conventions page (Conductor / Workspace /
-// Project). Renders an optional always-on core row, a per-module enable toggle
-// (when the scope has a global selection), built-in rows as read-only, and
-// custom rows with Add/Edit/Delete. Backed by a scope's REST endpoints.
+// Reusable conventions-list widget — one implementation shared by all three
+// scopes on the Settings → Conventions page (Conductor / Workspace / Project).
+// Renders an optional always-on core row, a per-convention enable toggle (when
+// the scope has a global selection), built-in rows as read-only, and custom
+// rows with Add/Edit/Delete. Backed by a scope's REST endpoints.
 //
-// GET  <base>            → { core?, modules?, enabled? } | { rules }
+// GET  <base>            → { core?, conventions, enabled? }
 // PUT  <base>/selection  → { enabled:[...] }        (only when hasToggle)
 // POST <base>            → { slug, name, description, body }
 // PUT  <base>/<slug>     → { name, description, body }
 // DELETE <base>/<slug>
 //
-// Element ids are derived from `prefix`: <prefix>-status, <prefix>-module-list,
+// Element ids are derived from `prefix`: <prefix>-status, <prefix>-convention-list,
 // <prefix>-add-btn/-form/-slug/-name/-desc/-body/-save/-cancel/-error.
 
 export function installConventionsPanel({ prefix, base, hasToggle = false, hasCoreRow = false, noun = 'convention' }) {
   const $ = (suffix) => document.getElementById(`${prefix}-${suffix}`);
   const statusEl = $('status');
-  const listEl = $('module-list');
+  const listEl = $('convention-list');
   const addBtn = $('add-btn');
   const addForm = $('add-form');
   const addSlug = $('add-slug');
@@ -39,7 +39,7 @@ export function installConventionsPanel({ prefix, base, hasToggle = false, hasCo
     // Always-on core row (non-toggleable).
     if (hasCoreRow && data.core) {
       const coreLi = document.createElement('li');
-      coreLi.className = 'cc-module-item cc-core-item';
+      coreLi.className = 'cc-convention-item cc-core-item';
       const titleEl = document.createElement('span');
       titleEl.className = 'or-rule-name';
       titleEl.textContent = data.core.name;
@@ -55,47 +55,47 @@ export function installConventionsPanel({ prefix, base, hasToggle = false, hasCo
       listEl.appendChild(coreLi);
     }
 
-    const modules = data.modules || data.rules || [];
-    for (const mod of modules) {
+    const conventions = data.conventions || [];
+    for (const conv of conventions) {
       const li = document.createElement('li');
-      li.className = hasToggle ? 'cc-module-item' : 'or-rule-item';
+      li.className = hasToggle ? 'cc-convention-item' : 'or-rule-item';
       if (hasToggle) {
         const cb = document.createElement('input');
         cb.type = 'checkbox';
-        cb.className = 'cc-module-toggle';
-        cb.checked = enabled.has(mod.slug);
-        cb.setAttribute('aria-label', `Enable ${mod.name}`);
-        cb.addEventListener('change', () => toggle(mod.slug, cb.checked));
+        cb.className = 'cc-convention-toggle';
+        cb.checked = enabled.has(conv.slug);
+        cb.setAttribute('aria-label', `Enable ${conv.name}`);
+        cb.addEventListener('change', () => toggle(conv.slug, cb.checked));
         li.appendChild(cb);
       }
       const titleEl = document.createElement('span');
       titleEl.className = 'or-rule-name';
-      titleEl.textContent = mod.name;
+      titleEl.textContent = conv.name;
       const tagEl = document.createElement('span');
       tagEl.className = 'or-rule-slug';
-      tagEl.textContent = mod.slug;
+      tagEl.textContent = conv.slug;
       const descEl = document.createElement('span');
       descEl.className = 'or-rule-desc';
-      descEl.textContent = mod.description;
+      descEl.textContent = conv.description;
       li.appendChild(titleEl);
       li.appendChild(tagEl);
       li.appendChild(descEl);
-      if (mod.plugin) {
+      if (conv.plugin) {
         // Plugin-contributed convention: read-only here (managed by
         // enabling/disabling the plugin), not in the custom store.
         const badge = document.createElement('span');
         badge.className = 'or-builtin-badge';
-        badge.textContent = `plugin: ${mod.plugin}`;
+        badge.textContent = `plugin: ${conv.plugin}`;
         li.appendChild(badge);
-      } else if (!mod.builtin) {
+      } else if (!conv.builtin) {
         const editBtn = document.createElement('button');
         editBtn.type = 'button';
         editBtn.textContent = 'Edit';
-        editBtn.addEventListener('click', () => openEditForm(mod));
+        editBtn.addEventListener('click', () => openEditForm(conv));
         const delBtn = document.createElement('button');
         delBtn.type = 'button';
         delBtn.textContent = 'Delete';
-        delBtn.addEventListener('click', () => remove(mod.slug));
+        delBtn.addEventListener('click', () => remove(conv.slug));
         li.appendChild(editBtn);
         li.appendChild(delBtn);
       } else {
@@ -134,12 +134,12 @@ export function installConventionsPanel({ prefix, base, hasToggle = false, hasCo
     addSlug?.focus();
   }
 
-  function openEditForm(mod) {
-    editingSlug = mod.slug;
-    if (addSlug) { addSlug.value = mod.slug; addSlug.disabled = true; }
-    if (addName) addName.value = mod.name;
-    if (addDesc) addDesc.value = mod.description;
-    if (addBody) addBody.value = mod.body || '';
+  function openEditForm(conv) {
+    editingSlug = conv.slug;
+    if (addSlug) { addSlug.value = conv.slug; addSlug.disabled = true; }
+    if (addName) addName.value = conv.name;
+    if (addDesc) addDesc.value = conv.description;
+    if (addBody) addBody.value = conv.body || '';
     if (addError) addError.textContent = '';
     if (addForm) addForm.hidden = false;
     if (addBtn) addBtn.hidden = true;

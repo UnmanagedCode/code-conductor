@@ -46,7 +46,7 @@ test('ensureConductProject creates .conduct/ + seeds CLAUDE.md with @CONDUCT.md 
   assert.ok(content.startsWith('# Conductor role'), 'starts with core role');
   assert.match(content, /## MCP toolbelt/, 'core toolbelt present');
   assert.match(content, /## Canonical workflow/, 'a default-enabled module present');
-  assert.match(content, /generated from `conduct\/core\.md`/, 'footer present');
+  assert.match(content, /generated from `conventions\/conductor\/core\.md`/, 'footer present');
 });
 
 test('ensureConductProject is idempotent — second call leaves an existing CLAUDE.md alone, regenerates CONDUCT.md', async () => {

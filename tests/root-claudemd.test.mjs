@@ -12,7 +12,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { bootServer, api } from './helpers.mjs';
 import { ensureRootClaudeMd, targetPath } from '../src/rootClaudeMd.js';
-import { composeCurrentWorkspace } from '../src/workspaceModules.js';
+import { composeCurrentWorkspace } from '../src/workspaceConventions.js';
 
 async function mkTmp() {
   return fs.mkdtemp(path.join(os.tmpdir(), 'cc-rootclaudemd-'));
@@ -145,22 +145,22 @@ test('ensureRootClaudeMd: after the sentinel exists, a since-edited target is ov
 
 // ── HTTP surface ─────────────────────────────────────────────────────────────
 
-test('GET /api/settings/workspace-conventions returns core + 4 modules + enabled (all on)', async () => {
+test('GET /api/settings/conventions/workspace returns core + 4 conventions + enabled (all on)', async () => {
   const { baseUrl, close } = await bootServer();
   try {
-    const r = await api(baseUrl, 'GET', '/api/settings/workspace-conventions');
+    const r = await api(baseUrl, 'GET', '/api/settings/conventions/workspace');
     assert.equal(r.status, 200);
     assert.ok(r.body.core && r.body.core.name);
-    assert.equal(r.body.modules.length, 4);
+    assert.equal(r.body.conventions.length, 4);
     assert.equal(r.body.enabled.length, 4);
-    for (const m of r.body.modules) assert.equal(m.builtin, true);
+    for (const m of r.body.conventions) assert.equal(m.builtin, true);
   } finally { await close(); }
 });
 
 test('PUT selection regenerates the projects-root CLAUDE.md; built-in edit/delete → 400', async () => {
   const { baseUrl, projectsRoot, close } = await bootServer();
   try {
-    const r = await api(baseUrl, 'PUT', '/api/settings/workspace-conventions/selection', {
+    const r = await api(baseUrl, 'PUT', '/api/settings/conventions/workspace/selection', {
       enabled: ['git-hygiene'],
     });
     assert.equal(r.status, 200);
@@ -169,11 +169,11 @@ test('PUT selection regenerates the projects-root CLAUDE.md; built-in edit/delet
     assert.doesNotMatch(content, /## Opening URLs/);
     assert.ok(content.startsWith('# Workspace conventions'), 'core first');
 
-    const put = await api(baseUrl, 'PUT', '/api/settings/workspace-conventions/git-hygiene', { name: 'X' });
+    const put = await api(baseUrl, 'PUT', '/api/settings/conventions/workspace/git-hygiene', { name: 'X' });
     assert.equal(put.status, 400);
-    const del = await api(baseUrl, 'DELETE', '/api/settings/workspace-conventions/git-hygiene');
+    const del = await api(baseUrl, 'DELETE', '/api/settings/conventions/workspace/git-hygiene');
     assert.equal(del.status, 400);
-    const bad = await api(baseUrl, 'PUT', '/api/settings/workspace-conventions/selection', { enabled: ['nope'] });
+    const bad = await api(baseUrl, 'PUT', '/api/settings/conventions/workspace/selection', { enabled: ['nope'] });
     assert.equal(bad.status, 400);
   } finally { await close(); }
 });

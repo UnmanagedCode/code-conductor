@@ -1,6 +1,6 @@
-// Tests for project convention modules (formerly "optional guidelines"):
+// Tests for project conventions (formerly "optional guidelines"):
 // catalog, custom CRUD, compose, per-project snapshot at creation, the REST
-// surface (/api/settings/project-conventions), and the MCP tools
+// surface (/api/settings/conventions/project), and the MCP tools
 // (list_project_conventions + create_project's `conventions` param).
 
 import { test, before, after, beforeEach, afterEach } from 'node:test';
@@ -182,67 +182,67 @@ test('createProject with conventions appends convention bodies', async () => {
 
 // ── REST API ───────────────────────────────────────────────────────────────
 
-test('GET /api/settings/project-conventions returns 4 seed conventions', async () => {
-  const r = await api(baseUrl, 'GET', '/api/settings/project-conventions');
+test('GET /api/settings/conventions/project returns 4 seed conventions', async () => {
+  const r = await api(baseUrl, 'GET', '/api/settings/conventions/project');
   assert.equal(r.status, 200);
-  assert.ok(Array.isArray(r.body.rules));
-  assert.equal(r.body.rules.length, SEED_PROJECT_CONVENTIONS.length);
-  for (const rule of r.body.rules) assert.equal(rule.builtin, true);
+  assert.ok(Array.isArray(r.body.conventions));
+  assert.equal(r.body.conventions.length, SEED_PROJECT_CONVENTIONS.length);
+  for (const conv of r.body.conventions) assert.equal(conv.builtin, true);
 });
 
-test('POST /api/settings/project-conventions creates a custom convention', async () => {
-  const r = await api(baseUrl, 'POST', '/api/settings/project-conventions', {
+test('POST /api/settings/conventions/project creates a custom convention', async () => {
+  const r = await api(baseUrl, 'POST', '/api/settings/conventions/project', {
     slug: 'rest-convention', name: 'REST Convention', description: 'via REST', body: '## REST\n- item',
   });
   assert.equal(r.status, 201);
-  assert.equal(r.body.rule.slug, 'rest-convention');
-  assert.equal(r.body.rule.builtin, false);
+  assert.equal(r.body.convention.slug, 'rest-convention');
+  assert.equal(r.body.convention.builtin, false);
 
-  const list = await api(baseUrl, 'GET', '/api/settings/project-conventions');
-  assert.equal(list.body.rules.length, SEED_PROJECT_CONVENTIONS.length + 1);
+  const list = await api(baseUrl, 'GET', '/api/settings/conventions/project');
+  assert.equal(list.body.conventions.length, SEED_PROJECT_CONVENTIONS.length + 1);
 });
 
-test('POST /api/settings/project-conventions rejects duplicate slug', async () => {
-  await api(baseUrl, 'POST', '/api/settings/project-conventions', {
+test('POST /api/settings/conventions/project rejects duplicate slug', async () => {
+  await api(baseUrl, 'POST', '/api/settings/conventions/project', {
     slug: 'dup', name: 'A', description: 'b', body: 'c',
   });
-  const r = await api(baseUrl, 'POST', '/api/settings/project-conventions', {
+  const r = await api(baseUrl, 'POST', '/api/settings/conventions/project', {
     slug: 'dup', name: 'A2', description: 'b2', body: 'c2',
   });
   assert.equal(r.status, 409);
 });
 
-test('PUT /api/settings/project-conventions/:slug updates name/description', async () => {
-  await api(baseUrl, 'POST', '/api/settings/project-conventions', {
+test('PUT /api/settings/conventions/project/:slug updates name/description', async () => {
+  await api(baseUrl, 'POST', '/api/settings/conventions/project', {
     slug: 'upd-convention', name: 'Old', description: 'old desc', body: '## Old',
   });
-  const r = await api(baseUrl, 'PUT', '/api/settings/project-conventions/upd-convention', {
+  const r = await api(baseUrl, 'PUT', '/api/settings/conventions/project/upd-convention', {
     name: 'New', description: 'new desc',
   });
   assert.equal(r.status, 200);
-  assert.equal(r.body.rule.name, 'New');
-  assert.equal(r.body.rule.description, 'new desc');
+  assert.equal(r.body.convention.name, 'New');
+  assert.equal(r.body.convention.description, 'new desc');
 });
 
-test('PUT /api/settings/project-conventions/:slug rejects builtin', async () => {
-  const r = await api(baseUrl, 'PUT', '/api/settings/project-conventions/documentation-guidelines', {
+test('PUT /api/settings/conventions/project/:slug rejects builtin', async () => {
+  const r = await api(baseUrl, 'PUT', '/api/settings/conventions/project/documentation-guidelines', {
     name: 'Hacked',
   });
   assert.equal(r.status, 400);
 });
 
-test('DELETE /api/settings/project-conventions/:slug removes custom convention', async () => {
-  await api(baseUrl, 'POST', '/api/settings/project-conventions', {
+test('DELETE /api/settings/conventions/project/:slug removes custom convention', async () => {
+  await api(baseUrl, 'POST', '/api/settings/conventions/project', {
     slug: 'del-convention', name: 'A', description: 'b', body: 'c',
   });
-  const del = await api(baseUrl, 'DELETE', '/api/settings/project-conventions/del-convention');
+  const del = await api(baseUrl, 'DELETE', '/api/settings/conventions/project/del-convention');
   assert.equal(del.status, 200);
-  const list = await api(baseUrl, 'GET', '/api/settings/project-conventions');
-  assert.ok(!list.body.rules.find(r => r.slug === 'del-convention'));
+  const list = await api(baseUrl, 'GET', '/api/settings/conventions/project');
+  assert.ok(!list.body.conventions.find(r => r.slug === 'del-convention'));
 });
 
-test('DELETE /api/settings/project-conventions/:slug rejects builtin', async () => {
-  const r = await api(baseUrl, 'DELETE', '/api/settings/project-conventions/testing-guidelines');
+test('DELETE /api/settings/conventions/project/:slug rejects builtin', async () => {
+  const r = await api(baseUrl, 'DELETE', '/api/settings/conventions/project/testing-guidelines');
   assert.equal(r.status, 400);
 });
 

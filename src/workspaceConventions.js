@@ -1,16 +1,16 @@
-// Workspace convention modules — the toggleable sections composed into the
+// Workspace conventions — the toggleable sections composed into the
 // app-owned projects-root CLAUDE.md (the file every project imports via
 // `@../CLAUDE.md`) alongside the always-on core.
 //
-// CORE (baseline/core.md) is always present. The four built-in modules
-// (baseline/modules/<slug>.md) and any user-defined custom modules are
-// toggled via a single GLOBAL selection (there is one projects-root
-// CLAUDE.md), persisted at <orchStoreRoot>/workspace-modules.json as
-// { enabled: [...], rules: [...] }.
+// CORE (conventions/workspace/core.md) is always present. The four built-in
+// conventions (conventions/workspace/<slug>.md) and any user-defined custom
+// conventions are toggled via a single GLOBAL selection (there is one
+// projects-root CLAUDE.md), persisted at
+// <orchStoreRoot>/conventions/workspace.json as { enabled: [...], rules: [...] }.
 //
 // The composed file is fully app-owned: regenerated (overwritten) on boot
 // and after a settings change by ensureRootClaudeMd() in rootClaudeMd.js —
-// exactly like .conduct/CONDUCT.md. This mirrors src/conductModules.js.
+// exactly like .conduct/CONDUCT.md. This mirrors src/conductorConventions.js.
 
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
@@ -18,20 +18,19 @@ import { fileURLToPath } from 'node:url';
 import { orchStoreRoot } from './projects.js';
 import { createFragmentCatalog } from './fragmentCatalog.js';
 
-const BASELINE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'baseline');
-const CORE_FILE = path.join(BASELINE_ROOT, 'core.md');
-const MODULES_DIR = path.join(BASELINE_ROOT, 'modules');
+const CONVENTIONS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'conventions', 'workspace');
+const CORE_FILE = path.join(CONVENTIONS_DIR, 'core.md');
 
-// Always-on core (baseline/core.md) — surfaced to the settings UI as a
-// non-toggleable row so users see what can't be turned off.
+// Always-on core (conventions/workspace/core.md) — surfaced to the settings UI
+// as a non-toggleable row so users see what can't be turned off.
 export const CORE_META = {
   name: 'Core (always on)',
   description: 'Intro + the @../CLAUDE.md import contract every project relies on',
 };
 
-// Built-in module metadata (order = order they appear in the composed doc).
-// Bodies live in baseline/modules/<slug>.md.
-export const SEED_MODULES = [
+// Built-in convention metadata (order = order they appear in the composed doc).
+// Bodies live in conventions/workspace/<slug>.md.
+export const SEED_CONVENTIONS = [
   { slug: 'git-hygiene', name: 'Git hygiene',
     description: 'Init repo; git identity; commit-per-turn; .gitignore; no push; no hook bypass' },
   { slug: 'readme-maintenance', name: 'README maintenance',
@@ -43,9 +42,9 @@ export const SEED_MODULES = [
 ];
 
 const catalog = createFragmentCatalog({
-  seeds: SEED_MODULES,
-  seedDir: MODULES_DIR,
-  storeFile: () => path.join(orchStoreRoot(), 'workspace-modules.json'),
+  seeds: SEED_CONVENTIONS,
+  seedDir: CONVENTIONS_DIR,
+  storeFile: () => path.join(orchStoreRoot(), 'conventions', 'workspace.json'),
   noun: 'convention',
 });
 
@@ -60,12 +59,12 @@ async function getCore() {
 // ── Catalog + CRUD (delegated to the shared helper) ──────────────────────────
 
 export const getCatalog = catalog.getCatalog;
-export const addCustomModule = catalog.addCustom;
-export const updateCustomModule = catalog.updateCustom;
+export const addCustomConvention = catalog.addCustom;
+export const updateCustomConvention = catalog.updateCustom;
 export const validateSlug = catalog.validateSlug;
 
-// Deleting a custom module also drops it from the enabled selection.
-export async function deleteCustomModule(slug) {
+// Deleting a custom convention also drops it from the enabled selection.
+export async function deleteCustomConvention(slug) {
   const result = await catalog.deleteCustom(slug);
   const enabled = await getSelectionRaw();
   if (enabled?.includes(slug)) {
@@ -82,11 +81,11 @@ async function getSelectionRaw() {
   return Array.isArray(state.enabled) ? state.enabled : undefined;
 }
 
-// Enabled module slugs. Default (store absent/unset) = all built-ins, so a
+// Enabled convention slugs. Default (store absent/unset) = all built-ins, so a
 // fresh install renders the projects-root CLAUDE.md equivalent to the
 // pre-carve bundled canonical.
 export async function getSelection() {
-  return (await getSelectionRaw()) ?? SEED_MODULES.map(m => m.slug);
+  return (await getSelectionRaw()) ?? SEED_CONVENTIONS.map(m => m.slug);
 }
 
 export async function setSelection(enabled) {
@@ -98,7 +97,7 @@ export async function setSelection(enabled) {
   const known = new Set((await getCatalog()).map(m => m.slug));
   for (const slug of enabled) {
     if (!known.has(slug)) {
-      const err = new Error(`unknown module slug '${slug}'`);
+      const err = new Error(`unknown convention slug '${slug}'`);
       err.statusCode = 400;
       throw err;
     }
@@ -109,7 +108,7 @@ export async function setSelection(enabled) {
 
 // ── Compose ───────────────────────────────────────────────────────────────────
 
-// core + enabled module bodies (catalog order).
+// core + enabled convention bodies (catalog order).
 export async function composeWorkspace(enabledSlugs) {
   const core = await getCore();
   const mods = (await catalog.compose(enabledSlugs)).trim();

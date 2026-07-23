@@ -33,7 +33,7 @@ import { buildApprovePrompt, buildRejectPrompt } from '../planApproval.js';
 // submit — one canonical function, no fork. See public/userQuestionAnswers.js.
 import { formatUserQuestionAnswers } from '../../public/userQuestionAnswers.js';
 import { getCatalog as getProjectConventionsCatalog, composeProjectConventionsBlock, composeProjectScaffold } from '../projectConventions.js';
-import { getCatalog as getConductModulesCatalog, getSelection as getConductSelection } from '../conductModules.js';
+import { getCatalog as getConductorConventionsCatalog, getSelection as getConductorSelection } from '../conductorConventions.js';
 import { isKnownFamily, isKnownTier, isKnownRole, defaultVersion, familyOf } from '../modelVersions.js';
 import { getTierBackend, resolveRoleBackend, isKnownOllamaModel } from '../appSettings.js';
 import { textPayload } from './content.js';
@@ -959,7 +959,7 @@ export async function createProject({ name, gitInit = false, conventions = [] })
     }
   }
   // The scaffold directive is RETURNED, not persisted — fold it into your FIRST
-  // send_prompt to the project's first worker (see conduct/core.md).
+  // send_prompt to the project's first worker (see conventions/conductor/core.md).
   return { ...created, gitInit: !!gitInit, ...(scaffold ? { scaffold } : {}) };
 }
 
@@ -968,8 +968,8 @@ export async function listProjectConventions() {
   return catalog.map(({ slug, name, description, builtin, scaffold }) => ({ slug, name, description, builtin, hasScaffold: !!scaffold }));
 }
 
-export async function listConductorModules() {
-  const [catalog, enabled] = await Promise.all([getConductModulesCatalog(), getConductSelection()]);
+export async function listConductorConventions() {
+  const [catalog, enabled] = await Promise.all([getConductorConventionsCatalog(), getConductorSelection()]);
   const on = new Set(enabled);
   return catalog.map(({ slug, name, description, builtin }) => ({
     slug, name, description, builtin, enabled: on.has(slug),

@@ -275,9 +275,9 @@ function stubCatalogChangeFetch() {
     if (url === '/api/projects') return ok([]);
     if (url === '/api/plugins/library') return ok([]);
     if (url === '/api/plugins/demo/enable' && method === 'POST') return ok({});
-    if (url === '/api/settings/conductor-modules') return ok({});
-    if (url === '/api/settings/workspace-conventions') return ok({});
-    if (url === '/api/settings/project-conventions') return ok({});
+    if (url === '/api/settings/conventions/conductor') return ok({});
+    if (url === '/api/settings/conventions/workspace') return ok({});
+    if (url === '/api/settings/conventions/project') return ok({});
     return notFound();
   };
   return { impl, counts };
@@ -294,9 +294,9 @@ test('settings: enabling a plugin refreshes the conductor/workspace/project conv
   await tick();
 
   const before = {
-    conductor: counts['/api/settings/conductor-modules'] || 0,
-    workspace: counts['/api/settings/workspace-conventions'] || 0,
-    project: counts['/api/settings/project-conventions'] || 0,
+    conductor: counts['/api/settings/conventions/conductor'] || 0,
+    workspace: counts['/api/settings/conventions/workspace'] || 0,
+    project: counts['/api/settings/conventions/project'] || 0,
   };
   assert.equal(before.conductor, 1, 'sanity: conductor panel loaded once on open');
   assert.equal(before.workspace, 1, 'sanity: workspace panel loaded once on open');
@@ -307,9 +307,9 @@ test('settings: enabling a plugin refreshes the conductor/workspace/project conv
   click(enableBtn, window);
   await tick(20);
 
-  assert.equal(counts['/api/settings/conductor-modules'], before.conductor + 1, 'conductor panel refetched after enable');
-  assert.equal(counts['/api/settings/workspace-conventions'], before.workspace + 1, 'workspace panel refetched after enable');
-  assert.equal(counts['/api/settings/project-conventions'], before.project + 1, 'project panel refetched after enable');
+  assert.equal(counts['/api/settings/conventions/conductor'], before.conductor + 1, 'conductor panel refetched after enable');
+  assert.equal(counts['/api/settings/conventions/workspace'], before.workspace + 1, 'workspace panel refetched after enable');
+  assert.equal(counts['/api/settings/conventions/project'], before.project + 1, 'project panel refetched after enable');
   assert.equal(externalCalled, 1, 'existing onPluginsChanged hook still fires');
   window.happyDOM.abort();
 });
