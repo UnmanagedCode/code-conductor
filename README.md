@@ -95,3 +95,11 @@ See [docs/features.md](docs/features.md) for the exhaustive feature and UI-eleme
 - [conventions/conductor/](conventions/conductor/) (`core.md` + `footer.md` + toggleable `<slug>.md`) — conductor role prompt / orchestration contract; composed (core + enabled toggleable conventions + footer) into the live `.conduct/CONDUCT.md` loaded by every Conduct session (configurable in Settings → Conventions → Conductor)
 - [conventions/workspace/](conventions/workspace/) (`core.md` + toggleable `<slug>.md`) — workspace conventions; composed (core + enabled conventions) into the app-owned projects-root `CLAUDE.md` every project imports via `@../CLAUDE.md` (configurable in Settings → Conventions → Workspace)
 - [conventions/project/](conventions/project/) — project conventions; a catalog of `<slug>.md` sections snapshotted into a new project's `CLAUDE.md` at creation (configurable in Settings → Conventions → Project)
+
+## License
+
+This project is licensed under the GNU Affero General Public License v3.0 or later (AGPL-3.0-or-later).
+
+Copyright © 2026 UnmanagedCode
+
+See the [LICENSE](LICENSE) file for the full license text.
