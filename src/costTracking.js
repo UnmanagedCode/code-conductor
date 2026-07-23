@@ -11,7 +11,23 @@ export function costsPath() {
 }
 
 async function appendCostRow(inst, ev, parentSessionId) {
-  const usage = ev.usage ?? {};
+  // Per-turn token totals come ONLY from the SDK `result.usage` (a genuine
+  // per-turn sum). The Ollama backend (`ollama launch claude`) omits `usage`
+  // from its `result` frames, so ev.usage is null there — we OMIT the four
+  // token fields rather than persist fabricated 0s. (The only other token
+  // signal, message_start.usage, is a last-value-wins context-size snapshot,
+  // not a summable per-turn total — summing it would double-count.) Mirrors the
+  // client UsageTracker guard in public/usage.js. The conditional spread keeps
+  // the fields in-position so Anthropic rows (usage always present) serialize
+  // byte-identically. Read side treats an ollama row (no cost_usd) as
+  // token-unknown, so the omission drives an honest `—` in the #costs dashboard.
+  const usage = ev.usage;
+  const tokenFields = usage ? {
+    input_tokens: usage.input_tokens ?? 0,
+    output_tokens: usage.output_tokens ?? 0,
+    cache_creation_tokens: usage.cache_creation_input_tokens ?? 0,
+    cache_read_tokens: usage.cache_read_input_tokens ?? 0,
+  } : {};
   const row = {
     ts: Date.now(),
     project: inst.project ?? null,
@@ -30,10 +46,7 @@ async function appendCostRow(inst, ev, parentSessionId) {
     // duration_api_ms and are left as-is (fix-forward, no per-row repair).
     duration_ms: ev.durationMs ?? null,
     duration_api_ms: ev.durationApiMsDelta ?? ev.durationApiMs ?? null,
-    input_tokens: usage.input_tokens ?? 0,
-    output_tokens: usage.output_tokens ?? 0,
-    cache_creation_tokens: usage.cache_creation_input_tokens ?? 0,
-    cache_read_tokens: usage.cache_read_input_tokens ?? 0,
+    ...tokenFields,
     // Cache-miss verdict + per-request evidence, captured live from the turn's
     // first message_start (src/instances.js). `cache_miss` means "a cross-turn
     // eviction (full or partial) was detected": the turn's first-request
@@ -99,9 +112,18 @@ export async function getCostSummary() {
   // By project (with nested per-model breakdown)
   const projectMap = new Map();
   for (const r of rows) {
+    // A row's token counts are trustworthy only for Anthropic rows. Ollama rows
+    // carry no summable per-turn token total and omit `cost_usd` (see
+    // appendCostRow) — so `'cost_usd' in r` is the canonical current-format
+    // Anthropic marker, and it also correctly classifies legacy ollama rows
+    // that carry stale `input_tokens: 0` (they lack cost_usd). Rows without
+    // trustworthy tokens are excluded from the token sums and leave `_hasTokens`
+    // false, so an ollama-only group reports tokens_known:false → `—` in the UI,
+    // while a mixed group keeps its real Anthropic token totals.
+    const tokensKnown = 'cost_usd' in r;
     const key = r.project ?? '(unknown)';
     if (!projectMap.has(key)) {
-      projectMap.set(key, { project: key, cost_usd: 0, duration_ms: 0, duration_api_ms: 0, turns: 0, cache_misses: 0, _sessionSet: new Set(), _modelMap: new Map() });
+      projectMap.set(key, { project: key, cost_usd: 0, duration_ms: 0, duration_api_ms: 0, turns: 0, cache_misses: 0, _hasTokens: false, _sessionSet: new Set(), _modelMap: new Map() });
     }
     const entry = projectMap.get(key);
     entry.cost_usd += r.cost_usd ?? 0;
@@ -114,15 +136,19 @@ export async function getCostSummary() {
     const mKey = r.model ?? '(unknown)';
     const mEntry = entry._modelMap.get(mKey) ?? {
       model: mKey, cost_usd: 0, duration_ms: 0, duration_api_ms: 0, input_tokens: 0, output_tokens: 0,
-      cache_creation_tokens: 0, cache_read_tokens: 0, turns: 0, cache_misses: 0, _sessionSet: new Set(),
+      cache_creation_tokens: 0, cache_read_tokens: 0, turns: 0, cache_misses: 0, _hasTokens: false, _sessionSet: new Set(),
     };
     mEntry.cost_usd += r.cost_usd ?? 0;
     mEntry.duration_ms += r.duration_ms ?? 0;
     mEntry.duration_api_ms += r.duration_api_ms ?? 0;
-    mEntry.input_tokens += r.input_tokens ?? 0;
-    mEntry.output_tokens += r.output_tokens ?? 0;
-    mEntry.cache_creation_tokens += r.cache_creation_tokens ?? 0;
-    mEntry.cache_read_tokens += r.cache_read_tokens ?? 0;
+    if (tokensKnown) {
+      entry._hasTokens = true;
+      mEntry._hasTokens = true;
+      mEntry.input_tokens += r.input_tokens ?? 0;
+      mEntry.output_tokens += r.output_tokens ?? 0;
+      mEntry.cache_creation_tokens += r.cache_creation_tokens ?? 0;
+      mEntry.cache_read_tokens += r.cache_read_tokens ?? 0;
+    }
     mEntry.turns += 1;
     if (r.cache_miss === true) mEntry.cache_misses += 1;
     if (r.sessionId != null) mEntry._sessionSet.add(r.sessionId);
@@ -130,35 +156,39 @@ export async function getCostSummary() {
   }
   const by_project = [...projectMap.values()].map(e => {
     const by_model = [...e._modelMap.values()].sort((a, b) => b.cost_usd - a.cost_usd).map(m => {
-      const { _sessionSet, ...rest } = m;
-      return { ...rest, sessions: _sessionSet.size };
+      const { _sessionSet, _hasTokens, ...rest } = m;
+      return { ...rest, sessions: _sessionSet.size, tokens_known: _hasTokens };
     });
-    return { project: e.project, cost_usd: e.cost_usd, duration_ms: e.duration_ms, duration_api_ms: e.duration_api_ms, turns: e.turns, cache_misses: e.cache_misses, sessions: e._sessionSet.size, by_model };
+    return { project: e.project, cost_usd: e.cost_usd, duration_ms: e.duration_ms, duration_api_ms: e.duration_api_ms, turns: e.turns, cache_misses: e.cache_misses, sessions: e._sessionSet.size, tokens_known: e._hasTokens, by_model };
   }).sort((a, b) => b.cost_usd - a.cost_usd);
 
   // By model
   const modelMap = new Map();
   for (const r of rows) {
+    const tokensKnown = 'cost_usd' in r; // see the by_project loop for rationale
     const key = r.model ?? '(unknown)';
     const entry = modelMap.get(key) ?? {
       model: key, cost_usd: 0, duration_ms: 0, duration_api_ms: 0, input_tokens: 0, output_tokens: 0,
-      cache_creation_tokens: 0, cache_read_tokens: 0, turns: 0, cache_misses: 0, _sessionSet: new Set(),
+      cache_creation_tokens: 0, cache_read_tokens: 0, turns: 0, cache_misses: 0, _hasTokens: false, _sessionSet: new Set(),
     };
     entry.cost_usd += r.cost_usd ?? 0;
     entry.duration_ms += r.duration_ms ?? 0;
     entry.duration_api_ms += r.duration_api_ms ?? 0;
-    entry.input_tokens += r.input_tokens ?? 0;
-    entry.output_tokens += r.output_tokens ?? 0;
-    entry.cache_creation_tokens += r.cache_creation_tokens ?? 0;
-    entry.cache_read_tokens += r.cache_read_tokens ?? 0;
+    if (tokensKnown) {
+      entry._hasTokens = true;
+      entry.input_tokens += r.input_tokens ?? 0;
+      entry.output_tokens += r.output_tokens ?? 0;
+      entry.cache_creation_tokens += r.cache_creation_tokens ?? 0;
+      entry.cache_read_tokens += r.cache_read_tokens ?? 0;
+    }
     entry.turns += 1;
     if (r.cache_miss === true) entry.cache_misses += 1;
     if (r.sessionId != null) entry._sessionSet.add(r.sessionId);
     modelMap.set(key, entry);
   }
   const by_model = [...modelMap.values()].sort((a, b) => b.cost_usd - a.cost_usd).map(m => {
-    const { _sessionSet, ...rest } = m;
-    return { ...rest, sessions: _sessionSet.size };
+    const { _sessionSet, _hasTokens, ...rest } = m;
+    return { ...rest, sessions: _sessionSet.size, tokens_known: _hasTokens };
   });
 
   // Daily trend — all days that have data, sorted chronologically
