@@ -150,7 +150,7 @@ export function installHeader({
       const cacheHit = totalIn > 0 ? c.cacheRead / totalIn : 0;
       node.appendChild(row('Turns', String(c.turns)));
       node.appendChild(row('Duration', formatDuration(c.durationMs)));
-      node.appendChild(row('Cost', `$${c.cost.toFixed(4)}`));
+      node.appendChild(row('Cost', inst.backendKind === 'ollama' ? '—' : `$${c.cost.toFixed(4)}`));
       node.appendChild(row('Input (uncached)', formatTokens(c.inputTokens)));
       node.appendChild(row('Output', formatTokens(c.outputTokens)));
       node.appendChild(row('Cache reads', `${formatTokens(c.cacheRead)} (${formatPct(cacheHit)} hit)`));
