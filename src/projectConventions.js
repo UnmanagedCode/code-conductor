@@ -23,7 +23,7 @@ export const SEED_PROJECT_CONVENTIONS = [
   { slug: 'testing-guidelines', name: 'Testing guidelines',
     description: 'Prefer automated tests over manual checklists; deterministic; isolated; fake external deps' },
   { slug: 'documentation-guidelines', name: 'Documentation guidelines',
-    description: 'Layered docs (README + docs/features/protocol/architecture); update the most-specific file when behavior changes' },
+    description: 'Layered docs (README + docs/features/protocol/architecture); update the most-specific file(s) when behavior changes' },
   { slug: 'migration-guidelines', name: 'Migration guidelines',
     description: 'One-shot startup migrations, not read-time compat shims; no legacy aliases or dual-shape parsing; unstable APIs owe no back-compat' },
 ];

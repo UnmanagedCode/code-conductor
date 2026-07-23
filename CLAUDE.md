@@ -22,16 +22,13 @@ Load-bearing rules — stay inside them when writing code. Rationale + examples 
 - **Single-source-of-truth catalogs shipped to the client** — `modelVersions`/`whisperModels`/`ttsModels` own the authoritative list + allow-list server-side and are fetched by the client; never hardcode the canonical set as client literals (a first-paint fallback is fine — it's a fallback, not a second source).
 - **No read-time backwards compatibility** — the conductor has no external API clients, so there's no stable-API obligation. When a persisted format or config key changes, ship a one-shot migration in `migrations/` (see `migrations/migrations.md`) and make application code assume the current format; never keep legacy aliases, dual-shape parsing, or "back-compat" defaults on the MCP/REST surface. Exception: read-time tolerance is allowed for formats owned by external tools (e.g. the Claude CLI's session jsonls) that we can't migrate.
 
-## Documentation updates
-
-When a turn meaningfully changes user-facing behavior, update the **correct detail file** — not just the README:
-
-| Change type | File to update |
-|---|---|
-| New/changed UI element, feature behavior, MCP tool | `docs/features.md` + one-liner summary in `README.md` if it adds a new top-level subsystem |
-| Subprocess protocol flag, WebSocket message type, REST endpoint | `docs/protocol.md` |
-| New source file, component wiring, lifecycle change, on-disk layout, migration, test pattern | `docs/architecture.md` |
-| Quick start step, key default, known limitation | `README.md` directly |
+## Documentation guidelines
+Layer docs; on any behavior change, update the most specific file(s) — not just the README.
+- `docs/features.md` — user-facing features, UI, new tools.
+- `docs/protocol.md` — interface contracts: endpoints, message types, protocol flags, wire formats.
+- `docs/architecture.md` — internals: components, lifecycle, on-disk state, migrations, test patterns.
+- `README.md` — overview, quick start, key defaults, known limitations; add a one-line note here only when a change adds a new top-level subsystem.
+This overrides the workspace README-maintenance update rule here: README changes only for new top-level subsystems; new commands/flags/endpoints go to the matching `docs/*.md`.
 
 ## Testing
 
