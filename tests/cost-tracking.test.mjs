@@ -27,8 +27,8 @@ async function rmrf(p) {
 }
 
 // Build a minimal fake instance object.
-function fakeInst({ project = 'proj-a', model = 'claude-opus-4-8', sessionId = 'sess-1', callerInstanceId = null } = {}) {
-  return { project, model, sessionId, callerInstanceId };
+function fakeInst({ project = 'proj-a', model = 'claude-opus-4-8', sessionId = 'sess-1', callerInstanceId = null, backendKind = 'claude' } = {}) {
+  return { project, model, sessionId, callerInstanceId, backendKind };
 }
 
 // Build a synthetic turn_end event. The cacheMiss / firstReq* fields mirror
@@ -106,6 +106,84 @@ test('cost-tracking: turn_end appends a valid JSONL row', async () => {
     assert.equal(row2.cache_miss, false);
     assert.equal(row2.first_req_cache_read, 0);
     assert.equal(row2.first_req_cache_creation, 0);
+  } finally {
+    process.env.PROJECTS_ROOT = prevRoot ?? '';
+    if (!prevRoot) delete process.env.PROJECTS_ROOT;
+    await rmrf(dir);
+  }
+});
+
+test('cost-tracking: getCostSummary treats missing cost_usd (ollama rows) as zero', async () => {
+  const dir = await makeTmpDir();
+  const prevRoot = process.env.PROJECTS_ROOT;
+  process.env.PROJECTS_ROOT = dir;
+
+  try {
+    const { getCostSummary, costsPath } = await import('../src/costTracking.js');
+
+    const storeDir = path.join(dir, '.code-conductor');
+    await fs.mkdir(storeDir, { recursive: true });
+
+    const rows = [
+      // claude row: has a real cost_usd
+      { ts: new Date('2026-06-01').getTime(), project: 'alpha', model: 'claude-opus-4-8', sessionId: 's1', input_tokens: 100, output_tokens: 50, cache_creation_tokens: 10, cache_read_tokens: 200, cost_usd: 0.05, cache_miss: false },
+      // ollama row: no cost_usd key at all
+      { ts: new Date('2026-06-01').getTime(), project: 'alpha', model: 'llama3:8b', sessionId: 's2', input_tokens: 80, output_tokens: 40, cache_creation_tokens: 0, cache_read_tokens: 0, cache_miss: false },
+    ];
+    await fs.writeFile(costsPath(), rows.map(r => JSON.stringify(r)).join('\n') + '\n');
+
+    const summary = await getCostSummary();
+    assert.ok(Math.abs(summary.total_usd - 0.05) < 1e-9, `total_usd should only count the claude row, got ${summary.total_usd}`);
+    assert.equal(summary.row_count, 2);
+
+    assert.equal(summary.by_project.length, 1);
+    assert.ok(Math.abs(summary.by_project[0].cost_usd - 0.05) < 1e-9);
+    assert.equal(summary.by_project[0].turns, 2, 'both rows still counted as turns');
+    assert.equal(summary.by_project[0].sessions, 2);
+
+    const ollamaModel = summary.by_model.find(m => m.model === 'llama3:8b');
+    assert.ok(ollamaModel, 'ollama model entry should still exist');
+    assert.equal(ollamaModel.cost_usd, 0, 'ollama model cost contributes zero, not a bogus figure');
+    assert.equal(ollamaModel.input_tokens, 80, 'token counts still tracked for the ollama row');
+
+    const claudeModel = summary.by_model.find(m => m.model === 'claude-opus-4-8');
+    assert.ok(Math.abs(claudeModel.cost_usd - 0.05) < 1e-9);
+  } finally {
+    process.env.PROJECTS_ROOT = prevRoot ?? '';
+    if (!prevRoot) delete process.env.PROJECTS_ROOT;
+    await rmrf(dir);
+  }
+});
+
+test('cost-tracking: ollama-backed turn_end omits cost_usd entirely', async () => {
+  const dir = await makeTmpDir();
+  const prevRoot = process.env.PROJECTS_ROOT;
+  process.env.PROJECTS_ROOT = dir;
+
+  try {
+    const { initCostTracking, costsPath } = await import('../src/costTracking.js');
+
+    const emitter = new EventEmitter();
+    emitter.get = () => fakeInst({ backendKind: 'ollama' });
+    initCostTracking(emitter);
+
+    // ollama's total_cost_usd is Anthropic list pricing on a free backend —
+    // a nonzero value here must still be dropped from the persisted row.
+    emitter.emit('event', { id: 'inst-1', ev: turnEndEv({ costDelta: 0.0123 }) });
+
+    await new Promise(r => setTimeout(r, 50));
+
+    const storeDir = path.join(dir, '.code-conductor');
+    await fs.mkdir(storeDir, { recursive: true });
+    const raw = await fs.readFile(costsPath(), 'utf8').catch(() => '');
+    const lines = raw.split('\n').filter(Boolean);
+    assert.equal(lines.length, 1);
+    const row = JSON.parse(lines[0]);
+    assert.equal(Object.hasOwn(row, 'cost_usd'), false, 'ollama row must not have a cost_usd key');
+    // Non-cost fields still persist normally.
+    assert.equal(row.input_tokens, 100);
+    assert.equal(row.output_tokens, 50);
+    assert.equal(row.project, 'proj-a');
   } finally {
     process.env.PROJECTS_ROOT = prevRoot ?? '';
     if (!prevRoot) delete process.env.PROJECTS_ROOT;
