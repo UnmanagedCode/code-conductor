@@ -241,11 +241,16 @@ test('install(): already-installed target dir -> 409', async () => {
   }
 });
 
-test('install(): happy path clones (fake impl) and triggers a rescan, never enabling', async () => {
+test('install(): happy path clones (fake impl), rescans, and enables the discovered plugin by default', async () => {
   const env = await makePluginRoot();
   try {
     let rescanned = 0;
-    const stubHost = { rescan: async () => { rescanned++; } };
+    const enabled = [];
+    const stubHost = {
+      rescan: async () => { rescanned++; },
+      list: async () => [{ id: 'code-share', project: 'code-share', state: 'discovered' }],
+      enable: async (id) => { enabled.push(id); },
+    };
     const cloneCalls = [];
     const lib = createPluginLibrary({
       pluginHost: stubHost,
@@ -262,10 +267,34 @@ test('install(): happy path clones (fake impl) and triggers a rescan, never enab
     assert.equal(cloneCalls[0].url, 'https://github.com/UnmanagedCode/code-share');
     assert.ok((await fs.stat(path.join(env.root, 'code-share'))).isDirectory());
     assert.equal(rescanned, 1);
+    assert.deepEqual(enabled, ['code-share'], 'the freshly discovered plugin is enabled by default');
     assert.equal(result.postClone, null, 'code-share has no postClone configured');
 
     const rows = await lib.list();
     assert.equal(rows[0].installed, true);
+  } finally {
+    await env.restore();
+  }
+});
+
+test('install(): does not enable a plugin whose manifest is invalid/undiscoverable', async () => {
+  const env = await makePluginRoot();
+  try {
+    const enabled = [];
+    const stubHost = {
+      rescan: async () => {},
+      list: async () => [{ id: 'code-share', project: 'code-share', state: 'invalid' }],
+      enable: async (id) => { enabled.push(id); },
+    };
+    const lib = createPluginLibrary({
+      pluginHost: stubHost,
+      _cloneImpl: async (url, destDir) => {
+        await fs.mkdir(destDir, { recursive: true });
+        return { code: 0, stdout: '', stderr: '' };
+      },
+    });
+    await lib.install('code-share');
+    assert.deepEqual(enabled, [], 'a non-discovered (invalid/conflict) plugin is left disabled');
   } finally {
     await env.restore();
   }

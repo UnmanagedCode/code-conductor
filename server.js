@@ -37,6 +37,13 @@ export function createServer({ withInstances = true, claudeLauncher } = {}) {
   if (pluginHost) {
     setPluginConventionsProvider(async () => (await pluginHost.conventions()).project);
     setPluginConductorConventionsProvider(async () => (await pluginHost.conventions()).conductor);
+    // A plugin's conductor conventions are on-by-default while it's enabled
+    // (getSelection derives them from the live catalog), so enable/disable only
+    // needs to regenerate .conduct/CONDUCT.md — gated so a backend/project-only
+    // plugin doesn't spuriously create or rewrite it.
+    pluginHost.setEnabledChangeHook(async (id) => {
+      if (pluginHost.hasConductorConventions(id)) await ensureConductProject();
+    });
   }
 
   // serverCtx is a shared mutable handle so route handlers (POST

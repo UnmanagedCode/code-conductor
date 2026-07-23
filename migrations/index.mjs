@@ -28,10 +28,11 @@ import * as m0017 from './0017-collapse-tier-backend-to-kind-model.mjs';
 import * as m0018 from './0018-session-backends-carry-model.mjs';
 import * as m0019 from './0019-inline-sonnet-window-into-bindings.mjs';
 import * as m0020 from './0020-consolidate-convention-stores.mjs';
+import * as m0021 from './0021-strip-plugin-slugs-from-conductor-conventions.mjs';
 
 // Ordered list — append new migrations to the end. Order matters:
 // later migrations may assume earlier ones have run.
-const ALL = [m0001, m0002, m0004, m0005, m0006, m0007, m0008, m0009, m0010, m0011, m0012, m0013, m0014, m0015, m0016, m0017, m0018, m0019, m0020];
+const ALL = [m0001, m0002, m0004, m0005, m0006, m0007, m0008, m0009, m0010, m0011, m0012, m0013, m0014, m0015, m0016, m0017, m0018, m0019, m0020, m0021];
 
 export async function runMigrations({ root, log = console.log } = {}) {
   for (const m of ALL) {

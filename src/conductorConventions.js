@@ -89,25 +89,47 @@ export const validateSlug = catalog.validateSlug;
 // Deleting a custom convention also drops it from the enabled selection.
 export async function deleteCustomConvention(slug) {
   const result = await catalog.deleteCustom(slug);
-  const enabled = await getSelectionRaw();
-  if (enabled?.includes(slug)) {
+  const enabled = (await catalog.readState()).enabled;
+  if (Array.isArray(enabled) && enabled.includes(slug)) {
     await catalog.patchState({ enabled: enabled.filter(s => s !== slug) });
   }
   return result;
 }
 
 // ── Global selection ─────────────────────────────────────────────────────────
+//
+// A plugin's conductor conventions are ON by default the moment the plugin is
+// enabled, so the only per-convention state worth persisting is the user's
+// explicit OFF-switches. Two keys in the store:
+//   enabled   — seed/custom selection ONLY (absent ⇒ default all seeds, so a
+//               future-added built-in defaults on); plugin slugs never live here.
+//   pluginOff — namespaced <id>/<slug> conventions the user explicitly unchecked.
+//
+// Effective selection = base ∪ (conventions of currently-enabled plugins −
+// pluginOff). getCatalog() surfaces plugin conventions from ENABLED plugins
+// only, so a disabled plugin's conventions vanish automatically — no purge
+// needed, and a stale slug can never reach compose() (no 400). Plugin UPDATES
+// that add a convention get it on automatically; a removed one drops out.
 
-// Raw enabled array from the store (undefined when unset).
-async function getSelectionRaw() {
+const isPluginSlug = s => typeof s === 'string' && s.includes('/'); // namespaced <id>/<slug>; seeds/custom never contain '/'
+
+async function readSel() {
   const state = await catalog.readState();
-  return Array.isArray(state.enabled) ? state.enabled : undefined;
+  return {
+    base: (Array.isArray(state.enabled) ? state.enabled : SEED_CONVENTIONS.map(m => m.slug)).filter(s => !isPluginSlug(s)),
+    off: Array.isArray(state.pluginOff) ? state.pluginOff : [],
+  };
 }
 
-// Enabled convention slugs. Default (store absent/unset) = all built-ins, so a
-// fresh install renders guidance equivalent to the pre-carve CONDUCT.md.
+// Effective enabled slugs — the seed/custom base plus every enabled-plugin
+// convention the user hasn't turned off. Default (store absent) = all built-ins.
 export async function getSelection() {
-  return (await getSelectionRaw()) ?? SEED_CONVENTIONS.map(m => m.slug);
+  const { base, off } = await readSel();
+  const offSet = new Set(off);
+  const pluginOn = (await getCatalog())
+    .filter(m => m.plugin && !offSet.has(m.slug))
+    .map(m => m.slug);
+  return [...new Set([...base, ...pluginOn])];
 }
 
 export async function setSelection(enabled) {
@@ -116,7 +138,8 @@ export async function setSelection(enabled) {
     err.statusCode = 400;
     throw err;
   }
-  const known = new Set((await getCatalog()).map(m => m.slug));
+  const cat = await getCatalog();
+  const known = new Set(cat.map(m => m.slug));
   for (const slug of enabled) {
     if (!known.has(slug)) {
       const err = new Error(`unknown convention slug '${slug}'`);
@@ -124,7 +147,21 @@ export async function setSelection(enabled) {
       throw err;
     }
   }
-  await catalog.patchState({ enabled });
+  // Split the full submitted checkbox set: seed/custom slugs persist as the
+  // base `enabled`; each available plugin convention drives pluginOff (checked
+  // ⇒ clear the off-switch, unchecked ⇒ record it). Plugin slugs never enter
+  // `enabled`, so a settings save can't freeze the seed-default set.
+  const enabledSet = new Set(enabled);
+  const off = new Set((await readSel()).off);
+  for (const m of cat) {
+    if (!m.plugin) continue;
+    if (enabledSet.has(m.slug)) off.delete(m.slug);
+    else off.add(m.slug);
+  }
+  await catalog.patchState({
+    enabled: enabled.filter(s => !isPluginSlug(s)),
+    pluginOff: [...off],
+  });
   return enabled;
 }
 
