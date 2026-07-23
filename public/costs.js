@@ -19,6 +19,13 @@ function fmtNum(n) {
   return String(n);
 }
 
+// Token cell for a by_model entry. Ollama-backed models expose no summable
+// per-turn token total (the backend omits `usage`), so the server marks such
+// models `tokens_known:false` — render `—` rather than a fabricated 0.
+function tokenCell(m, key) {
+  return m.tokens_known ? fmtNum(m[key]) : '—';
+}
+
 async function load() {
   const bodyEl = getEl('costs-body');
   if (!bodyEl) return;
@@ -32,7 +39,7 @@ async function load() {
   }
 }
 
-function render(data) {
+export function render(data) {
   const bodyEl = getEl('costs-body');
   if (!bodyEl) return;
   bodyEl.innerHTML = '';
@@ -111,10 +118,10 @@ function render(data) {
       (p.by_model ?? []).map(m => [
         m.model,
         fmtExact(m.cost_usd),
-        fmtNum(m.input_tokens),
-        fmtNum(m.output_tokens),
-        fmtNum(m.cache_creation_tokens),
-        fmtNum(m.cache_read_tokens),
+        tokenCell(m, 'input_tokens'),
+        tokenCell(m, 'output_tokens'),
+        tokenCell(m, 'cache_creation_tokens'),
+        tokenCell(m, 'cache_read_tokens'),
         String(m.turns),
         String(m.sessions),
         String(m.cache_misses),
@@ -147,10 +154,10 @@ function render(data) {
     data.by_model.map(m => [
       m.model,
       fmtExact(m.cost_usd),
-      fmtNum(m.input_tokens),
-      fmtNum(m.output_tokens),
-      fmtNum(m.cache_creation_tokens),
-      fmtNum(m.cache_read_tokens),
+      tokenCell(m, 'input_tokens'),
+      tokenCell(m, 'output_tokens'),
+      tokenCell(m, 'cache_creation_tokens'),
+      tokenCell(m, 'cache_read_tokens'),
       String(m.turns),
       String(m.sessions),
       String(m.cache_misses),

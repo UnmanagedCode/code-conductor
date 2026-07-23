@@ -144,10 +144,17 @@ test('cost-tracking: getCostSummary treats missing cost_usd (ollama rows) as zer
     const ollamaModel = summary.by_model.find(m => m.model === 'llama3:8b');
     assert.ok(ollamaModel, 'ollama model entry should still exist');
     assert.equal(ollamaModel.cost_usd, 0, 'ollama model cost contributes zero, not a bogus figure');
-    assert.equal(ollamaModel.input_tokens, 80, 'token counts still tracked for the ollama row');
+    // The ollama row here carries a stale `input_tokens: 0`... actually 80, i.e.
+    // a legacy pre-fix row shape (token fields present but no cost_usd). It must
+    // be treated as token-UNKNOWN, not summed — no summable per-turn source
+    // exists for ollama, so surfacing 80 would be fabricated data.
+    assert.equal(ollamaModel.input_tokens, 0, 'ollama row excluded from token sums');
+    assert.equal(ollamaModel.tokens_known, false, 'ollama-only model reports tokens unavailable');
 
     const claudeModel = summary.by_model.find(m => m.model === 'claude-opus-4-8');
     assert.ok(Math.abs(claudeModel.cost_usd - 0.05) < 1e-9);
+    assert.equal(claudeModel.input_tokens, 100, 'claude row tokens summed as before');
+    assert.equal(claudeModel.tokens_known, true, 'claude model reports tokens known');
   } finally {
     process.env.PROJECTS_ROOT = prevRoot ?? '';
     if (!prevRoot) delete process.env.PROJECTS_ROOT;
@@ -184,6 +191,101 @@ test('cost-tracking: ollama-backed turn_end omits cost_usd entirely', async () =
     assert.equal(row.input_tokens, 100);
     assert.equal(row.output_tokens, 50);
     assert.equal(row.project, 'proj-a');
+  } finally {
+    process.env.PROJECTS_ROOT = prevRoot ?? '';
+    if (!prevRoot) delete process.env.PROJECTS_ROOT;
+    await rmrf(dir);
+  }
+});
+
+test('cost-tracking: ollama turn_end (no usage) omits token fields; cost_usd partitions backends', async () => {
+  const dir = await makeTmpDir();
+  const prevRoot = process.env.PROJECTS_ROOT;
+  process.env.PROJECTS_ROOT = dir;
+
+  try {
+    const { initCostTracking, costsPath } = await import('../src/costTracking.js');
+
+    const emitter = new EventEmitter();
+    const insts = {
+      'ollama-1': fakeInst({ backendKind: 'ollama', model: 'llama3:8b', sessionId: 'o1' }),
+      'claude-1': fakeInst({ backendKind: 'claude', model: 'claude-opus-4-8', sessionId: 'c1' }),
+    };
+    emitter.get = (id) => insts[id];
+    initCostTracking(emitter);
+
+    // Realistic ollama turn_end: the CLI `result` frame carries no usage block,
+    // so the parser sets ev.usage = null. Token fields must be OMITTED (not 0).
+    emitter.emit('event', { id: 'ollama-1', ev: { kind: 'turn_end', cost: 0.0001, costDelta: 0.0001, usage: null } });
+    // Anthropic turn_end: full usage block present.
+    emitter.emit('event', { id: 'claude-1', ev: turnEndEv({ costDelta: 0.02 }) });
+
+    await new Promise(r => setTimeout(r, 50));
+
+    const storeDir = path.join(dir, '.code-conductor');
+    await fs.mkdir(storeDir, { recursive: true });
+    const raw = await fs.readFile(costsPath(), 'utf8').catch(() => '');
+    const rows = raw.split('\n').filter(Boolean).map(l => JSON.parse(l));
+    const ollamaRow = rows.find(r => r.sessionId === 'o1');
+    const claudeRow = rows.find(r => r.sessionId === 'c1');
+    const tokenKeys = ['input_tokens', 'output_tokens', 'cache_creation_tokens', 'cache_read_tokens'];
+
+    // Persistence honesty: the ollama row omits ALL token fields — no fabricated 0s.
+    for (const k of tokenKeys) {
+      assert.equal(Object.hasOwn(ollamaRow, k), false, `ollama row must omit ${k}`);
+    }
+    assert.equal(Object.hasOwn(ollamaRow, 'cost_usd'), false, 'ollama row omits cost_usd');
+
+    // Partition invariant: every written Anthropic row carries cost_usd AND all
+    // token fields; ollama rows carry neither. So `'cost_usd' in r` is a sound
+    // token-countability discriminator (the aggregator relies on this).
+    assert.equal(Object.hasOwn(claudeRow, 'cost_usd'), true, 'claude row always has cost_usd');
+    for (const k of tokenKeys) {
+      assert.equal(Object.hasOwn(claudeRow, k), true, `claude row carries ${k}`);
+    }
+  } finally {
+    process.env.PROJECTS_ROOT = prevRoot ?? '';
+    if (!prevRoot) delete process.env.PROJECTS_ROOT;
+    await rmrf(dir);
+  }
+});
+
+test('cost-tracking: mixed model keeps Anthropic token totals; ollama-only reads unknown', async () => {
+  const dir = await makeTmpDir();
+  const prevRoot = process.env.PROJECTS_ROOT;
+  process.env.PROJECTS_ROOT = dir;
+
+  try {
+    const { getCostSummary, costsPath } = await import('../src/costTracking.js');
+
+    const storeDir = path.join(dir, '.code-conductor');
+    await fs.mkdir(storeDir, { recursive: true });
+
+    const ts = new Date('2026-07-01').getTime();
+    const rows = [
+      // One model key 'shared' with an Anthropic turn (cost_usd + tokens) AND a
+      // new-format ollama turn (no cost_usd, no token fields).
+      { ts, project: 'p', model: 'shared', sessionId: 'a', input_tokens: 100, output_tokens: 50, cache_creation_tokens: 10, cache_read_tokens: 20, cost_usd: 0.04, cache_miss: false },
+      { ts, project: 'p', model: 'shared', sessionId: 'b', cache_miss: false },
+      // A separate ollama-only model.
+      { ts, project: 'p', model: 'ollama-only', sessionId: 'c', cache_miss: false },
+    ];
+    await fs.writeFile(costsPath(), rows.map(r => JSON.stringify(r)).join('\n') + '\n');
+
+    const summary = await getCostSummary();
+
+    const shared = summary.by_model.find(m => m.model === 'shared');
+    assert.equal(shared.tokens_known, true, 'one Anthropic turn makes the mixed model tokens-known');
+    assert.equal(shared.input_tokens, 100, 'token totals come from the Anthropic turn only — the ollama turn never blanks them');
+    assert.equal(shared.output_tokens, 50);
+    assert.equal(shared.turns, 2, 'both turns still counted');
+
+    const only = summary.by_model.find(m => m.model === 'ollama-only');
+    assert.equal(only.tokens_known, false, 'ollama-only model reports tokens unavailable');
+    assert.equal(only.input_tokens, 0);
+
+    // Project has an Anthropic row → project-level tokens are known.
+    assert.equal(summary.by_project[0].tokens_known, true);
   } finally {
     process.env.PROJECTS_ROOT = prevRoot ?? '';
     if (!prevRoot) delete process.env.PROJECTS_ROOT;
@@ -258,6 +360,10 @@ test('cost-tracking: getCostSummary aggregates correctly', async () => {
     assert.equal(opus.turns, 2);
     assert.equal(opus.cache_misses, 1);
     assert.equal(opus.sessions, 1);
+    // All rows are Anthropic (carry cost_usd) → tokens are known everywhere.
+    assert.equal(opus.tokens_known, true);
+    assert.equal(summary.by_project[0].tokens_known, true);
+    assert.equal(summary.by_project[0].by_model[0].tokens_known, true);
 
     // daily_trend — sorted chronologically
     assert.equal(summary.daily_trend.length, 2);
