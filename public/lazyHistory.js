@@ -89,7 +89,7 @@ export function spliceBatchAbove({ root, batch, anchorNode = null, conversation 
     // the below chunk's leading bubble (its node/body identity is what the
     // live Conversation's maps point at) and drop the emptied batch bubble.
     // Quiescent seams make this a pure concatenation of whole, finalized
-    // blocks — a moved Task block carries its nested sub-conversation along.
+    // blocks — a moved Agent block carries its nested sub-conversation along.
     if (batch.trailingOpenWrap && oldestLeadingWrap
         && batch.trailingOpenWrap !== oldestLeadingWrap) {
       const dst = oldestLeadingWrap.body;
@@ -99,7 +99,7 @@ export function spliceBatchAbove({ root, batch, anchorNode = null, conversation 
       batch.trailingOpenWrap.node.remove();
       merged = true;
     }
-    // Sub-agent adoption: live child events whose parent Task head was below
+    // Sub-agent adoption: live child events whose parent Agent head was below
     // the tail sit parked in the live conversation; if this batch carries
     // the head's block, register it and replay them into its nested panel
     // (arrival order preserved — multi-part nested blocks reconstruct whole).

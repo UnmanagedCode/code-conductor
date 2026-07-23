@@ -51,7 +51,7 @@ export class Conversation {
     // NOT count rendered bubbles client-side — with a capped ring /
     // tail-only snapshot the view can start mid-history, so a local
     // counter would anchor rewinds against the wrong jsonl line.
-    // Sub-conversations (Task sub-agents) don't get rewind/fork buttons —
+    // Sub-conversations (Agent sub-agents) don't get rewind/fork buttons —
     // those operations only make sense at the outer session level.
     this._userActionsEnabled = !this.isSub;
     // Resolver-style context passed to describeToolInput so a
@@ -96,8 +96,8 @@ export class Conversation {
     // wrap instead of leaving two adjacent assistant bubbles.
     this.leadingAssistantWrap = null;
     this._sawSegmentCloser = false;
-    // Live sub-agent events whose parent Task head sits below the rendered
-    // tail (a backgrounded Task from an evicted/unloaded turn): parked here
+    // Live sub-agent events whose parent Agent head sits below the rendered
+    // tail (a backgrounded Agent call from an evicted/unloaded turn): parked here
     // per parent toolUseId instead of leaking to the outer level (a child
     // user_echo would render as a fake outer user bubble). Replayed in
     // arrival order by adoptToolBlock() when a lazy page brings the parent
@@ -181,12 +181,17 @@ export class Conversation {
   }
 
   // Deliver a sub-agent event into the nested sub-conversation of its parent
-  // tool block. Returns false when the parent isn't rendered here. Does NOT
-  // consult seenSeq — adoptToolBlock replays parked events through this path
-  // after their seqs were already recorded by apply().
+  // tool block. Returns false when the parent isn't rendered here, OR when it
+  // is rendered but isn't a genuine sub-agent host (name !== 'Agent' — the
+  // real CLI tool name for a sub-agent invocation) — a stray/mistagged
+  // parentToolUseId (e.g. a backgrounded Bash's own tool_result referencing
+  // its own or another plain tool's id) must never turn that tool's bubble
+  // into a "sub-agent" host. Does NOT consult seenSeq — adoptToolBlock
+  // replays parked events through this path after their seqs were already
+  // recorded by apply().
   _routeChildEvent(ev) {
     const parent = this.toolBlocks.get(ev.parentToolUseId);
-    if (!parent) return false;
+    if (!parent || parent.name !== 'Agent') return false;
     let sub = this.subConvs.get(ev.parentToolUseId);
     if (!sub) {
       sub = new Conversation(parent.subRoot, {
@@ -225,7 +230,12 @@ export class Conversation {
     const parked = this.orphanChildEvents.get(toolUseId);
     this.orphanChildEvents.delete(toolUseId);
     if (!parked) return;
-    for (const ev of parked) this._routeChildEvent(ev);
+    // The adopted block may turn out not to be a genuine sub-agent host (its
+    // real name isn't 'Agent') — render those parked events as ordinary
+    // top-level content instead of silently dropping them.
+    for (const ev of parked) {
+      if (!this._routeChildEvent(ev)) this._renderEvent(ev);
+    }
   }
 
   applyEvents(events) {
@@ -238,17 +248,28 @@ export class Conversation {
       this.seenSeq.add(ev._seq);
     }
     // Route sub-agent events into a nested mini-conversation hosted inside
-    // the matching outer tool_use block (typically a Task call). Inside a
-    // sub-conversation, an unmatched parentToolUseId is the sub-agent's OWN
-    // Task id — the event renders locally (fall through). At the outer
-    // level an unmatched parent means the Task head sits below the rendered
-    // tail (backgrounded Task): PARK the event instead of leaking it to the
-    // outer level; adoptToolBlock() replays it when a lazy page brings the
-    // head's block in.
+    // the matching outer Agent tool_use block. Inside a sub-conversation, an
+    // unmatched parentToolUseId is the sub-agent's OWN Agent id — the event
+    // renders locally (fall through). At the outer level, a parent id with
+    // no block registered yet means the Agent head sits below the rendered
+    // tail (backgrounded Agent call): PARK the event instead of leaking it to
+    // the outer level; adoptToolBlock() replays it when a lazy page brings the
+    // head's block in. A parent id that DOES resolve to a block, but one
+    // that isn't a genuine sub-agent host (_routeChildEvent's name check
+    // failed — e.g. a mistagged Bash tool_result), is neither nested nor
+    // parked: it renders immediately as ordinary top-level content, same as
+    // an event with no parentToolUseId at all.
     if (ev.parentToolUseId) {
       if (this._routeChildEvent(ev)) return;
-      if (!this.isSub) { this._parkChildEvent(ev); return; }
+      if (!this.isSub && !this.toolBlocks.has(ev.parentToolUseId)) {
+        this._parkChildEvent(ev);
+        return;
+      }
     }
+    this._renderEvent(ev);
+  }
+
+  _renderEvent(ev) {
     if (ev.kind === 'user_question') { this._renderUserQuestion(ev); return; }
     if (ev.kind === 'plan_request') { this._renderPlanRequest(ev); return; }
     if (ev.kind === 'permission_request') { this._renderPermissionRequest(ev); return; }

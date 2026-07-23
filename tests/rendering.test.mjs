@@ -858,11 +858,11 @@ test('DOM: a sub-agent tool_use (no streaming deltas) renders its tool block + a
   const { document, root, Parser, Conversation } = await setupDOM();
   const conversation = new Conversation(root);
   const p = new Parser();
-  // Outer Task tool_use streams in via stream_event chunks so the parent
+  // Outer Agent tool_use streams in via stream_event chunks so the parent
   // ToolUseBlock exists in outer.toolBlocks for sub-event routing to land.
   feed(p, conversation, [
     { type: 'stream_event', event: { type: 'message_start', message: { id: 'msg_outer', role: 'assistant' } } },
-    { type: 'stream_event', event: { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'task_xyz', name: 'Task', input: {} } } },
+    { type: 'stream_event', event: { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'task_xyz', name: 'Agent', input: {} } } },
     { type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '{"description":"search","prompt":"go"}' } } },
     { type: 'stream_event', event: { type: 'content_block_stop', index: 0 } },
     // Sub-agent assistant turn — only the complete envelope, no deltas.
@@ -889,7 +889,7 @@ test('DOM: a sub-agent tool_use (no streaming deltas) renders its tool block + a
   ]);
 
   const sub = root.querySelector('.sub-conversation');
-  assert.ok(sub, 'sub-conversation container must exist under the Task tool block');
+  assert.ok(sub, 'sub-conversation container must exist under the Agent tool block');
 
   // The Grep tool_use block must be rendered inside the sub-conversation.
   const subToolBlocks = sub.querySelectorAll('.block.tool');
@@ -910,6 +910,62 @@ test('DOM: a sub-agent tool_use (no streaming deltas) renders its tool block + a
   assert.equal(floating.length, 0, 'no tool_result should float at the sub-conversation msg level');
 });
 
+test('DOM: a plain Bash tool_result mistagged with a parent_tool_use_id renders as the Bash call\'s own result, not nested as a sub-agent', async () => {
+  // Production bug: a worker ran a plain Bash call (no Task/Agent involved at
+  // all) and its own tool_result arrived tagged with a parent_tool_use_id
+  // equal to the Bash call's OWN tool_use_id (the observed self-reference
+  // shape). Before the fix, _routeChildEvent nested ANY child event under
+  // ANY matching toolBlocks entry regardless of what tool it was, so this
+  // turned the Bash bubble itself into a "sub-agent" host and the result
+  // landed as a floating tool_result inside a revealed .sub-conversation
+  // nested INSIDE the Bash block — instead of attaching as the Bash call's
+  // own result.
+  const { document, root, Parser, Conversation } = await setupDOM();
+  const conversation = new Conversation(root);
+  feed(new Parser(), conversation, [
+    { type: 'stream_event', event: { type: 'message_start', message: { id: 'msg_bash', role: 'assistant' } } },
+    { type: 'stream_event', event: { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'tu_bash_1', name: 'Bash', input: {} } } },
+    { type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '{"command":"npm test 2>&1"}' } } },
+    { type: 'stream_event', event: { type: 'content_block_stop', index: 0 } },
+    // The Bash call's own tool_result — mistagged with parent_tool_use_id
+    // equal to its own tool_use_id. Real stream_event frames never carry
+    // parent_tool_use_id at all; this shape is specific to the `user`
+    // envelope carrying the tool_result.
+    {
+      type: 'user',
+      parent_tool_use_id: 'tu_bash_1',
+      message: {
+        role: 'user',
+        content: [{
+          type: 'tool_result',
+          tool_use_id: 'tu_bash_1',
+          content: '=== isolate instances test ===\n# tests 45\n# pass 45\n# fail 0',
+          is_error: false,
+        }],
+      },
+    },
+  ]);
+
+  // Exactly one tool block rendered — the Bash call itself.
+  const toolBlocks = root.querySelectorAll('.block.tool');
+  assert.equal(toolBlocks.length, 1, 'only the Bash tool block should render');
+  const bash = toolBlocks[0];
+  assert.match(bash.querySelector('summary').textContent, /Bash/);
+
+  // No sub-agent panel is ever revealed — Bash is never a valid nesting host.
+  const revealed = [...root.querySelectorAll('.sub-conversation')].filter((n) => !n.hasAttribute('hidden'));
+  assert.equal(revealed.length, 0, 'no SUB-AGENT panel should be revealed for a plain Bash call');
+
+  // The result attaches directly under the Bash block as its own result.
+  const attached = bash.querySelector('.block.tool-result');
+  assert.ok(attached, 'tool_result must attach under the Bash block itself');
+  assert.match(attached.textContent, /# pass 45/);
+
+  // No floating tool_result anywhere in the document outside the Bash block.
+  const allResults = root.querySelectorAll('.block.tool-result');
+  assert.equal(allResults.length, 1, 'exactly one tool_result should exist, attached to the Bash block');
+});
+
 test('DOM: parallel sub-agent tool_uses split across same-msgId envelopes both render with their results attached', async () => {
   // Production bug shape from session 7c452875: a sub-agent that issues two
   // parallel Bash tool_uses in one logical assistant message emits them as
@@ -921,9 +977,9 @@ test('DOM: parallel sub-agent tool_uses split across same-msgId envelopes both r
   const { document, root, Parser, Conversation } = await setupDOM();
   const conversation = new Conversation(root);
   feed(new Parser(), conversation, [
-    // Outer Task tool_use streamed normally so subA gets a registered parent.
+    // Outer Agent tool_use streamed normally so subA gets a registered parent.
     { type: 'stream_event', event: { type: 'message_start', message: { id: 'msg_outer', role: 'assistant' } } },
-    { type: 'stream_event', event: { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'task_xyz', name: 'Task', input: {} } } },
+    { type: 'stream_event', event: { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'task_xyz', name: 'Agent', input: {} } } },
     { type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '{"description":"x"}' } } },
     { type: 'stream_event', event: { type: 'content_block_stop', index: 0 } },
     // Two separate sub-agent assistant envelopes, SAME msgId, each one
@@ -959,7 +1015,7 @@ test('DOM: parallel sub-agent tool_uses split across same-msgId envelopes both r
   ]);
 
   const sub = root.querySelector('.sub-conversation');
-  assert.ok(sub, 'sub-conversation container must exist under the Task tool block');
+  assert.ok(sub, 'sub-conversation container must exist under the Agent tool block');
 
   const subToolBlocks = sub.querySelectorAll('.block.tool');
   assert.equal(subToolBlocks.length, 2, 'both parallel sub-agent tool_use blocks must render');
@@ -1239,14 +1295,14 @@ test('DOM: a user_echo between two assistant turns reopens the envelope', async 
   assert.equal(userWraps.length, 1);
 });
 
-test('DOM: sub-agent (Task) drill-down groups its own consecutive assistant turns', async () => {
+test('DOM: sub-agent (Agent) drill-down groups its own consecutive assistant turns', async () => {
   const { root, Parser, Conversation } = await setupDOM();
   const conversation = new Conversation(root);
   const parser = new Parser();
-  // Outer turn: assistant invokes the Task tool.
+  // Outer turn: assistant invokes the Agent tool.
   feed(parser, conversation, [
     { type: 'stream_event', event: { type: 'message_start', message: { id: 'msg_outer', role: 'assistant' } } },
-    { type: 'stream_event', event: { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'tu_task', name: 'Task', input: {} } } },
+    { type: 'stream_event', event: { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'tu_task', name: 'Agent', input: {} } } },
     { type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '{"description":"go","prompt":"do it","subagent_type":"general-purpose"}' } } },
     { type: 'stream_event', event: { type: 'content_block_stop', index: 0 } },
     { type: 'stream_event', event: { type: 'message_stop' } },
