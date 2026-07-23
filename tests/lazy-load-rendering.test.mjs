@@ -131,8 +131,8 @@ test('sub-agent group: head and children in the same batch nest children under t
   // child events (parentToolUseId set), then a tool_result.
   const batch = renderEventBatch([
     { kind: 'user_echo', text: 'run task', userIndex: 0, _seq: 0, parentToolUseId: null },
-    { kind: 'tool_use_start', msgId: 'm1', blockIdx: 0, toolUseId: 'tu1', name: 'Task', _seq: 1, parentToolUseId: null },
-    { kind: 'tool_use', msgId: 'm1', blockIdx: 0, toolUseId: 'tu1', name: 'Task', input: {}, _seq: 2, parentToolUseId: null },
+    { kind: 'tool_use_start', msgId: 'm1', blockIdx: 0, toolUseId: 'tu1', name: 'Agent', _seq: 1, parentToolUseId: null },
+    { kind: 'tool_use', msgId: 'm1', blockIdx: 0, toolUseId: 'tu1', name: 'Agent', input: {}, _seq: 2, parentToolUseId: null },
     { kind: 'text_delta', msgId: 'msub', blockIdx: 0, text: 'sub-agent reply', _seq: 3, parentToolUseId: 'tu1' },
     { kind: 'text_end', msgId: 'msub', blockIdx: 0, _seq: 4, parentToolUseId: 'tu1' },
     { kind: 'tool_result', toolUseId: 'tu1', content: 'done', isError: false, _seq: 5, parentToolUseId: null },
@@ -388,11 +388,11 @@ test('adopt-on-prepend reconstructs interleaved nested block parts whole, then u
   main.apply({ kind: 'text_end', msgId: 'mT', blockIdx: 0, _seq: 103, parentToolUseId: null });
   main.apply(parts[2]);
 
-  // The lazy page brings the Task head's turn in.
+  // The lazy page brings the Agent head's turn in.
   const batch = renderEventBatch(seq([
     { kind: 'user_echo', text: 'task prompt', userIndex: 4, parentToolUseId: null },
-    { kind: 'tool_use_start', msgId: 'mH', blockIdx: 0, toolUseId: 'T', name: 'Task', parentToolUseId: null },
-    { kind: 'tool_use', msgId: 'mH', blockIdx: 0, toolUseId: 'T', name: 'Task', input: { description: 'bg' }, parentToolUseId: null },
+    { kind: 'tool_use_start', msgId: 'mH', blockIdx: 0, toolUseId: 'T', name: 'Agent', parentToolUseId: null },
+    { kind: 'tool_use', msgId: 'mH', blockIdx: 0, toolUseId: 'T', name: 'Agent', input: { description: 'bg' }, parentToolUseId: null },
     { kind: 'tool_result', toolUseId: 'T', content: 'running in background', isError: false, parentToolUseId: null },
     { kind: 'turn_end', subtype: 'success', parentToolUseId: null },
   ]));
@@ -419,4 +419,38 @@ test('adopt-on-prepend reconstructs interleaved nested block parts whole, then u
   assert.equal([...root.querySelectorAll('.sub-conversation')]
     .filter(n => !n.hasAttribute('hidden')).length, 1);
   assert.ok(subConv.textContent.includes('post-adopt part'), 'new part appended incrementally');
+});
+
+test('adopt-on-prepend renders a parked event under a non-Task head as ordinary top-level content, not nested', async () => {
+  // Same production bug shape as the live case, but via the lazy-load path:
+  // a mistagged tool_result (parentToolUseId equal to its OWN toolUseId)
+  // arrives live before its own tool_use head has been paged in, so it parks
+  // as an orphan awaiting toolUseId 'B'. When the lazy page later brings that
+  // head in, it turns out to be a plain Bash block, not a Task — the parked
+  // event must render as the Bash call's own result, not get nested into a
+  // sub-agent panel (or silently dropped).
+  const { root, Conversation, renderEventBatch, spliceBatchAbove } = await setupDOM();
+  const main = new Conversation(root, {});
+  main.apply({ kind: 'user_echo', text: 'tail prompt', userIndex: 5, _seq: 90, parentToolUseId: null });
+  main.apply({
+    kind: 'tool_result', toolUseId: 'B', content: '# tests 45\n# pass 45\n# fail 0', isError: false,
+    _seq: 95, parentToolUseId: 'B',
+  });
+  assert.equal(main.orphanChildEvents.get('B').length, 1, 'parked awaiting the Bash head');
+
+  const batch = renderEventBatch(seq([
+    { kind: 'user_echo', text: 'earlier prompt', userIndex: 4, parentToolUseId: null },
+    { kind: 'tool_use_start', msgId: 'mH', blockIdx: 0, toolUseId: 'B', name: 'Bash', parentToolUseId: null },
+    { kind: 'tool_use', msgId: 'mH', blockIdx: 0, toolUseId: 'B', name: 'Bash', input: { command: 'npm test' }, parentToolUseId: null },
+  ]));
+  spliceBatchAbove({ root, batch, conversation: main, oldestLeadingWrap: main.leadingAssistantWrap });
+
+  assert.equal(main.orphanChildEvents.size, 0, 'parking drained on adoption');
+  const revealed = [...root.querySelectorAll('.sub-conversation')].filter((n) => !n.hasAttribute('hidden'));
+  assert.equal(revealed.length, 0, 'a Bash head is never a valid sub-agent host');
+  const bashBlock = main.toolBlocks.get('B');
+  assert.ok(bashBlock, 'Bash block adopted');
+  const attached = bashBlock.node.querySelector('.block.tool-result');
+  assert.ok(attached, 'tool_result attaches under the Bash block itself, not dropped or nested');
+  assert.match(attached.textContent, /# pass 45/);
 });

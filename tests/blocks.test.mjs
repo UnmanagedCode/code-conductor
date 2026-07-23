@@ -80,8 +80,8 @@ test('describeToolInput: WebFetch/WebSearch', () => {
   assert.equal(describeToolInput('WebSearch', { query: 'claude code' }), 'claude code');
 });
 
-test('describeToolInput: Task includes subagent_type', () => {
-  const s = describeToolInput('Task', { subagent_type: 'Explore', description: 'find files' });
+test('describeToolInput: Agent includes subagent_type', () => {
+  const s = describeToolInput('Agent', { subagent_type: 'Explore', description: 'find files' });
   assert.match(s, /\[Explore\]/);
   assert.match(s, /find files/);
 });

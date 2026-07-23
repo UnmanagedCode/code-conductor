@@ -232,7 +232,7 @@ export function describeToolInput(name, input, ctx = {}) {
     case 'WebFetch':   return trunc(input.url);
     case 'WebSearch':  return trunc(input.query);
     case 'ToolSearch': return trunc(input.query);
-    case 'Task':       return trunc(input.subagent_type ? `[${input.subagent_type}] ${input.description ?? input.prompt ?? ''}` : (input.description ?? input.prompt ?? ''));
+    case 'Agent':      return trunc(input.subagent_type ? `[${input.subagent_type}] ${input.description ?? input.prompt ?? ''}` : (input.description ?? input.prompt ?? ''));
     case 'Skill':      return trunc(input.skill ?? input.name);
     case 'TaskCreate':
       return join(input.subject, input.description);
