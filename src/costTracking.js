@@ -34,7 +34,6 @@ async function appendCostRow(inst, ev, parentSessionId) {
     output_tokens: usage.output_tokens ?? 0,
     cache_creation_tokens: usage.cache_creation_input_tokens ?? 0,
     cache_read_tokens: usage.cache_read_input_tokens ?? 0,
-    cost_usd: ev.costDelta ?? ev.cost ?? 0,
     // Cache-miss verdict + per-request evidence, captured live from the turn's
     // first message_start (src/instances.js). `cache_miss` means "a cross-turn
     // eviction (full or partial) was detected": the turn's first-request
@@ -48,6 +47,11 @@ async function appendCostRow(inst, ev, parentSessionId) {
     first_req_cache_creation: ev.firstReqCacheCreation ?? 0,
     first_req_evicted: ev.firstReqEvicted ?? 0,
   };
+  // ollama's total_cost_usd is Anthropic list pricing applied to a free local
+  // backend — meaningless, so omit the field rather than persist a bogus number.
+  if (inst.backendKind !== 'ollama') {
+    row.cost_usd = ev.costDelta ?? ev.cost ?? 0;
+  }
   try {
     const p = costsPath();
     await fs.mkdir(path.dirname(p), { recursive: true });
