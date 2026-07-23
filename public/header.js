@@ -180,6 +180,16 @@ export function installHeader({
         const resetStr = reset ? ` · ${reset}` : '';
         node.appendChild(row(label, utilStr + resetStr, fillClass(util)));
       }
+      const fableLimit = accountUsage.limits?.find(l => l.scope?.model?.display_name === 'Fable');
+      if (fableLimit) {
+        const util = typeof fableLimit.percent === 'number' ? fableLimit.percent / 100 : null;
+        const reset = fableLimit.resets_at
+          ? formatResetTime(new Date(fableLimit.resets_at).getTime() / 1000)
+          : null;
+        const utilStr = util != null ? `${Math.round(util * 100)}%` : '—';
+        const resetStr = reset ? ` · ${reset}` : '';
+        node.appendChild(row('7-day (Fable)', utilStr + resetStr, fillClass(util)));
+      }
       const ex = accountUsage.extra_usage;
       if (ex?.is_enabled) {
         const used = typeof ex.used_credits === 'number' ? (ex.used_credits / 100).toFixed(2) : '?';
