@@ -209,20 +209,27 @@ test('plugin conductor conventions merge into the catalog with namespaced slugs'
   assert.ok(cat.some(m => m.slug === 'canonical-workflow'));
 });
 
-test('default selection (store absent) does NOT auto-include a plugin conductor convention', async () => {
+test('a catalog-available plugin conductor convention is ON by default, minus pluginOff', async () => {
   setPluginConductorConventionsProvider(async () => [
     { slug: 'my-plugin/extra-rule', name: 'Extra rule', description: 'd', body: '## Extra rule\n- x', plugin: 'my-plugin' },
   ]);
+  // Store absent: base = all seeds, plus the available plugin convention on-by-default.
   const sel = await getSelection();
-  assert.ok(!sel.includes('my-plugin/extra-rule'));
-  assert.deepEqual([...sel].sort(), SEED_CONVENTIONS.map(m => m.slug).sort());
+  assert.ok(sel.includes('my-plugin/extra-rule'), 'plugin convention on by default');
+  assert.deepEqual([...sel].filter(s => !s.includes('/')).sort(), SEED_CONVENTIONS.map(m => m.slug).sort(), 'all seeds still present');
+
+  // Unchecking it records the off-switch and excludes it; seeds untouched.
+  await setSelection([...SEED_CONVENTIONS.map(m => m.slug)]);
+  const after = await getSelection();
+  assert.ok(!after.includes('my-plugin/extra-rule'), 'excluded once turned off');
 });
 
-test('a plugin conductor convention, once explicitly selected, composes into CONDUCT.md', async () => {
+test('a plugin conductor convention composes into CONDUCT.md', async () => {
   setPluginConductorConventionsProvider(async () => [
     { slug: 'my-plugin/extra-rule', name: 'Extra rule', description: 'd', body: '## Extra rule\n- x', plugin: 'my-plugin' },
   ]);
-  const enabled = await setSelection([...SEED_CONVENTIONS.map(m => m.slug), 'my-plugin/extra-rule']);
+  const enabled = await getSelection(); // on by default
+  assert.ok(enabled.includes('my-plugin/extra-rule'));
   const doc = await composeConduct(enabled);
   assert.match(doc, /## Extra rule/);
 });

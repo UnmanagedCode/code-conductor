@@ -7,9 +7,10 @@ import { getProjectUpstreamStatus } from '../worktrees.js';
 
 // Plugin Library — a catalog of installable plugins (git repo URLs) offered
 // alongside the discovered-plugins list in Settings → Plugins. Installing
-// clones the repo into the projects root; the existing discovery/enable flow
-// (registry.js) takes it from there once it has a conductor.plugin.json.
-// Installing never enables or starts anything.
+// clones the repo into the projects root, then enables the freshly-discovered
+// plugin by default (its conventions go active immediately). Enabling is
+// start-neutral — a backend starts lazily on first use — so install never
+// launches a process; an invalid/conflicting manifest is left disabled.
 //
 // Catalog = DEFAULT_ENTRIES, overlaid by drop-in manifests read from
 // `<orchStoreRoot()>/plugins/library/*.json` (one JSON object per file):
@@ -309,8 +310,21 @@ export function createPluginLibrary({ pluginHost = null, _cloneImpl = null, _pul
       throw httpError(502, `git clone failed for '${entry.repo}'`, { tail });
     }
 
-    // Cloned + discoverable only — never auto-enable/start.
-    if (pluginHost) await pluginHost.rescan();
+    // A freshly installed plugin defaults to enabled (its conventions become
+    // active immediately). enable() is start-neutral — backends start lazily on
+    // first use — so this never launches a process at install time. Only a
+    // cleanly-discovered plugin is auto-enabled; an invalid/conflicting manifest
+    // is left for the user to resolve. Best-effort: a failure here doesn't undo
+    // the successful clone.
+    if (pluginHost) {
+      await pluginHost.rescan();
+      try {
+        const row = (await pluginHost.list()).find(r => r.project === name && r.state === 'discovered');
+        if (row?.id) await pluginHost.enable(row.id);
+      } catch (e) {
+        onChunk?.('hook', `\n[auto-enable skipped: ${e.message}]\n`);
+      }
+    }
 
     // The clone succeeded and is already discoverable — a postClone failure
     // is reported, not fatal, and the clone is NOT rolled back (unlike a

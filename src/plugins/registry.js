@@ -86,6 +86,26 @@ export function createPluginHost({
   let initPromise = null;
   let initedFor = null; // projectsRoot() the current state was built for (test roots swap)
 
+  // Fired (best-effort) on a user enable/disable so server.js can regenerate
+  // .conduct/CONDUCT.md — a plugin's conductor conventions are on-by-default
+  // while it's enabled and derived from the live catalog, so no state mutation
+  // is needed here and a hook failure is never fatal to the enable/disable.
+  let enabledChangeHook = null;
+  function setEnabledChangeHook(fn) { enabledChangeHook = fn ?? null; }
+  async function fireEnabledChange(id) {
+    if (!enabledChangeHook) return;
+    try { await enabledChangeHook(id); }
+    catch (e) { console.warn(`plugins: CONDUCT.md regen after '${id}' enable/disable change failed: ${e.message}`); }
+  }
+
+  // Does this plugin's manifest declare ≥1 conductor-scope convention? Read
+  // from discovery (available whether or not it's enabled) so the enable/disable
+  // hook can gate its regen without a live catalog fetch.
+  function hasConductorConventions(id) {
+    const entry = byId.get(id) ?? entries.find(e => e.id === id);
+    return !!entry?.manifest?.conventions?.some(c => c.scope === 'conductor');
+  }
+
   const supervisor = createSupervisor({ onExit: handleChildExit, ..._supervisorOpts });
 
   function runtimeState(id) {
@@ -324,6 +344,7 @@ export function createPluginHost({
     const s = runtimeState(id);
     if (s.status === 'failed' || s.status === 'crashed') { s.status = 'stopped'; s.crashTimes = []; s.backoffUntil = 0; }
     await autoAssignToCcDev(entry.project);
+    await fireEnabledChange(id);
     return describe(id);
   }
 
@@ -333,6 +354,9 @@ export function createPluginHost({
     await stopInternal(id);
     persisted.plugins[id].enabled = false;
     await saveRegistry();
+    // The plugin's conventions leave the catalog on disable (getSelection
+    // derives from enabled plugins), so this only regenerates CONDUCT.md.
+    await fireEnabledChange(id);
     return describe(id);
   }
 
@@ -694,7 +718,7 @@ export function createPluginHost({
     init: ensureInit,
     list, rescan, enable, disable, start, stop, restart, status,
     ensureStarted, setActiveVersion, toolsFor, runtimeInfo,
-    conventions,
-    reportUpstreamFailure, setServerPort, stopAll,
+    conventions, hasConductorConventions,
+    reportUpstreamFailure, setServerPort, setEnabledChangeHook, stopAll,
   };
 }
