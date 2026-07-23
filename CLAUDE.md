@@ -24,7 +24,7 @@ Load-bearing rules — stay inside them when writing code. Rationale + examples 
 
 ## Documentation updates
 
-When a turn meaningfully changes user-facing behavior, update the **correct detail file** — not just the README:
+When a turn meaningfully changes user-facing behavior, update the **correct detail file(s)** — not just the README:
 
 | Change type | File to update |
 |---|---|
