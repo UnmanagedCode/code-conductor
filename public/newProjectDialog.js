@@ -60,8 +60,8 @@ export function installNewProjectDialog({ dom, refreshProjects, closeSidebarOver
     dom.npContributions.innerHTML = '';
     let conventions = [];
     try {
-      const r = await fetch('/api/settings/project-conventions');
-      if (r.ok) conventions = (await r.json()).rules ?? [];
+      const r = await fetch('/api/settings/conventions/project');
+      if (r.ok) conventions = (await r.json()).conventions ?? [];
     } catch { /* offline / no catalog — show nothing */ }
 
     const rowOf = (c) => ({ value: c.slug, name: c.name, description: c.description });

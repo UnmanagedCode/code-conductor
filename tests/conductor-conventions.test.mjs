@@ -1,6 +1,6 @@
-// Tests for conductor convention modules: compose (core + enabled + footer),
-// global selection state, custom-module CRUD, the generated .conduct/CONDUCT.md,
-// the REST surface, and the list_conductor_modules MCP tool.
+// Tests for conductor conventions: compose (core + enabled + footer),
+// global selection state, custom-convention CRUD, the generated .conduct/CONDUCT.md,
+// the REST surface, and the list_conductor_conventions MCP tool.
 
 import { test, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
@@ -9,10 +9,10 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, freshProjectsRoot, rmrf } from './helpers.mjs';
 import {
-  SEED_MODULES, getCatalog, getSelection, setSelection,
-  addCustomModule, deleteCustomModule, composeConduct, composeCurrentConduct,
+  SEED_CONVENTIONS, getCatalog, getSelection, setSelection,
+  addCustomConvention, deleteCustomConvention, composeConduct, composeCurrentConduct,
   setPluginConductorConventionsProvider,
-} from '../src/conductModules.js';
+} from '../src/conductorConventions.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-instance.json');
@@ -34,15 +34,15 @@ afterEach(async () => {
 
 // ── Catalog + compose (unit) ─────────────────────────────────────────────────
 
-test('SEED_MODULES has 8 built-in modules with metadata (no inline body)', () => {
-  assert.equal(SEED_MODULES.length, 8);
-  for (const m of SEED_MODULES) {
+test('SEED_CONVENTIONS has 8 built-in conventions with metadata (no inline body)', () => {
+  assert.equal(SEED_CONVENTIONS.length, 8);
+  for (const m of SEED_CONVENTIONS) {
     assert.ok(m.slug && m.name && m.description);
     assert.equal(m.body, undefined);
   }
 });
 
-test('getCatalog loads bodies from conduct/modules/*.md, builtin:true', async () => {
+test('getCatalog loads bodies from conventions/conductor/*.md, builtin:true', async () => {
   const cat = await getCatalog();
   assert.equal(cat.length, 8);
   for (const m of cat) {
@@ -51,30 +51,30 @@ test('getCatalog loads bodies from conduct/modules/*.md, builtin:true', async ()
   }
 });
 
-test('composeConduct(all) = core + all module bodies + footer', async () => {
-  const all = SEED_MODULES.map(m => m.slug);
+test('composeConduct(all) = core + all convention bodies + footer', async () => {
+  const all = SEED_CONVENTIONS.map(m => m.slug);
   const doc = await composeConduct(all);
   assert.ok(doc.startsWith('# Conductor role'), 'core first');
   assert.match(doc, /## MCP toolbelt/, 'core section');
   assert.match(doc, /## Project conventions on project creation/, 'core-hoisted section');
   assert.match(doc, /## Canonical workflow/);
   assert.match(doc, /## Worker lifecycle/);
-  assert.match(doc, /generated from `conduct\/core\.md`/, 'footer last');
+  assert.match(doc, /generated from `conventions\/conductor\/core\.md`/, 'footer last');
 });
 
-test('composeConduct([]) = core + footer only (no module headings)', async () => {
+test('composeConduct([]) = core + footer only (no convention headings)', async () => {
   const doc = await composeConduct([]);
   assert.ok(doc.startsWith('# Conductor role'));
   assert.doesNotMatch(doc, /## Canonical workflow/);
   assert.match(doc, /## Talking to the user/, 'core-hoisted section');
-  assert.match(doc, /generated from `conduct\/core\.md`/);
+  assert.match(doc, /generated from `conventions\/conductor\/core\.md`/);
 });
 
 // ── Selection (unit) ─────────────────────────────────────────────────────────
 
 test('default selection = all built-in slugs (store absent)', async () => {
   const sel = await getSelection();
-  assert.deepEqual([...sel].sort(), SEED_MODULES.map(m => m.slug).sort());
+  assert.deepEqual([...sel].sort(), SEED_CONVENTIONS.map(m => m.slug).sort());
 });
 
 test('setSelection persists; composeCurrentConduct honours it', async () => {
@@ -89,10 +89,10 @@ test('setSelection with an unknown slug → 400', async () => {
   await assert.rejects(() => setSelection(['nope']), e => { assert.equal(e.statusCode, 400); return true; });
 });
 
-// ── Custom module CRUD (unit) ────────────────────────────────────────────────
+// ── Custom convention CRUD (unit) ────────────────────────────────────────────
 
-test('addCustomModule appears in catalog; enabling it composes its body', async () => {
-  await addCustomModule({ slug: 'house-style', name: 'House style', description: 'd', body: '## House style\n- be nice' });
+test('addCustomConvention appears in catalog; enabling it composes its body', async () => {
+  await addCustomConvention({ slug: 'house-style', name: 'House style', description: 'd', body: '## House style\n- be nice' });
   const cat = await getCatalog();
   assert.equal(cat.length, 9);
   assert.equal(cat.find(c => c.slug === 'house-style').builtin, false);
@@ -101,10 +101,10 @@ test('addCustomModule appears in catalog; enabling it composes its body', async 
   assert.match(doc, /## House style/);
 });
 
-test('deleteCustomModule drops the slug from the enabled selection', async () => {
-  await addCustomModule({ slug: 'temp-mod', name: 'Temp', description: 'd', body: '## Temp' });
+test('deleteCustomConvention drops the slug from the enabled selection', async () => {
+  await addCustomConvention({ slug: 'temp-mod', name: 'Temp', description: 'd', body: '## Temp' });
   await setSelection(['canonical-workflow', 'temp-mod']);
-  await deleteCustomModule('temp-mod');
+  await deleteCustomConvention('temp-mod');
   assert.deepEqual(await getSelection(), ['canonical-workflow']);
   assert.ok(!(await getCatalog()).some(c => c.slug === 'temp-mod'));
 });
@@ -114,10 +114,10 @@ test('deleteCustomModule drops the slug from the enabled selection', async () =>
 test('PUT selection regenerates .conduct/CONDUCT.md to match', async () => {
   await api(baseUrl, 'POST', '/api/projects/.conduct/ensure');
   const conductMd = path.join(projectsRoot, '.conduct', 'CONDUCT.md');
-  // Default: all modules present.
+  // Default: all conventions present.
   assert.match(await fs.readFile(conductMd, 'utf8'), /## Worker lifecycle/);
 
-  const r = await api(baseUrl, 'PUT', '/api/settings/conductor-modules/selection', {
+  const r = await api(baseUrl, 'PUT', '/api/settings/conventions/conductor/selection', {
     enabled: ['canonical-workflow'],
   });
   assert.equal(r.status, 200);
@@ -126,55 +126,55 @@ test('PUT selection regenerates .conduct/CONDUCT.md to match', async () => {
   assert.doesNotMatch(content, /## Worker lifecycle/);
   // Core + footer always present.
   assert.ok(content.startsWith('# Conductor role'));
-  assert.match(content, /generated from `conduct\/core\.md`/);
+  assert.match(content, /generated from `conventions\/conductor\/core\.md`/);
 });
 
 // ── REST API ───────────────────────────────────────────────────────────────
 
-test('GET /api/settings/conductor-modules returns core + 8 modules + enabled', async () => {
-  const r = await api(baseUrl, 'GET', '/api/settings/conductor-modules');
+test('GET /api/settings/conventions/conductor returns core + 8 conventions + enabled', async () => {
+  const r = await api(baseUrl, 'GET', '/api/settings/conventions/conductor');
   assert.equal(r.status, 200);
   assert.ok(r.body.core && r.body.core.name);
-  assert.equal(r.body.modules.length, 8);
+  assert.equal(r.body.conventions.length, 8);
   assert.equal(r.body.enabled.length, 8); // default all-on
-  for (const m of r.body.modules) assert.equal(m.builtin, true);
+  for (const m of r.body.conventions) assert.equal(m.builtin, true);
 });
 
-test('POST creates a custom module (201); PUT /:slug updates; DELETE removes', async () => {
-  const add = await api(baseUrl, 'POST', '/api/settings/conductor-modules', {
+test('POST creates a custom convention (201); PUT /:slug updates; DELETE removes', async () => {
+  const add = await api(baseUrl, 'POST', '/api/settings/conventions/conductor', {
     slug: 'rest-mod', name: 'REST mod', description: 'via REST', body: '## REST mod',
   });
   assert.equal(add.status, 201);
-  assert.equal(add.body.module.slug, 'rest-mod');
-  assert.equal(add.body.module.builtin, false);
+  assert.equal(add.body.convention.slug, 'rest-mod');
+  assert.equal(add.body.convention.builtin, false);
 
-  const upd = await api(baseUrl, 'PUT', '/api/settings/conductor-modules/rest-mod', {
+  const upd = await api(baseUrl, 'PUT', '/api/settings/conventions/conductor/rest-mod', {
     name: 'REST mod v2', description: 'updated',
   });
   assert.equal(upd.status, 200);
-  assert.equal(upd.body.module.name, 'REST mod v2');
+  assert.equal(upd.body.convention.name, 'REST mod v2');
 
-  const del = await api(baseUrl, 'DELETE', '/api/settings/conductor-modules/rest-mod');
+  const del = await api(baseUrl, 'DELETE', '/api/settings/conventions/conductor/rest-mod');
   assert.equal(del.status, 200);
-  const list = await api(baseUrl, 'GET', '/api/settings/conductor-modules');
-  assert.ok(!list.body.modules.find(m => m.slug === 'rest-mod'));
+  const list = await api(baseUrl, 'GET', '/api/settings/conventions/conductor');
+  assert.ok(!list.body.conventions.find(m => m.slug === 'rest-mod'));
 });
 
-test('PUT/DELETE a built-in module → 400; PUT selection with unknown slug → 400', async () => {
-  const put = await api(baseUrl, 'PUT', '/api/settings/conductor-modules/canonical-workflow', { name: 'X' });
+test('PUT/DELETE a built-in convention → 400; PUT selection with unknown slug → 400', async () => {
+  const put = await api(baseUrl, 'PUT', '/api/settings/conventions/conductor/canonical-workflow', { name: 'X' });
   assert.equal(put.status, 400);
-  const del = await api(baseUrl, 'DELETE', '/api/settings/conductor-modules/canonical-workflow');
+  const del = await api(baseUrl, 'DELETE', '/api/settings/conventions/conductor/canonical-workflow');
   assert.equal(del.status, 400);
-  const sel = await api(baseUrl, 'PUT', '/api/settings/conductor-modules/selection', { enabled: ['nope'] });
+  const sel = await api(baseUrl, 'PUT', '/api/settings/conventions/conductor/selection', { enabled: ['nope'] });
   assert.equal(sel.status, 400);
 });
 
 // ── MCP tool ─────────────────────────────────────────────────────────────────
 
-test('list_conductor_modules MCP tool returns modules with enabled flag, no body', async () => {
+test('list_conductor_conventions MCP tool returns conventions with enabled flag, no body', async () => {
   const { buildTools } = await import('../src/mcp/tools.js');
-  const tool = buildTools().find(t => t.name === 'list_conductor_modules');
-  assert.ok(tool, 'list_conductor_modules tool registered');
+  const tool = buildTools().find(t => t.name === 'list_conductor_conventions');
+  assert.ok(tool, 'list_conductor_conventions tool registered');
   const result = await tool.handler({}, { instances });
   assert.ok(Array.isArray(result));
   assert.equal(result.length, 8);
@@ -188,7 +188,7 @@ test('list_conductor_modules MCP tool returns modules with enabled flag, no body
 
 // ── Plugin-contributed conductor conventions ──────────────────────────────
 // Exercises the provider seam directly (no real plugin host): the
-// fragment-catalog extraProvider (conductModules), mirroring the equivalent
+// fragment-catalog extraProvider (conductorConventions), mirroring the equivalent
 // project-conventions.test.mjs section. The provider is a module-level
 // singleton — set per test, reset after.
 
@@ -215,14 +215,14 @@ test('default selection (store absent) does NOT auto-include a plugin conductor 
   ]);
   const sel = await getSelection();
   assert.ok(!sel.includes('my-plugin/extra-rule'));
-  assert.deepEqual([...sel].sort(), SEED_MODULES.map(m => m.slug).sort());
+  assert.deepEqual([...sel].sort(), SEED_CONVENTIONS.map(m => m.slug).sort());
 });
 
 test('a plugin conductor convention, once explicitly selected, composes into CONDUCT.md', async () => {
   setPluginConductorConventionsProvider(async () => [
     { slug: 'my-plugin/extra-rule', name: 'Extra rule', description: 'd', body: '## Extra rule\n- x', plugin: 'my-plugin' },
   ]);
-  const enabled = await setSelection([...SEED_MODULES.map(m => m.slug), 'my-plugin/extra-rule']);
+  const enabled = await setSelection([...SEED_CONVENTIONS.map(m => m.slug), 'my-plugin/extra-rule']);
   const doc = await composeConduct(enabled);
   assert.match(doc, /## Extra rule/);
 });

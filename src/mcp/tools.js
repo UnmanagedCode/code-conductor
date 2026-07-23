@@ -616,14 +616,14 @@ export function buildTools() {
       annotations: { readOnlyHint: true },
     },
     {
-      name: 'list_conductor_modules',
+      name: 'list_conductor_conventions',
       description:
-        'List the conductor convention modules (slug, name, description, builtin, enabled) composed into ' +
-        '.conduct/CONDUCT.md. Built-in seeds have builtin:true; custom modules (builtin:false) and the ' +
+        'List the conductor conventions (slug, name, description, builtin, enabled) composed into ' +
+        '.conduct/CONDUCT.md. Built-in seeds have builtin:true; custom conventions (builtin:false) and the ' +
         'enabled selection are managed via the Settings → Conductor conventions panel. The always-on core ' +
         'is not listed here.',
       inputSchema: { type: 'object', properties: {}, required: [] },
-      handler: h.listConductorModules,
+      handler: h.listConductorConventions,
       annotations: { readOnlyHint: true },
     },
     {

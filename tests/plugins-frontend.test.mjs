@@ -886,7 +886,7 @@ test('new-project dialog groups core conventions + per-plugin conventions as pla
   const dom = buildNewProjectDom(window.document);
   const created = [];
   const routes = {
-    '/api/settings/project-conventions': { rules: [
+    '/api/settings/conventions/project': { conventions: [
       { slug: 'design-guidelines', name: 'Design guidelines', description: 'core', builtin: true },
       // A plugin convention carrying a scaffold facet: catalog entry exposes the
       // resolved directive text under `scaffold`.

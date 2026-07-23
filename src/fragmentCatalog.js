@@ -1,16 +1,16 @@
 // Shared fragment-catalog helper.
 //
-// Both the optional-guideline modules (project-creation CLAUDE.md sections)
-// and the conductor convention modules (composed into .conduct/CONDUCT.md)
-// are "a catalog of {slug, name, description} metadata whose body is a chunk
-// of markdown". Built-in bodies live in committed `.md` fragment files (one
-// per slug); custom entries are created at runtime via the UI, so their body
-// is stored inline in a JSON store under <orchStoreRoot>. This factory owns
-// the load/CRUD/compose logic so neither feature reimplements it.
+// The three convention scopes (project-creation CLAUDE.md sections, the
+// workspace projects-root CLAUDE.md, and the conductor .conduct/CONDUCT.md)
+// are each "a catalog of {slug, name, description} metadata whose body is a
+// chunk of markdown". Built-in bodies live in committed `.md` fragment files
+// (one per slug); custom entries are created at runtime via the UI, so their
+// body is stored inline in a JSON store under <orchStoreRoot>. This factory
+// owns the load/CRUD/compose logic so no scope reimplements it.
 //
 // The JSON store shape is { rules: [...], ...siblingKeys }. Sibling keys
-// (e.g. conductModules' `enabled` selection) are preserved across rule
-// writes and exposed via readState/patchState.
+// (e.g. the conductor/workspace scopes' `enabled` selection) are preserved
+// across rule writes and exposed via readState/patchState.
 
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
@@ -42,7 +42,7 @@ function validateFields({ name, description, body }, noun) {
 // seedDir:  absolute dir holding the built-in `.md` fragments
 // storeFile: () => absolute path of the custom/state JSON (lazy so PROJECTS_ROOT
 //            overrides in tests are honoured per-call)
-// noun:     label used in validation error messages (e.g. 'convention', 'module')
+// noun:     label used in validation error messages (e.g. 'convention')
 // extraProvider: optional async () => [{ slug, name, description, body, ...meta }]
 //            — a third body source merged after seeds+custom (e.g. enabled
 //            plugins' convention fragments). Entries are read-only (builtin:false)

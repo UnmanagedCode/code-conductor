@@ -72,15 +72,15 @@ export function installSettings({
   // Conductor → Workspace → Project). Each owns its own DOM (by id prefix) and
   // its scope's REST endpoints; see public/conventionsPanel.js.
   const conductorPanel = installConventionsPanel({
-    prefix: 'cc', base: '/api/settings/conductor-modules',
+    prefix: 'cc', base: '/api/settings/conventions/conductor',
     hasToggle: true, hasCoreRow: true, noun: 'conductor convention',
   });
   const workspacePanel = installConventionsPanel({
-    prefix: 'wk', base: '/api/settings/workspace-conventions',
+    prefix: 'wk', base: '/api/settings/conventions/workspace',
     hasToggle: true, hasCoreRow: true, noun: 'workspace convention',
   });
   const projectPanel = installConventionsPanel({
-    prefix: 'pc', base: '/api/settings/project-conventions',
+    prefix: 'pc', base: '/api/settings/conventions/project',
     hasToggle: false, hasCoreRow: false, noun: 'project convention',
   });
 

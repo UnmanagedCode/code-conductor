@@ -1,22 +1,22 @@
-// Project convention modules — a catalog of named CLAUDE.md sections that can be
+// Project conventions — a catalog of named CLAUDE.md sections that can be
 // appended inline to a new project's CLAUDE.md at creation time.
 //
 // Seeds are read-only (builtin: true); their bodies live in committed `.md`
-// fragments under project-conventions/<slug>.md. Custom conventions
-// (builtin: false) are persisted at <orchStoreRoot>/project-conventions.json.
+// fragments under conventions/project/<slug>.md. Custom conventions
+// (builtin: false) are persisted at <orchStoreRoot>/conventions/project.json.
 // Both the catalog and the compose/CRUD logic are provided by the shared
-// fragment-catalog helper, which is also used by the conductor convention
-// modules (src/conductModules.js) and the workspace convention modules
-// (src/workspaceModules.js).
+// fragment-catalog helper, which is also used by the conductor conventions
+// (src/conductorConventions.js) and the workspace conventions
+// (src/workspaceConventions.js).
 
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { orchStoreRoot } from './projects.js';
 import { createFragmentCatalog } from './fragmentCatalog.js';
 
-const CONVENTIONS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'project-conventions');
+const CONVENTIONS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'conventions', 'project');
 
-// Seed metadata (bodies in project-conventions/<slug>.md).
+// Seed metadata (bodies in conventions/project/<slug>.md).
 export const SEED_PROJECT_CONVENTIONS = [
   { slug: 'design-guidelines', name: 'Design guidelines',
     description: 'YAGNI; no god-modules; single source of truth; thin bootstrap; shared service layer' },
@@ -38,7 +38,7 @@ export function setPluginConventionsProvider(fn) { pluginConventionsProvider = f
 const catalog = createFragmentCatalog({
   seeds: SEED_PROJECT_CONVENTIONS,
   seedDir: CONVENTIONS_DIR,
-  storeFile: () => path.join(orchStoreRoot(), 'project-conventions.json'),
+  storeFile: () => path.join(orchStoreRoot(), 'conventions', 'project.json'),
   noun: 'convention',
   extraProvider: () => pluginConventionsProvider(),
 });

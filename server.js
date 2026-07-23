@@ -20,7 +20,7 @@ import { createPluginHost, WORKSPACE_AUTO_ASSIGN } from './src/plugins/registry.
 import { createPluginLibrary } from './src/plugins/library.js';
 import { buildPluginProxy } from './src/plugins/proxy.js';
 import { setPluginConventionsProvider } from './src/projectConventions.js';
-import { setPluginConductorConventionsProvider } from './src/conductModules.js';
+import { setPluginConductorConventionsProvider } from './src/conductorConventions.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 

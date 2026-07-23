@@ -61,24 +61,28 @@ import { isArchived, unmarkArchived } from './archivedSessions.js';
 import {
   getCatalog as getProjectConventionsCatalog,
   composeProjectConventionsBlock, composeProjectScaffold,
-  addCustomConvention, updateCustomConvention, deleteCustomConvention,
+  addCustomConvention as addProjectConvention,
+  updateCustomConvention as updateProjectConvention,
+  deleteCustomConvention as deleteProjectConvention,
 } from './projectConventions.js';
 import {
   CORE_META as CONDUCT_CORE_META,
-  getCatalog as getConductModulesCatalog,
-  getSelection as getConductSelection,
-  setSelection as setConductSelection,
-  addCustomModule, updateCustomModule, deleteCustomModule,
-} from './conductModules.js';
+  getCatalog as getConductorConventionsCatalog,
+  getSelection as getConductorSelection,
+  setSelection as setConductorSelection,
+  addCustomConvention as addConductorConvention,
+  updateCustomConvention as updateConductorConvention,
+  deleteCustomConvention as deleteConductorConvention,
+} from './conductorConventions.js';
 import {
   CORE_META as WORKSPACE_CORE_META,
-  getCatalog as getWorkspaceModulesCatalog,
+  getCatalog as getWorkspaceConventionsCatalog,
   getSelection as getWorkspaceSelection,
   setSelection as setWorkspaceSelection,
-  addCustomModule as addWorkspaceModule,
-  updateCustomModule as updateWorkspaceModule,
-  deleteCustomModule as deleteWorkspaceModule,
-} from './workspaceModules.js';
+  addCustomConvention as addWorkspaceConvention,
+  updateCustomConvention as updateWorkspaceConvention,
+  deleteCustomConvention as deleteWorkspaceConvention,
+} from './workspaceConventions.js';
 
 // Session ids are user-supplied path params on many routes; this is the single
 // allow-list + rejection (400 "invalid sessionId") they all share.
@@ -277,7 +281,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
       const scaffold = await composeProjectScaffold(name, conventions ?? []);
       const created = await createProject(name, { appendToCLAUDEmd });
       // Scaffold directive is returned (not persisted) — the caller folds it
-      // into the first worker brief. See conduct/core.md.
+      // into the first worker brief. See conventions/conductor/core.md.
       res.status(201).json({ ...created, ...(scaffold ? { scaffold } : {}) });
     } catch (e) { next(e); }
   });
@@ -1246,18 +1250,18 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
 
   // Settings → Conventions → Workspace block. code-conductor fully owns the
   // projects-root CLAUDE.md (the file every project imports via `@../CLAUDE.md`),
-  // composed from an always-on core + toggleable modules. Every mutation
+  // composed from an always-on core + toggleable conventions. Every mutation
   // regenerates that file so it takes effect immediately.
-  r.get('/settings/workspace-conventions', async (req, res, next) => {
+  r.get('/settings/conventions/workspace', async (req, res, next) => {
     try {
-      const [modules, enabled] = await Promise.all([getWorkspaceModulesCatalog(), getWorkspaceSelection()]);
-      res.json({ core: WORKSPACE_CORE_META, modules, enabled });
+      const [conventions, enabled] = await Promise.all([getWorkspaceConventionsCatalog(), getWorkspaceSelection()]);
+      res.json({ core: WORKSPACE_CORE_META, conventions, enabled });
     } catch (e) { next(e); }
   });
 
   // Literal /selection must precede the /:slug route below so it isn't
   // swallowed as a slug.
-  r.put('/settings/workspace-conventions/selection', async (req, res, next) => {
+  r.put('/settings/conventions/workspace/selection', async (req, res, next) => {
     try {
       const { enabled } = req.body ?? {};
       const saved = await setWorkspaceSelection(enabled);
@@ -1266,29 +1270,29 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
     } catch (e) { next(e); }
   });
 
-  r.post('/settings/workspace-conventions', async (req, res, next) => {
+  r.post('/settings/conventions/workspace', async (req, res, next) => {
     try {
       const { slug, name, description, body } = req.body ?? {};
-      const module = await addWorkspaceModule({ slug, name, description, body });
+      const convention = await addWorkspaceConvention({ slug, name, description, body });
       await ensureRootClaudeMd();
-      res.status(201).json({ module });
+      res.status(201).json({ convention });
     } catch (e) { next(e); }
   });
 
-  r.put('/settings/workspace-conventions/:slug', async (req, res, next) => {
+  r.put('/settings/conventions/workspace/:slug', async (req, res, next) => {
     try {
       const { slug } = req.params;
       const { name, description, body } = req.body ?? {};
-      const module = await updateWorkspaceModule(slug, { name, description, body });
+      const convention = await updateWorkspaceConvention(slug, { name, description, body });
       await ensureRootClaudeMd();
-      res.json({ module });
+      res.json({ convention });
     } catch (e) { next(e); }
   });
 
-  r.delete('/settings/workspace-conventions/:slug', async (req, res, next) => {
+  r.delete('/settings/conventions/workspace/:slug', async (req, res, next) => {
     try {
       const { slug } = req.params;
-      const result = await deleteWorkspaceModule(slug);
+      const result = await deleteWorkspaceConvention(slug);
       await ensureRootClaudeMd();
       res.json(result);
     } catch (e) { next(e); }
@@ -1297,79 +1301,79 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
   // Settings → Conventions → Project block — catalog read + custom CRUD.
   // Selected per project at creation (snapshotted into the new project's
   // CLAUDE.md); no global selection, no live regeneration.
-  r.get('/settings/project-conventions', async (req, res, next) => {
-    try { res.json({ rules: await getProjectConventionsCatalog() }); } catch (e) { next(e); }
+  r.get('/settings/conventions/project', async (req, res, next) => {
+    try { res.json({ conventions: await getProjectConventionsCatalog() }); } catch (e) { next(e); }
   });
 
-  r.post('/settings/project-conventions', async (req, res, next) => {
+  r.post('/settings/conventions/project', async (req, res, next) => {
     try {
       const { slug, name, description, body } = req.body ?? {};
-      const rule = await addCustomConvention({ slug, name, description, body });
-      res.status(201).json({ rule });
+      const convention = await addProjectConvention({ slug, name, description, body });
+      res.status(201).json({ convention });
     } catch (e) { next(e); }
   });
 
-  r.put('/settings/project-conventions/:slug', async (req, res, next) => {
+  r.put('/settings/conventions/project/:slug', async (req, res, next) => {
     try {
       const { slug } = req.params;
       const { name, description, body } = req.body ?? {};
-      const rule = await updateCustomConvention(slug, { name, description, body });
-      res.json({ rule });
+      const convention = await updateProjectConvention(slug, { name, description, body });
+      res.json({ convention });
     } catch (e) { next(e); }
   });
 
-  r.delete('/settings/project-conventions/:slug', async (req, res, next) => {
+  r.delete('/settings/conventions/project/:slug', async (req, res, next) => {
     try {
       const { slug } = req.params;
-      const result = await deleteCustomConvention(slug);
+      const result = await deleteProjectConvention(slug);
       res.json(result);
     } catch (e) { next(e); }
   });
 
-  // Conductor convention modules — global (singleton conductor) selection +
-  // custom-module CRUD. Every mutation regenerates .conduct/CONDUCT.md so the
-  // next-spawned conductor session picks up the change.
-  r.get('/settings/conductor-modules', async (req, res, next) => {
+  // Settings → Conventions → Conductor block — global (singleton conductor)
+  // selection + custom-convention CRUD. Every mutation regenerates
+  // .conduct/CONDUCT.md so the next-spawned conductor session picks up the change.
+  r.get('/settings/conventions/conductor', async (req, res, next) => {
     try {
-      const [modules, enabled] = await Promise.all([getConductModulesCatalog(), getConductSelection()]);
-      res.json({ core: CONDUCT_CORE_META, modules, enabled });
+      const [conventions, enabled] = await Promise.all([getConductorConventionsCatalog(), getConductorSelection()]);
+      res.json({ core: CONDUCT_CORE_META, conventions, enabled });
     } catch (e) { next(e); }
   });
 
   // Literal /selection must precede the /:slug route below so it isn't
   // swallowed as a slug.
-  r.put('/settings/conductor-modules/selection', async (req, res, next) => {
+  r.put('/settings/conventions/conductor/selection', async (req, res, next) => {
     try {
       const { enabled } = req.body ?? {};
-      const saved = await setConductSelection(enabled);
+      const saved = await setConductorSelection(enabled);
       await ensureConductProject();
       res.json({ enabled: saved });
     } catch (e) { next(e); }
   });
 
-  r.post('/settings/conductor-modules', async (req, res, next) => {
+  r.post('/settings/conventions/conductor', async (req, res, next) => {
     try {
       const { slug, name, description, body } = req.body ?? {};
-      const module = await addCustomModule({ slug, name, description, body });
+      const convention = await addConductorConvention({ slug, name, description, body });
       await ensureConductProject();
-      res.status(201).json({ module });
+      res.status(201).json({ convention });
     } catch (e) { next(e); }
   });
 
-  r.put('/settings/conductor-modules/:slug', async (req, res, next) => {
+  r.put('/settings/conventions/conductor/:slug', async (req, res, next) => {
     try {
       const { slug } = req.params;
       const { name, description, body } = req.body ?? {};
-      const module = await updateCustomModule(slug, { name, description, body });
+      const convention = await updateConductorConvention(slug, { name, description, body });
       await ensureConductProject();
-      res.json({ module });
+      res.json({ convention });
     } catch (e) { next(e); }
   });
 
-  r.delete('/settings/conductor-modules/:slug', async (req, res, next) => {
+  r.delete('/settings/conventions/conductor/:slug', async (req, res, next) => {
     try {
       const { slug } = req.params;
-      const result = await deleteCustomModule(slug);
+      const result = await deleteConductorConvention(slug);
       await ensureConductProject();
       res.json(result);
     } catch (e) { next(e); }

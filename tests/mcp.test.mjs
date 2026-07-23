@@ -142,7 +142,7 @@ test('tools/list returns the full expected tool catalog', async () => {
     'get_recent_messages', 'get_transcript',
     'interrupt_turn',
     'kill_instance',
-    'list_conductor_modules',
+    'list_conductor_conventions',
     'list_instances', 'list_project_conventions', 'list_projects', 'list_sessions',
     'list_workspaces', 'list_worktrees',
     'locate_session',
