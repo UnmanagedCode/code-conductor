@@ -23,6 +23,7 @@ import { truncateSessionAtUserMessage } from './sessionEdit.js';
 import { saveAttachment, isImageType } from './attachments.js';
 import { buildApprovePrompt } from './planApproval.js';
 import { reconstructTasks } from './taskReconstruct.js';
+import { buildArchive } from './eventArchive.js';
 import { IdleSubscriptionHub } from './idleSubscriptions.js';
 import { OverageResumeController } from './overageResume.js';
 import { UsageOverageMonitor } from './usageOverageMonitor.js';
@@ -653,12 +654,30 @@ export class Instance extends EventEmitter {
   // the snapshot tail begins. The client seeds its TaskTracker with this before
   // replaying the tail, so a batch whose TaskCreate sits below the tail still
   // shows the active panel (and completes correctly if it finishes inside the
-  // tail). Reconstructed from the retained ring only: a create evicted below
-  // the ring (created > cap events ago) is not recovered here — deep lazy pages
-  // that load the jsonl archive reconstruct it instead.
-  reconstructActiveTasks(beforeSeq) {
+  // tail). Reconstructed from the retained ring first (cheap); only when the
+  // ring alone yields an orphan TaskUpdate (its create was evicted below the
+  // ring) do we widen the scan to the jsonl archive — the same combine the lazy
+  // paging path uses (buildArchive → archive.cut ++ ring). Bounded by the exact
+  // bug condition so the archive read never runs on the common in-ring case.
+  async reconstructActiveTasks(beforeSeq) {
     const events = this.ring.buf.filter(ev => ev._seq < beforeSeq);
-    return reconstructTasks(events).activeAtEnd;
+    const { activeAtEnd, hadOrphanUpdate } = reconstructTasks(events);
+    const tb = this.ring.trimmedBefore;
+    if (!hadOrphanUpdate || tb <= 0 || !this.sessionId) return activeAtEnd;
+    // Best-effort widening: a non-ENOENT jsonl read error (EACCES/EIO/…) must
+    // never abort the snapshot frame — fall back to the ring-only result the
+    // pre-archive code always returned.
+    try {
+      const archive = await buildArchive({
+        cwd: this.cwd, sessionId: this.sessionId,
+        ring: this.ringSnapshot(), trimmedBefore: tb,
+        userEchoCount: this._userEchoCount,
+      });
+      const combined = archive.events.slice(0, archive.cut).concat(events);
+      return reconstructTasks(combined).activeAtEnd;
+    } catch {
+      return activeAtEnd;
+    }
   }
 
   // Open log files for the raw CLI streams when debug mode is on. Called

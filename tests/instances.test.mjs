@@ -678,6 +678,172 @@ test('resuming an existing session replays the persisted transcript into the rin
   }
 });
 
+// Build a synthetic session jsonl, resume it into an instance with a small
+// ring cap so early turns get evicted below the ring, and return the live
+// instance so the test can exercise reconstructActiveTasks against the
+// jsonl archive. `lines` is an array of jsonl records (chronological).
+async function resumeWithEvictedHistory({ project, sid, lines, ringCap }) {
+  const fsp = (await import('node:fs')).promises;
+  await api(baseUrl, 'POST', '/api/projects', { name: project });
+  const projectPath = path.join(ctx.projectsRoot, project);
+  const sessionDir = path.join(ctx.claudeProjectsRoot, encodeCwd(projectPath));
+  await fsp.mkdir(sessionDir, { recursive: true });
+  await fsp.writeFile(
+    path.join(sessionDir, `${sid}.jsonl`),
+    lines.map(l => JSON.stringify(l)).join('\n') + '\n',
+  );
+  const prevCap = process.env.ORCH_EVENT_RING_CAP;
+  process.env.ORCH_EVENT_RING_CAP = String(ringCap);
+  try {
+    const r = await api(baseUrl, 'POST', '/api/instances', {
+      project, mode: 'bypassPermissions', resume: sid,
+    });
+    const inst = instances.get(r.body.id);
+    await waitFor(() => inst.status === 'idle');
+    return inst;
+  } finally {
+    if (prevCap === undefined) delete process.env.ORCH_EVENT_RING_CAP;
+    else process.env.ORCH_EVENT_RING_CAP = prevCap;
+  }
+}
+
+// jsonl record builders (mirror the shapes the real CLI persists).
+const userText = (uuid, text) => ({ type: 'user', uuid, message: { role: 'user', content: text } });
+const asstToolUse = (uuid, msgId, id, name, input) =>
+  ({ type: 'assistant', uuid, message: { id: msgId, role: 'assistant', content: [{ type: 'tool_use', id, name, input }] } });
+const asstText = (uuid, msgId, text) =>
+  ({ type: 'assistant', uuid, message: { id: msgId, role: 'assistant', content: [{ type: 'text', text }] } });
+const userToolResult = (uuid, toolUseId, content) =>
+  ({ type: 'user', uuid, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: toolUseId, content, is_error: false }] } });
+
+test('reconstructActiveTasks recovers an in-flight batch whose TaskCreate was evicted below the ring', async () => {
+  // The exact bug (commit 69ed11b): a TaskCreate emitted > ring-cap events ago
+  // is gone from the ring, but an in-tail TaskUpdate for it survives. Ring-only
+  // reconstruction drops the orphan update; widening to the jsonl archive
+  // recovers the create so the panel seed shows the still-active task.
+  const prevScenario = process.env.FAKE_CLAUDE_SCENARIO;
+  process.env.FAKE_CLAUDE_SCENARIO = SCENARIO_RESUME;
+  try {
+    const lines = [
+      userText('u0', 'start'),
+      asstToolUse('a0', 'm0', 'tc', 'TaskCreate', { subject: 'Big batch' }),
+      userToolResult('r0', 'tc', 'Task #1 created successfully: Big batch'),
+    ];
+    for (let k = 1; k <= 12; k++) {
+      lines.push(userText(`u${k}`, `filler ${k}`));
+      lines.push(asstText(`a${k}`, `m${k}`, `reply ${k}`));
+    }
+    // Final turn: an in-flight update for the (now-evicted) task. It carries no
+    // subject — a recovered subject can only come from the archived create.
+    lines.push(userText('uF', 'please update'));
+    lines.push(asstToolUse('aF', 'mF', 'tu', 'TaskUpdate', { taskId: '1', status: 'in_progress' }));
+
+    const inst = await resumeWithEvictedHistory({
+      project: 'evicted-create', sid: '77777777-8888-9999-aaaa-bbbbbbbbbbbb',
+      lines, ringCap: 6,
+    });
+
+    // Preconditions: the create really was evicted, the update really survived.
+    assert.ok(inst.ring.trimmedBefore > 0, 'eviction happened');
+    const ring = inst.ringSnapshot();
+    assert.ok(!ring.some(e => e.name === 'TaskCreate'), 'TaskCreate evicted from the ring');
+    assert.ok(ring.some(e => e.name === 'TaskUpdate'), 'TaskUpdate retained in the ring');
+
+    const active = await inst.reconstructActiveTasks(Number.MAX_SAFE_INTEGER);
+    assert.deepEqual(
+      active.map(t => ({ id: t.id, status: t.status, subject: t.subject })),
+      [{ id: '1', status: 'in_progress', subject: 'Big batch' }],
+      'in-flight task recovered from the archive, subject sourced from the evicted create',
+    );
+  } finally {
+    process.env.FAKE_CLAUDE_SCENARIO = prevScenario;
+  }
+});
+
+test('reconstructActiveTasks does not resurrect a batch that completed inside the archive', async () => {
+  // Widening to the archive must respect completion: a batch whose create AND
+  // completing update both sit below the ring yields no active task, even when
+  // a trailing (orphan) update for it survives in the tail and triggers the
+  // archive read.
+  const prevScenario = process.env.FAKE_CLAUDE_SCENARIO;
+  process.env.FAKE_CLAUDE_SCENARIO = SCENARIO_RESUME;
+  try {
+    const lines = [
+      userText('u0', 'start'),
+      asstToolUse('a0', 'm0', 'tc', 'TaskCreate', { subject: 'Done batch' }),
+      userToolResult('r0', 'tc', 'Task #1 created successfully: Done batch'),
+      asstToolUse('a0b', 'm0b', 'tu0', 'TaskUpdate', { taskId: '1', status: 'completed' }),
+    ];
+    for (let k = 1; k <= 12; k++) {
+      lines.push(userText(`u${k}`, `filler ${k}`));
+      lines.push(asstText(`a${k}`, `m${k}`, `reply ${k}`));
+    }
+    // Trailing redundant update for the already-completed task — an orphan at
+    // the ring level (create evicted) that forces the archive widening.
+    lines.push(userText('uF', 'confirm'));
+    lines.push(asstToolUse('aF', 'mF', 'tuF', 'TaskUpdate', { taskId: '1', status: 'completed' }));
+
+    const inst = await resumeWithEvictedHistory({
+      project: 'evicted-done', sid: '88888888-9999-aaaa-bbbb-cccccccccccc',
+      lines, ringCap: 6,
+    });
+
+    assert.ok(inst.ring.trimmedBefore > 0, 'eviction happened');
+    const ring = inst.ringSnapshot();
+    assert.ok(!ring.some(e => e.name === 'TaskCreate'), 'TaskCreate evicted from the ring');
+
+    const active = await inst.reconstructActiveTasks(Number.MAX_SAFE_INTEGER);
+    assert.deepEqual(active, [], 'completed batch is not resurrected as active');
+  } finally {
+    process.env.FAKE_CLAUDE_SCENARIO = prevScenario;
+  }
+});
+
+test('reconstructActiveTasks falls back to the ring-only result when the archive read errors (non-ENOENT)', async () => {
+  // Regression: the archive widening awaits a jsonl read that can throw on a
+  // real fs error (EACCES/EIO/EISDIR/…). wsHub's subscribe handler wraps the
+  // whole snapshot build in try/catch, so a throw here would drop the ENTIRE
+  // snapshot frame — worse than the bug the widening fixes. reconstructActiveTasks
+  // must swallow the read error and return the ring-only reconstruction.
+  const prevScenario = process.env.FAKE_CLAUDE_SCENARIO;
+  process.env.FAKE_CLAUDE_SCENARIO = SCENARIO_RESUME;
+  const fsp = (await import('node:fs')).promises;
+  const project = 'evicted-archive-error';
+  const sid = '99999999-aaaa-bbbb-cccc-dddddddddddd';
+  try {
+    // Same shape as the recovery test: an in-flight update whose create is
+    // evicted, so hadOrphanUpdate is true and the widening path is taken.
+    const lines = [
+      userText('u0', 'start'),
+      asstToolUse('a0', 'm0', 'tc', 'TaskCreate', { subject: 'Big batch' }),
+      userToolResult('r0', 'tc', 'Task #1 created successfully: Big batch'),
+    ];
+    for (let k = 1; k <= 12; k++) {
+      lines.push(userText(`u${k}`, `filler ${k}`));
+      lines.push(asstText(`a${k}`, `m${k}`, `reply ${k}`));
+    }
+    lines.push(userText('uF', 'please update'));
+    lines.push(asstToolUse('aF', 'mF', 'tu', 'TaskUpdate', { taskId: '1', status: 'in_progress' }));
+
+    const inst = await resumeWithEvictedHistory({ project, sid, lines, ringCap: 6 });
+
+    // Make the archive read fail with EISDIR (non-ENOENT, uid-independent):
+    // replace the session jsonl with a directory at the same path.
+    const jsonlPath = path.join(
+      ctx.claudeProjectsRoot, encodeCwd(path.join(ctx.projectsRoot, project)), `${sid}.jsonl`,
+    );
+    await fsp.rm(jsonlPath);
+    await fsp.mkdir(jsonlPath);
+
+    // Resolves (does not reject) and yields the ring-only reconstruction, which
+    // cannot see the evicted create → the orphan update contributes nothing.
+    const active = await inst.reconstructActiveTasks(Number.MAX_SAFE_INTEGER);
+    assert.deepEqual(active, [], 'ring-only fallback, no throw past the snapshot build');
+  } finally {
+    process.env.FAKE_CLAUDE_SCENARIO = prevScenario;
+  }
+});
+
 test('two concurrent resumes of one session coalesce to a single instance (no duplicate --resume)', async () => {
   // Regression: on a resume-restart the boot-time manifest restore and the
   // reloaded frontend's anchor auto-resume both call create({resume:<sid>}).

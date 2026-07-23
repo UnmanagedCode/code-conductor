@@ -148,7 +148,7 @@ export function attachWsHub({ wss, instances }) {
             // GET /api/instances/:id/events?before=<seq>.
             const events = inst.snapshotTail();
             const tailStartSeq = events.length ? events[0]._seq : inst.ring.trimmedBefore;
-            const tasksAtTailStart = inst.reconstructActiveTasks(tailStartSeq);
+            const tasksAtTailStart = await inst.reconstructActiveTasks(tailStartSeq);
             // Re-attach the ephemeral thinking-token counter when a block is
             // still streaming (the per-token events aren't retained in the ring
             // — see EventLog.push). Appended LAST so the client applies it to

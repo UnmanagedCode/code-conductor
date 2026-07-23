@@ -78,6 +78,34 @@ test('status:"deleted" removes the task; an all-deleted batch never "completes"'
   assert.deepEqual(activeAtEnd, []);
 });
 
+test('hadOrphanUpdate is true when a TaskUpdate references an absent create', () => {
+  // The create for id '1' is not in the scanned events (evicted below the ring).
+  const events = seq([
+    update('u1', '1', { status: 'in_progress' }),
+  ]);
+  const { hadOrphanUpdate, activeAtEnd } = reconstructTasks(events);
+  assert.equal(hadOrphanUpdate, true, 'orphan update flagged for archive widening');
+  assert.deepEqual(activeAtEnd, [], 'orphan update alone binds no task');
+});
+
+test('hadOrphanUpdate is false when every update matches a present create', () => {
+  const events = seq([
+    create('a', 'A'), created('a', '1', 'A'),
+    update('u1', '1', { status: 'in_progress' }),
+  ]);
+  const { hadOrphanUpdate } = reconstructTasks(events);
+  assert.equal(hadOrphanUpdate, false);
+});
+
+test('hadOrphanUpdate is false for a deleted-id update with no create', () => {
+  // A delete of an already-absent id is not a create-eviction signal.
+  const events = seq([
+    update('u1', '9', { status: 'deleted' }),
+  ]);
+  const { hadOrphanUpdate } = reconstructTasks(events);
+  assert.equal(hadOrphanUpdate, false);
+});
+
 test('non-task tool events are ignored', () => {
   const events = seq([
     { kind: 'tool_use', name: 'Bash', toolUseId: 'x', input: { command: 'ls' } },
