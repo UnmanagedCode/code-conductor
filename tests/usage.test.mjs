@@ -109,6 +109,61 @@ test('UsageTracker: turn_end accumulates cum but does NOT touch lastUsage', asyn
   });
 });
 
+test('UsageTracker: turn_end WITHOUT usage still counts a turn (Ollama shape)', async () => {
+  const { UsageTracker } = await import(USAGE_URL);
+  const t = new UsageTracker();
+  t.apply({ kind: 'system', subtype: 'init', data: { model: 'qwen2.5-coder' } });
+  // The Ollama backend (`ollama launch claude`) emits `result` lines with no
+  // `usage` block (see tests/fixtures/scenario-ollama-bare-model.json). The chip
+  // must still advance turns + duration + cost — gating on usage undercounted
+  // multi-turn sessions down to whatever few turns happened to carry usage.
+  for (let i = 0; i < 3; i++) {
+    t.apply({ kind: 'turn_end', durationMs: 10, costDelta: 0.0001 });
+  }
+  const { cost, ...rest } = t.cum;
+  assert.deepEqual(rest, {
+    inputTokens: 0, outputTokens: 0,   // no fabrication — no usage was present
+    cacheRead: 0, cacheCreation: 0,
+    turns: 3, durationMs: 30,
+  });
+  assert.ok(Math.abs(cost - 0.0003) < 1e-9, `expected cost ~0.0003, got ${cost}`);
+});
+
+test('UsageTracker: turn_end WITH usage still accumulates tokens (Anthropic — no regression)', async () => {
+  const { UsageTracker } = await import(USAGE_URL);
+  const t = new UsageTracker();
+  t.apply({
+    kind: 'turn_end', durationMs: 500, costDelta: 0.01,
+    usage: { input_tokens: 100, output_tokens: 50, cache_read_input_tokens: 2000, cache_creation_input_tokens: 100 },
+  });
+  t.apply({
+    kind: 'turn_end', durationMs: 700, costDelta: 0.02,
+    usage: { input_tokens: 200, output_tokens: 70, cache_read_input_tokens: 3000, cache_creation_input_tokens: 200 },
+  });
+  const { cost, ...rest } = t.cum;
+  assert.deepEqual(rest, {
+    inputTokens: 300, outputTokens: 120,
+    cacheRead: 5000, cacheCreation: 300,
+    turns: 2, durationMs: 1200,
+  });
+  assert.ok(Math.abs(cost - 0.03) < 1e-9, `expected cost ~0.03, got ${cost}`);
+});
+
+test('UsageTracker: mixed usage/no-usage turns — turns count all, tokens only the usage-bearing ones', async () => {
+  const { UsageTracker } = await import(USAGE_URL);
+  const t = new UsageTracker();
+  t.apply({ kind: 'turn_end', durationMs: 10, costDelta: 0.0001 });                              // no usage
+  t.apply({ kind: 'turn_end', durationMs: 20, costDelta: 0.01, usage: { input_tokens: 100, output_tokens: 40 } });
+  t.apply({ kind: 'turn_end', durationMs: 30, costDelta: 0.0001 });                              // no usage
+  const { cost, ...rest } = t.cum;
+  assert.deepEqual(rest, {
+    inputTokens: 100, outputTokens: 40,   // only the middle turn carried usage
+    cacheRead: 0, cacheCreation: 0,
+    turns: 3, durationMs: 60,
+  });
+  assert.ok(Math.abs(cost - 0.0102) < 1e-9, `expected cost ~0.0102, got ${cost}`);
+});
+
 test('UsageTracker: message_start is the only source of currentContextSize', async () => {
   const { UsageTracker } = await import(USAGE_URL);
   const t = new UsageTracker();
@@ -195,7 +250,6 @@ test('UsageTracker: ignores unrelated event kinds', async () => {
   const t = new UsageTracker();
   t.apply({ kind: 'text_delta', text: 'hello' });
   t.apply({ kind: 'tool_use', name: 'Bash', input: {} });
-  t.apply({ kind: 'turn_end' /* no usage */ });
   assert.equal(t.currentContextSize(), null);
   assert.equal(t.cum.turns, 0);
 });

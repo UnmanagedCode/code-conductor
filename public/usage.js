@@ -102,12 +102,20 @@ export class UsageTracker {
     // So we MUST NOT update lastUsage from turn_end (that's the bug
     // that produced ctx 743% on a 1M window). turn_end only contributes
     // to cum.*, which is genuinely cumulative work over the session.
-    if (ev.kind === 'turn_end' && ev.usage) {
+    // Turn/duration/cost accumulate on EVERY turn_end — the Ollama backend
+    // (`ollama launch claude`) emits `result` lines with no `usage` block, so
+    // gating the turn count on `ev.usage` dropped every Ollama turn and the chip
+    // showed a stale count. Token fields stay guarded on `usage`: Ollama has no
+    // per-turn token sum to trust (its `message_start` figures are context-size
+    // snapshots, not summable totals), so we don't fabricate them.
+    if (ev.kind === 'turn_end') {
       const u = ev.usage;
-      this.cum.inputTokens   += u.input_tokens ?? 0;
-      this.cum.outputTokens  += u.output_tokens ?? 0;
-      this.cum.cacheRead     += u.cache_read_input_tokens ?? 0;
-      this.cum.cacheCreation += u.cache_creation_input_tokens ?? 0;
+      if (u) {
+        this.cum.inputTokens   += u.input_tokens ?? 0;
+        this.cum.outputTokens  += u.output_tokens ?? 0;
+        this.cum.cacheRead     += u.cache_read_input_tokens ?? 0;
+        this.cum.cacheCreation += u.cache_creation_input_tokens ?? 0;
+      }
       // costDelta is the actual cost of this turn; ev.cost is the cumulative
       // session total emitted by the CLI. Use the delta to avoid double-counting.
       this.cum.cost          += ev.costDelta ?? ev.cost ?? 0;
