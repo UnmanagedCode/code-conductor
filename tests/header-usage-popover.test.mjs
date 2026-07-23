@@ -1,13 +1,22 @@
-// Tests for the conditional "7-day (Fable)" line in the combined chip's usage
-// popover (buildCombinedPopover in header.js). The account-wide /api/usage
-// payload now carries a top-level `limits` array; a Fable-scoped entry looks
-// like { kind: 'weekly_scoped', percent, resets_at, scope: { model: { display_name: 'Fable' } } }.
-// The line must render ONLY when such an entry is present — no placeholder
-// row for subscriptions without Fable access.
+// Tests for two independent things rendered inside the combined chip's usage
+// popover (buildCombinedPopover in header.js):
+//
+// 1. The conditional "7-day (Fable)" line — the account-wide /api/usage
+//    payload now carries a top-level `limits` array; a Fable-scoped entry
+//    looks like { kind: 'weekly_scoped', percent, resets_at, scope: { model:
+//    { display_name: 'Fable' } } }. The line must render ONLY when such an
+//    entry is present — no placeholder row for subscriptions without Fable
+//    access.
+// 2. The "Cost" row: for a claude-backed session it renders the accumulated
+//    `$${cost}` figure as before; for an ollama-backed session it must NOT
+//    show that figure — the CLI's total_cost_usd is Anthropic list pricing
+//    applied to a free local backend, meaningless here (see
+//    src/costTracking.js's matching costs.jsonl fix) — so it renders the
+//    popover's own "value unavailable" em-dash instead.
 //
 // Same happy-dom + installHeader() harness as tests/header-change-model.test.mjs,
-// extended with a settable getAccountUsage so each test can supply its own
-// /api/usage-shaped fixture.
+// extended with a settable getAccountUsage (for the Fable cases) and a
+// getUsageTracker accessor (for the Cost cases).
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -91,6 +100,10 @@ async function setup() {
     setInstances: (v) => { instances = v; },
     setActiveId: (v) => { activeId = v; },
     setAccountUsage: (v) => { accountUsage = v; },
+    getUsageTracker: (id) => {
+      if (!usageByInstance.has(id)) usageByInstance.set(id, new UsageTracker());
+      return usageByInstance.get(id);
+    },
   };
 }
 
@@ -104,7 +117,7 @@ const LIVE_INSTANCE = {
 function openPopoverRows(dom, document) {
   const chip = dom.tiUsageSlot.querySelector('.ih-combined');
   assert.ok(chip, 'combined chip must be rendered');
-  chip.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+  chip.dispatchEvent(new document.defaultView.MouseEvent('click', { bubbles: true }));
   const popover = document.querySelector('.ih-usage-popover');
   assert.ok(popover, 'popover must open on chip click');
   return [...popover.querySelectorAll('.ih-usage-row')].map(r => ({
@@ -179,8 +192,42 @@ test('Fable line does not render when account usage is entirely unavailable', as
   header.update();
 
   const chip = dom.tiUsageSlot.querySelector('.ih-combined');
-  chip.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+  chip.dispatchEvent(new document.defaultView.MouseEvent('click', { bubbles: true }));
   const popover = document.querySelector('.ih-usage-popover');
   assert.ok(popover, 'popover must still open');
   assert.ok(!popover.textContent.includes('Fable'), 'no Fable text anywhere when account usage is null');
+});
+
+test('usage popover suppresses the Cost row for an ollama-backed session', async () => {
+  const { dom, document, header, setInstances, setActiveId, getUsageTracker } = await setup();
+  setInstances([{ ...LIVE_INSTANCE, backendKind: 'ollama' }]);
+  setActiveId('inst-1');
+  getUsageTracker('inst-1').apply({
+    kind: 'turn_end',
+    usage: { input_tokens: 100, output_tokens: 50, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+    costDelta: 0.05,
+  });
+  header.update();
+
+  const rows = openPopoverRows(dom, document);
+  const costRow = rows.find(r => r.key === 'Cost');
+  assert.ok(costRow, 'Cost row should be rendered once turns > 0');
+  assert.equal(costRow.value, '—', 'ollama session must not show the Anthropic-priced cost figure');
+});
+
+test('usage popover still shows the accumulated cost for a claude-backed session', async () => {
+  const { dom, document, header, setInstances, setActiveId, getUsageTracker } = await setup();
+  setInstances([{ ...LIVE_INSTANCE, backendKind: 'claude' }]);
+  setActiveId('inst-1');
+  getUsageTracker('inst-1').apply({
+    kind: 'turn_end',
+    usage: { input_tokens: 100, output_tokens: 50, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+    costDelta: 0.05,
+  });
+  header.update();
+
+  const rows = openPopoverRows(dom, document);
+  const costRow = rows.find(r => r.key === 'Cost');
+  assert.ok(costRow, 'Cost row should be rendered once turns > 0');
+  assert.equal(costRow.value, '$0.0500', 'claude session cost rendering is unchanged');
 });
