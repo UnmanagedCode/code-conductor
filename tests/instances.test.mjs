@@ -799,6 +799,51 @@ test('reconstructActiveTasks does not resurrect a batch that completed inside th
   }
 });
 
+test('reconstructActiveTasks falls back to the ring-only result when the archive read errors (non-ENOENT)', async () => {
+  // Regression: the archive widening awaits a jsonl read that can throw on a
+  // real fs error (EACCES/EIO/EISDIR/…). wsHub's subscribe handler wraps the
+  // whole snapshot build in try/catch, so a throw here would drop the ENTIRE
+  // snapshot frame — worse than the bug the widening fixes. reconstructActiveTasks
+  // must swallow the read error and return the ring-only reconstruction.
+  const prevScenario = process.env.FAKE_CLAUDE_SCENARIO;
+  process.env.FAKE_CLAUDE_SCENARIO = SCENARIO_RESUME;
+  const fsp = (await import('node:fs')).promises;
+  const project = 'evicted-archive-error';
+  const sid = '99999999-aaaa-bbbb-cccc-dddddddddddd';
+  try {
+    // Same shape as the recovery test: an in-flight update whose create is
+    // evicted, so hadOrphanUpdate is true and the widening path is taken.
+    const lines = [
+      userText('u0', 'start'),
+      asstToolUse('a0', 'm0', 'tc', 'TaskCreate', { subject: 'Big batch' }),
+      userToolResult('r0', 'tc', 'Task #1 created successfully: Big batch'),
+    ];
+    for (let k = 1; k <= 12; k++) {
+      lines.push(userText(`u${k}`, `filler ${k}`));
+      lines.push(asstText(`a${k}`, `m${k}`, `reply ${k}`));
+    }
+    lines.push(userText('uF', 'please update'));
+    lines.push(asstToolUse('aF', 'mF', 'tu', 'TaskUpdate', { taskId: '1', status: 'in_progress' }));
+
+    const inst = await resumeWithEvictedHistory({ project, sid, lines, ringCap: 6 });
+
+    // Make the archive read fail with EISDIR (non-ENOENT, uid-independent):
+    // replace the session jsonl with a directory at the same path.
+    const jsonlPath = path.join(
+      ctx.claudeProjectsRoot, encodeCwd(path.join(ctx.projectsRoot, project)), `${sid}.jsonl`,
+    );
+    await fsp.rm(jsonlPath);
+    await fsp.mkdir(jsonlPath);
+
+    // Resolves (does not reject) and yields the ring-only reconstruction, which
+    // cannot see the evicted create → the orphan update contributes nothing.
+    const active = await inst.reconstructActiveTasks(Number.MAX_SAFE_INTEGER);
+    assert.deepEqual(active, [], 'ring-only fallback, no throw past the snapshot build');
+  } finally {
+    process.env.FAKE_CLAUDE_SCENARIO = prevScenario;
+  }
+});
+
 test('two concurrent resumes of one session coalesce to a single instance (no duplicate --resume)', async () => {
   // Regression: on a resume-restart the boot-time manifest restore and the
   // reloaded frontend's anchor auto-resume both call create({resume:<sid>}).

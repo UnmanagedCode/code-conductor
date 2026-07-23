@@ -664,13 +664,20 @@ export class Instance extends EventEmitter {
     const { activeAtEnd, hadOrphanUpdate } = reconstructTasks(events);
     const tb = this.ring.trimmedBefore;
     if (!hadOrphanUpdate || tb <= 0 || !this.sessionId) return activeAtEnd;
-    const archive = await buildArchive({
-      cwd: this.cwd, sessionId: this.sessionId,
-      ring: this.ringSnapshot(), trimmedBefore: tb,
-      userEchoCount: this._userEchoCount,
-    });
-    const combined = archive.events.slice(0, archive.cut).concat(events);
-    return reconstructTasks(combined).activeAtEnd;
+    // Best-effort widening: a non-ENOENT jsonl read error (EACCES/EIO/…) must
+    // never abort the snapshot frame — fall back to the ring-only result the
+    // pre-archive code always returned.
+    try {
+      const archive = await buildArchive({
+        cwd: this.cwd, sessionId: this.sessionId,
+        ring: this.ringSnapshot(), trimmedBefore: tb,
+        userEchoCount: this._userEchoCount,
+      });
+      const combined = archive.events.slice(0, archive.cut).concat(events);
+      return reconstructTasks(combined).activeAtEnd;
+    } catch {
+      return activeAtEnd;
+    }
   }
 
   // Open log files for the raw CLI streams when debug mode is on. Called
