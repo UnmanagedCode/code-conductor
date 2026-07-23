@@ -71,34 +71,16 @@ See [docs/features.md](docs/features.md) for the exhaustive feature and UI-eleme
 - Control-request timeout: 5 s. Kill grace: stdin closed → 2 s → SIGTERM → 3 s → SIGKILL (5 s total).
 
 ## Known limitations
-- **Overage auto-stop is global & conductor-aware; auto-resume is in-memory** — **Settings → Account →
-  Action on overage** is `Off` / `Stop` / `Stop & resume` (a **global** setting, not per-session). A trip
-  fires on a `rate_limit_event` with `isUsingOverage:true` — or, with the optional **usage-threshold**
-  toggle on, when `utilization` crosses the configured percent (default 85%, range **10–99**). The
-  threshold is watched from **two** equal-footing sources: the live `rate_limit_event` stream (which
-  Anthropic only emits near its own ~90% mark) **and** a periodic server-side usage poll
-  (`src/usageOverageMonitor.js`; cadence `ORCH_USAGE_POLL_MS`, default 180 s) of the **five-hour** window —
-  so a *low* threshold (e.g. 25%) trips even though the stream never reports that low. Both sources drive
-  the same machinery and are deduped by the global one-shot (`_overageActive`), so they never double-trip;
-  the poll degrades silently (no trip) when its usage fetch fails/times out.
-  Stopped sessions stay idle-but-alive and manually resumable; `Stop & resume` schedules an **in-memory**
-  resume timer (~5 s after the five-hour window's `resetsAt`, **not** the far-future overage window) that
-  is **persisted in the resume manifest** across a graceful restart. The timer is armed for direct-stopped
-  sessions **and** steered conductors (both mid-turn and idle-subscribed); orchestrator-injected prompts
-  (the idle-subscription wake, the conductor steer) don't cancel a pending resume. **`Stop & resume` is a
-  GLOBAL hard lockout:** while the window is active EVERY session queues its sends — the one stopped
-  mid-turn, an idle/existing chat, and a brand-new chat started during the window (a queued-only session
-  arms its resume deadline immediately). Queued messages are delivered as one combined prompt when the
-  deadline fires — the composer shows a paused banner + a **"Queue"** send button, queued messages render
-  as ghost bubbles, and the auto-resume badge appends `· N queued`. There is **no** early-resume/override —
-  a session queues until the window-reset timer flushes it. A **safety rail** gates global queueing on a
-  valid *future* reset time (a missing/past reset means sends flow normally, never a permanent lockout).
-  Plain `Stop` never queues (no flush path). Routing
-  (direct-interrupt vs steer-the-conductor) and clear semantics: see [docs/architecture.md](docs/architecture.md) → overage trip detection + central routing.
+- **Overage auto-stop is global & conductor-aware; auto-resume is in-memory** — **Settings → Account → Action on overage** is `Off` / `Stop` / `Stop & resume` (a **global** setting, not per-session).
+  - A trip fires on a `rate_limit_event` with `isUsingOverage:true`, or — with the optional **usage-threshold** toggle on — when `utilization` crosses the configured percent (default 85%, range **10–99**). The threshold is watched from two equal-footing sources: the live `rate_limit_event` stream (which Anthropic only emits near its own ~90% mark) **and** a periodic server-side usage poll of the five-hour window, so a *low* threshold (e.g. 25%) trips even though the stream never reports that low.
+  - Stopped sessions stay idle-but-alive and manually resumable. `Stop & resume` schedules an **in-memory** resume timer (~5 s after the five-hour window resets) that is persisted in the resume manifest across a **graceful** restart only — not a hard crash.
+  - **`Stop & resume` is a global hard lockout:** while the window is active, *every* session queues its sends (the one stopped mid-turn, an idle chat, and a brand-new chat), with **no** early-resume/override — a session queues until the window-reset timer flushes it as one combined prompt. A safety rail gates this on a valid *future* reset time (missing/past reset ⇒ sends flow normally, never a permanent lockout). Plain `Stop` never queues.
+  - A session whose agent tree is purely **Ollama**-backed is exempt — never auto-stopped, queued, or armed for auto-resume.
+  - Mechanism + routing (direct-interrupt vs steer-the-conductor): [docs/features.md](docs/features.md) → Settings → Account; [docs/architecture.md](docs/architecture.md) → overage trip detection + central routing.
 - **Opus 4.7/4.8 thinking is redacted** — no readable content (4.7 sends only `signature_delta`; 4.8 sends empty `thinking_delta`s). Both render as `thinking (redacted)`. Pick `claude-sonnet-4-6` for the full stream.
 - **AskUserQuestion answered via next prompt** — PreToolUse hook denies; tool_result is `is_error:true`; answer is fed in as a normal user prompt. Functionally fine, but the original tool_result is still an error for diagnostics.
 - **`--effort` / `--thinking` are spawn-time only** — switching mid-session needs respawn + resume. Only `mode` is live-switchable.
-- **Forced interrupt discards partial work** — ⏹ Interrupt now (`force:true`) hard-aborts via `control_request`; the CLI severs the turn, keeps no assistant content, and leaves a `[Request interrupted by user]` tombstone. The default **soft** ⏸ Interrupt avoids this by injecting a steering message that asks the model to wind down gracefully; live, it appears in the conversation as a `soft_interrupted` system annotation carrying the steer text ("⏸ Turn interrupted: Stop now...."), and replayed/resumed sessions show the same bare annotation without the text. A **post-hard-abort drain window** (default 3 s) automatically kills any spurious new turns the CLI starts from its leftover input queue, so the model doesn't unexpectedly reactivate after a hard abort (see docs/features.md → Controls → Two-tier interrupt).
+- **Forced interrupt discards partial work** — ⏹ Interrupt now (`force:true`) hard-aborts via `control_request`; the CLI severs the turn, keeps no assistant content, and leaves a `[Request interrupted by user]` tombstone. The default **soft** ⏸ Interrupt instead injects a steering message that winds the turn down gracefully and preserves partial work. A **post-hard-abort drain window** (default 3 s) kills spurious new turns the CLI starts from its leftover input queue, so the model doesn't reactivate after a hard abort. Detail: [docs/features.md](docs/features.md) → Controls → Two-tier interrupt.
 - **No auth** — bound to 127.0.0.1; anyone with shell access can drive it.
 - **Best-effort metadata writes** — crash between turn-end and metadata append may omit the `last-prompt` line and hide the session from `claude --resume`'s picker. Transcript itself is intact.
 - **Claude-spawning-Claude recursion** — auto-registered MCP lets any session call `spawn_instance`; children inherit the auto-registration, no depth guard. Mitigations: (1) `ORCH_DISABLE_MCP_AUTOREGISTER=1`, (2) keep child default mode `plan`, (3) observe each worker step before it proceeds — via `wait:true` or (preferred, per `CONDUCT.md`) `wait:false` + `subscribe_to_idle`.
