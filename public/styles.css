@@ -1657,13 +1657,15 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
 
 /* Diff body inside the review view. Lines use pre (not pre-wrap) so long
    lines scroll horizontally rather than wrapping — essential on mobile.
-   touch-action: pan-x declares this strip as horizontal-only up front, so a
-   vertical swipe starting on a code line hands off to #review-file-list's
-   pan-y immediately instead of the browser arbitrating per-gesture across
-   every stacked diff body in the list (that per-gesture arbitration is what
-   made touch scrolling stutter a few px at a time). */
+   touch-action must list both axes here: `pan-x` alone would only permit
+   horizontal panning for a touch starting on a code line and suppress
+   vertical panning for that whole gesture (not "hand off" — actively
+   disable), which is why a first pass with pan-x-only made these strips
+   swallow vertical swipes completely. `pan-x pan-y` lets the browser route
+   each gesture by its actual direction: horizontal to this element,
+   vertical up to #review-file-list's pan-y. */
 .review-diff-body {
-  overflow-x: auto; -webkit-overflow-scrolling: touch; touch-action: pan-x;
+  overflow-x: auto; -webkit-overflow-scrolling: touch; touch-action: pan-x pan-y;
   font-family: ui-monospace, monospace;
   font-size: 12px; background: var(--panel-2);
 }
