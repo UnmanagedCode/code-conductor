@@ -40,7 +40,7 @@ approve_plan / sync_worktree / merge_worktree / kill_instance   // no extra get_
 
 ## MCP toolbelt
 
-Schemas are deferred — load them via `ToolSearch` before first use. Before your first MCP call (and again after a context reset), batch-load them via `ToolSearch({query: "select:list_projects,spawn_instance,send_prompt,…"})`; a wake-up stub's suggested call needs its schema loaded first, too. This is the inventory plus only what the schemas won't foreground: footguns, defaults, and result semantics.
+Schemas are deferred — load them via `ToolSearch` before first use. Before your first MCP call (and again after a context reset), batch-load them via `ToolSearch({query: "select:mcp__code-conductor__list_projects,mcp__code-conductor__spawn_instance,mcp__code-conductor__send_prompt,…"})`; a wake-up stub's suggested call needs its schema loaded first, too. This is the inventory plus only what the schemas won't foreground: footguns, defaults, and result semantics.
 
 **Discover**
 - `list_projects` — every project under the projects root, with git status, worktrees, live instance ids. Each entry's `path` is absolute — use it instead of guessing.
