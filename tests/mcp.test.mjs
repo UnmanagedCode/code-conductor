@@ -9,7 +9,7 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, instForSession, freshProjectsRoot, rmrf, stripMessageBoundaryHeader } from './helpers.mjs';
-import { setTierBackend, setTierEnabled } from '../src/appSettings.js';
+import { setTierBackend, setTierEnabled, setDebugByDefault } from '../src/appSettings.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO_WS = path.join(__dirname, 'fixtures', 'scenario-ws.json');
@@ -1002,6 +1002,20 @@ test('spawn_instance explicit mode wins over the temp default', async () => {
     const summary = await spawnIdle({ project: 'demo', mode: 'bypassPermissions' });
     assert.equal(summary.temp, true, 'temp still defaults to true');
     assert.equal(summary.mode, 'bypassPermissions', 'explicit mode wins');
+  } finally {
+    if (prev === undefined) delete process.env.FAKE_CLAUDE_SCENARIO;
+    else process.env.FAKE_CLAUDE_SCENARIO = prev;
+  }
+});
+
+test('spawn_instance explicit debug:false overrides an ON debugByDefault default (MCP path)', async () => {
+  const prev = process.env.FAKE_CLAUDE_SCENARIO;
+  process.env.FAKE_CLAUDE_SCENARIO = SCENARIO_INSTANCE;
+  try {
+    await api(baseUrl, 'POST', '/api/projects', { name: 'demo' });
+    await setDebugByDefault(true);
+    const summary = await spawnIdle({ project: 'demo', debug: false });
+    assert.equal(summary.debug, false, 'explicit debug:false overrides the ON default on the MCP spawn path too');
   } finally {
     if (prev === undefined) delete process.env.FAKE_CLAUDE_SCENARIO;
     else process.env.FAKE_CLAUDE_SCENARIO = prev;

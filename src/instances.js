@@ -2374,6 +2374,8 @@ export class InstanceManager extends EventEmitter {
       callerInstanceId: callerInstanceId ?? null,
       // `debug` falls back to the persisted conductor-wide default only when
       // the caller omitted it (undefined) — an explicit true/false always wins.
+      // `??` also treats an explicit `null` as "omitted" (falls through to the
+      // default) — there is no way to spell "off" other than `debug: false`.
       debug: !!(debug ?? getDebugByDefault()),
       launcher: this._claudeLauncher,
     });

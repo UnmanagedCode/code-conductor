@@ -4,7 +4,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { bootServer, api } from './helpers.mjs';
-import { getDebugByDefault, setDebugByDefault } from '../src/appSettings.js';
+import { getDebugByDefault, setDebugByDefault, getTranscribeModel, setTranscribeModel } from '../src/appSettings.js';
 
 async function mkTmp() {
   return fs.mkdtemp(path.join(os.tmpdir(), 'cc-settings-spawn-'));
@@ -37,9 +37,14 @@ test('appSettings getDebugByDefault/setDebugByDefault round-trip without clobber
   const saved = process.env.PROJECTS_ROOT;
   process.env.PROJECTS_ROOT = root;
   try {
+    // Pin a sibling namespace BEFORE touching spawn.debugByDefault, so a
+    // future regression that drops the `...cur` spread in setDebugByDefault
+    // (clobbering the rest of settings.json) fails this test.
+    await setTranscribeModel('base.en-q5_1');
     assert.equal(getDebugByDefault(), false);
     await setDebugByDefault(true);
     assert.equal(getDebugByDefault(), true);
+    assert.equal(getTranscribeModel(), 'base.en-q5_1', 'sibling namespace survives the spawn-namespace write');
   } finally {
     if (saved === undefined) delete process.env.PROJECTS_ROOT; else process.env.PROJECTS_ROOT = saved;
     await fs.rm(root, { recursive: true, force: true });
