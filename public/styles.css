@@ -1624,7 +1624,7 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
   white-space: pre-wrap; word-break: break-word;
   max-height: 40vh; overflow-y: auto;
 }
-#review-file-list { flex: 1 1 auto; overflow-y: auto; }
+#review-file-list { flex: 1 1 auto; overflow-y: auto; touch-action: pan-y; }
 
 .worktree-row .wt-review:hover { color: var(--tool); }
 
@@ -1656,9 +1656,15 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
 .review-file-stats del { text-decoration: none; color: var(--red); }
 
 /* Diff body inside the review view. Lines use pre (not pre-wrap) so long
-   lines scroll horizontally rather than wrapping — essential on mobile. */
+   lines scroll horizontally rather than wrapping — essential on mobile.
+   touch-action: pan-x declares this strip as horizontal-only up front, so a
+   vertical swipe starting on a code line hands off to #review-file-list's
+   pan-y immediately instead of the browser arbitrating per-gesture across
+   every stacked diff body in the list (that per-gesture arbitration is what
+   made touch scrolling stutter a few px at a time). */
 .review-diff-body {
-  overflow-x: auto; font-family: ui-monospace, monospace;
+  overflow-x: auto; -webkit-overflow-scrolling: touch; touch-action: pan-x;
+  font-family: ui-monospace, monospace;
   font-size: 12px; background: var(--panel-2);
 }
 /* Shrink-to-fit box sized to the widest row's max-content, floored at the
