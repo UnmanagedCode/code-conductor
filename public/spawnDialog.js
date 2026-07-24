@@ -136,7 +136,16 @@ export function installSpawnDialog({ dom, getProjects, refreshProjects, refreshI
 
     dom.sdEffort.value = 'high';
     dom.sdThinking.value = 'adaptive';
+    // Pre-check from the persisted default (Settings → About) so the box
+    // always reflects what will actually be sent — see the `debug` line in
+    // the close handler below, which sends the checkbox state verbatim
+    // (never `undefined`) so an unchecked box can override an ON default.
     dom.sdDebug.checked = false;
+    try {
+      const r = await fetch('/api/settings/spawn', { cache: 'no-store' });
+      const data = await r.json();
+      dom.sdDebug.checked = !!data.debugByDefault;
+    } catch { /* best-effort; leave unchecked on fetch failure */ }
 
     const proj = getProjects().find(p => p.name === projectName);
     const isGit = !!proj?.isGitRepo;
@@ -171,7 +180,11 @@ export function installSpawnDialog({ dom, getProjects, refreshProjects, refreshI
     const effort   = dom.sdEffort.value;
     const thinking = dom.sdThinking.value;
     const temp     = dom.sdTemp.checked || undefined;
-    const debug    = dom.sdDebug.checked || undefined;
+    // Always explicit (never `undefined`) — the checkbox is pre-checked from
+    // the persisted default above, so whatever it shows IS the intended
+    // value; falling back to `undefined` here would let an unchecked box
+    // silently re-inherit an ON server default (see InstanceManager._doCreate).
+    const debug    = dom.sdDebug.checked;
     const autoApprovePlan = (mode === 'plan') || undefined;
     let worktree;
     if (typeof pendingSpawnWorktreeIntent === 'string') worktree = pendingSpawnWorktreeIntent;

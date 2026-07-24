@@ -125,6 +125,21 @@ export async function setOnOverageAction(action) {
   return val;
 }
 
+// Spawn group: debugByDefault gates whether a newly spawned instance mirrors
+// raw CLI traffic to the debug dir when the spawn call doesn't name `debug`
+// explicitly (see InstanceManager._doCreate). Off by default — strictly opt-in.
+export function getDebugByDefault() {
+  const s = loadSync();
+  return s.spawn?.debugByDefault ?? false;
+}
+
+export async function setDebugByDefault(enabled) {
+  const cur = loadSync();
+  const next = { ...cur, spawn: { ...(cur.spawn || {}), debugByDefault: !!enabled } };
+  await writeSettings(next);
+  return !!enabled;
+}
+
 // Models group: per-tier visibility toggle. When a tier is false it is
 // hidden from all spawn pickers. All tiers default to true (opt-out).
 //

@@ -15,7 +15,7 @@ import { isTemp, markTemp, unmarkTemp } from './tempSessions.js';
 import { markArchived } from './archivedSessions.js';
 import { CONDUCT_PROJECT_NAME } from './conduct.js';
 import { buildSettingsJSON, buildMcpConfigJSON, AWAITING_INPUT_MESSAGE } from './settings.js';
-import { getOnOverageAction, getOverageThreshold, getConductorCompactWindow, getOllamaContextWindow } from './appSettings.js';
+import { getOnOverageAction, getOverageThreshold, getConductorCompactWindow, getOllamaContextWindow, getDebugByDefault } from './appSettings.js';
 import { HookBroker } from './hookBroker.js';
 import { loadPersistedTranscript, writeSessionMetadata, readLastSessionModel, hasResumableConversation } from './transcript.js';
 import { canonicalizeModel, familyOf } from './modelVersions.js';
@@ -2372,7 +2372,9 @@ export class InstanceManager extends EventEmitter {
       temp: !!temp,
       conducted: conductedFlag,
       callerInstanceId: callerInstanceId ?? null,
-      debug: !!debug,
+      // `debug` falls back to the persisted conductor-wide default only when
+      // the caller omitted it (undefined) — an explicit true/false always wins.
+      debug: !!(debug ?? getDebugByDefault()),
       launcher: this._claudeLauncher,
     });
     if (recoveredFirstPrompt) inst.firstPrompt = recoveredFirstPrompt;

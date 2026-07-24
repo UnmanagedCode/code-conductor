@@ -71,6 +71,7 @@ export function installSettings({
   const abStatusEl = document.getElementById('ab-update-status');
   const abBtnEl = document.getElementById('ab-update-btn');
   const abLogEl = document.getElementById('ab-update-log');
+  const abDebugDefaultEl = document.getElementById('ab-debug-default');
   let abUpdating = false;
   if (!view) return { open() {}, close() {} };
 
@@ -161,6 +162,7 @@ export function installSettings({
     projectPanel.load();
     pluginManager.load();
     loadAbout();
+    loadSpawnPrefs();
   }
 
   function hide() {
@@ -1252,6 +1254,27 @@ export function installSettings({
     if (!finalResult.ok) { const err = new Error(finalResult.error || 'update failed'); if (finalResult.tail) err.tail = finalResult.tail; throw err; }
     return finalResult.result;
   }
+
+  // Persisted default for the spawn dialog's debug checkbox (see spawnDialog.js
+  // openSpawnDialog, which fetches the same endpoint to pre-check the box).
+  async function loadSpawnPrefs() {
+    if (!abDebugDefaultEl) return;
+    try {
+      const r = await fetch('/api/settings/spawn', { cache: 'no-store' });
+      const data = await r.json();
+      abDebugDefaultEl.checked = !!data.debugByDefault;
+    } catch { /* ignore — leave last-known checkbox state */ }
+  }
+
+  abDebugDefaultEl?.addEventListener('change', async () => {
+    try {
+      await fetch('/api/settings/spawn/prefs', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ debugByDefault: abDebugDefaultEl.checked }),
+      });
+    } catch { /* best-effort; next open re-syncs from server */ }
+  });
 
   abBtnEl?.addEventListener('click', async () => {
     if (abUpdating) return;
