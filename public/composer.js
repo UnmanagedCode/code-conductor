@@ -130,7 +130,7 @@ export function attachComposer({ form, textarea, sendBtn, attachBtn, fileInput, 
       sendBtn.disabled = !micAvailable;
       sendBtn.title = micAvailable
         ? 'Tap to start recording — tap again to stop and transcribe'
-        : 'Install Whisper to enable voice dictation (Settings → Transcribe)';
+        : 'Install Whisper to enable voice dictation (Settings → Voice → Dictation)';
     } else {
       sendBtn.disabled = !canSend || !hasContent;
       sendBtn.title = queueMode

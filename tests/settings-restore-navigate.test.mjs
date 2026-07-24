@@ -21,18 +21,18 @@ function buildDOM(document) {
 
   const groupSelect = document.createElement('select');
   groupSelect.id = 'settings-group-select';
-  for (const val of ['transcribe', 'archived']) {
+  for (const val of ['voice', 'archived']) {
     const opt = document.createElement('option');
     opt.value = val;
     groupSelect.appendChild(opt);
   }
   view.appendChild(groupSelect);
 
-  for (const g of ['transcribe', 'archived']) {
+  for (const g of ['voice', 'archived']) {
     const panel = document.createElement('div');
     panel.id = `settings-${g}`;
     panel.className = 'settings-group';
-    panel.hidden = g !== 'transcribe';
+    panel.hidden = g !== 'voice';
     view.appendChild(panel);
   }
 
