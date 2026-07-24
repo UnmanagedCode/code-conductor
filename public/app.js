@@ -516,10 +516,16 @@ appSwitcher = installAppSwitcher({
     closeSidebarOnMobile();
   },
 });
+// Assigned later by installRestart() (called after this block); the
+// self-update flow only invokes it on a user click, long after wiring.
+let restartHandle = null;
 const settings = installSettings({
   requestClose: closeSettings,
   onAvailabilityChange: setMicAvailable,
   onPluginsChanged: () => appSwitcher.refresh(),
+  // Self-update hands off to the shared restart+resume engine after its pull
+  // succeeds — resume carries live sessions across the respawn.
+  requestRestartWithResume: () => restartHandle?.performRestart({ resume: true }),
   onModelsChange: data => {
     if (data.tierBackend) setActiveTierBackend(data.tierBackend);
     if (data.roleBackend) setActiveRoleBindings(data.roleBackend);
@@ -943,7 +949,7 @@ function setSidebarStatus(text, { warn = false } = {}) {
 // reconnect-status display. Placed here (before the first-connect 'open'
 // handler ~below) so its 'open' listener registers first, preserving the
 // original dispatch order.
-installRestart({
+restartHandle = installRestart({
   dom: { restartBtn: dom.restartBtn, restartDialog: dom.restartDialog, restartBlurb: dom.restartBlurb },
   bus,
   getInstances: () => state.instances,

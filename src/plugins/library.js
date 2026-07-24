@@ -1,9 +1,10 @@
-import { execFile, spawn } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { projectsRoot, orchStoreRoot, validateName } from '../projects.js';
 import { httpError } from './registry.js';
 import { getProjectUpstreamStatus } from '../worktrees.js';
+import { runGitLive, fetchOriginBounded } from '../gitLive.js';
 
 // Plugin Library — a catalog of installable plugins (git repo URLs) offered
 // alongside the discovered-plugins list in Settings → Plugins. Installing
@@ -33,19 +34,6 @@ const ALLOWED_SCHEMES = new Set(['http:', 'https:', 'git:']);
 const CLONE_TIMEOUT_MS = 120_000;
 const POST_HOOK_TIMEOUT_MS = 300_000; // longer than clone — installs pull deps (npm, browser binaries, ...)
 const HOOK_OUTPUT_CAP = 16 * 1024; // mirrors worktrees.js's HOOK_OUTPUT_CAP / supervisor.js's OUTPUT_CAP
-const LIBRARY_FETCH_TIMEOUT_MS = 8_000; // bounded pre-check fetch for list()'s update detection — must never block the list
-
-// Env for any git subprocess that talks to a remote outside an explicit
-// user action (the background fetch list() runs to freshen ahead/behind
-// data) — fail fast on missing credentials instead of hanging until the
-// timeout, which would otherwise be the common case for private repos.
-const NO_PROMPT_GIT_ENV = {
-  ...process.env,
-  GIT_TERMINAL_PROMPT: '0',
-  GIT_ASKPASS: '',
-  SSH_ASKPASS: '',
-  GIT_SSH_COMMAND: 'ssh -oBatchMode=yes',
-};
 
 const DEFAULT_ENTRIES = [
   {
@@ -137,71 +125,12 @@ function validateRepoUrl(repoUrl) {
   }
 }
 
-// Shared streaming runner for git subcommands whose output the caller wants
-// to surface live (clone, pull) — spawn + 'data' handlers (rather than a
-// buffered execFile) so onChunk fires as output arrives, with the same
-// detached-process-group timeout/kill as runHookCommand below: git can spawn
-// credential-helper/hook grandchildren that a plain kill of the direct child
-// would orphan. Never rejects — resolves {code,stdout,stderr}, mirroring
-// runGit's shape (src/worktrees.js) plus the split stdout/stderr callers need
-// to build an error tail from stderr first.
-function runGitLive(args, cwd, { timeoutMs = CLONE_TIMEOUT_MS, onChunk } = {}) {
-  return new Promise((resolve) => {
-    let stdout = '';
-    let stderr = '';
-    const proc = spawn('git', args, { cwd, detached: true });
-    const onOut = (d) => { const s = d.toString(); stdout += s; onChunk?.(s); };
-    const onErr = (d) => { const s = d.toString(); stderr += s; onChunk?.(s); };
-    proc.stdout?.on('data', onOut);
-    proc.stderr?.on('data', onErr);
-
-    let timedOut = false;
-    const killGroup = () => {
-      try { process.kill(-proc.pid, 'SIGTERM'); } catch { proc.kill('SIGTERM'); }
-      setTimeout(() => {
-        try { process.kill(-proc.pid, 'SIGKILL'); } catch { proc.kill('SIGKILL'); }
-      }, 100).unref();
-    };
-    const timer = setTimeout(() => { timedOut = true; killGroup(); }, timeoutMs);
-
-    proc.on('close', (code) => {
-      clearTimeout(timer);
-      resolve({ code: timedOut ? 124 : (code ?? 1), stdout, stderr });
-    });
-    proc.on('error', (e) => {
-      clearTimeout(timer);
-      resolve({ code: 1, stdout, stderr: stderr || e.message });
-    });
-  });
-}
-
 function cloneRepo(url, destDir, { onChunk } = {}) {
   return runGitLive(['clone', '--', url, destDir], projectsRoot(), { timeoutMs: CLONE_TIMEOUT_MS, onChunk });
 }
 
 function pullRepo(cwd, { onChunk } = {}) {
   return runGitLive(['pull', '--ff-only'], cwd, { timeoutMs: CLONE_TIMEOUT_MS, onChunk });
-}
-
-// Best-effort, timeout-bounded `git fetch` so getProjectUpstreamStatus's
-// cached-ref comparison (see list() below) reflects the real remote instead
-// of whatever was last fetched manually. Never throws; a timeout, missing
-// remote, or auth failure just means the subsequent status check falls back
-// to stale-or-null status — never crashes list(). Uses a raw execFile timeout
-// (not runGit, which has none) since a hung fetch must not block the whole
-// library list. NO_PROMPT_GIT_ENV makes credential failures fail fast rather
-// than hang until the timeout, the common case for private repos.
-function fetchOriginBounded(cwd) {
-  return new Promise((resolve) => {
-    execFile('git', ['-C', cwd, 'fetch', '--quiet'], {
-      cwd,
-      env: NO_PROMPT_GIT_ENV,
-      timeout: LIBRARY_FETCH_TIMEOUT_MS,
-      killSignal: 'SIGKILL',
-      maxBuffer: 16 * 1024 * 1024,
-      encoding: 'utf8',
-    }, () => resolve()); // outcome ignored — getProjectUpstreamStatus reads whatever refs are now cached
-  });
 }
 
 // Runs an arbitrary postClone/postPull command via `bash -lc` — the same
@@ -272,7 +201,7 @@ export function createPluginLibrary({ pluginHost = null, _cloneImpl = null, _pul
       if (installed) {
         // Cached refs go stale between visits — a bounded, best-effort fetch
         // first means "update available" reflects the real remote, not
-        // whatever was last fetched manually (see fetchOriginBounded above).
+        // whatever was last fetched manually (see fetchOriginBounded in gitLive.js).
         const target = path.join(projectsRoot(), name);
         await fetchOriginBounded(target);
         const status = await getProjectUpstreamStatus(target);
