@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
 import { encodeCwd } from '../src/projects.js';
 import { isArchived } from '../src/archivedSessions.js';
+import { setDebugByDefault } from '../src/appSettings.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-instance.json');
@@ -1712,6 +1713,35 @@ test('debug: omitting the flag leaves debug=false and writes nothing', async () 
   let exists = true;
   try { await fsp.access(debugDirGuess); } catch { exists = false; }
   assert.equal(exists, false, 'debug dir is not created when the flag is omitted');
+});
+
+test('debug: debugByDefault setting applies when the spawn call omits debug', async () => {
+  await setupWithProject();
+  await setDebugByDefault(true);
+  try {
+    const r = await api(baseUrl, 'POST', '/api/instances', {
+      project: 'demo', mode: 'bypassPermissions',
+    });
+    assert.equal(r.status, 201);
+    assert.equal(r.body.debug, true, 'debug-by-default applied when debug is omitted');
+    const inst = instances.get(r.body.id);
+    await waitFor(() => inst.status === 'idle' && inst.debugDir);
+  } finally { await setDebugByDefault(false); }
+});
+
+test('debug: an explicit debug:false on the spawn call overrides an ON debugByDefault default', async () => {
+  await setupWithProject();
+  await setDebugByDefault(true);
+  try {
+    const r = await api(baseUrl, 'POST', '/api/instances', {
+      project: 'demo', mode: 'bypassPermissions', debug: false,
+    });
+    assert.equal(r.status, 201);
+    assert.equal(r.body.debug, false, 'explicit debug:false wins over the ON default');
+    const inst = instances.get(r.body.id);
+    await waitFor(() => inst.status === 'idle');
+    assert.equal(inst.debugDir, null);
+  } finally { await setDebugByDefault(false); }
 });
 
 test('debug: POST /api/instances/:id/debug enables capture on a running instance', async () => {

@@ -49,6 +49,7 @@ import {
   getTierBackend, setTierBackend,
   getRoleBinding, setRoleBinding,
   getCustomBackends, addCustomBackend, removeCustomBackend,
+  getDebugByDefault, setDebugByDefault,
 } from './appSettings.js';
 import * as whisperInstall from './whisperInstall.js';
 import * as ttsInstall from './ttsInstall.js';
@@ -243,6 +244,19 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
         else next(e);
       },
     );
+  });
+
+  // Settings → About: whether newly spawned instances default to debug
+  // capture when a spawn call doesn't name `debug` explicitly (see
+  // InstanceManager._doCreate). An explicit per-spawn value always wins.
+  r.get('/settings/spawn', async (req, res, next) => {
+    try { res.json({ debugByDefault: getDebugByDefault() }); } catch (e) { next(e); }
+  });
+  r.post('/settings/spawn/prefs', async (req, res, next) => {
+    try {
+      if (req.body?.debugByDefault !== undefined) await setDebugByDefault(req.body.debugByDefault);
+      res.json({ debugByDefault: getDebugByDefault() });
+    } catch (e) { next(e); }
   });
 
   // Compute the git-heavy facts for one project. Called via getOrCompute() so
