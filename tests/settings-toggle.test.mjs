@@ -23,7 +23,7 @@ function buildDOM(document) {
 
   const groupSelect = document.createElement('select');
   groupSelect.id = 'settings-group-select';
-  for (const val of ['transcribe', 'models', 'tts']) {
+  for (const val of ['voice', 'models']) {
     const opt = document.createElement('option');
     opt.value = val;
     groupSelect.appendChild(opt);
@@ -31,11 +31,11 @@ function buildDOM(document) {
   view.appendChild(groupSelect);
 
   // Group panels — must exist before installSettings() so they're captured in groups[].
-  for (const g of ['transcribe', 'models', 'tts']) {
+  for (const g of ['voice', 'models']) {
     const panel = document.createElement('div');
     panel.id = `settings-${g}`;
     panel.className = 'settings-group';
-    panel.hidden = g !== 'transcribe';
+    panel.hidden = g !== 'voice';
     view.appendChild(panel);
   }
 
@@ -152,7 +152,7 @@ test('settings: group select switches visible panel', async () => {
   groupSelect.value = 'models';
   groupSelect.dispatchEvent(new window.Event('change', { bubbles: true }));
   assert.equal(window.document.getElementById('settings-models').hidden, false);
-  assert.equal(window.document.getElementById('settings-transcribe').hidden, true);
+  assert.equal(window.document.getElementById('settings-voice').hidden, true);
   window.happyDOM.abort();
 });
 
