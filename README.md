@@ -103,3 +103,7 @@ This project is licensed under the GNU Affero General Public License v3.0 or lat
 Copyright © 2026 UnmanagedCode
 
 See the [LICENSE](LICENSE) file for the full license text.
+
+## Attribution
+
+The running app surfaces its legal notice at **⚙ Settings → About** — project name, `Copyright © 2026 UnmanagedCode`, the AGPL-3.0 license, and the source link (https://github.com/UnmanagedCode/code-conductor). This is the "Appropriate Legal Notices" surface required by AGPL-3.0 §5(d); forks and network hosts must keep it intact so downstream users can find the corresponding source (§13).
