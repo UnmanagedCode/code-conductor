@@ -44,6 +44,11 @@ export function installSettings({
   const smCompactWindowRowEl     = document.getElementById('sm-compact-window-row');
   const smCompactWindowSliderEl  = document.getElementById('sm-compact-window');
   const smCompactWindowValEl     = document.getElementById('sm-compact-window-val');
+  // Debug-capture-by-default toggle — its own fieldset at the bottom of the
+  // Models group. Backed by /api/settings/spawn[/prefs], not the models
+  // payload (it's spawn policy, not a model/tier binding), so it loads via
+  // its own small fetch, called alongside loadModels() in show().
+  const smDebugDefaultEl = document.getElementById('sm-debug-default');
   // Account group elements (overage protection — lives on its own settings page,
   // but its prefs ride in the shared /api/settings/models payload; see below).
   const smOverageEl = document.getElementById('sm-overage');
@@ -71,7 +76,6 @@ export function installSettings({
   const abStatusEl = document.getElementById('ab-update-status');
   const abBtnEl = document.getElementById('ab-update-btn');
   const abLogEl = document.getElementById('ab-update-log');
-  const abDebugDefaultEl = document.getElementById('ab-debug-default');
   let abUpdating = false;
   if (!view) return { open() {}, close() {} };
 
@@ -155,6 +159,7 @@ export function installSettings({
     clearOverageDirty(); // discard any un-applied edit from a prior open before refetching
     clearOverageStatus(); // discard any stale applied/failed message from a prior open
     loadModels();
+    loadDebugDefaultPref();
     loadTts();
     loadArchived();
     conductorPanel.load();
@@ -162,7 +167,6 @@ export function installSettings({
     projectPanel.load();
     pluginManager.load();
     loadAbout();
-    loadSpawnPrefs();
   }
 
   function hide() {
@@ -342,6 +346,30 @@ export function installSettings({
       if (smStatusEl) smStatusEl.textContent = `Failed to load models: ${e.message || e}`;
     }
   }
+
+  // Debug-capture-by-default (Models → Debug capture fieldset). Persisted
+  // separately from the models payload (spawn.debugByDefault in settings.json,
+  // via /api/settings/spawn[/prefs]) — see spawnDialog.js openSpawnDialog,
+  // which fetches the same endpoint to pre-check the New Session dialog's
+  // debug checkbox.
+  async function loadDebugDefaultPref() {
+    if (!smDebugDefaultEl) return;
+    try {
+      const r = await fetch('/api/settings/spawn', { cache: 'no-store' });
+      const data = await r.json();
+      smDebugDefaultEl.checked = !!data.debugByDefault;
+    } catch { /* ignore — leave last-known checkbox state */ }
+  }
+
+  smDebugDefaultEl?.addEventListener('change', async () => {
+    try {
+      await fetch('/api/settings/spawn/prefs', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ debugByDefault: smDebugDefaultEl.checked }),
+      });
+    } catch { /* best-effort; next open re-syncs from server */ }
+  });
 
   function renderModels(data) {
     lastModelsData = data; // latest catalog, read by the provider-switch handler
@@ -1254,27 +1282,6 @@ export function installSettings({
     if (!finalResult.ok) { const err = new Error(finalResult.error || 'update failed'); if (finalResult.tail) err.tail = finalResult.tail; throw err; }
     return finalResult.result;
   }
-
-  // Persisted default for the spawn dialog's debug checkbox (see spawnDialog.js
-  // openSpawnDialog, which fetches the same endpoint to pre-check the box).
-  async function loadSpawnPrefs() {
-    if (!abDebugDefaultEl) return;
-    try {
-      const r = await fetch('/api/settings/spawn', { cache: 'no-store' });
-      const data = await r.json();
-      abDebugDefaultEl.checked = !!data.debugByDefault;
-    } catch { /* ignore — leave last-known checkbox state */ }
-  }
-
-  abDebugDefaultEl?.addEventListener('change', async () => {
-    try {
-      await fetch('/api/settings/spawn/prefs', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ debugByDefault: abDebugDefaultEl.checked }),
-      });
-    } catch { /* best-effort; next open re-syncs from server */ }
-  });
 
   abBtnEl?.addEventListener('click', async () => {
     if (abUpdating) return;

@@ -167,6 +167,11 @@
                   </label>
                 </div>
               </fieldset>
+              <fieldset class="sm-group">
+                <legend>Debug capture</legend>
+                <label class="tt-toggle"><input id="sm-debug-default" type="checkbox" /> Enable debug capture by default for new sessions</label>
+                <p class="settings-hint">When on, a spawn call that doesn't explicitly set <code>debug</code> mirrors raw CLI traffic to the debug dir automatically (see the 🐛 Debug indicator in a session's header). An explicit debug choice on a single spawn — e.g. the New Session dialog's Advanced options — always overrides this default. Off by default.</p>
+              </fieldset>
             </div>
             <div class="sm-cost-row">
               <button id="sm-cost-dashboard-btn" type="button">Cost dashboard</button>
@@ -358,7 +363,6 @@
               <strong>code-conductor</strong> — orchestrate multiple Claude Code CLI
               instances across projects from one browser tab.
             </p>
-            <label class="tt-toggle"><input id="ab-debug-default" type="checkbox" /> Enable debug capture by default for new sessions</label>
             <div id="ab-update" class="settings-desc">
               <span id="ab-update-status">Checking for updates…</span>
               <button id="ab-update-btn" type="button" hidden>Update</button>
