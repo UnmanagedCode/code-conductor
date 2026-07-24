@@ -18,6 +18,7 @@ export function installSettings({
   requestClose, onAvailabilityChange, onModelsChange,
   onTtsAvailabilityChange, onTtsPrefsChange, onOpenCostDashboard,
   onArchivedChanged, onPluginsChanged, onSessionRestored,
+  requestRestartWithResume,
 } = {}) {
   const main = document.getElementById('main');
   const view = document.getElementById('settings-view');
@@ -66,6 +67,11 @@ export function installSettings({
   // Archived group elements.
   const arStatusEl = document.getElementById('ar-status');
   const arListEl = document.getElementById('ar-list');
+  // About group elements (conductor self-update).
+  const abStatusEl = document.getElementById('ab-update-status');
+  const abBtnEl = document.getElementById('ab-update-btn');
+  const abLogEl = document.getElementById('ab-update-log');
+  let abUpdating = false;
   if (!view) return { open() {}, close() {} };
 
   // Conventions group — one reusable widget mounted three times (cascade order
@@ -154,6 +160,7 @@ export function installSettings({
     workspacePanel.load();
     projectPanel.load();
     pluginManager.load();
+    loadAbout();
   }
 
   function hide() {
@@ -1161,6 +1168,122 @@ export function installSettings({
       if (arListEl) arListEl.innerHTML = '';
     }
   }
+
+  // ── About group: conductor self-update ───────────────────────────────
+  // Mirrors the Plugin Library update UX (see pluginManager.js): a git-behind
+  // indicator + Update button. GET reports version/behind; POST streams the
+  // `git pull` + `npm install` log as NDJSON, then hands off to the shared
+  // restart+resume engine (requestRestartWithResume) so the new code loads.
+  function renderAbout(data) {
+    if (!abStatusEl || !abBtnEl) return;
+    const v = data.version ? `v${data.version}` : 'version unknown';
+    if (!data.canCheck) {
+      abStatusEl.textContent = `${v} · can't check for updates (no upstream branch)`;
+      abBtnEl.hidden = true;
+    } else if (data.diverged) {
+      // Local commits + remote ahead: a fast-forward pull can't apply, so
+      // don't offer an Update button that would fail.
+      abStatusEl.textContent = `${v} · ${data.ahead} ahead, ${data.behind} behind ${data.upstream} — can't fast-forward`;
+      abBtnEl.hidden = true;
+    } else if (data.updateAvailable) {
+      const n = data.behind;
+      const commits = `${n} commit${n === 1 ? '' : 's'}`;
+      const from = data.upstream ? ` behind ${data.upstream}` : '';
+      abStatusEl.textContent = `${v} · update available (${commits}${from})`;
+      abBtnEl.hidden = false;
+      abBtnEl.disabled = false;
+      abBtnEl.textContent = 'Update';
+    } else {
+      abStatusEl.textContent = `${v} · up to date`;
+      abBtnEl.hidden = true;
+    }
+  }
+
+  async function loadAbout() {
+    if (!abStatusEl) return;
+    if (abUpdating) return; // don't clobber a live update's status/log
+    abStatusEl.textContent = 'Checking for updates…';
+    if (abBtnEl) abBtnEl.hidden = true;
+    if (abLogEl) { abLogEl.hidden = true; abLogEl.textContent = ''; }
+    try {
+      const r = await fetch('/api/settings/self-update', { cache: 'no-store' });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      renderAbout(await r.json());
+    } catch (e) {
+      abStatusEl.textContent = `Failed to check for updates: ${e.message || e}`;
+      if (abBtnEl) abBtnEl.hidden = true;
+    }
+  }
+
+  // Stream the NDJSON update log into abLogEl; returns the terminal result.
+  async function streamSelfUpdate() {
+    const r = await fetch('/api/settings/self-update', { method: 'POST', cache: 'no-store' });
+    const ct = r.headers.get('content-type') || '';
+    if (!ct.includes('ndjson')) {
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) { const err = new Error(data.error || `HTTP ${r.status}`); if (data.tail) err.tail = data.tail; throw err; }
+      return data;
+    }
+    const reader = r.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = '';
+    let finalResult = null;
+    const appendLog = (text) => {
+      if (!abLogEl) return;
+      abLogEl.hidden = false;
+      abLogEl.textContent = (abLogEl.textContent + text).slice(-8192);
+      abLogEl.scrollTop = abLogEl.scrollHeight;
+    };
+    while (true) {
+      const { done, value } = await reader.read();
+      if (value) buf += decoder.decode(value, { stream: true });
+      let idx;
+      while ((idx = buf.indexOf('\n')) !== -1) {
+        const line = buf.slice(0, idx);
+        buf = buf.slice(idx + 1);
+        if (!line) continue;
+        const evt = JSON.parse(line);
+        if (evt.type === 'chunk') appendLog(evt.text);
+        else if (evt.type === 'result') finalResult = evt;
+      }
+      if (done) break;
+    }
+    if (!finalResult) throw new Error('stream ended unexpectedly');
+    if (!finalResult.ok) { const err = new Error(finalResult.error || 'update failed'); if (finalResult.tail) err.tail = finalResult.tail; throw err; }
+    return finalResult.result;
+  }
+
+  abBtnEl?.addEventListener('click', async () => {
+    if (abUpdating) return;
+    abUpdating = true;
+    abBtnEl.disabled = true;
+    abBtnEl.textContent = 'Updating…';
+    abStatusEl.textContent = 'Updating conductor…';
+    try {
+      const result = await streamSelfUpdate();
+      if (result?.npm && !result.npm.ok) {
+        // Pull succeeded but npm install failed — don't restart into a
+        // half-installed tree; surface the failure and let the user retry.
+        abStatusEl.textContent = 'Update pulled but npm install failed — resolve before restarting.';
+        if (abLogEl && result.npm.tail) { abLogEl.hidden = false; abLogEl.textContent = result.npm.tail; }
+        abBtnEl.disabled = false;
+        abBtnEl.textContent = 'Retry';
+        abUpdating = false;
+        return;
+      }
+      abStatusEl.textContent = 'Update applied — restarting…';
+      // Hand off to the shared restart+resume engine (bootId poll + reload).
+      // Leave abUpdating true: the page reloads when the new server answers.
+      if (requestRestartWithResume) requestRestartWithResume();
+      else abStatusEl.textContent = 'Update applied — restart the conductor to finish.';
+    } catch (e) {
+      abStatusEl.textContent = `Update failed: ${e.message || e}`;
+      if (abLogEl && e.tail) { abLogEl.hidden = false; abLogEl.textContent = e.tail; }
+      abBtnEl.disabled = false;
+      abBtnEl.textContent = 'Update';
+      abUpdating = false;
+    }
+  });
 
   window.addEventListener('hashchange', sync);
   window.addEventListener('keydown', e => {

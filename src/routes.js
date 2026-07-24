@@ -20,6 +20,7 @@ import {
 import { buildPluginApi } from './plugins/api.js';
 import { scheduleRestart } from './restart.js';
 import { drainAndScheduleRestart } from './resumeRestart.js';
+import { getSelfUpdateStatus, applySelfUpdate } from './selfUpdate.js';
 import { BOOT_ID } from './bootId.js';
 import { getOrCompute, invalidate, invalidateAll } from './projectsCache.js';
 import { pageInstanceEvents } from './eventArchive.js';
@@ -206,6 +207,42 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
     // over). Otherwise the normal hard restart (wipes temps).
     if (req.body?.resume) drainAndScheduleRestart(ctx);
     else scheduleRestart(ctx);
+  });
+
+  // Conductor self-update — the app's own git-pull update path, surfaced on
+  // Settings → About. GET reports version + git-behind detection; POST applies
+  // (`git pull --ff-only` + conditional `npm install`), streamed as NDJSON.
+  // The client hands off to the restart+resume flow after a successful apply
+  // (see public/restartFlow.js); the POST itself never restarts the process.
+  r.get('/settings/self-update', async (req, res, next) => {
+    try { res.json(await getSelfUpdateStatus()); } catch (e) { next(e); }
+  });
+
+  // Same streaming contract as the plugin library update (see
+  // streamLibraryAction in src/plugins/api.js): before onValidated fires a
+  // rejection is a normal thrown error (→ trailing error middleware, preserving
+  // status codes); after it, bytes are committed as 200 NDJSON and both
+  // outcomes resolve into one terminal {type:'result',...} line.
+  r.post('/settings/self-update', (req, res, next) => {
+    let streaming = false;
+    const write = (obj) => { if (!res.writableEnded) res.write(`${JSON.stringify(obj)}\n`); };
+    const onValidated = () => {
+      streaming = true;
+      res.setHeader('Content-Type', 'application/x-ndjson');
+      res.setHeader('Cache-Control', 'no-store');
+      res.flushHeaders();
+    };
+    const onChunk = (phase, text) => write({ type: 'chunk', phase, text });
+    return applySelfUpdate({ onChunk, onValidated }).then(
+      (result) => {
+        if (streaming) { write({ type: 'result', ok: true, result }); res.end(); }
+        else res.json(result);
+      },
+      (e) => {
+        if (streaming) { write({ type: 'result', ok: false, error: e.message, tail: e.tail }); res.end(); }
+        else next(e);
+      },
+    );
   });
 
   // Compute the git-heavy facts for one project. Called via getOrCompute() so

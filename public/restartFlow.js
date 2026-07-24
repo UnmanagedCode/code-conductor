@@ -121,4 +121,10 @@ export function installRestart({ dom, bus, getInstances, setSidebarStatus }) {
     if (!everConnected || restartInProgress) return;
     setSidebarStatus('reconnecting…', { warn: true });
   });
+
+  // Exposed so other flows can hand off to the exact same drain → respawn →
+  // bootId-poll → reload sequence rather than reimplementing it — e.g. the
+  // Settings → About self-update, which calls performRestart({ resume: true })
+  // once its pull + npm install have succeeded.
+  return { performRestart };
 }
