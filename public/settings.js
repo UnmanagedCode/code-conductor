@@ -1180,6 +1180,11 @@ export function installSettings({
     if (!data.canCheck) {
       abStatusEl.textContent = `${v} · can't check for updates (no upstream branch)`;
       abBtnEl.hidden = true;
+    } else if (data.diverged) {
+      // Local commits + remote ahead: a fast-forward pull can't apply, so
+      // don't offer an Update button that would fail.
+      abStatusEl.textContent = `${v} · ${data.ahead} ahead, ${data.behind} behind ${data.upstream} — can't fast-forward`;
+      abBtnEl.hidden = true;
     } else if (data.updateAvailable) {
       const n = data.behind;
       const commits = `${n} commit${n === 1 ? '' : 's'}`;

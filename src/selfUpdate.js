@@ -88,12 +88,20 @@ export async function getSelfUpdateStatus({ repoRoot = defaultRepoRoot() } = {})
   const status = await getProjectUpstreamStatus(repoRoot);
   const canCheck = typeof status.behind === 'number';
   const behind = canCheck ? status.behind : null;
+  const ahead = canCheck ? status.ahead : null;
+  // A checkout with local commits AND remote-ahead can't fast-forward — the
+  // `git pull --ff-only` apply would refuse. Report it as its own state so the
+  // UI never offers an Update button that's guaranteed to fail; gate
+  // updateAvailable on ahead === 0 so only an applicable update advertises one.
+  const diverged = canCheck && ahead > 0 && behind > 0;
   return {
     version,
     upstream: status.upstream,
+    ahead,
     behind,
     canCheck,
-    updateAvailable: canCheck && behind > 0,
+    diverged,
+    updateAvailable: canCheck && behind > 0 && ahead === 0,
   };
 }
 
@@ -122,13 +130,14 @@ export async function applySelfUpdate({
   }
 
   // Which tracked files did the pull move? If any is a dependency manifest,
-  // run npm install before the restart so the new deps are on disk.
-  let depsChanged = false;
+  // run npm install before the restart so the new deps are on disk. If the
+  // pre-pull HEAD read failed (no beforeSha) we can't diff — err toward safety
+  // and run npm rather than risk booting with stale deps.
+  let depsChanged = true;
   if (beforeSha) {
     const diff = await runGit(repoRoot, ['diff', '--name-only', `${beforeSha}..HEAD`]);
-    if (diff.code === 0) {
-      depsChanged = diff.stdout.split('\n').map(s => s.trim()).some(f => DEP_FILES.has(f));
-    }
+    depsChanged = diff.code !== 0
+      || diff.stdout.split('\n').map(s => s.trim()).some(f => DEP_FILES.has(f));
   }
 
   let npm = null;
@@ -137,5 +146,9 @@ export async function applySelfUpdate({
     npm = { ran: true, ok: r.code === 0, code: r.code, tail: (r.output ?? '').slice(-TAIL_CAP) };
   }
 
-  return { ok: true, version: await readVersion(repoRoot), depsChanged, npm, restartRequired: true };
+  // Truthful restart signal: a failed npm install must NOT advertise a
+  // ready-to-restart tree (the client already gates on npm.ok, but the field
+  // shouldn't lie).
+  const restartRequired = depsChanged ? (npm?.ok ?? false) : true;
+  return { ok: true, version: await readVersion(repoRoot), depsChanged, npm, restartRequired };
 }

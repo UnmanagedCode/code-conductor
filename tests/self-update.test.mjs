@@ -95,6 +95,24 @@ test('getSelfUpdateStatus: no upstream (git repo, no remote) -> canCheck false, 
   } finally { await fs.rm(dir, { recursive: true, force: true }); }
 });
 
+test('getSelfUpdateStatus: diverged (local + remote ahead) -> diverged true, updateAvailable false, no Update offered', async () => {
+  const r = await setupRepo();
+  try {
+    // Local diverging commit on the clone…
+    await fs.writeFile(path.join(r.clone, 'server.txt'), 'local-change');
+    await git(r.clone, 'add', '-A');
+    await git(r.clone, 'commit', '-q', '-m', 'local');
+    // …and a conflicting upstream commit.
+    await r.pushUpstream('v2', { 'server.txt': 'remote-change' });
+    const s = await getSelfUpdateStatus({ repoRoot: r.clone });
+    assert.equal(s.canCheck, true);
+    assert.equal(s.ahead, 1);
+    assert.equal(s.behind, 1);
+    assert.equal(s.diverged, true);
+    assert.equal(s.updateAvailable, false, 'a diverged checkout must not advertise an applicable update');
+  } finally { await r.cleanup(); }
+});
+
 test('applySelfUpdate: fast-forwards, streams pull chunks, restartRequired; no dep change -> npm skipped', async () => {
   const r = await setupRepo();
   try {
@@ -148,6 +166,7 @@ test('applySelfUpdate: npm install failure surfaces npm.ok false with tail (pull
     assert.equal(result.npm.ok, false);
     assert.equal(result.npm.code, 1);
     assert.match(result.npm.tail, /boom/);
+    assert.equal(result.restartRequired, false, 'a failed npm install must not advertise a ready-to-restart tree');
     assert.equal(result.version, '0.2.0', 'version reflects the pulled package.json');
   } finally { await r.cleanup(); }
 });
