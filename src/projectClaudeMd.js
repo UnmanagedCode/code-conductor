@@ -73,6 +73,10 @@ export async function ensureProjectConventionsMd(projectName, { log } = {}) {
 
   const slugs = parseMarker(existing.split('\n', 1)[0]);
   if (slugs === null) return { skipped: 'no-marker' };
+  // A zero-slug marker is vacuously resolvable, so recomposing would blank any
+  // hand-authored body. cc never emits one (create gates on ≥1 slug), so treat
+  // it like the other skip branches — leave the committed file untouched.
+  if (slugs.length === 0) return { skipped: 'empty-marker' };
 
   // Resolve against the local catalog. If any slug is missing (a custom
   // convention absent on this instance, a disabled/absent plugin, a retired

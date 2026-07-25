@@ -101,6 +101,19 @@ test('ensureProjectConventionsMd skips (untouched) a CONVENTIONS.md with no mark
   assert.equal(await fs.readFile(target, 'utf8'), handwritten, 'left byte-for-byte');
 });
 
+test('ensureProjectConventionsMd skips (untouched) a zero-slug marker', async () => {
+  await createProject('empty-marker');
+  const target = conventionsPath('empty-marker');
+  // A hand-authored file whose marker lists no slugs: recomposing would blank
+  // the body, so it must be left as-is (the zero-slug marker is vacuously
+  // "fully resolvable" but recomposition would still be destructive).
+  const committed = '<!-- cc:conventions -->\n\n## Hand-written\n- keep me\n';
+  await fs.writeFile(target, committed);
+  const res = await ensureProjectConventionsMd('empty-marker');
+  assert.equal(res.skipped, 'empty-marker');
+  assert.equal(await fs.readFile(target, 'utf8'), committed, 'left byte-for-byte');
+});
+
 test('ensureProjectConventionsMd is no-op-safe for an unresolvable slug (never blanks)', async () => {
   await createProject('portable');
   const target = conventionsPath('portable');
@@ -145,4 +158,23 @@ test('editing a custom convention body fans out to projects that selected it', a
   const after = await fs.readFile(target, 'utf8');
   assert.match(after, /v2 rule/);
   assert.doesNotMatch(after, /v1 rule/);
+});
+
+test('deleting a custom convention leaves a project that referenced it byte-for-byte', async () => {
+  await addCustomConvention({ slug: 'doomed', name: 'Doomed', description: 'x', body: '## Doomed\n- committed body' });
+  const created = await api(baseUrl, 'POST', '/api/projects', { name: 'refholder', conventions: ['doomed'] });
+  assert.equal(created.status, 201);
+  const target = conventionsPath('refholder');
+  const before = await fs.readFile(target, 'utf8');
+  assert.match(before, /committed body/);
+
+  // DELETE fans out to regenerate — but the project's slug is now unresolvable,
+  // so its committed CONVENTIONS.md must be preserved exactly (never blanked).
+  const del = await api(baseUrl, 'DELETE', '/api/settings/conventions/project/doomed');
+  assert.equal(del.status, 200);
+  assert.equal(await fs.readFile(target, 'utf8'), before, 'committed content preserved byte-for-byte');
+
+  // A direct re-run of the fan-out is likewise a no-op on this project.
+  await regenerateAllProjectConventions();
+  assert.equal(await fs.readFile(target, 'utf8'), before);
 });

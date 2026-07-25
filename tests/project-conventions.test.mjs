@@ -407,7 +407,7 @@ test('list_project_conventions carries hasScaffold', async () => {
   assert.equal(bySlug['playwright-harness/harness-wrapper'].scaffold, undefined);
 });
 
-test('a scaffold-only convention appends nothing to CLAUDE.md', async () => {
+test('composeProjectConventionsBlock: a scaffold-only convention contributes no fragment', async () => {
   setPluginConventionsProvider(async () => FAKE_CONVENTIONS);
   const block = await composeProjectConventionsBlock(['playwright-harness/seed-config']);
   assert.equal(block, '', 'scaffold-only convention contributes no fragment');
