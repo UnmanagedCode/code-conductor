@@ -15,6 +15,7 @@ import { checkClaudeReadiness, formatReadiness } from './src/health.js';
 import { sweepPendingTempCleanup } from './src/tempCleanup.js';
 import { ensureRootClaudeMd } from './src/rootClaudeMd.js';
 import { ensureConductProject } from './src/conduct.js';
+import { regenerateAllProjectConventions } from './src/projectClaudeMd.js';
 import { restoreFromResumeManifest } from './src/resumeRestart.js';
 import { createPluginHost, WORKSPACE_AUTO_ASSIGN } from './src/plugins/registry.js';
 import { createPluginLibrary } from './src/plugins/library.js';
@@ -142,6 +143,12 @@ export async function start({ port = 8787, host = '127.0.0.1' } = {}) {
   // Strictly non-fatal — the Conduct-dialog-open path re-ensures anyway.
   try { await ensureConductProject(); }
   catch (e) { console.warn('.conduct project ensure failed:', e); }
+  // Regenerate each split-model project's in-tree CONVENTIONS.md from its own
+  // marker so existing projects pick up improved convention text. No-op-safe:
+  // projects with no marker are skipped; unresolvable selections are left as-is.
+  // Strictly non-fatal, same as the regens above.
+  try { await regenerateAllProjectConventions({ log: console }); }
+  catch (e) { console.warn('project CONVENTIONS.md regenerate failed:', e); }
   // Seed the conductor's own project into CC-Dev, same placement plugins get
   // on discovery — the conductor itself isn't a plugin so it never hits that
   // path. Once-per-boot; no-op if already assigned or self can't be found.

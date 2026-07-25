@@ -63,11 +63,12 @@ import { getCostSummary, getSessionStats } from './costTracking.js';
 import { isArchived, unmarkArchived } from './archivedSessions.js';
 import {
   getCatalog as getProjectConventionsCatalog,
-  composeProjectConventionsBlock, composeProjectScaffold,
+  composeProjectScaffold,
   addCustomConvention as addProjectConvention,
   updateCustomConvention as updateProjectConvention,
   deleteCustomConvention as deleteProjectConvention,
 } from './projectConventions.js';
+import { composeProjectConventionsDoc, regenerateAllProjectConventions } from './projectClaudeMd.js';
 import {
   CORE_META as CONDUCT_CORE_META,
   getCatalog as getConductorConventionsCatalog,
@@ -329,9 +330,10 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
       if (conventions !== undefined && !Array.isArray(conventions)) {
         throw Object.assign(new Error('conventions must be an array of slug strings'), { statusCode: 400 });
       }
-      const appendToCLAUDEmd = await composeProjectConventionsBlock(conventions ?? []);
-      const scaffold = await composeProjectScaffold(name, conventions ?? []);
-      const created = await createProject(name, { appendToCLAUDEmd });
+      const slugs = conventions ?? [];
+      const conventionsDoc = slugs.length ? await composeProjectConventionsDoc(slugs) : null;
+      const scaffold = await composeProjectScaffold(name, slugs);
+      const created = await createProject(name, { conventionsDoc });
       // Scaffold directive is returned (not persisted) — the caller folds it
       // into the first worker brief. See conventions/conductor/core.md.
       res.status(201).json({ ...created, ...(scaffold ? { scaffold } : {}) });
@@ -1389,8 +1391,10 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
   });
 
   // Settings → Conventions → Project block — catalog read + custom CRUD.
-  // Selected per project at creation (snapshotted into the new project's
-  // CLAUDE.md); no global selection, no live regeneration.
+  // Selection is per-project (recorded in each project's in-tree CONVENTIONS.md
+  // marker at creation); there is no global selection. Each mutation to a custom
+  // convention's body fans out to regenerate every project that selected it —
+  // a since-deleted slug becomes unresolvable and is left as-is (no-op-safe).
   r.get('/settings/conventions/project', async (req, res, next) => {
     try { res.json({ conventions: await getProjectConventionsCatalog() }); } catch (e) { next(e); }
   });
@@ -1399,6 +1403,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
     try {
       const { slug, name, description, body } = req.body ?? {};
       const convention = await addProjectConvention({ slug, name, description, body });
+      await regenerateAllProjectConventions();
       res.status(201).json({ convention });
     } catch (e) { next(e); }
   });
@@ -1408,6 +1413,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
       const { slug } = req.params;
       const { name, description, body } = req.body ?? {};
       const convention = await updateProjectConvention(slug, { name, description, body });
+      await regenerateAllProjectConventions();
       res.json({ convention });
     } catch (e) { next(e); }
   });
@@ -1416,6 +1422,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
     try {
       const { slug } = req.params;
       const result = await deleteProjectConvention(slug);
+      await regenerateAllProjectConventions();
       res.json(result);
     } catch (e) { next(e); }
   });

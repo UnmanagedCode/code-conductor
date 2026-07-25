@@ -338,22 +338,23 @@ test('contributions-only plugin (convention w/ scaffold facet) flows through to 
     assert.equal(g.builtin, false);
     assert.match(g.scaffold, /harness wrapper/);
 
-    // Create a project selecting it: convention snapshots inline; scaffold
-    // directive is RETURNED (never persisted).
+    // Create a project selecting it: convention body lands in CONVENTIONS.md;
+    // scaffold directive is RETURNED (never persisted).
     const created = await api(boot.baseUrl, 'POST', '/api/projects', { name: 'usesconv', conventions: ['conv-plugin/vis-check'] });
     assert.equal(created.status, 201);
     assert.match(created.body.scaffold, /Project "usesconv" was created with these scaffolding steps/);
     assert.match(created.body.scaffold, /harness wrapper/);
-    const claudeMd = await fs.readFile(path.join(boot.projectsRoot, 'usesconv', 'CLAUDE.md'), 'utf8');
-    assert.match(claudeMd, /Visual UX verification/);
+    const conventionsMd = await fs.readFile(path.join(boot.projectsRoot, 'usesconv', 'CONVENTIONS.md'), 'utf8');
+    assert.match(conventionsMd, /Visual UX verification/);
     // Scaffold is NOT persisted to project meta.
     await assert.rejects(fs.stat(path.join(boot.projectsRoot, '.code-conductor', 'projects', 'usesconv', 'project.json')), { code: 'ENOENT' });
 
-    // Disable → convention drops from the catalog; the snapshot survives.
+    // Disable → convention drops from the catalog; the committed CONVENTIONS.md
+    // survives (nothing regenerates it, and regeneration would no-op anyway).
     await boot.pluginHost.disable('conv-plugin');
     conv = await api(boot.baseUrl, 'GET', '/api/settings/conventions/project');
     assert.ok(!conv.body.conventions.some(r => r.slug === 'conv-plugin/vis-check'));
-    const still = await fs.readFile(path.join(boot.projectsRoot, 'usesconv', 'CLAUDE.md'), 'utf8');
-    assert.match(still, /Visual UX verification/, 'applied convention snapshot survives disable');
+    const still = await fs.readFile(path.join(boot.projectsRoot, 'usesconv', 'CONVENTIONS.md'), 'utf8');
+    assert.match(still, /Visual UX verification/, 'committed convention body survives disable');
   } finally { await boot.close(); }
 });

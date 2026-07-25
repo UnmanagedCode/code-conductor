@@ -32,7 +32,8 @@ import { buildApprovePrompt, buildRejectPrompt } from '../planApproval.js';
 // re-exports it) so an answer_question MCP answer is byte-identical to a UI
 // submit — one canonical function, no fork. See public/userQuestionAnswers.js.
 import { formatUserQuestionAnswers } from '../../public/userQuestionAnswers.js';
-import { getCatalog as getProjectConventionsCatalog, composeProjectConventionsBlock, composeProjectScaffold } from '../projectConventions.js';
+import { getCatalog as getProjectConventionsCatalog, composeProjectScaffold } from '../projectConventions.js';
+import { composeProjectConventionsDoc } from '../projectClaudeMd.js';
 import { getCatalog as getConductorConventionsCatalog, getSelection as getConductorSelection } from '../conductorConventions.js';
 import { isKnownFamily, isKnownTier, defaultVersion, familyOf } from '../modelVersions.js';
 import { getTierBackend, resolveRoleBackend, isResolvableRole, isKnownOllamaModel } from '../appSettings.js';
@@ -951,9 +952,9 @@ export async function setProjectWorkspace({ project, workspace }) {
 // ---------- create / introspect ----------
 
 export async function createProject({ name, gitInit = false, conventions = [] }) {
-  const appendToCLAUDEmd = await composeProjectConventionsBlock(conventions);
+  const conventionsDoc = conventions.length ? await composeProjectConventionsDoc(conventions) : null;
   const scaffold = await composeProjectScaffold(name, conventions);
-  const created = await fsCreateProject(name, { appendToCLAUDEmd });
+  const created = await fsCreateProject(name, { conventionsDoc });
   if (gitInit) {
     const r = await runGit(created.path, ['init', '-q']);
     if (r.code !== 0) {
