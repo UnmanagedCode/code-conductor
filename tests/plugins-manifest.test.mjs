@@ -248,3 +248,38 @@ test('readManifest: absent → null, bad JSON → errors, invalid keeps id for d
     await fs.rm(dir, { recursive: true, force: true });
   }
 });
+
+// ── roles ────────────────────────────────────────────────────────────────
+test('roles: contributions-only manifest (no backend) validates and normalizes', () => {
+  const roles = [
+    { slug: 'captain', name: 'Captain', binding: { kind: 'tier', tier: 'powerful' } },
+    { slug: 'scribe', name: 'Scribe', binding: { kind: 'claude', model: 'claude-opus-4-8' } },
+  ];
+  const r = validateManifest(base({ roles }));
+  assert.equal(r.errors, undefined);
+  assert.deepEqual(r.manifest.roles, roles);
+  assert.equal(r.manifest.backend, undefined);
+});
+
+test('roles: invalid shapes rejected', () => {
+  const g = (entry) => validateManifest(base({ roles: [entry] }));
+  assert.ok(g({ slug: 'Bad', name: 'n', binding: { kind: 'tier', tier: 'fast' } }).errors.some(e => e.includes('.slug')));
+  assert.ok(g({ slug: 'ok', name: '', binding: { kind: 'tier', tier: 'fast' } }).errors.some(e => e.includes('.name')));
+  assert.ok(g({ slug: 'ok', name: 'n' }).errors.some(e => e.includes('.binding')));                          // missing binding
+  assert.ok(g({ slug: 'ok', name: 'n', binding: { kind: 'tier', tier: 'nope' } }).errors.some(e => e.includes('.tier')));   // unknown tier
+  assert.ok(g({ slug: 'ok', name: 'n', binding: { kind: 'claude', model: 'nope' } }).errors.some(e => e.includes('.model'))); // unknown model
+  assert.ok(g({ slug: 'ok', name: 'n', binding: { kind: 'ollama', model: 'x:cloud' } }).errors.some(e => e.includes('.kind'))); // ollama not allowed
+  assert.ok(g({ slug: 'ok', name: 'n', binding: { kind: 'tier', tier: 'fast', extra: 1 } }).errors.some(e => e.includes('.extra'))); // stray key
+});
+
+test('roles: duplicate slug within the array rejected', () => {
+  const roles = [
+    { slug: 'dup', name: 'A', binding: { kind: 'tier', tier: 'fast' } },
+    { slug: 'dup', name: 'B', binding: { kind: 'tier', tier: 'fast' } },
+  ];
+  assert.ok(validateManifest(base({ roles })).errors.some(e => e.includes("duplicate role slug 'dup'")));
+});
+
+test('roles: empty array rejected', () => {
+  assert.ok(validateManifest(base({ roles: [] })).errors.some(e => e.includes("'roles' must be a non-empty array")));
+});

@@ -30,7 +30,7 @@ import {
 } from './transcribe.js';
 import { WHISPER_MODELS, isKnownModel, DEFAULT_MODEL } from './whisperModels.js';
 import {
-  MODEL_FAMILIES, CAPABILITY_TIERS, PROVIDERS, isKnownTier, ROLES, isKnownRole,
+  MODEL_FAMILIES, CAPABILITY_TIERS, PROVIDERS, isKnownTier,
 } from './modelVersions.js';
 import {
   isAvailable as ttsAvailable, synthesize, voicePathForName,
@@ -48,6 +48,7 @@ import {
   getDefaultSpawnTier, setDefaultSpawnTier,
   getTierBackend, setTierBackend,
   getRoleBinding, setRoleBinding,
+  getAllRoles, getPluginRoles, addCustomRole, setCustomRoleLabel, removeCustomRole,
   getCustomBackends, addCustomBackend, removeCustomBackend,
   getDebugByDefault, setDebugByDefault,
 } from './appSettings.js';
@@ -1125,16 +1126,22 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
     for (const t of CAPABILITY_TIERS) {
       tierBackend[t.tier] = getTierBackend(t.tier); // {kind, model, window?}
     }
+    // roles = built-in + user-custom + plugin-owned (each {role,label,builtin?,plugin?}).
+    // Plugin roles carry their binding inline (read-only, live-derived); built-in
+    // and custom roles read their user-editable binding from the roleBackend store.
+    const allRoles = getAllRoles();
+    const pluginRoles = getPluginRoles();
     const roleBackend = {};
-    for (const r of ROLES) {
-      roleBackend[r.role] = getRoleBinding(r.role); // {kind:'tier',tier} | {kind,model,window?}
+    for (const r of allRoles) {
+      const pr = r.plugin ? pluginRoles.find(p => p.role === r.role) : null;
+      roleBackend[r.role] = pr ? pr.binding : getRoleBinding(r.role); // {kind:'tier',tier} | {kind,model,window?}
     }
     return { providers: PROVIDERS, backends: MODEL_FAMILIES, onOverage: getOnOverageAction(),
       overageThreshold: getOverageThreshold(),
       conductorCompactWindow: getConductorCompactWindow(),
       tiers: CAPABILITY_TIERS,
       tierBackend,
-      roles: ROLES,
+      roles: allRoles,
       roleBackend,
       customBackends: getCustomBackends(),
       ollamaCloudModels: OLLAMA_CLOUD_MODELS,
@@ -1173,9 +1180,11 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
       }
       if (roleBackend !== undefined) {
         // backend is a tier binding {kind:'tier',tier} or a {kind,model} custom
-        // backend — setRoleBinding validates it (400 otherwise).
-        if (!roleBackend || typeof roleBackend !== 'object' || !isKnownRole(roleBackend.role)) {
-          return res.status(400).json({ error: 'roleBackend must be {role, backend} with a known role' });
+        // backend. setRoleBinding validates the role is built-in or custom (a
+        // plugin/unknown role, or a bad binding, throws 400) — so no isKnownRole
+        // precheck here; the store is the single source of truth.
+        if (!roleBackend || typeof roleBackend !== 'object' || typeof roleBackend.role !== 'string') {
+          return res.status(400).json({ error: 'roleBackend must be {role, backend}' });
         }
         await setRoleBinding(roleBackend.role, roleBackend.backend);
       }
@@ -1225,6 +1234,40 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
       const ok = await removeCustomBackend(req.params.model);
       if (!ok) return res.status(404).json({ error: 'custom model not found' });
       res.json(modelsSettingsState());
+    } catch (e) { next(e); }
+  });
+
+  // Custom roles — user-defined named model bindings. A role is identity+label
+  // ({role,label}); its binding lives in roleBackend (edited via the shared
+  // /settings/models/prefs roleBackend path, same as built-in roles). Plugin
+  // roles are contributed by plugins (read-only) and never touched here.
+  r.post('/settings/models/roles', async (req, res, next) => {
+    try {
+      const { role, label, binding } = req.body ?? {};
+      // addCustomRole validates the slug + collisions (400/409) and the binding.
+      const rec = await addCustomRole({ role, label, binding });
+      res.status(201).json({ ...modelsSettingsState(), added: rec });
+    } catch (e) { next(e); }
+  });
+
+  // Rename (relabel) a custom role. 400 if not a custom role or label empty.
+  r.patch('/settings/models/roles/:role', async (req, res, next) => {
+    try {
+      await setCustomRoleLabel(req.params.role, req.body?.label);
+      res.json(modelsSettingsState());
+    } catch (e) { next(e); }
+  });
+
+  // Delete a custom role (and its binding). A built-in or plugin-owned role
+  // can't be deleted (400); an unknown name is 404. Plugin role names are
+  // '/'-namespaced so they never even match this `:role` param.
+  r.delete('/settings/models/roles/:role', async (req, res, next) => {
+    try {
+      const role = req.params.role;
+      const ok = await removeCustomRole(role);
+      if (ok) return res.json(modelsSettingsState());
+      const known = getAllRoles().some(x => x.role === role);
+      return res.status(known ? 400 : 404).json({ error: known ? 'cannot delete a built-in or plugin-owned role' : 'custom role not found' });
     } catch (e) { next(e); }
   });
 

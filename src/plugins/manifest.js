@@ -1,5 +1,6 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import { isKnownTier, isKnownClaudeModel } from '../modelVersions.js';
 
 // Plugin manifest: `conductor.plugin.json` at the plugin project root.
 // readManifest(dir) reads + validates; validateManifest(json) normalizes a
@@ -31,7 +32,7 @@ const quotedScopes = SUPPORTED_CONVENTION_SCOPES.map(s => `"${s}"`).join(', ');
 // scaffold facet) is an active pluginApi:1 capability that requires no backend,
 // so a conventions-only plugin is valid. `settings` stays reserved
 // (validated-but-inert; accepted, never acted on).
-const KNOWN_TOP_KEYS = new Set(['id', 'name', 'version', 'pluginApi', 'backend', 'frontend', 'mcp', 'settings', 'conventions']);
+const KNOWN_TOP_KEYS = new Set(['id', 'name', 'version', 'pluginApi', 'backend', 'frontend', 'mcp', 'settings', 'conventions', 'roles']);
 
 // Result: null (no manifest file) | { manifest } | { errors, incompatible? }
 export async function readManifest(dir) {
@@ -106,6 +107,7 @@ export function validateManifest(json) {
   const frontend = validateFrontend(json.frontend, backend, json.name, errors);
   const mcp = validateMcp(json.mcp, backend, errors);
   const conventions = validateConventions(json.conventions, errors);
+  const roles = validateRoles(json.roles, errors);
 
   if (errors.length > 0) return { errors, id: displayId(json) };
   return {
@@ -118,6 +120,7 @@ export function validateManifest(json) {
       ...(frontend ? { frontend } : {}),
       ...(mcp ? { mcp } : {}),
       ...(conventions ? { conventions } : {}),
+      ...(roles ? { roles } : {}),
     },
   };
 }
@@ -238,6 +241,75 @@ function validateConventionScope(scope, label, errors) {
   } else {
     errors.push(`'${label}.scope' must be one of: ${SUPPORTED_CONVENTION_SCOPES.join(', ')}`);
   }
+}
+
+// roles: [{ slug, name, binding }] — plugin-owned roles, surfaced namespaced
+// <plugin-id>/<slug> and resolvable anywhere built-in roles are. A role is a
+// named model-binding indirection only (no persona/system-prompt — parity with
+// built-in roles). Live-derived from enabled plugins, so no backend is required.
+// Returns a normalized array or null.
+function validateRoles(roles, errors) {
+  if (roles === undefined) return null;
+  if (!Array.isArray(roles) || roles.length === 0) {
+    errors.push("'roles' must be a non-empty array");
+    return null;
+  }
+  const out = [];
+  const seen = new Set();
+  roles.forEach((entry, i) => {
+    const label = `roles[${i}]`;
+    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
+      errors.push(`'${label}' must be an object`);
+      return;
+    }
+    for (const k of Object.keys(entry)) {
+      if (!['slug', 'name', 'binding'].includes(k)) errors.push(`unknown key '${label}.${k}'`);
+    }
+    if (typeof entry.slug !== 'string' || !SLUG_RE.test(entry.slug) || entry.slug.length > SLUG_MAX) {
+      errors.push(`'${label}.slug' is required and must match ^[a-z][a-z0-9-]*$ (max 40 chars)`);
+    } else if (seen.has(entry.slug)) {
+      errors.push(`duplicate role slug '${entry.slug}'`);
+    } else {
+      seen.add(entry.slug);
+    }
+    if (typeof entry.name !== 'string' || entry.name.trim() === '') errors.push(`'${label}.name' is required (non-empty string)`);
+    const binding = validateRoleBinding(entry.binding, label, errors);
+    out.push({
+      slug: entry.slug,
+      name: typeof entry.name === 'string' ? entry.name.trim() : '',
+      binding,
+    });
+  });
+  return out;
+}
+
+// A plugin role binding: {kind:'tier', tier} (a known capability tier) or
+// {kind:'claude', model} (a known Claude version id). Ollama tags are user-local
+// so a plugin can't bind to one. Validated against the shared modelVersions
+// catalog at load, so a role that names a since-removed tier/model never
+// registers. Returns the normalized binding or null.
+function validateRoleBinding(b, label, errors) {
+  const bl = `${label}.binding`;
+  if (typeof b !== 'object' || b === null || Array.isArray(b)) {
+    errors.push(`'${bl}' is required (object {kind:'tier',tier} or {kind:'claude',model})`);
+    return null;
+  }
+  if (b.kind === 'tier') {
+    for (const k of Object.keys(b)) {
+      if (!['kind', 'tier'].includes(k)) errors.push(`unknown key '${bl}.${k}'`);
+    }
+    if (!isKnownTier(b.tier)) errors.push(`'${bl}.tier' must be a known capability tier`);
+    return { kind: 'tier', tier: b.tier };
+  }
+  if (b.kind === 'claude') {
+    for (const k of Object.keys(b)) {
+      if (!['kind', 'model'].includes(k)) errors.push(`unknown key '${bl}.${k}'`);
+    }
+    if (!isKnownClaudeModel(b.model)) errors.push(`'${bl}.model' must be a known Claude model id`);
+    return { kind: 'claude', model: b.model };
+  }
+  errors.push(`'${bl}.kind' must be 'tier' or 'claude'`);
+  return null;
 }
 
 // Best-effort id for listing an invalid/incompatible manifest.

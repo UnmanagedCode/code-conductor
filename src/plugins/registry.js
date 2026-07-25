@@ -519,6 +519,7 @@ export function createPluginHost({
       // `hasScaffold` flags a convention whose pick triggers a one-time setup
       // directive (returned by create_project) in addition to any fragment.
       conventions: (entry.manifest?.conventions ?? []).map(g => ({ slug: `${id}/${g.slug}`, name: g.name, description: g.description, hasScaffold: !!g.scaffold })),
+      roles: (entry.manifest?.roles ?? []).map(r => ({ slug: `${id}/${r.slug}`, name: r.name })),
       port: rec?.port ?? null,
       pid: rec?.pid ?? null,
       startedAt: rec?.startedAt ?? null,
@@ -703,6 +704,22 @@ export function createPluginHost({
     return byScope;
   }
 
+  // Roles contributed by enabled plugins. SYNCHRONOUS — unlike conventions(),
+  // a role binding is inline in the manifest (no fragment file to resolve), so
+  // spawn-time resolution (appSettings.resolveRoleBackend) stays synchronous.
+  // Each entry: { role:'<plugin-id>/<slug>', label, binding, plugin:id }. Only
+  // enabled+ok plugins contribute, so disabling/removing a plugin drops its
+  // roles automatically (no purge, mirroring conductor conventions).
+  function roles() {
+    const out = [];
+    for (const entry of contributingEntries()) {
+      for (const r of entry.manifest.roles ?? []) {
+        out.push({ role: `${entry.id}/${r.slug}`, label: r.name, binding: r.binding, plugin: entry.id });
+      }
+    }
+    return out;
+  }
+
   function setServerPort(p) { serverPort = p; }
 
   // Test/shutdown teardown: kill every child this host started or adopted.
@@ -718,7 +735,7 @@ export function createPluginHost({
     init: ensureInit,
     list, rescan, enable, disable, start, stop, restart, status,
     ensureStarted, setActiveVersion, toolsFor, runtimeInfo,
-    conventions, hasConductorConventions,
+    conventions, roles, hasConductorConventions,
     reportUpstreamFailure, setServerPort, setEnabledChangeHook, stopAll,
   };
 }

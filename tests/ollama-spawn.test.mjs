@@ -14,7 +14,7 @@ import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf, fakeOllamaReachable, fakeOllamaUnreachable } from './helpers.mjs';
-import { addCustomBackend, setTierBackend, setRoleBinding } from '../src/appSettings.js';
+import { addCustomBackend, setTierBackend, setRoleBinding, addCustomRole } from '../src/appSettings.js';
 import { isOllamaSession, getOllamaSession, markOllamaSession } from '../src/sessionBackends.js';
 import { claudeProjectsRoot, encodeCwd } from '../src/projects.js';
 import { resolveBackendLaunch } from '../src/claudeLauncher.js';
@@ -199,6 +199,28 @@ describe('role → {kind,model} resolution (MCP spawn)', () => {
     const inst = instances.get(instances.idsForSession(spawned.sessionId)[0]);
     assert.equal(inst.backendKind, 'ollama');
     assert.equal(inst.model, 'deepseek-v4-flash:cloud');
+  });
+
+  test('a user custom role resolves to its bound claude model', async () => {
+    await addCustomRole({ role: 'tester', label: 'Tester', binding: { kind: 'claude', model: 'claude-haiku-4-5' } });
+    await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
+    const spawned = await callTool('spawn_instance', { project: 'p', mode: 'bypassPermissions', model: 'tester' });
+    await waitFor(() => instances.idsForSession(spawned.sessionId).length > 0);
+    const inst = instances.get(instances.idsForSession(spawned.sessionId)[0]);
+    assert.equal(inst.backendKind, 'claude');
+    assert.equal(inst.model, 'claude-haiku-4-5');
+  });
+
+  test('an unknown role/model is refused (BAD_MODEL), spawns nothing', async () => {
+    await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
+    const res = await fetch(baseUrl + '/mcp', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 999, method: 'tools/call', params: { name: 'spawn_instance', arguments: { project: 'p', mode: 'bypassPermissions', model: 'ghost-role' } } }),
+    });
+    const body = await res.json();
+    assert.equal(body.result.isError, true, JSON.stringify(body));
+    assert.match(body.result.content[0].text, /unknown model/);
   });
 });
 
