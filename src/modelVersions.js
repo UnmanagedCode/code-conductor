@@ -22,6 +22,12 @@
 // unchanged, independent of any tier→backend binding — see spawnInstance in
 // src/mcp/handlers.js.
 
+// Shared identifier-slug rule for user- and plugin-authored names (custom role
+// slugs in appSettings.js, plugin convention/role slugs in plugins/manifest.js).
+// One definition so the two can't drift.
+export const SLUG_RE = /^[a-z][a-z0-9-]*$/;
+export const SLUG_MAX = 40;
+
 export const MODEL_FAMILIES = [
   {
     family: 'fable',

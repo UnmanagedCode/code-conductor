@@ -14,7 +14,8 @@ import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf, fakeOllamaReachable, fakeOllamaUnreachable } from './helpers.mjs';
-import { addCustomBackend, setTierBackend, setRoleBinding, addCustomRole } from '../src/appSettings.js';
+import { addCustomBackend, setTierBackend, setRoleBinding, addCustomRole,
+  setPluginRolesProvider, getTierBackend, getDefaultSpawnTier } from '../src/appSettings.js';
 import { isOllamaSession, getOllamaSession, markOllamaSession } from '../src/sessionBackends.js';
 import { claudeProjectsRoot, encodeCwd } from '../src/projects.js';
 import { resolveBackendLaunch } from '../src/claudeLauncher.js';
@@ -221,6 +222,51 @@ describe('role → {kind,model} resolution (MCP spawn)', () => {
     const body = await res.json();
     assert.equal(body.result.isError, true, JSON.stringify(body));
     assert.match(body.result.content[0].text, /unknown model/);
+  });
+
+  // Plugin-owned roles are injected via the same provider server.js wires to
+  // pluginHost.roles(); overriding it here exercises the resolution path an
+  // enabled plugin would drive, without standing up a real plugin.
+  test('a plugin-owned role resolves to its manifest claude binding', async () => {
+    setPluginRolesProvider(() => [{ role: 'myplug/scribe', label: 'Scribe', binding: { kind: 'claude', model: 'claude-haiku-4-5' }, plugin: 'myplug' }]);
+    try {
+      await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
+      const spawned = await callTool('spawn_instance', { project: 'p', mode: 'bypassPermissions', model: 'myplug/scribe' });
+      await waitFor(() => instances.idsForSession(spawned.sessionId).length > 0);
+      const inst = instances.get(instances.idsForSession(spawned.sessionId)[0]);
+      assert.equal(inst.backendKind, 'claude');
+      assert.equal(inst.model, 'claude-haiku-4-5');
+    } finally { setPluginRolesProvider(null); }
+  });
+
+  test('a disabled plugin\'s role is not resolvable and is refused at spawn (BAD_MODEL)', async () => {
+    // Provider returns [] — the plugin is disabled/removed, so its namespaced
+    // role name resolves to nothing and spawn must refuse it.
+    setPluginRolesProvider(() => []);
+    try {
+      await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
+      const res = await fetch(baseUrl + '/mcp', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1001, method: 'tools/call', params: { name: 'spawn_instance', arguments: { project: 'p', mode: 'bypassPermissions', model: 'myplug/scribe' } } }),
+      });
+      const body = await res.json();
+      assert.equal(body.result.isError, true, JSON.stringify(body));
+      assert.match(body.result.content[0].text, /unknown model/);
+    } finally { setPluginRolesProvider(null); }
+  });
+
+  test('a plugin claude binding whose model left the catalog falls back to the default spawn tier', async () => {
+    setPluginRolesProvider(() => [{ role: 'myplug/legacy', label: 'Legacy', binding: { kind: 'claude', model: 'claude-retired-9' }, plugin: 'myplug' }]);
+    try {
+      await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
+      const expected = getTierBackend(getDefaultSpawnTier()); // {kind,model} the fallback must land on
+      const spawned = await callTool('spawn_instance', { project: 'p', mode: 'bypassPermissions', model: 'myplug/legacy' });
+      await waitFor(() => instances.idsForSession(spawned.sessionId).length > 0);
+      const inst = instances.get(instances.idsForSession(spawned.sessionId)[0]);
+      assert.equal(inst.backendKind, expected.kind);
+      assert.equal(inst.model, expected.model, 'dead plugin model must not pass through — fall back to the default spawn tier');
+    } finally { setPluginRolesProvider(null); }
   });
 });
 

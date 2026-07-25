@@ -12,7 +12,8 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { orchStoreRoot, writeFileAtomic } from './projects.js';
 import { CAPABILITY_TIERS, DEFAULT_TIER_BACKEND, isKnownTier, isKnownClaudeModel,
-  ROLES, DEFAULT_ROLE_BINDING, isKnownRole, isKnownFamily, sonnetWindowSelectable } from './modelVersions.js';
+  ROLES, DEFAULT_ROLE_BINDING, isKnownRole, isKnownFamily, sonnetWindowSelectable,
+  SLUG_RE, SLUG_MAX } from './modelVersions.js';
 import { OLLAMA_CLOUD_MODELS, isKnownOllamaCloudModel } from './ollamaCloudModels.js';
 
 function settingsPath() {
@@ -372,7 +373,19 @@ export async function setRoleBinding(role, binding) {
 // manifest binding (never persisted), so they vanish when the plugin is disabled.
 export function resolveRoleBackend(role) {
   const pluginRole = getPluginRoles().find(r => r.role === role);
-  const b = pluginRole ? pluginRole.binding : getRoleBinding(role);
+  if (pluginRole) {
+    const b = pluginRole.binding;
+    if (b.kind === 'tier') return getTierBackend(b.tier);
+    // A plugin claude binding is validated at manifest load, but the model
+    // catalog can move on (a Claude version retired) between that load and this
+    // resolve — never spawn a dead id. Mirror the custom-role fallback: revert to
+    // the default spawn tier's backend. (Ollama is never a plugin binding kind.)
+    if (b.kind === 'claude' && !isKnownClaudeModel(b.model)) {
+      return getTierBackend(getDefaultSpawnTier());
+    }
+    return persistBinding(b);
+  }
+  const b = getRoleBinding(role);
   return b.kind === 'tier' ? getTierBackend(b.tier) : persistBinding(b);
 }
 
@@ -398,10 +411,9 @@ export function getPluginRoles() {
 // User custom roles: persisted as `models.customRoles: [{role, label}]` —
 // identity + label only. The binding lives in `models.roleBackend[role]` exactly
 // like a built-in role, so binding edits reuse setRoleBinding/getRoleBinding
-// unchanged. A name must be a fresh slug, disjoint from tiers / built-in roles /
-// family aliases; '/' is reserved for plugin namespacing (the regex forbids it).
-const CUSTOM_ROLE_RE = /^[a-z][a-z0-9-]*$/;
-const CUSTOM_ROLE_MAX = 40;
+// unchanged. A name must be a fresh slug (shared SLUG_RE/SLUG_MAX rule),
+// disjoint from tiers / built-in roles / family aliases; '/' is reserved for
+// plugin namespacing (the regex forbids it).
 
 export function getCustomRoles() {
   const s = loadSync();
@@ -433,7 +445,7 @@ export function isResolvableRole(role) {
 export async function addCustomRole({ role, label, binding } = {}) {
   const slug = String(role || '').trim();
   const name = String(label || '').trim();
-  if (!CUSTOM_ROLE_RE.test(slug) || slug.length > CUSTOM_ROLE_MAX) {
+  if (!SLUG_RE.test(slug) || slug.length > SLUG_MAX) {
     throw Object.assign(new Error('role must match ^[a-z][a-z0-9-]*$ (max 40 chars)'), { statusCode: 400 });
   }
   if (!name) throw Object.assign(new Error('label is required'), { statusCode: 400 });

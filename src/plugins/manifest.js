@@ -1,6 +1,6 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { isKnownTier, isKnownClaudeModel } from '../modelVersions.js';
+import { isKnownTier, isKnownClaudeModel, SLUG_RE, SLUG_MAX } from '../modelVersions.js';
 
 // Plugin manifest: `conductor.plugin.json` at the plugin project root.
 // readManifest(dir) reads + validates; validateManifest(json) normalizes a
@@ -13,8 +13,8 @@ export const MANIFEST_FILENAME = 'conductor.plugin.json';
 export const SUPPORTED_PLUGIN_APIS = [1];
 
 const ID_RE = /^[a-z][a-z0-9-]*$/;
-const SLUG_RE = /^[a-z][a-z0-9-]*$/;
-const SLUG_MAX = 40;
+// SLUG_RE / SLUG_MAX are shared with appSettings.js (custom role slugs) via
+// modelVersions.js — one definition so the two rules can't drift.
 const TOOL_NAME_RE = /^[a-zA-Z0-9_-]+$/;
 const MCP_TIMEOUT_DEFAULT = 30000;
 const MCP_TIMEOUT_CAP = 120000;
@@ -286,8 +286,11 @@ function validateRoles(roles, errors) {
 // A plugin role binding: {kind:'tier', tier} (a known capability tier) or
 // {kind:'claude', model} (a known Claude version id). Ollama tags are user-local
 // so a plugin can't bind to one. Validated against the shared modelVersions
-// catalog at load, so a role that names a since-removed tier/model never
-// registers. Returns the normalized binding or null.
+// catalog at load — an unknown tier/model marks the plugin invalid. This is a
+// load-TIME check only: the catalog can move on afterwards (a Claude version
+// retired), so resolveRoleBackend (appSettings.js) re-guards a claude model at
+// resolve time and falls back rather than spawn a dead id. Returns the
+// normalized binding or null.
 function validateRoleBinding(b, label, errors) {
   const bl = `${label}.binding`;
   if (typeof b !== 'object' || b === null || Array.isArray(b)) {
