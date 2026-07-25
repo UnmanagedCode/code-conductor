@@ -94,7 +94,7 @@ See [docs/features.md](docs/features.md) for the exhaustive feature and UI-eleme
 - [docs/plugins.md](docs/plugins.md) — plugin manifest schema, reverse proxy, bridge protocol, `/api/plugins` REST, child MCP wire contract, Plugin Library, compliance checklist
 - [conventions/conductor/](conventions/conductor/) (`core.md` + `footer.md` + toggleable `<slug>.md`) — conductor role prompt / orchestration contract; composed (core + enabled toggleable conventions + footer) and injected at spawn via `--append-system-prompt` into every Conduct session (configurable in Settings → Conventions → Conductor)
 - [conventions/workspace/](conventions/workspace/) (`core.md` + toggleable `<slug>.md`) — workspace conventions; composed (core + enabled conventions) into the app-owned projects-root `CLAUDE.md` every project imports via `@../CLAUDE.md` (configurable in Settings → Conventions → Workspace)
-- [conventions/project/](conventions/project/) — project conventions; a catalog of `<slug>.md` sections snapshotted into a new project's `CLAUDE.md` at creation (configurable in Settings → Conventions → Project)
+- [conventions/project/](conventions/project/) — project conventions; a catalog of `<slug>.md` sections composed into a new project's app-owned, regenerated in-project `CONVENTIONS.md` (imported via `@CONVENTIONS.md`; self-describing line-1 marker, no-op-safe regeneration — `src/projectClaudeMd.js`), configurable in Settings → Conventions → Project
 
 ## License
 

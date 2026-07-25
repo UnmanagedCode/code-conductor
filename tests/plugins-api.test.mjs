@@ -338,22 +338,56 @@ test('contributions-only plugin (convention w/ scaffold facet) flows through to 
     assert.equal(g.builtin, false);
     assert.match(g.scaffold, /harness wrapper/);
 
-    // Create a project selecting it: convention snapshots inline; scaffold
-    // directive is RETURNED (never persisted).
+    // Create a project selecting it: convention body lands in CONVENTIONS.md;
+    // scaffold directive is RETURNED (never persisted).
     const created = await api(boot.baseUrl, 'POST', '/api/projects', { name: 'usesconv', conventions: ['conv-plugin/vis-check'] });
     assert.equal(created.status, 201);
     assert.match(created.body.scaffold, /Project "usesconv" was created with these scaffolding steps/);
     assert.match(created.body.scaffold, /harness wrapper/);
-    const claudeMd = await fs.readFile(path.join(boot.projectsRoot, 'usesconv', 'CLAUDE.md'), 'utf8');
-    assert.match(claudeMd, /Visual UX verification/);
+    const conventionsMd = await fs.readFile(path.join(boot.projectsRoot, 'usesconv', 'CONVENTIONS.md'), 'utf8');
+    assert.match(conventionsMd, /Visual UX verification/);
     // Scaffold is NOT persisted to project meta.
     await assert.rejects(fs.stat(path.join(boot.projectsRoot, '.code-conductor', 'projects', 'usesconv', 'project.json')), { code: 'ENOENT' });
 
-    // Disable → convention drops from the catalog; the snapshot survives.
+    // Disable → convention drops from the catalog; the committed CONVENTIONS.md
+    // survives (nothing regenerates it, and regeneration would no-op anyway).
     await boot.pluginHost.disable('conv-plugin');
     conv = await api(boot.baseUrl, 'GET', '/api/settings/conventions/project');
     assert.ok(!conv.body.conventions.some(r => r.slug === 'conv-plugin/vis-check'));
-    const still = await fs.readFile(path.join(boot.projectsRoot, 'usesconv', 'CLAUDE.md'), 'utf8');
-    assert.match(still, /Visual UX verification/, 'applied convention snapshot survives disable');
+    const still = await fs.readFile(path.join(boot.projectsRoot, 'usesconv', 'CONVENTIONS.md'), 'utf8');
+    assert.match(still, /Visual UX verification/, 'committed convention body survives disable');
+  } finally { await boot.close(); }
+});
+
+test('enable/disable a project-convention plugin fans out to referencing projects', async () => {
+  const boot = await bootServer();
+  try {
+    const dir = path.join(boot.projectsRoot, 'projconvplug');
+    await fs.cp(FAKE_PLUGIN_DIR, dir, { recursive: true }); // brings conventions/sample.md
+    await fs.writeFile(path.join(dir, 'conductor.plugin.json'), JSON.stringify({
+      id: 'projconv', name: 'Proj Conv', version: '1.0.0', pluginApi: 1,
+      conventions: [{ slug: 'vis', name: 'Visual check', description: 'verify UX', file: 'conventions/sample.md', scope: 'project' }],
+    }));
+
+    // Enable via the HTTP route, then a project selects the plugin convention.
+    assert.equal((await api(boot.baseUrl, 'POST', '/api/plugins/projconv/enable')).status, 200);
+    const created = await api(boot.baseUrl, 'POST', '/api/projects', { name: 'refproj', conventions: ['projconv/vis'] });
+    assert.equal(created.status, 201);
+    const target = path.join(boot.projectsRoot, 'refproj', 'CONVENTIONS.md');
+    assert.match(await fs.readFile(target, 'utf8'), /Visual UX verification/);
+
+    // Mangle the body (marker intact) to prove the fan-out actually rewrites.
+    await fs.writeFile(target, '<!-- cc:conventions projconv/vis -->\n\nSTALE BODY\n');
+
+    // Disable → fan-out runs but the slug is now unresolvable ⇒ no-op-safe skip:
+    // the (stale) committed file is frozen, never blanked.
+    assert.equal((await api(boot.baseUrl, 'POST', '/api/plugins/projconv/disable')).status, 200);
+    assert.equal(await fs.readFile(target, 'utf8'), '<!-- cc:conventions projconv/vis -->\n\nSTALE BODY\n', 'frozen while disabled');
+
+    // Re-enable → fan-out re-resolves the slug ⇒ CONVENTIONS.md refreshed.
+    assert.equal((await api(boot.baseUrl, 'POST', '/api/plugins/projconv/enable')).status, 200);
+    const refreshed = await fs.readFile(target, 'utf8');
+    assert.match(refreshed, /Visual UX verification/, 'enable refreshed the referencing project');
+    assert.doesNotMatch(refreshed, /STALE BODY/);
   } finally { await boot.close(); }
 });

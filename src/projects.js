@@ -366,7 +366,7 @@ export async function renameWorkspace(oldName, newName) {
   return { renamed: true, name: newV, movedProjects: members };
 }
 
-export async function createProject(name, { appendToCLAUDEmd = '' } = {}) {
+export async function createProject(name, { conventionsDoc = null } = {}) {
   validateName(name);
   const root = projectsRoot();
   const full = path.join(root, name);
@@ -383,13 +383,19 @@ export async function createProject(name, { appendToCLAUDEmd = '' } = {}) {
   // Seed a CLAUDE.md that imports the workspace-wide one at ~/project/CLAUDE.md.
   // Using @../CLAUDE.md so Claude Code's import resolver pulls the workspace
   // file in regardless of where the project ends up being mounted.
-  // appendToCLAUDEmd is an inline snapshot of selected project convention bodies;
-  // callers compute it via projectConventions.composeProjectConventionsBlock (no circular dep).
+  // When conventions were selected the caller passes the composed CONVENTIONS.md
+  // document; we add an in-project `@CONVENTIONS.md` import and write the file.
+  // That file is app-owned + regenerated later (src/projectClaudeMd.js); the
+  // caller composes it (no circular dep on projectConventions here).
+  const importLine = conventionsDoc != null ? '@../CLAUDE.md\n@CONVENTIONS.md\n' : '@../CLAUDE.md\n';
   const claudeMdPath = path.join(full, 'CLAUDE.md');
   try {
-    await fs.writeFile(claudeMdPath, '@../CLAUDE.md\n' + appendToCLAUDEmd, { flag: 'wx' });
+    await fs.writeFile(claudeMdPath, importLine, { flag: 'wx' });
   } catch (e) {
     if (e.code !== 'EEXIST') throw e;
+  }
+  if (conventionsDoc != null) {
+    await fs.writeFile(path.join(full, 'CONVENTIONS.md'), conventionsDoc);
   }
   return { name, path: full };
 }

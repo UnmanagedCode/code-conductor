@@ -1,5 +1,6 @@
 // Tests for project conventions (formerly "optional guidelines"):
-// catalog, custom CRUD, compose, per-project snapshot at creation, the REST
+// catalog, custom CRUD, compose, the in-tree CONVENTIONS.md written at creation
+// (see project-conventions-md.test.mjs for the regeneration contract), the REST
 // surface (/api/settings/conventions/project), and the MCP tools
 // (list_project_conventions + create_project's `conventions` param).
 
@@ -13,6 +14,7 @@ import {
   getCatalog, addCustomConvention, deleteCustomConvention,
   composeProjectConventionsBlock, SEED_PROJECT_CONVENTIONS,
 } from '../src/projectConventions.js';
+import { composeProjectConventionsDoc } from '../src/projectClaudeMd.js';
 import { createProject } from '../src/projects.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -170,14 +172,17 @@ test('createProject with no conventions seeds only @../CLAUDE.md', async () => {
   const { path: projPath } = await createProject('plain-proj');
   const content = await fs.readFile(path.join(projPath, 'CLAUDE.md'), 'utf8');
   assert.equal(content, '@../CLAUDE.md\n');
+  await assert.rejects(() => fs.readFile(path.join(projPath, 'CONVENTIONS.md'), 'utf8'));
 });
 
-test('createProject with conventions appends convention bodies', async () => {
-  const appendToCLAUDEmd = await composeProjectConventionsBlock(['documentation-guidelines']);
-  const { path: projPath } = await createProject('convention-proj', { appendToCLAUDEmd });
-  const content = await fs.readFile(path.join(projPath, 'CLAUDE.md'), 'utf8');
-  assert.ok(content.startsWith('@../CLAUDE.md\n'));
-  assert.ok(content.includes('## Documentation guidelines'));
+test('createProject with conventions imports + writes CONVENTIONS.md', async () => {
+  const conventionsDoc = await composeProjectConventionsDoc(['documentation-guidelines']);
+  const { path: projPath } = await createProject('convention-proj', { conventionsDoc });
+  const claude = await fs.readFile(path.join(projPath, 'CLAUDE.md'), 'utf8');
+  assert.equal(claude, '@../CLAUDE.md\n@CONVENTIONS.md\n');
+  const conventions = await fs.readFile(path.join(projPath, 'CONVENTIONS.md'), 'utf8');
+  assert.ok(conventions.startsWith('<!-- cc:conventions documentation-guidelines -->'));
+  assert.ok(conventions.includes('## Documentation guidelines'));
 });
 
 // ── REST API ───────────────────────────────────────────────────────────────
@@ -246,16 +251,18 @@ test('DELETE /api/settings/conventions/project/:slug rejects builtin', async () 
   assert.equal(r.status, 400);
 });
 
-test('POST /api/projects with conventions appends bodies to CLAUDE.md', async () => {
+test('POST /api/projects with conventions writes CONVENTIONS.md + imports it', async () => {
   const r = await api(baseUrl, 'POST', '/api/projects', {
     name: 'proj-with-conventions',
     conventions: ['documentation-guidelines', 'design-guidelines'],
   });
   assert.equal(r.status, 201);
-  const content = await fs.readFile(path.join(projectsRoot, 'proj-with-conventions', 'CLAUDE.md'), 'utf8');
-  assert.ok(content.startsWith('@../CLAUDE.md\n'));
-  assert.ok(content.includes('## Documentation guidelines'));
-  assert.ok(content.includes('## Design guidelines'));
+  const claude = await fs.readFile(path.join(projectsRoot, 'proj-with-conventions', 'CLAUDE.md'), 'utf8');
+  assert.equal(claude, '@../CLAUDE.md\n@CONVENTIONS.md\n');
+  const conventions = await fs.readFile(path.join(projectsRoot, 'proj-with-conventions', 'CONVENTIONS.md'), 'utf8');
+  assert.ok(conventions.startsWith('<!-- cc:conventions documentation-guidelines,design-guidelines -->'));
+  assert.ok(conventions.includes('## Documentation guidelines'));
+  assert.ok(conventions.includes('## Design guidelines'));
 });
 
 test('POST /api/projects with unknown convention slug returns 400', async () => {
@@ -311,9 +318,10 @@ test('create_project MCP tool with conventions appends bodies to CLAUDE.md', asy
   assert.ok(tool);
   const result = await tool.handler({ name: 'mcp-guided', conventions: ['documentation-guidelines'] }, { instances });
   assert.equal(result.name, 'mcp-guided');
-  const content = await fs.readFile(path.join(projectsRoot, 'mcp-guided', 'CLAUDE.md'), 'utf8');
-  assert.ok(content.startsWith('@../CLAUDE.md\n'));
-  assert.ok(content.includes('## Documentation guidelines'));
+  const claude = await fs.readFile(path.join(projectsRoot, 'mcp-guided', 'CLAUDE.md'), 'utf8');
+  assert.equal(claude, '@../CLAUDE.md\n@CONVENTIONS.md\n');
+  const conventions = await fs.readFile(path.join(projectsRoot, 'mcp-guided', 'CONVENTIONS.md'), 'utf8');
+  assert.ok(conventions.includes('## Documentation guidelines'));
 });
 
 // ── Plugin-contributed conventions (+ optional scaffold facet) ─────────────
@@ -345,21 +353,23 @@ test('plugin conventions merge into the catalog with namespaced slugs', async ()
   assert.ok(catalog.some(r => r.slug === 'design-guidelines'));
 });
 
-test('compose resolves a plugin convention slug; create_project snapshots it inline', async () => {
+test('compose resolves a plugin convention slug; create_project writes it to CONVENTIONS.md', async () => {
   setPluginConventionsProvider(async () => [
     { slug: 'playwright-harness/visual-verification', name: 'Visual verification', description: 'verify UX', body: '## Visual verification\n- always verify UX', plugin: 'playwright-harness' },
   ]);
-  const block = await composeProjectConventionsBlock(['playwright-harness/visual-verification']);
-  assert.ok(block.includes('## Visual verification'));
+  const doc = await composeProjectConventionsDoc(['playwright-harness/visual-verification']);
+  assert.ok(doc.includes('## Visual verification'));
 
-  await createProject('plugin-guided', { appendToCLAUDEmd: block });
-  const content = await fs.readFile(path.join(projectsRoot, 'plugin-guided', 'CLAUDE.md'), 'utf8');
+  await createProject('plugin-guided', { conventionsDoc: doc });
+  const target = path.join(projectsRoot, 'plugin-guided', 'CONVENTIONS.md');
+  const content = await fs.readFile(target, 'utf8');
   assert.ok(content.includes('always verify UX'));
 
-  // Applied copy survives the plugin going away (provider empties).
+  // Committed copy survives the plugin going away (provider empties). Nothing
+  // regenerates here, so the last-known-good body persists byte-for-byte.
   setPluginConventionsProvider(async () => []);
-  const after = await fs.readFile(path.join(projectsRoot, 'plugin-guided', 'CLAUDE.md'), 'utf8');
-  assert.ok(after.includes('always verify UX'), 'snapshot survives disable/uninstall');
+  const after = await fs.readFile(target, 'utf8');
+  assert.ok(after.includes('always verify UX'), 'committed body survives disable/uninstall');
   // And the catalog no longer offers it.
   const catalog = await getCatalog();
   assert.ok(!catalog.some(r => r.slug === 'playwright-harness/visual-verification'));
@@ -397,7 +407,7 @@ test('list_project_conventions carries hasScaffold', async () => {
   assert.equal(bySlug['playwright-harness/harness-wrapper'].scaffold, undefined);
 });
 
-test('a scaffold-only convention appends nothing to CLAUDE.md', async () => {
+test('composeProjectConventionsBlock: a scaffold-only convention contributes no fragment', async () => {
   setPluginConventionsProvider(async () => FAKE_CONVENTIONS);
   const block = await composeProjectConventionsBlock(['playwright-harness/seed-config']);
   assert.equal(block, '', 'scaffold-only convention contributes no fragment');
@@ -430,10 +440,11 @@ test('create_project RETURNS the composed scaffold directive from picked convent
   assert.match(result.scaffold, /Project "sc-proj" was created with these scaffolding steps/);
   assert.match(result.scaffold, /1\) Build a project-local harness wrapper/);
   assert.match(result.scaffold, /2\) Write a default config/);
-  // The fragment-bearing convention still snapshots into CLAUDE.md.
-  const content = await fs.readFile(path.join(projectsRoot, 'sc-proj', 'CLAUDE.md'), 'utf8');
+  // The fragment-bearing convention still lands in CONVENTIONS.md.
+  const content = await fs.readFile(path.join(projectsRoot, 'sc-proj', 'CONVENTIONS.md'), 'utf8');
   assert.match(content, /## Harness/);
-  // Nothing persisted — the project meta stays clean, no spawn coupling.
+  // Nothing persisted to the store — the project meta stays clean (the marker in
+  // CONVENTIONS.md is the only selection record), no spawn coupling.
   const { readProjectMeta } = await import('../src/projects.js');
   assert.deepEqual(await readProjectMeta('sc-proj'), { workspace: null });
 });
