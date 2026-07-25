@@ -1544,7 +1544,7 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
   padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px;
   background: var(--panel);
 }
-.sm-role-row .sm-family-label { flex: 0 0 76px; }
+.sm-role-row .sm-role-name-wrap { flex: 0 0 76px; display: flex; flex-direction: column; gap: 2px; }
 .sm-role-row .sm-role-binding { flex: 0 0 auto; }
 .sm-role-row .sm-version { flex: 1 1 auto; min-width: 0; }
 /* Small × remove control (matches the composer attachment chip's .cac-remove). */
@@ -1556,7 +1556,7 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
 .sm-role-row .sm-role-remove:hover { color: var(--red); }
 .sm-role-row--plugin { opacity: 0.9; }
 .sm-role-plugin-badge {
-  flex: 0 0 auto; font-size: 11px; color: var(--muted);
+  align-self: flex-start; flex: 0 0 auto; font-size: 11px; color: var(--muted);
   border: 1px solid var(--border); border-radius: 6px; padding: 1px 6px;
 }
 .sm-role-form { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
