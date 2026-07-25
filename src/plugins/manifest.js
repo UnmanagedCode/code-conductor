@@ -142,11 +142,14 @@ function validateClaudePlugin(value, errors) {
     errors.push("'claudePlugin' must be a non-empty relative path");
     return undefined;
   }
-  if (value.startsWith('/') || value.includes('..') || path.isAbsolute(value)) {
+  const trimmed = value.trim();
+  // Segment-level `..` check so a legitimate component like `data..v2` is fine —
+  // only a real `..` path segment is a traversal.
+  if (trimmed.startsWith('/') || path.isAbsolute(trimmed) || trimmed.split('/').includes('..')) {
     errors.push("'claudePlugin' must be a relative path with no '..' segment");
     return undefined;
   }
-  return value;
+  return trimmed;
 }
 
 // The one accessor consumers use to read a manifest's Claude Code plugin roots.

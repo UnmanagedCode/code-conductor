@@ -285,11 +285,19 @@ test('roles: empty array rejected', () => {
 });
 
 test('claudePlugin: accepted forms normalize and are preserved', () => {
-  for (const v of ['claude', 'adapters/x', '.']) {
+  // `data..v2` / `a..b` contain `..` as a substring but not as a path segment —
+  // legitimate, must be accepted.
+  for (const v of ['claude', 'adapters/x', '.', 'data..v2', 'a..b/root']) {
     const r = validateManifest(base({ claudePlugin: v }));
     assert.equal(r.errors, undefined, `claudePlugin=${v} should be accepted`);
     assert.equal(r.manifest.claudePlugin, v);
   }
+});
+
+test('claudePlugin: surrounding whitespace is trimmed in the normalized value', () => {
+  const r = validateManifest(base({ claudePlugin: '  claude  ' }));
+  assert.equal(r.errors, undefined);
+  assert.equal(r.manifest.claudePlugin, 'claude');
 });
 
 test('claudePlugin: absent → key omitted from normalized manifest', () => {
