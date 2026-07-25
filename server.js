@@ -43,6 +43,11 @@ export function createServer({ withInstances = true, claudeLauncher } = {}) {
     // binding is inline in the manifest, no fragment file). This lets spawn
     // resolution recognise <plugin-id>/<slug> roles and drops them on disable.
     setPluginRolesProvider(() => pluginHost.roles());
+    // Enabled plugins' Claude Code plugin roots (skills et al.) → one
+    // `--plugin-dir` per root at every claude launch. Resolved + validated
+    // (a missing .claude-plugin/plugin.json warns + drops the flag) in
+    // _doCreate and frozen on the Instance.
+    instances.setClaudePluginDirsResolver(() => pluginHost.claudePluginDirs());
   }
 
   // serverCtx is a shared mutable handle so route handlers (POST

@@ -257,7 +257,7 @@ export class EventLog {
 }
 
 export class Instance extends EventEmitter {
-  constructor({ id, project, cwd, mode, effort, thinking, model, sonnetWindow = '1m', backendKind = 'claude', hookCallbackUrl = null, mcpServerUrl = null, worktree = null, temp = false, conducted = false, callerInstanceId = null, debug = false, launcher = defaultClaudeLauncher, appendSystemPromptProvider = null }) {
+  constructor({ id, project, cwd, mode, effort, thinking, model, sonnetWindow = '1m', backendKind = 'claude', hookCallbackUrl = null, mcpServerUrl = null, worktree = null, temp = false, conducted = false, callerInstanceId = null, debug = false, claudePluginDirs = [], launcher = defaultClaudeLauncher, appendSystemPromptProvider = null }) {
     super();
     this.id = id;
     // The ClaudeLauncher used to spawn the subprocess. Defaults to the real
@@ -283,6 +283,14 @@ export class Instance extends EventEmitter {
     this.backendKind = backendKind === 'ollama' ? 'ollama' : 'claude';
     this.hookCallbackUrl = hookCallbackUrl;
     this.mcpServerUrl = mcpServerUrl;
+    // Absolute Claude Code plugin roots (each directly containing
+    // `.claude-plugin/plugin.json`) contributed by enabled cc plugins whose
+    // manifest declares `claudePlugin`. Resolved + validated once at create()
+    // time (async) and frozen on the instance, mirroring mcpServerUrl; spawn()
+    // emits one `--plugin-dir <root>` per entry. Reused verbatim across
+    // respawn/rewind (a plugin enabled mid-session is picked up on the next
+    // create, not a bare respawn).
+    this.claudePluginDirs = Array.isArray(claudePluginDirs) ? claudePluginDirs : [];
     // null for a normal instance; otherwise the worktree metadata object
     // (parentProject, worktreeName, worktreePath, branch, baseBranch,
     // baseSha) so the UI can show a chip and the rebase/ff buttons.
@@ -1002,6 +1010,12 @@ export class Instance extends EventEmitter {
       const url = `${this.mcpServerUrl}?caller=${encodeURIComponent(this.id)}`;
       args.push('--mcp-config', buildMcpConfigJSON({ url }));
     }
+    // Session-local Claude Code plugin roots (skills et al.) contributed by
+    // enabled cc plugins. Repeatable flag, one per validated root; lands on the
+    // claude side of the ollama `--` separator (same args array as every other
+    // claude flag), so it's correct for both backends. Empty for the common
+    // case (no plugin ships a claudePlugin surface).
+    for (const dir of this.claudePluginDirs) args.push('--plugin-dir', dir);
     // Each family runs at one fixed context window, pinned via the model id
     // itself (Sonnet carries the CLI-native `[1m]` suffix; Opus/Haiku are
     // bare — see canonicalizeModel in modelVersions.js). Strip any ambient
@@ -1974,6 +1988,11 @@ export class InstanceManager extends EventEmitter {
     // spawned without a port set get null hookCallbackUrl, which disables
     // the interactive http hook (ask mode falls back to auto-allow).
     this.serverPort = null;
+    // Resolves the enabled cc plugins' Claude Code plugin roots (validated abs
+    // dirs) to add as `--plugin-dir` flags. Injected by server.js after the
+    // plugin host exists (it's constructed after this manager); default [] keeps
+    // headless/tests working. Awaited in _doCreate and frozen on each Instance.
+    this._claudePluginDirsResolver = async () => [];
     // Two self-contained subsystems composed as collaborators. Each owns its
     // backing state (the idle-subscription graph map / the auto-resume timer
     // map) and resolves cross-instance lookups + event emission back through
@@ -2065,6 +2084,12 @@ export class InstanceManager extends EventEmitter {
 
   setServerPort(port) {
     this.serverPort = port;
+  }
+
+  // Injected by server.js once the plugin host exists: `() =>
+  // pluginHost.claudePluginDirs()`. A non-function resets to the [] default.
+  setClaudePluginDirsResolver(fn) {
+    this._claudePluginDirsResolver = typeof fn === 'function' ? fn : (async () => []);
   }
 
   hookCallbackUrl(id) {
@@ -2383,6 +2408,13 @@ export class InstanceManager extends EventEmitter {
       catch { /* best-effort */ }
     }
 
+    // Resolve + validate the enabled plugins' Claude Code plugin roots here (async
+    // launch-config, like mcpServerUrl) so the sync spawn() can just append the
+    // frozen list. Best-effort: a resolver failure must never block a spawn.
+    let claudePluginDirs = [];
+    try { claudePluginDirs = await this._claudePluginDirsResolver(); }
+    catch (e) { console.warn(`instances: claudePlugin resolve failed: ${e.message}`); }
+
     const id = randomUUID();
     const inst = new Instance({
       id, project, cwd,
@@ -2402,6 +2434,7 @@ export class InstanceManager extends EventEmitter {
       // `??` also treats an explicit `null` as "omitted" (falls through to the
       // default) — there is no way to spell "off" other than `debug: false`.
       debug: !!(debug ?? getDebugByDefault()),
+      claudePluginDirs,
       launcher: this._claudeLauncher,
       // The conductor singleton carries its composed role doc as an appended
       // system prompt; every other instance gets its guidance from CLAUDE.md

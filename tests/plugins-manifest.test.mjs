@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { validateManifest, readManifest } from '../src/plugins/manifest.js';
+import { validateManifest, readManifest, claudePluginPaths } from '../src/plugins/manifest.js';
 import { readFixtureManifest } from './plugin-helpers.mjs';
 
 function base(overrides = {}) {
@@ -282,4 +282,47 @@ test('roles: duplicate slug within the array rejected', () => {
 
 test('roles: empty array rejected', () => {
   assert.ok(validateManifest(base({ roles: [] })).errors.some(e => e.includes("'roles' must be a non-empty array")));
+});
+
+test('claudePlugin: accepted forms normalize and are preserved', () => {
+  // `data..v2` / `a..b` contain `..` as a substring but not as a path segment —
+  // legitimate, must be accepted.
+  for (const v of ['claude', 'adapters/x', '.', 'data..v2', 'a..b/root']) {
+    const r = validateManifest(base({ claudePlugin: v }));
+    assert.equal(r.errors, undefined, `claudePlugin=${v} should be accepted`);
+    assert.equal(r.manifest.claudePlugin, v);
+  }
+});
+
+test('claudePlugin: surrounding whitespace is trimmed in the normalized value', () => {
+  const r = validateManifest(base({ claudePlugin: '  claude  ' }));
+  assert.equal(r.errors, undefined);
+  assert.equal(r.manifest.claudePlugin, 'claude');
+});
+
+test('claudePlugin: absent → key omitted from normalized manifest', () => {
+  const r = validateManifest(base());
+  assert.equal(r.errors, undefined);
+  assert.ok(!('claudePlugin' in r.manifest));
+});
+
+test('claudePlugin: bad shapes rejected', () => {
+  for (const v of ['/abs/path', '../escape', 'a/../b', 42, '', '   ']) {
+    assert.ok(
+      validateManifest(base({ claudePlugin: v })).errors?.some(e => e.includes('claudePlugin')),
+      `claudePlugin=${JSON.stringify(v)} should be rejected`,
+    );
+  }
+});
+
+test('claudePlugin: skills-only manifest (no backend) validates', () => {
+  const r = validateManifest(base({ claudePlugin: 'claude' }));
+  assert.equal(r.errors, undefined);
+  assert.equal(r.manifest.backend, undefined);
+  assert.equal(r.manifest.claudePlugin, 'claude');
+});
+
+test('claudePluginPaths: [] when absent, [str] when present', () => {
+  assert.deepEqual(claudePluginPaths(validateManifest(base()).manifest), []);
+  assert.deepEqual(claudePluginPaths(validateManifest(base({ claudePlugin: 'claude' })).manifest), ['claude']);
 });

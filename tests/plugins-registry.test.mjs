@@ -552,3 +552,83 @@ test('roles(): only enabled+ok plugins contribute, namespaced; disable drops the
     await env.restore();
   }
 });
+
+// Write a Claude Code plugin root (the dir --plugin-dir expects) at
+// <dir>/<rel>/.claude-plugin/plugin.json.
+async function writeClaudePluginRoot(dir, rel, name) {
+  const root = path.join(dir, rel);
+  await fs.mkdir(path.join(root, '.claude-plugin'), { recursive: true });
+  await fs.writeFile(path.join(root, '.claude-plugin', 'plugin.json'), JSON.stringify({ name }));
+  return root;
+}
+
+test('claudePluginDirs() resolves validated roots for enabled+ok plugins only', async () => {
+  const env = await makePluginRoot();
+  try {
+    const dir = await env.addPluginProject('skillp', {
+      manifest: { id: 'skill-plugin', name: 'Skill Plugin', version: '1.0.0', pluginApi: 1, claudePlugin: 'claude' },
+    });
+    const expectedRoot = await writeClaudePluginRoot(dir, 'claude', 'skill-plugin-cc');
+    const host = createPluginHost();
+
+    // Not enabled → no flag.
+    assert.deepEqual(await host.claudePluginDirs(), []);
+
+    await host.enable('skill-plugin');
+    assert.deepEqual(await host.claudePluginDirs(), [expectedRoot]);
+
+    // Disabled → drops automatically.
+    await host.disable('skill-plugin');
+    assert.deepEqual(await host.claudePluginDirs(), []);
+  } finally {
+    await env.restore();
+  }
+});
+
+test('claudePluginDirs() supports "." (cc plugin root itself)', async () => {
+  const env = await makePluginRoot();
+  try {
+    const dir = await env.addPluginProject('selfp', {
+      manifest: { id: 'self-plugin', name: 'Self Plugin', version: '1.0.0', pluginApi: 1, claudePlugin: '.' },
+    });
+    await writeClaudePluginRoot(dir, '.', 'self-plugin-cc');
+    const host = createPluginHost();
+    await host.enable('self-plugin');
+    assert.deepEqual(await host.claudePluginDirs(), [dir]);
+  } finally {
+    await env.restore();
+  }
+});
+
+test('claudePluginDirs() drops (with warn) a target missing .claude-plugin/plugin.json', async () => {
+  const env = await makePluginRoot();
+  try {
+    // claudePlugin points at a dir with no .claude-plugin/plugin.json.
+    await env.addPluginProject('brokenp', {
+      manifest: { id: 'broken-plugin', name: 'Broken Plugin', version: '1.0.0', pluginApi: 1, claudePlugin: 'claude' },
+    });
+    const host = createPluginHost();
+    await host.enable('broken-plugin');
+    const warnings = [];
+    const orig = console.warn;
+    console.warn = (m) => warnings.push(String(m));
+    try {
+      assert.deepEqual(await host.claudePluginDirs(), []);
+    } finally { console.warn = orig; }
+    assert.ok(warnings.some(w => w.includes('broken-plugin') && w.includes('.claude-plugin/plugin.json')));
+  } finally {
+    await env.restore();
+  }
+});
+
+test('claudePluginDirs() is empty for a plugin without the field', async () => {
+  const env = await makePluginRoot();
+  try {
+    await env.addPluginProject('convp', { manifest: CONTRIB_ONLY });
+    const host = createPluginHost();
+    await host.enable('conv-plugin');
+    assert.deepEqual(await host.claudePluginDirs(), []);
+  } finally {
+    await env.restore();
+  }
+});

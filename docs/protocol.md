@@ -10,11 +10,14 @@ claude -p \
   --permission-mode <plan|bypassPermissions> --effort <effort> --thinking <thinking> \
   --settings '{"hooks":{"PreToolUse":[…]}}' \
   --mcp-config '{"mcpServers":{"code-conductor":{"type":"http","url":"http://127.0.0.1:<port>/mcp"}}}' \
+  [--plugin-dir <root> …] \
   [--model <name>] \
   --session-id <fresh-uuid> | --resume <existing-uuid>
 ```
 
 The `--mcp-config` line is omitted when `ORCH_DISABLE_MCP_AUTOREGISTER=1` (no MCP toolbelt auto-registered into the spawned process).
+
+`--plugin-dir` is **repeatable, one per enabled cc plugin** whose manifest declares `claudePlugin` (session-local Claude Code plugin roots — skills et al.). `<root>` is the resolved+validated abs dir (a dir directly containing `.claude-plugin/plugin.json`); a plugin whose target lacks that file is warned + dropped. Absent when no enabled plugin ships one. See [plugins.md](plugins.md#manifest--conductorpluginjson-at-the-plugin-project-root) → `claudePlugin`.
 
 **Ollama-backed backends.** Spawning is backend-agnostic: `Instance.spawn` computes only the command + prefix from `backendKind`, then appends the **same** claude args (including `--model <model>`) for both kinds. For `ollama` the command becomes `ollama launch claude --model <tag> --yes --` as a drop-in substitute for `claude`, so the full argv is `ollama launch claude --model <tag> --yes -- <all the args above, including --model <tag>>`. `ollama launch` sets the Anthropic-compatible endpoint + auth internally and re-injects `--model` into the child; the forwarded `--model <tag>` is a matching **no-op duplicate** (verified harmless). `--yes` bypasses the interactive agent-capability confirmation (which would fail a piped spawn). Localhost only — no host plumbing. Everything after `--` (stream-json stdin/stdout, `--mcp-config`, `--settings` hook, `--session-id`) is forwarded unchanged — the worker registers, streams, and drives MCP + hooks exactly like a bare-`claude` spawn. For an Ollama-backed spawn, `CLAUDE_CODE_AUTO_COMPACT_WINDOW` is set on the child env to the model's native window (raw tokens; resolved from the catalog or the custom model's declared window, `getOllamaContextWindow` in `src/appSettings.js`) so the CLI auto-compacts at the real limit; unset when the window is unknown. The `.conduct` orchestrator's opt-in compact-window override still wins when both apply.
 

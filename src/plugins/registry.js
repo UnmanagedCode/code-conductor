@@ -4,7 +4,7 @@ import {
   projectsRoot, selfProjectDir, orchStoreRoot, writeFileAtomic, listProjects, projectStoreDir,
   readProjectMeta, writeProjectMeta, addWorkspace,
 } from '../projects.js';
-import { readManifest, SUPPORTED_CONVENTION_SCOPES } from './manifest.js';
+import { readManifest, SUPPORTED_CONVENTION_SCOPES, claudePluginPaths } from './manifest.js';
 import { createSupervisor, httpOk, headSha } from './supervisor.js';
 import { createMcpBridge } from './mcpBridge.js';
 import { pidAlive, waitForPort } from './ports.js';
@@ -696,6 +696,34 @@ export function createPluginHost({
     return out;
   }
 
+  // Claude Code plugin roots contributed by enabled + `ok` plugins whose manifest
+  // declares `claudePlugin`. Each resolved root is validated HERE (at launch/
+  // resolve time) — the target must directly contain `.claude-plugin/plugin.json`
+  // for Claude Code's `--plugin-dir` to load it. A missing/unreadable one is
+  // warned loudly and dropped (adding a broken --plugin-dir would make claude
+  // itself fail to start), never silently swallowed. Returns absolute dir paths;
+  // Instance.spawn() turns each into a repeated `--plugin-dir <root>` flag.
+  async function claudePluginDirs() {
+    await ensureInit();
+    const out = [];
+    for (const entry of contributingEntries()) {
+      const rels = claudePluginPaths(entry.manifest);
+      if (rels.length === 0) continue;
+      let cwd;
+      try { cwd = await resolveCwd(entry); } catch (e) { console.warn(`plugins: claudePlugin cwd for '${entry.id}' failed: ${e.message}`); continue; }
+      for (const rel of rels) {
+        const root = path.join(cwd, rel);
+        try {
+          await fs.access(path.join(root, '.claude-plugin', 'plugin.json'));
+          out.push(root);
+        } catch {
+          console.warn(`plugins: '${entry.id}' claudePlugin '${rel}' — no .claude-plugin/plugin.json at ${root}; skipping --plugin-dir`);
+        }
+      }
+    }
+    return out;
+  }
+
   function setServerPort(p) { serverPort = p; }
 
   // Test/shutdown teardown: kill every child this host started or adopted.
@@ -711,7 +739,7 @@ export function createPluginHost({
     init: ensureInit,
     list, rescan, enable, disable, start, stop, restart, status,
     ensureStarted, setActiveVersion, toolsFor, runtimeInfo,
-    conventions, roles,
+    conventions, roles, claudePluginDirs,
     reportUpstreamFailure, setServerPort, stopAll,
   };
 }
