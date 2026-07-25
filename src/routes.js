@@ -47,9 +47,8 @@ import {
   getEnabledTiers, setTierEnabled,
   getDefaultSpawnTier, setDefaultSpawnTier,
   getTierBackend, setTierBackend,
-  getRoleBinding, getRoleBindingRaw, setRoleBinding,
-  isValidRoleBinding,
-  getAllRoles, getPluginRoles, addCustomRole, removeCustomRole,
+  effectiveRoleBinding, setRoleBinding,
+  getAllRoles, addCustomRole, removeCustomRole,
   getCustomBackends, addCustomBackend, removeCustomBackend,
   getDebugByDefault, setDebugByDefault,
 } from './appSettings.js';
@@ -1130,24 +1129,13 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
       tierBackend[t.tier] = getTierBackend(t.tier); // {kind, model, window?}
     }
     // roles = built-in + user-custom + plugin-owned (each {role,label,builtin?,plugin?}).
-    // A plugin role's binding is the EFFECTIVE binding: a valid user override
-    // from the roleBackend store if present, else the manifest binding (live,
-    // read-only). Built-in and custom roles read their user-editable binding
-    // from the store.
+    // Every role's payload binding is its EFFECTIVE binding (a valid user
+    // override wins, else the manifest binding for a plugin role or the
+    // stored/default binding otherwise) — shown as the tier/{kind,model} binding
+    // itself, NOT resolved to a concrete backend, so the tier identity survives.
     const allRoles = getAllRoles();
-    const pluginRoles = getPluginRoles();
     const roleBackend = {};
-    for (const r of allRoles) {
-      if (r.plugin) {
-        const pr = pluginRoles.find(p => p.role === r.role);
-        const raw = getRoleBindingRaw(r.role);
-        roleBackend[r.role] = isValidRoleBinding(raw)
-          ? raw
-          : (pr ? pr.binding : { kind: 'tier', tier: getDefaultSpawnTier() });
-      } else {
-        roleBackend[r.role] = getRoleBinding(r.role);
-      }
-    }
+    for (const r of allRoles) roleBackend[r.role] = effectiveRoleBinding(r.role);
     return { providers: PROVIDERS, backends: MODEL_FAMILIES, onOverage: getOnOverageAction(),
       overageThreshold: getOverageThreshold(),
       conductorCompactWindow: getConductorCompactWindow(),
