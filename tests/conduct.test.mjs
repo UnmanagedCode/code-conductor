@@ -18,42 +18,30 @@ after(async () => { await ctx.close(); });
 beforeEach(async () => { ({ home, projectsRoot } = await freshProjectsRoot()); });
 afterEach(async () => { await instances.shutdown(); await rmrf(home); });
 
-test('ensureConductProject creates .conduct/ + seeds CLAUDE.md with @CONDUCT.md import and a generated CONDUCT.md', async () => {
+test('ensureConductProject creates a bare .conduct/ dir — no CONDUCT.md, no seeded CLAUDE.md', async () => {
   const r = await api(baseUrl, 'POST', '/api/projects/.conduct/ensure');
   assert.equal(r.status, 200);
   assert.equal(r.body.ok, true);
   assert.equal(r.body.created, true);
-  assert.equal(r.body.claudeMdSeeded, true);
   assert.equal(r.body.path, path.join(projectsRoot, '.conduct'));
 
   const conductDir = path.join(projectsRoot, '.conduct');
   const stat = await fs.stat(conductDir);
   assert.ok(stat.isDirectory());
 
-  // CLAUDE.md must be exactly the single in-project @CONDUCT.md import.
-  // External imports (e.g. `@../CLAUDE.md`, `@/abs/path/CONDUCT.md`)
-  // silently no-op in headless / `-p` mode, which is how every
-  // conductor session is spawned.
-  const claudeMd = await fs.readFile(path.join(conductDir, 'CLAUDE.md'), 'utf8');
-  assert.equal(claudeMd, '@CONDUCT.md\n');
-
-  // CONDUCT.md must now be a regular generated file (not a symlink) whose
-  // content is the composed core + enabled modules.
-  const conductMdPath = path.join(conductDir, 'CONDUCT.md');
-  const lstat = await fs.lstat(conductMdPath);
-  assert.ok(lstat.isFile() && !lstat.isSymbolicLink(), 'CONDUCT.md must be a regular file');
-  const content = await fs.readFile(conductMdPath, 'utf8');
-  assert.ok(content.startsWith('# Conductor role'), 'starts with core role');
-  assert.match(content, /## MCP toolbelt/, 'core toolbelt present');
-  assert.match(content, /## Canonical workflow/, 'a default-enabled module present');
-  assert.match(content, /generated from `conventions\/conductor\/core\.md`/, 'footer present');
+  // The role prompt is injected at spawn via --append-system-prompt, so no
+  // on-disk CONDUCT.md and no seeded CLAUDE.md are written. Workspace
+  // conventions still reach the conductor via the ancestor walk-up to the
+  // projects-root CLAUDE.md.
+  await assert.rejects(fs.stat(path.join(conductDir, 'CONDUCT.md')), 'no CONDUCT.md written');
+  await assert.rejects(fs.stat(path.join(conductDir, 'CLAUDE.md')), 'no CLAUDE.md seeded');
 });
 
-test('ensureConductProject is idempotent — second call leaves an existing CLAUDE.md alone, regenerates CONDUCT.md', async () => {
+test('ensureConductProject is idempotent — second call reports created:false and leaves a user CLAUDE.md alone', async () => {
   const r1 = await api(baseUrl, 'POST', '/api/projects/.conduct/ensure');
   assert.equal(r1.body.created, true);
 
-  // User customises CLAUDE.md.
+  // A user may drop their own CLAUDE.md into .conduct — ensure never touches it.
   const customContent = '# custom\n\nuser edits should survive\n';
   const claudeMdPath = path.join(projectsRoot, '.conduct', 'CLAUDE.md');
   await fs.writeFile(claudeMdPath, customContent);
@@ -61,33 +49,9 @@ test('ensureConductProject is idempotent — second call leaves an existing CLAU
   const r2 = await api(baseUrl, 'POST', '/api/projects/.conduct/ensure');
   assert.equal(r2.status, 200);
   assert.equal(r2.body.created, false);
-  assert.equal(r2.body.claudeMdSeeded, false);
 
   const after = await fs.readFile(claudeMdPath, 'utf8');
-  assert.equal(after, customContent, 'user edits preserved');
-
-  // Generated CONDUCT.md is a regular file on the second ensure too.
-  const conductMdPath = path.join(projectsRoot, '.conduct', 'CONDUCT.md');
-  const lstat = await fs.lstat(conductMdPath);
-  assert.ok(lstat.isFile() && !lstat.isSymbolicLink(), 'CONDUCT.md is a regular generated file');
-});
-
-test('ensureConductProject swaps a legacy CONDUCT.md symlink for a regular generated file', async () => {
-  const conductDir = path.join(projectsRoot, '.conduct');
-  await fs.mkdir(conductDir, { recursive: true });
-  // Simulate the pre-generation era: a symlink at .conduct/CONDUCT.md.
-  const conductMdPath = path.join(conductDir, 'CONDUCT.md');
-  await fs.symlink('/nonexistent/target/CONDUCT.md', conductMdPath);
-  const before = await fs.lstat(conductMdPath);
-  assert.ok(before.isSymbolicLink(), 'precondition: symlink present');
-
-  const r = await api(baseUrl, 'POST', '/api/projects/.conduct/ensure');
-  assert.equal(r.status, 200);
-
-  const lstat = await fs.lstat(conductMdPath);
-  assert.ok(lstat.isFile() && !lstat.isSymbolicLink(), 'symlink swapped for a regular file');
-  const content = await fs.readFile(conductMdPath, 'utf8');
-  assert.ok(content.startsWith('# Conductor role'));
+  assert.equal(after, customContent, 'user CLAUDE.md preserved');
 });
 
 test('listProjects() excludes .conduct from /api/projects', async () => {

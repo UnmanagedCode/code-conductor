@@ -283,8 +283,8 @@
             <details class="conventions-block">
               <summary class="conventions-summary">Conductor conventions</summary>
               <p class="settings-desc">
-                Composed into the 🎼 Conduct orchestrator's guidance (<code>.conduct/CONDUCT.md</code>).
-                Global — applies to every conductor session; changes regenerate the doc for the
+                Composed into the 🎼 Conduct orchestrator's role prompt (injected at spawn).
+                Global — applies to every conductor session; changes take effect for the
                 next-spawned conductor. Keep the enabled set lean — every convention costs tokens in every
                 conductor session.
               </p>
@@ -294,7 +294,7 @@
                 <input id="cc-add-slug" type="text" placeholder="slug (e.g. my-convention)" />
                 <input id="cc-add-name" type="text" placeholder="Short name" />
                 <input id="cc-add-desc" type="text" placeholder="One-line description" />
-                <textarea id="cc-add-body" rows="6" placeholder="Markdown body composed into CONDUCT.md"></textarea>
+                <textarea id="cc-add-body" rows="6" placeholder="Markdown body composed into the conductor role prompt"></textarea>
                 <div class="or-add-actions">
                   <button id="cc-add-save" type="button">Save</button>
                   <button id="cc-add-cancel" type="button">Cancel</button>

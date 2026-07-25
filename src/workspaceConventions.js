@@ -9,8 +9,9 @@
 // <orchStoreRoot>/conventions/workspace.json as { enabled: [...], rules: [...] }.
 //
 // The composed file is fully app-owned: regenerated (overwritten) on boot
-// and after a settings change by ensureRootClaudeMd() in rootClaudeMd.js —
-// exactly like .conduct/CONDUCT.md. This mirrors src/conductorConventions.js.
+// and after a settings change by ensureRootClaudeMd() in rootClaudeMd.js.
+// This mirrors src/conductorConventions.js (which instead injects its
+// composed doc at spawn via --append-system-prompt rather than to a file).
 
 import { promises as fs } from 'node:fs';
 import path from 'node:path';

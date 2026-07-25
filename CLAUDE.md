@@ -8,8 +8,8 @@ When `README.md` doesn't go deep enough, load the relevant detail file:
 - **Feature / UI behavior** → `docs/features.md`
 - **Subprocess protocol, WebSocket messages, REST endpoints** → `docs/protocol.md`
 - **Component layout, instance lifecycle, on-disk state, migrations, testing** → `docs/architecture.md`
-- **Conductor role prompt / orchestration contract** → `conventions/conductor/core.md` (always-on core) + `conventions/conductor/*.md` (toggleable conventions); composed into the live `.conduct/CONDUCT.md` by `src/conductorConventions.js`
-- **Conventions (three scopes, all on `src/fragmentCatalog.js`; sources under `conventions/<scope>/`, stores under `<store>/conventions/<scope>.json`)** → Conductor: `conventions/conductor/*` + `src/conductorConventions.js` (→ `.conduct/CONDUCT.md`). Workspace: `conventions/workspace/core.md` + `conventions/workspace/*.md` + `src/workspaceConventions.js`, regenerated into the app-owned projects-root `CLAUDE.md` by `src/rootClaudeMd.js` (`ensureRootClaudeMd`). Project: `conventions/project/*.md` + `src/projectConventions.js`, snapshotted into each new project's `CLAUDE.md` at creation.
+- **Conductor role prompt / orchestration contract** → `conventions/conductor/core.md` (always-on core) + `conventions/conductor/*.md` (toggleable conventions); composed by `src/conductorConventions.js` (`composeCurrentConduct`) and injected at conductor spawn via `claude --append-system-prompt` (`Instance.launch`/`spawn` in `src/instances.js`)
+- **Conventions (three scopes, all on `src/fragmentCatalog.js`; sources under `conventions/<scope>/`, stores under `<store>/conventions/<scope>.json`)** → Conductor: `conventions/conductor/*` + `src/conductorConventions.js` (injected at spawn via `--append-system-prompt`). Workspace: `conventions/workspace/core.md` + `conventions/workspace/*.md` + `src/workspaceConventions.js`, regenerated into the app-owned projects-root `CLAUDE.md` by `src/rootClaudeMd.js` (`ensureRootClaudeMd`). Project: `conventions/project/*.md` + `src/projectConventions.js`, snapshotted into each new project's `CLAUDE.md` at creation.
 
 ## Code conventions
 

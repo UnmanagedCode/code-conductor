@@ -14,6 +14,7 @@ import { SessionRenewController } from './sessionRenew.js';
 import { isTemp, markTemp, unmarkTemp } from './tempSessions.js';
 import { markArchived } from './archivedSessions.js';
 import { CONDUCT_PROJECT_NAME } from './conduct.js';
+import { composeCurrentConduct } from './conductorConventions.js';
 import { buildSettingsJSON, buildMcpConfigJSON, AWAITING_INPUT_MESSAGE } from './settings.js';
 import { getOnOverageAction, getOverageThreshold, getConductorCompactWindow, getOllamaContextWindow, getDebugByDefault } from './appSettings.js';
 import { HookBroker } from './hookBroker.js';
@@ -256,7 +257,7 @@ export class EventLog {
 }
 
 export class Instance extends EventEmitter {
-  constructor({ id, project, cwd, mode, effort, thinking, model, sonnetWindow = '1m', backendKind = 'claude', hookCallbackUrl = null, mcpServerUrl = null, worktree = null, temp = false, conducted = false, callerInstanceId = null, debug = false, launcher = defaultClaudeLauncher }) {
+  constructor({ id, project, cwd, mode, effort, thinking, model, sonnetWindow = '1m', backendKind = 'claude', hookCallbackUrl = null, mcpServerUrl = null, worktree = null, temp = false, conducted = false, callerInstanceId = null, debug = false, launcher = defaultClaudeLauncher, appendSystemPromptProvider = null }) {
     super();
     this.id = id;
     // The ClaudeLauncher used to spawn the subprocess. Defaults to the real
@@ -309,6 +310,14 @@ export class Instance extends EventEmitter {
     // central store's debug dir for offline inspection. Streams + the
     // debug dir path are populated at spawn time.
     this.debug = !!debug;
+    // Optional async provider (role-agnostic seam) that composes the text
+    // delivered to the subprocess via `--append-system-prompt`. Injected by
+    // the manager: wired to composeCurrentConduct for the `.conduct`
+    // conductor session, null for every other instance. launch() awaits it
+    // and stashes the result on _appendSystemPrompt so the synchronous
+    // spawn() can read it — recomposing on every fresh spawn AND resume.
+    this._appendSystemPromptProvider = appendSystemPromptProvider;
+    this._appendSystemPrompt = null;
     this.debugDir = null;
     this._debugStreams = null;
     this.sessionId = null;
@@ -870,6 +879,18 @@ export class Instance extends EventEmitter {
     }
   }
 
+  // Async pre-spawn seam: recompose the appended system prompt (if a provider
+  // is wired) and stash it, then hand off to the synchronous spawn(). Every
+  // conductor (re)launch entry point routes through here — fresh spawn, resume,
+  // respawn, and rewind — so the doc is always freshly composed. A compose
+  // error propagates (fail loud): a role-less conductor is worse than a
+  // surfaced error, and all callers are async and return errors to REST/MCP.
+  async launch({ resume } = {}) {
+    this._appendSystemPrompt = this._appendSystemPromptProvider
+      ? await this._appendSystemPromptProvider() : null;
+    this.spawn({ resume });
+  }
+
   spawn({ resume } = {}) {
     if (this.proc) throw new Error('already running');
     // A reused instance object (respawn) may carry _killing from its prior
@@ -1015,6 +1036,10 @@ export class Instance extends EventEmitter {
         spawnEnv.CLAUDE_CODE_AUTO_COMPACT_WINDOW = String(cw.value * 1000);
       }
     }
+    // Deliver the composed role prompt (conductor doc) as an appended system
+    // prompt. Freshly recomposed by launch() before every spawn/resume; null
+    // for instances with no provider wired (see the constructor comment).
+    if (this._appendSystemPrompt) args.push('--append-system-prompt', this._appendSystemPrompt);
     // Uniform --model append for BOTH kinds (no backendKind check). For ollama
     // this duplicates the launch-slot --model with the same value — a confirmed
     // no-op (ollama consumes its own copy and re-injects the tag).
@@ -1871,9 +1896,9 @@ export class Instance extends EventEmitter {
         const dir = path.join(claudeProjectsRoot(), encodeCwd(this.cwd));
         await fsp.rm(path.join(dir, `${this.sessionId}.jsonl`), { force: true });
         await fsp.rm(path.join(dir, this.sessionId), { recursive: true, force: true });
-        this.spawn({});
+        await this.launch({});
       } else {
-        this.spawn({ resume: this.sessionId });
+        await this.launch({ resume: this.sessionId });
       }
 
       return { droppedText: result.droppedText };
@@ -2378,6 +2403,10 @@ export class InstanceManager extends EventEmitter {
       // default) — there is no way to spell "off" other than `debug: false`.
       debug: !!(debug ?? getDebugByDefault()),
       launcher: this._claudeLauncher,
+      // The conductor singleton carries its composed role doc as an appended
+      // system prompt; every other instance gets its guidance from CLAUDE.md
+      // via the ancestor walk-up, so no provider is wired.
+      appendSystemPromptProvider: project === CONDUCT_PROJECT_NAME ? composeCurrentConduct : null,
     });
     if (recoveredFirstPrompt) inst.firstPrompt = recoveredFirstPrompt;
 
@@ -2461,7 +2490,7 @@ export class InstanceManager extends EventEmitter {
     // Fork prefill: the dropped prompt rides the new instance's first
     // `snapshot` frame (see Instance.consumePrefill / wsHub subscribe).
     if (typeof prefill === 'string') inst.pendingPrefill = prefill;
-    inst.spawn({ resume });
+    await inst.launch({ resume });
     this.emit('list_changed');
     return inst;
   }
@@ -2755,7 +2784,7 @@ export class InstanceManager extends EventEmitter {
     // transcript into the ring — otherwise the replay piles up on top of the
     // existing conversation and every message renders twice.
     inst._wipeForResume();
-    inst.spawn({ resume: inst.sessionId });
+    await inst.launch({ resume: inst.sessionId });
     this.emit('list_changed');
     return inst;
   }

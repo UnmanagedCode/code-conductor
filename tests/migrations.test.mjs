@@ -9,6 +9,8 @@ import path from 'node:path';
 import os from 'node:os';
 import { runMigrations } from '../migrations/index.mjs';
 import * as m0001 from '../migrations/0001-centralize-orchestrator-state.mjs';
+import * as m0010 from '../migrations/0010-conduct-md-generated-file.mjs';
+import * as m0022 from '../migrations/0022-drop-conduct-md-file.mjs';
 
 async function mkTempRoot() {
   return fs.mkdtemp(path.join(os.tmpdir(), 'orch-migration-'));
@@ -322,6 +324,9 @@ test('0002 migration: prefers existing workspace field if both keys are present'
   }
 });
 
+// 0010 is invoked directly (not via runMigrations) because 0022 — later in the
+// chain — strips the very @CONDUCT.md line 0010 repairs, so the full-chain end
+// state is 0022's, not 0010's. This test isolates 0010's own behavior.
 test('0010 migration: removes a legacy .conduct/CONDUCT.md symlink + repairs @-import, idempotent', async () => {
   const root = await mkTempRoot();
   try {
@@ -334,18 +339,59 @@ test('0010 migration: removes a legacy .conduct/CONDUCT.md symlink + repairs @-i
     await fs.writeFile(claudeMd, '@../CONDUCT.md\nkeep this line\n');
     assert.ok((await fs.lstat(conductMd)).isSymbolicLink(), 'precondition: symlink staged');
 
-    const logs = [];
-    await runMigrations({ root, log: (...a) => logs.push(a.join(' ')) });
-    // Symlink is gone (ensureConductProject regenerates the file at boot);
-    // broken import rewritten to @CONDUCT.md, other lines preserved.
+    const res = await m0010.run({ root, log: () => {} });
+    assert.equal(res.applied, true);
+    // Symlink is gone; broken import rewritten to @CONDUCT.md, other lines preserved.
     assert.ok(!(await exists(conductMd)), 'symlink removed');
     assert.equal(await fs.readFile(claudeMd, 'utf8'), '@CONDUCT.md\nkeep this line\n');
-    assert.ok(logs.some(l => l.includes('0010-conduct-md-generated-file')), 'logged applied');
 
     // Second run: nothing to do (no symlink, import already in-project).
-    const logs2 = [];
-    await runMigrations({ root, log: (...a) => logs2.push(a.join(' ')) });
-    assert.ok(!logs2.some(l => l.includes('0010-conduct-md-generated-file')), 'idempotent no-op');
+    assert.equal((await m0010.run({ root, log: () => {} })).applied, false, 'idempotent no-op');
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test('0022 migration: removes orphan CONDUCT.md + strips @CONDUCT.md seed, preserving other lines; idempotent', async () => {
+  const root = await mkTempRoot();
+  try {
+    const conductDir = path.join(root, '.conduct');
+    await fs.mkdir(conductDir, { recursive: true });
+    const conductMd = path.join(conductDir, 'CONDUCT.md');
+    const claudeMd = path.join(conductDir, 'CLAUDE.md');
+    // A generated CONDUCT.md + a CLAUDE.md with the seed AND user-added content.
+    await fs.writeFile(conductMd, '# generated doc\n');
+    await fs.writeFile(claudeMd, '@CONDUCT.md\n\n## Shorthand\n- keep me\n');
+
+    const res = await m0022.run({ root, log: () => {} });
+    assert.equal(res.applied, true);
+    assert.deepEqual(res.summary, { conductMdRemoved: true, seedStripped: true, claudeMdRemoved: false });
+    assert.ok(!(await exists(conductMd)), 'CONDUCT.md removed');
+    // Seed line gone; the user's Shorthand section survives.
+    const after = await fs.readFile(claudeMd, 'utf8');
+    assert.doesNotMatch(after, /@CONDUCT\.md/, 'seed line stripped');
+    assert.match(after, /## Shorthand/, 'user content preserved');
+    assert.match(after, /- keep me/);
+
+    // Idempotent.
+    assert.equal((await m0022.run({ root, log: () => {} })).applied, false, 'second run is a no-op');
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test('0022 migration: unlinks a lone-seed CLAUDE.md when nothing else remains', async () => {
+  const root = await mkTempRoot();
+  try {
+    const conductDir = path.join(root, '.conduct');
+    await fs.mkdir(conductDir, { recursive: true });
+    const claudeMd = path.join(conductDir, 'CLAUDE.md');
+    await fs.writeFile(claudeMd, '@CONDUCT.md\n'); // exactly the old seed
+
+    const res = await m0022.run({ root, log: () => {} });
+    assert.equal(res.applied, true);
+    assert.equal(res.summary.claudeMdRemoved, true);
+    assert.ok(!(await exists(claudeMd)), 'lone-seed CLAUDE.md removed');
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }
