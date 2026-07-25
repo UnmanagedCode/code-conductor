@@ -32,7 +32,7 @@ const quotedScopes = SUPPORTED_CONVENTION_SCOPES.map(s => `"${s}"`).join(', ');
 // scaffold facet) is an active pluginApi:1 capability that requires no backend,
 // so a conventions-only plugin is valid. `settings` stays reserved
 // (validated-but-inert; accepted, never acted on).
-const KNOWN_TOP_KEYS = new Set(['id', 'name', 'version', 'pluginApi', 'backend', 'frontend', 'mcp', 'settings', 'conventions', 'roles']);
+const KNOWN_TOP_KEYS = new Set(['id', 'name', 'version', 'pluginApi', 'backend', 'frontend', 'mcp', 'settings', 'conventions', 'roles', 'claudePlugin']);
 
 // Result: null (no manifest file) | { manifest } | { errors, incompatible? }
 export async function readManifest(dir) {
@@ -108,6 +108,7 @@ export function validateManifest(json) {
   const mcp = validateMcp(json.mcp, backend, errors);
   const conventions = validateConventions(json.conventions, errors);
   const roles = validateRoles(json.roles, errors);
+  const claudePlugin = validateClaudePlugin(json.claudePlugin, errors);
 
   if (errors.length > 0) return { errors, id: displayId(json) };
   return {
@@ -121,8 +122,38 @@ export function validateManifest(json) {
       ...(mcp ? { mcp } : {}),
       ...(conventions ? { conventions } : {}),
       ...(roles ? { roles } : {}),
+      ...(claudePlugin !== undefined ? { claudePlugin } : {}),
     },
   };
+}
+
+// claudePlugin: OPTIONAL string — a path relative to the cc plugin root pointing
+// at a Claude Code plugin root (a dir directly containing
+// `.claude-plugin/plugin.json`; skills resolve at `<root>/skills/<name>/SKILL.md`).
+// `"."` makes the cc plugin root itself the CC root. Shape-only here (relative,
+// no `..`, no leading '/'); the `.claude-plugin/plugin.json` existence check runs
+// at launch/resolve time (registry.claudePluginDirs) so a missing target warns +
+// drops the flag rather than invalidating the plugin. Returns the string or
+// undefined. Kept a string for now — `claudePluginPaths()` is the single accessor,
+// so widening to `string | string[]` later is non-breaking.
+function validateClaudePlugin(value, errors) {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'string' || value.trim() === '') {
+    errors.push("'claudePlugin' must be a non-empty relative path");
+    return undefined;
+  }
+  if (value.startsWith('/') || value.includes('..') || path.isAbsolute(value)) {
+    errors.push("'claudePlugin' must be a relative path with no '..' segment");
+    return undefined;
+  }
+  return value;
+}
+
+// The one accessor consumers use to read a manifest's Claude Code plugin roots.
+// Today `claudePlugin` is a single string → `[]` | `[str]`; widening the field to
+// `string | string[]` later only touches validateClaudePlugin + this function.
+export function claudePluginPaths(manifest) {
+  return manifest?.claudePlugin ? [manifest.claudePlugin] : [];
 }
 
 // A plugin-relative fragment path: must be a relative `.md` path with no `..`
