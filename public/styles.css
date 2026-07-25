@@ -1545,10 +1545,15 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
   background: var(--panel);
 }
 .sm-role-row .sm-family-label { flex: 0 0 76px; }
-.sm-role-row .sm-role-label-edit { flex: 0 0 96px; min-width: 0; }
 .sm-role-row .sm-role-binding { flex: 0 0 auto; }
 .sm-role-row .sm-version { flex: 1 1 auto; min-width: 0; }
-.sm-role-row .sm-role-remove { flex: 0 0 auto; margin-left: auto; }
+/* Small × remove control (matches the composer attachment chip's .cac-remove). */
+.sm-role-row .sm-role-remove {
+  flex: 0 0 auto; margin-left: auto;
+  background: transparent; border: none; color: var(--muted);
+  cursor: pointer; padding: 0 4px; font-size: 16px; line-height: 1;
+}
+.sm-role-row .sm-role-remove:hover { color: var(--red); }
 .sm-role-row--plugin { opacity: 0.9; }
 .sm-role-plugin-badge {
   flex: 0 0 auto; font-size: 11px; color: var(--muted);

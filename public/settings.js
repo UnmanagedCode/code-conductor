@@ -34,8 +34,6 @@ export function installSettings({
   const smListEl = document.getElementById('sm-tier-list');
   const smRoleListEl = document.getElementById('sm-role-list');
   const smRoleNameEl = document.getElementById('sm-role-name');
-  const smRoleLabelEl = document.getElementById('sm-role-label');
-  const smRoleTierEl = document.getElementById('sm-role-tier');
   const smRoleAddEl = document.getElementById('sm-role-add');
   const smRoleStatusEl = document.getElementById('sm-role-status');
   const smCustomListEl = document.getElementById('sm-custom-list');
@@ -546,9 +544,10 @@ export function installSettings({
 
     // ── Roles ────────────────────────────────────────────────────────────
     // Built-in + user-custom roles pick one of the tiers OR "Custom" (shared
-    // backend/model pickers show only when Custom is selected). Plugin-owned
-    // roles are read-only (binding is manifest-defined, live-derived) and marked
-    // with a "via <plugin>" badge — no rebind, no delete.
+    // backend/model pickers show only when Custom is selected). A custom role is
+    // name-only (the name is shown directly) with a small × remove control.
+    // Plugin-owned roles are read-only (binding is manifest-defined, live-derived)
+    // and marked with a "via <plugin>" badge — no rebind, no delete.
     const tierLabelFor = (t) => tiers.find(x => x.tier === t)?.label || t;
     const describeRoleBinding = (rb) => rb.kind === 'tier' ? `Tier: ${tierLabelFor(rb.tier)}` : describeBinding(rb);
     if (smRoleListEl) {
@@ -564,20 +563,12 @@ export function installSettings({
         const li = document.createElement('li');
         li.className = 'sm-role-row' + (isPlugin ? ' sm-role-row--plugin' : '');
 
-        // Label — editable text for user roles, static span otherwise.
-        if (isUserRole) {
-          const labelInput = document.createElement('input');
-          labelInput.type = 'text';
-          labelInput.className = 'sm-role-label-edit';
-          labelInput.value = r.label;
-          labelInput.addEventListener('change', () => onRenameRole(r.role, labelInput.value.trim()));
-          li.appendChild(labelInput);
-        } else {
-          const labelEl = document.createElement('span');
-          labelEl.className = 'sm-family-label';
-          labelEl.textContent = r.label;
-          li.appendChild(labelEl);
-        }
+        // Name shown directly (built-in/plugin carry a label; a custom role is
+        // name-only, so fall back to the role name).
+        const labelEl = document.createElement('span');
+        labelEl.className = 'sm-family-label';
+        labelEl.textContent = r.label || r.role;
+        li.appendChild(labelEl);
 
         if (isPlugin) {
           const badge = document.createElement('span');
@@ -621,29 +612,19 @@ export function installSettings({
           li.appendChild(modelSel);
         }
 
-        // Delete — user roles only.
+        // Remove — user roles only. A small × icon control, not a full button.
         if (isUserRole) {
           const rm = document.createElement('button');
           rm.type = 'button';
-          rm.className = 'btn sm-role-remove';
-          rm.textContent = 'Remove';
+          rm.className = 'sm-role-remove';
+          rm.textContent = '×';
+          rm.title = `Remove role ${r.role}`;
+          rm.setAttribute('aria-label', `Remove role ${r.role}`);
           rm.addEventListener('click', () => onRemoveRole(r.role));
           li.appendChild(rm);
         }
 
         smRoleListEl.appendChild(li);
-      }
-    }
-
-    // Populate the add-role initial-binding tier select (default = default tier).
-    if (smRoleTierEl) {
-      smRoleTierEl.innerHTML = '';
-      for (const t of tiers) {
-        const opt = document.createElement('option');
-        opt.value = t.tier;
-        opt.textContent = t.label;
-        if (t.tier === defaultTier) opt.selected = true;
-        smRoleTierEl.appendChild(opt);
       }
     }
 
@@ -750,14 +731,12 @@ export function installSettings({
     return saveRoleBinding(role, { kind: 'claude', model: defaultClaudeModel() });
   }
 
-  // Create a custom role: name + label + an initial tier binding. The user can
-  // rebind it to a Custom backend afterwards via the row's picker.
+  // Create a custom role — name only. It defaults to the powerful tier binding
+  // (server-side); the user rebinds it afterwards via the row's picker.
   async function onAddRole() {
     const role = smRoleNameEl?.value?.trim();
-    const label = smRoleLabelEl?.value?.trim();
-    const tier = smRoleTierEl?.value;
-    if (!role || !label) {
-      if (smRoleStatusEl) smRoleStatusEl.textContent = 'Name and label are required.';
+    if (!role) {
+      if (smRoleStatusEl) smRoleStatusEl.textContent = 'Name is required.';
       return;
     }
     if (smRoleAddEl) smRoleAddEl.disabled = true;
@@ -765,12 +744,11 @@ export function installSettings({
       const r = await fetch('/api/settings/models/roles', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ role, label, binding: { kind: 'tier', tier } }),
+        body: JSON.stringify({ role }),
       });
       const data = await r.json();
       if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
       if (smRoleNameEl) smRoleNameEl.value = '';
-      if (smRoleLabelEl) smRoleLabelEl.value = '';
       if (smRoleStatusEl) smRoleStatusEl.textContent = 'Added.';
       renderModels(data);
       onModelsChange?.(data);
@@ -778,23 +756,6 @@ export function installSettings({
       if (smRoleStatusEl) smRoleStatusEl.textContent = `Add failed: ${e.message || e}`;
     } finally {
       if (smRoleAddEl) smRoleAddEl.disabled = false;
-    }
-  }
-
-  async function onRenameRole(role, label) {
-    if (!label) return; // empty → ignore (keep last-known); server would 400 anyway
-    try {
-      const r = await fetch(`/api/settings/models/roles/${encodeURIComponent(role)}`, {
-        method: 'PATCH',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ label }),
-      });
-      const data = await r.json();
-      if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
-      renderModels(data);
-      onModelsChange?.(data);
-    } catch (e) {
-      if (smRoleStatusEl) smRoleStatusEl.textContent = `Rename failed: ${e.message || e}`;
     }
   }
 

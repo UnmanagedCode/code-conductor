@@ -203,9 +203,20 @@ describe('role → {kind,model} resolution (MCP spawn)', () => {
   });
 
   test('a user custom role resolves to its bound claude model', async () => {
-    await addCustomRole({ role: 'tester', label: 'Tester', binding: { kind: 'claude', model: 'claude-haiku-4-5' } });
+    await addCustomRole({ role: 'tester', binding: { kind: 'claude', model: 'claude-haiku-4-5' } });
     await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
     const spawned = await callTool('spawn_instance', { project: 'p', mode: 'bypassPermissions', model: 'tester' });
+    await waitFor(() => instances.idsForSession(spawned.sessionId).length > 0);
+    const inst = instances.get(instances.idsForSession(spawned.sessionId)[0]);
+    assert.equal(inst.backendKind, 'claude');
+    assert.equal(inst.model, 'claude-haiku-4-5');
+  });
+
+  test('a role name resolves case-insensitively at spawn', async () => {
+    // Stored case-preserved as 'MyRole'; spawn requests it as 'MYROLE'.
+    await addCustomRole({ role: 'MyRole', binding: { kind: 'claude', model: 'claude-haiku-4-5' } });
+    await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
+    const spawned = await callTool('spawn_instance', { project: 'p', mode: 'bypassPermissions', model: 'MYROLE' });
     await waitFor(() => instances.idsForSession(spawned.sessionId).length > 0);
     const inst = instances.get(instances.idsForSession(spawned.sessionId)[0]);
     assert.equal(inst.backendKind, 'claude');

@@ -1,6 +1,6 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { isKnownTier, isKnownClaudeModel, SLUG_RE, SLUG_MAX } from '../modelVersions.js';
+import { isKnownTier, isKnownClaudeModel } from '../modelVersions.js';
 
 // Plugin manifest: `conductor.plugin.json` at the plugin project root.
 // readManifest(dir) reads + validates; validateManifest(json) normalizes a
@@ -13,8 +13,8 @@ export const MANIFEST_FILENAME = 'conductor.plugin.json';
 export const SUPPORTED_PLUGIN_APIS = [1];
 
 const ID_RE = /^[a-z][a-z0-9-]*$/;
-// SLUG_RE / SLUG_MAX are shared with appSettings.js (custom role slugs) via
-// modelVersions.js — one definition so the two rules can't drift.
+const SLUG_RE = /^[a-z][a-z0-9-]*$/;
+const SLUG_MAX = 40;
 const TOOL_NAME_RE = /^[a-zA-Z0-9_-]+$/;
 const MCP_TIMEOUT_DEFAULT = 30000;
 const MCP_TIMEOUT_CAP = 120000;

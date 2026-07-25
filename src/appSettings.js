@@ -12,8 +12,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { orchStoreRoot, writeFileAtomic } from './projects.js';
 import { CAPABILITY_TIERS, DEFAULT_TIER_BACKEND, isKnownTier, isKnownClaudeModel,
-  ROLES, DEFAULT_ROLE_BINDING, isKnownRole, isKnownFamily, sonnetWindowSelectable,
-  SLUG_RE, SLUG_MAX } from './modelVersions.js';
+  ROLES, DEFAULT_ROLE_BINDING, isKnownRole, isKnownFamily, sonnetWindowSelectable } from './modelVersions.js';
 import { OLLAMA_CLOUD_MODELS, isKnownOllamaCloudModel } from './ollamaCloudModels.js';
 
 function settingsPath() {
@@ -335,11 +334,17 @@ function defaultRoleBinding(role) {
   return DEFAULT_ROLE_BINDING[role] ?? { kind: 'tier', tier: getDefaultSpawnTier() };
 }
 
-// True if a role name is a built-in (modelVersions ROLES) or a user custom role
-// — i.e. one whose binding lives in `models.roleBackend` and is user-editable.
-// Plugin roles (namespaced <plugin-id>/<slug>, live-derived) are NOT settable.
-function isSettableRole(role) {
-  return isKnownRole(role) || getCustomRoles().some(r => r.role === role);
+// Role NAME matching is case-insensitive (a spawn caller may type `MyRole` for a
+// role stored as `myrole`). Names are stored/displayed as the user typed them,
+// but matched and deduped by lowercase. These helpers return the canonical
+// STORED name (built-in or custom) for a case-insensitive lookup, or undefined.
+function canonicalBuiltinRole(role) {
+  const lc = String(role).toLowerCase();
+  return ROLES.find(r => r.role.toLowerCase() === lc)?.role;
+}
+function canonicalCustomRole(role) {
+  const lc = String(role).toLowerCase();
+  return getCustomRoles().find(r => r.toLowerCase() === lc);
 }
 
 // Stored role binding for a built-in or custom role (revert dead/invalid binding
@@ -354,25 +359,30 @@ export function getRoleBinding(role) {
 }
 
 export async function setRoleBinding(role, binding) {
-  if (!isSettableRole(role) || !isValidRoleBinding(binding)) {
+  // Canonicalize to the stored name so a case-variant rebind updates the same
+  // roleBackend key rather than creating a duplicate.
+  const canonical = canonicalBuiltinRole(role) ?? canonicalCustomRole(role);
+  if (!canonical || !isValidRoleBinding(binding)) {
     throw Object.assign(new Error('roleBackend must name a built-in or custom role and be a known tier binding {kind:"tier",tier} or a {kind,model} backend'), { statusCode: 400 });
   }
   const stored = binding.kind === 'tier'
     ? { kind: 'tier', tier: binding.tier }
     : persistBinding(binding);
   const cur = loadSync();
-  const nextRoleBackend = { ...(cur.models?.roleBackend || {}), [role]: stored };
+  const nextRoleBackend = { ...(cur.models?.roleBackend || {}), [canonical]: stored };
   const next = { ...cur, models: { ...(cur.models || {}), roleBackend: nextRoleBackend } };
   await writeSettings(next);
   return nextRoleBackend;
 }
 
-// Resolve a role to a concrete {kind, model}. A tier binding delegates to
-// getTierBackend (so a role→tier→dead-custom chain still reverts correctly); a
-// custom binding is returned directly. Plugin roles resolve from their live
-// manifest binding (never persisted), so they vanish when the plugin is disabled.
+// Resolve a role to a concrete {kind, model}. Role NAME matching is
+// case-insensitive. A tier binding delegates to getTierBackend (so a
+// role→tier→dead-custom chain still reverts correctly); a custom binding is
+// returned directly. Plugin roles resolve from their live manifest binding
+// (never persisted), so they vanish when the plugin is disabled.
 export function resolveRoleBackend(role) {
-  const pluginRole = getPluginRoles().find(r => r.role === role);
+  const lc = String(role).toLowerCase();
+  const pluginRole = getPluginRoles().find(r => r.role.toLowerCase() === lc);
   if (pluginRole) {
     const b = pluginRole.binding;
     if (b.kind === 'tier') return getTierBackend(b.tier);
@@ -385,7 +395,9 @@ export function resolveRoleBackend(role) {
     }
     return persistBinding(b);
   }
-  const b = getRoleBinding(role);
+  // Canonicalize to the stored (built-in/custom) name for the roleBackend lookup.
+  const canonical = canonicalBuiltinRole(role) ?? canonicalCustomRole(role) ?? role;
+  const b = getRoleBinding(canonical);
   return b.kind === 'tier' ? getTierBackend(b.tier) : persistBinding(b);
 }
 
@@ -408,90 +420,90 @@ export function getPluginRoles() {
   } catch { return []; }
 }
 
-// User custom roles: persisted as `models.customRoles: [{role, label}]` —
-// identity + label only. The binding lives in `models.roleBackend[role]` exactly
-// like a built-in role, so binding edits reuse setRoleBinding/getRoleBinding
-// unchanged. A name must be a fresh slug (shared SLUG_RE/SLUG_MAX rule),
-// disjoint from tiers / built-in roles / family aliases; '/' is reserved for
-// plugin namespacing (the regex forbids it).
+// User custom roles: persisted as `models.customRoles: [name]` — a name-only
+// string list (no separate label; the name IS the display). The binding lives in
+// `models.roleBackend[name]` exactly like a built-in role, so binding edits reuse
+// setRoleBinding/getRoleBinding unchanged. A name is case-preserved but matched
+// case-insensitively; it must be disjoint (case-insensitively) from tiers /
+// built-in roles / family aliases / other custom + plugin roles. '/' is reserved
+// for plugin namespacing (the regex forbids it). This name rule is DELIBERATELY
+// distinct from the lowercase plugin-slug rule (manifest.js) — a custom role name
+// is a user-facing, case-preserving label, not a lowercase identifier slug.
+const CUSTOM_ROLE_RE = /^[A-Za-z][A-Za-z0-9-]*$/;
+const CUSTOM_ROLE_MAX = 40;
 
 export function getCustomRoles() {
   const s = loadSync();
   const list = s.models?.customRoles;
-  return Array.isArray(list) ? list.filter(r => r && typeof r.role === 'string' && typeof r.label === 'string') : [];
+  return Array.isArray(list) ? list.filter(r => typeof r === 'string' && r) : [];
 }
 
-// The full live role catalog: built-in + user custom + plugin-owned. Each entry
-// is {role, label, builtin?, plugin?}. Single source for the Settings payload
-// and the resolution guard (isResolvableRole).
+// The full live role catalog: built-in + user custom + plugin-owned. Built-in and
+// plugin entries carry a display `label`; a custom entry is name-only ({role}).
+// Single source for the Settings payload and the resolution guard.
 export function getAllRoles() {
   return [
     ...ROLES.map(r => ({ role: r.role, label: r.label, builtin: true })),
-    ...getCustomRoles().map(r => ({ role: r.role, label: r.label })),
+    ...getCustomRoles().map(role => ({ role })),
     ...getPluginRoles().map(r => ({ role: r.role, label: r.label, plugin: r.plugin })),
   ];
 }
 
 // True if a role name resolves to a backend today (built-in, custom, or a
-// currently-enabled plugin's role). Used by spawnInstance in place of the static
-// isKnownRole so custom/plugin roles are spawnable everywhere built-ins are.
+// currently-enabled plugin's role), matched case-insensitively. Used by
+// spawnInstance in place of the static isKnownRole so custom/plugin roles are
+// spawnable everywhere built-ins are.
 export function isResolvableRole(role) {
   if (typeof role !== 'string' || !role) return false;
-  if (isKnownRole(role)) return true;
-  if (getCustomRoles().some(r => r.role === role)) return true;
-  return getPluginRoles().some(r => r.role === role);
+  const lc = role.toLowerCase();
+  if (ROLES.some(r => r.role.toLowerCase() === lc)) return true;
+  if (getCustomRoles().some(r => r.toLowerCase() === lc)) return true;
+  return getPluginRoles().some(r => r.role.toLowerCase() === lc);
 }
 
-export async function addCustomRole({ role, label, binding } = {}) {
-  const slug = String(role || '').trim();
-  const name = String(label || '').trim();
-  if (!SLUG_RE.test(slug) || slug.length > SLUG_MAX) {
-    throw Object.assign(new Error('role must match ^[a-z][a-z0-9-]*$ (max 40 chars)'), { statusCode: 400 });
+// Create a custom role (name-only). Binding defaults to the built-in `powerful`
+// tier; callers rebind afterwards via setRoleBinding. Rejects a name that
+// case-insensitively collides with a tier, built-in role, family alias, an
+// existing custom role, or a plugin role.
+export async function addCustomRole({ role, binding } = {}) {
+  const name = String(role || '').trim();
+  if (!CUSTOM_ROLE_RE.test(name) || name.length > CUSTOM_ROLE_MAX) {
+    throw Object.assign(new Error('role must match ^[A-Za-z][A-Za-z0-9-]*$ (max 40 chars)'), { statusCode: 400 });
   }
-  if (!name) throw Object.assign(new Error('label is required'), { statusCode: 400 });
-  if (isKnownTier(slug) || isKnownRole(slug) || isKnownFamily(slug)) {
-    throw Object.assign(new Error(`name '${slug}' collides with a built-in tier, role, or model family`), { statusCode: 400 });
+  const lc = name.toLowerCase();
+  if (isKnownTier(lc) || isKnownRole(lc) || isKnownFamily(lc)) {
+    throw Object.assign(new Error(`name '${name}' collides with a built-in tier, role, or model family`), { statusCode: 400 });
   }
-  const existing = getCustomRoles();
-  if (existing.some(r => r.role === slug)) {
-    throw Object.assign(new Error(`role '${slug}' already exists`), { statusCode: 409 });
+  if (getPluginRoles().some(r => r.role.toLowerCase() === lc)) {
+    throw Object.assign(new Error(`name '${name}' collides with a plugin-owned role`), { statusCode: 409 });
   }
-  if (!isValidRoleBinding(binding)) {
+  if (getCustomRoles().some(r => r.toLowerCase() === lc)) {
+    throw Object.assign(new Error(`role '${name}' already exists`), { statusCode: 409 });
+  }
+  const b = binding ?? { kind: 'tier', tier: 'powerful' };
+  if (!isValidRoleBinding(b)) {
     throw Object.assign(new Error('binding must be a known tier binding {kind:"tier",tier} or a {kind,model} backend'), { statusCode: 400 });
   }
-  const stored = binding.kind === 'tier' ? { kind: 'tier', tier: binding.tier } : persistBinding(binding);
+  const stored = b.kind === 'tier' ? { kind: 'tier', tier: b.tier } : persistBinding(b);
   const cur = loadSync();
   const models = {
     ...(cur.models || {}),
-    customRoles: [...existing, { role: slug, label: name }],
-    roleBackend: { ...(cur.models?.roleBackend || {}), [slug]: stored },
+    customRoles: [...getCustomRoles(), name],
+    roleBackend: { ...(cur.models?.roleBackend || {}), [name]: stored },
   };
   await writeSettings({ ...cur, models });
-  return { role: slug, label: name };
+  return { role: name };
 }
 
-export async function setCustomRoleLabel(role, label) {
-  const name = String(label || '').trim();
-  if (!name) throw Object.assign(new Error('label is required'), { statusCode: 400 });
-  const existing = getCustomRoles();
-  if (!existing.some(r => r.role === role)) {
-    throw Object.assign(new Error(`unknown custom role '${role}'`), { statusCode: 400 });
-  }
-  const cur = loadSync();
-  const nextList = existing.map(r => r.role === role ? { role, label: name } : r);
-  const models = { ...(cur.models || {}), customRoles: nextList };
-  await writeSettings({ ...cur, models });
-  return { role, label: name };
-}
-
-// Remove a custom role and its binding. Returns false if no such custom role.
+// Remove a custom role and its binding (case-insensitive). Returns false if no
+// matching custom role.
 export async function removeCustomRole(role) {
-  const existing = getCustomRoles();
-  if (!existing.some(r => r.role === role)) return false;
+  const canonical = canonicalCustomRole(role);
+  if (canonical === undefined) return false;
   const cur = loadSync();
-  const nextList = existing.filter(r => r.role !== role);
+  const nextList = getCustomRoles().filter(r => r !== canonical);
   const roleBackend = { ...(cur.models?.roleBackend || {}) };
-  delete roleBackend[role];
+  delete roleBackend[canonical];
   const models = { ...(cur.models || {}), customRoles: nextList, roleBackend };
   await writeSettings({ ...cur, models });
   return true;

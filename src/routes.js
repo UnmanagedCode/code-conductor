@@ -48,7 +48,7 @@ import {
   getDefaultSpawnTier, setDefaultSpawnTier,
   getTierBackend, setTierBackend,
   getRoleBinding, setRoleBinding,
-  getAllRoles, getPluginRoles, addCustomRole, setCustomRoleLabel, removeCustomRole,
+  getAllRoles, getPluginRoles, addCustomRole, removeCustomRole,
   getCustomBackends, addCustomBackend, removeCustomBackend,
   getDebugByDefault, setDebugByDefault,
 } from './appSettings.js';
@@ -1237,24 +1237,18 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
     } catch (e) { next(e); }
   });
 
-  // Custom roles — user-defined named model bindings. A role is identity+label
-  // ({role,label}); its binding lives in roleBackend (edited via the shared
-  // /settings/models/prefs roleBackend path, same as built-in roles). Plugin
+  // Custom roles — user-defined, name-only model bindings. The name IS the
+  // identity/display (no separate label); its binding lives in roleBackend
+  // (edited via the shared /settings/models/prefs roleBackend path, same as
+  // built-in roles) and defaults to the `powerful` tier at creation. Plugin
   // roles are contributed by plugins (read-only) and never touched here.
   r.post('/settings/models/roles', async (req, res, next) => {
     try {
-      const { role, label, binding } = req.body ?? {};
-      // addCustomRole validates the slug + collisions (400/409) and the binding.
-      const rec = await addCustomRole({ role, label, binding });
+      const { role, binding } = req.body ?? {};
+      // addCustomRole validates the name + collisions (400/409); binding is
+      // optional (defaults to the powerful tier) and validated when present.
+      const rec = await addCustomRole({ role, binding });
       res.status(201).json({ ...modelsSettingsState(), added: rec });
-    } catch (e) { next(e); }
-  });
-
-  // Rename (relabel) a custom role. 400 if not a custom role or label empty.
-  r.patch('/settings/models/roles/:role', async (req, res, next) => {
-    try {
-      await setCustomRoleLabel(req.params.role, req.body?.label);
-      res.json(modelsSettingsState());
     } catch (e) { next(e); }
   });
 
