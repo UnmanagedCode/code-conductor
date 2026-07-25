@@ -2,8 +2,8 @@
 // via `@../CLAUDE.md`. code-conductor now *fully owns* this file: it is
 // regenerated (overwritten) on boot and after every Settings → Workspace
 // conventions change from the composed workspace conventions
-// (conventions/workspace/core.md + enabled conventions/workspace/*.md), exactly like
-// .conduct/CONDUCT.md. There is no three-way reconcile and no conflict UI.
+// (conventions/workspace/core.md + enabled conventions/workspace/*.md).
+// There is no three-way reconcile and no conflict UI.
 //
 // Safety on the co-owned → app-owned transition: the FIRST time we take
 // ownership we back up a hand-edited target to `<target>.bak-<stamp>` so a

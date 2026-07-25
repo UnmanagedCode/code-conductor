@@ -361,8 +361,8 @@ export async function spawnInstance(args, { instances, callerId }) {
 
 // Fold the idle-subscription registration into every turn-starting call, so a
 // conductor's single send_prompt/approve_plan/reject_plan/answer_question call
-// both starts the turn AND re-arms the dispatch-and-wake callback (CONDUCT.md's
-// Core rule). A failure to subscribe (e.g. the caller died in between) must
+// both starts the turn AND re-arms the dispatch-and-wake callback (the
+// conductor role prompt's Core rule). A failure to subscribe (e.g. the caller died in between) must
 // never turn a successful prompt-send into an error — it degrades to
 // subscribed:false with a reason instead.
 async function maybeSubscribeIdle({ instances, callerId }, sessionId, { subscribe, subscribeTimeoutMs }) {

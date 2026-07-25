@@ -619,7 +619,7 @@ export function buildTools() {
       name: 'list_conductor_conventions',
       description:
         'List the conductor conventions (slug, name, description, builtin, enabled) composed into ' +
-        '.conduct/CONDUCT.md. Built-in seeds have builtin:true; custom conventions (builtin:false) and the ' +
+        "the conductor's system prompt. Built-in seeds have builtin:true; custom conventions (builtin:false) and the " +
         'enabled selection are managed via the Settings → Conductor conventions panel. The always-on core ' +
         'is not listed here.',
       inputSchema: { type: 'object', properties: {}, required: [] },

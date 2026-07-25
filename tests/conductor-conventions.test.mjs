@@ -1,5 +1,5 @@
 // Tests for conductor conventions: compose (core + enabled + footer),
-// global selection state, custom-convention CRUD, the generated .conduct/CONDUCT.md,
+// global selection state, custom-convention CRUD, the composed role prompt,
 // the REST surface, and the list_conductor_conventions MCP tool.
 
 import { test, before, after, beforeEach, afterEach } from 'node:test';
@@ -109,24 +109,27 @@ test('deleteCustomConvention drops the slug from the enabled selection', async (
   assert.ok(!(await getCatalog()).some(c => c.slug === 'temp-mod'));
 });
 
-// ── Generated .conduct/CONDUCT.md ─────────────────────────────────────────────
+// ── Composed doc reflects selection (injected at spawn, no on-disk file) ──────
 
-test('PUT selection regenerates .conduct/CONDUCT.md to match', async () => {
+test('PUT selection changes what composeCurrentConduct() produces; no file is written', async () => {
   await api(baseUrl, 'POST', '/api/projects/.conduct/ensure');
-  const conductMd = path.join(projectsRoot, '.conduct', 'CONDUCT.md');
-  // Default: all conventions present.
-  assert.match(await fs.readFile(conductMd, 'utf8'), /## Worker lifecycle/);
+  // Default: all conventions present in the composed doc.
+  assert.match(await composeCurrentConduct(), /## Worker lifecycle/);
 
   const r = await api(baseUrl, 'PUT', '/api/settings/conventions/conductor/selection', {
     enabled: ['canonical-workflow'],
   });
   assert.equal(r.status, 200);
-  const content = await fs.readFile(conductMd, 'utf8');
+  const content = await composeCurrentConduct();
   assert.match(content, /## Canonical workflow/);
   assert.doesNotMatch(content, /## Worker lifecycle/);
   // Core + footer always present.
   assert.ok(content.startsWith('# Conductor role'));
   assert.match(content, /generated from `conventions\/conductor\/core\.md`/);
+
+  // The selection change never touches disk — the doc reaches the conductor
+  // via --append-system-prompt at spawn, not a regenerated file.
+  await assert.rejects(fs.stat(path.join(projectsRoot, '.conduct', 'CONDUCT.md')));
 });
 
 // ── REST API ───────────────────────────────────────────────────────────────
@@ -224,7 +227,7 @@ test('a catalog-available plugin conductor convention is ON by default, minus pl
   assert.ok(!after.includes('my-plugin/extra-rule'), 'excluded once turned off');
 });
 
-test('a plugin conductor convention composes into CONDUCT.md', async () => {
+test('a plugin conductor convention composes into the conductor role prompt', async () => {
   setPluginConductorConventionsProvider(async () => [
     { slug: 'my-plugin/extra-rule', name: 'Extra rule', description: 'd', body: '## Extra rule\n- x', plugin: 'my-plugin' },
   ]);

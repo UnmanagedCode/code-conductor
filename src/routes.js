@@ -1421,8 +1421,10 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
   });
 
   // Settings → Conventions → Conductor block — global (singleton conductor)
-  // selection + custom-convention CRUD. Every mutation regenerates
-  // .conduct/CONDUCT.md so the next-spawned conductor session picks up the change.
+  // selection + custom-convention CRUD. Mutations only update the convention
+  // stores; the conductor doc is recomposed and injected via
+  // `--append-system-prompt` on the next conductor spawn/resume (see
+  // Instance.launch in src/instances.js), so there is nothing to regenerate here.
   r.get('/settings/conventions/conductor', async (req, res, next) => {
     try {
       const [conventions, enabled] = await Promise.all([getConductorConventionsCatalog(), getConductorSelection()]);
@@ -1436,7 +1438,6 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
     try {
       const { enabled } = req.body ?? {};
       const saved = await setConductorSelection(enabled);
-      await ensureConductProject();
       res.json({ enabled: saved });
     } catch (e) { next(e); }
   });
@@ -1445,7 +1446,6 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
     try {
       const { slug, name, description, body } = req.body ?? {};
       const convention = await addConductorConvention({ slug, name, description, body });
-      await ensureConductProject();
       res.status(201).json({ convention });
     } catch (e) { next(e); }
   });
@@ -1455,7 +1455,6 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
       const { slug } = req.params;
       const { name, description, body } = req.body ?? {};
       const convention = await updateConductorConvention(slug, { name, description, body });
-      await ensureConductProject();
       res.json({ convention });
     } catch (e) { next(e); }
   });
@@ -1464,7 +1463,6 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
     try {
       const { slug } = req.params;
       const result = await deleteConductorConvention(slug);
-      await ensureConductProject();
       res.json(result);
     } catch (e) { next(e); }
   });

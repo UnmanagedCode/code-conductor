@@ -9,8 +9,9 @@
 // <orchStoreRoot>/conventions/workspace.json as { enabled: [...], rules: [...] }.
 //
 // The composed file is fully app-owned: regenerated (overwritten) on boot
-// and after a settings change by ensureRootClaudeMd() in rootClaudeMd.js —
-// exactly like .conduct/CONDUCT.md. This mirrors src/conductorConventions.js.
+// and after a settings change by ensureRootClaudeMd() in rootClaudeMd.js.
+// This mirrors src/conductorConventions.js (which instead injects its
+// composed doc at spawn via --append-system-prompt rather than to a file).
 
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
@@ -36,7 +37,7 @@ export const SEED_CONVENTIONS = [
   { slug: 'readme-maintenance', name: 'README maintenance',
     description: 'Read README before touching a project; create/update it; keep functional + technical in sync' },
   { slug: 'system-prompt-docs', name: 'System-prompt docs',
-    description: 'CLAUDE.md/CONDUCT.md cost tokens every session — cut color, keep behavior-changing instruction' },
+    description: 'CLAUDE.md + the conductor role doc cost tokens every session — cut color, keep behavior-changing instruction' },
   { slug: 'opening-urls', name: 'Opening URLs',
     description: 'Render actionable URLs as tappable ▶ buttons; never open them yourself; use sparingly' },
 ];

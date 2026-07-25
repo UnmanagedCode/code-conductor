@@ -42,13 +42,6 @@ export function createServer({ withInstances = true, claudeLauncher } = {}) {
     // binding is inline in the manifest, no fragment file). This lets spawn
     // resolution recognise <plugin-id>/<slug> roles and drops them on disable.
     setPluginRolesProvider(() => pluginHost.roles());
-    // A plugin's conductor conventions are on-by-default while it's enabled
-    // (getSelection derives them from the live catalog), so enable/disable only
-    // needs to regenerate .conduct/CONDUCT.md — gated so a backend/project-only
-    // plugin doesn't spuriously create or rewrite it.
-    pluginHost.setEnabledChangeHook(async (id) => {
-      if (pluginHost.hasConductorConventions(id)) await ensureConductProject();
-    });
   }
 
   // serverCtx is a shared mutable handle so route handlers (POST
@@ -129,7 +122,7 @@ export async function start({ port = 8787, host = '127.0.0.1' } = {}) {
   try { sweepPendingTempCleanup({ log: console }); }
   catch (e) { console.warn('temp-cleanup sweep failed:', e); }
   const { server, instances, wss, pluginHost } = createServer();
-  // The boot-time convention regens below must run AFTER createServer(), which
+  // The app-owned CLAUDE.md regen below must run AFTER createServer(), which
   // wires the plugin convention providers (setPluginConventionsProvider /
   // setPluginConductorConventionsProvider). Before wiring those providers are
   // no-op stubs returning [], so composing a selection that includes a
@@ -138,18 +131,17 @@ export async function start({ port = 8787, host = '127.0.0.1' } = {}) {
   // bound port, so they run here rather than after listen.
   // Regenerate the app-owned <PROJECTS_ROOT>/CLAUDE.md (the file every project
   // imports via `@../CLAUDE.md`) from the composed workspace convention modules.
-  // Overwrites like .conduct/CONDUCT.md; a one-time backup of a hand-edited copy
-  // fires on the first app-owned regeneration. Strictly non-fatal: a failure
-  // must never abort boot — unlike a migration, this is a convenience sync.
+  // A one-time backup of a hand-edited copy fires on the first app-owned
+  // regeneration. Strictly non-fatal: a failure must never abort boot — unlike
+  // a migration, this is a convenience sync.
   try { await ensureRootClaudeMd({ log: console }); }
   catch (e) { console.warn('root CLAUDE.md regenerate failed:', e); }
-  // Regenerate the composed .conduct/CONDUCT.md from the current core +
-  // enabled convention modules. Runs after migrations (0010 clears any
-  // legacy symlink) so a fresh boot reflects the latest fragments and
-  // selection. Strictly non-fatal — a conductor is spawned lazily and the
-  // Conduct-dialog-open path re-ensures anyway.
+  // Ensure the hidden `.conduct` project dir exists (the cwd of every conductor
+  // session). The conductor's role doc is composed fresh and injected via
+  // `--append-system-prompt` at spawn, so there is no file to (re)generate here.
+  // Strictly non-fatal — the Conduct-dialog-open path re-ensures anyway.
   try { await ensureConductProject(); }
-  catch (e) { console.warn('.conduct CONDUCT.md regenerate failed:', e); }
+  catch (e) { console.warn('.conduct project ensure failed:', e); }
   // Seed the conductor's own project into CC-Dev, same placement plugins get
   // on discovery — the conductor itself isn't a plugin so it never hits that
   // path. Once-per-boot; no-op if already assigned or self can't be found.

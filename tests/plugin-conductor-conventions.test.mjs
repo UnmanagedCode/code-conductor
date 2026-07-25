@@ -1,8 +1,9 @@
 // A plugin's conductor conventions are ON by default while the plugin is
 // enabled (derived from the live catalog); only the user's explicit off-switches
 // persist (pluginOff). Exercises the real plugin host wired to the conduct
-// catalog exactly as server.js does (the conductor-convention provider + a
-// regen hook gated on hasConductorConventions), against a temp PROJECTS_ROOT.
+// catalog exactly as server.js does (the conductor-convention provider), against
+// a temp PROJECTS_ROOT. Toggling a plugin needs no regen step — the composed
+// role prompt is rebuilt from the live catalog on the next conductor spawn.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -33,16 +34,10 @@ async function writeConductStore(root, store) {
 }
 
 // Wire a host to the conduct catalog the same way server.js does: the
-// conductor-convention provider + a regen hook gated on hasConductorConventions.
-// `regen` counts how often CONDUCT.md WOULD regenerate (the real
-// ensureConductProject is covered by conductor-conventions.test.mjs).
+// conductor-convention provider. No regen hook — a toggled plugin's conventions
+// flow into the composed role prompt on the next conductor spawn.
 function wire(host) {
-  const state = { regen: 0 };
   setPluginConductorConventionsProvider(async () => (await host.conventions()).conductor);
-  host.setEnabledChangeHook(async (id) => {
-    if (host.hasConductorConventions(id)) state.regen++;
-  });
-  return state;
 }
 
 test('enabling a plugin turns its conductor conventions on + composes them', async () => {
@@ -50,14 +45,13 @@ test('enabling a plugin turns its conductor conventions on + composes them', asy
   try {
     await env.addPluginProject('condp', { manifest: COND_PLUGIN });
     const host = createPluginHost();
-    const spy = wire(host);
+    wire(host);
 
     await host.enable('cond-plugin');
 
     const sel = await getSelection();
     assert.ok(sel.includes('cond-plugin/a'), 'convention a on');
     assert.ok(sel.includes('cond-plugin/b'), 'convention b on');
-    assert.equal(spy.regen, 1, 'regeneration fired once');
     assert.match(await composeCurrentConduct(), /Visual UX verification/);
   } finally {
     setPluginConductorConventionsProvider(null);
@@ -70,12 +64,11 @@ test('enabling a plugin with no conductor conventions leaves the selection untou
   try {
     await env.addPluginProject('fakep', { manifest: await readFixtureManifest() }); // backend, no conventions
     const host = createPluginHost();
-    const spy = wire(host);
+    wire(host);
 
     await host.enable('fake-plugin');
 
     assert.deepEqual((await getSelection()).sort(), [...SEEDS].sort(), 'selection is the default seeds');
-    assert.equal(spy.regen, 0, 'no regeneration for a plugin without conductor conventions');
   } finally {
     setPluginConductorConventionsProvider(null);
     await env.restore();

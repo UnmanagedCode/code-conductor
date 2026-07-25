@@ -7,7 +7,6 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { projectsRoot } from './projects.js';
-import { composeCurrentConduct } from './conductorConventions.js';
 
 export const CONDUCT_PROJECT_NAME = '.conduct';
 
@@ -15,31 +14,20 @@ export function conductProjectPath() {
   return path.join(projectsRoot(), CONDUCT_PROJECT_NAME);
 }
 
-// Idempotent: creates the .conduct dir (if missing), (re)generates
-// .conduct/CONDUCT.md from the current core + enabled conventions,
-// and seeds CLAUDE.md with a single in-project @CONDUCT.md import.
+// Idempotent: ensures the `.conduct` dir exists (it is the cwd of every
+// conductor session, so it must be present before spawn).
 //
-// The composed doc is a fully-owned generated artifact: it is overwritten
-// on every call (boot, Conduct-dialog-open, conductor resume, and after a
-// settings change), so selection edits take effect for newly-spawned /
-// next-context-refresh conductor sessions. Edit paths for its content are
-// the `conventions/conductor/*.md` fragments (built-in text) and Settings →
-// Conductor conventions (toggles + custom conventions) — never the generated file.
+// The conductor's composed role doc is NOT written here — it is composed
+// fresh by composeCurrentConduct() and injected at spawn time via
+// `claude --append-system-prompt` (see Instance.launch/spawn in
+// src/instances.js), so selection edits take effect on the next spawn/resume
+// with no on-disk artifact to keep in sync. Edit paths for its content are the
+// `conventions/conductor/*.md` fragments (built-in text) and Settings →
+// Conductor conventions (toggles + custom conventions). Workspace conventions
+// still reach the conductor via Claude Code's ancestor walk-up to the
+// app-owned <projectsRoot>/CLAUDE.md; no in-project CLAUDE.md is seeded.
 //
-// A legacy `.conduct/CONDUCT.md` *symlink* (from migration 0003, the
-// pre-generation era) is swapped for a regular file idempotently.
-//
-// Why the in-project @import: Claude Code gates @-import paths that resolve
-// outside the project root behind an "external includes approved" dialog
-// that never fires in headless / `-p` mode (which is how every conductor
-// session is spawned), so external imports silently no-op. Keeping the
-// import path in-project (`@CONDUCT.md`) bypasses that gate. The
-// workspace-wide ../CLAUDE.md is omitted on purpose — Claude Code's
-// ancestor walk-up already pulls in cc-projects/CLAUDE.md.
-//
-// The `wx` flag preserves any user-customised CLAUDE.md once it exists.
-// Returns {path, created, conductMdPath, claudeMdPath, claudeMdSeeded} so
-// callers (and tests) can tell what happened.
+// Returns {path, created} so callers (and tests) can tell what happened.
 export async function ensureConductProject() {
   const dir = conductProjectPath();
   let created = false;
@@ -49,27 +37,5 @@ export async function ensureConductProject() {
   } catch (e) {
     if (e.code !== 'EEXIST') throw e;
   }
-
-  const conductMdPath = path.join(dir, 'CONDUCT.md');
-  const content = await composeCurrentConduct();
-  try {
-    const st = await fs.lstat(conductMdPath);
-    if (st.isSymbolicLink()) await fs.unlink(conductMdPath);
-  } catch (e) {
-    if (e.code !== 'ENOENT') throw e;
-  }
-  await fs.writeFile(conductMdPath, content);
-
-  const claudeMdPath = path.join(dir, 'CLAUDE.md');
-  const seedContent = '@CONDUCT.md\n';
-  let claudeMdSeeded = false;
-  try {
-    await fs.writeFile(claudeMdPath, seedContent, { flag: 'wx' });
-    claudeMdSeeded = true;
-  } catch (e) {
-    if (e.code !== 'EEXIST') throw e;
-    // Existing CLAUDE.md left alone — user may have customised it.
-  }
-
-  return { path: dir, created, conductMdPath, claudeMdPath, claudeMdSeeded };
+  return { path: dir, created };
 }
