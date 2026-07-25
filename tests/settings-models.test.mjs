@@ -4,6 +4,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { bootServer, api, freshProjectsRoot, rmrf } from './helpers.mjs';
+import { orchStoreRoot } from '../src/projects.js';
 import {
   MODEL_FAMILIES, DEFAULT_VERSIONS, PROVIDERS, isKnownFamily, isKnownVersion, defaultVersion,
   isKnownClaudeModel, CAPABILITY_TIERS, DEFAULT_TIER_BACKEND, isKnownTier,
@@ -853,6 +854,29 @@ test('appSettings: a plugin-role override beats a dead manifest binding (drift)'
         assert.deepEqual(resolveRoleBackend('p/legacy'), getTierBackend(getDefaultSpawnTier())); // manifest dead → default tier
         await setRoleBinding('p/legacy', { kind: 'tier', tier: 'fast' }); // user override to a live tier
         assert.deepEqual(resolveRoleBackend('p/legacy'), getTierBackend('fast')); // override wins over the dead manifest
+      } finally {
+        setPluginRolesProvider(null);
+      }
+    });
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test('appSettings: a dead plugin-role override falls back to the manifest binding (plugin enabled)', async () => {
+  const root = await mkTmp();
+  try {
+    await withEnv({ PROJECTS_ROOT: root }, async () => {
+      // Manifest valid (haiku), override dead (retired claude) → manifest wins.
+      // The override is planted directly in settings.json (simulating drift: a
+      // model that was live when stored but later retired) because setRoleBinding
+      // validates at store-time and correctly rejects a dead binding.
+      setPluginRolesProvider(() => [{ role: 'p/scribe', label: 'S', binding: { kind: 'claude', model: 'claude-haiku-4-5' }, plugin: 'p' }]);
+      try {
+        const settingsFile = path.join(orchStoreRoot(), 'settings.json');
+        await fs.mkdir(path.dirname(settingsFile), { recursive: true });
+        await fs.writeFile(settingsFile, JSON.stringify({
+          models: { roleBackend: { 'p/scribe': { kind: 'claude', model: 'claude-retired-9' } } },
+        }));
+        assert.deepEqual(resolveRoleBackend('p/scribe'), { kind: 'claude', model: 'claude-haiku-4-5' }); // falls back to manifest
       } finally {
         setPluginRolesProvider(null);
       }
