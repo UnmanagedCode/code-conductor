@@ -4,6 +4,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { bootServer, api, freshProjectsRoot, rmrf } from './helpers.mjs';
+import { orchStoreRoot } from '../src/projects.js';
 import {
   MODEL_FAMILIES, DEFAULT_VERSIONS, PROVIDERS, isKnownFamily, isKnownVersion, defaultVersion,
   isKnownClaudeModel, CAPABILITY_TIERS, DEFAULT_TIER_BACKEND, isKnownTier,
@@ -783,23 +784,101 @@ test('appSettings: a custom role whose Ollama backend is removed falls back to t
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
 
-test('appSettings: plugin roles resolve via the injected provider (case-insensitive) and are read-only', async () => {
+test('appSettings: plugin roles resolve via the injected provider (case-insensitive) and are user-rebindable', async () => {
   const root = await mkTmp();
   try {
     await withEnv({ PROJECTS_ROOT: root }, async () => {
       setPluginRolesProvider(() => [{ role: 'p/cap', label: 'Cap', binding: { kind: 'tier', tier: 'fast' }, plugin: 'p' }]);
       try {
         assert.ok(isResolvableRole('P/CAP'));
-        assert.deepEqual(resolveRoleBackend('P/Cap'), getTierBackend('fast'));
+        assert.deepEqual(resolveRoleBackend('P/Cap'), getTierBackend('fast')); // manifest default
         assert.ok(getAllRoles().some(r => r.role === 'p/cap' && r.plugin === 'p'));
-        // A plugin role is not user-settable (namespaced, live-derived).
-        await assert.rejects(() => setRoleBinding('p/cap', { kind: 'tier', tier: 'powerful' }));
+        // A plugin role is user-rebindable: the override is persisted under the
+        // namespaced id and BEATS the manifest binding at resolve time.
+        await setRoleBinding('p/cap', { kind: 'tier', tier: 'powerful' });
+        assert.deepEqual(getRoleBinding('p/cap'), { kind: 'tier', tier: 'powerful' });
+        assert.deepEqual(resolveRoleBackend('P/Cap'), getTierBackend('powerful')); // override wins
+        // A custom backend override (Claude version) round-trips and wins too.
+        await setRoleBinding('p/cap', { kind: 'claude', model: 'claude-opus-4-8' });
+        assert.deepEqual(resolveRoleBackend('p/cap'), { kind: 'claude', model: 'claude-opus-4-8' });
+        // Reverting is done by re-selecting the manifest's tier in the same
+        // picker (no dedicated reset) — rebinding to the manifest tier restores
+        // the manifest behavior.
+        await setRoleBinding('p/cap', { kind: 'tier', tier: 'fast' });
+        assert.deepEqual(resolveRoleBackend('p/cap'), getTierBackend('fast'));
         // A custom name can never equal a plugin role name: plugin roles are
         // '<id>/<slug>' and the custom-name format rule forbids '/', so this is
         // rejected by the name-format rule (not a plugin-collision guard).
         await assert.rejects(() => addCustomRole({ role: 'p/cap' }), /must match/);
       } finally {
         setPluginRolesProvider(null); // restore default (no plugin host in this file)
+      }
+    });
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test('appSettings: a plugin-role override is ignored while the plugin is disabled and retained on re-enable', async () => {
+  const root = await mkTmp();
+  try {
+    await withEnv({ PROJECTS_ROOT: root }, async () => {
+      setPluginRolesProvider(() => [{ role: 'p/cap', label: 'Cap', binding: { kind: 'tier', tier: 'fast' }, plugin: 'p' }]);
+      try {
+        await setRoleBinding('p/cap', { kind: 'tier', tier: 'powerful' }); // store an override
+        assert.deepEqual(resolveRoleBackend('p/cap'), getTierBackend('powerful'));
+        // Disable the plugin: the role is no longer resolvable, and resolve does
+        // NOT leak the stale override (falls back to the default spawn tier, the
+        // existing unknown-role behavior — the spawn ladder gates on isResolvableRole).
+        setPluginRolesProvider(() => []);
+        assert.equal(isResolvableRole('p/cap'), false);
+        assert.deepEqual(resolveRoleBackend('p/cap'), getTierBackend(getDefaultSpawnTier()));
+        // The override key is retained in settings.json (no purge)…
+        assert.deepEqual(getRoleBinding('p/cap'), { kind: 'tier', tier: 'powerful' });
+        // …and re-applies when the plugin comes back.
+        setPluginRolesProvider(() => [{ role: 'p/cap', label: 'Cap', binding: { kind: 'tier', tier: 'fast' }, plugin: 'p' }]);
+        assert.deepEqual(resolveRoleBackend('p/cap'), getTierBackend('powerful'));
+      } finally {
+        setPluginRolesProvider(null);
+      }
+    });
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test('appSettings: a plugin-role override beats a dead manifest binding (drift)', async () => {
+  const root = await mkTmp();
+  try {
+    await withEnv({ PROJECTS_ROOT: root }, async () => {
+      // Manifest binds to a since-retired Claude model; a valid tier override
+      // rescues the role instead of falling back to the default spawn tier.
+      setPluginRolesProvider(() => [{ role: 'p/legacy', label: 'Legacy', binding: { kind: 'claude', model: 'claude-retired-9' }, plugin: 'p' }]);
+      try {
+        assert.deepEqual(resolveRoleBackend('p/legacy'), getTierBackend(getDefaultSpawnTier())); // manifest dead → default tier
+        await setRoleBinding('p/legacy', { kind: 'tier', tier: 'fast' }); // user override to a live tier
+        assert.deepEqual(resolveRoleBackend('p/legacy'), getTierBackend('fast')); // override wins over the dead manifest
+      } finally {
+        setPluginRolesProvider(null);
+      }
+    });
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test('appSettings: a dead plugin-role override falls back to the manifest binding (plugin enabled)', async () => {
+  const root = await mkTmp();
+  try {
+    await withEnv({ PROJECTS_ROOT: root }, async () => {
+      // Manifest valid (haiku), override dead (retired claude) → manifest wins.
+      // The override is planted directly in settings.json (simulating drift: a
+      // model that was live when stored but later retired) because setRoleBinding
+      // validates at store-time and correctly rejects a dead binding.
+      setPluginRolesProvider(() => [{ role: 'p/scribe', label: 'S', binding: { kind: 'claude', model: 'claude-haiku-4-5' }, plugin: 'p' }]);
+      try {
+        const settingsFile = path.join(orchStoreRoot(), 'settings.json');
+        await fs.mkdir(path.dirname(settingsFile), { recursive: true });
+        await fs.writeFile(settingsFile, JSON.stringify({
+          models: { roleBackend: { 'p/scribe': { kind: 'claude', model: 'claude-retired-9' } } },
+        }));
+        assert.deepEqual(resolveRoleBackend('p/scribe'), { kind: 'claude', model: 'claude-haiku-4-5' }); // falls back to manifest
+      } finally {
+        setPluginRolesProvider(null);
       }
     });
   } finally { await fs.rm(root, { recursive: true, force: true }); }

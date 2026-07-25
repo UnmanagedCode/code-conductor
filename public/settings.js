@@ -546,10 +546,11 @@ export function installSettings({
     // Built-in + user-custom roles pick one of the tiers OR "Custom" (shared
     // backend/model pickers show only when Custom is selected). A custom role is
     // name-only (the name is shown directly) with a small × remove control.
-    // Plugin-owned roles are read-only (binding is manifest-defined, live-derived)
-    // and marked with a "via <plugin>" badge — no rebind, no delete.
-    const tierLabelFor = (t) => tiers.find(x => x.tier === t)?.label || t;
-    const describeRoleBinding = (rb) => rb.kind === 'tier' ? `Tier: ${tierLabelFor(rb.tier)}` : describeBinding(rb);
+    // Plugin-owned roles are user-rebindable just like built-in/custom: the
+    // rebind is an OVERRIDE of the manifest binding, persisted under roleBackend
+    // and taking precedence at spawn. Marked with a "via <plugin>" badge; no
+    // delete (plugin roles are manifest-controlled). To revert an override the
+    // user simply re-selects the manifest's tier/model in the same picker.
     if (smRoleListEl) {
       const roles = data.roles || [];
       const roleBackend = data.roleBackend || {}; // {role: {kind:'tier',tier} | {kind,model}}
@@ -570,17 +571,12 @@ export function installSettings({
         labelEl.textContent = r.label || r.role;
         li.appendChild(labelEl);
 
+        // Plugin provenance badge — kept on editable rows.
         if (isPlugin) {
           const badge = document.createElement('span');
           badge.className = 'sm-role-plugin-badge';
           badge.textContent = `via ${r.plugin}`;
           li.appendChild(badge);
-          const bindingEl = document.createElement('span');
-          bindingEl.className = 'sm-role-binding-readonly';
-          bindingEl.textContent = describeRoleBinding(rb);
-          li.appendChild(bindingEl);
-          smRoleListEl.appendChild(li);
-          continue;
         }
 
         // Binding select: one option per tier + a final "Custom".

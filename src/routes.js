@@ -47,8 +47,8 @@ import {
   getEnabledTiers, setTierEnabled,
   getDefaultSpawnTier, setDefaultSpawnTier,
   getTierBackend, setTierBackend,
-  getRoleBinding, setRoleBinding,
-  getAllRoles, getPluginRoles, addCustomRole, removeCustomRole,
+  effectiveRoleBinding, setRoleBinding,
+  getAllRoles, addCustomRole, removeCustomRole,
   getCustomBackends, addCustomBackend, removeCustomBackend,
   getDebugByDefault, setDebugByDefault,
 } from './appSettings.js';
@@ -1129,15 +1129,13 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
       tierBackend[t.tier] = getTierBackend(t.tier); // {kind, model, window?}
     }
     // roles = built-in + user-custom + plugin-owned (each {role,label,builtin?,plugin?}).
-    // Plugin roles carry their binding inline (read-only, live-derived); built-in
-    // and custom roles read their user-editable binding from the roleBackend store.
+    // Every role's payload binding is its EFFECTIVE binding (a valid user
+    // override wins, else the manifest binding for a plugin role or the
+    // stored/default binding otherwise) — shown as the tier/{kind,model} binding
+    // itself, NOT resolved to a concrete backend, so the tier identity survives.
     const allRoles = getAllRoles();
-    const pluginRoles = getPluginRoles();
     const roleBackend = {};
-    for (const r of allRoles) {
-      const pr = r.plugin ? pluginRoles.find(p => p.role === r.role) : null;
-      roleBackend[r.role] = pr ? pr.binding : getRoleBinding(r.role); // {kind:'tier',tier} | {kind,model,window?}
-    }
+    for (const r of allRoles) roleBackend[r.role] = effectiveRoleBinding(r.role);
     return { providers: PROVIDERS, backends: MODEL_FAMILIES, onOverage: getOnOverageAction(),
       overageThreshold: getOverageThreshold(),
       conductorCompactWindow: getConductorCompactWindow(),
@@ -1182,9 +1180,9 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
       }
       if (roleBackend !== undefined) {
         // backend is a tier binding {kind:'tier',tier} or a {kind,model} custom
-        // backend. setRoleBinding validates the role is built-in or custom (a
-        // plugin/unknown role, or a bad binding, throws 400) — so no isKnownRole
-        // precheck here; the store is the single source of truth.
+        // backend. setRoleBinding validates the role is built-in, custom, or a
+        // plugin role (an unknown role, or a bad binding, throws 400) — so no
+        // isKnownRole precheck here; the store is the single source of truth.
         if (!roleBackend || typeof roleBackend !== 'object' || typeof roleBackend.role !== 'string') {
           return res.status(400).json({ error: 'roleBackend must be {role, backend}' });
         }

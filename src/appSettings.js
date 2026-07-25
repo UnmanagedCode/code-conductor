@@ -322,7 +322,7 @@ export async function setTierBackend(tier, backend) {
 // ({kind:'tier', tier}) or a custom {kind, model} backend (same shape a tier
 // binds to). A tier binding validates via isKnownTier; a custom binding via
 // isValidBinding.
-function isValidRoleBinding(b) {
+export function isValidRoleBinding(b) {
   if (b && typeof b === 'object' && b.kind === 'tier') return isKnownTier(b.tier);
   return isValidBinding(b);
 }
@@ -346,6 +346,15 @@ function canonicalCustomRole(role) {
   const lc = String(role).toLowerCase();
   return getCustomRoles().find(r => r.toLowerCase() === lc);
 }
+// The canonical STORED name for a plugin role (the exact '<plugin-id>/<slug>'
+// id from the live provider), matched case-insensitively, or undefined. Used
+// by setRoleBinding so a case-variant override targets the same roleBackend
+// key as a canonical one (parity with the built-in/custom canonicalization
+// above).
+function canonicalPluginRole(role) {
+  const lc = String(role).toLowerCase();
+  return getPluginRoles().find(r => r.role.toLowerCase() === lc)?.role;
+}
 
 // Stored role binding for a built-in or custom role (revert dead/invalid binding
 // to the role default on read, like getTierBackend). A tier binding whose tier
@@ -358,12 +367,31 @@ export function getRoleBinding(role) {
   return isValidRoleBinding(stored) ? stored : defaultRoleBinding(role);
 }
 
+// Effective binding for ANY role (plugin/built-in/custom): the tier or
+// {kind,model} binding that governs the role today, NOT resolved to a concrete
+// backend. A valid user override wins; else the manifest binding (plugin) or
+// the stored/default binding (built-in/custom). Single source for both the
+// Settings payload (which shows the binding as-is) and resolveRoleBackend
+// (which then resolves it to a concrete backend).
+export function effectiveRoleBinding(role) {
+  const lc = String(role).toLowerCase();
+  const pr = getPluginRoles().find(r => r.role.toLowerCase() === lc);
+  if (pr) {
+    const override = loadSync().models?.roleBackend?.[pr.role];
+    return isValidRoleBinding(override) ? override : pr.binding;
+  }
+  const canonical = canonicalBuiltinRole(role) ?? canonicalCustomRole(role);
+  return canonical ? getRoleBinding(canonical) : defaultRoleBinding(role);
+}
+
 export async function setRoleBinding(role, binding) {
   // Canonicalize to the stored name so a case-variant rebind updates the same
-  // roleBackend key rather than creating a duplicate.
-  const canonical = canonicalBuiltinRole(role) ?? canonicalCustomRole(role);
+  // roleBackend key rather than creating a duplicate. Plugin roles are included
+  // — a user override of a plugin role's manifest binding is persisted under
+  // its exact '<plugin-id>/<slug>' id and beats the manifest at resolve time.
+  const canonical = canonicalBuiltinRole(role) ?? canonicalCustomRole(role) ?? canonicalPluginRole(role);
   if (!canonical || !isValidRoleBinding(binding)) {
-    throw Object.assign(new Error('roleBackend must name a built-in or custom role and be a known tier binding {kind:"tier",tier} or a {kind,model} backend'), { statusCode: 400 });
+    throw Object.assign(new Error('roleBackend must name a built-in, custom, or plugin role and be a known tier binding {kind:"tier",tier} or a {kind,model} backend'), { statusCode: 400 });
   }
   const stored = binding.kind === 'tier'
     ? { kind: 'tier', tier: binding.tier }
@@ -375,30 +403,29 @@ export async function setRoleBinding(role, binding) {
   return nextRoleBackend;
 }
 
-// Resolve a role to a concrete {kind, model}. Role NAME matching is
-// case-insensitive. A tier binding delegates to getTierBackend (so a
-// role→tier→dead-custom chain still reverts correctly); a custom binding is
-// returned directly. Plugin roles resolve from their live manifest binding
-// (never persisted), so they vanish when the plugin is disabled.
+// Resolve a role to a concrete {kind, model}. Takes the effective binding (a
+// valid user override wins, else manifest/stored/default — see
+// effectiveRoleBinding) and resolves it: a tier binding delegates to
+// getTierBackend (so a role→tier→dead-custom chain still reverts correctly); a
+// concrete binding is returned directly. Never throws — an unknown role or a
+// disabled plugin's role falls back through effectiveRoleBinding to the default
+// spawn tier.
+//
+// The dead-Claude re-guard below protects the plugin MANIFEST claude binding
+// path: a manifest binding is validated at plugin load, but the model catalog
+// can move on (a Claude version retired) before this resolve, and unlike stored
+// bindings (getRoleBinding reverts) or valid overrides (isValidRoleBinding
+// gates) the manifest binding is NOT re-validated by effectiveRoleBinding.
+// Guarding here keeps a retired plugin claude id from spawning — it reverts to
+// the default spawn tier's backend instead. (Ollama is never a plugin binding
+// kind; tier bindings and valid non-manifest bindings never trip the guard.)
 export function resolveRoleBackend(role) {
-  const lc = String(role).toLowerCase();
-  const pluginRole = getPluginRoles().find(r => r.role.toLowerCase() === lc);
-  if (pluginRole) {
-    const b = pluginRole.binding;
-    if (b.kind === 'tier') return getTierBackend(b.tier);
-    // A plugin claude binding is validated at manifest load, but the model
-    // catalog can move on (a Claude version retired) between that load and this
-    // resolve — never spawn a dead id. Mirror the custom-role fallback: revert to
-    // the default spawn tier's backend. (Ollama is never a plugin binding kind.)
-    if (b.kind === 'claude' && !isKnownClaudeModel(b.model)) {
-      return getTierBackend(getDefaultSpawnTier());
-    }
-    return persistBinding(b);
+  const b = effectiveRoleBinding(role);
+  if (b.kind === 'tier') return getTierBackend(b.tier);
+  if (b.kind === 'claude' && !isKnownClaudeModel(b.model)) {
+    return getTierBackend(getDefaultSpawnTier());
   }
-  // Canonicalize to the stored (built-in/custom) name for the roleBackend lookup.
-  const canonical = canonicalBuiltinRole(role) ?? canonicalCustomRole(role) ?? role;
-  const b = getRoleBinding(canonical);
-  return b.kind === 'tier' ? getTierBackend(b.tier) : persistBinding(b);
+  return persistBinding(b);
 }
 
 // ── Custom + plugin roles ────────────────────────────────────────────────
