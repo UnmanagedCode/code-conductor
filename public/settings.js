@@ -564,20 +564,27 @@ export function installSettings({
         const li = document.createElement('li');
         li.className = 'sm-role-row' + (isPlugin ? ' sm-role-row--plugin' : '');
 
+        // Name + plugin provenance badge share a fixed-width column so the
+        // controls after it line up the same whether or not a row has a badge.
+        const nameWrap = document.createElement('div');
+        nameWrap.className = 'sm-role-name-wrap';
+
+        // Plugin provenance badge — kept on editable rows, stacked above the name.
+        if (isPlugin) {
+          const badge = document.createElement('span');
+          badge.className = 'sm-role-plugin-badge';
+          badge.textContent = `via ${r.plugin}`;
+          nameWrap.appendChild(badge);
+        }
+
         // Name shown directly (built-in/plugin carry a label; a custom role is
         // name-only, so fall back to the role name).
         const labelEl = document.createElement('span');
         labelEl.className = 'sm-family-label';
         labelEl.textContent = r.label || r.role;
-        li.appendChild(labelEl);
+        nameWrap.appendChild(labelEl);
 
-        // Plugin provenance badge — kept on editable rows.
-        if (isPlugin) {
-          const badge = document.createElement('span');
-          badge.className = 'sm-role-plugin-badge';
-          badge.textContent = `via ${r.plugin}`;
-          li.appendChild(badge);
-        }
+        li.appendChild(nameWrap);
 
         // Binding select: one option per tier + a final "Custom".
         const bindingSel = document.createElement('select');
