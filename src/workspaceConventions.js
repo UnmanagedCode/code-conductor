@@ -37,7 +37,7 @@ export const SEED_CONVENTIONS = [
   { slug: 'readme-maintenance', name: 'README maintenance',
     description: 'Read README before touching a project; create/update it; keep functional + technical in sync' },
   { slug: 'system-prompt-docs', name: 'System-prompt docs',
-    description: 'CLAUDE.md/CONDUCT.md cost tokens every session — cut color, keep behavior-changing instruction' },
+    description: 'CLAUDE.md + the conductor role doc cost tokens every session — cut color, keep behavior-changing instruction' },
   { slug: 'opening-urls', name: 'Opening URLs',
     description: 'Render actionable URLs as tappable ▶ buttons; never open them yourself; use sparingly' },
 ];
