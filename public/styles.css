@@ -1993,7 +1993,20 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
   background: var(--panel-2); border: 1px solid var(--border); border-radius: 4px;
   white-space: pre-wrap; word-break: break-word;
 }
-.pl-actions { margin-top: 8px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.pl-actions { margin-top: 8px; display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
+.pl-actions-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.pl-toggle-enable {
+  color: var(--green);
+  border-color: var(--green);
+  background: rgba(74, 222, 128, 0.15);
+}
+.pl-toggle-enable:hover:not(:disabled) { background: rgba(74, 222, 128, 0.25); }
+.pl-toggle-disable {
+  color: var(--red);
+  border-color: var(--red);
+  background: rgba(248, 113, 113, 0.15);
+}
+.pl-toggle-disable:hover:not(:disabled) { background: rgba(248, 113, 113, 0.25); }
 .pl-version {
   font-size: 12px;
   min-width: 0;
