@@ -548,7 +548,7 @@ export function installSettings({
     // name-only (the name is shown directly) with a small × remove control.
     // Plugin-owned roles are user-rebindable just like built-in/custom: the
     // rebind is an OVERRIDE of the manifest binding, persisted under roleBackend
-    // and taking precedence at spawn. Marked with a "via <plugin>" badge; no
+    // and taking precedence at spawn. Marked with a plugin-name badge; no
     // delete (plugin roles are manifest-controlled). To revert an override the
     // user simply re-selects the manifest's tier/model in the same picker.
     if (smRoleListEl) {
@@ -569,20 +569,20 @@ export function installSettings({
         const nameWrap = document.createElement('div');
         nameWrap.className = 'sm-role-name-wrap';
 
-        // Plugin provenance badge — kept on editable rows, stacked above the name.
-        if (isPlugin) {
-          const badge = document.createElement('span');
-          badge.className = 'sm-role-plugin-badge';
-          badge.textContent = `via ${r.plugin}`;
-          nameWrap.appendChild(badge);
-        }
-
         // Name shown directly (built-in/plugin carry a label; a custom role is
         // name-only, so fall back to the role name).
         const labelEl = document.createElement('span');
         labelEl.className = 'sm-family-label';
         labelEl.textContent = r.label || r.role;
         nameWrap.appendChild(labelEl);
+
+        // Plugin provenance badge — kept on editable rows, stacked below the name.
+        if (isPlugin) {
+          const badge = document.createElement('span');
+          badge.className = 'sm-role-plugin-badge';
+          badge.textContent = r.plugin;
+          nameWrap.appendChild(badge);
+        }
 
         li.appendChild(nameWrap);
 
