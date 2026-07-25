@@ -463,8 +463,10 @@ export function isResolvableRole(role) {
 
 // Create a custom role (name-only). Binding defaults to the built-in `powerful`
 // tier; callers rebind afterwards via setRoleBinding. Rejects a name that
-// case-insensitively collides with a tier, built-in role, family alias, an
-// existing custom role, or a plugin role.
+// case-insensitively collides with a tier, built-in role, family alias, or an
+// existing custom role. (Plugin roles are always '<id>/<slug>' and CUSTOM_ROLE_RE
+// forbids '/', so a custom name can never equal a plugin role name — no guard
+// needed for that.)
 export async function addCustomRole({ role, binding } = {}) {
   const name = String(role || '').trim();
   if (!CUSTOM_ROLE_RE.test(name) || name.length > CUSTOM_ROLE_MAX) {
@@ -473,9 +475,6 @@ export async function addCustomRole({ role, binding } = {}) {
   const lc = name.toLowerCase();
   if (isKnownTier(lc) || isKnownRole(lc) || isKnownFamily(lc)) {
     throw Object.assign(new Error(`name '${name}' collides with a built-in tier, role, or model family`), { statusCode: 400 });
-  }
-  if (getPluginRoles().some(r => r.role.toLowerCase() === lc)) {
-    throw Object.assign(new Error(`name '${name}' collides with a plugin-owned role`), { statusCode: 409 });
   }
   if (getCustomRoles().some(r => r.toLowerCase() === lc)) {
     throw Object.assign(new Error(`role '${name}' already exists`), { statusCode: 409 });

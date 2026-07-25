@@ -794,8 +794,10 @@ test('appSettings: plugin roles resolve via the injected provider (case-insensit
         assert.ok(getAllRoles().some(r => r.role === 'p/cap' && r.plugin === 'p'));
         // A plugin role is not user-settable (namespaced, live-derived).
         await assert.rejects(() => setRoleBinding('p/cap', { kind: 'tier', tier: 'powerful' }));
-        // A custom role can't collide (case-insensitively) with a plugin role.
-        await assert.rejects(() => addCustomRole({ role: 'p/cap' }), /must match/); // '/' invalid anyway
+        // A custom name can never equal a plugin role name: plugin roles are
+        // '<id>/<slug>' and the custom-name format rule forbids '/', so this is
+        // rejected by the name-format rule (not a plugin-collision guard).
+        await assert.rejects(() => addCustomRole({ role: 'p/cap' }), /must match/);
       } finally {
         setPluginRolesProvider(null); // restore default (no plugin host in this file)
       }
@@ -826,6 +828,8 @@ test('roles CRUD: POST creates name-only (defaults powerful), prefs rebinds, DEL
     assert.equal(d.status, 200);
     assert.ok(!d.body.roles.some(r => r.role === 'tester'));
     assert.equal((await api(baseUrl, 'DELETE', '/api/settings/models/roles/reviewer')).status, 400);
+    // A case-variant of a built-in is still "known" → 400, not a 404 miss.
+    assert.equal((await api(baseUrl, 'DELETE', '/api/settings/models/roles/Reviewer')).status, 400);
     assert.equal((await api(baseUrl, 'DELETE', '/api/settings/models/roles/ghost')).status, 404);
   }
 });

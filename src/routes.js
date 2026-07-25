@@ -1260,7 +1260,9 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
       const role = req.params.role;
       const ok = await removeCustomRole(role);
       if (ok) return res.json(modelsSettingsState());
-      const known = getAllRoles().some(x => x.role === role);
+      // Case-insensitive, matching removeCustomRole above: a case-variant of a
+      // built-in/plugin role is still "known" → 400, not a 404 miss.
+      const known = getAllRoles().some(x => x.role.toLowerCase() === role.toLowerCase());
       return res.status(known ? 400 : 404).json({ error: known ? 'cannot delete a built-in or plugin-owned role' : 'custom role not found' });
     } catch (e) { next(e); }
   });
