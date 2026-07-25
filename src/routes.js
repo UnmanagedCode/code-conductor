@@ -47,7 +47,8 @@ import {
   getEnabledTiers, setTierEnabled,
   getDefaultSpawnTier, setDefaultSpawnTier,
   getTierBackend, setTierBackend,
-  getRoleBinding, setRoleBinding,
+  getRoleBinding, getRoleBindingRaw, setRoleBinding,
+  isValidRoleBinding,
   getAllRoles, getPluginRoles, addCustomRole, removeCustomRole,
   getCustomBackends, addCustomBackend, removeCustomBackend,
   getDebugByDefault, setDebugByDefault,
@@ -1129,14 +1130,23 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
       tierBackend[t.tier] = getTierBackend(t.tier); // {kind, model, window?}
     }
     // roles = built-in + user-custom + plugin-owned (each {role,label,builtin?,plugin?}).
-    // Plugin roles carry their binding inline (read-only, live-derived); built-in
-    // and custom roles read their user-editable binding from the roleBackend store.
+    // A plugin role's binding is the EFFECTIVE binding: a valid user override
+    // from the roleBackend store if present, else the manifest binding (live,
+    // read-only). Built-in and custom roles read their user-editable binding
+    // from the store.
     const allRoles = getAllRoles();
     const pluginRoles = getPluginRoles();
     const roleBackend = {};
     for (const r of allRoles) {
-      const pr = r.plugin ? pluginRoles.find(p => p.role === r.role) : null;
-      roleBackend[r.role] = pr ? pr.binding : getRoleBinding(r.role); // {kind:'tier',tier} | {kind,model,window?}
+      if (r.plugin) {
+        const pr = pluginRoles.find(p => p.role === r.role);
+        const raw = getRoleBindingRaw(r.role);
+        roleBackend[r.role] = isValidRoleBinding(raw)
+          ? raw
+          : (pr ? pr.binding : { kind: 'tier', tier: getDefaultSpawnTier() });
+      } else {
+        roleBackend[r.role] = getRoleBinding(r.role);
+      }
     }
     return { providers: PROVIDERS, backends: MODEL_FAMILIES, onOverage: getOnOverageAction(),
       overageThreshold: getOverageThreshold(),
@@ -1182,9 +1192,9 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
       }
       if (roleBackend !== undefined) {
         // backend is a tier binding {kind:'tier',tier} or a {kind,model} custom
-        // backend. setRoleBinding validates the role is built-in or custom (a
-        // plugin/unknown role, or a bad binding, throws 400) — so no isKnownRole
-        // precheck here; the store is the single source of truth.
+        // backend. setRoleBinding validates the role is built-in, custom, or a
+        // plugin role (an unknown role, or a bad binding, throws 400) — so no
+        // isKnownRole precheck here; the store is the single source of truth.
         if (!roleBackend || typeof roleBackend !== 'object' || typeof roleBackend.role !== 'string') {
           return res.status(400).json({ error: 'roleBackend must be {role, backend}' });
         }

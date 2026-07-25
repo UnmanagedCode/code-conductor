@@ -279,6 +279,47 @@ describe('role → {kind,model} resolution (MCP spawn)', () => {
       assert.equal(inst.model, expected.model, 'dead plugin model must not pass through — fall back to the default spawn tier');
     } finally { setPluginRolesProvider(null); }
   });
+
+  test('a user override of a plugin role wins at spawn; re-selecting the manifest model reverts', async () => {
+    setPluginRolesProvider(() => [{ role: 'myplug/scribe', label: 'Scribe', binding: { kind: 'claude', model: 'claude-haiku-4-5' }, plugin: 'myplug' }]);
+    try {
+      await setRoleBinding('myplug/scribe', { kind: 'claude', model: 'claude-opus-4-8' }); // override
+      await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
+      const spawned = await callTool('spawn_instance', { project: 'p', mode: 'bypassPermissions', model: 'myplug/scribe' });
+      await waitFor(() => instances.idsForSession(spawned.sessionId).length > 0);
+      const inst = instances.get(instances.idsForSession(spawned.sessionId)[0]);
+      assert.equal(inst.backendKind, 'claude');
+      assert.equal(inst.model, 'claude-opus-4-8', 'override beats the manifest haiku binding');
+      // Revert by re-selecting the manifest model in the same picker (no reset).
+      await setRoleBinding('myplug/scribe', { kind: 'claude', model: 'claude-haiku-4-5' });
+      const spawned2 = await callTool('spawn_instance', { project: 'p', mode: 'bypassPermissions', model: 'myplug/scribe' });
+      await waitFor(() => instances.idsForSession(spawned2.sessionId).length > 0);
+      const inst2 = instances.get(instances.idsForSession(spawned2.sessionId)[0]);
+      assert.equal(inst2.model, 'claude-haiku-4-5', 're-selecting the manifest model reverts');
+    } finally { setPluginRolesProvider(null); }
+  });
+
+  test('a stored override is ignored while the plugin is disabled (spawn refuses BAD_MODEL)', async () => {
+    // Enable the plugin, store an override, then disable: the role is no longer
+    // resolvable, so the override must NOT rescue it — spawn refuses. (The
+    // override key is retained in the per-test settings store; no cleanup needed.)
+    setPluginRolesProvider(() => [{ role: 'myplug/scribe', label: 'Scribe', binding: { kind: 'claude', model: 'claude-haiku-4-5' }, plugin: 'myplug' }]);
+    await setRoleBinding('myplug/scribe', { kind: 'claude', model: 'claude-opus-4-8' });
+    setPluginRolesProvider(() => []); // disable
+    try {
+      await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
+      const res = await fetch(baseUrl + '/mcp', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1002, method: 'tools/call', params: { name: 'spawn_instance', arguments: { project: 'p', mode: 'bypassPermissions', model: 'myplug/scribe' } } }),
+      });
+      const body = await res.json();
+      assert.equal(body.result.isError, true, JSON.stringify(body));
+      assert.match(body.result.content[0].text, /unknown model/);
+    } finally {
+      setPluginRolesProvider(null);
+    }
+  });
 });
 
 describe('setModel live-switch gate', () => {

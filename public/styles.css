@@ -1559,7 +1559,6 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
   flex: 0 0 auto; font-size: 11px; color: var(--muted);
   border: 1px solid var(--border); border-radius: 6px; padding: 1px 6px;
 }
-.sm-role-binding-readonly { flex: 1 1 auto; min-width: 0; font-size: 13px; color: var(--muted); }
 .sm-role-form { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
 .sm-role-form input { flex: 1 1 120px; min-width: 0; }
 .sm-role-form select { flex: 0 0 auto; }

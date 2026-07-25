@@ -322,7 +322,7 @@ export async function setTierBackend(tier, backend) {
 // ({kind:'tier', tier}) or a custom {kind, model} backend (same shape a tier
 // binds to). A tier binding validates via isKnownTier; a custom binding via
 // isValidBinding.
-function isValidRoleBinding(b) {
+export function isValidRoleBinding(b) {
   if (b && typeof b === 'object' && b.kind === 'tier') return isKnownTier(b.tier);
   return isValidBinding(b);
 }
@@ -346,6 +346,15 @@ function canonicalCustomRole(role) {
   const lc = String(role).toLowerCase();
   return getCustomRoles().find(r => r.toLowerCase() === lc);
 }
+// The canonical STORED name for a plugin role (the exact '<plugin-id>/<slug>'
+// id from the live provider), matched case-insensitively, or undefined. Used
+// by setRoleBinding so a case-variant override targets the same roleBackend
+// key as a canonical one (parity with the built-in/custom canonicalization
+// above).
+function canonicalPluginRole(role) {
+  const lc = String(role).toLowerCase();
+  return getPluginRoles().find(r => r.role.toLowerCase() === lc)?.role;
+}
 
 // Stored role binding for a built-in or custom role (revert dead/invalid binding
 // to the role default on read, like getTierBackend). A tier binding whose tier
@@ -358,12 +367,25 @@ export function getRoleBinding(role) {
   return isValidRoleBinding(stored) ? stored : defaultRoleBinding(role);
 }
 
+// The RAW stored role binding (no validity check, no default fallback) —
+// undefined when no key is stored. Unlike getRoleBinding (which injects a
+// defaultRoleBinding for a plugin role, since plugin roles have no catalog
+// default), this lets a caller detect "is an override stored at all" and read
+// an override to validate/resolve itself. Used for plugin-role overrides in
+// resolveRoleBackend and the Settings payload.
+export function getRoleBindingRaw(role) {
+  const s = loadSync();
+  return s.models?.roleBackend?.[role];
+}
+
 export async function setRoleBinding(role, binding) {
   // Canonicalize to the stored name so a case-variant rebind updates the same
-  // roleBackend key rather than creating a duplicate.
-  const canonical = canonicalBuiltinRole(role) ?? canonicalCustomRole(role);
+  // roleBackend key rather than creating a duplicate. Plugin roles are included
+  // — a user override of a plugin role's manifest binding is persisted under
+  // its exact '<plugin-id>/<slug>' id and beats the manifest at resolve time.
+  const canonical = canonicalBuiltinRole(role) ?? canonicalCustomRole(role) ?? canonicalPluginRole(role);
   if (!canonical || !isValidRoleBinding(binding)) {
-    throw Object.assign(new Error('roleBackend must name a built-in or custom role and be a known tier binding {kind:"tier",tier} or a {kind,model} backend'), { statusCode: 400 });
+    throw Object.assign(new Error('roleBackend must name a built-in, custom, or plugin role and be a known tier binding {kind:"tier",tier} or a {kind,model} backend'), { statusCode: 400 });
   }
   const stored = binding.kind === 'tier'
     ? { kind: 'tier', tier: binding.tier }
@@ -378,12 +400,24 @@ export async function setRoleBinding(role, binding) {
 // Resolve a role to a concrete {kind, model}. Role NAME matching is
 // case-insensitive. A tier binding delegates to getTierBackend (so a
 // role→tier→dead-custom chain still reverts correctly); a custom binding is
-// returned directly. Plugin roles resolve from their live manifest binding
-// (never persisted), so they vanish when the plugin is disabled.
+// returned directly. A plugin role resolves to its manifest binding by default,
+// but a USER OVERRIDE persisted in roleBackend (keyed by the exact
+// '<plugin-id>/<slug>' id) takes precedence — and is itself validity-guarded
+// here, so a dead override (retired Claude model / removed Ollama tag) silently
+// falls back to the manifest binding rather than spawn a broken id. The manifest
+// binding is live-derived (never persisted), so the role vanishes when the
+// plugin is disabled; a stored override is retained across disable→re-enable
+// (no purge) and simply re-applies when the plugin returns.
 export function resolveRoleBackend(role) {
   const lc = String(role).toLowerCase();
   const pluginRole = getPluginRoles().find(r => r.role.toLowerCase() === lc);
   if (pluginRole) {
+    // User override beats the manifest binding. Looked up by the canonical
+    // plugin role id (pluginRole.role), matching the key setRoleBinding stores.
+    const override = getRoleBindingRaw(pluginRole.role);
+    if (isValidRoleBinding(override)) {
+      return override.kind === 'tier' ? getTierBackend(override.tier) : persistBinding(override);
+    }
     const b = pluginRole.binding;
     if (b.kind === 'tier') return getTierBackend(b.tier);
     // A plugin claude binding is validated at manifest load, but the model
@@ -395,8 +429,16 @@ export function resolveRoleBackend(role) {
     }
     return persistBinding(b);
   }
-  // Canonicalize to the stored (built-in/custom) name for the roleBackend lookup.
-  const canonical = canonicalBuiltinRole(role) ?? canonicalCustomRole(role) ?? role;
+  // Built-in / custom role: canonicalize to the stored name for the roleBackend
+  // lookup. A name that is neither (an unknown role, or a plugin role whose
+  // plugin is currently disabled) is NOT resolvable here — isResolvableRole is
+  // the gate the spawn ladder checks, so this branch is only reached for a live
+  // built-in/custom role. Falling back to the default spawn tier (rather than
+  // reading a stale stored override for a disabled plugin role) keeps a
+  // non-resolvable name from leaking an override; the never-throws contract is
+  // preserved (matches the pre-existing unknown-role fallback).
+  const canonical = canonicalBuiltinRole(role) ?? canonicalCustomRole(role);
+  if (!canonical) return getTierBackend(getDefaultSpawnTier());
   const b = getRoleBinding(canonical);
   return b.kind === 'tier' ? getTierBackend(b.tier) : persistBinding(b);
 }

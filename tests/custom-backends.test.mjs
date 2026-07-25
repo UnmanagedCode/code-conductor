@@ -10,7 +10,7 @@ import { bootServer, api, freshProjectsRoot, rmrf } from './helpers.mjs';
 import {
   addCustomBackend, getCustomBackends, removeCustomBackend, isKnownOllamaModel,
   getTierBackend, setTierBackend, getOllamaContextWindow,
-  getRoleBinding, setRoleBinding, resolveRoleBackend,
+  getRoleBinding, setRoleBinding, resolveRoleBackend, setPluginRolesProvider,
 } from '../src/appSettings.js';
 import { familyOf, canonicalizeModel, isKnownClaudeModel, PROVIDERS, DEFAULT_TIER_BACKEND, DEFAULT_ROLE_BINDING } from '../src/modelVersions.js';
 import { isOllamaSession, getOllamaSession, markOllamaSession, unmarkOllamaSession, loadAll } from '../src/sessionBackends.js';
@@ -280,6 +280,39 @@ describe('models settings routes', () => {
   test('the removed POST /settings/models version route is gone (404)', async () => {
     const r = await api(baseUrl, 'POST', '/api/settings/models', { backend: 'opus', version: 'claude-opus-4-8' });
     assert.equal(r.status, 404);
+  });
+
+  test('plugin role: /prefs stores an override (beats manifest); GET reflects the effective binding', async () => {
+    setPluginRolesProvider(() => [{ role: 'p/cap', label: 'Cap', binding: { kind: 'tier', tier: 'fast' }, plugin: 'p' }]);
+    try {
+      // Default (no override): effective binding is the manifest binding.
+      const g0 = await api(baseUrl, 'GET', '/api/settings/models');
+      const r0 = g0.body.roles.find(r => r.role === 'p/cap');
+      assert.ok(r0 && r0.plugin === 'p', 'plugin role present in list');
+      assert.deepEqual(g0.body.roleBackend['p/cap'], { kind: 'tier', tier: 'fast' }); // manifest
+
+      // /prefs accepts a plugin role (was 400 when read-only) → override persisted.
+      const ok = await api(baseUrl, 'POST', '/api/settings/models/prefs', { roleBackend: { role: 'p/cap', backend: { kind: 'tier', tier: 'powerful' } } });
+      assert.equal(ok.status, 200, JSON.stringify(ok.body));
+      assert.deepEqual(ok.body.roleBackend['p/cap'], { kind: 'tier', tier: 'powerful' });
+      assert.deepEqual(resolveRoleBackend('p/cap'), getTierBackend('powerful')); // override beats manifest
+
+      // A custom Ollama override round-trips too (Ollama tags are user-local but
+      // a user override — unlike the manifest — may bind to one).
+      const ollama = await api(baseUrl, 'POST', '/api/settings/models/prefs', { roleBackend: { role: 'p/cap', backend: { kind: 'ollama', model: 'deepseek-v4-flash:cloud' } } });
+      assert.equal(ollama.status, 200, JSON.stringify(ollama.body));
+      assert.deepEqual(ollama.body.roleBackend['p/cap'], { kind: 'ollama', model: 'deepseek-v4-flash:cloud' });
+      assert.deepEqual(resolveRoleBackend('p/cap'), { kind: 'ollama', model: 'deepseek-v4-flash:cloud' });
+
+      // Reverting is done by re-selecting the manifest tier in the picker (no
+      // reset endpoint) — rebinding to the manifest tier restores it.
+      const revert = await api(baseUrl, 'POST', '/api/settings/models/prefs', { roleBackend: { role: 'p/cap', backend: { kind: 'tier', tier: 'fast' } } });
+      assert.equal(revert.status, 200);
+      assert.deepEqual(revert.body.roleBackend['p/cap'], { kind: 'tier', tier: 'fast' });
+      assert.deepEqual(resolveRoleBackend('p/cap'), getTierBackend('fast'));
+    } finally {
+      setPluginRolesProvider(null);
+    }
   });
 
   test('POST /settings/models/custom (no host) fails preflight when Ollama is down', async () => {
