@@ -237,22 +237,29 @@ export function installPluginManager({ onCatalogChange } = {}) {
       const usable = !['invalid', 'incompatible', 'conflict'].includes(row.state);
       if (usable) {
         if (!row.enabled) {
-          actions.appendChild(btn('Enable', () => act(`Enabling ${row.id}`, () => api('POST', `/api/plugins/${row.id}/enable`))));
+          const enableBtn = btn('Enable', () => act(`Enabling ${row.id}`, () => api('POST', `/api/plugins/${row.id}/enable`)));
+          enableBtn.className = 'pl-toggle-enable';
+          actions.appendChild(enableBtn);
         } else {
           // A backendless (conventions-only) plugin has no process lifecycle —
           // no Start/Stop/version, only Disable.
+          const actionsRow = document.createElement('div');
+          actionsRow.className = 'pl-actions-row';
           if (row.hasBackend) {
             if (row.state === 'ready' || row.state === 'starting') {
-              actions.appendChild(btn('Stop', () => act(`Stopping ${row.id}`, () => api('POST', `/api/plugins/${row.id}/stop`))));
+              actionsRow.appendChild(btn('Stop', () => act(`Stopping ${row.id}`, () => api('POST', `/api/plugins/${row.id}/stop`))));
               if (row.state === 'ready' && row.stale) {
-                actions.appendChild(btn('Restart', () => act(`Restarting ${row.id}`, () => api('POST', `/api/plugins/${row.id}/restart`))));
+                actionsRow.appendChild(btn('Restart', () => act(`Restarting ${row.id}`, () => api('POST', `/api/plugins/${row.id}/restart`))));
               }
             } else {
-              actions.appendChild(btn('Start', () => act(`Starting ${row.id}`, () => api('POST', `/api/plugins/${row.id}/start`))));
+              actionsRow.appendChild(btn('Start', () => act(`Starting ${row.id}`, () => api('POST', `/api/plugins/${row.id}/start`))));
             }
+            actionsRow.appendChild(versionSelect(row, worktrees[row.project] || []));
           }
-          actions.appendChild(btn('Disable', () => act(`Disabling ${row.id}`, () => api('POST', `/api/plugins/${row.id}/disable`))));
-          if (row.hasBackend) actions.appendChild(versionSelect(row, worktrees[row.project] || []));
+          if (actionsRow.childElementCount > 0) actions.appendChild(actionsRow);
+          const disableBtn = btn('Disable', () => act(`Disabling ${row.id}`, () => api('POST', `/api/plugins/${row.id}/disable`)));
+          disableBtn.className = 'pl-toggle-disable';
+          actions.appendChild(disableBtn);
         }
       }
       if (actions.childElementCount > 0) li.appendChild(actions);
