@@ -1,4 +1,5 @@
 import express from 'express';
+import { regenerateAllProjectConventions } from '../projectClaudeMd.js';
 
 // REST surface for the plugin system — thin delegations to the registry
 // (src/plugins/registry.js), which is the shared service layer for REST,
@@ -63,12 +64,26 @@ export function buildPluginApi({ pluginHost, pluginLibrary } = {}) {
     try { res.json(await pluginHost.rescan()); } catch (e) { next(e); }
   });
 
+  // Enable/disable can change which project conventions the catalog offers
+  // (a plugin contributes conventions via setPluginConventionsProvider), so
+  // fan out to refresh every referencing project's CONVENTIONS.md — exactly as
+  // the project custom-convention CRUD routes do in src/routes.js. No-op-safe:
+  // a disable makes the plugin's slugs unresolvable ⇒ referencing projects are
+  // skipped (frozen), never blanked; an enable re-resolves them ⇒ refresh.
   r.post('/:id/enable', async (req, res, next) => {
-    try { res.json(await pluginHost.enable(req.params.id)); } catch (e) { next(e); }
+    try {
+      const result = await pluginHost.enable(req.params.id);
+      await regenerateAllProjectConventions();
+      res.json(result);
+    } catch (e) { next(e); }
   });
 
   r.post('/:id/disable', async (req, res, next) => {
-    try { res.json(await pluginHost.disable(req.params.id)); } catch (e) { next(e); }
+    try {
+      const result = await pluginHost.disable(req.params.id);
+      await regenerateAllProjectConventions();
+      res.json(result);
+    } catch (e) { next(e); }
   });
 
   r.post('/:id/start', async (req, res, next) => {
