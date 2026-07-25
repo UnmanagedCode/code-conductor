@@ -12,7 +12,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { orchStoreRoot, writeFileAtomic } from './projects.js';
 import { CAPABILITY_TIERS, DEFAULT_TIER_BACKEND, isKnownTier, isKnownClaudeModel,
-  DEFAULT_ROLE_BINDING, isKnownRole, sonnetWindowSelectable } from './modelVersions.js';
+  ROLES, DEFAULT_ROLE_BINDING, isKnownRole, isKnownFamily, sonnetWindowSelectable } from './modelVersions.js';
 import { OLLAMA_CLOUD_MODELS, isKnownOllamaCloudModel } from './ollamaCloudModels.js';
 
 function settingsPath() {
@@ -327,35 +327,185 @@ function isValidRoleBinding(b) {
   return isValidBinding(b);
 }
 
-// Stored role binding (revert dead/invalid binding to the role default on read,
-// like getTierBackend). A tier binding whose tier vanished, or a custom binding
-// whose backend was removed, falls back to DEFAULT_ROLE_BINDING[role].
+// A role's fallback binding when nothing valid is stored. Built-in roles use
+// their catalog default; a custom role (no catalog default) falls back to the
+// current default spawn tier so it always resolves to a live backend.
+function defaultRoleBinding(role) {
+  return DEFAULT_ROLE_BINDING[role] ?? { kind: 'tier', tier: getDefaultSpawnTier() };
+}
+
+// Role NAME matching is case-insensitive (a spawn caller may type `MyRole` for a
+// role stored as `myrole`). Names are stored/displayed as the user typed them,
+// but matched and deduped by lowercase. These helpers return the canonical
+// STORED name (built-in or custom) for a case-insensitive lookup, or undefined.
+function canonicalBuiltinRole(role) {
+  const lc = String(role).toLowerCase();
+  return ROLES.find(r => r.role.toLowerCase() === lc)?.role;
+}
+function canonicalCustomRole(role) {
+  const lc = String(role).toLowerCase();
+  return getCustomRoles().find(r => r.toLowerCase() === lc);
+}
+
+// Stored role binding for a built-in or custom role (revert dead/invalid binding
+// to the role default on read, like getTierBackend). A tier binding whose tier
+// vanished, or a custom binding whose backend was removed, falls back to
+// defaultRoleBinding(role). NOT for plugin roles — resolveRoleBackend handles
+// those from the live provider binding.
 export function getRoleBinding(role) {
   const s = loadSync();
   const stored = s.models?.roleBackend?.[role];
-  return isValidRoleBinding(stored) ? stored : DEFAULT_ROLE_BINDING[role];
+  return isValidRoleBinding(stored) ? stored : defaultRoleBinding(role);
 }
 
 export async function setRoleBinding(role, binding) {
-  if (!isKnownRole(role) || !isValidRoleBinding(binding)) {
-    throw Object.assign(new Error('roleBackend must be a known tier binding {kind:"tier",tier} or a {kind,model} backend'), { statusCode: 400 });
+  // Canonicalize to the stored name so a case-variant rebind updates the same
+  // roleBackend key rather than creating a duplicate.
+  const canonical = canonicalBuiltinRole(role) ?? canonicalCustomRole(role);
+  if (!canonical || !isValidRoleBinding(binding)) {
+    throw Object.assign(new Error('roleBackend must name a built-in or custom role and be a known tier binding {kind:"tier",tier} or a {kind,model} backend'), { statusCode: 400 });
   }
   const stored = binding.kind === 'tier'
     ? { kind: 'tier', tier: binding.tier }
     : persistBinding(binding);
   const cur = loadSync();
-  const nextRoleBackend = { ...(cur.models?.roleBackend || {}), [role]: stored };
+  const nextRoleBackend = { ...(cur.models?.roleBackend || {}), [canonical]: stored };
   const next = { ...cur, models: { ...(cur.models || {}), roleBackend: nextRoleBackend } };
   await writeSettings(next);
   return nextRoleBackend;
 }
 
-// Resolve a role to a concrete {kind, model}. A tier binding delegates to
-// getTierBackend (so a role→tier→dead-custom chain still reverts correctly); a
-// custom binding is returned directly.
+// Resolve a role to a concrete {kind, model}. Role NAME matching is
+// case-insensitive. A tier binding delegates to getTierBackend (so a
+// role→tier→dead-custom chain still reverts correctly); a custom binding is
+// returned directly. Plugin roles resolve from their live manifest binding
+// (never persisted), so they vanish when the plugin is disabled.
 export function resolveRoleBackend(role) {
-  const b = getRoleBinding(role);
+  const lc = String(role).toLowerCase();
+  const pluginRole = getPluginRoles().find(r => r.role.toLowerCase() === lc);
+  if (pluginRole) {
+    const b = pluginRole.binding;
+    if (b.kind === 'tier') return getTierBackend(b.tier);
+    // A plugin claude binding is validated at manifest load, but the model
+    // catalog can move on (a Claude version retired) between that load and this
+    // resolve — never spawn a dead id. Mirror the custom-role fallback: revert to
+    // the default spawn tier's backend. (Ollama is never a plugin binding kind.)
+    if (b.kind === 'claude' && !isKnownClaudeModel(b.model)) {
+      return getTierBackend(getDefaultSpawnTier());
+    }
+    return persistBinding(b);
+  }
+  // Canonicalize to the stored (built-in/custom) name for the roleBackend lookup.
+  const canonical = canonicalBuiltinRole(role) ?? canonicalCustomRole(role) ?? role;
+  const b = getRoleBinding(canonical);
   return b.kind === 'tier' ? getTierBackend(b.tier) : persistBinding(b);
+}
+
+// ── Custom + plugin roles ────────────────────────────────────────────────
+// Plugin-owned roles are LIVE-DERIVED from enabled plugins (never persisted),
+// mirroring plugin conventions: the provider is injected by server.js
+// (`setPluginRolesProvider(() => pluginHost.roles())`) so this low-level store
+// never imports the plugin registry. Each entry: {role:'<plugin-id>/<slug>',
+// label, binding:{kind:'tier',tier}|{kind,model}, plugin:id}. Default [] keeps
+// tests / headless runs (no plugin host) working, and disabling a plugin drops
+// its roles automatically (the provider derives from enabled plugins).
+let pluginRolesProvider = () => [];
+export function setPluginRolesProvider(fn) {
+  pluginRolesProvider = typeof fn === 'function' ? fn : (() => []);
+}
+export function getPluginRoles() {
+  try {
+    const list = pluginRolesProvider();
+    return Array.isArray(list) ? list : [];
+  } catch { return []; }
+}
+
+// User custom roles: persisted as `models.customRoles: [name]` — a name-only
+// string list (no separate label; the name IS the display). The binding lives in
+// `models.roleBackend[name]` exactly like a built-in role, so binding edits reuse
+// setRoleBinding/getRoleBinding unchanged. A name is case-preserved but matched
+// case-insensitively; it must be disjoint (case-insensitively) from tiers /
+// built-in roles / family aliases / other custom + plugin roles. '/' is reserved
+// for plugin namespacing (the regex forbids it). This name rule is DELIBERATELY
+// distinct from the lowercase plugin-slug rule (manifest.js) — a custom role name
+// is a user-facing, case-preserving label, not a lowercase identifier slug.
+const CUSTOM_ROLE_RE = /^[A-Za-z][A-Za-z0-9-]*$/;
+const CUSTOM_ROLE_MAX = 40;
+
+export function getCustomRoles() {
+  const s = loadSync();
+  const list = s.models?.customRoles;
+  return Array.isArray(list) ? list.filter(r => typeof r === 'string' && r) : [];
+}
+
+// The full live role catalog: built-in + user custom + plugin-owned. Built-in and
+// plugin entries carry a display `label`; a custom entry is name-only ({role}).
+// Single source for the Settings payload and the resolution guard.
+export function getAllRoles() {
+  return [
+    ...ROLES.map(r => ({ role: r.role, label: r.label, builtin: true })),
+    ...getCustomRoles().map(role => ({ role })),
+    ...getPluginRoles().map(r => ({ role: r.role, label: r.label, plugin: r.plugin })),
+  ];
+}
+
+// True if a role name resolves to a backend today (built-in, custom, or a
+// currently-enabled plugin's role), matched case-insensitively. Used by
+// spawnInstance in place of the static isKnownRole so custom/plugin roles are
+// spawnable everywhere built-ins are.
+export function isResolvableRole(role) {
+  if (typeof role !== 'string' || !role) return false;
+  const lc = role.toLowerCase();
+  if (ROLES.some(r => r.role.toLowerCase() === lc)) return true;
+  if (getCustomRoles().some(r => r.toLowerCase() === lc)) return true;
+  return getPluginRoles().some(r => r.role.toLowerCase() === lc);
+}
+
+// Create a custom role (name-only). Binding defaults to the built-in `powerful`
+// tier; callers rebind afterwards via setRoleBinding. Rejects a name that
+// case-insensitively collides with a tier, built-in role, family alias, or an
+// existing custom role. (Plugin roles are always '<id>/<slug>' and CUSTOM_ROLE_RE
+// forbids '/', so a custom name can never equal a plugin role name — no guard
+// needed for that.)
+export async function addCustomRole({ role, binding } = {}) {
+  const name = String(role || '').trim();
+  if (!CUSTOM_ROLE_RE.test(name) || name.length > CUSTOM_ROLE_MAX) {
+    throw Object.assign(new Error('role must match ^[A-Za-z][A-Za-z0-9-]*$ (max 40 chars)'), { statusCode: 400 });
+  }
+  const lc = name.toLowerCase();
+  if (isKnownTier(lc) || isKnownRole(lc) || isKnownFamily(lc)) {
+    throw Object.assign(new Error(`name '${name}' collides with a built-in tier, role, or model family`), { statusCode: 400 });
+  }
+  if (getCustomRoles().some(r => r.toLowerCase() === lc)) {
+    throw Object.assign(new Error(`role '${name}' already exists`), { statusCode: 409 });
+  }
+  const b = binding ?? { kind: 'tier', tier: 'powerful' };
+  if (!isValidRoleBinding(b)) {
+    throw Object.assign(new Error('binding must be a known tier binding {kind:"tier",tier} or a {kind,model} backend'), { statusCode: 400 });
+  }
+  const stored = b.kind === 'tier' ? { kind: 'tier', tier: b.tier } : persistBinding(b);
+  const cur = loadSync();
+  const models = {
+    ...(cur.models || {}),
+    customRoles: [...getCustomRoles(), name],
+    roleBackend: { ...(cur.models?.roleBackend || {}), [name]: stored },
+  };
+  await writeSettings({ ...cur, models });
+  return { role: name };
+}
+
+// Remove a custom role and its binding (case-insensitive). Returns false if no
+// matching custom role.
+export async function removeCustomRole(role) {
+  const canonical = canonicalCustomRole(role);
+  if (canonical === undefined) return false;
+  const cur = loadSync();
+  const nextList = getCustomRoles().filter(r => r !== canonical);
+  const roleBackend = { ...(cur.models?.roleBackend || {}) };
+  delete roleBackend[canonical];
+  const models = { ...(cur.models || {}), customRoles: nextList, roleBackend };
+  await writeSettings({ ...cur, models });
+  return true;
 }
 
 // Models group: conductor compact window override. When enabled, sets

@@ -34,8 +34,8 @@ import { buildApprovePrompt, buildRejectPrompt } from '../planApproval.js';
 import { formatUserQuestionAnswers } from '../../public/userQuestionAnswers.js';
 import { getCatalog as getProjectConventionsCatalog, composeProjectConventionsBlock, composeProjectScaffold } from '../projectConventions.js';
 import { getCatalog as getConductorConventionsCatalog, getSelection as getConductorSelection } from '../conductorConventions.js';
-import { isKnownFamily, isKnownTier, isKnownRole, defaultVersion, familyOf } from '../modelVersions.js';
-import { getTierBackend, resolveRoleBackend, isKnownOllamaModel } from '../appSettings.js';
+import { isKnownFamily, isKnownTier, defaultVersion, familyOf } from '../modelVersions.js';
+import { getTierBackend, resolveRoleBackend, isResolvableRole, isKnownOllamaModel } from '../appSettings.js';
 import { textPayload } from './content.js';
 import { pageInstanceEvents } from '../eventArchive.js';
 import { parseNumstat, parseNameStatus, indexDiffLines, paginateDiff } from './diffPaging.js';
@@ -262,8 +262,10 @@ export async function spawnInstance(args, { instances, callerId }) {
   // Resolve `args.model` to a concrete {model, backendKind} pair:
   //   - a capability tier (fast/balanced/powerful/frontier) → its bound
   //     {kind, model} (a Claude version id, or an Ollama tag);
-  //   - a role → its resolved {kind, model} (a role binds to a tier or a
-  //     custom backend; disjoint name-space from tiers, so order is safe);
+  //   - a role → its resolved {kind, model} (built-in, user-custom, or a
+  //     plugin-owned role; a role binds to a tier or a custom backend; disjoint
+  //     name-space from tiers — custom names can't be tier/family aliases, plugin
+  //     names are '/'-namespaced — so order is safe);
   //   - a legacy family alias (opus/sonnet/haiku/fable) → that family's default
   //     Claude version, independent of any tier binding;
   //   - a known Ollama tag passed directly → {kind:'ollama'} (robustness);
@@ -281,7 +283,7 @@ export async function spawnInstance(args, { instances, callerId }) {
     backendKind = binding.kind;
     model = binding.model;
     sonnetWindow = binding.window;
-  } else if (model && isKnownRole(model)) {
+  } else if (model && isResolvableRole(model)) {
     const binding = resolveRoleBackend(model); // {kind, model, window?}
     backendKind = binding.kind;
     model = binding.model;

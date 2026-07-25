@@ -21,6 +21,7 @@ import { createPluginLibrary } from './src/plugins/library.js';
 import { buildPluginProxy } from './src/plugins/proxy.js';
 import { setPluginConventionsProvider } from './src/projectConventions.js';
 import { setPluginConductorConventionsProvider } from './src/conductorConventions.js';
+import { setPluginRolesProvider } from './src/appSettings.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -37,6 +38,10 @@ export function createServer({ withInstances = true, claudeLauncher } = {}) {
   if (pluginHost) {
     setPluginConventionsProvider(async () => (await pluginHost.conventions()).project);
     setPluginConductorConventionsProvider(async () => (await pluginHost.conventions()).conductor);
+    // Plugin-owned roles are live-derived from enabled plugins (sync — a role
+    // binding is inline in the manifest, no fragment file). This lets spawn
+    // resolution recognise <plugin-id>/<slug> roles and drops them on disable.
+    setPluginRolesProvider(() => pluginHost.roles());
     // A plugin's conductor conventions are on-by-default while it's enabled
     // (getSelection derives them from the live catalog), so enable/disable only
     // needs to regenerate .conduct/CONDUCT.md — gated so a backend/project-only

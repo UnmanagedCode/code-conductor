@@ -140,8 +140,13 @@
             <ul id="sm-tier-list" class="sm-family-list"></ul>
             <fieldset class="sm-group sm-roles">
               <legend>Roles</legend>
-              <p class="settings-hint">A role binds to a capability tier (follows whatever that tier points at) or a <strong>Custom</strong> backend. Spawn callers resolve a role to its backend — the Conduct button uses the <strong>Conductor</strong> role.</p>
+              <p class="settings-hint">A role binds to a capability tier (follows whatever that tier points at) or a <strong>Custom</strong> backend. Spawn callers (MCP <code>spawn_instance</code>'s <code>model</code>) resolve a role to its backend (case-insensitively) — the Conduct button uses the <strong>Conductor</strong> role. Add your own <strong>custom roles</strong> below (they start on the Powerful tier — rebind with the row's picker); <strong>plugin</strong>-contributed roles are read-only and disappear when the plugin is disabled.</p>
               <ul id="sm-role-list" class="sm-role-list"></ul>
+              <div class="sm-role-form">
+                <input id="sm-role-name" type="text" placeholder="Role name (e.g. tester)" autocomplete="off" />
+                <button type="button" id="sm-role-add" class="btn">Add role</button>
+              </div>
+              <div id="sm-role-status" class="st-status" aria-live="polite"></div>
             </fieldset>
             <fieldset class="sm-group sm-custom">
               <legend>Custom models (Ollama)</legend>

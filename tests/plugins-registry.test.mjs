@@ -522,3 +522,33 @@ test('conventions() partitions project- and conductor-scope entries with no cros
     await env.restore();
   }
 });
+
+test('roles(): only enabled+ok plugins contribute, namespaced; disable drops them; describeRow carries roles', async () => {
+  const env = await makePluginRoot();
+  try {
+    const manifest = {
+      id: 'roleplug', name: 'Role Plugin', version: '1.0.0', pluginApi: 1,
+      roles: [
+        { slug: 'captain', name: 'Captain', binding: { kind: 'tier', tier: 'powerful' } },
+        { slug: 'scribe', name: 'Scribe', binding: { kind: 'claude', model: 'claude-opus-4-8' } },
+      ],
+    };
+    await env.addPluginProject('roleplug', { manifest, withFixtureFiles: false });
+    const host = createPluginHost();
+    await host.list(); // ensureInit + discovery
+    // Disabled → no roles.
+    assert.deepEqual(host.roles(), []);
+    await host.enable('roleplug');
+    const roles = host.roles();
+    assert.deepEqual(roles.map(r => r.role), ['roleplug/captain', 'roleplug/scribe']);
+    assert.deepEqual(roles[0], { role: 'roleplug/captain', label: 'Captain', binding: { kind: 'tier', tier: 'powerful' }, plugin: 'roleplug' });
+    // describeRow surfaces the roles for the Plugins-UI badge.
+    const row = (await host.list()).find(r => r.id === 'roleplug');
+    assert.deepEqual(row.roles, [{ slug: 'roleplug/captain', name: 'Captain' }, { slug: 'roleplug/scribe', name: 'Scribe' }]);
+    // Disable → roles vanish automatically (no purge).
+    await host.disable('roleplug');
+    assert.deepEqual(host.roles(), []);
+  } finally {
+    await env.restore();
+  }
+});

@@ -17,6 +17,9 @@ import {
   getEnabledTiers, setTierEnabled,
   getDefaultSpawnTier, setDefaultSpawnTier,
   getTierBackend, setTierBackend, getRoleBinding, setRoleBinding, isKnownOllamaModel,
+  getAllRoles, isResolvableRole, resolveRoleBackend,
+  getCustomRoles, addCustomRole, removeCustomRole,
+  addCustomBackend, removeCustomBackend, setPluginRolesProvider,
 } from '../src/appSettings.js';
 
 async function mkTmp() {
@@ -687,5 +690,156 @@ test('POST /api/settings/models/prefs rejects unknown tier or backend in tierBac
     assert.equal(badTier.status, 400);
     const badBackend = await api(baseUrl, 'POST', '/api/settings/models/prefs', { tierBackend: { tier: 'fast', backend: { kind: 'claude', model: 'nope' } } });
     assert.equal(badBackend.status, 400);
+  }
+});
+
+// ── custom roles (appSettings) ──────────────────────────────────────────
+test('appSettings: addCustomRole is name-only, defaults to powerful, and is seen by getAllRoles/isResolvableRole/resolveRoleBackend', async () => {
+  const root = await mkTmp();
+  try {
+    await withEnv({ PROJECTS_ROOT: root }, async () => {
+      // No binding given → defaults to the powerful tier.
+      assert.deepEqual(await addCustomRole({ role: 'tester' }), { role: 'tester' });
+      assert.deepEqual(getCustomRoles(), ['tester']); // name-only string list
+      assert.deepEqual(getRoleBinding('tester'), { kind: 'tier', tier: 'powerful' });
+      assert.ok(isResolvableRole('tester'));
+      assert.deepEqual(resolveRoleBackend('tester'), getTierBackend('powerful'));
+      const all = getAllRoles();
+      assert.ok(all.some(r => r.role === 'conductor' && r.builtin === true && r.label));
+      // Custom entries are name-only — no label field.
+      const custom = all.find(r => r.role === 'tester');
+      assert.ok(custom && !custom.builtin && !custom.plugin && custom.label === undefined);
+      // An explicit binding is honored when provided.
+      await addCustomRole({ role: 'claudey', binding: { kind: 'claude', model: 'claude-haiku-4-5' } });
+      assert.deepEqual(getRoleBinding('claudey'), { kind: 'claude', model: 'claude-haiku-4-5' });
+    });
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test('appSettings: addCustomRole rejects reserved names, bad names, and bad bindings (case-insensitive collisions)', async () => {
+  const root = await mkTmp();
+  try {
+    await withEnv({ PROJECTS_ROOT: root }, async () => {
+      await assert.rejects(() => addCustomRole({ role: 'fast' }), /collides/);       // capability tier
+      await assert.rejects(() => addCustomRole({ role: 'Fast' }), /collides/);       // tier, different case
+      await assert.rejects(() => addCustomRole({ role: 'Reviewer' }), /collides/);   // built-in role, different case
+      await assert.rejects(() => addCustomRole({ role: 'OPUS' }), /collides/);        // family alias, different case
+      await assert.rejects(() => addCustomRole({ role: 'Bad Name' }), /must match/);  // space
+      await assert.rejects(() => addCustomRole({ role: 'plug/in' }), /must match/);   // '/' reserved
+      await assert.rejects(() => addCustomRole({ role: 'x', binding: { kind: 'claude', model: 'nope' } }), /binding/);
+      await addCustomRole({ role: 'Tester' });                                       // mixed case preserved
+      assert.deepEqual(getCustomRoles(), ['Tester']);
+      await assert.rejects(() => addCustomRole({ role: 'tester' }), /already exists/); // case-insensitive dupe
+    });
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test('appSettings: role NAME matching is case-insensitive for resolve + rebind', async () => {
+  const root = await mkTmp();
+  try {
+    await withEnv({ PROJECTS_ROOT: root }, async () => {
+      await addCustomRole({ role: 'MyRole' }); // stored case-preserved
+      assert.ok(isResolvableRole('myrole'));
+      assert.ok(isResolvableRole('MYROLE'));
+      // Resolve by a different case → same binding as the stored name.
+      assert.deepEqual(resolveRoleBackend('myrole'), getTierBackend('powerful'));
+      // Rebind by a different case updates the SAME key (no duplicate).
+      await setRoleBinding('myrole', { kind: 'tier', tier: 'fast' });
+      assert.deepEqual(getCustomRoles(), ['MyRole']);
+      assert.deepEqual(getRoleBinding('MyRole'), { kind: 'tier', tier: 'fast' });
+      // Built-in role rebind is also case-insensitive.
+      await setRoleBinding('Reviewer', { kind: 'tier', tier: 'fast' });
+      assert.deepEqual(getRoleBinding('reviewer'), { kind: 'tier', tier: 'fast' });
+    });
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test('appSettings: setRoleBinding rebinds a custom role; removeCustomRole cleans the binding (case-insensitive)', async () => {
+  const root = await mkTmp();
+  try {
+    await withEnv({ PROJECTS_ROOT: root }, async () => {
+      await addCustomRole({ role: 'tester', binding: { kind: 'claude', model: 'claude-opus-4-8' } });
+      await setRoleBinding('tester', { kind: 'tier', tier: 'balanced' });
+      assert.deepEqual(getRoleBinding('tester'), { kind: 'tier', tier: 'balanced' });
+      // Remove by a different case drops the role AND its binding; idempotent.
+      assert.equal(await removeCustomRole('TESTER'), true);
+      assert.equal(getCustomRoles().length, 0);
+      assert.ok(!isResolvableRole('tester'));
+      assert.equal(await removeCustomRole('tester'), false);
+    });
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test('appSettings: a custom role whose Ollama backend is removed falls back to the default spawn tier', async () => {
+  const root = await mkTmp();
+  try {
+    await withEnv({ PROJECTS_ROOT: root }, async () => {
+      await addCustomBackend({ label: 'Local', model: 'local:tag' });
+      await addCustomRole({ role: 'tester', binding: { kind: 'ollama', model: 'local:tag' } });
+      assert.deepEqual(getRoleBinding('tester'), { kind: 'ollama', model: 'local:tag' });
+      await removeCustomBackend('local:tag'); // binding now dead
+      assert.deepEqual(getRoleBinding('tester'), { kind: 'tier', tier: getDefaultSpawnTier() });
+    });
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test('appSettings: plugin roles resolve via the injected provider (case-insensitive) and are read-only', async () => {
+  const root = await mkTmp();
+  try {
+    await withEnv({ PROJECTS_ROOT: root }, async () => {
+      setPluginRolesProvider(() => [{ role: 'p/cap', label: 'Cap', binding: { kind: 'tier', tier: 'fast' }, plugin: 'p' }]);
+      try {
+        assert.ok(isResolvableRole('P/CAP'));
+        assert.deepEqual(resolveRoleBackend('P/Cap'), getTierBackend('fast'));
+        assert.ok(getAllRoles().some(r => r.role === 'p/cap' && r.plugin === 'p'));
+        // A plugin role is not user-settable (namespaced, live-derived).
+        await assert.rejects(() => setRoleBinding('p/cap', { kind: 'tier', tier: 'powerful' }));
+        // A custom name can never equal a plugin role name: plugin roles are
+        // '<id>/<slug>' and the custom-name format rule forbids '/', so this is
+        // rejected by the name-format rule (not a plugin-collision guard).
+        await assert.rejects(() => addCustomRole({ role: 'p/cap' }), /must match/);
+      } finally {
+        setPluginRolesProvider(null); // restore default (no plugin host in this file)
+      }
+    });
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+// ── custom roles (REST) ─────────────────────────────────────────────────
+test('roles CRUD: POST creates name-only (defaults powerful), prefs rebinds, DELETE removes; GET merges', async () => {
+  {  // shared server (before/after) + fresh PROJECTS_ROOT per test (beforeEach)
+    const c = await api(baseUrl, 'POST', '/api/settings/models/roles', { role: 'tester' });
+    assert.equal(c.status, 201, JSON.stringify(c.body));
+    assert.deepEqual(c.body.added, { role: 'tester' });
+    const row = c.body.roles.find(r => r.role === 'tester');
+    assert.ok(row && !row.builtin && !row.plugin && row.label === undefined); // name-only
+    assert.deepEqual(c.body.roleBackend.tester, { kind: 'tier', tier: 'powerful' }); // default binding
+    // Duplicate (case-insensitive) → 409; reserved name → 400.
+    assert.equal((await api(baseUrl, 'POST', '/api/settings/models/roles', { role: 'Tester' })).status, 409);
+    assert.equal((await api(baseUrl, 'POST', '/api/settings/models/roles', { role: 'fast' })).status, 400);
+    // Rebind a custom role via the shared prefs path (built-in parity).
+    const rb = await api(baseUrl, 'POST', '/api/settings/models/prefs', { roleBackend: { role: 'tester', backend: { kind: 'claude', model: 'claude-opus-4-8' } } });
+    assert.equal(rb.status, 200);
+    assert.deepEqual(rb.body.roleBackend.tester, { kind: 'claude', model: 'claude-opus-4-8' });
+    // No PATCH endpoint anymore (label was dropped).
+    assert.equal((await api(baseUrl, 'PATCH', '/api/settings/models/roles/tester', { label: 'QA' })).status, 404);
+    // Delete a custom role; deleting a built-in → 400; unknown → 404.
+    const d = await api(baseUrl, 'DELETE', '/api/settings/models/roles/tester');
+    assert.equal(d.status, 200);
+    assert.ok(!d.body.roles.some(r => r.role === 'tester'));
+    assert.equal((await api(baseUrl, 'DELETE', '/api/settings/models/roles/reviewer')).status, 400);
+    // A case-variant of a built-in is still "known" → 400, not a 404 miss.
+    assert.equal((await api(baseUrl, 'DELETE', '/api/settings/models/roles/Reviewer')).status, 400);
+    assert.equal((await api(baseUrl, 'DELETE', '/api/settings/models/roles/ghost')).status, 404);
+  }
+});
+
+test('GET /api/settings/models roles list carries built-in flags', async () => {
+  {  // shared server (before/after) + fresh PROJECTS_ROOT per test (beforeEach)
+    const r = await api(baseUrl, 'GET', '/api/settings/models');
+    assert.equal(r.status, 200);
+    const conductor = r.body.roles.find(x => x.role === 'conductor');
+    assert.equal(conductor.builtin, true);
+    assert.deepEqual(r.body.roleBackend.conductor, { kind: 'tier', tier: 'powerful' });
   }
 });
