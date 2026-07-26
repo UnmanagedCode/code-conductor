@@ -849,9 +849,13 @@ export class Instance extends EventEmitter {
     }
     // INVARIANT: the ring and the live feed share ONE object. Anything stamped
     // onto `wrapped` above (userIndex, estimatedTokens) must be set BEFORE this
-    // point, and neither line may take a copy — cloning for the ring, or
-    // stamping after push(), would silently drop the field from the live frame
-    // while every snapshot-based test still passed.
+    // point, and neither line may take a copy. The field a copy would cost is
+    // `_seq`: push() assigns it to the object it receives (see EventLog.push),
+    // so cloning for the ring leaves the live frame with `_seq: undefined` and
+    // breaks the monotonic-`_seq` contract the `event` message relies on for
+    // idempotent merge (docs/protocol.md). A stamp placed between push() and
+    // emit() still reaches both — it is the same object — so only one placed
+    // after emit() would miss the WS frame.
     this.ring.push(wrapped); // stamps wrapped._seq
     this.emit('event', wrapped);
   }
