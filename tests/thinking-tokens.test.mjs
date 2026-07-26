@@ -85,6 +85,23 @@ test('ThinkingBlock: updateThinkingTokens no-ops after markRedacted', () => {
   assert.equal(block.node.textContent, 'thinking (redacted)');
 });
 
+test('ThinkingBlock: markRedacted(n) seeds the count when no live counters ran', () => {
+  setupDOM();
+  const block = new ThinkingBlock();
+  // Never saw updateThinkingTokens — this is the re-subscribe/replay shape,
+  // where the count arrives stamped on the thinking_redacted event instead.
+  block.markRedacted(1200);
+  assert.equal(block.node.textContent, 'thinking (redacted, ~1,200 tokens)');
+});
+
+test('ThinkingBlock: markRedacted(null) keeps the live-streamed count', () => {
+  setupDOM();
+  const block = new ThinkingBlock();
+  block.updateThinkingTokens(640);
+  block.markRedacted(null);
+  assert.equal(block.node.textContent, 'thinking (redacted, ~640 tokens)');
+});
+
 test('ThinkingBlock: finalize after markRedacted is a no-op', () => {
   setupDOM();
   const block = new ThinkingBlock();
@@ -195,6 +212,66 @@ test('Conversation: redacted path — no tokens gives plain label', () => {
 
   const block = conv.blocksByKey.get(`${msgId}:0:thinking`);
   assert.equal(block.node.textContent, 'thinking (redacted)');
+});
+
+// ── Re-subscribe / replay of a CLOSED block ──────────────────────────────────
+// Switching sessions (or refreshing) re-subscribes and rebuilds the DOM from
+// the ring tail. The per-token thinking_tokens frames are never retained, so a
+// closed redacted block replays as thinking_start/thinking_redacted/thinking_end
+// only — the count rides on the redacted event (Instance._emitUi stamps it).
+
+test('Conversation: re-subscribe of a closed redacted block keeps the token count', () => {
+  setupDOM();
+  const conv = makeConv();
+  const msgId = 'msg_resub_redacted';
+
+  // No thinking_tokens events at all — exactly what the ring tail replays.
+  conv.apply({ kind: 'thinking_start', msgId, blockIdx: 0, _seq: 1 });
+  conv.apply({ kind: 'thinking_redacted', msgId, blockIdx: 0, estimatedTokens: 4200, _seq: 2 });
+  conv.apply({ kind: 'thinking_end', msgId, blockIdx: 0, _seq: 3 });
+
+  const block = conv.blocksByKey.get(`${msgId}:0:thinking`);
+  assert.equal(block.node.textContent, 'thinking (redacted, ~4,200 tokens)');
+});
+
+test('Conversation: live and re-subscribed redacted blocks render identically', () => {
+  setupDOM();
+  const msgId = 'msg_redacted_parity';
+
+  // Live: per-token counters drive the block, then it closes.
+  const live = makeConv();
+  live.apply({ kind: 'thinking_start', msgId, blockIdx: 0, _seq: 1 });
+  for (const n of [50, 200, 300]) live.apply(thinkingTokensEv(n));
+  live.apply({ kind: 'thinking_redacted', msgId, blockIdx: 0, estimatedTokens: 300, _seq: 2 });
+  live.apply({ kind: 'thinking_end', msgId, blockIdx: 0, _seq: 3 });
+
+  // Re-subscribe: same ring slots, counters absent.
+  const replay = makeConv();
+  replay.apply({ kind: 'thinking_start', msgId, blockIdx: 0, _seq: 1 });
+  replay.apply({ kind: 'thinking_redacted', msgId, blockIdx: 0, estimatedTokens: 300, _seq: 2 });
+  replay.apply({ kind: 'thinking_end', msgId, blockIdx: 0, _seq: 3 });
+
+  const a = live.blocksByKey.get(`${msgId}:0:thinking`);
+  const b = replay.blocksByKey.get(`${msgId}:0:thinking`);
+  assert.equal(a.node.textContent, 'thinking (redacted, ~300 tokens)');
+  assert.equal(b.node.textContent, a.node.textContent);
+});
+
+test('Conversation: plaintext thinking replays its text, not a token count', () => {
+  setupDOM();
+  const conv = makeConv();
+  const msgId = 'msg_plaintext_replay';
+
+  // Models that stream real thinking text (e.g. haiku-4-5) may ALSO emit the
+  // counter live, but the text is retained in the coalesced ring slot, so the
+  // replayed block finalizes to a char count and needs no stamp.
+  conv.apply({ kind: 'thinking_start', msgId, blockIdx: 0, _seq: 1 });
+  conv.apply({ kind: 'thinking_delta', msgId, blockIdx: 0, text: 'hello world', _seq: 2 });
+  conv.apply({ kind: 'thinking_end', msgId, blockIdx: 0, _seq: 3 });
+
+  const block = conv.blocksByKey.get(`${msgId}:0:thinking`);
+  assert.equal(block.body.textContent, 'hello world');
+  assert.equal(block.node.querySelector('summary').textContent, 'thinking (11 chars)');
 });
 
 // ── Seq-less live frames (the ring-coalescing decoupling) ────────────────────

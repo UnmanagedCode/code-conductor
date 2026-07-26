@@ -98,7 +98,12 @@ export class ThinkingBlock {
       this._summary.textContent = `thinking… ${n.toLocaleString()} tokens`;
     }
   }
-  markRedacted() {
+  // `tokens` seeds the estimate when the live per-token counters never
+  // arrived — a redacted block rebuilt from the ring on re-subscribe replays
+  // only thinking_start/thinking_redacted/thinking_end, with the final count
+  // stamped on the redacted event (see Instance._emitUi).
+  markRedacted(tokens = null) {
+    if (tokens != null) this._thinkingTokens = tokens;
     const tokenSuffix = this._thinkingTokens > 0
       ? `, ~${this._thinkingTokens.toLocaleString()} tokens` : '';
     const flat = el('div', { class: 'block thinking redacted' }, `thinking (redacted${tokenSuffix})`);

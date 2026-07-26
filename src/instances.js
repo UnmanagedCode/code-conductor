@@ -207,11 +207,16 @@ export class EventLog {
   // WS feed. A `v` this method declines to retain simply never receives a
   // `_seq`, so _emitUi still emits it seq-less (the client renders seq-less
   // events unconditionally — see public/conversation.js). Two live-stream
-  // floods on ollama-backed workers (one system/thinking_tokens per
-  // thinking_delta token) are kept OUT of the ring so a single long reasoning
-  // turn can't overflow it and strand the archive mid-turn (history_gap):
+  // floods (one system/thinking_tokens per thinking_delta token, emitted by
+  // the Claude CLI as a live progress estimate — observed on opus-4-8,
+  // sonnet-5 and haiku-4-5) are kept OUT of the ring so a single long
+  // reasoning turn can't overflow it and strand the archive mid-turn
+  // (history_gap):
   //   - thinking_tokens is a live-only counter (last-value-wins, never
-  //     persisted, no-op on replay) → never retained.
+  //     persisted, no-op on replay) → never retained. Its final value is
+  //     stamped onto the retained thinking_redacted slot (see _emitUi) —
+  //     that block replays no text, so the slot is the only place the
+  //     estimate can outlive the block.
   //   - consecutive thinking_delta of one block fold into ONE slot — the same
   //     one-delta-per-block shape disk replay produces (src/transcript.js), so
   //     ring + jsonl-archive reconstruct identically. The LIVE per-token stream
@@ -357,8 +362,9 @@ export class Instance extends EventEmitter {
     // are never retained in the ring (see EventLog.push), so this O(1)
     // last-value-wins state lets a fresh subscriber's snapshot carry the
     // CURRENT count alongside the coalesced partial thinking text. Cleared when
-    // the block closes so a completed/replayed block shows no stale live count
-    // (the finished block is viewed from disk). Reset on resume (see _wipeForResume).
+    // the block closes; a closed block that had text replays it (and finalizes
+    // to a char count), while a closed REDACTED block keeps the final estimate
+    // on its ring slot (see _emitUi). Reset on resume (see _wipeForResume).
     this._liveThinkingTokens = null;
     this._pending = new Map(); // request_id -> { resolve, reject, timer }
     // Per-instance PreToolUse hook callback broker (held-open
@@ -823,6 +829,17 @@ export class Instance extends EventEmitter {
       this._liveThinkingTokens = null;
     }
     const wrapped = { ...ev };
+    // A redacted block carries no text, so once it closes its retained ring
+    // slot is the ONLY place the estimate can survive — without this, a
+    // re-subscribe rebuilds the block as a bare "thinking (redacted)". The
+    // parser emits thinking_redacted BEFORE thinking_end, so the counter is
+    // still set here. Live and re-subscribe therefore render identically.
+    // Nothing to stamp on the jsonl-replay path: the CLI never persists the
+    // counter frames, so the preceding replayed thinking_start has already
+    // cleared this to null and the field stays absent.
+    if (wrapped.kind === 'thinking_redacted' && this._liveThinkingTokens != null) {
+      wrapped.estimatedTokens = this._liveThinkingTokens;
+    }
     // Every outer user_echo funnels through here (live prompt(), parser
     // queued-prompt echoes, jsonl replay), so this counter matches the
     // Nth-pure-user-prompt-line semantics sessionEdit.js truncates by.
