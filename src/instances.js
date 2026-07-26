@@ -208,10 +208,10 @@ export class EventLog {
   // `_seq`, so _emitUi still emits it seq-less (the client renders seq-less
   // events unconditionally — see public/conversation.js). Two live-stream
   // floods (one system/thinking_tokens per thinking_delta token, emitted by
-  // the Claude CLI as a live progress estimate — observed on opus-4-8,
-  // sonnet-5 and haiku-4-5) are kept OUT of the ring so a single long
-  // reasoning turn can't overflow it and strand the archive mid-turn
-  // (history_gap):
+  // the Claude CLI as a live progress estimate — docs/protocol.md owns the
+  // observed-emitter list; it is NOT ollama-specific) are kept OUT of the
+  // ring so a single long reasoning turn can't overflow it and strand the
+  // archive mid-turn (history_gap):
   //   - thinking_tokens is a live-only counter (last-value-wins, never
   //     persisted, no-op on replay) → never retained. Its final value is
   //     stamped onto the retained thinking_redacted slot (see _emitUi) —
@@ -847,6 +847,11 @@ export class Instance extends EventEmitter {
       wrapped.userIndex = this._userEchoCount;
       this._userEchoCount += 1;
     }
+    // INVARIANT: the ring and the live feed share ONE object. Anything stamped
+    // onto `wrapped` above (userIndex, estimatedTokens) must be set BEFORE this
+    // point, and neither line may take a copy — cloning for the ring, or
+    // stamping after push(), would silently drop the field from the live frame
+    // while every snapshot-based test still passed.
     this.ring.push(wrapped); // stamps wrapped._seq
     this.emit('event', wrapped);
   }

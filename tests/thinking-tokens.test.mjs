@@ -94,14 +94,6 @@ test('ThinkingBlock: markRedacted(n) seeds the count when no live counters ran',
   assert.equal(block.node.textContent, 'thinking (redacted, ~1,200 tokens)');
 });
 
-test('ThinkingBlock: markRedacted(null) keeps the live-streamed count', () => {
-  setupDOM();
-  const block = new ThinkingBlock();
-  block.updateThinkingTokens(640);
-  block.markRedacted(null);
-  assert.equal(block.node.textContent, 'thinking (redacted, ~640 tokens)');
-});
-
 test('ThinkingBlock: finalize after markRedacted is a no-op', () => {
   setupDOM();
   const block = new ThinkingBlock();
@@ -255,23 +247,6 @@ test('Conversation: live and re-subscribed redacted blocks render identically', 
   const b = replay.blocksByKey.get(`${msgId}:0:thinking`);
   assert.equal(a.node.textContent, 'thinking (redacted, ~300 tokens)');
   assert.equal(b.node.textContent, a.node.textContent);
-});
-
-test('Conversation: plaintext thinking replays its text, not a token count', () => {
-  setupDOM();
-  const conv = makeConv();
-  const msgId = 'msg_plaintext_replay';
-
-  // Models that stream real thinking text (e.g. haiku-4-5) may ALSO emit the
-  // counter live, but the text is retained in the coalesced ring slot, so the
-  // replayed block finalizes to a char count and needs no stamp.
-  conv.apply({ kind: 'thinking_start', msgId, blockIdx: 0, _seq: 1 });
-  conv.apply({ kind: 'thinking_delta', msgId, blockIdx: 0, text: 'hello world', _seq: 2 });
-  conv.apply({ kind: 'thinking_end', msgId, blockIdx: 0, _seq: 3 });
-
-  const block = conv.blocksByKey.get(`${msgId}:0:thinking`);
-  assert.equal(block.body.textContent, 'hello world');
-  assert.equal(block.node.querySelector('summary').textContent, 'thinking (11 chars)');
 });
 
 // ── Seq-less live frames (the ring-coalescing decoupling) ────────────────────

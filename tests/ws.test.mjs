@@ -527,6 +527,10 @@ test('a redacted block with no counter frames carries no estimatedTokens', async
     const snap = await c.wait(m => m.t === 'snapshot' && m.id === id);
     const red = snap.events.find(e => e.kind === 'thinking_redacted' && e.msgId === 'm1');
     assert.ok(red, 'the redacted block is in the snapshot');
+    // NB: this assertion is rename-blind — it would also pass if the field
+    // were renamed and never written. Its protection against that comes from
+    // the `=== 450` assertion in the preceding test, which is the only place
+    // the stamp's field name is pinned. Don't delete that one as redundant.
     assert.equal(red.estimatedTokens, undefined,
       'thinking_start cleared the stale counter — no carry-over from a prior block');
 
