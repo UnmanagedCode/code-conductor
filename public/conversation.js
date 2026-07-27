@@ -407,7 +407,7 @@ export class Conversation {
       const wrap = this._ensureMessageWrap(ev.msgId, 'assistant');
       wrap.body.appendChild(block.node);
     }
-    block.markRedacted();
+    block.markRedacted(ev.estimatedTokens ?? null);
   }
 
   _renderUserEcho(ev) {

@@ -469,3 +469,73 @@ test('a completed thinking block carries no stale live count on a fresh subscrib
     await c.close();
   } finally { await close(); }
 });
+
+test('a closed REDACTED thinking block keeps its token count on a fresh subscribe', async () => {
+  const { baseUrl, wsUrl, instances, close } = await setup();
+  try {
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'a', mode: 'bypassPermissions' });
+    const id = r.body.id;
+    await waitFor(() => instances.get(id).status === 'idle');
+    const inst = instances.get(id);
+
+    // Redacted shape: counters stream but no thinking text ever arrives, so
+    // content_block_stop yields thinking_redacted + thinking_end (parser.js).
+    inst._emitUi({ kind: 'user_echo', text: 'think privately' });
+    inst._emitUi({ kind: 'thinking_start', msgId: 'm1', blockIdx: 0 });
+    for (const n of [50, 200, 450]) {
+      inst._emitUi({ kind: 'system', subtype: 'thinking_tokens', data: { estimated_tokens: n } });
+    }
+    inst._emitUi({ kind: 'thinking_redacted', msgId: 'm1', blockIdx: 0 });
+    inst._emitUi({ kind: 'thinking_end', msgId: 'm1', blockIdx: 0 });
+    assert.equal(inst.liveThinkingTokens, null, 'ephemeral count still cleared on thinking_end');
+
+    const c = await wsClient(wsUrl);
+    c.send({ t: 'subscribe', id });
+    const snap = await c.wait(m => m.t === 'snapshot' && m.id === id);
+
+    // No re-attached counter (the block is closed) — the estimate rides the
+    // retained redacted slot instead, which is what survives the switch.
+    assert.ok(!snap.events.some(e => e.kind === 'system' && e.subtype === 'thinking_tokens'),
+      'no seq-less counter re-attached for a closed block');
+    const red = snap.events.find(e => e.kind === 'thinking_redacted' && e.msgId === 'm1');
+    assert.ok(red, 'the redacted block is in the snapshot');
+    assert.equal(red.estimatedTokens, 450, 'final estimate stamped on the retained slot');
+    assert.ok(red._seq !== undefined, 'the redacted slot is retained and seq-stamped');
+
+    await c.close();
+  } finally { await close(); }
+});
+
+test('a redacted block with no counter frames carries no estimatedTokens', async () => {
+  const { baseUrl, wsUrl, instances, close } = await setup();
+  try {
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'a', mode: 'bypassPermissions' });
+    const id = r.body.id;
+    await waitFor(() => instances.get(id).status === 'idle');
+    const inst = instances.get(id);
+
+    // This is the jsonl-replay shape (src/transcript.js): the CLI never
+    // persists counter frames, so nothing stale may be stamped.
+    inst._emitUi({ kind: 'user_echo', text: 'replayed turn' });
+    inst._emitUi({ kind: 'system', subtype: 'thinking_tokens', data: { estimated_tokens: 999 } });
+    inst._emitUi({ kind: 'thinking_start', msgId: 'm1', blockIdx: 0 });
+    inst._emitUi({ kind: 'thinking_redacted', msgId: 'm1', blockIdx: 0 });
+    inst._emitUi({ kind: 'thinking_end', msgId: 'm1', blockIdx: 0 });
+
+    const c = await wsClient(wsUrl);
+    c.send({ t: 'subscribe', id });
+    const snap = await c.wait(m => m.t === 'snapshot' && m.id === id);
+    const red = snap.events.find(e => e.kind === 'thinking_redacted' && e.msgId === 'm1');
+    assert.ok(red, 'the redacted block is in the snapshot');
+    // NB: this assertion is rename-blind — it would also pass if the field
+    // were renamed and never written. Its protection against that comes from
+    // the `=== 450` assertion in the preceding test, the only place the
+    // SERVER-side write of this field name is pinned (the client-side read is
+    // pinned separately in tests/thinking-tokens.test.mjs). Don't delete that
+    // one as redundant.
+    assert.equal(red.estimatedTokens, undefined,
+      'thinking_start cleared the stale counter — no carry-over from a prior block');
+
+    await c.close();
+  } finally { await close(); }
+});
