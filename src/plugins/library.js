@@ -72,6 +72,12 @@ const DEFAULT_ENTRIES = [
     postClone: 'npm install',
     postPull: 'npm install',
   },
+  {
+    id: 'code-dialectic',
+    name: 'Code Dialectic',
+    description: 'Runs a structured dialectic (thesis → antithesis → synthesis) between two Dialectician workers to stress-test an idea or decision.',
+    repo: 'https://github.com/UnmanagedCode/code-dialectic',
+  },
 ];
 
 function libraryDir() {
