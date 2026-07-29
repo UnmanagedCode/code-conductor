@@ -24,8 +24,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { orchStoreRoot, writeFileAtomic } from './projects.js';
 import { resolveClaudeBin, resolveBackendLaunch } from './claudeLauncher.js';
-import { getTierBackend } from './appSettings.js';
-import { preflightOllamaBackend, ollamaPreflightError } from './ollamaBackend.js';
+import { getTierBackend, getBackend } from './appSettings.js';
 
 const VERSION_TIMEOUT_MS = 5000;
 const MARKER = 'CLAUDE_CODE_EXECPATH';
@@ -112,24 +111,13 @@ async function generateBundle(key, command, prefixArgs) {
 
 Then stop — do not summarize the output.`;
 
-  // Honor the fast tier's bound backend (Claude or Ollama) unconditionally —
-  // don't fall back to an Anthropic default: on hosts where only the Ollama
-  // backend is available that model wouldn't exist.
+  // Honor the fast tier's bound backend unconditionally — don't fall back to an
+  // Anthropic default: on hosts where only a substitution backend is available
+  // that model wouldn't exist.
   const fastBackend = getTierBackend('fast');
 
-  // Ollama-only reachability + model-availability preflight, mirroring
-  // Instance._preflightBackend's use of the same helper — no-op for Claude
-  // backends. Without this, a down/unreachable daemon would only surface as an
-  // opaque spawn failure after the full genTimeoutMs (45s default), and because
-  // the bundle is cached process-wide, EVERY project_bash call would eat that
-  // same slow failure until the daemon comes back.
-  if (fastBackend.kind === 'ollama') {
-    const pre = await preflightOllamaBackend({ model: fastBackend.model });
-    if (!pre.ok) throw ollamaPreflightError(pre, 'claudeShellEnv');
-  }
-
-  const { command: spawnCommand, prefixArgs: spawnPrefixArgs } =
-    resolveBackendLaunch(fastBackend.kind, fastBackend.model, { command, prefixArgs });
+  const { command: spawnCommand, prefixArgs: spawnPrefixArgs, env: backendEnvVars } =
+    resolveBackendLaunch(getBackend(fastBackend.backend), fastBackend.model, { command, prefixArgs });
 
   const args = [
     ...spawnPrefixArgs,
@@ -144,7 +132,7 @@ Then stop — do not summarize the output.`;
   await new Promise((resolve, reject) => {
     let proc;
     try {
-      proc = spawn(spawnCommand, args, { cwd: spawnDir, stdio: ['pipe', 'pipe', 'pipe'] });
+      proc = spawn(spawnCommand, args, { cwd: spawnDir, env: { ...process.env, ...backendEnvVars }, stdio: ['pipe', 'pipe', 'pipe'] });
     } catch (err) {
       reject(new Error(`claudeShellEnv: failed to spawn claude -p: ${err.message}`));
       return;
@@ -227,7 +215,7 @@ async function findCachedBundle(key) {
 async function resolveFresh() {
   // The cache key is intentionally (claude version, shell) and
   // backend-independent: the captured shims/PATH/aliases come from the
-  // `claude` CLI build itself, not from which provider (Claude or Ollama)
+  // `claude` CLI build itself, not from which backend
   // the fast tier happens to be bound to right now.
   const { command, prefixArgs } = resolveClaudeBin();
   const key = await getClaudeVersionKey(command, prefixArgs);

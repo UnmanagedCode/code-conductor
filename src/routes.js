@@ -30,13 +30,12 @@ import {
 } from './transcribe.js';
 import { WHISPER_MODELS, isKnownModel, DEFAULT_MODEL } from './whisperModels.js';
 import {
-  MODEL_FAMILIES, CAPABILITY_TIERS, PROVIDERS, isKnownTier,
+  MODEL_FAMILIES, CAPABILITY_TIERS, isKnownTier,
 } from './modelVersions.js';
 import {
   isAvailable as ttsAvailable, synthesize, voicePathForName,
 } from './tts.js';
 import { TTS_VOICES, isKnownVoice, DEFAULT_VOICE } from './ttsModels.js';
-import { preflightOllamaBackend } from './ollamaBackend.js';
 import { OLLAMA_CLOUD_MODELS, OLLAMA_CLOUD_TIER_DEFAULTS } from './ollamaCloudModels.js';
 import {
   getTranscribeModel, setTranscribeModel,
@@ -49,7 +48,8 @@ import {
   getTierBackend, setTierBackend,
   effectiveRoleBinding, setRoleBinding,
   getAllRoles, addCustomRole, removeCustomRole,
-  getCustomBackends, addCustomBackend, removeCustomBackend,
+  getCustomModels, addCustomModel, removeCustomModel,
+  getBackends, addBackend, updateBackend, removeBackend,
   getDebugByDefault, setDebugByDefault,
 } from './appSettings.js';
 import * as whisperInstall from './whisperInstall.js';
@@ -798,13 +798,13 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
 
     r.post('/instances', async (req, res, next) => {
       try {
-        const { project, resume, mode, effort, thinking, model, sonnetWindow, backendKind, worktree, temp, debug, autoApprovePlan } = req.body ?? {};
+        const { project, resume, mode, effort, thinking, model, sonnetWindow, backend, worktree, temp, debug, autoApprovePlan } = req.body ?? {};
         // UI shortcut: the temp checkbox implies bypassPermissions when no
         // mode is picked (a disposable session is almost always for *doing*,
         // not planning). create() is policy-light and no longer couples
         // these, so the mapping lives here. An explicit mode still wins.
         const effectiveMode = (mode == null && temp) ? 'bypassPermissions' : mode;
-        const inst = await instances.create({ project, resume, mode: effectiveMode, effort, thinking, model, sonnetWindow, backendKind, worktree, temp, debug, autoApprovePlan });
+        const inst = await instances.create({ project, resume, mode: effectiveMode, effort, thinking, model, sonnetWindow, backend, worktree, temp, debug, autoApprovePlan });
         res.status(201).json(inst.summary());
       } catch (e) { next(e); }
     });
@@ -1115,35 +1115,38 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
     installer: whisperInstall,
   });
 
-  // Settings → Models group. Reports the two provider backends, the Claude
-  // version catalog (MODEL_FAMILIES — the Anthropic backend's model list), the
-  // user's custom Ollama models, the curated Ollama cloud preset catalog +
-  // its per-tier defaults, the capability-tier list + each tier's
-  // {kind, model} binding, the role list + each role's stored binding (a tier
-  // binding {kind:'tier',tier} or a custom {kind,model}). A Sonnet 4.x Claude
-  // binding carries its own context window as {kind:'claude',model,window} —
-  // there is no global Sonnet-window preference.
+  // Settings → Models group. Reports the backend REGISTRY (`backends` — the
+  // user-manageable launch recipes, see Settings → Backends), the Claude version
+  // catalog (`claudeFamilies` = MODEL_FAMILIES — the `claude` backend's model
+  // list), the user's custom models, the curated Ollama cloud preset catalog +
+  // its per-tier defaults (scoped to the built-in `ollama` backend), the
+  // capability-tier list + each tier's {backend, model} binding, and the role
+  // list + each role's stored binding (a tier binding {kind:'tier',tier} or a
+  // concrete {backend,model}). A Sonnet 4.x Claude binding carries its own
+  // context window as {backend:'claude',model,window} — there is no global
+  // Sonnet-window preference.
   function modelsSettingsState() {
     const tierBackend = {};
     for (const t of CAPABILITY_TIERS) {
-      tierBackend[t.tier] = getTierBackend(t.tier); // {kind, model, window?}
+      tierBackend[t.tier] = getTierBackend(t.tier); // {backend, model, window?}
     }
     // roles = built-in + user-custom + plugin-owned (each {role,label,builtin?,plugin?}).
     // Every role's payload binding is its EFFECTIVE binding (a valid user
     // override wins, else the manifest binding for a plugin role or the
-    // stored/default binding otherwise) — shown as the tier/{kind,model} binding
-    // itself, NOT resolved to a concrete backend, so the tier identity survives.
+    // stored/default binding otherwise) — shown as the tier/{backend,model}
+    // binding itself, NOT resolved to a concrete backend, so the tier identity
+    // survives.
     const allRoles = getAllRoles();
     const roleBackend = {};
     for (const r of allRoles) roleBackend[r.role] = effectiveRoleBinding(r.role);
-    return { providers: PROVIDERS, backends: MODEL_FAMILIES, onOverage: getOnOverageAction(),
+    return { backends: getBackends(), claudeFamilies: MODEL_FAMILIES, onOverage: getOnOverageAction(),
       overageThreshold: getOverageThreshold(),
       conductorCompactWindow: getConductorCompactWindow(),
       tiers: CAPABILITY_TIERS,
       tierBackend,
       roles: allRoles,
       roleBackend,
-      customBackends: getCustomBackends(),
+      customModels: getCustomModels(),
       ollamaCloudModels: OLLAMA_CLOUD_MODELS,
       ollamaCloudTierDefaults: OLLAMA_CLOUD_TIER_DEFAULTS,
       enabledTiers: getEnabledTiers(),
@@ -1169,18 +1172,18 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
       }
       if (defaultSpawnTier !== undefined) await setDefaultSpawnTier(defaultSpawnTier);
       if (tierBackend !== undefined) {
-        // backend is a {kind, model, window?} record (window meaningful only for
-        // a Sonnet 4.x Claude binding) — setTierBackend validates it names a
-        // known Claude version or a configured Ollama tag (400 otherwise) and
-        // persists the window on the binding.
+        // backend is a {backend, model, window?} record (window meaningful only
+        // for a Sonnet 4.x Claude binding) — setTierBackend validates it names a
+        // known Claude version or a configured backend's model (400 otherwise)
+        // and persists the window on the binding.
         if (!tierBackend || typeof tierBackend !== 'object' || !isKnownTier(tierBackend.tier)) {
-          return res.status(400).json({ error: 'tierBackend must be {tier, backend:{kind,model}} with a known tier' });
+          return res.status(400).json({ error: 'tierBackend must be {tier, backend:{backend,model}} with a known tier' });
         }
         await setTierBackend(tierBackend.tier, tierBackend.backend);
       }
       if (roleBackend !== undefined) {
-        // backend is a tier binding {kind:'tier',tier} or a {kind,model} custom
-        // backend. setRoleBinding validates the role is built-in, custom, or a
+        // backend is a tier binding {kind:'tier',tier} or a concrete
+        // {backend,model}. setRoleBinding validates the role is built-in, custom, or a
         // plugin role (an unknown role, or a bad binding, throws 400) — so no
         // isKnownRole precheck here; the store is the single source of truth.
         if (!roleBackend || typeof roleBackend !== 'object' || typeof roleBackend.role !== 'string') {
@@ -1203,35 +1206,52 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
     } catch (e) { next(e); }
   });
 
-  // Custom (Ollama-served) models. Add runs a reachability + model preflight
-  // (GET localhost:11434/api/version + /api/tags) so a bad tag fails fast with a
-  // clear message instead of a silent `ollama launch` failure at spawn.
-  r.post('/settings/models/custom', async (req, res, next) => {
+  // The backend registry (Settings → Backends). addBackend/updateBackend/
+  // removeBackend own all validation + status codes; managed rows accept an env
+  // edit only and can never be removed.
+  r.post('/settings/models/backends', async (req, res, next) => {
     try {
-      const { label, model, contextWindow } = req.body ?? {};
-      if (typeof label !== 'string' || !label.trim() || typeof model !== 'string' || !model.trim()) {
-        return res.status(400).json({ error: 'label and model (ollama tag) are required' });
-      }
-      // Optional native context window (raw tokens). Validated before the
-      // preflight so a bad value fails fast without a live Ollama. Blank/omitted
-      // is fine — the model then falls back to the 200k default.
-      if (contextWindow !== undefined && contextWindow !== null && contextWindow !== '') {
-        const cw = Number(contextWindow);
-        if (!Number.isFinite(cw) || cw <= 0) {
-          return res.status(400).json({ error: 'contextWindow must be a positive number of tokens' });
-        }
-      }
-      const pre = await preflightOllamaBackend({ model });
-      if (!pre.ok) return res.status(400).json({ error: pre.error });
-      const rec = await addCustomBackend({ label, model, contextWindow });
+      const { id, label, template, env } = req.body ?? {};
+      const rec = await addBackend({ id, label, template, env });
       res.status(201).json({ ...modelsSettingsState(), added: rec });
     } catch (e) { next(e); }
   });
 
-  // Remove by tag (the identity); `:model` is URL-encoded (tags contain ':').
+  r.patch('/settings/models/backends/:id', async (req, res, next) => {
+    try {
+      const { label, template, env } = req.body ?? {};
+      const rec = await updateBackend(req.params.id, { label, template, env });
+      if (!rec) return res.status(404).json({ error: 'backend not found' });
+      res.json({ ...modelsSettingsState(), updated: rec });
+    } catch (e) { next(e); }
+  });
+
+  // Removal NEVER cascades: a backend still referenced by a custom model is
+  // refused with 409 naming them (removeBackend throws it), a managed row with
+  // 400, an unknown id with 404.
+  r.delete('/settings/models/backends/:id', async (req, res, next) => {
+    try {
+      const ok = await removeBackend(req.params.id);
+      if (!ok) return res.status(404).json({ error: 'backend not found' });
+      res.json(modelsSettingsState());
+    } catch (e) { next(e); }
+  });
+
+  // Custom models — a label + the backend's own model id + its REQUIRED native
+  // context window. There is no reachability preflight: a bad backend/model
+  // simply fails at spawn (and surfaces as `launch_failed`).
+  r.post('/settings/models/custom', async (req, res, next) => {
+    try {
+      const { label, model, backend, contextWindow } = req.body ?? {};
+      const rec = await addCustomModel({ label, model, backend, contextWindow });
+      res.status(201).json({ ...modelsSettingsState(), added: rec });
+    } catch (e) { next(e); }
+  });
+
+  // Remove by model id (the identity); `:model` is URL-encoded (ids contain ':').
   r.delete('/settings/models/custom/:model', async (req, res, next) => {
     try {
-      const ok = await removeCustomBackend(req.params.model);
+      const ok = await removeCustomModel(req.params.model);
       if (!ok) return res.status(404).json({ error: 'custom model not found' });
       res.json(modelsSettingsState());
     } catch (e) { next(e); }

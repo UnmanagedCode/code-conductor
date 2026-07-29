@@ -7,8 +7,7 @@ import { Parser, SOFT_INTERRUPT_MARKER, isOuterUserEcho, snapStartToQuiescent, f
 import { getProject, claudeProjectsRoot, encodeCwd, findSessionLocation, readFirstPrompt } from './projects.js';
 import { createWorktree, getWorktree, debugBaseDir } from './worktrees.js';
 import { getTitle as getSessionTitle, setTitle as setSessionTitle, deleteTitle as deleteSessionTitle } from './sessionTitles.js';
-import { getOllamaSession, markOllamaSession, unmarkOllamaSession } from './sessionBackends.js';
-import { preflightOllamaBackend, ollamaPreflightError } from './ollamaBackend.js';
+import { getSessionBackend, markSessionBackend, unmarkSessionBackend } from './sessionBackends.js';
 import { isConducted, markConducted, unmarkConducted } from './conductedSessions.js';
 import { SessionRenewController } from './sessionRenew.js';
 import { isTemp, markTemp, unmarkTemp } from './tempSessions.js';
@@ -16,10 +15,10 @@ import { markArchived } from './archivedSessions.js';
 import { CONDUCT_PROJECT_NAME } from './conduct.js';
 import { composeCurrentConduct } from './conductorConventions.js';
 import { buildSettingsJSON, buildMcpConfigJSON, AWAITING_INPUT_MESSAGE } from './settings.js';
-import { getOnOverageAction, getOverageThreshold, getConductorCompactWindow, getOllamaContextWindow, getDebugByDefault } from './appSettings.js';
+import { getOnOverageAction, getOverageThreshold, getConductorCompactWindow, contextWindowForModel, getDebugByDefault, getBackend, isKnownBackend } from './appSettings.js';
 import { HookBroker } from './hookBroker.js';
 import { loadPersistedTranscript, writeSessionMetadata, readLastSessionModel, hasResumableConversation } from './transcript.js';
-import { canonicalizeModel, familyOf } from './modelVersions.js';
+import { canonicalizeModel, familyOf, CLAUDE_BACKEND_ID } from './modelVersions.js';
 import { truncateSessionAtUserMessage } from './sessionEdit.js';
 import { saveAttachment, isImageType } from './attachments.js';
 import { buildApprovePrompt } from './planApproval.js';
@@ -209,7 +208,7 @@ export class EventLog {
   // events unconditionally — see public/conversation.js). Two live-stream
   // floods (one system/thinking_tokens per thinking_delta token, emitted by
   // the Claude CLI as a live progress estimate — docs/protocol.md owns the
-  // observed-emitter list; it is NOT ollama-specific) are kept OUT of the
+  // observed-emitter list; it is NOT specific to any one backend) are kept OUT of the
   // ring so a single long reasoning turn can't overflow it and strand the
   // archive mid-turn (history_gap):
   //   - thinking_tokens is a live-only counter (last-value-wins, never
@@ -262,7 +261,7 @@ export class EventLog {
 }
 
 export class Instance extends EventEmitter {
-  constructor({ id, project, cwd, mode, effort, thinking, model, sonnetWindow = '1m', backendKind = 'claude', hookCallbackUrl = null, mcpServerUrl = null, worktree = null, temp = false, conducted = false, callerInstanceId = null, debug = false, claudePluginDirs = [], launcher = defaultClaudeLauncher, appendSystemPromptProvider = null }) {
+  constructor({ id, project, cwd, mode, effort, thinking, model, sonnetWindow = '1m', backend = CLAUDE_BACKEND_ID, hookCallbackUrl = null, mcpServerUrl = null, worktree = null, temp = false, conducted = false, callerInstanceId = null, debug = false, claudePluginDirs = [], launcher = defaultClaudeLauncher, appendSystemPromptProvider = null }) {
     super();
     this.id = id;
     // The ClaudeLauncher used to spawn the subprocess. Defaults to the real
@@ -273,11 +272,11 @@ export class Instance extends EventEmitter {
     this.mode = mode;
     this.effort = effort;
     this.thinking = thinking;
-    // `model` holds the concrete id for BOTH kinds: a Claude version id
-    // ('claude-…', possibly with a [1m]/[200k] window suffix) or an Ollama tag
-    // ('gemma4:cloud'). `backendKind` ('claude' | 'ollama') is the sole
-    // discriminator — it selects the launch command; the claude args
-    // (including --model) are built uniformly.
+    // `model` holds the concrete id for EVERY backend: a Claude version id
+    // ('claude-…', possibly with a [1m]/[200k] window suffix) or another
+    // backend's model id ('gemma4:cloud'). `backend` (a registry id) is the sole
+    // discriminator — it selects the launch command via its template; the claude
+    // args (including --model) are built uniformly.
     this.model = model;
     // The Sonnet context window this session runs at ('1m'|'200k'), snapshotted
     // from the binding at spawn. It is the authority for re-deriving the model's
@@ -285,7 +284,9 @@ export class Instance extends EventEmitter {
     // carry the window in its suffix, so a global/suffix-only reader can't
     // recover it — see _trackModel). Irrelevant for non-Sonnet / Sonnet-5 models.
     this.sonnetWindow = sonnetWindow === '200k' ? '200k' : '1m';
-    this.backendKind = backendKind === 'ollama' ? 'ollama' : 'claude';
+    // Registry id, normalized to the identity backend when unknown (a backend
+    // the user has since removed must not strand the session unspawnable).
+    this.backend = isKnownBackend(backend) ? backend : CLAUDE_BACKEND_ID;
     this.hookCallbackUrl = hookCallbackUrl;
     this.mcpServerUrl = mcpServerUrl;
     // Absolute Claude Code plugin roots (each directly containing
@@ -418,7 +419,7 @@ export class Instance extends EventEmitter {
     // Set true at the top of kill() so _handleExit can tell a COMMANDED
     // teardown (user kill, project delete, shutdown, rewind — all route
     // through kill()) from a spontaneous crash, and not mislabel the former
-    // as an ollama launch failure. Reset to false on every spawn().
+    // as a substitution-backend launch failure. Reset to false on every spawn().
     this._killing = false;
     // Auto-stop / auto-resume on overage state. `autoStoppedForOverage` is
     // set true when an `onOverage: 'stop-resume'` overage event soft-interrupts
@@ -565,7 +566,7 @@ export class Instance extends EventEmitter {
       // size a bare live Sonnet id (the API strips the [1m] suffix in its
       // message_start stream) without a global preference.
       sonnetWindow: this.sonnetWindow,
-      backendKind: this.backendKind,
+      backend: this.backend,
       sessionId: this.sessionId,
       status: this.status,
       // Additive, display-only overlay: `status` itself is never repurposed
@@ -874,14 +875,20 @@ export class Instance extends EventEmitter {
     if (!rawModel) return;
     const canonical = canonicalizeModel(rawModel, { sonnetWindow: this.sonnetWindow });
     if (canonical === this.model) return;
-    // Ollama's inner CLI reports its model bare, dropping the `:tag` suffix
-    // (`ollama launch claude --model <tag>` still surfaces just the base name
-    // in system/init and message_start). canonicalizeModel is a no-op for
+    // A SUBSTITUTION backend's inner CLI reports its model bare, dropping the
+    // `:tag` suffix (`<template> --model <tag>` still surfaces just the base
+    // name in system/init and message_start). canonicalizeModel is a no-op for
     // non-Claude ids, so without this guard that bare report never matches
-    // this.model and looks like a genuine switch — overwriting this.model
-    // with the untagged id breaks the next resume's `ollama launch --model
-    // <tag>` (spawn() refuses to launch without the tag).
-    if (this.backendKind === 'ollama' && this.model && this.model.split(':')[0] === canonical) return;
+    // this.model and looks like a genuine switch — overwriting this.model with
+    // the untagged id breaks the next resume's `<template> --model <tag>`
+    // (spawn() refuses to launch without the model).
+    //
+    // Deliberately keyed on "not the identity backend" rather than on any one
+    // backend id: a USER-DEFINED backend serving tagged models hits exactly the
+    // same bare-report path, and an `=== 'ollama'` test would silently
+    // reintroduce the bug for it. The `claude` path is untouched, so a genuine
+    // interactive switch still fires model_changed.
+    if (this.backend !== CLAUDE_BACKEND_ID && this.model && this.model.split(':')[0] === canonical) return;
     if (this.model) {
       const from = this.model;
       this.model = canonical;
@@ -954,13 +961,16 @@ export class Instance extends EventEmitter {
     this._turnLastReqPrefix = null;
     this._turnEvicted = 0;
     // Backend-agnostic launch: resolveBackendLaunch() computes ONLY command +
-    // prefix from backendKind (and owns the ollama null-model invariant); the
-    // SAME claude args (including --model) are then appended uniformly below.
-    // Also used by claudeShellEnv.js's generateBundle() and summarize.js's
-    // generateSummary() for their own throwaway one-shot spawns.
-    let command, launchPrefix;
+    // prefix (+ the backend's env) from the backend RECORD, and owns the
+    // template's null-model invariant; the SAME claude args (including --model)
+    // are then appended uniformly below. Also used by claudeShellEnv.js's
+    // generateBundle() and summarize.js's generateSummary() for their own
+    // throwaway one-shot spawns.
+    const backendRecord = getBackend(this.backend);
+    let command, launchPrefix, backendEnvVars;
     try {
-      ({ command, prefixArgs: launchPrefix } = resolveBackendLaunch(this.backendKind, this.model, resolveClaudeBin()));
+      ({ command, prefixArgs: launchPrefix, env: backendEnvVars } =
+        resolveBackendLaunch(backendRecord, this.model, resolveClaudeBin()));
     } catch (err) {
       // Instance-specific side effect on the shared helper's invariant
       // failure — resolver + resume-guard are supposed to prevent this ever
@@ -975,12 +985,12 @@ export class Instance extends EventEmitter {
     // happens before the first turn_end (where _writeSessionMetadata also
     // calls markTemp). Fire-and-forget — spawn() must stay synchronous.
     if (this.temp && this.sessionId) markTemp(this.sessionId).catch(() => {});
-    // Persist the Ollama backend marker + tagged model durably (the two things
-    // jsonl can't carry — kind, and the model TAG the inner CLI drops) so every
-    // resume path re-acquires both. Runs on every spawn/resume, so a legacy
-    // tag-unknown entry self-heals once this.model holds a real tag.
-    if (this.backendKind === 'ollama' && this.sessionId) {
-      markOllamaSession(this.sessionId, this.model).catch(() => {});
+    // Persist the backend id + tagged model durably (the two things jsonl can't
+    // carry — which backend ran it, and the model TAG the inner CLI drops) so
+    // every resume path re-acquires both. Runs on every spawn/resume, so a legacy
+    // model-unknown entry self-heals once this.model holds a real id.
+    if (this.backend !== CLAUDE_BACKEND_ID && this.sessionId) {
+      markSessionBackend(this.sessionId, this.backend, this.model).catch(() => {});
     }
     this._hydrateTitle().catch(() => {});
     const args = [
@@ -1038,9 +1048,9 @@ export class Instance extends EventEmitter {
     }
     // Session-local Claude Code plugin roots (skills et al.) contributed by
     // enabled cc plugins. Repeatable flag, one per validated root; lands on the
-    // claude side of the ollama `--` separator (same args array as every other
-    // claude flag), so it's correct for both backends. Empty for the common
-    // case (no plugin ships a claudePlugin surface).
+    // claude side of a template's trailing `--` separator (same args array as
+    // every other claude flag), so it's correct for every backend. Empty for the
+    // common case (no plugin ships a claudePlugin surface).
     for (const dir of this.claudePluginDirs) args.push('--plugin-dir', dir);
     // Each family runs at one fixed context window, pinned via the model id
     // itself (Sonnet carries the CLI-native `[1m]` suffix; Opus/Haiku are
@@ -1048,26 +1058,33 @@ export class Instance extends EventEmitter {
     // CLAUDE_CODE_DISABLE_1M_CONTEXT so a user-level export can't silently
     // downgrade our 1M Opus/Sonnet sessions to 200k. Also strip any ambient
     // CLAUDE_CODE_AUTO_COMPACT_WINDOW / CLAUDE_CODE_MAX_CONTEXT_TOKENS
-    // inherited from the conductor's own process env — only the two blocks
-    // below (Ollama native-window, .conduct override) are allowed to set
-    // them, and they must run after this strip so their values win.
+    // inherited from the conductor's own process env — only the blocks below
+    // (the backend's own env, the substitution-backend native window, the
+    // .conduct override) are allowed to set them, and they must run after this
+    // strip so their values win.
     const spawnEnv = { ...process.env };
     delete spawnEnv.CLAUDE_CODE_DISABLE_1M_CONTEXT;
     delete spawnEnv.CLAUDE_CODE_AUTO_COMPACT_WINDOW;
     delete spawnEnv.CLAUDE_CODE_MAX_CONTEXT_TOKENS;
-    // Ollama-backed sessions: honour the model's native context window so the
-    // CLI auto-compacts at the real limit instead of its ~200k default.
+    // The backend's user-configured env pairs (Settings → Backends). Applied
+    // BEFORE the cc-managed context vars below so those always win — they are
+    // deliberately not exposed in the Backends UI.
+    Object.assign(spawnEnv, backendEnvVars);
+    // SUBSTITUTION-backend sessions: honour the model's native context window so
+    // the CLI auto-compacts at the real limit instead of its ~200k default.
     // AUTO_COMPACT_WINDOW alone is not enough: the CLI clamps it to
     // Math.min(modelWindow, AUTO_COMPACT_WINDOW), and its internal per-model
-    // table defaults any unrecognized model (every ollama tag) to a 200k
+    // table defaults any unrecognized model (every non-Claude id) to a 200k
     // assumed window — silently capping our value back down. MAX_CONTEXT_TOKENS
     // overrides that assumed window directly for non-Claude models, so both
-    // vars are set to the same raw token count. A custom model with no
-    // declared window resolves to null → leave both unset (CLI default).
+    // vars are set to the same raw token count. A model with no resolvable
+    // window (e.g. one removed from the custom-model list since spawn) yields
+    // null → leave both unset (CLI default). These two are cc-MANAGED: implicit
+    // to every substitution backend, never applied to plain `claude`.
     // Runs for both fresh spawns and every resume path (single spawn() method;
-    // backendKind + model are recovered before this block).
-    if (this.backendKind === 'ollama' && this.model) {
-      const cw = getOllamaContextWindow(this.model);
+    // backend + model are recovered before this block).
+    if (this.backend !== CLAUDE_BACKEND_ID && this.model) {
+      const cw = contextWindowForModel(this.model);
       if (cw) {
         spawnEnv.CLAUDE_CODE_AUTO_COMPACT_WINDOW = String(cw);
         spawnEnv.CLAUDE_CODE_MAX_CONTEXT_TOKENS = String(cw);
@@ -1078,7 +1095,7 @@ export class Instance extends EventEmitter {
     // MCP-spawned *worker* agents that the orchestrator spawns, which is the
     // opposite of the orchestrator session itself. This only overwrites
     // AUTO_COMPACT_WINDOW, never MAX_CONTEXT_TOKENS, so when the conductor role
-    // is itself Ollama-backed and both blocks apply, the effective window is
+    // itself runs on a substitution backend and both blocks apply, the effective window is
     // min(MAX_CONTEXT_TOKENS, AUTO_COMPACT_WINDOW) — the knob wins only when
     // it's smaller than the native window; otherwise the native window still
     // binds, same as docs/protocol.md's "remains the binding minimum".
@@ -1092,9 +1109,10 @@ export class Instance extends EventEmitter {
     // prompt. Freshly recomposed by launch() before every spawn/resume; null
     // for instances with no provider wired (see the constructor comment).
     if (this._appendSystemPrompt) args.push('--append-system-prompt', this._appendSystemPrompt);
-    // Uniform --model append for BOTH kinds (no backendKind check). For ollama
-    // this duplicates the launch-slot --model with the same value — a confirmed
-    // no-op (ollama consumes its own copy and re-injects the tag).
+    // Uniform --model append for EVERY backend (no backend check). For a
+    // template that names {model} this duplicates the launch-slot --model with
+    // the same value — a confirmed no-op for ollama (it consumes its own copy and
+    // re-injects the tag).
     if (this.model) args.push('--model', this.model);
     if (resume) args.push('--resume', this.sessionId);
     else args.push('--session-id', this.sessionId);
@@ -1482,12 +1500,12 @@ export class Instance extends EventEmitter {
     this._closeDrainWindow();
     const crashed = !(code === 0 && !signal);
     this._emitUi({ kind: 'system', subtype: 'exit', data: { code, signal } });
-    // An ollama-backed subprocess that crashed on its own (not a commanded
-    // kill) is the silent-launch-failure case: `ollama launch claude …` died
-    // — server gone, cloud-auth 401, etc. Surface it distinctly from the bare
-    // `exit`, carrying the captured stderr so the reason is visible. Claude
-    // exits and clean/commanded ollama exits are untouched.
-    if (crashed && this.backendKind === 'ollama'
+    // A SUBSTITUTION-backend subprocess that crashed on its own (not a commanded
+    // kill) is the silent-launch-failure case: the wrapper command died — binary
+    // missing, server gone, cloud-auth 401, etc. Surface it distinctly from the
+    // bare `exit`, carrying the captured stderr so the reason is visible. Plain
+    // claude exits and clean/commanded wrapper exits are untouched.
+    if (crashed && this.backend !== CLAUDE_BACKEND_ID
         && !this._killing && !this._suppressTempDelete) {
       this._emitUi({
         kind: 'system', subtype: 'launch_failed',
@@ -1689,9 +1707,9 @@ export class Instance extends EventEmitter {
     try { if (this.conducted) await markConducted(newSid); } catch { /* best-effort */ }
     try { if (this.title) await setSessionTitle(newSid, this.title); } catch { /* best-effort */ }
     try {
-      if (this.backendKind === 'ollama') {
-        await markOllamaSession(newSid, this.model);
-        await unmarkOllamaSession(oldSid);
+      if (this.backend !== CLAUDE_BACKEND_ID) {
+        await markSessionBackend(newSid, this.backend, this.model);
+        await unmarkSessionBackend(oldSid);
       }
     } catch { /* best-effort */ }
     try { await unmarkTemp(oldSid); } catch { /* best-effort */ }
@@ -1720,17 +1738,17 @@ export class Instance extends EventEmitter {
     return this.mode;
   }
 
-  async setModel(model, backendKind = 'claude') {
+  async setModel(model, backend = CLAUDE_BACKEND_ID) {
     // Live "Change model" sends a set_model control_request to the RUNNING
-    // process, whose Anthropic endpoint + auth are fixed at launch time. Any
-    // switch that involves Ollama (Claude↔Ollama, or Ollama↔Ollama) can't be
-    // done live — refuse it with a clear message rather than a silently-broken
-    // switch that keeps hitting the old model. Cross-kind kill+respawn is a
-    // separate, later enhancement.
-    if (this.backendKind === 'ollama' || backendKind === 'ollama') {
+    // process, whose endpoint + auth are fixed at launch time. Any switch that
+    // involves a SUBSTITUTION backend on either side (including
+    // substitution↔substitution) can't be done live — refuse it with a clear
+    // message rather than a silently-broken switch that keeps hitting the old
+    // model. Cross-backend kill+respawn is a separate, later enhancement.
+    if (this.backend !== CLAUDE_BACKEND_ID || backend !== CLAUDE_BACKEND_ID) {
       throw Object.assign(
-        new Error('Cannot change model live for an Ollama-backed session — kill and respawn on that tier.'),
-        { statusCode: 409, code: 'BACKEND_KIND_LOCKED' },
+        new Error('Cannot change model live for a session on a non-Claude backend — kill and respawn on that tier.'),
+        { statusCode: 409, code: 'BACKEND_LOCKED' },
       );
     }
     if (!model || !familyOf(model)) throw new Error('invalid model');
@@ -1878,7 +1896,7 @@ export class Instance extends EventEmitter {
   async kill({ graceMs = 2000 } = {}) {
     if (!this.proc) return;
     // Mark this as a commanded teardown so _handleExit doesn't mistake the
-    // resulting signalled exit for a spontaneous ollama launch crash.
+    // resulting signalled exit for a spontaneous launch crash.
     this._killing = true;
     try { this.proc.stdin.end(); } catch { /* ignore */ }
     const proc = this.proc;
@@ -2275,7 +2293,7 @@ export class InstanceManager extends EventEmitter {
     return p;
   }
 
-  async _doCreate({ project, resume, mode, effort, thinking, model, sonnetWindow, backendKind: explicitBackendKind, worktree, temp, conducted, callerInstanceId, debug, autoApprovePlan, prefill } = {}) {
+  async _doCreate({ project, resume, mode, effort, thinking, model, sonnetWindow, backend: explicitBackend, worktree, temp, conducted, callerInstanceId, debug, autoApprovePlan, prefill } = {}) {
     // On resume, when the caller didn't pin an explicit worktree, recover the
     // session's recorded project + worktree via findSessionLocation. This is
     // what makes spawn_instance({resume}) "just work" for an MCP conductor
@@ -2312,27 +2330,27 @@ export class InstanceManager extends EventEmitter {
     }
     let finalModel = (typeof model === 'string' && model.trim()) ? model.trim() : null;
 
-    // Backend kind (Claude vs Ollama) — the sole discriminator. `model` is a
-    // plain id for BOTH kinds (Claude version id OR Ollama tag) and is NOT
-    // cleared for ollama, so the canonicalize + jsonl model-recovery below
-    // apply uniformly. Sources, in priority order:
-    //   (a) explicit backendKind param — fresh spawn (client/handlers resolved
-    //       the tier to {kind, model}) and restart-manifest restore.
-    //   (b) resume with no explicit kind — the durable sidecar marks
-    //       ollama-backed sessions (the one bit jsonl can't carry), covering UI
-    //       resume / crash / anchor / respawn_instance uniformly.
-    let backendKind = explicitBackendKind === 'ollama' ? 'ollama' : 'claude';
-    if (!explicitBackendKind && resume) {
+    // Backend (a registry id) — the sole discriminator. `model` is a plain id for
+    // EVERY backend (Claude version id OR another backend's model id) and is NOT
+    // cleared for non-Claude backends, so the canonicalize + jsonl
+    // model-recovery below apply uniformly. Sources, in priority order:
+    //   (a) explicit `backend` param — fresh spawn (client/handlers resolved
+    //       the tier to {backend, model}) and restart-manifest restore.
+    //   (b) resume with no explicit backend — the durable sidecar records which
+    //       backend ran the session (one of the two bits jsonl can't carry),
+    //       covering UI resume / crash / anchor / respawn_instance uniformly.
+    let backend = isKnownBackend(explicitBackend) ? explicitBackend : CLAUDE_BACKEND_ID;
+    if (!explicitBackend && resume) {
       try {
-        const backend = await getOllamaSession(resume);
-        if (backend.ollama) {
-          backendKind = 'ollama';
-          // The backend store carries the FULL tagged model; the jsonl only
-          // holds the CLI's bare (tag-stripped) report. Prefer the store's tag
-          // — this is what stops `deepseek-v4-flash:cloud` resuming as the
-          // unpullable tagless `deepseek-v4-flash`. A null (legacy) entry falls
-          // through to the readLastSessionModel jsonl recovery below.
-          if (!finalModel && backend.model) finalModel = backend.model;
+        const rec = await getSessionBackend(resume);
+        if (rec) {
+          backend = rec.backend;
+          // The sidecar carries the FULL tagged model; the jsonl only holds the
+          // CLI's bare (tag-stripped) report. Prefer the sidecar's tag — this is
+          // what stops `deepseek-v4-flash:cloud` resuming as the unpullable
+          // tagless `deepseek-v4-flash`. A null (legacy) model falls through to
+          // the readLastSessionModel jsonl recovery below.
+          if (!finalModel && rec.model) finalModel = rec.model;
         }
       } catch { /* best-effort */ }
     }
@@ -2395,27 +2413,20 @@ export class InstanceManager extends EventEmitter {
     // truncates); a 200k-bound session cold-resumed this way widens to 1M rather
     // than erroring. Not an oversight.
     const finalSonnetWindow = sonnetWindow === '200k' ? '200k' : '1m';
-    // A no-op for a non-Claude id (familyOf(tag) === null → returned unchanged),
-    // so this runs uniformly for both backend kinds.
+    // A no-op for a non-Claude id (familyOf(id) === null → returned unchanged),
+    // so this runs uniformly for every backend.
     if (finalModel) finalModel = canonicalizeModel(finalModel, { sonnetWindow: finalSonnetWindow });
 
-    // Null-model guard (note 1): an ollama-backed session with no resolvable
-    // model — e.g. a resume whose jsonl is empty/corrupt so readLastSessionModel
-    // returned nothing — must fail clearly here rather than emit `--model
-    // undefined` at spawn.
-    if (backendKind === 'ollama' && !finalModel) {
+    // Null-model guard (note 1): a substitution-backend session with no
+    // resolvable model — e.g. a resume whose jsonl is empty/corrupt so
+    // readLastSessionModel returned nothing — must fail clearly here rather than
+    // emit `--model undefined` at spawn.
+    if (backend !== CLAUDE_BACKEND_ID && !finalModel) {
       throw Object.assign(
-        new Error('ollama-backed session has no resolvable model (tag) — rebind the tier or resume with an explicit model'),
-        { statusCode: 422, code: 'OLLAMA_MODEL_MISSING' },
+        new Error(`session on backend '${backend}' has no resolvable model — rebind the tier or resume with an explicit model`),
+        { statusCode: 422, code: 'BACKEND_MODEL_MISSING' },
       );
     }
-
-    // Reachability preflight for ollama-backed launches — fail here with a clear
-    // diagnostic instead of spawning into a silent `ollama launch` death. Runs
-    // for fresh spawns AND every resume path (backendKind was recovered above),
-    // before the Instance is created so a failure leaves nothing to unwind.
-    // No-op for Claude backends (zero added latency).
-    await this._preflightBackend(backendKind, finalModel);
 
     // The conducted marker is set explicitly on the MCP spawn path. When
     // resuming a historical session, recover it from the durable sidecar
@@ -2458,7 +2469,7 @@ export class InstanceManager extends EventEmitter {
       id, project, cwd,
       mode: finalMode, effort: finalEffort, thinking: finalThinking, model: finalModel,
       sonnetWindow: finalSonnetWindow,
-      backendKind,
+      backend,
       hookCallbackUrl: this.hookCallbackUrl(id),
       // Base MCP URL (no ?caller=) — the per-worker caller suffix is appended in
       // Instance.spawn() once the sessionId is known.
@@ -2494,7 +2505,7 @@ export class InstanceManager extends EventEmitter {
     inst._overageGate = () => {
       const resetsAt = this._overageResetsAt;
       const atMs = Number(resetsAt) * 1000;
-      // `_inUsageWindowFlow(inst)` keeps an exempt (e.g. Ollama-only) session out
+      // `_inUsageWindowFlow(inst)` keeps an exempt (e.g. ollama-only) session out
       // of the gate: its sends flow normally AND its summary reports
       // overageActive:false, so no overage/queued badge shows (summary() derives
       // overageActive/overageResetsAt from this same gate).
@@ -2600,26 +2611,26 @@ export class InstanceManager extends EventEmitter {
   }
 
   // ---- Usage-window domain resolution (overage exemption seam) -------------
-  // The set of backend kinds used across an instance's AGENT TREE: its own
-  // backend plus every conducted-worker descendant (separate Instances linked by
-  // `callerInstanceId`, each with its own backendKind). In-process Agent-tool
+  // The set of backend IDS used across an instance's AGENT TREE: its own backend
+  // plus every conducted-worker descendant (separate Instances linked by
+  // `callerInstanceId`, each with its own backend). In-process Agent-tool
   // subagents run inside the parent CLI process — the backend (endpoint + auth)
-  // is fixed at `ollama launch claude` / `claude` launch time, so they share the
-  // parent's backend and add no new kind. Cycle-safe.
+  // is fixed at launch time, so they share the parent's backend and add nothing
+  // new. Cycle-safe.
   agentTreeBackends(inst) {
-    const kinds = new Set();
+    const backends = new Set();
     const seen = new Set();
     const stack = [inst];
     while (stack.length) {
       const cur = stack.pop();
       if (!cur || seen.has(cur.id)) continue;
       seen.add(cur.id);
-      kinds.add(cur.backendKind === 'ollama' ? 'ollama' : 'claude');
+      backends.add(cur.backend ?? CLAUDE_BACKEND_ID);
       for (const child of this.byId.values()) {
         if (child.callerInstanceId === cur.id) stack.push(child);
       }
     }
-    return kinds;
+    return backends;
   }
 
   // The usage-window domains an instance's agent tree belongs to.
@@ -2629,9 +2640,10 @@ export class InstanceManager extends EventEmitter {
 
   // True iff the instance's agent tree touches a domain with an ACTIVE
   // usage-window monitor — the single predicate the overage stop/resume flow
-  // consults. A purely-Ollama tree → {ollama} → unmonitored → EXEMPT (never
-  // auto-stopped, queued, or armed). A tree with any Claude agent → {anthropic}
-  // → in-flow (holds even for an Ollama conductor whose workers are Claude).
+  // consults. A tree with no Claude agent → e.g. {ollama} → unmonitored → EXEMPT
+  // (never auto-stopped, queued, or armed). A tree with any Claude agent →
+  // {anthropic} → in-flow (holds even for a non-Claude conductor whose workers
+  // are Claude).
   _inUsageWindowFlow(inst) {
     for (const d of this.usageWindowDomainsOf(inst)) {
       if (isMonitoredDomain(d)) return true;
@@ -2648,8 +2660,8 @@ export class InstanceManager extends EventEmitter {
   _handleOverageTrip(inst, info) {
     const action = getOnOverageAction();
     if (action === 'none') return;          // no flag flip, no routing
-    // Domain scoping: a stream `rate_limit_event` from a purely-Ollama session
-    // belongs to the (unmonitored) ollama domain and must NOT trip the anthropic
+    // Domain scoping: a stream `rate_limit_event` from a session on an unmonitored
+    // backend belongs to that backend's own domain and must NOT trip the anthropic
     // flow. The poll monitor passes inst=null (account-global) and is unaffected.
     if (inst && !this._inUsageWindowFlow(inst)) return;
     if (this._overageActive) return;        // one-shot while active
@@ -2670,9 +2682,9 @@ export class InstanceManager extends EventEmitter {
   // its workers. Everything else still mid-turn gets a direct soft-interrupt.
   _routeOverageStop({ resume, resetsAt }) {
     // Exempt instances whose agent tree is purely in an unmonitored usage-window
-    // domain (e.g. Ollama-only): they consume no monitored account window, so
+    // domain (e.g. ollama-only): they consume no monitored account window, so
     // they are never stopped/steered/marked. A Claude conductor with an
-    // Ollama-only worker keeps the worker running and stops the conductor.
+    // ollama-only worker keeps the worker running and stops the conductor.
     const live = [...this.byId.values()].filter(i => i.proc && this._inUsageWindowFlow(i));
     // Pass 1: resolve which conductors to steer and which workers they protect.
     const steerConductors = new Map();  // conductor id → conductor instance
@@ -2822,19 +2834,6 @@ export class InstanceManager extends EventEmitter {
     }
   }
 
-  // Ollama-only reachability + model-availability preflight, run before any
-  // subprocess is launched. No-op (zero added latency) for Claude backends, so
-  // it never touches the common spawn path. On failure it THROWS a shaped error
-  // (mirroring the null-model guard's style) so both surfaces render the reason:
-  // REST via next(e) → HTTP 503; MCP via server.js's catch → isError with the
-  // "Ollama not reachable at …" / "not found" prose. Reuses the same
-  // preflightOllamaBackend the add-custom-model route uses.
-  async _preflightBackend(backendKind, model) {
-    if (backendKind !== 'ollama') return;
-    const pre = await preflightOllamaBackend({ model });
-    if (!pre.ok) throw ollamaPreflightError(pre);
-  }
-
   async respawn(id) {
     const inst = this.byId.get(id);
     if (!inst) {
@@ -2848,9 +2847,6 @@ export class InstanceManager extends EventEmitter {
     if (!inst.sessionId) {
       throw Object.assign(new Error('no sessionId to resume'), { statusCode: 400 });
     }
-    // An ollama-backed respawn with Ollama down must fail clearly too — check
-    // before _wipeForResume() so a failed preflight never discards history.
-    await this._preflightBackend(inst.backendKind, inst.model);
     // Drop the prior run's events before loadHistory() replays the persisted
     // transcript into the ring — otherwise the replay piles up on top of the
     // existing conversation and every message renders twice.

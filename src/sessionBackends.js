@@ -1,14 +1,16 @@
-// Sidecar JSON store mapping each Ollama-backed sessionId (spawned through
-// `ollama launch claude`) to the full tagged model it was launched with
-// (`deepseek-v4-flash:cloud`). Two things jsonl can't carry: the backend kind,
-// and the model TAG — the inner CLI records `message.model` bare (tag dropped),
-// so the tagless jsonl value can't rebuild `ollama launch --model <tag>` on
-// resume. This store is the authority for both. A `null` model means
-// ollama-backed but tag-unknown (a legacy entry migrated from the old set form,
-// or a mark with no model); resume falls back to the jsonl for those. Claude-
-// backed sessions store nothing (absence = 'claude'). Single global file
-// `<store>/session-backends.json`, map-shaped (`{sessions:{sid:model}}`); atomic
-// writes + cross-process lock, mirroring `conductedSessions.js`.
+// Sidecar JSON store mapping each session spawned through a SUBSTITUTION
+// backend (a registry row with a launch `template` — see modelVersions.js
+// MANAGED_BACKENDS) to the backend id plus the full model id it was launched
+// with (`deepseek-v4-flash:cloud`). Two things the jsonl can't carry: which
+// backend ran the session, and the model TAG — the inner CLI records
+// `message.model` bare (tag dropped), so the tagless jsonl value can't rebuild
+// `<template> --model <tag>` on resume. This store is the authority for both.
+// A `null` model means backend-known but model-unknown (a legacy entry, or a
+// mark with no model); resume falls back to the jsonl for those. Sessions on the
+// identity `claude` backend store nothing (absence = 'claude'). Single global
+// file `<store>/session-backends.json`, map-shaped
+// (`{sessions:{sid:{backend,model}}}`); atomic writes + cross-process lock,
+// mirroring `conductedSessions.js`.
 
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
@@ -24,9 +26,10 @@ function parseMap(obj) {
     ? obj.sessions : null;
   const out = new Map();
   if (!sessions) return out;
-  for (const [sid, model] of Object.entries(sessions)) {
+  for (const [sid, rec] of Object.entries(sessions)) {
     if (typeof sid !== 'string' || !sid) continue;
-    out.set(sid, typeof model === 'string' && model ? model : null);
+    if (!rec || typeof rec !== 'object' || typeof rec.backend !== 'string' || !rec.backend) continue;
+    out.set(sid, { backend: rec.backend, model: typeof rec.model === 'string' && rec.model ? rec.model : null });
   }
   return out;
 }
@@ -42,20 +45,20 @@ export async function loadAll() {
   }
 }
 
-export async function isOllamaSession(sessionId) {
+export async function hasSessionBackend(sessionId) {
   if (typeof sessionId !== 'string' || !sessionId) return false;
   const map = await loadAll();
   return map.has(sessionId);
 }
 
-// One read serving both the kind and the tag, so the resume path doesn't
-// load the store twice. `ollama` is membership; `model` is the tagged launch
-// model (null when tag-unknown — resume then falls back to the jsonl).
-export async function getOllamaSession(sessionId) {
-  if (typeof sessionId !== 'string' || !sessionId) return { ollama: false, model: null };
+// One read serving both the backend id and the model, so the resume path
+// doesn't load the store twice. Returns null for a session with no record
+// (i.e. a plain `claude` session). `model` is the tagged launch model, or null
+// when unknown — resume then falls back to the jsonl.
+export async function getSessionBackend(sessionId) {
+  if (typeof sessionId !== 'string' || !sessionId) return null;
   const map = await loadAll();
-  if (!map.has(sessionId)) return { ollama: false, model: null };
-  return { ollama: true, model: map.get(sessionId) ?? null };
+  return map.get(sessionId) ?? null;
 }
 
 // Strict re-read inside a mutation (under the lock): throws on I/O / corrupt
@@ -92,16 +95,19 @@ async function writeMap(map) {
   await fs.rename(tmp, file);
 }
 
-// Upsert the session's tagged launch model. Called on every spawn/resume, so a
-// legacy null entry self-heals the first time the session relaunches with a
-// real tag. Idempotent: skips the write when membership + model already match.
-export function markOllamaSession(sessionId, model = null) {
+// Upsert the session's backend id + tagged launch model. Called on every
+// spawn/resume, so a legacy null-model entry self-heals the first time the
+// session relaunches with a real model. Idempotent: skips the write when the
+// record already matches.
+export function markSessionBackend(sessionId, backend, model = null) {
   return serialize(async () => {
     if (typeof sessionId !== 'string' || !sessionId) return false;
-    const value = typeof model === 'string' && model ? model : null;
+    if (typeof backend !== 'string' || !backend) return false;
+    const value = { backend, model: typeof model === 'string' && model ? model : null };
     return withLock(backendsFile(), async () => {
       const map = await loadStrict();
-      if (map.has(sessionId) && (map.get(sessionId) ?? null) === value) return true;
+      const cur = map.get(sessionId);
+      if (cur && cur.backend === value.backend && cur.model === value.model) return true;
       map.set(sessionId, value);
       await writeMap(map);
       return true;
@@ -109,7 +115,7 @@ export function markOllamaSession(sessionId, model = null) {
   });
 }
 
-export function unmarkOllamaSession(sessionId) {
+export function unmarkSessionBackend(sessionId) {
   return serialize(async () => {
     if (typeof sessionId !== 'string' || !sessionId) return false;
     return withLock(backendsFile(), async () => {

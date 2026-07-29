@@ -70,21 +70,41 @@ export function isKnownFamily(family) {
   return MODEL_FAMILIES.some(f => f.family === family);
 }
 
-// --- Backends (providers) -----------------------------------------------
-// The two provider backends a capability tier can bind to. A tier binding is
-// {kind, model}: for 'claude' the model is a MODEL_FAMILIES version id; for
-// 'ollama' it's an Ollama tag (from Settings → Models custom models). This is
-// the single source of truth for the Settings backend selector.
-export const PROVIDERS = [
-  { kind: 'claude', label: 'Claude' },
-  { kind: 'ollama', label: 'Ollama' },
+// --- Backends -----------------------------------------------------------
+// A BACKEND is a launch recipe: `template` is the command that replaces
+// `claude` on the argv, with `{model}` standing in for the model id. An empty
+// template means "run `claude` directly" (the identity backend). Backends are
+// user-manageable DATA (Settings → Backends, persisted as `models.backends` —
+// see appSettings.js getBackends), so adding a provider is a settings row, not
+// a code change.
+//
+// These two are MANAGED: their id/label/template/managed come from here, not
+// from the store, so `ollama`'s template can't drift and `claude` can't be
+// removed. Only their `env` is user-editable. appSettings.getBackends() layers
+// the user's rows on top and re-asserts these.
+//
+// A tier/role binding is {backend, model}: for 'claude' the model is a
+// MODEL_FAMILIES version id; for any other backend it's whatever that backend's
+// models are identified by (an Ollama tag, say — see Settings → Models custom
+// models).
+export const MANAGED_BACKENDS = [
+  { id: 'claude', label: 'Claude', template: '', env: [], managed: true },
+  { id: 'ollama', label: 'Ollama', template: 'ollama launch claude --model {model} --yes --', env: [], managed: true },
 ];
+
+export const MANAGED_BACKEND_IDS = MANAGED_BACKENDS.map(b => b.id);
+
+// The identity backend — the one that runs `claude` itself. Everything that
+// used to branch on `backendKind === 'ollama'` now branches on
+// `backend !== CLAUDE_BACKEND_ID` (i.e. "is this a substitution backend?"), so
+// a user-defined backend gets the same treatment the built-in ollama row does.
+export const CLAUDE_BACKEND_ID = 'claude';
 
 // --- Capability tiers ---------------------------------------------------
 // Fixed, data-driven set of abstract capability tiers exposed to spawn
 // callers (UI pickers + MCP `spawn_instance`). Each tier is a bindable slot
 // that maps (via Settings, see appSettings.js `getTierBackend`) to a
-// {kind, model} pair. Renaming a tier, or changing the tier count, is a
+// {backend, model} pair. Renaming a tier, or changing the tier count, is a
 // one-line change to this array.
 export const CAPABILITY_TIERS = [
   { tier: 'fast',      label: 'Fast' },
@@ -93,13 +113,13 @@ export const CAPABILITY_TIERS = [
   { tier: 'frontier',  label: 'Frontier' },
 ];
 
-// Default tier → {kind, model} binding — each tier's Claude family default
+// Default tier → {backend, model} binding — each tier's Claude family default
 // version.
 export const DEFAULT_TIER_BACKEND = {
-  fast:     { kind: 'claude', model: DEFAULT_VERSIONS.haiku },
-  balanced: { kind: 'claude', model: DEFAULT_VERSIONS.sonnet },
-  powerful: { kind: 'claude', model: DEFAULT_VERSIONS.opus },
-  frontier: { kind: 'claude', model: DEFAULT_VERSIONS.fable },
+  fast:     { backend: CLAUDE_BACKEND_ID, model: DEFAULT_VERSIONS.haiku },
+  balanced: { backend: CLAUDE_BACKEND_ID, model: DEFAULT_VERSIONS.sonnet },
+  powerful: { backend: CLAUDE_BACKEND_ID, model: DEFAULT_VERSIONS.opus },
+  frontier: { backend: CLAUDE_BACKEND_ID, model: DEFAULT_VERSIONS.fable },
 };
 
 export function isKnownTier(tier) {
@@ -110,8 +130,8 @@ export function isKnownTier(tier) {
 // Data-driven set of named roles, a second bindable layer parallel to the
 // capability tiers. A role binds (via Settings, see appSettings.js
 // `getRoleBinding`) to EITHER a capability tier ({kind:'tier', tier}) — follow
-// whatever that tier points at — or a custom backend ({kind, model}, the same
-// shape a tier uses). Adding a role is a one-line change to this array.
+// whatever that tier points at — or a concrete backend ({backend, model}, the
+// same shape a tier uses). Adding a role is a one-line change to this array.
 export const ROLES = [
   { role: 'conductor', label: 'Conductor' },
   { role: 'reviewer',  label: 'Reviewer' },
@@ -143,8 +163,9 @@ export function defaultVersion(family) {
 }
 
 // Infer the Claude family from a bare or suffixed model id, by prefix. Returns
-// null for anything that isn't a Claude id (an Ollama tag included) — which is
-// exactly what makes canonicalizeModel a no-op for non-Claude models.
+// null for anything that isn't a Claude id (any other backend's model id
+// included) — which is exactly what makes canonicalizeModel a no-op for
+// non-Claude models, so a tagged id survives resume untouched.
 export function familyOf(modelId) {
   if (typeof modelId !== 'string') return null;
   if (modelId.startsWith('claude-fable')) return 'fable';

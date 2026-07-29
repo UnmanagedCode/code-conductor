@@ -14,6 +14,7 @@
 //   them (their jsonl was preserved for exactly that).
 
 import { spawnReplacementAndExit } from './restart.js';
+import { CLAUDE_BACKEND_ID } from './modelVersions.js';
 import {
   writeResumeManifest,
   readResumeManifest,
@@ -190,11 +191,11 @@ export async function drainToManifest({ server, wss, instances, log = console, g
       // is bare for a 200k Sonnet (200k is stored bare), so the window can't be
       // reconstructed from it — carry it explicitly so a restart preserves it.
       sonnetWindow: s.sonnetWindow ?? '1m',
-      // Backend kind (Claude vs Ollama-backed). The durable session-backends
-      // sidecar is the authority on resume; carried here too as belt-and-braces
-      // so a restart reconstructs the kind directly. The model itself rides in
-      // `model` above (recovered from jsonl uniformly for both kinds).
-      backendKind: s.backendKind ?? 'claude',
+      // Backend id. The durable session-backends sidecar is the authority on
+      // resume; carried here too as belt-and-braces so a restart reconstructs it
+      // directly. The model itself rides in `model` above (recovered from jsonl
+      // uniformly for every backend).
+      backend: s.backend ?? CLAUDE_BACKEND_ID,
       worktreeName: s.worktree?.worktreeName ?? null,
       temp: !!s.temp,
       conducted: !!s.conducted,
@@ -289,7 +290,7 @@ export async function restoreFromResumeManifest({ instances, log = console, stag
         thinking: e.thinking,
         model: e.model ?? undefined,
         sonnetWindow: e.sonnetWindow ?? undefined,
-        backendKind: e.backendKind ?? undefined,
+        backend: e.backend ?? undefined,
         worktree: e.worktreeName ?? null,
         temp: !!e.temp,
         conducted: !!e.conducted,
@@ -314,7 +315,7 @@ export async function restoreFromResumeManifest({ instances, log = console, stag
       // deadline as-is; the wall-clock sweep fires it on the first tick if it
       // already elapsed during the restart.
       // `_inUsageWindowFlow(inst)` guards against re-arming an auto-resume onto a
-      // now-exempt (e.g. Ollama-only) restored session — such a session never
+      // now-exempt (e.g. ollama-only) restored session — such a session never
       // persisted overageStopped:true, so this is belt-and-braces.
       if (e.overageStopped && Number.isFinite(e.overageResumeAt) && instances._inUsageWindowFlow(inst)) {
         inst._overageResetsAt = e.overageResetsAt ?? null;

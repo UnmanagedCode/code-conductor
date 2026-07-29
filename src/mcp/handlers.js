@@ -35,8 +35,8 @@ import { formatUserQuestionAnswers } from '../../public/userQuestionAnswers.js';
 import { getCatalog as getProjectConventionsCatalog, composeProjectScaffold } from '../projectConventions.js';
 import { composeProjectConventionsDoc } from '../projectClaudeMd.js';
 import { getCatalog as getConductorConventionsCatalog, getSelection as getConductorSelection } from '../conductorConventions.js';
-import { isKnownFamily, isKnownTier, defaultVersion, familyOf } from '../modelVersions.js';
-import { getTierBackend, resolveRoleBackend, isResolvableRole, isKnownOllamaModel } from '../appSettings.js';
+import { isKnownFamily, isKnownTier, defaultVersion, familyOf, CLAUDE_BACKEND_ID } from '../modelVersions.js';
+import { getTierBackend, resolveRoleBackend, isResolvableRole, backendForModel } from '../appSettings.js';
 import { textPayload } from './content.js';
 import { pageInstanceEvents } from '../eventArchive.js';
 import { parseNumstat, parseNameStatus, indexDiffLines, paginateDiff } from './diffPaging.js';
@@ -260,42 +260,44 @@ export async function spawnInstance(args, { instances, callerId }) {
   // callerId is the conductor's stable sessionId (?caller=). Resolve it to the
   // conductor's live instanceId so callerInstanceId stays an instanceId.
   const callerInst = callerId ? instances.liveForSession(callerId) : null;
-  // Resolve `args.model` to a concrete {model, backendKind} pair:
+  // Resolve `args.model` to a concrete {model, backend} pair:
   //   - a capability tier (fast/balanced/powerful/frontier) → its bound
-  //     {kind, model} (a Claude version id, or an Ollama tag);
-  //   - a role → its resolved {kind, model} (built-in, user-custom, or a
-  //     plugin-owned role; a role binds to a tier or a custom backend; disjoint
+  //     {backend, model} (a Claude version id, or another backend's model id);
+  //   - a role → its resolved {backend, model} (built-in, user-custom, or a
+  //     plugin-owned role; a role binds to a tier or a concrete backend; disjoint
   //     name-space from tiers — custom names can't be tier/family aliases, plugin
   //     names are '/'-namespaced — so order is safe);
   //   - a legacy family alias (opus/sonnet/haiku/fable) → that family's default
   //     Claude version, independent of any tier binding;
-  //   - a known Ollama tag passed directly → {kind:'ollama'} (robustness);
+  //   - a model id served by a configured backend, passed directly → that
+  //     backend (robustness);
   //   - a Claude model id (claude-…, incl. future ones) → pass-through claude;
   //   - anything else → reject, rather than silently spawn a broken claude.
   let model = args.model;
-  let backendKind = 'claude';
+  let backend = CLAUDE_BACKEND_ID;
   // The Sonnet context window ('1m'|'200k') carried by the resolved binding,
   // threaded to create() explicitly — a 200k Sonnet is stored bare, so its
   // window can't ride in the model-id suffix. Undefined for non-tier/role
-  // resolutions (family alias / raw id / ollama) → create() defaults to '1m'.
+  // resolutions (family alias / raw id) → create() defaults to '1m'.
   let sonnetWindow;
   if (model && isKnownTier(model)) {
-    const binding = getTierBackend(model); // {kind, model, window?}
-    backendKind = binding.kind;
+    const binding = getTierBackend(model); // {backend, model, window?}
+    backend = binding.backend;
     model = binding.model;
     sonnetWindow = binding.window;
   } else if (model && isResolvableRole(model)) {
-    const binding = resolveRoleBackend(model); // {kind, model, window?}
-    backendKind = binding.kind;
+    const binding = resolveRoleBackend(model); // {backend, model, window?}
+    backend = binding.backend;
     model = binding.model;
     sonnetWindow = binding.window;
   } else if (model && isKnownFamily(model)) {
     model = defaultVersion(model);
-  } else if (model && isKnownOllamaModel(model)) {
-    backendKind = 'ollama';
+  } else if (model && backendForModel(model)) {
+    backend = backendForModel(model);
   } else if (model && !familyOf(model)) {
-    // A non-empty model that is not a tier, family alias, known Ollama tag, or
-    // Claude id — refuse instead of resolving to a broken bare-claude spawn.
+    // A non-empty model that is not a tier, family alias, a configured backend's
+    // model, or a Claude id — refuse instead of resolving to a broken bare-claude
+    // spawn.
     throw Object.assign(
       new Error(`unknown model '${model}' — pass a capability tier (fast/balanced/powerful/frontier) or a specific model id`),
       { statusCode: 400, code: 'BAD_MODEL' },
@@ -313,7 +315,7 @@ export async function spawnInstance(args, { instances, callerId }) {
     thinking: args.thinking,
     model,
     sonnetWindow,
-    backendKind,
+    backend,
     resume: args.resume,
     worktree,
     // Conductor workers default to temp (disposable). Unlike the UI's temp
