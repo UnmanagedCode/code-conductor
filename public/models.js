@@ -70,12 +70,10 @@ export function getTierLabel(tier) { return tierLabels[tier] || tier; }
 // {backend,model}), falling back to the pre-fetch default.
 export function getActiveRoleBinding(role) { return activeRoleBinding[role] || DEFAULT_ROLE_BINDING[role]; }
 export function setActiveRoleBindings(map) { activeRoleBinding = { ...activeRoleBinding, ...(map || {}) }; }
-export function getBackends() { return backends; }
 export function setBackends(list) { backends = Array.isArray(list) && list.length ? list : backends; return backends; }
 export function getBackendLabel(id) { return backends.find(b => b.id === id)?.label || id; }
 export function getCustomModels() { return customModels; }
 export function setCustomModels(list) { customModels = Array.isArray(list) ? list : []; return customModels; }
-export function getOllamaCloudModels() { return ollamaCloudModels; }
 export function setOllamaCloudModels(list) { ollamaCloudModels = Array.isArray(list) ? list : []; return ollamaCloudModels; }
 
 // Native context window (raw tokens) for a non-Claude model id, or null when
