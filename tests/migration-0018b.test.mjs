@@ -1,17 +1,25 @@
-// Migration 0024: seed the backend registry, re-key concrete tier/role bindings
+// Migration 0018b: seed the backend registry, re-key concrete tier/role bindings
 // from {kind,model} to {backend,model}, rename customBackends → customModels with
-// a backend + a now-required contextWindow, and reshape the session-backends
-// sidecar to {sid:{backend,model}} while CARRYING the tagged model across.
+// a backend + a now-required contextWindow, inline the global sonnetContextWindow
+// onto the bindings that can carry one, and reshape the session-backends sidecar to
+// {sid:{backend,model}} while CARRYING the tagged model across.
+//
+// Letter-suffixed and ordered BETWEEN 0018 and 0019 (numeric order = execution
+// order). The ordering is load-bearing: 0019 deletes `models.sonnetContextWindow`
+// unconditionally, and on a pre-0017 store its backfill guard can't match the
+// still-STRING tier bindings — so running 0019 first destroys a user's explicit 200k
+// pin. `the full chain PRESERVES a pre-0017 200k Sonnet pin` below is the regression
+// test for exactly that; it FAILS if this migration is moved back after 0019.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import * as m0024 from '../migrations/0024-backend-registry.mjs';
+import * as m0018b from '../migrations/0018b-backend-registry.mjs';
 import { runMigrations } from '../migrations/index.mjs';
 
-async function mkTmp() { return fs.mkdtemp(path.join(os.tmpdir(), 'cc-mig24-')); }
+async function mkTmp() { return fs.mkdtemp(path.join(os.tmpdir(), 'cc-mig18b-')); }
 function settingsFile(root) { return path.join(root, '.code-conductor', 'settings.json'); }
 function sidecarFile(root) { return path.join(root, '.code-conductor', 'session-backends.json'); }
 async function writeJson(file, obj) { await fs.mkdir(path.dirname(file), { recursive: true }); await fs.writeFile(file, JSON.stringify(obj, null, 2)); }
@@ -49,9 +57,9 @@ test('settings: seeds the registry, re-keys every concrete binding, renames cust
     },
   });
 
-  const res = await m0024.run({ root });
+  const res = await m0018b.run({ root });
   assert.equal(res.applied, true);
-  assert.deepEqual(res.summary, { settings: true, rekeyed: 7, customModels: 3, sidecar: null });
+  assert.deepEqual(res.summary, { settings: true, rekeyed: 7, customModels: 3, windowsInlined: 0, sidecar: null });
 
   const s = (await readJson(settingsFile(root))).models;
 
@@ -94,7 +102,7 @@ test('settings: seeds the registry, re-keys every concrete binding, renames cust
   assert.deepEqual((await readJson(settingsFile(root))).transcribe, { model: 'ggml-small.en-q5_1.bin' });
 
   // Idempotent: `models.backends` present ⇒ second run is a no-op.
-  assert.deepEqual(await m0024.run({ root }), { applied: false });
+  assert.deepEqual(await m0018b.run({ root }), { applied: false });
 
   await fs.rm(root, { recursive: true, force: true });
 });
@@ -110,9 +118,9 @@ test('sidecar: map-of-string → map-of-object, CARRYING the tagged model (key-s
     },
   });
 
-  const res = await m0024.run({ root });
+  const res = await m0018b.run({ root });
   assert.equal(res.applied, true);
-  assert.deepEqual(res.summary, { settings: false, rekeyed: 0, customModels: 0, sidecar: 4 });
+  assert.deepEqual(res.summary, { settings: false, rekeyed: 0, customModels: 0, windowsInlined: 0, sidecar: 4 });
 
   const sc = await readJson(sidecarFile(root));
   assert.deepEqual(sc, {
@@ -127,7 +135,7 @@ test('sidecar: map-of-string → map-of-object, CARRYING the tagged model (key-s
   assert.deepEqual(Object.keys(sc.sessions), ['sid-a', 'sid-b', 'sid-c', 'sid-d']);
 
   // Idempotent: every value is already an object.
-  assert.deepEqual(await m0024.run({ root }), { applied: false });
+  assert.deepEqual(await m0018b.run({ root }), { applied: false });
 
   await fs.rm(root, { recursive: true, force: true });
 });
@@ -140,7 +148,7 @@ test('sidecar: a partially-migrated store is completed without losing already-sh
       'sid-old': 'glm-5.2:cloud',                            // still a string — converted
     },
   });
-  const res = await m0024.run({ root });
+  const res = await m0018b.run({ root });
   assert.equal(res.applied, true);
   assert.deepEqual((await readJson(sidecarFile(root))).sessions, {
     'sid-new': { backend: 'my-proxy', model: 'mine:v1' },
@@ -152,14 +160,14 @@ test('sidecar: a partially-migrated store is completed without losing already-sh
 test('settings with no models namespace, and an absent sidecar, are both no-ops', async () => {
   const root = await mkTmp();
   await writeJson(settingsFile(root), { transcribe: { model: 'x' } });
-  assert.deepEqual(await m0024.run({ root }), { applied: false });
+  assert.deepEqual(await m0018b.run({ root }), { applied: false });
   assert.equal(await exists(sidecarFile(root)), false);
   await fs.rm(root, { recursive: true, force: true });
 });
 
-// 0024 SUPERSEDES 0017 (which is unregistered — its probe keyed on the `kind` key
+// 0018b SUPERSEDES 0017 (which is unregistered — its probe keyed on the `kind` key
 // this migration removes, so it would re-run destructively every boot). These cover
-// the pre-0017 shapes 0024 absorbed.
+// the pre-0017 shapes 0018b absorbed.
 test('absorbs pre-0017 settings shapes: string tierBackend, id/host customBackends, per-family keys', async () => {
   const root = await mkTmp();
   await writeJson(settingsFile(root), {
@@ -180,7 +188,7 @@ test('absorbs pre-0017 settings shapes: string tierBackend, id/host customBacken
     },
   });
 
-  const res = await m0024.run({ root });
+  const res = await m0018b.run({ root });
   assert.equal(res.applied, true);
   const s = (await readJson(settingsFile(root))).models;
 
@@ -197,7 +205,7 @@ test('absorbs pre-0017 settings shapes: string tierBackend, id/host customBacken
   // Dead per-family keys deleted.
   for (const f of ['fable', 'opus', 'sonnet', 'haiku']) assert.equal(f in s, false, `models.${f} deleted`);
 
-  assert.deepEqual(await m0024.run({ root }), { applied: false });
+  assert.deepEqual(await m0018b.run({ root }), { applied: false });
   await fs.rm(root, { recursive: true, force: true });
 });
 
@@ -210,7 +218,7 @@ test('absorbs the pre-0017 sidecar form {backends:{sid:{kind}}}, keeping only no
       'sid-c': { kind: 'claude' },   // claude sessions store nothing
     },
   });
-  const res = await m0024.run({ root });
+  const res = await m0018b.run({ root });
   assert.equal(res.applied, true);
   const sc = await readJson(sidecarFile(root));
   // That form never carried the model, so it lands model-unknown — resume falls
@@ -222,14 +230,14 @@ test('absorbs the pre-0017 sidecar form {backends:{sid:{kind}}}, keeping only no
     },
   });
   assert.deepEqual(Object.keys(sc.sessions), ['sid-a', 'sid-b']);
-  assert.deepEqual(await m0024.run({ root }), { applied: false });
+  assert.deepEqual(await m0018b.run({ root }), { applied: false });
   await fs.rm(root, { recursive: true, force: true });
 });
 
 test('a pre-0017 sidecar with no non-claude sessions is unlinked', async () => {
   const root = await mkTmp();
   await writeJson(sidecarFile(root), { backends: { 'sid-c': { kind: 'claude' } } });
-  const res = await m0024.run({ root });
+  const res = await m0018b.run({ root });
   assert.equal(res.applied, true);
   assert.equal(await exists(sidecarFile(root)), false);
   await fs.rm(root, { recursive: true, force: true });
@@ -237,7 +245,7 @@ test('a pre-0017 sidecar with no non-claude sessions is unlinked', async () => {
 
 test('an EMPTY root is a completely silent no-op (the full-chain log stays clean)', async () => {
   const root = await mkTmp();
-  assert.deepEqual(await m0024.run({ root }), { applied: false });
+  assert.deepEqual(await m0018b.run({ root }), { applied: false });
   // …and via the real runner, so a regression here would also break
   // tests/migrations.test.mjs's "no candidates → no log output" contract.
   const logs = [];
@@ -273,12 +281,19 @@ test('the full migration chain leaves a legacy store on the current shape', asyn
   await fs.rm(root, { recursive: true, force: true });
 });
 
-test('the full chain migrates a PRE-0017 store, and re-running it changes nothing', async () => {
+test('the full chain PRESERVES a pre-0017 200k Sonnet pin (0018b must run BEFORE 0019)', async () => {
   const root = await mkTmp();
   await writeJson(settingsFile(root), {
     models: {
       opus: 'claude-opus-4-7',
-      tierBackend: { fast: 'ollama:local-gpt', powerful: 'opus' },
+      // Per-family active version + the GLOBAL window preference, the shape an
+      // install created between sonnetContextWindow shipping and 0017 carries.
+      sonnet: 'claude-sonnet-4-6',
+      sonnetContextWindow: '200k',
+      // Family-key STRINGS — 0019's backfill guard cannot match these, and 0019
+      // deletes the global unconditionally, so ordering 0018b after it destroys the
+      // pin. `balanced` is the selectable Sonnet that must keep its 200k.
+      tierBackend: { fast: 'ollama:local-gpt', balanced: 'sonnet', powerful: 'opus' },
       customBackends: [{ id: 'ollama:local-gpt', label: 'Local', model: 'gemma4:cloud', host: '10.0.0.5:11434' }],
     },
   });
@@ -286,6 +301,11 @@ test('the full chain migrates a PRE-0017 store, and re-running it changes nothin
 
   await runMigrations({ root, log: () => {} });
   const s = (await readJson(settingsFile(root))).models;
+  // THE assertion: the user's explicit 200k survived onto the materialized binding.
+  assert.deepEqual(s.tierBackend.balanced,
+    { backend: 'claude', model: 'claude-sonnet-4-6', window: '200k' },
+    'a pre-0017 200k Sonnet pin must be inlined, not silently widened to 1M');
+  assert.equal('sonnetContextWindow' in s, false, 'the global is consumed and dropped');
   assert.deepEqual(s.tierBackend.fast, { backend: 'ollama', model: 'gemma4:cloud' });
   assert.deepEqual(s.tierBackend.powerful, { backend: 'claude', model: 'claude-opus-4-7' });
   assert.deepEqual(s.customModels, [{ label: 'Local', model: 'gemma4:cloud', backend: 'ollama', contextWindow: 200000 }]);
@@ -299,5 +319,59 @@ test('the full chain migrates a PRE-0017 store, and re-running it changes nothin
   assert.deepEqual(logs, []);
   assert.deepEqual(await readJson(settingsFile(root)), before);
 
+  await fs.rm(root, { recursive: true, force: true });
+});
+
+// The shape 0019 was originally written for: bindings already collapsed to
+// {kind,model} but the global still present. 0018b now absorbs that job, so BOTH
+// paths are pinned and 0019 is left permanently inert.
+test('the full chain inlines a POST-0017 global onto tier AND role bindings', async () => {
+  const root = await mkTmp();
+  await writeJson(settingsFile(root), {
+    models: {
+      sonnetContextWindow: '200k',
+      tierBackend: {
+        balanced: { kind: 'claude', model: 'claude-sonnet-4-6' },  // selectable → inlined
+        fast:     { kind: 'claude', model: 'claude-sonnet-5' },    // fixed 1M → skipped
+        powerful: { kind: 'claude', model: 'claude-opus-4-8' },    // non-Sonnet → skipped
+      },
+      roleBackend: {
+        reviewer:  { kind: 'claude', model: 'claude-sonnet-4-5' }, // selectable → inlined
+        conductor: { kind: 'tier', tier: 'powerful' },             // tier ref → untouched
+      },
+    },
+  });
+
+  await runMigrations({ root, log: () => {} });
+  const s = (await readJson(settingsFile(root))).models;
+  assert.deepEqual(s.tierBackend.balanced, { backend: 'claude', model: 'claude-sonnet-4-6', window: '200k' });
+  assert.deepEqual(s.tierBackend.fast, { backend: 'claude', model: 'claude-sonnet-5' });
+  assert.deepEqual(s.tierBackend.powerful, { backend: 'claude', model: 'claude-opus-4-8' });
+  assert.deepEqual(s.roleBackend.reviewer, { backend: 'claude', model: 'claude-sonnet-4-5', window: '200k' });
+  assert.deepEqual(s.roleBackend.conductor, { kind: 'tier', tier: 'powerful' });
+  assert.equal('sonnetContextWindow' in s, false);
+
+  // 0019 is now permanently inert — a second chain run is silent and unchanged.
+  const before = await readJson(settingsFile(root));
+  const logs = [];
+  await runMigrations({ root, log: (m) => logs.push(m) });
+  assert.deepEqual(logs, []);
+  assert.deepEqual(await readJson(settingsFile(root)), before);
+
+  await fs.rm(root, { recursive: true, force: true });
+});
+
+// A store already past 0019 carries its window ON the binding and no global. The
+// inlining step must not touch it (and must not invent a window for it).
+test('an ALREADY-POST-0019 store keeps its per-binding window untouched', async () => {
+  const root = await mkTmp();
+  await writeJson(settingsFile(root), {
+    models: { tierBackend: { balanced: { kind: 'claude', model: 'claude-sonnet-4-6', window: '1m' } } },
+  });
+  const res = await m0018b.run({ root });
+  assert.equal(res.applied, true);
+  assert.equal(res.summary.windowsInlined, 0, 'nothing to inline — the global is long gone');
+  const s = (await readJson(settingsFile(root))).models;
+  assert.deepEqual(s.tierBackend.balanced, { backend: 'claude', model: 'claude-sonnet-4-6', window: '1m' });
   await fs.rm(root, { recursive: true, force: true });
 });

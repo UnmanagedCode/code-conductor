@@ -1,4 +1,4 @@
-// Migration 0024: turn the hardcoded `claude`/`ollama` provider union into the
+// Migration 0018b: turn the hardcoded `claude`/`ollama` provider union into the
 // data-driven backend REGISTRY.
 //
 // Before (settings.json `models`):
@@ -34,9 +34,21 @@
 // model}}}, CARRYING the existing tagged model across (it is the authority for a
 // tag the jsonl can't hold — losing it would resume `foo:cloud` as the
 // unpullable `foo`). Every pre-existing entry was ollama-backed by construction.
-// Note the post-0024 reader (src/sessionBackends.js) skips string values, so a
+// Note the post-0018b reader (src/sessionBackends.js) skips string values, so a
 // store left un-migrated degrades to "no record" (a plain claude resume) rather
 // than crashing.
+//
+// LETTER-SUFFIXED, and ordered between 0018 and 0019 on purpose. It must run AFTER
+// 0018 (it assumes the map-shaped sidecar 0018 produces) and BEFORE 0019: on a
+// pre-0017 store `models.tierBackend[tier]` is still a family-key STRING, so 0019's
+// backfill guard (`binding.kind === 'claude' && isSelectableSonnet(...)`) can't match
+// it, yet 0019 deletes `models.sonnetContextWindow` unconditionally — destroying a
+// user's explicit 200k Sonnet pin before this migration could materialize the
+// binding, silently widening it to 1M. So this migration ABSORBS 0019's job:
+// it inlines that global onto every selectable-Sonnet claude binding (both the
+// pre-0017 string form it materializes and the post-0017 {kind,model} form) and then
+// deletes it, which also leaves 0019 permanently inert (`applied:false`) while it
+// stays registered as the historical record.
 //
 // SUPERSEDES 0017. 0017's idempotency probe was "does some tierBackend value have
 // a `kind` key?" — which this migration removes, so leaving 0017 registered would
@@ -60,12 +72,21 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-export const name = '0024-backend-registry';
+export const name = '0018b-backend-registry';
 
 const DEFAULT_PROJECTS_ROOT = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   '..', '..',
 );
+
+// A Sonnet version whose window is user-selectable (Sonnet 4.x) — i.e. a
+// 'claude-sonnet-*' id that is NOT the fixed-1M Sonnet 5. Frozen snapshot rule,
+// copied from 0019 (whose job this absorbs for the pre-0017 path).
+function isSelectableSonnet(model) {
+  return typeof model === 'string'
+    && model.startsWith('claude-sonnet')
+    && model !== 'claude-sonnet-5';
+}
 
 // Frozen snapshots of the catalog at write time, for the absorbed 0017 shapes.
 const FAMILY_DEFAULT_VERSION = {
@@ -110,6 +131,7 @@ export async function run({ root, log = () => {} } = {}) {
   let didSettings = false;
   let rekeyed = 0;
   let customModels = 0;
+  let windowsInlined = 0;
   let sidecarSessions = null;
 
   const settings = await readJsonSafe(settingsFile);
@@ -185,6 +207,29 @@ export async function run({ root, log = () => {} } = {}) {
       }
       delete models.customBackends;
 
+      // Absorbed from 0019: inline the GLOBAL Sonnet window onto each binding that
+      // can carry one, then drop it. Runs after the re-key above, so both input
+      // shapes are already `{backend, model}` — the pre-0017 family-key strings this
+      // migration materialized AND post-0017 `{kind, model}` objects. Iterating
+      // roleBackend's values covers plugin-role override keys for free; tier
+      // REFERENCE bindings carry no `model`, so isSelectableSonnet excludes them.
+      // An explicit per-binding `window` (a store already past 0019) is never
+      // overwritten.
+      const globalWindow = models.sonnetContextWindow;
+      if (globalWindow === '1m' || globalWindow === '200k') {
+        const inline = (binding) => {
+          if (!binding || typeof binding !== 'object') return;
+          if (binding.backend !== 'claude' || !isSelectableSonnet(binding.model)) return;
+          if (binding.window === '1m' || binding.window === '200k') return;
+          binding.window = globalWindow;
+          windowsInlined += 1;
+        };
+        for (const map of [models.tierBackend, models.roleBackend]) {
+          if (map && typeof map === 'object') for (const b of Object.values(map)) inline(b);
+        }
+      }
+      if ('sonnetContextWindow' in models) delete models.sonnetContextWindow;
+
       await writeJsonAtomic(settingsFile, settings);
       didSettings = true;
     }
@@ -232,11 +277,11 @@ export async function run({ root, log = () => {} } = {}) {
 
   if (!didSettings && sidecarSessions === null) return { applied: false };
   const parts = [];
-  if (didSettings) parts.push(`seeded backend registry (re-keyed ${rekeyed} binding${rekeyed === 1 ? '' : 's'}, ${customModels} custom model${customModels === 1 ? '' : 's'})`);
+  if (didSettings) parts.push(`seeded backend registry (re-keyed ${rekeyed} binding${rekeyed === 1 ? '' : 's'}, ${customModels} custom model${customModels === 1 ? '' : 's'}, inlined ${windowsInlined} Sonnet window${windowsInlined === 1 ? '' : 's'})`);
   if (sidecarSessions !== null) parts.push(`reshaped ${sidecarSessions} session-backends entr${sidecarSessions === 1 ? 'y' : 'ies'}`);
   log(`  ✓ ${parts.join(' + ')}`);
   return {
     applied: true,
-    summary: { settings: didSettings, rekeyed, customModels, sidecar: sidecarSessions },
+    summary: { settings: didSettings, rekeyed, customModels, windowsInlined, sidecar: sidecarSessions },
   };
 }
