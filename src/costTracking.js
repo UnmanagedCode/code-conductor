@@ -7,6 +7,7 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { orchStoreRoot } from './projects.js';
+import { CLAUDE_BACKEND_ID } from './modelVersions.js';
 
 export function costsPath() {
   return path.join(orchStoreRoot(), 'costs.jsonl');
@@ -42,14 +43,14 @@ async function writeCostRow(p, row) {
 // they had become by the time the queue drained.
 function appendCostRow(inst, ev, parentSessionId) {
   // Per-turn token totals come ONLY from the SDK `result.usage` (a genuine
-  // per-turn sum). The Ollama backend (`ollama launch claude`) omits `usage`
-  // from its `result` frames, so ev.usage is null there — we OMIT the four
+  // per-turn sum). A substitution backend (e.g. the built-in `ollama` row) omits
+  // `usage` from its `result` frames, so ev.usage is null there — we OMIT the four
   // token fields rather than persist fabricated 0s. (The only other token
   // signal, message_start.usage, is a last-value-wins context-size snapshot,
   // not a summable per-turn total — summing it would double-count.) Mirrors the
   // client UsageTracker guard in public/usage.js. The conditional spread keeps
   // the fields in-position so Anthropic rows (usage always present) serialize
-  // byte-identically. Read side treats an ollama row (no cost_usd) as
+  // byte-identically. Read side treats a non-Claude row (no cost_usd) as
   // token-unknown, so the omission drives an honest `—` in the #costs dashboard.
   const usage = ev.usage;
   const tokenFields = usage ? {
@@ -90,9 +91,10 @@ function appendCostRow(inst, ev, parentSessionId) {
     first_req_cache_creation: ev.firstReqCacheCreation ?? 0,
     first_req_evicted: ev.firstReqEvicted ?? 0,
   };
-  // ollama's total_cost_usd is Anthropic list pricing applied to a free local
-  // backend — meaningless, so omit the field rather than persist a bogus number.
-  if (inst.backendKind !== 'ollama') {
+  // A substitution backend's total_cost_usd is Anthropic list pricing applied to
+  // someone else's model — meaningless, so omit the field rather than persist a
+  // bogus number. Only the identity `claude` backend bills the Anthropic account.
+  if (inst.backend === CLAUDE_BACKEND_ID) {
     row.cost_usd = ev.costDelta ?? ev.cost ?? 0;
   }
   const p = costsPath();
@@ -137,13 +139,13 @@ export async function getCostSummary() {
   // By project (with nested per-model breakdown)
   const projectMap = new Map();
   for (const r of rows) {
-    // A row's token counts are trustworthy only for Anthropic rows. Ollama rows
-    // carry no summable per-turn token total and omit `cost_usd` (see
+    // A row's token counts are trustworthy only for Anthropic rows. Non-Claude
+    // rows carry no summable per-turn token total and omit `cost_usd` (see
     // appendCostRow) — so `'cost_usd' in r` is the canonical current-format
-    // Anthropic marker, and it also correctly classifies legacy ollama rows
+    // Anthropic marker, and it also correctly classifies legacy non-Claude rows
     // that carry stale `input_tokens: 0` (they lack cost_usd). Rows without
     // trustworthy tokens are excluded from the token sums and leave `_hasTokens`
-    // false, so an ollama-only group reports tokens_known:false → `—` in the UI,
+    // false, so a non-Claude-only group reports tokens_known:false → `—` in the UI,
     // while a mixed group keeps its real Anthropic token totals.
     const tokensKnown = 'cost_usd' in r;
     const key = r.project ?? '(unknown)';

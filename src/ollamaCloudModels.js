@@ -1,8 +1,10 @@
 // Curated catalog of Ollama *cloud* coding models, offered as selectable
-// presets in the Settings → Models Ollama picker alongside the user's own
-// `customBackends`. Unlike customBackends these are read-only and never
-// persisted — this module is the single source of truth, shipped to the
-// client via `GET /api/settings/models` (see routes.js modelsSettingsState).
+// presets alongside the user's own `customModels` — scoped to the BUILT-IN
+// `ollama` backend only (a user-defined backend gets no curated catalog; see
+// isKnownBackendModel in appSettings.js). Unlike customModels these are
+// read-only and never persisted — this module is the single source of truth,
+// shipped to the client via `GET /api/settings/models` (see routes.js
+// modelsSettingsState).
 //
 // Tags are verbatim from ollama.com and deliberately inconsistent: most use
 // the bare `:cloud` alias, but Mistral Large 3 has no bare alias and stays
@@ -11,9 +13,9 @@
 // `contextWindow` is the model's native window in raw tokens (round decimals,
 // matching CONTEXT_WINDOWS in public/usage.js). This is the authoritative
 // per-model size: it drives the header context-usage bar (via
-// ollamaContextWindowFor in public/models.js) and both
+// customContextWindowFor in public/models.js) and both
 // CLAUDE_CODE_AUTO_COMPACT_WINDOW and CLAUDE_CODE_MAX_CONTEXT_TOKENS at spawn
-// time (via getOllamaContextWindow in src/appSettings.js). MiniMax M3
+// time (via contextWindowForModel in src/appSettings.js). MiniMax M3
 // is 1M *max* (only 512k guaranteed-minimum, billed 2× above 512k) — we
 // deliberately advertise the 1M ceiling here.
 export const OLLAMA_CLOUD_MODELS = [
@@ -27,8 +29,8 @@ export const OLLAMA_CLOUD_MODELS = [
 ];
 
 // Per-tier catalog default, used only as the auto-picked model when a user
-// switches THAT tier's Settings → Models provider to Ollama (see
-// onPickBackendKind in public/settings.js). Does not change the global
+// switches THAT tier's Settings → Models backend to the built-in `ollama` row
+// (see onPickBackend in public/settings.js). Does not change the global
 // out-of-the-box tier default (DEFAULT_TIER_BACKEND in modelVersions.js
 // stays all-Claude) — frontier intentionally has no catalog default.
 export const OLLAMA_CLOUD_TIER_DEFAULTS = {

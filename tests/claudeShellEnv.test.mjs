@@ -15,8 +15,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { getShellEnvBundlePath, _resetForTest, bundleShellKind } from '../src/claudeShellEnv.js';
 import { orchStoreRoot } from '../src/projects.js';
-import { setTierBackend } from '../src/appSettings.js';
-import { fakeOllamaReachable, fakeOllamaUnreachable } from './helpers.mjs';
+import { setTierBackend, addBackend, addCustomModel, getBackend } from '../src/appSettings.js';
 import { resolveBackendLaunch } from '../src/claudeLauncher.js';
 
 const execFileP = promisify(execFile);
@@ -72,6 +71,8 @@ process.stdin.on('end', () => {
   }
   const argvFile = process.env.FAKE_CLAUDE_ARGV_FILE;
   if (argvFile) writeFileSync(argvFile, JSON.stringify(argv));
+  const envFile = process.env.FAKE_CLAUDE_ENV_FILE;
+  if (envFile) writeFileSync(envFile, JSON.stringify(process.env));
   const m = input.match(/> '([^']*)'/);
   const targetPath = m ? m[1] : null;
 
@@ -134,7 +135,7 @@ test('bundle generation uses the fast tier\'s bound Claude model, not a hardcode
     PROJECTS_ROOT: home, CLAUDE_BIN: bin, FAKE_CLAUDE_MODE: 'happy', FAKE_CLAUDE_VERSION: '9.9.9',
     FAKE_CLAUDE_ARGV_FILE: argvFile,
   }, async () => {
-    await setTierBackend('fast', { kind: 'claude', model: 'claude-opus-4-7' });
+    await setTierBackend('fast', { backend: 'claude', model: 'claude-opus-4-7' });
     _resetForTest();
     await getShellEnvBundlePath();
     const argv = JSON.parse(await fsp.readFile(argvFile, 'utf8'));
@@ -144,51 +145,69 @@ test('bundle generation uses the fast tier\'s bound Claude model, not a hardcode
   });
 });
 
-test('bundle generation fails fast with a clear reachability error when the fast tier is Ollama-bound and Ollama is unreachable', async () => {
+// Main covered "bundle-gen fails fast instead of eating the full genTimeoutMs" via
+// the reachability preflight. The preflight is gone, but the fast-fail GUARANTEE
+// and the code implementing it (the spawn 'error' handler) are still live — a
+// template whose command is missing must reject promptly, since the bundle is
+// cached process-wide and every project_bash would otherwise eat the 45s timeout.
+test('bundle generation fails fast when the fast tier\'s backend command does not exist', async () => {
   const home = await mkTmp();
-  const bin = await writeFakeClaude(home);
-  const restoreUnreach = fakeOllamaUnreachable();
-  try {
-    await withEnv({ PROJECTS_ROOT: home, CLAUDE_BIN: bin, FAKE_CLAUDE_MODE: 'happy', FAKE_CLAUDE_VERSION: '9.9.9' }, async () => {
-      await setTierBackend('fast', { kind: 'ollama', model: 'deepseek-v4-flash:cloud' });
-      _resetForTest();
-      await assert.rejects(() => getShellEnvBundlePath(), /not reachable/i);
-    });
-  } finally {
-    restoreUnreach();
-  }
+  const bin = await writeFakeClaude(home); // for the claude --version cache-key probe
+  await withEnv({
+    PROJECTS_ROOT: home, CLAUDE_BIN: bin, FAKE_CLAUDE_MODE: 'happy', FAKE_CLAUDE_VERSION: '9.9.9',
+    // A generous timeout: the point is that we reject well before it, via 'error'.
+    CLAUDE_SHELL_ENV_TIMEOUT_MS: '30000',
+  }, async () => {
+    await addBackend({ id: 'ghostctl', label: 'Ghost', template: 'cc-definitely-not-a-real-binary run claude --model {model} --' });
+    await addCustomModel({ label: 'G', model: 'g:v1', backend: 'ghostctl', contextWindow: 128_000 });
+    await setTierBackend('fast', { backend: 'ghostctl', model: 'g:v1' });
+    _resetForTest();
+    const started = Date.now();
+    await assert.rejects(() => getShellEnvBundlePath(), /spawn error|ENOENT/i);
+    assert.ok(Date.now() - started < 10_000, 'rejected fast, not after the generation timeout');
+  });
 });
 
-test('bundle generation actually spawns `ollama launch claude ...` when the fast tier is Ollama-bound and reachable (OLLAMA_BIN test injection)', async () => {
+// The one place a template drives a REAL child_process.spawn (bundle-gen doesn't
+// go through the injectable launcher), so it's where template + env injection are
+// proven end-to-end. The backend row IS the injection seam now — a test registers
+// a row whose template names the fake binary, exactly as a user would register a
+// wrapper (this replaces the old hardcoded OLLAMA_BIN env shim).
+test('bundle generation spawns the fast tier\'s backend TEMPLATE, forwarding claude args and injecting the row\'s env', async () => {
   const home = await mkTmp();
   const claudeBin = await writeFakeClaude(home); // used only for the claude --version cache-key probe
-  const ollamaScript = path.join(home, 'fake-ollama.mjs');
-  await fsp.writeFile(ollamaScript, FAKE_CLAUDE_SCRIPT, 'utf8'); // same behavior — argv/stdin driven, name-agnostic
-  const ollamaBin = `${process.execPath} ${ollamaScript}`;
+  const wrapperScript = path.join(home, 'fake-wrapper.mjs');
+  await fsp.writeFile(wrapperScript, FAKE_CLAUDE_SCRIPT, 'utf8'); // same behavior — argv/stdin driven, name-agnostic
   const argvFile = path.join(home, 'argv.json');
-  const restoreReach = fakeOllamaReachable();
-  try {
-    await withEnv({
-      PROJECTS_ROOT: home, CLAUDE_BIN: claudeBin, OLLAMA_BIN: ollamaBin,
-      FAKE_CLAUDE_MODE: 'happy', FAKE_CLAUDE_VERSION: '9.9.9',
-      FAKE_CLAUDE_ARGV_FILE: argvFile,
-    }, async () => {
-      await setTierBackend('fast', { kind: 'ollama', model: 'deepseek-v4-flash:cloud' });
-      _resetForTest();
-      const p = await getShellEnvBundlePath();
-      const contents = await fsp.readFile(p, 'utf8');
-      assert.match(contents, /CLAUDE_CODE_EXECPATH/);
-
-      const argv = JSON.parse(await fsp.readFile(argvFile, 'utf8'));
-      assert.deepEqual(argv.slice(0, 6), ['launch', 'claude', '--model', 'deepseek-v4-flash:cloud', '--yes', '--']);
-      assert.equal(argv[6], '-p');
-      const modelIdxs = argv.map((a, i) => a === '--model' ? i : -1).filter(i => i >= 0);
-      assert.equal(modelIdxs.length, 2, '--model appears in both the launch prefix and the forwarded claude args');
-      for (const i of modelIdxs) assert.equal(argv[i + 1], 'deepseek-v4-flash:cloud');
+  const envFile = path.join(home, 'env.json');
+  await withEnv({
+    PROJECTS_ROOT: home, CLAUDE_BIN: claudeBin,
+    FAKE_CLAUDE_MODE: 'happy', FAKE_CLAUDE_VERSION: '9.9.9',
+    FAKE_CLAUDE_ARGV_FILE: argvFile, FAKE_CLAUDE_ENV_FILE: envFile,
+  }, async () => {
+    await addBackend({
+      id: 'wrapper', label: 'Wrapper',
+      // Mirrors the built-in ollama row's shape, pointed at the fake binary.
+      template: `${process.execPath} ${wrapperScript} launch claude --model {model} --yes --`,
+      env: [{ key: 'WRAPPER_TOKEN', value: 'sekret' }],
     });
-  } finally {
-    restoreReach();
-  }
+    await addCustomModel({ label: 'Flash', model: 'deepseek-v4-flash:cloud', backend: 'wrapper', contextWindow: 1_000_000 });
+    await setTierBackend('fast', { backend: 'wrapper', model: 'deepseek-v4-flash:cloud' });
+    _resetForTest();
+    const p = await getShellEnvBundlePath();
+    const contents = await fsp.readFile(p, 'utf8');
+    assert.match(contents, /CLAUDE_CODE_EXECPATH/);
+
+    const argv = JSON.parse(await fsp.readFile(argvFile, 'utf8'));
+    assert.deepEqual(argv.slice(0, 6), ['launch', 'claude', '--model', 'deepseek-v4-flash:cloud', '--yes', '--']);
+    assert.equal(argv[6], '-p');
+    const modelIdxs = argv.map((a, i) => a === '--model' ? i : -1).filter(i => i >= 0);
+    assert.equal(modelIdxs.length, 2, '--model appears in both the template prefix and the forwarded claude args');
+    for (const i of modelIdxs) assert.equal(argv[i + 1], 'deepseek-v4-flash:cloud');
+
+    const childEnv = JSON.parse(await fsp.readFile(envFile, 'utf8'));
+    assert.equal(childEnv.WRAPPER_TOKEN, 'sekret', "the backend row's env reaches the bundle-gen child");
+  });
 });
 
 test('bundleShellKind parses the shell suffix from a bundle path, defaulting unrecognized/legacy names to bash', () => {
@@ -409,7 +428,7 @@ const ot = OLLAMA_ENABLED ? test : test.skip.bind(test);
 ot('real ollama: `ollama launch claude ... --version` forwards claude\'s stdout/exit-code verbatim', async () => {
   const tag = process.env.REAL_OLLAMA_MODEL || 'deepseek-v4-flash:cloud';
   const direct = await execFileP('claude', ['--version']);
-  const { command, prefixArgs } = resolveBackendLaunch('ollama', tag, { command: 'claude', prefixArgs: [] });
+  const { command, prefixArgs } = resolveBackendLaunch(getBackend('ollama'), tag, { command: 'claude', prefixArgs: [] });
   const viaOllama = await execFileP(command, [...prefixArgs, '--version']);
   assert.equal(viaOllama.stdout, direct.stdout, 'ollama-launched claude --version must forward stdout verbatim, with no wrapper chatter');
   assert.equal(viaOllama.stderr, direct.stderr);

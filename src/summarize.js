@@ -8,8 +8,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { claudeProjectsRoot, encodeCwd, orchStoreRoot } from './projects.js'; // claudeProjectsRoot+encodeCwd used by countMessages/flattenTranscript
 import { resolveClaudeBin, resolveBackendLaunch } from './claudeLauncher.js';
-import { getTierBackend } from './appSettings.js';
-import { preflightOllamaBackend, ollamaPreflightError } from './ollamaBackend.js';
+import { getTierBackend, getBackend } from './appSettings.js';
 
 // Dedicated cwd for one-shot summary subprocesses: a subdirectory inside
 // the .code-conductor metadata dir. It is NOT under PROJECTS_ROOT as a
@@ -142,18 +141,15 @@ ${conversationText}
 ---
 Provide the summary only, no preamble:`;
 
-  // Honor the fast tier's bound backend (Claude or Ollama) unconditionally —
-  // same reasoning as claudeShellEnv.js's generateBundle(): no Anthropic
-  // fallback, since an Ollama-only host wouldn't have that model. `ollama
-  // launch claude` re-execs the SAME claude binary (only the endpoint/auth
-  // differ), so --output-format=json's result envelope is unaffected; a
-  // missing cost under Ollama already falls through the `?? null` below.
+  // Honor the fast tier's bound backend unconditionally — same reasoning as
+  // claudeShellEnv.js's generateBundle(): no Anthropic fallback, since a host
+  // with no Claude access wouldn't have that model. A substitution backend
+  // re-execs the SAME claude binary (only the endpoint/auth differ), so
+  // --output-format=json's result envelope is unaffected; a missing cost there
+  // already falls through the `?? null` below.
   const fastBackend = getTierBackend('fast');
-  if (fastBackend.kind === 'ollama') {
-    const pre = await preflightOllamaBackend({ model: fastBackend.model });
-    if (!pre.ok) throw ollamaPreflightError(pre);
-  }
-  const { command, prefixArgs } = resolveBackendLaunch(fastBackend.kind, fastBackend.model, resolveClaudeBin());
+  const { command, prefixArgs, env: backendEnvVars } =
+    resolveBackendLaunch(getBackend(fastBackend.backend), fastBackend.model, resolveClaudeBin());
   // Throwaway session-id so each generation is independent (no accidental
   // resume of a prior one-shot call).
   const scratchId = randomUUID();
@@ -176,6 +172,7 @@ Provide the summary only, no preamble:`;
   const parsed = await new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       cwd: spawnDir,
+      env: { ...process.env, ...backendEnvVars },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 
@@ -188,6 +185,16 @@ Provide the summary only, no preamble:`;
       child.kill();
       reject(new Error('summary generation timed out after 60s'));
     }, 60_000);
+
+    // A spawn that never starts (ENOENT/EACCES — e.g. a backend template naming a
+    // command that isn't installed) emits 'error', never 'close'. Without this
+    // listener the EventEmitter default rethrows it as an uncaught exception and
+    // takes the whole server down with every live session. Mirrors the same guard
+    // in claudeShellEnv.js's two spawns and instances.js's.
+    child.on('error', (err) => {
+      clearTimeout(timer);
+      reject(new Error(`summary generation failed to spawn ${command}: ${err.message}`));
+    });
 
     child.on('close', (code) => {
       clearTimeout(timer);
@@ -202,8 +209,13 @@ Provide the summary only, no preamble:`;
       resolve(out);
     });
 
-    child.stdin.write(prompt);
-    child.stdin.end();
+    // Guarded: on a failed spawn the streams are already destroyed, and an
+    // unhandled EPIPE here would escape the same way 'error' used to.
+    child.stdin.on('error', () => { /* surfaced via the 'error'/'close' paths above */ });
+    try {
+      child.stdin.write(prompt);
+      child.stdin.end();
+    } catch { /* ditto */ }
   });
 
   const durationMs = Date.now() - startMs;

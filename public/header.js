@@ -43,7 +43,7 @@ import {
 import { makeDismissable } from './dismissable.js';
 import { formatAgo } from './sidebar.js';
 import { send } from './ws.js';
-import { resolveSpawnModel, getTierList, getActiveTierEnabled, getActiveTierBackend, getTierLabel, backendKindOf } from './models.js';
+import { resolveSpawnModel, getTierList, getActiveTierEnabled, getActiveTierBackend, getTierLabel, backendIdOf, getBackendLabel, CLAUDE_BACKEND } from './models.js';
 
 // Combined popover: "Session totals" section above, "Usage limits" section
 // below. ctx data is per-session; usage-limit data is account-wide.
@@ -150,7 +150,7 @@ export function installHeader({
       const cacheHit = totalIn > 0 ? c.cacheRead / totalIn : 0;
       node.appendChild(row('Turns', String(c.turns)));
       node.appendChild(row('Duration', formatDuration(c.durationMs)));
-      node.appendChild(row('Cost', inst.backendKind === 'ollama' ? '—' : `$${c.cost.toFixed(4)}`));
+      node.appendChild(row('Cost', inst.backend && inst.backend !== CLAUDE_BACKEND ? '—' : `$${c.cost.toFixed(4)}`));
       node.appendChild(row('Input (uncached)', formatTokens(c.inputTokens)));
       node.appendChild(row('Output', formatTokens(c.outputTokens)));
       node.appendChild(row('Cache reads', `${formatTokens(c.cacheRead)} (${formatPct(cacheHit)} hit)`));
@@ -260,33 +260,33 @@ export function installHeader({
     node.appendChild(header);
 
     // A live "Change model" is a control_request to the RUNNING process, whose
-    // endpoint is fixed at launch — so a switch that changes backend KIND
-    // (Claude↔Ollama) can't be done live, and we conservatively also block
-    // Ollama↔Ollama (a different tag/host can't repoint the launched endpoint).
+    // endpoint is fixed at launch — so a switch involving any non-`claude`
+    // backend on either side can't be done live (including substitution↔
+    // substitution: a different model/host can't repoint the launched endpoint).
     // The server enforces this too; here we disable the blocked tiers upfront.
-    const runningKind = inst.backendKind === 'ollama' ? 'ollama' : 'claude';
+    const runningBackend = inst.backend || CLAUDE_BACKEND;
     const curModel = typeof inst.model === 'string' ? inst.model.replace(/\[(200k|1m)\]$/, '') : null;
     const row = document.createElement('div');
     row.className = 'quick-spawn-models';
     for (const tier of getTierList()) {
-      const binding = getActiveTierBackend(tier); // {kind, model}
-      const targetKind = backendKindOf(binding);
-      const blocked = runningKind === 'ollama' || targetKind === 'ollama';
+      const binding = getActiveTierBackend(tier); // {backend, model}
+      const targetBackend = backendIdOf(binding);
+      const blocked = runningBackend !== CLAUDE_BACKEND || targetBackend !== CLAUDE_BACKEND;
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.className = 'qs-model';
       btn.dataset.tier = tier;
       btn.hidden = !getActiveTierEnabled(tier);
       btn.disabled = blocked;
-      if (blocked) btn.title = 'Kill and respawn on that tier to change backend kind';
-      // Highlight the tier the running (Claude) worker is on — same kind + id.
-      btn.classList.toggle('qs-selected', runningKind === 'claude' && targetKind === 'claude' && binding.model === curModel);
+      if (blocked) btn.title = 'Kill and respawn on that tier to change backend';
+      // Highlight the tier the running (Claude) worker is on — same backend + id.
+      btn.classList.toggle('qs-selected', !blocked && binding.model === curModel);
       btn.textContent = getTierLabel(tier);
       if (!blocked) {
         btn.addEventListener('click', async () => {
-          const { model, backendKind } = resolveSpawnModel(tier);
+          const { model, backend } = resolveSpawnModel(tier);
           try {
-            await send('model', { id: inst.id, model, backendKind }, { ack: true });
+            await send('model', { id: inst.id, model, backend }, { ack: true });
             closeModelPopover();
             closeOverflow();
           } catch (e) {
@@ -297,10 +297,10 @@ export function installHeader({
       row.appendChild(btn);
     }
     node.appendChild(row);
-    if (runningKind === 'ollama') {
+    if (runningBackend !== CLAUDE_BACKEND) {
       const note = document.createElement('div');
       note.className = 'ih-usage-popover-note';
-      note.textContent = 'Ollama-backed session — kill and respawn on a tier to change model.';
+      note.textContent = `${getBackendLabel(runningBackend)}-backed session — kill and respawn on a tier to change model.`;
       node.appendChild(note);
     }
 

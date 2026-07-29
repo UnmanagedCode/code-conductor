@@ -1564,7 +1564,7 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
 .sm-role-form select { flex: 0 0 auto; }
 .sm-role-form .btn { flex: 0 0 auto; }
 
-/* Custom (Ollama) backends sub-panel inside the Models group. */
+/* Custom models sub-panel inside the Models group. */
 .sm-custom { margin-top: 12px; }
 .sm-custom-list { list-style: none; margin: 6px 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
 .sm-custom-empty { font-size: 12px; color: var(--muted); }
@@ -1575,8 +1575,34 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
 .sm-custom-meta { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sm-custom-form { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
 .sm-custom-form input { flex: 1 1 140px; min-width: 0; }
+.sm-custom-form select { flex: 0 0 auto; }
 .sm-custom-form .btn { flex: 0 0 auto; }
 .ih-usage-popover-note { font-size: 11px; color: var(--muted); padding: 6px 8px 2px; }
+
+/* ── Settings → Backends group ────────────────────────────────────────────── */
+/* One card per registry row. Managed rows show their template as read-only text
+   and have no Remove control (the server refuses either way). */
+.sb-list { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.sb-row {
+  display: flex; flex-direction: column; gap: 4px;
+  padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel);
+}
+.sb-row-head { display: flex; align-items: baseline; gap: 8px; }
+.sb-row-label { font-size: 13px; font-weight: 600; }
+.sb-row-id { font-size: 11px; color: var(--muted); font-family: ui-monospace, monospace; }
+.sb-managed-badge {
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em;
+  color: var(--muted); border: 1px solid var(--border); border-radius: 999px; padding: 0 5px;
+}
+.sb-row-actions { margin-left: auto; display: flex; gap: 6px; }
+.sb-row-template, .sb-row-env {
+  font-size: 12px; color: var(--muted);
+  font-family: ui-monospace, monospace; overflow-x: auto; white-space: pre;
+}
+.sb-form { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; }
+.sb-form input, .sb-form textarea { min-width: 0; width: 100%; box-sizing: border-box; }
+.sb-form textarea { font-family: ui-monospace, monospace; font-size: 12px; resize: vertical; }
+.sb-form-actions { display: flex; gap: 8px; }
 
 /* ── Review view ─────────────────────────────────────────────────────────── */
 /* Full-page diff browser, same pattern as settings. While open the instance-

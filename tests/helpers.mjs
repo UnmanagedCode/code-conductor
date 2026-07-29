@@ -6,7 +6,6 @@ import { createServer } from '../server.js';
 import { _resetForTest as resetProjectsCache } from '../src/projectsCache.js';
 import { InProcessClaudeLauncher } from './inProcessLauncher.mjs';
 import { ensureSafeStoreEnv } from './safeStoreRoot.mjs';
-import { OLLAMA_BASE } from '../src/ollamaBackend.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FAKE_CLAUDE = path.join(__dirname, 'fake-claude.mjs');
@@ -22,41 +21,6 @@ export async function makeTmpHome() {
   await fs.mkdir(path.join(dir, 'project'), { recursive: true });
   await fs.mkdir(path.join(dir, '.claude', 'projects'), { recursive: true });
   return dir;
-}
-
-// Install a fetch shim that makes the ollama reachability preflight
-// (src/ollamaBackend.js, hit by Instance spawn/respawn) see a live daemon at
-// localhost:11434, while passing every other request through to real fetch (so
-// the app's own HTTP/MCP calls still work). CI has no Ollama daemon, so any test
-// that spawns an ollama-backed worker needs this or the spawn now fails preflight.
-// `:cloud` tags are leniently available, so the default empty `models` suffices.
-// Returns a restore fn (call it in `after`).
-export function fakeOllamaReachable({ version = 'test', models = [] } = {}) {
-  const realFetch = globalThis.fetch;
-  globalThis.fetch = async (url, opts) => {
-    const u = String(url);
-    if (u.startsWith(OLLAMA_BASE)) {
-      if (u.endsWith('/api/version')) return { ok: true, json: async () => ({ version }) };
-      if (u.endsWith('/api/tags')) return { ok: true, json: async () => ({ models }) };
-    }
-    return realFetch(url, opts);
-  };
-  return () => { globalThis.fetch = realFetch; };
-}
-
-// Inverse of fakeOllamaReachable: make localhost:11434 connections fail so the
-// preflight reports "not reachable" deterministically, independent of whether a
-// real daemon happens to be running on the test host. Other requests pass
-// through. Returns a restore fn.
-export function fakeOllamaUnreachable() {
-  const realFetch = globalThis.fetch;
-  globalThis.fetch = async (url, opts) => {
-    if (String(url).startsWith(OLLAMA_BASE)) {
-      throw Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:11434'), { code: 'ECONNREFUSED' });
-    }
-    return realFetch(url, opts);
-  };
-  return () => { globalThis.fetch = realFetch; };
 }
 
 export async function rmrf(p) {

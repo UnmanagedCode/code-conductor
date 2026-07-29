@@ -30,38 +30,54 @@ export function resolveClaudeBin() {
   return { command: parts[0], prefixArgs: parts.slice(1) };
 }
 
-// Mirrors resolveClaudeBin's CLAUDE_BIN convention for the `ollama` command,
-// so tests can point it at a fake script instead of a real ollama install.
-function resolveOllamaBin() {
-  const raw = (process.env.OLLAMA_BIN ?? 'ollama').trim();
-  const parts = raw.split(/\s+/);
-  return { command: parts[0], prefixArgs: parts.slice(1) };
+// THE substitution point. Given a resolved claude binary and a backend RECORD
+// ({id,label,template,env} — see appSettings.getBackends), returns the
+// {command, prefixArgs, env} to spawn as a drop-in for `claude`; the SAME claude
+// args (including --model) are then appended uniformly by the caller.
+//
+//   empty template → the resolved claude binary + its prefixArgs (empty in prod;
+//                    the test CLAUDE_BIN="node fake.mjs" injection).
+//   a template     → the template's whitespace-split argv, with `{model}`
+//                    substituted, token 0 as the command and the rest as the
+//                    prefix. E.g. the built-in `ollama` row,
+//                    `ollama launch claude --model {model} --yes --`: ollama sets
+//                    the Anthropic endpoint + auth internally and re-injects
+//                    --model into the child, so a caller-forwarded --model later
+//                    in its own args is a matching no-op (verified in
+//                    tests/backend-spawn.test.mjs); `--yes` bypasses the
+//                    non-agent-capable confirmation (else a piped spawn fails);
+//                    the trailing `--` terminates its own flags.
+//
+// `env` is the backend's user-configured key/value pairs, applied by callers
+// BEFORE any cc-managed variable so cc-managed always wins.
+export function resolveBackendLaunch(backend, model, claudeBin) {
+  const template = typeof backend?.template === 'string' ? backend.template.trim() : '';
+  const env = backendEnv(backend);
+  if (!template) {
+    return { command: claudeBin.command, prefixArgs: claudeBin.prefixArgs, env };
+  }
+  // Invariant: a substitution launch always has a concrete model — never emit
+  // `--model undefined`, and never let a model-less session through on the grounds
+  // that this particular template happens not to interpolate one (the model still
+  // rides in the forwarded claude args and drives the context-window env). Every
+  // caller (Instance.spawn(), generateSummary, generateBundle) is expected to have
+  // resolved a real model before reaching here; this is the shared, single place
+  // that guarantees it, mirroring _doCreate's create-time guard.
+  if (!model) {
+    throw new Error(`backend '${backend?.id ?? '?'}' requires a model; none resolved — rebind the tier or resume with an explicit model`);
+  }
+  // Substitute inside each token (not only whole tokens) so `--model={model}`
+  // works as well as `--model {model}`.
+  const tokens = template.split(/\s+/).filter(Boolean).map(t => t.replaceAll('{model}', model));
+  return { command: tokens[0], prefixArgs: tokens.slice(1), env };
 }
 
-// Backend-agnostic launch target: given a resolved claude binary and a
-// {backendKind, model} pair, returns the {command, prefixArgs} to spawn as a
-// drop-in for `claude` — the SAME claude args (including --model) are then
-// appended uniformly by the caller.
-//   claude  → the resolved claude binary + its prefixArgs (empty in prod; the
-//             test CLAUDE_BIN="node fake.mjs" injection).
-//   ollama  → `ollama launch claude --model <tag> --yes --`. ollama sets the
-//             Anthropic endpoint + auth internally and re-injects --model into
-//             the child; a caller-forwarded --model later in its own args is a
-//             matching no-op (verified in tests/ollama-spawn.test.mjs). --yes
-//             bypasses the non-agent-capable confirmation (else a piped spawn
-//             fails). Localhost only — no host plumbing. `ollama` itself is
-//             resolved via resolveOllamaBin() (OLLAMA_BIN test injection).
-export function resolveBackendLaunch(backendKind, model, claudeBin) {
-  if (backendKind === 'ollama') {
-    // Invariant: an ollama-backed launch always has a concrete tag — never
-    // emit `--model undefined`. Every caller (Instance.spawn(), generateSummary,
-    // generateBundle) is expected to already have resolved a real tag before
-    // reaching here; this is the shared, single place that guarantees it.
-    if (!model) {
-      throw new Error('ollama-backed spawn requires a model (tag); none resolved — rebind the tier or resume with an explicit model');
-    }
-    const { command, prefixArgs: ollamaPrefixArgs } = resolveOllamaBin();
-    return { command, prefixArgs: [...ollamaPrefixArgs, 'launch', 'claude', '--model', model, '--yes', '--'] };
+// A backend's env pairs as a plain object, later keys winning. Returns {} for a
+// backend with no env, so callers can spread it unconditionally.
+export function backendEnv(backend) {
+  const out = {};
+  for (const e of Array.isArray(backend?.env) ? backend.env : []) {
+    if (e && typeof e.key === 'string' && e.key) out[e.key] = String(e.value ?? '');
   }
-  return { command: claudeBin.command, prefixArgs: claudeBin.prefixArgs };
+  return out;
 }

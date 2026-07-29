@@ -12,7 +12,8 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { orchStoreRoot, writeFileAtomic } from './projects.js';
 import { CAPABILITY_TIERS, DEFAULT_TIER_BACKEND, isKnownTier, isKnownClaudeModel,
-  ROLES, DEFAULT_ROLE_BINDING, isKnownRole, isKnownFamily, sonnetWindowSelectable } from './modelVersions.js';
+  ROLES, DEFAULT_ROLE_BINDING, isKnownRole, isKnownFamily, sonnetWindowSelectable,
+  MANAGED_BACKENDS, MANAGED_BACKEND_IDS, CLAUDE_BACKEND_ID } from './modelVersions.js';
 import { OLLAMA_CLOUD_MODELS, isKnownOllamaCloudModel } from './ollamaCloudModels.js';
 
 function settingsPath() {
@@ -207,100 +208,326 @@ export async function setDefaultSpawnTier(tier) {
   return val;
 }
 
-// Models group: custom (Ollama-served) models. Persisted as
-// `models.customBackends: [{ label, model }]`, where `model` is the Ollama tag
-// (the identity — no separate id). Localhost-only; no host field. This is the
-// catalog the Settings Ollama model selector lists.
-export function getCustomBackends() {
+// ── Backend registry ─────────────────────────────────────────────────────
+// Models group: the user-manageable backend registry, persisted as
+// `models.backends: [{ id, label, template, env:[{key,value}] }]`. A backend is
+// a launch recipe — see MANAGED_BACKENDS in modelVersions.js for the record
+// contract and `resolveBackendLaunch` in claudeLauncher.js for the one place
+// `template` is consumed.
+//
+// Managed rows are CODE-authoritative: id/label/template/managed always come
+// from MANAGED_BACKENDS, and only `env` is read from the store. So the built-in
+// `ollama` template can't drift, `claude` always exists, and a fresh install
+// (no settings.json) still has both rows.
+const BACKEND_ID_RE = /^[a-z][a-z0-9-]*$/;
+const BACKEND_ID_MAX = 40;
+const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+function parseEnv(list) {
+  if (!Array.isArray(list)) return [];
+  const out = [];
+  for (const e of list) {
+    if (!e || typeof e !== 'object') continue;
+    const key = String(e.key ?? '').trim();
+    if (!ENV_KEY_RE.test(key)) continue;
+    out.push({ key, value: String(e.value ?? '') });
+  }
+  return out;
+}
+
+export function getBackends() {
   const s = loadSync();
-  const list = s.models?.customBackends;
-  return Array.isArray(list) ? list.filter(b => b && typeof b.model === 'string') : [];
+  const stored = Array.isArray(s.models?.backends) ? s.models.backends : [];
+  const storedById = new Map(
+    stored.filter(b => b && typeof b.id === 'string' && b.id).map(b => [b.id, b]),
+  );
+  // Managed rows first, in catalog order, taking only `env` from the store.
+  const out = MANAGED_BACKENDS.map(m => ({
+    ...m,
+    env: parseEnv(storedById.get(m.id)?.env),
+  }));
+  for (const b of stored) {
+    if (!b || typeof b.id !== 'string' || !b.id) continue;
+    if (MANAGED_BACKEND_IDS.includes(b.id)) continue;
+    out.push({
+      id: b.id,
+      label: typeof b.label === 'string' && b.label ? b.label : b.id,
+      template: typeof b.template === 'string' ? b.template : '',
+      env: parseEnv(b.env),
+      managed: false,
+    });
+  }
+  return out;
 }
 
-// A tag is a bindable Ollama model if the user has added it, or if it's one
-// of the curated cloud presets (bindable with no prior "Add" step).
-export function isKnownOllamaModel(tag) {
-  return typeof tag === 'string' && !!tag &&
-    (getCustomBackends().some(b => b.model === tag) || isKnownOllamaCloudModel(tag));
+export function getBackend(id) {
+  return getBackends().find(b => b.id === id) ?? null;
 }
 
-// Native context window (raw tokens) for an Ollama tag, or null when unknown.
-// Custom backends win over the curated catalog (a user override of a preset).
-// The server always holds the full tag in Instance.model, so exact-tag match
-// suffices here (the client resolver additionally tolerates the bare base name
-// the CLI reports — see ollamaContextWindowFor in public/models.js).
-export function getOllamaContextWindow(tag) {
-  if (typeof tag !== 'string' || !tag) return null;
-  const custom = getCustomBackends().find(b => b.model === tag);
+export function isKnownBackend(id) {
+  return typeof id === 'string' && getBackends().some(b => b.id === id);
+}
+
+// Backends a custom model (and therefore a non-Claude binding) can name: every
+// SUBSTITUTION backend. The identity `claude` backend is excluded — its models
+// are the MODEL_FAMILIES catalog, not user rows.
+export function getSubstitutionBackends() {
+  return getBackends().filter(b => b.id !== CLAUDE_BACKEND_ID);
+}
+
+// `requireTemplate` is true for USER rows: a blank template would make the row a
+// bare-`claude` alias that runs on the real Anthropic account while being treated
+// as a substitution backend everywhere (unmonitored usage-window domain ⇒ no
+// overage protection, no cost_usd ⇒ `—` in #costs, plus a forced
+// CLAUDE_CODE_MAX_CONTEXT_TOKENS on a genuine Claude session). The managed `claude`
+// row already provides identity behaviour, so such an alias adds nothing but that
+// hazard. Managed rows are exempt — `claude`'s blank template comes from code.
+function validateBackendFields({ label, template, env }, { requireTemplate = false } = {}) {
+  const cleanLabel = String(label ?? '').trim();
+  if (!cleanLabel) throw Object.assign(new Error('label is required'), { statusCode: 400 });
+  const cleanTemplate = String(template ?? '').trim();
+  if (requireTemplate && !cleanTemplate) {
+    throw Object.assign(
+      new Error(`template is required — a backend with no template would run the Claude CLI itself while being treated as a separate provider (no overage protection, no cost tracking); bind the built-in '${CLAUDE_BACKEND_ID}' backend for that`),
+      { statusCode: 400 },
+    );
+  }
+  if (Array.isArray(env)) {
+    for (const e of env) {
+      const key = String(e?.key ?? '').trim();
+      if (!ENV_KEY_RE.test(key)) {
+        throw Object.assign(new Error(`env key '${key}' must match ${ENV_KEY_RE.source}`), { statusCode: 400 });
+      }
+    }
+  }
+  return { label: cleanLabel, template: cleanTemplate, env: parseEnv(env) };
+}
+
+// Persist only the user's rows plus any managed-row `env` override — never the
+// managed id/label/template, which getBackends() re-asserts from code.
+async function writeBackends(list) {
+  const cur = loadSync();
+  const next = { ...cur, models: { ...(cur.models || {}), backends: list } };
+  await writeSettings(next);
+}
+
+function storedBackends() {
+  const s = loadSync();
+  return Array.isArray(s.models?.backends) ? s.models.backends.filter(b => b && typeof b.id === 'string' && b.id) : [];
+}
+
+export async function addBackend({ id, label, template, env } = {}) {
+  const cleanId = String(id ?? '').trim();
+  if (!BACKEND_ID_RE.test(cleanId) || cleanId.length > BACKEND_ID_MAX) {
+    throw Object.assign(new Error(`id must match ${BACKEND_ID_RE.source} (max ${BACKEND_ID_MAX} chars)`), { statusCode: 400 });
+  }
+  if (isKnownBackend(cleanId)) {
+    throw Object.assign(new Error(`backend '${cleanId}' already exists`), { statusCode: 409 });
+  }
+  const fields = validateBackendFields({ label, template, env }, { requireTemplate: true });
+  const entry = { id: cleanId, ...fields };
+  await writeBackends([...storedBackends(), entry]);
+  return { ...entry, managed: false };
+}
+
+// Managed rows accept an `env` edit only — their label/template are owned by
+// MANAGED_BACKENDS. A user row accepts all three.
+export async function updateBackend(id, { label, template, env } = {}) {
+  const existing = getBackend(id);
+  if (!existing) return null;
+  const stored = storedBackends();
+  if (existing.managed) {
+    if (label !== undefined || template !== undefined) {
+      throw Object.assign(
+        new Error(`backend '${id}' is built in — only its env can be edited`),
+        { statusCode: 400 },
+      );
+    }
+    const entry = { id, env: parseEnv(env) };
+    await writeBackends([...stored.filter(b => b.id !== id), entry]);
+    return getBackend(id);
+  }
+  const fields = validateBackendFields({
+    label: label ?? existing.label,
+    template: template ?? existing.template,
+    env: env ?? existing.env,
+  }, { requireTemplate: true });
+  await writeBackends([...stored.filter(b => b.id !== id), { id, ...fields }]);
+  return getBackend(id);
+}
+
+// LIVE instances using each backend, injected by server.js
+// (`setLiveBackendsProvider(() => instances.liveBackendUsage())`) so this
+// low-level store never imports the instance registry — same seam shape as
+// pluginRolesProvider below. Each entry: {backend, sessionId}. Default []
+// keeps unit tests / headless runs (no manager) working.
+let liveBackendsProvider = () => [];
+export function setLiveBackendsProvider(fn) {
+  liveBackendsProvider = typeof fn === 'function' ? fn : (() => []);
+}
+function liveBackendUsage() {
+  try {
+    const list = liveBackendsProvider();
+    return Array.isArray(list) ? list : [];
+  } catch { return []; }
+}
+
+// Removing a backend NEVER cascades: a backend still referenced by a custom
+// model — or still carried by a TRACKED instance — is refused (409, naming them)
+// so nothing is deleted behind the user's back and no session is left pointing at
+// a backend that no longer exists (which would otherwise launch the real `claude`
+// on its next respawn). liveBackendUsage() deliberately counts exited instances
+// too (still respawnable), so the remedy in the message is archiving/deleting the
+// session — killing it leaves it in the registry's byId and re-trips this 409.
+// Once nothing references it, any tier/role left pointing at one of its models
+// reverts through the normal dead-binding path (see getTierBackend).
+export async function removeBackend(id) {
+  const existing = getBackend(id);
+  if (!existing) return false;
+  if (existing.managed) {
+    throw Object.assign(new Error(`backend '${id}' is built in and cannot be removed`), { statusCode: 400 });
+  }
+  const bound = getCustomModels().filter(m => m.backend === id).map(m => m.model);
+  if (bound.length) {
+    throw Object.assign(
+      new Error(`backend '${id}' still has custom models bound to it (${bound.join(', ')}) — remove them first`),
+      { statusCode: 409 },
+    );
+  }
+  const live = liveBackendUsage().filter(u => u && u.backend === id).map(u => u.sessionId || '(unknown session)');
+  if (live.length) {
+    throw Object.assign(
+      new Error(`backend '${id}' is still in use by ${live.length} open session${live.length === 1 ? '' : 's'} (${live.join(', ')}) — archive or delete ${live.length === 1 ? 'it' : 'them'} first (killing a session leaves it respawnable)`),
+      { statusCode: 409 },
+    );
+  }
+  await writeBackends(storedBackends().filter(b => b.id !== id));
+  return true;
+}
+
+// ── Custom models ────────────────────────────────────────────────────────
+// Models group: custom models served by a substitution backend. Persisted as
+// `models.customModels: [{ label, model, backend, contextWindow }]`, where
+// `model` is the backend's own model id (an Ollama tag, say) and IS the
+// identity — a given model id belongs to exactly one backend. This is the
+// catalog the Settings model selector lists for a non-Claude backend.
+export function getCustomModels() {
+  const s = loadSync();
+  const list = s.models?.customModels;
+  if (!Array.isArray(list)) return [];
+  return list.filter(m => m && typeof m.model === 'string' && typeof m.backend === 'string');
+}
+
+// True if `model` is bindable on `backend`: the user added it there, or it's a
+// curated cloud preset of the built-in `ollama` backend (bindable with no prior
+// "Add" step). The curated catalog is scoped to that one backend by design.
+export function isKnownBackendModel(backend, model) {
+  if (typeof backend !== 'string' || typeof model !== 'string' || !model) return false;
+  if (!isKnownBackend(backend) || backend === CLAUDE_BACKEND_ID) return false;
+  if (getCustomModels().some(m => m.backend === backend && m.model === model)) return true;
+  return backend === 'ollama' && isKnownOllamaCloudModel(model);
+}
+
+// The backend that serves a non-Claude model id, or null when nothing does. A
+// user row wins over the curated catalog (an override of a preset). Used by MCP
+// spawn_instance so a caller can pass a bare model id and still land on the right
+// backend.
+export function backendForModel(model) {
+  if (typeof model !== 'string' || !model) return null;
+  const custom = getCustomModels().find(m => m.model === model);
+  if (custom && isKnownBackend(custom.backend)) return custom.backend;
+  if (isKnownOllamaCloudModel(model) && isKnownBackend('ollama')) return 'ollama';
+  return null;
+}
+
+// Native context window (raw tokens) for a non-Claude model id, or null when
+// unknown. Custom models win over the curated catalog (a user override of a
+// preset). The server always holds the full model id in Instance.model, so an
+// exact match suffices here (the client resolver additionally tolerates the
+// bare base name the CLI reports — see customContextWindowFor in
+// public/models.js).
+export function contextWindowForModel(model) {
+  if (typeof model !== 'string' || !model) return null;
+  const custom = getCustomModels().find(m => m.model === model);
   if (custom && Number.isFinite(custom.contextWindow)) return custom.contextWindow;
-  const preset = OLLAMA_CLOUD_MODELS.find(m => m.model === tag);
+  const preset = OLLAMA_CLOUD_MODELS.find(m => m.model === model);
   if (preset && Number.isFinite(preset.contextWindow)) return preset.contextWindow;
   return null;
 }
 
-// `contextWindow` (optional): native window in raw tokens. When a positive
-// number, it's stored (rounded) and used for the header ctx bar +
-// CLAUDE_CODE_AUTO_COMPACT_WINDOW + CLAUDE_CODE_MAX_CONTEXT_TOKENS at spawn.
-// Blank/invalid → the key is omitted and the model falls back to the 200k
-// display default with no explicit compact window at spawn.
-export async function addCustomBackend({ label, model, contextWindow } = {}) {
+// `contextWindow` is REQUIRED and must be a positive, finite number of raw tokens
+// (stored `Math.round`ed): it
+// drives the header ctx bar plus CLAUDE_CODE_AUTO_COMPACT_WINDOW and
+// CLAUDE_CODE_MAX_CONTEXT_TOKENS at spawn, and guessing it wrong silently
+// truncates or over-fills the window. `backend` must name a substitution
+// backend (never `claude`).
+export async function addCustomModel({ label, model, backend, contextWindow } = {}) {
   const cleanLabel = String(label || '').trim();
   const cleanModel = String(model || '').trim();
-  if (!cleanLabel || !cleanModel) {
-    throw Object.assign(new Error('label and model (ollama tag) are required'), { statusCode: 400 });
+  const cleanBackend = String(backend || '').trim();
+  if (!cleanLabel || !cleanModel || !cleanBackend) {
+    throw Object.assign(new Error('label, model, and backend are required'), { statusCode: 400 });
+  }
+  if (cleanBackend === CLAUDE_BACKEND_ID || !isKnownBackend(cleanBackend)) {
+    throw Object.assign(
+      new Error(`backend '${cleanBackend}' is not a known custom-model backend — add it in Settings → Backends`),
+      { statusCode: 400 },
+    );
   }
   const cw = Number(contextWindow);
-  const entry = { label: cleanLabel, model: cleanModel };
-  if (Number.isFinite(cw) && cw > 0) entry.contextWindow = Math.round(cw);
+  if (!Number.isFinite(cw) || cw <= 0) {
+    throw Object.assign(new Error('contextWindow is required and must be a positive number of tokens'), { statusCode: 400 });
+  }
+  const entry = { label: cleanLabel, model: cleanModel, backend: cleanBackend, contextWindow: Math.round(cw) };
   const cur = loadSync();
-  const existing = getCustomBackends();
-  // The tag is the identity — adding an existing tag just updates its label.
-  const nextList = existing.filter(b => b.model !== cleanModel).concat([entry]);
-  const next = { ...cur, models: { ...(cur.models || {}), customBackends: nextList } };
+  // The model id is the identity — re-adding it updates the row in place.
+  const nextList = getCustomModels().filter(m => m.model !== cleanModel).concat([entry]);
+  const next = { ...cur, models: { ...(cur.models || {}), customModels: nextList } };
   await writeSettings(next);
   return entry;
 }
 
-// Remove a custom model by tag. Any tier still bound to it falls back
+// Remove a custom model by its model id. Any tier still bound to it falls back
 // gracefully: getTierBackend's validation reverts the now-unknown binding to
 // the tier's default Claude backend on the next read.
-export async function removeCustomBackend(tag) {
+export async function removeCustomModel(model) {
   const cur = loadSync();
-  const existing = getCustomBackends();
-  const nextList = existing.filter(b => b.model !== tag);
+  const existing = getCustomModels();
+  const nextList = existing.filter(m => m.model !== model);
   if (nextList.length === existing.length) return false;
-  const next = { ...cur, models: { ...(cur.models || {}), customBackends: nextList } };
+  const next = { ...cur, models: { ...(cur.models || {}), customModels: nextList } };
   await writeSettings(next);
   return true;
 }
 
-// True if a {kind, model} binding names a real, currently-available backend.
+// True if a {backend, model} binding names a real, currently-available backend.
 function isValidBinding(b) {
   if (!b || typeof b !== 'object') return false;
-  if (b.kind === 'claude') return isKnownClaudeModel(b.model);
-  if (b.kind === 'ollama') return isKnownOllamaModel(b.model);
-  return false;
+  if (b.backend === CLAUDE_BACKEND_ID) return isKnownClaudeModel(b.model);
+  return isKnownBackendModel(b.backend, b.model);
 }
 
-// Reconstruct the persisted shape of a concrete {kind, model} binding, keeping
-// only the fields that matter. A Claude binding on a user-selectable-window
-// Sonnet (4.x) carries its chosen `window` ('1m'|'200k'); every other binding
-// (Ollama, Opus/Haiku/Fable, fixed-window Sonnet 5) stores no window — those
-// families ignore it, so persisting one would be misleading noise.
+// Reconstruct the persisted shape of a concrete {backend, model} binding,
+// keeping only the fields that matter. A Claude binding on a
+// user-selectable-window Sonnet (4.x) carries its chosen `window`
+// ('1m'|'200k'); every other binding (any substitution backend,
+// Opus/Haiku/Fable, fixed-window Sonnet 5) stores no window — those ignore it,
+// so persisting one would be misleading noise.
 function persistBinding(b) {
-  const out = { kind: b.kind, model: b.model };
-  if (b.kind === 'claude' && sonnetWindowSelectable(b.model) && (b.window === '1m' || b.window === '200k')) {
+  const out = { backend: b.backend, model: b.model };
+  if (b.backend === CLAUDE_BACKEND_ID && sonnetWindowSelectable(b.model) && (b.window === '1m' || b.window === '200k')) {
     out.window = b.window;
   }
   return out;
 }
 
-// Models group: tier → {kind, model} binding. `kind` is 'claude' (model = a
-// MODEL_FAMILIES version id) or 'ollama' (model = an Ollama tag).
+// Models group: tier → {backend, model} binding. `backend` is 'claude' (model =
+// a MODEL_FAMILIES version id) or any other registry id (model = one of that
+// backend's custom models / curated presets).
 //
 // IMPORTANT: a valid binding is returned verbatim (no silent revert); only an
-// invalid/dead binding (unknown version, or a since-removed Ollama tag) falls
-// back to the tier's default Claude backend.
+// invalid/dead binding (unknown version, or a since-removed model or backend)
+// falls back to the tier's default Claude backend.
 export function getTierBackend(tier) {
   const s = loadSync();
   const stored = s.models?.tierBackend?.[tier];
@@ -309,7 +536,7 @@ export function getTierBackend(tier) {
 
 export async function setTierBackend(tier, backend) {
   if (!isKnownTier(tier) || !isValidBinding(backend)) {
-    throw Object.assign(new Error('tierBackend must be {kind, model} naming a known backend'), { statusCode: 400 });
+    throw Object.assign(new Error('tierBackend must be {backend, model} naming a known backend + model'), { statusCode: 400 });
   }
   const cur = loadSync();
   const nextTierBackend = { ...(cur.models?.tierBackend || {}), [tier]: persistBinding(backend) };
@@ -319,9 +546,9 @@ export async function setTierBackend(tier, backend) {
 }
 
 // Roles group: role → binding. A binding is EITHER a tier binding
-// ({kind:'tier', tier}) or a custom {kind, model} backend (same shape a tier
-// binds to). A tier binding validates via isKnownTier; a custom binding via
-// isValidBinding.
+// ({kind:'tier', tier}) or a concrete {backend, model} pair (the same shape a
+// tier binds to). The two are told apart by `kind === 'tier'`; a tier binding
+// validates via isKnownTier, a concrete one via isValidBinding.
 export function isValidRoleBinding(b) {
   if (b && typeof b === 'object' && b.kind === 'tier') return isKnownTier(b.tier);
   return isValidBinding(b);
@@ -368,7 +595,7 @@ export function getRoleBinding(role) {
 }
 
 // Effective binding for ANY role (plugin/built-in/custom): the tier or
-// {kind,model} binding that governs the role today, NOT resolved to a concrete
+// {backend,model} binding that governs the role today, NOT resolved to a concrete
 // backend. A valid user override wins; else the manifest binding (plugin) or
 // the stored/default binding (built-in/custom). Single source for both the
 // Settings payload (which shows the binding as-is) and resolveRoleBackend
@@ -391,7 +618,7 @@ export async function setRoleBinding(role, binding) {
   // its exact '<plugin-id>/<slug>' id and beats the manifest at resolve time.
   const canonical = canonicalBuiltinRole(role) ?? canonicalCustomRole(role) ?? canonicalPluginRole(role);
   if (!canonical || !isValidRoleBinding(binding)) {
-    throw Object.assign(new Error('roleBackend must name a built-in, custom, or plugin role and be a known tier binding {kind:"tier",tier} or a {kind,model} backend'), { statusCode: 400 });
+    throw Object.assign(new Error('roleBackend must name a built-in, custom, or plugin role and be a known tier binding {kind:"tier",tier} or a {backend,model} pair'), { statusCode: 400 });
   }
   const stored = binding.kind === 'tier'
     ? { kind: 'tier', tier: binding.tier }
@@ -403,7 +630,7 @@ export async function setRoleBinding(role, binding) {
   return nextRoleBackend;
 }
 
-// Resolve a role to a concrete {kind, model}. Takes the effective binding (a
+// Resolve a role to a concrete {backend, model}. Takes the effective binding (a
 // valid user override wins, else manifest/stored/default — see
 // effectiveRoleBinding) and resolves it: a tier binding delegates to
 // getTierBackend (so a role→tier→dead-custom chain still reverts correctly); a
@@ -417,12 +644,13 @@ export async function setRoleBinding(role, binding) {
 // bindings (getRoleBinding reverts) or valid overrides (isValidRoleBinding
 // gates) the manifest binding is NOT re-validated by effectiveRoleBinding.
 // Guarding here keeps a retired plugin claude id from spawning — it reverts to
-// the default spawn tier's backend instead. (Ollama is never a plugin binding
-// kind; tier bindings and valid non-manifest bindings never trip the guard.)
+// the default spawn tier's backend instead. (A plugin manifest can only bind
+// the `claude` backend; tier bindings and valid non-manifest bindings never trip
+// the guard.)
 export function resolveRoleBackend(role) {
   const b = effectiveRoleBinding(role);
   if (b.kind === 'tier') return getTierBackend(b.tier);
-  if (b.kind === 'claude' && !isKnownClaudeModel(b.model)) {
+  if (b.backend === CLAUDE_BACKEND_ID && !isKnownClaudeModel(b.model)) {
     return getTierBackend(getDefaultSpawnTier());
   }
   return persistBinding(b);
@@ -433,7 +661,7 @@ export function resolveRoleBackend(role) {
 // mirroring plugin conventions: the provider is injected by server.js
 // (`setPluginRolesProvider(() => pluginHost.roles())`) so this low-level store
 // never imports the plugin registry. Each entry: {role:'<plugin-id>/<slug>',
-// label, binding:{kind:'tier',tier}|{kind,model}, plugin:id}. Default [] keeps
+// label, binding:{kind:'tier',tier}|{backend,model}, plugin:id}. Default [] keeps
 // tests / headless runs (no plugin host) working, and disabling a plugin drops
 // its roles automatically (the provider derives from enabled plugins).
 let pluginRolesProvider = () => [];
@@ -508,7 +736,7 @@ export async function addCustomRole({ role, binding } = {}) {
   }
   const b = binding ?? { kind: 'tier', tier: 'powerful' };
   if (!isValidRoleBinding(b)) {
-    throw Object.assign(new Error('binding must be a known tier binding {kind:"tier",tier} or a {kind,model} backend'), { statusCode: 400 });
+    throw Object.assign(new Error('binding must be a known tier binding {kind:"tier",tier} or a {backend,model} pair'), { statusCode: 400 });
   }
   const stored = b.kind === 'tier' ? { kind: 'tier', tier: b.tier } : persistBinding(b);
   const cur = loadSync();

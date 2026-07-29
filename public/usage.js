@@ -8,7 +8,7 @@
 // Designed to mirror TaskTracker so app.js can drive it with the same
 // reset() + apply(ev) shape from the snapshot/event listeners.
 
-import { isSonnetFixedWindowVersion, ollamaContextWindowFor } from './models.js';
+import { isSonnetFixedWindowVersion, customContextWindowFor } from './models.js';
 
 // Hardcoded lookup — there's no API surface that reports each model's
 // context-window size, and the CLI doesn't carry it in system/init.
@@ -46,10 +46,11 @@ export function contextWindowFor(model, fallbackWindow) {
   }
   const bare = model.replace(/\[(200k|1m)\]$/, '');
   if (CONTEXT_WINDOWS[bare]) return CONTEXT_WINDOWS[bare];
-  // Ollama tag (curated preset or user custom model). Resolves against the
-  // catalog shipped via GET /api/settings/models; null when unknown.
-  const ollama = ollamaContextWindowFor(bare);
-  if (ollama) return ollama;
+  // A non-Claude backend's model id (curated preset or user custom model).
+  // Resolves against the catalog shipped via GET /api/settings/models; null when
+  // unknown.
+  const custom = customContextWindowFor(bare);
+  if (custom) return custom;
   return DEFAULT_CONTEXT_WINDOW;
 }
 
@@ -103,12 +104,12 @@ export class UsageTracker {
     // So we MUST NOT update lastUsage from turn_end (that's the bug
     // that produced ctx 743% on a 1M window). turn_end only contributes
     // to cum.*, which is genuinely cumulative work over the session.
-    // Turn/duration/cost accumulate on EVERY turn_end — the Ollama backend
-    // (`ollama launch claude`) emits `result` lines with no `usage` block, so
-    // gating the turn count on `ev.usage` dropped every Ollama turn and the chip
-    // showed a stale count. Token fields stay guarded on `usage`: Ollama has no
-    // per-turn token sum to trust (its `message_start` figures are context-size
-    // snapshots, not summable totals), so we don't fabricate them.
+    // Turn/duration/cost accumulate on EVERY turn_end — a substitution backend
+    // (e.g. the built-in `ollama` row) emits `result` lines with no `usage` block,
+    // so gating the turn count on `ev.usage` dropped every such turn and the chip
+    // showed a stale count. Token fields stay guarded on `usage`: those backends
+    // have no per-turn token sum to trust (their `message_start` figures are
+    // context-size snapshots, not summable totals), so we don't fabricate them.
     if (ev.kind === 'turn_end') {
       const u = ev.usage;
       if (u) {

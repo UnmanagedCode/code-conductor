@@ -27,8 +27,8 @@ async function rmrf(p) {
 }
 
 // Build a minimal fake instance object.
-function fakeInst({ project = 'proj-a', model = 'claude-opus-4-8', sessionId = 'sess-1', callerInstanceId = null, backendKind = 'claude' } = {}) {
-  return { project, model, sessionId, callerInstanceId, backendKind };
+function fakeInst({ project = 'proj-a', model = 'claude-opus-4-8', sessionId = 'sess-1', callerInstanceId = null, backend = 'claude' } = {}) {
+  return { project, model, sessionId, callerInstanceId, backend };
 }
 
 // Build a synthetic turn_end event. The cacheMiss / firstReq* fields mirror
@@ -162,7 +162,7 @@ test('cost-tracking: getCostSummary treats missing cost_usd (ollama rows) as zer
   }
 });
 
-test('cost-tracking: ollama-backed turn_end omits cost_usd entirely', async () => {
+test('cost-tracking: a substitution-backend turn_end omits cost_usd entirely', async () => {
   const dir = await makeTmpDir();
   const prevRoot = process.env.PROJECTS_ROOT;
   process.env.PROJECTS_ROOT = dir;
@@ -171,11 +171,11 @@ test('cost-tracking: ollama-backed turn_end omits cost_usd entirely', async () =
     const { initCostTracking, costsPath } = await import('../src/costTracking.js');
 
     const emitter = new EventEmitter();
-    emitter.get = () => fakeInst({ backendKind: 'ollama' });
+    emitter.get = () => fakeInst({ backend: 'ollama' });
     initCostTracking(emitter);
 
-    // ollama's total_cost_usd is Anthropic list pricing on a free backend —
-    // a nonzero value here must still be dropped from the persisted row.
+    // A substitution backend's total_cost_usd is Anthropic list pricing applied to
+    // someone else's model — a nonzero value here must still be dropped from the row.
     emitter.emit('event', { id: 'inst-1', ev: turnEndEv({ costDelta: 0.0123 }) });
 
     await new Promise(r => setTimeout(r, 50));
@@ -186,7 +186,7 @@ test('cost-tracking: ollama-backed turn_end omits cost_usd entirely', async () =
     const lines = raw.split('\n').filter(Boolean);
     assert.equal(lines.length, 1);
     const row = JSON.parse(lines[0]);
-    assert.equal(Object.hasOwn(row, 'cost_usd'), false, 'ollama row must not have a cost_usd key');
+    assert.equal(Object.hasOwn(row, 'cost_usd'), false, 'a non-Claude row must not have a cost_usd key');
     // Non-cost fields still persist normally.
     assert.equal(row.input_tokens, 100);
     assert.equal(row.output_tokens, 50);
@@ -198,7 +198,7 @@ test('cost-tracking: ollama-backed turn_end omits cost_usd entirely', async () =
   }
 });
 
-test('cost-tracking: ollama turn_end (no usage) omits token fields; cost_usd partitions backends', async () => {
+test('cost-tracking: a substitution-backend turn_end (no usage) omits token fields; cost_usd partitions backends', async () => {
   const dir = await makeTmpDir();
   const prevRoot = process.env.PROJECTS_ROOT;
   process.env.PROJECTS_ROOT = dir;
@@ -208,15 +208,19 @@ test('cost-tracking: ollama turn_end (no usage) omits token fields; cost_usd par
 
     const emitter = new EventEmitter();
     const insts = {
-      'ollama-1': fakeInst({ backendKind: 'ollama', model: 'llama3:8b', sessionId: 'o1' }),
-      'claude-1': fakeInst({ backendKind: 'claude', model: 'claude-opus-4-8', sessionId: 'c1' }),
+      'ollama-1': fakeInst({ backend: 'ollama', model: 'llama3:8b', sessionId: 'o1' }),
+      'proxy-1': fakeInst({ backend: 'my-proxy', model: 'mine:v1', sessionId: 'x1' }),
+      'claude-1': fakeInst({ backend: 'claude', model: 'claude-opus-4-8', sessionId: 'c1' }),
     };
     emitter.get = (id) => insts[id];
     initCostTracking(emitter);
 
-    // Realistic ollama turn_end: the CLI `result` frame carries no usage block,
-    // so the parser sets ev.usage = null. Token fields must be OMITTED (not 0).
+    // Realistic substitution-backend turn_end: the CLI `result` frame carries no
+    // usage block, so the parser sets ev.usage = null. Token fields must be OMITTED
+    // (not 0). Run for the built-in ollama row AND a user-defined one — the rule is
+    // keyed on "not the identity backend", not on the id 'ollama'.
     emitter.emit('event', { id: 'ollama-1', ev: { kind: 'turn_end', cost: 0.0001, costDelta: 0.0001, usage: null } });
+    emitter.emit('event', { id: 'proxy-1', ev: { kind: 'turn_end', cost: 0.0002, costDelta: 0.0002, usage: null } });
     // Anthropic turn_end: full usage block present.
     emitter.emit('event', { id: 'claude-1', ev: turnEndEv({ costDelta: 0.02 }) });
 
@@ -227,17 +231,21 @@ test('cost-tracking: ollama turn_end (no usage) omits token fields; cost_usd par
     const raw = await fs.readFile(costsPath(), 'utf8').catch(() => '');
     const rows = raw.split('\n').filter(Boolean).map(l => JSON.parse(l));
     const ollamaRow = rows.find(r => r.sessionId === 'o1');
+    const proxyRow = rows.find(r => r.sessionId === 'x1');
     const claudeRow = rows.find(r => r.sessionId === 'c1');
     const tokenKeys = ['input_tokens', 'output_tokens', 'cache_creation_tokens', 'cache_read_tokens'];
 
-    // Persistence honesty: the ollama row omits ALL token fields — no fabricated 0s.
-    for (const k of tokenKeys) {
-      assert.equal(Object.hasOwn(ollamaRow, k), false, `ollama row must omit ${k}`);
+    // Persistence honesty: a non-Claude row omits ALL token fields — no fabricated
+    // 0s — whichever substitution backend it ran on.
+    for (const row of [ollamaRow, proxyRow]) {
+      for (const k of tokenKeys) {
+        assert.equal(Object.hasOwn(row, k), false, `${row.model} row must omit ${k}`);
+      }
+      assert.equal(Object.hasOwn(row, 'cost_usd'), false, `${row.model} row omits cost_usd`);
     }
-    assert.equal(Object.hasOwn(ollamaRow, 'cost_usd'), false, 'ollama row omits cost_usd');
 
     // Partition invariant: every written Anthropic row carries cost_usd AND all
-    // token fields; ollama rows carry neither. So `'cost_usd' in r` is a sound
+    // token fields; non-Claude rows carry neither. So `'cost_usd' in r` is a sound
     // token-countability discriminator (the aggregator relies on this).
     assert.equal(Object.hasOwn(claudeRow, 'cost_usd'), true, 'claude row always has cost_usd');
     for (const k of tokenKeys) {
@@ -250,7 +258,7 @@ test('cost-tracking: ollama turn_end (no usage) omits token fields; cost_usd par
   }
 });
 
-test('cost-tracking: mixed model keeps Anthropic token totals; ollama-only reads unknown', async () => {
+test('cost-tracking: mixed model keeps Anthropic token totals; non-Claude-only reads unknown', async () => {
   const dir = await makeTmpDir();
   const prevRoot = process.env.PROJECTS_ROOT;
   process.env.PROJECTS_ROOT = dir;

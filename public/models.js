@@ -1,8 +1,9 @@
 // Client-side cache + resolver for the model catalog (Settings → Models). The
 // spawn pickers carry only a `tier` (fast/balanced/powerful/frontier); a tier
-// resolves via its {kind, model} binding to the spawn args {model, backendKind}
-// — kind 'claude' (model = a MODEL_FAMILIES version id) or 'ollama' (model = an
-// Ollama tag). Catalog fetched once at boot, refreshed on Settings changes.
+// resolves via its {backend, model} binding to the spawn args {model, backend}
+// — backend 'claude' (model = a MODEL_FAMILIES version id) or any other registry
+// id (model = one of that backend's custom models / curated presets). Catalog
+// fetched once at boot, refreshed on Settings changes.
 //
 // Sonnet context-window policy (mirrors canonicalizeModel in
 // src/modelVersions.js): Sonnet 5 is pinned to 1M (fixedWindow); Sonnet 4.x
@@ -27,19 +28,22 @@ const DEFAULT_VERSION_LABELS = {
   'claude-haiku-4-5': 'Haiku 4.5',
 };
 
-// Pre-fetch fallback tier→{kind,model} bindings (mirrors DEFAULT_TIER_BACKEND in
-// src/modelVersions.js). Overwritten by the shipped catalog at boot.
+// The identity backend id (mirrors CLAUDE_BACKEND_ID in src/modelVersions.js).
+export const CLAUDE_BACKEND = 'claude';
+
+// Pre-fetch fallback tier→{backend,model} bindings (mirrors DEFAULT_TIER_BACKEND
+// in src/modelVersions.js). Overwritten by the shipped catalog at boot.
 const DEFAULT_TIER_BACKEND = {
-  fast:     { kind: 'claude', model: DEFAULT_VERSIONS.haiku },
-  balanced: { kind: 'claude', model: DEFAULT_VERSIONS.sonnet },
-  powerful: { kind: 'claude', model: DEFAULT_VERSIONS.opus },
-  frontier: { kind: 'claude', model: DEFAULT_VERSIONS.fable },
+  fast:     { backend: CLAUDE_BACKEND, model: DEFAULT_VERSIONS.haiku },
+  balanced: { backend: CLAUDE_BACKEND, model: DEFAULT_VERSIONS.sonnet },
+  powerful: { backend: CLAUDE_BACKEND, model: DEFAULT_VERSIONS.opus },
+  frontier: { backend: CLAUDE_BACKEND, model: DEFAULT_VERSIONS.fable },
 };
 const DEFAULT_TIER_LABELS = { fast: 'Fast', balanced: 'Balanced', powerful: 'Powerful', frontier: 'Frontier' };
 
 // Pre-fetch fallback role→binding (mirrors DEFAULT_ROLE_BINDING in
-// src/modelVersions.js). A role binds to a tier ({kind:'tier',tier}) or a custom
-// {kind,model} backend. Overwritten by the shipped catalog at boot.
+// src/modelVersions.js). A role binds to a tier ({kind:'tier',tier}) or a
+// concrete {backend,model}. Overwritten by the shipped catalog at boot.
 const DEFAULT_ROLE_BINDING = {
   conductor: { kind: 'tier', tier: 'powerful' },
   reviewer:  { kind: 'tier', tier: 'powerful' },
@@ -53,32 +57,35 @@ let claudeVersionLabelById = {};
 let tierList = Object.keys(DEFAULT_TIER_BACKEND);
 let tierLabels = { ...DEFAULT_TIER_LABELS };
 let activeRoleBinding = { ...DEFAULT_ROLE_BINDING };
-let providers = [{ kind: 'claude', label: 'Claude' }, { kind: 'ollama', label: 'Ollama' }];
-let customBackends = []; // [{label, model, contextWindow?}]
-let ollamaCloudModels = []; // curated catalog [{label, model, contextWindow}]
+// First-paint fallback of the backend REGISTRY — the two managed rows. A
+// fallback only; the server's registry (which also carries user rows) replaces it
+// on the boot fetch.
+let backends = [{ id: CLAUDE_BACKEND, label: 'Claude', managed: true }, { id: 'ollama', label: 'Ollama', managed: true }];
+let customModels = []; // [{label, model, backend, contextWindow}]
+let ollamaCloudModels = []; // curated catalog [{label, model, contextWindow}], scoped to the built-in `ollama` backend
 
 export function getTierList() { return tierList; }
 export function getTierLabel(tier) { return tierLabels[tier] || tier; }
-// Returns the role's binding (a tier binding {kind:'tier',tier} or a custom
-// {kind,model}), falling back to the pre-fetch default.
+// Returns the role's binding (a tier binding {kind:'tier',tier} or a concrete
+// {backend,model}), falling back to the pre-fetch default.
 export function getActiveRoleBinding(role) { return activeRoleBinding[role] || DEFAULT_ROLE_BINDING[role]; }
 export function setActiveRoleBindings(map) { activeRoleBinding = { ...activeRoleBinding, ...(map || {}) }; }
-export function getProviders() { return providers; }
-export function getCustomBackends() { return customBackends; }
-export function setCustomBackends(list) { customBackends = Array.isArray(list) ? list : []; return customBackends; }
-export function getOllamaCloudModels() { return ollamaCloudModels; }
+export function setBackends(list) { backends = Array.isArray(list) && list.length ? list : backends; return backends; }
+export function getBackendLabel(id) { return backends.find(b => b.id === id)?.label || id; }
+export function getCustomModels() { return customModels; }
+export function setCustomModels(list) { customModels = Array.isArray(list) ? list : []; return customModels; }
 export function setOllamaCloudModels(list) { ollamaCloudModels = Array.isArray(list) ? list : []; return ollamaCloudModels; }
 
-// Native context window (raw tokens) for an Ollama tag, or null when unknown.
-// Custom backends win over the curated catalog. Matches the full tag OR its
-// bare base name: the CLI reports Ollama models bare (`qwen3.5`, dropping the
+// Native context window (raw tokens) for a non-Claude model id, or null when
+// unknown. Custom models win over the curated catalog. Matches the full id OR its
+// bare base name: the inner CLI reports such models bare (`qwen3.5`, dropping the
 // `:cloud` suffix) in system/init + message_start, and the UsageTracker adopts
 // that bare id as the live model — so contextWindowFor() often sees the base
-// name rather than the full tag. The curated bases are collision-free.
-export function ollamaContextWindowFor(tag) {
-  if (typeof tag !== 'string' || !tag) return null;
-  const match = (m) => m.model === tag || m.model.split(':')[0] === tag;
-  const custom = customBackends.find(match);
+// name rather than the full id. The curated bases are collision-free.
+export function customContextWindowFor(model) {
+  if (typeof model !== 'string' || !model) return null;
+  const match = (m) => m.model === model || m.model.split(':')[0] === model;
+  const custom = customModels.find(match);
   if (custom && Number.isFinite(custom.contextWindow)) return custom.contextWindow;
   const preset = ollamaCloudModels.find(match);
   if (preset && Number.isFinite(preset.contextWindow)) return preset.contextWindow;
@@ -86,8 +93,8 @@ export function ollamaContextWindowFor(tag) {
 }
 
 // Infer the Claude family from a model id, by prefix. Mirrors familyOf() in
-// src/modelVersions.js. Returns null for a non-Claude id (an Ollama tag), which
-// is what makes the window suffix a no-op for tags.
+// src/modelVersions.js. Returns null for a non-Claude id (another backend's
+// tagged model), which is what makes the window suffix a no-op for them.
 export function familyOf(modelId) {
   if (typeof modelId !== 'string') return null;
   if (modelId.startsWith('claude-fable')) return 'fable';
@@ -97,9 +104,9 @@ export function familyOf(modelId) {
   return null;
 }
 
-// Kind of a {kind, model} tier binding.
-export function backendKindOf(binding) {
-  return binding && binding.kind === 'ollama' ? 'ollama' : 'claude';
+// Backend id of a {backend, model} tier binding.
+export function backendIdOf(binding) {
+  return (binding && typeof binding.backend === 'string' && binding.backend) || CLAUDE_BACKEND;
 }
 
 export function isSonnetFixedWindowVersion(id) { return !!sonnetFixedWindowByVersion[id]; }
@@ -112,7 +119,7 @@ export function setActiveTierEnabled(map) { activeTierEnabled = { ...activeTierE
 export function getActiveDefaultSpawnTier() { return activeDefaultSpawnTier; }
 export function setActiveDefaultSpawnTier(v) { activeDefaultSpawnTier = v || 'powerful'; return activeDefaultSpawnTier; }
 
-// Returns the tier's {kind, model} binding (fallback default if unset).
+// Returns the tier's {backend, model} binding (fallback default if unset).
 export function getActiveTierBackend(tier) { return activeTierBackend[tier] || DEFAULT_TIER_BACKEND[tier]; }
 export function setActiveTierBackend(map) { activeTierBackend = { ...activeTierBackend, ...(map || {}) }; }
 
@@ -130,48 +137,48 @@ export async function loadModelVersions() {
     const r = await fetch('/api/settings/models', { cache: 'no-store' });
     if (r.ok) {
       const data = await r.json();
-      if (Array.isArray(data.backends) && data.backends.length) {
-        const sonnetFamily = data.backends.find(f => f.family === 'sonnet');
+      if (Array.isArray(data.claudeFamilies) && data.claudeFamilies.length) {
+        const sonnetFamily = data.claudeFamilies.find(f => f.family === 'sonnet');
         sonnetFixedWindowByVersion = Object.fromEntries(
           (sonnetFamily?.versions || []).filter(v => v.fixedWindow).map(v => [v.id, v.fixedWindow]),
         );
         claudeVersionLabelById = Object.fromEntries(
-          data.backends.flatMap(b => b.versions || []).map(v => [v.id, v.label]),
+          data.claudeFamilies.flatMap(b => b.versions || []).map(v => [v.id, v.label]),
         );
       }
       if (Array.isArray(data.tiers) && data.tiers.length) {
         tierList = data.tiers.map(t => t.tier);
         tierLabels = Object.fromEntries(data.tiers.map(t => [t.tier, t.label]));
       }
-      if (Array.isArray(data.providers) && data.providers.length) providers = data.providers;
+      setBackends(data.backends);
       if (data.tierBackend) setActiveTierBackend(data.tierBackend);
       if (data.roleBackend) setActiveRoleBindings(data.roleBackend);
       if (data.enabledTiers) setActiveTierEnabled(data.enabledTiers);
       setActiveDefaultSpawnTier(data.defaultSpawnTier);
-      setCustomBackends(data.customBackends);
+      setCustomModels(data.customModels);
       setOllamaCloudModels(data.ollamaCloudModels);
     }
   } catch { /* keep defaults */ }
   return activeTierBackend;
 }
 
-// Resolve a tier to the spawn args {model, backendKind}. For 'claude' the model
-// carries the Sonnet window suffix; for 'ollama' it's the bare tag.
+// Resolve a tier to the spawn args {model, backend}. For 'claude' the model
+// carries the Sonnet window suffix; for any other backend it's the bare model id.
 export function resolveSpawnModel(tier) {
   const b = getActiveTierBackend(tier);
-  if (!b || !b.model) return { model: '', backendKind: 'claude' };
-  if (b.kind === 'ollama') return { model: b.model, backendKind: 'ollama' };
-  return { model: applyClaudeWindow(b.model, b.window), backendKind: 'claude', sonnetWindow: b.window === '200k' ? '200k' : '1m' };
+  if (!b || !b.model) return { model: '', backend: CLAUDE_BACKEND };
+  if (backendIdOf(b) !== CLAUDE_BACKEND) return { model: b.model, backend: backendIdOf(b) };
+  return { model: applyClaudeWindow(b.model, b.window), backend: CLAUDE_BACKEND, sonnetWindow: b.window === '200k' ? '200k' : '1m' };
 }
 
-// Resolve a role to the spawn args {model, backendKind}. A tier binding
-// delegates to resolveSpawnModel (mirrors the server's resolveRoleBackend); a
-// custom binding resolves like a tier's own {kind,model} (Claude window suffix
-// applied for claude, bare tag for ollama).
+// Resolve a role to the spawn args {model, backend}. A tier binding delegates to
+// resolveSpawnModel (mirrors the server's resolveRoleBackend); a concrete binding
+// resolves like a tier's own {backend,model} (Claude window suffix applied for
+// claude, bare model id otherwise).
 export function resolveSpawnRole(role) {
   const b = getActiveRoleBinding(role);
   if (b && b.kind === 'tier') return resolveSpawnModel(b.tier);
-  if (!b || !b.model) return { model: '', backendKind: 'claude' };
-  if (b.kind === 'ollama') return { model: b.model, backendKind: 'ollama' };
-  return { model: applyClaudeWindow(b.model, b.window), backendKind: 'claude', sonnetWindow: b.window === '200k' ? '200k' : '1m' };
+  if (!b || !b.model) return { model: '', backend: CLAUDE_BACKEND };
+  if (backendIdOf(b) !== CLAUDE_BACKEND) return { model: b.model, backend: backendIdOf(b) };
+  return { model: applyClaudeWindow(b.model, b.window), backend: CLAUDE_BACKEND, sonnetWindow: b.window === '200k' ? '200k' : '1m' };
 }

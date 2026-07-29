@@ -19,8 +19,9 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // along here (there is no separate Account endpoint).
 function modelsPayload(over) {
   return {
-    providers: [{ kind: 'claude', label: 'Claude' }, { kind: 'ollama', label: 'Ollama' }],
-    backends: [], tiers: [], tierBackend: {}, customBackends: [],
+    backends: [{ id: 'claude', label: 'Claude', template: '', env: [], managed: true },
+               { id: 'ollama', label: 'Ollama', template: 'ollama launch claude --model {model} --yes --', env: [], managed: true }],
+    claudeFamilies: [], tiers: [], tierBackend: {}, customModels: [],
     ollamaCloudModels: [], ollamaCloudTierDefaults: {},
     enabledTiers: {}, defaultSpawnTier: 'powerful',
     onOverage: over.onOverage,

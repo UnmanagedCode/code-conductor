@@ -21,7 +21,7 @@
 //
 // Returns { openSpawnDialog, syncTierModelLabels, syncTierVisibility } — the
 // only handles with external callers; defaultSpawnTier stays internal.
-import { resolveSpawnModel, resolveSpawnRole, getVersionLabel,
+import { resolveSpawnModel, resolveSpawnRole, getVersionLabel, backendIdOf, CLAUDE_BACKEND,
   getTierList, getActiveTierEnabled, getActiveDefaultSpawnTier, getActiveTierBackend } from './models.js';
 
 export function installSpawnDialog({ dom, getProjects, refreshProjects, refreshInstances, selectInstance, closeSidebarOverflow }) {
@@ -31,8 +31,8 @@ export function installSpawnDialog({ dom, getProjects, refreshProjects, refreshI
   // backend's model name, so the UI reflects what will actually be spawned.
   function syncTierModelLabels() {
     for (const tier of getTierList()) {
-      const b = getActiveTierBackend(tier); // {kind, model}
-      const name = b.kind === 'ollama' ? b.model : getVersionLabel(b.model);
+      const b = getActiveTierBackend(tier); // {backend, model}
+      const name = backendIdOf(b) !== CLAUDE_BACKEND ? b.model : getVersionLabel(b.model);
       document.querySelectorAll(`.qs-model[data-tier="${tier}"] .qs-sublabel`)
         .forEach(el => { el.textContent = name; });
     }
@@ -176,7 +176,7 @@ export function installSpawnDialog({ dom, getProjects, refreshProjects, refreshI
     dom.sdError.textContent = '';
     const project  = pendingSpawnProject;
     const mode     = sdModeValue;
-    const { model, backendKind, sonnetWindow } = resolveSpawnModel(selectedSpawnTier);
+    const { model, backend, sonnetWindow } = resolveSpawnModel(selectedSpawnTier);
     const effort   = dom.sdEffort.value;
     const thinking = dom.sdThinking.value;
     const temp     = dom.sdTemp.checked || undefined;
@@ -193,7 +193,7 @@ export function installSpawnDialog({ dom, getProjects, refreshProjects, refreshI
       const r = await fetch('/api/instances', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ project, mode, effort, thinking, model, sonnetWindow, backendKind, worktree, temp, debug, autoApprovePlan }),
+        body: JSON.stringify({ project, mode, effort, thinking, model, sonnetWindow, backend, worktree, temp, debug, autoApprovePlan }),
       });
       if (!r.ok) throw new Error((await r.json()).error);
       const inst = await r.json();
@@ -236,7 +236,7 @@ export function installSpawnDialog({ dom, getProjects, refreshProjects, refreshI
         const err = await r.json().catch(() => ({}));
         throw new Error(err.error || `ensure failed (${r.status})`);
       }
-      const { model, backendKind, sonnetWindow } = resolveSpawnRole('conductor');
+      const { model, backend, sonnetWindow } = resolveSpawnRole('conductor');
       if (!model) {
         alert('Conduct session failed to start: the Conductor role has no model configured. Set one in Settings → Models → Roles.');
         return;
@@ -244,7 +244,7 @@ export function installSpawnDialog({ dom, getProjects, refreshProjects, refreshI
       const res = await fetch('/api/instances', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ project: '.conduct', model, backendKind, sonnetWindow, temp: true, mode: 'bypassPermissions' }),
+        body: JSON.stringify({ project: '.conduct', model, backend, sonnetWindow, temp: true, mode: 'bypassPermissions' }),
       });
       if (!res.ok) throw new Error((await res.json()).error);
       const inst = await res.json();

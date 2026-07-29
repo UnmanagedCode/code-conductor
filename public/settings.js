@@ -1,8 +1,8 @@
 // Settings page — a full-page view inside #main, shown when the URL hash is
-// `#settings`. Built as a group-nav + content scaffold: Models, Account
-// (overage protection), Voice (Dictation + Speech grouping boxes), Conventions
-// (Conductor / Workspace / Project blocks, each a reusable conventionsPanel),
-// Plugins, Archived. Each adds a nav item + a panel.
+// `#settings`. Built as a group-nav + content scaffold: Models, Backends,
+// Account (overage protection), Voice (Dictation + Speech grouping boxes),
+// Conventions (Conductor / Workspace / Project blocks, each a reusable
+// conventionsPanel), Plugins, Archived. Each adds a nav item + a panel.
 //
 // Navigation is hash-driven so a refresh keeps the page. app.js owns the
 // hash (it knows the active session to restore on close) and passes a
@@ -11,6 +11,7 @@
 import { formatAgo } from './sidebar.js';
 import { installPluginManager } from './pluginManager.js';
 import { installConventionsPanel } from './conventionsPanel.js';
+import { CLAUDE_BACKEND, backendIdOf } from './models.js';
 
 const POLL_MS = 1500;
 
@@ -38,11 +39,25 @@ export function installSettings({
   const smRoleStatusEl = document.getElementById('sm-role-status');
   const smCustomListEl = document.getElementById('sm-custom-list');
   const smCustomLabelEl = document.getElementById('sm-custom-label');
+  const smCustomBackendEl = document.getElementById('sm-custom-backend');
   const smCustomModelEl = document.getElementById('sm-custom-model');
   const smCustomContextEl = document.getElementById('sm-custom-context');
   const smCustomAddEl = document.getElementById('sm-custom-add');
   const smCustomStatusEl = document.getElementById('sm-custom-status');
   let lastModelsData = null;
+  // Backends group elements (the backend registry — Settings → Backends).
+  const sbStatusEl = document.getElementById('sb-status');
+  const sbListEl = document.getElementById('sb-list');
+  const sbIdEl = document.getElementById('sb-id');
+  const sbLabelEl = document.getElementById('sb-label');
+  const sbTemplateEl = document.getElementById('sb-template');
+  const sbEnvEl = document.getElementById('sb-env');
+  const sbSaveEl = document.getElementById('sb-save');
+  const sbCancelEl = document.getElementById('sb-cancel');
+  const sbFormLegendEl = document.getElementById('sb-form-legend');
+  const sbFormStatusEl = document.getElementById('sb-form-status');
+  // null = add mode; a backend id = editing that row (mirrors conventionsPanel).
+  let sbEditingId = null;
   const smCompactWindowEnabledEl = document.getElementById('sm-compact-window-enabled');
   const smCompactWindowRowEl     = document.getElementById('sm-compact-window-row');
   const smCompactWindowSliderEl  = document.getElementById('sm-compact-window');
@@ -338,6 +353,182 @@ export function installSettings({
     }
   }
 
+  // ── Backends group ──────────────────────────────────────────────────
+  // The backend registry: one card per row. Managed rows (`claude`, `ollama`)
+  // are code-owned — their label/template can't be edited and they can't be
+  // removed (the server refuses either way), but their env can. Removal of a
+  // user row is REFUSED with 409 when custom models still reference it OR when
+  // any tracked session is still on it; the message names them either way, so it
+  // goes straight into the status line.
+  //
+  // No loader of its own: the registry rides in the shared /api/settings/models
+  // payload, so renderModels() drives renderBackends() — the same arrangement the
+  // Account panel's overage prefs use (see syncOverageControls).
+  function envToText(env) {
+    return (Array.isArray(env) ? env : []).map(e => `${e.key}=${e.value}`).join('\n');
+  }
+
+  // KEY=VALUE per line → [{key,value}]. Blank lines are skipped; a line with no
+  // '=' is treated as an empty value so a half-typed row doesn't silently vanish
+  // (the server validates the key shape and 400s on a bad one).
+  function envFromText(text) {
+    return String(text || '').split('\n').map(l => l.trim()).filter(Boolean).map(l => {
+      const i = l.indexOf('=');
+      return i === -1 ? { key: l, value: '' } : { key: l.slice(0, i).trim(), value: l.slice(i + 1) };
+    });
+  }
+
+  function renderBackends(data) {
+    const backends = data.backends || [];
+    const customModels = data.customModels || [];
+    if (sbStatusEl) {
+      sbStatusEl.textContent = `${backends.length} backend${backends.length === 1 ? '' : 's'} — ${backends.filter(b => b.managed).length} built in.`;
+    }
+    if (!sbListEl) return;
+    sbListEl.innerHTML = '';
+    for (const b of backends) {
+      const li = document.createElement('li');
+      li.className = 'sb-row';
+
+      const head = document.createElement('div');
+      head.className = 'sb-row-head';
+      const label = document.createElement('span');
+      label.className = 'sb-row-label';
+      label.textContent = b.label;
+      head.appendChild(label);
+      const id = document.createElement('span');
+      id.className = 'sb-row-id';
+      id.textContent = b.id;
+      head.appendChild(id);
+      if (b.managed) {
+        const badge = document.createElement('span');
+        badge.className = 'sb-managed-badge';
+        badge.textContent = 'built in';
+        head.appendChild(badge);
+      }
+      const actions = document.createElement('div');
+      actions.className = 'sb-row-actions';
+      const edit = document.createElement('button');
+      edit.type = 'button';
+      edit.className = 'btn';
+      edit.textContent = b.managed ? 'Edit env' : 'Edit';
+      edit.addEventListener('click', () => openEditBackend(b));
+      actions.appendChild(edit);
+      if (!b.managed) {
+        const rm = document.createElement('button');
+        rm.type = 'button';
+        rm.className = 'btn';
+        rm.textContent = 'Remove';
+        rm.addEventListener('click', () => onRemoveBackend(b.id));
+        actions.appendChild(rm);
+      }
+      head.appendChild(actions);
+      li.appendChild(head);
+
+      const tpl = document.createElement('div');
+      tpl.className = 'sb-row-template';
+      tpl.textContent = b.template ? b.template : 'runs `claude` directly';
+      li.appendChild(tpl);
+
+      if (Array.isArray(b.env) && b.env.length) {
+        const env = document.createElement('div');
+        env.className = 'sb-row-env';
+        env.textContent = b.env.map(e => `${e.key}=${e.value}`).join('  ');
+        li.appendChild(env);
+      }
+
+      const bound = customModels.filter(m => m.backend === b.id);
+      if (bound.length) {
+        const models = document.createElement('div');
+        models.className = 'sb-row-env';
+        models.textContent = `models: ${bound.map(m => m.model).join(', ')}`;
+        li.appendChild(models);
+      }
+
+      sbListEl.appendChild(li);
+    }
+  }
+
+  function closeBackendForm() {
+    sbEditingId = null;
+    if (sbIdEl) { sbIdEl.value = ''; sbIdEl.disabled = false; sbIdEl.hidden = false; }
+    if (sbLabelEl) { sbLabelEl.value = ''; sbLabelEl.disabled = false; }
+    if (sbTemplateEl) { sbTemplateEl.value = ''; sbTemplateEl.disabled = false; }
+    if (sbEnvEl) sbEnvEl.value = '';
+    if (sbSaveEl) sbSaveEl.textContent = 'Add';
+    if (sbCancelEl) sbCancelEl.hidden = true;
+    if (sbFormLegendEl) sbFormLegendEl.textContent = 'Add a backend';
+    if (sbFormStatusEl) sbFormStatusEl.textContent = '';
+  }
+
+  function openEditBackend(b) {
+    sbEditingId = b.id;
+    if (sbIdEl) { sbIdEl.value = b.id; sbIdEl.disabled = true; sbIdEl.hidden = false; }
+    if (sbLabelEl) { sbLabelEl.value = b.label; sbLabelEl.disabled = !!b.managed; }
+    if (sbTemplateEl) { sbTemplateEl.value = b.template || ''; sbTemplateEl.disabled = !!b.managed; }
+    if (sbEnvEl) sbEnvEl.value = envToText(b.env);
+    if (sbSaveEl) sbSaveEl.textContent = 'Save';
+    if (sbCancelEl) sbCancelEl.hidden = false;
+    if (sbFormLegendEl) {
+      sbFormLegendEl.textContent = b.managed
+        ? `Edit env for ${b.label} (built in — template is fixed)`
+        : `Edit ${b.label}`;
+    }
+    if (sbFormStatusEl) sbFormStatusEl.textContent = '';
+  }
+
+  async function onSaveBackend() {
+    const env = envFromText(sbEnvEl?.value);
+    if (sbSaveEl) sbSaveEl.disabled = true;
+    try {
+      let r;
+      if (sbEditingId) {
+        // A managed row accepts env only — sending its (disabled, unchanged)
+        // label/template would be rejected 400, so omit them.
+        const managed = (lastModelsData?.backends || []).find(b => b.id === sbEditingId)?.managed;
+        const body = managed ? { env } : { label: sbLabelEl?.value?.trim(), template: sbTemplateEl?.value ?? '', env };
+        r = await fetch(`/api/settings/models/backends/${encodeURIComponent(sbEditingId)}`, {
+          method: 'PATCH',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+      } else {
+        r = await fetch('/api/settings/models/backends', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ id: sbIdEl?.value?.trim(), label: sbLabelEl?.value?.trim(), template: sbTemplateEl?.value ?? '', env }),
+        });
+      }
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+      closeBackendForm();
+      renderModels(data); // also re-renders this panel (renderBackends)
+      onModelsChange?.(data);
+    } catch (e) {
+      if (sbFormStatusEl) sbFormStatusEl.textContent = `Save failed: ${e.message || e}`;
+    } finally {
+      if (sbSaveEl) sbSaveEl.disabled = false;
+    }
+  }
+
+  async function onRemoveBackend(id) {
+    try {
+      const r = await fetch(`/api/settings/models/backends/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      const data = await r.json();
+      // 409 names what still references the row (bound custom models, or the
+      // sessions still on it) in its message — surface it verbatim.
+      if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+      if (sbEditingId === id) closeBackendForm();
+      renderModels(data); // also re-renders this panel (renderBackends)
+      onModelsChange?.(data);
+    } catch (e) {
+      if (sbStatusEl) sbStatusEl.textContent = `Remove failed: ${e.message || e}`;
+    }
+  }
+
+  sbSaveEl?.addEventListener('click', onSaveBackend);
+  sbCancelEl?.addEventListener('click', closeBackendForm);
+
   // ── Models group ────────────────────────────────────────────────────
   async function loadModels() {
     if (!smListEl) return;
@@ -375,25 +566,32 @@ export function installSettings({
   });
 
   function renderModels(data) {
-    lastModelsData = data; // latest catalog, read by the provider-switch handler
+    lastModelsData = data; // latest catalog, read by the backend-switch handler
     const tiers = data.tiers || [];
-    const providers = data.providers || [{ kind: 'claude', label: 'Claude' }, { kind: 'ollama', label: 'Ollama' }];
-    const backends = data.backends || []; // Claude version catalog (MODEL_FAMILIES)
-    const customBackends = data.customBackends || []; // [{label, model}]
-    const ollamaCloudModels = data.ollamaCloudModels || []; // curated presets [{label, model}]
-    const tierBackend = data.tierBackend || {}; // {tier: {kind, model, window?}}
+    // The backend REGISTRY (Settings → Backends): [{id,label,template,env,managed}].
+    const backends = data.backends || [{ id: 'claude', label: 'Claude', managed: true }];
+    const claudeFamilies = data.claudeFamilies || []; // Claude version catalog (MODEL_FAMILIES)
+    const customModels = data.customModels || []; // [{label, model, backend, contextWindow}]
+    const ollamaCloudModels = data.ollamaCloudModels || []; // curated presets, `ollama` backend only
+    const tierBackend = data.tierBackend || {}; // {tier: {backend, model, window?}}
     const enabledTiers = data.enabledTiers ?? {};
     const defaultTier = data.defaultSpawnTier ?? 'powerful';
     const enabledCount = tiers.filter(t => enabledTiers[t.tier] !== false).length;
 
     // Flattened Claude version catalog + a label lookup.
-    const claudeVersions = backends.flatMap(b => b.versions.map(v => ({ ...v, family: b.family })));
+    const claudeVersions = claudeFamilies.flatMap(b => b.versions.map(v => ({ ...v, family: b.family })));
     const versionLabel = (id) => claudeVersions.find(v => v.id === id)?.label || id;
     const isSonnetFixed = (id) => !!claudeVersions.find(v => v.id === id && v.fixedWindow);
-    const providerLabel = (kind) => providers.find(p => p.kind === kind)?.label || kind;
-    const bindingFor = (tier) => tierBackend[tier] || { kind: 'claude', model: '' };
+    const backendLabel = (id) => backends.find(b => b.id === id)?.label || id;
+    const bindingFor = (tier) => tierBackend[tier] || { backend: CLAUDE_BACKEND, model: '' };
+    // Models bindable on a backend: its own custom-model rows, plus — for the
+    // built-in `ollama` row only — the curated cloud presets.
+    const modelsForBackend = (id) => ({
+      curated: id === 'ollama' ? ollamaCloudModels : [],
+      custom: customModels.filter(m => m.backend === id),
+    });
     function describeBinding(b) {
-      if (b.kind === 'ollama') return `Ollama — ${b.model}`;
+      if (backendIdOf(b) !== CLAUDE_BACKEND) return `${backendLabel(backendIdOf(b))} — ${b.model}`;
       let extra = '';
       // Per-binding window (Sonnet 4.x only) — this binding's own `window`, not a
       // shared global, so two Sonnet bindings can show different windows.
@@ -401,31 +599,33 @@ export function installSettings({
       return `${versionLabel(b.model)}${extra}`;
     }
 
-    // Shared backend + model picker (Claude/Ollama), reused by both tier rows
-    // and role custom bindings. `b` is a {kind, model} binding; callbacks fire
-    // on a provider switch (onKind), a Claude version pick (onClaude(model,
-    // window)), or an Ollama tag pick (onOllama(model)). Returns the two <select>
-    // elements so the caller can place them.
-    function buildBackendPicker(b, enabled, { onKind, onClaude, onOllama }) {
-      // Backend (provider) select — Claude / Ollama.
+    // Shared backend + model picker, reused by both tier rows and role custom
+    // bindings. `b` is a {backend, model} binding; callbacks fire on a backend
+    // switch (onBackend), a Claude version pick (onClaude(model, window)), or a
+    // non-Claude model pick (onModel(model)). The backend list comes from the
+    // registry, so a user-added row shows up here with no code change. Returns the
+    // two <select> elements so the caller can place them.
+    function buildBackendPicker(b, enabled, { onBackend, onClaude, onModel }) {
+      const bBackend = backendIdOf(b);
       const backendSel = document.createElement('select');
       backendSel.className = 'sm-backend';
       backendSel.disabled = !enabled;
-      for (const p of providers) {
+      for (const p of backends) {
         const opt = document.createElement('option');
-        opt.value = p.kind;
+        opt.value = p.id;
         opt.textContent = p.label;
-        if (p.kind === b.kind) opt.selected = true;
+        if (p.id === bBackend) opt.selected = true;
         backendSel.appendChild(opt);
       }
-      backendSel.addEventListener('change', () => onKind(backendSel.value));
+      backendSel.addEventListener('change', () => onBackend(backendSel.value));
 
-      // Model select, scoped to the row's backend kind.
+      // Model select, scoped to the row's backend.
       const sel = document.createElement('select');
       sel.className = 'sm-version';
       sel.disabled = !enabled;
-      if (b.kind === 'ollama') {
-        if (!ollamaCloudModels.length && !customBackends.length) {
+      if (bBackend !== CLAUDE_BACKEND) {
+        const { curated, custom } = modelsForBackend(bBackend);
+        if (!curated.length && !custom.length) {
           const opt = document.createElement('option');
           opt.textContent = '(add a model below)';
           sel.appendChild(opt);
@@ -444,9 +644,9 @@ export function installSettings({
             }
             sel.appendChild(grp);
           };
-          addGroup('Ollama Cloud', ollamaCloudModels);
-          addGroup('My Models', customBackends);
-          sel.addEventListener('change', () => onOllama(sel.value));
+          addGroup(`${backendLabel(bBackend)} Cloud`, curated);
+          addGroup('My Models', custom);
+          sel.addEventListener('change', () => onModel(sel.value));
         }
       } else {
         // Claude version list; Sonnet 4.x expands to 200k/1M sub-entries. The
@@ -480,7 +680,7 @@ export function installSettings({
       return { backendSel, modelSel: sel };
     }
 
-    renderCustomList(customBackends);
+    renderCustomList(customModels, backends);
 
     if (smStatusEl) {
       smStatusEl.innerHTML = tiers.map(t => {
@@ -518,11 +718,11 @@ export function installSettings({
       labelEl.textContent = t.label;
       li.appendChild(labelEl);
 
-      // Columns 3 & 4: backend (provider) + model selects (shared picker).
+      // Columns 3 & 4: backend + model selects (shared picker).
       const { backendSel, modelSel } = buildBackendPicker(b, isEnabled, {
-        onKind: (kind) => onPickBackendKind(t.tier, kind),
+        onBackend: (backend) => onPickTierBackend(t.tier, backend),
         onClaude: (model, window) => onPickClaudeModel(t.tier, model, window),
-        onOllama: (model) => onPickOllamaModel(t.tier, model),
+        onModel: (model) => onPickTierModel(t.tier, model),
       });
       backendSel.dataset.tier = t.tier;
       li.appendChild(backendSel);
@@ -553,7 +753,7 @@ export function installSettings({
     // user simply re-selects the manifest's tier/model in the same picker.
     if (smRoleListEl) {
       const roles = data.roles || [];
-      const roleBackend = data.roleBackend || {}; // {role: {kind:'tier',tier} | {kind,model}}
+      const roleBackend = data.roleBackend || {}; // {role: {kind:'tier',tier} | {backend,model}}
       smRoleListEl.innerHTML = '';
       for (const r of roles) {
         const rb = roleBackend[r.role] || { kind: 'tier', tier: defaultTier };
@@ -607,9 +807,9 @@ export function installSettings({
         // Custom backend + model pickers, only when Custom is selected.
         if (isCustom) {
           const { backendSel, modelSel } = buildBackendPicker(rb, true, {
-            onKind: (kind) => onPickRoleBackendKind(r.role, kind),
-            onClaude: (model, window) => saveRoleBinding(r.role, { kind: 'claude', model }, window || undefined),
-            onOllama: (model) => saveRoleBinding(r.role, { kind: 'ollama', model }),
+            onBackend: (backend) => onPickRoleBackend(r.role, backend),
+            onClaude: (model, window) => saveRoleBinding(r.role, { backend: CLAUDE_BACKEND, model }, window || undefined),
+            onModel: (model) => saveRoleBinding(r.role, { backend: backendIdOf(rb), model }),
           });
           li.appendChild(backendSel);
           li.appendChild(modelSel);
@@ -634,6 +834,7 @@ export function installSettings({
     // Overage prefs live on the Account page but ride in this same models payload,
     // so keep their controls in sync whenever it refreshes. See syncOverageControls.
     syncOverageControls(data);
+    renderBackends(data);
     if (smCompactWindowEnabledEl) {
       const cw = data.conductorCompactWindow ?? { enabled: false, value: 200 };
       smCompactWindowEnabledEl.checked = cw.enabled;
@@ -664,41 +865,61 @@ export function installSettings({
     }
   }
 
-  // Switching a tier's provider: pick a sensible default model for the new kind
-  // (Sonnet default for Claude; this tier's catalog cloud preset for Ollama —
-  // fast/balanced/powerful each have one, see ollamaCloudTierDefaults — else
-  // the first custom model).
-  function onPickBackendKind(tier, kind) {
-    if (kind === 'ollama') {
-      const cloudModels = lastModelsData?.ollamaCloudModels || [];
-      const tierDefaults = lastModelsData?.ollamaCloudTierDefaults || {};
-      const preset = cloudModels.find(c => c.model === tierDefaults[tier]);
-      const chosen = preset || lastModelsData?.customBackends?.[0];
-      if (!chosen) { if (smStatusEl) smStatusEl.textContent = 'Add an Ollama model below first.'; renderModels(lastModelsData); return; }
-      return saveTierBinding(tier, { kind: 'ollama', model: chosen.model });
+  // First model to bind when a tier/role switches TO a non-Claude backend: for
+  // the built-in `ollama` row prefer that tier's curated cloud preset
+  // (fast/balanced/powerful each have one, see ollamaCloudTierDefaults), else the
+  // first custom model on the backend. Returns null when nothing is bindable yet.
+  function firstModelForBackend(backend, tier) {
+    const curated = backend === 'ollama' ? (lastModelsData?.ollamaCloudModels || []) : [];
+    if (tier) {
+      const preset = curated.find(c => c.model === (lastModelsData?.ollamaCloudTierDefaults || {})[tier]);
+      if (preset) return preset;
     }
-    return saveTierBinding(tier, { kind: 'claude', model: defaultClaudeModel() });
+    const custom = (lastModelsData?.customModels || []).filter(m => m.backend === backend);
+    return custom[0] || curated[0] || null;
+  }
+
+  function backendLabelOf(id) {
+    return (lastModelsData?.backends || []).find(b => b.id === id)?.label || id;
+  }
+
+  // Switching a tier's backend: pick a sensible default model for the new backend
+  // (Sonnet default for Claude; see firstModelForBackend otherwise).
+  function onPickTierBackend(tier, backend) {
+    if (backend !== CLAUDE_BACKEND) {
+      const chosen = firstModelForBackend(backend, tier);
+      if (!chosen) {
+        // Re-render FIRST to snap the select back, THEN write the message —
+        // renderModels rewrites smStatusEl, so the other order loses it.
+        renderModels(lastModelsData);
+        if (smStatusEl) smStatusEl.textContent = `Add a ${backendLabelOf(backend)} model below first.`;
+        return;
+      }
+      return saveTierBinding(tier, { backend, model: chosen.model });
+    }
+    return saveTierBinding(tier, { backend: CLAUDE_BACKEND, model: defaultClaudeModel() });
   }
 
   function onPickClaudeModel(tier, model, window) {
-    return saveTierBinding(tier, { kind: 'claude', model }, window || undefined);
+    return saveTierBinding(tier, { backend: CLAUDE_BACKEND, model }, window || undefined);
   }
 
-  function onPickOllamaModel(tier, model) {
-    return saveTierBinding(tier, { kind: 'ollama', model });
+  function onPickTierModel(tier, model) {
+    const backend = backendIdOf(lastModelsData?.tierBackend?.[tier]);
+    return saveTierBinding(tier, { backend, model });
   }
 
   // The Claude version a "switch to Custom" / "switch to Claude" pick defaults
   // to (Sonnet default, else the first catalog version).
   function defaultClaudeModel() {
-    const backends = lastModelsData?.backends || [];
-    const sonnet = backends.find(b => b.family === 'sonnet') || backends[0];
-    return sonnet?.default || backends[0]?.versions?.[0]?.id;
+    const families = lastModelsData?.claudeFamilies || [];
+    const sonnet = families.find(b => b.family === 'sonnet') || families[0];
+    return sonnet?.default || families[0]?.versions?.[0]?.id;
   }
 
-  // Persist a role binding — a tier binding {kind:'tier',tier} or a custom
-  // {kind, model} — in one /prefs POST. For a Sonnet 4.x custom pick the chosen
-  // window rides ON the binding ({kind,model,window}), not a sibling global.
+  // Persist a role binding — a tier binding {kind:'tier',tier} or a concrete
+  // {backend, model} — in one /prefs POST. For a Sonnet 4.x custom pick the chosen
+  // window rides ON the binding ({backend,model,window}), not a sibling global.
   async function saveRoleBinding(role, backend, window) {
     try {
       const body = { roleBackend: { role, backend: window ? { ...backend, window } : backend } };
@@ -720,18 +941,22 @@ export function installSettings({
   // default Claude custom binding so the pickers appear populated.
   function onPickRoleBinding(role, value) {
     if (value.startsWith('tier:')) return saveRoleBinding(role, { kind: 'tier', tier: value.slice(5) });
-    return saveRoleBinding(role, { kind: 'claude', model: defaultClaudeModel() });
+    return saveRoleBinding(role, { backend: CLAUDE_BACKEND, model: defaultClaudeModel() });
   }
 
-  // Switching a role's custom provider: pick a sensible default model for the
-  // new kind (Sonnet default for Claude; first cloud preset / custom for Ollama).
-  function onPickRoleBackendKind(role, kind) {
-    if (kind === 'ollama') {
-      const chosen = (lastModelsData?.ollamaCloudModels || [])[0] || lastModelsData?.customBackends?.[0];
-      if (!chosen) { if (smStatusEl) smStatusEl.textContent = 'Add an Ollama model below first.'; renderModels(lastModelsData); return; }
-      return saveRoleBinding(role, { kind: 'ollama', model: chosen.model });
+  // Switching a role's custom backend: pick a sensible default model for the new
+  // backend (Sonnet default for Claude; see firstModelForBackend otherwise).
+  function onPickRoleBackend(role, backend) {
+    if (backend !== CLAUDE_BACKEND) {
+      const chosen = firstModelForBackend(backend, null);
+      if (!chosen) {
+        renderModels(lastModelsData); // see onPickTierBackend: re-render, then message
+        if (smStatusEl) smStatusEl.textContent = `Add a ${backendLabelOf(backend)} model below first.`;
+        return;
+      }
+      return saveRoleBinding(role, { backend, model: chosen.model });
     }
-    return saveRoleBinding(role, { kind: 'claude', model: defaultClaudeModel() });
+    return saveRoleBinding(role, { backend: CLAUDE_BACKEND, model: defaultClaudeModel() });
   }
 
   // Create a custom role — name only. It defaults to the powerful tier binding
@@ -820,8 +1045,25 @@ export function installSettings({
     return String(n);
   }
 
-  function renderCustomList(list) {
+  // `backends` is the registry, used to fill the add-form's backend select with
+  // every SUBSTITUTION backend (the identity `claude` row serves the Claude
+  // version catalog, not user model rows, so it's never offered here).
+  function renderCustomList(list, backends) {
+    if (smCustomBackendEl) {
+      const substitution = (backends || []).filter(b => b.id !== CLAUDE_BACKEND);
+      const prev = smCustomBackendEl.value;
+      smCustomBackendEl.innerHTML = '';
+      for (const b of substitution) {
+        const opt = document.createElement('option');
+        opt.value = b.id;
+        opt.textContent = b.label;
+        smCustomBackendEl.appendChild(opt);
+      }
+      if (substitution.some(b => b.id === prev)) smCustomBackendEl.value = prev;
+      smCustomBackendEl.disabled = !substitution.length;
+    }
     if (!smCustomListEl) return;
+    const backendLabel = (id) => (backends || []).find(b => b.id === id)?.label || id;
     smCustomListEl.innerHTML = '';
     if (!list.length) {
       const li = document.createElement('li');
@@ -836,43 +1078,40 @@ export function installSettings({
       const meta = document.createElement('span');
       meta.className = 'sm-custom-meta';
       const ctx = Number.isFinite(c.contextWindow) ? ` · ${fmtCtxTokens(c.contextWindow)} ctx` : '';
-      meta.textContent = `${c.label} — ${c.model}${ctx}`;
+      meta.textContent = `${c.label} — ${c.model} · ${backendLabel(c.backend)}${ctx}`;
       li.appendChild(meta);
       const rm = document.createElement('button');
       rm.type = 'button';
       rm.className = 'btn sm-custom-remove';
       rm.textContent = 'Remove';
-      rm.addEventListener('click', () => onRemoveCustomBackend(c.model));
+      rm.addEventListener('click', () => onRemoveCustomModel(c.model));
       li.appendChild(rm);
       smCustomListEl.appendChild(li);
     }
   }
 
-  async function onAddCustomBackend() {
+  async function onAddCustomModel() {
     const label = smCustomLabelEl?.value?.trim();
     const model = smCustomModelEl?.value?.trim();
-    if (!label || !model) {
-      if (smCustomStatusEl) smCustomStatusEl.textContent = 'Label and Ollama tag are required.';
+    const backend = smCustomBackendEl?.value;
+    if (!label || !model || !backend) {
+      if (smCustomStatusEl) smCustomStatusEl.textContent = 'Label, backend, and model id are required.';
       return;
     }
-    // Optional context window (tokens). Only send when non-empty; validate > 0.
+    // Context window (tokens) — REQUIRED, and must be positive.
     const ctxRaw = smCustomContextEl?.value?.trim();
-    const body = { label, model };
-    if (ctxRaw) {
-      const ctx = Number(ctxRaw);
-      if (!Number.isFinite(ctx) || ctx <= 0) {
-        if (smCustomStatusEl) smCustomStatusEl.textContent = 'Context must be a positive number of tokens.';
-        return;
-      }
-      body.contextWindow = ctx;
+    const ctx = Number(ctxRaw);
+    if (!ctxRaw || !Number.isFinite(ctx) || ctx <= 0) {
+      if (smCustomStatusEl) smCustomStatusEl.textContent = 'Context is required and must be a positive number of tokens.';
+      return;
     }
-    if (smCustomStatusEl) smCustomStatusEl.textContent = 'Checking Ollama…';
+    if (smCustomStatusEl) smCustomStatusEl.textContent = 'Adding…';
     if (smCustomAddEl) smCustomAddEl.disabled = true;
     try {
       const r = await fetch('/api/settings/models/custom', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(body),
+        body: JSON.stringify({ label, model, backend, contextWindow: ctx }),
       });
       const data = await r.json();
       if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
@@ -889,10 +1128,10 @@ export function installSettings({
     }
   }
 
-  // Remove by tag (the identity). The tag can contain ':' — encodeURIComponent.
-  async function onRemoveCustomBackend(tag) {
+  // Remove by model id (the identity). It can contain ':' — encodeURIComponent.
+  async function onRemoveCustomModel(model) {
     try {
-      const r = await fetch(`/api/settings/models/custom/${encodeURIComponent(tag)}`, { method: 'DELETE' });
+      const r = await fetch(`/api/settings/models/custom/${encodeURIComponent(model)}`, { method: 'DELETE' });
       const data = await r.json();
       if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
       renderModels(data);
@@ -902,7 +1141,7 @@ export function installSettings({
     }
   }
 
-  smCustomAddEl?.addEventListener('click', onAddCustomBackend);
+  smCustomAddEl?.addEventListener('click', onAddCustomModel);
   smRoleAddEl?.addEventListener('click', onAddRole);
 
   smCompactWindowEnabledEl?.addEventListener('change', () => {

@@ -22,13 +22,17 @@ import { createPluginLibrary } from './src/plugins/library.js';
 import { buildPluginProxy } from './src/plugins/proxy.js';
 import { setPluginConventionsProvider } from './src/projectConventions.js';
 import { setPluginConductorConventionsProvider } from './src/conductorConventions.js';
-import { setPluginRolesProvider } from './src/appSettings.js';
+import { setPluginRolesProvider, setLiveBackendsProvider } from './src/appSettings.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export function createServer({ withInstances = true, claudeLauncher } = {}) {
   const app = express();
   const instances = withInstances ? new InstanceManager({ claudeLauncher }) : null;
+  // Which backends live sessions are on — lets removeBackend refuse (409) rather
+  // than delete a backend out from under a running/respawnable instance, whose next
+  // relaunch would otherwise fall through to the real `claude`.
+  setLiveBackendsProvider(instances ? () => instances.liveBackendUsage() : null);
   const pluginHost = withInstances ? createPluginHost({ instances }) : null;
   const pluginLibrary = withInstances ? createPluginLibrary({ pluginHost }) : null;
   // Enabled plugins contribute project conventions (each optionally carrying a

@@ -8,9 +8,12 @@
 //     artifact jsonl at <CLAUDE_PROJECTS_ROOT>/<encodedCwd>/<sessionId>.jsonl
 //     (so the cleanup test can verify it gets deleted).
 //   FAKE_SUMMARIZE_ARGV_FILE — path to dump the received argv as JSON (for
-//     asserting the composed command line, e.g. the ollama launch prefix).
-// Name-agnostic: this same script also stands in for `ollama` via OLLAMA_BIN,
-// since it only reacts to argv/stdin/env, never to which binary name invoked it.
+//     asserting the composed command line, e.g. a backend template's prefix).
+//   FAKE_SUMMARIZE_ENV_FILE  — path to dump process.env as JSON (for asserting a
+//     backend row's injected env reached the child).
+// Name-agnostic: this same script also stands in for a backend's WRAPPER command
+// (named by that row's `template`), since it only reacts to argv/stdin/env, never
+// to which binary name invoked it.
 import { createInterface } from 'node:readline';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
@@ -23,9 +26,12 @@ const sidIdx = args.indexOf('--session-id');
 const sessionId = sidIdx !== -1 ? args[sidIdx + 1] : null;
 
 // Dump argv for tests that assert the composed command line (e.g. the
-// ollama launch-prefix shape).
+// a backend template prefix shape).
 if (process.env.FAKE_SUMMARIZE_ARGV_FILE) {
   await fs.writeFile(process.env.FAKE_SUMMARIZE_ARGV_FILE, JSON.stringify(args)).catch(() => {});
+}
+if (process.env.FAKE_SUMMARIZE_ENV_FILE) {
+  await fs.writeFile(process.env.FAKE_SUMMARIZE_ENV_FILE, JSON.stringify(process.env)).catch(() => {});
 }
 
 // Drain stdin.

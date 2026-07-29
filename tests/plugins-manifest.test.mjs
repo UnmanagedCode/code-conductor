@@ -253,7 +253,7 @@ test('readManifest: absent → null, bad JSON → errors, invalid keeps id for d
 test('roles: contributions-only manifest (no backend) validates and normalizes', () => {
   const roles = [
     { slug: 'captain', name: 'Captain', binding: { kind: 'tier', tier: 'powerful' } },
-    { slug: 'scribe', name: 'Scribe', binding: { kind: 'claude', model: 'claude-opus-4-8' } },
+    { slug: 'scribe', name: 'Scribe', binding: { backend: 'claude', model: 'claude-opus-4-8' } },
   ];
   const r = validateManifest(base({ roles }));
   assert.equal(r.errors, undefined);
@@ -267,9 +267,32 @@ test('roles: invalid shapes rejected', () => {
   assert.ok(g({ slug: 'ok', name: '', binding: { kind: 'tier', tier: 'fast' } }).errors.some(e => e.includes('.name')));
   assert.ok(g({ slug: 'ok', name: 'n' }).errors.some(e => e.includes('.binding')));                          // missing binding
   assert.ok(g({ slug: 'ok', name: 'n', binding: { kind: 'tier', tier: 'nope' } }).errors.some(e => e.includes('.tier')));   // unknown tier
-  assert.ok(g({ slug: 'ok', name: 'n', binding: { kind: 'claude', model: 'nope' } }).errors.some(e => e.includes('.model'))); // unknown model
-  assert.ok(g({ slug: 'ok', name: 'n', binding: { kind: 'ollama', model: 'x:cloud' } }).errors.some(e => e.includes('.kind'))); // ollama not allowed
+  assert.ok(g({ slug: 'ok', name: 'n', binding: { backend: 'claude', model: 'nope' } }).errors.some(e => e.includes('.model'))); // unknown model
+  // Only the identity `claude` backend may be named: every other registry row is
+  // user-local (its models exist only in this user's settings).
+  assert.ok(g({ slug: 'ok', name: 'n', binding: { backend: 'ollama', model: 'x:cloud' } }).errors.some(e => e.includes('.backend')));
+  assert.ok(g({ slug: 'ok', name: 'n', binding: { backend: 'my-proxy', model: 'x:v1' } }).errors.some(e => e.includes('.backend')));
+  // …and that holds for the LEGACY key too (a pre-registry manifest naming a
+  // user-local backend is still refused).
+  assert.ok(g({ slug: 'ok', name: 'n', binding: { kind: 'ollama', model: 'x:cloud' } }).errors.some(e => e.includes('.kind')));
   assert.ok(g({ slug: 'ok', name: 'n', binding: { kind: 'tier', tier: 'fast', extra: 1 } }).errors.some(e => e.includes('.extra'))); // stray key
+});
+
+// A manifest lives in a third-party repo we can't migrate, so the pre-registry
+// `{kind:'claude',model}` shape is accepted and normalized rather than marking the
+// whole plugin invalid on upgrade.
+test('roles: a LEGACY {kind:"claude",model} binding is accepted and normalized to {backend}', () => {
+  const r = validateManifest(base({ roles: [
+    { slug: 'legacy', name: 'Legacy', binding: { kind: 'claude', model: 'claude-opus-4-8' } },
+  ] }));
+  assert.equal(r.errors, undefined, JSON.stringify(r.errors));
+  assert.deepEqual(r.manifest.roles[0].binding, { backend: 'claude', model: 'claude-opus-4-8' },
+    'translated on read — downstream only ever sees the current shape');
+  // An unknown model under the legacy key still errors, on the legacy key's name.
+  const bad = validateManifest(base({ roles: [
+    { slug: 'legacy', name: 'Legacy', binding: { kind: 'claude', model: 'claude-retired-9' } },
+  ] }));
+  assert.ok(bad.errors.some(e => e.includes('.model')));
 });
 
 test('roles: duplicate slug within the array rejected', () => {

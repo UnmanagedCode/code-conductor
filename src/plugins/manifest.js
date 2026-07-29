@@ -1,6 +1,6 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { isKnownTier, isKnownClaudeModel } from '../modelVersions.js';
+import { isKnownTier, isKnownClaudeModel, CLAUDE_BACKEND_ID } from '../modelVersions.js';
 
 // Plugin manifest: `conductor.plugin.json` at the plugin project root.
 // readManifest(dir) reads + validates; validateManifest(json) normalizes a
@@ -318,17 +318,26 @@ function validateRoles(roles, errors) {
 }
 
 // A plugin role binding: {kind:'tier', tier} (a known capability tier) or
-// {kind:'claude', model} (a known Claude version id). Ollama tags are user-local
-// so a plugin can't bind to one. Validated against the shared modelVersions
-// catalog at load — an unknown tier/model marks the plugin invalid. This is a
-// load-TIME check only: the catalog can move on afterwards (a Claude version
-// retired), so resolveRoleBackend (appSettings.js) re-guards a claude model at
-// resolve time and falls back rather than spawn a dead id. Returns the
-// normalized binding or null.
+// {backend:'claude', model} (a known Claude version id). Any OTHER backend is
+// user-local — its rows and models exist only in this user's settings — so a
+// plugin can't bind to one. Validated against the shared modelVersions catalog
+// at load — an unknown tier/model marks the plugin invalid. This is a load-TIME
+// check only: the catalog can move on afterwards (a Claude version retired), so
+// resolveRoleBackend (appSettings.js) re-guards a claude model at resolve time
+// and falls back rather than spawn a dead id. Returns the normalized binding or
+// null.
+//
+// LEGACY SHAPE, TRANSLATED ON READ: before the backend registry a concrete binding
+// was `{kind:'claude', model}`. A manifest is an EXTERNAL format — it lives in a
+// third-party repo we can't migrate (the same carve-out the no-read-time-back-compat
+// rule makes for the Claude CLI's jsonls), and rejecting it would mark the whole
+// plugin invalid on upgrade. So `kind:'claude'` is accepted and normalized to
+// `backend:'claude'`. `kind:<anything else>` stays rejected: those backends are
+// user-local, exactly as before.
 function validateRoleBinding(b, label, errors) {
   const bl = `${label}.binding`;
   if (typeof b !== 'object' || b === null || Array.isArray(b)) {
-    errors.push(`'${bl}' is required (object {kind:'tier',tier} or {kind:'claude',model})`);
+    errors.push(`'${bl}' is required (object {kind:'tier',tier} or {backend:'claude',model})`);
     return null;
   }
   if (b.kind === 'tier') {
@@ -338,14 +347,20 @@ function validateRoleBinding(b, label, errors) {
     if (!isKnownTier(b.tier)) errors.push(`'${bl}.tier' must be a known capability tier`);
     return { kind: 'tier', tier: b.tier };
   }
-  if (b.kind === 'claude') {
+  // `backend` (current) or `kind` (legacy pre-registry) may name the backend.
+  const backendKey = b.backend !== undefined ? 'backend' : (b.kind !== undefined ? 'kind' : null);
+  if (backendKey) {
     for (const k of Object.keys(b)) {
-      if (!['kind', 'model'].includes(k)) errors.push(`unknown key '${bl}.${k}'`);
+      if (![backendKey, 'model'].includes(k)) errors.push(`unknown key '${bl}.${k}'`);
+    }
+    if (b[backendKey] !== CLAUDE_BACKEND_ID) {
+      errors.push(`'${bl}.${backendKey}' must be '${CLAUDE_BACKEND_ID}' — other backends are user-local`);
+      return null;
     }
     if (!isKnownClaudeModel(b.model)) errors.push(`'${bl}.model' must be a known Claude model id`);
-    return { kind: 'claude', model: b.model };
+    return { backend: CLAUDE_BACKEND_ID, model: b.model };
   }
-  errors.push(`'${bl}.kind' must be 'tier' or 'claude'`);
+  errors.push(`'${bl}' must be {kind:'tier',tier} or {backend:'claude',model}`);
   return null;
 }
 

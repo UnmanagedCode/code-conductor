@@ -6,7 +6,7 @@ import os from 'node:os';
 import { bootServer, api, freshProjectsRoot, rmrf } from './helpers.mjs';
 import { orchStoreRoot } from '../src/projects.js';
 import {
-  MODEL_FAMILIES, DEFAULT_VERSIONS, PROVIDERS, isKnownFamily, isKnownVersion, defaultVersion,
+  MODEL_FAMILIES, DEFAULT_VERSIONS, MANAGED_BACKENDS, isKnownFamily, isKnownVersion, defaultVersion,
   isKnownClaudeModel, CAPABILITY_TIERS, DEFAULT_TIER_BACKEND, isKnownTier,
 } from '../src/modelVersions.js';
 import { OLLAMA_CLOUD_MODELS, OLLAMA_CLOUD_TIER_DEFAULTS, isKnownOllamaCloudModel } from '../src/ollamaCloudModels.js';
@@ -17,10 +17,10 @@ import {
   getConductorCompactWindow, setConductorCompactWindow,
   getEnabledTiers, setTierEnabled,
   getDefaultSpawnTier, setDefaultSpawnTier,
-  getTierBackend, setTierBackend, getRoleBinding, setRoleBinding, isKnownOllamaModel,
+  getTierBackend, setTierBackend, getRoleBinding, setRoleBinding, isKnownBackendModel,
   getAllRoles, isResolvableRole, resolveRoleBackend,
   getCustomRoles, addCustomRole, removeCustomRole,
-  addCustomBackend, removeCustomBackend, setPluginRolesProvider,
+  addCustomModel, removeCustomModel, setPluginRolesProvider,
 } from '../src/appSettings.js';
 
 async function mkTmp() {
@@ -55,10 +55,10 @@ after(async () => { await ctx.close(); });
 beforeEach(async () => { ({ home } = await freshProjectsRoot()); });
 afterEach(async () => { await instances.shutdown(); await rmrf(home); });
 
-// ── Catalog (backend catalog — unchanged, still Claude family-keyed) ────
-test('modelVersions catalog: backends, defaults, and validators', () => {
+// ── Catalog (the `claude` backend's model list — Claude family-keyed) ───
+test('modelVersions catalog: Claude families, defaults, and validators', () => {
   assert.deepEqual(MODEL_FAMILIES.map(f => f.family), ['fable', 'opus', 'sonnet', 'haiku']);
-  // Every backend default is itself a known version of that backend.
+  // Every family's default is itself a known version of that family.
   for (const f of MODEL_FAMILIES) {
     assert.equal(DEFAULT_VERSIONS[f.family], f.default);
     assert.ok(isKnownVersion(f.family, f.default), `${f.family} default in catalog`);
@@ -74,13 +74,13 @@ test('modelVersions catalog: backends, defaults, and validators', () => {
 });
 
 // ── Catalog (capability-tier layer) ─────────────────────────────────────
-test('modelVersions catalog: tiers, providers + default {kind,model} bindings', () => {
+test('modelVersions catalog: tiers, managed backend rows + default {backend,model} bindings', () => {
   assert.deepEqual(CAPABILITY_TIERS.map(t => t.tier), ['fast', 'balanced', 'powerful', 'frontier']);
-  assert.deepEqual(PROVIDERS.map(p => p.kind), ['claude', 'ollama']);
+  assert.deepEqual(MANAGED_BACKENDS.map(b => b.id), ['claude', 'ollama']);
   // Every default tier binding is claude + a known Claude version.
   for (const t of CAPABILITY_TIERS) {
     const b = DEFAULT_TIER_BACKEND[t.tier];
-    assert.equal(b.kind, 'claude');
+    assert.equal(b.backend, 'claude');
     assert.ok(isKnownClaudeModel(b.model), `${t.tier}'s default model must be known`);
   }
   assert.ok(isKnownTier('fast'));
@@ -115,17 +115,17 @@ test('ollamaCloudModels: 7-model catalog, tags verbatim, tier defaults, no globa
   // Decided: the catalog does NOT change the true out-of-the-box default —
   // every tier's DEFAULT_TIER_BACKEND stays Claude (unmodified assertion).
   for (const t of CAPABILITY_TIERS) {
-    assert.equal(DEFAULT_TIER_BACKEND[t.tier].kind, 'claude');
+    assert.equal(DEFAULT_TIER_BACKEND[t.tier].backend, 'claude');
   }
 });
 
-test('appSettings: isKnownOllamaModel accepts a catalog preset with no prior addCustomBackend, and tiers can bind straight to one', async () => {
+test('appSettings: isKnownBackendModel accepts a catalog preset with no prior addCustomModel, and tiers can bind straight to one', async () => {
   const root = await mkTmp();
   try {
     await withEnv({ PROJECTS_ROOT: root }, async () => {
-      assert.ok(isKnownOllamaModel('qwen3.5:cloud'));
-      await setTierBackend('fast', { kind: 'ollama', model: 'deepseek-v4-flash:cloud' });
-      assert.deepEqual(getTierBackend('fast'), { kind: 'ollama', model: 'deepseek-v4-flash:cloud' });
+      assert.ok(isKnownBackendModel('ollama', 'qwen3.5:cloud'));
+      await setTierBackend('fast', { backend: 'ollama', model: 'deepseek-v4-flash:cloud' });
+      assert.deepEqual(getTierBackend('fast'), { backend: 'ollama', model: 'deepseek-v4-flash:cloud' });
     });
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
@@ -136,22 +136,22 @@ test('appSettings: models namespace does not clobber transcribe', async () => {
   try {
     await withEnv({ PROJECTS_ROOT: root }, async () => {
       await setTranscribeModel('base.en-q5_1');
-      await setTierBackend('balanced', { kind: 'claude', model: 'claude-sonnet-4-5' });
+      await setTierBackend('balanced', { backend: 'claude', model: 'claude-sonnet-4-5' });
       assert.equal(getTranscribeModel(), 'base.en-q5_1');
-      assert.deepEqual(getTierBackend('balanced'), { kind: 'claude', model: 'claude-sonnet-4-5' });
+      assert.deepEqual(getTierBackend('balanced'), { backend: 'claude', model: 'claude-sonnet-4-5' });
     });
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
 
 // ── REST endpoints ──────────────────────────────────────────────────────
-test('GET /api/settings/models returns providers, catalog, and {kind,model} tier bindings', async () => {
+test('GET /api/settings/models returns the registry, catalog, and {backend,model} tier bindings', async () => {
   {  // shared server (before/after) + fresh PROJECTS_ROOT per test (beforeEach)
     const r = await api(baseUrl, 'GET', '/api/settings/models');
     assert.equal(r.status, 200);
-    assert.deepEqual(r.body.providers.map(p => p.kind), ['claude', 'ollama']);
-    assert.deepEqual(r.body.backends.map(f => f.family), ['fable', 'opus', 'sonnet', 'haiku']);
+    assert.deepEqual(r.body.backends.map(b => b.id), ['claude', 'ollama']);
+    assert.deepEqual(r.body.claudeFamilies.map(f => f.family), ['fable', 'opus', 'sonnet', 'haiku']);
     assert.equal(r.body.activeVersions, undefined); // removed
-    assert.deepEqual(r.body.customBackends, []);
+    assert.deepEqual(r.body.customModels, []);
     assert.equal(r.body.ollamaCloudModels.length, 7);
     assert.ok(r.body.ollamaCloudModels.some(m => m.model === 'glm-5.2:cloud'));
     // Each curated model ships its native context window (raw tokens).
@@ -169,9 +169,9 @@ test('GET /api/settings/models returns providers, catalog, and {kind,model} tier
       fast: 'deepseek-v4-flash:cloud', balanced: 'qwen3.5:cloud', powerful: 'glm-5.2:cloud',
     });
     assert.deepEqual(r.body.tiers.map(t => t.tier), ['fast', 'balanced', 'powerful', 'frontier']);
-    // Unset → default {kind,model} bindings (each family's default version).
-    assert.deepEqual(r.body.tierBackend.powerful, { kind: 'claude', model: 'claude-opus-4-8' });
-    assert.deepEqual(r.body.tierBackend.balanced, { kind: 'claude', model: 'claude-sonnet-5' });
+    // Unset → default {backend,model} bindings (each family's default version).
+    assert.deepEqual(r.body.tierBackend.powerful, { backend: 'claude', model: 'claude-opus-4-8' });
+    assert.deepEqual(r.body.tierBackend.balanced, { backend: 'claude', model: 'claude-sonnet-5' });
   }
 });
 
@@ -205,9 +205,9 @@ test('appSettings: onOverage does not clobber model versions', async () => {
   const root = await mkTmp();
   try {
     await withEnv({ PROJECTS_ROOT: root }, async () => {
-      await setTierBackend('balanced', { kind: 'claude', model: 'claude-sonnet-4-5' });
+      await setTierBackend('balanced', { backend: 'claude', model: 'claude-sonnet-4-5' });
       await setOnOverageAction('stop-resume');
-      assert.deepEqual(getTierBackend('balanced'), { kind: 'claude', model: 'claude-sonnet-4-5' });
+      assert.deepEqual(getTierBackend('balanced'), { backend: 'claude', model: 'claude-sonnet-4-5' });
       assert.equal(getOnOverageAction(), 'stop-resume');
     });
   } finally { await fs.rm(root, { recursive: true, force: true }); }
@@ -323,10 +323,10 @@ test('appSettings: setConductorCompactWindow does not clobber onOverage or model
   const root = await mkTmp();
   try {
     await withEnv({ PROJECTS_ROOT: root, CLAUDE_CODE_AUTO_COMPACT_WINDOW: undefined }, async () => {
-      await setTierBackend('balanced', { kind: 'claude', model: 'claude-sonnet-4-5' });
+      await setTierBackend('balanced', { backend: 'claude', model: 'claude-sonnet-4-5' });
       await setOnOverageAction('stop');
       await setConductorCompactWindow({ enabled: true, value: 400 });
-      assert.deepEqual(getTierBackend('balanced'), { kind: 'claude', model: 'claude-sonnet-4-5' });
+      assert.deepEqual(getTierBackend('balanced'), { backend: 'claude', model: 'claude-sonnet-4-5' });
       assert.equal(getOnOverageAction(), 'stop');
       assert.equal(getConductorCompactWindow().value, 400);
     });
@@ -445,8 +445,8 @@ test('appSettings: a Sonnet 4.x tier binding persists its own window', async () 
   const root = await mkTmp();
   try {
     await withEnv({ PROJECTS_ROOT: root }, async () => {
-      await setTierBackend('balanced', { kind: 'claude', model: 'claude-sonnet-4-6', window: '200k' });
-      assert.deepEqual(getTierBackend('balanced'), { kind: 'claude', model: 'claude-sonnet-4-6', window: '200k' });
+      await setTierBackend('balanced', { backend: 'claude', model: 'claude-sonnet-4-6', window: '200k' });
+      assert.deepEqual(getTierBackend('balanced'), { backend: 'claude', model: 'claude-sonnet-4-6', window: '200k' });
     });
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
@@ -456,11 +456,11 @@ test('appSettings: window is NOT persisted for non-selectable bindings (Opus, So
   try {
     await withEnv({ PROJECTS_ROOT: root }, async () => {
       // Sonnet 5 is fixed-1M — the window is meaningless, so it is dropped.
-      await setTierBackend('balanced', { kind: 'claude', model: 'claude-sonnet-5', window: '200k' });
-      assert.deepEqual(getTierBackend('balanced'), { kind: 'claude', model: 'claude-sonnet-5' });
+      await setTierBackend('balanced', { backend: 'claude', model: 'claude-sonnet-5', window: '200k' });
+      assert.deepEqual(getTierBackend('balanced'), { backend: 'claude', model: 'claude-sonnet-5' });
       // Opus never varies its window.
-      await setTierBackend('powerful', { kind: 'claude', model: 'claude-opus-4-8', window: '200k' });
-      assert.deepEqual(getTierBackend('powerful'), { kind: 'claude', model: 'claude-opus-4-8' });
+      await setTierBackend('powerful', { backend: 'claude', model: 'claude-opus-4-8', window: '200k' });
+      assert.deepEqual(getTierBackend('powerful'), { backend: 'claude', model: 'claude-opus-4-8' });
     });
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
@@ -469,13 +469,13 @@ test('appSettings: two Sonnet 4.x bindings carry independent windows', async () 
   const root = await mkTmp();
   try {
     await withEnv({ PROJECTS_ROOT: root }, async () => {
-      await setTierBackend('balanced', { kind: 'claude', model: 'claude-sonnet-4-6', window: '200k' });
-      await setRoleBinding('reviewer', { kind: 'claude', model: 'claude-sonnet-4-5', window: '1m' });
+      await setTierBackend('balanced', { backend: 'claude', model: 'claude-sonnet-4-6', window: '200k' });
+      await setRoleBinding('reviewer', { backend: 'claude', model: 'claude-sonnet-4-5', window: '1m' });
       // Setting the role binding did NOT touch the tier binding's window.
       assert.equal(getTierBackend('balanced').window, '200k');
       assert.equal(getRoleBinding('reviewer').window, '1m');
       // …and flipping the tier binding to 1m leaves the role binding at 1m.
-      await setTierBackend('balanced', { kind: 'claude', model: 'claude-sonnet-4-6', window: '1m' });
+      await setTierBackend('balanced', { backend: 'claude', model: 'claude-sonnet-4-6', window: '1m' });
       assert.equal(getTierBackend('balanced').window, '1m');
       assert.equal(getRoleBinding('reviewer').window, '1m');
     });
@@ -484,12 +484,12 @@ test('appSettings: two Sonnet 4.x bindings carry independent windows', async () 
 
 test('POST /api/settings/models/prefs persists a Sonnet 4.x tier window on the binding', async () => {
   const r = await api(baseUrl, 'POST', '/api/settings/models/prefs', {
-    tierBackend: { tier: 'balanced', backend: { kind: 'claude', model: 'claude-sonnet-4-6', window: '200k' } },
+    tierBackend: { tier: 'balanced', backend: { backend: 'claude', model: 'claude-sonnet-4-6', window: '200k' } },
   });
   assert.equal(r.status, 200);
-  assert.deepEqual(r.body.tierBackend.balanced, { kind: 'claude', model: 'claude-sonnet-4-6', window: '200k' });
+  assert.deepEqual(r.body.tierBackend.balanced, { backend: 'claude', model: 'claude-sonnet-4-6', window: '200k' });
   const g = await api(baseUrl, 'GET', '/api/settings/models');
-  assert.deepEqual(g.body.tierBackend.balanced, { kind: 'claude', model: 'claude-sonnet-4-6', window: '200k' });
+  assert.deepEqual(g.body.tierBackend.balanced, { backend: 'claude', model: 'claude-sonnet-4-6', window: '200k' });
 });
 
 // ── enabledTiers ─────────────────────────────────────────────────────────
@@ -645,13 +645,13 @@ test('POST /api/settings/models/prefs sets defaultSpawnTier and persists', async
   }
 });
 
-// ── tierBackend (tier→{kind,model} binding) ─────────────────────────────
+// ── tierBackend (tier→{backend,model} binding) ──────────────────────────
 test('appSettings: getTierBackend defaults to DEFAULT_TIER_BACKEND when unset', async () => {
   const root = await mkTmp();
   try {
     await withEnv({ PROJECTS_ROOT: root }, async () => {
       assert.deepEqual(getTierBackend('fast'), DEFAULT_TIER_BACKEND.fast);
-      assert.deepEqual(getTierBackend('powerful'), { kind: 'claude', model: 'claude-opus-4-8' });
+      assert.deepEqual(getTierBackend('powerful'), { backend: 'claude', model: 'claude-opus-4-8' });
     });
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
@@ -660,8 +660,8 @@ test('appSettings: setTierBackend round-trips and rebinding one tier leaves othe
   const root = await mkTmp();
   try {
     await withEnv({ PROJECTS_ROOT: root }, async () => {
-      await setTierBackend('powerful', { kind: 'claude', model: 'claude-fable-5' });
-      assert.deepEqual(getTierBackend('powerful'), { kind: 'claude', model: 'claude-fable-5' });
+      await setTierBackend('powerful', { backend: 'claude', model: 'claude-fable-5' });
+      assert.deepEqual(getTierBackend('powerful'), { backend: 'claude', model: 'claude-fable-5' });
       // Other tiers keep their default binding.
       assert.deepEqual(getTierBackend('fast'), DEFAULT_TIER_BACKEND.fast);
       assert.deepEqual(getTierBackend('balanced'), DEFAULT_TIER_BACKEND.balanced);
@@ -673,27 +673,27 @@ test('appSettings: setTierBackend rejects unknown tier or backend', async () => 
   const root = await mkTmp();
   try {
     await withEnv({ PROJECTS_ROOT: root }, async () => {
-      await assert.rejects(() => setTierBackend('medium', { kind: 'claude', model: 'claude-opus-4-8' }));
-      await assert.rejects(() => setTierBackend('fast', { kind: 'claude', model: 'not-a-version' }));
+      await assert.rejects(() => setTierBackend('medium', { backend: 'claude', model: 'claude-opus-4-8' }));
+      await assert.rejects(() => setTierBackend('fast', { backend: 'claude', model: 'not-a-version' }));
     });
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
 
 test('POST /api/settings/models/prefs with tierBackend rebinds a tier and persists', async () => {
   {  // shared server (before/after) + fresh PROJECTS_ROOT per test (beforeEach)
-    const r = await api(baseUrl, 'POST', '/api/settings/models/prefs', { tierBackend: { tier: 'powerful', backend: { kind: 'claude', model: 'claude-fable-5' } } });
+    const r = await api(baseUrl, 'POST', '/api/settings/models/prefs', { tierBackend: { tier: 'powerful', backend: { backend: 'claude', model: 'claude-fable-5' } } });
     assert.equal(r.status, 200);
-    assert.deepEqual(r.body.tierBackend.powerful, { kind: 'claude', model: 'claude-fable-5' });
+    assert.deepEqual(r.body.tierBackend.powerful, { backend: 'claude', model: 'claude-fable-5' });
     const g = await api(baseUrl, 'GET', '/api/settings/models');
-    assert.deepEqual(g.body.tierBackend.powerful, { kind: 'claude', model: 'claude-fable-5' });
+    assert.deepEqual(g.body.tierBackend.powerful, { backend: 'claude', model: 'claude-fable-5' });
   }
 });
 
 test('POST /api/settings/models/prefs rejects unknown tier or backend in tierBackend', async () => {
   {  // shared server (before/after) + fresh PROJECTS_ROOT per test (beforeEach)
-    const badTier = await api(baseUrl, 'POST', '/api/settings/models/prefs', { tierBackend: { tier: 'medium', backend: { kind: 'claude', model: 'claude-opus-4-8' } } });
+    const badTier = await api(baseUrl, 'POST', '/api/settings/models/prefs', { tierBackend: { tier: 'medium', backend: { backend: 'claude', model: 'claude-opus-4-8' } } });
     assert.equal(badTier.status, 400);
-    const badBackend = await api(baseUrl, 'POST', '/api/settings/models/prefs', { tierBackend: { tier: 'fast', backend: { kind: 'claude', model: 'nope' } } });
+    const badBackend = await api(baseUrl, 'POST', '/api/settings/models/prefs', { tierBackend: { tier: 'fast', backend: { backend: 'claude', model: 'nope' } } });
     assert.equal(badBackend.status, 400);
   }
 });
@@ -715,8 +715,8 @@ test('appSettings: addCustomRole is name-only, defaults to powerful, and is seen
       const custom = all.find(r => r.role === 'tester');
       assert.ok(custom && !custom.builtin && !custom.plugin && custom.label === undefined);
       // An explicit binding is honored when provided.
-      await addCustomRole({ role: 'claudey', binding: { kind: 'claude', model: 'claude-haiku-4-5' } });
-      assert.deepEqual(getRoleBinding('claudey'), { kind: 'claude', model: 'claude-haiku-4-5' });
+      await addCustomRole({ role: 'claudey', binding: { backend: 'claude', model: 'claude-haiku-4-5' } });
+      assert.deepEqual(getRoleBinding('claudey'), { backend: 'claude', model: 'claude-haiku-4-5' });
     });
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
@@ -731,7 +731,7 @@ test('appSettings: addCustomRole rejects reserved names, bad names, and bad bind
       await assert.rejects(() => addCustomRole({ role: 'OPUS' }), /collides/);        // family alias, different case
       await assert.rejects(() => addCustomRole({ role: 'Bad Name' }), /must match/);  // space
       await assert.rejects(() => addCustomRole({ role: 'plug/in' }), /must match/);   // '/' reserved
-      await assert.rejects(() => addCustomRole({ role: 'x', binding: { kind: 'claude', model: 'nope' } }), /binding/);
+      await assert.rejects(() => addCustomRole({ role: 'x', binding: { backend: 'claude', model: 'nope' } }), /binding/);
       await addCustomRole({ role: 'Tester' });                                       // mixed case preserved
       assert.deepEqual(getCustomRoles(), ['Tester']);
       await assert.rejects(() => addCustomRole({ role: 'tester' }), /already exists/); // case-insensitive dupe
@@ -763,7 +763,7 @@ test('appSettings: setRoleBinding rebinds a custom role; removeCustomRole cleans
   const root = await mkTmp();
   try {
     await withEnv({ PROJECTS_ROOT: root }, async () => {
-      await addCustomRole({ role: 'tester', binding: { kind: 'claude', model: 'claude-opus-4-8' } });
+      await addCustomRole({ role: 'tester', binding: { backend: 'claude', model: 'claude-opus-4-8' } });
       await setRoleBinding('tester', { kind: 'tier', tier: 'balanced' });
       assert.deepEqual(getRoleBinding('tester'), { kind: 'tier', tier: 'balanced' });
       // Remove by a different case drops the role AND its binding; idempotent.
@@ -779,10 +779,10 @@ test('appSettings: a custom role whose Ollama backend is removed falls back to t
   const root = await mkTmp();
   try {
     await withEnv({ PROJECTS_ROOT: root }, async () => {
-      await addCustomBackend({ label: 'Local', model: 'local:tag' });
-      await addCustomRole({ role: 'tester', binding: { kind: 'ollama', model: 'local:tag' } });
-      assert.deepEqual(getRoleBinding('tester'), { kind: 'ollama', model: 'local:tag' });
-      await removeCustomBackend('local:tag'); // binding now dead
+      await addCustomModel({ label: 'Local', model: 'local:tag', backend: 'ollama', contextWindow: 128_000 });
+      await addCustomRole({ role: 'tester', binding: { backend: 'ollama', model: 'local:tag' } });
+      assert.deepEqual(getRoleBinding('tester'), { backend: 'ollama', model: 'local:tag' });
+      await removeCustomModel('local:tag'); // binding now dead
       assert.deepEqual(getRoleBinding('tester'), { kind: 'tier', tier: getDefaultSpawnTier() });
     });
   } finally { await fs.rm(root, { recursive: true, force: true }); }
@@ -803,8 +803,8 @@ test('appSettings: plugin roles resolve via the injected provider (case-insensit
         assert.deepEqual(getRoleBinding('p/cap'), { kind: 'tier', tier: 'powerful' });
         assert.deepEqual(resolveRoleBackend('P/Cap'), getTierBackend('powerful')); // override wins
         // A custom backend override (Claude version) round-trips and wins too.
-        await setRoleBinding('p/cap', { kind: 'claude', model: 'claude-opus-4-8' });
-        assert.deepEqual(resolveRoleBackend('p/cap'), { kind: 'claude', model: 'claude-opus-4-8' });
+        await setRoleBinding('p/cap', { backend: 'claude', model: 'claude-opus-4-8' });
+        assert.deepEqual(resolveRoleBackend('p/cap'), { backend: 'claude', model: 'claude-opus-4-8' });
         // Reverting is done by re-selecting the manifest's tier in the same
         // picker (no dedicated reset) — rebinding to the manifest tier restores
         // the manifest behavior.
@@ -853,7 +853,7 @@ test('appSettings: a plugin-role override beats a dead manifest binding (drift)'
     await withEnv({ PROJECTS_ROOT: root }, async () => {
       // Manifest binds to a since-retired Claude model; a valid tier override
       // rescues the role instead of falling back to the default spawn tier.
-      setPluginRolesProvider(() => [{ role: 'p/legacy', label: 'Legacy', binding: { kind: 'claude', model: 'claude-retired-9' }, plugin: 'p' }]);
+      setPluginRolesProvider(() => [{ role: 'p/legacy', label: 'Legacy', binding: { backend: 'claude', model: 'claude-retired-9' }, plugin: 'p' }]);
       try {
         assert.deepEqual(resolveRoleBackend('p/legacy'), getTierBackend(getDefaultSpawnTier())); // manifest dead → default tier
         await setRoleBinding('p/legacy', { kind: 'tier', tier: 'fast' }); // user override to a live tier
@@ -873,14 +873,14 @@ test('appSettings: a dead plugin-role override falls back to the manifest bindin
       // The override is planted directly in settings.json (simulating drift: a
       // model that was live when stored but later retired) because setRoleBinding
       // validates at store-time and correctly rejects a dead binding.
-      setPluginRolesProvider(() => [{ role: 'p/scribe', label: 'S', binding: { kind: 'claude', model: 'claude-haiku-4-5' }, plugin: 'p' }]);
+      setPluginRolesProvider(() => [{ role: 'p/scribe', label: 'S', binding: { backend: 'claude', model: 'claude-haiku-4-5' }, plugin: 'p' }]);
       try {
         const settingsFile = path.join(orchStoreRoot(), 'settings.json');
         await fs.mkdir(path.dirname(settingsFile), { recursive: true });
         await fs.writeFile(settingsFile, JSON.stringify({
-          models: { roleBackend: { 'p/scribe': { kind: 'claude', model: 'claude-retired-9' } } },
+          models: { roleBackend: { 'p/scribe': { backend: 'claude', model: 'claude-retired-9' } } },
         }));
-        assert.deepEqual(resolveRoleBackend('p/scribe'), { kind: 'claude', model: 'claude-haiku-4-5' }); // falls back to manifest
+        assert.deepEqual(resolveRoleBackend('p/scribe'), { backend: 'claude', model: 'claude-haiku-4-5' }); // falls back to manifest
       } finally {
         setPluginRolesProvider(null);
       }
@@ -901,9 +901,9 @@ test('roles CRUD: POST creates name-only (defaults powerful), prefs rebinds, DEL
     assert.equal((await api(baseUrl, 'POST', '/api/settings/models/roles', { role: 'Tester' })).status, 409);
     assert.equal((await api(baseUrl, 'POST', '/api/settings/models/roles', { role: 'fast' })).status, 400);
     // Rebind a custom role via the shared prefs path (built-in parity).
-    const rb = await api(baseUrl, 'POST', '/api/settings/models/prefs', { roleBackend: { role: 'tester', backend: { kind: 'claude', model: 'claude-opus-4-8' } } });
+    const rb = await api(baseUrl, 'POST', '/api/settings/models/prefs', { roleBackend: { role: 'tester', backend: { backend: 'claude', model: 'claude-opus-4-8' } } });
     assert.equal(rb.status, 200);
-    assert.deepEqual(rb.body.roleBackend.tester, { kind: 'claude', model: 'claude-opus-4-8' });
+    assert.deepEqual(rb.body.roleBackend.tester, { backend: 'claude', model: 'claude-opus-4-8' });
     // No PATCH endpoint anymore (label was dropped).
     assert.equal((await api(baseUrl, 'PATCH', '/api/settings/models/roles/tester', { label: 'QA' })).status, 404);
     // Delete a custom role; deleting a built-in → 400; unknown → 404.
