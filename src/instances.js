@@ -969,6 +969,17 @@ export class Instance extends EventEmitter {
     const backendRecord = getBackend(this.backend);
     let command, launchPrefix, backendEnvVars;
     try {
+      // A backend removed from the registry while this instance was alive would
+      // otherwise fall into resolveBackendLaunch's blank-template (identity) branch
+      // — i.e. launch the real `claude` with this session's foreign model id. Refuse
+      // instead; the catch below flips the instance to 'crashed' so the failure is
+      // visible rather than silently billed.
+      if (!backendRecord) {
+        throw Object.assign(
+          new Error(`backend '${this.backend}' no longer exists — re-add it in Settings → Backends`),
+          { statusCode: 422, code: 'BACKEND_GONE' },
+        );
+      }
       ({ command, prefixArgs: launchPrefix, env: backendEnvVars } =
         resolveBackendLaunch(backendRecord, this.model, resolveClaudeBin()));
     } catch (err) {
@@ -2188,6 +2199,18 @@ export class InstanceManager extends EventEmitter {
       hasIdleSubscriber: this.isIdleCaller(i.id),
     }));
   }
+
+  // Which backend each tracked instance is on — the seam appSettings' removeBackend
+  // consults (via setLiveBackendsProvider) to refuse deleting a backend out from
+  // under a running session. Includes instances with no live subprocess: they are
+  // still respawnable (crash-respawn, overage auto-resume, rewind), and it is
+  // exactly that later relaunch that would otherwise fall through to the real
+  // `claude`. Only the identity backend is uninteresting here.
+  liveBackendUsage() {
+    return [...this.byId.values()]
+      .filter(i => i.backend && i.backend !== CLAUDE_BACKEND_ID)
+      .map(i => ({ backend: i.backend, sessionId: i.sessionId ?? null }));
+  }
   get(id) { return this.byId.get(id); }
   idsForProject(name) {
     return [...this.byId.values()].filter(i => i.project === name).map(i => i.id);
@@ -2339,7 +2362,18 @@ export class InstanceManager extends EventEmitter {
     //   (b) resume with no explicit backend — the durable sidecar records which
     //       backend ran the session (one of the two bits jsonl can't carry),
     //       covering UI resume / crash / anchor / respawn_instance uniformly.
-    let backend = isKnownBackend(explicitBackend) ? explicitBackend : CLAUDE_BACKEND_ID;
+    // An EXPLICIT backend that isn't in the registry must refuse, not fall back to
+    // `claude`: `finalModel` keeps the caller's foreign model id, so the fallback
+    // would launch a real `claude --model <foreign-id>` against the Anthropic
+    // account. Reachable from POST /api/instances and from the graceful-restart
+    // replay (resumeRestart.js), which carries the recorded backend id forward.
+    if (explicitBackend && !isKnownBackend(explicitBackend)) {
+      throw Object.assign(
+        new Error(`unknown backend '${explicitBackend}' — add it in Settings → Backends, or omit it to use '${CLAUDE_BACKEND_ID}'`),
+        { statusCode: 422, code: 'BACKEND_GONE' },
+      );
+    }
+    let backend = explicitBackend || CLAUDE_BACKEND_ID;
     if (!explicitBackend && resume) {
       let rec = null;
       try { rec = await getSessionBackend(resume); } catch { /* best-effort */ }
@@ -2349,6 +2383,12 @@ export class InstanceManager extends EventEmitter {
         // unknown id back to `claude` while finalModel keeps the sidecar's foreign
         // model id, which spawns a real `claude --model <foreign-id>` that fails
         // opaquely deep in the CLI.
+        // Deliberately BEFORE the session-existence checks further down: the
+        // sidecar is never garbage-collected (unmarkSessionBackend runs only on an
+        // in-place /clear renewal), so a stale entry for a long-deleted session
+        // reports this instead of a 404. Accepted — the backend error is the more
+        // actionable of the two, and a resume that would otherwise launch the real
+        // `claude` with a foreign model id must never get further than here.
         if (!isKnownBackend(rec.backend)) {
           throw Object.assign(
             new Error(`session was last run on backend '${rec.backend}', which no longer exists — re-add it in Settings → Backends, or resume with an explicit model`),
@@ -2427,18 +2467,20 @@ export class InstanceManager extends EventEmitter {
     // so this runs uniformly for every backend.
     if (finalModel) finalModel = canonicalizeModel(finalModel, { sonnetWindow: finalSonnetWindow });
 
-    // Null-model guard (note 1): a session whose backend TEMPLATE interpolates
-    // `{model}` and has no resolvable model — e.g. a resume whose jsonl is
-    // empty/corrupt so readLastSessionModel returned nothing — must fail clearly
-    // here rather than emit `--model undefined` at spawn.
+    // Null-model guard (note 1): a substitution-backend session with no resolvable
+    // model — e.g. a resume whose jsonl is empty/corrupt so readLastSessionModel
+    // returned nothing — must fail clearly here rather than emit `--model undefined`
+    // at spawn.
     //
-    // Scoped to templates that actually name `{model}`, matching
-    // resolveBackendLaunch's own invariant: a template that hardcodes its model
-    // (`wrap exec claude --`) has nothing to interpolate, so a missing model is not
-    // an error for it. Guarding unconditionally here would make that shape
-    // unspawnable and the launcher's corresponding branch dead code.
-    if (backend !== CLAUDE_BACKEND_ID && !finalModel
-        && (getBackend(backend)?.template ?? '').includes('{model}')) {
+    // UNCONDITIONAL on the template shape, deliberately. Every supported way to bind
+    // a model to a substitution backend goes through a custom-model row (which
+    // requires a contextWindow), so such a session always has one; a template that
+    // omits `{model}` is a pass-through wrapper, not a licence to spawn model-less.
+    // Scoping this to templates naming `{model}` would put template introspection
+    // outside resolveBackendLaunch — and then a THIRD site (_trackModel) would have
+    // to suppress the CLI's own model report, or run 2 would inject a
+    // canonicalized `--model` the wrapper never asked for.
+    if (backend !== CLAUDE_BACKEND_ID && !finalModel) {
       throw Object.assign(
         new Error(`session on backend '${backend}' has no resolvable model — rebind the tier or resume with an explicit model`),
         { statusCode: 422, code: 'BACKEND_MODEL_MISSING' },

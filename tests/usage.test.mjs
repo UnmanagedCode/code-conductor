@@ -290,7 +290,7 @@ test('contextWindowFor: one fixed window per non-Sonnet family; Sonnet 5 always 
 
 test('contextWindowFor: resolves non-Claude model ids (full + bare base name) and custom overrides via models.js catalog', async () => {
   const { contextWindowFor } = await import(USAGE_URL);
-  const { setOllamaCloudModels, setCustomModels } = await import(pathToFileURL(path.join(PUB, 'models.js')).href);
+  const { setOllamaCloudModels, setCustomModels, customContextWindowFor } = await import(pathToFileURL(path.join(PUB, 'models.js')).href);
   try {
     setOllamaCloudModels([
       { label: 'DeepSeek V4 Flash', model: 'deepseek-v4-flash:cloud', contextWindow: 1_000_000 },
@@ -317,7 +317,13 @@ test('contextWindowFor: resolves non-Claude model ids (full + bare base name) an
     assert.equal(contextWindowFor('localbig:cloud'), 128_000);
     assert.equal(contextWindowFor('localbig'), 128_000);
     assert.equal(contextWindowFor('proxybig:v2'), 512_000);
-    // A custom row with no declared window → the 200k display default.
+    // A custom row with no declared window → the 200k display default. Asserted at
+    // BOTH layers: contextWindowFor is double-guarded (models.js's Number.isFinite
+    // AND usage.js's truthiness check), so the 200k assertion alone stays green if
+    // either guard is removed. Pinning the resolver's own contract closes that.
+    assert.equal(customContextWindowFor('localnowin:cloud'), null,
+      'the resolver reports "unknown", it does not invent a default');
+    assert.equal(customContextWindowFor('localnowin'), null);
     assert.equal(contextWindowFor('localnowin:cloud'), 200_000);
     assert.equal(contextWindowFor('localnowin'), 200_000);
     // Unknown tagged id → 200k default.

@@ -56,9 +56,9 @@ beforeEach(async () => { ({ home } = await freshProjectsRoot()); });
 afterEach(async () => { await instances.shutdown(); await rmrf(home); });
 
 // ── Catalog (the `claude` backend's model list — Claude family-keyed) ───
-test('modelVersions catalog: backends, defaults, and validators', () => {
+test('modelVersions catalog: Claude families, defaults, and validators', () => {
   assert.deepEqual(MODEL_FAMILIES.map(f => f.family), ['fable', 'opus', 'sonnet', 'haiku']);
-  // Every backend default is itself a known version of that backend.
+  // Every family's default is itself a known version of that family.
   for (const f of MODEL_FAMILIES) {
     assert.equal(DEFAULT_VERSIONS[f.family], f.default);
     assert.ok(isKnownVersion(f.family, f.default), `${f.family} default in catalog`);
@@ -74,7 +74,7 @@ test('modelVersions catalog: backends, defaults, and validators', () => {
 });
 
 // ── Catalog (capability-tier layer) ─────────────────────────────────────
-test('modelVersions catalog: tiers, managed backends + default {backend,model} bindings', () => {
+test('modelVersions catalog: tiers, managed backend rows + default {backend,model} bindings', () => {
   assert.deepEqual(CAPABILITY_TIERS.map(t => t.tier), ['fast', 'balanced', 'powerful', 'frontier']);
   assert.deepEqual(MANAGED_BACKENDS.map(b => b.id), ['claude', 'ollama']);
   // Every default tier binding is claude + a known Claude version.

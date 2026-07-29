@@ -56,11 +56,14 @@ export function resolveBackendLaunch(backend, model, claudeBin) {
   if (!template) {
     return { command: claudeBin.command, prefixArgs: claudeBin.prefixArgs, env };
   }
-  // Invariant: a template that names {model} always launches with a concrete
-  // model — never emit `--model undefined`. Every caller (Instance.spawn(),
-  // generateSummary, generateBundle) is expected to have resolved a real model
-  // before reaching here; this is the shared, single place that guarantees it.
-  if (template.includes('{model}') && !model) {
+  // Invariant: a substitution launch always has a concrete model — never emit
+  // `--model undefined`, and never let a model-less session through on the grounds
+  // that this particular template happens not to interpolate one (the model still
+  // rides in the forwarded claude args and drives the context-window env). Every
+  // caller (Instance.spawn(), generateSummary, generateBundle) is expected to have
+  // resolved a real model before reaching here; this is the shared, single place
+  // that guarantees it, mirroring _doCreate's create-time guard.
+  if (!model) {
     throw new Error(`backend '${backend?.id ?? '?'}' requires a model; none resolved — rebind the tier or resume with an explicit model`);
   }
   // Substitute inside each token (not only whole tokens) so `--model={model}`

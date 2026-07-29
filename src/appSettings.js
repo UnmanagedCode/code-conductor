@@ -356,10 +356,29 @@ export async function updateBackend(id, { label, template, env } = {}) {
   return getBackend(id);
 }
 
+// LIVE instances using each backend, injected by server.js
+// (`setLiveBackendsProvider(() => instances.liveBackendUsage())`) so this
+// low-level store never imports the instance registry — same seam shape as
+// pluginRolesProvider below. Each entry: {backend, sessionId}. Default []
+// keeps unit tests / headless runs (no manager) working.
+let liveBackendsProvider = () => [];
+export function setLiveBackendsProvider(fn) {
+  liveBackendsProvider = typeof fn === 'function' ? fn : (() => []);
+}
+function liveBackendUsage() {
+  try {
+    const list = liveBackendsProvider();
+    return Array.isArray(list) ? list : [];
+  } catch { return []; }
+}
+
 // Removing a backend NEVER cascades: a backend still referenced by a custom
-// model is refused (409, naming them) so nothing is deleted behind the user's
-// back. Once no model references it, any tier/role left pointing at one of its
-// models reverts through the normal dead-binding path (see getTierBackend).
+// model — or still in use by a LIVE instance — is refused (409, naming them) so
+// nothing is deleted behind the user's back and no running session is left
+// pointing at a backend that no longer exists (which would otherwise launch the
+// real `claude` on its next respawn). Once nothing references it, any tier/role
+// left pointing at one of its models reverts through the normal dead-binding path
+// (see getTierBackend).
 export async function removeBackend(id) {
   const existing = getBackend(id);
   if (!existing) return false;
@@ -370,6 +389,13 @@ export async function removeBackend(id) {
   if (bound.length) {
     throw Object.assign(
       new Error(`backend '${id}' still has custom models bound to it (${bound.join(', ')}) — remove them first`),
+      { statusCode: 409 },
+    );
+  }
+  const live = liveBackendUsage().filter(u => u && u.backend === id).map(u => u.sessionId || '(unknown session)');
+  if (live.length) {
+    throw Object.assign(
+      new Error(`backend '${id}' is still in use by ${live.length} live session${live.length === 1 ? '' : 's'} (${live.join(', ')}) — kill them first`),
       { statusCode: 409 },
     );
   }
@@ -427,7 +453,8 @@ export function contextWindowForModel(model) {
   return null;
 }
 
-// `contextWindow` is REQUIRED and must be a positive integer of raw tokens: it
+// `contextWindow` is REQUIRED and must be a positive, finite number of raw tokens
+// (stored `Math.round`ed): it
 // drives the header ctx bar plus CLAUDE_CODE_AUTO_COMPACT_WINDOW and
 // CLAUDE_CODE_MAX_CONTEXT_TOKENS at spawn, and guessing it wrong silently
 // truncates or over-fills the window. `backend` must name a substitution

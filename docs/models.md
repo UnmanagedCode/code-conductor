@@ -63,6 +63,14 @@ would add nothing but that hazard.
 Every rule that could have been keyed on one provider is instead keyed on
 `backend !== 'claude'` — i.e. "is this a **substitution** backend?". Keyed that way
 on purpose: a user-defined backend behaves exactly like the built-in `ollama` row.
+
+The classification is by **row identity, not by what the template resolves to**. A
+non-empty template can still end up running bare `claude` (`template: 'claude'`, or a
+wrapper that just exec's it) and such a row keeps every consequence below — no
+overage protection, no `cost_usd`, cc-managed context env. That's a deliberate
+user-error path, not a supported way to alias the identity backend; bind the managed
+`claude` row for that. (A *blank* template on a user row is refused outright, above.)
+
 The consequences of being a substitution backend:
 
 - **cc-managed context env** — `CLAUDE_CODE_AUTO_COMPACT_WINDOW` +

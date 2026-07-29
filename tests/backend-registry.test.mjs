@@ -72,17 +72,31 @@ describe('resolveBackendLaunch (template-driven launch resolution)', () => {
     assert.deepEqual(r.prefixArgs, ['--model=glm-5.2:cloud', '--']);
   });
 
-  test('a template with NO {model} is valid and needs no model', () => {
-    const r = resolveBackendLaunch({ id: 'p', template: 'wrap exec claude --' }, null, CLAUDE_BIN);
+  // A template need not interpolate `{model}` — a pass-through wrapper forwards the
+  // claude args (including `--model`) untouched. It still REQUIRES a model, though:
+  // see the next test.
+  test('a template with NO {model} tokenizes normally', () => {
+    const r = resolveBackendLaunch({ id: 'p', template: 'wrap exec claude --' }, 'mine:v1', CLAUDE_BIN);
     assert.equal(r.command, 'wrap');
     assert.deepEqual(r.prefixArgs, ['exec', 'claude', '--']);
   });
 
-  test('a template that names {model} refuses to launch without one', () => {
+  // UNCONDITIONAL on the template shape, mirroring _doCreate's create-time guard.
+  // The model isn't only a template placeholder: it rides in the forwarded claude
+  // args and drives the context-window env, so a model-less substitution launch is
+  // never legal — including for a template that omits `{model}`.
+  test('a substitution launch refuses without a model, whatever the template shape', () => {
     assert.throws(
       () => resolveBackendLaunch({ id: 'ollama', template: 'ollama launch claude --model {model} --' }, null, CLAUDE_BIN),
       /requires a model/,
     );
+    assert.throws(
+      () => resolveBackendLaunch({ id: 'p', template: 'wrap exec claude --' }, null, CLAUDE_BIN),
+      /requires a model/,
+    );
+    // The identity backend is exempt — a bare `claude` with no model is the
+    // account-default spawn.
+    assert.doesNotThrow(() => resolveBackendLaunch({ id: 'claude', template: '' }, null, CLAUDE_BIN));
   });
 
   test('the backend\'s env rides along on every resolution', () => {

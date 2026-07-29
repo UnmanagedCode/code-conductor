@@ -20,7 +20,8 @@ import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
 import { addCustomModel, setTierBackend, setRoleBinding, addCustomRole, addBackend,
-  setPluginRolesProvider, getTierBackend, getDefaultSpawnTier } from '../src/appSettings.js';
+  setPluginRolesProvider, getTierBackend, getDefaultSpawnTier,
+  removeBackend, removeCustomModel, isKnownBackend } from '../src/appSettings.js';
 import { hasSessionBackend, getSessionBackend, markSessionBackend } from '../src/sessionBackends.js';
 import { claudeProjectsRoot, encodeCwd } from '../src/projects.js';
 
@@ -110,6 +111,40 @@ describe('substitution-backend spawn command/args', () => {
     assert.equal(env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, '300000');
     assert.equal(env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, '300000');
     assert.deepEqual(await getSessionBackend(summary.sessionId), { backend: 'my-proxy', model: 'mine:v2' });
+  });
+
+  // The `--model undefined` regression this whole guard family exists to prevent:
+  // nothing previously asserted a FRESH spawn's argv, only the resume path. A
+  // substitution spawn must always carry a real model in BOTH slots and never the
+  // string "undefined".
+  test('a fresh substitution spawn never emits `--model undefined` in either slot', async () => {
+    const { argv } = await spawnOnBackend({ model: 'gemma4:cloud' });
+    const modelIdxs = argv.map((a, i) => a === '--model' ? i : -1).filter(i => i >= 0);
+    assert.equal(modelIdxs.length, 2, 'template slot + forwarded claude arg');
+    for (const i of modelIdxs) assert.equal(argv[i + 1], 'gemma4:cloud');
+    assert.ok(!argv.includes('undefined'), `no literal "undefined" in argv: ${argv.join(' ')}`);
+    assert.ok(!argv.some(a => a.includes('{model}')), 'the placeholder is always substituted');
+  });
+
+  // The identity backend is the one case where a model-less spawn IS legal (the
+  // account default), so `--model` must simply be absent — not `undefined`.
+  test('a fresh claude spawn with no model omits --model entirely', async () => {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'backend-spawn-nomodel-'));
+    const argvDump = path.join(tmp, 'argv.txt');
+    process.env.FAKE_CLAUDE_ARGV_DUMP = argvDump;
+    try {
+      await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
+      const r = await api(baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions' });
+      assert.equal(r.status, 201, JSON.stringify(r.body));
+      await waitFor(() => instances.get(r.body.id)?.status === 'idle');
+      await waitFor(async () => { try { await fs.stat(argvDump); return true; } catch { return false; } });
+      const argv = (await fs.readFile(argvDump, 'utf8')).split('\n').filter(Boolean);
+      assert.ok(!argv.includes('--model'), `no --model at all: ${argv.join(' ')}`);
+      assert.ok(!argv.includes('undefined'));
+    } finally {
+      delete process.env.FAKE_CLAUDE_ARGV_DUMP;
+      await fs.rm(tmp, { recursive: true, force: true }).catch(() => {});
+    }
   });
 
   test('a cc-managed context var beats a same-named backend env pair', async () => {
@@ -349,26 +384,27 @@ describe('null-model guards', () => {
     assert.match(JSON.stringify(r.body), /no resolvable model|BACKEND_MODEL_MISSING/);
   });
 
-  // A template that hardcodes its model has nothing to interpolate, so the
-  // null-model guard must NOT fire for it — otherwise resolveBackendLaunch's
-  // no-`{model}` branch is unreachable from the session path.
-  test('a backend whose template does NOT name {model} spawns fine with no model', async () => {
+  // The null-model guard is UNCONDITIONAL on template shape: a pass-through wrapper
+  // (no `{model}`) still needs a model, because the model rides in the forwarded
+  // claude args and drives the context-window env.
+  test('a backend whose template omits {model} is STILL refused with no model', async () => {
     await addBackend({ id: 'fixedwrap', label: 'Fixed Wrap', template: 'launch claude --' });
     await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
     const cwd = path.join(projectsRoot, 'p');
     const sid = 'eeeeeeee-0000-0000-0000-000000000000';
     const dir = path.join(claudeProjectsRoot(), encodeCwd(cwd));
     await fs.mkdir(dir, { recursive: true });
-    // Resumable jsonl with no assistant line ⇒ readLastSessionModel returns null,
-    // and the sidecar records no model either.
     await fs.writeFile(path.join(dir, `${sid}.jsonl`),
       JSON.stringify({ type: 'user', message: { role: 'user', content: 'hi' }, sessionId: sid }) + '\n');
     await markSessionBackend(sid, 'fixedwrap');
 
-    const inst = await instances.create({ project: 'p', resume: sid });
-    await waitFor(() => inst.status === 'idle');
-    assert.equal(inst.backend, 'fixedwrap');
-    assert.equal(inst.model, null, 'no model resolved, and that is legal here');
+    await assert.rejects(
+      () => instances.create({ project: 'p', resume: sid }),
+      (e) => {
+        assert.equal(e.code, 'BACKEND_MODEL_MISSING');
+        return true;
+      },
+    );
   });
 
   test('resuming a substitution-backend session whose jsonl has no model is refused (not `--model undefined`)', async () => {
@@ -432,6 +468,104 @@ describe('resume onto a since-removed backend', () => {
     await waitFor(() => inst.status === 'idle');
     assert.equal(inst.backend, 'back-again');
     assert.equal(inst.model, 'mine:v1', "the sidecar's tagged model is still preferred");
+  });
+});
+
+// An unknown/removed backend must never reach a real `claude` launch. Three
+// independent doors, each closed and tested separately — the bug kept reappearing
+// because each earlier fix shut only one.
+describe('an unknown or removed backend never falls through to real claude', () => {
+  // DOOR 1: an EXPLICIT backend id that isn't in the registry. Reachable from
+  // POST /api/instances and from resumeRestart's graceful-restart replay, which
+  // carries the recorded backend id forward.
+  test('door 1: an explicit unknown backend is refused, not silently downgraded to claude', async () => {
+    await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
+    await assert.rejects(
+      () => instances.create({ project: 'p', mode: 'bypassPermissions', backend: 'vanished', model: 'foreign:v1' }),
+      (e) => {
+        assert.equal(e.statusCode, 422);
+        assert.equal(e.code, 'BACKEND_GONE');
+        assert.match(e.message, /vanished/);
+        return true;
+      },
+    );
+    // …and over REST, the surface a client actually hits.
+    const r = await api(baseUrl, 'POST', '/api/instances',
+      { project: 'p', mode: 'bypassPermissions', backend: 'vanished', model: 'foreign:v1' });
+    assert.equal(r.status, 422, JSON.stringify(r.body));
+    assert.match(JSON.stringify(r.body), /BACKEND_GONE|unknown backend/);
+  });
+
+  // The same door as replayed by the graceful-restart manifest: restoreFromResumeManifest
+  // passes the persisted `backend` straight into create(), so a backend removed
+  // across the restart must surface there too rather than spawn bare claude.
+  test('door 1 (restart replay): a manifest entry naming a removed backend is refused', async () => {
+    await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
+    // Exactly the create() call resumeRestart.js:293 makes for a carried-over session.
+    await assert.rejects(
+      () => instances.create({
+        project: 'p', resume: 'ffffffff-0000-0000-0000-000000000000',
+        mode: 'bypassPermissions', model: 'foreign:v1', backend: 'vanished',
+      }),
+      (e) => { assert.equal(e.code, 'BACKEND_GONE'); return true; },
+    );
+  });
+
+  // DOOR 2: the backstop. If a row ever does vanish under a live instance,
+  // getBackend() returns null at spawn time and resolveBackendLaunch(null, …) would
+  // read `backend?.template` as blank and take the IDENTITY branch — launching the
+  // real claude with this session's foreign model. Door 3 makes that unreachable
+  // through the API, so this is exercised white-box, by putting the instance in
+  // exactly the state a removal would have left it in.
+  test('door 2: spawn refuses a null backend record instead of taking the identity branch', async () => {
+    await addBackend({ id: 'doomed', label: 'Doomed', template: 'doomedctl claude --model {model} --' });
+    await addCustomModel({ label: 'D', model: 'doomed:v1', backend: 'doomed', contextWindow: 128_000 });
+    const { id, inst } = await spawnOnBackend({ model: 'doomed:v1', backend: 'doomed' });
+    assert.equal(inst.backend, 'doomed');
+
+    await inst.kill({ graceMs: 5 });
+    await waitFor(() => !instances.get(id).proc);
+    inst.backend = 'vanished'; // the post-removal state, without going through removal
+
+    await assert.rejects(
+      () => instances.respawn(id),
+      (e) => {
+        assert.equal(e.code, 'BACKEND_GONE');
+        assert.match(e.message, /vanished/);
+        return true;
+      },
+    );
+    assert.equal(instances.get(id).status, 'crashed', 'the failure is visible, not silently billed');
+  });
+
+  // DOOR 3: removeBackend itself refuses while a live instance is on that backend,
+  // naming the sessions — consistent with the bound-custom-models refusal.
+  test('door 3: removeBackend refuses (409) while a live instance is on that backend', async () => {
+    await addBackend({ id: 'inuse', label: 'In Use', template: 'inusectl claude --model {model} --' });
+    await addCustomModel({ label: 'U', model: 'inuse:v1', backend: 'inuse', contextWindow: 128_000 });
+    const { inst } = await spawnOnBackend({ model: 'inuse:v1', backend: 'inuse' });
+
+    // The bound custom model is refused first…
+    await assert.rejects(() => removeBackend('inuse'), /custom models bound to it/);
+    await removeCustomModel('inuse:v1');
+    // …then the LIVE session is, naming it.
+    await assert.rejects(
+      () => removeBackend('inuse'),
+      (e) => {
+        assert.equal(e.statusCode, 409);
+        assert.match(e.message, /live session/);
+        assert.match(e.message, new RegExp(inst.sessionId));
+        return true;
+      },
+    );
+    assert.ok(isKnownBackend('inuse'), 'nothing deleted on refusal');
+
+    // A killed-but-tracked instance is STILL respawnable, so it still blocks;
+    // only forgetting it (remove) clears the way.
+    await inst.kill({ graceMs: 5 });
+    await assert.rejects(() => removeBackend('inuse'), /live session/);
+    await instances.remove(inst.id);
+    assert.equal(await removeBackend('inuse'), true);
   });
 });
 
