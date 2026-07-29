@@ -110,6 +110,7 @@
             <span class="settings-title">Settings</span>
             <select id="settings-group-select">
               <option value="models">Models</option>
+              <option value="backends">Backends</option>
               <option value="account">Account</option>
               <option value="voice">Voice</option>
               <option value="conventions">Conventions</option>
@@ -121,13 +122,14 @@
           <div id="settings-models" class="settings-group">
             <p class="settings-desc">
               Each capability tier (Fast / Balanced / Powerful / Frontier) binds to a <strong>backend</strong>
-              (Claude or Ollama) and a <strong>model</strong> scoped to it — a Claude version
-              or one of your custom Ollama models. The new-session dialog's tier picker resolves a tier
-              to that pair; the Conduct button resolves the Conductor role (Settings → Models → Roles)
-              to a backend/model instead. For Claude, Sonnet's context window (200k or 1M) is a stored
-              preference set alongside the Sonnet 4.x model choice; Haiku is always 200k, Opus/Fable always 1M.
-              An Ollama-bound tier resolves straight to its tag (no version/window choice) and launches via
-              <code>ollama launch claude</code>. Changes take effect immediately — no restart.
+              (managed in <strong>Settings → Backends</strong>) and a <strong>model</strong> scoped to it —
+              a Claude version, or one of your custom models on another backend. The new-session dialog's
+              tier picker resolves a tier to that pair; the Conduct button resolves the Conductor role
+              (Settings → Models → Roles) to a backend/model instead. For Claude, Sonnet's context window
+              (200k or 1M) is a stored preference set alongside the Sonnet 4.x model choice; Haiku is always
+              200k, Opus/Fable always 1M. A tier on any other backend resolves straight to its model id
+              (no version/window choice) and launches through that backend's command template.
+              Changes take effect immediately — no restart.
             </p>
             <div id="sm-status" class="st-status" aria-live="polite">Loading…</div>
             <div class="sm-family-header" aria-hidden="true">
@@ -140,7 +142,7 @@
             <ul id="sm-tier-list" class="sm-family-list"></ul>
             <fieldset class="sm-group sm-roles">
               <legend>Roles</legend>
-              <p class="settings-hint">A role binds to a capability tier (follows whatever that tier points at) or a <strong>Custom</strong> backend. Spawn callers (MCP <code>spawn_instance</code>'s <code>model</code>) resolve a role to its backend (case-insensitively) — the Conduct button uses the <strong>Conductor</strong> role. Add your own <strong>custom roles</strong> below (they start on the Powerful tier — rebind with the row's picker); <strong>plugin</strong>-contributed roles are read-only and disappear when the plugin is disabled.</p>
+              <p class="settings-hint">A role binds to a capability tier (follows whatever that tier points at) or a <strong>Custom</strong> backend/model pair. Spawn callers (MCP <code>spawn_instance</code>'s <code>model</code>) resolve a role to its backend (case-insensitively) — the Conduct button uses the <strong>Conductor</strong> role. Add your own <strong>custom roles</strong> below (they start on the Powerful tier — rebind with the row's picker); <strong>plugin</strong>-contributed roles are read-only and disappear when the plugin is disabled.</p>
               <ul id="sm-role-list" class="sm-role-list"></ul>
               <div class="sm-role-form">
                 <input id="sm-role-name" type="text" placeholder="Role name (e.g. tester)" autocomplete="off" />
@@ -149,13 +151,14 @@
               <div id="sm-role-status" class="st-status" aria-live="polite"></div>
             </fieldset>
             <fieldset class="sm-group sm-custom">
-              <legend>Custom models (Ollama)</legend>
-              <p class="settings-hint">Add an Ollama-served model (served on <code>localhost:11434</code>), then pick <strong>Ollama</strong> as a tier's backend above and select it. It launches via <code>ollama launch claude</code>; a bound tier resolves straight to the tag. The <strong>context</strong> field (tokens, optional) sets the model's native window — it drives the context-usage bar and the CLI auto-compact point; leave blank to use the 200k default.</p>
+              <legend>Custom models</legend>
+              <p class="settings-hint">Add a model served by one of your <strong>Backends</strong>, then pick that backend for a tier above and select the model. A bound tier resolves straight to the model id, launched through the backend's command template. The <strong>context</strong> field is <strong>required</strong>: it is the model's native window in tokens, and it drives the context-usage bar plus the CLI auto-compact point at spawn — a wrong value silently truncates or over-fills the window. Removing a model still bound to a tier makes that tier fall back to its default Claude model.</p>
               <ul id="sm-custom-list" class="sm-custom-list"></ul>
               <div class="sm-custom-form">
                 <input id="sm-custom-label" type="text" placeholder="Label (e.g. Local GPT)" autocomplete="off" />
-                <input id="sm-custom-model" type="text" placeholder="Ollama tag (e.g. gemma4:cloud)" autocomplete="off" />
-                <input id="sm-custom-context" type="number" min="1" step="1000" placeholder="Context (tokens, optional)" autocomplete="off" />
+                <select id="sm-custom-backend" aria-label="Backend"></select>
+                <input id="sm-custom-model" type="text" placeholder="Model id (e.g. gemma4:cloud)" autocomplete="off" />
+                <input id="sm-custom-context" type="number" min="1" step="1000" placeholder="Context (tokens)" autocomplete="off" />
                 <button type="button" id="sm-custom-add" class="btn">Add</button>
               </div>
               <div id="sm-custom-status" class="st-status" aria-live="polite"></div>
@@ -181,6 +184,33 @@
             <div class="sm-cost-row">
               <button id="sm-cost-dashboard-btn" type="button">Cost dashboard</button>
             </div>
+          </div>
+          <div id="settings-backends" class="settings-group" hidden>
+            <p class="settings-desc">
+              A <strong>backend</strong> is a launch recipe: the command that replaces <code>claude</code>,
+              with <code>{model}</code> standing in for the model id. An empty template runs
+              <code>claude</code> directly. <strong>Claude</strong> and <strong>Ollama</strong> are built in
+              — their template is fixed, and they can't be removed — but you can add your own row for any
+              wrapper that ends by exec'ing the Claude CLI, then bind models to it under
+              <strong>Settings → Models → Custom models</strong>. Each backend can also carry
+              <strong>env</strong> variables injected at spawn. Changes take effect on the next spawn.
+            </p>
+            <div id="sb-status" class="st-status" aria-live="polite">Loading…</div>
+            <ul id="sb-list" class="sb-list"></ul>
+            <fieldset class="sm-group">
+              <legend id="sb-form-legend">Add a backend</legend>
+              <div class="sb-form">
+                <input id="sb-id" type="text" placeholder="id (e.g. my-proxy)" autocomplete="off" />
+                <input id="sb-label" type="text" placeholder="Label (e.g. My Proxy)" autocomplete="off" />
+                <input id="sb-template" type="text" placeholder="Template (e.g. myproxy run claude --model {model} --)" autocomplete="off" />
+                <textarea id="sb-env" rows="3" placeholder="Env, one KEY=VALUE per line (optional)"></textarea>
+                <div class="sb-form-actions">
+                  <button type="button" id="sb-save" class="btn">Add</button>
+                  <button type="button" id="sb-cancel" class="btn" hidden>Cancel</button>
+                </div>
+              </div>
+              <div id="sb-form-status" class="st-status" aria-live="polite"></div>
+            </fieldset>
           </div>
           <div id="settings-account" class="settings-group" hidden>
             <p class="settings-desc">

@@ -19,9 +19,9 @@ function fmtNum(n) {
   return String(n);
 }
 
-// Token cell for a by_model entry. Ollama-backed models expose no summable
-// per-turn token total (the backend omits `usage`), so the server marks such
-// models `tokens_known:false` — render `—` rather than a fabricated 0.
+// Token cell for a by_model entry. Models on a substitution backend expose no
+// summable per-turn token total (the backend omits `usage`), so the server marks
+// such models `tokens_known:false` — render `—` rather than a fabricated 0.
 function tokenCell(m, key) {
   return m.tokens_known ? fmtNum(m[key]) : '—';
 }

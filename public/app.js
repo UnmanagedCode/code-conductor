@@ -38,7 +38,7 @@ import { installSessionStats } from './sessionStats.js';
 import { installWsRouter } from './wsRouter.js';
 import { latestOnly } from './latestOnly.js';
 import { loadModelVersions,
-  setActiveTierEnabled, setActiveDefaultSpawnTier, setActiveTierBackend, setActiveRoleBindings, setCustomBackends } from './models.js';
+  setActiveTierEnabled, setActiveDefaultSpawnTier, setActiveTierBackend, setActiveRoleBindings, setCustomModels, setBackends, setOllamaCloudModels } from './models.js';
 import { setTtsAvailable, setTtsEnabled, setTtsRate } from './tts.js';
 
 const state = {
@@ -531,7 +531,9 @@ const settings = installSettings({
     if (data.roleBackend) setActiveRoleBindings(data.roleBackend);
     if (data.enabledTiers) setActiveTierEnabled(data.enabledTiers);
     setActiveDefaultSpawnTier(data.defaultSpawnTier);
-    setCustomBackends(data.customBackends);
+    setBackends(data.backends);
+    setCustomModels(data.customModels);
+    setOllamaCloudModels(data.ollamaCloudModels);
     spawnHandles.syncTierModelLabels();
     spawnHandles.syncTierVisibility();
   },
