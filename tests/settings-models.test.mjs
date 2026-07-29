@@ -283,11 +283,15 @@ test('appSettings: setConductorCompactWindow snaps to nearest 10k step', async (
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
 
-test('appSettings: setConductorCompactWindow clamps to [20, 1000]', async () => {
+test('appSettings: setConductorCompactWindow clamps to [100, 1000]', async () => {
   const root = await mkTmp();
   try {
     await withEnv({ PROJECTS_ROOT: root, CLAUDE_CODE_AUTO_COMPACT_WINDOW: undefined }, async () => {
-      assert.equal((await setConductorCompactWindow({ enabled: true, value: 5 })).value, 20);
+      assert.equal((await setConductorCompactWindow({ enabled: true, value: 5 })).value, 100);
+      // The Claude Code CLI floors CLAUDE_CODE_AUTO_COMPACT_WINDOW at 100k tokens,
+      // so a sub-100k value would silently behave as 100k anyway — clamp it explicitly
+      // instead of letting the CLI's floor mask the user's chosen value.
+      assert.equal((await setConductorCompactWindow({ enabled: true, value: 50 })).value, 100);
       assert.equal((await setConductorCompactWindow({ enabled: true, value: 9999 })).value, 1000);
     });
   } finally { await fs.rm(root, { recursive: true, force: true }); }

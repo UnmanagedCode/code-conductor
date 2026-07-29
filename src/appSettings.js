@@ -541,7 +541,7 @@ export async function removeCustomRole(role) {
 // Value is stored in k-tokens (e.g. 200 = 200k); the env var receives raw
 // tokens (value * 1000). Seeded from the orchestrator's own env if set.
 // Off by default — strictly opt-in.
-const COMPACT_K_MIN  = 20;
+const COMPACT_K_MIN  = 100;
 const COMPACT_K_MAX  = 1000;
 const COMPACT_K_STEP = 10;
 const COMPACT_K_DEFAULT = 200;
