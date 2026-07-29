@@ -7,7 +7,11 @@
 export const NotificationState = {
   permission: 'default',          // mirrors Notification.permission
   globalEnabled: false,           // user toggled the bell on
-  mutedInstances: new Set(),      // per-instance mute
+  // Per-session mute, keyed by sessionId rather than the per-process
+  // instance id: a crash + resume mints a new instance id for the same
+  // session, which would silently un-mute it. Mirrors the unread counter's
+  // keying in app.js for the same reason.
+  mutedSessions: new Set(),
   swRegistration: null,           // ServiceWorkerRegistration, once registered
 };
 
@@ -65,10 +69,45 @@ export async function ensurePermission() {
 }
 
 export function setGlobalEnabled(on) { NotificationState.globalEnabled = !!on; }
-export function muteInstance(id, mute) {
-  if (!id) return;
-  if (mute) NotificationState.mutedInstances.add(id);
-  else NotificationState.mutedInstances.delete(id);
+
+const MUTED_STORAGE_KEY = 'code-conductor:muted-sessions';
+function safeStorage() {
+  try { return typeof localStorage !== 'undefined' ? localStorage : null; }
+  catch { return null; }
+}
+function saveMutedSessions() {
+  const storage = safeStorage();
+  if (!storage) return;
+  try {
+    if (NotificationState.mutedSessions.size === 0) storage.removeItem(MUTED_STORAGE_KEY);
+    else storage.setItem(MUTED_STORAGE_KEY, JSON.stringify([...NotificationState.mutedSessions]));
+  } catch { /* quota / disabled storage — mute is best-effort */ }
+}
+
+// Rehydrate the mute set from localStorage. Called once at app bootstrap;
+// keyed by sessionId, so the restored entries stay meaningful even for
+// sessions that have since been respawned under a new instance id.
+export function restoreMutedSessions() {
+  const storage = safeStorage();
+  if (!storage) return;
+  try {
+    const raw = storage.getItem(MUTED_STORAGE_KEY);
+    if (!raw) return;
+    const arr = JSON.parse(raw);
+    if (!Array.isArray(arr)) return;
+    for (const id of arr) if (typeof id === 'string' && id) NotificationState.mutedSessions.add(id);
+  } catch { /* corrupt or unreadable — start unmuted */ }
+}
+
+export function muteSession(sessionId, mute) {
+  if (!sessionId) return;
+  if (mute) NotificationState.mutedSessions.add(sessionId);
+  else NotificationState.mutedSessions.delete(sessionId);
+  saveMutedSessions();
+}
+
+export function isSessionMuted(sessionId) {
+  return !!sessionId && NotificationState.mutedSessions.has(sessionId);
 }
 
 export function fire({ title, body, tag, data }) {
@@ -167,7 +206,7 @@ export function maybeNotifyTurnEnd({ instanceId, projectName, sessionId, turnEve
   const decision = shouldNotify({
     permission: NotificationState.permission,
     globalEnabled: NotificationState.globalEnabled,
-    mutedInstance: NotificationState.mutedInstances.has(instanceId),
+    mutedInstance: isSessionMuted(sessionId),
     documentHidden: typeof document !== 'undefined' ? document.hidden : false,
     isError: !!turnEvent.isError,
   });

@@ -384,6 +384,21 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
   flex: 0 0 auto;
 }
 .session-promote:hover { color: var(--text); }
+/* Per-session notification mute (🔔/🔕). Hover-revealed like .session-delete
+   while the session is unmuted — but pinned visible once muted, so the 🔕 on
+   the row is what tells the user at a glance that THIS session is silenced
+   (the global bell only changes the header button, never a row). */
+.session-mute {
+  background: none; border: none; color: var(--muted);
+  cursor: pointer; padding: 0 4px; font-size: 13px; line-height: 1;
+  flex: 0 0 auto; opacity: 0;
+}
+.session-row:hover .session-mute { opacity: 1; }
+.session-row.muted .session-mute { opacity: 1; }
+.session-mute:hover { color: var(--text); }
+@media (hover: none) {
+  .session-mute { opacity: 1; }
+}
 
 /* Temp rows live inside the regular Sessions list, pinned below a dim
    "— temp —" divider. The warm temp-pill colour stays on the preview

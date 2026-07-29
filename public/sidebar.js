@@ -151,7 +151,7 @@ export class Sidebar {
     rootList, onSelectInstance, onCreateInstanceClick,
     onRemoveWorktree, onDeleteProject, onResumeSession, onLoadSessions,
     onDeleteSession, onEditWorkspace, onPromoteSession,
-    onReviewWorktree,
+    onReviewWorktree, onToggleMuteSession,
   }) {
     this.list = rootList;
     this.onSelectInstance = onSelectInstance;
@@ -164,6 +164,7 @@ export class Sidebar {
     this.onEditWorkspace = onEditWorkspace;
     this.onPromoteSession = onPromoteSession;
     this.onReviewWorktree = onReviewWorktree;
+    this.onToggleMuteSession = onToggleMuteSession;
     this.projects = [];
     this.instances = [];
     // Names of registered workspaces (from GET /api/workspaces). Render
@@ -194,6 +195,9 @@ export class Sidebar {
     // selectInstance. Keyed by sessionId so it survives crash + resume
     // (a new instance id for the same session).
     this.unreadBySessionId = new Map();
+    // Session ids whose turn-end notifications the user has muted. Driven
+    // from app.js (NotificationState.mutedSessions); render-only here.
+    this.mutedSessionIds = new Set();
     this.conductSessionCount = 0;
     this.conductSessionLastMtime = 0;
   }
@@ -205,6 +209,7 @@ export class Sidebar {
     this.render();
   }
   setUnread(map) { this.unreadBySessionId = map ?? new Map(); this.render(); }
+  setMutedSessions(set) { this.mutedSessionIds = set ?? new Set(); this.render(); }
   setConductSessions({ count = 0, lastMtime = 0 } = {}) {
     this.conductSessionCount = count;
     this.conductSessionLastMtime = lastMtime;
@@ -328,10 +333,11 @@ export class Sidebar {
     const status = session.instanceDisplayStatus ?? session.instanceStatus ?? 'offline';
     const isActive = session.instanceId === this.activeInstanceId;
     const unread = this.unreadBySessionId.get(session.sessionId) ?? 0;
+    const muted = this.mutedSessionIds.has(session.sessionId);
     const tooltipParts = [session.sessionId];
     if (customTitle && preview) tooltipParts.push(preview);
 
-    row.className = 'session-row' + (isActive ? ' active' : '') + (isLive ? ' live' : '') + (unread > 0 ? ' has-unread' : '') + (session.instanceTemp ? ' temp' : '') + (session.conducted ? ' conducted' : '') + (session.archived ? ' archived' : '') + (customTitle ? ' has-title' : '');
+    row.className = 'session-row' + (isActive ? ' active' : '') + (isLive ? ' live' : '') + (unread > 0 ? ' has-unread' : '') + (session.instanceTemp ? ' temp' : '') + (session.conducted ? ' conducted' : '') + (session.archived ? ' archived' : '') + (customTitle ? ' has-title' : '') + (muted ? ' muted' : '');
     row.title = tooltipParts.join('\n');
 
     const resumeLabel = session.autoResumeAt ? formatAutoResumeTime(session.autoResumeAt) : null;
@@ -340,6 +346,10 @@ export class Sidebar {
     if (unread > 0) keys.push('unread');
     if (resumeLabel) keys.push('resume');
     if (showPromote) keys.push('promote');
+    // Notifications only fire for live instances, so the mute affordance is
+    // offered on live rows — plus any already-muted row, so a mute made
+    // before the session was killed can still be undone.
+    if (isLive || muted) keys.push('mute');
     keys.push('delete');
     reconcileChildren(row, keys, (k, ex) => {
       if (k === 'dot') {
@@ -388,6 +398,23 @@ export class Sidebar {
             });
           },
         }, '↑');
+      }
+      if (k === 'mute') {
+        // Per-session notification mute. The handler reads the mute set live
+        // rather than closing over `muted` — the node is reused across
+        // re-renders, so a captured value would go stale after the first toggle.
+        const b = ex ?? el('button', {
+          class: 'session-mute',
+          onclick: (e) => {
+            e.stopPropagation();
+            const sid = holder.session.sessionId;
+            this.onToggleMuteSession?.({ sessionId: sid, mute: !this.mutedSessionIds.has(sid) });
+          },
+        });
+        b.textContent = muted ? '🔕' : '🔔';
+        b.title = muted ? 'notifications muted for this session — tap to unmute' : 'mute notifications for this session';
+        b.setAttribute('aria-pressed', muted ? 'true' : 'false');
+        return b;
       }
       // delete
       return ex ?? el('button', {
