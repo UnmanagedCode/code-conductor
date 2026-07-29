@@ -243,11 +243,27 @@ export function installWsRouter({
   // the notification-click handler (a click for an instance that's gone idle
   // and been reaped, or respawned under a new instanceId, still has to land
   // somewhere via its sessionId).
-  async function resumeSessionByAnchor(anchor) {
+  //
+  // Returns true if the anchor was resolved to a definite outcome (selected
+  // a live instance, or an archived/resume-success determination was made)
+  // — callers that have their own trailing logic gated on "was anything
+  // selected" (the first-connect open handler's subscribe below) must
+  // `return` when this is true, mirroring the early-returns of the original
+  // inline block this was extracted from. Returns false for a 404/fetch
+  // error, where there's nothing left to do.
+  //
+  // `clearAnchorOnMiss` gates the `writeSessionAnchor(null)` clears on the
+  // archived/404/error paths. It defaults true for the first-connect case,
+  // where `anchor` IS the URL's current hash, so clearing it on a miss is
+  // correct housekeeping. The notification-click caller passes false: its
+  // `anchor` is an arbitrary sessionId from a (possibly stale) notification,
+  // unrelated to whatever the user is currently anchored to — clearing the
+  // hash there would blow away the user's actual current session anchor.
+  async function resumeSessionByAnchor(anchor, { clearAnchorOnMiss = true } = {}) {
     const live = state.instances.find(i => i.sessionId === anchor);
     if (live) {
       selectInstance(live.id);
-      return;
+      return true;
     }
     // No live instance owns this anchor — locate the session on disk
     // and auto-resume it. Covers refreshes after a server restart (all
@@ -265,8 +281,8 @@ export function installWsRouter({
         // anchor and fall through to the placeholder. Deliberate resume
         // from the "— archived —" section still works (it's not this path).
         if (archived) {
-          writeSessionAnchor(null);
-          return;
+          if (clearAnchorOnMiss) writeSessionAnchor(null);
+          return true;
         }
         setSidebarStatus('resuming session…', { warn: true });
         try {
@@ -276,15 +292,17 @@ export function installWsRouter({
           // instance that now owns the anchor.
           await sessionActions.resumeSession({ projectName: project, worktreeName, sessionId: anchor, silent: true });
         } finally { setSidebarStatus(''); }
-        return;
+        return true;
       }
       // 404 / other — session jsonl no longer on disk. Clear the stale
       // anchor so a follow-up refresh doesn't re-attempt and let the
       // user fall through to the empty placeholder.
-      writeSessionAnchor(null);
+      if (clearAnchorOnMiss) writeSessionAnchor(null);
+      return false;
     } catch (e) {
       console.warn('auto-resume from anchor failed', e);
-      writeSessionAnchor(null);
+      if (clearAnchorOnMiss) writeSessionAnchor(null);
+      return false;
     }
   }
 
@@ -293,16 +311,21 @@ export function installWsRouter({
   // tab was already open) and the page-level Notification's onclick (SW
   // unavailable/failed) via the two listeners below — one resolution path
   // for both routes, reusing selectInstance / resumeSessionByAnchor rather
-  // than a parallel implementation.
+  // than a parallel implementation. Both branches select with the same
+  // (default, replaceState) history behavior as every other anchor-driven
+  // selectInstance call in this file (popstate, first-connect) — a
+  // notification click is closer to a page-load restore than a forward
+  // navigation, and pushing here would also require threading a push option
+  // through sessionActions.resumeSession for the fallback branch below.
   async function handleNotificationClickData(data) {
     if (!data) return;
     const { instanceId, sessionId } = data;
     const target = resolveNotificationInstance({ instanceId, sessionId }, state.instances);
     if (target) {
-      selectInstance(target.id, { push: true });
+      selectInstance(target.id);
       return;
     }
-    if (sessionId) await resumeSessionByAnchor(sessionId);
+    if (sessionId) await resumeSessionByAnchor(sessionId, { clearAnchorOnMiss: false });
   }
   if (typeof navigator !== 'undefined' && navigator.serviceWorker) {
     navigator.serviceWorker.addEventListener('message', (event) => {
@@ -328,7 +351,15 @@ export function installWsRouter({
         // PWA process while it was backgrounded and start_url ('/') doesn't
         // carry the previous hash.
         const anchor = readSessionAnchor() || consumeStashedAnchor();
-        if (anchor) await resumeSessionByAnchor(anchor);
+        if (anchor) {
+          const handled = await resumeSessionByAnchor(anchor);
+          // Mirrors the original inline block's early `return`s (live-match,
+          // archived, resume-success): skip the trailing subscribe below,
+          // since selectInstance/resumeSession already subscribed via their
+          // own selectInstance call. Falling through here double-subscribes
+          // and forces a second full snapshot replay for no reason.
+          if (handled) return;
+        }
       }
     }
     if (state.activeId && state.instances.some(i => i.id === state.activeId)) {

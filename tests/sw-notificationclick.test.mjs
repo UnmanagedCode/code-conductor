@@ -17,10 +17,9 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SW_PATH = path.resolve(__dirname, '..', 'public', 'sw.js');
 
-function makeClient({ id, visible = false, focused = false, focusThrows = false }) {
+function makeClient({ id, visible = false, focused = false, focusThrows = false, omitVisibilityState = false }) {
   const client = {
     id,
-    visibilityState: visible ? 'visible' : 'hidden',
     focused,
     postedMessages: [],
     async focus() {
@@ -29,6 +28,10 @@ function makeClient({ id, visible = false, focused = false, focusThrows = false 
     },
     postMessage(msg) { client.postedMessages.push(msg); },
   };
+  // Real WindowClients always carry visibilityState, but the fallback-to-
+  // `focused` branch only matters when it's genuinely absent — set it only
+  // when the test isn't specifically exercising that fallback.
+  if (!omitVisibilityState) client.visibilityState = visible ? 'visible' : 'hidden';
   return client;
 }
 
@@ -77,9 +80,10 @@ test('notificationclick: prefers a visible client over the first-listed hidden o
   assert.equal(visible.postedMessages.length, 1, 'visible client gets the message');
 });
 
-test('notificationclick: falls back to a `focused` client when visibilityState is absent', async () => {
-  const other = makeClient({ id: 'other' });
-  const focused = makeClient({ id: 'focused', focused: true });
+test('notificationclick: falls back to a `focused` client when visibilityState is genuinely absent', async () => {
+  const other = makeClient({ id: 'other', omitVisibilityState: true });
+  const focused = makeClient({ id: 'focused', focused: true, omitVisibilityState: true });
+  assert.ok(!('visibilityState' in other) && !('visibilityState' in focused), 'test setup: visibilityState must actually be absent here');
   const { handlers } = await loadFakeSw({ clients: [other, focused] });
   await fireClick(handlers, { instanceId: 'inst-1' });
   assert.equal(other.postedMessages.length, 0);

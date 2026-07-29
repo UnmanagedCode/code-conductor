@@ -14,6 +14,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Window } from 'happy-dom';
 import { bus } from '../public/ws.js';
+import { readSessionAnchor } from '../public/anchor.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUB = path.resolve(__dirname, '..', 'public');
@@ -28,8 +29,8 @@ async function waitFor(cond, ms = 1000) {
   }
 }
 
-function installDom() {
-  const window = new Window({ url: 'http://localhost/' });
+function installDom(hash = '') {
+  const window = new Window({ url: `http://localhost/${hash}` });
   globalThis.window = window;
   globalThis.document = window.document;
   globalThis.location = window.location;
@@ -42,8 +43,9 @@ function installDom() {
 
 function baseDeps({ instances = [], resumeSpy, selectSpy } = {}) {
   const noop = () => {};
+  const state = { activeId: null, instances };
   return {
-    state: { activeId: null, instances },
+    state,
     getTracker: () => ({ reset: noop, seedActive: noop, apply: noop, completedBatches: [] }),
     getUsage: () => ({ reset: noop, apply: noop }),
     globalRLTracker: { apply: noop },
@@ -54,7 +56,13 @@ function baseDeps({ instances = [], resumeSpy, selectSpy } = {}) {
     composer: {}, sidebar: {}, subagentPanel: {},
     bumpUnread: noop, flushPendingAnswers: noop,
     refreshProjects: async () => {}, refreshInstances: async () => {},
-    selectInstance: selectSpy ?? noop, setSidebarStatus: noop,
+    // Mirrors the real selectInstance (app.js): sets state.activeId, same as
+    // tests/anchor-autoresume.test.mjs's baseDeps — a spy that only records
+    // the call without this masks the double-subscribe class of regression
+    // (irrelevant to this file's own assertions, but keeping the two
+    // baseDeps helpers consistent avoids re-introducing that gap here too).
+    selectInstance: (id, opts) => { state.activeId = id; selectSpy?.(id, opts); },
+    setSidebarStatus: noop,
   };
 }
 
@@ -72,7 +80,11 @@ test('notification click selects the live instance matching instanceId', async (
   dispatchClick({ instanceId: 'inst-2', sessionId: 'sess-2' });
   await waitFor(() => selected !== null);
   assert.equal(selected.id, 'inst-2');
-  assert.equal(selected.opts?.push, true, 'notification-driven selection pushes a history entry');
+  // Same (default, replaceState) history behavior as every other
+  // anchor-driven selectInstance call in wsRouter.js (popstate,
+  // first-connect) — a notification click is treated as a page-load-style
+  // restore, not a forward navigation that should leave a back-button entry.
+  assert.equal(selected.opts, undefined, 'notification-driven selection does not push a history entry');
 });
 
 test('notification click falls back to sessionId when instanceId is no longer live (respawn)', async () => {
@@ -120,4 +132,46 @@ test('notification click with no sessionId and no live match is a graceful no-op
   await new Promise(r => setTimeout(r, 20));
   assert.equal(selected, null);
   assert.equal(fetched, false, 'no sessionId means nothing to locate');
+});
+
+// ── anchor-clobber regression ───────────────────────────────────────────────
+//
+// Scenario: the user is actively viewing #session=sess-X (a temp session
+// pinged, then got archived on a restart while the user moved on); they
+// later click the old, now-stale notification for sess-Y. resumeSessionByAnchor
+// resolves sess-Y (archived → miss) and must NOT clear the CURRENT anchor —
+// sess-Y is not what the hash currently points to, so wiping it would strand
+// the user's real session on their next refresh, landing them on the empty
+// placeholder instead of back on X. clearAnchorOnMiss:false is what the
+// notification-click caller passes specifically to prevent this.
+
+test('notification click for an unrelated archived sessionId does not clobber the current #session= anchor', async () => {
+  installDom('#session=sess-X');
+  const { installWsRouter } = await load('wsRouter.js');
+
+  globalThis.fetch = async (url) => {
+    if (String(url).includes('/locate')) {
+      return { ok: true, json: async () => ({ project: 'p', worktreeName: null, archived: true }) };
+    }
+    throw new Error(`unexpected fetch ${url}`);
+  };
+
+  installWsRouter(baseDeps({ instances: [] }));
+
+  dispatchClick({ instanceId: 'inst-gone', sessionId: 'sess-Y' });
+  await new Promise(r => setTimeout(r, 20));
+
+  assert.equal(readSessionAnchor(), 'sess-X', 'the current, unrelated anchor must survive an archived notification click');
+});
+
+test('notification click for an unrelated 404 sessionId does not clobber the current #session= anchor', async () => {
+  installDom('#session=sess-X');
+  const { installWsRouter } = await load('wsRouter.js');
+  globalThis.fetch = async () => ({ ok: false, status: 404 });
+  installWsRouter(baseDeps({ instances: [] }));
+
+  dispatchClick({ instanceId: 'inst-gone', sessionId: 'sess-Y' });
+  await new Promise(r => setTimeout(r, 20));
+
+  assert.equal(readSessionAnchor(), 'sess-X', 'a 404 miss on an unrelated notification must not clear the current anchor');
 });
