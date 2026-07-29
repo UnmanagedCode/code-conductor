@@ -2,7 +2,9 @@
 // process env ONLY when spawning the .conduct orchestrator session (project
 // === '.conduct') with the feature enabled. MCP-spawned worker agents
 // (this.conducted === true) and ordinary non-.conduct sessions must NOT
-// receive the env var, even when the feature is enabled.
+// receive the env var, even when the feature is enabled. Also covers the
+// reachable case where the conductor role itself is Ollama-backed, so both
+// the ollama native-window block and this knob block fire on one spawn.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -10,19 +12,20 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { bootServer, api, waitFor } from './helpers.mjs';
+import { bootServer, api, waitFor, fakeOllamaReachable } from './helpers.mjs';
 import { setConductorCompactWindow } from '../src/appSettings.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-instance.json');
 const SCENARIO_WS = path.join(__dirname, 'fixtures', 'scenario-ws.json');
 
-async function spawnAndGetEnv({ ctx, project, conductedWorker = false }) {
+async function spawnAndGetEnv({ ctx, project, conductedWorker = false, model = 'claude-haiku-4-5', backendKind }) {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'cwspawn-'));
   const envDump = path.join(tmp, 'env.txt');
   process.env.FAKE_CLAUDE_ENV_DUMP = envDump;
   try {
-    const spawnBody = { project, mode: 'bypassPermissions', model: 'claude-haiku-4-5', temp: true };
+    const spawnBody = { project, mode: 'bypassPermissions', model, temp: true };
+    if (backendKind) spawnBody.backendKind = backendKind;
     if (conductedWorker) spawnBody.conducted = true;
     const r = await api(ctx.baseUrl, 'POST', '/api/instances', spawnBody);
     assert.equal(r.status, 201, `spawn failed: ${JSON.stringify(r.body)}`);
@@ -109,4 +112,43 @@ test('.conduct spawn does NOT receive CLAUDE_CODE_AUTO_COMPACT_WINDOW when featu
     assert.ok(!('CLAUDE_CODE_AUTO_COMPACT_WINDOW' in env),
       'disabled feature must not inject CLAUDE_CODE_AUTO_COMPACT_WINDOW');
   } finally { await ctx.close(); }
+});
+
+// The conductor role can be bound to an Ollama backend (roleBackend in
+// settings), so a .conduct session with backendKind:'ollama' is reachable —
+// both the ollama native-window block AND the .conduct knob block fire on the
+// same spawn. The ollama block runs first (sets MAX_CONTEXT_TOKENS to the
+// native window, and AUTO_COMPACT_WINDOW to the same value), then the .conduct
+// block runs second and unconditionally overwrites AUTO_COMPACT_WINDOW with
+// the knob value. These tests pin that ordering: if a future edit reordered
+// the two blocks, the knob would get silently clobbered back to the native
+// window and nothing else would catch it.
+test('ollama-backed .conduct spawn: knob overrides AUTO_COMPACT_WINDOW, native window still wins MAX_CONTEXT_TOKENS (knob above native)', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO_WS });
+  const restoreFetch = fakeOllamaReachable();
+  try {
+    await withEnv({ PROJECTS_ROOT: ctx.projectsRoot, CLAUDE_CODE_AUTO_COMPACT_WINDOW: undefined }, async () => {
+      await setConductorCompactWindow({ enabled: true, value: 400 }); // 400k knob
+    });
+    await api(ctx.baseUrl, 'POST', '/api/projects/.conduct/ensure');
+    const env = await spawnAndGetEnv({ ctx, project: '.conduct', model: 'qwen3.5:cloud', backendKind: 'ollama' });
+    assert.equal(env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, '400000',
+      'the .conduct block must run after the ollama block and win — not the native 256k');
+    assert.equal(env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, '256000',
+      'MAX_CONTEXT_TOKENS is only ever set by the ollama block, to the native window');
+  } finally { await ctx.close(); restoreFetch(); }
+});
+
+test('ollama-backed .conduct spawn: knob below native window still wins the effective min', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO_WS });
+  const restoreFetch = fakeOllamaReachable();
+  try {
+    await withEnv({ PROJECTS_ROOT: ctx.projectsRoot, CLAUDE_CODE_AUTO_COMPACT_WINDOW: undefined }, async () => {
+      await setConductorCompactWindow({ enabled: true, value: 200 }); // 200k knob, below the 256k native window
+    });
+    await api(ctx.baseUrl, 'POST', '/api/projects/.conduct/ensure');
+    const env = await spawnAndGetEnv({ ctx, project: '.conduct', model: 'qwen3.5:cloud', backendKind: 'ollama' });
+    assert.equal(env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, '200000');
+    assert.equal(env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, '256000');
+  } finally { await ctx.close(); restoreFetch(); }
 });

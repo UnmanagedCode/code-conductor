@@ -1076,8 +1076,12 @@ export class Instance extends EventEmitter {
     // Apply the compact-window override ONLY to the Conduct orchestrator session
     // (project === '.conduct'). Do NOT gate on this.conducted — that flag marks
     // MCP-spawned *worker* agents that the orchestrator spawns, which is the
-    // opposite of the orchestrator session itself. The explicit conductor knob
-    // wins over the Ollama window above when both apply.
+    // opposite of the orchestrator session itself. This only overwrites
+    // AUTO_COMPACT_WINDOW, never MAX_CONTEXT_TOKENS, so when the conductor role
+    // is itself Ollama-backed and both blocks apply, the effective window is
+    // min(MAX_CONTEXT_TOKENS, AUTO_COMPACT_WINDOW) — the knob wins only when
+    // it's smaller than the native window; otherwise the native window still
+    // binds, same as docs/protocol.md's "remains the binding minimum".
     if (this.project === CONDUCT_PROJECT_NAME) {
       const cw = getConductorCompactWindow();
       if (cw.enabled) {
