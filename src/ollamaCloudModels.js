@@ -11,8 +11,9 @@
 // `contextWindow` is the model's native window in raw tokens (round decimals,
 // matching CONTEXT_WINDOWS in public/usage.js). This is the authoritative
 // per-model size: it drives the header context-usage bar (via
-// ollamaContextWindowFor in public/models.js) and CLAUDE_CODE_AUTO_COMPACT_WINDOW
-// at spawn time (via getOllamaContextWindow in src/appSettings.js). MiniMax M3
+// ollamaContextWindowFor in public/models.js) and both
+// CLAUDE_CODE_AUTO_COMPACT_WINDOW and CLAUDE_CODE_MAX_CONTEXT_TOKENS at spawn
+// time (via getOllamaContextWindow in src/appSettings.js). MiniMax M3
 // is 1M *max* (only 512k guaranteed-minimum, billed 2× above 512k) — we
 // deliberately advertise the 1M ceiling here.
 export const OLLAMA_CLOUD_MODELS = [

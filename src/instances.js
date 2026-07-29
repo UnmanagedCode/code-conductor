@@ -1047,29 +1047,41 @@ export class Instance extends EventEmitter {
     // bare — see canonicalizeModel in modelVersions.js). Strip any ambient
     // CLAUDE_CODE_DISABLE_1M_CONTEXT so a user-level export can't silently
     // downgrade our 1M Opus/Sonnet sessions to 200k. Also strip any ambient
-    // CLAUDE_CODE_AUTO_COMPACT_WINDOW inherited from the conductor's own
-    // process env — only the two blocks below (Ollama native-window,
-    // .conduct override) are allowed to set it, and they must run after
-    // this strip so their values win.
+    // CLAUDE_CODE_AUTO_COMPACT_WINDOW / CLAUDE_CODE_MAX_CONTEXT_TOKENS
+    // inherited from the conductor's own process env — only the two blocks
+    // below (Ollama native-window, .conduct override) are allowed to set
+    // them, and they must run after this strip so their values win.
     const spawnEnv = { ...process.env };
     delete spawnEnv.CLAUDE_CODE_DISABLE_1M_CONTEXT;
     delete spawnEnv.CLAUDE_CODE_AUTO_COMPACT_WINDOW;
+    delete spawnEnv.CLAUDE_CODE_MAX_CONTEXT_TOKENS;
     // Ollama-backed sessions: honour the model's native context window so the
-    // CLI auto-compacts at the real limit instead of its ~200k default. The
-    // value is already a raw token count (unlike the conductor override below,
-    // which stores k-tokens), so set it directly. A custom model with no
-    // declared window resolves to null → leave the var unset (CLI default).
+    // CLI auto-compacts at the real limit instead of its ~200k default.
+    // AUTO_COMPACT_WINDOW alone is not enough: the CLI clamps it to
+    // Math.min(modelWindow, AUTO_COMPACT_WINDOW), and its internal per-model
+    // table defaults any unrecognized model (every ollama tag) to a 200k
+    // assumed window — silently capping our value back down. MAX_CONTEXT_TOKENS
+    // overrides that assumed window directly for non-Claude models, so both
+    // vars are set to the same raw token count. A custom model with no
+    // declared window resolves to null → leave both unset (CLI default).
     // Runs for both fresh spawns and every resume path (single spawn() method;
     // backendKind + model are recovered before this block).
     if (this.backendKind === 'ollama' && this.model) {
       const cw = getOllamaContextWindow(this.model);
-      if (cw) spawnEnv.CLAUDE_CODE_AUTO_COMPACT_WINDOW = String(cw);
+      if (cw) {
+        spawnEnv.CLAUDE_CODE_AUTO_COMPACT_WINDOW = String(cw);
+        spawnEnv.CLAUDE_CODE_MAX_CONTEXT_TOKENS = String(cw);
+      }
     }
     // Apply the compact-window override ONLY to the Conduct orchestrator session
     // (project === '.conduct'). Do NOT gate on this.conducted — that flag marks
     // MCP-spawned *worker* agents that the orchestrator spawns, which is the
-    // opposite of the orchestrator session itself. The explicit conductor knob
-    // wins over the Ollama window above when both apply.
+    // opposite of the orchestrator session itself. This only overwrites
+    // AUTO_COMPACT_WINDOW, never MAX_CONTEXT_TOKENS, so when the conductor role
+    // is itself Ollama-backed and both blocks apply, the effective window is
+    // min(MAX_CONTEXT_TOKENS, AUTO_COMPACT_WINDOW) — the knob wins only when
+    // it's smaller than the native window; otherwise the native window still
+    // binds, same as docs/protocol.md's "remains the binding minimum".
     if (this.project === CONDUCT_PROJECT_NAME) {
       const cw = getConductorCompactWindow();
       if (cw.enabled) {

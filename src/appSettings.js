@@ -240,9 +240,9 @@ export function getOllamaContextWindow(tag) {
 
 // `contextWindow` (optional): native window in raw tokens. When a positive
 // number, it's stored (rounded) and used for the header ctx bar +
-// CLAUDE_CODE_AUTO_COMPACT_WINDOW at spawn. Blank/invalid → the key is omitted
-// and the model falls back to the 200k display default with no explicit compact
-// window at spawn.
+// CLAUDE_CODE_AUTO_COMPACT_WINDOW + CLAUDE_CODE_MAX_CONTEXT_TOKENS at spawn.
+// Blank/invalid → the key is omitted and the model falls back to the 200k
+// display default with no explicit compact window at spawn.
 export async function addCustomBackend({ label, model, contextWindow } = {}) {
   const cleanLabel = String(label || '').trim();
   const cleanModel = String(model || '').trim();
