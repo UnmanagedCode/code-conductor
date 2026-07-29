@@ -887,8 +887,10 @@ export function installSettings({
     if (backend !== CLAUDE_BACKEND) {
       const chosen = firstModelForBackend(backend, tier);
       if (!chosen) {
-        if (smStatusEl) smStatusEl.textContent = `Add a ${backendLabelOf(backend)} model below first.`;
+        // Re-render FIRST to snap the select back, THEN write the message —
+        // renderModels rewrites smStatusEl, so the other order loses it.
         renderModels(lastModelsData);
+        if (smStatusEl) smStatusEl.textContent = `Add a ${backendLabelOf(backend)} model below first.`;
         return;
       }
       return saveTierBinding(tier, { backend, model: chosen.model });
@@ -946,8 +948,8 @@ export function installSettings({
     if (backend !== CLAUDE_BACKEND) {
       const chosen = firstModelForBackend(backend, null);
       if (!chosen) {
+        renderModels(lastModelsData); // see onPickTierBackend: re-render, then message
         if (smStatusEl) smStatusEl.textContent = `Add a ${backendLabelOf(backend)} model below first.`;
-        renderModels(lastModelsData);
         return;
       }
       return saveRoleBinding(role, { backend, model: chosen.model });
