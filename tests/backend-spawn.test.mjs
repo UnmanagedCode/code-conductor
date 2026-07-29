@@ -553,7 +553,11 @@ describe('an unknown or removed backend never falls through to real claude', () 
       () => removeBackend('inuse'),
       (e) => {
         assert.equal(e.statusCode, 409);
-        assert.match(e.message, /live session/);
+        assert.match(e.message, /open session/);
+        // The remedy must NOT be "kill them" — the kill button leaves a non-temp
+        // instance tracked, so the 409 just repeats (asserted below).
+        assert.match(e.message, /archive or delete/);
+        assert.doesNotMatch(e.message, /kill (it|them) first/);
         assert.match(e.message, new RegExp(inst.sessionId));
         return true;
       },
@@ -563,7 +567,7 @@ describe('an unknown or removed backend never falls through to real claude', () 
     // A killed-but-tracked instance is STILL respawnable, so it still blocks;
     // only forgetting it (remove) clears the way.
     await inst.kill({ graceMs: 5 });
-    await assert.rejects(() => removeBackend('inuse'), /live session/);
+    await assert.rejects(() => removeBackend('inuse'), /open session/);
     await instances.remove(inst.id);
     assert.equal(await removeBackend('inuse'), true);
   });

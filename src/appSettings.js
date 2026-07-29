@@ -373,12 +373,14 @@ function liveBackendUsage() {
 }
 
 // Removing a backend NEVER cascades: a backend still referenced by a custom
-// model — or still in use by a LIVE instance — is refused (409, naming them) so
-// nothing is deleted behind the user's back and no running session is left
-// pointing at a backend that no longer exists (which would otherwise launch the
-// real `claude` on its next respawn). Once nothing references it, any tier/role
-// left pointing at one of its models reverts through the normal dead-binding path
-// (see getTierBackend).
+// model — or still carried by a TRACKED instance — is refused (409, naming them)
+// so nothing is deleted behind the user's back and no session is left pointing at
+// a backend that no longer exists (which would otherwise launch the real `claude`
+// on its next respawn). liveBackendUsage() deliberately counts exited instances
+// too (still respawnable), so the remedy in the message is archiving/deleting the
+// session — killing it leaves it in the registry's byId and re-trips this 409.
+// Once nothing references it, any tier/role left pointing at one of its models
+// reverts through the normal dead-binding path (see getTierBackend).
 export async function removeBackend(id) {
   const existing = getBackend(id);
   if (!existing) return false;
@@ -395,7 +397,7 @@ export async function removeBackend(id) {
   const live = liveBackendUsage().filter(u => u && u.backend === id).map(u => u.sessionId || '(unknown session)');
   if (live.length) {
     throw Object.assign(
-      new Error(`backend '${id}' is still in use by ${live.length} live session${live.length === 1 ? '' : 's'} (${live.join(', ')}) — kill them first`),
+      new Error(`backend '${id}' is still in use by ${live.length} open session${live.length === 1 ? '' : 's'} (${live.join(', ')}) — archive or delete ${live.length === 1 ? 'it' : 'them'} first (killing a session leaves it respawnable)`),
       { statusCode: 409 },
     );
   }

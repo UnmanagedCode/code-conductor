@@ -68,7 +68,7 @@ export function resolveBackendLaunch(backend, model, claudeBin) {
   }
   // Substitute inside each token (not only whole tokens) so `--model={model}`
   // works as well as `--model {model}`.
-  const tokens = template.split(/\s+/).filter(Boolean).map(t => t.replaceAll('{model}', model ?? ''));
+  const tokens = template.split(/\s+/).filter(Boolean).map(t => t.replaceAll('{model}', model));
   return { command: tokens[0], prefixArgs: tokens.slice(1), env };
 }
 

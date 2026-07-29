@@ -357,8 +357,9 @@ export function installSettings({
   // The backend registry: one card per row. Managed rows (`claude`, `ollama`)
   // are code-owned — their label/template can't be edited and they can't be
   // removed (the server refuses either way), but their env can. Removal of a
-  // user row is REFUSED with 409 when custom models still reference it; the
-  // message names them, so it goes straight into the status line.
+  // user row is REFUSED with 409 when custom models still reference it OR when
+  // any tracked session is still on it; the message names them either way, so it
+  // goes straight into the status line.
   //
   // No loader of its own: the registry rides in the shared /api/settings/models
   // payload, so renderModels() drives renderBackends() — the same arrangement the
@@ -514,7 +515,8 @@ export function installSettings({
     try {
       const r = await fetch(`/api/settings/models/backends/${encodeURIComponent(id)}`, { method: 'DELETE' });
       const data = await r.json();
-      // 409 carries the still-bound custom models in its message — surface it.
+      // 409 names what still references the row (bound custom models, or the
+      // sessions still on it) in its message — surface it verbatim.
       if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
       if (sbEditingId === id) closeBackendForm();
       renderModels(data); // also re-renders this panel (renderBackends)

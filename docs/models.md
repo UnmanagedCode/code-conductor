@@ -24,7 +24,7 @@ Record: `{ id, label, template, env: [{key,value}], managed }`, persisted as
 |---|---|
 | `id` | `^[a-z][a-z0-9-]*$`, ≤40 chars, unique (incl. against managed ids). The value stored in `Instance.backend`, tier/role bindings, the session sidecar, and the resume manifest. |
 | `label` | Display name. Required. |
-| `template` | **Required on a USER row** (400 if blank — see below). Blank on the managed `claude` row ⇒ identity. A template naming `{model}` refuses to launch without a model; a template with **no** `{model}` is valid and needs none. |
+| `template` | **Required on a USER row** (400 if blank — see below). Blank on the managed `claude` row ⇒ identity. Any non-blank template refuses to launch without a resolved model, **unconditionally** — a template that never names `{model}` is no exception, because the model still rides in the forwarded claude args and drives the context-window env. |
 | `env` | Key/value pairs injected into the child's env at spawn. Keys match `^[A-Za-z_][A-Za-z0-9_]*$`. |
 | `managed` | Derived, never stored: true for the two built-ins below. |
 
@@ -107,12 +107,25 @@ The consequences of being a substitution backend:
   the session, and the model TAG. Absence of a record means plain `claude`; a `null`
   model means backend-known/model-unknown (resume falls back to the jsonl and the
   next mark self-heals it). If the recorded backend has since been REMOVED from the
-  registry, resume is refused `422 BACKEND_GONE` — falling back to `claude` while
-  keeping the foreign model id would spawn a real `claude --model <foreign-id>`.
+  registry, resume is refused `422 BACKEND_GONE` (below).
 
 There is deliberately **no** per-backend health check and **no** per-backend model
 catalog. A bad backend or model simply fails at spawn and surfaces as
 `launch_failed`.
+
+### Missing backends are refused, never downgraded
+
+Falling back to `claude` when a backend id can't be resolved would launch the real
+CLI against the real Anthropic account with a **foreign model id** — an opaque
+failure, billed. So every path refuses instead. These are four independent doors on
+purpose: each closes a distinct route, and none subsumes another.
+
+| Door | Where | Refusal |
+|---|---|---|
+| Create with an **explicit** unknown backend (`POST /api/instances`, restart replay) | `_doCreate`, `src/instances.js` | `422 BACKEND_GONE` |
+| Resume whose **sidecar** backend was removed since | `_doCreate`, same guard | `422 BACKEND_GONE` |
+| Spawn/respawn after the row was removed **under a tracked instance** | `Instance.spawn()`, `src/instances.js` | throws, instance → `crashed` (visible), instead of taking `resolveBackendLaunch`'s identity branch |
+| **Removing** a row that anything still references | `removeBackend()`, `src/appSettings.js` | `409` — see [Settings → Backends](#settings--backends) |
 
 ## Custom models
 
@@ -205,10 +218,22 @@ Managed rows carry a **built in** badge, show the template read-only, and have n
 Remove. One shared add/edit form (id + label + template + an env textarea, one
 `KEY=VALUE` per line).
 
-Removing a backend **never cascades**: while any custom model still references it the
-DELETE is refused **409** with a message naming those models, surfaced in the panel's
-status line. Remove the models first. Once unreferenced, any tier/role left pointing
-at one of its models reverts through the normal dead-binding path.
+Removing a backend **never cascades**. The DELETE is refused **409** — message
+surfaced in the panel's status line — while *either* of two things still references
+the row:
+
+- **any custom model is bound to it** (message names those model ids) — remove the
+  models first;
+- **any tracked instance is on it** (message names those session ids) — **archive or
+  delete** those sessions first. `liveBackendUsage()` (`src/instances.js`) counts
+  every instance in `byId`, *including exited ones*: an exited instance is still
+  respawnable (crash-respawn, overage auto-resume, rewind), and it is exactly that
+  later relaunch that would hit the real `claude`. So **killing is not enough** — the
+  kill button leaves a non-temp instance in `byId` and the 409 repeats; only the
+  session archive/delete paths call `instances.remove()`.
+
+Once nothing references it, any tier/role left pointing at one of its models reverts
+through the normal dead-binding path.
 
 ## Settings → Models
 
