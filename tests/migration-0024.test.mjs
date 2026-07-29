@@ -55,11 +55,10 @@ test('settings: seeds the registry, re-keys every concrete binding, renames cust
 
   const s = (await readJson(settingsFile(root))).models;
 
-  // The two managed rows are seeded, in catalog order, with the ollama template.
-  assert.deepEqual(s.backends, [
-    { id: 'claude', label: 'Claude', template: '', env: [] },
-    { id: 'ollama', label: 'Ollama', template: 'ollama launch claude --model {model} --yes --', env: [] },
-  ]);
+  // `models.backends` is seeded EMPTY — the managed rows are code-authoritative, so
+  // persisting them would be dead data the reader ignores. Its presence is the
+  // idempotency probe.
+  assert.deepEqual(s.backends, []);
 
   // Concrete bindings re-keyed, same values; `window` preserved.
   assert.deepEqual(s.tierBackend, {

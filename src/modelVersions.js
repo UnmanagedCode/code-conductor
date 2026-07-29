@@ -15,11 +15,13 @@
 // `canonicalizeModel()` below applies that policy and is the single source
 // of truth; the client mirrors it in public/models.js.
 //
-// This catalog is also the BACKEND CATALOG for the capability-tier layer
-// below: each tier binds to one of these families via Settings
+// This catalog is the `claude` BACKEND's model list (shipped as the
+// `claudeFamilies` payload key); the backend catalog proper is the user-managed
+// registry — see MANAGED_BACKENDS below and appSettings.getBackends(). A tier
+// binds to a {backend, model} pair via Settings
 // (`getTierBackend`/`setTierBackend` in appSettings.js). A legacy caller
 // passing a family name directly (`opus`, `sonnet`, ...) still resolves here
-// unchanged, independent of any tier→backend binding — see spawnInstance in
+// unchanged, independent of any tier binding — see spawnInstance in
 // src/mcp/handlers.js.
 
 export const MODEL_FAMILIES = [

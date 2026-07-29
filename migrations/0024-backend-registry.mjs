@@ -7,7 +7,12 @@
 //   models.customBackends     = [{ label, model, contextWindow? }]      (all ollama-served)
 //   (no models.backends)
 // After:
-//   models.backends           = [{ id:'claude'|'ollama', label, template, env:[] }]
+//   models.backends           = []   (seeded empty: the two managed rows are
+//                                     code-authoritative — getBackends() re-asserts
+//                                     their id/label/template and reads only `env`
+//                                     from here, so persisting them would be dead
+//                                     data. The key's PRESENCE is the idempotency
+//                                     probe.)
 //   models.tierBackend[tier]  = { backend:'claude'|'ollama', model[, window] }
 //   models.roleBackend[role]  = { kind:'tier', tier } | { backend, model[, window] }
 //   models.customModels       = [{ label, model, backend:'ollama', contextWindow }]
@@ -47,7 +52,7 @@
 //     intermediate {sessions:[…]} set form, and still runs before this).
 //
 // Idempotent: settings is a no-op once `models.backends` exists; the sidecar is a
-// no-op once its first entry is already an object. Silent on an empty root.
+// no-op once EVERY entry is already an object. Silent on an empty root.
 //
 // Frozen artifact — do not edit. Uses Node built-ins only.
 
@@ -61,13 +66,6 @@ const DEFAULT_PROJECTS_ROOT = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   '..', '..',
 );
-
-// Frozen snapshot of MANAGED_BACKENDS (src/modelVersions.js) at write time —
-// migrations use built-ins only, no import from src/.
-const MANAGED_BACKENDS = [
-  { id: 'claude', label: 'Claude', template: '', env: [] },
-  { id: 'ollama', label: 'Ollama', template: 'ollama launch claude --model {model} --yes --', env: [] },
-];
 
 // Frozen snapshots of the catalog at write time, for the absorbed 0017 shapes.
 const FAMILY_DEFAULT_VERSION = {
@@ -118,7 +116,11 @@ export async function run({ root, log = () => {} } = {}) {
   if (settings && typeof settings === 'object' && settings.models && typeof settings.models === 'object') {
     const models = settings.models;
     if (!Array.isArray(models.backends)) {
-      models.backends = MANAGED_BACKENDS.map(b => ({ ...b, env: [] }));
+      // Seeded EMPTY on purpose: getBackends() (src/appSettings.js) owns the two
+      // managed rows' id/label/template from code and takes only their `env` from
+      // the store, so writing them here would persist data the reader ignores. The
+      // key's presence is what makes this migration idempotent.
+      models.backends = [];
 
       // `kind` → `backend`, same value. Skips tier-reference role bindings.
       const rekey = (binding) => {

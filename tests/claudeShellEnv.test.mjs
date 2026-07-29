@@ -145,6 +145,29 @@ test('bundle generation uses the fast tier\'s bound Claude model, not a hardcode
   });
 });
 
+// Main covered "bundle-gen fails fast instead of eating the full genTimeoutMs" via
+// the reachability preflight. The preflight is gone, but the fast-fail GUARANTEE
+// and the code implementing it (the spawn 'error' handler) are still live — a
+// template whose command is missing must reject promptly, since the bundle is
+// cached process-wide and every project_bash would otherwise eat the 45s timeout.
+test('bundle generation fails fast when the fast tier\'s backend command does not exist', async () => {
+  const home = await mkTmp();
+  const bin = await writeFakeClaude(home); // for the claude --version cache-key probe
+  await withEnv({
+    PROJECTS_ROOT: home, CLAUDE_BIN: bin, FAKE_CLAUDE_MODE: 'happy', FAKE_CLAUDE_VERSION: '9.9.9',
+    // A generous timeout: the point is that we reject well before it, via 'error'.
+    CLAUDE_SHELL_ENV_TIMEOUT_MS: '30000',
+  }, async () => {
+    await addBackend({ id: 'ghostctl', label: 'Ghost', template: 'cc-definitely-not-a-real-binary run claude --model {model} --' });
+    await addCustomModel({ label: 'G', model: 'g:v1', backend: 'ghostctl', contextWindow: 128_000 });
+    await setTierBackend('fast', { backend: 'ghostctl', model: 'g:v1' });
+    _resetForTest();
+    const started = Date.now();
+    await assert.rejects(() => getShellEnvBundlePath(), /spawn error|ENOENT/i);
+    assert.ok(Date.now() - started < 10_000, 'rejected fast, not after the generation timeout');
+  });
+});
+
 // The one place a template drives a REAL child_process.spawn (bundle-gen doesn't
 // go through the injectable launcher), so it's where template + env injection are
 // proven end-to-end. The backend row IS the injection seam now — a test registers

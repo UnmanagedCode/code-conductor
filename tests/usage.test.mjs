@@ -301,6 +301,10 @@ test('contextWindowFor: resolves non-Claude model ids (full + bare base name) an
       // A row on a USER-DEFINED backend resolves the same way — the resolver is
       // keyed on the model id, not on which backend serves it.
       { label: 'Proxy Big', model: 'proxybig:v2', backend: 'my-proxy', contextWindow: 512_000 },
+      // A row with NO window. The server now requires one, but this client-side
+      // guard still has to hold for a hand-edited store or a stale payload —
+      // otherwise the bar would render against `undefined`.
+      { label: 'Local NoWin', model: 'localnowin:cloud', backend: 'ollama' },
     ]);
     // Full model id resolves.
     assert.equal(contextWindowFor('deepseek-v4-flash:cloud'), 1_000_000);
@@ -313,6 +317,9 @@ test('contextWindowFor: resolves non-Claude model ids (full + bare base name) an
     assert.equal(contextWindowFor('localbig:cloud'), 128_000);
     assert.equal(contextWindowFor('localbig'), 128_000);
     assert.equal(contextWindowFor('proxybig:v2'), 512_000);
+    // A custom row with no declared window → the 200k display default.
+    assert.equal(contextWindowFor('localnowin:cloud'), 200_000);
+    assert.equal(contextWindowFor('localnowin'), 200_000);
     // Unknown tagged id → 200k default.
     assert.equal(contextWindowFor('mystery:cloud'), 200_000);
     // A Claude id is unaffected by the non-Claude catalog.

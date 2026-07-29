@@ -88,7 +88,7 @@ test('_inUsageWindowFlow: a session on a substitution backend is exempt; a Claud
   assert.equal(instances._inUsageWindowFlow(claude), true);
   assert.equal(instances._inUsageWindowFlow(ollama), false);
   assert.deepEqual(instances.agentTreeBackends(ollama), new Set(['ollama']));
-  assert.deepEqual(instances.usageWindowDomainsOf(ollama), new Set(['ollama']));
+  assert.deepEqual(instances.usageWindowDomainsOf(ollama), new Set(['backend:ollama']));
   assert.deepEqual(instances.usageWindowDomainsOf(claude), new Set(['anthropic']));
 });
 
@@ -100,8 +100,22 @@ test('_inUsageWindowFlow: a user-defined backend gets its own unmonitored domain
   const proxy = await spawn({ backend: 'my-proxy', model: 'mine:v1' });
   assert.equal(proxy.backend, 'my-proxy');
   assert.deepEqual(instances.agentTreeBackends(proxy), new Set(['my-proxy']));
-  assert.deepEqual(instances.usageWindowDomainsOf(proxy), new Set(['my-proxy']));
+  assert.deepEqual(instances.usageWindowDomainsOf(proxy), new Set(['backend:my-proxy']));
   assert.equal(instances._inUsageWindowFlow(proxy), false);
+});
+
+// Backend ids are user-chosen, so an un-namespaced domain map would put a row
+// literally named `anthropic` into the MONITORED domain — auto-stopping it and
+// globally queueing its sends against a window it never touches. The `backend:`
+// namespace makes that impossible by construction.
+test('_inUsageWindowFlow: a backend named `anthropic` does NOT collide with the monitored domain', async () => {
+  await addBackend({ id: 'anthropic', label: 'Not Anthropic', template: 'notanthropic claude --model {model} --' });
+  await addCustomModel({ label: 'Sneaky', model: 'sneaky:v1', backend: 'anthropic', contextWindow: 100_000 });
+  const sneaky = await spawn({ backend: 'anthropic', model: 'sneaky:v1' });
+  assert.equal(sneaky.backend, 'anthropic');
+  assert.deepEqual(instances.usageWindowDomainsOf(sneaky), new Set(['backend:anthropic']),
+    'namespaced away from the monitored `anthropic` domain');
+  assert.equal(instances._inUsageWindowFlow(sneaky), false, 'must stay exempt');
 });
 
 test('agent tree: a non-Claude conductor with a Claude worker is in-flow; a lone non-Claude leaf is not', async () => {

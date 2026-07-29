@@ -275,10 +275,23 @@ export function getSubstitutionBackends() {
   return getBackends().filter(b => b.id !== CLAUDE_BACKEND_ID);
 }
 
-function validateBackendFields({ label, template, env }) {
+// `requireTemplate` is true for USER rows: a blank template would make the row a
+// bare-`claude` alias that runs on the real Anthropic account while being treated
+// as a substitution backend everywhere (unmonitored usage-window domain ⇒ no
+// overage protection, no cost_usd ⇒ `—` in #costs, plus a forced
+// CLAUDE_CODE_MAX_CONTEXT_TOKENS on a genuine Claude session). The managed `claude`
+// row already provides identity behaviour, so such an alias adds nothing but that
+// hazard. Managed rows are exempt — `claude`'s blank template comes from code.
+function validateBackendFields({ label, template, env }, { requireTemplate = false } = {}) {
   const cleanLabel = String(label ?? '').trim();
   if (!cleanLabel) throw Object.assign(new Error('label is required'), { statusCode: 400 });
   const cleanTemplate = String(template ?? '').trim();
+  if (requireTemplate && !cleanTemplate) {
+    throw Object.assign(
+      new Error(`template is required — a backend with no template would run the Claude CLI itself while being treated as a separate provider (no overage protection, no cost tracking); bind the built-in '${CLAUDE_BACKEND_ID}' backend for that`),
+      { statusCode: 400 },
+    );
+  }
   if (Array.isArray(env)) {
     for (const e of env) {
       const key = String(e?.key ?? '').trim();
@@ -311,7 +324,7 @@ export async function addBackend({ id, label, template, env } = {}) {
   if (isKnownBackend(cleanId)) {
     throw Object.assign(new Error(`backend '${cleanId}' already exists`), { statusCode: 409 });
   }
-  const fields = validateBackendFields({ label, template, env });
+  const fields = validateBackendFields({ label, template, env }, { requireTemplate: true });
   const entry = { id: cleanId, ...fields };
   await writeBackends([...storedBackends(), entry]);
   return { ...entry, managed: false };
@@ -338,7 +351,7 @@ export async function updateBackend(id, { label, template, env } = {}) {
     label: label ?? existing.label,
     template: template ?? existing.template,
     env: env ?? existing.env,
-  });
+  }, { requireTemplate: true });
   await writeBackends([...stored.filter(b => b.id !== id), { id, ...fields }]);
   return getBackend(id);
 }

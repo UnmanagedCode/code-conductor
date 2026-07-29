@@ -24,7 +24,7 @@ Record: `{ id, label, template, env: [{key,value}], managed }`, persisted as
 |---|---|
 | `id` | `^[a-z][a-z0-9-]*$`, ≤40 chars, unique (incl. against managed ids). The value stored in `Instance.backend`, tier/role bindings, the session sidecar, and the resume manifest. |
 | `label` | Display name. Required. |
-| `template` | Blank ⇒ identity (run `claude`). A template naming `{model}` refuses to launch without a model (`resolveBackendLaunch` throws). A template with **no** `{model}` is valid. |
+| `template` | **Required on a USER row** (400 if blank — see below). Blank on the managed `claude` row ⇒ identity. A template naming `{model}` refuses to launch without a model; a template with **no** `{model}` is valid and needs none. |
 | `env` | Key/value pairs injected into the child's env at spawn. Keys match `^[A-Za-z_][A-Za-z0-9_]*$`. |
 | `managed` | Derived, never stored: true for the two built-ins below. |
 
@@ -51,6 +51,13 @@ Managed rows accept an **`env` edit only** (label/template edits → 400) and ca
 **never be removed** (400). `claude` is additionally never offered as a custom
 model's backend — its models are the Claude version catalog, not user rows.
 
+**A USER row must declare a template** (400 otherwise). A blank one would be a
+bare-`claude` alias: it runs the real CLI against the real Anthropic account, yet
+every rule below treats it as a substitution backend — no overage protection, no
+`cost_usd`, and a forced `CLAUDE_CODE_MAX_CONTEXT_TOKENS` on a genuine Claude
+session. The managed `claude` row already provides identity behaviour, so the alias
+would add nothing but that hazard.
+
 ### Identity vs substitution backends
 
 Every rule that could have been keyed on one provider is instead keyed on
@@ -59,10 +66,13 @@ on purpose: a user-defined backend behaves exactly like the built-in `ollama` ro
 The consequences of being a substitution backend:
 
 - **cc-managed context env** — `CLAUDE_CODE_AUTO_COMPACT_WINDOW` +
-  `CLAUDE_CODE_MAX_CONTEXT_TOKENS` are set to the model's native window. Implicit to
-  every substitution backend, **never** applied to plain `claude`, and never exposed
-  in the Backends UI. Applied *after* the row's `env`, so they win over a same-named
-  pair. See [protocol.md](protocol.md#subprocess-protocol) for why both are needed.
+  `CLAUDE_CODE_MAX_CONTEXT_TOKENS` are set to the model's native window on every
+  **session** spawn (`Instance.spawn`), **never** for plain `claude`, and never
+  exposed in the Backends UI. Applied *after* the row's `env`, so they win over a
+  same-named pair. Scoped to sessions: the one-shot spawners (`summarize.js`,
+  `claudeShellEnv.js`) set neither — they run a single short prompt with no
+  conversation to compact. See [protocol.md](protocol.md#subprocess-protocol) for why
+  both are needed.
 - **Bare model reports are suppressed** — the inner CLI records `message.model`
   bare (tag dropped), so `_trackModel` ignores a report that tag-strips to the
   current model rather than treating it as an interactive switch. Without this,
@@ -78,15 +88,19 @@ The consequences of being a substitution backend:
   *absence* of `cost_usd` is the canonical "tokens not countable" marker the cost
   dashboard reads.
 - **Own usage-window domain** — `usageDomainOfBackend()` maps `claude` to the
-  monitored `anthropic` domain and every other backend to a domain named after
-  itself. Only `anthropic` has a monitor, so a tree with no Claude agent is exempt
-  from the overage stop/resume flow. Adding a monitor later is one `Set` entry
-  (`src/usageWindowDomains.js`).
+  monitored `anthropic` domain and every other backend to `backend:<its id>`. The
+  namespace is load-bearing: ids are user-chosen, so an un-namespaced map would let a
+  row named `anthropic` land in the monitored domain and be auto-stopped against a
+  window it never touches. Only `anthropic` has a monitor, so a tree with no Claude
+  agent is exempt from the overage stop/resume flow. Adding a monitor later is one
+  `Set` entry (`src/usageWindowDomains.js`).
 - **The session sidecar records it** — `<store>/session-backends.json` maps
   `sid → {backend, model}`. Two things the CLI jsonl can't carry: which backend ran
   the session, and the model TAG. Absence of a record means plain `claude`; a `null`
   model means backend-known/model-unknown (resume falls back to the jsonl and the
-  next mark self-heals it).
+  next mark self-heals it). If the recorded backend has since been REMOVED from the
+  registry, resume is refused `422 BACKEND_GONE` — falling back to `claude` while
+  keeping the foreign model id would spawn a real `claude --model <foreign-id>`.
 
 There is deliberately **no** per-backend health check and **no** per-backend model
 catalog. A bad backend or model simply fails at spawn and surfaces as
@@ -100,7 +114,8 @@ selectable for a substitution backend.
 - `model` (the backend's own model id) **is the identity**: re-adding it updates the
   row in place, and a given model id belongs to exactly one backend.
 - `backend` must name a substitution backend (never `claude`).
-- `contextWindow` is **required** and must be a positive integer of raw tokens. It
+- `contextWindow` is **required** and must be a positive number of raw tokens
+  (stored `Math.round`ed). It
   drives the context-usage bar and both cc-managed env vars at spawn, so a wrong
   value silently truncates or over-fills the window. Resolved by
   `contextWindowForModel()` (`src/appSettings.js`), mirrored client-side by

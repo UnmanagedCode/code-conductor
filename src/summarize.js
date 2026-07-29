@@ -186,6 +186,16 @@ Provide the summary only, no preamble:`;
       reject(new Error('summary generation timed out after 60s'));
     }, 60_000);
 
+    // A spawn that never starts (ENOENT/EACCES — e.g. a backend template naming a
+    // command that isn't installed) emits 'error', never 'close'. Without this
+    // listener the EventEmitter default rethrows it as an uncaught exception and
+    // takes the whole server down with every live session. Mirrors the same guard
+    // in claudeShellEnv.js's two spawns and instances.js's.
+    child.on('error', (err) => {
+      clearTimeout(timer);
+      reject(new Error(`summary generation failed to spawn ${command}: ${err.message}`));
+    });
+
     child.on('close', (code) => {
       clearTimeout(timer);
       if (code !== 0) {
@@ -199,8 +209,13 @@ Provide the summary only, no preamble:`;
       resolve(out);
     });
 
-    child.stdin.write(prompt);
-    child.stdin.end();
+    // Guarded: on a failed spawn the streams are already destroyed, and an
+    // unhandled EPIPE here would escape the same way 'error' used to.
+    child.stdin.on('error', () => { /* surfaced via the 'error'/'close' paths above */ });
+    try {
+      child.stdin.write(prompt);
+      child.stdin.end();
+    } catch { /* ditto */ }
   });
 
   const durationMs = Date.now() - startMs;

@@ -130,17 +130,35 @@ describe('backend registry data model', () => {
     await assert.rejects(() => addBackend({ id: 'claude', label: 'Mine' }), /already exists/);
   });
 
-  test('addBackend: an empty template is allowed (a bare-claude alias)', async () => {
-    const rec = await addBackend({ id: 'plain', label: 'Plain' });
+  // A user row with no template would run the Claude CLI itself while being
+  // treated as a separate provider everywhere: unmonitored usage-window domain (no
+  // overage protection), no `cost_usd` (⇒ `—` in #costs while real money burns),
+  // and a forced CLAUDE_CODE_MAX_CONTEXT_TOKENS on a genuine Claude session. The
+  // managed `claude` row already provides identity behaviour, so it's refused.
+  test('addBackend/updateBackend REFUSE a blank template on a USER row', async () => {
+    await assert.rejects(() => addBackend({ id: 'plain', label: 'Plain' }), /template is required/);
+    await assert.rejects(() => addBackend({ id: 'plain', label: 'Plain', template: '   ' }), /template is required/);
+    assert.equal(isKnownBackend('plain'), false, 'nothing persisted');
+
+    await addBackend({ id: 'real', label: 'Real', template: 'realctl claude --model {model} --' });
+    await assert.rejects(() => updateBackend('real', { template: '' }), /template is required/);
+    assert.equal(getBackend('real').template, 'realctl claude --model {model} --', 'unchanged');
+  });
+
+  test('the MANAGED claude row keeps its blank template — identity comes from code', async () => {
+    assert.equal(getBackend('claude').template, '');
+    assert.equal(resolveBackendLaunch(getBackend('claude'), 'm', CLAUDE_BIN).command, CLAUDE_BIN.command);
+    // Editing its env must not trip the user-row template requirement.
+    const rec = await updateBackend('claude', { env: [{ key: 'ANTHROPIC_LOG', value: 'debug' }] });
     assert.equal(rec.template, '');
-    assert.equal(resolveBackendLaunch(getBackend('plain'), 'm', CLAUDE_BIN).command, CLAUDE_BIN.command);
+    assert.deepEqual(rec.env, [{ key: 'ANTHROPIC_LOG', value: 'debug' }]);
   });
 
   test('env pairs persist and reject a malformed key', async () => {
     await addBackend({ id: 'p', label: 'P', template: 'p --', env: [{ key: 'FOO', value: 'bar' }] });
     assert.deepEqual(getBackend('p').env, [{ key: 'FOO', value: 'bar' }]);
-    await assert.rejects(() => addBackend({ id: 'q', label: 'Q', env: [{ key: 'not-a-key', value: 'x' }] }), /env key/);
-    await assert.rejects(() => addBackend({ id: 'q', label: 'Q', env: [{ key: '1BAD', value: 'x' }] }), /env key/);
+    await assert.rejects(() => addBackend({ id: 'q', label: 'Q', template: 'q {model}', env: [{ key: 'not-a-key', value: 'x' }] }), /env key/);
+    await assert.rejects(() => addBackend({ id: 'q', label: 'Q', template: 'q {model}', env: [{ key: '1BAD', value: 'x' }] }), /env key/);
   });
 
   test('managed rows: label/template immutable, env editable, never removable', async () => {
@@ -403,10 +421,13 @@ describe('models + backends settings routes', () => {
     assert.deepEqual(add.body.added, { id: 'my-proxy', label: 'My Proxy', template: 'proxy run claude --model {model} --', env: [{ key: 'TOKEN', value: 't' }], managed: false });
     assert.deepEqual(add.body.backends.map(b => b.id), ['claude', 'ollama', 'my-proxy']);
 
-    const dup = await api(baseUrl, 'POST', '/api/settings/models/backends', { id: 'my-proxy', label: 'X' });
+    const dup = await api(baseUrl, 'POST', '/api/settings/models/backends', { id: 'my-proxy', label: 'X', template: 'x {model}' });
     assert.equal(dup.status, 409);
-    const badId = await api(baseUrl, 'POST', '/api/settings/models/backends', { id: 'Nope!', label: 'X' });
+    const badId = await api(baseUrl, 'POST', '/api/settings/models/backends', { id: 'Nope!', label: 'X', template: 'x {model}' });
     assert.equal(badId.status, 400);
+    const noTemplate = await api(baseUrl, 'POST', '/api/settings/models/backends', { id: 'plain', label: 'Plain' });
+    assert.equal(noTemplate.status, 400);
+    assert.match(noTemplate.body.error, /template is required/);
 
     const patch = await api(baseUrl, 'PATCH', '/api/settings/models/backends/my-proxy', { label: 'Renamed' });
     assert.equal(patch.status, 200);

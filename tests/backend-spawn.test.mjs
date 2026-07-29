@@ -349,6 +349,28 @@ describe('null-model guards', () => {
     assert.match(JSON.stringify(r.body), /no resolvable model|BACKEND_MODEL_MISSING/);
   });
 
+  // A template that hardcodes its model has nothing to interpolate, so the
+  // null-model guard must NOT fire for it — otherwise resolveBackendLaunch's
+  // no-`{model}` branch is unreachable from the session path.
+  test('a backend whose template does NOT name {model} spawns fine with no model', async () => {
+    await addBackend({ id: 'fixedwrap', label: 'Fixed Wrap', template: 'launch claude --' });
+    await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
+    const cwd = path.join(projectsRoot, 'p');
+    const sid = 'eeeeeeee-0000-0000-0000-000000000000';
+    const dir = path.join(claudeProjectsRoot(), encodeCwd(cwd));
+    await fs.mkdir(dir, { recursive: true });
+    // Resumable jsonl with no assistant line ⇒ readLastSessionModel returns null,
+    // and the sidecar records no model either.
+    await fs.writeFile(path.join(dir, `${sid}.jsonl`),
+      JSON.stringify({ type: 'user', message: { role: 'user', content: 'hi' }, sessionId: sid }) + '\n');
+    await markSessionBackend(sid, 'fixedwrap');
+
+    const inst = await instances.create({ project: 'p', resume: sid });
+    await waitFor(() => inst.status === 'idle');
+    assert.equal(inst.backend, 'fixedwrap');
+    assert.equal(inst.model, null, 'no model resolved, and that is legal here');
+  });
+
   test('resuming a substitution-backend session whose jsonl has no model is refused (not `--model undefined`)', async () => {
     await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
     const cwd = path.join(projectsRoot, 'p');
@@ -365,6 +387,51 @@ describe('null-model guards', () => {
       () => instances.create({ project: 'p', resume: sid }),
       /no resolvable model|BACKEND_MODEL_MISSING/,
     );
+  });
+});
+
+// A backend can be removed while a session that ran on it still exists. The
+// sidecar still names it, so resume must refuse clearly rather than fall back to
+// `claude` while keeping the foreign model id — which spawns a real
+// `claude --model <foreign-id>` that fails deep inside the CLI.
+describe('resume onto a since-removed backend', () => {
+  test('refuses with BACKEND_GONE instead of spawning claude with a foreign model id', async () => {
+    await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
+    const cwd = path.join(projectsRoot, 'p');
+    const sid = 'cccccccc-0000-0000-0000-000000000000';
+    const dir = path.join(claudeProjectsRoot(), encodeCwd(cwd));
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(path.join(dir, `${sid}.jsonl`),
+      JSON.stringify({ type: 'user', message: { role: 'user', content: 'hi' }, sessionId: sid }) + '\n');
+    // The sidecar names a backend that was never registered (equivalently: removed).
+    await markSessionBackend(sid, 'gone-proxy', 'mine:v1');
+
+    await assert.rejects(
+      () => instances.create({ project: 'p', resume: sid }),
+      (e) => {
+        assert.equal(e.statusCode, 422);
+        assert.equal(e.code, 'BACKEND_GONE');
+        assert.match(e.message, /gone-proxy/);
+        return true;
+      },
+    );
+  });
+
+  test('re-adding the backend makes the same resume work again', async () => {
+    await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
+    const cwd = path.join(projectsRoot, 'p');
+    const sid = 'dddddddd-0000-0000-0000-000000000000';
+    const dir = path.join(claudeProjectsRoot(), encodeCwd(cwd));
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(path.join(dir, `${sid}.jsonl`),
+      JSON.stringify({ type: 'user', message: { role: 'user', content: 'hi' }, sessionId: sid }) + '\n');
+    await markSessionBackend(sid, 'back-again', 'mine:v1');
+
+    await addBackend({ id: 'back-again', label: 'Back Again', template: 'backagain claude --model {model} --' });
+    const inst = await instances.create({ project: 'p', resume: sid });
+    await waitFor(() => inst.status === 'idle');
+    assert.equal(inst.backend, 'back-again');
+    assert.equal(inst.model, 'mine:v1', "the sidecar's tagged model is still preferred");
   });
 });
 

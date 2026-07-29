@@ -1583,7 +1583,6 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
 /* One card per registry row. Managed rows show their template as read-only text
    and have no Remove control (the server refuses either way). */
 .sb-list { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
-.sb-empty { font-size: 12px; color: var(--muted); }
 .sb-row {
   display: flex; flex-direction: column; gap: 4px;
   padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel);

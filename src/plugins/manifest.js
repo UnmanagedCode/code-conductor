@@ -326,6 +326,14 @@ function validateRoles(roles, errors) {
 // resolveRoleBackend (appSettings.js) re-guards a claude model at resolve time
 // and falls back rather than spawn a dead id. Returns the normalized binding or
 // null.
+//
+// LEGACY SHAPE, TRANSLATED ON READ: before the backend registry a concrete binding
+// was `{kind:'claude', model}`. A manifest is an EXTERNAL format — it lives in a
+// third-party repo we can't migrate (the same carve-out the no-read-time-back-compat
+// rule makes for the Claude CLI's jsonls), and rejecting it would mark the whole
+// plugin invalid on upgrade. So `kind:'claude'` is accepted and normalized to
+// `backend:'claude'`. `kind:<anything else>` stays rejected: those backends are
+// user-local, exactly as before.
 function validateRoleBinding(b, label, errors) {
   const bl = `${label}.binding`;
   if (typeof b !== 'object' || b === null || Array.isArray(b)) {
@@ -339,12 +347,14 @@ function validateRoleBinding(b, label, errors) {
     if (!isKnownTier(b.tier)) errors.push(`'${bl}.tier' must be a known capability tier`);
     return { kind: 'tier', tier: b.tier };
   }
-  if (b.backend !== undefined) {
+  // `backend` (current) or `kind` (legacy pre-registry) may name the backend.
+  const backendKey = b.backend !== undefined ? 'backend' : (b.kind !== undefined ? 'kind' : null);
+  if (backendKey) {
     for (const k of Object.keys(b)) {
-      if (!['backend', 'model'].includes(k)) errors.push(`unknown key '${bl}.${k}'`);
+      if (![backendKey, 'model'].includes(k)) errors.push(`unknown key '${bl}.${k}'`);
     }
-    if (b.backend !== CLAUDE_BACKEND_ID) {
-      errors.push(`'${bl}.backend' must be '${CLAUDE_BACKEND_ID}' — other backends are user-local`);
+    if (b[backendKey] !== CLAUDE_BACKEND_ID) {
+      errors.push(`'${bl}.${backendKey}' must be '${CLAUDE_BACKEND_ID}' — other backends are user-local`);
       return null;
     }
     if (!isKnownClaudeModel(b.model)) errors.push(`'${bl}.model' must be a known Claude model id`);

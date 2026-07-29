@@ -55,7 +55,7 @@ after(async () => { await ctx.close(); });
 beforeEach(async () => { ({ home } = await freshProjectsRoot()); });
 afterEach(async () => { await instances.shutdown(); await rmrf(home); });
 
-// ── Catalog (backend catalog — unchanged, still Claude family-keyed) ────
+// ── Catalog (the `claude` backend's model list — Claude family-keyed) ───
 test('modelVersions catalog: backends, defaults, and validators', () => {
   assert.deepEqual(MODEL_FAMILIES.map(f => f.family), ['fable', 'opus', 'sonnet', 'haiku']);
   // Every backend default is itself a known version of that backend.

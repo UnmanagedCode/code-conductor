@@ -2341,18 +2341,28 @@ export class InstanceManager extends EventEmitter {
     //       covering UI resume / crash / anchor / respawn_instance uniformly.
     let backend = isKnownBackend(explicitBackend) ? explicitBackend : CLAUDE_BACKEND_ID;
     if (!explicitBackend && resume) {
-      try {
-        const rec = await getSessionBackend(resume);
-        if (rec) {
-          backend = rec.backend;
-          // The sidecar carries the FULL tagged model; the jsonl only holds the
-          // CLI's bare (tag-stripped) report. Prefer the sidecar's tag — this is
-          // what stops `deepseek-v4-flash:cloud` resuming as the unpullable
-          // tagless `deepseek-v4-flash`. A null (legacy) model falls through to
-          // the readLastSessionModel jsonl recovery below.
-          if (!finalModel && rec.model) finalModel = rec.model;
+      let rec = null;
+      try { rec = await getSessionBackend(resume); } catch { /* best-effort */ }
+      if (rec) {
+        // The recorded backend may have been REMOVED from the registry since this
+        // session last ran. Refuse cleanly: the constructor would normalize the
+        // unknown id back to `claude` while finalModel keeps the sidecar's foreign
+        // model id, which spawns a real `claude --model <foreign-id>` that fails
+        // opaquely deep in the CLI.
+        if (!isKnownBackend(rec.backend)) {
+          throw Object.assign(
+            new Error(`session was last run on backend '${rec.backend}', which no longer exists — re-add it in Settings → Backends, or resume with an explicit model`),
+            { statusCode: 422, code: 'BACKEND_GONE' },
+          );
         }
-      } catch { /* best-effort */ }
+        backend = rec.backend;
+        // The sidecar carries the FULL tagged model; the jsonl only holds the
+        // CLI's bare (tag-stripped) report. Prefer the sidecar's tag — this is
+        // what stops `deepseek-v4-flash:cloud` resuming as the unpullable
+        // tagless `deepseek-v4-flash`. A null (legacy) model falls through to
+        // the readLastSessionModel jsonl recovery below.
+        if (!finalModel && rec.model) finalModel = rec.model;
+      }
     }
 
     // Optional worktree attachment:
@@ -2417,11 +2427,18 @@ export class InstanceManager extends EventEmitter {
     // so this runs uniformly for every backend.
     if (finalModel) finalModel = canonicalizeModel(finalModel, { sonnetWindow: finalSonnetWindow });
 
-    // Null-model guard (note 1): a substitution-backend session with no
-    // resolvable model — e.g. a resume whose jsonl is empty/corrupt so
-    // readLastSessionModel returned nothing — must fail clearly here rather than
-    // emit `--model undefined` at spawn.
-    if (backend !== CLAUDE_BACKEND_ID && !finalModel) {
+    // Null-model guard (note 1): a session whose backend TEMPLATE interpolates
+    // `{model}` and has no resolvable model — e.g. a resume whose jsonl is
+    // empty/corrupt so readLastSessionModel returned nothing — must fail clearly
+    // here rather than emit `--model undefined` at spawn.
+    //
+    // Scoped to templates that actually name `{model}`, matching
+    // resolveBackendLaunch's own invariant: a template that hardcodes its model
+    // (`wrap exec claude --`) has nothing to interpolate, so a missing model is not
+    // an error for it. Guarding unconditionally here would make that shape
+    // unspawnable and the launcher's corresponding branch dead code.
+    if (backend !== CLAUDE_BACKEND_ID && !finalModel
+        && (getBackend(backend)?.template ?? '').includes('{model}')) {
       throw Object.assign(
         new Error(`session on backend '${backend}' has no resolvable model — rebind the tier or resume with an explicit model`),
         { statusCode: 422, code: 'BACKEND_MODEL_MISSING' },

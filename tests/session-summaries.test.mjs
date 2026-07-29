@@ -303,6 +303,38 @@ test("POST generates through the fast tier's backend template, injecting the row
   }
 });
 
+// A backend template whose command does not exist. `spawn()` never starts the
+// child — it emits 'error', not 'close'. Before the summarize spawn had an 'error'
+// listener that escaped as an uncaught exception and killed the whole server (and
+// with it every live session); dropping the old reachability preflight is what made
+// it reachable, since addBackend validates the id/env shape but never that token 0
+// of the template resolves. The request must fail with a 500-class error and the
+// server must still be serving afterwards.
+test('a fast tier on a backend whose command does not exist fails the request WITHOUT killing the server', async () => {
+  await api(baseUrl, 'POST', '/api/projects', { name: 'ghost-sum' });
+  const sid = 'sid-ghost-sum';
+  await plantJsonl(path.join(projectsRoot, 'ghost-sum'), sid, [
+    { type: 'user', message: { role: 'user', content: 'hello' } },
+    { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'hi' }] } },
+  ]);
+
+  await addBackend({
+    id: 'ghostctl', label: 'Ghost',
+    // A command that certainly is not on PATH → spawn ENOENT.
+    template: 'cc-definitely-not-a-real-binary run claude --model {model} --',
+  });
+  await addCustomModel({ label: 'G', model: 'g:v1', backend: 'ghostctl', contextWindow: 128_000 });
+  await setTierBackend('fast', { backend: 'ghostctl', model: 'g:v1' });
+
+  const r = await api(baseUrl, 'POST', `/api/sessions/${sid}/summary`, { length: 'short' });
+  assert.equal(r.status >= 400, true, JSON.stringify(r.body));
+  assert.match(JSON.stringify(r.body), /failed to spawn|ENOENT/i);
+
+  // THE point of the test: the process is still alive and serving.
+  const alive = await api(baseUrl, 'GET', '/api/settings/models');
+  assert.equal(alive.status, 200, 'server survived the failed spawn');
+});
+
 // ---------------------------------------------------------------------------
 // .conduct (hidden conductor project) regression — listProjects() skips
 // dot-prefixed dirs, so findSessionLocation must special-case .conduct or
