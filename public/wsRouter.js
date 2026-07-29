@@ -23,7 +23,7 @@
 // `accountUsage` is NOT touched by any handler, so it stays wholly in app.js.
 
 import { bus, send } from './ws.js';
-import { maybeNotifyTurnEnd } from './notifications.js';
+import { maybeNotifyTurnEnd, resolveNotificationInstance } from './notifications.js';
 import { readSessionAnchor, writeSessionAnchor, consumeStashedAnchor } from './anchor.js';
 
 export function installWsRouter({
@@ -181,15 +181,16 @@ export function installWsRouter({
 
   bus.addEventListener('turn_notification', (e) => {
     const m = e.detail;
+    const inst = state.instances.find(i => i.id === m.id);
     maybeNotifyTurnEnd({
       instanceId: m.id,
       projectName: m.project ?? 'instance',
+      sessionId: inst?.sessionId ?? null,
       turnEvent: { isError: m.isError, stopReason: m.stopReason, cost: m.cost },
     });
     // Mark the session unread in the sidebar — unless the user is already
     // looking at it, in which case the activity is by definition seen.
     if (m.id !== state.activeId) {
-      const inst = state.instances.find(i => i.id === m.id);
       bumpUnread(inst?.sessionId);
     }
   });
@@ -236,6 +237,103 @@ export function installWsRouter({
     if (targetId !== state.activeId) selectInstance(targetId);
   });
 
+  // Resolve a sessionId anchor to a live instance and select it, or — if
+  // nothing currently live owns it — locate the session on disk and
+  // auto-resume it. Shared by the first-connect anchor restore below and by
+  // the notification-click handler (a click for an instance that's gone idle
+  // and been reaped, or respawned under a new instanceId, still has to land
+  // somewhere via its sessionId).
+  //
+  // Returns true if the anchor was resolved to a definite outcome (selected
+  // a live instance, or an archived/resume-success determination was made)
+  // — callers that have their own trailing logic gated on "was anything
+  // selected" (the first-connect open handler's subscribe below) must
+  // `return` when this is true, mirroring the early-returns of the original
+  // inline block this was extracted from. Returns false for a 404/fetch
+  // error, where there's nothing left to do.
+  //
+  // `clearAnchorOnMiss` gates the `writeSessionAnchor(null)` clears on the
+  // archived/404/error paths. It defaults true for the first-connect case,
+  // where `anchor` IS the URL's current hash, so clearing it on a miss is
+  // correct housekeeping. The notification-click caller passes false: its
+  // `anchor` is an arbitrary sessionId from a (possibly stale) notification,
+  // unrelated to whatever the user is currently anchored to — clearing the
+  // hash there would blow away the user's actual current session anchor.
+  async function resumeSessionByAnchor(anchor, { clearAnchorOnMiss = true } = {}) {
+    const live = state.instances.find(i => i.sessionId === anchor);
+    if (live) {
+      selectInstance(live.id);
+      return true;
+    }
+    // No live instance owns this anchor — locate the session on disk
+    // and auto-resume it. Covers refreshes after a server restart (all
+    // instances gone) and refreshes after the user killed the instance
+    // but is still anchored to the same conversation. A --resume spawn
+    // costs zero API tokens (the model isn't called until the user
+    // sends a prompt), so this is always free except for the
+    // subprocess itself.
+    try {
+      const r = await fetch(`/api/sessions/${encodeURIComponent(anchor)}/locate`);
+      if (r.ok) {
+        const { project, worktreeName, archived } = await r.json();
+        // Archived (e.g. a temp session cleaned up on a plain restart):
+        // do NOT silently resurrect it via the anchor. Clear the stale
+        // anchor and fall through to the placeholder. Deliberate resume
+        // from the "— archived —" section still works (it's not this path).
+        if (archived) {
+          if (clearAnchorOnMiss) writeSessionAnchor(null);
+          return true;
+        }
+        setSidebarStatus('resuming session…', { warn: true });
+        try {
+          // `silent`: a concurrent resume (the server's manifest restore
+          // after a resume-restart) may already own this session — coalesced
+          // or 409'd server-side. Don't alert; just re-sync and select the
+          // instance that now owns the anchor.
+          await sessionActions.resumeSession({ projectName: project, worktreeName, sessionId: anchor, silent: true });
+        } finally { setSidebarStatus(''); }
+        return true;
+      }
+      // 404 / other — session jsonl no longer on disk. Clear the stale
+      // anchor so a follow-up refresh doesn't re-attempt and let the
+      // user fall through to the empty placeholder.
+      if (clearAnchorOnMiss) writeSessionAnchor(null);
+      return false;
+    } catch (e) {
+      console.warn('auto-resume from anchor failed', e);
+      if (clearAnchorOnMiss) writeSessionAnchor(null);
+      return false;
+    }
+  }
+
+  // Resolve a notification-click payload ({instanceId, sessionId}) to a
+  // target and select it. Fed by both the Service Worker's postMessage (a
+  // tab was already open) and the page-level Notification's onclick (SW
+  // unavailable/failed) via the two listeners below — one resolution path
+  // for both routes, reusing selectInstance / resumeSessionByAnchor rather
+  // than a parallel implementation. Both branches select with the same
+  // (default, replaceState) history behavior as every other anchor-driven
+  // selectInstance call in this file (popstate, first-connect) — a
+  // notification click is closer to a page-load restore than a forward
+  // navigation, and pushing here would also require threading a push option
+  // through sessionActions.resumeSession for the fallback branch below.
+  async function handleNotificationClickData(data) {
+    if (!data) return;
+    const { instanceId, sessionId } = data;
+    const target = resolveNotificationInstance({ instanceId, sessionId }, state.instances);
+    if (target) {
+      selectInstance(target.id);
+      return;
+    }
+    if (sessionId) await resumeSessionByAnchor(sessionId, { clearAnchorOnMiss: false });
+  }
+  if (typeof navigator !== 'undefined' && navigator.serviceWorker) {
+    navigator.serviceWorker.addEventListener('message', (event) => {
+      if (event.data?.type === 'cc-notification-click') handleNotificationClickData(event.data);
+    });
+  }
+  window.addEventListener('cc-notification-click', (event) => handleNotificationClickData(event.detail));
+
   let firstConnect = true;
   bus.addEventListener('open', async () => {
     await refreshProjects();
@@ -254,48 +352,13 @@ export function installWsRouter({
         // carry the previous hash.
         const anchor = readSessionAnchor() || consumeStashedAnchor();
         if (anchor) {
-          const live = state.instances.find(i => i.sessionId === anchor);
-          if (live) {
-            selectInstance(live.id);
-            return;
-          }
-          // No live instance owns this anchor — locate the session on disk
-          // and auto-resume it. Covers refreshes after a server restart (all
-          // instances gone) and refreshes after the user killed the instance
-          // but is still anchored to the same conversation. A --resume spawn
-          // costs zero API tokens (the model isn't called until the user
-          // sends a prompt), so this is always free except for the
-          // subprocess itself.
-          try {
-            const r = await fetch(`/api/sessions/${encodeURIComponent(anchor)}/locate`);
-            if (r.ok) {
-              const { project, worktreeName, archived } = await r.json();
-              // Archived (e.g. a temp session cleaned up on a plain restart):
-              // do NOT silently resurrect it via the anchor. Clear the stale
-              // anchor and fall through to the placeholder. Deliberate resume
-              // from the "— archived —" section still works (it's not this path).
-              if (archived) {
-                writeSessionAnchor(null);
-                return;
-              }
-              setSidebarStatus('resuming session…', { warn: true });
-              try {
-                // `silent`: a concurrent resume (the server's manifest restore
-                // after a resume-restart) may already own this session — coalesced
-                // or 409'd server-side. Don't alert; just re-sync and select the
-                // instance that now owns the anchor.
-                await sessionActions.resumeSession({ projectName: project, worktreeName, sessionId: anchor, silent: true });
-              } finally { setSidebarStatus(''); }
-              return;
-            }
-            // 404 / other — session jsonl no longer on disk. Clear the stale
-            // anchor so a follow-up refresh doesn't re-attempt and let the
-            // user fall through to the empty placeholder.
-            writeSessionAnchor(null);
-          } catch (e) {
-            console.warn('auto-resume from anchor failed', e);
-            writeSessionAnchor(null);
-          }
+          const handled = await resumeSessionByAnchor(anchor);
+          // Mirrors the original inline block's early `return`s (live-match,
+          // archived, resume-success): skip the trailing subscribe below,
+          // since selectInstance/resumeSession already subscribed via their
+          // own selectInstance call. Falling through here double-subscribes
+          // and forces a second full snapshot replay for no reason.
+          if (handled) return;
         }
       }
     }

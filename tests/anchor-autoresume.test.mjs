@@ -17,8 +17,11 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Window } from 'happy-dom';
 // Canonical ws.js so our `bus` is the SAME EventTarget wsRouter listens on
-// (wsRouter imports './ws.js' without a cache-bust query).
-import { bus } from '../public/ws.js';
+// (wsRouter imports './ws.js' without a cache-bust query). `connect` is
+// imported the same (non-busted) way for the double-subscribe regression
+// test at the bottom of this file, so it arms the exact module-private `ws`
+// that wsRouter's own (canonical) `send` writes through.
+import { bus, connect } from '../public/ws.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUB = path.resolve(__dirname, '..', 'public');
@@ -82,8 +85,9 @@ function installDom(hash) {
 
 function baseDeps({ instances = [], resumeSpy }) {
   const noop = () => {};
+  const state = { activeId: null, instances };
   return {
-    state: { activeId: null, instances },
+    state,
     getTracker: () => ({ reset: noop, seedActive: noop, apply: noop, completedBatches: [] }),
     getUsage: () => ({ reset: noop, apply: noop }),
     globalRLTracker: { apply: noop },
@@ -94,7 +98,15 @@ function baseDeps({ instances = [], resumeSpy }) {
     composer: {}, sidebar: {}, subagentPanel: {},
     bumpUnread: noop, flushPendingAnswers: noop,
     refreshProjects: async () => {}, refreshInstances: async () => {},
-    selectInstance: noop, setSidebarStatus: noop,
+    // Mirrors the real selectInstance (app.js): sets state.activeId. Tests
+    // that override this with their own tracking spy must do the same, or
+    // the trailing `if (state.activeId && ...) send('subscribe', ...)` check
+    // in wsRouter's open handler is silently false regardless of whether the
+    // early-return-on-handled logic is correct — a real regression (a
+    // double-subscribe on the live-anchor first-connect path) landed
+    // undetected in this suite for exactly that reason.
+    selectInstance: (id) => { state.activeId = id; },
+    setSidebarStatus: noop,
   };
 }
 
@@ -191,4 +203,62 @@ test('popstate back to a live session anchor still restores it (guard does not b
   await new Promise(r => setTimeout(r, 20));
 
   assert.equal(selectedWith, 'inst-2', 'a genuine back-navigation onto a live session anchor still selects it');
+});
+
+// ── firstConnect double-subscribe regression ────────────────────────────────
+//
+// resumeSessionByAnchor's live-match branch (`selectInstance(live.id); return
+// true;`) must make the first-connect `open` handler `return` before it
+// reaches the trailing `if (state.activeId && ...) send('subscribe', ...)`
+// check below — mirroring the original inline block's early `return` there.
+// wsHub emits a fresh full snapshot per subscribe with no dedup, so a missed
+// early-return means the client does conversation.clear() + a tail replay
+// TWICE on every refresh that restores a live session.
+//
+// This needs a real `send` (not the module's no-op-when-disconnected one) to
+// actually catch the regression, and a `selectInstance` spy that sets
+// state.activeId the way the real one does (see baseDeps above) — a spy
+// that doesn't do either lets the trailing check stay permanently false
+// regardless of whether the early return is present, which is exactly how
+// the double-subscribe regression shipped past this suite once already.
+// Must stay the LAST test in this file: it arms a real `ws` connection via
+// `connect()`, so every `send()` after this point actually delivers.
+class FakeWebSocket {
+  constructor(url) { this.url = url; this.readyState = FakeWebSocket.OPEN; }
+  addEventListener() {}
+  send(data) { FakeWebSocket.sent.push(JSON.parse(data)); }
+  close() {}
+}
+FakeWebSocket.OPEN = 1;
+FakeWebSocket.sent = [];
+
+test('firstConnect with a live instance already matching the anchor does not double-subscribe', async () => {
+  const sid = 'live-anchor-test-sid';
+  const iid = 'live-anchor-test-inst';
+  installDom(`#session=${sid}`);
+  globalThis.WebSocket = FakeWebSocket;
+  connect();
+
+  const { installWsRouter } = await load('wsRouter.js');
+  const instances = [{ id: iid, sessionId: sid }];
+  const state = { activeId: null, instances };
+  let selected = null;
+  installWsRouter({
+    ...baseDeps({ instances, resumeSpy: async () => {} }),
+    state,
+    // A realistic spy: sets state.activeId like the real selectInstance
+    // does, but — unlike the real one — does NOT itself send('subscribe').
+    // So the correct count from wsRouter's OWN trailing logic is exactly
+    // ZERO here (the real selectInstance is what contributes the one
+    // production subscribe); any hit is wsRouter redundantly subscribing
+    // on top of what selectInstance already did.
+    selectInstance: (id) => { selected = id; state.activeId = id; },
+  });
+
+  bus.dispatchEvent(new Event('open'));
+  await waitFor(() => selected !== null);
+  await new Promise(r => setTimeout(r, 20)); // let a (buggy) trailing subscribe land
+
+  const subscribes = FakeWebSocket.sent.filter(m => m.t === 'subscribe' && m.id === iid);
+  assert.equal(subscribes.length, 0, 'wsRouter\'s own trailing check must not also subscribe — selectInstance already did');
 });
