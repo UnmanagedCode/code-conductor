@@ -14,6 +14,7 @@ import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, fakeOllamaReachable } from './helpers.mjs';
 import { setConductorCompactWindow } from '../src/appSettings.js';
+import { runMigrations } from '../migrations/index.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-instance.json');
@@ -137,6 +138,36 @@ test('ollama-backed .conduct spawn: knob overrides AUTO_COMPACT_WINDOW, native w
     assert.equal(env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, '256000',
       'MAX_CONTEXT_TOKENS is only ever set by the ollama block, to the native window');
   } finally { await ctx.close(); restoreFetch(); }
+});
+
+// COMPACT_K_MIN used to be 20; a settings.json persisted under that regime
+// (or hand-edited) can carry a conductorCompactWindowK below the new 100
+// floor. getConductorCompactWindow() reads that field back verbatim (no
+// read-time clamp — see the comment above COMPACT_K_MIN in appSettings.js),
+// so without migrations/0023-clamp-compact-window-floor.mjs a stale sub-100
+// value would still reach the CLI as a sub-100k CLAUDE_CODE_AUTO_COMPACT_WINDOW,
+// which the CLI itself then silently floors to 100k — the exact no-op this
+// knob exists to eliminate. This test proves the migration closes that gap
+// at the actual spawn path, not just at the setter.
+test('a stale pre-migration sub-100k persisted value is bumped to 100k before it reaches spawn', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO_WS });
+  try {
+    // Simulate a pre-existing settings.json (written before COMPACT_K_MIN was
+    // raised to 100) by writing the raw file directly — bypasses
+    // setConductorCompactWindow's clamp entirely, same as a hand-edit would.
+    const settingsFile = path.join(ctx.projectsRoot, '.code-conductor', 'settings.json');
+    await fs.mkdir(path.dirname(settingsFile), { recursive: true });
+    await fs.writeFile(settingsFile, JSON.stringify({
+      models: { conductorCompactWindowEnabled: true, conductorCompactWindowK: 50 },
+    }));
+
+    await runMigrations({ root: ctx.projectsRoot, log: () => {} });
+
+    await api(ctx.baseUrl, 'POST', '/api/projects/.conduct/ensure');
+    const env = await spawnAndGetEnv({ ctx, project: '.conduct' });
+    assert.equal(env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, '100000',
+      'a stale sub-100k persisted value must be normalized to 100k by the migration before spawn, not passed through as a sub-100k env value');
+  } finally { await ctx.close(); }
 });
 
 test('ollama-backed .conduct spawn: knob below native window still wins the effective min', async () => {
