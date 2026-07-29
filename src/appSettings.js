@@ -541,6 +541,13 @@ export async function removeCustomRole(role) {
 // Value is stored in k-tokens (e.g. 200 = 200k); the env var receives raw
 // tokens (value * 1000). Seeded from the orchestrator's own env if set.
 // Off by default — strictly opt-in.
+// COMPACT_K_MIN is 100 (not lower) because the Claude Code CLI itself floors
+// CLAUDE_CODE_AUTO_COMPACT_WINDOW at 100,000 tokens (Math.max(100000, effective))
+// — a lower minimum here would be a silent no-op once it reaches the CLI.
+// Clamped on write only (setConductorCompactWindow), matching this file's other
+// clamped settings (e.g. setOverageThreshold) — a pre-existing persisted value
+// below the floor is normalized once via migrations/0023-clamp-compact-window-floor.mjs,
+// not re-clamped on every read.
 const COMPACT_K_MIN  = 100;
 const COMPACT_K_MAX  = 1000;
 const COMPACT_K_STEP = 10;
