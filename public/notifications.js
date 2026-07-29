@@ -85,7 +85,17 @@ export function fire({ title, body, tag, data }) {
     } catch { /* fall through to page-level */ }
   }
   try {
-    return new Notification(title, opts);
+    const n = new Notification(title, opts);
+    // The Service Worker's notificationclick handler covers the
+    // showNotification path above; page-level notifications need their own
+    // click wiring so both paths land on the same instance-selection logic
+    // in wsRouter.js (via this shared custom event).
+    n.onclick = () => {
+      window.focus();
+      window.dispatchEvent(new CustomEvent('cc-notification-click', { detail: data }));
+      n.close();
+    };
+    return n;
   } catch {
     return null;
   }
@@ -153,7 +163,7 @@ export async function closeAllOnFocus() {
  * Decide-and-fire helper for a turn_end event.
  * Returns the Notification instance (or null if suppressed).
  */
-export function maybeNotifyTurnEnd({ instanceId, projectName, turnEvent }) {
+export function maybeNotifyTurnEnd({ instanceId, projectName, sessionId, turnEvent }) {
   const decision = shouldNotify({
     permission: NotificationState.permission,
     globalEnabled: NotificationState.globalEnabled,
@@ -165,8 +175,27 @@ export function maybeNotifyTurnEnd({ instanceId, projectName, turnEvent }) {
   const cost = turnEvent.cost != null ? ` · $${turnEvent.cost.toFixed(4)}` : '';
   const title = turnEvent.isError ? `❌ ${projectName} — turn errored` : `✓ ${projectName} — turn complete`;
   const body = `${turnEvent.stopReason ?? 'end_turn'}${cost}`;
-  const result = fire({ title, body, tag: `instance:${instanceId}`, data: { project: projectName } });
+  const result = fire({ title, body, tag: `instance:${instanceId}`, data: { project: projectName, instanceId, sessionId } });
   // Best-effort summary refresh; failures here must not block the per-instance ping.
   maybeUpdateSummary();
   return result;
+}
+
+/**
+ * Pure: given a notification click's data payload, find the currently-live
+ * instance it refers to. Prefers instanceId (stable within one process
+ * lifetime); falls back to sessionId (survives a respawn under a new id).
+ * Public so tests can exercise it without a real browser/SW.
+ */
+export function resolveNotificationInstance({ instanceId, sessionId } = {}, instances) {
+  if (!instances) return null;
+  if (instanceId) {
+    const byId = instances.find(i => i.id === instanceId);
+    if (byId) return byId;
+  }
+  if (sessionId) {
+    const bySession = instances.find(i => i.sessionId === sessionId);
+    if (bySession) return bySession;
+  }
+  return null;
 }
