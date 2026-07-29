@@ -1,6 +1,8 @@
 // Per-turn cost persistence. Subscribes to instance events and appends one
 // JSONL row per turn_end to <orchStoreRoot()>/costs.jsonl. Append-only so
-// writes are a single fs.appendFile — no parse/rewrite of the whole file.
+// writes are a single fs.appendFile — no parse/rewrite of the whole file —
+// serialised behind a per-process chain so same-tick turn_ends land in emit
+// order (see `serialize` below).
 
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
@@ -10,7 +12,35 @@ export function costsPath() {
   return path.join(orchStoreRoot(), 'costs.jsonl');
 }
 
-async function appendCostRow(inst, ev, parentSessionId) {
+// Serialise appends behind a per-process promise chain. The event listener is
+// synchronous so it cannot await the write; two turn_ends in one tick would
+// otherwise start two independent mkdir→open→write chains whose threadpool
+// completion order is undefined, landing the rows in either order (and racing
+// two concurrent recursive mkdirs, where any throw silently drops a row).
+// The chain advances on both outcomes and is never left rejected, so one failed
+// write can't poison every later append.
+let writeChain = Promise.resolve();
+function serialize(fn) {
+  writeChain = writeChain.then(fn, fn).catch(() => {});
+}
+
+// Append one built row to an already-resolved path. mkdir stays per-write: the
+// store dir is absent before the first row and can be removed underneath us.
+async function writeCostRow(p, row) {
+  try {
+    await fs.mkdir(path.dirname(p), { recursive: true });
+    await fs.appendFile(p, JSON.stringify(row) + '\n', 'utf8');
+  } catch (e) {
+    console.warn('cost-tracking: failed to append row:', e.message ?? e);
+  }
+}
+
+// SYNCHRONOUS by design: the row and the target path are snapshotted in the
+// emit tick, and only the write is queued. `inst` is the live Instance (its
+// sessionId/model move on renewal/rewind/model-switch) and costsPath() reads
+// PROJECTS_ROOT live — resolving either at write time would capture whatever
+// they had become by the time the queue drained.
+function appendCostRow(inst, ev, parentSessionId) {
   // Per-turn token totals come ONLY from the SDK `result.usage` (a genuine
   // per-turn sum). The Ollama backend (`ollama launch claude`) omits `usage`
   // from its `result` frames, so ev.usage is null there — we OMIT the four
@@ -33,8 +63,8 @@ async function appendCostRow(inst, ev, parentSessionId) {
     project: inst.project ?? null,
     model: inst.model ?? null,
     sessionId: inst.sessionId ?? null,
-    // Durable link to the spawning conductor's CURRENT sessionId (resolved at
-    // write-time from the ephemeral callerInstanceId). null for UI/HTTP-created
+    // Durable link to the spawning conductor's CURRENT sessionId (resolved in
+    // the emit tick from the ephemeral callerInstanceId). null for UI/HTTP-created
     // sessions. Drives the tree rollup in getSessionStats. Additive.
     parentSessionId: parentSessionId ?? null,
     // Turn timing from the SDK result. duration_ms is the turn walltime (incl.
@@ -65,13 +95,8 @@ async function appendCostRow(inst, ev, parentSessionId) {
   if (inst.backendKind !== 'ollama') {
     row.cost_usd = ev.costDelta ?? ev.cost ?? 0;
   }
-  try {
-    const p = costsPath();
-    await fs.mkdir(path.dirname(p), { recursive: true });
-    await fs.appendFile(p, JSON.stringify(row) + '\n', 'utf8');
-  } catch (e) {
-    console.warn('cost-tracking: failed to append row:', e.message ?? e);
-  }
+  const p = costsPath();
+  serialize(() => writeCostRow(p, row));
 }
 
 export function initCostTracking(instances) {
