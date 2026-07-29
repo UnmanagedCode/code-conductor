@@ -33,6 +33,19 @@
 // store left un-migrated degrades to "no record" (a plain claude resume) rather
 // than crashing.
 //
+// SUPERSEDES 0017. 0017's idempotency probe was "does some tierBackend value have
+// a `kind` key?" — which this migration removes, so leaving 0017 registered would
+// make it re-run on every later boot and reset every tier binding to its Claude
+// default. 0017 is therefore unregistered (see migrations/index.mjs) and the
+// pre-0017 shapes it used to normalize are absorbed here:
+//   - models.tierBackend[tier] as a STRING: a family key ('opus') resolving to
+//     that family's active version (models[family] ?? the catalog default), or
+//     'ollama:<slug>' resolving to that custom backend's tag by id;
+//   - models.customBackends entries carrying the dropped `id` / `host` fields;
+//   - the dead per-family active-version keys (models.opus = '…');
+//   - the pre-0017 sidecar form {backends:{sid:{kind}}} (0018 only handles the
+//     intermediate {sessions:[…]} set form, and still runs before this).
+//
 // Idempotent: settings is a no-op once `models.backends` exists; the sidecar is a
 // no-op once its first entry is already an object. Silent on an empty root.
 //
@@ -55,6 +68,17 @@ const MANAGED_BACKENDS = [
   { id: 'claude', label: 'Claude', template: '', env: [] },
   { id: 'ollama', label: 'Ollama', template: 'ollama launch claude --model {model} --yes --', env: [] },
 ];
+
+// Frozen snapshots of the catalog at write time, for the absorbed 0017 shapes.
+const FAMILY_DEFAULT_VERSION = {
+  fable: 'claude-fable-5',
+  opus: 'claude-opus-4-8',
+  sonnet: 'claude-sonnet-5',
+  haiku: 'claude-haiku-4-5',
+};
+const FAMILIES = ['fable', 'opus', 'sonnet', 'haiku'];
+const DEFAULT_TIER_FAMILY = { fast: 'haiku', balanced: 'sonnet', powerful: 'opus', frontier: 'fable' };
+const TIERS = ['fast', 'balanced', 'powerful', 'frontier'];
 
 // Frozen snapshot of OLLAMA_CLOUD_MODELS' tag → contextWindow at write time.
 const CURATED_WINDOWS = {
@@ -105,6 +129,33 @@ export async function run({ root, log = () => {} } = {}) {
         delete binding.kind;
         rekeyed += 1;
       };
+
+      // Absorbed from 0017: a pre-0017 STRING tierBackend value. Materialize the
+      // binding it stood for before the re-key sweep below sees it.
+      const oldCustom = Array.isArray(models.customBackends) ? models.customBackends : [];
+      const tagById = new Map(oldCustom.filter(b => b && typeof b.id === 'string').map(b => [b.id, b.model]));
+      const claudeBinding = (family) => ({
+        backend: 'claude',
+        model: (typeof models[family] === 'string' && models[family]) ? models[family] : FAMILY_DEFAULT_VERSION[family],
+      });
+      if (models.tierBackend && typeof models.tierBackend === 'object') {
+        for (const tier of TIERS) {
+          const v = models.tierBackend[tier];
+          if (typeof v !== 'string') continue;
+          if (v.startsWith('ollama:')) {
+            const tag = tagById.get(v);
+            models.tierBackend[tier] = tag ? { backend: 'ollama', model: tag } : claudeBinding(DEFAULT_TIER_FAMILY[tier]);
+          } else if (FAMILIES.includes(v)) {
+            models.tierBackend[tier] = claudeBinding(v);
+          } else {
+            models.tierBackend[tier] = claudeBinding(DEFAULT_TIER_FAMILY[tier]);
+          }
+          rekeyed += 1;
+        }
+      }
+      // Absorbed from 0017: the dead per-family active-version keys.
+      for (const f of FAMILIES) delete models[f];
+
       if (models.tierBackend && typeof models.tierBackend === 'object') {
         for (const b of Object.values(models.tierBackend)) rekey(b);
       }
@@ -115,6 +166,8 @@ export async function run({ root, log = () => {} } = {}) {
       }
 
       // customBackends → customModels, all bound to the built-in ollama backend.
+      // Absorbed from 0017: a pre-0017 entry may still carry `id` / `host`; taking
+      // only the four fields below drops them.
       if (Array.isArray(models.customBackends)) {
         models.customModels = models.customBackends
           .filter(b => b && typeof b.label === 'string' && typeof b.model === 'string')
@@ -136,7 +189,21 @@ export async function run({ root, log = () => {} } = {}) {
   }
 
   const sidecar = await readJsonSafe(sidecarFile);
-  const sessions = sidecar && typeof sidecar === 'object' && sidecar.sessions
+  // Absorbed from 0017: the pre-0017 form {backends:{sid:{kind}}} — only the
+  // ollama-kind entries were ever sessions on a non-claude backend. The model was
+  // not carried in that form, so it lands model-unknown (resume falls back to the
+  // jsonl and self-heals on the next mark), exactly as 0017→0018 produced.
+  if (sidecar && typeof sidecar === 'object' && sidecar.backends && typeof sidecar.backends === 'object') {
+    const next = {};
+    for (const sid of Object.keys(sidecar.backends).sort((a, b) => a.localeCompare(b))) {
+      const rec = sidecar.backends[sid];
+      if (rec && rec.kind === 'ollama') next[sid] = { backend: 'ollama', model: null };
+    }
+    if (Object.keys(next).length) await writeJsonAtomic(sidecarFile, { sessions: next });
+    else { try { await fs.unlink(sidecarFile); } catch { /* ignore */ } }
+    sidecarSessions = Object.keys(next).length;
+  }
+  const sessions = sidecarSessions === null && sidecar && typeof sidecar === 'object' && sidecar.sessions
     && typeof sidecar.sessions === 'object' && !Array.isArray(sidecar.sessions)
     ? sidecar.sessions : null;
   if (sessions) {

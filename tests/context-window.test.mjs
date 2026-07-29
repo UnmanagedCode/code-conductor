@@ -11,28 +11,26 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { bootServer, api, waitFor, freshProjectsRoot, rmrf, fakeOllamaReachable } from './helpers.mjs';
+import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
 import { canonicalizeModel, familyOf } from '../src/modelVersions.js';
-import { addCustomBackend } from '../src/appSettings.js';
+import { addCustomModel, removeCustomModel } from '../src/appSettings.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-instance.json');
 
 // One server shared across the file; each test gets a fresh PROJECTS_ROOT and
 // the spawned instance is cleared between tests. See helpers → freshProjectsRoot.
-let ctx, baseUrl, instances, home, restoreFetch;
+let ctx, baseUrl, instances, home;
 
 before(async () => {
-  // Ollama spawns preflight reachability; simulate a live daemon (no CI daemon).
-  restoreFetch = fakeOllamaReachable();
   ctx = await bootServer({ scenarioPath: SCENARIO });
   ({ baseUrl, instances } = ctx);
 });
-after(async () => { await ctx.close(); restoreFetch(); });
+after(async () => { await ctx.close(); });
 beforeEach(async () => { ({ home } = await freshProjectsRoot()); });
 afterEach(async () => { await instances.shutdown(); await rmrf(home); });
 
-async function spawnAndDump(model, { backendKind, project = 'p' } = {}) {
+async function spawnAndDump(model, { backend, project = 'p' } = {}) {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'ctxwin-'));
   const argvDump = path.join(tmp, 'argv.txt');
   const envDump = path.join(tmp, 'env.txt');
@@ -40,7 +38,7 @@ async function spawnAndDump(model, { backendKind, project = 'p' } = {}) {
   process.env.FAKE_CLAUDE_ENV_DUMP = envDump;
   try {
     await api(baseUrl, 'POST', '/api/projects', { name: project });
-    const r = await api(baseUrl, 'POST', '/api/instances', { project, mode: 'bypassPermissions', model, backendKind });
+    const r = await api(baseUrl, 'POST', '/api/instances', { project, mode: 'bypassPermissions', model, backend });
     const id = r.body.id;
     await waitFor(() => instances.get(id).status === 'idle');
     // fake-claude writes its argv/env dumps synchronously at process start
@@ -197,30 +195,35 @@ test('two Sonnet 4.x spawns carry independent windows (200k vs 1M) — one does 
   }
 });
 
-test('Ollama-backed spawn sets CLAUDE_CODE_AUTO_COMPACT_WINDOW to the curated model window (raw tokens, no ×1000)', async () => {
-  const { env, id } = await spawnAndDump('deepseek-v4-flash:cloud', { backendKind: 'ollama', project: 'ollama-a' });
+test('a substitution-backend spawn sets CLAUDE_CODE_AUTO_COMPACT_WINDOW to the curated model window (raw tokens, no ×1000)', async () => {
+  const { env, id } = await spawnAndDump('deepseek-v4-flash:cloud', { backend: 'ollama', project: 'ollama-a' });
   assert.equal(env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, '1000000',
     'a 1M curated model sets the raw token count directly');
   assert.equal(env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, '1000000',
     'MAX_CONTEXT_TOKENS must also be set — AUTO_COMPACT_WINDOW alone is clamped by the CLI to a 200k assumed window for unrecognized models');
-  assert.equal(instances.get(id).backendKind, 'ollama');
+  assert.equal(instances.get(id).backend, 'ollama');
 });
 
-test('Ollama-backed spawn honours a smaller curated window (256k)', async () => {
-  const { env } = await spawnAndDump('qwen3.5:cloud', { backendKind: 'ollama', project: 'ollama-b' });
+test('a substitution-backend spawn honours a smaller curated window (256k)', async () => {
+  const { env } = await spawnAndDump('qwen3.5:cloud', { backend: 'ollama', project: 'ollama-b' });
   assert.equal(env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, '256000');
   assert.equal(env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, '256000');
 });
 
-test('Ollama-backed spawn uses a custom model\'s declared contextWindow', async () => {
-  await addCustomBackend({ label: 'Local Big', model: 'localbig:cloud', contextWindow: 300_000 });
-  const { env } = await spawnAndDump('localbig:cloud', { backendKind: 'ollama', project: 'ollama-c' });
+test('a substitution-backend spawn uses a custom model\'s declared contextWindow', async () => {
+  await addCustomModel({ label: 'Local Big', model: 'localbig:cloud', backend: 'ollama', contextWindow: 300_000 });
+  const { env } = await spawnAndDump('localbig:cloud', { backend: 'ollama', project: 'ollama-c' });
   assert.equal(env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, '300000');
   assert.equal(env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, '300000');
 });
 
-test('Ollama-backed spawn with an unknown window leaves CLAUDE_CODE_AUTO_COMPACT_WINDOW and CLAUDE_CODE_MAX_CONTEXT_TOKENS unset', async () => {
-  await addCustomBackend({ label: 'Local NoWin', model: 'localnowin:cloud' }); // no contextWindow
+// A BOUND custom model always carries a window now (contextWindow is required),
+// so the "window unknown" spawn path is reached via a model that has since been
+// REMOVED from the custom list — e.g. a resume of a session whose model was
+// deleted. contextWindowForModel returns null and we must set neither var.
+test('a substitution-backend spawn whose model has no resolvable window leaves CLAUDE_CODE_AUTO_COMPACT_WINDOW and CLAUDE_CODE_MAX_CONTEXT_TOKENS unset', async () => {
+  await addCustomModel({ label: 'Local NoWin', model: 'localnowin:cloud', backend: 'ollama', contextWindow: 128_000 });
+  await removeCustomModel('localnowin:cloud'); // window no longer resolvable
   const hadAmbientCompact = 'CLAUDE_CODE_AUTO_COMPACT_WINDOW' in process.env;
   const savedAmbientCompact = process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW;
   const hadAmbientMax = 'CLAUDE_CODE_MAX_CONTEXT_TOKENS' in process.env;
@@ -228,7 +231,7 @@ test('Ollama-backed spawn with an unknown window leaves CLAUDE_CODE_AUTO_COMPACT
   process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = '999999'; // poison: prove the strip, not ambient luck
   process.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS = '999999';
   try {
-    const { env } = await spawnAndDump('localnowin:cloud', { backendKind: 'ollama', project: 'ollama-d' });
+    const { env } = await spawnAndDump('localnowin:cloud', { backend: 'ollama', project: 'ollama-d' });
     assert.ok(!('CLAUDE_CODE_AUTO_COMPACT_WINDOW' in env),
       'no declared window → the CLI uses its own default, we set nothing (even with an ambient value present)');
     assert.ok(!('CLAUDE_CODE_MAX_CONTEXT_TOKENS' in env),

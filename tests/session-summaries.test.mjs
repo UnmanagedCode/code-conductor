@@ -4,13 +4,13 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { bootServer, api, waitFor, freshProjectsRoot, rmrf, fakeOllamaReachable, fakeOllamaUnreachable } from './helpers.mjs';
+import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
 import {
   setSummary, getSummaries, deleteSummaries, loadAll,
 } from '../src/sessionSummaries.js';
 import { orchStoreRoot, findSessionLocation, encodeCwd } from '../src/projects.js';
 import { summarySpawnDir } from '../src/summarize.js';
-import { setTierBackend } from '../src/appSettings.js';
+import { setTierBackend, addBackend, addCustomModel } from '../src/appSettings.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-basic.json');
@@ -249,30 +249,38 @@ test('POST spawns subprocess in .code-conductor/summaries dir (not a real projec
 });
 
 // ---------------------------------------------------------------------------
-// Ollama-bound fast tier: generateSummary() honors the bound model/backend
-// (same fix, and same shared resolveBackendLaunch/preflight, as
-// claudeShellEnv.js's generateBundle()).
+// A fast tier on a SUBSTITUTION backend: generateSummary() honors the bound
+// model/backend, driving the launch off the row's template (same shared
+// resolveBackendLaunch as claudeShellEnv.js's generateBundle()). Like bundle-gen
+// this uses a REAL child_process.spawn, so the registry row is the injection
+// seam: its template names the fake binary, exactly as a user would register a
+// wrapper.
 // ---------------------------------------------------------------------------
 
-test('POST generates via `ollama launch claude ...` when the fast tier is Ollama-bound and reachable', async () => {
-  await api(baseUrl, 'POST', '/api/projects', { name: 'ollama-sum' });
-  const sid = 'sid-ollama-sum';
-  await plantJsonl(path.join(projectsRoot, 'ollama-sum'), sid, [
+test("POST generates through the fast tier's backend template, injecting the row's env", async () => {
+  await api(baseUrl, 'POST', '/api/projects', { name: 'wrapper-sum' });
+  const sid = 'sid-wrapper-sum';
+  await plantJsonl(path.join(projectsRoot, 'wrapper-sum'), sid, [
     { type: 'user', message: { role: 'user', content: 'hello' } },
     { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'hi' }] } },
   ]);
 
   const argvFile = path.join(os.tmpdir(), `cc-test-argv-${Date.now()}.json`);
+  const envFile = path.join(os.tmpdir(), `cc-test-env-${Date.now()}.json`);
   const origBin = process.env.CLAUDE_BIN;
-  const origOllamaBin = process.env.OLLAMA_BIN;
-  const restoreReach = fakeOllamaReachable();
-  // FAKE_SUMMARIZE stands in for BOTH binaries here — it only reacts to
-  // argv/stdin/env, never to which command name invoked it.
+  // FAKE_SUMMARIZE stands in for BOTH the claude binary and the wrapper command —
+  // it only reacts to argv/stdin/env, never to which command name invoked it.
   process.env.CLAUDE_BIN = `${process.execPath} ${FAKE_SUMMARIZE}`;
-  process.env.OLLAMA_BIN = `${process.execPath} ${FAKE_SUMMARIZE}`;
   process.env.FAKE_SUMMARIZE_ARGV_FILE = argvFile;
+  process.env.FAKE_SUMMARIZE_ENV_FILE = envFile;
   try {
-    await setTierBackend('fast', { kind: 'ollama', model: 'deepseek-v4-flash:cloud' });
+    await addBackend({
+      id: 'wrapper', label: 'Wrapper',
+      template: `${process.execPath} ${FAKE_SUMMARIZE} launch claude --model {model} --yes --`,
+      env: [{ key: 'WRAPPER_TOKEN', value: 'sekret' }],
+    });
+    await addCustomModel({ label: 'Flash', model: 'deepseek-v4-flash:cloud', backend: 'wrapper', contextWindow: 1_000_000 });
+    await setTierBackend('fast', { backend: 'wrapper', model: 'deepseek-v4-flash:cloud' });
     const r = await api(baseUrl, 'POST', `/api/sessions/${sid}/summary`, { length: 'short' });
     assert.equal(r.status, 200, JSON.stringify(r.body));
     assert.equal(r.body.data.short.summary, 'This is a canned test summary of the session.');
@@ -281,32 +289,17 @@ test('POST generates via `ollama launch claude ...` when the fast tier is Ollama
     assert.deepEqual(argv.slice(0, 6), ['launch', 'claude', '--model', 'deepseek-v4-flash:cloud', '--yes', '--']);
     assert.equal(argv[6], '-p');
     const modelIdxs = argv.map((a, i) => a === '--model' ? i : -1).filter(i => i >= 0);
-    assert.equal(modelIdxs.length, 2, '--model appears in both the launch prefix and the forwarded claude args');
+    assert.equal(modelIdxs.length, 2, '--model appears in both the template prefix and the forwarded claude args');
     for (const i of modelIdxs) assert.equal(argv[i + 1], 'deepseek-v4-flash:cloud');
+
+    const childEnv = JSON.parse(await fs.readFile(envFile, 'utf8'));
+    assert.equal(childEnv.WRAPPER_TOKEN, 'sekret', "the backend row's env reaches the summary child");
   } finally {
     if (origBin === undefined) delete process.env.CLAUDE_BIN; else process.env.CLAUDE_BIN = origBin;
-    if (origOllamaBin === undefined) delete process.env.OLLAMA_BIN; else process.env.OLLAMA_BIN = origOllamaBin;
     delete process.env.FAKE_SUMMARIZE_ARGV_FILE;
+    delete process.env.FAKE_SUMMARIZE_ENV_FILE;
     await fs.unlink(argvFile).catch(() => {});
-    restoreReach();
-  }
-});
-
-test('POST returns 503 when the fast tier is Ollama-bound and Ollama is unreachable', async () => {
-  await api(baseUrl, 'POST', '/api/projects', { name: 'ollama-sum-down' });
-  const sid = 'sid-ollama-sum-down';
-  await plantJsonl(path.join(projectsRoot, 'ollama-sum-down'), sid, [
-    { type: 'user', message: { role: 'user', content: 'hello' } },
-  ]);
-
-  const restoreUnreach = fakeOllamaUnreachable();
-  try {
-    await setTierBackend('fast', { kind: 'ollama', model: 'deepseek-v4-flash:cloud' });
-    const r = await api(baseUrl, 'POST', `/api/sessions/${sid}/summary`, { length: 'short' });
-    assert.equal(r.status, 503, JSON.stringify(r.body));
-    assert.match(JSON.stringify(r.body), /not reachable/i);
-  } finally {
-    restoreUnreach();
+    await fs.unlink(envFile).catch(() => {});
   }
 });
 

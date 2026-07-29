@@ -200,7 +200,7 @@ test('Fable line does not render when account usage is entirely unavailable', as
 
 test('usage popover suppresses the Cost row for an ollama-backed session', async () => {
   const { dom, document, header, setInstances, setActiveId, getUsageTracker } = await setup();
-  setInstances([{ ...LIVE_INSTANCE, backendKind: 'ollama' }]);
+  setInstances([{ ...LIVE_INSTANCE, backend: 'ollama' }]);
   setActiveId('inst-1');
   getUsageTracker('inst-1').apply({
     kind: 'turn_end',
@@ -217,7 +217,7 @@ test('usage popover suppresses the Cost row for an ollama-backed session', async
 
 test('usage popover still shows the accumulated cost for a claude-backed session', async () => {
   const { dom, document, header, setInstances, setActiveId, getUsageTracker } = await setup();
-  setInstances([{ ...LIVE_INSTANCE, backendKind: 'claude' }]);
+  setInstances([{ ...LIVE_INSTANCE, backend: 'claude' }]);
   setActiveId('inst-1');
   getUsageTracker('inst-1').apply({
     kind: 'turn_end',

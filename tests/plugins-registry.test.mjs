@@ -530,7 +530,7 @@ test('roles(): only enabled+ok plugins contribute, namespaced; disable drops the
       id: 'roleplug', name: 'Role Plugin', version: '1.0.0', pluginApi: 1,
       roles: [
         { slug: 'captain', name: 'Captain', binding: { kind: 'tier', tier: 'powerful' } },
-        { slug: 'scribe', name: 'Scribe', binding: { kind: 'claude', model: 'claude-opus-4-8' } },
+        { slug: 'scribe', name: 'Scribe', binding: { backend: 'claude', model: 'claude-opus-4-8' } },
       ],
     };
     await env.addPluginProject('roleplug', { manifest, withFixtureFiles: false });

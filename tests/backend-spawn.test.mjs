@@ -1,9 +1,14 @@
-// Ollama-backed spawn: the uniform `{BACKEND_CMD} {CLAUDE_ARGS}` builder
-// (`ollama launch claude --model <tag> --yes --` + the SAME claude args, so
-// `--model <tag>` appears twice — confirmed harmless), no OLLAMA_HOST, the
-// sid→model sidecar written at spawn + the tagged model recovered on resume
-// (over the CLI's bare jsonl report), the setModel live-switch gate,
-// tier→{kind,model} MCP resolution, and the null-model guards (fresh + resume).
+// Spawn on a SUBSTITUTION backend: the uniform `{TEMPLATE} {CLAUDE_ARGS}` builder
+// (the backend's template + the SAME claude args, so `--model <id>` appears twice
+// — confirmed harmless), the backend's env injection, the sid→{backend,model}
+// sidecar written at spawn + the tagged model recovered on resume (over the CLI's
+// bare jsonl report), the setModel live-switch gate, tier/role→{backend,model} MCP
+// resolution, the launch_failed crash signal, and the null-model guards.
+//
+// Every case runs on the built-in `ollama` row AND — where the generalization is
+// what's under test — on a USER-DEFINED backend, since a rule keyed on the id
+// 'ollama' rather than "not the identity backend" would pass the former and fail
+// the latter.
 
 import { test, describe, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
@@ -13,71 +18,35 @@ import os from 'node:os';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
-import { bootServer, api, waitFor, freshProjectsRoot, rmrf, fakeOllamaReachable, fakeOllamaUnreachable } from './helpers.mjs';
-import { addCustomBackend, setTierBackend, setRoleBinding, addCustomRole,
+import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
+import { addCustomModel, setTierBackend, setRoleBinding, addCustomRole, addBackend,
   setPluginRolesProvider, getTierBackend, getDefaultSpawnTier } from '../src/appSettings.js';
-import { isOllamaSession, getOllamaSession, markOllamaSession } from '../src/sessionBackends.js';
+import { hasSessionBackend, getSessionBackend, markSessionBackend } from '../src/sessionBackends.js';
 import { claudeProjectsRoot, encodeCwd } from '../src/projects.js';
-import { resolveBackendLaunch } from '../src/claudeLauncher.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-instance.json');
 
-let ctx, baseUrl, instances, home, projectsRoot, restoreFetch;
+let ctx, baseUrl, instances, home, projectsRoot;
 
-describe('resolveBackendLaunch (shared claude/ollama launch resolution)', () => {
-  test('ollama kind builds the launch prefix with the tag passed through verbatim', () => {
-    const { command, prefixArgs } = resolveBackendLaunch('ollama', 'deepseek-v4-flash:cloud', { command: '/usr/bin/claude', prefixArgs: [] });
-    assert.equal(command, 'ollama');
-    assert.deepEqual(prefixArgs, ['launch', 'claude', '--model', 'deepseek-v4-flash:cloud', '--yes', '--']);
-  });
-
-  test('claude kind passes the given claudeBin command/prefixArgs through unchanged', () => {
-    const claudeBin = { command: '/usr/bin/claude', prefixArgs: ['--extra'] };
-    const { command, prefixArgs } = resolveBackendLaunch('claude', 'claude-opus-4-7', claudeBin);
-    assert.equal(command, claudeBin.command);
-    assert.deepEqual(prefixArgs, claudeBin.prefixArgs);
-  });
-
-  test('ollama kind with no model throws — the helper owns this invariant for every caller', () => {
-    assert.throws(() => resolveBackendLaunch('ollama', null, { command: '/usr/bin/claude', prefixArgs: [] }), /requires a model/);
-  });
-
-  test('OLLAMA_BIN mirrors CLAUDE_BIN — lets tests point the literal `ollama` command at a fake script', () => {
-    const orig = process.env.OLLAMA_BIN;
-    process.env.OLLAMA_BIN = 'node /fake/ollama.mjs';
-    try {
-      const { command, prefixArgs } = resolveBackendLaunch('ollama', 'gemma4:cloud', { command: '/usr/bin/claude', prefixArgs: [] });
-      assert.equal(command, 'node');
-      assert.deepEqual(prefixArgs, ['/fake/ollama.mjs', 'launch', 'claude', '--model', 'gemma4:cloud', '--yes', '--']);
-    } finally {
-      if (orig === undefined) delete process.env.OLLAMA_BIN;
-      else process.env.OLLAMA_BIN = orig;
-    }
-  });
-});
-
-// Spawns/respawns preflight ollama reachability; simulate a live daemon for the
-// happy-path suites (the preflight-failure suite below restores real fetch).
 before(async () => {
-  restoreFetch = fakeOllamaReachable();
   ctx = await bootServer({ scenarioPath: SCENARIO }); ({ baseUrl, instances } = ctx);
 });
-after(async () => { await ctx.close(); restoreFetch(); });
+after(async () => { await ctx.close(); });
 beforeEach(async () => { ({ home, projectsRoot } = await freshProjectsRoot()); });
 afterEach(async () => { await instances.shutdown(); await rmrf(home); });
 
-// Spawn an ollama-backed instance directly (model + backendKind), capturing the
+// Spawn on a substitution backend directly (model + backend), capturing the
 // launch argv/env the (fake) CLI received.
-async function spawnOllama({ model = 'gemma4:cloud' } = {}) {
-  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'ollama-spawn-'));
+async function spawnOnBackend({ model = 'gemma4:cloud', backend = 'ollama' } = {}) {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'backend-spawn-'));
   const argvDump = path.join(tmp, 'argv.txt');
   const envDump = path.join(tmp, 'env.txt');
   process.env.FAKE_CLAUDE_ARGV_DUMP = argvDump;
   process.env.FAKE_CLAUDE_ENV_DUMP = envDump;
   try {
     await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
-    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions', model, backendKind: 'ollama' });
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions', model, backend });
     assert.equal(r.status, 201, JSON.stringify(r.body));
     const id = r.body.id;
     await waitFor(() => instances.get(id)?.status === 'idle');
@@ -93,9 +62,9 @@ async function spawnOllama({ model = 'gemma4:cloud' } = {}) {
   }
 }
 
-describe('ollama-backed spawn command/args', () => {
-  test('`ollama launch claude --model <tag> --yes --` + uniform forwarded --model', async () => {
-    const { inst, argv, env, summary } = await spawnOllama({ model: 'gemma4:cloud' });
+describe('substitution-backend spawn command/args', () => {
+  test('the template becomes the launch prefix + uniform forwarded --model', async () => {
+    const { inst, argv, env, summary } = await spawnOnBackend({ model: 'gemma4:cloud' });
 
     assert.equal(inst._spawnArgv[0], 'ollama');
     assert.deepEqual(argv.slice(0, 6), ['launch', 'claude', '--model', 'gemma4:cloud', '--yes', '--']);
@@ -110,19 +79,51 @@ describe('ollama-backed spawn command/args', () => {
     assert.ok(argv.includes('--output-format=stream-json'));
     assert.equal(env.OLLAMA_HOST, undefined); // no host plumbing
 
-    assert.equal(summary.backendKind, 'ollama');
-    assert.equal(summary.model, 'gemma4:cloud'); // model holds the tag for both kinds
-    assert.equal(summary.ollamaModel, undefined); // field collapsed away
+    assert.equal(summary.backend, 'ollama');
+    assert.equal(summary.model, 'gemma4:cloud'); // model holds the id for every backend
+    assert.equal(summary.backendKind, undefined); // renamed away, not aliased
   });
 
-  test('the ollama backend marker + tagged model is written to the sidecar at spawn', async () => {
-    const { summary } = await spawnOllama({ model: 'gemma4:cloud' });
-    assert.equal(await isOllamaSession(summary.sessionId), true);
-    assert.deepEqual(await getOllamaSession(summary.sessionId), { ollama: true, model: 'gemma4:cloud' });
+  test('the backend id + tagged model is written to the sidecar at spawn', async () => {
+    const { summary } = await spawnOnBackend({ model: 'gemma4:cloud' });
+    assert.equal(await hasSessionBackend(summary.sessionId), true);
+    assert.deepEqual(await getSessionBackend(summary.sessionId), { backend: 'ollama', model: 'gemma4:cloud' });
+  });
+
+  // The generalization under test: a USER-DEFINED row drives the launch from its
+  // own template, gets its own env injected, and records its own id in the sidecar.
+  test('a user-defined backend launches from its template, injects its env, and marks its own id', async () => {
+    await addBackend({
+      id: 'my-proxy', label: 'My Proxy',
+      template: 'proxyctl exec claude --model {model} --',
+      env: [{ key: 'PROXY_TOKEN', value: 'sekret' }],
+    });
+    await addCustomModel({ label: 'Mine', model: 'mine:v2', backend: 'my-proxy', contextWindow: 300_000 });
+
+    const { inst, argv, env, summary } = await spawnOnBackend({ model: 'mine:v2', backend: 'my-proxy' });
+    assert.equal(inst._spawnArgv[0], 'proxyctl');
+    assert.deepEqual(argv.slice(0, 5), ['exec', 'claude', '--model', 'mine:v2', '--']);
+    assert.equal(summary.backend, 'my-proxy');
+    // The row's env pair reaches the child…
+    assert.equal(env.PROXY_TOKEN, 'sekret');
+    // …and the cc-MANAGED context vars apply here too (never only to `ollama`).
+    assert.equal(env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, '300000');
+    assert.equal(env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, '300000');
+    assert.deepEqual(await getSessionBackend(summary.sessionId), { backend: 'my-proxy', model: 'mine:v2' });
+  });
+
+  test('a cc-managed context var beats a same-named backend env pair', async () => {
+    await addBackend({
+      id: 'shadow', label: 'Shadow', template: 'shadowctl claude --model {model} --',
+      env: [{ key: 'CLAUDE_CODE_MAX_CONTEXT_TOKENS', value: '999' }],
+    });
+    await addCustomModel({ label: 'S', model: 's:v1', backend: 'shadow', contextWindow: 128_000 });
+    const { env } = await spawnOnBackend({ model: 's:v1', backend: 'shadow' });
+    assert.equal(env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, '128000', 'cc-managed value wins over the user env pair');
   });
 });
 
-describe('tier → {kind,model} resolution (MCP spawn)', () => {
+describe('tier → {backend,model} resolution (MCP spawn)', () => {
   let rpcId = 1;
   async function callTool(name, args) {
     const res = await fetch(baseUrl + '/mcp', {
@@ -134,29 +135,29 @@ describe('tier → {kind,model} resolution (MCP spawn)', () => {
     return JSON.parse(body.result.content[0].text);
   }
 
-  test('an Ollama-bound tier resolves the MCP spawn to an ollama worker', async () => {
-    await addCustomBackend({ label: 'Local', model: 'gemma4:cloud' });
-    await setTierBackend('powerful', { kind: 'ollama', model: 'gemma4:cloud' });
+  test('an ollama-bound tier resolves the MCP spawn to an ollama worker', async () => {
+    await addCustomModel({ label: 'Local', model: 'gemma4:cloud', backend: 'ollama', contextWindow: 128_000 });
+    await setTierBackend('powerful', { backend: 'ollama', model: 'gemma4:cloud' });
     await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
     const spawned = await callTool('spawn_instance', { project: 'p', mode: 'bypassPermissions', model: 'powerful' });
     await waitFor(() => instances.idsForSession(spawned.sessionId).length > 0);
     const inst = instances.get(instances.idsForSession(spawned.sessionId)[0]);
-    assert.equal(inst.backendKind, 'ollama');
+    assert.equal(inst.backend, 'ollama');
     assert.equal(inst.model, 'gemma4:cloud');
   });
 
   test('a Claude-bound tier resolves to a bare-claude worker', async () => {
-    await setTierBackend('fast', { kind: 'claude', model: 'claude-haiku-4-5' });
+    await setTierBackend('fast', { backend: 'claude', model: 'claude-haiku-4-5' });
     await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
     const spawned = await callTool('spawn_instance', { project: 'p', mode: 'bypassPermissions', model: 'fast' });
     await waitFor(() => instances.idsForSession(spawned.sessionId).length > 0);
     const inst = instances.get(instances.idsForSession(spawned.sessionId)[0]);
-    assert.equal(inst.backendKind, 'claude');
+    assert.equal(inst.backend, 'claude');
     assert.equal(inst.model, 'claude-haiku-4-5');
   });
 });
 
-describe('role → {kind,model} resolution (MCP spawn)', () => {
+describe('role → {backend,model} resolution (MCP spawn)', () => {
   let rpcId = 1;
   async function callTool(name, args) {
     const res = await fetch(baseUrl + '/mcp', {
@@ -169,57 +170,57 @@ describe('role → {kind,model} resolution (MCP spawn)', () => {
   }
 
   test('a tier-bound role follows the tier (ollama)', async () => {
-    await addCustomBackend({ label: 'Local', model: 'gemma4:cloud' });
-    await setTierBackend('powerful', { kind: 'ollama', model: 'gemma4:cloud' });
+    await addCustomModel({ label: 'Local', model: 'gemma4:cloud', backend: 'ollama', contextWindow: 128_000 });
+    await setTierBackend('powerful', { backend: 'ollama', model: 'gemma4:cloud' });
     await setRoleBinding('conductor', { kind: 'tier', tier: 'powerful' });
     await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
     const spawned = await callTool('spawn_instance', { project: 'p', mode: 'bypassPermissions', model: 'conductor' });
     await waitFor(() => instances.idsForSession(spawned.sessionId).length > 0);
     const inst = instances.get(instances.idsForSession(spawned.sessionId)[0]);
-    assert.equal(inst.backendKind, 'ollama');
+    assert.equal(inst.backend, 'ollama');
     assert.equal(inst.model, 'gemma4:cloud');
   });
 
   test('a custom Claude-bound role resolves to that claude model', async () => {
-    await setRoleBinding('reviewer', { kind: 'claude', model: 'claude-haiku-4-5' });
+    await setRoleBinding('reviewer', { backend: 'claude', model: 'claude-haiku-4-5' });
     await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
     const spawned = await callTool('spawn_instance', { project: 'p', mode: 'bypassPermissions', model: 'reviewer' });
     await waitFor(() => instances.idsForSession(spawned.sessionId).length > 0);
     const inst = instances.get(instances.idsForSession(spawned.sessionId)[0]);
-    assert.equal(inst.backendKind, 'claude');
+    assert.equal(inst.backend, 'claude');
     assert.equal(inst.model, 'claude-haiku-4-5');
   });
 
-  test('a custom Ollama-bound role resolves straight to the tag (non-tier branch)', async () => {
-    // Bind reviewer directly to a custom ollama backend (a curated cloud tag),
+  test('a role bound straight to a non-Claude model resolves to it (non-tier branch)', async () => {
+    // Bind reviewer directly to a curated cloud model on the ollama row,
     // exercising resolveRoleBackend's non-tier branch.
-    await setRoleBinding('reviewer', { kind: 'ollama', model: 'deepseek-v4-flash:cloud' });
+    await setRoleBinding('reviewer', { backend: 'ollama', model: 'deepseek-v4-flash:cloud' });
     await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
     const spawned = await callTool('spawn_instance', { project: 'p', mode: 'bypassPermissions', model: 'reviewer' });
     await waitFor(() => instances.idsForSession(spawned.sessionId).length > 0);
     const inst = instances.get(instances.idsForSession(spawned.sessionId)[0]);
-    assert.equal(inst.backendKind, 'ollama');
+    assert.equal(inst.backend, 'ollama');
     assert.equal(inst.model, 'deepseek-v4-flash:cloud');
   });
 
   test('a user custom role resolves to its bound claude model', async () => {
-    await addCustomRole({ role: 'tester', binding: { kind: 'claude', model: 'claude-haiku-4-5' } });
+    await addCustomRole({ role: 'tester', binding: { backend: 'claude', model: 'claude-haiku-4-5' } });
     await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
     const spawned = await callTool('spawn_instance', { project: 'p', mode: 'bypassPermissions', model: 'tester' });
     await waitFor(() => instances.idsForSession(spawned.sessionId).length > 0);
     const inst = instances.get(instances.idsForSession(spawned.sessionId)[0]);
-    assert.equal(inst.backendKind, 'claude');
+    assert.equal(inst.backend, 'claude');
     assert.equal(inst.model, 'claude-haiku-4-5');
   });
 
   test('a role name resolves case-insensitively at spawn', async () => {
     // Stored case-preserved as 'MyRole'; spawn requests it as 'MYROLE'.
-    await addCustomRole({ role: 'MyRole', binding: { kind: 'claude', model: 'claude-haiku-4-5' } });
+    await addCustomRole({ role: 'MyRole', binding: { backend: 'claude', model: 'claude-haiku-4-5' } });
     await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
     const spawned = await callTool('spawn_instance', { project: 'p', mode: 'bypassPermissions', model: 'MYROLE' });
     await waitFor(() => instances.idsForSession(spawned.sessionId).length > 0);
     const inst = instances.get(instances.idsForSession(spawned.sessionId)[0]);
-    assert.equal(inst.backendKind, 'claude');
+    assert.equal(inst.backend, 'claude');
     assert.equal(inst.model, 'claude-haiku-4-5');
   });
 
@@ -239,13 +240,13 @@ describe('role → {kind,model} resolution (MCP spawn)', () => {
   // pluginHost.roles(); overriding it here exercises the resolution path an
   // enabled plugin would drive, without standing up a real plugin.
   test('a plugin-owned role resolves to its manifest claude binding', async () => {
-    setPluginRolesProvider(() => [{ role: 'myplug/scribe', label: 'Scribe', binding: { kind: 'claude', model: 'claude-haiku-4-5' }, plugin: 'myplug' }]);
+    setPluginRolesProvider(() => [{ role: 'myplug/scribe', label: 'Scribe', binding: { backend: 'claude', model: 'claude-haiku-4-5' }, plugin: 'myplug' }]);
     try {
       await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
       const spawned = await callTool('spawn_instance', { project: 'p', mode: 'bypassPermissions', model: 'myplug/scribe' });
       await waitFor(() => instances.idsForSession(spawned.sessionId).length > 0);
       const inst = instances.get(instances.idsForSession(spawned.sessionId)[0]);
-      assert.equal(inst.backendKind, 'claude');
+      assert.equal(inst.backend, 'claude');
       assert.equal(inst.model, 'claude-haiku-4-5');
     } finally { setPluginRolesProvider(null); }
   });
@@ -268,30 +269,30 @@ describe('role → {kind,model} resolution (MCP spawn)', () => {
   });
 
   test('a plugin claude binding whose model left the catalog falls back to the default spawn tier', async () => {
-    setPluginRolesProvider(() => [{ role: 'myplug/legacy', label: 'Legacy', binding: { kind: 'claude', model: 'claude-retired-9' }, plugin: 'myplug' }]);
+    setPluginRolesProvider(() => [{ role: 'myplug/legacy', label: 'Legacy', binding: { backend: 'claude', model: 'claude-retired-9' }, plugin: 'myplug' }]);
     try {
       await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
-      const expected = getTierBackend(getDefaultSpawnTier()); // {kind,model} the fallback must land on
+      const expected = getTierBackend(getDefaultSpawnTier()); // {backend,model} the fallback must land on
       const spawned = await callTool('spawn_instance', { project: 'p', mode: 'bypassPermissions', model: 'myplug/legacy' });
       await waitFor(() => instances.idsForSession(spawned.sessionId).length > 0);
       const inst = instances.get(instances.idsForSession(spawned.sessionId)[0]);
-      assert.equal(inst.backendKind, expected.kind);
+      assert.equal(inst.backend, expected.backend);
       assert.equal(inst.model, expected.model, 'dead plugin model must not pass through — fall back to the default spawn tier');
     } finally { setPluginRolesProvider(null); }
   });
 
   test('a user override of a plugin role wins at spawn; re-selecting the manifest model reverts', async () => {
-    setPluginRolesProvider(() => [{ role: 'myplug/scribe', label: 'Scribe', binding: { kind: 'claude', model: 'claude-haiku-4-5' }, plugin: 'myplug' }]);
+    setPluginRolesProvider(() => [{ role: 'myplug/scribe', label: 'Scribe', binding: { backend: 'claude', model: 'claude-haiku-4-5' }, plugin: 'myplug' }]);
     try {
-      await setRoleBinding('myplug/scribe', { kind: 'claude', model: 'claude-opus-4-8' }); // override
+      await setRoleBinding('myplug/scribe', { backend: 'claude', model: 'claude-opus-4-8' }); // override
       await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
       const spawned = await callTool('spawn_instance', { project: 'p', mode: 'bypassPermissions', model: 'myplug/scribe' });
       await waitFor(() => instances.idsForSession(spawned.sessionId).length > 0);
       const inst = instances.get(instances.idsForSession(spawned.sessionId)[0]);
-      assert.equal(inst.backendKind, 'claude');
+      assert.equal(inst.backend, 'claude');
       assert.equal(inst.model, 'claude-opus-4-8', 'override beats the manifest haiku binding');
       // Revert by re-selecting the manifest model in the same picker (no reset).
-      await setRoleBinding('myplug/scribe', { kind: 'claude', model: 'claude-haiku-4-5' });
+      await setRoleBinding('myplug/scribe', { backend: 'claude', model: 'claude-haiku-4-5' });
       const spawned2 = await callTool('spawn_instance', { project: 'p', mode: 'bypassPermissions', model: 'myplug/scribe' });
       await waitFor(() => instances.idsForSession(spawned2.sessionId).length > 0);
       const inst2 = instances.get(instances.idsForSession(spawned2.sessionId)[0]);
@@ -303,8 +304,8 @@ describe('role → {kind,model} resolution (MCP spawn)', () => {
     // Enable the plugin, store an override, then disable: the role is no longer
     // resolvable, so the override must NOT rescue it — spawn refuses. (The
     // override key is retained in the per-test settings store; no cleanup needed.)
-    setPluginRolesProvider(() => [{ role: 'myplug/scribe', label: 'Scribe', binding: { kind: 'claude', model: 'claude-haiku-4-5' }, plugin: 'myplug' }]);
-    await setRoleBinding('myplug/scribe', { kind: 'claude', model: 'claude-opus-4-8' });
+    setPluginRolesProvider(() => [{ role: 'myplug/scribe', label: 'Scribe', binding: { backend: 'claude', model: 'claude-haiku-4-5' }, plugin: 'myplug' }]);
+    await setRoleBinding('myplug/scribe', { backend: 'claude', model: 'claude-opus-4-8' });
     setPluginRolesProvider(() => []); // disable
     try {
       await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
@@ -323,29 +324,32 @@ describe('role → {kind,model} resolution (MCP spawn)', () => {
 });
 
 describe('setModel live-switch gate', () => {
-  test('blocks changing model on an Ollama-backed session', async () => {
-    const { inst } = await spawnOllama();
-    await assert.rejects(() => inst.setModel('claude-opus-4-8', 'claude'), /Ollama-backed/);
+  test('blocks changing model on a session running on a substitution backend', async () => {
+    const { inst } = await spawnOnBackend();
+    await assert.rejects(() => inst.setModel('claude-opus-4-8', 'claude'), /non-Claude backend/);
   });
 
-  test('blocks switching a Claude session TO an Ollama backend', async () => {
+  test('blocks switching a Claude session TO a substitution backend', async () => {
     await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
     const r = await api(baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions', model: 'claude-opus-4-8' });
     const inst = instances.get(r.body.id);
     await waitFor(() => inst.status === 'idle');
-    await assert.rejects(() => inst.setModel('gemma4:cloud', 'ollama'), /Ollama-backed/);
+    await assert.rejects(() => inst.setModel('gemma4:cloud', 'ollama'), /non-Claude backend/);
+    // …and to a USER-DEFINED one, not just the built-in ollama row.
+    await addBackend({ id: 'p2', label: 'P2', template: 'p2 claude --model {model} --' });
+    await assert.rejects(() => inst.setModel('mine:v1', 'p2'), /non-Claude backend/);
   });
 });
 
 describe('null-model guards', () => {
-  test('a fresh ollama spawn with no model is refused', async () => {
+  test('a fresh substitution-backend spawn with no model is refused', async () => {
     await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
-    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions', backendKind: 'ollama' });
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions', backend: 'ollama' });
     assert.equal(r.status >= 400, true);
-    assert.match(JSON.stringify(r.body), /no resolvable model|OLLAMA_MODEL_MISSING/);
+    assert.match(JSON.stringify(r.body), /no resolvable model|BACKEND_MODEL_MISSING/);
   });
 
-  test('resuming an ollama session whose jsonl has no model is refused (not `--model undefined`)', async () => {
+  test('resuming a substitution-backend session whose jsonl has no model is refused (not `--model undefined`)', async () => {
     await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
     const cwd = path.join(projectsRoot, 'p');
     const sid = 'aaaaaaaa-0000-0000-0000-000000000000';
@@ -356,60 +360,11 @@ describe('null-model guards', () => {
     await fs.mkdir(dir, { recursive: true });
     await fs.writeFile(path.join(dir, `${sid}.jsonl`),
       JSON.stringify({ type: 'user', message: { role: 'user', content: 'hi' }, sessionId: sid }) + '\n');
-    await markOllamaSession(sid); // sidecar says this session is ollama-backed
+    await markSessionBackend(sid, 'ollama'); // sidecar says which backend, model unknown
     await assert.rejects(
       () => instances.create({ project: 'p', resume: sid }),
-      /no resolvable model|OLLAMA_MODEL_MISSING/,
+      /no resolvable model|BACKEND_MODEL_MISSING/,
     );
-  });
-});
-
-// ── Reachability preflight at spawn/respawn (Ollama down) ────────────────────
-// Installs fakeOllamaUnreachable so localhost:11434 fails deterministically
-// (regardless of any daemon on the host), overriding the file-level reachable
-// shim for this suite's duration.
-describe('ollama reachability preflight (daemon down)', () => {
-  let dctx, dbase, dinst, dhome, restoreUnreach;
-  before(async () => { restoreUnreach = fakeOllamaUnreachable(); dctx = await bootServer({ scenarioPath: SCENARIO }); ({ baseUrl: dbase, instances: dinst } = dctx); });
-  after(async () => { await dctx.close(); restoreUnreach(); });
-  beforeEach(async () => { ({ home: dhome } = await freshProjectsRoot()); });
-  afterEach(async () => { await dinst.shutdown(); await rmrf(dhome); });
-
-  test('HTTP spawn fails with 503 + reachability message, spawns nothing', async () => {
-    await api(dbase, 'POST', '/api/projects', { name: 'p' });
-    const before = dinst.list().length;
-    const r = await api(dbase, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions', model: 'glm-5.2:cloud', backendKind: 'ollama' });
-    assert.equal(r.status, 503, JSON.stringify(r.body));
-    assert.match(JSON.stringify(r.body), /not reachable|OLLAMA_PREFLIGHT_FAILED/);
-    assert.equal(dinst.list().length, before, 'no instance created on preflight failure');
-  });
-
-  test('MCP spawn_instance surfaces the reachability prose as an isError result', async () => {
-    await api(dbase, 'POST', '/api/projects', { name: 'p' });
-    const res = await fetch(dbase + '/mcp', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'spawn_instance', arguments: { project: 'p', mode: 'bypassPermissions', model: 'glm-5.2:cloud' } } }),
-    });
-    const body = await res.json();
-    assert.equal(body.result.isError, true, JSON.stringify(body));
-    // content[0] is prose for the LLM — it must contain the actionable reason.
-    assert.match(body.result.content[0].text, /Ollama not reachable at/);
-  });
-
-  test('respawn of an ollama-backed session fails preflight without wiping history', async () => {
-    // Bring an ollama instance up WITH a reachable daemon, then let the daemon
-    // "go down" and respawn it — the respawn must reject.
-    const restore = fakeOllamaReachable();
-    await api(dbase, 'POST', '/api/projects', { name: 'p' });
-    const r = await api(dbase, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions', model: 'glm-5.2:cloud', backendKind: 'ollama' });
-    assert.equal(r.status, 201, JSON.stringify(r.body));
-    const id = r.body.id;
-    await waitFor(() => dinst.get(id)?.status === 'idle');
-    await dinst.get(id).kill({ graceMs: 10 });
-    await waitFor(() => !dinst.get(id)?.proc);
-    restore(); // daemon down again
-    await assert.rejects(() => dinst.respawn(id), /not reachable|OLLAMA_PREFLIGHT_FAILED/);
   });
 });
 
@@ -445,36 +400,48 @@ class ControllableLauncher {
 }
 
 describe('launch_failed crash signal', () => {
-  let cctx, cbase, cinst, chome, launcher, restore, events;
+  let cctx, cbase, cinst, chome, launcher, events;
   before(async () => {
-    restore = fakeOllamaReachable(); // preflight passes; we test the post-launch crash
     launcher = new ControllableLauncher();
     cctx = await bootServer({ scenarioPath: SCENARIO, claudeLauncher: launcher });
     ({ baseUrl: cbase, instances: cinst } = cctx);
   });
-  after(async () => { await cctx.close(); restore(); });
+  after(async () => { await cctx.close(); });
   beforeEach(async () => { ({ home: chome } = await freshProjectsRoot()); events = []; cinst.on('event', ({ ev }) => events.push(ev)); });
   afterEach(async () => { cinst.removeAllListeners('event'); await cinst.shutdown(); await rmrf(chome); });
 
   const hasLaunchFailed = () => events.find(e => e.kind === 'system' && e.subtype === 'launch_failed');
 
-  async function spawnAndWaitIdle(model, backendKind) {
+  async function spawnAndWaitIdle(model, backend) {
     await api(cbase, 'POST', '/api/projects', { name: 'p' });
-    const r = await api(cbase, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions', model, backendKind });
+    const r = await api(cbase, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions', model, backend });
     assert.equal(r.status, 201, JSON.stringify(r.body));
     const id = r.body.id;
     await waitFor(() => cinst.get(id)?.status === 'idle');
     return id;
   }
 
-  test('an ollama subprocess that crashes emits launch_failed with captured stderr', async () => {
+  test('a substitution-backend subprocess that crashes emits launch_failed with captured stderr', async () => {
     const id = await spawnAndWaitIdle('glm-5.2:cloud', 'ollama');
     launcher.last.crash('Error: cloud model requires auth (401)');
     await waitFor(() => cinst.get(id)?.status === 'crashed');
     const ev = hasLaunchFailed();
-    assert.ok(ev, 'launch_failed emitted for ollama crash');
+    assert.ok(ev, 'launch_failed emitted for a substitution-backend crash');
     assert.equal(ev.data.code, 1);
     assert.match(ev.data.stderr, /cloud model requires auth \(401\)/);
+  });
+
+  // Generalization check: the signal is keyed on "not the identity backend", so a
+  // user-defined row gets it too.
+  test('a USER-DEFINED backend crash also emits launch_failed', async () => {
+    await addBackend({ id: 'crashy', label: 'Crashy', template: 'crashy claude --model {model} --' });
+    await addCustomModel({ label: 'C', model: 'c:v1', backend: 'crashy', contextWindow: 100_000 });
+    const id = await spawnAndWaitIdle('c:v1', 'crashy');
+    launcher.last.crash('crashyctl: not found');
+    await waitFor(() => cinst.get(id)?.status === 'crashed');
+    const ev = hasLaunchFailed();
+    assert.ok(ev, 'launch_failed emitted for a user-defined backend crash');
+    assert.match(ev.data.stderr, /crashyctl: not found/);
   });
 
   test('a claude subprocess crash emits exit but NOT launch_failed', async () => {
@@ -485,7 +452,7 @@ describe('launch_failed crash signal', () => {
     assert.equal(hasLaunchFailed(), undefined, 'no launch_failed for claude backend');
   });
 
-  test('a commanded kill of an ollama session does NOT emit launch_failed', async () => {
+  test('a commanded kill of a substitution-backend session does NOT emit launch_failed', async () => {
     const id = await spawnAndWaitIdle('glm-5.2:cloud', 'ollama');
     await cinst.get(id).kill({ graceMs: 5 }); // sets _killing → signalled exit is guarded
     await waitFor(() => !cinst.get(id)?.proc);
@@ -515,7 +482,7 @@ describe('resume recovers the tagged model from the backend store', () => {
         JSON.stringify({ type: 'user', message: { role: 'user', content: 'hi' }, sessionId: sid }) + '\n' +
         JSON.stringify({ type: 'assistant', message: { role: 'assistant', model: 'deepseek-v4-flash', content: [] }, sessionId: sid }) + '\n');
       // Store holds the FULL tag (written at the original spawn).
-      await markOllamaSession(sid, 'deepseek-v4-flash:cloud');
+      await markSessionBackend(sid, 'ollama', 'deepseek-v4-flash:cloud');
 
       const inst = await instances.create({ project: 'p', resume: sid }); // no explicit model
       await waitFor(() => inst.status === 'idle');

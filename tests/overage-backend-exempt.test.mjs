@@ -1,19 +1,20 @@
-// Ollama-backed sessions are exempt from the usage-window (overage) stop/resume
-// flow. A usage/rate-limit window is an Anthropic-account concept, so a session
-// whose agent tree is PURELY Ollama-backed must sit entirely outside the flow —
-// never auto-stopped on a trip, never queued behind the global gate, never armed
-// for auto-resume, and it shows no overage badge. A tree containing ANY
-// claude-backed agent (e.g. an Ollama conductor whose workers are Claude) stays
+// Sessions on a non-Claude backend are exempt from the usage-window (overage)
+// stop/resume flow. A usage/rate-limit window is an Anthropic-account concept, so
+// a session whose agent tree touches NO monitored domain must sit entirely outside
+// the flow — never auto-stopped on a trip, never queued behind the global gate,
+// never armed for auto-resume, and it shows no overage badge. A tree containing ANY
+// claude-backed agent (e.g. a non-Claude conductor whose workers are Claude) stays
 // in the flow. Exercises the backend-scoped usage-window-domain seam
-// (src/usageWindowDomains.js) + the guards in instances.js.
+// (src/usageWindowDomains.js — each backend maps to its own domain, `claude` to the
+// monitored `anthropic`) + the guards in instances.js.
 
 import { test, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { bootServer, api, waitFor, freshProjectsRoot, rmrf, fakeOllamaReachable } from './helpers.mjs';
-import { setOnOverageAction } from '../src/appSettings.js';
+import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
+import { setOnOverageAction, addBackend, addCustomModel } from '../src/appSettings.js';
 import { getAccountUsage } from '../src/accountUsage.js';
 
 const nowSec = () => Math.floor(Date.now() / 1000);
@@ -43,13 +44,12 @@ async function writeScenario(obj) {
   return p;
 }
 
-let ctx, instances, home, restoreFetch;
+let ctx, instances, home;
 before(async () => {
-  restoreFetch = fakeOllamaReachable(); // Ollama spawn preflight sees a live daemon
   ctx = await bootServer({});
   instances = ctx.instances;
 });
-after(async () => { await ctx.close(); restoreFetch(); });
+after(async () => { await ctx.close(); });
 
 beforeEach(async () => {
   ({ home } = await freshProjectsRoot());
@@ -65,12 +65,12 @@ afterEach(async () => { await instances.shutdown(); await rmrf(home); });
 
 // create() directly (not the REST route) so we can pass callerInstanceId /
 // conducted — the MCP-only fields the /api/instances route doesn't expose.
-async function spawn({ scenario = HOLD, backendKind = 'claude', model, callerInstanceId, conducted } = {}) {
+async function spawn({ scenario = HOLD, backend = 'claude', model, callerInstanceId, conducted } = {}) {
   process.env.FAKE_CLAUDE_SCENARIO = await writeScenario(scenario);
   const inst = await instances.create({
     project: 'demo', mode: 'bypassPermissions',
     ...(model ? { model } : {}),
-    ...(backendKind === 'ollama' ? { backendKind: 'ollama' } : {}),
+    ...(backend !== 'claude' ? { backend } : {}),
     ...(conducted ? { conducted: true } : {}),
     ...(callerInstanceId ? { callerInstanceId } : {}),
   });
@@ -81,10 +81,10 @@ async function spawn({ scenario = HOLD, backendKind = 'claude', model, callerIns
 const sysEvents = (inst) => { const evs = []; inst.on('event', e => evs.push(e)); return evs; };
 const sub = (evs, subtype) => evs.filter(e => e.kind === 'system' && e.subtype === subtype);
 
-test('_inUsageWindowFlow: a purely-Ollama session is exempt; a Claude session is in-flow', async () => {
+test('_inUsageWindowFlow: a session on a substitution backend is exempt; a Claude session is in-flow', async () => {
   const claude = await spawn({});
-  const ollama = await spawn({ backendKind: 'ollama', model: 'gemma4:cloud' });
-  assert.equal(ollama.backendKind, 'ollama');
+  const ollama = await spawn({ backend: 'ollama', model: 'gemma4:cloud' });
+  assert.equal(ollama.backend, 'ollama');
   assert.equal(instances._inUsageWindowFlow(claude), true);
   assert.equal(instances._inUsageWindowFlow(ollama), false);
   assert.deepEqual(instances.agentTreeBackends(ollama), new Set(['ollama']));
@@ -92,21 +92,33 @@ test('_inUsageWindowFlow: a purely-Ollama session is exempt; a Claude session is
   assert.deepEqual(instances.usageWindowDomainsOf(claude), new Set(['anthropic']));
 });
 
-test('agent tree: an Ollama conductor with a Claude worker is in-flow; a lone Ollama leaf is not', async () => {
-  const conductor = await spawn({ backendKind: 'ollama', model: 'gemma4:cloud' });
+// A USER-DEFINED backend gets its OWN unmonitored domain — the exemption is not
+// an 'ollama' special case, it falls out of the domain mapping.
+test('_inUsageWindowFlow: a user-defined backend gets its own unmonitored domain and is exempt too', async () => {
+  await addBackend({ id: 'my-proxy', label: 'My Proxy', template: 'proxyctl claude --model {model} --' });
+  await addCustomModel({ label: 'Mine', model: 'mine:v1', backend: 'my-proxy', contextWindow: 100_000 });
+  const proxy = await spawn({ backend: 'my-proxy', model: 'mine:v1' });
+  assert.equal(proxy.backend, 'my-proxy');
+  assert.deepEqual(instances.agentTreeBackends(proxy), new Set(['my-proxy']));
+  assert.deepEqual(instances.usageWindowDomainsOf(proxy), new Set(['my-proxy']));
+  assert.equal(instances._inUsageWindowFlow(proxy), false);
+});
+
+test('agent tree: a non-Claude conductor with a Claude worker is in-flow; a lone non-Claude leaf is not', async () => {
+  const conductor = await spawn({ backend: 'ollama', model: 'gemma4:cloud' });
   const worker = await spawn({ conducted: true, callerInstanceId: conductor.id });
-  const lone = await spawn({ backendKind: 'ollama', model: 'gemma4:cloud' });
-  assert.equal(worker.backendKind, 'claude');
+  const lone = await spawn({ backend: 'ollama', model: 'gemma4:cloud' });
+  assert.equal(worker.backend, 'claude');
   assert.equal(worker.callerInstanceId, conductor.id);
   assert.deepEqual(instances.agentTreeBackends(conductor), new Set(['ollama', 'claude']));
   assert.equal(instances._inUsageWindowFlow(conductor), true, 'tree touches anthropic via the Claude worker');
   assert.equal(instances._inUsageWindowFlow(worker), true, 'the Claude worker itself is in-flow');
-  assert.equal(instances._inUsageWindowFlow(lone), false, 'a childless Ollama leaf stays exempt');
+  assert.equal(instances._inUsageWindowFlow(lone), false, 'a childless non-Claude leaf stays exempt');
 });
 
 test('global overage trip stops a mid-turn Claude session but exempts a coexisting Ollama session', async () => {
   const claude = await spawn({});
-  const ollama = await spawn({ backendKind: 'ollama', model: 'gemma4:cloud' });
+  const ollama = await spawn({ backend: 'ollama', model: 'gemma4:cloud' });
   const cEvs = sysEvents(claude), oEvs = sysEvents(ollama);
   // Drive both mid-turn (HOLD emits no RESULT ⇒ status stays 'turn').
   claude.prompt('go'); ollama.prompt('go');
@@ -128,7 +140,7 @@ test('global overage trip stops a mid-turn Claude session but exempts a coexisti
 
 test('during an active overage window an Ollama session still sends normally (not queued)', async () => {
   const claude = await spawn({});
-  const ollama = await spawn({ backendKind: 'ollama', model: 'gemma4:cloud' });
+  const ollama = await spawn({ backend: 'ollama', model: 'gemma4:cloud' });
   claude.prompt('go');
   await waitFor(() => claude.status === 'turn');
   instances._handleOverageTrip(null, { resetsAt: nowSec() + 3600 });
@@ -141,7 +153,7 @@ test('during an active overage window an Ollama session still sends normally (no
 });
 
 test("an Ollama session's own rate_limit_event does not trip the global flow", async () => {
-  const ollama = await spawn({ backendKind: 'ollama', model: 'gemma4:cloud', scenario: tripScenario(nowSec() + 3600) });
+  const ollama = await spawn({ backend: 'ollama', model: 'gemma4:cloud', scenario: tripScenario(nowSec() + 3600) });
   const evs = sysEvents(ollama);
   ollama.prompt('go');
   // The trip event is emitted + processed, then RESULT winds the turn to idle.
