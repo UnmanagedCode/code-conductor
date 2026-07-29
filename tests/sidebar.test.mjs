@@ -26,7 +26,7 @@ async function setupSidebar({ onLoadSessions } = {}) {
   document.body.innerHTML = '<ul id="root"></ul>';
   const root = document.getElementById('root');
 
-  const calls = { select: [], create: [], resume: [], removeWorktree: [], deleteProject: [], editWorkspace: [] };
+  const calls = { select: [], create: [], resume: [], removeWorktree: [], deleteProject: [], editWorkspace: [], toggleMute: [] };
   const sidebar = new Sidebar({
     rootList: root,
     onSelectInstance: (id) => calls.select.push(id),
@@ -36,6 +36,7 @@ async function setupSidebar({ onLoadSessions } = {}) {
     onDeleteProject: (p) => calls.deleteProject.push(p),
     onLoadSessions: onLoadSessions ?? (async () => []),
     onEditWorkspace: (g) => calls.editWorkspace.push(g),
+    onToggleMuteSession: (a) => calls.toggleMute.push(a),
   });
   return { window, document, root, sidebar, calls };
 }
@@ -829,4 +830,54 @@ test('a synthetic session with no lastResponseAt (pre-first-turn) uses inst.crea
   } finally {
     Date.now = realNow;
   }
+});
+
+test('Per-session mute button: live rows expose it, clicking it reports the toggle, muted rows show 🔕', async () => {
+  const now = Date.now();
+  const { root, sidebar, calls } = await setupSidebar({
+    onLoadSessions: async () => [
+      { sessionId: 'sid-live', firstPrompt: 'live', mtime: now - 60_000, size: 10 },
+      { sessionId: 'sid-old', firstPrompt: 'old', mtime: now - 3600_000, size: 10 },
+    ],
+  });
+  sidebar.setProjects([{
+    name: 'demo', path: '/p/demo', sessionIds: [],
+    isGitRepo: false, worktrees: [],
+    sessions: { count: 2, lastMtime: now - 60_000 },
+  }]);
+  sidebar.setInstances([
+    { id: 'inst-x', project: 'demo', sessionId: 'sid-live', status: 'idle', mode: 'plan', worktree: null },
+  ]);
+  await new Promise(r => setTimeout(r, 0));
+
+  const rowBySid = (sid) => [...root.querySelectorAll('li')]
+    .find(li => li._holder?.session?.sessionId === sid).querySelector('.session-row');
+
+  const liveRow = rowBySid('sid-live');
+  const oldRow = rowBySid('sid-old');
+  const muteBtn = liveRow.querySelector('.session-mute');
+  assert.ok(muteBtn, 'live row carries a mute button');
+  assert.equal(muteBtn.textContent, '🔔', 'unmuted row shows the bell');
+  assert.equal(muteBtn.getAttribute('aria-pressed'), 'false');
+  assert.equal(oldRow.querySelector('.session-mute'), null, 'offline + unmuted row stays uncluttered');
+
+  muteBtn.click();
+  assert.deepEqual(calls.toggleMute, [{ sessionId: 'sid-live', mute: true }]);
+  assert.deepEqual(calls.select, [], 'the mute click does not also select the row');
+
+  // app.js answers by pushing the new mute set back in.
+  sidebar.setMutedSessions(new Set(['sid-live', 'sid-old']));
+  await new Promise(r => setTimeout(r, 0));
+  assert.ok(rowBySid('sid-live').classList.contains('muted'), 'muted row is marked at a glance');
+  const mutedBtn = rowBySid('sid-live').querySelector('.session-mute');
+  assert.equal(mutedBtn.textContent, '🔕', 'reused button repaints to the muted glyph');
+  assert.equal(mutedBtn.getAttribute('aria-pressed'), 'true');
+  // An offline session that was muted while live keeps the affordance so it
+  // can be un-muted.
+  assert.ok(rowBySid('sid-old').querySelector('.session-mute'), 'muted offline row keeps its button');
+
+  // Toggling again reports mute:false — the handler reads the live set, not a
+  // value captured when the button was created.
+  mutedBtn.click();
+  assert.deepEqual(calls.toggleMute[1], { sessionId: 'sid-live', mute: false });
 });

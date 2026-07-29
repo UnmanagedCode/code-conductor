@@ -12,7 +12,7 @@ import { UsageTracker, RateLimitTracker } from './usage.js';
 import {
   NotificationState, ensurePermission, setGlobalEnabled,
   isNotificationAPIAvailable, registerServiceWorker,
-  closeAllOnFocus,
+  closeAllOnFocus, muteSession, restoreMutedSessions,
 } from './notifications.js';
 import {
   writeSessionAnchor, pushSessionAnchor, stashCurrentAnchorForRelaunch,
@@ -405,12 +405,20 @@ const sidebar = new Sidebar({
   onDeleteSession: (...a) => sessionActions.deleteSession(...a),
   onEditWorkspace: (name) => workspaceHandles.openEdit(name),
   onPromoteSession: (...a) => sessionActions.promoteSession(...a),
+  onToggleMuteSession: ({ sessionId, mute }) => {
+    muteSession(sessionId, mute);
+    sidebar.setMutedSessions(NotificationState.mutedSessions);
+  },
 });
 // Seed the sidebar with any unread counts restored from localStorage so
 // the pills appear on the first render after a page reload — without
 // this, sidebar starts with an empty Map and the badges only reappear
 // after the next bumpUnread fires.
 sidebar.setUnread(unreadBySessionId);
+// Same for per-session notification mutes: rehydrate the set, then hand it
+// to the sidebar so muted rows render their 🔕 on the first paint.
+restoreMutedSessions();
+sidebar.setMutedSessions(NotificationState.mutedSessions);
 
 const composer = attachComposer({
   form: dom.composerForm,

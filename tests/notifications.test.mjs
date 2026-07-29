@@ -164,6 +164,98 @@ test('maybeNotifyTurnEnd: fired notification data carries instanceId and session
   assert.deepEqual(result.data, { project: 'proj-a', instanceId: 'inst-1', sessionId: 'sess-1' });
 });
 
+// ── per-session mute ────────────────────────────────────────────────────────
+// The mute set is keyed by sessionId (not the per-process instance id) so a
+// respawn under a new instance id can't silently un-mute a session.
+
+function installFakeLocalStorage(seed = {}) {
+  const map = new Map(Object.entries(seed));
+  globalThis.localStorage = {
+    getItem: (k) => (map.has(k) ? map.get(k) : null),
+    setItem: (k, v) => { map.set(k, String(v)); },
+    removeItem: (k) => { map.delete(k); },
+  };
+  return map;
+}
+
+test('muted session stays silent while an unmuted sibling still notifies', async () => {
+  const mod = await loadFresh();
+  const { maybeNotifyTurnEnd, muteSession, isSessionMuted, NotificationState } = mod;
+  installFakeNotificationGlobals();
+  installFakeLocalStorage();
+  try {
+    NotificationState.globalEnabled = true;
+    NotificationState.permission = 'granted';
+    muteSession('sess-muted', true);
+    assert.equal(isSessionMuted('sess-muted'), true);
+    assert.equal(isSessionMuted('sess-loud'), false);
+
+    // shouldNotify's mutedInstance branch, fed from the real mute set.
+    const base = { permission: 'granted', globalEnabled: true, documentHidden: true, isError: false };
+    assert.equal(mod.shouldNotify({ ...base, mutedInstance: isSessionMuted('sess-muted') }), false);
+    assert.equal(mod.shouldNotify({ ...base, mutedInstance: isSessionMuted('sess-loud') }), true);
+
+    // …and end-to-end through the turn_end helper.
+    const turnEvent = { isError: false, stopReason: 'end_turn', cost: null };
+    assert.equal(
+      maybeNotifyTurnEnd({ instanceId: 'i-muted', projectName: 'p', sessionId: 'sess-muted', turnEvent }),
+      null, 'muted session fires nothing');
+    assert.ok(
+      maybeNotifyTurnEnd({ instanceId: 'i-loud', projectName: 'p', sessionId: 'sess-loud', turnEvent }),
+      'unmuted sibling still notifies');
+
+    // Respawn: same session, brand-new instance id — still muted.
+    assert.equal(
+      maybeNotifyTurnEnd({ instanceId: 'i-muted-respawned', projectName: 'p', sessionId: 'sess-muted', turnEvent }),
+      null, 'mute survives a respawn under a new instance id');
+
+    // Mute beats the isError override that otherwise notifies on a visible tab.
+    assert.equal(
+      maybeNotifyTurnEnd({ instanceId: 'i-muted', projectName: 'p', sessionId: 'sess-muted', turnEvent: { isError: true, stopReason: 'error', cost: null } }),
+      null, 'muted session stays silent even on an errored turn');
+
+    muteSession('sess-muted', false);
+    assert.ok(maybeNotifyTurnEnd({ instanceId: 'i-muted', projectName: 'p', sessionId: 'sess-muted', turnEvent }), 'unmuting restores pings');
+  } finally {
+    delete globalThis.localStorage;
+  }
+});
+
+test('mute set round-trips through localStorage across a reload', async () => {
+  const store = installFakeLocalStorage();
+  try {
+    const first = await loadFresh();
+    first.muteSession('sess-a', true);
+    first.muteSession('sess-b', true);
+    assert.deepEqual(JSON.parse(store.get('code-conductor:muted-sessions')), ['sess-a', 'sess-b']);
+
+    // Fresh module instance = a page reload: state starts empty until restored.
+    const reloaded = await loadFresh();
+    assert.equal(reloaded.isSessionMuted('sess-a'), false, 'starts empty before restore');
+    reloaded.restoreMutedSessions();
+    assert.equal(reloaded.isSessionMuted('sess-a'), true);
+    assert.equal(reloaded.isSessionMuted('sess-b'), true);
+
+    reloaded.muteSession('sess-a', false);
+    assert.deepEqual(JSON.parse(store.get('code-conductor:muted-sessions')), ['sess-b']);
+    reloaded.muteSession('sess-b', false);
+    assert.equal(store.has('code-conductor:muted-sessions'), false, 'empty set clears the key');
+  } finally {
+    delete globalThis.localStorage;
+  }
+});
+
+test('restoreMutedSessions: corrupt or absent storage leaves the set empty', async () => {
+  installFakeLocalStorage({ 'code-conductor:muted-sessions': '{not json' });
+  try {
+    const mod = await loadFresh();
+    mod.restoreMutedSessions();
+    assert.equal(mod.NotificationState.mutedSessions.size, 0);
+  } finally {
+    delete globalThis.localStorage;
+  }
+});
+
 test('fire: page-level fallback onclick dispatches cc-notification-click and closes the notification', async () => {
   const { fire } = await loadFresh();
   const { dispatched, isFocused } = installFakeNotificationGlobals();
