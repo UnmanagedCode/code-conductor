@@ -201,45 +201,62 @@ test('Ollama-backed spawn sets CLAUDE_CODE_AUTO_COMPACT_WINDOW to the curated mo
   const { env, id } = await spawnAndDump('deepseek-v4-flash:cloud', { backendKind: 'ollama', project: 'ollama-a' });
   assert.equal(env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, '1000000',
     'a 1M curated model sets the raw token count directly');
+  assert.equal(env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, '1000000',
+    'MAX_CONTEXT_TOKENS must also be set — AUTO_COMPACT_WINDOW alone is clamped by the CLI to a 200k assumed window for unrecognized models');
   assert.equal(instances.get(id).backendKind, 'ollama');
 });
 
 test('Ollama-backed spawn honours a smaller curated window (256k)', async () => {
   const { env } = await spawnAndDump('qwen3.5:cloud', { backendKind: 'ollama', project: 'ollama-b' });
   assert.equal(env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, '256000');
+  assert.equal(env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, '256000');
 });
 
 test('Ollama-backed spawn uses a custom model\'s declared contextWindow', async () => {
   await addCustomBackend({ label: 'Local Big', model: 'localbig:cloud', contextWindow: 300_000 });
   const { env } = await spawnAndDump('localbig:cloud', { backendKind: 'ollama', project: 'ollama-c' });
   assert.equal(env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, '300000');
+  assert.equal(env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, '300000');
 });
 
-test('Ollama-backed spawn with an unknown window leaves CLAUDE_CODE_AUTO_COMPACT_WINDOW unset', async () => {
+test('Ollama-backed spawn with an unknown window leaves CLAUDE_CODE_AUTO_COMPACT_WINDOW and CLAUDE_CODE_MAX_CONTEXT_TOKENS unset', async () => {
   await addCustomBackend({ label: 'Local NoWin', model: 'localnowin:cloud' }); // no contextWindow
-  const hadAmbient = 'CLAUDE_CODE_AUTO_COMPACT_WINDOW' in process.env;
-  const savedAmbient = process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW;
+  const hadAmbientCompact = 'CLAUDE_CODE_AUTO_COMPACT_WINDOW' in process.env;
+  const savedAmbientCompact = process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW;
+  const hadAmbientMax = 'CLAUDE_CODE_MAX_CONTEXT_TOKENS' in process.env;
+  const savedAmbientMax = process.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS;
   process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = '999999'; // poison: prove the strip, not ambient luck
+  process.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS = '999999';
   try {
     const { env } = await spawnAndDump('localnowin:cloud', { backendKind: 'ollama', project: 'ollama-d' });
     assert.ok(!('CLAUDE_CODE_AUTO_COMPACT_WINDOW' in env),
       'no declared window → the CLI uses its own default, we set nothing (even with an ambient value present)');
+    assert.ok(!('CLAUDE_CODE_MAX_CONTEXT_TOKENS' in env),
+      'no declared window → we set nothing (even with an ambient value present)');
   } finally {
-    if (hadAmbient) process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = savedAmbient;
+    if (hadAmbientCompact) process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = savedAmbientCompact;
     else delete process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW;
+    if (hadAmbientMax) process.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS = savedAmbientMax;
+    else delete process.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS;
   }
 });
 
-test('a Claude-backed spawn never sets CLAUDE_CODE_AUTO_COMPACT_WINDOW', async () => {
-  const hadAmbient = 'CLAUDE_CODE_AUTO_COMPACT_WINDOW' in process.env;
-  const savedAmbient = process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW;
+test('a Claude-backed spawn never sets CLAUDE_CODE_AUTO_COMPACT_WINDOW or CLAUDE_CODE_MAX_CONTEXT_TOKENS', async () => {
+  const hadAmbientCompact = 'CLAUDE_CODE_AUTO_COMPACT_WINDOW' in process.env;
+  const savedAmbientCompact = process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW;
+  const hadAmbientMax = 'CLAUDE_CODE_MAX_CONTEXT_TOKENS' in process.env;
+  const savedAmbientMax = process.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS;
   process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = '999999'; // poison: prove the strip, not ambient luck
+  process.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS = '999999';
   try {
     const { env } = await spawnAndDump('claude-opus-4-8', { project: 'claude-x' });
     assert.ok(!('CLAUDE_CODE_AUTO_COMPACT_WINDOW' in env));
+    assert.ok(!('CLAUDE_CODE_MAX_CONTEXT_TOKENS' in env));
   } finally {
-    if (hadAmbient) process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = savedAmbient;
+    if (hadAmbientCompact) process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = savedAmbientCompact;
     else delete process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW;
+    if (hadAmbientMax) process.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS = savedAmbientMax;
+    else delete process.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS;
   }
 });
 
