@@ -44,6 +44,7 @@ import { makeDismissable } from './dismissable.js';
 import { formatAgo } from './sidebar.js';
 import { send } from './ws.js';
 import { resolveSpawnModel, getTierList, getActiveTierEnabled, getActiveTierBackend, getTierLabel, backendIdOf, getBackendLabel, CLAUDE_BACKEND } from './models.js';
+import { isSessionMuted } from './notifications.js';
 
 // Combined popover: "Session totals" section above, "Usage limits" section
 // below. ctx data is per-session; usage-limit data is account-wide.
@@ -500,9 +501,10 @@ export function installHeader({
     dom.syncBtn.disabled = !hasWorktree;
     dom.mergeBtn.hidden = !hasWorktree;
     dom.mergeBtn.disabled = !hasWorktree;
-    // Overflow menu (⋮) hosts secondary actions: Interrupt/Kill + Debug
-    // capture. The whole trigger is hidden when no items apply (i.e. the
-    // instance isn't alive). Debug button: shown while alive; once enabled
+    // Overflow menu (⋮) hosts secondary actions: Interrupt/Kill, per-session
+    // mute, and Debug capture. The whole trigger is hidden when no items
+    // apply (i.e. the instance isn't alive). Debug button: shown while
+    // alive; once enabled
     // it flips to a disabled '🐛 capturing' indicator — there's no off
     // path (the CLI stays mirrored for the rest of its life). Auto-approve
     // plans lives in the controls row (sibling of #mode-select), not in
@@ -517,6 +519,14 @@ export function installHeader({
     dom.changeModelBtn.textContent = '🧠 Change model';
     dom.sessionStatsBtn.hidden = !canMenu;
     dom.sessionStatsBtn.disabled = !canMenu || !inst.sessionId;
+    dom.muteBtn.hidden = !canMenu;
+    dom.muteBtn.disabled = !canMenu || !inst.sessionId;
+    const muted = !!inst.sessionId && isSessionMuted(inst.sessionId);
+    dom.muteBtn.textContent = muted ? '🔔 Unmute' : '🔕 Mute';
+    dom.muteBtn.title = muted
+      ? 'unmute turn-end notifications for this session'
+      : 'mute turn-end notifications for this session';
+    dom.muteBtn.setAttribute('aria-pressed', muted ? 'true' : 'false');
     // Auto-approve only applies to plan mode (it short-circuits the
     // ExitPlanMode confirmation card). Hide it in code/ask mode so the
     // controls row stays uncluttered.

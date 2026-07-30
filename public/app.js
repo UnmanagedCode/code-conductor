@@ -12,7 +12,7 @@ import { UsageTracker, RateLimitTracker } from './usage.js';
 import {
   NotificationState, ensurePermission, setGlobalEnabled,
   isNotificationAPIAvailable, registerServiceWorker,
-  closeAllOnFocus, muteSession, restoreMutedSessions,
+  closeAllOnFocus, muteSession, isSessionMuted, restoreMutedSessions,
 } from './notifications.js';
 import {
   writeSessionAnchor, pushSessionAnchor, stashCurrentAnchorForRelaunch,
@@ -98,6 +98,7 @@ const dom = {
   composerAttachments: document.getElementById('composer-attachments'),
   modeSelect: document.getElementById('mode-select'),
   killBtn: document.getElementById('kill-btn'),
+  muteBtn: document.getElementById('mute-btn'),
   resumeBtn: document.getElementById('resume-btn'),
   instanceTitle: document.getElementById('instance-title'),
   taskPanel: document.getElementById('task-panel'),
@@ -405,20 +406,15 @@ const sidebar = new Sidebar({
   onDeleteSession: (...a) => sessionActions.deleteSession(...a),
   onEditWorkspace: (name) => workspaceHandles.openEdit(name),
   onPromoteSession: (...a) => sessionActions.promoteSession(...a),
-  onToggleMuteSession: ({ sessionId, mute }) => {
-    muteSession(sessionId, mute);
-    sidebar.setMutedSessions(NotificationState.mutedSessions);
-  },
 });
 // Seed the sidebar with any unread counts restored from localStorage so
 // the pills appear on the first render after a page reload — without
 // this, sidebar starts with an empty Map and the badges only reappear
 // after the next bumpUnread fires.
 sidebar.setUnread(unreadBySessionId);
-// Same for per-session notification mutes: rehydrate the set, then hand it
-// to the sidebar so muted rows render their 🔕 on the first paint.
+// Rehydrate per-session notification mutes so the header's Mute/Unmute
+// item reflects the right state on the first render after a page reload.
 restoreMutedSessions();
-sidebar.setMutedSessions(NotificationState.mutedSessions);
 
 const composer = attachComposer({
   form: dom.composerForm,
@@ -638,6 +634,15 @@ dom.killBtn.addEventListener('click', () => {
   } else if (confirm('Terminate this instance?')) {
     send('kill', { id: state.activeId });
   }
+});
+
+dom.muteBtn.addEventListener('click', () => {
+  if (!state.activeId) return;
+  const inst = state.instances.find(i => i.id === state.activeId);
+  if (!inst?.sessionId) return;
+  closeOverflow();
+  muteSession(inst.sessionId, !isSessionMuted(inst.sessionId));
+  headerHandle.update();
 });
 
 // Turn-indicator escalate button: force-stop the in-flight turn (hard
