@@ -446,17 +446,17 @@ test('readProjectMeta returns {workspace:null} when the dotfile is absent', asyn
 
 test('writeProjectMeta({workspace}) round-trips through listProjects/GET /api/projects', async () => {
   await api(baseUrl, 'POST', '/api/projects', { name: 'work' });
-  await writeProjectMeta('work', { workspace: 'Side projects' });
+  await writeProjectMeta('work', { workspace: 'Side-projects' });
   const meta = await readProjectMeta('work');
-  assert.equal(meta.workspace, 'Side projects');
+  assert.equal(meta.workspace, 'Side-projects');
   // The on-disk file lives in the workspace-wide central store.
   const file = path.join(projectsRoot, '.code-conductor', 'projects', 'work', 'project.json');
   const raw = await fs.readFile(file, 'utf8');
-  assert.match(raw, /"workspace": "Side projects"/);
+  assert.match(raw, /"workspace": "Side-projects"/);
   // And it surfaces in the REST listing.
   const r = await api(baseUrl, 'GET', '/api/projects');
   const proj = r.body.find(p => p.name === 'work');
-  assert.equal(proj.workspace, 'Side projects');
+  assert.equal(proj.workspace, 'Side-projects');
 });
 
 test('writeProjectMeta({workspace:null}) clears the field and removes the now-empty file', async () => {
@@ -475,7 +475,13 @@ test('writeProjectMeta rejects invalid workspace strings', async () => {
   // Disallowed characters and over-long names are rejected.
   // Leading/trailing whitespace is trimmed; empty / whitespace-only
   // map to null (clear), not an error.
-  for (const bad of ['x'.repeat(60), 'has:colon', 'has!bang', 'with\ttab']) {
+  // Workspace names share the project charset so they stay safe as path
+  // segments: no spaces, no separators, no traversal.
+  const bads = [
+    'x'.repeat(60), 'x'.repeat(41), 'has:colon', 'has!bang', 'with\ttab',
+    'a/../b', 'A B', 'client/Foo', 'a\\b',
+  ];
+  for (const bad of bads) {
     await assert.rejects(
       writeProjectMeta('bad', { workspace: bad }),
       /invalid workspace name/,
@@ -485,6 +491,14 @@ test('writeProjectMeta rejects invalid workspace strings', async () => {
   await assert.rejects(writeProjectMeta('bad', { workspace: 123 }), /must be a string/);
   // Whitespace-only treated as null — no throw.
   await writeProjectMeta('bad', { workspace: '   ' });
+});
+
+test('writeProjectMeta accepts the project charset up to the 40-char bound', async () => {
+  await api(baseUrl, 'POST', '/api/projects', { name: 'okws' });
+  for (const good of ['CC-Dev', 'CTF', 'HOME', 'LLM-CHALLENGE', 'TTD', 'a.b_c-1', 'x'.repeat(40)]) {
+    await writeProjectMeta('okws', { workspace: good });
+    assert.equal((await readProjectMeta('okws')).workspace, good, `expected accept for ${good}`);
+  }
 });
 
 test('PUT /api/projects/:name/workspace assigns and clears the field; broadcasts the projects WS hint', async () => {

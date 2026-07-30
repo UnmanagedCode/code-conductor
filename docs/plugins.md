@@ -132,6 +132,15 @@ Six built-in entries are always present, even with no library dir: `code-share` 
 
 The conductor POSTs `{tool, arguments, caller:{sessionId, project}}` (JSON) to the manifest `mcp.endpoint`. The child returns **HTTP 200 for EVERY well-formed tool invocation** with body `{result: <any JSON>}` or `{error: "<message>"}` — unknown tool, bad arguments and tool-level failures are all `200 + {error}`. A **non-200 means a transport-level failure only** (malformed envelope, plugin bug) and surfaces to the MCP client as an HTTP-coded error; `200 + {error}` surfaces as a plain tool error. Calls are aborted at `mcp.timeoutMs`. Tool names are namespaced `<plugin-id>__<tool>`; argument validation against the declared `inputSchema` happens in the conductor **before** any forward. Visibility: every enabled plugin's tools are offered to **every** MCP caller — the conductor UI and workers in any project (`scope` is inert); a disabled plugin's tools are absent, so calling one refuses as an unknown tool.
 
+**Raw-text results (opt-in, additive).** A success body may return `{text, meta?}` **instead of** `{result}`. `text` is one string **or** a list of strings; each becomes a **raw, UNESCAPED** `content[]` block, appended after a compact-JSON block holding `meta` (`null` when omitted). Use it for anything a human or LLM reads as prose — a wiki page, a diff, file contents — where `{result}`'s `JSON.stringify` would escape every newline. `{result}` remains correct for structured data; a body with no `text` key behaves exactly as before.
+
+Two edges, both deliberate:
+
+- **`text` wins over `result`.** Sending both is a contract violation; it degrades to the `text` path rather than throwing, and `result` is ignored.
+- **`meta` without `text` is silently dropped.** With no `text` key the body falls through to the `result` path, which never reads `meta`. This is the design's only lossy case — `meta` is meaningful *only* alongside `text`. To emit metadata with no body, send `{meta, text: []}` (or `text: null`), which yields the meta block and zero text blocks.
+
+`text: null` → zero text blocks. A non-string (`text: 42`) is stringified, not rejected — nothing on this path throws.
+
 ### Plugin-compliance checklist
 
 1. `conductor.plugin.json` at the repo root (schema above); keep `id` stable.
@@ -139,6 +148,6 @@ The conductor POSTs `{tool, arguments, caller:{sessionId, project}}` (JSON) to t
 3. Base-path compliance: reachable under `X-Forwarded-Prefix` — relative asset URLs (or honor the prefix), root-relative redirects only (they get rewritten).
 4. `<script src="/pluginBridge.js" defer></script>` in the frontend + SPA routing via pushState/replaceState (the bridge reports routes for you).
 5. A `healthPath` endpoint (any HTTP response counts as alive).
-6. Optional MCP endpoint following the 200-always contract above, tools declared in the manifest with flat schemas.
+6. Optional MCP endpoint following the 200-always contract above, tools declared in the manifest with flat schemas. Return `{result}` for structured data; return `{text, meta?}` when the tool's output is prose/diff/file content that should reach the caller un-escaped (`text` wins if both are sent; `meta` alone, without `text`, is dropped).
 7. Expect to be killed at any time (Doze) and restarted lazily — persist state, start fast.
 8. If a convention's fragment depends on something its `scaffold` facet sets up, **word the fragment to degrade gracefully** when the scaffold step wasn't run — the picked convention may land in a project where the setup directive was never carried out (e.g. "if a project-local harness wrapper exists, use it to visually verify UX changes; otherwise see the shared harness to create one").

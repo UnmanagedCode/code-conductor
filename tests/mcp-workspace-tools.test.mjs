@@ -90,18 +90,18 @@ test('set_project_workspace assigns, clears with null, and auto-registers the ne
 
   // Assign — workspace gets auto-registered even though we never called create_workspace.
   const a = unwrap(await callTool('set_project_workspace', {
-    project: 'alpha', workspace: 'Side projects',
+    project: 'alpha', workspace: 'Side-projects',
   }));
-  assert.equal(a.workspace, 'Side projects');
+  assert.equal(a.workspace, 'Side-projects');
 
   const list1 = unwrap(await callTool('list_workspaces', {}));
-  assert.ok(list1.some(w => w.name === 'Side projects'),
+  assert.ok(list1.some(w => w.name === 'Side-projects'),
     'newly-assigned workspace appears in list_workspaces');
 
   // Reflected in list_projects.
   const projects = unwrap(await callTool('list_projects', {}));
   const alpha = projects.find(p => p.name === 'alpha');
-  assert.equal(alpha.workspace, 'Side projects');
+  assert.equal(alpha.workspace, 'Side-projects');
 
   // Clear with null.
   const cleared = unwrap(await callTool('set_project_workspace', {
