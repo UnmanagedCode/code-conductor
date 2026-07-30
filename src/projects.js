@@ -26,11 +26,19 @@ const SELF_PROJECT_DIR = path.resolve(
 );
 
 const NAME_RE = /^[a-zA-Z0-9._-]+$/;
-// Workspace names are looser than project names: spaces and slashes are
-// allowed so users can type a natural label ("Work", "Side projects",
-// "client/Foo"). Bounded length + no control chars so it remains safe to
-// render and serialise.
-const WORKSPACE_RE = /^[\w][\w \-./]{0,39}$/;
+// Workspace names are becoming path segments (a directory-per-workspace
+// layout), so they're restricted to the project charset: no spaces, no `/`
+// or `\`, and `a/../b` can't traverse. This deliberately reverses the earlier
+// "natural label" looseness ("Side projects", "client/Foo") — path-safety at
+// the source beats sanitising at every future call site. The 40-char bound
+// (1 + 39) is kept: the UI and the error text depend on a bounded label.
+//
+// The first character additionally excludes `.`, so `..`, `.` and `.hidden`
+// are refused — a dot-leading or dot-only name is exactly the path hazard
+// this regex exists to prevent. That's a deliberate deviation from NAME_RE
+// above, which has the same hole (`..` passes it) and is left alone as
+// pre-existing: do NOT "restore parity" with NAME_RE here, it reopens this.
+const WORKSPACE_RE = /^[a-zA-Z0-9_-][a-zA-Z0-9._-]{0,39}$/;
 
 // All orchestrator-owned state lives under a single dotfolder at the
 // workspace root (`<projectsRoot>/.code-conductor/`). Layout:
@@ -164,6 +172,14 @@ export async function ensureSelfProjectWorkspace(workspaceName, selfDir = SELF_P
   return self.name;
 }
 
+// Note for maintainers: this validates the *existing* name as well as a new
+// one — removeWorkspace/renameWorkspace both run it on their `oldName` arg.
+// So a workspace stored under a name that predates a tightening of
+// WORKSPACE_RE becomes undeletable and unrenameable through the API;
+// recovery is hand-editing `<store>/workspaces.json` plus the `workspace`
+// field in each member's `<store>/projects/<name>/project.json`. No live
+// name is in that state — the constraint is recorded so a future tightening
+// doesn't strand one silently.
 export function validateWorkspace(workspace) {
   if (workspace === null) return null;
   if (typeof workspace !== 'string') {
@@ -174,7 +190,7 @@ export function validateWorkspace(workspace) {
   const trimmed = workspace.trim();
   if (trimmed === '') return null;
   if (!WORKSPACE_RE.test(trimmed)) {
-    const err = new Error('invalid workspace name (1–40 chars, no control chars; spaces / `/`,`.`,`-`,`_` allowed)');
+    const err = new Error('invalid workspace name (1–40 chars; letters, digits, `.`, `_`, `-` only, and cannot start with `.`)');
     err.statusCode = 400;
     throw err;
   }

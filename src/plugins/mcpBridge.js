@@ -13,6 +13,10 @@
 // all 200+{error}. A non-200 from the child means a transport-level
 // failure only (malformed envelope, plugin bug) and maps to an HTTP-coded
 // error; 200+{error} maps to a plain tool error with no status code.
+//
+// Additive to that contract: a success body may use {text, meta?} instead
+// of {result} to get raw, UNESCAPED text blocks (see makeHandler below).
+import { textPayload } from '../mcp/content.js';
 
 export function createMcpBridge({ instances, listMcpPlugins, ensureStarted, portFor, reportUpstreamFailure }) {
   // callerId → project of the live/known session, or undefined when the
@@ -81,6 +85,14 @@ export function createMcpBridge({ instances, listMcpPlugins, ensureStarted, port
       if (body && typeof body === 'object' && body.error != null) {
         throw new Error(String(body.error)); // tool-level failure: no HTTP status
       }
+      // Opt-in raw-text channel (additive to the pinned contract): instead of
+      // `result`, a child may return `text` (one string OR a list of strings)
+      // plus optional `meta`, to have them emitted as raw, UNESCAPED content
+      // blocks after a compact-JSON meta block. The child says `text` because
+      // that channel only ever carries text; textPayload's param is `bodies`
+      // because it's generic (file bodies, diffs, prose). `text` wins if both
+      // are sent; absent `text` → today's `result` path.
+      if (body?.text !== undefined) return textPayload(body.meta ?? null, body.text);
       return body?.result;
     };
   }
