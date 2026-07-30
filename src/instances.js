@@ -367,6 +367,17 @@ export class Instance extends EventEmitter {
     // to a char count), while a closed REDACTED block keeps the final estimate
     // on its ring slot (see _emitUi). Reset on resume (see _wipeForResume).
     this._liveThinkingTokens = null;
+    // Last observed message_start.usage — the current context-size reading that
+    // drives the header's ctx chip. Held as O(1) state because the ring is NOT a
+    // reliable carrier: the snapshot tail is capped and its start snaps FORWARD
+    // past any open block (snapshotTail → snapStartToQuiescent), so a turn whose
+    // final text block runs longer than the tail pushes every message_start below
+    // the window and a re-subscribing client would rebuild an empty tracker
+    // (`ctx —`). A backend that answers in one long unbroken text block hits that
+    // routinely. Unlike _liveThinkingTokens this deliberately SURVIVES turn_end —
+    // it's last-value-wins for the life of the process — and is cleared only by
+    // _wipeForResume, since a rewind/fork/respawn rewrites the prefix.
+    this._lastContextUsage = null;
     this._pending = new Map(); // request_id -> { resolve, reject, timer }
     // Per-instance PreToolUse hook callback broker (held-open
     // responses + timeout fallbacks + the ask-mode permission_request
@@ -646,6 +657,12 @@ export class Instance extends EventEmitter {
   // already carries the partial thinking text).
   get liveThinkingTokens() { return this._liveThinkingTokens; }
 
+  // Last observed message_start.usage (the current context-size reading), or null
+  // before the first one. The WS subscribe path carries this on the snapshot frame
+  // so the client can seed its UsageTracker even when the tail holds no
+  // message_start — see the constructor comment for why the ring can't be trusted.
+  get lastContextUsage() { return this._lastContextUsage; }
+
   // Trailing slice of the ring for the WS `subscribe` snapshot — tabs no
   // longer receive the whole ring on every subscribe; older events are
   // lazy-loaded via GET /api/instances/:id/events. The window start is
@@ -828,6 +845,15 @@ export class Instance extends EventEmitter {
       this._liveThinkingTokens = ev.data?.estimated_tokens ?? null;
     } else if (ev.kind === 'thinking_end' || ev.kind === 'turn_end') {
       this._liveThinkingTokens = null;
+    }
+    // Same funnel, same reason (every emit path stays consistent): latch the
+    // current context-size reading so a re-subscribe can seed the client's
+    // UsageTracker from the snapshot frame instead of depending on a
+    // message_start surviving the tail's quiescent snap. NOT cleared at
+    // turn_end — the reading stays valid between turns, which is exactly the
+    // window where a reload would otherwise show `ctx —`.
+    if (ev.kind === 'message_start') {
+      this._lastContextUsage = ev.usage ?? null;
     }
     const wrapped = { ...ev };
     // A redacted block carries no text, so once it closes its retained ring
@@ -1998,6 +2024,10 @@ export class Instance extends EventEmitter {
     this.ring.clear();
     this._userEchoCount = 0;
     this._liveThinkingTokens = null;
+    // A rewind/fork/respawn rewrites the CLI's prefix, so the pre-wipe context
+    // reading must not leak into the replayed session (it would over-report a
+    // rewound session's fill until its first live message_start).
+    this._lastContextUsage = null;
     this.parser.reset();
     this._lastLeafUuid = null;
     this._lastPlanFilePath = null;

@@ -177,6 +177,13 @@ export function attachWsHub({ wss, instances }) {
               // In-flight task batch as of the tail start, so the client panel
               // reflects a batch whose TaskCreate is below the tail.
               tasksAtTailStart,
+              // Current context-size reading (last message_start.usage), so the
+              // client's UsageTracker seeds correctly when the tail's quiescent
+              // snap left every message_start below the window — the case for a
+              // turn whose final text block is longer than the tail. A FIELD, not
+              // an appended event like the thinking counter above: a synthetic
+              // message_start in events[] would also reach conversation.apply.
+              lastContextUsage: inst.lastContextUsage,
               ...(droppedText != null ? { droppedText } : {}),
             }));
             reply(true);

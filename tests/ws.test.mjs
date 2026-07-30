@@ -200,6 +200,82 @@ test('snapshot carries tasksAtTailStart for a batch created below the tail', asy
   }
 });
 
+test('snapshot carries lastContextUsage when the tail holds no message_start', async () => {
+  // The ctx chip is fed ONLY by message_start (public/usage.js) and the client
+  // rebuilds its UsageTracker from the snapshot tail alone. A turn whose final
+  // text block is longer than the tail leaves the tail's quiescent snap with
+  // nowhere to cut but past the whole block — dropping every message_start — so
+  // the reading has to ride the frame as a field instead. This is the shape a
+  // long single-block answer produces in production (observed at 800-2000
+  // consecutive text_deltas on an ollama-backed session).
+  const prevTail = process.env.ORCH_SNAPSHOT_TAIL;
+  const prevCap = process.env.ORCH_EVENT_RING_CAP;
+  process.env.ORCH_SNAPSHOT_TAIL = '4';
+  process.env.ORCH_EVENT_RING_CAP = '200'; // no trim — the message_start stays in the ring, below the tail
+  const { baseUrl, wsUrl, instances, close } = await setup();
+  // Closed in `finally`, not after the asserts: a failing assert would otherwise
+  // skip the close and leave bootServer's teardown waiting on a live socket, so
+  // the regression would surface as a test-file timeout instead of a diff.
+  let c = null;
+  try {
+    const created = await api(baseUrl, 'POST', '/api/instances', { project: 'a', mode: 'bypassPermissions' });
+    const id = created.body.id;
+    await waitFor(() => instances.get(id).status === 'idle' && instances.get(id).sessionId);
+    const inst = instances.get(id);
+
+    // A turn: message_start carrying the context size, then one unbroken text
+    // block long enough to push it below the tail, then the turn footer.
+    inst._emitUi({ kind: 'user_echo', text: 'write me an essay' });
+    inst._emitUi({ kind: 'message_start', msgId: 'm1', model: 'glm-5.2',
+      usage: { input_tokens: 79167, output_tokens: 0 } });
+    for (let i = 0; i < 20; i++) {
+      inst._emitUi({ kind: 'text_delta', msgId: 'm1', blockIdx: 0, text: `w${i} ` });
+    }
+    inst._emitUi({ kind: 'text_end', msgId: 'm1', blockIdx: 0 });
+    inst._emitUi({ kind: 'turn_end', subtype: 'success' });
+
+    c = await wsClient(wsUrl);
+    c.send({ t: 'subscribe', id });
+    const snap = await c.wait(m => m.t === 'snapshot' && m.id === id);
+
+    // The bug's precondition: the tail genuinely has no message_start to replay.
+    assert.ok(!snap.events.some(e => e.kind === 'message_start'),
+      'precondition: message_start must be below the tail for this test to mean anything');
+    // …so the frame carries the reading instead. Survives turn_end deliberately:
+    // between turns is exactly when a reload would otherwise show `ctx —`.
+    assert.deepEqual(snap.lastContextUsage, { input_tokens: 79167, output_tokens: 0 });
+  } finally {
+    if (c) await c.close();
+    await close();
+    if (prevTail === undefined) delete process.env.ORCH_SNAPSHOT_TAIL;
+    else process.env.ORCH_SNAPSHOT_TAIL = prevTail;
+    if (prevCap === undefined) delete process.env.ORCH_EVENT_RING_CAP;
+    else process.env.ORCH_EVENT_RING_CAP = prevCap;
+  }
+});
+
+test('lastContextUsage tracks the newest message_start and is cleared by a rewind wipe', async () => {
+  const { baseUrl, instances, close } = await setup();
+  try {
+    const created = await api(baseUrl, 'POST', '/api/instances', { project: 'a', mode: 'bypassPermissions' });
+    const id = created.body.id;
+    await waitFor(() => instances.get(id).status === 'idle' && instances.get(id).sessionId);
+    const inst = instances.get(id);
+
+    assert.equal(inst.lastContextUsage, null, 'null before the first message_start');
+    inst._emitUi({ kind: 'message_start', msgId: 'm1', usage: { input_tokens: 100 } });
+    inst._emitUi({ kind: 'message_start', msgId: 'm2', usage: { input_tokens: 200 } });
+    assert.deepEqual(inst.lastContextUsage, { input_tokens: 200 }, 'last value wins');
+    inst._emitUi({ kind: 'turn_end', subtype: 'success' });
+    assert.deepEqual(inst.lastContextUsage, { input_tokens: 200 },
+      'survives turn_end (unlike the thinking counter) — the reading is still valid between turns');
+
+    // A rewind/fork/respawn rewrites the prefix, so the stale reading must go.
+    inst._wipeForResume();
+    assert.equal(inst.lastContextUsage, null, 'cleared by _wipeForResume');
+  } finally { await close(); }
+});
+
 test('two clients on two instances stream concurrently and independently', async () => {
   const { baseUrl, wsUrl, instances, close } = await setup();
   try {
