@@ -26,13 +26,19 @@ const SELF_PROJECT_DIR = path.resolve(
 );
 
 const NAME_RE = /^[a-zA-Z0-9._-]+$/;
-// Workspace names use the same charset as project names because they are
-// becoming path segments (a directory-per-workspace layout): no spaces, no
-// `/` or `\`, and `a/../b` can't traverse. This deliberately reverses the
-// earlier "natural label" looseness ("Side projects", "client/Foo") —
-// path-safety at the source beats sanitising at every future call site. The
-// 40-char bound is kept: the UI and the error text depend on a bounded label.
-const WORKSPACE_RE = /^[a-zA-Z0-9._-]{1,40}$/;
+// Workspace names are becoming path segments (a directory-per-workspace
+// layout), so they're restricted to the project charset: no spaces, no `/`
+// or `\`, and `a/../b` can't traverse. This deliberately reverses the earlier
+// "natural label" looseness ("Side projects", "client/Foo") — path-safety at
+// the source beats sanitising at every future call site. The 40-char bound
+// (1 + 39) is kept: the UI and the error text depend on a bounded label.
+//
+// The first character additionally excludes `.`, so `..`, `.` and `.hidden`
+// are refused — a dot-leading or dot-only name is exactly the path hazard
+// this regex exists to prevent. That's a deliberate deviation from NAME_RE
+// above, which has the same hole (`..` passes it) and is left alone as
+// pre-existing: do NOT "restore parity" with NAME_RE here, it reopens this.
+const WORKSPACE_RE = /^[a-zA-Z0-9_-][a-zA-Z0-9._-]{0,39}$/;
 
 // All orchestrator-owned state lives under a single dotfolder at the
 // workspace root (`<projectsRoot>/.code-conductor/`). Layout:
@@ -184,7 +190,7 @@ export function validateWorkspace(workspace) {
   const trimmed = workspace.trim();
   if (trimmed === '') return null;
   if (!WORKSPACE_RE.test(trimmed)) {
-    const err = new Error('invalid workspace name (1–40 chars; letters, digits, `.`, `_`, `-` only)');
+    const err = new Error('invalid workspace name (1–40 chars; letters, digits, `.`, `_`, `-` only, and cannot start with `.`)');
     err.statusCode = 400;
     throw err;
   }

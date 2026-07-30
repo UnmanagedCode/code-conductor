@@ -476,10 +476,12 @@ test('writeProjectMeta rejects invalid workspace strings', async () => {
   // Leading/trailing whitespace is trimmed; empty / whitespace-only
   // map to null (clear), not an error.
   // Workspace names share the project charset so they stay safe as path
-  // segments: no spaces, no separators, no traversal.
+  // segments: no spaces, no separators, no traversal — and, unlike NAME_RE,
+  // no leading dot, so `..` and `.hidden` are refused too.
   const bads = [
     'x'.repeat(60), 'x'.repeat(41), 'has:colon', 'has!bang', 'with\ttab',
     'a/../b', 'A B', 'client/Foo', 'a\\b',
+    '..', '.', '...', '.hidden',
   ];
   for (const bad of bads) {
     await assert.rejects(
