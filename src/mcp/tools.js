@@ -525,7 +525,11 @@ export function buildTools() {
         properties: {
           // minLength/maxLength are subsumed by the pattern but kept: they are
           // checked first, so a too-short/too-long name gets a length-specific
-          // message instead of a bare pattern dump.
+          // message instead of a bare pattern dump. The pattern is tested
+          // against the UNTRIMMED argument, so " CC-Dev " is refused here,
+          // whereas validateWorkspace's trim still accepts it via
+          // set_project_workspace — deliberate, so this tool's stated rule is
+          // literally true of what it accepts.
           name: {
             type: 'string',
             minLength: 1,
