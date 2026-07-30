@@ -559,7 +559,14 @@ const settings = installSettings({
     sessionActions.resumeSession({ projectName: project, worktreeName, sessionId }),
 });
 // Seed the per-tier/per-backend model-version cache the spawn pickers resolve against.
-loadModelVersions().then(() => { spawnHandles.syncTierModelLabels(); spawnHandles.syncTierVisibility(); });
+// headerHandle.update() too: the ctx chip's denominator for a non-Claude model is
+// resolved from this payload's catalogs (customContextWindowFor), so a chip already
+// painted from the WS snapshot is still showing the 200k default until it re-renders.
+loadModelVersions().then(() => {
+  spawnHandles.syncTierModelLabels();
+  spawnHandles.syncTierVisibility();
+  headerHandle.update();
+});
 dom.settingsBtn?.addEventListener('click', () => {
   closeSidebarOverflow();
   if (location.hash === '#settings') settings.close();

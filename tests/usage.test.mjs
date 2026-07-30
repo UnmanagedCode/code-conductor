@@ -336,6 +336,75 @@ test('contextWindowFor: resolves non-Claude model ids (full + bare base name) an
   }
 });
 
+test('UsageTracker: seedContext supplies the current size when the tail has no message_start', async () => {
+  const { UsageTracker } = await import(USAGE_URL);
+  const t = new UsageTracker();
+
+  // Nothing to seed with is a no-op, not a crash (field absent on older frames
+  // and on every reset_snapshot).
+  t.seedContext(null);
+  t.seedContext(undefined);
+  assert.equal(t.currentContextSize(), null);
+
+  t.seedContext({ input_tokens: 79167, output_tokens: 0 });
+  assert.equal(t.currentContextSize(), 79167);
+
+  // Cache fields are summed the same way as a live message_start.
+  t.reset();
+  t.seedContext({ input_tokens: 2, cache_read_input_tokens: 105_488, cache_creation_input_tokens: 496 });
+  assert.equal(t.currentContextSize(), 105_986);
+
+  // A message_start replayed from the tail still wins (the seed runs first).
+  t.apply({ kind: 'message_start', usage: { input_tokens: 500 } });
+  assert.equal(t.currentContextSize(), 500);
+});
+
+test('UsageTracker: seeded snapshot replay renders the chip against the model window, not `ctx —`', async () => {
+  const { UsageTracker, contextWindowFor, formatPct, formatTokens, fillClass } = await import(USAGE_URL);
+  const { setOllamaCloudModels, setCustomModels } = await import(pathToFileURL(path.join(PUB, 'models.js')).href);
+  try {
+    setOllamaCloudModels([{ label: 'GLM-5.2', model: 'glm-5.2:cloud', contextWindow: 1_000_000 }]);
+    setCustomModels([{ label: 'Proxy Big', model: 'proxybig:v2', backend: 'my-proxy', contextWindow: 512_000 }]);
+
+    // Replay a snapshot in the exact order wsRouter uses: reset → seed → tail.
+    // The tail is the production no-message_start shape: the trailing slice of a
+    // long text block plus the turn footer. `inst.model` is the spawn-time tagged
+    // id, which is all the client has when the tail also dropped system/init.
+    const chip = (tracker, instModel) => {
+      const used = tracker.currentContextSize();
+      if (used == null) return 'ctx —';
+      const window = contextWindowFor(tracker.effectiveModel(instModel));
+      return `ctx ${formatPct(used / window)} · ${formatTokens(used)}/${formatTokens(window)}`;
+    };
+
+    const t = new UsageTracker();
+    t.reset();
+    t.seedContext({ input_tokens: 79167, output_tokens: 0 });
+    for (const ev of [
+      { kind: 'text_delta', msgId: 'm1', blockIdx: 0, text: 'tail ' },
+      { kind: 'text_end', msgId: 'm1', blockIdx: 0 },
+      { kind: 'turn_end', subtype: 'success', durationMs: 10 },
+    ]) t.apply(ev);
+
+    assert.equal(chip(t, 'glm-5.2:cloud'), 'ctx 8% · 79k/1.0M');
+    assert.equal(fillClass(t.currentFillPct('glm-5.2:cloud')), 'ih-usage-low');
+    // The bare id the inner CLI reports resolves to the same window.
+    assert.equal(chip(t, 'glm-5.2'), 'ctx 8% · 79k/1.0M');
+    // A custom model on a user-defined substitution backend uses its declared window.
+    const t2 = new UsageTracker();
+    t2.seedContext({ input_tokens: 256_000 });
+    assert.equal(chip(t2, 'proxybig:v2'), 'ctx 50% · 256k/512k');
+
+    // Without the seed the same tail yields the reported symptom.
+    const bare = new UsageTracker();
+    for (const ev of [{ kind: 'text_end', msgId: 'm1', blockIdx: 0 }, { kind: 'turn_end', subtype: 'success' }]) bare.apply(ev);
+    assert.equal(chip(bare, 'glm-5.2:cloud'), 'ctx —');
+  } finally {
+    setOllamaCloudModels([]);
+    setCustomModels([]);
+  }
+});
+
 test('fillClass: thresholds at 50% and 80%', async () => {
   const { fillClass } = await import(USAGE_URL);
   assert.equal(fillClass(null), 'ih-usage-empty');
@@ -443,4 +512,20 @@ test('DOM: tracker drives chip-class transitions across thresholds', async () =>
   tracker.apply({ kind: 'message_start', usage: { input_tokens: 850_000 } });
   assert.equal(chipClassNow(), 'ih-usage-high');
   assert.equal(chipPctNow(), '85%');
+});
+
+test('DOM: a seeded tracker renders a graded chip, not the empty state', async () => {
+  // The re-subscribe path for a tail with no message_start: the seed alone has to
+  // carry the chip out of `ih-usage-empty`/`ctx —` into a real reading.
+  const { UsageTracker, fillClass, formatPct } = await setupDOM();
+  const model = 'claude-opus-4-8[1m]';
+  const tracker = new UsageTracker();
+  tracker.reset();
+  assert.equal(fillClass(tracker.currentFillPct(model)), 'ih-usage-empty');
+  assert.equal(formatPct(tracker.currentFillPct(model)), '—');
+
+  tracker.seedContext({ input_tokens: 2, cache_read_input_tokens: 600_000 });
+  tracker.apply({ kind: 'turn_end', subtype: 'success' }); // the only in-tail event
+  assert.equal(fillClass(tracker.currentFillPct(model)), 'ih-usage-mid');
+  assert.equal(formatPct(tracker.currentFillPct(model)), '60%');
 });

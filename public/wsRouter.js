@@ -61,6 +61,13 @@ export function installWsRouter({
     if (m.tasksAtTailStart?.length) tracker.seedActive(m.tasksAtTailStart);
     const usage = getUsage(m.id);
     usage.reset();
+    // Same shape as the task seed above: the tail is not guaranteed to carry a
+    // message_start (its quiescent snap can jump past a whole long text block, and
+    // only message_start feeds the ctx readout), so seed the current context size
+    // from the server's own last reading BEFORE replaying the tail — an in-tail
+    // message_start then overrides it. Absent on a reset_snapshot (rewind wipes
+    // the server-side value), which is why that handler has no equivalent.
+    if (m.lastContextUsage) usage.seedContext(m.lastContextUsage);
     // Rate limits are account-wide — do NOT reset globalRLTracker per snapshot,
     // and do NOT feed it from this replay loop either. A session's replayed
     // history is only time-ordered within that session, so a stale historical
