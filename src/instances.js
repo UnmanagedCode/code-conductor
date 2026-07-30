@@ -959,13 +959,15 @@ export class Instance extends EventEmitter {
       // field-only fix could not reach that client).
       //
       // `replayed: true` keeps it OUT of the ring (EventLog.push declines it),
-      // so it is emitted seq-less to the live feed only. That is deliberate on
-      // three counts: `events[]` stays free of synthetic message_starts (see
-      // docs/protocol.md's snapshot entry), it can never become the ring head
-      // after a trim and fake a `history_gap` at the archive seam
-      // (message_start is quiescent — parser.js), and it doesn't bump
-      // ring.nextSeq, which idleSubscriptions.js uses as its "activity since
-      // arm" marker.
+      // so it is emitted seq-less to the live feed only. Two reasons: `events[]`
+      // stays free of synthetic message_starts (see docs/protocol.md's snapshot
+      // entry), and it can never become the ring head after a trim and fake a
+      // `history_gap` at the archive seam (message_start is quiescent —
+      // parser.js). Non-retention also keeps it invisible to ring.nextSeq, which
+      // idleSubscriptions.js arms on as its "activity since arm" marker — that
+      // one is defense-in-depth, not a live hazard: this fires once inside
+      // loadHistory, before any turn, so it can't land inside an arm→fire
+      // window. The guard keeps it from becoming a hazard if the emit ever moves.
       //
       // `model` is deliberately omitted: UsageTracker.apply only adopts
       // ev.model when present, so leaving it out keeps the tracker falling back
