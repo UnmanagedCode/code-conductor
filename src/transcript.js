@@ -248,8 +248,20 @@ export async function loadSubAgentTranscript({ cwd, sessionId, agentId, parentTo
 
 // Reads the persisted jsonl at the conventional path. Yields each line's
 // already-replayed UI events plus the line's own `uuid` (so the caller
-// can track the latest leaf for `claude --resume`'s picker). Returns
-// `null` if the file is missing — caller treats that as "no history".
+// can track the latest leaf for `claude --resume`'s picker) and
+// `lastAssistantUsage` (the current context-size reading — see below).
+// Returns `null` if the file is missing — caller treats that as "no history".
+//
+// `lastAssistantUsage` is `{ msgId, usage } | null`: the newest assistant
+// line's `message.usage`, which the caller replays as a synthetic
+// `message_start` so a resumed session's ctx chip is populated before its
+// first live turn (replay emits no `message_start` of its own). Trustworthy
+// as a context-size SNAPSHOT, not a sum: each line's
+// input+cache_read+cache_creation equals the previous call's total (the
+// per-call prompt ladder), and the per-turn sum the `ctx 743%` bug came from
+// (`turn_end.usage`, see public/usage.js) is a stream-only `result` frame the
+// CLI never persists — there is no `type:"result"` line in a session jsonl,
+// so that value is structurally unreachable from here.
 export async function loadPersistedTranscript({ cwd, sessionId, seqHint = 0 }) {
   if (!cwd || !sessionId) return null;
   const file = path.join(claudeProjectsRoot(), encodeCwd(cwd), `${sessionId}.jsonl`);
@@ -259,6 +271,7 @@ export async function loadPersistedTranscript({ cwd, sessionId, seqHint = 0 }) {
 
   const lines = [];
   let lastLeafUuid = null;
+  let lastAssistantUsage = null;
   let replayedCount = 0;
   let seq = seqHint;
   const blockCursor = new Map();
@@ -268,6 +281,31 @@ export async function loadPersistedTranscript({ cwd, sessionId, seqHint = 0 }) {
     if (!trimmed) continue;
     let obj;
     try { obj = JSON.parse(trimmed); } catch { continue; }
+
+    // Latch this session's context-size reading (see the header). Three
+    // independent guards, each load-bearing:
+    //   - `model: '<synthetic>'` — the CLI's API-error / interrupt placeholder
+    //     is not real model output, so its usage never counts WHATEVER it
+    //     holds. Read-time tolerance for a format we don't own (the CLI's
+    //     jsonl), and the same predicate readLastSessionModel applies to it.
+    //   - `isSidechain` — a sub-agent's prompt size is a DIFFERENT context
+    //     window, not this session's. (Sub-agent files go through
+    //     loadSubAgentTranscript, which deliberately has no equivalent latch.)
+    //   - the zero-prompt floor — every synthetic line observed in practice
+    //     carries an all-zero usage block, and such a line is frequently the
+    //     LAST assistant line of an interrupted session; seeding 0 would render
+    //     `ctx 0 · 0%`, strictly worse than `ctx —`.
+    // The async-worker CLI persists one logical message as N single-block
+    // lines sharing message.id (see replayPersistedLine) — every copy carries
+    // the IDENTICAL usage, so plain last-wins needs no dedup.
+    if (obj.type === 'assistant' && !obj.isSidechain
+        && obj.message?.usage && obj.message.model !== '<synthetic>') {
+      const u = obj.message.usage;
+      const prompt = (u.input_tokens ?? 0)
+                   + (u.cache_read_input_tokens ?? 0)
+                   + (u.cache_creation_input_tokens ?? 0);
+      if (prompt > 0) lastAssistantUsage = { msgId: obj.message.id ?? null, usage: u };
+    }
 
     // When the line is the parent's tool_result for an Agent invocation, the
     // CLI persists the sub-agent's own assistant/user transcript in a sibling
@@ -301,7 +339,7 @@ export async function loadPersistedTranscript({ cwd, sessionId, seqHint = 0 }) {
     if (typeof obj.uuid === 'string') lastLeafUuid = obj.uuid;
     lines.push({ events });
   }
-  return { lines, replayedCount, lastLeafUuid };
+  return { lines, replayedCount, lastLeafUuid, lastAssistantUsage };
 }
 
 // Scan the persisted jsonl and return the bare model id from the

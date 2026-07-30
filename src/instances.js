@@ -220,8 +220,13 @@ export class EventLog {
   //     one-delta-per-block shape disk replay produces (src/transcript.js), so
   //     ring + jsonl-archive reconstruct identically. The LIVE per-token stream
   //     is untouched; only the retained representation coalesces.
+  // The replay-path `message_start` (`replayed: true`, emitted by loadHistory to
+  // seed the ctx readout) is declined for the same storage-only reason: it is
+  // synthetic, so it must not become history — see loadHistory for why keeping it
+  // off the ring is load-bearing rather than merely tidy.
   push(v) {
     if (v.kind === 'system' && v.subtype === 'thinking_tokens') return;
+    if (v.kind === 'message_start' && v.replayed) return;
     const tail = this.buf[this.buf.length - 1];
     if (v.kind === 'thinking_delta' && tail && tail.kind === 'thinking_delta'
         && tail.msgId === v.msgId && tail.blockIdx === v.blockIdx) {
@@ -942,6 +947,46 @@ export class Instance extends EventEmitter {
     }
     if (result.lastLeafUuid) this._lastLeafUuid = result.lastLeafUuid;
     if (result.replayedCount > 0) {
+      // Replay emits no `message_start` of its own, so nothing would latch
+      // _lastContextUsage and a resumed/respawned/rewound session's ctx chip
+      // would read `ctx —` until its first live turn. Feed the jsonl's reading
+      // (loadPersistedTranscript owns the snapshot-not-a-sum argument) through
+      // the one event kind that already drives the readout end to end: _emitUi
+      // latches it, wsHub ships the latch as the snapshot's `lastContextUsage`
+      // field, and the live frame reaches UsageTracker.apply — which is what
+      // covers a rewind/respawn while a client is subscribed (the wipe nulls
+      // the value and broadcasts reset_snapshot BEFORE this replay runs, so a
+      // field-only fix could not reach that client).
+      //
+      // `replayed: true` keeps it OUT of the ring (EventLog.push declines it),
+      // so it is emitted seq-less to the live feed only. Two reasons: `events[]`
+      // stays free of synthetic message_starts (see docs/protocol.md's snapshot
+      // entry), and it can never become the ring head after a trim and fake a
+      // `history_gap` at the archive seam (message_start is quiescent —
+      // parser.js). Non-retention also keeps it invisible to ring.nextSeq, which
+      // idleSubscriptions.js arms on as its "activity since arm" marker — that
+      // one is defense-in-depth, not a live hazard: this fires once inside
+      // loadHistory, before any turn, so it can't land inside an arm→fire
+      // window. The guard keeps it from becoming a hazard if the emit ever moves.
+      //
+      // `model` is deliberately omitted: UsageTracker.apply only adopts
+      // ev.model when present, so leaving it out keeps the tracker falling back
+      // to the instance's TAGGED model for the window denominator — which we
+      // already recover durably at spawn. The jsonl reports it bare (`glm-5.2`,
+      // not `glm-5.2:cloud`), so carrying it here would be a redundant second
+      // source of truth for the model.
+      //
+      // Emitted inside this `replayedCount > 0` guard, before the divider: at
+      // least one real replayed event has already reached the client, so this
+      // one can't be the event that strips the conversation's empty-state
+      // placeholder (its only effect on the renderer — conversation.apply has
+      // no `message_start` case).
+      if (result.lastAssistantUsage) {
+        this._emitUi({
+          kind: 'message_start', ...result.lastAssistantUsage,
+          replayed: true, parentToolUseId: null,
+        });
+      }
       this._emitUi({
         kind: 'system', subtype: 'history_replayed',
         data: { sessionId, count: result.replayedCount },

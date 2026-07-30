@@ -1,9 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { randomUUID } from 'node:crypto';
 import { WebSocket } from 'ws';
 import { bootServer, api, waitFor } from './helpers.mjs';
+import { encodeCwd } from '../src/projects.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO_NORMAL = path.join(__dirname, 'fixtures', 'scenario-ws.json');
@@ -283,6 +286,153 @@ test('lastContextUsage tracks the newest message_start and is cleared by a rewin
     // session keeps running with its own value.)
     inst._wipeForResume();
     assert.equal(inst.lastContextUsage, null, 'cleared by _wipeForResume');
+  } finally { await close(); }
+});
+
+// ── seeding the reading from jsonl replay (card 2026-0026) ──────────────────
+
+// The replay path emits no `message_start` of its own, so before this a resumed
+// session had nothing to latch and read `ctx —` until its first live turn.
+// loadHistory now replays the jsonl's own reading as one synthetic,
+// non-retained `message_start`.
+const CTX_USAGE = { input_tokens: 2, cache_read_input_tokens: 79165, cache_creation_input_tokens: 0, output_tokens: 500 };
+
+// Materialize a resumable jsonl at the cwd-encoded path loadHistory reads.
+// `content` defaults to a real text block so the line actually replays; pass []
+// for the degenerate "usage but nothing to replay" case.
+async function seedResumableJsonl(ctx, project, { content = [{ type: 'text', text: 'prior answer' }], usage = CTX_USAGE, model = 'claude-opus-5' } = {}) {
+  const sid = randomUUID();
+  const cwd = path.join(ctx.projectsRoot, project);
+  const dir = path.join(ctx.claudeProjectsRoot, encodeCwd(cwd));
+  await fs.mkdir(dir, { recursive: true });
+  const lines = [
+    { type: 'user', uuid: 'u1', message: { role: 'user', content: 'earlier prompt' } },
+    { type: 'assistant', uuid: 'a1', message: { id: 'm_prior', role: 'assistant', model, content, usage } },
+  ];
+  await fs.writeFile(path.join(dir, `${sid}.jsonl`), lines.map(l => JSON.stringify(l)).join('\n') + '\n');
+  return sid;
+}
+
+test('a resumed session carries its ctx reading before taking any live turn', async () => {
+  const ctx = await setup();
+  const { baseUrl, wsUrl, instances, close } = ctx;
+  let c = null;
+  try {
+    const sid = await seedResumableJsonl(ctx, 'a');
+    const created = await api(baseUrl, 'POST', '/api/instances',
+      { project: 'a', resume: sid, mode: 'bypassPermissions' });
+    const id = created.body.id;
+    // Reaching 'idle' IS the replay barrier — spawn() awaits loadHistory before
+    // flipping the status, so asserting straight after gives a diff on
+    // regression rather than a polling timeout.
+    await waitFor(() => instances.get(id).status === 'idle');
+    const inst = instances.get(id);
+
+    // The headline acceptance criterion: populated with no prompt ever sent.
+    assert.deepEqual(inst.lastContextUsage, CTX_USAGE,
+      'seeded from the jsonl, not from a live turn');
+
+    c = await wsClient(wsUrl);
+    c.send({ t: 'subscribe', id });
+    const snap = await c.wait(m => m.t === 'snapshot' && m.id === id);
+    assert.deepEqual(snap.lastContextUsage, CTX_USAGE, 'rides the snapshot frame as before');
+    // Non-retained: it must never reach `conversation.apply` through a replay.
+    assert.ok(!snap.events.some(e => e.kind === 'message_start'),
+      'the synthetic event is kept OUT of events[]');
+    assert.ok(!inst.ring.buf.some(e => e.kind === 'message_start'),
+      'and out of the ring — so it can never become the ring head and fake a history_gap');
+    assert.ok(snap.events.some(e => e.kind === 'text_delta'),
+      'precondition: the real history did replay into the ring');
+  } finally {
+    if (c) await c.close();
+    await close();
+  }
+});
+
+test('the replayed reading reaches an already-subscribed client (the rewind/respawn case)', async () => {
+  // A rewind/respawn wipes the value and broadcasts reset_snapshot BEFORE
+  // loadHistory replays, so a field-only fix could never reach a client that is
+  // already subscribed. The live `event` frame is what closes that gap.
+  const ctx = await setup();
+  const { baseUrl, wsUrl, instances, close } = ctx;
+  let c = null;
+  try {
+    const sid = await seedResumableJsonl(ctx, 'a');
+    const created = await api(baseUrl, 'POST', '/api/instances',
+      { project: 'a', resume: sid, mode: 'bypassPermissions' });
+    const id = created.body.id;
+    await waitFor(() => instances.get(id).status === 'idle');
+    const inst = instances.get(id);
+
+    c = await wsClient(wsUrl);
+    c.send({ t: 'subscribe', id });
+    await c.wait(m => m.t === 'snapshot' && m.id === id);
+
+    // Exactly what rewindToUserMessage / respawn do around the replay.
+    inst._wipeForResume();
+    assert.equal(inst.lastContextUsage, null, 'the wipe clears it first');
+    await inst.loadHistory(sid);
+
+    const frame = await c.wait(m => m.t === 'event' && m.id === id && m.ev.kind === 'message_start');
+    assert.equal(frame.ev.replayed, true, 'flagged so EventLog.push declines to retain it');
+    assert.deepEqual(frame.ev.usage, CTX_USAGE);
+    assert.equal(frame.ev._seq, undefined, 'seq-less — it got no ring slot');
+    assert.equal('model' in frame.ev, false,
+      'model deliberately omitted so the instance tagged model owns the window denominator');
+    assert.deepEqual(inst.lastContextUsage, CTX_USAGE, 're-seeded by the replay');
+  } finally {
+    if (c) await c.close();
+    await close();
+  }
+});
+
+test('a non-retained replay event does not disturb the ring seq or the archive seam', async () => {
+  const ctx = await setup();
+  const { baseUrl, instances, close } = ctx;
+  try {
+    const sid = await seedResumableJsonl(ctx, 'a');
+    const created = await api(baseUrl, 'POST', '/api/instances',
+      { project: 'a', resume: sid, mode: 'bypassPermissions' });
+    const id = created.body.id;
+    await waitFor(() => instances.get(id).status === 'idle');
+    const inst = instances.get(id);
+    assert.deepEqual(inst.lastContextUsage, CTX_USAGE, 'precondition: the replay seeded');
+
+    // idleSubscriptions.js arms on ring.nextSeq as its "activity since arm"
+    // marker, so a retained synthetic event would have looked like new activity.
+    const seqBefore = inst.ring.nextSeq;
+    inst._emitUi({ kind: 'message_start', msgId: 'm_x', usage: CTX_USAGE, replayed: true });
+    assert.equal(inst.ring.nextSeq, seqBefore, 'declined events do not advance nextSeq');
+    // …while a genuine live message_start still is retained.
+    inst._emitUi({ kind: 'message_start', msgId: 'm_y', usage: { input_tokens: 5 } });
+    assert.equal(inst.ring.nextSeq, seqBefore + 1, 'the live kind is unaffected');
+  } finally { await close(); }
+});
+
+test('no reading is replayed when the jsonl has usage but nothing to replay', async () => {
+  // The `replayedCount > 0` guard: it is what makes the synthetic event provably
+  // never the first thing a client sees, so it can't strip the conversation's
+  // empty-state placeholder (see tests/transcript-context-usage.test.mjs).
+  const ctx = await setup();
+  const { baseUrl, instances, close } = ctx;
+  try {
+    const cwd = path.join(ctx.projectsRoot, 'a');
+    const dir = path.join(ctx.claudeProjectsRoot, encodeCwd(cwd));
+    await fs.mkdir(dir, { recursive: true });
+    const sid = randomUUID();
+    // An assistant line carrying usage but zero content blocks replays to no
+    // UI events at all, so replayedCount stays 0.
+    await fs.writeFile(path.join(dir, `${sid}.jsonl`), JSON.stringify(
+      { type: 'assistant', uuid: 'a1', message: { id: 'm_empty', role: 'assistant', model: 'claude-opus-5', content: [], usage: CTX_USAGE } },
+    ) + '\n');
+
+    const created = await api(baseUrl, 'POST', '/api/instances',
+      { project: 'a', resume: sid, mode: 'bypassPermissions' });
+    const id = created.body.id;
+    await waitFor(() => instances.get(id).status === 'idle');
+    const inst = instances.get(id);
+    assert.equal(inst.ring.buf.length, 0, 'precondition: nothing replayed');
+    assert.equal(inst.lastContextUsage, null, 'so no reading is seeded either');
   } finally { await close(); }
 });
 
