@@ -375,8 +375,11 @@ export class Instance extends EventEmitter {
     // the window and a re-subscribing client would rebuild an empty tracker
     // (`ctx —`). A backend that answers in one long unbroken text block hits that
     // routinely. Unlike _liveThinkingTokens this deliberately SURVIVES turn_end —
-    // it's last-value-wins for the life of the process — and is cleared only by
-    // _wipeForResume, since a rewind/fork/respawn rewrites the prefix.
+    // it's last-value-wins for the life of the process. Its only reset is
+    // _wipeForResume (rewind/respawn), which rewrites the CLI's prefix in place;
+    // a fork or a resume-after-restart needs none, since each builds a NEW
+    // Instance that starts here at null (and a fork must leave the parent's value
+    // alone — that session continues).
     this._lastContextUsage = null;
     this._pending = new Map(); // request_id -> { resolve, reject, timer }
     // Per-instance PreToolUse hook callback broker (held-open
@@ -2024,9 +2027,9 @@ export class Instance extends EventEmitter {
     this.ring.clear();
     this._userEchoCount = 0;
     this._liveThinkingTokens = null;
-    // A rewind/fork/respawn rewrites the CLI's prefix, so the pre-wipe context
-    // reading must not leak into the replayed session (it would over-report a
-    // rewound session's fill until its first live message_start).
+    // A rewind/respawn rewrites the CLI's prefix, so the pre-wipe context reading
+    // must not leak into the replayed session (it would over-report a rewound
+    // session's fill until its first live message_start).
     this._lastContextUsage = null;
     this.parser.reset();
     this._lastLeafUuid = null;

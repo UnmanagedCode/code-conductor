@@ -39,12 +39,13 @@ async function setup(scenario = SCENARIO_NORMAL) {
 
 test('subscribe sends snapshot then live events', async () => {
   const { baseUrl, wsUrl, instances, close } = await setup();
+  let c = null;
   try {
     const created = await api(baseUrl, 'POST', '/api/instances', { project: 'a', mode: 'bypassPermissions' });
     const id = created.body.id;
     await waitFor(() => instances.get(id).status === 'idle' && instances.get(id).sessionId);
 
-    const c = await wsClient(wsUrl);
+    c = await wsClient(wsUrl);
     c.send({ t: 'subscribe', id, reqId: 'r1' });
     const snap = await c.wait(m => m.t === 'snapshot' && m.id === id);
     assert.equal(snap.status, 'idle');
@@ -64,12 +65,15 @@ test('subscribe sends snapshot then live events', async () => {
     // The init system event arrives in the live stream after the first prompt.
     assert.ok(liveKinds.includes('system'), 'init delivered after first prompt');
 
-    await c.close();
-  } finally { await close(); }
+  } finally {
+    if (c) await c.close();
+    await close();
+  }
 });
 
 test('reconnect mid-stream replays snapshot without duplicating events', async () => {
   const { baseUrl, wsUrl, instances, close } = await setup();
+  let c2 = null;
   try {
     const created = await api(baseUrl, 'POST', '/api/instances', { project: 'a', mode: 'bypassPermissions' });
     const id = created.body.id;
@@ -84,7 +88,7 @@ test('reconnect mid-stream replays snapshot without duplicating events', async (
     await c1.close();
 
     // New tab connects: snapshot should include the same events.
-    const c2 = await wsClient(wsUrl);
+    c2 = await wsClient(wsUrl);
     c2.send({ t: 'subscribe', id });
     const snap = await c2.wait(m => m.t === 'snapshot' && m.id === id);
     const snapKinds = snap.events.map(e => e.kind);
@@ -105,8 +109,10 @@ test('reconnect mid-stream replays snapshot without duplicating events', async (
     for (const m of newLive) {
       assert.ok(m.ev._seq > maxSnapSeq, `live _seq ${m.ev._seq} must exceed maxSnapSeq ${maxSnapSeq}`);
     }
-    await c2.close();
-  } finally { await close(); }
+  } finally {
+    if (c2) await c2.close();
+    await close();
+  }
 });
 
 test('subscribe sends only the ring tail, snapped to a turn boundary', async () => {
@@ -115,6 +121,7 @@ test('subscribe sends only the ring tail, snapped to a turn boundary', async () 
   process.env.ORCH_SNAPSHOT_TAIL = '12';
   process.env.ORCH_EVENT_RING_CAP = '40';
   const { baseUrl, wsUrl, instances, close } = await setup();
+  let c = null;
   try {
     const created = await api(baseUrl, 'POST', '/api/instances', { project: 'a', mode: 'bypassPermissions' });
     const id = created.body.id;
@@ -128,7 +135,7 @@ test('subscribe sends only the ring tail, snapped to a turn boundary', async () 
         : { kind: 'text_delta', msgId: 'mT', blockIdx: 0, text: `e${i}` });
     }
 
-    const c = await wsClient(wsUrl);
+    c = await wsClient(wsUrl);
     c.send({ t: 'subscribe', id });
     const snap = await c.wait(m => m.t === 'snapshot' && m.id === id);
     assert.ok(snap.events.length <= 12, `tail-only snapshot (${snap.events.length} > 12)`);
@@ -142,8 +149,8 @@ test('subscribe sends only the ring tail, snapped to a turn boundary', async () 
     // Tail is the NEWEST slice.
     const ring = inst.ringSnapshot();
     assert.equal(snap.events[snap.events.length - 1]._seq, ring[ring.length - 1]._seq);
-    await c.close();
   } finally {
+    if (c) await c.close();
     await close();
     if (prevTail === undefined) delete process.env.ORCH_SNAPSHOT_TAIL;
     else process.env.ORCH_SNAPSHOT_TAIL = prevTail;
@@ -161,6 +168,7 @@ test('snapshot carries tasksAtTailStart for a batch created below the tail', asy
   process.env.ORCH_SNAPSHOT_TAIL = '8';
   process.env.ORCH_EVENT_RING_CAP = '200'; // no trim — the create stays in the ring, below the tail
   const { baseUrl, wsUrl, instances, close } = await setup();
+  let c = null;
   try {
     const created = await api(baseUrl, 'POST', '/api/instances', { project: 'a', mode: 'bypassPermissions' });
     const id = created.body.id;
@@ -179,7 +187,7 @@ test('snapshot carries tasksAtTailStart for a batch created below the tail', asy
         : { kind: 'text_delta', msgId: 'm', blockIdx: 0, text: `e${i}` });
     }
 
-    const c = await wsClient(wsUrl);
+    c = await wsClient(wsUrl);
     c.send({ t: 'subscribe', id });
     const snap = await c.wait(m => m.t === 'snapshot' && m.id === id);
 
@@ -190,8 +198,8 @@ test('snapshot carries tasksAtTailStart for a batch created below the tail', asy
     assert.ok(Array.isArray(snap.tasksAtTailStart));
     assert.deepEqual(snap.tasksAtTailStart.map(t => ({ id: t.id, status: t.status, subject: t.subject })),
       [{ id: '1', status: 'in_progress', subject: 'Big batch' }]);
-    await c.close();
   } finally {
+    if (c) await c.close();
     await close();
     if (prevTail === undefined) delete process.env.ORCH_SNAPSHOT_TAIL;
     else process.env.ORCH_SNAPSHOT_TAIL = prevTail;
@@ -270,7 +278,9 @@ test('lastContextUsage tracks the newest message_start and is cleared by a rewin
     assert.deepEqual(inst.lastContextUsage, { input_tokens: 200 },
       'survives turn_end (unlike the thinking counter) — the reading is still valid between turns');
 
-    // A rewind/fork/respawn rewrites the prefix, so the stale reading must go.
+    // A rewind/respawn rewrites the prefix in place, so the stale reading must go.
+    // (A fork needs no reset — it builds a new Instance, and the forked-from
+    // session keeps running with its own value.)
     inst._wipeForResume();
     assert.equal(inst.lastContextUsage, null, 'cleared by _wipeForResume');
   } finally { await close(); }
@@ -278,14 +288,15 @@ test('lastContextUsage tracks the newest message_start and is cleared by a rewin
 
 test('two clients on two instances stream concurrently and independently', async () => {
   const { baseUrl, wsUrl, instances, close } = await setup();
+  let c1 = null, c2 = null;
   try {
     const a = await api(baseUrl, 'POST', '/api/instances', { project: 'a', mode: 'bypassPermissions' });
     const b = await api(baseUrl, 'POST', '/api/instances', { project: 'b', mode: 'bypassPermissions' });
     const idA = a.body.id, idB = b.body.id;
     await waitFor(() => instances.get(idA).sessionId && instances.get(idB).sessionId);
 
-    const c1 = await wsClient(wsUrl);
-    const c2 = await wsClient(wsUrl);
+    c1 = await wsClient(wsUrl);
+    c2 = await wsClient(wsUrl);
     c1.send({ t: 'subscribe', id: idA });
     c2.send({ t: 'subscribe', id: idB });
     await c1.wait(m => m.t === 'snapshot' && m.id === idA);
@@ -304,62 +315,73 @@ test('two clients on two instances stream concurrently and independently', async
     for (const m of c2.messages) {
       if (m.t === 'event') assert.equal(m.id, idB, 'c2 only sees idB events');
     }
-    await c1.close();
-    await c2.close();
-  } finally { await close(); }
+  } finally {
+    if (c1) await c1.close();
+    if (c2) await c2.close();
+    await close();
+  }
 });
 
 test('mode switch via WS updates instance.mode and acks', async () => {
   const { baseUrl, wsUrl, instances, close } = await setup();
+  let c = null;
   try {
     const r = await api(baseUrl, 'POST', '/api/instances', { project: 'a', mode: 'bypassPermissions' });
     const id = r.body.id;
     await waitFor(() => instances.get(id).sessionId);
 
-    const c = await wsClient(wsUrl);
+    c = await wsClient(wsUrl);
     c.send({ t: 'subscribe', id });
     await c.wait(m => m.t === 'snapshot');
     c.send({ t: 'mode', id, mode: 'plan', reqId: 'm1' });
     const ack = await c.wait(m => m.t === 'ack' && m.reqId === 'm1');
     assert.equal(ack.ok, true);
     assert.equal(instances.get(id).mode, 'plan');
-    await c.close();
-  } finally { await close(); }
+  } finally {
+    if (c) await c.close();
+    await close();
+  }
 });
 
 test('model switch via WS updates instance.model and acks', async () => {
   const { baseUrl, wsUrl, instances, close } = await setup();
+  let c = null;
   try {
     const r = await api(baseUrl, 'POST', '/api/instances', { project: 'a', mode: 'bypassPermissions' });
     const id = r.body.id;
     await waitFor(() => instances.get(id).sessionId);
 
-    const c = await wsClient(wsUrl);
+    c = await wsClient(wsUrl);
     c.send({ t: 'subscribe', id });
     await c.wait(m => m.t === 'snapshot');
     c.send({ t: 'model', id, model: 'claude-sonnet-5[1m]', reqId: 'm1' });
     const ack = await c.wait(m => m.t === 'ack' && m.reqId === 'm1');
     assert.equal(ack.ok, true);
     assert.equal(instances.get(id).model, 'claude-sonnet-5[1m]');
-    await c.close();
-  } finally { await close(); }
+  } finally {
+    if (c) await c.close();
+    await close();
+  }
 });
 
 test('model switch via WS with an unknown model acks false', async () => {
   const { baseUrl, wsUrl, instances, close } = await setup();
+  let c = null;
   try {
     const r = await api(baseUrl, 'POST', '/api/instances', { project: 'a', mode: 'bypassPermissions' });
     const id = r.body.id;
     await waitFor(() => instances.get(id).sessionId);
 
-    const c = await wsClient(wsUrl);
+    c = await wsClient(wsUrl);
     c.send({ t: 'subscribe', id });
     await c.wait(m => m.t === 'snapshot');
     c.send({ t: 'model', id, model: 'not-a-model', reqId: 'm2' });
     const ack = await c.wait(m => m.t === 'ack' && m.reqId === 'm2');
     assert.equal(ack.ok, false);
-    await c.close();
-  } finally { await close(); }
+  } finally {
+    if (c) await c.close();
+    await close();
+  }
 });
 
 test('turn_notification is broadcast to every connected client (not just subscribers)', async () => {
@@ -367,16 +389,17 @@ test('turn_notification is broadcast to every connected client (not just subscri
   // turn_notification channel) even if the foreground tab is subscribed to a
   // different instance.
   const { baseUrl, wsUrl, instances, close } = await setup();
+  let subscriber = null, bystander = null;
   try {
     const r = await api(baseUrl, 'POST', '/api/instances', { project: 'a', mode: 'bypassPermissions' });
     const id = r.body.id;
     await waitFor(() => instances.get(id).status === 'idle');
 
-    const subscriber = await wsClient(wsUrl);
+    subscriber = await wsClient(wsUrl);
     subscriber.send({ t: 'subscribe', id });
     await subscriber.wait(m => m.t === 'snapshot' && m.id === id);
 
-    const bystander = await wsClient(wsUrl); // never subscribes
+    bystander = await wsClient(wsUrl); // never subscribes
 
     subscriber.send({ t: 'prompt', id, text: 'go' });
     await subscriber.wait(m => m.t === 'event' && m.ev.kind === 'turn_end');
@@ -393,9 +416,11 @@ test('turn_notification is broadcast to every connected client (not just subscri
     const byEvents = bystander.messages.filter(m => m.t === 'event');
     assert.equal(byEvents.length, 0);
 
-    await subscriber.close();
-    await bystander.close();
-  } finally { await close(); }
+  } finally {
+    if (subscriber) await subscriber.close();
+    if (bystander) await bystander.close();
+    await close();
+  }
 });
 
 test('projects hint is broadcast on instance lifecycle so sidebar session counts refresh', async () => {
@@ -406,8 +431,9 @@ test('projects hint is broadcast on instance lifecycle so sidebar session counts
   // project that started with zero on-disk sessions can have its whole
   // Sessions subnode vanish once `liveCount` drops to zero.
   const { baseUrl, wsUrl, instances, close } = await setup();
+  let bystander = null;
   try {
-    const bystander = await wsClient(wsUrl);
+    bystander = await wsClient(wsUrl);
     const r = await api(baseUrl, 'POST', '/api/instances', { project: 'a', mode: 'bypassPermissions' });
     const id = r.body.id;
     await waitFor(() => bystander.messages.some(m => m.t === 'projects'));
@@ -416,17 +442,20 @@ test('projects hint is broadcast on instance lifecycle so sidebar session counts
     const beforeRemove = bystander.messages.length;
     await instances.remove(id);
     await waitFor(() => bystander.messages.slice(beforeRemove).some(m => m.t === 'projects'));
-    await bystander.close();
-  } finally { await close(); }
+  } finally {
+    if (bystander) await bystander.close();
+    await close();
+  }
 });
 
 test('forced interrupt via WS (force:true) returns instance to idle', async () => {
   const { baseUrl, wsUrl, instances, close } = await setup(SCENARIO_INTERRUPT);
+  let c = null;
   try {
     const r = await api(baseUrl, 'POST', '/api/instances', { project: 'a', mode: 'bypassPermissions' });
     const id = r.body.id;
     await waitFor(() => instances.get(id).sessionId);
-    const c = await wsClient(wsUrl);
+    c = await wsClient(wsUrl);
     c.send({ t: 'subscribe', id });
     await c.wait(m => m.t === 'snapshot');
 
@@ -439,17 +468,20 @@ test('forced interrupt via WS (force:true) returns instance to idle', async () =
     await waitFor(() => instances.get(id).status === 'turn');
     c.send({ t: 'interrupt', id, force: true });
     await waitFor(() => instances.get(id).status === 'idle');
-    await c.close();
-  } finally { await close(); }
+  } finally {
+    if (c) await c.close();
+    await close();
+  }
 });
 
 test('soft interrupt via WS broadcasts interrupting:true without ending the turn', async () => {
   const { baseUrl, wsUrl, instances, close } = await setup(SCENARIO_INTERRUPT);
+  let c = null;
   try {
     const r = await api(baseUrl, 'POST', '/api/instances', { project: 'a', mode: 'bypassPermissions' });
     const id = r.body.id;
     await waitFor(() => instances.get(id).sessionId);
-    const c = await wsClient(wsUrl);
+    c = await wsClient(wsUrl);
     c.send({ t: 'subscribe', id });
     await c.wait(m => m.t === 'snapshot');
 
@@ -465,12 +497,15 @@ test('soft interrupt via WS broadcasts interrupting:true without ending the turn
     // Still in turn (soft does not sever it), flag set server-side.
     assert.equal(instances.get(id).status, 'turn');
     assert.equal(instances.get(id).interrupting, true);
-    await c.close();
-  } finally { await close(); }
+  } finally {
+    if (c) await c.close();
+    await close();
+  }
 });
 
 test('a client subscribing mid-thinking gets the partial thinking text AND the live token count', async () => {
   const { baseUrl, wsUrl, instances, close } = await setup();
+  let c = null;
   try {
     const r = await api(baseUrl, 'POST', '/api/instances', { project: 'a', mode: 'bypassPermissions' });
     const id = r.body.id;
@@ -490,7 +525,7 @@ test('a client subscribing mid-thinking gets the partial thinking text AND the l
     // No thinking_end yet — the block is still streaming.
     assert.equal(inst.liveThinkingTokens, 24, 'server holds the latest count in O(1)');
 
-    const c = await wsClient(wsUrl);
+    c = await wsClient(wsUrl);
     c.send({ t: 'subscribe', id });
     const snap = await c.wait(m => m.t === 'snapshot' && m.id === id);
 
@@ -514,12 +549,15 @@ test('a client subscribing mid-thinking gets the partial thinking text AND the l
     // tailStartSeq is computed from ring events, unperturbed by the trailing synthetic.
     assert.equal(snap.tailStartSeq, snap.events[0]._seq);
 
-    await c.close();
-  } finally { await close(); }
+  } finally {
+    if (c) await c.close();
+    await close();
+  }
 });
 
 test('a completed thinking block carries no stale live count on a fresh subscribe', async () => {
   const { baseUrl, wsUrl, instances, close } = await setup();
+  let c = null;
   try {
     const r = await api(baseUrl, 'POST', '/api/instances', { project: 'a', mode: 'bypassPermissions' });
     const id = r.body.id;
@@ -534,7 +572,7 @@ test('a completed thinking block carries no stale live count on a fresh subscrib
     // Block closed → the ephemeral count is cleared.
     assert.equal(inst.liveThinkingTokens, null, 'count cleared on thinking_end');
 
-    const c = await wsClient(wsUrl);
+    c = await wsClient(wsUrl);
     c.send({ t: 'subscribe', id });
     const snap = await c.wait(m => m.t === 'snapshot' && m.id === id);
     assert.ok(!snap.events.some(e => e.kind === 'system' && e.subtype === 'thinking_tokens'),
@@ -542,12 +580,15 @@ test('a completed thinking block carries no stale live count on a fresh subscrib
     // The finished thinking text is still present.
     assert.ok(snap.events.some(e => e.kind === 'thinking_delta' && e.text === 'all done'));
 
-    await c.close();
-  } finally { await close(); }
+  } finally {
+    if (c) await c.close();
+    await close();
+  }
 });
 
 test('a closed REDACTED thinking block keeps its token count on a fresh subscribe', async () => {
   const { baseUrl, wsUrl, instances, close } = await setup();
+  let c = null;
   try {
     const r = await api(baseUrl, 'POST', '/api/instances', { project: 'a', mode: 'bypassPermissions' });
     const id = r.body.id;
@@ -565,7 +606,7 @@ test('a closed REDACTED thinking block keeps its token count on a fresh subscrib
     inst._emitUi({ kind: 'thinking_end', msgId: 'm1', blockIdx: 0 });
     assert.equal(inst.liveThinkingTokens, null, 'ephemeral count still cleared on thinking_end');
 
-    const c = await wsClient(wsUrl);
+    c = await wsClient(wsUrl);
     c.send({ t: 'subscribe', id });
     const snap = await c.wait(m => m.t === 'snapshot' && m.id === id);
 
@@ -578,12 +619,15 @@ test('a closed REDACTED thinking block keeps its token count on a fresh subscrib
     assert.equal(red.estimatedTokens, 450, 'final estimate stamped on the retained slot');
     assert.ok(red._seq !== undefined, 'the redacted slot is retained and seq-stamped');
 
-    await c.close();
-  } finally { await close(); }
+  } finally {
+    if (c) await c.close();
+    await close();
+  }
 });
 
 test('a redacted block with no counter frames carries no estimatedTokens', async () => {
   const { baseUrl, wsUrl, instances, close } = await setup();
+  let c = null;
   try {
     const r = await api(baseUrl, 'POST', '/api/instances', { project: 'a', mode: 'bypassPermissions' });
     const id = r.body.id;
@@ -598,7 +642,7 @@ test('a redacted block with no counter frames carries no estimatedTokens', async
     inst._emitUi({ kind: 'thinking_redacted', msgId: 'm1', blockIdx: 0 });
     inst._emitUi({ kind: 'thinking_end', msgId: 'm1', blockIdx: 0 });
 
-    const c = await wsClient(wsUrl);
+    c = await wsClient(wsUrl);
     c.send({ t: 'subscribe', id });
     const snap = await c.wait(m => m.t === 'snapshot' && m.id === id);
     const red = snap.events.find(e => e.kind === 'thinking_redacted' && e.msgId === 'm1');
@@ -612,6 +656,8 @@ test('a redacted block with no counter frames carries no estimatedTokens', async
     assert.equal(red.estimatedTokens, undefined,
       'thinking_start cleared the stale counter — no carry-over from a prior block');
 
-    await c.close();
-  } finally { await close(); }
+  } finally {
+    if (c) await c.close();
+    await close();
+  }
 });
