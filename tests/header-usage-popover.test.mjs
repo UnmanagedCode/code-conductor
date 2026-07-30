@@ -44,6 +44,7 @@ async function setup() {
     composerInput: document.getElementById('composer-input'),
     modeSelect: document.getElementById('mode-select'),
     killBtn: document.getElementById('kill-btn'),
+    muteBtn: document.getElementById('mute-btn'),
     resumeBtn: document.getElementById('resume-btn'),
     instanceTitle: document.getElementById('instance-title'),
     turnIndicator: document.getElementById('turn-indicator'),

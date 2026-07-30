@@ -1,16 +1,15 @@
-// Tests for the "🧠 Change model" ⋮-menu button:
-//   (1) its label is always static — no "(Family)" suffix (the popover's own
-//       .qs-selected highlight is the only place current-family state shows).
-//   (2) the header's "no instance selected" render branch actually hides the
-//       ⋮ overflow menu instead of leaving a previously-live-rendered
-//       Change-model/Rename/Debug button stale-clickable — the bug that made
-//       clicking it silently do nothing once `currentInst` desynced from a
-//       real live instance.
+// Tests for the "🔕 Mute" / "🔔 Unmute" ⋮-menu item that replaced the sidebar
+// row mute button (2026-0014 relocation): it must sit directly above
+// Terminate, reflect the session's current mute state via isSessionMuted(),
+// and hide along with the rest of the ⋮ menu when no instance is active.
 //
-// Loads the real index.html into happy-dom (same approach as
-// tests/static.test.mjs / tests/settings-toggle.test.mjs) so the `dom` object
-// built here matches app.js's getElementById wiring exactly, then drives the
-// real installHeader() factory with fake instance state.
+// Same approach as tests/header-change-model.test.mjs: load the real
+// index.html into happy-dom so `dom` matches app.js's getElementById wiring,
+// then drive the real installHeader() factory with fake instance state.
+// notifications.js is imported WITHOUT a cache-busting query string (same as
+// header.js's own import), so mutating NotificationState here is visible to
+// header.js's isSessionMuted() calls — and is reset in a finally block so it
+// can't leak into other tests in this file.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -64,6 +63,7 @@ async function setup() {
 
   const { installHeader } = await import(pathToFileURL(path.join(PUB, 'header.js')).href + `?t=${Math.random()}`);
   const { UsageTracker, RateLimitTracker } = await import(pathToFileURL(path.join(PUB, 'usage.js')).href);
+  const notifications = await import(pathToFileURL(path.join(PUB, 'notifications.js')).href);
 
   let instances = [];
   let activeId = null;
@@ -90,7 +90,7 @@ async function setup() {
   });
 
   return {
-    window, document, dom, header, composer,
+    window, document, dom, header, composer, notifications,
     setInstances: (v) => { instances = v; },
     setActiveId: (v) => { activeId = v; },
   };
@@ -102,56 +102,60 @@ const LIVE_INSTANCE = {
   autoApprovePlan: false, interrupting: false, debug: false,
 };
 
-test('Change-model button label is always static, regardless of the instance model family', async () => {
-  for (const model of ['claude-sonnet-4-6', 'claude-opus-4-8', 'claude-haiku-4-5-20251001', null]) {
-    const { dom, header, setInstances, setActiveId } = await setup();
-    setInstances([{ ...LIVE_INSTANCE, model }]);
+test('Mute item sits directly above Terminate in DOM order', async () => {
+  const { dom } = await setup();
+  const items = [...dom.overflowMenu.querySelectorAll('[role="menuitem"]')];
+  const muteIdx = items.indexOf(dom.muteBtn);
+  const killIdx = items.indexOf(dom.killBtn);
+  assert.ok(muteIdx >= 0 && killIdx >= 0, 'both items must be present in the menu');
+  assert.equal(killIdx, muteIdx + 1, 'Terminate/Interrupt must immediately follow Mute');
+});
+
+test('a live session shows the ⋮ menu with Mute enabled, unmuted by default', async () => {
+  const { dom, header, notifications, setInstances, setActiveId } = await setup();
+  try {
+    setInstances([LIVE_INSTANCE]);
     setActiveId('inst-1');
     header.update();
-    assert.equal(dom.changeModelBtn.textContent, '🧠 Change model', `label must be static for model=${model}`);
+    assert.equal(dom.overflowMenu.hidden, false);
+    assert.equal(dom.muteBtn.hidden, false);
+    assert.equal(dom.muteBtn.disabled, false);
+    assert.equal(dom.muteBtn.textContent, '🔕 Mute');
+    assert.equal(dom.muteBtn.getAttribute('aria-pressed'), 'false');
+  } finally {
+    notifications.NotificationState.mutedSessions.clear();
   }
 });
 
-test('a live session shows the ⋮ menu with Change-model enabled', async () => {
-  const { dom, header, setInstances, setActiveId } = await setup();
-  setInstances([LIVE_INSTANCE]);
-  setActiveId('inst-1');
-  header.update();
-  assert.equal(dom.overflowMenu.hidden, false);
-  assert.equal(dom.changeModelBtn.hidden, false);
-  assert.equal(dom.changeModelBtn.disabled, false);
+test('Mute item reflects isSessionMuted() and flips label/aria-pressed on mute/unmute', async () => {
+  const { dom, header, notifications, setInstances, setActiveId } = await setup();
+  try {
+    setInstances([LIVE_INSTANCE]);
+    setActiveId('inst-1');
+    header.update();
+
+    notifications.muteSession('sess-1', true);
+    header.update();
+    assert.equal(dom.muteBtn.textContent, '🔔 Unmute');
+    assert.equal(dom.muteBtn.getAttribute('aria-pressed'), 'true');
+
+    notifications.muteSession('sess-1', false);
+    header.update();
+    assert.equal(dom.muteBtn.textContent, '🔕 Mute');
+    assert.equal(dom.muteBtn.getAttribute('aria-pressed'), 'false');
+  } finally {
+    notifications.NotificationState.mutedSessions.clear();
+  }
 });
 
-test('when the active id has no backing instance, the ⋮ menu is hidden — not left stale-clickable', async () => {
-  const { dom, header, setInstances, setActiveId } = await setup();
-  // First render: a real live instance — the ⋮ menu becomes visible/enabled.
-  setInstances([LIVE_INSTANCE]);
-  setActiveId('inst-1');
-  header.update();
-  assert.equal(dom.overflowMenu.hidden, false, 'sanity: menu is visible while live');
-
-  // Second render: state.instances no longer contains the active id (the
-  // exact desync a stale/out-of-order refreshInstances() response used to
-  // produce even though the server-side Instance was still fully live).
-  setInstances([]);
-  header.update();
-  assert.equal(dom.overflowMenu.hidden, true,
-    'the ⋮ menu (and therefore Change-model) must hide once the active instance disappears from state — ' +
-    'previously it stayed visibly enabled from the prior render and clicking it silently no-opped');
-});
-
-test('reselecting a live instance after a no-instance render re-enables the menu', async () => {
+test('when the active id has no backing instance, the ⋮ menu (and Mute) is hidden', async () => {
   const { dom, header, setInstances, setActiveId } = await setup();
   setInstances([LIVE_INSTANCE]);
   setActiveId('inst-1');
   header.update();
+  assert.equal(dom.muteBtn.hidden, false, 'sanity: visible while live');
 
   setInstances([]);
   header.update();
   assert.equal(dom.overflowMenu.hidden, true);
-
-  setInstances([LIVE_INSTANCE]);
-  header.update();
-  assert.equal(dom.overflowMenu.hidden, false);
-  assert.equal(dom.changeModelBtn.disabled, false);
 });
