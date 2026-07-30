@@ -517,11 +517,23 @@ export function buildTools() {
       name: 'create_workspace',
       description:
         'Register a workspace name so it appears in the sidebar even before any project joins it. ' +
-        'Idempotent — calling on an existing name is a no-op (added:false). Workspace names allow ' +
-        'spaces, slashes, dots, hyphens, underscores (1–40 chars, no control chars).',
+        'Idempotent — calling on an existing name is a no-op (added:false). Workspace names use the ' +
+        'same charset as project names (letters, digits, `.`, `_`, `-`), 1–40 chars, and cannot ' +
+        'start with `.`.',
       inputSchema: {
         type: 'object',
-        properties: { name: { type: 'string', minLength: 1, maxLength: 40 } },
+        properties: {
+          // minLength/maxLength are subsumed by the pattern but kept: they are
+          // checked first, so a too-short/too-long name gets a length-specific
+          // message instead of a bare pattern dump.
+          name: {
+            type: 'string',
+            minLength: 1,
+            maxLength: 40,
+            pattern: '^[a-zA-Z0-9_-][a-zA-Z0-9._-]{0,39}$',
+            description: 'Workspace name. Must match ^[a-zA-Z0-9_-][a-zA-Z0-9._-]{0,39}$.',
+          },
+        },
         required: ['name'],
       },
       handler: h.createWorkspace,
