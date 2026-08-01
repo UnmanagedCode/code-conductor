@@ -181,6 +181,56 @@ test('fork guards its jsonl read with the same flag', async () => {
   } finally { await ctx.close(); }
 });
 
+test('the fork route claims _mutating with no await after the check', async () => {
+  // The guard is only worth anything if the check and the claim are atomic. An
+  // await between them lets two requests both pass the check, both set the flag,
+  // and the first one's `finally` clear it while the second is still reading —
+  // the exact unprotected read the flag exists to prevent.
+  //
+  // This is asserted structurally, which needs justifying. The interleave is NOT
+  // reachable over HTTP: traced with an accessor on `_mutating`, two concurrent
+  // fork requests produce `get:false | set:true | get:true | set:false` whether
+  // or not the await is present — the second request simply doesn't arrive
+  // within the first's microtask-scale import window. So a behavioural test
+  // cannot distinguish the two, and the only guard against reintroducing it is
+  // to pin the shape.
+  const src = await fs.readFile(new URL('../src/routes.js', import.meta.url), 'utf8');
+  const route = src.slice(src.indexOf("r.post('/instances/:id/fork'"));
+  const check = route.indexOf('another rewind/fork/prune is in progress');
+  const claim = route.indexOf('inst._mutating = true');
+  assert.ok(check > 0 && claim > check, 'fork route must check _mutating before claiming it');
+  assert.doesNotMatch(
+    route.slice(check, claim), /\bawait\b/,
+    'no await may sit between the _mutating check and the claim — see this test\'s comment',
+  );
+});
+
+test('two concurrent forks cannot both claim the flag', async () => {
+  // Mutual exclusion under real concurrent load. This does NOT pin the
+  // check-then-await-then-set defect above (see that test for why); it catches
+  // the guard being weakened or removed outright.
+  const ctx = await bootServer({ scenarioPath: SCENARIO });
+  try {
+    const sid = 'aaaaaaa6-2222-3333-4444-555555555555';
+    await seedSession({ ctx, projectName: 'forkrace', sid, lines: sessionLines() });
+    const r = await api(ctx.baseUrl, 'POST', '/api/instances', {
+      project: 'forkrace', mode: 'bypassPermissions', resume: sid,
+    });
+    const id = r.body.id;
+    await waitFor(() => ctx.instances.get(id).status === 'idle');
+
+    const [a, b] = await Promise.all([
+      api(ctx.baseUrl, 'POST', `/api/instances/${id}/fork`, { userMessageIndex: 1 }),
+      api(ctx.baseUrl, 'POST', `/api/instances/${id}/fork`, { userMessageIndex: 1 }),
+    ]);
+    const codes = [a.status, b.status].sort();
+    assert.deepEqual(codes, [201, 409],
+      `exactly one concurrent fork may proceed, got ${codes.join(' + ')}`);
+    // The loser must not have left the flag stuck on the source instance.
+    assert.equal(ctx.instances.get(id)._mutating, false);
+  } finally { await ctx.close(); }
+});
+
 test('a failed prune does not leave the recovered session on a suppressed ctx reading', async () => {
   // `_skipUsageSeed` is set for the PRUNED session's replay. If launch throws
   // after that, the catch replays the ORIGINAL — whose jsonl usage is accurate —

@@ -886,13 +886,15 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
         // A rewind/prune on the SAME instance rewrites (or truncates) the very
         // jsonl this fork is about to read. Refuse rather than read a file
         // mid-rewrite — the mirror of the `_mutating` check those two already do.
+        //
+        // Claim the flag SYNCHRONOUSLY with the check: no await may sit between
+        // them, or two concurrent forks both pass the check, both set the flag,
+        // and the first one's `finally` clears it while the second is still
+        // reading — reintroducing exactly the unprotected read this guards.
         if (inst._mutating) {
           throw Object.assign(new Error('another rewind/fork/prune is in progress'), { statusCode: 409 });
         }
-        // Defer the import until first use — keeps the routes module light
-        // and avoids pulling sessionEdit into the test paths that don't
-        // exercise it.
-        const { forkSessionAtUserMessage } = await import('./sessionEdit.js');
+        inst._mutating = true;
         // Unlike rewind/prune, fork never kills the source subprocess, so
         // `!this.proc` doesn't cover it: a prompt landing here would be written
         // to stdin, the CLI would persist its tail, and that tail could be
@@ -901,8 +903,11 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
         // a prompt to the source can no longer affect the fork, so the create()
         // below (which spawns a whole new instance) stays outside the window.
         let forked;
-        inst._mutating = true;
         try {
+          // Deferred import — keeps the routes module light and avoids pulling
+          // sessionEdit into test paths that never exercise it. Inside the try
+          // so the flag is released if it throws.
+          const { forkSessionAtUserMessage } = await import('./sessionEdit.js');
           forked = await forkSessionAtUserMessage({
             cwd: inst.cwd,
             sessionId: inst.sessionId,
