@@ -883,16 +883,36 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
         if (!Number.isInteger(idx) || idx < 0) {
           throw Object.assign(new Error('userMessageIndex must be a non-negative integer'), { statusCode: 400 });
         }
+        // A rewind/prune on the SAME instance rewrites (or truncates) the very
+        // jsonl this fork is about to read. Refuse rather than read a file
+        // mid-rewrite — the mirror of the `_mutating` check those two already do.
+        if (inst._mutating) {
+          throw Object.assign(new Error('another rewind/fork/prune is in progress'), { statusCode: 409 });
+        }
         // Defer the import until first use — keeps the routes module light
         // and avoids pulling sessionEdit into the test paths that don't
         // exercise it.
         const { forkSessionAtUserMessage } = await import('./sessionEdit.js');
-        const { newSessionId, droppedText } = await forkSessionAtUserMessage({
-          cwd: inst.cwd,
-          sessionId: inst.sessionId,
-          userMessageIndex: idx,
-          permissionMode: inst.mode === 'ask' ? 'bypassPermissions' : inst.mode,
-        });
+        // Unlike rewind/prune, fork never kills the source subprocess, so
+        // `!this.proc` doesn't cover it: a prompt landing here would be written
+        // to stdin, the CLI would persist its tail, and that tail could be
+        // folded into the prefix being copied. `_mutating` makes prompt() refuse
+        // for the duration. Scoped to the READ only — once the copy is on disk,
+        // a prompt to the source can no longer affect the fork, so the create()
+        // below (which spawns a whole new instance) stays outside the window.
+        let forked;
+        inst._mutating = true;
+        try {
+          forked = await forkSessionAtUserMessage({
+            cwd: inst.cwd,
+            sessionId: inst.sessionId,
+            userMessageIndex: idx,
+            permissionMode: inst.mode === 'ask' ? 'bypassPermissions' : inst.mode,
+          });
+        } finally {
+          inst._mutating = false;
+        }
+        const { newSessionId, droppedText } = forked;
         // Spawn the fork as a new instance against the same cwd / worktree.
         const newInst = await instances.create({
           project: inst.project,

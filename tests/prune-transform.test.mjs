@@ -284,13 +284,13 @@ test('truncate mode never splits a surrogate pair', async () => {
       cwd: CWD, sessionId: sid, cutTurnIndex: 1, pruneThinking: false, inputMode: 'truncate',
     });
 
-    const raw = await fs.readFile(path.join(dir, `${newSessionId}.jsonl`));
-    // The strongest form of the assertion: what landed on disk is valid UTF-8.
-    // A lone surrogate would have been written as U+FFFD, so a byte-level
-    // round-trip through the file catches it even if the in-memory string looked
-    // fine. (JSON.stringify emits a lone surrogate as a \ud83d escape, so also
-    // check the decoded values below.)
-    assert.ok(!raw.includes(Buffer.from('�', 'utf8')), 'replacement char written to the jsonl');
+    // `JSON.stringify` writes a well-formed astral character as literal UTF-8
+    // bytes but escapes a LONE surrogate as `\ud83d`. So the presence of any
+    // surrogate-range \u escape in the file is itself the bug signature — no
+    // intact pair can produce one.
+    const raw = await fs.readFile(path.join(dir, `${newSessionId}.jsonl`), 'utf8');
+    assert.doesNotMatch(raw, /\\ud[89ab][0-9a-f]{2}/i,
+      'a lone surrogate was escaped into the pruned jsonl');
 
     const byUuid = Object.fromEntries((await readOut(dir, newSessionId)).map(o => [o.uuid, o]));
     const { old_string: cutOld, new_string: cutNew } = byUuid.a1.message.content[0].input;

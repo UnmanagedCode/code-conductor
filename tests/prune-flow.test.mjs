@@ -143,6 +143,89 @@ test('a prompt landing mid-rewrite is refused instead of corrupting the transfor
   } finally { await ctx.close(); }
 });
 
+test('fork guards its jsonl read with the same flag', async () => {
+  // Fork never kills the source subprocess, so `!this.proc` does not cover it —
+  // without `_mutating` a prompt lands on stdin mid-read and its persisted tail
+  // can be folded into the copied prefix. Observe the flag directly rather than
+  // trying to win a race: an accessor records every write the route makes.
+  const ctx = await bootServer({ scenarioPath: SCENARIO });
+  try {
+    const sid = 'aaaaaaa4-2222-3333-4444-555555555555';
+    await seedSession({ ctx, projectName: 'forkguard', sid, lines: sessionLines() });
+    const r = await api(ctx.baseUrl, 'POST', '/api/instances', {
+      project: 'forkguard', mode: 'bypassPermissions', resume: sid,
+    });
+    const id = r.body.id;
+    await waitFor(() => ctx.instances.get(id).status === 'idle');
+    const inst = ctx.instances.get(id);
+
+    const writes = [];
+    let flag = false;
+    Object.defineProperty(inst, '_mutating', {
+      configurable: true,
+      get: () => flag,
+      set: (v) => { flag = v; writes.push(v); },
+    });
+
+    const fk = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/fork`, { userMessageIndex: 1 });
+    assert.equal(fk.status, 201);
+    assert.deepEqual(writes, [true, false], 'fork must set and clear _mutating around its read');
+    assert.equal(inst._mutating, false, 'the flag is cleared even though fork leaves the source alive');
+
+    // …and fork refuses to read a jsonl another rewrite is already rewriting.
+    inst._mutating = true;
+    try {
+      const clash = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/fork`, { userMessageIndex: 1 });
+      assert.equal(clash.status, 409);
+    } finally { inst._mutating = false; }
+  } finally { await ctx.close(); }
+});
+
+test('a failed prune does not leave the recovered session on a suppressed ctx reading', async () => {
+  // `_skipUsageSeed` is set for the PRUNED session's replay. If launch throws
+  // after that, the catch replays the ORIGINAL — whose jsonl usage is accurate —
+  // so the flag must not carry over and blank its ctx chip.
+  //
+  // Assert the OBSERVABLE consequence (was the reading seeded?), not the flag:
+  // loadHistory consumes and clears `_skipUsageSeed` itself, so reading it back
+  // afterwards is always false and would make this test unfalsifiable.
+  const ctx = await bootServer({ scenarioPath: SCENARIO });
+  try {
+    const sid = 'aaaaaaa5-2222-3333-4444-555555555555';
+    // The fixture needs real usage on its newest assistant line, else there is
+    // nothing to seed and the assertion below is vacuous either way.
+    const lines = sessionLines();
+    lines[lines.length - 1].message.usage = {
+      input_tokens: 10, cache_read_input_tokens: 4000, cache_creation_input_tokens: 0,
+      output_tokens: 20,
+    };
+    await seedSession({ ctx, projectName: 'prunerecover', sid, lines });
+    const r = await api(ctx.baseUrl, 'POST', '/api/instances', {
+      project: 'prunerecover', mode: 'bypassPermissions', resume: sid,
+    });
+    const id = r.body.id;
+    await waitFor(() => ctx.instances.get(id).status === 'idle');
+    const inst = ctx.instances.get(id);
+
+    // Fail the pruned launch only; let the recovery launch succeed.
+    const realLaunch = inst.launch.bind(inst);
+    let calls = 0;
+    inst.launch = async (opts) => {
+      calls += 1;
+      if (calls === 1) throw new Error('simulated launch failure');
+      return realLaunch(opts);
+    };
+
+    const pr = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/prune`, { cutTurnIndex: 1 });
+    assert.equal(pr.status, 500, 'the real cause surfaces rather than being swallowed');
+    await waitFor(() => inst.status === 'idle');
+    assert.equal(inst.sessionId, sid, 'recovered onto the original session');
+    assert.ok(inst.lastContextUsage,
+      "the recovered original's ctx reading must be seeded — the pruned run's suppression leaked");
+    assert.equal(inst.lastContextUsage.cache_read_input_tokens, 4000);
+  } finally { await ctx.close(); }
+});
+
 test('prune is refused mid-turn and on a session with nothing to cut', async () => {
   const ctx = await bootServer({ scenarioPath: SCENARIO });
   try {

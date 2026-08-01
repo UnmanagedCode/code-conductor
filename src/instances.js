@@ -2164,6 +2164,11 @@ export class Instance extends EventEmitter {
       // cause) must be what surfaces.
       if (!this.proc) {
         this._wipeForResume();
+        // `_skipUsageSeed` may already be set for the PRUNED session's replay. The
+        // recovery replays the ORIGINAL instead, whose jsonl usage is accurate —
+        // leaving the flag set would suppress a perfectly good ctx reading and
+        // strand the recovered session on `ctx —` until its next turn.
+        this._skipUsageSeed = false;
         this.sessionId = oldSid;
         await this.launch({ resume: oldSid }).catch(() => {});
       }
