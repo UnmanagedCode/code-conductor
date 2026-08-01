@@ -6,6 +6,8 @@
 
 import { test, describe, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
+import { promises as fs } from 'node:fs';
+import path from 'node:path';
 import { bootServer, api, freshProjectsRoot, rmrf } from './helpers.mjs';
 import {
   addCustomModel, getCustomModels, removeCustomModel, isKnownBackendModel,
@@ -107,6 +109,50 @@ describe('resolveBackendLaunch (template-driven launch resolution)', () => {
     assert.deepEqual(backendEnv(undefined), {});
     assert.deepEqual(backendEnv({ env: [{ key: '', value: 'x' }] }), {}); // blank key dropped
   });
+
+  // {model} substitutes into env VALUES (never keys) at the single substitution
+  // point, so a custom backend can put `{model}` in an env var and have it filled
+  // at spawn. Keys are never templated. Only applies when a model is resolved.
+  test('{model} substitutes into env VALUES (not keys) for substitution backends', () => {
+    const backend = {
+      id: 'p', template: 'wrap --',
+      env: [
+        { key: 'SOME_MODEL_ID', value: '{model}' },
+        { key: 'KEEP', value: 'x-{model}-y' },
+        { key: 'NO_SUBST', value: 'plain' },
+        { key: '{model}', value: 'no' }, // key is NOT templated
+      ],
+    };
+    assert.deepEqual(resolveBackendLaunch(backend, 'glm-5.2:cloud', CLAUDE_BIN).env, {
+      '{model}': 'no',
+      SOME_MODEL_ID: 'glm-5.2:cloud',
+      KEEP: 'x-glm-5.2:cloud-y',
+      NO_SUBST: 'plain',
+    });
+    // backendEnv takes the optional model directly; no model ⇒ no substitution.
+    assert.deepEqual(backendEnv(backend, 'glm-5.2:cloud'), {
+      '{model}': 'no',
+      SOME_MODEL_ID: 'glm-5.2:cloud',
+      KEEP: 'x-glm-5.2:cloud-y',
+      NO_SUBST: 'plain',
+    });
+    assert.deepEqual(backendEnv(backend), {
+      '{model}': 'no',
+      SOME_MODEL_ID: '{model}',
+      KEEP: 'x-{model}-y',
+      NO_SUBST: 'plain',
+    });
+  });
+
+  // The identity path (blank template) resolves with NO model — env rides along
+  // unsubstituted. The only blank-template backend is the managed `claude` row
+  // (empty env), so this is defensive; it pins the no-model no-substitution rule.
+  test('a blank template leaves env unsubstituted when no model is given', () => {
+    const backend = { id: 'x', template: '', env: [{ key: 'M', value: '{model}' }] };
+    assert.deepEqual(resolveBackendLaunch(backend, null, CLAUDE_BIN).env, { M: '{model}' });
+    // With a model, the blank-template path still substitutes (single point).
+    assert.deepEqual(resolveBackendLaunch(backend, 'glm-5.2:cloud', CLAUDE_BIN).env, { M: 'glm-5.2:cloud' });
+  });
 });
 
 // ── registry + custom models + bindings + sidecar (fresh store) ─────────────
@@ -162,10 +208,11 @@ describe('backend registry data model', () => {
   test('the MANAGED claude row keeps its blank template — identity comes from code', async () => {
     assert.equal(getBackend('claude').template, '');
     assert.equal(resolveBackendLaunch(getBackend('claude'), 'm', CLAUDE_BIN).command, CLAUDE_BIN.command);
-    // Editing its env must not trip the user-row template requirement.
-    const rec = await updateBackend('claude', { env: [{ key: 'ANTHROPIC_LOG', value: 'debug' }] });
-    assert.equal(rec.template, '');
-    assert.deepEqual(rec.env, [{ key: 'ANTHROPIC_LOG', value: 'debug' }]);
+    // Env is read-only on a managed row (code-authoritative, empty) — editing it is
+    // rejected, and the row never falls through to the user-row template requirement.
+    await assert.rejects(() => updateBackend('claude', { env: [{ key: 'ANTHROPIC_LOG', value: 'debug' }] }), /built in/);
+    assert.equal(getBackend('claude').template, '');
+    assert.deepEqual(getBackend('claude').env, []);
   });
 
   test('env pairs persist and reject a malformed key', async () => {
@@ -175,20 +222,47 @@ describe('backend registry data model', () => {
     await assert.rejects(() => addBackend({ id: 'q', label: 'Q', template: 'q {model}', env: [{ key: '1BAD', value: 'x' }] }), /env key/);
   });
 
-  test('managed rows: label/template immutable, env editable, never removable', async () => {
+  test('managed rows: label/template/env immutable, never removable', async () => {
     await assert.rejects(() => updateBackend('ollama', { label: 'Mine' }), /built in/);
     await assert.rejects(() => updateBackend('ollama', { template: 'evil {model}' }), /built in/);
+    await assert.rejects(() => updateBackend('ollama', { env: [{ key: 'OLLAMA_HOST', value: 'http://box:11434' }] }), /built in/);
+    await assert.rejects(() => updateBackend('claude', { env: [{ key: 'X', value: '1' }] }), /built in/);
     await assert.rejects(() => removeBackend('ollama'), /cannot be removed/);
     await assert.rejects(() => removeBackend('claude'), /cannot be removed/);
 
-    // env IS editable, and the code-owned fields survive the write untouched.
-    const rec = await updateBackend('ollama', { env: [{ key: 'OLLAMA_HOST', value: 'http://box:11434' }] });
-    assert.deepEqual(rec.env, [{ key: 'OLLAMA_HOST', value: 'http://box:11434' }]);
-    assert.equal(rec.template, 'ollama launch claude --model {model} --yes --');
-    assert.equal(rec.label, 'Ollama');
-    assert.equal(rec.managed, true);
+    // Managed env is code-authoritative (empty) — never read from the store.
+    assert.deepEqual(getBackend('ollama').env, []);
+    assert.deepEqual(getBackend('claude').env, []);
+    // A no-op PATCH (no fields) returns the read-only row unchanged.
+    const noop = await updateBackend('ollama', {});
+    assert.equal(noop && noop.id, 'ollama');
     // And the registry still lists both managed rows exactly once.
     assert.deepEqual(getBackends().map(b => b.id), ['claude', 'ollama']);
+  });
+
+  // Managed env is code-authoritative: a stored {id, env} override for a managed
+  // row is dead data — getBackends() ignores it (env comes from MANAGED_BACKENDS,
+  // i.e. empty). Migration 0024 strips such entries; this pins the read side.
+  test('managed env is code-authoritative — stored managed env overrides are ignored', async () => {
+    const settingsFile = path.join(process.env.PROJECTS_ROOT, '.code-conductor', 'settings.json');
+    await fs.mkdir(path.dirname(settingsFile), { recursive: true });
+    await fs.writeFile(settingsFile, JSON.stringify({
+      models: {
+        backends: [
+          { id: 'ollama', env: [{ key: 'OLLAMA_HOST', value: 'http://seeded:11434' }] },
+          { id: 'claude', env: [{ key: 'X', value: '1' }] },
+          { id: 'my-proxy', label: 'My Proxy', template: 'proxy {model} --', env: [] },
+        ],
+      },
+    }, null, 2) + '\n');
+
+    // Managed rows: env is empty from code, NOT the seeded store override.
+    assert.deepEqual(getBackend('ollama').env, []);
+    assert.deepEqual(getBackend('claude').env, []);
+    assert.equal(resolveBackendLaunch(getBackend('ollama'), 'glm-5.2:cloud', CLAUDE_BIN).env.OLLAMA_HOST, undefined);
+    // A user row alongside is still read from the store.
+    assert.equal(isKnownBackend('my-proxy'), true);
+    assert.equal(getBackend('my-proxy').template, 'proxy {model} --');
   });
 
   test('updateBackend edits a user row; 404-equivalent null for an unknown id', async () => {
@@ -446,12 +520,16 @@ describe('models + backends settings routes', () => {
     const patch = await api(baseUrl, 'PATCH', '/api/settings/models/backends/my-proxy', { label: 'Renamed' });
     assert.equal(patch.status, 200);
     assert.equal(patch.body.updated.label, 'Renamed');
-    // A managed row rejects a label/template edit but takes env.
+    // A managed row rejects label/template AND env edits (read-only); a no-op
+    // PATCH (no fields) returns 200 with the unchanged row.
     const patchManaged = await api(baseUrl, 'PATCH', '/api/settings/models/backends/ollama', { template: 'evil {model}' });
     assert.equal(patchManaged.status, 400);
     const patchEnv = await api(baseUrl, 'PATCH', '/api/settings/models/backends/ollama', { env: [{ key: 'OLLAMA_HOST', value: 'http://box:11434' }] });
-    assert.equal(patchEnv.status, 200);
-    assert.deepEqual(patchEnv.body.backends.find(b => b.id === 'ollama').env, [{ key: 'OLLAMA_HOST', value: 'http://box:11434' }]);
+    assert.equal(patchEnv.status, 400);
+    assert.match(patchEnv.body.error, /built in/);
+    const patchNoop = await api(baseUrl, 'PATCH', '/api/settings/models/backends/ollama', {});
+    assert.equal(patchNoop.status, 200);
+    assert.deepEqual(patchNoop.body.updated.env, []);
     const patchGhost = await api(baseUrl, 'PATCH', '/api/settings/models/backends/ghost', { label: 'x' });
     assert.equal(patchGhost.status, 404);
 

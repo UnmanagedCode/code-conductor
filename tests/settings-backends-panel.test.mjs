@@ -1,9 +1,9 @@
 // The two registry-facing settings panels, driven through the real
 // public/settings.js with happy-dom.
 //
-// Settings → Backends: the registry renders (managed rows read-only +
-// non-removable, user rows editable/removable), the add/edit form round-trips (a
-// managed row PATCHes `env` only), and — the load-bearing one — a 409 refusal on
+// Settings → Backends: the registry renders (managed rows fully read-only +
+// non-removable — no edit affordance; user rows editable/removable), the add/edit
+// form round-trips for USER rows, and — the load-bearing one — a 409 refusal on
 // Remove surfaces the server's message instead of failing silently.
 //
 // Settings → Models: buildBackendPicker is REGISTRY-driven, so a user-added backend
@@ -23,7 +23,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const MANAGED = [
   { id: 'claude', label: 'Claude', template: '', env: [], managed: true },
-  { id: 'ollama', label: 'Ollama', template: 'ollama launch claude --model {model} --yes --', env: [{ key: 'OLLAMA_HOST', value: 'http://box:11434' }], managed: true },
+  { id: 'ollama', label: 'Ollama', template: 'ollama launch claude --model {model} --yes --', env: [], managed: true },
 ];
 const USER = { id: 'my-proxy', label: 'My Proxy', template: 'proxyctl exec claude --model {model} --', env: [{ key: 'PROXY_TOKEN', value: 'sekret' }], managed: false };
 
@@ -145,17 +145,18 @@ test('renders one card per registry row; managed rows are read-only + non-remova
   assert.equal(rows.length, 3, 'one card per backend');
   assert.deepEqual(rows.map(r => r.querySelector('.sb-row-id').textContent), ['claude', 'ollama', 'my-proxy']);
 
-  // Managed rows: badge, no Remove, "Edit env" only.
+  // Managed rows: badge, no action buttons (read-only), no Remove.
   const [claudeRow, ollamaRow, userRow] = rows;
   for (const r of [claudeRow, ollamaRow]) {
     assert.ok(r.querySelector('.sb-managed-badge'), 'managed badge shown');
     const labels = [...r.querySelectorAll('.sb-row-actions button')].map(b => b.textContent);
-    assert.deepEqual(labels, ['Edit env'], 'managed row offers env editing only, no Remove');
+    assert.deepEqual(labels, [], 'managed row is read-only — no edit affordance, no Remove');
   }
-  // The identity row advertises that it runs claude directly; ollama shows its template.
-  assert.match(claudeRow.querySelector('.sb-row-template').textContent, /runs `claude` directly/);
+  // The identity row shows the bare `claude` command for its blank template; ollama shows its template.
+  assert.equal(claudeRow.querySelector('.sb-row-template').textContent, 'claude');
   assert.equal(ollamaRow.querySelector('.sb-row-template').textContent, MANAGED[1].template);
-  assert.match(ollamaRow.querySelector('.sb-row-env').textContent, /OLLAMA_HOST=http:\/\/box:11434/);
+  // Managed env is code-authoritative (empty) — no env line rendered for ollama.
+  assert.equal(ollamaRow.querySelector('.sb-row-env'), null);
 
   // User row: no badge, both Edit and Remove.
   assert.equal(userRow.querySelector('.sb-managed-badge'), null);
@@ -212,33 +213,23 @@ test('the add form POSTs id/label/template + parsed KEY=VALUE env, then resets',
   assert.equal($('sb-cancel').hidden, true);
 });
 
-test('editing a MANAGED row locks id/label/template and PATCHes env only', async () => {
+test('a MANAGED row exposes no edit affordance — the form cannot be opened for it', async () => {
   const { impl, calls } = stubFetch(modelsPayload());
   const { window, mod } = await setup(impl);
   mod.installSettings({});
   await openSettings(window);
   const $ = (id) => window.document.getElementById(id);
 
-  const ollamaRow = [...window.document.querySelectorAll('#sb-list .sb-row')]
-    .find(r => r.querySelector('.sb-row-id').textContent === 'ollama');
-  ollamaRow.querySelector('.sb-row-actions button').click(); // "Edit env"
-  await tick();
-
-  assert.equal($('sb-id').disabled, true);
-  assert.equal($('sb-label').disabled, true, 'a managed label is not editable');
-  assert.equal($('sb-template').disabled, true, 'a managed template is not editable');
-  assert.equal($('sb-env').value, 'OLLAMA_HOST=http://box:11434', 'existing env prefilled');
-  assert.match($('sb-form-legend').textContent, /built in — template is fixed/);
-
-  $('sb-env').value = 'OLLAMA_HOST=http://other:11434';
-  $('sb-save').click();
-  await tick();
-
-  assert.equal(calls.length, 1);
-  assert.equal(calls[0].method, 'PATCH');
-  assert.equal(calls[0].url, '/api/settings/models/backends/ollama');
-  assert.deepEqual(calls[0].body, { env: [{ key: 'OLLAMA_HOST', value: 'http://other:11434' }] },
-    'no label/template keys — the server would 400 on them');
+  for (const id of ['claude', 'ollama']) {
+    const row = [...window.document.querySelectorAll('#sb-list .sb-row')]
+      .find(r => r.querySelector('.sb-row-id').textContent === id);
+    // No action buttons on a managed row → no way to open the edit form, so env
+    // (code-authoritative, empty) is never editable from the UI.
+    assert.equal([...row.querySelectorAll('.sb-row-actions button')].length, 0, `${id} has no edit/remove button`);
+  }
+  // The form stays in its "Add a backend" resting state (never opened for a managed row).
+  assert.equal($('sb-save').textContent, 'Add');
+  assert.equal(calls.length, 0, 'no PATCH was issued');
 });
 
 test('editing a USER row PATCHes label/template/env together', async () => {

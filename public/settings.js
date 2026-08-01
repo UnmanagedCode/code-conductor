@@ -408,13 +408,15 @@ export function installSettings({
       }
       const actions = document.createElement('div');
       actions.className = 'sb-row-actions';
-      const edit = document.createElement('button');
-      edit.type = 'button';
-      edit.className = 'btn';
-      edit.textContent = b.managed ? 'Edit env' : 'Edit';
-      edit.addEventListener('click', () => openEditBackend(b));
-      actions.appendChild(edit);
+      // Managed rows are fully read-only — no edit affordance (label/template/env
+      // are all code-authoritative). User rows get Edit + Remove.
       if (!b.managed) {
+        const edit = document.createElement('button');
+        edit.type = 'button';
+        edit.className = 'btn';
+        edit.textContent = 'Edit';
+        edit.addEventListener('click', () => openEditBackend(b));
+        actions.appendChild(edit);
         const rm = document.createElement('button');
         rm.type = 'button';
         rm.className = 'btn';
@@ -427,7 +429,7 @@ export function installSettings({
 
       const tpl = document.createElement('div');
       tpl.className = 'sb-row-template';
-      tpl.textContent = b.template ? b.template : 'runs `claude` directly';
+      tpl.textContent = b.template ? b.template : 'claude';
       li.appendChild(tpl);
 
       if (Array.isArray(b.env) && b.env.length) {
@@ -466,12 +468,12 @@ export function installSettings({
     if (sbIdEl) { sbIdEl.value = b.id; sbIdEl.disabled = true; sbIdEl.hidden = false; }
     if (sbLabelEl) { sbLabelEl.value = b.label; sbLabelEl.disabled = !!b.managed; }
     if (sbTemplateEl) { sbTemplateEl.value = b.template || ''; sbTemplateEl.disabled = !!b.managed; }
-    if (sbEnvEl) sbEnvEl.value = envToText(b.env);
+    if (sbEnvEl) { sbEnvEl.value = envToText(b.env); sbEnvEl.disabled = !!b.managed; }
     if (sbSaveEl) sbSaveEl.textContent = 'Save';
     if (sbCancelEl) sbCancelEl.hidden = false;
     if (sbFormLegendEl) {
       sbFormLegendEl.textContent = b.managed
-        ? `Edit env for ${b.label} (built in — template is fixed)`
+        ? `Edit ${b.label} (built in — template and env are fixed)`
         : `Edit ${b.label}`;
     }
     if (sbFormStatusEl) sbFormStatusEl.textContent = '';
@@ -483,10 +485,10 @@ export function installSettings({
     try {
       let r;
       if (sbEditingId) {
-        // A managed row accepts env only — sending its (disabled, unchanged)
-        // label/template would be rejected 400, so omit them.
-        const managed = (lastModelsData?.backends || []).find(b => b.id === sbEditingId)?.managed;
-        const body = managed ? { env } : { label: sbLabelEl?.value?.trim(), template: sbTemplateEl?.value ?? '', env };
+        // Editing is only offered for user rows (managed rows are read-only —
+        // label/template/env are all code-authoritative), so the edit PATCH
+        // always carries the full triple.
+        const body = { label: sbLabelEl?.value?.trim(), template: sbTemplateEl?.value ?? '', env };
         r = await fetch(`/api/settings/models/backends/${encodeURIComponent(sbEditingId)}`, {
           method: 'PATCH',
           headers: { 'content-type': 'application/json' },

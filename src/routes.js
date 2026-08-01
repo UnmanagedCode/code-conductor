@@ -1207,8 +1207,8 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
   });
 
   // The backend registry (Settings → Backends). addBackend/updateBackend/
-  // removeBackend own all validation + status codes; managed rows accept an env
-  // edit only and can never be removed.
+  // removeBackend own all validation + status codes; managed rows are read-only
+  // (all field edits → 400) and can never be removed.
   r.post('/settings/models/backends', async (req, res, next) => {
     try {
       const { id, label, template, env } = req.body ?? {};
