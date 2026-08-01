@@ -76,6 +76,8 @@
                       title="Switch this session's model without restarting">🧠 Change model</button>
               <button id="session-stats-btn" type="button" role="menuitem"
                       title="Cost & timing for this session and the workers it spawned">📊 Statistics</button>
+              <button id="prune-session-btn" type="button" role="menuitem"
+                      title="Shrink this session's context by stubbing out old tool payloads and thinking — mechanical, no LLM pass, no token cost">🪒 Prune</button>
               <button id="mute-btn" type="button" role="menuitem">🔕 Mute</button>
               <button id="kill-btn" type="button" role="menuitem" disabled>Interrupt</button>
               <button id="debug-btn" type="button" role="menuitem" title="Start mirroring CLI stdin/stdout/stderr to .code-conductor/debug/&lt;id&gt;/ for offline inspection">🐛 Debug</button>
@@ -595,6 +597,34 @@
       <p id="stats-error" class="error" hidden></p>
       <menu>
         <button value="close">Close</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <dialog id="prune-dialog" class="summary-dialog">
+    <form method="dialog">
+      <div class="summary-dialog-head">
+        <h3>Prune context</h3>
+      </div>
+      <p class="settings-hint">
+        Rewrites a <em>copy</em> of this session with old tool payloads replaced by size stubs.
+        No LLM pass and no token cost. The original session is archived and stays resumable.
+      </p>
+      <label for="pd-cut">Prune the oldest <span id="pd-cut-label">0</span> turns</label>
+      <input type="range" id="pd-cut" min="0" max="0" step="1" value="0" />
+      <label class="ni-temp-row">
+        <input type="checkbox" id="pd-thinking" checked />
+        <span>Prune all thinking blocks (every turn, not just the pruned ones)</span>
+      </label>
+      <label class="ni-temp-row">
+        <input type="checkbox" id="pd-minimal" />
+        <span>Minimal tool inputs (squeeze long values to a marker instead of truncating)</span>
+      </label>
+      <div id="pd-savings" class="prune-savings"></div>
+      <p id="pd-error" class="error" hidden></p>
+      <menu>
+        <button value="cancel" formnovalidate>Cancel</button>
+        <button id="pd-apply" value="prune" type="button">Prune</button>
       </menu>
     </form>
   </dialog>

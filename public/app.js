@@ -35,6 +35,7 @@ import { installSessionActions } from './sessionActions.js';
 import { installHeader } from './header.js';
 import { installSessionSummary } from './sessionSummary.js';
 import { installSessionStats } from './sessionStats.js';
+import { installPruneDialog } from './pruneDialog.js';
 import { installWsRouter } from './wsRouter.js';
 import { latestOnly } from './latestOnly.js';
 import { loadModelVersions,
@@ -155,6 +156,8 @@ const dom = {
   changeModelBtn: document.getElementById('change-model-btn'),
   sessionStatsBtn: document.getElementById('session-stats-btn'),
   statsDialog: document.getElementById('stats-dialog'),
+  pruneSessionBtn: document.getElementById('prune-session-btn'),
+  pruneDialog: document.getElementById('prune-dialog'),
   autoApprovePlanBtn: document.getElementById('auto-approve-plan-btn'),
   overflowMenu: document.getElementById('overflow-menu'),
   overflowToggle: document.getElementById('overflow-toggle'),
@@ -711,6 +714,11 @@ dom.sessionStatsBtn.addEventListener('click', () => {
   statsHandle.open();
 });
 
+dom.pruneSessionBtn.addEventListener('click', () => {
+  closeOverflow();
+  pruneHandle.open();
+});
+
 dom.debugBtn.addEventListener('click', async () => {
   if (!state.activeId) return;
   closeOverflow();
@@ -991,6 +999,9 @@ const getActiveSid = () => {
 };
 const summaryHandle = installSessionSummary({ dom, getActiveSid });
 const statsHandle = installSessionStats({ dom, getActiveSid });
+const pruneHandle = installPruneDialog({
+  dom, getActiveId: () => state.activeId, refreshInstances,
+});
 
 sessionActions = installSessionActions({
   getActiveId: () => state.activeId,

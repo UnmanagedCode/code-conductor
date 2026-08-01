@@ -914,6 +914,47 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
       } catch (e) { next(e); }
     });
 
+    // Per-turn analysis backing the Prune dialog's slider + savings readout.
+    // Returns every turn's prunable-token count broken down by category, so the
+    // client can recompute any slider/tickbox combination locally instead of
+    // round-tripping on every drag. Counted over in-context entries only —
+    // sidechains and the disk-only `toolUseResult` sidecar are excluded (see
+    // sessionPrune.js).
+    r.get('/instances/:id/prune/analysis', async (req, res, next) => {
+      try {
+        const inst = instances.get(req.params.id);
+        if (!inst) throw Object.assign(new Error('instance not found'), { statusCode: 404 });
+        if (!inst.sessionId) {
+          throw Object.assign(new Error('no sessionId — instance has not yet received a turn'), { statusCode: 400 });
+        }
+        const { analyzeSessionForPrune } = await import('./sessionPrune.js');
+        res.json(await analyzeSessionForPrune({ cwd: inst.cwd, sessionId: inst.sessionId }));
+      } catch (e) { next(e); }
+    });
+
+    // Prune the active session: stub tool outputs / oversized tool inputs in the
+    // turns before `cutTurnIndex` (and, independently, thinking blocks) into a
+    // COPY under a fresh sessionId, archive the original, and respawn this same
+    // instance against the pruned file. The session comes back IDLE — unlike
+    // renew_session, nothing is seeded as a first turn.
+    r.post('/instances/:id/prune', async (req, res, next) => {
+      try {
+        const inst = instances.get(req.params.id);
+        if (!inst) throw Object.assign(new Error('instance not found'), { statusCode: 404 });
+        const body = req.body ?? {};
+        const cutTurnIndex = Number(body.cutTurnIndex);
+        if (!Number.isInteger(cutTurnIndex) || cutTurnIndex < 0) {
+          throw Object.assign(new Error('cutTurnIndex must be a non-negative integer'), { statusCode: 400 });
+        }
+        const result = await inst.pruneSession({
+          cutTurnIndex,
+          pruneThinking: !!body.pruneThinking,
+          inputMode: body.inputMode ?? 'truncate',
+        });
+        res.json({ ok: true, ...result, instance: inst.summary() });
+      } catch (e) { next(e); }
+    });
+
     r.delete('/instances/:id', async (req, res, next) => {
       try {
         await instances.remove(req.params.id);

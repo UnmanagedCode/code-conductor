@@ -2075,3 +2075,8 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
   background: var(--panel-2); border: 1px solid var(--border); border-radius: 4px;
   white-space: pre-wrap; word-break: break-word; font-family: ui-monospace, monospace;
 }
+
+/* prune-savings: the Prune dialog's per-category savings breakdown */
+.prune-savings { margin: 10px 0 4px; min-height: 90px; }
+.prune-savings .stats-table tr:last-child td { font-weight: 600; border-top: 1px solid var(--border); }
+#prune-dialog input[type="range"] { width: 100%; margin: 4px 0 12px; }
