@@ -60,6 +60,7 @@ async function setup() {
     renameSessionBtn: document.getElementById('rename-session-btn'),
     changeModelBtn: document.getElementById('change-model-btn'),
     sessionStatsBtn: document.getElementById('session-stats-btn'),
+    pruneSessionBtn: document.getElementById('prune-session-btn'),
     autoApprovePlanBtn: document.getElementById('auto-approve-plan-btn'),
     overflowMenu: document.getElementById('overflow-menu'),
     overflowToggle: document.getElementById('overflow-toggle'),

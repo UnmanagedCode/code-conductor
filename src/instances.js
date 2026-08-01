@@ -20,6 +20,7 @@ import { HookBroker } from './hookBroker.js';
 import { loadPersistedTranscript, writeSessionMetadata, readLastSessionModel, hasResumableConversation } from './transcript.js';
 import { canonicalizeModel, familyOf, CLAUDE_BACKEND_ID } from './modelVersions.js';
 import { truncateSessionAtUserMessage } from './sessionEdit.js';
+import { pruneSessionToNewId, INPUT_MODES } from './sessionPrune.js';
 import { saveAttachment, isImageType } from './attachments.js';
 import { buildApprovePrompt } from './planApproval.js';
 import { reconstructTasks } from './taskReconstruct.js';
@@ -946,6 +947,13 @@ export class Instance extends EventEmitter {
       for (const ev of line.events) this._emitUi(ev);
     }
     if (result.lastLeafUuid) this._lastLeafUuid = result.lastLeafUuid;
+    // One-shot, set by pruneSession(): the jsonl's newest assistant `usage` still
+    // reports the PRE-prune context size, so seeding it would tell the user the
+    // prune did nothing until the first live turn re-measures. A known-wrong
+    // number is worse than none — fall back to `ctx —`. Same reasoning as the
+    // `_lastContextUsage = null` in _wipeForResume.
+    const skipUsageSeed = this._skipUsageSeed;
+    this._skipUsageSeed = false;
     if (result.replayedCount > 0) {
       // Replay emits no `message_start` of its own, so nothing would latch
       // _lastContextUsage and a resumed/respawned/rewound session's ctx chip
@@ -981,7 +989,7 @@ export class Instance extends EventEmitter {
       // one can't be the event that strips the conversation's empty-state
       // placeholder (its only effect on the renderer — conversation.apply has
       // no `message_start` case).
-      if (result.lastAssistantUsage) {
+      if (result.lastAssistantUsage && !skipUsageSeed) {
         this._emitUi({
           kind: 'message_start', ...result.lastAssistantUsage,
           replayed: true, parentToolUseId: null,
@@ -1650,6 +1658,20 @@ export class Instance extends EventEmitter {
   // re-paying the base64 token cost on every subsequent turn and
   // keeps the prompt-cache prefix stable.
   async prompt(text, attachments = [], { annotateIfMidTurn = true, internal = false } = {}) {
+    // A rewind/fork/prune is rewriting this session's jsonl. The `!this.proc`
+    // check below already rejects for most of that window (the subprocess is
+    // killed first), but not for the sliver between the caller's idle check and
+    // the kill completing — a prompt landing there is written to stdin, the CLI
+    // persists a partial tail, and that tail gets folded into the rewritten file.
+    // Closing the window here rather than at each call site fixes rewind too.
+    // Not a new failure class for callers: they already have to tolerate the
+    // 'not running' throw from the same operation, a few hundred ms later.
+    if (this._mutating) {
+      throw Object.assign(
+        new Error('session is being rewritten (rewind/fork/prune) — retry in a moment'),
+        { statusCode: 409 },
+      );
+    }
     if (!this.proc) throw new Error('not running');
     // An explicit new turn closes the drain window immediately so an intentional
     // follow-up prompt is never intercepted by the post-hard-abort drain logic.
@@ -2057,6 +2079,100 @@ export class Instance extends EventEmitter {
       }
 
       return { droppedText: result.droppedText };
+    } finally {
+      this._mutating = false;
+    }
+  }
+
+  // Prune this session's context: write a stubbed COPY of the jsonl under a
+  // fresh sessionId, then respawn this SAME instance against it. Mechanically a
+  // cousin of rewindToUserMessage (kill → rewrite → wipe → relaunch), but it
+  // rotates the sessionId like renew_session does, so it borrows that path's
+  // marker carry + auto-archive of the abandoned id.
+  //
+  // Two divergences from renew_session, both deliberate:
+  //   - renewal's `/clear` rotates IN PLACE inside the live process; a prune has
+  //     to respawn, because the CLI only re-reads a transcript at launch.
+  //   - renewal reseeds the cleared session with a summary as its first user
+  //     turn, which auto-starts a turn. A pruned session must come up IDLE, so
+  //     nothing here calls prompt().
+  //
+  // The instanceId is preserved (only the sessionId rotates), so the
+  // idle-subscription graph, overage timers, the renew controller and every
+  // `?caller=<instanceId>` MCP handle stay valid with no migration.
+  async pruneSession({ cutTurnIndex, pruneThinking = false, inputMode = 'truncate' } = {}) {
+    if (this._mutating) {
+      throw Object.assign(new Error('another rewind/fork/prune is in progress'), { statusCode: 409 });
+    }
+    if (!this.sessionId) {
+      throw Object.assign(new Error('no sessionId — instance has not yet received a turn'), { statusCode: 400 });
+    }
+    if (this.status === 'turn') {
+      throw Object.assign(new Error('cannot prune during a running turn — interrupt first'), { statusCode: 409 });
+    }
+    // Validate what can be validated BEFORE the kill — no reason to tear down a
+    // live subprocess for a request that was always going to be rejected. The
+    // cutTurnIndex range check can't move here (it needs the turn count, which
+    // means reading the file); that one throws post-kill and is why the catch
+    // below has to be able to fail safe.
+    if (!INPUT_MODES.has(inputMode)) {
+      throw Object.assign(
+        new Error(`inputMode must be one of ${[...INPUT_MODES].join('|')}`), { statusCode: 400 },
+      );
+    }
+    this._mutating = true;
+    const oldSid = this.sessionId;
+    try {
+      // Kill first so the CLI can't flush a stale tail into the jsonl while we
+      // read it. _suppressTempDelete for the same reason rewind sets it: a temp
+      // session respawns immediately and must not be archived out from under us.
+      if (this.proc) {
+        this._suppressTempDelete = true;
+        try { await this.kill({ graceMs: 300 }); }
+        finally { this._suppressTempDelete = false; }
+      }
+
+      const { newSessionId, saved } = await pruneSessionToNewId({
+        cwd: this.cwd,
+        sessionId: oldSid,
+        cutTurnIndex,
+        pruneThinking,
+        inputMode,
+        permissionMode: cliPermissionMode(this.mode),
+      });
+
+      this._wipeForResume();
+      this._skipUsageSeed = true;
+      // launch({resume}) assigns this.sessionId = newSessionId (see spawn()).
+      await this.launch({ resume: newSessionId });
+      // Carry temp/conducted/title/backend onto the new id and archive the old
+      // one. Reads this.sessionId as the NEW id, so it must follow the launch.
+      // Awaited (unlike the renewal path, which can't block its reseed turn) so
+      // the REST response can't beat the archive into the sidebar refresh.
+      await this.carryMarkersAcrossRenewal(oldSid).catch(() => {});
+
+      return { oldSessionId: oldSid, newSessionId, saved };
+    } catch (e) {
+      // The subprocess is already dead by the time most of this can throw, and
+      // the transform has real failure surface (writeAtomic, copySubAgentDir, a
+      // launch that can't spawn). Without this the instance is left wedged: no
+      // proc, no respawn, and the user's only recovery is a manual resume.
+      //
+      // Failing safe back to the UNPRUNED session is always possible: Prune only
+      // ever writes a new file, so the original jsonl is intact by construction.
+      // Best-effort — a failure here is already the error path, and `e` (the real
+      // cause) must be what surfaces.
+      if (!this.proc) {
+        this._wipeForResume();
+        // `_skipUsageSeed` may already be set for the PRUNED session's replay. The
+        // recovery replays the ORIGINAL instead, whose jsonl usage is accurate —
+        // leaving the flag set would suppress a perfectly good ctx reading and
+        // strand the recovered session on `ctx —` until its next turn.
+        this._skipUsageSeed = false;
+        this.sessionId = oldSid;
+        await this.launch({ resume: oldSid }).catch(() => {});
+      }
+      throw e;
     } finally {
       this._mutating = false;
     }

@@ -519,6 +519,15 @@ export function installHeader({
     dom.changeModelBtn.textContent = '🧠 Change model';
     dom.sessionStatsBtn.hidden = !canMenu;
     dom.sessionStatsBtn.disabled = !canMenu || !inst.sessionId;
+    // Prune kills and respawns the subprocess against a rewritten transcript, so
+    // it is idle-only — the server refuses it mid-turn (409) and the button
+    // shouldn't pretend otherwise.
+    dom.pruneSessionBtn.hidden = !canMenu;
+    dom.pruneSessionBtn.disabled = inst.status !== 'idle' || !inst.sessionId;
+    dom.pruneSessionBtn.title = inst.status !== 'idle'
+      ? 'Prune is only available between turns'
+      : "Shrink this session's context by stubbing out old tool payloads and thinking "
+        + '— mechanical, no LLM pass, no token cost';
     dom.muteBtn.hidden = !canMenu;
     dom.muteBtn.disabled = !canMenu || !inst.sessionId;
     const muted = !!inst.sessionId && isSessionMuted(inst.sessionId);

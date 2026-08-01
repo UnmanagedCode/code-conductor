@@ -883,16 +883,41 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
         if (!Number.isInteger(idx) || idx < 0) {
           throw Object.assign(new Error('userMessageIndex must be a non-negative integer'), { statusCode: 400 });
         }
-        // Defer the import until first use — keeps the routes module light
-        // and avoids pulling sessionEdit into the test paths that don't
-        // exercise it.
-        const { forkSessionAtUserMessage } = await import('./sessionEdit.js');
-        const { newSessionId, droppedText } = await forkSessionAtUserMessage({
-          cwd: inst.cwd,
-          sessionId: inst.sessionId,
-          userMessageIndex: idx,
-          permissionMode: inst.mode === 'ask' ? 'bypassPermissions' : inst.mode,
-        });
+        // A rewind/prune on the SAME instance rewrites (or truncates) the very
+        // jsonl this fork is about to read. Refuse rather than read a file
+        // mid-rewrite — the mirror of the `_mutating` check those two already do.
+        //
+        // Claim the flag SYNCHRONOUSLY with the check: no await may sit between
+        // them, or two concurrent forks both pass the check, both set the flag,
+        // and the first one's `finally` clears it while the second is still
+        // reading — reintroducing exactly the unprotected read this guards.
+        if (inst._mutating) {
+          throw Object.assign(new Error('another rewind/fork/prune is in progress'), { statusCode: 409 });
+        }
+        inst._mutating = true;
+        // Unlike rewind/prune, fork never kills the source subprocess, so
+        // `!this.proc` doesn't cover it: a prompt landing here would be written
+        // to stdin, the CLI would persist its tail, and that tail could be
+        // folded into the prefix being copied. `_mutating` makes prompt() refuse
+        // for the duration. Scoped to the READ only — once the copy is on disk,
+        // a prompt to the source can no longer affect the fork, so the create()
+        // below (which spawns a whole new instance) stays outside the window.
+        let forked;
+        try {
+          // Deferred import — keeps the routes module light and avoids pulling
+          // sessionEdit into test paths that never exercise it. Inside the try
+          // so the flag is released if it throws.
+          const { forkSessionAtUserMessage } = await import('./sessionEdit.js');
+          forked = await forkSessionAtUserMessage({
+            cwd: inst.cwd,
+            sessionId: inst.sessionId,
+            userMessageIndex: idx,
+            permissionMode: inst.mode === 'ask' ? 'bypassPermissions' : inst.mode,
+          });
+        } finally {
+          inst._mutating = false;
+        }
+        const { newSessionId, droppedText } = forked;
         // Spawn the fork as a new instance against the same cwd / worktree.
         const newInst = await instances.create({
           project: inst.project,
@@ -911,6 +936,47 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
           droppedText,
           instance: newInst.summary(),
         });
+      } catch (e) { next(e); }
+    });
+
+    // Per-turn analysis backing the Prune dialog's slider + savings readout.
+    // Returns every turn's prunable-token count broken down by category, so the
+    // client can recompute any slider/tickbox combination locally instead of
+    // round-tripping on every drag. Counted over in-context entries only —
+    // sidechains and the disk-only `toolUseResult` sidecar are excluded (see
+    // sessionPrune.js).
+    r.get('/instances/:id/prune/analysis', async (req, res, next) => {
+      try {
+        const inst = instances.get(req.params.id);
+        if (!inst) throw Object.assign(new Error('instance not found'), { statusCode: 404 });
+        if (!inst.sessionId) {
+          throw Object.assign(new Error('no sessionId — instance has not yet received a turn'), { statusCode: 400 });
+        }
+        const { analyzeSessionForPrune } = await import('./sessionPrune.js');
+        res.json(await analyzeSessionForPrune({ cwd: inst.cwd, sessionId: inst.sessionId }));
+      } catch (e) { next(e); }
+    });
+
+    // Prune the active session: stub tool outputs / oversized tool inputs in the
+    // turns before `cutTurnIndex` (and, independently, thinking blocks) into a
+    // COPY under a fresh sessionId, archive the original, and respawn this same
+    // instance against the pruned file. The session comes back IDLE — unlike
+    // renew_session, nothing is seeded as a first turn.
+    r.post('/instances/:id/prune', async (req, res, next) => {
+      try {
+        const inst = instances.get(req.params.id);
+        if (!inst) throw Object.assign(new Error('instance not found'), { statusCode: 404 });
+        const body = req.body ?? {};
+        const cutTurnIndex = Number(body.cutTurnIndex);
+        if (!Number.isInteger(cutTurnIndex) || cutTurnIndex < 0) {
+          throw Object.assign(new Error('cutTurnIndex must be a non-negative integer'), { statusCode: 400 });
+        }
+        const result = await inst.pruneSession({
+          cutTurnIndex,
+          pruneThinking: !!body.pruneThinking,
+          inputMode: body.inputMode ?? 'truncate',
+        });
+        res.json({ ok: true, ...result, instance: inst.summary() });
       } catch (e) { next(e); }
     });
 
