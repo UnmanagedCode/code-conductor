@@ -74,6 +74,20 @@ import { isPureUserPromptLine, writeSessionMetadata } from './transcript.js';
 export const PRUNE_STUB_AS_BLOCKS = true;
 
 // Tools whose tool_result content the CLI turns into a readFileState entry.
+//
+// The CLI's reconstruction pass branches on exactly THREE tool names — Read,
+// Write and Edit — and nothing else. Of those:
+//   Read  → cache content comes from the tool_result's `content`  ⇒ seeding
+//   Write → cache content comes from the tool_use's `input.content` ⇒ seeding
+//           (its result only has to exist and be non-error)
+//   Edit  → the CLI re-reads the file from DISK; the result content is
+//           irrelevant, so a block array would change nothing ⇒ not listed
+// `NotebookEdit` is a defined tool-name constant in the bundle but is NEVER
+// referenced by the reconstruction pass, so a notebook result cannot seed the
+// cache and does not belong here. (NotebookEdit *does* check readFileState and
+// refuses with "File has not been read yet" when it's empty — but since nothing
+// ever seeds it from a transcript, a notebook edit already needs a live Read
+// after ANY resume. Pruning neither causes nor worsens that.)
 const SEEDING_TOOLS = new Set(['Read', 'Write']);
 
 // Truncate mode: string values in a tool input longer than this keep their first
@@ -190,15 +204,34 @@ function toolNamesById(objs) {
   return names;
 }
 
+// Cut a string at `max`, backing off one unit when that would land INSIDE a
+// surrogate pair. `String.prototype.slice` counts UTF-16 code units, so a naive
+// cut can leave a lone leading surrogate — an unpaired code unit with no valid
+// UTF-8 encoding — which then gets written into the pruned jsonl and replayed
+// into context on resume. Astral-plane characters (emoji, CJK ext, math script)
+// turn up in exactly the values truncate mode targets: Edit old_string /
+// new_string, Write content, Bash command.
+//
+// Only a trailing HIGH surrogate can be orphaned: if `value[end-1]` is a LOW
+// surrogate its partner sits at `end-2`, already inside the cut.
+function sliceCodePoints(value, max) {
+  if (value.length <= max) return value;
+  const last = value.charCodeAt(max - 1);
+  const end = (last >= 0xd800 && last <= 0xdbff) ? max - 1 : max;
+  return value.slice(0, end);
+}
+
 // Squeeze one string value from a tool input. Returns the original when it is
 // already short enough, so short scalars survive verbatim in both modes.
 function squeezeString(value, mode) {
   if (mode === 'minimal') {
+    // Whole-value replacement — no slicing, so surrogate-safe by construction.
     if (value.length <= MINIMAL_INPUT_MAX) return value;
     return `[pruned: ${humanBytes(Buffer.byteLength(value, 'utf8'))}]`;
   }
   if (value.length <= PRUNE_INPUT_MAX) return value;
-  return `${value.slice(0, PRUNE_INPUT_MAX)}… [+${value.length - PRUNE_INPUT_MAX} chars pruned]`;
+  const head = sliceCodePoints(value, PRUNE_INPUT_MAX);
+  return `${head}… [+${value.length - head.length} chars pruned]`;
 }
 
 // Walk a tool input, editing string VALUES in place and preserving every key,
@@ -220,12 +253,14 @@ function squeezeInput(value, mode, key = null) {
 
 // ── analysis ────────────────────────────────────────────────────────────────
 
+// Display-only (the slider's turn label), but cut the same surrogate-safe way —
+// a lone high surrogate here would render as a replacement glyph.
 function readTurnPreview(obj) {
   const content = obj?.type === 'attachment' ? obj.attachment?.prompt : obj?.message?.content;
-  if (typeof content === 'string') return content.slice(0, 80);
+  if (typeof content === 'string') return sliceCodePoints(content, 80);
   if (!Array.isArray(content)) return '';
   const text = content.filter(b => b?.type === 'text').map(b => b.text).join(' ');
-  return text.replace(/\s+/g, ' ').trim().slice(0, 80);
+  return sliceCodePoints(text.replace(/\s+/g, ' ').trim(), 80);
 }
 
 // An assistant entry whose thinking must NOT be touched: it carries a tool_use
@@ -281,7 +316,15 @@ async function readRecords({ cwd, sessionId }) {
     // (invariant 5); an unparseable line is copied byte-for-byte.
     const prunable = !!obj && !obj.isSidechain
       && (obj.type === 'assistant' || obj.type === 'user');
-    records.push({ raw, obj, turn: Math.max(turn, 0), prunable });
+    // Wider than `prunable`: `attachment` entries (CLAUDE.md / nested-memory /
+    // file injections the CLI folds into a user turn) ARE in the model's context
+    // even though Prune never touches them. They belong in the savings
+    // DENOMINATOR — leaving them out shrinks it and over-reports the percentage
+    // saved, the same dishonesty we exclude sidechains to avoid, pointing the
+    // other way. CLI bookkeeping lines (queue-operation, ai-title, last-prompt,
+    // permission-mode, system) are not context and stay out.
+    const inContext = prunable || (!!obj && !obj.isSidechain && obj.type === 'attachment');
+    records.push({ raw, obj, turn: Math.max(turn, 0), prunable, inContext });
   }
   return { file, records, turnCount: turn + 1 };
 }
@@ -309,7 +352,13 @@ export async function analyzeSessionForPrune({ cwd, sessionId }) {
     if (rec.obj && isPureUserPromptLine(rec.obj) && turns[rec.turn]) {
       turns[rec.turn].preview = readTurnPreview(rec.obj);
     }
-    if (!rec.prunable) continue;
+    if (!rec.inContext) continue;
+    if (!rec.prunable) {
+      // An attachment: denominator only, never pruned. Its shape varies by
+      // attachment kind, so estimate off the serialized payload.
+      totalTokens += approxTokens(JSON.stringify(rec.obj.attachment ?? ''));
+      continue;
+    }
     const content = rec.obj.message?.content;
     if (!Array.isArray(content)) {
       if (typeof content === 'string') totalTokens += approxTokens(content);

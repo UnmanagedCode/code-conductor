@@ -96,6 +96,11 @@ export function installPruneDialog({ dom, getActiveId, refreshInstances }) {
     analysis = null;
     busy = false;
     showError('');
+    // Reset every control, not just the slider — the HTML `checked` attribute is
+    // only the FIRST-open default, so without this a previous prune's tickbox
+    // choices silently carry into the next one.
+    thinkingEl.checked = true;
+    minimalEl.checked = false;
     savingsEl.textContent = 'Analysing session…';
     applyBtn.disabled = true;
     applyBtn.textContent = 'Prune';

@@ -20,7 +20,7 @@ import { HookBroker } from './hookBroker.js';
 import { loadPersistedTranscript, writeSessionMetadata, readLastSessionModel, hasResumableConversation } from './transcript.js';
 import { canonicalizeModel, familyOf, CLAUDE_BACKEND_ID } from './modelVersions.js';
 import { truncateSessionAtUserMessage } from './sessionEdit.js';
-import { pruneSessionToNewId } from './sessionPrune.js';
+import { pruneSessionToNewId, INPUT_MODES } from './sessionPrune.js';
 import { saveAttachment, isImageType } from './attachments.js';
 import { buildApprovePrompt } from './planApproval.js';
 import { reconstructTasks } from './taskReconstruct.js';
@@ -1658,6 +1658,20 @@ export class Instance extends EventEmitter {
   // re-paying the base64 token cost on every subsequent turn and
   // keeps the prompt-cache prefix stable.
   async prompt(text, attachments = [], { annotateIfMidTurn = true, internal = false } = {}) {
+    // A rewind/fork/prune is rewriting this session's jsonl. The `!this.proc`
+    // check below already rejects for most of that window (the subprocess is
+    // killed first), but not for the sliver between the caller's idle check and
+    // the kill completing — a prompt landing there is written to stdin, the CLI
+    // persists a partial tail, and that tail gets folded into the rewritten file.
+    // Closing the window here rather than at each call site fixes rewind too.
+    // Not a new failure class for callers: they already have to tolerate the
+    // 'not running' throw from the same operation, a few hundred ms later.
+    if (this._mutating) {
+      throw Object.assign(
+        new Error('session is being rewritten (rewind/fork/prune) — retry in a moment'),
+        { statusCode: 409 },
+      );
+    }
     if (!this.proc) throw new Error('not running');
     // An explicit new turn closes the drain window immediately so an intentional
     // follow-up prompt is never intercepted by the post-hard-abort drain logic.
@@ -2096,6 +2110,16 @@ export class Instance extends EventEmitter {
     if (this.status === 'turn') {
       throw Object.assign(new Error('cannot prune during a running turn — interrupt first'), { statusCode: 409 });
     }
+    // Validate what can be validated BEFORE the kill — no reason to tear down a
+    // live subprocess for a request that was always going to be rejected. The
+    // cutTurnIndex range check can't move here (it needs the turn count, which
+    // means reading the file); that one throws post-kill and is why the catch
+    // below has to be able to fail safe.
+    if (!INPUT_MODES.has(inputMode)) {
+      throw Object.assign(
+        new Error(`inputMode must be one of ${[...INPUT_MODES].join('|')}`), { statusCode: 400 },
+      );
+    }
     this._mutating = true;
     const oldSid = this.sessionId;
     try {
@@ -2128,6 +2152,22 @@ export class Instance extends EventEmitter {
       await this.carryMarkersAcrossRenewal(oldSid).catch(() => {});
 
       return { oldSessionId: oldSid, newSessionId, saved };
+    } catch (e) {
+      // The subprocess is already dead by the time most of this can throw, and
+      // the transform has real failure surface (writeAtomic, copySubAgentDir, a
+      // launch that can't spawn). Without this the instance is left wedged: no
+      // proc, no respawn, and the user's only recovery is a manual resume.
+      //
+      // Failing safe back to the UNPRUNED session is always possible: Prune only
+      // ever writes a new file, so the original jsonl is intact by construction.
+      // Best-effort — a failure here is already the error path, and `e` (the real
+      // cause) must be what surfaces.
+      if (!this.proc) {
+        this._wipeForResume();
+        this.sessionId = oldSid;
+        await this.launch({ resume: oldSid }).catch(() => {});
+      }
+      throw e;
     } finally {
       this._mutating = false;
     }

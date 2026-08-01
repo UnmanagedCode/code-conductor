@@ -116,6 +116,33 @@ test('prune rotates the sessionId in place, archives the original, and lands idl
   } finally { await ctx.close(); }
 });
 
+test('a prompt landing mid-rewrite is refused instead of corrupting the transform', async () => {
+  // Between the caller's idle check and the kill completing, the subprocess is
+  // still writable: a prompt landing there would have its partial tail persisted
+  // by the CLI and folded into the rewritten file. `_mutating` closes that window
+  // for prune, rewind and fork alike.
+  const ctx = await bootServer({ scenarioPath: SCENARIO });
+  try {
+    const sid = 'aaaaaaa3-2222-3333-4444-555555555555';
+    await seedSession({ ctx, projectName: 'prunerace', sid, lines: sessionLines() });
+    const r = await api(ctx.baseUrl, 'POST', '/api/instances', {
+      project: 'prunerace', mode: 'bypassPermissions', resume: sid,
+    });
+    const id = r.body.id;
+    await waitFor(() => ctx.instances.get(id).status === 'idle');
+    const inst = ctx.instances.get(id);
+
+    inst._mutating = true;
+    try {
+      await assert.rejects(() => inst.prompt('sneaky'), /being rewritten/);
+    } finally { inst._mutating = false; }
+
+    // The guard lifts cleanly — no lingering refusal once the rewrite is done.
+    await inst.prompt('fine now');
+    await waitFor(() => inst.status === 'idle');
+  } finally { await ctx.close(); }
+});
+
 test('prune is refused mid-turn and on a session with nothing to cut', async () => {
   const ctx = await bootServer({ scenarioPath: SCENARIO });
   try {
@@ -128,10 +155,28 @@ test('prune is refused mid-turn and on a session with nothing to cut', async () 
     await waitFor(() => ctx.instances.get(id).status === 'idle');
 
     // cutTurnIndex == turnCount would prune the newest turn — the cap refuses it.
+    // This one throws AFTER the subprocess has been killed (the range check needs
+    // the turn count, so it can't be hoisted above the kill), which makes it the
+    // natural exercise of the fail-safe path: a mid-transform throw must not
+    // leave the instance wedged with no proc and no respawn.
     const tooFar = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/prune`, { cutTurnIndex: 2 });
     assert.equal(tooFar.status, 400);
+    await waitFor(() => ctx.instances.get(id).status === 'idle');
+    assert.ok(ctx.instances.get(id).proc, 'a failed prune must respawn the instance, not wedge it');
+    assert.equal(ctx.instances.get(id).sessionId, sid,
+      'a failed prune falls back to the UNPRUNED session');
+    // …and the recovered session is actually usable, not just present.
+    await ctx.instances.get(id).prompt('still here?');
+    await waitFor(() => ctx.instances.get(id).status === 'idle');
+
     const negative = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/prune`, { cutTurnIndex: -1 });
     assert.equal(negative.status, 400);
+    // An unknown inputMode is rejected BEFORE the kill — the proc is untouched.
+    const procBefore = ctx.instances.get(id).proc;
+    const badMode = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/prune`,
+      { cutTurnIndex: 1, inputMode: 'bogus' });
+    assert.equal(badMode.status, 400);
+    assert.equal(ctx.instances.get(id).proc, procBefore, 'a rejected request must not kill the subprocess');
 
     // Mid-turn: a prune would kill the subprocess under a running turn.
     const prevScenario = process.env.FAKE_CLAUDE_SCENARIO;

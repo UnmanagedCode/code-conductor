@@ -260,6 +260,111 @@ test('sub-agent transcripts follow the session to its new id', async () => {
   });
 });
 
+test('truncate mode never splits a surrogate pair', async () => {
+  // The default mode slices on code UNITS. A pair straddling the cut would leave
+  // a lone high surrogate — no valid UTF-8 encoding — written into a jsonl whose
+  // entire contract is that it resumes cleanly. Astral-plane characters turn up
+  // in exactly the values this truncates.
+  await withStore(async () => {
+    const { pruneSessionToNewId, PRUNE_INPUT_MAX } = await import('../src/sessionPrune.js');
+    // '😀' is a surrogate pair, so at PRUNE_INPUT_MAX-1 it straddles the cut.
+    const straddling = 'a'.repeat(PRUNE_INPUT_MAX - 1) + '😀' + 'b'.repeat(50);
+    // …and one where the pair sits wholly inside the kept prefix.
+    const aligned = 'a'.repeat(PRUNE_INPUT_MAX - 2) + '😀' + 'b'.repeat(50);
+    const { dir, sid } = await seed([
+      { type: 'user', uuid: 'u1', sessionId: 'old', message: { role: 'user', content: [{ type: 'text', text: 'go' }] } },
+      { type: 'assistant', uuid: 'a1', sessionId: 'old', message: { id: 'm1', role: 'assistant', content: [
+        { type: 'tool_use', id: 't1', name: 'Edit', input: { file_path: '/x', old_string: straddling, new_string: aligned } },
+      ] } },
+      { type: 'user', uuid: 'r1', sessionId: 'old', toolUseResult: 'ok',
+        message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: 'ok' }] } },
+      { type: 'user', uuid: 'u2', sessionId: 'old', message: { role: 'user', content: [{ type: 'text', text: 'next' }] } },
+    ]);
+    const { newSessionId } = await pruneSessionToNewId({
+      cwd: CWD, sessionId: sid, cutTurnIndex: 1, pruneThinking: false, inputMode: 'truncate',
+    });
+
+    const raw = await fs.readFile(path.join(dir, `${newSessionId}.jsonl`));
+    // The strongest form of the assertion: what landed on disk is valid UTF-8.
+    // A lone surrogate would have been written as U+FFFD, so a byte-level
+    // round-trip through the file catches it even if the in-memory string looked
+    // fine. (JSON.stringify emits a lone surrogate as a \ud83d escape, so also
+    // check the decoded values below.)
+    assert.ok(!raw.includes(Buffer.from('�', 'utf8')), 'replacement char written to the jsonl');
+
+    const byUuid = Object.fromEntries((await readOut(dir, newSessionId)).map(o => [o.uuid, o]));
+    const { old_string: cutOld, new_string: cutNew } = byUuid.a1.message.content[0].input;
+    for (const [label, s] of [['old_string', cutOld], ['new_string', cutNew]]) {
+      assert.match(s, /chars pruned\]$/, `${label} should have been truncated`);
+      for (let i = 0; i < s.length; i++) {
+        const c = s.charCodeAt(i);
+        if (c >= 0xd800 && c <= 0xdbff) {
+          const next = s.charCodeAt(i + 1);
+          assert.ok(next >= 0xdc00 && next <= 0xdfff, `${label}: lone high surrogate at ${i}`);
+          i++;
+        } else {
+          assert.ok(!(c >= 0xdc00 && c <= 0xdfff), `${label}: lone low surrogate at ${i}`);
+        }
+      }
+      assert.equal(s, Buffer.from(s, 'utf8').toString('utf8'), `${label} is not UTF-8 round-trippable`);
+    }
+    // The straddling pair is dropped whole (one unit shorter); the aligned one is kept.
+    assert.ok(!cutOld.includes('😀'), 'a straddling pair is dropped rather than split');
+    assert.ok(cutNew.includes('😀'), 'a pair inside the kept prefix survives intact');
+    // The reported count must reflect what was actually kept.
+    assert.match(cutOld, new RegExp(`\\[\\+${straddling.length - (PRUNE_INPUT_MAX - 1)} chars pruned\\]$`));
+  });
+});
+
+test('the savings preview equals what the transform actually saves', async () => {
+  // Invariant 10 holds by construction (both passes call pruneBlock), but
+  // "by construction" is exactly the kind of guarantee that quietly stops being
+  // true. The other assertions in this file are one-sided lower bounds and would
+  // not notice an analysis pass that reported 10x the real figure.
+  await withStore(async () => {
+    const { analyzeSessionForPrune, pruneSessionToNewId } = await import('../src/sessionPrune.js');
+    const { sid } = await seed(scenario());
+    const analysis = await analyzeSessionForPrune({ cwd: CWD, sessionId: sid });
+
+    for (const inputMode of ['truncate', 'minimal']) {
+      for (const pruneThinking of [true, false]) {
+        for (let cut = 0; cut <= analysis.turnCount - 1; cut++) {
+          const { saved } = await pruneSessionToNewId({
+            cwd: CWD, sessionId: sid, cutTurnIndex: cut, pruneThinking, inputMode,
+          });
+          // Same arithmetic the dialog does: sum the selected prefix per
+          // category, with thinking summed over ALL turns (it is global).
+          const prefix = analysis.turns.slice(0, cut);
+          const expected = {
+            thinking: pruneThinking ? analysis.turns.reduce((a, t) => a + t.thinking, 0) : 0,
+            toolInputs: prefix.reduce((a, t) => a + (inputMode === 'minimal' ? t.toolInputMinimal : t.toolInputTruncatable), 0),
+            toolOutputs: prefix.reduce((a, t) => a + t.toolOutput, 0),
+          };
+          assert.deepEqual(saved, expected,
+            `preview drifted from the transform (cut=${cut}, ${inputMode}, thinking=${pruneThinking})`);
+        }
+      }
+    }
+  });
+});
+
+test('the savings denominator counts attachments, which are in context', async () => {
+  await withStore(async () => {
+    const { analyzeSessionForPrune } = await import('../src/sessionPrune.js');
+    const lines = scenario();
+    // A CLAUDE.md injection: never pruned, but genuinely in the model's context,
+    // so omitting it from the denominator over-reports the percentage saved.
+    lines.splice(1, 0, {
+      type: 'attachment', uuid: 'at1', sessionId: 'old',
+      attachment: { type: 'nested_memory', path: '/CLAUDE.md', content: 'z'.repeat(4000) },
+    });
+    const { sid } = await seed(lines);
+    const a = await analyzeSessionForPrune({ cwd: CWD, sessionId: sid });
+    assert.ok(a.totalTokens > 5000,
+      `attachment excluded from the denominator (${a.totalTokens})`);
+  });
+});
+
 test('the cut is capped so the newest turn always survives', async () => {
   await withStore(async () => {
     const { pruneSessionToNewId } = await import('../src/sessionPrune.js');
