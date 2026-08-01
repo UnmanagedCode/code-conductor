@@ -238,14 +238,11 @@ function parseEnv(list) {
 export function getBackends() {
   const s = loadSync();
   const stored = Array.isArray(s.models?.backends) ? s.models.backends : [];
-  const storedById = new Map(
-    stored.filter(b => b && typeof b.id === 'string' && b.id).map(b => [b.id, b]),
-  );
-  // Managed rows first, in catalog order, taking only `env` from the store.
-  const out = MANAGED_BACKENDS.map(m => ({
-    ...m,
-    env: parseEnv(storedById.get(m.id)?.env),
-  }));
+  // Managed rows first, in catalog order, fully code-authoritative — their
+  // id/label/template/env all come from MANAGED_BACKENDS. Nothing on a managed
+  // row is read from the store; any stored managed {id, env} entry is dead data
+  // (stripped by migration 0024) and ignored here.
+  const out = MANAGED_BACKENDS.map(m => ({ ...m }));
   for (const b of stored) {
     if (!b || typeof b.id !== 'string' || !b.id) continue;
     if (MANAGED_BACKEND_IDS.includes(b.id)) continue;
@@ -303,8 +300,8 @@ function validateBackendFields({ label, template, env }, { requireTemplate = fal
   return { label: cleanLabel, template: cleanTemplate, env: parseEnv(env) };
 }
 
-// Persist only the user's rows plus any managed-row `env` override — never the
-// managed id/label/template, which getBackends() re-asserts from code.
+// Persist only the user's rows — managed rows are fully code-authoritative
+// (id/label/template/env), so they are never stored.
 async function writeBackends(list) {
   const cur = loadSync();
   const next = { ...cur, models: { ...(cur.models || {}), backends: list } };
@@ -330,23 +327,21 @@ export async function addBackend({ id, label, template, env } = {}) {
   return { ...entry, managed: false };
 }
 
-// Managed rows accept an `env` edit only — their label/template are owned by
+// Managed rows are fully read-only — their label/template/env are all owned by
 // MANAGED_BACKENDS. A user row accepts all three.
 export async function updateBackend(id, { label, template, env } = {}) {
   const existing = getBackend(id);
   if (!existing) return null;
-  const stored = storedBackends();
   if (existing.managed) {
-    if (label !== undefined || template !== undefined) {
+    if (label !== undefined || template !== undefined || env !== undefined) {
       throw Object.assign(
-        new Error(`backend '${id}' is built in — only its env can be edited`),
+        new Error(`backend '${id}' is built in — its label, template, and env cannot be edited`),
         { statusCode: 400 },
       );
     }
-    const entry = { id, env: parseEnv(env) };
-    await writeBackends([...stored.filter(b => b.id !== id), entry]);
-    return getBackend(id);
+    return getBackend(id); // no-op PATCH on a read-only row
   }
+  const stored = storedBackends();
   const fields = validateBackendFields({
     label: label ?? existing.label,
     template: template ?? existing.template,

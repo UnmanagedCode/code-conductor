@@ -31,10 +31,10 @@ Record: `{ id, label, template, env: [{key,value}], managed }`, persisted as
 ### The two managed backends
 
 `MANAGED_BACKENDS` in `src/modelVersions.js` is authoritative for their
-`id`/`label`/`template`/`managed` — `getBackends()` takes only their **`env`** from
-the store and re-asserts the rest, appending either row if the store lacks it. So a
-built-in template can't drift, `claude` always exists, and a fresh install needs no
-seeding.
+`id`/`label`/`template`/`env`/`managed` — `getBackends()` re-asserts all of it from
+code (managed rows are fully code-authoritative; nothing on them is stored),
+appending either row if the store lacks it. So a built-in template can't drift,
+`claude` always exists, and a fresh install needs no seeding.
 
 | id | label | template |
 |---|---|---|
@@ -44,12 +44,14 @@ seeding.
 `ollama launch` sets the Anthropic endpoint + auth internally and **re-injects
 `--model` into the child**, so the caller-forwarded `--model` later in the args is a
 matching no-op; `--yes` bypasses the non-agent-capable confirmation (else a piped
-spawn hangs); the trailing `--` terminates its own flags. Localhost only — point it
-elsewhere with an `OLLAMA_HOST` env pair on the row.
+spawn hangs); the trailing `--` terminates its own flags. Localhost only — a managed
+row's `env` is read-only, so point it elsewhere by setting `OLLAMA_HOST` in the
+orchestrator's process environment (inherited by the child at spawn).
 
-Managed rows accept an **`env` edit only** (label/template edits → 400) and can
-**never be removed** (400). `claude` is additionally never offered as a custom
-model's backend — its models are the Claude version catalog, not user rows.
+Managed rows are fully **read-only** (label/template/env edits → 400) and can
+**never be removed** (400); their `env` is code-authoritative (empty). `claude` is
+additionally never offered as a custom model's backend — its models are the Claude
+version catalog, not user rows.
 
 **A USER row must declare a template** (400 otherwise). A blank one would be a
 bare-`claude` alias: it runs the real CLI against the real Anthropic account, yet
@@ -213,10 +215,10 @@ which is exactly what lets a tagged model survive resume untouched.
 ## Settings → Backends
 
 Panel (`#settings-backends`): one card per registry row showing label, id, template
-(or "runs `claude` directly"), its env pairs, and the custom models bound to it.
-Managed rows carry a **built in** badge, show the template read-only, and have no
+(blank shows `claude`), its env pairs, and the custom models bound to it. Managed
+rows carry a **built in** badge, show their template and env read-only, and have no
 Remove. One shared add/edit form (id + label + template + an env textarea, one
-`KEY=VALUE` per line).
+`KEY=VALUE` per line) — for user rows only.
 
 Removing a backend **never cascades**. The DELETE is refused **409** — message
 surfaced in the panel's status line — while *either* of two things still references

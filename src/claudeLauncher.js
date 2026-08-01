@@ -49,10 +49,13 @@ export function resolveClaudeBin() {
 //                    the trailing `--` terminates its own flags.
 //
 // `env` is the backend's user-configured key/value pairs, applied by callers
-// BEFORE any cc-managed variable so cc-managed always wins.
+// BEFORE any cc-managed variable so cc-managed always wins. `{model}` is
+// substituted into env VALUES (never keys) here — the same single substitution
+// point that handles the template — so a custom backend can put `{model}` in
+// an env var (e.g. `SOME_MODEL_ID={model}`) and have it filled at spawn.
 export function resolveBackendLaunch(backend, model, claudeBin) {
   const template = typeof backend?.template === 'string' ? backend.template.trim() : '';
-  const env = backendEnv(backend);
+  const env = backendEnv(backend, model || null);
   if (!template) {
     return { command: claudeBin.command, prefixArgs: claudeBin.prefixArgs, env };
   }
@@ -73,11 +76,17 @@ export function resolveBackendLaunch(backend, model, claudeBin) {
 }
 
 // A backend's env pairs as a plain object, later keys winning. Returns {} for a
-// backend with no env, so callers can spread it unconditionally.
-export function backendEnv(backend) {
+// backend with no env, so callers can spread it unconditionally. When `model`
+// is given, `{model}` is substituted into each VALUE (keys are never templated)
+// — the same `{model}` → tag replacement the template gets, applied here so
+// resolveBackendLaunch stays the single substitution point.
+export function backendEnv(backend, model = null) {
   const out = {};
   for (const e of Array.isArray(backend?.env) ? backend.env : []) {
-    if (e && typeof e.key === 'string' && e.key) out[e.key] = String(e.value ?? '');
+    if (e && typeof e.key === 'string' && e.key) {
+      const v = String(e.value ?? '');
+      out[e.key] = model ? v.replaceAll('{model}', model) : v;
+    }
   }
   return out;
 }
