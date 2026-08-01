@@ -38,7 +38,7 @@ appending either row if the store lacks it. So a built-in template can't drift,
 
 | id | label | template |
 |---|---|---|
-| `claude` | Claude | *(empty — runs `claude` directly)* |
+| `claude` | Claude | *(empty — `claude`)* |
 | `ollama` | Ollama | `ollama launch claude --model {model} --yes --` |
 
 `ollama launch` sets the Anthropic endpoint + auth internally and **re-injects
