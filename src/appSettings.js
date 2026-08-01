@@ -215,10 +215,10 @@ export async function setDefaultSpawnTier(tier) {
 // contract and `resolveBackendLaunch` in claudeLauncher.js for the one place
 // `template` is consumed.
 //
-// Managed rows are CODE-authoritative: id/label/template/managed always come
-// from MANAGED_BACKENDS, and only `env` is read from the store. So the built-in
-// `ollama` template can't drift, `claude` always exists, and a fresh install
-// (no settings.json) still has both rows.
+// Managed rows are fully CODE-authoritative: id/label/template/env/managed all
+// come from MANAGED_BACKENDS — nothing on a managed row is read from the store.
+// So the built-in `ollama` template can't drift, `claude` always exists, and a
+// fresh install (no settings.json) still has both rows.
 const BACKEND_ID_RE = /^[a-z][a-z0-9-]*$/;
 const BACKEND_ID_MAX = 40;
 const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
