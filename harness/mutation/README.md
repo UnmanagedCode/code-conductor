@@ -9,28 +9,64 @@ The runner is a sibling project, not a dependency. Command syntax below is `muta
 
 ---
 
-## Read these two first
+## Read these first
 
-### 1. Do NOT pass `--copy` on this project
+### 1. `--copy` FAILS THE BASELINE GATE here — never pass it
 
-`/code-mutant:prove` step 6 says "prefer `--copy`". **That does not apply here** — use the
-configured default (`in-place`), or `--in-place` explicitly to override the habit. Two reasons:
+`/code-mutant:prove` step 6 says "prefer `--copy`". **That does not apply here.** This is not a soft
+preference: `--copy` does not produce degraded verdicts, it produces *no* verdicts. Measured —
+`run --copy` fails the baseline gate (1948 pass / **1 fail**, exit 1 → `GATE_FAILED`, process exit 2)
+and **zero mutants run**.
 
-- **A copy is not a git repository.** `code-mutant`'s `copyTree` excludes the top-level `.git`
-  entry. In a code-conductor worktree `.git` is a *pointer file*, so the copy has no git linkage at
-  all — and 11 test files shell out to `git`. This project *is* a git-orchestration app.
-- **Copy mode silently defeats the store-isolation backstop.** `tests/safeStoreRoot.mjs` derives
-  `REAL_STORE_DIR` **source-relative** (`<repo>/../.code-conductor`). Copy mode relocates the tree
-  to `os.tmpdir()/code-mutant-run-*`, so that constant becomes `/tmp/.../.code-conductor` and
+Use the configured default (`in-place`), or `--in-place` explicitly to override the habit. Why a copy
+breaks:
+
+- **A copy is not a git repository.** `code-mutant`'s `copyTree` excludes the top-level `.git` entry.
+  In a code-conductor worktree `.git` is a *pointer file*, so the copy has no git linkage at all —
+  and 11 test files shell out to `git`. This project *is* a git-orchestration app. That is what fails
+  the baseline above.
+- **Copy mode also defeats the store-isolation backstop.** `tests/safeStoreRoot.mjs` derives
+  `REAL_STORE_DIR` **source-relative** (`<repo>/../.code-conductor`). Copy mode relocates the tree to
+  `os.tmpdir()/code-mutant-run-*`, so that constant becomes `/tmp/.../.code-conductor` and
   `assertStoreIsolated` starts asserting against a path that is not the production store — a
-  tautology. Nothing gets corrupted either way (`tests/run.mjs` pins `PROJECTS_ROOT` /
+  tautology. No data is at risk either way (`tests/run.mjs` pins `PROJECTS_ROOT` /
   `CLAUDE_PROJECTS_ROOT` to a fresh `mkdtemp` before any test file forks, and children inherit it),
   but the guarantee is only genuinely exercised in-place.
 
 In-place restore is byte-snapshot replay plus a byte-identity check and a whole-tree `git status`
 comparison, and the suite leaves no residue in the tree, so `assertNoTrace` holds.
 
-### 2. `narrowTo: "names"` does NOT work here — leave narrowing at the default
+### 2. `expectFail` refs: a nested test needs its `describe >` path, not its leaf name
+
+Two forms, depending on where the test sits:
+
+| Test | Reference |
+|---|---|
+| top-level `test(...)` | `tests/<file>.test.mjs::<test name>` |
+| inside a `describe(...)` | `tests/<file>.test.mjs::<describe name> > <test name>` |
+
+The adapter reconstructs the full `describe > name` path from the spec reporter's inline block
+(`parseInlineFailurePaths`) and matches `expectFail` against **that**. A leaf-only ref for a nested
+test does not match, and the failure mode is a trap: the verdict is `IMPRECISE (extra-failures)` with
+detail *"the mutant is too broad, rewrite it smaller"* — advice that sends you to rewrite a mutant
+that was already correct. Measured, same mutation, only the ref differing:
+
+```
+leaf-only ref   → IMPRECISE  reason: extra-failures
+  unexpectedFailures: ["tests/backend-registry.test.mjs::resolveBackendLaunch (template-driven launch resolution) > {model} substitutes INSIDE a token, so --model={model} works too"]
+  missingFailures:    ["tests/backend-registry.test.mjs::{model} substitutes INSIDE a token, so --model={model} works too"]
+
+full describe path → KILLED  (37 passed / 1 failed / 38 ran)
+```
+
+**Don't hand-construct an id — read it.** Run the mutation once via `probe --json` and copy the
+string out of `results[0].failedTests`; that is the adapter's own id for the test and is what
+`expectFail` is compared against. Note the describe name is reproduced verbatim, parentheses and all.
+
+Three files in this suite use `describe`: `tests/backend-spawn.test.mjs`,
+`tests/backend-registry.test.mjs`, `tests/mcp-inspect-tools.test.mjs`. Everything else is top-level.
+
+### 3. `narrowTo: "names"` does NOT work here — leave narrowing at the default
 
 The `node-test` adapter declares `canNameFilter: true` and substitutes
 `--test-name-pattern '<regex>' 'tests/foo.test.mjs'`. But `tests/run.mjs` is **not** the
@@ -61,10 +97,11 @@ node ../code-mutant/mutate.mjs candidates --base main
 node ../code-mutant/mutate.mjs run --all
 node ../code-mutant/mutate.mjs run --id <id> --id <id>
 
-# Explore one mutation without a catalog entry (clean-tree gate only warns here)
+# Explore one mutation without a catalog entry (clean-tree gate only warns here).
+# Add --json and read results[0].failedTests to learn a test's real id — see §2.
 node ../code-mutant/mutate.mjs probe \
   --file src/instances.js --anchor "some exact text" --replace "false" \
-  --expect-fail 'tests/instances.test.mjs::the leaf test name'
+  --expect-fail 'tests/instances.test.mjs::a top-level test name'
 
 # Add --json to any of the above for the machine report.
 ```
@@ -80,7 +117,7 @@ non-reproducible.
 | Full suite (`baselineCommand`) | ~36 s, 1962 tests (1949 pass / 13 skipped / 0 fail) on a 16-core host |
 | `baseline` total | ~75 s — the canary run is a second full-suite pass |
 | A file-narrowed mutant | ~0.5–3 s (`tests/health.test.mjs`: 9 tests, 0.5 s) |
-| Test reference format | `tests/<name>.test.mjs::<leaf test name>`, repo-relative, exactly as the spec reporter prints it |
+| Test reference format | repo-relative, and **`describe >` path–sensitive** — see [§2](#2-expectfail-refs-a-nested-test-needs-its-describe--path-not-its-leaf-name) |
 
 Narrowing is worth ~70× here, so always give every mutant an `expectFail`.
 
@@ -95,7 +132,7 @@ what `timeoutMs` below is sized for.
 | `baselineCommand` | `npm test` | The project's real entry point (`package.json` script, README quick start). Using the script rather than its expansion keeps `NODE_OPTIONS=--max-old-space-size=512` defined in one place. |
 | `testCommand` | `npm test -- {tests}` | `npm test -- <files>` forwards positionals to `tests/run.mjs`, which accepts a list of file paths. The adapter substitutes space-joined single-quoted repo-relative paths. |
 | `runner` | `node-test` | `tests/run.mjs` is bespoke but pipes through `new spec()` from `node:test/reporters` — the same reporter the adapter is pinned to. Counters (`ℹ tests/pass/fail/skipped`) land on stdout; the `✖ failing tests:` block carries `test at <repo-relative path>`, because the spec reporter emits `relative(process.cwd(), file)` and the runner resolves its args against the same cwd. A full green run trips none of the adapter's `compileError` probes. Proven here by the `baseline` canary gate. |
-| `isolation` | `in-place` | See "Do NOT pass `--copy`" above. Also: the suite boots real express+ws servers on ephemeral ports and forks child processes. |
+| `isolation` | `in-place` | See §1 above — `--copy` fails the baseline gate outright. Also: the suite boots real express+ws servers on ephemeral ports and forks child processes. |
 | `timeoutMs` | `300000` | Applies to **every** measured command, the full-suite baseline included. 36 s on 16 cores, but a slow/Termux host is far slower and a baseline `TIMEOUT` is a gate failure that blocks the whole review. It's a cap, not a wait; `tests/run.mjs` has its own 60 s per-file ceiling, so a hung mutant still surfaces well inside it. |
 | `baseBranch` | `main` | The real integration branch. Unset, `run`'s empty-diff-vs-base gate reports `not-established` and checks nothing — a branch with no committed work would read as a clean sweep. |
 
