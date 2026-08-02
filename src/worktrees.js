@@ -131,7 +131,7 @@ export { readMeta as readWorktreeMeta };
 
 // Cap on hook output kept in memory — tail of this many bytes is retained.
 // Chatty scripts (npm ci, etc.) can emit MBs; keep only the tail so the
-// result field stays network-friendly. ~16 KB is generous for diagnostics.
+// result field stays network-friendly. `HOOK_OUTPUT_CAP` is generous for diagnostics.
 const HOOK_OUTPUT_CAP = 16 * 1024;
 
 async function fileExists(p) {
@@ -201,7 +201,7 @@ async function runPostWorktreeHook(meta) {
     const killGroup = () => {
       try { process.kill(-proc.pid, 'SIGTERM'); } catch { proc.kill('SIGTERM'); }
       // SIGKILL backstop: sends SIGKILL if the process group doesn't die
-      // from SIGTERM within 100 ms (e.g. `sleep` ignoring SIGTERM on some
+      // from SIGTERM within the SIGKILL-backoff delay set in the setTimeout below (e.g. `sleep` ignoring SIGTERM on some
       // platforms). Unref'd so it can't keep the process alive.
       setTimeout(() => {
         try { process.kill(-proc.pid, 'SIGKILL'); } catch { proc.kill('SIGKILL'); }
@@ -800,7 +800,7 @@ const COMMITS_MAX_LIMIT = 500;
 
 // Return the commit history of a project's current branch (HEAD), newest first.
 // Validates the project via getProject (throws 404 if not found). Caps the log
-// at `limit` (default 100, max 500) and sets `truncated` when more commits exist.
+// at `limit` (default `COMMITS_DEFAULT_LIMIT`, max `COMMITS_MAX_LIMIT`) and sets `truncated` when more commits exist.
 // Returns { project, branch, commits, truncated, limit, hasUncommitted, aheadCount, aheadOf },
 // where each commit is { sha, shortSha, subject, author, relativeDate, isoDate, parents },
 // and `parents` is the array of parent SHAs (empty for the root, ≥2 for a merge) — the

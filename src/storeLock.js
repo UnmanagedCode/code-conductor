@@ -78,7 +78,7 @@ async function acquireLock(lockPath) {
         );
       }
 
-      // Exponential backoff with ±20 % jitter
+      // Exponential backoff with jitter (spread set in the sleep call below)
       const base = LOCK_RETRY_BASE_MS * Math.pow(1.5, attempt);
       await sleep(Math.min(base * (0.8 + 0.4 * Math.random()), 500));
     }
