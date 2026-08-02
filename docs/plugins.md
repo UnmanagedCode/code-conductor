@@ -72,7 +72,7 @@ Child env: `$PORT` (conductor-allocated; default your own port when absent so th
 - `/plugins/<id>/foo?q=1` → child `/foo?q=1` (prefix strip). Injected headers: `X-Forwarded-Prefix: /plugins/<id>`, `X-Forwarded-Host`, `X-Forwarded-Proto`, `X-Forwarded-For`.
 - `GET /plugins/<id>` → `301 /plugins/<id>/` (query preserved). Child `Location:` headers starting with `/` get the prefix re-added — the only header rewrite.
 - Bodies are never parsed — pure req→upstream→res streaming (SSE works). WebSocket upgrades are raw-socket piped with the original header order/casing replayed.
-- Requests to an enabled-but-stopped plugin wait through the lazy start (≤30 s). Unknown/disabled id → 404 JSON; `failed` → `503 {error, status:"failed", tail}`; crash-backoff window → `503 {error, status:"crashed", retryAfter, tail?}`; child unreachable mid-request → 502.
+- Requests to an enabled-but-stopped plugin wait through the lazy start (`READY_TIMEOUT_MS` in `src/plugins/supervisor.js`). Unknown/disabled id → 404 JSON; `failed` → `503 {error, status:"failed", tail}`; crash-backoff window → `503 {error, status:"crashed", retryAfter, tail?}`; child unreachable mid-request → 502.
 
 ### Bridge protocol — `/pluginBridge.js`
 
@@ -95,7 +95,7 @@ Inside the iframe the bridge patches `history.pushState` → `replaceState`, so 
 | `POST /api/plugins/:id/enable` | record + enable; the plugin's `conductor`-scope conventions become on-by-default (minus remembered off-switches) and flow into the conductor's composed prompt on its next spawn/resume (no regeneration step); recovery path out of `failed` (workspace auto-assign to `CC-Dev` happens on discovery, not enable specifically — see `rescan` below) |
 | `POST /api/plugins/:id/disable` | stop the child + disable; the plugin's conventions leave the catalog automatically, so they simply drop from the conductor's next composed prompt. The user's off-switches (`pluginOff`) persist for a future re-enable |
 | `POST /api/plugins/:id/start` | explicit start (clears crash history); 502 + `tail` on start failure |
-| `POST /api/plugins/:id/stop` | SIGTERM the process group (SIGKILL after 3 s) |
+| `POST /api/plugins/:id/stop` | SIGTERM the process group (SIGKILL after `GRACE_MS` in `src/plugins/supervisor.js`) |
 | `POST /api/plugins/:id/restart` | stop + start the running child in place (picks up new code from the active checkout); 409 if not running |
 | `GET /api/plugins/:id/status` | row + live probe (flips a silently-dead child to `crashed`) |
 | `POST /api/plugins/:id/version` | `{type:"main"}` \| `{type:"worktree", name}`; validates the target checkout (400 keeps previous state), restarts if running |
