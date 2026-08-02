@@ -15,8 +15,8 @@ The runner is a sibling project, not a dependency. Command syntax below is `muta
 
 `/code-mutant:prove` step 6 says "prefer `--copy`". **That does not apply here.** This is not a soft
 preference and not a degraded-verdict tradeoff: in copy mode the **baseline gate fails**, so *zero*
-mutants run and no verdict is interpretable. Measured, `baseline --copy` → `1956/1/13 (p/f/s)`,
-`baseline FAILED`, process **exit 2**. Reproduce in one command:
+mutants run and no verdict is interpretable. Measured, `baseline --copy` → `baseline FAILED`,
+process **exit 2**. Reproduce in one command:
 `node ../code-mutant/mutate.mjs baseline --copy`.
 
 Use the configured default (`in-place`), or `--in-place` explicitly to override the habit. Why a copy
@@ -91,19 +91,20 @@ covers this."* Filing the latter is a false finding against an implementer who d
 **Snapshot of the gates present today** — a starting point to re-derive, not a fact to trust; flags get
 added and removed:
 
-| Env flag | Skips | Surface left unproven |
-|---|---|---|
-| `RUN_REAL_CLAUDE` | 7 | real spawn + stream-json parsing, Bash tool call, AskUserQuestion, ask-mode PreToolUse hook (`smoke.real` 4); pruned-session resume + read-before-edit re-arm (`prune.real` 1); shell-env bundle restoring rg/find (`claudeShellEnv` 1); real `renew_session` sessionId rotation (`renew-session` 1) |
-| `RUN_REAL_OLLAMA` | 1 | `ollama launch claude … --version` forwarding claude's stdout/exit code (`claudeShellEnv`) |
-| `RUN_PLAYWRIGHT` | 3 | real-browser UI behaviour, one test each — main-bar reset (`main-bar-reset-browser`), plugin app-switcher landing (`plugin-switch-browser`), plugin version-select width (`plugin-version-select-width`) |
-| `RUN_TTS_INSTALL_TESTS` | 2 | Piper voice install flow and its 409-while-running guard (`settings-tts`). **Note the name:** the file reads this flag into a local const called `RUN_INSTALL`; `RUN_INSTALL` is not an env var. |
+| Env flag | Surface left unproven |
+|---|---|
+| `RUN_REAL_CLAUDE` | real spawn + stream-json parsing, Bash tool call, AskUserQuestion, ask-mode PreToolUse hook (`smoke.real` 4); pruned-session resume + read-before-edit re-arm (`prune.real` 1); shell-env bundle restoring rg/find (`claudeShellEnv` 1); real `renew_session` sessionId rotation (`renew-session` 1) |
+| `RUN_REAL_OLLAMA` | `ollama launch claude … --version` forwarding claude's stdout/exit code (`claudeShellEnv`) |
+| `RUN_PLAYWRIGHT` | real-browser UI behaviour, one test each — main-bar reset (`main-bar-reset-browser`), plugin app-switcher landing (`plugin-switch-browser`), plugin version-select width (`plugin-version-select-width`) |
+| `RUN_TTS_INSTALL_TESTS` | Piper voice install flow and its 409-while-running guard (`settings-tts`). **Note the name:** the file reads this flag into a local const called `RUN_INSTALL`; `RUN_INSTALL` is not an env var. |
 
-7+1+3+2 = **13, the entire skip count** in the baseline's `1957/0/13`. There is no residual
-"unrelated" remainder that is safe to mutate against — every skip in this suite is an env-flag opt-in
-gate. Enabling any of them needs something a review environment does not have (the real
-`claude`/`ollama` binary plus auth plus network; a Chromium install via the `code-playwright` sibling;
-a network voice download), so treat the whole set as **out of scope for mutation proof** and report
-such a claim as unprovable-by-this-harness rather than mutating it.
+the skip count is the union of env-flag-gated tests — re-derive it with the recipe below rather
+than trusting a fixed number. Every skip in this suite is an env-flag opt-in gate (no residual
+"unrelated" remainder is safe to mutate against). Enabling any of them needs something a review
+environment does not have (the real `claude`/`ollama` binary plus auth plus network; a Chromium
+install via the `code-playwright` sibling; a network voice download), so treat the whole set as
+**out of scope for mutation proof** and report such a claim as unprovable-by-this-harness rather
+than mutating it.
 
 **Re-derive it when the gates change:**
 
@@ -120,7 +121,7 @@ Two traps in re-deriving this, both of which produced a wrong count while writin
 
 - **Grep the `﹣` glyph, not `# SKIP`.** The spec reporter appends `# SKIP` only for a boolean
   `skip: true`; a `skip: '<reason>'` prints `# <reason>` instead (e.g.
-  `# set RUN_TTS_INSTALL_TESTS=1 to run`). Grepping `# SKIP` silently drops those and reports 11 of 13.
+  `# set RUN_TTS_INSTALL_TESTS=1 to run`). Grepping `# SKIP` silently drops those and undercounts.
 - **Don't grep `skip:` in the sources.** The gates use three different mechanisms
   (`test.skip.bind(test)`, `{ skip: <const holding the reason> }`, and an inline
   `{ skip: process.env.X !== '1' }`); only the last is findable that way.
@@ -128,7 +129,7 @@ Two traps in re-deriving this, both of which produced a wrong count while writin
 Also beware that a *host-capability* skip is a different thing from an env-flag gate and moves between
 hosts, so any count you take is host-specific: `mcp-inspect-tools`'s zsh-flavoured `project_bash`
 block skips only where `zsh` is absent. It contributes 0 here (zsh 5.9 present), which is why the
-13 above is exactly the four env flags.
+skip count above is exactly the four env flags.
 
 **The `scope-empty` guard does not save you.** `ran` counts skipped tests, so a scope narrowed to
 `tests/smoke.real.test.mjs` reports `ran 4 / skipped 4 / failed 0` — a *green* narrow baseline — and
@@ -171,7 +172,7 @@ non-reproducible.
 
 | | |
 |---|---|
-| Full suite (`baselineCommand`) | ~41 s, 1970 tests (1957 pass / 13 skipped / 0 fail) on a 16-core host |
+| Full suite (`baselineCommand`) | ~41 s on a 16-core host; a full green run is pass + a fixed set of env-gated skips, 0 fail |
 | `baseline` total | ~85 s — the canary run is a second full-suite pass |
 | A file-narrowed mutant | ~0.1–4.5 s across the files timed — `resume-manifest` 0.13 s, `health` 0.53 s, `mcp-inspect-tools` 1.28 s, `instances` 2.91 s, `overage-action` **4.31 s**. Files that wait on drains/timeouts sit at the top end; this is a sample, not a swept bound. |
 | Test reference format | repo-relative, and **`describe >` path–sensitive** — see [§2](#2-expectfail-refs-a-nested-test-needs-its-describe--path-not-its-leaf-name) |

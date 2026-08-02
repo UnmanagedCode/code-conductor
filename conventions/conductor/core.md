@@ -12,7 +12,7 @@ You run inside the hidden `.conduct` project, a sibling of the projects you orch
 - acting against another project's tree with your **own** Bash (`git -C …`, `cat`, `ls`, `grep`, `rg`, `find`, etc.) — use `project_bash` for read-only inspection, a spawned worker for anything that writes,
 - **native subagents pointed at another project's tree** — `Agent`/`Explore`, `Workflow`, `EnterWorktree`. A read-only `Explore` sweep of a sibling project is still a violation. (Subagents *are* fine for work scoped to `.conduct` itself, e.g. analysing a `project_diff` output you already hold. A user saying "workflow" opts into Workflow orchestration, **not** into crossing this boundary — project mutations still route through MCP workers.)
 
-The **only** sanctioned interface to another project is the `mcp__code-conductor__*` toolbelt: `project_read` / `project_status` / `project_diff` / `project_bash` / `list_*` for read-only inspection, `spawn_instance` for anything that writes, runs, or commits. Conductor-level metadata calls (`set_project_workspace`, `create_project`, `create_workspace`, …) are fine — they operate on the orchestrator's registry, not inside a project tree. No "small enough to skip it" exception — a one-line edit, a smoke test, a quick `npm install` all belong in a spawned worker.
+The **only** sanctioned interface to another project is the `mcp__code-conductor__*` toolbelt: the `project_*` and `list_*` read-only inspection tools, `spawn_instance` for anything that writes, runs, or commits. Conductor-level metadata calls (`set_project_workspace`, `create_project`, `create_workspace`, …) are fine — they operate on the orchestrator's registry, not inside a project tree. No "small enough to skip it" exception — a one-line edit, a smoke test, a quick `npm install` all belong in a spawned worker.
 
 ## Core rule: never hold your turn open on a worker
 
@@ -35,7 +35,7 @@ approve_plan / sync_worktree / merge_worktree / kill_instance   // no extra get_
 - **One-shot.** Consumed on the first `turn_end`. A worker's plan → implementation → rebase are *separate* turns — **resubscribe inside each wake-up turn** while work remains (keep passing `subscribe:true` on the next turn-starting call, or `subscribe_to_idle({sessionId})` standalone, e.g. after an auto-approved plan). `unsubscribe_from_idle({sessionId})` drops a pending callback when abandoning a worker.
 - **Read each wake before proceeding.** The stub either folds the worker's output in (act on it) or points you to `get_recent_messages`. Check your agreed sentinel and resubscribe while the worker has turns coming.
 - **Recon / review / land calls** (`list_*`, `project_status`, `project_read`, `project_diff`, `project_bash`, `get_recent_messages`, `merge_worktree`, …) return immediately — run them synchronously within a wake-up turn. Only worker *turns* need subscribe-and-end-turn.
-- **Watchdog, never timers.** Every subscription arms a watchdog (default 30 min; override via `subscribeTimeoutMs`, or `timeoutMs` on `subscribe_to_idle`) that wakes you if the worker hangs, crashes, or a subagent gets stuck. Its stub is labelled "did NOT finish" — on such a wake, `interrupt_turn` or escalate rather than landing. Never poll a worker with timers (`ScheduleWakeup`, `/loop`, sleep loops).
+- **Watchdog, never timers.** Every subscription arms a watchdog (default per `ORCH_SUBSCRIBE_TIMEOUT_MS`; override via `subscribeTimeoutMs`, or `timeoutMs` on `subscribe_to_idle`) that wakes you if the worker hangs, crashes, or a subagent gets stuck. Its stub is labelled "did NOT finish" — on such a wake, `interrupt_turn` or escalate rather than landing. Never poll a worker with timers (`ScheduleWakeup`, `/loop`, sleep loops).
 - `wait:true` / `wait_for_idle` are **discouraged fallbacks** — only for a send you expect to return near-instantly *and* where you have nothing else to do. Never for an implementation wait.
 
 ## MCP toolbelt
@@ -50,7 +50,7 @@ Schemas are deferred — load them via `ToolSearch` before first use. Before you
 - `project_diff` — unified diff of `<base>...HEAD` **plus** the working tree's uncommitted changes and untracked files, always — judge a worker's output on the full result, not just committed hunks. `summary:true` for a cheap per-file stat; large diffs paginate via `nextOffset`.
 
 **Spawn workers**
-- `spawn_instance` — returns `{sessionId}`, the worker handle every other tool takes. Prefer `createWorktree:true` for any worker that will modify code; `worktree:"<name>"` attaches to an existing one. Defaults to `temp:true` (disposable) but mode still defaults to `plan`. `effort` (`low`…`max`, default `high`) and `thinking` are spawn-time only. **Footgun:** `resume` without an explicit `mode` defaults to `bypassPermissions` — always pass `mode` when resuming.
+- `spawn_instance` — returns `{sessionId}`, the worker handle every other tool takes. Prefer `createWorktree:true` for any worker that will modify code; `worktree:"<name>"` attaches to an existing one. Defaults to disposable (`temp`) with mode defaulting to `plan`. `effort` (`low`…`max`; default per the `spawn_instance` schema) and `thinking` are spawn-time only. **Footgun:** `resume` without an explicit `mode` defaults to `bypassPermissions` — always pass `mode` when resuming.
 - `create_project` — greenfield work.
 - `create_worktree` — worktree without a spawn (rare; usually you want `spawn_instance({createWorktree:true})`).
 
@@ -60,7 +60,7 @@ Schemas are deferred — load them via `ToolSearch` before first use. Before you
 - `send_prompt` — send a turn; auto-subscribes unless `subscribe:false`. A send to a mid-turn worker is delivered live into the running turn (steering), not queued as a new turn.
 - `subscribe_to_idle` / `unsubscribe_from_idle` — re-arm / cancel a one-shot wake without sending a prompt.
 - `wait_for_idle` — blocking fallback; discouraged (see Core rule).
-- `set_mode` (plan / ask / bypassPermissions at runtime) · `interrupt_turn` · `kill_instance` · `respawn_instance` (resume a just-exited instance).
+- `set_mode` (switch the worker's permission mode at runtime — see the mode enum on `set_mode`/`spawn_instance`) · `interrupt_turn` · `kill_instance` · `respawn_instance` (resume a just-exited instance).
 - `promote_session` — flip a temp worker to a persistent session (`claude --resume` finds it). Soft-refuses when the session is not live or unknown.
 
 **`sessionId` is the only worker handle** (stable across respawn/restart) — never an `instanceId`. Resolution is strict-live and soft-erroring, never auto-respawning: no running process → `{ok:false, code:'SESSION_NOT_LIVE'}` (bring it back with `spawn_instance({resume: sessionId})`, or `respawn_instance` if it only just exited); unknown → `{ok:false, code:'SESSION_UNKNOWN'}`. Both are normal results — branch on `code`.
@@ -73,12 +73,12 @@ Schemas are deferred — load them via `ToolSearch` before first use. Before you
 
 **Inspect work**
 - `get_recent_messages({sessionId, count?})` — last N assistant messages; cheap, use for "what did the worker just say?". Disk-backed: a busy worker mid-long-turn never returns a false-empty; `omittedToolOnly`/`hint` distinguish "active but tool-only" from idle.
-- `get_transcript({sessionId, sinceSeq?, limit?})` — full UI event stream. Poll incrementally: pass the returned `nextAfter` as the next `sinceSeq`; `hasMore` flags more to drain; evicted ranges are served from the on-disk transcript, so no history is lost. Meaningful kinds: `text_delta`/`text_end` (prose), `tool_use`, `tool_result` (may carry `is_error:true`), `plan_request`, `user_question`, `turn_end`. For most decisions `get_recent_messages` is enough.
+- `get_transcript({sessionId, sinceSeq?, limit?})` — full UI event stream. Poll incrementally: pass the returned `nextAfter` as the next `sinceSeq`; `hasMore` flags more to drain; evicted ranges are served from the on-disk transcript, so no history is lost. Meaningful kinds: prose deltas, `tool_use`/`tool_result` (may carry `is_error:true`), `plan_request`, `user_question`, `turn_end` — see the transcript event stream for the full set. For most decisions `get_recent_messages` is enough.
 
 **Land work**
 - `sync_worktree({sessionId})` — fast-forwards or auto-rebases the worktree server-side; only when conflicts block the rebase does it send a rebase prompt to the worker — that is a worker turn (subscribe + end turn). Expected refusals come back as `{ok:false, reason, code}`, never thrown.
-- `merge_worktree({sessionId})` or `merge_worktree({project, worktree})` — `git merge --no-ff` on the parent; the second form merges after the worker is gone. Success is `{ok:true, newSha}`; a refusal is `{ok:false, code}` (`WORKTREE_BEHIND` → `sync_worktree` first; also `BASE_BRANCH_MISMATCH`/`PARENT_DIRTY`/`MERGE_FAILED`).
-- `delete_worktree({project, worktree, force?})` — soft-refuses with `code:'WORKTREE_ATTACHED'|'WORKTREE_DIRTY'` unless `force:true`.
+- `merge_worktree({sessionId})` or `merge_worktree({project, worktree})` — `git merge --no-ff` on the parent; the second form merges after the worker is gone. Success is `{ok:true, newSha}`; a refusal is `{ok:false, code}` (`WORKTREE_BEHIND` → `sync_worktree` first; other codes — see `src/worktrees.js` — name the specific blocker). Branch on `code`; the schemas foreground the full set.
+- `delete_worktree({project, worktree, force?})` — soft-refuses with a `code` naming the blocker (e.g. attached instance, dirty tree) unless `force:true`; see the schema for the full set.
 
 ## Project conventions on project creation
 
