@@ -1,0 +1,8 @@
+{
+  "baselineCommand": "npm test",
+  "testCommand": "npm test -- {tests}",
+  "runner": "node-test",
+  "isolation": "in-place",
+  "timeoutMs": 300000,
+  "baseBranch": "main"
+}
