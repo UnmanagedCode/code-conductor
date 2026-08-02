@@ -165,6 +165,80 @@ test('replay mode: an interleaved wake stub does NOT consume the answer slot; th
   assert.ok(applePick?.classList.contains('picked'), 'Apple option is marked as picked');
 });
 
+test('replay mode: a MID-TURN answer replayed from disk still locks the card with the right option', async () => {
+  // Card answers are now sent unconditionally, so a mid-turn answer is the
+  // normal case and Instance.prompt prepends MID_TURN_NOTE. The note rides as
+  // its OWN content block and consolidateUserContent strips it, which is the
+  // only reason isUserQuestionAnswerText's startsWith still matches. Fold the
+  // note into the text instead and every mid-turn answer silently unpairs from
+  // its card — this test goes through the real replay path to prove it doesn't.
+  const { replayPersistedLine } = await import('../src/transcript.js');
+  const { MID_TURN_NOTE } = await import('../src/instances.js');
+
+  const evs = replayPersistedLine({
+    type: 'user',
+    message: {
+      role: 'user',
+      content: [
+        { type: 'text', text: MID_TURN_NOTE },
+        { type: 'text', text: ANSWER_TEXT },
+      ],
+    },
+  });
+  const echo = evs.find(e => e.kind === 'user_echo');
+  assert.ok(echo, 'replay emitted a user_echo');
+  assert.equal(echo.text, ANSWER_TEXT, 'the note was stripped before the echo');
+
+  setupDOM();
+  const Conversation = await importConversation();
+  const root = document.createElement('div');
+  const conv = new Conversation(root, {});
+
+  conv._replayMode = true;
+  conv.apply(UQ_EVENT);
+  conv.apply(TOOL_RESULT_EVENT);
+  conv.apply(echo);
+  conv._replayMode = false;
+
+  const qBlock = conv.userQuestionBlocks.get(Q_TOOL_USE_ID);
+  assert.equal(qBlock.submitted, true, 'card locks on the replayed mid-turn answer');
+  const applePick = [...qBlock.panes.querySelectorAll('button.uq-opt')]
+    .find(b => b.dataset.label === 'Apple');
+  assert.ok(applePick?.classList.contains('picked'), 'Apple is recovered as the picked option');
+});
+
+test('markSendFailed re-opens a card whose answer never reached the CLI', async () => {
+  // With the idle gate gone the send is fire-and-forget over a socket that can
+  // be down (or aimed at a killed instance). _submit() locks the card and shows
+  // 'sending…' BEFORE the send, so a failure must un-lock it — otherwise the
+  // card asserts a delivery that never happened.
+  setupDOM();
+  const Conversation = await importConversation();
+  const root = document.createElement('div');
+  const conv = new Conversation(root, { onUserQuestionSubmit: () => {} });
+
+  conv.apply(UQ_EVENT);
+  conv.apply(TOOL_RESULT_EVENT);
+  const qBlock = conv.userQuestionBlocks.get(Q_TOOL_USE_ID);
+
+  qBlock._pickOption(0, 'Apple');
+  qBlock._submit();
+  assert.equal(qBlock.submitted, true, 'precondition: card locked on submit');
+  assert.equal(qBlock.statusNode.textContent, 'sending…');
+
+  qBlock.markSendFailed('not connected');
+
+  assert.equal(qBlock.submitted, false, 'card is re-opened');
+  assert.ok(!qBlock.node.classList.contains('answered'), 'answered styling dropped');
+  assert.match(qBlock.statusNode.textContent, /couldn't send — not connected/);
+  for (const btn of qBlock.panes.querySelectorAll('button.uq-opt')) {
+    assert.equal(btn.disabled, false, `option "${btn.dataset.label}" is selectable again`);
+  }
+  for (const input of qBlock.panes.querySelectorAll('.uq-custom-input')) {
+    assert.equal(input.disabled, false, 'custom input is editable again');
+  }
+});
+
 test('live mode: user submits card, then echo arrives — card stays locked (normal live flow)', async () => {
   setupDOM();
   const Conversation = await importConversation();

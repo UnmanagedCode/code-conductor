@@ -96,7 +96,7 @@ function baseDeps({ instances = [], resumeSpy }) {
     lazyController: { init: noop },
     sessionActions: { resumeSession: resumeSpy },
     composer: {}, sidebar: {}, subagentPanel: {},
-    bumpUnread: noop, flushPendingAnswers: noop,
+    bumpUnread: noop,
     refreshProjects: async () => {}, refreshInstances: async () => {},
     // Mirrors the real selectInstance (app.js): sets state.activeId. Tests
     // that override this with their own tracking spy must do the same, or

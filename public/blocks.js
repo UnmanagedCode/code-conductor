@@ -792,6 +792,20 @@ export class UserQuestionBlock {
     this.panes.querySelectorAll('button.uq-opt').forEach(b => { b.disabled = true; });
     this.panes.querySelectorAll('.uq-custom-input').forEach(i => { i.disabled = true; });
   }
+
+  // Exact inverse of _submit()'s lock — called when the answer never reached
+  // the CLI (socket down, instance killed, session mid-rewind). Without this
+  // the card sits on 'sending…' forever, asserting a delivery that never
+  // happened. Re-opens it so the user can pick again; no retry, no queueing.
+  markSendFailed(reason) {
+    if (!this.submitted) return;
+    this.submitted = false;
+    this.node.classList.remove('answered');
+    this.panes.querySelectorAll('button.uq-opt').forEach(b => { b.disabled = false; });
+    this.panes.querySelectorAll('.uq-custom-input').forEach(i => { i.disabled = false; });
+    this._render(); // restores the picked state + re-enables Send if still answered
+    this.statusNode.textContent = `couldn't send — ${reason}`;
+  }
 }
 
 // The AskUserQuestion answer formatter/parser moved to ./userQuestionAnswers.js
@@ -872,6 +886,18 @@ export class PlanRequestBlock {
         feedback: this.feedbackInput.value.trim(),
       });
     }
+  }
+
+  // Exact inverse of _click()'s lock — see UserQuestionBlock.markSendFailed.
+  // No-op on an auto-approved card, which has no buttons to re-enable.
+  markSendFailed(reason) {
+    if (!this.submitted || !this.approveBtn) return;
+    this.submitted = false;
+    this.approveBtn.disabled = false;
+    this.rejectBtn.disabled = false;
+    this.feedbackInput.disabled = false;
+    this.node.classList.remove('approved', 'rejected');
+    this.statusNode.textContent = `couldn't send — ${reason}`;
   }
 }
 

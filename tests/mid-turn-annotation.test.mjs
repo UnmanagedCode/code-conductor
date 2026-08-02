@@ -118,8 +118,23 @@ test('user_echo text is never annotated regardless of turn state', async () => {
 // isMidTurnNoteContent predicate
 // ---------------------------------------------------------------------------
 
-test('isMidTurnNoteContent matches the actual MID_TURN_NOTE constant', () => {
-  assert.equal(isMidTurnNoteContent(MID_TURN_NOTE), true);
+// Asserted signal-by-signal, not just through the predicate. MID_TURN_NOTE is
+// now prepended to CARD ANSWERS too (a human answering an AskUserQuestion /
+// plan card mid-turn), and every strip path keys off these three signals:
+// consolidateUserContent drops the block on the live-parser path and on both
+// jsonl-replay branches. Reword the constant so any ONE signal is lost and the
+// note stops being stripped — it leaks into the rendered user bubble AND into
+// the text isUserQuestionAnswerText() prefix-matches, silently unpairing every
+// mid-turn answer from its card. A named per-signal failure says which.
+test('MID_TURN_NOTE carries all three isMidTurnNoteContent signals', () => {
+  assert.ok(MID_TURN_NOTE.startsWith('<system-reminder>'),
+    'signal 1/3: must start with the <system-reminder> open tag');
+  assert.ok(MID_TURN_NOTE.includes('mid-turn'),
+    'signal 2/3: must contain the literal "mid-turn" token');
+  assert.ok(MID_TURN_NOTE.trimEnd().endsWith('</system-reminder>'),
+    'signal 3/3: must end with the </system-reminder> close tag');
+  assert.equal(isMidTurnNoteContent(MID_TURN_NOTE), true,
+    'and therefore satisfies the predicate every strip path uses');
 });
 
 test('isMidTurnNoteContent rejects ordinary text', () => {

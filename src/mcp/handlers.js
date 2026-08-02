@@ -566,7 +566,7 @@ export async function approvePlan(
     }
   }
   const text = buildApprovePrompt(feedback);
-  await inst.prompt(text, [], { annotateIfMidTurn: false });
+  await inst.prompt(text);
   const sub = await maybeSubscribeIdle({ instances, callerId }, inst.sessionId, { subscribe, subscribeTimeoutMs });
   return { sessionId: inst.sessionId, mode: inst.mode, sentText: text, ...sub };
 }
@@ -582,16 +582,18 @@ export async function rejectPlan(
   if (r.soft) return r.soft;
   const inst = r.inst;
   const text = buildRejectPrompt(feedback);
-  await inst.prompt(text, [], { annotateIfMidTurn: false });
+  await inst.prompt(text);
   const sub = await maybeSubscribeIdle({ instances, callerId }, inst.sessionId, { subscribe, subscribeTimeoutMs });
   return { sessionId: inst.sessionId, mode: inst.mode, sentText: text, ...sub };
 }
 
 // Answer a worker's AskUserQuestion with a STRUCTURED answer. Mirrors the UI
 // question card's submit (public/app.js onUserQuestionSubmit → formatUserQuestionAnswers):
-// the worker's turn ended on the can_use_tool deny, so it's idle and we send the
-// consolidated answer as a normal user turn — byte-identical to a UI answer
-// because both call the same public/userQuestionAnswers.js formatter.
+// the consolidated answer goes out as a normal user turn, byte-identical to a UI
+// answer because both call the same public/userQuestionAnswers.js formatter.
+// The worker is NOT necessarily idle here — the can_use_tool deny only ends the
+// turn if the CLI has nothing queued behind it (see Instance._handleStdoutLine),
+// so the send is unconditional and picks up MID_TURN_NOTE when it lands mid-turn.
 //
 // `answers` is aligned BY INDEX (0-based) to the pending questions — the same
 // questions get_recent_messages renders 1-based in its "--- questions ---"
@@ -664,7 +666,7 @@ export async function answerQuestion(
   }
 
   const text = formatUserQuestionAnswers(questions, states);
-  await inst.prompt(text, [], { annotateIfMidTurn: false });
+  await inst.prompt(text);
   const sub = await maybeSubscribeIdle({ instances, callerId }, inst.sessionId, { subscribe, subscribeTimeoutMs });
   return { sessionId: inst.sessionId, mode: inst.mode, sentText: text, ...sub };
 }

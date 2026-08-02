@@ -1370,12 +1370,18 @@ export class Instance extends EventEmitter {
       // With `--permission-prompt-tool stdio`, the CLI routes tool-permission
       // prompts to us as `can_use_tool` control_requests. The interactive tools
       // (ExitPlanMode / EnterPlanMode / AskUserQuestion) are DENIED with a
-      // friendly message: the deny ends the turn (verified: stop_reason
-      // end_turn), so the plan_request / user_question card already emitted from
-      // the tool-use surfaces and the orchestrator drives forward exactly as
-      // before (subscribe_to_idle wakes on turn_end → approve_plan/reject_plan,
-      // or questions via the next prompt). Holding the request open for an
-      // in-turn answer would break that contract — no turn_end, so a conductor's
+      // friendly message. The deny releases the tool call — the plan_request /
+      // user_question card was already emitted from the tool-use surfaces — but
+      // it does NOT reliably end the turn: the model gets an is_error tool_result
+      // and wraps up only if the CLI has nothing else to do. In a conducted
+      // session a wake callback already sitting in the CLI's stdin is injected
+      // right after the deny and the SAME turn keeps running for as long as the
+      // conductor keeps working, so an answer clicked in that window lands
+      // mid-turn (Instance.prompt annotates it with MID_TURN_NOTE). Either way
+      // the drive-forward path is unchanged: subscribe_to_idle wakes on the
+      // eventual turn_end, and approvals/answers are sent unconditionally rather
+      // than waiting for idle. Holding the request open for an in-turn answer
+      // would break that contract — no turn_end, so a conductor's
       // subscribe_to_idle never wakes. Any OTHER tool arriving here (rare —
       // --allow-dangerously-skip-permissions auto-allows normal tools, so they
       // don't reach can_use_tool) is allowed through unchanged.

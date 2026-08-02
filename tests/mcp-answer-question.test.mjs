@@ -90,6 +90,89 @@ test('answer_question sends the canonical single-option text and lands it as use
     ev => ev.kind === 'user_echo' && ev.text === 'Answer to "Pick a fruit": Apple'));
 });
 
+// ---------------------------------------------------------------------------
+// Mid-turn annotation. answer_question / approve_plan / reject_plan used to send
+// with `annotateIfMidTurn:false`, on the premise that the can_use_tool deny left
+// the worker idle. It doesn't — anything queued in the CLI's stdin keeps the turn
+// running — so they now send unconditionally and pick up MID_TURN_NOTE when the
+// worker is still busy. These two pin both halves: unchanged when idle, annotated
+// when not.
+// ---------------------------------------------------------------------------
+
+// Every `type:"user"` line written to the fake CLI's stdin, in order.
+async function userStdinLines(transcriptPath) {
+  const raw = await (await import('node:fs')).promises.readFile(transcriptPath, 'utf8');
+  return raw.split('\n')
+    .filter(Boolean)
+    .map(l => { try { return JSON.parse(l); } catch { return null; } })
+    .filter(o => o && o.type === 'user' && o.message?.role === 'user');
+}
+
+test('answer_question to an IDLE worker writes exactly one content block (byte-identical to before)', async () => {
+  const transcriptPath = path.join(home, 'idle-answer.log');
+  process.env.FAKE_CLAUDE_TRANSCRIPT = transcriptPath;
+  try {
+    const { inst, sid } = await spawnAtQuestion();
+    await waitFor(() => inst.status === 'idle');
+
+    unwrap(await callTool('answer_question', { sessionId: sid, answers: [{ option: 'Apple' }] }));
+    await waitFor(() => inst.ring.toArray().some(
+      ev => ev.kind === 'user_echo' && ev.text === 'Answer to "Pick a fruit": Apple'));
+
+    const lines = await userStdinLines(transcriptPath);
+    const answerLine = lines.find(o =>
+      JSON.stringify(o.message.content).includes('Answer to \\"Pick a fruit\\"'));
+    assert.ok(answerLine, 'the answer reached the CLI stdin');
+    assert.deepEqual(
+      answerLine.message.content,
+      [{ type: 'text', text: 'Answer to "Pick a fruit": Apple' }],
+      'an idle send is a single verbatim block — no annotation',
+    );
+  } finally { delete process.env.FAKE_CLAUDE_TRANSCRIPT; }
+});
+
+test('answer_question to a MID-TURN worker prepends MID_TURN_NOTE as its own block', async () => {
+  const { MID_TURN_NOTE } = await import('../src/instances.js');
+  const transcriptPath = path.join(home, 'midturn-answer.log');
+  process.env.FAKE_CLAUDE_TRANSCRIPT = transcriptPath;
+  try {
+    const { inst, sid } = await spawnAtQuestion();
+    await waitFor(() => inst.status === 'idle');
+
+    // Drain the fixture's one remaining unfiltered prompt-turn so the injection
+    // below has nothing left to answer it — otherwise the fake replies with a
+    // `result` and the worker is idle again before answer_question runs.
+    await callTool('send_prompt', { sessionId: sid, text: 'filler', wait: true });
+    await waitFor(() => inst.status === 'idle');
+
+    // Put the worker back mid-turn the way the real bug does: a wake callback
+    // injected on the internal path. No scenario turn matches it now, so nothing
+    // answers and the instance stays in `turn` — exactly the window in which a
+    // human's card answer (or a conductor's answer_question) actually lands.
+    await inst.prompt('Worker `abc12345` finished its turn.', [], {
+      internal: true, annotateIfMidTurn: false,
+    });
+    assert.equal(inst.status, 'turn', 'precondition: worker is mid-turn');
+
+    unwrap(await callTool('answer_question', { sessionId: sid, answers: [{ option: 'Apple' }] }));
+    await waitFor(() => inst.ring.toArray().some(
+      ev => ev.kind === 'user_echo' && ev.text === 'Answer to "Pick a fruit": Apple'));
+
+    const lines = await userStdinLines(transcriptPath);
+    const answerLine = lines.find(o =>
+      JSON.stringify(o.message.content).includes('Answer to \\"Pick a fruit\\"'));
+    assert.ok(answerLine, 'the answer reached the CLI stdin');
+    assert.deepEqual(
+      answerLine.message.content,
+      [
+        { type: 'text', text: MID_TURN_NOTE },
+        { type: 'text', text: 'Answer to "Pick a fruit": Apple' },
+      ],
+      'annotation first, answer text verbatim second',
+    );
+  } finally { delete process.env.FAKE_CLAUDE_TRANSCRIPT; }
+});
+
 test('answer_question appends an option note', async () => {
   const { sid } = await spawnAtQuestion();
   const res = unwrap(await callTool('answer_question', {

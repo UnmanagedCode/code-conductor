@@ -211,13 +211,6 @@ function getUsage(instanceId) {
 // fields win; absent/undefined fields never clobber existing values.
 const globalRLTracker = new RateLimitTracker();
 
-// Pending user-question answers waiting for the active instance to reach
-// idle. If the user picks an option while a turn is still running, the
-// answer prompt would race with the in-flight stream — claude's stdin can
-// accept queued messages but the timing was producing dropped or misordered
-// responses. We hold the answer here and flush it when status flips to idle.
-const pendingAnswersByInstance = new Map();
-
 // Auto-approve-plan toggle now lives on the server (per Instance) and
 // the flag is mirrored down through `snapshot` / `status` frames into
 // each entry of `state.instances`. The client just renders the synced
@@ -268,22 +261,21 @@ function clearUnread(sessionId) {
   sidebar.setUnread(unreadBySessionId);
 }
 
-function flushPendingAnswers(instanceId) {
-  const queue = pendingAnswersByInstance.get(instanceId);
-  if (!queue || queue.length === 0) return;
-  for (const text of queue) send('prompt', { id: instanceId, text });
-  pendingAnswersByInstance.delete(instanceId);
-}
-
-function sendOrQueuePrompt(instanceId, text) {
-  const inst = state.instances.find(i => i.id === instanceId);
-  if (inst && inst.status === 'idle') {
-    send('prompt', { id: instanceId, text });
-  } else {
-    const queue = pendingAnswersByInstance.get(instanceId) ?? [];
-    queue.push(text);
-    pendingAnswersByInstance.set(instanceId, queue);
-  }
+// Deliver a card answer (AskUserQuestion / plan Approve-Reject) as a normal
+// user turn — the same ungated send the composer uses. Mid-turn is the NORMAL
+// case, not an edge: the can_use_tool deny only ends the turn if the CLI has
+// nothing queued behind it, and in a conductor session a wake callback already
+// sitting in stdin keeps the same turn running while the human reads the card.
+// Instance.prompt() prepends MID_TURN_NOTE as its own content block when the
+// send lands mid-turn, so the answer text stays byte-identical either way.
+//
+// Sent with `ack` so a send that never reaches the CLI — socket reconnecting,
+// instance killed, session mid-rewind — can unlock the card instead of leaving
+// it asserting `sending…` forever. `onFail` re-opens the card; there is no
+// retry or persistence by design.
+function sendCardAnswer(instanceId, text, onFail) {
+  send('prompt', { id: instanceId, text }, { ack: true })
+    .catch((e) => onFail(e?.message || 'send failed'));
 }
 
 // Handles returned by installSessionActions ({ promoteSession, loadSessions,
@@ -329,13 +321,16 @@ const conversationOptions = {
       return t ? t.getDescription(id) : null;
     },
   },
-  onUserQuestionSubmit: ({ questions, answers }) => {
+  onUserQuestionSubmit: ({ toolUseId, questions, answers }) => {
     if (!state.activeId) return;
-    // The CLI auto-errors AskUserQuestion in stream-json mode, so we
-    // deliver the consolidated answers back as a single normal prompt on
-    // the next turn. If a turn is still in flight, queue and flush on
-    // status=idle.
-    sendOrQueuePrompt(state.activeId, formatUserQuestionAnswers(questions, answers));
+    // The CLI auto-errors AskUserQuestion in stream-json mode, so the
+    // consolidated answers go back as a single normal prompt — sent live,
+    // whatever the instance's status (see sendCardAnswer).
+    sendCardAnswer(
+      state.activeId,
+      formatUserQuestionAnswers(questions, answers),
+      (reason) => conversation.userQuestionBlocks.get(toolUseId)?.markSendFailed(reason),
+    );
   },
   onPermissionDecision: ({ toolUseId, allow }) => {
     if (!state.activeId) return;
@@ -344,9 +339,10 @@ const conversationOptions = {
     // the CLI then either runs the tool or auto-denies it.
     send('hook_decision', { id: state.activeId, toolUseId, allow });
   },
-  onPlanDecision: async ({ decision, feedback }) => {
+  onPlanDecision: async ({ toolUseId, decision, feedback }) => {
     if (!state.activeId) return;
     const activeId = state.activeId;
+    const onFail = (reason) => conversation.planBlocks.get(toolUseId)?.markSendFailed(reason);
     if (decision === 'approve') {
       // Switch the instance to bypassPermissions so the model can actually
       // implement what was just approved without every tool call hitting
@@ -358,12 +354,12 @@ const conversationOptions = {
       const text = feedback
         ? `I approve the plan. Additional notes: ${feedback}\n\nPlease proceed with the implementation.`
         : 'I approve the plan. Please proceed with the implementation.';
-      sendOrQueuePrompt(activeId, text);
+      sendCardAnswer(activeId, text, onFail);
     } else {
       const text = feedback
         ? `I'd like to revise the plan. Refinement notes:\n${feedback}`
         : `I'd like to revise the plan. Please refine it.`;
-      sendOrQueuePrompt(activeId, text);
+      sendCardAnswer(activeId, text, onFail);
     }
   },
   onRewind: (userMessageIndex) => sessionActions.rewindActiveSession(userMessageIndex),
@@ -1150,7 +1146,6 @@ installWsRouter({
   sidebar,
   subagentPanel,
   bumpUnread,
-  flushPendingAnswers,
   refreshProjects,
   refreshInstances,
   selectInstance,

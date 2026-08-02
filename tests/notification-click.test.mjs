@@ -54,7 +54,7 @@ function baseDeps({ instances = [], resumeSpy, selectSpy } = {}) {
     lazyController: { init: noop },
     sessionActions: { resumeSession: resumeSpy ?? (async () => {}) },
     composer: {}, sidebar: {}, subagentPanel: {},
-    bumpUnread: noop, flushPendingAnswers: noop,
+    bumpUnread: noop,
     refreshProjects: async () => {}, refreshInstances: async () => {},
     // Mirrors the real selectInstance (app.js): sets state.activeId, same as
     // tests/anchor-autoresume.test.mjs's baseDeps — a spy that only records

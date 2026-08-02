@@ -12,9 +12,10 @@
 // they are enabled via `--permission-prompt-tool stdio` (see Instance.spawn)
 // and gated at the `can_use_tool` control-request layer instead: the
 // orchestrator answers with a `deny` control_response carrying
-// AWAITING_INPUT_MESSAGE, which ends the turn so the existing plan_request /
-// user_question card + approve_plan/reject_plan drive-forward path is
-// unchanged. See Instance._handleStdoutLine.
+// AWAITING_INPUT_MESSAGE, leaving the existing plan_request / user_question card
+// + approve_plan/reject_plan drive-forward path unchanged. The deny does not
+// reliably end the turn — anything already queued in the CLI's stdin keeps it
+// running. See Instance._handleStdoutLine.
 //
 // All inputs are pure JS values — no Instance state involved.
 
