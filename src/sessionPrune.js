@@ -41,6 +41,8 @@
 //      no empty content array) cannot be violated.
 //   5. Sidechain (sub-agent) entries are never pruned — the user wants them
 //      fully readable in the GUI.
+//   6. Some tools are EXEMPT by name: their `tool_use` and the `tool_result`
+//      answering it are copied verbatim in every mode. See isPruneExemptTool.
 
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
@@ -89,6 +91,55 @@ export const PRUNE_STUB_AS_BLOCKS = true;
 // ever seeds it from a transcript, a notebook edit already needs a live Read
 // after ANY resume. Pruning neither causes nor worsens that.)
 const SEEDING_TOOLS = new Set(['Read', 'Write']);
+
+// ── the exemption (invariant 6) ─────────────────────────────────────────────
+
+// The orchestrator's own MCP server name is pinned to `code-conductor`
+// (src/settings.js buildMcpConfigJSON), so every tool it exposes carries this
+// prefix. `__` is the segment separator, so what follows is `<tool>` for a CORE
+// tool and `<plugin-id>__<tool>` for a plugin-forwarded one.
+export const CONDUCTOR_MCP_PREFIX = 'mcp__code-conductor__';
+
+// The two core conductor tools that stay PRUNABLE. Their results are bulk file /
+// command output — precisely what Prune exists to shed — where every other core
+// tool's payload is orchestration record. Hardcoded rather than configurable:
+// which of the two a tool is, is a property of the tool, not a user preference.
+export const PRUNABLE_CONDUCTOR_MCP_TOOLS = new Set([
+  `${CONDUCTOR_MCP_PREFIX}project_read`,
+  `${CONDUCTOR_MCP_PREFIX}project_bash`,
+]);
+
+// INVARIANT 6. True for a tool whose `tool_use` — and the `tool_result` answering
+// it — must be copied VERBATIM in every mode, at any cut.
+//
+//   AskUserQuestion: the question card is rebuilt entirely from
+//   `input.questions` on replay (transcript.js), and the answer is recovered by
+//   STRING-MATCHING the question text and option labels against the user echo
+//   that follows (public/userQuestionAnswers.js, driven from
+//   public/conversation.js). Squeezing either side leaves the human with an
+//   unreadable question and silently drops the answer off the card.
+//
+//   Core conductor MCP calls: the orchestration record — what was spawned,
+//   approved, merged, filed. Exempt as a NAMESPACE so a core tool added later is
+//   exempt by default, minus PRUNABLE_CONDUCTOR_MCP_TOOLS.
+//
+// Matching the prefix alone is NOT enough. What remains after the prefix must
+// also contain no further `__`: a plugin-forwarded tool carries one
+// (`…__code-kanban__file_task`, or a third-party `…__acme-tools__run`) and its
+// payload is ordinary bulk
+// output that stays prunable by default. The separator tested is `__`, not `_`,
+// which is what keeps a core tool whose own name contains a single underscore —
+// `spawn_instance`, `merge_worktree` — on the exempt side. Testing for `__` and
+// not for a first-party plugin naming habit (`code-*`) is deliberate: a
+// third-party plugin id must classify the same way.
+export function isPruneExemptTool(name) {
+  if (typeof name !== 'string') return false;
+  if (name === 'AskUserQuestion') return true;
+  if (!name.startsWith(CONDUCTOR_MCP_PREFIX)) return false;
+  const rest = name.slice(CONDUCTOR_MCP_PREFIX.length);
+  if (!rest || rest.includes('__')) return false;   // plugin-namespaced ⇒ prunable
+  return !PRUNABLE_CONDUCTOR_MCP_TOOLS.has(name);
+}
 
 // Truncate mode: string values in a tool input longer than this keep their first
 // PRUNE_INPUT_MAX characters. Chosen so a typical Edit's old_string/new_string
@@ -174,12 +225,17 @@ function pruneBlock(block, { inCut, pruneThinking, exemptThinking, toolNames, in
   } else if (!inCut) {
     return none;
   } else if (block.type === 'tool_result') {
+    // Invariant 6 — an exempt tool's result rides along with its tool_use. An
+    // ORPHANED result (no tool_use in context, so no name) stays prunable.
+    const toolName = toolNames.get(block.tool_use_id);
+    if (isPruneExemptTool(toolName)) return none;
     next = {
       ...block,
-      content: stubToolResultContent(block.content, toolNames.get(block.tool_use_id)),
+      content: stubToolResultContent(block.content, toolName),
     };
     category = 'toolOutputs';
   } else if (block.type === 'tool_use') {
+    if (isPruneExemptTool(block.name)) return none;   // invariant 6
     next = { ...block, input: squeezeInput(block.input, inputMode) };
     category = 'toolInputs';
   } else {

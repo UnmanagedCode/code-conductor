@@ -379,3 +379,222 @@ test('the cut is capped so the newest turn always survives', async () => {
     );
   });
 });
+
+// ── invariant 6: exempt tools ───────────────────────────────────────────────
+//
+// AskUserQuestion and the CORE conductor MCP namespace are copied verbatim; the
+// two bulk-output carve-outs, plugin-namespaced tools and foreign MCP servers
+// stay prunable. Every payload below is `bigText`-sized so a "prunable"
+// assertion can never pass because the never-inflate skip fired.
+
+const LONG_Q = 'Which approach should I take? ' + 'q'.repeat(4000);
+const LONG_DESC = 'd'.repeat(4000);
+
+// One assistant tool_use + the user tool_result answering it.
+function callPair(tag, name, input) {
+  return [
+    { type: 'assistant', uuid: `a_${tag}`, sessionId: 'old', message: { id: `m_${tag}`, role: 'assistant', content: [
+      { type: 'tool_use', id: `t_${tag}`, name, input },
+    ] } },
+    { type: 'user', uuid: `r_${tag}`, sessionId: 'old', toolUseResult: 'ok', message: { role: 'user', content: [
+      { type: 'tool_result', tool_use_id: `t_${tag}`, content: bigText },
+    ] } },
+  ];
+}
+
+// Turn 0 holds one call pair per tool class; turn 1 is the verbatim newest turn.
+function exemptScenario() {
+  return [
+    { type: 'user', uuid: 'u1', sessionId: 'old', message: { role: 'user', content: [{ type: 'text', text: 'first' }] } },
+    ...callPair('uq', 'AskUserQuestion', { questions: [
+      { question: LONG_Q, header: 'Approach', multiSelect: false,
+        options: [{ label: 'Rewrite', description: LONG_DESC }, { label: 'Patch', description: LONG_DESC }] },
+    ] }),
+    ...callPair('core', 'mcp__code-conductor__spawn_instance', { prompt: bigText, project: 'demo' }),
+    // A HYPOTHETICAL core tool, named to share its tail with the real plugin
+    // tool below — a prefix-only match cannot tell these two apart, so they are
+    // asserted against each other in ONE prune run.
+    ...callPair('tail', 'mcp__code-conductor__file_task', { description: bigText }),
+    ...callPair('plug', 'mcp__code-conductor__code-kanban__file_task', { description: bigText }),
+    // A plugin id that does NOT start with `code-`. Every first-party plugin
+    // does, so a fixture of only those cannot tell the `__` discriminator apart
+    // from a `code-` one — and a third-party plugin would then be exempted, its
+    // bulk output copied verbatim into every pruned session.
+    ...callPair('thirdparty', 'mcp__code-conductor__acme-tools__run', { script: bigText }),
+    ...callPair('read', 'mcp__code-conductor__project_read', { path: 'src/a.js', pattern: bigText }),
+    ...callPair('bash', 'mcp__code-conductor__project_bash', { command: bigText }),
+    ...callPair('other', 'mcp__otherserver__do_thing', { payload: bigText }),
+    { type: 'user', uuid: 'u2', sessionId: 'old', message: { role: 'user', content: [{ type: 'text', text: 'second' }] } },
+    { type: 'assistant', uuid: 'a_done', sessionId: 'old', message: { id: 'm_done', role: 'assistant', content: [
+      { type: 'text', text: 'done' },
+    ] } },
+  ];
+}
+
+const STUBBED_RESULT = '[pruned: 3.9 KB]';
+
+// Assert a tool input value was genuinely REPLACED BY A STUB — not merely
+// "different from the original". Each mode has one exact shape.
+function assertStubbedInput(value, inputMode, label) {
+  if (inputMode === 'minimal') {
+    assert.equal(value, STUBBED_RESULT, `${label}: expected a minimal-mode size marker`);
+  } else {
+    assert.match(value, /^x{500}… \[\+3500 chars pruned\]$/, `${label}: expected a truncate-mode cut`);
+  }
+}
+
+async function pruneExemptFixture(inputMode) {
+  const { pruneSessionToNewId } = await import('../src/sessionPrune.js');
+  const { dir, sid } = await seed(exemptScenario());
+  const { newSessionId, saved } = await pruneSessionToNewId({
+    cwd: CWD, sessionId: sid, cutTurnIndex: 1, pruneThinking: true, inputMode,
+  });
+  const byUuid = Object.fromEntries((await readOut(dir, newSessionId)).map(o => [o.uuid, o]));
+  const use = (tag) => byUuid[`a_${tag}`].message.content[0];
+  const result = (tag) => byUuid[`r_${tag}`].message.content[0].content;
+  // The fixture must never be vacuously all-exempt: something real is pruned in
+  // every run, on both axes.
+  assert.ok(saved.toolInputs > 0 && saved.toolOutputs > 0,
+    `nothing was pruned at all (${inputMode}) — the fixture proves nothing: ${JSON.stringify(saved)}`);
+  return { use, result, saved };
+}
+
+test('prune copies an AskUserQuestion tool_use verbatim', async () => {
+  // The question card is rebuilt from input.questions on replay, and the answer
+  // is recovered by string-matching the question text + option labels against the
+  // following user echo. Squeeze either and the human is left with an unreadable
+  // question and no answer on the card.
+  for (const inputMode of ['truncate', 'minimal']) {
+    await withStore(async () => {
+      const { use } = await pruneExemptFixture(inputMode);
+      const q = use('uq').input.questions[0];
+      assert.equal(q.question, LONG_Q, `question text was squeezed (${inputMode})`);
+      assert.equal(q.header, 'Approach');
+      assert.equal(q.options[0].label, 'Rewrite');
+      assert.equal(q.options[0].description, LONG_DESC, `option description was squeezed (${inputMode})`);
+      assert.equal(q.options[1].description, LONG_DESC);
+    });
+  }
+});
+
+test('prune copies an AskUserQuestion tool_result verbatim', async () => {
+  // Reached via the tool_use_id → name map, so this fails independently of the
+  // tool_use guard above.
+  for (const inputMode of ['truncate', 'minimal']) {
+    await withStore(async () => {
+      const { result } = await pruneExemptFixture(inputMode);
+      assert.equal(result('uq'), bigText, `AskUserQuestion result was stubbed (${inputMode})`);
+    });
+  }
+});
+
+test('prune copies core conductor MCP calls verbatim', async () => {
+  // The orchestration record. Exempt as a NAMESPACE, so `spawn_instance` — whose
+  // own name contains an underscore — must not be mistaken for a plugin call.
+  for (const inputMode of ['truncate', 'minimal']) {
+    await withStore(async () => {
+      const { use, result } = await pruneExemptFixture(inputMode);
+      assert.equal(use('core').input.prompt, bigText, `core tool_use squeezed (${inputMode})`);
+      assert.equal(use('core').input.project, 'demo');
+      assert.equal(result('core'), bigText, `core tool_result stubbed (${inputMode})`);
+    });
+  }
+});
+
+test('prune stubs a plugin-namespaced call while the same-tail core call survives', async () => {
+  // THE naive-startsWith catcher. `mcp__code-conductor__code-kanban__file_task`
+  // and `mcp__code-conductor__file_task` share a prefix AND a tail; only the
+  // segment count separates them, and both are pruned in the SAME run.
+  for (const inputMode of ['truncate', 'minimal']) {
+    await withStore(async () => {
+      const { use, result } = await pruneExemptFixture(inputMode);
+      assertStubbedInput(use('plug').input.description, inputMode, `plugin tool_use (${inputMode})`);
+      assert.equal(result('plug'), STUBBED_RESULT, `plugin tool_result survived (${inputMode})`);
+      assert.equal(use('tail').input.description, bigText, `core tool_use squeezed (${inputMode})`);
+      assert.equal(result('tail'), bigText, `core tool_result stubbed (${inputMode})`);
+      // A third-party plugin id — no `code-` in it. Pins the discriminator as
+      // the `__` segment itself, not the first-party `code-*` naming habit.
+      assertStubbedInput(use('thirdparty').input.script, inputMode, `third-party plugin tool_use (${inputMode})`);
+      assert.equal(result('thirdparty'), STUBBED_RESULT, `third-party plugin tool_result survived (${inputMode})`);
+    });
+  }
+});
+
+test('prune stubs project_read and project_bash despite the core namespace', async () => {
+  // The deliberate carve-outs: bulk file / command output is exactly what Prune
+  // exists to shed. Fails the moment PRUNABLE_CONDUCTOR_MCP_TOOLS stops applying.
+  for (const inputMode of ['truncate', 'minimal']) {
+    await withStore(async () => {
+      const { use, result } = await pruneExemptFixture(inputMode);
+      assertStubbedInput(use('read').input.pattern, inputMode, `project_read input (${inputMode})`);
+      assert.equal(use('read').input.path, 'src/a.js', 'short scalars still pass through');
+      assert.equal(result('read'), STUBBED_RESULT, `project_read result survived (${inputMode})`);
+      assertStubbedInput(use('bash').input.command, inputMode, `project_bash input (${inputMode})`);
+      assert.equal(result('bash'), STUBBED_RESULT, `project_bash result survived (${inputMode})`);
+    });
+  }
+});
+
+test('prune stubs a foreign MCP server unchanged', async () => {
+  // The exemption is anchored to `mcp__code-conductor__`, not to `mcp__`.
+  for (const inputMode of ['truncate', 'minimal']) {
+    await withStore(async () => {
+      const { use, result } = await pruneExemptFixture(inputMode);
+      assertStubbedInput(use('other').input.payload, inputMode, `foreign tool_use (${inputMode})`);
+      assert.equal(result('other'), STUBBED_RESULT, `foreign tool_result survived (${inputMode})`);
+    });
+  }
+});
+
+test('the savings preview accounts for the exemption too', async () => {
+  // The exemption must live in the shared pruneBlock, not in the transform loop:
+  // bolted onto one side, the dialog would promise savings the rewrite never
+  // delivers. Exempt blocks still count toward the per-turn DENOMINATOR — they
+  // remain in the model's context.
+  await withStore(async () => {
+    const { analyzeSessionForPrune, pruneSessionToNewId } = await import('../src/sessionPrune.js');
+    const { sid } = await seed(exemptScenario());
+    const analysis = await analyzeSessionForPrune({ cwd: CWD, sessionId: sid });
+
+    for (const inputMode of ['truncate', 'minimal']) {
+      for (let cut = 0; cut <= analysis.turnCount - 1; cut++) {
+        const { saved } = await pruneSessionToNewId({
+          cwd: CWD, sessionId: sid, cutTurnIndex: cut, pruneThinking: false, inputMode,
+        });
+        const prefix = analysis.turns.slice(0, cut);
+        assert.deepEqual(saved, {
+          thinking: 0,
+          toolInputs: prefix.reduce((a, t) => a + (inputMode === 'minimal' ? t.toolInputMinimal : t.toolInputTruncatable), 0),
+          toolOutputs: prefix.reduce((a, t) => a + t.toolOutput, 0),
+        }, `preview drifted from the transform (cut=${cut}, ${inputMode})`);
+      }
+    }
+    const t0 = analysis.turns[0];
+    assert.ok(t0.total > t0.toolOutput + t0.toolInputMinimal,
+      'exempt blocks must stay in the denominator — they are still in context');
+  });
+});
+
+test('isPruneExemptTool draws the line at the segment boundary', async () => {
+  const { isPruneExemptTool, PRUNABLE_CONDUCTOR_MCP_TOOLS } = await import('../src/sessionPrune.js');
+  for (const name of [
+    'AskUserQuestion',
+    'mcp__code-conductor__spawn_instance',
+    'mcp__code-conductor__merge_worktree',
+    'mcp__code-conductor__some_future_tool',
+  ]) assert.equal(isPruneExemptTool(name), true, `${name} should be exempt`);
+  for (const name of [
+    'mcp__code-conductor__project_read',
+    'mcp__code-conductor__project_bash',
+    'mcp__code-conductor__code-kanban__file_task',
+    'mcp__code-conductor__code-hub__start_app',
+    // Third-party plugin ids: no `code-` prefix, so these pin the `__` segment
+    // as the discriminator rather than the first-party naming convention.
+    'mcp__code-conductor__acme-tools__run',
+    'mcp__code-conductor__zzz__go',
+    'mcp__code-conductor__',
+    'mcp__otherserver__do_thing',
+    'Read', 'Bash', '', undefined, null,
+  ]) assert.equal(isPruneExemptTool(name), false, `${name} should be prunable`);
+  assert.equal(PRUNABLE_CONDUCTOR_MCP_TOOLS.size, 2, 'the denylist is exactly the two bulk-output tools');
+});

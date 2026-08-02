@@ -77,7 +77,7 @@
               <button id="session-stats-btn" type="button" role="menuitem"
                       title="Cost & timing for this session and the workers it spawned">📊 Statistics</button>
               <button id="prune-session-btn" type="button" role="menuitem"
-                      title="Shrink this session's context by stubbing out old tool payloads and thinking — mechanical, no LLM pass, no token cost">🪒 Prune</button>
+                      title="Shrink this session's context by stubbing out old tool payloads and thinking, keeping questions and orchestration calls intact — mechanical, no LLM pass, no token cost">🪒 Prune</button>
               <button id="mute-btn" type="button" role="menuitem">🔕 Mute</button>
               <button id="kill-btn" type="button" role="menuitem" disabled>Interrupt</button>
               <button id="debug-btn" type="button" role="menuitem" title="Start mirroring CLI stdin/stdout/stderr to .code-conductor/debug/&lt;id&gt;/ for offline inspection">🐛 Debug</button>
@@ -608,7 +608,8 @@
       </div>
       <p class="settings-hint">
         Rewrites a <em>copy</em> of this session with old tool payloads replaced by size stubs.
-        No LLM pass and no token cost. The original session is archived and stays resumable.
+        Questions and orchestration calls are kept intact. No LLM pass and no token cost.
+        The original session is archived and stays resumable.
       </p>
       <label for="pd-cut">Prune the oldest <span id="pd-cut-label">0</span> turns</label>
       <input type="range" id="pd-cut" min="0" max="0" step="1" value="0" />
