@@ -6,8 +6,9 @@
 // round-trips. A turn longer than the window now SPLITS across ~limit-sized
 // pages (no whole-turn extension, no TURN_SNAP_MULT backstop) — the client
 // merges the seam bubbles back into one. Sub-agent groups (whose block parts
-// interleave with the outer turn's) stay whole per chunk via the
-// group-integrity pull, which is the sole guarantee for nested blocks.
+// interleave with the outer turn's) stay whole per chunk via the group-boundary
+// resolver — the sole guarantee for nested blocks: an available head is pulled
+// into the chunk, and a group whose head is absent has its children pushed out.
 
 import { test, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
@@ -108,12 +109,14 @@ function assertPageIntegrity(events, label) {
   const heads = new Set();
   for (let i = 0; i < events.length; i++) {
     const ev = events[i];
+    // Registered BEFORE the child check: a sub-agent tool head is itself a
+    // child of its outer group, and must still satisfy its own children.
+    if ((ev.kind === 'tool_use_start' || ev.kind === 'tool_use') && ev.toolUseId) heads.add(ev.toolUseId);
     if (ev.parentToolUseId) {
       assert.ok(heads.has(ev.parentToolUseId),
         `${label}: child event #${i} (${ev.kind}) has no head ${ev.parentToolUseId} in-page`);
       continue;
     }
-    if ((ev.kind === 'tool_use_start' || ev.kind === 'tool_use') && ev.toolUseId) heads.add(ev.toolUseId);
     const key = `${ev.msgId}:${ev.blockIdx}`;
     switch (ev.kind) {
       case 'user_echo': case 'turn_end': open.clear(); pending.clear(); break;
@@ -209,6 +212,81 @@ test('snapshotTail opens on a quiescent point; an in-window boundary still snaps
   } finally {
     if (prevTail === undefined) delete process.env.ORCH_SNAPSHOT_TAIL;
     else process.env.ORCH_SNAPSHOT_TAIL = prevTail;
+  }
+});
+
+test('snapshotTail preserves the safe suffix after a headless/surviving overlap', async () => {
+  const prevTail = process.env.ORCH_SNAPSHOT_TAIL;
+  process.env.ORCH_SNAPSHOT_TAIL = '2';
+  try {
+    const inst = await bootIdle('tailoverlap');
+    inst._emitUi({ kind: 'tool_use', msgId: 'mB', blockIdx: 0,
+      toolUseId: 'B', name: 'Read', input: {}, parentToolUseId: 'A' });
+    inst._emitUi({ kind: 'assistant_message', msgId: 'mA', parentToolUseId: 'A',
+      message: { id: 'mA', content: [{ type: 'text', text: 'outer child' }] } });
+    inst._emitUi({ kind: 'assistant_message', msgId: 'mB', parentToolUseId: 'B',
+      message: { id: 'mB', content: [{ type: 'text', text: 'inner child' }] } });
+    inst._emitUi({ kind: 'system', subtype: 'safe-tail' });
+
+    const snap = inst.snapshotTail();
+    assert.deepEqual(snap.map(e => e.subtype), ['safe-tail']);
+    assertPageIntegrity(snap, 'overlap tail');
+  } finally {
+    if (prevTail === undefined) delete process.env.ORCH_SNAPSHOT_TAIL;
+    else process.env.ORCH_SNAPSHOT_TAIL = prevTail;
+  }
+});
+
+test('backward paging over a headless/surviving overlap stays whole at every small limit', async () => {
+  // Turn 1 is the shape that used to oscillate: children of a group whose head
+  // never arrived (GONE — the evicted-head case) interleaved with a surviving
+  // group's, so the two constraints pull the cut in opposite directions.
+  // Turn 2 is a healthy nested group. Every page must be self-contained, and
+  // the damaged region must not take the healthy one down with it.
+  const inst = await bootIdle('pageoverlap');
+
+  inst._emitUi({ kind: 'user_echo', text: 'turn one' });
+  inst._emitUi({ kind: 'tool_use', msgId: 'mH1', blockIdx: 0, toolUseId: 'A1', name: 'Task', input: {} });
+  for (let i = 0; i < 3; i++) {
+    inst._emitUi({ kind: 'text_delta', msgId: 'ms1', blockIdx: 0, text: `a${i}`, parentToolUseId: 'A1' });
+    inst._emitUi({ kind: 'text_delta', msgId: 'msG', blockIdx: 0, text: `g${i}`, parentToolUseId: 'GONE' });
+  }
+  inst._emitUi({ kind: 'tool_result', toolUseId: 'A1', content: 'done', isError: false });
+  inst._emitUi({ kind: 'turn_end', subtype: 'success' });
+
+  inst._emitUi({ kind: 'user_echo', text: 'turn two' });
+  inst._emitUi({ kind: 'tool_use_start', msgId: 'mH', blockIdx: 0, toolUseId: 'A', name: 'Task' });
+  inst._emitUi({ kind: 'tool_use', msgId: 'mH', blockIdx: 0, toolUseId: 'A', name: 'Task', input: {} });
+  // B is a head AND a child of A — the nested-head shape.
+  inst._emitUi({ kind: 'tool_use', msgId: 'mB', blockIdx: 0, toolUseId: 'B',
+    name: 'Read', input: {}, parentToolUseId: 'A' });
+  for (let i = 0; i < 4; i++) {
+    inst._emitUi({ kind: 'text_delta', msgId: 'msA', blockIdx: 0, text: `a${i}`, parentToolUseId: 'A' });
+    inst._emitUi({ kind: 'text_delta', msgId: 'msB', blockIdx: 0, text: `b${i}`, parentToolUseId: 'B' });
+  }
+  inst._emitUi({ kind: 'tool_result', toolUseId: 'B', content: 'ok', isError: false, parentToolUseId: 'A' });
+  inst._emitUi({ kind: 'tool_result', toolUseId: 'A', content: 'done', isError: false });
+  inst._emitUi({ kind: 'turn_end', subtype: 'success' });
+
+  for (const limit of [3, 5, 7]) {
+    const pages = await pageAllPages(ctx, inst.id, { limit });
+    assert.ok(pages.length > 0, `limit=${limit}: at least one page`);
+    for (let p = 0; p < pages.length; p++) {
+      assertPageIntegrity(pages[p], `limit=${limit} page[${p}]`);
+    }
+    const all = pages.flat();
+    // A headless group is unreachable by design, and because its children
+    // interleave with A1's, the merged constraint legitimately takes turn 1's
+    // group with it — the only cuts satisfying both lie past the whole span.
+    assert.equal(all.filter(e => e.parentToolUseId === 'GONE').length, 0,
+      `limit=${limit}: headless children are excluded, never orphaned`);
+    // Turn 2 is untouched by turn 1's damage: head + every child reachable.
+    assert.ok(all.some(e => e.toolUseId === 'A' && e.kind === 'tool_use'),
+      `limit=${limit}: surviving outer head A is reachable`);
+    assert.equal(all.filter(e => e.parentToolUseId === 'A' && e.kind === 'text_delta').length, 4,
+      `limit=${limit}: every direct child of A is reachable`);
+    assert.equal(all.filter(e => e.parentToolUseId === 'B' && e.kind === 'text_delta').length, 4,
+      `limit=${limit}: every child of the nested surviving head B is reachable`);
   }
 });
 

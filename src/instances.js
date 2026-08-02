@@ -684,9 +684,10 @@ export class Instance extends EventEmitter {
   // span) is the whole ring, same as the old whole-turn extension. The
   // helper also enforces sub-agent group integrity — an in-tail child pulls
   // its Task head (and thus the whole group so far) into the tail, which is
-  // what keeps NESTED blocks whole; an evicted head advances the start past
-  // its children (they are served later via lazy paging alongside their
-  // head). INVARIANT (see EventLog.toArray): a still-open thinking_delta slot in
+  // what keeps NESTED blocks whole; a head that is not in the array at all
+  // advances the start past every child of that group, since an orphaned
+  // child cannot be rendered (lazy paging reunites them only on a page that
+  // holds the head too). INVARIANT (see EventLog.toArray): a still-open thinking_delta slot in
   // the returned slice keeps growing its `.text` in place until its block closes
   // — safe to serialize async, only unsafe to re-read a slot expecting byte-stable
   // text or to page/merge by array position rather than `_seq`.

@@ -5,11 +5,17 @@
 // A cut index i is quiescent when no outer block is mid-stream and every
 // outer tool_use has its tool_result; outer user_echo/turn_end force-reset;
 // sub-agent (parentToolUseId) events are scan-opaque — their wholeness comes
-// from the group-integrity pull, exercised here too.
+// from the group-boundary resolver (available head pulled in, absent head's
+// children pushed past), exercised here too.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { snapStartToQuiescent, firstQuiescentAtOrAfter } from '../src/parser.js';
+import { Worker } from 'node:worker_threads';
+import {
+  snapStartToGroupBoundary,
+  snapStartToQuiescent,
+  firstQuiescentAtOrAfter,
+} from '../src/parser.js';
 
 // --- terse event builders --------------------------------------------------
 let msgN = 0;
@@ -29,17 +35,23 @@ const child = (ev, pid) => ({ ...ev, parentToolUseId: pid });
 
 // Invariant checker: window [s, end) must contain only whole outer blocks,
 // fully-resolved outer tool spans (unless force-reset by a later echo /
-// turn_end inside the window), and no child event without its head.
+// turn_end inside the window), and no child event without its head. The head
+// check is ORDER-AWARE on purpose — a child may not precede its own head in
+// the window, since the renderer nests children under an already-built head.
 function assertWindowIntegrity(arr, s, end, label) {
   const open = new Set(); const pending = new Set(); const heads = new Set();
   for (let i = s; i < end; i++) {
     const ev = arr[i];
+    // Registered BEFORE the child check: a sub-agent tool head is itself a
+    // child of its outer group, and must still satisfy its own children.
+    if (ev.toolUseId && (ev.kind === 'tool_use_start' || ev.kind === 'tool_use')) {
+      heads.add(ev.toolUseId);
+    }
     if (ev.parentToolUseId) {
       assert.ok(heads.has(ev.parentToolUseId),
         `${label}: child at ${i} (parent ${ev.parentToolUseId}) has no head in [${s},${end})`);
       continue;
     }
-    if ((ev.kind === 'tool_use_start' || ev.kind === 'tool_use') && ev.toolUseId) heads.add(ev.toolUseId);
     switch (ev.kind) {
       case 'user_echo': case 'turn_end': open.clear(); pending.clear(); break;
       case 'text_delta': open.add(`${ev.msgId}:${ev.blockIdx}:text`); break;
@@ -66,6 +78,243 @@ function assertWindowIntegrity(arr, s, end, label) {
 }
 
 // --- fixtures ---------------------------------------------------------------
+
+function productionOverlapFixture() {
+  const arr = Array.from({ length: 1390 }, () => ({ kind: 'system', subtype: 'status' }));
+  // Production ordering: nested tool heads are themselves children of outer
+  // Agent groups. Some outer heads have fallen out of the available array,
+  // while several inner heads remain and their child ranges overlap.
+  arr[359] = child(tu('survive-a', 'sa', 0, 'Read'), 'missing-a');
+  arr[567] = child(tu('survive-b', 'sb', 0, 'Bash'), 'missing-a');
+  arr[767] = child(tu('survive-c', 'sc', 0, 'Grep'), 'missing-b');
+  arr[973] = child(tu('survive-d', 'sd', 0, 'Agent'), 'missing-b');
+  arr[770] = child(asstMsg('ca'), 'survive-a');
+  arr[1249] = child(asstMsg('cc'), 'survive-c');
+  arr[1358] = child(asstMsg('ma'), 'missing-a');
+  arr[1376] = child(asstMsg('cd'), 'survive-d');
+  arr[1380] = child(asstMsg('mb'), 'missing-b');
+  arr[1385] = child(asstMsg('cb'), 'survive-b');
+  arr[1386] = { kind: 'system', subtype: 'safe-tail' };
+  return arr;
+}
+
+async function snapInWorker(arr, start, end, timeoutMs = 2_000) {
+  const parserUrl = new URL('../src/parser.js', import.meta.url).href;
+  const source = `
+    const { parentPort, workerData } = require('node:worker_threads');
+    import(workerData.parserUrl).then(({ snapStartToQuiescent }) => {
+      parentPort.postMessage(snapStartToQuiescent(
+        workerData.arr, workerData.start, workerData.end,
+      ));
+    }).catch((error) => { throw error; });
+  `;
+  const worker = new Worker(source, {
+    eval: true,
+    workerData: { parserUrl, arr, start, end },
+  });
+  try {
+    return await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(
+        `snapStartToQuiescent did not terminate within ${timeoutMs}ms`,
+      )), timeoutMs);
+      worker.once('message', (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      });
+      worker.once('error', (error) => {
+        clearTimeout(timer);
+        reject(error);
+      });
+      worker.once('exit', (code) => {
+        if (code !== 0) {
+          clearTimeout(timer);
+          reject(new Error(`boundary worker exited with code ${code}`));
+        }
+      });
+    });
+  } finally {
+    await worker.terminate();
+  }
+}
+
+// --- group-boundary regressions ----------------------------------------------
+
+test('overlap cycle excludes the headless component but preserves a safe suffix', () => {
+  const arr = [
+    /*0*/ tu('B', 'mB'),
+    /*1*/ child(asstMsg('ca'), 'A'), // A head unavailable
+    /*2*/ child(asstMsg('cb'), 'B'),
+    /*3*/ ({ kind: 'system', subtype: 'safe-tail' }),
+  ];
+  const s = snapStartToGroupBoundary(arr, 1, arr.length);
+  assert.equal(s, 3);
+  assertWindowIntegrity(arr, s, arr.length, 'minimal cycle');
+});
+
+test('overlapping surviving groups resolve to the merged left edge', () => {
+  const arr = [
+    /*0*/ tu('A', 'ma'),
+    /*1*/ ({ kind: 'system', subtype: 'neutral' }),
+    /*2*/ tu('B', 'mb'),
+    /*3*/ ({ kind: 'system', subtype: 'neutral' }),
+    /*4*/ child(asstMsg('ca'), 'A'),
+    /*5*/ child(asstMsg('cb'), 'B'),
+  ];
+  const s = snapStartToGroupBoundary(arr, 3, arr.length);
+  assert.equal(s, 0);
+  assertWindowIntegrity(arr, s, arr.length, 'surviving overlap');
+});
+
+test('multiple headless groups are fully excluded together', () => {
+  const arr = [
+    /*0*/ child(asstMsg('a1'), 'A'),
+    /*1*/ ({ kind: 'system', subtype: 'neutral' }),
+    /*2*/ child(asstMsg('b1'), 'B'),
+    /*3*/ child(asstMsg('a2'), 'A'),
+    /*4*/ ({ kind: 'system', subtype: 'safe-tail' }),
+  ];
+  const s = snapStartToGroupBoundary(arr, 1, arr.length);
+  assert.equal(s, 4);
+  assertWindowIntegrity(arr, s, arr.length, 'multiple headless');
+});
+
+test('finalized tool_use is the latest stream head for its group', () => {
+  const arr = [
+    /*0*/ tuStart('T', 'm1'),
+    /*1*/ tuDelta('T', 'm1'),
+    /*2*/ tu('T', 'm1', 0, 'Read'),
+    /*3*/ child(asstMsg('sub'), 'T'),
+  ];
+  // Live streaming emits tool_use_start before the finalized tool_use. The
+  // finalized event is the nearest recognized head and avoids overextending
+  // the slice back through its input stream.
+  assert.equal(snapStartToGroupBoundary(arr, 3, arr.length), 2);
+});
+
+test('adjacent group intervals merge, so a nested head cannot strand its own parent', () => {
+  const arr = [
+    /*0*/ tu('A', 'm1'),                    // outer head A
+    /*1*/ child(tu('B', 'm2'), 'A'),        // head B — and itself a child of A
+    /*2*/ child(asstMsg('c'), 'B'),
+    /*3*/ ({ kind: 'system', subtype: 'safe-tail' }),
+  ];
+  // A forbids [1,1] and B forbids [2,2]: adjacent, not overlapping. They must
+  // merge into [1,2], so the cut lands at 0 and keeps BOTH heads. Left
+  // unmerged, a cut at 2 would resolve to B's edge (1) and strand A's child.
+  const s = snapStartToGroupBoundary(arr, 2, arr.length);
+  assert.equal(s, 0);
+  assertWindowIntegrity(arr, s, arr.length, 'adjacent merge');
+});
+
+test('a group whose children all sit below the candidate imposes no constraint', () => {
+  const surviving = [
+    /*0*/ tu('A', 'm1'),
+    /*1*/ child(asstMsg('c'), 'A'),
+    /*2*/ ({ kind: 'system', subtype: 'neutral' }),
+    /*3*/ ({ kind: 'system', subtype: 'safe-tail' }),
+  ];
+  assert.equal(snapStartToGroupBoundary(surviving, 2, surviving.length), 2);
+  assert.equal(snapStartToGroupBoundary(surviving, 3, surviving.length), 3);
+
+  // Same for a headless group: past its last child, it constrains nothing.
+  const headless = [
+    /*0*/ child(asstMsg('c'), 'missing'),
+    /*1*/ ({ kind: 'system', subtype: 'neutral' }),
+    /*2*/ ({ kind: 'system', subtype: 'safe-tail' }),
+  ];
+  assert.equal(snapStartToGroupBoundary(headless, 1, headless.length), 1);
+  assert.equal(snapStartToGroupBoundary(headless, 2, headless.length), 2);
+});
+
+test('surviving group with no quiescent cut to its left falls back rightward', () => {
+  const arr = [
+    /*0*/ tDelta('m', 0),                    // opens an outer text block
+    /*1*/ child(asstMsg('sub'), 'missing'),  // headless — forbids [0,1]
+    /*2*/ tu('A', 'm', 0),                   // head A (block still open)
+    /*3*/ tr('A'),
+    /*4*/ tEnd('m', 0),                      // block closes AFTER this applies
+    /*5*/ ({ kind: 'system', subtype: 'neutral' }),
+    /*6*/ child(asstMsg('c'), 'A'),          // A forbids [3,6]
+    /*7*/ ({ kind: 'system', subtype: 'safe-tail' }),
+  ];
+  // 5 is quiescent but sits inside A's surviving interval. Every quiescent cut
+  // below it (only index 0) lies inside the headless component, so the
+  // backward search legitimately fails and the rightward fallback runs.
+  const s = snapStartToQuiescent(arr, 5, arr.length);
+  assert.equal(s, 7, 'excluded forward past the whole group, not to A head at 2');
+  assertWindowIntegrity(arr, s, arr.length, 'rightward fallback');
+});
+
+test('group boundary normalizes edges and preserves ID truthiness semantics', () => {
+  assert.equal(snapStartToGroupBoundary([], -4, 0), 0);
+
+  const headless = [
+    child(asstMsg('sub'), 'missing'),
+    { kind: 'system', subtype: 'safe-tail' },
+  ];
+  assert.equal(snapStartToGroupBoundary(headless, -4, headless.length), 1);
+  assert.equal(snapStartToGroupBoundary(headless, 0, headless.length), 1);
+  assert.equal(snapStartToGroupBoundary(headless, 1, headless.length), 1);
+  assert.equal(snapStartToGroupBoundary(headless, headless.length, headless.length), 2);
+
+  const ignored = [
+    child(asstMsg('empty-parent'), ''),
+    { ...tu('', 'm1'), name: 'Agent' },
+    child(asstMsg('truthy-parent'), 'T'),
+    { kind: 'system', subtype: 'safe-tail' },
+  ];
+  assert.equal(snapStartToGroupBoundary(ignored, 0, ignored.length), 3,
+    'empty parent is ignored and an empty head ID does not satisfy T');
+
+  const arbitraryName = [tu('T', 'm2', 0, 'CustomTool'), child(asstMsg('c'), 'T')];
+  assert.equal(snapStartToGroupBoundary(arbitraryName, 1, arbitraryName.length), 0,
+    'recognized heads are not restricted by tool name');
+});
+
+test('forward headless exclusion is re-snapped to a quiescent outer boundary', () => {
+  const arr = [
+    /*0*/ echo('A'),
+    /*1*/ tDelta('outer'),
+    /*2*/ child(asstMsg('sub'), 'missing'),
+    /*3*/ tDelta('outer'),
+    /*4*/ tEnd('outer'),
+    /*5*/ turnEnd(),
+  ];
+  for (const candidate of [0, 1]) {
+    const s = snapStartToQuiescent(arr, candidate, arr.length);
+    assert.equal(s, 5, `candidate ${candidate}`);
+    assertWindowIntegrity(arr, s, arr.length, `forward quiescence ${candidate}`);
+  }
+});
+
+test('group ownership crosses resetIdx while quiescence treats it as a barrier', () => {
+  const arr = [
+    /*0*/ tu('T', 'm1'),
+    /*1*/ tr('T'),
+    // ---- archive/ring seam ----
+    /*2*/ ({ kind: 'system', subtype: 'ring-head' }),
+    /*3*/ child(asstMsg('sub'), 'T'),
+    /*4*/ ({ kind: 'system', subtype: 'tail' }),
+  ];
+  const s = snapStartToQuiescent(arr, 3, arr.length, { resetIdx: 2 });
+  assert.equal(s, 0);
+  assertWindowIntegrity(arr, s, arr.length, 'cross-seam owner');
+});
+
+test('production-shaped overlap resolves to the exact nonempty safe suffix', () => {
+  const arr = productionOverlapFixture();
+  const s = snapStartToQuiescent(arr, 1000, arr.length);
+  assert.equal(s, 1386);
+  assert.ok(s < arr.length, 'safe retained tail is not discarded');
+  assertWindowIntegrity(arr, s, arr.length, 'production overlap');
+});
+
+test('production-shaped overlap completes within a bounded worker deadline', async () => {
+  const arr = productionOverlapFixture();
+  assert.equal(await snapInWorker(arr, 1000, arr.length), 1386);
+});
+
+// --- quiescent fixtures -------------------------------------------------------
 
 // One turn: thinking, text, a tool round-trip, closing text.
 function roundTripTurn() {

@@ -518,49 +518,88 @@ export function isOuterUserEcho(ev) {
   return ev?.kind === 'user_echo' && !ev.parentToolUseId;
 }
 
-// Snap a window-start index forward/backward so no sub-agent child event in
-// [start, end) is orphaned — i.e. every child's owning tool-call head is also
-// in range. For each orphan: if its head sits below `start`, pull `start` back
-// to include it; if the head is gone entirely (evicted from the ring), advance
-// `start` past all of that group's children so the window stays consistent.
-// Loops because one adjustment can expose another straddling group. Shared by
-// instances.js snapshotTail and eventArchive.js pageInstanceEvents.
-export function snapStartToGroupBoundary(arr, start, end) {
-  if (start <= 0) return start;
-  let changed = true;
-  while (changed) {
-    changed = false;
-    const headIds = new Set();
-    for (let i = start; i < end; i++) {
-      if (arr[i].toolUseId &&
-          (arr[i].kind === 'tool_use_start' || arr[i].kind === 'tool_use')) {
-        headIds.add(arr[i].toolUseId);
-      }
+// A child at index c whose nearest preceding head sits at h forbids cuts
+// h < start <= c: such a suffix includes the child but not its head. A child
+// with no head at or before it forbids every cut through c. Intervals are
+// per-child, not per-group, so a head arriving AFTER one of its own children
+// cannot cover it — the child is pushed out instead of rendered head-less.
+// Merging the integer intervals resolves all overlapping constraints at once
+// instead of oscillating between groups. Each (group, head-generation) opens
+// at most one interval, so the sort stays O(g log g) in practice.
+function groupBoundaryComponents(arr, end) {
+  const intervals = [];
+  const groups = new Map();
+  const stateFor = (id) => {
+    let state = groups.get(id);
+    if (!state) {
+      state = { head: -1, interval: null };
+      groups.set(id, state);
     }
-    for (let i = start; i < end; i++) {
-      const pid = arr[i].parentToolUseId;
-      if (!pid || headIds.has(pid)) continue;
-      headIds.add(pid); // don't re-process this group in the same pass
-      let headIdx = -1;
-      for (let j = start - 1; j >= 0; j--) {
-        if (arr[j].toolUseId === pid &&
-            (arr[j].kind === 'tool_use_start' || arr[j].kind === 'tool_use')) {
-          headIdx = j; break;
-        }
-      }
-      if (headIdx >= 0) {
-        start = headIdx; // head is below — extend backward to include it
+    return state;
+  };
+
+  for (let i = 0; i < end; i++) {
+    const ev = arr[i];
+    if (!ev) continue;
+    if (ev.toolUseId && (ev.kind === 'tool_use_start' || ev.kind === 'tool_use')) {
+      const state = stateFor(ev.toolUseId);
+      state.head = i;
+      state.interval = null; // a new head opens a new generation
+    }
+    if (ev.parentToolUseId) {
+      const state = stateFor(ev.parentToolUseId);
+      if (state.interval) {
+        state.interval.right = i; // same generation — extend to the later child
       } else {
-        // Head is evicted — advance past all children of this group.
-        for (let j = start; j < end; j++) {
-          if (arr[j].parentToolUseId === pid) start = j + 1;
-        }
+        state.interval = {
+          left: state.head >= 0 ? state.head + 1 : 0,
+          right: i,
+          headless: state.head < 0,
+        };
+        intervals.push(state.interval);
       }
-      changed = true;
-      break; // restart with updated start
     }
   }
-  return start;
+  intervals.sort((a, b) => a.left - b.left || a.right - b.right);
+
+  const merged = [];
+  for (const interval of intervals) {
+    const tail = merged[merged.length - 1];
+    if (!tail || interval.left > tail.right + 1) {
+      merged.push({ ...interval });
+      continue;
+    }
+    tail.right = Math.max(tail.right, interval.right);
+    tail.headless ||= interval.headless;
+  }
+  return merged;
+}
+
+function forbiddenComponentAt(components, index) {
+  let lo = 0, hi = components.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (components[mid].left <= index) lo = mid + 1;
+    else hi = mid;
+  }
+  const component = components[lo - 1];
+  return component && index <= component.right ? component : null;
+}
+
+function resolveGroupBoundary(components, start) {
+  const component = forbiddenComponentAt(components, start);
+  if (!component) return start;
+  return component.headless ? component.right + 1 : component.left - 1;
+}
+
+// Snap a window-start index so no sub-agent child event in [start, end) is
+// orphaned. Surviving groups extend backward to their latest recognized head;
+// groups whose head is unavailable are excluded completely. Shared by
+// instances.js snapshotTail and eventArchive.js pageInstanceEvents.
+export function snapStartToGroupBoundary(arr, start, end) {
+  end = Math.max(0, Math.min(end, arr.length));
+  start = Math.max(0, Math.min(start, end));
+  return resolveGroupBoundary(groupBoundaryComponents(arr, end), start);
 }
 
 // --- Quiescent-point chunking ----------------------------------------------
@@ -585,14 +624,18 @@ export function snapStartToGroupBoundary(arr, start, end) {
 // SUB-AGENT events (parentToolUseId != null) are deliberately IGNORED by this
 // scan. Async sub-agents interleave their block PARTS with the outer turn's
 // (and each other's), so nested-block wholeness CANNOT come from a linear
-// quiescence scan — it comes from snapStartToGroupBoundary: any child event
-// in the window pulls the start down to the owning Task head, and because
-// chunks are contiguous slices the pulled chunk then contains the head plus
-// every group event up to its end, while the next-older page ends strictly
-// before the head. One group's events — hence every nested block — are never
-// split across chunks. Do NOT extend this state machine to nested blocks: it
-// would destroy quiescent density across every background-task region while
-// adding nothing the group snap doesn't already guarantee.
+// quiescence scan — it comes from the group-boundary resolver, which moves
+// the cut in EITHER direction. A child whose head is available pulls the
+// start back to that head, so the chunk holds the head plus every group event
+// up to its end and the next-older page ends strictly before the head. A
+// child whose head is NOT available in [0, end) — evicted from the ring, or
+// below the loaded archive — cannot be rendered at all, so the cut is pushed
+// PAST every child of that group instead; those events are unreachable by
+// design rather than served orphaned. Either way one group's events — hence
+// every nested block — are never split across chunks. Do NOT extend this
+// state machine to nested blocks: it would destroy quiescent density across
+// every background-task region while adding nothing the group snap already
+// guarantees.
 
 function blockKey(ev, type) { return `${ev.msgId ?? '?'}:${ev.blockIdx ?? 0}:${type}`; }
 
@@ -677,6 +720,52 @@ function quiesceStart(arr, start, end, resetIdx, allowForward) {
   return best !== -1 ? best : start; // nothing reachable — raw start stands
 }
 
+function collectQuiescentCuts(arr, end, resetIdx) {
+  const cuts = [];
+  let scan = new QuiescenceScan();
+  for (let i = 0; i < end; i++) {
+    if (i === resetIdx) scan = new QuiescenceScan();
+    const fiat = i === resetIdx || isOuterUserEcho(arr[i]);
+    if (fiat || scan.empty) cuts.push(i);
+    scan.apply(arr[i]);
+  }
+  cuts.push(end); // the empty suffix is always a safe final fallback
+  return cuts;
+}
+
+function lowerBound(values, target) {
+  let lo = 0, hi = values.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (values[mid] < target) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+function firstCombinedBoundary(cuts, components, from) {
+  let i = lowerBound(cuts, from);
+  while (i < cuts.length) {
+    const cut = cuts[i];
+    const component = forbiddenComponentAt(components, cut);
+    if (!component) return cut;
+    i = lowerBound(cuts, component.right + 1);
+  }
+  return cuts[cuts.length - 1];
+}
+
+function lastCombinedBoundary(cuts, components, through) {
+  let i = lowerBound(cuts, through + 1) - 1;
+  while (i >= 0) {
+    const cut = cuts[i];
+    const component = forbiddenComponentAt(components, cut);
+    if (!component) return cut;
+    if (component.headless) return -1; // its interval starts at index 0
+    i = lowerBound(cuts, component.left) - 1;
+  }
+  return -1;
+}
+
 // Smallest quiescent index in [from, bound), or -1. Used by EventLog._trim
 // to keep the post-eviction ring head on whole blocks when no turn boundary
 // is in reach. Assumes arr[0] opens on a boundary (true by induction over
@@ -695,33 +784,34 @@ export function firstQuiescentAtOrAfter(arr, from, bound) {
   return -1;
 }
 
-// Snap a window-start index to a quiescent point, then enforce sub-agent
-// group integrity. `resetIdx` marks the archive→ring seam inside a combined
-// array (see eventArchive.js) — quiescent by fiat, opaque to the scan.
+// Snap a window-start index to a cut that is both quiescent and preserves
+// sub-agent group integrity. `resetIdx` marks the archive→ring seam inside a
+// combined array (see eventArchive.js): it resets only quiescence state, while
+// group heads remain visible across the seam.
 //
-// After the quiescent snap, snapStartToGroupBoundary runs. A BACKWARD pull
-// (a child's head below the window — e.g. a background Task from an earlier
-// turn) re-triggers the backward quiescent snap so the window still opens on
-// a whole-block boundary at or below that head; a FORWARD move (head evicted
-// entirely — the archive gap case) is final. Group integrity is unbounded by
-// design (an orphaned child would be silently dropped by the renderer, so
-// the head must be included at any cost) — and it is the SOLE guarantee that
-// nested (sub-agent) blocks are never cut, since the quiescence scan ignores
-// child events (see the header comment above). Shared by instances.js
-// snapshotTail and eventArchive.js pageInstanceEvents.
+// Group constraints are merged before resolution. A surviving-only forbidden
+// component prefers the nearest combined-valid cut on its left (keep the
+// complete group); a component connected to a headless group searches right
+// (exclude every unavailable group). Both searches move monotonically across
+// finite quiescent cuts/components, so they cannot oscillate.
 export function snapStartToQuiescent(arr, start, end, { resetIdx = -1 } = {}) {
+  end = Math.max(0, Math.min(end, arr.length));
+  start = Math.max(0, Math.min(start, end));
+  if (start === end) return end;
+
+  const components = groupBoundaryComponents(arr, end);
   start = quiesceStart(arr, start, end, resetIdx, true);
-  // Fixpoint loop: each backward group pull re-snaps to a quiescent point,
-  // which can expose another straddling group. Backward moves are monotonic
-  // (bounded by index 0); the iteration cap is a defensive net only.
-  for (let iter = 0; iter < 20; iter++) {
-    const snapped = snapStartToGroupBoundary(arr, start, end);
-    if (snapped >= start) return snapped;
-    const re = quiesceStart(arr, snapped, end, resetIdx, false);
-    if (re === snapped) return snapped; // no quiescent point below the pulled-in head
-    start = re;
+  const component = forbiddenComponentAt(components, start);
+  if (!component) return start;
+
+  const cuts = collectQuiescentCuts(arr, end, resetIdx);
+  if (component.headless) {
+    return firstCombinedBoundary(cuts, components, component.right + 1);
   }
-  return snapStartToGroupBoundary(arr, start, end);
+
+  const backward = lastCombinedBoundary(cuts, components, component.left - 1);
+  if (backward >= 0) return backward;
+  return firstCombinedBoundary(cuts, components, component.right + 1);
 }
 
 export default Parser;

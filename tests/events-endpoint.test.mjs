@@ -239,21 +239,22 @@ async function pageAllPages(ctx, id, { limit = 10 } = {}) {
   throw new Error('pageAllPages: cursor never terminated');
 }
 
-// Assert that every child event (parentToolUseId != null) in the array has its
-// owning tool-call head (a tool_use_start or tool_use event with the same
-// toolUseId) present in the same array.
+// Assert that every child event (parentToolUseId != null) in the array is
+// PRECEDED by its owning tool-call head (a tool_use_start or tool_use event
+// with the same toolUseId). Order-aware: the renderer nests a child under an
+// already-built head, so a child ahead of its head is as broken as a missing
+// one. A head is registered before its own child check — a sub-agent tool head
+// is itself a child of its outer group.
 function assertGroupIntegrity(events, label = '') {
   const headIds = new Set();
   for (const ev of events) {
     if (ev.toolUseId && (ev.kind === 'tool_use_start' || ev.kind === 'tool_use')) {
       headIds.add(ev.toolUseId);
     }
-  }
-  for (const ev of events) {
     if (ev.parentToolUseId) {
       assert.ok(headIds.has(ev.parentToolUseId),
         `${label}orphaned child: parentToolUseId=${ev.parentToolUseId} has no ` +
-        `matching head in this set; seqs=[${events.map(e => e._seq).join(',')}]`);
+        `matching head at or before it; seqs=[${events.map(e => e._seq).join(',')}]`);
     }
   }
 }
@@ -315,6 +316,118 @@ test('group integrity: snapshotTail never includes orphaned sub-agent children',
     assertGroupIntegrity(snap, 'snapshot ');
   } finally {    if (prevTail === undefined) delete process.env.ORCH_SNAPSHOT_TAIL;
     else process.env.ORCH_SNAPSHOT_TAIL = prevTail;
+  }
+});
+
+// Page backward capturing each RESPONSE (not just its events), so cursor
+// mechanics can be asserted alongside page contents.
+async function pageResponses(ctx, id, { limit = 10 } = {}) {
+  const responses = [];
+  let before;
+  for (let i = 0; i < 100; i++) {
+    const q = before == null ? `?limit=${limit}` : `?before=${before}&limit=${limit}`;
+    const r = await api(ctx.baseUrl, 'GET', `/api/instances/${id}/events${q}`);
+    assert.equal(r.status, 200);
+    responses.push(r.body);
+    if (!r.body.hasMore) return responses;
+    before = r.body.nextBefore;
+  }
+  throw new Error('pageResponses: cursor never terminated');
+}
+
+test('archive/ring seam: overlapping groups page whole, cursor progresses, no orphans', async () => {
+  const prevCap = process.env.ORCH_EVENT_RING_CAP;
+  process.env.ORCH_EVENT_RING_CAP = '12';
+  try {
+    const sid = 'ffffffff-1111-2222-3333-444444444444';
+    const agentToolUseId = 'toolu_seam_agent';
+    // The Agent head lives ONLY in the jsonl. Trailing turns push it out of
+    // the ring, so on resume it is reconstructed archive-side while the
+    // children emitted below stay ring-side — the head/children split that
+    // makes group ownership have to cross the seam.
+    const plainTurn = (tag) => ([
+      { type: 'user', uuid: `u_${tag}`, message: { role: 'user', content: `prompt ${tag}` } },
+      { type: 'assistant', uuid: `a_${tag}`, message: { id: `m_${tag}`, role: 'assistant', content: [
+        { type: 'text', text: `reply ${tag}` },
+      ] } },
+    ]);
+    const lines = [
+      ...plainTurn('p0'), ...plainTurn('p1'),
+      { type: 'user', uuid: 'u_agent', message: { role: 'user', content: 'run the agent' } },
+      { type: 'assistant', uuid: 'a_agent', message: { id: 'm_agent', role: 'assistant', content: [
+        { type: 'tool_use', id: agentToolUseId, name: 'Agent', input: { description: 'bg' } },
+      ] } },
+      { type: 'user', uuid: 'u_agent_res', message: { role: 'user', content: [
+        { type: 'tool_result', tool_use_id: agentToolUseId, content: 'started', is_error: false },
+      ] } },
+      ...plainTurn('p2'), ...plainTurn('p3'), ...plainTurn('p4'),
+      ...plainTurn('p5'), ...plainTurn('p6'), ...plainTurn('p7'),
+    ];
+    const id = await bootResumed({ ctx, projectName: 'seamgroup', sid, lines });
+    const inst = ctx.instances.get(id);
+    assert.ok(inst.ring.trimmedBefore > 0, 'ring trimmed');
+    assert.ok(!inst.ring.buf.some(e => e.toolUseId === agentToolUseId),
+      'the Agent head really is archive-side, not still in the ring');
+
+    // Ring turn 1: a group whose head is nowhere at all (never emitted).
+    inst._emitUi({ kind: 'user_echo', text: 'headless turn' });
+    for (let i = 0; i < 3; i++) {
+      inst._emitUi({ kind: 'text_delta', msgId: 'msG', blockIdx: 0, text: `g${i}`, parentToolUseId: 'GONE' });
+    }
+    inst._emitUi({ kind: 'turn_end', subtype: 'success' });
+    // Ring turn 2: late children of the ARCHIVE-side Agent head.
+    inst._emitUi({ kind: 'user_echo', text: 'seam turn' });
+    inst._emitUi({ kind: 'text_delta', msgId: 'mz', blockIdx: 0, text: 'outer' });
+    for (let i = 0; i < 3; i++) {
+      inst._emitUi({ kind: 'text_delta', msgId: 'msq', blockIdx: 0, text: `q${i}`,
+        parentToolUseId: agentToolUseId });
+    }
+    inst._emitUi({ kind: 'text_end', msgId: 'mz', blockIdx: 0 });
+    inst._emitUi({ kind: 'turn_end', subtype: 'success' });
+
+    for (const limit of [3, 5, 7]) {
+      const responses = await pageResponses(ctx, id, { limit });
+      assert.ok(responses.length > 0, `limit=${limit}: at least one response`);
+
+      let prevBefore = Infinity;
+      let empties = 0;
+      for (let p = 0; p < responses.length; p++) {
+        const body = responses[p];
+        assertGroupIntegrity(body.events, `limit=${limit} page[${p}] `);
+        if (body.hasMore) {
+          // A window holding ONLY children of a headless group has no servable
+          // cut but `end`, so it legitimately serves an empty page. What must
+          // never happen is such a page stalling the cursor.
+          if (body.events.length === 0) empties++;
+          assert.ok(body.nextBefore < prevBefore,
+            `limit=${limit} page[${p}]: nextBefore must strictly progress ` +
+            `(${body.nextBefore} !< ${prevBefore})`);
+          prevBefore = body.nextBefore;
+        }
+      }
+      assert.ok(empties < responses.length,
+        `limit=${limit}: paging cannot be all-empty (${empties}/${responses.length})`);
+
+      const all = responses.flatMap(b => b.events);
+      assert.equal(all.filter(e => e.parentToolUseId === 'GONE').length, 0,
+        `limit=${limit}: the truly headless group is excluded, never orphaned`);
+      assert.ok(all.some(e => e.toolUseId === agentToolUseId && e.kind === 'tool_use'),
+        `limit=${limit}: the archive-side Agent head is reachable`);
+      // Ring-side children of the archived head are only servable on a page
+      // whose window dips below the ring (`needArchive`, eventArchive.js) —
+      // otherwise the head is not in `combined` and the group reads headless.
+      // Deliberately NOT asserting a count either way: this test pins the
+      // invariant (whatever is served is whole), so it keeps passing if the
+      // archive-reach limitation is later fixed.
+      for (const ev of all.filter(e => e.parentToolUseId === agentToolUseId)) {
+        assert.ok(all.some(h => h.toolUseId === agentToolUseId &&
+          (h.kind === 'tool_use' || h.kind === 'tool_use_start')),
+        `limit=${limit}: a served seam child always has its head served too`);
+      }
+    }
+  } finally {
+    if (prevCap === undefined) delete process.env.ORCH_EVENT_RING_CAP;
+    else process.env.ORCH_EVENT_RING_CAP = prevCap;
   }
 });
 
