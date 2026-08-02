@@ -125,7 +125,8 @@ export const PRUNABLE_CONDUCTOR_MCP_TOOLS = new Set([
 //
 // Matching the prefix alone is NOT enough. What remains after the prefix must
 // also contain no further `__`: a plugin-forwarded tool carries one
-// (`…__code-kanban__run`, `…__acme-tools__run`) and its payload is ordinary bulk
+// (`…__code-kanban__file_task`, or a third-party `…__acme-tools__run`) and its
+// payload is ordinary bulk
 // output that stays prunable by default. The separator tested is `__`, not `_`,
 // which is what keeps a core tool whose own name contains a single underscore —
 // `spawn_instance`, `merge_worktree` — on the exempt side. Testing for `__` and

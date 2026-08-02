@@ -411,8 +411,9 @@ function exemptScenario() {
         options: [{ label: 'Rewrite', description: LONG_DESC }, { label: 'Patch', description: LONG_DESC }] },
     ] }),
     ...callPair('core', 'mcp__code-conductor__spawn_instance', { prompt: bigText, project: 'demo' }),
-    // Same tail as the plugin tool below — a prefix-only match cannot tell these
-    // two apart, so they are asserted against each other in ONE prune run.
+    // A HYPOTHETICAL core tool, named to share its tail with the real plugin
+    // tool below — a prefix-only match cannot tell these two apart, so they are
+    // asserted against each other in ONE prune run.
     ...callPair('tail', 'mcp__code-conductor__file_task', { description: bigText }),
     ...callPair('plug', 'mcp__code-conductor__code-kanban__file_task', { description: bigText }),
     // A plugin id that does NOT start with `code-`. Every first-party plugin
