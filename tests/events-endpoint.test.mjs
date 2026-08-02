@@ -243,11 +243,18 @@ async function pageAllPages(ctx, id, { limit = 10 } = {}) {
 // PRECEDED by its owning tool-call head (a tool_use_start or tool_use event
 // with the same toolUseId). Order-aware: the renderer nests a child under an
 // already-built head, so a child ahead of its head is as broken as a missing
-// one. A head is registered before its own child check — a sub-agent tool head
-// is itself a child of its outer group.
+// one.
 function assertGroupIntegrity(events, label = '') {
   const headIds = new Set();
   for (const ev of events) {
+    // Registered BEFORE this event's own child check, and for child events
+    // too — a sub-agent tool head is ITSELF a child of its outer group, so
+    // skipping heads that carry a parentToolUseId would make a nested head
+    // unable to satisfy its own children. This deliberately WEAKENS the check
+    // (more ids in `headIds` at each assertion): it tolerates "child of B
+    // where B's head is itself a child of A". That shape is legitimate, and
+    // it is not a hole — if A's head were missing, the assertion still fires
+    // on B's own line. Do not "fix" this back to registering only outer heads.
     if (ev.toolUseId && (ev.kind === 'tool_use_start' || ev.kind === 'tool_use')) {
       headIds.add(ev.toolUseId);
     }
@@ -405,25 +412,26 @@ test('archive/ring seam: overlapping groups page whole, cursor progresses, no or
           prevBefore = body.nextBefore;
         }
       }
-      assert.ok(empties < responses.length,
-        `limit=${limit}: paging cannot be all-empty (${empties}/${responses.length})`);
+      // The GONE window has no servable cut but `end`, so it yields exactly
+      // one empty page — the disclosed all-excluded fallback. Pinned in both
+      // directions: the path must be REACHED (else this fixture proves
+      // nothing about it) and must not swallow the whole history.
+      assert.equal(empties, 1,
+        `limit=${limit}: exactly the headless window serves empty (${empties}/${responses.length})`);
 
       const all = responses.flatMap(b => b.events);
       assert.equal(all.filter(e => e.parentToolUseId === 'GONE').length, 0,
         `limit=${limit}: the truly headless group is excluded, never orphaned`);
       assert.ok(all.some(e => e.toolUseId === agentToolUseId && e.kind === 'tool_use'),
         `limit=${limit}: the archive-side Agent head is reachable`);
-      // Ring-side children of the archived head are only servable on a page
-      // whose window dips below the ring (`needArchive`, eventArchive.js) —
-      // otherwise the head is not in `combined` and the group reads headless.
-      // Deliberately NOT asserting a count either way: this test pins the
-      // invariant (whatever is served is whole), so it keeps passing if the
-      // archive-reach limitation is later fixed.
-      for (const ev of all.filter(e => e.parentToolUseId === agentToolUseId)) {
-        assert.ok(all.some(h => h.toolUseId === agentToolUseId &&
-          (h.kind === 'tool_use' || h.kind === 'tool_use_start')),
-        `limit=${limit}: a served seam child always has its head served too`);
-      }
+      // Whether ring-side children of the archived head are served at all is
+      // NOT pinned here: they are servable only on a page whose window dips
+      // below the ring (`needArchive`, eventArchive.js), so today they are
+      // not served. The per-page assertGroupIntegrity above is what carries
+      // the invariant — it holds however many of them get served, so this
+      // test keeps passing once the archive-reach limitation (2026-0037) is
+      // fixed. No per-event assertion here would add anything it doesn't
+      // already check.
     }
   } finally {
     if (prevCap === undefined) delete process.env.ORCH_EVENT_RING_CAP;

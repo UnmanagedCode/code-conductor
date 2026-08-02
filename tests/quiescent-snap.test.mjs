@@ -5,8 +5,8 @@
 // A cut index i is quiescent when no outer block is mid-stream and every
 // outer tool_use has its tool_result; outer user_echo/turn_end force-reset;
 // sub-agent (parentToolUseId) events are scan-opaque — their wholeness comes
-// from the group-boundary resolver (available head pulled in, absent head's
-// children pushed past), exercised here too.
+// from the group-boundary resolver (a head at or before the child is pulled
+// in; a child with no such head is pushed past), exercised here too.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -42,8 +42,14 @@ function assertWindowIntegrity(arr, s, end, label) {
   const open = new Set(); const pending = new Set(); const heads = new Set();
   for (let i = s; i < end; i++) {
     const ev = arr[i];
-    // Registered BEFORE the child check: a sub-agent tool head is itself a
-    // child of its outer group, and must still satisfy its own children.
+    // Registered BEFORE the child check, and for child events too — a
+    // sub-agent tool head is ITSELF a child of its outer group, so skipping
+    // heads that carry a parentToolUseId would make a nested head unable to
+    // satisfy its own children. This deliberately WEAKENS the check (more ids
+    // in `heads` at each assertion): it tolerates "child of B where B's head
+    // is itself a child of A". That shape is legitimate, and it is not a hole
+    // — if A's head were missing, the assertion still fires on B's own line.
+    // Do not "fix" this back to registering only outer heads.
     if (ev.toolUseId && (ev.kind === 'tool_use_start' || ev.kind === 'tool_use')) {
       heads.add(ev.toolUseId);
     }
@@ -98,24 +104,29 @@ function productionOverlapFixture() {
   return arr;
 }
 
-async function snapInWorker(arr, start, end, timeoutMs = 2_000) {
+// Run one snapper against a fixture in a worker under a deadline. An
+// oscillating implementation is a synchronous infinite loop, which would hang
+// the whole test FILE; here it fails on the deadline instead. Use this for any
+// fixture that combines a surviving head with a headless group — that is the
+// shape the old fixpoint cycled on.
+async function snapInWorker(arr, start, end, { fn = 'snapStartToQuiescent', timeoutMs = 2_000 } = {}) {
   const parserUrl = new URL('../src/parser.js', import.meta.url).href;
   const source = `
     const { parentPort, workerData } = require('node:worker_threads');
-    import(workerData.parserUrl).then(({ snapStartToQuiescent }) => {
-      parentPort.postMessage(snapStartToQuiescent(
+    import(workerData.parserUrl).then((mod) => {
+      parentPort.postMessage(mod[workerData.fn](
         workerData.arr, workerData.start, workerData.end,
       ));
     }).catch((error) => { throw error; });
   `;
   const worker = new Worker(source, {
     eval: true,
-    workerData: { parserUrl, arr, start, end },
+    workerData: { parserUrl, arr, start, end, fn },
   });
   try {
     return await new Promise((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error(
-        `snapStartToQuiescent did not terminate within ${timeoutMs}ms`,
+        `${fn} did not terminate within ${timeoutMs}ms`,
       )), timeoutMs);
       worker.once('message', (value) => {
         clearTimeout(timer);
@@ -269,6 +280,61 @@ test('group boundary normalizes edges and preserves ID truthiness semantics', ()
   const arbitraryName = [tu('T', 'm2', 0, 'CustomTool'), child(asstMsg('c'), 'T')];
   assert.equal(snapStartToGroupBoundary(arbitraryName, 1, arbitraryName.length), 0,
     'recognized heads are not restricted by tool name');
+});
+
+test('a tool_use_start with no finalized tool_use still counts as a head', () => {
+  // The live-streaming case where the turn is cut off (or the window ends)
+  // before the finalized tool_use: tool_use_start is the group's ONLY head.
+  // Every other fixture pairs tuStart with a later tu, so without this one,
+  // dropping tool_use_start from head recognition would change no expectation.
+  const arr = [
+    /*0*/ tuStart('T', 'm1'),
+    /*1*/ tuDelta('T', 'm1'),
+    /*2*/ child(asstMsg('sub'), 'T'),
+    /*3*/ ({ kind: 'system', subtype: 'safe-tail' }),
+  ];
+  assert.equal(snapStartToGroupBoundary(arr, 2, arr.length), 0,
+    'pulled back to the tool_use_start, not pushed past the child as headless');
+  assertWindowIntegrity(arr, 0, arr.length, 'tool_use_start-only head');
+
+  // ...and it is a real head, not an accident of the child being last: a
+  // headless group in the same array is still pushed past.
+  const mixed = [
+    /*0*/ tuStart('T', 'm1'),
+    /*1*/ child(asstMsg('sub'), 'T'),
+    /*2*/ child(asstMsg('orphan'), 'GONE'),
+    /*3*/ ({ kind: 'system', subtype: 'safe-tail' }),
+  ];
+  assert.equal(snapStartToGroupBoundary(mixed, 1, mixed.length), 3);
+  assertWindowIntegrity(mixed, 3, mixed.length, 'tool_use_start head vs headless');
+});
+
+test('snapStartToQuiescent returns end for an already-empty window', () => {
+  const arr = [echo('hi'), tDelta('m', 0), tEnd('m', 0)];
+  // start === end: the slice is empty, so it is trivially valid and must be
+  // returned as-is rather than snapped anywhere.
+  assert.equal(snapStartToQuiescent(arr, arr.length, arr.length), 3);
+  assert.equal(snapStartToQuiescent(arr, 1, 1), 1);
+  assert.equal(snapStartToQuiescent([], 0, 0), 0);
+  // Out-of-range start clamps into [0, end] before the emptiness check.
+  assert.equal(snapStartToQuiescent(arr, 99, arr.length), 3);
+});
+
+test('the former-oscillation paging fixture terminates under a deadline', async () => {
+  // The exact array behind quiescent-paging.test.mjs's snapshotTail overlap:
+  // a nested surviving head B (itself a child of a headless A) plus children
+  // of both. The old fixpoint cycled 2 → 0 → 2 → 0 on this, so a
+  // reintroduced loop would HANG that server-backed test rather than fail it.
+  // Guard the same shape here, where the worker deadline can catch it.
+  const arr = [
+    /*0*/ child(tu('B', 'mB', 0, 'Read'), 'A'), // A head unavailable
+    /*1*/ child(asstMsg('ca'), 'A'),
+    /*2*/ child(asstMsg('cb'), 'B'),
+    /*3*/ ({ kind: 'system', subtype: 'safe-tail' }),
+  ];
+  assert.equal(await snapInWorker(arr, 2, arr.length, { fn: 'snapStartToGroupBoundary' }), 3);
+  assert.equal(await snapInWorker(arr, 2, arr.length), 3);
+  assertWindowIntegrity(arr, 3, arr.length, 'paging overlap shape');
 });
 
 test('forward headless exclusion is re-snapped to a quiescent outer boundary', () => {

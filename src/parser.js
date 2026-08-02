@@ -593,9 +593,13 @@ function resolveGroupBoundary(components, start) {
 }
 
 // Snap a window-start index so no sub-agent child event in [start, end) is
-// orphaned. Surviving groups extend backward to their latest recognized head;
-// groups whose head is unavailable are excluded completely. Shared by
-// instances.js snapshotTail and eventArchive.js pageInstanceEvents.
+// orphaned: a child whose head is available pulls the start back to that head,
+// a child with no head at or before it pushes the start past its whole group.
+// NOT on the production path — snapshotTail (instances.js) and
+// pageInstanceEvents (eventArchive.js) both call snapStartToQuiescent, which
+// resolves the same components itself while also honoring quiescence. This
+// export isolates the group resolver for direct unit testing; keep the two
+// in sync by construction (both go through groupBoundaryComponents).
 export function snapStartToGroupBoundary(arr, start, end) {
   end = Math.max(0, Math.min(end, arr.length));
   start = Math.max(0, Math.min(start, end));
@@ -628,10 +632,10 @@ export function snapStartToGroupBoundary(arr, start, end) {
 // the cut in EITHER direction. A child whose head is available pulls the
 // start back to that head, so the chunk holds the head plus every group event
 // up to its end and the next-older page ends strictly before the head. A
-// child whose head is NOT available in [0, end) — evicted from the ring, or
-// below the loaded archive — cannot be rendered at all, so the cut is pushed
-// PAST every child of that group instead; those events are unreachable by
-// design rather than served orphaned. Either way one group's events — hence
+// child with NO head at or before it in [0, end) — head evicted from the
+// ring, below the loaded archive, or simply not yet streamed — cannot be
+// rendered, so the cut is pushed PAST that child instead; those events are
+// unreachable by design rather than served orphaned. Either way one group's events — hence
 // every nested block — are never split across chunks. Do NOT extend this
 // state machine to nested blocks: it would destroy quiescent density across
 // every background-task region while adding nothing the group snap already

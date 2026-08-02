@@ -7,8 +7,8 @@
 // pages (no whole-turn extension, no TURN_SNAP_MULT backstop) — the client
 // merges the seam bubbles back into one. Sub-agent groups (whose block parts
 // interleave with the outer turn's) stay whole per chunk via the group-boundary
-// resolver — the sole guarantee for nested blocks: an available head is pulled
-// into the chunk, and a group whose head is absent has its children pushed out.
+// resolver — the sole guarantee for nested blocks: a head at or before the
+// child is pulled into the chunk, and a child with no such head is pushed out.
 
 import { test, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
@@ -109,8 +109,14 @@ function assertPageIntegrity(events, label) {
   const heads = new Set();
   for (let i = 0; i < events.length; i++) {
     const ev = events[i];
-    // Registered BEFORE the child check: a sub-agent tool head is itself a
-    // child of its outer group, and must still satisfy its own children.
+    // Registered BEFORE the child check, and for child events too — a
+    // sub-agent tool head is ITSELF a child of its outer group, so skipping
+    // heads that carry a parentToolUseId would make a nested head unable to
+    // satisfy its own children. This deliberately WEAKENS the check (more ids
+    // in `heads` at each assertion): it tolerates "child of B where B's head
+    // is itself a child of A". That shape is legitimate, and it is not a hole
+    // — if A's head were missing, the assertion still fires on B's own line.
+    // Do not "fix" this back to registering only outer heads.
     if ((ev.kind === 'tool_use_start' || ev.kind === 'tool_use') && ev.toolUseId) heads.add(ev.toolUseId);
     if (ev.parentToolUseId) {
       assert.ok(heads.has(ev.parentToolUseId),
