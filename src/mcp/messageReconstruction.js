@@ -14,7 +14,7 @@ import { loadPersistedTranscript } from '../transcript.js';
 export const MSG_TEXT_CAP = 32 * 1024;
 // Upper bound on how many trailing on-disk events get_recent_messages
 // reconstructs in its (rare) disk-fallback path, so a multi-MB session jsonl
-// can't make the call pathological. We only need the last ≤50 messages, which
+// can't make the call pathological. We only need the last few messages the `count` cap allows, which
 // fit comfortably in this many events.
 const DISK_REPLAY_TAIL_CAP = 5000;
 

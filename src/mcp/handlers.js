@@ -663,7 +663,7 @@ export async function answerQuestion(
 
 // Tiered drill-down diff for a worktree relative to <baseRef>...HEAD.
 // baseRef defaults to the worktree's recorded baseBranch (the branch it
-// was created from). Three modes keep the tool usable at any size:
+// was created from). Several modes keep the tool usable at any size (see the branches below):
 //   - summary:true  -> a structured per-file stat (never truncated)
 //   - paths:[...]    -> scope the diff (or summary) to specific files
 //   - offset:<line>  -> line-based pagination; each page is <= DIFF_BYTE_CAP
@@ -1242,10 +1242,10 @@ export async function projectStatus({ project, worktree, logLimit = 20 }) {
 
 // Path-traversal-guarded file read. Path is project-relative; absolute
 // paths or `..` segments that escape the project / worktree root are
-// rejected. Caps at maxBytes (default 256 KB) so this stays cheap to
+// rejected. Caps at maxBytes (default per the projectRead param) so this stays cheap to
 // call from an LLM loop. Returns text content with lineCount; binary
 // files are reported as base64 (line params ignored for binary).
-// Optional line params (text only): offset (1-based start line, default 1),
+// Optional line params (text only): offset (1-based start line, default per projectRead),
 // limit (max lines, default: to EOF), lineNumbers (cat-n prefix).
 export async function projectRead({ project, worktree, relativePath,
   maxBytes = 256 * 1024, lineNumbers = false, offset = 1, limit }) {
@@ -1458,7 +1458,7 @@ export async function bashProject({ project, worktree, command, timeout }) {
       clearTimeout(timer);
       const durationMs = Date.now() - start;
       const raw = Buffer.concat(chunks).toString('utf8');
-      const output = capped ? raw + '\n… [truncated at 200 KB]' : raw;
+      const output = capped ? raw + '\n… [truncated at the output cap]' : raw;
       const meta = {
         project, worktree: worktree ?? null, cwd,
         exitCode: timedOut ? null : (code ?? null),
