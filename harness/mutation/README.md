@@ -24,8 +24,7 @@ breaks:
 
 - **A copy is not a git repository.** `code-mutant`'s `copyTree` excludes the top-level `.git` entry.
   In a code-conductor worktree `.git` is a *pointer file*, so the copy has no git linkage at all —
-  `git rev-parse` inside it fails outright. This project *is* a git-orchestration app; 11 test files
-  shell out to `git`. The concrete casualty is
+  `git rev-parse` inside it fails outright. The concrete casualty is
   `tests/plugins-supervisor.test.mjs::git HEAD is recorded when cwd is a repo, null otherwise`, which
   reads the repo's own HEAD and gets `null` — that single failure is what fails the baseline.
 - **Copy mode also defeats the store-isolation backstop.** `tests/safeStoreRoot.mjs` derives
