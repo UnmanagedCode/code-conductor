@@ -257,12 +257,8 @@ export class Parser {
               planPath: null,
             });
           }
-          // Track Skill invocations so the isSynthetic content-injection user
-          // message that follows can be identified and titled — see
-          // _handleUser for why isSynthetic alone isn't a reliable signal.
-          if (block.name === 'Skill') {
-            this._pendingSkillLoads.push({ toolUseId: block.toolUseId, skill: input?.skill ?? null });
-          }
+          // Skill invocations are NOT registered here — _handleAssistant is
+          // the single registration point. See the note there.
           return out;
         }
         return [];
@@ -278,19 +274,32 @@ export class Parser {
   _handleAssistant(obj) {
     const msg = obj.message ?? {};
     const events = [];
-    // Track Skill invocations arriving on the finals-only path. Sub-agent
-    // turns are forwarded as complete assistant/user envelopes with no
-    // stream_event frames (see the single-writer note in _handleStreamEvent),
-    // so a Skill invoked inside a Task never reaches the content_block_stop
-    // branch and its injection would have nothing to correlate against.
-    // A top-level message arrives BOTH ways — its envelope always precedes
-    // tool execution, so the entry is still pending here and deduping by
-    // tool_use id is enough to avoid a second, orphaned copy.
-    for (const b of Array.isArray(msg.content) ? msg.content : []) {
-      if (b?.type !== 'tool_use' || b.name !== 'Skill') continue;
-      const toolUseId = b.id ?? null;
-      if (toolUseId && this._pendingSkillLoads.some((p) => p.toolUseId === toolUseId)) continue;
-      this._pendingSkillLoads.push({ toolUseId, skill: b.input?.skill ?? null });
+    // THE single registration point for Skill invocations awaiting their
+    // content injection. The `assistant` envelope is a strict superset of the
+    // streaming frames: measured over 12 real stdout captures (12,835 lines,
+    // 4 backends), 356 tool_use ids appeared on both paths and the envelope
+    // arrived first in 356/356; 84 ids arrived finals-only (sub-agent turns
+    // carry no stream_event frames at all — see the single-writer note in
+    // _handleStreamEvent) and 0 arrived streaming-only. So registering here
+    // covers every case, and registering in the content_block_stop branch as
+    // well would only ever double-register: the envelope lands first, so the
+    // entry is still pending when the stop frame arrives.
+    //
+    // Sub-agent tool_uses are deliberately NOT registered. The CLI forwards
+    // sub-agent turns as envelopes tagged with parent_tool_use_id but never
+    // forwards the skill content injection for them (0 `isSynthetic` user
+    // envelopes with a parent_tool_use_id across those same captures; the one
+    // captured sub-agent Skill call goes tool_use -> tool_result -> system and
+    // no injection ever arrives). An entry registered here could therefore
+    // never be consumed by its own injection — it would sit at the head of
+    // the queue and steal the next TOP-LEVEL injection instead. A sub-agent
+    // Skill still folds on replay, where the persisted jsonl does record the
+    // injection (loadSubAgentTranscript, src/transcript.js).
+    if (!obj.parent_tool_use_id) {
+      for (const b of Array.isArray(msg.content) ? msg.content : []) {
+        if (b?.type !== 'tool_use' || b.name !== 'Skill') continue;
+        this._pendingSkillLoads.push({ toolUseId: b.id ?? null, skill: b.input?.skill ?? null });
+      }
     }
     // Slash commands (registered or not) are handled locally by the CLI and
     // come back as a single `assistant` envelope with `model:"<synthetic>"`
@@ -550,8 +559,12 @@ export function attachSkillLoad(events, source, pendingSkillLoads) {
       const [pending] = pendingSkillLoads.splice(idx, 1);
       echo.skillLoad = { skill: pending.skill };
     }
-    // Otherwise: an id that names nothing pending — an injection for some
-    // OTHER tool, not a skill load. Leave the queue alone (no FIFO
+    // Otherwise the id names nothing pending. Not "an injection for another
+    // tool" — all 31 sourceToolUseID lines in the persisted corpus name a
+    // Skill tool_use. It means the entry is gone or was never made: expired
+    // by an intervening real turn, dropped by an erroring tool_result, or its
+    // Skill tool_use sits outside the range being replayed. Either way there
+    // is nothing to correlate with, so leave the queue alone (no FIFO
     // consumption) and don't expire: this isn't a real user turn.
     return events;
   }

@@ -281,6 +281,83 @@ test('loadPersistedTranscript: a queued_command prompt is a real user turn, neve
     'the user\'s own typed prompt must never render as "Loading skill: …"');
 });
 
+test('loadPersistedTranscript: a queued_command prompt expires the pending queue, so a later injection for the interrupted Skill claims nothing', async () => {
+  // The positive half of the call site's purpose. Not tagging the queued
+  // prompt is achievable by doing nothing at all; expiring is the behaviour
+  // that call site exists for, and it is only observable downstream.
+  await seedTranscript([
+    ...queuedPromptDuringSkillLines(),
+    {
+      type: 'user', uuid: 'u2', isMeta: true, sourceToolUseID: 'tu_skill',
+      message: { role: 'user', content: [{ type: 'text', text: '# Keybindings Skill\n\nreference' }] },
+    },
+  ]);
+  const result = await loadPersistedTranscript({ cwd: CWD, sessionId: SID });
+  const echoes = flatEvents(result).filter(ev => ev.kind === 'user_echo');
+  assert.equal(echoes.length, 3);
+  assert.equal(echoes[2].skillLoad, undefined,
+    'the genuine turn boundary expired tu_skill, so its late injection has nothing to correlate with');
+});
+
+test('loadPersistedTranscript: isVisibleInTranscriptOnly marks a line as CLI-injected too, so it does not expire a pending Skill', async () => {
+  // 21 lines in the persisted corpus carry isVisibleInTranscriptOnly WITHOUT
+  // isMeta (compaction continuations). The CLI's own stdout builder maps
+  // isSynthetic = isMeta || isVisibleInTranscriptOnly, so dropping the second
+  // term here would classify those 21 as real user turns and expire a pending
+  // entry that a later injection still needs.
+  await seedTranscript([
+    { type: 'user', uuid: 'u0', message: { role: 'user', content: 'load a skill' } },
+    {
+      type: 'assistant', uuid: 'a0',
+      message: {
+        id: 'm_1', role: 'assistant',
+        content: [{ type: 'tool_use', id: 'tu_skill', name: 'Skill', input: { skill: 'keybindings-help' } }],
+      },
+    },
+    {
+      type: 'user', uuid: 'u1', isVisibleInTranscriptOnly: true,
+      message: { role: 'user', content: [{ type: 'text', text: 'This session is being continued from a previous conversation...' }] },
+    },
+    {
+      type: 'user', uuid: 'u2', isMeta: true, sourceToolUseID: 'tu_skill',
+      message: { role: 'user', content: [{ type: 'text', text: '# Keybindings Skill\n\nreference' }] },
+    },
+  ]);
+  const result = await loadPersistedTranscript({ cwd: CWD, sessionId: SID });
+  const echoes = flatEvents(result).filter(ev => ev.kind === 'user_echo');
+  assert.equal(echoes.length, 3);
+  assert.equal(echoes[1].skillLoad, undefined, 'the continuation line is not itself a skill load');
+  assert.deepEqual(echoes[2].skillLoad, { skill: 'keybindings-help' },
+    'and it did not expire the entry the real injection needs');
+});
+
+test('loadPersistedTranscript: a matched injection consumes its entry, so a repeated sourceToolUseID claims nothing', async () => {
+  await seedTranscript([
+    { type: 'user', uuid: 'u0', message: { role: 'user', content: 'load a skill' } },
+    {
+      type: 'assistant', uuid: 'a0',
+      message: {
+        id: 'm_1', role: 'assistant',
+        content: [{ type: 'tool_use', id: 'tu_skill', name: 'Skill', input: { skill: 'keybindings-help' } }],
+      },
+    },
+    {
+      type: 'user', uuid: 'u1', isMeta: true, sourceToolUseID: 'tu_skill',
+      message: { role: 'user', content: [{ type: 'text', text: '# Keybindings Skill\n\nreference' }] },
+    },
+    // A second line naming the same tool_use. The entry is spent.
+    {
+      type: 'user', uuid: 'u2', isMeta: true, sourceToolUseID: 'tu_skill',
+      message: { role: 'user', content: [{ type: 'text', text: 'trailing injected content for the same tool' }] },
+    },
+  ]);
+  const result = await loadPersistedTranscript({ cwd: CWD, sessionId: SID });
+  const echoes = flatEvents(result).filter(ev => ev.kind === 'user_echo');
+  assert.equal(echoes.length, 3);
+  assert.deepEqual(echoes[1].skillLoad, { skill: 'keybindings-help' });
+  assert.equal(echoes[2].skillLoad, undefined, 'the matched entry was consumed, not just read');
+});
+
 function orphanedSkillSessionLines() {
   return [
     { type: 'user', uuid: 'u0', message: { role: 'user', content: 'what are the default keybindings?' } },
