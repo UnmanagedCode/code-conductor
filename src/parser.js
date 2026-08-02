@@ -30,7 +30,7 @@ export class Parser {
     this.blocks = new Map(); // blockIdx -> { type, accumText, accumJson, toolUseId, name }
     this._lastCost = 0; // tracks cumulative cost to compute per-turn delta
     this._lastApiMs = 0; // tracks cumulative duration_api_ms to compute per-turn delta
-    this._pendingSkillLoads = []; // FIFO of {toolUseId, skill} awaiting their content injection
+    this._pendingSkillLoads = []; // {toolUseId, skill} entries awaiting their content injection
   }
 
   reset() {
@@ -278,6 +278,20 @@ export class Parser {
   _handleAssistant(obj) {
     const msg = obj.message ?? {};
     const events = [];
+    // Track Skill invocations arriving on the finals-only path. Sub-agent
+    // turns are forwarded as complete assistant/user envelopes with no
+    // stream_event frames (see the single-writer note in _handleStreamEvent),
+    // so a Skill invoked inside a Task never reaches the content_block_stop
+    // branch and its injection would have nothing to correlate against.
+    // A top-level message arrives BOTH ways — its envelope always precedes
+    // tool execution, so the entry is still pending here and deduping by
+    // tool_use id is enough to avoid a second, orphaned copy.
+    for (const b of Array.isArray(msg.content) ? msg.content : []) {
+      if (b?.type !== 'tool_use' || b.name !== 'Skill') continue;
+      const toolUseId = b.id ?? null;
+      if (toolUseId && this._pendingSkillLoads.some((p) => p.toolUseId === toolUseId)) continue;
+      this._pendingSkillLoads.push({ toolUseId, skill: b.input?.skill ?? null });
+    }
     // Slash commands (registered or not) are handled locally by the CLI and
     // come back as a single `assistant` envelope with `model:"<synthetic>"`
     // and no preceding stream_event frames. The normal delta-driven render
@@ -321,7 +335,7 @@ export class Parser {
     }
     if (!Array.isArray(content)) return [];
     const events = consolidateUserContent(content);
-    return attachSkillLoad(events, obj.isSynthetic === true, this._pendingSkillLoads);
+    return attachSkillLoad(events, obj, this._pendingSkillLoads);
   }
 
   _handleResult(obj) {
@@ -462,36 +476,63 @@ export function consolidateUserContent(contentBlocks) {
 }
 
 // The CLI marks the Skill-content injection (the SKILL.md dumped back as a
-// plain user message right after a Skill tool_use/tool_result) with
-// `isSynthetic:true` — but it reuses that same flag for unrelated messages
-// (compaction-continuation summaries, Stop-hook feedback), so `isSynthetic`
-// alone isn't a reliable "this is skill content" signal. Only treat it as a
-// skill load when it immediately follows a Skill tool_use nothing else has
-// claimed yet (FIFO — matches the CLI's synchronous
-// tool_use -> tool_result -> content-injection ordering). `pendingSkillLoads`
-// is a per-stream/per-file queue of `{toolUseId, skill}` the caller pushes to
-// when it sees a Skill tool_use. Shared by the live path (Parser._handleUser)
-// and transcript.js replay so live vs replay rendering stays identical.
+// plain user message right after a Skill tool_use/tool_result) as a
+// CLI-injected rather than user-typed message — but it reuses that same mark
+// for unrelated messages (compaction-continuation summaries, Stop-hook
+// feedback), so the mark alone isn't a reliable "this is skill content"
+// signal. `pendingSkillLoads` is a per-stream/per-file queue of
+// `{toolUseId, skill}` the caller pushes to when it sees a Skill tool_use;
+// this correlates an injection back to its invocation. Shared by the live
+// path (Parser._handleUser) and transcript.js replay so live vs replay
+// rendering stays identical.
 //
-// The FIFO has no identity link to the content-injection message (it carries
-// no `tool_use_id`), so a pending entry left over from a Skill invocation
-// whose injection never arrived (the skill errored, or the turn was
-// interrupted) would otherwise sit in the queue indefinitely and could
-// mislabel a later, unrelated isSynthetic message. Two bounds close the
-// realistic causes: (1) an erroring tool_result for the pending entry's
-// toolUseId drops it immediately — no injection is coming; (2) a genuine
-// (non-synthetic) user_echo — a real prompt — clears the whole queue, since
-// the synchronous-ordering guarantee is broken for every still-pending entry
-// once a new real turn begins. This can't close a truly adjacent orphan (no
-// tool_result at all, immediately followed by an unrelated isSynthetic
-// message with no intervening real turn) — there's no signal to distinguish
-// that from a real skill load — but that case is a narrow race rather than
-// the unbounded, anywhere-later-in-the-file risk this closes.
+// The two surfaces name the mark differently AND support different
+// correlation strengths — see skillInjectionMarker. Where only FIFO order is
+// available (stdout), a pending entry left over from a Skill invocation whose
+// injection never arrived (the skill errored, or the turn was interrupted)
+// would otherwise sit in the queue indefinitely and could mislabel a later,
+// unrelated injected message. Two bounds close the realistic causes: (1) an
+// erroring tool_result for the pending entry's toolUseId drops it immediately
+// — no injection is coming; (2) a genuine (non-injected) user_echo — a real
+// prompt — clears the whole queue, since the synchronous-ordering guarantee is
+// broken for every still-pending entry once a new real turn begins. This can't
+// close a truly adjacent orphan (no tool_result at all, immediately followed
+// by an unrelated injected message with no intervening real turn) — there's no
+// signal to distinguish that from a real skill load — but that case is a
+// narrow race rather than the unbounded, anywhere-later-in-the-file risk this
+// closes. Replay, which has identity, is not exposed to any of it.
 export function expireSkillLoads(pendingSkillLoads) {
   if (pendingSkillLoads) pendingSkillLoads.length = 0;
 }
 
-export function attachSkillLoad(events, isSynthetic, pendingSkillLoads) {
+// Normalize a source line into the marker attachSkillLoad reasons about. The
+// CLI names the same fact differently per surface, and the surfaces are NOT
+// interchangeable:
+//   stdout envelope — `isSynthetic` (the CLI builds it as
+//     `isMeta || isVisibleInTranscriptOnly`) and never carries
+//     `sourceToolUseID`, so FIFO order is the only correlation available.
+//   persisted jsonl — `isMeta` / `isVisibleInTranscriptOnly`, and every skill
+//     injection carries `sourceToolUseID`: the id of the Skill tool_use it
+//     belongs to. Exact identity, so the meta lines that are NOT skill
+//     injections (compaction continuations, hook feedback) cannot steal a
+//     pending entry.
+// Deriving both facts here — rather than at each call site — is the point:
+// the replay path testing the stdout field name is what shipped the
+// skill-bubble-only-renders-live bug.
+function skillInjectionMarker(obj) {
+  const persisted = obj?.isMeta === true || obj?.isVisibleInTranscriptOnly === true;
+  const streamed = obj?.isSynthetic === true;
+  return {
+    injected: persisted || streamed,
+    sourceToolUseId: typeof obj?.sourceToolUseID === 'string' ? obj.sourceToolUseID : null,
+    // jsonl-shaped: identity is the only legal correlation on this surface.
+    identityOnly: persisted && !streamed,
+  };
+}
+
+// `source` is the raw line: a stream-json stdout envelope live, a persisted
+// jsonl object on replay.
+export function attachSkillLoad(events, source, pendingSkillLoads) {
   if (!pendingSkillLoads) return events;
   for (const ev of events) {
     if (ev.kind === 'tool_result' && ev.isError) {
@@ -501,10 +542,34 @@ export function attachSkillLoad(events, isSynthetic, pendingSkillLoads) {
   }
   const echo = events.find((e) => e.kind === 'user_echo');
   if (!echo) return events;
-  if (!isSynthetic) {
+  const { injected, sourceToolUseId, identityOnly } = skillInjectionMarker(source);
+  if (sourceToolUseId) {
+    // Exact match: this line names the Skill tool_use it was injected for.
+    const idx = pendingSkillLoads.findIndex((p) => p.toolUseId === sourceToolUseId);
+    if (idx !== -1) {
+      const [pending] = pendingSkillLoads.splice(idx, 1);
+      echo.skillLoad = { skill: pending.skill };
+    }
+    // Otherwise: an id that names nothing pending — an injection for some
+    // OTHER tool, not a skill load. Leave the queue alone (no FIFO
+    // consumption) and don't expire: this isn't a real user turn.
+    return events;
+  }
+  if (identityOnly) {
+    // Distinct from the branch above: a jsonl-shaped injected line with no id
+    // AT ALL — a compaction continuation or hook feedback, since every real
+    // skill injection in a jsonl carries sourceToolUseID. No FIFO fallback
+    // here; on this surface it could only ever mis-stamp. (An id-less skill
+    // injection from some older CLI would simply not fold — same as before
+    // this correlation existed, not a regression.)
+    return events;
+  }
+  if (!injected) {
     expireSkillLoads(pendingSkillLoads);
     return events;
   }
+  // Streamed injection: no identity on this surface, so fall back to the
+  // CLI's synchronous tool_use -> tool_result -> injection ordering.
   if (!pendingSkillLoads.length) return events;
   const pending = pendingSkillLoads.shift();
   echo.skillLoad = { skill: pending.skill };

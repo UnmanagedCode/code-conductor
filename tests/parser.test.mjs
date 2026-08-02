@@ -598,3 +598,75 @@ test('parser: a Skill tool_use interrupted with no tool_result is expired by the
   assert.ok(later);
   assert.equal(later.skillLoad, undefined);
 });
+
+test('parser: a Skill invoked in a live sub-agent turn (finals-only, no stream_event frames) still gets a skillLoad tag', () => {
+  const p = new Parser();
+  // The CLI forwards sub-agent turns as complete assistant/user envelopes
+  // tagged with parent_tool_use_id — it emits NO stream_event frames for them
+  // (see the single-writer note in _handleStreamEvent). So the
+  // content_block_stop branch never runs and the Skill invocation has to be
+  // registered from the assistant envelope itself.
+  p.handleObject({
+    type: 'assistant',
+    parent_tool_use_id: 'tu_agent',
+    message: {
+      id: 'msg_sub', role: 'assistant', type: 'message', model: 'claude-opus-5',
+      content: [{ type: 'tool_use', id: 'tu_sub_skill', name: 'Skill', input: { skill: 'claude-api', args: 'context windows' } }],
+    },
+  });
+  p.handleObject({
+    type: 'user',
+    parent_tool_use_id: 'tu_agent',
+    message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu_sub_skill', content: 'Launching skill: claude-api' }] },
+  });
+  const echo = p.handleObject({
+    type: 'user',
+    parent_tool_use_id: 'tu_agent',
+    isSynthetic: true,
+    message: { role: 'user', content: [{ type: 'text', text: 'Base directory for this skill: /tmp/...\n\n# Building LLM-Powered Applications' }] },
+  }).find(e => e.kind === 'user_echo');
+
+  assert.ok(echo, 'still emits a user_echo');
+  assert.deepEqual(echo.skillLoad, { skill: 'claude-api' });
+  assert.equal(echo.parentToolUseId, 'tu_agent', 'stays routed under the outer Agent block');
+});
+
+test('parser: a top-level Skill arriving via BOTH stream_event and the final assistant envelope is registered once', () => {
+  const p = new Parser();
+  // Top-level turns produce stream_event frames AND a final assistant
+  // envelope for the same message. Registering the Skill from both would
+  // leave a duplicate pending entry behind after the injection consumed one,
+  // and the next unrelated isSynthetic message would inherit it.
+  p.handleObject({ type: 'stream_event', event: { type: 'message_start', message: { id: 'msg_top', role: 'assistant' } } });
+  p.handleObject({
+    type: 'stream_event',
+    event: { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'tu_dup', name: 'Skill', input: {} } },
+  });
+  p.handleObject({
+    type: 'stream_event',
+    event: { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '{"skill":"keybindings-help","args":"x"}' } },
+  });
+  p.handleObject({ type: 'stream_event', event: { type: 'content_block_stop', index: 0 } });
+  p.handleObject({
+    type: 'assistant',
+    message: {
+      id: 'msg_top', role: 'assistant', type: 'message', model: 'claude-opus-5',
+      content: [{ type: 'tool_use', id: 'tu_dup', name: 'Skill', input: { skill: 'keybindings-help', args: 'x' } }],
+    },
+  });
+
+  const first = p.handleObject({
+    type: 'user', isSynthetic: true,
+    message: { role: 'user', content: [{ type: 'text', text: '# Keybindings Skill\n\nreference' }] },
+  }).find(e => e.kind === 'user_echo');
+  assert.deepEqual(first.skillLoad, { skill: 'keybindings-help' });
+
+  // A later unrelated synthetic message: with a duplicate entry left in the
+  // queue this would be mislabeled "Loading skill: keybindings-help".
+  const later = p.handleObject({
+    type: 'user', isSynthetic: true,
+    message: { role: 'user', content: [{ type: 'text', text: 'Stop hook feedback:\n[do the thing]' }] },
+  }).find(e => e.kind === 'user_echo');
+  assert.ok(later);
+  assert.equal(later.skillLoad, undefined, 'no duplicate pending entry survived the first injection');
+});
