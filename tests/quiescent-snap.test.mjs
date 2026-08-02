@@ -297,8 +297,10 @@ test('a tool_use_start with no finalized tool_use still counts as a head', () =>
     'pulled back to the tool_use_start, not pushed past the child as headless');
   assertWindowIntegrity(arr, 0, arr.length, 'tool_use_start-only head');
 
-  // ...and it is a real head, not an accident of the child being last: a
-  // headless group in the same array is still pushed past.
+  // Extra coverage of the merge, NOT of head recognition: this one returns 3
+  // either way (recognized, T forbids [1,1] and merges with GONE's [0,2];
+  // unrecognized, T forbids [0,1] and still merges to [0,2]). The claim above
+  // rests on the first fixture alone.
   const mixed = [
     /*0*/ tuStart('T', 'm1'),
     /*1*/ child(asstMsg('sub'), 'T'),

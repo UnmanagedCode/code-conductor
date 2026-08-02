@@ -594,7 +594,9 @@ function resolveGroupBoundary(components, start) {
 
 // Snap a window-start index so no sub-agent child event in [start, end) is
 // orphaned: a child whose head is available pulls the start back to that head,
-// a child with no head at or before it pushes the start past its whole group.
+// a child with no head at or before it pushes the start past THAT CHILD (and
+// the component it merges into) — not past its whole group, whose later
+// children may still have a head above them and stay servable.
 // NOT on the production path — snapshotTail (instances.js) and
 // pageInstanceEvents (eventArchive.js) both call snapStartToQuiescent, which
 // resolves the same components itself while also honoring quiescence. This
@@ -635,11 +637,11 @@ export function snapStartToGroupBoundary(arr, start, end) {
 // child with NO head at or before it in [0, end) — head evicted from the
 // ring, below the loaded archive, or simply not yet streamed — cannot be
 // rendered, so the cut is pushed PAST that child instead; those events are
-// unreachable by design rather than served orphaned. Either way one group's events — hence
-// every nested block — are never split across chunks. Do NOT extend this
-// state machine to nested blocks: it would destroy quiescent density across
-// every background-task region while adding nothing the group snap already
-// guarantees.
+// unreachable by design rather than served orphaned. Either way one group's
+// events — hence every nested block — are never split across chunks. Do
+// NOT extend this state machine to nested blocks: it would destroy quiescent
+// density across every background-task region while adding nothing the group
+// snap already guarantees.
 
 function blockKey(ev, type) { return `${ev.msgId ?? '?'}:${ev.blockIdx ?? 0}:${type}`; }
 

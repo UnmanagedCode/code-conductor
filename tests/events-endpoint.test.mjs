@@ -426,8 +426,10 @@ test('archive/ring seam: overlapping groups page whole, cursor progresses, no or
         `limit=${limit}: the archive-side Agent head is reachable`);
       // Whether ring-side children of the archived head are served at all is
       // NOT pinned here: they are servable only on a page whose window dips
-      // below the ring (`needArchive`, eventArchive.js), so today they are
-      // not served. The per-page assertGroupIntegrity above is what carries
+      // below the ring (`needArchive`, eventArchive.js) — i.e. only when
+      // `child_seq - trimmedBefore < limit`, which no child in THIS fixture
+      // satisfies, though children nearer the ring head would. The per-page
+      // assertGroupIntegrity above is what carries
       // the invariant — it holds however many of them get served, so this
       // test keeps passing once the archive-reach limitation (2026-0037) is
       // fixed. No per-event assertion here would add anything it doesn't
