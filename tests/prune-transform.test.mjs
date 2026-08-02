@@ -415,6 +415,11 @@ function exemptScenario() {
     // two apart, so they are asserted against each other in ONE prune run.
     ...callPair('tail', 'mcp__code-conductor__file_task', { description: bigText }),
     ...callPair('plug', 'mcp__code-conductor__code-kanban__file_task', { description: bigText }),
+    // A plugin id that does NOT start with `code-`. Every first-party plugin
+    // does, so a fixture of only those cannot tell the `__` discriminator apart
+    // from a `code-` one — and a third-party plugin would then be exempted, its
+    // bulk output copied verbatim into every pruned session.
+    ...callPair('thirdparty', 'mcp__code-conductor__acme-tools__run', { script: bigText }),
     ...callPair('read', 'mcp__code-conductor__project_read', { path: 'src/a.js', pattern: bigText }),
     ...callPair('bash', 'mcp__code-conductor__project_bash', { command: bigText }),
     ...callPair('other', 'mcp__otherserver__do_thing', { payload: bigText }),
@@ -506,6 +511,10 @@ test('prune stubs a plugin-namespaced call while the same-tail core call survive
       assert.equal(result('plug'), STUBBED_RESULT, `plugin tool_result survived (${inputMode})`);
       assert.equal(use('tail').input.description, bigText, `core tool_use squeezed (${inputMode})`);
       assert.equal(result('tail'), bigText, `core tool_result stubbed (${inputMode})`);
+      // A third-party plugin id — no `code-` in it. Pins the discriminator as
+      // the `__` segment itself, not the first-party `code-*` naming habit.
+      assertStubbedInput(use('thirdparty').input.script, inputMode, `third-party plugin tool_use (${inputMode})`);
+      assert.equal(result('thirdparty'), STUBBED_RESULT, `third-party plugin tool_result survived (${inputMode})`);
     });
   }
 });
@@ -578,6 +587,10 @@ test('isPruneExemptTool draws the line at the segment boundary', async () => {
     'mcp__code-conductor__project_bash',
     'mcp__code-conductor__code-kanban__file_task',
     'mcp__code-conductor__code-hub__start_app',
+    // Third-party plugin ids: no `code-` prefix, so these pin the `__` segment
+    // as the discriminator rather than the first-party naming convention.
+    'mcp__code-conductor__acme-tools__run',
+    'mcp__code-conductor__zzz__go',
     'mcp__code-conductor__',
     'mcp__otherserver__do_thing',
     'Read', 'Bash', '', undefined, null,

@@ -123,11 +123,14 @@ export const PRUNABLE_CONDUCTOR_MCP_TOOLS = new Set([
 //   approved, merged, filed. Exempt as a NAMESPACE so a core tool added later is
 //   exempt by default, minus PRUNABLE_CONDUCTOR_MCP_TOOLS.
 //
-// The segment count is load-bearing, NOT a plain prefix match: a plugin-forwarded
-// tool (`…__code-kanban__file_task`) carries a further `__`, and plugin payloads
-// are ordinary bulk output that stays prunable by default. Splitting on `__` and
-// not `_` is what keeps a core tool whose own name contains an underscore —
-// `spawn_instance`, `merge_worktree` — on the exempt side.
+// Matching the prefix alone is NOT enough. What remains after the prefix must
+// also contain no further `__`: a plugin-forwarded tool carries one
+// (`…__code-kanban__run`, `…__acme-tools__run`) and its payload is ordinary bulk
+// output that stays prunable by default. The separator tested is `__`, not `_`,
+// which is what keeps a core tool whose own name contains a single underscore —
+// `spawn_instance`, `merge_worktree` — on the exempt side. Testing for `__` and
+// not for a first-party plugin naming habit (`code-*`) is deliberate: a
+// third-party plugin id must classify the same way.
 export function isPruneExemptTool(name) {
   if (typeof name !== 'string') return false;
   if (name === 'AskUserQuestion') return true;
