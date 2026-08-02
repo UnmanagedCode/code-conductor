@@ -14,17 +14,20 @@ The runner is a sibling project, not a dependency. Command syntax below is `muta
 ### 1. `--copy` FAILS THE BASELINE GATE here — never pass it
 
 `/code-mutant:prove` step 6 says "prefer `--copy`". **That does not apply here.** This is not a soft
-preference: `--copy` does not produce degraded verdicts, it produces *no* verdicts. Measured —
-`run --copy` fails the baseline gate (1948 pass / **1 fail**, exit 1 → `GATE_FAILED`, process exit 2)
-and **zero mutants run**.
+preference and not a degraded-verdict tradeoff: in copy mode the **baseline gate fails**, so *zero*
+mutants run and no verdict is interpretable. Measured, `baseline --copy` → `1948/1/13 (p/f/s)`,
+`baseline FAILED`, process **exit 2**. Reproduce in one command:
+`node ../code-mutant/mutate.mjs baseline --copy`.
 
 Use the configured default (`in-place`), or `--in-place` explicitly to override the habit. Why a copy
 breaks:
 
 - **A copy is not a git repository.** `code-mutant`'s `copyTree` excludes the top-level `.git` entry.
   In a code-conductor worktree `.git` is a *pointer file*, so the copy has no git linkage at all —
-  and 11 test files shell out to `git`. This project *is* a git-orchestration app. That is what fails
-  the baseline above.
+  `git rev-parse` inside it fails outright. This project *is* a git-orchestration app; 11 test files
+  shell out to `git`. The concrete casualty is
+  `tests/plugins-supervisor.test.mjs::git HEAD is recorded when cwd is a repo, null otherwise`, which
+  reads the repo's own HEAD and gets `null` — that single failure is what fails the baseline.
 - **Copy mode also defeats the store-isolation backstop.** `tests/safeStoreRoot.mjs` derives
   `REAL_STORE_DIR` **source-relative** (`<repo>/../.code-conductor`). Copy mode relocates the tree to
   `os.tmpdir()/code-mutant-run-*`, so that constant becomes `/tmp/.../.code-conductor` and
