@@ -1087,7 +1087,7 @@ test('spawn_instance: haiku alias resolves to concrete model id', async () => {
   }
 });
 
-test('spawn_instance: sonnet alias resolves to concrete model id with context-window suffix', async () => {
+test('spawn_instance: sonnet alias resolves to the family default at its native window', async () => {
   const prev = process.env.FAKE_CLAUDE_SCENARIO;
   process.env.FAKE_CLAUDE_SCENARIO = SCENARIO_INSTANCE;
   try {
@@ -1097,11 +1097,11 @@ test('spawn_instance: sonnet alias resolves to concrete model id with context-wi
       typeof summary.model === 'string' && summary.model.startsWith('claude-sonnet-'),
       `expected concrete sonnet model id, got: ${summary.model}`,
     );
-    // Default sonnet context window is 1m — verify the [1m] suffix was applied
-    assert.ok(
-      summary.model.endsWith('[1m]'),
-      `expected [1m] suffix on sonnet by default, got: ${summary.model}`,
-    );
+    // The sonnet family default is Sonnet 5, which is natively 1M and so launches
+    // BARE — the `[1m]` tag exists only for Sonnet 4.x, which ships separate
+    // 200k/1M builds. Capacity is reported as a number, not inferred from a suffix.
+    assert.equal(summary.model, 'claude-sonnet-5');
+    assert.equal(summary.contextWindowTokens, 1_000_000);
   } finally {
     if (prev === undefined) delete process.env.FAKE_CLAUDE_SCENARIO;
     else process.env.FAKE_CLAUDE_SCENARIO = prev;

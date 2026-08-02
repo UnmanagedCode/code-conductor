@@ -346,9 +346,14 @@ export async function loadPersistedTranscript({ cwd, sessionId, seqHint = 0 }) {
 
 // Scan the persisted jsonl and return the bare model id from the
 // most-recent `type:"assistant"` line, or null if none found / file
-// missing. The caller (instances.js create) re-derives the context window
-// from the family via canonicalizeModel() — the window is never persisted,
-// so the bare id recorded by the CLI is all we need.
+// missing.
+//
+// The CLI records this id LOSSILY (any `[1m]` build tag and `:tag` variant
+// dropped), so it is a last-resort recovery source only: on a substitution
+// backend the session sidecar's exact id wins, because that string is the
+// registry key. For a `claude` session the bare id is enough — canonicalizeModel
+// re-applies the catalog launch tag, and capacity comes from the catalog rather
+// than from anything persisted here.
 export async function readLastSessionModel({ cwd, sessionId }) {
   if (!cwd || !sessionId) return null;
   const file = path.join(claudeProjectsRoot(), encodeCwd(cwd), `${sessionId}.jsonl`);

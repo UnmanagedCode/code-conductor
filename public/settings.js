@@ -575,7 +575,7 @@ export function installSettings({
     const claudeFamilies = data.claudeFamilies || []; // Claude version catalog (MODEL_FAMILIES)
     const customModels = data.customModels || []; // [{label, model, backend, contextWindow}]
     const ollamaCloudModels = data.ollamaCloudModels || []; // curated presets, `ollama` backend only
-    const tierBackend = data.tierBackend || {}; // {tier: {backend, model, window?}}
+    const tierBackend = data.tierBackend || {}; // {tier: {backend, model}}
     const tierEffort = data.tierEffort || {};   // {tier: level} — the default-effort axis
     const efforts = data.efforts || [];         // effort levels, server-shipped catalog
     // End of the server's precedence chain, shipped in the payload. The one place
@@ -589,7 +589,6 @@ export function installSettings({
     // Flattened Claude version catalog + a label lookup.
     const claudeVersions = claudeFamilies.flatMap(b => b.versions.map(v => ({ ...v, family: b.family })));
     const versionLabel = (id) => claudeVersions.find(v => v.id === id)?.label || id;
-    const isSonnetFixed = (id) => !!claudeVersions.find(v => v.id === id && v.fixedWindow);
     const backendLabel = (id) => backends.find(b => b.id === id)?.label || id;
     const bindingFor = (tier) => tierBackend[tier] || { backend: CLAUDE_BACKEND, model: '' };
     // Models bindable on a backend: its own custom-model rows, plus — for the
@@ -600,16 +599,12 @@ export function installSettings({
     });
     function describeBinding(b) {
       if (backendIdOf(b) !== CLAUDE_BACKEND) return `${backendLabel(backendIdOf(b))} — ${b.model}`;
-      let extra = '';
-      // Per-binding window (Sonnet 4.x only) — this binding's own `window`, not a
-      // shared global, so two Sonnet bindings can show different windows.
-      if (b.model.startsWith('claude-sonnet') && !isSonnetFixed(b.model)) extra = ` — ${b.window === '200k' ? '200k' : '1M'}`;
-      return `${versionLabel(b.model)}${extra}`;
+      return versionLabel(b.model);
     }
 
     // Shared backend + model picker, reused by both tier rows and role custom
     // bindings. `b` is a {backend, model} binding; callbacks fire on a backend
-    // switch (onBackend), a Claude version pick (onClaude(model, window)), or a
+    // switch (onBackend), a Claude version pick (onClaude(model)), or a
     // non-Claude model pick (onModel(model)). The backend list comes from the
     // registry, so a user-added row shows up here with no code change. Returns the
     // two <select> elements so the caller can place them.
@@ -657,33 +652,16 @@ export function installSettings({
           sel.addEventListener('change', () => onModel(sel.value));
         }
       } else {
-        // Claude version list; Sonnet 4.x expands to 200k/1M sub-entries. The
-        // chosen window rides on THIS binding (opt.dataset.window → the binding's
-        // own `window`), not a global — picking one binding's window never moves
-        // another's.
-        const bWindow = b.window === '200k' ? '200k' : '1m';
+        // Claude version list — one option per version. Each model has exactly
+        // one native context window, so there is no sub-choice to offer.
         for (const v of claudeVersions) {
-          if (v.family === 'sonnet' && !v.fixedWindow) {
-            for (const w of ['200k', '1m']) {
-              const opt = document.createElement('option');
-              opt.value = v.id;
-              opt.dataset.window = w;
-              opt.textContent = `${v.label} — ${w === '200k' ? '200k' : '1M'}`;
-              if (v.id === b.model && w === bWindow) opt.selected = true;
-              sel.appendChild(opt);
-            }
-          } else {
-            const opt = document.createElement('option');
-            opt.value = v.id;
-            opt.textContent = v.label;
-            if (v.id === b.model) opt.selected = true;
-            sel.appendChild(opt);
-          }
+          const opt = document.createElement('option');
+          opt.value = v.id;
+          opt.textContent = v.label;
+          if (v.id === b.model) opt.selected = true;
+          sel.appendChild(opt);
         }
-        sel.addEventListener('change', () => {
-          const opt = sel.options[sel.selectedIndex];
-          onClaude(opt.value, opt.dataset.window || null);
-        });
+        sel.addEventListener('change', () => onClaude(sel.value));
       }
       return { backendSel, modelSel: sel };
     }
@@ -763,7 +741,7 @@ export function installSettings({
       // Columns 3 & 4: backend + model selects (shared picker).
       const { backendSel, modelSel } = buildBackendPicker(b, isEnabled, {
         onBackend: (backend) => onPickTierBackend(t.tier, backend),
-        onClaude: (model, window) => onPickClaudeModel(t.tier, model, window),
+        onClaude: (model) => onPickClaudeModel(t.tier, model),
         onModel: (model) => onPickTierModel(t.tier, model),
       });
       backendSel.dataset.tier = t.tier;
@@ -862,7 +840,7 @@ export function installSettings({
         if (isCustom) {
           const { backendSel, modelSel } = buildBackendPicker(rb, true, {
             onBackend: (backend) => onPickRoleBackend(r.role, backend),
-            onClaude: (model, window) => saveRoleBinding(r.role, { backend: CLAUDE_BACKEND, model }, window || undefined),
+            onClaude: (model) => saveRoleBinding(r.role, { backend: CLAUDE_BACKEND, model }),
             onModel: (model) => saveRoleBinding(r.role, { backend: backendIdOf(rb), model }),
           });
           li.appendChild(backendSel);
@@ -908,12 +886,10 @@ export function installSettings({
   }
 
 
-  // Persist a tier binding {kind, model} in one /prefs POST. For a Sonnet 4.x
-  // pick the chosen context window rides ON the binding ({kind,model,window}),
-  // not a sibling global — so it only affects this tier.
-  async function saveTierBinding(tier, backend, window) {
+  // Persist a tier binding {backend, model} in one /prefs POST.
+  async function saveTierBinding(tier, backend) {
     try {
-      const body = { tierBackend: { tier, backend: window ? { ...backend, window } : backend } };
+      const body = { tierBackend: { tier, backend } };
       const r = await fetch('/api/settings/models/prefs', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -990,8 +966,8 @@ export function installSettings({
     return saveTierBinding(tier, { backend: CLAUDE_BACKEND, model: defaultClaudeModel() });
   }
 
-  function onPickClaudeModel(tier, model, window) {
-    return saveTierBinding(tier, { backend: CLAUDE_BACKEND, model }, window || undefined);
+  function onPickClaudeModel(tier, model) {
+    return saveTierBinding(tier, { backend: CLAUDE_BACKEND, model });
   }
 
   function onPickTierModel(tier, model) {
@@ -1008,11 +984,10 @@ export function installSettings({
   }
 
   // Persist a role binding — a tier binding {kind:'tier',tier} or a concrete
-  // {backend, model} — in one /prefs POST. For a Sonnet 4.x custom pick the chosen
-  // window rides ON the binding ({backend,model,window}), not a sibling global.
-  async function saveRoleBinding(role, backend, window) {
+  // {backend, model} — in one /prefs POST.
+  async function saveRoleBinding(role, backend) {
     try {
-      const body = { roleBackend: { role, backend: window ? { ...backend, window } : backend } };
+      const body = { roleBackend: { role, backend } };
       const r = await fetch('/api/settings/models/prefs', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },

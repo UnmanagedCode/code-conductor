@@ -13,6 +13,8 @@ import { fileURLToPath } from 'node:url';
 import { WebSocket } from 'ws';
 import { bootServer, api, waitFor } from './helpers.mjs';
 import { encodeCwd } from '../src/projects.js';
+import { addBackend, addCustomModel } from '../src/appSettings.js';
+import { getSessionBackend } from '../src/sessionBackends.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-resume.json');
@@ -176,5 +178,100 @@ test('fork on a temp session is refused 400', async () => {
 
     const fk = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/fork`, { userMessageIndex: 0 });
     assert.equal(fk.status, 400);
+  } finally { await ctx.close(); }
+});
+
+
+// ── the fork must carry the BACKEND ──────────────────────────────────────
+// forkSessionAtUserMessage copies the jsonl but writes no backend sidecar for
+// the new sessionId, so create()'s sidecar recovery finds nothing. If the fork
+// route omits `backend`, the new instance silently falls back to the identity
+// `claude` backend while keeping the substitution backend's foreign model id —
+// and because that model is non-null, the BACKEND_MODEL_MISSING guard never
+// fires, so it launches a real `claude --model <foreign-id>` against the
+// Anthropic account. Deliberately a USER-DEFINED backend with a `[1m]`-tagged
+// model, so a tag-stripping or `=== 'ollama'` regression also fails here.
+test('fork carries backend + exact model + capacity to the new instance', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO });
+  try {
+    await addBackend({
+      id: 'codex', label: 'Codex',
+      template: 'codexctl run claude --model {model} --', env: [],
+    });
+    await addCustomModel({ label: 'Sol', model: 'gpt-5.6-sol[1m]', backend: 'codex', contextWindow: 1_000_000 });
+
+    const sid = 'fffffff5-2222-3333-4444-555555555555';
+    await seedSession({
+      ctx, projectName: 'forkbackend', sid,
+      lines: [
+        { type: 'user', uuid: 'u1', message: { role: 'user', content: 'first' } },
+        { type: 'assistant', uuid: 'a1', message: { id: 'm1', role: 'assistant', content: [{ type: 'text', text: 'r1' }] } },
+        { type: 'user', uuid: 'u2', message: { role: 'user', content: 'second' } },
+      ],
+    });
+
+    const r = await api(ctx.baseUrl, 'POST', '/api/instances', {
+      project: 'forkbackend', mode: 'bypassPermissions', resume: sid,
+      backend: 'codex', model: 'gpt-5.6-sol[1m]',
+    });
+    assert.equal(r.status, 201);
+    const id = r.body.id;
+    await waitFor(() => ctx.instances.get(id).status === 'idle');
+    assert.equal(r.body.backend, 'codex');
+    assert.equal(r.body.contextWindowTokens, 1_000_000);
+
+    const fk = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/fork`, { userMessageIndex: 1 });
+    assert.equal(fk.status, 201);
+
+    const forked = fk.body.instance;
+    assert.equal(forked.backend, 'codex', 'the fork must not fall back to the real claude backend');
+    assert.equal(forked.model, 'gpt-5.6-sol[1m]', 'the registry key survives the fork byte-exact');
+    assert.equal(forked.contextWindowTokens, 1_000_000);
+
+    // …and it actually launched through the backend's template, not bare claude.
+    const newInst = ctx.instances.get(forked.id);
+    await waitFor(() => newInst.status === 'idle');
+    assert.equal(newInst._spawnArgv[0], 'codexctl',
+      'the forked subprocess must launch from the backend template');
+    assert.ok(newInst._spawnArgv.includes('gpt-5.6-sol[1m]'));
+  } finally { await ctx.close(); }
+});
+
+test('the forked sessionId is recorded in the backend sidecar, so a later cold resume finds it', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO });
+  try {
+    await addBackend({
+      id: 'codex2', label: 'Codex 2',
+      template: 'codexctl run claude --model {model} --', env: [],
+    });
+    await addCustomModel({ label: 'Sol2', model: 'gpt-5.6-sol[1m]', backend: 'codex2', contextWindow: 1_000_000 });
+
+    const sid = 'fffffff6-2222-3333-4444-555555555555';
+    await seedSession({
+      ctx, projectName: 'forksidecar', sid,
+      lines: [
+        { type: 'user', uuid: 'u1', message: { role: 'user', content: 'first' } },
+        { type: 'assistant', uuid: 'a1', message: { id: 'm1', role: 'assistant', content: [{ type: 'text', text: 'r1' }] } },
+        { type: 'user', uuid: 'u2', message: { role: 'user', content: 'second' } },
+      ],
+    });
+    const r = await api(ctx.baseUrl, 'POST', '/api/instances', {
+      project: 'forksidecar', mode: 'bypassPermissions', resume: sid,
+      backend: 'codex2', model: 'gpt-5.6-sol[1m]',
+    });
+    const id = r.body.id;
+    await waitFor(() => ctx.instances.get(id).status === 'idle');
+
+    const fk = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/fork`, { userMessageIndex: 1 });
+    assert.equal(fk.status, 201);
+    const newSid = fk.body.newSessionId;
+    await waitFor(() => ctx.instances.get(fk.body.instance.id)?.status === 'idle');
+
+    // Written by spawn(), which is what makes the fork resumable on its own
+    // later — without it the fork resolves to `claude` on the next cold resume.
+    await waitFor(async () => !!(await getSessionBackend(newSid)));
+    assert.deepEqual(await getSessionBackend(newSid), {
+      backend: 'codex2', model: 'gpt-5.6-sol[1m]', contextWindowTokens: 1_000_000,
+    });
   } finally { await ctx.close(); }
 });

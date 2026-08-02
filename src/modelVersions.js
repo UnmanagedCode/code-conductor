@@ -5,15 +5,19 @@
 // the per-family Settings endpoint — only a (family, id) pair present here
 // may be activated via Settings.
 //
-// `id` is the bare CLI model identifier. Context-window policy is one fixed
-// window per family (no per-spawn choice), except Sonnet, which is
-// per-version: Opus → 1M (bare CLI default); Haiku → 200k (no 1M build);
-// Sonnet 5 has no 200k build, so it's pinned to `[1m]` via the `fixedWindow`
-// flag on its catalog entry below; Sonnet 4.x has both builds and remains
-// user-selectable — the chosen window rides on the individual tier/role
-// binding (`binding.window`), not a global preference.
-// `canonicalizeModel()` below applies that policy and is the single source
-// of truth; the client mirrors it in public/models.js.
+// `id` is the bare CLI model identifier. Every entry declares exactly ONE
+// numeric `contextWindow` (raw tokens) — its native capacity — plus an optional
+// `launchTag`, the suffix the CLI needs to actually get that capacity
+// (Sonnet 4.x ships separate 200k/1M builds, so its 1M capacity is only
+// reachable as `…[1m]`; every other model's native window is the bare id's
+// default). There is no per-spawn window choice and no routing selector: one
+// model, one capacity.
+//
+// `contextWindow` is the authoritative capacity for a `claude`-backend model —
+// read it via claudeContextWindowTokens(), and for a concrete {backend, model}
+// pair via resolveContextWindowTokens() in appSettings.js, which is the single
+// place capacity is resolved. `canonicalizeModel()` below owns the launch-tag
+// half of the policy.
 //
 // This catalog is the `claude` BACKEND's model list (shipped as the
 // `claudeFamilies` payload key); the backend catalog proper is the user-managed
@@ -30,7 +34,7 @@ export const MODEL_FAMILIES = [
     label: 'Fable',
     default: 'claude-fable-5',
     versions: [
-      { id: 'claude-fable-5', label: 'Fable 5' },
+      { id: 'claude-fable-5', label: 'Fable 5', contextWindow: 1_000_000 },
     ],
   },
   {
@@ -38,9 +42,9 @@ export const MODEL_FAMILIES = [
     label: 'Opus',
     default: 'claude-opus-4-8',
     versions: [
-      { id: 'claude-opus-5', label: 'Opus 5' },
-      { id: 'claude-opus-4-8', label: 'Opus 4.8' },
-      { id: 'claude-opus-4-7', label: 'Opus 4.7' },
+      { id: 'claude-opus-5', label: 'Opus 5', contextWindow: 1_000_000 },
+      { id: 'claude-opus-4-8', label: 'Opus 4.8', contextWindow: 1_000_000 },
+      { id: 'claude-opus-4-7', label: 'Opus 4.7', contextWindow: 1_000_000 },
     ],
   },
   {
@@ -48,9 +52,12 @@ export const MODEL_FAMILIES = [
     label: 'Sonnet',
     default: 'claude-sonnet-5',
     versions: [
-      { id: 'claude-sonnet-5', label: 'Sonnet 5', fixedWindow: '1m' },
-      { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6' },
-      { id: 'claude-sonnet-4-5', label: 'Sonnet 4.5' },
+      { id: 'claude-sonnet-5', label: 'Sonnet 5', contextWindow: 1_000_000 },
+      // Sonnet 4.x is the only family with separate 200k/1M builds; its 1M
+      // capacity is reachable only via the `[1m]` tag, so it always launches
+      // tagged.
+      { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6', contextWindow: 1_000_000, launchTag: '[1m]' },
+      { id: 'claude-sonnet-4-5', label: 'Sonnet 4.5', contextWindow: 1_000_000, launchTag: '[1m]' },
     ],
   },
   {
@@ -58,7 +65,7 @@ export const MODEL_FAMILIES = [
     label: 'Haiku',
     default: 'claude-haiku-4-5',
     versions: [
-      { id: 'claude-haiku-4-5', label: 'Haiku 4.5' },
+      { id: 'claude-haiku-4-5', label: 'Haiku 4.5', contextWindow: 200_000 },
     ],
   },
 ];
@@ -165,9 +172,13 @@ export function defaultVersion(family) {
 }
 
 // Infer the Claude family from a bare or suffixed model id, by prefix. Returns
-// null for anything that isn't a Claude id (any other backend's model id
-// included) — which is exactly what makes canonicalizeModel a no-op for
-// non-Claude models, so a tagged id survives resume untouched.
+// null for anything that doesn't LOOK like a Claude id.
+//
+// This is a naming heuristic, not a backend test, and must never be used as
+// one. A substitution backend is free to serve a model whose id happens to
+// start with `claude-`, and conversely a non-Claude id tells you nothing about
+// which registry row serves it. Only the `backend` field decides that — see
+// canonicalizeModel below, which gates on it explicitly.
 export function familyOf(modelId) {
   if (typeof modelId !== 'string') return null;
   if (modelId.startsWith('claude-fable')) return 'fable';
@@ -177,35 +188,44 @@ export function familyOf(modelId) {
   return null;
 }
 
-// Returns the pinned suffix for a specific (family, bare-id) version, if the
-// catalog fixes it (e.g. Sonnet 5 has no 200k build), or undefined if the
-// version defers to the sonnetWindow preference instead.
-function fixedWindowFor(family, id) {
-  const v = MODEL_FAMILIES.find(f => f.family === family)?.versions.find(x => x.id === id);
-  return v?.fixedWindow;
+// Terminal `[1m]`/`[200k]` build tag. Only meaningful on a `claude` model id.
+const LAUNCH_TAG_RE = /\[(200k|1m)\]$/;
+
+// Catalog lookup for a bare Claude version id.
+function claudeVersion(bareId) {
+  for (const f of MODEL_FAMILIES) {
+    const v = f.versions.find(x => x.id === bareId);
+    if (v) return v;
+  }
+  return null;
 }
 
-// Single source of truth for context-window policy. Strips any existing
-// `[200k]`/`[1m]` suffix first so recovered ids normalise cleanly.
-// Opus → 1M bare (CLI default); Haiku → 200k bare (no 1M build). Sonnet's
-// window is per-version: a version can pin `fixedWindow` in the catalog
-// (Sonnet 5 — no 200k build, always `[1m]`) or defer to the `sonnetWindow`
-// preference (Sonnet 4.x — user-selectable via Settings → Models).
-export function canonicalizeModel(modelId, { sonnetWindow = '1m' } = {}) {
+// Native context window (raw tokens) for a `claude`-backend model id, or null
+// when the catalog doesn't know it (an unlisted/future `claude-*` id). Null
+// means "unknown" and must render as unknown — never as a fabricated default.
+// Tolerates a launch tag on the way in.
+export function claudeContextWindowTokens(modelId) {
+  if (typeof modelId !== 'string' || !modelId) return null;
+  const v = claudeVersion(modelId.replace(LAUNCH_TAG_RE, ''));
+  return Number.isFinite(v?.contextWindow) ? v.contextWindow : null;
+}
+
+// Apply the launch-tag half of context-window policy: return the exact model id
+// to put on the CLI's `--model`.
+//
+// `backend` is a REQUIRED positional, and the gate below is the ONLY thing that
+// makes this a no-op for a substitution backend. Do not reintroduce a
+// family/prefix test in its place: a non-Claude model id is an OPAQUE,
+// byte-exact registry key that may legitimately end in `[1m]` or look
+// Claude-shaped, and stripping it desynchronises this.model from the key the
+// registry is stored under — which silently drops the context env vars, breaks
+// `{model}` substitution, and poisons the session sidecar.
+//
+// Omitting the argument yields `undefined !== CLAUDE_BACKEND_ID` → verbatim,
+// i.e. it fails toward preserving the caller's id rather than mangling it.
+export function canonicalizeModel(modelId, backend) {
   if (typeof modelId !== 'string' || !modelId) return modelId;
-  const bare = modelId.replace(/\[(200k|1m)\]$/, '');
-  const family = familyOf(bare);
-  if (family !== 'sonnet') return bare;
-  const window = fixedWindowFor('sonnet', bare) || sonnetWindow;
-  return window === '200k' ? bare : `${bare}[1m]`;
-}
-
-// True if a model id's context window is user-selectable — i.e. a Sonnet
-// version with no catalog-pinned `fixedWindow` (Sonnet 4.x). Used to gate
-// where a per-binding `window` is meaningful: Sonnet 5 (fixedWindow) and every
-// non-Sonnet family ignore any binding window, so we don't persist one there.
-export function sonnetWindowSelectable(id) {
-  if (typeof id !== 'string') return false;
-  const bare = id.replace(/\[(200k|1m)\]$/, '');
-  return familyOf(bare) === 'sonnet' && !fixedWindowFor('sonnet', bare);
+  if (backend !== CLAUDE_BACKEND_ID) return modelId;
+  const bare = modelId.replace(LAUNCH_TAG_RE, '');
+  return `${bare}${claudeVersion(bare)?.launchTag ?? ''}`;
 }

@@ -10,12 +10,12 @@
 // the bare `:cloud` alias, but Mistral Large 3 has no bare alias and stays
 // size-pinned (`:675b-cloud`) — do not "normalize" it.
 //
-// `contextWindow` is the model's native window in raw tokens (round decimals,
-// matching CONTEXT_WINDOWS in public/usage.js). This is the authoritative
-// per-model size: it drives the header context-usage bar (via
-// customContextWindowFor in public/models.js) and both
-// CLAUDE_CODE_AUTO_COMPACT_WINDOW and CLAUDE_CODE_MAX_CONTEXT_TOKENS at spawn
-// time (via contextWindowForModel in src/appSettings.js). MiniMax M3
+// `contextWindow` is the model's native window in raw tokens (round decimals).
+// This is the authoritative per-model size: resolveContextWindowTokens() in
+// src/appSettings.js reads it (via contextWindowForModel) to produce the
+// session's `contextWindowTokens`, which drives the header context-usage bar and
+// both CLAUDE_CODE_AUTO_COMPACT_WINDOW and CLAUDE_CODE_MAX_CONTEXT_TOKENS at
+// spawn time. The client holds no capacity table of its own. MiniMax M3
 // is 1M *max* (only 512k guaranteed-minimum, billed 2× above 512k) — we
 // deliberately advertise the 1M ceiling here.
 export const OLLAMA_CLOUD_MODELS = [

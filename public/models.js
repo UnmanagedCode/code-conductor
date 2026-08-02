@@ -5,10 +5,11 @@
 // id (model = one of that backend's custom models / curated presets). Catalog
 // fetched once at boot, refreshed on Settings changes.
 //
-// Sonnet context-window policy (mirrors canonicalizeModel in
-// src/modelVersions.js): Sonnet 5 is pinned to 1M (fixedWindow); Sonnet 4.x
-// obeys the window on its own binding (`binding.window`, no global); Opus/Fable
-// 1M, Haiku 200k.
+// This module holds NO context-window policy. Every model has exactly one
+// native capacity, resolved server-side from {backend, model} and delivered as
+// the instance summary's `contextWindowTokens`; the launch tag some Claude
+// builds need is applied server-side too (canonicalizeModel). A client mirror
+// of either would be a second source of truth that drifts.
 
 // Pre-fetch fallback version ids (one per family) — only used to seed the
 // default tier bindings before the boot fetch resolves.
@@ -61,7 +62,6 @@ let activeTierEffort = {};
 let activeTierEnabled = { fast: true, balanced: true, powerful: true, frontier: true };
 let activeDefaultSpawnTier = 'powerful';
 let activeTierBackend = { ...DEFAULT_TIER_BACKEND };
-let sonnetFixedWindowByVersion = { 'claude-sonnet-5': '1m' };
 let claudeVersionLabelById = {};
 let tierList = Object.keys(DEFAULT_TIER_BACKEND);
 let tierLabels = { ...DEFAULT_TIER_LABELS };
@@ -85,25 +85,10 @@ export function getCustomModels() { return customModels; }
 export function setCustomModels(list) { customModels = Array.isArray(list) ? list : []; return customModels; }
 export function setOllamaCloudModels(list) { ollamaCloudModels = Array.isArray(list) ? list : []; return ollamaCloudModels; }
 
-// Native context window (raw tokens) for a non-Claude model id, or null when
-// unknown. Custom models win over the curated catalog. Matches the full id OR its
-// bare base name: the inner CLI reports such models bare (`qwen3.5`, dropping the
-// `:cloud` suffix) in system/init + message_start, and the UsageTracker adopts
-// that bare id as the live model — so contextWindowFor() often sees the base
-// name rather than the full id. The curated bases are collision-free.
-export function customContextWindowFor(model) {
-  if (typeof model !== 'string' || !model) return null;
-  const match = (m) => m.model === model || m.model.split(':')[0] === model;
-  const custom = customModels.find(match);
-  if (custom && Number.isFinite(custom.contextWindow)) return custom.contextWindow;
-  const preset = ollamaCloudModels.find(match);
-  if (preset && Number.isFinite(preset.contextWindow)) return preset.contextWindow;
-  return null;
-}
-
 // Infer the Claude family from a model id, by prefix. Mirrors familyOf() in
-// src/modelVersions.js. Returns null for a non-Claude id (another backend's
-// tagged model), which is what makes the window suffix a no-op for them.
+// src/modelVersions.js. A naming heuristic for grouping the Settings picker —
+// never a backend test; only a binding's `backend` field says which registry row
+// serves a model.
 export function familyOf(modelId) {
   if (typeof modelId !== 'string') return null;
   if (modelId.startsWith('claude-fable')) return 'fable';
@@ -118,7 +103,6 @@ export function backendIdOf(binding) {
   return (binding && typeof binding.backend === 'string' && binding.backend) || CLAUDE_BACKEND;
 }
 
-export function isSonnetFixedWindowVersion(id) { return !!sonnetFixedWindowByVersion[id]; }
 // Friendly display name for a Claude version id (e.g. "Opus 4.8"), falling
 // back to the pre-fetch default label, then the raw id itself.
 export function getVersionLabel(id) { return claudeVersionLabelById[id] || DEFAULT_VERSION_LABELS[id] || id; }
@@ -138,25 +122,12 @@ export function getActiveTierEffort(tier) { return activeTierEffort[tier] || def
 export function setActiveTierEffort(map) { activeTierEffort = { ...activeTierEffort, ...(map || {}) }; }
 export function setDefaultEffort(level) { if (level) defaultEffort = level; return defaultEffort; }
 
-// Apply the Sonnet window suffix to a Claude version id from the binding's own
-// `window` ('1m'|'200k', default '1m') — no global. No-op for non-Sonnet and
-// non-Claude ids; fixed-window Sonnet (5) is always [1m] regardless of `window`.
-function applyClaudeWindow(versionId, window) {
-  if (familyOf(versionId) !== 'sonnet') return versionId;
-  if (isSonnetFixedWindowVersion(versionId)) return `${versionId}[1m]`;
-  return window === '200k' ? versionId : `${versionId}[1m]`;
-}
-
 export async function loadModelVersions() {
   try {
     const r = await fetch('/api/settings/models', { cache: 'no-store' });
     if (r.ok) {
       const data = await r.json();
       if (Array.isArray(data.claudeFamilies) && data.claudeFamilies.length) {
-        const sonnetFamily = data.claudeFamilies.find(f => f.family === 'sonnet');
-        sonnetFixedWindowByVersion = Object.fromEntries(
-          (sonnetFamily?.versions || []).filter(v => v.fixedWindow).map(v => [v.id, v.fixedWindow]),
-        );
         claudeVersionLabelById = Object.fromEntries(
           data.claudeFamilies.flatMap(b => b.versions || []).map(v => [v.id, v.label]),
         );
@@ -179,23 +150,21 @@ export async function loadModelVersions() {
   return activeTierBackend;
 }
 
-// Resolve a tier to the spawn args {model, backend}. For 'claude' the model
-// carries the Sonnet window suffix; for any other backend it's the bare model id.
+// Resolve a tier to the spawn args {model, backend} — the binding's ids
+// verbatim. No launch tag is applied here: that is catalog policy, owned by
+// canonicalizeModel() server-side, which sees the authoritative `backend`.
 export function resolveSpawnModel(tier) {
   const b = getActiveTierBackend(tier);
   if (!b || !b.model) return { model: '', backend: CLAUDE_BACKEND };
-  if (backendIdOf(b) !== CLAUDE_BACKEND) return { model: b.model, backend: backendIdOf(b) };
-  return { model: applyClaudeWindow(b.model, b.window), backend: CLAUDE_BACKEND, sonnetWindow: b.window === '200k' ? '200k' : '1m' };
+  return { model: b.model, backend: backendIdOf(b) };
 }
 
 // Resolve a role to the spawn args {model, backend}. A tier binding delegates to
-// resolveSpawnModel (mirrors the server's resolveRoleBackend); a concrete binding
-// resolves like a tier's own {backend,model} (Claude window suffix applied for
-// claude, bare model id otherwise).
+// resolveSpawnModel (mirrors the server's resolveRoleBackend); a concrete
+// binding resolves like a tier's own {backend, model}.
 export function resolveSpawnRole(role) {
   const b = getActiveRoleBinding(role);
   if (b && b.kind === 'tier') return resolveSpawnModel(b.tier);
   if (!b || !b.model) return { model: '', backend: CLAUDE_BACKEND };
-  if (backendIdOf(b) !== CLAUDE_BACKEND) return { model: b.model, backend: backendIdOf(b) };
-  return { model: applyClaudeWindow(b.model, b.window), backend: CLAUDE_BACKEND, sonnetWindow: b.window === '200k' ? '200k' : '1m' };
+  return { model: b.model, backend: backendIdOf(b) };
 }

@@ -1,17 +1,24 @@
 // Sidecar JSON store mapping each session spawned through a SUBSTITUTION
 // backend (a registry row with a launch `template` — see modelVersions.js
-// MANAGED_BACKENDS) to the backend id plus the full model id it was launched
-// with (`deepseek-v4-flash:cloud`). The fields the jsonl can't carry (backend,
-// model, persisted in session-backends.json): which backend ran the session, and
-// the model TAG — the inner CLI records
-// `message.model` bare (tag dropped), so the tagless jsonl value can't rebuild
-// `<template> --model <tag>` on resume. This store is the authority for both.
+// MANAGED_BACKENDS) to the backend id plus the full, EXACT model id it was
+// launched with (`deepseek-v4-flash:cloud`, `gpt-5.6-sol[1m]`). The fields the
+// jsonl can't carry (backend, model, persisted here): which backend ran the
+// session, and the model id in full — the inner CLI records `message.model`
+// lossily (`:tag` and any terminal `[…]` build tag dropped), so the jsonl value
+// can't rebuild `<template> --model <key>` on resume. This store is the
+// authority for both.
+//
+// `contextWindowTokens` is the session's last known capacity, recorded so a
+// resume can still size the ctx bar after the model's custom-model row is
+// DELETED. It is a fallback only — live registry resolution wins whenever it
+// succeeds, so a corrected window takes effect on the next resume.
+//
 // A `null` model means backend-known but model-unknown (a legacy entry, or a
 // mark with no model); resume falls back to the jsonl for those. Sessions on the
 // identity `claude` backend store nothing (absence = 'claude'). Single global
 // file `<store>/session-backends.json`, map-shaped
-// (`{sessions:{sid:{backend,model}}}`); atomic writes + cross-process lock,
-// mirroring `conductedSessions.js`.
+// (`{sessions:{sid:{backend,model,contextWindowTokens?}}}`); atomic writes +
+// cross-process lock, mirroring `conductedSessions.js`.
 
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
@@ -30,7 +37,11 @@ function parseMap(obj) {
   for (const [sid, rec] of Object.entries(sessions)) {
     if (typeof sid !== 'string' || !sid) continue;
     if (!rec || typeof rec !== 'object' || typeof rec.backend !== 'string' || !rec.backend) continue;
-    out.set(sid, { backend: rec.backend, model: typeof rec.model === 'string' && rec.model ? rec.model : null });
+    out.set(sid, {
+      backend: rec.backend,
+      model: typeof rec.model === 'string' && rec.model ? rec.model : null,
+      contextWindowTokens: Number.isFinite(rec.contextWindowTokens) ? rec.contextWindowTokens : null,
+    });
   }
   return out;
 }
@@ -96,19 +107,24 @@ async function writeMap(map) {
   await fs.rename(tmp, file);
 }
 
-// Upsert the session's backend id + tagged launch model. Called on every
-// spawn/resume, so a legacy null-model entry self-heals the first time the
-// session relaunches with a real model. Idempotent: skips the write when the
-// record already matches.
-export function markSessionBackend(sessionId, backend, model = null) {
+// Upsert the session's backend id + exact launch model + last known capacity.
+// Called on every spawn/resume, so a legacy null-model entry self-heals the
+// first time the session relaunches with a real model. Idempotent: skips the
+// write when the record already matches.
+export function markSessionBackend(sessionId, backend, model = null, contextWindowTokens = null) {
   return serialize(async () => {
     if (typeof sessionId !== 'string' || !sessionId) return false;
     if (typeof backend !== 'string' || !backend) return false;
-    const value = { backend, model: typeof model === 'string' && model ? model : null };
+    const value = {
+      backend,
+      model: typeof model === 'string' && model ? model : null,
+      contextWindowTokens: Number.isFinite(contextWindowTokens) ? contextWindowTokens : null,
+    };
     return withLock(backendsFile(), async () => {
       const map = await loadStrict();
       const cur = map.get(sessionId);
-      if (cur && cur.backend === value.backend && cur.model === value.model) return true;
+      if (cur && cur.backend === value.backend && cur.model === value.model
+          && cur.contextWindowTokens === value.contextWindowTokens) return true;
       map.set(sessionId, value);
       await writeMap(map);
       return true;

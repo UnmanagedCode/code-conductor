@@ -563,9 +563,10 @@ const settings = installSettings({
     sessionActions.resumeSession({ projectName: project, worktreeName, sessionId }),
 });
 // Seed the per-tier/per-backend model-version cache the spawn pickers resolve against.
-// headerHandle.update() too: the ctx chip's denominator for a non-Claude model is
-// resolved from this payload's catalogs (customContextWindowFor), so a chip already
-// painted from the WS snapshot is still showing the 200k default until it re-renders.
+// headerHandle.update() too: the header's tier and backend LABELS come from this
+// payload (getTierLabel / getBackendLabel), so a header painted from the WS
+// snapshot shows raw ids until it re-renders. The ctx denominator does NOT come
+// from here — it rides on the instance summary as `contextWindowTokens`.
 loadModelVersions().then(() => {
   spawnHandles.syncTierModelLabels();
   spawnHandles.syncTierVisibility();

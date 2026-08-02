@@ -801,7 +801,10 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
 
     r.post('/instances', async (req, res, next) => {
       try {
-        const { project, resume, mode, effort, tier, role, thinking, model, sonnetWindow, backend, worktree, temp, debug, autoApprovePlan } = req.body ?? {};
+        // No context-window input: capacity is resolved server-side from
+        // {backend, model} (see resolveContextWindowTokens), never accepted
+        // from the client.
+        const { project, resume, mode, effort, tier, role, thinking, model, backend, worktree, temp, debug, autoApprovePlan } = req.body ?? {};
         // UI shortcut: the temp checkbox implies bypassPermissions when no
         // mode is picked (a disposable session is almost always for *doing*,
         // not planning). create() is policy-light and no longer couples
@@ -811,7 +814,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
         // `model`+`backend` from; they exist so create() can resolve THAT row's
         // default effort when `effort` is omitted (resolveSpawnEffort). The client
         // never resolves effort itself — see public/spawnDialog.js.
-        const inst = await instances.create({ project, resume, mode: effectiveMode, effort, tier, role, thinking, model, sonnetWindow, backend, worktree, temp, debug, autoApprovePlan });
+        const inst = await instances.create({ project, resume, mode: effectiveMode, effort, tier, role, thinking, model, backend, worktree, temp, debug, autoApprovePlan });
         res.status(201).json(inst.summary());
       } catch (e) { next(e); }
     });
@@ -926,14 +929,24 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
         }
         const { newSessionId, droppedText } = forked;
         // Spawn the fork as a new instance against the same cwd / worktree.
+        //
+        // `backend` is REQUIRED here, not optional: forkSessionAtUserMessage
+        // copies the jsonl but writes no backend sidecar for the new sessionId,
+        // so create()'s sidecar recovery finds nothing. Omitting it silently
+        // falls back to the identity `claude` backend while inst.model keeps the
+        // substitution backend's foreign model id — and because that model is
+        // non-null, the BACKEND_MODEL_MISSING guard never fires, so the fork
+        // launches a real `claude --model <foreign-id>` against the Anthropic
+        // account. contextWindowTokens rides along as the last-known fallback.
         const newInst = await instances.create({
           project: inst.project,
           resume: newSessionId,
           mode: inst.mode,
           effort: inst.effort,
           thinking: inst.thinking,
+          backend: inst.backend,
           model: inst.model,
-          sonnetWindow: inst.sonnetWindow,
+          contextWindowTokens: inst.contextWindowTokens,
           worktree: inst.worktree?.worktreeName ?? null,
           prefill: droppedText,
         });

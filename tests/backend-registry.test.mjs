@@ -28,11 +28,16 @@ import {
 const CLAUDE_BIN = { command: '/usr/bin/claude', prefixArgs: [] };
 
 // ── modelVersions: Claude-only familyOf + no-regression ─────────────────────
-test('familyOf is Claude-only; non-Claude ids return null (canonicalize no-op)', () => {
+test('familyOf classifies Claude ids by name only; canonicalize is gated on BACKEND', () => {
   assert.equal(familyOf('claude-opus-4-8'), 'opus');
   assert.equal(familyOf('gemma4:cloud'), null);
-  assert.equal(canonicalizeModel('gemma4:cloud'), 'gemma4:cloud');   // id passes through
-  assert.equal(canonicalizeModel('claude-sonnet-5'), 'claude-sonnet-5[1m]');
+  // canonicalize's no-op for a substitution model comes from the `backend`
+  // argument, NOT from familyOf returning null. A Claude-SHAPED id on a
+  // substitution backend is still returned verbatim — going by the name is
+  // exactly the inference that used to truncate registry keys.
+  assert.equal(canonicalizeModel('gemma4:cloud', 'ollama'), 'gemma4:cloud');
+  assert.equal(canonicalizeModel('claude-sonnet-4-6', 'my-proxy'), 'claude-sonnet-4-6');
+  assert.equal(canonicalizeModel('claude-sonnet-5', CLAUDE_BACKEND_ID), 'claude-sonnet-5');
   assert.equal(isKnownClaudeModel('claude-opus-4-8'), true);
   assert.equal(isKnownClaudeModel('gemma4:cloud'), false);
   assert.deepEqual(MANAGED_BACKEND_IDS.slice().sort(), ['claude', 'ollama']);
@@ -446,27 +451,33 @@ describe('backend registry data model', () => {
     assert.equal(await hasSessionBackend('sid-1'), false);
     assert.equal(await getSessionBackend('sid-1'), null);
 
-    await markSessionBackend('sid-1', 'ollama', 'gemma4:cloud');
+    await markSessionBackend('sid-1', 'ollama', 'gemma4:cloud', 200_000);
     assert.equal(await hasSessionBackend('sid-1'), true);
-    assert.deepEqual(await getSessionBackend('sid-1'), { backend: 'ollama', model: 'gemma4:cloud' });
+    assert.deepEqual(await getSessionBackend('sid-1'),
+      { backend: 'ollama', model: 'gemma4:cloud', contextWindowTokens: 200_000 });
 
-    await markSessionBackend('sid-1', 'ollama', 'gemma4:cloud'); // idempotent
+    await markSessionBackend('sid-1', 'ollama', 'gemma4:cloud', 200_000); // idempotent
     assert.equal((await loadAll()).size, 1);
 
     // Re-mark with a different model upserts (the self-heal path).
-    await markSessionBackend('sid-1', 'ollama', 'deepseek-v4-flash:cloud');
-    assert.deepEqual(await getSessionBackend('sid-1'), { backend: 'ollama', model: 'deepseek-v4-flash:cloud' });
+    await markSessionBackend('sid-1', 'ollama', 'deepseek-v4-flash:cloud', 1_000_000);
+    assert.deepEqual(await getSessionBackend('sid-1'),
+      { backend: 'ollama', model: 'deepseek-v4-flash:cloud', contextWindowTokens: 1_000_000 });
 
-    // A mark with no model stores null (backend known, model unknown).
+    // A mark with no model stores null (backend known, model unknown); an
+    // unknown capacity stores null too rather than a guessed default.
     await markSessionBackend('sid-2', 'ollama');
-    assert.deepEqual(await getSessionBackend('sid-2'), { backend: 'ollama', model: null });
+    assert.deepEqual(await getSessionBackend('sid-2'),
+      { backend: 'ollama', model: null, contextWindowTokens: null });
     // …and re-marking it WITH a model self-heals the legacy entry.
-    await markSessionBackend('sid-2', 'ollama', 'qwen3.5:cloud');
-    assert.deepEqual(await getSessionBackend('sid-2'), { backend: 'ollama', model: 'qwen3.5:cloud' });
+    await markSessionBackend('sid-2', 'ollama', 'qwen3.5:cloud', 256_000);
+    assert.deepEqual(await getSessionBackend('sid-2'),
+      { backend: 'ollama', model: 'qwen3.5:cloud', contextWindowTokens: 256_000 });
 
     // A user-defined backend id round-trips just the same.
-    await markSessionBackend('sid-3', 'my-proxy', 'mine:v1');
-    assert.deepEqual(await getSessionBackend('sid-3'), { backend: 'my-proxy', model: 'mine:v1' });
+    await markSessionBackend('sid-3', 'my-proxy', 'mine:v1', 42_000);
+    assert.deepEqual(await getSessionBackend('sid-3'),
+      { backend: 'my-proxy', model: 'mine:v1', contextWindowTokens: 42_000 });
 
     // A mark with no backend is refused (absence must mean "plain claude").
     assert.equal(await markSessionBackend('sid-4', null, 'x'), false);

@@ -12,7 +12,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { orchStoreRoot, writeFileAtomic } from './projects.js';
 import { CAPABILITY_TIERS, DEFAULT_TIER_BACKEND, isKnownTier, isKnownClaudeModel,
-  ROLES, DEFAULT_ROLE_BINDING, isKnownRole, isKnownFamily, sonnetWindowSelectable,
+  ROLES, DEFAULT_ROLE_BINDING, isKnownRole, isKnownFamily, claudeContextWindowTokens,
   MANAGED_BACKENDS, MANAGED_BACKEND_IDS, CLAUDE_BACKEND_ID } from './modelVersions.js';
 import { OLLAMA_CLOUD_MODELS, isKnownOllamaCloudModel } from './ollamaCloudModels.js';
 import { DEFAULT_EFFORT, INHERIT_EFFORT, isKnownEffort } from './effortLevels.js';
@@ -438,10 +438,12 @@ export function backendForModel(model) {
 
 // Native context window (raw tokens) for a non-Claude model id, or null when
 // unknown. Custom models win over the curated catalog (a user override of a
-// preset). The server always holds the full model id in Instance.model, so an
-// exact match suffices here (the client resolver additionally tolerates the
-// bare base name the CLI reports — see customContextWindowFor in
-// public/models.js).
+// preset).
+//
+// The match is EXACT and load-bearing: a substitution model id is an opaque
+// registry key, so `gpt-5.6-sol[1m]` is a different model from `gpt-5.6-sol`.
+// Anything that strips a tag before reaching here turns a known window into a
+// silent null — see canonicalizeModel's backend gate in modelVersions.js.
 export function contextWindowForModel(model) {
   if (typeof model !== 'string' || !model) return null;
   const custom = getCustomModels().find(m => m.model === model);
@@ -449,6 +451,20 @@ export function contextWindowForModel(model) {
   const preset = OLLAMA_CLOUD_MODELS.find(m => m.model === model);
   if (preset && Number.isFinite(preset.contextWindow)) return preset.contextWindow;
   return null;
+}
+
+// THE single place a session's context capacity is resolved, from the concrete
+// {backend, exact model} pair. Returns raw tokens, or null when unknown — and
+// null must be rendered as unknown, never replaced by a default, because a
+// fabricated denominator reads as a real cap (a session with a fabricated 200k
+// was observed processing >256k input tokens).
+//
+// Both arms require the EXACT model id: the Claude catalog tolerates a launch
+// tag, the substitution registry does not tolerate its removal.
+export function resolveContextWindowTokens({ backend, model } = {}) {
+  if (typeof model !== 'string' || !model) return null;
+  if (backend === CLAUDE_BACKEND_ID) return claudeContextWindowTokens(model);
+  return contextWindowForModel(model);
 }
 
 // `contextWindow` is REQUIRED and must be a positive, finite number of raw tokens
@@ -503,18 +519,12 @@ function isValidBinding(b) {
   return isKnownBackendModel(b.backend, b.model);
 }
 
-// Reconstruct the persisted shape of a concrete {backend, model} binding,
-// keeping only the fields that matter. A Claude binding on a
-// user-selectable-window Sonnet (4.x) carries its chosen `window`
-// ('1m'|'200k'); every other binding (any substitution backend,
-// Opus/Haiku/Fable, fixed-window Sonnet 5) stores no window — those ignore it,
-// so persisting one would be misleading noise.
+// Reconstruct the persisted shape of a concrete binding. A binding is exactly
+// {backend, model} — every model has one native context window, so there is
+// nothing else to choose. Any extra key a caller sends (e.g. a stale `window`
+// from an old client) is dropped here rather than persisted.
 function persistBinding(b) {
-  const out = { backend: b.backend, model: b.model };
-  if (b.backend === CLAUDE_BACKEND_ID && sonnetWindowSelectable(b.model) && (b.window === '1m' || b.window === '200k')) {
-    out.window = b.window;
-  }
-  return out;
+  return { backend: b.backend, model: b.model };
 }
 
 // Models group: tier → {backend, model} binding. `backend` is 'claude' (model =

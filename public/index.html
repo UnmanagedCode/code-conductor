@@ -128,10 +128,10 @@
               (managed in <strong>Settings → Backends</strong>) and a <strong>model</strong> scoped to it —
               a Claude version, or one of your custom models on another backend. The new-session dialog's
               tier picker resolves a tier to that pair; the Conduct button resolves the Conductor role
-              (Settings → Models → Roles) to a backend/model instead. For Claude, Sonnet's context window
-              (200k or 1M) is a stored preference set alongside the Sonnet 4.x model choice; Haiku is always
-              200k, Opus/Fable always 1M. A tier on any other backend resolves straight to its model id
-              (no version/window choice) and launches through that backend's command template.
+              (Settings → Models → Roles) to a backend/model instead. Every model has one native context
+              window — Haiku 200k, every other Claude model 1M; a model on another backend declares its own.
+              A tier on any other backend resolves straight to its model id and launches through that
+              backend's command template.
               Each row also carries a <strong>default effort</strong> — a separate axis from the model
               binding (how hard it reasons, not which model): a spawn on that tier runs at it unless the
               spawn call passes its own <code>effort</code>.

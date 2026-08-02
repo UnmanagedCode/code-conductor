@@ -52,13 +52,63 @@ const DIRTY_CAP = 500;
 
 // ---------- helpers ----------
 
-// Project an internal instance summary down to the conductor-facing view:
-// strip the per-process `id` (instanceId) and `callerInstanceId` so the
-// conductor never sees — nor can come to depend on — a handle that dies on
-// restart. `sessionId` (stable across respawn / --resume / full restart) is
-// the only worker handle the MCP surface speaks.
-function toConductorView({ id, callerInstanceId, ...rest }) {
-  return rest;
+// The conductor-facing projection of an instance summary.
+//
+// An EXPLICIT ALLOWLIST, not a spread with keys deleted. The previous
+// `({id, callerInstanceId, ...rest}) => rest` form silently published every
+// field ever added to summary() — that is how `sonnetWindow` reached
+// list_instances / spawn_instance / wait_for_idle.summary / respawn_instance /
+// promote_session without ever being documented. Adding a key here is now a
+// deliberate act, and CONDUCTOR_VIEW_KEYS is asserted against the documented
+// list in src/mcp/tools.js by tests/mcp-conductor-view.test.mjs, so the two
+// cannot drift.
+//
+// Excluded on purpose: `id` + `callerInstanceId` (per-process instanceIds that
+// die on restart — `sessionId` is the only worker handle this surface speaks),
+// `debugDir` (the `debug` boolean is the signal), `autoApprovePlan` (UI-only),
+// `interrupting` (transient; a conductor that called interrupt_turn knows).
+export const CONDUCTOR_VIEW_KEYS = [
+  'project',
+  // Load-bearing for the conductor's self-identification check: it confirms its
+  // own cwd ends in `.conduct` and stops if it doesn't (i.e. it is running
+  // inside a worker).
+  'cwd',
+  'sessionId',
+  'status',
+  // idle-and-done vs idle-with-a-subagent-still-running — the wake semantics.
+  'displayStatus',
+  'activeAgentTasks',
+  'mode',
+  'effort',
+  'thinking',
+  'backend',
+  'model',
+  'contextWindowTokens',
+  'pid',
+  'worktree',
+  'temp',
+  'conducted',
+  'debug',
+  // Together with `title`, how a conductor tells its own worker from another
+  // conductor's worker on the same task — enforces "only drive what you spawned".
+  'firstPrompt',
+  'title',
+  'createdAt',
+  // On a watchdog-timeout wake: "silent for 30 minutes" vs "producing until a
+  // moment ago".
+  'lastResponseAt',
+  // Explains an unexpected wake.
+  'queuedCount',
+  // Explain a stalled worker and when it comes back.
+  'autoResumeAt',
+  'overageActive',
+  'overageResetsAt',
+];
+
+function toConductorView(summary) {
+  const out = {};
+  for (const k of CONDUCTOR_VIEW_KEYS) out[k] = summary[k];
+  return out;
 }
 
 // The ONLY public worker lookup. LIVE-only + soft-erroring: resolves a
@@ -176,9 +226,14 @@ export async function listProjects(_args, { instances }) {
 }
 
 export async function listInstances(_args, { instances }) {
-  // Scrub instanceId + callerInstanceId from every row; sessionId is the
-  // conductor-facing handle. hasIdleSubscriber (added by list()) is preserved.
-  return instances ? instances.list().map(toConductorView) : [];
+  // Project every row to the allowlist (sessionId is the conductor-facing
+  // handle), then re-attach `hasIdleSubscriber`. It is added by list(), not by
+  // Instance.summary(), so it is deliberately NOT in CONDUCTOR_VIEW_KEYS — the
+  // other four projections have no such field and must not emit it as undefined.
+  // This is the one place list_instances' shape differs from the rest.
+  return instances
+    ? instances.list().map(row => ({ ...toConductorView(row), hasIdleSubscriber: row.hasIdleSubscriber }))
+    : [];
 }
 
 export async function listSessions({ project, worktree, includeArchived = false }) {
@@ -275,29 +330,25 @@ export async function spawnInstance(args, { instances, callerId }) {
   //   - anything else → reject, rather than silently spawn a broken claude.
   let model = args.model;
   let backend = CLAUDE_BACKEND_ID;
-  // The Sonnet context window ('1m'|'200k') carried by the resolved binding,
-  // threaded to create() explicitly — a 200k Sonnet is stored bare, so its
-  // window can't ride in the model-id suffix. Undefined for non-tier/role
-  // resolutions (family alias / raw id) → create() defaults to '1m'.
-  let sonnetWindow;
   // Which tier/role the model was resolved THROUGH, forwarded to create() so its
   // stored default effort applies when the caller passed no `effort`. Exactly one
   // of the two is ever set (a name is a tier or a role, never both); a family
   // alias / raw model id leaves both unset → the global default.
+  //
+  // No window/capacity is threaded from here: a binding is {backend, model},
+  // and create() resolves the one capacity that pair implies.
   let tier;
   let role;
   if (model && isKnownTier(model)) {
-    const binding = getTierBackend(model); // {backend, model, window?}
+    const binding = getTierBackend(model); // {backend, model}
     tier = model;
     backend = binding.backend;
     model = binding.model;
-    sonnetWindow = binding.window;
   } else if (model && isResolvableRole(model)) {
-    const binding = resolveRoleBackend(model); // {backend, model, window?}
+    const binding = resolveRoleBackend(model); // {backend, model}
     role = model;
     backend = binding.backend;
     model = binding.model;
-    sonnetWindow = binding.window;
   } else if (model && isKnownFamily(model)) {
     model = defaultVersion(model);
   } else if (model && backendForModel(model)) {
@@ -324,7 +375,6 @@ export async function spawnInstance(args, { instances, callerId }) {
     role,
     thinking: args.thinking,
     model,
-    sonnetWindow,
     backend,
     resume: args.resume,
     worktree,

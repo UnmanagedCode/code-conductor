@@ -37,7 +37,7 @@
 //   - closeOverflow():   the header ⋮ menu close (overflow controller STAYS in app.js).
 
 import {
-  contextWindowFor, formatTokens, formatPct, formatDuration,
+  formatTokens, formatPct, formatDuration,
   fillClass, formatResetTime, formatAutoResumeTime, rlChipSegment,
 } from './usage.js';
 import { makeDismissable } from './dismissable.js';
@@ -134,11 +134,15 @@ export function installHeader({
     node.appendChild(section('Session totals'));
     const usage = getUsage(inst.id);
     const c = usage.cum;
-    const ctxWindow = contextWindowFor(usage.effectiveModel(inst.model), inst.sonnetWindow);
+    // Server-resolved capacity; omit the clause entirely when unknown rather
+    // than printing a guessed number next to a real model name.
+    const ctxWindow = inst.contextWindowTokens;
     const modelLabel = usage.effectiveModel(inst.model) ?? '(default)';
     const meta = document.createElement('div');
     meta.className = 'ih-usage-meta';
-    meta.textContent = `${modelLabel} · ${formatTokens(ctxWindow)} context`;
+    meta.textContent = Number.isFinite(ctxWindow)
+      ? `${modelLabel} · ${formatTokens(ctxWindow)} context`
+      : modelLabel;
     node.appendChild(meta);
     if (c.turns === 0) {
       const empty = document.createElement('div');
@@ -321,12 +325,14 @@ export function installHeader({
     const accountUsage = getAccountUsage();
     // ── ctx half ──
     const usage = getUsage(inst.id);
-    const ctxFrac = usage.currentFillPct(inst.model, inst.sonnetWindow);
+    const ctxWindow = inst.contextWindowTokens;
+    const ctxFrac = usage.currentFillPct(ctxWindow);
     const ctxUsed = usage.currentContextSize();
-    const ctxWindow = contextWindowFor(usage.effectiveModel(inst.model), inst.sonnetWindow);
 
+    // `ctx —` covers both "no turn yet" and "capacity unknown". A percentage
+    // against a fabricated denominator would read as a measurement.
     let ctxText;
-    if (ctxUsed == null) {
+    if (ctxUsed == null || ctxFrac == null) {
       ctxText = 'ctx —';
     } else {
       ctxText = `ctx ${formatPct(ctxFrac)} · ${formatTokens(ctxUsed)}/${formatTokens(ctxWindow)}`;

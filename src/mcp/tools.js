@@ -24,9 +24,17 @@ export function buildTools() {
       name: 'list_instances',
       description:
         'List every live or recently-exited orchestrator worker. Each entry carries ' +
-        '{project, sessionId, status, mode, effort, thinking, model, pid, worktree, temp, conducted, debug, hasIdleSubscriber}. ' +
+        '{project, cwd, sessionId, status, displayStatus, activeAgentTasks, mode, effort, thinking, ' +
+        'backend, model, contextWindowTokens, pid, worktree, temp, conducted, debug, ' +
+        'firstPrompt, title, createdAt, lastResponseAt, queuedCount, autoResumeAt, ' +
+        'overageActive, overageResetsAt, hasIdleSubscriber}. ' +
         'sessionId is the stable handle for every worker-addressing tool. ' +
-        '`conducted:true` marks a session spawned via this `spawn_instance` tool.',
+        '`conducted:true` marks a session spawned via this `spawn_instance` tool. ' +
+        '`displayStatus` reads `running` while an idle worker still has background subagents — ' +
+        'read it, not `status`, to decide whether work is actually finished. ' +
+        '`contextWindowTokens` is the model\'s context capacity in tokens, or null when unknown. ' +
+        '`lastResponseAt` separates a long-silent worker from one producing output moments ago. ' +
+        'Every other tool here returning a worker summary returns this same shape minus `hasIdleSubscriber`.',
       inputSchema: { type: 'object', properties: {}, required: [] },
       handler: h.listInstances,
       annotations: { readOnlyHint: true },
