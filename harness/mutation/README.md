@@ -80,6 +80,37 @@ It degrades safely — the mutant reads `IMPRECISE` or `ERROR`, never a false `K
 but it burns a review round on a non-finding. **Omit `narrowTo` from every mutant** and let it stay
 at file granularity, which is the policy default anyway.
 
+### 4. The real-binary surface is NOT under mutation proof — never read a survivor there as "uncovered"
+
+`baselineCommand` is plain `npm test`, which sets neither `RUN_REAL_CLAUDE=1` nor `RUN_REAL_OLLAMA=1`.
+Every test behind those flags is skipped in **every** mutation run — **8 of the 13 skips** in the
+baseline's `1949/0/13`:
+
+| File | Gated tests |
+|---|---|
+| `tests/smoke.real.test.mjs` | 4 (`RUN_REAL_CLAUDE`) — real spawn, stream-json parsing, Bash tool call, AskUserQuestion, ask-mode hook |
+| `tests/prune.real.test.mjs` | 1 (`RUN_REAL_CLAUDE`) — pruned-session resume + read-before-edit re-arm |
+| `tests/claudeShellEnv.test.mjs` | 2 — 1 `RUN_REAL_CLAUDE` (bundle restores rg/find shell functions) + 1 `RUN_REAL_OLLAMA` (`ollama launch claude` forwards stdout/exit code) |
+| `tests/renew-session.test.mjs` | 1 (`RUN_REAL_CLAUDE`) — real `renew_session` sessionId rotation |
+
+(The other 5 baseline skips are unrelated — UI and host-capability gates, e.g. the zsh-flavoured
+`project_bash` block.)
+
+**The consequence, and why this is a must-read:** mutate code that only the real binary exercises and
+you get `SURVIVED`. The correct reading is *"covered only by an opt-in test this harness does not
+enable"*, **not** *"no test covers this"* — filing the latter is a false finding against an
+implementer who did nothing wrong.
+
+**The `scope-empty` guard does not save you here.** `ran` counts skipped tests, so a scope narrowed to
+`tests/smoke.real.test.mjs` reports `ran 4 / skipped 4 / failed 0` — a *green* narrow baseline — and
+the mutant then reads `SURVIVED` rather than `ERROR (scope-empty)`. Verified by running that file
+directly.
+
+Treat this surface as **out of scope for mutation proof here**: enabling it needs the real `claude` /
+`ollama` binary plus working auth plus network, which a review environment does not have. If a claim
+you must prove lives only behind those flags, say so in the report as unprovable-by-this-harness
+rather than mutating it.
+
 ---
 
 ## Running it
@@ -118,10 +149,11 @@ non-reproducible.
 |---|---|
 | Full suite (`baselineCommand`) | ~36 s, 1962 tests (1949 pass / 13 skipped / 0 fail) on a 16-core host |
 | `baseline` total | ~75 s — the canary run is a second full-suite pass |
-| A file-narrowed mutant | ~0.5–3 s (`tests/health.test.mjs`: 9 tests, 0.5 s) |
+| A file-narrowed mutant | ~0.1–4.5 s across the files timed — `resume-manifest` 0.13 s, `health` 0.53 s, `mcp-inspect-tools` 1.28 s, `instances` 2.91 s, `overage-action` **4.31 s**. Files that wait on drains/timeouts sit at the top end; this is a sample, not a swept bound. |
 | Test reference format | repo-relative, and **`describe >` path–sensitive** — see [§2](#2-expectfail-refs-a-nested-test-needs-its-describe--path-not-its-leaf-name) |
 
-Narrowing is worth ~70× here, so always give every mutant an `expectFail`.
+Narrowing is the difference between the full-suite row and the narrowed row above, so always give
+every mutant an `expectFail`.
 
 Runtimes scale with core count: `tests/run.mjs` runs files at `min(4, cores/2)` concurrency
 (`TEST_CONCURRENCY` overrides). On a low-core host (Termux) expect multiples of the above — which is
