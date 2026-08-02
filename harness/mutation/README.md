@@ -80,36 +80,60 @@ It degrades safely — the mutant reads `IMPRECISE` or `ERROR`, never a false `K
 but it burns a review round on a non-finding. **Omit `narrowTo` from every mutant** and let it stay
 at file granularity, which is the policy default anyway.
 
-### 4. The real-binary surface is NOT under mutation proof — never read a survivor there as "uncovered"
+### 4. Env-gated opt-in tests are outside mutation proof — a survivor there is uninformative
 
-`baselineCommand` is plain `npm test`, which sets neither `RUN_REAL_CLAUDE=1` nor `RUN_REAL_OLLAMA=1`.
-Every test behind those flags is skipped in **every** mutation run — **8 of the 13 skips** in the
-baseline's `1949/0/13`:
+**The rule, which outlives any list below:** any test the suite skips because an opt-in env flag is
+unset is invisible to every mutation run here. `baselineCommand` is plain `npm test`, which sets no
+opt-in flag at all. Mutate code that only such a test exercises and you get `SURVIVED`; the one honest
+reading is *"covered solely by an opt-in test this harness does not enable"*, **never** *"no test
+covers this."* Filing the latter is a false finding against an implementer who did nothing wrong.
 
-| File | Gated tests |
-|---|---|
-| `tests/smoke.real.test.mjs` | 4 (`RUN_REAL_CLAUDE`) — real spawn, stream-json parsing, Bash tool call, AskUserQuestion, ask-mode hook |
-| `tests/prune.real.test.mjs` | 1 (`RUN_REAL_CLAUDE`) — pruned-session resume + read-before-edit re-arm |
-| `tests/claudeShellEnv.test.mjs` | 2 — 1 `RUN_REAL_CLAUDE` (bundle restores rg/find shell functions) + 1 `RUN_REAL_OLLAMA` (`ollama launch claude` forwards stdout/exit code) |
-| `tests/renew-session.test.mjs` | 1 (`RUN_REAL_CLAUDE`) — real `renew_session` sessionId rotation |
+**Snapshot of the gates present today** — a starting point to re-derive, not a fact to trust; flags get
+added and removed:
 
-(The other 5 baseline skips are unrelated — UI and host-capability gates, e.g. the zsh-flavoured
-`project_bash` block.)
+| Env flag | Skips | Surface left unproven |
+|---|---|---|
+| `RUN_REAL_CLAUDE` | 7 | real spawn + stream-json parsing, Bash tool call, AskUserQuestion, ask-mode PreToolUse hook (`smoke.real` 4); pruned-session resume + read-before-edit re-arm (`prune.real` 1); shell-env bundle restoring rg/find (`claudeShellEnv` 1); real `renew_session` sessionId rotation (`renew-session` 1) |
+| `RUN_REAL_OLLAMA` | 1 | `ollama launch claude … --version` forwarding claude's stdout/exit code (`claudeShellEnv`) |
+| `RUN_PLAYWRIGHT` | 3 | real-browser UI behaviour, one test each — main-bar reset (`main-bar-reset-browser`), plugin app-switcher landing (`plugin-switch-browser`), plugin version-select width (`plugin-version-select-width`) |
+| `RUN_TTS_INSTALL_TESTS` | 2 | Piper voice install flow and its 409-while-running guard (`settings-tts`). **Note the name:** the file reads this flag into a local const called `RUN_INSTALL`; `RUN_INSTALL` is not an env var. |
 
-**The consequence, and why this is a must-read:** mutate code that only the real binary exercises and
-you get `SURVIVED`. The correct reading is *"covered only by an opt-in test this harness does not
-enable"*, **not** *"no test covers this"* — filing the latter is a false finding against an
-implementer who did nothing wrong.
+7+1+3+2 = **13, the entire skip count** in the baseline's `1949/0/13`. There is no residual
+"unrelated" remainder that is safe to mutate against — every skip in this suite is an env-flag opt-in
+gate. Enabling any of them needs something a review environment does not have (the real
+`claude`/`ollama` binary plus auth plus network; a Chromium install via the `code-playwright` sibling;
+a network voice download), so treat the whole set as **out of scope for mutation proof** and report
+such a claim as unprovable-by-this-harness rather than mutating it.
 
-**The `scope-empty` guard does not save you here.** `ran` counts skipped tests, so a scope narrowed to
+**Re-derive it when the gates change:**
+
+```bash
+# the env flags that gate tests today
+grep -rhoE "process\.env\.(RUN|SKIP)[A-Z_]+" tests/*.test.mjs | sort -u
+# every test skipped in a full run — 13 lines today, matching `ℹ skipped`
+npm test 2>&1 | grep '^﹣'
+# attribute skips to one file
+npm test -- tests/<file>.test.mjs 2>&1 | grep -E '^﹣|^ℹ skipped'
+```
+
+Two traps in re-deriving this, both of which produced a wrong count while writing it:
+
+- **Grep the `﹣` glyph, not `# SKIP`.** The spec reporter appends `# SKIP` only for a boolean
+  `skip: true`; a `skip: '<reason>'` prints `# <reason>` instead (e.g.
+  `# set RUN_TTS_INSTALL_TESTS=1 to run`). Grepping `# SKIP` silently drops those and reports 11 of 13.
+- **Don't grep `skip:` in the sources.** The gates use three different mechanisms
+  (`test.skip.bind(test)`, `{ skip: <const holding the reason> }`, and an inline
+  `{ skip: process.env.X !== '1' }`); only the last is findable that way.
+
+Also beware that a *host-capability* skip is a different thing from an env-flag gate and moves between
+hosts, so any count you take is host-specific: `mcp-inspect-tools`'s zsh-flavoured `project_bash`
+block skips only where `zsh` is absent. It contributes 0 here (zsh 5.9 present), which is why the
+13 above is exactly the four env flags.
+
+**The `scope-empty` guard does not save you.** `ran` counts skipped tests, so a scope narrowed to
 `tests/smoke.real.test.mjs` reports `ran 4 / skipped 4 / failed 0` — a *green* narrow baseline — and
 the mutant then reads `SURVIVED` rather than `ERROR (scope-empty)`. Verified by running that file
 directly.
-
-Treat this surface as **out of scope for mutation proof here**: enabling it needs the real `claude` /
-`ollama` binary plus working auth plus network, which a review environment does not have. If a claim
-you must prove lives only behind those flags, say so in the report as unprovable-by-this-harness
-rather than mutating it.
 
 ---
 
