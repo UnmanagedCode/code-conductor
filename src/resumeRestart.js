@@ -22,7 +22,7 @@ import {
 } from './resumeManifest.js';
 import { CONDUCT_PROJECT_NAME, ensureConductProject } from './conduct.js';
 
-// Wait-and-retry grace: after wind-down, wait this long (60 s) for every live
+// Wait-and-retry grace: after wind-down, wait this long (`RESUME_DRAIN_GRACE_MS`) for every live
 // instance to leave its turn on its own. If the grace elapses, log a warning
 // and keep waiting (re-arming the grace) — it never force-interrupts. If an
 // agent is wedged and won't finish its turn, the user can manually interrupt

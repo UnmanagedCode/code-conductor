@@ -1,6 +1,6 @@
 // Shared fragment-catalog helper.
 //
-// The three convention scopes (project-creation CLAUDE.md sections, the
+// The convention scopes (project-creation CLAUDE.md sections, the
 // workspace projects-root CLAUDE.md, and the conductor role prompt)
 // are each "a catalog of {slug, name, description} metadata whose body is a
 // chunk of markdown". Built-in bodies live in committed `.md` fragment files

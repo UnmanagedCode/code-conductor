@@ -1,8 +1,9 @@
 // Sidecar JSON store mapping each session spawned through a SUBSTITUTION
 // backend (a registry row with a launch `template` — see modelVersions.js
 // MANAGED_BACKENDS) to the backend id plus the full model id it was launched
-// with (`deepseek-v4-flash:cloud`). Two things the jsonl can't carry: which
-// backend ran the session, and the model TAG — the inner CLI records
+// with (`deepseek-v4-flash:cloud`). The fields the jsonl can't carry (backend,
+// model, persisted in session-backends.json): which backend ran the session, and
+// the model TAG — the inner CLI records
 // `message.model` bare (tag dropped), so the tagless jsonl value can't rebuild
 // `<template> --model <tag>` on resume. This store is the authority for both.
 // A `null` model means backend-known but model-unknown (a legacy entry, or a

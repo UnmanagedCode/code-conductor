@@ -53,8 +53,8 @@ function buildCombinedResumeText(queue, wasStopped = true) {
 
 // After this many CONSECUTIVE "can't confirm" usage fetches (null / backoff /
 // malformed payload), a due session fails OPEN and resumes anyway rather than
-// parking forever behind a persistently-unavailable usage API. At the 60s recheck
-// cadence that's ~5 minutes — aligned with accountUsage.js's MAX_RETRY_MS ceiling.
+// parking forever behind a persistently-unavailable usage API. At the default recheck
+// cadence that's `FAIL_OPEN_AFTER` rechecks — aligned with accountUsage.js's MAX_RETRY_MS ceiling.
 const FAIL_OPEN_AFTER = 5;
 
 export class OverageResumeController {
@@ -89,7 +89,7 @@ export class OverageResumeController {
 
   // Recheck cadence for a parked (still-over / can't-confirm) session. Overridable
   // via ORCH_OVERAGE_RECHECK_MS (a test seam, like the sweep/buffer envs). Default
-  // 60s is independent of accountUsage.js's 180s success cache — most recheck ticks
+  // recheck is independent of accountUsage.js's success-cache cadence — most recheck ticks
   // just re-read the cached value (cheap no-op), so a shorter cadence here doesn't
   // add real network pressure; it just keeps FAIL_OPEN_AFTER's ~5-minute bound
   // aligned with accountUsage.js's MAX_RETRY_MS ceiling (see FAIL_OPEN_AFTER above).
@@ -220,7 +220,7 @@ export class OverageResumeController {
 
   // Park a still-over / can't-confirm session on a fresh recheck deadline instead of
   // resuming. `max(resetsAt, now + recheck)`: keep resetsAt if it's still further out,
-  // else recheck ~1 min out. Also pushes the manager's global _overageResetsAt forward
+  // else recheck one `_recheckMs()` window out. Also pushes the manager's global _overageResetsAt forward
   // so the frontend/queue lockout gate (which requires a FUTURE resetsAt) stays engaged
   // while sessions are parked — the lockout must not lift out from under an active park.
   _reschedule(inst, id) {

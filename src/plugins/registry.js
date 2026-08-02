@@ -30,7 +30,7 @@ import { pidAlive, waitForPort } from './ports.js';
 
 const CRASH_LIMIT = 3;
 const CRASH_WINDOW_MS = 60_000;
-const BACKOFF_UNIT_MS = 1000;   // backoff = min(2^n, 30) * unit
+const BACKOFF_UNIT_MS = 1000;   // backoff = min(2^n, BACKOFF_CAP_UNITS) * unit
 const BACKOFF_CAP_UNITS = 30;
 // Exported so server.js can reuse the same literal for the conductor's own
 // boot-time self-seed instead of duplicating it.
@@ -429,7 +429,7 @@ export function createPluginHost({
   }
 
   // The lazy-start gate used by the proxy and the MCP bridge. Resolves once
-  // the plugin is ready (requests wait through the ≤30s readiness window);
+  // the plugin is ready (requests wait through the readiness poll window in `waitSettled`);
   // throws 503 when the plugin can't serve.
   async function ensureStarted(id) {
     await ensureInit();
