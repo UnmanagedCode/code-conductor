@@ -15,7 +15,7 @@ The runner is a sibling project, not a dependency. Command syntax below is `muta
 
 `/code-mutant:prove` step 6 says "prefer `--copy`". **That does not apply here.** This is not a soft
 preference and not a degraded-verdict tradeoff: in copy mode the **baseline gate fails**, so *zero*
-mutants run and no verdict is interpretable. Measured, `baseline --copy` → `1948/1/13 (p/f/s)`,
+mutants run and no verdict is interpretable. Measured, `baseline --copy` → `1956/1/13 (p/f/s)`,
 `baseline FAILED`, process **exit 2**. Reproduce in one command:
 `node ../code-mutant/mutate.mjs baseline --copy`.
 
@@ -98,7 +98,7 @@ added and removed:
 | `RUN_PLAYWRIGHT` | 3 | real-browser UI behaviour, one test each — main-bar reset (`main-bar-reset-browser`), plugin app-switcher landing (`plugin-switch-browser`), plugin version-select width (`plugin-version-select-width`) |
 | `RUN_TTS_INSTALL_TESTS` | 2 | Piper voice install flow and its 409-while-running guard (`settings-tts`). **Note the name:** the file reads this flag into a local const called `RUN_INSTALL`; `RUN_INSTALL` is not an env var. |
 
-7+1+3+2 = **13, the entire skip count** in the baseline's `1949/0/13`. There is no residual
+7+1+3+2 = **13, the entire skip count** in the baseline's `1957/0/13`. There is no residual
 "unrelated" remainder that is safe to mutate against — every skip in this suite is an env-flag opt-in
 gate. Enabling any of them needs something a review environment does not have (the real
 `claude`/`ollama` binary plus auth plus network; a Chromium install via the `code-playwright` sibling;
@@ -171,8 +171,8 @@ non-reproducible.
 
 | | |
 |---|---|
-| Full suite (`baselineCommand`) | ~36 s, 1962 tests (1949 pass / 13 skipped / 0 fail) on a 16-core host |
-| `baseline` total | ~75 s — the canary run is a second full-suite pass |
+| Full suite (`baselineCommand`) | ~41 s, 1970 tests (1957 pass / 13 skipped / 0 fail) on a 16-core host |
+| `baseline` total | ~85 s — the canary run is a second full-suite pass |
 | A file-narrowed mutant | ~0.1–4.5 s across the files timed — `resume-manifest` 0.13 s, `health` 0.53 s, `mcp-inspect-tools` 1.28 s, `instances` 2.91 s, `overage-action` **4.31 s**. Files that wait on drains/timeouts sit at the top end; this is a sample, not a swept bound. |
 | Test reference format | repo-relative, and **`describe >` path–sensitive** — see [§2](#2-expectfail-refs-a-nested-test-needs-its-describe--path-not-its-leaf-name) |
 
