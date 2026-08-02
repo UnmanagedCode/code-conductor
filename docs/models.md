@@ -28,7 +28,7 @@ Record: `{ id, label, template, env: [{key,value}], managed }`, persisted as
 | `env` | Key/value pairs injected into the child's env at spawn. Keys match `^[A-Za-z_][A-Za-z0-9_]*$`. |
 | `managed` | Derived, never stored: true for the two built-ins below. |
 
-### The two managed backends
+### The managed backends
 
 `MANAGED_BACKENDS` in `src/modelVersions.js` is authoritative for their
 `id`/`label`/`template`/`env`/`managed` — `getBackends()` re-asserts all of it from
@@ -40,6 +40,8 @@ appending either row if the store lacks it. So a built-in template can't drift,
 |---|---|---|
 | `claude` | Claude | *(empty — `claude`)* |
 | `ollama` | Ollama | `ollama launch claude --model {model} --yes --` |
+
+Authoritative set: `MANAGED_BACKENDS` in `src/modelVersions.js`.
 
 `ollama launch` sets the Anthropic endpoint + auth internally and **re-injects
 `--model` into the child**, so the caller-forwarded `--model` later in the args is a
@@ -147,27 +149,24 @@ selectable for a substitution backend.
 
 ### The curated Ollama cloud catalog
 
-`src/ollamaCloudModels.js` ships 7 read-only cloud coding models, each with its
+`src/ollamaCloudModels.js` ships a read-only catalog of Ollama cloud coding models, each with its
 native `contextWindow` — bindable with no "Add" step. **Scoped to the built-in
 `ollama` backend only**: `isKnownBackendModel(backend, model)` accepts a preset just
 for that row, and the picker renders the optgroup only there. A user-defined backend
-has no curated catalog. `OLLAMA_CLOUD_TIER_DEFAULTS` (fast/balanced/powerful;
-frontier intentionally absent) is a **UI pre-selection only** when a tier switches
+has no curated catalog. `OLLAMA_CLOUD_TIER_DEFAULTS` (a per-tier UI pre-selection only — see the module for which tiers carry one) applies when a tier switches
 to the `ollama` row — `DEFAULT_TIER_BACKEND` stays all-Claude.
 
 ## Capability tiers & roles
 
-**Tiers** (`CAPABILITY_TIERS`: `fast`/`balanced`/`powerful`/`frontier`) are the
-primary spawn vocabulary. Each binds to `{backend, model, window?}` under
-`models.tierBackend`. Defaults (`DEFAULT_TIER_BACKEND`) are all Claude:
-Fast→Haiku, Balanced→Sonnet 5, Powerful→Opus, Frontier→Fable 5.
+**Tiers** — `CAPABILITY_TIERS` (the tier list in `src/modelVersions.js`) is the primary spawn vocabulary. Each binds to `{backend, model, window?}` under
+`models.tierBackend`. Defaults (`DEFAULT_TIER_BACKEND`) are all-Claude; see the module for the per-tier mapping.
 
 **Roles** are a parallel bindable layer under `models.roleBackend`. A role binding is
 **either** a tier reference `{kind:'tier', tier}` — follow whatever that tier points
 at — **or** a concrete `{backend, model, window?}`. The two are told apart by
 `kind === 'tier'`; a tier reference names no backend, so it keeps `kind`.
 
-- **Built-in**: `ROLES` (`conductor`, `reviewer`), both defaulting to the `powerful`
+- **Built-in**: `ROLES` (the seed role list in `src/modelVersions.js`), both defaulting to the `powerful`
   tier. The Conduct button spawns via the Conductor role.
 - **User-custom**: `models.customRoles: [name]`, name-only (the name is the
   display), matching `^[A-Za-z][A-Za-z0-9-]*$` (≤40) and case-insensitively disjoint
@@ -200,6 +199,8 @@ One fixed window per family, applied by `canonicalizeModel()` in
 | Opus / Fable 5 | 1M (CLI default) — bare id |
 | Sonnet 5 | 1M only (`fixedWindow` in the catalog) — always `[1m]` |
 | Sonnet 4.x | user-selectable 200k (bare) or 1M (`[1m]`) |
+
+One fixed window per family, applied by `canonicalizeModel()` in `src/modelVersions.js` (single source of truth); see the catalog for the per-family policy.
 
 A Sonnet 4.x choice rides as `window` **on that individual binding**
 (`{backend:'claude', model, window}`) — there is no global preference, so picking one
@@ -246,8 +247,7 @@ checkbox** and **default radio** (default falls back to the first enabled tier i
 order balanced → fast → powerful → frontier). Both selects come from one shared
 `buildBackendPicker`, reused by the Roles rows.
 
-- **`claude`** → the Claude version list. Sonnet shows 5 entries: Sonnet 5 (1M only)
-  plus Sonnet 4.6/4.5 each ×2 for their 200k/1M sub-choice.
+- **`claude`** → the Claude version list; a selectable-window Sonnet version contributes one entry per window build (see the catalog).
 - **any other backend** → a curated optgroup (built-in `ollama` row only) + a
   **"My Models"** optgroup filtered to that backend; `(add a model below)` when it has
   none.
