@@ -9,7 +9,7 @@
 // Solution:
 //   1. In-flight coalescing — concurrent requests share one computation so a
 //      simultaneous burst of refreshes triggers only one git fan-out.
-//   2. Short TTL (default 2 s) — sequential refreshes within the TTL are served
+//   2. Short TTL (`PRODUCTION_TTL_MS`) — sequential refreshes within the TTL are served
 //      from the cache. Staleness is bounded and acceptable for passive sidebar
 //      updates; targeted invalidate() calls cover every user-triggered mutation
 //      (merge/sync/worktree delete/instance spawn-exit) so those always see fresh

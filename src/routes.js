@@ -606,7 +606,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
 
   // Structured diff for a worktree vs its base branch. Returns per-file
   // data with hunks parsed for direct rendering — no client-side diffing
-  // needed. Accepts optional ?baseRef= and ?context= (0–50, default 3).
+  // needed. Accepts optional ?baseRef= and ?context= (clamped to the range/default enforced in getWorktreeDiff).
   r.get('/projects/:name/worktrees/:wt/diff', async (req, res, next) => {
     try {
       const baseRef = req.query.baseRef || undefined;
@@ -617,7 +617,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
   });
 
   // Commit history (git log) for a project's current branch (HEAD), newest
-  // first. Accepts optional ?limit= (default 100, max 500). Returns
+  // first. Accepts optional ?limit= (default `COMMITS_DEFAULT_LIMIT`, max `COMMITS_MAX_LIMIT`). Returns
   // { project, branch, commits, truncated, limit }.
   r.get('/projects/:name/commits', async (req, res, next) => {
     try {
@@ -641,7 +641,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
 
   // Structured diff for the change introduced by a single commit. Mirrors the
   // worktree /diff response shape so the same client renderer applies.
-  // Accepts optional ?context= (0–50, default 3).
+  // Accepts optional ?context= (clamped to the range/default enforced in getCommitDiff).
   r.get('/projects/:name/commits/:sha/diff', async (req, res, next) => {
     try {
       const contextLines = req.query.context !== undefined ? Number(req.query.context) : 3;
@@ -822,7 +822,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
     // preceding that seq, oldest-first; the UI's scroll-up path — echo the
     // response's `nextBefore` cursor back to continue). `after=<seq>` pages
     // forward (first `limit` events with seq > after). Neither → trailing
-    // `limit` events. `limit` clamped to [1, 500], default 200. Responds
+    // `limit` events. `limit` clamped by `clampLimit` (default `LIMIT_DEFAULT`, max `LIMIT_MAX`). Responds
     // { id, events, hasMore, nextBefore, trimmedBefore, lastSeq }.
     r.get('/instances/:id/events', async (req, res, next) => {
       try {
@@ -1365,7 +1365,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
   });
 
   // Streaming synthesis. Body is the raw text (route-scoped text parser so the
-  // global 1 MB JSON limit doesn't apply). The response body is a sequence of
+  // global express.json body limit doesn't apply). The response body is a sequence of
   // [4-byte LE length][WAV] frames, one per sentence, flushed as Piper yields
   // them so the client can start playing the first sentence immediately.
   r.post('/tts', express.text({ type: '*/*', limit: '256kb' }), async (req, res, next) => {

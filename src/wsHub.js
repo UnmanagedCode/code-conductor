@@ -1,18 +1,11 @@
 // WebSocket hub. One /ws endpoint multiplexes subscriptions to many instances.
 //
-// Client → server:
-//   { t: "subscribe",   id }
-//   { t: "unsubscribe", id }
-//   { t: "prompt",         id, text, attachments?: [{name, mediaType, dataBase64}] }
-//   { t: "mode",           id, mode }
-//   { t: "interrupt",      id }
-//   { t: "kill",           id }
-//   { t: "hook_decision",  id, toolUseId, allow }
-//   { t: "auto_approve_plan", id, enabled }
+// Client → server messages are dispatched in the `switch (msg.t)` below; see
+// the cases for the authoritative set.
 //
 // Server → client:
 //   { t: "snapshot",       id, status, mode, sessionId, project, autoApprovePlan,
-//                          events: [...],            // ring TAIL only (≤ ORCH_SNAPSHOT_TAIL, default 500)
+//                          events: [...],            // ring TAIL only (≤ ORCH_SNAPSHOT_TAIL; default DEFAULT_SNAPSHOT_TAIL)
 //                          tailStartSeq, trimmedBefore, // >0 ⇒ older history exists; page it via
 //                                                        // GET /api/instances/:id/events?before=<seq>
 //                          droppedText? }            // present once on a fork's first snapshot ⇒ composer prefill
@@ -142,7 +135,7 @@ export function attachWsHub({ wss, instances }) {
           case 'subscribe': {
             if (!inst) { reply(false, 'unknown instance'); return; }
             subsFor(msg.id).add(ws);
-            // Tail-only snapshot: at most ORCH_SNAPSHOT_TAIL (default 500)
+            // Tail-only snapshot: at most ORCH_SNAPSHOT_TAIL (default DEFAULT_SNAPSHOT_TAIL)
             // trailing events, snapped to a turn boundary. tailStartSeq > 0
             // tells the client older history exists — it lazy-loads it via
             // GET /api/instances/:id/events?before=<seq>.

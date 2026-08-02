@@ -41,13 +41,13 @@ function parseRetryAfter(header, now) {
   return null;
 }
 
-// Exponential backoff: BASE * 2^n, capped at MAX, with ±25% jitter.
+// Exponential backoff: BASE * 2^n, capped at MAX, with the jitter fraction applied in computeBackoff.
 // `rand` is injectable (pass 0.5 for deterministic zero-jitter in tests).
 function computeBackoff(failureCount, rand) {
   const exp    = Math.min(failureCount, 8); // cap exponent; 2^8 * 10s >> MAX anyway
   const base   = BASE_RETRY_MS * Math.pow(2, exp);
   const capped = Math.min(base, MAX_RETRY_MS);
-  const jitter = capped * 0.25 * (2 * rand - 1); // ±25%
+  const jitter = capped * 0.25 * (2 * rand - 1); // jitter fraction
   return Math.max(BASE_RETRY_MS, Math.round(capped + jitter));
 }
 

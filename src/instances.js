@@ -186,8 +186,8 @@ const DEFAULT_THINKING = 'adaptive';
 const DEFAULT_RING_CAP = 2000;
 const RING_TRIM_SLACK = 256;
 // Max events sent in a WS `subscribe` snapshot (see Instance.snapshotTail).
-// Matches the long-documented "500 events" figure, so sessions under 500
-// events behave exactly as before. Override with ORCH_SNAPSHOT_TAIL.
+// Matches the long-documented snapshot-tail figure, so sessions under that count
+// behave exactly as before. Override with ORCH_SNAPSHOT_TAIL.
 const DEFAULT_SNAPSHOT_TAIL = 500;
 
 export class EventLog {
@@ -528,7 +528,7 @@ export class Instance extends EventEmitter {
     // MISS ⇔ read_N < P_{N-1} - tolerance: this turn served less of the prefix
     // than was demonstrably cached at the end of last turn ⇒ eviction (full OR
     // partial). Warm continuation reads exactly P_{N-1} (drop 0). Tolerance
-    // (max(1024, 1% of P)) absorbs tokenization-boundary noise.
+    // (the tolerance computed in _detectCacheMiss) absorbs tokenization-boundary noise.
     //   Turn 1 (no prior P) or a guard-invalidated turn (see _prefixBaselineInvalid)
     //   falls back to the stateless `creation>read` rule — which still flags a
     //   genuinely COLD prefix (cold start, expiry, resume, cold rewind).
