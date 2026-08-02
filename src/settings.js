@@ -1,5 +1,5 @@
 // Builds the inline `--settings` JSON the orchestrator passes to every
-// claude subprocess. One PreToolUse hook is registered:
+// claude subprocess. A PreToolUse hook is registered (when `hookCallbackUrl` is provided):
 //
 //   - (Optional, when hookCallbackUrl is provided) An interactive
 //     `http` hook on the destructive tools that POSTs back to the

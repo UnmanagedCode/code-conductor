@@ -7,7 +7,7 @@
 // conventions (conventions/conductor/<slug>.md) and any user-defined custom
 // conventions are toggled via a single GLOBAL selection (the conductor is a
 // singleton), persisted at
-// <orchStoreRoot>/conventions/conductor.json as { enabled: [...], rules: [...] }.
+// <orchStoreRoot>/conventions/conductor.json (keys: `enabled`, `pluginOff`).
 //
 // Every enabled convention costs tokens in every conductor session's system
 // prompt — keep the built-in set lean; project-specific detail belongs in
@@ -101,7 +101,8 @@ export async function deleteCustomConvention(slug) {
 //
 // A plugin's conductor conventions are ON by default the moment the plugin is
 // enabled, so the only per-convention state worth persisting is the user's
-// explicit OFF-switches. Two keys in the store:
+// explicit OFF-switches. The persisted keys in the store (see the read in
+// `getEffectiveSelection`):
 //   enabled   — seed/custom selection ONLY (absent ⇒ default all seeds, so a
 //               future-added built-in defaults on); plugin slugs never live here.
 //   pluginOff — namespaced <id>/<slug> conventions the user explicitly unchecked.

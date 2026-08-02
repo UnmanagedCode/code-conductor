@@ -5,7 +5,7 @@
 //
 // Mechanics:
 //   1. Close the WebSocket server and terminate any held-open sockets
-//      (the PreToolUse hook callbacks hang up to 540 s otherwise).
+//      (the PreToolUse hook callbacks hang up to `HOOK_PENDING_TIMEOUT_MS` otherwise).
 //   2. Stop accepting new HTTP connections.
 //   3. Best-effort shutdown of attached instance subprocesses' stdin
 //      so they don't lose buffered writes; the subprocesses themselves
