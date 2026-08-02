@@ -97,7 +97,7 @@ export function buildTools() {
         properties: {
           sessionId: { type: 'string', description: 'Worker sessionId.' },
           sinceSeq: { type: 'integer', default: -1, description: 'Return events with _seq > sinceSeq (forward, oldest-first). Default -1 → newest page. Pass the previous call\'s nextAfter to poll incrementally.' },
-          limit: { type: 'integer', minimum: 1, maximum: 500, default: 200, description: 'Max events returned per call (clamped to [1, 500]). Use nextAfter + hasMore to page.' },
+          limit: { type: 'integer', minimum: 1, maximum: 500, default: 200, description: 'Max events returned per call (clamped to this property\'s minimum/maximum). Use nextAfter + hasMore to page.' },
         },
         required: ['sessionId'],
       },
@@ -161,14 +161,14 @@ export function buildTools() {
           sessionId: { type: 'string', description: 'Worker sessionId.' },
           text: { type: 'string' },
           wait: { type: 'boolean', default: false, description: 'Block until turn_end. Default false.' },
-          waitTimeoutMs: { type: 'integer', default: 600000, description: 'Per-call wait cap (default 600000 = 10 min).' },
+          waitTimeoutMs: { type: 'integer', default: 600000, description: 'Per-call wait cap (default per the schema).' },
           subscribe: {
             type: 'boolean', default: true,
             description: "Also register a one-shot idle callback (dispatch-and-wake) so you're re-woken on the worker's next turn_end. Default true. Pass false for mid-turn steers / fire-and-forget. Ignored (never subscribes) when wait:true.",
           },
           subscribeTimeoutMs: {
             type: 'integer',
-            description: 'Watchdog: wake with a non-completion "did NOT finish" stub if the worker+subagents-done state is never reached (hang/crash). Defaults to 30 min (ORCH_SUBSCRIBE_TIMEOUT_MS) when omitted; an explicit value overrides. Same semantics as subscribe_to_idle timeoutMs.',
+            description: 'Watchdog: wake with a non-completion "did NOT finish" stub if the worker+subagents-done state is never reached (hang/crash). Defaults to ORCH_SUBSCRIBE_TIMEOUT_MS when omitted; an explicit value overrides. Same semantics as subscribe_to_idle timeoutMs.',
           },
         },
         required: ['sessionId', 'text'],
@@ -184,7 +184,7 @@ export function buildTools() {
         type: 'object',
         properties: {
           sessionId: { type: 'string', description: 'Worker sessionId.' },
-          timeoutMs: { type: 'integer', default: 600000, description: 'Default 600000 (10 min) — matches send_prompt\'s wait cap.' },
+          timeoutMs: { type: 'integer', default: 600000, description: 'Default matches send_prompt\'s wait cap (see the schema default).' },
         },
         required: ['sessionId'],
       },
@@ -224,7 +224,7 @@ export function buildTools() {
           },
           subscribeTimeoutMs: {
             type: 'integer',
-            description: 'Watchdog: wake with a non-completion "did NOT finish" stub if the worker+subagents-done state is never reached (hang/crash). Defaults to 30 min (ORCH_SUBSCRIBE_TIMEOUT_MS) when omitted; an explicit value overrides. Same semantics as subscribe_to_idle timeoutMs.',
+            description: 'Watchdog: wake with a non-completion "did NOT finish" stub if the worker+subagents-done state is never reached (hang/crash). Defaults to ORCH_SUBSCRIBE_TIMEOUT_MS when omitted; an explicit value overrides. Same semantics as subscribe_to_idle timeoutMs.',
           },
         },
         required: ['sessionId'],
@@ -249,7 +249,7 @@ export function buildTools() {
           },
           subscribeTimeoutMs: {
             type: 'integer',
-            description: 'Watchdog: wake with a non-completion "did NOT finish" stub if the worker+subagents-done state is never reached (hang/crash). Defaults to 30 min (ORCH_SUBSCRIBE_TIMEOUT_MS) when omitted; an explicit value overrides. Same semantics as subscribe_to_idle timeoutMs.',
+            description: 'Watchdog: wake with a non-completion "did NOT finish" stub if the worker+subagents-done state is never reached (hang/crash). Defaults to ORCH_SUBSCRIBE_TIMEOUT_MS when omitted; an explicit value overrides. Same semantics as subscribe_to_idle timeoutMs.',
           },
         },
         required: ['sessionId'],
@@ -291,7 +291,7 @@ export function buildTools() {
           },
           subscribeTimeoutMs: {
             type: 'integer',
-            description: 'Watchdog: wake with a non-completion "did NOT finish" stub if the worker+subagents-done state is never reached (hang/crash). Defaults to 30 min (ORCH_SUBSCRIBE_TIMEOUT_MS) when omitted; an explicit value overrides. Same semantics as subscribe_to_idle timeoutMs.',
+            description: 'Watchdog: wake with a non-completion "did NOT finish" stub if the worker+subagents-done state is never reached (hang/crash). Defaults to ORCH_SUBSCRIBE_TIMEOUT_MS when omitted; an explicit value overrides. Same semantics as subscribe_to_idle timeoutMs.',
           },
         },
         required: ['sessionId', 'answers'],
@@ -310,7 +310,7 @@ export function buildTools() {
         'be re-woken when the worker finishes. The subscription is consumed on fire — call again to watch ' +
         'further turns. Caller identity is taken from the MCP URL (?caller=<sessionId>), so this only works for ' +
         'orchestrator-spawned instances. ' +
-        'A timeoutMs watchdog is ALWAYS armed (default 30 min, ORCH_SUBSCRIBE_TIMEOUT_MS; an explicit value ' +
+        'A timeoutMs watchdog is ALWAYS armed (default ORCH_SUBSCRIBE_TIMEOUT_MS; an explicit value ' +
         'overrides): if the agent+subagents-done state is not reached in time, the subscription fires with a ' +
         'timeout-flagged stub that says the worker did NOT finish, so a hung/crashed worker (or a stuck ' +
         'subagent) still wakes you. Whichever fires first (completion or timeout) consumes the subscription ' +
@@ -325,7 +325,7 @@ export function buildTools() {
             description:
               'Watchdog override: fire the subscription after this many ms even if the agent+subagents-done ' +
               'state has not been reached. Must be a positive finite number; omitted/invalid falls back to ' +
-              'the 30-min default (ORCH_SUBSCRIBE_TIMEOUT_MS). The stub injected on timeout is clearly ' +
+              'the default (ORCH_SUBSCRIBE_TIMEOUT_MS). The stub injected on timeout is clearly ' +
               'labelled as a timeout (not a completion) so the conductor can distinguish a timed-out worker ' +
               'from a finished one.',
           },
@@ -518,7 +518,7 @@ export function buildTools() {
       description:
         'Register a workspace name so it appears in the sidebar even before any project joins it. ' +
         'Idempotent — calling on an existing name is a no-op (added:false). Workspace names use the ' +
-        'same charset as project names (letters, digits, `.`, `_`, `-`), 1–40 chars, and cannot ' +
+        'same charset as project names (letters, digits, `.`, `_`, `-`), length and charset per the schema\'s minLength/maxLength/pattern, and cannot ' +
         'start with `.`.',
       inputSchema: {
         type: 'object',
@@ -535,7 +535,7 @@ export function buildTools() {
             minLength: 1,
             maxLength: 40,
             pattern: '^[a-zA-Z0-9_-][a-zA-Z0-9._-]{0,39}$',
-            description: 'Workspace name. Must match ^[a-zA-Z0-9_-][a-zA-Z0-9._-]{0,39}$.',
+            description: 'Workspace name. See minLength/maxLength/pattern on this property.',
           },
         },
         required: ['name'],
@@ -669,7 +669,7 @@ export function buildTools() {
         'which case each body is prefixed with "--- message i/N · msgId · textChars chars ---"). `omittedToolOnly` counts ' +
         'recent tool-call-only messages excluded by the default filter (the agent is active even when messages[] is ' +
         'empty); `hint` explains a short/empty result. Large message text is capped (textTruncated); blocks[].input is ' +
-        'capped inline (inputTruncated). Default count 1, max 50. ' +
+        'capped inline (inputTruncated). Default count and max per the `count` schema. ' +
         'DEFAULT-CALL BONDING: on the default call only (no `count` passed), if the last message is plain prose ' +
         'the selection is bonded back to the turn\'s plan/questions message and spans from it through the end ' +
         'of that turn — so a turn whose trailing prose spans several messages still surfaces the plan/questions ' +
@@ -680,7 +680,7 @@ export function buildTools() {
         type: 'object',
         properties: {
           sessionId: { type: 'string', description: 'Worker sessionId.' },
-          count: { type: 'integer', minimum: 1, maximum: 50, default: 1, description: 'Number of recent messages to return (from the filtered set). Default 1, clamped to [1, 50].' },
+          count: { type: 'integer', minimum: 1, maximum: 50, default: 1, description: 'Number of recent messages to return (from the filtered set). clamped to the `count` schema\'s [minimum, maximum].' },
           includeToolCalls: { type: 'boolean', default: false, description: 'When true, include tool-call-only messages (no text blocks) in the result. Default false.' },
           includeThinking: { type: 'boolean', default: false, description: 'When true, include thinking blocks in blocks[]. Default false.' },
         },
@@ -714,10 +714,10 @@ export function buildTools() {
       description:
         'Return the unified diff of <baseRef>...HEAD in a worktree, PLUS the working tree\'s uncommitted state. ' +
         'baseRef defaults to the worktree\'s recorded baseBranch (the branch it was created from); contextLines ' +
-        '(0-50, default 3) sets hunk context. Three modes keep this usable at any size: (1) summary:true returns a ' +
+        '(per the contextLines schema range/default) sets hunk context. The supported modes keep this usable at any size: (1) summary:true returns a ' +
         'structured per-file stat {totals, files:[{path,status,oldPath?,additions,deletions,binary}]} instead of a ' +
         'diff — always small, never truncated, single JSON block. (2) paths:[...] scopes the diff (or summary) to ' +
-        'specific file paths. (3) the diff is paginated by LINE INDEX: each call returns at most ~200 KB of whole ' +
+        'specific file paths. (3) the diff is paginated by LINE INDEX: each call returns at most `DIFF_BYTE_CAP` of whole ' +
         'lines starting at offset (0-based line index, default 0). In diff mode the OUTPUT is a compact-JSON metadata ' +
         'block (content[0]) {project, worktree, baseRef, head:<sha>, contextLines, offset, truncated, nextOffset, ' +
         'totalLines, totalBytes, hasUncommittedChanges:bool, untracked:[paths], ahead, includedFiles?, omittedFiles?} ' +
@@ -736,7 +736,7 @@ export function buildTools() {
           project: { type: 'string' },
           worktree: { type: 'string' },
           baseRef: { type: 'string', description: 'Optional ref to diff against. Defaults to the worktree\'s baseBranch.' },
-          contextLines: { type: 'integer', minimum: 0, maximum: 50, default: 3, description: 'Lines of context around each hunk (0-50, default 3).' },
+          contextLines: { type: 'integer', minimum: 0, maximum: 50, default: 3, description: 'Lines of context around each hunk (per the schema range/default).' },
           summary: { type: 'boolean', default: false, description: 'Return a per-file stat (totals + files[]) instead of a diff. Always small; never truncated.' },
           paths: { type: 'array', items: { type: 'string' }, description: 'Limit the diff (or summary) to these file paths.' },
           offset: { type: 'integer', minimum: 0, default: 0, description: '0-based line index into the diff to start this page at (default 0). Use nextOffset from the previous call to paginate.' },
@@ -760,9 +760,9 @@ export function buildTools() {
         'metadata block (content[0]) {project, worktree, cwd, exitCode, durationMs, truncated?, ' +
         'timedOut?, error?} PLUS a separate raw, un-escaped text block (content[1]) carrying the ' +
         'combined stdout+stderr output, in arrival order. A non-zero exitCode is a normal result, ' +
-        'not a tool error. truncated:true means retained output was capped at ~200 KB — the command ' +
+        'not a tool error. truncated:true means retained output was capped at the bash output cap (`BASH_OUTPUT_CAP`) — the command ' +
         'still ran to completion; assume later output beyond the cap was lost, not that the process ' +
-        'was killed. timeout is milliseconds (default 120000, max 600000 — larger values are ' +
+        'was killed. timeout is milliseconds (default per the schema, clamped to the max enforced in `bashProject` — larger values are ' +
         'clamped); on timeout (the only hard kill) the whole process group is killed, exitCode is ' +
         'null, and timedOut:true. stdin is not connected — an interactive command hangs until ' +
         'timeout.',
@@ -773,7 +773,7 @@ export function buildTools() {
           worktree: { type: 'string', description: 'Optional worktree name to scope into.' },
           command:  { type: 'string', description: 'The bash command to run.' },
           description: { type: 'string', description: 'Clear, concise description of what this command does in 5-10 words. Unused server-side; accepted for schema parity with the built-in Bash tool.' },
-          timeout:  { type: 'integer', minimum: 1, default: 120000, description: 'Timeout in milliseconds (max 600000). Values above 600000 are clamped.' },
+          timeout:  { type: 'integer', minimum: 1, default: 120000, description: 'Timeout in milliseconds; values above the max enforced in `bashProject` are clamped.' },
         },
         required: ['project', 'command'],
       },
@@ -791,14 +791,14 @@ export function buildTools() {
         '`lineNumbers:true` to prefix each line with a right-aligned number and tab (cat -n style, absolute to the ' +
         'full file). Metadata includes `startLine`/`endLine` when a range is requested. Binary files come back as a ' +
         'base64 body with encoding:"base64" — line params are ignored for binary. Content is byte-capped at maxBytes ' +
-        '(default 256 KB); the `truncated` flag tells you when that happened.',
+        '(default per the schema); the `truncated` flag tells you when that happened.',
       inputSchema: {
         type: 'object',
         properties: {
           project: { type: 'string' },
           worktree: { type: 'string', description: 'Optional worktree name to scope into.' },
           relativePath: { type: 'string', description: 'Path relative to the project / worktree root.' },
-          maxBytes: { type: 'integer', minimum: 1, default: 262144, description: 'Cap on bytes returned. Default 262144 (256 KB). For text with line params, applied as a final byte-cap on the assembled slice.' },
+          maxBytes: { type: 'integer', minimum: 1, default: 262144, description: 'Cap on bytes returned (default per the schema). For text with line params, applied as a final byte-cap on the assembled slice.' },
           lineNumbers: { type: 'boolean', default: false, description: 'When true, prefix each line with a right-aligned line number and tab (cat -n style). Numbers are absolute to the full file. Ignored for binary files. Default false.' },
           offset: { type: 'integer', minimum: 1, default: 1, description: '1-based line number to start at (default 1). Ignored for binary files.' },
           limit: { type: 'integer', minimum: 1, description: 'Maximum number of lines to return (default: to end of file). Ignored for binary files.' },
