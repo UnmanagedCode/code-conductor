@@ -578,6 +578,7 @@ export function installSettings({
     const tierBackend = data.tierBackend || {}; // {tier: {backend, model, window?}}
     const tierEffort = data.tierEffort || {};   // {tier: level} — the default-effort axis
     const efforts = data.efforts || [];         // effort levels, server-shipped catalog
+    const defaultEffort = data.defaultEffort;   // end of the server's precedence chain
     const enabledTiers = data.enabledTiers ?? {};
     const defaultTier = data.defaultSpawnTier ?? 'powerful';
     const enabledCount = tiers.filter(t => enabledTiers[t.tier] !== false).length;
@@ -709,8 +710,10 @@ export function installSettings({
       // the option is still detached — happy-dom drops that, and the panel test
       // asserts what the user would see). A value matching no option (a payload
       // without the effort axis) leaves selectedIndex at -1, i.e. a blank select —
-      // fall back to the first entry instead.
+      // fall back to the level the SERVER would resolve, never to the first entry
+      // in the catalog, which would display `low` for a row that runs at `high`.
       sel.value = current;
+      if (sel.selectedIndex < 0) sel.value = defaultEffort;
       if (sel.selectedIndex < 0) sel.selectedIndex = 0;
       sel.addEventListener('change', () => onPick(sel.value));
       return sel;

@@ -32,7 +32,7 @@ import { WHISPER_MODELS, isKnownModel, DEFAULT_MODEL } from './whisperModels.js'
 import {
   MODEL_FAMILIES, CAPABILITY_TIERS, isKnownTier,
 } from './modelVersions.js';
-import { EFFORT_LEVELS } from './effortLevels.js';
+import { EFFORT_LEVELS, DEFAULT_EFFORT } from './effortLevels.js';
 import {
   isAvailable as ttsAvailable, synthesize, voicePathForName,
 } from './tts.js';
@@ -1229,6 +1229,10 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
       tierBackend,
       tierEffort,
       efforts: EFFORT_LEVELS,
+      // The end of the precedence chain, shipped so a client fallback lands on the
+      // level the SERVER would actually resolve rather than on the first level in
+      // the catalog (see buildEffortPicker, public/settings.js).
+      defaultEffort: DEFAULT_EFFORT,
       roles: allRoles,
       roleBackend,
       roleEffort,

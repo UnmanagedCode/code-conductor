@@ -224,14 +224,22 @@ hazard, only a level.
 `InstanceManager._doCreate` is the only caller: `tier`/`role` reach it from
 `mcp/handlers.js` `spawnInstance` (which already knows which one it resolved the
 model through) and from the `POST /api/instances` body. Neither name is stored on
-the `Instance` — `this.effort` holds the resolved level, which respawn reuses.
-**Every resume** (sidebar one-click, crash/anchor auto-resume, `respawn_instance`,
-the restart manifest) carries no tier/role and so lands on `DEFAULT_EFFORT`: a
-resume recovers its model from the jsonl/sidecar, not from a binding, so there is
-no row to inherit an effort from.
+the `Instance` — `this.effort` holds the resolved level.
+
+**What each relaunch path does** — only the first ever consults a tier/role default,
+so a changed default moves *new spawns*, never anything already running:
+
+| Path | Effort |
+|---|---|
+| Fresh spawn (dialog / Conduct / `spawn_instance` with a tier or role) | resolved through the chain above |
+| Resume via `_doCreate` with no tier/role — sidebar one-click, anchor auto-resume, `spawn_instance({resume})` | step 4, `DEFAULT_EFFORT`: a resume recovers its model from the jsonl/sidecar, not from a binding, so there is no row to inherit from |
+| Restart manifest (`src/resumeRestart.js`) | step 1 — it carries the recorded `effort` explicitly, so the session comes back at the exact level it was running at |
+| `Instance.launch({resume})` — `respawn_instance`, `POST /instances/:id/respawn`, crash-respawn, rewind, prune | reuses the live `this.effort`; these never re-enter `_doCreate`, so nothing is re-resolved |
 
 The client **never** resolves this chain. The `/api/settings/models` payload ships
-`tierEffort` (effective, always concrete), `efforts` (the level catalog), and
+`tierEffort` (effective, always concrete), `efforts` (the level catalog),
+`defaultEffort` (`DEFAULT_EFFORT`, so a client fallback lands on the level the server
+would resolve rather than the first level in the catalog), and
 `roleEffort: {<role>: {effort, inheritsTo}}`, where `inheritsTo` is what `inherit`
 resolves to right now — computed server-side purely so the UI can render the
 `Inherit (<level>)` label. The caller-facing statement of the chain lives in the

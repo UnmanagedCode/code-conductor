@@ -18,11 +18,11 @@ import { bootServer, api, waitFor, freshProjectsRoot, rmrf, instForSession } fro
 import {
   setTierEffort, getTierEffort, setRoleEffort, getRoleEffort,
   inheritedRoleEffort, resolveRoleEffort, resolveSpawnEffort,
-  setRoleBinding, addCustomRole, setDefaultSpawnTier,
+  setRoleBinding, addCustomRole, setDefaultSpawnTier, setPluginRolesProvider,
 } from '../src/appSettings.js';
 import { DEFAULT_EFFORT, INHERIT_EFFORT, EFFORT_LEVELS } from '../src/effortLevels.js';
 import { DEFAULT_VERSIONS } from '../src/modelVersions.js';
-import { encodeCwd } from '../src/projects.js';
+import { encodeCwd, orchStoreRoot } from '../src/projects.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-instance.json');
@@ -139,10 +139,100 @@ describe('resolveSpawnEffort precedence', () => {
     assert.equal(resolveSpawnEffort({ role: 'Tester' }), 'low');
   });
 
-  test("an unknown tier/role name falls through instead of refusing", () => {
+  test('an unknown tier/role name falls through instead of refusing', async () => {
     // Deliberate: unlike a missing backend there's no billing hazard, only a level.
-    assert.equal(resolveSpawnEffort({ tier: 'nope' }), DEFAULT_EFFORT);
+    // The default spawn tier is deliberately tuned OFF the global default: an
+    // unknown role that skipped the isResolvableRole guard would resolve through
+    // defaultRoleBinding → the default spawn tier → 'low', so 'high' here is only
+    // reachable by falling all the way through the chain.
+    await setDefaultSpawnTier('fast');
+    await setTierEffort('fast', 'low');
     assert.equal(resolveSpawnEffort({ role: 'nope' }), DEFAULT_EFFORT);
+    assert.equal(resolveSpawnEffort({ tier: 'nope' }), DEFAULT_EFFORT);
+    // A name that IS resolvable still goes through the role branch, so the guard
+    // isn't just dead weight.
+    await setRoleEffort('conductor', 'max');
+    assert.equal(resolveSpawnEffort({ role: 'conductor' }), 'max');
+  });
+
+  test("a plugin role's effort inherits through its MANIFEST binding", async () => {
+    // A plugin role is live-derived and has no DEFAULT_ROLE_BINDING entry, so the
+    // inherited level can only come from the EFFECTIVE binding (manifest or user
+    // override). Tuned so the manifest tier and the default spawn tier differ:
+    // reading the stored binding instead would fall back to powerful → 'low'.
+    setPluginRolesProvider(() => [
+      { role: 'p/scribe', label: 'Scribe', binding: { kind: 'tier', tier: 'fast' }, plugin: 'p' },
+    ]);
+    try {
+      await setDefaultSpawnTier('powerful');
+      await setTierEffort('powerful', 'low');
+      await setTierEffort('fast', 'max');
+      assert.equal(getRoleEffort('p/scribe'), INHERIT_EFFORT, 'plugin roles start on inherit too');
+      assert.equal(inheritedRoleEffort('p/scribe'), 'max', 'follows the MANIFEST-bound tier');
+      assert.equal(resolveSpawnEffort({ role: 'p/scribe' }), 'max');
+
+      // A user override of a plugin role's effort persists under its namespaced id
+      // and beats the manifest-inherited level (parity with a binding override).
+      await setRoleEffort('P/Scribe', 'medium');   // case-insensitive, same key
+      assert.equal(getRoleEffort('p/scribe'), 'medium');
+      assert.equal(resolveSpawnEffort({ role: 'p/scribe' }), 'medium');
+      assert.equal(inheritedRoleEffort('p/scribe'), 'max', 'what it would revert to is unchanged');
+    } finally {
+      setPluginRolesProvider(null);
+    }
+  });
+
+  test("a plugin role bound by manifest to a concrete model inherits the global default", async () => {
+    setPluginRolesProvider(() => [
+      { role: 'p/fixed', label: 'Fixed', binding: { backend: 'claude', model: DEFAULT_VERSIONS.haiku }, plugin: 'p' },
+    ]);
+    try {
+      await setDefaultSpawnTier('powerful');
+      await setTierEffort('powerful', 'low');
+      assert.equal(resolveSpawnEffort({ role: 'p/fixed' }), DEFAULT_EFFORT, 'no tier to follow');
+    } finally {
+      setPluginRolesProvider(null);
+    }
+  });
+
+  test("an INVALID stored level reverts on read and never reaches --effort", async () => {
+    // Hand-edited settings.json (the setters would refuse these). Written before any
+    // appSettings read in this test so the cache seeds from it. Mirrors the
+    // dead-binding revert the bindings already guarantee (see getTierBackend).
+    const file = path.join(orchStoreRoot(), 'settings.json');
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(file, JSON.stringify({
+      models: {
+        tierEffort: { fast: 'ultra', frontier: 'max' },
+        roleEffort: { conductor: 'ultra' },
+        roleBackend: { conductor: { kind: 'tier', tier: 'frontier' } },
+      },
+    }));
+
+    // Tier: reverts to the global default, NOT passed through.
+    assert.equal(getTierEffort('fast'), DEFAULT_EFFORT);
+    assert.equal(resolveSpawnEffort({ tier: 'fast' }), DEFAULT_EFFORT);
+    // Role: reverts to 'inherit', so it follows its (valid) frontier binding.
+    assert.equal(getRoleEffort('conductor'), INHERIT_EFFORT);
+    assert.equal(resolveSpawnEffort({ role: 'conductor' }), 'max');
+    // A valid neighbour in the same map is untouched — the revert is per key.
+    assert.equal(getTierEffort('frontier'), 'max');
+  });
+
+  test("an empty-string effort is INVALID, not 'omitted'", async () => {
+    await setTierEffort('fast', 'low');
+    // Pre-feature this was a 400; an explicit-but-unusable value must never decay
+    // into a default (it isn't in EFFORT_LEVELS).
+    assert.throws(() => resolveSpawnEffort({ effort: '', tier: 'fast' }), (e) => {
+      assert.equal(e.statusCode, 400);
+      return true;
+    });
+    await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'p', effort: '', tier: 'fast' });
+    assert.equal(r.status, 400, 'POST /api/instances {effort:""} stays a 400');
+    // Absent-ness proper still falls through to the tier default.
+    assert.equal(resolveSpawnEffort({ effort: undefined, tier: 'fast' }), 'low');
+    assert.equal(resolveSpawnEffort({ effort: null, tier: 'fast' }), 'low');
   });
 
   test("'inherit' is a role-only sentinel — a tier refuses it", async () => {
@@ -227,9 +317,23 @@ describe('the resolved effort reaches the spawn', () => {
   test("MCP spawn_instance({model:'<tier>'}) applies that tier's default effort", async () => {
     await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
     await setTierEffort('fast', 'low');
-    const w = await callTool('spawn_instance', { project: 'p', mode: 'bypassPermissions', model: 'fast' });
-    const inst = instForSession(instances, w.sessionId);
-    assert.equal(inst.effort, 'low', 'handler dropped the tier name if this is high');
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'spawn-effort-mcp-'));
+    const argvDump = path.join(tmp, 'argv.txt');
+    process.env.FAKE_CLAUDE_ARGV_DUMP = argvDump;
+    try {
+      const w = await callTool('spawn_instance', { project: 'p', mode: 'bypassPermissions', model: 'fast' });
+      const inst = instForSession(instances, w.sessionId);
+      assert.equal(inst.effort, 'low', 'handler dropped the tier name if this is high');
+      // Assert the LAUNCH args too, not just tracked state — the MCP surface has
+      // its own resolution step, so it gets its own argv proof.
+      await waitFor(() => instForSession(instances, w.sessionId)?.status === 'idle');
+      await waitFor(async () => { try { await fs.stat(argvDump); return true; } catch { return false; } });
+      const argv = (await fs.readFile(argvDump, 'utf8')).split('\n').filter(Boolean);
+      assert.equal(argv[argv.indexOf('--effort') + 1], 'low');
+    } finally {
+      delete process.env.FAKE_CLAUDE_ARGV_DUMP;
+      await rmrf(tmp);
+    }
   });
 
   test('MCP spawn_instance honours an explicit effort over the tier default', async () => {

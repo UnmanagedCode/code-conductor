@@ -21,7 +21,7 @@ import {
   getAllRoles, isResolvableRole, resolveRoleBackend,
   getCustomRoles, addCustomRole, removeCustomRole,
   addCustomModel, removeCustomModel, setPluginRolesProvider,
-  getTierEffort, setTierEffort, getRoleEffort, setRoleEffort,
+  getTierEffort, setTierEffort, getRoleEffort, setRoleEffort, resolveSpawnEffort,
 } from '../src/appSettings.js';
 import { EFFORT_LEVELS, DEFAULT_EFFORT } from '../src/effortLevels.js';
 
@@ -992,6 +992,32 @@ test('appSettings: the effort keys survive unrelated writes to the models namesp
       await setTierEffort('fast', 'medium');
       assert.deepEqual(getTierBackend('frontier'), { backend: 'claude', model: 'claude-opus-4-8' });
       assert.deepEqual(getRoleBinding('conductor'), { kind: 'tier', tier: 'fast' });
+    });
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test('removeCustomRole clears BOTH axes — a recreated name does not inherit the old effort', async () => {
+  const root = await mkTmp();
+  try {
+    await withEnv({ PROJECTS_ROOT: root }, async () => {
+      await addCustomRole({ role: 'Tester' });
+      await setRoleEffort('Tester', 'max');
+      await setRoleBinding('Tester', { kind: 'tier', tier: 'fast' });
+      assert.equal(getRoleEffort('Tester'), 'max');
+
+      assert.equal(await removeCustomRole('tester'), true); // case-insensitive
+      const stored = JSON.parse(await fs.readFile(path.join(orchStoreRoot(), 'settings.json'), 'utf8'));
+      assert.equal('Tester' in (stored.models.roleEffort || {}), false,
+        'the effort entry is deleted, like the binding one line above it');
+      assert.equal('Tester' in (stored.models.roleBackend || {}), false);
+
+      // Recreating the name must start clean: `inherit` → the powerful tier it is
+      // created on. A stranded 'max' would spawn it at max with nothing in the UI
+      // attributing that to the new role.
+      await addCustomRole({ role: 'Tester' });
+      assert.equal(getRoleEffort('Tester'), 'inherit');
+      await setTierEffort('powerful', 'low');
+      assert.equal(resolveSpawnEffort({ role: 'Tester' }), 'low');
     });
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });

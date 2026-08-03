@@ -35,6 +35,7 @@ function modelsPayload(over = {}) {
     tierBackend: Object.fromEntries(TIERS.map(t => [t.tier, { backend: 'claude', model: 'claude-opus-4-8' }])),
     tierEffort: Object.fromEntries(TIERS.map(t => [t.tier, 'high'])),
     efforts: EFFORT_LEVELS,
+    defaultEffort: 'high',
     roles: [{ role: 'conductor', label: 'Conductor', builtin: true }],
     roleBackend: { conductor: { kind: 'tier', tier: 'powerful' } },
     roleEffort: { conductor: { effort: 'inherit', inheritsTo: 'high' } },
@@ -207,4 +208,23 @@ test('a disabled tier disables its effort select alongside its binding pickers',
   assert.equal(row.querySelector('.sm-backend').disabled, true);
   assert.equal(row.querySelector('.sm-effort').disabled, true, 'a hidden tier can\'t be re-tuned');
   assert.equal(tierRow(window, 'balanced').querySelector('.sm-effort').disabled, false);
+});
+
+test('a row whose level is missing from the payload shows the SERVER default, not the first level', async () => {
+  // A stale/partial payload (an older server, a hand-edited store) must not display
+  // `low` — the first entry in EFFORT_LEVELS — for a row the server resolves at
+  // `high`. The displayed level is a claim about what will run.
+  const { impl } = stubFetch(modelsPayload({
+    tierEffort: { balanced: 'max' },                 // fast/powerful/frontier absent
+    roleEffort: { conductor: { effort: undefined, inheritsTo: 'high' } },
+  }));
+  const { window, mod } = await setup(impl);
+  mod.installSettings({});
+  await openSettings(window);
+
+  assert.equal(tierRow(window, 'fast').querySelector('.sm-effort').value, 'high',
+    'falls back to the payload\'s defaultEffort');
+  assert.equal(tierRow(window, 'balanced').querySelector('.sm-effort').value, 'max');
+  // A role with no stored effort still lands on its Inherit option.
+  assert.equal(window.document.querySelector('#sm-role-list .sm-effort').value, 'inherit');
 });

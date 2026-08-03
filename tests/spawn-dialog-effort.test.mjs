@@ -12,10 +12,23 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Window } from 'happy-dom';
+import { readFileSync } from 'node:fs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const TIERS = ['fast', 'balanced', 'powerful', 'frontier'];
+
+// The REAL `<select id="sd-effort">` markup, lifted out of public/index.html rather
+// than hand-written here: the leading `<option value="">` is the anchor the whole
+// "leave it on Default and let the server resolve" contract hangs on (spawnDialog.js
+// reads `dom.sdEffort.value || undefined` and relabels `option[value=""]`), so a
+// hand-copied select would let someone delete that option with these tests still green.
+const INDEX_HTML = readFileSync(path.resolve(__dirname, '..', 'public', 'index.html'), 'utf8');
+const SD_EFFORT_MARKUP = (() => {
+  const m = INDEX_HTML.match(/<select id="sd-effort">[\s\S]*?<\/select>/);
+  if (!m) throw new Error('public/index.html no longer has a <select id="sd-effort"> — update this test');
+  return m[0];
+})();
 
 // Mirrors GET /api/settings/models for the fields models.js caches.
 function modelsPayload(tierEffort) {
@@ -49,14 +62,7 @@ function buildDOM(document) {
         </div>
         <button type="button" id="sd-mode-code" aria-pressed="true"></button>
         <button type="button" id="sd-mode-plan" aria-pressed="false"></button>
-        <select id="sd-effort">
-          <option value="" selected>Default</option>
-          <option value="low">low</option>
-          <option value="medium">medium</option>
-          <option value="high">high</option>
-          <option value="xhigh">xhigh</option>
-          <option value="max">max</option>
-        </select>
+        ${SD_EFFORT_MARKUP}
         <select id="sd-thinking"><option value="adaptive" selected>adaptive</option></select>
         <input id="sd-worktree" type="checkbox" />
         <span id="sd-worktree-hint"></span>
@@ -209,4 +215,40 @@ test('the Conduct button sends role:conductor and no effort', async () => {
   assert.equal(spawns[0].role, 'conductor',
     "the Conductor role travels so ITS default effort applies (not the spawn dialog's tier)");
   assert.equal(spawns[0].effort, undefined);
+});
+
+// The client cache's own fallbacks (public/models.js), which every test above
+// bypasses by supplying a complete `tierEffort`. Uses its OWN cache-busted
+// models.js instance so the pre-fetch state is genuinely unseeded.
+test('models.js: pre-fetch reads the DEFAULT_EFFORT seed, then adopts the payload\'s defaultEffort', async () => {
+  const window = new Window({ url: 'http://localhost/' });
+  globalThis.window = window;
+  globalThis.document = window.document;
+  const models = await import(
+    pathToFileURL(path.resolve(__dirname, '..', 'public', 'models.js')).href + '?prefetch=1');
+
+  // Before any fetch: the seed mirrors src/effortLevels.js DEFAULT_EFFORT, so a
+  // first paint can't advertise a level the server would never resolve.
+  for (const t of TIERS) assert.equal(models.getActiveTierEffort(t), 'high');
+
+  // After the fetch: a tier the payload omits falls back to the SHIPPED default,
+  // not to the stale seed.
+  globalThis.fetch = () => Promise.resolve({
+    ok: true, status: 200,
+    json: () => Promise.resolve({ ...modelsPayload({ balanced: 'max' }), defaultEffort: 'medium' }),
+  });
+  await models.loadModelVersions();
+  assert.equal(models.getActiveTierEffort('balanced'), 'max', 'a shipped level wins');
+  assert.equal(models.getActiveTierEffort('frontier'), 'medium', 'an absent one uses defaultEffort');
+});
+
+test('public/index.html anchors the Default option: first, value="", pre-selected', async () => {
+  const { dom } = await setup({ fast: 'low', balanced: 'medium', powerful: 'high', frontier: 'max' });
+  const opts = [...dom.sdEffort.options];
+  assert.equal(opts[0].value, '', 'the empty-value option exists and is FIRST');
+  assert.equal(dom.sdEffort.value, '', 'the shipped markup pre-selects it');
+  // The remaining entries are the real levels, in order, with no stray duplicate
+  // of the removed hardcoded `selected` on `high`.
+  assert.deepEqual(opts.slice(1).map(o => o.value), ['low', 'medium', 'high', 'xhigh', 'max']);
+  assert.equal(opts.filter(o => o.value === '').length, 1);
 });

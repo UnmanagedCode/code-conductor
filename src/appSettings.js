@@ -746,12 +746,23 @@ export function resolveRoleEffort(role) {
 // model id — see getTierBackend's callers) the only thing at stake here is which
 // effort level a spawn runs at, so a refusal would be the harsher error.
 //
-// Paths with no tier/role at hand — every resume (sidebar one-click, crash/anchor
-// auto-resume, respawn_instance, the restart manifest) — land on step 4 and keep
-// today's behaviour: a resume recovers its model from the jsonl/sidecar, not from
-// a tier, so there is no binding to inherit an effort from.
+// Paths with no tier/role at hand land on step 4 and keep today's behaviour: a
+// resume recovers its model from the jsonl/sidecar, not from a binding, so there is
+// no row to inherit an effort from. That is the sidebar one-click resume, the anchor
+// auto-resume, and spawn_instance({resume}). Two other relaunch paths never reach
+// step 4 at all: the restart manifest passes the recorded `effort` explicitly (step
+// 1, so a session returns at the level it was running at), and Instance.launch({resume})
+// — respawn_instance, crash-respawn, rewind, prune — reuses the live `this.effort`
+// without re-entering _doCreate. Table of all of them: docs/models.md#default-effort.
 export function resolveSpawnEffort({ effort, tier, role } = {}) {
-  if (effort !== undefined && effort !== null && effort !== '') {
+  // Only `undefined`/`null` mean "the caller didn't ask" (an absent JSON field, an
+  // omitted MCP arg). Anything else present — including the empty string — is an
+  // ATTEMPT to name a level and must be validated, not absorbed: `''` was a 400
+  // before this feature and staying a 400 is what keeps "an invalid explicit value
+  // never silently becomes a default" true. (The spawn dialog's `Default` option
+  // has value '' but is normalized to `undefined` before the POST — see
+  // public/spawnDialog.js.)
+  if (effort !== undefined && effort !== null) {
     if (!isKnownEffort(effort)) {
       throw Object.assign(new Error('invalid effort'), { statusCode: 400 });
     }
@@ -855,8 +866,11 @@ export async function addCustomRole({ role, binding } = {}) {
   return { role: name };
 }
 
-// Remove a custom role and its binding (case-insensitive). Returns false if no
-// matching custom role.
+// Remove a custom role and BOTH of its axes — binding and default effort
+// (case-insensitive). Returns false if no matching custom role. Leaving either
+// behind would silently re-apply to a later role of the same name: recreating
+// `Tester` starts on the default tier at `inherit`, so a stranded roleEffort
+// entry would spawn it at an effort nothing in the UI attributes to it.
 export async function removeCustomRole(role) {
   const canonical = canonicalCustomRole(role);
   if (canonical === undefined) return false;
@@ -864,7 +878,9 @@ export async function removeCustomRole(role) {
   const nextList = getCustomRoles().filter(r => r !== canonical);
   const roleBackend = { ...(cur.models?.roleBackend || {}) };
   delete roleBackend[canonical];
-  const models = { ...(cur.models || {}), customRoles: nextList, roleBackend };
+  const roleEffort = { ...(cur.models?.roleEffort || {}) };
+  delete roleEffort[canonical];
+  const models = { ...(cur.models || {}), customRoles: nextList, roleBackend, roleEffort };
   await writeSettings({ ...cur, models });
   return true;
 }

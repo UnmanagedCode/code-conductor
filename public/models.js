@@ -49,12 +49,13 @@ const DEFAULT_ROLE_BINDING = {
   reviewer:  { kind: 'tier', tier: 'powerful' },
 };
 
-// Pre-fetch fallback for the effort a tier spawns at (mirrors DEFAULT_EFFORT in
-// src/effortLevels.js). A FALLBACK only: the server ships the effective per-tier
-// level in the boot payload, and it is the only thing consulted for a real spawn —
-// the client never resolves the effort chain itself (see resolveSpawnEffort,
-// src/appSettings.js). Read for DISPLAY: the spawn dialog's `Default (…)` label.
-const DEFAULT_TIER_EFFORT_FALLBACK = 'high';
+// First-paint seed for the end of the effort chain (mirrors DEFAULT_EFFORT in
+// src/effortLevels.js) — replaced by the payload's `defaultEffort` on the boot
+// fetch, so the shipped value is the single source and this is only what a
+// pre-fetch read sees. Read for DISPLAY only: the spawn dialog's `Default (…)`
+// label. The client never resolves the effort chain itself (that is
+// resolveSpawnEffort, src/appSettings.js).
+let defaultEffort = 'high';
 
 let activeTierEffort = {};
 let activeTierEnabled = { fast: true, balanced: true, powerful: true, frontier: true };
@@ -133,8 +134,9 @@ export function setActiveTierBackend(map) { activeTierBackend = { ...activeTierB
 
 // The effort a spawn on this tier runs at, as resolved SERVER-side and shipped in
 // the models payload. Display-only.
-export function getActiveTierEffort(tier) { return activeTierEffort[tier] || DEFAULT_TIER_EFFORT_FALLBACK; }
+export function getActiveTierEffort(tier) { return activeTierEffort[tier] || defaultEffort; }
 export function setActiveTierEffort(map) { activeTierEffort = { ...activeTierEffort, ...(map || {}) }; }
+export function setDefaultEffort(level) { if (level) defaultEffort = level; return defaultEffort; }
 
 // Apply the Sonnet window suffix to a Claude version id from the binding's own
 // `window` ('1m'|'200k', default '1m') — no global. No-op for non-Sonnet and
@@ -165,6 +167,7 @@ export async function loadModelVersions() {
       }
       setBackends(data.backends);
       if (data.tierBackend) setActiveTierBackend(data.tierBackend);
+      setDefaultEffort(data.defaultEffort);
       if (data.tierEffort) setActiveTierEffort(data.tierEffort);
       if (data.roleBackend) setActiveRoleBindings(data.roleBackend);
       if (data.enabledTiers) setActiveTierEnabled(data.enabledTiers);
