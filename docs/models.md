@@ -85,11 +85,18 @@ The consequences of being a substitution backend:
   `claudeShellEnv.js`) set neither — they run a single short prompt with no
   conversation to compact. See [protocol.md](protocol.md#subprocess-protocol) for why
   both are needed.
-- **Bare model reports are suppressed** — the inner CLI records `message.model`
-  bare (tag dropped), so `_trackModel` ignores a report that tag-strips to the
-  current model rather than treating it as an interactive switch. Without this,
-  `this.model` would lose its tag and the next launch would use an unpullable
-  tagless id.
+- **The CLI's model report is ignored entirely** — `_trackModel` never adopts it
+  for a substitution backend that has a configured model, whatever it says. The
+  inner CLI records `message.model` lossily (the `:tag` variant suffix *and* any
+  terminal `[…]` build tag dropped) and may report an unrelated id altogether;
+  `this.model` is the registry KEY for these backends, so adopting any of that
+  breaks the next resume's `--model <key>`, drops the context env vars, and writes
+  a foreign id + capacity into `session-backends.json`. Suppressing only the
+  *lossy* shapes left exactly that hole. Unconditional is correct rather than
+  merely safe: live model changes are already refused here (below), so the
+  configured id is authoritative by construction. The guard is keyed on
+  `backend !== 'claude'`, never on one backend id — narrowing it to
+  `=== 'ollama'` reintroduces the bug for every user-defined backend.
 - **Live "Change model" is refused** — the endpoint is fixed at launch, so any
   switch with a non-`claude` backend on either side (including
   substitution↔substitution) is rejected `409 BACKEND_LOCKED`.
@@ -107,10 +114,11 @@ The consequences of being a substitution backend:
   agent is exempt from the overage stop/resume flow. Adding a monitor later is one
   `Set` entry (`src/usageWindowDomains.js`).
 - **The session sidecar records it** — `<store>/session-backends.json` maps
-  `sid → {backend, model}`. Two things the CLI jsonl can't carry: which backend ran
-  the session, and the model TAG. Absence of a record means plain `claude`; a `null`
-  model means backend-known/model-unknown (resume falls back to the jsonl and the
-  next mark self-heals it). If the recorded backend has since been REMOVED from the
+  `sid → {backend, model, contextWindowTokens?}`. Two things the CLI jsonl can't
+  carry: which backend ran the session, and the model id in full. Absence of a record
+  means plain `claude`; a `null` model means backend-known/model-unknown (resume falls
+  back to the jsonl and the next mark self-heals it). `contextWindowTokens` is a
+  fallback used only when the model's custom-model row has since been deleted. If the recorded backend has since been REMOVED from the
   registry, resume is refused `422 BACKEND_GONE` (below).
 
 There is deliberately **no** per-backend health check and **no** per-backend model
@@ -143,9 +151,9 @@ selectable for a substitution backend.
   (stored `Math.round`ed). It
   drives the context-usage bar and both cc-managed env vars at spawn, so a wrong
   value silently truncates or over-fills the window. Resolved by
-  `contextWindowForModel()` (`src/appSettings.js`), mirrored client-side by
-  `customContextWindowFor()` (`public/models.js`, which additionally matches the
-  bare base name the CLI reports).
+  `contextWindowForModel()` (`src/appSettings.js`) — an **exact** match on the
+  model id, which is the registry key. There is no client-side mirror: the server
+  ships the resolved number as `contextWindowTokens`.
 
 ### The curated Ollama cloud catalog
 
@@ -158,12 +166,12 @@ to the `ollama` row — `DEFAULT_TIER_BACKEND` stays all-Claude.
 
 ## Capability tiers & roles
 
-**Tiers** — `CAPABILITY_TIERS` (the tier list in `src/modelVersions.js`) is the primary spawn vocabulary. Each binds to `{backend, model, window?}` under
+**Tiers** — `CAPABILITY_TIERS` (the tier list in `src/modelVersions.js`) is the primary spawn vocabulary. Each binds to `{backend, model}` under
 `models.tierBackend`. Defaults (`DEFAULT_TIER_BACKEND`) are all-Claude; see the module for the per-tier mapping.
 
 **Roles** are a parallel bindable layer under `models.roleBackend`. A role binding is
 **either** a tier reference `{kind:'tier', tier}` — follow whatever that tier points
-at — **or** a concrete `{backend, model, window?}`. The two are told apart by
+at — **or** a concrete `{backend, model}`. The two are told apart by
 `kind === 'tier'`; a tier reference names no backend, so it keeps `kind`.
 
 - **Built-in**: `ROLES` (the seed role list in `src/modelVersions.js`), both defaulting to the `powerful`
@@ -246,31 +254,54 @@ resolves to right now — computed server-side purely so the UI can render the
 `Inherit (<level>)` label. The caller-facing statement of the chain lives in the
 MCP `spawn_instance` `effort` schema description.
 
-## Claude context windows
+## Context windows
 
-One fixed window per family, applied by `canonicalizeModel()` in
-`src/modelVersions.js` — the single source of truth, mirrored client-side in
-`public/models.js`:
+Every model has exactly **one** native context window. There is no per-spawn
+window choice and no routing selector.
 
-| Family | Window |
-|---|---|
-| Haiku | 200k (no 1M build) — bare id |
-| Opus / Fable 5 | 1M (CLI default) — bare id |
-| Sonnet 5 | 1M only (`fixedWindow` in the catalog) — always `[1m]` |
-| Sonnet 4.x | user-selectable 200k (bare) or 1M (`[1m]`) |
+**Claude models** declare theirs in the `src/modelVersions.js` catalog as
+`contextWindow` (raw tokens), plus an optional `launchTag` — the suffix the CLI
+needs to actually reach that capacity. A model carries `launchTag` only where its
+native window is a separate build with a distinct id; everything else launches
+bare. The catalog is authoritative for which model is which, so those values are
+not restated here.
 
-One fixed window per family, applied by `canonicalizeModel()` in `src/modelVersions.js` (single source of truth); see the catalog for the per-family policy.
+**Substitution-backend models** declare theirs on their custom-model row
+(`contextWindow`, required) or carry it in the curated Ollama preset catalog.
 
-A Sonnet 4.x choice rides as `window` **on that individual binding**
-(`{backend:'claude', model, window}`) — there is no global preference, so picking one
-binding's window never moves another's. `persistBinding` stores `window` only where
-it's meaningful (a `claude` binding on a selectable-window Sonnet); everything else
-would ignore it. The window rides on the spawn as `sonnetWindow` and in
-`this.model`'s suffix, is carried across a graceful restart via the resume manifest,
-and defaults to **1M on a bare cold resume** (larger window, never truncates).
+### Resolution
 
-`canonicalizeModel` is a **no-op for any non-Claude id** (`familyOf` returns null),
-which is exactly what lets a tagged model survive resume untouched.
+`resolveContextWindowTokens({backend, model})` in `src/appSettings.js` is the
+single place capacity is resolved: it dispatches on `backend` to either
+`claudeContextWindowTokens()` (catalog) or `contextWindowForModel()` (registry).
+`Instance.create()` calls it once and stores the number as
+`contextWindowTokens`, which then feeds every consumer — the substitution
+backend's `CLAUDE_CODE_MAX_CONTEXT_TOKENS` / `CLAUDE_CODE_AUTO_COMPACT_WINDOW`,
+`summary()`, the MCP projection, the header ctx chip, forks, and the resume
+manifest. **Unknown capacity is `null` and renders as `ctx —`** — never a
+fabricated default.
+
+A binding is exactly `{backend, model}`. Sidecar and manifest records carry
+`contextWindowTokens` as a **fallback only**, used when the model's custom-model
+row was deleted since the session last ran; live registry resolution wins
+whenever it succeeds.
+
+### Canonicalization is gated on `backend`
+
+`canonicalizeModel(modelId, backend)` applies the launch tag. `backend` is a
+**required positional**, and that gate is the only reason this is a no-op for a
+substitution model — *not* `familyOf()` returning null:
+
+- `backend === 'claude'` → strip any terminal tag, re-apply the catalog
+  `launchTag`. This is also what re-tags the bare id recovered from a jsonl on a
+  cold resume, so each model comes back at its own native window.
+- any other backend → the id is returned **byte-exact**. A substitution model id
+  is an opaque registry key that may legitimately end in `[1m]` or look
+  Claude-shaped; every registry lookup matches it exactly, so normalizing it
+  silently drops the context env vars and breaks `{model}` substitution.
+
+Omitting the argument yields `undefined !== 'claude'` → verbatim, i.e. it fails
+toward preserving the caller's id rather than mangling it.
 
 ## Settings → Backends
 
@@ -307,7 +338,8 @@ back to the first enabled tier in order balanced → fast → powerful → front
 two binding selects come from one shared `buildBackendPicker` and the effort select
 from `buildEffortPicker` — both reused by the Roles rows.
 
-- **`claude`** → the Claude version list; a selectable-window Sonnet version contributes one entry per window build (see the catalog).
+- **`claude`** → the Claude version list, one option per version. Each model has a
+  single native context window, so there is no window sub-choice.
 - **any other backend** → a curated optgroup (built-in `ollama` row only) + a
   **"My Models"** optgroup filtered to that backend; `(add a model below)` when it has
   none.

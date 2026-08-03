@@ -191,7 +191,7 @@ export function installSpawnDialog({ dom, getProjects, refreshProjects, refreshI
     dom.sdError.textContent = '';
     const project  = pendingSpawnProject;
     const mode     = sdModeValue;
-    const { model, backend, sonnetWindow } = resolveSpawnModel(selectedSpawnTier);
+    const { model, backend } = resolveSpawnModel(selectedSpawnTier);
     // Send the TIER alongside the resolved model and omit `effort` unless the user
     // picked a level: the server then resolves that tier's stored default effort.
     // Deliberately NOT mirrored client-side — the precedence chain has one home.
@@ -211,7 +211,7 @@ export function installSpawnDialog({ dom, getProjects, refreshProjects, refreshI
       const r = await fetch('/api/instances', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ project, mode, effort, tier: selectedSpawnTier, thinking, model, sonnetWindow, backend, worktree, temp, debug, autoApprovePlan }),
+        body: JSON.stringify({ project, mode, effort, tier: selectedSpawnTier, thinking, model, backend, worktree, temp, debug, autoApprovePlan }),
       });
       if (!r.ok) throw new Error((await r.json()).error);
       const inst = await r.json();
@@ -254,7 +254,7 @@ export function installSpawnDialog({ dom, getProjects, refreshProjects, refreshI
         const err = await r.json().catch(() => ({}));
         throw new Error(err.error || `ensure failed (${r.status})`);
       }
-      const { model, backend, sonnetWindow } = resolveSpawnRole('conductor');
+      const { model, backend } = resolveSpawnRole('conductor');
       if (!model) {
         alert('Conduct session failed to start: the Conductor role has no model configured. Set one in Settings → Models → Roles.');
         return;
@@ -265,7 +265,7 @@ export function installSpawnDialog({ dom, getProjects, refreshProjects, refreshI
         // `role` carries the Conductor role so the server applies ITS default
         // effort (Settings → Models → Roles); no `effort` is sent, so there is
         // nothing to override it.
-        body: JSON.stringify({ project: '.conduct', model, backend, sonnetWindow, role: 'conductor', temp: true, mode: 'bypassPermissions' }),
+        body: JSON.stringify({ project: '.conduct', model, backend, role: 'conductor', temp: true, mode: 'bypassPermissions' }),
       });
       if (!res.ok) throw new Error((await res.json()).error);
       const inst = await res.json();

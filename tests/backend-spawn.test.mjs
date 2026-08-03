@@ -88,7 +88,10 @@ describe('substitution-backend spawn command/args', () => {
   test('the backend id + tagged model is written to the sidecar at spawn', async () => {
     const { summary } = await spawnOnBackend({ model: 'gemma4:cloud' });
     assert.equal(await hasSessionBackend(summary.sessionId), true);
-    assert.deepEqual(await getSessionBackend(summary.sessionId), { backend: 'ollama', model: 'gemma4:cloud' });
+    // `gemma4:cloud` is neither a curated preset nor a custom-model row here, so
+    // its capacity is genuinely unknown — recorded as null, never a 200k guess.
+    assert.deepEqual(await getSessionBackend(summary.sessionId),
+      { backend: 'ollama', model: 'gemma4:cloud', contextWindowTokens: null });
   });
 
   // The generalization under test: a USER-DEFINED row drives the launch from its
@@ -110,7 +113,9 @@ describe('substitution-backend spawn command/args', () => {
     // …and the cc-MANAGED context vars apply here too (never only to `ollama`).
     assert.equal(env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, '300000');
     assert.equal(env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, '300000');
-    assert.deepEqual(await getSessionBackend(summary.sessionId), { backend: 'my-proxy', model: 'mine:v2' });
+    assert.equal(summary.contextWindowTokens, 300_000);
+    assert.deepEqual(await getSessionBackend(summary.sessionId),
+      { backend: 'my-proxy', model: 'mine:v2', contextWindowTokens: 300_000 });
   });
 
   // The `--model undefined` regression this whole guard family exists to prevent:

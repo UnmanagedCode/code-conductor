@@ -35,7 +35,7 @@ test('UsageTracker: system/init captures model authoritatively', async () => {
 });
 
 test('UsageTracker: live-tracked model wins over a stale spawn-time modelOverride', async () => {
-  const { UsageTracker, contextWindowFor } = await import(USAGE_URL);
+  const { UsageTracker } = await import(USAGE_URL);
   const t = new UsageTracker();
   const spawnOverride = 'claude-sonnet-4-6[1m]';
   // Before any stream event, the spawn-time override is the only info we have.
@@ -49,8 +49,9 @@ test('UsageTracker: live-tracked model wins over a stale spawn-time modelOverrid
   t.apply({ kind: 'system', subtype: 'model_changed', data: { from: 'claude-sonnet-4-6[1m]', to: 'claude-opus-4-8' } });
   assert.equal(t.effectiveModel(spawnOverride), 'claude-opus-4-8',
     'live tracker beats the stale spawn override once populated');
-  assert.equal(contextWindowFor(t.effectiveModel(spawnOverride)), 1_000_000,
-    'ctx window reflects the switched model, not the spawn-time Sonnet[1m] window');
+  // The matching capacity update is now the SERVER's job: _trackModel recomputes
+  // contextWindowTokens and re-emits the summary on a real switch. This tracker
+  // only owns the model label. (Pinned server-side in tests/context-window.test.mjs.)
 });
 
 test('UsageTracker: message_start also updates the live model (flips at the true turn boundary)', async () => {
@@ -254,86 +255,43 @@ test('UsageTracker: ignores unrelated event kinds', async () => {
   assert.equal(t.cum.turns, 0);
 });
 
-test('contextWindowFor: one fixed window per non-Sonnet family; Sonnet 5 always 1M, Sonnet 4.x suffix-authoritative/per-session-window fallback', async () => {
-  const { contextWindowFor } = await import(USAGE_URL);
-  // Opus/Fable → 1M, Haiku → 200k, regardless of any stray suffix.
-  assert.equal(contextWindowFor('claude-opus-4-8'), 1_000_000);
-  assert.equal(contextWindowFor('claude-opus-4-8[1m]'), 1_000_000);
-  assert.equal(contextWindowFor('claude-opus-4-8[200k]'), 1_000_000);
-  assert.equal(contextWindowFor('claude-opus-4-7'), 1_000_000);
-  assert.equal(contextWindowFor('claude-haiku-4-5'), 200_000);
-  // Sonnet: explicit suffix is always authoritative.
-  assert.equal(contextWindowFor('claude-sonnet-5[1m]'), 1_000_000);
-  assert.equal(contextWindowFor('claude-sonnet-5[200k]'), 200_000);
-  assert.equal(contextWindowFor('claude-sonnet-4-6[1m]'), 1_000_000);
-  // Bare Sonnet 5 (no 200k build) — always 1M, unambiguous.
-  assert.equal(contextWindowFor('claude-sonnet-5'), 1_000_000);
-  // Bare Sonnet 4.x (API stripped the suffix) — falls back to the session's own
-  // window (2nd arg), defaulting to '1m' when absent.
-  assert.equal(contextWindowFor('claude-sonnet-4-6'), 1_000_000);
-  assert.equal(contextWindowFor('claude-sonnet-4-5'), 1_000_000);
-  // With a per-session fallback of '200k':
-  //   - Sonnet 5 ignores it entirely (always 1M);
-  assert.equal(contextWindowFor('claude-sonnet-5', '200k'), 1_000_000);
-  //   - bare Sonnet 4.6 honours it;
-  assert.equal(contextWindowFor('claude-sonnet-4-6', '200k'), 200_000);
-  //   - an explicit suffix still wins over the fallback for either version.
-  assert.equal(contextWindowFor('claude-sonnet-5[1m]', '200k'), 1_000_000);
-  assert.equal(contextWindowFor('claude-sonnet-4-6[1m]', '200k'), 1_000_000);
-  // Unknown model → default.
-  assert.equal(contextWindowFor('some-future-model'), 200_000);
-  // Empty/null → default.
-  assert.equal(contextWindowFor(''), 200_000);
-  assert.equal(contextWindowFor(null), 200_000);
-  assert.equal(contextWindowFor(undefined), 200_000);
+test('currentFillPct: the denominator is the server-supplied number, with no client-side table', async () => {
+  const { UsageTracker } = await import(USAGE_URL);
+  const t = new UsageTracker();
+  t.apply({ kind: 'message_start', usage: { input_tokens: 500_000 } });
+  assert.equal(t.currentContextSize(), 500_000);
+
+  // The client no longer knows or guesses any model's capacity: whatever the
+  // server resolved is the denominator, verbatim.
+  assert.equal(t.currentFillPct(1_000_000), 0.5);
+  assert.equal(t.currentFillPct(200_000), 2.5);
+  assert.equal(t.currentFillPct(256_000), 500_000 / 256_000);
 });
 
-test('contextWindowFor: resolves non-Claude model ids (full + bare base name) and custom overrides via models.js catalog', async () => {
-  const { contextWindowFor } = await import(USAGE_URL);
-  const { setOllamaCloudModels, setCustomModels, customContextWindowFor } = await import(pathToFileURL(path.join(PUB, 'models.js')).href);
-  try {
-    setOllamaCloudModels([
-      { label: 'DeepSeek V4 Flash', model: 'deepseek-v4-flash:cloud', contextWindow: 1_000_000 },
-      { label: 'Qwen3.5', model: 'qwen3.5:cloud', contextWindow: 256_000 },
-    ]);
-    setCustomModels([
-      { label: 'Local Big', model: 'localbig:cloud', backend: 'ollama', contextWindow: 128_000 },
-      // A row on a USER-DEFINED backend resolves the same way — the resolver is
-      // keyed on the model id, not on which backend serves it.
-      { label: 'Proxy Big', model: 'proxybig:v2', backend: 'my-proxy', contextWindow: 512_000 },
-      // A row with NO window. The server now requires one, but this client-side
-      // guard still has to hold for a hand-edited store or a stale payload —
-      // otherwise the bar would render against `undefined`.
-      { label: 'Local NoWin', model: 'localnowin:cloud', backend: 'ollama' },
-    ]);
-    // Full model id resolves.
-    assert.equal(contextWindowFor('deepseek-v4-flash:cloud'), 1_000_000);
-    assert.equal(contextWindowFor('qwen3.5:cloud'), 256_000);
-    // Bare base name resolves too — the inner CLI reports such models bare
-    // (dropping `:cloud`), and the tracker adopts that as the live model.
-    assert.equal(contextWindowFor('deepseek-v4-flash'), 1_000_000);
-    assert.equal(contextWindowFor('qwen3.5'), 256_000);
-    // Custom model resolves (full + bare), on either backend.
-    assert.equal(contextWindowFor('localbig:cloud'), 128_000);
-    assert.equal(contextWindowFor('localbig'), 128_000);
-    assert.equal(contextWindowFor('proxybig:v2'), 512_000);
-    // A custom row with no declared window → the 200k display default. Asserted at
-    // BOTH layers: contextWindowFor is double-guarded (models.js's Number.isFinite
-    // AND usage.js's truthiness check), so the 200k assertion alone stays green if
-    // either guard is removed. Pinning the resolver's own contract closes that.
-    assert.equal(customContextWindowFor('localnowin:cloud'), null,
-      'the resolver reports "unknown", it does not invent a default');
-    assert.equal(customContextWindowFor('localnowin'), null);
-    assert.equal(contextWindowFor('localnowin:cloud'), 200_000);
-    assert.equal(contextWindowFor('localnowin'), 200_000);
-    // Unknown tagged id → 200k default.
-    assert.equal(contextWindowFor('mystery:cloud'), 200_000);
-    // A Claude id is unaffected by the non-Claude catalog.
-    assert.equal(contextWindowFor('claude-opus-4-8'), 1_000_000);
-  } finally {
-    setOllamaCloudModels([]);
-    setCustomModels([]);
+test('currentFillPct: unknown capacity yields null, never a fabricated 200k default', async () => {
+  const { UsageTracker } = await import(USAGE_URL);
+  const t = new UsageTracker();
+  t.apply({ kind: 'message_start', usage: { input_tokens: 500_000 } });
+
+  // THE regression: the old resolver defaulted any unrecognised model to 200k,
+  // so a 1M session read "ctx 250%" and a session with genuinely unknown
+  // capacity read as if it were measured. Unknown must stay unknown.
+  for (const unknown of [null, undefined, 0, -1, NaN, 'lots']) {
+    assert.equal(t.currentFillPct(unknown), null, `expected null for ${String(unknown)}`);
   }
+
+  // Null also survives the no-usage case (both reasons collapse to `ctx —`).
+  const fresh = new UsageTracker();
+  assert.equal(fresh.currentFillPct(1_000_000), null);
+});
+
+test('usage.js exports no context-window table or resolver', async () => {
+  const mod = await import(USAGE_URL);
+  // Capacity has exactly one home (the server). A client-side resolver
+  // reappearing here is a second source of truth that will drift.
+  assert.equal(mod.contextWindowFor, undefined);
+  assert.equal(mod.CONTEXT_WINDOWS, undefined);
+  assert.equal(mod.DEFAULT_CONTEXT_WINDOW, undefined);
 });
 
 test('UsageTracker: seedContext supplies the current size when the tail has no message_start', async () => {
@@ -360,21 +318,17 @@ test('UsageTracker: seedContext supplies the current size when the tail has no m
 });
 
 test('UsageTracker: seeded snapshot replay renders the chip against the model window, not `ctx —`', async () => {
-  const { UsageTracker, contextWindowFor, formatPct, formatTokens, fillClass } = await import(USAGE_URL);
-  const { setOllamaCloudModels, setCustomModels } = await import(pathToFileURL(path.join(PUB, 'models.js')).href);
+  const { UsageTracker, formatPct, formatTokens, fillClass } = await import(USAGE_URL);
   try {
-    setOllamaCloudModels([{ label: 'GLM-5.2', model: 'glm-5.2:cloud', contextWindow: 1_000_000 }]);
-    setCustomModels([{ label: 'Proxy Big', model: 'proxybig:v2', backend: 'my-proxy', contextWindow: 512_000 }]);
-
     // Replay a snapshot in the exact order wsRouter uses: reset → seed → tail.
     // The tail is the production no-message_start shape: the trailing slice of a
-    // long text block plus the turn footer. `inst.model` is the spawn-time tagged
-    // id, which is all the client has when the tail also dropped system/init.
-    const chip = (tracker, instModel) => {
+    // long text block plus the turn footer. The denominator comes from the
+    // instance summary's `contextWindowTokens`, mirroring renderCombinedChip.
+    const chip = (tracker, windowTokens) => {
       const used = tracker.currentContextSize();
-      if (used == null) return 'ctx —';
-      const window = contextWindowFor(tracker.effectiveModel(instModel));
-      return `ctx ${formatPct(used / window)} · ${formatTokens(used)}/${formatTokens(window)}`;
+      const frac = tracker.currentFillPct(windowTokens);
+      if (used == null || frac == null) return 'ctx —';
+      return `ctx ${formatPct(frac)} · ${formatTokens(used)}/${formatTokens(windowTokens)}`;
     };
 
     const t = new UsageTracker();
@@ -386,23 +340,22 @@ test('UsageTracker: seeded snapshot replay renders the chip against the model wi
       { kind: 'turn_end', subtype: 'success', durationMs: 10 },
     ]) t.apply(ev);
 
-    assert.equal(chip(t, 'glm-5.2:cloud'), 'ctx 8% · 79k/1.0M');
-    assert.equal(fillClass(t.currentFillPct('glm-5.2:cloud')), 'ih-usage-low');
-    // The bare id the inner CLI reports resolves to the same window.
-    assert.equal(chip(t, 'glm-5.2'), 'ctx 8% · 79k/1.0M');
+    // A 1M substitution model — the case the old client table got wrong by
+    // defaulting anything it didn't recognise to 200k (which would read 40%).
+    assert.equal(chip(t, 1_000_000), 'ctx 8% · 79k/1.0M');
+    assert.equal(fillClass(t.currentFillPct(1_000_000)), 'ih-usage-low');
     // A custom model on a user-defined substitution backend uses its declared window.
     const t2 = new UsageTracker();
     t2.seedContext({ input_tokens: 256_000 });
-    assert.equal(chip(t2, 'proxybig:v2'), 'ctx 50% · 256k/512k');
+    assert.equal(chip(t2, 512_000), 'ctx 50% · 256k/512k');
 
     // Without the seed the same tail yields the reported symptom.
     const bare = new UsageTracker();
     for (const ev of [{ kind: 'text_end', msgId: 'm1', blockIdx: 0 }, { kind: 'turn_end', subtype: 'success' }]) bare.apply(ev);
-    assert.equal(chip(bare, 'glm-5.2:cloud'), 'ctx —');
-  } finally {
-    setOllamaCloudModels([]);
-    setCustomModels([]);
-  }
+    assert.equal(chip(bare, 1_000_000), 'ctx —');
+    // …as does a seeded tracker whose capacity the server could not resolve.
+    assert.equal(chip(t, null), 'ctx —');
+  } finally { /* no client catalog to reset — capacity is server-side now */ }
 });
 
 test('fillClass: thresholds at 50% and 80%', async () => {
@@ -485,7 +438,7 @@ test('DOM: tracker drives chip-class transitions across thresholds', async () =>
   const { document, UsageTracker, fillClass, formatPct } = await setupDOM();
   const tracker = new UsageTracker();
   tracker.apply({ kind: 'system', subtype: 'init', data: { model: 'claude-opus-4-8[1m]' } });
-  const model = 'claude-opus-4-8[1m]'; // 1M context
+  const model = 1_000_000; // server-resolved capacity for Opus 4.8
 
   function chipClassNow() {
     return fillClass(tracker.currentFillPct(model));
@@ -518,7 +471,7 @@ test('DOM: a seeded tracker renders a graded chip, not the empty state', async (
   // The re-subscribe path for a tail with no message_start: the seed alone has to
   // carry the chip out of `ih-usage-empty`/`ctx —` into a real reading.
   const { UsageTracker, fillClass, formatPct } = await setupDOM();
-  const model = 'claude-opus-4-8[1m]';
+  const model = 1_000_000; // server-resolved capacity for Opus 4.8
   const tracker = new UsageTracker();
   tracker.reset();
   assert.equal(fillClass(tracker.currentFillPct(model)), 'ih-usage-empty');

@@ -436,62 +436,38 @@ test('POST /api/settings/models/prefs saves conductorCompactWindow without clobb
   }
 });
 
-// ── per-binding Sonnet window (no global) ────────────────────────────────
+// ── binding shape: no window key, per-binding or global ──────────────────
 test('GET /api/settings/models no longer exposes a global sonnetContextWindow', async () => {
   const r = await api(baseUrl, 'GET', '/api/settings/models');
   assert.equal(r.status, 200);
   assert.ok(!('sonnetContextWindow' in r.body), 'the global key is gone');
 });
 
-test('appSettings: a Sonnet 4.x tier binding persists its own window', async () => {
+test('appSettings: a binding is exactly {backend, model} — a `window` is never persisted', async () => {
   const root = await mkTmp();
   try {
     await withEnv({ PROJECTS_ROOT: root }, async () => {
+      // Every Claude model has ONE native context window, so there is no window
+      // to choose and nothing to store. A `window` from a stale client is dropped
+      // rather than persisted as dead state that later readers might trust.
       await setTierBackend('balanced', { backend: 'claude', model: 'claude-sonnet-4-6', window: '200k' });
-      assert.deepEqual(getTierBackend('balanced'), { backend: 'claude', model: 'claude-sonnet-4-6', window: '200k' });
-    });
-  } finally { await fs.rm(root, { recursive: true, force: true }); }
-});
-
-test('appSettings: window is NOT persisted for non-selectable bindings (Opus, Sonnet 5)', async () => {
-  const root = await mkTmp();
-  try {
-    await withEnv({ PROJECTS_ROOT: root }, async () => {
-      // Sonnet 5 is fixed-1M — the window is meaningless, so it is dropped.
-      await setTierBackend('balanced', { backend: 'claude', model: 'claude-sonnet-5', window: '200k' });
-      assert.deepEqual(getTierBackend('balanced'), { backend: 'claude', model: 'claude-sonnet-5' });
-      // Opus never varies its window.
+      assert.deepEqual(getTierBackend('balanced'), { backend: 'claude', model: 'claude-sonnet-4-6' });
       await setTierBackend('powerful', { backend: 'claude', model: 'claude-opus-4-8', window: '200k' });
       assert.deepEqual(getTierBackend('powerful'), { backend: 'claude', model: 'claude-opus-4-8' });
-    });
-  } finally { await fs.rm(root, { recursive: true, force: true }); }
-});
-
-test('appSettings: two Sonnet 4.x bindings carry independent windows', async () => {
-  const root = await mkTmp();
-  try {
-    await withEnv({ PROJECTS_ROOT: root }, async () => {
-      await setTierBackend('balanced', { backend: 'claude', model: 'claude-sonnet-4-6', window: '200k' });
       await setRoleBinding('reviewer', { backend: 'claude', model: 'claude-sonnet-4-5', window: '1m' });
-      // Setting the role binding did NOT touch the tier binding's window.
-      assert.equal(getTierBackend('balanced').window, '200k');
-      assert.equal(getRoleBinding('reviewer').window, '1m');
-      // …and flipping the tier binding to 1m leaves the role binding at 1m.
-      await setTierBackend('balanced', { backend: 'claude', model: 'claude-sonnet-4-6', window: '1m' });
-      assert.equal(getTierBackend('balanced').window, '1m');
-      assert.equal(getRoleBinding('reviewer').window, '1m');
+      assert.deepEqual(getRoleBinding('reviewer'), { backend: 'claude', model: 'claude-sonnet-4-5' });
     });
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
 
-test('POST /api/settings/models/prefs persists a Sonnet 4.x tier window on the binding', async () => {
+test('POST /api/settings/models/prefs stores {backend, model} and strips any window', async () => {
   const r = await api(baseUrl, 'POST', '/api/settings/models/prefs', {
     tierBackend: { tier: 'balanced', backend: { backend: 'claude', model: 'claude-sonnet-4-6', window: '200k' } },
   });
   assert.equal(r.status, 200);
-  assert.deepEqual(r.body.tierBackend.balanced, { backend: 'claude', model: 'claude-sonnet-4-6', window: '200k' });
+  assert.deepEqual(r.body.tierBackend.balanced, { backend: 'claude', model: 'claude-sonnet-4-6' });
   const g = await api(baseUrl, 'GET', '/api/settings/models');
-  assert.deepEqual(g.body.tierBackend.balanced, { backend: 'claude', model: 'claude-sonnet-4-6', window: '200k' });
+  assert.deepEqual(g.body.tierBackend.balanced, { backend: 'claude', model: 'claude-sonnet-4-6' });
 });
 
 // ── enabledTiers ─────────────────────────────────────────────────────────

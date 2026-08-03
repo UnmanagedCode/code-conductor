@@ -310,7 +310,7 @@ test('a successful Remove re-renders from the response', async () => {
 const TIERS = [{ tier: 'fast', label: 'Fast' }, { tier: 'powerful', label: 'Powerful' }];
 const CURATED = [{ label: 'GLM-5.2', model: 'glm-5.2:cloud', contextWindow: 1000000 }];
 const CLAUDE_FAMILIES = [
-  { family: 'sonnet', label: 'Sonnet', default: 'claude-sonnet-5', versions: [{ id: 'claude-sonnet-5', label: 'Sonnet 5', fixedWindow: '1m' }] },
+  { family: 'sonnet', label: 'Sonnet', default: 'claude-sonnet-5', versions: [{ id: 'claude-sonnet-5', label: 'Sonnet 5', contextWindow: 1000000 }] },
   { family: 'haiku', label: 'Haiku', default: 'claude-haiku-4-5', versions: [{ id: 'claude-haiku-4-5', label: 'Haiku 4.5' }] },
 ];
 

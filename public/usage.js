@@ -8,52 +8,17 @@
 // Designed to mirror TaskTracker so app.js can drive it with the same
 // reset() + apply(ev) shape from the snapshot/event listeners.
 
-import { isSonnetFixedWindowVersion, customContextWindowFor } from './models.js';
-
-// Hardcoded lookup — there's no API surface that reports each model's
-// context-window size, and the CLI doesn't carry it in system/init.
+// Context capacity is NOT derived here. The server resolves it once from the
+// concrete {backend, exact model} pair and ships it as the instance summary's
+// `contextWindowTokens`; callers pass that number in.
 //
-// One fixed window per non-Sonnet family (mirrors canonicalizeModel in
-// src/modelVersions.js): Opus → 1M, Fable → 1M, Haiku → 200k. Sonnet is
-// per-version: Sonnet 5 has no 200k build (always 1M, unambiguous); Sonnet
-// 4.x has a user-selectable window (Settings → Models). The CLI-native
-// `[1m]`/`[200k]` suffix on the canonical id is authoritative when present.
-// But the Anthropic API strips that suffix in its `message_start` stream
-// event (reports bare `claude-sonnet-*` even for a session spawned with
-// `[1m]`), and UsageTracker.apply adopts that bare id as the live model —
-// so a bare Sonnet 4.x id here does NOT mean "200k", it means "the API
-// didn't tell us." Fall back to the session's own window (`fallbackWindow`,
-// from the instance's `sonnetWindow`; default `1m`) in that case — NOT a global
-// preference; a bare Sonnet 5 id needs no fallback since it's always 1M. Any
-// suffix on a non-Sonnet id is stale/incidental data and is ignored (that
-// family's window never varies).
-const CONTEXT_WINDOWS = {
-  'claude-fable-5':  1_000_000,
-  'claude-opus-5':   1_000_000,
-  'claude-opus-4-8': 1_000_000,
-  'claude-opus-4-7': 1_000_000,
-  'claude-haiku-4-5': 200_000,
-};
-const DEFAULT_CONTEXT_WINDOW = 200_000;
-
-export function contextWindowFor(model, fallbackWindow) {
-  if (!model) return DEFAULT_CONTEXT_WINDOW;
-  if (model.startsWith('claude-sonnet')) {
-    if (model.endsWith('[1m]')) return 1_000_000;
-    if (model.endsWith('[200k]')) return 200_000;
-    if (isSonnetFixedWindowVersion(model)) return 1_000_000;
-    return fallbackWindow === '200k' ? 200_000 : 1_000_000;
-  }
-  const bare = model.replace(/\[(200k|1m)\]$/, '');
-  if (CONTEXT_WINDOWS[bare]) return CONTEXT_WINDOWS[bare];
-  // A non-Claude backend's model id (curated preset or user custom model).
-  // Resolves against the catalog shipped via GET /api/settings/models; null when
-  // unknown.
-  const custom = customContextWindowFor(bare);
-  if (custom) return custom;
-  return DEFAULT_CONTEXT_WINDOW;
-}
-
+// The client cannot do this itself and must not try: the API reports a bare
+// model id in `message_start` (stripping the `[1m]` build tag the session
+// actually launched with) and a substitution backend's model id is an opaque
+// registry key. The hardcoded family table that used to live here defaulted
+// anything it didn't recognise to 200k — a fabricated cap that a real session
+// was observed blowing past 256k input tokens without ever hitting.
+//
 export class UsageTracker {
   constructor() { this.reset(); }
 
@@ -147,14 +112,15 @@ export class UsageTracker {
          + (u.cache_creation_input_tokens ?? 0);
   }
 
-  // Fraction in [0, 1+]. `modelOverride` lets the caller pass the
-  // instance's spawn-time model as a FALLBACK for before system/init has
-  // arrived — the live tracker wins once it has a value, since the model
-  // can switch mid-session and the spawn record never updates.
-  currentFillPct(modelOverride, fallbackWindow) {
+  // Fraction in [0, 1+], or null when it can't be computed — either no turn has
+  // landed yet, or the server reports the model's capacity as unknown. Null
+  // renders as `ctx —`; there is deliberately no fallback denominator, because a
+  // guessed one is indistinguishable from a measured one in the UI.
+  currentFillPct(windowTokens) {
     const used = this.currentContextSize();
     if (used == null) return null;
-    return used / contextWindowFor(this.model || modelOverride, fallbackWindow);
+    if (!Number.isFinite(windowTokens) || windowTokens <= 0) return null;
+    return used / windowTokens;
   }
 
   // Effective model used by currentFillPct(), surfaced so the popover

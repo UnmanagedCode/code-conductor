@@ -801,7 +801,10 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
 
     r.post('/instances', async (req, res, next) => {
       try {
-        const { project, resume, mode, effort, tier, role, thinking, model, sonnetWindow, backend, worktree, temp, debug, autoApprovePlan } = req.body ?? {};
+        // No context-window input: capacity is resolved server-side from
+        // {backend, model} (see resolveContextWindowTokens), never accepted
+        // from the client.
+        const { project, resume, mode, effort, tier, role, thinking, model, backend, worktree, temp, debug, autoApprovePlan } = req.body ?? {};
         // UI shortcut: the temp checkbox implies bypassPermissions when no
         // mode is picked (a disposable session is almost always for *doing*,
         // not planning). create() is policy-light and no longer couples
@@ -811,7 +814,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
         // `model`+`backend` from; they exist so create() can resolve THAT row's
         // default effort when `effort` is omitted (resolveSpawnEffort). The client
         // never resolves effort itself — see public/spawnDialog.js.
-        const inst = await instances.create({ project, resume, mode: effectiveMode, effort, tier, role, thinking, model, sonnetWindow, backend, worktree, temp, debug, autoApprovePlan });
+        const inst = await instances.create({ project, resume, mode: effectiveMode, effort, tier, role, thinking, model, backend, worktree, temp, debug, autoApprovePlan });
         res.status(201).json(inst.summary());
       } catch (e) { next(e); }
     });
@@ -926,14 +929,24 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
         }
         const { newSessionId, droppedText } = forked;
         // Spawn the fork as a new instance against the same cwd / worktree.
+        //
+        // `backend` is REQUIRED here, not optional: forkSessionAtUserMessage
+        // copies the jsonl but writes no backend sidecar for the new sessionId,
+        // so create()'s sidecar recovery finds nothing. Omitting it silently
+        // falls back to the identity `claude` backend while inst.model keeps the
+        // substitution backend's foreign model id — and because that model is
+        // non-null, the BACKEND_MODEL_MISSING guard never fires, so the fork
+        // launches a real `claude --model <foreign-id>` against the Anthropic
+        // account. contextWindowTokens rides along as the last-known fallback.
         const newInst = await instances.create({
           project: inst.project,
           resume: newSessionId,
           mode: inst.mode,
           effort: inst.effort,
           thinking: inst.thinking,
+          backend: inst.backend,
           model: inst.model,
-          sonnetWindow: inst.sonnetWindow,
+          contextWindowTokens: inst.contextWindowTokens,
           worktree: inst.worktree?.worktreeName ?? null,
           prefill: droppedText,
         });
@@ -1195,14 +1208,14 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
   // its per-tier defaults (scoped to the built-in `ollama` backend), the
   // capability-tier list + each tier's {backend, model} binding, and the role
   // list + each role's stored binding (a tier binding {kind:'tier',tier} or a
-  // concrete {backend,model}). A Sonnet 4.x Claude binding carries its own
-  // context window as {backend:'claude',model,window} — there is no global
-  // Sonnet-window preference.
+  // concrete {backend,model}). A binding is exactly {backend, model}: a model's
+  // context window is catalog data for `claude` and registry data for any other
+  // backend, resolved at spawn — never stored on the binding.
   function modelsSettingsState() {
     const tierBackend = {};
     const tierEffort = {};
     for (const t of CAPABILITY_TIERS) {
-      tierBackend[t.tier] = getTierBackend(t.tier); // {backend, model, window?}
+      tierBackend[t.tier] = getTierBackend(t.tier); // {backend, model}
       tierEffort[t.tier] = getTierEffort(t.tier);   // always a concrete level
     }
     // roles = built-in + user-custom + plugin-owned (each {role,label,builtin?,plugin?}).
@@ -1263,10 +1276,10 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
       }
       if (defaultSpawnTier !== undefined) await setDefaultSpawnTier(defaultSpawnTier);
       if (tierBackend !== undefined) {
-        // backend is a {backend, model, window?} record (window meaningful only
-        // for a Sonnet 4.x Claude binding) — setTierBackend validates it names a
-        // known Claude version or a configured backend's model (400 otherwise)
-        // and persists the window on the binding.
+        // backend is a {backend, model} record — setTierBackend validates it names
+        // a known Claude version or a configured backend's model (400 otherwise).
+        // A `window` from an older client is dropped by persistBinding, not stored:
+        // a model's context window is catalog/registry data, resolved at spawn.
         if (!tierBackend || typeof tierBackend !== 'object' || !isKnownTier(tierBackend.tier)) {
           return res.status(400).json({ error: 'tierBackend must be {tier, backend:{backend,model}} with a known tier' });
         }

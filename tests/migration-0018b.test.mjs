@@ -8,8 +8,14 @@
 // order). The ordering is load-bearing: 0019 deletes `models.sonnetContextWindow`
 // unconditionally, and on a pre-0017 store its backfill guard can't match the
 // still-STRING tier bindings — so running 0019 first destroys a user's explicit 200k
-// pin. `the full chain PRESERVES a pre-0017 200k Sonnet pin` below is the regression
-// test for exactly that; it FAILS if this migration is moved back after 0019.
+// pin. `the chain THROUGH 0019 preserves a pre-0017 200k Sonnet pin` below is the
+// regression test for exactly that; it FAILS if this migration is moved back after
+// 0019.
+//
+// That test deliberately replays the chain PREFIX rather than the whole chain:
+// 0026 later drops the `window` key that proves the pin was inlined, so a
+// full-chain end-state assertion would pass even with 0018b and 0019 reordered —
+// the test would silently stop testing its own subject.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -17,7 +23,14 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import * as m0018b from '../migrations/0018b-backend-registry.mjs';
-import { runMigrations } from '../migrations/index.mjs';
+import { runMigrations, ALL } from '../migrations/index.mjs';
+
+// Replay the real registered chain up to and including `lastName`, in order.
+async function runChainThrough(lastName, { root }) {
+  const end = ALL.findIndex(m => m.name === lastName);
+  assert.ok(end >= 0, `no migration named ${lastName} is registered`);
+  for (const m of ALL.slice(0, end + 1)) await m.run({ root, log: () => {} });
+}
 
 async function mkTmp() { return fs.mkdtemp(path.join(os.tmpdir(), 'cc-mig18b-')); }
 function settingsFile(root) { return path.join(root, '.code-conductor', 'settings.json'); }
@@ -270,8 +283,9 @@ test('the full migration chain leaves a legacy store on the current shape', asyn
   assert.deepEqual(s.tierBackend.fast, { backend: 'ollama', model: 'gemma4:cloud' });
   assert.equal(s.customModels[0].backend, 'ollama');
   assert.ok(Number.isFinite(s.customModels[0].contextWindow));
+  // 0026 backfills the sidecar's capacity from the custom-model row 0018b created.
   assert.deepEqual((await readJson(sidecarFile(root))).sessions,
-    { 'sid-1': { backend: 'ollama', model: 'gemma4:cloud' } });
+    { 'sid-1': { backend: 'ollama', model: 'gemma4:cloud', contextWindowTokens: 200000 } });
 
   // Re-running the whole chain changes nothing further.
   const logs = [];
@@ -281,7 +295,7 @@ test('the full migration chain leaves a legacy store on the current shape', asyn
   await fs.rm(root, { recursive: true, force: true });
 });
 
-test('the full chain PRESERVES a pre-0017 200k Sonnet pin (0018b must run BEFORE 0019)', async () => {
+test('the chain THROUGH 0019 preserves a pre-0017 200k Sonnet pin (0018b must run BEFORE 0019)', async () => {
   const root = await mkTmp();
   await writeJson(settingsFile(root), {
     models: {
@@ -299,7 +313,11 @@ test('the full chain PRESERVES a pre-0017 200k Sonnet pin (0018b must run BEFORE
   });
   await writeJson(sidecarFile(root), { backends: { 'sid-1': { kind: 'ollama' } } });
 
-  await runMigrations({ root, log: () => {} });
+  // Stop at 0019 — the last point at which the inlined pin is still observable.
+  // 0026 drops `window` from every claude binding, so running the whole chain
+  // here would yield {backend, model} whether or not 0018b ran first, and this
+  // test would pass while proving nothing.
+  await runChainThrough('0019-inline-sonnet-window-into-bindings', { root });
   const s = (await readJson(settingsFile(root))).models;
   // THE assertion: the user's explicit 200k survived onto the materialized binding.
   assert.deepEqual(s.tierBackend.balanced,
@@ -310,6 +328,12 @@ test('the full chain PRESERVES a pre-0017 200k Sonnet pin (0018b must run BEFORE
   assert.deepEqual(s.tierBackend.powerful, { backend: 'claude', model: 'claude-opus-4-7' });
   assert.deepEqual(s.customModels, [{ label: 'Local', model: 'gemma4:cloud', backend: 'ollama', contextWindow: 200000 }]);
   assert.deepEqual((await readJson(sidecarFile(root))).sessions, { 'sid-1': { backend: 'ollama', model: null } });
+
+  // Finishing the chain retires the window selector: the pin's binding collapses
+  // to {backend, model} and Sonnet 4.x runs at its single native window.
+  await runMigrations({ root, log: () => {} });
+  const after = (await readJson(settingsFile(root))).models;
+  assert.deepEqual(after.tierBackend.balanced, { backend: 'claude', model: 'claude-sonnet-4-6' });
 
   // THE regression this guards: 0017 unregistered means a second boot must not
   // reset the bindings it re-keyed. Silent + unchanged.
@@ -325,7 +349,7 @@ test('the full chain PRESERVES a pre-0017 200k Sonnet pin (0018b must run BEFORE
 // The shape 0019 was originally written for: bindings already collapsed to
 // {kind,model} but the global still present. 0018b now absorbs that job, so BOTH
 // paths are pinned and 0019 is left permanently inert.
-test('the full chain inlines a POST-0017 global onto tier AND role bindings', async () => {
+test('the chain THROUGH 0019 inlines a POST-0017 global onto tier AND role bindings', async () => {
   const root = await mkTmp();
   await writeJson(settingsFile(root), {
     models: {
@@ -342,7 +366,8 @@ test('the full chain inlines a POST-0017 global onto tier AND role bindings', as
     },
   });
 
-  await runMigrations({ root, log: () => {} });
+  // Prefix again — 0026 would erase the very `window` keys under test here.
+  await runChainThrough('0019-inline-sonnet-window-into-bindings', { root });
   const s = (await readJson(settingsFile(root))).models;
   assert.deepEqual(s.tierBackend.balanced, { backend: 'claude', model: 'claude-sonnet-4-6', window: '200k' });
   assert.deepEqual(s.tierBackend.fast, { backend: 'claude', model: 'claude-sonnet-5' });
@@ -350,6 +375,13 @@ test('the full chain inlines a POST-0017 global onto tier AND role bindings', as
   assert.deepEqual(s.roleBackend.reviewer, { backend: 'claude', model: 'claude-sonnet-4-5', window: '200k' });
   assert.deepEqual(s.roleBackend.conductor, { kind: 'tier', tier: 'powerful' });
   assert.equal('sonnetContextWindow' in s, false);
+
+  // …and the finished chain drops every one of those windows.
+  await runMigrations({ root, log: () => {} });
+  const after = (await readJson(settingsFile(root))).models;
+  assert.deepEqual(after.tierBackend.balanced, { backend: 'claude', model: 'claude-sonnet-4-6' });
+  assert.deepEqual(after.roleBackend.reviewer, { backend: 'claude', model: 'claude-sonnet-4-5' });
+  assert.deepEqual(after.roleBackend.conductor, { kind: 'tier', tier: 'powerful' });
 
   // 0019 is now permanently inert — a second chain run is silent and unchanged.
   const before = await readJson(settingsFile(root));

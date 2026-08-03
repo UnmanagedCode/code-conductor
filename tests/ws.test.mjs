@@ -504,10 +504,13 @@ test('model switch via WS updates instance.model and acks', async () => {
     c = await wsClient(wsUrl);
     c.send({ t: 'subscribe', id });
     await c.wait(m => m.t === 'snapshot');
-    c.send({ t: 'model', id, model: 'claude-sonnet-5[1m]', reqId: 'm1' });
+    // The client sends a BARE version id; the server applies the catalog launch
+    // tag (Sonnet 5 has none — it is natively 1M).
+    c.send({ t: 'model', id, model: 'claude-sonnet-5', reqId: 'm1' });
     const ack = await c.wait(m => m.t === 'ack' && m.reqId === 'm1');
     assert.equal(ack.ok, true);
-    assert.equal(instances.get(id).model, 'claude-sonnet-5[1m]');
+    assert.equal(instances.get(id).model, 'claude-sonnet-5');
+    assert.equal(instances.get(id).contextWindowTokens, 1_000_000);
   } finally {
     if (c) await c.close();
     await close();

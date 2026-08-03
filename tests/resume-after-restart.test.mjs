@@ -24,6 +24,7 @@ import {
 } from '../src/resumeRestart.js';
 import { ensureConductProject, CONDUCT_PROJECT_NAME } from '../src/conduct.js';
 import { AUTO_RESUME_TEXT } from '../src/instances.js';
+import { addBackend, addCustomModel } from '../src/appSettings.js';
 
 const nowSec = () => Math.floor(Date.now() / 1000);
 
@@ -667,4 +668,78 @@ test('restoreFromResumeManifest arms a FUTURE overage deadline without firing; l
     else process.env.FAKE_CLAUDE_TRANSCRIPT = prevTranscript;
     await fs.rm(transcript, { force: true });
   }
+});
+
+
+// ── graceful restart carries {backend, model, contextWindowTokens} ────────
+// The manifest is the ONLY carrier across a graceful restart, and a
+// substitution session's model id is an opaque registry key. Losing the tag or
+// the backend here re-spawns the session against the real `claude` backend, or
+// silently drops its context env vars.
+test('a drained substitution session restores with its exact model, backend and capacity', async () => {
+  const ctx = await bootServer({ scenarioPath: BASIC });
+  try {
+    await addBackend({
+      id: 'codex', label: 'Codex',
+      template: 'codexctl run claude --model {model} --', env: [],
+    });
+    await addCustomModel({ label: 'Sol', model: 'gpt-5.6-sol[1m]', backend: 'codex', contextWindow: 1_000_000 });
+    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'restartsub' });
+
+    const r = await api(ctx.baseUrl, 'POST', '/api/instances', {
+      project: 'restartsub', mode: 'bypassPermissions',
+      backend: 'codex', model: 'gpt-5.6-sol[1m]',
+    });
+    assert.equal(r.status, 201);
+    const id = r.body.id;
+    await waitFor(() => ctx.instances.get(id).status === 'idle');
+    const sessionId = ctx.instances.get(id).sessionId;
+
+    await drainToManifest({ instances: ctx.instances, log: { log() {}, warn() {} } });
+
+    const entry = readResumeManifest().instances.find(e => e.sessionId === sessionId);
+    assert.ok(entry, 'the live session must be in the manifest');
+    assert.equal(entry.backend, 'codex');
+    assert.equal(entry.model, 'gpt-5.6-sol[1m]', 'the registry key rides the manifest byte-exact');
+    assert.equal(entry.contextWindowTokens, 1_000_000);
+    assert.ok(!('sonnetWindow' in entry), 'the retired field must not be written');
+  } finally { await ctx.close(); }
+});
+
+test('a restored session whose custom-model row was DELETED keeps its last known capacity', async () => {
+  // The one path where two sources of the same number can disagree: live
+  // registry resolution returns null, so the carried value is the only thing
+  // standing between the user and a ctx bar that reads `—` for the rest of the
+  // session. The live registry still WINS whenever it can resolve.
+  const ctx = await bootServer({ scenarioPath: BASIC });
+  try {
+    await addBackend({
+      id: 'codex', label: 'Codex',
+      template: 'codexctl run claude --model {model} --', env: [],
+    });
+    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'restartgone' });
+    const cwd = path.join(ctx.projectsRoot, 'restartgone');
+    const sid = randomUUID();
+    const dir = path.join(ctx.claudeProjectsRoot, encodeCwd(cwd));
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(path.join(dir, `${sid}.jsonl`), '{"type":"user","uuid":"u1"}\n');
+
+    await fs.mkdir(orchStoreRoot(), { recursive: true });
+    writeResumeManifest([{
+      project: 'restartgone', sessionId: sid, cwd,
+      mode: 'bypassPermissions', effort: 'high', thinking: 'adaptive',
+      // The model is NOT in customModels — the row was deleted before restart.
+      backend: 'codex', model: 'gpt-5.6-sol[1m]', contextWindowTokens: 1_000_000,
+      worktreeName: null, temp: false, conducted: false, debug: false, title: null,
+      autoApprovePlan: false, group: 'other',
+    }]);
+
+    await restoreFromResumeManifest({ instances: ctx.instances, log: { log() {}, warn() {} }, staggerMs: 0 });
+    const inst = ctx.instances.liveForSession(sid);
+    assert.ok(inst, 'the session must be restored');
+    assert.equal(inst.backend, 'codex');
+    assert.equal(inst.model, 'gpt-5.6-sol[1m]');
+    assert.equal(inst.contextWindowTokens, 1_000_000,
+      'the carried capacity is the fallback when the registry can no longer resolve one');
+  } finally { await ctx.close(); }
 });

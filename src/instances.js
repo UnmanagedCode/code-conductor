@@ -15,7 +15,7 @@ import { markArchived } from './archivedSessions.js';
 import { CONDUCT_PROJECT_NAME } from './conduct.js';
 import { composeCurrentConduct } from './conductorConventions.js';
 import { buildSettingsJSON, buildMcpConfigJSON, AWAITING_INPUT_MESSAGE } from './settings.js';
-import { getOnOverageAction, getOverageThreshold, getConductorCompactWindow, contextWindowForModel, getDebugByDefault, getBackend, isKnownBackend, resolveSpawnEffort } from './appSettings.js';
+import { getOnOverageAction, getOverageThreshold, getConductorCompactWindow, resolveContextWindowTokens, getDebugByDefault, getBackend, isKnownBackend, resolveSpawnEffort } from './appSettings.js';
 import { HookBroker } from './hookBroker.js';
 import { loadPersistedTranscript, writeSessionMetadata, readLastSessionModel, hasResumableConversation } from './transcript.js';
 import { canonicalizeModel, familyOf, CLAUDE_BACKEND_ID } from './modelVersions.js';
@@ -163,6 +163,7 @@ const DEFAULT_RESUME_MODE = 'bypassPermissions';
 function cliPermissionMode(mode) {
   return mode === 'ask' ? 'bypassPermissions' : mode;
 }
+
 const VALID_THINKING = new Set(['adaptive', 'enabled', 'disabled']);
 const DEFAULT_THINKING = 'adaptive';
 
@@ -265,7 +266,7 @@ export class EventLog {
 }
 
 export class Instance extends EventEmitter {
-  constructor({ id, project, cwd, mode, effort, thinking, model, sonnetWindow = '1m', backend = CLAUDE_BACKEND_ID, hookCallbackUrl = null, mcpServerUrl = null, worktree = null, temp = false, conducted = false, callerInstanceId = null, debug = false, claudePluginDirs = [], launcher = defaultClaudeLauncher, appendSystemPromptProvider = null }) {
+  constructor({ id, project, cwd, mode, effort, thinking, model, contextWindowTokens = null, backend = CLAUDE_BACKEND_ID, hookCallbackUrl = null, mcpServerUrl = null, worktree = null, temp = false, conducted = false, callerInstanceId = null, debug = false, claudePluginDirs = [], launcher = defaultClaudeLauncher, appendSystemPromptProvider = null }) {
     super();
     this.id = id;
     // The ClaudeLauncher used to spawn the subprocess. Defaults to the real
@@ -277,17 +278,20 @@ export class Instance extends EventEmitter {
     this.effort = effort;
     this.thinking = thinking;
     // `model` holds the concrete id for EVERY backend: a Claude version id
-    // ('claude-…', possibly with a [1m]/[200k] window suffix) or another
-    // backend's model id ('gemma4:cloud'). `backend` (a registry id) is the sole
-    // discriminator — it selects the launch command via its template; the claude
-    // args (including --model) are built uniformly.
+    // ('claude-…', carrying its catalog launch tag where one applies) or another
+    // backend's model id ('gemma4:cloud', 'gpt-5.6-sol[1m]'). For a substitution
+    // backend this string is the registry KEY — byte-exact, never normalized.
+    // `backend` (a registry id) is the sole discriminator: it selects the launch
+    // command via its template; the claude args (including --model) are built
+    // uniformly.
     this.model = model;
-    // The Sonnet context window this session runs at ('1m'|'200k'), snapshotted
-    // from the binding at spawn. It is the authority for re-deriving the model's
-    // [1m]/bare suffix on live re-canonicalization (a bare 200k Sonnet id can't
-    // carry the window in its suffix, so a global/suffix-only reader can't
-    // recover it — see _trackModel). Irrelevant for non-Sonnet / Sonnet-5 models.
-    this.sonnetWindow = sonnetWindow === '200k' ? '200k' : '1m';
+    // This session's context capacity in raw tokens, or null when unknown.
+    // Resolved ONCE server-side from {backend, model} (see create()), then
+    // recomputed only when this.model genuinely changes. Feeds the substitution
+    // backend's context env vars, summary(), the MCP projection, the client ctx
+    // chip, forks, and the restart manifest — one number, one source. Null means
+    // unknown and must render as unknown.
+    this.contextWindowTokens = Number.isFinite(contextWindowTokens) ? contextWindowTokens : null;
     // Registry id, normalized to the identity backend when unknown (a backend
     // the user has since removed must not strand the session unspawnable).
     this.backend = isKnownBackend(backend) ? backend : CLAUDE_BACKEND_ID;
@@ -580,10 +584,11 @@ export class Instance extends EventEmitter {
       effort: this.effort,
       thinking: this.thinking,
       model: this.model,
-      // The session's Sonnet window ('1m'|'200k'), so the client ctx bar can
-      // size a bare live Sonnet id (the API strips the [1m] suffix in its
-      // message_start stream) without a global preference.
-      sonnetWindow: this.sonnetWindow,
+      // Server-resolved context capacity (raw tokens) or null when unknown. The
+      // client renders this denominator verbatim and never derives one itself —
+      // it can't, since the API reports a bare model id in message_start and a
+      // substitution model's id is opaque.
+      contextWindowTokens: this.contextWindowTokens,
       backend: this.backend,
       sessionId: this.sessionId,
       status: this.status,
@@ -898,43 +903,85 @@ export class Instance extends EventEmitter {
   // Track the model the CLI is actually running, live. `this.model` starts
   // as the spawn-time request but the CLI can switch models interactively
   // mid-session with no discrete event of its own — system/init (and
-  // message_start) just start reporting a different id. Canonicalize before
-  // comparing: the CLI reports a bare id, while this.model already carries
-  // the [1m]/[200k] suffix from spawn-time canonicalization, so a raw-string
-  // compare would false-positive on every single init. Canonicalize against
-  // this session's own window (this.sonnetWindow), NOT a global — a 200k
-  // Sonnet session is stored bare, so re-canonicalizing with a 1m default
-  // would append [1m] and false-fire model_changed on every bare report.
+  // message_start) just start reporting a different id. Canonicalize the report
+  // against THIS session's backend before comparing: on `claude`, the CLI
+  // reports a bare id while this.model carries the catalog launch tag, so a
+  // raw-string compare would false-positive on every init.
   _trackModel(rawModel) {
     if (!rawModel) return;
-    const canonical = canonicalizeModel(rawModel, { sonnetWindow: this.sonnetWindow });
+    const canonical = canonicalizeModel(rawModel, this.backend);
     if (canonical === this.model) return;
-    // A SUBSTITUTION backend's inner CLI reports its model bare, dropping the
-    // `:tag` suffix (`<template> --model <tag>` still surfaces just the base
-    // name in system/init and message_start). canonicalizeModel is a no-op for
-    // non-Claude ids, so without this guard that bare report never matches
-    // this.model and looks like a genuine switch — overwriting this.model with
-    // the untagged id breaks the next resume's `<template> --model <tag>`
-    // (spawn() refuses to launch without the model).
+    // A SUBSTITUTION backend's configured model is NEVER replaced by the CLI's
+    // report — not even when the report looks like an unrelated model. Ignoring
+    // only *lossy* reports was not enough: anything else fell through and
+    // overwrote `this.model`, which for these backends IS the registry key. That
+    // breaks the next resume's `<template> --model <key>`, drops the context env
+    // vars, and poisons `session-backends.json` (now the authority for both the
+    // id and the capacity) with a foreign model.
+    //
+    // Unconditional is correct rather than merely safe: live model changes are
+    // already refused for these backends (`setModel` → 409 BACKEND_LOCKED), so
+    // the configured exact id is authoritative by construction and the inner
+    // CLI's self-report carries no information we want. Matching more report
+    // shapes would only shrink the hole; this closes the class.
     //
     // Deliberately keyed on "not the identity backend" rather than on any one
-    // backend id: a USER-DEFINED backend serving tagged models hits exactly the
-    // same bare-report path, and an `=== 'ollama'` test would silently
-    // reintroduce the bug for it. The `claude` path is untouched, so a genuine
-    // interactive switch still fires model_changed.
-    if (this.backend !== CLAUDE_BACKEND_ID && this.model && this.model.split(':')[0] === canonical) return;
+    // backend id. An `=== 'ollama'` test still passes most of this suite while
+    // silently reintroducing the bug for every USER-DEFINED backend — do not
+    // narrow it. The `claude` path is untouched, so a genuine interactive
+    // switch still fires model_changed.
+    //
+    // Returning here also skips `_prefixBaselineInvalid`, so if such a backend's
+    // inner CLI really did switch model, the next turn reports a spurious
+    // cross-turn cache miss instead of re-baselining. Accepted: that path is
+    // unsupported (a live switch on these backends is refused 409
+    // BACKEND_LOCKED), and a wrong cache-miss notice is strictly cheaper than a
+    // corrupted registry key.
+    if (this.backend !== CLAUDE_BACKEND_ID && this.model) return;
     if (this.model) {
       const from = this.model;
       this.model = canonical;
+      // Capacity is a function of the model, so it must move with it — a stale
+      // denominator survives as a wrong ctx% for the rest of the session.
+      this._refreshContextWindowTokens();
       // The cache is model-specific, so a switch legitimately shrinks/invalidates
       // the prefix; re-baseline next turn instead of flagging a cross-turn miss.
       this._prefixBaselineInvalid = true;
       this._emitUi({ kind: 'system', subtype: 'model_changed', data: { from, to: canonical } });
+      // summary() carries contextWindowTokens, so the client chip follows the
+      // switch without waiting for an unrelated refetch.
+      this.emit('status', this.summary());
     } else {
       // No explicit spawn-time model (account default) — this is discovery
-      // of the resolved default, not a user-visible switch. Adopt silently.
+      // of the resolved default, not a user-visible switch. Adopt silently:
+      // no model_changed event, since nothing changed from the user's view.
       this.model = canonical;
+      this._refreshContextWindowTokens();
+      // But DO push the summary, like the sibling branch. This is the first
+      // moment the server knows the model — and therefore its capacity — for a
+      // session spawned with no `--model` (the documented default). Without the
+      // emit the client holds `contextWindowTokens: null` until some unrelated
+      // refetch, so the ctx chip reads `ctx —` for the whole first turn.
+      this.emit('status', this.summary());
     }
+  }
+
+  // Re-resolve capacity from the current {backend, model}, INCLUDING null.
+  //
+  // Every caller runs because `this.model` just changed, so an unresolvable
+  // window means "we don't know this new model's capacity" — never "the old
+  // number is still roughly right". Retaining it publishes the previous model's
+  // window as this model's measured denominator: a Haiku session switched to an
+  // out-of-catalog 1M-class id would read `ctx 95% · 190k/200k`, and the reverse
+  // `ctx 30% · 300k/1M` on a session already past its real cap. Unknown must
+  // render as unknown (`ctx —`), which is the whole point of the field.
+  //
+  // The mid-session row-deletion case is NOT handled here and does not need to
+  // be: nothing recomputes while the model is unchanged, and a deletion observed
+  // across a resume is covered by `carriedContextWindowTokens` in create().
+  _refreshContextWindowTokens() {
+    const cw = resolveContextWindowTokens({ backend: this.backend, model: this.model });
+    this.contextWindowTokens = Number.isFinite(cw) ? cw : null;
   }
 
   async loadHistory(sessionId) {
@@ -1077,12 +1124,14 @@ export class Instance extends EventEmitter {
     // happens before the first turn_end (where _writeSessionMetadata also
     // calls markTemp). Fire-and-forget — spawn() must stay synchronous.
     if (this.temp && this.sessionId) markTemp(this.sessionId).catch(() => {});
-    // Persist the backend id + tagged model durably (the two things jsonl can't
-    // carry — which backend ran it, and the model TAG the inner CLI drops) so
-    // every resume path re-acquires both. Runs on every spawn/resume, so a legacy
-    // model-unknown entry self-heals once this.model holds a real id.
+    // Persist the backend id + exact model durably (the things jsonl can't carry
+    // — which backend ran it, and the full model id the inner CLI reports
+    // lossily) so every resume path re-acquires them. The capacity rides along
+    // as a last-known fallback for a resume after the custom-model row is
+    // deleted. Runs on every spawn/resume, so a legacy model-unknown entry
+    // self-heals once this.model holds a real id.
     if (this.backend !== CLAUDE_BACKEND_ID && this.sessionId) {
-      markSessionBackend(this.sessionId, this.backend, this.model).catch(() => {});
+      markSessionBackend(this.sessionId, this.backend, this.model, this.contextWindowTokens).catch(() => {});
     }
     this._hydrateTitle().catch(() => {});
     const args = [
@@ -1169,18 +1218,19 @@ export class Instance extends EventEmitter {
     // table defaults any unrecognized model (every non-Claude id) to a 200k
     // assumed window — silently capping our value back down. MAX_CONTEXT_TOKENS
     // overrides that assumed window directly for non-Claude models, so both
-    // vars are set to the same raw token count. A model with no resolvable
-    // window (e.g. one removed from the custom-model list since spawn) yields
-    // null → leave both unset (CLI default). These two are cc-MANAGED: implicit
-    // to every substitution backend, never applied to plain `claude`.
+    // vars are set to the same raw token count. An unknown window (null) leaves
+    // both unset (CLI default). These two are cc-MANAGED: implicit to every
+    // substitution backend, never applied to plain `claude`.
     // Runs for both fresh spawns and every resume path (single spawn() method;
     // backend + model are recovered before this block).
-    if (this.backend !== CLAUDE_BACKEND_ID && this.model) {
-      const cw = contextWindowForModel(this.model);
-      if (cw) {
-        spawnEnv.CLAUDE_CODE_AUTO_COMPACT_WINDOW = String(cw);
-        spawnEnv.CLAUDE_CODE_MAX_CONTEXT_TOKENS = String(cw);
-      }
+    //
+    // Reads the capacity resolved once at create() rather than re-resolving
+    // here, so the number in the child's env is the same one summary(), the MCP
+    // projection, and the ctx chip report. A mid-session registry deletion can
+    // therefore no longer silently drop the env var on the next respawn.
+    if (this.backend !== CLAUDE_BACKEND_ID && this.model && this.contextWindowTokens) {
+      spawnEnv.CLAUDE_CODE_AUTO_COMPACT_WINDOW = String(this.contextWindowTokens);
+      spawnEnv.CLAUDE_CODE_MAX_CONTEXT_TOKENS = String(this.contextWindowTokens);
     }
     // Apply the compact-window override ONLY to the Conduct orchestrator session
     // (project === '.conduct'). Do NOT gate on this.conducted — that flag marks
@@ -1820,7 +1870,7 @@ export class Instance extends EventEmitter {
     try { if (this.title) await setSessionTitle(newSid, this.title); } catch { /* best-effort */ }
     try {
       if (this.backend !== CLAUDE_BACKEND_ID) {
-        await markSessionBackend(newSid, this.backend, this.model);
+        await markSessionBackend(newSid, this.backend, this.model, this.contextWindowTokens);
         await unmarkSessionBackend(oldSid);
       }
     } catch { /* best-effort */ }
@@ -1863,14 +1913,23 @@ export class Instance extends EventEmitter {
         { statusCode: 409, code: 'BACKEND_LOCKED' },
       );
     }
+    // A NAME-PREFIX test on purpose, not a catalog allow-list. An out-of-catalog
+    // `claude-*` id is accepted so a model Anthropic ships before this build's
+    // catalog learns it can still be switched to live, instead of forcing a
+    // kill-and-respawn — and so this matches `spawn_instance`, which already
+    // accepts such an id. Capacity is what makes that safe: an id the catalog
+    // can't price resolves to null and the chip honestly reads `ctx —` (see
+    // _refreshContextWindowTokens). Accepting it never fabricates a denominator.
     if (!model || !familyOf(model)) throw new Error('invalid model');
-    await this._controlRequest({ subtype: 'set_model', model });
-    this.model = model;
-    // Keep the session window in step with a live model change so _trackModel
-    // keeps comparing against the right suffix. The client baked the suffix via
-    // applyClaudeWindow, so it's authoritative for the new pick: a Sonnet with
-    // [1m] → '1m', a bare Sonnet → '200k'. Non-Sonnet leaves it untouched.
-    if (familyOf(model) === 'sonnet') this.sonnetWindow = model.endsWith('[1m]') ? '1m' : '200k';
+    // Canonicalize the incoming pick rather than trusting the client to have
+    // baked the launch tag: the tag is catalog policy and the client now sends
+    // bare version ids. The backend is pinned to `claude` — the guard above
+    // already refused every other case.
+    const canonical = canonicalizeModel(model, CLAUDE_BACKEND_ID);
+    await this._controlRequest({ subtype: 'set_model', model: canonical });
+    this.model = canonical;
+    // Capacity moves with the model.
+    this._refreshContextWindowTokens();
     this.emit('status', this.summary());
     this._writeSessionMetadata().catch(() => {});
     return this.model;
@@ -2515,7 +2574,11 @@ export class InstanceManager extends EventEmitter {
     return p;
   }
 
-  async _doCreate({ project, resume, mode, effort, tier, role, thinking, model, sonnetWindow, backend: explicitBackend, worktree, temp, conducted, callerInstanceId, debug, autoApprovePlan, prefill } = {}) {
+  // `contextWindowTokens` is a FALLBACK ONLY, never an override: callers that
+  // carry a session's last known capacity (fork, restart manifest) pass it so a
+  // deleted custom-model row doesn't blank the ctx bar. Live registry
+  // resolution wins whenever it succeeds — see finalContextWindowTokens below.
+  async _doCreate({ project, resume, mode, effort, tier, role, thinking, model, contextWindowTokens: carriedContextWindowTokens, backend: explicitBackend, worktree, temp, conducted, callerInstanceId, debug, autoApprovePlan, prefill } = {}) {
     // On resume, when the caller didn't pin an explicit worktree, recover the
     // session's recorded project + worktree via findSessionLocation. This is
     // what makes spawn_instance({resume}) "just work" for an MCP conductor
@@ -2597,12 +2660,17 @@ export class InstanceManager extends EventEmitter {
           );
         }
         backend = rec.backend;
-        // The sidecar carries the FULL tagged model; the jsonl only holds the
-        // CLI's bare (tag-stripped) report. Prefer the sidecar's tag — this is
-        // what stops `deepseek-v4-flash:cloud` resuming as the unpullable
-        // tagless `deepseek-v4-flash`. A null (legacy) model falls through to
-        // the readLastSessionModel jsonl recovery below.
+        // The sidecar carries the FULL exact model id; the jsonl only holds the
+        // CLI's lossy (tag-stripped) report. Prefer the sidecar's — this is what
+        // stops `deepseek-v4-flash:cloud` resuming as the unpullable tagless
+        // `deepseek-v4-flash`, and `gpt-5.6-sol[1m]` resuming as an id the
+        // registry doesn't know. A null (legacy) model falls through to the
+        // readLastSessionModel jsonl recovery below.
         if (!finalModel && rec.model) finalModel = rec.model;
+        // Last known capacity, used only if the custom-model row is gone by now.
+        if (!Number.isFinite(carriedContextWindowTokens) && Number.isFinite(rec.contextWindowTokens)) {
+          carriedContextWindowTokens = rec.contextWindowTokens;
+        }
       }
     }
 
@@ -2650,23 +2718,12 @@ export class InstanceManager extends EventEmitter {
       } catch { /* best-effort */ }
     }
 
-    // Resolve the Sonnet context window for this spawn, then re-derive the
-    // model's [1m]/bare suffix from it. An explicit `sonnetWindow` is passed on
-    // every path that knows the window: a fresh spawn (caller resolved the
-    // binding window), a restart-manifest restore, and a rewind/fork (carries
-    // the live instance's window) — the only faithful source for a 200k Sonnet,
-    // which is stored BARE and so can't carry its window in a suffix.
-    //
-    // Absent it, default to '1m'. This is reached on a bare COLD RESUME
-    // (historical/anchor resume in a fresh process: the model is recovered bare
-    // from the jsonl, which the CLI strips of any suffix, and no binding/window
-    // is at hand). DELIBERATE — 1M is the safe choice (larger window, never
-    // truncates); a 200k-bound session cold-resumed this way widens to 1M rather
-    // than erroring. Not an oversight.
-    const finalSonnetWindow = sonnetWindow === '200k' ? '200k' : '1m';
-    // A no-op for a non-Claude id (familyOf(id) === null → returned unchanged),
-    // so this runs uniformly for every backend.
-    if (finalModel) finalModel = canonicalizeModel(finalModel, { sonnetWindow: finalSonnetWindow });
+    // Apply the launch tag. GATED ON `backend`, not on what the id looks like:
+    // for any substitution backend this returns the id byte-exact, because that
+    // string is the registry key everything downstream matches on. A Claude id
+    // gets its catalog tag (re)applied, which is also what re-tags a bare id
+    // recovered from the jsonl on a cold resume.
+    if (finalModel) finalModel = canonicalizeModel(finalModel, backend);
 
     // Null-model guard (note 1): a substitution-backend session with no resolvable
     // model — e.g. a resume whose jsonl is empty/corrupt so readLastSessionModel
@@ -2687,6 +2744,22 @@ export class InstanceManager extends EventEmitter {
         { statusCode: 422, code: 'BACKEND_MODEL_MISSING' },
       );
     }
+
+    // Resolve context capacity ONCE, from the concrete {backend, exact model}
+    // pair now settled above. This single number feeds the substitution
+    // backend's context env vars, summary(), the MCP projection, the client ctx
+    // chip, forks, and the restart manifest.
+    //
+    // The live registry WINS over any carried value: a custom model's window is
+    // user-editable, so a session resumed after the row was corrected must pick
+    // up the correction. `carriedContextWindowTokens` (from the session sidecar,
+    // the restart manifest, or a fork) is the fallback for exactly one case —
+    // the custom-model row was DELETED since the session last ran, so the
+    // registry can no longer resolve it. Keeping the last known real number
+    // beats rendering a long-running session's ctx bar as unknown.
+    const finalContextWindowTokens =
+      resolveContextWindowTokens({ backend, model: finalModel })
+      ?? (Number.isFinite(carriedContextWindowTokens) ? carriedContextWindowTokens : null);
 
     // The conducted marker is set explicitly on the MCP spawn path. When
     // resuming a historical session, recover it from the durable sidecar
@@ -2728,7 +2801,7 @@ export class InstanceManager extends EventEmitter {
     const inst = new Instance({
       id, project, cwd,
       mode: finalMode, effort: finalEffort, thinking: finalThinking, model: finalModel,
-      sonnetWindow: finalSonnetWindow,
+      contextWindowTokens: finalContextWindowTokens,
       backend,
       hookCallbackUrl: this.hookCallbackUrl(id),
       // Base MCP URL (no ?caller=) — the per-worker caller suffix is appended in

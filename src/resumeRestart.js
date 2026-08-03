@@ -187,10 +187,10 @@ export async function drainToManifest({ server, wss, instances, log = console, g
       effort: s.effort,
       thinking: s.thinking,
       model: s.model ?? null,
-      // Sonnet context window ('1m'|'200k'). The jsonl-recovered `model` above
-      // is bare for a 200k Sonnet (200k is stored bare), so the window can't be
-      // reconstructed from it — carry it explicitly so a restart preserves it.
-      sonnetWindow: s.sonnetWindow ?? '1m',
+      // Last known context capacity. A FALLBACK for the restored session, used
+      // only if the model's custom-model row is gone by the time we boot; live
+      // registry resolution wins otherwise.
+      contextWindowTokens: s.contextWindowTokens ?? null,
       // Backend id. The durable session-backends sidecar is the authority on
       // resume; carried here too as belt-and-braces so a restart reconstructs it
       // directly. The model itself rides in `model` above (recovered from jsonl
@@ -289,7 +289,7 @@ export async function restoreFromResumeManifest({ instances, log = console, stag
         effort: e.effort,
         thinking: e.thinking,
         model: e.model ?? undefined,
-        sonnetWindow: e.sonnetWindow ?? undefined,
+        contextWindowTokens: e.contextWindowTokens ?? undefined,
         backend: e.backend ?? undefined,
         worktree: e.worktreeName ?? null,
         temp: !!e.temp,
