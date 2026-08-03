@@ -234,6 +234,7 @@ so a changed default moves *new spawns*, never anything already running:
 | Fresh spawn (dialog / Conduct / `spawn_instance` with a tier or role) | resolved through the chain above |
 | Resume via `_doCreate` with no tier/role — sidebar one-click, anchor auto-resume, `spawn_instance({resume})` | step 4, `DEFAULT_EFFORT`: a resume recovers its model from the jsonl/sidecar, not from a binding, so there is no row to inherit from |
 | Restart manifest (`src/resumeRestart.js`) | step 1 — it carries the recorded `effort` explicitly, so the session comes back at the exact level it was running at |
+| `POST /api/instances/:id/fork` | step 1 — `create({… effort: inst.effort …})`, so the fork inherits the source session's level (it *does* re-enter `_doCreate`, unlike the row below) |
 | `Instance.launch({resume})` — `respawn_instance`, `POST /instances/:id/respawn`, crash-respawn, rewind, prune | reuses the live `this.effort`; these never re-enter `_doCreate`, so nothing is re-resolved |
 
 The client **never** resolves this chain. The `/api/settings/models` payload ships

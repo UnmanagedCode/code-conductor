@@ -228,3 +228,21 @@ test('a row whose level is missing from the payload shows the SERVER default, no
   // A role with no stored effort still lands on its Inherit option.
   assert.equal(window.document.querySelector('#sm-role-list .sm-effort').value, 'inherit');
 });
+
+test('every panel fallback routes through the payload\'s defaultEffort, including the Inherit label', async () => {
+  // defaultEffort deliberately differs from the global default so a hardcoded
+  // 'high' anywhere in the panel shows up as a wrong label / wrong selection.
+  const { impl } = stubFetch(modelsPayload({
+    defaultEffort: 'medium',
+    tierEffort: { balanced: 'max' },                        // other tiers absent
+    roleEffort: { conductor: { effort: 'inherit' } },       // inheritsTo absent
+  }));
+  const { window, mod } = await setup(impl);
+  mod.installSettings({});
+  await openSettings(window);
+
+  assert.equal(tierRow(window, 'frontier').querySelector('.sm-effort').value, 'medium',
+    'the tier-select fallback uses defaultEffort');
+  assert.equal(window.document.querySelector('#sm-role-list .sm-effort').options[0].textContent,
+    'Inherit (medium)', 'so does the Inherit label — no separate literal');
+});

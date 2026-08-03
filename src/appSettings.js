@@ -878,9 +878,15 @@ export async function removeCustomRole(role) {
   const nextList = getCustomRoles().filter(r => r !== canonical);
   const roleBackend = { ...(cur.models?.roleBackend || {}) };
   delete roleBackend[canonical];
-  const roleEffort = { ...(cur.models?.roleEffort || {}) };
-  delete roleEffort[canonical];
-  const models = { ...(cur.models || {}), customRoles: nextList, roleBackend, roleEffort };
+  const models = { ...(cur.models || {}), customRoles: nextList, roleBackend };
+  // Guarded rather than unconditional: a store with no roleEffort key has nothing
+  // to strip, and materializing an empty map would write a setting the user never
+  // touched (the same principle migration 0025 states for a missing `models`).
+  if (cur.models?.roleEffort) {
+    const roleEffort = { ...cur.models.roleEffort };
+    delete roleEffort[canonical];
+    models.roleEffort = roleEffort;
+  }
   await writeSettings({ ...cur, models });
   return true;
 }

@@ -578,7 +578,10 @@ export function installSettings({
     const tierBackend = data.tierBackend || {}; // {tier: {backend, model, window?}}
     const tierEffort = data.tierEffort || {};   // {tier: level} — the default-effort axis
     const efforts = data.efforts || [];         // effort levels, server-shipped catalog
-    const defaultEffort = data.defaultEffort;   // end of the server's precedence chain
+    // End of the server's precedence chain, shipped in the payload. The one place
+    // this panel names a level — every fallback below routes through it rather than
+    // repeating a literal that could drift from DEFAULT_EFFORT.
+    const defaultEffort = data.defaultEffort || 'high';
     const enabledTiers = data.enabledTiers ?? {};
     const defaultTier = data.defaultSpawnTier ?? 'powerful';
     const enabledCount = tiers.filter(t => enabledTiers[t.tier] !== false).length;
@@ -870,7 +873,7 @@ export function installSettings({
         const re = roleEffort[r.role] || {};
         const effortSel = buildEffortPicker(
           re.effort || 'inherit', true, (level) => onPickRoleEffort(r.role, level),
-          `Inherit (${re.inheritsTo || 'high'})`,
+          `Inherit (${re.inheritsTo || defaultEffort})`,
         );
         effortSel.setAttribute('aria-label', `Default effort for the ${r.label || r.role} role`);
         li.appendChild(effortSel);

@@ -935,6 +935,10 @@ test('GET /api/settings/models ships the effort axis: level catalog, per-tier le
     const fresh = await api(baseUrl, 'GET', '/api/settings/models');
     assert.equal(fresh.status, 200);
     assert.deepEqual(fresh.body.efforts, EFFORT_LEVELS, 'the level catalog is server-shipped, not a client literal');
+    // The field exists to stop the client's fallback drifting from the server's
+    // chain end, so assert the SERVER half against the real constant — a stubbed
+    // payload in a client test can't catch a mismatch reintroduced here.
+    assert.equal(fresh.body.defaultEffort, DEFAULT_EFFORT);
     // Fresh install: every tier at the global default, every role inheriting.
     for (const t of CAPABILITY_TIERS) assert.equal(fresh.body.tierEffort[t.tier], DEFAULT_EFFORT);
     assert.deepEqual(fresh.body.roleEffort.conductor, { effort: 'inherit', inheritsTo: DEFAULT_EFFORT });
@@ -1004,12 +1008,23 @@ test('removeCustomRole clears BOTH axes — a recreated name does not inherit th
       await setRoleEffort('Tester', 'max');
       await setRoleBinding('Tester', { kind: 'tier', tier: 'fast' });
       assert.equal(getRoleEffort('Tester'), 'max');
+      // Bystanders whose effort must survive the removal — one other custom role
+      // and a built-in. Without these, wiping the whole map (roleEffort = {})
+      // would satisfy the absence assertions below just as well as deleting one key.
+      await addCustomRole({ role: 'Alpha' });
+      await setRoleEffort('Alpha', 'low');
+      await setRoleEffort('conductor', 'xhigh');
 
       assert.equal(await removeCustomRole('tester'), true); // case-insensitive
       const stored = JSON.parse(await fs.readFile(path.join(orchStoreRoot(), 'settings.json'), 'utf8'));
       assert.equal('Tester' in (stored.models.roleEffort || {}), false,
         'the effort entry is deleted, like the binding one line above it');
       assert.equal('Tester' in (stored.models.roleBackend || {}), false);
+      // …and ONLY that entry: a removal must never reset anyone else's effort.
+      assert.equal(getRoleEffort('Alpha'), 'low');
+      assert.equal(getRoleEffort('conductor'), 'xhigh');
+      assert.equal(stored.models.roleEffort.Alpha, 'low');
+      assert.equal(stored.models.roleEffort.conductor, 'xhigh');
 
       // Recreating the name must start clean: `inherit` → the powerful tier it is
       // created on. A stranded 'max' would spawn it at max with nothing in the UI
@@ -1018,6 +1033,19 @@ test('removeCustomRole clears BOTH axes — a recreated name does not inherit th
       assert.equal(getRoleEffort('Tester'), 'inherit');
       await setTierEffort('powerful', 'low');
       assert.equal(resolveSpawnEffort({ role: 'Tester' }), 'low');
+    });
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test('removeCustomRole does not materialize a roleEffort map in a store that never had one', async () => {
+  const root = await mkTmp();
+  try {
+    await withEnv({ PROJECTS_ROOT: root }, async () => {
+      await addCustomRole({ role: 'Tester' });          // binding only, no effort ever set
+      assert.equal(await removeCustomRole('Tester'), true);
+      const stored = JSON.parse(await fs.readFile(path.join(orchStoreRoot(), 'settings.json'), 'utf8'));
+      assert.equal('roleEffort' in stored.models, false,
+        'nothing to strip ⇒ write no setting the user never touched');
     });
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
