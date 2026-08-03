@@ -1,0 +1,41 @@
+{
+  "events": [
+    { "type": "system", "subtype": "init", "session_id": "$SID", "cwd": "$CWD", "permissionMode": "bypassPermissions" }
+  ],
+  "turns": [
+    {
+      "on": { "type": "prompt", "text": "go" },
+      "emit": [
+        { "type": "stream_event", "event": { "type": "message_start", "message": { "id": "msg_cq", "role": "assistant" } } },
+        { "type": "stream_event", "event": { "type": "content_block_start", "index": 0, "content_block": { "type": "tool_use", "id": "tu_q", "name": "AskUserQuestion", "input": {} } } },
+        { "type": "stream_event", "event": { "type": "content_block_delta", "index": 0, "delta": { "type": "input_json_delta", "partial_json": "{\"questions\":[{\"question\":\"Pick a fruit\",\"header\":\"Fruit\",\"multiSelect\":false,\"options\":[{\"label\":\"Apple\"},{\"label\":\"Banana\"}]}]}" } } },
+        { "type": "stream_event", "event": { "type": "content_block_stop", "index": 0 } },
+        { "type": "control_request", "request_id": "ct_q", "request": { "subtype": "can_use_tool", "tool_name": "AskUserQuestion", "input": { "questions": [ { "question": "Pick a fruit", "header": "Fruit", "multiSelect": false, "options": [ { "label": "Apple" }, { "label": "Banana" } ] } ] } } }
+      ]
+    },
+    {
+      "on": { "type": "control_response", "request_id": "ct_q", "behavior": "deny" },
+      "emit": [
+        { "type": "user", "message": { "role": "user", "content": [ { "type": "tool_result", "tool_use_id": "tu_q", "content": "Awaiting user input via the orchestrator UI — please stop and wait for the next user message.", "is_error": true } ] } }
+      ]
+    },
+    {
+      "on": { "type": "prompt", "text": "finished its turn" },
+      "emit": [
+        { "type": "stream_event", "event": { "type": "content_block_start", "index": 1, "content_block": { "type": "text", "text": "" } } },
+        { "type": "stream_event", "event": { "type": "content_block_delta", "index": 1, "delta": { "type": "text_delta", "text": "Handling the worker result while the question is still open." } } },
+        { "type": "stream_event", "event": { "type": "content_block_stop", "index": 1 } }
+      ]
+    },
+    {
+      "on": { "type": "prompt", "text": "Answer to" },
+      "emit": [
+        { "type": "stream_event", "event": { "type": "content_block_start", "index": 2, "content_block": { "type": "text", "text": "" } } },
+        { "type": "stream_event", "event": { "type": "content_block_delta", "index": 2, "delta": { "type": "text_delta", "text": "Got the answer." } } },
+        { "type": "stream_event", "event": { "type": "content_block_stop", "index": 2 } },
+        { "type": "stream_event", "event": { "type": "message_stop" } },
+        { "type": "result", "subtype": "success", "stop_reason": "end_turn", "duration_ms": 5, "total_cost_usd": 0.0, "is_error": false }
+      ]
+    }
+  ]
+}

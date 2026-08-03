@@ -10,7 +10,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
+import { bootServer, api, waitFor, freshProjectsRoot, rmrf, userStdinLines } from './helpers.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO_WS = path.join(__dirname, 'fixtures', 'scenario-ws.json');
@@ -172,6 +172,103 @@ test('reject_plan keeps the worker in plan mode', async () => {
     assert.match(res.sentText, /simpler please/);
     assert.equal(inst.mode, 'plan');
   } finally {
+    process.env.FAKE_CLAUDE_SCENARIO = prevScenario;
+    delete process.env.FAKE_PLAN_FILE;
+    await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Mid-turn annotation for approve_plan / reject_plan.
+//
+// Both used to send with `annotateIfMidTurn:false`, on the premise that the
+// can_use_tool deny on ExitPlanMode leaves the worker idle. It doesn't: the
+// deny releases the tool call, but anything already queued in the CLI's stdin
+// — a wake callback from a finished sub-worker, say — is injected right after
+// and the same turn keeps running. A conductor approving in that window used
+// to land the approval with no timing context at all.
+//
+// The tests above only ever exercise the idle path (`waitFor(status === 'idle')`
+// before the call), where annotateIfMidTurn never engages, so re-disabling
+// annotation on either handler leaves them green. These two close that.
+// ---------------------------------------------------------------------------
+
+// Spawn a plan-mode worker, drive it to the plan_request card, then wedge it
+// mid-turn. SCENARIO_PLAN holds exactly ONE unfiltered prompt-turn: 'go'
+// consumes it (emitting the ExitPlanMode deny → plan_request card), so the wake
+// callback injected afterwards has nothing left to answer it and the worker
+// stays in `turn` — the real window in which a conductor's approval lands.
+async function spawnWedgedMidTurn(transcriptName) {
+  const transcriptPath = path.join(home, transcriptName);
+  process.env.FAKE_CLAUDE_TRANSCRIPT = transcriptPath;
+  await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
+  const r = await api(baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'plan' });
+  const inst = instances.get(r.body.id);
+  await waitFor(() => inst.status === 'idle');
+  const sid = inst.sessionId;
+
+  await callTool('send_prompt', { sessionId: sid, text: 'go', wait: true });
+  await waitFor(() => inst.status === 'idle');
+  await waitFor(() => inst.ring.toArray().some(ev => ev.kind === 'plan_request'));
+
+  await inst.prompt('Worker `abc12345` finished its turn.', [], {
+    internal: true, annotateIfMidTurn: false,
+  });
+  assert.equal(inst.status, 'turn', 'precondition: worker is wedged mid-turn');
+  return { inst, sid, transcriptPath };
+}
+
+// Asserts the tool's text reached the CLI as [MID_TURN_NOTE, <text>] — two
+// blocks, note first, payload verbatim. Fails if annotateIfMidTurn:false comes
+// back, or if the note is ever folded into the text instead of prepended as
+// its own block (which would break isUserQuestionAnswerText pairing too).
+async function assertAnnotatedOnTheWire(transcriptPath, sentText) {
+  const { MID_TURN_NOTE } = await import('../src/instances.js');
+  const lines = await userStdinLines(transcriptPath);
+  const line = lines.find(o => JSON.stringify(o.message.content).includes(sentText.slice(0, 24)));
+  assert.ok(line, `"${sentText.slice(0, 24)}…" reached the CLI stdin`);
+  assert.deepEqual(
+    line.message.content,
+    [{ type: 'text', text: MID_TURN_NOTE }, { type: 'text', text: sentText }],
+  );
+}
+
+test('approve_plan to a MID-TURN worker prepends MID_TURN_NOTE as its own block', async () => {
+  const tmpDir = await seedPlanFile();
+  const prevScenario = process.env.FAKE_CLAUDE_SCENARIO;
+  process.env.FAKE_CLAUDE_SCENARIO = SCENARIO_PLAN;
+  try {
+    const { inst, sid, transcriptPath } = await spawnWedgedMidTurn('approve-midturn.log');
+
+    const res = unwrap(await callTool('approve_plan', { sessionId: sid }));
+    assert.equal(res.mode, 'bypassPermissions', 'the mode flip still happens mid-turn');
+    await waitFor(() => inst.ring.toArray().some(
+      ev => ev.kind === 'user_echo' && /I approve the plan/.test(ev.text ?? '')));
+
+    await assertAnnotatedOnTheWire(transcriptPath, res.sentText);
+  } finally {
+    delete process.env.FAKE_CLAUDE_TRANSCRIPT;
+    process.env.FAKE_CLAUDE_SCENARIO = prevScenario;
+    delete process.env.FAKE_PLAN_FILE;
+    await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+  }
+});
+
+test('reject_plan to a MID-TURN worker prepends MID_TURN_NOTE as its own block', async () => {
+  const tmpDir = await seedPlanFile();
+  const prevScenario = process.env.FAKE_CLAUDE_SCENARIO;
+  process.env.FAKE_CLAUDE_SCENARIO = SCENARIO_PLAN;
+  try {
+    const { inst, sid, transcriptPath } = await spawnWedgedMidTurn('reject-midturn.log');
+
+    const res = unwrap(await callTool('reject_plan', { sessionId: sid, feedback: 'simpler please' }));
+    assert.equal(res.mode, 'plan', 'reject still leaves the worker in plan mode mid-turn');
+    await waitFor(() => inst.ring.toArray().some(
+      ev => ev.kind === 'user_echo' && /revise the plan/i.test(ev.text ?? '')));
+
+    await assertAnnotatedOnTheWire(transcriptPath, res.sentText);
+  } finally {
+    delete process.env.FAKE_CLAUDE_TRANSCRIPT;
     process.env.FAKE_CLAUDE_SCENARIO = prevScenario;
     delete process.env.FAKE_PLAN_FILE;
     await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});

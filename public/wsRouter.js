@@ -17,9 +17,9 @@
 // app.js stays the orchestrator: it constructs `state`, the trackers
 // (getTracker/getUsage/globalRLTracker), conversation, headerHandle,
 // lazyController, sessionActions, composer, sidebar, subagentPanel, the
-// unread/queued-answer helpers (bumpUnread/flushPendingAnswers — kept there
-// because they share module state with clearUnread/sendOrQueuePrompt), the
-// REST refreshers, selectInstance, and setSidebarStatus — all injected here.
+// unread helper (bumpUnread — kept there because it shares module state with
+// clearUnread), the REST refreshers, selectInstance, and setSidebarStatus —
+// all injected here.
 // `accountUsage` is NOT touched by any handler, so it stays wholly in app.js.
 
 import { bus, send } from './ws.js';
@@ -39,7 +39,6 @@ export function installWsRouter({
   sidebar,
   subagentPanel,
   bumpUnread,
-  flushPendingAnswers,
   refreshProjects,
   refreshInstances,
   selectInstance,
@@ -216,9 +215,6 @@ export function installWsRouter({
       subagentPanel.setInstances(state.instances, state.activeId);
       if (m.id === state.activeId) headerHandle.update();
     }
-    // Now that this instance is idle again, drain any queued user-question
-    // answers that came in while a turn was running.
-    if (m.status === 'idle') flushPendingAnswers(m.id);
   });
 
   bus.addEventListener('instances', () => { refreshInstances(); });
