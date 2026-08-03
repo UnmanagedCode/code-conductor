@@ -1215,7 +1215,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
     const tierBackend = {};
     const tierEffort = {};
     for (const t of CAPABILITY_TIERS) {
-      tierBackend[t.tier] = getTierBackend(t.tier); // {backend, model, window?}
+      tierBackend[t.tier] = getTierBackend(t.tier); // {backend, model}
       tierEffort[t.tier] = getTierEffort(t.tier);   // always a concrete level
     }
     // roles = built-in + user-custom + plugin-owned (each {role,label,builtin?,plugin?}).
@@ -1276,9 +1276,10 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
       }
       if (defaultSpawnTier !== undefined) await setDefaultSpawnTier(defaultSpawnTier);
       if (tierBackend !== undefined) {
-        // backend is a {backend, model, window?} record (window meaningful only
-        // for a Sonnet 4.x Claude binding) — setTierBackend validates it names a
-        // known Claude version or a configured backend's model (400 otherwise)
+        // backend is a {backend, model} record — setTierBackend validates it names
+        // a known Claude version or a configured backend's model (400 otherwise).
+        // A `window` from an older client is dropped by persistBinding, not stored:
+        // a model's context window is catalog/registry data, resolved at spawn.
         // and persists the window on the binding.
         if (!tierBackend || typeof tierBackend !== 'object' || !isKnownTier(tierBackend.tier)) {
           return res.status(400).json({ error: 'tierBackend must be {tier, backend:{backend,model}} with a known tier' });

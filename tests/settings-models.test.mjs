@@ -436,7 +436,7 @@ test('POST /api/settings/models/prefs saves conductorCompactWindow without clobb
   }
 });
 
-// ── per-binding Sonnet window (no global) ────────────────────────────────
+// ── binding shape: no window key, per-binding or global ──────────────────
 test('GET /api/settings/models no longer exposes a global sonnetContextWindow', async () => {
   const r = await api(baseUrl, 'GET', '/api/settings/models');
   assert.equal(r.status, 200);
