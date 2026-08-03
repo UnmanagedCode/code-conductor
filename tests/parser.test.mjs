@@ -460,16 +460,22 @@ test('parser: non-synthetic assistant message does not emit text events', () => 
 });
 
 // Emit the frames the CLI actually emits for a top-level tool call, IN THE
-// ORDER IT EMITS THEM. Measured over 12 real stdout captures: the complete
-// `assistant` envelope lands BEFORE `content_block_stop` — 356 of 356 tool_use
-// ids that appeared on both paths, 0 the other way. A fixture that emits the
+// ORDER IT EMITS THEM. Measured over the 11 stdout captures on disk: the
+// complete `assistant` envelope lands BEFORE `content_block_stop` — 353 of 353
+// tool_use ids that appeared on both paths, 0 the other way. A fixture that emits the
 // stop frame first is describing a stream the CLI never produces, and any
 // invariant about the two registration paths that it "pins" is a false green.
-function emitSkillToolUse(p, { toolUseId, skill, index = 0, args = 'x' } = {}) {
+//
+// `parent_tool_use_id` is present-and-null on every real top-level envelope
+// (720/720 across the surviving captures; 0 omit the key). Omitting it here
+// would leave the registration gate's live branch exercising `undefined` only,
+// so narrowing that gate to an `=== undefined` test would disable all live
+// folding with a green suite.
+function emitSkillToolUse(p, { toolUseId, skill, index = 0, args = 'x', name = 'Skill' } = {}) {
   p.handleObject({ type: 'stream_event', event: { type: 'message_start', message: { id: `m_${toolUseId}`, role: 'assistant' } } });
   p.handleObject({
     type: 'stream_event',
-    event: { type: 'content_block_start', index, content_block: { type: 'tool_use', id: toolUseId, name: 'Skill', input: {} } },
+    event: { type: 'content_block_start', index, content_block: { type: 'tool_use', id: toolUseId, name, input: {} } },
   });
   p.handleObject({
     type: 'stream_event',
@@ -477,9 +483,10 @@ function emitSkillToolUse(p, { toolUseId, skill, index = 0, args = 'x' } = {}) {
   });
   p.handleObject({
     type: 'assistant',
+    parent_tool_use_id: null,
     message: {
       id: `m_${toolUseId}`, role: 'assistant', type: 'message', model: 'claude-opus-4-8',
-      content: [{ type: 'tool_use', id: toolUseId, name: 'Skill', input: { skill, args } }],
+      content: [{ type: 'tool_use', id: toolUseId, name, input: name === 'Skill' ? { skill, args } : { command: 'ls' } }],
     },
   });
   const stopEvs = p.handleObject({ type: 'stream_event', event: { type: 'content_block_stop', index } });
@@ -592,11 +599,12 @@ test('parser: a Skill tool_use interrupted with no tool_result is expired by the
 
 test('parser: a Skill invoked in a live sub-agent turn registers nothing, so its never-arriving injection cannot steal a later top-level one', () => {
   const p = new Parser();
-  // Envelope shapes here mirror a real capture: the CLI forwards sub-agent
-  // turns as complete assistant/user envelopes tagged with parent_tool_use_id
-  // and emits NO stream_event frames for them — but it also never forwards
-  // the skill content injection on that surface (0 isSynthetic user envelopes
-  // with a parent_tool_use_id across 12 captures). Registering the sub-agent
+  // Envelope shapes here mirror the one captured sub-agent Skill call (in a
+  // capture since deleted, so this shape is no longer re-derivable): the CLI
+  // forwards sub-agent turns as complete assistant/user envelopes tagged with
+  // parent_tool_use_id and emits NO stream_event frames for them — and no
+  // injection followed it (0 isSynthetic user envelopes carry a
+  // parent_tool_use_id across the surviving captures). Registering the sub-agent
   // Skill would therefore create an entry nothing can consume; its
   // tool_result is not an error, so the error-drop never fires either, and it
   // would sit at the queue head and claim the next TOP-LEVEL injection.
@@ -723,4 +731,62 @@ test('parser: two Skill invocations in one turn each get their own name (the sec
     [a.skillLoad?.skill, b.skillLoad?.skill],
     ['claude-api', 'keybindings-help'],
   );
+});
+
+test('parser: a non-Skill tool_use registers nothing, so the next injected message is not mislabeled', () => {
+  const p = new Parser();
+  // The over-firing direction of the registration gate. Every other test puts
+  // either a Skill tool_use or nothing at all in front of the injected
+  // message, so dropping the `name !== 'Skill'` half of the filter goes
+  // unnoticed — and under it an ordinary Bash call registers
+  // {skill: undefined} and the next injected line renders "Loading skill:
+  // undefined".
+  emitSkillToolUse(p, { toolUseId: 'call_bash', name: 'Bash' });
+  p.handleObject({
+    type: 'user',
+    message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'call_bash', content: 'file-a\nfile-b' }] },
+  });
+  const echo = p.handleObject({
+    type: 'user', isSynthetic: true,
+    message: { role: 'user', content: [{ type: 'text', text: '[Your previous response had no visible output…]' }] },
+  }).find(e => e.kind === 'user_echo');
+  assert.ok(echo, 'still emits a user_echo');
+  assert.equal(echo.skillLoad, undefined, 'a Bash tool_use must never register a pending skill load');
+});
+
+test('parser: two Skill tool_uses pending at once keep FIFO order (the first injection takes the first skill)', () => {
+  const p = new Parser();
+  // SEQUENCE COMPOSED from attested primitives, not lifted from a capture: no
+  // surviving capture holds two Skill tool_uses. The primitives are each real
+  // — a tool_use-carrying `assistant` envelope with parent_tool_use_id
+  // present-and-null (720/720), and the envelope landing before its
+  // tool_result (353/353) — which is what lets both entries be pending before
+  // either injection arrives. Every other skill test injects between the two
+  // invocations, so the queue never holds two entries and shift()/pop() are
+  // indistinguishable; under pop() BOTH labels swap.
+  emitSkillToolUse(p, { toolUseId: 'call_first', skill: 'claude-api', index: 0 });
+  emitSkillToolUse(p, { toolUseId: 'call_second', skill: 'keybindings-help', index: 1 });
+  const inject = () => p.handleObject({
+    type: 'user', isSynthetic: true,
+    message: { role: 'user', content: [{ type: 'text', text: 'Base directory for this skill: /tmp/…' }] },
+  }).find(e => e.kind === 'user_echo');
+  assert.deepEqual(
+    [inject().skillLoad?.skill, inject().skillLoad?.skill],
+    ['claude-api', 'keybindings-help'],
+    'injections are consumed oldest-first',
+  );
+});
+
+test('parser: the real captured live Skill turn folds (committed stdout scenario)', async () => {
+  // Committed trim of a REAL capture, so the live-side evidence survives the
+  // debug dir it came from: lines 3/11/12/52-57 of
+  // .conduct/debug/570bbe7c-…/claude-stdout.jsonl (gpt-5.6-sol, CLI 2.1.220).
+  // Structural fields verbatim; only long text/args bodies truncated.
+  const sc = await loadScenario('scenario-live-skill-load.json');
+  const events = feed(sc);
+  const echo = events.filter(e => e.kind === 'user_echo').at(-1);
+  assert.ok(echo, 'the injected content message emits a user_echo');
+  assert.deepEqual(echo.skillLoad, { skill: 'claude-api' });
+  // The tool_result confirming the launch stays a plain tool_result.
+  assert.ok(events.some(e => e.kind === 'tool_result'));
 });

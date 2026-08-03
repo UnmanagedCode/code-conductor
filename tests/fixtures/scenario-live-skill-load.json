@@ -1,0 +1,178 @@
+{
+ "events": [],
+ "turns": [
+  {
+   "on": {
+    "type": "prompt"
+   },
+   "emit": [
+    {
+     "type": "stream_event",
+     "event": {
+      "message": {
+       "content": [],
+       "id": "msg_d2c4b7833ae84b4b8d722a1f240e11e0",
+       "model": "gpt-5.6-sol",
+       "role": "assistant",
+       "stop_reason": null,
+       "stop_sequence": null,
+       "type": "message",
+       "usage": {
+        "input_tokens": 46179,
+        "output_tokens": 0
+       }
+      },
+      "type": "message_start"
+     },
+     "session_id": "841c9120-b1c4-4b28-be05-8f4721f1f0f1",
+     "parent_tool_use_id": null,
+     "uuid": "0e3c1e7a-708f-4092-8bb4-72f224258ff6",
+     "ttft_ms": 5898
+    },
+    {
+     "type": "stream_event",
+     "event": {
+      "content_block": {
+       "id": "call_JXmtc3zjl5AsKmAvfNu9Exs4",
+       "input": {},
+       "name": "Skill",
+       "type": "tool_use"
+      },
+      "index": 1,
+      "type": "content_block_start"
+     },
+     "session_id": "841c9120-b1c4-4b28-be05-8f4721f1f0f1",
+     "parent_tool_use_id": null,
+     "uuid": "b6334da4-3169-44ee-a90d-2b02e10ff3d4"
+    },
+    {
+     "type": "stream_event",
+     "event": {
+      "delta": {
+       "partial_json": "{\"",
+       "type": "input_json_delta"
+      },
+      "index": 1,
+      "type": "content_block_delta"
+     },
+     "session_id": "841c9120-b1c4-4b28-be05-8f4721f1f0f1",
+     "parent_tool_use_id": null,
+     "uuid": "e4e84359-6148-426c-8c0f-023b5189eb15"
+    },
+    {
+     "type": "assistant",
+     "message": {
+      "content": [
+       {
+        "id": "call_JXmtc3zjl5AsKmAvfNu9Exs4",
+        "input": {
+         "skill": "claude-api",
+         "args": "Investigate why a debug-spawned code-conductor session reports 200k context inst\n\u2026[truncated for fixture]"
+        },
+        "name": "Skill",
+        "type": "tool_use"
+       }
+      ],
+      "id": "msg_d2c4b7833ae84b4b8d722a1f240e11e0",
+      "model": "gpt-5.6-sol",
+      "role": "assistant",
+      "stop_reason": null,
+      "stop_sequence": null,
+      "type": "message",
+      "usage": {
+       "input_tokens": 46179,
+       "output_tokens": 0
+      },
+      "context_management": null
+     },
+     "parent_tool_use_id": null,
+     "session_id": "841c9120-b1c4-4b28-be05-8f4721f1f0f1",
+     "uuid": "770b92f9-c4dd-4717-8985-14e758c10dc7",
+     "timestamp": "2026-08-01T12:45:08.175Z"
+    },
+    {
+     "type": "stream_event",
+     "event": {
+      "index": 1,
+      "type": "content_block_stop"
+     },
+     "session_id": "841c9120-b1c4-4b28-be05-8f4721f1f0f1",
+     "parent_tool_use_id": null,
+     "uuid": "2d599c97-29bb-46b5-b52c-8f21a2388601"
+    },
+    {
+     "type": "stream_event",
+     "event": {
+      "delta": {
+       "stop_reason": "tool_use",
+       "stop_sequence": null
+      },
+      "type": "message_delta",
+      "usage": {
+       "cache_creation_input_tokens": 0,
+       "cache_read_input_tokens": 0,
+       "input_tokens": 37395,
+       "output_tokens": 110
+      }
+     },
+     "session_id": "841c9120-b1c4-4b28-be05-8f4721f1f0f1",
+     "parent_tool_use_id": null,
+     "uuid": "2aa10ff9-3f8b-45e9-801a-7bc9e627d8b1"
+    },
+    {
+     "type": "stream_event",
+     "event": {
+      "type": "message_stop"
+     },
+     "session_id": "841c9120-b1c4-4b28-be05-8f4721f1f0f1",
+     "parent_tool_use_id": null,
+     "uuid": "0942180b-0c35-4159-bea5-93f236bee07a"
+    },
+    {
+     "type": "user",
+     "message": {
+      "role": "user",
+      "content": [
+       {
+        "type": "tool_result",
+        "tool_use_id": "call_JXmtc3zjl5AsKmAvfNu9Exs4",
+        "content": "Launching skill: claude-api"
+       }
+      ]
+     },
+     "parent_tool_use_id": null,
+     "session_id": "841c9120-b1c4-4b28-be05-8f4721f1f0f1",
+     "uuid": "e1813c65-a7ca-41f7-be43-2095fd8a37d7",
+     "timestamp": "2026-08-01T12:45:08.251Z",
+     "tool_use_result": {
+      "success": true,
+      "commandName": "claude-api",
+      "allowedTools": [
+       "Read",
+       "Grep",
+       "Glob",
+       "WebFetch"
+      ]
+     }
+    },
+    {
+     "type": "user",
+     "message": {
+      "role": "user",
+      "content": [
+       {
+        "type": "text",
+        "text": "Base directory for this skill: /tmp/claude-1000/bundled-skills/2.1.220/bc301b9b038f6902f3f9291ed625df8d/claude-api\n\n# Building LLM-Powered Applications with Claude\n\nThis skill helps you build LLM-powe\n\u2026[truncated for fixture]"
+       }
+      ]
+     },
+     "parent_tool_use_id": null,
+     "session_id": "841c9120-b1c4-4b28-be05-8f4721f1f0f1",
+     "uuid": "8eb65add-bb54-4906-b72e-c2c7564d84ee",
+     "timestamp": "2026-08-01T12:45:08.249Z",
+     "isSynthetic": true
+    }
+   ]
+  }
+ ]
+}
