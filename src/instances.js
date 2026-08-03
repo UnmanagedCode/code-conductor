@@ -18,7 +18,7 @@ import { buildSettingsJSON, buildMcpConfigJSON, AWAITING_INPUT_MESSAGE } from '.
 import { getOnOverageAction, getOverageThreshold, getConductorCompactWindow, resolveContextWindowTokens, getDebugByDefault, getBackend, isKnownBackend, resolveSpawnEffort } from './appSettings.js';
 import { HookBroker } from './hookBroker.js';
 import { loadPersistedTranscript, writeSessionMetadata, readLastSessionModel, hasResumableConversation } from './transcript.js';
-import { canonicalizeModel, isKnownClaudeModel, CLAUDE_BACKEND_ID } from './modelVersions.js';
+import { canonicalizeModel, familyOf, CLAUDE_BACKEND_ID } from './modelVersions.js';
 import { truncateSessionAtUserMessage } from './sessionEdit.js';
 import { pruneSessionToNewId, INPUT_MODES } from './sessionPrune.js';
 import { saveAttachment, isImageType } from './attachments.js';
@@ -930,6 +930,13 @@ export class Instance extends EventEmitter {
     // silently reintroducing the bug for every USER-DEFINED backend — do not
     // narrow it. The `claude` path is untouched, so a genuine interactive
     // switch still fires model_changed.
+    //
+    // Returning here also skips `_prefixBaselineInvalid`, so if such a backend's
+    // inner CLI really did switch model, the next turn reports a spurious
+    // cross-turn cache miss instead of re-baselining. Accepted: that path is
+    // unsupported (a live switch on these backends is refused 409
+    // BACKEND_LOCKED), and a wrong cache-miss notice is strictly cheaper than a
+    // corrupted registry key.
     if (this.backend !== CLAUDE_BACKEND_ID && this.model) return;
     if (this.model) {
       const from = this.model;
@@ -946,9 +953,16 @@ export class Instance extends EventEmitter {
       this.emit('status', this.summary());
     } else {
       // No explicit spawn-time model (account default) — this is discovery
-      // of the resolved default, not a user-visible switch. Adopt silently.
+      // of the resolved default, not a user-visible switch. Adopt silently:
+      // no model_changed event, since nothing changed from the user's view.
       this.model = canonical;
       this._refreshContextWindowTokens();
+      // But DO push the summary, like the sibling branch. This is the first
+      // moment the server knows the model — and therefore its capacity — for a
+      // session spawned with no `--model` (the documented default). Without the
+      // emit the client holds `contextWindowTokens: null` until some unrelated
+      // refetch, so the ctx chip reads `ctx —` for the whole first turn.
+      this.emit('status', this.summary());
     }
   }
 
@@ -1899,14 +1913,14 @@ export class Instance extends EventEmitter {
         { statusCode: 409, code: 'BACKEND_LOCKED' },
       );
     }
-    // Validate against the CATALOG, not the `claude-` name prefix. `familyOf` is
-    // a naming heuristic: it accepted any `claude-*` string, so an out-of-catalog
-    // id reached `this.model` with no resolvable capacity and the ctx bar lost its
-    // denominator mid-session. The catalog is the same allow-list the Settings
-    // picker offers, which is the only place a live switch can originate.
-    if (!model || !isKnownClaudeModel(model.replace(/\[(200k|1m)\]$/, ''))) {
-      throw new Error('invalid model');
-    }
+    // A NAME-PREFIX test on purpose, not a catalog allow-list. An out-of-catalog
+    // `claude-*` id is accepted so a model Anthropic ships before this build's
+    // catalog learns it can still be switched to live, instead of forcing a
+    // kill-and-respawn — and so this matches `spawn_instance`, which already
+    // accepts such an id. Capacity is what makes that safe: an id the catalog
+    // can't price resolves to null and the chip honestly reads `ctx —` (see
+    // _refreshContextWindowTokens). Accepting it never fabricates a denominator.
+    if (!model || !familyOf(model)) throw new Error('invalid model');
     // Canonicalize the incoming pick rather than trusting the client to have
     // baked the launch tag: the tag is catalog policy and the client now sends
     // bare version ids. The backend is pinned to `claude` — the guard above

@@ -22,6 +22,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
+import { Instance } from '../src/instances.js';
 import { canonicalizeModel, familyOf, claudeContextWindowTokens, CLAUDE_BACKEND_ID } from '../src/modelVersions.js';
 import { addCustomModel, removeCustomModel, addBackend, resolveContextWindowTokens } from '../src/appSettings.js';
 import { encodeCwd } from '../src/projects.js';
@@ -474,18 +475,58 @@ test('a live switch to an out-of-catalog id nulls capacity rather than retaining
     'an unresolvable window is null, never the outgoing model\'s number');
 });
 
-test('setModel refuses an out-of-catalog Claude id (catalog allow-list, not the name prefix)', async () => {
+test('setModel ACCEPTS an out-of-catalog Claude id and reports its capacity as unknown', async () => {
   const { id } = await spawnAndDump('claude-haiku-4-5', { project: 'sw-c' });
   const inst = instances.get(id);
-
-  // `familyOf` accepted any `claude-*` string, so this used to be adopted with no
-  // resolvable capacity — the ctx bar lost its denominator mid-session.
-  await assert.rejects(() => inst.setModel('claude-opus-9'), /invalid model/);
-  assert.equal(inst.model, 'claude-haiku-4-5', 'the refused switch changes nothing');
   assert.equal(inst.contextWindowTokens, 200_000);
 
-  // A catalogued id is still accepted, and carries its own window.
+  // A model Anthropic ships before this build's catalog learns it. Accepted on a
+  // name-prefix test, deliberately: refusing would force a kill-and-respawn to
+  // use it, and would contradict `spawn_instance`, which already accepts such an
+  // id. Safety comes from capacity, not from the validator —
+  await inst.setModel('claude-opus-9');
+  assert.equal(inst.model, 'claude-opus-9', 'the switch goes through');
+  // — the outgoing model's 200_000 must NOT be retained. Unknown renders `ctx —`;
+  // keeping the old number would publish it as this model's measured cap.
+  assert.equal(inst.contextWindowTokens, null,
+    'an uncatalogued id has unknown capacity, never the previous model\'s');
+
+  // A catalogued id still resolves its own window, so the null above is a real
+  // "we don't know" rather than the resolver having broken.
   await inst.setModel('claude-sonnet-4-6');
   assert.equal(inst.model, 'claude-sonnet-4-6[1m]', 'the launch tag is applied server-side');
   assert.equal(inst.contextWindowTokens, 1_000_000);
+
+  // A non-Claude-shaped id is still refused — the prefix test is a shape check,
+  // not an absence of validation.
+  await assert.rejects(() => inst.setModel('gpt-5.6-sol'), /invalid model/);
+  assert.equal(inst.model, 'claude-sonnet-4-6[1m]', 'the refused switch changes nothing');
+});
+
+
+// ── N2: the silent-adoption branch must push the summary too ──────────────
+test('adopting the account-default model pushes a summary so the chip is not `ctx —` all turn', () => {
+  // A session spawned with no `--model` (the documented default) learns its model
+  // only from system/init. The adoption branch is silent by design — no
+  // model_changed — but it must still emit `status`, or the client keeps
+  // contextWindowTokens:null until some unrelated refetch and the ctx chip reads
+  // `ctx —` for the whole first turn. Unit-level: the branch needs this.model to
+  // be null at call time, which a spawned instance has already passed.
+  const inst = new Instance({
+    id: 'n2', project: 'p', cwd: '/tmp/p', mode: 'plan', effort: 'high',
+    thinking: 'adaptive', model: null, backend: CLAUDE_BACKEND_ID,
+  });
+  const statuses = [];
+  const uiEvents = [];
+  inst.on('status', (s) => statuses.push(s));
+  inst.on('event', (e) => { if (e.subtype === 'model_changed') uiEvents.push(e); });
+
+  inst._trackModel('claude-haiku-4-5');
+
+  assert.equal(inst.model, 'claude-haiku-4-5');
+  assert.equal(inst.contextWindowTokens, 200_000);
+  assert.deepEqual(uiEvents, [], 'discovery is not a user-visible switch');
+  assert.equal(statuses.length, 1, 'the summary must be pushed on adoption');
+  assert.equal(statuses[0].contextWindowTokens, 200_000,
+    'the pushed summary carries the newly-known capacity');
 });
