@@ -105,7 +105,7 @@ export function replayPersistedLine(obj, { seqHint = 0, parentToolUseId = null, 
       // live `parser.js:_handleUser` consolidation. tool_result blocks
       // remain their own events.
       const userEvents = consolidateUserContent(content);
-      attachSkillLoad(userEvents, obj.isSynthetic === true, pendingSkillLoads);
+      attachSkillLoad(userEvents, obj, pendingSkillLoads);
       for (const ev of userEvents) events.push(ev);
     }
     return tagAndReturn();
@@ -127,10 +127,12 @@ export function replayPersistedLine(obj, { seqHint = 0, parentToolUseId = null, 
     // queued_command prompts are orchestrator-authored text blocks (no
     // tool_result), so consolidateUserContent emits just the one user_echo.
     const queuedEvents = consolidateUserContent(prompt);
-    // A queued prompt is a genuine (non-synthetic) turn boundary — expires
+    // A queued prompt is a genuine (non-injected) turn boundary — expires
     // any Skill invocation still awaiting its content injection, same as
-    // the primary `type:"user"` branch above.
-    attachSkillLoad(queuedEvents, false, pendingSkillLoads);
+    // the primary `type:"user"` branch above. queued_command lines carry no
+    // injection marker, so passing the line itself normalizes to exactly
+    // that.
+    attachSkillLoad(queuedEvents, obj, pendingSkillLoads);
     for (const ev of queuedEvents) events.push(ev);
     return tagAndReturn();
   }
