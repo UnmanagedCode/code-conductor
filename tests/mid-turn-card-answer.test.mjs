@@ -18,10 +18,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
-import { promises as fsp } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { WebSocket } from 'ws';
-import { bootServer, api, waitFor } from './helpers.mjs';
+import { bootServer, api, waitFor, userStdinLines } from './helpers.mjs';
 import { MID_TURN_NOTE } from '../src/instances.js';
 import { isUserQuestionAnswerText } from '../public/userQuestionAnswers.js';
 
@@ -54,15 +53,6 @@ function wsClient(url) {
       indexOf(p) { return messages.findIndex(p); },
     }));
   });
-}
-
-// Every `type:"user"` line the orchestrator wrote to the fake CLI's stdin.
-async function userStdinLines(transcriptPath) {
-  const raw = await fsp.readFile(transcriptPath, 'utf8');
-  return raw.split('\n')
-    .filter(Boolean)
-    .map(l => { try { return JSON.parse(l); } catch { return null; } })
-    .filter(o => o && o.type === 'user' && o.message?.role === 'user');
 }
 
 // Drive the shared sequence up to (but not including) the answer submit:

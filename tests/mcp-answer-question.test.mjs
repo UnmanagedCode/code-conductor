@@ -7,7 +7,7 @@ import { test, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
+import { bootServer, api, waitFor, freshProjectsRoot, rmrf, userStdinLines } from './helpers.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO_QUESTION = path.join(__dirname, 'fixtures', 'scenario-question.json');
@@ -98,15 +98,6 @@ test('answer_question sends the canonical single-option text and lands it as use
 // worker is still busy. These two pin both halves: unchanged when idle, annotated
 // when not.
 // ---------------------------------------------------------------------------
-
-// Every `type:"user"` line written to the fake CLI's stdin, in order.
-async function userStdinLines(transcriptPath) {
-  const raw = await (await import('node:fs')).promises.readFile(transcriptPath, 'utf8');
-  return raw.split('\n')
-    .filter(Boolean)
-    .map(l => { try { return JSON.parse(l); } catch { return null; } })
-    .filter(o => o && o.type === 'user' && o.message?.role === 'user');
-}
 
 test('answer_question to an IDLE worker writes exactly one content block (byte-identical to before)', async () => {
   const transcriptPath = path.join(home, 'idle-answer.log');

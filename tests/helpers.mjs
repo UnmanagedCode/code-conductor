@@ -175,6 +175,20 @@ export async function waitFor(predicate, { timeout = 10000, interval = 20 } = {}
   }
 }
 
+// Every `type:"user"` line the orchestrator wrote to the fake CLI's stdin, in
+// order. Requires FAKE_CLAUDE_TRANSCRIPT to have been set before the instance
+// launched (tests/fake-claude.mjs appends each stdin line there verbatim).
+// This is the only way to see what actually reached the CLI: the ring's
+// user_echo is emitted from the raw text BEFORE Instance.prompt prepends
+// MID_TURN_NOTE, so assertions about annotation have to read the wire.
+export async function userStdinLines(transcriptPath) {
+  const raw = await fs.readFile(transcriptPath, 'utf8');
+  return raw.split('\n')
+    .filter(Boolean)
+    .map(l => { try { return JSON.parse(l); } catch { return null; } })
+    .filter(o => o && o.type === 'user' && o.message?.role === 'user');
+}
+
 // Strips the "--- message i/N · msgId · textChars chars ---" boundary line
 // get_recent_messages prefixes into each body when it returns more than one
 // message (src/mcp/handlers.js messageBoundaryHeader). No-op when absent, so

@@ -273,6 +273,9 @@ function clearUnread(sessionId) {
 // instance killed, session mid-rewind — can unlock the card instead of leaving
 // it asserting `sending…` forever. `onFail` re-opens the card; there is no
 // retry or persistence by design.
+// The ack's 10s timeout can't realistically unlock a card that DID send: the
+// server writes the ack and the user_echo to the same socket in the same tick,
+// so the only losing window is a drop between those two writes.
 function sendCardAnswer(instanceId, text, onFail) {
   send('prompt', { id: instanceId, text }, { ack: true })
     .catch((e) => onFail(e?.message || 'send failed'));
