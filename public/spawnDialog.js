@@ -22,7 +22,8 @@
 // Returns { openSpawnDialog, syncTierModelLabels, syncTierVisibility } — the
 // only handles with external callers; defaultSpawnTier stays internal.
 import { resolveSpawnModel, resolveSpawnRole, getVersionLabel, backendIdOf, CLAUDE_BACKEND,
-  getTierList, getActiveTierEnabled, getActiveDefaultSpawnTier, getActiveTierBackend } from './models.js';
+  getTierList, getActiveTierEnabled, getActiveDefaultSpawnTier, getActiveTierBackend,
+  getActiveTierEffort } from './models.js';
 
 export function installSpawnDialog({ dom, getProjects, refreshProjects, refreshInstances, selectInstance, closeSidebarOverflow }) {
   // ── Shared spawn-dialog helpers ───────────────────────────────────────
@@ -94,6 +95,18 @@ export function installSpawnDialog({ dom, getProjects, refreshProjects, refreshI
     dom.spawnDialog.querySelectorAll('.qs-model').forEach(btn => {
       btn.classList.toggle('qs-selected', btn.dataset.tier === selectedSpawnTier);
     });
+    syncEffortDefaultLabel();
+  }
+
+  // Effort is a SEPARATE axis from the tier, but its default is per-tier — so the
+  // Advanced-options select's leading `Default (…)` entry names the level the
+  // selected tier will actually run at. Display only: leaving it selected sends no
+  // `effort`, and the server resolves it (one resolution point, see
+  // resolveSpawnEffort in src/appSettings.js). Re-run on every tier change; the
+  // dialog is modal, so a Settings edit can't land while it's open.
+  function syncEffortDefaultLabel() {
+    const opt = dom.sdEffort?.querySelector('option[value=""]');
+    if (opt) opt.textContent = `Default (${getActiveTierEffort(selectedSpawnTier)})`;
   }
 
   let sdModeValue = 'bypassPermissions';
@@ -134,7 +147,9 @@ export function installSpawnDialog({ dom, getProjects, refreshProjects, refreshI
     selectedSpawnTier = defaultSpawnTier();
     updateSpawnModelSelection();
 
-    dom.sdEffort.value = 'high';
+    // '' = follow the tier's default effort (label synced by
+    // updateSpawnModelSelection above).
+    dom.sdEffort.value = '';
     dom.sdThinking.value = 'adaptive';
     // Pre-check from the persisted default (Settings → About) so the box
     // always reflects what will actually be sent — see the `debug` line in
@@ -177,7 +192,10 @@ export function installSpawnDialog({ dom, getProjects, refreshProjects, refreshI
     const project  = pendingSpawnProject;
     const mode     = sdModeValue;
     const { model, backend, sonnetWindow } = resolveSpawnModel(selectedSpawnTier);
-    const effort   = dom.sdEffort.value;
+    // Send the TIER alongside the resolved model and omit `effort` unless the user
+    // picked a level: the server then resolves that tier's stored default effort.
+    // Deliberately NOT mirrored client-side — the precedence chain has one home.
+    const effort   = dom.sdEffort.value || undefined;
     const thinking = dom.sdThinking.value;
     const temp     = dom.sdTemp.checked || undefined;
     // Always explicit (never `undefined`) — the checkbox is pre-checked from
@@ -193,7 +211,7 @@ export function installSpawnDialog({ dom, getProjects, refreshProjects, refreshI
       const r = await fetch('/api/instances', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ project, mode, effort, thinking, model, sonnetWindow, backend, worktree, temp, debug, autoApprovePlan }),
+        body: JSON.stringify({ project, mode, effort, tier: selectedSpawnTier, thinking, model, sonnetWindow, backend, worktree, temp, debug, autoApprovePlan }),
       });
       if (!r.ok) throw new Error((await r.json()).error);
       const inst = await r.json();
@@ -244,7 +262,10 @@ export function installSpawnDialog({ dom, getProjects, refreshProjects, refreshI
       const res = await fetch('/api/instances', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ project: '.conduct', model, backend, sonnetWindow, temp: true, mode: 'bypassPermissions' }),
+        // `role` carries the Conductor role so the server applies ITS default
+        // effort (Settings → Models → Roles); no `effort` is sent, so there is
+        // nothing to override it.
+        body: JSON.stringify({ project: '.conduct', model, backend, sonnetWindow, role: 'conductor', temp: true, mode: 'bypassPermissions' }),
       });
       if (!res.ok) throw new Error((await res.json()).error);
       const inst = await res.json();

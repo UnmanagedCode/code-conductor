@@ -39,7 +39,7 @@ import { installPruneDialog } from './pruneDialog.js';
 import { installWsRouter } from './wsRouter.js';
 import { latestOnly } from './latestOnly.js';
 import { loadModelVersions,
-  setActiveTierEnabled, setActiveDefaultSpawnTier, setActiveTierBackend, setActiveRoleBindings, setCustomModels, setBackends, setOllamaCloudModels } from './models.js';
+  setActiveTierEnabled, setActiveDefaultSpawnTier, setActiveTierBackend, setActiveTierEffort, setActiveRoleBindings, setCustomModels, setBackends, setOllamaCloudModels } from './models.js';
 import { setTtsAvailable, setTtsEnabled, setTtsRate } from './tts.js';
 
 const state = {
@@ -535,6 +535,7 @@ const settings = installSettings({
   requestRestartWithResume: () => restartHandle?.performRestart({ resume: true }),
   onModelsChange: data => {
     if (data.tierBackend) setActiveTierBackend(data.tierBackend);
+    if (data.tierEffort) setActiveTierEffort(data.tierEffort);
     if (data.roleBackend) setActiveRoleBindings(data.roleBackend);
     if (data.enabledTiers) setActiveTierEnabled(data.enabledTiers);
     setActiveDefaultSpawnTier(data.defaultSpawnTier);

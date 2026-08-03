@@ -15,7 +15,7 @@ import { markArchived } from './archivedSessions.js';
 import { CONDUCT_PROJECT_NAME } from './conduct.js';
 import { composeCurrentConduct } from './conductorConventions.js';
 import { buildSettingsJSON, buildMcpConfigJSON, AWAITING_INPUT_MESSAGE } from './settings.js';
-import { getOnOverageAction, getOverageThreshold, getConductorCompactWindow, contextWindowForModel, getDebugByDefault, getBackend, isKnownBackend } from './appSettings.js';
+import { getOnOverageAction, getOverageThreshold, getConductorCompactWindow, contextWindowForModel, getDebugByDefault, getBackend, isKnownBackend, resolveSpawnEffort } from './appSettings.js';
 import { HookBroker } from './hookBroker.js';
 import { loadPersistedTranscript, writeSessionMetadata, readLastSessionModel, hasResumableConversation } from './transcript.js';
 import { canonicalizeModel, familyOf, CLAUDE_BACKEND_ID } from './modelVersions.js';
@@ -163,8 +163,6 @@ const DEFAULT_RESUME_MODE = 'bypassPermissions';
 function cliPermissionMode(mode) {
   return mode === 'ask' ? 'bypassPermissions' : mode;
 }
-const VALID_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
-const DEFAULT_EFFORT = 'high';
 const VALID_THINKING = new Set(['adaptive', 'enabled', 'disabled']);
 const DEFAULT_THINKING = 'adaptive';
 
@@ -2511,7 +2509,7 @@ export class InstanceManager extends EventEmitter {
     return p;
   }
 
-  async _doCreate({ project, resume, mode, effort, thinking, model, sonnetWindow, backend: explicitBackend, worktree, temp, conducted, callerInstanceId, debug, autoApprovePlan, prefill } = {}) {
+  async _doCreate({ project, resume, mode, effort, tier, role, thinking, model, sonnetWindow, backend: explicitBackend, worktree, temp, conducted, callerInstanceId, debug, autoApprovePlan, prefill } = {}) {
     // On resume, when the caller didn't pin an explicit worktree, recover the
     // session's recorded project + worktree via findSessionLocation. This is
     // what makes spawn_instance({resume}) "just work" for an MCP conductor
@@ -2538,10 +2536,12 @@ export class InstanceManager extends EventEmitter {
     if (!VALID_MODES.has(finalMode)) {
       throw Object.assign(new Error('invalid mode (must be plan, ask, or bypassPermissions)'), { statusCode: 400 });
     }
-    const finalEffort = effort ?? DEFAULT_EFFORT;
-    if (!VALID_EFFORTS.has(finalEffort)) {
-      throw Object.assign(new Error('invalid effort'), { statusCode: 400 });
-    }
+    // `tier`/`role` are carried ONLY to resolve the default effort — the model +
+    // backend are already resolved to concrete values by the caller. They are not
+    // stored on the Instance: `this.effort` holds the resolved level, which is what
+    // respawn/resume reuse. resolveSpawnEffort owns validation too (an explicit
+    // invalid effort throws 400 there).
+    const finalEffort = resolveSpawnEffort({ effort, tier, role });
     const finalThinking = thinking ?? DEFAULT_THINKING;
     if (!VALID_THINKING.has(finalThinking)) {
       throw Object.assign(new Error('invalid thinking'), { statusCode: 400 });

@@ -132,6 +132,9 @@
               (200k or 1M) is a stored preference set alongside the Sonnet 4.x model choice; Haiku is always
               200k, Opus/Fable always 1M. A tier on any other backend resolves straight to its model id
               (no version/window choice) and launches through that backend's command template.
+              Each row also carries a <strong>default effort</strong> — a separate axis from the model
+              binding (how hard it reasons, not which model): a spawn on that tier runs at it unless the
+              spawn call passes its own <code>effort</code>.
               Changes take effect immediately — no restart.
             </p>
             <div id="sm-status" class="st-status" aria-live="polite">Loading…</div>
@@ -140,12 +143,13 @@
               <span></span>
               <span class="sm-col-header">backend</span>
               <span class="sm-col-header">model</span>
+              <span class="sm-col-header">effort</span>
               <span class="sm-col-header">default</span>
             </div>
             <ul id="sm-tier-list" class="sm-family-list"></ul>
             <fieldset class="sm-group sm-roles">
               <legend>Roles</legend>
-              <p class="settings-hint">A role binds to a capability tier (follows whatever that tier points at) or a <strong>Custom</strong> backend/model pair. Spawn callers (MCP <code>spawn_instance</code>'s <code>model</code>) resolve a role to its backend (case-insensitively) — the Conduct button uses the <strong>Conductor</strong> role. Add your own <strong>custom roles</strong> below (they start on the Powerful tier — rebind with the row's picker); <strong>plugin</strong>-contributed roles are read-only and disappear when the plugin is disabled.</p>
+              <p class="settings-hint">A role binds to a capability tier (follows whatever that tier points at) or a <strong>Custom</strong> backend/model pair. Spawn callers (MCP <code>spawn_instance</code>'s <code>model</code>) resolve a role to its backend (case-insensitively) — the Conduct button uses the <strong>Conductor</strong> role. Add your own <strong>custom roles</strong> below (they start on the Powerful tier — rebind with the row's picker); <strong>plugin</strong>-contributed roles are read-only and disappear when the plugin is disabled. A role's <strong>default effort</strong> follows its tier (<code>Inherit</code>, showing the level it resolves to) unless you pick a level for the role itself.</p>
               <ul id="sm-role-list" class="sm-role-list"></ul>
               <div class="sm-role-form">
                 <input id="sm-role-name" type="text" placeholder="Role name (e.g. tester)" autocomplete="off" />
@@ -525,9 +529,13 @@
         <div class="sd-advanced-body">
           <label>Effort
             <select id="sd-effort">
+              <!-- Value '' → send no `effort`, so the server resolves the selected
+                   tier's default (Settings → Models). The label is rewritten to
+                   `Default (<level>)` as the tier selection changes. -->
+              <option value="" selected>Default</option>
               <option value="low">low</option>
               <option value="medium">medium</option>
-              <option value="high" selected>high</option>
+              <option value="high">high</option>
               <option value="xhigh">xhigh</option>
               <option value="max">max</option>
             </select>

@@ -187,6 +187,56 @@ unknown backend) falls back: `getTierBackend` to the tier's default Claude backe
 role → tier → dead-model chain reverts correctly, and re-guards a plugin *manifest*
 Claude id (which nothing else re-validates) against a retired catalog version.
 
+### Default effort
+
+A **second axis** on the same rows: which model a spawn runs *on* is the binding
+above; how hard it *reasons* is the effort. The two vocabularies stay disjoint —
+`low`/`medium`/`high`/`xhigh`/`max` (`EFFORT_LEVELS`, `src/effortLevels.js`) never
+name a tier, and no tier word is an effort level.
+
+| Key | Shape | Default |
+|---|---|---|
+| `models.tierEffort` | `{<tier>: <level>}` | `DEFAULT_EFFORT` (`high`) |
+| `models.roleEffort` | `{<role>: 'inherit' \| <level>}` | `inherit` |
+
+`inherit` means *follow the bound tier* — mirroring how `resolveRoleBackend`
+delegates a tier reference to `getTierBackend`, so a role has one inheritance story
+for both axes. A role bound to a concrete `{backend, model}` has no tier to follow,
+so its `inherit` resolves to `DEFAULT_EFFORT`. `inherit` is a role-only sentinel: a
+tier has nothing to inherit from, so `setTierEffort` refuses it (400). Invalid
+stored values revert on read, like the bindings.
+
+**`resolveSpawnEffort({effort, tier, role})` (`src/appSettings.js`) is the single
+resolution point** — the effort counterpart of `resolveBackendLaunch`. Precedence:
+
+1. an explicit `effort` (MCP `spawn_instance`, the spawn dialog's Advanced options,
+   the `POST /api/instances` body) — **validated here**, so an invalid explicit
+   value throws `400 invalid effort` instead of silently decaying to a default;
+2. `role` → `resolveRoleEffort(role)` (explicit level, else the inherited one);
+3. `tier` → `getTierEffort(tier)`;
+4. `DEFAULT_EFFORT`.
+
+Role before tier: a spawn resolves its model through one or the other, never both,
+but a caller passing both gets the more specific. An unknown tier/role name falls
+*through* rather than refusing — unlike a missing backend there is no billing
+hazard, only a level.
+
+`InstanceManager._doCreate` is the only caller: `tier`/`role` reach it from
+`mcp/handlers.js` `spawnInstance` (which already knows which one it resolved the
+model through) and from the `POST /api/instances` body. Neither name is stored on
+the `Instance` — `this.effort` holds the resolved level, which respawn reuses.
+**Every resume** (sidebar one-click, crash/anchor auto-resume, `respawn_instance`,
+the restart manifest) carries no tier/role and so lands on `DEFAULT_EFFORT`: a
+resume recovers its model from the jsonl/sidecar, not from a binding, so there is
+no row to inherit an effort from.
+
+The client **never** resolves this chain. The `/api/settings/models` payload ships
+`tierEffort` (effective, always concrete), `efforts` (the level catalog), and
+`roleEffort: {<role>: {effort, inheritsTo}}`, where `inheritsTo` is what `inherit`
+resolves to right now — computed server-side purely so the UI can render the
+`Inherit (<level>)` label. The caller-facing statement of the chain lives in the
+MCP `spawn_instance` `effort` schema description.
+
 ## Claude context windows
 
 One fixed window per family, applied by `canonicalizeModel()` in
@@ -242,10 +292,11 @@ through the normal dead-binding path.
 
 One row per tier, rendered **Frontier → Powerful → Balanced → Fast**, each with a
 **backend select** driven by the registry (a user-added row appears here with no code
-change) and a **model select scoped to the chosen backend**, plus a per-tier **enable
-checkbox** and **default radio** (default falls back to the first enabled tier in
-order balanced → fast → powerful → frontier). Both selects come from one shared
-`buildBackendPicker`, reused by the Roles rows.
+change), a **model select scoped to the chosen backend**, and a **default-effort
+select**, plus a per-tier **enable checkbox** and **default radio** (default falls
+back to the first enabled tier in order balanced → fast → powerful → frontier). The
+two binding selects come from one shared `buildBackendPicker` and the effort select
+from `buildEffortPicker` — both reused by the Roles rows.
 
 - **`claude`** → the Claude version list; a selectable-window Sonnet version contributes one entry per window build (see the catalog).
 - **any other backend** → a curated optgroup (built-in `ollama` row only) + a
@@ -254,8 +305,12 @@ order balanced → fast → powerful → frontier). Both selects come from one s
 
 **Custom models** fieldset: label + backend select + model id + **required** context
 tokens. **Roles** fieldset: one select per role listing every tier plus `Custom`
-(which reveals the shared backend/model pickers), a name-only add form for custom
-roles, an `×` remove on user rows, and a `via <plugin>` badge on plugin rows.
+(which reveals the shared backend/model pickers), a **default-effort select** whose
+first option reads `Inherit (<level>)` — the payload's `inheritsTo`, so a row is
+never opaque about what it will run at — a name-only add form for custom roles, an
+`×` remove on user rows, and a `via <plugin>` badge on plugin rows. A plugin role's
+effort is user-settable like its binding, persisted under `models.roleEffort` by the
+namespaced id.
 
 Every mutation is a single POST that returns the full refreshed state, re-rendered
 immediately — no restart. Endpoints: [protocol.md](protocol.md#rest-endpoints).

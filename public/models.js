@@ -49,6 +49,14 @@ const DEFAULT_ROLE_BINDING = {
   reviewer:  { kind: 'tier', tier: 'powerful' },
 };
 
+// Pre-fetch fallback for the effort a tier spawns at (mirrors DEFAULT_EFFORT in
+// src/effortLevels.js). A FALLBACK only: the server ships the effective per-tier
+// level in the boot payload, and it is the only thing consulted for a real spawn —
+// the client never resolves the effort chain itself (see resolveSpawnEffort,
+// src/appSettings.js). Read for DISPLAY: the spawn dialog's `Default (…)` label.
+const DEFAULT_TIER_EFFORT_FALLBACK = 'high';
+
+let activeTierEffort = {};
 let activeTierEnabled = { fast: true, balanced: true, powerful: true, frontier: true };
 let activeDefaultSpawnTier = 'powerful';
 let activeTierBackend = { ...DEFAULT_TIER_BACKEND };
@@ -123,6 +131,11 @@ export function setActiveDefaultSpawnTier(v) { activeDefaultSpawnTier = v || 'po
 export function getActiveTierBackend(tier) { return activeTierBackend[tier] || DEFAULT_TIER_BACKEND[tier]; }
 export function setActiveTierBackend(map) { activeTierBackend = { ...activeTierBackend, ...(map || {}) }; }
 
+// The effort a spawn on this tier runs at, as resolved SERVER-side and shipped in
+// the models payload. Display-only.
+export function getActiveTierEffort(tier) { return activeTierEffort[tier] || DEFAULT_TIER_EFFORT_FALLBACK; }
+export function setActiveTierEffort(map) { activeTierEffort = { ...activeTierEffort, ...(map || {}) }; }
+
 // Apply the Sonnet window suffix to a Claude version id from the binding's own
 // `window` ('1m'|'200k', default '1m') — no global. No-op for non-Sonnet and
 // non-Claude ids; fixed-window Sonnet (5) is always [1m] regardless of `window`.
@@ -152,6 +165,7 @@ export async function loadModelVersions() {
       }
       setBackends(data.backends);
       if (data.tierBackend) setActiveTierBackend(data.tierBackend);
+      if (data.tierEffort) setActiveTierEffort(data.tierEffort);
       if (data.roleBackend) setActiveRoleBindings(data.roleBackend);
       if (data.enabledTiers) setActiveTierEnabled(data.enabledTiers);
       setActiveDefaultSpawnTier(data.defaultSpawnTier);
