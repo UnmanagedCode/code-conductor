@@ -1208,9 +1208,9 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
   // its per-tier defaults (scoped to the built-in `ollama` backend), the
   // capability-tier list + each tier's {backend, model} binding, and the role
   // list + each role's stored binding (a tier binding {kind:'tier',tier} or a
-  // concrete {backend,model}). A Sonnet 4.x Claude binding carries its own
-  // context window as {backend:'claude',model,window} — there is no global
-  // Sonnet-window preference.
+  // concrete {backend,model}). A binding is exactly {backend, model}: a model's
+  // context window is catalog data for `claude` and registry data for any other
+  // backend, resolved at spawn — never stored on the binding.
   function modelsSettingsState() {
     const tierBackend = {};
     const tierEffort = {};
