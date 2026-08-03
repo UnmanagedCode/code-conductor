@@ -32,6 +32,7 @@ import { WHISPER_MODELS, isKnownModel, DEFAULT_MODEL } from './whisperModels.js'
 import {
   MODEL_FAMILIES, CAPABILITY_TIERS, isKnownTier,
 } from './modelVersions.js';
+import { EFFORT_LEVELS, DEFAULT_EFFORT } from './effortLevels.js';
 import {
   isAvailable as ttsAvailable, synthesize, voicePathForName,
 } from './tts.js';
@@ -46,6 +47,8 @@ import {
   getEnabledTiers, setTierEnabled,
   getDefaultSpawnTier, setDefaultSpawnTier,
   getTierBackend, setTierBackend,
+  getTierEffort, setTierEffort,
+  getRoleEffort, setRoleEffort, inheritedRoleEffort,
   effectiveRoleBinding, setRoleBinding,
   getAllRoles, addCustomRole, removeCustomRole,
   getCustomModels, addCustomModel, removeCustomModel,
@@ -798,13 +801,17 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
 
     r.post('/instances', async (req, res, next) => {
       try {
-        const { project, resume, mode, effort, thinking, model, sonnetWindow, backend, worktree, temp, debug, autoApprovePlan } = req.body ?? {};
+        const { project, resume, mode, effort, tier, role, thinking, model, sonnetWindow, backend, worktree, temp, debug, autoApprovePlan } = req.body ?? {};
         // UI shortcut: the temp checkbox implies bypassPermissions when no
         // mode is picked (a disposable session is almost always for *doing*,
         // not planning). create() is policy-light and no longer couples
         // these, so the mapping lives here. An explicit mode still wins.
         const effectiveMode = (mode == null && temp) ? 'bypassPermissions' : mode;
-        const inst = await instances.create({ project, resume, mode: effectiveMode, effort, thinking, model, sonnetWindow, backend, worktree, temp, debug, autoApprovePlan });
+        // `tier`/`role` name which Settings → Models row the client resolved
+        // `model`+`backend` from; they exist so create() can resolve THAT row's
+        // default effort when `effort` is omitted (resolveSpawnEffort). The client
+        // never resolves effort itself — see public/spawnDialog.js.
+        const inst = await instances.create({ project, resume, mode: effectiveMode, effort, tier, role, thinking, model, sonnetWindow, backend, worktree, temp, debug, autoApprovePlan });
         res.status(201).json(inst.summary());
       } catch (e) { next(e); }
     });
@@ -1193,8 +1200,10 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
   // Sonnet-window preference.
   function modelsSettingsState() {
     const tierBackend = {};
+    const tierEffort = {};
     for (const t of CAPABILITY_TIERS) {
       tierBackend[t.tier] = getTierBackend(t.tier); // {backend, model, window?}
+      tierEffort[t.tier] = getTierEffort(t.tier);   // always a concrete level
     }
     // roles = built-in + user-custom + plugin-owned (each {role,label,builtin?,plugin?}).
     // Every role's payload binding is its EFFECTIVE binding (a valid user
@@ -1204,14 +1213,29 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
     // survives.
     const allRoles = getAllRoles();
     const roleBackend = {};
-    for (const r of allRoles) roleBackend[r.role] = effectiveRoleBinding(r.role);
+    // Each role's effort as {effort, inheritsTo}: `effort` is what's stored
+    // ('inherit' or a level) and `inheritsTo` is what 'inherit' resolves to right
+    // now. The client renders `Inherit (<inheritsTo>)` as a label — it never
+    // recomputes the chain, so resolveSpawnEffort stays the only resolution point.
+    const roleEffort = {};
+    for (const r of allRoles) {
+      roleBackend[r.role] = effectiveRoleBinding(r.role);
+      roleEffort[r.role] = { effort: getRoleEffort(r.role), inheritsTo: inheritedRoleEffort(r.role) };
+    }
     return { backends: getBackends(), claudeFamilies: MODEL_FAMILIES, onOverage: getOnOverageAction(),
       overageThreshold: getOverageThreshold(),
       conductorCompactWindow: getConductorCompactWindow(),
       tiers: CAPABILITY_TIERS,
       tierBackend,
+      tierEffort,
+      efforts: EFFORT_LEVELS,
+      // The end of the precedence chain, shipped so a client fallback lands on the
+      // level the SERVER would actually resolve rather than on the first level in
+      // the catalog (see buildEffortPicker, public/settings.js).
+      defaultEffort: DEFAULT_EFFORT,
       roles: allRoles,
       roleBackend,
+      roleEffort,
       customModels: getCustomModels(),
       ollamaCloudModels: OLLAMA_CLOUD_MODELS,
       ollamaCloudTierDefaults: OLLAMA_CLOUD_TIER_DEFAULTS,
@@ -1226,7 +1250,8 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
   r.post('/settings/models/prefs', async (req, res, next) => {
     try {
       const { onOverage, overageThreshold, conductorCompactWindow,
-              tierEnabled, defaultSpawnTier, tierBackend, roleBackend } = req.body ?? {};
+              tierEnabled, defaultSpawnTier, tierBackend, roleBackend,
+              tierEffort, roleEffort } = req.body ?? {};
       if (typeof onOverage === 'string') await setOnOverageAction(onOverage);
       if (overageThreshold !== undefined) await setOverageThreshold(overageThreshold);
       if (conductorCompactWindow !== undefined) await setConductorCompactWindow(conductorCompactWindow);
@@ -1256,6 +1281,21 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
           return res.status(400).json({ error: 'roleBackend must be {role, backend}' });
         }
         await setRoleBinding(roleBackend.role, roleBackend.backend);
+      }
+      // The DEFAULT-EFFORT axis of the same rows — {tier, effort} / {role, effort}.
+      // Shaped like the two binding patches above; the setters own validation
+      // (unknown tier/role, unknown level, or 'inherit' on a tier → 400).
+      if (tierEffort !== undefined) {
+        if (!tierEffort || typeof tierEffort !== 'object') {
+          return res.status(400).json({ error: 'tierEffort must be {tier, effort}' });
+        }
+        await setTierEffort(tierEffort.tier, tierEffort.effort);
+      }
+      if (roleEffort !== undefined) {
+        if (!roleEffort || typeof roleEffort !== 'object') {
+          return res.status(400).json({ error: 'roleEffort must be {role, effort}' });
+        }
+        await setRoleEffort(roleEffort.role, roleEffort.effort);
       }
       // Bidirectional on-demand re-evaluation: a save that touched the overage action
       // or threshold should take effect on whatever is happening right now, not wait

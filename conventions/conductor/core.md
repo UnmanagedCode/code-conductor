@@ -50,7 +50,7 @@ Schemas are deferred — load them via `ToolSearch` before first use. Before you
 - `project_diff` — unified diff of `<base>...HEAD` **plus** the working tree's uncommitted changes and untracked files, always — judge a worker's output on the full result, not just committed hunks. `summary:true` for a cheap per-file stat; large diffs paginate via `nextOffset`.
 
 **Spawn workers**
-- `spawn_instance` — returns `{sessionId}`, the worker handle every other tool takes. Prefer `createWorktree:true` for any worker that will modify code; `worktree:"<name>"` attaches to an existing one. Defaults to disposable (`temp`) with mode defaulting to `plan`. `effort` (`low`…`max`; default per the `spawn_instance` schema) and `thinking` are spawn-time only. **Footgun:** `resume` without an explicit `mode` defaults to `bypassPermissions` — always pass `mode` when resuming.
+- `spawn_instance` — returns `{sessionId}`, the worker handle every other tool takes. Prefer `createWorktree:true` for any worker that will modify code; `worktree:"<name>"` attaches to an existing one. Defaults to disposable (`temp`) with mode defaulting to `plan`. `effort` and `thinking` are spawn-time only. **Footgun:** `resume` without an explicit `mode` defaults to `bypassPermissions` — always pass `mode` when resuming.
 - `create_project` — greenfield work.
 - `create_worktree` — worktree without a spawn (rare; usually you want `spawn_instance({createWorktree:true})`).
 

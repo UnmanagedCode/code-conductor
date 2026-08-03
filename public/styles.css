@@ -1516,7 +1516,7 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
 .sm-family-header,
 .sm-family-row {
   display: grid;
-  grid-template-columns: 20px 76px 88px 1fr 48px;
+  grid-template-columns: 20px 76px 88px 1fr 76px 48px;
   align-items: center;
   gap: 10px;
 }
@@ -1531,13 +1531,15 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
 .sm-family-label { font-size: 13px; white-space: nowrap; }
 .sm-backend { min-width: 0; }
 .sm-version { min-width: 0; }
+.sm-effort { min-width: 0; }
 .sm-family-row input[type="radio"] { justify-self: center; }
 @media (max-width: 720px) {
   .sm-family-row { padding: 7px 10px; }
 }
 
 /* Roles sub-panel inside the Models group. Roles use a simple flex row (not the
-   5-column tier grid): label + binding select + optional custom pickers. */
+   6-column tier grid): label + binding select + optional custom pickers +
+   default-effort select. */
 .sm-role-list { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
 .sm-role-row {
   display: flex; align-items: center; gap: 10px;
@@ -1547,9 +1549,13 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
 .sm-role-row .sm-role-name-wrap { flex: 0 0 76px; display: flex; flex-direction: column; gap: 2px; }
 .sm-role-row .sm-role-binding { flex: 0 0 auto; }
 .sm-role-row .sm-version { flex: 1 1 auto; min-width: 0; }
+/* Effort sits at the row's right edge, before the ×. It carries the margin-left:auto
+   that used to be on the × — a tier-bound row has no model select to absorb the
+   slack, so this is what pushes the trailing controls right as a pair. */
+.sm-role-row .sm-effort { flex: 0 0 auto; margin-left: auto; }
 /* Small × remove control (matches the composer attachment chip's .cac-remove). */
 .sm-role-row .sm-role-remove {
-  flex: 0 0 auto; margin-left: auto;
+  flex: 0 0 auto;
   background: transparent; border: none; color: var(--muted);
   cursor: pointer; padding: 0 4px; font-size: 16px; line-height: 1;
 }

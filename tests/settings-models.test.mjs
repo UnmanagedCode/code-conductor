@@ -21,7 +21,9 @@ import {
   getAllRoles, isResolvableRole, resolveRoleBackend,
   getCustomRoles, addCustomRole, removeCustomRole,
   addCustomModel, removeCustomModel, setPluginRolesProvider,
+  getTierEffort, setTierEffort, getRoleEffort, setRoleEffort, resolveSpawnEffort,
 } from '../src/appSettings.js';
+import { EFFORT_LEVELS, DEFAULT_EFFORT } from '../src/effortLevels.js';
 
 async function mkTmp() {
   return fs.mkdtemp(path.join(os.tmpdir(), 'cc-models-test-'));
@@ -925,4 +927,125 @@ test('GET /api/settings/models roles list carries built-in flags', async () => {
     assert.equal(conductor.builtin, true);
     assert.deepEqual(r.body.roleBackend.conductor, { kind: 'tier', tier: 'powerful' });
   }
+});
+
+// ── default effort (the second axis on the tier/role rows) ───────────────
+test('GET /api/settings/models ships the effort axis: level catalog, per-tier level, per-role {effort, inheritsTo}', async () => {
+  {  // shared server (before/after) + fresh PROJECTS_ROOT per test (beforeEach)
+    const fresh = await api(baseUrl, 'GET', '/api/settings/models');
+    assert.equal(fresh.status, 200);
+    assert.deepEqual(fresh.body.efforts, EFFORT_LEVELS, 'the level catalog is server-shipped, not a client literal');
+    // The field exists to stop the client's fallback drifting from the server's
+    // chain end, so assert the SERVER half against the real constant — a stubbed
+    // payload in a client test can't catch a mismatch reintroduced here.
+    assert.equal(fresh.body.defaultEffort, DEFAULT_EFFORT);
+    // Fresh install: every tier at the global default, every role inheriting.
+    for (const t of CAPABILITY_TIERS) assert.equal(fresh.body.tierEffort[t.tier], DEFAULT_EFFORT);
+    assert.deepEqual(fresh.body.roleEffort.conductor, { effort: 'inherit', inheritsTo: DEFAULT_EFFORT });
+
+    // Bind conductor → frontier and tune THAT tier: `inheritsTo` must track it, so
+    // the UI's `Inherit (…)` label is right without the client resolving anything.
+    await api(baseUrl, 'POST', '/api/settings/models/prefs', { roleBackend: { role: 'conductor', backend: { kind: 'tier', tier: 'frontier' } } });
+    const after = await api(baseUrl, 'POST', '/api/settings/models/prefs', { tierEffort: { tier: 'frontier', effort: 'max' } });
+    assert.equal(after.status, 200);
+    assert.equal(after.body.tierEffort.frontier, 'max');
+    assert.deepEqual(after.body.roleEffort.conductor, { effort: 'inherit', inheritsTo: 'max' });
+    // A role bound to a concrete pair has no tier to follow → the global default.
+    await api(baseUrl, 'POST', '/api/settings/models/prefs', { roleBackend: { role: 'reviewer', backend: { backend: 'claude', model: 'claude-opus-4-8' } } });
+    const concrete = await api(baseUrl, 'GET', '/api/settings/models');
+    assert.deepEqual(concrete.body.roleEffort.reviewer, { effort: 'inherit', inheritsTo: DEFAULT_EFFORT });
+  }
+});
+
+test('POST /api/settings/models/prefs validates the effort patches', async () => {
+  {  // shared server (before/after) + fresh PROJECTS_ROOT per test (beforeEach)
+    // Happy path, both axes.
+    const t = await api(baseUrl, 'POST', '/api/settings/models/prefs', { tierEffort: { tier: 'fast', effort: 'low' } });
+    assert.equal(t.status, 200);
+    assert.equal(t.body.tierEffort.fast, 'low');
+    const r = await api(baseUrl, 'POST', '/api/settings/models/prefs', { roleEffort: { role: 'conductor', effort: 'xhigh' } });
+    assert.equal(r.status, 200);
+    assert.deepEqual(r.body.roleEffort.conductor.effort, 'xhigh');
+    // 'inherit' is role-only: valid for a role, refused for a tier.
+    assert.equal((await api(baseUrl, 'POST', '/api/settings/models/prefs', { roleEffort: { role: 'conductor', effort: 'inherit' } })).status, 200);
+    assert.equal((await api(baseUrl, 'POST', '/api/settings/models/prefs', { tierEffort: { tier: 'fast', effort: 'inherit' } })).status, 400);
+    // Unknown tier / role / level.
+    assert.equal((await api(baseUrl, 'POST', '/api/settings/models/prefs', { tierEffort: { tier: 'nope', effort: 'low' } })).status, 400);
+    assert.equal((await api(baseUrl, 'POST', '/api/settings/models/prefs', { tierEffort: { tier: 'fast', effort: 'bogus' } })).status, 400);
+    assert.equal((await api(baseUrl, 'POST', '/api/settings/models/prefs', { roleEffort: { role: 'nope', effort: 'low' } })).status, 400);
+    assert.equal((await api(baseUrl, 'POST', '/api/settings/models/prefs', { roleEffort: { role: 'conductor', effort: 'bogus' } })).status, 400);
+    // A refused write persists nothing.
+    assert.equal((await api(baseUrl, 'GET', '/api/settings/models')).body.tierEffort.fast, 'low');
+  }
+});
+
+test('appSettings: the effort keys survive unrelated writes to the models namespace', async () => {
+  const root = await mkTmp();
+  try {
+    await withEnv({ PROJECTS_ROOT: root }, async () => {
+      await setTierEffort('frontier', 'max');
+      await setRoleEffort('conductor', 'low');
+      // Each of these spreads `models` — a clobbering write would drop the efforts.
+      await setTierBackend('frontier', { backend: 'claude', model: 'claude-opus-4-8' });
+      await setRoleBinding('conductor', { kind: 'tier', tier: 'fast' });
+      await setDefaultSpawnTier('fast');
+      await setTierEnabled('powerful', false);
+      assert.equal(getTierEffort('frontier'), 'max');
+      assert.equal(getRoleEffort('conductor'), 'low');
+      // …and symmetrically, an effort write doesn't drop a binding.
+      await setTierEffort('fast', 'medium');
+      assert.deepEqual(getTierBackend('frontier'), { backend: 'claude', model: 'claude-opus-4-8' });
+      assert.deepEqual(getRoleBinding('conductor'), { kind: 'tier', tier: 'fast' });
+    });
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test('removeCustomRole clears BOTH axes — a recreated name does not inherit the old effort', async () => {
+  const root = await mkTmp();
+  try {
+    await withEnv({ PROJECTS_ROOT: root }, async () => {
+      await addCustomRole({ role: 'Tester' });
+      await setRoleEffort('Tester', 'max');
+      await setRoleBinding('Tester', { kind: 'tier', tier: 'fast' });
+      assert.equal(getRoleEffort('Tester'), 'max');
+      // Bystanders whose effort must survive the removal — one other custom role
+      // and a built-in. Without these, wiping the whole map (roleEffort = {})
+      // would satisfy the absence assertions below just as well as deleting one key.
+      await addCustomRole({ role: 'Alpha' });
+      await setRoleEffort('Alpha', 'low');
+      await setRoleEffort('conductor', 'xhigh');
+
+      assert.equal(await removeCustomRole('tester'), true); // case-insensitive
+      const stored = JSON.parse(await fs.readFile(path.join(orchStoreRoot(), 'settings.json'), 'utf8'));
+      assert.equal('Tester' in (stored.models.roleEffort || {}), false,
+        'the effort entry is deleted, like the binding one line above it');
+      assert.equal('Tester' in (stored.models.roleBackend || {}), false);
+      // …and ONLY that entry: a removal must never reset anyone else's effort.
+      assert.equal(getRoleEffort('Alpha'), 'low');
+      assert.equal(getRoleEffort('conductor'), 'xhigh');
+      assert.equal(stored.models.roleEffort.Alpha, 'low');
+      assert.equal(stored.models.roleEffort.conductor, 'xhigh');
+
+      // Recreating the name must start clean: `inherit` → the powerful tier it is
+      // created on. A stranded 'max' would spawn it at max with nothing in the UI
+      // attributing that to the new role.
+      await addCustomRole({ role: 'Tester' });
+      assert.equal(getRoleEffort('Tester'), 'inherit');
+      await setTierEffort('powerful', 'low');
+      assert.equal(resolveSpawnEffort({ role: 'Tester' }), 'low');
+    });
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test('removeCustomRole does not materialize a roleEffort map in a store that never had one', async () => {
+  const root = await mkTmp();
+  try {
+    await withEnv({ PROJECTS_ROOT: root }, async () => {
+      await addCustomRole({ role: 'Tester' });          // binding only, no effort ever set
+      assert.equal(await removeCustomRole('Tester'), true);
+      const stored = JSON.parse(await fs.readFile(path.join(orchStoreRoot(), 'settings.json'), 'utf8'));
+      assert.equal('roleEffort' in stored.models, false,
+        'nothing to strip ⇒ write no setting the user never touched');
+    });
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
 });

@@ -4,9 +4,9 @@
 // the orchestrator's existing modules — no business logic here.
 
 import * as h from './handlers.js';
+import { EFFORT_LEVELS, DEFAULT_EFFORT } from '../effortLevels.js';
 
 const VALID_MODES = ['plan', 'ask', 'bypassPermissions'];
-const VALID_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
 const VALID_THINKING = ['adaptive', 'enabled', 'disabled'];
 
 export function buildTools() {
@@ -123,7 +123,13 @@ export function buildTools() {
         properties: {
           project: { type: 'string', description: 'Required for a fresh spawn. Optional when resume is given — recovered from the session\'s recorded location if worktree is also omitted.' },
           mode: { type: 'string', enum: VALID_MODES, description: 'plan / ask / bypassPermissions. Defaults to plan, independent of temp (resume defaults to bypassPermissions).' },
-          effort: { type: 'string', enum: VALID_EFFORTS },
+          effort: {
+            type: 'string', enum: EFFORT_LEVELS,
+            description:
+              'Reasoning effort. Omit it to use the default effort of the tier or role you spawned on ' +
+              `(set per row in Settings → Models; '${DEFAULT_EFFORT}' when that row has none, and for a resume, ` +
+              'which has no tier/role). An explicit value here always wins. Spawn-time only.',
+          },
           thinking: { type: 'string', enum: VALID_THINKING },
           model: {
             type: 'string',

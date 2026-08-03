@@ -51,12 +51,13 @@ import * as m0021 from './0021-strip-plugin-slugs-from-conductor-conventions.mjs
 import * as m0022 from './0022-drop-conduct-md-file.mjs';
 import * as m0023 from './0023-clamp-compact-window-floor.mjs';
 import * as m0024 from './0024-drop-managed-backend-env-overrides.mjs';
+import * as m0025 from './0025-seed-explicit-tier-role-effort.mjs';
 
 // Ordered list. Numeric (lexicographic) order IS execution order — keep it that
 // way: append to the end, or letter-suffix (`0018b`) when a migration must slot
 // between two shipped ones. Order matters: later migrations may assume earlier
 // ones have run, and an earlier one can destroy state a later one needs.
-const ALL = [m0001, m0002, m0004, m0005, m0006, m0007, m0008, m0009, m0010, m0011, m0012, m0013, m0014, m0015, m0016, m0018, m0018b, m0019, m0020, m0021, m0022, m0023, m0024];
+const ALL = [m0001, m0002, m0004, m0005, m0006, m0007, m0008, m0009, m0010, m0011, m0012, m0013, m0014, m0015, m0016, m0018, m0018b, m0019, m0020, m0021, m0022, m0023, m0024, m0025];
 
 export async function runMigrations({ root, log = console.log } = {}) {
   for (const m of ALL) {

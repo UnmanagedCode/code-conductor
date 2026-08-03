@@ -280,13 +280,21 @@ export async function spawnInstance(args, { instances, callerId }) {
   // window can't ride in the model-id suffix. Undefined for non-tier/role
   // resolutions (family alias / raw id) → create() defaults to '1m'.
   let sonnetWindow;
+  // Which tier/role the model was resolved THROUGH, forwarded to create() so its
+  // stored default effort applies when the caller passed no `effort`. Exactly one
+  // of the two is ever set (a name is a tier or a role, never both); a family
+  // alias / raw model id leaves both unset → the global default.
+  let tier;
+  let role;
   if (model && isKnownTier(model)) {
     const binding = getTierBackend(model); // {backend, model, window?}
+    tier = model;
     backend = binding.backend;
     model = binding.model;
     sonnetWindow = binding.window;
   } else if (model && isResolvableRole(model)) {
     const binding = resolveRoleBackend(model); // {backend, model, window?}
+    role = model;
     backend = binding.backend;
     model = binding.model;
     sonnetWindow = binding.window;
@@ -312,6 +320,8 @@ export async function spawnInstance(args, { instances, callerId }) {
     project: args.project,
     mode: args.mode,
     effort: args.effort,
+    tier,
+    role,
     thinking: args.thinking,
     model,
     sonnetWindow,

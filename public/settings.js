@@ -576,6 +576,12 @@ export function installSettings({
     const customModels = data.customModels || []; // [{label, model, backend, contextWindow}]
     const ollamaCloudModels = data.ollamaCloudModels || []; // curated presets, `ollama` backend only
     const tierBackend = data.tierBackend || {}; // {tier: {backend, model, window?}}
+    const tierEffort = data.tierEffort || {};   // {tier: level} — the default-effort axis
+    const efforts = data.efforts || [];         // effort levels, server-shipped catalog
+    // End of the server's precedence chain, shipped in the payload. The one place
+    // this panel names a level — every fallback below routes through it rather than
+    // repeating a literal that could drift from DEFAULT_EFFORT.
+    const defaultEffort = data.defaultEffort || 'high';
     const enabledTiers = data.enabledTiers ?? {};
     const defaultTier = data.defaultSpawnTier ?? 'powerful';
     const enabledCount = tiers.filter(t => enabledTiers[t.tier] !== false).length;
@@ -682,6 +688,40 @@ export function installSettings({
       return { backendSel, modelSel: sel };
     }
 
+    // Default-effort select, shared by tier rows and role rows. `inheritLabel`
+    // (role rows only) adds a leading `Inherit (<level>)` option whose value is
+    // 'inherit' — the level shown is the server-computed `inheritsTo`, never
+    // recomputed here. Tier rows pass no inheritLabel: a tier has nothing to
+    // inherit from.
+    function buildEffortPicker(current, enabled, onPick, inheritLabel) {
+      const sel = document.createElement('select');
+      sel.className = 'sm-effort';
+      sel.disabled = !enabled;
+      if (inheritLabel) {
+        const opt = document.createElement('option');
+        opt.value = 'inherit';
+        opt.textContent = inheritLabel;
+        sel.appendChild(opt);
+      }
+      for (const level of efforts) {
+        const opt = document.createElement('option');
+        opt.value = level;
+        opt.textContent = level;
+        sel.appendChild(opt);
+      }
+      // Select by assigning the built select's value (not `option.selected` while
+      // the option is still detached — happy-dom drops that, and the panel test
+      // asserts what the user would see). A value matching no option (a payload
+      // without the effort axis) leaves selectedIndex at -1, i.e. a blank select —
+      // fall back to the level the SERVER would resolve, never to the first entry
+      // in the catalog, which would display `low` for a row that runs at `high`.
+      sel.value = current;
+      if (sel.selectedIndex < 0) sel.value = defaultEffort;
+      if (sel.selectedIndex < 0) sel.selectedIndex = 0;
+      sel.addEventListener('change', () => onPick(sel.value));
+      return sel;
+    }
+
     renderCustomList(customModels, backends);
 
     if (smStatusEl) {
@@ -730,7 +770,15 @@ export function installSettings({
       li.appendChild(backendSel);
       li.appendChild(modelSel);
 
-      // Column 5: default radio
+      // Column 5: default effort (a separate axis from the binding above)
+      const effortSel = buildEffortPicker(
+        tierEffort[t.tier], isEnabled, (level) => onPickTierEffort(t.tier, level),
+      );
+      effortSel.dataset.tier = t.tier;
+      effortSel.setAttribute('aria-label', `Default effort for the ${t.label} tier`);
+      li.appendChild(effortSel);
+
+      // Column 6: default radio
       const radio = document.createElement('input');
       radio.type = 'radio';
       radio.name = 'sm-default-tier';
@@ -756,6 +804,10 @@ export function installSettings({
     if (smRoleListEl) {
       const roles = data.roles || [];
       const roleBackend = data.roleBackend || {}; // {role: {kind:'tier',tier} | {backend,model}}
+      // {role: {effort:'inherit'|level, inheritsTo:level}} — `inheritsTo` is what
+      // 'inherit' resolves to today (the bound tier's effort, or the global default
+      // for a Custom-bound role), computed server-side.
+      const roleEffort = data.roleEffort || {};
       smRoleListEl.innerHTML = '';
       for (const r of roles) {
         const rb = roleBackend[r.role] || { kind: 'tier', tier: defaultTier };
@@ -817,6 +869,15 @@ export function installSettings({
           li.appendChild(modelSel);
         }
 
+        // Default effort — 'inherit' (follow the bound tier) or an explicit level.
+        const re = roleEffort[r.role] || {};
+        const effortSel = buildEffortPicker(
+          re.effort || 'inherit', true, (level) => onPickRoleEffort(r.role, level),
+          `Inherit (${re.inheritsTo || defaultEffort})`,
+        );
+        effortSel.setAttribute('aria-label', `Default effort for the ${r.label || r.role} role`);
+        li.appendChild(effortSel);
+
         // Remove — user roles only. A small × icon control, not a full button.
         if (isUserRole) {
           const rm = document.createElement('button');
@@ -865,6 +926,33 @@ export function installSettings({
     } catch (e) {
       if (smStatusEl) smStatusEl.textContent = `Switch failed: ${e.message || e}`;
     }
+  }
+
+  // Persist a default effort — the tier/role's second axis — in one /prefs POST.
+  // Same shape as saveTierBinding/saveRoleBinding: the response is the full
+  // refreshed state, re-rendered immediately.
+  async function saveEffort(body) {
+    try {
+      const r = await fetch('/api/settings/models/prefs', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+      renderModels(data);
+      onModelsChange?.(data);
+    } catch (e) {
+      if (smStatusEl) smStatusEl.textContent = `Effort change failed: ${e.message || e}`;
+    }
+  }
+
+  function onPickTierEffort(tier, effort) {
+    return saveEffort({ tierEffort: { tier, effort } });
+  }
+
+  function onPickRoleEffort(role, effort) {
+    return saveEffort({ roleEffort: { role, effort } });
   }
 
   // First model to bind when a tier/role switches TO a non-Claude backend: for

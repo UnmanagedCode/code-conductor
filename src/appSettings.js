@@ -15,6 +15,7 @@ import { CAPABILITY_TIERS, DEFAULT_TIER_BACKEND, isKnownTier, isKnownClaudeModel
   ROLES, DEFAULT_ROLE_BINDING, isKnownRole, isKnownFamily, sonnetWindowSelectable,
   MANAGED_BACKENDS, MANAGED_BACKEND_IDS, CLAUDE_BACKEND_ID } from './modelVersions.js';
 import { OLLAMA_CLOUD_MODELS, isKnownOllamaCloudModel } from './ollamaCloudModels.js';
+import { DEFAULT_EFFORT, INHERIT_EFFORT, isKnownEffort } from './effortLevels.js';
 
 function settingsPath() {
   return path.join(orchStoreRoot(), 'settings.json');
@@ -651,6 +652,127 @@ export function resolveRoleBackend(role) {
   return persistBinding(b);
 }
 
+// ── Default effort ───────────────────────────────────────────────────────
+// A SECOND axis on the same rows the bindings above live on: `models.tierEffort`
+// ({tier: level}) and `models.roleEffort` ({role: 'inherit'|level}). It answers
+// "how hard does a spawn on this tier/role think" — never "which model", which
+// stays entirely with the bindings. Same read-time contract as the bindings: an
+// invalid stored value reverts to the default on read, no migration-on-read.
+//
+// A ROLE stores `inherit` by default — follow the tier it is bound to — mirroring
+// resolveRoleBackend's delegation of a tier reference to getTierBackend, so a role
+// has one inheritance story for both axes. A tier has nothing to inherit from, so
+// `inherit` is never a valid tier value.
+
+export function getTierEffort(tier) {
+  const s = loadSync();
+  const stored = s.models?.tierEffort?.[tier];
+  return isKnownEffort(stored) ? stored : DEFAULT_EFFORT;
+}
+
+export async function setTierEffort(tier, effort) {
+  if (!isKnownTier(tier) || !isKnownEffort(effort)) {
+    throw Object.assign(
+      new Error(`tierEffort must be a known capability tier and one of the effort levels (a tier has no '${INHERIT_EFFORT}')`),
+      { statusCode: 400 },
+    );
+  }
+  const cur = loadSync();
+  const nextTierEffort = { ...(cur.models?.tierEffort || {}), [tier]: effort };
+  const next = { ...cur, models: { ...(cur.models || {}), tierEffort: nextTierEffort } };
+  await writeSettings(next);
+  return nextTierEffort;
+}
+
+// The role's STORED effort: an explicit level, or `inherit` (the default) meaning
+// "follow the bound tier". Role names are canonicalized case-insensitively, like
+// getRoleBinding's callers do, so `Conductor` and `conductor` read one key.
+export function getRoleEffort(role) {
+  const canonical = canonicalBuiltinRole(role) ?? canonicalCustomRole(role) ?? canonicalPluginRole(role);
+  if (canonical === undefined) return INHERIT_EFFORT;
+  const s = loadSync();
+  const stored = s.models?.roleEffort?.[canonical];
+  return isKnownEffort(stored) ? stored : INHERIT_EFFORT;
+}
+
+export async function setRoleEffort(role, effort) {
+  const canonical = canonicalBuiltinRole(role) ?? canonicalCustomRole(role) ?? canonicalPluginRole(role);
+  if (!canonical || !(effort === INHERIT_EFFORT || isKnownEffort(effort))) {
+    throw Object.assign(
+      new Error(`roleEffort must name a built-in, custom, or plugin role and be '${INHERIT_EFFORT}' or one of the effort levels`),
+      { statusCode: 400 },
+    );
+  }
+  const cur = loadSync();
+  const nextRoleEffort = { ...(cur.models?.roleEffort || {}), [canonical]: effort };
+  const next = { ...cur, models: { ...(cur.models || {}), roleEffort: nextRoleEffort } };
+  await writeSettings(next);
+  return nextRoleEffort;
+}
+
+// What `inherit` resolves to for this role RIGHT NOW: the effort of the tier the
+// role is bound to, or the global default when the role binds to a concrete
+// backend+model (no tier to follow). Exported because the Settings payload ships
+// it as the label of the role row's `Inherit (…)` option — the client renders that
+// value, it never recomputes the chain.
+export function inheritedRoleEffort(role) {
+  const b = effectiveRoleBinding(role);
+  return b.kind === 'tier' ? getTierEffort(b.tier) : DEFAULT_EFFORT;
+}
+
+// The role's EFFECTIVE effort: an explicit level wins, `inherit` delegates.
+export function resolveRoleEffort(role) {
+  const stored = getRoleEffort(role);
+  return isKnownEffort(stored) ? stored : inheritedRoleEffort(role);
+}
+
+// THE resolution point for spawn effort — the whole precedence chain, in one
+// place (what resolveBackendLaunch is for backend templates). Every spawn path
+// routes through InstanceManager._doCreate, which calls exactly this.
+//
+//   1. an explicit `effort` from the caller (MCP spawn_instance, the spawn
+//      dialog's Advanced options, the REST body) — validated HERE so an invalid
+//      explicit value throws rather than silently decaying into a default;
+//   2. the `role` the spawn resolved its model through, if any;
+//   3. the `tier` the spawn resolved its model through, if any;
+//   4. DEFAULT_EFFORT.
+//
+// Role before tier: the two are mutually exclusive in practice (a spawn resolves
+// its model through one or the other — see mcp/handlers.js spawnInstance), but
+// the order is fixed so a caller that passes both gets the more specific one.
+//
+// An unknown tier/role name falls THROUGH to the next step rather than refusing.
+// Unlike a missing backend (which would bill a real `claude` run against a foreign
+// model id — see getTierBackend's callers) the only thing at stake here is which
+// effort level a spawn runs at, so a refusal would be the harsher error.
+//
+// Paths with no tier/role at hand land on step 4 and keep today's behaviour: a
+// resume recovers its model from the jsonl/sidecar, not from a binding, so there is
+// no row to inherit an effort from. That is the sidebar one-click resume, the anchor
+// auto-resume, and spawn_instance({resume}). Two other relaunch paths never reach
+// step 4 at all: the restart manifest passes the recorded `effort` explicitly (step
+// 1, so a session returns at the level it was running at), and Instance.launch({resume})
+// — respawn_instance, crash-respawn, rewind, prune — reuses the live `this.effort`
+// without re-entering _doCreate. Table of all of them: docs/models.md#default-effort.
+export function resolveSpawnEffort({ effort, tier, role } = {}) {
+  // Only `undefined`/`null` mean "the caller didn't ask" (an absent JSON field, an
+  // omitted MCP arg). Anything else present — including the empty string — is an
+  // ATTEMPT to name a level and must be validated, not absorbed: `''` was a 400
+  // before this feature and staying a 400 is what keeps "an invalid explicit value
+  // never silently becomes a default" true. (The spawn dialog's `Default` option
+  // has value '' but is normalized to `undefined` before the POST — see
+  // public/spawnDialog.js.)
+  if (effort !== undefined && effort !== null) {
+    if (!isKnownEffort(effort)) {
+      throw Object.assign(new Error('invalid effort'), { statusCode: 400 });
+    }
+    return effort;
+  }
+  if (role && isResolvableRole(role)) return resolveRoleEffort(role);
+  if (tier && isKnownTier(tier)) return getTierEffort(tier);
+  return DEFAULT_EFFORT;
+}
+
 // ── Custom + plugin roles ────────────────────────────────────────────────
 // Plugin-owned roles are LIVE-DERIVED from enabled plugins (never persisted),
 // mirroring plugin conventions: the provider is injected by server.js
@@ -744,8 +866,11 @@ export async function addCustomRole({ role, binding } = {}) {
   return { role: name };
 }
 
-// Remove a custom role and its binding (case-insensitive). Returns false if no
-// matching custom role.
+// Remove a custom role and BOTH of its axes — binding and default effort
+// (case-insensitive). Returns false if no matching custom role. Leaving either
+// behind would silently re-apply to a later role of the same name: recreating
+// `Tester` starts on the default tier at `inherit`, so a stranded roleEffort
+// entry would spawn it at an effort nothing in the UI attributes to it.
 export async function removeCustomRole(role) {
   const canonical = canonicalCustomRole(role);
   if (canonical === undefined) return false;
@@ -754,6 +879,14 @@ export async function removeCustomRole(role) {
   const roleBackend = { ...(cur.models?.roleBackend || {}) };
   delete roleBackend[canonical];
   const models = { ...(cur.models || {}), customRoles: nextList, roleBackend };
+  // Guarded rather than unconditional: a store with no roleEffort key has nothing
+  // to strip, and materializing an empty map would write a setting the user never
+  // touched (the same principle migration 0025 states for a missing `models`).
+  if (cur.models?.roleEffort) {
+    const roleEffort = { ...cur.models.roleEffort };
+    delete roleEffort[canonical];
+    models.roleEffort = roleEffort;
+  }
   await writeSettings({ ...cur, models });
   return true;
 }
