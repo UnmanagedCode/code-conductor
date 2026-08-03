@@ -24,6 +24,7 @@ import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
 import { canonicalizeModel, familyOf, claudeContextWindowTokens, CLAUDE_BACKEND_ID } from '../src/modelVersions.js';
 import { addCustomModel, removeCustomModel, addBackend, resolveContextWindowTokens } from '../src/appSettings.js';
+import { encodeCwd } from '../src/projects.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-instance.json');
@@ -234,24 +235,37 @@ test('a tagged non-Claude model resolves its context env from the exact registry
   });
 });
 
-test('_trackModel never overwrites a substitution model with the CLI\'s lossy bare report', async () => {
+test('_trackModel never adopts ANY report on a substitution backend, lossy or not', async () => {
   await withTaggedCodexModel(async () => {
     const { id } = await spawnAndDump('gpt-5.6-sol[1m]', { backend: 'codex', project: 'codex-c' });
     const inst = instances.get(id);
     const events = [];
     inst.on('event', (e) => { if (e.subtype === 'model_changed') events.push(e); });
 
-    // The inner CLI reports its model with the build tag dropped, exactly as a
-    // real substitution backend does in system/init and message_start.
-    inst._trackModel('gpt-5.6-sol');
+    // Every shape the inner CLI can report. Suppression is UNCONDITIONAL for a
+    // substitution backend with a configured model, so all of these are ignored:
+    const reports = [
+      // 1. the build tag dropped — what a real substitution backend emits
+      'gpt-5.6-sol',
+      // 2. and again, to prove idempotence rather than a one-shot latch
+      'gpt-5.6-sol',
+      // 3. a `:tag`-and-build-tag combination
+      'gpt-5.6-sol:cloud',
+      // 4. THE REGRESSION: a report that is NOT a lossy rendering of the
+      //    configured id at all. Matching only lossy shapes let this through, so
+      //    the foreign id replaced the registry key — and `spawn()` then wrote it,
+      //    with the wrong capacity, into session-backends.json, which this design
+      //    makes the authority for both. Reproduced in the suite via
+      //    scenario-basic.json, whose system/init hardcodes a Claude id.
+      'claude-sonnet-4-6',
+      // 5. an unrelated id with no shared prefix
+      'some-other-model',
+    ];
+    for (const r of reports) inst._trackModel(r);
 
-    assert.equal(inst.model, 'gpt-5.6-sol[1m]', 'the configured registry key must survive the lossy report');
-    assert.equal(inst.contextWindowTokens, 1_000_000, 'capacity must not collapse to unknown');
-    assert.deepEqual(events, [], 'a lossy re-report is not a model switch');
-
-    // The `:tag` form of the same loss is suppressed too.
-    inst._trackModel('gpt-5.6-sol');
-    assert.equal(inst.model, 'gpt-5.6-sol[1m]');
+    assert.equal(inst.model, 'gpt-5.6-sol[1m]', 'the configured registry key is authoritative');
+    assert.equal(inst.contextWindowTokens, 1_000_000, 'capacity must not follow a foreign report');
+    assert.deepEqual(events, [], 'a substitution backend never reports a live switch');
   });
 });
 
@@ -364,4 +378,114 @@ test('REST instance summaries carry contextWindowTokens and no sonnetWindow', as
   assert.ok(!('sonnetWindow' in row));
   assert.equal(row.contextWindowTokens, 200_000);
   assert.equal(typeof row.contextWindowTokens, 'number');
+});
+
+
+// ── F3: the env block reads the STORED number, not a live re-resolve ──────
+// The only behavioural difference between reading `this.contextWindowTokens` and
+// re-resolving at spawn time is what happens when the registry can no longer
+// answer. Deleting the row BEFORE create makes both forms agree (carried is null
+// too), so the row must be deleted AFTER the number is resolved.
+test('a respawn after the custom-model row is DELETED still injects the resolved window', async () => {
+  await addBackend({ id: 'codex', label: 'Codex', template: 'codexctl run claude --model {model} --', env: [] });
+  await addCustomModel({ label: 'Sol', model: 'gpt-5.6-sol[1m]', backend: 'codex', contextWindow: 1_000_000 });
+
+  const { id, summary } = await spawnAndDump('gpt-5.6-sol[1m]', { backend: 'codex', project: 'codex-del' });
+  assert.equal(summary.contextWindowTokens, 1_000_000);
+
+  // The user removes the model from Settings → Models mid-session.
+  await removeCustomModel('gpt-5.6-sol[1m]');
+  assert.equal(resolveContextWindowTokens({ backend: 'codex', model: 'gpt-5.6-sol[1m]' }), null,
+    'the registry can no longer resolve it');
+
+  const inst = instances.get(id);
+  assert.equal(inst.contextWindowTokens, 1_000_000, 'the session keeps the number it was created with');
+  const sessionId = inst.sessionId;
+
+  // Relaunch the session (kill + resume, the real path a user takes). The sidecar
+  // carries the last known capacity, `_doCreate` falls back to it, and the env
+  // block hands the child THAT number. A live per-spawn re-resolve would now
+  // yield null and silently omit both env vars, quietly reverting the session to
+  // the CLI's ~200k assumption for an unrecognised model.
+  // fake-claude writes no jsonl, so seed one at the cwd-encoded path the resume
+  // pre-flight checks (mirrors tests/model-resume.test.mjs).
+  const sessionDir = path.join(process.env.CLAUDE_PROJECTS_ROOT, encodeCwd(path.join(process.env.PROJECTS_ROOT, 'codex-del')));
+  await fs.mkdir(sessionDir, { recursive: true });
+  await fs.writeFile(path.join(sessionDir, `${sessionId}.jsonl`),
+    JSON.stringify({ type: 'user', uuid: 'u1', message: { role: 'user', content: 'hi' } }) + '\n');
+
+  await api(baseUrl, 'DELETE', `/api/instances/${id}`);
+  await waitFor(() => !instances.get(id) || !instances.get(id).proc);
+
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'ctxwin-'));
+  const envDump = path.join(tmp, 'env.txt');
+  process.env.FAKE_CLAUDE_ENV_DUMP = envDump;
+  try {
+    const r = await api(baseUrl, 'POST', '/api/instances', {
+      project: 'codex-del', mode: 'bypassPermissions', resume: sessionId,
+    });
+    assert.equal(r.status, 201, JSON.stringify(r.body));
+    await waitFor(() => instances.get(r.body.id).status === 'idle');
+    assert.equal(r.body.backend, 'codex', 'the backend is recovered from the sidecar');
+    assert.equal(r.body.model, 'gpt-5.6-sol[1m]', 'the exact id is recovered from the sidecar');
+    assert.equal(r.body.contextWindowTokens, 1_000_000, 'carried capacity survives the deleted row');
+
+    await waitFor(async () => { try { await fs.stat(envDump); return true; } catch { return false; } });
+    const env = Object.fromEntries((await fs.readFile(envDump, 'utf8')).split('\n').filter(Boolean).map(l => {
+      const eq = l.indexOf('='); return eq < 0 ? [l, ''] : [l.slice(0, eq), l.slice(eq + 1)];
+    }));
+    assert.equal(env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, '1000000');
+    assert.equal(env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, '1000000');
+  } finally {
+    delete process.env.FAKE_CLAUDE_ENV_DUMP;
+    await fs.rm(tmp, { recursive: true, force: true }).catch(() => {});
+  }
+});
+
+// ── F4: capacity follows the model on a live switch, in BOTH directions ───
+test('a live model switch moves capacity to the new model', async () => {
+  const { id } = await spawnAndDump('claude-haiku-4-5', { project: 'sw-a' });
+  const inst = instances.get(id);
+  assert.equal(inst.contextWindowTokens, 200_000);
+
+  // The CLI reports a genuine interactive switch to a 1M model.
+  inst._trackModel('claude-sonnet-5');
+  assert.equal(inst.model, 'claude-sonnet-5');
+  assert.equal(inst.contextWindowTokens, 1_000_000, 'capacity must follow the switch upward');
+
+  // …and back down. Retaining the larger number here would under-report the
+  // fill on a session that is now capped at 200k.
+  inst._trackModel('claude-haiku-4-5');
+  assert.equal(inst.contextWindowTokens, 200_000, 'capacity must follow the switch downward');
+});
+
+test('a live switch to an out-of-catalog id nulls capacity rather than retaining the old model\'s', async () => {
+  const { id } = await spawnAndDump('claude-haiku-4-5', { project: 'sw-b' });
+  const inst = instances.get(id);
+  assert.equal(inst.contextWindowTokens, 200_000);
+
+  // A `claude-*` id the catalog doesn't know (a model shipped after this build).
+  inst._trackModel('claude-future-9');
+  assert.equal(inst.model, 'claude-future-9');
+  // Retaining 200_000 here would publish the PREVIOUS model's window as this
+  // model's measured denominator — `ctx 95% · 190k/200k` on a possibly-1M model.
+  // Unknown must render as unknown.
+  assert.equal(inst.contextWindowTokens, null,
+    'an unresolvable window is null, never the outgoing model\'s number');
+});
+
+test('setModel refuses an out-of-catalog Claude id (catalog allow-list, not the name prefix)', async () => {
+  const { id } = await spawnAndDump('claude-haiku-4-5', { project: 'sw-c' });
+  const inst = instances.get(id);
+
+  // `familyOf` accepted any `claude-*` string, so this used to be adopted with no
+  // resolvable capacity — the ctx bar lost its denominator mid-session.
+  await assert.rejects(() => inst.setModel('claude-opus-9'), /invalid model/);
+  assert.equal(inst.model, 'claude-haiku-4-5', 'the refused switch changes nothing');
+  assert.equal(inst.contextWindowTokens, 200_000);
+
+  // A catalogued id is still accepted, and carries its own window.
+  await inst.setModel('claude-sonnet-4-6');
+  assert.equal(inst.model, 'claude-sonnet-4-6[1m]', 'the launch tag is applied server-side');
+  assert.equal(inst.contextWindowTokens, 1_000_000);
 });

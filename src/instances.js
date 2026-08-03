@@ -18,7 +18,7 @@ import { buildSettingsJSON, buildMcpConfigJSON, AWAITING_INPUT_MESSAGE } from '.
 import { getOnOverageAction, getOverageThreshold, getConductorCompactWindow, resolveContextWindowTokens, getDebugByDefault, getBackend, isKnownBackend, resolveSpawnEffort } from './appSettings.js';
 import { HookBroker } from './hookBroker.js';
 import { loadPersistedTranscript, writeSessionMetadata, readLastSessionModel, hasResumableConversation } from './transcript.js';
-import { canonicalizeModel, familyOf, CLAUDE_BACKEND_ID } from './modelVersions.js';
+import { canonicalizeModel, isKnownClaudeModel, CLAUDE_BACKEND_ID } from './modelVersions.js';
 import { truncateSessionAtUserMessage } from './sessionEdit.js';
 import { pruneSessionToNewId, INPUT_MODES } from './sessionPrune.js';
 import { saveAttachment, isImageType } from './attachments.js';
@@ -162,18 +162,6 @@ const DEFAULT_RESUME_MODE = 'bypassPermissions';
 // the user or auto-allow.
 function cliPermissionMode(mode) {
   return mode === 'ask' ? 'bypassPermissions' : mode;
-}
-// True if `report` is just a lossier rendering of the configured model id.
-// A substitution backend's inner CLI drops both the `:tag` variant suffix
-// (`deepseek-v4-flash:cloud` → `deepseek-v4-flash`) and a terminal build tag
-// (`gpt-5.6-sol[1m]` → `gpt-5.6-sol`) when it reports its own model, in either
-// combination. Used by _trackModel to tell "same model, worse name" apart from
-// a genuine switch.
-function lossyReportMatches(configured, report) {
-  const noTag = configured.replace(/\[(200k|1m)\]$/, '');
-  return report === noTag
-      || report === configured.split(':')[0]
-      || report === noTag.split(':')[0];
 }
 
 const VALID_THINKING = new Set(['adaptive', 'enabled', 'disabled']);
@@ -923,19 +911,26 @@ export class Instance extends EventEmitter {
     if (!rawModel) return;
     const canonical = canonicalizeModel(rawModel, this.backend);
     if (canonical === this.model) return;
-    // A SUBSTITUTION backend's inner CLI reports its model LOSSILY — dropping a
-    // `:tag` suffix, and dropping a terminal `[…]` build tag — so the report can
-    // never be trusted to replace the configured id. this.model IS the registry
-    // key for these backends: overwriting it with the lossy report breaks the
-    // next resume's `<template> --model <key>`, drops the context env vars, and
-    // poisons the session sidecar.
+    // A SUBSTITUTION backend's configured model is NEVER replaced by the CLI's
+    // report — not even when the report looks like an unrelated model. Ignoring
+    // only *lossy* reports was not enough: anything else fell through and
+    // overwrote `this.model`, which for these backends IS the registry key. That
+    // breaks the next resume's `<template> --model <key>`, drops the context env
+    // vars, and poisons `session-backends.json` (now the authority for both the
+    // id and the capacity) with a foreign model.
+    //
+    // Unconditional is correct rather than merely safe: live model changes are
+    // already refused for these backends (`setModel` → 409 BACKEND_LOCKED), so
+    // the configured exact id is authoritative by construction and the inner
+    // CLI's self-report carries no information we want. Matching more report
+    // shapes would only shrink the hole; this closes the class.
     //
     // Deliberately keyed on "not the identity backend" rather than on any one
     // backend id. An `=== 'ollama'` test still passes most of this suite while
     // silently reintroducing the bug for every USER-DEFINED backend — do not
     // narrow it. The `claude` path is untouched, so a genuine interactive
     // switch still fires model_changed.
-    if (this.backend !== CLAUDE_BACKEND_ID && this.model && lossyReportMatches(this.model, canonical)) return;
+    if (this.backend !== CLAUDE_BACKEND_ID && this.model) return;
     if (this.model) {
       const from = this.model;
       this.model = canonical;
@@ -957,13 +952,22 @@ export class Instance extends EventEmitter {
     }
   }
 
-  // Re-resolve capacity from the current {backend, model}. Keeps a previously
-  // known number when the registry can no longer resolve one (the custom-model
-  // row was deleted mid-session): a stale-but-real window beats reverting the
-  // ctx bar to unknown.
+  // Re-resolve capacity from the current {backend, model}, INCLUDING null.
+  //
+  // Every caller runs because `this.model` just changed, so an unresolvable
+  // window means "we don't know this new model's capacity" — never "the old
+  // number is still roughly right". Retaining it publishes the previous model's
+  // window as this model's measured denominator: a Haiku session switched to an
+  // out-of-catalog 1M-class id would read `ctx 95% · 190k/200k`, and the reverse
+  // `ctx 30% · 300k/1M` on a session already past its real cap. Unknown must
+  // render as unknown (`ctx —`), which is the whole point of the field.
+  //
+  // The mid-session row-deletion case is NOT handled here and does not need to
+  // be: nothing recomputes while the model is unchanged, and a deletion observed
+  // across a resume is covered by `carriedContextWindowTokens` in create().
   _refreshContextWindowTokens() {
     const cw = resolveContextWindowTokens({ backend: this.backend, model: this.model });
-    if (Number.isFinite(cw)) this.contextWindowTokens = cw;
+    this.contextWindowTokens = Number.isFinite(cw) ? cw : null;
   }
 
   async loadHistory(sessionId) {
@@ -1895,7 +1899,14 @@ export class Instance extends EventEmitter {
         { statusCode: 409, code: 'BACKEND_LOCKED' },
       );
     }
-    if (!model || !familyOf(model)) throw new Error('invalid model');
+    // Validate against the CATALOG, not the `claude-` name prefix. `familyOf` is
+    // a naming heuristic: it accepted any `claude-*` string, so an out-of-catalog
+    // id reached `this.model` with no resolvable capacity and the ctx bar lost its
+    // denominator mid-session. The catalog is the same allow-list the Settings
+    // picker offers, which is the only place a live switch can originate.
+    if (!model || !isKnownClaudeModel(model.replace(/\[(200k|1m)\]$/, ''))) {
+      throw new Error('invalid model');
+    }
     // Canonicalize the incoming pick rather than trusting the client to have
     // baked the launch tag: the tag is catalog policy and the client now sends
     // bare version ids. The backend is pinned to `claude` — the guard above

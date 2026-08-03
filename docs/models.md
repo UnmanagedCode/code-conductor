@@ -85,12 +85,17 @@ The consequences of being a substitution backend:
   `claudeShellEnv.js`) set neither — they run a single short prompt with no
   conversation to compact. See [protocol.md](protocol.md#subprocess-protocol) for why
   both are needed.
-- **Lossy model reports are suppressed** — the inner CLI records `message.model`
-  lossily (the `:tag` variant suffix *and* any terminal `[…]` build tag dropped), so
-  `_trackModel` ignores a report that matches the current model once those are
-  stripped, rather than treating it as an interactive switch. Without this,
-  `this.model` would lose its tag and stop matching its own registry key. The guard is
-  keyed on `backend !== 'claude'`, never on one backend id — narrowing it to
+- **The CLI's model report is ignored entirely** — `_trackModel` never adopts it
+  for a substitution backend that has a configured model, whatever it says. The
+  inner CLI records `message.model` lossily (the `:tag` variant suffix *and* any
+  terminal `[…]` build tag dropped) and may report an unrelated id altogether;
+  `this.model` is the registry KEY for these backends, so adopting any of that
+  breaks the next resume's `--model <key>`, drops the context env vars, and writes
+  a foreign id + capacity into `session-backends.json`. Suppressing only the
+  *lossy* shapes left exactly that hole. Unconditional is correct rather than
+  merely safe: live model changes are already refused here (below), so the
+  configured id is authoritative by construction. The guard is keyed on
+  `backend !== 'claude'`, never on one backend id — narrowing it to
   `=== 'ollama'` reintroduces the bug for every user-defined backend.
 - **Live "Change model" is refused** — the endpoint is fixed at launch, so any
   switch with a non-`claude` backend on either side (including

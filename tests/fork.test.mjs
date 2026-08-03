@@ -13,7 +13,7 @@ import { fileURLToPath } from 'node:url';
 import { WebSocket } from 'ws';
 import { bootServer, api, waitFor } from './helpers.mjs';
 import { encodeCwd } from '../src/projects.js';
-import { addBackend, addCustomModel } from '../src/appSettings.js';
+import { addBackend, addCustomModel, resolveContextWindowTokens } from '../src/appSettings.js';
 import { getSessionBackend } from '../src/sessionBackends.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -273,5 +273,56 @@ test('the forked sessionId is recorded in the backend sidecar, so a later cold r
     assert.deepEqual(await getSessionBackend(newSid), {
       backend: 'codex2', model: 'gpt-5.6-sol[1m]', contextWindowTokens: 1_000_000,
     });
+  } finally { await ctx.close(); }
+});
+
+
+// ── the live registry WINS over a carried capacity ───────────────────────
+// `create()` documents `resolveContextWindowTokens(...) ?? carried` — live first,
+// carried only as a fallback. Every other test has carried == live, or live ==
+// null, so the two sources never disagree and the precedence passes with the
+// operands swapped. This is the only test where they differ AND live resolves.
+test('a fork prefers the live registry window over the carried one when they disagree', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO });
+  try {
+    await addBackend({
+      id: 'codex3', label: 'Codex 3',
+      template: 'codexctl run claude --model {model} --', env: [],
+    });
+    // The row's CURRENT window. The source instance will carry a different one.
+    await addCustomModel({ label: 'Sol3', model: 'gpt-5.6-sol[1m]', backend: 'codex3', contextWindow: 400_000 });
+    assert.equal(resolveContextWindowTokens({ backend: 'codex3', model: 'gpt-5.6-sol[1m]' }), 400_000);
+
+    const sid = 'fffffff7-2222-3333-4444-555555555555';
+    await seedSession({
+      ctx, projectName: 'forkprec', sid,
+      lines: [
+        { type: 'user', uuid: 'u1', message: { role: 'user', content: 'first' } },
+        { type: 'assistant', uuid: 'a1', message: { id: 'm1', role: 'assistant', content: [{ type: 'text', text: 'r1' }] } },
+        { type: 'user', uuid: 'u2', message: { role: 'user', content: 'second' } },
+      ],
+    });
+    const r = await api(ctx.baseUrl, 'POST', '/api/instances', {
+      project: 'forkprec', mode: 'bypassPermissions', resume: sid,
+      backend: 'codex3', model: 'gpt-5.6-sol[1m]',
+    });
+    const id = r.body.id;
+    await waitFor(() => ctx.instances.get(id).status === 'idle');
+
+    // Force a DISAGREEMENT: the source instance carries a stale 999_999 (the shape
+    // a session gets when it was created while the row declared something else),
+    // while the registry now says 400_000.
+    const src = ctx.instances.get(id);
+    src.contextWindowTokens = 999_999;
+
+    const fk = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/fork`, { userMessageIndex: 1 });
+    assert.equal(fk.status, 201);
+
+    // The fork must adopt the registry's CURRENT number, not the value it was
+    // handed. A user who corrects a model's window in Settings expects the next
+    // spawn to use the correction; carrying-wins would pin the stale one forever.
+    assert.equal(fk.body.instance.contextWindowTokens, 400_000,
+      'live registry resolution wins over the carried fallback when both resolve');
+    assert.notEqual(fk.body.instance.contextWindowTokens, 999_999);
   } finally { await ctx.close(); }
 });
