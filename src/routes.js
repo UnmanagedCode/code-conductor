@@ -1280,7 +1280,6 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
         // a known Claude version or a configured backend's model (400 otherwise).
         // A `window` from an older client is dropped by persistBinding, not stored:
         // a model's context window is catalog/registry data, resolved at spawn.
-        // and persists the window on the binding.
         if (!tierBackend || typeof tierBackend !== 'object' || !isKnownTier(tierBackend.tier)) {
           return res.status(400).json({ error: 'tierBackend must be {tier, backend:{backend,model}} with a known tier' });
         }
