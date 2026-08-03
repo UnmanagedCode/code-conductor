@@ -603,8 +603,8 @@ test('parser: a Skill invoked in a live sub-agent turn registers nothing, so its
   // capture since deleted, so this shape is no longer re-derivable): the CLI
   // forwards sub-agent turns as complete assistant/user envelopes tagged with
   // parent_tool_use_id and emits NO stream_event frames for them — and no
-  // injection followed it (0 isSynthetic user envelopes carry a
-  // parent_tool_use_id across the surviving captures). Registering the sub-agent
+  // injection followed it. No surviving capture contains a sub-agent turn, so
+  // nothing corroborates that either way. Registering the sub-agent
   // Skill would therefore create an entry nothing can consume; its
   // tool_result is not an error, so the error-drop never fires either, and it
   // would sit at the queue head and claim the next TOP-LEVEL injection.

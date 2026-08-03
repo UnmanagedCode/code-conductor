@@ -287,11 +287,11 @@ export class Parser {
     //
     // Sub-agent tool_uses are deliberately NOT registered. The CLI forwards
     // sub-agent turns as envelopes tagged with parent_tool_use_id, but no
-    // injection was ever observed to follow one: 0 `isSynthetic` user
-    // envelopes carry a parent_tool_use_id across the surviving captures, and
-    // the ONE captured sub-agent Skill call — in a capture since deleted, so
-    // this rests on n=1 and is no longer re-derivable — went tool_use ->
-    // tool_result -> system with no injection. An entry registered here could
+    // injection was ever observed to follow one: the ONE captured sub-agent
+    // Skill call — in a capture since deleted, so this rests on n=1 and is no
+    // longer re-derivable — went tool_use -> tool_result -> system with no
+    // injection. No surviving capture contains a sub-agent turn at all, so
+    // there is no corroborating evidence either way. An entry registered here could
     // therefore never be consumed by its own injection: it would sit at the
     // head of the queue and steal the next TOP-LEVEL injection instead. Not
     // registering is the conservative reading — it forgoes folding we have no
@@ -564,7 +564,7 @@ export function attachSkillLoad(events, source, pendingSkillLoads) {
       echo.skillLoad = { skill: pending.skill };
     }
     // Otherwise the id names nothing pending. Not "an injection for another
-    // tool" — all 31 sourceToolUseID lines in the persisted corpus name a
+    // tool" — every sourceToolUseID line in the persisted corpus names a
     // Skill tool_use. It means the entry is gone or was never made: expired
     // by an intervening real turn, dropped by an erroring tool_result, or its
     // Skill tool_use sits outside the range being replayed. Either way there
