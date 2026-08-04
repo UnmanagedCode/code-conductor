@@ -338,6 +338,17 @@ export function installHeader({
       ctxText = `ctx ${formatPct(ctxFrac)} · ${formatTokens(ctxUsed)}/${formatTokens(ctxWindow)}`;
     }
 
+    // The body folds "capacity unknown" into `ctx —`; the tooltip can still name
+    // the measured token count, which is real even when the denominator isn't.
+    let ctxTitle;
+    if (ctxUsed == null) {
+      ctxTitle = 'Context usage appears after the first turn.';
+    } else if (Number.isFinite(ctxWindow)) {
+      ctxTitle = `Context: ${ctxUsed.toLocaleString()}/${ctxWindow.toLocaleString()} tokens`;
+    } else {
+      ctxTitle = `Context: ${ctxUsed.toLocaleString()} tokens used (capacity unknown)`;
+    }
+
     // ── rl half (global) — pure derivation via rlChipSegment ──
     const { text: rlText, frac: rlFrac, isOverage: rlIsOverage } =
       rlChipSegment(globalRLTracker.info, accountUsage);
@@ -351,9 +362,7 @@ export function installHeader({
     el.setAttribute('aria-haspopup', 'dialog');
     el.setAttribute('aria-expanded', 'false');
     el.title = [
-      ctxUsed != null
-        ? `Context: ${ctxUsed.toLocaleString()}/${ctxWindow.toLocaleString()} tokens`
-        : 'Context usage appears after the first turn.',
+      ctxTitle,
       rlFrac != null ? `Rate limit: ${Math.round(rlFrac * 100)}% used` : null,
       rlIsOverage ? 'OVERAGE active' : null,
       'Tap for details',
