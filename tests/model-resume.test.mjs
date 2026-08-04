@@ -1,6 +1,6 @@
 // Tests for model recovery across resume. The window is no longer
 // persisted — it's a pure function of the family (see canonicalizeModel in
-// src/modelVersions.js) — so resume recovers only the bare model id the CLI
+// src/modelVersions.ts) — so resume recovers only the bare model id the CLI
 // recorded in the session jsonl and re-derives the window from it. No
 // `orchestrator-model` marker is written to Claude's jsonl anymore.
 

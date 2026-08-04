@@ -7,7 +7,7 @@ import { Parser, SOFT_INTERRUPT_MARKER, isOuterUserEcho, snapStartToQuiescent, f
 import { getProject, claudeProjectsRoot, encodeCwd, findSessionLocation, readFirstPrompt } from './projects.js';
 import { createWorktree, getWorktree, debugBaseDir } from './worktrees.js';
 import { getTitle as getSessionTitle, setTitle as setSessionTitle, deleteTitle as deleteSessionTitle } from './sessionTitles.js';
-import { getSessionBackend, markSessionBackend, unmarkSessionBackend } from './sessionBackends.js';
+import { getSessionBackend, markSessionBackend, unmarkSessionBackend } from './sessionBackends.ts';
 import { isConducted, markConducted, unmarkConducted } from './conductedSessions.js';
 import { SessionRenewController } from './sessionRenew.js';
 import { isTemp, markTemp, unmarkTemp } from './tempSessions.js';
@@ -18,7 +18,7 @@ import { buildSettingsJSON, buildMcpConfigJSON, AWAITING_INPUT_MESSAGE } from '.
 import { getOnOverageAction, getOverageThreshold, getConductorCompactWindow, resolveContextWindowTokens, getDebugByDefault, getBackend, isKnownBackend, resolveSpawnEffort } from './appSettings.js';
 import { HookBroker } from './hookBroker.js';
 import { loadPersistedTranscript, writeSessionMetadata, readLastSessionModel, hasResumableConversation } from './transcript.js';
-import { canonicalizeModel, familyOf, CLAUDE_BACKEND_ID } from './modelVersions.js';
+import { canonicalizeModel, familyOf, CLAUDE_BACKEND_ID } from './modelVersions.ts';
 import { truncateSessionAtUserMessage } from './sessionEdit.js';
 import { pruneSessionToNewId, INPUT_MODES } from './sessionPrune.js';
 import { saveAttachment, isImageType } from './attachments.js';
@@ -28,7 +28,7 @@ import { buildArchive } from './eventArchive.js';
 import { IdleSubscriptionHub } from './idleSubscriptions.js';
 import { OverageResumeController } from './overageResume.js';
 import { UsageOverageMonitor } from './usageOverageMonitor.js';
-import { usageDomainOfBackend, isMonitoredDomain } from './usageWindowDomains.js';
+import { usageDomainOfBackend, isMonitoredDomain } from './usageWindowDomains.ts';
 import { defaultClaudeLauncher, resolveClaudeBin, resolveBackendLaunch } from './claudeLauncher.js';
 
 // `AUTO_RESUME_TEXT` now lives with the overage timer machine in
@@ -1195,7 +1195,7 @@ export class Instance extends EventEmitter {
     for (const dir of this.claudePluginDirs) args.push('--plugin-dir', dir);
     // Each family runs at one fixed context window, pinned via the model id
     // itself (Sonnet carries the CLI-native `[1m]` suffix; Opus/Haiku are
-    // bare — see canonicalizeModel in modelVersions.js). Strip any ambient
+    // bare — see canonicalizeModel in modelVersions.ts). Strip any ambient
     // CLAUDE_CODE_DISABLE_1M_CONTEXT so a user-level export can't silently
     // downgrade our 1M Opus/Sonnet sessions to 200k. Also strip any ambient
     // CLAUDE_CODE_AUTO_COMPACT_WINDOW / CLAUDE_CODE_MAX_CONTEXT_TOKENS

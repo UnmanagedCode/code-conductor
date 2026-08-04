@@ -13,7 +13,7 @@ import path from 'node:path';
 import { orchStoreRoot, writeFileAtomic } from './projects.js';
 import { CAPABILITY_TIERS, DEFAULT_TIER_BACKEND, isKnownTier, isKnownClaudeModel,
   ROLES, DEFAULT_ROLE_BINDING, isKnownRole, isKnownFamily, claudeContextWindowTokens,
-  MANAGED_BACKENDS, MANAGED_BACKEND_IDS, CLAUDE_BACKEND_ID } from './modelVersions.js';
+  MANAGED_BACKENDS, MANAGED_BACKEND_IDS, CLAUDE_BACKEND_ID } from './modelVersions.ts';
 import { OLLAMA_CLOUD_MODELS, isKnownOllamaCloudModel } from './ollamaCloudModels.js';
 import { DEFAULT_EFFORT, INHERIT_EFFORT, isKnownEffort } from './effortLevels.js';
 
@@ -212,7 +212,7 @@ export async function setDefaultSpawnTier(tier) {
 // ── Backend registry ─────────────────────────────────────────────────────
 // Models group: the user-manageable backend registry, persisted as
 // `models.backends: [{ id, label, template, env:[{key,value}] }]`. A backend is
-// a launch recipe — see MANAGED_BACKENDS in modelVersions.js for the record
+// a launch recipe — see MANAGED_BACKENDS in modelVersions.ts for the record
 // contract and `resolveBackendLaunch` in claudeLauncher.js for the one place
 // `template` is consumed.
 //
@@ -443,7 +443,7 @@ export function backendForModel(model) {
 // The match is EXACT and load-bearing: a substitution model id is an opaque
 // registry key, so `gpt-5.6-sol[1m]` is a different model from `gpt-5.6-sol`.
 // Anything that strips a tag before reaching here turns a known window into a
-// silent null — see canonicalizeModel's backend gate in modelVersions.js.
+// silent null — see canonicalizeModel's backend gate in modelVersions.ts.
 export function contextWindowForModel(model) {
   if (typeof model !== 'string' || !model) return null;
   const custom = getCustomModels().find(m => m.model === model);

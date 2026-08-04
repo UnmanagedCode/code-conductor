@@ -22,7 +22,7 @@ import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs
 import { addCustomModel, setTierBackend, setRoleBinding, addCustomRole, addBackend,
   setPluginRolesProvider, getTierBackend, getDefaultSpawnTier,
   removeBackend, removeCustomModel, isKnownBackend } from '../src/appSettings.js';
-import { hasSessionBackend, getSessionBackend, markSessionBackend } from '../src/sessionBackends.js';
+import { hasSessionBackend, getSessionBackend, markSessionBackend } from '../src/sessionBackends.ts';
 import { claudeProjectsRoot, encodeCwd } from '../src/projects.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));

@@ -1,7 +1,7 @@
 // The reasoning-effort vocabulary — the CLI's `--effort` axis.
 //
 // Deliberately its own module, NOT part of the model/tier catalog in
-// modelVersions.js: effort and the capability tiers are distinct vocabularies
+// modelVersions.ts: effort and the capability tiers are distinct vocabularies
 // (a tier says which model, an effort says how hard it thinks) and keeping them
 // in separate modules is what stops the two word-sets bleeding into each other.
 //

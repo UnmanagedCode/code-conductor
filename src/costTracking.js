@@ -7,7 +7,7 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { orchStoreRoot } from './projects.js';
-import { CLAUDE_BACKEND_ID } from './modelVersions.js';
+import { CLAUDE_BACKEND_ID } from './modelVersions.ts';
 
 export function costsPath() {
   return path.join(orchStoreRoot(), 'costs.jsonl');

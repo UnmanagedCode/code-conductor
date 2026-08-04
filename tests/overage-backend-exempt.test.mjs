@@ -5,7 +5,7 @@
 // never armed for auto-resume, and it shows no overage badge. A tree containing ANY
 // claude-backed agent (e.g. a non-Claude conductor whose workers are Claude) stays
 // in the flow. Exercises the backend-scoped usage-window-domain seam
-// (src/usageWindowDomains.js — each backend maps to its own domain, `claude` to the
+// (src/usageWindowDomains.ts — each backend maps to its own domain, `claude` to the
 // monitored `anthropic`) + the guards in instances.js.
 
 import { test, before, after, beforeEach, afterEach } from 'node:test';

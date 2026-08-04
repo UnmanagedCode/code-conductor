@@ -1,5 +1,5 @@
 // Context-window policy. Every model has exactly ONE native capacity:
-//   - the `claude` catalog declares it per version (src/modelVersions.js), plus
+//   - the `claude` catalog declares it per version (src/modelVersions.ts), plus
 //     an optional `launchTag` for builds that need a suffix to reach it —
 //     Sonnet 4.x ships separate 200k/1M builds so it always launches `[1m]`;
 //     Sonnet 5 / Opus / Fable are natively 1M and launch bare; Haiku is 200k.
@@ -23,7 +23,7 @@ import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
 import { Instance } from '../src/instances.js';
-import { canonicalizeModel, familyOf, claudeContextWindowTokens, CLAUDE_BACKEND_ID } from '../src/modelVersions.js';
+import { canonicalizeModel, familyOf, claudeContextWindowTokens, CLAUDE_BACKEND_ID } from '../src/modelVersions.ts';
 import { addCustomModel, removeCustomModel, addBackend, resolveContextWindowTokens } from '../src/appSettings.js';
 import { encodeCwd } from '../src/projects.js';
 

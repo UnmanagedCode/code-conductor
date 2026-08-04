@@ -31,7 +31,7 @@ import {
 import { WHISPER_MODELS, isKnownModel, DEFAULT_MODEL } from './whisperModels.js';
 import {
   MODEL_FAMILIES, CAPABILITY_TIERS, isKnownTier,
-} from './modelVersions.js';
+} from './modelVersions.ts';
 import { EFFORT_LEVELS, DEFAULT_EFFORT } from './effortLevels.js';
 import {
   isAvailable as ttsAvailable, synthesize, voicePathForName,

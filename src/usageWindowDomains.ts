@@ -19,7 +19,7 @@
 // usage window becomes monitorable, add its domain to MONITORED_DOMAINS — no
 // exemption logic elsewhere changes.
 
-import { CLAUDE_BACKEND_ID } from './modelVersions.js';
+import { CLAUDE_BACKEND_ID } from './modelVersions.ts';
 
 export const ANTHROPIC_DOMAIN = 'anthropic';
 
@@ -27,11 +27,11 @@ export const ANTHROPIC_DOMAIN = 'anthropic';
 // flow.
 const MONITORED_DOMAINS = new Set([ANTHROPIC_DOMAIN]);
 
-export function usageDomainOfBackend(backend) {
+export function usageDomainOfBackend(backend: unknown): string {
   if (typeof backend !== 'string' || !backend || backend === CLAUDE_BACKEND_ID) return ANTHROPIC_DOMAIN;
   return `backend:${backend}`;
 }
 
-export function isMonitoredDomain(domain) {
-  return MONITORED_DOMAINS.has(domain);
+export function isMonitoredDomain(domain: unknown): boolean {
+  return typeof domain === 'string' && MONITORED_DOMAINS.has(domain);
 }

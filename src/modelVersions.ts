@@ -28,7 +28,53 @@
 // unchanged, independent of any tier binding — see spawnInstance in
 // src/mcp/handlers.js.
 
-export const MODEL_FAMILIES = [
+export type FamilyName = 'fable' | 'opus' | 'sonnet' | 'haiku';
+export type TierName = 'fast' | 'balanced' | 'powerful' | 'frontier';
+export type RoleName = 'conductor' | 'reviewer';
+
+export interface ModelVersion {
+  id: string;
+  label: string;
+  contextWindow: number;
+  launchTag?: string;
+}
+
+export interface ModelFamily {
+  family: FamilyName;
+  label: string;
+  default: string;
+  versions: readonly ModelVersion[];
+}
+
+export interface BackendRecord {
+  id: string;
+  label: string;
+  template: string;
+  env: readonly { key: string; value: string }[];
+  managed: boolean;
+}
+
+export interface CapabilityTier {
+  tier: TierName;
+  label: string;
+}
+
+export interface Role {
+  role: RoleName;
+  label: string;
+}
+
+export interface BackendBinding {
+  backend: string;
+  model: string;
+}
+
+export interface TierBinding {
+  kind: 'tier';
+  tier: TierName;
+}
+
+export const MODEL_FAMILIES: readonly ModelFamily[] = [
   {
     family: 'fable',
     label: 'Fable',
@@ -70,12 +116,14 @@ export const MODEL_FAMILIES = [
   },
 ];
 
-// Convenience map of family → default version id.
-export const DEFAULT_VERSIONS = Object.fromEntries(
+// Convenience map of family → default version id. Built from MODEL_FAMILIES,
+// which lists exactly the FamilyName keys, so the resulting record genuinely
+// has all four.
+export const DEFAULT_VERSIONS: Record<FamilyName, string> = Object.fromEntries(
   MODEL_FAMILIES.map(f => [f.family, f.default]),
-);
+) as Record<FamilyName, string>;
 
-export function isKnownFamily(family) {
+export function isKnownFamily(family: unknown): boolean {
   return MODEL_FAMILIES.some(f => f.family === family);
 }
 
@@ -96,12 +144,12 @@ export function isKnownFamily(family) {
 // MODEL_FAMILIES version id; for any other backend it's whatever that backend's
 // models are identified by (an Ollama tag, say — see Settings → Models custom
 // models).
-export const MANAGED_BACKENDS = [
+export const MANAGED_BACKENDS: readonly BackendRecord[] = [
   { id: 'claude', label: 'Claude', template: '', env: [], managed: true },
   { id: 'ollama', label: 'Ollama', template: 'ollama launch claude --model {model} --yes --', env: [], managed: true },
 ];
 
-export const MANAGED_BACKEND_IDS = MANAGED_BACKENDS.map(b => b.id);
+export const MANAGED_BACKEND_IDS: readonly string[] = MANAGED_BACKENDS.map(b => b.id);
 
 // The identity backend — the one that runs `claude` itself. Everything that
 // used to branch on `backendKind === 'ollama'` now branches on
@@ -115,7 +163,7 @@ export const CLAUDE_BACKEND_ID = 'claude';
 // that maps (via Settings, see appSettings.js `getTierBackend`) to a
 // {backend, model} pair. Renaming a tier, or changing the tier count, is a
 // one-line change to this array.
-export const CAPABILITY_TIERS = [
+export const CAPABILITY_TIERS: readonly CapabilityTier[] = [
   { tier: 'fast',      label: 'Fast' },
   { tier: 'balanced',  label: 'Balanced' },
   { tier: 'powerful',  label: 'Powerful' },
@@ -124,14 +172,14 @@ export const CAPABILITY_TIERS = [
 
 // Default tier → {backend, model} binding — each tier's Claude family default
 // version.
-export const DEFAULT_TIER_BACKEND = {
+export const DEFAULT_TIER_BACKEND: Record<TierName, BackendBinding> = {
   fast:     { backend: CLAUDE_BACKEND_ID, model: DEFAULT_VERSIONS.haiku },
   balanced: { backend: CLAUDE_BACKEND_ID, model: DEFAULT_VERSIONS.sonnet },
   powerful: { backend: CLAUDE_BACKEND_ID, model: DEFAULT_VERSIONS.opus },
   frontier: { backend: CLAUDE_BACKEND_ID, model: DEFAULT_VERSIONS.fable },
 };
 
-export function isKnownTier(tier) {
+export function isKnownTier(tier: unknown): boolean {
   return CAPABILITY_TIERS.some(t => t.tier === tier);
 }
 
@@ -141,33 +189,33 @@ export function isKnownTier(tier) {
 // `getRoleBinding`) to EITHER a capability tier ({kind:'tier', tier}) — follow
 // whatever that tier points at — or a concrete backend ({backend, model}, the
 // same shape a tier uses). Adding a role is a one-line change to this array.
-export const ROLES = [
+export const ROLES: readonly Role[] = [
   { role: 'conductor', label: 'Conductor' },
   { role: 'reviewer',  label: 'Reviewer' },
 ];
 
 // Default role → binding. Both point at the `powerful` tier out of the box.
-export const DEFAULT_ROLE_BINDING = {
+export const DEFAULT_ROLE_BINDING: Record<RoleName, TierBinding> = {
   conductor: { kind: 'tier', tier: 'powerful' },
   reviewer:  { kind: 'tier', tier: 'powerful' },
 };
 
-export function isKnownRole(role) {
+export function isKnownRole(role: unknown): boolean {
   return ROLES.some(r => r.role === role);
 }
 
-export function isKnownVersion(family, id) {
+export function isKnownVersion(family: unknown, id: unknown): boolean {
   const f = MODEL_FAMILIES.find(x => x.family === family);
   return !!f && f.versions.some(v => v.id === id);
 }
 
 // A model id is a known Claude version if any family lists it (family-agnostic
 // — a tier binding stores a concrete version id, not a family).
-export function isKnownClaudeModel(id) {
+export function isKnownClaudeModel(id: unknown): boolean {
   return MODEL_FAMILIES.some(f => f.versions.some(v => v.id === id));
 }
 
-export function defaultVersion(family) {
+export function defaultVersion(family: unknown): string | null {
   return MODEL_FAMILIES.find(f => f.family === family)?.default ?? null;
 }
 
@@ -179,7 +227,7 @@ export function defaultVersion(family) {
 // start with `claude-`, and conversely a non-Claude id tells you nothing about
 // which registry row serves it. Only the `backend` field decides that — see
 // canonicalizeModel below, which gates on it explicitly.
-export function familyOf(modelId) {
+export function familyOf(modelId: unknown): FamilyName | null {
   if (typeof modelId !== 'string') return null;
   if (modelId.startsWith('claude-fable')) return 'fable';
   if (modelId.startsWith('claude-opus')) return 'opus';
@@ -192,7 +240,7 @@ export function familyOf(modelId) {
 const LAUNCH_TAG_RE = /\[(200k|1m)\]$/;
 
 // Catalog lookup for a bare Claude version id.
-function claudeVersion(bareId) {
+function claudeVersion(bareId: string): ModelVersion | null {
   for (const f of MODEL_FAMILIES) {
     const v = f.versions.find(x => x.id === bareId);
     if (v) return v;
@@ -204,10 +252,11 @@ function claudeVersion(bareId) {
 // when the catalog doesn't know it (an unlisted/future `claude-*` id). Null
 // means "unknown" and must render as unknown — never as a fabricated default.
 // Tolerates a launch tag on the way in.
-export function claudeContextWindowTokens(modelId) {
+export function claudeContextWindowTokens(modelId: unknown): number | null {
   if (typeof modelId !== 'string' || !modelId) return null;
   const v = claudeVersion(modelId.replace(LAUNCH_TAG_RE, ''));
-  return Number.isFinite(v?.contextWindow) ? v.contextWindow : null;
+  const n = v?.contextWindow;
+  return typeof n === 'number' && Number.isFinite(n) ? n : null;
 }
 
 // Apply the launch-tag half of context-window policy: return the exact model id
@@ -223,7 +272,7 @@ export function claudeContextWindowTokens(modelId) {
 //
 // Omitting the argument yields `undefined !== CLAUDE_BACKEND_ID` → verbatim,
 // i.e. it fails toward preserving the caller's id rather than mangling it.
-export function canonicalizeModel(modelId, backend) {
+export function canonicalizeModel(modelId: string | undefined, backend: string | undefined): string | undefined {
   if (typeof modelId !== 'string' || !modelId) return modelId;
   if (backend !== CLAUDE_BACKEND_ID) return modelId;
   const bare = modelId.replace(LAUNCH_TAG_RE, '');

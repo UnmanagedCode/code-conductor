@@ -20,7 +20,7 @@
 import { promises as fs, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { orchStoreRoot } from './projects.js';
-import { withLock } from './storeLock.js';
+import { withLock } from './storeLock.ts';
 
 function tempFile() {
   return path.join(orchStoreRoot(), 'temp-sessions.json');

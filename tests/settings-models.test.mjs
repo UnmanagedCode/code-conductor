@@ -8,7 +8,7 @@ import { orchStoreRoot } from '../src/projects.js';
 import {
   MODEL_FAMILIES, DEFAULT_VERSIONS, MANAGED_BACKENDS, isKnownFamily, isKnownVersion, defaultVersion,
   isKnownClaudeModel, CAPABILITY_TIERS, DEFAULT_TIER_BACKEND, isKnownTier,
-} from '../src/modelVersions.js';
+} from '../src/modelVersions.ts';
 import { OLLAMA_CLOUD_MODELS, OLLAMA_CLOUD_TIER_DEFAULTS, isKnownOllamaCloudModel } from '../src/ollamaCloudModels.js';
 import {
   getTranscribeModel, setTranscribeModel,

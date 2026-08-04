@@ -14,7 +14,7 @@ import { WebSocket } from 'ws';
 import { bootServer, api, waitFor } from './helpers.mjs';
 import { encodeCwd } from '../src/projects.js';
 import { addBackend, addCustomModel, resolveContextWindowTokens } from '../src/appSettings.js';
-import { getSessionBackend } from '../src/sessionBackends.js';
+import { getSessionBackend } from '../src/sessionBackends.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-resume.json');

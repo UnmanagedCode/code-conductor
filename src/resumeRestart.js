@@ -14,7 +14,7 @@
 //   them (their jsonl was preserved for exactly that).
 
 import { spawnReplacementAndExit } from './restart.js';
-import { CLAUDE_BACKEND_ID } from './modelVersions.js';
+import { CLAUDE_BACKEND_ID } from './modelVersions.ts';
 import {
   writeResumeManifest,
   readResumeManifest,

@@ -25,7 +25,7 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { orchStoreRoot } from './projects.js';
-import { withLock } from './storeLock.js';
+import { withLock } from './storeLock.ts';
 
 function archivedFile() {
   return path.join(orchStoreRoot(), 'archived-sessions.json');

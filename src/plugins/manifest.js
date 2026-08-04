@@ -1,6 +1,6 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { isKnownTier, isKnownClaudeModel, CLAUDE_BACKEND_ID } from '../modelVersions.js';
+import { isKnownTier, isKnownClaudeModel, CLAUDE_BACKEND_ID } from '../modelVersions.ts';
 
 // Plugin manifest: `conductor.plugin.json` at the plugin project root.
 // readManifest(dir) reads + validates; validateManifest(json) normalizes a

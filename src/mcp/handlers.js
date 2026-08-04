@@ -35,7 +35,7 @@ import { formatUserQuestionAnswers } from '../../public/userQuestionAnswers.js';
 import { getCatalog as getProjectConventionsCatalog, composeProjectScaffold } from '../projectConventions.js';
 import { composeProjectConventionsDoc } from '../projectClaudeMd.js';
 import { getCatalog as getConductorConventionsCatalog, getSelection as getConductorSelection } from '../conductorConventions.js';
-import { isKnownFamily, isKnownTier, defaultVersion, familyOf, CLAUDE_BACKEND_ID } from '../modelVersions.js';
+import { isKnownFamily, isKnownTier, defaultVersion, familyOf, CLAUDE_BACKEND_ID } from '../modelVersions.ts';
 import { getTierBackend, resolveRoleBackend, isResolvableRole, backendForModel } from '../appSettings.js';
 import { textPayload } from './content.js';
 import { pageInstanceEvents } from '../eventArchive.js';

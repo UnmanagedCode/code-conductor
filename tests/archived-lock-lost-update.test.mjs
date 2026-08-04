@@ -2,7 +2,7 @@
 //
 // Symptom: sessions the user archived silently lose their `archived` flag and
 // reappear in the normal list — "most but not all" each time, recurring around
-// server restarts. Root cause (src/storeLock.js): the cross-process lock evicted
+// server restarts. Root cause (src/storeLock.ts): the cross-process lock evicted
 // a *live but slow* holder on a pure age threshold, letting two writers run the
 // read-modify-write concurrently and drop each other's entries (a lost update).
 // Under Termux post-restart CPU throttle a live holder is easily starved past
@@ -28,7 +28,7 @@ import { spawn } from 'node:child_process';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const srcDir = path.join(__dirname, '..', 'src');
-const storeLockMod = JSON.stringify('file://' + path.join(srcDir, 'storeLock.js'));
+const storeLockMod = JSON.stringify('file://' + path.join(srcDir, 'storeLock.ts'));
 
 const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-lock-lu-'));
 after(async () => { await fs.rm(tmp, { recursive: true, force: true }); });
@@ -107,7 +107,7 @@ async function runRace() {
   return { got: new Set(items), seed, holderIds, waiterIds };
 }
 
-// FAILS on pre-fix storeLock.js (evicts the aged-but-live lock → lost update);
+// FAILS on pre-fix storeLock.ts (evicts the aged-but-live lock → lost update);
 // PASSES after the fix (evicts only dead owners).
 test('live-but-slow lock holder is never evicted → no lost update', { timeout: 30000 }, async () => {
   const { got, seed, holderIds, waiterIds } = await runRace();
