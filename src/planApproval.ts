@@ -5,14 +5,14 @@
 // phrasing so the worker can't tell the difference between a UI click,
 // an auto-approve, or an MCP-driven approval.
 
-export function buildApprovePrompt(feedback) {
+export function buildApprovePrompt(feedback: unknown): string {
   const trimmed = typeof feedback === 'string' ? feedback.trim() : '';
   return trimmed
     ? `I approve the plan. Additional notes: ${trimmed}\n\nPlease proceed with the implementation.`
     : 'I approve the plan. Please proceed with the implementation.';
 }
 
-export function buildRejectPrompt(feedback) {
+export function buildRejectPrompt(feedback: unknown): string {
   const trimmed = typeof feedback === 'string' ? feedback.trim() : '';
   return trimmed
     ? `I'd like to revise the plan. Refinement notes:\n${trimmed}`

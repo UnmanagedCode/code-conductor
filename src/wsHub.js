@@ -19,7 +19,7 @@
 //   { t: "error",          message }
 
 import { WebSocket } from 'ws';
-import { invalidateAll } from './projectsCache.js';
+import { invalidateAll } from './projectsCache.ts';
 
 export function attachWsHub({ wss, instances }) {
   const subscribers = new Map(); // instanceId -> Set<ws>

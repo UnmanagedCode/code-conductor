@@ -27,7 +27,7 @@
 // emission go through the owning InstanceManager passed in at construction.
 
 import { buildRecentMessages } from './mcp/handlers.js';
-import { flattenPayload } from './mcp/content.js';
+import { flattenPayload } from './mcp/content.ts';
 import { buildWakeStub, markPlainStub } from '../public/wakeCallback.js';
 
 // Default watchdog for EVERY idle subscription. Delivery is deferred until the
@@ -462,7 +462,7 @@ export class IdleSubscriptionHub {
 
   // Inverse of snapshot(): the sessionIds of every target that callerInstanceId
   // currently has a pending subscription on. Used by the renewal state block
-  // (src/sessionRenew.js) — instanceId-keyed throughout, since the caller's
+  // (src/sessionRenew.ts) — instanceId-keyed throughout, since the caller's
   // renewal already has direct instanceId access with no sessionId round-trip.
   subscriptionsOf(callerInstanceId) {
     const out = [];

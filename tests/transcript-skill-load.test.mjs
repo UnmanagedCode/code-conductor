@@ -1,7 +1,7 @@
 // Replay parity for the Skill-content-injection correlation: a persisted
 // jsonl session where a Skill tool_use is followed by its content-injection
 // user line must replay with the same `skillLoad` tag the live parser stamps
-// (see attachSkillLoad in src/parser.js) — otherwise the dedicated
+// (see attachSkillLoad in src/parser.ts) — otherwise the dedicated
 // skill-loading bubble would only appear live and regress to a giant
 // plain-text bubble on session reload.
 //

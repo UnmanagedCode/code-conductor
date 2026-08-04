@@ -5,7 +5,7 @@
 // must be recognised by the SOFT_INTERRUPT_MARKER and dropped.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { Parser, SOFT_INTERRUPT_MARKER, isSoftInterruptContent } from '../src/parser.js';
+import { Parser, SOFT_INTERRUPT_MARKER, isSoftInterruptContent } from '../src/parser.ts';
 import { replayPersistedLine, isPureUserPromptLine } from '../src/transcript.js';
 
 const STEER = `${SOFT_INTERRUPT_MARKER}\nStop all work and end your turn now.`;

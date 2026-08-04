@@ -1,4 +1,4 @@
-// Quiescent-point lazy paging & tail snapshots (src/parser.js
+// Quiescent-point lazy paging & tail snapshots (src/parser.ts
 // snapStartToQuiescent, used by src/eventArchive.js pageInstanceEvents and
 // src/instances.js snapshotTail): backward pages and the WS tail open where
 // reconstruction has no open block and no unresolved tool, so the client's

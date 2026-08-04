@@ -95,7 +95,7 @@ const SEEDING_TOOLS = new Set(['Read', 'Write']);
 // ── the exemption (invariant 6) ─────────────────────────────────────────────
 
 // The orchestrator's own MCP server name is pinned to `code-conductor`
-// (src/settings.js buildMcpConfigJSON), so every tool it exposes carries this
+// (src/settings.ts buildMcpConfigJSON), so every tool it exposes carries this
 // prefix. `__` is the segment separator, so what follows is `<tool>` for a CORE
 // tool and `<plugin-id>__<tool>` for a plugin-forwarded one.
 export const CONDUCTOR_MCP_PREFIX = 'mcp__code-conductor__';

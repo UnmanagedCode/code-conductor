@@ -5,27 +5,52 @@
 // constructed with — getMode() and emit(ev) — keeping the dependency
 // arrow one-way.
 
+import type { Response } from 'express';
+
 // Server-side timeout for a pending interactive hook callback. Must
-// be safely under HOOK_HTTP_TIMEOUT_S (in settings.js) so we always
+// be safely under HOOK_HTTP_TIMEOUT_S (in settings.ts) so we always
 // respond before the CLI gives up — an HTTP timeout on its side =
 // non-blocking error = the tool proceeds, which is the opposite of
 // what we want here.
 export const HOOK_PENDING_TIMEOUT_MS = 540_000;
 
-function hookResponseBody(decision, reason) {
-  const out = { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: decision } };
+function hookResponseBody(
+  decision: 'allow' | 'deny',
+  reason?: string,
+): { hookSpecificOutput: { hookEventName: string; permissionDecision: string; permissionDecisionReason?: string } } {
+  const out: { hookSpecificOutput: { hookEventName: string; permissionDecision: string; permissionDecisionReason?: string } } = {
+    hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: decision },
+  };
   if (reason) out.hookSpecificOutput.permissionDecisionReason = reason;
   return out;
 }
 
-function respondAllow(res) {
+function respondAllow(res: Response): void {
   if (!res || res.headersSent) return;
   res.status(200).json(hookResponseBody('allow'));
 }
 
-function respondDeny(res, reason) {
+function respondDeny(res: Response, reason: string): void {
   if (!res || res.headersSent) return;
   res.status(200).json(hookResponseBody('deny', reason));
+}
+
+export interface HookEnvelope {
+  tool_use_id?: unknown;
+  tool_name?: unknown;
+  tool_input?: unknown;
+}
+
+interface PendingCallback {
+  res: Response;
+  timer: NodeJS.Timeout;
+  toolName: unknown;
+}
+
+export interface HookBrokerOptions {
+  getMode: () => string;
+  emit: (ev: unknown) => void;
+  pendingTimeoutMs?: number;
 }
 
 export class HookBroker {
@@ -35,20 +60,24 @@ export class HookBroker {
   //            permission_resolved card) through the instance's normal
   //            ring + WS path.
   // pendingTimeoutMs: override for tests; defaults to the production value.
-  constructor({ getMode, emit, pendingTimeoutMs = HOOK_PENDING_TIMEOUT_MS }) {
+  private readonly _getMode: () => string;
+  private readonly _emit: (ev: unknown) => void;
+  private readonly _pendingTimeoutMs: number;
+  private readonly _pending = new Map<unknown, PendingCallback>(); // toolUseId -> { res, timer, toolName }
+
+  constructor({ getMode, emit, pendingTimeoutMs = HOOK_PENDING_TIMEOUT_MS }: HookBrokerOptions) {
     if (typeof getMode !== 'function') throw new Error('HookBroker requires getMode()');
     if (typeof emit !== 'function') throw new Error('HookBroker requires emit()');
     this._getMode = getMode;
     this._emit = emit;
     this._pendingTimeoutMs = pendingTimeoutMs;
-    this._pending = new Map(); // toolUseId -> { res, timer, toolName }
   }
 
   // Called by the REST hook-callback handler. Either auto-allows
   // (non-ask modes / malformed envelope) or holds the response open
   // and emits a permission_request so the UI can render the Allow /
   // Deny card.
-  handle(envelope, res) {
+  handle(envelope: HookEnvelope | null | undefined, res: Response): void {
     const toolUseId = envelope?.tool_use_id;
     const toolName = envelope?.tool_name;
     const mode = this._getMode();
@@ -85,7 +114,7 @@ export class HookBroker {
   // Called when the user clicks Allow / Deny in the UI. Returns true
   // if there was a matching pending callback to resolve, false if not
   // (so the WS hub can ack with an error).
-  resolve(toolUseId, allow) {
+  resolve(toolUseId: unknown, allow: boolean): boolean {
     const pending = this._pending.get(toolUseId);
     if (!pending) return false;
     clearTimeout(pending.timer);
@@ -100,7 +129,7 @@ export class HookBroker {
   // instance exits — the CLI is gone so the tool won't run anyway, but
   // we still need to free the held-open HTTP responses and tell any
   // subscribed UI tabs that the cards are done.
-  discardAll(reason = 'instance exited before user responded') {
+  discardAll(reason = 'instance exited before user responded'): void {
     for (const [toolUseId, pending] of this._pending) {
       clearTimeout(pending.timer);
       respondDeny(pending.res, reason);
@@ -110,5 +139,5 @@ export class HookBroker {
   }
 
   // Test helper — count of in-flight pending callbacks.
-  get pendingCount() { return this._pending.size; }
+  get pendingCount(): number { return this._pending.size; }
 }

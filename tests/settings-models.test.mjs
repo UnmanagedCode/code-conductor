@@ -9,7 +9,7 @@ import {
   MODEL_FAMILIES, DEFAULT_VERSIONS, MANAGED_BACKENDS, isKnownFamily, isKnownVersion, defaultVersion,
   isKnownClaudeModel, CAPABILITY_TIERS, DEFAULT_TIER_BACKEND, isKnownTier,
 } from '../src/modelVersions.ts';
-import { OLLAMA_CLOUD_MODELS, OLLAMA_CLOUD_TIER_DEFAULTS, isKnownOllamaCloudModel } from '../src/ollamaCloudModels.js';
+import { OLLAMA_CLOUD_MODELS, OLLAMA_CLOUD_TIER_DEFAULTS, isKnownOllamaCloudModel } from '../src/ollamaCloudModels.ts';
 import {
   getTranscribeModel, setTranscribeModel,
   getOnOverageAction, setOnOverageAction,
@@ -23,7 +23,7 @@ import {
   addCustomModel, removeCustomModel, setPluginRolesProvider,
   getTierEffort, setTierEffort, getRoleEffort, setRoleEffort, resolveSpawnEffort,
 } from '../src/appSettings.js';
-import { EFFORT_LEVELS, DEFAULT_EFFORT } from '../src/effortLevels.js';
+import { EFFORT_LEVELS, DEFAULT_EFFORT } from '../src/effortLevels.ts';
 
 async function mkTmp() {
   return fs.mkdtemp(path.join(os.tmpdir(), 'cc-models-test-'));

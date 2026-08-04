@@ -11,11 +11,11 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { encodeCwd, claudeProjectsRoot } from './projects.js';
-import { consolidateUserContent, isSoftInterruptContent, isTaskNotificationContent, attachSkillLoad } from './parser.js';
+import { consolidateUserContent, isSoftInterruptContent, isTaskNotificationContent, attachSkillLoad } from './parser.ts';
 
 // Predicate: does this persisted jsonl object emit at least one `user_echo`
 // UI event when replayed? Mirrors the live-path emission in
-// `parser.js:_handleUser` so the rewind/fork code can count "user prompt"
+// `parser.ts:_handleUser` so the rewind/fork code can count "user prompt"
 // lines in the jsonl and have the count match the Nth user_echo in the
 // orchestrator's event stream. tool_result-only `type:"user"` lines are
 // excluded; sidechain lines are excluded too (consistent with replay).
@@ -39,7 +39,7 @@ export function isPureUserPromptLine(obj) {
     // fork/rewind indices would drift past the user_echo count.
     if (isSoftInterruptContent(content)) return false;
     // Background-subagent completion ping — dropped silently, never a
-    // user_echo. See parser.js:_handleUser.
+    // user_echo. See parser.ts:_handleUser.
     if (isTaskNotificationContent(content)) return false;
     if (typeof content === 'string') return content.length > 0;
     if (!Array.isArray(content)) return false;
@@ -91,7 +91,7 @@ export function replayPersistedLine(obj, { seqHint = 0, parentToolUseId = null, 
       return tagAndReturn();
     }
     // Background-subagent completion ping — drop silently, same as live
-    // (parser.js:_handleUser): it's a duplicate of the already-hidden
+    // (parser.ts:_handleUser): it's a duplicate of the already-hidden
     // streaming system/task_notification event, and never produced a
     // user_echo live.
     if (isTaskNotificationContent(content)) return tagAndReturn();
@@ -102,7 +102,7 @@ export function replayPersistedLine(obj, { seqHint = 0, parentToolUseId = null, 
     if (Array.isArray(content)) {
       // Group text blocks of a single user message into one user_echo so
       // the bubble renders text and attachments together — mirrors the
-      // live `parser.js:_handleUser` consolidation. tool_result blocks
+      // live `parser.ts:_handleUser` consolidation. tool_result blocks
       // remain their own events.
       const userEvents = consolidateUserContent(content);
       attachSkillLoad(userEvents, obj, pendingSkillLoads);
@@ -187,7 +187,7 @@ export function replayPersistedLine(obj, { seqHint = 0, parentToolUseId = null, 
             planPath: null,
           });
         }
-        // Track Skill invocations — mirrors parser.js so the isSynthetic
+        // Track Skill invocations — mirrors parser.ts so the isSynthetic
         // content-injection user line that follows can be identified and
         // titled with the actual invoked skill id (see attachSkillLoad).
         if (b.name === 'Skill' && pendingSkillLoads) {

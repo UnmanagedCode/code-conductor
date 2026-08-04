@@ -24,8 +24,18 @@ const PRODUCTION_TTL_MS = 2000;
 // without any TTL caching (integration tests need exact, uncached responses).
 let _ttlMs = PRODUCTION_TTL_MS;
 
-// Map<string, { data: any, ts: number, inflight: Promise|null, gen: number }>
-const _entries = new Map();
+// The data type is per-key (each key is a distinct git-facts shape), so the
+// shared store is typed against `unknown` and the generic caller re-asserts its
+// own type at the two read sites — a value stored below is always the result of
+// that caller's computeFn(), so the assertion is by construction, not a guess.
+interface Entry {
+  data: unknown;
+  ts: number;
+  inflight: Promise<unknown> | null;
+  gen: number;
+}
+
+const _entries = new Map<string, Entry>();
 
 /**
  * Return cached git facts for `key`, or compute them via `computeFn()`.
@@ -34,16 +44,16 @@ const _entries = new Map();
  * - If a computation is already in-flight, return the same Promise (coalescing).
  * - Otherwise start computeFn(), store the in-flight Promise, cache the result.
  */
-export async function getOrCompute(key, computeFn) {
+export async function getOrCompute<T>(key: string, computeFn: () => Promise<T>): Promise<T> {
   const entry = _entries.get(key);
   const now = Date.now();
 
   if (entry?.data !== null && entry?.ts && now - entry.ts < _ttlMs) {
-    return entry.data;
+    return entry.data as T; // stored below as this computeFn()'s own result
   }
 
   if (entry?.inflight) {
-    return entry.inflight;
+    return entry.inflight as Promise<T>; // an in-flight computeFn() of the same key
   }
 
   const gen = entry?.gen ?? 0;
@@ -73,7 +83,7 @@ export async function getOrCompute(key, computeFn) {
  * for this key will complete but its result will not be stored. The next call
  * to getOrCompute() starts a fresh computation.
  */
-export function invalidate(key) {
+export function invalidate(key: string): void {
   const entry = _entries.get(key);
   _entries.set(key, { data: null, ts: 0, inflight: null, gen: (entry?.gen ?? 0) + 1 });
 }
@@ -82,7 +92,7 @@ export function invalidate(key) {
  * Invalidate all cached entries. Called on list_changed (instance spawn/exit)
  * since we don't know which project was affected.
  */
-export function invalidateAll() {
+export function invalidateAll(): void {
   for (const [key, entry] of _entries) {
     _entries.set(key, { data: null, ts: 0, inflight: null, gen: (entry.gen ?? 0) + 1 });
   }
@@ -94,7 +104,7 @@ export function invalidateAll() {
  * in-flight computation coalesce, but completed results are never served from
  * cache — integration tests always get exact, live data.
  */
-export function _resetForTest(ttlMs = 0) {
+export function _resetForTest(ttlMs = 0): void {
   _entries.clear();
   _ttlMs = ttlMs;
 }

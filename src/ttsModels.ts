@@ -8,7 +8,13 @@
 // `name` is the Piper voice id (HF rhasspy/piper-voices file stem); the
 // on-disk files are `<name>.onnx` (model) + `<name>.onnx.json` (config).
 
-export const TTS_VOICES = [
+export interface TtsVoice {
+  name: string;
+  label: string;
+  sizeLabel: string;
+}
+
+export const TTS_VOICES: readonly TtsVoice[] = [
   { name: 'en_US-lessac-medium', label: 'Lessac (US, medium)', sizeLabel: '~63 MB' },
   { name: 'en_US-amy-medium',    label: 'Amy (US, medium)',    sizeLabel: '~63 MB' },
   { name: 'en_US-ryan-high',     label: 'Ryan (US, high)',     sizeLabel: '~114 MB' },
@@ -17,11 +23,11 @@ export const TTS_VOICES = [
 
 export const DEFAULT_VOICE = 'en_US-lessac-medium';
 
-export function isKnownVoice(name) {
+export function isKnownVoice(name: unknown): boolean {
   return TTS_VOICES.some(v => v.name === name);
 }
 
 // The model file stem; the config sidecar is always `${voiceFileName(name)}.json`.
-export function voiceFileName(name) {
+export function voiceFileName(name: string): string {
   return `${name}.onnx`;
 }

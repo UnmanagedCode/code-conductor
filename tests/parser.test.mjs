@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { Parser } from '../src/parser.js';
+import { Parser } from '../src/parser.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FX = path.join(__dirname, 'fixtures');

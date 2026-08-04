@@ -4,7 +4,7 @@
 // the orchestrator's existing modules — no business logic here.
 
 import * as h from './handlers.js';
-import { EFFORT_LEVELS, DEFAULT_EFFORT } from '../effortLevels.js';
+import { EFFORT_LEVELS, DEFAULT_EFFORT } from '../effortLevels.ts';
 
 const VALID_MODES = ['plan', 'ask', 'bypassPermissions'];
 const VALID_THINKING = ['adaptive', 'enabled', 'disabled'];

@@ -19,7 +19,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { encodeCwd, claudeProjectsRoot } from './projects.js';
 import { isPureUserPromptLine, writeSessionMetadata } from './transcript.js';
-import { extractAttachedMarkers } from './parser.js';
+import { extractAttachedMarkers } from './parser.ts';
 
 function sessionFilePath(cwd, sessionId) {
   return path.join(claudeProjectsRoot(), encodeCwd(cwd), `${sessionId}.jsonl`);
@@ -35,7 +35,7 @@ function tryParse(line) {
 // Pull the prompt text that produced a user_echo when this object is
 // replayed. Used to prefill the composer after a rewind/fork. Mirrors the
 // consolidation logic in transcript.js: text blocks joined with newlines,
-// attachment markers stripped via parser.js's `extractAttachedMarkers` (the
+// attachment markers stripped via parser.ts's `extractAttachedMarkers` (the
 // same store-path-anchored matcher the live/replay path uses, so prefill
 // can never diverge from what the bubble showed).
 function extractUserPromptText(obj) {

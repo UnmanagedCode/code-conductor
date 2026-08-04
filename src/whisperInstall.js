@@ -12,7 +12,7 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { makeInstallRunner } from './installRunner.js';
-import { isKnownModel } from './whisperModels.js';
+import { isKnownModel } from './whisperModels.ts';
 import { setTranscribeModel } from './appSettings.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));

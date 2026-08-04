@@ -12,7 +12,7 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { makeInstallRunner } from './installRunner.js';
-import { isKnownVoice } from './ttsModels.js';
+import { isKnownVoice } from './ttsModels.ts';
 import { setTtsVoice } from './appSettings.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));

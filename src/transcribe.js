@@ -14,7 +14,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { getTranscribeModel } from './appSettings.js';
-import { modelFileName, DEFAULT_MODEL } from './whisperModels.js';
+import { modelFileName, DEFAULT_MODEL } from './whisperModels.ts';
 import { orchStoreRoot } from './projects.js';
 
 // Root of the whisper.cpp install. Defaults to the orchestrator store

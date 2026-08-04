@@ -347,7 +347,7 @@ test('snapshot replay: feeding a long stream rebuilds state deterministically', 
 });
 
 // --- seedActive: seed the in-flight batch from the server's tasksAtTailStart ---
-// (server sibling: src/taskReconstruct.js). The snapshot handler calls this
+// (server sibling: src/taskReconstruct.ts). The snapshot handler calls this
 // after reset() and before replaying the tail.
 
 test('seedActive populates tasks + _infoHistory and shows the panel', () => {

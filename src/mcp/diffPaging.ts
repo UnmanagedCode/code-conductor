@@ -4,11 +4,17 @@
 // The byte-cap / pagination / summary output shapes are a documented MCP
 // contract — keep them identical.
 
+export interface NumstatRow {
+  additions: number;
+  deletions: number;
+  binary: boolean;
+}
+
 // Parse `git diff --numstat` output into per-file {additions, deletions,
 // binary}. Binary files render as "-\t-\t<path>". File order matches
 // --name-status given identical flags, so callers zip the two by index.
-export function parseNumstat(out) {
-  const rows = [];
+export function parseNumstat(out: string | undefined): NumstatRow[] {
+  const rows: NumstatRow[] = [];
   for (const line of (out ?? '').split('\n')) {
     if (!line) continue;
     const tab1 = line.indexOf('\t');
@@ -26,10 +32,16 @@ export function parseNumstat(out) {
   return rows;
 }
 
+export interface NameStatusRow {
+  status: string;
+  path: string;
+  oldPath?: string;
+}
+
 // Parse `git diff --name-status` output into per-file {status, path,
 // oldPath?}. Rename/copy rows (R###/C###) carry the old path first.
-export function parseNameStatus(out) {
-  const rows = [];
+export function parseNameStatus(out: string | undefined): NameStatusRow[] {
+  const rows: NameStatusRow[] = [];
   for (const line of (out ?? '').split('\n')) {
     if (!line) continue;
     const parts = line.split('\t');
@@ -44,15 +56,28 @@ export function parseNameStatus(out) {
   return rows;
 }
 
+export interface DiffFileInfo {
+  path: string | null;
+  start: number;
+  preEnd: number;
+  sawHunk: boolean;
+}
+
+export interface DiffIndex {
+  fileOf: number[];
+  hunkAt: number[];
+  files: DiffFileInfo[];
+}
+
 // Walk a unified-diff line array once, recording for each line the file it
 // belongs to: {path, preambleLines, hunkAt} where preambleLines are the
 // lines from "diff --git" up to (not including) the first "@@", and
 // hunkAt[i] is the index of the active "@@" header for line i (or -1).
-export function indexDiffLines(lines) {
-  const fileOf = new Array(lines.length).fill(-1);   // index into files[]
-  const hunkAt = new Array(lines.length).fill(-1);   // index of active @@ line
-  const files = [];                                  // {path, start, preEnd}
-  let cur = null;
+export function indexDiffLines(lines: string[]): DiffIndex {
+  const fileOf = new Array<number>(lines.length).fill(-1);   // index into files[]
+  const hunkAt = new Array<number>(lines.length).fill(-1);   // index of active @@ line
+  const files: DiffFileInfo[] = [];                          // {path, start, preEnd}
+  let cur: DiffFileInfo | null = null;
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     if (line.startsWith('diff --git ')) {
@@ -80,18 +105,24 @@ export function indexDiffLines(lines) {
   return { fileOf, hunkAt, files };
 }
 
+export interface DiffPage {
+  diff: string;
+  cutoff: number;
+  prefixLines: string[];
+}
+
 // Line-based pager. Returns a page of whole lines starting at `offset`,
 // filling until the next line would exceed `cap` bytes. Mid-file pages are
 // prefixed with the file's preamble + active hunk header so they parse
 // standalone. Snaps the cutoff back to a hunk boundary when cheap.
-export function paginateDiff(lines, offset, cap, idx) {
+export function paginateDiff(lines: string[], offset: number, cap: number, idx: DiffIndex): DiffPage {
   const { fileOf, hunkAt, files } = idx;
   const total = lines.length;
   if (offset >= total) {
     return { diff: '', cutoff: total, prefixLines: [] };
   }
   // Re-emit headers when the page starts mid-file (not on the diff --git line).
-  const prefixLines = [];
+  const prefixLines: string[] = [];
   const fi = fileOf[offset];
   if (offset > 0 && fi >= 0) {
     const f = files[fi];

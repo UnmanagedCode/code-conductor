@@ -32,13 +32,13 @@ const ASK_GATED_TOOL_MATCHER = 'Edit|Write|NotebookEdit|Bash';
 
 // Per-hook timeout (seconds) for the interactive http hook. Generous —
 // the CLI waits this long for the user to click Allow/Deny in the UI.
-// The orchestrator's pending timeout (see hookBroker.js) resolves with
+// The orchestrator's pending timeout (see hookBroker.ts) resolves with
 // a synthesised deny well before this fires; the headroom is just
 // there to avoid the CLI cutting off a slow human.
 export const HOOK_HTTP_TIMEOUT_S = 660;
 
-export function buildSettingsJSON({ hookCallbackUrl } = {}) {
-  const preToolUse = [];
+export function buildSettingsJSON({ hookCallbackUrl }: { hookCallbackUrl?: string } = {}): string {
+  const preToolUse: unknown[] = [];
   if (hookCallbackUrl) {
     preToolUse.push({
       matcher: ASK_GATED_TOOL_MATCHER,
@@ -58,7 +58,7 @@ export function buildSettingsJSON({ hookCallbackUrl } = {}) {
 // step. The server name must stay `code-conductor` — tool names are
 // prefixed `mcp__code-conductor__*`, and changing the name would break any
 // in-flight transcripts and tool-allowlist patterns.
-export function buildMcpConfigJSON({ url, name = 'code-conductor' } = {}) {
+export function buildMcpConfigJSON({ url, name = 'code-conductor' }: { url?: string; name?: string } = {}): string {
   return JSON.stringify({
     mcpServers: { [name]: { type: 'http', url } },
   });

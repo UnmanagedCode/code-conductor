@@ -8,7 +8,13 @@
 // `name` is the whisper.cpp model id (what download-ggml-model.sh expects);
 // the on-disk file is always `ggml-<name>.bin`.
 
-export const WHISPER_MODELS = [
+export interface WhisperModel {
+  name: string;
+  label: string;
+  sizeLabel: string;
+}
+
+export const WHISPER_MODELS: readonly WhisperModel[] = [
   { name: 'tiny.en-q5_1', label: 'Tiny (English)', sizeLabel: '~32 MB' },
   { name: 'base.en-q5_1', label: 'Base (English)', sizeLabel: '~60 MB' },
   { name: 'small.en-q5_1', label: 'Small (English)', sizeLabel: '~182 MB' },
@@ -19,10 +25,10 @@ export const WHISPER_MODELS = [
 
 export const DEFAULT_MODEL = 'small.en-q5_1';
 
-export function isKnownModel(name) {
+export function isKnownModel(name: unknown): boolean {
   return WHISPER_MODELS.some(m => m.name === name);
 }
 
-export function modelFileName(name) {
+export function modelFileName(name: string): string {
   return `ggml-${name}.bin`;
 }

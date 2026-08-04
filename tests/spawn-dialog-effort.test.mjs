@@ -227,7 +227,7 @@ test('models.js: pre-fetch reads the DEFAULT_EFFORT seed, then adopts the payloa
   const models = await import(
     pathToFileURL(path.resolve(__dirname, '..', 'public', 'models.js')).href + '?prefetch=1');
 
-  // Before any fetch: the seed mirrors src/effortLevels.js DEFAULT_EFFORT, so a
+  // Before any fetch: the seed mirrors src/effortLevels.ts DEFAULT_EFFORT, so a
   // first paint can't advertise a level the server would never resolve.
   for (const t of TIERS) assert.equal(models.getActiveTierEffort(t), 'high');
 

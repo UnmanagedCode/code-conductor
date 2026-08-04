@@ -18,7 +18,14 @@
 // spawn time. The client holds no capacity table of its own. MiniMax M3
 // is 1M *max* (only 512k guaranteed-minimum, billed 2× above 512k) — we
 // deliberately advertise the 1M ceiling here.
-export const OLLAMA_CLOUD_MODELS = [
+
+export interface OllamaCloudModel {
+  model: string;
+  label: string;
+  contextWindow: number;
+}
+
+export const OLLAMA_CLOUD_MODELS: readonly OllamaCloudModel[] = [
   { model: 'deepseek-v4-flash:cloud',    label: 'DeepSeek V4 Flash',         contextWindow: 1_000_000 },
   { model: 'qwen3.5:cloud',              label: 'Qwen3.5',                  contextWindow:   256_000 },
   { model: 'glm-5.2:cloud',              label: 'GLM-5.2',                  contextWindow: 1_000_000 },
@@ -33,12 +40,12 @@ export const OLLAMA_CLOUD_MODELS = [
 // (see onPickBackend in public/settings.js). Does not change the global
 // out-of-the-box tier default (DEFAULT_TIER_BACKEND in modelVersions.ts
 // stays all-Claude) — frontier intentionally has no catalog default.
-export const OLLAMA_CLOUD_TIER_DEFAULTS = {
+export const OLLAMA_CLOUD_TIER_DEFAULTS: Record<string, string> = {
   fast: 'deepseek-v4-flash:cloud',
   balanced: 'qwen3.5:cloud',
   powerful: 'glm-5.2:cloud',
 };
 
-export function isKnownOllamaCloudModel(tag) {
+export function isKnownOllamaCloudModel(tag: unknown): boolean {
   return OLLAMA_CLOUD_MODELS.some(m => m.model === tag);
 }

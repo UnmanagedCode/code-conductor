@@ -21,23 +21,23 @@ import { buildPluginApi } from './plugins/api.js';
 import { scheduleRestart } from './restart.js';
 import { drainAndScheduleRestart } from './resumeRestart.js';
 import { getSelfUpdateStatus, applySelfUpdate } from './selfUpdate.js';
-import { BOOT_ID } from './bootId.js';
-import { getOrCompute, invalidate, invalidateAll } from './projectsCache.js';
+import { BOOT_ID } from './bootId.ts';
+import { getOrCompute, invalidate, invalidateAll } from './projectsCache.ts';
 import { pageInstanceEvents } from './eventArchive.js';
 import { ensureConductProject, CONDUCT_PROJECT_NAME } from './conduct.js';
 import {
   isAvailable as transcribeAvailable, transcribe, modelPathForName,
 } from './transcribe.js';
-import { WHISPER_MODELS, isKnownModel, DEFAULT_MODEL } from './whisperModels.js';
+import { WHISPER_MODELS, isKnownModel, DEFAULT_MODEL } from './whisperModels.ts';
 import {
   MODEL_FAMILIES, CAPABILITY_TIERS, isKnownTier,
 } from './modelVersions.ts';
-import { EFFORT_LEVELS, DEFAULT_EFFORT } from './effortLevels.js';
+import { EFFORT_LEVELS, DEFAULT_EFFORT } from './effortLevels.ts';
 import {
   isAvailable as ttsAvailable, synthesize, voicePathForName,
 } from './tts.js';
-import { TTS_VOICES, isKnownVoice, DEFAULT_VOICE } from './ttsModels.js';
-import { OLLAMA_CLOUD_MODELS, OLLAMA_CLOUD_TIER_DEFAULTS } from './ollamaCloudModels.js';
+import { TTS_VOICES, isKnownVoice, DEFAULT_VOICE } from './ttsModels.ts';
+import { OLLAMA_CLOUD_MODELS, OLLAMA_CLOUD_TIER_DEFAULTS } from './ollamaCloudModels.ts';
 import {
   getTranscribeModel, setTranscribeModel,
   getTtsEnabled, setTtsEnabled, getTtsVoice, setTtsVoice, getTtsRate, setTtsRate,
@@ -200,7 +200,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
   // server context wasn't wired (in-process test boot).
   // Cheap liveness + per-process identity probe. The client restart flow polls
   // this for a CHANGED bootId to confirm it's talking to the replacement
-  // process, not the old one still up during a resume drain (see bootId.js).
+  // process, not the old one still up during a resume drain (see bootId.ts).
   r.get('/health', (req, res) => {
     res.json({ ok: true, bootId: BOOT_ID });
   });

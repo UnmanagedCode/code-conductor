@@ -32,8 +32,8 @@
 // `nextBefore` cursor that works across the boundary.
 
 import { loadPersistedTranscript } from './transcript.js';
-import { isOuterUserEcho, snapStartToQuiescent } from './parser.js';
-import { reconstructTasks } from './taskReconstruct.js';
+import { isOuterUserEcho, snapStartToQuiescent } from './parser.ts';
+import { reconstructTasks } from './taskReconstruct.ts';
 
 const LIMIT_DEFAULT = 200;
 const LIMIT_MAX = 500;

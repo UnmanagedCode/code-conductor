@@ -17,7 +17,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getTtsVoice, getTtsRate } from './appSettings.js';
-import { voiceFileName, DEFAULT_VOICE } from './ttsModels.js';
+import { voiceFileName, DEFAULT_VOICE } from './ttsModels.ts';
 import { orchStoreRoot } from './projects.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));

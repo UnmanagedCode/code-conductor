@@ -25,10 +25,33 @@
 //              before `/clear` took effect) is ignored, so an intervening turn
 //              can never make us reseed into the wrong session.
 
+import type { InstanceLike, InstanceManagerLike } from './instanceTypes.ts';
+
 // Defensive ceiling: if `/clear` never rotates the session (the real CLI always
 // does — this only guards a wedged/hung subprocess), abandon the pending
 // renewal rather than leaving the instance stuck in `clearing` forever.
 const CLEAR_ROTATE_TIMEOUT_MS = Number(process.env.ORCH_RENEW_CLEAR_TIMEOUT_MS) || 60_000;
+
+export interface RenewalOpts {
+  summary?: string;
+  rolePreamble?: string | null;
+  replayPrompt?: string | null;
+  stateBlock?: string | null;
+}
+
+interface PendingRenewal {
+  state: 'armed' | 'clearing';
+  opts: RenewalOpts;
+  oldSid: string | null;
+  timerId: NodeJS.Timeout | null;
+}
+
+// The manager's event stream entry for this instance (instances.js calls
+// _sessionRenew.onEvent({ id, ev }) on every instance event).
+interface ManagerEvent {
+  id: string;
+  ev: { kind?: string } | null;
+}
 
 // Compose the first-turn seed for the cleared session. Extensibility seam: phase
 // 1 uses only `summary`. Later phases fill `rolePreamble` (conductor-role/system
@@ -37,8 +60,8 @@ const CLEAR_ROTATE_TIMEOUT_MS = Number(process.env.ORCH_RENEW_CLEAR_TIMEOUT_MS) 
 // changes. `stateBlock` (the mechanical state block, built fresh at reseed time
 // — see buildStateBlock()) is the newest seam member. Callers pass the whole
 // opts object through arm().
-export function buildRenewSeed({ summary, rolePreamble = null, replayPrompt = null, stateBlock = null } = {}) {
-  const parts = [];
+export function buildRenewSeed({ summary, rolePreamble = null, replayPrompt = null, stateBlock = null }: RenewalOpts = {}): string {
+  const parts: string[] = [];
   if (rolePreamble && String(rolePreamble).trim()) parts.push(String(rolePreamble).trim());
   parts.push(
     'Your context was just renewed (cleared) at your own request via '
@@ -63,7 +86,7 @@ export function buildRenewSeed({ summary, rolePreamble = null, replayPrompt = nu
 // block disagree, this block wins for EXISTENCE (a worker it lists is really
 // still live) while the summary wins for INTENT (task, state, next action) —
 // so a worker the summary omitted is never silently orphaned.
-export function buildStateBlock(manager, callerInstanceId) {
+export function buildStateBlock(manager: InstanceManagerLike, callerInstanceId: string): string {
   const workers = manager.liveOwnedBy(callerInstanceId);
   const subs = manager.idleSubscriptionsOf(callerInstanceId);
   const lines = [
@@ -82,23 +105,25 @@ export function buildStateBlock(manager, callerInstanceId) {
 }
 
 export class SessionRenewController {
-  constructor(manager) {
+  private readonly manager: InstanceManagerLike;
+  // instanceId → { state:'armed'|'clearing', opts, oldSid, timerId }
+  private readonly pending = new Map<string, PendingRenewal>();
+
+  constructor(manager: InstanceManagerLike) {
     this.manager = manager;
-    // instanceId → { state:'armed'|'clearing', opts, oldSid, timerId }
-    this.pending = new Map();
   }
 
   // Arm (or re-arm) a renewal for an instance. Idempotent: re-arming while
   // already pending just refreshes opts (a second renew_session call in the
   // same turn), it never starts a second `/clear`.
-  arm(instanceId, opts = {}) {
+  arm(instanceId: string, opts: RenewalOpts = {}): { armed: true; rearmed: boolean } {
     const existing = this.pending.get(instanceId);
     if (existing) { existing.opts = opts; return { armed: true, rearmed: true }; }
     this.pending.set(instanceId, { state: 'armed', opts, oldSid: null, timerId: null });
     return { armed: true, rearmed: false };
   }
 
-  onEvent({ id, ev }) {
+  onEvent({ id, ev }: ManagerEvent): void {
     if (ev?.kind !== 'turn_end') return;
     const p = this.pending.get(id);
     if (!p) return;
@@ -106,7 +131,7 @@ export class SessionRenewController {
     else if (p.state === 'clearing') this._onClearingTurnEnd(id, p);
   }
 
-  _onArmedTurnEnd(id, p) {
+  private _onArmedTurnEnd(id: string, p: PendingRenewal): void {
     const inst = this.manager.byId.get(id);
     if (!inst || !inst.proc) { this._clear(id); return; }
     // Defer while there is queued or background work the rotation would strand.
@@ -116,7 +141,7 @@ export class SessionRenewController {
     // account; wait for it to drain. Likewise defer past live subagents / an
     // owed re-invocation. Stay armed: a later turn_end (once the queue drains /
     // subagents finish) fires the renewal. Mirrors the idle hub's defer gate.
-    if (inst._overageQueue?.length > 0
+    if ((inst._overageQueue?.length ?? 0) > 0
         || inst.activeAgentTaskCount > 0 || inst.taskNotificationPending) {
       return;
     }
@@ -130,7 +155,7 @@ export class SessionRenewController {
     catch { this._clear(id); }
   }
 
-  _onClearingTurnEnd(id, p) {
+  private _onClearingTurnEnd(id: string, p: PendingRenewal): void {
     const inst = this.manager.byId.get(id);
     if (!inst || !inst.proc) { this._clear(id); return; }
     // Only `/clear`'s own turn_end rotates the sessionId. Ignore any intervening
@@ -161,12 +186,12 @@ export class SessionRenewController {
     inst.prompt(seed, [], { internal: true }).catch(() => {});
   }
 
-  _clear(id) {
+  private _clear(id: string): void {
     const p = this.pending.get(id);
     if (p?.timerId) clearTimeout(p.timerId);
     this.pending.delete(id);
   }
 
   // Drop a pending renewal (called on instance removal).
-  purge(instanceId) { this._clear(instanceId); }
+  purge(instanceId: string): void { this._clear(instanceId); }
 }

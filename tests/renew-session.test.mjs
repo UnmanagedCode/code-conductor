@@ -1,7 +1,7 @@
 // Integration tests for the renew_session MCP tool — a managed, server-driven
 // `/clear` that rotates the calling session's context in place (same process,
 // new sessionId) and reseeds it with a self-authored summary plus a
-// server-generated mechanical state block. See src/sessionRenew.js +
+// server-generated mechanical state block. See src/sessionRenew.ts +
 // src/mcp/handlers.js (renewSession).
 //
 // The fake CLI can't call MCP tools, so each test arms the renewal out of

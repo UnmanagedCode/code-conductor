@@ -192,7 +192,7 @@ test('prompt() with neither text nor attachments throws', async () => {
 });
 
 test('parser replay: text block with `Attached file:` marker becomes an attachment entry', async () => {
-  const { Parser } = await import('../src/parser.js');
+  const { Parser } = await import('../src/parser.ts');
   const p = new Parser();
   const events = p.handleObject({
     type: 'user',
@@ -216,7 +216,7 @@ test('parser replay: text block with `Attached file:` marker becomes an attachme
 });
 
 test('parser replay: non-image extension yields kind: file', async () => {
-  const { Parser } = await import('../src/parser.js');
+  const { Parser } = await import('../src/parser.ts');
   const p = new Parser();
   const events = p.handleObject({
     type: 'user',

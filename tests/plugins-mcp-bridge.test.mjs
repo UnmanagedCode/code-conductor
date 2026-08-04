@@ -10,7 +10,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { createMcpBridge } from '../src/plugins/mcpBridge.js';
-import { isTextPayload } from '../src/mcp/content.js';
+import { isTextPayload } from '../src/mcp/content.ts';
 
 const PLUGIN_ID = 'testplug';
 

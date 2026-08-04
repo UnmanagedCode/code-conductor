@@ -1,4 +1,4 @@
-// Pure-function tests for the quiescent-point snapper (src/parser.js):
+// Pure-function tests for the quiescent-point snapper (src/parser.ts):
 // snapStartToQuiescent (page/tail window starts) and firstQuiescentAtOrAfter
 // (EventLog._trim fallback). No server, no DOM — hand-built UI-event arrays.
 //
@@ -15,7 +15,7 @@ import {
   snapStartToGroupBoundary,
   snapStartToQuiescent,
   firstQuiescentAtOrAfter,
-} from '../src/parser.js';
+} from '../src/parser.ts';
 
 // --- terse event builders --------------------------------------------------
 let msgN = 0;
@@ -110,7 +110,7 @@ function productionOverlapFixture() {
 // fixture that combines a surviving head with a headless group — that is the
 // shape the old fixpoint cycled on.
 async function snapInWorker(arr, start, end, { fn = 'snapStartToQuiescent', timeoutMs = 2_000 } = {}) {
-  const parserUrl = new URL('../src/parser.js', import.meta.url).href;
+  const parserUrl = new URL('../src/parser.ts', import.meta.url).href;
   const source = `
     const { parentPort, workerData } = require('node:worker_threads');
     import(workerData.parserUrl).then((mod) => {

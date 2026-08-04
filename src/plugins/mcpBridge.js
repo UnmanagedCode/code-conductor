@@ -16,7 +16,7 @@
 //
 // Additive to that contract: a success body may use {text, meta?} instead
 // of {result} to get raw, UNESCAPED text blocks (see makeHandler below).
-import { textPayload } from '../mcp/content.js';
+import { textPayload } from '../mcp/content.ts';
 
 export function createMcpBridge({ instances, listMcpPlugins, ensureStarted, portFor, reportUpstreamFailure }) {
   // callerId → project of the live/known session, or undefined when the

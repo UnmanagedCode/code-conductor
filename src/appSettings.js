@@ -14,8 +14,8 @@ import { orchStoreRoot, writeFileAtomic } from './projects.js';
 import { CAPABILITY_TIERS, DEFAULT_TIER_BACKEND, isKnownTier, isKnownClaudeModel,
   ROLES, DEFAULT_ROLE_BINDING, isKnownRole, isKnownFamily, claudeContextWindowTokens,
   MANAGED_BACKENDS, MANAGED_BACKEND_IDS, CLAUDE_BACKEND_ID } from './modelVersions.ts';
-import { OLLAMA_CLOUD_MODELS, isKnownOllamaCloudModel } from './ollamaCloudModels.js';
-import { DEFAULT_EFFORT, INHERIT_EFFORT, isKnownEffort } from './effortLevels.js';
+import { OLLAMA_CLOUD_MODELS, isKnownOllamaCloudModel } from './ollamaCloudModels.ts';
+import { DEFAULT_EFFORT, INHERIT_EFFORT, isKnownEffort } from './effortLevels.ts';
 
 function settingsPath() {
   return path.join(orchStoreRoot(), 'settings.json');
@@ -61,7 +61,7 @@ export async function setTranscribeModel(name) {
 
 // TTS group: the `tts` namespace holds { enabled, voice, rate }.
 // `enabled` gates auto-speak of finalized assistant messages; `voice` is the
-// active Piper voice name (null → built-in default, see ttsModels.js); `rate`
+// active Piper voice name (null → built-in default, see ttsModels.ts); `rate`
 // is the playback speed multiplier (1.0 = natural). Each setter spreads the
 // existing namespace so it never clobbers `transcribe`/`models`.
 const TTS_RATE_MIN = 0.5;

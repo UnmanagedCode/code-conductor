@@ -3,7 +3,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { createServer } from '../server.js';
-import { _resetForTest as resetProjectsCache } from '../src/projectsCache.js';
+import { _resetForTest as resetProjectsCache } from '../src/projectsCache.ts';
 import { InProcessClaudeLauncher } from './inProcessLauncher.mjs';
 import { ensureSafeStoreEnv } from './safeStoreRoot.mjs';
 

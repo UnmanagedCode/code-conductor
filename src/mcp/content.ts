@@ -8,17 +8,23 @@
 
 const PAYLOAD = Symbol('mcpTextPayload');
 
+export interface TextPayload {
+  [PAYLOAD]: true;
+  meta: unknown;
+  bodies: unknown[];
+}
+
 // Returns a tagged wrapper. `meta` → ONE compact-JSON block (content[0]); each
 // entry of `bodies` → ONE raw text block appended after it, in order. The
 // Symbol key is non-enumerable to JSON.stringify and can't collide with a
 // handler's real data, so a handler can never accidentally trip this path.
-export function textPayload(meta, bodies) {
+export function textPayload(meta: unknown, bodies: unknown): TextPayload {
   const arr = bodies == null ? [] : (Array.isArray(bodies) ? bodies : [bodies]);
   return { [PAYLOAD]: true, meta, bodies: arr };
 }
 
-export function isTextPayload(v) {
-  return !!v && typeof v === 'object' && v[PAYLOAD] === true;
+export function isTextPayload(v: unknown): v is TextPayload {
+  return !!v && typeof v === 'object' && (v as Partial<TextPayload>)[PAYLOAD] === true;
 }
 
 // Flatten a (meta, bodies) payload into the single string an LLM would read off
@@ -26,13 +32,19 @@ export function isTextPayload(v) {
 // order — mirroring how the MCP server emits them as separate content[] blocks
 // (src/mcp/server.js). Used to fold a default get_recent_messages result inline
 // into the idle-subscription wake stub without re-deriving its shape.
-export function flattenPayload(meta, bodies) {
+export function flattenPayload(meta: unknown, bodies: unknown): string {
   const arr = bodies == null ? [] : (Array.isArray(bodies) ? bodies : [bodies]);
   return [JSON.stringify(meta ?? null), ...arr.map(String)].join('\n\n');
 }
 
 // Map a handler error's HTTP-ish statusCode to a stable machine code. Returns
 // null when there's no recognized status (the error surfaces as prose only).
-export function codeForStatus(s) {
-  return ({ 400: 'BAD_REQUEST', 404: 'NOT_FOUND', 409: 'CONFLICT', 500: 'INTERNAL' })[s] ?? null;
+export function codeForStatus(s: unknown): string | null {
+  const codes: Record<string, string> = {
+    '400': 'BAD_REQUEST',
+    '404': 'NOT_FOUND',
+    '409': 'CONFLICT',
+    '500': 'INTERNAL',
+  };
+  return codes[String(s)] ?? null;
 }

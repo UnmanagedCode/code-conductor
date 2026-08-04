@@ -1,5 +1,5 @@
 // Integration + unit tests for the per-project git-facts cache
-// (src/projectsCache.js).
+// (src/projectsCache.ts).
 //
 // Unit tests exercise TTL caching, coalescing, and invalidation directly on the
 // module with _resetForTest(). Integration tests drive the full REST surface via
@@ -14,7 +14,7 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, freshProjectsRoot, rmrf } from './helpers.mjs';
-import { getOrCompute, invalidate, invalidateAll, _resetForTest } from '../src/projectsCache.js';
+import { getOrCompute, invalidate, invalidateAll, _resetForTest } from '../src/projectsCache.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-instance.json');

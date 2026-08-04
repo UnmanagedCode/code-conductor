@@ -165,7 +165,7 @@ test('subscribe sends only the ring tail, snapped to a turn boundary', async () 
 test('snapshot carries tasksAtTailStart for a batch created below the tail', async () => {
   // A still-incomplete batch whose TaskCreate sits below the ring tail must be
   // recoverable by the client panel via the snapshot's tasksAtTailStart seed
-  // (src/instances.js reconstructActiveTasks → src/taskReconstruct.js).
+  // (src/instances.js reconstructActiveTasks → src/taskReconstruct.ts).
   const prevTail = process.env.ORCH_SNAPSHOT_TAIL;
   const prevCap = process.env.ORCH_EVENT_RING_CAP;
   process.env.ORCH_SNAPSHOT_TAIL = '8';
@@ -749,7 +749,7 @@ test('a closed REDACTED thinking block keeps its token count on a fresh subscrib
     const inst = instances.get(id);
 
     // Redacted shape: counters stream but no thinking text ever arrives, so
-    // content_block_stop yields thinking_redacted + thinking_end (parser.js).
+    // content_block_stop yields thinking_redacted + thinking_end (parser.ts).
     inst._emitUi({ kind: 'user_echo', text: 'think privately' });
     inst._emitUi({ kind: 'thinking_start', msgId: 'm1', blockIdx: 0 });
     for (const n of [50, 200, 450]) {

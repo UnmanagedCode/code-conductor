@@ -27,7 +27,7 @@ import {
   syncWorktree as fsSyncWorktree, mergeWorktreeIntoParent, buildRebasePrompt,
   worktreeDirtyLines, runGit, DIFF_BYTE_CAP, assertValidBaseRef,
 } from '../worktrees.js';
-import { buildApprovePrompt, buildRejectPrompt } from '../planApproval.js';
+import { buildApprovePrompt, buildRejectPrompt } from '../planApproval.ts';
 // DOM-free formatter shared with the UI question card (public/blocks.js
 // re-exports it) so an answer_question MCP answer is byte-identical to a UI
 // submit — one canonical function, no fork. See public/userQuestionAnswers.js.
@@ -37,9 +37,9 @@ import { composeProjectConventionsDoc } from '../projectClaudeMd.js';
 import { getCatalog as getConductorConventionsCatalog, getSelection as getConductorSelection } from '../conductorConventions.js';
 import { isKnownFamily, isKnownTier, defaultVersion, familyOf, CLAUDE_BACKEND_ID } from '../modelVersions.ts';
 import { getTierBackend, resolveRoleBackend, isResolvableRole, backendForModel } from '../appSettings.js';
-import { textPayload } from './content.js';
+import { textPayload } from './content.ts';
 import { pageInstanceEvents } from '../eventArchive.js';
-import { parseNumstat, parseNameStatus, indexDiffLines, paginateDiff } from './diffPaging.js';
+import { parseNumstat, parseNameStatus, indexDiffLines, paginateDiff } from './diffPaging.ts';
 import {
   capText, MSG_TEXT_CAP, reconstructMessages, mergeRecentWithDisk, capBlockInput,
   hasPlanOrQuestions, ringTurnIndex, bondTrailingTurn,
@@ -520,7 +520,7 @@ export async function unsubscribeFromIdle({ sessionId }, { instances, callerId }
 // identity comes from the MCP URL's ?caller=<sessionId>, so this only works for
 // a code-conductor-managed session and always acts on the caller's own session.
 // The `/clear` is deferred to turn_end (not fired now) so this tool call's turn
-// completes normally first — see src/sessionRenew.js.
+// completes normally first — see src/sessionRenew.ts.
 export async function renewSession({ summary }, { instances, callerId }) {
   if (!instances) throw new Error('orchestrator has no InstanceManager');
   if (!callerId) {
@@ -734,7 +734,7 @@ export async function answerQuestion(
 // The byte cap is the per-page ceiling, never a silent terminal cut.
 // DIFF_BYTE_CAP is imported from ../worktrees.js (single source of truth).
 // The numstat/name-status parsing + line-index + pager engine lives in
-// ./diffPaging.js (parseNumstat / parseNameStatus / indexDiffLines /
+// ./diffPaging.ts (parseNumstat / parseNameStatus / indexDiffLines /
 // paginateDiff), imported above.
 
 export async function projectDiff({ project, worktree, baseRef, contextLines = 3, summary = false, paths, offset = 0 }) {
@@ -1122,7 +1122,7 @@ export async function getRecentMessages(args, ctx) {
 // soft-refusal). Split out so the idle-subscription wake-callback can fold the
 // SAME content a default get_recent_messages call returns into its stub without
 // re-deriving the selection/bonding logic. `getRecentMessages` wraps this in a
-// textPayload; the wake path flattens it (see src/mcp/content.js flattenPayload).
+// textPayload; the wake path flattens it (see src/mcp/content.ts flattenPayload).
 export async function buildRecentMessages({ sessionId, count, includeToolCalls = false, includeThinking = false }, { instances }) {
   const r = await getInst(instances, sessionId);
   if (r.soft) return r;

@@ -20,7 +20,7 @@ import {
   inheritedRoleEffort, resolveRoleEffort, resolveSpawnEffort,
   setRoleBinding, addCustomRole, setDefaultSpawnTier, setPluginRolesProvider,
 } from '../src/appSettings.js';
-import { DEFAULT_EFFORT, INHERIT_EFFORT, EFFORT_LEVELS } from '../src/effortLevels.js';
+import { DEFAULT_EFFORT, INHERIT_EFFORT, EFFORT_LEVELS } from '../src/effortLevels.ts';
 import { DEFAULT_VERSIONS } from '../src/modelVersions.ts';
 import { encodeCwd, orchStoreRoot } from '../src/projects.js';
 

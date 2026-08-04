@@ -21,17 +21,108 @@
 //   turn_end                { usage, durationMs, durationApiMs, durationApiMsDelta, cost, costDelta, isError, stopReason, subtype }
 //   control_response        { requestId, ok, response?, error? }
 //   raw                     { line }                        // fallback for unrecognized
+//
+// The CLI's stream-json wire shapes are an UNTYPED external boundary — the
+// envelope/block/delta interfaces below declare only the fields this file
+// reads, loosely (unknown), and each read narrows at the point of use. A
+// non-conforming value fails toward a safe default rather than propagating
+// (recorded as deliberate edge-tightening in the batch commit).
 
 import { randomUUID } from 'node:crypto';
 
+// UI event shape. `kind` is the discriminator; the per-kind payload fields
+// ride on the index signature (consumers read what they know).
+export interface UiEvent {
+  kind: string;
+  parentToolUseId?: string | null;
+  [key: string]: unknown;
+}
+
+// ── CLI stream-json wire shapes ───────────────────────────────────────────
+
+interface WireContentBlock {
+  type?: unknown;
+  name?: unknown;
+  id?: unknown;
+  text?: unknown;
+  input?: Record<string, unknown> | null;
+  tool_use_id?: unknown;
+  content?: unknown;
+  is_error?: unknown;
+}
+
+interface WireMessage {
+  id?: unknown;
+  model?: unknown;
+  usage?: unknown;
+  content?: unknown;
+}
+
+interface WireStreamEvent {
+  type?: unknown;
+  index?: unknown;
+  message?: WireMessage | null;
+  content_block?: WireContentBlock | null;
+  delta?: { type?: unknown; text?: unknown; thinking?: unknown; partial_json?: unknown } | null;
+}
+
+interface WireEnvelope {
+  type?: unknown;
+  subtype?: unknown;
+  message?: WireMessage | null;
+  event?: WireStreamEvent | null;
+  parent_tool_use_id?: unknown;
+  request_id?: unknown;
+  response?: { subtype?: unknown; request_id?: unknown; response?: unknown; error?: unknown } | null;
+  total_cost_usd?: unknown;
+  duration_api_ms?: unknown;
+  duration_ms?: unknown;
+  stop_reason?: unknown;
+  usage?: unknown;
+  is_error?: unknown;
+  isSynthetic?: unknown;
+  isMeta?: unknown;
+  isVisibleInTranscriptOnly?: unknown;
+  sourceToolUseID?: unknown;
+}
+
+// Per-block merge state keyed by blockIdx.
+interface BlockState {
+  type: string | null;
+  accumText: string;
+  accumJson: string;
+  gotThinkingDelta: boolean;
+  toolUseId: string | null;
+  name: string | null;
+}
+
+interface PendingSkillLoad {
+  toolUseId: string | null;
+  skill: string | null;
+}
+
+interface BoundaryInterval {
+  left: number;
+  right: number;
+  headless: boolean;
+}
+
+interface GroupState {
+  head: number;
+  interval: BoundaryInterval | null;
+}
+
+function eventIndex(ev: WireStreamEvent): number {
+  const idx = ev.index;
+  return typeof idx === 'number' ? idx : 0;
+}
+
 export class Parser {
-  constructor() {
-    this.currentMsgId = null;
-    this.blocks = new Map(); // blockIdx -> { type, accumText, accumJson, toolUseId, name }
-    this._lastCost = 0; // tracks cumulative cost to compute per-turn delta
-    this._lastApiMs = 0; // tracks cumulative duration_api_ms to compute per-turn delta
-    this._pendingSkillLoads = []; // {toolUseId, skill} entries awaiting their content injection
-  }
+  currentMsgId: string | null = null;
+  blocks = new Map<number, BlockState>(); // blockIdx -> { type, accumText, accumJson, toolUseId, name }
+  _lastCost = 0; // tracks cumulative cost to compute per-turn delta
+  _lastApiMs = 0; // tracks cumulative duration_api_ms to compute per-turn delta
+  _pendingSkillLoads: PendingSkillLoad[] = []; // {toolUseId, skill} entries awaiting their content injection
 
   reset() {
     this.currentMsgId = null;
@@ -49,37 +140,40 @@ export class Parser {
     expireSkillLoads(this._pendingSkillLoads);
   }
 
-  handleLine(line) {
-    line = typeof line === 'string' ? line.trim() : '';
-    if (!line) return [];
-    let obj;
-    try { obj = JSON.parse(line); }
-    catch { return [{ kind: 'raw', line }]; }
+  handleLine(line: unknown): UiEvent[] {
+    const text = typeof line === 'string' ? line.trim() : '';
+    if (!text) return [];
+    let obj: unknown;
+    try { obj = JSON.parse(text); }
+    catch { return [{ kind: 'raw', line: text }]; }
     return this.handleObject(obj);
   }
 
-  handleObject(obj) {
+  handleObject(obj: unknown): UiEvent[] {
     if (!obj || typeof obj !== 'object') return [];
-    const events = this._dispatch(obj);
+    const events = this._dispatch(obj as WireEnvelope);
     // Tag every emitted UI event with the parent_tool_use_id (or null) from
     // the wrapping stream-json envelope. The conversation view uses this to
     // route sub-agent events into a nested area under the matching outer
     // Task tool_use block.
-    const parentToolUseId = obj.parent_tool_use_id ?? null;
+    const parentToolUseId = obj as WireEnvelope;
+    const rawParent = parentToolUseId.parent_tool_use_id;
+    const tag = typeof rawParent === 'string' ? rawParent : null;
     for (const ev of events) {
-      if (!('parentToolUseId' in ev)) ev.parentToolUseId = parentToolUseId;
+      if (!('parentToolUseId' in ev)) ev.parentToolUseId = tag;
     }
     return events;
   }
 
-  _dispatch(obj) {
-    switch (obj.type) {
+  _dispatch(obj: WireEnvelope): UiEvent[] {
+    const type = typeof obj.type === 'string' ? obj.type : '';
+    switch (type) {
       case 'system':       return this._handleSystem(obj);
       case 'stream_event': return this._handleStreamEvent(obj);
       case 'assistant':    return this._handleAssistant(obj);
       case 'user':         return this._handleUser(obj);
       case 'result':       return this._handleResult(obj);
-      case 'hook_event':   return [{ kind: 'hook', event: obj.event ?? obj.subtype ?? 'unknown', data: obj }];
+      case 'hook_event':   return [{ kind: 'hook', event: obj.event?.type ?? obj.subtype ?? 'unknown', data: obj }];
       case 'control_response': return this._handleControlResponse(obj);
       case 'control_request':  return this._handleControlRequest(obj);
       case 'keep_alive':       return [];
@@ -88,15 +182,15 @@ export class Parser {
     }
   }
 
-  _handleSystem(obj) {
+  _handleSystem(obj: WireEnvelope): UiEvent[] {
     return [{ kind: 'system', subtype: obj.subtype ?? 'unknown', data: obj }];
   }
 
-  _handleControlRequest(obj) {
+  _handleControlRequest(obj: WireEnvelope): UiEvent[] {
     return [{ kind: 'system', subtype: 'control_request', data: obj }];
   }
 
-  _handleControlResponse(obj) {
+  _handleControlResponse(obj: WireEnvelope): UiEvent[] {
     const resp = obj.response ?? {};
     const ok = resp.subtype === 'success';
     return [{
@@ -108,9 +202,10 @@ export class Parser {
     }];
   }
 
-  _handleStreamEvent(obj) {
+  _handleStreamEvent(obj: WireEnvelope): UiEvent[] {
     const ev = obj.event ?? {};
-    switch (ev.type) {
+    const type = typeof ev.type === 'string' ? ev.type : '';
+    switch (type) {
       case 'message_start': {
         // Single-writer assumption: only the top-level agent's partials ever
         // arrive as stream_event frames — the CLI hardcodes
@@ -119,7 +214,8 @@ export class Parser {
         // partial forwarding, forwardSubagentText, is SDK-only with no CLI
         // flag). So resetting the shared currentMsgId/blocks here can never
         // clobber an interleaved sub-agent message.
-        this.currentMsgId = ev.message?.id ?? `msg_${randomUUID()}`;
+        const rawId = ev.message?.id;
+        this.currentMsgId = typeof rawId === 'string' ? rawId : `msg_${randomUUID()}`;
         this.blocks.clear();
         // Surface the usage block. Each agent-loop step within a turn
         // fires its own message_start with cumulative input-side counts
@@ -133,15 +229,15 @@ export class Parser {
         return [{ kind: 'message_start', msgId: this.currentMsgId, usage, model: ev.message?.model ?? null }];
       }
       case 'content_block_start': {
-        const idx = ev.index ?? 0;
+        const idx = eventIndex(ev);
         const cb = ev.content_block ?? {};
-        const block = {
-          type: cb.type,
+        const block: BlockState = {
+          type: typeof cb.type === 'string' ? cb.type : null,
           accumText: '',
           accumJson: '',
           gotThinkingDelta: false,
-          toolUseId: cb.id ?? null,
-          name: cb.name ?? null,
+          toolUseId: typeof cb.id === 'string' ? cb.id : null,
+          name: typeof cb.name === 'string' ? cb.name : null,
         };
         this.blocks.set(idx, block);
         if (cb.type === 'tool_use') {
@@ -159,18 +255,20 @@ export class Parser {
         return [];
       }
       case 'content_block_delta': {
-        const idx = ev.index ?? 0;
+        const idx = eventIndex(ev);
         const block = this.blocks.get(idx);
         const delta = ev.delta ?? {};
         if (!block) return [];
-        switch (delta.type) {
+        const deltaType = typeof delta.type === 'string' ? delta.type : '';
+        switch (deltaType) {
           case 'text_delta': {
-            const text = delta.text ?? '';
+            const text = typeof delta.text === 'string' ? delta.text : '';
             block.accumText += text;
             return [{ kind: 'text_delta', msgId: this.currentMsgId, blockIdx: idx, text }];
           }
           case 'thinking_delta': {
-            const text = delta.thinking ?? delta.text ?? '';
+            const raw = delta.thinking ?? delta.text;
+            const text = typeof raw === 'string' ? raw : '';
             // Opus 4.8 streams empty thinking_delta ("") for redacted thinking
             // (where 4.7 sent only a signature_delta). Ignore empties so
             // gotThinkingDelta stays false and content_block_stop takes the
@@ -182,7 +280,7 @@ export class Parser {
             return [{ kind: 'thinking_delta', msgId: this.currentMsgId, blockIdx: idx, text }];
           }
           case 'input_json_delta': {
-            const part = delta.partial_json ?? '';
+            const part = typeof delta.partial_json === 'string' ? delta.partial_json : '';
             block.accumJson += part;
             return [{
               kind: 'tool_use_input_delta',
@@ -199,7 +297,7 @@ export class Parser {
         }
       }
       case 'content_block_stop': {
-        const idx = ev.index ?? 0;
+        const idx = eventIndex(ev);
         const block = this.blocks.get(idx);
         if (!block) return [];
         if (block.type === 'text') {
@@ -218,12 +316,18 @@ export class Parser {
           return [{ kind: 'thinking_end', msgId: this.currentMsgId, blockIdx: idx }];
         }
         if (block.type === 'tool_use') {
-          let input = {};
+          let input: Record<string, unknown> = {};
           if (block.accumJson) {
-            try { input = JSON.parse(block.accumJson); }
-            catch { input = { _raw: block.accumJson }; }
+            try {
+              const parsed: unknown = JSON.parse(block.accumJson);
+              if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+                input = parsed as Record<string, unknown>;
+              }
+            } catch {
+              input = { _raw: block.accumJson };
+            }
           }
-          const out = [{
+          const out: UiEvent[] = [{
             kind: 'tool_use',
             msgId: this.currentMsgId,
             blockIdx: idx,
@@ -236,7 +340,7 @@ export class Parser {
           // view can render the questions as buttons. The CLI in stream-json
           // mode immediately errors out the actual tool execution, so the
           // user_question event is what makes this tool usable here.
-          if (block.name === 'AskUserQuestion' && Array.isArray(input?.questions)) {
+          if (block.name === 'AskUserQuestion' && Array.isArray(input.questions)) {
             out.push({
               kind: 'user_question',
               toolUseId: block.toolUseId,
@@ -253,7 +357,7 @@ export class Parser {
             out.push({
               kind: 'plan_request',
               toolUseId: block.toolUseId,
-              plan: typeof input?.plan === 'string' ? input.plan : null,
+              plan: typeof input.plan === 'string' ? input.plan : null,
               planPath: null,
             });
           }
@@ -271,9 +375,9 @@ export class Parser {
     }
   }
 
-  _handleAssistant(obj) {
+  _handleAssistant(obj: WireEnvelope): UiEvent[] {
     const msg = obj.message ?? {};
-    const events = [];
+    const events: UiEvent[] = [];
     // THE single registration point for Skill invocations awaiting their
     // content injection. Nothing arrives streaming-only: measured over the 11
     // stdout captures on disk (12,226 lines, 6 model ids), 353 tool_use ids
@@ -300,9 +404,14 @@ export class Parser {
     // injection (loadSubAgentTranscript, src/transcript.js, pinned against a
     // real fixture in tests/transcript-skill-load.test.mjs).
     if (!obj.parent_tool_use_id) {
-      for (const b of Array.isArray(msg.content) ? msg.content : []) {
-        if (b?.type !== 'tool_use' || b.name !== 'Skill') continue;
-        this._pendingSkillLoads.push({ toolUseId: b.id ?? null, skill: b.input?.skill ?? null });
+      for (const raw of Array.isArray(msg.content) ? msg.content : []) {
+        if (!raw || typeof raw !== 'object') continue;
+        const b = raw as WireContentBlock;
+        if (b.type !== 'tool_use' || b.name !== 'Skill') continue;
+        this._pendingSkillLoads.push({
+          toolUseId: typeof b.id === 'string' ? b.id : null,
+          skill: typeof b.input?.skill === 'string' ? b.input.skill : null,
+        });
       }
     }
     // Slash commands (registered or not) are handled locally by the CLI and
@@ -313,11 +422,14 @@ export class Parser {
     // synthetic text_delta + text_end events so the existing pipeline
     // renders an assistant bubble.
     if (msg.model === '<synthetic>' && Array.isArray(msg.content)) {
-      const msgId = msg.id ?? `synthetic_${randomUUID()}`;
+      const rawMsgId = msg.id;
+      const msgId = typeof rawMsgId === 'string' ? rawMsgId : `synthetic_${randomUUID()}`;
       let blockIdx = 0;
-      for (const block of msg.content) {
-        if (block?.type === 'text' && typeof block.text === 'string' && block.text.length) {
-          events.push({ kind: 'text_delta', msgId, blockIdx, text: block.text });
+      for (const raw of msg.content) {
+        if (!raw || typeof raw !== 'object') continue;
+        const b = raw as WireContentBlock;
+        if (b.type === 'text' && typeof b.text === 'string' && b.text.length) {
+          events.push({ kind: 'text_delta', msgId, blockIdx, text: b.text });
           events.push({ kind: 'text_end', msgId, blockIdx });
           blockIdx += 1;
         }
@@ -331,7 +443,7 @@ export class Parser {
     return events;
   }
 
-  _handleUser(obj) {
+  _handleUser(obj: WireEnvelope): UiEvent[] {
     const msg = obj.message ?? {};
     const content = msg.content;
     // If the CLI echoes the soft-interrupt steer back on stdout, surface it
@@ -351,15 +463,15 @@ export class Parser {
     return attachSkillLoad(events, obj, this._pendingSkillLoads);
   }
 
-  _handleResult(obj) {
+  _handleResult(obj: WireEnvelope): UiEvent[] {
     // total_cost_usd and duration_api_ms are both cumulative session totals in
     // the SDK result, not per-turn values. Convert each to a per-turn delta so
     // callers can display / accumulate the actual turn cost and LLM time.
     // (duration_ms — turn walltime — is genuinely per-turn and left as-is.)
-    const cost = obj.total_cost_usd ?? null;
+    const cost = typeof obj.total_cost_usd === 'number' ? obj.total_cost_usd : null;
     const costDelta = cost != null ? cost - this._lastCost : null;
     if (cost != null) this._lastCost = cost;
-    const apiMs = obj.duration_api_ms ?? null;
+    const apiMs = typeof obj.duration_api_ms === 'number' ? obj.duration_api_ms : null;
     const durationApiMsDelta = apiMs != null ? apiMs - this._lastApiMs : null;
     if (apiMs != null) this._lastApiMs = apiMs;
     return [{
@@ -386,6 +498,13 @@ export class Parser {
 const IMG_EXT = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp']);
 const ATT_LINE_RE = /^Attached file:\s*`([^`]*?\/\.code-conductor\/[^`]+?\/attachments\/[^`]+)`\s*$/;
 
+export interface Attachment {
+  kind: 'image' | 'file';
+  path: string;
+  filename: string;
+  name: string;
+}
+
 // Sentinel on the steering message a SOFT interrupt injects mid-turn
 // (Instance.interrupt() without force). The CLI persists the injected prompt
 // to the session jsonl — as a `type:"user"` line live, or a
@@ -399,12 +518,13 @@ export const SOFT_INTERRUPT_MARKER = '[[cc:soft-interrupt]]';
 // queued_command `prompt` array is the hidden soft-interrupt steer —
 // detected by the marker appearing anywhere in a text block (marker is
 // now appended at the end of the text, not the beginning).
-export function isSoftInterruptContent(content) {
+export function isSoftInterruptContent(content: unknown): boolean {
   if (typeof content === 'string') return content.includes(SOFT_INTERRUPT_MARKER);
   if (!Array.isArray(content)) return false;
   return content.some(
-    (b) => b && b.type === 'text' && typeof b.text === 'string'
-           && b.text.includes(SOFT_INTERRUPT_MARKER),
+    (b) => b && typeof b === 'object' && (b as { type?: unknown; text?: unknown }).type === 'text'
+           && typeof (b as { text?: unknown }).text === 'string'
+           && (b as { text: string }).text.includes(SOFT_INTERRUPT_MARKER),
   );
 }
 
@@ -413,33 +533,33 @@ export function isSoftInterruptContent(content) {
 // conversation as though it were a user turn. Detected by tag shape, not a
 // marker, since the CLI — not this codebase — produces the string, so
 // there's nothing to append a marker to.
-export function isTaskNotificationContent(content) {
-  const isTag = (text) => typeof text === 'string' && text.trimStart().startsWith('<task-notification>');
+export function isTaskNotificationContent(content: unknown): boolean {
+  const isTag = (text: unknown) => typeof text === 'string' && text.trimStart().startsWith('<task-notification>');
   if (typeof content === 'string') return isTag(content);
   if (!Array.isArray(content)) return false;
-  return content.some((b) => b && b.type === 'text' && isTag(b.text));
+  return content.some((b) => b && typeof b === 'object' && (b as { type?: unknown; text?: unknown }).type === 'text' && isTag((b as { text?: unknown }).text));
 }
 
 // True when a single text block is the mid-turn annotation prepended by
 // Instance.prompt() when a message arrives while a worker is in-flight.
 // Matched by shape (system-reminder wrapper + 'mid-turn' token), not by
 // exact string, so minor wording tweaks don't silently break filtering.
-export function isMidTurnNoteContent(text) {
+export function isMidTurnNoteContent(text: unknown): boolean {
   return typeof text === 'string'
     && text.startsWith('<system-reminder>')
     && text.includes('mid-turn')
     && text.trimEnd().endsWith('</system-reminder>');
 }
 
-export function extractAttachedMarkers(text) {
+export function extractAttachedMarkers(text: string): { text: string; attachments: Attachment[] } {
   const lines = text.split('\n');
-  const keptLines = [];
-  const attachments = [];
+  const keptLines: string[] = [];
+  const attachments: Attachment[] = [];
   for (const line of lines) {
     const m = line.match(ATT_LINE_RE);
     if (!m) { keptLines.push(line); continue; }
     const attPath = m[1];
-    const filename = attPath.split('/').pop();
+    const filename = attPath.split('/').pop() ?? '';
     const ext = (filename.split('.').pop() || '').toLowerCase();
     const kind = IMG_EXT.has(ext) ? 'image' : 'file';
     attachments.push({ kind, path: attPath, filename, name: filename });
@@ -456,16 +576,17 @@ export function extractAttachedMarkers(text) {
 // `user_echo` carrying any extracted attachments. Shared by the live path
 // (Parser._handleUser) and both jsonl-replay branches in transcript.js so
 // live vs replay rendering stays byte-for-byte identical.
-export function consolidateUserContent(contentBlocks) {
-  const out = [];
-  const echoTexts = [];
-  const echoAttachments = [];
-  for (const block of contentBlocks) {
-    if (!block || typeof block !== 'object') continue;
+export function consolidateUserContent(contentBlocks: unknown[]): UiEvent[] {
+  const out: UiEvent[] = [];
+  const echoTexts: string[] = [];
+  const echoAttachments: Attachment[] = [];
+  for (const raw of contentBlocks) {
+    if (!raw || typeof raw !== 'object') continue;
+    const block = raw as WireContentBlock;
     if (block.type === 'tool_result') {
       out.push({
         kind: 'tool_result',
-        toolUseId: block.tool_use_id ?? null,
+        toolUseId: typeof block.tool_use_id === 'string' ? block.tool_use_id : null,
         content: block.content ?? '',
         isError: !!block.is_error,
         finishedAt: Date.now(),
@@ -514,7 +635,7 @@ export function consolidateUserContent(contentBlocks) {
 // signal to distinguish that from a real skill load — but that case is a
 // narrow race rather than the unbounded, anywhere-later-in-the-file risk this
 // closes. Replay, which has identity, is not exposed to any of it.
-export function expireSkillLoads(pendingSkillLoads) {
+export function expireSkillLoads(pendingSkillLoads: PendingSkillLoad[] | null | undefined): void {
   if (pendingSkillLoads) pendingSkillLoads.length = 0;
 }
 
@@ -532,7 +653,7 @@ export function expireSkillLoads(pendingSkillLoads) {
 // Deriving both facts here — rather than at each call site — is the point:
 // the replay path testing the stdout field name is what shipped the
 // skill-bubble-only-renders-live bug.
-function skillInjectionMarker(obj) {
+function skillInjectionMarker(obj: WireEnvelope): { injected: boolean; sourceToolUseId: string | null; identityOnly: boolean } {
   const persisted = obj?.isMeta === true || obj?.isVisibleInTranscriptOnly === true;
   const streamed = obj?.isSynthetic === true;
   return {
@@ -545,7 +666,7 @@ function skillInjectionMarker(obj) {
 
 // `source` is the raw line: a stream-json stdout envelope live, a persisted
 // jsonl object on replay.
-export function attachSkillLoad(events, source, pendingSkillLoads) {
+export function attachSkillLoad(events: UiEvent[], source: WireEnvelope, pendingSkillLoads: PendingSkillLoad[] | null): UiEvent[] {
   if (!pendingSkillLoads) return events;
   for (const ev of events) {
     if (ev.kind === 'tool_result' && ev.isError) {
@@ -589,6 +710,7 @@ export function attachSkillLoad(events, source, pendingSkillLoads) {
   // CLI's synchronous tool_use -> tool_result -> injection ordering.
   if (!pendingSkillLoads.length) return events;
   const pending = pendingSkillLoads.shift();
+  if (!pending) return events; // defensive — length was just checked; keeps the shift result honest
   echo.skillLoad = { skill: pending.skill };
   return events;
 }
@@ -596,7 +718,7 @@ export function attachSkillLoad(events, source, pendingSkillLoads) {
 // A `user_echo` for a top-level (non-sub-agent) user prompt — i.e. one that
 // marks a turn boundary. Sub-agent echoes carry a parentToolUseId. Shared by
 // the event ring (instances.js) and the paging/archive code (eventArchive.js).
-export function isOuterUserEcho(ev) {
+export function isOuterUserEcho(ev: UiEvent | null | undefined): boolean {
   return ev?.kind === 'user_echo' && !ev.parentToolUseId;
 }
 
@@ -608,10 +730,10 @@ export function isOuterUserEcho(ev) {
 // Merging the integer intervals resolves all overlapping constraints at once
 // instead of oscillating between groups. Each (group, head-generation) opens
 // at most one interval, so the sort stays O(g log g) in practice.
-function groupBoundaryComponents(arr, end) {
-  const intervals = [];
-  const groups = new Map();
-  const stateFor = (id) => {
+function groupBoundaryComponents(arr: UiEvent[], end: number): BoundaryInterval[] {
+  const intervals: BoundaryInterval[] = [];
+  const groups = new Map<string, GroupState>();
+  const stateFor = (id: string): GroupState => {
     let state = groups.get(id);
     if (!state) {
       state = { head: -1, interval: null };
@@ -623,13 +745,15 @@ function groupBoundaryComponents(arr, end) {
   for (let i = 0; i < end; i++) {
     const ev = arr[i];
     if (!ev) continue;
-    if (ev.toolUseId && (ev.kind === 'tool_use_start' || ev.kind === 'tool_use')) {
-      const state = stateFor(ev.toolUseId);
+    const toolUseId = typeof ev.toolUseId === 'string' ? ev.toolUseId : null;
+    if (toolUseId && (ev.kind === 'tool_use_start' || ev.kind === 'tool_use')) {
+      const state = stateFor(toolUseId);
       state.head = i;
       state.interval = null; // a new head opens a new generation
     }
-    if (ev.parentToolUseId) {
-      const state = stateFor(ev.parentToolUseId);
+    const parentToolUseId = typeof ev.parentToolUseId === 'string' ? ev.parentToolUseId : null;
+    if (parentToolUseId) {
+      const state = stateFor(parentToolUseId);
       if (state.interval) {
         state.interval.right = i; // same generation — extend to the later child
       } else {
@@ -644,7 +768,7 @@ function groupBoundaryComponents(arr, end) {
   }
   intervals.sort((a, b) => a.left - b.left || a.right - b.right);
 
-  const merged = [];
+  const merged: BoundaryInterval[] = [];
   for (const interval of intervals) {
     const tail = merged[merged.length - 1];
     if (!tail || interval.left > tail.right + 1) {
@@ -657,18 +781,18 @@ function groupBoundaryComponents(arr, end) {
   return merged;
 }
 
-function forbiddenComponentAt(components, index) {
+function forbiddenComponentAt(components: BoundaryInterval[], index: number): BoundaryInterval | null {
   let lo = 0, hi = components.length;
   while (lo < hi) {
     const mid = (lo + hi) >> 1;
     if (components[mid].left <= index) lo = mid + 1;
     else hi = mid;
   }
-  const component = components[lo - 1];
+  const component = components[lo - 1] ?? null;
   return component && index <= component.right ? component : null;
 }
 
-function resolveGroupBoundary(components, start) {
+function resolveGroupBoundary(components: BoundaryInterval[], start: number): number {
   const component = forbiddenComponentAt(components, start);
   if (!component) return start;
   return component.headless ? component.right + 1 : component.left - 1;
@@ -684,7 +808,7 @@ function resolveGroupBoundary(components, start) {
 // resolves the same components itself while also honoring quiescence. This
 // export isolates the group resolver for direct unit testing; keep the two
 // in sync by construction (both go through groupBoundaryComponents).
-export function snapStartToGroupBoundary(arr, start, end) {
+export function snapStartToGroupBoundary(arr: UiEvent[], start: number, end: number): number {
   end = Math.max(0, Math.min(end, arr.length));
   start = Math.max(0, Math.min(start, end));
   return resolveGroupBoundary(groupBoundaryComponents(arr, end), start);
@@ -725,20 +849,18 @@ export function snapStartToGroupBoundary(arr, start, end) {
 // density across every background-task region while adding nothing the group
 // snap already guarantees.
 
-function blockKey(ev, type) { return `${ev.msgId ?? '?'}:${ev.blockIdx ?? 0}:${type}`; }
+function blockKey(ev: UiEvent, type: string): string { return `${ev.msgId ?? '?'}:${ev.blockIdx ?? 0}:${type}`; }
 
 // An outer turn_end also force-resets (see header comment above).
-function isOuterTurnEnd(ev) {
+function isOuterTurnEnd(ev: UiEvent): boolean {
   return ev?.kind === 'turn_end' && !ev.parentToolUseId;
 }
 
 class QuiescenceScan {
-  constructor() {
-    this.openBlocks = new Set();   // `${msgId}:${blockIdx}:${type}` mid-stream
-    this.pendingTools = new Set(); // toolUseId awaiting its tool_result
-  }
-  get empty() { return this.openBlocks.size === 0 && this.pendingTools.size === 0; }
-  apply(ev) {
+  openBlocks = new Set<string>();   // `${msgId}:${blockIdx}:${type}` mid-stream
+  pendingTools = new Set<string>(); // toolUseId awaiting its tool_result
+  get empty(): boolean { return this.openBlocks.size === 0 && this.pendingTools.size === 0; }
+  apply(ev: UiEvent): void {
     if (!ev || ev.parentToolUseId) return; // nested — group integrity covers these
     switch (ev.kind) {
       case 'user_echo':
@@ -752,14 +874,14 @@ class QuiescenceScan {
       case 'tool_use_start':
       case 'tool_use_input_delta':
         this.openBlocks.add(blockKey(ev, 'tool'));
-        if (ev.toolUseId) this.pendingTools.add(ev.toolUseId);
+        if (typeof ev.toolUseId === 'string') this.pendingTools.add(ev.toolUseId);
         break;
       case 'tool_use': // block finalized; the SPAN stays open until tool_result
         this.openBlocks.delete(blockKey(ev, 'tool'));
-        if (ev.toolUseId) this.pendingTools.add(ev.toolUseId);
+        if (typeof ev.toolUseId === 'string') this.pendingTools.add(ev.toolUseId);
         break;
       case 'tool_result':
-        if (ev.toolUseId) this.pendingTools.delete(ev.toolUseId);
+        if (typeof ev.toolUseId === 'string') this.pendingTools.delete(ev.toolUseId);
         break;
       default: break; // message_start / system / assistant_message / … are state-neutral
     }
@@ -770,7 +892,7 @@ class QuiescenceScan {
 // `resetIdx` (an externally-declared discontinuity, e.g. the archive→ring
 // seam — state must never be scanned across it), or an outer
 // user_echo/turn_end (both force-reset).
-function nearestResetOrigin(arr, i, resetIdx) {
+function nearestResetOrigin(arr: UiEvent[], i: number, resetIdx: number): number {
   for (let j = i; j > 0; j--) {
     if (j === resetIdx || isOuterUserEcho(arr[j]) || isOuterTurnEnd(arr[j])) return j;
   }
@@ -785,7 +907,7 @@ function nearestResetOrigin(arr, i, resetIdx) {
 // never unbounded. Index 0, `resetIdx` and outer user_echo indices are
 // quiescent BY FIAT (cutting right before a turn boundary is the legacy
 // behavior; the seam and the array start are boundaries by construction).
-function quiesceStart(arr, start, end, resetIdx, allowForward) {
+function quiesceStart(arr: UiEvent[], start: number, end: number, resetIdx: number, allowForward: boolean): number {
   if (start <= 0) return 0;
   if (start === resetIdx || isOuterUserEcho(arr[start])) return start;
   const r = nearestResetOrigin(arr, start - 1, resetIdx);
@@ -808,8 +930,8 @@ function quiesceStart(arr, start, end, resetIdx, allowForward) {
   return best !== -1 ? best : start; // nothing reachable — raw start stands
 }
 
-function collectQuiescentCuts(arr, end, resetIdx) {
-  const cuts = [];
+function collectQuiescentCuts(arr: UiEvent[], end: number, resetIdx: number): number[] {
+  const cuts: number[] = [];
   let scan = new QuiescenceScan();
   for (let i = 0; i < end; i++) {
     if (i === resetIdx) scan = new QuiescenceScan();
@@ -821,7 +943,7 @@ function collectQuiescentCuts(arr, end, resetIdx) {
   return cuts;
 }
 
-function lowerBound(values, target) {
+function lowerBound(values: number[], target: number): number {
   let lo = 0, hi = values.length;
   while (lo < hi) {
     const mid = (lo + hi) >> 1;
@@ -831,7 +953,7 @@ function lowerBound(values, target) {
   return lo;
 }
 
-function firstCombinedBoundary(cuts, components, from) {
+function firstCombinedBoundary(cuts: number[], components: BoundaryInterval[], from: number): number {
   let i = lowerBound(cuts, from);
   while (i < cuts.length) {
     const cut = cuts[i];
@@ -842,7 +964,7 @@ function firstCombinedBoundary(cuts, components, from) {
   return cuts[cuts.length - 1];
 }
 
-function lastCombinedBoundary(cuts, components, through) {
+function lastCombinedBoundary(cuts: number[], components: BoundaryInterval[], through: number): number {
   let i = lowerBound(cuts, through + 1) - 1;
   while (i >= 0) {
     const cut = cuts[i];
@@ -858,7 +980,7 @@ function lastCombinedBoundary(cuts, components, through) {
 // to keep the post-eviction ring head on whole blocks when no turn boundary
 // is in reach. Assumes arr[0] opens on a boundary (true by induction over
 // trims, except after a plain-cut last resort — a documented degradation).
-export function firstQuiescentAtOrAfter(arr, from, bound) {
+export function firstQuiescentAtOrAfter(arr: UiEvent[], from: number, bound: number): number {
   if (from <= 0) return 0;
   const r = nearestResetOrigin(arr, from, -1);
   const originValid = r === 0 || isOuterUserEcho(arr[r]);
@@ -882,7 +1004,7 @@ export function firstQuiescentAtOrAfter(arr, from, bound) {
 // complete group); a component connected to a headless group searches right
 // (exclude every unavailable group). Both searches move monotonically across
 // finite quiescent cuts/components, so they cannot oscillate.
-export function snapStartToQuiescent(arr, start, end, { resetIdx = -1 } = {}) {
+export function snapStartToQuiescent(arr: UiEvent[], start: number, end: number, { resetIdx = -1 }: { resetIdx?: number } = {}): number {
   end = Math.max(0, Math.min(end, arr.length));
   start = Math.max(0, Math.min(start, end));
   if (start === end) return end;

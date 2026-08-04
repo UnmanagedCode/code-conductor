@@ -462,7 +462,7 @@ test('limit is clamped; bad params 400; unknown instance 404', async () => {
 // A task batch that lives in older history must render its finished-task bubble
 // when paged back — the server injects a synthetic {kind:'task_completion'}
 // after the completing TaskUpdate (client no longer synthesizes it for the
-// lazy path). See src/eventArchive.js injectTaskCompletions + taskReconstruct.js.
+// lazy path). See src/eventArchive.js injectTaskCompletions + taskReconstruct.ts.
 function taskBatchLines() {
   return [
     { type: 'user', uuid: 'utc', message: { role: 'user', content: 'do the tasks' } },

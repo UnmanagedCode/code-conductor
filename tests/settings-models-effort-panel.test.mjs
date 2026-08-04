@@ -15,7 +15,7 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Window } from 'happy-dom';
-import { EFFORT_LEVELS } from '../src/effortLevels.js';
+import { EFFORT_LEVELS } from '../src/effortLevels.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 

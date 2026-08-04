@@ -9,7 +9,7 @@
 
 import express from 'express';
 import { buildTools } from './tools.js';
-import { isTextPayload, codeForStatus } from './content.js';
+import { isTextPayload, codeForStatus } from './content.ts';
 import { SESSION_PREFIX_MIN } from '../instances.js';
 
 const PROTOCOL_VERSION = '2025-06-18';

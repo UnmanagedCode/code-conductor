@@ -3,27 +3,27 @@ import { randomUUID } from 'node:crypto';
 import readline from 'node:readline';
 import { promises as fsp, readFileSync, mkdirSync, createWriteStream, writeFileSync, rmSync } from 'node:fs';
 import path from 'node:path';
-import { Parser, SOFT_INTERRUPT_MARKER, isOuterUserEcho, snapStartToQuiescent, firstQuiescentAtOrAfter } from './parser.js';
+import { Parser, SOFT_INTERRUPT_MARKER, isOuterUserEcho, snapStartToQuiescent, firstQuiescentAtOrAfter } from './parser.ts';
 import { getProject, claudeProjectsRoot, encodeCwd, findSessionLocation, readFirstPrompt } from './projects.js';
 import { createWorktree, getWorktree, debugBaseDir } from './worktrees.js';
 import { getTitle as getSessionTitle, setTitle as setSessionTitle, deleteTitle as deleteSessionTitle } from './sessionTitles.js';
 import { getSessionBackend, markSessionBackend, unmarkSessionBackend } from './sessionBackends.ts';
 import { isConducted, markConducted, unmarkConducted } from './conductedSessions.js';
-import { SessionRenewController } from './sessionRenew.js';
+import { SessionRenewController } from './sessionRenew.ts';
 import { isTemp, markTemp, unmarkTemp } from './tempSessions.js';
 import { markArchived } from './archivedSessions.js';
 import { CONDUCT_PROJECT_NAME } from './conduct.js';
 import { composeCurrentConduct } from './conductorConventions.js';
-import { buildSettingsJSON, buildMcpConfigJSON, AWAITING_INPUT_MESSAGE } from './settings.js';
+import { buildSettingsJSON, buildMcpConfigJSON, AWAITING_INPUT_MESSAGE } from './settings.ts';
 import { getOnOverageAction, getOverageThreshold, getConductorCompactWindow, resolveContextWindowTokens, getDebugByDefault, getBackend, isKnownBackend, resolveSpawnEffort } from './appSettings.js';
-import { HookBroker } from './hookBroker.js';
+import { HookBroker } from './hookBroker.ts';
 import { loadPersistedTranscript, writeSessionMetadata, readLastSessionModel, hasResumableConversation } from './transcript.js';
 import { canonicalizeModel, familyOf, CLAUDE_BACKEND_ID } from './modelVersions.ts';
 import { truncateSessionAtUserMessage } from './sessionEdit.js';
 import { pruneSessionToNewId, INPUT_MODES } from './sessionPrune.js';
 import { saveAttachment, isImageType } from './attachments.js';
-import { buildApprovePrompt } from './planApproval.js';
-import { reconstructTasks } from './taskReconstruct.js';
+import { buildApprovePrompt } from './planApproval.ts';
+import { reconstructTasks } from './taskReconstruct.ts';
 import { buildArchive } from './eventArchive.js';
 import { IdleSubscriptionHub } from './idleSubscriptions.js';
 import { OverageResumeController } from './overageResume.js';
@@ -180,7 +180,7 @@ const DEFAULT_THINKING = 'adaptive';
 // the jsonl-replay archive be cut against the retained ring with no
 // overlap. When no echo is within cap/2 of the tail (a single giant turn
 // spans the whole droppable region), the snap falls back to the nearest
-// QUIESCENT point (whole blocks only — see parser.js) so the gap-case head
+// QUIESCENT point (whole blocks only — see parser.ts) so the gap-case head
 // still renders cleanly; only a giant non-quiescent span forces a plain cut.
 const DEFAULT_RING_CAP = 2000;
 const RING_TRIM_SLACK = 256;
@@ -392,7 +392,7 @@ export class Instance extends EventEmitter {
     this._pending = new Map(); // request_id -> { resolve, reject, timer }
     // Per-instance PreToolUse hook callback broker (held-open
     // responses + timeout fallbacks + the ask-mode permission_request
-    // emission). See src/hookBroker.js.
+    // emission). See src/hookBroker.ts.
     this._hooks = new HookBroker({
       getMode: () => this.mode,
       emit: (ev) => this._emitUi(ev),
@@ -526,7 +526,7 @@ export class Instance extends EventEmitter {
     //             (cache_read + cache_creation) — `_prevTurnPrefix`. Captured by
     //             overwriting `_turnLastReqPrefix` on every message_start (no
     //             per-iteration array exists; the CLI result.usage is passed
-    //             through verbatim by parser.js), then latched at turn_end.
+    //             through verbatim by parser.ts), then latched at turn_end.
     // MISS ⇔ read_N < P_{N-1} - tolerance: this turn served less of the prefix
     // than was demonstrably cached at the end of last turn ⇒ eviction (full OR
     // partial). Warm continuation reads exactly P_{N-1} (drop 0). Tolerance
@@ -679,7 +679,7 @@ export class Instance extends EventEmitter {
   // longer receive the whole ring on every subscribe; older events are
   // lazy-loaded via GET /api/instances/:id/events. The window start is
   // snapped to a QUIESCENT point (no open block, no unresolved tool — see
-  // snapStartToQuiescent in parser.js): the first one inside the window when
+  // snapStartToQuiescent in parser.ts): the first one inside the window when
   // present, else the nearest one below it. A non-quiescent tail start would
   // strand a half block / a result-less tool across the isolated page
   // renderer and the live view. Quiescent points are dense, so the snap
@@ -1017,7 +1017,7 @@ export class Instance extends EventEmitter {
       // stays free of synthetic message_starts (see docs/protocol.md's snapshot
       // entry), and it can never become the ring head after a trim and fake a
       // `history_gap` at the archive seam (message_start is quiescent —
-      // parser.js). Non-retention also keeps it invisible to ring.nextSeq, which
+      // parser.ts). Non-retention also keeps it invisible to ring.nextSeq, which
       // idleSubscriptions.js arms on as its "activity since arm" marker — that
       // one is defense-in-depth, not a live hazard: this fires once inside
       // loadHistory, before any turn, so it can't land inside an arm→fire
@@ -1368,7 +1368,7 @@ export class Instance extends EventEmitter {
         // (the reset above/in _setStatus left `_turnFirstReqCacheRead` null)
         // decides; later message_starts only keep P (`_turnLastReqPrefix`)
         // current. The parser only emits message_start when usage is present
-        // (src/parser.js), so ev.usage is always defined here.
+        // (src/parser.ts), so ev.usage is always defined here.
         if (this._turnFirstReqCacheRead === null) {
           this._turnFirstReqCacheRead = reqRead;
           this._turnFirstReqCacheCreation = reqCreation;
@@ -1810,7 +1810,7 @@ export class Instance extends EventEmitter {
     }
 
     // A real prompt is a genuine turn boundary — any Skill invocation still
-    // awaiting its content injection is stale (see parser.js:attachSkillLoad).
+    // awaiting its content injection is stale (see parser.ts:attachSkillLoad).
     this.parser.expirePendingSkillLoads();
     this._emitUi({ kind: 'user_echo', text: safeText, attachments: echoAttachments });
     if (this.firstPrompt == null && safeText.length) {
@@ -1834,7 +1834,7 @@ export class Instance extends EventEmitter {
   // is a server-internal control send, not a user turn. The rotation is picked
   // up by the system/init handler (which updates this.sessionId), and the
   // SessionRenewController reseeds the cleared session on the following
-  // turn_end. See src/sessionRenew.js.
+  // turn_end. See src/sessionRenew.ts.
   clearContext() {
     if (!this.proc || !this.proc.stdin.writable) throw new Error('not running');
     this._sendRaw({
@@ -1969,7 +1969,7 @@ export class Instance extends EventEmitter {
   // Instead we emit a live system/soft_interrupted annotation carrying the
   // text, so the human sees what was said without affecting prompt indices.
   // JSONL replay independently produces the same bare annotation (no text)
-  // via SOFT_INTERRUPT_MARKER filtering in parser.js / transcript.js.
+  // via SOFT_INTERRUPT_MARKER filtering in parser.ts / transcript.js.
   async interrupt({ force = false } = {}) {
     if (this.status !== 'turn') return;
     if (force) {
@@ -2328,7 +2328,7 @@ export class InstanceManager extends EventEmitter {
     // Managed session renewal (`renew_session` MCP tool): drives a server-side
     // `/clear` at the caller's turn_end and reseeds the rotated session with a
     // handoff summary. Keyed by instanceId so it tracks the caller across the
-    // sessionId rotation `/clear` performs. See src/sessionRenew.js.
+    // sessionId rotation `/clear` performs. See src/sessionRenew.ts.
     this._sessionRenew = new SessionRenewController(this);
     // Server-side usage poller: a second, equal-footing source for the overage
     // auto-stop. The stream `rate_limit_event` only reports near Anthropic's own
@@ -2373,11 +2373,11 @@ export class InstanceManager extends EventEmitter {
   _purgeIdleFor(instanceId) { return this._idleHub.purge(instanceId); }
   // Sibling to _idleSubscriberSnapshot, but caller-indexed and sessionId-shaped
   // — which targets THIS instanceId (as caller) currently watches. Used by the
-  // renewal state block (src/sessionRenew.js) to enumerate the caller's own
+  // renewal state block (src/sessionRenew.ts) to enumerate the caller's own
   // pending idle subscriptions.
   idleSubscriptionsOf(instanceId) { return this._idleHub.subscriptionsOf(instanceId); }
 
-  // Managed session renewal — see src/sessionRenew.js. Arm a `/clear`+reseed
+  // Managed session renewal — see src/sessionRenew.ts. Arm a `/clear`+reseed
   // on the given instance; the controller fires at the instance's next turn_end.
   // No sessionId-rotation bookkeeping is needed: the idle-subscription graph and
   // overage timers are keyed by the stable instanceId, which `/clear` preserves.
@@ -3355,7 +3355,7 @@ export class InstanceManager extends EventEmitter {
   }
 
   // Live (proc-attached) instances spawned by conductorId, for the renewal
-  // state block (src/sessionRenew.js) — a safety net so a worker missing from
+  // state block (src/sessionRenew.ts) — a safety net so a worker missing from
   // a degraded self-authored summary is never orphaned. Distinct from
   // conductedWorkersOf: this filters to LIVE only and carries `status`, since
   // the resume manifest's use case (any-with-sessionId, no status) differs.
