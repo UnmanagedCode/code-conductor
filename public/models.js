@@ -29,11 +29,11 @@ const DEFAULT_VERSION_LABELS = {
   'claude-haiku-4-5': 'Haiku 4.5',
 };
 
-// The identity backend id (mirrors CLAUDE_BACKEND_ID in src/modelVersions.js).
+// The identity backend id (mirrors CLAUDE_BACKEND_ID in src/modelVersions.ts).
 export const CLAUDE_BACKEND = 'claude';
 
 // Pre-fetch fallback tier→{backend,model} bindings (mirrors DEFAULT_TIER_BACKEND
-// in src/modelVersions.js). Overwritten by the shipped catalog at boot.
+// in src/modelVersions.ts). Overwritten by the shipped catalog at boot.
 const DEFAULT_TIER_BACKEND = {
   fast:     { backend: CLAUDE_BACKEND, model: DEFAULT_VERSIONS.haiku },
   balanced: { backend: CLAUDE_BACKEND, model: DEFAULT_VERSIONS.sonnet },
@@ -43,7 +43,7 @@ const DEFAULT_TIER_BACKEND = {
 const DEFAULT_TIER_LABELS = { fast: 'Fast', balanced: 'Balanced', powerful: 'Powerful', frontier: 'Frontier' };
 
 // Pre-fetch fallback role→binding (mirrors DEFAULT_ROLE_BINDING in
-// src/modelVersions.js). A role binds to a tier ({kind:'tier',tier}) or a
+// src/modelVersions.ts). A role binds to a tier ({kind:'tier',tier}) or a
 // concrete {backend,model}. Overwritten by the shipped catalog at boot.
 const DEFAULT_ROLE_BINDING = {
   conductor: { kind: 'tier', tier: 'powerful' },
@@ -86,7 +86,7 @@ export function setCustomModels(list) { customModels = Array.isArray(list) ? lis
 export function setOllamaCloudModels(list) { ollamaCloudModels = Array.isArray(list) ? list : []; return ollamaCloudModels; }
 
 // Infer the Claude family from a model id, by prefix. Mirrors familyOf() in
-// src/modelVersions.js. A naming heuristic for grouping the Settings picker —
+// src/modelVersions.ts. A naming heuristic for grouping the Settings picker —
 // never a backend test; only a binding's `backend` field says which registry row
 // serves a model.
 export function familyOf(modelId) {

@@ -117,14 +117,15 @@ async function acquireLock(lockPath: string): Promise<string> {
       await sleep(Math.min(base * (0.8 + 0.4 * Math.random()), 500));
     }
   }
-  // Unreachable in practice: every path above returns (acquired) or throws
-  // (non-EEXIST error, or a live owner past LOCK_RETRY_MAX retries). The only
-  // way out of the loop is a dead-owner reclaim on the FINAL iteration, which
-  // would leave the old JS returning `undefined` (releasing nothing and
-  // stranding a stale lockfile); throwing is the type-safe equivalent for a
-  // path that cannot occur — a lock held by a live owner is waited out and
-  // timed out above, and a dead owner's lock is cleared, so the loop always
-  // terminates with a token or an error.
+  // The dead-owner reclaim on the FINAL retry iteration (attempt ===
+  // LOCK_RETRY_MAX) falls out of the loop and lands here. That path is
+  // reachable: an owner alive across all 25 retries that dies during the last
+  // backoff window is unlinked by iteration 25's `continue`, which exits the
+  // loop. The original JS fell through returning `undefined`, so `withLock`
+  // then ran `fn()` with NO lock held — the exact lost-update class this file
+  // exists to prevent. Throwing here is the intentional latent-bug fix: a
+  // reclaim that cannot re-acquire inside the loop fails closed instead of
+  // running the critical section unlocked.
   throw new Error('storeLock: acquire loop exited without a token');
 }
 
