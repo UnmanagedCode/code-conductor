@@ -18,16 +18,16 @@ import {
   getProjectCommits, getCommitDiff, getProjectUncommittedDiff,
 } from './worktrees.ts';
 import { buildPluginApi } from './plugins/api.js';
-import { scheduleRestart } from './restart.js';
+import { scheduleRestart } from './restart.ts';
 import { drainAndScheduleRestart } from './resumeRestart.js';
-import { getSelfUpdateStatus, applySelfUpdate } from './selfUpdate.js';
+import { getSelfUpdateStatus, applySelfUpdate } from './selfUpdate.ts';
 import { BOOT_ID } from './bootId.ts';
 import { getOrCompute, invalidate, invalidateAll } from './projectsCache.ts';
 import { pageInstanceEvents } from './eventArchive.ts';
 import { ensureConductProject, CONDUCT_PROJECT_NAME } from './conduct.ts';
 import {
   isAvailable as transcribeAvailable, transcribe, modelPathForName,
-} from './transcribe.js';
+} from './transcribe.ts';
 import { WHISPER_MODELS, isKnownModel, DEFAULT_MODEL } from './whisperModels.ts';
 import {
   MODEL_FAMILIES, CAPABILITY_TIERS, isKnownTier,
@@ -35,7 +35,7 @@ import {
 import { EFFORT_LEVELS, DEFAULT_EFFORT } from './effortLevels.ts';
 import {
   isAvailable as ttsAvailable, synthesize, voicePathForName,
-} from './tts.js';
+} from './tts.ts';
 import { TTS_VOICES, isKnownVoice, DEFAULT_VOICE } from './ttsModels.ts';
 import { OLLAMA_CLOUD_MODELS, OLLAMA_CLOUD_TIER_DEFAULTS } from './ollamaCloudModels.ts';
 import {
@@ -55,12 +55,12 @@ import {
   getBackends, addBackend, updateBackend, removeBackend,
   getDebugByDefault, setDebugByDefault,
 } from './appSettings.ts';
-import * as whisperInstall from './whisperInstall.js';
-import * as ttsInstall from './ttsInstall.js';
+import * as whisperInstall from './whisperInstall.ts';
+import * as ttsInstall from './ttsInstall.ts';
 import { ensureRootClaudeMd } from './rootClaudeMd.js';
 import { setTitle as setSessionTitle, MAX_TITLE_LEN } from './sessionTitles.ts';
 import { getSummaries, setSummary, deleteSummaries } from './sessionSummaries.ts';
-import { generateSummary, countMessages } from './summarize.js';
+import { generateSummary, countMessages } from './summarize.ts';
 import { getAccountUsage } from './accountUsage.ts';
 import { getCostSummary, getSessionStats } from './costTracking.ts';
 import { isArchived, unmarkArchived } from './archivedSessions.ts';

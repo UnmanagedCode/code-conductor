@@ -17,11 +17,11 @@ import { getTierBackend, getBackend } from './appSettings.ts';
 // We do NOT delete those jsonls — they are harmless litter in an opaque
 // metadata dir, and reaching into ~/.claude/projects/ to delete them is
 // fragile. Exported so tests can introspect the expected spawn cwd.
-export function summarySpawnDir() {
+export function summarySpawnDir(): string {
   return path.join(orchStoreRoot(), 'summaries');
 }
 
-const LENGTH_INSTRUCTIONS = {
+const LENGTH_INSTRUCTIONS: Record<'short' | 'medium' | 'long', { depth: string; budget: string; structure: string }> = {
   short: {
     depth: 'a one-glance gist — just what the session was about and the outcome. Highest altitude.',
     budget: '~40 content words maximum',
@@ -43,27 +43,36 @@ const INPUT_CAP = 80_000;
 const INPUT_HEAD = 20_000;
 const INPUT_TAIL = 60_000;
 
+// A persisted session line narrowed to the fields flattenTranscript/countMessages read.
+interface TranscriptLine {
+  type?: unknown;
+  message?: { content?: unknown } | null;
+}
+
 // Read the session jsonl and return { conversationText, messageCount }.
 // messageCount = number of type:'user' + type:'assistant' lines.
 // conversationText is formatted as "User: ...\nAssistant: ...\n\n" turns,
 // capped at INPUT_CAP chars.
-export async function flattenTranscript(sessionId, cwd) {
+export async function flattenTranscript(sessionId: string, cwd: string): Promise<{ conversationText: string; messageCount: number }> {
   const file = path.join(claudeProjectsRoot(), encodeCwd(cwd), `${sessionId}.jsonl`);
-  let raw;
+  let raw: string;
   try { raw = await fs.readFile(file, 'utf8'); }
   catch (e) {
-    if (e.code === 'ENOENT') throw Object.assign(new Error(`session not found: ${sessionId}`), { code: 'ENOENT' });
+    if (errCode(e) === 'ENOENT') throw Object.assign(new Error(`session not found: ${sessionId}`), { code: 'ENOENT' });
     throw e;
   }
 
-  const turns = [];
+  const turns: string[] = [];
   let messageCount = 0;
 
   for (const line of raw.split('\n')) {
     const trimmed = line.trim();
     if (!trimmed) continue;
-    let obj;
-    try { obj = JSON.parse(trimmed); } catch { continue; }
+    let obj: TranscriptLine | null = null;
+    try {
+      const parsed: unknown = JSON.parse(trimmed);
+      if (parsed && typeof parsed === 'object') obj = parsed as TranscriptLine;
+    } catch { continue; }
     if (!obj || (obj.type !== 'user' && obj.type !== 'assistant')) continue;
 
     messageCount++;
@@ -71,11 +80,11 @@ export async function flattenTranscript(sessionId, cwd) {
     if (!content) continue;
 
     // Extract only text blocks; skip tool_use / tool_result entirely.
-    const texts = [];
+    const texts: string[] = [];
     if (typeof content === 'string') {
       if (content.trim()) texts.push(content.trim());
     } else if (Array.isArray(content)) {
-      for (const block of content) {
+      for (const block of content as Array<{ type?: unknown; text?: unknown }>) {
         if (block && block.type === 'text' && typeof block.text === 'string' && block.text.trim()) {
           texts.push(block.text.trim());
         }
@@ -101,25 +110,35 @@ export async function flattenTranscript(sessionId, cwd) {
 // Count user+assistant message lines in a session jsonl. Used by the GET
 // summary endpoint to detect staleness without loading the full transcript.
 // Returns 0 if the file is missing (archived/deleted session).
-export async function countMessages(sessionId, cwd) {
+export async function countMessages(sessionId: string, cwd: string): Promise<number> {
   const file = path.join(claudeProjectsRoot(), encodeCwd(cwd), `${sessionId}.jsonl`);
-  let raw;
+  let raw: string;
   try { raw = await fs.readFile(file, 'utf8'); }
-  catch (e) { if (e.code === 'ENOENT') return 0; throw e; }
+  catch (e) { if (errCode(e) === 'ENOENT') return 0; throw e; }
   let count = 0;
   for (const line of raw.split('\n')) {
     const trimmed = line.trim();
     if (!trimmed) continue;
-    let obj;
-    try { obj = JSON.parse(trimmed); } catch { continue; }
+    let obj: TranscriptLine | null = null;
+    try {
+      const parsed: unknown = JSON.parse(trimmed);
+      if (parsed && typeof parsed === 'object') obj = parsed as TranscriptLine;
+    } catch { continue; }
     if (obj && (obj.type === 'user' || obj.type === 'assistant')) count++;
   }
   return count;
 }
 
+// The `claude -p --output-format=json` result envelope (loose — CLI-owned).
+interface SummaryOutput {
+  result?: unknown;
+  total_cost_usd?: unknown;
+  cost_usd?: unknown;
+}
+
 // Generate a summary of a session by running `claude -p` as a one-shot
 // subprocess. Returns { summary, messageCount, durationMs, costUsd }.
-export async function generateSummary(sessionId, cwd, length = 'medium') {
+export async function generateSummary(sessionId: string, cwd: string, length: 'short' | 'medium' | 'long' = 'medium'): Promise<{ summary: string; messageCount: number; durationMs: number; costUsd: number | null }> {
   const tier = LENGTH_INSTRUCTIONS[length];
   if (!tier) throw Object.assign(new Error(`invalid length: ${length}`), { statusCode: 400 });
 
@@ -169,15 +188,15 @@ Provide the summary only, no preamble:`;
 
   const startMs = Date.now();
 
-  const parsed = await new Promise((resolve, reject) => {
+  const parsed = await new Promise<SummaryOutput>((resolve, reject) => {
     const child = spawn(command, args, {
       cwd: spawnDir,
       env: { ...process.env, ...backendEnvVars },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 
-    const stdoutChunks = [];
-    const stderrChunks = [];
+    const stdoutChunks: Buffer[] = [];
+    const stderrChunks: Buffer[] = [];
     child.stdout.on('data', chunk => stdoutChunks.push(chunk));
     child.stderr.on('data', chunk => stderrChunks.push(chunk));
 
@@ -203,8 +222,8 @@ Provide the summary only, no preamble:`;
         return reject(new Error(`claude exited with code ${code}: ${stderr.slice(0, 500)}`));
       }
       const stdout = Buffer.concat(stdoutChunks).toString().trim();
-      let out;
-      try { out = JSON.parse(stdout); }
+      let out: SummaryOutput;
+      try { out = JSON.parse(stdout) as SummaryOutput; }
       catch (e) { return reject(new Error(`failed to parse claude output: ${stdout.slice(0, 200)}`)); }
       resolve(out);
     });
@@ -228,6 +247,16 @@ Provide the summary only, no preamble:`;
     summary: summary.trim(),
     messageCount,
     durationMs,
-    costUsd: parsed.total_cost_usd ?? parsed.cost_usd ?? null,
+    costUsd: (parsed.total_cost_usd ?? parsed.cost_usd ?? null) as number | null,
   };
+}
+
+// The `code` on a thrown Node error (e.g. 'ENOENT'), or undefined — the
+// narrowing point for error-code checks (catch variables are `unknown` under
+// strict). Duplicated from storeLock.ts: it's four lines, and importing it
+// across modules would couple every store to storeLock for one helper.
+function errCode(e: unknown): string | undefined {
+  if (typeof e !== 'object' || e === null) return undefined;
+  const code = (e as { code?: unknown }).code;
+  return typeof code === 'string' ? code : undefined;
 }

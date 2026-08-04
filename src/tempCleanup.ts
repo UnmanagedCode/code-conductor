@@ -17,7 +17,7 @@
 // temp-sessions.json with no live instance when the restart ran) have no
 // cwd on record. Those entries skip the dir cleanup and only get the
 // unmarkTemp/markArchived bookkeeping (a backup for the fire-and-forget
-// writes runTempCleanup already attempted in src/restart.js).
+// writes runTempCleanup already attempted in src/restart.ts).
 
 import path from 'node:path';
 import { writeFileSync, readFileSync, rmSync, existsSync, renameSync } from 'node:fs';

@@ -57,7 +57,7 @@ async function autoAssignToCcDev(projectName: string): Promise<void> {
   }
 }
 
-// Exported for reuse by sibling collaborators (e.g. library.js) that need
+// Exported for reuse by sibling collaborators (e.g. library.ts) that need
 // the same statusCode-bearing Error shape without duplicating it.
 export function httpError(status: number, message: string, extra: Record<string, unknown> = {}): Error & { statusCode: number } {
   const e = Object.assign(new Error(message), { statusCode: status }, extra);

@@ -415,7 +415,7 @@ t('real claude: generated bundle restores rg/find as shell functions', async () 
 // binary through the exact resolveBackendLaunch() shape production code
 // uses, and asserts it forwards claude's --version stdout/exit-code
 // verbatim (no extra banner/log chatter mixed into stdout). This matters
-// because summarize.js's generateSummary() JSON.parses the FULL stdout of
+// because summarize.ts's generateSummary() JSON.parses the FULL stdout of
 // an ollama-launched claude call — any stdout chatter a future ollama
 // release adds to its wrapper (not just stderr) would silently break that
 // parse. This is the one test validating that assumption against real

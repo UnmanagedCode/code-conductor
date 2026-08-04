@@ -7,7 +7,7 @@ import http from 'node:http';
 import express from 'express';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { getSelfUpdateStatus, applySelfUpdate } from '../src/selfUpdate.js';
+import { getSelfUpdateStatus, applySelfUpdate } from '../src/selfUpdate.ts';
 import { buildRoutes } from '../src/routes.js';
 
 const run = promisify(execFile);

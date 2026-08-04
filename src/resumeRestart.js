@@ -13,7 +13,7 @@
 //   resumes. Conducted workers are NOT resumed here — their conductor re-spawns
 //   them (their jsonl was preserved for exactly that).
 
-import { spawnReplacementAndExit } from './restart.js';
+import { spawnReplacementAndExit } from './restart.ts';
 import { CLAUDE_BACKEND_ID } from './modelVersions.ts';
 import {
   writeResumeManifest,

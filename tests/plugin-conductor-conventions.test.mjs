@@ -10,7 +10,7 @@ import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { createPluginHost } from '../src/plugins/registry.ts';
-import { createPluginLibrary } from '../src/plugins/library.js';
+import { createPluginLibrary } from '../src/plugins/library.ts';
 import {
   SEED_CONVENTIONS, getSelection, setSelection, composeCurrentConduct,
   setPluginConductorConventionsProvider,

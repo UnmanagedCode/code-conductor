@@ -21,7 +21,7 @@ import { loadPersistedTranscript, writeSessionMetadata, readLastSessionModel, ha
 import { canonicalizeModel, familyOf, CLAUDE_BACKEND_ID } from './modelVersions.ts';
 import { truncateSessionAtUserMessage } from './sessionEdit.ts';
 import { pruneSessionToNewId, INPUT_MODES } from './sessionPrune.ts';
-import { saveAttachment, isImageType } from './attachments.js';
+import { saveAttachment, isImageType } from './attachments.ts';
 import { buildApprovePrompt } from './planApproval.ts';
 import { reconstructTasks } from './taskReconstruct.ts';
 import { buildArchive } from './eventArchive.ts';
@@ -1092,7 +1092,7 @@ export class Instance extends EventEmitter {
     // prefix (+ the backend's env) from the backend RECORD, and owns the
     // template's null-model invariant; the SAME claude args (including --model)
     // are then appended uniformly below. Also used by claudeShellEnv.ts's
-    // generateBundle() and summarize.js's generateSummary() for their own
+    // generateBundle() and summarize.ts's generateSummary() for their own
     // throwaway one-shot spawns.
     const backendRecord = getBackend(this.backend);
     let command, launchPrefix, backendEnvVars;

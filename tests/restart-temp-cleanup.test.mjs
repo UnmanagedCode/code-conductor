@@ -12,7 +12,7 @@ import {
   writePendingTempCleanup,
   sweepPendingTempCleanup,
 } from '../src/tempCleanup.ts';
-import { runTempCleanup } from '../src/restart.js';
+import { runTempCleanup } from '../src/restart.ts';
 import { drainToManifest } from '../src/resumeRestart.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));

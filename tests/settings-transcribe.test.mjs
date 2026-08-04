@@ -4,13 +4,13 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { bootServer, api, waitFor } from './helpers.mjs';
-import { whisperPaths, modelPathForName } from '../src/transcribe.js';
+import { whisperPaths, modelPathForName } from '../src/transcribe.ts';
 import { setTranscribeModel } from '../src/appSettings.ts';
-import * as whisperInstall from '../src/whisperInstall.js';
+import * as whisperInstall from '../src/whisperInstall.ts';
 
 // A bash stand-in for bin/install-whisper.sh: emits a couple of progress
 // lines and `touch`es the whisper-cli binary + the requested model under
-// INSTALL_ROOT, exactly where transcribe.js expects them. FAKE_INSTALL_SLEEP
+// INSTALL_ROOT, exactly where transcribe.ts expects them. FAKE_INSTALL_SLEEP
 // lets a test keep an install "running" long enough to probe concurrency.
 const FAKE_INSTALL = `#!/usr/bin/env bash
 echo "==> fake install for $WHISPER_MODEL_NAME"

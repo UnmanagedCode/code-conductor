@@ -1,5 +1,5 @@
-// Shared factory behind whisperInstall.js (Settings → Transcribe) and
-// ttsInstall.js (Settings → TTS). Both drive a bin/install-*.sh script from the
+// Shared factory behind whisperInstall.ts (Settings → Transcribe) and
+// ttsInstall.ts (Settings → TTS). Both drive a bin/install-*.sh script from the
 // web UI as a single process-wide singleton: one install runs at a time,
 // stdout+stderr are captured into a bounded in-memory ring so the frontend can
 // poll progress, and on a clean exit (code 0) the freshly-installed item is
@@ -31,7 +31,7 @@ interface InstallRunnerConfig {
   scriptEnvVar: string;
   childEnvVar: string;
   validate: (name: string) => boolean;
-  persist: (name: string) => Promise<void>;
+  persist: (name: string) => Promise<unknown>;
   itemKey: 'model' | 'voice';
   unknownNoun: string;
   startLabel: string;

@@ -49,7 +49,7 @@ export async function loadAllTemps(): Promise<Set<string>> {
   }
 }
 
-// Sync twin of loadAllTemps(), for the restart path (src/restart.js), which
+// Sync twin of loadAllTemps(), for the restart path (src/restart.ts), which
 // must stay fully synchronous up to process.exit() — see shutdownTempSync's
 // comment in src/instances.js for why.
 export function loadAllTempsSync(): Set<string> {

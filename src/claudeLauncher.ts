@@ -24,7 +24,7 @@ export interface ClaudeBin {
 }
 
 // Lives here (not instances.js) so pure one-shot spawners — health.ts's boot
-// probe, summarize.js's summary generation, claudeShellEnv.ts's bundle-gen —
+// probe, summarize.ts's summary generation, claudeShellEnv.ts's bundle-gen —
 // can depend on just the launch-resolution primitives without pulling in the
 // whole Instance/InstanceManager module.
 export function resolveClaudeBin(): ClaudeBin {

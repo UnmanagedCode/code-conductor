@@ -9,7 +9,7 @@ import {
   setSummary, getSummaries, deleteSummaries, loadAll,
 } from '../src/sessionSummaries.ts';
 import { orchStoreRoot, findSessionLocation, encodeCwd } from '../src/projects.ts';
-import { summarySpawnDir } from '../src/summarize.js';
+import { summarySpawnDir } from '../src/summarize.ts';
 import { setTierBackend, addBackend, addCustomModel } from '../src/appSettings.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));

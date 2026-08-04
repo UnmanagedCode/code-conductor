@@ -18,9 +18,27 @@
 //   5. Exit this process after a small delay so the 202 response can
 //      flush over the wire.
 import { spawn } from 'node:child_process';
+import type { Server } from 'node:http';
+import type { WebSocketServer } from 'ws';
 import { writePendingTempCleanup } from './tempCleanup.ts';
 import { orphanedTempIdsSync, unmarkTemp } from './tempSessions.ts';
 import { markArchived } from './archivedSessions.ts';
+
+// The InstanceManager surface the restart path reads. Every method is
+// optional because runTempCleanup/scheduleRestart guard each call (the
+// routes inject the real manager; tests pass stubs). `tempCleanupSnapshot`
+// returns {cwd, sessionId} rows — only sessionId is consumed here.
+interface RestartManagerLike {
+  shutdownTempSync?(): void;
+  tempCleanupSnapshot?(): Array<{ sessionId: string }>;
+  shutdown?(): Promise<unknown> | void;
+}
+
+interface RestartLog {
+  warn?: (...args: unknown[]) => void;
+  log?: (...args: unknown[]) => void;
+  error?: (...args: unknown[]) => void;
+}
 
 // Archive every temp session on a plain restart: live-attached ones (via
 // instances.shutdownTempSync()) AND crash-orphaned ones that are recorded in
@@ -28,7 +46,7 @@ import { markArchived } from './archivedSessions.ts';
 // Kept separate from scheduleRestart (no process.exit inside) so it's
 // directly unit-testable, mirroring how shutdownTempSync/writePendingTempCleanup
 // /sweepPendingTempCleanup are already tested standalone.
-export function runTempCleanup({ instances, log = console } = {}) {
+export function runTempCleanup({ instances, log = console }: { instances?: RestartManagerLike | null; log?: RestartLog } = {}): void {
   if (!instances || typeof instances.shutdownTempSync !== 'function') return;
 
   // Capture the temp session set *before* shutdownTempSync runs, then
@@ -37,7 +55,7 @@ export function runTempCleanup({ instances, log = console } = {}) {
   // calls, we don't track them) can keep writing to the jsonl after
   // our parent has exited, so the in-process cleanup alone isn't
   // enough — the post-restart sweep wipes anything that reappeared.
-  let snapshot = [];
+  let snapshot: Array<{ sessionId: string }> = [];
   try {
     if (typeof instances.tempCleanupSnapshot === 'function') {
       snapshot = instances.tempCleanupSnapshot();
@@ -55,7 +73,7 @@ export function runTempCleanup({ instances, log = console } = {}) {
   // live instance, so the kill/wipe loop above never sees them. There's no
   // cwd on record for these (temp-sessions.json stores sessionIds only), so
   // there's no subagents dir to locate/clean — just the sidecar bookkeeping.
-  let orphanedIds = [];
+  let orphanedIds: string[] = [];
   try {
     orphanedIds = orphanedTempIdsSync(snapshot.map((e) => e.sessionId));
   } catch (e) { log.warn?.('restart: orphaned temp lookup error', e); }
@@ -69,7 +87,9 @@ export function runTempCleanup({ instances, log = console } = {}) {
   } catch (e) { log.warn?.('restart: pending-cleanup manifest write failed', e); }
 }
 
-export function scheduleRestart({ server, wss, instances, log = console } = {}) {
+export function scheduleRestart({ server, wss, instances, log = console }: {
+  server?: Server | null; wss?: WebSocketServer | null; instances?: RestartManagerLike | null; log?: RestartLog;
+} = {}): void {
   // Don't await any of this; the response was already sent before we
   // got called, and waiting for server.close() would block on the
   // very WS connections we're about to terminate.
@@ -85,8 +105,11 @@ export function scheduleRestart({ server, wss, instances, log = console } = {}) 
     }
     runTempCleanup({ instances, log });
     if (instances && typeof instances.shutdown === 'function') {
-      // Fire-and-forget — instance subprocesses outlive us.
-      Promise.resolve().then(() => instances.shutdown()).catch(() => {});
+      // Fire-and-forget — instance subprocesses outlive us. Captured before
+      // the closure so the narrowed function isn't lost (TS re-widens
+      // property accesses inside closures).
+      const shutdown = instances.shutdown;
+      Promise.resolve().then(() => shutdown()).catch(() => {});
     }
   } catch (e) {
     log.warn?.('restart: pre-spawn cleanup error', e);
@@ -98,9 +121,9 @@ export function scheduleRestart({ server, wss, instances, log = console } = {}) 
 // Spawn a detached replacement node process (same execPath + argv + cwd + env)
 // and exit this one after a short delay so the in-flight 202 response can flush.
 // Shared by the normal restart (scheduleRestart) and the graceful resume restart
-// (src/resumeRestart.js drainAndScheduleRestart). The child's listen-with-retry
+// (src/resumeRestart.ts drainAndScheduleRestart). The child's listen-with-retry
 // (server.js) handles the EADDRINUSE race while our socket releases.
-export function spawnReplacementAndExit({ log = console } = {}) {
+export function spawnReplacementAndExit({ log = console }: { log?: RestartLog } = {}): void {
   const args = [process.argv[1], ...process.argv.slice(2)];
   try {
     const child = spawn(process.execPath, args, {

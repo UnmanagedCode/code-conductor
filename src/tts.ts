@@ -1,5 +1,5 @@
 // Piper text-to-speech for the conversation's "🔊 speak" affordance. The
-// inverse of transcribe.js: takes assistant text and produces audio. Piper's
+// inverse of transcribe.ts: takes assistant text and produces audio. Piper's
 // PiperVoice.synthesize() yields one AudioChunk per sentence, so we synthesize
 // *streaming* — a small Python helper (bin/piper-synth.py) loads the voice once
 // and writes one self-contained WAV per sentence to stdout, length-prefixed,
@@ -28,40 +28,40 @@ const DEFAULT_SYNTH_SCRIPT = path.resolve(__dirname, '..', 'bin', 'piper-synth.p
 // state lives under. INSTALL_ROOT overrides it and mirrors the knob honoured
 // by bin/install-piper.sh, so the server and the installer agree on where the
 // venv + voices live (and tests can point both at a temp dir).
-export function piperRoot() {
+export function piperRoot(): string {
   return path.join(process.env.INSTALL_ROOT || orchStoreRoot(), 'piper');
 }
 
-export function voicesDir() {
+export function voicesDir(): string {
   return path.join(piperRoot(), 'voices');
 }
 
-export function voicePathForName(name) {
+export function voicePathForName(name: string): string {
   return path.join(voicesDir(), voiceFileName(name));
 }
 
 // venv python: PIPER_PYTHON (explicit) → PIPER_VENV/bin/python3 → <root>/venv.
-function pythonPath() {
+function pythonPath(): string {
   if (process.env.PIPER_PYTHON) return process.env.PIPER_PYTHON;
   const venv = process.env.PIPER_VENV || path.join(piperRoot(), 'venv');
   return path.join(venv, 'bin', 'python3');
 }
 
-function synthScriptPath() {
+function synthScriptPath(): string {
   return process.env.PIPER_SYNTH_SCRIPT || DEFAULT_SYNTH_SCRIPT;
 }
 
 // Resolve the active voice's model path. Priority: PIPER_VOICE env (explicit
 // absolute .onnx path) → the voice chosen in Settings (settings.json) → the
 // built-in default. The latter two derive a path under voicesDir().
-function resolveVoicePath() {
+function resolveVoicePath(): string {
   if (process.env.PIPER_VOICE) return process.env.PIPER_VOICE;
   const chosen = getTtsVoice();
   if (chosen) return voicePathForName(chosen);
   return voicePathForName(DEFAULT_VOICE);
 }
 
-export function ttsPaths() {
+export function ttsPaths(): { python: string; model: string; config: string; synthScript: string } {
   const model = resolveVoicePath();
   return {
     python: pythonPath(),
@@ -71,7 +71,7 @@ export function ttsPaths() {
   };
 }
 
-export async function isAvailable() {
+export async function isAvailable(): Promise<boolean> {
   const { python, model, config } = ttsPaths();
   try {
     const [py, m, c] = await Promise.all([fs.stat(python), fs.stat(model), fs.stat(config)]);
@@ -86,11 +86,9 @@ export async function isAvailable() {
 // per sentence) to the HTTP response and kills the child if the client aborts.
 // rate maps to Piper's length_scale (inverse of speed): faster rate → shorter
 // scale. Throws { statusCode: 400 } on empty text.
-export function synthesize(text, { voice, rate } = {}) {
+export function synthesize(text: unknown, { voice, rate }: { voice?: string; rate?: number } = {}): ReturnType<typeof spawn> {
   if (typeof text !== 'string' || !text.trim()) {
-    const e = new Error('empty text body');
-    e.statusCode = 400;
-    throw e;
+    throw Object.assign(new Error('empty text body'), { statusCode: 400 });
   }
   const { python, synthScript } = ttsPaths();
   // An explicit voice arg overrides the configured/default one (e.g. a future

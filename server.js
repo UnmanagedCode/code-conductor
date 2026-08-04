@@ -18,7 +18,7 @@ import { ensureConductProject } from './src/conduct.ts';
 import { regenerateAllProjectConventions } from './src/projectClaudeMd.js';
 import { restoreFromResumeManifest } from './src/resumeRestart.js';
 import { createPluginHost, WORKSPACE_AUTO_ASSIGN } from './src/plugins/registry.ts';
-import { createPluginLibrary } from './src/plugins/library.js';
+import { createPluginLibrary } from './src/plugins/library.ts';
 import { buildPluginProxy } from './src/plugins/proxy.ts';
 import { setPluginConventionsProvider } from './src/projectConventions.ts';
 import { setPluginConductorConventionsProvider } from './src/conductorConventions.ts';
@@ -90,7 +90,7 @@ export function createServer({ withInstances = true, claudeLauncher } = {}) {
 }
 
 // `listen` with retry-on-EADDRINUSE — the self-respawn restart path
-// (POST /api/admin/restart → src/restart.js) exits the parent and
+// (POST /api/admin/restart → src/restart.ts) exits the parent and
 // immediately spawns a replacement. The kernel can take a moment to
 // release the listening socket, so the child polls until it can bind.
 // Other listen errors (EACCES etc.) propagate on the first attempt.
@@ -128,7 +128,7 @@ export async function start({ port = 8787, host = '127.0.0.1' } = {}) {
   } catch { /* diagnostic only */ }
   // Belt-and-braces cleanup for temp sessions whose jsonl re-appeared after
   // the previous process exited (orphaned subagent writes etc.). The manifest
-  // is written by scheduleRestart in src/restart.js.
+  // is written by scheduleRestart in src/restart.ts.
   try { sweepPendingTempCleanup({ log: console }); }
   catch (e) { console.warn('temp-cleanup sweep failed:', e); }
   const { server, instances, wss, pluginHost } = createServer();

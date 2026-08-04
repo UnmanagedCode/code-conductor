@@ -8,7 +8,7 @@
 // If either file is missing, /api/transcribe/status reports unavailable
 // and the frontend hides the mic button.
 
-import { execFile } from 'node:child_process';
+import { execFile, type ExecFileException } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -22,19 +22,19 @@ import { orchStoreRoot } from './projects.ts';
 // app's state lives under. INSTALL_ROOT overrides it and mirrors the knob
 // honoured by bin/install-whisper.sh, so the server and the installer agree
 // on where the binary + models live (and tests can point both at a temp dir).
-export function whisperRoot() {
+export function whisperRoot(): string {
   return path.join(process.env.INSTALL_ROOT || orchStoreRoot(), 'whisper.cpp');
 }
 
-export function modelsDir() {
+export function modelsDir(): string {
   return path.join(whisperRoot(), 'models');
 }
 
-export function modelPathForName(name) {
+export function modelPathForName(name: string): string {
   return path.join(modelsDir(), modelFileName(name));
 }
 
-function defaultPaths() {
+function defaultPaths(): { cli: string; ffmpeg: string } {
   return {
     cli: path.join(whisperRoot(), 'build', 'bin', 'whisper-cli'),
     ffmpeg: 'ffmpeg',
@@ -44,14 +44,14 @@ function defaultPaths() {
 // Resolve the active model path. Priority: WHISPER_MODEL env (an explicit
 // absolute path) → the model chosen in Settings (persisted in settings.json)
 // → the built-in default. The latter two derive a path under modelsDir().
-function resolveModelPath() {
+function resolveModelPath(): string {
   if (process.env.WHISPER_MODEL) return process.env.WHISPER_MODEL;
   const chosen = getTranscribeModel();
   if (chosen) return modelPathForName(chosen);
   return modelPathForName(DEFAULT_MODEL);
 }
 
-export function whisperPaths() {
+export function whisperPaths(): { cli: string; model: string; ffmpeg: string } {
   const d = defaultPaths();
   return {
     cli: process.env.WHISPER_CLI || d.cli,
@@ -68,12 +68,12 @@ export function whisperPaths() {
 // from the actual cli path (<root>/build/bin/whisper-cli → <root>/build/{src,
 // ggml/src}) so they stay correct across relocations and honour a WHISPER_CLI
 // override, and feed them via LD_LIBRARY_PATH at spawn time.
-function whisperLibDirs(cli) {
+function whisperLibDirs(cli: string): string[] {
   const buildDir = path.resolve(cli, '..', '..');
   return [path.join(buildDir, 'src'), path.join(buildDir, 'ggml', 'src')];
 }
 
-function whisperEnv(cli) {
+function whisperEnv(cli: string): NodeJS.ProcessEnv {
   return {
     ...process.env,
     LD_LIBRARY_PATH: [...whisperLibDirs(cli), process.env.LD_LIBRARY_PATH]
@@ -82,7 +82,7 @@ function whisperEnv(cli) {
   };
 }
 
-export async function isAvailable() {
+export async function isAvailable(): Promise<boolean> {
   const { cli, model } = whisperPaths();
   try {
     const [cliStat, modelStat] = await Promise.all([fs.stat(cli), fs.stat(model)]);
@@ -92,9 +92,9 @@ export async function isAvailable() {
   }
 }
 
-function run(cmd, args, opts = {}) {
+function run(cmd: string, args: string[], opts: { env?: NodeJS.ProcessEnv } = {}): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
-    execFile(cmd, args, { maxBuffer: 16 * 1024 * 1024, ...opts }, (err, stdout, stderr) => {
+    execFile(cmd, args, { maxBuffer: 16 * 1024 * 1024, ...opts }, (err: ExecFileException | null, stdout: string, stderr: string) => {
       if (err) {
         err.stdout = stdout;
         err.stderr = stderr;
@@ -105,11 +105,9 @@ function run(cmd, args, opts = {}) {
   });
 }
 
-export async function transcribe(audioBuf) {
+export async function transcribe(audioBuf: Buffer): Promise<string> {
   if (!Buffer.isBuffer(audioBuf) || audioBuf.length === 0) {
-    const e = new Error('empty audio body');
-    e.statusCode = 400;
-    throw e;
+    throw Object.assign(new Error('empty audio body'), { statusCode: 400 });
   }
   const { cli, model, ffmpeg } = whisperPaths();
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), `cc-transcribe-${randomUUID()}-`));

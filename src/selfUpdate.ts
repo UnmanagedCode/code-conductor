@@ -6,7 +6,7 @@ import { runGit, getProjectUpstreamStatus } from './worktrees.ts';
 import { runGitLive, fetchOriginBounded } from './gitLive.ts';
 
 // Conductor self-update — the app's own version of the Plugin Library update
-// path (src/plugins/library.js). The conductor is distributed as a git clone
+// path (src/plugins/library.ts). The conductor is distributed as a git clone
 // (README quick start), so "update" == `git pull --ff-only` in the repo root,
 // then `npm install` if the pull moved a dependency manifest, then a restart
 // so the running node process loads the new files. This module owns the
@@ -22,33 +22,35 @@ import { runGitLive, fetchOriginBounded } from './gitLive.ts';
 // — which call these with no args — target a throwaway clone. Callers may also
 // pass repoRoot explicitly (the service-level tests do).
 const MODULE_REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-function defaultRepoRoot() {
+function defaultRepoRoot(): string {
   return process.env.SELF_UPDATE_REPO_ROOT || MODULE_REPO_ROOT;
 }
 
-const NPM_OUTPUT_CAP = 16 * 1024;   // mirrors library.js's HOOK_OUTPUT_CAP
+const NPM_OUTPUT_CAP = 16 * 1024;   // mirrors library.ts's HOOK_OUTPUT_CAP
 const NPM_TIMEOUT_MS = 300_000;     // installs pull deps — same budget as postPull hooks
-const TAIL_CAP = 4000;              // error/result tail length, matching library.js
+const TAIL_CAP = 4000;              // error/result tail length, matching library.ts
 
 // A pull that touches one of these means dependencies may have shifted, so an
 // `npm install` is run before the restart. Anything else is code-only.
 const DEP_FILES = new Set(['package-lock.json', 'package.json']);
 
-async function readVersion(repoRoot) {
+async function readVersion(repoRoot: string): Promise<string | null> {
   try {
     const raw = await fs.readFile(path.join(repoRoot, 'package.json'), 'utf8');
-    return JSON.parse(raw).version ?? null;
+    const pkg: { version?: unknown } = JSON.parse(raw);
+    // npm requires a string version — a non-string is malformed → null.
+    return typeof pkg.version === 'string' ? pkg.version : null;
   } catch { return null; }
 }
 
 // Streamed `npm install` (via `bash -lc` so a custom command string works),
 // detached with a process-group timeout/kill — npm spawns grandchildren a
 // plain kill would orphan. Never rejects; resolves {code, output}.
-function runNpmInstall(cmd, cwd, { onChunk } = {}) {
+function runNpmInstall(cmd: string, cwd: string, { onChunk }: { onChunk?: (s: string) => void } = {}): Promise<{ code: number; output: string }> {
   return new Promise((resolve) => {
     let output = '';
     const proc = spawn('bash', ['-lc', cmd], { cwd, env: process.env, detached: true });
-    const onData = (d) => {
+    const onData = (d: Buffer) => {
       const s = d.toString();
       output += s;
       if (output.length > NPM_OUTPUT_CAP) output = output.slice(-NPM_OUTPUT_CAP);
@@ -59,9 +61,9 @@ function runNpmInstall(cmd, cwd, { onChunk } = {}) {
 
     let timedOut = false;
     const killGroup = () => {
-      try { process.kill(-proc.pid, 'SIGTERM'); } catch { proc.kill('SIGTERM'); }
+      try { process.kill(-proc.pid!, 'SIGTERM'); } catch { proc.kill('SIGTERM'); }
       setTimeout(() => {
-        try { process.kill(-proc.pid, 'SIGKILL'); } catch { proc.kill('SIGKILL'); }
+        try { process.kill(-proc.pid!, 'SIGKILL'); } catch { proc.kill('SIGKILL'); }
       }, 100).unref();
     };
     const timer = setTimeout(() => { timedOut = true; killGroup(); }, NPM_TIMEOUT_MS);
@@ -82,7 +84,15 @@ function runNpmInstall(cmd, cwd, { onChunk } = {}) {
 // the behind-count reflects the real remote, then getProjectUpstreamStatus.
 // canCheck:false (behind null) when HEAD is detached or the branch has no
 // configured upstream (e.g. a dev worktree) — the UI shows "can't check".
-export async function getSelfUpdateStatus({ repoRoot = defaultRepoRoot() } = {}) {
+export async function getSelfUpdateStatus({ repoRoot = defaultRepoRoot() }: { repoRoot?: string } = {}): Promise<{
+  version: string | null;
+  upstream: string | null;
+  ahead: number | null;
+  behind: number | null;
+  canCheck: boolean;
+  diverged: boolean;
+  updateAvailable: boolean;
+}> {
   const version = await readVersion(repoRoot);
   await fetchOriginBounded(repoRoot);
   const status = await getProjectUpstreamStatus(repoRoot);
@@ -93,7 +103,8 @@ export async function getSelfUpdateStatus({ repoRoot = defaultRepoRoot() } = {})
   // `git pull --ff-only` apply would refuse. Report it as its own state so the
   // UI never offers an Update button that's guaranteed to fail; gate
   // updateAvailable on ahead === 0 so only an applicable update advertises one.
-  const diverged = canCheck && ahead > 0 && behind > 0;
+  // (`?? 0` is a defensive no-op: when canCheck, ahead/behind are both numbers.)
+  const diverged = canCheck && (ahead ?? 0) > 0 && (behind ?? 0) > 0;
   return {
     version,
     upstream: status.upstream,
@@ -101,7 +112,7 @@ export async function getSelfUpdateStatus({ repoRoot = defaultRepoRoot() } = {})
     behind,
     canCheck,
     diverged,
-    updateAvailable: canCheck && behind > 0 && ahead === 0,
+    updateAvailable: canCheck && (behind ?? 0) > 0 && (ahead ?? 0) === 0,
   };
 }
 
@@ -117,7 +128,18 @@ export async function applySelfUpdate({
   npmCmd = process.env.SELF_UPDATE_NPM_CMD || 'npm install',
   onChunk,
   onValidated,
-} = {}) {
+}: {
+  repoRoot?: string;
+  npmCmd?: string;
+  onChunk?: (phase: 'pull' | 'npm', text: string) => void;
+  onValidated?: () => void;
+} = {}): Promise<{
+  ok: boolean;
+  version: string | null;
+  depsChanged: boolean;
+  npm: { ran: boolean; ok: boolean; code: number; tail: string } | null;
+  restartRequired: boolean;
+}> {
   const before = await runGit(repoRoot, ['rev-parse', 'HEAD']);
   const beforeSha = before.code === 0 ? before.stdout.trim() : '';
 
@@ -140,7 +162,7 @@ export async function applySelfUpdate({
       || diff.stdout.split('\n').map(s => s.trim()).some(f => DEP_FILES.has(f));
   }
 
-  let npm = null;
+  let npm: { ran: boolean; ok: boolean; code: number; tail: string } | null = null;
   if (depsChanged) {
     const r = await runNpmInstall(npmCmd, repoRoot, { onChunk: (t) => onChunk?.('npm', t) });
     npm = { ran: true, ok: r.code === 0, code: r.code, tail: (r.output ?? '').slice(-TAIL_CAP) };

@@ -5,7 +5,7 @@
 //
 // Reads are served from an in-memory cache (lazily seeded from disk with a
 // synchronous read — the file is tiny and the read paths, e.g. resolving the
-// whisper model in transcribe.js, are not hot). Writes are atomic
+// whisper model in transcribe.ts, are not hot). Writes are atomic
 // (tmp → rename) and refresh the cache.
 
 import { readFileSync } from 'node:fs';

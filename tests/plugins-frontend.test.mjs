@@ -260,7 +260,7 @@ function ndjsonResponse(events) {
 
 // Fixed single library entry (code-share); `installed` flips true after a
 // successful install call, mirroring the real server's directory-exists
-// check. `updateAvailable` mirrors library.js's list() ahead/behind check.
+// check. `updateAvailable` mirrors library.ts's list() ahead/behind check.
 function stubPluginManagerFetch({
   initiallyInstalled = false, updateAvailable = true,
   installResult, installPostClone = null, updateResult, updatePostPull = null,

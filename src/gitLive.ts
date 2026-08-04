@@ -3,7 +3,7 @@ import { execFile, spawn } from 'node:child_process';
 // Shared git-subprocess helpers used wherever the app pulls/fetches a git
 // checkout it manages (the Plugin Library — src/plugins/library.ts — and the
 // conductor self-update — src/selfUpdate.ts). Extracted verbatim from
-// library.js so the two paths share one implementation instead of drifting.
+// library.ts so the two paths share one implementation instead of drifting.
 
 // Default timeout for a streamed git subcommand (clone/pull): long enough for
 // a big clone over a slow link.

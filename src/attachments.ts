@@ -8,11 +8,11 @@ import { attachmentsDir } from './worktrees.ts';
 
 const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
 
-export function isImageType(mediaType) {
+export function isImageType(mediaType: unknown): boolean {
   return IMAGE_TYPES.has(String(mediaType || '').toLowerCase());
 }
 
-function safeName(name) {
+function safeName(name: unknown): string {
   const cleaned = String(name).replace(/[^A-Za-z0-9._-]+/g, '_').slice(0, 80);
   return cleaned || 'file';
 }
@@ -22,7 +22,7 @@ function safeName(name) {
 // and the absolute prompt path Claude reads with the `Read` tool. The
 // prompt path is absolute because the file lives outside the agent's
 // cwd — relative paths from the worktree would no longer resolve.
-export async function saveAttachment(project, worktreeName, { name, dataBase64 }) {
+export async function saveAttachment(project: string, worktreeName: string | null, { name, dataBase64 }: { name: unknown; dataBase64: string }): Promise<{ savedPath: string; promptPath: string; filename: string }> {
   const dir = attachmentsDir(project, worktreeName ?? null);
   await fs.mkdir(dir, { recursive: true });
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
