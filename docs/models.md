@@ -30,7 +30,7 @@ Record: `{ id, label, template, env: [{key,value}], managed }`, persisted as
 
 ### The managed backends
 
-`MANAGED_BACKENDS` in `src/modelVersions.js` is authoritative for their
+`MANAGED_BACKENDS` in `src/modelVersions.ts` is authoritative for their
 `id`/`label`/`template`/`env`/`managed` — `getBackends()` re-asserts all of it from
 code (managed rows are fully code-authoritative; nothing on them is stored),
 appending either row if the store lacks it. So a built-in template can't drift,
@@ -41,7 +41,7 @@ appending either row if the store lacks it. So a built-in template can't drift,
 | `claude` | Claude | *(empty — `claude`)* |
 | `ollama` | Ollama | `ollama launch claude --model {model} --yes --` |
 
-Authoritative set: `MANAGED_BACKENDS` in `src/modelVersions.js`.
+Authoritative set: `MANAGED_BACKENDS` in `src/modelVersions.ts`.
 
 `ollama launch` sets the Anthropic endpoint + auth internally and **re-injects
 `--model` into the child**, so the caller-forwarded `--model` later in the args is a
@@ -112,7 +112,7 @@ The consequences of being a substitution backend:
   row named `anthropic` land in the monitored domain and be auto-stopped against a
   window it never touches. Only `anthropic` has a monitor, so a tree with no Claude
   agent is exempt from the overage stop/resume flow. Adding a monitor later is one
-  `Set` entry (`src/usageWindowDomains.js`).
+  `Set` entry (`src/usageWindowDomains.ts`).
 - **The session sidecar records it** — `<store>/session-backends.json` maps
   `sid → {backend, model, contextWindowTokens?}`. Two things the CLI jsonl can't
   carry: which backend ran the session, and the model id in full. Absence of a record
@@ -166,7 +166,7 @@ to the `ollama` row — `DEFAULT_TIER_BACKEND` stays all-Claude.
 
 ## Capability tiers & roles
 
-**Tiers** — `CAPABILITY_TIERS` (the tier list in `src/modelVersions.js`) is the primary spawn vocabulary. Each binds to `{backend, model}` under
+**Tiers** — `CAPABILITY_TIERS` (the tier list in `src/modelVersions.ts`) is the primary spawn vocabulary. Each binds to `{backend, model}` under
 `models.tierBackend`. Defaults (`DEFAULT_TIER_BACKEND`) are all-Claude; see the module for the per-tier mapping.
 
 **Roles** are a parallel bindable layer under `models.roleBackend`. A role binding is
@@ -174,7 +174,7 @@ to the `ollama` row — `DEFAULT_TIER_BACKEND` stays all-Claude.
 at — **or** a concrete `{backend, model}`. The two are told apart by
 `kind === 'tier'`; a tier reference names no backend, so it keeps `kind`.
 
-- **Built-in**: `ROLES` (the seed role list in `src/modelVersions.js`), both defaulting to the `powerful`
+- **Built-in**: `ROLES` (the seed role list in `src/modelVersions.ts`), both defaulting to the `powerful`
   tier. The Conduct button spawns via the Conductor role.
 - **User-custom**: `models.customRoles: [name]`, name-only (the name is the
   display), matching `^[A-Za-z][A-Za-z0-9-]*$` (≤40) and case-insensitively disjoint
@@ -259,7 +259,7 @@ MCP `spawn_instance` `effort` schema description.
 Every model has exactly **one** native context window. There is no per-spawn
 window choice and no routing selector.
 
-**Claude models** declare theirs in the `src/modelVersions.js` catalog as
+**Claude models** declare theirs in the `src/modelVersions.ts` catalog as
 `contextWindow` (raw tokens), plus an optional `launchTag` — the suffix the CLI
 needs to actually reach that capacity. A model carries `launchTag` only where its
 native window is a separate build with a distinct id; everything else launches
