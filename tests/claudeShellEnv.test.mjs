@@ -16,7 +16,7 @@ import path from 'node:path';
 import { getShellEnvBundlePath, _resetForTest, bundleShellKind } from '../src/claudeShellEnv.js';
 import { orchStoreRoot } from '../src/projects.js';
 import { setTierBackend, addBackend, addCustomModel, getBackend } from '../src/appSettings.js';
-import { resolveBackendLaunch } from '../src/claudeLauncher.js';
+import { resolveBackendLaunch } from '../src/claudeLauncher.ts';
 
 const execFileP = promisify(execFile);
 

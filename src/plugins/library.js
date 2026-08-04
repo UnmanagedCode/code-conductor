@@ -4,7 +4,7 @@ import path from 'node:path';
 import { projectsRoot, orchStoreRoot, validateName } from '../projects.js';
 import { httpError } from './registry.js';
 import { getProjectUpstreamStatus } from '../worktrees.js';
-import { runGitLive, fetchOriginBounded } from '../gitLive.js';
+import { runGitLive, fetchOriginBounded } from '../gitLive.ts';
 
 // Plugin Library — a catalog of installable plugins (git repo URLs) offered
 // alongside the discovered-plugins list in Settings → Plugins. Installing
@@ -33,7 +33,7 @@ import { runGitLive, fetchOriginBounded } from '../gitLive.js';
 const ALLOWED_SCHEMES = new Set(['http:', 'https:', 'git:']);
 const CLONE_TIMEOUT_MS = 120_000;
 const POST_HOOK_TIMEOUT_MS = 300_000; // longer than clone — installs pull deps (npm, browser binaries, ...)
-const HOOK_OUTPUT_CAP = 16 * 1024; // mirrors worktrees.js's HOOK_OUTPUT_CAP / supervisor.js's OUTPUT_CAP
+const HOOK_OUTPUT_CAP = 16 * 1024; // mirrors worktrees.js's HOOK_OUTPUT_CAP / supervisor.ts's OUTPUT_CAP
 
 const DEFAULT_ENTRIES = [
   {
@@ -140,7 +140,7 @@ function pullRepo(cwd, { onChunk } = {}) {
 }
 
 // Runs an arbitrary postClone/postPull command via `bash -lc` — the same
-// invocation style manifest `backend.start` and supervisor.js's spawnChild()
+// invocation style manifest `backend.start` and supervisor.ts's spawnChild()
 // already use for plugin-declared shell commands. Detached + process-group
 // kill on timeout (mirrors worktrees.js's runPostWorktreeHook) rather than
 // execFile's built-in timeout, since a command like `npm install` or a
@@ -207,7 +207,7 @@ export function createPluginLibrary({ pluginHost = null, _cloneImpl = null, _pul
       if (installed) {
         // Cached refs go stale between visits — a bounded, best-effort fetch
         // first means "update available" reflects the real remote, not
-        // whatever was last fetched manually (see fetchOriginBounded in gitLive.js).
+        // whatever was last fetched manually (see fetchOriginBounded in gitLive.ts).
         const target = path.join(projectsRoot(), name);
         await fetchOriginBounded(target);
         const status = await getProjectUpstreamStatus(target);

@@ -4,14 +4,14 @@ import {
   projectsRoot, selfProjectDir, orchStoreRoot, writeFileAtomic, listProjects, projectStoreDir,
   readProjectMeta, writeProjectMeta, addWorkspace,
 } from '../projects.js';
-import { readManifest, SUPPORTED_CONVENTION_SCOPES, claudePluginPaths } from './manifest.js';
-import { createSupervisor, httpOk, headSha } from './supervisor.js';
-import { createMcpBridge } from './mcpBridge.js';
-import { pidAlive, waitForPort } from './ports.js';
+import { readManifest, SUPPORTED_CONVENTION_SCOPES, claudePluginPaths } from './manifest.ts';
+import { createSupervisor, httpOk, headSha } from './supervisor.ts';
+import { createMcpBridge } from './mcpBridge.ts';
+import { pidAlive, waitForPort } from './ports.ts';
 
 // Plugin registry — the single service layer behind the REST api
-// (src/plugins/api.js), the reverse proxy (src/plugins/proxy.js) and MCP
-// forwarding (src/plugins/mcpBridge.js). Owns discovery, the persisted
+// (src/plugins/api.js), the reverse proxy (src/plugins/proxy.ts) and MCP
+// forwarding (src/plugins/mcpBridge.ts). Owns discovery, the persisted
 // registry/runtime files, lifecycle state and lazy starts.
 //
 // On-disk state (all under `<orchStoreRoot()>/plugins/`):
@@ -646,7 +646,7 @@ export function createPluginHost({
   // each scope routes to its own catalog. Only `project` is wired today (into
   // the project-conventions catalog via server.js); the workspace/conductor
   // groups already exist here (empty until their scope is enabled in
-  // manifest.js + a provider is wired), so future routing is a localized add,
+  // manifest.ts + a provider is wired), so future routing is a localized add,
   // not a redesign. Each entry: { slug:'<plugin-id>/<slug>', name, description,
   // body, scaffold?, plugin:id } — `body` is '' when the convention carries no
   // fragment (scaffold-only); `scaffold` is the resolved directive text, present

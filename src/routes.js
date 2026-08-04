@@ -61,7 +61,7 @@ import { ensureRootClaudeMd } from './rootClaudeMd.js';
 import { setTitle as setSessionTitle, MAX_TITLE_LEN } from './sessionTitles.js';
 import { getSummaries, setSummary, deleteSummaries } from './sessionSummaries.js';
 import { generateSummary, countMessages } from './summarize.js';
-import { getAccountUsage } from './accountUsage.js';
+import { getAccountUsage } from './accountUsage.ts';
 import { getCostSummary, getSessionStats } from './costTracking.js';
 import { isArchived, unmarkArchived } from './archivedSessions.js';
 import {
@@ -180,7 +180,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
   r.use('/plugins', buildPluginApi({ pluginHost, pluginLibrary }));
 
   // Nudge every connected client to re-fetch /api/projects. Mirrors the
-  // hint that wsHub.js broadcasts on instance lifecycle events — used
+  // hint that wsHub.ts broadcasts on instance lifecycle events — used
   // here when a route mutates project state outside that channel (e.g.
   // workspace assignment).
   function broadcastProjects() {
@@ -1614,7 +1614,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
   // Account-level usage from the Anthropic OAuth endpoint. Cached server-side
   // for 180 s. allowStale lets this route serve the last retained payload
   // (with stale: true) when a fresh fetch isn't available, instead of
-  // blanking the chip — see src/accountUsage.js. Returns
+  // blanking the chip — see src/accountUsage.ts. Returns
   // { usage: <data>|null, stale, fetchedAt } — never exposes the raw token.
   r.get('/usage', async (req, res, next) => {
     try {

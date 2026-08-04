@@ -1,8 +1,8 @@
 import { execFile, spawn } from 'node:child_process';
 
 // Shared git-subprocess helpers used wherever the app pulls/fetches a git
-// checkout it manages (the Plugin Library — src/plugins/library.js — and the
-// conductor self-update — src/selfUpdate.js). Extracted verbatim from
+// checkout it manages (the Plugin Library — src/plugins/library.ts — and the
+// conductor self-update — src/selfUpdate.ts). Extracted verbatim from
 // library.js so the two paths share one implementation instead of drifting.
 
 // Default timeout for a streamed git subcommand (clone/pull): long enough for
@@ -23,29 +23,39 @@ export const NO_PROMPT_GIT_ENV = {
   GIT_SSH_COMMAND: 'ssh -oBatchMode=yes',
 };
 
+export interface GitLiveResult {
+  code: number;
+  stdout: string;
+  stderr: string;
+}
+
 // Shared streaming runner for git subcommands whose output the caller wants
 // to surface live (clone, pull) — spawn + 'data' handlers (rather than a
 // buffered execFile) so onChunk fires as output arrives, with a detached-
 // process-group timeout/kill: git can spawn credential-helper/hook
 // grandchildren that a plain kill of the direct child would orphan. Never
 // rejects — resolves {code,stdout,stderr}, mirroring runGit's shape
-// (src/worktrees.js) plus the split stdout/stderr callers need to build an
+// (src/worktrees.ts) plus the split stdout/stderr callers need to build an
 // error tail from stderr first.
-export function runGitLive(args, cwd, { timeoutMs = GIT_LIVE_TIMEOUT_MS, onChunk } = {}) {
+export function runGitLive(
+  args: string[],
+  cwd: string,
+  { timeoutMs = GIT_LIVE_TIMEOUT_MS, onChunk }: { timeoutMs?: number; onChunk?: (s: string) => void } = {},
+): Promise<GitLiveResult> {
   return new Promise((resolve) => {
     let stdout = '';
     let stderr = '';
     const proc = spawn('git', args, { cwd, detached: true });
-    const onOut = (d) => { const s = d.toString(); stdout += s; onChunk?.(s); };
-    const onErr = (d) => { const s = d.toString(); stderr += s; onChunk?.(s); };
+    const onOut = (d: Buffer) => { const s = d.toString(); stdout += s; onChunk?.(s); };
+    const onErr = (d: Buffer) => { const s = d.toString(); stderr += s; onChunk?.(s); };
     proc.stdout?.on('data', onOut);
     proc.stderr?.on('data', onErr);
 
     let timedOut = false;
     const killGroup = () => {
-      try { process.kill(-proc.pid, 'SIGTERM'); } catch { proc.kill('SIGTERM'); }
+      try { process.kill(-proc.pid!, 'SIGTERM'); } catch { proc.kill('SIGTERM'); }
       setTimeout(() => {
-        try { process.kill(-proc.pid, 'SIGKILL'); } catch { proc.kill('SIGKILL'); }
+        try { process.kill(-proc.pid!, 'SIGKILL'); } catch { proc.kill('SIGKILL'); }
       }, 100).unref();
     };
     const timer = setTimeout(() => { timedOut = true; killGroup(); }, timeoutMs);
@@ -68,7 +78,7 @@ export function runGitLive(args, cwd, { timeoutMs = GIT_LIVE_TIMEOUT_MS, onChunk
 // to stale-or-null status. Uses a raw execFile timeout (not runGit, which has
 // none) since a hung fetch must not block the caller. NO_PROMPT_GIT_ENV makes
 // credential failures fail fast rather than hang until the timeout.
-export function fetchOriginBounded(cwd) {
+export function fetchOriginBounded(cwd: string): Promise<void> {
   return new Promise((resolve) => {
     execFile('git', ['-C', cwd, 'fetch', '--quiet'], {
       cwd,

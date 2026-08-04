@@ -8,11 +8,21 @@ import { spawn } from 'node:child_process';
 import { promises as fsp } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { resolveClaudeBin } from './claudeLauncher.js';
+import { resolveClaudeBin } from './claudeLauncher.ts';
 
 const DEFAULT_TIMEOUT_MS = 3000;
 
-async function probeBin({ timeoutMs }) {
+export interface ClaudeBinProbe {
+  found: boolean;
+  command: string;
+  version?: string;
+  error?: string;
+  exitCode?: number | null;
+  message?: string;
+  stderr?: string;
+}
+
+async function probeBin({ timeoutMs }: { timeoutMs: number }): Promise<ClaudeBinProbe> {
   const { command, prefixArgs } = resolveClaudeBin();
   return new Promise((resolve) => {
     let proc;
@@ -21,27 +31,27 @@ async function probeBin({ timeoutMs }) {
         stdio: ['ignore', 'pipe', 'pipe'],
       });
     } catch (err) {
-      resolve({ found: false, command, error: 'spawn', message: err.message });
+      resolve({ found: false, command, error: 'spawn', message: (err as Error).message });
       return;
     }
     let stdout = '';
     let stderr = '';
     let settled = false;
-    const settle = (v) => { if (!settled) { settled = true; clearTimeout(timer); resolve(v); } };
+    const settle = (v: ClaudeBinProbe) => { if (!settled) { settled = true; clearTimeout(timer); resolve(v); } };
     const timer = setTimeout(() => {
       try { proc.kill('SIGKILL'); } catch { /* ignore */ }
       settle({ found: false, command, error: 'timeout' });
     }, timeoutMs);
-    proc.stdout?.on('data', (d) => { stdout += d.toString(); });
-    proc.stderr?.on('data', (d) => { stderr += d.toString(); });
+    proc.stdout?.on('data', (d: Buffer) => { stdout += d.toString(); });
+    proc.stderr?.on('data', (d: Buffer) => { stderr += d.toString(); });
     proc.on('error', (err) => {
-      const code = err.code === 'ENOENT' ? 'enoent' : 'spawn';
+      const code = (err as { code?: unknown }).code === 'ENOENT' ? 'enoent' : 'spawn';
       settle({ found: false, command, error: code, message: err.message });
     });
     proc.on('exit', (code) => {
       if (code === 0) {
         const version = stdout.trim().split(/\s+/)[0] || null;
-        settle({ found: true, command, version });
+        settle({ found: true, command, version: version ?? undefined });
       } else {
         settle({ found: false, command, error: 'exit', exitCode: code, stderr: stderr.trim() });
       }
@@ -49,7 +59,7 @@ async function probeBin({ timeoutMs }) {
   });
 }
 
-async function probeDir(home) {
+async function probeDir(home: string): Promise<{ exists: boolean; path: string }> {
   const p = path.join(home, '.claude');
   try {
     const st = await fsp.stat(p);
@@ -59,7 +69,7 @@ async function probeDir(home) {
   }
 }
 
-async function probeAuth(home) {
+async function probeAuth(home: string): Promise<{ ok: boolean; source: 'env' | 'credentials' | null }> {
   if (process.env.ANTHROPIC_API_KEY && process.env.ANTHROPIC_API_KEY.trim()) {
     return { ok: true, source: 'env' };
   }
@@ -72,13 +82,27 @@ async function probeAuth(home) {
   }
 }
 
-export async function checkClaudeReadiness({ home = os.homedir(), timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
+export interface ReadinessIssue {
+  code: string;
+  title: string;
+  hint: string;
+}
+
+export interface ReadinessResult {
+  ok: boolean;
+  claudeBin: ClaudeBinProbe;
+  claudeDir: { exists: boolean; path: string };
+  authenticated: { ok: boolean; source: 'env' | 'credentials' | null };
+  issues: ReadinessIssue[];
+}
+
+export async function checkClaudeReadiness({ home = os.homedir(), timeoutMs = DEFAULT_TIMEOUT_MS }: { home?: string; timeoutMs?: number } = {}): Promise<ReadinessResult> {
   const [claudeBin, claudeDir, authenticated] = await Promise.all([
     probeBin({ timeoutMs }),
     probeDir(home),
     probeAuth(home),
   ]);
-  const issues = [];
+  const issues: ReadinessIssue[] = [];
   if (!claudeBin.found) {
     issues.push({
       code: 'claude_bin_missing',
@@ -109,7 +133,7 @@ export async function checkClaudeReadiness({ home = os.homedir(), timeoutMs = DE
   };
 }
 
-export function formatReadiness(result) {
+export function formatReadiness(result: ReadinessResult): string {
   if (result.ok) {
     const v = result.claudeBin.version ? `v${result.claudeBin.version}` : 'unknown version';
     const src = result.authenticated.source === 'env'

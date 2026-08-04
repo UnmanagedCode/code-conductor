@@ -7,7 +7,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { bootServer, api, waitFor } from './helpers.mjs';
 import { FAKE_PLUGIN_DIR } from './plugin-helpers.mjs';
-import { pidAlive } from '../src/plugins/ports.js';
+import { pidAlive } from '../src/plugins/ports.ts';
 
 const run = promisify(execFile);
 async function git(cwd, ...args) { await run('git', ['-C', cwd, ...args]); }

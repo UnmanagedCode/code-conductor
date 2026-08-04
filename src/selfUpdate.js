@@ -3,7 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import { runGit, getProjectUpstreamStatus } from './worktrees.js';
-import { runGitLive, fetchOriginBounded } from './gitLive.js';
+import { runGitLive, fetchOriginBounded } from './gitLive.ts';
 
 // Conductor self-update — the app's own version of the Plugin Library update
 // path (src/plugins/library.js). The conductor is distributed as a git clone

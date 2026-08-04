@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { promises as fsp } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { checkClaudeReadiness, formatReadiness } from '../src/health.js';
+import { checkClaudeReadiness, formatReadiness } from '../src/health.ts';
 
 async function mkTmp(prefix = 'cc-health-') {
   return fsp.mkdtemp(path.join(os.tmpdir(), prefix));

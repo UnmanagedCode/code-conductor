@@ -25,14 +25,29 @@ const CACHE_TTL_MS  = 180_000;
 const BASE_RETRY_MS = 10_000;       // base backoff delay after a failed fetch
 const MAX_RETRY_MS  = 5 * 60_000;   // ceiling for both Retry-After and exponential backoff
 
-let _cache      = { data: null, fetchedAt: 0 };
-let _retryState = { failureCount: 0, nextAllowedAt: 0 };
+// The Anthropic OAuth usage payload is an untyped external API shape — callers
+// read its `five_hour` bucket via usageOverThreshold (appSettings.ts); this
+// module only stores/forwards it opaquely.
+export type AccountUsageData = unknown;
+
+export interface UsageCacheState {
+  data: AccountUsageData | null;
+  fetchedAt: number;
+}
+
+export interface UsageRetryState {
+  failureCount: number;
+  nextAllowedAt: number;
+}
+
+let _cache: UsageCacheState = { data: null, fetchedAt: 0 };
+let _retryState: UsageRetryState = { failureCount: 0, nextAllowedAt: 0 };
 
 // Parse the Retry-After response header. Returns milliseconds to wait, or null
 // if the header is absent or unparseable.
 // Supports both delta-seconds ("120") and HTTP-date ("Wed, 22 Jun 2026 14:00:00 GMT").
 // `now` is the caller's logical current time so tests can inject a fixed clock.
-function parseRetryAfter(header, now) {
+function parseRetryAfter(header: string | null, now: number): number | null {
   if (!header) return null;
   const delta = Number(header);
   if (Number.isFinite(delta) && delta >= 0) return delta * 1000;
@@ -43,7 +58,7 @@ function parseRetryAfter(header, now) {
 
 // Exponential backoff: BASE * 2^n, capped at MAX, with the jitter fraction applied in computeBackoff.
 // `rand` is injectable (pass 0.5 for deterministic zero-jitter in tests).
-function computeBackoff(failureCount, rand) {
+function computeBackoff(failureCount: number, rand: number): number {
   const exp    = Math.min(failureCount, 8); // cap exponent; 2^8 * 10s >> MAX anyway
   const base   = BASE_RETRY_MS * Math.pow(2, exp);
   const capped = Math.min(base, MAX_RETRY_MS);
@@ -51,25 +66,33 @@ function computeBackoff(failureCount, rand) {
   return Math.max(BASE_RETRY_MS, Math.round(capped + jitter));
 }
 
-async function readOauthToken(home = os.homedir()) {
+async function readOauthToken(home: string = os.homedir()): Promise<string | null> {
   const credPath = path.join(home, '.claude', '.credentials.json');
-  let raw;
+  let raw: string;
   try {
     raw = await fsp.readFile(credPath, 'utf8');
   } catch {
     return null;
   }
   try {
-    const parsed = JSON.parse(raw);
-    return parsed?.claudeAiOauth?.accessToken ?? null;
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== 'object' || parsed === null) return null;
+    const token = (parsed as { claudeAiOauth?: { accessToken?: unknown } }).claudeAiOauth?.accessToken;
+    return typeof token === 'string' && token ? token : null;
   } catch {
     return null;
   }
 }
 
+interface FetchOutcome {
+  data: AccountUsageData | null;
+  status: number;
+  retryAfterHeader: string | null;
+}
+
 // Returns { data, status, retryAfterHeader } so the caller can compute the
 // appropriate retry delay with access to its injected clock.
-async function fetchFromApi(token) {
+async function fetchFromApi(token: string): Promise<FetchOutcome> {
   const res = await fetch(USAGE_URL, {
     headers: {
       'Authorization': `Bearer ${token}`,
@@ -89,15 +112,23 @@ async function fetchFromApi(token) {
   return { data: await res.json(), status: res.status, retryAfterHeader: null };
 }
 
+interface StaleResult {
+  data: AccountUsageData;
+  stale: true;
+  fetchedAt: number;
+}
+
 // When a fresh fetch isn't available and allowStale is set, serve the last
 // retained payload as long as it isn't older than maxStaleMs. Returns null
 // otherwise (nothing usable to serve, stale or fresh).
-function maybeServeStale(now, maxStaleMs) {
+function maybeServeStale(now: number, maxStaleMs: number): StaleResult | null {
   if (_cache.data !== null && now - _cache.fetchedAt < maxStaleMs) {
     return { data: _cache.data, stale: true, fetchedAt: _cache.fetchedAt };
   }
   return null;
 }
+
+export type AccountUsageResult = AccountUsageData | StaleResult | null;
 
 // _now and _random are test seams — production callers omit them.
 //
@@ -109,7 +140,13 @@ function maybeServeStale(now, maxStaleMs) {
 export async function getAccountUsage({
   home, _now = Date.now, _random = Math.random,
   allowStale = false, maxStaleMs = 15 * 60_000,
-} = {}) {
+}: {
+  home?: string;
+  _now?: () => number;
+  _random?: () => number;
+  allowStale?: boolean;
+  maxStaleMs?: number;
+} = {}): Promise<AccountUsageResult> {
   const now = _now();
 
   // 1. Valid success cache.
@@ -154,7 +191,7 @@ export async function getAccountUsage({
 }
 
 // Exposed for tests so they can reset the cache and retry state between runs.
-export function _resetCache() {
+export function _resetCache(): void {
   _cache      = { data: null, fetchedAt: 0 };
   _retryState = { failureCount: 0, nextAllowedAt: 0 };
 }

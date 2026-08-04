@@ -23,7 +23,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { orchStoreRoot, writeFileAtomic } from './projects.js';
-import { resolveClaudeBin, resolveBackendLaunch } from './claudeLauncher.js';
+import { resolveClaudeBin, resolveBackendLaunch } from './claudeLauncher.ts';
 import { getTierBackend, getBackend } from './appSettings.js';
 
 const VERSION_TIMEOUT_MS = 5000;

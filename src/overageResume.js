@@ -15,7 +15,7 @@
 // (wall-clock) each tick and fires every deadline that is now due, so a
 // deadline that elapsed during suspension fires on the FIRST tick after wake.
 
-import { getAccountUsage } from './accountUsage.js';
+import { getAccountUsage } from './accountUsage.ts';
 import { usageOverThreshold } from './appSettings.js';
 
 // Prompt delivered by the overage auto-resume timer to a still-alive session
@@ -54,7 +54,7 @@ function buildCombinedResumeText(queue, wasStopped = true) {
 // After this many CONSECUTIVE "can't confirm" usage fetches (null / backoff /
 // malformed payload), a due session fails OPEN and resumes anyway rather than
 // parking forever behind a persistently-unavailable usage API. At the default recheck
-// cadence that's `FAIL_OPEN_AFTER` rechecks — aligned with accountUsage.js's MAX_RETRY_MS ceiling.
+// cadence that's `FAIL_OPEN_AFTER` rechecks — aligned with accountUsage.ts's MAX_RETRY_MS ceiling.
 const FAIL_OPEN_AFTER = 5;
 
 export class OverageResumeController {
@@ -89,10 +89,10 @@ export class OverageResumeController {
 
   // Recheck cadence for a parked (still-over / can't-confirm) session. Overridable
   // via ORCH_OVERAGE_RECHECK_MS (a test seam, like the sweep/buffer envs). Default
-  // recheck is independent of accountUsage.js's success-cache cadence — most recheck ticks
+  // recheck is independent of accountUsage.ts's success-cache cadence — most recheck ticks
   // just re-read the cached value (cheap no-op), so a shorter cadence here doesn't
   // add real network pressure; it just keeps FAIL_OPEN_AFTER's ~5-minute bound
-  // aligned with accountUsage.js's MAX_RETRY_MS ceiling (see FAIL_OPEN_AFTER above).
+  // aligned with accountUsage.ts's MAX_RETRY_MS ceiling (see FAIL_OPEN_AFTER above).
   _recheckMs() {
     const env = Number(process.env.ORCH_OVERAGE_RECHECK_MS);
     return Number.isFinite(env) && env > 0 ? env : 60_000;
@@ -162,7 +162,7 @@ export class OverageResumeController {
 
   // One sweep cycle. Collects every deadline now due by the WALL clock, then does a
   // SINGLE usage fetch shared across all of them (coalesced: many parked sessions
-  // must not each hit the API — accountUsage.js has no in-flight dedup, only a 60s
+  // must not each hit the API — accountUsage.ts has no in-flight dedup, only a 60s
   // cache) and resolves each. A deadline whose instant passed while the process was
   // suspended is due here on the first tick after wake — the suspension-survival
   // property. `_ticking` prevents an overlapping tick from opening a second fetch;

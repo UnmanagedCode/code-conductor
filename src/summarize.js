@@ -7,7 +7,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { claudeProjectsRoot, encodeCwd, orchStoreRoot } from './projects.js'; // claudeProjectsRoot+encodeCwd used by countMessages/flattenTranscript
-import { resolveClaudeBin, resolveBackendLaunch } from './claudeLauncher.js';
+import { resolveClaudeBin, resolveBackendLaunch } from './claudeLauncher.ts';
 import { getTierBackend, getBackend } from './appSettings.js';
 
 // Dedicated cwd for one-shot summary subprocesses: a subdirectory inside

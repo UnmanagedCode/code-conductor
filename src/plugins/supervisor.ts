@@ -1,6 +1,7 @@
 import { spawn, execFile } from 'node:child_process';
 import http from 'node:http';
-import { allocatePort, waitForPort, pidAlive } from './ports.js';
+import { allocatePort, waitForPort, pidAlive } from './ports.ts';
+import type { PluginBackend } from './manifest.ts';
 
 // Plugin child-process supervisor — a port of code-hub's src/runner.js.
 // Each child is the manifest's blocking `backend.start` command spawned in
@@ -15,6 +16,37 @@ const OUTPUT_CAP = 16 * 1024; // per-plugin crash-tail
 const EADDRINUSE_RETRIES = 3;
 const SPAWN_SETTLE_MS = 400;  // window to catch a fast EADDRINUSE crash before committing to this attempt's port
 
+export type ChildStatus = 'starting' | 'ready' | 'crashed' | 'exited';
+
+interface ChildRecord {
+  proc: ReturnType<typeof spawn>;
+  pgid: number;
+  status: ChildStatus;
+  error: string | null;
+  output: string;
+}
+
+export interface ChildRuntime {
+  status: ChildStatus;
+  error: string | null;
+  output: string;
+}
+
+export interface SupervisorStartInput {
+  id: string;
+  manifest: { backend: PluginBackend };
+  cwd: string;
+  env?: Record<string, string>;
+}
+
+export interface StartedChild {
+  pid: number;
+  pgid: number;
+  port: number;
+  startedAt: string;
+  gitHead: string | null;
+}
+
 // Factory (not module state) so each plugin host — and each test — gets an
 // isolated child table. Options beyond onExit exist only for test speed.
 export function createSupervisor({
@@ -22,39 +54,44 @@ export function createSupervisor({
   _allocatePort = allocatePort,
   _readyTimeoutMs = READY_TIMEOUT_MS,
   _settleMs = SPAWN_SETTLE_MS,
+}: {
+  onExit?: (id: string, runtime: ChildRuntime) => void;
+  _allocatePort?: () => Promise<number>;
+  _readyTimeoutMs?: number;
+  _settleMs?: number;
 } = {}) {
   // id → { proc, pgid, status, error, output }. Children adopted after a
   // conductor restart have no entry here (their stdout can't be recaptured);
   // the registry tracks those via the persisted runtime record only.
-  const children = new Map();
+  const children = new Map<string, ChildRecord>();
 
-  function runtime(id) {
+  function runtime(id: string): ChildRuntime | null {
     const c = children.get(id);
     if (!c) return null;
     return { status: c.status, error: c.error, output: c.output };
   }
 
-  function appendOutput(c, chunk) {
+  function appendOutput(c: ChildRecord, chunk: string): void {
     c.output += chunk;
     if (c.output.length > OUTPUT_CAP) c.output = c.output.slice(-OUTPUT_CAP);
   }
 
-  function settle(c, status, error = null) {
+  function settle(c: ChildRecord, status: ChildStatus, error: string | null = null): void {
     if (c.status !== 'starting') return;
     c.status = status;
     c.error = error;
   }
 
-  function spawnChild({ id, manifest, cwd, env }, port) {
+  function spawnChild({ id, manifest, cwd, env }: SupervisorStartInput, port: number): ChildRecord {
     const proc = spawn('bash', ['-lc', manifest.backend.start], {
       cwd,
       env: { ...process.env, ...env, PORT: String(port), CONDUCTOR_PLUGIN_ID: id },
       detached: true,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
-    const c = { proc, pgid: proc.pid, status: 'starting', error: null, output: '' };
+    const c: ChildRecord = { proc, pgid: proc.pid ?? 0, status: 'starting', error: null, output: '' };
 
-    const onData = (d) => appendOutput(c, d.toString());
+    const onData = (d: Buffer) => appendOutput(c, d.toString());
     proc.stdout.on('data', onData);
     proc.stderr.on('data', onData);
 
@@ -75,7 +112,7 @@ export function createSupervisor({
   // Resolve once the child settles (crashes) or `ms` elapses, whichever
   // first — only used to decide whether an early death was an EADDRINUSE
   // race worth retrying on a new port.
-  function raceSettle(c, ms) {
+  function raceSettle(c: ChildRecord, ms: number): Promise<void> {
     const deadline = Date.now() + ms;
     return new Promise((resolve) => {
       const tick = () => {
@@ -90,7 +127,8 @@ export function createSupervisor({
   // and updates the in-memory runtime status. If the fresh child dies almost
   // immediately with EADDRINUSE (the allocated port got claimed before this
   // bind), retry on a new port a bounded number of times.
-  async function start({ id, manifest, cwd, env = {} }) {
+  async function start(input: SupervisorStartInput): Promise<StartedChild> {
+    const { id, manifest, cwd, env } = input;
     let port = await _allocatePort();
     for (let attempt = 1; ; attempt++) {
       const c = spawnChild({ id, manifest, cwd, env }, port);
@@ -111,15 +149,15 @@ export function createSupervisor({
       if (c.status === 'starting') {
         detectReady(manifest, port, c).then(
           () => settle(c, 'ready'),
-          (e) => settle(c, 'crashed', `${e.message}\n${c.output.slice(-2000)}`),
+          (e) => settle(c, 'crashed', `${(e as Error).message}\n${c.output.slice(-2000)}`),
         );
       }
       const gitHead = await headSha(cwd);
-      return { pid: c.proc.pid, pgid: c.proc.pid, port, startedAt: new Date().toISOString(), gitHead };
+      return { pid: c.proc.pid ?? 0, pgid: c.proc.pid ?? 0, port, startedAt: new Date().toISOString(), gitHead };
     }
   }
 
-  function detectReady(manifest, port, c) {
+  function detectReady(manifest: { backend: PluginBackend }, port: number, c: ChildRecord): Promise<void> {
     const { readyWhen, healthPath } = manifest.backend;
     if (readyWhen) {
       const re = new RegExp(readyWhen);
@@ -131,7 +169,7 @@ export function createSupervisor({
     return waitForPort(port, { timeoutMs: _readyTimeoutMs });
   }
 
-  function poll(pred, { timeoutMs = _readyTimeoutMs, intervalMs = 200 } = {}) {
+  function poll(pred: () => boolean | Promise<boolean>, { timeoutMs = _readyTimeoutMs, intervalMs = 200 }: { timeoutMs?: number; intervalMs?: number } = {}): Promise<void> {
     const deadline = Date.now() + timeoutMs;
     return new Promise((resolve, reject) => {
       const tick = async () => {
@@ -148,7 +186,7 @@ export function createSupervisor({
   // Kill the process group: SIGTERM, then SIGKILL after a grace period if
   // the leader is still alive. Only needs the pgid, so it also works for
   // adopted children with no `children` entry.
-  function stop({ id, pgid }) {
+  function stop({ id, pgid }: { id: string; pgid: number }): void {
     children.delete(id);
     try { process.kill(-pgid, 'SIGTERM'); } catch { /* already gone */ }
     const t = setTimeout(() => {
@@ -161,7 +199,7 @@ export function createSupervisor({
 }
 
 // Any HTTP response counts — "the server answered", not "2xx".
-export function httpOk(port, path) {
+export function httpOk(port: number, path: string): Promise<boolean> {
   return new Promise((resolve) => {
     const req = http.get({ host: '127.0.0.1', port, path, timeout: 1500 }, (res) => {
       res.resume();
@@ -174,7 +212,7 @@ export function httpOk(port, path) {
 
 // HEAD sha of the checkout the child was started from (staleness display).
 // Null on any failure — a plugin dir need not be a git repo.
-export function headSha(cwd) {
+export function headSha(cwd: string): Promise<string | null> {
   return new Promise((resolve) => {
     execFile('git', ['-C', cwd, 'rev-parse', 'HEAD'], (err, stdout) => {
       resolve(err ? null : stdout.trim());

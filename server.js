@@ -6,12 +6,12 @@ import { WebSocketServer } from 'ws';
 import { buildRoutes } from './src/routes.js';
 import { buildMcpRouter } from './src/mcp/server.js';
 import { InstanceManager } from './src/instances.js';
-import { attachWsHub } from './src/wsHub.js';
+import { attachWsHub } from './src/wsHub.ts';
 import { initCostTracking } from './src/costTracking.js';
 import { projectsRoot, orchStoreRoot, ensureSelfProjectWorkspace } from './src/projects.js';
 import { loadAllArchived } from './src/archivedSessions.js';
 import { runMigrations } from './migrations/index.mjs';
-import { checkClaudeReadiness, formatReadiness } from './src/health.js';
+import { checkClaudeReadiness, formatReadiness } from './src/health.ts';
 import { sweepPendingTempCleanup } from './src/tempCleanup.js';
 import { ensureRootClaudeMd } from './src/rootClaudeMd.js';
 import { ensureConductProject } from './src/conduct.js';
@@ -19,7 +19,7 @@ import { regenerateAllProjectConventions } from './src/projectClaudeMd.js';
 import { restoreFromResumeManifest } from './src/resumeRestart.js';
 import { createPluginHost, WORKSPACE_AUTO_ASSIGN } from './src/plugins/registry.js';
 import { createPluginLibrary } from './src/plugins/library.js';
-import { buildPluginProxy } from './src/plugins/proxy.js';
+import { buildPluginProxy } from './src/plugins/proxy.ts';
 import { setPluginConventionsProvider } from './src/projectConventions.js';
 import { setPluginConductorConventionsProvider } from './src/conductorConventions.js';
 import { setPluginRolesProvider, setLiveBackendsProvider } from './src/appSettings.js';
@@ -39,7 +39,7 @@ export function createServer({ withInstances = true, claudeLauncher } = {}) {
   // one-time scaffold facet) and conductor conventions through these providers
   // (the host is a runtime singleton, wired after construction).
   // `conventions()` is grouped by scope; `project` and `conductor` are routed
-  // today (`workspace` isn't accepted yet — see manifest.js).
+  // today (`workspace` isn't accepted yet — see manifest.ts).
   if (pluginHost) {
     setPluginConventionsProvider(async () => (await pluginHost.conventions()).project);
     setPluginConductorConventionsProvider(async () => (await pluginHost.conventions()).conductor);

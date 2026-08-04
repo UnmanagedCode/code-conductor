@@ -14,11 +14,11 @@
 // one-shot: whichever source reaches `_handleOverageTrip` first wins; the other
 // no-ops until the window-reset clear timer releases the flag.
 
-import { getAccountUsage } from './accountUsage.js';
+import { getAccountUsage } from './accountUsage.ts';
 import { getOverageThreshold, getOnOverageAction, usageOverThreshold } from './appSettings.js';
 import { parseResetEpochSecs } from './instances.js';
 
-// Default poll cadence. Aligned with accountUsage.js's success-cache cadence so a
+// Default poll cadence. Aligned with accountUsage.ts's success-cache cadence so a
 // tick rarely forces a real network fetch beyond what the chip already triggers.
 const DEFAULT_POLL_MS = 180_000;
 

@@ -19,18 +19,26 @@
 //   { t: "error",          message }
 
 import { WebSocket } from 'ws';
+import type { WebSocketServer } from 'ws';
 import { invalidateAll } from './projectsCache.ts';
+import type { InstanceManagerLike, InstanceLike, InstanceSummary } from './instanceTypes.ts';
+import type { UiEvent } from './parser.ts';
 
-export function attachWsHub({ wss, instances }) {
-  const subscribers = new Map(); // instanceId -> Set<ws>
+export interface WsHubOptions {
+  wss: WebSocketServer;
+  instances: InstanceManagerLike;
+}
 
-  function subsFor(id) {
+export function attachWsHub({ wss, instances }: WsHubOptions): void {
+  const subscribers = new Map<string, Set<WebSocket>>(); // instanceId -> Set<ws>
+
+  function subsFor(id: string): Set<WebSocket> {
     let s = subscribers.get(id);
     if (!s) { s = new Set(); subscribers.set(id, s); }
     return s;
   }
 
-  instances.on('event', ({ id, ev }) => {
+  instances.on('event', ({ id, ev }: { id: string; ev: UiEvent | null }) => {
     const subs = subscribers.get(id);
     if (subs) {
       const msg = JSON.stringify({ t: 'event', id, ev });
@@ -42,7 +50,7 @@ export function attachWsHub({ wss, instances }) {
     //
     // ORDERING DEPENDENCY: the idle hub's 'event' listener (registered in
     // InstanceManager's constructor) always runs before this handler
-    // (registered by attachWsHub in server.js). shouldSuppressTurnNotification
+    // (registered by attachWsHub in server.ts). shouldSuppressTurnNotification
     // relies on IdleSubscriptionHub._justConsumed being populated by that
     // earlier listener. Do not reorder those registrations without revisiting
     // instances.shouldSuppressTurnNotification().
@@ -64,7 +72,7 @@ export function attachWsHub({ wss, instances }) {
     }
   });
 
-  instances.on('status', (summary) => {
+  instances.on('status', (summary: InstanceSummary) => {
     const subs = subscribers.get(summary.id);
     const payload = JSON.stringify({
       t: 'status',
@@ -104,18 +112,18 @@ export function attachWsHub({ wss, instances }) {
   // drop their current conversation DOM before the replayed events from
   // the new spawn start landing — that's what `reset_snapshot` does. Same
   // shape as `snapshot` so the client can apply it through the same path.
-  instances.on('snapshot_reset', (snap) => {
+  instances.on('snapshot_reset', (snap: { id: string }) => {
     const subs = subscribers.get(snap.id);
     if (!subs) return;
     const msg = JSON.stringify({ t: 'reset_snapshot', ...snap });
     for (const ws of subs) safeSend(ws, msg);
   });
 
-  function broadcastAll(msg) {
+  function broadcastAll(msg: string): void {
     for (const ws of wss.clients) safeSend(ws, msg);
   }
 
-  function safeSend(ws, msg) {
+  function safeSend(ws: WebSocket, msg: string): void {
     if (ws.readyState === WebSocket.OPEN) {
       try { ws.send(msg); } catch { /* ignore */ }
     }
@@ -123,24 +131,26 @@ export function attachWsHub({ wss, instances }) {
 
   wss.on('connection', (ws) => {
     ws.on('message', async (raw) => {
-      let msg;
-      try { msg = JSON.parse(raw.toString()); }
+      let msg: Record<string, unknown>;
+      try { msg = JSON.parse(raw.toString()) as Record<string, unknown>; }
       catch { safeSend(ws, JSON.stringify({ t: 'error', message: 'invalid json' })); return; }
 
-      const reply = (ok, error) => safeSend(ws, JSON.stringify({ t: 'ack', reqId: msg.reqId ?? null, ok, error }));
-      const inst = msg.id ? instances.get(msg.id) : null;
+      const reply = (ok: boolean, error?: string) => safeSend(ws, JSON.stringify({ t: 'ack', reqId: msg.reqId ?? null, ok, error }));
+      const id = typeof msg.id === 'string' && msg.id ? msg.id : null;
+      const inst: InstanceLike | undefined = id ? instances.get(id) : undefined;
 
       try {
-        switch (msg.t) {
+        const t = typeof msg.t === 'string' ? msg.t : '';
+        switch (t) {
           case 'subscribe': {
-            if (!inst) { reply(false, 'unknown instance'); return; }
-            subsFor(msg.id).add(ws);
+            if (!inst || !id) { reply(false, 'unknown instance'); return; }
+            subsFor(id).add(ws);
             // Tail-only snapshot: at most ORCH_SNAPSHOT_TAIL (default DEFAULT_SNAPSHOT_TAIL)
             // trailing events, snapped to a turn boundary. tailStartSeq > 0
             // tells the client older history exists — it lazy-loads it via
             // GET /api/instances/:id/events?before=<seq>.
             const events = inst.snapshotTail();
-            const tailStartSeq = events.length ? events[0]._seq : inst.ring.trimmedBefore;
+            const tailStartSeq = events.length ? Number(events[0]._seq) : inst.ring.trimmedBefore;
             const tasksAtTailStart = await inst.reconstructActiveTasks(tailStartSeq);
             // Re-attach the ephemeral thinking-token counter when a block is
             // still streaming (the per-token events aren't retained in the ring
@@ -183,7 +193,7 @@ export function attachWsHub({ wss, instances }) {
             return;
           }
           case 'unsubscribe': {
-            if (msg.id) subscribers.get(msg.id)?.delete(ws);
+            if (id) subscribers.get(id)?.delete(ws);
             reply(true);
             return;
           }
@@ -191,10 +201,10 @@ export function attachWsHub({ wss, instances }) {
             if (!inst) { reply(false, 'unknown instance'); return; }
             const atts = Array.isArray(msg.attachments)
               ? msg.attachments.filter(a =>
-                  a && typeof a === 'object' &&
-                  typeof a.name === 'string' &&
-                  typeof a.dataBase64 === 'string' &&
-                  typeof a.mediaType === 'string',
+                  !!a && typeof a === 'object' &&
+                  typeof (a as { name?: unknown }).name === 'string' &&
+                  typeof (a as { dataBase64?: unknown }).dataBase64 === 'string' &&
+                  typeof (a as { mediaType?: unknown }).mediaType === 'string',
                 )
               : [];
             await inst.prompt(String(msg.text ?? ''), atts);
@@ -241,10 +251,10 @@ export function attachWsHub({ wss, instances }) {
             return;
           }
           default:
-            reply(false, `unknown message type: ${msg.t}`);
+            reply(false, `unknown message type: ${t}`);
         }
       } catch (e) {
-        reply(false, e.message ?? 'error');
+        reply(false, (e as Error).message ?? 'error');
       }
     });
 

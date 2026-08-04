@@ -213,7 +213,7 @@ export async function setDefaultSpawnTier(tier) {
 // Models group: the user-manageable backend registry, persisted as
 // `models.backends: [{ id, label, template, env:[{key,value}] }]`. A backend is
 // a launch recipe — see MANAGED_BACKENDS in modelVersions.ts for the record
-// contract and `resolveBackendLaunch` in claudeLauncher.js for the one place
+// contract and `resolveBackendLaunch` in claudeLauncher.ts for the one place
 // `template` is consumed.
 //
 // Managed rows are fully CODE-authoritative: id/label/template/env/managed all
@@ -809,7 +809,7 @@ export function getPluginRoles() {
 // case-insensitively; it must be disjoint (case-insensitively) from tiers /
 // built-in roles / family aliases / other custom + plugin roles. '/' is reserved
 // for plugin namespacing (the regex forbids it). This name rule is DELIBERATELY
-// distinct from the lowercase plugin-slug rule (manifest.js) — a custom role name
+// distinct from the lowercase plugin-slug rule (manifest.ts) — a custom role name
 // is a user-facing, case-preserving label, not a lowercase identifier slug.
 const CUSTOM_ROLE_RE = /^[A-Za-z][A-Za-z0-9-]*$/;
 const CUSTOM_ROLE_MAX = 40;
@@ -978,7 +978,7 @@ export function getOverageThreshold() {
 }
 
 // Single source of truth for "is the account still over the overage bar?", given
-// an account-usage payload (src/accountUsage.js shape: five_hour.utilization is a
+// an account-usage payload (src/accountUsage.ts shape: five_hour.utilization is a
 // 0–100 PERCENT). Used by BOTH the server-side poll trip (usageOverageMonitor) and
 // the usage-verified auto-resume (overageResume) so the trip and the resume never
 // disagree. Returns:

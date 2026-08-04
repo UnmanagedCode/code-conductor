@@ -36,7 +36,7 @@ function overageEvent({ resetsAt } = {}) {
   return { type: 'system', subtype: 'rate_limit_event', uuid: 'rl-1', rate_limit_info: info };
 }
 
-// Account-usage payload shape (src/accountUsage.js): each window carries a 0–100
+// Account-usage payload shape (src/accountUsage.ts): each window carries a 0–100
 // PERCENT `utilization` and a snake_case ISO `resets_at`.
 function usagePayload(fiveHourUtilPct, resetsAtSec) {
   return {

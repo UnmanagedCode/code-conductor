@@ -16,7 +16,7 @@ import os from 'node:os';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
 import { setOnOverageAction, setOverageThreshold } from '../src/appSettings.js';
 import { AUTO_RESUME_TEXT } from '../src/instances.js';
-import { getAccountUsage } from '../src/accountUsage.js';
+import { getAccountUsage } from '../src/accountUsage.ts';
 import { ensureConductProject, CONDUCT_PROJECT_NAME } from '../src/conduct.js';
 
 const nowSec = () => Math.floor(Date.now() / 1000);
@@ -147,7 +147,7 @@ function collect(inst) {
 
 const sub = (evs, subtype) => evs.filter(e => e.kind === 'system' && e.subtype === subtype);
 
-// Account-usage payload shape (src/accountUsage.js): five_hour carries a 0–100
+// Account-usage payload shape (src/accountUsage.ts): five_hour carries a 0–100
 // PERCENT `utilization` and an ISO `resets_at`. The fire-time resume verify reads it.
 function usagePayload(fiveHourUtilPct, resetsAtSec) {
   return {
@@ -946,7 +946,7 @@ test('stop-resume GLOBAL: lockout held while parked over-threshold, lifts on ver
 });
 
 // (f) Coalescing: many parked sessions coming due in one sweep cycle share ONE
-// underlying usage fetch (accountUsage.js has no in-flight dedup — the controller
+// underlying usage fetch (accountUsage.ts has no in-flight dedup — the controller
 // must not open a fetch per session).
 test('stop-resume: one usage fetch per sweep cycle across all due sessions', async () => {
   // Suppress the fast background sweep for this test so the single manual _tick() is

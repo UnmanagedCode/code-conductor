@@ -4,21 +4,26 @@ import net from 'node:net';
 // then closing. There is a small TOCTOU window between close and the child
 // binding it: another process can grab the same ephemeral port first, in
 // which case the child's listen() fails with EADDRINUSE and it exits hard.
-// supervisor.js retries on a freshly allocated port when it detects that.
-export function allocatePort() {
+// supervisor.ts retries on a freshly allocated port when it detects that.
+export function allocatePort(): Promise<number> {
   return new Promise((resolve, reject) => {
     const srv = net.createServer();
     srv.on('error', reject);
     srv.listen(0, '127.0.0.1', () => {
-      const { port } = srv.address();
-      srv.close(() => resolve(port));
+      const addr = srv.address();
+      if (addr && typeof addr === 'object') {
+        const { port } = addr;
+        srv.close(() => resolve(port));
+      } else {
+        srv.close(() => reject(new Error('allocatePort: no port assigned')));
+      }
     });
   });
 }
 
 // Resolve once a TCP connection to localhost:port succeeds, or reject after
 // `timeoutMs`. Polls every `intervalMs`.
-export function waitForPort(port, { timeoutMs = 30000, intervalMs = 200 } = {}) {
+export function waitForPort(port: number, { timeoutMs = 30000, intervalMs = 200 }: { timeoutMs?: number; intervalMs?: number } = {}): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   return new Promise((resolve, reject) => {
     const attempt = () => {
@@ -34,7 +39,7 @@ export function waitForPort(port, { timeoutMs = 30000, intervalMs = 200 } = {}) 
   });
 }
 
-export function pidAlive(pid) {
+export function pidAlive(pid: number | undefined | null): boolean {
   if (!pid) return false;
   try { process.kill(pid, 0); return true; }
   catch { return false; }

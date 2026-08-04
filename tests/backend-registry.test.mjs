@@ -20,7 +20,7 @@ import {
   familyOf, canonicalizeModel, isKnownClaudeModel, MANAGED_BACKENDS,
   MANAGED_BACKEND_IDS, CLAUDE_BACKEND_ID, DEFAULT_TIER_BACKEND, DEFAULT_ROLE_BINDING,
 } from '../src/modelVersions.ts';
-import { resolveBackendLaunch, backendEnv } from '../src/claudeLauncher.js';
+import { resolveBackendLaunch, backendEnv } from '../src/claudeLauncher.ts';
 import {
   hasSessionBackend, getSessionBackend, markSessionBackend, unmarkSessionBackend, loadAll,
 } from '../src/sessionBackends.ts';

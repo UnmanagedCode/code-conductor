@@ -29,7 +29,7 @@ import { IdleSubscriptionHub } from './idleSubscriptions.js';
 import { OverageResumeController } from './overageResume.js';
 import { UsageOverageMonitor } from './usageOverageMonitor.js';
 import { usageDomainOfBackend, isMonitoredDomain } from './usageWindowDomains.ts';
-import { defaultClaudeLauncher, resolveClaudeBin, resolveBackendLaunch } from './claudeLauncher.js';
+import { defaultClaudeLauncher, resolveClaudeBin, resolveBackendLaunch } from './claudeLauncher.ts';
 
 // `AUTO_RESUME_TEXT` now lives with the overage timer machine in
 // overageResume.js; re-export it here so existing importers (and tests) that
@@ -1951,7 +1951,7 @@ export class Instance extends EventEmitter {
     return this.summary();
   }
 
-  // Thin delegate so callers (routes.js / wsHub.js) keep talking to
+  // Thin delegate so callers (routes.js / wsHub.ts) keep talking to
   // the Instance — the broker holds the actual state.
   handleHookCallback(envelope, res) { this._hooks.handle(envelope, res); }
   resolveHookCallback(toolUseId, allow) { return this._hooks.resolve(toolUseId, allow); }

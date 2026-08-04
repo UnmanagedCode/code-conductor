@@ -1,8 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import net from 'node:net';
-import { createSupervisor } from '../src/plugins/supervisor.js';
-import { allocatePort, pidAlive } from '../src/plugins/ports.js';
+import { createSupervisor } from '../src/plugins/supervisor.ts';
+import { allocatePort, pidAlive } from '../src/plugins/ports.ts';
 import { FAKE_PLUGIN_DIR, waitFor } from './plugin-helpers.mjs';
 
 const manifest = (backend) => ({ id: 'fake-plugin', name: 'Fake', version: '1', pluginApi: 1, backend });

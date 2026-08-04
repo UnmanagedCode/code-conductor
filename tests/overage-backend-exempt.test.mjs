@@ -15,7 +15,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
 import { setOnOverageAction, addBackend, addCustomModel } from '../src/appSettings.js';
-import { getAccountUsage } from '../src/accountUsage.js';
+import { getAccountUsage } from '../src/accountUsage.ts';
 
 const nowSec = () => Math.floor(Date.now() / 1000);
 const INIT = { type: 'system', subtype: 'init', session_id: '$SID', cwd: '$CWD',

@@ -9,7 +9,7 @@ import { spawn } from 'node:child_process';
 // while tests inject an in-process implementation that runs the fake-claude
 // scenario engine on the event loop (no OS process — see tests/inProcessLauncher.mjs).
 export class RealClaudeLauncher {
-  launch({ command, args, cwd, env }) {
+  launch({ command, args, cwd, env }: { command: string; args: string[]; cwd: string; env: NodeJS.ProcessEnv }): ReturnType<typeof spawn> {
     return spawn(command, args, { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] });
   }
 }
@@ -18,16 +18,27 @@ export class RealClaudeLauncher {
 // caller overrides it; omitting the option keeps this real launcher.
 export const defaultClaudeLauncher = new RealClaudeLauncher();
 
-// Lives here (not instances.js) so pure one-shot spawners — health.js's boot
+export interface ClaudeBin {
+  command: string;
+  prefixArgs: string[];
+}
+
+// Lives here (not instances.js) so pure one-shot spawners — health.ts's boot
 // probe, summarize.js's summary generation, claudeShellEnv.js's bundle-gen —
 // can depend on just the launch-resolution primitives without pulling in the
 // whole Instance/InstanceManager module.
-export function resolveClaudeBin() {
+export function resolveClaudeBin(): ClaudeBin {
   // CLAUDE_BIN may be "node /path/to/script.mjs" so callers can swap in the
   // fake CLI used by tests; split on whitespace.
   const raw = (process.env.CLAUDE_BIN ?? 'claude').trim();
   const parts = raw.split(/\s+/);
   return { command: parts[0], prefixArgs: parts.slice(1) };
+}
+
+export interface BackendLaunch {
+  command: string;
+  prefixArgs: string[];
+  env: Record<string, string>;
 }
 
 // THE substitution point. Given a resolved claude binary and a backend RECORD
@@ -53,7 +64,11 @@ export function resolveClaudeBin() {
 // substituted into env VALUES (never keys) here — the same single substitution
 // point that handles the template — so a custom backend can put `{model}` in
 // an env var (e.g. `SOME_MODEL_ID={model}`) and have it filled at spawn.
-export function resolveBackendLaunch(backend, model, claudeBin) {
+export function resolveBackendLaunch(
+  backend: { id?: unknown; template?: unknown; env?: unknown } | null | undefined,
+  model: string | null | undefined,
+  claudeBin: ClaudeBin,
+): BackendLaunch {
   const template = typeof backend?.template === 'string' ? backend.template.trim() : '';
   const env = backendEnv(backend, model || null);
   if (!template) {
@@ -80,12 +95,15 @@ export function resolveBackendLaunch(backend, model, claudeBin) {
 // is given, `{model}` is substituted into each VALUE (keys are never templated)
 // — the same `{model}` → tag replacement the template gets, applied here so
 // resolveBackendLaunch stays the single substitution point.
-export function backendEnv(backend, model = null) {
-  const out = {};
+export function backendEnv(backend: { env?: unknown } | null | undefined, model: string | null = null): Record<string, string> {
+  const out: Record<string, string> = {};
   for (const e of Array.isArray(backend?.env) ? backend.env : []) {
-    if (e && typeof e.key === 'string' && e.key) {
-      const v = String(e.value ?? '');
-      out[e.key] = model ? v.replaceAll('{model}', model) : v;
+    if (e && typeof e === 'object') {
+      const rec = e as { key?: unknown; value?: unknown };
+      if (typeof rec.key === 'string' && rec.key) {
+        const v = String(rec.value ?? '');
+        out[rec.key] = model ? v.replaceAll('{model}', model) : v;
+      }
     }
   }
   return out;
