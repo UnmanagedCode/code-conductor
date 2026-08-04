@@ -186,6 +186,28 @@ test('a partial message_start.usage with an unknown capacity still renders its r
     'a small/partial reading is still a real reading, not a missing one');
 });
 
+// 6a/6b. The `<= 0` boundary. The body's denominator is gated on ctxFrac, and
+// currentFillPct rejects `windowTokens <= 0` as well as non-finite (usage.js:122),
+// so the tooltip must key on that same predicate. A tooltip guarded by a second
+// `Number.isFinite(ctxWindow)` test agrees everywhere EXCEPT here, where it would
+// print `Context: 250,000/0 tokens` against a body reading `ctx —`.
+test('a context window of 0 takes the unknown-capacity branch, in lockstep with the body', async () => {
+  const chip = await renderChip({ instance: { contextWindowTokens: 0 }, applyUsage: MSG_START_250K });
+  assert.match(chip.textContent, /^ctx —/, 'body must not render a percentage against a zero window');
+  assert.match(chip.title, /Context: 250,000 tokens used \(capacity unknown\)/,
+    'tooltip must agree with the body — a `Number.isFinite` guard would emit `250,000/0` here');
+  assert.doesNotMatch(chip.title, /\d\s*\/\s*\d/, 'no fabricated zero denominator');
+});
+
+test('the smallest positive window is still a known capacity (the boundary is not off by one)', async () => {
+  const chip = await renderChip({ instance: { contextWindowTokens: 1 }, applyUsage: MSG_START_250K });
+  assert.ok(
+    chip.title.startsWith('Context: 250,000/1 tokens'),
+    `a window of 1 is a real capacity, got: ${chip.title}`,
+  );
+  assert.doesNotMatch(chip.title, /capacity unknown/, 'a `>= 0` or `> 1` guard would wrongly land here');
+});
+
 // 6. An absent key behaves the same as an explicit null.
 test('an instance summary with no contextWindowTokens key is treated as unknown capacity', async () => {
   const chip = await renderChip({ instance: {}, applyUsage: MSG_START_250K });

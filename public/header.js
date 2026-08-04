@@ -340,10 +340,15 @@ export function installHeader({
 
     // The body folds "capacity unknown" into `ctx —`; the tooltip can still name
     // the measured token count, which is real even when the denominator isn't.
+    // Keyed on `ctxFrac`, the SAME predicate the body's denominator uses — not a
+    // second `Number.isFinite(ctxWindow)` test that merely agrees with it most of
+    // the time. currentFillPct also rejects `windowTokens <= 0`, so a window of 0
+    // must reach the unknown-capacity branch here too rather than printing a
+    // fabricated `/0` the body would never show.
     let ctxTitle;
     if (ctxUsed == null) {
       ctxTitle = 'Context usage appears after the first turn.';
-    } else if (Number.isFinite(ctxWindow)) {
+    } else if (ctxFrac != null) {
       ctxTitle = `Context: ${ctxUsed.toLocaleString()}/${ctxWindow.toLocaleString()} tokens`;
     } else {
       ctxTitle = `Context: ${ctxUsed.toLocaleString()} tokens used (capacity unknown)`;
