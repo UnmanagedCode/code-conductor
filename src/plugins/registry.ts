@@ -15,7 +15,7 @@ import type { InstanceManagerLike } from '../instanceTypes.ts';
 import type { WorktreeMeta } from '../worktrees.ts';
 
 // Plugin registry — the single service layer behind the REST api
-// (src/plugins/api.js), the reverse proxy (src/plugins/proxy.ts) and MCP
+// (src/plugins/api.ts), the reverse proxy (src/plugins/proxy.ts) and MCP
 // forwarding (src/plugins/mcpBridge.ts). Owns discovery, the persisted
 // registry/runtime files, lifecycle state and lazy starts.
 //

@@ -13,7 +13,7 @@ import {
   sweepPendingTempCleanup,
 } from '../src/tempCleanup.ts';
 import { runTempCleanup } from '../src/restart.ts';
-import { drainToManifest } from '../src/resumeRestart.js';
+import { drainToManifest } from '../src/resumeRestart.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-basic.json');

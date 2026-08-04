@@ -813,7 +813,7 @@ export function resolveRoleEffort(role: string): EffortLevel {
 //   4. DEFAULT_EFFORT.
 //
 // Role before tier: the two are mutually exclusive in practice (a spawn resolves
-// its model through one or the other — see mcp/handlers.js spawnInstance), but
+// its model through one or the other — see mcp/handlers.ts spawnInstance), but
 // the order is fixed so a caller that passes both gets the more specific one.
 //
 // An unknown tier/role name falls THROUGH to the next step rather than refusing.

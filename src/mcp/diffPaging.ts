@@ -1,5 +1,5 @@
 // Diff-pagination engine for project_diff. Pure functions (only the
-// `Buffer` global) lifted out of the handler shell in ./handlers.js: numstat /
+// `Buffer` global) lifted out of the handler shell in ./handlers.ts: numstat /
 // name-status parsing, a one-pass line index, and a byte-bounded line pager.
 // The byte-cap / pagination / summary output shapes are a documented MCP
 // contract — keep them identical.

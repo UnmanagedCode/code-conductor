@@ -408,7 +408,7 @@ export async function createProject(
   // file in regardless of where the project ends up being mounted.
   // When conventions were selected the caller passes the composed CONVENTIONS.md
   // document; we add an in-project `@CONVENTIONS.md` import and write the file.
-  // That file is app-owned + regenerated later (src/projectClaudeMd.js); the
+  // That file is app-owned + regenerated later (src/projectClaudeMd.ts); the
   // caller composes it (no circular dep on projectConventions here).
   const importLine = conventionsDoc != null ? '@../CLAUDE.md\n@CONVENTIONS.md\n' : '@../CLAUDE.md\n';
   const claudeMdPath = path.join(full, 'CLAUDE.md');

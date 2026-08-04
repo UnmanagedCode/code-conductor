@@ -2,7 +2,7 @@
 // `/clear` that rotates the calling session's context in place (same process,
 // new sessionId) and reseeds it with a self-authored summary plus a
 // server-generated mechanical state block. See src/sessionRenew.ts +
-// src/mcp/handlers.js (renewSession).
+// src/mcp/handlers.ts (renewSession).
 //
 // The fake CLI can't call MCP tools, so each test arms the renewal out of
 // band (POST /mcp?caller=<sid>) and then drives a turn_end with send_prompt —

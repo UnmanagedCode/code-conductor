@@ -17,9 +17,9 @@ import {
   getProjectUpstreamStatus, getWorktreeDiff,
   getProjectCommits, getCommitDiff, getProjectUncommittedDiff,
 } from './worktrees.ts';
-import { buildPluginApi } from './plugins/api.js';
+import { buildPluginApi } from './plugins/api.ts';
 import { scheduleRestart } from './restart.ts';
-import { drainAndScheduleRestart } from './resumeRestart.js';
+import { drainAndScheduleRestart } from './resumeRestart.ts';
 import { getSelfUpdateStatus, applySelfUpdate } from './selfUpdate.ts';
 import { BOOT_ID } from './bootId.ts';
 import { getOrCompute, invalidate, invalidateAll } from './projectsCache.ts';
@@ -57,7 +57,7 @@ import {
 } from './appSettings.ts';
 import * as whisperInstall from './whisperInstall.ts';
 import * as ttsInstall from './ttsInstall.ts';
-import { ensureRootClaudeMd } from './rootClaudeMd.js';
+import { ensureRootClaudeMd } from './rootClaudeMd.ts';
 import { setTitle as setSessionTitle, MAX_TITLE_LEN } from './sessionTitles.ts';
 import { getSummaries, setSummary, deleteSummaries } from './sessionSummaries.ts';
 import { generateSummary, countMessages } from './summarize.ts';
@@ -71,7 +71,7 @@ import {
   updateCustomConvention as updateProjectConvention,
   deleteCustomConvention as deleteProjectConvention,
 } from './projectConventions.ts';
-import { composeProjectConventionsDoc, regenerateAllProjectConventions } from './projectClaudeMd.js';
+import { composeProjectConventionsDoc, regenerateAllProjectConventions } from './projectClaudeMd.ts';
 import {
   CORE_META as CONDUCT_CORE_META,
   getCatalog as getConductorConventionsCatalog,
@@ -225,7 +225,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
   });
 
   // Same streaming contract as the plugin library update (see
-  // streamLibraryAction in src/plugins/api.js): before onValidated fires a
+  // streamLibraryAction in src/plugins/api.ts): before onValidated fires a
   // rejection is a normal thrown error (→ trailing error middleware, preserving
   // status codes); after it, bytes are committed as 200 NDJSON and both
   // outcomes resolve into one terminal {type:'result',...} line.

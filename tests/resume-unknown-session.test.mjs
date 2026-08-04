@@ -95,7 +95,7 @@ test('spawn_instance({resume:<bogus>, project}) soft-refuses SESSION_UNKNOWN and
   const prevArgvDump = process.env.FAKE_CLAUDE_ARGV_DUMP;
   try {
     await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'demo' });
-    const { spawnInstance, respawnInstance } = await import('../src/mcp/handlers.js');
+    const { spawnInstance, respawnInstance } = await import('../src/mcp/handlers.ts');
 
     // A well-specified but mistyped resume id: project is supplied, so the
     // findSessionLocation "project required" net is bypassed — this is the
@@ -140,7 +140,7 @@ test('spawn_instance({resume:<marker-only stub>, project}) soft-refuses SESSION_
   const ctx = await bootServer({ scenarioPath: SCENARIO });
   try {
     await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'demo' });
-    const { spawnInstance } = await import('../src/mcp/handlers.js');
+    const { spawnInstance } = await import('../src/mcp/handlers.ts');
 
     const stubId = 'facade00-1111-2222-3333-444444444444';
     const projectPath = path.join(ctx.projectsRoot, 'demo');
@@ -161,7 +161,7 @@ test('spawn_instance({resume:<real transcript>, project}) still spawns normally 
   const ctx = await bootServer({ scenarioPath: SCENARIO });
   try {
     await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'demo' });
-    const { spawnInstance } = await import('../src/mcp/handlers.js');
+    const { spawnInstance } = await import('../src/mcp/handlers.ts');
 
     const goodId = 'beefcafe-1111-2222-3333-444444444444';
     const projectPath = path.join(ctx.projectsRoot, 'demo');
@@ -188,7 +188,7 @@ test('spawn_instance({resume:<bogus>}) with NO project still throws the existing
   const ctx = await bootServer({ scenarioPath: SCENARIO });
   try {
     await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'demo' });
-    const { spawnInstance } = await import('../src/mcp/handlers.js');
+    const { spawnInstance } = await import('../src/mcp/handlers.ts');
     // No project supplied + an unlocatable id: the older findSessionLocation
     // net fires first (this is the path that caught the conductor's -4830
     // mistype). spawnInstance only soft-refuses SESSION_UNKNOWN, so the 400

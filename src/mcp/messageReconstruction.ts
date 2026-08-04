@@ -1,7 +1,7 @@
 // Message-reconstruction engine for get_recent_messages. Rebuilds ordered
 // assistant messages from a UI-event array (ring or disk-replayed), merges the
 // in-memory ring with the on-disk transcript tail, and caps oversized block
-// inputs. Lifted out of the handler shell in ./handlers.js — the metadata
+// inputs. Lifted out of the handler shell in ./handlers.ts — the metadata
 // block shape, ring-vs-disk merge, omittedToolOnly counting, inputTruncated
 // capping, and oldest-first ordering are a documented MCP contract; keep them
 // identical.
@@ -207,7 +207,7 @@ function buildMessageFromRing(ring: ReconEvent[], targetMsgId: string, includeTh
   let plan: string | null = null;
   let questions: unknown = null;
   // seq/*Seq: arrival-order position of each segment within the message, so
-  // the body renderer (handlers.js) can interleave prose/plan/questions in the
+  // the body renderer (handlers.ts) can interleave prose/plan/questions in the
   // order the underlying blocks actually occurred instead of hardcoding
   // "prose then plan" — set once, at each segment's first occurrence.
   let seq = 0;

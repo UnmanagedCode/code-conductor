@@ -16,7 +16,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
-import { CONDUCTOR_VIEW_KEYS } from '../src/mcp/handlers.js';
+import { CONDUCTOR_VIEW_KEYS } from '../src/mcp/handlers.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO_INSTANCE = path.join(__dirname, 'fixtures', 'scenario-instance.json');
@@ -125,7 +125,7 @@ test('every worker-summary handler routes through the single projection', async 
   // lifecycle-verified call sites above plus this source-level check together
   // cover all five: nothing may hand-roll its own worker projection, because a
   // second projection is exactly how a field escapes the documented list.
-  const src = await fs.readFile(path.join(__dirname, '..', 'src', 'mcp', 'handlers.js'), 'utf8');
+  const src = await fs.readFile(path.join(__dirname, '..', 'src', 'mcp', 'handlers.ts'), 'utf8');
   for (const fn of ['listInstances', 'spawnInstance', 'waitForIdle', 'respawnInstance', 'promoteSession']) {
     const at = src.indexOf(`export async function ${fn}(`);
     assert.ok(at >= 0, `handler ${fn} not found`);

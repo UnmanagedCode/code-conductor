@@ -168,7 +168,7 @@ test('MCP kill_instance archives temp session', async () => {
     const jsonlFile = await materializeJsonl(claudeProjectsRoot, inst);
 
     // Use the MCP kill_instance handler directly (same code path as the tool).
-    const { killInstance } = await import('../src/mcp/handlers.js');
+    const { killInstance } = await import('../src/mcp/handlers.ts');
     await killInstance({ sessionId: inst.sessionId }, { instances });
     await waitFor(() => !instances.get(inst.id));
 

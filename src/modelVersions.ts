@@ -26,7 +26,7 @@
 // (`getTierBackend`/`setTierBackend` in appSettings.ts). A legacy caller
 // passing a family name directly (`opus`, `sonnet`, ...) still resolves here
 // unchanged, independent of any tier binding — see spawnInstance in
-// src/mcp/handlers.js.
+// src/mcp/handlers.ts.
 
 export type FamilyName = 'fable' | 'opus' | 'sonnet' | 'haiku';
 export type TierName = 'fast' | 'balanced' | 'powerful' | 'frontier';

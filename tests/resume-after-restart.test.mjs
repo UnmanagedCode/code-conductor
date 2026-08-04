@@ -21,7 +21,7 @@ import {
   WIND_DOWN_TEXT,
   WIND_DOWN_TEXT_CONDUCTOR,
   RESUME_TEXT,
-} from '../src/resumeRestart.js';
+} from '../src/resumeRestart.ts';
 import { ensureConductProject, CONDUCT_PROJECT_NAME } from '../src/conduct.ts';
 import { AUTO_RESUME_TEXT } from '../src/instances.js';
 import { addBackend, addCustomModel } from '../src/appSettings.ts';

@@ -1,9 +1,9 @@
 // MCP tool registry. Each entry is { name, description, inputSchema,
 // handler }. Schemas are inline JSON-Schema objects (shallow-validated
-// by ../mcp/server.js). Handlers live in ./handlers.js and reach into
+// by ../mcp/server.js). Handlers live in ./handlers.ts and reach into
 // the orchestrator's existing modules — no business logic here.
 
-import * as h from './handlers.js';
+import * as h from './handlers.ts';
 import { EFFORT_LEVELS, DEFAULT_EFFORT } from '../effortLevels.ts';
 
 const VALID_MODES = ['plan', 'ask', 'bypassPermissions'];

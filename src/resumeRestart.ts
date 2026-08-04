@@ -13,6 +13,8 @@
 //   resumes. Conducted workers are NOT resumed here — their conductor re-spawns
 //   them (their jsonl was preserved for exactly that).
 
+import type { Server } from 'node:http';
+import type { WebSocketServer } from 'ws';
 import { spawnReplacementAndExit } from './restart.ts';
 import { CLAUDE_BACKEND_ID } from './modelVersions.ts';
 import {
@@ -21,6 +23,7 @@ import {
   clearResumeManifest,
 } from './resumeManifest.ts';
 import { CONDUCT_PROJECT_NAME, ensureConductProject } from './conduct.ts';
+import type { InstanceLike, InstanceManagerLike, InstanceSummary } from './instanceTypes.ts';
 
 // Wait-and-retry grace: after wind-down, wait this long (`RESUME_DRAIN_GRACE_MS`) for every live
 // instance to leave its turn on its own. If the grace elapses, log a warning
@@ -32,7 +35,7 @@ export const RESUME_DRAIN_GRACE_MS = 60000;
 // resource spike on Termux/Android.
 export const RESUME_STAGGER_MS = 1500;
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 // --- Message texts -------------------------------------------------------
 
@@ -55,7 +58,14 @@ export const RESUME_TEXT =
   '✅ CodeConductor has restarted successfully. You may resume activity now — ' +
   'pick up wherever you left off before the restart.';
 
-export function buildConductorResumeText(workers = []) {
+// A worker row in the conductor-resume list (from conductedWorkersOf).
+interface WorkerRow {
+  worktreeName?: string | null;
+  project?: string | null;
+  sessionId?: string | null;
+}
+
+export function buildConductorResumeText(workers: WorkerRow[] = []): string {
   const lines = (Array.isArray(workers) ? workers : []).map((w) => {
     const wt = w?.worktreeName ? `worktree \`${w.worktreeName}\`` : '(no worktree)';
     return `- project \`${w?.project}\`, sessionId \`${w?.sessionId}\`, ${wt}`;
@@ -74,7 +84,7 @@ export function buildConductorResumeText(workers = []) {
 // --- Phase 1+2: drain + restart (old process) ----------------------------
 
 // Classify a live instance into a resume group.
-function groupOf(inst) {
+function groupOf(inst: InstanceLike): 'worker' | 'conductor' | 'other' {
   if (inst.conducted) return 'worker';
   if (inst.project === CONDUCT_PROJECT_NAME) return 'conductor';
   return 'other';
@@ -83,27 +93,27 @@ function groupOf(inst) {
 // Resolve once every live instance has left `turn` (idle/exited/crashed), or on
 // the grace timeout. Returns { timedOut, stragglers } where stragglers are the
 // instances still mid-turn at timeout.
-function waitAllIdle(instances, graceMs) {
+function waitAllIdle(instances: InstanceManagerLike, graceMs: number): Promise<{ timedOut: boolean; stragglers: InstanceLike[] }> {
   const live = [...instances.byId.values()].filter((i) => i.proc);
   const pending = new Set(live.filter((i) => i.status === 'turn'));
   if (pending.size === 0) return Promise.resolve({ timedOut: false, stragglers: [] });
 
   return new Promise((resolve) => {
-    const listeners = new Map();
-    let timer = null;
-    const cleanup = () => {
+    const listeners = new Map<InstanceLike, (s: InstanceSummary) => void>();
+    let timer: NodeJS.Timeout | null = null;
+    function cleanup(): void {
       if (timer) clearTimeout(timer);
       for (const [inst, fn] of listeners) inst.off('status', fn);
-    };
+    }
     for (const inst of pending) {
-      const fn = (s) => {
+      function fn(s: InstanceSummary): void {
         if (s.status === 'turn' || s.status === 'spawning') return;
         pending.delete(inst);
         if (pending.size === 0) {
           cleanup();
           resolve({ timedOut: false, stragglers: [] });
         }
-      };
+      }
       listeners.set(inst, fn);
       inst.on('status', fn);
     }
@@ -120,13 +130,15 @@ function waitAllIdle(instances, graceMs) {
 // written. Split out from drainAndScheduleRestart so tests can exercise it
 // without the process-exiting spawn. Pass server/wss null to skip networking
 // teardown.
-export async function drainToManifest({ server, wss, instances, log = console, graceMs = RESUME_DRAIN_GRACE_MS } = {}) {
+export async function drainToManifest({ server, wss, instances, log = console, graceMs = RESUME_DRAIN_GRACE_MS }: {
+  server?: Server | null; wss?: WebSocketServer | null; instances?: InstanceManagerLike | null; log?: RestartLog; graceMs?: number;
+} = {}): Promise<ResumeEntry[]> {
   if (!instances) return [];
   const live = [...instances.byId.values()].filter((i) => i.proc);
 
   // (1) Snapshot conductor→worker map BEFORE draining — instance ids become
   // meaningless across the restart, so capture the workers now.
-  const workersByConductor = new Map();
+  const workersByConductor = new Map<string, Array<{ project: string; sessionId: string; worktreeName: string | null }>>();
   for (const inst of live) {
     if (groupOf(inst) === 'conductor') {
       workersByConductor.set(inst.id, instances.conductedWorkersOf(inst.id));
@@ -149,7 +161,7 @@ export async function drainToManifest({ server, wss, instances, log = console, g
   for (const inst of live) {
     if (inst.status !== 'turn') continue;
     const text = groupOf(inst) === 'conductor' ? WIND_DOWN_TEXT_CONDUCTOR : WIND_DOWN_TEXT;
-    try { inst.windDown(text); } catch (e) { log.warn?.('resume-restart: windDown failed', e?.message); }
+    try { inst.windDown(text); } catch (e) { log.warn?.('resume-restart: windDown failed', errMsg(e)); }
   }
 
   // (3) Wait for all-idle — gracefully, no forced interrupt ever. If the grace
@@ -171,7 +183,7 @@ export async function drainToManifest({ server, wss, instances, log = console, g
 
   // (5) Build + write the manifest. NO writePendingTempCleanup / shutdownTempSync
   // — carrying temps over is scoped to this path only.
-  const entries = [];
+  const entries: ResumeEntry[] = [];
   for (const inst of instances.byId.values()) {
     // LIVE instances only — byId retains recently exited/crashed instances
     // (proc === null), which are not active sessions and must not be
@@ -179,29 +191,32 @@ export async function drainToManifest({ server, wss, instances, log = console, g
     if (!inst.proc || !inst.sessionId) continue;
     const s = inst.summary();
     const group = groupOf(inst);
-    const entry = {
+    // summary() is the loosely-typed InstanceSummary (index signature), so each
+    // field the manifest carries is narrowed here at point of use — the values
+    // are app-authored and well-formed.
+    const entry: ResumeEntry = {
       project: s.project,
-      sessionId: s.sessionId,
-      cwd: s.cwd,
+      sessionId: s.sessionId as string,
+      cwd: s.cwd as string,
       mode: s.mode,
-      effort: s.effort,
-      thinking: s.thinking,
-      model: s.model ?? null,
+      effort: (s.effort ?? null) as string | null,
+      thinking: (s.thinking ?? null) as string | null,
+      model: (s.model ?? null) as string | null,
       // Last known context capacity. A FALLBACK for the restored session, used
       // only if the model's custom-model row is gone by the time we boot; live
       // registry resolution wins otherwise.
-      contextWindowTokens: s.contextWindowTokens ?? null,
+      contextWindowTokens: (s.contextWindowTokens ?? null) as number | null,
       // Backend id. The durable session-backends sidecar is the authority on
       // resume; carried here too as belt-and-braces so a restart reconstructs it
       // directly. The model itself rides in `model` above (recovered from jsonl
       // uniformly for every backend).
-      backend: s.backend ?? CLAUDE_BACKEND_ID,
-      worktreeName: s.worktree?.worktreeName ?? null,
+      backend: (s.backend ?? CLAUDE_BACKEND_ID) as string,
+      worktreeName: ((s.worktree as { worktreeName: string | null } | null)?.worktreeName ?? null),
       temp: !!s.temp,
       conducted: !!s.conducted,
       debug: !!s.debug,
-      title: s.title ?? null,
-      firstPrompt: s.firstPrompt ?? null,
+      title: (s.title ?? null) as string | null,
+      firstPrompt: (s.firstPrompt ?? null) as string | null,
       autoApprovePlan: !!s.autoApprovePlan,
       group,
       wasBusy: busyAtDrain.has(inst.id),
@@ -211,7 +226,7 @@ export async function drainToManifest({ server, wss, instances, log = console, g
       // intent. On boot these re-arm the wall-clock sweep (see
       // restoreFromResumeManifest); a deadline that elapsed during the restart
       // fires on the first post-boot tick. Both falsy for non-overage sessions.
-      overageResumeAt: s.autoResumeAt ?? null,
+      overageResumeAt: (s.autoResumeAt ?? null) as number | null,
       overageStopped: !!inst.autoStoppedForOverage,
       // Was this session stopped mid-work (full "continue" preamble) vs.
       // queued-only (softened preamble)? Carried so the resume text is right
@@ -226,16 +241,18 @@ export async function drainToManifest({ server, wss, instances, log = console, g
     entries.push(entry);
   }
   try { writeResumeManifest(entries); }
-  catch (e) { log.warn?.('resume-restart: manifest write failed', e?.message); }
+  catch (e) { log.warn?.('resume-restart: manifest write failed', errMsg(e)); }
 
   // (6) Gracefully close subprocesses (stdin EOF) WITHOUT wiping temp jsonl.
   try { instances.shutdownForResumeSync(); }
-  catch (e) { log.warn?.('resume-restart: shutdownForResumeSync error', e?.message); }
+  catch (e) { log.warn?.('resume-restart: shutdownForResumeSync error', errMsg(e)); }
 
   return entries;
 }
 
-export async function drainAndScheduleRestart({ server, wss, instances, log = console, graceMs = RESUME_DRAIN_GRACE_MS } = {}) {
+export async function drainAndScheduleRestart({ server, wss, instances, log = console, graceMs = RESUME_DRAIN_GRACE_MS }: {
+  server?: Server | null; wss?: WebSocketServer | null; instances?: InstanceManagerLike | null; log?: RestartLog; graceMs?: number;
+} = {}): Promise<void> {
   try {
     await drainToManifest({ server, wss, instances, log, graceMs });
   } catch (e) {
@@ -248,29 +265,38 @@ export async function drainAndScheduleRestart({ server, wss, instances, log = co
 // --- Phase 3: restore on boot (new process) ------------------------------
 
 // Resolve once the instance reaches idle (loadHistory done) or exited/crashed.
-function waitForIdleOnce(inst, { timeoutMs = 60000 } = {}) {
+function waitForIdleOnce(inst: InstanceLike, { timeoutMs = 60000 }: { timeoutMs?: number } = {}): Promise<string> {
   if (inst.status === 'idle') return Promise.resolve('idle');
   if (inst.status === 'exited' || inst.status === 'crashed') return Promise.resolve(inst.status);
   return new Promise((resolve) => {
-    let timer = null;
-    const done = (st) => { if (timer) clearTimeout(timer); inst.off('status', fn); resolve(st); };
-    const fn = (s) => {
+    let timer: NodeJS.Timeout | null = null;
+    function done(st: string): void {
+      if (timer) clearTimeout(timer);
+      inst.off('status', fn);
+      resolve(st);
+    }
+    function fn(s: InstanceSummary): void {
       if (s.status === 'idle' || s.status === 'exited' || s.status === 'crashed') done(s.status);
-    };
+    }
     inst.on('status', fn);
     timer = setTimeout(() => done('timeout'), timeoutMs);
   });
 }
 
-export async function restoreFromResumeManifest({ instances, log = console, staggerMs = RESUME_STAGGER_MS } = {}) {
+export async function restoreFromResumeManifest({ instances, log = console, staggerMs = RESUME_STAGGER_MS }: {
+  instances?: InstanceManagerLike | null; log?: RestartLog; staggerMs?: number;
+} = {}): Promise<{ restored: number }> {
   if (!instances) return { restored: 0 };
   // Read + unlink first: at-most-once, so a crash mid-restore can't loop.
-  const { instances: entries } = readResumeManifest({ log });
+  const { instances: entriesRaw } = readResumeManifest({ log });
   clearResumeManifest();
-  if (!entries.length) return { restored: 0 };
+  if (!entriesRaw.length) return { restored: 0 };
+  // The manifest is app-authored (drainToManifest writes exactly ResumeEntry),
+  // so a single boundary cast narrows the unknown[] read.
+  const entries = entriesRaw as ResumeEntry[];
 
   if (entries.some((e) => e.group === 'conductor')) {
-    try { await ensureConductProject(); } catch (e) { log.warn?.('resume-restart: ensureConductProject failed', e?.message); }
+    try { await ensureConductProject(); } catch (e) { log.warn?.('resume-restart: ensureConductProject failed', errMsg(e)); }
   }
 
   let restored = 0;
@@ -317,14 +343,14 @@ export async function restoreFromResumeManifest({ instances, log = console, stag
       // `_inUsageWindowFlow(inst)` guards against re-arming an auto-resume onto a
       // now-exempt (e.g. ollama-only) restored session — such a session never
       // persisted overageStopped:true, so this is belt-and-braces.
-      if (e.overageStopped && Number.isFinite(e.overageResumeAt) && instances._inUsageWindowFlow(inst)) {
+      if (e.overageStopped && typeof e.overageResumeAt === 'number' && Number.isFinite(e.overageResumeAt) && instances._inUsageWindowFlow(inst)) {
         inst._overageResetsAt = e.overageResetsAt ?? null;
         inst._overageWasStopped = !!e.overageWasStopped; // preamble select survives restart
         // Restore queued messages BEFORE re-arming so armRestored's status emit
         // carries the restored queuedCount (badge shows "· N queued").
         inst._overageQueue = Array.isArray(e.overageQueue) ? e.overageQueue : [];
-        try { instances._armRestoredAutoResume(inst, e.overageResumeAt * 1000); }
-        catch (err) { log.warn?.('resume-restart: overage re-arm failed', err?.message); }
+        try { instances._armRestoredAutoResume(inst, (e.overageResumeAt ?? 0) * 1000); }
+        catch (err) { log.warn?.('resume-restart: overage re-arm failed', errMsg(err)); }
       }
       // Only re-prompt sessions that were mid-turn when the drain began.
       // Idle sessions are resurrected silently — they have nothing to resume.
@@ -332,13 +358,52 @@ export async function restoreFromResumeManifest({ instances, log = console, stag
       // the window resets, so a RESUME_TEXT here would double-prompt.
       if (e.wasBusy !== false && !e.overageStopped) {
         const text = e.group === 'conductor' ? buildConductorResumeText(e.workers) : RESUME_TEXT;
-        try { await inst.prompt(text); } catch (err) { log.warn?.('resume-restart: notify failed', err?.message); }
+        try { await inst.prompt(text); } catch (err) { log.warn?.('resume-restart: notify failed', errMsg(err)); }
       }
       restored++;
     } catch (err) {
-      log.warn?.(`resume-restart: failed to resume ${e.sessionId}: ${err?.message}`);
+      log.warn?.(`resume-restart: failed to resume ${e.sessionId}: ${errMsg(err)}`);
     }
   }
   if (restored > 0) log.log?.(`resume-restart: resumed ${restored} session(s) from previous run`);
   return { restored };
+}
+
+// A resume-manifest entry (drained from summary()/instance fields, restored on
+// boot). Fields are typed to the exact shapes drainToManifest writes.
+interface ResumeEntry {
+  project: string;
+  sessionId: string;
+  cwd: string;
+  mode: string;
+  effort: string | null;
+  thinking: string | null;
+  model: string | null;
+  contextWindowTokens: number | null;
+  backend: string;
+  worktreeName: string | null;
+  temp: boolean;
+  conducted: boolean;
+  debug: boolean;
+  title: string | null;
+  firstPrompt: string | null;
+  autoApprovePlan: boolean;
+  group: 'conductor' | 'worker' | 'other';
+  wasBusy: boolean;
+  overageResumeAt: number | null;
+  overageStopped: boolean;
+  overageWasStopped: boolean;
+  overageResetsAt: number | null;
+  overageQueue: unknown[];
+  workers?: Array<{ project: string; sessionId: string; worktreeName: string | null }>;
+}
+
+interface RestartLog {
+  warn?: (...args: unknown[]) => void;
+  error?: (...args: unknown[]) => void;
+  log?: (...args: unknown[]) => void;
+}
+
+function errMsg(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
 }

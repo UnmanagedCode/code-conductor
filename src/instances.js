@@ -2630,7 +2630,7 @@ export class InstanceManager extends EventEmitter {
     // `claude`: `finalModel` keeps the caller's foreign model id, so the fallback
     // would launch a real `claude --model <foreign-id>` against the Anthropic
     // account. Reachable from POST /api/instances and from the graceful-restart
-    // replay (resumeRestart.js), which carries the recorded backend id forward.
+    // replay (resumeRestart.ts), which carries the recorded backend id forward.
     if (explicitBackend && !isKnownBackend(explicitBackend)) {
       throw Object.assign(
         new Error(`unknown backend '${explicitBackend}' — add it in Settings → Backends, or omit it to use '${CLAUDE_BACKEND_ID}'`),
@@ -2776,7 +2776,7 @@ export class InstanceManager extends EventEmitter {
     }
     // Recover firstPrompt from the on-disk jsonl on resume. A resumed session
     // gets a BRAND NEW Instance object (firstPrompt starts null) — unlike the
-    // manifest-driven restart-resume path (resumeRestart.js), which seeds it
+    // manifest-driven restart-resume path (resumeRestart.ts), which seeds it
     // from its own in-memory snapshot, every OTHER resume (a UI "resume dead
     // session" click, crash/anchor auto-resume, respawn_instance) had nothing
     // recovering it, so the next prompt()'s fallback-when-null guard

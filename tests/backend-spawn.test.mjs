@@ -506,7 +506,7 @@ describe('an unknown or removed backend never falls through to real claude', () 
   // across the restart must surface there too rather than spawn bare claude.
   test('door 1 (restart replay): a manifest entry naming a removed backend is refused', async () => {
     await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
-    // Exactly the create() call resumeRestart.js:293 makes for a carried-over session.
+    // Exactly the create() call resumeRestart.ts:293 makes for a carried-over session.
     await assert.rejects(
       () => instances.create({
         project: 'p', resume: 'ffffffff-0000-0000-0000-000000000000',

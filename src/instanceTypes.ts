@@ -17,6 +17,7 @@
 
 import type { UiEvent } from './parser.ts';
 import type { TaskRecord } from './taskReconstruct.ts';
+import type { WorktreeMeta } from './worktrees.ts';
 
 export interface InstanceSummary {
   id: string;
@@ -68,9 +69,26 @@ export interface InstanceLike {
   setMode(mode: string): Promise<unknown>;
   setModel(model: string, backend?: unknown): Promise<unknown>;
   interrupt(opts?: { force?: boolean }): Promise<unknown>;
-  kill(): Promise<unknown>;
+  kill(opts?: { graceMs?: number }): Promise<unknown>;
   setAutoApprovePlan(enabled: boolean): void;
   resolveHookCallback(toolUseId: unknown, allow: boolean): boolean;
+  // MCP handler surface (src/mcp/handlers.ts): the worktree the session is
+  // attached to (or null), temp→normal promotion, and the EventEmitter 'event'
+  // channel (UI events) alongside 'status'.
+  readonly worktree: WorktreeMeta | null;
+  promoteToNormal(): Promise<InstanceSummary>;
+  on(event: 'event', cb: (ev: UiEvent | null) => void): void;
+  off(event: 'event', cb: (ev: UiEvent | null) => void): void;
+  // Resume-restart reads/writes (src/resumeRestart.ts). `firstPrompt` is the
+  // session's first-prompt line, read + written on the restored instance.
+  readonly conducted: boolean;
+  readonly temp: boolean;
+  firstPrompt: string | null;
+  setTitle(title: string): void;
+  windDown(text: string): void;
+  emit(event: 'status', summary: InstanceSummary): void;
+  on(event: 'status', cb: (s: InstanceSummary) => void): void;
+  off(event: 'status', cb: (s: InstanceSummary) => void): void;
 }
 
 export interface InstanceManagerLike {
@@ -94,4 +112,39 @@ export interface InstanceManagerLike {
   on(event: 'status', cb: (summary: InstanceSummary) => void): void;
   on(event: 'list_changed' | 'subscription_changed', cb: () => void): void;
   on(event: 'snapshot_reset', cb: (snap: { id: string }) => void): void;
+  // Resume-restart surface (src/resumeRestart.ts).
+  conductedWorkersOf(conductorId: string): Array<{ project: string; sessionId: string; worktreeName: string | null }>;
+  isIdleCaller(instanceId: string): boolean;
+  shutdownForResumeSync(): void;
+  create(input: {
+    project: string;
+    resume?: string;
+    mode?: string | null;
+    effort?: string | null;
+    tier?: string;
+    role?: string;
+    thinking?: string | null;
+    model?: string | null;
+    contextWindowTokens?: number | null;
+    backend?: string | null;
+    worktree?: string | boolean | null;
+    temp?: boolean;
+    conducted?: boolean;
+    debug?: boolean;
+    autoApprovePlan?: boolean;
+    callerInstanceId?: string | null;
+    prefill?: string;
+  }): Promise<InstanceLike>;
+  _inUsageWindowFlow(inst: InstanceLike): boolean;
+  _armRestoredAutoResume(inst: InstanceLike, fireAtMs: number): void;
+  // MCP handler surface (src/mcp/handlers.ts).
+  sessionIdsForProject(project: string): string[];
+  list(): Array<InstanceSummary & { hasIdleSubscriber: boolean }>;
+  liveForSession(sessionId: string): InstanceLike | undefined;
+  remove(id: string): Promise<unknown>;
+  respawn(id: string): Promise<InstanceLike>;
+  subscribeIdle(callerSessionId: string, targetSessionId: string, timeoutMs?: number): { already: boolean };
+  unsubscribeIdle(callerSessionId: string, targetSessionId: string): { removed: boolean };
+  armSessionRenew(instanceId: string, opts: { summary: string }): void;
+  idsForWorktree(project: string, worktreeName: string): string[];
 }

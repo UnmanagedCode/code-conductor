@@ -26,24 +26,27 @@ import {
   createWorktree as fsCreateWorktree, removeWorktree, getWorktree,
   syncWorktree as fsSyncWorktree, mergeWorktreeIntoParent, buildRebasePrompt,
   worktreeDirtyLines, runGit, DIFF_BYTE_CAP, assertValidBaseRef,
+  type WorktreeMeta,
 } from '../worktrees.ts';
 import { buildApprovePrompt, buildRejectPrompt } from '../planApproval.ts';
 // DOM-free formatter shared with the UI question card (public/blocks.js
 // re-exports it) so an answer_question MCP answer is byte-identical to a UI
 // submit — one canonical function, no fork. See public/userQuestionAnswers.js.
-import { formatUserQuestionAnswers } from '../../public/userQuestionAnswers.js';
+import { formatUserQuestionAnswers, type Question, type UserQuestionAnswer } from '../../public/userQuestionAnswers.js';
 import { getCatalog as getProjectConventionsCatalog, composeProjectScaffold } from '../projectConventions.ts';
-import { composeProjectConventionsDoc } from '../projectClaudeMd.js';
+import { composeProjectConventionsDoc } from '../projectClaudeMd.ts';
 import { getCatalog as getConductorConventionsCatalog, getSelection as getConductorSelection } from '../conductorConventions.ts';
-import { isKnownFamily, isKnownTier, defaultVersion, familyOf, CLAUDE_BACKEND_ID } from '../modelVersions.ts';
+import { isKnownFamily, isKnownTier, defaultVersion, familyOf, CLAUDE_BACKEND_ID, type TierName } from '../modelVersions.ts';
 import { getTierBackend, resolveRoleBackend, isResolvableRole, backendForModel } from '../appSettings.ts';
 import { textPayload } from './content.ts';
 import { pageInstanceEvents } from '../eventArchive.ts';
 import { parseNumstat, parseNameStatus, indexDiffLines, paginateDiff } from './diffPaging.ts';
 import {
   capText, MSG_TEXT_CAP, reconstructMessages, mergeRecentWithDisk, capBlockInput,
-  hasPlanOrQuestions, ringTurnIndex, bondTrailingTurn,
+  hasPlanOrQuestions, ringTurnIndex, bondTrailingTurn, type ReconMessage,
 } from './messageReconstruction.ts';
+import type { InstanceLike, InstanceManagerLike, InstanceSummary } from '../instanceTypes.ts';
+import type { UiEvent } from '../parser.ts';
 
 // Dirty-line cap for project_status — mirror project_read/project_diff's
 // bounded-output pattern so no tool can emit an unbounded body. (The
@@ -51,6 +54,35 @@ import {
 const DIRTY_CAP = 500;
 
 // ---------- helpers ----------
+
+// The per-handler call context injected by the MCP server (src/mcp/server.ts).
+interface McpCtx {
+  instances?: InstanceManagerLike | null;
+  callerId?: string | null;
+}
+
+// Loose type for handlers that don't destructure their args (schema-validated
+// by the tool registry; see mcp/tools.ts).
+type McpArgs = Record<string, unknown>;
+
+// A soft-refusal the handler hands back as a normal (non-error) result.
+interface SoftRefusal {
+  ok: false;
+  code: string;
+  sessionId: string | null;
+  reason: string;
+}
+
+// A per-file diff row (project_diff summary mode), optionally carrying the
+// pre-rename path for a rename entry.
+interface DiffFileRow {
+  path: string;
+  status: string;
+  additions: number;
+  deletions: number;
+  binary: boolean;
+  oldPath?: string;
+}
 
 // The conductor-facing projection of an instance summary.
 //
@@ -60,7 +92,7 @@ const DIRTY_CAP = 500;
 // list_instances / spawn_instance / wait_for_idle.summary / respawn_instance /
 // promote_session without ever being documented. Adding a key here is now a
 // deliberate act, and CONDUCTOR_VIEW_KEYS is asserted against the documented
-// list in src/mcp/tools.js by tests/mcp-conductor-view.test.mjs, so the two
+// list in src/mcp/tools.ts by tests/mcp-conductor-view.test.mjs, so the two
 // cannot drift.
 //
 // Excluded on purpose: `id` + `callerInstanceId` (per-process instanceIds that
@@ -105,8 +137,8 @@ export const CONDUCTOR_VIEW_KEYS = [
   'overageResetsAt',
 ];
 
-function toConductorView(summary) {
-  const out = {};
+function toConductorView(summary: InstanceSummary): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
   for (const k of CONDUCTOR_VIEW_KEYS) out[k] = summary[k];
   return out;
 }
@@ -122,11 +154,9 @@ function toConductorView(summary) {
 //   - SESSION_UNKNOWN: no such session anywhere.
 // The disk probe (findSessionLocation) runs ONLY on the not-live path, so the
 // hot path stays a pure in-memory lookup.
-async function getInst(instances, sessionId) {
+async function getInst(instances: InstanceManagerLike | null | undefined, sessionId: string): Promise<{ inst: InstanceLike } | { soft: SoftRefusal }> {
   if (!instances) {
-    const err = new Error('orchestrator was started without an InstanceManager');
-    err.statusCode = 500;
-    throw err;
+    throw Object.assign(new Error('orchestrator was started without an InstanceManager'), { statusCode: 500 });
   }
   if (typeof sessionId !== 'string' || !sessionId) {
     return { soft: { ok: false, code: 'SESSION_UNKNOWN', sessionId: sessionId ?? null,
@@ -149,55 +179,57 @@ async function getInst(instances, sessionId) {
 
 // Resolve when `inst.status` first satisfies predicate, or reject on timeout.
 // Resolves immediately if the predicate is already true.
-function waitForStatus(inst, predicate, timeoutMs) {
+function waitForStatus(inst: InstanceLike, predicate: (status: string) => boolean, timeoutMs: number): Promise<{ status: string; summary: InstanceSummary }> {
   return new Promise((resolve, reject) => {
     if (predicate(inst.status)) {
       resolve({ status: inst.status, summary: inst.summary() });
       return;
     }
-    const onStatus = (s) => {
+    let timer: NodeJS.Timeout | null = null;
+    function cleanup(): void {
+      if (timer) clearTimeout(timer);
+      inst.off('status', onStatus);
+    }
+    function onStatus(s: InstanceSummary): void {
       if (predicate(s.status)) {
         cleanup();
         resolve({ status: s.status, summary: s });
       }
-    };
-    const timer = setTimeout(() => {
+    }
+    timer = setTimeout(() => {
       cleanup();
       reject(new Error(`wait_for_idle timed out after ${timeoutMs} ms (status=${inst.status})`));
     }, timeoutMs);
-    const cleanup = () => {
-      clearTimeout(timer);
-      inst.off('status', onStatus);
-    };
     inst.on('status', onStatus);
   });
 }
 
 // Resolve when the next event matching `predicate` arrives. Rejects on
 // timeout or if the instance exits/crashes mid-wait.
-function waitForEvent(inst, predicate, timeoutMs) {
+function waitForEvent(inst: InstanceLike, predicate: (ev: UiEvent | null) => boolean, timeoutMs: number): Promise<UiEvent | null> {
   return new Promise((resolve, reject) => {
-    const onEvent = (ev) => {
+    let timer: NodeJS.Timeout | null = null;
+    function cleanup(): void {
+      if (timer) clearTimeout(timer);
+      inst.off('event', onEvent);
+      inst.off('status', onStatus);
+    }
+    function onEvent(ev: UiEvent | null): void {
       if (predicate(ev)) {
         cleanup();
         resolve(ev);
       }
-    };
-    const onStatus = (s) => {
+    }
+    function onStatus(s: InstanceSummary): void {
       if (s.status === 'exited' || s.status === 'crashed') {
         cleanup();
         reject(new Error(`instance ${s.status} before event arrived`));
       }
-    };
-    const timer = setTimeout(() => {
+    }
+    timer = setTimeout(() => {
       cleanup();
       reject(new Error(`wait timed out after ${timeoutMs} ms`));
     }, timeoutMs);
-    const cleanup = () => {
-      clearTimeout(timer);
-      inst.off('event', onEvent);
-      inst.off('status', onStatus);
-    };
     inst.on('event', onEvent);
     inst.on('status', onStatus);
   });
@@ -205,7 +237,7 @@ function waitForEvent(inst, predicate, timeoutMs) {
 
 // ---------- read-only ----------
 
-export async function listProjects(_args, { instances }) {
+export async function listProjects(_args: McpArgs, { instances }: McpCtx) {
   const projects = await fsListProjects();
   const enriched = await Promise.all(projects.map(async (p) => {
     const worktrees = await fsListWorktrees(p.name).catch(() => []);
@@ -225,7 +257,7 @@ export async function listProjects(_args, { instances }) {
   return enriched;
 }
 
-export async function listInstances(_args, { instances }) {
+export async function listInstances(_args: McpArgs, { instances }: McpCtx) {
   // Project every row to the allowlist (sessionId is the conductor-facing
   // handle), then re-attach `hasIdleSubscriber`. It is added by list(), not by
   // Instance.summary(), so it is deliberately NOT in CONDUCTOR_VIEW_KEYS — the
@@ -236,7 +268,7 @@ export async function listInstances(_args, { instances }) {
     : [];
 }
 
-export async function listSessions({ project, worktree, includeArchived = false }) {
+export async function listSessions({ project, worktree, includeArchived = false }: { project: string; worktree?: string; includeArchived?: boolean }) {
   let sessions;
   if (worktree) {
     const wt = await getWorktree(project, worktree);
@@ -251,24 +283,22 @@ export async function listSessions({ project, worktree, includeArchived = false 
 // Map the shared worktree-metadata shape (whose property is `worktreeName`)
 // to the MCP contract's `worktree` key. The internal/REST field stays
 // `worktreeName`; this is a boundary mapping, not an alias.
-function toMcpWorktree({ worktreeName, ...rest }) {
+function toMcpWorktree({ worktreeName, ...rest }: WorktreeMeta) {
   return { worktree: worktreeName, ...rest };
 }
 
-export async function listWorktrees({ project }) {
+export async function listWorktrees({ project }: { project: string }) {
   const wts = await fsListWorktrees(project);
   return wts.map(toMcpWorktree);
 }
 
-export async function locateSession({ sessionId }) {
+export async function locateSession({ sessionId }: { sessionId?: string }) {
   if (typeof sessionId !== 'string' || !sessionId) {
     throw new Error('sessionId required');
   }
   const hit = await findSessionLocation(sessionId);
   if (!hit) {
-    const err = new Error(`session not found: ${sessionId}`);
-    err.statusCode = 404;
-    throw err;
+    throw Object.assign(new Error(`session not found: ${sessionId}`), { statusCode: 404 });
   }
   // {project, worktreeName} → {project, worktree} (MCP contract).
   return { project: hit.project, worktree: hit.worktreeName ?? null };
@@ -286,15 +316,15 @@ export async function locateSession({ sessionId }) {
 // NOTE: a single turn larger than the ring cap can leave a mid-turn gap (the
 // archive's dense _seq space can't overlap the live ring); get_transcript
 // covers dropped PRIOR turns — for prose mid-giant-turn use get_recent_messages.
-export async function getTranscript({ sessionId, sinceSeq = -1, limit = 200 }, { instances }) {
+export async function getTranscript({ sessionId, sinceSeq = -1, limit = 200 }: { sessionId: string; sinceSeq?: number; limit?: number }, { instances }: McpCtx) {
   const r = await getInst(instances, sessionId);
-  if (r.soft) return r.soft;
+  if ('soft' in r) return r.soft;
   const inst = r.inst;
   const page = sinceSeq >= 0
     ? await pageInstanceEvents(inst, { after: sinceSeq, limit })
     : await pageInstanceEvents(inst, { limit });
   const events = page.events;
-  const nextAfter = events.length ? events[events.length - 1]._seq : sinceSeq;
+  const nextAfter = events.length ? events[events.length - 1]._seq as number : sinceSeq;
   return {
     status: inst.status,
     sessionId: inst.sessionId,
@@ -310,7 +340,20 @@ export async function getTranscript({ sessionId, sinceSeq = -1, limit = 200 }, {
 
 // ---------- mutating: instance ----------
 
-export async function spawnInstance(args, { instances, callerId }) {
+interface SpawnArgs {
+  project: string;
+  mode?: string;
+  effort?: string;
+  thinking?: string;
+  model?: string;
+  resume?: string;
+  worktree?: string | boolean;
+  createWorktree?: boolean;
+  temp?: boolean;
+  debug?: boolean;
+}
+
+export async function spawnInstance(args: SpawnArgs, { instances, callerId }: McpCtx) {
   if (!instances) throw new Error('orchestrator has no InstanceManager');
   // callerId is the conductor's stable sessionId (?caller=). Resolve it to the
   // conductor's live instanceId so callerInstanceId stays an instanceId.
@@ -328,7 +371,7 @@ export async function spawnInstance(args, { instances, callerId }) {
   //     backend (robustness);
   //   - a Claude model id (claude-…, incl. future ones) → pass-through claude;
   //   - anything else → reject, rather than silently spawn a broken claude.
-  let model = args.model;
+  let model: string | null | undefined = args.model;
   let backend = CLAUDE_BACKEND_ID;
   // Which tier/role the model was resolved THROUGH, forwarded to create() so its
   // stored default effort applies when the caller passed no `effort`. Exactly one
@@ -337,10 +380,10 @@ export async function spawnInstance(args, { instances, callerId }) {
   //
   // No window/capacity is threaded from here: a binding is {backend, model},
   // and create() resolves the one capacity that pair implies.
-  let tier;
-  let role;
+  let tier: string | undefined;
+  let role: string | undefined;
   if (model && isKnownTier(model)) {
-    const binding = getTierBackend(model); // {backend, model}
+    const binding = getTierBackend(model as TierName); // {backend, model}
     tier = model;
     backend = binding.backend;
     model = binding.model;
@@ -352,7 +395,7 @@ export async function spawnInstance(args, { instances, callerId }) {
   } else if (model && isKnownFamily(model)) {
     model = defaultVersion(model);
   } else if (model && backendForModel(model)) {
-    backend = backendForModel(model);
+    backend = backendForModel(model) as string; // non-null in this branch (guard above)
   } else if (model && !familyOf(model)) {
     // A non-empty model that is not a tier, family alias, a configured backend's
     // model, or a Claude id — refuse instead of resolving to a broken bare-claude
@@ -409,11 +452,11 @@ export async function spawnInstance(args, { instances, callerId }) {
     // marker-only crash stub) is soft-refused rather than surfaced as a raw
     // spawn error — mirrors respawnInstance's SESSION_NOT_LIVE shape so the
     // conductor gets an actionable hint instead of a crashed worker.
-    if (e?.code === 'SESSION_UNKNOWN') {
+    if (errCode(e) === 'SESSION_UNKNOWN') {
       return {
         ok: false,
         code: 'SESSION_UNKNOWN',
-        sessionId: args.resume,
+        sessionId: args.resume ?? null,
         reason: `no resumable conversation for session ${args.resume} — verify the id via list_sessions`,
       };
     }
@@ -428,43 +471,46 @@ export async function spawnInstance(args, { instances, callerId }) {
 // conductor role prompt's Core rule). A failure to subscribe (e.g. the caller died in between) must
 // never turn a successful prompt-send into an error — it degrades to
 // subscribed:false with a reason instead.
-async function maybeSubscribeIdle({ instances, callerId }, sessionId, { subscribe, subscribeTimeoutMs }) {
+async function maybeSubscribeIdle({ instances, callerId }: McpCtx, sessionId: string, { subscribe, subscribeTimeoutMs }: { subscribe: boolean; subscribeTimeoutMs?: number }): Promise<{ subscribed: boolean; already?: boolean; subscribeSkipped?: string }> {
   if (!subscribe) return { subscribed: false };
   if (!callerId) return { subscribed: false, subscribeSkipped: 'no-caller' };
   if (callerId === sessionId) return { subscribed: false, subscribeSkipped: 'self' };
+  if (!instances) return { subscribed: false, subscribeSkipped: 'no-manager' }; // unreachable (getInst threw)
   try {
     const { already } = instances.subscribeIdle(callerId, sessionId, subscribeTimeoutMs);
     return { subscribed: true, already };
   } catch (e) {
-    return { subscribed: false, subscribeSkipped: e.message };
+    return { subscribed: false, subscribeSkipped: errMsg(e) };
   }
 }
 
 export async function sendPrompt(
-  { sessionId, text, wait = false, waitTimeoutMs = 600_000, subscribe = true, subscribeTimeoutMs },
-  { instances, callerId },
+  { sessionId, text, wait = false, waitTimeoutMs = 600_000, subscribe = true, subscribeTimeoutMs }: {
+    sessionId: string; text: string; wait?: boolean; waitTimeoutMs?: number; subscribe?: boolean; subscribeTimeoutMs?: number;
+  },
+  { instances, callerId }: McpCtx,
 ) {
   const r = await getInst(instances, sessionId);
-  if (r.soft) return r.soft;
+  if ('soft' in r) return r.soft;
   const inst = r.inst;
   // getInst is LIVE-only, so inst.proc is guaranteed here.
   if (wait) {
     // Attach the listener *before* sending so we can't miss a fast turn_end.
     // A one-shot subscription registered here would fire on the *next* turn
     // (this one is already being awaited inline), so skip it entirely.
-    const waiter = waitForEvent(inst, (ev) => ev.kind === 'turn_end', waitTimeoutMs);
+    const waiter = waitForEvent(inst, (ev) => ev?.kind === 'turn_end', waitTimeoutMs);
     await inst.prompt(text);
     const ev = await waiter;
     return { sessionId: inst.sessionId, turnEnd: ev, subscribed: false, subscribeSkipped: 'wait' };
   }
   await inst.prompt(text);
-  const sub = await maybeSubscribeIdle({ instances, callerId }, inst.sessionId, { subscribe, subscribeTimeoutMs });
+  const sub = await maybeSubscribeIdle({ instances, callerId }, inst.sessionId as string, { subscribe, subscribeTimeoutMs });
   return { sessionId: inst.sessionId, status: inst.status, ...sub };
 }
 
-export async function waitForIdle({ sessionId, timeoutMs = 600_000 }, { instances }) {
+export async function waitForIdle({ sessionId, timeoutMs = 600_000 }: { sessionId: string; timeoutMs?: number }, { instances }: McpCtx) {
   const r = await getInst(instances, sessionId);
-  if (r.soft) return r.soft;
+  if ('soft' in r) return r.soft;
   const inst = r.inst;
   const { status } = await waitForStatus(
     inst,
@@ -474,9 +520,9 @@ export async function waitForIdle({ sessionId, timeoutMs = 600_000 }, { instance
   return { sessionId: inst.sessionId, status, summary: toConductorView(inst.summary()) };
 }
 
-export async function setMode({ sessionId, mode }, { instances }) {
+export async function setMode({ sessionId, mode }: { sessionId: string; mode: string }, { instances }: McpCtx) {
   const r = await getInst(instances, sessionId);
-  if (r.soft) return r.soft;
+  if ('soft' in r) return r.soft;
   const inst = r.inst;
   await inst.setMode(mode);
   return { sessionId: inst.sessionId, mode: inst.mode };
@@ -488,7 +534,7 @@ export async function setMode({ sessionId, mode }, { instances }) {
 // by InstanceManager.mcpServerUrl). The stub names the target and
 // points at get_recent_messages so the conductor can inspect the
 // result. Re-subscribe after every callback to keep getting pings.
-export async function subscribeToIdle({ sessionId, timeoutMs }, { instances, callerId }) {
+export async function subscribeToIdle({ sessionId, timeoutMs }: { sessionId: string; timeoutMs?: number }, { instances, callerId }: McpCtx) {
   if (!instances) throw new Error('orchestrator has no InstanceManager');
   if (!callerId) {
     throw new Error(
@@ -499,12 +545,12 @@ export async function subscribeToIdle({ sessionId, timeoutMs }, { instances, cal
   // Existence check before registering, so a not-live target surfaces here
   // (soft) rather than as a silent drop at callback time.
   const r = await getInst(instances, sessionId);
-  if (r.soft) return r.soft;
+  if ('soft' in r) return r.soft;
   const res = instances.subscribeIdle(callerId, sessionId, timeoutMs);
   return { sessionId, already: res.already };
 }
 
-export async function unsubscribeFromIdle({ sessionId }, { instances, callerId }) {
+export async function unsubscribeFromIdle({ sessionId }: { sessionId: string }, { instances, callerId }: McpCtx) {
   if (!instances) throw new Error('orchestrator has no InstanceManager');
   if (!callerId) throw new Error('caller identity missing — MCP URL lacks ?caller=…');
   // Idempotent + must work even on a dead target (to clean up), so no getInst.
@@ -521,7 +567,7 @@ export async function unsubscribeFromIdle({ sessionId }, { instances, callerId }
 // a code-conductor-managed session and always acts on the caller's own session.
 // The `/clear` is deferred to turn_end (not fired now) so this tool call's turn
 // completes normally first — see src/sessionRenew.ts.
-export async function renewSession({ summary }, { instances, callerId }) {
+export async function renewSession({ summary }: { summary?: string }, { instances, callerId }: McpCtx) {
   if (!instances) throw new Error('orchestrator has no InstanceManager');
   if (!callerId) {
     throw new Error(
@@ -535,7 +581,7 @@ export async function renewSession({ summary }, { instances, callerId }) {
       reason: 'summary must be a non-empty string — write the handoff context to seed the cleared session with.' };
   }
   const r = await getInst(instances, callerId);
-  if (r.soft) return r.soft;
+  if ('soft' in r) return r.soft;
   instances.armSessionRenew(r.inst.id, { summary });
   return {
     ok: true,
@@ -548,23 +594,23 @@ export async function renewSession({ summary }, { instances, callerId }) {
   };
 }
 
-export async function interruptTurn({ sessionId, force }, { instances }) {
+export async function interruptTurn({ sessionId, force }: { sessionId: string; force?: boolean }, { instances }: McpCtx) {
   const r = await getInst(instances, sessionId);
-  if (r.soft) return r.soft;
+  if ('soft' in r) return r.soft;
   const inst = r.inst;
   await inst.interrupt({ force: !!force });
   return { sessionId: inst.sessionId, status: inst.status, interrupting: !!inst.interrupting };
 }
 
-export async function killInstance({ sessionId }, { instances }) {
+export async function killInstance({ sessionId }: { sessionId: string }, { instances }: McpCtx) {
   const r = await getInst(instances, sessionId);
-  if (r.soft) return r.soft;
+  if ('soft' in r) return r.soft;
   const inst = r.inst;
   // LIVE-only: getInst resolves only running instances, so kill_instance can no
   // longer reap an already-exited non-temp instance by sessionId (it is already
   // gone from the process table; resume it first if you need to act on it).
   // Accepted under the strict-live contract.
-  await instances.remove(inst.id);
+  await instances!.remove(inst.id);
   return { sessionId };
 }
 
@@ -572,7 +618,7 @@ export async function killInstance({ sessionId }, { instances }) {
 // instance, so it cannot use the LIVE-only getInst. Resolve the sessionId to
 // its in-byId instance regardless of proc; instances.respawn() 409s if it's
 // actually running. No in-byId match → SESSION_NOT_LIVE soft refusal.
-export async function respawnInstance({ sessionId }, { instances }) {
+export async function respawnInstance({ sessionId }: { sessionId: string }, { instances }: McpCtx) {
   if (!instances) throw new Error('orchestrator has no InstanceManager');
   const inst = instances.anyForSession(sessionId);
   if (!inst) {
@@ -587,9 +633,9 @@ export async function respawnInstance({ sessionId }, { instances }) {
 // Instance.promoteToNormal() the REST endpoint calls. getInst returns a soft
 // SESSION_NOT_LIVE/SESSION_UNKNOWN for a non-live/unknown session;
 // promoteToNormal throws "instance is not temp" (statusCode 400) → isError.
-export async function promoteSession({ sessionId }, { instances }) {
+export async function promoteSession({ sessionId }: { sessionId: string }, { instances }: McpCtx) {
   const r = await getInst(instances, sessionId);
-  if (r.soft) return r.soft;
+  if ('soft' in r) return r.soft;
   const inst = r.inst;
   return toConductorView(await inst.promoteToNormal());
 }
@@ -603,21 +649,23 @@ export async function promoteSession({ sessionId }, { instances }) {
 // shared planApproval module so the three entry points (UI click,
 // server-side auto-approve, MCP) all look identical to the worker.
 export async function approvePlan(
-  { sessionId, feedback, subscribe = true, subscribeTimeoutMs },
-  { instances, callerId },
+  { sessionId, feedback, subscribe = true, subscribeTimeoutMs }: {
+    sessionId: string; feedback?: string; subscribe?: boolean; subscribeTimeoutMs?: number;
+  },
+  { instances, callerId }: McpCtx,
 ) {
   const r = await getInst(instances, sessionId);
-  if (r.soft) return r.soft;
+  if ('soft' in r) return r.soft;
   const inst = r.inst;
   if (inst.mode === 'plan') {
     try { await inst.setMode('bypassPermissions'); }
     catch (e) {
-      throw new Error(`failed to switch session ${sessionId} to bypassPermissions: ${e.message}`);
+      throw new Error(`failed to switch session ${sessionId} to bypassPermissions: ${errMsg(e)}`);
     }
   }
   const text = buildApprovePrompt(feedback);
   await inst.prompt(text);
-  const sub = await maybeSubscribeIdle({ instances, callerId }, inst.sessionId, { subscribe, subscribeTimeoutMs });
+  const sub = await maybeSubscribeIdle({ instances, callerId }, inst.sessionId as string, { subscribe, subscribeTimeoutMs });
   return { sessionId: inst.sessionId, mode: inst.mode, sentText: text, ...sub };
 }
 
@@ -625,16 +673,25 @@ export async function approvePlan(
 // The worker will produce a revised plan; the conductor loops back to
 // reviewing get_recent_messages and either approves or rejects again.
 export async function rejectPlan(
-  { sessionId, feedback, subscribe = true, subscribeTimeoutMs },
-  { instances, callerId },
+  { sessionId, feedback, subscribe = true, subscribeTimeoutMs }: {
+    sessionId: string; feedback?: string; subscribe?: boolean; subscribeTimeoutMs?: number;
+  },
+  { instances, callerId }: McpCtx,
 ) {
   const r = await getInst(instances, sessionId);
-  if (r.soft) return r.soft;
+  if ('soft' in r) return r.soft;
   const inst = r.inst;
   const text = buildRejectPrompt(feedback);
   await inst.prompt(text);
-  const sub = await maybeSubscribeIdle({ instances, callerId }, inst.sessionId, { subscribe, subscribeTimeoutMs });
+  const sub = await maybeSubscribeIdle({ instances, callerId }, inst.sessionId as string, { subscribe, subscribeTimeoutMs });
   return { sessionId: inst.sessionId, mode: inst.mode, sentText: text, ...sub };
+}
+
+interface AnswerEntry {
+  option?: string;
+  options?: string[];
+  text?: string;
+  note?: string;
 }
 
 // Answer a worker's AskUserQuestion with a STRUCTURED answer. Mirrors the UI
@@ -656,18 +713,21 @@ export async function rejectPlan(
 // the SAME source get_recent_messages uses — so we format against exactly what
 // the conductor saw. Soft-refuses (never throws) on mismatch.
 export async function answerQuestion(
-  { sessionId, answers, subscribe = true, subscribeTimeoutMs },
-  { instances, callerId },
+  { sessionId, answers, subscribe = true, subscribeTimeoutMs }: {
+    sessionId: string; answers: AnswerEntry[]; subscribe?: boolean; subscribeTimeoutMs?: number;
+  },
+  { instances, callerId }: McpCtx,
 ) {
   const r = await getInst(instances, sessionId);
-  if (r.soft) return r.soft;
+  if ('soft' in r) return r.soft;
   const inst = r.inst;
 
   const msgs = reconstructMessages(inst.ringSnapshot(), false);
-  let questions = null;
+  let questions: Question[] | null = null;
   for (let i = msgs.length - 1; i >= 0; i--) {
-    if (Array.isArray(msgs[i].questions) && msgs[i].questions.length > 0) {
-      questions = msgs[i].questions;
+    const qs = msgs[i].questions;
+    if (Array.isArray(qs) && qs.length > 0) {
+      questions = qs as Question[];
       break;
     }
   }
@@ -681,7 +741,7 @@ export async function answerQuestion(
       reason: `Provide exactly one answer per question, in order (${questions.length} expected).` };
   }
 
-  const states = [];
+  const states: UserQuestionAnswer[] = [];
   for (let i = 0; i < questions.length; i++) {
     const q = questions[i];
     const a = answers[i] ?? {};
@@ -717,7 +777,7 @@ export async function answerQuestion(
 
   const text = formatUserQuestionAnswers(questions, states);
   await inst.prompt(text);
-  const sub = await maybeSubscribeIdle({ instances, callerId }, inst.sessionId, { subscribe, subscribeTimeoutMs });
+  const sub = await maybeSubscribeIdle({ instances, callerId }, inst.sessionId as string, { subscribe, subscribeTimeoutMs });
   return { sessionId: inst.sessionId, mode: inst.mode, sentText: text, ...sub };
 }
 
@@ -737,7 +797,9 @@ export async function answerQuestion(
 // ./diffPaging.ts (parseNumstat / parseNameStatus / indexDiffLines /
 // paginateDiff), imported above.
 
-export async function projectDiff({ project, worktree, baseRef, contextLines = 3, summary = false, paths, offset = 0 }) {
+export async function projectDiff({ project, worktree, baseRef, contextLines = 3, summary = false, paths, offset = 0 }: {
+  project: string; worktree: string; baseRef?: string; contextLines?: number; summary?: boolean; paths?: string[]; offset?: number;
+}) {
   if (!project || !worktree) {
     throw new Error('project_diff requires {project, worktree}');
   }
@@ -772,9 +834,9 @@ export async function projectDiff({ project, worktree, baseRef, contextLines = 3
     if (rns.code !== 0) throw new Error(`git diff --name-status failed in ${wt.worktreePath}: ${rns.stderr.trim() || rns.stdout.trim()}`);
     const nums = parseNumstat(rn.stdout);
     const stats = parseNameStatus(rns.stdout);
-    const files = stats.map((s, i) => {
+    const files = stats.map((s, i): DiffFileRow => {
       const n = nums[i] ?? { additions: 0, deletions: 0, binary: false };
-      const entry = { path: s.path, status: s.status, additions: n.additions, deletions: n.deletions, binary: n.binary };
+      const entry: DiffFileRow = { path: s.path, status: s.status, additions: n.additions, deletions: n.deletions, binary: n.binary };
       if (s.oldPath) entry.oldPath = s.oldPath;
       return entry;
     });
@@ -783,7 +845,11 @@ export async function projectDiff({ project, worktree, baseRef, contextLines = 3
       additions: files.reduce((acc, f) => acc + f.additions, 0),
       deletions: files.reduce((acc, f) => acc + f.deletions, 0),
     };
-    const result = { project, worktree, baseRef: ref, head, summary: true, ahead, totals, files };
+    const result: {
+      project: string; worktree: string; baseRef: string; head: string | null;
+      summary: boolean; ahead: number | null; totals: typeof totals; files: DiffFileRow[];
+      uncommitted?: { totals: typeof totals; files: DiffFileRow[]; untracked: string[] };
+    } = { project, worktree, baseRef: ref, head, summary: true, ahead, totals, files };
 
     // Staged + unstaged changes vs HEAD (does not include untracked files)
     const [rnu, rnsu] = await Promise.all([
@@ -792,9 +858,9 @@ export async function projectDiff({ project, worktree, baseRef, contextLines = 3
     ]);
     const uNums = rnu.code === 0 ? parseNumstat(rnu.stdout) : [];
     const uStats = rnsu.code === 0 ? parseNameStatus(rnsu.stdout) : [];
-    const uFiles = uStats.map((s, i) => {
+    const uFiles = uStats.map((s, i): DiffFileRow => {
       const n = uNums[i] ?? { additions: 0, deletions: 0, binary: false };
-      const entry = { path: s.path, status: s.status, additions: n.additions, deletions: n.deletions, binary: n.binary };
+      const entry: DiffFileRow = { path: s.path, status: s.status, additions: n.additions, deletions: n.deletions, binary: n.binary };
       if (s.oldPath) entry.oldPath = s.oldPath;
       return entry;
     });
@@ -819,7 +885,7 @@ export async function projectDiff({ project, worktree, baseRef, contextLines = 3
 
   let full = r.stdout ?? '';
   let uncommittedDiff = '';
-  let untracked = [];
+  let untracked: string[] = [];
 
   // Staged + unstaged vs HEAD. git diff HEAD does NOT include untracked files,
   // so list those separately via ls-files --others.
@@ -849,7 +915,12 @@ export async function projectDiff({ project, worktree, baseRef, contextLines = 3
   const truncated = cutoff < totalLines;
   const nextOffset = truncated ? cutoff : null;
 
-  const meta = {
+  const meta: {
+    project: string; worktree: string; baseRef: string; head: string | null;
+    contextLines: number; offset: number; truncated: boolean; nextOffset: number | null;
+    totalLines: number; totalBytes: number; hasUncommittedChanges: boolean; untracked: string[]; ahead: number | null;
+    includedFiles?: string[]; omittedFiles?: string[];
+  } = {
     project, worktree, baseRef: ref, head,
     contextLines: ctx,
     offset: startLine,
@@ -863,12 +934,12 @@ export async function projectDiff({ project, worktree, baseRef, contextLines = 3
   };
   // Explicit truncation metadata: which files this page covers vs omits.
   if (truncated) {
-    const included = new Set();
+    const included = new Set<string>();
     for (let i = startLine; i < cutoff; i++) {
       const fi = idx.fileOf[i];
       if (fi >= 0 && idx.files[fi].path) included.add(idx.files[fi].path);
     }
-    const allPaths = idx.files.map(f => f.path).filter(Boolean);
+    const allPaths = idx.files.map(f => f.path).filter((p): p is string => !!p);
     meta.includedFiles = allPaths.filter(p => included.has(p));
     meta.omittedFiles = allPaths.filter(p => !included.has(p));
   }
@@ -878,16 +949,16 @@ export async function projectDiff({ project, worktree, baseRef, contextLines = 3
 
 // ---------- mutating: worktrees ----------
 
-export async function createWorktree({ project }) {
+export async function createWorktree({ project }: { project: string }) {
   return toMcpWorktree(await fsCreateWorktree(project));
 }
 
-export async function deleteWorktree({ project, worktree, force = false }, { instances }) {
-  let running = [];
+export async function deleteWorktree({ project, worktree, force = false }: { project: string; worktree: string; force?: boolean }, { instances }: McpCtx) {
+  let running: InstanceLike[] = [];
   if (instances) {
     running = instances.idsForWorktree(project, worktree)
       .map(id => instances.get(id))
-      .filter(i => i && i.proc);
+      .filter((i): i is InstanceLike => !!i && !!i.proc);
     // Expected business refusal (not a fault): attached live instance.
     if (running.length > 0 && !force) {
       return {
@@ -920,9 +991,9 @@ export async function deleteWorktree({ project, worktree, force = false }, { ins
   return { project, worktree };
 }
 
-export async function syncWorktree({ sessionId }, { instances }) {
+export async function syncWorktree({ sessionId }: { sessionId: string }, { instances }: McpCtx) {
   const r = await getInst(instances, sessionId);
-  if (r.soft) return r.soft;
+  if ('soft' in r) return r.soft;
   const inst = r.inst;
   if (!inst.worktree) throw new Error(`session ${sessionId} is not attached to a worktree`);
   const result = await fsSyncWorktree(inst.project, inst.worktree.worktreeName);
@@ -938,11 +1009,13 @@ export async function syncWorktree({ sessionId }, { instances }) {
   return result;
 }
 
-export async function mergeWorktree({ sessionId, project, worktree, allowDirty }, { instances }) {
-  let projectName, wtName, meta;
+export async function mergeWorktree({ sessionId, project, worktree, allowDirty }: { sessionId?: string; project?: string; worktree?: string; allowDirty?: boolean }, { instances }: McpCtx) {
+  let projectName: string;
+  let wtName: string;
+  let meta: WorktreeMeta;
   if (sessionId) {
     const r = await getInst(instances, sessionId);
-    if (r.soft) return r.soft;
+    if ('soft' in r) return r.soft;
     const inst = r.inst;
     if (!inst.worktree) throw new Error(`session ${sessionId} is not attached to a worktree`);
     projectName = inst.project;
@@ -954,13 +1027,14 @@ export async function mergeWorktree({ sessionId, project, worktree, allowDirty }
     }
     projectName = project;
     wtName = worktree;
-    meta = await getWorktree(projectName, wtName);
-    if (!meta) throw new Error(`worktree '${wtName}' not found under project '${projectName}'`);
+    const wt = await getWorktree(projectName, wtName);
+    if (!wt) throw new Error(`worktree '${wtName}' not found under project '${projectName}'`);
+    meta = wt;
   }
   // The behind-guard now lives inside mergeWorktreeIntoParent (shared with the
   // REST route); map its typed refusal to this surface's exact wording.
   const result = await mergeWorktreeIntoParent(projectName, wtName, { allowDirty: allowDirty === true });
-  if (result.code === 'WORKTREE_BEHIND') {
+  if (!result.ok && result.code === 'WORKTREE_BEHIND') {
     return {
       ok: false,
       code: 'WORKTREE_BEHIND',
@@ -974,7 +1048,7 @@ export async function mergeWorktree({ sessionId, project, worktree, allowDirty }
 // Workspaces are sidebar-organisation primitives — registered names plus
 // a `workspace` field per project. The registry persists independently
 // of membership so an empty workspace still shows up. These tools mirror
-// the REST endpoints in src/routes.js (PUT /projects/:name/workspace,
+// the REST endpoints in src/routes.ts (PUT /projects/:name/workspace,
 // POST/PUT/DELETE /workspaces, GET /workspaces) so a conductor can set
 // up its own organisation alongside the human.
 
@@ -982,15 +1056,15 @@ export async function listWorkspaces() {
   return summarizeWorkspaces();
 }
 
-export async function createWorkspace({ name }) {
+export async function createWorkspace({ name }: { name: string }) {
   return fsAddWorkspace(name);
 }
 
-export async function deleteWorkspace({ name }) {
+export async function deleteWorkspace({ name }: { name: string }) {
   return fsRemoveWorkspace(name);
 }
 
-export async function renameWorkspace({ oldName, newName }) {
+export async function renameWorkspace({ oldName, newName }: { oldName: string; newName: string }) {
   return fsRenameWorkspace(oldName, newName);
 }
 
@@ -999,7 +1073,7 @@ export async function renameWorkspace({ oldName, newName }) {
 // workspaces appear in list_workspaces immediately, matching the REST
 // PUT handler's behaviour. Refuses .conduct — the hidden project can't
 // belong to a workspace.
-export async function setProjectWorkspace({ project, workspace }) {
+export async function setProjectWorkspace({ project, workspace }: { project: string; workspace?: string | null }) {
   if (typeof project !== 'string' || !project) throw new Error('project required');
   if (project === CONDUCT_PROJECT_NAME) {
     throw new Error('the .conduct project cannot be assigned to a workspace');
@@ -1015,7 +1089,7 @@ export async function setProjectWorkspace({ project, workspace }) {
 
 // ---------- create / introspect ----------
 
-export async function createProject({ name, gitInit = false, conventions = [] }) {
+export async function createProject({ name, gitInit = false, conventions = [] }: { name: string; gitInit?: boolean; conventions?: string[] }) {
   const conventionsDoc = conventions.length ? await composeProjectConventionsDoc(conventions) : null;
   const scaffold = await composeProjectScaffold(name, conventions);
   const created = await fsCreateProject(name, { conventionsDoc });
@@ -1048,7 +1122,7 @@ export async function listConductorConventions() {
 // (+ capText / MSG_TEXT_CAP) live in ./messageReconstruction.ts, imported above.
 // isTextBearing stays here — it's a handler-side filter, not part of the
 // reconstruction engine.
-function isTextBearing(m) {
+function isTextBearing(m: ReconMessage): boolean {
   return m.text.length > 0 || hasPlanOrQuestions(m);
 }
 
@@ -1056,7 +1130,7 @@ function isTextBearing(m) {
 // message is returned, so consecutive raw text blocks (content[k+1]) never
 // visually run together. Presentation-only — meta's textChars/index already
 // describe the raw prose.
-function messageBoundaryHeader(index, total, msgId, textChars) {
+function messageBoundaryHeader(index: number, total: number, msgId: string, textChars: number): string {
   return `--- message ${index + 1}/${total} · ${msgId} · ${textChars} chars ---`;
 }
 
@@ -1064,7 +1138,7 @@ function messageBoundaryHeader(index, total, msgId, textChars) {
 // numbered so a reader can answer_question by index against the SAME array
 // (answer_question re-derives it independently from the ring — see its
 // handler — this is just a readable rendering of that same shape).
-function renderQuestions(questions) {
+function renderQuestions(questions: Question[]): string {
   const lines = ['--- questions ---'];
   questions.forEach((q, i) => {
     const headerSuffix = q.header ? ` · header: ${q.header}` : '';
@@ -1081,11 +1155,11 @@ function renderQuestions(questions) {
 // questionsSeq) — NOT hardcoded prose-then-plan — so the body reflects the
 // order those blocks actually occurred in the turn. A segment missing its seq
 // (shouldn't happen) sorts last rather than throwing.
-function renderMessageBody(m, cappedText) {
-  const segments = [];
+function renderMessageBody(m: ReconMessage, cappedText: string): string {
+  const segments: Array<{ pos: number; text: string }> = [];
   if (cappedText) segments.push({ pos: m.textSeq ?? Infinity, text: cappedText });
   if (m.plan) segments.push({ pos: m.planSeq ?? Infinity, text: `--- plan ---\n${m.plan}` });
-  if (m.questions) segments.push({ pos: m.questionsSeq ?? Infinity, text: renderQuestions(m.questions) });
+  if (m.questions) segments.push({ pos: m.questionsSeq ?? Infinity, text: renderQuestions(m.questions as Question[]) });
   segments.sort((a, b) => a.pos - b.pos);
   return segments.map(s => s.text).join('\n');
 }
@@ -1111,9 +1185,9 @@ function renderMessageBody(m, cappedText) {
 // the ring's turn_end seqs, so a plan from a previous turn is never pulled in.
 // A message that already carries its own plan/questions is returned alone.
 // Explicit `count` (including `count:1`) is always literal.
-export async function getRecentMessages(args, ctx) {
-  const r = await buildRecentMessages(args, ctx);
-  if (r.soft) return r.soft;
+export async function getRecentMessages(args: McpArgs, ctx: McpCtx) {
+  const r = await buildRecentMessages(args as { sessionId: string; count?: number; includeToolCalls?: boolean; includeThinking?: boolean }, ctx);
+  if ('soft' in r) return r.soft;
   return textPayload(r.meta, r.bodies);
 }
 
@@ -1123,12 +1197,14 @@ export async function getRecentMessages(args, ctx) {
 // SAME content a default get_recent_messages call returns into its stub without
 // re-deriving the selection/bonding logic. `getRecentMessages` wraps this in a
 // textPayload; the wake path flattens it (see src/mcp/content.ts flattenPayload).
-export async function buildRecentMessages({ sessionId, count, includeToolCalls = false, includeThinking = false }, { instances }) {
+export async function buildRecentMessages({ sessionId, count, includeToolCalls = false, includeThinking = false }: {
+  sessionId: string; count?: number; includeToolCalls?: boolean; includeThinking?: boolean;
+}, { instances }: McpCtx): Promise<{ meta: Record<string, unknown>; bodies: string[] } | { soft: SoftRefusal }> {
   const r = await getInst(instances, sessionId);
-  if (r.soft) return r;
+  if ('soft' in r) return r;
   const inst = r.inst;
   const isDefaultCount = count === undefined;
-  const n = Math.max(1, Math.min(Number.isInteger(count) ? count : 1, 50));
+  const n = Math.max(1, Math.min(typeof count === 'number' && Number.isInteger(count) ? count : 1, 50));
   // A defaulted call may bond in one preceding plan/question message, so the
   // ring must satisfy n+1 text messages before we trust it over disk.
   const bondNeed = isDefaultCount ? n + 1 : n;
@@ -1164,7 +1240,7 @@ export async function buildRecentMessages({ sessionId, count, includeToolCalls =
   // lives only in the body now — meta carries just presence markers
   // (hasPlan/questionCount) so a caller scanning metadata across a multi-
   // message result can spot which index to read without opening every body.
-  const bodies = [];
+  const bodies: string[] = [];
   const total = messages.length;
   const metaMessages = messages.map((m, index) => {
     const textChars = (m.text ?? '').length;
@@ -1174,7 +1250,7 @@ export async function buildRecentMessages({ sessionId, count, includeToolCalls =
       ? messageBoundaryHeader(index, total, m.msgId, textChars) + (rendered ? `\n${rendered}` : '')
       : rendered;
     bodies.push(body);
-    const entry = {
+    const entry: Record<string, unknown> = {
       index,
       msgId: m.msgId,
       hasToolUse: m.hasToolUse,
@@ -1182,13 +1258,13 @@ export async function buildRecentMessages({ sessionId, count, includeToolCalls =
       textTruncated: capped.truncated,
     };
     if (m.plan) entry.hasPlan = true;
-    if (m.questions) entry.questionCount = m.questions.length;
+    if (m.questions) entry.questionCount = (m.questions as Question[]).length;
     if (m.blocks) entry.blocks = m.blocks.map(capBlockInput);
     return entry;
   });
 
   const lastSeq = ring.length ? ring[ring.length - 1]._seq : -1;
-  const meta = {
+  const meta: Record<string, unknown> = {
     sessionId: inst.sessionId,
     messages: metaMessages,
     source,
@@ -1210,7 +1286,7 @@ export async function buildRecentMessages({ sessionId, count, includeToolCalls =
 
 // Resolve { project, worktree? } to an absolute cwd, throwing with a
 // useful message if either is missing.
-async function resolveProjectCwd(projectName, worktreeName) {
+async function resolveProjectCwd(projectName: string, worktreeName?: string | null): Promise<{ cwd: string; worktreeMeta: WorktreeMeta | null; projectPath: string }> {
   const proj = await getProject(projectName);
   if (worktreeName) {
     const wt = await getWorktree(projectName, worktreeName);
@@ -1223,7 +1299,7 @@ async function resolveProjectCwd(projectName, worktreeName) {
 // Read the top-level directory listing, hiding dotfiles by default.
 // Used by project_status for a quick "what's in this dir?" snapshot.
 // Errors return an empty list.
-async function listTopLevelEntries(cwd) {
+async function listTopLevelEntries(cwd: string): Promise<Array<{ name: string; kind: string }>> {
   try {
     const entries = await fs.readdir(cwd, { withFileTypes: true });
     return entries
@@ -1241,9 +1317,23 @@ async function listTopLevelEntries(cwd) {
 // Read-only project / worktree introspection. Returns the cwd, git state
 // (branch + head + dirty + recent commits), top-level files, and — for
 // worktrees — the mergeStatus + a diff stat vs the base branch.
-export async function projectStatus({ project, worktree, logLimit = 20 }) {
+export async function projectStatus({ project, worktree, logLimit = 20 }: { project: string; worktree?: string; logLimit?: number }) {
   const { cwd, worktreeMeta } = await resolveProjectCwd(project, worktree);
-  const out = {
+  const out: {
+    project: string; worktree: string | null; cwd: string;
+    files: Array<{ name: string; kind: string }>;
+    isGitRepo: boolean;
+    branch?: string | null;
+    head?: { sha: string | null; subject: string | null } | null;
+    dirty?: string[];
+    dirtyTotal?: number;
+    dirtyTruncated?: boolean;
+    recentCommits?: string[];
+    baseBranch?: string;
+    baseSha?: string;
+    mergeStatus?: { ahead: number | null; behind: number | null };
+    diffStat?: string;
+  } = {
     project,
     worktree: worktree ?? null,
     cwd,
@@ -1277,15 +1367,16 @@ export async function projectStatus({ project, worktree, logLimit = 20 }) {
   }
   // Cap the dirty list so a pathological working tree can't blow up the
   // response (mirrors project_read / project_diff's bounded-output pattern).
-  if (out.dirty.length > DIRTY_CAP) {
-    out.dirtyTotal = out.dirty.length;
-    out.dirty = out.dirty.slice(0, DIRTY_CAP);
+  const dirty = out.dirty ?? [];
+  if (dirty.length > DIRTY_CAP) {
+    out.dirtyTotal = dirty.length;
+    out.dirty = dirty.slice(0, DIRTY_CAP);
     out.dirtyTruncated = true;
   } else {
     out.dirtyTruncated = false;
   }
   // Recent commits (oneline). Negative or 0 logLimit → skip.
-  if (Number.isInteger(logLimit) && logLimit > 0) {
+  if (typeof logLimit === 'number' && Number.isInteger(logLimit) && logLimit > 0) {
     const logR = await runGit(cwd, ['log', `-${logLimit}`, '--pretty=%h %s']);
     out.recentCommits = logR.code === 0
       ? logR.stdout.split('\n').map(s => s.trim()).filter(Boolean)
@@ -1310,7 +1401,10 @@ export async function projectStatus({ project, worktree, logLimit = 20 }) {
 // Optional line params (text only): offset (1-based start line, default per projectRead),
 // limit (max lines, default: to EOF), lineNumbers (cat-n prefix).
 export async function projectRead({ project, worktree, relativePath,
-  maxBytes = 256 * 1024, lineNumbers = false, offset = 1, limit }) {
+  maxBytes = 256 * 1024, lineNumbers = false, offset = 1, limit }: {
+  project: string; worktree?: string; relativePath: string;
+  maxBytes?: number; lineNumbers?: boolean; offset?: number; limit?: number;
+}) {
   if (typeof relativePath !== 'string' || !relativePath) {
     throw new Error('relativePath required');
   }
@@ -1327,10 +1421,8 @@ export async function projectRead({ project, worktree, relativePath,
   let stat;
   try { stat = await fs.stat(resolved); }
   catch (e) {
-    if (e.code === 'ENOENT') {
-      const err = new Error(`file not found: ${relativePath}`);
-      err.statusCode = 404;
-      throw err;
+    if (errCode(e) === 'ENOENT') {
+      throw Object.assign(new Error(`file not found: ${relativePath}`), { statusCode: 404 });
     }
     throw e;
   }
@@ -1340,12 +1432,13 @@ export async function projectRead({ project, worktree, relativePath,
   if (!stat.isFile()) {
     throw new Error(`'${relativePath}' is not a regular file`);
   }
-  const cap = Number.isInteger(maxBytes) && maxBytes > 0 ? maxBytes : 256 * 1024;
+  const cap = typeof maxBytes === 'number' && Number.isInteger(maxBytes) && maxBytes > 0 ? maxBytes : 256 * 1024;
 
   // Always read up to cap bytes first (preserves existing binary behaviour and
   // avoids loading huge files on the fast path).
   const fh = await fs.open(resolved, 'r');
-  let buf, truncatedByBytes;
+  let buf: Buffer;
+  let truncatedByBytes: boolean;
   try {
     const len = Math.min(stat.size, cap);
     buf = Buffer.alloc(len);
@@ -1392,8 +1485,8 @@ export async function projectRead({ project, worktree, relativePath,
   if (hasTrailingNL) allLines.pop(); // remove sentinel empty element
   const lineCount = allLines.length;
 
-  const startIdx = Number.isInteger(offset) && offset >= 1 ? offset - 1 : 0;
-  const endIdx = Number.isInteger(limit) && limit >= 1
+  const startIdx = typeof offset === 'number' && Number.isInteger(offset) && offset >= 1 ? offset - 1 : 0;
+  const endIdx = typeof limit === 'number' && Number.isInteger(limit) && limit >= 1
     ? Math.min(startIdx + limit, lineCount)
     : lineCount;
 
@@ -1404,7 +1497,7 @@ export async function projectRead({ project, worktree, relativePath,
 
   // Reassemble; restore trailing newline when the slice ends at the last line.
   const atEof = slicedLines.length > 0 && endLine >= lineCount;
-  let content;
+  let content: string;
   if (lineNumbers) {
     const w = String(lineCount).length;
     content = slicedLines
@@ -1424,7 +1517,10 @@ export async function projectRead({ project, worktree, relativePath,
   }
 
   // Slow path read the full file, so lineCount covers the whole file.
-  const meta = {
+  const meta: {
+    path: string; size: number; truncated: boolean; encoding: string;
+    lineCount: number; lineCountExact: boolean; startLine?: number; endLine?: number;
+  } = {
     path: relativePath, size: stat.size, truncated, encoding: 'utf8',
     lineCount, lineCountExact: true,
   };
@@ -1441,14 +1537,14 @@ const BASH_OUTPUT_CAP = 200 * 1024; // matches the old grep content-mode cap (DI
 const BASH_DEFAULT_TIMEOUT_MS = 120_000; // matches the built-in Bash tool's default
 const BASH_MAX_TIMEOUT_MS = 600_000;     // matches the built-in Bash tool's documented max
 
-export function clampBashTimeoutMs(timeout) {
-  if (!Number.isFinite(timeout) || timeout <= 0) return BASH_DEFAULT_TIMEOUT_MS;
+export function clampBashTimeoutMs(timeout: unknown): number {
+  if (typeof timeout !== 'number' || !Number.isFinite(timeout) || timeout <= 0) return BASH_DEFAULT_TIMEOUT_MS;
   return Math.min(timeout, BASH_MAX_TIMEOUT_MS);
 }
 
 // Single-quote-escape for safe interpolation inside a single-quoted bash
 // string — orchStoreRoot() derives from user-configurable PROJECTS_ROOT.
-function shQuote(p) {
+function shQuote(p: string): string {
   return `'${p.replace(/'/g, `'\\''`)}'`;
 }
 
@@ -1456,10 +1552,12 @@ function shQuote(p) {
 // restored shell environment (rg/find/grep shims + shell functions, via the
 // cached bundle from claudeShellEnv.ts). The bundle is sourced with the same
 // shell (bash or zsh) that produced it — see bundleShellKind(). Read-only
-// inspection only (see the tool description in mcp/tools.js). `description`
+// inspection only (see the tool description in mcp/tools.ts). `description`
 // is accepted for schema parity with the built-in Bash tool but is unused
 // server-side.
-export async function bashProject({ project, worktree, command, timeout }) {
+export async function bashProject({ project, worktree, command, timeout }: {
+  project: string; worktree?: string; command: string; timeout?: number;
+}) {
   if (typeof command !== 'string' || !command.trim()) {
     throw new Error('project_bash requires a non-empty command string');
   }
@@ -1476,7 +1574,7 @@ export async function bashProject({ project, worktree, command, timeout }) {
     const start = Date.now();
     let timedOut = false;
     let capped = false;
-    const chunks = [];
+    const chunks: Buffer[] = [];
     let bytes = 0;
 
     let proc;
@@ -1490,22 +1588,22 @@ export async function bashProject({ project, worktree, command, timeout }) {
       resolve(textPayload(
         { project, worktree: worktree ?? null, cwd, exitCode: null,
           durationMs: Date.now() - start, error: true },
-        err.message,
+        errMsg(err),
       ));
       return;
     }
 
     const killGroup = () => {
-      try { process.kill(-proc.pid, 'SIGTERM'); } catch { proc.kill('SIGTERM'); }
+      try { process.kill(-proc.pid!, 'SIGTERM'); } catch { proc.kill('SIGTERM'); }
       setTimeout(() => {
-        try { process.kill(-proc.pid, 'SIGKILL'); } catch { proc.kill('SIGKILL'); }
+        try { process.kill(-proc.pid!, 'SIGKILL'); } catch { proc.kill('SIGKILL'); }
       }, 100).unref();
     };
     // Keep draining both pipes to completion (avoids backpressure stalling
     // the process) but stop RETAINING bytes past the cap — matches the
     // built-in Bash tool's semantics (truncate what's *shown*, let the
     // command run to completion). timeoutMs is the only hard kill.
-    const onData = (chunk) => {
+    const onData = (chunk: Buffer) => {
       if (bytes >= BASH_OUTPUT_CAP) { capped = true; return; }
       chunks.push(chunk);
       bytes += chunk.length;
@@ -1521,7 +1619,10 @@ export async function bashProject({ project, worktree, command, timeout }) {
       const durationMs = Date.now() - start;
       const raw = Buffer.concat(chunks).toString('utf8');
       const output = capped ? raw + '\n… [truncated at the output cap]' : raw;
-      const meta = {
+      const meta: {
+        project: string; worktree: string | null; cwd: string;
+        exitCode: number | null; durationMs: number; truncated?: boolean; timedOut?: boolean;
+      } = {
         project, worktree: worktree ?? null, cwd,
         exitCode: timedOut ? null : (code ?? null),
         durationMs,
@@ -1540,4 +1641,18 @@ export async function bashProject({ project, worktree, command, timeout }) {
       ));
     });
   });
+}
+
+// The `code` on a thrown Node error (e.g. 'ENOENT'), or undefined — the
+// narrowing point for error-code checks (catch variables are `unknown` under
+// strict). Duplicated from storeLock.ts: it's four lines, and importing it
+// across modules would couple every store to storeLock for one helper.
+function errCode(e: unknown): string | undefined {
+  if (typeof e !== 'object' || e === null) return undefined;
+  const code = (e as { code?: unknown }).code;
+  return typeof code === 'string' ? code : undefined;
+}
+
+function errMsg(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
 }

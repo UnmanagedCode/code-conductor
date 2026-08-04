@@ -22,53 +22,57 @@ import { composeCurrentWorkspace } from './workspaceConventions.ts';
 
 // ── Paths ────────────────────────────────────────────────────────────────
 
-export function targetPath() {
+export function targetPath(): string {
   return path.join(projectsRoot(), 'CLAUDE.md');
 }
 
-function storeDir() {
+function storeDir(): string {
   return path.join(orchStoreRoot(), 'workspace-claudemd');
 }
 
-function ownedMarkerPath() {
+function ownedMarkerPath(): string {
   return path.join(storeDir(), 'owned.json');
 }
 
 // Legacy last-applied canonical from the retired reconcile machinery. Used
 // once, as the "was the target hand-edited?" oracle on the first app-owned
 // regeneration. Absent on fresh installs (and after the transition).
-function legacyBaselinePath() {
+function legacyBaselinePath(): string {
   return path.join(storeDir(), 'baseline.md');
 }
 
 // ── small fs helpers ────────────────────────────────────────────────────────
 
-async function readFileOrNull(p) {
+async function readFileOrNull(p: string): Promise<string | null> {
   try { return await fs.readFile(p, 'utf8'); } catch { return null; }
 }
 
-async function fileExists(p) {
+async function fileExists(p: string): Promise<boolean> {
   try { return (await fs.stat(p)).isFile(); } catch { return false; }
 }
 
-function timestamp(d) {
-  const p = (n) => String(n).padStart(2, '0');
+function timestamp(d: Date): string {
+  const p = (n: number) => String(n).padStart(2, '0');
   return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-`
     + `${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
 }
 
 // ── Regenerate (mutating; runs on boot + after settings changes) ─────────────
 
+interface RootClaudeMdLog {
+  log?: (...args: unknown[]) => void;
+}
+
 // Overwrite <PROJECTS_ROOT>/CLAUDE.md with the composed workspace conventions.
 // On the first app-owned regeneration, back up a hand-edited target once.
 // Returns { path, created, backedUp, backupPath }.
-export async function ensureRootClaudeMd({ log } = {}) {
+export async function ensureRootClaudeMd({ log }: { log?: RootClaudeMdLog } = {}): Promise<{ path: string; created: boolean; backedUp: boolean; backupPath: string | null }> {
   const target = targetPath();
   const content = await composeCurrentWorkspace();
 
   const firstTransition = !(await fileExists(ownedMarkerPath()));
   let backedUp = false;
-  let backupPath = null;
+  let backupPath: string | null = null;
   if (firstTransition) {
     const existing = await readFileOrNull(target);
     if (existing != null) {

@@ -11,7 +11,7 @@
 // also probes $ZSH_VERSION/$BASH_VERSION to record which shell produced the
 // dump, and that shell is baked into the cache filename
 // (bundle-<version>-<bash|zsh>.sh, see bundleShellKind()) so project_bash
-// (mcp/handlers.js) can spawn a matching shell to source it. Generated once
+// (mcp/handlers.ts) can spawn a matching shell to source it. Generated once
 // per (claude version, shell) and cached on disk. The daemon runs fixed code
 // between restarts, so a version/shell change can only happen across a
 // restart — the resolved path is additionally memoized in-memory for the

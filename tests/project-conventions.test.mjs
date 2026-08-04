@@ -14,7 +14,7 @@ import {
   getCatalog, addCustomConvention, deleteCustomConvention,
   composeProjectConventionsBlock, SEED_PROJECT_CONVENTIONS,
 } from '../src/projectConventions.ts';
-import { composeProjectConventionsDoc } from '../src/projectClaudeMd.js';
+import { composeProjectConventionsDoc } from '../src/projectClaudeMd.ts';
 import { createProject } from '../src/projects.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));

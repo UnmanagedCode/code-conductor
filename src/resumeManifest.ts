@@ -1,6 +1,6 @@
 // Resume-after-restart manifest.
 //
-// The graceful "Resume after restart" path (src/resumeRestart.js) drains every
+// The graceful "Resume after restart" path (src/resumeRestart.ts) drains every
 // live instance to idle, then — instead of wiping temp sessions like the normal
 // restart — writes this manifest capturing everything boot needs to bring each
 // session back via `claude --resume`. On boot, `restoreFromResumeManifest`
@@ -21,7 +21,7 @@ export function resumeManifestPath(): string {
   return path.join(orchStoreRoot(), PENDING_RESUME_FILENAME);
 }
 
-// The manifest payload is an opaque blob to this module: resumeRestart.js
+// The manifest payload is an opaque blob to this module: resumeRestart.ts
 // authors and re-reads the instance records, so the shape lives there.
 interface ManifestLogger {
   log?: (...args: unknown[]) => void;

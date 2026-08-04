@@ -26,7 +26,7 @@
 // Cross-instance lookups (idsForSession / byId / liveForSession) and event
 // emission go through the owning InstanceManager passed in at construction.
 
-import { buildRecentMessages } from './mcp/handlers.js';
+import { buildRecentMessages } from './mcp/handlers.ts';
 import { flattenPayload } from './mcp/content.ts';
 import { buildWakeStub, markPlainStub } from '../public/wakeCallback.js';
 
