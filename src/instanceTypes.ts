@@ -35,8 +35,17 @@ export interface InstanceLike {
   readonly model: string | null;
   readonly backend: string;
   readonly callerInstanceId: string | null;
+  readonly cwd: string;
+  readonly _userEchoCount: number;
   readonly proc: unknown;
-  readonly _overageQueue?: unknown[];
+  // Overage auto-resume state — mutated by OverageResumeController (and the
+  // status handler in instances.ts), so these are deliberately non-readonly.
+  autoResumeAt: number | null;
+  autoStoppedForOverage: boolean;
+  _overageWasStopped: boolean;
+  _overageHandled: boolean;
+  _overageResetsAt: number | null;
+  _overageQueue: unknown[];
   readonly activeAgentTaskCount: number;
   readonly taskNotificationPending: boolean;
   readonly project: string;
@@ -48,10 +57,13 @@ export interface InstanceLike {
   readonly lastContextUsage: unknown;
   readonly ring: { trimmedBefore: number; nextSeq: number };
   snapshotTail(): UiEvent[];
+  ringSnapshot(): Array<UiEvent & { _seq: number }>;
   reconstructActiveTasks(beforeSeq: number): Promise<TaskRecord[]>;
   consumePrefill(): string | null;
   clearContext(): void;
   carryMarkersAcrossRenewal(oldSid: string | null): Promise<void>;
+  summary(): InstanceSummary;
+  _emitUi(ev: UiEvent): void;
   prompt(text: string, attachments?: unknown[], opts?: { annotateIfMidTurn?: boolean; internal?: boolean }): Promise<unknown>;
   setMode(mode: string): Promise<unknown>;
   setModel(model: string, backend?: unknown): Promise<unknown>;
@@ -66,6 +78,10 @@ export interface InstanceManagerLike {
   get(id: string): InstanceLike | undefined;
   anyForSession(sessionId: string): InstanceLike | undefined;
   callerSessionId(handle: string | null): string | null;
+  emit(event: 'status', summary: InstanceSummary): void;
+  _overageResumeMode: boolean;
+  _overageResetsAt: number | null;
+  _maybeReleaseOverageLock(): void;
   liveOwnedBy(conductorId: string): Array<{
     sessionId: string | null;
     project: string;
