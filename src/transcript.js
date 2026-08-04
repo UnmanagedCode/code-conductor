@@ -10,7 +10,7 @@
 
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { encodeCwd, claudeProjectsRoot } from './projects.js';
+import { encodeCwd, claudeProjectsRoot } from './projects.ts';
 import { consolidateUserContent, isSoftInterruptContent, isTaskNotificationContent, attachSkillLoad } from './parser.ts';
 
 // Predicate: does this persisted jsonl object emit at least one `user_echo`

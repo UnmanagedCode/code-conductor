@@ -13,7 +13,7 @@
 
 import path from 'node:path';
 import { writeFileSync, readFileSync, rmSync, existsSync, mkdirSync, renameSync } from 'node:fs';
-import { orchStoreRoot } from './projects.js';
+import { orchStoreRoot } from './projects.ts';
 
 export const PENDING_RESUME_FILENAME = 'pending-resume.json';
 

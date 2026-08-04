@@ -6,7 +6,7 @@ import { spawn } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { claudeProjectsRoot, encodeCwd, orchStoreRoot } from './projects.js'; // claudeProjectsRoot+encodeCwd used by countMessages/flattenTranscript
+import { claudeProjectsRoot, encodeCwd, orchStoreRoot } from './projects.ts'; // claudeProjectsRoot+encodeCwd used by countMessages/flattenTranscript
 import { resolveClaudeBin, resolveBackendLaunch } from './claudeLauncher.ts';
 import { getTierBackend, getBackend } from './appSettings.js';
 

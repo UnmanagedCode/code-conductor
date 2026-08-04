@@ -14,7 +14,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor } from './helpers.mjs';
-import { encodeCwd } from '../src/projects.js';
+import { encodeCwd } from '../src/projects.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-resume.json');
@@ -95,7 +95,7 @@ test('prune rotates the sessionId in place, archives the original, and lands idl
     assert.deepEqual(await fs.readFile(file), originalBytes, 'original jsonl untouched');
     // …and archived, so it shows up under Settings → Archived rather than as a
     // stale live row.
-    const { isArchived } = await import('../src/archivedSessions.js');
+    const { isArchived } = await import('../src/archivedSessions.ts');
     assert.equal(await isArchived(sid), true, 'the abandoned session is archived');
 
     // The pruned copy carries the stub and still has both user turns.

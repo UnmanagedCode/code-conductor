@@ -19,8 +19,8 @@
 //      flush over the wire.
 import { spawn } from 'node:child_process';
 import { writePendingTempCleanup } from './tempCleanup.js';
-import { orphanedTempIdsSync, unmarkTemp } from './tempSessions.js';
-import { markArchived } from './archivedSessions.js';
+import { orphanedTempIdsSync, unmarkTemp } from './tempSessions.ts';
+import { markArchived } from './archivedSessions.ts';
 
 // Archive every temp session on a plain restart: live-attached ones (via
 // instances.shutdownTempSync()) AND crash-orphaned ones that are recorded in

@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { WebSocket } from 'ws';
 import { bootServer, api, waitFor } from './helpers.mjs';
-import { encodeCwd } from '../src/projects.js';
+import { encodeCwd } from '../src/projects.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO_NORMAL = path.join(__dirname, 'fixtures', 'scenario-ws.json');

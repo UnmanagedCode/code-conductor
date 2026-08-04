@@ -4,14 +4,14 @@ import readline from 'node:readline';
 import { promises as fsp, readFileSync, mkdirSync, createWriteStream, writeFileSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { Parser, SOFT_INTERRUPT_MARKER, isOuterUserEcho, snapStartToQuiescent, firstQuiescentAtOrAfter } from './parser.ts';
-import { getProject, claudeProjectsRoot, encodeCwd, findSessionLocation, readFirstPrompt } from './projects.js';
+import { getProject, claudeProjectsRoot, encodeCwd, findSessionLocation, readFirstPrompt } from './projects.ts';
 import { createWorktree, getWorktree, debugBaseDir } from './worktrees.js';
-import { getTitle as getSessionTitle, setTitle as setSessionTitle, deleteTitle as deleteSessionTitle } from './sessionTitles.js';
+import { getTitle as getSessionTitle, setTitle as setSessionTitle, deleteTitle as deleteSessionTitle } from './sessionTitles.ts';
 import { getSessionBackend, markSessionBackend, unmarkSessionBackend } from './sessionBackends.ts';
-import { isConducted, markConducted, unmarkConducted } from './conductedSessions.js';
+import { isConducted, markConducted, unmarkConducted } from './conductedSessions.ts';
 import { SessionRenewController } from './sessionRenew.ts';
-import { isTemp, markTemp, unmarkTemp } from './tempSessions.js';
-import { markArchived } from './archivedSessions.js';
+import { isTemp, markTemp, unmarkTemp } from './tempSessions.ts';
+import { markArchived } from './archivedSessions.ts';
 import { CONDUCT_PROJECT_NAME } from './conduct.js';
 import { composeCurrentConduct } from './conductorConventions.js';
 import { buildSettingsJSON, buildMcpConfigJSON, AWAITING_INPUT_MESSAGE } from './settings.ts';
@@ -401,7 +401,7 @@ export class Instance extends EventEmitter {
     this._lastLeafUuid = null;     // for last-prompt jsonl marker
     this._lastPlanFilePath = null; // last Write to ~/.claude/plans/*.md, used to enrich ExitPlanMode
     // Cached first user-prompt text (200-char cap matching readFirstPrompt
-    // in projects.js). Surfaced via summary() so the sidebar can label a
+    // in projects.ts). Surfaced via summary() so the sidebar can label a
     // live temp session's row — temp rows don't read the jsonl, so without
     // this they'd stay as "(new session)" forever.
     this.firstPrompt = null;

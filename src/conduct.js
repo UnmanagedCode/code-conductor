@@ -6,7 +6,7 @@
 
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { projectsRoot } from './projects.js';
+import { projectsRoot } from './projects.ts';
 
 export const CONDUCT_PROJECT_NAME = '.conduct';
 

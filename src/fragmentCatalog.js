@@ -14,7 +14,7 @@
 
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { writeFileAtomic } from './projects.js';
+import { writeFileAtomic } from './projects.ts';
 
 const SLUG_RE = /^[a-z][a-z0-9-]*$/;
 const SLUG_MAX = 40;

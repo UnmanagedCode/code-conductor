@@ -8,7 +8,7 @@ import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs
 import {
   setSummary, getSummaries, deleteSummaries, loadAll,
 } from '../src/sessionSummaries.js';
-import { orchStoreRoot, findSessionLocation, encodeCwd } from '../src/projects.js';
+import { orchStoreRoot, findSessionLocation, encodeCwd } from '../src/projects.ts';
 import { summarySpawnDir } from '../src/summarize.js';
 import { setTierBackend, addBackend, addCustomModel } from '../src/appSettings.js';
 

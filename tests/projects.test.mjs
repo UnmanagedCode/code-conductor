@@ -9,8 +9,8 @@ import {
   encodeCwd, findSessionLocation,
   readProjectMeta, writeProjectMeta, listWorkspaces,
   findSelfProject, ensureSelfProjectWorkspace,
-} from '../src/projects.js';
-import { markArchived } from '../src/archivedSessions.js';
+} from '../src/projects.ts';
+import { markArchived } from '../src/archivedSessions.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURE_JSONL = path.join(__dirname, 'fixtures', 'session-sample.jsonl');

@@ -9,7 +9,7 @@ import { execFile, spawn } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
-import { projectsRoot, getProject, projectStoreDir, worktreeStoreDir, listProjects } from './projects.js';
+import { projectsRoot, getProject, projectStoreDir, worktreeStoreDir, listProjects } from './projects.ts';
 
 // Manual execFile wrapper. `promisify(execFile)` would be tempting but
 // this Node build (Termux's android port) doesn't ship the

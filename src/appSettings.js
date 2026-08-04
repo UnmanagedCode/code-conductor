@@ -10,7 +10,7 @@
 
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import { orchStoreRoot, writeFileAtomic } from './projects.js';
+import { orchStoreRoot, writeFileAtomic } from './projects.ts';
 import { CAPABILITY_TIERS, DEFAULT_TIER_BACKEND, isKnownTier, isKnownClaudeModel,
   ROLES, DEFAULT_ROLE_BINDING, isKnownRole, isKnownFamily, claudeContextWindowTokens,
   MANAGED_BACKENDS, MANAGED_BACKEND_IDS, CLAUDE_BACKEND_ID } from './modelVersions.ts';

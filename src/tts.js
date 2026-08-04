@@ -18,7 +18,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getTtsVoice, getTtsRate } from './appSettings.js';
 import { voiceFileName, DEFAULT_VOICE } from './ttsModels.ts';
-import { orchStoreRoot } from './projects.js';
+import { orchStoreRoot } from './projects.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_SYNTH_SCRIPT = path.resolve(__dirname, '..', 'bin', 'piper-synth.py');

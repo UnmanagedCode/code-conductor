@@ -18,10 +18,10 @@ import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, instForSession } from './helpers.mjs';
-import { isConducted } from '../src/conductedSessions.js';
-import { isTemp } from '../src/tempSessions.js';
-import { isArchived } from '../src/archivedSessions.js';
-import { getTitle } from '../src/sessionTitles.js';
+import { isConducted } from '../src/conductedSessions.ts';
+import { isTemp } from '../src/tempSessions.ts';
+import { isArchived } from '../src/archivedSessions.ts';
+import { getTitle } from '../src/sessionTitles.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-renew.json');

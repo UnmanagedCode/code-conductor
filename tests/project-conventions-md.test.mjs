@@ -12,7 +12,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, freshProjectsRoot, rmrf } from './helpers.mjs';
-import { createProject } from '../src/projects.js';
+import { createProject } from '../src/projects.ts';
 import { addCustomConvention } from '../src/projectConventions.js';
 import {
   buildMarker, parseMarker, composeProjectConventionsDoc,

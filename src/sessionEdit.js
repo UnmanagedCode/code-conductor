@@ -17,7 +17,7 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { encodeCwd, claudeProjectsRoot } from './projects.js';
+import { encodeCwd, claudeProjectsRoot } from './projects.ts';
 import { isPureUserPromptLine, writeSessionMetadata } from './transcript.js';
 import { extractAttachedMarkers } from './parser.ts';
 

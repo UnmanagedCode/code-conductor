@@ -8,7 +8,7 @@ import {
   findSessionLocation, writeProjectMeta,
   addWorkspace, removeWorkspace, renameWorkspace,
   summarizeWorkspaces, validateName,
-} from './projects.js';
+} from './projects.ts';
 import { WebSocket } from 'ws';
 import {
   isGitRepo, listWorktrees, removeWorktree, mergeWorktreeIntoParent,
@@ -58,12 +58,12 @@ import {
 import * as whisperInstall from './whisperInstall.js';
 import * as ttsInstall from './ttsInstall.js';
 import { ensureRootClaudeMd } from './rootClaudeMd.js';
-import { setTitle as setSessionTitle, MAX_TITLE_LEN } from './sessionTitles.js';
+import { setTitle as setSessionTitle, MAX_TITLE_LEN } from './sessionTitles.ts';
 import { getSummaries, setSummary, deleteSummaries } from './sessionSummaries.js';
 import { generateSummary, countMessages } from './summarize.js';
 import { getAccountUsage } from './accountUsage.ts';
 import { getCostSummary, getSessionStats } from './costTracking.js';
-import { isArchived, unmarkArchived } from './archivedSessions.js';
+import { isArchived, unmarkArchived } from './archivedSessions.ts';
 import {
   getCatalog as getProjectConventionsCatalog,
   composeProjectScaffold,
@@ -384,7 +384,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
 
   // Assign or clear the project's workspace. Body: {workspace: string|null}.
   // An empty string is treated as null (clears the field). Workspace names
-  // are validated in writeProjectMeta — see validateWorkspace() in projects.js.
+  // are validated in writeProjectMeta — see validateWorkspace() in projects.ts.
   // Setting a non-null workspace auto-registers it (so newly-named
   // workspaces appear in /api/workspaces). A successful write broadcasts
   // the `projects` WS hint so connected sidebars re-fetch and rebucket

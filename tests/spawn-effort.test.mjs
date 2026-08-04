@@ -22,7 +22,7 @@ import {
 } from '../src/appSettings.js';
 import { DEFAULT_EFFORT, INHERIT_EFFORT, EFFORT_LEVELS } from '../src/effortLevels.ts';
 import { DEFAULT_VERSIONS } from '../src/modelVersions.ts';
-import { encodeCwd, orchStoreRoot } from '../src/projects.js';
+import { encodeCwd, orchStoreRoot } from '../src/projects.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-instance.json');

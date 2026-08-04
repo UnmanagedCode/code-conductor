@@ -6,7 +6,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createPluginHost } from '../src/plugins/registry.js';
 import { pidAlive } from '../src/plugins/ports.ts';
-import { readProjectMeta, writeProjectMeta, listWorkspaces, projectStoreDir, selfProjectDir } from '../src/projects.js';
+import { readProjectMeta, writeProjectMeta, listWorkspaces, projectStoreDir, selfProjectDir } from '../src/projects.ts';
 import { makePluginRoot, readFixtureManifest, waitFor, FAKE_PLUGIN_DIR } from './plugin-helpers.mjs';
 
 const run = promisify(execFile);

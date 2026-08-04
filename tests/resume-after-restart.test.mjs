@@ -6,7 +6,7 @@ import os from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
-import { encodeCwd, orchStoreRoot } from '../src/projects.js';
+import { encodeCwd, orchStoreRoot } from '../src/projects.ts';
 import { SOFT_INTERRUPT_MARKER } from '../src/parser.ts';
 import {
   resumeManifestPath,

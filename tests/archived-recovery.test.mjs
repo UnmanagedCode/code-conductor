@@ -24,7 +24,7 @@ const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-arc-rec-'));
 process.env.PROJECTS_ROOT = path.join(tmp, 'projects');
 
 const { loadAllArchived, markArchived, unmarkArchived, isArchived } =
-  await import('../src/archivedSessions.js');
+  await import('../src/archivedSessions.ts');
 
 let testNo = 0;
 // Give each test its own store dir so the module-global writeChain + the

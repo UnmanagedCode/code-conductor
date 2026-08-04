@@ -12,7 +12,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor } from './helpers.mjs';
-import { encodeCwd } from '../src/projects.js';
+import { encodeCwd } from '../src/projects.ts';
 import { hasResumableConversation, writeSessionMetadata } from '../src/transcript.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));

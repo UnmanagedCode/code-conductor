@@ -10,7 +10,7 @@
 // unchanged. The per-feature differences are injected as config.
 
 import { spawn } from 'node:child_process';
-import { orchStoreRoot } from './projects.js';
+import { orchStoreRoot } from './projects.ts';
 
 const LOG_CAP = 64 * 1024; // bytes of tail kept in memory
 

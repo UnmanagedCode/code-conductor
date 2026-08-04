@@ -25,7 +25,7 @@ process.env.CLAUDE_PROJECTS_ROOT = safeRoot.claudeProjectsRoot;
 // workspace (env forced above, so this validates the default and catches a
 // future regression rather than silently corrupting production). Dynamic import
 // so it runs AFTER the env is set (static imports hoist above statements).
-const { orchStoreRoot } = await import('../src/projects.js');
+const { orchStoreRoot } = await import('../src/projects.ts');
 try {
   assertStoreIsolated(orchStoreRoot());
 } catch (e) {

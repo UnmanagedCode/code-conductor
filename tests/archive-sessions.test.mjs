@@ -4,13 +4,13 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
-import { encodeCwd, orchStoreRoot } from '../src/projects.js';
+import { encodeCwd, orchStoreRoot } from '../src/projects.ts';
 import {
   pendingTempCleanupPath,
   writePendingTempCleanup,
   sweepPendingTempCleanup,
 } from '../src/tempCleanup.js';
-import { loadAllArchived, isArchived } from '../src/archivedSessions.js';
+import { loadAllArchived, isArchived } from '../src/archivedSessions.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-basic.json');
@@ -63,7 +63,7 @@ test('killing a temp instance archives the session — .jsonl kept, archived fla
     assert.equal(await isArchived(sid), true);
 
     // temp-sessions.json must NOT contain it any more.
-    const { loadAllTemps } = await import('../src/tempSessions.js');
+    const { loadAllTemps } = await import('../src/tempSessions.ts');
     assert.equal((await loadAllTemps()).has(sid), false);
   }
 });
@@ -279,7 +279,7 @@ test('restore endpoint with missing .jsonl degrades gracefully (idempotent unmar
     await api(baseUrl, 'POST', '/api/projects', { name: 'archiveghost' });
 
     // Manually mark a session as archived without a .jsonl file.
-    const { markArchived } = await import('../src/archivedSessions.js');
+    const { markArchived } = await import('../src/archivedSessions.ts');
     const ghostSid = 'cccccccc-dddd-eeee-ffff-111111111111';
     await markArchived(ghostSid);
     assert.equal(await isArchived(ghostSid), true);

@@ -21,7 +21,7 @@
 
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { listProjects } from './projects.js';
+import { listProjects } from './projects.ts';
 import { composeProjectConventionsBlock, getCatalog } from './projectConventions.js';
 
 const CONVENTIONS_FILENAME = 'CONVENTIONS.md';

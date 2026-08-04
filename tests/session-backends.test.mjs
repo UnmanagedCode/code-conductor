@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { freshProjectsRoot, rmrf } from './helpers.mjs';
-import { orchStoreRoot } from '../src/projects.js';
+import { orchStoreRoot } from '../src/projects.ts';
 import { loadAll, getSessionBackend, hasSessionBackend, markSessionBackend, unmarkSessionBackend } from '../src/sessionBackends.ts';
 
 let home;

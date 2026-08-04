@@ -22,7 +22,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Window } from 'happy-dom';
-import { encodeCwd } from '../src/projects.js';
+import { encodeCwd } from '../src/projects.ts';
 import { loadPersistedTranscript } from '../src/transcript.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));

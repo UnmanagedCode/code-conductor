@@ -1,4 +1,4 @@
-// Tests for cross-process safety of tempSessions.js.
+// Tests for cross-process safety of tempSessions.ts.
 // The core bug: during a hot restart the old process fires unmarkTemp()
 // fire-and-forget while the new process boots and marks fresh temps — two
 // independent writeChains racing on the same file, last-writer-wins. On top
@@ -25,7 +25,7 @@ const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-temp-conc-'));
 process.env.PROJECTS_ROOT = path.join(tmp, 'projects');
 
 const { markTemp, unmarkTemp, loadAllTemps } =
-  await import('../src/tempSessions.js');
+  await import('../src/tempSessions.ts');
 
 after(async () => {
   await fs.rm(tmp, { recursive: true, force: true });
@@ -94,11 +94,11 @@ test('two concurrent child processes both markTemp → all entries preserved', {
   const xTmp = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-temp-xproc-'));
   const xRoot = path.join(xTmp, 'projects');
 
-  // Worker script: sets PROJECTS_ROOT from env, imports tempSessions.js via
+  // Worker script: sets PROJECTS_ROOT from env, imports tempSessions.ts via
   // absolute path (relative imports inside the module still resolve from
   // the module's own location in src/), marks each argv session ID.
   const workerPath = path.join(xTmp, 'worker.mjs');
-  const tempMod = JSON.stringify('file://' + path.join(srcDir, 'tempSessions.js'));
+  const tempMod = JSON.stringify('file://' + path.join(srcDir, 'tempSessions.ts'));
   await fs.writeFile(workerPath, [
     `const { markTemp } = await import(${tempMod});`,
     `for (const id of process.argv.slice(2)) { await markTemp(id); }`,

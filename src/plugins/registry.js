@@ -3,7 +3,7 @@ import path from 'node:path';
 import {
   projectsRoot, selfProjectDir, orchStoreRoot, writeFileAtomic, listProjects, projectStoreDir,
   readProjectMeta, writeProjectMeta, addWorkspace,
-} from '../projects.js';
+} from '../projects.ts';
 import { readManifest, SUPPORTED_CONVENTION_SCOPES, claudePluginPaths } from './manifest.ts';
 import { createSupervisor, httpOk, headSha } from './supervisor.ts';
 import { createMcpBridge } from './mcpBridge.ts';

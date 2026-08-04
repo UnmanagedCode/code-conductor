@@ -17,7 +17,7 @@
 
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { projectsRoot, orchStoreRoot, writeFileAtomic } from './projects.js';
+import { projectsRoot, orchStoreRoot, writeFileAtomic } from './projects.ts';
 import { composeCurrentWorkspace } from './workspaceConventions.js';
 
 // ── Paths ────────────────────────────────────────────────────────────────

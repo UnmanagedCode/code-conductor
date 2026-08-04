@@ -12,7 +12,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor } from './helpers.mjs';
 import { addBackend, addCustomModel } from '../src/appSettings.js';
-import { encodeCwd } from '../src/projects.js';
+import { encodeCwd } from '../src/projects.ts';
 import { readLastSessionModel, writeSessionMetadata } from '../src/transcript.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));

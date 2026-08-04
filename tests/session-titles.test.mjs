@@ -6,9 +6,9 @@ import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
 import {
   setTitle, getTitle, deleteTitle, loadAll, MAX_TITLE_LEN,
-} from '../src/sessionTitles.js';
-import { orchStoreRoot, encodeCwd } from '../src/projects.js';
-import { isArchived } from '../src/archivedSessions.js';
+} from '../src/sessionTitles.ts';
+import { orchStoreRoot, encodeCwd } from '../src/projects.ts';
+import { isArchived } from '../src/archivedSessions.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-basic.json');

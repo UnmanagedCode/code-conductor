@@ -169,7 +169,7 @@ test('restart sweeps a pending-temp-cleanup manifest on the next boot (archives 
   const fakeCwd = path.join(projectsRoot, 'sweep-target');
   await fs.mkdir(fakeCwd, { recursive: true });
   const sid = 'cafef00d-0000-0000-0000-000000000001';
-  const { encodeCwd } = await import('../src/projects.js');
+  const { encodeCwd } = await import('../src/projects.ts');
   const sessionDir = path.join(claudeProjectsRoot, encodeCwd(fakeCwd));
   await fs.mkdir(sessionDir, { recursive: true });
   const jsonl = path.join(sessionDir, `${sid}.jsonl`);

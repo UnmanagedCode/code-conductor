@@ -14,7 +14,7 @@ import { promisify } from 'node:util';
 import os from 'node:os';
 import path from 'node:path';
 import { getShellEnvBundlePath, _resetForTest, bundleShellKind } from '../src/claudeShellEnv.js';
-import { orchStoreRoot } from '../src/projects.js';
+import { orchStoreRoot } from '../src/projects.ts';
 import { setTierBackend, addBackend, addCustomModel, getBackend } from '../src/appSettings.js';
 import { resolveBackendLaunch } from '../src/claudeLauncher.ts';
 

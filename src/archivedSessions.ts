@@ -9,7 +9,7 @@
 // Degrades gracefully if the underlying .jsonl has been removed by external
 // housekeeping: callers check for file existence before rendering or acting.
 //
-// Atomic writes (write tmp + rename), mirroring `conductedSessions.js`.
+// Atomic writes (write tmp + rename), mirroring `conductedSessions.ts`.
 // A rolling `.bak` holds the last non-empty snapshot; on a missing or corrupt
 // primary we recover from it rather than silently returning empty. A corrupt
 // primary is quarantined to `.corrupt-<pid>-<ts>` (under the lock) instead of
@@ -24,26 +24,26 @@
 
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { orchStoreRoot } from './projects.js';
+import { orchStoreRoot } from './projects.ts';
 import { withLock } from './storeLock.ts';
 
-function archivedFile() {
+function archivedFile(): string {
   return path.join(orchStoreRoot(), 'archived-sessions.json');
 }
 
-function backupFile() {
+function backupFile(): string {
   return archivedFile() + '.bak';
 }
 
 // Parse raw store JSON into a Set of sessionIds. Throws SyntaxError on corrupt
 // JSON (callers decide whether that's fatal). A well-formed doc with no
 // `sessions` array yields the empty set.
-function parseSet(raw) {
-  const obj = JSON.parse(raw); // throws SyntaxError on corrupt JSON
-  const arr = Array.isArray(obj?.sessions) ? obj.sessions : null;
-  if (!arr) return new Set();
-  const out = new Set();
-  for (const sid of arr) {
+function parseSet(raw: unknown): Set<string> {
+  if (typeof raw !== 'object' || raw === null) return new Set();
+  const sessions = (raw as { sessions?: unknown }).sessions;
+  if (!Array.isArray(sessions)) return new Set();
+  const out = new Set<string>();
+  for (const sid of sessions) {
     if (typeof sid === 'string' && sid) out.add(sid);
   }
   return out;
@@ -52,42 +52,42 @@ function parseSet(raw) {
 // Best-effort: rename a bad file aside for forensics. Only ever called on the
 // primary from within a mutation (under the lock) or on the backup, so it can't
 // race a concurrent writer's rename of a good file.
-async function quarantine(file) {
+async function quarantine(file: string): Promise<void> {
   const dest = `${file}.corrupt-${process.pid}-${Date.now()}`;
   try { await fs.rename(file, dest); } catch { /* best-effort */ }
 }
 
 // Read-only recovery for the non-fatal read path: return the backup's set, or
 // empty if the backup is absent/corrupt. Never writes, never throws.
-async function loadBackupSet() {
-  let raw;
+async function loadBackupSet(): Promise<Set<string>> {
+  let raw: string;
   try {
     raw = await fs.readFile(backupFile(), 'utf8');
   } catch { return new Set(); }
-  try { return parseSet(raw); } catch { return new Set(); }
+  try { return parseSet(JSON.parse(raw)); } catch { return new Set(); }
 }
 
-export async function loadAllArchived() {
-  let raw;
+export async function loadAllArchived(): Promise<Set<string>> {
+  let raw: string;
   try {
     raw = await fs.readFile(archivedFile(), 'utf8');
   } catch (e) {
-    if (e.code === 'ENOENT') return loadBackupSet(); // absent → try backup
+    if (errCode(e) === 'ENOENT') return loadBackupSet(); // absent → try backup
     // I/O error on the read path is non-fatal — fall back to the backup.
-    console.warn(`archivedSessions: failed to read ${archivedFile()}: ${e.message}; trying backup`);
+    console.warn(`archivedSessions: failed to read ${archivedFile()}: ${errMsg(e)}; trying backup`);
     return loadBackupSet();
   }
   try {
-    return parseSet(raw);
+    return parseSet(JSON.parse(raw));
   } catch (e) {
     // Corrupt primary — don't clobber it here (the read path isn't under the
     // lock); just serve the backup. The next mutation quarantines + self-heals.
-    console.warn(`archivedSessions: corrupt ${archivedFile()} (${e.message}); recovering from backup`);
+    console.warn(`archivedSessions: corrupt ${archivedFile()} (${errMsg(e)}); recovering from backup`);
     return loadBackupSet();
   }
 }
 
-export async function isArchived(sessionId) {
+export async function isArchived(sessionId: string): Promise<boolean> {
   if (typeof sessionId !== 'string' || !sessionId) return false;
   const set = await loadAllArchived();
   return set.has(sessionId);
@@ -98,16 +98,16 @@ export async function isArchived(sessionId) {
 // start clean (both copies are then preserved for forensics). A genuine I/O
 // error reading the backup (e.g. EACCES) propagates — abort the mutation rather
 // than risk overwriting a store we simply couldn't read.
-async function recoverBackupStrict() {
-  let raw;
+async function recoverBackupStrict(): Promise<Set<string>> {
+  let raw: string;
   try {
     raw = await fs.readFile(backupFile(), 'utf8');
   } catch (e) {
-    if (e.code === 'ENOENT') return new Set(); // no backup → legitimately empty
+    if (errCode(e) === 'ENOENT') return new Set(); // no backup → legitimately empty
     throw e; // unrecoverable I/O — abort the mutation
   }
   try {
-    return parseSet(raw);
+    return parseSet(JSON.parse(raw));
   } catch {
     await quarantine(backupFile()); // backup also corrupt → set aside, start clean
     return new Set();
@@ -119,16 +119,16 @@ async function recoverBackupStrict() {
 // archiving; a genuine unrecoverable I/O error (EACCES etc.) still throws so we
 // never overwrite the store based on a failed read. ENOENT falls back to the
 // backup, then to a legitimately-empty base.
-async function loadArchivedStrict() {
-  let raw;
+async function loadArchivedStrict(): Promise<Set<string>> {
+  let raw: string;
   try {
     raw = await fs.readFile(archivedFile(), 'utf8');
   } catch (e) {
-    if (e.code === 'ENOENT') return recoverBackupStrict(); // absent → backup, else empty
+    if (errCode(e) === 'ENOENT') return recoverBackupStrict(); // absent → backup, else empty
     throw e; // I/O error (EACCES etc.) — abort the mutation
   }
   try {
-    return parseSet(raw);
+    return parseSet(JSON.parse(raw));
   } catch {
     // Corrupt primary — quarantine aside (race-safe under the lock) then
     // recover from the backup. The ensuing writeSet rewrites a clean primary.
@@ -140,14 +140,14 @@ async function loadArchivedStrict() {
 // Serialise concurrent writers behind a per-process promise chain. We
 // load → mutate → write the whole set, so without this two concurrent
 // writers could race on the read-modify-write and lose an entry.
-let writeChain = Promise.resolve();
-function serialize(fn) {
+let writeChain: Promise<unknown> = Promise.resolve();
+function serialize<T>(fn: () => Promise<T>): Promise<T> {
   const next = writeChain.then(fn, fn);
   writeChain = next.catch(() => {});
   return next;
 }
 
-async function writeSet(set) {
+async function writeSet(set: Set<string>): Promise<void> {
   const file = archivedFile();
   await fs.mkdir(orchStoreRoot(), { recursive: true });
   const obj = { sessions: [...set].sort((a, b) => a.localeCompare(b)) };
@@ -181,23 +181,23 @@ async function writeSet(set) {
 // superset, so a first write creates it); corrupt `.bak` → treat as empty
 // (worthless — replace it); other I/O error → false (leave an unreadable `.bak`
 // untouched). Runs under the caller's lock.
-async function backupIsSubsetOf(set) {
-  let raw;
+async function backupIsSubsetOf(set: Set<string>): Promise<boolean> {
+  let raw: string;
   try {
     raw = await fs.readFile(backupFile(), 'utf8');
   } catch (e) {
-    if (e.code === 'ENOENT') return true; // no backup yet → create it
+    if (errCode(e) === 'ENOENT') return true; // no backup yet → create it
     return false; // unreadable backup → don't overwrite what we can't verify
   }
-  let bak;
-  try { bak = parseSet(raw); } catch { return true; } // corrupt backup → replace
+  let bak: Set<string>;
+  try { bak = parseSet(JSON.parse(raw)); } catch { return true; } // corrupt backup → replace
   for (const id of bak) {
     if (!set.has(id)) return false;
   }
   return true;
 }
 
-export function markArchived(sessionId) {
+export function markArchived(sessionId: string): Promise<boolean> {
   return serialize(async () => {
     if (typeof sessionId !== 'string' || !sessionId) return false;
     return withLock(archivedFile(), async () => {
@@ -210,7 +210,7 @@ export function markArchived(sessionId) {
   });
 }
 
-export function unmarkArchived(sessionId) {
+export function unmarkArchived(sessionId: string): Promise<boolean> {
   return serialize(async () => {
     if (typeof sessionId !== 'string' || !sessionId) return false;
     return withLock(archivedFile(), async () => {
@@ -221,4 +221,18 @@ export function unmarkArchived(sessionId) {
       return true;
     });
   });
+}
+
+// The `code` on a thrown Node error (e.g. 'ENOENT'), or undefined — the
+// narrowing point for error-code checks (catch variables are `unknown` under
+// strict). Duplicated from storeLock.ts: it's four lines, and importing it
+// across modules would couple every store to storeLock for one helper.
+function errCode(e: unknown): string | undefined {
+  if (typeof e !== 'object' || e === null) return undefined;
+  const code = (e as { code?: unknown }).code;
+  return typeof code === 'string' ? code : undefined;
+}
+
+function errMsg(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
 }

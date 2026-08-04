@@ -19,7 +19,7 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { encodeCwd } from '../src/projects.js';
+import { encodeCwd } from '../src/projects.ts';
 import { loadPersistedTranscript, loadSubAgentTranscript } from '../src/transcript.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));

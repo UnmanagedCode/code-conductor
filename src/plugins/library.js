@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { projectsRoot, orchStoreRoot, validateName } from '../projects.js';
+import { projectsRoot, orchStoreRoot, validateName } from '../projects.ts';
 import { httpError } from './registry.js';
 import { getProjectUpstreamStatus } from '../worktrees.js';
 import { runGitLive, fetchOriginBounded } from '../gitLive.ts';

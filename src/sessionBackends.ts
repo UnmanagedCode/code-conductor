@@ -18,11 +18,11 @@
 // identity `claude` backend store nothing (absence = 'claude'). Single global
 // file `<store>/session-backends.json`, map-shaped
 // (`{sessions:{sid:{backend,model,contextWindowTokens?}}}`); atomic writes +
-// cross-process lock, mirroring `conductedSessions.js`.
+// cross-process lock, mirroring `conductedSessions.ts`.
 
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { orchStoreRoot } from './projects.js';
+import { orchStoreRoot } from './projects.ts';
 import { withLock } from './storeLock.ts';
 
 export interface SessionBackendRecord {

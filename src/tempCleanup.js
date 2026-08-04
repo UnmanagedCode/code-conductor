@@ -21,9 +21,9 @@
 
 import path from 'node:path';
 import { writeFileSync, readFileSync, rmSync, existsSync, renameSync } from 'node:fs';
-import { orchStoreRoot, claudeProjectsRoot, encodeCwd } from './projects.js';
-import { unmarkTemp } from './tempSessions.js';
-import { markArchived } from './archivedSessions.js';
+import { orchStoreRoot, claudeProjectsRoot, encodeCwd } from './projects.ts';
+import { unmarkTemp } from './tempSessions.ts';
+import { markArchived } from './archivedSessions.ts';
 
 export const PENDING_TEMP_CLEANUP_FILENAME = 'pending-temp-cleanup.json';
 

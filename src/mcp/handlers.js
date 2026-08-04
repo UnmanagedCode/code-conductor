@@ -1,5 +1,5 @@
 // MCP tool handlers. Thin shells over the orchestrator's existing modules
-// (InstanceManager, projects.js, worktrees.js) — never duplicate business
+// (InstanceManager, projects.ts, worktrees.js) — never duplicate business
 // logic, never self-HTTP. Each handler receives (args, { instances }).
 
 import path from 'node:path';
@@ -19,7 +19,7 @@ import {
   removeWorkspace as fsRemoveWorkspace,
   renameWorkspace as fsRenameWorkspace,
   writeProjectMeta,
-} from '../projects.js';
+} from '../projects.ts';
 import { CONDUCT_PROJECT_NAME } from '../conduct.js';
 import {
   isGitRepo, listWorktrees as fsListWorktrees, getWorktreeMergeStatus,

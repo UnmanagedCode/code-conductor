@@ -25,7 +25,7 @@ async function withStore(fn) {
 }
 
 async function seed(lines, { subAgents = null } = {}) {
-  const { encodeCwd, claudeProjectsRoot } = await import('../src/projects.js');
+  const { encodeCwd, claudeProjectsRoot } = await import('../src/projects.ts');
   const dir = path.join(claudeProjectsRoot(), encodeCwd(CWD));
   await fs.mkdir(dir, { recursive: true });
   const sid = '11111111-2222-3333-4444-555555555555';

@@ -11,7 +11,7 @@
 
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { orchStoreRoot } from './projects.js';
+import { orchStoreRoot } from './projects.ts';
 import { createFragmentCatalog } from './fragmentCatalog.js';
 
 const CONVENTIONS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'conventions', 'project');

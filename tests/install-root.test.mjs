@@ -4,7 +4,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { waitFor } from './helpers.mjs';
-import { orchStoreRoot } from '../src/projects.js';
+import { orchStoreRoot } from '../src/projects.ts';
 import { whisperRoot } from '../src/transcribe.js';
 import { piperRoot } from '../src/tts.js';
 import * as whisperInstall from '../src/whisperInstall.js';

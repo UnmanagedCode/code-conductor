@@ -8,7 +8,7 @@
 // disk). Without this, on restart the session is rediscovered with no
 // record it was temp and silently becomes persistent.
 //
-// Atomic writes (write tmp + rename), mirroring `conductedSessions.js`.
+// Atomic writes (write tmp + rename), mirroring `conductedSessions.ts`.
 // Missing file = empty set.
 //
 // Mutation safety: each write is protected by a cross-process advisory
@@ -19,31 +19,32 @@
 
 import { promises as fs, readFileSync } from 'node:fs';
 import path from 'node:path';
-import { orchStoreRoot } from './projects.js';
+import { orchStoreRoot } from './projects.ts';
 import { withLock } from './storeLock.ts';
 
-function tempFile() {
+function tempFile(): string {
   return path.join(orchStoreRoot(), 'temp-sessions.json');
 }
 
-function parseTempsJson(raw) {
-  const obj = JSON.parse(raw);
-  const arr = Array.isArray(obj?.sessions) ? obj.sessions : null;
-  if (!arr) return new Set();
-  const out = new Set();
-  for (const sid of arr) {
+function parseTempsJson(raw: string): Set<string> {
+  const obj: unknown = JSON.parse(raw); // throws SyntaxError on corrupt JSON
+  if (typeof obj !== 'object' || obj === null) return new Set();
+  const sessions = (obj as { sessions?: unknown }).sessions;
+  if (!Array.isArray(sessions)) return new Set();
+  const out = new Set<string>();
+  for (const sid of sessions) {
     if (typeof sid === 'string' && sid) out.add(sid);
   }
   return out;
 }
 
-export async function loadAllTemps() {
+export async function loadAllTemps(): Promise<Set<string>> {
   try {
     const raw = await fs.readFile(tempFile(), 'utf8');
     return parseTempsJson(raw);
   } catch (e) {
-    if (e.code === 'ENOENT') return new Set();
-    console.warn(`tempSessions: failed to read ${tempFile()}: ${e.message}`);
+    if (errCode(e) === 'ENOENT') return new Set();
+    console.warn(`tempSessions: failed to read ${tempFile()}: ${errMsg(e)}`);
     return new Set();
   }
 }
@@ -51,12 +52,12 @@ export async function loadAllTemps() {
 // Sync twin of loadAllTemps(), for the restart path (src/restart.js), which
 // must stay fully synchronous up to process.exit() — see shutdownTempSync's
 // comment in src/instances.js for why.
-export function loadAllTempsSync() {
+export function loadAllTempsSync(): Set<string> {
   try {
     return parseTempsJson(readFileSync(tempFile(), 'utf8'));
   } catch (e) {
-    if (e.code === 'ENOENT') return new Set();
-    console.warn(`tempSessions: failed to read ${tempFile()}: ${e.message}`);
+    if (errCode(e) === 'ENOENT') return new Set();
+    console.warn(`tempSessions: failed to read ${tempFile()}: ${errMsg(e)}`);
     return new Set();
   }
 }
@@ -65,13 +66,13 @@ export function loadAllTempsSync() {
 // that crashed before this process could clean them up itself, recorded
 // only in temp-sessions.json. `liveSessionIds` should be every sessionId
 // this process currently tracks as a live temp instance.
-export function orphanedTempIdsSync(liveSessionIds) {
+export function orphanedTempIdsSync(liveSessionIds: Iterable<string>): string[] {
   const durable = loadAllTempsSync();
   const live = new Set(liveSessionIds);
   return [...durable].filter((id) => !live.has(id));
 }
 
-export async function isTemp(sessionId) {
+export async function isTemp(sessionId: string): Promise<boolean> {
   if (typeof sessionId !== 'string' || !sessionId) return false;
   const set = await loadAllTemps();
   return set.has(sessionId);
@@ -82,12 +83,12 @@ export async function isTemp(sessionId) {
 // so we never overwrite the store based on a failed read.
 // ENOENT is the one legitimate empty-base case: the file has never been written
 // or was correctly unlinked when the last entry was removed.
-async function loadTempsStrict() {
+async function loadTempsStrict(): Promise<Set<string>> {
   try {
     const raw = await fs.readFile(tempFile(), 'utf8');
     return parseTempsJson(raw); // throws SyntaxError on corrupt JSON
   } catch (e) {
-    if (e.code === 'ENOENT') return new Set(); // legitimately empty
+    if (errCode(e) === 'ENOENT') return new Set(); // legitimately empty
     throw e; // I/O error or corrupt JSON — abort the mutation
   }
 }
@@ -95,17 +96,17 @@ async function loadTempsStrict() {
 // Serialise concurrent writers behind a per-process promise chain. We
 // load → mutate → write the whole set, so without this two concurrent
 // writers could race on the read-modify-write and lose an entry.
-let writeChain = Promise.resolve();
-function serialize(fn) {
+let writeChain: Promise<unknown> = Promise.resolve();
+function serialize<T>(fn: () => Promise<T>): Promise<T> {
   const next = writeChain.then(fn, fn);
   writeChain = next.catch(() => {});
   return next;
 }
 
-async function writeSet(set) {
+async function writeSet(set: Set<string>): Promise<void> {
   const file = tempFile();
   if (set.size === 0) {
-    try { await fs.unlink(file); } catch (e) { if (e.code !== 'ENOENT') throw e; }
+    try { await fs.unlink(file); } catch (e) { if (errCode(e) !== 'ENOENT') throw e; }
     return;
   }
   await fs.mkdir(orchStoreRoot(), { recursive: true });
@@ -115,7 +116,7 @@ async function writeSet(set) {
   await fs.rename(tmp, file);
 }
 
-export function markTemp(sessionId) {
+export function markTemp(sessionId: string): Promise<boolean> {
   return serialize(async () => {
     if (typeof sessionId !== 'string' || !sessionId) return false;
     return withLock(tempFile(), async () => {
@@ -128,7 +129,7 @@ export function markTemp(sessionId) {
   });
 }
 
-export function unmarkTemp(sessionId) {
+export function unmarkTemp(sessionId: string): Promise<boolean> {
   return serialize(async () => {
     if (typeof sessionId !== 'string' || !sessionId) return false;
     return withLock(tempFile(), async () => {
@@ -139,4 +140,18 @@ export function unmarkTemp(sessionId) {
       return true;
     });
   });
+}
+
+// The `code` on a thrown Node error (e.g. 'ENOENT'), or undefined — the
+// narrowing point for error-code checks (catch variables are `unknown` under
+// strict). Duplicated from storeLock.ts: it's four lines, and importing it
+// across modules would couple every store to storeLock for one helper.
+function errCode(e: unknown): string | undefined {
+  if (typeof e !== 'object' || e === null) return undefined;
+  const code = (e as { code?: unknown }).code;
+  return typeof code === 'string' ? code : undefined;
+}
+
+function errMsg(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
 }
