@@ -10,7 +10,7 @@ import { regenerateAllProjectConventions } from '../projectClaudeMd.ts';
 // The plugin-host / plugin-library surfaces these routes delegate to. Typed as
 // the read subset (registry.PluginRow and library's return types are internal
 // to those modules — the actual return values flow through res.json untouched).
-interface PluginHostApiLike {
+export interface PluginHostApiLike {
   list(): Promise<unknown>;
   rescan(): Promise<unknown>;
   enable(id: string): Promise<unknown>;
@@ -22,7 +22,7 @@ interface PluginHostApiLike {
   setActiveVersion(id: string, input: unknown): Promise<unknown>;
 }
 
-interface PluginLibraryApiLike {
+export interface PluginLibraryApiLike {
   list(): Promise<unknown>;
   install(id: string, opts: { onChunk: (phase: string, text: string) => void; onValidated: () => void }): Promise<unknown>;
   update(id: string, opts: { onChunk: (phase: string, text: string) => void; onValidated: () => void }): Promise<unknown>;

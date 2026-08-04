@@ -5,11 +5,40 @@
 
 import * as h from './handlers.ts';
 import { EFFORT_LEVELS, DEFAULT_EFFORT } from '../effortLevels.ts';
+import type { InstanceManagerLike } from '../instanceTypes.ts';
 
 const VALID_MODES = ['plan', 'ask', 'bypassPermissions'];
 const VALID_THINKING = ['adaptive', 'enabled', 'disabled'];
 
-export function buildTools() {
+// The per-call context the MCP server injects next to the args (mcp/server.ts).
+interface ToolCtx {
+  instances?: InstanceManagerLike | null;
+  callerId?: string | null;
+}
+
+interface ToolAnnotations {
+  readOnlyHint?: boolean;
+  idempotentHint?: boolean;
+  destructiveHint?: boolean;
+}
+
+// A registered tool. `handler` is declared as a METHOD (not an arrow property)
+// so its parameters are checked bivariantly: each handler in handlers.ts narrows
+// its own argument shape (e.g. `{project: string}`), and the registry can only
+// promise the schema-validated `args` the server passes. `args: unknown` is the
+// honest boundary — an interface arg (SpawnArgs) has no implicit index signature
+// to satisfy `Record<string, unknown>`. Runtime validation is the tool's
+// JSON-Schema inputSchema (validateArgs in mcp/server.ts), not this type — the
+// same boundary mcpBridge.ts draws with `(args: unknown, …)`.
+interface Tool {
+  name: string;
+  description: string;
+  inputSchema: Record<string, unknown>;
+  handler(args: unknown, ctx: ToolCtx): Promise<unknown>;
+  annotations?: ToolAnnotations;
+}
+
+export function buildTools(): Tool[] {
   return [
     {
       name: 'list_projects',

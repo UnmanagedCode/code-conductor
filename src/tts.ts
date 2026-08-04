@@ -12,7 +12,7 @@
 // <orchStoreRoot>/piper/). If anything is missing, /api/tts/status reports
 // unavailable and the frontend hides the speak button.
 
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -86,7 +86,7 @@ export async function isAvailable(): Promise<boolean> {
 // per sentence) to the HTTP response and kills the child if the client aborts.
 // rate maps to Piper's length_scale (inverse of speed): faster rate → shorter
 // scale. Throws { statusCode: 400 } on empty text.
-export function synthesize(text: unknown, { voice, rate }: { voice?: string; rate?: number } = {}): ReturnType<typeof spawn> {
+export function synthesize(text: unknown, { voice, rate }: { voice?: string; rate?: number } = {}): ChildProcessWithoutNullStreams {
   if (typeof text !== 'string' || !text.trim()) {
     throw Object.assign(new Error('empty text body'), { statusCode: 400 });
   }

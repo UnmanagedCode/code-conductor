@@ -1,6 +1,9 @@
 import express from 'express';
 import path from 'node:path';
 import { promises as fs, createReadStream } from 'node:fs';
+import type { Server } from 'node:http';
+import { WebSocket } from 'ws';
+import type { WebSocketServer } from 'ws';
 import {
   listProjects, createProject, listSessions, listSessionsForCwd,
   summarizeSessions, deleteProject, deleteSessionForCwd, archiveSessionForCwd,
@@ -9,7 +12,6 @@ import {
   addWorkspace, removeWorkspace, renameWorkspace,
   summarizeWorkspaces, validateName,
 } from './projects.ts';
-import { WebSocket } from 'ws';
 import {
   isGitRepo, listWorktrees, removeWorktree, mergeWorktreeIntoParent,
   buildRebasePrompt, getWorktree, removeAllWorktreesForProject,
@@ -18,6 +20,7 @@ import {
   getProjectCommits, getCommitDiff, getProjectUncommittedDiff,
 } from './worktrees.ts';
 import { buildPluginApi } from './plugins/api.ts';
+import type { PluginHostApiLike, PluginLibraryApiLike } from './plugins/api.ts';
 import { scheduleRestart } from './restart.ts';
 import { drainAndScheduleRestart } from './resumeRestart.ts';
 import { getSelfUpdateStatus, applySelfUpdate } from './selfUpdate.ts';
@@ -31,6 +34,7 @@ import {
 import { WHISPER_MODELS, isKnownModel, DEFAULT_MODEL } from './whisperModels.ts';
 import {
   MODEL_FAMILIES, CAPABILITY_TIERS, isKnownTier,
+  type TierName, type BackendBinding, type TierBinding,
 } from './modelVersions.ts';
 import { EFFORT_LEVELS, DEFAULT_EFFORT } from './effortLevels.ts';
 import {
@@ -90,17 +94,18 @@ import {
   updateCustomConvention as updateWorkspaceConvention,
   deleteCustomConvention as deleteWorkspaceConvention,
 } from './workspaceConventions.ts';
+import type { InstanceLike, InstanceManagerLike } from './instanceTypes.ts';
 
 // Session ids are user-supplied path params on many routes; this is the single
 // allow-list + rejection (400 "invalid sessionId") they all share.
 const SID_RE = /^[A-Za-z0-9_-]+$/;
-function assertValidSid(sid) {
+function assertValidSid(sid: string): void {
   if (!SID_RE.test(sid)) {
     throw Object.assign(new Error('invalid sessionId'), { statusCode: 400 });
   }
 }
 
-const CONTENT_TYPE_BY_EXT = {
+const CONTENT_TYPE_BY_EXT: Record<string, string> = {
   png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg',
   gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml',
   pdf: 'application/pdf', txt: 'text/plain; charset=utf-8',
@@ -108,19 +113,67 @@ const CONTENT_TYPE_BY_EXT = {
   csv: 'text/csv; charset=utf-8', md: 'text/markdown; charset=utf-8',
 };
 
+// express types req.body as `any`; every JSON body read routes through here so
+// fields arrive as `unknown` and each handler narrows them with its existing
+// runtime guards (or a callee-side validation). A non-object body yields {} —
+// destructuring it gives the same undefined fields the original
+// `req.body ?? {}` produced for the absent-body case.
+function jsonBody(req: express.Request): Record<string, unknown> {
+  const b: unknown = req.body;
+  if (b == null || typeof b !== 'object' || Array.isArray(b)) return {};
+  return b as Record<string, unknown>;
+}
+
+// Narrow an unknown thrown value's `code` field (the attachment stat catch
+// reads e.code === 'ENOENT') — the shared errCode idiom.
+function errCode(e: unknown): string | undefined {
+  if (e && typeof e === 'object' && 'code' in e) {
+    const c = (e as { code?: unknown }).code;
+    return typeof c === 'string' ? c : undefined;
+  }
+  return undefined;
+}
+
+// The trailing error middleware's message extraction (err may be any thrown
+// value; express only types it `any`).
+function errMessage(e: unknown): string {
+  if (e && typeof e === 'object' && 'message' in e) {
+    const m = (e as { message?: unknown }).message;
+    if (typeof m === 'string') return m;
+  }
+  return 'internal error';
+}
+
 // Mounts the four parallel routes shared by the Settings → Transcribe and
 // Settings → TTS groups: GET the catalog state, POST to switch the active item
 // (allow-list + on-disk gate), POST to start an install, GET install status.
 // cfg.itemKey ('model' | 'voice') drives the URL segment, the request-body
 // field, and the active/list state keys; the on-disk-before-activate check is
 // the allow-list enforcement point.
-function mountInstallableCatalog(r, cfg) {
+interface InstallableCatalogCfg {
+  prefix: string;
+  itemKey: string;
+  // Only `name` is read here; the rest flows through `{...it, installed}`.
+  // Typed as the bare `{ name: string }` (not an index-signature record)
+  // because the catalog entries are declared `interface`s, which have no
+  // implicit index signature.
+  catalog: ReadonlyArray<{ name: string }>;
+  pathForName: (name: string) => string;
+  isKnown: (name: unknown) => boolean;
+  getActive: () => string | null;
+  setActive: (name: string) => Promise<unknown>;
+  defaultName: string;
+  available: () => Promise<boolean>;
+  installer: { start: (name: string) => { started: boolean; running: boolean }; status: () => unknown };
+  extraState?: () => Record<string, unknown>;
+}
+function mountInstallableCatalog(r: express.Router, cfg: InstallableCatalogCfg): { state: () => Promise<Record<string, unknown>> } {
   const { prefix, itemKey, catalog, pathForName, isKnown, getActive, setActive,
           defaultName, available, installer, extraState } = cfg;
   const activeKey = `active${itemKey[0].toUpperCase()}${itemKey.slice(1)}`;
   const listKey = `${itemKey}s`;
 
-  async function state() {
+  async function state(): Promise<Record<string, unknown>> {
     const items = await Promise.all(catalog.map(async (it) => {
       let installed = false;
       try { installed = (await fs.stat(pathForName(it.name))).isFile(); } catch { /* missing */ }
@@ -141,23 +194,23 @@ function mountInstallableCatalog(r, cfg) {
 
   r.post(`/settings/${prefix}/${itemKey}`, async (req, res, next) => {
     try {
-      const name = req.body?.[itemKey];
+      const name = jsonBody(req)[itemKey];
       if (!isKnown(name)) {
         throw Object.assign(new Error(`unknown ${itemKey}`), { statusCode: 400 });
       }
       let onDisk = false;
-      try { onDisk = (await fs.stat(pathForName(name))).isFile(); } catch { /* missing */ }
+      try { onDisk = (await fs.stat(pathForName(name as string))).isFile(); } catch { /* missing */ }
       if (!onDisk) {
         throw Object.assign(new Error(`${itemKey} not installed — install it first`), { statusCode: 400 });
       }
-      await setActive(name);
+      await setActive(name as string);
       res.json(await state());
     } catch (e) { next(e); }
   });
 
   r.post(`/settings/${prefix}/install`, async (req, res, next) => {
     try {
-      const result = installer.start(req.body?.[itemKey]);
+      const result = installer.start(jsonBody(req)[itemKey] as string);
       if (!result.started) return res.status(409).json({ ok: false, running: true });
       res.json({ ok: true, started: true });
     } catch (e) { next(e); }
@@ -171,7 +224,30 @@ function mountInstallableCatalog(r, cfg) {
   return { state };
 }
 
-export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } = {}) {
+// The shared mutable handle server.js populates with the http server + wss once
+// they exist (routes read them at request time, after build).
+interface ServerCtx {
+  server?: Server | null;
+  wss?: WebSocketServer | null;
+}
+
+// Body-patch shapes for /settings/models/prefs. The setters own validation
+// (unknown tier/role/level, bad binding → 400), so each field is asserted to
+// the setter's input type and the runtime value passes through unchanged.
+interface ThresholdPatch { enabled: unknown; value: unknown }
+interface TierEnabledPatch { tier: TierName; enabled?: unknown }
+interface TierBackendPatch { tier: TierName; backend?: unknown }
+interface RoleBackendPatch { role: string; backend?: unknown }
+interface TierEffortPatch { tier: TierName; effort?: unknown }
+interface RoleEffortPatch { role: string; effort?: unknown }
+
+export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
+  {
+    instances?: InstanceManagerLike | null;
+    serverCtx?: ServerCtx | null;
+    pluginHost?: PluginHostApiLike | null;
+    pluginLibrary?: PluginLibraryApiLike | null;
+  } = {}): express.Router {
   const r = express.Router();
   r.use(express.json({ limit: '1mb' }));
   // Plugin management API (GET /, rescan, enable/disable/start/stop/status/
@@ -183,7 +259,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
   // hint that wsHub.ts broadcasts on instance lifecycle events — used
   // here when a route mutates project state outside that channel (e.g.
   // workspace assignment).
-  function broadcastProjects() {
+  function broadcastProjects(): void {
     const wss = serverCtx?.wss;
     if (!wss) return;
     const msg = JSON.stringify({ t: 'projects' });
@@ -211,7 +287,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
     const ctx = { server: serverCtx.server, wss: serverCtx.wss, instances };
     // `resume:true` ⇒ graceful drain → restart → resurrect (carries temps
     // over). Otherwise the normal hard restart (wipes temps).
-    if (req.body?.resume) drainAndScheduleRestart(ctx);
+    if (jsonBody(req).resume) drainAndScheduleRestart(ctx);
     else scheduleRestart(ctx);
   });
 
@@ -231,21 +307,21 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
   // outcomes resolve into one terminal {type:'result',...} line.
   r.post('/settings/self-update', (req, res, next) => {
     let streaming = false;
-    const write = (obj) => { if (!res.writableEnded) res.write(`${JSON.stringify(obj)}\n`); };
+    const write = (obj: unknown) => { if (!res.writableEnded) res.write(`${JSON.stringify(obj)}\n`); };
     const onValidated = () => {
       streaming = true;
       res.setHeader('Content-Type', 'application/x-ndjson');
       res.setHeader('Cache-Control', 'no-store');
       res.flushHeaders();
     };
-    const onChunk = (phase, text) => write({ type: 'chunk', phase, text });
+    const onChunk = (phase: 'pull' | 'npm', text: string) => write({ type: 'chunk', phase, text });
     return applySelfUpdate({ onChunk, onValidated }).then(
       (result) => {
         if (streaming) { write({ type: 'result', ok: true, result }); res.end(); }
         else res.json(result);
       },
       (e) => {
-        if (streaming) { write({ type: 'result', ok: false, error: e.message, tail: e.tail }); res.end(); }
+        if (streaming) { write({ type: 'result', ok: false, error: errMessage(e), tail: (e as { tail?: unknown }).tail }); res.end(); }
         else next(e);
       },
     );
@@ -259,7 +335,8 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
   });
   r.post('/settings/spawn/prefs', async (req, res, next) => {
     try {
-      if (req.body?.debugByDefault !== undefined) await setDebugByDefault(req.body.debugByDefault);
+      const body = jsonBody(req);
+      if (body.debugByDefault !== undefined) await setDebugByDefault(body.debugByDefault);
       res.json({ debugByDefault: getDebugByDefault() });
     } catch (e) { next(e); }
   });
@@ -268,7 +345,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
   // results are cached for TTL_MS and concurrent callers share one in-flight
   // execution. Does NOT include sessionIds or session counts — those are cheap
   // and always computed fresh so they stay live across status changes.
-  async function computeGitFacts(p) {
+  async function computeGitFacts(p: { name: string; path: string }) {
     const worktrees = await listWorktrees(p.name).catch(() => []);
     const worktreesWithMerge = await Promise.all(worktrees.map(async (w) => ({
       ...w,
@@ -316,15 +393,16 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
 
   r.post('/projects', async (req, res, next) => {
     try {
-      const { name, conventions } = req.body ?? {};
+      const body = jsonBody(req);
+      const { name, conventions } = body;
       // Validate the regex first so callers that hit BOTH conditions
       // (e.g. "../escape" — starts with "." AND contains "/") get the
       // canonical "invalid project name" error rather than the dot-prefix
       // one. Then refuse dot-prefixed names that *did* pass the regex —
       // those are reserved for orchestrator-managed hidden projects
       // (currently just `.conduct`).
-      validateName(name);
-      if (name.startsWith('.')) {
+      const validName = validateName(name as string);
+      if (validName.startsWith('.')) {
         throw Object.assign(
           new Error('invalid project name (cannot start with "." — reserved for orchestrator-managed projects)'),
           { statusCode: 400 },
@@ -333,10 +411,10 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
       if (conventions !== undefined && !Array.isArray(conventions)) {
         throw Object.assign(new Error('conventions must be an array of slug strings'), { statusCode: 400 });
       }
-      const slugs = conventions ?? [];
+      const slugs = (conventions ?? []) as string[];
       const conventionsDoc = slugs.length ? await composeProjectConventionsDoc(slugs) : null;
-      const scaffold = await composeProjectScaffold(name, slugs);
-      const created = await createProject(name, { conventionsDoc });
+      const scaffold = await composeProjectScaffold(validName, slugs);
+      const created = await createProject(validName, { conventionsDoc });
       // Scaffold directive is returned (not persisted) — the caller folds it
       // into the first worker brief. See conventions/conductor/core.md.
       res.status(201).json({ ...created, ...(scaffold ? { scaffold } : {}) });
@@ -398,9 +476,9 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
         );
       }
       await getProject(req.params.name);
-      const raw = req.body?.workspace;
+      const raw = jsonBody(req).workspace;
       const target = raw === '' || raw === undefined ? null : raw;
-      const meta = await writeProjectMeta(req.params.name, { workspace: target });
+      const meta = await writeProjectMeta(req.params.name, { workspace: target as string | null });
       if (meta.workspace) {
         try { await addWorkspace(meta.workspace); } catch { /* validation already ran in writeProjectMeta */ }
       }
@@ -421,7 +499,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
 
   r.post('/workspaces', async (req, res, next) => {
     try {
-      const { name } = req.body ?? {};
+      const name = jsonBody(req).name as string;
       const result = await addWorkspace(name);
       broadcastProjects();
       res.status(result.added ? 201 : 200).json({ ok: true, ...result });
@@ -438,7 +516,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
 
   r.put('/workspaces/:name', async (req, res, next) => {
     try {
-      const newName = req.body?.name;
+      const newName = jsonBody(req).name as string;
       const result = await renameWorkspace(req.params.name, newName);
       broadcastProjects();
       res.json({ ok: true, ...result });
@@ -478,11 +556,11 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
   // them in byId would surface as a ghost sidebar row / let Resume reattach a
   // jsonl that's about to change). `verb` is the action phrase in the 409 (the
   // only difference between the delete and archive paths).
-  async function detachInstancesForSession({ sessionId, force, verb }) {
+  async function detachInstancesForSession({ sessionId, force, verb }: { sessionId: string; force: boolean; verb: string }): Promise<void> {
     if (!instances) return;
     const attached = instances.idsForSession(sessionId)
       .map(id => instances.get(id))
-      .filter(Boolean);
+      .filter((i): i is InstanceLike => !!i);
     const running = attached.filter(i => i.proc);
     if (running.length > 0 && !force) {
       throw Object.assign(new Error(
@@ -496,7 +574,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
     await Promise.all(stale.map(i => instances.remove(i.id).catch(() => {})));
   }
 
-  async function deleteSessionAtCwd({ cwd, sessionId, force }) {
+  async function deleteSessionAtCwd({ cwd, sessionId, force }: { cwd: string; sessionId: string; force: boolean }): Promise<void> {
     await detachInstancesForSession({ sessionId, force, verb: 'kill it first' });
     const removed = await deleteSessionForCwd(cwd, sessionId);
     if (!removed) {
@@ -535,7 +613,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
   // instance first (so the archived session leaves the sidebar cleanly).
   // Unlike delete, this keeps the jsonl — it only records the sessionId
   // in the global archived set.
-  async function archiveSessionAtCwd({ cwd, sessionId, force }) {
+  async function archiveSessionAtCwd({ cwd, sessionId, force }: { cwd: string; sessionId: string; force: boolean }): Promise<void> {
     await detachInstancesForSession({ sessionId, force, verb: 'stop it first' });
     const archived = await archiveSessionForCwd(cwd, sessionId);
     if (!archived) {
@@ -612,7 +690,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
   // needed. Accepts optional ?baseRef= and ?context= (clamped to the range/default enforced in getWorktreeDiff).
   r.get('/projects/:name/worktrees/:wt/diff', async (req, res, next) => {
     try {
-      const baseRef = req.query.baseRef || undefined;
+      const baseRef = typeof req.query.baseRef === 'string' ? req.query.baseRef : undefined;
       const contextLines = req.query.context !== undefined ? Number(req.query.context) : 3;
       const result = await getWorktreeDiff(req.params.name, req.params.wt, { baseRef, contextLines });
       res.json(result);
@@ -661,7 +739,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
       if (instances) {
         const running = instances.idsForWorktree(req.params.name, req.params.wt)
           .map(id => instances.get(id))
-          .filter(i => i && i.proc);
+          .filter((i): i is InstanceLike => !!i && !!i.proc);
         if (running.length > 0 && !force) {
           throw Object.assign(new Error(
             `worktree has ${running.length} running instance(s) — kill them first or pass force=1`,
@@ -693,7 +771,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
     try {
       const sid = String(req.params.sessionId || '');
       assertValidSid(sid);
-      const raw = req.body?.title;
+      const raw = jsonBody(req).title;
       if (raw != null && typeof raw !== 'string') {
         throw Object.assign(new Error('title must be a string'), { statusCode: 400 });
       }
@@ -710,7 +788,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
   });
 
   // Resolve the filesystem cwd for a session from findSessionLocation's result.
-  async function cwdForHit(hit) {
+  async function cwdForHit(hit: { project: string; worktreeName: string | null } | null): Promise<string | null> {
     if (!hit) return null;
     if (hit.worktreeName) {
       const wt = await getWorktree(hit.project, hit.worktreeName);
@@ -720,11 +798,13 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
     return proj.path;
   }
 
+  type SessionSummaries = Awaited<ReturnType<typeof getSummaries>>;
+
   // Build the three-tier response data object, adding per-tier isStale.
   // currentCount should be pre-fetched (once) and passed in.
-  function buildTierData(tiers, currentCount) {
-    const LENGTHS = ['short', 'medium', 'long'];
-    const data = {};
+  function buildTierData(tiers: SessionSummaries, currentCount: number): Record<string, unknown> {
+    const LENGTHS = ['short', 'medium', 'long'] as const;
+    const data: Record<string, unknown> = {};
     for (const len of LENGTHS) {
       const t = tiers[len];
       data[len] = t
@@ -762,8 +842,10 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
     try {
       const sid = String(req.params.sessionId || '');
       assertValidSid(sid);
-      const length = req.body?.length;
-      if (!['short', 'medium', 'long'].includes(length)) {
+      const length = jsonBody(req).length;
+      // Equality narrowing (the original `includes` check) — only one of the
+      // three known tiers passes.
+      if (length !== 'short' && length !== 'medium' && length !== 'long') {
         throw Object.assign(new Error('length must be short, medium, or long'), { statusCode: 400 });
       }
       const hit = await findSessionLocation(sid);
@@ -804,17 +886,38 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
         // No context-window input: capacity is resolved server-side from
         // {backend, model} (see resolveContextWindowTokens), never accepted
         // from the client.
-        const { project, resume, mode, effort, tier, role, thinking, model, backend, worktree, temp, debug, autoApprovePlan } = req.body ?? {};
+        const body = jsonBody(req);
+        const { project, resume, mode, effort, tier, role, thinking, model, backend, worktree, temp, debug, autoApprovePlan } = body;
         // UI shortcut: the temp checkbox implies bypassPermissions when no
         // mode is picked (a disposable session is almost always for *doing*,
         // not planning). create() is policy-light and no longer couples
         // these, so the mapping lives here. An explicit mode still wins.
-        const effectiveMode = (mode == null && temp) ? 'bypassPermissions' : mode;
+        // `temp === true` (NOT truthiness): a malformed non-boolean temp (e.g.
+        // the string "false") must not force bypassPermissions — pinned by
+        // tests/instances.test.mjs.
+        const effectiveMode = (mode == null && temp === true) ? 'bypassPermissions' : mode;
         // `tier`/`role` name which Settings → Models row the client resolved
         // `model`+`backend` from; they exist so create() can resolve THAT row's
         // default effort when `effort` is omitted (resolveSpawnEffort). The client
         // never resolves effort itself — see public/spawnDialog.js.
-        const inst = await instances.create({ project, resume, mode: effectiveMode, effort, tier, role, thinking, model, backend, worktree, temp, debug, autoApprovePlan });
+        // Each field is asserted to create()'s input type — create() remains the
+        // runtime validator (unknown project / bad effort → its own error), so
+        // the erased casts change nothing at runtime.
+        const inst = await instances.create({
+          project: project as string,
+          resume: resume as string | undefined,
+          mode: effectiveMode as string | null | undefined,
+          effort: effort as string | null | undefined,
+          tier: tier as string | undefined,
+          role: role as string | undefined,
+          thinking: thinking as string | null | undefined,
+          model: model as string | null | undefined,
+          backend: backend as string | null | undefined,
+          worktree: worktree as string | boolean | null | undefined,
+          temp: temp as boolean | undefined,
+          debug: debug as boolean | undefined,
+          autoApprovePlan: autoApprovePlan as boolean | undefined,
+        });
         res.status(201).json(inst.summary());
       } catch (e) { next(e); }
     });
@@ -838,7 +941,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
       try {
         const inst = instances.get(req.params.id);
         if (!inst) throw Object.assign(new Error('instance not found'), { statusCode: 404 });
-        const parseIntParam = (v, name) => {
+        const parseIntParam = (v: unknown, name: string): number | null => {
           if (v === undefined) return null;
           const n = Number(v);
           if (!Number.isInteger(n)) {
@@ -864,7 +967,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
       try {
         const inst = instances.get(req.params.id);
         if (!inst) throw Object.assign(new Error('instance not found'), { statusCode: 404 });
-        const idx = Number((req.body ?? {}).userMessageIndex);
+        const idx = Number(jsonBody(req).userMessageIndex);
         if (!Number.isInteger(idx) || idx < 0) {
           throw Object.assign(new Error('userMessageIndex must be a non-negative integer'), { statusCode: 400 });
         }
@@ -889,7 +992,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
         if (!inst.sessionId) {
           throw Object.assign(new Error('no sessionId — instance has not yet received a turn'), { statusCode: 400 });
         }
-        const idx = Number((req.body ?? {}).userMessageIndex);
+        const idx = Number(jsonBody(req).userMessageIndex);
         if (!Number.isInteger(idx) || idx < 0) {
           throw Object.assign(new Error('userMessageIndex must be a non-negative integer'), { statusCode: 400 });
         }
@@ -912,7 +1015,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
         // for the duration. Scoped to the READ only — once the copy is on disk,
         // a prompt to the source can no longer affect the fork, so the create()
         // below (which spawns a whole new instance) stays outside the window.
-        let forked;
+        let forked: { newSessionId: string; droppedText: string };
         try {
           // Deferred import — keeps the routes module light and avoids pulling
           // sessionEdit into test paths that never exercise it. Inside the try
@@ -986,7 +1089,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
       try {
         const inst = instances.get(req.params.id);
         if (!inst) throw Object.assign(new Error('instance not found'), { statusCode: 404 });
-        const body = req.body ?? {};
+        const body = jsonBody(req);
         const cutTurnIndex = Number(body.cutTurnIndex);
         if (!Number.isInteger(cutTurnIndex) || cutTurnIndex < 0) {
           throw Object.assign(new Error('cutTurnIndex must be a non-negative integer'), { statusCode: 400 });
@@ -1087,9 +1190,12 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
         // The behind-guard now lives inside mergeWorktreeIntoParent (shared with
         // the MCP handler); map its typed refusal to this surface's exact wording
         // + status (HTTP 200, no cache invalidation — nothing changed).
-        const allowDirty = req.body?.allowDirty === true;
+        const allowDirty = jsonBody(req).allowDirty === true;
         const result = await mergeWorktreeIntoParent(inst.project, inst.worktree.worktreeName, { allowDirty });
-        if (result.code === 'WORKTREE_BEHIND') {
+        // The ok:false guard narrows the MergeSuccess|MergeFailure union; a
+        // success has no `code`, so `result.code === 'WORKTREE_BEHIND'` was
+        // already false on that branch — behavior is unchanged.
+        if (result.ok === false && result.code === 'WORKTREE_BEHIND') {
           res.json({
             ok: false,
             reason: `worktree is behind '${result.baseBranch}' by ${result.behind} commit(s) — click Sync first to fast-forward / rebase`,
@@ -1125,10 +1231,10 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
           attachmentsDir(inst.project, inst.worktree?.worktreeName ?? null),
           raw,
         );
-        let stat;
+        let stat: Awaited<ReturnType<typeof fs.stat>>;
         try { stat = await fs.stat(abs); }
         catch (e) {
-          if (e.code === 'ENOENT') throw Object.assign(new Error('attachment not found'), { statusCode: 404 });
+          if (errCode(e) === 'ENOENT') throw Object.assign(new Error('attachment not found'), { statusCode: 404 });
           throw e;
         }
         if (!stat.isFile()) throw Object.assign(new Error('attachment not found'), { statusCode: 404 });
@@ -1159,6 +1265,8 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
         });
         return;
       }
+      // req.body is the raw CLI envelope (express.json already parsed it);
+      // kept as `req.body ?? {}` exactly as before — the handler narrows.
       inst.handleHookCallback(req.body ?? {}, res);
     });
   }
@@ -1179,7 +1287,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
       if (!(await transcribeAvailable())) {
         throw Object.assign(new Error('whisper.cpp not installed — run bin/install-whisper.sh'), { statusCode: 503 });
       }
-      const text = await transcribe(req.body);
+      const text = await transcribe(req.body as Buffer);
       res.json({ text });
     } catch (e) { next(e); }
   });
@@ -1211,9 +1319,9 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
   // concrete {backend,model}). A binding is exactly {backend, model}: a model's
   // context window is catalog data for `claude` and registry data for any other
   // backend, resolved at spawn — never stored on the binding.
-  function modelsSettingsState() {
-    const tierBackend = {};
-    const tierEffort = {};
+  function modelsSettingsState(): Record<string, unknown> {
+    const tierBackend: Record<string, unknown> = {};
+    const tierEffort: Record<string, unknown> = {};
     for (const t of CAPABILITY_TIERS) {
       tierBackend[t.tier] = getTierBackend(t.tier); // {backend, model}
       tierEffort[t.tier] = getTierEffort(t.tier);   // always a concrete level
@@ -1225,12 +1333,12 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
     // binding itself, NOT resolved to a concrete backend, so the tier identity
     // survives.
     const allRoles = getAllRoles();
-    const roleBackend = {};
+    const roleBackend: Record<string, unknown> = {};
     // Each role's effort as {effort, inheritsTo}: `effort` is what's stored
     // ('inherit' or a level) and `inheritsTo` is what 'inherit' resolves to right
     // now. The client renders `Inherit (<inheritsTo>)` as a label — it never
     // recomputes the chain, so resolveSpawnEffort stays the only resolution point.
-    const roleEffort = {};
+    const roleEffort: Record<string, unknown> = {};
     for (const r of allRoles) {
       roleBackend[r.role] = effectiveRoleBinding(r.role);
       roleEffort[r.role] = { effort: getRoleEffort(r.role), inheritsTo: inheritedRoleEffort(r.role) };
@@ -1260,19 +1368,24 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
     res.json(modelsSettingsState());
   });
 
+  // The prefs setters all validate internally (unknown names → 400), so each
+  // body field is asserted to the setter's input type — behavior identical to
+  // the untyped original.
   r.post('/settings/models/prefs', async (req, res, next) => {
     try {
+      const body = jsonBody(req);
       const { onOverage, overageThreshold, conductorCompactWindow,
               tierEnabled, defaultSpawnTier, tierBackend, roleBackend,
-              tierEffort, roleEffort } = req.body ?? {};
+              tierEffort, roleEffort } = body;
       if (typeof onOverage === 'string') await setOnOverageAction(onOverage);
-      if (overageThreshold !== undefined) await setOverageThreshold(overageThreshold);
-      if (conductorCompactWindow !== undefined) await setConductorCompactWindow(conductorCompactWindow);
+      if (overageThreshold !== undefined) await setOverageThreshold(overageThreshold as ThresholdPatch);
+      if (conductorCompactWindow !== undefined) await setConductorCompactWindow(conductorCompactWindow as ThresholdPatch);
       if (tierEnabled !== undefined) {
-        if (!tierEnabled || typeof tierEnabled !== 'object' || !isKnownTier(tierEnabled.tier)) {
+        if (!tierEnabled || typeof tierEnabled !== 'object' || !isKnownTier((tierEnabled as TierEnabledPatch).tier)) {
           return res.status(400).json({ error: 'tierEnabled.tier must be a known capability tier' });
         }
-        await setTierEnabled(tierEnabled.tier, !!tierEnabled.enabled);
+        const patch = tierEnabled as TierEnabledPatch;
+        await setTierEnabled(patch.tier, !!patch.enabled);
       }
       if (defaultSpawnTier !== undefined) await setDefaultSpawnTier(defaultSpawnTier);
       if (tierBackend !== undefined) {
@@ -1280,20 +1393,22 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
         // a known Claude version or a configured backend's model (400 otherwise).
         // A `window` from an older client is dropped by persistBinding, not stored:
         // a model's context window is catalog/registry data, resolved at spawn.
-        if (!tierBackend || typeof tierBackend !== 'object' || !isKnownTier(tierBackend.tier)) {
+        if (!tierBackend || typeof tierBackend !== 'object' || !isKnownTier((tierBackend as TierBackendPatch).tier)) {
           return res.status(400).json({ error: 'tierBackend must be {tier, backend:{backend,model}} with a known tier' });
         }
-        await setTierBackend(tierBackend.tier, tierBackend.backend);
+        const patch = tierBackend as TierBackendPatch;
+        await setTierBackend(patch.tier, patch.backend);
       }
       if (roleBackend !== undefined) {
         // backend is a tier binding {kind:'tier',tier} or a concrete
         // {backend,model}. setRoleBinding validates the role is built-in, custom, or a
         // plugin role (an unknown role, or a bad binding, throws 400) — so no
         // isKnownRole precheck here; the store is the single source of truth.
-        if (!roleBackend || typeof roleBackend !== 'object' || typeof roleBackend.role !== 'string') {
+        if (!roleBackend || typeof roleBackend !== 'object' || typeof (roleBackend as RoleBackendPatch).role !== 'string') {
           return res.status(400).json({ error: 'roleBackend must be {role, backend}' });
         }
-        await setRoleBinding(roleBackend.role, roleBackend.backend);
+        const patch = roleBackend as RoleBackendPatch;
+        await setRoleBinding(patch.role, patch.backend as BackendBinding | TierBinding);
       }
       // The DEFAULT-EFFORT axis of the same rows — {tier, effort} / {role, effort}.
       // Shaped like the two binding patches above; the setters own validation
@@ -1302,13 +1417,15 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
         if (!tierEffort || typeof tierEffort !== 'object') {
           return res.status(400).json({ error: 'tierEffort must be {tier, effort}' });
         }
-        await setTierEffort(tierEffort.tier, tierEffort.effort);
+        const patch = tierEffort as TierEffortPatch;
+        await setTierEffort(patch.tier, patch.effort);
       }
       if (roleEffort !== undefined) {
         if (!roleEffort || typeof roleEffort !== 'object') {
           return res.status(400).json({ error: 'roleEffort must be {role, effort}' });
         }
-        await setRoleEffort(roleEffort.role, roleEffort.effort);
+        const patch = roleEffort as RoleEffortPatch;
+        await setRoleEffort(patch.role, patch.effort);
       }
       // Bidirectional on-demand re-evaluation: a save that touched the overage action
       // or threshold should take effect on whatever is happening right now, not wait
@@ -1330,7 +1447,8 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
   // (all field edits → 400) and can never be removed.
   r.post('/settings/models/backends', async (req, res, next) => {
     try {
-      const { id, label, template, env } = req.body ?? {};
+      const body = jsonBody(req);
+      const { id, label, template, env } = body;
       const rec = await addBackend({ id, label, template, env });
       res.status(201).json({ ...modelsSettingsState(), added: rec });
     } catch (e) { next(e); }
@@ -1338,7 +1456,8 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
 
   r.patch('/settings/models/backends/:id', async (req, res, next) => {
     try {
-      const { label, template, env } = req.body ?? {};
+      const body = jsonBody(req);
+      const { label, template, env } = body;
       const rec = await updateBackend(req.params.id, { label, template, env });
       if (!rec) return res.status(404).json({ error: 'backend not found' });
       res.json({ ...modelsSettingsState(), updated: rec });
@@ -1361,7 +1480,8 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
   // simply fails at spawn (and surfaces as `launch_failed`).
   r.post('/settings/models/custom', async (req, res, next) => {
     try {
-      const { label, model, backend, contextWindow } = req.body ?? {};
+      const body = jsonBody(req);
+      const { label, model, backend, contextWindow } = body;
       const rec = await addCustomModel({ label, model, backend, contextWindow });
       res.status(201).json({ ...modelsSettingsState(), added: rec });
     } catch (e) { next(e); }
@@ -1383,7 +1503,8 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
   // roles are contributed by plugins (read-only) and never touched here.
   r.post('/settings/models/roles', async (req, res, next) => {
     try {
-      const { role, binding } = req.body ?? {};
+      const body = jsonBody(req);
+      const { role, binding } = body;
       // addCustomRole validates the name + collisions (400/409); binding is
       // optional (defaults to the powerful tier) and validated when present.
       const rec = await addCustomRole({ role, binding });
@@ -1471,8 +1592,9 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
   // Persist the auto-speak toggle and/or playback rate.
   r.post('/settings/tts/prefs', async (req, res, next) => {
     try {
-      if (req.body?.enabled !== undefined) await setTtsEnabled(req.body.enabled);
-      if (req.body?.rate !== undefined) await setTtsRate(req.body.rate);
+      const body = jsonBody(req);
+      if (body.enabled !== undefined) await setTtsEnabled(body.enabled);
+      if (body.rate !== undefined) await setTtsRate(body.rate);
       res.json(await tts.state());
     } catch (e) { next(e); }
   });
@@ -1492,7 +1614,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
   // swallowed as a slug.
   r.put('/settings/conventions/workspace/selection', async (req, res, next) => {
     try {
-      const { enabled } = req.body ?? {};
+      const enabled = jsonBody(req).enabled as string[];
       const saved = await setWorkspaceSelection(enabled);
       await ensureRootClaudeMd();
       res.json({ enabled: saved });
@@ -1501,8 +1623,11 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
 
   r.post('/settings/conventions/workspace', async (req, res, next) => {
     try {
-      const { slug, name, description, body } = req.body ?? {};
-      const convention = await addWorkspaceConvention({ slug, name, description, body });
+      const body = jsonBody(req);
+      const { slug, name, description, body: text } = body;
+      const convention = await addWorkspaceConvention({
+        slug: slug as string, name: name as string, description: description as string, body: text as string,
+      });
       await ensureRootClaudeMd();
       res.status(201).json({ convention });
     } catch (e) { next(e); }
@@ -1511,8 +1636,9 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
   r.put('/settings/conventions/workspace/:slug', async (req, res, next) => {
     try {
       const { slug } = req.params;
-      const { name, description, body } = req.body ?? {};
-      const convention = await updateWorkspaceConvention(slug, { name, description, body });
+      const body = jsonBody(req);
+      const { name, description, body: text } = body;
+      const convention = await updateWorkspaceConvention(slug, { name, description, body: text });
       await ensureRootClaudeMd();
       res.json({ convention });
     } catch (e) { next(e); }
@@ -1538,8 +1664,11 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
 
   r.post('/settings/conventions/project', async (req, res, next) => {
     try {
-      const { slug, name, description, body } = req.body ?? {};
-      const convention = await addProjectConvention({ slug, name, description, body });
+      const body = jsonBody(req);
+      const { slug, name, description, body: text } = body;
+      const convention = await addProjectConvention({
+        slug: slug as string, name: name as string, description: description as string, body: text as string,
+      });
       await regenerateAllProjectConventions();
       res.status(201).json({ convention });
     } catch (e) { next(e); }
@@ -1548,8 +1677,9 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
   r.put('/settings/conventions/project/:slug', async (req, res, next) => {
     try {
       const { slug } = req.params;
-      const { name, description, body } = req.body ?? {};
-      const convention = await updateProjectConvention(slug, { name, description, body });
+      const body = jsonBody(req);
+      const { name, description, body: text } = body;
+      const convention = await updateProjectConvention(slug, { name, description, body: text });
       await regenerateAllProjectConventions();
       res.json({ convention });
     } catch (e) { next(e); }
@@ -1580,7 +1710,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
   // swallowed as a slug.
   r.put('/settings/conventions/conductor/selection', async (req, res, next) => {
     try {
-      const { enabled } = req.body ?? {};
+      const enabled = jsonBody(req).enabled as string[];
       const saved = await setConductorSelection(enabled);
       res.json({ enabled: saved });
     } catch (e) { next(e); }
@@ -1588,8 +1718,11 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
 
   r.post('/settings/conventions/conductor', async (req, res, next) => {
     try {
-      const { slug, name, description, body } = req.body ?? {};
-      const convention = await addConductorConvention({ slug, name, description, body });
+      const body = jsonBody(req);
+      const { slug, name, description, body: text } = body;
+      const convention = await addConductorConvention({
+        slug: slug as string, name: name as string, description: description as string, body: text as string,
+      });
       res.status(201).json({ convention });
     } catch (e) { next(e); }
   });
@@ -1597,8 +1730,9 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
   r.put('/settings/conventions/conductor/:slug', async (req, res, next) => {
     try {
       const { slug } = req.params;
-      const { name, description, body } = req.body ?? {};
-      const convention = await updateConductorConvention(slug, { name, description, body });
+      const body = jsonBody(req);
+      const { name, description, body: text } = body;
+      const convention = await updateConductorConvention(slug, { name, description, body: text });
       res.json({ convention });
     } catch (e) { next(e); }
   });
@@ -1620,7 +1754,11 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
     try {
       const result = await getAccountUsage({ allowStale: true });
       if (!result) return res.json({ usage: null, stale: false, fetchedAt: null });
-      res.json({ usage: result.data, stale: result.stale, fetchedAt: result.fetchedAt });
+      // getAccountUsage's declared union collapses to `unknown` (AccountUsageData
+      // is unknown); with allowStale every non-null return is the stale-result
+      // shape, so narrow to it here.
+      const r = result as { data: unknown; stale: boolean; fetchedAt: number };
+      res.json({ usage: r.data, stale: r.stale, fetchedAt: r.fetchedAt });
     } catch (e) { next(e); }
   });
 
@@ -1632,9 +1770,9 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
     try { res.json(await getSessionStats(req.params.sessionId)); } catch (e) { next(e); }
   });
 
-  r.use((err, req, res, _next) => {
-    const status = err.statusCode ?? 500;
-    res.status(status).json({ error: err.message ?? 'internal error' });
+  r.use((err: unknown, req: express.Request, res: express.Response, _next: express.NextFunction) => {
+    const status = (err as { statusCode?: number } | null)?.statusCode ?? 500;
+    res.status(status).json({ error: errMessage(err) });
   });
 
   return r;

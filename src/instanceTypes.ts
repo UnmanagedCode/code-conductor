@@ -18,6 +18,7 @@
 import type { UiEvent } from './parser.ts';
 import type { TaskRecord } from './taskReconstruct.ts';
 import type { WorktreeMeta } from './worktrees.ts';
+import type { Response } from 'express';
 
 export interface InstanceSummary {
   id: string;
@@ -84,8 +85,23 @@ export interface InstanceLike {
   readonly conducted: boolean;
   readonly temp: boolean;
   firstPrompt: string | null;
-  setTitle(title: string): void;
+  // Accepts null (clears the title) — the routes title endpoint stores
+  // `setSessionTitle(...)`'s result, which is null when the title is cleared.
+  setTitle(title: string | null): void;
   windDown(text: string): void;
+  // Route surface (src/routes.ts): spawn/fork inputs read back off the
+  // instance, prune/rewind/debug mutation, the hook-callback envelope, and the
+  // mutable `_mutating` guard fork/rewind/prune claim synchronously.
+  readonly effort: string | null;
+  readonly thinking: string | null;
+  readonly contextWindowTokens: number | null;
+  readonly debug: boolean;
+  readonly debugDir: string | null;
+  _mutating: boolean;
+  rewindToUserMessage(userMessageIndex: number): Promise<{ droppedText: string }>;
+  pruneSession(input?: { cutTurnIndex?: unknown; pruneThinking?: unknown; inputMode?: unknown }): Promise<Record<string, unknown>>;
+  enableDebug(): { ok: boolean; alreadyOn?: boolean; debugDir?: string | null; reason?: string };
+  handleHookCallback(envelope: unknown, res: Response): void;
   emit(event: 'status', summary: InstanceSummary): void;
   on(event: 'status', cb: (s: InstanceSummary) => void): void;
   off(event: 'status', cb: (s: InstanceSummary) => void): void;
@@ -147,4 +163,17 @@ export interface InstanceManagerLike {
   unsubscribeIdle(callerSessionId: string, targetSessionId: string): { removed: boolean };
   armSessionRenew(instanceId: string, opts: { summary: string }): void;
   idsForWorktree(project: string, worktreeName: string): string[];
+  // Route surface (src/routes.ts).
+  tempSessionIdsForCwd(cwd: string): Set<string>;
+  idsForSession(sessionId: string): string[];
+  sessionIdsForWorktree(project: string, worktreeName: string): string[];
+  removeAllForProject(projectName: string): Promise<number>;
+  reevaluateOverageResumes(): void;
+  _usageMonitor: { forceTick(): Promise<unknown> };
+  // Restart surface (src/restart.ts / resumeRestart.ts) — the restart routes
+  // pass the manager to scheduleRestart/drainAndScheduleRestart as the
+  // RestartManagerLike subset.
+  shutdownTempSync(): void;
+  tempCleanupSnapshot(): Array<{ cwd: string; sessionId: string }>;
+  shutdown(): Promise<unknown>;
 }

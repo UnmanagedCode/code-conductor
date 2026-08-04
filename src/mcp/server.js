@@ -8,7 +8,7 @@
 // code-conductor http://127.0.0.1:8787/mcp`.
 
 import express from 'express';
-import { buildTools } from './tools.js';
+import { buildTools } from './tools.ts';
 import { isTextPayload, codeForStatus } from './content.ts';
 import { SESSION_PREFIX_MIN } from '../instances.js';
 

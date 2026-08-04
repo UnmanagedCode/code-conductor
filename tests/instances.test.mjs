@@ -446,6 +446,24 @@ test('rejects invalid mode and unknown project', async () => {
   assert.equal(r3.status, 400);
 });
 
+test('spawn with a non-boolean temp never forces bypassPermissions (fail-closed)', async () => {
+  await setupWithProject('tempguard');
+  // Control: the UI shortcut — temp:true with no mode ⇒ bypassPermissions.
+  const ctl = await api(baseUrl, 'POST', '/api/instances', { project: 'tempguard', temp: true });
+  assert.equal(ctl.status, 201);
+  assert.equal(ctl.body.mode, 'bypassPermissions');
+  await waitFor(() => instances.get(ctl.body.id).status === 'idle');
+
+  // Regression: the JSON string "false" is truthy in JS, so the old
+  // `(mode == null && temp)` truthiness test forced bypassPermissions here.
+  // `temp === true` is the ONLY bypass trigger — a malformed non-boolean temp
+  // fails closed (no bypass) instead of silently escalating permissions.
+  const r = await api(baseUrl, 'POST', '/api/instances', { project: 'tempguard', temp: 'false' });
+  assert.equal(r.status, 201);
+  assert.notEqual(r.body.mode, 'bypassPermissions');
+  await waitFor(() => instances.get(r.body.id).status === 'idle');
+});
+
 test('default spawn passes --permission-mode plan, --effort high, --thinking adaptive', async () => {
   await setupWithProject();
   const fsp = (await import('node:fs')).promises;

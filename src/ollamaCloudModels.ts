@@ -3,7 +3,7 @@
 // `ollama` backend only (a user-defined backend gets no curated catalog; see
 // isKnownBackendModel in appSettings.ts). Unlike customModels these are
 // read-only and never persisted — this module is the single source of truth,
-// shipped to the client via `GET /api/settings/models` (see routes.js
+// shipped to the client via `GET /api/settings/models` (see routes.ts
 // modelsSettingsState).
 //
 // Tags are verbatim from ollama.com and deliberately inconsistent: most use

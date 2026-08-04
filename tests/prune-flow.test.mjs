@@ -194,7 +194,7 @@ test('the fork route claims _mutating with no await after the check', async () =
   // within the first's microtask-scale import window. So a behavioural test
   // cannot distinguish the two, and the only guard against reintroducing it is
   // to pin the shape.
-  const src = await fs.readFile(new URL('../src/routes.js', import.meta.url), 'utf8');
+  const src = await fs.readFile(new URL('../src/routes.ts', import.meta.url), 'utf8');
   const route = src.slice(src.indexOf("r.post('/instances/:id/fork'"));
   const check = route.indexOf('another rewind/fork/prune is in progress');
   const claim = route.indexOf('inst._mutating = true');

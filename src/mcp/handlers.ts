@@ -36,7 +36,7 @@ import { formatUserQuestionAnswers, type Question, type UserQuestionAnswer } fro
 import { getCatalog as getProjectConventionsCatalog, composeProjectScaffold } from '../projectConventions.ts';
 import { composeProjectConventionsDoc } from '../projectClaudeMd.ts';
 import { getCatalog as getConductorConventionsCatalog, getSelection as getConductorSelection } from '../conductorConventions.ts';
-import { isKnownFamily, isKnownTier, defaultVersion, familyOf, CLAUDE_BACKEND_ID, type TierName } from '../modelVersions.ts';
+import { isKnownFamily, isKnownTier, defaultVersion, familyOf, CLAUDE_BACKEND_ID } from '../modelVersions.ts';
 import { getTierBackend, resolveRoleBackend, isResolvableRole, backendForModel } from '../appSettings.ts';
 import { textPayload } from './content.ts';
 import { pageInstanceEvents } from '../eventArchive.ts';
@@ -383,7 +383,7 @@ export async function spawnInstance(args: SpawnArgs, { instances, callerId }: Mc
   let tier: string | undefined;
   let role: string | undefined;
   if (model && isKnownTier(model)) {
-    const binding = getTierBackend(model as TierName); // {backend, model}
+    const binding = getTierBackend(model); // {backend, model} — isKnownTier narrows
     tier = model;
     backend = binding.backend;
     model = binding.model;
@@ -394,16 +394,21 @@ export async function spawnInstance(args: SpawnArgs, { instances, callerId }: Mc
     model = binding.model;
   } else if (model && isKnownFamily(model)) {
     model = defaultVersion(model);
-  } else if (model && backendForModel(model)) {
-    backend = backendForModel(model) as string; // non-null in this branch (guard above)
-  } else if (model && !familyOf(model)) {
-    // A non-empty model that is not a tier, family alias, a configured backend's
-    // model, or a Claude id — refuse instead of resolving to a broken bare-claude
-    // spawn.
-    throw Object.assign(
-      new Error(`unknown model '${model}' — pass a capability tier (fast/balanced/powerful/frontier) or a specific model id`),
-      { statusCode: 400, code: 'BAD_MODEL' },
-    );
+  } else if (model) {
+    // A configured backend's model id, passed directly → that backend. The old
+    // `backendForModel(model) as string` re-called the guard a second time; the
+    // once-called `bm` is checked before use, so the narrowing is proven.
+    const bm = backendForModel(model);
+    if (bm) backend = bm;
+    else if (!familyOf(model)) {
+      // A non-empty model that is not a tier, family alias, a configured backend's
+      // model, or a Claude id — refuse instead of resolving to a broken bare-claude
+      // spawn.
+      throw Object.assign(
+        new Error(`unknown model '${model}' — pass a capability tier (fast/balanced/powerful/frontier) or a specific model id`),
+        { statusCode: 400, code: 'BAD_MODEL' },
+      );
+    }
   }
   // createWorktree:true → create a fresh worktree (passed to create() as the
   // boolean `true`); worktree:"<name>" → attach to an existing one.

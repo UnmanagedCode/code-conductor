@@ -426,7 +426,7 @@ export async function createProject(
 // Delete the entire project directory + the project's central-store
 // entry. Caller is responsible for first killing any running instances
 // and removing worktree registrations (the cascade is orchestrated in
-// src/routes.js). Sessions under ~/.claude/projects/<encoded>/ are
+// src/routes.ts). Sessions under ~/.claude/projects/<encoded>/ are
 // deliberately left in place — they might still be referenced by
 // `claude --resume` outside the orchestrator.
 export async function deleteProject(name: string): Promise<{ name: string; path: string }> {

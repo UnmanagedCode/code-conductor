@@ -5,7 +5,7 @@
 // `({id, callerInstanceId, ...rest}) => rest`, so every field ever added to
 // Instance.summary() was published to conductors automatically. That is how the
 // misleading `sonnetWindow` reached list_instances / spawn_instance /
-// wait_for_idle.summary / respawn_instance / promote_session while tools.js
+// wait_for_idle.summary / respawn_instance / promote_session while tools.ts
 // documented only 13 keys. The surface being UNDOCUMENTED was the bug — not its
 // width — so the allowlist is close to parity and the tool description is
 // pinned against it here rather than by review.
@@ -20,7 +20,7 @@ import { CONDUCTOR_VIEW_KEYS } from '../src/mcp/handlers.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO_INSTANCE = path.join(__dirname, 'fixtures', 'scenario-instance.json');
-const TOOLS_SRC = path.join(__dirname, '..', 'src', 'mcp', 'tools.js');
+const TOOLS_SRC = path.join(__dirname, '..', 'src', 'mcp', 'tools.ts');
 
 let ctx, baseUrl, instances, home;
 before(async () => { ctx = await bootServer({ scenarioPath: SCENARIO_INSTANCE }); ({ baseUrl, instances } = ctx); });

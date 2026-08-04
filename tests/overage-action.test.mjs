@@ -983,7 +983,7 @@ test('stop-resume: one usage fetch per sweep cycle across all due sessions', asy
 // POST /api/settings/models/prefs, when it touches onOverage/overageThreshold,
 // force-reevaluates whatever is happening right now instead of waiting for the
 // next ~60s poll tick (lower threshold) or the resume deadline (raised/disabled
-// threshold, which can be hours away). See src/routes.js's prefs handler.
+// threshold, which can be hours away). See src/routes.ts's prefs handler.
 
 test('Apply raising the threshold force-resumes a parked stop-resume session under the new bar', async () => {
   await boot(scenario([utilEvent({ util: 0.9, resetsAt: nowSec() + 3600 }), RESULT]), 'stop-resume');

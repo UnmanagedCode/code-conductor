@@ -3,7 +3,7 @@ import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
-import { buildRoutes } from './src/routes.js';
+import { buildRoutes } from './src/routes.ts';
 import { buildMcpRouter } from './src/mcp/server.js';
 import { InstanceManager } from './src/instances.js';
 import { attachWsHub } from './src/wsHub.ts';

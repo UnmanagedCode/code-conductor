@@ -123,7 +123,7 @@ export const DEFAULT_VERSIONS: Record<FamilyName, string> = Object.fromEntries(
   MODEL_FAMILIES.map(f => [f.family, f.default]),
 ) as Record<FamilyName, string>;
 
-export function isKnownFamily(family: unknown): boolean {
+export function isKnownFamily(family: unknown): family is FamilyName {
   return MODEL_FAMILIES.some(f => f.family === family);
 }
 
@@ -179,7 +179,7 @@ export const DEFAULT_TIER_BACKEND: Record<TierName, BackendBinding> = {
   frontier: { backend: CLAUDE_BACKEND_ID, model: DEFAULT_VERSIONS.fable },
 };
 
-export function isKnownTier(tier: unknown): boolean {
+export function isKnownTier(tier: unknown): tier is TierName {
   return CAPABILITY_TIERS.some(t => t.tier === tier);
 }
 
@@ -204,7 +204,7 @@ export function isKnownRole(role: unknown): boolean {
   return ROLES.some(r => r.role === role);
 }
 
-export function isKnownVersion(family: unknown, id: unknown): boolean {
+export function isKnownVersion(family: unknown, id: unknown): id is string {
   const f = MODEL_FAMILIES.find(x => x.family === family);
   return !!f && f.versions.some(v => v.id === id);
 }
