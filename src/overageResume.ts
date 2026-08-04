@@ -30,7 +30,7 @@ const QUEUED_ONLY_RESUME_TEXT =
   'The rate-limit window has reset. Delivering the messages you queued while paused:';
 
 // A message the user queued while the session was paused — the shape
-// Instance.prompt() pushes onto `_overageQueue` (instances.js), so all fields
+// Instance.prompt() pushes onto `_overageQueue` (instances.ts), so all fields
 // are app-authored and well-typed.
 interface OverageQueueItem {
   text: string;

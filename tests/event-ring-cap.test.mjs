@@ -4,7 +4,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { EventLog } from '../src/instances.js';
+import { EventLog } from '../src/instances.ts';
 
 function pushN(log, n, makeEv = (i) => ({ kind: 'text_delta', text: `e${i}` })) {
   for (let i = 0; i < n; i++) log.push(makeEv(i));

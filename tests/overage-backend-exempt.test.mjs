@@ -6,7 +6,7 @@
 // claude-backed agent (e.g. a non-Claude conductor whose workers are Claude) stays
 // in the flow. Exercises the backend-scoped usage-window-domain seam
 // (src/usageWindowDomains.ts — each backend maps to its own domain, `claude` to the
-// monitored `anthropic`) + the guards in instances.js.
+// monitored `anthropic`) + the guards in instances.ts.
 
 import { test, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';

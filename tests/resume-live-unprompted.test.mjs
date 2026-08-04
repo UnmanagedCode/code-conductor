@@ -4,7 +4,7 @@
 // received its first prompt yet (not a genuine replay-only/non-live view).
 //
 // Two things are verified against the real src/routes.ts + src/wsHub.ts +
-// src/instances.js code paths (no UI/browser involved — see the plan for
+// src/instances.ts code paths (no UI/browser involved — see the plan for
 // what that leaves unverified):
 //
 //   1. Sanity-check for the race diagnosis: a freshly-resumed instance is

@@ -491,7 +491,7 @@ export class Parser {
 }
 
 // Detect "Attached file: `<path>`" marker lines in a text block (the
-// shape we write in instances.js prompt()) and split them out as
+// shape we write in instances.ts prompt()) and split them out as
 // attachment entries. Path must point inside the orchestrator's central
 // store (`.../<ORCH_STORE_DIRNAME>/.../attachments/<file>`) to be
 // recognized — anchors the match so unrelated prose mentioning
@@ -718,7 +718,7 @@ export function attachSkillLoad(events: UiEvent[], source: WireEnvelope, pending
 
 // A `user_echo` for a top-level (non-sub-agent) user prompt — i.e. one that
 // marks a turn boundary. Sub-agent echoes carry a parentToolUseId. Shared by
-// the event ring (instances.js) and the paging/archive code (eventArchive.ts).
+// the event ring (instances.ts) and the paging/archive code (eventArchive.ts).
 export function isOuterUserEcho(ev: UiEvent | null | undefined): boolean {
   return ev?.kind === 'user_echo' && !ev.parentToolUseId;
 }
@@ -804,7 +804,7 @@ function resolveGroupBoundary(components: BoundaryInterval[], start: number): nu
 // a child with no head at or before it pushes the start past THAT CHILD (and
 // the component it merges into) — not past its whole group, whose later
 // children may still have a head above them and stay servable.
-// NOT on the production path — snapshotTail (instances.js) and
+// NOT on the production path — snapshotTail (instances.ts) and
 // pageInstanceEvents (eventArchive.ts) both call snapStartToQuiescent, which
 // resolves the same components itself while also honoring quiescence. This
 // export isolates the group resolver for direct unit testing; keep the two

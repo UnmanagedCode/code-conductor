@@ -1231,7 +1231,7 @@ test('turn_end while a backgrounded Agent task is still running: status stays id
     // `task_updated` (both in the same `emit` array, spaced by delay_ms), so
     // `status:'idle' && activeAgentTasks:1` is only true for a ~20ms window.
     // `Instance` emits 'status' synchronously at the exact instant of each
-    // transition (_setStatus / task-tracking in src/instances.js), so
+    // transition (_setStatus / task-tracking in src/instances.ts), so
     // awaiting that event — rather than polling live state on an interval —
     // can't straddle or miss the window. Register the listener before
     // prompting so the emit can't fire before we're subscribed.

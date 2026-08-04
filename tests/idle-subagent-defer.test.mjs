@@ -22,7 +22,7 @@
 
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { InstanceManager, Instance } from '../src/instances.js';
+import { InstanceManager, Instance } from '../src/instances.ts';
 
 const instances = new InstanceManager();
 after(() => instances.shutdown().catch(() => {}));

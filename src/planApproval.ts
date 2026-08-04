@@ -1,7 +1,7 @@
 // Canonical text for the plan-approve / plan-reject prompts that get
 // sent to a worker when the user (or a conductor) acts on a plan_request.
 // Source-of-truth for these strings — the WS handler in public/app.js
-// and the auto-approve fire path in src/instances.js use the same
+// and the auto-approve fire path in src/instances.ts use the same
 // phrasing so the worker can't tell the difference between a UI click,
 // an auto-approve, or an MCP-driven approval.
 

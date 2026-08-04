@@ -1,4 +1,4 @@
-// Tests for self-triggered-turn status tracking (see src/instances.js message_start branch).
+// Tests for self-triggered-turn status tracking (see src/instances.ts message_start branch).
 //
 // An instance's status flips to `turn` on the prompt-send path (prompt() →
 // _setStatus('turn')). But a turn the CLI starts on its own — e.g. a

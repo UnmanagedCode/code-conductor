@@ -20,7 +20,7 @@ export function conductProjectPath(): string {
 // The conductor's composed role doc is NOT written here — it is composed
 // fresh by composeCurrentConduct() and injected at spawn time via
 // `claude --append-system-prompt` (see Instance.launch/spawn in
-// src/instances.js), so selection edits take effect on the next spawn/resume
+// src/instances.ts), so selection edits take effect on the next spawn/resume
 // with no on-disk artifact to keep in sync. Edit paths for its content are the
 // `conventions/conductor/*.md` fragments (built-in text) and Settings →
 // Conductor conventions (toggles + custom conventions). Workspace conventions

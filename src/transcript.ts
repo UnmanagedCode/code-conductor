@@ -472,7 +472,7 @@ export async function hasResumableConversation(options: { cwd: string; sessionId
 // shell picker can discover and label the session. Best-effort — caller
 // swallows errors. permissionMode is the CLI-level value (the
 // orchestrator's 'ask' is collapsed to 'bypassPermissions' before
-// reaching this function; see cliPermissionMode in instances.js).
+// reaching this function; see cliPermissionMode in instances.ts).
 export async function writeSessionMetadata(options: {
   cwd: string;
   sessionId: string;

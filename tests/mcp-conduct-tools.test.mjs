@@ -223,7 +223,7 @@ async function spawnWedgedMidTurn(transcriptName) {
 // back, or if the note is ever folded into the text instead of prepended as
 // its own block (which would break isUserQuestionAnswerText pairing too).
 async function assertAnnotatedOnTheWire(transcriptPath, sentText) {
-  const { MID_TURN_NOTE } = await import('../src/instances.js');
+  const { MID_TURN_NOTE } = await import('../src/instances.ts');
   const lines = await userStdinLines(transcriptPath);
   const line = lines.find(o => JSON.stringify(o.message.content).includes(sentText.slice(0, 24)));
   assert.ok(line, `"${sentText.slice(0, 24)}…" reached the CLI stdin`);

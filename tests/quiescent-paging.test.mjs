@@ -1,6 +1,6 @@
 // Quiescent-point lazy paging & tail snapshots (src/parser.ts
 // snapStartToQuiescent, used by src/eventArchive.ts pageInstanceEvents and
-// src/instances.js snapshotTail): backward pages and the WS tail open where
+// src/instances.ts snapshotTail): backward pages and the WS tail open where
 // reconstruction has no open block and no unresolved tool, so the client's
 // isolated per-page renderer only ever sees whole blocks and complete tool
 // round-trips. A turn longer than the window now SPLITS across ~limit-sized

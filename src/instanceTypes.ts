@@ -50,6 +50,9 @@ export interface InstanceLike {
   _overageQueue: unknown[];
   readonly activeAgentTaskCount: number;
   readonly taskNotificationPending: boolean;
+  // True when the current idle window contains non-task-lifecycle activity —
+  // read by IdleSubscriptionHub to refuse arming an idle task-drain settle.
+  readonly idleWindowDirty: boolean;
   readonly project: string;
   readonly status: string;
   readonly mode: string;
@@ -110,9 +113,15 @@ export interface InstanceLike {
 export interface InstanceManagerLike {
   byId: ReadonlyMap<string, InstanceLike>;
   get(id: string): InstanceLike | undefined;
-  anyForSession(sessionId: string): InstanceLike | undefined;
+  // Both session lookups return null (not undefined) on a miss — the impl's
+  // `find(...) ?? null` shape, pinned by tests.
+  anyForSession(sessionId: string): InstanceLike | null;
   callerSessionId(handle: string | null): string | null;
   emit(event: 'status', summary: InstanceSummary): void;
+  // IdleSubscriptionHub notifies watchers of graph changes; the server listens
+  // for it to re-render the watcher count. Emitted with no payload shape beyond
+  // the target id.
+  emit(event: 'subscription_changed', arg: { targetId: string }): void;
   _overageResumeMode: boolean;
   _overageResetsAt: number | null;
   _maybeReleaseOverageLock(): void;
@@ -156,7 +165,7 @@ export interface InstanceManagerLike {
   // MCP handler surface (src/mcp/handlers.ts).
   sessionIdsForProject(project: string): string[];
   list(): Array<InstanceSummary & { hasIdleSubscriber: boolean }>;
-  liveForSession(sessionId: string): InstanceLike | undefined;
+  liveForSession(sessionId: string): InstanceLike | null;
   remove(id: string): Promise<unknown>;
   respawn(id: string): Promise<InstanceLike>;
   subscribeIdle(callerSessionId: string, targetSessionId: string, timeoutMs?: number): { already: boolean };

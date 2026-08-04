@@ -165,7 +165,7 @@ test('subscribe sends only the ring tail, snapped to a turn boundary', async () 
 test('snapshot carries tasksAtTailStart for a batch created below the tail', async () => {
   // A still-incomplete batch whose TaskCreate sits below the ring tail must be
   // recoverable by the client panel via the snapshot's tasksAtTailStart seed
-  // (src/instances.js reconstructActiveTasks → src/taskReconstruct.ts).
+  // (src/instances.ts reconstructActiveTasks → src/taskReconstruct.ts).
   const prevTail = process.env.ORCH_SNAPSHOT_TAIL;
   const prevCap = process.env.ORCH_EVENT_RING_CAP;
   process.env.ORCH_SNAPSHOT_TAIL = '8';
@@ -398,7 +398,7 @@ test('a non-retained replay event does not disturb the ring seq or the archive s
     const inst = instances.get(id);
     assert.deepEqual(inst.lastContextUsage, CTX_USAGE, 'precondition: the replay seeded');
 
-    // idleSubscriptions.js arms on ring.nextSeq as its "activity since arm"
+    // idleSubscriptions.ts arms on ring.nextSeq as its "activity since arm"
     // marker, so a retained synthetic event would have looked like new activity.
     const seqBefore = inst.ring.nextSeq;
     inst._emitUi({ kind: 'message_start', msgId: 'm_x', usage: CTX_USAGE, replayed: true });

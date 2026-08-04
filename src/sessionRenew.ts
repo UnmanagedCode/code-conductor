@@ -46,7 +46,7 @@ interface PendingRenewal {
   timerId: NodeJS.Timeout | null;
 }
 
-// The manager's event stream entry for this instance (instances.js calls
+// The manager's event stream entry for this instance (instances.ts calls
 // _sessionRenew.onEvent({ id, ev }) on every instance event).
 interface ManagerEvent {
   id: string;

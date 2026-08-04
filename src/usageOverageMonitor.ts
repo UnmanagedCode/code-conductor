@@ -16,16 +16,21 @@
 
 import { getAccountUsage } from './accountUsage.ts';
 import { getOverageThreshold, getOnOverageAction, usageOverThreshold } from './appSettings.ts';
-import { parseResetEpochSecs } from './instances.js';
+import { parseResetEpochSecs } from './instances.ts';
+import type { InstanceManager } from './instances.ts';
 
 // Default poll cadence. Aligned with accountUsage.ts's success-cache cadence so a
 // tick rarely forces a real network fetch beyond what the chip already triggers.
 const DEFAULT_POLL_MS = 180_000;
 
 export class UsageOverageMonitor {
+  manager: InstanceManager;
+  fetchUsage: () => Promise<unknown>;
+  timer: NodeJS.Timeout | null;
+
   // `fetchUsage` is injectable purely as a test seam (defaults to the real
   // cached fetcher). The monitor never throws out of a tick.
-  constructor(manager, { fetchUsage = getAccountUsage } = {}) {
+  constructor(manager: InstanceManager, { fetchUsage = getAccountUsage }: { fetchUsage?: () => Promise<unknown> } = {}) {
     this.manager = manager;
     this.fetchUsage = fetchUsage;
     this.timer = null;
@@ -33,7 +38,7 @@ export class UsageOverageMonitor {
 
   // Begin polling. Idempotent. Cadence overridable via ORCH_USAGE_POLL_MS (ms).
   // The timer is unref()'d so it never holds the event loop / process open.
-  start() {
+  start(): void {
     if (this.timer) return;
     const env = Number(process.env.ORCH_USAGE_POLL_MS);
     const ms = Number.isFinite(env) && env > 0 ? env : DEFAULT_POLL_MS;
@@ -43,7 +48,7 @@ export class UsageOverageMonitor {
 
   // Stop polling. Idempotent. Wired into BOTH manager shutdown paths
   // (shutdown / shutdownForResumeSync).
-  stop() {
+  stop(): void {
     if (this.timer) { clearInterval(this.timer); this.timer = null; }
   }
 
@@ -51,7 +56,7 @@ export class UsageOverageMonitor {
   // may already be crossed) rather than waiting up to ORCH_USAGE_POLL_MS for the next
   // tick. Reuses _tick() so the forced check goes through the exact same
   // _handleOverageTrip path as the periodic poll — no parallel stop logic.
-  forceTick() {
+  forceTick(): Promise<unknown> {
     return this._tick();
   }
 
@@ -60,7 +65,7 @@ export class UsageOverageMonitor {
   // window ONLY, and derives the resume reset from that SAME window — keeping the
   // trip window and the resume window identical (consistent with the stream path's
   // five-hour resume timing).
-  async _tick() {
+  async _tick(): Promise<void> {
     const m = this.manager;
     if (m._overageActive) return;                  // already tripped this window (stream or poll)
     const t = getOverageThreshold();
@@ -69,18 +74,18 @@ export class UsageOverageMonitor {
     const anyLive = [...m.byId.values()].some(i => i.proc && i.status === 'turn');
     if (!anyLive) return;                           // nothing mid-turn to stop
 
-    let usage;
+    let usage: unknown;
     try { usage = await this.fetchUsage(); }        // getAccountUsage never throws, but an
     catch { return; }                               // aborted/rejected fetch must not false-trip
     if (!usage) return;                             // null on error/timeout → bail (no trip)
-    const win = usage.five_hour;
-    if (!win || typeof win.utilization !== 'number') return;
+    const win = (usage as { five_hour?: unknown }).five_hour;
+    if (!win || typeof (win as { utilization?: unknown }).utilization !== 'number') return;
     // Same "still over the bar?" logic the resume verify uses (usageOverThreshold):
     // five_hour utilization is a 0–100 PERCENT compared directly against the percent
     // threshold. (The stream path divides by 100 — its rate_limit_info.utilization is
     // a 0–1 fraction, a different shape.) Equivalent to the old `util < t.value` guard
     // here since the threshold is enabled (value ≤ 99, so the >=100 proxy is subsumed).
-    if (usageOverThreshold(usage) !== true) return;
+    if (usageOverThreshold(usage as { five_hour?: { utilization?: unknown } }) !== true) return;
 
     const resetsAt = parseResetEpochSecs(win);      // five_hour.resets_at (ISO) → epoch secs
     m._handleOverageTrip(null, { resetsAt });       // SAME machinery as the stream trip

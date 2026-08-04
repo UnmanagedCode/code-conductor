@@ -1698,7 +1698,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
   // selection + custom-convention CRUD. Mutations only update the convention
   // stores; the conductor doc is recomposed and injected via
   // `--append-system-prompt` on the next conductor spawn/resume (see
-  // Instance.launch in src/instances.js), so there is nothing to regenerate here.
+  // Instance.launch in src/instances.ts), so there is nothing to regenerate here.
   r.get('/settings/conventions/conductor', async (req, res, next) => {
     try {
       const [conventions, enabled] = await Promise.all([getConductorConventionsCatalog(), getConductorSelection()]);

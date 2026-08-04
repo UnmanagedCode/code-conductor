@@ -19,7 +19,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { bootServer, api, waitFor } from './helpers.mjs';
 import { setOnOverageAction, setOverageThreshold } from '../src/appSettings.ts';
-import { AUTO_RESUME_TEXT } from '../src/instances.js';
+import { AUTO_RESUME_TEXT } from '../src/instances.ts';
 
 const nowSec = () => Math.floor(Date.now() / 1000);
 

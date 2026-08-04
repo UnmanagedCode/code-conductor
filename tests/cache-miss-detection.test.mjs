@@ -1,4 +1,4 @@
-// Unit tests for CROSS-TURN cache-miss detection in src/instances.js.
+// Unit tests for CROSS-TURN cache-miss detection in src/instances.ts.
 //
 // A turn is one or more API requests; each message_start carries that request's
 // cumulative usage, and cache_read ACCUMULATES across a turn's tool-call
@@ -21,7 +21,7 @@ import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { Instance } from '../src/instances.js';
+import { Instance } from '../src/instances.ts';
 
 const MODEL = 'claude-opus-4-8';
 

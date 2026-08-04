@@ -51,7 +51,7 @@ export async function loadAllTemps(): Promise<Set<string>> {
 
 // Sync twin of loadAllTemps(), for the restart path (src/restart.ts), which
 // must stay fully synchronous up to process.exit() — see shutdownTempSync's
-// comment in src/instances.js for why.
+// comment in src/instances.ts for why.
 export function loadAllTempsSync(): Set<string> {
   try {
     return parseTempsJson(readFileSync(tempFile(), 'utf8'));

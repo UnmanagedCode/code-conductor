@@ -304,7 +304,7 @@ test('system/init repeating the current model does not re-emit model_changed', a
 
 // --- A SUBSTITUTION backend's inner CLI reports its model bare, dropping the
 // `:tag` suffix the template's `--model <tag>` was given. That bare report must
-// not look like a model switch (see _trackModel in src/instances.js).
+// not look like a model switch (see _trackModel in src/instances.ts).
 //
 // Run for BOTH the built-in `ollama` row and a USER-DEFINED backend. The
 // suppression is keyed on "not the identity `claude` backend", NOT on the id

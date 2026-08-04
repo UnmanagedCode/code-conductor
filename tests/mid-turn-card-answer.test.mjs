@@ -21,7 +21,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocket } from 'ws';
 import { bootServer, api, waitFor, userStdinLines } from './helpers.mjs';
-import { MID_TURN_NOTE } from '../src/instances.js';
+import { MID_TURN_NOTE } from '../src/instances.ts';
 import { isUserQuestionAnswerText } from '../public/userQuestionAnswers.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));

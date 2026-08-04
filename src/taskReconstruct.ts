@@ -8,7 +8,7 @@
 // there too, and vice-versa.
 //
 // Used by:
-//   - src/instances.js  → Instance.reconstructActiveTasks() (snapshot seed)
+//   - src/instances.ts  → Instance.reconstructActiveTasks() (snapshot seed)
 //   - src/wsHub.ts       → snapshot frame `tasksAtTailStart`
 //   - src/eventArchive.ts → inject synthetic `task_completion` into paged history
 //

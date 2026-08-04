@@ -1043,8 +1043,8 @@ export async function setConductorCompactWindow(input: { enabled: unknown; value
 // unified knob shared by BOTH trigger sources. When enabled, the overage auto-stop
 // fires once a rate-limit window's live `utilization` crosses this percentage —
 // before paid overage credits are reached. It is read by the stream-event path
-// (instances.js `_isOverageTrip`, where it only fires near Anthropic's own ~90%
-// reporting) AND by the server-side usage poller (usageOverageMonitor.js), which is
+// (instances.ts `_isOverageTrip`, where it only fires near Anthropic's own ~90%
+// reporting) AND by the server-side usage poller (usageOverageMonitor.ts), which is
 // what makes LOW thresholds actionable. Utilization-based, NOT tied to Anthropic's
 // paid-overage flag — that hard `isUsingOverage` trip is always-on and independent.
 // Value is an integer percent, clamped to [10,99] (floor lowered from 50 so

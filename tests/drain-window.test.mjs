@@ -1,4 +1,4 @@
-// Tests for the post-hard-abort drain window (see src/instances.js _openDrainWindow).
+// Tests for the post-hard-abort drain window (see src/instances.ts _openDrainWindow).
 //
 // The drain window kills spurious new turns that the CLI starts by dequeuing
 // messages it had buffered before the hard abort (e.g. the soft-interrupt steer

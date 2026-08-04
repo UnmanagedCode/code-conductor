@@ -2,7 +2,7 @@
 // address a worker by any unambiguous prefix of its sessionId (e.g. first 8
 // chars) instead of the full 36-char UUID. Resolution happens once, uniformly,
 // in the MCP dispatch layer (src/mcp/server.js) via
-// InstanceManager.resolveSessionRef (src/instances.js).
+// InstanceManager.resolveSessionRef (src/instances.ts).
 //
 // Two layers:
 //   A. unit — resolveSessionRef branch coverage on a manager with controlled
@@ -15,7 +15,7 @@ import { test, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { InstanceManager, SESSION_PREFIX_MIN } from '../src/instances.js';
+import { InstanceManager, SESSION_PREFIX_MIN } from '../src/instances.ts';
 import { bootServer, api, waitFor, instForSession, freshProjectsRoot, rmrf } from './helpers.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));

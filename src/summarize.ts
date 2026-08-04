@@ -209,7 +209,7 @@ Provide the summary only, no preamble:`;
     // command that isn't installed) emits 'error', never 'close'. Without this
     // listener the EventEmitter default rethrows it as an uncaught exception and
     // takes the whole server down with every live session. Mirrors the same guard
-    // in claudeShellEnv.ts's two spawns and instances.js's.
+    // in claudeShellEnv.ts's two spawns and instances.ts's.
     child.on('error', (err) => {
       clearTimeout(timer);
       reject(new Error(`summary generation failed to spawn ${command}: ${err.message}`));

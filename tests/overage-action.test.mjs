@@ -15,7 +15,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
 import { setOnOverageAction, setOverageThreshold } from '../src/appSettings.ts';
-import { AUTO_RESUME_TEXT } from '../src/instances.js';
+import { AUTO_RESUME_TEXT } from '../src/instances.ts';
 import { getAccountUsage } from '../src/accountUsage.ts';
 import { ensureConductProject, CONDUCT_PROJECT_NAME } from '../src/conduct.ts';
 

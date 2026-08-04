@@ -32,7 +32,7 @@ function fakeInst({ project = 'proj-a', model = 'claude-opus-4-8', sessionId = '
 }
 
 // Build a synthetic turn_end event. The cacheMiss / firstReq* fields mirror
-// the decisive verdict instances.js enriches onto turn_end before it's
+// the decisive verdict instances.ts enriches onto turn_end before it's
 // persisted (see appendCostRow).
 function turnEndEv({ costDelta = 0.01, usage, cacheMiss, firstReqCacheRead, firstReqCacheCreation, durationMs, durationApiMs, durationApiMsDelta } = {}) {
   return {

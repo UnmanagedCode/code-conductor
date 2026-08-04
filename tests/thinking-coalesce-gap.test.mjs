@@ -1,5 +1,5 @@
 // Storage-only coalescing of the ollama thinking flood, end-to-end through a
-// real Instance + the archive/paging path (src/instances.js EventLog,
+// real Instance + the archive/paging path (src/instances.ts EventLog,
 // src/eventArchive.ts pageInstanceEvents). On ollama-backed workers the CLI
 // emits one system/thinking_tokens per thinking_delta token; before the fix a
 // single long reasoning turn overflowed the ring and left its head mid-turn,

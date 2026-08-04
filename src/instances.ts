@@ -7,16 +7,16 @@ import { Parser, SOFT_INTERRUPT_MARKER, isOuterUserEcho, snapStartToQuiescent, f
 import { getProject, claudeProjectsRoot, encodeCwd, findSessionLocation, readFirstPrompt } from './projects.ts';
 import { createWorktree, getWorktree, debugBaseDir } from './worktrees.ts';
 import { getTitle as getSessionTitle, setTitle as setSessionTitle, deleteTitle as deleteSessionTitle } from './sessionTitles.ts';
-import { getSessionBackend, markSessionBackend, unmarkSessionBackend } from './sessionBackends.ts';
+import { getSessionBackend, markSessionBackend, unmarkSessionBackend, type SessionBackendRecord } from './sessionBackends.ts';
 import { isConducted, markConducted, unmarkConducted } from './conductedSessions.ts';
-import { SessionRenewController } from './sessionRenew.ts';
+import { SessionRenewController, type RenewalOpts } from './sessionRenew.ts';
 import { isTemp, markTemp, unmarkTemp } from './tempSessions.ts';
 import { markArchived } from './archivedSessions.ts';
 import { CONDUCT_PROJECT_NAME } from './conduct.ts';
 import { composeCurrentConduct } from './conductorConventions.ts';
 import { buildSettingsJSON, buildMcpConfigJSON, AWAITING_INPUT_MESSAGE } from './settings.ts';
 import { getOnOverageAction, getOverageThreshold, getConductorCompactWindow, resolveContextWindowTokens, getDebugByDefault, getBackend, isKnownBackend, resolveSpawnEffort } from './appSettings.ts';
-import { HookBroker } from './hookBroker.ts';
+import { HookBroker, type HookEnvelope } from './hookBroker.ts';
 import { loadPersistedTranscript, writeSessionMetadata, readLastSessionModel, hasResumableConversation } from './transcript.ts';
 import { canonicalizeModel, familyOf, CLAUDE_BACKEND_ID } from './modelVersions.ts';
 import { truncateSessionAtUserMessage } from './sessionEdit.ts';
@@ -25,16 +25,119 @@ import { saveAttachment, isImageType } from './attachments.ts';
 import { buildApprovePrompt } from './planApproval.ts';
 import { reconstructTasks } from './taskReconstruct.ts';
 import { buildArchive } from './eventArchive.ts';
-import { IdleSubscriptionHub } from './idleSubscriptions.js';
+import { IdleSubscriptionHub } from './idleSubscriptions.ts';
 import { OverageResumeController } from './overageResume.ts';
-import { UsageOverageMonitor } from './usageOverageMonitor.js';
+import { UsageOverageMonitor } from './usageOverageMonitor.ts';
 import { usageDomainOfBackend, isMonitoredDomain } from './usageWindowDomains.ts';
 import { defaultClaudeLauncher, resolveClaudeBin, resolveBackendLaunch } from './claudeLauncher.ts';
+import type { InstanceLike, InstanceManagerLike, InstanceSummary } from './instanceTypes.ts';
+import type { UiEvent } from './parser.ts';
+import type { WorktreeMeta } from './worktrees.ts';
+import type { TaskRecord } from './taskReconstruct.ts';
+import type { Response } from 'express';
+import type { WriteStream } from 'node:fs';
 
 // `AUTO_RESUME_TEXT` now lives with the overage timer machine in
 // overageResume.ts; re-export it here so existing importers (and tests) that
-// reach for `instances.js` keep resolving it unchanged.
+// reach for `instances.ts` keep resolving it unchanged.
 export { AUTO_RESUME_TEXT } from './overageResume.ts';
+
+// The subprocess handle an Instance launches through the injectable launcher
+// seam (default: RealClaudeLauncher → a raw ChildProcess; tests inject an
+// in-process fake). Structural — covers exactly the surface Instance.spawn()
+// consumes: pid, piped stdio, the 'exit'/'error'/'close' EventEmitter surface,
+// and kill(). Nullable streams match ChildProcess's own types; the real CLI
+// always spawns with ['pipe','pipe','pipe'], so the nulls are unreachable on
+// the production path (guarded at the few call sites that touch them).
+interface LaunchedProc {
+  // Optional to match ChildProcess's `pid?: number` (the fake in tests sets it
+  // to null); Instance.pid is normalised with `?? null` at spawn.
+  pid?: number | null;
+  stdin: { writable: boolean; write(data: string): boolean; end(): void } | null;
+  stdout: NodeJS.ReadableStream | null;
+  stderr: NodeJS.ReadableStream | null;
+  on(event: string, cb: (...args: unknown[]) => void): unknown;
+  once(event: string, cb: (...args: unknown[]) => void): unknown;
+  kill(signal?: NodeJS.Signals | number): unknown;
+}
+
+interface LauncherLike {
+  launch(input: { command: string; args: string[]; cwd: string; env: NodeJS.ProcessEnv }): LaunchedProc;
+}
+
+// A held-open control_request (see Instance._controlRequest): the promise
+// callbacks + watchdog timer stored in _pending keyed by request_id.
+interface PendingRequest {
+  resolve: (value: unknown) => void;
+  reject: (reason: Error) => void;
+  timer: NodeJS.Timeout;
+}
+
+// A message the user typed while the session was paused for overage — the
+// shape Instance.prompt() pushes onto `_overageQueue`.
+interface OverageQueueItem {
+  text: string;
+  attachments: unknown[];
+  ts: number;
+}
+
+// Narrow an event's `data` payload (UiEvent's index signature is `unknown`) to
+// a record so the per-subtype field reads below stay typed.
+function evData(ev: UiEvent): Record<string, unknown> | null | undefined {
+  return ev.data as Record<string, unknown> | null | undefined;
+}
+
+// The Instance constructor's input. `effort` is the RESOLVED level (spawn-time
+// defaulting happens in the manager's _doCreate); `appendSystemPromptProvider`
+// is the role-agnostic seam that composes the conductor doc (null for every
+// non-conductor instance).
+interface InstanceConstructorInput {
+  id: string;
+  project: string;
+  cwd: string;
+  mode: string;
+  effort: string | null;
+  thinking: string;
+  model: string | null;
+  contextWindowTokens?: number | null;
+  backend?: string;
+  hookCallbackUrl?: string | null;
+  mcpServerUrl?: string | null;
+  worktree?: WorktreeMeta | null;
+  temp?: boolean;
+  conducted?: boolean;
+  callerInstanceId?: string | null;
+  debug?: boolean;
+  claudePluginDirs?: string[];
+  launcher?: LauncherLike;
+  appendSystemPromptProvider?: (() => Promise<string | null>) | null;
+}
+
+// InstanceManager.create()/_doCreate() input — the REST/MCP spawn surface.
+// `tier`/`role` resolve the default effort only (never stored); `backend` is
+// the registry id (explicit wins; a resume without one recovers the sidecar's).
+interface CreateInstanceInput {
+  // Optional on the type only so `create(opts = {})` compiles; _doCreate
+  // validates it (throws 400 'project required') and the contract's create
+  // input requires it of callers.
+  project?: string;
+  resume?: string;
+  mode?: string | null;
+  effort?: string | null;
+  tier?: string;
+  role?: string;
+  thinking?: string | null;
+  model?: string | null;
+  contextWindowTokens?: number | null;
+  backend?: string | null;
+  worktree?: string | boolean | null;
+  temp?: boolean;
+  conducted?: boolean;
+  debug?: boolean;
+  autoApprovePlan?: boolean;
+  callerInstanceId?: string | null;
+  prefill?: string;
+}
 
 // Three user-facing modes:
 //   - `plan`              — read-only planning; CLI is in plan mode
@@ -101,7 +204,7 @@ const POST_ABORT_DRAIN_MAX = 20;
 // phantom workers (which would waste a list_instances recon round-trip).
 // Delivered mid-turn via windDown(), or as a fresh prompt() when the conductor
 // is idle+subscribed.
-function overageConductorSteerText({ hasWorkers }) {
+function overageConductorSteerText({ hasWorkers }: { hasWorkers: boolean }) {
   const halt = hasWorkers
     ? 'halt every worker you are conducting now — for each live worker call ' +
       '`mcp__code-conductor__interrupt_turn` (or `mcp__code-conductor__kill_instance` ' +
@@ -127,9 +230,10 @@ export const MID_TURN_NOTE =
 // Returns true when a rate_limit_event signals the session is now using
 // paid overage credits. Defensive: matches isUsingOverage at either
 // nesting level (nested under rate_limit_info or flat on the event).
-function isOverageEvent(data) {
-  return data?.rate_limit_info?.isUsingOverage === true
-      || data?.isUsingOverage === true;
+function isOverageEvent(data: unknown): boolean {
+  const rec = (data ?? null) as { rate_limit_info?: { isUsingOverage?: unknown } | null | undefined; isUsingOverage?: unknown } | null;
+  return rec?.rate_limit_info?.isUsingOverage === true
+      || rec?.isUsingOverage === true;
 }
 
 // Normalise the rate-limit window reset time to epoch SECONDS, or null.
@@ -139,11 +243,12 @@ function isOverageEvent(data) {
 // raw epoch number are accepted only as defensive fallbacks. The overage
 // auto-resume timer (overageResume.ts arm()) and the global clear timer both
 // expect epoch seconds, so this is the single place the shape is reconciled.
-export function parseResetEpochSecs(info) {
-  const v = info?.resetsAt ?? info?.resets_at ?? null;
+export function parseResetEpochSecs(info: unknown): number | null {
+  const rec = (info ?? null) as { resetsAt?: unknown; resets_at?: unknown } | null;
+  const v = rec?.resetsAt ?? rec?.resets_at ?? null;
   if (v == null) return null;
   if (typeof v === 'number') return Number.isFinite(v) ? v : null; // already epoch secs
-  const ms = Date.parse(v);                                        // ISO-8601 string
+  const ms = Date.parse(v as string);                              // ISO-8601 string
   return Number.isFinite(ms) ? Math.floor(ms / 1000) : null;
 }
 // Start fresh instances in read-only plan mode by default. The user can pick
@@ -160,7 +265,7 @@ const DEFAULT_RESUME_MODE = 'bypassPermissions';
 // bypassPermissions value; the orchestrator tracks `ask` separately and
 // uses it to decide whether the interactive hook callback should prompt
 // the user or auto-allow.
-function cliPermissionMode(mode) {
+function cliPermissionMode(mode: string): string {
   return mode === 'ask' ? 'bypassPermissions' : mode;
 }
 
@@ -190,9 +295,14 @@ const RING_TRIM_SLACK = 256;
 const DEFAULT_SNAPSHOT_TAIL = 500;
 
 export class EventLog {
-  constructor({ cap } = {}) {
+  cap: number;
+  slack: number;
+  buf: Array<UiEvent & { _seq: number }>;
+  nextSeq: number;
+
+  constructor({ cap }: { cap?: number } = {}) {
     const envCap = Number(process.env.ORCH_EVENT_RING_CAP);
-    this.cap = Number.isInteger(cap) && cap > 0 ? cap
+    this.cap = (typeof cap === 'number' && Number.isInteger(cap) && cap > 0) ? cap
       : (Number.isInteger(envCap) && envCap > 0 ? envCap : DEFAULT_RING_CAP);
     // For tiny caps (tests) the trim trigger scales down with the cap.
     this.slack = Math.min(RING_TRIM_SLACK, this.cap);
@@ -201,7 +311,7 @@ export class EventLog {
   }
   // First retained `_seq` — everything below it was evicted (0 when
   // nothing was). Equals nextSeq for an empty ring.
-  get trimmedBefore() { return this.buf.length ? this.buf[0]._seq : this.nextSeq; }
+  get trimmedBefore(): number { return this.buf.length ? this.buf[0]._seq : this.nextSeq; }
   // Retention is storage-only — it never gates what _emitUi emits to the live
   // WS feed. A `v` this method declines to retain simply never receives a
   // `_seq`, so _emitUi still emits it seq-less (the client renders seq-less
@@ -224,21 +334,23 @@ export class EventLog {
   // seed the ctx readout) is declined for the same storage-only reason: it is
   // synthetic, so it must not become history — see loadHistory for why keeping it
   // off the ring is load-bearing rather than merely tidy.
-  push(v) {
+  push(v: UiEvent): void {
     if (v.kind === 'system' && v.subtype === 'thinking_tokens') return;
     if (v.kind === 'message_start' && v.replayed) return;
     const tail = this.buf[this.buf.length - 1];
     if (v.kind === 'thinking_delta' && tail && tail.kind === 'thinking_delta'
         && tail.msgId === v.msgId && tail.blockIdx === v.blockIdx) {
-      tail.text += v.text;
+      // The parser emits thinking_delta text as a string, so the merge is
+      // string concatenation (the index-signature field is unknown).
+      tail.text = (tail.text as string) + (v.text as string);
       return;
     }
     v._seq = this.nextSeq;
     this.nextSeq += 1;
-    this.buf.push(v);
+    this.buf.push(v as UiEvent & { _seq: number });
     if (this.buf.length > this.cap + this.slack) this._trim();
   }
-  _trim() {
+  _trim(): void {
     const base = this.buf.length - this.cap;                   // plain cut point
     const maxIdx = this.buf.length - Math.ceil(this.cap / 2);  // snap give-up bound
     let cut = base;
@@ -261,12 +373,83 @@ export class EventLog {
   // serialization is sufficient but not required; the only hazard is a consumer
   // that re-reads the same `_seq` slot later expecting byte-stable text, or that
   // merges/pages by array position instead of by `_seq`.
-  toArray() { return this.buf.slice(); }
-  clear() { this.buf.length = 0; this.nextSeq = 0; }
+  toArray(): Array<UiEvent & { _seq: number }> { return this.buf.slice(); }
+  clear(): void { this.buf.length = 0; this.nextSeq = 0; }
 }
 
-export class Instance extends EventEmitter {
-  constructor({ id, project, cwd, mode, effort, thinking, model, contextWindowTokens = null, backend = CLAUDE_BACKEND_ID, hookCallbackUrl = null, mcpServerUrl = null, worktree = null, temp = false, conducted = false, callerInstanceId = null, debug = false, claudePluginDirs = [], launcher = defaultClaudeLauncher, appendSystemPromptProvider = null }) {
+export class Instance extends EventEmitter implements InstanceLike {
+  // All fields are assigned in the constructor below (with the three
+  // post-construction additions _mutating/_skipUsageSeed/_spawnArgv/_overageGate
+  // declared here too, since the manager and later methods assign them).
+  id: string;
+  _launcher: LauncherLike;
+  project: string;
+  cwd: string;
+  mode: string;
+  effort: string | null;
+  thinking: string;
+  model: string | null;
+  contextWindowTokens: number | null;
+  backend: string;
+  hookCallbackUrl: string | null;
+  mcpServerUrl: string | null;
+  claudePluginDirs: string[];
+  worktree: (WorktreeMeta & { postWorktreeCreate?: unknown }) | null;
+  temp: boolean;
+  conducted: boolean;
+  callerInstanceId: string | null;
+  debug: boolean;
+  _appendSystemPromptProvider: (() => Promise<string | null>) | null;
+  _appendSystemPrompt: string | null;
+  debugDir: string | null;
+  _debugStreams: { stdin: WriteStream; stdout: WriteStream; stderr: WriteStream } | null;
+  sessionId: string | null;
+  pid: number | null;
+  status: string;
+  lastResponseAt: number | null;
+  createdAt: number;
+  proc: LaunchedProc | null;
+  parser: Parser;
+  ring: EventLog;
+  _userEchoCount: number;
+  _liveThinkingTokens: number | null;
+  _lastContextUsage: unknown;
+  _pending: Map<string, PendingRequest>;
+  _hooks: HookBroker;
+  _stderr: string;
+  _lastLeafUuid: string | null;
+  _lastPlanFilePath: string | null;
+  firstPrompt: string | null;
+  title: string | null;
+  autoApprovePlan: boolean;
+  interrupting: boolean;
+  pendingPrefill: string | null;
+  _drainTimer: NodeJS.Timeout | null;
+  _drainListener: ((ev: UiEvent) => void) | null;
+  _suppressTempDelete: boolean;
+  _killing: boolean;
+  autoStoppedForOverage: boolean;
+  autoResumeAt: number | null;
+  _overageResetsAt: number | null;
+  _overageHandled: boolean;
+  _overageWasStopped: boolean;
+  _overageQueue: OverageQueueItem[];
+  _activeAgentTasks: Map<string, string | null>;
+  _taskNotificationPending: boolean;
+  _idleWindowDirty: boolean;
+  _turnFirstReqCacheRead: number | null;
+  _turnFirstReqCacheCreation: number | null;
+  _turnMissDetected: boolean;
+  _turnLastReqPrefix: number | null;
+  _turnEvicted: number;
+  _prevTurnPrefix: number | null;
+  _prefixBaselineInvalid: boolean;
+  _mutating: boolean;
+  _skipUsageSeed: boolean;
+  _spawnArgv: string[] | null;
+  _overageGate: (() => { active: boolean; resetsAt: number | null }) | null;
+
+  constructor({ id, project, cwd, mode, effort, thinking, model, contextWindowTokens = null, backend = CLAUDE_BACKEND_ID, hookCallbackUrl = null, mcpServerUrl = null, worktree = null, temp = false, conducted = false, callerInstanceId = null, debug = false, claudePluginDirs = [], launcher = defaultClaudeLauncher, appendSystemPromptProvider = null }: InstanceConstructorInput) {
     super();
     this.id = id;
     // The ClaudeLauncher used to spawn the subprocess. Defaults to the real
@@ -389,13 +572,13 @@ export class Instance extends EventEmitter {
     // Instance that starts here at null (and a fork must leave the parent's value
     // alone — that session continues).
     this._lastContextUsage = null;
-    this._pending = new Map(); // request_id -> { resolve, reject, timer }
+    this._pending = new Map<string, PendingRequest>(); // request_id -> { resolve, reject, timer }
     // Per-instance PreToolUse hook callback broker (held-open
     // responses + timeout fallbacks + the ask-mode permission_request
     // emission). See src/hookBroker.ts.
     this._hooks = new HookBroker({
       getMode: () => this.mode,
-      emit: (ev) => this._emitUi(ev),
+      emit: (ev: unknown) => this._emitUi(ev as UiEvent),
     });
     this._stderr = '';
     this._lastLeafUuid = null;     // for last-prompt jsonl marker
@@ -475,7 +658,7 @@ export class Instance extends EventEmitter {
     // stays the true process lifecycle value, while `summary().displayStatus`
     // (see below) overlays `running` for as long as this map is non-empty.
     // Reset on (re)spawn so a stale entry never survives a respawn/resume.
-    this._activeAgentTasks = new Map();
+    this._activeAgentTasks = new Map<string, string | null>();
     // True when a `task_notification` fired mid-turn (status === 'turn') and no
     // delivery edge has consumed it yet. Mirrors the CLI's internal message
     // queue, which is unobservable on stdout — but its state is fully inferable
@@ -552,26 +735,33 @@ export class Instance extends EventEmitter {
     this._turnEvicted = 0;             // P_{N-1} - read_N when a cross-turn miss fires
     this._prevTurnPrefix = null;       // P_{N-1}: prior turn's last-request full prefix
     this._prefixBaselineInvalid = false; // set by compaction/model-switch/rewind; consumed next turn
+    // Post-construction fields the manager and later methods assign — declared
+    // in the field block above, initialised here so they are definite from the
+    // start (same falsy values the JS left as undefined).
+    this._mutating = false;   // claimed synchronously by rewind/fork/prune
+    this._skipUsageSeed = false; // one-shot: suppress the pre-prune ctx seed on replay
+    this._spawnArgv = null;   // full launch argv, remembered for enableDebug's meta.json
+    this._overageGate = null; // live global-overage gate, injected by the manager
   }
 
   // Live count of in-flight background Agent-tool (subagent) tasks. Read by
   // IdleSubscriptionHub to defer the idle wake until a worker's turn
   // ends with no subagents still running. Mirrors summary().activeAgentTasks
   // without building the whole summary object.
-  get activeAgentTaskCount() { return this._activeAgentTasks.size; }
+  get activeAgentTaskCount(): number { return this._activeAgentTasks.size; }
 
   // True when a mid-turn task_notification is still unconsumed (so a
   // re-invocation turn is owed — see the _taskNotificationPending comment).
   // Read by IdleSubscriptionHub as a second defer reason alongside
   // activeAgentTaskCount.
-  get taskNotificationPending() { return this._taskNotificationPending; }
+  get taskNotificationPending(): boolean { return this._taskNotificationPending; }
 
   // True when the current idle window contains non-task-lifecycle activity
   // (see the _idleWindowDirty comment). Read by IdleSubscriptionHub to refuse
   // arming an idle task-drain settle.
-  get idleWindowDirty() { return this._idleWindowDirty; }
+  get idleWindowDirty(): boolean { return this._idleWindowDirty; }
 
-  summary() {
+  summary(): InstanceSummary {
     // Live global-overage gate (injected by the manager at create). Surfaces the
     // paused state to the client BEFORE the first message is typed on a session
     // that hasn't queued yet. Absent (no manager wiring) ⇒ not paused.
@@ -627,7 +817,7 @@ export class Instance extends EventEmitter {
     };
   }
 
-  setAutoApprovePlan(enabled) {
+  setAutoApprovePlan(enabled: boolean): void {
     const next = !!enabled;
     if (this.autoApprovePlan === next) return;
     this.autoApprovePlan = next;
@@ -639,7 +829,7 @@ export class Instance extends EventEmitter {
   // Pass null/'' to clear. Callers (the PUT route, the resume hydration
   // path) are responsible for the sidecar write; this just updates the
   // in-memory mirror.
-  setTitle(title) {
+  setTitle(title: string | null): void {
     const next = (typeof title === 'string' && title.trim()) ? title.trim() : null;
     if (this.title === next) return;
     this.title = next;
@@ -649,7 +839,7 @@ export class Instance extends EventEmitter {
   // Hydrate the in-memory title from the sidecar. Called after the
   // sessionId becomes known so the active header chip survives a
   // resume/respawn without the user re-typing.
-  async _hydrateTitle() {
+  async _hydrateTitle(): Promise<void> {
     if (!this.sessionId) return;
     try {
       const t = await getSessionTitle(this.sessionId);
@@ -660,20 +850,20 @@ export class Instance extends EventEmitter {
     } catch { /* sidecar read is best-effort */ }
   }
 
-  ringSnapshot() { return this.ring.toArray(); }
+  ringSnapshot(): Array<UiEvent & { _seq: number }> { return this.ring.toArray(); }
 
   // Latest live thinking-token estimate for the OPEN thinking block, or null
   // when none is streaming. The WS subscribe path re-attaches this as a
   // seq-less system/thinking_tokens event on the snapshot so a client joining
   // mid-thinking sees the current count immediately (the coalesced ring slot
   // already carries the partial thinking text).
-  get liveThinkingTokens() { return this._liveThinkingTokens; }
+  get liveThinkingTokens(): number | null { return this._liveThinkingTokens; }
 
   // Last observed message_start.usage (the current context-size reading), or null
   // before the first one. The WS subscribe path carries this on the snapshot frame
   // so the client can seed its UsageTracker even when the tail holds no
   // message_start — see the constructor comment for why the ring can't be trusted.
-  get lastContextUsage() { return this._lastContextUsage; }
+  get lastContextUsage(): unknown { return this._lastContextUsage; }
 
   // Trailing slice of the ring for the WS `subscribe` snapshot — tabs no
   // longer receive the whole ring on every subscribe; older events are
@@ -694,9 +884,9 @@ export class Instance extends EventEmitter {
   // the returned slice keeps growing its `.text` in place until its block closes
   // — safe to serialize async, only unsafe to re-read a slot expecting byte-stable
   // text or to page/merge by array position rather than `_seq`.
-  snapshotTail(max) {
+  snapshotTail(max?: number): UiEvent[] {
     const envMax = Number(process.env.ORCH_SNAPSHOT_TAIL);
-    const cap = Number.isInteger(max) && max > 0 ? max
+    const cap = (typeof max === 'number' && Number.isInteger(max) && max > 0) ? max
       : (Number.isInteger(envMax) && envMax > 0 ? envMax : DEFAULT_SNAPSHOT_TAIL);
     const buf = this.ring.buf;
     if (buf.length <= cap) return buf.slice();
@@ -713,7 +903,7 @@ export class Instance extends EventEmitter {
   // ring) do we widen the scan to the jsonl archive — the same combine the lazy
   // paging path uses (buildArchive → archive.cut ++ ring). Bounded by the exact
   // bug condition so the archive read never runs on the common in-ring case.
-  async reconstructActiveTasks(beforeSeq) {
+  async reconstructActiveTasks(beforeSeq: number): Promise<TaskRecord[]> {
     const events = this.ring.buf.filter(ev => ev._seq < beforeSeq);
     const { activeAtEnd, hadOrphanUpdate } = reconstructTasks(events);
     const tb = this.ring.trimmedBefore;
@@ -738,7 +928,7 @@ export class Instance extends EventEmitter {
   // exactly once at the top of spawn(), before any data flows. Best-effort:
   // a failure here demotes the instance to non-debug rather than blocking
   // the spawn — the user is debugging, not depending on the logs.
-  _openDebugStreams(args) {
+  _openDebugStreams(args: string[]): void {
     if (!this.debug) return;
     if (this._debugStreams) return; // idempotent — already capturing.
     try {
@@ -771,14 +961,14 @@ export class Instance extends EventEmitter {
     } catch (e) {
       // Surface but don't fail the spawn — debug is opportunistic.
       this._emitUi({ kind: 'system', subtype: 'stderr',
-        data: { line: `debug-mode setup failed: ${e.message}` } });
+        data: { line: `debug-mode setup failed: ${(e as Error).message}` } });
       this.debug = false;
       this.debugDir = null;
       this._debugStreams = null;
     }
   }
 
-  _closeDebugStreams() {
+  _closeDebugStreams(): void {
     if (!this._debugStreams) return;
     for (const s of Object.values(this._debugStreams)) {
       try { s.end(); } catch { /* ignore */ }
@@ -786,7 +976,7 @@ export class Instance extends EventEmitter {
     this._debugStreams = null;
   }
 
-  _debugLog(kind, line) {
+  _debugLog(kind: 'stdin' | 'stdout' | 'stderr', line: string): void {
     const s = this._debugStreams?.[kind];
     if (!s) return;
     try { s.write(line.endsWith('\n') ? line : line + '\n'); }
@@ -798,7 +988,7 @@ export class Instance extends EventEmitter {
   // before the toggle are NOT recoverable — they were never tee'd. Emits a
   // status event so the UI can refresh the DEBUG pill + button label.
   // Idempotent: a second call is a no-op.
-  enableDebug() {
+  enableDebug(): { ok: boolean; alreadyOn?: boolean; debugDir?: string | null; reason?: string } {
     if (this.debug && this._debugStreams) {
       return { ok: true, debugDir: this.debugDir, alreadyOn: true };
     }
@@ -813,7 +1003,7 @@ export class Instance extends EventEmitter {
     return { ok: true, debugDir: this.debugDir, alreadyOn: false };
   }
 
-  _setStatus(next) {
+  _setStatus(next: string): void {
     if (this.status === next) return;
     this.status = next;
     // Any exit from `turn` ends an in-flight soft interrupt — the model
@@ -844,7 +1034,7 @@ export class Instance extends EventEmitter {
     this.emit('status', this.summary());
   }
 
-  _emitUi(ev) {
+  _emitUi(ev: UiEvent): void {
     // Track the ephemeral live thinking-token count for the OPEN thinking
     // block (the per-token thinking_tokens events are never retained — see
     // EventLog.push). Funneled here alongside userIndex so every emit path
@@ -855,7 +1045,7 @@ export class Instance extends EventEmitter {
     if (ev.kind === 'thinking_start') {
       this._liveThinkingTokens = null;
     } else if (ev.kind === 'system' && ev.subtype === 'thinking_tokens') {
-      this._liveThinkingTokens = ev.data?.estimated_tokens ?? null;
+      this._liveThinkingTokens = (evData(ev)?.estimated_tokens as number | undefined) ?? null;
     } else if (ev.kind === 'thinking_end' || ev.kind === 'turn_end') {
       this._liveThinkingTokens = null;
     }
@@ -907,9 +1097,13 @@ export class Instance extends EventEmitter {
   // against THIS session's backend before comparing: on `claude`, the CLI
   // reports a bare id while this.model carries the catalog launch tag, so a
   // raw-string compare would false-positive on every init.
-  _trackModel(rawModel) {
+  _trackModel(rawModel: unknown): void {
     if (!rawModel) return;
-    const canonical = canonicalizeModel(rawModel, this.backend);
+    const canonical = canonicalizeModel(typeof rawModel === 'string' ? rawModel : undefined, this.backend);
+    // A truthy non-string report (unreachable — the CLI always reports the
+    // model id as a string) yields undefined here; drop it rather than write a
+    // garbage value into this.model.
+    if (!canonical) return;
     if (canonical === this.model) return;
     // A SUBSTITUTION backend's configured model is NEVER replaced by the CLI's
     // report — not even when the report looks like an unrelated model. Ignoring
@@ -979,12 +1173,12 @@ export class Instance extends EventEmitter {
   // The mid-session row-deletion case is NOT handled here and does not need to
   // be: nothing recomputes while the model is unchanged, and a deletion observed
   // across a resume is covered by `carriedContextWindowTokens` in create().
-  _refreshContextWindowTokens() {
+  _refreshContextWindowTokens(): void {
     const cw = resolveContextWindowTokens({ backend: this.backend, model: this.model });
     this.contextWindowTokens = Number.isFinite(cw) ? cw : null;
   }
 
-  async loadHistory(sessionId) {
+  async loadHistory(sessionId: string): Promise<void> {
     const result = await loadPersistedTranscript({
       cwd: this.cwd, sessionId, seqHint: this.ring.nextSeq,
     });
@@ -1018,7 +1212,7 @@ export class Instance extends EventEmitter {
       // entry), and it can never become the ring head after a trim and fake a
       // `history_gap` at the archive seam (message_start is quiescent —
       // parser.ts). Non-retention also keeps it invisible to ring.nextSeq, which
-      // idleSubscriptions.js arms on as its "activity since arm" marker — that
+      // idleSubscriptions.ts arms on as its "activity since arm" marker — that
       // one is defense-in-depth, not a live hazard: this fires once inside
       // loadHistory, before any turn, so it can't land inside an arm→fire
       // window. The guard keeps it from becoming a hazard if the emit ever moves.
@@ -1054,13 +1248,13 @@ export class Instance extends EventEmitter {
   // respawn, and rewind — so the doc is always freshly composed. A compose
   // error propagates (fail loud): a role-less conductor is worse than a
   // surfaced error, and all callers are async and return errors to REST/MCP.
-  async launch({ resume } = {}) {
+  async launch({ resume }: { resume?: string } = {}): Promise<void> {
     this._appendSystemPrompt = this._appendSystemPromptProvider
       ? await this._appendSystemPromptProvider() : null;
     this.spawn({ resume });
   }
 
-  spawn({ resume } = {}) {
+  spawn({ resume }: { resume?: string } = {}): void {
     if (this.proc) throw new Error('already running');
     // A reused instance object (respawn) may carry _killing from its prior
     // teardown — clear it so this fresh launch's exit is judged on its own.
@@ -1075,7 +1269,7 @@ export class Instance extends EventEmitter {
     this._overageQueue = [];
     // A fresh process starts with no in-flight Agent tasks — any entries
     // from a prior run's background subagents are gone with that process.
-    this._activeAgentTasks = new Map();
+    this._activeAgentTasks = new Map<string, string | null>();
     this._taskNotificationPending = false;
     this._idleWindowDirty = false;
     // Per-turn cache-miss capture starts clean on every (re)spawn. Cross-turn
@@ -1095,7 +1289,9 @@ export class Instance extends EventEmitter {
     // generateBundle() and summarize.ts's generateSummary() for their own
     // throwaway one-shot spawns.
     const backendRecord = getBackend(this.backend);
-    let command, launchPrefix, backendEnvVars;
+    let command: string;
+    let launchPrefix: string[];
+    let backendEnvVars: Record<string, string>;
     try {
       // A backend removed from the registry while this instance was alive would
       // otherwise fall into resolveBackendLaunch's blank-template (identity) branch
@@ -1120,6 +1316,10 @@ export class Instance extends EventEmitter {
     }
     if (resume) this.sessionId = resume;
     else if (!this.sessionId) this.sessionId = randomUUID();
+    // Local capture: a fresh spawn always has a sessionId by here, and the
+    // later method calls (markTemp / _hydrateTitle / getBackend) would reset
+    // property narrowing — the args block below needs a non-null id.
+    const sessionId = this.sessionId;
     // Persist the temp marker at spawn time so it survives a SIGKILL that
     // happens before the first turn_end (where _writeSessionMetadata also
     // calls markTemp). Fire-and-forget — spawn() must stay synchronous.
@@ -1149,7 +1349,10 @@ export class Instance extends EventEmitter {
       // leave plan mode.
       '--allow-dangerously-skip-permissions',
       '--permission-mode', cliPermissionMode(this.mode),
-      '--effort', this.effort,
+      // `effort` is always resolved to a concrete level by the manager's
+      // _doCreate (resolveSpawnEffort never returns null); the field is
+      // `string | null` only because the contract allows it.
+      '--effort', this.effort as string,
       '--thinking', this.thinking,
       // PreToolUse hooks. The static `command` deny on
       // AskUserQuestion|ExitPlanMode replaces the old auto-interrupt +
@@ -1157,7 +1360,7 @@ export class Instance extends EventEmitter {
       // interactive `http` hook is ALSO registered for the destructive
       // tools — its behaviour at callback time depends on the
       // orchestrator-tracked mode (ask = prompt user, otherwise = allow).
-      '--settings', buildSettingsJSON({ hookCallbackUrl: this.hookCallbackUrl }),
+      '--settings', buildSettingsJSON({ hookCallbackUrl: this.hookCallbackUrl ?? undefined }),
     ];
     // Route tool-permission prompts over the stream-json control channel as
     // `can_use_tool` control_requests. THIS is what un-strips the interactive
@@ -1256,8 +1459,8 @@ export class Instance extends EventEmitter {
     // the same value — a confirmed no-op for ollama (it consumes its own copy and
     // re-injects the tag).
     if (this.model) args.push('--model', this.model);
-    if (resume) args.push('--resume', this.sessionId);
-    else args.push('--session-id', this.sessionId);
+    if (resume) args.push('--resume', sessionId);
+    else args.push('--session-id', sessionId);
 
     this._setStatus('spawning');
     this.parser.reset();
@@ -1267,24 +1470,24 @@ export class Instance extends EventEmitter {
     this._openDebugStreams(this._spawnArgv);
 
     this.proc = this._launcher.launch({ command, args, cwd: this.cwd, env: spawnEnv });
-    this.pid = this.proc.pid;
+    this.pid = this.proc.pid ?? null;
 
-    const outRl = readline.createInterface({ input: this.proc.stdout, crlfDelay: Infinity });
+    const outRl = readline.createInterface({ input: this.proc.stdout as NodeJS.ReadableStream, crlfDelay: Infinity });
     outRl.on('line', (line) => {
       this._debugLog('stdout', line);
       this._handleStdoutLine(line);
     });
 
-    const errRl = readline.createInterface({ input: this.proc.stderr, crlfDelay: Infinity });
+    const errRl = readline.createInterface({ input: this.proc.stderr as NodeJS.ReadableStream, crlfDelay: Infinity });
     errRl.on('line', (line) => {
       this._debugLog('stderr', line);
       this._stderr += line + '\n';
       this._emitUi({ kind: 'system', subtype: 'stderr', data: { line } });
     });
 
-    this.proc.on('exit', (code, signal) => this._handleExit(code, signal));
+    this.proc.on('exit', (code, signal) => this._handleExit(code as number | null, signal as NodeJS.Signals | null));
     this.proc.on('error', (err) => {
-      this._emitUi({ kind: 'system', subtype: 'spawn_error', data: { message: err.message } });
+      this._emitUi({ kind: 'system', subtype: 'spawn_error', data: { message: (err as Error).message } });
       this._setStatus('crashed');
     });
 
@@ -1295,28 +1498,29 @@ export class Instance extends EventEmitter {
     // the persisted transcript into the ring buffer first so the UI shows
     // prior history alongside the new live stream.
     (async () => {
-      if (resume) {
+      if (resume && this.sessionId) {
         try { await this.loadHistory(this.sessionId); }
         catch (err) {
-          this._emitUi({ kind: 'system', subtype: 'history_load_error', data: { message: err.message } });
+          this._emitUi({ kind: 'system', subtype: 'history_load_error', data: { message: (err as Error).message } });
         }
       }
-      if (this.proc && this.proc.stdin.writable && this.status === 'spawning') {
+      if (this.proc && this.proc.stdin && this.proc.stdin.writable && this.status === 'spawning') {
         this._setStatus('idle');
       }
     })();
   }
 
-  _handleStdoutLine(line) {
+  _handleStdoutLine(line: string): void {
     const events = this.parser.handleLine(line);
     // Track the latest event uuid we've seen — used as the leaf marker we
     // append to the session jsonl so `claude --resume` from the shell can
     // discover this session in its interactive picker.
-    let leafUuidThisLine = null;
+    let leafUuidThisLine: string | null = null;
     try {
-      const obj = JSON.parse(line);
-      if (obj && typeof obj === 'object' && typeof obj.uuid === 'string') {
-        leafUuidThisLine = obj.uuid;
+      const obj: unknown = JSON.parse(line);
+      if (obj && typeof obj === 'object') {
+        const uuid = (obj as { uuid?: unknown }).uuid;
+        if (typeof uuid === 'string') leafUuidThisLine = uuid;
       }
     } catch { /* ignore */ }
     if (leafUuidThisLine) this._lastLeafUuid = leafUuidThisLine;
@@ -1327,17 +1531,18 @@ export class Instance extends EventEmitter {
       // status the event ARRIVED under. Any idle-time event that isn't pure
       // task bookkeeping dirties the window; turn_end below starts it clean.
       if (this.status === 'idle'
-          && !(ev.kind === 'system' && TASK_LIFECYCLE_SUBTYPES.has(ev.subtype))) {
+          && !(ev.kind === 'system' && typeof ev.subtype === 'string' && TASK_LIFECYCLE_SUBTYPES.has(ev.subtype))) {
         this._idleWindowDirty = true;
       }
       if (ev.kind === 'system' && ev.subtype === 'init') {
-        const sid = ev.data?.session_id;
-        if (sid && sid !== this.sessionId) {
+        const data = evData(ev);
+        const sid = data?.session_id;
+        if (sid && typeof sid === 'string' && sid !== this.sessionId) {
           this.sessionId = sid;
           this._hydrateTitle().catch(() => {});
         }
-        const mode = ev.data?.permissionMode;
-        if (mode && VALID_MODES.has(mode)) {
+        const mode = data?.permissionMode;
+        if (mode && typeof mode === 'string' && VALID_MODES.has(mode)) {
           // The CLI reports its own mode value ('plan' or
           // 'bypassPermissions'). Don't clobber the orchestrator-only
           // 'ask' label when the CLI says bypassPermissions — they're
@@ -1346,7 +1551,7 @@ export class Instance extends EventEmitter {
             this.mode = mode;
           }
         }
-        this._trackModel(ev.data?.model);
+        this._trackModel(data?.model);
       }
       // message_start reports the model too, and fires at the actual turn
       // boundary rather than a turn later once the next init lands.
@@ -1362,8 +1567,13 @@ export class Instance extends EventEmitter {
         // window's trigger — so no spurious post-spawn turn and no fight with
         // the post-abort drain (which severs on init, before any API round-trip).
         if (this.status === 'idle') this._setStatus('turn');
-        const reqRead = ev.usage.cache_read_input_tokens ?? 0;
-        const reqCreation = ev.usage.cache_creation_input_tokens ?? 0;
+        // The parser only emits message_start when usage is present, so these
+        // reads are guaranteed on the reachable path; the optional chain keeps
+        // them defensive (a missing field falls back to 0, same as the old
+        // `?? 0`).
+        const usage = ev.usage as { cache_read_input_tokens?: unknown; cache_creation_input_tokens?: unknown } | null | undefined;
+        const reqRead = (usage?.cache_read_input_tokens as number | undefined) ?? 0;
+        const reqCreation = (usage?.cache_creation_input_tokens as number | undefined) ?? 0;
         // Cross-turn cache-miss detection. The FIRST message_start of this turn
         // (the reset above/in _setStatus left `_turnFirstReqCacheRead` null)
         // decides; later message_starts only keep P (`_turnLastReqPrefix`)
@@ -1399,7 +1609,7 @@ export class Instance extends EventEmitter {
             // overage/rate-limit notice surface (an inline SystemBlock); no
             // server-side action, unlike overage. The cross-turn path adds
             // prevPrefix/evicted so the notice can show partial evictions.
-            const data = { cacheRead: reqRead, cacheCreation: reqCreation };
+            const data: Record<string, number> = { cacheRead: reqRead, cacheCreation: reqCreation };
             if (prevP !== null && !wasInvalid) {
               data.prevPrefix = prevP;
               data.evicted = this._turnEvicted;
@@ -1435,29 +1645,30 @@ export class Instance extends EventEmitter {
       // subscribe_to_idle never wakes. Any OTHER tool arriving here (rare —
       // --allow-dangerously-skip-permissions auto-allows normal tools, so they
       // don't reach can_use_tool) is allowed through unchanged.
-      if (ev.kind === 'system' && ev.subtype === 'control_request'
-          && ev.data?.request?.subtype === 'can_use_tool') {
-        const req = ev.data.request;
-        const gated = req?.tool_name === 'ExitPlanMode'
-          || req?.tool_name === 'EnterPlanMode'
-          || req?.tool_name === 'AskUserQuestion';
-        const decision = gated
-          ? { behavior: 'deny', message: AWAITING_INPUT_MESSAGE }
-          : { behavior: 'allow', updatedInput: req?.input };
-        try {
-          this._sendRaw({
-            type: 'control_response',
-            response: { subtype: 'success', request_id: ev.data.request_id, response: decision },
-          });
-        } catch { /* stdin gone — CLI will time the permission out */ }
+      if (ev.kind === 'system' && ev.subtype === 'control_request') {
+        const req = evData(ev)?.request as { subtype?: unknown; tool_name?: unknown; input?: unknown } | null | undefined;
+        if (req?.subtype === 'can_use_tool') {
+          const gated = req?.tool_name === 'ExitPlanMode'
+            || req?.tool_name === 'EnterPlanMode'
+            || req?.tool_name === 'AskUserQuestion';
+          const decision = gated
+            ? { behavior: 'deny', message: AWAITING_INPUT_MESSAGE }
+            : { behavior: 'allow', updatedInput: req?.input };
+          try {
+            this._sendRaw({
+              type: 'control_response',
+              response: { subtype: 'success', request_id: evData(ev)?.request_id, response: decision },
+            });
+          } catch { /* stdin gone — CLI will time the permission out */ }
+        }
       }
       if (ev.kind === 'control_response') {
-        const p = this._pending.get(ev.requestId);
+        const p = this._pending.get(ev.requestId as string);
         if (p) {
           clearTimeout(p.timer);
-          this._pending.delete(ev.requestId);
+          this._pending.delete(ev.requestId as string);
           if (ev.ok) p.resolve(ev.response);
-          else p.reject(new Error(ev.error ?? 'control_request failed'));
+          else p.reject(new Error((ev.error as string | undefined) ?? 'control_request failed'));
         }
       }
       if (ev.kind === 'turn_end') {
@@ -1492,33 +1703,41 @@ export class Instance extends EventEmitter {
       // over-report-running polarity as TERMINAL_TASK_STATUSES). A completed
       // Bash task that owes a re-invocation turn is still deferred correctly
       // by _taskNotificationPending, which is task-type-agnostic on purpose.
-      if (ev.kind === 'system' && ev.subtype === 'task_started' && ev.data?.task_id
-          && ev.data.task_type !== 'local_bash') {
-        const grew = this._activeAgentTasks.size === 0;
-        this._activeAgentTasks.set(ev.data.task_id, ev.data.tool_use_id ?? null);
-        if (grew) this.emit('status', this.summary());
+      if (ev.kind === 'system' && ev.subtype === 'task_started') {
+        const data = evData(ev);
+        if (data?.task_id && data.task_type !== 'local_bash') {
+          const grew = this._activeAgentTasks.size === 0;
+          this._activeAgentTasks.set(data.task_id as string, (data.tool_use_id as string | null | undefined) ?? null);
+          if (grew) this.emit('status', this.summary());
+        }
       }
-      if (ev.kind === 'system' && ev.subtype === 'task_updated' && ev.data?.task_id
-          && TERMINAL_TASK_STATUSES.has(ev.data.patch?.status)) {
-        if (this._activeAgentTasks.delete(ev.data.task_id) && this._activeAgentTasks.size === 0) {
-          this.emit('status', this.summary());
+      if (ev.kind === 'system' && ev.subtype === 'task_updated') {
+        const data = evData(ev);
+        const patchStatus = (data?.patch as { status?: unknown } | null | undefined)?.status;
+        if (data?.task_id && TERMINAL_TASK_STATUSES.has(patchStatus as string)) {
+          if (this._activeAgentTasks.delete(data.task_id as string) && this._activeAgentTasks.size === 0) {
+            this.emit('status', this.summary());
+          }
         }
       }
       // Belt-and-suspenders: task_notification always carries a terminal
       // top-level `status` (it's the human/model-facing "it's done" ping),
       // so delete unconditionally here in case task_updated was ever missed
       // for a given completion. Map.delete is a no-op if already gone.
-      if (ev.kind === 'system' && ev.subtype === 'task_notification' && ev.data?.task_id) {
-        // A mid-turn notification MAY owe an unprompted re-invocation turn —
-        // or may be consumed in-turn (sync-delivered / attached). Assume owed
-        // until a delivery edge (top-level tool_result below, or the next
-        // idle→turn transition) proves otherwise — see the
-        // _taskNotificationPending comment for the full protocol model. A
-        // completion while idle never sets it: the CLI dequeues immediately
-        // and the re-invocation turn's start would clear it anyway.
-        if (this.status === 'turn') this._taskNotificationPending = true;
-        if (this._activeAgentTasks.delete(ev.data.task_id) && this._activeAgentTasks.size === 0) {
-          this.emit('status', this.summary());
+      if (ev.kind === 'system' && ev.subtype === 'task_notification') {
+        const data = evData(ev);
+        if (data?.task_id) {
+          // A mid-turn notification MAY owe an unprompted re-invocation turn —
+          // or may be consumed in-turn (sync-delivered / attached). Assume owed
+          // until a delivery edge (top-level tool_result below, or the next
+          // idle→turn transition) proves otherwise — see the
+          // _taskNotificationPending comment for the full protocol model. A
+          // completion while idle never sets it: the CLI dequeues immediately
+          // and the re-invocation turn's start would clear it anyway.
+          if (this.status === 'turn') this._taskNotificationPending = true;
+          if (this._activeAgentTasks.delete(data.task_id as string) && this._activeAgentTasks.size === 0) {
+            this.emit('status', this.summary());
+          }
         }
       }
       // Any top-level tool_result going back to the model consumes whatever
@@ -1534,10 +1753,13 @@ export class Instance extends EventEmitter {
       // Track the most recent plan file the model wrote, so we can enrich
       // an upcoming ExitPlanMode plan_request with the saved plan text
       // when the model omits `plan` from the tool input.
-      if (ev.kind === 'tool_use' && ev.name === 'Write' && typeof ev.input?.file_path === 'string') {
-        const fp = ev.input.file_path;
-        if (fp.includes('/.claude/plans/') && fp.endsWith('.md')) {
-          this._lastPlanFilePath = fp;
+      if (ev.kind === 'tool_use' && ev.name === 'Write') {
+        const input = ev.input as { file_path?: unknown } | null | undefined;
+        if (typeof input?.file_path === 'string') {
+          const fp = input.file_path;
+          if (fp.includes('/.claude/plans/') && fp.endsWith('.md')) {
+            this._lastPlanFilePath = fp;
+          }
         }
       }
       if (ev.kind === 'plan_request' && !ev.plan && this._lastPlanFilePath) {
@@ -1572,7 +1794,8 @@ export class Instance extends EventEmitter {
       if (ev.kind === 'system' && ev.subtype === 'rate_limit_event'
           && !this._overageHandled && this._isOverageTrip(ev.data)) {
         this._overageHandled = true;
-        const resetsAt = parseResetEpochSecs(ev.data?.rate_limit_info) ?? parseResetEpochSecs(ev.data);
+        const rateInfo = (ev.data as { rate_limit_info?: unknown } | null | undefined)?.rate_limit_info;
+        const resetsAt = parseResetEpochSecs(rateInfo) ?? parseResetEpochSecs(ev.data);
         this.emit('overage', { resetsAt });
       }
     }
@@ -1584,15 +1807,16 @@ export class Instance extends EventEmitter {
   // for WHICHEVER window the event reports (no rateLimitType filtering). The
   // two triggers are independent; the hard flag fires regardless of the
   // threshold setting.
-  _isOverageTrip(data) {
+  _isOverageTrip(data: unknown): boolean {
     if (isOverageEvent(data)) return true;
     const t = getOverageThreshold();
     if (!t.enabled) return false;
-    const u = data?.rate_limit_info?.utilization;
+    const rec = (data ?? null) as { rate_limit_info?: { utilization?: unknown } | null | undefined } | null;
+    const u = rec?.rate_limit_info?.utilization;
     return typeof u === 'number' && u >= t.value / 100;
   }
 
-  _fireAutoApprovePlan() {
+  _fireAutoApprovePlan(): void {
     // Run after the current stdout line has finished dispatching so the
     // plan_request event reaches subscribers before the resulting mode
     // flip / user_echo / turn-start events do. ExitPlanMode's can_use_tool
@@ -1604,15 +1828,15 @@ export class Instance extends EventEmitter {
         if (!this.proc) return;
         if (this.mode === 'plan') await this.setMode('bypassPermissions');
         if (!this.proc) return;
-        await this.prompt(buildApprovePrompt());
+        await this.prompt(buildApprovePrompt(undefined));
       } catch (err) {
         this._emitUi({ kind: 'system', subtype: 'stderr',
-          data: { line: `auto-approve plan failed: ${err.message}` } });
+          data: { line: `auto-approve plan failed: ${(err as Error).message}` } });
       }
     });
   }
 
-  async _writeSessionMetadata() {
+  async _writeSessionMetadata(): Promise<void> {
     // Persist the durable temp + conducted markers BEFORE the temp early
     // return, so a temp session that survives SIGKILL recovers BOTH flags on
     // respawn (InstanceManager.create() OR-recovers them via isTemp/isConducted).
@@ -1642,7 +1866,7 @@ export class Instance extends EventEmitter {
     } catch { /* best effort */ }
   }
 
-  _handleExit(code, signal) {
+  _handleExit(code: number | null, signal: NodeJS.Signals | null): void {
     this.pid = null;
     this.proc = null;
     this._closeDrainWindow();
@@ -1685,7 +1909,7 @@ export class Instance extends EventEmitter {
   // still cleaned up (it is ephemeral; only the main .jsonl matters for
   // restore). Title and conducted markers are kept — they are still
   // meaningful on an archived session.
-  async _archiveTempSession() {
+  async _archiveTempSession(): Promise<void> {
     if (!this.sessionId) return;
     const dir = path.join(claudeProjectsRoot(), encodeCwd(this.cwd));
     const subagents = path.join(dir, this.sessionId);
@@ -1694,11 +1918,13 @@ export class Instance extends EventEmitter {
     try { await markArchived(this.sessionId); } catch { /* best-effort */ }
   }
 
-  _sendRaw(obj) {
-    if (!this.proc || !this.proc.stdin.writable) {
+  _sendRaw(obj: unknown): void {
+    if (!this.proc || !this.proc.stdin || !this.proc.stdin.writable) {
       throw new Error('subprocess not writable');
     }
-    const line = JSON.stringify(obj);
+    // _sendRaw only ever receives plain JSON-serializable objects (control /
+    // user envelopes), so stringify always yields a string.
+    const line = JSON.stringify(obj) as string;
     this._debugLog('stdin', line);
     this.proc.stdin.write(line + '\n');
   }
@@ -1712,7 +1938,7 @@ export class Instance extends EventEmitter {
   // vision content) and arbitrary file bytes on demand. This avoids
   // re-paying the base64 token cost on every subsequent turn and
   // keeps the prompt-cache prefix stable.
-  async prompt(text, attachments = [], { annotateIfMidTurn = true, internal = false } = {}) {
+  async prompt(text: string, attachments: unknown[] = [], { annotateIfMidTurn = true, internal = false }: { annotateIfMidTurn?: boolean; internal?: boolean } = {}): Promise<void> {
     // A rewind/fork/prune is rewriting this session's jsonl. The `!this.proc`
     // check below already rejects for most of that window (the subprocess is
     // killed first), but not for the sliver between the caller's idle check and
@@ -1777,32 +2003,34 @@ export class Instance extends EventEmitter {
       throw new Error('prompt requires non-empty text or at least one attachment');
     }
 
-    const content = [];
-    const echoAttachments = [];
+    const content: Array<Record<string, unknown>> = [];
+    const echoAttachments: unknown[] = [];
     if (safeText.length) content.push({ type: 'text', text: safeText });
 
     for (const a of atts) {
-      if (!a || typeof a.name !== 'string' || typeof a.dataBase64 !== 'string') continue;
-      const mediaType = typeof a.mediaType === 'string' ? a.mediaType : 'application/octet-stream';
-      let saved;
-      try { saved = await saveAttachment(this.project, this.worktree?.worktreeName ?? null, a); }
-      catch (e) {
-        this._emitUi({ kind: 'system', subtype: 'stderr', data: { line: `attachment save failed (${a.name}): ${e.message}` } });
+      if (!a || typeof a !== 'object') continue;
+      const rec = a as { name?: unknown; mediaType?: unknown; dataBase64?: unknown };
+      if (typeof rec.name !== 'string' || typeof rec.dataBase64 !== 'string') continue;
+      const mediaType = typeof rec.mediaType === 'string' ? rec.mediaType : 'application/octet-stream';
+      try {
+        const saved = await saveAttachment(this.project, this.worktree?.worktreeName ?? null, { name: rec.name, dataBase64: rec.dataBase64 });
+        content.push({ type: 'text', text: `Attached file: \`${saved.promptPath}\`` });
+        echoAttachments.push({
+          kind: isImageType(mediaType) ? 'image' : 'file',
+          name: rec.name,
+          mediaType,
+          path: saved.promptPath,
+          filename: saved.filename,
+          // For the live user_echo bubble only — lets the frontend show
+          // the thumbnail without a round-trip. Not written to the CLI's
+          // stdin or the session jsonl. On replay/refresh the frontend
+          // fetches the bytes from /api/instances/:id/attachments/<file>.
+          dataBase64: isImageType(mediaType) ? rec.dataBase64 : undefined,
+        });
+      } catch (e) {
+        this._emitUi({ kind: 'system', subtype: 'stderr', data: { line: `attachment save failed (${rec.name}): ${(e as Error).message}` } });
         continue;
       }
-      content.push({ type: 'text', text: `Attached file: \`${saved.promptPath}\`` });
-      echoAttachments.push({
-        kind: isImageType(mediaType) ? 'image' : 'file',
-        name: a.name,
-        mediaType,
-        path: saved.promptPath,
-        filename: saved.filename,
-        // For the live user_echo bubble only — lets the frontend show
-        // the thumbnail without a round-trip. Not written to the CLI's
-        // stdin or the session jsonl. On replay/refresh the frontend
-        // fetches the bytes from /api/instances/:id/attachments/<file>.
-        dataBase64: isImageType(mediaType) ? a.dataBase64 : undefined,
-      });
     }
 
     if (content.length === 0) {
@@ -1835,8 +2063,8 @@ export class Instance extends EventEmitter {
   // up by the system/init handler (which updates this.sessionId), and the
   // SessionRenewController reseeds the cleared session on the following
   // turn_end. See src/sessionRenew.ts.
-  clearContext() {
-    if (!this.proc || !this.proc.stdin.writable) throw new Error('not running');
+  clearContext(): void {
+    if (!this.proc || !this.proc.stdin || !this.proc.stdin.writable) throw new Error('not running');
     this._sendRaw({
       type: 'user',
       message: { role: 'user', content: [{ type: 'text', text: '/clear' }] },
@@ -1862,7 +2090,7 @@ export class Instance extends EventEmitter {
   // Best-effort throughout (never throws into the reseed path). Mirrors
   // _archiveTempSession for the old id: unmarkTemp + markArchived, keeping the
   // conducted/title markers — they stay meaningful on the archived row.
-  async carryMarkersAcrossRenewal(oldSid) {
+  async carryMarkersAcrossRenewal(oldSid: string | null): Promise<void> {
     const newSid = this.sessionId;
     if (!newSid || !oldSid || newSid === oldSid) return;
     try { if (this.temp) await markTemp(newSid); } catch { /* best-effort */ }
@@ -1878,9 +2106,9 @@ export class Instance extends EventEmitter {
     try { await markArchived(oldSid); } catch { /* best-effort */ }
   }
 
-  async _controlRequest(request, { timeout = 5000 } = {}) {
+  async _controlRequest(request: Record<string, unknown>, { timeout = 5000 }: { timeout?: number } = {}): Promise<unknown> {
     const requestId = randomUUID();
-    const p = new Promise((resolve, reject) => {
+    const p = new Promise<unknown>((resolve, reject) => {
       const timer = setTimeout(() => {
         this._pending.delete(requestId);
         reject(new Error('control_request timeout'));
@@ -1891,7 +2119,7 @@ export class Instance extends EventEmitter {
     return p;
   }
 
-  async setMode(mode) {
+  async setMode(mode: string): Promise<unknown> {
     if (!VALID_MODES.has(mode)) throw new Error('invalid mode');
     await this._controlRequest({ subtype: 'set_permission_mode', mode: cliPermissionMode(mode) });
     this.mode = mode;
@@ -1900,7 +2128,7 @@ export class Instance extends EventEmitter {
     return this.mode;
   }
 
-  async setModel(model, backend = CLAUDE_BACKEND_ID) {
+  async setModel(model: string, backend: string = CLAUDE_BACKEND_ID): Promise<unknown> {
     // Live "Change model" sends a set_model control_request to the RUNNING
     // process, whose endpoint + auth are fixed at launch time. Any switch that
     // involves a SUBSTITUTION backend on either side (including
@@ -1925,7 +2153,7 @@ export class Instance extends EventEmitter {
     // baked the launch tag: the tag is catalog policy and the client now sends
     // bare version ids. The backend is pinned to `claude` — the guard above
     // already refused every other case.
-    const canonical = canonicalizeModel(model, CLAUDE_BACKEND_ID);
+    const canonical = canonicalizeModel(model, CLAUDE_BACKEND_ID) as string;
     await this._controlRequest({ subtype: 'set_model', model: canonical });
     this.model = canonical;
     // Capacity moves with the model.
@@ -1939,10 +2167,10 @@ export class Instance extends EventEmitter {
   // resume-picker metadata appends and stop the on-exit cleanup of
   // the jsonl. The jsonl itself was already being written by the CLI
   // — only the orchestrator's bookkeeping was opting out.
-  async promoteToNormal() {
+  async promoteToNormal(): Promise<InstanceSummary> {
     if (!this.temp) throw Object.assign(new Error('instance is not temp'), { statusCode: 400 });
     this.temp = false;
-    try { await unmarkTemp(this.sessionId); } catch { /* best-effort */ }
+    try { if (this.sessionId) await unmarkTemp(this.sessionId); } catch { /* best-effort */ }
     // Persist last-prompt + permission-mode now, so the standalone
     // `claude --resume` picker sees this session immediately — without
     // waiting for the next turn-end / setMode cycle to trigger it.
@@ -1953,8 +2181,8 @@ export class Instance extends EventEmitter {
 
   // Thin delegate so callers (routes.ts / wsHub.ts) keep talking to
   // the Instance — the broker holds the actual state.
-  handleHookCallback(envelope, res) { this._hooks.handle(envelope, res); }
-  resolveHookCallback(toolUseId, allow) { return this._hooks.resolve(toolUseId, allow); }
+  handleHookCallback(envelope: unknown, res: Response): void { this._hooks.handle(envelope as HookEnvelope | null | undefined, res); }
+  resolveHookCallback(toolUseId: unknown, allow: boolean): boolean { return this._hooks.resolve(toolUseId, allow); }
 
   // Two-tier interrupt. FORCED (`force:true`) is the hard abort: a
   // control_request the CLI honours by severing the in-flight turn and
@@ -1970,7 +2198,7 @@ export class Instance extends EventEmitter {
   // text, so the human sees what was said without affecting prompt indices.
   // JSONL replay independently produces the same bare annotation (no text)
   // via SOFT_INTERRUPT_MARKER filtering in parser.ts / transcript.ts.
-  async interrupt({ force = false } = {}) {
+  async interrupt({ force = false }: { force?: boolean } = {}): Promise<void> {
     if (this.status !== 'turn') return;
     if (force) {
       await this._controlRequest({ subtype: 'interrupt' });
@@ -2003,7 +2231,7 @@ export class Instance extends EventEmitter {
   // receives the message with SOFT_INTERRUPT_MARKER appended so the parser
   // drops it on JSONL replay after resume (no duplicate bubble in resumed
   // session). Mid-turn only; idempotent within a turn via `interrupting`.
-  windDown(text) {
+  windDown(text: string): void {
     if (this.status !== 'turn') return;
     if (this.interrupting) return;
     const body = typeof text === 'string' && text.trim() ? text : SOFT_INTERRUPT_TEXT;
@@ -2029,11 +2257,11 @@ export class Instance extends EventEmitter {
   // the API round-trip) and slides the window deadline so a queue of N
   // messages is fully drained. Closes automatically when the window elapses
   // with no new turn-start, or earlier when an explicit prompt() is called.
-  _openDrainWindow() {
+  _openDrainWindow(): void {
     this._closeDrainWindow(); // cancel any prior window
     let drainCount = 0;
 
-    const onEvent = (ev) => {
+    const onEvent = (ev: UiEvent): void => {
       if (ev.kind !== 'system' || ev.subtype !== 'init') return;
       if (drainCount >= POST_ABORT_DRAIN_MAX) {
         console.error(
@@ -2045,7 +2273,9 @@ export class Instance extends EventEmitter {
       drainCount += 1;
       this._emitUi({ kind: 'system', subtype: 'drain_abort', data: { count: drainCount } });
       // Slide the window: another queued message could follow, extend deadline.
-      clearTimeout(this._drainTimer);
+      // _drainTimer is always set by the time an event can fire (the listener
+      // is attached before the initial timer below), so the guard is type-level.
+      if (this._drainTimer) clearTimeout(this._drainTimer);
       this._drainTimer = setTimeout(() => this._closeDrainWindow(), POST_ABORT_DRAIN_WINDOW_MS);
       this._drainTimer.unref?.();
       // Kill the spurious turn immediately, before any API round-trip.
@@ -2059,19 +2289,19 @@ export class Instance extends EventEmitter {
     this._drainTimer.unref?.(); // don't keep the process alive for the window alone
   }
 
-  _closeDrainWindow() {
+  _closeDrainWindow(): void {
     if (this._drainTimer) { clearTimeout(this._drainTimer); this._drainTimer = null; }
     if (this._drainListener) { this.off('event', this._drainListener); this._drainListener = null; }
   }
 
-  async kill({ graceMs = 2000 } = {}) {
+  async kill({ graceMs = 2000 }: { graceMs?: number } = {}): Promise<void> {
     if (!this.proc) return;
     // Mark this as a commanded teardown so _handleExit doesn't mistake the
     // resulting signalled exit for a spontaneous launch crash.
     this._killing = true;
-    try { this.proc.stdin.end(); } catch { /* ignore */ }
+    try { this.proc.stdin?.end(); } catch { /* ignore */ }
     const proc = this.proc;
-    await new Promise((resolve) => {
+    await new Promise<void>((resolve) => {
       let done = false;
       const onExit = () => { if (!done) { done = true; resolve(); } };
       proc.once('exit', onExit);
@@ -2093,11 +2323,12 @@ export class Instance extends EventEmitter {
   //
   // Returns { droppedText }: the prompt text of the dropped user message,
   // so the frontend can prefill it back into the composer.
-  async rewindToUserMessage(userMessageIndex) {
+  async rewindToUserMessage(userMessageIndex: number): Promise<{ droppedText: string }> {
     if (this._mutating) {
       throw Object.assign(new Error('another rewind/fork is in progress'), { statusCode: 409 });
     }
-    if (!this.sessionId) {
+    const sessionId = this.sessionId;
+    if (!sessionId) {
       throw Object.assign(new Error('no sessionId — instance has not yet received a turn'), { statusCode: 400 });
     }
     if (this.status === 'turn') {
@@ -2117,7 +2348,7 @@ export class Instance extends EventEmitter {
 
       const result = await truncateSessionAtUserMessage({
         cwd: this.cwd,
-        sessionId: this.sessionId,
+        sessionId,
         userMessageIndex,
         permissionMode: cliPermissionMode(this.mode),
       });
@@ -2135,11 +2366,11 @@ export class Instance extends EventEmitter {
       // valid and the instance comes back ready for a fresh first turn.
       if (result.remainingLineCount === 0) {
         const dir = path.join(claudeProjectsRoot(), encodeCwd(this.cwd));
-        await fsp.rm(path.join(dir, `${this.sessionId}.jsonl`), { force: true });
-        await fsp.rm(path.join(dir, this.sessionId), { recursive: true, force: true });
+        await fsp.rm(path.join(dir, `${sessionId}.jsonl`), { force: true });
+        await fsp.rm(path.join(dir, sessionId), { recursive: true, force: true });
         await this.launch({});
       } else {
-        await this.launch({ resume: this.sessionId });
+        await this.launch({ resume: sessionId });
       }
 
       return { droppedText: result.droppedText };
@@ -2164,11 +2395,12 @@ export class Instance extends EventEmitter {
   // The instanceId is preserved (only the sessionId rotates), so the
   // idle-subscription graph, overage timers, the renew controller and every
   // `?caller=<instanceId>` MCP handle stay valid with no migration.
-  async pruneSession({ cutTurnIndex, pruneThinking = false, inputMode = 'truncate' } = {}) {
+  async pruneSession({ cutTurnIndex, pruneThinking = false, inputMode = 'truncate' }: { cutTurnIndex?: unknown; pruneThinking?: unknown; inputMode?: unknown } = {}): Promise<Record<string, unknown>> {
     if (this._mutating) {
       throw Object.assign(new Error('another rewind/fork/prune is in progress'), { statusCode: 409 });
     }
-    if (!this.sessionId) {
+    const sessionId = this.sessionId;
+    if (!sessionId) {
       throw Object.assign(new Error('no sessionId — instance has not yet received a turn'), { statusCode: 400 });
     }
     if (this.status === 'turn') {
@@ -2179,13 +2411,14 @@ export class Instance extends EventEmitter {
     // cutTurnIndex range check can't move here (it needs the turn count, which
     // means reading the file); that one throws post-kill and is why the catch
     // below has to be able to fail safe.
-    if (!INPUT_MODES.has(inputMode)) {
+    const effInputMode = inputMode === undefined ? 'truncate' : inputMode as string;
+    if (!INPUT_MODES.has(effInputMode)) {
       throw Object.assign(
         new Error(`inputMode must be one of ${[...INPUT_MODES].join('|')}`), { statusCode: 400 },
       );
     }
     this._mutating = true;
-    const oldSid = this.sessionId;
+    const oldSid = sessionId;
     try {
       // Kill first so the CLI can't flush a stale tail into the jsonl while we
       // read it. _suppressTempDelete for the same reason rewind sets it: a temp
@@ -2199,9 +2432,9 @@ export class Instance extends EventEmitter {
       const { newSessionId, saved } = await pruneSessionToNewId({
         cwd: this.cwd,
         sessionId: oldSid,
-        cutTurnIndex,
-        pruneThinking,
-        inputMode,
+        cutTurnIndex: cutTurnIndex as number,
+        pruneThinking: !!pruneThinking,
+        inputMode: effInputMode as 'truncate' | 'minimal',
         permissionMode: cliPermissionMode(this.mode),
       });
 
@@ -2248,7 +2481,7 @@ export class Instance extends EventEmitter {
   // persisted transcript on top of the existing ring and every message would
   // render twice. Also broadcasts `snapshot_reset` so subscribed clients
   // clear their conversation DOM before the new replay starts streaming.
-  _wipeForResume(extra = {}) {
+  _wipeForResume(extra: Record<string, unknown> = {}): void {
     this.ring.clear();
     this._userEchoCount = 0;
     this._liveThinkingTokens = null;
@@ -2272,7 +2505,7 @@ export class Instance extends EventEmitter {
   // Read-and-clear the fork prefill. Returns the dropped prompt text (may be
   // '') the first time, then null — so the very first `snapshot` frame after a
   // fork carries `droppedText` and every later subscribe does not.
-  consumePrefill() {
+  consumePrefill(): string | null {
     const t = this.pendingPrefill;
     this.pendingPrefill = null;
     return t;
@@ -2280,7 +2513,7 @@ export class Instance extends EventEmitter {
 
   // Snapshot frame used at rewind broadcast time. Mirrors the shape of the
   // `snapshot` WS frame so the client can apply it through the same path.
-  _snapshotForReset() {
+  _snapshotForReset(): { id: string; project: string; status: string; mode: string; sessionId: string | null; events: unknown[] } {
     return {
       id: this.id,
       project: this.project,
@@ -2292,10 +2525,24 @@ export class Instance extends EventEmitter {
   }
 }
 
-export class InstanceManager extends EventEmitter {
-  constructor({ claudeLauncher = defaultClaudeLauncher } = {}) {
+export class InstanceManager extends EventEmitter implements InstanceManagerLike {
+  byId: Map<string, Instance>;
+  _claudeLauncher: LauncherLike;
+  _resuming: Map<string, Promise<Instance>>;
+  serverPort: number | null;
+  _claudePluginDirsResolver: () => Promise<string[]>;
+  _idleHub: IdleSubscriptionHub;
+  _overageResume: OverageResumeController;
+  _sessionRenew: SessionRenewController;
+  _usageMonitor: UsageOverageMonitor;
+  _overageActive: boolean;
+  _overageResetsAt: number | null;
+  _overageClearTimer: NodeJS.Timeout | null;
+  _overageResumeMode: boolean;
+
+  constructor({ claudeLauncher = defaultClaudeLauncher }: { claudeLauncher?: LauncherLike } = {}) {
     super();
-    this.byId = new Map();
+    this.byId = new Map<string, Instance>();
     // Injected launcher, passed to every Instance so it spawns through the
     // seam rather than child_process.spawn directly. Production default is the
     // real launcher; tests inject an in-process one via createServer().
@@ -2308,7 +2555,7 @@ export class InstanceManager extends EventEmitter {
     // auto-resume racing the manifest restore, and manual stop+resume. Entries
     // are deleted when the create settles (success OR failure), by which point
     // .proc is set and the live-guard in create() takes over.
-    this._resuming = new Map();
+    this._resuming = new Map<string, Promise<Instance>>();
     // Set by the server after `server.listen()` resolves. New instances
     // spawned without a port set get null hookCallbackUrl, which disables
     // the interactive http hook (ask mode falls back to auto-allow).
@@ -2337,8 +2584,8 @@ export class InstanceManager extends EventEmitter {
     // `_handleOverageTrip` machinery (deduped via `_overageActive`). Its timer is
     // started by the server after listen() and stopped in both shutdown paths.
     this._usageMonitor = new UsageOverageMonitor(this);
-    this.on('event', (e) => this._idleHub.onEvent(e));
-    this.on('event', (e) => this._sessionRenew.onEvent(e));
+    this.on('event', (e: { id: string; ev: UiEvent | null }) => this._idleHub.onEvent(e));
+    this.on('event', (e: { id: string; ev: UiEvent | null }) => this._sessionRenew.onEvent(e));
     // Global overage auto-stop state. The decision moved off the per-Instance
     // handler (which can't reach the idle-subscription graph) up to here:
     // `_overageActive` is a one-shot guard held from the first trip until the
@@ -2360,28 +2607,28 @@ export class InstanceManager extends EventEmitter {
   get _idleSubscribers() { return this._idleHub.subscribers; }
   get _autoResumeTimers() { return this._overageResume.timers; }
 
-  // Idle-subscription graph — see src/idleSubscriptions.js. The manager keeps
+  // Idle-subscription graph — see src/idleSubscriptions.ts. The manager keeps
   // these names/signatures and forwards to the hub so MCP handlers, wsHub, the
   // resume path, and tests see an unchanged surface.
-  subscribeIdle(callerSessionId, targetSessionId, timeoutMs) {
+  subscribeIdle(callerSessionId: string, targetSessionId: string, timeoutMs?: number): { already: boolean } {
     return this._idleHub.subscribe(callerSessionId, targetSessionId, timeoutMs);
   }
-  unsubscribeIdle(callerSessionId, targetSessionId) {
+  unsubscribeIdle(callerSessionId: string, targetSessionId: string): { removed: boolean } {
     return this._idleHub.unsubscribe(callerSessionId, targetSessionId);
   }
-  _idleSubscriberSnapshot() { return this._idleHub.snapshot(); }
-  _purgeIdleFor(instanceId) { return this._idleHub.purge(instanceId); }
+  _idleSubscriberSnapshot(): Record<string, string[]> { return this._idleHub.snapshot(); }
+  _purgeIdleFor(instanceId: string): void { return this._idleHub.purge(instanceId); }
   // Sibling to _idleSubscriberSnapshot, but caller-indexed and sessionId-shaped
   // — which targets THIS instanceId (as caller) currently watches. Used by the
   // renewal state block (src/sessionRenew.ts) to enumerate the caller's own
   // pending idle subscriptions.
-  idleSubscriptionsOf(instanceId) { return this._idleHub.subscriptionsOf(instanceId); }
+  idleSubscriptionsOf(instanceId: string): string[] { return this._idleHub.subscriptionsOf(instanceId); }
 
   // Managed session renewal — see src/sessionRenew.ts. Arm a `/clear`+reseed
   // on the given instance; the controller fires at the instance's next turn_end.
   // No sessionId-rotation bookkeeping is needed: the idle-subscription graph and
   // overage timers are keyed by the stable instanceId, which `/clear` preserves.
-  armSessionRenew(instanceId, opts) { return this._sessionRenew.arm(instanceId, opts); }
+  armSessionRenew(instanceId: string, opts: RenewalOpts): { armed: true; rearmed: boolean } { return this._sessionRenew.arm(instanceId, opts); }
 
   // Returns true when a turn_notification for instanceId should be suppressed:
   //   Condition 1 — session is a conductor mid-orchestration (subscribed as caller
@@ -2397,27 +2644,27 @@ export class InstanceManager extends EventEmitter {
   //                 suppressed across the whole deferral. (The settle path never
   //                 marks it — no turn_notification exists at settle-fire time.)
   // ORDERING DEPENDENCY: the idle hub's 'event' listener (registered in the
-  // InstanceManager constructor, instances.js) must run before wsHub's listener
+  // InstanceManager constructor, instances.ts) must run before wsHub's listener
   // (registered by attachWsHub in server.js). wasConsumed() is only valid during
   // the same synchronous dispatch cycle as the hub's turn_end handling. Do not
   // reorder those registrations without revisiting this method.
-  shouldSuppressTurnNotification(instanceId) {
+  shouldSuppressTurnNotification(instanceId: string): boolean {
     if (this._idleHub.isCaller(instanceId)) return true;   // Condition 1
     if (this._idleHub.wasConsumed(instanceId)) return true; // Condition 2
     return false;
   }
 
-  setServerPort(port) {
+  setServerPort(port: number): void {
     this.serverPort = port;
   }
 
   // Injected by server.js once the plugin host exists: `() =>
   // pluginHost.claudePluginDirs()`. A non-function resets to the [] default.
-  setClaudePluginDirsResolver(fn) {
-    this._claudePluginDirsResolver = typeof fn === 'function' ? fn : (async () => []);
+  setClaudePluginDirsResolver(fn: unknown): void {
+    this._claudePluginDirsResolver = typeof fn === 'function' ? (fn as () => Promise<string[]>) : (async () => []);
   }
 
-  hookCallbackUrl(id) {
+  hookCallbackUrl(id: string): string | null {
     if (!this.serverPort) return null;
     return `http://127.0.0.1:${this.serverPort}/api/instances/${id}/hook-callback`;
   }
@@ -2427,7 +2674,7 @@ export class InstanceManager extends EventEmitter {
   // caller suffix once it's known, so the MCP server can identify which worker
   // is calling (needed by subscribe_to_idle to route the turn_end callback).
   // Honours ORCH_DISABLE_MCP_AUTOREGISTER at call time.
-  mcpServerUrl() {
+  mcpServerUrl(): string | null {
     if (!this.serverPort) return null;
     if (process.env.ORCH_DISABLE_MCP_AUTOREGISTER === '1') return null;
     return `http://127.0.0.1:${this.serverPort}/mcp`;
@@ -2440,18 +2687,18 @@ export class InstanceManager extends EventEmitter {
   // rotates, so we re-resolve the live value per request. Returns null when the
   // handle names no live instance (or it has no sessionId yet) — callers then see
   // the same "no caller" path as an absent `?caller=`.
-  callerSessionId(handle) {
+  callerSessionId(handle: string | null): string | null {
     if (!handle) return null;
     return this.byId.get(handle)?.sessionId ?? null;
   }
 
-  hasIdleSubscriber(instanceId) { return this._idleHub.hasSubscriber(instanceId); }
+  hasIdleSubscriber(instanceId: string): boolean { return this._idleHub.hasSubscriber(instanceId); }
 
   // Returns true when instanceId is the *caller* (conductor) in any pending
   // subscription — i.e. this instance is actively waiting for a worker to finish.
-  isIdleCaller(instanceId) { return this._idleHub.isCaller(instanceId); }
+  isIdleCaller(instanceId: string): boolean { return this._idleHub.isCaller(instanceId); }
 
-  list() {
+  list(): Array<InstanceSummary & { hasIdleSubscriber: boolean }> {
     return [...this.byId.values()].map(i => ({
       ...i.summary(),
       hasIdleSubscriber: this.isIdleCaller(i.id),
@@ -2464,30 +2711,31 @@ export class InstanceManager extends EventEmitter {
   // still respawnable (crash-respawn, overage auto-resume, rewind), and it is
   // exactly that later relaunch that would otherwise fall through to the real
   // `claude`. Only the identity backend is uninteresting here.
-  liveBackendUsage() {
+  liveBackendUsage(): Array<{ backend: string; sessionId: string | null }> {
     return [...this.byId.values()]
       .filter(i => i.backend && i.backend !== CLAUDE_BACKEND_ID)
       .map(i => ({ backend: i.backend, sessionId: i.sessionId ?? null }));
   }
-  get(id) { return this.byId.get(id); }
-  idsForProject(name) {
+  get(id: string): Instance | undefined { return this.byId.get(id); }
+  idsForProject(name: string): string[] {
     return [...this.byId.values()].filter(i => i.project === name).map(i => i.id);
   }
-  idsForWorktree(project, worktreeName) {
+  idsForWorktree(project: string, worktreeName: string): string[] {
     return [...this.byId.values()]
       .filter(i => i.project === project && i.worktree?.worktreeName === worktreeName)
       .map(i => i.id);
   }
-  sessionIdsForProject(name) {
-    return [...this.byId.values()].filter(i => i.project === name).map(i => i.sessionId).filter(Boolean);
+  sessionIdsForProject(name: string): string[] {
+    return [...this.byId.values()].filter(i => i.project === name).map(i => i.sessionId)
+      .filter((sid): sid is string => sid !== null);
   }
-  sessionIdsForWorktree(project, worktreeName) {
+  sessionIdsForWorktree(project: string, worktreeName: string): string[] {
     return [...this.byId.values()]
       .filter(i => i.project === project && i.worktree?.worktreeName === worktreeName)
       .map(i => i.sessionId)
-      .filter(Boolean);
+      .filter((sid): sid is string => sid !== null);
   }
-  idsForSession(sessionId) {
+  idsForSession(sessionId: string): string[] {
     return [...this.byId.values()]
       .filter(i => i.sessionId === sessionId)
       .map(i => i.id);
@@ -2495,13 +2743,15 @@ export class InstanceManager extends EventEmitter {
   // The single live (proc-attached) instance for a sessionId, or null. Folds
   // the `idsForSession(sid).map(get).find(i => i && i.proc)` idiom scattered
   // across the MCP handlers + idle-callback delivery.
-  liveForSession(sessionId) {
-    return this.idsForSession(sessionId).map(id => this.byId.get(id)).find(i => i && i.proc) ?? null;
+  liveForSession(sessionId: string): Instance | null {
+    return this.idsForSession(sessionId).map(id => this.byId.get(id))
+      .find((i): i is Instance => i != null && i.proc != null) ?? null;
   }
   // Any instance (live or exited) for a sessionId, or null — the `.find(Boolean)`
   // counterpart used where a non-running instance is still a valid target.
-  anyForSession(sessionId) {
-    return this.idsForSession(sessionId).map(id => this.byId.get(id)).find(Boolean) ?? null;
+  anyForSession(sessionId: string): Instance | null {
+    return this.idsForSession(sessionId).map(id => this.byId.get(id))
+      .find((i): i is Instance => i != null) ?? null;
   }
   // Resolve an MCP input that is either a full sessionId or an unambiguous PREFIX
   // to a canonical full sessionId. The MCP dispatch layer (src/mcp/server.js) uses
@@ -2519,9 +2769,10 @@ export class InstanceManager extends EventEmitter {
   //                                         unique prefix >= SESSION_PREFIX_MIN chars
   //   { ambiguous:[fullIds], tooShort } → prefix matches >1 id, OR a too-short
   //                                         (< SESSION_PREFIX_MIN) prefix matches >=1
-  resolveSessionRef(input) {
+  resolveSessionRef(input: unknown): { sessionId: string } | { ambiguous: string[]; tooShort: boolean } | null {
     if (typeof input !== 'string' || !input) return null;
-    const all = [...new Set([...this.byId.values()].map(i => i.sessionId).filter(Boolean))];
+    const all = [...new Set([...this.byId.values()].map(i => i.sessionId)
+      .filter((sid): sid is string => sid !== null))];
     if (all.includes(input)) return { sessionId: input }; // exact match always wins
     const matches = all.filter(s => s.startsWith(input));
     if (matches.length === 0) return null;
@@ -2532,8 +2783,8 @@ export class InstanceManager extends EventEmitter {
   // SessionIds of live (proc-attached) temp instances whose cwd matches.
   // Routes use this to strip running temp jsonls from the regular Sessions
   // list — otherwise clicking the row would 409 against the live instance.
-  tempSessionIdsForCwd(cwd) {
-    const out = new Set();
+  tempSessionIdsForCwd(cwd: string): Set<string> {
+    const out = new Set<string>();
     for (const i of this.byId.values()) {
       if (i.temp && i.proc && i.cwd === cwd && i.sessionId) out.add(i.sessionId);
     }
@@ -2546,7 +2797,7 @@ export class InstanceManager extends EventEmitter {
   // restart anchor auto-resume racing the manifest restore, or a manual
   // stop+resume — can't both slip past during the await gap _doCreate opens
   // before spawn() attaches `.proc`.
-  create(opts = {}) {
+  create(opts: CreateInstanceInput = {}): Promise<Instance> {
     const { resume } = opts;
     if (!resume) return this._doCreate(opts);
     // Already fully live: a running instance owns this session. `claude
@@ -2578,7 +2829,7 @@ export class InstanceManager extends EventEmitter {
   // carry a session's last known capacity (fork, restart manifest) pass it so a
   // deleted custom-model row doesn't blank the ctx bar. Live registry
   // resolution wins whenever it succeeds — see finalContextWindowTokens below.
-  async _doCreate({ project, resume, mode, effort, tier, role, thinking, model, contextWindowTokens: carriedContextWindowTokens, backend: explicitBackend, worktree, temp, conducted, callerInstanceId, debug, autoApprovePlan, prefill } = {}) {
+  async _doCreate({ project, resume, mode, effort, tier, role, thinking, model, contextWindowTokens: carriedContextWindowTokens, backend: explicitBackend, worktree, temp, conducted, callerInstanceId, debug, autoApprovePlan, prefill }: CreateInstanceInput = {}): Promise<Instance> {
     // On resume, when the caller didn't pin an explicit worktree, recover the
     // session's recorded project + worktree via findSessionLocation. This is
     // what makes spawn_instance({resume}) "just work" for an MCP conductor
@@ -2639,7 +2890,7 @@ export class InstanceManager extends EventEmitter {
     }
     let backend = explicitBackend || CLAUDE_BACKEND_ID;
     if (!explicitBackend && resume) {
-      let rec = null;
+      let rec: SessionBackendRecord | null = null;
       try { rec = await getSessionBackend(resume); } catch { /* best-effort */ }
       if (rec) {
         // The recorded backend may have been REMOVED from the registry since this
@@ -2678,7 +2929,7 @@ export class InstanceManager extends EventEmitter {
     //   worktree === true  → create a fresh worktree off the parent's HEAD
     //   worktree === '<existingName>' → spawn into the named existing worktree
     //   omitted/null/false → normal spawn at proj.path
-    let worktreeMeta = null;
+    let worktreeMeta: WorktreeMeta | null = null;
     let cwd = proj.path;
     if (worktree === true) {
       worktreeMeta = await createWorktree(project);
@@ -2723,7 +2974,7 @@ export class InstanceManager extends EventEmitter {
     // string is the registry key everything downstream matches on. A Claude id
     // gets its catalog tag (re)applied, which is also what re-tags a bare id
     // recovered from the jsonl on a cold resume.
-    if (finalModel) finalModel = canonicalizeModel(finalModel, backend);
+    if (finalModel) finalModel = canonicalizeModel(finalModel, backend) ?? null;
 
     // Null-model guard (note 1): a substitution-backend session with no resolvable
     // model — e.g. a resume whose jsonl is empty/corrupt so readLastSessionModel
@@ -2784,7 +3035,7 @@ export class InstanceManager extends EventEmitter {
     // typed. `--resume` does not fork history into a new jsonl (verified:
     // same sessionId, same file, across a real resume) — the original file
     // still holds the true first line, so this is reliable.
-    let recoveredFirstPrompt = null;
+    let recoveredFirstPrompt: string | null = null;
     if (resume) {
       try { recoveredFirstPrompt = await readFirstPrompt(path.join(claudeProjectsRoot(), encodeCwd(cwd), `${resume}.jsonl`)); }
       catch { /* best-effort */ }
@@ -2793,9 +3044,9 @@ export class InstanceManager extends EventEmitter {
     // Resolve + validate the enabled plugins' Claude Code plugin roots here (async
     // launch-config, like mcpServerUrl) so the sync spawn() can just append the
     // frozen list. Best-effort: a resolver failure must never block a spawn.
-    let claudePluginDirs = [];
+    let claudePluginDirs: string[] = [];
     try { claudePluginDirs = await this._claudePluginDirsResolver(); }
-    catch (e) { console.warn(`instances: claudePlugin resolve failed: ${e.message}`); }
+    catch (e) { console.warn(`instances: claudePlugin resolve failed: ${(e as Error).message}`); }
 
     const id = randomUUID();
     const inst = new Instance({
@@ -2825,10 +3076,10 @@ export class InstanceManager extends EventEmitter {
     });
     if (recoveredFirstPrompt) inst.firstPrompt = recoveredFirstPrompt;
 
-    inst.on('event', (ev) => this.emit('event', { id, ev }));
+    inst.on('event', (ev: UiEvent) => this.emit('event', { id, ev }));
     // The Instance signals (rather than self-handles) an overage trip — central
     // routing lives on the manager where the idle-subscription graph is reachable.
-    inst.on('overage', (info) => this._handleOverageTrip(inst, info));
+    inst.on('overage', (info: { resetsAt: number | null }) => this._handleOverageTrip(inst, info));
     // Live GLOBAL-overage gate, injected as a small callback (not a manager ref).
     // active ⇒ this session must queue every non-internal send. SAFETY RAIL: only
     // engages when the window is active in stop-resume mode AND there is a valid
@@ -2849,7 +3100,7 @@ export class InstanceManager extends EventEmitter {
     // A queued-only (idle/new) session signals it needs a resume deadline armed
     // immediately — it has no mid-turn→idle transition for the status handler to
     // arm on.
-    inst.on('overage_queued', (info) => this._armQueuedOnly(inst, info?.resetsAt));
+    inst.on('overage_queued', (info: { resetsAt: number | null }) => this._armQueuedOnly(inst, info?.resetsAt));
     // A user/MCP-driven turn cancels any pending overage auto-resume. If the
     // turn is a manual takeover of an overage-stopped session, it also clears
     // the global overage flag so the stop can trip again. Capture the flag
@@ -2858,13 +3109,13 @@ export class InstanceManager extends EventEmitter {
     // they must not discard a pending resume armed for an overage-stopped
     // session (the auto-resume's own fire sends a non-internal prompt, so its
     // teardown still runs).
-    inst.on('user_prompt', (meta) => {
+    inst.on('user_prompt', (meta: { internal: boolean }) => {
       if (meta?.internal) return;
       const wasOverageStopped = inst.autoStoppedForOverage;
       this._cancelAutoResume(inst.id);
       if (wasOverageStopped && this._overageActive) this._clearOverage();
     });
-    inst.on('status', (summary) => {
+    inst.on('status', (summary: InstanceSummary) => {
       this.emit('status', summary);
       // Overage auto-resume: arm the per-session timer on the idle transition
       // that follows a `stop-resume` soft-interrupt (the session stays alive;
@@ -2898,7 +3149,7 @@ export class InstanceManager extends EventEmitter {
         this.emit('list_changed');
       }
     });
-    inst.on('snapshot_reset', (snap) => this.emit('snapshot_reset', snap));
+    inst.on('snapshot_reset', (snap: { id: string }) => this.emit('snapshot_reset', snap));
 
     this.byId.set(id, inst);
     if (autoApprovePlan) inst.autoApprovePlan = true;
@@ -2913,21 +3164,21 @@ export class InstanceManager extends EventEmitter {
   // Overage auto-resume timer machine — see src/overageResume.ts. The manager
   // keeps these names/signatures and forwards to the controller (internal
   // callers + the overage tests reach for them on the manager).
-  _armAutoResume(inst) { return this._overageResume.arm(inst); }
+  _armAutoResume(inst: Instance): void { return this._overageResume.arm(inst); }
   // Arm a resume deadline for a queued-only session (idle/new — it queued a send
   // while the global window was active but was never stopped mid-work). The
   // status→idle arm path can't fire for it, so arm here off the window reset.
   // Leaves `_overageWasStopped` false so the resume preamble stays softened.
-  _armQueuedOnly(inst, resetsAt) {
+  _armQueuedOnly(inst: Instance, resetsAt: number | null): void {
     if (inst.autoResumeAt || this._autoResumeTimers.has(inst.id)) return; // already armed
     inst._overageResetsAt = Number.isFinite(Number(resetsAt)) ? resetsAt : this._overageResetsAt;
     inst.autoStoppedForOverage = true; // so cancel/flush treats it like an armed session
     this._armAutoResume(inst);         // arm() re-checks the future-resetsAt safety rail
   }
-  _armRestoredAutoResume(inst, fireAtMs) { return this._overageResume.armRestored(inst, fireAtMs); }
-  _runAutoResume(inst, instanceId) { return this._overageResume.run(inst, instanceId); }
-  _fireAutoResumeNow(instanceId) { return this._overageResume.fireNow(instanceId); }
-  _cancelAutoResume(instanceId) { return this._overageResume.cancel(instanceId); }
+  _armRestoredAutoResume(inst: Instance, fireAtMs: number): void { return this._overageResume.armRestored(inst, fireAtMs); }
+  _runAutoResume(inst: Instance, instanceId: string): void { return this._overageResume.run(inst, instanceId); }
+  _fireAutoResumeNow(instanceId: string): boolean { return this._overageResume.fireNow(instanceId); }
+  _cancelAutoResume(instanceId: string): void { return this._overageResume.cancel(instanceId); }
 
   // Force-reevaluate every parked overage auto-resume session against the CURRENT
   // threshold — called after Settings → Models Apply raises/disables the threshold so
@@ -2937,7 +3188,7 @@ export class InstanceManager extends EventEmitter {
   // normal sweep tick. Snapshot the keys first — fireNow synchronously deletes its own
   // timers entry before doing anything async, so iterating the live map would skip
   // entries.
-  reevaluateOverageResumes() {
+  reevaluateOverageResumes(): void {
     for (const id of [...this._overageResume.timers.keys()]) {
       this._overageResume.fireNow(id);
     }
@@ -2950,10 +3201,10 @@ export class InstanceManager extends EventEmitter {
   // subagents run inside the parent CLI process — the backend (endpoint + auth)
   // is fixed at launch time, so they share the parent's backend and add nothing
   // new. Cycle-safe.
-  agentTreeBackends(inst) {
-    const backends = new Set();
-    const seen = new Set();
-    const stack = [inst];
+  agentTreeBackends(inst: Instance): Set<string> {
+    const backends = new Set<string>();
+    const seen = new Set<string>();
+    const stack: Instance[] = [inst];
     while (stack.length) {
       const cur = stack.pop();
       if (!cur || seen.has(cur.id)) continue;
@@ -2967,7 +3218,7 @@ export class InstanceManager extends EventEmitter {
   }
 
   // The usage-window domains an instance's agent tree belongs to.
-  usageWindowDomainsOf(inst) {
+  usageWindowDomainsOf(inst: Instance): Set<string> {
     return new Set([...this.agentTreeBackends(inst)].map(usageDomainOfBackend));
   }
 
@@ -2977,7 +3228,7 @@ export class InstanceManager extends EventEmitter {
   // (never auto-stopped, queued, or armed). A tree with any Claude agent →
   // {anthropic} → in-flow (holds even for a non-Claude conductor whose workers
   // are Claude).
-  _inUsageWindowFlow(inst) {
+  _inUsageWindowFlow(inst: Instance): boolean {
     for (const d of this.usageWindowDomainsOf(inst)) {
       if (isMonitoredDomain(d)) return true;
     }
@@ -2990,7 +3241,7 @@ export class InstanceManager extends EventEmitter {
   // 'none' does nothing at all (no flag flip, no routing). Otherwise it flips
   // the flag, routes the stop across every live instance, and arms the clear
   // timer so the flag releases when the window resets.
-  _handleOverageTrip(inst, info) {
+  _handleOverageTrip(inst: Instance | null, info: { resetsAt: number | null } | null | undefined): void {
     const action = getOnOverageAction();
     if (action === 'none') return;          // no flag flip, no routing
     // Domain scoping: a stream `rate_limit_event` from a session on an unmonitored
@@ -3013,15 +3264,15 @@ export class InstanceManager extends EventEmitter {
   // the generic direct-interrupt — otherwise a mid-turn conductor would be
   // plain-interrupted as an "active session" before it could be told to stop
   // its workers. Everything else still mid-turn gets a direct soft-interrupt.
-  _routeOverageStop({ resume, resetsAt }) {
+  _routeOverageStop({ resume, resetsAt }: { resume: boolean; resetsAt: number | null }): void {
     // Exempt instances whose agent tree is purely in an unmonitored usage-window
     // domain (e.g. ollama-only): they consume no monitored account window, so
     // they are never stopped/steered/marked. A Claude conductor with an
     // ollama-only worker keeps the worker running and stops the conductor.
     const live = [...this.byId.values()].filter(i => i.proc && this._inUsageWindowFlow(i));
     // Pass 1: resolve which conductors to steer and which workers they protect.
-    const steerConductors = new Map();  // conductor id → conductor instance
-    const protectedWorkers = new Set(); // worker ids owned by a steered conductor
+    const steerConductors = new Map<string, Instance>();  // conductor id → conductor instance
+    const protectedWorkers = new Set<string>(); // worker ids owned by a steered conductor
     for (const inst of live) {
       if (!inst.conducted) continue;
       const conductor = this._ownerConductor(inst);
@@ -3058,14 +3309,16 @@ export class InstanceManager extends EventEmitter {
   // The owning conductor of a conducted worker: callerInstanceId is the
   // conductor's instanceId, mapped back through the live registry — which is
   // exactly the key isIdleCaller() uses. Null when the conductor is gone.
-  _ownerConductor(worker) {
-    return (worker.callerInstanceId && this.byId.get(worker.callerInstanceId)) || null;
+  _ownerConductor(worker: Instance): Instance | null {
+    const callerId = worker.callerInstanceId;
+    if (!callerId) return null;
+    return this.byId.get(callerId) ?? null;
   }
 
   // Direct soft-interrupt path (the preserved pre-refactor behavior). For
   // stop-resume, mark the instance so the status handler arms its per-session
   // resume timer on the resulting turn→idle transition.
-  _directOverageStop(inst, { resume, resetsAt }) {
+  _directOverageStop(inst: Instance, { resume, resetsAt }: { resume: boolean; resetsAt: number | null }): void {
     if (resume) {
       inst.autoStoppedForOverage = true;
       inst._overageWasStopped = true; // genuinely stopped mid-work → full preamble
@@ -3083,7 +3336,7 @@ export class InstanceManager extends EventEmitter {
   // worker is intentionally left un-armed). Resume is armed via the
   // autoStoppedForOverage flag, which the status→idle handler turns into a
   // per-session timer.
-  _steerConductor(conductor, { resume, resetsAt, hasWorkers }) {
+  _steerConductor(conductor: Instance, { resume, resetsAt, hasWorkers }: { resume: boolean; resetsAt: number | null; hasWorkers: boolean }): void {
     const steerText = overageConductorSteerText({ hasWorkers });
     if (conductor.status === 'turn') {
       if (resume) {
@@ -3113,7 +3366,7 @@ export class InstanceManager extends EventEmitter {
   // resetsAt is missing/past (the flag then clears only on manual resume).
   // ORCH_OVERAGE_RESUME_BUFFER_MS doubles as the test seam (shared with the
   // resume controller) so tests don't sleep out the wall clock.
-  _armOverageClear(resetsAt) {
+  _armOverageClear(resetsAt: number | null): void {
     if (this._overageClearTimer) { clearTimeout(this._overageClearTimer); this._overageClearTimer = null; }
     const atMs = Number(resetsAt) * 1000; // epoch seconds → ms
     if (!Number.isFinite(atMs)) return;
@@ -3135,7 +3388,7 @@ export class InstanceManager extends EventEmitter {
   // usage-verified sweep that resumes sessions, so the lockout and the resumes can't
   // disagree. Called by the resume controller after each deadline-removing outcome
   // and by the clock backstop.
-  _maybeReleaseOverageLock() {
+  _maybeReleaseOverageLock(): void {
     if (!this._overageActive) return;
     if (this._overageResume.timers.size > 0) return; // sessions still parked/rechecking
     // A session soft-interrupted for overage but not yet at idle (so no deadline armed
@@ -3151,7 +3404,7 @@ export class InstanceManager extends EventEmitter {
   // Release the global overage one-shot and re-enable per-instance trip
   // detection. Called by the clear timer (window reset) and on manual resume of
   // an overage-stopped session.
-  _clearOverage() {
+  _clearOverage(): void {
     if (this._overageClearTimer) { clearTimeout(this._overageClearTimer); this._overageClearTimer = null; }
     this._overageActive = false;
     this._overageResetsAt = null;
@@ -3167,7 +3420,7 @@ export class InstanceManager extends EventEmitter {
     }
   }
 
-  async respawn(id) {
+  async respawn(id: string): Promise<Instance> {
     const inst = this.byId.get(id);
     if (!inst) {
       throw Object.assign(new Error('instance not found'), { statusCode: 404 });
@@ -3177,19 +3430,20 @@ export class InstanceManager extends EventEmitter {
     }
     // A manual respawn supersedes any pending auto-resume for this session.
     this._cancelAutoResume(inst.id);
-    if (!inst.sessionId) {
+    const sessionId = inst.sessionId;
+    if (!sessionId) {
       throw Object.assign(new Error('no sessionId to resume'), { statusCode: 400 });
     }
     // Drop the prior run's events before loadHistory() replays the persisted
     // transcript into the ring — otherwise the replay piles up on top of the
     // existing conversation and every message renders twice.
     inst._wipeForResume();
-    await inst.launch({ resume: inst.sessionId });
+    await inst.launch({ resume: sessionId });
     this.emit('list_changed');
     return inst;
   }
 
-  async remove(id) {
+  async remove(id: string): Promise<void> {
     const inst = this.byId.get(id);
     if (!inst) {
       throw Object.assign(new Error('instance not found'), { statusCode: 404 });
@@ -3206,7 +3460,7 @@ export class InstanceManager extends EventEmitter {
   // running inside worktrees of that project). Used by the
   // project-delete endpoint. Failures are swallowed — we're tearing
   // everything down anyway.
-  async removeAllForProject(projectName) {
+  async removeAllForProject(projectName: string): Promise<number> {
     const victims = [...this.byId.values()].filter(i => i.project === projectName);
     await Promise.all(victims.map(async (i) => {
       try { if (i.proc) await i.kill({ graceMs: 200 }); } catch { /* ignore */ }
@@ -3218,7 +3472,7 @@ export class InstanceManager extends EventEmitter {
     return victims.length;
   }
 
-  async shutdown() {
+  async shutdown(): Promise<void> {
     if (this._overageClearTimer) { clearTimeout(this._overageClearTimer); this._overageClearTimer = null; }
     this._usageMonitor.stop();
     this._overageResume.clearAll();
@@ -3231,8 +3485,8 @@ export class InstanceManager extends EventEmitter {
   // on-disk jsonl: {cwd, sessionId}. Used by the restart path to write a
   // pending-cleanup manifest that the next boot can replay (defence in
   // depth against orphaned post-exit writes).
-  tempCleanupSnapshot() {
-    const out = [];
+  tempCleanupSnapshot(): Array<{ cwd: string; sessionId: string }> {
+    const out: Array<{ cwd: string; sessionId: string }> = [];
     for (const inst of this.byId.values()) {
       if (!inst.temp || !inst.sessionId) continue;
       out.push({ cwd: inst.cwd, sessionId: inst.sessionId });
@@ -3252,8 +3506,8 @@ export class InstanceManager extends EventEmitter {
   // unmaskable — once the kernel delivers it, the process can't write again.
   // We then block briefly until every targeted pid is reaped before deleting,
   // and wipe a second time as belt-and-braces.
-  shutdownTempSync() {
-    const temps = [];
+  shutdownTempSync(): void {
+    const temps: Instance[] = [];
     for (const inst of this.byId.values()) {
       if (!inst.temp) continue;
       temps.push(inst);
@@ -3280,7 +3534,7 @@ export class InstanceManager extends EventEmitter {
     // Remove subagent dirs (ephemeral; not needed for restore). The main
     // .jsonl is KEPT — we archive rather than delete. A double-wipe for
     // belt-and-braces against orphaned subagent writes is still correct here.
-    const wipe = () => {
+    const wipe = (): void => {
       for (const inst of temps) {
         if (!inst.sessionId) continue;
         const dir = path.join(claudeProjectsRoot(), encodeCwd(inst.cwd));
@@ -3307,9 +3561,9 @@ export class InstanceManager extends EventEmitter {
   // about to carry over. DO NOT delete any jsonl. Set `_suppressTempDelete`
   // first so each temp instance's _handleExit skips _archiveTempSession(),
   // preserving the transcript for `--resume` on boot.
-  shutdownForResumeSync() {
+  shutdownForResumeSync(): void {
     this._usageMonitor.stop();
-    const live = [];
+    const live: Instance[] = [];
     for (const inst of this.byId.values()) {
       if (!inst.proc) continue;
       inst._suppressTempDelete = true;
@@ -3317,7 +3571,7 @@ export class InstanceManager extends EventEmitter {
       // Graceful close: end stdin so the CLI exits normally when idle.
       // All turns are already complete before this is called (the drain
       // waits for all-idle), so the session JSONL is fully flushed.
-      try { inst.proc.stdin.end(); } catch { /* gone */ }
+      try { inst.proc.stdin?.end(); } catch { /* gone */ }
     }
     // Bounded sync wait for processes to exit after stdin close.
     // 2 s gives the CLI enough time to handle the EOF and exit cleanly.
@@ -3341,8 +3595,8 @@ export class InstanceManager extends EventEmitter {
   // live instance whose callerInstanceId matches and that has a sessionId —
   // `project` is required so the conductor can deterministically re-spawn each
   // worker via spawn_instance without reconstructing it from its transcript.
-  conductedWorkersOf(conductorId) {
-    const out = [];
+  conductedWorkersOf(conductorId: string): Array<{ project: string; sessionId: string; worktreeName: string | null }> {
+    const out: Array<{ project: string; sessionId: string; worktreeName: string | null }> = [];
     for (const inst of this.byId.values()) {
       if (inst.callerInstanceId !== conductorId || !inst.sessionId) continue;
       out.push({
@@ -3359,8 +3613,8 @@ export class InstanceManager extends EventEmitter {
   // a degraded self-authored summary is never orphaned. Distinct from
   // conductedWorkersOf: this filters to LIVE only and carries `status`, since
   // the resume manifest's use case (any-with-sessionId, no status) differs.
-  liveOwnedBy(conductorId) {
-    const out = [];
+  liveOwnedBy(conductorId: string): Array<{ sessionId: string | null; project: string; worktree: string | null; status: string }> {
+    const out: Array<{ sessionId: string | null; project: string; worktree: string | null; status: string }> = [];
     for (const inst of this.byId.values()) {
       if (inst.id === conductorId) continue;
       if (inst.callerInstanceId !== conductorId || !inst.proc) continue;

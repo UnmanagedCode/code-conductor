@@ -21,7 +21,7 @@
 
 // Message returned to the model when the orchestrator denies an interactive
 // tool's `can_use_tool` request — tells it to stop and wait for the user.
-// Shared with the can_use_tool responder in instances.js.
+// Shared with the can_use_tool responder in instances.ts.
 export const AWAITING_INPUT_MESSAGE =
   'Awaiting user input via the orchestrator UI — please stop and wait for the next user message.';
 

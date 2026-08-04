@@ -1,5 +1,5 @@
 // Paged access to an instance's event history, including events evicted
-// from the in-memory ring (src/instances.js EventLog). Retained events are
+// from the in-memory ring (src/instances.ts EventLog). Retained events are
 // served straight from the ring; older ones are reconstructed by replaying
 // the persisted session jsonl through the existing machinery in
 // src/transcript.ts.

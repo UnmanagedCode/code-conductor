@@ -23,7 +23,7 @@ import {
   RESUME_TEXT,
 } from '../src/resumeRestart.ts';
 import { ensureConductProject, CONDUCT_PROJECT_NAME } from '../src/conduct.ts';
-import { AUTO_RESUME_TEXT } from '../src/instances.js';
+import { AUTO_RESUME_TEXT } from '../src/instances.ts';
 import { addBackend, addCustomModel } from '../src/appSettings.ts';
 
 const nowSec = () => Math.floor(Date.now() / 1000);

@@ -10,7 +10,7 @@
 import express from 'express';
 import { buildTools } from './tools.ts';
 import { isTextPayload, codeForStatus } from './content.ts';
-import { SESSION_PREFIX_MIN } from '../instances.js';
+import { SESSION_PREFIX_MIN } from '../instances.ts';
 
 const PROTOCOL_VERSION = '2025-06-18';
 const SERVER_NAME = 'code-conductor';

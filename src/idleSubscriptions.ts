@@ -29,6 +29,8 @@
 import { buildRecentMessages } from './mcp/handlers.ts';
 import { flattenPayload } from './mcp/content.ts';
 import { buildWakeStub, markPlainStub } from '../public/wakeCallback.js';
+import type { InstanceManagerLike } from './instanceTypes.ts';
+import type { UiEvent } from './parser.ts';
 
 // Default watchdog for EVERY idle subscription. Delivery is deferred until the
 // worker's turn ends AND all its background subagents have finished (see
@@ -52,27 +54,44 @@ const DEFAULT_SUBSCRIBE_TIMEOUT_MS = Number(process.env.ORCH_SUBSCRIBE_TIMEOUT_M
 // while still waking ~360x sooner than the 30-min watchdog fallback.
 const IDLE_DRAIN_SETTLE_MS = Number(process.env.ORCH_IDLE_DRAIN_SETTLE_MS) || 5_000;
 
+// A subscription entry: the watchdog timer for a single caller→target pair.
+interface SubscriptionEntry {
+  timerId: NodeJS.Timeout;
+}
+
+// A pending idle task-drain settle, keyed by target instanceId. `proc` pins the
+// arm to a specific subprocess run (respawn/rewind reuse the Instance AND its
+// instanceId but mint a new proc and reset the ring, so seq comparisons across
+// runs are meaningless); `armSeq` is the ring's nextSeq at arm time, so
+// `nextSeq === armSeq` at fire time means literally zero events of any kind
+// arrived since the arming task event.
+interface PendingSettle {
+  timerId: NodeJS.Timeout;
+  proc: unknown;
+  armSeq: number;
+}
+
 export class IdleSubscriptionHub {
-  constructor(manager) {
+  manager: InstanceManagerLike;
+  // One-shot idle subscriptions: when target hits turn_end, deliver
+  // a stub user prompt to every registered caller and clear the set.
+  // Keyed by targetInstanceId → Map<callerInstanceId, { timerId }>.
+  subscribers: Map<string, Map<string, SubscriptionEntry>>;
+  // Short-lived set of targetInstanceIds populated in _onTurnEnd() BEFORE
+  // subscribers is cleared, so the synchronously-following wsHub
+  // turn_notification handler can read it. A queueMicrotask cleanup runs after
+  // both synchronous listeners complete. turn_end-ONLY by contract: the settle
+  // path never touches it (a settle fires while the worker is idle with a
+  // frozen stream, so no worker turn_notification exists to suppress).
+  _justConsumed: Set<string>;
+  // Pending idle task-drain settles, keyed by targetInstanceId (see
+  // PendingSettle).
+  _pendingSettles: Map<string, PendingSettle>;
+
+  constructor(manager: InstanceManagerLike) {
     this.manager = manager;
-    // One-shot idle subscriptions: when target hits turn_end, deliver
-    // a stub user prompt to every registered caller and clear the set.
-    // Keyed by targetInstanceId → Map<callerInstanceId, { timerId: Timeout | null }>.
     this.subscribers = new Map();
-    // Short-lived set of targetInstanceIds populated in _onTurnEnd() BEFORE
-    // subscribers is cleared, so the synchronously-following wsHub
-    // turn_notification handler can read it. A queueMicrotask cleanup runs after
-    // both synchronous listeners complete. turn_end-ONLY by contract: the settle
-    // path never touches it (a settle fires while the worker is idle with a
-    // frozen stream, so no worker turn_notification exists to suppress).
     this._justConsumed = new Set();
-    // Pending idle task-drain settles, keyed by targetInstanceId →
-    // { timerId, proc, armSeq }. `proc` pins the arm to a specific subprocess
-    // run (respawn/rewind reuse the Instance AND its instanceId but mint a new
-    // proc and reset the ring, so seq comparisons across runs are meaningless);
-    // `armSeq` is the ring's nextSeq at arm time, so `nextSeq === armSeq` at
-    // fire time means literally zero events of any kind arrived since the
-    // arming task event.
     this._pendingSettles = new Map();
   }
 
@@ -87,7 +106,7 @@ export class IdleSubscriptionHub {
   // every ignored event still advanced the target's ring seq and, if it
   // arrived while the target was idle, set its idleWindowDirty flag — the two
   // structural signals the settle path uses to avoid firing early.
-  onEvent({ id, ev }) {
+  onEvent({ id, ev }: { id: string; ev: UiEvent | null }): void {
     if (ev?.kind === 'turn_end') {
       this._onTurnEnd(id);
     } else if (ev?.kind === 'system'
@@ -110,7 +129,7 @@ export class IdleSubscriptionHub {
   //   2. taskNotificationPending — a task_notification fired during the turn
   //      now ending and NO top-level tool_result followed it, which (per the
   //      CLI's queue semantics — see the _taskNotificationPending comment in
-  //      instances.js) means the notification is still queued and the CLI WILL
+  //      instances.ts) means the notification is still queued and the CLI WILL
   //      open an unprompted re-invocation turn to deliver it. Firing here
   //      would wake the caller one turn early (it would read the worker's
   //      output from before the result was processed), so we wait for that
@@ -125,7 +144,7 @@ export class IdleSubscriptionHub {
   // all, the idle task-drain settle path (_onTaskEvent) delivers the wake. A
   // never-finishing subagent — or a CLI that never flushes its queue — is
   // caught by the watchdog (always armed).
-  _onTurnEnd(targetInstanceId) {
+  _onTurnEnd(targetInstanceId: string): void {
     // The event payload carries the instanceId — the graph's key directly.
     const target = this.manager.byId.get(targetInstanceId);
     if (!target) return;
@@ -137,7 +156,7 @@ export class IdleSubscriptionHub {
     const subs = this.subscribers.get(targetInstanceId);
     if (!subs || subs.size === 0) return;
     // Mark BEFORE the defer check / clearing so the wsHub 'event' listener
-    // (registered after this one in server.js: new InstanceManager() then
+    // (registered after this one in server.ts: new InstanceManager() then
     // attachWsHub()) can still detect that the target had a watcher when its
     // turn_end fired — on the deferred intermediate turn_end as well as the
     // final one, so the worker's turn_notification stays suppressed across the
@@ -175,7 +194,7 @@ export class IdleSubscriptionHub {
   //             arm advances the ring within ms (CLI-local writes) and the
   //             fire-time check drops.
   // Deliberately task-shape agnostic: no task_type / nesting / init-counting.
-  _onTaskEvent(targetInstanceId) {
+  _onTaskEvent(targetInstanceId: string): void {
     const target = this.manager.byId.get(targetInstanceId);
     if (!target) return;
     const subs = this.subscribers.get(targetInstanceId);
@@ -207,7 +226,7 @@ export class IdleSubscriptionHub {
   // of them drops the settle silently — the subscription and its watchdog stay
   // armed, so the worst wrong outcome here is "wake later than ideal", never
   // "wake one turn early" or "wake twice".
-  _fireSettle(targetInstanceId) {
+  _fireSettle(targetInstanceId: string): void {
     const pending = this._pendingSettles.get(targetInstanceId);
     this._pendingSettles.delete(targetInstanceId); // always self-clean, even on drop
     if (!pending) return;
@@ -236,7 +255,7 @@ export class IdleSubscriptionHub {
   }
 
   // Cancel the pending settle for a target instance, if any. Idempotent.
-  _cancelSettle(targetInstanceId) {
+  _cancelSettle(targetInstanceId: string): void {
     const pending = this._pendingSettles.get(targetInstanceId);
     if (!pending) return;
     clearTimeout(pending.timerId);
@@ -246,7 +265,7 @@ export class IdleSubscriptionHub {
   // Drop every pending settle. Test teardown hook — suites that reach into
   // the subscriber map directly need a way to also drop the (unref'd) timers
   // so a stale settle can't fire into a later test's manager state.
-  _cancelAllSettles() {
+  _cancelAllSettles(): void {
     for (const { timerId } of this._pendingSettles.values()) clearTimeout(timerId);
     this._pendingSettles.clear();
   }
@@ -261,7 +280,7 @@ export class IdleSubscriptionHub {
   // timeout-flagged "did NOT finish" stub) if the agent+subagents-done state is
   // never reached — the safety net for a hung subagent that would otherwise
   // defer forever. .unref()'d so a lone watchdog never keeps the process alive.
-  subscribe(callerSessionId, targetSessionId, timeoutMs) {
+  subscribe(callerSessionId: string, targetSessionId: string, timeoutMs?: number): { already: boolean } {
     if (typeof callerSessionId !== 'string' || !callerSessionId) {
       throw new Error('callerSessionId required');
     }
@@ -318,7 +337,7 @@ export class IdleSubscriptionHub {
   // sessionId args are translated to instanceId at the boundary; an endpoint
   // that no longer resolves to a live instance yields removed:false (it was
   // already purged on remove()).
-  unsubscribe(callerSessionId, targetSessionId) {
+  unsubscribe(callerSessionId: string, targetSessionId: string): { removed: boolean } {
     const callerInstanceId = this.manager.liveForSession(callerSessionId)?.id ?? null;
     const targetInstanceId = this.manager.liveForSession(targetSessionId)?.id ?? null;
     if (!callerInstanceId || !targetInstanceId) return { removed: false };
@@ -340,9 +359,9 @@ export class IdleSubscriptionHub {
   // sessionIds. Test/debug-only — the honest "which sessions subscribe to which"
   // view (internal keys are instanceIds). Falls back to the raw key if the
   // instance is already gone.
-  snapshot() {
-    const sid = (id) => this.manager.byId.get(id)?.sessionId ?? id;
-    const out = {};
+  snapshot(): Record<string, string[]> {
+    const sid = (id: string): string => this.manager.byId.get(id)?.sessionId ?? id;
+    const out: Record<string, string[]> = {};
     for (const [targetId, callers] of this.subscribers) {
       out[sid(targetId)] = [...callers.keys()].map(sid);
     }
@@ -352,7 +371,7 @@ export class IdleSubscriptionHub {
   // Drop an instanceId from every subscription map (as caller) AND drop any
   // entry where it was the target. Clears watchdog timers. Called on instance
   // removal so dead instances can't accumulate subscriptions. Guards a falsy id.
-  purge(instanceId) {
+  purge(instanceId: string): void {
     if (!instanceId) return;
     this._cancelSettle(instanceId); // as target: drop any pending idle-drain settle
     const asTarget = this.subscribers.get(instanceId);
@@ -373,7 +392,7 @@ export class IdleSubscriptionHub {
     }
   }
 
-  deliver(callerInstanceId, targetInstanceId, opts) {
+  deliver(callerInstanceId: string, targetInstanceId: string, opts?: { timedOut?: boolean; timeoutMs?: number }): void {
     // Resolve the live caller instance directly by instanceId.
     const caller = this.manager.byId.get(callerInstanceId);
     if (!caller || !caller.proc) return; // caller gone — drop silently.
@@ -386,7 +405,7 @@ export class IdleSubscriptionHub {
     // live mid-turn steering path keep the plain pointer stub. Decided here,
     // synchronously, on the caller's status at delivery time.
     const fold = !opts?.timedOut && caller.status !== 'turn';
-    const deliver = async () => {
+    const deliver = async (): Promise<void> => {
       try {
         if (!caller.proc) return;
         const stub = fold
@@ -404,7 +423,7 @@ export class IdleSubscriptionHub {
       } catch (err) {
         caller._emitUi({
           kind: 'system', subtype: 'stderr',
-          data: { line: `idle-callback delivery failed: ${err.message}` },
+          data: { line: `idle-callback delivery failed: ${(err as Error).message}` },
         });
       }
     };
@@ -417,7 +436,7 @@ export class IdleSubscriptionHub {
   // mid-turn steering path. Tells the caller to go call get_recent_messages.
   // Tagged with the wake marker (body-less, no WAKE_BODY_SEP) so the conductor
   // UI renders it as a wake bubble too — just the summary line, no fold.
-  _plainStub(targetSessionId, opts) {
+  _plainStub(targetSessionId: string, opts?: { timedOut?: boolean; timeoutMs?: number }): string {
     const summary = opts?.timedOut
       ? `Worker \`${targetSessionId}\` did NOT finish — timed out after ${opts.timeoutMs}ms; ` +
         `it may still be busy or stuck. ` +
@@ -434,26 +453,26 @@ export class IdleSubscriptionHub {
   // default get_recent_messages call runs) and flattens it inline so the caller
   // doesn't need the follow-up MCP round-trip. Falls back to the plain stub on a
   // soft-refusal (e.g. the worker went away between turn_end and delivery).
-  async _buildFoldedStub(targetSessionId) {
+  async _buildFoldedStub(targetSessionId: string): Promise<string> {
     const r = await buildRecentMessages({ sessionId: targetSessionId }, { instances: this.manager });
-    if (r.soft) return this._plainStub(targetSessionId);
+    if ('soft' in r) return this._plainStub(targetSessionId);
     return buildWakeStub({ targetSessionId, payloadText: flattenPayload(r.meta, r.bodies) });
   }
 
-  hasSubscriber(instanceId) {
+  hasSubscriber(instanceId: string): boolean {
     const subs = this.subscribers.get(instanceId);
     return subs != null && subs.size > 0;
   }
 
   // Returns true when instanceId was the *target* of a subscription that fired
   // this synchronous event-dispatch cycle (populated before subscribers clears).
-  wasConsumed(instanceId) {
+  wasConsumed(instanceId: string): boolean {
     return this._justConsumed.has(instanceId);
   }
 
   // Returns true when instanceId is the *caller* (conductor) in any pending
   // subscription — i.e. this instance is actively waiting for a worker to finish.
-  isCaller(instanceId) {
+  isCaller(instanceId: string): boolean {
     for (const callers of this.subscribers.values()) {
       if (callers.has(instanceId)) return true;
     }
@@ -464,8 +483,8 @@ export class IdleSubscriptionHub {
   // currently has a pending subscription on. Used by the renewal state block
   // (src/sessionRenew.ts) — instanceId-keyed throughout, since the caller's
   // renewal already has direct instanceId access with no sessionId round-trip.
-  subscriptionsOf(callerInstanceId) {
-    const out = [];
+  subscriptionsOf(callerInstanceId: string): string[] {
+    const out: string[] = [];
     for (const [targetId, callers] of this.subscribers) {
       if (callers.has(callerInstanceId)) {
         out.push(this.manager.byId.get(targetId)?.sessionId ?? targetId);

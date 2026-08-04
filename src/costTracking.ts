@@ -112,7 +112,7 @@ function appendCostRow(inst: InstanceLike, ev: UiEvent, parentSessionId: string 
     duration_api_ms: numOrNull(ev.durationApiMsDelta) ?? numOrNull(ev.durationApiMs) ?? null,
     ...tokenFields,
     // Cache-miss verdict + per-request evidence, captured live from the turn's
-    // first message_start (src/instances.js). `cache_miss` means "a cross-turn
+    // first message_start (src/instances.ts). `cache_miss` means "a cross-turn
     // eviction (full or partial) was detected": the turn's first-request
     // cache_read was below the prior turn's cached prefix, or (turn 1 / after a
     // compaction/model-switch/rewind re-baseline) creation>read. `first_req_evicted`

@@ -22,7 +22,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
-import { Instance } from '../src/instances.js';
+import { Instance } from '../src/instances.ts';
 import { canonicalizeModel, familyOf, claudeContextWindowTokens, CLAUDE_BACKEND_ID } from '../src/modelVersions.ts';
 import { addCustomModel, removeCustomModel, addBackend, resolveContextWindowTokens } from '../src/appSettings.ts';
 import { encodeCwd } from '../src/projects.ts';

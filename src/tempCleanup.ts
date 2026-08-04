@@ -1,6 +1,6 @@
 // Boot-time fallback for temp-session cleanup.
 //
-// `shutdownTempSync()` in src/instances.js synchronously deletes every live
+// `shutdownTempSync()` in src/instances.ts synchronously deletes every live
 // temp session's jsonl + subagents dir on the restart path. But the claude
 // CLI forks subagent processes (for Task tool calls) that aren't tracked by
 // the orchestrator and aren't killed alongside the parent — those orphans

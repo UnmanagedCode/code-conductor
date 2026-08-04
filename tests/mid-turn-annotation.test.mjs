@@ -4,7 +4,7 @@
 // annotation block so it never appears in a rendered user bubble.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { Instance, MID_TURN_NOTE } from '../src/instances.js';
+import { Instance, MID_TURN_NOTE } from '../src/instances.ts';
 import { isMidTurnNoteContent, Parser } from '../src/parser.ts';
 import { replayPersistedLine } from '../src/transcript.ts';
 

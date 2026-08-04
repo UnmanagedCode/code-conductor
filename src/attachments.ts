@@ -1,5 +1,5 @@
 // Save user-attached files to the project's / worktree's central-store
-// attachments dir and classify image vs. non-image so instances.js can
+// attachments dir and classify image vs. non-image so instances.ts can
 // build the right content block.
 
 import { promises as fs } from 'node:fs';
