@@ -8,7 +8,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { claudeProjectsRoot, encodeCwd, orchStoreRoot } from './projects.ts'; // claudeProjectsRoot+encodeCwd used by countMessages/flattenTranscript
 import { resolveClaudeBin, resolveBackendLaunch } from './claudeLauncher.ts';
-import { getTierBackend, getBackend } from './appSettings.js';
+import { getTierBackend, getBackend } from './appSettings.ts';
 
 // Dedicated cwd for one-shot summary subprocesses: a subdirectory inside
 // the .code-conductor metadata dir. It is NOT under PROJECTS_ROOT as a

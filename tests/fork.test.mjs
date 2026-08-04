@@ -13,7 +13,7 @@ import { fileURLToPath } from 'node:url';
 import { WebSocket } from 'ws';
 import { bootServer, api, waitFor } from './helpers.mjs';
 import { encodeCwd } from '../src/projects.ts';
-import { addBackend, addCustomModel, resolveContextWindowTokens } from '../src/appSettings.js';
+import { addBackend, addCustomModel, resolveContextWindowTokens } from '../src/appSettings.ts';
 import { getSessionBackend } from '../src/sessionBackends.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));

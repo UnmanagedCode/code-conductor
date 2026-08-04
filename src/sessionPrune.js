@@ -48,7 +48,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { encodeCwd, claudeProjectsRoot } from './projects.ts';
-import { isPureUserPromptLine, writeSessionMetadata } from './transcript.js';
+import { isPureUserPromptLine, writeSessionMetadata } from './transcript.ts';
 
 // Stub shape for a pruned Read/Write tool_result. `true` (the default) makes the
 // stub a content-block array instead of a plain string.
@@ -113,7 +113,7 @@ export const PRUNABLE_CONDUCTOR_MCP_TOOLS = new Set([
 // it — must be copied VERBATIM in every mode, at any cut.
 //
 //   AskUserQuestion: the question card is rebuilt entirely from
-//   `input.questions` on replay (transcript.js), and the answer is recovered by
+//   `input.questions` on replay (transcript.ts), and the answer is recovered by
 //   STRING-MATCHING the question text and option labels against the user echo
 //   that follows (public/userQuestionAnswers.js, driven from
 //   public/conversation.js). Squeezing either side leaves the human with an
@@ -455,7 +455,7 @@ async function writeAtomic(file, content) {
 
 // The CLI persists sub-agent transcripts in a sibling directory keyed by SESSION
 // ID (`<encoded-cwd>/<sid>/subagents/agent-<agentId>.jsonl`, see
-// transcript.js:loadSubAgentTranscript). Minting a new sessionId would therefore
+// transcript.ts:loadSubAgentTranscript). Minting a new sessionId would therefore
 // make every sidechain silently vanish from the pruned session's transcript view
 // — copy the directory across. Best-effort: a session with no sub-agents has none.
 async function copySubAgentDir({ cwd, sessionId, newSessionId }) {

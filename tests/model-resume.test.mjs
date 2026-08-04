@@ -11,9 +11,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor } from './helpers.mjs';
-import { addBackend, addCustomModel } from '../src/appSettings.js';
+import { addBackend, addCustomModel } from '../src/appSettings.ts';
 import { encodeCwd } from '../src/projects.ts';
-import { readLastSessionModel, writeSessionMetadata } from '../src/transcript.js';
+import { readLastSessionModel, writeSessionMetadata } from '../src/transcript.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-resume.json');

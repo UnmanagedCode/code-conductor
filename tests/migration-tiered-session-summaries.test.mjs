@@ -98,7 +98,7 @@ test('post-migration, getSummaries reads the converted entry correctly', async (
 
   process.env.PROJECTS_ROOT = root;
   try {
-    const { getSummaries } = await import('../src/sessionSummaries.js');
+    const { getSummaries } = await import('../src/sessionSummaries.ts');
     const tiers = await getSummaries('old-sid');
     assert.equal(tiers.medium?.summary, 'Old summary.');
     assert.equal(tiers.medium?.messageCount, 7);

@@ -1,7 +1,7 @@
 // Curated catalog of Ollama *cloud* coding models, offered as selectable
 // presets alongside the user's own `customModels` — scoped to the BUILT-IN
 // `ollama` backend only (a user-defined backend gets no curated catalog; see
-// isKnownBackendModel in appSettings.js). Unlike customModels these are
+// isKnownBackendModel in appSettings.ts). Unlike customModels these are
 // read-only and never persisted — this module is the single source of truth,
 // shipped to the client via `GET /api/settings/models` (see routes.js
 // modelsSettingsState).
@@ -12,7 +12,7 @@
 //
 // `contextWindow` is the model's native window in raw tokens (round decimals).
 // This is the authoritative per-model size: resolveContextWindowTokens() in
-// src/appSettings.js reads it (via contextWindowForModel) to produce the
+// src/appSettings.ts reads it (via contextWindowForModel) to produce the
 // session's `contextWindowTokens`, which drives the header context-usage bar and
 // both CLAUDE_CODE_AUTO_COMPACT_WINDOW and CLAUDE_CODE_MAX_CONTEXT_TOKENS at
 // spawn time. The client holds no capacity table of its own. MiniMax M3

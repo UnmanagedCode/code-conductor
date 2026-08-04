@@ -15,7 +15,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Window } from 'happy-dom';
 import { encodeCwd } from '../src/projects.ts';
-import { loadPersistedTranscript, loadSubAgentTranscript } from '../src/transcript.js';
+import { loadPersistedTranscript, loadSubAgentTranscript } from '../src/transcript.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 

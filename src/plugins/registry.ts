@@ -4,10 +4,15 @@ import {
   projectsRoot, selfProjectDir, orchStoreRoot, writeFileAtomic, listProjects, projectStoreDir,
   readProjectMeta, writeProjectMeta, addWorkspace,
 } from '../projects.ts';
-import { readManifest, SUPPORTED_CONVENTION_SCOPES, claudePluginPaths } from './manifest.ts';
-import { createSupervisor, httpOk, headSha } from './supervisor.ts';
+import {
+  readManifest, SUPPORTED_CONVENTION_SCOPES, claudePluginPaths,
+  type PluginManifest, type PluginMcp, type ReadManifestResult,
+} from './manifest.ts';
+import { createSupervisor, httpOk, headSha, type ChildRuntime } from './supervisor.ts';
 import { createMcpBridge } from './mcpBridge.ts';
 import { pidAlive, waitForPort } from './ports.ts';
+import type { InstanceManagerLike } from '../instanceTypes.ts';
+import type { WorktreeMeta } from '../worktrees.ts';
 
 // Plugin registry — the single service layer behind the REST api
 // (src/plugins/api.js), the reverse proxy (src/plugins/proxy.ts) and MCP
@@ -40,7 +45,7 @@ export const WORKSPACE_AUTO_ASSIGN = 'CC-Dev';
 // (same primitives as set_project_workspace). Never overrides a workspace
 // the user has deliberately assigned. Non-fatal — a failure here must never
 // block discovery or enable.
-async function autoAssignToCcDev(projectName) {
+async function autoAssignToCcDev(projectName: string): Promise<void> {
   try {
     const meta = await readProjectMeta(projectName);
     if (meta.workspace == null) {
@@ -48,93 +53,165 @@ async function autoAssignToCcDev(projectName) {
       await addWorkspace(WORKSPACE_AUTO_ASSIGN);
     }
   } catch (e) {
-    console.warn(`plugins: workspace auto-assign for '${projectName}' failed: ${e.message}`);
+    console.warn(`plugins: workspace auto-assign for '${projectName}' failed: ${errMsg(e)}`);
   }
 }
 
 // Exported for reuse by sibling collaborators (e.g. library.js) that need
 // the same statusCode-bearing Error shape without duplicating it.
-export function httpError(status, message, extra = {}) {
-  const e = new Error(message);
-  e.statusCode = status;
-  Object.assign(e, extra);
+export function httpError(status: number, message: string, extra: Record<string, unknown> = {}): Error & { statusCode: number } {
+  const e = Object.assign(new Error(message), { statusCode: status }, extra);
   return e;
 }
 
-export function createPluginHost({
-  instances = null,
-  _crashWindowMs = CRASH_WINDOW_MS,
-  _backoffUnitMs = BACKOFF_UNIT_MS,
-  _supervisorOpts = {},
+type ManifestSource = { type: 'main' } | { type: 'worktree'; name: string };
+
+// A discovered plugin project: either usable (manifest + id) or broken
+// (invalid/conflicting/incompatible manifest). `id` is null only for an
+// invalid manifest that carried no id; `dir` stays '' for the synthetic rows
+// describe()/list() build for registry entries whose project vanished (their
+// dir is never read). `manifestSource` is optional only because those
+// synthetic rows don't carry one (describeRow falls back to {type:'main'}).
+interface PluginEntry {
+  id: string | null;
+  project: string;
+  dir: string;
+  manifest: PluginManifest | null;
+  manifestSource?: ManifestSource;
+  discoveryState: 'ok' | 'invalid' | 'incompatible' | 'conflict';
+  errors: string[];
+}
+
+interface PersistedPluginRecord {
+  project: string;
+  enabled: boolean;
+  activeVersion?: ManifestSource;
+}
+
+interface RuntimeRecord {
+  pid: number;
+  pgid: number;
+  port: number;
+  startedAt: string;
+  gitHead: string | null;
+}
+
+type PluginRuntimeStatus = 'stopped' | 'starting' | 'ready' | 'crashed' | 'failed';
+
+interface RuntimeState {
+  status: PluginRuntimeStatus;
+  crashTimes: number[];
+  backoffUntil: number;
+  startPromise: Promise<PluginRow | null> | null;
+  tail: string | null;
+  adopted: boolean;
+}
+
+interface PluginRow {
+  id: string | null;
+  name: string;
+  project: string;
+  version: string | null;
+  state: string;
+  enabled: boolean;
+  activeVersion: ManifestSource;
+  manifestSource: ManifestSource;
+  hasBackend: boolean;
+  hasFrontend: boolean;
+  navLabel: string | null;
+  frontendPath: string | null;
+  hasMcp: boolean;
+  conventions: Array<{ slug: string; name: string; description: string; hasScaffold: boolean }>;
+  roles: Array<{ slug: string; name: string }>;
+  port: number | null;
+  pid: number | null;
+  startedAt: string | null;
+  gitHead: string | null;
+  stale: boolean;
+  errors: string[];
+  crashTail: string | null;
+}
+
+export function createPluginHost(opts: {
+  instances?: InstanceManagerLike | null;
+  _crashWindowMs?: number;
+  _backoffUnitMs?: number;
+  _supervisorOpts?: Omit<Parameters<typeof createSupervisor>[0], 'onExit'>;
 } = {}) {
+  const {
+    instances = null,
+    _crashWindowMs = CRASH_WINDOW_MS,
+    _backoffUnitMs = BACKOFF_UNIT_MS,
+    _supervisorOpts = {},
+  } = opts;
   // Discovery catalog: rebuilt by rescan(). `entries` keeps every
   // manifest-bearing dir (including invalid ones, for listing); `byId`
   // indexes only usable ids (states ok/conflict).
-  let entries = [];
-  let byId = new Map();
+  let entries: PluginEntry[] = [];
+  let byId = new Map<string, PluginEntry>();
 
   // Persisted state, loaded by init().
-  let persisted = { plugins: {} };
-  let runtimeRecords = {};
+  let persisted: { plugins: Record<string, PersistedPluginRecord> } = { plugins: {} };
+  let runtimeRecords: Record<string, RuntimeRecord> = {};
 
   // In-memory runtime per id: status stopped|starting|ready|crashed|failed,
   // crash bookkeeping for backoff, the in-flight start dedupe promise, and
   // the last crash tail for 503 bodies.
-  const rt = new Map();
+  const rt = new Map<string, RuntimeState>();
 
-  let serverPort = null;
-  let initPromise = null;
-  let initedFor = null; // projectsRoot() the current state was built for (test roots swap)
+  let serverPort: number | null = null;
+  let initPromise: Promise<void> | null = null;
+  let initedFor: string | null = null; // projectsRoot() the current state was built for (test roots swap)
 
   const supervisor = createSupervisor({ onExit: handleChildExit, ..._supervisorOpts });
 
-  function runtimeState(id) {
+  function runtimeState(id: string): RuntimeState {
     let s = rt.get(id);
     if (!s) { s = { status: 'stopped', crashTimes: [], backoffUntil: 0, startPromise: null, tail: null, adopted: false }; rt.set(id, s); }
     return s;
   }
 
   // ── persistence ─────────────────────────────────────────────────────
-  const registryFile = () => path.join(orchStoreRoot(), 'plugins', 'registry.json');
-  const runtimeFile = () => path.join(orchStoreRoot(), 'plugins', 'runtime.json');
+  const registryFile = (): string => path.join(orchStoreRoot(), 'plugins', 'registry.json');
+  const runtimeFile = (): string => path.join(orchStoreRoot(), 'plugins', 'runtime.json');
 
-  async function loadJson(file, fallback) {
+  async function loadJson(file: string, fallback: unknown): Promise<unknown> {
     try { return JSON.parse(await fs.readFile(file, 'utf8')); }
     catch (e) {
-      if (e.code !== 'ENOENT') console.warn(`plugins: failed to read ${file}: ${e.message}`);
+      if (errCode(e) !== 'ENOENT') console.warn(`plugins: failed to read ${file}: ${errMsg(e)}`);
       return fallback;
     }
   }
 
-  async function saveRegistry() {
+  async function saveRegistry(): Promise<void> {
     await writeFileAtomic(registryFile(), JSON.stringify(persisted, null, 2) + '\n');
   }
 
-  async function saveRuntimeRecords() {
+  async function saveRuntimeRecords(): Promise<void> {
     await writeFileAtomic(runtimeFile(), JSON.stringify(runtimeRecords, null, 2) + '\n');
   }
 
   // ── init / discovery ────────────────────────────────────────────────
-  function ensureInit() {
+  function ensureInit(): Promise<void> {
     if (initPromise && initedFor === projectsRoot()) return initPromise;
     initedFor = projectsRoot();
     rt.clear();
     initPromise = (async () => {
-      persisted = await loadJson(registryFile(), { plugins: {} });
+      persisted = (await loadJson(registryFile(), { plugins: {} })) as { plugins: Record<string, PersistedPluginRecord> };
       if (typeof persisted?.plugins !== 'object' || persisted.plugins === null) persisted = { plugins: {} };
-      runtimeRecords = await loadJson(runtimeFile(), {});
+      runtimeRecords = (await loadJson(runtimeFile(), {})) as Record<string, RuntimeRecord>;
       await rescanInternal();
       await adoptRunning();
     })();
     return initPromise;
   }
 
-  async function rescanInternal() {
+  async function rescanInternal(): Promise<void> {
     const projects = await listProjects();
-    const found = [];
+    const found: Array<{ project: string; dir: string; result: Exclude<ReadManifestResult, null>; manifestSource: ManifestSource }> = [];
     for (const p of projects) {
       let result = await readManifest(p.path);
-      let manifestSource = { type: 'main' };
+      let manifestSource: ManifestSource = { type: 'main' };
       // Bootstrap fallback: a project whose main checkout has NO manifest
       // file at all may still be a plugin-in-progress living in an unmerged
       // worktree (first-time plugin-ification). A present-but-invalid main
@@ -155,11 +232,11 @@ export function createPluginHost({
     }
     // Deterministic conflict resolution: first alphabetical project wins.
     found.sort((a, b) => a.project.localeCompare(b.project));
-    const next = [];
-    const nextById = new Map();
+    const next: PluginEntry[] = [];
+    const nextById = new Map<string, PluginEntry>();
     for (const f of found) {
       const { result, manifestSource } = f;
-      if (result.errors) {
+      if ('errors' in result) {
         next.push({
           id: result.id ?? null, project: f.project, dir: f.dir, manifest: null, manifestSource,
           discoveryState: result.incompatible ? 'incompatible' : 'invalid',
@@ -168,11 +245,12 @@ export function createPluginHost({
         continue;
       }
       const m = result.manifest;
-      if (nextById.has(m.id)) {
-        next.push({ id: m.id, project: f.project, dir: f.dir, manifest: m, manifestSource, discoveryState: 'conflict', errors: [`duplicate id '${m.id}' — already provided by project '${nextById.get(m.id).project}'`] });
+      const existing = nextById.get(m.id);
+      if (existing) {
+        next.push({ id: m.id, project: f.project, dir: f.dir, manifest: m, manifestSource, discoveryState: 'conflict', errors: [`duplicate id '${m.id}' — already provided by project '${existing.project}'`] });
         continue;
       }
-      const entry = { id: m.id, project: f.project, dir: f.dir, manifest: m, manifestSource, discoveryState: 'ok', errors: [] };
+      const entry: PluginEntry = { id: m.id, project: f.project, dir: f.dir, manifest: m, manifestSource, discoveryState: 'ok', errors: [] };
       next.push(entry);
       nextById.set(m.id, entry);
     }
@@ -184,18 +262,18 @@ export function createPluginHost({
   // Reads the worktree store metadata directly (no git spawns — this runs
   // for every manifest-less project on every rescan); a stale entry's
   // worktreePath has no manifest and is skipped.
-  async function worktreeManifestFallback(projectName) {
+  async function worktreeManifestFallback(projectName: string): Promise<{ result: Exclude<ReadManifestResult, null>; manifestSource: ManifestSource } | null> {
     const wtDir = path.join(projectStoreDir(projectName), 'worktrees');
-    let names;
+    let names: string[];
     try { names = (await fs.readdir(wtDir)).sort((a, b) => a.localeCompare(b)); }
-    catch (e) { if (e.code === 'ENOENT') return null; throw e; }
+    catch (e) { if (errCode(e) === 'ENOENT') return null; throw e; }
     if (names.length === 0) return null;
-    const { readWorktreeMeta } = await import('../worktrees.js');
+    const { readWorktreeMeta } = await import('../worktrees.ts');
     for (const name of names) {
       const meta = await readWorktreeMeta(projectName, name).catch(() => null);
       if (!meta?.worktreePath) continue;
       const result = await readManifest(meta.worktreePath);
-      if (result && !result.errors) {
+      if (result && !('errors' in result)) {
         return { result, manifestSource: { type: 'worktree', name } };
       }
     }
@@ -204,7 +282,7 @@ export function createPluginHost({
 
   // Adopt-don't-drain: a recorded child whose pid is alive and answering on
   // its recorded port is adopted as ready; anything else is cleared.
-  async function adoptRunning() {
+  async function adoptRunning(): Promise<void> {
     let dirty = false;
     for (const [id, rec] of Object.entries(runtimeRecords)) {
       const entry = byId.get(id);
@@ -222,7 +300,7 @@ export function createPluginHost({
     if (dirty) await saveRuntimeRecords();
   }
 
-  async function probeAnswers(port, manifest) {
+  async function probeAnswers(port: number, manifest: PluginManifest | null | undefined): Promise<boolean> {
     if (!port) return false;
     if (manifest?.backend?.healthPath) return httpOk(port, manifest.backend.healthPath);
     try { await waitForPort(port, { timeoutMs: 1000, intervalMs: 200 }); return true; }
@@ -230,7 +308,7 @@ export function createPluginHost({
   }
 
   // ── crash bookkeeping ───────────────────────────────────────────────
-  function recordCrash(id, tail) {
+  function recordCrash(id: string, tail: string | null): void {
     const s = runtimeState(id);
     const now = Date.now();
     s.crashTimes = s.crashTimes.filter(t => now - t < _crashWindowMs);
@@ -247,22 +325,22 @@ export function createPluginHost({
   // Supervisor exit callback. Pre-ready crashes ('crashed') are observed by
   // the in-flight doStart() poll — handling them here too would double-count.
   // Post-ready exits ('exited') have no watcher, so this is where they land.
-  function handleChildExit(id, info) {
+  function handleChildExit(id: string, info: ChildRuntime): void {
     if (info.status !== 'exited') return;
     delete runtimeRecords[id];
-    saveRuntimeRecords().catch(e => console.warn(`plugins: runtime.json write failed: ${e.message}`));
+    saveRuntimeRecords().catch(e => console.warn(`plugins: runtime.json write failed: ${errMsg(e)}`));
     recordCrash(id, `${info.error}\n${(info.output ?? '').slice(-2000)}`);
   }
 
   // A dead child discovered passively (status probe, proxy upstream error).
-  function markDead(id, reason) {
+  function markDead(id: string, reason: string): void {
     delete runtimeRecords[id];
-    saveRuntimeRecords().catch(e => console.warn(`plugins: runtime.json write failed: ${e.message}`));
+    saveRuntimeRecords().catch(e => console.warn(`plugins: runtime.json write failed: ${errMsg(e)}`));
     recordCrash(id, reason);
   }
 
   // ── lookups ─────────────────────────────────────────────────────────
-  function requireEntry(id) {
+  function requireEntry(id: string): PluginEntry {
     const entry = byId.get(id);
     if (entry) return entry;
     // byId indexes only usable ids — a known-but-unusable manifest still
@@ -272,7 +350,7 @@ export function createPluginHost({
     throw httpError(404, `unknown plugin '${id}'`);
   }
 
-  function requireEnabled(id) {
+  function requireEnabled(id: string): PluginEntry {
     const entry = requireEntry(id);
     if (persisted.plugins[id]?.enabled !== true) throw httpError(409, `plugin '${id}' is not enabled`);
     return entry;
@@ -284,34 +362,36 @@ export function createPluginHost({
   // read activeVersion — and self-heal back to main so neither has to
   // special-case staleness, and a plugin stuck on a dead worktree recovers
   // without hand-editing registry.json.
-  async function reconcileActiveVersion(entry) {
+  async function reconcileActiveVersion(entry: PluginEntry): Promise<{ activeVersion: ManifestSource; worktreeMeta: WorktreeMeta | null }> {
     const id = entry.id;
     const reg = id ? persisted.plugins[id] : null;
     const av = reg?.activeVersion ?? { type: 'main' };
     if (av.type !== 'worktree') return { activeVersion: av, worktreeMeta: null };
     // Never string-assemble worktree paths — resolve via the store metadata.
-    const { getWorktree } = await import('../worktrees.js');
+    const { getWorktree } = await import('../worktrees.ts');
     const meta = await getWorktree(entry.project, av.name);
     if (meta?.worktreePath) return { activeVersion: av, worktreeMeta: meta };
-    reg.activeVersion = { type: 'main' };
+    if (reg) reg.activeVersion = { type: 'main' };
     await saveRegistry();
     return { activeVersion: { type: 'main' }, worktreeMeta: null };
   }
 
-  async function resolveCwd(entry) {
+  async function resolveCwd(entry: PluginEntry): Promise<string> {
     const { activeVersion, worktreeMeta } = await reconcileActiveVersion(entry);
-    return activeVersion.type === 'worktree' ? worktreeMeta.worktreePath : entry.dir;
+    return activeVersion.type === 'worktree' && worktreeMeta
+      ? worktreeMeta.worktreePath
+      : entry.dir;
   }
 
   // ── lifecycle ───────────────────────────────────────────────────────
-  async function enable(id) {
+  async function enable(id: string): Promise<PluginRow | null> {
     await ensureInit();
     const entry = requireEntry(id);
     const prev = persisted.plugins[id];
     // A worktree-sourced plugin (manifest only in an unmerged worktree)
     // must default its active version to that worktree — the main checkout
     // has nothing to start.
-    const defaultVersion = entry.manifestSource?.type === 'worktree'
+    const defaultVersion: ManifestSource = entry.manifestSource?.type === 'worktree'
       ? { type: 'worktree', name: entry.manifestSource.name }
       : { type: 'main' };
     persisted.plugins[id] = {
@@ -327,7 +407,7 @@ export function createPluginHost({
     return describe(id);
   }
 
-  async function disable(id) {
+  async function disable(id: string): Promise<PluginRow | null> {
     await ensureInit();
     if (!persisted.plugins[id]) throw httpError(404, `plugin '${id}' has no registry entry`);
     await stopInternal(id);
@@ -339,7 +419,7 @@ export function createPluginHost({
   // Deduped start: concurrent callers (proxy requests, MCP calls) share one
   // in-flight promise; it resolves once the child is ready or throws with
   // the crash tail.
-  function doStart(id) {
+  function doStart(id: string): Promise<PluginRow | null> {
     const s = runtimeState(id);
     if (s.startPromise) return s.startPromise;
     s.startPromise = (async () => {
@@ -350,10 +430,11 @@ export function createPluginHost({
       // must not start under its id.
       const result = await readManifest(cwd);
       if (!result) throw httpError(400, `no ${path.basename(cwd)}/conductor.plugin.json in the active checkout`);
-      if (result.errors) throw httpError(400, `manifest in active checkout is invalid: ${result.errors.join('; ')}`);
+      if ('errors' in result) throw httpError(400, `manifest in active checkout is invalid: ${result.errors.join('; ')}`);
       if (result.manifest.id !== id) throw httpError(400, `manifest id '${result.manifest.id}' in active checkout does not match plugin '${id}'`);
       entry.manifest = result.manifest;
-      if (!entry.manifest.backend) throw httpError(400, `plugin '${id}' has no backend to start`);
+      const backend = result.manifest.backend;
+      if (!backend) throw httpError(400, `plugin '${id}' has no backend to start`);
 
       s.status = 'starting';
       s.adopted = false;
@@ -362,12 +443,12 @@ export function createPluginHost({
       // authoritative value even in the default case where the conductor's own
       // env never set PROJECTS_ROOT, and locates the conductor even when its
       // checkout lives outside projectsRoot().
-      const env = {
+      const env: Record<string, string> = {
         PROJECTS_ROOT: projectsRoot(),
         CONDUCTOR_PROJECT_DIR: selfProjectDir(),
         ...(serverPort ? { CONDUCTOR_URL: `http://127.0.0.1:${serverPort}` } : {}),
       };
-      const rec = await supervisor.start({ id, manifest: entry.manifest, cwd, env });
+      const rec = await supervisor.start({ id, manifest: { backend }, cwd, env });
       runtimeRecords[id] = rec;
       await saveRuntimeRecords();
 
@@ -388,7 +469,7 @@ export function createPluginHost({
   }
 
   // Poll the supervisor runtime until readiness settles one way or the other.
-  async function waitSettled(id, { timeoutMs = 35_000 } = {}) {
+  async function waitSettled(id: string, { timeoutMs = 35_000 }: { timeoutMs?: number } = {}): Promise<ChildRuntime | { status: 'crashed'; error: string; output?: string }> {
     const deadline = Date.now() + timeoutMs;
     for (;;) {
       const r = supervisor.runtime(id);
@@ -399,7 +480,7 @@ export function createPluginHost({
     }
   }
 
-  async function start(id) {
+  async function start(id: string): Promise<PluginRow | null> {
     await ensureInit();
     requireEnabled(id);
     const s = runtimeState(id);
@@ -410,7 +491,7 @@ export function createPluginHost({
     return doStart(id);
   }
 
-  async function stopInternal(id) {
+  async function stopInternal(id: string): Promise<void> {
     const rec = runtimeRecords[id];
     const s = runtimeState(id);
     if (rec) {
@@ -421,7 +502,7 @@ export function createPluginHost({
     if (s.status !== 'failed') s.status = 'stopped';
   }
 
-  async function stop(id) {
+  async function stop(id: string): Promise<PluginRow | null> {
     await ensureInit();
     if (!byId.get(id) && !persisted.plugins[id]) throw httpError(404, `unknown plugin '${id}'`);
     await stopInternal(id);
@@ -431,7 +512,7 @@ export function createPluginHost({
   // The lazy-start gate used by the proxy and the MCP bridge. Resolves once
   // the plugin is ready (requests wait through the readiness poll window in `waitSettled`);
   // throws 503 when the plugin can't serve.
-  async function ensureStarted(id) {
+  async function ensureStarted(id: string): Promise<void> {
     await ensureInit();
     const entry = byId.get(id);
     if (!entry || persisted.plugins[id]?.enabled !== true) throw httpError(404, `unknown or disabled plugin '${id}'`);
@@ -448,32 +529,34 @@ export function createPluginHost({
   }
 
   // ── views ───────────────────────────────────────────────────────────
-  function describe(id) {
+  function describe(id: string): Promise<PluginRow> | null {
     const entry = byId.get(id) ?? entries.find(e => e.id === id) ?? null;
     const reg = persisted.plugins[id];
     if (!entry && !reg) return null;
-    return describeRow(entry ?? { id, project: reg.project, dir: null, manifest: null, discoveryState: 'invalid', errors: ['project or manifest no longer present'] });
+    return describeRow(entry ?? { id, project: reg.project, dir: '', manifest: null, discoveryState: 'invalid', errors: ['project or manifest no longer present'] });
   }
 
-  async function describeRow(entry) {
+  async function describeRow(entry: PluginEntry): Promise<PluginRow> {
     const id = entry.id;
     const reg = id ? persisted.plugins[id] : null;
     const s = id ? runtimeState(id) : null;
     const rec = id ? runtimeRecords[id] : null;
     const hasBackend = !!entry.manifest?.backend;
-    let state;
+    let state: string;
     if (entry.discoveryState !== 'ok') state = entry.discoveryState;
     else if (!reg?.enabled) state = reg ? 'disabled' : 'discovered';
     // A backendless (conventions-only) plugin has no process lifecycle — it is
     // simply 'enabled', never 'stopped', so the UI shows no (broken) Start button.
     else if (!hasBackend) state = 'enabled';
-    else state = s.status;
+    else state = s?.status ?? 'stopped';
     const { activeVersion, worktreeMeta } = await reconcileActiveVersion(entry);
     // Staleness: only worth a git spawn for a currently-running plugin — the
     // running child's code may have moved past the sha it was started at.
     let stale = false;
     if (state === 'ready' && rec?.gitHead) {
-      const cwd = activeVersion.type === 'worktree' ? worktreeMeta.worktreePath : entry.dir;
+      const cwd = activeVersion.type === 'worktree' && worktreeMeta
+        ? worktreeMeta.worktreePath
+        : entry.dir;
       const currentHead = await headSha(cwd);
       stale = !!currentHead && currentHead !== rec.gitHead;
     }
@@ -506,20 +589,20 @@ export function createPluginHost({
     };
   }
 
-  async function list() {
+  async function list(): Promise<PluginRow[]> {
     await ensureInit();
-    const rowPromises = entries.map(describeRow);
+    const rowPromises: Array<Promise<PluginRow>> = entries.map(describeRow);
     // Registry entries whose project/manifest vanished still deserve a row
     // (they hold state the user may want to disable).
     for (const [id, reg] of Object.entries(persisted.plugins)) {
       if (!entries.some(e => e.id === id)) {
-        rowPromises.push(describeRow({ id, project: reg.project, dir: null, manifest: null, discoveryState: 'invalid', errors: ['project or manifest no longer present'] }));
+        rowPromises.push(describeRow({ id, project: reg.project, dir: '', manifest: null, discoveryState: 'invalid', errors: ['project or manifest no longer present'] }));
       }
     }
     return Promise.all(rowPromises);
   }
 
-  async function rescan() {
+  async function rescan(): Promise<PluginRow[]> {
     await ensureInit();
     await rescanInternal();
     return list();
@@ -527,7 +610,7 @@ export function createPluginHost({
 
   // Merged row + live probe: catches children that died silently (Doze,
   // OOM-kill) since the last event we saw.
-  async function status(id) {
+  async function status(id: string): Promise<PluginRow | null> {
     await ensureInit();
     if (!byId.get(id) && !persisted.plugins[id]) throw httpError(404, `unknown plugin '${id}'`);
     const s = runtimeState(id);
@@ -543,7 +626,7 @@ export function createPluginHost({
   }
 
   // Proxy hook: an upstream connection error may mean the child is gone.
-  function reportUpstreamFailure(id) {
+  function reportUpstreamFailure(id: string): void {
     const rec = runtimeRecords[id];
     const s = rt.get(id);
     if (!rec || !s || s.status !== 'ready') return;
@@ -554,30 +637,31 @@ export function createPluginHost({
   // at. Guard: the target checkout must contain a valid manifest with a
   // matching id, else 400 and the previous state is kept. Restarts the
   // child when it was running so the switch takes effect immediately.
-  async function setActiveVersion(id, v) {
+  async function setActiveVersion(id: string, v: unknown): Promise<PluginRow | null> {
     await ensureInit();
     const entry = requireEntry(id);
     if (!persisted.plugins[id]) throw httpError(409, `plugin '${id}' has no registry entry — enable it first`);
-    let next;
-    if (v?.type === 'main') {
+    const ver = v as { type?: unknown; name?: unknown } | null | undefined;
+    let next: ManifestSource;
+    if (ver?.type === 'main') {
       // Same pre-validation as the worktree target: the main checkout must
       // actually BE this plugin (a worktree-sourced plugin's main checkout
       // has no manifest until the worktree lands).
       const result = await readManifest(entry.dir);
       if (!result) throw httpError(400, `the main checkout of '${entry.project}' has no conductor.plugin.json`);
-      if (result.errors) throw httpError(400, `manifest in the main checkout is invalid: ${result.errors.join('; ')}`);
+      if ('errors' in result) throw httpError(400, `manifest in the main checkout is invalid: ${result.errors.join('; ')}`);
       if (result.manifest.id !== id) throw httpError(400, `manifest id '${result.manifest.id}' in the main checkout does not match plugin '${id}'`);
       next = { type: 'main' };
-    } else if (v?.type === 'worktree') {
-      if (typeof v.name !== 'string' || v.name === '') throw httpError(400, "worktree version requires a 'name'");
-      const { getWorktree } = await import('../worktrees.js');
-      const meta = await getWorktree(entry.project, v.name);
-      if (!meta?.worktreePath) throw httpError(404, `worktree '${v.name}' of project '${entry.project}' not found`);
+    } else if (ver?.type === 'worktree') {
+      if (typeof ver.name !== 'string' || ver.name === '') throw httpError(400, "worktree version requires a 'name'");
+      const { getWorktree } = await import('../worktrees.ts');
+      const meta = await getWorktree(entry.project, ver.name);
+      if (!meta?.worktreePath) throw httpError(404, `worktree '${ver.name}' of project '${entry.project}' not found`);
       const result = await readManifest(meta.worktreePath);
-      if (!result) throw httpError(400, `no conductor.plugin.json in worktree '${v.name}'`);
-      if (result.errors) throw httpError(400, `manifest in worktree '${v.name}' is invalid: ${result.errors.join('; ')}`);
-      if (result.manifest.id !== id) throw httpError(400, `manifest id '${result.manifest.id}' in worktree '${v.name}' does not match plugin '${id}'`);
-      next = { type: 'worktree', name: v.name };
+      if (!result) throw httpError(400, `no conductor.plugin.json in worktree '${ver.name}'`);
+      if ('errors' in result) throw httpError(400, `manifest in worktree '${ver.name}' is invalid: ${result.errors.join('; ')}`);
+      if (result.manifest.id !== id) throw httpError(400, `manifest id '${result.manifest.id}' in worktree '${ver.name}' does not match plugin '${id}'`);
+      next = { type: 'worktree', name: ver.name };
     } else {
       throw httpError(400, "version must be {type:'main'} or {type:'worktree', name}");
     }
@@ -595,7 +679,7 @@ export function createPluginHost({
   // Manual pick-up of new code in the active checkout: stop the running
   // child and start it again (re-reads the manifest + recomputes gitHead via
   // doStart/supervisor.start, same as setActiveVersion's restart branch).
-  async function restart(id) {
+  async function restart(id: string): Promise<PluginRow | null> {
     await ensureInit();
     requireEnabled(id);
     const s = runtimeState(id);
@@ -611,15 +695,16 @@ export function createPluginHost({
   // hands it narrow accessors over its own state.
   const mcpBridge = createMcpBridge({
     instances,
-    listMcpPlugins: () => [...byId.values()].filter(e =>
-      e.discoveryState === 'ok' && persisted.plugins[e.id]?.enabled === true && e.manifest.mcp),
+    listMcpPlugins: () => [...byId.values()].filter((e): e is PluginEntry & { id: string; manifest: PluginManifest & { mcp: PluginMcp } } =>
+      e.discoveryState === 'ok' && typeof e.id === 'string' && e.manifest !== null && e.manifest.mcp != null
+        && persisted.plugins[e.id]?.enabled === true),
     ensureStarted,
-    portFor: (id) => runtimeRecords[id]?.port ?? null,
+    portFor: (id: string) => runtimeRecords[id]?.port ?? null,
     reportUpstreamFailure,
   });
-  const toolsFor = (callerId) => mcpBridge.toolsFor(callerId);
+  const toolsFor = (callerId: string) => mcpBridge.toolsFor(callerId);
 
-  function runtimeInfo(id) {
+  function runtimeInfo(id: string): { status: string; port: number | null } {
     const rec = runtimeRecords[id];
     const s = rt.get(id);
     return { status: s?.status ?? 'stopped', port: rec?.port ?? null };
@@ -630,16 +715,18 @@ export function createPluginHost({
   // never surfaces its conventions). Bodies are resolved from the active
   // checkout; a fragment path that vanished after load is skipped with a
   // warning (manifest load already rejects missing files).
-  const fragmentBodyCache = new Map(); // abs path -> body
-  async function readFragment(abs) {
-    if (fragmentBodyCache.has(abs)) return fragmentBodyCache.get(abs);
+  const fragmentBodyCache = new Map<string, string>(); // abs path -> body
+  async function readFragment(abs: string): Promise<string> {
+    const cached = fragmentBodyCache.get(abs);
+    if (cached !== undefined) return cached;
     const body = (await fs.readFile(abs, 'utf8')).replace(/\s+$/, '');
     fragmentBodyCache.set(abs, body);
     return body;
   }
 
-  function contributingEntries() {
-    return [...byId.values()].filter(e => e.discoveryState === 'ok' && persisted.plugins[e.id]?.enabled === true);
+  function contributingEntries(): Array<PluginEntry & { id: string; manifest: PluginManifest }> {
+    return [...byId.values()].filter((e): e is PluginEntry & { id: string; manifest: PluginManifest } =>
+      e.discoveryState === 'ok' && typeof e.id === 'string' && e.manifest !== null && persisted.plugins[e.id]?.enabled === true);
   }
 
   // Convention entries contributed by enabled plugins, GROUPED BY SCOPE so
@@ -651,27 +738,28 @@ export function createPluginHost({
   // body, scaffold?, plugin:id } — `body` is '' when the convention carries no
   // fragment (scaffold-only); `scaffold` is the resolved directive text, present
   // only when the entry carries a scaffold facet.
-  async function conventions() {
+  async function conventions(): Promise<Record<string, Array<{ slug: string; name: string; description: string; body: string; scaffold?: string; plugin: string }>>> {
     await ensureInit();
-    const byScope = Object.fromEntries(SUPPORTED_CONVENTION_SCOPES.map(s => [s, []]));
+    const byScope: Record<string, Array<{ slug: string; name: string; description: string; body: string; scaffold?: string; plugin: string }>>
+      = Object.fromEntries(SUPPORTED_CONVENTION_SCOPES.map(s => [s, []]));
     for (const entry of contributingEntries()) {
       const list = entry.manifest.conventions ?? [];
       if (list.length === 0) continue;
-      let cwd;
-      try { cwd = await resolveCwd(entry); } catch (e) { console.warn(`plugins: conventions cwd for '${entry.id}' failed: ${e.message}`); continue; }
+      let cwd: string;
+      try { cwd = await resolveCwd(entry); } catch (e) { console.warn(`plugins: conventions cwd for '${entry.id}' failed: ${errMsg(e)}`); continue; }
       for (const g of list) {
         if (!byScope[g.scope]) continue; // scope not routed yet — skip defensively
         let body = '';
         if (g.file) {
           try { body = await readFragment(path.join(cwd, g.file)); }
-          catch (e) { console.warn(`plugins: convention '${entry.id}/${g.slug}' body unreadable: ${e.message}`); continue; }
+          catch (e) { console.warn(`plugins: convention '${entry.id}/${g.slug}' body unreadable: ${errMsg(e)}`); continue; }
         }
-        let scaffold;
+        let scaffold: string | undefined;
         if (g.scaffold) {
-          if (g.scaffold.text !== undefined) scaffold = g.scaffold.text;
+          if ('text' in g.scaffold) scaffold = g.scaffold.text;
           else {
             try { scaffold = await readFragment(path.join(cwd, g.scaffold.file)); }
-            catch (e) { console.warn(`plugins: convention '${entry.id}/${g.slug}' scaffold unreadable: ${e.message}`); continue; }
+            catch (e) { console.warn(`plugins: convention '${entry.id}/${g.slug}' scaffold unreadable: ${errMsg(e)}`); continue; }
           }
         }
         byScope[g.scope].push({ slug: `${entry.id}/${g.slug}`, name: g.name, description: g.description, body, ...(scaffold !== undefined ? { scaffold } : {}), plugin: entry.id });
@@ -686,8 +774,8 @@ export function createPluginHost({
   // Each entry: { role:'<plugin-id>/<slug>', label, binding, plugin:id }. Only
   // enabled+ok plugins contribute, so disabling/removing a plugin drops its
   // roles automatically (no purge, mirroring conductor conventions).
-  function roles() {
-    const out = [];
+  function roles(): Array<{ role: string; label: string; binding: { kind: 'tier'; tier: string } | { backend: string; model: string } | null; plugin: string }> {
+    const out: Array<{ role: string; label: string; binding: { kind: 'tier'; tier: string } | { backend: string; model: string } | null; plugin: string }> = [];
     for (const entry of contributingEntries()) {
       for (const r of entry.manifest.roles ?? []) {
         out.push({ role: `${entry.id}/${r.slug}`, label: r.name, binding: r.binding, plugin: entry.id });
@@ -703,14 +791,14 @@ export function createPluginHost({
   // warned loudly and dropped (adding a broken --plugin-dir would make claude
   // itself fail to start), never silently swallowed. Returns absolute dir paths;
   // Instance.spawn() turns each into a repeated `--plugin-dir <root>` flag.
-  async function claudePluginDirs() {
+  async function claudePluginDirs(): Promise<string[]> {
     await ensureInit();
-    const out = [];
+    const out: string[] = [];
     for (const entry of contributingEntries()) {
       const rels = claudePluginPaths(entry.manifest);
       if (rels.length === 0) continue;
-      let cwd;
-      try { cwd = await resolveCwd(entry); } catch (e) { console.warn(`plugins: claudePlugin cwd for '${entry.id}' failed: ${e.message}`); continue; }
+      let cwd: string;
+      try { cwd = await resolveCwd(entry); } catch (e) { console.warn(`plugins: claudePlugin cwd for '${entry.id}' failed: ${errMsg(e)}`); continue; }
       for (const rel of rels) {
         const root = path.join(cwd, rel);
         try {
@@ -724,10 +812,10 @@ export function createPluginHost({
     return out;
   }
 
-  function setServerPort(p) { serverPort = p; }
+  function setServerPort(p: number | null): void { serverPort = p; }
 
   // Test/shutdown teardown: kill every child this host started or adopted.
-  async function stopAll() {
+  async function stopAll(): Promise<void> {
     if (!initPromise) return;
     try { await initPromise; } catch { /* init failure — nothing running */ }
     for (const id of Object.keys(runtimeRecords)) {
@@ -742,4 +830,18 @@ export function createPluginHost({
     conventions, roles, claudePluginDirs,
     reportUpstreamFailure, setServerPort, stopAll,
   };
+}
+
+// The `code` on a thrown Node error (e.g. 'ENOENT'), or undefined — the
+// narrowing point for error-code checks (catch variables are `unknown` under
+// strict). Duplicated from storeLock.ts: it's four lines, and importing it
+// across modules would couple every store to storeLock for one helper.
+function errCode(e: unknown): string | undefined {
+  if (typeof e !== 'object' || e === null) return undefined;
+  const code = (e as { code?: unknown }).code;
+  return typeof code === 'string' ? code : undefined;
+}
+
+function errMsg(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
 }

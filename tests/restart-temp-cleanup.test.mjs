@@ -11,7 +11,7 @@ import {
   pendingTempCleanupPath,
   writePendingTempCleanup,
   sweepPendingTempCleanup,
-} from '../src/tempCleanup.js';
+} from '../src/tempCleanup.ts';
 import { runTempCleanup } from '../src/restart.js';
 import { drainToManifest } from '../src/resumeRestart.js';
 

@@ -7,7 +7,7 @@ import { bootServer, api, waitFor } from './helpers.mjs';
 import {
   setTranscribeModel, getTranscribeModel,
   setTtsVoice, getTtsVoice, getTtsEnabled, getTtsRate,
-} from '../src/appSettings.js';
+} from '../src/appSettings.ts';
 import * as ttsInstall from '../src/ttsInstall.js';
 
 // A bash stand-in for bin/install-piper.sh: touches the venv python3 + the

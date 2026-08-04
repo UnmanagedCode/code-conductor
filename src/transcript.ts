@@ -11,7 +11,30 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { encodeCwd, claudeProjectsRoot } from './projects.ts';
-import { consolidateUserContent, isSoftInterruptContent, isTaskNotificationContent, attachSkillLoad } from './parser.ts';
+import {
+  consolidateUserContent, isSoftInterruptContent, isTaskNotificationContent, attachSkillLoad,
+  type UiEvent, type WireEnvelope, type WireContentBlock, type PendingSkillLoad,
+} from './parser.ts';
+
+// A persisted jsonl line is a WireEnvelope plus the fields the CLI writes to
+// disk that the live stream never carries (uuid, isSidechain, attachment,
+// toolUseResult). All wire fields stay `unknown` (or loosely typed) — the
+// on-disk format is owned by the CLI, so every value is narrowed at point of
+// use rather than trusted.
+interface PersistedLine extends WireEnvelope {
+  uuid?: unknown;
+  isSidechain?: boolean;
+  attachment?: { type?: unknown; prompt?: unknown } | null;
+  toolUseResult?: { agentId?: string } | null;
+}
+
+// The subset of a persisted assistant line's `message.usage` that the replay
+// reads as a context-size snapshot (see loadPersistedTranscript's header note).
+interface PersistedUsage {
+  input_tokens?: number;
+  cache_read_input_tokens?: number;
+  cache_creation_input_tokens?: number;
+}
 
 // Predicate: does this persisted jsonl object emit at least one `user_echo`
 // UI event when replayed? Mirrors the live-path emission in
@@ -29,11 +52,12 @@ import { consolidateUserContent, isSoftInterruptContent, isTaskNotificationConte
 // one). CLI-internal `<task-notification>` lines/queued commands (either
 // a `type:"user"` line or an attachment with a string `prompt`) are
 // excluded in both shapes — they never produced a user_echo.
-export function isPureUserPromptLine(obj) {
+export function isPureUserPromptLine(obj: unknown): boolean {
   if (!obj || typeof obj !== 'object') return false;
-  if (obj.isSidechain) return false;
-  if (obj.type === 'user') {
-    const content = obj.message?.content;
+  const line = obj as PersistedLine;
+  if (line.isSidechain) return false;
+  if (line.type === 'user') {
+    const content = line.message?.content;
     // Soft-interrupt steer never produces a user_echo bubble (it renders as a
     // system/soft_interrupted annotation instead) — don't count it, or
     // fork/rewind indices would drift past the user_echo count.
@@ -45,8 +69,8 @@ export function isPureUserPromptLine(obj) {
     if (!Array.isArray(content)) return false;
     return content.some((b) => b && b.type === 'text' && typeof b.text === 'string');
   }
-  if (obj.type === 'attachment' && obj.attachment?.type === 'queued_command') {
-    const prompt = obj.attachment.prompt;
+  if (line.type === 'attachment' && line.attachment?.type === 'queued_command') {
+    const prompt = line.attachment.prompt;
     if (!Array.isArray(prompt)) return false;
     if (isSoftInterruptContent(prompt)) return false; // system annotation, not a user_echo
     return prompt.some((b) => b && b.type === 'text' && typeof b.text === 'string' && b.text.length > 0);
@@ -63,9 +87,19 @@ export function isPureUserPromptLine(obj) {
 // whose original message had no `id` and no `uuid` (rare but
 // possible) — passing the ring's current length keeps replays
 // reproducible across reruns.
-export function replayPersistedLine(obj, { seqHint = 0, parentToolUseId = null, allowSidechain = false, blockCursor = null, pendingSkillLoads = null } = {}) {
-  const events = [];
-  const tagAndReturn = () => {
+export function replayPersistedLine(
+  obj: unknown,
+  { seqHint = 0, parentToolUseId = null, allowSidechain = false, blockCursor = null, pendingSkillLoads = null }: {
+    seqHint?: number;
+    parentToolUseId?: string | null;
+    allowSidechain?: boolean;
+    blockCursor?: Map<string, number> | null;
+    pendingSkillLoads?: PendingSkillLoad[] | null;
+  } = {},
+): UiEvent[] {
+  const events: UiEvent[] = [];
+  const line = obj as PersistedLine;
+  const tagAndReturn = (): UiEvent[] => {
     // Mirror parser.handleObject's contract: every emitted UI event carries a
     // parentToolUseId (null when there's no enclosing sub-agent), so consumers
     // never have to distinguish undefined vs null.
@@ -80,10 +114,10 @@ export function replayPersistedLine(obj, { seqHint = 0, parentToolUseId = null, 
   // writes those to a sibling `subagents/` directory instead. Skip by
   // default — callers replaying a sub-agent file explicitly opt in via
   // allowSidechain.
-  if (obj.isSidechain && !allowSidechain) return events;
+  if (line.isSidechain && !allowSidechain) return events;
 
-  if (obj.type === 'user') {
-    const msg = obj.message ?? {};
+  if (line.type === 'user') {
+    const msg = line.message ?? {};
     const content = msg.content;
     // Soft-interrupt steer — show as a system annotation, not a user bubble.
     if (isSoftInterruptContent(content)) {
@@ -105,20 +139,20 @@ export function replayPersistedLine(obj, { seqHint = 0, parentToolUseId = null, 
       // live `parser.ts:_handleUser` consolidation. tool_result blocks
       // remain their own events.
       const userEvents = consolidateUserContent(content);
-      attachSkillLoad(userEvents, obj, pendingSkillLoads);
+      attachSkillLoad(userEvents, line, pendingSkillLoads);
       for (const ev of userEvents) events.push(ev);
     }
     return tagAndReturn();
   }
 
-  if (obj.type === 'attachment' && obj.attachment?.type === 'queued_command') {
+  if (line.type === 'attachment' && line.attachment?.type === 'queued_command') {
     // Prompts received via stdin while the CLI is mid-turn get persisted
     // as this attachment shape instead of a `type:"user"` line. Replay the
     // same `user_echo` the live path emitted from `inst.prompt()` so the
     // bubble count survives a reload / resume. CLI-internal queued
     // commands (e.g. `<task-notification>...</task-notification>`) carry a
     // string `prompt` — they never produced a user_echo live, so skip.
-    const prompt = obj.attachment.prompt;
+    const prompt = line.attachment.prompt;
     if (!Array.isArray(prompt)) return tagAndReturn();
     if (isSoftInterruptContent(prompt)) {
       events.push({ kind: 'system', subtype: 'soft_interrupted' });
@@ -132,15 +166,17 @@ export function replayPersistedLine(obj, { seqHint = 0, parentToolUseId = null, 
     // the primary `type:"user"` branch above. queued_command lines carry no
     // injection marker, so passing the line itself normalizes to exactly
     // that.
-    attachSkillLoad(queuedEvents, obj, pendingSkillLoads);
+    attachSkillLoad(queuedEvents, line, pendingSkillLoads);
     for (const ev of queuedEvents) events.push(ev);
     return tagAndReturn();
   }
 
-  if (obj.type === 'assistant') {
-    const msg = obj.message ?? {};
-    const msgId = msg.id ?? obj.uuid ?? `replay-${seqHint}`;
-    const blocks = Array.isArray(msg.content) ? msg.content : [];
+  if (line.type === 'assistant') {
+    const msg = line.message ?? {};
+    const msgId = typeof msg.id === 'string' ? msg.id
+      : typeof line.uuid === 'string' ? line.uuid
+      : `replay-${seqHint}`;
+    const blocks = Array.isArray(msg.content) ? msg.content as WireContentBlock[] : [];
     // The async-worker CLI persists one logical message as N single-block
     // assistant lines sharing message.id. The per-line array index alone
     // would give every block of a fragmented message blockIdx 0, colliding
@@ -157,32 +193,34 @@ export function replayPersistedLine(obj, { seqHint = 0, parentToolUseId = null, 
       const blockIdx = base + i;
       if (!b || typeof b !== 'object') continue;
       if (b.type === 'text') {
-        events.push({ kind: 'text_delta', msgId, blockIdx, text: b.text ?? '' });
+        events.push({ kind: 'text_delta', msgId, blockIdx, text: typeof b.text === 'string' ? b.text : '' });
         events.push({ kind: 'text_end', msgId, blockIdx });
       } else if (b.type === 'thinking') {
-        const text = b.thinking ?? b.text ?? '';
+        const text = typeof b.thinking === 'string' ? b.thinking : typeof b.text === 'string' ? b.text : '';
         events.push({ kind: 'thinking_start', msgId, blockIdx });
         if (text) events.push({ kind: 'thinking_delta', msgId, blockIdx, text });
         else events.push({ kind: 'thinking_redacted', msgId, blockIdx });
         events.push({ kind: 'thinking_end', msgId, blockIdx });
       } else if (b.type === 'tool_use') {
-        events.push({ kind: 'tool_use_start', msgId, blockIdx, toolUseId: b.id ?? null, name: b.name ?? null });
-        events.push({ kind: 'tool_use', msgId, blockIdx, toolUseId: b.id ?? null, name: b.name ?? null, input: b.input ?? {} });
+        const toolUseId = typeof b.id === 'string' ? b.id : null;
+        const name = typeof b.name === 'string' ? b.name : null;
+        events.push({ kind: 'tool_use_start', msgId, blockIdx, toolUseId, name });
+        events.push({ kind: 'tool_use', msgId, blockIdx, toolUseId, name, input: b.input ?? {} });
         // Mirror the parser's structured event emission for the live
         // path — a replayed AskUserQuestion / ExitPlanMode should
         // render as a question / plan card, not just a collapsed
         // generic tool block.
-        if (b.name === 'AskUserQuestion' && Array.isArray(b.input?.questions)) {
+        if (name === 'AskUserQuestion' && Array.isArray(b.input?.questions)) {
           events.push({
             kind: 'user_question',
-            toolUseId: b.id ?? null,
+            toolUseId,
             questions: b.input.questions,
           });
         }
-        if (b.name === 'ExitPlanMode') {
+        if (name === 'ExitPlanMode') {
           events.push({
             kind: 'plan_request',
-            toolUseId: b.id ?? null,
+            toolUseId,
             plan: typeof b.input?.plan === 'string' ? b.input.plan : null,
             planPath: null,
           });
@@ -190,8 +228,9 @@ export function replayPersistedLine(obj, { seqHint = 0, parentToolUseId = null, 
         // Track Skill invocations — mirrors parser.ts so the isSynthetic
         // content-injection user line that follows can be identified and
         // titled with the actual invoked skill id (see attachSkillLoad).
-        if (b.name === 'Skill' && pendingSkillLoads) {
-          pendingSkillLoads.push({ toolUseId: b.id ?? null, skill: b.input?.skill ?? null });
+        if (name === 'Skill' && pendingSkillLoads) {
+          const skill = typeof b.input?.skill === 'string' ? b.input.skill : null;
+          pendingSkillLoads.push({ toolUseId, skill });
         }
       }
     }
@@ -207,22 +246,29 @@ export function replayPersistedLine(obj, { seqHint = 0, parentToolUseId = null, 
 // Agent tool block. Live runs receive these events over stdout tagged with
 // parent_tool_use_id; persistence drops them in this sibling file instead, so
 // replay has to load them explicitly.
-export async function loadSubAgentTranscript({ cwd, sessionId, agentId, parentToolUseId, seqHint = 0 }) {
+export async function loadSubAgentTranscript(options: {
+  cwd: string;
+  sessionId: string;
+  agentId: string;
+  parentToolUseId: string;
+  seqHint?: number;
+}): Promise<UiEvent[]> {
+  const { cwd, sessionId, agentId, parentToolUseId, seqHint = 0 } = options;
   if (!cwd || !sessionId || !agentId || !parentToolUseId) return [];
   const file = path.join(
     claudeProjectsRoot(), encodeCwd(cwd), sessionId, 'subagents', `agent-${agentId}.jsonl`,
   );
-  let text;
+  let text: string;
   try { text = await fs.readFile(file, 'utf8'); }
-  catch (e) { if (e.code === 'ENOENT') return []; throw e; }
-  const out = [];
+  catch (e) { if (errCode(e) === 'ENOENT') return []; throw e; }
+  const out: UiEvent[] = [];
   let seq = seqHint;
-  const blockCursor = new Map();
-  const pendingSkillLoads = [];
+  const blockCursor = new Map<string, number>();
+  const pendingSkillLoads: PendingSkillLoad[] = [];
   for (const raw of text.split('\n')) {
     const trimmed = raw.trim();
     if (!trimmed) continue;
-    let obj;
+    let obj: unknown;
     try { obj = JSON.parse(trimmed); } catch { continue; }
     const lineEvents = replayPersistedLine(obj, {
       seqHint: seq, parentToolUseId, allowSidechain: true, blockCursor, pendingSkillLoads,
@@ -231,12 +277,16 @@ export async function loadSubAgentTranscript({ cwd, sessionId, agentId, parentTo
     seq += lineEvents.length;
     // Recurse: a sub-agent may itself invoke another Agent. Its user
     // tool_result line carries toolUseResult.agentId for the nested run.
-    if (obj.type === 'user' && obj.toolUseResult?.agentId) {
-      const innerToolUseId = obj.message?.content?.find?.(b => b?.type === 'tool_result')?.tool_use_id;
+    const line = obj as PersistedLine;
+    if (line.type === 'user' && line.toolUseResult?.agentId) {
+      const innerContent = line.message?.content;
+      const innerToolUseId = Array.isArray(innerContent)
+        ? innerContent.find(b => b?.type === 'tool_result')?.tool_use_id
+        : undefined;
       if (innerToolUseId) {
         const innerEvents = await loadSubAgentTranscript({
           cwd, sessionId,
-          agentId: obj.toolUseResult.agentId,
+          agentId: line.toolUseResult.agentId,
           parentToolUseId: innerToolUseId,
           seqHint: seq,
         });
@@ -264,25 +314,36 @@ export async function loadSubAgentTranscript({ cwd, sessionId, agentId, parentTo
 // (`turn_end.usage`, see public/usage.js) is a stream-only `result` frame the
 // CLI never persists — there is no `type:"result"` line in a session jsonl,
 // so that value is structurally unreachable from here.
-export async function loadPersistedTranscript({ cwd, sessionId, seqHint = 0 }) {
+export async function loadPersistedTranscript(options: {
+  cwd: string;
+  sessionId: string;
+  seqHint?: number;
+}): Promise<{
+  lines: Array<{ events: UiEvent[] }>;
+  replayedCount: number;
+  lastLeafUuid: string | null;
+  lastAssistantUsage: { msgId: string | null; usage: PersistedUsage } | null;
+} | null> {
+  const { cwd, sessionId, seqHint = 0 } = options;
   if (!cwd || !sessionId) return null;
   const file = path.join(claudeProjectsRoot(), encodeCwd(cwd), `${sessionId}.jsonl`);
-  let text;
+  let text: string;
   try { text = await fs.readFile(file, 'utf8'); }
-  catch (e) { if (e.code === 'ENOENT') return null; throw e; }
+  catch (e) { if (errCode(e) === 'ENOENT') return null; throw e; }
 
-  const lines = [];
-  let lastLeafUuid = null;
-  let lastAssistantUsage = null;
+  const lines: Array<{ events: UiEvent[] }> = [];
+  let lastLeafUuid: string | null = null;
+  let lastAssistantUsage: { msgId: string | null; usage: PersistedUsage } | null = null;
   let replayedCount = 0;
   let seq = seqHint;
-  const blockCursor = new Map();
-  const pendingSkillLoads = [];
+  const blockCursor = new Map<string, number>();
+  const pendingSkillLoads: PendingSkillLoad[] = [];
   for (const raw of text.split('\n')) {
     const trimmed = raw.trim();
     if (!trimmed) continue;
-    let obj;
+    let obj: unknown;
     try { obj = JSON.parse(trimmed); } catch { continue; }
+    const line = obj as PersistedLine;
 
     // Latch this session's context-size reading (see the header). Three
     // independent guards, each load-bearing:
@@ -300,13 +361,16 @@ export async function loadPersistedTranscript({ cwd, sessionId, seqHint = 0 }) {
     // The async-worker CLI persists one logical message as N single-block
     // lines sharing message.id (see replayPersistedLine) — every copy carries
     // the IDENTICAL usage, so plain last-wins needs no dedup.
-    if (obj.type === 'assistant' && !obj.isSidechain
-        && obj.message?.usage && obj.message.model !== '<synthetic>') {
-      const u = obj.message.usage;
+    if (line.type === 'assistant' && !line.isSidechain
+        && line.message?.usage != null && line.message.model !== '<synthetic>') {
+      const u = line.message.usage as PersistedUsage;
       const prompt = (u.input_tokens ?? 0)
                    + (u.cache_read_input_tokens ?? 0)
                    + (u.cache_creation_input_tokens ?? 0);
-      if (prompt > 0) lastAssistantUsage = { msgId: obj.message.id ?? null, usage: u };
+      if (prompt > 0) lastAssistantUsage = {
+        msgId: typeof line.message.id === 'string' ? line.message.id : null,
+        usage: u,
+      };
     }
 
     // When the line is the parent's tool_result for an Agent invocation, the
@@ -315,15 +379,15 @@ export async function loadPersistedTranscript({ cwd, sessionId, seqHint = 0 }) {
     // runs receive those events over stdout tagged with parent_tool_use_id;
     // replay has to load + tag them explicitly so the conversation view can
     // nest them under the Agent tool block.
-    const events = [];
-    if (obj.type === 'user' && obj.toolUseResult?.agentId) {
-      const tuid = Array.isArray(obj.message?.content)
-        ? obj.message.content.find(b => b?.type === 'tool_result')?.tool_use_id
+    const events: UiEvent[] = [];
+    if (line.type === 'user' && line.toolUseResult?.agentId) {
+      const tuid = Array.isArray(line.message?.content)
+        ? line.message.content.find(b => b?.type === 'tool_result')?.tool_use_id
         : null;
       if (tuid) {
         const subEvents = await loadSubAgentTranscript({
           cwd, sessionId,
-          agentId: obj.toolUseResult.agentId,
+          agentId: line.toolUseResult.agentId,
           parentToolUseId: tuid,
           seqHint: seq,
         });
@@ -338,7 +402,7 @@ export async function loadPersistedTranscript({ cwd, sessionId, seqHint = 0 }) {
       replayedCount++;
       seq += ownEvents.length;
     }
-    if (typeof obj.uuid === 'string') lastLeafUuid = obj.uuid;
+    if (typeof line.uuid === 'string') lastLeafUuid = line.uuid;
     lines.push({ events });
   }
   return { lines, replayedCount, lastLeafUuid, lastAssistantUsage };
@@ -354,21 +418,23 @@ export async function loadPersistedTranscript({ cwd, sessionId, seqHint = 0 }) {
 // registry key. For a `claude` session the bare id is enough — canonicalizeModel
 // re-applies the catalog launch tag, and capacity comes from the catalog rather
 // than from anything persisted here.
-export async function readLastSessionModel({ cwd, sessionId }) {
+export async function readLastSessionModel(options: { cwd: string; sessionId: string }): Promise<string | null> {
+  const { cwd, sessionId } = options;
   if (!cwd || !sessionId) return null;
   const file = path.join(claudeProjectsRoot(), encodeCwd(cwd), `${sessionId}.jsonl`);
-  let text;
+  let text: string;
   try { text = await fs.readFile(file, 'utf8'); }
-  catch (e) { if (e.code === 'ENOENT') return null; throw e; }
-  let lastModel = null;
+  catch (e) { if (errCode(e) === 'ENOENT') return null; throw e; }
+  let lastModel: string | null = null;
   for (const raw of text.split('\n')) {
     const trimmed = raw.trim();
     if (!trimmed) continue;
-    let obj;
+    let obj: unknown;
     try { obj = JSON.parse(trimmed); } catch { continue; }
-    if (obj && obj.type === 'assistant' && typeof obj.message?.model === 'string'
-        && obj.message.model !== '<synthetic>') {
-      lastModel = obj.message.model;
+    const line = obj as PersistedLine;
+    if (line.type === 'assistant' && typeof line.message?.model === 'string'
+        && line.message.model !== '<synthetic>') {
+      lastModel = line.message.model;
     }
   }
   return lastModel;
@@ -382,18 +448,20 @@ export async function readLastSessionModel({ cwd, sessionId }) {
 // and the CLI treats that as a non-existent session. Used as a resume
 // pre-flight so a mistyped/bogus resume id is refused before we spawn a
 // subprocess that would only crash-loop.
-export async function hasResumableConversation({ cwd, sessionId }) {
+export async function hasResumableConversation(options: { cwd: string; sessionId: string }): Promise<boolean> {
+  const { cwd, sessionId } = options;
   if (!cwd || !sessionId) return false;
   const file = path.join(claudeProjectsRoot(), encodeCwd(cwd), `${sessionId}.jsonl`);
-  let text;
+  let text: string;
   try { text = await fs.readFile(file, 'utf8'); }
-  catch (e) { if (e.code === 'ENOENT') return false; throw e; }
+  catch (e) { if (errCode(e) === 'ENOENT') return false; throw e; }
   for (const raw of text.split('\n')) {
     const trimmed = raw.trim();
     if (!trimmed) continue;
-    let obj;
+    let obj: unknown;
     try { obj = JSON.parse(trimmed); } catch { continue; }
-    if (obj && (obj.type === 'user' || obj.type === 'assistant')) return true;
+    const line = obj as PersistedLine;
+    if (line.type === 'user' || line.type === 'assistant') return true;
   }
   return false;
 }
@@ -403,7 +471,13 @@ export async function hasResumableConversation({ cwd, sessionId }) {
 // swallows errors. permissionMode is the CLI-level value (the
 // orchestrator's 'ask' is collapsed to 'bypassPermissions' before
 // reaching this function; see cliPermissionMode in instances.js).
-export async function writeSessionMetadata({ cwd, sessionId, leafUuid, permissionMode }) {
+export async function writeSessionMetadata(options: {
+  cwd: string;
+  sessionId: string;
+  leafUuid: string | null;
+  permissionMode: string;
+}): Promise<void> {
+  const { cwd, sessionId, leafUuid, permissionMode } = options;
   if (!cwd || !sessionId || !leafUuid) return;
   const dir = path.join(claudeProjectsRoot(), encodeCwd(cwd));
   const file = path.join(dir, `${sessionId}.jsonl`);
@@ -412,4 +486,14 @@ export async function writeSessionMetadata({ cwd, sessionId, leafUuid, permissio
     JSON.stringify({ type: 'permission-mode', permissionMode, sessionId }) + '\n';
   await fs.mkdir(dir, { recursive: true });
   await fs.appendFile(file, lines);
+}
+
+// The `code` on a thrown Node error (e.g. 'ENOENT'), or undefined — the
+// narrowing point for error-code checks (catch variables are `unknown` under
+// strict). Duplicated from storeLock.ts: it's four lines, and importing it
+// across modules would couple every store to storeLock for one helper.
+function errCode(e: unknown): string | undefined {
+  if (typeof e !== 'object' || e === null) return undefined;
+  const code = (e as { code?: unknown }).code;
+  return typeof code === 'string' ? code : undefined;
 }

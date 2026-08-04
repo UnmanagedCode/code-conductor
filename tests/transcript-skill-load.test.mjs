@@ -20,7 +20,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { encodeCwd } from '../src/projects.ts';
-import { loadPersistedTranscript, loadSubAgentTranscript } from '../src/transcript.js';
+import { loadPersistedTranscript, loadSubAgentTranscript } from '../src/transcript.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURES = path.join(__dirname, 'fixtures');

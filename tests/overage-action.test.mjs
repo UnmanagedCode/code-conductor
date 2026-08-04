@@ -14,10 +14,10 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
-import { setOnOverageAction, setOverageThreshold } from '../src/appSettings.js';
+import { setOnOverageAction, setOverageThreshold } from '../src/appSettings.ts';
 import { AUTO_RESUME_TEXT } from '../src/instances.js';
 import { getAccountUsage } from '../src/accountUsage.ts';
-import { ensureConductProject, CONDUCT_PROJECT_NAME } from '../src/conduct.js';
+import { ensureConductProject, CONDUCT_PROJECT_NAME } from '../src/conduct.ts';
 
 const nowSec = () => Math.floor(Date.now() / 1000);
 // The live `rate_limit_event` delivers the window reset as the camelCase

@@ -11,7 +11,7 @@
 //    `$${cost}` figure as before; for an ollama-backed session it must NOT
 //    show that figure — the CLI's total_cost_usd is Anthropic list pricing
 //    applied to a free local backend, meaningless here (see
-//    src/costTracking.js's matching costs.jsonl fix) — so it renders the
+//    src/costTracking.ts's matching costs.jsonl fix) — so it renders the
 //    popover's own "value unavailable" em-dash instead.
 //
 // Same happy-dom + installHeader() harness as tests/header-change-model.test.mjs,

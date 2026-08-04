@@ -787,7 +787,7 @@ test('a redacted block with no counter frames carries no estimatedTokens', async
     await waitFor(() => instances.get(id).status === 'idle');
     const inst = instances.get(id);
 
-    // This is the jsonl-replay shape (src/transcript.js): the CLI never
+    // This is the jsonl-replay shape (src/transcript.ts): the CLI never
     // persists counter frames, so nothing stale may be stamped.
     inst._emitUi({ kind: 'user_echo', text: 'replayed turn' });
     inst._emitUi({ kind: 'system', subtype: 'thinking_tokens', data: { estimated_tokens: 999 } });

@@ -6,14 +6,14 @@
 // The script path is overridable via PIPER_INSTALL_SCRIPT (test injection,
 // mirroring the CLAUDE_BIN fake-binary convention). The selected voice name is
 // gated against the ttsModels allow-list before it ever reaches the shell. All
-// the shared singleton mechanics live in installRunner.js; this module is just
+// the shared singleton mechanics live in installRunner.ts; this module is just
 // the piper-specific config + the public re-exports.
 
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { makeInstallRunner } from './installRunner.js';
+import { makeInstallRunner } from './installRunner.ts';
 import { isKnownVoice } from './ttsModels.ts';
-import { setTtsVoice } from './appSettings.js';
+import { setTtsVoice } from './appSettings.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_SCRIPT = path.resolve(__dirname, '..', 'bin', 'install-piper.sh');

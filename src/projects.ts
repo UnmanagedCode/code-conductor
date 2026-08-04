@@ -6,6 +6,7 @@ import { loadAll as loadAllTitles, deleteTitle as deleteSessionTitle } from './s
 import { loadAll as loadAllConducted, unmarkConducted } from './conductedSessions.ts';
 import { loadAllTemps } from './tempSessions.ts';
 import { loadAllArchived, markArchived, unmarkArchived } from './archivedSessions.ts';
+import type { WorktreeMeta } from './worktrees.ts';
 
 // Default projects root = parent directory of the code-conductor repo,
 // resolved once at module load. Layout: <parent>/code-conductor/src/
@@ -591,21 +592,12 @@ export async function deleteSessionForCwd(absCwd: string, sessionId: string): Pr
 }
 
 // The two lazy worktrees imports below sit on a circular edge
-// (projects ↔ worktrees) that must stay lazy. worktrees.js is still `.js`
-// until its conversion batch, so the specifier is held in a variable to
-// keep tsc from resolving it (an unresolved lazy module would otherwise be
-// an implicit-any error); the structural cast types exactly the members
-// used here. When worktrees converts, this becomes a plain literal
-// `./worktrees.ts` import and the cast disappears.
-type WorktreeInfo = {
-  worktreeName: string;
-  worktreePath: string;
-};
-
-async function loadWorktreesFor(projectName: string): Promise<WorktreeInfo[]> {
-  const spec = './worktrees.js';
-  const mod = (await import(spec)) as { listWorktrees: (name: string) => Promise<WorktreeInfo[]> };
-  return mod.listWorktrees(projectName);
+// (projects ↔ worktrees) that must stay lazy — worktrees.ts already imports
+// from projects.ts (encodeCwd, etc.). The dynamic import is typed via the
+// static `import type` above, so it stays lazy at runtime with no cast.
+async function loadWorktreesFor(projectName: string): Promise<WorktreeMeta[]> {
+  const { listWorktrees } = await import('./worktrees.ts');
+  return listWorktrees(projectName);
 }
 
 // Look up which project (and optionally which worktree) owns a given
@@ -620,8 +612,8 @@ export async function findSessionLocation(sessionId: string): Promise<{ project:
   // anything that's safe to interpolate into a filename. The point is to
   // reject path-traversal payloads before they touch the filesystem.
   if (typeof sessionId !== 'string' || !/^[A-Za-z0-9_-]+$/.test(sessionId)) return null;
-  // Lazy import to avoid the projects.ts ↔ worktrees.js circular dep
-  // worktrees.js already imports from projects.ts (encodeCwd, etc.).
+  // Lazy import to avoid the projects.ts ↔ worktrees.ts circular dep
+  // worktrees.ts already imports from projects.ts (encodeCwd, etc.).
   const projects: ProjectInfo[] = await listProjects();
 
   // Include .conduct (the hidden conductor project) — listProjects() skips
@@ -642,7 +634,7 @@ export async function findSessionLocation(sessionId: string): Promise<{ project:
     } catch (e) {
       if (errCode(e) !== 'ENOENT') throw e;
     }
-    let wts: WorktreeInfo[] = [];
+    let wts: WorktreeMeta[] = [];
     try { wts = await loadWorktreesFor(proj.name); } catch { /* project may not be a git repo, skip */ }
     for (const wt of wts) {
       const wtFile = path.join(claudeProjectsRoot(), encodeCwd(wt.worktreePath), `${sessionId}.jsonl`);
@@ -694,7 +686,7 @@ export async function listArchivedGroupedByProject(): Promise<{ project: string;
         mtime: s.mtime, size: s.size, worktreeName: null,
       });
     }
-    let wts: WorktreeInfo[] = [];
+    let wts: WorktreeMeta[] = [];
     try { wts = await loadWorktreesFor(proj.name); } catch { /* not a git repo, skip */ }
     for (const wt of wts) {
       const wtRows = (await listSessionsForCwd(wt.worktreePath)).filter(s => s.archived);

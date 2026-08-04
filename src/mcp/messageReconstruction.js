@@ -6,7 +6,7 @@
 // capping, and oldest-first ordering are a documented MCP contract; keep them
 // identical.
 
-import { loadPersistedTranscript } from '../transcript.js';
+import { loadPersistedTranscript } from '../transcript.ts';
 
 // Per-message text cap for get_recent_messages raw blocks — mirror
 // project_read/project_diff's bounded-output pattern so no tool can emit an

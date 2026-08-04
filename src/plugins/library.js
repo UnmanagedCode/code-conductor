@@ -2,8 +2,8 @@ import { spawn } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { projectsRoot, orchStoreRoot, validateName } from '../projects.ts';
-import { httpError } from './registry.js';
-import { getProjectUpstreamStatus } from '../worktrees.js';
+import { httpError } from './registry.ts';
+import { getProjectUpstreamStatus } from '../worktrees.ts';
 import { runGitLive, fetchOriginBounded } from '../gitLive.ts';
 
 // Plugin Library — a catalog of installable plugins (git repo URLs) offered
@@ -33,7 +33,7 @@ import { runGitLive, fetchOriginBounded } from '../gitLive.ts';
 const ALLOWED_SCHEMES = new Set(['http:', 'https:', 'git:']);
 const CLONE_TIMEOUT_MS = 120_000;
 const POST_HOOK_TIMEOUT_MS = 300_000; // longer than clone — installs pull deps (npm, browser binaries, ...)
-const HOOK_OUTPUT_CAP = 16 * 1024; // mirrors worktrees.js's HOOK_OUTPUT_CAP / supervisor.ts's OUTPUT_CAP
+const HOOK_OUTPUT_CAP = 16 * 1024; // mirrors worktrees.ts's HOOK_OUTPUT_CAP / supervisor.ts's OUTPUT_CAP
 
 const DEFAULT_ENTRIES = [
   {
@@ -142,7 +142,7 @@ function pullRepo(cwd, { onChunk } = {}) {
 // Runs an arbitrary postClone/postPull command via `bash -lc` — the same
 // invocation style manifest `backend.start` and supervisor.ts's spawnChild()
 // already use for plugin-declared shell commands. Detached + process-group
-// kill on timeout (mirrors worktrees.js's runPostWorktreeHook) rather than
+// kill on timeout (mirrors worktrees.ts's runPostWorktreeHook) rather than
 // execFile's built-in timeout, since a command like `npm install` or a
 // browser-binary downloader can spawn grandchildren that a plain kill of
 // the direct child would orphan. Never rejects.

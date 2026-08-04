@@ -7,7 +7,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Parser, isTaskNotificationContent } from '../src/parser.ts';
-import { replayPersistedLine, isPureUserPromptLine } from '../src/transcript.js';
+import { replayPersistedLine, isPureUserPromptLine } from '../src/transcript.ts';
 
 const NOTIF = '<task-notification>\n<task-id>abc123</task-id>\n<status>completed</status>\n</task-notification>';
 

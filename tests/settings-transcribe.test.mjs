@@ -5,7 +5,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { bootServer, api, waitFor } from './helpers.mjs';
 import { whisperPaths, modelPathForName } from '../src/transcribe.js';
-import { setTranscribeModel } from '../src/appSettings.js';
+import { setTranscribeModel } from '../src/appSettings.ts';
 import * as whisperInstall from '../src/whisperInstall.js';
 
 // A bash stand-in for bin/install-whisper.sh: emits a couple of progress

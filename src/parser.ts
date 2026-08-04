@@ -40,18 +40,19 @@ export interface UiEvent {
 
 // ── CLI stream-json wire shapes ───────────────────────────────────────────
 
-interface WireContentBlock {
+export interface WireContentBlock {
   type?: unknown;
   name?: unknown;
   id?: unknown;
   text?: unknown;
+  thinking?: unknown;
   input?: Record<string, unknown> | null;
   tool_use_id?: unknown;
   content?: unknown;
   is_error?: unknown;
 }
 
-interface WireMessage {
+export interface WireMessage {
   id?: unknown;
   model?: unknown;
   usage?: unknown;
@@ -66,7 +67,7 @@ interface WireStreamEvent {
   delta?: { type?: unknown; text?: unknown; thinking?: unknown; partial_json?: unknown } | null;
 }
 
-interface WireEnvelope {
+export interface WireEnvelope {
   type?: unknown;
   subtype?: unknown;
   message?: WireMessage | null;
@@ -96,7 +97,7 @@ interface BlockState {
   name: string | null;
 }
 
-interface PendingSkillLoad {
+export interface PendingSkillLoad {
   toolUseId: string | null;
   skill: string | null;
 }
@@ -401,7 +402,7 @@ export class Parser {
     // registering is the conservative reading — it forgoes folding we have no
     // evidence is possible rather than risking a mislabel. A sub-agent Skill
     // still folds on replay, where the persisted jsonl does record the
-    // injection (loadSubAgentTranscript, src/transcript.js, pinned against a
+    // injection (loadSubAgentTranscript, src/transcript.ts, pinned against a
     // real fixture in tests/transcript-skill-load.test.mjs).
     if (!obj.parent_tool_use_id) {
       for (const raw of Array.isArray(msg.content) ? msg.content : []) {
@@ -574,7 +575,7 @@ export function extractAttachedMarkers(text: string): { text: string; attachment
 // tool_result becomes its own event, and all text blocks (minus mid-turn
 // notes and `Attached file:` marker lines) are joined into a single
 // `user_echo` carrying any extracted attachments. Shared by the live path
-// (Parser._handleUser) and both jsonl-replay branches in transcript.js so
+// (Parser._handleUser) and both jsonl-replay branches in transcript.ts so
 // live vs replay rendering stays byte-for-byte identical.
 export function consolidateUserContent(contentBlocks: unknown[]): UiEvent[] {
   const out: UiEvent[] = [];
@@ -617,7 +618,7 @@ export function consolidateUserContent(contentBlocks: unknown[]): UiEvent[] {
 // signal. `pendingSkillLoads` is a per-stream/per-file queue of
 // `{toolUseId, skill}` the caller pushes to when it sees a Skill tool_use;
 // this correlates an injection back to its invocation. Shared by the live
-// path (Parser._handleUser) and transcript.js replay so live vs replay
+// path (Parser._handleUser) and transcript.ts replay so live vs replay
 // rendering stays identical.
 //
 // The two surfaces name the mark differently AND support different

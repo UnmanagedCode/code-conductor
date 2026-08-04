@@ -27,14 +27,24 @@ import { markArchived } from './archivedSessions.ts';
 
 export const PENDING_TEMP_CLEANUP_FILENAME = 'pending-temp-cleanup.json';
 
-export function pendingTempCleanupPath() {
+export function pendingTempCleanupPath(): string {
   return path.join(orchStoreRoot(), PENDING_TEMP_CLEANUP_FILENAME);
+}
+
+interface PendingTempCleanupEntry {
+  cwd?: string | null;
+  sessionId: string;
+}
+
+interface ManifestLogger {
+  log?: (...args: unknown[]) => void;
+  warn?: (...args: unknown[]) => void;
 }
 
 // Synchronously write the manifest. Must be sync — the restart path calls
 // this immediately before `process.exit(0)`. Sweeping always archives: keeps
 // the .jsonl, marks the session archived.
-export function writePendingTempCleanup(entries) {
+export function writePendingTempCleanup(entries: PendingTempCleanupEntry[]): void {
   if (!Array.isArray(entries) || entries.length === 0) return;
   const file = pendingTempCleanupPath();
   const payload = {
@@ -48,17 +58,25 @@ export function writePendingTempCleanup(entries) {
   renameSync(tmp, file);
 }
 
-export function sweepPendingTempCleanup({ log = console } = {}) {
+export function sweepPendingTempCleanup({ log = console }: { log?: ManifestLogger } = {}): { swept: number } {
   const file = pendingTempCleanupPath();
   if (!existsSync(file)) return { swept: 0 };
 
-  let entries = [];
+  let entries: PendingTempCleanupEntry[] = [];
   try {
     const raw = readFileSync(file, 'utf8');
-    const parsed = JSON.parse(raw);
-    entries = Array.isArray(parsed?.entries) ? parsed.entries : [];
+    const parsed: unknown = JSON.parse(raw);
+    const rawList = typeof parsed === 'object' && parsed !== null ? (parsed as { entries?: unknown }).entries : undefined;
+    if (Array.isArray(rawList)) {
+      for (const e of rawList) {
+        if (typeof e !== 'object' || e === null) continue;
+        const rec = e as { cwd?: unknown; sessionId?: unknown };
+        if (typeof rec.sessionId !== 'string' || !rec.sessionId) continue;
+        entries.push({ cwd: typeof rec.cwd === 'string' ? rec.cwd : null, sessionId: rec.sessionId });
+      }
+    }
   } catch (e) {
-    log.warn?.('temp-cleanup: failed to parse manifest; removing', e?.message);
+    log.warn?.('temp-cleanup: failed to parse manifest; removing', errMsg(e));
     try { rmSync(file, { force: true }); } catch { /* ignore */ }
     return { swept: 0 };
   }
@@ -85,4 +103,8 @@ export function sweepPendingTempCleanup({ log = console } = {}) {
   try { rmSync(file, { force: true }); } catch { /* ignore */ }
   if (swept > 0) log.log?.(`temp-cleanup: swept ${swept} temp session(s) from previous run (archived)`);
   return { swept };
+}
+
+function errMsg(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
 }

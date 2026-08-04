@@ -13,7 +13,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
-import { getTranscribeModel } from './appSettings.js';
+import { getTranscribeModel } from './appSettings.ts';
 import { modelFileName, DEFAULT_MODEL } from './whisperModels.ts';
 import { orchStoreRoot } from './projects.ts';
 

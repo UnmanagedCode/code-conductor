@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { createFragmentCatalog } from '../src/fragmentCatalog.js';
+import { createFragmentCatalog } from '../src/fragmentCatalog.ts';
 
 async function mkFixture() {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-fragcat-'));

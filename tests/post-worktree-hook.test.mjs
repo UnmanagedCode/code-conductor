@@ -10,7 +10,7 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, freshProjectsRoot, rmrf } from './helpers.mjs';
-import { createWorktree } from '../src/worktrees.js';
+import { createWorktree } from '../src/worktrees.ts';
 import { projectStoreDir } from '../src/projects.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));

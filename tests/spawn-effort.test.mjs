@@ -1,5 +1,5 @@
 // Per-tier / per-role DEFAULT EFFORT — the precedence chain in
-// `resolveSpawnEffort` (src/appSettings.js) and its two spawn surfaces.
+// `resolveSpawnEffort` (src/appSettings.ts) and its two spawn surfaces.
 //
 // The chain, which every case below pins one step of:
 //   explicit `effort`  →  the spawned-on role  →  the spawned-on tier  →  'high'
@@ -19,7 +19,7 @@ import {
   setTierEffort, getTierEffort, setRoleEffort, getRoleEffort,
   inheritedRoleEffort, resolveRoleEffort, resolveSpawnEffort,
   setRoleBinding, addCustomRole, setDefaultSpawnTier, setPluginRolesProvider,
-} from '../src/appSettings.js';
+} from '../src/appSettings.ts';
 import { DEFAULT_EFFORT, INHERIT_EFFORT, EFFORT_LEVELS } from '../src/effortLevels.ts';
 import { DEFAULT_VERSIONS } from '../src/modelVersions.ts';
 import { encodeCwd, orchStoreRoot } from '../src/projects.ts';

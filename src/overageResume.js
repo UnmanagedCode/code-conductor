@@ -16,7 +16,7 @@
 // deadline that elapsed during suspension fires on the FIRST tick after wake.
 
 import { getAccountUsage } from './accountUsage.ts';
-import { usageOverThreshold } from './appSettings.js';
+import { usageOverThreshold } from './appSettings.ts';
 
 // Prompt delivered by the overage auto-resume timer to a still-alive session
 // once the rate-limit window has reset (onOverage: 'stop-resume').

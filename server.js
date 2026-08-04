@@ -7,22 +7,22 @@ import { buildRoutes } from './src/routes.js';
 import { buildMcpRouter } from './src/mcp/server.js';
 import { InstanceManager } from './src/instances.js';
 import { attachWsHub } from './src/wsHub.ts';
-import { initCostTracking } from './src/costTracking.js';
+import { initCostTracking } from './src/costTracking.ts';
 import { projectsRoot, orchStoreRoot, ensureSelfProjectWorkspace } from './src/projects.ts';
 import { loadAllArchived } from './src/archivedSessions.ts';
 import { runMigrations } from './migrations/index.mjs';
 import { checkClaudeReadiness, formatReadiness } from './src/health.ts';
-import { sweepPendingTempCleanup } from './src/tempCleanup.js';
+import { sweepPendingTempCleanup } from './src/tempCleanup.ts';
 import { ensureRootClaudeMd } from './src/rootClaudeMd.js';
-import { ensureConductProject } from './src/conduct.js';
+import { ensureConductProject } from './src/conduct.ts';
 import { regenerateAllProjectConventions } from './src/projectClaudeMd.js';
 import { restoreFromResumeManifest } from './src/resumeRestart.js';
-import { createPluginHost, WORKSPACE_AUTO_ASSIGN } from './src/plugins/registry.js';
+import { createPluginHost, WORKSPACE_AUTO_ASSIGN } from './src/plugins/registry.ts';
 import { createPluginLibrary } from './src/plugins/library.js';
 import { buildPluginProxy } from './src/plugins/proxy.ts';
 import { setPluginConventionsProvider } from './src/projectConventions.js';
 import { setPluginConductorConventionsProvider } from './src/conductorConventions.js';
-import { setPluginRolesProvider, setLiveBackendsProvider } from './src/appSettings.js';
+import { setPluginRolesProvider, setLiveBackendsProvider } from './src/appSettings.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 

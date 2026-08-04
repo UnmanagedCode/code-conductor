@@ -16,7 +16,7 @@ import {
   attachmentsDir, getWorktreeMergeStatus, syncWorktree,
   getProjectUpstreamStatus, getWorktreeDiff,
   getProjectCommits, getCommitDiff, getProjectUncommittedDiff,
-} from './worktrees.js';
+} from './worktrees.ts';
 import { buildPluginApi } from './plugins/api.js';
 import { scheduleRestart } from './restart.js';
 import { drainAndScheduleRestart } from './resumeRestart.js';
@@ -24,7 +24,7 @@ import { getSelfUpdateStatus, applySelfUpdate } from './selfUpdate.js';
 import { BOOT_ID } from './bootId.ts';
 import { getOrCompute, invalidate, invalidateAll } from './projectsCache.ts';
 import { pageInstanceEvents } from './eventArchive.js';
-import { ensureConductProject, CONDUCT_PROJECT_NAME } from './conduct.js';
+import { ensureConductProject, CONDUCT_PROJECT_NAME } from './conduct.ts';
 import {
   isAvailable as transcribeAvailable, transcribe, modelPathForName,
 } from './transcribe.js';
@@ -54,15 +54,15 @@ import {
   getCustomModels, addCustomModel, removeCustomModel,
   getBackends, addBackend, updateBackend, removeBackend,
   getDebugByDefault, setDebugByDefault,
-} from './appSettings.js';
+} from './appSettings.ts';
 import * as whisperInstall from './whisperInstall.js';
 import * as ttsInstall from './ttsInstall.js';
 import { ensureRootClaudeMd } from './rootClaudeMd.js';
 import { setTitle as setSessionTitle, MAX_TITLE_LEN } from './sessionTitles.ts';
-import { getSummaries, setSummary, deleteSummaries } from './sessionSummaries.js';
+import { getSummaries, setSummary, deleteSummaries } from './sessionSummaries.ts';
 import { generateSummary, countMessages } from './summarize.js';
 import { getAccountUsage } from './accountUsage.ts';
-import { getCostSummary, getSessionStats } from './costTracking.js';
+import { getCostSummary, getSessionStats } from './costTracking.ts';
 import { isArchived, unmarkArchived } from './archivedSessions.ts';
 import {
   getCatalog as getProjectConventionsCatalog,

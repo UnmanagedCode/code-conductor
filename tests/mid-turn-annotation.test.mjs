@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Instance, MID_TURN_NOTE } from '../src/instances.js';
 import { isMidTurnNoteContent, Parser } from '../src/parser.ts';
-import { replayPersistedLine } from '../src/transcript.js';
+import { replayPersistedLine } from '../src/transcript.ts';
 
 // Returns a minimal fake proc + the array of lines written to its stdin.
 function makeProc() {

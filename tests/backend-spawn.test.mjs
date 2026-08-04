@@ -21,7 +21,7 @@ import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
 import { addCustomModel, setTierBackend, setRoleBinding, addCustomRole, addBackend,
   setPluginRolesProvider, getTierBackend, getDefaultSpawnTier,
-  removeBackend, removeCustomModel, isKnownBackend } from '../src/appSettings.js';
+  removeBackend, removeCustomModel, isKnownBackend } from '../src/appSettings.ts';
 import { hasSessionBackend, getSessionBackend, markSessionBackend } from '../src/sessionBackends.ts';
 import { claudeProjectsRoot, encodeCwd } from '../src/projects.ts';
 

@@ -2,7 +2,7 @@ import express from 'express';
 import { regenerateAllProjectConventions } from '../projectClaudeMd.js';
 
 // REST surface for the plugin system — thin delegations to the registry
-// (src/plugins/registry.js), which is the shared service layer for REST,
+// (src/plugins/registry.ts), which is the shared service layer for REST,
 // the reverse proxy and MCP forwarding. Mounted from src/routes.js at
 // /plugins (⇒ /api/plugins), inheriting its JSON body parser and its
 // trailing error middleware (err.statusCode → JSON).

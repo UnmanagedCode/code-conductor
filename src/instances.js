@@ -5,19 +5,19 @@ import { promises as fsp, readFileSync, mkdirSync, createWriteStream, writeFileS
 import path from 'node:path';
 import { Parser, SOFT_INTERRUPT_MARKER, isOuterUserEcho, snapStartToQuiescent, firstQuiescentAtOrAfter } from './parser.ts';
 import { getProject, claudeProjectsRoot, encodeCwd, findSessionLocation, readFirstPrompt } from './projects.ts';
-import { createWorktree, getWorktree, debugBaseDir } from './worktrees.js';
+import { createWorktree, getWorktree, debugBaseDir } from './worktrees.ts';
 import { getTitle as getSessionTitle, setTitle as setSessionTitle, deleteTitle as deleteSessionTitle } from './sessionTitles.ts';
 import { getSessionBackend, markSessionBackend, unmarkSessionBackend } from './sessionBackends.ts';
 import { isConducted, markConducted, unmarkConducted } from './conductedSessions.ts';
 import { SessionRenewController } from './sessionRenew.ts';
 import { isTemp, markTemp, unmarkTemp } from './tempSessions.ts';
 import { markArchived } from './archivedSessions.ts';
-import { CONDUCT_PROJECT_NAME } from './conduct.js';
+import { CONDUCT_PROJECT_NAME } from './conduct.ts';
 import { composeCurrentConduct } from './conductorConventions.js';
 import { buildSettingsJSON, buildMcpConfigJSON, AWAITING_INPUT_MESSAGE } from './settings.ts';
-import { getOnOverageAction, getOverageThreshold, getConductorCompactWindow, resolveContextWindowTokens, getDebugByDefault, getBackend, isKnownBackend, resolveSpawnEffort } from './appSettings.js';
+import { getOnOverageAction, getOverageThreshold, getConductorCompactWindow, resolveContextWindowTokens, getDebugByDefault, getBackend, isKnownBackend, resolveSpawnEffort } from './appSettings.ts';
 import { HookBroker } from './hookBroker.ts';
-import { loadPersistedTranscript, writeSessionMetadata, readLastSessionModel, hasResumableConversation } from './transcript.js';
+import { loadPersistedTranscript, writeSessionMetadata, readLastSessionModel, hasResumableConversation } from './transcript.ts';
 import { canonicalizeModel, familyOf, CLAUDE_BACKEND_ID } from './modelVersions.ts';
 import { truncateSessionAtUserMessage } from './sessionEdit.js';
 import { pruneSessionToNewId, INPUT_MODES } from './sessionPrune.js';
@@ -217,7 +217,7 @@ export class EventLog {
   //     that block replays no text, so the slot is the only place the
   //     estimate can outlive the block.
   //   - consecutive thinking_delta of one block fold into ONE slot — the same
-  //     one-delta-per-block shape disk replay produces (src/transcript.js), so
+  //     one-delta-per-block shape disk replay produces (src/transcript.ts), so
   //     ring + jsonl-archive reconstruct identically. The LIVE per-token stream
   //     is untouched; only the retained representation coalesces.
   // The replay-path `message_start` (`replayed: true`, emitted by loadHistory to
@@ -1965,11 +1965,11 @@ export class Instance extends EventEmitter {
   // gracefully without triggering the CLI's empty-turn follow-up. The steer
   // itself is never echoed to the UI as a user_echo (that would shift the
   // live userIndex rewind/fork keys off from the JSONL-derived count, which
-  // deliberately excludes it — see isPureUserPromptLine in transcript.js).
+  // deliberately excludes it — see isPureUserPromptLine in transcript.ts).
   // Instead we emit a live system/soft_interrupted annotation carrying the
   // text, so the human sees what was said without affecting prompt indices.
   // JSONL replay independently produces the same bare annotation (no text)
-  // via SOFT_INTERRUPT_MARKER filtering in parser.ts / transcript.js.
+  // via SOFT_INTERRUPT_MARKER filtering in parser.ts / transcript.ts.
   async interrupt({ force = false } = {}) {
     if (this.status !== 'turn') return;
     if (force) {

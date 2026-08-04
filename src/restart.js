@@ -18,7 +18,7 @@
 //   5. Exit this process after a small delay so the 202 response can
 //      flush over the wire.
 import { spawn } from 'node:child_process';
-import { writePendingTempCleanup } from './tempCleanup.js';
+import { writePendingTempCleanup } from './tempCleanup.ts';
 import { orphanedTempIdsSync, unmarkTemp } from './tempSessions.ts';
 import { markArchived } from './archivedSessions.ts';
 

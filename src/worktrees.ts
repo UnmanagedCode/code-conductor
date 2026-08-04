@@ -9,22 +9,31 @@ import { execFile, spawn } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
-import { projectsRoot, getProject, projectStoreDir, worktreeStoreDir, listProjects } from './projects.ts';
+import {
+  projectsRoot, getProject, projectStoreDir, worktreeStoreDir, listProjects,
+  type ProjectInfo,
+} from './projects.ts';
 
 // Manual execFile wrapper. `promisify(execFile)` would be tempting but
 // this Node build (Termux's android port) doesn't ship the
 // util.promisify.custom symbol on execFile, so the promisified version
 // resolves to just stdout (a string) instead of {stdout, stderr}.
 // Wrap it ourselves so the shape is reliable across runtimes.
-function execFileP(file, args, options = {}) {
+interface ExecResult {
+  stdout: string;
+  stderr: string;
+}
+
+function execFileP(file: string, args: string[], options: object = {}): Promise<ExecResult> {
   return new Promise((resolve, reject) => {
     execFile(file, args, options, (err, stdout, stderr) => {
       if (err) {
-        err.stdout = stdout;
-        err.stderr = stderr;
-        reject(err);
+        const e = err as Error & { stdout?: string | Buffer; stderr?: string | Buffer };
+        e.stdout = stdout;
+        e.stderr = stderr;
+        reject(e);
       } else {
-        resolve({ stdout, stderr });
+        resolve({ stdout: String(stdout), stderr: String(stderr) });
       }
     });
   });
@@ -32,41 +41,58 @@ function execFileP(file, args, options = {}) {
 
 const WORKTREE_META_FILENAME = 'worktree.json';
 
+export interface WorktreeMeta {
+  parentProject: string;
+  parentPath: string;
+  worktreeName: string;
+  worktreePath: string;
+  branch: string;
+  baseBranch: string;
+  baseSha: string;
+  createdAt: string;
+}
+
 // Where this project / worktree's central-store entry lives. Pass
 // `worktreeName: null` for the project root.
-function baseStoreDir(project, worktreeName) {
+function baseStoreDir(project: string, worktreeName: string | null): string {
   return worktreeName
     ? worktreeStoreDir(project, worktreeName)
     : projectStoreDir(project);
 }
 
-export function attachmentsDir(project, worktreeName) {
+export function attachmentsDir(project: string, worktreeName: string | null): string {
   return path.join(baseStoreDir(project, worktreeName), 'attachments');
 }
 
-export function debugBaseDir(project, worktreeName) {
+export function debugBaseDir(project: string, worktreeName: string | null): string {
   return path.join(baseStoreDir(project, worktreeName), 'debug');
 }
 
-function metaPath(project, worktreeName) {
+function metaPath(project: string, worktreeName: string): string {
   return path.join(worktreeStoreDir(project, worktreeName), WORKTREE_META_FILENAME);
 }
 
 // Shorter-than-uuid identifier — 6 hex chars is plenty for collision
 // avoidance across a handful of worktrees per project.
-function shortId() {
+function shortId(): string {
   return randomBytes(3).toString('hex');
 }
 
-function worktreeBranchName(id) {
+function worktreeBranchName(id: string): string {
   return `code-conductor/${id}`;
 }
 
-function worktreeDirName(project, id) {
+function worktreeDirName(project: string, id: string): string {
   return `${project}_worktree_${id}`;
 }
 
-export async function runGit(cwd, args) {
+interface GitResult {
+  stdout: string;
+  stderr: string;
+  code: number;
+}
+
+export async function runGit(cwd: string, args: string[]): Promise<GitResult> {
   try {
     const { stdout, stderr } = await execFileP('git', ['-C', cwd, ...args], {
       encoding: 'utf8',
@@ -74,16 +100,17 @@ export async function runGit(cwd, args) {
     });
     return { stdout, stderr, code: 0 };
   } catch (e) {
+    const err = e as { stdout?: unknown; stderr?: unknown; message?: unknown; code?: unknown };
     // execFile rejects with an error that carries stdout/stderr/code.
     return {
-      stdout: e.stdout ?? '',
-      stderr: e.stderr ?? e.message ?? '',
-      code: typeof e.code === 'number' ? e.code : 1,
+      stdout: typeof err.stdout === 'string' ? err.stdout : '',
+      stderr: typeof err.stderr === 'string' ? err.stderr : typeof err.message === 'string' ? err.message : '',
+      code: typeof err.code === 'number' ? err.code : 1,
     };
   }
 }
 
-export async function isGitRepo(projectPath) {
+export async function isGitRepo(projectPath: string): Promise<boolean> {
   const r = await runGit(projectPath, ['rev-parse', '--git-dir']);
   return r.code === 0;
 }
@@ -91,7 +118,7 @@ export async function isGitRepo(projectPath) {
 // `git status --porcelain` for a worktree path. Returns
 // { ok: boolean, lines: string[] }. Callers can decide whether a
 // non-empty `lines` means "refuse" or "fall back to the agent flow".
-export async function worktreeDirtyLines(worktreePath) {
+export async function worktreeDirtyLines(worktreePath: string): Promise<{ ok: boolean; lines: string[] }> {
   const dirty = await runGit(worktreePath, ['status', '--porcelain']);
   if (dirty.code !== 0) return { ok: false, lines: [] };
   const lines = (dirty.stdout || '').split('\n').filter(l => l.trim().length > 0);
@@ -101,28 +128,29 @@ export async function worktreeDirtyLines(worktreePath) {
 // Look up the parent repo's current branch + commit. Detached HEAD is
 // allowed (we record null for `branch`) — the rebase-back path will
 // require a named branch, but creation itself shouldn't be blocked.
-export async function getHeadBranchAndSha(projectPath) {
+export async function getHeadBranchAndSha(projectPath: string): Promise<{ branch: string | null; sha: string }> {
   const head = await runGit(projectPath, ['symbolic-ref', '--quiet', '--short', 'HEAD']);
   const branch = head.code === 0 ? head.stdout.trim() || null : null;
   const sha = await runGit(projectPath, ['rev-parse', 'HEAD']);
   if (sha.code !== 0) {
-    const err = new Error(`unable to resolve HEAD in ${projectPath}: ${sha.stderr.trim()}`);
-    err.statusCode = 400;
-    throw err;
+    throw httpError(400, `unable to resolve HEAD in ${projectPath}: ${sha.stderr.trim()}`);
   }
   return { branch, sha: sha.stdout.trim() };
 }
 
-async function writeMeta(project, worktreeName, meta) {
+async function writeMeta(project: string, worktreeName: string, meta: WorktreeMeta): Promise<void> {
   await fs.mkdir(worktreeStoreDir(project, worktreeName), { recursive: true });
   await fs.writeFile(metaPath(project, worktreeName), JSON.stringify(meta, null, 2) + '\n', 'utf8');
 }
 
-async function readMeta(project, worktreeName) {
-  let text;
+async function readMeta(project: string, worktreeName: string): Promise<WorktreeMeta | null> {
+  let text: string;
   try { text = await fs.readFile(metaPath(project, worktreeName), 'utf8'); }
-  catch (e) { if (e.code === 'ENOENT') return null; throw e; }
-  try { return JSON.parse(text); } catch { return null; }
+  catch (e) { if (errCode(e) === 'ENOENT') return null; throw e; }
+  try {
+    const obj: unknown = JSON.parse(text);
+    return typeof obj === 'object' && obj !== null ? obj as WorktreeMeta : null;
+  } catch { return null; }
 }
 // Store-only read (no `git worktree list` verification) — for scans that
 // must stay cheap across many projects (plugin manifest discovery). A stale
@@ -134,9 +162,21 @@ export { readMeta as readWorktreeMeta };
 // result field stays network-friendly. `HOOK_OUTPUT_CAP` is generous for diagnostics.
 const HOOK_OUTPUT_CAP = 16 * 1024;
 
-async function fileExists(p) {
+async function fileExists(p: string): Promise<boolean> {
   try { await fs.access(p); return true; }
   catch { return false; }
+}
+
+interface PostWorktreeHookResult {
+  ran: boolean;
+  skipped?: string;
+  source?: string | null;
+  exitCode?: number | null;
+  durationMs?: number;
+  output?: string;
+  truncated?: boolean;
+  timedOut?: boolean;
+  error?: boolean;
 }
 
 // Run `post-worktree-create.sh` with cwd in the new worktree. Resolved
@@ -148,15 +188,15 @@ async function fileExists(p) {
 // Always resolves — never rejects — so a broken hook cannot abort a
 // successful worktree create. Result is attached to the createWorktree()
 // return value as `postWorktreeCreate`; `source` records which location ran.
-async function runPostWorktreeHook(meta) {
+async function runPostWorktreeHook(meta: WorktreeMeta): Promise<PostWorktreeHookResult> {
   if (process.env.ORCH_DISABLE_POST_WORKTREE_HOOK === '1') {
     return { ran: false, skipped: 'disabled' };
   }
 
   const inTree = path.join(meta.parentPath, '.code-conductor', 'post-worktree-create.sh');
   const inStore = path.join(projectStoreDir(meta.parentProject), 'post-worktree-create.sh');
-  let scriptPath = null;
-  let source = null;
+  let scriptPath: string | null = null;
+  let source: string | null = null;
   if (await fileExists(inTree)) { scriptPath = inTree; source = 'in-tree'; }
   else if (await fileExists(inStore)) { scriptPath = inStore; source = 'store'; }
   if (!scriptPath) return { ran: false };
@@ -183,7 +223,7 @@ async function runPostWorktreeHook(meta) {
   return new Promise((resolve) => {
     const start = Date.now();
     let timedOut = false;
-    const chunks = [];
+    const chunks: Buffer[] = [];
 
     // detached=true puts bash + all its children in their own process group so
     // we can kill the whole group (including long-running child processes like
@@ -194,17 +234,25 @@ async function runPostWorktreeHook(meta) {
       detached: true,
     });
 
-    const onData = (chunk) => chunks.push(chunk);
+    const onData = (chunk: Buffer) => chunks.push(chunk);
     proc.stdout?.on('data', onData);
     proc.stderr?.on('data', onData);
 
-    const killGroup = () => {
-      try { process.kill(-proc.pid, 'SIGTERM'); } catch { proc.kill('SIGTERM'); }
+    const killGroup = (): void => {
+      if (proc.pid != null) {
+        try { process.kill(-proc.pid, 'SIGTERM'); } catch { proc.kill('SIGTERM'); }
+      } else {
+        try { proc.kill('SIGTERM'); } catch { /* ignore */ }
+      }
       // SIGKILL backstop: sends SIGKILL if the process group doesn't die
       // from SIGTERM within the SIGKILL-backoff delay set in the setTimeout below (e.g. `sleep` ignoring SIGTERM on some
       // platforms). Unref'd so it can't keep the process alive.
       setTimeout(() => {
-        try { process.kill(-proc.pid, 'SIGKILL'); } catch { proc.kill('SIGKILL'); }
+        if (proc.pid != null) {
+          try { process.kill(-proc.pid, 'SIGKILL'); } catch { proc.kill('SIGKILL'); }
+        } else {
+          try { proc.kill('SIGKILL'); } catch { /* ignore */ }
+        }
       }, 100).unref();
     };
 
@@ -213,12 +261,12 @@ async function runPostWorktreeHook(meta) {
       killGroup();
     }, timeoutMs);
 
-    proc.on('close', (code) => {
+    proc.on('close', (code: number | null) => {
       clearTimeout(timer);
       const durationMs = Date.now() - start;
       const raw = Buffer.concat(chunks).toString('utf8');
       const truncated = raw.length > HOOK_OUTPUT_CAP;
-      let output;
+      let output: string;
       if (truncated) {
         const tail = raw.slice(raw.length - HOOK_OUTPUT_CAP);
         // Start at the next newline so output begins on a clean line.
@@ -227,7 +275,7 @@ async function runPostWorktreeHook(meta) {
       } else {
         output = raw;
       }
-      const result = {
+      const result: PostWorktreeHookResult = {
         ran: true,
         source,
         exitCode: timedOut ? null : (code ?? null),
@@ -239,7 +287,7 @@ async function runPostWorktreeHook(meta) {
       resolve(result);
     });
 
-    proc.on('error', (err) => {
+    proc.on('error', (err: Error) => {
       clearTimeout(timer);
       resolve({
         ran: true,
@@ -253,22 +301,22 @@ async function runPostWorktreeHook(meta) {
   });
 }
 
+interface CreateWorktreeResult extends WorktreeMeta {
+  postWorktreeCreate: PostWorktreeHookResult;
+}
+
 // Create a fresh worktree off the parent repo's current HEAD. Returns
 // the metadata that was written to disk.
-export async function createWorktree(projectName) {
+export async function createWorktree(projectName: string): Promise<CreateWorktreeResult> {
   const proj = await getProject(projectName);
   if (!(await isGitRepo(proj.path))) {
-    const err = new Error(`project '${projectName}' is not a git repository`);
-    err.statusCode = 400;
-    throw err;
+    throw httpError(400, `project '${projectName}' is not a git repository`);
   }
   const head = await getHeadBranchAndSha(proj.path);
   if (!head.branch) {
     // git worktree add can work off a detached HEAD, but tracking down
     // "what was the base" later is messy. Refuse cleanly instead.
-    const err = new Error(`project '${projectName}' is on a detached HEAD; check out a branch before creating a worktree`);
-    err.statusCode = 400;
-    throw err;
+    throw httpError(400, `project '${projectName}' is on a detached HEAD; check out a branch before creating a worktree`);
   }
   const id = shortId();
   const dirName = worktreeDirName(projectName, id);
@@ -280,12 +328,10 @@ export async function createWorktree(projectName) {
   // branch can't drift our base.
   const add = await runGit(proj.path, ['worktree', 'add', worktreePath, '-b', branch, head.sha]);
   if (add.code !== 0) {
-    const err = new Error(`git worktree add failed: ${add.stderr.trim() || add.stdout.trim()}`);
-    err.statusCode = 500;
-    throw err;
+    throw httpError(500, `git worktree add failed: ${add.stderr.trim() || add.stdout.trim()}`);
   }
 
-  const meta = {
+  const meta: WorktreeMeta = {
     parentProject: projectName,
     parentPath: proj.path,
     worktreeName: dirName,
@@ -307,18 +353,18 @@ export async function createWorktree(projectName) {
 // List every worktree on disk that we own for a given project. Reads
 // the parent repo's `git worktree list --porcelain` and filters down to
 // entries whose dir has a matching record in the central store.
-export async function listWorktrees(projectName) {
+export async function listWorktrees(projectName: string): Promise<WorktreeMeta[]> {
   const proj = await getProject(projectName);
   if (!(await isGitRepo(proj.path))) return [];
   const r = await runGit(proj.path, ['worktree', 'list', '--porcelain']);
   if (r.code !== 0) return [];
-  const candidates = [];
+  const candidates: string[] = [];
   for (const line of r.stdout.split('\n')) {
     if (line.startsWith('worktree ')) {
       candidates.push(line.slice('worktree '.length));
     }
   }
-  const out = [];
+  const out: WorktreeMeta[] = [];
   for (const wtPath of candidates) {
     // Skip the parent repo itself (no store entry).
     const dirName = path.basename(wtPath);
@@ -329,7 +375,7 @@ export async function listWorktrees(projectName) {
   return out;
 }
 
-export async function getWorktree(projectName, worktreeName) {
+export async function getWorktree(projectName: string, worktreeName: string): Promise<WorktreeMeta | null> {
   const all = await listWorktrees(projectName);
   return all.find(w => w.worktreeName === worktreeName) ?? null;
 }
@@ -338,23 +384,24 @@ export async function getWorktree(projectName, worktreeName) {
 // the branch, drop the central-store entry. We refuse if the working
 // tree has uncommitted changes so the user can't silently throw away
 // in-progress agent work.
-export async function removeWorktree(projectName, worktreeName, { force = false } = {}) {
+export async function removeWorktree(
+  projectName: string,
+  worktreeName: string,
+  { force = false }: { force?: boolean } = {},
+): Promise<WorktreeMeta> {
   const meta = await getWorktree(projectName, worktreeName);
   if (!meta) {
-    const err = new Error(`worktree '${worktreeName}' not found under project '${projectName}'`);
-    err.statusCode = 404;
-    throw err;
+    throw httpError(404, `worktree '${worktreeName}' not found under project '${projectName}'`);
   }
   const parentPath = meta.parentPath;
 
   if (!force) {
     const dirty = await worktreeDirtyLines(meta.worktreePath);
     if (dirty.ok && dirty.lines.length > 0) {
-      const err = new Error(
+      throw httpError(
+        409,
         `worktree '${worktreeName}' has uncommitted changes — commit / discard them, or pass force=true`,
       );
-      err.statusCode = 409;
-      throw err;
     }
   }
 
@@ -363,9 +410,7 @@ export async function removeWorktree(projectName, worktreeName, { force = false 
   // also keeps git from refusing on minor leftover state.
   const rm = await runGit(parentPath, ['worktree', 'remove', '--force', meta.worktreePath]);
   if (rm.code !== 0) {
-    const err = new Error(`git worktree remove failed: ${rm.stderr.trim() || rm.stdout.trim()}`);
-    err.statusCode = 500;
-    throw err;
+    throw httpError(500, `git worktree remove failed: ${rm.stderr.trim() || rm.stdout.trim()}`);
   }
   // Branch deletion is best-effort — if the rebase-back already
   // fast-forwarded the base onto the worktree branch then `-d` will
@@ -378,6 +423,11 @@ export async function removeWorktree(projectName, worktreeName, { force = false 
   return meta;
 }
 
+export interface MergeStatus {
+  ahead: number | null;
+  behind: number | null;
+}
+
 // Compare the worktree branch to its captured base branch from inside
 // the parent repo (worktrees share the same gitdir, so the branch is
 // visible from there). Returns:
@@ -388,7 +438,7 @@ export async function removeWorktree(projectName, worktreeName, { force = false 
 // Returns { ahead: null, behind: null } when the comparison fails (base
 // branch renamed/deleted, ref missing, etc.) — callers treat null as
 // "unknown" and render no indicator.
-export async function getWorktreeMergeStatus(meta) {
+export async function getWorktreeMergeStatus(meta: WorktreeMeta): Promise<MergeStatus> {
   if (!meta?.parentPath || !meta?.baseBranch || !meta?.branch) {
     return { ahead: null, behind: null };
   }
@@ -407,6 +457,10 @@ export async function getWorktreeMergeStatus(meta) {
   return { ahead, behind };
 }
 
+export interface UpstreamStatus extends MergeStatus {
+  upstream: string | null;
+}
+
 // Compare the project's currently-checked-out branch against its
 // configured upstream (whatever `git branch --set-upstream-to` picked —
 // usually `origin/<branch>`, matching what `git status` reports).
@@ -417,7 +471,7 @@ export async function getWorktreeMergeStatus(meta) {
 //     no upstream configured, HEAD is detached, the project isn't a
 //     git repo, or the rev-list comparison fails. Callers treat the
 //     null shape as "no indicator to render".
-export async function getProjectUpstreamStatus(projectPath) {
+export async function getProjectUpstreamStatus(projectPath: string): Promise<UpstreamStatus> {
   const headRef = await runGit(projectPath, ['symbolic-ref', '--quiet', '--short', 'HEAD']);
   if (headRef.code !== 0) return { ahead: null, behind: null, upstream: null };
   const branch = headRef.stdout.trim();
@@ -443,6 +497,21 @@ export async function getProjectUpstreamStatus(projectPath) {
   return { ahead, behind, upstream };
 }
 
+interface MergeFailure {
+  ok: false;
+  code: string;
+  reason?: string;
+  behind?: number;
+  baseBranch?: string;
+}
+
+interface MergeSuccess {
+  ok: true;
+  output: string;
+  newSha: string;
+  worktreeFastForwarded: boolean;
+}
+
 // Run `git merge --no-ff --no-edit <branch>` on the parent repo. Always
 // produces a merge commit (even when a fast-forward would be possible)
 // so each worktree's contribution is a visible branch in the parent's
@@ -456,12 +525,14 @@ export async function getProjectUpstreamStatus(projectPath) {
 // worktreeFastForwarded} on success or {ok:false, reason} when the merge
 // can't proceed (parent on wrong branch, dirty parent, conflicts, etc.)
 // — caller surfaces the reason to the UI rather than throwing.
-export async function mergeWorktreeIntoParent(projectName, worktreeName, { allowDirty = false } = {}) {
+export async function mergeWorktreeIntoParent(
+  projectName: string,
+  worktreeName: string,
+  { allowDirty = false }: { allowDirty?: boolean } = {},
+): Promise<MergeSuccess | MergeFailure> {
   const meta = await getWorktree(projectName, worktreeName);
   if (!meta) {
-    const err = new Error(`worktree '${worktreeName}' not found under project '${projectName}'`);
-    err.statusCode = 404;
-    throw err;
+    throw httpError(404, `worktree '${worktreeName}' not found under project '${projectName}'`);
   }
   // 0. Refuse if the worktree branch is behind its base — the merge would
   //    still work, but conflicts would surface on the parent side instead of
@@ -551,6 +622,13 @@ export async function mergeWorktreeIntoParent(projectName, worktreeName, { allow
   };
 }
 
+type SyncResult =
+  | { ok: true; action: 'already-in-sync'; ahead: number; behind: number }
+  | { ok: true; action: 'fast-forwarded'; ahead: 0; behind: 0; newSha: string }
+  | { ok: true; action: 'rebased'; ahead: number; behind: 0; newSha: string }
+  | { ok: true; action: 'rebase-required'; ahead: number; behind: number }
+  | { ok: false; reason: string };
+
 // Bring a worktree's branch up to date with the parent's baseBranch.
 // Picks the cheapest path:
 //   - behind == 0                                 → already in sync (no-op).
@@ -568,12 +646,10 @@ export async function mergeWorktreeIntoParent(projectName, worktreeName, { allow
 //   { ok:true,  action:"rebased",          ahead, behind:0, newSha }
 //   { ok:true,  action:"rebase-required",  ahead, behind }
 //   { ok:false, reason: "..." }
-export async function syncWorktree(projectName, worktreeName) {
+export async function syncWorktree(projectName: string, worktreeName: string): Promise<SyncResult> {
   const meta = await getWorktree(projectName, worktreeName);
   if (!meta) {
-    const err = new Error(`worktree '${worktreeName}' not found under project '${projectName}'`);
-    err.statusCode = 404;
-    throw err;
+    throw httpError(404, `worktree '${worktreeName}' not found under project '${projectName}'`);
   }
   const { ahead, behind } = await getWorktreeMergeStatus(meta);
   if (ahead == null || behind == null) {
@@ -635,7 +711,7 @@ export async function syncWorktree(projectName, worktreeName) {
 // Build the prompt text the orchestrator sends to the agent when the
 // user clicks "Ask agent to rebase". Kept in this module so the on-disk
 // metadata and the prompt phrasing stay consistent.
-export function buildRebasePrompt(meta) {
+export function buildRebasePrompt(meta: WorktreeMeta): string {
   return [
     `You are running in an isolated git worktree.`,
     `Worktree branch: ${meta.branch}`,
@@ -652,8 +728,8 @@ export function buildRebasePrompt(meta) {
 // Best-effort sweep: remove every orchestrator-owned worktree under a
 // project. Used by the project-delete cascade — failures are swallowed
 // because the caller is about to `rm -rf` the parent anyway.
-export async function removeAllWorktreesForProject(projectName) {
-  let known = [];
+export async function removeAllWorktreesForProject(projectName: string): Promise<void> {
+  let known: WorktreeMeta[] = [];
   try { known = await listWorktrees(projectName); } catch { /* repo may be gone */ }
   for (const wt of known) {
     try { await removeWorktree(projectName, wt.worktreeName, { force: true }); } catch { /* ignore */ }
@@ -675,16 +751,35 @@ const BASE_REF_RE = /^[A-Za-z0-9._/-]+$/;
 // Throw a 400 if `ref` isn't a safe base ref. Callers decide WHEN to validate
 // (each surface has its own "a baseRef was supplied" trigger) — this owns only
 // the check + the canonical error.
-export function assertValidBaseRef(ref) {
+export function assertValidBaseRef(ref: string): void {
   if (ref.startsWith('-') || !BASE_REF_RE.test(ref)) {
     throw Object.assign(new Error('invalid baseRef'), { statusCode: 400 });
   }
 }
 
+interface DiffLine {
+  type: 'add' | 'del' | 'ctx';
+  content: string;
+}
+
+interface DiffHunk {
+  header: string;
+  lines: DiffLine[];
+}
+
+interface DiffFile {
+  path: string;
+  oldPath: string | null;
+  status: string;
+  adds: number;
+  dels: number;
+  hunks: DiffHunk[];
+}
+
 // Parse a raw unified diff string (from `git diff --unified=N base...HEAD`)
 // into a per-file array of structured objects. Pure string-walking, no deps.
-function parseUnifiedDiff(raw) {
-  const files = [];
+function parseUnifiedDiff(raw: string): DiffFile[] {
+  const files: DiffFile[] = [];
   if (!raw || !raw.trim()) return files;
 
   // Each file section starts with "diff --git ...". Split there.
@@ -699,9 +794,9 @@ function parseUnifiedDiff(raw) {
 
     let status = 'modified';
     let filePath = headerMatch[2]; // b-side path (current name)
-    let oldPath = null;
-    const hunks = [];
-    let currentHunk = null;
+    let oldPath: string | null = null;
+    const hunks: DiffHunk[] = [];
+    let currentHunk: DiffHunk | null = null;
     let adds = 0;
     let dels = 0;
     let inHunks = false;
@@ -748,12 +843,14 @@ function parseUnifiedDiff(raw) {
 // Return structured diff data for a worktree relative to its base branch.
 // Validates ownership via getWorktree (throws 404 if not found).
 // Returns { project, worktreeName, baseRef, files, totalAdds, totalDels, truncated }.
-export async function getWorktreeDiff(projectName, worktreeName, { baseRef, contextLines = 3 } = {}) {
+export async function getWorktreeDiff(
+  projectName: string,
+  worktreeName: string,
+  { baseRef, contextLines = 3 }: { baseRef?: string; contextLines?: number } = {},
+): Promise<{ project: string; worktreeName: string; baseRef: string; files: DiffFile[]; totalAdds: number; totalDels: number; truncated: boolean }> {
   const meta = await getWorktree(projectName, worktreeName);
   if (!meta) {
-    const err = new Error(`worktree '${worktreeName}' not found under project '${projectName}'`);
-    err.statusCode = 404;
-    throw err;
+    throw httpError(404, `worktree '${worktreeName}' not found under project '${projectName}'`);
   }
   const ctx = Math.max(0, Math.min(50, Number.isFinite(Number(contextLines)) ? Math.floor(Number(contextLines)) : 3));
   const ref = baseRef || meta.baseBranch;
@@ -761,9 +858,7 @@ export async function getWorktreeDiff(projectName, worktreeName, { baseRef, cont
   const r = await runGit(meta.worktreePath, ['diff', `--unified=${ctx}`, `${ref}...HEAD`]);
   if (r.code !== 0) {
     const msg = (r.stderr || r.stdout).trim() || `git diff ${ref}...HEAD failed`;
-    const err = new Error(msg);
-    err.statusCode = 500;
-    throw err;
+    throw httpError(500, msg);
   }
   const rawOutput = r.stdout;
   const truncated = rawOutput.length > DIFF_BYTE_CAP;
@@ -781,12 +876,12 @@ const COMMITS_DEFAULT_LIMIT = 100;
 // the given absolute path. Returns the metadata object or null.
 // Metadata lives at: projectStoreDir(project)/worktrees/<worktreeName>/worktree.json
 // so we list subdirectories under the per-project 'worktrees/' dir.
-async function findWorktreeMetaForPath(targetPath) {
-  let projects;
+async function findWorktreeMetaForPath(targetPath: string): Promise<WorktreeMeta | null> {
+  let projects: ProjectInfo[];
   try { projects = await listProjects(); } catch { return null; }
   for (const proj of projects) {
     const wtListDir = path.join(projectStoreDir(proj.name), 'worktrees');
-    let entries;
+    let entries: import('node:fs').Dirent[];
     try { entries = await fs.readdir(wtListDir, { withFileTypes: true }); } catch { continue; }
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
@@ -798,6 +893,16 @@ async function findWorktreeMetaForPath(targetPath) {
 }
 const COMMITS_MAX_LIMIT = 500;
 
+interface CommitRow {
+  sha: string;
+  shortSha: string;
+  subject: string;
+  author: string;
+  relativeDate: string;
+  isoDate: string;
+  parents: string[];
+}
+
 // Return the commit history of a project's current branch (HEAD), newest first.
 // Validates the project via getProject (throws 404 if not found). Caps the log
 // at `limit` (default `COMMITS_DEFAULT_LIMIT`, max `COMMITS_MAX_LIMIT`) and sets `truncated` when more commits exist.
@@ -808,7 +913,19 @@ const COMMITS_MAX_LIMIT = 500;
 // hasUncommitted: true when `git status --porcelain` is non-empty.
 // aheadCount/aheadOf: how many leading commits are ahead of the base (upstream or
 // worktree base branch), or null when unknown/not applicable.
-export async function getProjectCommits(projectName, { limit = COMMITS_DEFAULT_LIMIT } = {}) {
+export async function getProjectCommits(
+  projectName: string,
+  { limit = COMMITS_DEFAULT_LIMIT }: { limit?: number } = {},
+): Promise<{
+  project: string;
+  branch: string | null;
+  commits: CommitRow[];
+  truncated: boolean;
+  limit: number;
+  hasUncommitted: boolean;
+  aheadCount: number | null;
+  aheadOf: string | null;
+}> {
   const proj = await getProject(projectName);
   const n = Number(limit);
   const cap = Math.max(1, Math.min(COMMITS_MAX_LIMIT, Number.isFinite(n) ? Math.floor(n) : COMMITS_DEFAULT_LIMIT));
@@ -830,8 +947,8 @@ export async function getProjectCommits(projectName, { limit = COMMITS_DEFAULT_L
   // Determine how many leading commits are "ahead" of the base.
   // Try upstream tracking first (normal project with a configured remote).
   // Fall back to worktree base-branch metadata (orchestrator-managed worktrees).
-  let aheadCount = null;
-  let aheadOf = null;
+  let aheadCount: number | null = null;
+  let aheadOf: string | null = null;
   const upstreamStatus = await getProjectUpstreamStatus(proj.path);
   if (upstreamStatus.ahead !== null) {
     aheadCount = upstreamStatus.ahead;
@@ -863,7 +980,11 @@ export async function getProjectCommits(projectName, { limit = COMMITS_DEFAULT_L
   const rows = r.stdout.split('\n').filter(Boolean).map((line) => {
     const [sha, shortSha, subject, author, relativeDate, isoDate, parentField] = line.split('\x1f');
     const parents = parentField ? parentField.trim().split(' ').filter(Boolean) : [];
-    return { sha, shortSha, subject, author, relativeDate, isoDate, parents };
+    return {
+      sha: sha ?? '', shortSha: shortSha ?? '', subject: subject ?? '',
+      author: author ?? '', relativeDate: relativeDate ?? '', isoDate: isoDate ?? '',
+      parents,
+    };
   });
   const truncated = rows.length > cap;
   const commits = truncated ? rows.slice(0, cap) : rows;
@@ -878,12 +999,14 @@ export async function getProjectCommits(projectName, { limit = COMMITS_DEFAULT_L
 // aggregate the merged branch brought onto mainline instead of git's default
 // combined diff (conflict hunks only, empty for a clean --no-ff merge).
 // Returns { project, sha, commitMessage, files, totalAdds, totalDels, truncated }.
-export async function getCommitDiff(projectName, sha, { contextLines = 3 } = {}) {
+export async function getCommitDiff(
+  projectName: string,
+  sha: string,
+  { contextLines = 3 }: { contextLines?: number } = {},
+): Promise<{ project: string; sha: string; commitMessage: string | null; files: DiffFile[]; totalAdds: number; totalDels: number; truncated: boolean }> {
   const proj = await getProject(projectName);
   if (!/^[0-9a-fA-F]{4,40}$/.test(String(sha))) {
-    const err = new Error('invalid commit sha');
-    err.statusCode = 400;
-    throw err;
+    throw httpError(400, 'invalid commit sha');
   }
   const ctx = Math.max(0, Math.min(50, Number.isFinite(Number(contextLines)) ? Math.floor(Number(contextLines)) : 3));
 
@@ -894,9 +1017,7 @@ export async function getCommitDiff(projectName, sha, { contextLines = 3 } = {})
   if (metaR.code !== 0) {
     const stderr = (metaR.stderr || '').trim();
     const notFound = /unknown revision|bad revision|ambiguous argument/i.test(stderr);
-    const err = new Error(stderr || `git log ${sha} failed`);
-    err.statusCode = notFound ? 404 : 500;
-    throw err;
+    throw httpError(notFound ? 404 : 500, stderr || `git log ${sha} failed`);
   }
   const metaParts = metaR.stdout.split('\x1f');
   const commitMessage = metaParts.slice(0, -1).join('\x1f').trim() || null;
@@ -910,9 +1031,7 @@ export async function getCommitDiff(projectName, sha, { contextLines = 3 } = {})
   if (r.code !== 0) {
     const stderr = (r.stderr || '').trim();
     const notFound = /unknown revision|bad revision|ambiguous argument/i.test(stderr);
-    const err = new Error(stderr || `git show ${sha} failed`);
-    err.statusCode = notFound ? 404 : 500;
-    throw err;
+    throw httpError(notFound ? 404 : 500, stderr || `git show ${sha} failed`);
   }
   const rawOutput = r.stdout;
   const truncated = rawOutput.length > DIFF_BYTE_CAP;
@@ -929,7 +1048,10 @@ export async function getCommitDiff(projectName, sha, { contextLines = 3 } = {})
 // Returns { project, files, totalAdds, totalDels, truncated }.
 // If HEAD doesn't exist (fresh repo with no commits), returns an empty file
 // list rather than throwing — the frontend treats this as "no diff to show".
-export async function getProjectUncommittedDiff(projectName, { contextLines = 3 } = {}) {
+export async function getProjectUncommittedDiff(
+  projectName: string,
+  { contextLines = 3 }: { contextLines?: number } = {},
+): Promise<{ project: string; files: DiffFile[]; totalAdds: number; totalDels: number; truncated: boolean }> {
   const proj = await getProject(projectName);
   const ctx = Math.max(0, Math.min(50, Number.isFinite(Number(contextLines)) ? Math.floor(Number(contextLines)) : 3));
   const r = await runGit(proj.path, ['diff', 'HEAD', `--unified=${ctx}`, '--no-color']);
@@ -943,4 +1065,22 @@ export async function getProjectUncommittedDiff(projectName, { contextLines = 3 
   const totalAdds = files.reduce((s, f) => s + f.adds, 0);
   const totalDels = files.reduce((s, f) => s + f.dels, 0);
   return { project: projectName, files, totalAdds, totalDels, truncated };
+}
+
+// The `code` on a thrown Node error (e.g. 'ENOENT'), or undefined — the
+// narrowing point for error-code checks (catch variables are `unknown` under
+// strict). Duplicated from storeLock.ts: it's four lines, and importing it
+// across modules would couple every store to storeLock for one helper.
+function errCode(e: unknown): string | undefined {
+  if (typeof e !== 'object' || e === null) return undefined;
+  const code = (e as { code?: unknown }).code;
+  return typeof code === 'string' ? code : undefined;
+}
+
+// Throw an Error carrying an HTTP statusCode for the REST layer, using the
+// same Object.assign pattern the routes consume (`err.statusCode`). Typed as
+// `Error & { statusCode: number }` so callers can rely on the code without a
+// cast.
+function httpError(statusCode: number, message: string): Error & { statusCode: number } {
+  return Object.assign(new Error(message), { statusCode });
 }

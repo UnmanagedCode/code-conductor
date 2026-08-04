@@ -8,7 +8,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { encodeCwd } from '../src/projects.ts';
-import { isPureUserPromptLine } from '../src/transcript.js';
+import { isPureUserPromptLine } from '../src/transcript.ts';
 import {
   truncateSessionAtUserMessage, forkSessionAtUserMessage,
 } from '../src/sessionEdit.js';

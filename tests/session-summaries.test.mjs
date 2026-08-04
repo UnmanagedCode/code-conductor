@@ -7,10 +7,10 @@ import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
 import {
   setSummary, getSummaries, deleteSummaries, loadAll,
-} from '../src/sessionSummaries.js';
+} from '../src/sessionSummaries.ts';
 import { orchStoreRoot, findSessionLocation, encodeCwd } from '../src/projects.ts';
 import { summarySpawnDir } from '../src/summarize.js';
-import { setTierBackend, addBackend, addCustomModel } from '../src/appSettings.js';
+import { setTierBackend, addBackend, addCustomModel } from '../src/appSettings.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-basic.json');

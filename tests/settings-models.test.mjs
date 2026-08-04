@@ -22,7 +22,7 @@ import {
   getCustomRoles, addCustomRole, removeCustomRole,
   addCustomModel, removeCustomModel, setPluginRolesProvider,
   getTierEffort, setTierEffort, getRoleEffort, setRoleEffort, resolveSpawnEffort,
-} from '../src/appSettings.js';
+} from '../src/appSettings.ts';
 import { EFFORT_LEVELS, DEFAULT_EFFORT } from '../src/effortLevels.ts';
 
 async function mkTmp() {

@@ -1,5 +1,5 @@
 // MCP tool handlers. Thin shells over the orchestrator's existing modules
-// (InstanceManager, projects.ts, worktrees.js) — never duplicate business
+// (InstanceManager, projects.ts, worktrees.ts) — never duplicate business
 // logic, never self-HTTP. Each handler receives (args, { instances }).
 
 import path from 'node:path';
@@ -20,13 +20,13 @@ import {
   renameWorkspace as fsRenameWorkspace,
   writeProjectMeta,
 } from '../projects.ts';
-import { CONDUCT_PROJECT_NAME } from '../conduct.js';
+import { CONDUCT_PROJECT_NAME } from '../conduct.ts';
 import {
   isGitRepo, listWorktrees as fsListWorktrees, getWorktreeMergeStatus,
   createWorktree as fsCreateWorktree, removeWorktree, getWorktree,
   syncWorktree as fsSyncWorktree, mergeWorktreeIntoParent, buildRebasePrompt,
   worktreeDirtyLines, runGit, DIFF_BYTE_CAP, assertValidBaseRef,
-} from '../worktrees.js';
+} from '../worktrees.ts';
 import { buildApprovePrompt, buildRejectPrompt } from '../planApproval.ts';
 // DOM-free formatter shared with the UI question card (public/blocks.js
 // re-exports it) so an answer_question MCP answer is byte-identical to a UI
@@ -36,7 +36,7 @@ import { getCatalog as getProjectConventionsCatalog, composeProjectScaffold } fr
 import { composeProjectConventionsDoc } from '../projectClaudeMd.js';
 import { getCatalog as getConductorConventionsCatalog, getSelection as getConductorSelection } from '../conductorConventions.js';
 import { isKnownFamily, isKnownTier, defaultVersion, familyOf, CLAUDE_BACKEND_ID } from '../modelVersions.ts';
-import { getTierBackend, resolveRoleBackend, isResolvableRole, backendForModel } from '../appSettings.js';
+import { getTierBackend, resolveRoleBackend, isResolvableRole, backendForModel } from '../appSettings.ts';
 import { textPayload } from './content.ts';
 import { pageInstanceEvents } from '../eventArchive.js';
 import { parseNumstat, parseNameStatus, indexDiffLines, paginateDiff } from './diffPaging.ts';
@@ -732,7 +732,7 @@ export async function answerQuestion(
 //                       of whole lines, mid-file pages re-emit file/hunk
 //                       headers so each page parses standalone.
 // The byte cap is the per-page ceiling, never a silent terminal cut.
-// DIFF_BYTE_CAP is imported from ../worktrees.js (single source of truth).
+// DIFF_BYTE_CAP is imported from ../worktrees.ts (single source of truth).
 // The numstat/name-status parsing + line-index + pager engine lives in
 // ./diffPaging.ts (parseNumstat / parseNameStatus / indexDiffLines /
 // paginateDiff), imported above.

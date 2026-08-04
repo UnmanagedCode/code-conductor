@@ -32,6 +32,9 @@ export interface InstanceSummary {
 export interface InstanceLike {
   readonly id: string;
   readonly sessionId: string | null;
+  readonly model: string | null;
+  readonly backend: string;
+  readonly callerInstanceId: string | null;
   readonly proc: unknown;
   readonly _overageQueue?: unknown[];
   readonly activeAgentTaskCount: number;
@@ -62,6 +65,7 @@ export interface InstanceManagerLike {
   byId: ReadonlyMap<string, InstanceLike>;
   get(id: string): InstanceLike | undefined;
   anyForSession(sessionId: string): InstanceLike | undefined;
+  callerSessionId(handle: string | null): string | null;
   liveOwnedBy(conductorId: string): Array<{
     sessionId: string | null;
     project: string;

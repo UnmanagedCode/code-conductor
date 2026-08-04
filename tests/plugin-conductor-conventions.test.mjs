@@ -9,7 +9,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { createPluginHost } from '../src/plugins/registry.js';
+import { createPluginHost } from '../src/plugins/registry.ts';
 import { createPluginLibrary } from '../src/plugins/library.js';
 import {
   SEED_CONVENTIONS, getSelection, setSelection, composeCurrentConduct,

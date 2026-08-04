@@ -6,7 +6,7 @@
 // in separate modules is what stops the two word-sets bleeding into each other.
 //
 // Pure vocabulary, no imports — the STORE side (per-tier / per-role defaults)
-// and the precedence chain live in appSettings.js `resolveSpawnEffort`.
+// and the precedence chain live in appSettings.ts `resolveSpawnEffort`.
 
 export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 

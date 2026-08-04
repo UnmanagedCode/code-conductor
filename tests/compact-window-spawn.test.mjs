@@ -13,7 +13,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor } from './helpers.mjs';
-import { setConductorCompactWindow } from '../src/appSettings.js';
+import { setConductorCompactWindow } from '../src/appSettings.ts';
 import { runMigrations } from '../migrations/index.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -142,7 +142,7 @@ test('ollama-backed .conduct spawn: knob overrides AUTO_COMPACT_WINDOW, native w
 // COMPACT_K_MIN used to be 20; a settings.json persisted under that regime
 // (or hand-edited) can carry a conductorCompactWindowK below the new 100
 // floor. getConductorCompactWindow() reads that field back verbatim (no
-// read-time clamp — see the comment above COMPACT_K_MIN in appSettings.js),
+// read-time clamp — see the comment above COMPACT_K_MIN in appSettings.ts),
 // so without migrations/0023-clamp-compact-window-floor.mjs a stale sub-100
 // value would still reach the CLI as a sub-100k CLAUDE_CODE_AUTO_COMPACT_WINDOW,
 // which the CLI itself then silently floors to 100k — the exact no-op this

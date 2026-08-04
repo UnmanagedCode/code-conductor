@@ -5,7 +5,7 @@
 // lines — the same lines that emit a `user_echo` UI event when replayed.
 // This keeps the index the UI hands back from a click on a user bubble
 // in sync with what we count in the jsonl. See `isPureUserPromptLine`
-// in transcript.js for the predicate definition.
+// in transcript.ts for the predicate definition.
 //
 // File rewrites are atomic: write a sibling tmp file, fsync, rename over
 // the target. The companion sub-agent directory (sibling to the jsonl,
@@ -18,7 +18,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { encodeCwd, claudeProjectsRoot } from './projects.ts';
-import { isPureUserPromptLine, writeSessionMetadata } from './transcript.js';
+import { isPureUserPromptLine, writeSessionMetadata } from './transcript.ts';
 import { extractAttachedMarkers } from './parser.ts';
 
 function sessionFilePath(cwd, sessionId) {
@@ -34,7 +34,7 @@ function tryParse(line) {
 
 // Pull the prompt text that produced a user_echo when this object is
 // replayed. Used to prefill the composer after a rewind/fork. Mirrors the
-// consolidation logic in transcript.js: text blocks joined with newlines,
+// consolidation logic in transcript.ts: text blocks joined with newlines,
 // attachment markers stripped via parser.ts's `extractAttachedMarkers` (the
 // same store-path-anchored matcher the live/replay path uses, so prefill
 // can never diverge from what the bubble showed).

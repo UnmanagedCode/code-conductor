@@ -15,7 +15,7 @@
 //
 // `contextWindow` is the authoritative capacity for a `claude`-backend model —
 // read it via claudeContextWindowTokens(), and for a concrete {backend, model}
-// pair via resolveContextWindowTokens() in appSettings.js, which is the single
+// pair via resolveContextWindowTokens() in appSettings.ts, which is the single
 // place capacity is resolved. `canonicalizeModel()` below owns the launch-tag
 // half of the policy.
 //
@@ -23,7 +23,7 @@
 // `claudeFamilies` payload key); the backend catalog proper is the user-managed
 // registry — see MANAGED_BACKENDS below and appSettings.getBackends(). A tier
 // binds to a {backend, model} pair via Settings
-// (`getTierBackend`/`setTierBackend` in appSettings.js). A legacy caller
+// (`getTierBackend`/`setTierBackend` in appSettings.ts). A legacy caller
 // passing a family name directly (`opus`, `sonnet`, ...) still resolves here
 // unchanged, independent of any tier binding — see spawnInstance in
 // src/mcp/handlers.js.
@@ -132,7 +132,7 @@ export function isKnownFamily(family: unknown): boolean {
 // `claude` on the argv, with `{model}` standing in for the model id. An empty
 // template means "run `claude` directly" (the identity backend). Backends are
 // user-manageable DATA (Settings → Backends, persisted as `models.backends` —
-// see appSettings.js getBackends), so adding a provider is a settings row, not
+// see appSettings.ts getBackends), so adding a provider is a settings row, not
 // a code change.
 //
 // These two are MANAGED: their id/label/template/managed come from here, not
@@ -160,7 +160,7 @@ export const CLAUDE_BACKEND_ID = 'claude';
 // --- Capability tiers ---------------------------------------------------
 // Fixed, data-driven set of abstract capability tiers exposed to spawn
 // callers (UI pickers + MCP `spawn_instance`). Each tier is a bindable slot
-// that maps (via Settings, see appSettings.js `getTierBackend`) to a
+// that maps (via Settings, see appSettings.ts `getTierBackend`) to a
 // {backend, model} pair. Renaming a tier, or changing the tier count, is a
 // one-line change to this array.
 export const CAPABILITY_TIERS: readonly CapabilityTier[] = [
@@ -185,7 +185,7 @@ export function isKnownTier(tier: unknown): boolean {
 
 // --- Roles --------------------------------------------------------------
 // Data-driven set of named roles, a second bindable layer parallel to the
-// capability tiers. A role binds (via Settings, see appSettings.js
+// capability tiers. A role binds (via Settings, see appSettings.ts
 // `getRoleBinding`) to EITHER a capability tier ({kind:'tier', tier}) — follow
 // whatever that tier points at — or a concrete backend ({backend, model}, the
 // same shape a tier uses). Adding a role is a one-line change to this array.

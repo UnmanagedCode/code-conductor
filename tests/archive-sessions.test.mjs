@@ -9,7 +9,7 @@ import {
   pendingTempCleanupPath,
   writePendingTempCleanup,
   sweepPendingTempCleanup,
-} from '../src/tempCleanup.js';
+} from '../src/tempCleanup.ts';
 import { loadAllArchived, isArchived } from '../src/archivedSessions.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));

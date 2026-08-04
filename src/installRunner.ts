@@ -9,7 +9,7 @@
 // today — { start, status, isRunning, _reset } — so callers and tests are
 // unchanged. The per-feature differences are injected as config.
 
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { orchStoreRoot } from './projects.ts';
 
 const LOG_CAP = 64 * 1024; // bytes of tail kept in memory
@@ -26,34 +26,70 @@ const LOG_CAP = 64 * 1024; // bytes of tail kept in memory
 //   itemKey        'model' | 'voice' — names the state/status field + log noun
 //   unknownNoun    noun used in the unknown-item throw ('whisper model' / 'piper voice')
 //   startLabel     banner subject ('whisper.cpp + model' / 'Piper + voice')
-export function makeInstallRunner(config) {
+interface InstallRunnerConfig {
+  scriptDefault: string;
+  scriptEnvVar: string;
+  childEnvVar: string;
+  validate: (name: string) => boolean;
+  persist: (name: string) => Promise<void>;
+  itemKey: 'model' | 'voice';
+  unknownNoun: string;
+  startLabel: string;
+}
+
+interface InstallState {
+  item: string;
+  child: ChildProcess | null;
+  log: string;
+  running: boolean;
+  exitCode: number | null;
+}
+
+// status() carries the item name under the config's `itemKey` ('model' or
+// 'voice'), so both are declared optional — a given runner has exactly one.
+interface InstallStatus {
+  running: boolean;
+  exitCode: number | null;
+  log: string;
+  model?: string | null;
+  voice?: string | null;
+}
+
+export interface InstallRunner {
+  start(name: string): { started: boolean; running: boolean };
+  status(): InstallStatus;
+  isRunning(): boolean;
+  _reset(): void;
+}
+
+export function makeInstallRunner(config: InstallRunnerConfig): InstallRunner {
   const { scriptDefault, scriptEnvVar, childEnvVar, validate, persist,
           itemKey, unknownNoun, startLabel } = config;
 
-  let current = null; // { [itemKey], child, log, running, exitCode }
+  let current: InstallState | null = null; // { item, child, log, running, exitCode }
 
-  function scriptPath() {
+  function scriptPath(): string {
     return process.env[scriptEnvVar] || scriptDefault;
   }
 
-  function appendLog(state, chunk) {
+  function appendLog(state: InstallState, chunk: string): void {
     state.log += chunk;
     if (state.log.length > LOG_CAP) state.log = state.log.slice(-LOG_CAP);
   }
 
-  function isRunning() {
+  function isRunning(): boolean {
     return !!(current && current.running);
   }
 
   // Start an install. Returns { started:true } or { started:false, running:true }
   // if one is already in flight. Throws (statusCode 400) on an unknown item.
-  function start(name) {
+  function start(name: string): { started: boolean; running: boolean } {
     if (!validate(name)) {
       throw Object.assign(new Error(`unknown ${unknownNoun}: ${name}`), { statusCode: 400 });
     }
     if (isRunning()) return { started: false, running: true };
 
-    const state = { [itemKey]: name, child: null, log: '', running: true, exitCode: null };
+    const state: InstallState = { item: name, child: null, log: '', running: true, exitCode: null };
     const child = spawn('bash', [scriptPath()], {
       // Pin INSTALL_ROOT to the orchestrator store so the script installs where
       // the server looks for the binary/venv + assets, regardless of the
@@ -65,19 +101,19 @@ export function makeInstallRunner(config) {
     appendLog(state, `==> Installing ${startLabel} "${name}"\n`);
     child.stdout.on('data', (b) => appendLog(state, b.toString()));
     child.stderr.on('data', (b) => appendLog(state, b.toString()));
-    child.on('error', (err) => {
+    child.on('error', (err: Error) => {
       appendLog(state, `\nERROR: failed to launch installer: ${err.message}\n`);
       state.running = false;
       state.exitCode = -1;
     });
-    child.on('close', async (code) => {
+    child.on('close', async (code: number | null) => {
       state.exitCode = code;
       if (code === 0) {
         try {
           await persist(name);
           appendLog(state, `\n==> Done. Active ${itemKey} set to "${name}".\n`);
         } catch (e) {
-          appendLog(state, `\nWARN: install succeeded but failed to persist active ${itemKey}: ${e.message}\n`);
+          appendLog(state, `\nWARN: install succeeded but failed to persist active ${itemKey}: ${errMsg(e)}\n`);
         }
       } else {
         appendLog(state, `\nERROR: installer exited with code ${code}.\n`);
@@ -89,18 +125,18 @@ export function makeInstallRunner(config) {
     return { started: true, running: true };
   }
 
-  function status() {
-    if (!current) return { running: false, [itemKey]: null, exitCode: null, log: '' };
+  function status(): InstallStatus {
+    if (!current) return { running: false, exitCode: null, log: '' };
     return {
       running: current.running,
-      [itemKey]: current[itemKey],
+      [itemKey]: current.item,
       exitCode: current.exitCode,
       log: current.log,
     };
   }
 
   // Test-only: drop the in-memory install state.
-  function _reset() {
+  function _reset(): void {
     if (current?.child && current.running) {
       try { current.child.kill('SIGKILL'); } catch { /* ignore */ }
     }
@@ -108,4 +144,8 @@ export function makeInstallRunner(config) {
   }
 
   return { start, status, isRunning, _reset };
+}
+
+function errMsg(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
 }

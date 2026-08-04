@@ -19,8 +19,8 @@ import {
   writeResumeManifest,
   readResumeManifest,
   clearResumeManifest,
-} from './resumeManifest.js';
-import { CONDUCT_PROJECT_NAME, ensureConductProject } from './conduct.js';
+} from './resumeManifest.ts';
+import { CONDUCT_PROJECT_NAME, ensureConductProject } from './conduct.ts';
 
 // Wait-and-retry grace: after wind-down, wait this long (`RESUME_DRAIN_GRACE_MS`) for every live
 // instance to leave its turn on its own. If the grace elapses, log a warning

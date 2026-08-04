@@ -4,7 +4,7 @@
 
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { attachmentsDir } from './worktrees.js';
+import { attachmentsDir } from './worktrees.ts';
 
 const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
 

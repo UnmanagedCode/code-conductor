@@ -2,7 +2,7 @@
 // from the in-memory ring (src/instances.js EventLog). Retained events are
 // served straight from the ring; older ones are reconstructed by replaying
 // the persisted session jsonl through the existing machinery in
-// src/transcript.js.
+// src/transcript.ts.
 //
 // Two seq spaces meet here. Live `_seq` values are stamped at emit time and
 // are denser than replay output (one event per streaming delta vs one or
@@ -31,7 +31,7 @@
 // sorted by `_seq` and backward paging can hand the client an opaque
 // `nextBefore` cursor that works across the boundary.
 
-import { loadPersistedTranscript } from './transcript.js';
+import { loadPersistedTranscript } from './transcript.ts';
 import { isOuterUserEcho, snapStartToQuiescent } from './parser.ts';
 import { reconstructTasks } from './taskReconstruct.ts';
 

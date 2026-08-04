@@ -10,7 +10,7 @@ import { projectsRoot } from './projects.ts';
 
 export const CONDUCT_PROJECT_NAME = '.conduct';
 
-export function conductProjectPath() {
+export function conductProjectPath(): string {
   return path.join(projectsRoot(), CONDUCT_PROJECT_NAME);
 }
 
@@ -28,14 +28,24 @@ export function conductProjectPath() {
 // app-owned <projectsRoot>/CLAUDE.md; no in-project CLAUDE.md is seeded.
 //
 // Returns {path, created} so callers (and tests) can tell what happened.
-export async function ensureConductProject() {
+export async function ensureConductProject(): Promise<{ path: string; created: boolean }> {
   const dir = conductProjectPath();
   let created = false;
   try {
     await fs.mkdir(dir, { recursive: false });
     created = true;
   } catch (e) {
-    if (e.code !== 'EEXIST') throw e;
+    if (errCode(e) !== 'EEXIST') throw e;
   }
   return { path: dir, created };
+}
+
+// The `code` on a thrown Node error (e.g. 'EEXIST'), or undefined — the
+// narrowing point for error-code checks (catch variables are `unknown` under
+// strict). Duplicated from storeLock.ts: it's four lines, and importing it
+// across modules would couple every store to storeLock for one helper.
+function errCode(e: unknown): string | undefined {
+  if (typeof e !== 'object' || e === null) return undefined;
+  const code = (e as { code?: unknown }).code;
+  return typeof code === 'string' ? code : undefined;
 }

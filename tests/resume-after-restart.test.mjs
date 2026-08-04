@@ -13,7 +13,7 @@ import {
   writeResumeManifest,
   readResumeManifest,
   clearResumeManifest,
-} from '../src/resumeManifest.js';
+} from '../src/resumeManifest.ts';
 import {
   drainToManifest,
   restoreFromResumeManifest,
@@ -22,9 +22,9 @@ import {
   WIND_DOWN_TEXT_CONDUCTOR,
   RESUME_TEXT,
 } from '../src/resumeRestart.js';
-import { ensureConductProject, CONDUCT_PROJECT_NAME } from '../src/conduct.js';
+import { ensureConductProject, CONDUCT_PROJECT_NAME } from '../src/conduct.ts';
 import { AUTO_RESUME_TEXT } from '../src/instances.js';
-import { addBackend, addCustomModel } from '../src/appSettings.js';
+import { addBackend, addCustomModel } from '../src/appSettings.ts';
 
 const nowSec = () => Math.floor(Date.now() / 1000);
 
