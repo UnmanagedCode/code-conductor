@@ -6,18 +6,18 @@
 // (builtin: false) are persisted at <orchStoreRoot>/conventions/project.json.
 // Both the catalog and the compose/CRUD logic are provided by the shared
 // fragment-catalog helper, which is also used by the conductor conventions
-// (src/conductorConventions.js) and the workspace conventions
-// (src/workspaceConventions.js).
+// (src/conductorConventions.ts) and the workspace conventions
+// (src/workspaceConventions.ts).
 
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { orchStoreRoot } from './projects.ts';
-import { createFragmentCatalog } from './fragmentCatalog.ts';
+import { createFragmentCatalog, type ExtraEntry } from './fragmentCatalog.ts';
 
 const CONVENTIONS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'conventions', 'project');
 
 // Seed metadata (bodies in conventions/project/<slug>.md).
-export const SEED_PROJECT_CONVENTIONS = [
+export const SEED_PROJECT_CONVENTIONS: Array<{ slug: string; name: string; description: string }> = [
   { slug: 'design-guidelines', name: 'Design guidelines',
     description: 'YAGNI; no god-modules; single source of truth; thin bootstrap; shared service layer' },
   { slug: 'testing-guidelines', name: 'Testing guidelines',
@@ -32,8 +32,8 @@ export const SEED_PROJECT_CONVENTIONS = [
 // provider. It is injected after construction (server.js wires it to the
 // plugin host) because the host is a runtime singleton, not importable here
 // without a cycle. Default is a no-op so tests/imports without plugins work.
-let pluginConventionsProvider = async () => [];
-export function setPluginConventionsProvider(fn) { pluginConventionsProvider = fn ?? (async () => []); }
+let pluginConventionsProvider: () => Promise<ExtraEntry[]> = async () => [];
+export function setPluginConventionsProvider(fn: (() => Promise<ExtraEntry[]>) | null | undefined): void { pluginConventionsProvider = fn ?? (async () => []); }
 
 const catalog = createFragmentCatalog({
   seeds: SEED_PROJECT_CONVENTIONS,
@@ -63,21 +63,23 @@ export const composeProjectConventionsBlock = catalog.compose;
 // conductor to fold into its first worker brief. Slugs are resolved in
 // selection order; unknown slug → 400; a slug without a scaffold facet is
 // skipped. No scaffold facets among the selection → '' (no scaffold).
-export async function composeProjectScaffold(projectName, slugs) {
+export async function composeProjectScaffold(projectName: string, slugs: string[]): Promise<string> {
   if (!Array.isArray(slugs) || slugs.length === 0) return '';
   const entries = await getCatalog();
   const bySlug = new Map(entries.map(e => [e.slug, e]));
-  const steps = [];
+  const steps: string[] = [];
   for (const slug of slugs) {
     const entry = bySlug.get(slug);
     if (!entry) {
-      const err = new Error(`unknown convention slug '${slug}'`);
-      err.statusCode = 400;
-      throw err;
+      throw httpError(400, `unknown convention slug '${slug}'`);
     }
     if (entry.scaffold) steps.push(entry.scaffold);
   }
   if (steps.length === 0) return '';
   const numbered = steps.map((t, i) => `${i + 1}) ${t}`).join('\n\n');
   return `Project "${projectName}" was created with these scaffolding steps. Complete them first, before other work:\n\n${numbered}`;
+}
+
+function httpError(statusCode: number, message: string): Error & { statusCode: number } {
+  return Object.assign(new Error(message), { statusCode });
 }

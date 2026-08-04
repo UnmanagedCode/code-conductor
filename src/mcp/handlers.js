@@ -5,7 +5,7 @@
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import { spawn } from 'node:child_process';
-import { getShellEnvBundlePath, bundleShellKind } from '../claudeShellEnv.js';
+import { getShellEnvBundlePath, bundleShellKind } from '../claudeShellEnv.ts';
 import {
   listProjects as fsListProjects,
   listSessions as fsListSessions,
@@ -32,22 +32,22 @@ import { buildApprovePrompt, buildRejectPrompt } from '../planApproval.ts';
 // re-exports it) so an answer_question MCP answer is byte-identical to a UI
 // submit — one canonical function, no fork. See public/userQuestionAnswers.js.
 import { formatUserQuestionAnswers } from '../../public/userQuestionAnswers.js';
-import { getCatalog as getProjectConventionsCatalog, composeProjectScaffold } from '../projectConventions.js';
+import { getCatalog as getProjectConventionsCatalog, composeProjectScaffold } from '../projectConventions.ts';
 import { composeProjectConventionsDoc } from '../projectClaudeMd.js';
-import { getCatalog as getConductorConventionsCatalog, getSelection as getConductorSelection } from '../conductorConventions.js';
+import { getCatalog as getConductorConventionsCatalog, getSelection as getConductorSelection } from '../conductorConventions.ts';
 import { isKnownFamily, isKnownTier, defaultVersion, familyOf, CLAUDE_BACKEND_ID } from '../modelVersions.ts';
 import { getTierBackend, resolveRoleBackend, isResolvableRole, backendForModel } from '../appSettings.ts';
 import { textPayload } from './content.ts';
-import { pageInstanceEvents } from '../eventArchive.js';
+import { pageInstanceEvents } from '../eventArchive.ts';
 import { parseNumstat, parseNameStatus, indexDiffLines, paginateDiff } from './diffPaging.ts';
 import {
   capText, MSG_TEXT_CAP, reconstructMessages, mergeRecentWithDisk, capBlockInput,
   hasPlanOrQuestions, ringTurnIndex, bondTrailingTurn,
-} from './messageReconstruction.js';
+} from './messageReconstruction.ts';
 
 // Dirty-line cap for project_status — mirror project_read/project_diff's
 // bounded-output pattern so no tool can emit an unbounded body. (The
-// per-message text cap MSG_TEXT_CAP now lives in ./messageReconstruction.js.)
+// per-message text cap MSG_TEXT_CAP now lives in ./messageReconstruction.ts.)
 const DIRTY_CAP = 500;
 
 // ---------- helpers ----------
@@ -1045,7 +1045,7 @@ export async function listConductorConventions() {
 
 // reconstructMessages / buildMessageFromRing / mergeRecentWithDisk /
 // capBlockInput / hasPlanOrQuestions / ringTurnIndex / bondTrailingTurn
-// (+ capText / MSG_TEXT_CAP) live in ./messageReconstruction.js, imported above.
+// (+ capText / MSG_TEXT_CAP) live in ./messageReconstruction.ts, imported above.
 // isTextBearing stays here — it's a handler-side filter, not part of the
 // reconstruction engine.
 function isTextBearing(m) {
@@ -1077,7 +1077,7 @@ function renderQuestions(questions) {
 }
 
 // Assemble a message's body from its prose/plan/questions segments, ordered by
-// the arrival-order seq messageReconstruction.js records (textSeq/planSeq/
+// the arrival-order seq messageReconstruction.ts records (textSeq/planSeq/
 // questionsSeq) — NOT hardcoded prose-then-plan — so the body reflects the
 // order those blocks actually occurred in the turn. A segment missing its seq
 // (shouldn't happen) sorts last rather than throwing.
@@ -1454,7 +1454,7 @@ function shQuote(p) {
 
 // Run a shell command inside a project/worktree cwd, in claude's own
 // restored shell environment (rg/find/grep shims + shell functions, via the
-// cached bundle from claudeShellEnv.js). The bundle is sourced with the same
+// cached bundle from claudeShellEnv.ts). The bundle is sourced with the same
 // shell (bash or zsh) that produced it — see bundleShellKind(). Read-only
 // inspection only (see the tool description in mcp/tools.js). `description`
 // is accepted for schema parity with the built-in Bash tool but is unused

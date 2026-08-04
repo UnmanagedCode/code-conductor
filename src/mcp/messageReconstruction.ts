@@ -7,6 +7,8 @@
 // identical.
 
 import { loadPersistedTranscript } from '../transcript.ts';
+import type { InstanceLike } from '../instanceTypes.ts';
+import type { UiEvent } from '../parser.ts';
 
 // Per-message text cap for get_recent_messages raw blocks — mirror
 // project_read/project_diff's bounded-output pattern so no tool can emit an
@@ -19,20 +21,70 @@ export const MSG_TEXT_CAP = 32 * 1024;
 const DISK_REPLAY_TAIL_CAP = 5000;
 
 // Cap a string to `cap` bytes, returning { text, truncated }.
-export function capText(s, cap) {
+export function capText(s: unknown, cap: number): { text: string; truncated: boolean } {
   const str = typeof s === 'string' ? s : '';
   if (Buffer.byteLength(str, 'utf8') <= cap) return { text: str, truncated: false };
   return { text: Buffer.from(str, 'utf8').subarray(0, cap).toString('utf8'), truncated: true };
 }
 
+// A ring/archive event narrowed to the fields this engine reads. `_seq` is
+// required because every ring event carries it. The boundary into this type is
+// a single narrowing cast in reconstructMessages (`events as ReconEvent[]`) —
+// ring and replayed events both carry these fields, and ReconEvent is
+// assignable to UiEvent, so the cast is one-directional.
+interface ReconEvent extends UiEvent {
+  msgId?: string | null;
+  blockIdx?: number;
+  text?: string;
+  name?: string;
+  input?: Record<string, unknown> | null;
+  toolUseId?: string | null;
+  message?: { content?: unknown } | null;
+  _seq: number;
+}
+
+// A block inside a reconstructed message's `blocks` array — either a
+// `tool_use` (from the delta or reconciled path) or a `thinking` block.
+interface ReconBlockOut {
+  type: string;
+  name?: unknown;
+  input?: unknown;
+  toolUseId?: unknown;
+  text?: unknown;
+}
+
+// A content block from a reconciled `assistant_message` envelope (JSON-shaped).
+interface ReconBlock {
+  type?: unknown;
+  text?: unknown;
+  name?: unknown;
+  input?: Record<string, unknown> | null;
+  id?: unknown;
+  thinking?: unknown;
+}
+
+// A reconstructed assistant message.
+export interface ReconMessage {
+  msgId: string;
+  text: string;
+  blocks?: Array<ReconBlockOut>;
+  hasToolUse: boolean;
+  plan?: string;
+  questions?: unknown;
+  textSeq?: number;
+  planSeq?: number;
+  questionsSeq?: number;
+}
+
 // Reconstruct ordered assistant messages from an event array (ring or disk-
 // replayed — both carry the same UI-event shape). Collects distinct top-level
 // msgIds (skipping sub-agent content) then rebuilds each message.
-export function reconstructMessages(events, includeThinking) {
-  const seen = new Set();
-  const reverseIds = [];
-  for (let i = events.length - 1; i >= 0; i--) {
-    const ev = events[i];
+export function reconstructMessages(events: UiEvent[], includeThinking: boolean): ReconMessage[] {
+  const ring = events as ReconEvent[];
+  const seen = new Set<string>();
+  const reverseIds: string[] = [];
+  for (let i = ring.length - 1; i >= 0; i--) {
+    const ev = ring[i];
     if (ev.parentToolUseId) continue; // ignore sub-agent content
     if (!ev.msgId) continue;
     if (ev.kind !== 'text_delta' && ev.kind !== 'text_end'
@@ -42,7 +94,7 @@ export function reconstructMessages(events, includeThinking) {
     reverseIds.push(ev.msgId);
   }
   const orderedIds = reverseIds.reverse();
-  return orderedIds.map(msgId => buildMessageFromRing(events, msgId, includeThinking));
+  return orderedIds.map(msgId => buildMessageFromRing(ring, msgId, includeThinking));
 }
 
 // Disk-fallback for getRecentMessages: load the on-disk transcript tail and
@@ -51,18 +103,18 @@ export function reconstructMessages(events, includeThinking) {
 // completed-but-evicted current-turn messages. Bounded by DISK_REPLAY_TAIL_CAP.
 // Returns null when no transcript exists (e.g. exited temp session) so the
 // caller degrades gracefully to ring-only.
-export async function mergeRecentWithDisk(inst, ringMessages, includeThinking) {
+export async function mergeRecentWithDisk(inst: InstanceLike, ringMessages: ReconMessage[], includeThinking: boolean): Promise<ReconMessage[] | null> {
   const result = await loadPersistedTranscript({
-    cwd: inst.cwd, sessionId: inst.sessionId, seqHint: 0,
+    cwd: inst.cwd, sessionId: inst.sessionId as string, seqHint: 0,
   }).catch(() => null);
   if (!result) return null;
-  let diskEvents = [];
+  let diskEvents: UiEvent[] = [];
   for (const line of result.lines) for (const ev of line.events) diskEvents.push(ev);
   if (diskEvents.length > DISK_REPLAY_TAIL_CAP) diskEvents = diskEvents.slice(-DISK_REPLAY_TAIL_CAP);
   const diskMessages = reconstructMessages(diskEvents, includeThinking);
   // Ordered merge by msgId: disk first (chronological), ring overrides in place
   // / appends newer (Map keeps first-insert position, updates value).
-  const byId = new Map();
+  const byId = new Map<string, ReconMessage>();
   for (const m of diskMessages) byId.set(m.msgId, m);
   for (const m of ringMessages) byId.set(m.msgId, m);
   return [...byId.values()];
@@ -72,7 +124,7 @@ export async function mergeRecentWithDisk(inst, ringMessages, includeThinking) {
 // tool_use input stays a structured object when small; when oversized it
 // becomes a truncated JSON string flagged with inputTruncated. A thinking
 // block's text is capped the same way.
-export function capBlockInput(b) {
+export function capBlockInput(b: ReconBlockOut) {
   if (b.type === 'tool_use') {
     const json = JSON.stringify(b.input ?? null);
     const { text, truncated } = capText(json, MSG_TEXT_CAP);
@@ -91,7 +143,7 @@ export function capBlockInput(b) {
 
 // A reconstructed message carries an actionable plan or questions (hoisted from
 // an ExitPlanMode / AskUserQuestion tool_use).
-export function hasPlanOrQuestions(m) {
+export function hasPlanOrQuestions(m: ReconMessage): boolean {
   return !!m.plan || (Array.isArray(m.questions) && m.questions.length > 0);
 }
 
@@ -100,9 +152,9 @@ export function hasPlanOrQuestions(m) {
 // current turn's messages are always in the ring (they just streamed), so this
 // lets the default-count bond scope its walk-back to the turn that produced the
 // last message even when the surrounding message list came from the disk merge.
-export function ringTurnIndex(ring) {
-  const firstSeqByMsgId = new Map();
-  const turnEndSeqs = [];
+export function ringTurnIndex(ring: ReconEvent[]): { firstSeqByMsgId: Map<string, number>; turnEndSeqs: number[] } {
+  const firstSeqByMsgId = new Map<string, number>();
+  const turnEndSeqs: number[] = [];
   for (const ev of ring) {
     if (ev.parentToolUseId) continue;
     if (ev.kind === 'turn_end') { if (ev._seq != null) turnEndSeqs.push(ev._seq); continue; }
@@ -122,7 +174,7 @@ export function ringTurnIndex(ring) {
 // act on. A plan from a previous turn is never pulled in (the walk stops at the
 // turn boundary), and a last message that already carries its own plan/question
 // is returned alone.
-export function bondTrailingTurn(filtered, ringTurn) {
+export function bondTrailingTurn(filtered: ReconMessage[], ringTurn: { firstSeqByMsgId: Map<string, number>; turnEndSeqs: number[] }): ReconMessage[] {
   const lastIdx = filtered.length - 1;
   const last = filtered[lastIdx];
   if (!last) return filtered;
@@ -146,30 +198,31 @@ export function bondTrailingTurn(filtered, ringTurn) {
   return filtered.slice(startIdx);
 }
 
-function buildMessageFromRing(ring, targetMsgId, includeThinking = false) {
-  const byBlock = new Map();
-  const blockOrder = [];
-  const otherBlocks = []; // tool_use blocks etc, for context
+function buildMessageFromRing(ring: ReconEvent[], targetMsgId: string, includeThinking = false): ReconMessage {
+  const byBlock = new Map<number, string>();
+  const blockOrder: number[] = [];
+  const otherBlocks: ReconBlockOut[] = []; // tool_use blocks etc, for context
   let hasToolUse = false;
-  let assistantContent = null; // content blocks merged across all assistant_message envelopes for this msgId
-  let plan = null;
-  let questions = null;
+  let assistantContent: ReconBlock[] | null = null; // content blocks merged across all assistant_message envelopes for this msgId
+  let plan: string | null = null;
+  let questions: unknown = null;
   // seq/*Seq: arrival-order position of each segment within the message, so
   // the body renderer (handlers.js) can interleave prose/plan/questions in the
   // order the underlying blocks actually occurred instead of hardcoding
   // "prose then plan" — set once, at each segment's first occurrence.
   let seq = 0;
-  let textSeq = null, planSeq = null, questionsSeq = null;
+  let textSeq: number | null = null, planSeq: number | null = null, questionsSeq: number | null = null;
   for (const ev of ring) {
     if (ev.parentToolUseId) continue;
     if (ev.msgId !== targetMsgId) continue;
     if (ev.kind === 'text_delta') {
-      if (!byBlock.has(ev.blockIdx)) {
-        byBlock.set(ev.blockIdx, '');
-        blockOrder.push(ev.blockIdx);
+      const idx = ev.blockIdx as number; // text_delta always carries blockIdx
+      if (!byBlock.has(idx)) {
+        byBlock.set(idx, '');
+        blockOrder.push(idx);
         if (textSeq === null) textSeq = seq++;
       }
-      byBlock.set(ev.blockIdx, byBlock.get(ev.blockIdx) + (ev.text ?? ''));
+      byBlock.set(idx, (byBlock.get(idx) ?? '') + (ev.text ?? ''));
     } else if (ev.kind === 'tool_use') {
       hasToolUse = true;
       let hoisted = false;
@@ -193,7 +246,7 @@ function buildMessageFromRing(ring, targetMsgId, includeThinking = false) {
       }
     } else if (ev.kind === 'assistant_message') {
       const content = ev.message?.content;
-      if (Array.isArray(content) && content.length) (assistantContent ??= []).push(...content);
+      if (Array.isArray(content) && content.length) (assistantContent ??= []).push(...content as ReconBlock[]);
     }
   }
   // If reconciled assistant_message envelopes arrived (real CLI), they're the
@@ -204,10 +257,10 @@ function buildMessageFromRing(ring, targetMsgId, includeThinking = false) {
   // (async-worker CLI); both are the concatenation of envelope content in
   // arrival order, which matches block order.
   if (assistantContent) {
-    const textParts = [];
-    const blocks = [];
+    const textParts: string[] = [];
+    const blocks: ReconBlockOut[] = [];
     let seq2 = 0;
-    let textSeq2 = null, planSeq2 = null, questionsSeq2 = null;
+    let textSeq2: number | null = null, planSeq2: number | null = null, questionsSeq2: number | null = null;
     for (const block of assistantContent) {
       if (block?.type === 'text' && typeof block.text === 'string') {
         textParts.push(block.text);
@@ -234,7 +287,7 @@ function buildMessageFromRing(ring, targetMsgId, includeThinking = false) {
           blocks.push({ type: 'tool_use', name: block.name, input: block.input, toolUseId: block.id });
         }
       } else if (block?.type === 'thinking' && includeThinking) {
-        blocks.push({ type: 'thinking', text: block.thinking ?? '' });
+        blocks.push({ type: 'thinking', text: (block.thinking ?? '') as string });
       }
     }
     let text = textParts.join('');
@@ -247,14 +300,14 @@ function buildMessageFromRing(ring, targetMsgId, includeThinking = false) {
     // an envelope-less text block can only be the delta stream's own block,
     // which — per the arrival-order comment above — always finalizes before
     // any block a reconciled envelope in THIS pass reports on.
-    if (!text) { text = blockOrder.map(idx => byBlock.get(idx)).join(''); if (text) textSeq2 = -1; }
+    if (!text) { text = blockOrder.map(idx => byBlock.get(idx) ?? '').join(''); if (text) textSeq2 = -1; }
     return { msgId: targetMsgId, text, ...(blocks.length ? { blocks } : {}), hasToolUse,
       ...(plan ? { plan } : {}), ...(questions ? { questions } : {}),
       ...(textSeq2 !== null ? { textSeq: textSeq2 } : {}),
       ...(planSeq2 !== null ? { planSeq: planSeq2 } : {}),
       ...(questionsSeq2 !== null ? { questionsSeq: questionsSeq2 } : {}) };
   }
-  const text = blockOrder.map(idx => byBlock.get(idx)).join('');
+  const text = blockOrder.map(idx => byBlock.get(idx) ?? '').join('');
   return { msgId: targetMsgId, text, ...(otherBlocks.length ? { blocks: otherBlocks } : {}), hasToolUse,
     ...(plan ? { plan } : {}), ...(questions ? { questions } : {}),
     ...(textSeq !== null ? { textSeq } : {}),

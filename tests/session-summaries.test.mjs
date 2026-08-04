@@ -251,7 +251,7 @@ test('POST spawns subprocess in .code-conductor/summaries dir (not a real projec
 // ---------------------------------------------------------------------------
 // A fast tier on a SUBSTITUTION backend: generateSummary() honors the bound
 // model/backend, driving the launch off the row's template (same shared
-// resolveBackendLaunch as claudeShellEnv.js's generateBundle()). Like bundle-gen
+// resolveBackendLaunch as claudeShellEnv.ts's generateBundle()). Like bundle-gen
 // this uses a REAL child_process.spawn, so the registry row is the injection
 // seam: its template names the fake binary, exactly as a user would register a
 // wrapper.

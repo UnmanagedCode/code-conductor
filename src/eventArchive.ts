@@ -32,25 +32,35 @@
 // `nextBefore` cursor that works across the boundary.
 
 import { loadPersistedTranscript } from './transcript.ts';
-import { isOuterUserEcho, snapStartToQuiescent } from './parser.ts';
-import { reconstructTasks } from './taskReconstruct.ts';
+import { isOuterUserEcho, snapStartToQuiescent, type UiEvent } from './parser.ts';
+import { reconstructTasks, type TaskCompletion, type TaskRecord } from './taskReconstruct.ts';
+import type { InstanceLike } from './instanceTypes.ts';
 
 const LIMIT_DEFAULT = 200;
 const LIMIT_MAX = 500;
 
-export function clampLimit(n) {
-  if (!Number.isInteger(n) || n < 1) return LIMIT_DEFAULT;
+export function clampLimit(n: unknown): number {
+  if (typeof n !== 'number' || !Number.isInteger(n) || n < 1) return LIMIT_DEFAULT;
   return Math.min(n, LIMIT_MAX);
 }
 
 // First index in a `_seq`-sorted array whose seq is >= `seq`.
-function firstIndexAtOrAbove(arr, seq) {
+function firstIndexAtOrAbove(arr: SeqEvent[], seq: number): number {
   let lo = 0, hi = arr.length;
   while (lo < hi) {
     const mid = (lo + hi) >> 1;
     if (arr[mid]._seq < seq) lo = mid + 1; else hi = mid;
   }
   return lo;
+}
+
+// A ring/archive event carries a dense `_seq`; outer user echoes additionally
+// carry an absolute `userIndex` (stamped by Instance._emitUi / buildArchive).
+// Synthetic events (`history_gap`, `task_completion`) have neither and are
+// represented as plain UiEvent.
+interface SeqEvent extends UiEvent {
+  _seq: number;
+  userIndex?: number;
 }
 
 // Replay the persisted jsonl into a flat event list (dense `_seq` = array
@@ -61,15 +71,17 @@ function firstIndexAtOrAbove(arr, seq) {
 // turn boundary): the turn's content between the cut and the ring head was
 // evicted and cannot be recovered — pageInstanceEvents marks the seam with
 // a `history_gap` event.
-export async function buildArchive({ cwd, sessionId, ring, trimmedBefore, userEchoCount }) {
+export async function buildArchive({ cwd, sessionId, ring, trimmedBefore, userEchoCount }: {
+  cwd: string; sessionId: string; ring: SeqEvent[]; trimmedBefore: number; userEchoCount: number;
+}): Promise<{ events: SeqEvent[]; cut: number; gap: boolean }> {
   const result = await loadPersistedTranscript({ cwd, sessionId, seqHint: 0 });
   if (!result) return { events: [], cut: 0, gap: false };
 
-  const flat = [];
+  const flat: SeqEvent[] = [];
   let echoOrdinal = 0;
   for (const line of result.lines) {
     for (const ev of line.events) {
-      const copy = { ...ev };
+      const copy = { ...ev } as SeqEvent;
       if (isOuterUserEcho(copy)) {
         copy.userIndex = echoOrdinal;
         echoOrdinal += 1;
@@ -82,25 +94,25 @@ export async function buildArchive({ cwd, sessionId, ring, trimmedBefore, userEc
   // Content anchor: which prompt ordinal marks the first turn that is (at
   // least partially) represented in the retained ring.
   const head = ring.length ? ring[0] : null;
-  let anchor;
-  let includeAnchorEcho;
+  let anchor: number;
+  let includeAnchorEcho: boolean;
   if (!head) {
     // Empty ring — everything the jsonl knows about is older than "now".
     anchor = userEchoCount;
     includeAnchorEcho = false;
-  } else if (isOuterUserEcho(head) && Number.isInteger(head.userIndex)) {
+  } else if (isOuterUserEcho(head) && typeof head.userIndex === 'number') {
     // Common case: trim snapped onto a turn boundary.
     anchor = head.userIndex;
     includeAnchorEcho = false;
   } else {
     // Head is mid-turn. The turn containing it started at the prompt just
     // before the first retained echo (or the last prompt overall).
-    const firstEcho = ring.find(ev => isOuterUserEcho(ev) && Number.isInteger(ev.userIndex));
-    anchor = (firstEcho ? firstEcho.userIndex : userEchoCount) - 1;
+    const firstEcho = ring.find(ev => isOuterUserEcho(ev) && typeof ev.userIndex === 'number');
+    anchor = (firstEcho ? firstEcho.userIndex as number : userEchoCount) - 1;
     includeAnchorEcho = true;
   }
 
-  let cut;
+  let cut: number;
   if (anchor < 0) {
     cut = 0;
   } else {
@@ -135,7 +147,9 @@ export async function buildArchive({ cwd, sessionId, ring, trimmedBefore, userEc
 // `nextBefore` is an opaque cursor for the next backward page; `hasMore`
 // means older events than the first one served (may be optimistically true
 // exactly at the ring/archive boundary — the follow-up page resolves it).
-export async function pageInstanceEvents(inst, { before = null, after = null, limit } = {}) {
+export async function pageInstanceEvents(inst: InstanceLike, { before = null, after = null, limit }: {
+  before?: number | null; after?: number | null; limit?: number;
+} = {}): Promise<{ events: UiEvent[]; hasMore: boolean; nextBefore: number; trimmedBefore: number; lastSeq: number }> {
   const max = clampLimit(limit);
   const ring = inst.ringSnapshot();
   const tb = inst.ring.trimmedBefore;
@@ -149,14 +163,14 @@ export async function pageInstanceEvents(inst, { before = null, after = null, li
   // the ring (the trim keeps the head on a boundary, which terminates the
   // backward search), so no extra reach margin is needed.
   const needArchive = tb > 0 && !!inst.sessionId
-    && (before != null ? before - max < tb : after < tb);
+    && (before != null ? before - max < tb : (after ?? 0) < tb);
 
-  let combined = ring;
+  let combined: SeqEvent[] = ring;
   let seamIdx = -1; // index of the ring head inside `combined`
   let gap = false;  // ring head is mid-turn — content before it was evicted
   if (needArchive) {
     const archive = await buildArchive({
-      cwd: inst.cwd, sessionId: inst.sessionId,
+      cwd: inst.cwd, sessionId: inst.sessionId as string,
       ring, trimmedBefore: tb, userEchoCount: inst._userEchoCount,
     });
     combined = archive.events.slice(0, archive.cut).concat(ring);
@@ -164,7 +178,8 @@ export async function pageInstanceEvents(inst, { before = null, after = null, li
     gap = archive.gap;
   }
 
-  let events, hasMore;
+  let events: UiEvent[];
+  let hasMore: boolean;
   if (before != null) {
     const end = firstIndexAtOrAbove(combined, before);
     let start = Math.max(0, end - max);
@@ -189,12 +204,12 @@ export async function pageInstanceEvents(inst, { before = null, after = null, li
       // exist below the ring — optimistic, next page resolves.
       || (!needArchive && tb > 0 && !!inst.sessionId);
   } else {
-    const start = firstIndexAtOrAbove(combined, after + 1);
+    const start = firstIndexAtOrAbove(combined, (after ?? 0) + 1);
     events = combined.slice(start, start + max);
     hasMore = start + events.length < combined.length;
   }
 
-  const nextBefore = events.length ? events[0]._seq : Math.max(0, Math.min(before ?? 0, tb));
+  const nextBefore = events.length ? events[0]._seq as number : Math.max(0, Math.min(before ?? 0, tb));
 
   // Mark the evicted-content seam. When the ring head is mid-turn, the slice
   // that carries the first ring event gets a `{kind:'history_gap'}` marker
@@ -202,7 +217,7 @@ export async function pageInstanceEvents(inst, { before = null, after = null, li
   // it — the client renders an "earlier messages unavailable" divider there
   // instead of silently gluing the surviving whole blocks together.
   if (gap && events.length) {
-    const headIdx = events.findIndex(ev => ev._seq === tb);
+    const headIdx = events.findIndex(ev => (ev._seq as number) === tb);
     if (headIdx !== -1) events.splice(headIdx, 0, { kind: 'history_gap' });
   }
   // Inject synthetic `task_completion` bubbles below the tail. Derived over the
@@ -220,18 +235,21 @@ export async function pageInstanceEvents(inst, { before = null, after = null, li
 // Splice `{kind:'task_completion', tasks}` (no `_seq`, matching the client's own
 // synthesis) into `events` immediately after each event whose `_seq` is the
 // completing update of a batch. Unmatched completions (outside this slice) drop.
-function injectTaskCompletions(events, completions) {
+function injectTaskCompletions(events: UiEvent[], completions: TaskCompletion[]): UiEvent[] {
   if (!completions.length || !events.length) return events;
-  const bySeq = new Map();
+  const bySeq = new Map<number, TaskRecord[]>();
   for (const c of completions) {
     if (c.afterSeq != null) bySeq.set(c.afterSeq, c.tasks);
   }
   if (bySeq.size === 0) return events;
-  const out = [];
+  const out: UiEvent[] = [];
   for (const ev of events) {
     out.push(ev);
-    const tasks = bySeq.get(ev._seq);
-    if (tasks) out.push({ kind: 'task_completion', tasks });
+    const seq = ev._seq;
+    if (typeof seq === 'number') {
+      const tasks = bySeq.get(seq);
+      if (tasks) out.push({ kind: 'task_completion', tasks });
+    }
   }
   return out;
 }

@@ -86,7 +86,7 @@ before(async () => {
   process.env.ORCH_OVERAGE_RESUME_SWEEP_MS = '40';
   // Short recheck cadence so a still-over / can't-confirm park re-checks fast enough
   // to observe within a test (production default is 60s, independent of the 180s
-  // usage cache — see src/overageResume.js's _recheckMs()).
+  // usage cache — see src/overageResume.ts's _recheckMs()).
   savedRecheck = process.env.ORCH_OVERAGE_RECHECK_MS;
   process.env.ORCH_OVERAGE_RECHECK_MS = '60';
   // No scenario at boot — each test's boot() sets FAKE_CLAUDE_SCENARIO before it

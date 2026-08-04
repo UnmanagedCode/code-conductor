@@ -142,7 +142,7 @@ ${conversationText}
 Provide the summary only, no preamble:`;
 
   // Honor the fast tier's bound backend unconditionally — same reasoning as
-  // claudeShellEnv.js's generateBundle(): no Anthropic fallback, since a host
+  // claudeShellEnv.ts's generateBundle(): no Anthropic fallback, since a host
   // with no Claude access wouldn't have that model. A substitution backend
   // re-execs the SAME claude binary (only the endpoint/auth differ), so
   // --output-format=json's result envelope is unaffected; a missing cost there
@@ -190,7 +190,7 @@ Provide the summary only, no preamble:`;
     // command that isn't installed) emits 'error', never 'close'. Without this
     // listener the EventEmitter default rethrows it as an uncaught exception and
     // takes the whole server down with every live session. Mirrors the same guard
-    // in claudeShellEnv.js's two spawns and instances.js's.
+    // in claudeShellEnv.ts's two spawns and instances.js's.
     child.on('error', (err) => {
       clearTimeout(timer);
       reject(new Error(`summary generation failed to spawn ${command}: ${err.message}`));

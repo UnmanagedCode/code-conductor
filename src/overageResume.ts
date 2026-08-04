@@ -17,6 +17,7 @@
 
 import { getAccountUsage } from './accountUsage.ts';
 import { usageOverThreshold } from './appSettings.ts';
+import type { InstanceLike, InstanceManagerLike } from './instanceTypes.ts';
 
 // Prompt delivered by the overage auto-resume timer to a still-alive session
 // once the rate-limit window has reset (onOverage: 'stop-resume').
@@ -28,6 +29,15 @@ export const AUTO_RESUME_TEXT =
 const QUEUED_ONLY_RESUME_TEXT =
   'The rate-limit window has reset. Delivering the messages you queued while paused:';
 
+// A message the user queued while the session was paused — the shape
+// Instance.prompt() pushes onto `_overageQueue` (instances.js), so all fields
+// are app-authored and well-typed.
+interface OverageQueueItem {
+  text: string;
+  attachments: unknown[];
+  ts: number;
+}
+
 // Build the single prompt the resume delivers. With no queued messages it is
 // just AUTO_RESUME_TEXT (the unchanged single-resume behavior). With queued
 // messages it prepends the reset preamble, then lists each queued message as a
@@ -35,10 +45,10 @@ const QUEUED_ONLY_RESUME_TEXT =
 // while the session was paused. `wasStopped` picks the preamble: a session
 // stopped mid-work resumes with "continue where you left off"; a queued-only
 // session gets the softened line.
-function buildCombinedResumeText(queue, wasStopped = true) {
+function buildCombinedResumeText(queue: OverageQueueItem[], wasStopped = true): string {
   if (!queue.length) return AUTO_RESUME_TEXT;
   const preamble = wasStopped ? AUTO_RESUME_TEXT : QUEUED_ONLY_RESUME_TEXT;
-  const fmt = (ts) => {
+  const fmt = (ts: number): string => {
     try { return new Date(ts).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); }
     catch { return ''; }
   };
@@ -60,7 +70,7 @@ const FAIL_OPEN_AFTER = 5;
 export class OverageResumeController {
   // `fetchUsage` is injectable purely as a test seam (defaults to the real cached
   // fetcher, which self-guards its own cache + backoff — we never force-fresh it).
-  constructor(manager, { fetchUsage = getAccountUsage } = {}) {
+  constructor(manager: InstanceManagerLike, { fetchUsage = getAccountUsage }: { fetchUsage?: () => Promise<unknown> } = {}) {
     this.manager = manager;
     this.fetchUsage = fetchUsage;
     // Pending overage auto-resume DEADLINES, keyed by the stable instanceId,
@@ -69,7 +79,7 @@ export class OverageResumeController {
     // sweep POLLS usage once due and only resumes when the account is verified
     // under the overage bar (else it reschedules). In-memory only — lost on
     // restart (restore re-arms off the freshly-created Instance's id, see
-    // resumeRestart.js; the session otherwise stays manually resumable).
+    // resumeRestart.ts; the session otherwise stays manually resumable).
     this.timers = new Map(); // instanceId → fireAtMs (epoch ms)
     // Instances with an in-flight usage-verify (a deadline that came due and is
     // awaiting the fetch result). Guards the sweep from re-firing them on the next
@@ -87,13 +97,21 @@ export class OverageResumeController {
     this._sweep = null;
   }
 
+  manager: InstanceManagerLike;
+  fetchUsage: () => Promise<unknown>;
+  timers: Map<string, number>;
+  _checking: Set<string>;
+  _failCount: Map<string, number>;
+  _ticking: boolean;
+  _sweep: NodeJS.Timeout | null;
+
   // Recheck cadence for a parked (still-over / can't-confirm) session. Overridable
   // via ORCH_OVERAGE_RECHECK_MS (a test seam, like the sweep/buffer envs). Default
   // recheck is independent of accountUsage.ts's success-cache cadence — most recheck ticks
   // just re-read the cached value (cheap no-op), so a shorter cadence here doesn't
   // add real network pressure; it just keeps FAIL_OPEN_AFTER's ~5-minute bound
   // aligned with accountUsage.ts's MAX_RETRY_MS ceiling (see FAIL_OPEN_AFTER above).
-  _recheckMs() {
+  _recheckMs(): number {
     const env = Number(process.env.ORCH_OVERAGE_RECHECK_MS);
     return Number.isFinite(env) && env > 0 ? env : 60_000;
   }
@@ -105,13 +123,13 @@ export class OverageResumeController {
   // dead-end anymore: it schedules the first usage-check at `now + recheck` instead
   // of giving up — the verify decides whether to resume. `auto_resume_skipped` now
   // fires ONLY for the genuine "process gone" case (in run()).
-  arm(inst) {
+  arm(inst: InstanceLike): void {
     // Slack past the reported reset time before the FIRST check. Overridable via env
     // (a test seam — lets integration tests fire the resume promptly).
     const envBuf = Number(process.env.ORCH_OVERAGE_RESUME_BUFFER_MS);
     const BUFFER_MS = Number.isFinite(envBuf) ? envBuf : 5000;
     const nowMs = Date.now();
-    const atMs = inst._overageResetsAt * 1000; // resetsAt is epoch SECONDS
+    const atMs = Number(inst._overageResetsAt) * 1000; // resetsAt is epoch SECONDS
     // Missing/past resetsAt → check in `recheck` ms rather than arming a negative
     // deadline; a valid future resetsAt → first check at resetsAt + buffer.
     const fireAtMs = (!Number.isFinite(atMs) || atMs <= nowMs)
@@ -130,7 +148,7 @@ export class OverageResumeController {
   // property, applied across a full restart). Caller guarantees the session is
   // live + idle (re-armed AFTER spawn()'s flag-clear, so the clear can't wipe
   // it). No-op on a non-finite deadline.
-  armRestored(inst, fireAtMs) {
+  armRestored(inst: InstanceLike, fireAtMs: number): void {
     if (!Number.isFinite(fireAtMs)) return;
     inst.autoStoppedForOverage = true;
     inst.autoResumeAt = Math.round(fireAtMs / 1000); // epoch secs for the badge
@@ -142,8 +160,8 @@ export class OverageResumeController {
   // Ensure the single shared wall-clock sweep is running. Idempotent. Cadence
   // overridable via ORCH_OVERAGE_RESUME_SWEEP_MS (ms) — a test seam so the sweep
   // can be driven fast. Mirrors the unref()'d-interval idiom in
-  // src/usageOverageMonitor.js: it never holds the event loop open by itself.
-  _ensureSweep() {
+  // src/usageOverageMonitor.ts: it never holds the event loop open by itself.
+  _ensureSweep(): void {
     if (this._sweep) return;
     const env = Number(process.env.ORCH_OVERAGE_RESUME_SWEEP_MS);
     const ms = Number.isFinite(env) && env > 0 ? env : 30_000;
@@ -153,7 +171,7 @@ export class OverageResumeController {
 
   // Stop the sweep once no deadlines remain — nothing to watch for. Called from
   // the tick, cancel, and clearAll. Idempotent.
-  _maybeStopSweep() {
+  _maybeStopSweep(): void {
     if (this._sweep && this.timers.size === 0) {
       clearInterval(this._sweep);
       this._sweep = null;
@@ -167,10 +185,10 @@ export class OverageResumeController {
   // suspended is due here on the first tick after wake — the suspension-survival
   // property. `_ticking` prevents an overlapping tick from opening a second fetch;
   // `_checking` prevents re-collecting a session already mid-verify.
-  async _tick() {
+  async _tick(): Promise<void> {
     if (this._ticking) return;
     const now = Date.now();
-    const due = [];
+    const due: Array<[string, InstanceLike]> = [];
     for (const [id, fireAtMs] of [...this.timers]) {
       if (now < fireAtMs) continue;
       if (this._checking.has(id)) continue;
@@ -181,7 +199,7 @@ export class OverageResumeController {
     if (due.length) {
       this._ticking = true;
       for (const [id] of due) this._checking.add(id);
-      let usage = null;
+      let usage: unknown = null;
       // ONE fetch per cycle. getAccountUsage self-guards its cache/backoff and never
       // throws, but the injected test seam might — treat any error as "can't confirm".
       try { usage = await this.fetchUsage(); } catch { usage = null; }
@@ -198,7 +216,7 @@ export class OverageResumeController {
   // Decide what a due deadline does given the shared usage snapshot: resume (verified
   // under the bar, or failed-open), or reschedule (still over / can't-confirm). The
   // process-gone case routes to run() which emits the sole surviving auto_resume_skipped.
-  _resolveDue(inst, id, usage) {
+  _resolveDue(inst: InstanceLike, id: string, usage: unknown): void {
     if (inst.proc) {
       // Still alive → usage-gate the resume.
       const over = usage == null ? null : usageOverThreshold(usage);
@@ -223,7 +241,7 @@ export class OverageResumeController {
   // else recheck one `_recheckMs()` window out. Also pushes the manager's global _overageResetsAt forward
   // so the frontend/queue lockout gate (which requires a FUTURE resetsAt) stays engaged
   // while sessions are parked — the lockout must not lift out from under an active park.
-  _reschedule(inst, id) {
+  _reschedule(inst: InstanceLike, id: string): void {
     const now = Date.now();
     const atMs = Number(inst._overageResetsAt) * 1000; // epoch secs → ms
     const fireAtMs = Math.max(Number.isFinite(atMs) ? atMs : 0, now + this._recheckMs());
@@ -237,7 +255,7 @@ export class OverageResumeController {
   // The body the sweep fires (extracted so it can also be triggered on-demand
   // via fireNow). Resumes the still-live session, or tears down with a notice
   // if the process vanished. No respawn, ever.
-  run(inst, id) {
+  run(inst: InstanceLike, id: string): void {
     if (inst.proc) {
       // Deliver any messages the user queued during the wait window as ONE
       // combined prompt alongside the resume text. Snapshot + empty the queue
@@ -249,9 +267,9 @@ export class OverageResumeController {
       // path, or a per-session deadline that beats the global clear), and the
       // GLOBAL gate would otherwise re-queue the resume prompt forever. internal
       // also skips the user_prompt emit — fine, cancel() already did the teardown.
-      const queue = inst._overageQueue.slice();
+      const queue = inst._overageQueue.slice() as OverageQueueItem[];
       inst._overageQueue = [];
-      const attachments = queue.flatMap(e => Array.isArray(e.attachments) ? e.attachments : []);
+      const attachments: unknown[] = queue.flatMap(e => Array.isArray(e.attachments) ? e.attachments as unknown[] : []);
       const text = buildCombinedResumeText(queue, inst._overageWasStopped);
       this.cancel(id);
       if (queue.length) {
@@ -274,7 +292,7 @@ export class OverageResumeController {
   // resolve as the sweep (fire-and-forget the async fetch; the resume/reschedule lands
   // asynchronously — tests waitFor the outcome). Returns false if nothing was armed
   // (or the session vanished); true if a due deadline was picked up.
-  fireNow(instanceId) {
+  fireNow(instanceId: string): boolean {
     if (!this.timers.has(instanceId)) return false;
     const inst = this.manager.byId.get(instanceId);
     if (!inst) { this.timers.delete(instanceId); this._maybeStopSweep(); return false; }
@@ -283,7 +301,7 @@ export class OverageResumeController {
     this.timers.delete(instanceId);
     this._maybeStopSweep();
     (async () => {
-      let usage = null;
+      let usage: unknown = null;
       try { usage = await this.fetchUsage(); } catch { usage = null; }
       try { this._resolveDue(inst, instanceId, usage); }
       catch { /* swallow — mirror the sweep's per-session isolation */ }
@@ -298,7 +316,7 @@ export class OverageResumeController {
   // when the instance is already gone from byId (e.g. remove() deletes it before
   // cancelling) — there is nothing left to update, and the deadline delete by
   // instanceId still runs.
-  cancel(instanceId) {
+  cancel(instanceId: string): void {
     this._failCount.delete(instanceId);
     if (this.timers.has(instanceId)) {
       this.timers.delete(instanceId);
@@ -322,7 +340,7 @@ export class OverageResumeController {
 
   // Clear every pending deadline and stop the sweep (orchestrator shutdown).
   // Mirrors the old inline teardown in InstanceManager.shutdown().
-  clearAll() {
+  clearAll(): void {
     this.timers.clear();
     this._checking.clear();
     this._failCount.clear();

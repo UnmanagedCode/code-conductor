@@ -20,8 +20,8 @@ import { restoreFromResumeManifest } from './src/resumeRestart.js';
 import { createPluginHost, WORKSPACE_AUTO_ASSIGN } from './src/plugins/registry.ts';
 import { createPluginLibrary } from './src/plugins/library.js';
 import { buildPluginProxy } from './src/plugins/proxy.ts';
-import { setPluginConventionsProvider } from './src/projectConventions.js';
-import { setPluginConductorConventionsProvider } from './src/conductorConventions.js';
+import { setPluginConventionsProvider } from './src/projectConventions.ts';
+import { setPluginConductorConventionsProvider } from './src/conductorConventions.ts';
 import { setPluginRolesProvider, setLiveBackendsProvider } from './src/appSettings.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));

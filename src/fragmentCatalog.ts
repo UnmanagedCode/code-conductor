@@ -49,11 +49,16 @@ interface CustomRule {
   body?: string;
 }
 
-interface ExtraEntry {
+// An entry a third source (extraProvider, e.g. an enabled plugin's convention
+// fragments) contributes to the merged catalog. Exported so the convention
+// scopes can type their providers without a local copy.
+export interface ExtraEntry {
   slug: string;
   name: string;
   description: string;
   body?: string;
+  scaffold?: string;
+  plugin?: string;
   [key: string]: unknown;
 }
 
@@ -63,6 +68,11 @@ interface CatalogEntry {
   description: string;
   body?: string;
   builtin: boolean;
+  // Plugin-contributed entries carry these (see conductorConventions's
+  // getSelection / projectConventions's composeProjectScaffold): a namespaced
+  // `plugin` id and an optional one-time scaffold directive with no body.
+  plugin?: string;
+  scaffold?: string;
 }
 
 interface FragmentCatalogConfig {

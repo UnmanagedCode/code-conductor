@@ -14,7 +14,7 @@ import { createPluginLibrary } from '../src/plugins/library.js';
 import {
   SEED_CONVENTIONS, getSelection, setSelection, composeCurrentConduct,
   setPluginConductorConventionsProvider,
-} from '../src/conductorConventions.js';
+} from '../src/conductorConventions.ts';
 import * as m0021 from '../migrations/0021-strip-plugin-slugs-from-conductor-conventions.mjs';
 import { makePluginRoot, readFixtureManifest } from './plugin-helpers.mjs';
 

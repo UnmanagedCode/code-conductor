@@ -18,16 +18,16 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { encodeCwd, claudeProjectsRoot } from './projects.ts';
-import { isPureUserPromptLine, writeSessionMetadata } from './transcript.ts';
-import { extractAttachedMarkers } from './parser.ts';
+import { isPureUserPromptLine, writeSessionMetadata, type PersistedLine } from './transcript.ts';
+import { extractAttachedMarkers, type WireContentBlock } from './parser.ts';
 
-function sessionFilePath(cwd, sessionId) {
+function sessionFilePath(cwd: string, sessionId: string): string {
   return path.join(claudeProjectsRoot(), encodeCwd(cwd), `${sessionId}.jsonl`);
 }
 
 // Parse one trimmed jsonl line, swallowing parse errors (mirrors the
 // tolerant behavior of loadPersistedTranscript).
-function tryParse(line) {
+function tryParse(line: string): unknown {
   try { return JSON.parse(line); }
   catch { return null; }
 }
@@ -38,12 +38,12 @@ function tryParse(line) {
 // attachment markers stripped via parser.ts's `extractAttachedMarkers` (the
 // same store-path-anchored matcher the live/replay path uses, so prefill
 // can never diverge from what the bubble showed).
-function extractUserPromptText(obj) {
+function extractUserPromptText(obj: PersistedLine | null | undefined): string {
   // `type:"attachment"` queued_command lines stash the text blocks under
   // `attachment.prompt` instead of `message.content` — same block shape,
   // different envelope. Pick the right source so composer prefill works
   // when the rewind/fork target is a queued prompt (e.g. auto-approve).
-  let content;
+  let content: unknown;
   if (obj?.type === 'attachment' && obj.attachment?.type === 'queued_command') {
     content = obj.attachment.prompt;
   } else {
@@ -51,8 +51,8 @@ function extractUserPromptText(obj) {
   }
   if (typeof content === 'string') return content;
   if (!Array.isArray(content)) return '';
-  const parts = [];
-  for (const b of content) {
+  const parts: string[] = [];
+  for (const b of content as WireContentBlock[]) {
     if (!b || b.type !== 'text' || typeof b.text !== 'string') continue;
     // Strip attachment marker lines we wrote at send time so they don't
     // get prefilled back into the composer as visible prose.
@@ -69,29 +69,37 @@ function extractUserPromptText(obj) {
 //   - droppedText: the prompt text of the target user message
 //   - lastSurvivingUuid: uuid of the last prefix line, or null
 // Throws { statusCode: 400 } if the target index isn't found.
-async function readAndSplit({ cwd, sessionId, userMessageIndex }) {
+async function readAndSplit({ cwd, sessionId, userMessageIndex }: {
+  cwd: string; sessionId: string; userMessageIndex: number;
+}): Promise<{
+  prefix: Array<{ raw: string; obj: PersistedLine | null }>;
+  dropped: Array<{ raw: string; obj: PersistedLine | null }>;
+  droppedText: string;
+  lastSurvivingUuid: string | null;
+}> {
   const file = sessionFilePath(cwd, sessionId);
-  let text;
+  let text: string;
   try { text = await fs.readFile(file, 'utf8'); }
   catch (e) {
-    if (e.code === 'ENOENT') {
-      throw Object.assign(new Error(`session ${sessionId} not found`), { statusCode: 404 });
+    if (errCode(e) === 'ENOENT') {
+      throw httpError(404, `session ${sessionId} not found`);
     }
     throw e;
   }
   // Split preserving line boundaries — the file may or may not end with a
   // trailing newline. We re-emit with `\n` per kept line on writeback.
   const rawLines = text.split('\n');
-  const prefix = [];
-  const dropped = [];
-  let target = null;
+  const prefix: Array<{ raw: string; obj: PersistedLine | null }> = [];
+  const dropped: Array<{ raw: string; obj: PersistedLine | null }> = [];
+  let target: PersistedLine | null = null;
   let userCount = 0;
   let crossed = false;
-  let lastSurvivingUuid = null;
+  let lastSurvivingUuid: string | null = null;
 
   for (const raw of rawLines) {
     if (!raw.length) continue; // skip empty trailing line from final `\n`
-    const obj = tryParse(raw);
+    const parsed = tryParse(raw);
+    const obj: PersistedLine | null = parsed && typeof parsed === 'object' ? parsed as PersistedLine : null;
     if (!obj) {
       // Unparseable line — keep it on the prefix side until we've crossed
       // the threshold, then drop it on the tail side. This is best-effort
@@ -117,10 +125,7 @@ async function readAndSplit({ cwd, sessionId, userMessageIndex }) {
   }
 
   if (!target) {
-    throw Object.assign(
-      new Error(`userMessageIndex ${userMessageIndex} out of range (session has ${userCount} user prompts)`),
-      { statusCode: 400 },
-    );
+    throw httpError(400, `userMessageIndex ${userMessageIndex} out of range (session has ${userCount} user prompts)`);
   }
 
   return {
@@ -131,7 +136,7 @@ async function readAndSplit({ cwd, sessionId, userMessageIndex }) {
   };
 }
 
-async function writeAtomic(file, content) {
+async function writeAtomic(file: string, content: string): Promise<void> {
   const dir = path.dirname(file);
   await fs.mkdir(dir, { recursive: true });
   const tmp = path.join(dir, `.tmp-${randomUUID()}-${path.basename(file)}`);
@@ -139,7 +144,7 @@ async function writeAtomic(file, content) {
   await fs.rename(tmp, file);
 }
 
-function joinLines(entries) {
+function joinLines(entries: Array<{ raw: string }>): string {
   if (entries.length === 0) return '';
   // Each line gets a trailing `\n` — preserves the canonical jsonl shape.
   return entries.map(e => e.raw).join('\n') + '\n';
@@ -152,10 +157,12 @@ function joinLines(entries) {
 // After the rewrite, appends a fresh last-prompt / permission-mode metadata
 // pair pointing at lastSurvivingUuid (skipped when N==0 — the empty-history
 // case where no leaf exists to anchor the picker).
-export async function truncateSessionAtUserMessage({ cwd, sessionId, userMessageIndex, permissionMode }) {
+export async function truncateSessionAtUserMessage({ cwd, sessionId, userMessageIndex, permissionMode }: {
+  cwd: string; sessionId: string; userMessageIndex: number; permissionMode?: string;
+}): Promise<{ droppedText: string; droppedLineCount: number; remainingLineCount: number; lastSurvivingUuid: string | null }> {
   if (!cwd || !sessionId) throw new Error('cwd + sessionId required');
   if (!Number.isInteger(userMessageIndex) || userMessageIndex < 0) {
-    throw Object.assign(new Error('userMessageIndex must be a non-negative integer'), { statusCode: 400 });
+    throw httpError(400, 'userMessageIndex must be a non-negative integer');
   }
   const { prefix, dropped, droppedText, lastSurvivingUuid } =
     await readAndSplit({ cwd, sessionId, userMessageIndex });
@@ -188,10 +195,12 @@ export async function truncateSessionAtUserMessage({ cwd, sessionId, userMessage
 // copied line to the new id — purely cosmetic (the filename is what
 // `--resume` reads) but keeps the file self-consistent for any downstream
 // tooling. Returns { newSessionId, droppedText, lastSurvivingUuid }.
-export async function forkSessionAtUserMessage({ cwd, sessionId, userMessageIndex, permissionMode, newSessionId }) {
+export async function forkSessionAtUserMessage({ cwd, sessionId, userMessageIndex, permissionMode, newSessionId }: {
+  cwd: string; sessionId: string; userMessageIndex: number; permissionMode?: string; newSessionId?: string;
+}): Promise<{ newSessionId: string; droppedText: string; lastSurvivingUuid: string | null }> {
   if (!cwd || !sessionId) throw new Error('cwd + sessionId required');
   if (!Number.isInteger(userMessageIndex) || userMessageIndex < 0) {
-    throw Object.assign(new Error('userMessageIndex must be a non-negative integer'), { statusCode: 400 });
+    throw httpError(400, 'userMessageIndex must be a non-negative integer');
   }
   const { prefix, droppedText, lastSurvivingUuid } =
     await readAndSplit({ cwd, sessionId, userMessageIndex });
@@ -201,7 +210,7 @@ export async function forkSessionAtUserMessage({ cwd, sessionId, userMessageInde
 
   // Rewrite each line's `sessionId` field (when present) to the new id.
   // Lines we couldn't parse are passed through verbatim.
-  const rewritten = prefix.map(({ raw, obj }) => {
+  const rewritten = prefix.map(({ raw, obj }): { raw: string } => {
     if (!obj) return { raw };
     if (typeof obj.sessionId !== 'string') return { raw };
     const copy = { ...obj, sessionId: newSid };
@@ -226,4 +235,20 @@ export async function forkSessionAtUserMessage({ cwd, sessionId, userMessageInde
     droppedText,
     lastSurvivingUuid,
   };
+}
+
+// The `code` on a thrown Node error (e.g. 'ENOENT'), or undefined — the
+// narrowing point for error-code checks (catch variables are `unknown` under
+// strict). Duplicated from storeLock.ts: it's four lines, and importing it
+// across modules would couple every store to storeLock for one helper.
+function errCode(e: unknown): string | undefined {
+  if (typeof e !== 'object' || e === null) return undefined;
+  const code = (e as { code?: unknown }).code;
+  return typeof code === 'string' ? code : undefined;
+}
+
+// Throw an Error carrying an HTTP statusCode for the REST layer, using the
+// same Object.assign pattern the routes consume (`err.statusCode`).
+function httpError(statusCode: number, message: string): Error & { statusCode: number } {
+  return Object.assign(new Error(message), { statusCode });
 }

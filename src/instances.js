@@ -13,28 +13,28 @@ import { SessionRenewController } from './sessionRenew.ts';
 import { isTemp, markTemp, unmarkTemp } from './tempSessions.ts';
 import { markArchived } from './archivedSessions.ts';
 import { CONDUCT_PROJECT_NAME } from './conduct.ts';
-import { composeCurrentConduct } from './conductorConventions.js';
+import { composeCurrentConduct } from './conductorConventions.ts';
 import { buildSettingsJSON, buildMcpConfigJSON, AWAITING_INPUT_MESSAGE } from './settings.ts';
 import { getOnOverageAction, getOverageThreshold, getConductorCompactWindow, resolveContextWindowTokens, getDebugByDefault, getBackend, isKnownBackend, resolveSpawnEffort } from './appSettings.ts';
 import { HookBroker } from './hookBroker.ts';
 import { loadPersistedTranscript, writeSessionMetadata, readLastSessionModel, hasResumableConversation } from './transcript.ts';
 import { canonicalizeModel, familyOf, CLAUDE_BACKEND_ID } from './modelVersions.ts';
-import { truncateSessionAtUserMessage } from './sessionEdit.js';
-import { pruneSessionToNewId, INPUT_MODES } from './sessionPrune.js';
+import { truncateSessionAtUserMessage } from './sessionEdit.ts';
+import { pruneSessionToNewId, INPUT_MODES } from './sessionPrune.ts';
 import { saveAttachment, isImageType } from './attachments.js';
 import { buildApprovePrompt } from './planApproval.ts';
 import { reconstructTasks } from './taskReconstruct.ts';
-import { buildArchive } from './eventArchive.js';
+import { buildArchive } from './eventArchive.ts';
 import { IdleSubscriptionHub } from './idleSubscriptions.js';
-import { OverageResumeController } from './overageResume.js';
+import { OverageResumeController } from './overageResume.ts';
 import { UsageOverageMonitor } from './usageOverageMonitor.js';
 import { usageDomainOfBackend, isMonitoredDomain } from './usageWindowDomains.ts';
 import { defaultClaudeLauncher, resolveClaudeBin, resolveBackendLaunch } from './claudeLauncher.ts';
 
 // `AUTO_RESUME_TEXT` now lives with the overage timer machine in
-// overageResume.js; re-export it here so existing importers (and tests) that
+// overageResume.ts; re-export it here so existing importers (and tests) that
 // reach for `instances.js` keep resolving it unchanged.
-export { AUTO_RESUME_TEXT } from './overageResume.js';
+export { AUTO_RESUME_TEXT } from './overageResume.ts';
 
 // Three user-facing modes:
 //   - `plan`              — read-only planning; CLI is in plan mode
@@ -137,7 +137,7 @@ function isOverageEvent(data) {
 // (confirmed against a real CLI capture). The snake_case ISO `resets_at` (as in
 // the account-usage payload / header.js's `new Date(bucket.resets_at)`) and a
 // raw epoch number are accepted only as defensive fallbacks. The overage
-// auto-resume timer (overageResume.js arm()) and the global clear timer both
+// auto-resume timer (overageResume.ts arm()) and the global clear timer both
 // expect epoch seconds, so this is the single place the shape is reconciled.
 export function parseResetEpochSecs(info) {
   const v = info?.resetsAt ?? info?.resets_at ?? null;
@@ -172,7 +172,7 @@ const DEFAULT_THINKING = 'adaptive';
 // never renumbers, so consumers keyed on `_seq` (WS client dedup,
 // get_transcript({sinceSeq}), GET /api/instances/:id/events) survive
 // trims. Evicted events remain reconstructable from the session jsonl
-// (see src/eventArchive.js).
+// (see src/eventArchive.ts).
 //
 // Trimming is batched (amortized O(1) per push): once the buffer exceeds
 // cap + slack, the front is spliced down to cap, then "snapped" forward so
@@ -882,7 +882,7 @@ export class Instance extends EventEmitter {
     }
     // Every outer user_echo funnels through here (live prompt(), parser
     // queued-prompt echoes, jsonl replay), so this counter matches the
-    // Nth-pure-user-prompt-line semantics sessionEdit.js truncates by.
+    // Nth-pure-user-prompt-line semantics sessionEdit.ts truncates by.
     if (isOuterUserEcho(wrapped)) {
       wrapped.userIndex = this._userEchoCount;
       this._userEchoCount += 1;
@@ -1091,7 +1091,7 @@ export class Instance extends EventEmitter {
     // Backend-agnostic launch: resolveBackendLaunch() computes ONLY command +
     // prefix (+ the backend's env) from the backend RECORD, and owns the
     // template's null-model invariant; the SAME claude args (including --model)
-    // are then appended uniformly below. Also used by claudeShellEnv.js's
+    // are then appended uniformly below. Also used by claudeShellEnv.ts's
     // generateBundle() and summarize.js's generateSummary() for their own
     // throwaway one-shot spawns.
     const backendRecord = getBackend(this.backend);
@@ -2910,7 +2910,7 @@ export class InstanceManager extends EventEmitter {
     return inst;
   }
 
-  // Overage auto-resume timer machine — see src/overageResume.js. The manager
+  // Overage auto-resume timer machine — see src/overageResume.ts. The manager
   // keeps these names/signatures and forwards to the controller (internal
   // callers + the overage tests reach for them on the manager).
   _armAutoResume(inst) { return this._overageResume.arm(inst); }

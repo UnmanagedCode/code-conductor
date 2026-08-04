@@ -1,4 +1,4 @@
-// Unit tests for src/claudeShellEnv.js — the per-claude-version shell-env
+// Unit tests for src/claudeShellEnv.ts — the per-claude-version shell-env
 // bundle cache used by the project_bash MCP tool. Server-less (no
 // bootServer): a fake `claude` binary drives every codepath deterministically
 // via env-var-selected modes, following the writeFake/withEnv pattern from
@@ -13,7 +13,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import os from 'node:os';
 import path from 'node:path';
-import { getShellEnvBundlePath, _resetForTest, bundleShellKind } from '../src/claudeShellEnv.js';
+import { getShellEnvBundlePath, _resetForTest, bundleShellKind } from '../src/claudeShellEnv.ts';
 import { orchStoreRoot } from '../src/projects.ts';
 import { setTierBackend, addBackend, addCustomModel, getBackend } from '../src/appSettings.ts';
 import { resolveBackendLaunch } from '../src/claudeLauncher.ts';

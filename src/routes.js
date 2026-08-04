@@ -23,7 +23,7 @@ import { drainAndScheduleRestart } from './resumeRestart.js';
 import { getSelfUpdateStatus, applySelfUpdate } from './selfUpdate.js';
 import { BOOT_ID } from './bootId.ts';
 import { getOrCompute, invalidate, invalidateAll } from './projectsCache.ts';
-import { pageInstanceEvents } from './eventArchive.js';
+import { pageInstanceEvents } from './eventArchive.ts';
 import { ensureConductProject, CONDUCT_PROJECT_NAME } from './conduct.ts';
 import {
   isAvailable as transcribeAvailable, transcribe, modelPathForName,
@@ -70,7 +70,7 @@ import {
   addCustomConvention as addProjectConvention,
   updateCustomConvention as updateProjectConvention,
   deleteCustomConvention as deleteProjectConvention,
-} from './projectConventions.js';
+} from './projectConventions.ts';
 import { composeProjectConventionsDoc, regenerateAllProjectConventions } from './projectClaudeMd.js';
 import {
   CORE_META as CONDUCT_CORE_META,
@@ -80,7 +80,7 @@ import {
   addCustomConvention as addConductorConvention,
   updateCustomConvention as updateConductorConvention,
   deleteCustomConvention as deleteConductorConvention,
-} from './conductorConventions.js';
+} from './conductorConventions.ts';
 import {
   CORE_META as WORKSPACE_CORE_META,
   getCatalog as getWorkspaceConventionsCatalog,
@@ -89,7 +89,7 @@ import {
   addCustomConvention as addWorkspaceConvention,
   updateCustomConvention as updateWorkspaceConvention,
   deleteCustomConvention as deleteWorkspaceConvention,
-} from './workspaceConventions.js';
+} from './workspaceConventions.ts';
 
 // Session ids are user-supplied path params on many routes; this is the single
 // allow-list + rejection (400 "invalid sessionId") they all share.
@@ -827,7 +827,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
     });
 
     // Paged event history, including events evicted from the capped ring
-    // (reconstructed from the session jsonl — see src/eventArchive.js).
+    // (reconstructed from the session jsonl — see src/eventArchive.ts).
     // `before=<seq>` pages backward (up to `limit` events immediately
     // preceding that seq, oldest-first; the UI's scroll-up path — echo the
     // response's `nextBefore` cursor back to continue). `after=<seq>` pages
@@ -917,7 +917,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
           // Deferred import — keeps the routes module light and avoids pulling
           // sessionEdit into test paths that never exercise it. Inside the try
           // so the flag is released if it throws.
-          const { forkSessionAtUserMessage } = await import('./sessionEdit.js');
+          const { forkSessionAtUserMessage } = await import('./sessionEdit.ts');
           forked = await forkSessionAtUserMessage({
             cwd: inst.cwd,
             sessionId: inst.sessionId,
@@ -964,7 +964,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
     // client can recompute any slider/tickbox combination locally instead of
     // round-tripping on every drag. Counted over in-context entries only —
     // sidechains and the disk-only `toolUseResult` sidecar are excluded (see
-    // sessionPrune.js).
+    // sessionPrune.ts).
     r.get('/instances/:id/prune/analysis', async (req, res, next) => {
       try {
         const inst = instances.get(req.params.id);
@@ -972,7 +972,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary } 
         if (!inst.sessionId) {
           throw Object.assign(new Error('no sessionId — instance has not yet received a turn'), { statusCode: 400 });
         }
-        const { analyzeSessionForPrune } = await import('./sessionPrune.js');
+        const { analyzeSessionForPrune } = await import('./sessionPrune.ts');
         res.json(await analyzeSessionForPrune({ cwd: inst.cwd, sessionId: inst.sessionId }));
       } catch (e) { next(e); }
     });

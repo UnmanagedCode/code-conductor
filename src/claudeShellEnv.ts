@@ -33,20 +33,20 @@ const BUNDLE_NAME_RE = /^bundle-(.+)-(bash|zsh)\.sh$/;
 
 // Read live (not a module-level constant) so tests can shrink it via env var
 // per-case without needing to reload the module.
-function genTimeoutMs() {
+function genTimeoutMs(): number {
   return Number(process.env.CLAUDE_SHELL_ENV_TIMEOUT_MS) || 45_000;
 }
 
-function shellEnvDir() {
+function shellEnvDir(): string {
   return path.join(orchStoreRoot(), 'shell-env');
 }
 
-function sanitizeVersionKey(raw) {
+function sanitizeVersionKey(raw: string): string {
   const token = raw.trim().split(/\s+/)[0] || 'unknown';
   return token.replace(/[^A-Za-z0-9._-]/g, '_');
 }
 
-function parseShellKind(contents) {
+function parseShellKind(contents: string): string {
   const m = contents.match(new RegExp(`^export ${SHELL_KIND_MARKER}=(\\S*)$`, 'm'));
   return m ? m[1] : '';
 }
@@ -56,29 +56,29 @@ function parseShellKind(contents) {
 // Falls back to 'bash' for any unrecognized/legacy path — never actually
 // hit in practice, since generateBundle()/findCachedBundle() only ever
 // produce the new-format name.
-export function bundleShellKind(bundlePath) {
+export function bundleShellKind(bundlePath: string): string {
   const m = path.basename(bundlePath).match(/-(bash|zsh)\.sh$/);
   return m ? m[1] : 'bash';
 }
 
 // Single-quote-escape for safe interpolation inside a single-quoted bash
 // string — orchStoreRoot() derives from user-configurable PROJECTS_ROOT.
-function shQuote(p) {
+function shQuote(p: string): string {
   return `'${p.replace(/'/g, `'\\''`)}'`;
 }
 
-async function getClaudeVersionKey(command, prefixArgs) {
+async function getClaudeVersionKey(command: string, prefixArgs: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
     let proc;
     try {
       proc = spawn(command, [...prefixArgs, '--version'], { stdio: ['ignore', 'pipe', 'pipe'] });
     } catch (err) {
-      reject(new Error(`claudeShellEnv: failed to spawn claude --version: ${err.message}`));
+      reject(new Error(`claudeShellEnv: failed to spawn claude --version: ${errMsg(err)}`));
       return;
     }
     let stdout = '';
     let settled = false;
-    const settle = (fn) => { if (!settled) { settled = true; clearTimeout(timer); fn(); } };
+    const settle = (fn: () => void) => { if (!settled) { settled = true; clearTimeout(timer); fn(); } };
     const timer = setTimeout(() => {
       try { proc.kill('SIGKILL'); } catch { /* ignore */ }
       settle(() => reject(new Error('claudeShellEnv: claude --version timed out')));
@@ -99,7 +99,7 @@ async function getClaudeVersionKey(command, prefixArgs) {
   });
 }
 
-async function generateBundle(key, command, prefixArgs) {
+async function generateBundle(key: string, command: string, prefixArgs: string[]): Promise<string> {
   const dir = shellEnvDir();
   const spawnDir = path.join(dir, 'spawn');
   await fs.mkdir(spawnDir, { recursive: true });
@@ -129,15 +129,15 @@ Then stop — do not summarize the output.`;
     '--allowedTools', 'Bash',
   ];
 
-  await new Promise((resolve, reject) => {
+  await new Promise<void>((resolve, reject) => {
     let proc;
     try {
       proc = spawn(spawnCommand, args, { cwd: spawnDir, env: { ...process.env, ...backendEnvVars }, stdio: ['pipe', 'pipe', 'pipe'] });
     } catch (err) {
-      reject(new Error(`claudeShellEnv: failed to spawn claude -p: ${err.message}`));
+      reject(new Error(`claudeShellEnv: failed to spawn claude -p: ${errMsg(err)}`));
       return;
     }
-    const stderrChunks = [];
+    const stderrChunks: Buffer[] = [];
     proc.stderr.on('data', (c) => stderrChunks.push(c));
     proc.stdout.resume(); // discard — we only care about the side-effect file
 
@@ -169,7 +169,7 @@ Then stop — do not summarize the output.`;
   try {
     contents = await fs.readFile(tmpTarget, 'utf8');
   } catch (err) {
-    throw new Error(`claudeShellEnv: bundle-generation did not produce the expected file: ${err.message}`);
+    throw new Error(`claudeShellEnv: bundle-generation did not produce the expected file: ${errMsg(err)}`);
   }
   if (!contents.trim() || !contents.includes(MARKER)) {
     throw new Error('claudeShellEnv: generated bundle failed validation (empty or missing CLAUDE_CODE_EXECPATH marker)');
@@ -192,9 +192,9 @@ Then stop — do not summarize the output.`;
 // Old-format `bundle-<version>.sh` files (pre-dating shell-matching) never
 // match BUNDLE_NAME_RE, so they're simply never returned here — no explicit
 // migration needed, they're just unreferenced disk cruft from here on.
-async function findCachedBundle(key) {
+async function findCachedBundle(key: string): Promise<string | null> {
   const dir = shellEnvDir();
-  let entries;
+  let entries: string[];
   try {
     entries = await fs.readdir(dir);
   } catch {
@@ -212,7 +212,7 @@ async function findCachedBundle(key) {
   return null;
 }
 
-async function resolveFresh() {
+async function resolveFresh(): Promise<string> {
   // The cache key is intentionally (claude version, shell) and
   // backend-independent: the captured shims/PATH/aliases come from the
   // `claude` CLI build itself, not from which backend
@@ -231,9 +231,9 @@ async function resolveFresh() {
 // share the same in-flight resolveFresh() call — `_singleton = p` is
 // assigned before either caller has awaited anything, so this doubles as
 // the concurrent-first-caller coalescer.
-let _singleton = null;
+let _singleton: Promise<string> | null = null;
 
-export async function getShellEnvBundlePath() {
+export async function getShellEnvBundlePath(): Promise<string> {
   if (_singleton) return _singleton;
   const p = resolveFresh();
   _singleton = p;
@@ -243,6 +243,10 @@ export async function getShellEnvBundlePath() {
   return p;
 }
 
-export function _resetForTest() {
+export function _resetForTest(): void {
   _singleton = null;
+}
+
+function errMsg(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
 }

@@ -10,7 +10,7 @@
 // Used by:
 //   - src/instances.js  → Instance.reconstructActiveTasks() (snapshot seed)
 //   - src/wsHub.ts       → snapshot frame `tasksAtTailStart`
-//   - src/eventArchive.js → inject synthetic `task_completion` into paged history
+//   - src/eventArchive.ts → inject synthetic `task_completion` into paged history
 //
 // task_completion is never a real wire event — it is derived here (and, for the
 // live/tail path, synthesized client-side in wsRouter.js). Callers assemble it

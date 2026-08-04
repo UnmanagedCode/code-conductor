@@ -9,8 +9,8 @@
 // <orchStoreRoot>/conventions/workspace.json as { enabled: [...], rules: [...] }.
 //
 // The composed file is fully app-owned: regenerated (overwritten) on boot
-// and after a settings change by ensureRootClaudeMd() in rootClaudeMd.js.
-// This mirrors src/conductorConventions.js (which instead injects its
+// and after a settings change by ensureRootClaudeMd() in rootClaudeMd.ts.
+// This mirrors src/conductorConventions.ts (which instead injects its
 // composed doc at spawn via --append-system-prompt rather than to a file).
 
 import { promises as fs } from 'node:fs';
@@ -31,7 +31,7 @@ export const CORE_META = {
 
 // Built-in convention metadata (order = order they appear in the composed doc).
 // Bodies live in conventions/workspace/<slug>.md.
-export const SEED_CONVENTIONS = [
+export const SEED_CONVENTIONS: Array<{ slug: string; name: string; description: string }> = [
   { slug: 'git-hygiene', name: 'Git hygiene',
     description: 'Init repo; git identity; commit-per-turn; .gitignore; no push; no hook bypass' },
   { slug: 'readme-maintenance', name: 'README maintenance',
@@ -51,8 +51,8 @@ const catalog = createFragmentCatalog({
 
 // ── Fragment read (core is always-on, cached per resolved path) ──────────────
 
-let coreCache;
-async function getCore() {
+let coreCache: string | undefined;
+async function getCore(): Promise<string> {
   if (coreCache === undefined) coreCache = (await fs.readFile(CORE_FILE, 'utf8')).replace(/\s+$/, '');
   return coreCache;
 }
@@ -65,7 +65,7 @@ export const updateCustomConvention = catalog.updateCustom;
 export const validateSlug = catalog.validateSlug;
 
 // Deleting a custom convention also drops it from the enabled selection.
-export async function deleteCustomConvention(slug) {
+export async function deleteCustomConvention(slug: string) {
   const result = await catalog.deleteCustom(slug);
   const enabled = await getSelectionRaw();
   if (enabled?.includes(slug)) {
@@ -77,30 +77,26 @@ export async function deleteCustomConvention(slug) {
 // ── Global selection ─────────────────────────────────────────────────────────
 
 // Raw enabled array from the store (undefined when unset).
-async function getSelectionRaw() {
+async function getSelectionRaw(): Promise<string[] | undefined> {
   const state = await catalog.readState();
-  return Array.isArray(state.enabled) ? state.enabled : undefined;
+  return Array.isArray(state.enabled) ? state.enabled as string[] : undefined;
 }
 
 // Enabled convention slugs. Default (store absent/unset) = all built-ins, so a
 // fresh install renders the projects-root CLAUDE.md equivalent to the
 // pre-carve bundled canonical.
-export async function getSelection() {
+export async function getSelection(): Promise<string[]> {
   return (await getSelectionRaw()) ?? SEED_CONVENTIONS.map(m => m.slug);
 }
 
-export async function setSelection(enabled) {
+export async function setSelection(enabled: string[]): Promise<string[]> {
   if (!Array.isArray(enabled)) {
-    const err = new Error('enabled must be an array of slug strings');
-    err.statusCode = 400;
-    throw err;
+    throw httpError(400, 'enabled must be an array of slug strings');
   }
   const known = new Set((await getCatalog()).map(m => m.slug));
   for (const slug of enabled) {
     if (!known.has(slug)) {
-      const err = new Error(`unknown convention slug '${slug}'`);
-      err.statusCode = 400;
-      throw err;
+      throw httpError(400, `unknown convention slug '${slug}'`);
     }
   }
   await catalog.patchState({ enabled });
@@ -110,12 +106,16 @@ export async function setSelection(enabled) {
 // ── Compose ───────────────────────────────────────────────────────────────────
 
 // core + enabled convention bodies (catalog order).
-export async function composeWorkspace(enabledSlugs) {
+export async function composeWorkspace(enabledSlugs: string[]): Promise<string> {
   const core = await getCore();
   const mods = (await catalog.compose(enabledSlugs)).trim();
   return [core, ...(mods ? [mods] : [])].join('\n\n') + '\n';
 }
 
-export async function composeCurrentWorkspace() {
+export async function composeCurrentWorkspace(): Promise<string> {
   return composeWorkspace(await getSelection());
+}
+
+function httpError(statusCode: number, message: string): Error & { statusCode: number } {
+  return Object.assign(new Error(message), { statusCode });
 }

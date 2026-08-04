@@ -1,9 +1,9 @@
-// Unit coverage of the Prune transform (src/sessionPrune.js).
+// Unit coverage of the Prune transform (src/sessionPrune.ts).
 //
 // The invariants asserted here are load-bearing, not stylistic — several were
 // derived by probing the real CLI's transcript-replay behaviour and would be
 // invisible to a reviewer reading only this repo. See the header comment in
-// src/sessionPrune.js and docs/architecture.md → Prune.
+// src/sessionPrune.ts and docs/architecture.md → Prune.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -78,7 +78,7 @@ async function readOut(dir, sid) {
 
 test('prune stubs the pruned region and leaves the newest turn verbatim', async () => {
   await withStore(async () => {
-    const { pruneSessionToNewId } = await import('../src/sessionPrune.js');
+    const { pruneSessionToNewId } = await import('../src/sessionPrune.ts');
     const lines = scenario();
     const { dir, sid } = await seed(lines);
     const originalBytes = await fs.readFile(path.join(dir, `${sid}.jsonl`));
@@ -123,7 +123,7 @@ test('a Read tool_use keeps file_path, and its result becomes a block array', as
   // every later Edit fail; keeping the result a STRING would leave the harness
   // asserting the file is in context when only a size marker is.
   await withStore(async () => {
-    const { pruneSessionToNewId, PRUNE_STUB_AS_BLOCKS } = await import('../src/sessionPrune.js');
+    const { pruneSessionToNewId, PRUNE_STUB_AS_BLOCKS } = await import('../src/sessionPrune.ts');
     assert.equal(PRUNE_STUB_AS_BLOCKS, true);
     const { dir, sid } = await seed(scenario());
     for (const inputMode of ['truncate', 'minimal']) {
@@ -147,7 +147,7 @@ test('a Read tool_use keeps file_path, and its result becomes a block array', as
 
 test('toolUseResult, timestamps, is_error and sidechain lines are never touched', async () => {
   await withStore(async () => {
-    const { pruneSessionToNewId } = await import('../src/sessionPrune.js');
+    const { pruneSessionToNewId } = await import('../src/sessionPrune.ts');
     const lines = scenario();
     lines[3].timestamp = '2026-01-01T00:00:00.000Z';
     lines[5].message.content[0].is_error = true;
@@ -173,7 +173,7 @@ test('toolUseResult, timestamps, is_error and sidechain lines are never touched'
 
 test('thinking in an entry with an unresolved tool_use is exempt', async () => {
   await withStore(async () => {
-    const { pruneSessionToNewId } = await import('../src/sessionPrune.js');
+    const { pruneSessionToNewId } = await import('../src/sessionPrune.ts');
     const { dir, sid } = await seed([
       { type: 'user', uuid: 'u1', sessionId: 'old', message: { role: 'user', content: [{ type: 'text', text: 'go' }] } },
       { type: 'assistant', uuid: 'a1', sessionId: 'old', message: { id: 'm1', role: 'assistant', content: [
@@ -200,7 +200,7 @@ test('thinking in an entry with an unresolved tool_use is exempt', async () => {
 
 test('a stub that would be larger than the original is skipped', async () => {
   await withStore(async () => {
-    const { pruneSessionToNewId, analyzeSessionForPrune } = await import('../src/sessionPrune.js');
+    const { pruneSessionToNewId, analyzeSessionForPrune } = await import('../src/sessionPrune.ts');
     const { dir, sid } = await seed([
       { type: 'user', uuid: 'u1', sessionId: 'old', message: { role: 'user', content: [{ type: 'text', text: 'go' }] } },
       { type: 'assistant', uuid: 'a1', sessionId: 'old', message: { id: 'm1', role: 'assistant', content: [
@@ -228,7 +228,7 @@ test('a stub that would be larger than the original is skipped', async () => {
 
 test('analysis excludes sidechain entries and toolUseResult bytes', async () => {
   await withStore(async () => {
-    const { analyzeSessionForPrune } = await import('../src/sessionPrune.js');
+    const { analyzeSessionForPrune } = await import('../src/sessionPrune.ts');
     const { sid } = await seed(scenario());
     const a = await analyzeSessionForPrune({ cwd: CWD, sessionId: sid });
     assert.equal(a.turnCount, 2);
@@ -246,7 +246,7 @@ test('analysis excludes sidechain entries and toolUseResult bytes', async () => 
 
 test('sub-agent transcripts follow the session to its new id', async () => {
   await withStore(async () => {
-    const { pruneSessionToNewId } = await import('../src/sessionPrune.js');
+    const { pruneSessionToNewId } = await import('../src/sessionPrune.ts');
     const { dir, sid } = await seed(scenario(), { subAgents: '{"type":"assistant"}\n' });
     const { newSessionId } = await pruneSessionToNewId({
       cwd: CWD, sessionId: sid, cutTurnIndex: 1, pruneThinking: false, inputMode: 'truncate',
@@ -266,7 +266,7 @@ test('truncate mode never splits a surrogate pair', async () => {
   // entire contract is that it resumes cleanly. Astral-plane characters turn up
   // in exactly the values this truncates.
   await withStore(async () => {
-    const { pruneSessionToNewId, PRUNE_INPUT_MAX } = await import('../src/sessionPrune.js');
+    const { pruneSessionToNewId, PRUNE_INPUT_MAX } = await import('../src/sessionPrune.ts');
     // '😀' is a surrogate pair, so at PRUNE_INPUT_MAX-1 it straddles the cut.
     const straddling = 'a'.repeat(PRUNE_INPUT_MAX - 1) + '😀' + 'b'.repeat(50);
     // …and one where the pair sits wholly inside the kept prefix.
@@ -322,7 +322,7 @@ test('the savings preview equals what the transform actually saves', async () =>
   // true. The other assertions in this file are one-sided lower bounds and would
   // not notice an analysis pass that reported 10x the real figure.
   await withStore(async () => {
-    const { analyzeSessionForPrune, pruneSessionToNewId } = await import('../src/sessionPrune.js');
+    const { analyzeSessionForPrune, pruneSessionToNewId } = await import('../src/sessionPrune.ts');
     const { sid } = await seed(scenario());
     const analysis = await analyzeSessionForPrune({ cwd: CWD, sessionId: sid });
 
@@ -350,7 +350,7 @@ test('the savings preview equals what the transform actually saves', async () =>
 
 test('the savings denominator counts attachments, which are in context', async () => {
   await withStore(async () => {
-    const { analyzeSessionForPrune } = await import('../src/sessionPrune.js');
+    const { analyzeSessionForPrune } = await import('../src/sessionPrune.ts');
     const lines = scenario();
     // A CLAUDE.md injection: never pruned, but genuinely in the model's context,
     // so omitting it from the denominator over-reports the percentage saved.
@@ -367,7 +367,7 @@ test('the savings denominator counts attachments, which are in context', async (
 
 test('the cut is capped so the newest turn always survives', async () => {
   await withStore(async () => {
-    const { pruneSessionToNewId } = await import('../src/sessionPrune.js');
+    const { pruneSessionToNewId } = await import('../src/sessionPrune.ts');
     const { sid } = await seed(scenario());
     await assert.rejects(
       () => pruneSessionToNewId({ cwd: CWD, sessionId: sid, cutTurnIndex: 2 }),
@@ -444,7 +444,7 @@ function assertStubbedInput(value, inputMode, label) {
 }
 
 async function pruneExemptFixture(inputMode) {
-  const { pruneSessionToNewId } = await import('../src/sessionPrune.js');
+  const { pruneSessionToNewId } = await import('../src/sessionPrune.ts');
   const { dir, sid } = await seed(exemptScenario());
   const { newSessionId, saved } = await pruneSessionToNewId({
     cwd: CWD, sessionId: sid, cutTurnIndex: 1, pruneThinking: true, inputMode,
@@ -552,7 +552,7 @@ test('the savings preview accounts for the exemption too', async () => {
   // delivers. Exempt blocks still count toward the per-turn DENOMINATOR — they
   // remain in the model's context.
   await withStore(async () => {
-    const { analyzeSessionForPrune, pruneSessionToNewId } = await import('../src/sessionPrune.js');
+    const { analyzeSessionForPrune, pruneSessionToNewId } = await import('../src/sessionPrune.ts');
     const { sid } = await seed(exemptScenario());
     const analysis = await analyzeSessionForPrune({ cwd: CWD, sessionId: sid });
 
@@ -576,7 +576,7 @@ test('the savings preview accounts for the exemption too', async () => {
 });
 
 test('isPruneExemptTool draws the line at the segment boundary', async () => {
-  const { isPruneExemptTool, PRUNABLE_CONDUCTOR_MCP_TOOLS } = await import('../src/sessionPrune.js');
+  const { isPruneExemptTool, PRUNABLE_CONDUCTOR_MCP_TOOLS } = await import('../src/sessionPrune.ts');
   for (const name of [
     'AskUserQuestion',
     'mcp__code-conductor__spawn_instance',

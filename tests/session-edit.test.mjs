@@ -1,4 +1,4 @@
-// Pure-function coverage of the truncate/fork helpers in src/sessionEdit.js.
+// Pure-function coverage of the truncate/fork helpers in src/sessionEdit.ts.
 // Operates against synthetic jsonl files written into a temp dir styled as
 // `~/.claude/projects/<encoded-cwd>/<sid>.jsonl`.
 
@@ -11,7 +11,7 @@ import { encodeCwd } from '../src/projects.ts';
 import { isPureUserPromptLine } from '../src/transcript.ts';
 import {
   truncateSessionAtUserMessage, forkSessionAtUserMessage,
-} from '../src/sessionEdit.js';
+} from '../src/sessionEdit.ts';
 
 async function makeFixture(lines) {
   const tmpHome = await fs.mkdtemp(path.join(os.tmpdir(), 'orch-edit-'));

@@ -718,7 +718,7 @@ export function attachSkillLoad(events: UiEvent[], source: WireEnvelope, pending
 
 // A `user_echo` for a top-level (non-sub-agent) user prompt — i.e. one that
 // marks a turn boundary. Sub-agent echoes carry a parentToolUseId. Shared by
-// the event ring (instances.js) and the paging/archive code (eventArchive.js).
+// the event ring (instances.js) and the paging/archive code (eventArchive.ts).
 export function isOuterUserEcho(ev: UiEvent | null | undefined): boolean {
   return ev?.kind === 'user_echo' && !ev.parentToolUseId;
 }
@@ -805,7 +805,7 @@ function resolveGroupBoundary(components: BoundaryInterval[], start: number): nu
 // the component it merges into) — not past its whole group, whose later
 // children may still have a head above them and stay servable.
 // NOT on the production path — snapshotTail (instances.js) and
-// pageInstanceEvents (eventArchive.js) both call snapStartToQuiescent, which
+// pageInstanceEvents (eventArchive.ts) both call snapStartToQuiescent, which
 // resolves the same components itself while also honoring quiescence. This
 // export isolates the group resolver for direct unit testing; keep the two
 // in sync by construction (both go through groupBoundaryComponents).
@@ -997,7 +997,7 @@ export function firstQuiescentAtOrAfter(arr: UiEvent[], from: number, bound: num
 
 // Snap a window-start index to a cut that is both quiescent and preserves
 // sub-agent group integrity. `resetIdx` marks the archive→ring seam inside a
-// combined array (see eventArchive.js): it resets only quiescence state, while
+// combined array (see eventArchive.ts): it resets only quiescence state, while
 // group heads remain visible across the seam.
 //
 // Group constraints are merged before resolution. A surviving-only forbidden

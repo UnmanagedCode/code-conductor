@@ -17,7 +17,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { orchStoreRoot } from './projects.ts';
-import { createFragmentCatalog } from './fragmentCatalog.ts';
+import { createFragmentCatalog, type ExtraEntry } from './fragmentCatalog.ts';
 
 const CONVENTIONS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'conventions', 'conductor');
 const CORE_FILE = path.join(CONVENTIONS_DIR, 'core.md');
@@ -32,7 +32,7 @@ export const CORE_META = {
 
 // Built-in convention metadata (order = order they appear in the composed doc).
 // Bodies live in conventions/conductor/<slug>.md.
-export const SEED_CONVENTIONS = [
+export const SEED_CONVENTIONS: Array<{ slug: string; name: string; description: string }> = [
   { slug: 'intent-disambiguation', name: 'Intent disambiguation',
     description: "Ground ambiguous asks in list_projects(); use MCP not shell to enumerate; ask before creating" },
   { slug: 'canonical-workflow', name: 'Canonical workflow',
@@ -52,11 +52,11 @@ export const SEED_CONVENTIONS = [
 ];
 
 // Plugin-contributed conductor-convention fragments join the catalog through
-// this provider, mirroring projectConventions.js's identical pattern. Injected
+// this provider, mirroring projectConventions.ts's identical pattern. Injected
 // after construction (server.js wires it to the plugin host); default no-op
 // so plugin-less imports/tests work.
-let pluginConductorConventionsProvider = async () => [];
-export function setPluginConductorConventionsProvider(fn) {
+let pluginConductorConventionsProvider: () => Promise<ExtraEntry[]> = async () => [];
+export function setPluginConductorConventionsProvider(fn: (() => Promise<ExtraEntry[]>) | null | undefined): void {
   pluginConductorConventionsProvider = fn ?? (async () => []);
 }
 
@@ -70,12 +70,12 @@ const catalog = createFragmentCatalog({
 
 // ── Fragment reads (core + footer are always-on, cached per resolved path) ──
 
-let coreCache; let footerCache;
-async function getCore() {
+let coreCache: string | undefined; let footerCache: string | undefined;
+async function getCore(): Promise<string> {
   if (coreCache === undefined) coreCache = (await fs.readFile(CORE_FILE, 'utf8')).replace(/\s+$/, '');
   return coreCache;
 }
-async function getFooter() {
+async function getFooter(): Promise<string> {
   if (footerCache === undefined) footerCache = (await fs.readFile(FOOTER_FILE, 'utf8')).replace(/\s+$/, '');
   return footerCache;
 }
@@ -88,11 +88,11 @@ export const updateCustomConvention = catalog.updateCustom;
 export const validateSlug = catalog.validateSlug;
 
 // Deleting a custom convention also drops it from the enabled selection.
-export async function deleteCustomConvention(slug) {
+export async function deleteCustomConvention(slug: string) {
   const result = await catalog.deleteCustom(slug);
   const enabled = (await catalog.readState()).enabled;
-  if (Array.isArray(enabled) && enabled.includes(slug)) {
-    await catalog.patchState({ enabled: enabled.filter(s => s !== slug) });
+  if (Array.isArray(enabled) && (enabled as string[]).includes(slug)) {
+    await catalog.patchState({ enabled: (enabled as string[]).filter(s => s !== slug) });
   }
   return result;
 }
@@ -113,19 +113,21 @@ export async function deleteCustomConvention(slug) {
 // needed, and a stale slug can never reach compose() (no 400). Plugin UPDATES
 // that add a convention get it on automatically; a removed one drops out.
 
-const isPluginSlug = s => typeof s === 'string' && s.includes('/'); // namespaced <id>/<slug>; seeds/custom never contain '/'
+const isPluginSlug = (s: string): boolean => typeof s === 'string' && s.includes('/'); // namespaced <id>/<slug>; seeds/custom never contain '/'
 
-async function readSel() {
+async function readSel(): Promise<{ base: string[]; off: string[] }> {
   const state = await catalog.readState();
   return {
-    base: (Array.isArray(state.enabled) ? state.enabled : SEED_CONVENTIONS.map(m => m.slug)).filter(s => !isPluginSlug(s)),
-    off: Array.isArray(state.pluginOff) ? state.pluginOff : [],
+    base: (Array.isArray(state.enabled)
+      ? state.enabled as string[]
+      : SEED_CONVENTIONS.map(m => m.slug)).filter(s => !isPluginSlug(s)),
+    off: Array.isArray(state.pluginOff) ? state.pluginOff as string[] : [],
   };
 }
 
 // Effective enabled slugs — the seed/custom base plus every enabled-plugin
 // convention the user hasn't turned off. Default (store absent) = all built-ins.
-export async function getSelection() {
+export async function getSelection(): Promise<string[]> {
   const { base, off } = await readSel();
   const offSet = new Set(off);
   const pluginOn = (await getCatalog())
@@ -134,19 +136,15 @@ export async function getSelection() {
   return [...new Set([...base, ...pluginOn])];
 }
 
-export async function setSelection(enabled) {
+export async function setSelection(enabled: string[]): Promise<string[]> {
   if (!Array.isArray(enabled)) {
-    const err = new Error('enabled must be an array of slug strings');
-    err.statusCode = 400;
-    throw err;
+    throw httpError(400, 'enabled must be an array of slug strings');
   }
   const cat = await getCatalog();
   const known = new Set(cat.map(m => m.slug));
   for (const slug of enabled) {
     if (!known.has(slug)) {
-      const err = new Error(`unknown convention slug '${slug}'`);
-      err.statusCode = 400;
-      throw err;
+      throw httpError(400, `unknown convention slug '${slug}'`);
     }
   }
   // Split the full submitted checkbox set: seed/custom slugs persist as the
@@ -170,13 +168,20 @@ export async function setSelection(enabled) {
 // ── Compose ───────────────────────────────────────────────────────────────────
 
 // core + enabled convention bodies (catalog order) + footer.
-export async function composeConduct(enabledSlugs) {
+export async function composeConduct(enabledSlugs: string[]): Promise<string> {
   const core = await getCore();
   const footer = await getFooter();
   const mods = (await catalog.compose(enabledSlugs)).trim();
   return [core, ...(mods ? [mods] : []), footer].join('\n\n') + '\n';
 }
 
-export async function composeCurrentConduct() {
+export async function composeCurrentConduct(): Promise<string> {
   return composeConduct(await getSelection());
+}
+
+// The `code`-style HTTP error the REST/MCP surfaces consume (`err.statusCode`),
+// built with the same Object.assign pattern the routes use. Typed so callers
+// can rely on the code without a cast.
+function httpError(statusCode: number, message: string): Error & { statusCode: number } {
+  return Object.assign(new Error(message), { statusCode });
 }

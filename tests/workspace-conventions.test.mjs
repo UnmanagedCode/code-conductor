@@ -11,7 +11,7 @@ import { bootServer, api, freshProjectsRoot, rmrf } from './helpers.mjs';
 import {
   SEED_CONVENTIONS, getCatalog, getSelection, setSelection,
   addCustomConvention, deleteCustomConvention, composeWorkspace, composeCurrentWorkspace,
-} from '../src/workspaceConventions.js';
+} from '../src/workspaceConventions.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-instance.json');

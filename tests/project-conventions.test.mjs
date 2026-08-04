@@ -13,7 +13,7 @@ import { bootServer, api, freshProjectsRoot, rmrf } from './helpers.mjs';
 import {
   getCatalog, addCustomConvention, deleteCustomConvention,
   composeProjectConventionsBlock, SEED_PROJECT_CONVENTIONS,
-} from '../src/projectConventions.js';
+} from '../src/projectConventions.ts';
 import { composeProjectConventionsDoc } from '../src/projectClaudeMd.js';
 import { createProject } from '../src/projects.ts';
 
@@ -333,7 +333,7 @@ test('create_project MCP tool with conventions appends bodies to CLAUDE.md', asy
 
 import {
   setPluginConventionsProvider, composeProjectScaffold,
-} from '../src/projectConventions.js';
+} from '../src/projectConventions.ts';
 
 afterEach(() => {
   // Reset the provider so a fake never leaks into a later test.

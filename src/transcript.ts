@@ -20,9 +20,11 @@ import {
 // disk that the live stream never carries (uuid, isSidechain, attachment,
 // toolUseResult). All wire fields stay `unknown` (or loosely typed) — the
 // on-disk format is owned by the CLI, so every value is narrowed at point of
-// use rather than trusted.
-interface PersistedLine extends WireEnvelope {
+// use rather than trusted. Exported so the sibling editors (sessionEdit.ts's
+// rewind/fork and sessionPrune.ts's transform) share the one shape.
+export interface PersistedLine extends WireEnvelope {
   uuid?: unknown;
+  sessionId?: unknown;
   isSidechain?: boolean;
   attachment?: { type?: unknown; prompt?: unknown } | null;
   toolUseResult?: { agentId?: string } | null;

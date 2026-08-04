@@ -13,7 +13,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, freshProjectsRoot, rmrf } from './helpers.mjs';
 import { createProject } from '../src/projects.ts';
-import { addCustomConvention } from '../src/projectConventions.js';
+import { addCustomConvention } from '../src/projectConventions.ts';
 import {
   buildMarker, parseMarker, composeProjectConventionsDoc,
   conventionsTargetPath, ensureProjectConventionsMd, regenerateAllProjectConventions,

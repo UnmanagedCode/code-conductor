@@ -224,7 +224,7 @@ test('renew_session defers the /clear while an overage-queued turn is pending, t
     // Stand in for a user turn parked in the overage queue at turn_end (the real
     // stop→idle-with-queued-work case). We drive the armed turn_end DIRECTLY
     // rather than via send_prompt: a real prompt fires user_prompt → cancel(),
-    // which empties _overageQueue (overageResume.js) — so it could never leave a
+    // which empties _overageQueue (overageResume.ts) — so it could never leave a
     // queued entry standing at turn_end. This isolates the controller's defer gate.
     inst._overageQueue.push({ text: 'queued task', attachments: [], ts: 1 });
     srv.instances.emit('event', { id, ev: { kind: 'turn_end' } });

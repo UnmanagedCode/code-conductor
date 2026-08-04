@@ -5,7 +5,7 @@
 // with short stubs. No LLM pass: this is a mechanical file transform. The
 // original file is never mutated (the caller archives it).
 //
-// Sibling of sessionEdit.js (rewind/fork) and shares its conventions: atomic
+// Sibling of sessionEdit.ts (rewind/fork) and shares its conventions: atomic
 // tmp+rename write, `sessionId` rewritten inside each copied line, resume-picker
 // metadata appended for the new id.
 //
@@ -48,7 +48,8 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { encodeCwd, claudeProjectsRoot } from './projects.ts';
-import { isPureUserPromptLine, writeSessionMetadata } from './transcript.ts';
+import { isPureUserPromptLine, writeSessionMetadata, type PersistedLine } from './transcript.ts';
+import type { WireContentBlock } from './parser.ts';
 
 // Stub shape for a pruned Read/Write tool_result. `true` (the default) makes the
 // stub a content-block array instead of a plain string.
@@ -132,7 +133,7 @@ export const PRUNABLE_CONDUCTOR_MCP_TOOLS = new Set([
 // `spawn_instance`, `merge_worktree` — on the exempt side. Testing for `__` and
 // not for a first-party plugin naming habit (`code-*`) is deliberate: a
 // third-party plugin id must classify the same way.
-export function isPruneExemptTool(name) {
+export function isPruneExemptTool(name: unknown): boolean {
   if (typeof name !== 'string') return false;
   if (name === 'AskUserQuestion') return true;
   if (!name.startsWith(CONDUCTOR_MCP_PREFIX)) return false;
@@ -159,7 +160,31 @@ const THINKING_STUB = '[pruned: thinking]';
 
 export const INPUT_MODES = new Set(['truncate', 'minimal']);
 
-function humanBytes(n) {
+type InputMode = 'truncate' | 'minimal';
+
+// The subset of a content block the transform reads/writes. All fields stay
+// `unknown` (JSON-parsed); the switch in pruneBlock narrows per type.
+interface PruneBlock {
+  type?: unknown;
+  text?: unknown;
+  thinking?: unknown;
+  data?: unknown;
+  name?: unknown;
+  id?: unknown;
+  input?: unknown;
+  content?: unknown;
+  tool_use_id?: unknown;
+}
+
+interface PruneOpts {
+  inCut: boolean;
+  pruneThinking: boolean;
+  exemptThinking: boolean;
+  toolNames: Map<string, string | undefined>;
+  inputMode: InputMode;
+}
+
+function humanBytes(n: number): string {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
@@ -169,15 +194,17 @@ function humanBytes(n) {
 // (text → text, thinking → thinking, tool_use → name + JSON(input), tool_result →
 // content) at ~4 chars/token. The brief only asks for a heuristic; what matters is
 // that it is computed over IN-CONTEXT entries only (see analyzeSessionForPrune).
-const approxTokens = (s) => Math.ceil((s ?? '').length / 4);
+// Non-string input coerces to '' (was NaN before, when a malformed block carried
+// a numeric field).
+const approxTokens = (s: unknown): number => Math.ceil((typeof s === 'string' ? s : '').length / 4);
 
-function blockTokens(block) {
+function blockTokens(block: PruneBlock | null | undefined): number {
   if (!block || typeof block !== 'object') return 0;
   switch (block.type) {
     case 'text': return approxTokens(block.text);
     case 'thinking': return approxTokens(block.thinking);
     case 'redacted_thinking': return approxTokens(block.data);
-    case 'tool_use': return approxTokens((block.name ?? '') + JSON.stringify(block.input ?? {}));
+    case 'tool_use': return approxTokens(String(block.name ?? '') + JSON.stringify(block.input ?? {}));
     case 'tool_result': return approxTokens(
       typeof block.content === 'string' ? block.content : JSON.stringify(block.content ?? ''),
     );
@@ -189,12 +216,12 @@ function blockTokens(block) {
 
 // `toolName` is the name of the tool_use this result answers (null when unknown —
 // e.g. an orphaned result), and decides the stub SHAPE. See PRUNE_STUB_AS_BLOCKS.
-function stubToolResultContent(content, toolName) {
+function stubToolResultContent(content: unknown, toolName: string | undefined): Array<{ type: string; text: string }> | string {
   const bytes = Buffer.byteLength(
     typeof content === 'string' ? content : JSON.stringify(content ?? ''), 'utf8',
   );
   const text = `[pruned: ${humanBytes(bytes)}]`;
-  return PRUNE_STUB_AS_BLOCKS && SEEDING_TOOLS.has(toolName)
+  return PRUNE_STUB_AS_BLOCKS && toolName != null && SEEDING_TOOLS.has(toolName)
     ? [{ type: 'text', text }]
     : text;
 }
@@ -206,12 +233,14 @@ function stubToolResultContent(content, toolName) {
 // negative: a stub that would be BIGGER than what it replaces (an empty thinking
 // block, a two-byte tool output) is skipped and the original block is returned
 // verbatim. Pruning must never inflate the context.
-function pruneBlock(block, { inCut, pruneThinking, exemptThinking, toolNames, inputMode }) {
+function pruneBlock(block: PruneBlock | null | undefined, { inCut, pruneThinking, exemptThinking, toolNames, inputMode }: PruneOpts): {
+  block: PruneBlock | null | undefined; category: string | null; saved: number;
+} {
   const none = { block, category: null, saved: 0 };
   if (!block || typeof block !== 'object') return none;
 
-  let next = null;
-  let category = null;
+  let next: PruneBlock | null = null;
+  let category: string | null = null;
   if (block.type === 'thinking') {
     // Global, not gated on the cut (thinking staleness is categorical, not
     // temporal) — minus the unresolved-tool_use exemption. `signature` is
@@ -227,7 +256,7 @@ function pruneBlock(block, { inCut, pruneThinking, exemptThinking, toolNames, in
   } else if (block.type === 'tool_result') {
     // Invariant 6 — an exempt tool's result rides along with its tool_use. An
     // ORPHANED result (no tool_use in context, so no name) stays prunable.
-    const toolName = toolNames.get(block.tool_use_id);
+    const toolName = toolNames.get(block.tool_use_id as string);
     if (isPruneExemptTool(toolName)) return none;
     next = {
       ...block,
@@ -249,13 +278,17 @@ function pruneBlock(block, { inCut, pruneThinking, exemptThinking, toolNames, in
 
 // tool_use id → tool name, over in-context entries. Lets a tool_result pick the
 // right stub shape without a second scan.
-function toolNamesById(objs) {
-  const names = new Map();
+function toolNamesById(objs: Array<PersistedLine | null | undefined>): Map<string, string> {
+  const names = new Map<string, string>();
   for (const obj of objs) {
     if (obj?.isSidechain || obj?.type !== 'assistant') continue;
     const content = obj?.message?.content;
     if (!Array.isArray(content)) continue;
-    for (const b of content) if (b?.type === 'tool_use' && b.id) names.set(b.id, b.name);
+    for (const b of content as WireContentBlock[]) {
+      // id/name are strings in the CLI wire format; cast (not coerce) so a
+      // malformed non-string still behaves exactly as before (truthy → kept).
+      if (b?.type === 'tool_use' && b.id) names.set(b.id as string, b.name as string);
+    }
   }
   return names;
 }
@@ -270,7 +303,7 @@ function toolNamesById(objs) {
 //
 // Only a trailing HIGH surrogate can be orphaned: if `value[end-1]` is a LOW
 // surrogate its partner sits at `end-2`, already inside the cut.
-function sliceCodePoints(value, max) {
+function sliceCodePoints(value: string, max: number): string {
   if (value.length <= max) return value;
   const last = value.charCodeAt(max - 1);
   const end = (last >= 0xd800 && last <= 0xdbff) ? max - 1 : max;
@@ -279,7 +312,7 @@ function sliceCodePoints(value, max) {
 
 // Squeeze one string value from a tool input. Returns the original when it is
 // already short enough, so short scalars survive verbatim in both modes.
-function squeezeString(value, mode) {
+function squeezeString(value: string, mode: InputMode): string {
   if (mode === 'minimal') {
     // Whole-value replacement — no slicing, so surrogate-safe by construction.
     if (value.length <= MINIMAL_INPUT_MAX) return value;
@@ -293,14 +326,14 @@ function squeezeString(value, mode) {
 // Walk a tool input, editing string VALUES in place and preserving every key,
 // every nested object/array, and every non-string scalar. Path keys are skipped
 // at any depth (invariant 1). Returns a new value; never mutates the input.
-function squeezeInput(value, mode, key = null) {
+function squeezeInput(value: unknown, mode: InputMode, key: string | null = null): unknown {
   if (typeof value === 'string') {
     if (key !== null && PATH_KEYS.has(key)) return value;
     return squeezeString(value, mode);
   }
   if (Array.isArray(value)) return value.map(v => squeezeInput(v, mode, key));
   if (value && typeof value === 'object') {
-    const out = {};
+    const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(value)) out[k] = squeezeInput(v, mode, k);
     return out;
   }
@@ -311,12 +344,21 @@ function squeezeInput(value, mode, key = null) {
 
 // Display-only (the slider's turn label), but cut the same surrogate-safe way —
 // a lone high surrogate here would render as a replacement glyph.
-function readTurnPreview(obj) {
+function readTurnPreview(obj: PersistedLine | null | undefined): string {
   const content = obj?.type === 'attachment' ? obj.attachment?.prompt : obj?.message?.content;
   if (typeof content === 'string') return sliceCodePoints(content, 80);
   if (!Array.isArray(content)) return '';
-  const text = content.filter(b => b?.type === 'text').map(b => b.text).join(' ');
+  const text = (content as WireContentBlock[]).filter(b => b?.type === 'text')
+    .map(b => b.text as string).join(' ');
   return sliceCodePoints(text.replace(/\s+/g, ' ').trim(), 80);
+}
+
+// The message-identity key for the unresolved-tool_use thinking exemption. Both
+// sides of the set (build here, query in the callers) use this exact expression
+// so add/has can never drift. Cast (not coerce) so a malformed non-string value
+// keys the same way the original `??` did.
+function thinkingExemptKey(obj: PersistedLine | null | undefined): string {
+  return (obj?.message?.id ?? obj?.uuid) as string;
 }
 
 // An assistant entry whose thinking must NOT be touched: it carries a tool_use
@@ -324,22 +366,24 @@ function readTurnPreview(obj) {
 // API validates the thinking signature against its content. The CLI splits one
 // logical assistant message into N single-block lines sharing `message.id`, so the
 // exemption is by message id, not by line.
-function unresolvedThinkingMessageIds(objs) {
-  const answered = new Set();
+function unresolvedThinkingMessageIds(objs: Array<PersistedLine | null | undefined>): Set<string> {
+  const answered = new Set<string>();
   for (const obj of objs) {
     if (obj?.isSidechain) continue;
     const content = obj?.message?.content;
     if (obj?.type !== 'user' || !Array.isArray(content)) continue;
-    for (const b of content) if (b?.type === 'tool_result' && b.tool_use_id) answered.add(b.tool_use_id);
+    for (const b of content as WireContentBlock[]) {
+      if (b?.type === 'tool_result' && b.tool_use_id) answered.add(b.tool_use_id as string);
+    }
   }
-  const exempt = new Set();
+  const exempt = new Set<string>();
   for (const obj of objs) {
     if (obj?.isSidechain || obj?.type !== 'assistant') continue;
     const content = obj?.message?.content;
     if (!Array.isArray(content)) continue;
-    for (const b of content) {
-      if (b?.type === 'tool_use' && b.id && !answered.has(b.id)) {
-        exempt.add(obj.message?.id ?? obj.uuid);
+    for (const b of content as WireContentBlock[]) {
+      if (b?.type === 'tool_use' && b.id && !answered.has(b.id as string)) {
+        exempt.add(thinkingExemptKey(obj));
       }
     }
   }
@@ -351,22 +395,29 @@ function unresolvedThinkingMessageIds(objs) {
 // use (`isPureUserPromptLine`) and the same `userIndex` the conversation view
 // stamps on user bubbles, which is what makes the slider snap to turn boundaries
 // structurally rather than cosmetically. Lines before the first prompt ride turn 0.
-async function readRecords({ cwd, sessionId }) {
+async function readRecords({ cwd, sessionId }: { cwd: string; sessionId: string }): Promise<{
+  file: string;
+  records: Array<{ raw: string; obj: PersistedLine | null; turn: number; prunable: boolean; inContext: boolean }>;
+  turnCount: number;
+}> {
   const file = path.join(claudeProjectsRoot(), encodeCwd(cwd), `${sessionId}.jsonl`);
-  let text;
+  let text: string;
   try { text = await fs.readFile(file, 'utf8'); }
   catch (e) {
-    if (e.code === 'ENOENT') {
-      throw Object.assign(new Error(`session ${sessionId} not found`), { statusCode: 404 });
+    if (errCode(e) === 'ENOENT') {
+      throw httpError(404, `session ${sessionId} not found`);
     }
     throw e;
   }
-  const records = [];
+  const records: Array<{ raw: string; obj: PersistedLine | null; turn: number; prunable: boolean; inContext: boolean }> = [];
   let turn = -1;
   for (const raw of text.split('\n')) {
     if (!raw.length) continue;
-    let obj = null;
-    try { obj = JSON.parse(raw); } catch { /* pass unparseable lines through verbatim */ }
+    let obj: PersistedLine | null = null;
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object') obj = parsed as PersistedLine;
+    } catch { /* pass unparseable lines through verbatim */ }
     if (obj && isPureUserPromptLine(obj)) turn++;
     // Sidechain entries are not in the parent's context and are never pruned
     // (invariant 5); an unparseable line is copied byte-for-byte.
@@ -392,7 +443,11 @@ async function readRecords({ cwd, sessionId }) {
 // Counted over in-context entries ONLY: sidechain lines are skipped (a sub-agent's
 // transcript is not in the parent's context — only the Task tool_result carrying
 // its report is), and `toolUseResult` bytes are never counted (disk-only sidecar).
-export async function analyzeSessionForPrune({ cwd, sessionId }) {
+export async function analyzeSessionForPrune({ cwd, sessionId }: { cwd: string; sessionId: string }): Promise<{
+  turnCount: number;
+  turns: Array<{ index: number; preview: string; thinking: number; toolInputTruncatable: number; toolInputMinimal: number; toolOutput: number; total: number }>;
+  totalTokens: number;
+}> {
   if (!cwd || !sessionId) throw new Error('cwd + sessionId required');
   const { records, turnCount } = await readRecords({ cwd, sessionId });
   const exemptThinking = unresolvedThinkingMessageIds(records.map(r => r.obj));
@@ -412,17 +467,17 @@ export async function analyzeSessionForPrune({ cwd, sessionId }) {
     if (!rec.prunable) {
       // An attachment: denominator only, never pruned. Its shape varies by
       // attachment kind, so estimate off the serialized payload.
-      totalTokens += approxTokens(JSON.stringify(rec.obj.attachment ?? ''));
+      totalTokens += approxTokens(JSON.stringify(rec.obj?.attachment ?? ''));
       continue;
     }
-    const content = rec.obj.message?.content;
+    const content = rec.obj?.message?.content;
     if (!Array.isArray(content)) {
       if (typeof content === 'string') totalTokens += approxTokens(content);
       continue;
     }
     const bucket = turns[rec.turn];
-    const exempt = exemptThinking.has(rec.obj.message?.id ?? rec.obj.uuid);
-    for (const block of content) {
+    const exempt = exemptThinking.has(thinkingExemptKey(rec.obj));
+    for (const block of content as PruneBlock[]) {
       const before = blockTokens(block);
       totalTokens += before;
       if (!bucket) continue;
@@ -445,7 +500,7 @@ export async function analyzeSessionForPrune({ cwd, sessionId }) {
 
 // ── the transform ───────────────────────────────────────────────────────────
 
-async function writeAtomic(file, content) {
+async function writeAtomic(file: string, content: string): Promise<void> {
   const dir = path.dirname(file);
   await fs.mkdir(dir, { recursive: true });
   const tmp = path.join(dir, `.tmp-${randomUUID()}-${path.basename(file)}`);
@@ -458,11 +513,11 @@ async function writeAtomic(file, content) {
 // transcript.ts:loadSubAgentTranscript). Minting a new sessionId would therefore
 // make every sidechain silently vanish from the pruned session's transcript view
 // — copy the directory across. Best-effort: a session with no sub-agents has none.
-async function copySubAgentDir({ cwd, sessionId, newSessionId }) {
+async function copySubAgentDir({ cwd, sessionId, newSessionId }: { cwd: string; sessionId: string; newSessionId: string }): Promise<void> {
   const base = path.join(claudeProjectsRoot(), encodeCwd(cwd));
   const src = path.join(base, sessionId);
   try { await fs.cp(src, path.join(base, newSessionId), { recursive: true }); }
-  catch (e) { if (e.code !== 'ENOENT') throw e; }
+  catch (e) { if (errCode(e) !== 'ENOENT') throw e; }
 }
 
 // Copy <cwd>/<sessionId>.jsonl into a new sessionId, stubbing block content per
@@ -479,28 +534,30 @@ async function copySubAgentDir({ cwd, sessionId, newSessionId }) {
 export async function pruneSessionToNewId({
   cwd, sessionId, cutTurnIndex, pruneThinking = false, inputMode = 'truncate',
   permissionMode, newSessionId,
-}) {
+}: {
+  cwd: string; sessionId: string; cutTurnIndex: number;
+  pruneThinking?: boolean; inputMode?: InputMode;
+  permissionMode?: string; newSessionId?: string;
+}): Promise<{ newSessionId: string; saved: { thinking: number; toolInputs: number; toolOutputs: number }; lastSurvivingUuid: string | null }> {
   if (!cwd || !sessionId) throw new Error('cwd + sessionId required');
   if (!INPUT_MODES.has(inputMode)) {
-    throw Object.assign(new Error(`inputMode must be one of ${[...INPUT_MODES].join('|')}`), { statusCode: 400 });
+    throw httpError(400, `inputMode must be one of ${[...INPUT_MODES].join('|')}`);
   }
   const { records, turnCount } = await readRecords({ cwd, sessionId });
   if (turnCount === 0) {
-    throw Object.assign(new Error('session has no user turns to prune'), { statusCode: 400 });
+    throw httpError(400, 'session has no user turns to prune');
   }
   if (!Number.isInteger(cutTurnIndex) || cutTurnIndex < 0 || cutTurnIndex > turnCount - 1) {
-    throw Object.assign(
-      new Error(`cutTurnIndex must be an integer in 0…${turnCount - 1} (the newest turn always stays verbatim)`),
-      { statusCode: 400 },
-    );
+    throw httpError(400,
+      `cutTurnIndex must be an integer in 0…${turnCount - 1} (the newest turn always stays verbatim)`);
   }
 
   const exemptThinking = unresolvedThinkingMessageIds(records.map(r => r.obj));
   const toolNames = toolNamesById(records.map(r => r.obj));
   const newSid = newSessionId ?? randomUUID();
   const saved = { thinking: 0, toolInputs: 0, toolOutputs: 0 };
-  const out = [];
-  let lastSurvivingUuid = null;
+  const out: string[] = [];
+  let lastSurvivingUuid: string | null = null;
 
   for (const rec of records) {
     if (!rec.obj) { out.push(rec.raw); continue; }
@@ -520,13 +577,12 @@ export async function pruneSessionToNewId({
       continue;
     }
 
-    const msgId = obj.message?.id ?? obj.uuid;
-    const opts = {
-      inCut, pruneThinking, exemptThinking: exemptThinking.has(msgId), toolNames, inputMode,
+    const opts: PruneOpts = {
+      inCut, pruneThinking, exemptThinking: exemptThinking.has(thinkingExemptKey(obj)), toolNames, inputMode,
     };
-    const nextContent = content.map((block) => {
+    const nextContent = (content as PruneBlock[]).map((block) => {
       const r = pruneBlock(block, opts);
-      if (r.category) saved[r.category] += r.saved;
+      if (r.category) saved[r.category as keyof typeof saved] += r.saved;
       return r.block;
     });
 
@@ -552,4 +608,18 @@ export async function pruneSessionToNewId({
   }
 
   return { newSessionId: newSid, saved, lastSurvivingUuid };
+}
+
+// The `code` on a thrown Node error (e.g. 'ENOENT'), or undefined — the
+// narrowing point for error-code checks (catch variables are `unknown` under
+// strict). Duplicated from storeLock.ts: it's four lines, and importing it
+// across modules would couple every store to storeLock for one helper.
+function errCode(e: unknown): string | undefined {
+  if (typeof e !== 'object' || e === null) return undefined;
+  const code = (e as { code?: unknown }).code;
+  return typeof code === 'string' ? code : undefined;
+}
+
+function httpError(statusCode: number, message: string): Error & { statusCode: number } {
+  return Object.assign(new Error(message), { statusCode });
 }

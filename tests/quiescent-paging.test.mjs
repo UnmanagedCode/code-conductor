@@ -1,5 +1,5 @@
 // Quiescent-point lazy paging & tail snapshots (src/parser.ts
-// snapStartToQuiescent, used by src/eventArchive.js pageInstanceEvents and
+// snapStartToQuiescent, used by src/eventArchive.ts pageInstanceEvents and
 // src/instances.js snapshotTail): backward pages and the WS tail open where
 // reconstruction has no open block and no unresolved tool, so the client's
 // isolated per-page renderer only ever sees whole blocks and complete tool
@@ -17,7 +17,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
 import { encodeCwd } from '../src/projects.ts';
-import { pageInstanceEvents } from '../src/eventArchive.js';
+import { pageInstanceEvents } from '../src/eventArchive.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-resume.json');

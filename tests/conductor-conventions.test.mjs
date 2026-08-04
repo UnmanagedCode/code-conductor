@@ -12,7 +12,7 @@ import {
   SEED_CONVENTIONS, getCatalog, getSelection, setSelection,
   addCustomConvention, deleteCustomConvention, composeConduct, composeCurrentConduct,
   setPluginConductorConventionsProvider,
-} from '../src/conductorConventions.js';
+} from '../src/conductorConventions.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-instance.json');

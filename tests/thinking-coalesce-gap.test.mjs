@@ -1,6 +1,6 @@
 // Storage-only coalescing of the ollama thinking flood, end-to-end through a
 // real Instance + the archive/paging path (src/instances.js EventLog,
-// src/eventArchive.js pageInstanceEvents). On ollama-backed workers the CLI
+// src/eventArchive.ts pageInstanceEvents). On ollama-backed workers the CLI
 // emits one system/thinking_tokens per thinking_delta token; before the fix a
 // single long reasoning turn overflowed the ring and left its head mid-turn,
 // so get_transcript spliced a spurious {kind:'history_gap'} INSIDE the turn.
@@ -12,7 +12,7 @@
 import { test, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
-import { pageInstanceEvents } from '../src/eventArchive.js';
+import { pageInstanceEvents } from '../src/eventArchive.ts';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
