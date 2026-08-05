@@ -1,7 +1,7 @@
 // Tests for sessionId PREFIX resolution at the MCP boundary. A conductor may
 // address a worker by any unambiguous prefix of its sessionId (e.g. first 8
 // chars) instead of the full 36-char UUID. Resolution happens once, uniformly,
-// in the MCP dispatch layer (src/mcp/server.js) via
+// in the MCP dispatch layer (src/mcp/server.ts) via
 // InstanceManager.resolveSessionRef (src/instances.ts).
 //
 // Two layers:

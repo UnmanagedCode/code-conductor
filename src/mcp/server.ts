@@ -11,19 +11,77 @@ import express from 'express';
 import { buildTools } from './tools.ts';
 import { isTextPayload, codeForStatus } from './content.ts';
 import { SESSION_PREFIX_MIN } from '../instances.ts';
+import type { InstanceManagerLike } from '../instanceTypes.ts';
 
 const PROTOCOL_VERSION = '2025-06-18';
 const SERVER_NAME = 'code-conductor';
 const SERVER_VERSION = '0.1.0';
 const JSONRPC = '2.0';
 
-function rpcResult(id, result) {
+interface JsonRpcResponse {
+  jsonrpc: string;
+  id: unknown;
+  result?: unknown;
+  error?: { code: number; message: string; data?: unknown };
+}
+
+// The per-request context handed to every tool handler: `tools` is the
+// per-request composition (core tools + this caller's plugin tools) that both
+// tools/list and tools/call read; `instances`/`callerId` are the caller-
+// resolved handles the handlers consume.
+interface McpCtx {
+  instances?: InstanceManagerLike | null;
+  tools: McpTool[];
+  callerId: string | null;
+}
+
+// The tool shape the transport itself needs — deliberately broader than the
+// registry's `Tool` (tools.ts) so BOTH core tools (inputSchema typed as a
+// Record, handler ctx `ToolCtx`) and plugin tools (inputSchema: unknown,
+// handler ctx narrowed to `{callerId}`) satisfy it without a cast. `handler`'s
+// ctx is McpCtx (a supertype of both) so the assignment is contravariantly
+// sound in each direction.
+interface McpTool {
+  name: string;
+  description: string;
+  inputSchema: unknown;
+  handler(args: unknown, ctx: McpCtx): Promise<unknown>;
+  annotations?: { readOnlyHint?: boolean; idempotentHint?: boolean; destructiveHint?: boolean };
+}
+
+// The plugin-host surface this module composes tools from — `init` + `toolsFor`
+// are the only two members the per-request composition touches. Structural:
+// the real createPluginHost return satisfies it.
+interface McpPluginHostLike {
+  init(): Promise<void>;
+  toolsFor(callerId: string): Array<{
+    name: string;
+    description: string;
+    inputSchema: unknown;
+    handler: (args: unknown, ctx: { callerId: string | null }) => Promise<unknown>;
+  }>;
+}
+
+function rpcResult(id: unknown, result: unknown): JsonRpcResponse {
   return { jsonrpc: JSONRPC, id, result };
 }
-function rpcError(id, code, message, data) {
-  const err = { code, message };
+function rpcError(id: unknown, code: number, message: string, data?: unknown): JsonRpcResponse {
+  const err: { code: number; message: string; data?: unknown } = { code, message };
   if (data !== undefined) err.data = data;
   return { jsonrpc: JSONRPC, id, error: err };
+}
+
+// The one narrowing predicate for every wire-boundary value this module reads
+// (msg, args, params, schema sub-fields): a non-null, non-array object.
+function isJsonRecord(v: unknown): v is Record<string, unknown> {
+  return !!v && typeof v === 'object' && !Array.isArray(v);
+}
+
+// The record-shaped view of an unknown value, `{}` for anything else — the
+// wire boundary is `unknown`, so every optional-field read goes through this
+// (or isJsonRecord) rather than a cast.
+function asRecord(v: unknown): Record<string, unknown> {
+  return isJsonRecord(v) ? v : {};
 }
 
 // Shallow JSON-Schema validation. Covers the shapes we use: object with
@@ -32,22 +90,22 @@ function rpcError(id, code, message, data) {
 // items.type). Returns null on success or a string describing the first
 // violation. No $ref / oneOf / anyOf — the registry doesn't use those.
 // Unknown properties are rejected (clean MCP contract — no silent drops).
-function validateArgs(schema, args, toolName) {
-  if (!schema || schema.type !== 'object') return null;
+function validateArgs(schema: unknown, args: unknown, toolName: unknown): string | null {
+  if (!isJsonRecord(schema) || schema.type !== 'object') return null;
   const a = args ?? {};
-  if (typeof a !== 'object' || Array.isArray(a)) return 'arguments must be an object';
+  if (!isJsonRecord(a)) return 'arguments must be an object';
   const req = Array.isArray(schema.required) ? schema.required : [];
   for (const k of req) {
-    if (!(k in a)) return `missing required argument: ${k}`;
+    if (typeof k !== 'string' || !(k in a)) return `missing required argument: ${k}`;
   }
-  const props = schema.properties ?? {};
+  const props = asRecord(schema.properties);
   for (const [k, v] of Object.entries(a)) {
     const p = props[k];
     if (!p) {
       const allowed = Object.keys(props).join(', ') || '(none)';
       return `unexpected argument '${k}' — not a recognized parameter for ${toolName ?? 'this tool'}. Allowed: ${allowed}`;
     }
-    const viol = checkConstraints(k, v, p);
+    const viol = checkConstraints(k, v, asRecord(p));
     if (viol) return viol;
   }
   return null;
@@ -56,13 +114,16 @@ function validateArgs(schema, args, toolName) {
 // Validate a single value against its property schema. Returns a violation
 // string or null. Skips constraint checks when the type doesn't match the
 // constraint's domain (the type error already fired, or the keyword is N/A).
-function checkConstraints(k, v, p) {
+function checkConstraints(k: string, v: unknown, p: Record<string, unknown>): string | null {
   const t = p.type;
   if (t && !typeMatches(t, v)) {
     return `argument '${k}' must be ${Array.isArray(t) ? t.join(' | ') : t}`;
   }
-  if (p.enum && !p.enum.includes(v)) {
-    return `argument '${k}' must be one of ${JSON.stringify(p.enum)}`;
+  const en = p.enum;
+  if (typeof en === 'string' && en) {
+    if (!en.includes(String(v))) return `argument '${k}' must be one of ${JSON.stringify(en)}`;
+  } else if (Array.isArray(en) && !en.includes(v)) {
+    return `argument '${k}' must be one of ${JSON.stringify(en)}`;
   }
   if (typeof v === 'string') {
     if (typeof p.minLength === 'number' && v.length < p.minLength) {
@@ -83,7 +144,7 @@ function checkConstraints(k, v, p) {
       return `argument '${k}' must be <= ${p.maximum}`;
     }
   }
-  if (Array.isArray(v) && p.items && p.items.type) {
+  if (Array.isArray(v) && isJsonRecord(p.items) && p.items.type) {
     for (let i = 0; i < v.length; i++) {
       if (!typeMatches(p.items.type, v[i])) {
         return `argument '${k}[${i}]' must be ${p.items.type}`;
@@ -93,8 +154,8 @@ function checkConstraints(k, v, p) {
   return null;
 }
 
-function typeMatches(t, v) {
-  const ts = Array.isArray(t) ? t : [t];
+function typeMatches(t: unknown, v: unknown): boolean {
+  const ts: unknown[] = Array.isArray(t) ? t : [t];
   for (const one of ts) {
     if (one === 'string' && typeof v === 'string') return true;
     if (one === 'number' && typeof v === 'number') return true;
@@ -107,9 +168,61 @@ function typeMatches(t, v) {
   return false;
 }
 
-async function dispatch(msg, ctx) {
-  if (!msg || typeof msg !== 'object' || msg.jsonrpc !== JSONRPC) {
-    return rpcError(msg?.id ?? null, -32600, 'invalid JSON-RPC request');
+// The numeric HTTP-ish statusCode on a thrown value, or null — the narrowing
+// point for the tools/call error envelope (catch variables are `unknown`
+// under strict).
+function errStatus(e: unknown): number | null {
+  if (typeof e !== 'object' || e === null) return null;
+  const sc = (e as { statusCode?: unknown }).statusCode;
+  return typeof sc === 'number' ? sc : null;
+}
+
+// The `code` on a thrown value (handlers throw Object.assign(new Error, {code})),
+// or undefined — same idiom as routes.ts / handlers.ts.
+function errCode(e: unknown): string | undefined {
+  if (typeof e !== 'object' || e === null) return undefined;
+  const c = (e as { code?: unknown }).code;
+  return typeof c === 'string' ? c : undefined;
+}
+
+// The message prose for the tools/call error envelope: a thrown value's
+// `message` when it has one (Error or not), else its String() coercion —
+// matches the original `e?.message ?? String(e)` reading.
+function errMsg(e: unknown): string {
+  if (typeof e === 'object' && e !== null && 'message' in e) {
+    const m = (e as { message?: unknown }).message;
+    if (m !== undefined && m !== null) return String(m);
+  }
+  return String(e);
+}
+
+// A string `message` on a thrown value, or undefined — the dispatch-level
+// fallback feeds 'internal error' (original `e?.message ?? 'internal error'`).
+function errMessage(e: unknown): string | undefined {
+  if (typeof e === 'object' && e !== null && 'message' in e) {
+    const m = (e as { message?: unknown }).message;
+    return typeof m === 'string' ? m : undefined;
+  }
+  return undefined;
+}
+
+// The id of a non-JSON-RPC request (used only for the -32600 error reply).
+function rpcRequestId(msg: unknown): unknown {
+  return isJsonRecord(msg) ? msg.id : undefined;
+}
+
+// True when a tool's inputSchema declares a `sessionId` property with a
+// truthy value — the schema gate for the prefix-resolution chokepoint below.
+function hasSessionIdProperty(schema: unknown): boolean {
+  if (!isJsonRecord(schema)) return false;
+  const props = schema.properties;
+  if (!isJsonRecord(props)) return false;
+  return 'sessionId' in props && !!props.sessionId;
+}
+
+async function dispatch(msg: unknown, ctx: McpCtx): Promise<JsonRpcResponse | null> {
+  if (!isJsonRecord(msg) || msg.jsonrpc !== JSONRPC) {
+    return rpcError(rpcRequestId(msg) ?? null, -32600, 'invalid JSON-RPC request');
   }
   const { id, method, params } = msg;
   const isNotification = id === undefined || id === null;
@@ -140,8 +253,9 @@ async function dispatch(msg, ctx) {
       return rpcResult(id, { tools });
     }
     if (method === 'tools/call') {
-      const name = params?.name;
-      let args = params?.arguments ?? {};
+      const p = asRecord(params);
+      const name = p.name;
+      let args: unknown = p.arguments ?? {};
       const tool = ctx.tools.find(t => t.name === name);
       if (!tool) {
         return rpcResult(id, {
@@ -165,10 +279,11 @@ async function dispatch(msg, ctx) {
       // on-disk lookup paths still run. The only new outcome is SESSION_AMBIGUOUS,
       // serialized exactly like a handler soft-refusal (no isError).
       if (ctx.instances?.resolveSessionRef
-          && tool.inputSchema?.properties?.sessionId
+          && hasSessionIdProperty(tool.inputSchema)
+          && isJsonRecord(args)
           && typeof args.sessionId === 'string' && args.sessionId) {
         const ref = ctx.instances.resolveSessionRef(args.sessionId);
-        if (ref?.ambiguous) {
+        if (ref && 'ambiguous' in ref) {
           const matches = ref.ambiguous.map(s => s.slice(0, 8));
           const reason = ref.tooShort
             ? `session prefix "${args.sessionId}" is too short — pass at least ${SESSION_PREFIX_MIN} characters or a full sessionId. Candidates: ${matches.join(', ')}.`
@@ -185,7 +300,7 @@ async function dispatch(msg, ctx) {
       }
       try {
         const result = await tool.handler(args, ctx);
-        let content;
+        let content: Array<{ type: 'text'; text: string }>;
         if (isTextPayload(result)) {
           // Multi-block: compact-JSON metadata block, then one raw text block
           // per body, in order. Lets the LLM read file/diff/message bodies
@@ -199,9 +314,9 @@ async function dispatch(msg, ctx) {
       } catch (e) {
         // Errors read best as prose for an LLM (content[0]); a structured
         // {error, code, statusCode} block follows for machine handling.
-        const sc = typeof e?.statusCode === 'number' ? e.statusCode : null;
-        const code = e?.code ?? codeForStatus(sc);
-        const msg = e?.message ?? String(e);
+        const sc = errStatus(e);
+        const code = errCode(e) ?? codeForStatus(sc);
+        const msg = errMsg(e);
         const prose = sc ? `${msg} (HTTP ${sc})` : msg;
         return rpcResult(id, {
           content: [
@@ -216,11 +331,11 @@ async function dispatch(msg, ctx) {
     return rpcError(id, -32601, `method not found: ${method}`);
   } catch (e) {
     if (isNotification) return null;
-    return rpcError(id, -32603, e?.message ?? 'internal error');
+    return rpcError(id, -32603, errMessage(e) ?? 'internal error');
   }
 }
 
-export function buildMcpRouter({ instances, pluginHost }) {
+export function buildMcpRouter({ instances, pluginHost }: { instances?: InstanceManagerLike | null; pluginHost?: McpPluginHostLike | null }): express.Router {
   const r = express.Router();
   r.use(express.json({ limit: '8mb' }));
 
@@ -242,20 +357,20 @@ export function buildMcpRouter({ instances, pluginHost }) {
     // tools/call read ctx.tools unchanged). init() is memoized — after the
     // first request it's a resolved promise. A plugin-subsystem failure must
     // never take the core tools down with it.
-    let tools = coreTools;
+    let tools: McpTool[] = coreTools;
     if (pluginHost) {
       try {
         await pluginHost.init();
-        tools = [...coreTools, ...pluginHost.toolsFor(callerId)];
+        tools = [...coreTools, ...pluginHost.toolsFor(callerId ?? '')];
       } catch (e) {
-        console.warn('mcp: plugin tool composition failed:', e?.message || e);
+        console.warn('mcp: plugin tool composition failed:', errMessage(e) || e);
       }
     }
-    const ctx = { instances, tools, callerId };
-    const body = req.body;
+    const ctx: McpCtx = { instances, tools, callerId };
+    const body: unknown = req.body;
     // Batch: array of requests → array of responses (notifications dropped).
     if (Array.isArray(body)) {
-      const out = [];
+      const out: JsonRpcResponse[] = [];
       for (const msg of body) {
         const r1 = await dispatch(msg, ctx);
         if (r1) out.push(r1);

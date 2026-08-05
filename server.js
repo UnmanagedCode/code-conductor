@@ -4,7 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
 import { buildRoutes } from './src/routes.ts';
-import { buildMcpRouter } from './src/mcp/server.js';
+import { buildMcpRouter } from './src/mcp/server.ts';
 import { InstanceManager } from './src/instances.ts';
 import { attachWsHub } from './src/wsHub.ts';
 import { initCostTracking } from './src/costTracking.ts';

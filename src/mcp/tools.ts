@@ -1,6 +1,6 @@
 // MCP tool registry. Each entry is { name, description, inputSchema,
 // handler }. Schemas are inline JSON-Schema objects (shallow-validated
-// by ../mcp/server.js). Handlers live in ./handlers.ts and reach into
+// by ../mcp/server.ts). Handlers live in ./handlers.ts and reach into
 // the orchestrator's existing modules — no business logic here.
 
 import * as h from './handlers.ts';

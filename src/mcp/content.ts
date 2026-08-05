@@ -30,7 +30,7 @@ export function isTextPayload(v: unknown): v is TextPayload {
 // Flatten a (meta, bodies) payload into the single string an LLM would read off
 // the wire: the compact-JSON metadata block followed by each raw body block, in
 // order — mirroring how the MCP server emits them as separate content[] blocks
-// (src/mcp/server.js). Used to fold a default get_recent_messages result inline
+// (src/mcp/server.ts). Used to fold a default get_recent_messages result inline
 // into the idle-subscription wake stub without re-deriving its shape.
 export function flattenPayload(meta: unknown, bodies: unknown): string {
   const arr = bodies == null ? [] : (Array.isArray(bodies) ? bodies : [bodies]);

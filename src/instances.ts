@@ -1386,7 +1386,7 @@ export class Instance extends EventEmitter implements InstanceLike {
       // the subprocess's --mcp-config for the life of the process — a baked
       // sessionId would go stale after the first renewal. The instanceId
       // never rotates; the MCP boundary resolves it to the caller's CURRENT
-      // sessionId per request (see InstanceManager.callerSessionId / mcp/server.js).
+      // sessionId per request (see InstanceManager.callerSessionId / mcp/server.ts).
       const url = `${this.mcpServerUrl}?caller=${encodeURIComponent(this.id)}`;
       args.push('--mcp-config', buildMcpConfigJSON({ url }));
     }
@@ -2754,7 +2754,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
       .find((i): i is Instance => i != null) ?? null;
   }
   // Resolve an MCP input that is either a full sessionId or an unambiguous PREFIX
-  // to a canonical full sessionId. The MCP dispatch layer (src/mcp/server.js) uses
+  // to a canonical full sessionId. The MCP dispatch layer (src/mcp/server.ts) uses
   // this to let conductors address workers by a short prefix (e.g. first 8 chars)
   // instead of the error-prone 36-char UUID. Universe = the distinct sessionIds
   // across ALL byId instances (live AND exited) — broader than live-only, so a
