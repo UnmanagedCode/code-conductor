@@ -76,7 +76,7 @@ test('fold builds the projection across all five event kinds', () => {
   const p = fold([
     { kind: 'spawn', sessionId: 's1', playbook: 'classic', stage: 'plan', project: 'demo', worktree: 'demo_wt' },
     { kind: 'transition', sessionId: 's1', from: 'plan', to: 'implement', via: 'approve_plan' },
-    { kind: 'refusal', sessionId: 's1', tool: 'merge_worktree', code: 'TOOL_DENIED_IN_STAGE', reason: 'nope' },
+    { kind: 'refusal', sessionId: 's1', tool: 'sync_worktree', code: 'TOOL_DENIED_IN_STAGE', reason: 'nope' },
     { kind: 'enforcement', conductorSessionId: 'c1', from: 'off', to: 'enforce' },
     { kind: 'spawn', sessionId: 's2', playbook: 'classic', stage: 'review', needs: { implement: 's1' } },
     { kind: 'retire', sessionId: 's2', reason: 'killed' },

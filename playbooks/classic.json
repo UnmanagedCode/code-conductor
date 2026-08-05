@@ -8,25 +8,20 @@
     "plan": {
       "tools": {
         "spawn_instance": { "require": { "mode": "plan", "model": "planner", "createWorktree": true } },
-        "set_mode": "deny",
-        "merge_worktree": "deny"
+        "set_mode": "deny"
       }
     },
-    "implement": {
-      "tools": { "merge_worktree": "deny" }
-    },
+    "implement": {},
     "review": {
       "needs": [{ "stage": "implement" }],
       "tools": {
         "spawn_instance": { "require": { "mode": "bypassPermissions", "model": "reviewer" } },
-        "merge_worktree": "deny",
         "sync_worktree": "deny",
         "approve_plan": "deny"
       }
     },
     "refine": {
-      "needs": [{ "stage": "review" }],
-      "tools": { "merge_worktree": "deny" }
+      "needs": [{ "stage": "review" }]
     }
   },
 

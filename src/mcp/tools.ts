@@ -532,16 +532,18 @@ export function buildTools(): Tool[] {
         'first (WORKTREE_BEHIND), the parent is on the wrong branch or dirty (BASE_BRANCH_MISMATCH / ' +
         'PARENT_DIRTY), the worktree\'s own tree has uncommitted or untracked changes that would not ' +
         'land (WORKTREE_DIRTY — pass allowDirty:true to merge anyway), or the branch has no commits ' +
-        'to merge (NOTHING_TO_MERGE). Pass either {sessionId} (live worker) or {project, worktree} — ' +
-        'the latter form lets you merge a worktree whose worker has already been killed.',
+        'to merge (NOTHING_TO_MERGE). Names the WORKTREE, never a worker: merging touches only git, ' +
+        'so it works identically whether the worktree\'s worker is still live or already killed. ' +
+        '(sync_worktree does take {sessionId} — it may have to prompt the live worker to resolve a ' +
+        'rebase conflict. Merging never needs a worker.)',
       inputSchema: {
         type: 'object',
         properties: {
-          sessionId: { type: 'string', description: 'Live worker sessionId attached to the worktree.' },
-          project: { type: 'string', description: 'Parent project — required if sessionId is omitted.' },
-          worktree: { type: 'string', description: 'Worktree dir name — required if sessionId is omitted.' },
+          project: { type: 'string', description: 'Parent project holding the worktree.' },
+          worktree: { type: 'string', description: 'Worktree dir name (as returned by list_worktrees / the worker\'s `worktree.worktreeName`).' },
           allowDirty: { type: 'boolean', description: 'Merge even though the worktree has uncommitted/untracked changes (they will not be included in the merge commit).' },
         },
+        required: ['project', 'worktree'],
       },
       handler: h.mergeWorktree,
       annotations: { destructiveHint: true },

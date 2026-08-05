@@ -362,7 +362,7 @@ test('the mcp__code-conductor__ prefix is normalized before policy lookup', () =
 });
 
 test('a worker that is not playbook-tracked is ungoverned', () => {
-  const res = allowed(d('merge_worktree', { sessionId: 'not-tracked' }, CLASSIC_RUN));
+  const res = allowed(d('sync_worktree', { sessionId: 'not-tracked' }, CLASSIC_RUN));
   assert.deepEqual(res.move, { kind: 'none' });
 });
 
