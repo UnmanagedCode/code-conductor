@@ -118,11 +118,9 @@ test('governable tools are derived from buildTools(): sessionId-taking tools plu
                    'kill_instance', 'get_transcript', 'locate_session', 'spawn_instance']) {
     assert.ok(names.includes(t), `${t} should be governable`);
   }
-  // Ungoverned BY CONSTRUCTION (targeted-only scope): these declare no sessionId.
-  // renew_session acts on the caller; delete_worktree and merge_worktree are both
-  // keyed {project, worktree} — merging is pure git and names no worker, which is
-  // why sync_worktree (which may have to prompt the live worker through a rebase)
-  // is governable and merge_worktree is not.
+  // Ungoverned BY CONSTRUCTION (targeted-only scope): these declare no sessionId,
+  // so nothing names a worker for policy to be read from. A sample of the class —
+  // the authoritative membership is whatever governableToolNames() computes.
   for (const t of ['renew_session', 'delete_worktree', 'merge_worktree', 'project_read',
                    'project_bash', 'list_projects', 'list_instances', 'create_worktree']) {
     assert.ok(!names.includes(t), `${t} must NOT be governable`);
@@ -267,8 +265,6 @@ test('a tool name outside the governable set is rejected', () => {
     /'delete_worktree' is not a governable tool/);
   expectErr(base({ stages: { a: { tools: { spawn_instance: 'allow', renew_session: 'deny' } } } }),
     /'renew_session' is not a governable tool/);
-  // merge_worktree names {project, worktree} and no worker, so a stage cannot
-  // declare a policy for it at all — the sibling sync_worktree still can.
   expectErr(base({ stages: { a: { tools: { spawn_instance: 'allow', merge_worktree: 'deny' } } } }),
     /'merge_worktree' is not a governable tool/);
   // Prefix globs are not a thing — only the bare '*' fallback entry.

@@ -141,12 +141,21 @@ export function createPlaybookGate(
     // RETIRE — the ONE retire path, for both a deliberate kill_instance and an
     // unexpected crash, since either way the subprocess exits and lands here.
     // Capacity (`workers: "one"`) counts LIVE workers, so a worker that never
-    // retires holds its stage's slot forever. Guarded on the worker already being
-    // live IN THE PROJECTION, which is also what keeps 'off' inert: nothing is
-    // tracked there, so nothing is written.
+    // retires holds its stage's slot forever.
     if (summary.status === 'exited' || summary.status === 'crashed') {
-      // No ensureLoaded() here on purpose: an untracked session cannot be
-      // retired, and probing the projection is how we know it is untracked.
+      // The projection MUST be folded before probing it. It is otherwise loaded
+      // lazily on the first governed call, so a worker that crashes after a
+      // restart but before that call would be read against an empty projection,
+      // never retire, and stay `live` in the on-disk ledger forever — leaking its
+      // workers:"one" slot with no way to recover.
+      //
+      // This does not break `off` inertness: load() is READ-ONLY (a missing file
+      // folds to an empty projection and creates nothing), and the append below
+      // is guarded on the worker already being tracked. So the guard is "was this
+      // worker ever recorded", NOT "is enforcement on" — deliberately, because a
+      // worker tracked by an earlier enforcing run must still retire correctly
+      // even if enforcement is off right now.
+      await ensureLoaded();
       const st = ledger.projection().bySession.get(sessionId);
       if (st?.live) await append({ kind: 'retire', sessionId, reason: `subprocess ${summary.status}` });
     }
@@ -154,11 +163,18 @@ export function createPlaybookGate(
     // illegal-looking move was allowed.
     if (!isConductorInstance({ project: String(summary.project) })) return;
     const mode = typeof summary.playbookEnforcement === 'string' ? summary.playbookEnforcement : 'off';
-    const prev = lastMode.get(sessionId) ?? 'off';
-    if (mode === prev) {
+    // The FIRST observation of a conductor is the baseline, not a change: a
+    // conductor created with `enforce` was never `off`, and recording
+    // {from:'off', to:'enforce'} would put a value in the audit trail that never
+    // held. Assuming a default here rather than reading the instance is safe
+    // because create() awaits launch(), which emits status — so a conductor has
+    // always ticked at least once before any client can flip its toggle.
+    if (!lastMode.has(sessionId)) {
       lastMode.set(sessionId, mode);
       return;
     }
+    const prev = lastMode.get(sessionId) as string;
+    if (mode === prev) return;
     lastMode.set(sessionId, mode);
     await ensureLoaded();
     await append({ kind: 'enforcement', conductorSessionId: sessionId, from: prev, to: mode });

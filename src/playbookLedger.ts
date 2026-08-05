@@ -27,12 +27,8 @@
 //     sessionId, so a renewed worker's chain breaks in this sessionId-keyed
 //     projection and it loses its stage binding. This is a projection break,
 //     not a policy-scope gap; propagating stage state across a rotation belongs
-//     to the separate renew_session remodel track.
-//
-// (Distinct from either: renew_session is also UNGOVERNABLE by construction —
-// its inputSchema carries no sessionId, so it can never appear in a stage's
-// `tools` map. That is the targeted-only policy scope, documented in
-// playbooks.ts alongside delete_worktree and the project_* tools.)
+//     to the separate renew_session remodel track. (A projection break, NOT the
+//     targeted-only policy-scope gap — that one lives in playbooks.ts.)
 
 import { promises as fs } from 'node:fs';
 import path from 'node:path';

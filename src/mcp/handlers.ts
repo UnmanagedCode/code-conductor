@@ -1044,11 +1044,6 @@ export async function syncWorktree({ sessionId }: { sessionId: string }, { insta
   return result;
 }
 
-// Keyed on the WORKTREE, never on a worker: merging is a pure git operation on
-// the parent repo, so it works the same whether the worktree's worker is live or
-// long gone. That is why there is no `{sessionId}` form — it would name a worker
-// the operation never touches. sync_worktree is deliberately asymmetric: it may
-// have to prompt the live worker to resolve a rebase conflict, so it needs one.
 export async function mergeWorktree({ project, worktree, allowDirty }: { project: string; worktree: string; allowDirty?: boolean }) {
   const wt = await getWorktree(project, worktree);
   if (!wt) throw new Error(`worktree '${worktree}' not found under project '${project}'`);

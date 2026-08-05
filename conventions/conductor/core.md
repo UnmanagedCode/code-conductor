@@ -77,7 +77,7 @@ Schemas are deferred — load them via `ToolSearch` before first use. Before you
 
 **Land work**
 - `sync_worktree({sessionId})` — fast-forwards or auto-rebases the worktree server-side; only when conflicts block the rebase does it send a rebase prompt to the worker — that is a worker turn (subscribe + end turn). Expected refusals come back as `{ok:false, reason, code}`, never thrown.
-- `merge_worktree({project, worktree})` — `git merge --no-ff` on the parent. Names the **worktree**, not a worker (merging is pure git), so there is no `sessionId` form and the same call works whether the worker is live or already killed. Success is `{ok:true, newSha}`; a refusal is `{ok:false, code}` (`WORKTREE_BEHIND` → `sync_worktree` first; other codes — see `src/worktrees.ts` — name the specific blocker). Branch on `code`; the schemas foreground the full set.
+- `merge_worktree({project, worktree})` — the landing step. Success is `{ok:true, newSha}`; `WORKTREE_BEHIND` ⇒ `sync_worktree` first.
 - `delete_worktree({project, worktree, force?})` — soft-refuses with a `code` naming the blocker (e.g. attached instance, dirty tree) unless `force:true`; see the schema for the full set.
 
 ## Project conventions on project creation

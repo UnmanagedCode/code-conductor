@@ -14,13 +14,16 @@
 //
 // GOVERNABLE SURFACE (targeted-only policy scope). A tool is governable iff its
 // inputSchema declares a `sessionId` — it names a worker — plus `spawn_instance`,
-// which is governed by the stage being ENTERED. Everything else is ungoverned by
-// construction and can never appear in a `tools` map: `project_*`, `list_*`,
-// `create_*`, every plugin tool, `delete_worktree` (its signature is
-// {project, worktree, force}), and `renew_session` (it acts on the caller, so it
-// carries no sessionId). That gap is accepted. It is NOT the same fact as the
-// renew_session projection limitation documented in playbookLedger.ts — that one
-// is about a sessionId rotation orphaning stage state.
+// which is governed by the stage being ENTERED. A tool declaring no `sessionId`
+// names no worker for policy to be read from, so it is ungoverned by construction
+// and can never appear in a stage's `tools` map. That gap is accepted. The
+// membership of that class is not restated anywhere: governableToolNames()
+// computes it from buildTools(), and a hand-maintained copy would drift.
+//
+// `renew_session` is in that ungoverned class (it acts on the caller, so it
+// carries no sessionId). That is NOT the same fact as the renew_session
+// limitation in playbookLedger.ts, which is about a sessionId ROTATION orphaning
+// stage state in the projection — a different mechanism with a different fix.
 
 import path from 'node:path';
 import { promises as fs } from 'node:fs';

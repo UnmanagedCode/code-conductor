@@ -556,10 +556,7 @@ export function buildTools(): Tool[] {
         'first (WORKTREE_BEHIND), the parent is on the wrong branch or dirty (BASE_BRANCH_MISMATCH / ' +
         'PARENT_DIRTY), the worktree\'s own tree has uncommitted or untracked changes that would not ' +
         'land (WORKTREE_DIRTY — pass allowDirty:true to merge anyway), or the branch has no commits ' +
-        'to merge (NOTHING_TO_MERGE). Names the WORKTREE, never a worker: merging touches only git, ' +
-        'so it works identically whether the worktree\'s worker is still live or already killed. ' +
-        '(sync_worktree does take {sessionId} — it may have to prompt the live worker to resolve a ' +
-        'rebase conflict. Merging never needs a worker.)',
+        'to merge (NOTHING_TO_MERGE).',
       inputSchema: {
         type: 'object',
         properties: {
