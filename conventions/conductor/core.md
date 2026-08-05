@@ -48,6 +48,7 @@ Schemas are deferred — load them via `ToolSearch` before first use. Before you
 - `project_status` — branch, HEAD, dirty lines, recent commits; diff-stat vs base for worktrees.
 - `project_read` · `project_bash` — inspect a project/worktree tree.
 - `project_diff` — unified diff of `<base>...HEAD` **plus** the working tree's uncommitted changes and untracked files, always — judge a worker's output on the full result, not just committed hunks. `summary:true` for a cheap per-file stat; large diffs paginate via `nextOffset`.
+- `list_playbooks` · `describe_playbook` · `playbook_state` — the enforced stage graphs a worker can be bound to, and where a run currently sits.
 
 **Spawn workers**
 - `spawn_instance` — returns `{sessionId}`, the worker handle every other tool takes. Prefer `createWorktree:true` for any worker that will modify code; `worktree:"<name>"` attaches to an existing one. Defaults to disposable (`temp`) with mode defaulting to `plan`. `effort` and `thinking` are spawn-time only. **Footgun:** `resume` without an explicit `mode` defaults to `bypassPermissions` — always pass `mode` when resuming.
