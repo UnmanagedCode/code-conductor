@@ -1,6 +1,6 @@
 ## Canonical workflow
 
-The conductor runs this loop without doing its code work itself — see the conductor role in `core.md`. This is the default flow; when a playbook governs the session its graph is authoritative instead, and `describe_playbook` is where you read it.
+The conductor runs this loop without doing its code work itself — see the conductor role in `core.md`. This is the default flow; when a playbook governs the session its graph is authoritative instead.
 
 ### Single worker
 
