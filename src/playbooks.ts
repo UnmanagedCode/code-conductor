@@ -239,7 +239,8 @@ export function validatePlaybook(raw: unknown, id: string, index: ToolIndex): Va
     // An entry stage a run cannot actually start in is a definition bug.
     if (stages[s] && !spawnable(s)) {
       err(`entryStages names '${s}', which does not declare spawn_instance in its tools map — ` +
-          'an entry stage must be spawnable (spawn_instance defaults to "deny")');
+          'an entry stage must be spawnable. spawn_instance defaults to "deny" and a "*" entry does NOT ' +
+          'confer spawnability: name spawn_instance explicitly.');
     }
   }
 
@@ -256,6 +257,8 @@ export function validatePlaybook(raw: unknown, id: string, index: ToolIndex): Va
   // ── transitions ──
   const transitions: Transition[] = [];
   const seenEdges = new Set<string>();
+  // "<from>:<on>" — the driver-uniqueness index (see the duplicate-driver check).
+  const seenDrivers = new Set<string>();
   if (!Array.isArray(raw.transitions)) {
     err('transitions must be an array');
   } else {
@@ -286,8 +289,16 @@ export function validatePlaybook(raw: unknown, id: string, index: ToolIndex): Va
           err(`transition ${edge}: on cannot be spawn_instance — spawn_instance enters a stage, it does not move a worker between stages`);
         } else if (on === 'send_prompt') {
           err(`transition ${edge}: on cannot be send_prompt — send_prompt is the DEFAULT driver for an edge with no \`on\`, so declaring it is an ambiguous no-op`);
+        } else if (seenDrivers.has(`${String(from)}:${on}`)) {
+          // Two edges out of the same stage driven by the same tool: resolveMove
+          // resolves a driver by (from, on) and takes the FIRST match, so the
+          // second edge would be silently dead. Ambiguous, so refuse it here
+          // rather than let file order decide which transition happens.
+          err(`transition ${edge}: '${on}' already drives another transition out of '${String(from)}' — ` +
+              'a tool can drive at most one edge per stage, or which destination fires would depend on file order');
         } else {
           t.on = on;
+          seenDrivers.add(`${String(from)}:${on}`);
         }
       }
       transitions.push(t);
@@ -369,18 +380,33 @@ function validateToolPolicy(
   return { require: out };
 }
 
-// A stage is spawnable iff its resolved policy for spawn_instance permits it.
-// spawn_instance is the ONE tool defaulting to "deny": creating a worker is the
-// single irreversible entry into the graph, so forgetting a line must not let the
-// conductor spawn straight into `implement` and skip planning entirely.
+// A stage is spawnable iff it EXPLICITLY declares spawn_instance as "allow" or
+// {require:…}. Deliberately NOT resolvePolicy(): a `"*"` wildcard must never
+// confer spawnability.
+//
+// This is where the schema's two rules would otherwise collide — the general
+// lookup rule ("exact name, else the `"*"` entry, else the default") and the
+// fail-closed rule ("a stage is spawnable only if it DECLARES spawn_instance").
+// Fail-closed wins, because the entire point of the default is that forgetting
+// one line must not let the conductor spawn straight into `implement` and skip
+// planning; a wildcard silently rescuing that omission is precisely the failure
+// the rule exists to prevent. Creating a worker is the one irreversible entry
+// into the graph, so it is the one tool that must be named to be permitted.
+//
+// resolvePolicy keeps its general lookup for every other tool, including for
+// spawn_instance's `require` constraints once a stage IS spawnable.
 export function isSpawnable(stage: Stage | undefined): boolean {
   if (!stage) return false;
-  const policy = resolvePolicy(stage, 'spawn_instance');
-  return policy !== 'deny';
+  const declared = stage.tools['spawn_instance'];
+  return declared !== undefined && declared !== 'deny';
 }
 
 // One-step lookup: exact tool name, else the "*" entry, else the default —
 // "deny" for spawn_instance, "allow" for everything else.
+//
+// NOTE: spawnability does NOT go through here — see isSpawnable. A `"*"` entry
+// answers "may this tool be called on a worker in this stage", which for
+// spawn_instance is a different question from "may a worker be CREATED here".
 export function resolvePolicy(stage: Stage, toolName: string): ToolPolicy {
   const exact = stage.tools[toolName];
   if (exact !== undefined) return exact;
@@ -645,7 +671,7 @@ function decideSpawn(
   // Permission for a spawn IS the spawnability check (spawn_instance fails closed).
   if (!isSpawnable(stage)) {
     return refuse('STAGE_NOT_SPAWNABLE',
-      `stage '${stageName}' of playbook '${playbook.id}' does not permit spawn_instance, so a worker cannot ` +
+      `stage '${stageName}' of playbook '${playbook.id}' does not declare spawn_instance, so a worker cannot ` +
       `be created directly in it — it is transition-only. Spawnable stages: ` +
       `${Object.keys(playbook.stages).filter(s => isSpawnable(playbook.stages[s])).join(', ') || '(none)'}.`,
       legalMovesFrom(playbook, stageName));

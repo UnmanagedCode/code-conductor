@@ -73,9 +73,32 @@ test('spawn_instance is DENIED BY DEFAULT on a stage that omits it — no explic
   // classic's `implement` and `refine` say nothing about spawn_instance.
   for (const stage of ['implement', 'refine']) {
     const res = refusal(d('spawn_instance', { playbook: 'classic', stage }), 'STAGE_NOT_SPAWNABLE');
-    assert.match(res.reason, /does not permit spawn_instance/);
+    assert.match(res.reason, /does not declare spawn_instance/);
     assert.match(res.reason, /Spawnable stages: plan, review/);
   }
+});
+
+test('a "*": "allow" wildcard does NOT make a stage spawnable — spawn_instance must be named', () => {
+  const wild = pb({
+    id: 'wild', name: 'Wild', description: 'wildcard-allow stage', entryStages: ['a'],
+    stages: {
+      a: { tools: { spawn_instance: 'allow' } },
+      b: { tools: { '*': 'allow' } },   // reachable by transition, but never spawnable
+    },
+    transitions: [{ from: 'a', to: 'b' }],
+  });
+  const res = refusal(decide({
+    toolName: 'spawn_instance', args: { playbook: 'wild', stage: 'b' },
+    projection: proj([]), playbooks: pbs(wild),
+  }), 'STAGE_NOT_SPAWNABLE');
+  assert.match(res.reason, /does not declare spawn_instance/);
+  assert.match(res.reason, /Spawnable stages: a\./);
+  // The wildcard still governs every OTHER tool in that stage as usual.
+  allowed(decide({
+    toolName: 'set_mode', args: { sessionId: 'w-wild-001', mode: 'ask' },
+    projection: proj([{ kind: 'spawn', sessionId: 'w-wild-001', playbook: 'wild', stage: 'b' }]),
+    playbooks: pbs(wild),
+  }));
 });
 
 test('a run-root spawn must name a playbook; an unknown playbook or stage is named as such', () => {
@@ -236,6 +259,58 @@ test('capacity counts LIVE workers, so a retire frees the slot', () => {
     args: { stage: 'slot', needs: { root: 'w-cap-root' } },
     projection: proj(events), playbooks: pbs(capacityPlaybook('one')),
   }));
+});
+
+// decideSpawn and decideTargeted each carry their OWN capacity guard. The three
+// tests above drive the spawn one; this drives the transition one, which is a
+// separate code site and would otherwise stand unguarded.
+test('TRANSITION: capacity is enforced on the DESTINATION stage of a transition', () => {
+  const capT = pb({
+    id: 'capt', name: 'CapT', description: 'transition into a one-worker stage', entryStages: ['root'],
+    stages: {
+      root: { tools: { spawn_instance: 'allow' } },
+      worker: { needs: [{ stage: 'root', at: 'ever' }], workers: 'many', tools: { spawn_instance: 'allow' } },
+      hold: { workers: 'one' },   // transition-only, single occupant
+    },
+    transitions: [{ from: 'worker', to: 'hold' }],
+  });
+  const P = pbs(capT);
+  // Two workers of the SAME run sitting in `worker`.
+  const twoInWorker = [
+    { kind: 'spawn', sessionId: 'w-capt-rt', playbook: 'capt', stage: 'root' },
+    { kind: 'spawn', sessionId: 'w-capt-w1', playbook: 'capt', stage: 'worker', needs: { root: 'w-capt-rt' } },
+    { kind: 'spawn', sessionId: 'w-capt-w2', playbook: 'capt', stage: 'worker', needs: { root: 'w-capt-rt' } },
+  ];
+  const move = { sessionId: 'w-capt-w2', text: 'take the slot', stage: 'hold' };
+  // `hold` empty -> the transition is allowed
+  allowed(decide({ toolName: 'send_prompt', args: move, projection: proj(twoInWorker), playbooks: P }));
+  // w1 has since transitioned into `hold` -> w2's identical transition is refused
+  const occupied = [
+    ...twoInWorker,
+    { kind: 'transition', sessionId: 'w-capt-w1', from: 'worker', to: 'hold', via: 'send_prompt' },
+  ];
+  const res = refusal(decide({ toolName: 'send_prompt', args: move, projection: proj(occupied), playbooks: P }),
+    'STAGE_AT_CAPACITY');
+  assert.match(res.reason, /stage 'hold' declares workers:"one"/);
+  // ...and freeing the slot lets it through again
+  allowed(decide({
+    toolName: 'send_prompt', args: move, playbooks: P,
+    projection: proj([...occupied, { kind: 'retire', sessionId: 'w-capt-w1', reason: 'killed' }]),
+  }));
+});
+
+// The same spawn-vs-transition asymmetry: checkNeeds's playbook check is
+// UNREACHABLE from the spawn path (there, playbookId is derived from the
+// ancestors, so it always matches) and reachable only on a transition.
+test('TRANSITION: a needs target bound to another playbook is PLAYBOOK_MISMATCH', () => {
+  const events = [
+    ...CLASSIC_RUN.slice(0, 2),                                                    // classic implementer
+    { kind: 'spawn', sessionId: 'w-split-rv', playbook: 'split', stage: 'plan' },   // a worker on another playbook
+  ];
+  const res = refusal(d('send_prompt',
+    { sessionId: 'w-planner-1', text: 'go', stage: 'refine', needs: { review: 'w-split-rv' } }, events),
+    'PLAYBOOK_MISMATCH');
+  assert.match(res.reason, /names a worker on playbook 'split', not 'classic'/);
 });
 
 test('capacity is scoped to the RUN, not globally — a second run gets its own slot', () => {

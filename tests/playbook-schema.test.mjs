@@ -208,6 +208,31 @@ test('a tool name outside the governable set is rejected', () => {
     /is not a governable tool/);
 });
 
+// Fail-closed beats the general lookup rule: spawnability requires an EXPLICIT
+// spawn_instance entry, because the whole point of the "deny" default is that
+// forgetting one line must not open a stage — and a wildcard silently rescuing
+// that omission is exactly the failure it exists to prevent.
+test('a "*" wildcard never confers spawnability, and the load-time rules key off that', () => {
+  // entryStages: wildcard-allow is not enough, so this fails LOUDLY at load time
+  expectErr(base({ entryStages: ['a'], stages: { a: { tools: { '*': 'allow' } } } }),
+    /entryStages names 'a', which does not declare spawn_instance/);
+  // ...and the message says the wildcard does not count
+  expectErr(base({ entryStages: ['a'], stages: { a: { tools: { '*': 'allow' } } } }),
+    /a "\*" entry does NOT confer spawnability/);
+  // reachability stays consistent with the same definition: a wildcard-allow
+  // stage with no inbound edge is now genuinely unreachable, not "spawnable"
+  expectErr(base({ stages: { a: { tools: { spawn_instance: 'allow' } }, b: { tools: { '*': 'allow' } } } }),
+    /stage 'b' is unreachable/);
+  // an explicit deny is not rescued by a wildcard allow either
+  expectErr(base({ entryStages: ['a'], stages: { a: { tools: { '*': 'allow', spawn_instance: 'deny' } } } }),
+    /entryStages names 'a', which does not declare spawn_instance/);
+});
+
+test('an explicit spawn_instance still beats a "*": "deny"', () => {
+  expectOk(base({ stages: { a: { tools: { '*': 'deny', spawn_instance: 'allow' } } } }));
+  expectOk(base({ stages: { a: { tools: { '*': 'deny', spawn_instance: { require: { mode: 'plan' } } } } } }));
+});
+
 test("the '*' fallback entry is accepted but cannot carry require", () => {
   expectOk(base({ stages: { a: { tools: { '*': 'deny', spawn_instance: 'allow' } } } }));
   expectErr(base({ stages: { a: { tools: { spawn_instance: 'allow', '*': { require: { mode: 'plan' } } } } } }),
@@ -228,6 +253,48 @@ test('a duplicate from->to transition is rejected', () => {
     stages: { a: { tools: { spawn_instance: 'allow' } }, b: {} },
     transitions: [{ from: 'a', to: 'b' }, { from: 'a', to: 'b' }],
   }), /duplicate transition a->b/);
+});
+
+// resolveMove resolves a driver by (from, on) and takes the first match, so two
+// edges out of one stage sharing a driver would leave the second silently dead
+// and make the destination depend on file order.
+test('two transitions out of the same stage cannot share the same `on` driver', () => {
+  const stages = {
+    plan: { tools: { spawn_instance: 'allow' } },
+    implement: {},
+    review: {},
+  };
+  const errs = expectErr(base({
+    entryStages: ['plan'], stages,
+    transitions: [
+      { from: 'plan', to: 'implement', on: 'approve_plan' },
+      { from: 'plan', to: 'review', on: 'approve_plan' },
+    ],
+  }), /'approve_plan' already drives another transition out of 'plan'/);
+  assert.match(errs.join('\n'), /would depend on file order/);
+
+  // Different drivers out of the same stage are fine...
+  expectOk(base({
+    entryStages: ['plan'], stages,
+    transitions: [
+      { from: 'plan', to: 'implement', on: 'approve_plan' },
+      { from: 'plan', to: 'review', on: 'reject_plan' },
+    ],
+  }));
+  // ...and so is the SAME driver out of two different stages.
+  expectOk(base({
+    entryStages: ['plan'], stages,
+    transitions: [
+      { from: 'plan', to: 'implement', on: 'approve_plan' },
+      { from: 'implement', to: 'review', on: 'approve_plan' },
+    ],
+  }));
+  // Two `on`-less edges out of one stage stay legal: send_prompt resolves them
+  // by destination stage, so there is nothing ambiguous about them.
+  expectOk(base({
+    entryStages: ['plan'], stages,
+    transitions: [{ from: 'plan', to: 'implement' }, { from: 'plan', to: 'review' }],
+  }));
 });
 
 test('a transition `on` must be a governable tool, and neither send_prompt nor spawn_instance', () => {
