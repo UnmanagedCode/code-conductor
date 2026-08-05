@@ -442,6 +442,17 @@ test('policy applies only to the conductor: the same calls from a worker or no c
     const asRogue = await t.callAs(rogue.body.id, 'spawn_instance', { project: 'demo', mode: 'plan' });
     assert.ok(asRogue.sessionId, 'only the conductor is governed, whatever a worker\'s own setting says');
 
+    // The rogue must also be invisible to the AUDIT trail, which is a separate
+    // guard from the one above: the birth-event path lives on the status stream,
+    // not in check(), so the spawn refusal alone leaves it unobserved. The only
+    // enforcement event may be the conductor's own birth — a rogue birth event
+    // would make a non-conductor look like a governed actor to anything reading
+    // projection.enforcement.
+    const own = await expectEnforcementEvents(t, 1);
+    assert.equal(own[0].conductorSessionId, t.instances.get(t.conductorId).sessionId,
+      'the one enforcement event belongs to the real conductor');
+    await expectNoMoreEnforcement(t, 1);
+
     // And no ?caller= at all (a human or an unattributed client) likewise.
     const anon = await t.callAs(null, 'spawn_instance', { project: 'demo', mode: 'plan' });
     assert.ok(anon.sessionId, 'an unattributed spawn is ungoverned');
