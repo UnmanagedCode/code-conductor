@@ -220,8 +220,8 @@ test('spawn_instance + send_prompt(wait:true) + get_transcript round-trip', asyn
   // Untrimmed ring → trimmedBefore is 0.
   assert.equal(tx.trimmedBefore, 0);
 
-  // sinceSeq filter: after the turn, asking sinceSeq=lastSeq returns nothing.
-  const tail = unwrap(await callTool(baseUrl, 'get_transcript', { sessionId: spawn.sessionId, sinceSeq: tx.lastSeq }));
+  // fromSeq filter (inclusive): after the turn, asking fromSeq=lastSeq+1 returns nothing.
+  const tail = unwrap(await callTool(baseUrl, 'get_transcript', { sessionId: spawn.sessionId, fromSeq: tx.lastSeq + 1 }));
   assert.equal(tail.events.length, 0);
 });
 
@@ -245,16 +245,19 @@ test('get_transcript + get_recent_messages survive a trimmed ring', async () => 
 
     const tx = unwrap(await callTool(baseUrl, 'get_transcript', { sessionId: spawn.sessionId }));
     assert.equal(tx.trimmedBefore, inst.ring.trimmedBefore);
-    // sinceSeq below trimmedBefore: this fixture has no on-disk jsonl (the fake
-    // CLI doesn't write one), so disk-fallback finds nothing and the dropped
-    // range is served from the ring only — events start at trimmedBefore.
-    // (Real disk-backed paging into a dropped range is covered in
-    // tests/mcp-recent-disk.test.mjs.)
-    const below = unwrap(await callTool(baseUrl, 'get_transcript', { sessionId: spawn.sessionId, sinceSeq: 0 }));
+    // fromSeq below trimmedBefore (inclusive): this fixture has no on-disk
+    // jsonl (the fake CLI doesn't write one), so disk-fallback finds nothing
+    // and the dropped range is served from the ring only, with a
+    // history_gap marker at the seam (Step 3 — the unreconstructable evicted
+    // span is marked, not silently dropped). (Real disk-backed paging into a
+    // dropped range is covered in tests/mcp-recent-disk.test.mjs.)
+    const below = unwrap(await callTool(baseUrl, 'get_transcript', { sessionId: spawn.sessionId, fromSeq: 0 }));
     assert.ok(below.events.length > 0);
-    assert.ok(below.events[0]._seq >= below.trimmedBefore);
+    assert.equal(below.events[0].kind, 'history_gap', 'the unreplayable evicted span is marked');
+    const firstReal = below.events.find(e => typeof e._seq === 'number');
+    assert.ok(firstReal && firstReal._seq >= below.trimmedBefore);
     assert.equal(typeof below.hasMore, 'boolean');
-    assert.equal(typeof below.nextAfter, 'number');
+    assert.equal(typeof below.nextFrom, 'number');
 
     const recent = unwrapMessages(await callTool(baseUrl, 'get_recent_messages', { sessionId: spawn.sessionId }));
     assert.equal(recent.messages.length, 1);

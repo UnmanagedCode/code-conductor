@@ -128,7 +128,7 @@ Mounted at `POST /mcp` (Streamable HTTP, JSON-RPC 2.0); tools exposed as `mcp__c
   - `list_projects`, `list_workspaces`, `list_worktrees`, `locate_session` — bare listings / lookup.
   - `list_instances` — each entry carries displayStatus and activeAgentTasks.
   - `list_sessions` — conducted:bool marker.
-  - `get_transcript` — disk-backed ring-first event stream (forward-paged via `sinceSeq`).
+  - `get_transcript` — disk-backed ring-first event stream (forward-paged via `fromSeq`, inclusive).
   - `get_recent_messages` — multi-block (text + tool_use + thinking), default-call bonding, disk-backed ring-first.
   - `project_status` — dirty-state output capped.
   - `project_read` — path-traversal guarded, multi-block (metadata + body).

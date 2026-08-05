@@ -122,19 +122,19 @@ export function buildTools(): Tool[] {
       name: 'get_transcript',
       description:
         'Return the instance UI-event stream. DISK-BACKED & ring-first: events are served from the ' +
-        'in-memory ring, and when sinceSeq points into a range the ring has already evicted (below ' +
+        'in-memory ring, and when fromSeq points into a range the ring has already evicted (below ' +
         'trimmedBefore) the dropped range is transparently served from the on-disk session transcript — ' +
         'ring eviction is invisible to you. Events carry _seq; poll incrementally by passing the returned ' +
-        '`nextAfter` back as the next sinceSeq (forward paging, oldest-first). Returns {id, status, ' +
-        'sessionId, events, lastSeq, trimmedBefore, hasMore, nextAfter}. Event kinds: text_delta, tool_use, ' +
+        '`nextFrom` back as the next fromSeq (forward paging, oldest-first). Returns {id, status, ' +
+        'sessionId, events, lastSeq, trimmedBefore, hasMore, nextFrom}. Event kinds: text_delta, tool_use, ' +
         'tool_result, turn_end, etc. — same shape as the WebSocket snapshot. (Caveat: a single turn larger ' +
         'than the ring cap can leave a mid-turn gap; for prose mid-long-turn use get_recent_messages.)',
       inputSchema: {
         type: 'object',
         properties: {
           sessionId: { type: 'string', description: 'Worker sessionId.' },
-          sinceSeq: { type: 'integer', default: -1, description: 'Return events with _seq > sinceSeq (forward, oldest-first). Default -1 → newest page. Pass the previous call\'s nextAfter to poll incrementally.' },
-          limit: { type: 'integer', minimum: 1, maximum: 500, default: 200, description: 'Max events returned per call (clamped to this property\'s minimum/maximum). Use nextAfter + hasMore to page.' },
+          fromSeq: { type: 'integer', description: 'Omitted → newest page; n → events with _seq >= n (inclusive), so fromSeq: 0 reaches the very first event. Pass nextFrom back to poll.' },
+          limit: { type: 'integer', minimum: 1, maximum: 500, default: 200, description: 'Max events returned per call (clamped to this property\'s minimum/maximum). Use nextFrom + hasMore to page.' },
         },
         required: ['sessionId'],
       },

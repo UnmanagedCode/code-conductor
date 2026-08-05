@@ -229,9 +229,10 @@ test('get_transcript: paging into a ring-dropped range is served from disk', asy
     const inst = ctx.instances.get(id);
     assert.ok(inst.ring.trimmedBefore > 0, 'ring actually trimmed');
 
-    // sinceSeq:0 points below trimmedBefore — the dropped range must come from
-    // disk, NOT be silently skipped (the bug). events start in the dropped range.
-    const page = unwrap(await callTool(ctx.baseUrl, 'get_transcript', { sessionId: sid, sinceSeq: 0, limit: 50 }));
+    // fromSeq:0 (inclusive) points below trimmedBefore — the dropped range
+    // must come from disk, NOT be silently skipped (the bug). events start
+    // in the dropped range.
+    const page = unwrap(await callTool(ctx.baseUrl, 'get_transcript', { sessionId: sid, fromSeq: 0, limit: 50 }));
     assert.ok(page.events.length > 0);
     assert.ok(page.events[0]._seq < page.trimmedBefore,
       `first event _seq (${page.events[0]._seq}) is in the dropped range (< trimmedBefore ${page.trimmedBefore}) — served from disk`);
@@ -241,7 +242,7 @@ test('get_transcript: paging into a ring-dropped range is served from disk', asy
     // Oldest-first, contiguous, with a forward cursor to continue.
     for (let i = 1; i < page.events.length; i++) assert.ok(page.events[i]._seq > page.events[i - 1]._seq);
     assert.equal(typeof page.hasMore, 'boolean');
-    assert.equal(page.nextAfter, page.events[page.events.length - 1]._seq);
+    assert.equal(page.nextFrom, page.events[page.events.length - 1]._seq + 1);
   } finally {
     await ctx.close();
     if (prevCap === undefined) delete process.env.ORCH_EVENT_RING_CAP;
@@ -262,7 +263,7 @@ test('get_transcript: in-flight (current-turn) ring events still appear after a 
     // A fresh live event lands in the ring (not on disk).
     inst._emitUi({ kind: 'text_delta', msgId: 'live', blockIdx: 0, text: 'in-flight words' });
 
-    const page = unwrap(await callTool(ctx.baseUrl, 'get_transcript', { sessionId: sid, sinceSeq: lastSeqBefore }));
+    const page = unwrap(await callTool(ctx.baseUrl, 'get_transcript', { sessionId: sid, fromSeq: lastSeqBefore + 1 }));
     assert.ok(page.events.some(e => e.kind === 'text_delta' && e.text === 'in-flight words'),
       'the in-flight ring event is returned');
   } finally {
@@ -272,7 +273,63 @@ test('get_transcript: in-flight (current-turn) ring events still appear after a 
   }
 });
 
-test('get_transcript: ring-first when sinceSeq is at/above trimmedBefore (no out-of-bound request)', async () => {
+test('get_transcript: fromSeq cursor convention — 0 is inclusive of _seq 0, 1 starts later, omitted stays newest, nextFrom does not re-serve the boundary event', async () => {
+  const prevCap = process.env.ORCH_EVENT_RING_CAP;
+  process.env.ORCH_EVENT_RING_CAP = '10';
+  const ctx = await bootServer({ scenarioPath: SCENARIO_RESUME });
+  try {
+    const sid = 'bbbbbbbb-1111-2222-3333-444444444444';
+    const id = await bootResumed({ ctx, projectName: 'cursorconv', sid, lines: turnLines(12) });
+    const inst = ctx.instances.get(id);
+    assert.ok(inst.ring.trimmedBefore > 0, 'ring actually trimmed');
+
+    // fromSeq:0 is INCLUSIVE — reaches _seq 0 from disk, the opening
+    // prompt, on a trimmed ring. Fails before Step 1's rename: pre-fix
+    // (sinceSeq, exclusive) there was no value meaning "from the very
+    // beginning" — sinceSeq:0 skipped _seq 0 itself.
+    const fromStart = unwrap(await callTool(ctx.baseUrl, 'get_transcript', { sessionId: sid, fromSeq: 0, limit: 50 }));
+    assert.equal(fromStart.events[0]._seq, 0, 'first served event is _seq 0');
+    assert.equal(fromStart.events[0].kind, 'user_echo', '_seq 0 is the opening user_echo');
+    assert.equal(fromStart.events[0].text, 'prompt 0', 'it is the opening prompt, not a later one');
+
+    // fromSeq:1 starts at _seq 1 (inclusive semantics, just a higher floor).
+    const fromOne = unwrap(await callTool(ctx.baseUrl, 'get_transcript', { sessionId: sid, fromSeq: 1, limit: 50 }));
+    assert.equal(fromOne.events[0]._seq, 1, 'fromSeq:1 serves starting at _seq 1');
+
+    // fromSeq omitted still returns the newest page.
+    const omitted = unwrap(await callTool(ctx.baseUrl, 'get_transcript', { sessionId: sid }));
+    assert.equal(omitted.events[omitted.events.length - 1]._seq, omitted.lastSeq,
+      'omitted fromSeq serves the trailing/newest page');
+
+    // nextFrom must be lastServedSeq + 1, NOT the last served seq itself —
+    // under INCLUSIVE semantics, re-polling with the last served seq would
+    // re-serve that same boundary event forever. Poll again with nextFrom
+    // and confirm the boundary event does not reappear.
+    const lastServed = fromStart.events[fromStart.events.length - 1]._seq;
+    assert.equal(fromStart.nextFrom, lastServed + 1, 'nextFrom is lastServedSeq + 1, not an echo of lastServedSeq');
+    const rePoll = unwrap(await callTool(ctx.baseUrl, 'get_transcript', { sessionId: sid, fromSeq: fromStart.nextFrom, limit: 50 }));
+    assert.equal(rePoll.events.length, 0, 'a caught-up re-poll with nextFrom returns nothing, not the repeated boundary event');
+    assert.ok(!rePoll.events.some(e => e._seq === lastServed),
+      're-polling with nextFrom does not re-serve the previous boundary event');
+
+    // A stale/future fromSeq (already caught up, or further ahead than
+    // anything real) must not echo the requested cursor back as nextFrom —
+    // that would let a client with a bad cursor stay wedged on it forever.
+    // It must snap to the true lastSeq + 1 instead.
+    const trueLastSeq = fromStart.lastSeq;
+    const stale = trueLastSeq + 1000;
+    const staleQuery = unwrap(await callTool(ctx.baseUrl, 'get_transcript', { sessionId: sid, fromSeq: stale }));
+    assert.equal(staleQuery.events.length, 0, 'precondition: nothing exists past the stale cursor');
+    assert.equal(staleQuery.nextFrom, trueLastSeq + 1,
+      'nextFrom snaps to the true lastSeq + 1, not an echo of the stale input cursor');
+  } finally {
+    await ctx.close();
+    if (prevCap === undefined) delete process.env.ORCH_EVENT_RING_CAP;
+    else process.env.ORCH_EVENT_RING_CAP = prevCap;
+  }
+});
+
+test('get_transcript: ring-first when fromSeq is at/above trimmedBefore (no out-of-bound request)', async () => {
   const prevCap = process.env.ORCH_EVENT_RING_CAP;
   process.env.ORCH_EVENT_RING_CAP = '10';
   const ctx = await bootServer({ scenarioPath: SCENARIO_RESUME });
@@ -283,7 +340,7 @@ test('get_transcript: ring-first when sinceSeq is at/above trimmedBefore (no out
     const tb = inst.ring.trimmedBefore;
     assert.ok(tb > 0);
 
-    const page = unwrap(await callTool(ctx.baseUrl, 'get_transcript', { sessionId: sid, sinceSeq: tb }));
+    const page = unwrap(await callTool(ctx.baseUrl, 'get_transcript', { sessionId: sid, fromSeq: tb }));
     // Every returned event is in the retained window — disk wasn't needed.
     assert.ok(page.events.length > 0);
     assert.ok(page.events.every(e => e._seq >= tb), 'all events come from the retained ring');

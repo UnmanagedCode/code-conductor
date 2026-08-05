@@ -11,6 +11,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
 import { encodeCwd } from '../src/projects.ts';
+import { buildArchive, pageInstanceEvents } from '../src/eventArchive.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-resume.json');
@@ -121,6 +122,12 @@ test('trimmed ring: archive fallback yields no overlap and no gap at prompt gran
     for (const e of all.filter(e => e.kind === 'user_echo')) {
       assert.ok(Number.isInteger(e.userIndex));
     }
+    // T4 (pins R3/R5): the paged history's very first event is _seq 0 and is
+    // the opening prompt's user_echo — makes the _seq 0 boundary explicit
+    // rather than implied by the "all 12 prompts" check above.
+    assert.equal(all[0]._seq, 0, 'first served event is _seq 0');
+    assert.equal(all[0].kind, 'user_echo', '_seq 0 is a user_echo');
+    assert.equal(all[0].text, 'prompt 0', '_seq 0 is the opening prompt');
   } finally {    if (prevCap === undefined) delete process.env.ORCH_EVENT_RING_CAP;
     else process.env.ORCH_EVENT_RING_CAP = prevCap;
   }
@@ -197,8 +204,16 @@ test('trimmed ring without a jsonl (nothing to replay): cursor terminates cleanl
 
     const { all, last } = await pageAll(ctx, id, { limit: 9 });
     assert.equal(last.hasMore, false);
-    // Only the retained ring could be served.
-    assert.equal(all[0]._seq, inst.ring.trimmedBefore);
+    // T2 (Step 3): the jsonl-missing branch of buildArchive must mark the
+    // seam with a history_gap rather than silently dropping the evicted
+    // span — exactly one marker, no _seq, sitting immediately before the
+    // first ring-side event.
+    const gaps = all.filter(e => e.kind === 'history_gap');
+    assert.equal(gaps.length, 1, 'exactly one gap marker served');
+    assert.equal(gaps[0]._seq, undefined, 'marker carries no _seq');
+    const gi = all.findIndex(e => e.kind === 'history_gap');
+    assert.equal(all[gi + 1]._seq, inst.ring.trimmedBefore,
+      'marker sits right before the first ring-side event');
   } finally {
     process.env.FAKE_CLAUDE_SCENARIO = prevScenario;
     if (prevCap === undefined) delete process.env.ORCH_EVENT_RING_CAP;
@@ -206,7 +221,7 @@ test('trimmed ring without a jsonl (nothing to replay): cursor terminates cleanl
   }
 });
 
-test('after= pages forward, mirroring sinceSeq semantics', async () => {
+test('after= pages forward, exclusive (REST-only convention, unrelated to get_transcript\'s fromSeq)', async () => {
   {
     const sid = 'dddddddd-2222-3333-4444-555555555555';
     const id = await bootResumed({ ctx, projectName: 'forward', sid, lines: turnLines(4) });
@@ -457,6 +472,55 @@ test('limit is clamped; bad params 400; unknown instance 404', async () => {
     const missing = await api(ctx.baseUrl, 'GET', `/api/instances/nope/events`);
     assert.equal(missing.status, 404);
   }
+});
+
+test('T3 (Step 4): buildArchive marks a gap when the trimmedBefore clamp discards archive content', async () => {
+  await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'clampgap' });
+  const projectPath = path.join(ctx.projectsRoot, 'clampgap');
+  const sid = 'aaaabbbb-2222-3333-4444-555555555555';
+  const sessionDir = path.join(ctx.claudeProjectsRoot, encodeCwd(projectPath));
+  await fs.mkdir(sessionDir, { recursive: true });
+  // Two plain turns: replay flattens to [echo0, text_delta, text_end, echo1,
+  // text_delta, text_end] — echo1 (userIndex 1) lands at flat index 3.
+  await fs.writeFile(
+    path.join(sessionDir, `${sid}.jsonl`),
+    turnLines(2).map(l => JSON.stringify(l)).join('\n') + '\n',
+  );
+  const head = { kind: 'user_echo', text: 'prompt 1', userIndex: 1, _seq: 2 };
+
+  // trimmedBefore (2) sits BELOW the anchor echo's archive index (3): the
+  // clamp discards flat[2] (turn 0's text_end) without the fix, silently.
+  const clamped = await buildArchive({
+    cwd: projectPath, sessionId: sid, ring: [head], trimmedBefore: 2, userEchoCount: 2,
+  });
+  assert.equal(clamped.cut, 2, 'cut is clamped down to trimmedBefore');
+  assert.equal(clamped.gap, true, 'clamp discarding real archive content must mark gap (Step 4)');
+
+  // trimmedBefore (3) matches the anchor cut exactly — the normal
+  // turn-aligned case — and must NOT be marked as a gap.
+  const aligned = await buildArchive({
+    cwd: projectPath, sessionId: sid, ring: [head], trimmedBefore: 3, userEchoCount: 2,
+  });
+  assert.equal(aligned.cut, 3);
+  assert.equal(aligned.gap, false, 'cut === trimmedBefore is the healthy turn-aligned case, no gap');
+});
+
+test('T3 (Step 5): pageInstanceEvents marks a gap for a trimmed ring with no sessionId to replay from', async () => {
+  const ring = [
+    { kind: 'text_delta', msgId: 'm', blockIdx: 0, text: 'e0', _seq: 5 },
+    { kind: 'text_delta', msgId: 'm', blockIdx: 1, text: 'e1', _seq: 6 },
+  ];
+  const stubInst = {
+    cwd: '/fake', sessionId: null, _userEchoCount: 0,
+    ring: { get trimmedBefore() { return 5; } },
+    ringSnapshot: () => ring.slice(),
+  };
+  const page = await pageInstanceEvents(stubInst, { limit: 10 });
+  assert.equal(page.hasMore, false, 'nothing more IS fetchable (no sessionId to replay from) — the marker is the honest signal');
+  const gaps = page.events.filter(e => e.kind === 'history_gap');
+  assert.equal(gaps.length, 1, 'exactly one gap marker for the unreplayable evicted span');
+  assert.equal(page.events[0].kind, 'history_gap', 'marker sits right before the retained ring head');
+  assert.equal(page.events[1]._seq, 5, 'the ring head follows immediately after the marker');
 });
 
 // A task batch that lives in older history must render its finished-task bubble

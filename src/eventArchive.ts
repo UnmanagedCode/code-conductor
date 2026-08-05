@@ -30,6 +30,13 @@
 // space sits strictly below the ring space, so a combined list is globally
 // sorted by `_seq` and backward paging can hand the client an opaque
 // `nextBefore` cursor that works across the boundary.
+//
+// The mid-turn head is not the only gap cause: `gap` must be true whenever
+// evicted history exists that this call could not reconstruct. That also
+// covers an unreadable/missing jsonl (buildArchive can't replay anything),
+// the trimmedBefore clamp above discarding archive events past its own
+// anchor-derived cut (denser replay than the live evicted span), and a
+// trimmed ring with no sessionId to replay from at all.
 
 import { loadPersistedTranscript } from './transcript.ts';
 import { isOuterUserEcho, snapStartToQuiescent, type UiEvent } from './parser.ts';
@@ -75,7 +82,7 @@ export async function buildArchive({ cwd, sessionId, ring, trimmedBefore, userEc
   cwd: string; sessionId: string; ring: SeqEvent[]; trimmedBefore: number; userEchoCount: number;
 }): Promise<{ events: SeqEvent[]; cut: number; gap: boolean }> {
   const result = await loadPersistedTranscript({ cwd, sessionId, seqHint: 0 });
-  if (!result) return { events: [], cut: 0, gap: false };
+  if (!result) return { events: [], cut: 0, gap: trimmedBefore > 0 };
 
   const flat: SeqEvent[] = [];
   let echoOrdinal = 0;
@@ -131,17 +138,24 @@ export async function buildArchive({ cwd, sessionId, ring, trimmedBefore, userEc
       cut = includeAnchorEcho ? idx + 1 : idx;
     }
   }
-  // Safety net: keep archive seqs strictly below the ring's seq space.
-  cut = Math.min(cut, Math.max(0, trimmedBefore));
-  return { events: flat, cut, gap: includeAnchorEcho };
+  // Safety net: keep archive seqs strictly below the ring's seq space. When
+  // the anchor-derived cut exceeds trimmedBefore, this clamp silently drops
+  // archive events in [trimmedBefore, cut) — real evicted history — so that
+  // must also mark the gap.
+  const clampedCut = Math.min(cut, Math.max(0, trimmedBefore));
+  const clampDroppedContent = cut > trimmedBefore;
+  cut = clampedCut;
+  return { events: flat, cut, gap: includeAnchorEcho || clampDroppedContent };
 }
 
 // Page an instance's event history.
 //   before — backward paging: up to `limit` events immediately preceding
 //            seq `before`, oldest-first (the UI's scroll-up path). Wins
 //            over `after` when both are given.
-//   after  — forward paging: the first `limit` events with seq > after
-//            (mirrors get_transcript's sinceSeq semantics).
+//   after  — forward paging: the first `limit` events with seq > after,
+//            EXCLUSIVE (mirrors the REST `after=` cursor; get_transcript's
+//            own `fromSeq` is inclusive and translates to this at its
+//            boundary in src/mcp/handlers.ts, not here).
 //   neither — the trailing `limit` events.
 // Returns { events, hasMore, nextBefore, trimmedBefore, lastSeq }.
 // `nextBefore` is an opaque cursor for the next backward page; `hasMore`
@@ -167,7 +181,10 @@ export async function pageInstanceEvents(inst: InstanceLike, { before = null, af
 
   let combined: SeqEvent[] = ring;
   let seamIdx = -1; // index of the ring head inside `combined`
-  let gap = false;  // ring head is mid-turn — content before it was evicted
+  // Evicted history exists but this call couldn't reconstruct it (no
+  // sessionId to replay from) — mark the gap even though needArchive is
+  // false (it's gated on sessionId being present).
+  let gap = tb > 0 && !inst.sessionId;
   if (needArchive) {
     const archive = await buildArchive({
       cwd: inst.cwd, sessionId: inst.sessionId as string,
@@ -215,10 +232,16 @@ export async function pageInstanceEvents(inst: InstanceLike, { before = null, af
   // that carries the first ring event gets a `{kind:'history_gap'}` marker
   // (no `_seq`, matching task_completion's synthesis) spliced right before
   // it — the client renders an "earlier messages unavailable" divider there
-  // instead of silently gluing the surviving whole blocks together.
-  if (gap && events.length) {
-    const headIdx = events.findIndex(ev => (ev._seq as number) === tb);
+  // instead of silently gluing the surviving whole blocks together. On a
+  // terminal page (`!hasMore`) whose served window doesn't carry the ring
+  // head at all (e.g. an earlier, wider quiescent-snapped page already
+  // served it, leaving this archive-confirming call with nothing) the
+  // marker still has to surface somewhere, or the eviction goes unmarked —
+  // append it as this page's lone content.
+  if (gap) {
+    const headIdx = events.length ? events.findIndex(ev => (ev._seq as number) === tb) : -1;
     if (headIdx !== -1) events.splice(headIdx, 0, { kind: 'history_gap' });
+    else if (!hasMore) events.push({ kind: 'history_gap' });
   }
   // Inject synthetic `task_completion` bubbles below the tail. Derived over the
   // full `combined` history (so batches spanning page boundaries are correct),
