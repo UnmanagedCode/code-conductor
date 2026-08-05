@@ -1,0 +1,19 @@
+{
+  "id": "research",
+  "name": "Research — read-only fan-out",
+  "description": "Many read-only investigators in parallel, no worktrees and nothing to land: worktree creation is forced off and sync/merge are denied.",
+  "entryStages": ["investigate"],
+
+  "stages": {
+    "investigate": {
+      "workers": "many",
+      "tools": {
+        "spawn_instance": { "require": { "createWorktree": false } },
+        "sync_worktree": "deny",
+        "merge_worktree": "deny"
+      }
+    }
+  },
+
+  "transitions": []
+}

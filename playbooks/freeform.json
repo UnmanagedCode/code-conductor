@@ -1,0 +1,17 @@
+{
+  "id": "freeform",
+  "name": "Freeform — the named escape hatch",
+  "description": "One permissive stage for operational and read-only spawns; forcing createWorktree:false keeps code-writing work from silently routing around the gated playbooks.",
+  "entryStages": ["freeform"],
+
+  "stages": {
+    "freeform": {
+      "workers": "many",
+      "tools": {
+        "spawn_instance": { "require": { "createWorktree": false } }
+      }
+    }
+  },
+
+  "transitions": []
+}

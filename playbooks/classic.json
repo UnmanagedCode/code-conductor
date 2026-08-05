@@ -1,0 +1,37 @@
+{
+  "id": "classic",
+  "name": "Classic — one worker plans/implements/refines, separate reviewer",
+  "description": "Today's canonical workflow: one worker plans, implements and refines; a separate reviewer reviews and is re-prompted to re-review.",
+  "entryStages": ["plan"],
+
+  "stages": {
+    "plan": {
+      "tools": {
+        "spawn_instance": { "require": { "mode": "plan", "model": "planner", "createWorktree": true } },
+        "set_mode": "deny",
+        "merge_worktree": "deny"
+      }
+    },
+    "implement": {
+      "tools": { "merge_worktree": "deny" }
+    },
+    "review": {
+      "needs": [{ "stage": "implement" }],
+      "tools": {
+        "spawn_instance": { "require": { "mode": "bypassPermissions", "model": "reviewer" } },
+        "merge_worktree": "deny",
+        "sync_worktree": "deny",
+        "approve_plan": "deny"
+      }
+    },
+    "refine": {
+      "needs": [{ "stage": "review" }],
+      "tools": { "merge_worktree": "deny" }
+    }
+  },
+
+  "transitions": [
+    { "from": "plan", "to": "implement", "on": "approve_plan" },
+    { "from": "implement", "to": "refine" }
+  ]
+}

@@ -76,8 +76,10 @@ interface CatalogEntry {
 }
 
 interface FragmentCatalogConfig {
-  // seeds:    [{ slug, name, description }] — built-in metadata; body from <seedDir>/<slug>.md
-  // seedDir:  absolute dir holding the built-in `.md` fragments
+  // seeds:    [{ slug, name, description }] — built-in metadata; body from <seedDir>/<slug><seedExt>
+  // seedDir:  absolute dir holding the built-in fragment files
+  // seedExt:  seed filename extension, default '.md' (the playbook catalog passes
+  //           '.json' — its bodies are JSON definitions the caller parses itself)
   // storeFile: () => absolute path of the custom/state JSON (lazy so PROJECTS_ROOT
   //            overrides in tests are honoured per-call)
   // noun:     label used in validation error messages (e.g. 'convention')
@@ -88,6 +90,7 @@ interface FragmentCatalogConfig {
   //            provider so they never collide with seed/custom slugs.
   seeds: FragmentSeed[];
   seedDir: string;
+  seedExt?: string;
   storeFile: () => string;
   noun?: string;
   extraProvider?: (() => Promise<ExtraEntry[]>) | null;
@@ -104,12 +107,12 @@ interface FragmentCatalog {
   validateSlug(slug: string): string;
 }
 
-export function createFragmentCatalog({ seeds, seedDir, storeFile, noun = 'entry', extraProvider = null }: FragmentCatalogConfig): FragmentCatalog {
+export function createFragmentCatalog({ seeds, seedDir, seedExt = '.md', storeFile, noun = 'entry', extraProvider = null }: FragmentCatalogConfig): FragmentCatalog {
   const fragmentCache = new Map<string, string>(); // slug -> body
 
   async function seedBody(slug: string): Promise<string> {
     if (fragmentCache.has(slug)) return fragmentCache.get(slug) as string;
-    const body = await fs.readFile(path.join(seedDir, `${slug}.md`), 'utf8');
+    const body = await fs.readFile(path.join(seedDir, `${slug}${seedExt}`), 'utf8');
     const trimmed = body.replace(/\s+$/, '');
     fragmentCache.set(slug, trimmed);
     return trimmed;

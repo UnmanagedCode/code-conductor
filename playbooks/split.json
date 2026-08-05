@@ -1,0 +1,41 @@
+{
+  "id": "split",
+  "name": "Split — the planner never implements",
+  "description": "Plan and implement are distinct workers: the plan stage has no outgoing transition, so a planner can only hand off to a freshly spawned implementer.",
+  "entryStages": ["plan"],
+
+  "stages": {
+    "plan": {
+      "tools": {
+        "spawn_instance": { "require": { "mode": "plan", "model": "planner", "createWorktree": true } },
+        "set_mode": "deny",
+        "sync_worktree": "deny",
+        "merge_worktree": "deny"
+      }
+    },
+    "implement": {
+      "needs": [{ "stage": "plan", "at": "ever" }],
+      "tools": {
+        "spawn_instance": { "require": { "mode": "bypassPermissions" } },
+        "merge_worktree": "deny"
+      }
+    },
+    "review": {
+      "needs": [{ "stage": "implement", "at": "ever" }],
+      "tools": {
+        "spawn_instance": { "require": { "mode": "bypassPermissions", "model": "reviewer" } },
+        "merge_worktree": "deny",
+        "sync_worktree": "deny",
+        "approve_plan": "deny"
+      }
+    },
+    "refine": {
+      "needs": [{ "stage": "review" }],
+      "tools": { "merge_worktree": "deny" }
+    }
+  },
+
+  "transitions": [
+    { "from": "implement", "to": "refine" }
+  ]
+}
