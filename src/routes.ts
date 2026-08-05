@@ -16,9 +16,13 @@ import {
   isGitRepo, listWorktrees, removeWorktree, mergeWorktreeIntoParent,
   buildRebasePrompt, getWorktree, removeAllWorktreesForProject,
   attachmentsDir, getWorktreeMergeStatus, syncWorktree,
-  getProjectUpstreamStatus, getWorktreeDiff,
-  getProjectCommits, getCommitDiff, getProjectUncommittedDiff,
+  getProjectUpstreamStatus, getProjectCommits,
 } from './worktrees.ts';
+import {
+  getWorktreeDiff, getWorktreeFileDiff,
+  getCommitDiff, getCommitFileDiff,
+  getProjectUncommittedDiff, getProjectUncommittedFileDiff,
+} from './gitDiff.ts';
 import { buildPluginApi } from './plugins/api.ts';
 import type { PluginHostApiLike, PluginLibraryApiLike } from './plugins/api.ts';
 import { scheduleRestart } from './restart.ts';
@@ -685,14 +689,19 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
     } catch (e) { next(e); }
   });
 
-  // Structured diff for a worktree vs its base branch. Returns per-file
-  // data with hunks parsed for direct rendering — no client-side diffing
-  // needed. Accepts optional ?baseRef= and ?context= (clamped to the range/default enforced in getWorktreeDiff).
+  // Structured diff for a worktree vs its base branch. Without ?path=,
+  // returns a per-file summary (no hunks, never truncated); with ?path=,
+  // returns that one file's hunks (fetched lazily by the review UI on
+  // expand). Accepts optional ?baseRef= and ?context= (clamped to the
+  // range/default enforced in getWorktreeDiff/getWorktreeFileDiff).
   r.get('/projects/:name/worktrees/:wt/diff', async (req, res, next) => {
     try {
       const baseRef = typeof req.query.baseRef === 'string' ? req.query.baseRef : undefined;
       const contextLines = req.query.context !== undefined ? Number(req.query.context) : 3;
-      const result = await getWorktreeDiff(req.params.name, req.params.wt, { baseRef, contextLines });
+      const filePath = typeof req.query.path === 'string' && req.query.path ? req.query.path : null;
+      const result = filePath
+        ? await getWorktreeFileDiff(req.params.name, req.params.wt, filePath, { baseRef, contextLines })
+        : await getWorktreeDiff(req.params.name, req.params.wt, { baseRef, contextLines });
       res.json(result);
     } catch (e) { next(e); }
   });
@@ -709,24 +718,32 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
   });
 
   // Diff of all uncommitted changes (staged + unstaged vs HEAD). Mirrors the
-  // commit /diff response shape so the same client renderer applies.
+  // commit /diff response shape (summary without ?path=, one file's hunks
+  // with ?path=) so the same client renderer applies.
   // Registered before the :sha route so the literal "uncommitted" isn't
   // treated as a SHA param.
   r.get('/projects/:name/commits/uncommitted/diff', async (req, res, next) => {
     try {
       const contextLines = req.query.context !== undefined ? Number(req.query.context) : 3;
-      const result = await getProjectUncommittedDiff(req.params.name, { contextLines });
+      const filePath = typeof req.query.path === 'string' && req.query.path ? req.query.path : null;
+      const result = filePath
+        ? await getProjectUncommittedFileDiff(req.params.name, filePath, { contextLines })
+        : await getProjectUncommittedDiff(req.params.name, { contextLines });
       res.json(result);
     } catch (e) { next(e); }
   });
 
   // Structured diff for the change introduced by a single commit. Mirrors the
-  // worktree /diff response shape so the same client renderer applies.
-  // Accepts optional ?context= (clamped to the range/default enforced in getCommitDiff).
+  // worktree /diff response shape (summary without ?path=, one file's hunks
+  // with ?path=) so the same client renderer applies. Accepts optional
+  // ?context= (clamped to the range/default enforced in getCommitDiff/getCommitFileDiff).
   r.get('/projects/:name/commits/:sha/diff', async (req, res, next) => {
     try {
       const contextLines = req.query.context !== undefined ? Number(req.query.context) : 3;
-      const result = await getCommitDiff(req.params.name, req.params.sha, { contextLines });
+      const filePath = typeof req.query.path === 'string' && req.query.path ? req.query.path : null;
+      const result = filePath
+        ? await getCommitFileDiff(req.params.name, req.params.sha, filePath, { contextLines })
+        : await getCommitDiff(req.params.name, req.params.sha, { contextLines });
       res.json(result);
     } catch (e) { next(e); }
   });

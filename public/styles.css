@@ -1729,6 +1729,17 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
 .review-loading, .review-empty { padding: 24px; color: var(--muted); text-align: center; font-size: 13px; }
 .review-error { padding: 24px; color: var(--red); text-align: center; font-size: 13px; }
 
+/* Per-file lazy-load states, inside a file card's .review-diff-inner rather
+   than filling the whole view — smaller padding than .review-loading/.review-error. */
+.review-file-loading { padding: 10px 12px; color: var(--muted); font-size: 12px; }
+.review-file-error { padding: 10px 12px; color: var(--red); font-size: 12px; }
+.review-file-note { padding: 10px 12px; color: var(--amber); font-size: 12px; }
+.review-file-retry {
+  font-size: 11px; color: var(--text); background: var(--panel-2);
+  border: 1px solid var(--border); border-radius: 3px; padding: 2px 8px;
+  cursor: pointer;
+}
+
 /* Commit history view — same full-page pattern as the review/diff view. The
    ≡ project-row button opens it; tapping a commit opens the diff view above. */
 #commits-view { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }

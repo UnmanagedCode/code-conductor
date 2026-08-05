@@ -25,9 +25,10 @@ import {
   isGitRepo, listWorktrees as fsListWorktrees, getWorktreeMergeStatus,
   createWorktree as fsCreateWorktree, removeWorktree, getWorktree,
   syncWorktree as fsSyncWorktree, mergeWorktreeIntoParent, buildRebasePrompt,
-  worktreeDirtyLines, runGit, DIFF_BYTE_CAP, assertValidBaseRef,
+  worktreeDirtyLines, runGit,
   type WorktreeMeta,
 } from '../worktrees.ts';
+import { DIFF_BYTE_CAP, assertValidBaseRef, parseNumstat, parseNameStatus } from '../gitDiff.ts';
 import { buildApprovePrompt, buildRejectPrompt } from '../planApproval.ts';
 // DOM-free formatter shared with the UI question card (public/blocks.js
 // re-exports it) so an answer_question MCP answer is byte-identical to a UI
@@ -40,7 +41,7 @@ import { isKnownFamily, isKnownTier, defaultVersion, familyOf, CLAUDE_BACKEND_ID
 import { getTierBackend, resolveRoleBackend, isResolvableRole, backendForModel } from '../appSettings.ts';
 import { textPayload } from './content.ts';
 import { pageInstanceEvents } from '../eventArchive.ts';
-import { parseNumstat, parseNameStatus, indexDiffLines, paginateDiff } from './diffPaging.ts';
+import { indexDiffLines, paginateDiff } from './diffPaging.ts';
 import {
   capText, MSG_TEXT_CAP, reconstructMessages, mergeRecentWithDisk, capBlockInput,
   hasPlanOrQuestions, ringTurnIndex, bondTrailingTurn, type ReconMessage,
@@ -797,9 +798,9 @@ export async function answerQuestion(
 //                       of whole lines, mid-file pages re-emit file/hunk
 //                       headers so each page parses standalone.
 // The byte cap is the per-page ceiling, never a silent terminal cut.
-// DIFF_BYTE_CAP is imported from ../worktrees.ts (single source of truth).
-// The numstat/name-status parsing + line-index + pager engine lives in
-// ./diffPaging.ts (parseNumstat / parseNameStatus / indexDiffLines /
+// DIFF_BYTE_CAP / parseNumstat / parseNameStatus are imported from
+// ../gitDiff.ts (single source of truth, shared with the REST diff surface).
+// The line-index + pager engine lives in ./diffPaging.ts (indexDiffLines /
 // paginateDiff), imported above.
 
 export async function projectDiff({ project, worktree, baseRef, contextLines = 3, summary = false, paths, offset = 0 }: {

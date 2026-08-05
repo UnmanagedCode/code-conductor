@@ -1,60 +1,8 @@
 // Diff-pagination engine for project_diff. Pure functions (only the
-// `Buffer` global) lifted out of the handler shell in ./handlers.ts: numstat /
-// name-status parsing, a one-pass line index, and a byte-bounded line pager.
-// The byte-cap / pagination / summary output shapes are a documented MCP
-// contract — keep them identical.
-
-export interface NumstatRow {
-  additions: number;
-  deletions: number;
-  binary: boolean;
-}
-
-// Parse `git diff --numstat` output into per-file {additions, deletions,
-// binary}. Binary files render as "-\t-\t<path>". File order matches
-// --name-status given identical flags, so callers zip the two by index.
-export function parseNumstat(out: string | undefined): NumstatRow[] {
-  const rows: NumstatRow[] = [];
-  for (const line of (out ?? '').split('\n')) {
-    if (!line) continue;
-    const tab1 = line.indexOf('\t');
-    const tab2 = line.indexOf('\t', tab1 + 1);
-    if (tab1 < 0 || tab2 < 0) continue;
-    const addsField = line.slice(0, tab1);
-    const delsField = line.slice(tab1 + 1, tab2);
-    const binary = addsField === '-';
-    rows.push({
-      additions: binary ? 0 : (Number(addsField) || 0),
-      deletions: binary ? 0 : (Number(delsField) || 0),
-      binary,
-    });
-  }
-  return rows;
-}
-
-export interface NameStatusRow {
-  status: string;
-  path: string;
-  oldPath?: string;
-}
-
-// Parse `git diff --name-status` output into per-file {status, path,
-// oldPath?}. Rename/copy rows (R###/C###) carry the old path first.
-export function parseNameStatus(out: string | undefined): NameStatusRow[] {
-  const rows: NameStatusRow[] = [];
-  for (const line of (out ?? '').split('\n')) {
-    if (!line) continue;
-    const parts = line.split('\t');
-    const code = parts[0] ?? '';
-    const status = (code[0] || 'M').toUpperCase();
-    if ((status === 'R' || status === 'C') && parts.length >= 3) {
-      rows.push({ status, oldPath: parts[1], path: parts[2] });
-    } else {
-      rows.push({ status, path: parts[parts.length - 1] });
-    }
-  }
-  return rows;
-}
+// `Buffer` global) lifted out of the handler shell in ./handlers.ts: a
+// one-pass line index and a byte-bounded line pager. The byte-cap /
+// pagination / summary output shapes are a documented MCP contract — keep
+// them identical.
 
 export interface DiffFileInfo {
   path: string | null;
