@@ -597,6 +597,10 @@ test('cost-tracking: getCostSummary sums timing and tolerates legacy rows', asyn
       { ts: Date.now(), project: 'alpha', model: 'opus', sessionId: 's1', cost_usd: 0.03, duration_ms: 4000, duration_api_ms: 1500 },
       // Legacy row — no duration fields at all.
       { ts: Date.now(), project: 'alpha', model: 'opus', sessionId: 's1', cost_usd: 0.01 },
+      // Malformed row — NO ts field at all. The daily-trend grouping must not
+      // crash on it (new Date(undefined).toISOString() throws RangeError); the
+      // guard buckets it under the epoch date instead.
+      { project: 'alpha', model: 'opus', sessionId: 's1', cost_usd: 0.02 },
     ];
     await fs.writeFile(costsPath(), rows.map(r => JSON.stringify(r)).join('\n') + '\n');
 
@@ -610,6 +614,11 @@ test('cost-tracking: getCostSummary sums timing and tolerates legacy rows', asyn
     const opus = summary.by_model.find(m => m.model === 'opus');
     assert.equal(opus.duration_ms, 10000);
     assert.equal(opus.duration_api_ms, 3500);
+
+    // The ts-less row lands in the epoch bucket instead of crashing the summary.
+    const epoch = summary.daily_trend.find(d => d.date === '1970-01-01');
+    assert.ok(epoch, `ts-less row must be bucketed under the epoch date (got ${JSON.stringify(summary.daily_trend)})`);
+    assert.ok(Math.abs(epoch.cost_usd - 0.02) < 1e-9, `epoch bucket holds the ts-less row's cost (got ${epoch.cost_usd})`);
   } finally {
     process.env.PROJECTS_ROOT = prevRoot ?? '';
     if (!prevRoot) delete process.env.PROJECTS_ROOT;
