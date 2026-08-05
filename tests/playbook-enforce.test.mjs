@@ -482,21 +482,38 @@ test('the enforcement toggle takes effect on the next call and lands in the ledg
   } finally { await t.close(); }
 });
 
-test('a conductor created at enforce records no toggle event — it was never off', async () => {
+test('a conductor born at enforce records a birth event with from:null, never from:off', async () => {
   const t = await setup({ enforcement: 'enforce' });
   try {
-    // Drive a governed call so the ledger definitely exists and the projection is
-    // loaded; only then is "no enforcement event" a statement about the audit
-    // trail rather than about an absent file.
-    const w = await t.spawnWorker({ project: 'demo', playbook: 'classic', stage: 'plan' });
-    assert.ok(w.sessionId);
-    await expectNoMoreEnforcement(t, 0);
+    const birth = (await expectEnforcementEvents(t, 1))[0];
+    assert.equal(birth.to, 'enforce');
+    // The whole point: `null` says "born this way". `'off'` would assert a past
+    // the conductor never had.
+    assert.equal(birth.from, null);
+    assert.equal('from' in birth, true, 'the key is present-and-null, so a reader can tell a birth from a missing field');
+    assert.equal(birth.conductorSessionId, t.instances.get(t.conductorId).sessionId);
 
-    // A real change from that baseline is still recorded, and its `from` is the
-    // mode that actually held — never a value the conductor never had.
+    // A later change is a change: its `from` is the mode that actually held.
     await t.setEnforcement('warn');
-    const toggles = await expectEnforcementEvents(t, 1);
-    assert.deepEqual({ from: toggles[0].from, to: toggles[0].to }, { from: 'enforce', to: 'warn' });
+    const all = await expectEnforcementEvents(t, 2);
+    assert.deepEqual({ from: all[1].from, to: all[1].to }, { from: 'enforce', to: 'warn' });
+
+    // Folding treats the birth as setting the initial mode, so the projection
+    // agrees with the live instance either way.
+    assert.equal(foldProjection(await t.events()).enforcement.get(birth.conductorSessionId), 'warn');
+  } finally { await t.close(); }
+});
+
+test('a conductor born at off records nothing and creates no ledger file', async () => {
+  const t = await setup();
+  try {
+    await waitFor(() => t.instances.get(t.conductorId)?.sessionId);
+    // The birth path must not fire for the default mode — give it real chances.
+    await assert.rejects(
+      () => waitFor(() => t.ledgerExists(), { timeout: 1000, interval: 20 }),
+      /timeout/,
+      'an off-at-spawn conductor must not create the ledger');
+    await expectNoMoreEnforcement(t, 0);
   } finally { await t.close(); }
 });
 

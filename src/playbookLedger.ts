@@ -46,7 +46,11 @@ export type LedgerEvent =
       via: string; needs?: Record<string, string> }
   | { seq: number; ts: string; kind: 'retire'; sessionId: string; reason: string }
   | { seq: number; ts: string; kind: 'refusal'; sessionId?: string; tool: string; code: string; reason: string }
-  | { seq: number; ts: string; kind: 'enforcement'; conductorSessionId: string; from: string; to: string };
+  // `from: null` is a BIRTH — a conductor created with a non-'off' mode, which
+  // was never in any prior mode. Distinct from a change, and deliberately an
+  // explicit null rather than an absent key so a reader can tell "born this way"
+  // from "field missing". A conductor created 'off' records nothing at all.
+  | { seq: number; ts: string; kind: 'enforcement'; conductorSessionId: string; from: string | null; to: string };
 
 // A ledger event as handed to append() — seq/ts are assigned by the ledger.
 export type NewLedgerEvent =
@@ -161,6 +165,10 @@ export function applyEvent(p: Projection, ev: LedgerEvent): void {
     case 'refusal':
       break; // audit-only; no state change
     case 'enforcement':
+      // Only `to` is folded, so a birth (`from: null`) sets the initial mode by
+      // exactly the same path a change does — `from` is audit-only, there to say
+      // what the mode WAS, and the projection has no notion of a transition to
+      // get wrong. Do not start branching on `from` here.
       p.enforcement.set(ev.conductorSessionId, ev.to);
       break;
   }

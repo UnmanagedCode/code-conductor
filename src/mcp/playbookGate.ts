@@ -163,14 +163,21 @@ export function createPlaybookGate(
     // illegal-looking move was allowed.
     if (!isConductorInstance({ project: String(summary.project) })) return;
     const mode = typeof summary.playbookEnforcement === 'string' ? summary.playbookEnforcement : 'off';
-    // The FIRST observation of a conductor is the baseline, not a change: a
-    // conductor created with `enforce` was never `off`, and recording
-    // {from:'off', to:'enforce'} would put a value in the audit trail that never
-    // held. Assuming a default here rather than reading the instance is safe
+    // The FIRST observation of a conductor is its BIRTH, not a change: a
+    // conductor created with `enforce` was never `off`, so {from:'off'} would put
+    // a value in the audit trail that never held. A birth is recorded with
+    // `from: null` instead — and only when the mode is not the default 'off',
+    // because an 'off' conductor must not create the ledger file at all.
+    //
+    // Assuming the 'off' default here, rather than reading the instance, is safe
     // because create() awaits launch(), which emits status — so a conductor has
-    // always ticked at least once before any client can flip its toggle.
+    // always ticked at least once before any client can reach it to flip the
+    // toggle, and the first tick therefore carries the spawn-time value.
     if (!lastMode.has(sessionId)) {
       lastMode.set(sessionId, mode);
+      if (mode === 'off') return;
+      await ensureLoaded();
+      await append({ kind: 'enforcement', conductorSessionId: sessionId, from: null, to: mode });
       return;
     }
     const prev = lastMode.get(sessionId) as string;
