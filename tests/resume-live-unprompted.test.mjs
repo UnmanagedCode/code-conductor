@@ -3,8 +3,8 @@
 // from the sidebar — one that IS backed by a live CLI process but hasn't
 // received its first prompt yet (not a genuine replay-only/non-live view).
 //
-// Two things are verified against the real src/routes.js + src/wsHub.js +
-// src/instances.js code paths (no UI/browser involved — see the plan for
+// Two things are verified against the real src/routes.ts + src/wsHub.ts +
+// src/instances.ts code paths (no UI/browser involved — see the plan for
 // what that leaves unverified):
 //
 //   1. Sanity-check for the race diagnosis: a freshly-resumed instance is
@@ -27,7 +27,7 @@ import { fileURLToPath } from 'node:url';
 import { promises as fs } from 'node:fs';
 import { WebSocket } from 'ws';
 import { bootServer, api, waitFor } from './helpers.mjs';
-import { encodeCwd } from '../src/projects.js';
+import { encodeCwd } from '../src/projects.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-resume.json');

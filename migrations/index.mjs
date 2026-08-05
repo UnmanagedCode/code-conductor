@@ -1,4 +1,4 @@
-// Migration entrypoint. Called once on server boot from server.js
+// Migration entrypoint. Called once on server boot from server.ts
 // before listen(); each registered migration runs in order and is
 // responsible for its own "already applied?" idempotency check. A
 // thrown error aborts boot — better than limping along with half-

@@ -2,7 +2,7 @@
 //
 // Bug: tests/run.mjs never set PROJECTS_ROOT, and bootServer's teardown restored
 // it to UNSET — so any store access outside an open bootServer window fell
-// through to src/projects.js's SOURCE-RELATIVE default, which is the REAL
+// through to src/projects.ts's SOURCE-RELATIVE default, which is the REAL
 // production `.code-conductor`. This asserts the two safety nets are live:
 //   - under the suite, orchStoreRoot() never resolves into the real workspace
 //   - assertStoreIsolated() TRIPS on the real store path (so a future leak
@@ -14,7 +14,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
-import { orchStoreRoot } from '../src/projects.js';
+import { orchStoreRoot } from '../src/projects.ts';
 import { assertStoreIsolated, REAL_STORE_DIR } from './safeStoreRoot.mjs';
 
 test('under the suite the store never resolves into the real workspace', () => {

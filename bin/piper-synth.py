@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Streaming Piper synthesizer used by src/tts.js.
+"""Streaming Piper synthesizer used by src/tts.ts.
 
 Reads UTF-8 text from stdin, loads the given Piper voice once, and writes one
 self-contained WAV per *sentence* to stdout as Piper yields it — each framed as

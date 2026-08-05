@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { validateManifest, readManifest, claudePluginPaths } from '../src/plugins/manifest.js';
+import { validateManifest, readManifest, claudePluginPaths } from '../src/plugins/manifest.ts';
 import { readFixtureManifest } from './plugin-helpers.mjs';
 
 function base(overrides = {}) {

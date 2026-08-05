@@ -1,6 +1,6 @@
 // Tests for model recovery across resume. The window is no longer
 // persisted — it's a pure function of the family (see canonicalizeModel in
-// src/modelVersions.js) — so resume recovers only the bare model id the CLI
+// src/modelVersions.ts) — so resume recovers only the bare model id the CLI
 // recorded in the session jsonl and re-derives the window from it. No
 // `orchestrator-model` marker is written to Claude's jsonl anymore.
 
@@ -11,9 +11,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor } from './helpers.mjs';
-import { addBackend, addCustomModel } from '../src/appSettings.js';
-import { encodeCwd } from '../src/projects.js';
-import { readLastSessionModel, writeSessionMetadata } from '../src/transcript.js';
+import { addBackend, addCustomModel } from '../src/appSettings.ts';
+import { encodeCwd } from '../src/projects.ts';
+import { readLastSessionModel, writeSessionMetadata } from '../src/transcript.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-resume.json');
@@ -304,7 +304,7 @@ test('system/init repeating the current model does not re-emit model_changed', a
 
 // --- A SUBSTITUTION backend's inner CLI reports its model bare, dropping the
 // `:tag` suffix the template's `--model <tag>` was given. That bare report must
-// not look like a model switch (see _trackModel in src/instances.js).
+// not look like a model switch (see _trackModel in src/instances.ts).
 //
 // Run for BOTH the built-in `ollama` row and a USER-DEFINED backend. The
 // suppression is keyed on "not the identity `claude` backend", NOT on the id

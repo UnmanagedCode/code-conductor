@@ -7,7 +7,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { createPluginHost } from '../src/plugins/registry.js';
+import { createPluginHost } from '../src/plugins/registry.ts';
 import { makePluginRoot } from './plugin-helpers.mjs';
 
 const run = promisify(execFile);
@@ -31,7 +31,7 @@ async function setup(env) {
   await git(dir, 'add', '-A');
   await git(dir, 'commit', '-q', '-m', 'plugin main');
 
-  const { createWorktree } = await import('../src/worktrees.js');
+  const { createWorktree } = await import('../src/worktrees.ts');
   const meta = await createWorktree('wtplug');
   const serverPath = path.join(meta.worktreePath, 'server.mjs');
   const src = await fs.readFile(serverPath, 'utf8');
@@ -137,7 +137,7 @@ test('bootstrap: worktree-only plugin starts from its worktree; switch-to-main g
     await git(dir, 'config', 'user.name', 'test');
     await git(dir, 'add', '-A');
     await git(dir, 'commit', '-q', '-m', 'no manifest yet');
-    const { createWorktree } = await import('../src/worktrees.js');
+    const { createWorktree } = await import('../src/worktrees.ts');
     const meta = await createWorktree('wtplug');
     await fs.writeFile(path.join(meta.worktreePath, 'conductor.plugin.json'), JSON.stringify(MANIFEST));
 
@@ -197,7 +197,7 @@ test('deleted active-version worktree self-heals to main on read and stays start
     await host.setActiveVersion('wtplug', { type: 'worktree', name: meta.worktreeName });
     await host.disable('wtplug'); // reproduce the reported disabled+stale case
 
-    const { removeWorktree } = await import('../src/worktrees.js');
+    const { removeWorktree } = await import('../src/worktrees.ts');
     await removeWorktree('wtplug', meta.worktreeName, { force: true });
 
     // A read must no longer show the dangling worktree, and the persisted

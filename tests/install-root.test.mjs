@@ -4,11 +4,11 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { waitFor } from './helpers.mjs';
-import { orchStoreRoot } from '../src/projects.js';
-import { whisperRoot } from '../src/transcribe.js';
-import { piperRoot } from '../src/tts.js';
-import * as whisperInstall from '../src/whisperInstall.js';
-import * as ttsInstall from '../src/ttsInstall.js';
+import { orchStoreRoot } from '../src/projects.ts';
+import { whisperRoot } from '../src/transcribe.ts';
+import { piperRoot } from '../src/tts.ts';
+import * as whisperInstall from '../src/whisperInstall.ts';
+import * as ttsInstall from '../src/ttsInstall.ts';
 
 // These tests pin down the install-location change: the AV assets default to
 // the orchestrator store (<projectsRoot>/.code-conductor), NOT $HOME/.code-conductor,

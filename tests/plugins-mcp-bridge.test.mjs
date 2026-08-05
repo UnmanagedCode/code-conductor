@@ -5,12 +5,12 @@
 // Focus: the opt-in raw-text channel. A child may return {text, meta?} instead
 // of {result} to have its output emitted as raw, UNESCAPED content blocks. The
 // bridge's job is producing the right payload; where the blocks land in
-// content[] is src/mcp/server.js's job and is not re-asserted here.
+// content[] is src/mcp/server.ts's job and is not re-asserted here.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { createMcpBridge } from '../src/plugins/mcpBridge.js';
-import { isTextPayload } from '../src/mcp/content.js';
+import { createMcpBridge } from '../src/plugins/mcpBridge.ts';
+import { isTextPayload } from '../src/mcp/content.ts';
 
 const PLUGIN_ID = 'testplug';
 

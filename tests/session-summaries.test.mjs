@@ -7,10 +7,10 @@ import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
 import {
   setSummary, getSummaries, deleteSummaries, loadAll,
-} from '../src/sessionSummaries.js';
-import { orchStoreRoot, findSessionLocation, encodeCwd } from '../src/projects.js';
-import { summarySpawnDir } from '../src/summarize.js';
-import { setTierBackend, addBackend, addCustomModel } from '../src/appSettings.js';
+} from '../src/sessionSummaries.ts';
+import { orchStoreRoot, findSessionLocation, encodeCwd } from '../src/projects.ts';
+import { summarySpawnDir } from '../src/summarize.ts';
+import { setTierBackend, addBackend, addCustomModel } from '../src/appSettings.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-basic.json');
@@ -251,7 +251,7 @@ test('POST spawns subprocess in .code-conductor/summaries dir (not a real projec
 // ---------------------------------------------------------------------------
 // A fast tier on a SUBSTITUTION backend: generateSummary() honors the bound
 // model/backend, driving the launch off the row's template (same shared
-// resolveBackendLaunch as claudeShellEnv.js's generateBundle()). Like bundle-gen
+// resolveBackendLaunch as claudeShellEnv.ts's generateBundle()). Like bundle-gen
 // this uses a REAL child_process.spawn, so the registry row is the injection
 // seam: its template names the fake binary, exactly as a user would register a
 // wrapper.

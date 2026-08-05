@@ -57,7 +57,7 @@ t('.pl-version select stays compact regardless of option content (stopped vs rea
 
     // Plugin B: a git repo with a deliberately long project name, so its
     // auto-generated worktree dir name (`${project}_worktree_${id}`,
-    // src/worktrees.js:65-67) produces long <option> text — enabled and
+    // src/worktrees.ts:65-67) produces long <option> text — enabled and
     // started ("ready").
     const longName = 'a-very-long-project-name-for-worktree-testing';
     const dir = await addPlugin(boot, longName, { ...MANIFEST, id: 'longplug', name: 'Long Plug' });
@@ -66,7 +66,7 @@ t('.pl-version select stays compact regardless of option content (stopped vs rea
     await git(dir, 'config', 'user.name', 'test');
     await git(dir, 'add', '-A');
     await git(dir, 'commit', '-q', '-m', 'plugin main');
-    const { createWorktree } = await import('../src/worktrees.js');
+    const { createWorktree } = await import('../src/worktrees.ts');
     await createWorktree(longName);
 
     // Both plugin projects exist on disk now — rescan once so discovery

@@ -1,5 +1,5 @@
 // Tests for the dedicated skill-loading bubble: a user_echo carrying
-// `skillLoad: {skill}` (stamped by parser.js's attachSkillLoad once it has
+// `skillLoad: {skill}` (stamped by parser.ts's attachSkillLoad once it has
 // correlated an isSynthetic content-injection message with a preceding
 // Skill tool_use) renders as a collapsed <details class="block skill">
 // named after the invoked skill, with the raw SKILL.md content in an
@@ -75,7 +75,7 @@ test('an isSynthetic message with no skillLoad tag renders as plain text, not a 
   const conv = new Conversation(root, {});
 
   // e.g. Stop-hook feedback or compaction-continuation text — also
-  // isSynthetic on the CLI side, but parser.js only stamps skillLoad when it
+  // isSynthetic on the CLI side, but parser.ts only stamps skillLoad when it
   // actually correlated with a Skill tool_use.
   conv.apply({ kind: 'user_echo', text: 'Stop hook feedback:\n[do the thing]', userIndex: 0 });
 

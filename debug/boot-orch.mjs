@@ -1,6 +1,6 @@
 // Orch-specific wrapper around code-playwright's generic
 // bootServer. Hardcodes the orchestrator's cwd (..) and entrypoint
-// (server.js), plus the sandbox shape that tests/fake-claude.mjs expects
+// (server.ts), plus the sandbox shape that tests/fake-claude.mjs expects
 // (PROJECTS_ROOT + CLAUDE_PROJECTS_ROOT subdirs and CLAUDE_BIN pointing
 // at the fake).
 //
@@ -29,7 +29,7 @@ const FAKE_CLAUDE = path.join(ORCH_ROOT, 'tests', 'fake-claude.mjs');
 export async function bootOrch({ sandbox = false, scenario, ...rest } = {}) {
   return bootServer({
     cwd: ORCH_ROOT,
-    entry: 'server.js',
+    entry: 'server.ts',
     ...rest,
     sandbox: sandbox ? {
       dirs: {

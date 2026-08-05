@@ -20,7 +20,7 @@
 //   3. End-to-end tests (fake-claude scenarios through the MCP surface)
 
 // The settle length is a module-load-time constant, so the env var must be
-// set BEFORE src/instances.js (→ idleSubscriptions.js) is imported — hence
+// set BEFORE src/instances.ts (→ idleSubscriptions.ts) is imported — hence
 // the dynamic imports below.
 process.env.ORCH_IDLE_DRAIN_SETTLE_MS = '400';
 const SETTLE_MS = 400;
@@ -30,7 +30,7 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const { InstanceManager, Instance } = await import('../src/instances.js');
+const { InstanceManager, Instance } = await import('../src/instances.ts');
 const { bootServer, api, waitFor, instForSession, freshProjectsRoot, rmrf } =
   await import('./helpers.mjs');
 const { WAKE_CALLBACK_MARKER, WAKE_BODY_SEP } = await import('../public/wakeCallback.js');

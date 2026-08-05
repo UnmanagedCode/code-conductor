@@ -11,7 +11,7 @@ import path from 'node:path';
 import { execFile, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { bootServer, freshProjectsRoot, rmrf } from './helpers.mjs';
-import { _resetForTest as resetShellEnvCache } from '../src/claudeShellEnv.js';
+import { _resetForTest as resetShellEnvCache } from '../src/claudeShellEnv.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO_WS = path.join(__dirname, 'fixtures', 'scenario-ws.json');
@@ -87,7 +87,7 @@ async function makeWorktree(project) {
 
 // ---- project_bash ----
 //
-// project_bash's own claudeShellEnv.js spawn is a separate codepath from the
+// project_bash's own claudeShellEnv.ts spawn is a separate codepath from the
 // instance-launching CLAUDE_BIN handled by bootServer's in-process launcher,
 // so it needs its own fake `claude` binary: one that answers --version and,
 // for a -p invocation, writes a canned bundle (defining a trivial `rg` shell

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import os from 'node:os';
 import path from 'node:path';
-import { claudeProjectsRoot } from '../src/projects.js';
+import { claudeProjectsRoot } from '../src/projects.ts';
 
 test('claudeProjectsRoot() falls back to ~/.claude/projects without env override', () => {
   const prev = process.env.CLAUDE_PROJECTS_ROOT;

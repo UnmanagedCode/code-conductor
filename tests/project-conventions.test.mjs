@@ -13,9 +13,9 @@ import { bootServer, api, freshProjectsRoot, rmrf } from './helpers.mjs';
 import {
   getCatalog, addCustomConvention, deleteCustomConvention,
   composeProjectConventionsBlock, SEED_PROJECT_CONVENTIONS,
-} from '../src/projectConventions.js';
-import { composeProjectConventionsDoc } from '../src/projectClaudeMd.js';
-import { createProject } from '../src/projects.js';
+} from '../src/projectConventions.ts';
+import { composeProjectConventionsDoc } from '../src/projectClaudeMd.ts';
+import { createProject } from '../src/projects.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-instance.json');
@@ -283,7 +283,7 @@ test('POST /api/projects with no conventions seeds only @../CLAUDE.md', async ()
 // ── MCP tools ─────────────────────────────────────────────────────────────
 
 test('list_project_conventions MCP tool returns seeds (no body field)', async () => {
-  const { buildTools } = await import('../src/mcp/tools.js');
+  const { buildTools } = await import('../src/mcp/tools.ts');
   const tools = buildTools();
   const tool = tools.find(t => t.name === 'list_project_conventions');
   assert.ok(tool, 'list_project_conventions tool registered');
@@ -301,7 +301,7 @@ test('list_project_conventions MCP tool returns seeds (no body field)', async ()
 
 test('list_project_conventions reflects a newly added custom convention', async () => {
   await addCustomConvention({ slug: 'mcp-custom', name: 'MCP Custom', description: 'test', body: '## MCP\n- x' });
-  const { buildTools } = await import('../src/mcp/tools.js');
+  const { buildTools } = await import('../src/mcp/tools.ts');
   const tools = buildTools();
   const tool = tools.find(t => t.name === 'list_project_conventions');
   const result = await tool.handler({}, { instances });
@@ -312,7 +312,7 @@ test('list_project_conventions reflects a newly added custom convention', async 
 });
 
 test('create_project MCP tool with conventions appends bodies to CLAUDE.md', async () => {
-  const { buildTools } = await import('../src/mcp/tools.js');
+  const { buildTools } = await import('../src/mcp/tools.ts');
   const tools = buildTools();
   const tool = tools.find(t => t.name === 'create_project');
   assert.ok(tool);
@@ -333,7 +333,7 @@ test('create_project MCP tool with conventions appends bodies to CLAUDE.md', asy
 
 import {
   setPluginConventionsProvider, composeProjectScaffold,
-} from '../src/projectConventions.js';
+} from '../src/projectConventions.ts';
 
 afterEach(() => {
   // Reset the provider so a fake never leaks into a later test.
@@ -394,7 +394,7 @@ const FAKE_CONVENTIONS = [
 
 test('list_project_conventions carries hasScaffold', async () => {
   setPluginConventionsProvider(async () => FAKE_CONVENTIONS);
-  const { buildTools } = await import('../src/mcp/tools.js');
+  const { buildTools } = await import('../src/mcp/tools.ts');
   const tool = buildTools().find(t => t.name === 'list_project_conventions');
   const list = await tool.handler({}, { instances });
   const bySlug = Object.fromEntries(list.map(e => [e.slug, e]));
@@ -434,7 +434,7 @@ test('composeProjectScaffold frames scaffold-bearing conventions in order; unkno
 
 test('create_project RETURNS the composed scaffold directive from picked conventions (no persistence)', async () => {
   setPluginConventionsProvider(async () => FAKE_CONVENTIONS);
-  const { buildTools } = await import('../src/mcp/tools.js');
+  const { buildTools } = await import('../src/mcp/tools.ts');
   const tool = buildTools().find(t => t.name === 'create_project');
   const result = await tool.handler({ name: 'sc-proj', conventions: ['playwright-harness/harness-wrapper', 'playwright-harness/seed-config'] }, { instances });
   assert.match(result.scaffold, /Project "sc-proj" was created with these scaffolding steps/);
@@ -445,7 +445,7 @@ test('create_project RETURNS the composed scaffold directive from picked convent
   assert.match(content, /## Harness/);
   // Nothing persisted to the store — the project meta stays clean (the marker in
   // CONVENTIONS.md is the only selection record), no spawn coupling.
-  const { readProjectMeta } = await import('../src/projects.js');
+  const { readProjectMeta } = await import('../src/projects.ts');
   assert.deepEqual(await readProjectMeta('sc-proj'), { workspace: null });
 });
 
@@ -458,7 +458,7 @@ test('REST POST /api/projects returns the scaffold directive in the 201 body', a
 
 test('create_project with no scaffold-bearing conventions omits the scaffold field', async () => {
   setPluginConventionsProvider(async () => FAKE_CONVENTIONS);
-  const { buildTools } = await import('../src/mcp/tools.js');
+  const { buildTools } = await import('../src/mcp/tools.ts');
   const tool = buildTools().find(t => t.name === 'create_project');
   const result = await tool.handler({ name: 'sc-none', conventions: ['playwright-harness/plain'] }, { instances });
   assert.equal(result.scaffold, undefined);

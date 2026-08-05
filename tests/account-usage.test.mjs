@@ -1,4 +1,4 @@
-// Integration tests for src/accountUsage.js
+// Integration tests for src/accountUsage.ts
 // Tests the OAuth fetch, 180 s caching, allowStale serve-last-good behavior,
 // and graceful error handling. Uses a temporary credentials file and a
 // stubbed global fetch.
@@ -11,7 +11,7 @@ import path from 'node:path';
 
 // Dynamic import so we can reload with a fresh module cache per test would
 // require workers; instead we export _resetCache() and use it between tests.
-import { getAccountUsage, _resetCache } from '../src/accountUsage.js';
+import { getAccountUsage, _resetCache } from '../src/accountUsage.ts';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 

@@ -809,7 +809,7 @@ export class UserQuestionBlock {
 }
 
 // The AskUserQuestion answer formatter/parser moved to ./userQuestionAnswers.js
-// so the answer_question MCP tool (src/mcp/handlers.js) can import the SAME
+// so the answer_question MCP tool (src/mcp/handlers.ts) can import the SAME
 // DOM-free formatter server-side — one canonical function, no fork. Re-exported
 // here so existing importers (app.js, conversation.js) are unchanged.
 export { formatUserQuestionAnswers, parseUserQuestionAnswers, isUserQuestionAnswerText } from './userQuestionAnswers.js';

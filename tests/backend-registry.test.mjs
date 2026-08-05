@@ -15,15 +15,15 @@ import {
   getRoleBinding, setRoleBinding, resolveRoleBackend, setPluginRolesProvider,
   getBackends, getBackend, isKnownBackend, getSubstitutionBackends,
   addBackend, updateBackend, removeBackend,
-} from '../src/appSettings.js';
+} from '../src/appSettings.ts';
 import {
   familyOf, canonicalizeModel, isKnownClaudeModel, MANAGED_BACKENDS,
   MANAGED_BACKEND_IDS, CLAUDE_BACKEND_ID, DEFAULT_TIER_BACKEND, DEFAULT_ROLE_BINDING,
-} from '../src/modelVersions.js';
-import { resolveBackendLaunch, backendEnv } from '../src/claudeLauncher.js';
+} from '../src/modelVersions.ts';
+import { resolveBackendLaunch, backendEnv } from '../src/claudeLauncher.ts';
 import {
   hasSessionBackend, getSessionBackend, markSessionBackend, unmarkSessionBackend, loadAll,
-} from '../src/sessionBackends.js';
+} from '../src/sessionBackends.ts';
 
 const CLAUDE_BIN = { command: '/usr/bin/claude', prefixArgs: [] };
 

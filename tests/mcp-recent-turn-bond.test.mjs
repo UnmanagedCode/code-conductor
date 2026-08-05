@@ -6,7 +6,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { ringTurnIndex, bondTrailingTurn } from '../src/mcp/messageReconstruction.js';
+import { ringTurnIndex, bondTrailingTurn } from '../src/mcp/messageReconstruction.ts';
 
 // Helper: build a text-bearing message stub.
 const prose = (msgId, text) => ({ msgId, text });

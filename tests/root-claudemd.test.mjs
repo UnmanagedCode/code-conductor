@@ -11,8 +11,8 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { bootServer, api } from './helpers.mjs';
-import { ensureRootClaudeMd, targetPath } from '../src/rootClaudeMd.js';
-import { composeCurrentWorkspace } from '../src/workspaceConventions.js';
+import { ensureRootClaudeMd, targetPath } from '../src/rootClaudeMd.ts';
+import { composeCurrentWorkspace } from '../src/workspaceConventions.ts';
 
 async function mkTmp() {
   return fs.mkdtemp(path.join(os.tmpdir(), 'cc-rootclaudemd-'));

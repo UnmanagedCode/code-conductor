@@ -4,8 +4,8 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor } from './helpers.mjs';
-import { encodeCwd, projectsRoot } from '../src/projects.js';
-import { isArchived, markArchived } from '../src/archivedSessions.js';
+import { encodeCwd, projectsRoot } from '../src/projects.ts';
+import { isArchived, markArchived } from '../src/archivedSessions.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-basic.json');

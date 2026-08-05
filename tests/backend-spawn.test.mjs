@@ -21,9 +21,9 @@ import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
 import { addCustomModel, setTierBackend, setRoleBinding, addCustomRole, addBackend,
   setPluginRolesProvider, getTierBackend, getDefaultSpawnTier,
-  removeBackend, removeCustomModel, isKnownBackend } from '../src/appSettings.js';
-import { hasSessionBackend, getSessionBackend, markSessionBackend } from '../src/sessionBackends.js';
-import { claudeProjectsRoot, encodeCwd } from '../src/projects.js';
+  removeBackend, removeCustomModel, isKnownBackend } from '../src/appSettings.ts';
+import { hasSessionBackend, getSessionBackend, markSessionBackend } from '../src/sessionBackends.ts';
+import { claudeProjectsRoot, encodeCwd } from '../src/projects.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-instance.json');
@@ -276,7 +276,7 @@ describe('role → {backend,model} resolution (MCP spawn)', () => {
     assert.match(body.result.content[0].text, /unknown model/);
   });
 
-  // Plugin-owned roles are injected via the same provider server.js wires to
+  // Plugin-owned roles are injected via the same provider server.ts wires to
   // pluginHost.roles(); overriding it here exercises the resolution path an
   // enabled plugin would drive, without standing up a real plugin.
   test('a plugin-owned role resolves to its manifest claude binding', async () => {
@@ -506,7 +506,7 @@ describe('an unknown or removed backend never falls through to real claude', () 
   // across the restart must surface there too rather than spawn bare claude.
   test('door 1 (restart replay): a manifest entry naming a removed backend is refused', async () => {
     await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
-    // Exactly the create() call resumeRestart.js:293 makes for a carried-over session.
+    // Exactly the create() call resumeRestart.ts:293 makes for a carried-over session.
     await assert.rejects(
       () => instances.create({
         project: 'p', resume: 'ffffffff-0000-0000-0000-000000000000',

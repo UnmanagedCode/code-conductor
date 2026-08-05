@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
-import { composeCurrentConduct, setSelection } from '../src/conductorConventions.js';
+import { composeCurrentConduct, setSelection } from '../src/conductorConventions.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO_WS = path.join(__dirname, 'fixtures', 'scenario-ws.json');

@@ -5,9 +5,9 @@ import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { bootServer } from './helpers.mjs';
-import { ttsPaths, voicePathForName } from '../src/tts.js';
-import { setTtsVoice } from '../src/appSettings.js';
-import { DEFAULT_VOICE } from '../src/ttsModels.js';
+import { ttsPaths, voicePathForName } from '../src/tts.ts';
+import { setTtsVoice } from '../src/appSettings.ts';
+import { DEFAULT_VOICE } from '../src/ttsModels.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FAKE_SYNTH = path.join(__dirname, 'fake-piper-synth.mjs');

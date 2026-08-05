@@ -1,0 +1,16 @@
+{
+  "compilerOptions": {
+    "strict": true,
+    "erasableSyntaxOnly": true,
+    "noEmit": true,
+    "verbatimModuleSyntax": true,
+    "allowImportingTsExtensions": true,
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "target": "es2024",
+    "lib": ["es2024"],
+    "types": ["node"],
+    "skipLibCheck": true
+  },
+  "include": ["src/**/*.ts", "server.ts", "public/**/*.d.ts", "migrations/index.d.mts"]
+}

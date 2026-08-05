@@ -9,7 +9,7 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, instForSession, freshProjectsRoot, rmrf, stripMessageBoundaryHeader } from './helpers.mjs';
-import { setTierBackend, setTierEnabled, setDebugByDefault } from '../src/appSettings.js';
+import { setTierBackend, setTierEnabled, setDebugByDefault } from '../src/appSettings.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO_WS = path.join(__dirname, 'fixtures', 'scenario-ws.json');
@@ -336,7 +336,7 @@ test('kill_instance removes the instance from the manager', async () => {
 });
 
 test('list_sessions marks MCP-spawned sessions conducted:true, HTTP ones false, and returns both', async () => {
-  const { encodeCwd } = await import('../src/projects.js');
+  const { encodeCwd } = await import('../src/projects.ts');
   await api(baseUrl, 'POST', '/api/projects', { name: 'a' });
 
   // Conducted session: spawned via the MCP spawn_instance tool. Pass
@@ -399,9 +399,9 @@ test('temp conducted session persists the conducted marker and recovers it on re
   // leaves nothing for create() to recover and the session resumes with
   // conducted falsy. This exercises both halves: the durable WRITE (a live
   // temp+conducted turn) and the RECOVERY (create({resume}) reading sidecars).
-  const { isConducted, markConducted } = await import('../src/conductedSessions.js');
-  const { isTemp, markTemp } = await import('../src/tempSessions.js');
-  const { encodeCwd } = await import('../src/projects.js');
+  const { isConducted, markConducted } = await import('../src/conductedSessions.ts');
+  const { isTemp, markTemp } = await import('../src/tempSessions.ts');
+  const { encodeCwd } = await import('../src/projects.ts');
   await api(baseUrl, 'POST', '/api/projects', { name: 'a' });
 
   // --- WRITE side (the fix) ---
@@ -449,7 +449,7 @@ test('argument validation rejects a missing required field via isError', async (
 });
 
 test('locate_session finds an on-disk session by id, 404s when missing', async () => {
-  const { encodeCwd } = await import('../src/projects.js');
+  const { encodeCwd } = await import('../src/projects.ts');
   const FIXTURE_JSONL = path.join(__dirname, 'fixtures', 'session-sample.jsonl');
   await api(baseUrl, 'POST', '/api/projects', { name: 'host' });
   const dir = path.join(claudeProjectsRoot, encodeCwd(path.join(projectsRoot, 'host')));
@@ -1274,7 +1274,7 @@ test('spawn_instance({resume}) re-attaches the recorded worktree, cwd, and repla
   const prev = process.env.FAKE_CLAUDE_SCENARIO;
   process.env.FAKE_CLAUDE_SCENARIO = SCENARIO_RESUME;
   try {
-    const { encodeCwd } = await import('../src/projects.js');
+    const { encodeCwd } = await import('../src/projects.ts');
     await makeRealRepo(projectsRoot, 'demo');
 
     // Spawn a persistent (non-temp) instance into a fresh worktree.
@@ -1344,14 +1344,14 @@ test('spawn_instance({resume}) recovers temp:true from the durable sidecar after
   // A graceful kill_instance runs _handleExit → _archiveTempSession(), which
   // intentionally unmarks temp (the session becomes an archived-but-resumable
   // regular session) — that's existing, correct behavior, not this bug. The
-  // scenario this test guards is the *other* one tempSessions.js exists for:
+  // scenario this test guards is the *other* one tempSessions.ts exists for:
   // an orchestrator SIGKILL where _handleExit never runs, so the jsonl and
   // the durable temp sidecar marker both survive with no in-memory record.
   // Resuming that session must recover temp:true from the sidecar — not get
   // silently forced true by a blanket default, and not silently dropped to
   // false either.
-  const { markTemp } = await import('../src/tempSessions.js');
-  const { encodeCwd } = await import('../src/projects.js');
+  const { markTemp } = await import('../src/tempSessions.ts');
+  const { encodeCwd } = await import('../src/projects.ts');
   await api(baseUrl, 'POST', '/api/projects', { name: 'a' });
 
   const survivedSid = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';

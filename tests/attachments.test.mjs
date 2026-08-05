@@ -10,7 +10,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor } from './helpers.mjs';
-import { attachmentsDir } from '../src/worktrees.js';
+import { attachmentsDir } from '../src/worktrees.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-instance.json');
@@ -192,7 +192,7 @@ test('prompt() with neither text nor attachments throws', async () => {
 });
 
 test('parser replay: text block with `Attached file:` marker becomes an attachment entry', async () => {
-  const { Parser } = await import('../src/parser.js');
+  const { Parser } = await import('../src/parser.ts');
   const p = new Parser();
   const events = p.handleObject({
     type: 'user',
@@ -216,7 +216,7 @@ test('parser replay: text block with `Attached file:` marker becomes an attachme
 });
 
 test('parser replay: non-image extension yields kind: file', async () => {
-  const { Parser } = await import('../src/parser.js');
+  const { Parser } = await import('../src/parser.ts');
   const p = new Parser();
   const events = p.handleObject({
     type: 'user',

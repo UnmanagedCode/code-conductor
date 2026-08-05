@@ -9,7 +9,7 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
-import { listWorktrees, getWorktree, getWorktreeMergeStatus } from '../src/worktrees.js';
+import { listWorktrees, getWorktree, getWorktreeMergeStatus } from '../src/worktrees.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-instance.json');

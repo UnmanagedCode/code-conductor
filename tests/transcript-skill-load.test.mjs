@@ -1,7 +1,7 @@
 // Replay parity for the Skill-content-injection correlation: a persisted
 // jsonl session where a Skill tool_use is followed by its content-injection
 // user line must replay with the same `skillLoad` tag the live parser stamps
-// (see attachSkillLoad in src/parser.js) — otherwise the dedicated
+// (see attachSkillLoad in src/parser.ts) — otherwise the dedicated
 // skill-loading bubble would only appear live and regress to a giant
 // plain-text bubble on session reload.
 //
@@ -19,8 +19,8 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { encodeCwd } from '../src/projects.js';
-import { loadPersistedTranscript, loadSubAgentTranscript } from '../src/transcript.js';
+import { encodeCwd } from '../src/projects.ts';
+import { loadPersistedTranscript, loadSubAgentTranscript } from '../src/transcript.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURES = path.join(__dirname, 'fixtures');

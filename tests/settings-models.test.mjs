@@ -4,12 +4,12 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { bootServer, api, freshProjectsRoot, rmrf } from './helpers.mjs';
-import { orchStoreRoot } from '../src/projects.js';
+import { orchStoreRoot } from '../src/projects.ts';
 import {
   MODEL_FAMILIES, DEFAULT_VERSIONS, MANAGED_BACKENDS, isKnownFamily, isKnownVersion, defaultVersion,
   isKnownClaudeModel, CAPABILITY_TIERS, DEFAULT_TIER_BACKEND, isKnownTier,
-} from '../src/modelVersions.js';
-import { OLLAMA_CLOUD_MODELS, OLLAMA_CLOUD_TIER_DEFAULTS, isKnownOllamaCloudModel } from '../src/ollamaCloudModels.js';
+} from '../src/modelVersions.ts';
+import { OLLAMA_CLOUD_MODELS, OLLAMA_CLOUD_TIER_DEFAULTS, isKnownOllamaCloudModel } from '../src/ollamaCloudModels.ts';
 import {
   getTranscribeModel, setTranscribeModel,
   getOnOverageAction, setOnOverageAction,
@@ -22,8 +22,8 @@ import {
   getCustomRoles, addCustomRole, removeCustomRole,
   addCustomModel, removeCustomModel, setPluginRolesProvider,
   getTierEffort, setTierEffort, getRoleEffort, setRoleEffort, resolveSpawnEffort,
-} from '../src/appSettings.js';
-import { EFFORT_LEVELS, DEFAULT_EFFORT } from '../src/effortLevels.js';
+} from '../src/appSettings.ts';
+import { EFFORT_LEVELS, DEFAULT_EFFORT } from '../src/effortLevels.ts';
 
 async function mkTmp() {
   return fs.mkdtemp(path.join(os.tmpdir(), 'cc-models-test-'));

@@ -1,0 +1,1028 @@
+// Normalize Claude Code stream-json events into compact UI events.
+//
+// Each call to handleLine(line) parses one JSON object emitted on stdout and
+// returns an array of UI events (possibly empty). The parser keeps minimal
+// per-instance state so streaming content blocks can be merged across many
+// stream_event chunks before the matching content_block_stop arrives.
+//
+// Emitted UI event kinds:
+//   message_start           { msgId, usage }                // live context-size signal
+//   text_delta              { msgId, blockIdx, text }
+//   text_end                { msgId, blockIdx }
+//   thinking_delta          { msgId, blockIdx, text }
+//   thinking_end            { msgId, blockIdx }
+//   tool_use_input_delta    { msgId, blockIdx, toolUseId, partialJson }
+//   tool_use                { msgId, blockIdx, toolUseId, name, input }
+//   tool_result             { toolUseId, content, isError }
+//   user_echo               { text, attachments?: [{kind:'image'|'file', ...}], skillLoad?: {skill} }
+//   system                  { subtype, data }
+//   hook                    { event, data }
+//   assistant_message       { msgId, message }              // final reconciled message
+//   turn_end                { usage, durationMs, durationApiMs, durationApiMsDelta, cost, costDelta, isError, stopReason, subtype }
+//   control_response        { requestId, ok, response?, error? }
+//   raw                     { line }                        // fallback for unrecognized
+//
+// The CLI's stream-json wire shapes are an UNTYPED external boundary — the
+// envelope/block/delta interfaces below declare only the fields this file
+// reads, loosely (unknown), and each read narrows at the point of use. A
+// non-conforming value fails toward a safe default rather than propagating
+// (recorded as deliberate edge-tightening in the batch commit).
+
+import { randomUUID } from 'node:crypto';
+
+// UI event shape. `kind` is the discriminator; the per-kind payload fields
+// ride on the index signature (consumers read what they know).
+export interface UiEvent {
+  kind: string;
+  parentToolUseId?: string | null;
+  [key: string]: unknown;
+}
+
+// ── CLI stream-json wire shapes ───────────────────────────────────────────
+
+export interface WireContentBlock {
+  type?: unknown;
+  name?: unknown;
+  id?: unknown;
+  text?: unknown;
+  thinking?: unknown;
+  input?: Record<string, unknown> | null;
+  tool_use_id?: unknown;
+  content?: unknown;
+  is_error?: unknown;
+}
+
+export interface WireMessage {
+  id?: unknown;
+  model?: unknown;
+  usage?: unknown;
+  content?: unknown;
+}
+
+interface WireStreamEvent {
+  type?: unknown;
+  index?: unknown;
+  message?: WireMessage | null;
+  content_block?: WireContentBlock | null;
+  delta?: { type?: unknown; text?: unknown; thinking?: unknown; partial_json?: unknown } | null;
+}
+
+export interface WireEnvelope {
+  type?: unknown;
+  subtype?: unknown;
+  message?: WireMessage | null;
+  event?: WireStreamEvent | null;
+  parent_tool_use_id?: unknown;
+  request_id?: unknown;
+  response?: { subtype?: unknown; request_id?: unknown; response?: unknown; error?: unknown } | null;
+  total_cost_usd?: unknown;
+  duration_api_ms?: unknown;
+  duration_ms?: unknown;
+  stop_reason?: unknown;
+  usage?: unknown;
+  is_error?: unknown;
+  isSynthetic?: unknown;
+  isMeta?: unknown;
+  isVisibleInTranscriptOnly?: unknown;
+  sourceToolUseID?: unknown;
+}
+
+// Per-block merge state keyed by blockIdx.
+interface BlockState {
+  type: string | null;
+  accumText: string;
+  accumJson: string;
+  gotThinkingDelta: boolean;
+  toolUseId: string | null;
+  name: string | null;
+}
+
+export interface PendingSkillLoad {
+  toolUseId: string | null;
+  skill: string | null;
+}
+
+interface BoundaryInterval {
+  left: number;
+  right: number;
+  headless: boolean;
+}
+
+interface GroupState {
+  head: number;
+  interval: BoundaryInterval | null;
+}
+
+function eventIndex(ev: WireStreamEvent): number {
+  const idx = ev.index;
+  return typeof idx === 'number' ? idx : 0;
+}
+
+export class Parser {
+  currentMsgId: string | null = null;
+  blocks = new Map<number, BlockState>(); // blockIdx -> { type, accumText, accumJson, toolUseId, name }
+  _lastCost = 0; // tracks cumulative cost to compute per-turn delta
+  _lastApiMs = 0; // tracks cumulative duration_api_ms to compute per-turn delta
+  _pendingSkillLoads: PendingSkillLoad[] = []; // {toolUseId, skill} entries awaiting their content injection
+
+  reset() {
+    this.currentMsgId = null;
+    this.blocks.clear();
+    this._lastCost = 0;
+    this._lastApiMs = 0;
+    this._pendingSkillLoads = [];
+  }
+
+  // Signal a genuine turn boundary (a real prompt or interrupt emitted
+  // directly by Instance, bypassing _handleUser/attachSkillLoad) so any
+  // Skill invocation still awaiting its content injection is dropped rather
+  // than surviving to mislabel a later, unrelated isSynthetic message.
+  expirePendingSkillLoads() {
+    expireSkillLoads(this._pendingSkillLoads);
+  }
+
+  handleLine(line: unknown): UiEvent[] {
+    const text = typeof line === 'string' ? line.trim() : '';
+    if (!text) return [];
+    let obj: unknown;
+    try { obj = JSON.parse(text); }
+    catch { return [{ kind: 'raw', line: text }]; }
+    return this.handleObject(obj);
+  }
+
+  handleObject(obj: unknown): UiEvent[] {
+    if (!obj || typeof obj !== 'object') return [];
+    const events = this._dispatch(obj as WireEnvelope);
+    // Tag every emitted UI event with the parent_tool_use_id (or null) from
+    // the wrapping stream-json envelope. The conversation view uses this to
+    // route sub-agent events into a nested area under the matching outer
+    // Task tool_use block.
+    const parentToolUseId = obj as WireEnvelope;
+    const rawParent = parentToolUseId.parent_tool_use_id;
+    const tag = typeof rawParent === 'string' ? rawParent : null;
+    for (const ev of events) {
+      if (!('parentToolUseId' in ev)) ev.parentToolUseId = tag;
+    }
+    return events;
+  }
+
+  _dispatch(obj: WireEnvelope): UiEvent[] {
+    const type = typeof obj.type === 'string' ? obj.type : '';
+    switch (type) {
+      case 'system':       return this._handleSystem(obj);
+      case 'stream_event': return this._handleStreamEvent(obj);
+      case 'assistant':    return this._handleAssistant(obj);
+      case 'user':         return this._handleUser(obj);
+      case 'result':       return this._handleResult(obj);
+      case 'hook_event':   return [{ kind: 'hook', event: obj.event?.type ?? obj.subtype ?? 'unknown', data: obj }];
+      case 'control_response': return this._handleControlResponse(obj);
+      case 'control_request':  return this._handleControlRequest(obj);
+      case 'keep_alive':       return [];
+      default:
+        return [{ kind: 'system', subtype: obj.type ?? 'unknown', data: obj }];
+    }
+  }
+
+  _handleSystem(obj: WireEnvelope): UiEvent[] {
+    return [{ kind: 'system', subtype: obj.subtype ?? 'unknown', data: obj }];
+  }
+
+  _handleControlRequest(obj: WireEnvelope): UiEvent[] {
+    return [{ kind: 'system', subtype: 'control_request', data: obj }];
+  }
+
+  _handleControlResponse(obj: WireEnvelope): UiEvent[] {
+    const resp = obj.response ?? {};
+    const ok = resp.subtype === 'success';
+    return [{
+      kind: 'control_response',
+      requestId: resp.request_id ?? obj.request_id ?? null,
+      ok,
+      response: ok ? (resp.response ?? null) : null,
+      error: ok ? null : (resp.error ?? null),
+    }];
+  }
+
+  _handleStreamEvent(obj: WireEnvelope): UiEvent[] {
+    const ev = obj.event ?? {};
+    const type = typeof ev.type === 'string' ? ev.type : '';
+    switch (type) {
+      case 'message_start': {
+        // Single-writer assumption: only the top-level agent's partials ever
+        // arrive as stream_event frames — the CLI hardcodes
+        // parent_tool_use_id:null on every stream_event it emits and forwards
+        // sub-agent turns as finals-only assistant/user envelopes (their
+        // partial forwarding, forwardSubagentText, is SDK-only with no CLI
+        // flag). So resetting the shared currentMsgId/blocks here can never
+        // clobber an interleaved sub-agent message.
+        const rawId = ev.message?.id;
+        this.currentMsgId = typeof rawId === 'string' ? rawId : `msg_${randomUUID()}`;
+        this.blocks.clear();
+        // Surface the usage block. Each agent-loop step within a turn
+        // fires its own message_start with cumulative input-side counts
+        // (input_tokens + cache_read + cache_creation), so this is the
+        // signal that lets the context-usage chip update mid-turn rather
+        // than only when the final `result` lands. Skip emission when
+        // there's no usage payload (defensive — keeps DOM tests stable
+        // for fixtures that omit it).
+        const usage = ev.message?.usage ?? null;
+        if (!usage) return [];
+        return [{ kind: 'message_start', msgId: this.currentMsgId, usage, model: ev.message?.model ?? null }];
+      }
+      case 'content_block_start': {
+        const idx = eventIndex(ev);
+        const cb = ev.content_block ?? {};
+        const block: BlockState = {
+          type: typeof cb.type === 'string' ? cb.type : null,
+          accumText: '',
+          accumJson: '',
+          gotThinkingDelta: false,
+          toolUseId: typeof cb.id === 'string' ? cb.id : null,
+          name: typeof cb.name === 'string' ? cb.name : null,
+        };
+        this.blocks.set(idx, block);
+        if (cb.type === 'tool_use') {
+          return [{
+            kind: 'tool_use_start',
+            msgId: this.currentMsgId,
+            blockIdx: idx,
+            toolUseId: block.toolUseId,
+            name: block.name,
+          }];
+        }
+        if (cb.type === 'thinking') {
+          return [{ kind: 'thinking_start', msgId: this.currentMsgId, blockIdx: idx }];
+        }
+        return [];
+      }
+      case 'content_block_delta': {
+        const idx = eventIndex(ev);
+        const block = this.blocks.get(idx);
+        const delta = ev.delta ?? {};
+        if (!block) return [];
+        const deltaType = typeof delta.type === 'string' ? delta.type : '';
+        switch (deltaType) {
+          case 'text_delta': {
+            const text = typeof delta.text === 'string' ? delta.text : '';
+            block.accumText += text;
+            return [{ kind: 'text_delta', msgId: this.currentMsgId, blockIdx: idx, text }];
+          }
+          case 'thinking_delta': {
+            const raw = delta.thinking ?? delta.text;
+            const text = typeof raw === 'string' ? raw : '';
+            // Opus 4.8 streams empty thinking_delta ("") for redacted thinking
+            // (where 4.7 sent only a signature_delta). Ignore empties so
+            // gotThinkingDelta stays false and content_block_stop takes the
+            // thinking_redacted path — otherwise the block finalizes empty and
+            // renders as "thinking (0 chars)" instead of "thinking (redacted)".
+            if (!text) return [];
+            block.accumText += text;
+            block.gotThinkingDelta = true;
+            return [{ kind: 'thinking_delta', msgId: this.currentMsgId, blockIdx: idx, text }];
+          }
+          case 'input_json_delta': {
+            const part = typeof delta.partial_json === 'string' ? delta.partial_json : '';
+            block.accumJson += part;
+            return [{
+              kind: 'tool_use_input_delta',
+              msgId: this.currentMsgId,
+              blockIdx: idx,
+              toolUseId: block.toolUseId,
+              partialJson: part,
+            }];
+          }
+          case 'signature_delta':
+            return [];
+          default:
+            return [];
+        }
+      }
+      case 'content_block_stop': {
+        const idx = eventIndex(ev);
+        const block = this.blocks.get(idx);
+        if (!block) return [];
+        if (block.type === 'text') {
+          return [{ kind: 'text_end', msgId: this.currentMsgId, blockIdx: idx }];
+        }
+        if (block.type === 'thinking') {
+          if (!block.gotThinkingDelta) {
+            // No thinking_delta arrived — the model (e.g. Opus 4.7/4.8) thought
+            // but the content is encrypted/redacted; only signature_delta
+            // streamed. Surface a placeholder so the UI can show something.
+            return [
+              { kind: 'thinking_redacted', msgId: this.currentMsgId, blockIdx: idx },
+              { kind: 'thinking_end', msgId: this.currentMsgId, blockIdx: idx },
+            ];
+          }
+          return [{ kind: 'thinking_end', msgId: this.currentMsgId, blockIdx: idx }];
+        }
+        if (block.type === 'tool_use') {
+          let input: Record<string, unknown> = {};
+          if (block.accumJson) {
+            try {
+              const parsed: unknown = JSON.parse(block.accumJson);
+              if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+                input = parsed as Record<string, unknown>;
+              }
+            } catch {
+              input = { _raw: block.accumJson };
+            }
+          }
+          const out: UiEvent[] = [{
+            kind: 'tool_use',
+            msgId: this.currentMsgId,
+            blockIdx: idx,
+            toolUseId: block.toolUseId,
+            name: block.name,
+            input,
+            startedAt: Date.now(),
+          }];
+          // AskUserQuestion gets a structured UI event so the conversation
+          // view can render the questions as buttons. The CLI in stream-json
+          // mode immediately errors out the actual tool execution, so the
+          // user_question event is what makes this tool usable here.
+          if (block.name === 'AskUserQuestion' && Array.isArray(input.questions)) {
+            out.push({
+              kind: 'user_question',
+              toolUseId: block.toolUseId,
+              questions: input.questions,
+            });
+          }
+          // ExitPlanMode is similar: the CLI auto-errors it in stream-json
+          // ("Exit plan mode?"). We surface a plan_request UI event so the
+          // user can approve / reject the plan inline. The plan text may be
+          // in `input.plan` directly or omitted when the model wrote it to
+          // a file first — Instance enriches the event with the file path
+          // and content in the latter case.
+          if (block.name === 'ExitPlanMode') {
+            out.push({
+              kind: 'plan_request',
+              toolUseId: block.toolUseId,
+              plan: typeof input.plan === 'string' ? input.plan : null,
+              planPath: null,
+            });
+          }
+          // Skill invocations are NOT registered here — _handleAssistant is
+          // the single registration point. See the note there.
+          return out;
+        }
+        return [];
+      }
+      case 'message_delta':
+      case 'message_stop':
+        return [];
+      default:
+        return [];
+    }
+  }
+
+  _handleAssistant(obj: WireEnvelope): UiEvent[] {
+    const msg = obj.message ?? {};
+    const events: UiEvent[] = [];
+    // THE single registration point for Skill invocations awaiting their
+    // content injection. Nothing arrives streaming-only: measured over the 11
+    // stdout captures on disk (12,226 lines, 6 model ids), 353 tool_use ids
+    // appeared on both the envelope and the streaming frames, 0 on the
+    // streaming frames alone, and the envelope arrived first in 353/353. So
+    // registering here loses nothing, and registering in the
+    // content_block_stop branch as well would only ever double-register: the
+    // envelope lands first, so the entry is still pending when the stop frame
+    // arrives. (A trimmed live capture of one such turn is committed as
+    // tests/fixtures/scenario-live-skill-load.json.)
+    //
+    // Sub-agent tool_uses are deliberately NOT registered. The CLI forwards
+    // sub-agent turns as envelopes tagged with parent_tool_use_id, but no
+    // injection was ever observed to follow one: the ONE captured sub-agent
+    // Skill call — in a capture since deleted, so this rests on n=1 and is no
+    // longer re-derivable — went tool_use -> tool_result -> system with no
+    // injection. No surviving capture contains a sub-agent turn at all, so
+    // there is no corroborating evidence either way. An entry registered here could
+    // therefore never be consumed by its own injection: it would sit at the
+    // head of the queue and steal the next TOP-LEVEL injection instead. Not
+    // registering is the conservative reading — it forgoes folding we have no
+    // evidence is possible rather than risking a mislabel. A sub-agent Skill
+    // still folds on replay, where the persisted jsonl does record the
+    // injection (loadSubAgentTranscript, src/transcript.ts, pinned against a
+    // real fixture in tests/transcript-skill-load.test.mjs).
+    if (!obj.parent_tool_use_id) {
+      for (const raw of Array.isArray(msg.content) ? msg.content : []) {
+        if (!raw || typeof raw !== 'object') continue;
+        const b = raw as WireContentBlock;
+        if (b.type !== 'tool_use' || b.name !== 'Skill') continue;
+        this._pendingSkillLoads.push({
+          toolUseId: typeof b.id === 'string' ? b.id : null,
+          skill: typeof b.input?.skill === 'string' ? b.input.skill : null,
+        });
+      }
+    }
+    // Slash commands (registered or not) are handled locally by the CLI and
+    // come back as a single `assistant` envelope with `model:"<synthetic>"`
+    // and no preceding stream_event frames. The normal delta-driven render
+    // path never fires, so without unpacking the text blocks here the UI
+    // sees nothing between the user prompt and the turn footer. Emit
+    // synthetic text_delta + text_end events so the existing pipeline
+    // renders an assistant bubble.
+    if (msg.model === '<synthetic>' && Array.isArray(msg.content)) {
+      const rawMsgId = msg.id;
+      const msgId = typeof rawMsgId === 'string' ? rawMsgId : `synthetic_${randomUUID()}`;
+      let blockIdx = 0;
+      for (const raw of msg.content) {
+        if (!raw || typeof raw !== 'object') continue;
+        const b = raw as WireContentBlock;
+        if (b.type === 'text' && typeof b.text === 'string' && b.text.length) {
+          events.push({ kind: 'text_delta', msgId, blockIdx, text: b.text });
+          events.push({ kind: 'text_end', msgId, blockIdx });
+          blockIdx += 1;
+        }
+      }
+    }
+    events.push({
+      kind: 'assistant_message',
+      msgId: msg.id ?? this.currentMsgId,
+      message: msg,
+    });
+    return events;
+  }
+
+  _handleUser(obj: WireEnvelope): UiEvent[] {
+    const msg = obj.message ?? {};
+    const content = msg.content;
+    // If the CLI echoes the soft-interrupt steer back on stdout, surface it
+    // as a system annotation so the user can see a stop was requested.
+    if (isSoftInterruptContent(content)) return [{ kind: 'system', subtype: 'soft_interrupted' }];
+    // Background-subagent completion ping the CLI re-injects into a
+    // worker's own conversation as though it were a user turn. Drop
+    // silently — the streaming `system/task_notification` event already
+    // carries this (hidden from the feed by default), so this would be a
+    // duplicate, and it never produced a user_echo live.
+    if (isTaskNotificationContent(content)) return [];
+    if (typeof content === 'string') {
+      return [{ kind: 'user_echo', text: content }];
+    }
+    if (!Array.isArray(content)) return [];
+    const events = consolidateUserContent(content);
+    return attachSkillLoad(events, obj, this._pendingSkillLoads);
+  }
+
+  _handleResult(obj: WireEnvelope): UiEvent[] {
+    // total_cost_usd and duration_api_ms are both cumulative session totals in
+    // the SDK result, not per-turn values. Convert each to a per-turn delta so
+    // callers can display / accumulate the actual turn cost and LLM time.
+    // (duration_ms — turn walltime — is genuinely per-turn and left as-is.)
+    const cost = typeof obj.total_cost_usd === 'number' ? obj.total_cost_usd : null;
+    const costDelta = cost != null ? cost - this._lastCost : null;
+    if (cost != null) this._lastCost = cost;
+    const apiMs = typeof obj.duration_api_ms === 'number' ? obj.duration_api_ms : null;
+    const durationApiMsDelta = apiMs != null ? apiMs - this._lastApiMs : null;
+    if (apiMs != null) this._lastApiMs = apiMs;
+    return [{
+      kind: 'turn_end',
+      subtype: obj.subtype ?? 'success',
+      stopReason: obj.stop_reason ?? null,
+      durationMs: obj.duration_ms ?? null,        // turn walltime (incl. tool exec), per-turn
+      durationApiMs: apiMs,                        // raw cumulative session API time (kept for reference)
+      durationApiMsDelta,                          // per-turn LLM/inference time
+      cost,      // raw cumulative session total (kept for reference)
+      costDelta, // actual cost of this turn
+      usage: obj.usage ?? null,
+      isError: !!obj.is_error,
+    }];
+  }
+}
+
+// Detect "Attached file: `<path>`" marker lines in a text block (the
+// shape we write in instances.ts prompt()) and split them out as
+// attachment entries. Path must point inside the orchestrator's central
+// store (`.../<ORCH_STORE_DIRNAME>/.../attachments/<file>`) to be
+// recognized — anchors the match so unrelated prose mentioning
+// "Attached file:" isn't accidentally promoted.
+const IMG_EXT = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp']);
+const ATT_LINE_RE = /^Attached file:\s*`([^`]*?\/\.code-conductor\/[^`]+?\/attachments\/[^`]+)`\s*$/;
+
+export interface Attachment {
+  kind: 'image' | 'file';
+  path: string;
+  filename: string;
+  name: string;
+}
+
+// Sentinel on the steering message a SOFT interrupt injects mid-turn
+// (Instance.interrupt() without force). The CLI persists the injected prompt
+// to the session jsonl — as a `type:"user"` line live, or a
+// `type:"attachment"` queued_command line when received mid-turn — so this
+// marker lets the live parser, the transcript replay, and the rewind/fork
+// prompt-counter all recognise it. It renders as a `system/soft_interrupted`
+// annotation rather than a user bubble, and never shifts the user-message index.
+export const SOFT_INTERRUPT_MARKER = '[[cc:soft-interrupt]]';
+
+// True when a user-message `content` (string or block array) or a
+// queued_command `prompt` array is the hidden soft-interrupt steer —
+// detected by the marker appearing anywhere in a text block (marker is
+// now appended at the end of the text, not the beginning).
+export function isSoftInterruptContent(content: unknown): boolean {
+  if (typeof content === 'string') return content.includes(SOFT_INTERRUPT_MARKER);
+  if (!Array.isArray(content)) return false;
+  return content.some(
+    (b) => b && typeof b === 'object' && (b as { type?: unknown; text?: unknown }).type === 'text'
+           && typeof (b as { text?: unknown }).text === 'string'
+           && (b as { text: string }).text.includes(SOFT_INTERRUPT_MARKER),
+  );
+}
+
+// True when a user-message `content` (string or block array) is the CLI's
+// own "background subagent finished" ping, re-injected into a worker's own
+// conversation as though it were a user turn. Detected by tag shape, not a
+// marker, since the CLI — not this codebase — produces the string, so
+// there's nothing to append a marker to.
+export function isTaskNotificationContent(content: unknown): boolean {
+  const isTag = (text: unknown) => typeof text === 'string' && text.trimStart().startsWith('<task-notification>');
+  if (typeof content === 'string') return isTag(content);
+  if (!Array.isArray(content)) return false;
+  return content.some((b) => b && typeof b === 'object' && (b as { type?: unknown; text?: unknown }).type === 'text' && isTag((b as { text?: unknown }).text));
+}
+
+// True when a single text block is the mid-turn annotation prepended by
+// Instance.prompt() when a message arrives while a worker is in-flight.
+// Matched by shape (system-reminder wrapper + 'mid-turn' token), not by
+// exact string, so minor wording tweaks don't silently break filtering.
+export function isMidTurnNoteContent(text: unknown): boolean {
+  return typeof text === 'string'
+    && text.startsWith('<system-reminder>')
+    && text.includes('mid-turn')
+    && text.trimEnd().endsWith('</system-reminder>');
+}
+
+export function extractAttachedMarkers(text: string): { text: string; attachments: Attachment[] } {
+  const lines = text.split('\n');
+  const keptLines: string[] = [];
+  const attachments: Attachment[] = [];
+  for (const line of lines) {
+    const m = line.match(ATT_LINE_RE);
+    if (!m) { keptLines.push(line); continue; }
+    const attPath = m[1];
+    const filename = attPath.split('/').pop() ?? '';
+    const ext = (filename.split('.').pop() || '').toLowerCase();
+    const kind = IMG_EXT.has(ext) ? 'image' : 'file';
+    attachments.push({ kind, path: attPath, filename, name: filename });
+  }
+  // Trim any trailing blank lines that the marker(s) leave behind, but
+  // preserve interior structure so leading prose stays intact.
+  while (keptLines.length && keptLines[keptLines.length - 1].trim() === '') keptLines.pop();
+  return { text: keptLines.join('\n'), attachments };
+}
+
+// Consolidate one user message's content blocks into UI events: each
+// tool_result becomes its own event, and all text blocks (minus mid-turn
+// notes and `Attached file:` marker lines) are joined into a single
+// `user_echo` carrying any extracted attachments. Shared by the live path
+// (Parser._handleUser) and both jsonl-replay branches in transcript.ts so
+// live vs replay rendering stays byte-for-byte identical.
+export function consolidateUserContent(contentBlocks: unknown[]): UiEvent[] {
+  const out: UiEvent[] = [];
+  const echoTexts: string[] = [];
+  const echoAttachments: Attachment[] = [];
+  for (const raw of contentBlocks) {
+    if (!raw || typeof raw !== 'object') continue;
+    const block = raw as WireContentBlock;
+    if (block.type === 'tool_result') {
+      out.push({
+        kind: 'tool_result',
+        toolUseId: typeof block.tool_use_id === 'string' ? block.tool_use_id : null,
+        content: block.content ?? '',
+        isError: !!block.is_error,
+        finishedAt: Date.now(),
+      });
+    } else if (block.type === 'text') {
+      if (typeof block.text !== 'string') continue;
+      if (isMidTurnNoteContent(block.text)) continue;
+      const { text: leftover, attachments } = extractAttachedMarkers(block.text);
+      if (leftover.length) echoTexts.push(leftover);
+      for (const a of attachments) echoAttachments.push(a);
+    }
+  }
+  if (echoTexts.length || echoAttachments.length) {
+    out.push({
+      kind: 'user_echo',
+      text: echoTexts.join('\n'),
+      attachments: echoAttachments,
+    });
+  }
+  return out;
+}
+
+// The CLI marks the Skill-content injection (the SKILL.md dumped back as a
+// plain user message right after a Skill tool_use/tool_result) as a
+// CLI-injected rather than user-typed message — but it reuses that same mark
+// for unrelated messages (compaction-continuation summaries, Stop-hook
+// feedback), so the mark alone isn't a reliable "this is skill content"
+// signal. `pendingSkillLoads` is a per-stream/per-file queue of
+// `{toolUseId, skill}` the caller pushes to when it sees a Skill tool_use;
+// this correlates an injection back to its invocation. Shared by the live
+// path (Parser._handleUser) and transcript.ts replay so live vs replay
+// rendering stays identical.
+//
+// The two surfaces name the mark differently AND support different
+// correlation strengths — see skillInjectionMarker. Where only FIFO order is
+// available (stdout), a pending entry left over from a Skill invocation whose
+// injection never arrived (the skill errored, or the turn was interrupted)
+// would otherwise sit in the queue indefinitely and could mislabel a later,
+// unrelated injected message. Two bounds close the realistic causes: (1) an
+// erroring tool_result for the pending entry's toolUseId drops it immediately
+// — no injection is coming; (2) a genuine (non-injected) user_echo — a real
+// prompt — clears the whole queue, since the synchronous-ordering guarantee is
+// broken for every still-pending entry once a new real turn begins. This can't
+// close a truly adjacent orphan (no tool_result at all, immediately followed
+// by an unrelated injected message with no intervening real turn) — there's no
+// signal to distinguish that from a real skill load — but that case is a
+// narrow race rather than the unbounded, anywhere-later-in-the-file risk this
+// closes. Replay, which has identity, is not exposed to any of it.
+export function expireSkillLoads(pendingSkillLoads: PendingSkillLoad[] | null | undefined): void {
+  if (pendingSkillLoads) pendingSkillLoads.length = 0;
+}
+
+// Normalize a source line into the marker attachSkillLoad reasons about. The
+// CLI names the same fact differently per surface, and the surfaces are NOT
+// interchangeable:
+//   stdout envelope — `isSynthetic` (the CLI builds it as
+//     `isMeta || isVisibleInTranscriptOnly`) and never carries
+//     `sourceToolUseID`, so FIFO order is the only correlation available.
+//   persisted jsonl — `isMeta` / `isVisibleInTranscriptOnly`, and every skill
+//     injection carries `sourceToolUseID`: the id of the Skill tool_use it
+//     belongs to. Exact identity, so the meta lines that are NOT skill
+//     injections (compaction continuations, hook feedback) cannot steal a
+//     pending entry.
+// Deriving both facts here — rather than at each call site — is the point:
+// the replay path testing the stdout field name is what shipped the
+// skill-bubble-only-renders-live bug.
+function skillInjectionMarker(obj: WireEnvelope): { injected: boolean; sourceToolUseId: string | null; identityOnly: boolean } {
+  const persisted = obj?.isMeta === true || obj?.isVisibleInTranscriptOnly === true;
+  const streamed = obj?.isSynthetic === true;
+  return {
+    injected: persisted || streamed,
+    sourceToolUseId: typeof obj?.sourceToolUseID === 'string' ? obj.sourceToolUseID : null,
+    // jsonl-shaped: identity is the only legal correlation on this surface.
+    identityOnly: persisted && !streamed,
+  };
+}
+
+// `source` is the raw line: a stream-json stdout envelope live, a persisted
+// jsonl object on replay.
+export function attachSkillLoad(events: UiEvent[], source: WireEnvelope, pendingSkillLoads: PendingSkillLoad[] | null): UiEvent[] {
+  if (!pendingSkillLoads) return events;
+  for (const ev of events) {
+    if (ev.kind === 'tool_result' && ev.isError) {
+      const idx = pendingSkillLoads.findIndex((p) => p.toolUseId === ev.toolUseId);
+      if (idx !== -1) pendingSkillLoads.splice(idx, 1);
+    }
+  }
+  const echo = events.find((e) => e.kind === 'user_echo');
+  if (!echo) return events;
+  const { injected, sourceToolUseId, identityOnly } = skillInjectionMarker(source);
+  if (sourceToolUseId) {
+    // Exact match: this line names the Skill tool_use it was injected for.
+    const idx = pendingSkillLoads.findIndex((p) => p.toolUseId === sourceToolUseId);
+    if (idx !== -1) {
+      const [pending] = pendingSkillLoads.splice(idx, 1);
+      echo.skillLoad = { skill: pending.skill };
+    }
+    // Otherwise the id names nothing pending. Not "an injection for another
+    // tool" — every sourceToolUseID line in the persisted corpus names a
+    // Skill tool_use. It means the entry is gone or was never made: expired
+    // by an intervening real turn, dropped by an erroring tool_result, or its
+    // Skill tool_use sits outside the range being replayed. Either way there
+    // is nothing to correlate with, so leave the queue alone (no FIFO
+    // consumption) and don't expire: this isn't a real user turn.
+    return events;
+  }
+  if (identityOnly) {
+    // Distinct from the branch above: a jsonl-shaped injected line with no id
+    // AT ALL — a compaction continuation or hook feedback, since every real
+    // skill injection in a jsonl carries sourceToolUseID. No FIFO fallback
+    // here; on this surface it could only ever mis-stamp. (An id-less skill
+    // injection from some older CLI would simply not fold — same as before
+    // this correlation existed, not a regression.)
+    return events;
+  }
+  if (!injected) {
+    expireSkillLoads(pendingSkillLoads);
+    return events;
+  }
+  // Streamed injection: no identity on this surface, so fall back to the
+  // CLI's synchronous tool_use -> tool_result -> injection ordering.
+  if (!pendingSkillLoads.length) return events;
+  const pending = pendingSkillLoads.shift();
+  if (!pending) return events; // defensive — length was just checked; keeps the shift result honest
+  echo.skillLoad = { skill: pending.skill };
+  return events;
+}
+
+// A `user_echo` for a top-level (non-sub-agent) user prompt — i.e. one that
+// marks a turn boundary. Sub-agent echoes carry a parentToolUseId. Shared by
+// the event ring (instances.ts) and the paging/archive code (eventArchive.ts).
+export function isOuterUserEcho(ev: UiEvent | null | undefined): boolean {
+  return ev?.kind === 'user_echo' && !ev.parentToolUseId;
+}
+
+// A child at index c whose nearest preceding head sits at h forbids cuts
+// h < start <= c: such a suffix includes the child but not its head. A child
+// with no head at or before it forbids every cut through c. Intervals are
+// per-child, not per-group, so a head arriving AFTER one of its own children
+// cannot cover it — the child is pushed out instead of rendered head-less.
+// Merging the integer intervals resolves all overlapping constraints at once
+// instead of oscillating between groups. Each (group, head-generation) opens
+// at most one interval, so the sort stays O(g log g) in practice.
+function groupBoundaryComponents(arr: UiEvent[], end: number): BoundaryInterval[] {
+  const intervals: BoundaryInterval[] = [];
+  const groups = new Map<string, GroupState>();
+  const stateFor = (id: string): GroupState => {
+    let state = groups.get(id);
+    if (!state) {
+      state = { head: -1, interval: null };
+      groups.set(id, state);
+    }
+    return state;
+  };
+
+  for (let i = 0; i < end; i++) {
+    const ev = arr[i];
+    if (!ev) continue;
+    const toolUseId = typeof ev.toolUseId === 'string' ? ev.toolUseId : null;
+    if (toolUseId && (ev.kind === 'tool_use_start' || ev.kind === 'tool_use')) {
+      const state = stateFor(toolUseId);
+      state.head = i;
+      state.interval = null; // a new head opens a new generation
+    }
+    const parentToolUseId = typeof ev.parentToolUseId === 'string' ? ev.parentToolUseId : null;
+    if (parentToolUseId) {
+      const state = stateFor(parentToolUseId);
+      if (state.interval) {
+        state.interval.right = i; // same generation — extend to the later child
+      } else {
+        state.interval = {
+          left: state.head >= 0 ? state.head + 1 : 0,
+          right: i,
+          headless: state.head < 0,
+        };
+        intervals.push(state.interval);
+      }
+    }
+  }
+  intervals.sort((a, b) => a.left - b.left || a.right - b.right);
+
+  const merged: BoundaryInterval[] = [];
+  for (const interval of intervals) {
+    const tail = merged[merged.length - 1];
+    if (!tail || interval.left > tail.right + 1) {
+      merged.push({ ...interval });
+      continue;
+    }
+    tail.right = Math.max(tail.right, interval.right);
+    tail.headless ||= interval.headless;
+  }
+  return merged;
+}
+
+function forbiddenComponentAt(components: BoundaryInterval[], index: number): BoundaryInterval | null {
+  let lo = 0, hi = components.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (components[mid].left <= index) lo = mid + 1;
+    else hi = mid;
+  }
+  const component = components[lo - 1] ?? null;
+  return component && index <= component.right ? component : null;
+}
+
+function resolveGroupBoundary(components: BoundaryInterval[], start: number): number {
+  const component = forbiddenComponentAt(components, start);
+  if (!component) return start;
+  return component.headless ? component.right + 1 : component.left - 1;
+}
+
+// Snap a window-start index so no sub-agent child event in [start, end) is
+// orphaned: a child whose head is available pulls the start back to that head,
+// a child with no head at or before it pushes the start past THAT CHILD (and
+// the component it merges into) — not past its whole group, whose later
+// children may still have a head above them and stay servable.
+// NOT on the production path — snapshotTail (instances.ts) and
+// pageInstanceEvents (eventArchive.ts) both call snapStartToQuiescent, which
+// resolves the same components itself while also honoring quiescence. This
+// export isolates the group resolver for direct unit testing; keep the two
+// in sync by construction (both go through groupBoundaryComponents).
+export function snapStartToGroupBoundary(arr: UiEvent[], start: number, end: number): number {
+  end = Math.max(0, Math.min(end, arr.length));
+  start = Math.max(0, Math.min(start, end));
+  return resolveGroupBoundary(groupBoundaryComponents(arr, end), start);
+}
+
+// --- Quiescent-point chunking ----------------------------------------------
+//
+// A cut index i is QUIESCENT when reconstruction state is empty at the seam:
+// no outer text/thinking/tool block is mid-stream (text blocks open at their
+// first text_delta — there is no text_start) and every outer tool_use seen
+// has received its tool_result. A page/tail sliced at a quiescent index
+// contains only whole outer blocks and complete tool round-trips, so the
+// client's isolated per-chunk renderer never shows a half block. Quiescent
+// points are dense — at least one after every resolved tool round-trip and
+// between blocks of one message — so a boundary snap normally moves a few
+// indices, never a whole turn.
+//
+// Outer user_echo / turn_end FORCE-RESET the state: they are always
+// boundaries. Without the reset, a hard-interrupted turn (a tool_use whose
+// tool_result never arrives) would poison every later index forever; the
+// dangling tool renders `· incomplete` via the client's finalize backstop.
+// A running foreground Task is an open tool span, so no quiescent point
+// exists anywhere inside it.
+//
+// SUB-AGENT events (parentToolUseId != null) are deliberately IGNORED by this
+// scan. Async sub-agents interleave their block PARTS with the outer turn's
+// (and each other's), so nested-block wholeness CANNOT come from a linear
+// quiescence scan — it comes from the group-boundary resolver, which moves
+// the cut in EITHER direction. A child whose head is available pulls the
+// start back to that head, so the chunk holds the head plus every group event
+// up to its end and the next-older page ends strictly before the head. A
+// child with NO head at or before it in [0, end) — head evicted from the
+// ring, below the loaded archive, or simply not yet streamed — cannot be
+// rendered, so the cut is pushed PAST that child instead; those events are
+// unreachable by design rather than served orphaned. Either way one group's
+// events — hence every nested block — are never split across chunks. Do
+// NOT extend this state machine to nested blocks: it would destroy quiescent
+// density across every background-task region while adding nothing the group
+// snap already guarantees.
+
+function blockKey(ev: UiEvent, type: string): string { return `${ev.msgId ?? '?'}:${ev.blockIdx ?? 0}:${type}`; }
+
+// An outer turn_end also force-resets (see header comment above).
+function isOuterTurnEnd(ev: UiEvent): boolean {
+  return ev?.kind === 'turn_end' && !ev.parentToolUseId;
+}
+
+class QuiescenceScan {
+  openBlocks = new Set<string>();   // `${msgId}:${blockIdx}:${type}` mid-stream
+  pendingTools = new Set<string>(); // toolUseId awaiting its tool_result
+  get empty(): boolean { return this.openBlocks.size === 0 && this.pendingTools.size === 0; }
+  apply(ev: UiEvent): void {
+    if (!ev || ev.parentToolUseId) return; // nested — group integrity covers these
+    switch (ev.kind) {
+      case 'user_echo':
+      case 'turn_end':
+        this.openBlocks.clear(); this.pendingTools.clear(); break;
+      case 'text_delta':     this.openBlocks.add(blockKey(ev, 'text')); break;
+      case 'text_end':       this.openBlocks.delete(blockKey(ev, 'text')); break;
+      case 'thinking_start':
+      case 'thinking_delta': this.openBlocks.add(blockKey(ev, 'thinking')); break;
+      case 'thinking_end':   this.openBlocks.delete(blockKey(ev, 'thinking')); break;
+      case 'tool_use_start':
+      case 'tool_use_input_delta':
+        this.openBlocks.add(blockKey(ev, 'tool'));
+        if (typeof ev.toolUseId === 'string') this.pendingTools.add(ev.toolUseId);
+        break;
+      case 'tool_use': // block finalized; the SPAN stays open until tool_result
+        this.openBlocks.delete(blockKey(ev, 'tool'));
+        if (typeof ev.toolUseId === 'string') this.pendingTools.add(ev.toolUseId);
+        break;
+      case 'tool_result':
+        if (typeof ev.toolUseId === 'string') this.pendingTools.delete(ev.toolUseId);
+        break;
+      default: break; // message_start / system / assistant_message / … are state-neutral
+    }
+  }
+}
+
+// Nearest index <= i where the scan state is known: index 0 (array start),
+// `resetIdx` (an externally-declared discontinuity, e.g. the archive→ring
+// seam — state must never be scanned across it), or an outer
+// user_echo/turn_end (both force-reset).
+function nearestResetOrigin(arr: UiEvent[], i: number, resetIdx: number): number {
+  for (let j = i; j > 0; j--) {
+    if (j === resetIdx || isOuterUserEcho(arr[j]) || isOuterTurnEnd(arr[j])) return j;
+  }
+  return 0;
+}
+
+// Core quiescent search. Returns `start` when it is already quiescent, else
+// (allowForward) the first quiescent index inside (start, end) — keeps the
+// window small — else the nearest quiescent index below `start`. A backward
+// result always exists within the current turn (its reset origin is
+// reachable), so the reach is bounded by one turn / one giant block run,
+// never unbounded. Index 0, `resetIdx` and outer user_echo indices are
+// quiescent BY FIAT (cutting right before a turn boundary is the legacy
+// behavior; the seam and the array start are boundaries by construction).
+function quiesceStart(arr: UiEvent[], start: number, end: number, resetIdx: number, allowForward: boolean): number {
+  if (start <= 0) return 0;
+  if (start === resetIdx || isOuterUserEcho(arr[start])) return start;
+  const r = nearestResetOrigin(arr, start - 1, resetIdx);
+  // At a turn_end origin the state BEFORE the event is unknown — it only
+  // becomes known-empty after applying it, so index r itself is not claimable.
+  const originValid = r === 0 || r === resetIdx || isOuterUserEcho(arr[r]);
+  const scan = new QuiescenceScan();
+  let best = -1;
+  for (let i = r; i < end; i++) {
+    const fiat = i === resetIdx || isOuterUserEcho(arr[i]);
+    const quiescent = fiat || (scan.empty && (i > r || originValid));
+    if (quiescent) {
+      if (i === start) return start;
+      if (i < start) best = i;
+      else if (allowForward) return i;
+      else break;
+    } else if (i > start && !allowForward) break;
+    scan.apply(arr[i]);
+  }
+  return best !== -1 ? best : start; // nothing reachable — raw start stands
+}
+
+function collectQuiescentCuts(arr: UiEvent[], end: number, resetIdx: number): number[] {
+  const cuts: number[] = [];
+  let scan = new QuiescenceScan();
+  for (let i = 0; i < end; i++) {
+    if (i === resetIdx) scan = new QuiescenceScan();
+    const fiat = i === resetIdx || isOuterUserEcho(arr[i]);
+    if (fiat || scan.empty) cuts.push(i);
+    scan.apply(arr[i]);
+  }
+  cuts.push(end); // the empty suffix is always a safe final fallback
+  return cuts;
+}
+
+function lowerBound(values: number[], target: number): number {
+  let lo = 0, hi = values.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (values[mid] < target) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+function firstCombinedBoundary(cuts: number[], components: BoundaryInterval[], from: number): number {
+  let i = lowerBound(cuts, from);
+  while (i < cuts.length) {
+    const cut = cuts[i];
+    const component = forbiddenComponentAt(components, cut);
+    if (!component) return cut;
+    i = lowerBound(cuts, component.right + 1);
+  }
+  return cuts[cuts.length - 1];
+}
+
+function lastCombinedBoundary(cuts: number[], components: BoundaryInterval[], through: number): number {
+  let i = lowerBound(cuts, through + 1) - 1;
+  while (i >= 0) {
+    const cut = cuts[i];
+    const component = forbiddenComponentAt(components, cut);
+    if (!component) return cut;
+    if (component.headless) return -1; // its interval starts at index 0
+    i = lowerBound(cuts, component.left) - 1;
+  }
+  return -1;
+}
+
+// Smallest quiescent index in [from, bound), or -1. Used by EventLog._trim
+// to keep the post-eviction ring head on whole blocks when no turn boundary
+// is in reach. Assumes arr[0] opens on a boundary (true by induction over
+// trims, except after a plain-cut last resort — a documented degradation).
+export function firstQuiescentAtOrAfter(arr: UiEvent[], from: number, bound: number): number {
+  if (from <= 0) return 0;
+  const r = nearestResetOrigin(arr, from, -1);
+  const originValid = r === 0 || isOuterUserEcho(arr[r]);
+  const scan = new QuiescenceScan();
+  for (let i = r; i < bound; i++) {
+    const fiat = isOuterUserEcho(arr[i]);
+    const quiescent = fiat || (scan.empty && (i > r || originValid));
+    if (quiescent && i >= from) return i;
+    scan.apply(arr[i]);
+  }
+  return -1;
+}
+
+// Snap a window-start index to a cut that is both quiescent and preserves
+// sub-agent group integrity. `resetIdx` marks the archive→ring seam inside a
+// combined array (see eventArchive.ts): it resets only quiescence state, while
+// group heads remain visible across the seam.
+//
+// Group constraints are merged before resolution. A surviving-only forbidden
+// component prefers the nearest combined-valid cut on its left (keep the
+// complete group); a component connected to a headless group searches right
+// (exclude every unavailable group). Both searches move monotonically across
+// finite quiescent cuts/components, so they cannot oscillate.
+export function snapStartToQuiescent(arr: UiEvent[], start: number, end: number, { resetIdx = -1 }: { resetIdx?: number } = {}): number {
+  end = Math.max(0, Math.min(end, arr.length));
+  start = Math.max(0, Math.min(start, end));
+  if (start === end) return end;
+
+  const components = groupBoundaryComponents(arr, end);
+  start = quiesceStart(arr, start, end, resetIdx, true);
+  const component = forbiddenComponentAt(components, start);
+  if (!component) return start;
+
+  const cuts = collectQuiescentCuts(arr, end, resetIdx);
+  if (component.headless) {
+    return firstCombinedBoundary(cuts, components, component.right + 1);
+  }
+
+  const backward = lastCombinedBoundary(cuts, components, component.left - 1);
+  if (backward >= 0) return backward;
+  return firstCombinedBoundary(cuts, components, component.right + 1);
+}
+
+export default Parser;

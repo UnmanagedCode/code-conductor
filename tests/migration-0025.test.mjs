@@ -10,8 +10,8 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import * as m0025 from '../migrations/0025-seed-explicit-tier-role-effort.mjs';
-import { getTierEffort, getRoleEffort, resolveSpawnEffort } from '../src/appSettings.js';
-import { DEFAULT_EFFORT } from '../src/effortLevels.js';
+import { getTierEffort, getRoleEffort, resolveSpawnEffort } from '../src/appSettings.ts';
+import { DEFAULT_EFFORT } from '../src/effortLevels.ts';
 
 async function mkTmp() { return fs.mkdtemp(path.join(os.tmpdir(), 'cc-mig25-')); }
 function settingsFile(root) { return path.join(root, '.code-conductor', 'settings.json'); }

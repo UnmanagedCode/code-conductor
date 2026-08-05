@@ -10,7 +10,7 @@ const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-temp-sessions-'));
 process.env.PROJECTS_ROOT = path.join(tmp, 'project');
 
 const { markTemp, unmarkTemp, isTemp, loadAllTemps } =
-  await import('../src/tempSessions.js');
+  await import('../src/tempSessions.ts');
 
 test('markTemp / isTemp / unmarkTemp round-trip + file shape', async () => {
   assert.equal(await isTemp('sid-1'), false, 'unknown sid is not temp');

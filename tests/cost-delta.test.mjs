@@ -8,7 +8,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { Parser } from '../src/parser.js';
+import { Parser } from '../src/parser.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUB = path.resolve(__dirname, '..', 'public');

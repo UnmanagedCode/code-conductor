@@ -10,7 +10,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
-import { encodeCwd } from '../src/projects.js';
+import { encodeCwd } from '../src/projects.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-resume.json');
@@ -426,7 +426,7 @@ test('archive/ring seam: overlapping groups page whole, cursor progresses, no or
         `limit=${limit}: the archive-side Agent head is reachable`);
       // Whether ring-side children of the archived head are served at all is
       // NOT pinned here: they are servable only on a page whose window dips
-      // below the ring (`needArchive`, eventArchive.js) — i.e. only when
+      // below the ring (`needArchive`, eventArchive.ts) — i.e. only when
       // `child_seq - trimmedBefore < limit`, which no child in THIS fixture
       // satisfies, though children nearer the ring head would. The per-page
       // assertGroupIntegrity above is what carries
@@ -462,7 +462,7 @@ test('limit is clamped; bad params 400; unknown instance 404', async () => {
 // A task batch that lives in older history must render its finished-task bubble
 // when paged back — the server injects a synthetic {kind:'task_completion'}
 // after the completing TaskUpdate (client no longer synthesizes it for the
-// lazy path). See src/eventArchive.js injectTaskCompletions + taskReconstruct.js.
+// lazy path). See src/eventArchive.ts injectTaskCompletions + taskReconstruct.ts.
 function taskBatchLines() {
   return [
     { type: 'user', uuid: 'utc', message: { role: 'user', content: 'do the tasks' } },

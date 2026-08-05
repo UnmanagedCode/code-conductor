@@ -5,7 +5,7 @@
 // `({id, callerInstanceId, ...rest}) => rest`, so every field ever added to
 // Instance.summary() was published to conductors automatically. That is how the
 // misleading `sonnetWindow` reached list_instances / spawn_instance /
-// wait_for_idle.summary / respawn_instance / promote_session while tools.js
+// wait_for_idle.summary / respawn_instance / promote_session while tools.ts
 // documented only 13 keys. The surface being UNDOCUMENTED was the bug — not its
 // width — so the allowlist is close to parity and the tool description is
 // pinned against it here rather than by review.
@@ -16,11 +16,11 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
-import { CONDUCTOR_VIEW_KEYS } from '../src/mcp/handlers.js';
+import { CONDUCTOR_VIEW_KEYS } from '../src/mcp/handlers.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO_INSTANCE = path.join(__dirname, 'fixtures', 'scenario-instance.json');
-const TOOLS_SRC = path.join(__dirname, '..', 'src', 'mcp', 'tools.js');
+const TOOLS_SRC = path.join(__dirname, '..', 'src', 'mcp', 'tools.ts');
 
 let ctx, baseUrl, instances, home;
 before(async () => { ctx = await bootServer({ scenarioPath: SCENARIO_INSTANCE }); ({ baseUrl, instances } = ctx); });
@@ -125,7 +125,7 @@ test('every worker-summary handler routes through the single projection', async 
   // lifecycle-verified call sites above plus this source-level check together
   // cover all five: nothing may hand-roll its own worker projection, because a
   // second projection is exactly how a field escapes the documented list.
-  const src = await fs.readFile(path.join(__dirname, '..', 'src', 'mcp', 'handlers.js'), 'utf8');
+  const src = await fs.readFile(path.join(__dirname, '..', 'src', 'mcp', 'handlers.ts'), 'utf8');
   for (const fn of ['listInstances', 'spawnInstance', 'waitForIdle', 'respawnInstance', 'promoteSession']) {
     const at = src.indexOf(`export async function ${fn}(`);
     assert.ok(at >= 0, `handler ${fn} not found`);

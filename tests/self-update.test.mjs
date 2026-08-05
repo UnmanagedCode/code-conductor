@@ -7,8 +7,8 @@ import http from 'node:http';
 import express from 'express';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { getSelfUpdateStatus, applySelfUpdate } from '../src/selfUpdate.js';
-import { buildRoutes } from '../src/routes.js';
+import { getSelfUpdateStatus, applySelfUpdate } from '../src/selfUpdate.ts';
+import { buildRoutes } from '../src/routes.ts';
 
 const run = promisify(execFile);
 async function git(cwd, ...args) { await run('git', ['-C', cwd, ...args]); }

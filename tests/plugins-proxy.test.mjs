@@ -6,7 +6,7 @@ import path from 'node:path';
 import { WebSocket } from 'ws';
 import { bootServer, waitFor } from './helpers.mjs';
 import { FAKE_PLUGIN_DIR } from './plugin-helpers.mjs';
-import { pidAlive } from '../src/plugins/ports.js';
+import { pidAlive } from '../src/plugins/ports.ts';
 
 // Boot the full server (helpers tmp root) with the fake plugin installed as
 // a project and enabled — every test drives the real /plugins proxy.

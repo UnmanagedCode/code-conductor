@@ -15,8 +15,8 @@ import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { WebSocket } from 'ws';
-import { InstanceManager } from '../src/instances.js';
-import { attachWsHub } from '../src/wsHub.js';
+import { InstanceManager } from '../src/instances.ts';
+import { attachWsHub } from '../src/wsHub.ts';
 
 // Minimal fake WebSocketServer: provides `clients` + EventEmitter surface.
 // Captured .send() calls are collected in `received` for assertion.

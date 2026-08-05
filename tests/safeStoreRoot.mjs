@@ -1,5 +1,5 @@
 // Test-suite store isolation. The orchestrator's sidecar stores resolve their
-// on-disk root from `PROJECTS_ROOT` (src/projects.js), falling back to a
+// on-disk root from `PROJECTS_ROOT` (src/projects.ts), falling back to a
 // SOURCE-RELATIVE default (`src/../..`) when it is unset — which, run from this
 // checkout, is the parent of the repo: the REAL production `.code-conductor`.
 // A test that touches a store with `PROJECTS_ROOT` unset therefore corrupts the
@@ -15,7 +15,7 @@ import { fileURLToPath } from 'node:url';
 
 // The repo root (this file lives at <repo>/tests/), and the real production
 // projects root one level above it. `REAL_STORE_DIR` is exactly what
-// orchStoreRoot() yields when PROJECTS_ROOT is unset (src/projects.js resolves
+// orchStoreRoot() yields when PROJECTS_ROOT is unset (src/projects.ts resolves
 // its default to `src/../..`, the same `<repo>/..` dir).
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const REAL_PROJECTS_ROOT = path.resolve(repoRoot, '..');

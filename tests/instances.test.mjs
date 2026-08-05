@@ -5,9 +5,9 @@ import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
-import { encodeCwd } from '../src/projects.js';
-import { isArchived } from '../src/archivedSessions.js';
-import { setDebugByDefault } from '../src/appSettings.js';
+import { encodeCwd } from '../src/projects.ts';
+import { isArchived } from '../src/archivedSessions.ts';
+import { setDebugByDefault } from '../src/appSettings.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-instance.json');
@@ -444,6 +444,24 @@ test('rejects invalid mode and unknown project', async () => {
   assert.equal(r2.status, 404);
   const r3 = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', effort: 'bogus' });
   assert.equal(r3.status, 400);
+});
+
+test('spawn with a non-boolean temp never forces bypassPermissions (fail-closed)', async () => {
+  await setupWithProject('tempguard');
+  // Control: the UI shortcut — temp:true with no mode ⇒ bypassPermissions.
+  const ctl = await api(baseUrl, 'POST', '/api/instances', { project: 'tempguard', temp: true });
+  assert.equal(ctl.status, 201);
+  assert.equal(ctl.body.mode, 'bypassPermissions');
+  await waitFor(() => instances.get(ctl.body.id).status === 'idle');
+
+  // Regression: the JSON string "false" is truthy in JS, so the old
+  // `(mode == null && temp)` truthiness test forced bypassPermissions here.
+  // `temp === true` is the ONLY bypass trigger — a malformed non-boolean temp
+  // fails closed (no bypass) instead of silently escalating permissions.
+  const r = await api(baseUrl, 'POST', '/api/instances', { project: 'tempguard', temp: 'false' });
+  assert.equal(r.status, 201);
+  assert.notEqual(r.body.mode, 'bypassPermissions');
+  await waitFor(() => instances.get(r.body.id).status === 'idle');
 });
 
 test('default spawn passes --permission-mode plan, --effort high, --thinking adaptive', async () => {
@@ -1213,7 +1231,7 @@ test('turn_end while a backgrounded Agent task is still running: status stays id
     // `task_updated` (both in the same `emit` array, spaced by delay_ms), so
     // `status:'idle' && activeAgentTasks:1` is only true for a ~20ms window.
     // `Instance` emits 'status' synchronously at the exact instant of each
-    // transition (_setStatus / task-tracking in src/instances.js), so
+    // transition (_setStatus / task-tracking in src/instances.ts), so
     // awaiting that event — rather than polling live state on an interval —
     // can't straddle or miss the window. Register the listener before
     // prompting so the emit can't fire before we're subscribed.

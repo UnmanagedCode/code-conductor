@@ -10,7 +10,7 @@ const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-conducted-'));
 process.env.PROJECTS_ROOT = path.join(tmp, 'project');
 
 const { markConducted, unmarkConducted, isConducted, loadAll } =
-  await import('../src/conductedSessions.js');
+  await import('../src/conductedSessions.ts');
 
 test('markConducted / isConducted / unmarkConducted round-trip + file shape', async () => {
   assert.equal(await isConducted('sid-1'), false, 'unknown sid is not conducted');

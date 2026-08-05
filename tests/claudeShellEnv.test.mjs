@@ -1,4 +1,4 @@
-// Unit tests for src/claudeShellEnv.js — the per-claude-version shell-env
+// Unit tests for src/claudeShellEnv.ts — the per-claude-version shell-env
 // bundle cache used by the project_bash MCP tool. Server-less (no
 // bootServer): a fake `claude` binary drives every codepath deterministically
 // via env-var-selected modes, following the writeFake/withEnv pattern from
@@ -13,10 +13,10 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import os from 'node:os';
 import path from 'node:path';
-import { getShellEnvBundlePath, _resetForTest, bundleShellKind } from '../src/claudeShellEnv.js';
-import { orchStoreRoot } from '../src/projects.js';
-import { setTierBackend, addBackend, addCustomModel, getBackend } from '../src/appSettings.js';
-import { resolveBackendLaunch } from '../src/claudeLauncher.js';
+import { getShellEnvBundlePath, _resetForTest, bundleShellKind } from '../src/claudeShellEnv.ts';
+import { orchStoreRoot } from '../src/projects.ts';
+import { setTierBackend, addBackend, addCustomModel, getBackend } from '../src/appSettings.ts';
+import { resolveBackendLaunch } from '../src/claudeLauncher.ts';
 
 const execFileP = promisify(execFile);
 
@@ -415,7 +415,7 @@ t('real claude: generated bundle restores rg/find as shell functions', async () 
 // binary through the exact resolveBackendLaunch() shape production code
 // uses, and asserts it forwards claude's --version stdout/exit-code
 // verbatim (no extra banner/log chatter mixed into stdout). This matters
-// because summarize.js's generateSummary() JSON.parses the FULL stdout of
+// because summarize.ts's generateSummary() JSON.parses the FULL stdout of
 // an ollama-launched claude call — any stdout chatter a future ollama
 // release adds to its wrapper (not just stderr) would silently break that
 // parse. This is the one test validating that assumption against real

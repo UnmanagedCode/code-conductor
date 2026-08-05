@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { WebSocket } from 'ws';
 import { bootServer, api, waitFor } from './helpers.mjs';
-import { encodeCwd } from '../src/projects.js';
+import { encodeCwd } from '../src/projects.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO_NORMAL = path.join(__dirname, 'fixtures', 'scenario-ws.json');
@@ -165,7 +165,7 @@ test('subscribe sends only the ring tail, snapped to a turn boundary', async () 
 test('snapshot carries tasksAtTailStart for a batch created below the tail', async () => {
   // A still-incomplete batch whose TaskCreate sits below the ring tail must be
   // recoverable by the client panel via the snapshot's tasksAtTailStart seed
-  // (src/instances.js reconstructActiveTasks → src/taskReconstruct.js).
+  // (src/instances.ts reconstructActiveTasks → src/taskReconstruct.ts).
   const prevTail = process.env.ORCH_SNAPSHOT_TAIL;
   const prevCap = process.env.ORCH_EVENT_RING_CAP;
   process.env.ORCH_SNAPSHOT_TAIL = '8';
@@ -398,7 +398,7 @@ test('a non-retained replay event does not disturb the ring seq or the archive s
     const inst = instances.get(id);
     assert.deepEqual(inst.lastContextUsage, CTX_USAGE, 'precondition: the replay seeded');
 
-    // idleSubscriptions.js arms on ring.nextSeq as its "activity since arm"
+    // idleSubscriptions.ts arms on ring.nextSeq as its "activity since arm"
     // marker, so a retained synthetic event would have looked like new activity.
     const seqBefore = inst.ring.nextSeq;
     inst._emitUi({ kind: 'message_start', msgId: 'm_x', usage: CTX_USAGE, replayed: true });
@@ -749,7 +749,7 @@ test('a closed REDACTED thinking block keeps its token count on a fresh subscrib
     const inst = instances.get(id);
 
     // Redacted shape: counters stream but no thinking text ever arrives, so
-    // content_block_stop yields thinking_redacted + thinking_end (parser.js).
+    // content_block_stop yields thinking_redacted + thinking_end (parser.ts).
     inst._emitUi({ kind: 'user_echo', text: 'think privately' });
     inst._emitUi({ kind: 'thinking_start', msgId: 'm1', blockIdx: 0 });
     for (const n of [50, 200, 450]) {
@@ -787,7 +787,7 @@ test('a redacted block with no counter frames carries no estimatedTokens', async
     await waitFor(() => instances.get(id).status === 'idle');
     const inst = instances.get(id);
 
-    // This is the jsonl-replay shape (src/transcript.js): the CLI never
+    // This is the jsonl-replay shape (src/transcript.ts): the CLI never
     // persists counter frames, so nothing stale may be stamped.
     inst._emitUi({ kind: 'user_echo', text: 'replayed turn' });
     inst._emitUi({ kind: 'system', subtype: 'thinking_tokens', data: { estimated_tokens: 999 } });

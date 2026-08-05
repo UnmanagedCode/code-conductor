@@ -2,8 +2,8 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { createServer } from '../server.js';
-import { _resetForTest as resetProjectsCache } from '../src/projectsCache.js';
+import { createServer } from '../server.ts';
+import { _resetForTest as resetProjectsCache } from '../src/projectsCache.ts';
 import { InProcessClaudeLauncher } from './inProcessLauncher.mjs';
 import { ensureSafeStoreEnv } from './safeStoreRoot.mjs';
 
@@ -89,7 +89,7 @@ export async function bootServer({ scenarioPath, useRealClaude = false, realProc
     server.listen(0, '127.0.0.1', resolve);
   });
   const { port } = server.address();
-  // Mirror server.js's start() flow — instances need the bound port to
+  // Mirror server.ts's start() flow — instances need the bound port to
   // construct the PreToolUse http hook callback URL, plugin children get
   // CONDUCTOR_URL from it. (No pluginHost.init() here — it's lazy on first
   // use, and eager discovery would race tests that build projects later.)
@@ -191,7 +191,7 @@ export async function userStdinLines(transcriptPath) {
 
 // Strips the "--- message i/N · msgId · textChars chars ---" boundary line
 // get_recent_messages prefixes into each body when it returns more than one
-// message (src/mcp/handlers.js messageBoundaryHeader). No-op when absent, so
+// message (src/mcp/handlers.ts messageBoundaryHeader). No-op when absent, so
 // callers can run every body through this before asserting on prose content
 // regardless of how many messages came back.
 const BOUNDARY_HEADER_RE = /^--- message \d+\/\d+ · .*? · \d+ chars ---\n?/;

@@ -123,7 +123,7 @@ test('answer_question to an IDLE worker writes exactly one content block (byte-i
 });
 
 test('answer_question to a MID-TURN worker prepends MID_TURN_NOTE as its own block', async () => {
-  const { MID_TURN_NOTE } = await import('../src/instances.js');
+  const { MID_TURN_NOTE } = await import('../src/instances.ts');
   const transcriptPath = path.join(home, 'midturn-answer.log');
   process.env.FAKE_CLAUDE_TRANSCRIPT = transcriptPath;
   try {

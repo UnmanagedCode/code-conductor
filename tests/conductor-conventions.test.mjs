@@ -12,7 +12,7 @@ import {
   SEED_CONVENTIONS, getCatalog, getSelection, setSelection,
   addCustomConvention, deleteCustomConvention, composeConduct, composeCurrentConduct,
   setPluginConductorConventionsProvider,
-} from '../src/conductorConventions.js';
+} from '../src/conductorConventions.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-instance.json');
@@ -175,7 +175,7 @@ test('PUT/DELETE a built-in convention → 400; PUT selection with unknown slug 
 // ── MCP tool ─────────────────────────────────────────────────────────────────
 
 test('list_conductor_conventions MCP tool returns conventions with enabled flag, no body', async () => {
-  const { buildTools } = await import('../src/mcp/tools.js');
+  const { buildTools } = await import('../src/mcp/tools.ts');
   const tool = buildTools().find(t => t.name === 'list_conductor_conventions');
   assert.ok(tool, 'list_conductor_conventions tool registered');
   const result = await tool.handler({}, { instances });

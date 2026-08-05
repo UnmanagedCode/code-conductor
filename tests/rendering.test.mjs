@@ -22,7 +22,7 @@ async function setupDOM() {
   globalThis.Element = window.Element;
   globalThis.Node = window.Node;
 
-  const { Parser } = await import(pathToFileURL(path.resolve(__dirname, '..', 'src', 'parser.js')).href);
+  const { Parser } = await import(pathToFileURL(path.resolve(__dirname, '..', 'src', 'parser.ts')).href);
   const { Conversation } = await import(pathToFileURL(path.join(PUB, 'conversation.js')).href);
 
   // Fresh root each time we ask for a setup.

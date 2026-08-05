@@ -1,4 +1,4 @@
-// Tests for cross-process safety of archivedSessions.js.
+// Tests for cross-process safety of archivedSessions.ts.
 // The core bug: during a hot restart the old process fires markArchived()
 // fire-and-forget while the new process boots and calls sweepPendingTempCleanup
 // — two independent writeChains racing on the same file, last-writer-wins.
@@ -22,7 +22,7 @@ const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-arc-conc-'));
 process.env.PROJECTS_ROOT = path.join(tmp, 'projects');
 
 const { markArchived, unmarkArchived, loadAllArchived } =
-  await import('../src/archivedSessions.js');
+  await import('../src/archivedSessions.ts');
 
 after(async () => {
   await fs.rm(tmp, { recursive: true, force: true });
@@ -100,11 +100,11 @@ test('two concurrent child processes both markArchived → all entries preserved
   const xTmp = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-arc-xproc-'));
   const xRoot = path.join(xTmp, 'projects');
 
-  // Worker script: sets PROJECTS_ROOT from env, imports archivedSessions.js
+  // Worker script: sets PROJECTS_ROOT from env, imports archivedSessions.ts
   // via absolute path (relative imports inside the module still resolve
   // from the module's own location in src/), marks each argv session ID.
   const workerPath = path.join(xTmp, 'worker.mjs');
-  const archivedMod = JSON.stringify('file://' + path.join(srcDir, 'archivedSessions.js'));
+  const archivedMod = JSON.stringify('file://' + path.join(srcDir, 'archivedSessions.ts'));
   await fs.writeFile(workerPath, [
     `const { markArchived } = await import(${archivedMod});`,
     `for (const id of process.argv.slice(2)) { await markArchived(id); }`,

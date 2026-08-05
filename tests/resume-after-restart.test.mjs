@@ -6,14 +6,14 @@ import os from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
-import { encodeCwd, orchStoreRoot } from '../src/projects.js';
-import { SOFT_INTERRUPT_MARKER } from '../src/parser.js';
+import { encodeCwd, orchStoreRoot } from '../src/projects.ts';
+import { SOFT_INTERRUPT_MARKER } from '../src/parser.ts';
 import {
   resumeManifestPath,
   writeResumeManifest,
   readResumeManifest,
   clearResumeManifest,
-} from '../src/resumeManifest.js';
+} from '../src/resumeManifest.ts';
 import {
   drainToManifest,
   restoreFromResumeManifest,
@@ -21,10 +21,10 @@ import {
   WIND_DOWN_TEXT,
   WIND_DOWN_TEXT_CONDUCTOR,
   RESUME_TEXT,
-} from '../src/resumeRestart.js';
-import { ensureConductProject, CONDUCT_PROJECT_NAME } from '../src/conduct.js';
-import { AUTO_RESUME_TEXT } from '../src/instances.js';
-import { addBackend, addCustomModel } from '../src/appSettings.js';
+} from '../src/resumeRestart.ts';
+import { ensureConductProject, CONDUCT_PROJECT_NAME } from '../src/conduct.ts';
+import { AUTO_RESUME_TEXT } from '../src/instances.ts';
+import { addBackend, addCustomModel } from '../src/appSettings.ts';
 
 const nowSec = () => Math.floor(Date.now() / 1000);
 

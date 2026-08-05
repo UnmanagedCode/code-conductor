@@ -5,7 +5,7 @@
 // WebSocketServer construction time. Without the fix, EADDRINUSE fired on the
 // wss (which had no handler) and killed the process before the retry loop ran.
 //
-// Strategy: hold the target port with a plain TCP blocker, spawn server.js on
+// Strategy: hold the target port with a plain TCP blocker, spawn server.ts on
 // that port, wait for the EADDRINUSE retry log line in stderr (deterministic
 // signal that the child actually hit the collision), then release the blocker
 // and assert the child recovers and serves.
@@ -19,7 +19,7 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const SERVER_JS = path.resolve(__dirname, '..', 'server.js');
+const SERVER_TS = path.resolve(__dirname, '..', 'server.ts');
 
 function getFreePort() {
   return new Promise((resolve, reject) => {
@@ -34,8 +34,8 @@ function getFreePort() {
 }
 
 function spawnServer(port, tmpHome) {
-  return spawn(process.execPath, [SERVER_JS], {
-    cwd: path.dirname(SERVER_JS),
+  return spawn(process.execPath, [SERVER_TS], {
+    cwd: path.dirname(SERVER_TS),
     env: {
       ...process.env,
       PORT: String(port),

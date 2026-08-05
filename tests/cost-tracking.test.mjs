@@ -32,7 +32,7 @@ function fakeInst({ project = 'proj-a', model = 'claude-opus-4-8', sessionId = '
 }
 
 // Build a synthetic turn_end event. The cacheMiss / firstReq* fields mirror
-// the decisive verdict instances.js enriches onto turn_end before it's
+// the decisive verdict instances.ts enriches onto turn_end before it's
 // persisted (see appendCostRow).
 function turnEndEv({ costDelta = 0.01, usage, cacheMiss, firstReqCacheRead, firstReqCacheCreation, durationMs, durationApiMs, durationApiMsDelta } = {}) {
   return {
@@ -65,7 +65,7 @@ test('cost-tracking: turn_end appends a valid JSONL row', async () => {
     // Dynamically import with fresh module cache is not straightforward in
     // node:test isolation mode, so we import the module functions directly.
     // Each test boots with its own PROJECTS_ROOT so costsPath() resolves to dir.
-    const { initCostTracking, costsPath } = await import('../src/costTracking.js');
+    const { initCostTracking, costsPath } = await import('../src/costTracking.ts');
 
     // Create a minimal EventEmitter acting as InstanceManager.
     const emitter = new EventEmitter();
@@ -119,7 +119,7 @@ test('cost-tracking: getCostSummary treats missing cost_usd (ollama rows) as zer
   process.env.PROJECTS_ROOT = dir;
 
   try {
-    const { getCostSummary, costsPath } = await import('../src/costTracking.js');
+    const { getCostSummary, costsPath } = await import('../src/costTracking.ts');
 
     const storeDir = path.join(dir, '.code-conductor');
     await fs.mkdir(storeDir, { recursive: true });
@@ -168,7 +168,7 @@ test('cost-tracking: a substitution-backend turn_end omits cost_usd entirely', a
   process.env.PROJECTS_ROOT = dir;
 
   try {
-    const { initCostTracking, costsPath } = await import('../src/costTracking.js');
+    const { initCostTracking, costsPath } = await import('../src/costTracking.ts');
 
     const emitter = new EventEmitter();
     emitter.get = () => fakeInst({ backend: 'ollama' });
@@ -204,7 +204,7 @@ test('cost-tracking: a substitution-backend turn_end (no usage) omits token fiel
   process.env.PROJECTS_ROOT = dir;
 
   try {
-    const { initCostTracking, costsPath } = await import('../src/costTracking.js');
+    const { initCostTracking, costsPath } = await import('../src/costTracking.ts');
 
     const emitter = new EventEmitter();
     const insts = {
@@ -264,7 +264,7 @@ test('cost-tracking: mixed model keeps Anthropic token totals; non-Claude-only r
   process.env.PROJECTS_ROOT = dir;
 
   try {
-    const { getCostSummary, costsPath } = await import('../src/costTracking.js');
+    const { getCostSummary, costsPath } = await import('../src/costTracking.ts');
 
     const storeDir = path.join(dir, '.code-conductor');
     await fs.mkdir(storeDir, { recursive: true });
@@ -309,7 +309,7 @@ test('cost-tracking: getCostSummary aggregates correctly', async () => {
   process.env.PROJECTS_ROOT = dir;
 
   try {
-    const { getCostSummary, costsPath } = await import('../src/costTracking.js');
+    const { getCostSummary, costsPath } = await import('../src/costTracking.ts');
 
     const storeDir = path.join(dir, '.code-conductor');
     await fs.mkdir(storeDir, { recursive: true });
@@ -394,7 +394,7 @@ test('cost-tracking: getCostSummary returns zeros when costs.jsonl is absent', a
   process.env.PROJECTS_ROOT = dir;
 
   try {
-    const { getCostSummary } = await import('../src/costTracking.js');
+    const { getCostSummary } = await import('../src/costTracking.ts');
     const summary = await getCostSummary();
     assert.equal(summary.total_usd, 0);
     assert.equal(summary.row_count, 0);
@@ -416,7 +416,7 @@ test('cost-tracking: by_model and by_project entries carry correct cache_misses 
   process.env.PROJECTS_ROOT = dir;
 
   try {
-    const { getCostSummary, costsPath } = await import('../src/costTracking.js');
+    const { getCostSummary, costsPath } = await import('../src/costTracking.ts');
 
     const storeDir = path.join(dir, '.code-conductor');
     await fs.mkdir(storeDir, { recursive: true });
@@ -515,7 +515,7 @@ test('cost-tracking: turn_end persists timing + resolves parentSessionId', async
   process.env.PROJECTS_ROOT = dir;
 
   try {
-    const { initCostTracking, costsPath } = await import('../src/costTracking.js');
+    const { initCostTracking, costsPath } = await import('../src/costTracking.ts');
 
     // Emitter doubling as InstanceManager: a worker whose callerInstanceId
     // (the conductor's stable instanceId) resolves live to its current sessionId.
@@ -558,7 +558,7 @@ test('cost-tracking: persists per-turn durationApiMsDelta as duration_api_ms', a
   process.env.PROJECTS_ROOT = dir;
 
   try {
-    const { initCostTracking, costsPath } = await import('../src/costTracking.js');
+    const { initCostTracking, costsPath } = await import('../src/costTracking.ts');
     const emitter = new EventEmitter();
     emitter.get = () => fakeInst();
     initCostTracking(emitter);
@@ -589,7 +589,7 @@ test('cost-tracking: getCostSummary sums timing and tolerates legacy rows', asyn
   process.env.PROJECTS_ROOT = dir;
 
   try {
-    const { getCostSummary, costsPath } = await import('../src/costTracking.js');
+    const { getCostSummary, costsPath } = await import('../src/costTracking.ts');
     await fs.mkdir(path.join(dir, '.code-conductor'), { recursive: true });
 
     const rows = [
@@ -597,6 +597,10 @@ test('cost-tracking: getCostSummary sums timing and tolerates legacy rows', asyn
       { ts: Date.now(), project: 'alpha', model: 'opus', sessionId: 's1', cost_usd: 0.03, duration_ms: 4000, duration_api_ms: 1500 },
       // Legacy row — no duration fields at all.
       { ts: Date.now(), project: 'alpha', model: 'opus', sessionId: 's1', cost_usd: 0.01 },
+      // Malformed row — NO ts field at all. The daily-trend grouping must not
+      // crash on it (new Date(undefined).toISOString() throws RangeError); the
+      // guard buckets it under the epoch date instead.
+      { project: 'alpha', model: 'opus', sessionId: 's1', cost_usd: 0.02 },
     ];
     await fs.writeFile(costsPath(), rows.map(r => JSON.stringify(r)).join('\n') + '\n');
 
@@ -610,6 +614,11 @@ test('cost-tracking: getCostSummary sums timing and tolerates legacy rows', asyn
     const opus = summary.by_model.find(m => m.model === 'opus');
     assert.equal(opus.duration_ms, 10000);
     assert.equal(opus.duration_api_ms, 3500);
+
+    // The ts-less row lands in the epoch bucket instead of crashing the summary.
+    const epoch = summary.daily_trend.find(d => d.date === '1970-01-01');
+    assert.ok(epoch, `ts-less row must be bucketed under the epoch date (got ${JSON.stringify(summary.daily_trend)})`);
+    assert.ok(Math.abs(epoch.cost_usd - 0.02) < 1e-9, `epoch bucket holds the ts-less row's cost (got ${epoch.cost_usd})`);
   } finally {
     process.env.PROJECTS_ROOT = prevRoot ?? '';
     if (!prevRoot) delete process.env.PROJECTS_ROOT;
@@ -625,7 +634,7 @@ test('cost-tracking: getSessionStats rolls up the worker tree', async () => {
   process.env.PROJECTS_ROOT = dir;
 
   try {
-    const { getSessionStats, costsPath } = await import('../src/costTracking.js');
+    const { getSessionStats, costsPath } = await import('../src/costTracking.ts');
     await fs.mkdir(path.join(dir, '.code-conductor'), { recursive: true });
 
     // Tree: conductor → w1, w2; w1 → w1a (grandchild). A legacy row (no
@@ -675,7 +684,7 @@ test('cost-tracking: getSessionStats terminates on a parent cycle', async () => 
   process.env.PROJECTS_ROOT = dir;
 
   try {
-    const { getSessionStats, costsPath } = await import('../src/costTracking.js');
+    const { getSessionStats, costsPath } = await import('../src/costTracking.ts');
     await fs.mkdir(path.join(dir, '.code-conductor'), { recursive: true });
 
     // a → b and b → a: a mutual cycle. Also a self-parent row.
@@ -703,7 +712,7 @@ test('cost-tracking: getSessionStats terminates on a parent cycle', async () => 
 test('GET /api/costs/session/:sessionId returns own + rolled stats', async () => {
   const { baseUrl, close, tmpHome } = await bootServer();
   try {
-    const { costsPath } = await import('../src/costTracking.js');
+    const { costsPath } = await import('../src/costTracking.ts');
     const storeDir = path.join(tmpHome, 'project', '.code-conductor');
     await fs.mkdir(storeDir, { recursive: true });
 
@@ -729,7 +738,7 @@ test('GET /api/costs/session/:sessionId returns own + rolled stats', async () =>
 test('GET /api/costs/summary returns aggregated data when rows exist', async () => {
   const { baseUrl, close, tmpHome } = await bootServer();
   try {
-    const { costsPath } = await import('../src/costTracking.js');
+    const { costsPath } = await import('../src/costTracking.ts');
     const storeDir = path.join(tmpHome, 'project', '.code-conductor');
     await fs.mkdir(storeDir, { recursive: true });
 

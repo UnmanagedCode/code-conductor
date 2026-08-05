@@ -1,7 +1,7 @@
 // A plugin's conductor conventions are ON by default while the plugin is
 // enabled (derived from the live catalog); only the user's explicit off-switches
 // persist (pluginOff). Exercises the real plugin host wired to the conduct
-// catalog exactly as server.js does (the conductor-convention provider), against
+// catalog exactly as server.ts does (the conductor-convention provider), against
 // a temp PROJECTS_ROOT. Toggling a plugin needs no regen step — the composed
 // role prompt is rebuilt from the live catalog on the next conductor spawn.
 
@@ -9,12 +9,12 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { createPluginHost } from '../src/plugins/registry.js';
-import { createPluginLibrary } from '../src/plugins/library.js';
+import { createPluginHost } from '../src/plugins/registry.ts';
+import { createPluginLibrary } from '../src/plugins/library.ts';
 import {
   SEED_CONVENTIONS, getSelection, setSelection, composeCurrentConduct,
   setPluginConductorConventionsProvider,
-} from '../src/conductorConventions.js';
+} from '../src/conductorConventions.ts';
 import * as m0021 from '../migrations/0021-strip-plugin-slugs-from-conductor-conventions.mjs';
 import { makePluginRoot, readFixtureManifest } from './plugin-helpers.mjs';
 
@@ -33,7 +33,7 @@ async function writeConductStore(root, store) {
   await fs.writeFile(file, JSON.stringify(store, null, 2) + '\n');
 }
 
-// Wire a host to the conduct catalog the same way server.js does: the
+// Wire a host to the conduct catalog the same way server.ts does: the
 // conductor-convention provider. No regen hook — a toggled plugin's conventions
 // flow into the composed role prompt on the next conductor spawn.
 function wire(host) {

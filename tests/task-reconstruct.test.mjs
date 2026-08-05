@@ -1,9 +1,9 @@
 // Pure unit tests for the server-side task reconstructor
-// (src/taskReconstruct.js) — the mirror of the client TaskTracker used to
+// (src/taskReconstruct.ts) — the mirror of the client TaskTracker used to
 // recover out-of-tail task state for the snapshot seed and lazy-page bubbles.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { reconstructTasks } from '../src/taskReconstruct.js';
+import { reconstructTasks } from '../src/taskReconstruct.ts';
 
 // Build a chronological event list with dense _seq stamped in order.
 function seq(events) {

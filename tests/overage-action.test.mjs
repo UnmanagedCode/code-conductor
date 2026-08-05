@@ -14,10 +14,10 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
-import { setOnOverageAction, setOverageThreshold } from '../src/appSettings.js';
-import { AUTO_RESUME_TEXT } from '../src/instances.js';
-import { getAccountUsage } from '../src/accountUsage.js';
-import { ensureConductProject, CONDUCT_PROJECT_NAME } from '../src/conduct.js';
+import { setOnOverageAction, setOverageThreshold } from '../src/appSettings.ts';
+import { AUTO_RESUME_TEXT } from '../src/instances.ts';
+import { getAccountUsage } from '../src/accountUsage.ts';
+import { ensureConductProject, CONDUCT_PROJECT_NAME } from '../src/conduct.ts';
 
 const nowSec = () => Math.floor(Date.now() / 1000);
 // The live `rate_limit_event` delivers the window reset as the camelCase
@@ -86,7 +86,7 @@ before(async () => {
   process.env.ORCH_OVERAGE_RESUME_SWEEP_MS = '40';
   // Short recheck cadence so a still-over / can't-confirm park re-checks fast enough
   // to observe within a test (production default is 60s, independent of the 180s
-  // usage cache — see src/overageResume.js's _recheckMs()).
+  // usage cache — see src/overageResume.ts's _recheckMs()).
   savedRecheck = process.env.ORCH_OVERAGE_RECHECK_MS;
   process.env.ORCH_OVERAGE_RECHECK_MS = '60';
   // No scenario at boot — each test's boot() sets FAKE_CLAUDE_SCENARIO before it
@@ -147,7 +147,7 @@ function collect(inst) {
 
 const sub = (evs, subtype) => evs.filter(e => e.kind === 'system' && e.subtype === subtype);
 
-// Account-usage payload shape (src/accountUsage.js): five_hour carries a 0–100
+// Account-usage payload shape (src/accountUsage.ts): five_hour carries a 0–100
 // PERCENT `utilization` and an ISO `resets_at`. The fire-time resume verify reads it.
 function usagePayload(fiveHourUtilPct, resetsAtSec) {
   return {
@@ -946,7 +946,7 @@ test('stop-resume GLOBAL: lockout held while parked over-threshold, lifts on ver
 });
 
 // (f) Coalescing: many parked sessions coming due in one sweep cycle share ONE
-// underlying usage fetch (accountUsage.js has no in-flight dedup — the controller
+// underlying usage fetch (accountUsage.ts has no in-flight dedup — the controller
 // must not open a fetch per session).
 test('stop-resume: one usage fetch per sweep cycle across all due sessions', async () => {
   // Suppress the fast background sweep for this test so the single manual _tick() is
@@ -983,7 +983,7 @@ test('stop-resume: one usage fetch per sweep cycle across all due sessions', asy
 // POST /api/settings/models/prefs, when it touches onOverage/overageThreshold,
 // force-reevaluates whatever is happening right now instead of waiting for the
 // next ~60s poll tick (lower threshold) or the resume deadline (raised/disabled
-// threshold, which can be hours away). See src/routes.js's prefs handler.
+// threshold, which can be hours away). See src/routes.ts's prefs handler.
 
 test('Apply raising the threshold force-resumes a parked stop-resume session under the new bar', async () => {
   await boot(scenario([utilEvent({ util: 0.9, resetsAt: nowSec() + 3600 }), RESULT]), 'stop-resume');
@@ -1024,7 +1024,7 @@ test('Apply lowering the threshold force-stops a live mid-turn session via the p
   await waitFor(() => inst.status === 'turn');
 
   // Test harness never starts the real ORCH_USAGE_POLL_MS interval (bootServer
-  // calls createServer() directly, not server.js's start()) — forceTick() via the
+  // calls createServer() directly, not server.ts's start()) — forceTick() via the
   // route is the only thing that can trip this before the test times out.
   ctx.instances._usageMonitor.fetchUsage = async () => usagePayload(90, nowSec() + 3600);
 

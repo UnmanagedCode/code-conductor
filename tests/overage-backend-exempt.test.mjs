@@ -5,8 +5,8 @@
 // never armed for auto-resume, and it shows no overage badge. A tree containing ANY
 // claude-backed agent (e.g. a non-Claude conductor whose workers are Claude) stays
 // in the flow. Exercises the backend-scoped usage-window-domain seam
-// (src/usageWindowDomains.js — each backend maps to its own domain, `claude` to the
-// monitored `anthropic`) + the guards in instances.js.
+// (src/usageWindowDomains.ts — each backend maps to its own domain, `claude` to the
+// monitored `anthropic`) + the guards in instances.ts.
 
 import { test, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
@@ -14,8 +14,8 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
-import { setOnOverageAction, addBackend, addCustomModel } from '../src/appSettings.js';
-import { getAccountUsage } from '../src/accountUsage.js';
+import { setOnOverageAction, addBackend, addCustomModel } from '../src/appSettings.ts';
+import { getAccountUsage } from '../src/accountUsage.ts';
 
 const nowSec = () => Math.floor(Date.now() / 1000);
 const INIT = { type: 'system', subtype: 'init', session_id: '$SID', cwd: '$CWD',

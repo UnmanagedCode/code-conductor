@@ -18,8 +18,8 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { bootServer, api, waitFor } from './helpers.mjs';
-import { setOnOverageAction, setOverageThreshold } from '../src/appSettings.js';
-import { AUTO_RESUME_TEXT } from '../src/instances.js';
+import { setOnOverageAction, setOverageThreshold } from '../src/appSettings.ts';
+import { AUTO_RESUME_TEXT } from '../src/instances.ts';
 
 const nowSec = () => Math.floor(Date.now() / 1000);
 
@@ -36,7 +36,7 @@ function overageEvent({ resetsAt } = {}) {
   return { type: 'system', subtype: 'rate_limit_event', uuid: 'rl-1', rate_limit_info: info };
 }
 
-// Account-usage payload shape (src/accountUsage.js): each window carries a 0–100
+// Account-usage payload shape (src/accountUsage.ts): each window carries a 0–100
 // PERCENT `utilization` and a snake_case ISO `resets_at`.
 function usagePayload(fiveHourUtilPct, resetsAtSec) {
   return {

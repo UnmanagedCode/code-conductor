@@ -7,11 +7,11 @@ import { bootServer, api, waitFor } from './helpers.mjs';
 import {
   setTranscribeModel, getTranscribeModel,
   setTtsVoice, getTtsVoice, getTtsEnabled, getTtsRate,
-} from '../src/appSettings.js';
-import * as ttsInstall from '../src/ttsInstall.js';
+} from '../src/appSettings.ts';
+import * as ttsInstall from '../src/ttsInstall.ts';
 
 // A bash stand-in for bin/install-piper.sh: touches the venv python3 + the
-// requested voice's .onnx/.onnx.json under INSTALL_ROOT, exactly where tts.js
+// requested voice's .onnx/.onnx.json under INSTALL_ROOT, exactly where tts.ts
 // expects them. FAKE_INSTALL_SLEEP keeps an install "running" for concurrency.
 const FAKE_INSTALL = `#!/usr/bin/env bash
 echo "==> fake piper install for $PIPER_VOICE_NAME"

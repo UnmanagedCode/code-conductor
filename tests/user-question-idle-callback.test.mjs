@@ -172,8 +172,8 @@ test('replay mode: a MID-TURN answer replayed from disk still locks the card wit
   // only reason isUserQuestionAnswerText's startsWith still matches. Fold the
   // note into the text instead and every mid-turn answer silently unpairs from
   // its card — this test goes through the real replay path to prove it doesn't.
-  const { replayPersistedLine } = await import('../src/transcript.js');
-  const { MID_TURN_NOTE } = await import('../src/instances.js');
+  const { replayPersistedLine } = await import('../src/transcript.ts');
+  const { MID_TURN_NOTE } = await import('../src/instances.ts');
 
   const evs = replayPersistedLine({
     type: 'user',

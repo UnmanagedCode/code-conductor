@@ -11,7 +11,7 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Window } from 'happy-dom';
-import { pageInstanceEvents } from '../src/eventArchive.js';
+import { pageInstanceEvents } from '../src/eventArchive.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUB = path.resolve(__dirname, '..', 'public');

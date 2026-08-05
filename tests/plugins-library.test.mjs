@@ -5,8 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { createPluginLibrary } from '../src/plugins/library.js';
-import { orchStoreRoot } from '../src/projects.js';
+import { createPluginLibrary } from '../src/plugins/library.ts';
+import { orchStoreRoot } from '../src/projects.ts';
 import { makePluginRoot } from './plugin-helpers.mjs';
 
 const run = promisify(execFile);

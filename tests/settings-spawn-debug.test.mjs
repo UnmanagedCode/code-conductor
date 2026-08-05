@@ -4,7 +4,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { bootServer, api } from './helpers.mjs';
-import { getDebugByDefault, setDebugByDefault, getTranscribeModel, setTranscribeModel } from '../src/appSettings.js';
+import { getDebugByDefault, setDebugByDefault, getTranscribeModel, setTranscribeModel } from '../src/appSettings.ts';
 
 async function mkTmp() {
   return fs.mkdtemp(path.join(os.tmpdir(), 'cc-settings-spawn-'));

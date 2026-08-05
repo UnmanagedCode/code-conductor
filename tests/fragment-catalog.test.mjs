@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { createFragmentCatalog } from '../src/fragmentCatalog.js';
+import { createFragmentCatalog } from '../src/fragmentCatalog.ts';
 
 async function mkFixture() {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-fragcat-'));
@@ -111,5 +111,30 @@ test('patchState preserves rules; saveCustom preserves sibling state', async () 
     await catalog.addCustom({ slug: 'qux', name: 'Qux', description: 'd', body: '## Qux' });
     assert.deepEqual((await catalog.readState()).enabled, ['foo', 'baz']);
     assert.equal((await catalog.getCatalog()).length, 4);
+  } finally { await fs.rm(dir, { recursive: true, force: true }); }
+});
+
+// A rule written straight into the store JSON that bypassed addCustom's string
+// validation (hand-edited store, foreign garbage). loadCustom must coerce
+// non-string name/description to '' and non-string body to undefined — not pass
+// the raw values through, where a numeric body would be string-concatenated into
+// composed markdown and a null name would slip past re-validation as "valid".
+test('a malformed rule in the store JSON is coerced, not concatenated into markdown', async () => {
+  const { dir, catalog } = await mkFixture();
+  try {
+    await fs.writeFile(path.join(dir, 'store.json'), JSON.stringify({
+      rules: [{ slug: 'x', name: null, description: null, body: 42 }],
+    }));
+
+    const cat = await catalog.getCatalog();
+    const x = cat.find(c => c.slug === 'x');
+    assert.ok(x, 'the malformed rule still surfaces in the catalog');
+    assert.equal(x.name, '', 'non-string name coerced to empty string');
+    assert.equal(x.description, '', 'non-string description coerced to empty string');
+    assert.equal(x.body, undefined, 'non-string body coerced to undefined — no markdown injected');
+    assert.equal(x.builtin, false);
+
+    // compose resolves the slug but the entry contributes no body — no '42'.
+    assert.equal(await catalog.compose(['x']), '');
   } finally { await fs.rm(dir, { recursive: true, force: true }); }
 });

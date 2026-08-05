@@ -1,5 +1,5 @@
 // Tests for the per-project in-tree CONVENTIONS.md regeneration contract
-// (src/projectClaudeMd.js). The file is app-owned + self-describing: line 1 is a
+// (src/projectClaudeMd.ts). The file is app-owned + self-describing: line 1 is a
 // `<!-- cc:conventions … -->` marker that is the source of truth for the
 // selection, so any cc instance can regenerate the body from the file alone.
 // Regeneration is NO-OP-SAFE — it only overwrites when every marker slug
@@ -12,12 +12,12 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, freshProjectsRoot, rmrf } from './helpers.mjs';
-import { createProject } from '../src/projects.js';
-import { addCustomConvention } from '../src/projectConventions.js';
+import { createProject } from '../src/projects.ts';
+import { addCustomConvention } from '../src/projectConventions.ts';
 import {
   buildMarker, parseMarker, composeProjectConventionsDoc,
   conventionsTargetPath, ensureProjectConventionsMd, regenerateAllProjectConventions,
-} from '../src/projectClaudeMd.js';
+} from '../src/projectClaudeMd.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-instance.json');
