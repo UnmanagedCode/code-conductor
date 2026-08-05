@@ -56,14 +56,17 @@ export function buildTools(): Tool[] {
         '{project, cwd, sessionId, status, displayStatus, activeAgentTasks, mode, effort, thinking, ' +
         'backend, model, contextWindowTokens, pid, worktree, temp, conducted, debug, ' +
         'firstPrompt, title, createdAt, lastResponseAt, queuedCount, autoResumeAt, ' +
-        'overageActive, overageResetsAt, hasIdleSubscriber}. ' +
+        'overageActive, overageResetsAt, hasIdleSubscriber, playbook, stage}. ' +
         'sessionId is the stable handle for every worker-addressing tool. ' +
+        '`playbook`/`stage` say where the worker sits in its playbook graph, or null when it is not ' +
+        'playbook-tracked; playbook_state gives the full run picture. ' +
         '`conducted:true` marks a session spawned via this `spawn_instance` tool. ' +
         '`displayStatus` reads `running` while an idle worker still has background subagents — ' +
         'read it, not `status`, to decide whether work is actually finished. ' +
         '`contextWindowTokens` is the model\'s context capacity in tokens, or null when unknown. ' +
         '`lastResponseAt` separates a long-silent worker from one producing output moments ago. ' +
-        'Every other tool here returning a worker summary returns this same shape minus `hasIdleSubscriber`.',
+        'Every other tool here returning a worker summary returns this same shape minus ' +
+        '`hasIdleSubscriber`, `playbook` and `stage`.',
       inputSchema: { type: 'object', properties: {}, required: [] },
       handler: h.listInstances,
       annotations: { readOnlyHint: true },
@@ -706,6 +709,70 @@ export function buildTools(): Tool[] {
         'is not listed here.',
       inputSchema: { type: 'object', properties: {}, required: [] },
       handler: h.listConductorConventions,
+      annotations: { readOnlyHint: true },
+    },
+    {
+      name: 'list_playbooks',
+      description:
+        'List the available playbooks — the declarative workflow graphs a worker can be bound to. ' +
+        'Returns {playbooks, errors}: each playbook is {id, name, description, entryStages, ' +
+        'spawnableStages}, and `errors` is [{id, message}] for definitions REJECTED at load time — ' +
+        'check it when a playbook you authored does not appear. `entryStages` are the stages a run may ' +
+        'start in; `spawnableStages` are every stage a worker can be created directly in (the rest are ' +
+        'transition-only). Built-ins ship in-repo; author your own as JSON under ' +
+        '<projectsRoot>/.code-conductor/playbooks/. Call describe_playbook for a graph.',
+      inputSchema: { type: 'object', properties: {}, required: [] },
+      handler: h.listPlaybooks,
+      annotations: { readOnlyHint: true },
+    },
+    {
+      name: 'describe_playbook',
+      description:
+        'The full graph of one playbook — read this rather than guessing what a stage permits. ' +
+        'Returns {id, name, description, entryStages, stages, transitions}. Each stage is ' +
+        '{needs, workers, tools, spawnable}: `tools` maps a tool name to "allow" / "deny" / ' +
+        '{require:{arg:value}} (a "*" key is the fallback for unnamed tools); `needs` is ' +
+        '[{stage, at}] naming WORKERS that must exist for this stage to be entered; `workers` is ' +
+        '"one" or "many" per run; `spawnable` is whether a worker can be created directly here. ' +
+        'Each transition is {from, to, via} — `via` is the tool that drives that edge and the ONLY ' +
+        'tool that can. Refuses {ok:false, code:"PLAYBOOK_UNKNOWN", known:[…]} for an unknown id.',
+      inputSchema: {
+        type: 'object',
+        properties: { id: { type: 'string', description: 'Playbook id, as listed by list_playbooks.' } },
+        required: ['id'],
+      },
+      handler: h.describePlaybook,
+      annotations: { readOnlyHint: true },
+    },
+    {
+      name: 'playbook_state',
+      description:
+        'Where a run actually is, and what it may legally do next — the insight + backtrack surface. ' +
+        'Two shapes, chosen by whether you pass sessionId. WITH sessionId: ' +
+        '{tracked, worker, run, nextMoves, history, historyTruncated, enforcement}, where `worker` ' +
+        'carries {stage, stageHistory, needs, live, runRoot}, `run` is {root, members} (the connected ' +
+        'component over `needs` edges), `nextMoves` is every outgoing edge as ' +
+        '{to, via, ok, code?, reason?} — each ANSWERED BY THE SAME CHECK THAT ENFORCES, so a move ' +
+        'reported ok:false comes back with the exact code and reason you would get for attempting it — ' +
+        'and `history` is the run\'s ledger events oldest-first (capped; see historyTruncated). ' +
+        'Each move is evaluated as the BARE call, with no `needs` supplied, so an edge into a stage ' +
+        'that declares `needs` reads ok:false (NEEDS_UNSATISFIED) even when a satisfying worker exists ' +
+        '— that is not "impossible", it is "pass the argument": the `reason` names exactly what to pass. ' +
+        'WITHOUT sessionId: {tracked:false, runs, enforcement} — every run at once. ' +
+        'An untracked worker is a normal {tracked:false} answer, not a refusal. ' +
+        'Note the no-argument form names no worker, so it is never subject to a stage\'s tool policy: ' +
+        'use it if a stage denies the targeted form.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          sessionId: {
+            type: 'string',
+            description: 'Optional. Worker sessionId (a prefix is fine) to report one run. Omit for every run.',
+          },
+        },
+        required: [],
+      },
+      handler: h.playbookState,
       annotations: { readOnlyHint: true },
     },
     {

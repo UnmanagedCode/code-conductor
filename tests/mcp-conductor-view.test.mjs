@@ -22,6 +22,10 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO_INSTANCE = path.join(__dirname, 'fixtures', 'scenario-instance.json');
 const TOOLS_SRC = path.join(__dirname, '..', 'src', 'mcp', 'tools.ts');
 
+// Fields list_instances adds on top of the shared projection, in one place so the
+// three independent `expected` constructions below cannot drift apart.
+const LIST_ONLY_KEYS = ['hasIdleSubscriber', 'playbook', 'stage'];
+
 let ctx, baseUrl, instances, home;
 before(async () => { ctx = await bootServer({ scenarioPath: SCENARIO_INSTANCE }); ({ baseUrl, instances } = ctx); });
 after(async () => { await ctx.close(); });
@@ -62,14 +66,18 @@ export function documentedKeys(toolsSource) {
 test('the documented key list matches what toConductorView emits, one-for-one', async () => {
   const src = await fs.readFile(TOOLS_SRC, 'utf8');
   const documented = documentedKeys(src);
-  // `hasIdleSubscriber` is appended downstream by listInstances, not by the
-  // projection — so list_instances documents exactly the allowlist plus that.
-  const expected = [...CONDUCTOR_VIEW_KEYS, 'hasIdleSubscriber'];
+  // Three fields are appended downstream by listInstances, not by the
+  // projection: `hasIdleSubscriber` (added by list()), and `playbook`/`stage`
+  // (joined from the sessionId-keyed playbook projection). None of them exists on
+  // InstanceSummary, so putting them in the allowlist would publish permanently-
+  // undefined fields on the four other projections — hence list_instances
+  // documents exactly the allowlist plus these three.
+  const expected = [...CONDUCTOR_VIEW_KEYS, ...LIST_ONLY_KEYS];
 
   // Non-vacuity: a regex that matched nothing would compare [] to [] under a
   // sloppier assertion. Pin the count first, then the contents.
   assert.ok(documented.length >= 20, `parsed only ${documented.length} keys — the description shape changed`);
-  assert.equal(documented.length, 26);
+  assert.equal(documented.length, 28);
   assert.equal(CONDUCTOR_VIEW_KEYS.length, 25);
   assert.deepEqual(sorted(documented), sorted(expected));
 });
@@ -83,7 +91,7 @@ test('the doc-drift gate actually fails on a mangled description (vacuity guard)
       inputSchema: {} }`;
   const parsed = documentedKeys(mangled);
   assert.deepEqual(parsed, ['project', 'sessionId']);
-  assert.notDeepEqual(sorted(parsed), sorted([...CONDUCTOR_VIEW_KEYS, 'hasIdleSubscriber']));
+  assert.notDeepEqual(sorted(parsed), sorted([...CONDUCTOR_VIEW_KEYS, ...LIST_ONLY_KEYS]));
   // …and a description with no brace block is a hard error, not an empty pass.
   assert.throws(() => documentedKeys(`{ name: 'list_instances', description: 'no keys here', inputSchema: {} }`));
 });
@@ -101,11 +109,11 @@ test('every conductor-facing projection emits exactly the allowlist', async () =
   // spawn_instance
   assert.deepEqual(sorted(Object.keys(spawned)), sorted(CONDUCTOR_VIEW_KEYS));
 
-  // list_instances — the allowlist plus the downstream hasIdleSubscriber.
+  // list_instances — the allowlist plus its three downstream-only fields.
   const listed = await callTool('list_instances', {});
   const entry = (listed.instances ?? listed).find(i => i.sessionId === sessionId);
   assert.ok(entry, 'spawned worker must appear in list_instances');
-  assert.deepEqual(sorted(Object.keys(entry)), sorted([...CONDUCTOR_VIEW_KEYS, 'hasIdleSubscriber']));
+  assert.deepEqual(sorted(Object.keys(entry)), sorted([...CONDUCTOR_VIEW_KEYS, ...LIST_ONLY_KEYS]));
 
   // wait_for_idle.summary
   const waited = await callTool('wait_for_idle', { sessionId, timeoutMs: 5000 });

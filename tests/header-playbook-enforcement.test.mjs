@@ -1,15 +1,15 @@
-// Tests for the "🔕 Mute" / "🔔 Unmute" ⋮-menu item that replaced the sidebar
-// row mute button (2026-0014 relocation): it must sit directly above
-// Terminate, reflect the session's current mute state via isSessionMuted(),
-// and hide along with the rest of the ⋮ menu when no instance is active.
+// The playbook-enforcement <select> in the controls row.
 //
-// Same approach as tests/header-change-model.test.mjs: load the real
-// index.html into happy-dom so `dom` matches app.js's getElementById wiring,
-// then drive the real installHeader() factory with fake instance state.
-// notifications.js is imported WITHOUT a cache-busting query string (same as
-// header.js's own import), so mutating NotificationState here is visible to
-// header.js's isSessionMuted() calls — and is reset in a finally block so it
-// can't leak into other tests in this file.
+// It governs the CONDUCTOR's own tool calls, so it is meaningless on any other
+// session — a visible control that does nothing is worse than an absent one.
+// Modelled on #mode-select rather than the autoApprovePlan toggle: three states,
+// rendered from state (never optimistic), with the `status` frame authoritative.
+//
+// Same harness as tests/header-mute.test.mjs — the real index.html into
+// happy-dom so `dom` matches app.js's wiring, then the real installHeader()
+// driven with fake instance state. This file covers the RENDER side only; the
+// `change` listener that forwards to send() lives in app.js and is not reached by
+// any test in this repo (it is pure delegation, deliberately — see app.js).
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -65,7 +65,6 @@ async function setup() {
 
   const { installHeader } = await import(pathToFileURL(path.join(PUB, 'header.js')).href + `?t=${Math.random()}`);
   const { UsageTracker, RateLimitTracker } = await import(pathToFileURL(path.join(PUB, 'usage.js')).href);
-  const notifications = await import(pathToFileURL(path.join(PUB, 'notifications.js')).href);
 
   let instances = [];
   let activeId = null;
@@ -92,72 +91,69 @@ async function setup() {
   });
 
   return {
-    window, document, dom, header, composer, notifications,
-    setInstances: (v) => { instances = v; },
-    setActiveId: (v) => { activeId = v; },
+    dom, header,
+    show(inst) { instances = [inst]; activeId = inst.id; header.update(); },
   };
 }
 
-const LIVE_INSTANCE = {
+const WORKER = {
   id: 'inst-1', sessionId: 'sess-1', status: 'idle', mode: 'plan',
   model: 'claude-sonnet-4-6', project: 'demo', title: null, worktree: null,
   autoApprovePlan: false, interrupting: false, debug: false,
 };
+// The reserved conductor project — must track CONDUCT_PROJECT_NAME (src/conduct.ts).
+const CONDUCTOR = { ...WORKER, id: 'inst-2', sessionId: 'sess-2', project: '.conduct', playbookEnforcement: 'off' };
 
-test('Mute item sits directly above Terminate in DOM order', async () => {
-  const { dom } = await setup();
-  const items = [...dom.overflowMenu.querySelectorAll('[role="menuitem"]')];
-  const muteIdx = items.indexOf(dom.muteBtn);
-  const killIdx = items.indexOf(dom.killBtn);
-  assert.ok(muteIdx >= 0 && killIdx >= 0, 'both items must be present in the menu');
-  assert.equal(killIdx, muteIdx + 1, 'Terminate/Interrupt must immediately follow Mute');
+test('the control is hidden for an ordinary session and shown for a conductor', async () => {
+  const t = await setup();
+
+  t.show(WORKER);
+  assert.equal(t.dom.playbookEnforcementSelect.hidden, true,
+    'enforcement is meaningless off a conductor, so the control must not appear');
+  assert.equal(t.dom.playbookEnforcementSelect.disabled, true);
+
+  t.show(CONDUCTOR);
+  assert.equal(t.dom.playbookEnforcementSelect.hidden, false);
+  assert.equal(t.dom.playbookEnforcementSelect.disabled, false);
 });
 
-test('a live session shows the ⋮ menu with Mute enabled, unmuted by default', async () => {
-  const { dom, header, notifications, setInstances, setActiveId } = await setup();
-  try {
-    setInstances([LIVE_INSTANCE]);
-    setActiveId('inst-1');
-    header.update();
-    assert.equal(dom.overflowMenu.hidden, false);
-    assert.equal(dom.muteBtn.hidden, false);
-    assert.equal(dom.muteBtn.disabled, false);
-    assert.equal(dom.muteBtn.textContent, '🔕 Mute');
-    assert.equal(dom.muteBtn.getAttribute('aria-pressed'), 'false');
-  } finally {
-    notifications.NotificationState.mutedSessions.clear();
+test('the control renders the conductor\'s current level, and re-renders when it changes', async () => {
+  const t = await setup();
+
+  t.show({ ...CONDUCTOR, playbookEnforcement: 'enforce' });
+  assert.equal(t.dom.playbookEnforcementSelect.value, 'enforce',
+    'the current level must be readable without interaction — that is the whole point of the control');
+
+  // A `status` frame changes the mirrored value; update() must follow it rather
+  // than keep whatever the user last picked (the control is not optimistic).
+  t.show({ ...CONDUCTOR, playbookEnforcement: 'warn' });
+  assert.equal(t.dom.playbookEnforcementSelect.value, 'warn');
+
+  // A conductor from before this field existed has no value; default to the safe
+  // level rather than rendering blank.
+  const legacy = { ...CONDUCTOR };
+  delete legacy.playbookEnforcement;
+  t.show(legacy);
+  assert.equal(t.dom.playbookEnforcementSelect.value, 'off');
+});
+
+test('the control offers exactly the three enforcement levels', async () => {
+  const t = await setup();
+  const values = [...t.dom.playbookEnforcementSelect.querySelectorAll('option')].map(o => o.value);
+  assert.deepEqual(values, ['off', 'warn', 'enforce'],
+    'the options are the server-side allow-list (PLAYBOOK_ENFORCEMENT_MODES); a fourth would be refused');
+});
+
+test('the control is a sibling of #mode-select in the controls row', async () => {
+  const t = await setup();
+  assert.equal(t.dom.playbookEnforcementSelect.parentElement?.id, 'instance-controls',
+    'it belongs beside #mode-select, not in the ⋮ overflow panel where its current value would be hidden');
+});
+
+test('a dead conductor cannot have its enforcement changed', async () => {
+  const t = await setup();
+  for (const status of ['exited', 'crashed']) {
+    t.show({ ...CONDUCTOR, status, playbookEnforcement: 'enforce' });
+    assert.equal(t.dom.playbookEnforcementSelect.hidden, true, `hidden for a ${status} conductor`);
   }
-});
-
-test('Mute item reflects isSessionMuted() and flips label/aria-pressed on mute/unmute', async () => {
-  const { dom, header, notifications, setInstances, setActiveId } = await setup();
-  try {
-    setInstances([LIVE_INSTANCE]);
-    setActiveId('inst-1');
-    header.update();
-
-    notifications.muteSession('sess-1', true);
-    header.update();
-    assert.equal(dom.muteBtn.textContent, '🔔 Unmute');
-    assert.equal(dom.muteBtn.getAttribute('aria-pressed'), 'true');
-
-    notifications.muteSession('sess-1', false);
-    header.update();
-    assert.equal(dom.muteBtn.textContent, '🔕 Mute');
-    assert.equal(dom.muteBtn.getAttribute('aria-pressed'), 'false');
-  } finally {
-    notifications.NotificationState.mutedSessions.clear();
-  }
-});
-
-test('when the active id has no backing instance, the ⋮ menu (and Mute) is hidden', async () => {
-  const { dom, header, setInstances, setActiveId } = await setup();
-  setInstances([LIVE_INSTANCE]);
-  setActiveId('inst-1');
-  header.update();
-  assert.equal(dom.muteBtn.hidden, false, 'sanity: visible while live');
-
-  setInstances([]);
-  header.update();
-  assert.equal(dom.overflowMenu.hidden, true);
 });

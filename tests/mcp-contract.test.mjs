@@ -373,6 +373,11 @@ test('tools/list emits readOnly / destructive / idempotent annotations', async (
   assert.equal(byName.project_read.readOnlyHint, true);
   assert.equal(byName.list_projects.readOnlyHint, true);
   assert.equal(byName.project_diff.readOnlyHint, true);
+  // The playbook introspection surface is read-only in the strong sense: it never
+  // even materialises the ledger it reads.
+  assert.equal(byName.list_playbooks.readOnlyHint, true);
+  assert.equal(byName.describe_playbook.readOnlyHint, true);
+  assert.equal(byName.playbook_state.readOnlyHint, true);
   assert.equal(byName.kill_instance.destructiveHint, true);
   assert.equal(byName.delete_worktree.destructiveHint, true);
   assert.equal(byName.merge_worktree.destructiveHint, true);

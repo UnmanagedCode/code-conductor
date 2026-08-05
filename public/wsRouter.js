@@ -90,12 +90,13 @@ export function installWsRouter({
       }
     }
     if (isActive) conversation._replayMode = false;
-    // Mirror the server's auto-approve-plan flag into our local instance
-    // entry so the header toggle reflects it correctly the moment a tab
-    // subscribes (or re-subscribes after a session switch).
+    // Mirror the server's auto-approve-plan flag and playbook-enforcement level
+    // into our local instance entry so the header controls reflect them the
+    // moment a tab subscribes (or re-subscribes after a session switch).
     const inst = state.instances.find(i => i.id === m.id);
     if (inst) {
       inst.autoApprovePlan = !!m.autoApprovePlan;
+      if (typeof m.playbookEnforcement === 'string') inst.playbookEnforcement = m.playbookEnforcement;
       inst.interrupting = !!m.interrupting;
     }
     if (!isActive) return;
@@ -210,6 +211,7 @@ export function installWsRouter({
       inst.model = m.model;
       inst.sessionId = m.sessionId;
       if (typeof m.autoApprovePlan === 'boolean') inst.autoApprovePlan = m.autoApprovePlan;
+      if (typeof m.playbookEnforcement === 'string') inst.playbookEnforcement = m.playbookEnforcement;
       inst.interrupting = !!m.interrupting;
       sidebar.setInstances(state.instances);
       subagentPanel.setInstances(state.instances, state.activeId);

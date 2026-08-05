@@ -46,6 +46,11 @@ import { send } from './ws.js';
 import { resolveSpawnModel, getTierList, getActiveTierEnabled, getActiveTierBackend, getTierLabel, backendIdOf, getBackendLabel, CLAUDE_BACKEND } from './models.js';
 import { isSessionMuted } from './notifications.js';
 
+// The reserved project every conductor session lives in — mirrors
+// CONDUCT_PROJECT_NAME (src/conduct.ts), which is the source of truth. Named
+// here rather than inlined so the one gate that depends on it is greppable.
+const CONDUCT_PROJECT = '.conduct';
+
 // Combined popover: "Session totals" section above, "Usage limits" section
 // below. ctx data is per-session; usage-limit data is account-wide.
 const OAUTH_BUCKET_LABELS = {
@@ -562,6 +567,14 @@ export function installHeader({
     const showAutoApprove = canMenu && inst.mode === 'plan';
     dom.autoApprovePlanBtn.hidden = !showAutoApprove;
     dom.autoApprovePlanBtn.disabled = !showAutoApprove;
+    // Playbook enforcement governs the CONDUCTOR's own tool calls, so it is
+    // meaningless on any other session — and a visible control that does nothing
+    // is worse than an absent one. Rendered from state (never optimistic), like
+    // #mode-select beside it: the `status` frame is authoritative.
+    const showEnforcement = canMenu && inst.project === CONDUCT_PROJECT;
+    dom.playbookEnforcementSelect.hidden = !showEnforcement;
+    dom.playbookEnforcementSelect.disabled = !showEnforcement;
+    if (showEnforcement) dom.playbookEnforcementSelect.value = inst.playbookEnforcement ?? 'off';
     dom.overflowMenu.hidden = !canMenu;
     if (inst.debug) {
       dom.debugBtn.textContent = '🐛 capturing';

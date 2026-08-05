@@ -36,7 +36,10 @@ import {
   decide, loadToolIndex, loadPlaybooks, normalizeToolName,
   type Move, type Playbook, type RefusalCode, type LegalMoves,
 } from '../playbooks.ts';
-import { createPlaybookLedger, ledgerFile, type PlaybookLedger } from '../playbookLedger.ts';
+import {
+  createPlaybookLedger, ledgerFile, readEvents,
+  type PlaybookLedger, type Projection, type LedgerEvent,
+} from '../playbookLedger.ts';
 import { isConductorInstance } from '../conduct.ts';
 import type { InstanceManagerLike, InstanceSummary } from '../instanceTypes.ts';
 
@@ -60,6 +63,17 @@ export type GateOutcome =
 
 export interface PlaybookGate {
   check(input: { toolName: unknown; args: unknown; callerId: string | null }): Promise<GateOutcome>;
+  // READ SURFACE for the introspection tools (src/mcp/handlers.ts). Named methods
+  // rather than handing out the ledger, so a read tool never reaches through the
+  // test seam below, and so there is exactly one projection in the process — a
+  // second one folded independently would drift from the one that enforces.
+  //
+  // Both fold on demand through the same memoised load the enforcement path uses,
+  // and that load is READ-ONLY: a missing ledger folds to an empty projection and
+  // creates nothing. That is what lets a read tool answer under `off` without
+  // materialising the file.
+  readProjection(): Promise<Projection>;
+  readHistory(): Promise<LedgerEvent[]>;
   // Test seam: the ledger this gate appends to.
   ledger(): PlaybookLedger;
 }
@@ -301,7 +315,20 @@ export function createPlaybookGate(
     // unexpected crashes identically.
   }
 
-  return { check, ledger: () => ledger };
+  async function readProjection(): Promise<Projection> {
+    await ensureLoaded();
+    return ledger.projection();
+  }
+
+  // Raw events, for the backtrack surface. Re-read per call rather than kept
+  // alongside the projection: history is asked for by a human-paced read tool,
+  // and holding every event in memory forever to serve it would be a leak.
+  async function readHistory(): Promise<LedgerEvent[]> {
+    await ensureLoaded();
+    return readEvents(ledger.file());
+  }
+
+  return { check, readProjection, readHistory, ledger: () => ledger };
 }
 
 // The caller's `needs` map, narrowed to the {stage: sessionId} string pairs the

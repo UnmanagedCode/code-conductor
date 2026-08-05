@@ -4,14 +4,14 @@
 // the cases for the authoritative set.
 //
 // Server → client:
-//   { t: "snapshot",       id, status, mode, sessionId, project, autoApprovePlan,
+//   { t: "snapshot",       id, status, mode, sessionId, project, autoApprovePlan, playbookEnforcement,
 //                          events: [...],            // ring TAIL only (≤ ORCH_SNAPSHOT_TAIL; default DEFAULT_SNAPSHOT_TAIL)
 //                          tailStartSeq, trimmedBefore, // >0 ⇒ older history exists; page it via
 //                                                        // GET /api/instances/:id/events?before=<seq>
 //                          droppedText? }            // present once on a fork's first snapshot ⇒ composer prefill
 //   { t: "reset_snapshot", id, status, mode, sessionId, project, events: [...], droppedText? } // droppedText ⇒ rewind prefill
 //   { t: "event",          id, ev }
-//   { t: "status",         id, status, sessionId, mode, autoApprovePlan }
+//   { t: "status",         id, status, sessionId, mode, autoApprovePlan, playbookEnforcement }
 //   { t: "closed",         id, code, signal }
 //   { t: "projects" }              // hint to re-fetch /api/projects
 //   { t: "instances" }             // hint to re-fetch /api/instances
@@ -82,6 +82,7 @@ export function attachWsHub({ wss, instances }: WsHubOptions): void {
       sessionId: summary.sessionId,
       mode: summary.mode,
       autoApprovePlan: !!summary.autoApprovePlan,
+      playbookEnforcement: summary.playbookEnforcement,
       interrupting: !!summary.interrupting,
     });
     if (subs) for (const ws of subs) safeSend(ws, payload);
@@ -174,6 +175,7 @@ export function attachWsHub({ wss, instances }: WsHubOptions): void {
               mode: inst.mode,
               sessionId: inst.sessionId,
               autoApprovePlan: !!inst.autoApprovePlan,
+              playbookEnforcement: inst.playbookEnforcement,
               interrupting: !!inst.interrupting,
               events,
               tailStartSeq,

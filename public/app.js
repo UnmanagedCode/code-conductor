@@ -159,6 +159,7 @@ const dom = {
   pruneSessionBtn: document.getElementById('prune-session-btn'),
   pruneDialog: document.getElementById('prune-dialog'),
   autoApprovePlanBtn: document.getElementById('auto-approve-plan-btn'),
+  playbookEnforcementSelect: document.getElementById('playbook-enforcement-select'),
   overflowMenu: document.getElementById('overflow-menu'),
   overflowToggle: document.getElementById('overflow-toggle'),
   overflowPanel: document.getElementById('overflow-panel'),
@@ -634,6 +635,18 @@ dom.modeSelect.addEventListener('change', async () => {
   const mode = dom.modeSelect.value;
   try { await send('mode', { id: state.activeId, mode }, { ack: true }); }
   catch (e) { alert(`mode change failed: ${e.message}`); }
+});
+
+// Pure delegation, deliberately: no validation, no state decision, no rendering.
+// The allowed values are the <option>s (checked again server-side by
+// isPlaybookEnforcement), visibility/disabled/value are header.js's, and the
+// authoritative value comes back on the `status` frame. This is the one line of
+// the feature no test reaches, so it holds no logic to get wrong.
+dom.playbookEnforcementSelect.addEventListener('change', async () => {
+  if (!state.activeId) return;
+  const mode = dom.playbookEnforcementSelect.value;
+  try { await send('playbook_enforcement', { id: state.activeId, mode }, { ack: true }); }
+  catch (e) { alert(`playbook enforcement change failed: ${e.message}`); }
 });
 
 dom.killBtn.addEventListener('click', () => {
