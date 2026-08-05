@@ -122,10 +122,17 @@ test('GET /commits/:sha/diff returns only that commit\'s change', async () => {
   assert.equal(r.body.files[0].path, 'feature.js');
   assert.equal(r.body.files[0].status, 'added');
   assert.ok(r.body.files[0].adds > 0, 'should have additions');
+  assert.equal(r.body.files[0].hunks, undefined, 'summary rows have no hunks');
   assert.ok(r.body.totalAdds > 0, 'totalAdds should be > 0');
   assert.equal(r.body.totalDels, 0);
-  assert.equal(r.body.truncated, false);
+  assert.equal(r.body.totalFiles, 1);
+  assert.equal(r.body.truncated, undefined, 'summary is never truncated — field removed');
   assert.equal(r.body.commitMessage, 'add feature', 'commitMessage should be the trimmed commit message');
+
+  const fr = await api(baseUrl, 'GET', `/api/projects/demo/commits/${sha}/diff?path=feature.js`);
+  assert.equal(fr.status, 200, `expected 200, got ${fr.status}: ${JSON.stringify(fr.body)}`);
+  assert.equal(fr.body.path, 'feature.js');
+  assert.ok(fr.body.file.hunks.length > 0, 'at least one hunk');
 });
 
 test('GET /commits/:sha/diff works for the root commit', async () => {
@@ -165,18 +172,51 @@ test('GET /commits/:sha/diff for a merge commit returns the first-parent aggrega
   assert.equal(file.status, 'added');
   assert.ok(r.body.totalAdds > 0, 'totalAdds should be > 0');
   assert.equal(r.body.commitMessage, 'merge feature');
+
+  const fr = await api(baseUrl, 'GET', `/api/projects/demo/commits/${merge.sha}/diff?path=feature.js`);
+  assert.equal(fr.status, 200, `expected 200, got ${fr.status}: ${JSON.stringify(fr.body)}`);
+  assert.ok(fr.body.file.hunks.length > 0, 'at least one hunk');
 });
 
-test('GET /commits/:sha/diff rejects a non-hex sha with 400', async () => {
+test('GET /commits/:sha/diff for a --no-ff merge touching many files lists every file', async () => {
+  const repoPath = await makeRealRepo('demo');
+  await git(repoPath, 'checkout', '-q', '-b', 'feature');
+  const N = 30;
+  for (let i = 0; i < N; i++) {
+    await fs.writeFile(path.join(repoPath, `f${i}.js`), `export const v${i} = ${i};\n`);
+  }
+  await git(repoPath, 'add', '.');
+  await git(repoPath, 'commit', '-q', '-m', 'feature: many files');
+  await git(repoPath, 'checkout', '-q', 'main');
+  await git(repoPath, 'merge', '--no-ff', '-q', '-m', 'merge feature', 'feature');
+
+  const list = await api(baseUrl, 'GET', '/api/projects/demo/commits');
+  const merge = list.body.commits[0];
+
+  const r = await api(baseUrl, 'GET', `/api/projects/demo/commits/${merge.sha}/diff`);
+  assert.equal(r.status, 200, `expected 200, got ${r.status}: ${JSON.stringify(r.body)}`);
+  assert.equal(r.body.files.length, N, `every file in the merge should be listed`);
+
+  const one = r.body.files[0].path;
+  const fr = await api(baseUrl, 'GET', `/api/projects/demo/commits/${merge.sha}/diff?path=${encodeURIComponent(one)}`);
+  assert.equal(fr.status, 200);
+  assert.ok(fr.body.file.hunks.length > 0);
+});
+
+test('GET /commits/:sha/diff rejects a non-hex sha with 400 (summary and ?path=)', async () => {
   await makeRealRepo('demo');
   const r = await api(baseUrl, 'GET', '/api/projects/demo/commits/zzz/diff');
   assert.equal(r.status, 400, `expected 400, got ${r.status}`);
+  const rp = await api(baseUrl, 'GET', '/api/projects/demo/commits/zzz/diff?path=a.js');
+  assert.equal(rp.status, 400, `expected 400, got ${rp.status}`);
 });
 
-test('GET /commits/:sha/diff returns 404 for an unknown commit', async () => {
+test('GET /commits/:sha/diff returns 404 for an unknown commit (summary and ?path=)', async () => {
   await makeRealRepo('demo');
   const r = await api(baseUrl, 'GET', '/api/projects/demo/commits/deadbeef/diff');
   assert.equal(r.status, 404, `expected 404, got ${r.status}`);
+  const rp = await api(baseUrl, 'GET', '/api/projects/demo/commits/deadbeef/diff?path=a.js');
+  assert.equal(rp.status, 404, `expected 404, got ${rp.status}`);
 });
 
 test('GET /commits returns empty history for a non-git project', async () => {
@@ -221,7 +261,13 @@ test('GET /commits/uncommitted/diff returns structured diff for dirty tree', asy
   assert.ok(r.body.files.length > 0, 'should have at least one changed file');
   const readme = r.body.files.find(f => f.path === 'README.md');
   assert.ok(readme, 'README.md should appear in the diff');
+  assert.equal(readme.hunks, undefined, 'summary rows have no hunks');
   assert.ok(r.body.totalAdds > 0 || r.body.totalDels > 0, 'should have changes');
+  assert.equal(r.body.totalFiles, r.body.files.length);
+
+  const fr = await api(baseUrl, 'GET', '/api/projects/demo/commits/uncommitted/diff?path=README.md');
+  assert.equal(fr.status, 200, `expected 200, got ${fr.status}: ${JSON.stringify(fr.body)}`);
+  assert.ok(fr.body.file.hunks.length > 0, 'at least one hunk');
 });
 
 test('GET /commits/uncommitted/diff returns empty files on a clean tree', async () => {
@@ -231,6 +277,7 @@ test('GET /commits/uncommitted/diff returns empty files on a clean tree', async 
   assert.deepEqual(r.body.files, []);
   assert.equal(r.body.totalAdds, 0);
   assert.equal(r.body.totalDels, 0);
+  assert.equal(r.body.totalFiles, 0);
 });
 
 // ── Ahead-of-base detection ────────────────────────────────────────────────
