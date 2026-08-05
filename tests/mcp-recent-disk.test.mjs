@@ -296,10 +296,16 @@ test('get_transcript: fromSeq cursor convention — 0 is inclusive of _seq 0, 1 
     const fromOne = unwrap(await callTool(ctx.baseUrl, 'get_transcript', { sessionId: sid, fromSeq: 1, limit: 50 }));
     assert.equal(fromOne.events[0]._seq, 1, 'fromSeq:1 serves starting at _seq 1');
 
-    // fromSeq omitted still returns the newest page.
-    const omitted = unwrap(await callTool(ctx.baseUrl, 'get_transcript', { sessionId: sid }));
+    // fromSeq omitted still returns the newest page — limit BELOW the
+    // fixture's total event count so the trailing page (last 5) and a
+    // forward-from-0 page (first 5) actually diverge; without the small
+    // limit both would end at lastSeq and this assertion couldn't tell
+    // "newest page" from "everything, coincidentally ending at the tail".
+    const omitted = unwrap(await callTool(ctx.baseUrl, 'get_transcript', { sessionId: sid, limit: 5 }));
+    assert.ok(omitted.events.length > 0 && omitted.events.length < omitted.lastSeq + 1,
+      `precondition: a small slice, not the fixture's whole history (got ${omitted.events.length} of ${omitted.lastSeq + 1} total)`);
     assert.equal(omitted.events[omitted.events.length - 1]._seq, omitted.lastSeq,
-      'omitted fromSeq serves the trailing/newest page');
+      'omitted fromSeq serves the trailing/newest page, not a forward page from the beginning');
 
     // nextFrom must be lastServedSeq + 1, NOT the last served seq itself —
     // under INCLUSIVE semantics, re-polling with the last served seq would
