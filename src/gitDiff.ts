@@ -315,6 +315,7 @@ async function worktreeTarget(
     cwd: meta.worktreePath,
     argv: (o, p) => [
       ...(p.length ? ['--literal-pathspecs'] : []),
+      '-c', 'core.quotePath=false',
       'diff', ...o, `${ref}...HEAD`,
       ...(p.length ? ['--', ...p] : []),
     ],
@@ -368,6 +369,7 @@ function commitTarget(proj: { path: string }, sha: string, isMerge: boolean): Di
     cwd: proj.path,
     argv: (o, p) => [
       ...(p.length ? ['--literal-pathspecs'] : []),
+      '-c', 'core.quotePath=false',
       'show', ...(isMerge ? ['--first-parent'] : []), '--format=', ...o, sha,
       ...(p.length ? ['--', ...p] : []),
     ],
@@ -418,6 +420,7 @@ function uncommittedTarget(proj: { path: string }): DiffTarget {
     cwd: proj.path,
     argv: (o, p) => [
       ...(p.length ? ['--literal-pathspecs'] : []),
+      '-c', 'core.quotePath=false',
       'diff', ...o, 'HEAD',
       ...(p.length ? ['--', ...p] : []),
     ],
@@ -443,12 +446,19 @@ export async function getProjectUncommittedDiff(
 }
 
 // Return the full hunks for one file in the uncommitted working-tree diff.
+// If HEAD doesn't exist (fresh repo with no commits), there is no diff at
+// all, so any path is "not part of this diff" — same 404 as an unknown path,
+// matching getProjectUncommittedDiff's empty-list-not-throw contract.
 export async function getProjectUncommittedFileDiff(
   projectName: string,
   filePath: string,
   { contextLines = 3 }: { contextLines?: number } = {},
 ): Promise<{ project: string; path: string; file: DiffFileDetail }> {
   const proj = await getProject(projectName);
+  const probe = await runGit(proj.path, ['rev-parse', '--verify', 'HEAD']);
+  if (probe.code !== 0) {
+    throw httpError(404, `path '${filePath}' is not part of this diff`);
+  }
   const target = uncommittedTarget(proj);
   const ctx = clampContext(contextLines);
   const file = await fileDiffForTarget(target, filePath, null, ctx);

@@ -184,6 +184,36 @@ test('GET /diff reports a renamed file with oldPath, and ?path= on the new name 
   assert.ok(fr.body.file.hunks.length > 0, 'renamed file should have hunks');
 });
 
+test('GET /diff handles a non-ASCII filename: summary shows the real name, and ?path= on it succeeds', async () => {
+  await makeRealRepo(projectsRoot, 'demo');
+  const created = await api(baseUrl, 'POST', '/api/instances', {
+    project: 'demo', mode: 'bypassPermissions', worktree: true,
+  });
+  const wtName = created.body.worktree.worktreeName;
+  const wtPath = path.join(projectsRoot, wtName);
+
+  await git(wtPath, 'config', 'user.email', 'agent@example.com');
+  await git(wtPath, 'config', 'user.name', 'agent');
+  await git(wtPath, 'config', 'commit.gpgsign', 'false');
+  // With git's default core.quotePath=true this path would come back from
+  // --numstat/--name-status C-quoted (e.g. "caf\303\251.txt") unless the diff
+  // invocations disable it.
+  await fs.writeFile(path.join(wtPath, 'café.txt'), 'export const x = 1;\n');
+  await git(wtPath, 'add', '.');
+  await git(wtPath, 'commit', '-q', '-m', 'add café.txt');
+
+  const r = await api(baseUrl, 'GET',
+    `/api/projects/demo/worktrees/${encodeURIComponent(wtName)}/diff`);
+  assert.equal(r.status, 200, `expected 200, got ${r.status}: ${JSON.stringify(r.body)}`);
+  const row = r.body.files.find(f => f.path === 'café.txt');
+  assert.ok(row, `café.txt should appear un-escaped in the summary; got paths: ${JSON.stringify(r.body.files.map(f => f.path))}`);
+
+  const fr = await api(baseUrl, 'GET',
+    `/api/projects/demo/worktrees/${encodeURIComponent(wtName)}/diff?path=${encodeURIComponent('café.txt')}`);
+  assert.equal(fr.status, 200, `expected 200, got ${fr.status}: ${JSON.stringify(fr.body)}`);
+  assert.ok(fr.body.file.hunks.length > 0, 'at least one hunk');
+});
+
 test('GET /diff reports a binary file, and ?path= returns binary with no hunks', async () => {
   await makeRealRepo(projectsRoot, 'demo');
   const created = await api(baseUrl, 'POST', '/api/instances', {
@@ -212,6 +242,7 @@ test('GET /diff reports a binary file, and ?path= returns binary with no hunks',
   assert.equal(fr.status, 200);
   assert.equal(fr.body.file.binary, true);
   assert.deepEqual(fr.body.file.hunks, []);
+  assert.equal(fr.body.file.bytes, 0, 'binary short-circuit never reads the unified diff');
 });
 
 test('GET /diff?path= flags an oversized file without reading its full diff', async () => {

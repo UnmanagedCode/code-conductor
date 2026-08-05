@@ -280,6 +280,16 @@ test('GET /commits/uncommitted/diff returns empty files on a clean tree', async 
   assert.equal(r.body.totalFiles, 0);
 });
 
+test('GET /commits/uncommitted/diff?path= returns 404 on a repo with no HEAD (no commits yet)', async () => {
+  const repoPath = path.join(projectsRoot, 'fresh');
+  await fs.mkdir(repoPath, { recursive: true });
+  await git(repoPath, 'init', '-q', '-b', 'main');
+  await fs.writeFile(path.join(repoPath, 'a.txt'), 'hello\n');
+
+  const r = await api(baseUrl, 'GET', '/api/projects/fresh/commits/uncommitted/diff?path=a.txt');
+  assert.equal(r.status, 404, `expected 404, got ${r.status}: ${JSON.stringify(r.body)}`);
+});
+
 // ── Ahead-of-base detection ────────────────────────────────────────────────
 
 test('GET /commits returns aheadCount:null when there is no upstream', async () => {
