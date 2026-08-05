@@ -9,7 +9,7 @@
 set -euo pipefail
 
 # Default install root = the orchestrator store at <projectsRoot>/.code-conductor,
-# mirroring src/projects.js: PROJECTS_ROOT override, else the parent dir of this
+# mirroring src/projects.ts: PROJECTS_ROOT override, else the parent dir of this
 # repo (this script lives at <repo>/bin/). When launched from the web UI the
 # server pins INSTALL_ROOT explicitly; this fallback only applies to manual runs.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

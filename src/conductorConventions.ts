@@ -53,7 +53,7 @@ export const SEED_CONVENTIONS: Array<{ slug: string; name: string; description: 
 
 // Plugin-contributed conductor-convention fragments join the catalog through
 // this provider, mirroring projectConventions.ts's identical pattern. Injected
-// after construction (server.js wires it to the plugin host); default no-op
+// after construction (server.ts wires it to the plugin host); default no-op
 // so plugin-less imports/tests work.
 let pluginConductorConventionsProvider: () => Promise<ExtraEntry[]> = async () => [];
 export function setPluginConductorConventionsProvider(fn: (() => Promise<ExtraEntry[]>) | null | undefined): void {

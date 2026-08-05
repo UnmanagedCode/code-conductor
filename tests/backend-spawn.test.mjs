@@ -276,7 +276,7 @@ describe('role → {backend,model} resolution (MCP spawn)', () => {
     assert.match(body.result.content[0].text, /unknown model/);
   });
 
-  // Plugin-owned roles are injected via the same provider server.js wires to
+  // Plugin-owned roles are injected via the same provider server.ts wires to
   // pluginHost.roles(); overriding it here exercises the resolution path an
   // enabled plugin would drive, without standing up a real plugin.
   test('a plugin-owned role resolves to its manifest claude binding', async () => {

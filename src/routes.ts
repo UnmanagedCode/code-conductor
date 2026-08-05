@@ -224,7 +224,7 @@ function mountInstallableCatalog(r: express.Router, cfg: InstallableCatalogCfg):
   return { state };
 }
 
-// The shared mutable handle server.js populates with the http server + wss once
+// The shared mutable handle server.ts populates with the http server + wss once
 // they exist (routes read them at request time, after build).
 interface ServerCtx {
   server?: Server | null;

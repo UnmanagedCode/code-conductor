@@ -1,7 +1,7 @@
 // Live self-respawn test for POST /api/admin/restart.
 //
 // The in-process bootServer helper can't observe its own exit, so this
-// test spawns the actual server.js in a child node process, hits the
+// test spawns the actual server.ts in a child node process, hits the
 // restart endpoint, and asserts that:
 //   (a) the original process exits cleanly,
 //   (b) a new process (different PID) ends up listening on the same port,
@@ -19,7 +19,7 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const SERVER_JS = path.resolve(__dirname, '..', 'server.js');
+const SERVER_TS = path.resolve(__dirname, '..', 'server.ts');
 
 function getFreePort() {
   return new Promise((resolve, reject) => {
@@ -34,8 +34,8 @@ function getFreePort() {
 }
 
 function spawnServer(port, tmpHome) {
-  const child = spawn(process.execPath, [SERVER_JS], {
-    cwd: path.dirname(SERVER_JS),
+  const child = spawn(process.execPath, [SERVER_TS], {
+    cwd: path.dirname(SERVER_TS),
     env: {
       ...process.env,
       PORT: String(port),
@@ -49,7 +49,7 @@ function spawnServer(port, tmpHome) {
   return child;
 }
 
-// Generous default deadline: this test boots the REAL server.js (port bind +
+// Generous default deadline: this test boots the REAL server.ts (port bind +
 // migrations + sync reconcile + restart respawn). Under the concurrent suite
 // these boots are CPU-starved on Termux, so the poll must allow ample headroom.
 // It returns the instant /api/projects responds, so a wide deadline is free on

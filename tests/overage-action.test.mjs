@@ -1024,7 +1024,7 @@ test('Apply lowering the threshold force-stops a live mid-turn session via the p
   await waitFor(() => inst.status === 'turn');
 
   // Test harness never starts the real ORCH_USAGE_POLL_MS interval (bootServer
-  // calls createServer() directly, not server.js's start()) — forceTick() via the
+  // calls createServer() directly, not server.ts's start()) — forceTick() via the
   // route is the only thing that can trip this before the test times out.
   ctx.instances._usageMonitor.fetchUsage = async () => usagePayload(90, nowSec() + 3600);
 

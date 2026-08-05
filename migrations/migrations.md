@@ -3,11 +3,11 @@
 This directory holds idempotent migration scripts that mutate on-disk state to
 keep the workspace aligned with the current codebase. They run **automatically
 on server startup** via `migrations/index.mjs`, which is invoked by
-`server.js` before the HTTP listener binds.
+`server.ts` before the HTTP listener binds.
 
 ## How auto-run works
 
-`server.js` calls `runMigrations({ root: projectsRoot() })` once at boot. Migrations run in order (oldest first); each self-checks "already applied?" and returns `{ applied: false }` as a fast no-op (steady state) or `{ applied: true, summary }` (logged one-line, e.g. `migration 0001-centralize-orchestrator-state: applied — {…}`). A migration that **throws aborts the boot** — fix and restart. You never run them by hand; a new release's migration applies itself on the next `git pull && npm start`.
+`server.ts` calls `runMigrations({ root: projectsRoot() })` once at boot. Migrations run in order (oldest first); each self-checks "already applied?" and returns `{ applied: false }` as a fast no-op (steady state) or `{ applied: true, summary }` (logged one-line, e.g. `migration 0001-centralize-orchestrator-state: applied — {…}`). A migration that **throws aborts the boot** — fix and restart. You never run them by hand; a new release's migration applies itself on the next `git pull && npm start`.
 
 ## Adding a new migration
 

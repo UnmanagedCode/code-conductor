@@ -67,14 +67,14 @@ export function buildPluginApi({ pluginHost, pluginLibrary }: { pluginHost?: Plu
     next();
   });
   // Every route below runs only after the guard above has passed, so the host
-  // (and the library, which server.js constructs alongside it) is non-null
+  // (and the library, which server.ts constructs alongside it) is non-null
   // there. `!` captures that; a null library would have crashed the original
   // routes identically (the guard never checked it).
   const host = pluginHost!;
   const lib = pluginLibrary!;
 
   // Plugin Library — installable catalog (git repo URLs) + clone-to-install.
-  // Constructed alongside pluginHost (same withInstances gate in server.js),
+  // Constructed alongside pluginHost (same withInstances gate in server.ts),
   // so the guard above already covers these too.
   r.get('/library', async (req, res, next) => {
     try { res.json(await lib.list()); } catch (e) { next(e); }

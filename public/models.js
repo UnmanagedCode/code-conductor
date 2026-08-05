@@ -51,11 +51,11 @@ const DEFAULT_ROLE_BINDING = {
 };
 
 // First-paint seed for the end of the effort chain (mirrors DEFAULT_EFFORT in
-// src/effortLevels.js) — replaced by the payload's `defaultEffort` on the boot
+// src/effortLevels.ts) — replaced by the payload's `defaultEffort` on the boot
 // fetch, so the shipped value is the single source and this is only what a
 // pre-fetch read sees. Read for DISPLAY only: the spawn dialog's `Default (…)`
 // label. The client never resolves the effort chain itself (that is
-// resolveSpawnEffort, src/appSettings.js).
+// resolveSpawnEffort, src/appSettings.ts).
 let defaultEffort = 'high';
 
 let activeTierEffort = {};

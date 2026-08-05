@@ -1,5 +1,6 @@
 import http from 'node:http';
 import net from 'node:net';
+import type { Duplex } from 'node:stream';
 
 // Same-origin reverse proxy for plugin backends — `/plugins/<id>/*` → the
 // child's `/*`. Hand-rolled on node:http/node:net (code-hub authproxy
@@ -15,10 +16,12 @@ import net from 'node:net';
 
 // The plugin-host subset this proxy consumes. Defined locally because proxy
 // converts before src/plugins/registry.ts (which returns the real host);
-// registry's host type must satisfy it at the composition root (server.js).
+// registry's host type must satisfy it at the composition root (server.ts).
 export interface PluginHostProxyLike {
   ensureStarted(id: string): Promise<void>;
-  runtimeInfo(id: string): { port: number };
+  // `port` is null only when no child record exists yet — every call site here
+  // runs after ensureStarted() resolved, so the null branch is defensive.
+  runtimeInfo(id: string): { status: string; port: number | null };
   reportUpstreamFailure(id: string): void;
 }
 
@@ -68,6 +71,9 @@ export function buildPluginProxy({ pluginHost }: { pluginHost: PluginHostProxyLi
       });
     }
     const { port } = pluginHost.runtimeInfo(id);
+    // Post-ensureStarted the child has a port; null means it vanished in the
+    // gap — fail closed rather than forward to a default/null port.
+    if (port == null) return jsonResponse(res, 503, { error: `plugin '${id}' has no running backend` });
 
     const up = http.request({
       host: '127.0.0.1',
@@ -98,7 +104,7 @@ export function buildPluginProxy({ pluginHost }: { pluginHost: PluginHostProxyLi
     req.pipe(up);
   }
 
-  async function handleUpgrade(req: http.IncomingMessage, socket: net.Socket, head: Buffer): Promise<void> {
+  async function handleUpgrade(req: http.IncomingMessage, socket: Duplex, head: Buffer): Promise<void> {
     const fail = (status: number, text: string) => {
       try { socket.write(`HTTP/1.1 ${status} ${text}\r\nConnection: close\r\n\r\n`); } catch { /* gone */ }
       socket.destroy();
@@ -115,6 +121,7 @@ export function buildPluginProxy({ pluginHost }: { pluginHost: PluginHostProxyLi
       return fail(503, 'Service Unavailable');
     }
     const { port } = pluginHost.runtimeInfo(id);
+    if (port == null) return fail(503, 'Service Unavailable');
 
     const up = net.connect(port, '127.0.0.1', () => {
       // Replay the handshake with a rewritten request line; rawHeaders keeps

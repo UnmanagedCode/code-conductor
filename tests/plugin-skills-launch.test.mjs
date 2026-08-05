@@ -7,7 +7,7 @@ import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs
 
 // End-to-end wire: an enabled cc plugin declaring `claudePlugin` (a Claude Code
 // plugin root) must add `--plugin-dir <root>` to the claude subprocess argv at
-// spawn — proving provider injection (server.js) → resolver (registry) → the
+// spawn — proving provider injection (server.ts) → resolver (registry) → the
 // frozen-on-Instance list → sync append in Instance.spawn().
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-instance.json');

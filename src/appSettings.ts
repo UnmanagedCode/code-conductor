@@ -409,7 +409,7 @@ interface LiveBackendUsage {
   sessionId: string | null;
 }
 
-// LIVE instances using each backend, injected by server.js
+// LIVE instances using each backend, injected by server.ts
 // (`setLiveBackendsProvider(() => instances.liveBackendUsage())`) so this
 // low-level store never imports the instance registry — same seam shape as
 // pluginRolesProvider below. Each entry: {backend, sessionId}. Default []
@@ -851,7 +851,7 @@ export function resolveSpawnEffort(input: { effort?: unknown; tier?: unknown; ro
 
 // ── Custom + plugin roles ────────────────────────────────────────────────
 // Plugin-owned roles are LIVE-DERIVED from enabled plugins (never persisted),
-// mirroring plugin conventions: the provider is injected by server.js
+// mirroring plugin conventions: the provider is injected by server.ts
 // (`setPluginRolesProvider(() => pluginHost.roles())`) so this low-level store
 // never imports the plugin registry. Each entry: {role:'<plugin-id>/<slug>',
 // label, binding:{kind:'tier',tier}|{backend,model}, plugin:id}. Default [] keeps

@@ -9,13 +9,13 @@ internals in [architecture.md](architecture.md#component-layout).
 
 A **backend** is a launch recipe. `template` is the command that replaces `claude`
 on the argv, with `{model}` standing in for the model id; an **empty template runs
-`claude` directly**. `resolveBackendLaunch()` in `src/claudeLauncher.js` is the
+`claude` directly**. `resolveBackendLaunch()` in `src/claudeLauncher.ts` is the
 single place a template is consumed — it whitespace-splits the template,
 substitutes `{model}` **inside each token** (so `--model={model}` works as well as
 `--model {model}`), takes token 0 as the command and the rest as the argv prefix,
 then the caller appends the SAME claude args uniformly. Three callers share it:
-`Instance.spawn()`, `generateSummary()` (`src/summarize.js`), `generateBundle()`
-(`src/claudeShellEnv.js`).
+`Instance.spawn()`, `generateSummary()` (`src/summarize.ts`), `generateBundle()`
+(`src/claudeShellEnv.ts`).
 
 Record: `{ id, label, template, env: [{key,value}], managed }`, persisted as
 `models.backends`.
@@ -81,8 +81,8 @@ The consequences of being a substitution backend:
   `CLAUDE_CODE_MAX_CONTEXT_TOKENS` are set to the model's native window on every
   **session** spawn (`Instance.spawn`), **never** for plain `claude`, and never
   exposed in the Backends UI. Applied *after* the row's `env`, so they win over a
-  same-named pair. Scoped to sessions: the one-shot spawners (`summarize.js`,
-  `claudeShellEnv.js`) set neither — they run a single short prompt with no
+  same-named pair. Scoped to sessions: the one-shot spawners (`summarize.ts`,
+  `claudeShellEnv.ts`) set neither — they run a single short prompt with no
   conversation to compact. See [protocol.md](protocol.md#subprocess-protocol) for why
   both are needed.
 - **The CLI's model report is ignored entirely** — `_trackModel` never adopts it
@@ -102,7 +102,7 @@ The consequences of being a substitution backend:
   substitution↔substitution) is rejected `409 BACKEND_LOCKED`.
 - **`launch_failed`** is emitted when the subprocess dies on its own (binary
   missing, daemon gone, cloud-auth 401) — see [protocol.md](protocol.md#websocket-protocol).
-- **No `cost_usd`** is persisted for its turns (`src/costTracking.js`): the CLI's
+- **No `cost_usd`** is persisted for its turns (`src/costTracking.ts`): the CLI's
   `total_cost_usd` is Anthropic list pricing applied to someone else's model. The
   *absence* of `cost_usd` is the canonical "tokens not countable" marker the cost
   dashboard reads.
@@ -134,10 +134,10 @@ purpose: each closes a distinct route, and none subsumes another.
 
 | Door | Where | Refusal |
 |---|---|---|
-| Create with an **explicit** unknown backend (`POST /api/instances`, restart replay) | `_doCreate`, `src/instances.js` | `422 BACKEND_GONE` |
+| Create with an **explicit** unknown backend (`POST /api/instances`, restart replay) | `_doCreate`, `src/instances.ts` | `422 BACKEND_GONE` |
 | Resume whose **sidecar** backend was removed since | `_doCreate`, same guard | `422 BACKEND_GONE` |
-| Spawn/respawn after the row was removed **under a tracked instance** | `Instance.spawn()`, `src/instances.js` | throws, instance → `crashed` (visible), instead of taking `resolveBackendLaunch`'s identity branch |
-| **Removing** a row that anything still references | `removeBackend()`, `src/appSettings.js` | `409` — see [Settings → Backends](#settings--backends) |
+| Spawn/respawn after the row was removed **under a tracked instance** | `Instance.spawn()`, `src/instances.ts` | throws, instance → `crashed` (visible), instead of taking `resolveBackendLaunch`'s identity branch |
+| **Removing** a row that anything still references | `removeBackend()`, `src/appSettings.ts` | `409` — see [Settings → Backends](#settings--backends) |
 
 ## Custom models
 
@@ -151,13 +151,13 @@ selectable for a substitution backend.
   (stored `Math.round`ed). It
   drives the context-usage bar and both cc-managed env vars at spawn, so a wrong
   value silently truncates or over-fills the window. Resolved by
-  `contextWindowForModel()` (`src/appSettings.js`) — an **exact** match on the
+  `contextWindowForModel()` (`src/appSettings.ts`) — an **exact** match on the
   model id, which is the registry key. There is no client-side mirror: the server
   ships the resolved number as `contextWindowTokens`.
 
 ### The curated Ollama cloud catalog
 
-`src/ollamaCloudModels.js` ships a read-only catalog of Ollama cloud coding models, each with its
+`src/ollamaCloudModels.ts` ships a read-only catalog of Ollama cloud coding models, each with its
 native `contextWindow` — bindable with no "Add" step. **Scoped to the built-in
 `ollama` backend only**: `isKnownBackendModel(backend, model)` accepts a preset just
 for that row, and the picker renders the optgroup only there. A user-defined backend
@@ -199,7 +199,7 @@ Claude id (which nothing else re-validates) against a retired catalog version.
 
 A **second axis** on the same rows: which model a spawn runs *on* is the binding
 above; how hard it *reasons* is the effort. The two vocabularies stay disjoint —
-`low`/`medium`/`high`/`xhigh`/`max` (`EFFORT_LEVELS`, `src/effortLevels.js`) never
+`low`/`medium`/`high`/`xhigh`/`max` (`EFFORT_LEVELS`, `src/effortLevels.ts`) never
 name a tier, and no tier word is an effort level.
 
 | Key | Shape | Default |
@@ -214,7 +214,7 @@ so its `inherit` resolves to `DEFAULT_EFFORT`. `inherit` is a role-only sentinel
 tier has nothing to inherit from, so `setTierEffort` refuses it (400). Invalid
 stored values revert on read, like the bindings.
 
-**`resolveSpawnEffort({effort, tier, role})` (`src/appSettings.js`) is the single
+**`resolveSpawnEffort({effort, tier, role})` (`src/appSettings.ts`) is the single
 resolution point** — the effort counterpart of `resolveBackendLaunch`. Precedence:
 
 1. an explicit `effort` (MCP `spawn_instance`, the spawn dialog's Advanced options,
@@ -230,7 +230,7 @@ but a caller passing both gets the more specific. An unknown tier/role name fall
 hazard, only a level.
 
 `InstanceManager._doCreate` is the only caller: `tier`/`role` reach it from
-`mcp/handlers.js` `spawnInstance` (which already knows which one it resolved the
+`mcp/handlers.ts` `spawnInstance` (which already knows which one it resolved the
 model through) and from the `POST /api/instances` body. Neither name is stored on
 the `Instance` — `this.effort` holds the resolved level.
 
@@ -241,7 +241,7 @@ so a changed default moves *new spawns*, never anything already running:
 |---|---|
 | Fresh spawn (dialog / Conduct / `spawn_instance` with a tier or role) | resolved through the chain above |
 | Resume via `_doCreate` with no tier/role — sidebar one-click, anchor auto-resume, `spawn_instance({resume})` | step 4, `DEFAULT_EFFORT`: a resume recovers its model from the jsonl/sidecar, not from a binding, so there is no row to inherit from |
-| Restart manifest (`src/resumeRestart.js`) | step 1 — it carries the recorded `effort` explicitly, so the session comes back at the exact level it was running at |
+| Restart manifest (`src/resumeRestart.ts`) | step 1 — it carries the recorded `effort` explicitly, so the session comes back at the exact level it was running at |
 | `POST /api/instances/:id/fork` | step 1 — `create({… effort: inst.effort …})`, so the fork inherits the source session's level (it *does* re-enter `_doCreate`, unlike the row below) |
 | `Instance.launch({resume})` — `respawn_instance`, `POST /instances/:id/respawn`, crash-respawn, rewind, prune | reuses the live `this.effort`; these never re-enter `_doCreate`, so nothing is re-resolved |
 
@@ -271,7 +271,7 @@ not restated here.
 
 ### Resolution
 
-`resolveContextWindowTokens({backend, model})` in `src/appSettings.js` is the
+`resolveContextWindowTokens({backend, model})` in `src/appSettings.ts` is the
 single place capacity is resolved: it dispatches on `backend` to either
 `claudeContextWindowTokens()` (catalog) or `contextWindowForModel()` (registry).
 `Instance.create()` calls it once and stores the number as
@@ -318,7 +318,7 @@ the row:
 - **any custom model is bound to it** (message names those model ids) — remove the
   models first;
 - **any tracked instance is on it** (message names those session ids) — **archive or
-  delete** those sessions first. `liveBackendUsage()` (`src/instances.js`) counts
+  delete** those sessions first. `liveBackendUsage()` (`src/instances.ts`) counts
   every instance in `byId`, *including exited ones*: an exited instance is still
   respawnable (crash-respawn, overage auto-resume, rewind), and it is exactly that
   later relaunch that would hit the real `claude`. So **killing is not enough** — the

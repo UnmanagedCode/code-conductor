@@ -30,7 +30,7 @@
 //
 // Covers three files. `pending-resume.json` matters for SELF-UPDATE: an old
 // process can write the old manifest shape moments before new code boots, and
-// migrations run before restoreFromResumeManifest (server.js).
+// migrations run before restoreFromResumeManifest (server.ts).
 //
 // Known limit: repair candidates come from `models.customModels` only. The
 // curated Ollama cloud presets live in src/ (never imported here, per

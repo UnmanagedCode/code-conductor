@@ -13,7 +13,7 @@
 //      orchestrator after the respawn.
 //   4. Spawn a detached replacement (process.execPath + the same argv
 //      + cwd + env). The child polls EADDRINUSE while binding (see
-//      listenWithRetry in server.js), which handles the race where
+//      listenWithRetry in server.ts), which handles the race where
 //      our listening socket hasn't fully released yet.
 //   5. Exit this process after a small delay so the 202 response can
 //      flush over the wire.
@@ -122,7 +122,7 @@ export function scheduleRestart({ server, wss, instances, log = console }: {
 // and exit this one after a short delay so the in-flight 202 response can flush.
 // Shared by the normal restart (scheduleRestart) and the graceful resume restart
 // (src/resumeRestart.ts drainAndScheduleRestart). The child's listen-with-retry
-// (server.js) handles the EADDRINUSE race while our socket releases.
+// (server.ts) handles the EADDRINUSE race while our socket releases.
 export function spawnReplacementAndExit({ log = console }: { log?: RestartLog } = {}): void {
   const args = [process.argv[1], ...process.argv.slice(2)];
   try {

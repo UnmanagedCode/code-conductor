@@ -3,6 +3,7 @@ import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
+import type { RealClaudeLauncher } from './src/claudeLauncher.ts';
 import { buildRoutes } from './src/routes.ts';
 import { buildMcpRouter } from './src/mcp/server.ts';
 import { InstanceManager } from './src/instances.ts';
@@ -26,7 +27,15 @@ import { setPluginRolesProvider, setLiveBackendsProvider } from './src/appSettin
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-export function createServer({ withInstances = true, claudeLauncher } = {}) {
+// The shared mutable handle server.ts populates with the http server + wss once
+// they exist (route handlers read them at request time). Structural match for
+// routes.ts's ServerCtx.
+interface ServerCtx {
+  server?: http.Server | null;
+  wss?: WebSocketServer | null;
+}
+
+export function createServer({ withInstances = true, claudeLauncher }: { withInstances?: boolean; claudeLauncher?: RealClaudeLauncher } = {}) {
   const app = express();
   const instances = withInstances ? new InstanceManager({ claudeLauncher }) : null;
   // Which backends live sessions are on — lets removeBackend refuse (409) rather
@@ -40,7 +49,9 @@ export function createServer({ withInstances = true, claudeLauncher } = {}) {
   // (the host is a runtime singleton, wired after construction).
   // `conventions()` is grouped by scope; `project` and `conductor` are routed
   // today (`workspace` isn't accepted yet — see manifest.ts).
-  if (pluginHost) {
+  // pluginHost and instances are set together (both derive from withInstances);
+  // the && guard is what lets TS see that here.
+  if (pluginHost && instances) {
     setPluginConventionsProvider(async () => (await pluginHost.conventions()).project);
     setPluginConductorConventionsProvider(async () => (await pluginHost.conventions()).conductor);
     // Plugin-owned roles are live-derived from enabled plugins (sync — a role
@@ -57,7 +68,7 @@ export function createServer({ withInstances = true, claudeLauncher } = {}) {
   // serverCtx is a shared mutable handle so route handlers (POST
   // /admin/restart) can reach the http server + wss without those
   // existing at route-build time. Populated below once they do.
-  const serverCtx = {};
+  const serverCtx: ServerCtx = {};
   app.use('/api', buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }));
   app.use('/mcp', buildMcpRouter({ instances, pluginHost }));
   const pluginProxy = buildPluginProxy({ pluginHost });
@@ -70,12 +81,12 @@ export function createServer({ withInstances = true, claudeLauncher } = {}) {
   // ws lib never touches `server`, so no error forwarding to guard against.)
   const wss = new WebSocketServer({ noServer: true });
   server.on('upgrade', (req, socket, head) => {
-    let pathname;
-    try { pathname = new URL(req.url, 'http://placeholder').pathname; }
+    let pathname: string | null = null;
+    try { pathname = new URL(req.url ?? '', 'http://placeholder').pathname; }
     catch { socket.destroy(); return; }
     if (pathname === '/ws') {
       wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
-    } else if (pathname.startsWith('/plugins/')) {
+    } else if (pathname !== null && pathname.startsWith('/plugins/')) {
       pluginProxy.handleUpgrade(req, socket, head);
     } else {
       socket.destroy();
@@ -94,11 +105,11 @@ export function createServer({ withInstances = true, claudeLauncher } = {}) {
 // immediately spawns a replacement. The kernel can take a moment to
 // release the listening socket, so the child polls until it can bind.
 // Other listen errors (EACCES etc.) propagate on the first attempt.
-async function listenWithRetry(server, port, host, { tries = 40, delayMs = 100 } = {}) {
+async function listenWithRetry(server: http.Server, port: number, host: string, { tries = 40, delayMs = 100 } = {}) {
   for (let i = 0; i < tries; i++) {
     try {
-      await new Promise((resolve, reject) => {
-        const onErr = (e) => { server.off('listening', onOk); reject(e); };
+      await new Promise<void>((resolve, reject) => {
+        const onErr = (e: Error) => { server.off('listening', onOk); reject(e); };
         const onOk = () => { server.off('error', onErr); resolve(); };
         server.once('error', onErr);
         server.once('listening', onOk);
@@ -106,9 +117,9 @@ async function listenWithRetry(server, port, host, { tries = 40, delayMs = 100 }
       });
       return;
     } catch (e) {
-      if (e.code !== 'EADDRINUSE' || i === tries - 1) throw e;
+      if (errCode(e) !== 'EADDRINUSE' || i === tries - 1) throw e;
       process.stderr.write(`server: EADDRINUSE on port ${port}, retrying (${i + 1}/${tries})...\n`);
-      await new Promise(r => setTimeout(r, delayMs));
+      await new Promise<void>(r => setTimeout(r, delayMs));
     }
   }
 }
@@ -165,6 +176,10 @@ export async function start({ port = 8787, host = '127.0.0.1' } = {}) {
   catch (e) { console.warn('self workspace seed failed:', e); }
   await listenWithRetry(server, port, host);
   const addr = server.address();
+  // listenWithRetry only resolves after the 'listening' event, so the bound
+  // address is a TCP AddressInfo (never the string/pipe form). Guard fail-closed
+  // anyway — this is a boot-fatal invariant, not something to limp past.
+  if (!addr || typeof addr === 'string') throw new Error(`server.listen bound to unexpected address: ${addr}`);
   // Instance subprocesses need the actual bound port to construct the
   // PreToolUse http hook URL — feed it back into the manager now that
   // listen has resolved (port may have been auto-assigned via 0).
@@ -174,7 +189,7 @@ export async function start({ port = 8787, host = '127.0.0.1' } = {}) {
   // Fire-and-forget like the resume restore — boot must not gate on it.
   if (pluginHost) {
     pluginHost.setServerPort(addr.port);
-    pluginHost.init().catch((e) => console.warn('plugin registry init failed:', e?.message || e));
+    pluginHost.init().catch((e) => console.warn('plugin registry init failed:', errText(e)));
   }
   // Start the server-side usage poller (overage auto-stop's second trigger
   // source). Its timer lifecycle tracks the server's, like the bound port; the
@@ -188,7 +203,7 @@ export async function start({ port = 8787, host = '127.0.0.1' } = {}) {
   // builds the per-instance hook/MCP URLs from it), so it runs after setServerPort.
   if (instances) {
     restoreFromResumeManifest({ instances, log: console })
-      .catch((e) => console.warn('resume-restart restore failed:', e?.message || e));
+      .catch((e) => console.warn('resume-restart restore failed:', errText(e)));
   }
   // Readiness is informational only (a stderr warning banner). Run it AFTER
   // we're listening — never gate port availability on a `claude --version`
@@ -196,7 +211,7 @@ export async function start({ port = 8787, host = '127.0.0.1' } = {}) {
   // it here previously delayed listen() past test poll deadlines under load.)
   checkClaudeReadiness()
     .then((readiness) => process.stderr.write(formatReadiness(readiness) + '\n'))
-    .catch((e) => process.stderr.write(`claude readiness check failed: ${e?.message || e}\n`));
+    .catch((e) => process.stderr.write(`claude readiness check failed: ${errText(e)}\n`));
   return { server, instances, wss, pluginHost, port: addr.port, host: addr.address };
 }
 
@@ -210,4 +225,24 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     console.error('failed to start:', e);
     process.exit(1);
   });
+}
+
+// The `code` on a thrown Node error (e.g. 'EADDRINUSE'), or undefined — the
+// narrowing point for error-code checks (catch variables are `unknown` under
+// strict). Same idiom as storeLock.ts et al.
+function errCode(e: unknown): string | undefined {
+  if (typeof e !== 'object' || e === null) return undefined;
+  const code = (e as { code?: unknown }).code;
+  return typeof code === 'string' ? code : undefined;
+}
+
+// `e?.message || e` from the JS original, typed: an Error's message when
+// truthy, else the thrown value itself (for a non-Error, or an empty
+// message). Preserves the exact log text of the untyped boot path.
+function errText(e: unknown): unknown {
+  if (typeof e === 'object' && e !== null && 'message' in e) {
+    const m = (e as { message?: unknown }).message;
+    return m || e;
+  }
+  return e;
 }

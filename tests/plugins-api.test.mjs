@@ -302,7 +302,7 @@ test('POST /api/plugins/library/:id/update — streams NDJSON chunks, terminal o
 });
 
 // End-to-end wiring: a real contributions-only plugin, enabled via the host,
-// must surface through server.js's provider hookup on the project-conventions
+// must surface through server.ts's provider hookup on the project-conventions
 // REST endpoint (the path the new-project dialog fetches), carrying the scaffold
 // facet, and create_project must return the composed scaffold directive.
 test('contributions-only plugin (convention w/ scaffold facet) flows through to /api/settings/conventions/project', async () => {

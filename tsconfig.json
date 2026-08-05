@@ -12,5 +12,5 @@
     "types": ["node"],
     "skipLibCheck": true
   },
-  "include": ["src/**/*.ts", "server.ts", "public/**/*.d.ts"]
+  "include": ["src/**/*.ts", "server.ts", "public/**/*.d.ts", "migrations/index.d.mts"]
 }

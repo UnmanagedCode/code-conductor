@@ -56,7 +56,7 @@ export function projectsRoot(): string {
   return process.env.PROJECTS_ROOT ?? DEFAULT_PROJECTS_ROOT;
 }
 
-// The conductor's own running checkout dir (the dir holding server.js /
+// The conductor's own running checkout dir (the dir holding server.ts /
 // package.json). Exposed so the plugin supervisor can hand it to backends as
 // CONDUCTOR_PROJECT_DIR — they surface the conductor as an app even when its
 // checkout isn't under projectsRoot().

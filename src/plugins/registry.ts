@@ -11,6 +11,7 @@ import {
 import { createSupervisor, httpOk, headSha, type ChildRuntime } from './supervisor.ts';
 import { createMcpBridge } from './mcpBridge.ts';
 import { pidAlive, waitForPort } from './ports.ts';
+import type { BackendBinding, TierBinding } from '../modelVersions.ts';
 import type { InstanceManagerLike } from '../instanceTypes.ts';
 import type { WorktreeMeta } from '../worktrees.ts';
 
@@ -37,7 +38,7 @@ const CRASH_LIMIT = 3;
 const CRASH_WINDOW_MS = 60_000;
 const BACKOFF_UNIT_MS = 1000;   // backoff = min(2^n, BACKOFF_CAP_UNITS) * unit
 const BACKOFF_CAP_UNITS = 30;
-// Exported so server.js can reuse the same literal for the conductor's own
+// Exported so server.ts can reuse the same literal for the conductor's own
 // boot-time self-seed instead of duplicating it.
 export const WORKSPACE_AUTO_ASSIGN = 'CC-Dev';
 
@@ -731,7 +732,7 @@ export function createPluginHost(opts: {
 
   // Convention entries contributed by enabled plugins, GROUPED BY SCOPE so
   // each scope routes to its own catalog. Only `project` is wired today (into
-  // the project-conventions catalog via server.js); the workspace/conductor
+  // the project-conventions catalog via server.ts); the workspace/conductor
   // groups already exist here (empty until their scope is enabled in
   // manifest.ts + a provider is wired), so future routing is a localized add,
   // not a redesign. Each entry: { slug:'<plugin-id>/<slug>', name, description,
@@ -774,10 +775,14 @@ export function createPluginHost(opts: {
   // Each entry: { role:'<plugin-id>/<slug>', label, binding, plugin:id }. Only
   // enabled+ok plugins contribute, so disabling/removing a plugin drops its
   // roles automatically (no purge, mirroring conductor conventions).
-  function roles(): Array<{ role: string; label: string; binding: { kind: 'tier'; tier: string } | { backend: string; model: string } | null; plugin: string }> {
-    const out: Array<{ role: string; label: string; binding: { kind: 'tier'; tier: string } | { backend: string; model: string } | null; plugin: string }> = [];
+  function roles(): Array<{ role: string; label: string; binding: BackendBinding | TierBinding; plugin: string }> {
+    const out: Array<{ role: string; label: string; binding: BackendBinding | TierBinding; plugin: string }> = [];
     for (const entry of contributingEntries()) {
       for (const r of entry.manifest.roles ?? []) {
+        // A null binding means the manifest failed role validation, which
+        // excludes it from contributingEntries (discoveryState must be 'ok');
+        // skip defensively so the provider's binding type holds without a cast.
+        if (!r.binding) continue;
         out.push({ role: `${entry.id}/${r.slug}`, label: r.name, binding: r.binding, plugin: entry.id });
       }
     }

@@ -2561,7 +2561,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     // the interactive http hook (ask mode falls back to auto-allow).
     this.serverPort = null;
     // Resolves the enabled cc plugins' Claude Code plugin roots (validated abs
-    // dirs) to add as `--plugin-dir` flags. Injected by server.js after the
+    // dirs) to add as `--plugin-dir` flags. Injected by server.ts after the
     // plugin host exists (it's constructed after this manager); default [] keeps
     // headless/tests working. Awaited in _doCreate and frozen on each Instance.
     this._claudePluginDirsResolver = async () => [];
@@ -2645,7 +2645,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   //                 marks it — no turn_notification exists at settle-fire time.)
   // ORDERING DEPENDENCY: the idle hub's 'event' listener (registered in the
   // InstanceManager constructor, instances.ts) must run before wsHub's listener
-  // (registered by attachWsHub in server.js). wasConsumed() is only valid during
+  // (registered by attachWsHub in server.ts). wasConsumed() is only valid during
   // the same synchronous dispatch cycle as the hub's turn_end handling. Do not
   // reorder those registrations without revisiting this method.
   shouldSuppressTurnNotification(instanceId: string): boolean {
@@ -2658,7 +2658,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     this.serverPort = port;
   }
 
-  // Injected by server.js once the plugin host exists: `() =>
+  // Injected by server.ts once the plugin host exists: `() =>
   // pluginHost.claudePluginDirs()`. A non-function resets to the [] default.
   setClaudePluginDirsResolver(fn: unknown): void {
     this._claudePluginDirsResolver = typeof fn === 'function' ? (fn as () => Promise<string[]>) : (async () => []);

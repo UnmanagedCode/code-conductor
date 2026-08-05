@@ -29,7 +29,7 @@ export const SEED_PROJECT_CONVENTIONS: Array<{ slug: string; name: string; descr
 ];
 
 // Plugin-contributed convention fragments join the catalog through this
-// provider. It is injected after construction (server.js wires it to the
+// provider. It is injected after construction (server.ts wires it to the
 // plugin host) because the host is a runtime singleton, not importable here
 // without a cycle. Default is a no-op so tests/imports without plugins work.
 let pluginConventionsProvider: () => Promise<ExtraEntry[]> = async () => [];

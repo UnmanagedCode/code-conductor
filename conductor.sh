@@ -1,2 +1,2 @@
 #!/usr/bin/env bash
-exec node "$(dirname "$0")/server.js" "$@"
+exec node "$(dirname "$0")/server.ts" "$@"

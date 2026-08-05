@@ -2,7 +2,7 @@
 // for the text delivered to a worker when a question is answered.
 //
 // Lives under public/ because the browser can only import from the statically
-// served public/ dir (see server.js express.static). It is DOM-free on purpose
+// served public/ dir (see server.ts express.static). It is DOM-free on purpose
 // so BOTH surfaces call ONE function — no fork:
 //   - the UI question card (public/blocks.js re-exports these; app.js formats
 //     the submit text, conversation.js reverses it on replay), and

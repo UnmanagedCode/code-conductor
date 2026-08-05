@@ -3,7 +3,7 @@
 // Type-only module — zero runtime exports. The collaborator modules that
 // receive an instance/manager as an injected parameter (routes, mcp/handlers,
 // plugins/registry, resumeRestart, overageResume, sessionRenew, idleSubscriptions,
-// usageOverageMonitor, wsHub, mcp/server, server.js) import these types via
+// usageOverageMonitor, wsHub, mcp/server, server.ts) import these types via
 // `import type`, which `verbatimModuleSyntax` fully erases — so this file adds
 // no runtime import edge and can never create a cycle, even though several of
 // its consumers convert before src/instances.ts exists (instances.ts imports

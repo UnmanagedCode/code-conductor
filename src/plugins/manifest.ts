@@ -1,6 +1,6 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { isKnownTier, isKnownClaudeModel, CLAUDE_BACKEND_ID } from '../modelVersions.ts';
+import { isKnownTier, isKnownClaudeModel, CLAUDE_BACKEND_ID, type BackendBinding, type TierBinding } from '../modelVersions.ts';
 
 // Plugin manifest: `conductor.plugin.json` at the plugin project root.
 // readManifest(dir) reads + validates; validateManifest(json) normalizes a
@@ -48,7 +48,7 @@ export interface ConventionEntry {
 export interface PluginRole {
   slug: string;
   name: string;
-  binding: { kind: 'tier'; tier: string } | { backend: string; model: string } | null;
+  binding: TierBinding | BackendBinding | null;
 }
 
 export interface PluginBackend {
@@ -408,8 +408,11 @@ function validateRoleBinding(b: unknown, label: string, errors: string[]): Plugi
     for (const k of Object.keys(rec)) {
       if (!['kind', 'tier'].includes(k)) errors.push(`unknown key '${bl}.${k}'`);
     }
-    if (!isKnownTier(rec.tier)) errors.push(`'${bl}.tier' must be a known capability tier`);
-    return { kind: 'tier', tier: typeof rec.tier === 'string' ? rec.tier : '' };
+    if (!isKnownTier(rec.tier)) {
+      errors.push(`'${bl}.tier' must be a known capability tier`);
+      return null;
+    }
+    return { kind: 'tier', tier: rec.tier };
   }
   // `backend` (current) or `kind` (legacy pre-registry) may name the backend.
   const backendKey = rec.backend !== undefined ? 'backend' : (rec.kind !== undefined ? 'kind' : null);
