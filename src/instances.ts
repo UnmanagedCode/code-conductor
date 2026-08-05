@@ -275,7 +275,7 @@ const DEFAULT_THINKING = 'adaptive';
 // Bounded drop-oldest event log per instance. `_seq` is stamped here at
 // push time and stays monotonic for the life of the Instance — eviction
 // never renumbers, so consumers keyed on `_seq` (WS client dedup,
-// get_transcript({sinceSeq}), GET /api/instances/:id/events) survive
+// get_transcript({fromSeq}), GET /api/instances/:id/events) survive
 // trims. Evicted events remain reconstructable from the session jsonl
 // (see src/eventArchive.ts).
 //

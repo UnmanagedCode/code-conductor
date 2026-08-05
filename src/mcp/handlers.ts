@@ -309,23 +309,28 @@ export async function locateSession({ sessionId }: { sessionId?: string }) {
 // in-memory ring and only reads the on-disk session transcript when the
 // requested window crosses trimmedBefore (i.e. asks for evicted history) —
 // reconciling disk + ring by _seq with no gap/dup at the seam. So ring
-// eviction is invisible to the caller: a sinceSeq below trimmedBefore now
+// eviction is invisible to the caller: a fromSeq below trimmedBefore now
 // returns the dropped range from disk instead of a silent gap.
-//   - sinceSeq >= 0 → forward page (events with _seq > sinceSeq, oldest-first).
-//     Incremental polling: pass nextAfter back as the next sinceSeq.
-//   - sinceSeq omitted/-1 → newest page (last `limit` events).
+//   - fromSeq omitted → newest page (last `limit` events).
+//   - fromSeq: n → forward page, INCLUSIVE (events with _seq >= n,
+//     oldest-first) — fromSeq: 0 reaches the very first event. Incremental
+//     polling: pass nextFrom back as the next fromSeq.
 // NOTE: a single turn larger than the ring cap can leave a mid-turn gap (the
 // archive's dense _seq space can't overlap the live ring); get_transcript
 // covers dropped PRIOR turns — for prose mid-giant-turn use get_recent_messages.
-export async function getTranscript({ sessionId, sinceSeq = -1, limit = 200 }: { sessionId: string; sinceSeq?: number; limit?: number }, { instances }: McpCtx) {
+export async function getTranscript({ sessionId, fromSeq, limit = 200 }: { sessionId: string; fromSeq?: number; limit?: number }, { instances }: McpCtx) {
   const r = await getInst(instances, sessionId);
   if ('soft' in r) return r.soft;
   const inst = r.inst;
-  const page = sinceSeq >= 0
-    ? await pageInstanceEvents(inst, { after: sinceSeq, limit })
-    : await pageInstanceEvents(inst, { limit });
+  // fromSeq is this tool's own INCLUSIVE convention; pageInstanceEvents'
+  // `after` option is EXCLUSIVE (matches the REST `after=` cursor) — the
+  // two surfaces deliberately differ by name, so translate at this
+  // boundary rather than "unifying" them.
+  const page = fromSeq == null
+    ? await pageInstanceEvents(inst, { limit })
+    : await pageInstanceEvents(inst, { after: fromSeq - 1, limit });
   const events = page.events;
-  const nextAfter = events.length ? events[events.length - 1]._seq as number : sinceSeq;
+  const nextFrom = events.length ? (events[events.length - 1]._seq as number) + 1 : page.lastSeq + 1;
   return {
     status: inst.status,
     sessionId: inst.sessionId,
@@ -334,8 +339,8 @@ export async function getTranscript({ sessionId, sinceSeq = -1, limit = 200 }: {
     trimmedBefore: page.trimmedBefore,
     hasMore: page.hasMore,
     // Forward cursor for the next incremental poll: poll again with
-    // sinceSeq = nextAfter to get only events since this batch.
-    nextAfter,
+    // fromSeq = nextFrom to get only events since this batch.
+    nextFrom,
   };
 }
 

@@ -73,7 +73,7 @@ Schemas are deferred — load them via `ToolSearch` before first use. Before you
 
 **Inspect work**
 - `get_recent_messages({sessionId, count?})` — last N assistant messages; cheap, use for "what did the worker just say?". Disk-backed: a busy worker mid-long-turn never returns a false-empty; `omittedToolOnly`/`hint` distinguish "active but tool-only" from idle.
-- `get_transcript({sessionId, sinceSeq?, limit?})` — full UI event stream. Poll incrementally: pass the returned `nextAfter` as the next `sinceSeq`; `hasMore` flags more to drain; evicted ranges are served from the on-disk transcript, so no history is lost. Meaningful kinds: prose deltas, `tool_use`/`tool_result` (may carry `is_error:true`), `plan_request`, `user_question`, `turn_end` — see the transcript event stream for the full set. For most decisions `get_recent_messages` is enough.
+- `get_transcript({sessionId, fromSeq?, limit?})` — full UI event stream. Poll incrementally: pass the returned `nextFrom` as the next `fromSeq`; `hasMore` flags more to drain; evicted ranges are served from the on-disk transcript, so no history is lost. Meaningful kinds: prose deltas, `tool_use`/`tool_result` (may carry `is_error:true`), `plan_request`, `user_question`, `turn_end` — see the transcript event stream for the full set. For most decisions `get_recent_messages` is enough.
 
 **Land work**
 - `sync_worktree({sessionId})` — fast-forwards or auto-rebases the worktree server-side; only when conflicts block the rebase does it send a rebase prompt to the worker — that is a worker turn (subscribe + end turn). Expected refusals come back as `{ok:false, reason, code}`, never thrown.
