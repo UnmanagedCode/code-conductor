@@ -101,6 +101,13 @@ export async function bootServer({ scenarioPath, useRealClaude = false, realProc
   async function close() {
     if (instances && typeof instances.shutdown === 'function') await instances.shutdown();
     if (pluginHost) await pluginHost.stopAll();
+    // server.close() waits for existing connections to END, so any still-open
+    // WebSocket hangs teardown forever. A test that leaks a socket — e.g. by
+    // closing it after its assertions rather than in a finally — would then HANG
+    // instead of failing, which is strictly worse: it stalls the run and reads as
+    // "no verdict" rather than "caught". Drop the sockets first so teardown is
+    // unconditional and no future test can reintroduce that class.
+    server.closeAllConnections?.();
     await new Promise(r => server.close(r));
     for (const [k, v] of Object.entries(prev)) {
       if (v !== undefined) { process.env[k] = v; continue; }

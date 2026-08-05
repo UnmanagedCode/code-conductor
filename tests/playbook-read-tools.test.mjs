@@ -397,22 +397,38 @@ test('list_instances carries playbook/stage for a tracked worker and null for an
 
 test('the WS snapshot and status frames carry playbookEnforcement', async () => {
   const t = await setup({ enforcement: 'warn' });
+  const { WebSocket } = await import('ws');
+  let ws = null;
   try {
-    const { WebSocket } = await import('ws');
     const frames = [];
-    const ws = new WebSocket(t.wsUrl);
+    ws = new WebSocket(t.wsUrl);
     await new Promise((resolve, reject) => { ws.once('open', resolve); ws.once('error', reject); });
     ws.on('message', raw => frames.push(JSON.parse(raw.toString())));
     ws.send(JSON.stringify({ t: 'subscribe', id: t.conductorId }));
 
-    const snap = await waitFor(() => frames.find(f => f.t === 'snapshot'));
+    // Each frame is located by TYPE and its field asserted separately, never
+    // found by the field's value: a predicate like `f.playbookEnforcement ===
+    // 'warn'` would turn a missing field into a timeout instead of an assertion
+    // failure, which is the difference between a caught regression and a stalled
+    // run.
+    const snap = await waitFor(() => frames.find(f => f.t === 'snapshot'), { timeout: 4000 });
     assert.equal(snap.playbookEnforcement, 'warn',
       'without this the control cannot hydrate on subscribe');
 
     // A flip from any surface must reach the client, or the control desyncs.
+    // Clearing first means the frame we then read is one this flip caused.
+    frames.length = 0;
     t.instances.get(t.conductorId).setPlaybookEnforcement('enforce');
-    const status = await waitFor(() => frames.find(f => f.t === 'status' && f.playbookEnforcement === 'enforce'));
-    assert.equal(status.playbookEnforcement, 'enforce');
-    ws.close();
-  } finally { await t.close(); }
+    const status = await waitFor(() => frames.find(f => f.t === 'status'), { timeout: 4000 });
+    assert.equal(status.playbookEnforcement, 'enforce',
+      'a flip must reach the client, or the control shows a stale level');
+  } finally {
+    // The socket MUST be released whether or not the assertions passed: close()
+    // awaits server.close(), which waits for existing connections to end, so a
+    // leaked socket turns a failing assertion into a hung suite. A hanging test
+    // is worse than a failing one — it also defeats mutation testing, which reads
+    // the timeout as "no verdict" rather than "caught".
+    if (ws) await new Promise(resolve => { ws.once('close', resolve); ws.close(); });
+    await t.close();
+  }
 });
