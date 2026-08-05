@@ -29,9 +29,13 @@ function allowed(res) {
 test('spawn into an entry stage is allowed and `require` FILLS the omitted arguments', () => {
   const res = allowed(d('spawn_instance', { playbook: 'classic', stage: 'plan', project: 'demo' }));
   assert.equal(res.patchedArgs.mode, 'plan');
-  assert.equal(res.patchedArgs.model, 'planner');
   assert.equal(res.patchedArgs.createWorktree, true);
-  assert.deepEqual(res.move, { kind: 'spawn', to: 'plan' });
+  // classic's plan stage deliberately does NOT pin `model`: its worker is the
+  // same session that goes on to implement and refine, so pinning the model at
+  // the plan stage would pin it for the whole run. Model choice is the
+  // conductor's per-task judgment; playbooks enforce structure.
+  assert.equal('model' in res.patchedArgs, false);
+  assert.deepEqual(res.move, { kind: 'spawn', to: 'plan', playbook: 'classic' });
 });
 
 test('a supplied argument that contradicts `require` is refused, not overridden', () => {

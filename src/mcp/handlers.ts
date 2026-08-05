@@ -357,14 +357,23 @@ interface SpawnArgs {
   createWorktree?: boolean;
   temp?: boolean;
   debug?: boolean;
+  // Playbook-policy inputs. Declared so the router's unknown-argument rejection
+  // admits them; consumed entirely by src/mcp/playbookGate.ts before this
+  // handler runs, so nothing here reads them.
+  playbook?: string;
+  stage?: string;
+  needs?: Record<string, string>;
 }
 
-export async function spawnInstance(args: SpawnArgs, { instances, callerId }: McpCtx) {
-  if (!instances) throw new Error('orchestrator has no InstanceManager');
-  // callerId is the conductor's stable sessionId (?caller=). Resolve it to the
-  // conductor's live instanceId so callerInstanceId stays an instanceId.
-  const callerInst = callerId ? instances.liveForSession(callerId) : null;
-  // Resolve `args.model` to a concrete {model, backend} pair:
+// Resolve a spawn's `model` name to the concrete {model, backend} pair plus the
+// tier/role it resolved THROUGH. Exported because it is the authority on which
+// model names are spawnable at all: tests/playbook-schema.test.mjs runs every
+// built-in playbook's `require: {model}` through it, so a definition can never
+// ship pinning a model the product cannot resolve.
+export function resolveSpawnModel(input: string | null | undefined): {
+  model: string | null | undefined; backend: string; tier?: string; role?: string;
+} {
+  // Resolve `input` to a concrete {model, backend} pair:
   //   - a capability tier (fast/balanced/powerful/frontier) → its bound
   //     {backend, model} (a Claude version id, or another backend's model id);
   //   - a role → its resolved {backend, model} (built-in, user-custom, or a
@@ -377,7 +386,7 @@ export async function spawnInstance(args: SpawnArgs, { instances, callerId }: Mc
   //     backend (robustness);
   //   - a Claude model id (claude-…, incl. future ones) → pass-through claude;
   //   - anything else → reject, rather than silently spawn a broken claude.
-  let model: string | null | undefined = args.model;
+  let model: string | null | undefined = input;
   let backend = CLAUDE_BACKEND_ID;
   // Which tier/role the model was resolved THROUGH, forwarded to create() so its
   // stored default effort applies when the caller passed no `effort`. Exactly one
@@ -416,6 +425,15 @@ export async function spawnInstance(args: SpawnArgs, { instances, callerId }: Mc
       );
     }
   }
+  return { model, backend, ...(tier ? { tier } : {}), ...(role ? { role } : {}) };
+}
+
+export async function spawnInstance(args: SpawnArgs, { instances, callerId }: McpCtx) {
+  if (!instances) throw new Error('orchestrator has no InstanceManager');
+  // callerId is the conductor's stable sessionId (?caller=). Resolve it to the
+  // conductor's live instanceId so callerInstanceId stays an instanceId.
+  const callerInst = callerId ? instances.liveForSession(callerId) : null;
+  const { model, backend, tier, role } = resolveSpawnModel(args.model);
   // createWorktree:true → create a fresh worktree (passed to create() as the
   // boolean `true`); worktree:"<name>" → attach to an existing one.
   // createWorktree wins if both are given. create() still accepts the
@@ -498,6 +516,12 @@ async function maybeSubscribeIdle({ instances, callerId }: McpCtx, sessionId: st
 export async function sendPrompt(
   { sessionId, text, wait = false, waitTimeoutMs = 600_000, subscribe = true, subscribeTimeoutMs }: {
     sessionId: string; text: string; wait?: boolean; waitTimeoutMs?: number; subscribe?: boolean; subscribeTimeoutMs?: number;
+    // `stage`/`needs` are playbook-policy inputs, consumed by
+    // src/mcp/playbookGate.ts before this handler runs. Declared (and
+    // deliberately not destructured) so the type matches the schema the router
+    // validates against.
+    stage?: string;
+    needs?: Record<string, string>;
   },
   { instances, callerId }: McpCtx,
 ) {

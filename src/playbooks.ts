@@ -53,6 +53,19 @@ export const REQUIRE_FORBIDDEN_KEYS = ['sessionId', 'stage', 'playbook', 'needs'
 
 export const WILDCARD = '*';
 
+// Per-conductor-session enforcement level (the rollout gate + emergency
+// override), defaulting to 'off'. The single home for the allow-list:
+//   • 'off'     — nothing is checked, nothing is patched, nothing is ledgered.
+//                 Omitted `playbook`/`stage` are legal. Today's flow, unchanged.
+//   • 'warn'    — the refusal is ledgered and the call PROCEEDS anyway.
+//   • 'enforce' — the refusal is returned to the caller.
+export const PLAYBOOK_ENFORCEMENT_MODES = ['off', 'warn', 'enforce'] as const;
+export type PlaybookEnforcement = typeof PLAYBOOK_ENFORCEMENT_MODES[number];
+
+export function isPlaybookEnforcement(v: unknown): v is PlaybookEnforcement {
+  return typeof v === 'string' && (PLAYBOOK_ENFORCEMENT_MODES as readonly string[]).includes(v);
+}
+
 // ── the tool index (governable names + their real argument names) ────────────
 
 // toolName -> the set of its inputSchema.properties keys.
@@ -499,13 +512,18 @@ export interface LegalMoves {
   transitions: Array<{ to: string; via: string }>;
 }
 
-// What the call DID to the graph, so step 4 knows what to ledger. A self-edge
-// ('self') and an ordinary governed call ('none') move nothing.
+// What the call DID to the graph, so the enforcement gate knows what to ledger.
+// A self-edge ('self') and an ordinary governed call ('none') move nothing.
 export interface Move {
   kind: 'spawn' | 'transition' | 'self' | 'none';
   from?: string;
   to?: string;
   via?: string;
+  // Set on a 'spawn' only: the playbook the new worker is bound to, which on a
+  // non-root spawn is INHERITED from the `needs` ancestors rather than supplied.
+  // Carried here so the gate can write the `spawn` ledger event without
+  // re-deriving that inheritance.
+  playbook?: string;
 }
 
 export type Decision =
@@ -695,7 +713,10 @@ function decideSpawn(
     }
   }
 
-  return applyRequire({ stage, stageName, playbook, toolName: 'spawn_instance', args, move: { kind: 'spawn', to: stageName } });
+  return applyRequire({
+    stage, stageName, playbook, toolName: 'spawn_instance', args,
+    move: { kind: 'spawn', to: stageName, playbook: playbook.id },
+  });
 }
 
 function decideTargeted(

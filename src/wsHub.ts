@@ -21,6 +21,7 @@
 import { WebSocket } from 'ws';
 import type { WebSocketServer } from 'ws';
 import { invalidateAll } from './projectsCache.ts';
+import { PLAYBOOK_ENFORCEMENT_MODES, isPlaybookEnforcement } from './playbooks.ts';
 import type { InstanceManagerLike, InstanceLike, InstanceSummary } from './instanceTypes.ts';
 import type { UiEvent } from './parser.ts';
 
@@ -238,6 +239,17 @@ export function attachWsHub({ wss, instances }: WsHubOptions): void {
           case 'auto_approve_plan': {
             if (!inst) { reply(false, 'unknown instance'); return; }
             inst.setAutoApprovePlan(!!msg.enabled);
+            reply(true);
+            return;
+          }
+          case 'playbook_enforcement': {
+            if (!inst) { reply(false, 'unknown instance'); return; }
+            // Ingress validation — the setter takes an already-narrowed mode.
+            if (!isPlaybookEnforcement(msg.mode)) {
+              reply(false, `mode must be one of ${PLAYBOOK_ENFORCEMENT_MODES.join(' | ')}`);
+              return;
+            }
+            inst.setPlaybookEnforcement(msg.mode);
             reply(true);
             return;
           }

@@ -7,7 +7,7 @@
   "stages": {
     "plan": {
       "tools": {
-        "spawn_instance": { "require": { "mode": "plan", "model": "planner", "createWorktree": true } },
+        "spawn_instance": { "require": { "mode": "plan", "createWorktree": true } },
         "set_mode": "deny"
       }
     },

@@ -154,7 +154,10 @@ export function buildTools(): Tool[] {
         'omitted, the session\'s recorded project + worktree are recovered automatically so ' +
         'spawn_instance({resume:sessionId}) alone re-attaches the right cwd/branch and its prior history. ' +
         'CAUTION: an instance with the code-conductor MCP registered can in turn spawn ' +
-        'further instances — guard against runaway recursion by keeping child agents in plan mode.',
+        'further instances — guard against runaway recursion by keeping child agents in plan mode. ' +
+        'PLAYBOOKS: playbook / stage / needs declare which workflow graph this worker joins and where. ' +
+        'They are only enforced while the conductor session has playbookEnforcement on (default off, ' +
+        'where they are accepted and ignored); a refusal names the legal moves.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -185,6 +188,18 @@ export function buildTools(): Tool[] {
           },
           temp: { type: 'boolean', default: true, description: 'If true, the session jsonl is removed on subprocess exit. Defaults to true for MCP spawns; pass false to keep the session (or promote_session later).' },
           debug: { type: 'boolean', description: 'If true, raw CLI traffic is mirrored to .code-conductor/debug/<id>/.' },
+          playbook: {
+            type: 'string',
+            description: 'Playbook id (list_playbooks / describe_playbook). REQUIRED on a run root — a spawn with no `needs`. On a non-root spawn it is inherited from the workers named in `needs`; supplying a different one is refused PLAYBOOK_MISMATCH.',
+          },
+          stage: {
+            type: 'string',
+            description: 'The playbook stage this worker enters. It must declare spawn_instance in its tools map, else STAGE_NOT_SPAWNABLE — transition-only stages cannot be spawned into. The entered stage supplies both the permission and the entry conditions (`needs`, `require`).',
+          },
+          needs: {
+            type: 'object',
+            description: 'WORKER PROVENANCE — {"<stage>": "<sessionId>"} naming the workers that satisfy the entered stage\'s `needs`. Not the same as a stage\'s `require`, which pins argument VALUES. Absent ⇒ this spawn starts a new run. sessionId prefixes are accepted, like everywhere else.',
+          },
         },
         required: [],
       },
@@ -197,7 +212,8 @@ export function buildTools(): Tool[] {
         'Pass wait:true to block until the turn ends and return the turn_end event inline. ' +
         'A mid-turn send_prompt is delivered live into the running turn (not queued), so it can steer a worker in flight. ' +
         'Also auto-subscribes to the worker\'s idle callback by default (dispatch-and-wake) — see `subscribe`. ' +
-        'Skipped automatically when wait:true, since the turn already resolves inline.',
+        'Skipped automatically when wait:true, since the turn already resolves inline. ' +
+        'PLAYBOOKS: always carry `stage` — it is what makes send_prompt the default transition driver.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -212,6 +228,14 @@ export function buildTools(): Tool[] {
           subscribeTimeoutMs: {
             type: 'integer',
             description: 'Watchdog: wake with a non-completion "did NOT finish" stub if the worker+subagents-done state is never reached (hang/crash). Defaults to ORCH_SUBSCRIBE_TIMEOUT_MS when omitted; an explicit value overrides. Same semantics as subscribe_to_idle timeoutMs.',
+          },
+          stage: {
+            type: 'string',
+            description: 'The playbook stage this prompt puts the worker in — always carry it. Equal to the worker\'s current stage ⇒ a self-edge (an ordinary follow-up prompt), always legal. Different ⇒ a transition, checked against the playbook\'s edge set: TRANSITION_ILLEGAL if there is no such edge, or if the edge declares an `on` tool that must drive it instead.',
+          },
+          needs: {
+            type: 'object',
+            description: 'WORKER PROVENANCE — {"<stage>": "<sessionId>"} satisfying the DESTINATION stage\'s `needs` when `stage` names a transition. A stage\'s entry conditions apply however it is entered, by spawn or by transition, so a transition into a stage that declares `needs` must supply them here. Ignored on a self-edge (entering the stage you are already in re-checks nothing). sessionId prefixes are accepted.',
           },
         },
         required: ['sessionId', 'text'],

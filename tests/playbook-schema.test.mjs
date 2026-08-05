@@ -10,6 +10,9 @@ import {
   validatePlaybook, loadPlaybooks, loadToolIndex, governableToolNames,
   SEED_PLAYBOOK_IDS, REQUIRE_FORBIDDEN_KEYS,
 } from '../src/playbooks.ts';
+import { buildTools } from '../src/mcp/tools.ts';
+import { resolveSpawnModel } from '../src/mcp/handlers.ts';
+import { builtins } from './playbook-fixtures.mjs';
 
 const index = await loadToolIndex();
 
@@ -62,6 +65,49 @@ test('all four built-in playbooks load and validate clean', async () => {
   assert.equal(playbooks.get('classic').entryStages.join(','), 'plan');
   // split's defining property: the planner has no way out of `plan`.
   assert.equal(playbooks.get('split').transitions.some(t => t.from === 'plan'), false);
+});
+
+// A built-in's `require` values must be resolvable BY THE REAL PRODUCT, not
+// merely well-typed. The validator checks that a `require` key is a genuine
+// argument NAME of its tool; it cannot check that the VALUE means anything —
+// which is how `"model": "planner"` shipped, naming a role that exists nowhere
+// in the registry, making classic and split throw BAD_MODEL on every spawn.
+//
+// So each value is checked against whatever actually owns its domain:
+//   • the tool's own inputSchema, for `enum`/`type` constraints (covers `mode`,
+//     `createWorktree`, and any future constrained argument, generically); and
+//   • resolveSpawnModel — the exact ladder spawn_instance itself runs — for
+//     `model`, whose valid values live in the model registry, not the schema.
+test('every built-in `require` value resolves against the real product', async () => {
+  const playbooks = await builtins();
+  const schemas = new Map(buildTools().map(t => [t.name, t.inputSchema]));
+  let checked = 0;
+  for (const pb of playbooks.values()) {
+    for (const [stageName, stage] of Object.entries(pb.stages)) {
+      for (const [toolName, policy] of Object.entries(stage.tools)) {
+        if (typeof policy === 'string') continue;
+        const props = schemas.get(toolName)?.properties ?? {};
+        for (const [arg, value] of Object.entries(policy.require)) {
+          const where = `${pb.id}.${stageName}.tools.${toolName}.require.${arg}`;
+          const prop = props[arg] ?? {};
+          if (Array.isArray(prop.enum)) {
+            assert.ok(prop.enum.includes(value),
+              `${where} = ${JSON.stringify(value)} is not one of ${JSON.stringify(prop.enum)}`);
+          }
+          if (prop.type === 'boolean') assert.equal(typeof value, 'boolean', `${where} must be a boolean`);
+          if (prop.type === 'string') assert.equal(typeof value, 'string', `${where} must be a string`);
+          if (arg === 'model') {
+            assert.doesNotThrow(() => resolveSpawnModel(value),
+              `${where} = ${JSON.stringify(value)} is not a resolvable tier, role, family alias or model id`);
+          }
+          checked++;
+        }
+      }
+    }
+  }
+  // Guards the loop itself: a refactor that stopped finding `require` entries
+  // would otherwise make this test vacuously green.
+  assert.ok(checked >= 4, `expected to check several require values, checked ${checked}`);
 });
 
 // ── the governable surface is DERIVED, not a hardcoded list ─────────────────
@@ -166,11 +212,26 @@ test('the require-forbidden-key check PRECEDES the exists-in-inputSchema check',
     assert.doesNotMatch(joined, /is not an argument of/,
       `${key} must NOT be reported as a typo — the forbidden-key check has to run first`);
   }
-  // Sanity: the tool genuinely lacks these properties today, so the precedence
-  // is load-bearing rather than incidental.
+  // spawn_instance now genuinely DECLARES all three (the enforcement wiring added
+  // them), which is precisely the change the ordering was written to survive: an
+  // exists-first check would have reported them as typos before, and would start
+  // silently accepting them into the exists-branch now.
   for (const key of ['stage', 'playbook', 'needs']) {
-    assert.ok(!index.get('spawn_instance').has(key),
-      `spawn_instance unexpectedly declares '${key}' — revisit this test's premise`);
+    assert.ok(index.get('spawn_instance').has(key),
+      `spawn_instance must declare '${key}' as an argument — the policy layer passes it`);
+  }
+  // So the precedence is now observable on a tool that does NOT declare them:
+  // reported as a policy-layer input, never as a misspelled argument.
+  for (const key of ['stage', 'playbook', 'needs']) {
+    assert.ok(!index.get('set_mode').has(key), `set_mode must not declare '${key}'`);
+    const res = validatePlaybook(
+      base({ stages: { a: { tools: { spawn_instance: 'allow', set_mode: { require: { [key]: 'x' } } } } } }),
+      'fixture', index);
+    assert.equal(res.ok, false);
+    const joined = res.errors.join('\n');
+    assert.match(joined, new RegExp(`require cannot constrain '${key}'`));
+    assert.doesNotMatch(joined, /is not an argument of/,
+      `${key} on set_mode must NOT be reported as a typo — the forbidden-key check has to run first`);
   }
   // sessionId, by contrast, IS a real argument of set_mode and still refused.
   assert.ok(index.get('set_mode').has('sessionId'));

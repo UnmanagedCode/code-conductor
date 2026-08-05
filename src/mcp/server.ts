@@ -11,6 +11,7 @@ import express from 'express';
 import { buildTools } from './tools.ts';
 import { isTextPayload, codeForStatus } from './content.ts';
 import { SESSION_PREFIX_MIN } from '../instances.ts';
+import { createPlaybookGate, type PlaybookGate } from './playbookGate.ts';
 import type { InstanceManagerLike } from '../instanceTypes.ts';
 
 const PROTOCOL_VERSION = '2025-06-18';
@@ -33,6 +34,7 @@ interface McpCtx {
   instances?: InstanceManagerLike | null;
   tools: McpTool[];
   callerId: string | null;
+  playbookGate: PlaybookGate;
 }
 
 // The tool shape the transport itself needs — deliberately broader than the
@@ -211,13 +213,27 @@ function rpcRequestId(msg: unknown): unknown {
   return isJsonRecord(msg) ? msg.id : undefined;
 }
 
-// True when a tool's inputSchema declares a `sessionId` property with a
-// truthy value — the schema gate for the prefix-resolution chokepoint below.
-function hasSessionIdProperty(schema: unknown): boolean {
+// True when a tool's inputSchema declares `prop` with a truthy value — the
+// schema gate for the prefix-resolution chokepoint below. Driven off the schema
+// so a future tool declaring `needs` is resolved without another edit here.
+function hasSchemaProperty(schema: unknown, prop: string): boolean {
   if (!isJsonRecord(schema)) return false;
   const props = schema.properties;
   if (!isJsonRecord(props)) return false;
-  return 'sessionId' in props && !!props.sessionId;
+  return prop in props && !!props[prop];
+}
+
+// The SESSION_AMBIGUOUS soft refusal, shared by both prefix-resolution sites
+// (the top-level `sessionId` and each `needs` value) so the wording has one
+// home. `where` names the argument the ambiguous prefix came from.
+function ambiguousRefusal(
+  ref: { ambiguous: string[]; tooShort: boolean }, input: string, where: string,
+): Record<string, unknown> {
+  const matches = ref.ambiguous.map(s => s.slice(0, 8));
+  const reason = ref.tooShort
+    ? `session prefix "${input}" (${where}) is too short — pass at least ${SESSION_PREFIX_MIN} characters or a full sessionId. Candidates: ${matches.join(', ')}.`
+    : `session prefix "${input}" (${where}) matches ${ref.ambiguous.length} sessions — pass more characters or a full sessionId. Candidates: ${matches.join(', ')}.`;
+  return { ok: false, code: 'SESSION_AMBIGUOUS', sessionId: input, reason, matches };
 }
 
 async function dispatch(msg: unknown, ctx: McpCtx): Promise<JsonRpcResponse | null> {
@@ -279,27 +295,56 @@ async function dispatch(msg: unknown, ctx: McpCtx): Promise<JsonRpcResponse | nu
       // on-disk lookup paths still run. The only new outcome is SESSION_AMBIGUOUS,
       // serialized exactly like a handler soft-refusal (no isError).
       if (ctx.instances?.resolveSessionRef
-          && hasSessionIdProperty(tool.inputSchema)
+          && hasSchemaProperty(tool.inputSchema, 'sessionId')
           && isJsonRecord(args)
           && typeof args.sessionId === 'string' && args.sessionId) {
         const ref = ctx.instances.resolveSessionRef(args.sessionId);
         if (ref && 'ambiguous' in ref) {
-          const matches = ref.ambiguous.map(s => s.slice(0, 8));
-          const reason = ref.tooShort
-            ? `session prefix "${args.sessionId}" is too short — pass at least ${SESSION_PREFIX_MIN} characters or a full sessionId. Candidates: ${matches.join(', ')}.`
-            : `session prefix "${args.sessionId}" matches ${ref.ambiguous.length} sessions — pass more characters or a full sessionId. Candidates: ${matches.join(', ')}.`;
           return rpcResult(id, {
-            content: [{ type: 'text', text: JSON.stringify({
-              ok: false, code: 'SESSION_AMBIGUOUS', sessionId: args.sessionId, reason, matches,
-            }) }],
+            content: [{ type: 'text', text: JSON.stringify(ambiguousRefusal(ref, args.sessionId, 'sessionId')) }],
           });
         }
         if (ref?.sessionId && ref.sessionId !== args.sessionId) {
           args = { ...args, sessionId: ref.sessionId };
         }
       }
+      // `needs` values are sessionIds too (spawn_instance's {stage: sessionId}
+      // provenance map — see src/playbooks.ts), so they get the SAME prefix
+      // treatment. Without this the conductor would have to pass full 36-char
+      // UUIDs in `needs` while every other worker reference takes 8 chars.
+      // Ordering is load-bearing: this must run before the policy checkpoint
+      // below, which compares these values against the projection's full ids.
+      if (ctx.instances?.resolveSessionRef
+          && hasSchemaProperty(tool.inputSchema, 'needs')
+          && isJsonRecord(args) && isJsonRecord(args.needs)) {
+        const resolved: Record<string, unknown> = { ...args.needs };
+        for (const [stage, value] of Object.entries(args.needs)) {
+          if (typeof value !== 'string' || !value) continue;
+          const ref = ctx.instances.resolveSessionRef(value);
+          if (ref && 'ambiguous' in ref) {
+            return rpcResult(id, {
+              content: [{ type: 'text', text: JSON.stringify(ambiguousRefusal(ref, value, `needs.${stage}`)) }],
+            });
+          }
+          if (ref?.sessionId) resolved[stage] = ref.sessionId;
+        }
+        args = { ...args, needs: resolved };
+      }
+      // Playbook policy — the ONE enforcement point, deliberately AFTER
+      // validateArgs and after both prefix-resolution passes, and BEFORE the
+      // handler. Inert unless the caller is a conductor with enforcement on;
+      // see src/mcp/playbookGate.ts.
+      const gate = await ctx.playbookGate.check({ toolName: name, args, callerId: ctx.callerId });
+      if ('refusal' in gate) {
+        return rpcResult(id, { content: [{ type: 'text', text: JSON.stringify(gate.refusal) }] });
+      }
+      args = gate.args;
       try {
         const result = await tool.handler(args, ctx);
+        // Ledger the move only now that it has actually happened. A throw skips
+        // this entirely (see the catch below); a soft refusal is filtered inside
+        // commit().
+        if (gate.commit) await gate.commit(result);
         let content: Array<{ type: 'text'; text: string }>;
         if (isTextPayload(result)) {
           // Multi-block: compact-JSON metadata block, then one raw text block
@@ -340,6 +385,9 @@ export function buildMcpRouter({ instances, pluginHost }: { instances?: Instance
   r.use(express.json({ limit: '8mb' }));
 
   const coreTools = buildTools();
+  // One gate per router: it holds the folded ledger projection, and it subscribes
+  // to the manager's status stream for retire / enforcement-toggle events.
+  const playbookGate = createPlaybookGate({ instances });
 
   r.post('/', async (req, res) => {
     // Each spawned worker registers the MCP URL with its own stable INSTANCE id
@@ -366,7 +414,7 @@ export function buildMcpRouter({ instances, pluginHost }: { instances?: Instance
         console.warn('mcp: plugin tool composition failed:', errMessage(e) || e);
       }
     }
-    const ctx: McpCtx = { instances, tools, callerId };
+    const ctx: McpCtx = { instances, tools, callerId, playbookGate };
     const body: unknown = req.body;
     // Batch: array of requests → array of responses (notifications dropped).
     if (Array.isArray(body)) {

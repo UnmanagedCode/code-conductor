@@ -22,7 +22,8 @@ import {
   readResumeManifest,
   clearResumeManifest,
 } from './resumeManifest.ts';
-import { CONDUCT_PROJECT_NAME, ensureConductProject } from './conduct.ts';
+import { CONDUCT_PROJECT_NAME, ensureConductProject, isConductorInstance } from './conduct.ts';
+import { isPlaybookEnforcement, type PlaybookEnforcement } from './playbooks.ts';
 import type { InstanceLike, InstanceManagerLike, InstanceSummary } from './instanceTypes.ts';
 
 // Wait-and-retry grace: after wind-down, wait this long (`RESUME_DRAIN_GRACE_MS`) for every live
@@ -86,7 +87,7 @@ export function buildConductorResumeText(workers: WorkerRow[] = []): string {
 // Classify a live instance into a resume group.
 function groupOf(inst: InstanceLike): 'worker' | 'conductor' | 'other' {
   if (inst.conducted) return 'worker';
-  if (inst.project === CONDUCT_PROJECT_NAME) return 'conductor';
+  if (isConductorInstance(inst)) return 'conductor';
   return 'other';
 }
 
@@ -218,6 +219,10 @@ export async function drainToManifest({ server, wss, instances, log = console, g
       title: (s.title ?? null) as string | null,
       firstPrompt: (s.firstPrompt ?? null) as string | null,
       autoApprovePlan: !!s.autoApprovePlan,
+      // Carried because losing it is a SILENT downgrade: a conductor that comes
+      // back as 'off' after a restart is unenforced with nothing saying so —
+      // exactly the invisible drift playbooks exist to catch.
+      playbookEnforcement: isPlaybookEnforcement(s.playbookEnforcement) ? s.playbookEnforcement : 'off',
       group,
       wasBusy: busyAtDrain.has(inst.id),
       // Pending overage auto-resume (in-memory-only until now). `autoResumeAt`
@@ -322,6 +327,7 @@ export async function restoreFromResumeManifest({ instances, log = console, stag
         conducted: !!e.conducted,
         debug: !!e.debug,
         autoApprovePlan: !!e.autoApprovePlan,
+        playbookEnforcement: e.playbookEnforcement,
         callerInstanceId: null,
       });
       if (e.title) inst.setTitle(e.title);
@@ -388,6 +394,7 @@ interface ResumeEntry {
   title: string | null;
   firstPrompt: string | null;
   autoApprovePlan: boolean;
+  playbookEnforcement: PlaybookEnforcement;
   group: 'conductor' | 'worker' | 'other';
   wasBusy: boolean;
   overageResumeAt: number | null;
