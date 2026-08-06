@@ -243,6 +243,36 @@ test('restoreFromResumeManifest resumes conductors + others, skips workers, inje
   }
 });
 
+test('a manifest carrying the retired playbookEnforcement `off` resurrects at warn', async () => {
+  // The migrate-on-read path, end to end. A pending-resume.json written by the
+  // build that still had three levels is the ONLY way 'off' can reach this
+  // process, and it is consumed once at boot — so it is normalized here rather
+  // than by a migration.
+  //
+  // It must land on `warn`, not on the `enforce` default: that session was
+  // deliberately running unenforced, and bringing it back enforced would start
+  // refusing calls that used to be allowed with nothing announcing it.
+  const conductorSid = randomUUID();
+  const conductCwd = path.join(projectsRoot, '.conduct');
+  const dir = path.join(claudeProjectsRoot, encodeCwd(conductCwd));
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(path.join(dir, `${conductorSid}.jsonl`), '{"type":"user","uuid":"u1"}\n');
+
+  await fs.mkdir(orchStoreRoot(), { recursive: true });
+  writeResumeManifest([{
+    project: '.conduct', sessionId: conductorSid, cwd: conductCwd,
+    mode: 'bypassPermissions', effort: 'high', thinking: 'adaptive', model: null,
+    worktreeName: null, temp: true, conducted: false, debug: false, title: null,
+    autoApprovePlan: false, playbookEnforcement: 'off', group: 'conductor',
+  }]);
+
+  await restoreFromResumeManifest({ instances, log: { log() {}, warn() {} }, staggerMs: 0 });
+  const inst = [...instances.byId.values()].find(i => i.sessionId === conductorSid);
+  assert.ok(inst, 'conductor resumed');
+  assert.equal(inst.playbookEnforcement, 'warn',
+    "the retired level must normalize to warn, never to the enforcing default");
+});
+
 test('buildConductorResumeText lists each worker sessionId + worktree', () => {
   const txt = buildConductorResumeText([
     { project: 'p1', sessionId: 'aaa', worktreeName: 'wt-1' },

@@ -1,16 +1,15 @@
-// The playbook-enforcement <select> in the controls row.
+// The playbook-enforcement toggle in the ⋮ session menu.
 //
 // It governs the CONDUCTOR's own tool calls, so it is meaningless on any other
 // session — a visible control that does nothing is worse than an absent one.
-// Modelled on #mode-select rather than the autoApprovePlan toggle: three states,
-// rendered from state (never optimistic), with the `status` frame authoritative.
+// Modelled on #mute-btn: a menu item carrying two states in aria-pressed + its
+// label, rendered from state (never optimistic) with the `status` frame
+// authoritative — unlike #auto-approve-plan-btn, which flips optimistically.
 //
 // Same harness as tests/header-mute.test.mjs — the real index.html into
 // happy-dom so `dom` matches app.js's wiring, then the real installHeader()
 // driven with fake instance state. This file covers the RENDER side only; the
-// `change` listener that forwards to send() lives in app.js and is not reached by
-// any test in this repo (it is pure delegation, deliberately — see app.js).
-
+// `click` listener that forwards to send() lives in app.js.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
@@ -55,7 +54,7 @@ async function setup() {
     sessionStatsBtn: document.getElementById('session-stats-btn'),
     pruneSessionBtn: document.getElementById('prune-session-btn'),
     autoApprovePlanBtn: document.getElementById('auto-approve-plan-btn'),
-    playbookEnforcementSelect: document.getElementById('playbook-enforcement-select'),
+    playbookEnforcementBtn: document.getElementById('playbook-enforcement-btn'),
     overflowMenu: document.getElementById('overflow-menu'),
     overflowToggle: document.getElementById('overflow-toggle'),
   };
@@ -102,58 +101,71 @@ const WORKER = {
   autoApprovePlan: false, interrupting: false, debug: false,
 };
 // The reserved conductor project — must track CONDUCT_PROJECT_NAME (src/conduct.ts).
-const CONDUCTOR = { ...WORKER, id: 'inst-2', sessionId: 'sess-2', project: '.conduct', playbookEnforcement: 'off' };
+const CONDUCTOR = { ...WORKER, id: 'inst-2', sessionId: 'sess-2', project: '.conduct', playbookEnforcement: 'enforce' };
 
 test('the control is hidden for an ordinary session and shown for a conductor', async () => {
   const t = await setup();
 
   t.show(WORKER);
-  assert.equal(t.dom.playbookEnforcementSelect.hidden, true,
+  assert.equal(t.dom.playbookEnforcementBtn.hidden, true,
     'enforcement is meaningless off a conductor, so the control must not appear');
-  assert.equal(t.dom.playbookEnforcementSelect.disabled, true);
+  assert.equal(t.dom.playbookEnforcementBtn.disabled, true);
 
   t.show(CONDUCTOR);
-  assert.equal(t.dom.playbookEnforcementSelect.hidden, false);
-  assert.equal(t.dom.playbookEnforcementSelect.disabled, false);
+  assert.equal(t.dom.playbookEnforcementBtn.hidden, false);
+  assert.equal(t.dom.playbookEnforcementBtn.disabled, false);
 });
 
-test('the control renders the conductor\'s current level, and re-renders when it changes', async () => {
+test('the toggle renders the conductor\'s current level, and re-renders when it changes', async () => {
   const t = await setup();
 
   t.show({ ...CONDUCTOR, playbookEnforcement: 'enforce' });
-  assert.equal(t.dom.playbookEnforcementSelect.value, 'enforce',
-    'the current level must be readable without interaction — that is the whole point of the control');
+  assert.equal(t.dom.playbookEnforcementBtn.getAttribute('aria-pressed'), 'true',
+    'enforce is the ON position — readable without interaction, which is the point of the control');
+  assert.match(t.dom.playbookEnforcementBtn.textContent, /Enforce Playbooks/);
 
   // A `status` frame changes the mirrored value; update() must follow it rather
-  // than keep whatever the user last picked (the control is not optimistic).
+  // than keep whatever the user last tapped (the toggle is not optimistic).
   t.show({ ...CONDUCTOR, playbookEnforcement: 'warn' });
-  assert.equal(t.dom.playbookEnforcementSelect.value, 'warn');
+  assert.equal(t.dom.playbookEnforcementBtn.getAttribute('aria-pressed'), 'false',
+    'warn is the OFF position: illegal moves are recorded but allowed');
 
-  // A conductor from before this field existed has no value; default to the safe
-  // level rather than rendering blank.
+  t.show({ ...CONDUCTOR, playbookEnforcement: 'enforce' });
+  assert.equal(t.dom.playbookEnforcementBtn.getAttribute('aria-pressed'), 'true',
+    'and back — the label tracks the server, in both directions');
+});
+
+test('a level this client does not know renders as ON', async () => {
+  const t = await setup();
+  // Only 'warn' turns the toggle off. A missing or unrecognised value therefore
+  // reads as enforcing, which is the safe direction for a control whose OFF
+  // position stops illegal moves being refused. ('off' is retired server-side and
+  // normalized to 'warn' before it can reach a frame — see normalizePlaybookEnforcement.)
   const legacy = { ...CONDUCTOR };
   delete legacy.playbookEnforcement;
   t.show(legacy);
-  assert.equal(t.dom.playbookEnforcementSelect.value, 'off');
+  assert.equal(t.dom.playbookEnforcementBtn.getAttribute('aria-pressed'), 'true');
 });
 
-test('the control offers exactly the three enforcement levels', async () => {
+test('the toggle sits in the ⋮ panel directly below Prune', async () => {
   const t = await setup();
-  const values = [...t.dom.playbookEnforcementSelect.querySelectorAll('option')].map(o => o.value);
-  assert.deepEqual(values, ['off', 'warn', 'enforce'],
-    'the options are the server-side allow-list (PLAYBOOK_ENFORCEMENT_MODES); a fourth would be refused');
+  assert.equal(t.dom.playbookEnforcementBtn.parentElement?.id, 'overflow-panel',
+    'it belongs in the ⋮ session menu, not the controls row');
+  assert.equal(t.dom.playbookEnforcementBtn.previousElementSibling?.id, 'prune-session-btn',
+    'placed immediately below Prune');
+  assert.equal(t.dom.playbookEnforcementBtn.getAttribute('role'), 'menuitem');
 });
 
-test('the control is a sibling of #mode-select in the controls row', async () => {
+test('the retired <select> is gone from index.html', async () => {
   const t = await setup();
-  assert.equal(t.dom.playbookEnforcementSelect.parentElement?.id, 'instance-controls',
-    'it belongs beside #mode-select, not in the ⋮ overflow panel where its current value would be hidden');
+  assert.equal(document.getElementById('playbook-enforcement-select'), null,
+    'the three-level dropdown was replaced, not duplicated — two controls would fight over one field');
 });
 
 test('a dead conductor cannot have its enforcement changed', async () => {
   const t = await setup();
   for (const status of ['exited', 'crashed']) {
     t.show({ ...CONDUCTOR, status, playbookEnforcement: 'enforce' });
-    assert.equal(t.dom.playbookEnforcementSelect.hidden, true, `hidden for a ${status} conductor`);
+    assert.equal(t.dom.playbookEnforcementBtn.hidden, true, `hidden for a ${status} conductor`);
   }
 });

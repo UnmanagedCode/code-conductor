@@ -570,11 +570,20 @@ export function installHeader({
     // Playbook enforcement governs the CONDUCTOR's own tool calls, so it is
     // meaningless on any other session — and a visible control that does nothing
     // is worse than an absent one. Rendered from state (never optimistic), like
-    // #mode-select beside it: the `status` frame is authoritative.
+    // #mode-select: the `status` frame is authoritative.
+    //
+    // Two levels only, so `!== 'warn'` IS "enforcing" — that also renders a value
+    // this client doesn't know as on, which is the safe way round for a control
+    // whose off position means illegal moves stop being refused.
     const showEnforcement = canMenu && inst.project === CONDUCT_PROJECT;
-    dom.playbookEnforcementSelect.hidden = !showEnforcement;
-    dom.playbookEnforcementSelect.disabled = !showEnforcement;
-    if (showEnforcement) dom.playbookEnforcementSelect.value = inst.playbookEnforcement ?? 'off';
+    dom.playbookEnforcementBtn.hidden = !showEnforcement;
+    dom.playbookEnforcementBtn.disabled = !showEnforcement;
+    const enforcing = inst.playbookEnforcement !== 'warn';
+    dom.playbookEnforcementBtn.textContent = enforcing ? '🔒 Enforce Playbooks' : '⚠️ Enforce Playbooks';
+    dom.playbookEnforcementBtn.title = enforcing
+      ? 'Illegal playbook moves are refused for this conductor — tap to only record them'
+      : 'Illegal playbook moves are recorded but allowed — tap to refuse them';
+    dom.playbookEnforcementBtn.setAttribute('aria-pressed', enforcing ? 'true' : 'false');
     dom.overflowMenu.hidden = !canMenu;
     if (inst.debug) {
       dom.debugBtn.textContent = '🐛 capturing';

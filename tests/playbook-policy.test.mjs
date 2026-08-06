@@ -114,6 +114,51 @@ test('a run-root spawn must name a playbook; an unknown playbook or stage is nam
     /must name the `stage` to enter/);
 });
 
+// ── the first-spawn refusal has to be recoverable in ONE round-trip ─────────
+//
+// Enforcement is on by default, so a fresh conductor's first spawn is refused
+// unless it already names a playbook — and it cannot know one without asking.
+// That refusal is the only channel (there is no server→client notification and
+// the tool list is fetched once), so it must carry both halves of the answer:
+// which playbooks exist AND where each can be entered. `legalMoves` structurally
+// cannot say this — it describes edges out of one known stage, and there is no
+// stage yet — so it lives in `reason`.
+
+test('the run-root refusal names every playbook WITH its spawnable entry stages', () => {
+  const res = refusal(d('spawn_instance', { project: 'demo' }), 'PLAYBOOK_UNKNOWN');
+  assert.match(res.reason, /must name a `playbook` and a `stage`/);
+  for (const [id, playbook] of PB) {
+    assert.match(res.reason, new RegExp(`\\b${id}\\b`), `${id} must be named`);
+    const spawnable = playbook.entryStages.filter(
+      s => playbook.stages[s].tools['spawn_instance'] !== undefined
+        && playbook.stages[s].tools['spawn_instance'] !== 'deny');
+    for (const stage of spawnable) {
+      assert.match(res.reason, new RegExp(`\\b${stage}\\b`),
+        `${id}'s entry stage ${stage} must be named, or the conductor needs a second refusal to find it`);
+    }
+  }
+});
+
+test('acting on that refusal alone yields a LEGAL spawn — no second round-trip', () => {
+  // The claim under test is that the hint is actionable, not merely present: parse
+  // the first (playbook, stage) pair back out of the text the conductor was given
+  // and replay the call. If the hint ever drifts from real stage names, this fails
+  // where a substring assertion would not.
+  const res = refusal(d('spawn_instance', { project: 'demo' }), 'PLAYBOOK_UNKNOWN');
+  const m = /(\w[\w-]*) \(enter at: ([\w-]+)/.exec(res.reason);
+  assert.ok(m, `the hint must be machine-parseable; got: ${res.reason}`);
+  const [, playbook, stage] = m;
+  const retry = allowed(d('spawn_instance', { playbook, stage, project: 'demo' }));
+  assert.equal(retry.move.kind, 'spawn');
+  assert.deepEqual({ playbook: retry.move.playbook, to: retry.move.to }, { playbook, to: stage });
+});
+
+test('naming a playbook but no stage still names that playbook\'s entry stages', () => {
+  // The second step of recovery, if the conductor supplies only the playbook.
+  assert.match(refusal(d('spawn_instance', { playbook: 'classic' }), 'STAGE_UNKNOWN').reason,
+    /can be entered at: plan/);
+});
+
 // ── needs: worker provenance, on spawn-entry AND transition-entry ───────────
 
 test('needs is enforced on SPAWN-entry: a reviewer needs an implementer', () => {

@@ -159,7 +159,7 @@ const dom = {
   pruneSessionBtn: document.getElementById('prune-session-btn'),
   pruneDialog: document.getElementById('prune-dialog'),
   autoApprovePlanBtn: document.getElementById('auto-approve-plan-btn'),
-  playbookEnforcementSelect: document.getElementById('playbook-enforcement-select'),
+  playbookEnforcementBtn: document.getElementById('playbook-enforcement-btn'),
   overflowMenu: document.getElementById('overflow-menu'),
   overflowToggle: document.getElementById('overflow-toggle'),
   overflowPanel: document.getElementById('overflow-panel'),
@@ -637,14 +637,17 @@ dom.modeSelect.addEventListener('change', async () => {
   catch (e) { alert(`mode change failed: ${e.message}`); }
 });
 
-// Pure delegation, deliberately: no validation, no state decision, no rendering.
-// The allowed values are the <option>s (checked again server-side by
-// isPlaybookEnforcement), visibility/disabled/value are header.js's, and the
-// authoritative value comes back on the `status` frame. This is the one line of
-// the feature no test reaches, so it holds no logic to get wrong.
-dom.playbookEnforcementSelect.addEventListener('change', async () => {
+// Two levels, so the menu item flips to the other one. Deliberately NOT
+// optimistic (unlike #auto-approve-plan-btn): the label is rendered from the
+// `status` frame in header.js, so what the menu shows is always what the server
+// is actually enforcing — worth a round-trip for a control that decides whether
+// illegal moves get refused.
+dom.playbookEnforcementBtn.addEventListener('click', async () => {
   if (!state.activeId) return;
-  const mode = dom.playbookEnforcementSelect.value;
+  const inst = state.instances.find(i => i.id === state.activeId);
+  if (!inst) return;
+  closeOverflow();
+  const mode = inst.playbookEnforcement === 'warn' ? 'enforce' : 'warn';
   try { await send('playbook_enforcement', { id: state.activeId, mode }, { ack: true }); }
   catch (e) { alert(`playbook enforcement change failed: ${e.message}`); }
 });

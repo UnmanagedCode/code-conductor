@@ -13,11 +13,13 @@ import { SessionRenewController, type RenewalOpts } from './sessionRenew.ts';
 import { isTemp, markTemp, unmarkTemp } from './tempSessions.ts';
 import { markArchived } from './archivedSessions.ts';
 import { CONDUCT_PROJECT_NAME, isConductorInstance, materializeCurrentConduct } from './conduct.ts';
-// TYPE-ONLY, deliberately: verbatimModuleSyntax erases it, so this adds no
-// runtime import edge from instances.ts into the playbook subsystem. The
-// runtime allow-list (PLAYBOOK_ENFORCEMENT_MODES) is validated at the ingress
-// boundaries — the spawn route and the WS toggle — not here.
-import type { PlaybookEnforcement } from './playbooks.ts';
+// The DEFAULT is imported rather than restated: a second copy of the level this
+// field is born at would drift from the allow-list that validates it. Safe as a
+// runtime edge — playbooks.ts reaches only projects/fragmentCatalog/playbookLedger
+// at module scope, and the tool registry through a lazy dynamic import, so nothing
+// here closes a cycle. The allow-list itself (PLAYBOOK_ENFORCEMENT_MODES) is still
+// applied at the ingress boundaries — the spawn route and the WS toggle — not here.
+import { DEFAULT_PLAYBOOK_ENFORCEMENT, type PlaybookEnforcement } from './playbooks.ts';
 import { buildSettingsJSON, buildMcpConfigJSON, AWAITING_INPUT_MESSAGE } from './settings.ts';
 import { getOnOverageAction, getOverageThreshold, getConductorCompactWindow, resolveContextWindowTokens, getDebugByDefault, getBackend, isKnownBackend, resolveSpawnEffort } from './appSettings.ts';
 import { HookBroker, type HookEnvelope } from './hookBroker.ts';
@@ -617,11 +619,10 @@ export class Instance extends EventEmitter implements InstanceLike {
     // focus, or whether any client is even connected.
     this.autoApprovePlan = false;
     // How hard this session's playbook is enforced at the MCP boundary, read by
-    // src/mcp/playbookGate.ts. Only meaningful on a CONDUCTOR (the gate governs
-    // the conductor's own calls); 'off' is a no-op, so the field is harmless on
-    // every other instance. Defaults to 'off' so an upgrade cannot break a flow
-    // that predates playbooks.
-    this.playbookEnforcement = 'off';
+    // src/mcp/playbookGate.ts. Only meaningful on a CONDUCTOR — the gate scopes
+    // itself with isConductorInstance, so the field is simply never read on any
+    // other instance. On by default: a conducted run names its playbook.
+    this.playbookEnforcement = DEFAULT_PLAYBOOK_ENFORCEMENT;
     // Transient flag layered on top of `status: 'turn'`: set true when a
     // SOFT interrupt injects its hidden steering message and the model is
     // winding the turn down; cleared automatically by _setStatus on any

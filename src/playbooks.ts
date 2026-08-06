@@ -56,17 +56,31 @@ export const REQUIRE_FORBIDDEN_KEYS = ['sessionId', 'stage', 'playbook', 'needs'
 
 export const WILDCARD = '*';
 
-// Per-conductor-session enforcement level (the rollout gate + emergency
-// override), defaulting to 'off'. The single home for the allow-list:
-//   • 'off'     — nothing is checked, nothing is patched, nothing is ledgered.
-//                 Omitted `playbook`/`stage` are legal. Today's flow, unchanged.
+// Per-conductor-session enforcement level. The single home for the allow-list:
 //   • 'warn'    — the refusal is ledgered and the call PROCEEDS anyway.
 //   • 'enforce' — the refusal is returned to the caller.
-export const PLAYBOOK_ENFORCEMENT_MODES = ['off', 'warn', 'enforce'] as const;
+// Both levels check, patch and ledger; neither is inert. Enforcement is on by
+// default, so a conducted run must name its playbook — see decideSpawn's
+// PLAYBOOK_UNKNOWN refusal, which carries every playbook and where to enter it.
+export const PLAYBOOK_ENFORCEMENT_MODES = ['warn', 'enforce'] as const;
 export type PlaybookEnforcement = typeof PLAYBOOK_ENFORCEMENT_MODES[number];
+export const DEFAULT_PLAYBOOK_ENFORCEMENT: PlaybookEnforcement = 'enforce';
 
 export function isPlaybookEnforcement(v: unknown): v is PlaybookEnforcement {
   return typeof v === 'string' && (PLAYBOOK_ENFORCEMENT_MODES as readonly string[]).includes(v);
+}
+
+// Absorbs the retired 'off' level off a value that predates the two-level model.
+// Read-time tolerance is warranted for exactly one store — pending-resume.json,
+// written by the previous build during a graceful drain and consumed once at the
+// next boot — so there is no durable state left for a migration to rewrite.
+//
+// 'off' lands on 'warn', NOT on the 'enforce' default: bringing a session that
+// was running unenforced back as enforced is a silent UPGRADE, the mirror of the
+// silent downgrade src/resumeRestart.ts carries this field to avoid.
+export function normalizePlaybookEnforcement(v: unknown): PlaybookEnforcement {
+  if (v === 'off') return 'warn';
+  return isPlaybookEnforcement(v) ? v : DEFAULT_PLAYBOOK_ENFORCEMENT;
 }
 
 // ── the tool index (governable names + their real argument names) ────────────
@@ -664,14 +678,14 @@ function decideSpawn(
     playbookId = args.playbook;
   } else {
     return refuse('PLAYBOOK_UNKNOWN',
-      'this spawn has no `needs`, so it starts a new run and must name a `playbook`. ' +
-      `Known playbooks: ${[...playbooks.keys()].sort().join(', ') || '(none)'}.`, noMoves);
+      'this spawn has no `needs`, so it starts a new run and must name a `playbook` and a `stage`. ' +
+      `Known playbooks: ${knownPlaybooksHint(playbooks)}.`, noMoves);
   }
 
   const playbook = playbooks.get(playbookId);
   if (!playbook) {
     return refuse('PLAYBOOK_UNKNOWN',
-      `no playbook '${playbookId}'. Known playbooks: ${[...playbooks.keys()].sort().join(', ') || '(none)'}.`,
+      `no playbook '${playbookId}'. Known playbooks: ${knownPlaybooksHint(playbooks)}.`,
       noMoves);
   }
 
@@ -728,8 +742,8 @@ function decideTargeted(
 ): Decision {
   const sessionId = typeof args.sessionId === 'string' ? args.sessionId : '';
   const subject = sessionId ? projection.bySession.get(sessionId) : undefined;
-  // Not a playbook-tracked worker (spawned with enforcement off, or not conducted
-  // at all) — ungoverned, nothing to check.
+  // Not a playbook-tracked worker (not conducted at all, or spawned before this
+  // process began tracking the run) — ungoverned, nothing to check.
   if (!subject) return { ok: true, patchedArgs: args, move: { kind: 'none' } };
 
   const playbook = playbooks.get(subject.playbook);
@@ -885,6 +899,26 @@ function applyRequire(
 
 function refuse(code: RefusalCode, reason: string, legalMoves: LegalMoves): Decision {
   return { ok: false, code, reason, legalMoves };
+}
+
+// Every playbook with the stages it can actually be entered at, e.g.
+// "classic (enter at: recon), freeform (enter at: freeform)".
+//
+// Enforcement is on by default, so a conductor's FIRST spawn is refused unless it
+// already names a playbook — and it has no way to know one without asking. Naming
+// the entry stages here, not just the playbook ids, is what makes that refusal
+// recoverable in one round-trip instead of two (name, then stage). `legalMoves`
+// cannot carry this: it describes edges out of ONE known stage, and there is no
+// stage yet. Spawnable-only, since a transition-only entry stage would be a dead
+// end (isSpawnable is the same predicate the spawn check below uses).
+function knownPlaybooksHint(playbooks: Map<string, Playbook>): string {
+  const ids = [...playbooks.keys()].sort();
+  if (ids.length === 0) return '(none)';
+  return ids.map(id => {
+    const pb = playbooks.get(id) as Playbook;
+    const entries = pb.entryStages.filter(s => isSpawnable(pb.stages[s]));
+    return `${id} (${entries.length > 0 ? `enter at: ${entries.join(', ')}` : 'no spawnable entry stage'})`;
+  }).join(', ');
 }
 
 function short(sessionId: string): string {

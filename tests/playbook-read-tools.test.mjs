@@ -3,9 +3,8 @@
 // ?caller= and the fake claude engine.
 //
 // Two properties matter more than the shapes:
-//   • READING NEVER WRITES. `off` inertness is the highest-priority invariant of
-//     the whole feature, and a read tool that materialises the ledger to answer
-//     would break it silently.
+//   • READING NEVER WRITES. A read tool that appended to the ledger — or created
+//     it — to answer would corrupt the audit trail with the act of inspecting it.
 //   • ADVERTISED == ENFORCED. `nextMoves` is answered by dry-running the same
 //     decide() the enforcement checkpoint runs, so the two cannot diverge by
 //     construction; the test then performs the advertised moves and compares.
@@ -102,6 +101,12 @@ async function setup({ enforcement } = {}) {
     async ledgerExists() {
       try { await fs.access(ledgerFile()); return true; } catch { return false; }
     },
+    async eventCount() {
+      try {
+        const raw = await fs.readFile(ledgerFile(), 'utf8');
+        return raw.split('\n').filter(l => l.trim()).length;
+      } catch { return 0; }
+    },
     // Drop a hand-authored definition into the user overlay directory, which is
     // the documented way to add a playbook without touching the repo.
     async writeUserPlaybook(id, body) {
@@ -195,29 +200,63 @@ test('describe_playbook soft-refuses an unknown id and lists the known ones', as
 
 // ── reading never writes ───────────────────────────────────────────────────
 
-test('all three read tools answer on a fresh install without creating the ledger', async () => {
-  const t = await setup();
+test('the read tools create no ledger when there is nothing to read', async () => {
+  // No conductor at all, so nothing has recorded a birth: the read-only fold must
+  // answer from an empty projection and leave the filesystem untouched. Built from
+  // scratch rather than via setup() precisely because setup()'s conductor would
+  // materialise the ledger itself — legitimately, and for reasons unrelated to reads.
+  const ctx = await bootServer({ scenarioPath: SCENARIO });
   try {
-    assert.equal((await t.call('list_playbooks', {})).playbooks.length, 4);
-    assert.equal((await t.call('describe_playbook', { id: 'classic' })).id, 'classic');
-    const state = await t.call('playbook_state', {});
-    assert.deepEqual(state.runs, [], 'nothing is tracked yet');
+    const call = async (name, args) => {
+      const res = await fetch(ctx.baseUrl + '/mcp', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: nextRpcId++, method: 'tools/call', params: { name, arguments: args } }),
+      });
+      const body = await res.json();
+      return JSON.parse(body.result.content[0].text);
+    };
+    assert.equal((await call('list_playbooks', {})).playbooks.length, 4);
+    assert.equal((await call('describe_playbook', { id: 'classic' })).id, 'classic');
+    assert.deepEqual((await call('playbook_state', {})).runs, []);
 
-    const worker = await t.spawnWorker({ project: 'demo', mode: 'plan', createWorktree: true });
-    const targeted = await t.call('playbook_state', { sessionId: worker.sessionId });
-    assert.equal(targeted.tracked, false);
-
-    // The whole point: answering must not be a side effect. Give any deferred
-    // write real chances to land rather than reading once and racing it.
+    // Give any deferred write real chances to land rather than reading once and
+    // racing it.
     await assert.rejects(
-      () => waitFor(() => t.ledgerExists(), { timeout: 1000, interval: 20 }),
+      () => waitFor(async () => {
+        try { await fs.access(ledgerFile()); return true; } catch { return false; }
+      }, { timeout: 1000, interval: 20 }),
       /timeout/,
       'a read tool must never materialise the ledger it reads');
+  } finally { await ctx.close(); }
+});
+
+test('the read tools append no events to a ledger that already exists', async () => {
+  // The other half of "reading never writes", and the half that still applies once
+  // a conductor's birth event has created the file: answering must add nothing.
+  const t = await setup({ enforcement: 'warn' });
+  try {
+    const worker = await t.spawnWorker({ project: 'demo', mode: 'plan', createWorktree: true });
+    await waitFor(async () => (await t.eventCount()) > 0);
+    const before = await t.eventCount();
+
+    assert.equal((await t.call('list_playbooks', {})).playbooks.length, 4);
+    assert.equal((await t.call('describe_playbook', { id: 'classic' })).id, 'classic');
+    assert.deepEqual((await t.call('playbook_state', {})).runs, [],
+      'the illegal spawn was refused-but-allowed, so it bound no run');
+    assert.equal((await t.call('playbook_state', { sessionId: worker.sessionId })).tracked, false);
+
+    await assert.rejects(
+      () => waitFor(async () => (await t.eventCount()) > before, { timeout: 1000, interval: 20 }),
+      /timeout/,
+      'reading must not append');
   } finally { await t.close(); }
 });
 
 test('playbook_state for an untracked worker is a normal empty answer, not a refusal', async () => {
-  const t = await setup();
+  // `warn` is what produces an untracked worker now: the playbook-less spawn is
+  // refused-but-allowed, so it runs with no binding.
+  const t = await setup({ enforcement: 'warn' });
   try {
     const worker = await t.spawnWorker({ project: 'demo', mode: 'plan', createWorktree: true });
     const res = await t.call('playbook_state', { sessionId: worker.sessionId });

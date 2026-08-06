@@ -56,7 +56,7 @@ async function setup() {
     sessionStatsBtn: document.getElementById('session-stats-btn'),
     pruneSessionBtn: document.getElementById('prune-session-btn'),
     autoApprovePlanBtn: document.getElementById('auto-approve-plan-btn'),
-    playbookEnforcementSelect: document.getElementById('playbook-enforcement-select'),
+    playbookEnforcementBtn: document.getElementById('playbook-enforcement-btn'),
     overflowMenu: document.getElementById('overflow-menu'),
     overflowToggle: document.getElementById('overflow-toggle'),
   };

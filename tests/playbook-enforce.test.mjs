@@ -178,35 +178,50 @@ const refused = (res, code) => {
   return res;
 };
 
-// ── the highest-priority invariant: `off` changes nothing ───────────────────
+// ── `warn`: everything is checked and recorded, nothing is refused ──────────
+//
+// There is no inert level any more. `warn` differs from `enforce` on exactly one
+// thing — whether the refusal reaches the caller — so these tests pin that the
+// permissive level still decides, still patches and still writes.
 
-test('off: a spawn/prompt/approve flow with NO playbook args works and writes no ledger', async () => {
-  const t = await setup();
+test('warn: an illegal spawn PROCEEDS, is ledgered as a refusal, and stays untracked', async () => {
+  const t = await setup({ enforcement: 'warn' });
   try {
+    // No playbook at all: `enforce` refuses this with PLAYBOOK_UNKNOWN.
     const w = await t.spawnWorker({ project: 'demo', mode: 'plan', createWorktree: true });
-    assert.ok(w.sessionId, 'spawn succeeded without naming a playbook or stage');
-    // A stage-less send_prompt and approve_plan are exactly today's calls.
-    assert.equal((await t.call('send_prompt', { sessionId: w.sessionId, text: 'go', subscribe: false })).ok, undefined);
-    assert.ok((await t.call('approve_plan', { sessionId: w.sessionId, subscribe: false })).sessionId);
-    // Inert means inert: the ledger file is never even created.
-    assert.equal(await t.ledgerExists(), false, 'enforcement off must not touch the ledger');
+    assert.ok(w.sessionId, 'warn lets a spawn with no playbook through');
+
+    const refusals = await waitFor(async () => {
+      const evs = (await t.events()).filter(e => e.kind === 'refusal');
+      return evs.length > 0 ? evs : false;
+    });
+    assert.equal(refusals[0].code, 'PLAYBOOK_UNKNOWN',
+      'the ledger is the only trace that the call should not have been allowed');
+    assert.equal(refusals[0].tool, 'spawn_instance');
+
+    // Refused-but-allowed means NO binding was written, so the worker is
+    // ungoverned even after a flip to enforce.
+    assert.equal((await t.events()).filter(e => e.kind === 'spawn').length, 0,
+      'an illegal spawn records no binding');
+    assert.equal((await t.call('send_prompt', {
+      sessionId: w.sessionId, text: 'go', stage: 'refine', subscribe: false,
+    })).ok, undefined, 'an untracked worker is ungoverned at either level');
   } finally { await t.close(); }
 });
 
-test('off: playbook/stage/needs are accepted and ignored', async () => {
-  const t = await setup();
+test('warn: a LEGAL spawn is patched by `require` and recorded, exactly as under enforce', async () => {
+  const t = await setup({ enforcement: 'warn' });
   try {
-    // A spawn that `enforce` would refuse outright (implement is transition-only)
-    // succeeds here, and `require` does not patch the mode.
-    const w = await t.spawnWorker({
-      project: 'demo', playbook: 'classic', stage: 'implement', mode: 'bypassPermissions',
-    });
-    assert.ok(w.sessionId);
-    assert.equal(w.mode, 'bypassPermissions', 'off must not apply the stage\'s require');
-    assert.equal((await t.call('send_prompt', {
-      sessionId: w.sessionId, text: 'go', stage: 'refine', subscribe: false,
-    })).ok, undefined, 'an illegal transition is not checked while off');
-    assert.equal(await t.ledgerExists(), false);
+    // Neither mode nor createWorktree is passed; the plan stage pins both. Proof
+    // that warn runs the full decide()+patch path rather than passing args through.
+    const w = await t.spawnWorker({ project: 'demo', playbook: 'classic', stage: 'plan' });
+    assert.equal(w.mode, 'plan', 'warn applies the stage\'s require');
+    assert.ok(w.worktree?.worktreeName, 'require filled in createWorktree under warn');
+
+    const spawn = await waitFor(async () =>
+      (await t.events()).find(e => e.kind === 'spawn') ?? false);
+    assert.deepEqual({ playbook: spawn.playbook, stage: spawn.stage },
+      { playbook: 'classic', stage: 'plan' }, 'the binding is written under warn');
   } finally { await t.close(); }
 });
 
@@ -362,8 +377,12 @@ test('enforce: a worker whose subprocess exits is retired without a kill_instanc
   } finally { await t.close(); }
 });
 
-test('off: a worker exit writes no retire, because nothing was ever tracked', async () => {
-  const t = await setup();
+test('an untracked worker\'s exit writes no retire', async () => {
+  // Under `warn` the playbook-less spawn proceeds without a binding, which is the
+  // only way to get an untracked worker now that no level is inert. The ledger
+  // itself DOES exist here (birth + the refusal), so the assertion is on the
+  // absence of the retire event, not of the file.
+  const t = await setup({ enforcement: 'warn' });
   try {
     const w = await t.spawnWorker({ project: 'demo', mode: 'plan', createWorktree: true });
     await instForSession(t.instances, w.sessionId).kill();
@@ -373,36 +392,54 @@ test('off: a worker exit writes no retire, because nothing was ever tracked', as
     // require that it never does — a sibling test proves the same path writes
     // within milliseconds when the worker IS tracked.
     await assert.rejects(
-      () => waitFor(() => t.ledgerExists(), { timeout: 1000, interval: 20 }),
+      () => waitFor(async () => (await t.events()).some(e => e.kind === 'retire'),
+        { timeout: 1000, interval: 20 }),
       /timeout/,
       'the exit listener must stay inert while nothing is tracked');
   } finally { await t.close(); }
 });
 
-// The restart window: the projection is folded lazily on the first GOVERNED
-// call, so a worker that crashes before one has happened is read against an
-// empty projection. Without an explicit fold it would never retire and would
-// hold its workers:"one" slot in the on-disk ledger forever.
+// The restart window: a worker bound by a PREVIOUS run of the orchestrator exits
+// before this process has made any governed call. The retire path must fold the
+// ledger itself rather than assume enforcement already did, or that worker never
+// retires and holds its stage's workers:"one" slot in the on-disk ledger forever.
 //
-// Staged exactly that way: the conductor is `off`, so no governed call ever
-// loads the projection, and the ledger is hand-authored as if an earlier
-// enforcing run had tracked this worker.
-test('a worker tracked by a previous run still retires when it exits before any governed call', async () => {
-  const t = await setup();
+// Staged the way production reaches it — the ledger is already on disk when the
+// conductor boots — which is why this test builds its own fixture instead of
+// using setup(): the binding has to predate the conductor, and setup() spawns the
+// conductor first.
+test('a worker bound by a previous run still retires when it exits', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO });
   try {
-    const w = await t.spawnWorker({ project: 'demo', mode: 'plan', createWorktree: true });
+    await makeRealRepo(ctx.projectsRoot, 'demo');
+    await api(ctx.baseUrl, 'POST', '/api/projects/.conduct/ensure');
+
+    // A worker created directly, so no governed call is involved in its birth.
+    const worker = await api(ctx.baseUrl, 'POST', '/api/instances',
+      { project: 'demo', mode: 'plan', temp: true });
+    assert.equal(worker.status, 201, `worker spawn failed: ${JSON.stringify(worker.body)}`);
+    await waitFor(() => ctx.instances.get(worker.body.id)?.sessionId);
+    const sessionId = ctx.instances.get(worker.body.id).sessionId;
+
+    // The earlier run's ledger, hand-authored as if it had tracked this worker.
     await fs.mkdir(path.dirname(ledgerFile()), { recursive: true });
     await fs.writeFile(ledgerFile(), JSON.stringify({
       seq: 1, ts: '2026-08-05T00:00:00Z', kind: 'spawn',
-      sessionId: w.sessionId, playbook: 'classic', stage: 'plan', project: 'demo',
+      sessionId, playbook: 'classic', stage: 'plan', project: 'demo',
     }) + '\n');
 
-    await instForSession(t.instances, w.sessionId).kill();
-    await waitFor(async () => (await t.events()).some(e => e.kind === 'retire'));
-    const folded = foldProjection(await t.events());
-    assert.equal(folded.bySession.get(w.sessionId).live, false,
-      'the slot is freed even though enforcement never loaded the projection itself');
-  } finally { await t.close(); }
+    // Only now does a conductor exist, and it makes no tools/call at all.
+    const spawned = await api(ctx.baseUrl, 'POST', '/api/instances',
+      { project: '.conduct', mode: 'bypassPermissions', temp: true });
+    assert.equal(spawned.status, 201);
+    await waitFor(() => ctx.instances.get(spawned.body.id)?.status === 'idle');
+
+    await ctx.instances.get(worker.body.id).kill();
+    await waitFor(async () => (await readEvents(ledgerFile())).some(e => e.kind === 'retire'));
+    const folded = foldProjection(await readEvents(ledgerFile()));
+    assert.equal(folded.bySession.get(sessionId).live, false,
+      'the slot is freed even though enforcement never decided a single call');
+  } finally { await ctx.close(); }
 });
 
 // ── split: the planner can never implement ─────────────────────────────────
@@ -535,20 +572,6 @@ test('enforce: a refusal pushes no playbook_warn — the caller already got it',
   } finally { if (c) await c.close(); await t.close(); }
 });
 
-test('off: an illegal move pushes no playbook_warn', async () => {
-  const t = await setup();
-  let c = null;
-  try {
-    const impl = await t.spawnWorker({ project: 'demo', playbook: 'classic', stage: 'plan' });
-    c = await watchConductor(t);
-    await t.call('send_prompt', {
-      sessionId: impl.sessionId, text: 'skip ahead', stage: 'implement', subscribe: false,
-    });
-    await c.expectNoWarning();
-    assert.equal(await t.ledgerExists(), false, 'off still writes nothing at all');
-  } finally { if (c) await c.close(); await t.close(); }
-});
-
 test('policy applies only to the conductor: the same calls from a worker or no caller are ungoverned', async () => {
   const t = await setup({ enforcement: 'enforce' });
   try {
@@ -565,8 +588,8 @@ test('policy applies only to the conductor: the same calls from a worker or no c
     // The case where being a conductor is the OPERATIVE term rather than
     // incidental: a NON-.conduct instance that is itself carrying
     // playbookEnforcement:'enforce'. The spawn route accepts the field for any
-    // project, so `mode === 'off'` cannot be what makes this caller ungoverned —
-    // only the conductor check can.
+    // project, so a permissive level cannot be what makes this caller ungoverned
+    // — only the conductor check can.
     const rogue = await api(t.baseUrl, 'POST', '/api/instances', {
       project: 'demo', mode: 'bypassPermissions', temp: true, playbookEnforcement: 'enforce',
     });
@@ -597,9 +620,10 @@ test('policy applies only to the conductor: the same calls from a worker or no c
 // ── the toggle ─────────────────────────────────────────────────────────────
 
 test('the enforcement toggle takes effect on the next call and lands in the ledger', async () => {
-  const t = await setup();
+  // Starts at `warn` — the OFF position of the menu toggle — where an unlabelled
+  // spawn is allowed through, so the flip has something observable to change.
+  const t = await setup({ enforcement: 'warn' });
   try {
-    // Starts `off`, so an unlabelled spawn is fine.
     const w = await t.spawnWorker({ project: 'demo', mode: 'plan', createWorktree: true });
     assert.ok(w.sessionId);
 
@@ -611,30 +635,31 @@ test('the enforcement toggle takes effect on the next call and lands in the ledg
     // Same call, now refused — the flip is live without a respawn.
     refused(await t.call('spawn_instance', { project: 'demo', mode: 'plan' }), 'PLAYBOOK_UNKNOWN');
 
-    const toggles = await expectEnforcementEvents(t, 1);
-    assert.equal(toggles[0].from, 'off', 'the change is recorded so backtracking can explain it');
-    assert.equal(toggles[0].to, 'enforce');
-    assert.equal(toggles[0].conductorSessionId, t.instances.get(t.conductorId).sessionId);
+    // Two events: the birth at `warn`, then the change.
+    const toggles = await expectEnforcementEvents(t, 2);
+    assert.equal(toggles[1].from, 'warn', 'the change is recorded so backtracking can explain it');
+    assert.equal(toggles[1].to, 'enforce');
+    assert.equal(toggles[1].conductorSessionId, t.instances.get(t.conductorId).sessionId);
 
     // A no-op re-set writes nothing more.
     await t.setEnforcement('enforce');
-    await expectNoMoreEnforcement(t, 1);
+    await expectNoMoreEnforcement(t, 2);
 
     // An unknown mode is refused at the ingress boundary.
     const bad = await t.setEnforcement('sometimes');
     assert.equal(bad.ok, false);
-    assert.match(bad.error, /off \| warn \| enforce/);
+    assert.match(bad.error, /warn \| enforce/);
     assert.equal(t.instances.get(t.conductorId).playbookEnforcement, 'enforce');
   } finally { await t.close(); }
 });
 
-test('a conductor born at enforce records a birth event with from:null, never from:off', async () => {
+test('a conductor born at enforce records a birth event with from:null, not from:warn', async () => {
   const t = await setup({ enforcement: 'enforce' });
   try {
     const birth = (await expectEnforcementEvents(t, 1))[0];
     assert.equal(birth.to, 'enforce');
-    // The whole point: `null` says "born this way". `'off'` would assert a past
-    // the conductor never had.
+    // The whole point: `null` says "born this way". Naming the other level would
+    // assert a past the conductor never had.
     assert.equal(birth.from, null);
     assert.equal('from' in birth, true, 'the key is present-and-null, so a reader can tell a birth from a missing field');
     assert.equal(birth.conductorSessionId, t.instances.get(t.conductorId).sessionId);
@@ -650,16 +675,25 @@ test('a conductor born at enforce records a birth event with from:null, never fr
   } finally { await t.close(); }
 });
 
-test('a conductor born at off records nothing and creates no ledger file', async () => {
+test('a conductor born at warn records its birth and materialises the ledger', async () => {
+  const t = await setup({ enforcement: 'warn' });
+  try {
+    // No level is inert, so the permissive one is audited too — a `warn` session
+    // that is never flipped must still be explicable from the ledger alone.
+    const [birth] = await expectEnforcementEvents(t, 1);
+    assert.deepEqual({ from: birth.from, to: birth.to }, { from: null, to: 'warn' });
+    assert.equal(await t.ledgerExists(), true);
+  } finally { await t.close(); }
+});
+
+test('a conductor spawned with no playbookEnforcement defaults to enforce', async () => {
   const t = await setup();
   try {
-    await waitFor(() => t.instances.get(t.conductorId)?.sessionId);
-    // The birth path must not fire for the default mode — give it real chances.
-    await assert.rejects(
-      () => waitFor(() => t.ledgerExists(), { timeout: 1000, interval: 20 }),
-      /timeout/,
-      'an off-at-spawn conductor must not create the ledger');
-    await expectNoMoreEnforcement(t, 0);
+    // The flipped default, read at the real ingress rather than off the class
+    // field: playbooks are on unless someone turns them off.
+    assert.equal(t.instances.get(t.conductorId).playbookEnforcement, 'enforce');
+    assert.equal(t.instances.get(t.conductorId).summary().playbookEnforcement, 'enforce',
+      'and it rides the summary, which is what every frame and REST reply carries');
   } finally { await t.close(); }
 });
 
@@ -670,6 +704,24 @@ test('the spawn route validates playbookEnforcement and rejects an unknown mode'
       project: '.conduct', mode: 'bypassPermissions', temp: true, playbookEnforcement: 'always',
     });
     assert.equal(bad.status, 400);
-    assert.match(bad.body.error, /off \| warn \| enforce/);
+    assert.match(bad.body.error, /warn \| enforce/);
+  } finally { await t.close(); }
+});
+
+test('the retired `off` level is refused at both ingress boundaries', async () => {
+  const t = await setup();
+  try {
+    // 'off' is gone from the allow-list, so it must be REFUSED rather than
+    // silently coerced — a caller asking for inert behaviour that no longer
+    // exists deserves to hear that, not to get `warn` without being told.
+    const bad = await api(t.baseUrl, 'POST', '/api/instances', {
+      project: '.conduct', mode: 'bypassPermissions', temp: true, playbookEnforcement: 'off',
+    });
+    assert.equal(bad.status, 400);
+
+    const ack = await t.setEnforcement('off');
+    assert.equal(ack.ok, false, 'the WS toggle must reject it too');
+    assert.equal(t.instances.get(t.conductorId).playbookEnforcement, 'enforce',
+      'and the level must not have moved');
   } finally { await t.close(); }
 });

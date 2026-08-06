@@ -396,7 +396,7 @@ export async function playbookState({ sessionId }: { sessionId?: string }, ctx: 
     return {
       tracked: false, worker: null, run: null, nextMoves: [], history: [],
       historyTruncated: false, enforcement,
-      reason: `worker ${sessionId.slice(0, 8)} is not playbook-tracked (spawned with enforcement off, or not conducted).`,
+      reason: `worker ${sessionId.slice(0, 8)} is not playbook-tracked (not conducted, or spawned without a playbook while enforcement was 'warn').`,
     };
   }
 
