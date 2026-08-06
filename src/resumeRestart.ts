@@ -23,7 +23,7 @@ import {
   clearResumeManifest,
 } from './resumeManifest.ts';
 import { CONDUCT_PROJECT_NAME, ensureConductProject, isConductorInstance } from './conduct.ts';
-import { isPlaybookEnforcement, type PlaybookEnforcement } from './playbooks.ts';
+import { normalizePlaybookEnforcement, type PlaybookEnforcement } from './playbooks.ts';
 import type { InstanceLike, InstanceManagerLike, InstanceSummary } from './instanceTypes.ts';
 
 // Wait-and-retry grace: after wind-down, wait this long (`RESUME_DRAIN_GRACE_MS`) for every live
@@ -220,9 +220,9 @@ export async function drainToManifest({ server, wss, instances, log = console, g
       firstPrompt: (s.firstPrompt ?? null) as string | null,
       autoApprovePlan: !!s.autoApprovePlan,
       // Carried because losing it is a SILENT downgrade: a conductor that comes
-      // back as 'off' after a restart is unenforced with nothing saying so —
+      // back permissive after a restart is unenforced with nothing saying so —
       // exactly the invisible drift playbooks exist to catch.
-      playbookEnforcement: isPlaybookEnforcement(s.playbookEnforcement) ? s.playbookEnforcement : 'off',
+      playbookEnforcement: normalizePlaybookEnforcement(s.playbookEnforcement),
       group,
       wasBusy: busyAtDrain.has(inst.id),
       // Pending overage auto-resume (in-memory-only until now). `autoResumeAt`
@@ -327,7 +327,11 @@ export async function restoreFromResumeManifest({ instances, log = console, stag
         conducted: !!e.conducted,
         debug: !!e.debug,
         autoApprovePlan: !!e.autoApprovePlan,
-        playbookEnforcement: e.playbookEnforcement,
+        // Normalized on the READ side, not just where the manifest is written:
+        // this file is the one store a PREVIOUS build's retired 'off' can reach
+        // this process through, and it is read exactly once before being deleted,
+        // which is why absorbing it here needs no migration.
+        playbookEnforcement: normalizePlaybookEnforcement(e.playbookEnforcement),
         callerInstanceId: null,
       });
       if (e.title) inst.setTitle(e.title);

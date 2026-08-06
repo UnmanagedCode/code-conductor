@@ -24,16 +24,20 @@
 // — and only to tools in the derived governable set. Everything else passes
 // through untouched.
 //
-// `off` IS FULLY INERT. No decide(), no arg patching, no ledger append. That is
-// the highest-priority invariant here: enforcement defaults to 'off', so an
-// upgrade must leave every existing conductor flow working byte-for-byte,
-// including spawns that name no `playbook`/`stage`. The consequence is that a
-// run started under 'off' is untracked, so flipping to 'enforce' mid-run leaves
-// those workers ungoverned while new spawns are governed — that is the intended
-// rollout, not a gap.
+// NEITHER LEVEL IS INERT. Both `warn` and `enforce` run decide(), patch args and
+// append to the ledger; they part company on one thing only — whether a refusal
+// is returned to the caller or merely recorded while the call proceeds. So every
+// conductor session materialises the ledger, and a governed call always costs a
+// fold plus a definitions read.
+//
+// A LEGAL spawn is recorded under either level, so a `warn` run that named its
+// playbook is fully governable the moment enforcement is flipped on. An illegal
+// one is not: under `warn` it proceeds with only the refusal recorded and no
+// binding, leaving that worker untracked — so flipping to `enforce` mid-run
+// governs new spawns while those workers stay ungoverned.
 
 import {
-  decide, loadToolIndex, loadPlaybooks, normalizeToolName,
+  decide, loadToolIndex, loadPlaybooks, normalizeToolName, normalizePlaybookEnforcement,
   type Move, type Playbook, type RefusalCode, type LegalMoves,
 } from '../playbooks.ts';
 import {
@@ -70,8 +74,8 @@ export interface PlaybookGate {
   //
   // Both fold on demand through the same memoised load the enforcement path uses,
   // and that load is READ-ONLY: a missing ledger folds to an empty projection and
-  // creates nothing. That is what lets a read tool answer under `off` without
-  // materialising the file.
+  // creates nothing. That is what lets a read tool answer before any run has been
+  // recorded without materialising the file.
   readProjection(): Promise<Projection>;
   readHistory(): Promise<LedgerEvent[]>;
   // Test seam: the ledger this gate appends to.
@@ -99,8 +103,8 @@ export function createPlaybookGate(
 
   // Fold the ledger from disk once, on the first governed call rather than at
   // construction: the router is built before a test has finished pointing
-  // PROJECTS_ROOT at its temp store, and an 'off'-only session must never touch
-  // the filesystem at all. The PROMISE is memoised, not a boolean — a tools/call
+  // PROJECTS_ROOT at its temp store, so resolving the path eagerly would bind the
+  // wrong store. The PROMISE is memoised, not a boolean — a tools/call
   // and a status event can both arrive first, and two concurrent load() calls
   // would fold the same events into the projection twice.
   function ensureLoaded(): Promise<unknown> {
@@ -163,12 +167,11 @@ export function createPlaybookGate(
       // never retire, and stay `live` in the on-disk ledger forever — leaking its
       // workers:"one" slot with no way to recover.
       //
-      // This does not break `off` inertness: load() is READ-ONLY (a missing file
-      // folds to an empty projection and creates nothing), and the append below
-      // is guarded on the worker already being tracked. So the guard is "was this
-      // worker ever recorded", NOT "is enforcement on" — deliberately, because a
-      // worker tracked by an earlier enforcing run must still retire correctly
-      // even if enforcement is off right now.
+      // load() is READ-ONLY (a missing file folds to an empty projection and
+      // creates nothing), and the append below is guarded on the worker already
+      // being tracked. So the guard is "was this worker ever recorded", NOT "is
+      // enforcement on" — deliberately, because a worker bound by an earlier
+      // enforcing run must still retire correctly after a flip to `warn`.
       await ensureLoaded();
       const st = ledger.projection().bySession.get(sessionId);
       if (st?.live) await append({ kind: 'retire', sessionId, reason: `subprocess ${summary.status}` });
@@ -176,20 +179,18 @@ export function createPlaybookGate(
     // ENFORCEMENT. Without this, backtracking cannot explain why an
     // illegal-looking move was allowed.
     if (!isConductorInstance({ project: String(summary.project) })) return;
-    const mode = typeof summary.playbookEnforcement === 'string' ? summary.playbookEnforcement : 'off';
+    const mode = normalizePlaybookEnforcement(summary.playbookEnforcement);
     // The FIRST observation of a conductor is its BIRTH, not a change: a
-    // conductor created with `enforce` was never `off`, so {from:'off'} would put
-    // a value in the audit trail that never held. A birth is recorded with
-    // `from: null` instead — and only when the mode is not the default 'off',
-    // because an 'off' conductor must not create the ledger file at all.
+    // conductor created at `warn` was never at the `enforce` default, so
+    // {from:'enforce'} would put a value in the audit trail that never held. A
+    // birth is recorded with `from: null` instead.
     //
-    // Assuming the 'off' default here, rather than reading the instance, is safe
-    // because create() awaits launch(), which emits status — so a conductor has
-    // always ticked at least once before any client can reach it to flip the
-    // toggle, and the first tick therefore carries the spawn-time value.
+    // Every birth is recorded, at either level — neither is inert. The first tick
+    // carries the spawn-time value because create() awaits launch(), which emits
+    // status, so a conductor has always ticked at least once before any client can
+    // reach it to flip the toggle.
     if (!lastMode.has(sessionId)) {
       lastMode.set(sessionId, mode);
-      if (mode === 'off') return;
       await ensureLoaded();
       await append({ kind: 'enforcement', conductorSessionId: sessionId, from: null, to: mode });
       return;
@@ -215,7 +216,6 @@ export function createPlaybookGate(
     if (!caller || !isConductorInstance(caller)) return pass;
 
     const mode = caller.playbookEnforcement;
-    if (mode === 'off') return pass;
 
     // Governable = the derived set (tools taking a sessionId, plus
     // spawn_instance). Never a literal list.

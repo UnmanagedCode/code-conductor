@@ -62,13 +62,6 @@
             <option value="ask">ask</option>
             <option value="plan">plan</option>
           </select>
-          <select id="playbook-enforcement-select" disabled hidden
-                  aria-label="Playbook enforcement"
-                  title="Playbook enforcement for this conductor — off: nothing is checked (today's flow). warn: illegal moves are recorded but allowed. enforce: illegal moves are refused. Conductor sessions only.">
-            <option value="off">🔓 off</option>
-            <option value="warn">⚠️ warn</option>
-            <option value="enforce">🔒 enforce</option>
-          </select>
           <button id="resume-btn" hidden>Resume</button>
           <button id="sync-btn" hidden title="Bring this worktree up to date with its parent branch (fast-forward when possible, otherwise ask the agent to rebase)">Sync</button>
           <button id="merge-btn" hidden title="Merge this worktree's branch into the parent (creates a merge commit, even when fast-forward would be possible)">Merge</button>
@@ -85,6 +78,7 @@
                       title="Cost & timing for this session and the workers it spawned">📊 Statistics</button>
               <button id="prune-session-btn" type="button" role="menuitem"
                       title="Shrink this session's context by stubbing out old tool payloads and thinking, keeping questions and orchestration calls intact — mechanical, no LLM pass, no token cost">🪒 Prune</button>
+              <button id="playbook-enforcement-btn" type="button" role="menuitem">🔒 Enforce Playbooks</button>
               <button id="mute-btn" type="button" role="menuitem">🔕 Mute</button>
               <button id="kill-btn" type="button" role="menuitem" disabled>Interrupt</button>
               <button id="debug-btn" type="button" role="menuitem" title="Start mirroring CLI stdin/stdout/stderr to .code-conductor/debug/&lt;id&gt;/ for offline inspection">🐛 Debug</button>
