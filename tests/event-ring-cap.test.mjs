@@ -6,7 +6,14 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventLog } from '../src/instances.ts';
 
-function pushN(log, n, makeEv = (i) => ({ kind: 'text_delta', text: `e${i}` })) {
+// Padding events carry a DISTINCT blockIdx each, so the ring's coalescing
+// (consecutive same-(msgId, blockIdx) deltas fold into one slot) never collapses
+// the padding and the eviction pressure these tests assert on stays 1 slot per
+// push. Deliberately no text_end: an unterminated run leaves every block open, so
+// every index inside it is non-quiescent — the same profile a single shared
+// blockIdx produced before coalescing, which is what keeps the snap/give-up
+// cases below meaningful.
+function pushN(log, n, makeEv = (i) => ({ kind: 'text_delta', msgId: 'm', blockIdx: i, text: `e${i}` })) {
   for (let i = 0; i < n; i++) log.push(makeEv(i));
 }
 
@@ -42,7 +49,7 @@ test('trim snaps the surviving head to an outer user_echo', () => {
   // the snappable window, so after any trim the head must be a user_echo.
   pushN(log, 200, (i) => (i % 4 === 0
     ? { kind: 'user_echo', text: `prompt ${i}` }
-    : { kind: 'text_delta', text: `e${i}` }));
+    : { kind: 'text_delta', msgId: 'm', blockIdx: i, text: `e${i}` }));
   const head = log.toArray()[0];
   assert.equal(head.kind, 'user_echo');
 });
@@ -51,7 +58,7 @@ test('snap ignores sub-agent user_echo (parentToolUseId set)', () => {
   const log = new EventLog({ cap: 10 });
   pushN(log, 200, (i) => (i % 4 === 0
     ? { kind: 'user_echo', text: `sub ${i}`, parentToolUseId: 'tu_1' }
-    : { kind: 'text_delta', text: `e${i}` }));
+    : { kind: 'text_delta', msgId: 'm', blockIdx: i, text: `e${i}` }));
   const head = log.toArray()[0];
   // No outer echo exists → plain cut (head is whatever the cut landed on,
   // never treated as a turn boundary).
@@ -164,4 +171,65 @@ test('a huge single reasoning turn cannot overflow the ring (no eviction)', () =
   assert.equal(log.trimmedBefore, 0, 'nothing evicted → the turn boundary survives, no mid-turn gap');
   assert.equal(arr[2].kind, 'thinking_delta');
   assert.ok(arr[2].text.startsWith('t0 ') && arr[2].text.endsWith('t4999 '));
+});
+
+// ── Storage-only coalescing of the per-token prose flood ─────────────────────
+// Same fold as thinking above, same storage-only contract. One prose block was
+// observed occupying 1265-2060 ring slots before this.
+
+test('consecutive same-block text_delta fold into one slot', () => {
+  const log = new EventLog({ cap: 50 });
+  const d1 = { kind: 'text_delta', msgId: 'm1', blockIdx: 0, text: 'Hello' };
+  const d2 = { kind: 'text_delta', msgId: 'm1', blockIdx: 0, text: ' world' };
+  const d3 = { kind: 'text_delta', msgId: 'm1', blockIdx: 0, text: '!' };
+  log.push(d1); log.push(d2); log.push(d3);
+  const arr = log.toArray();
+  assert.equal(arr.length, 1, 'one ring slot per text block');
+  assert.equal(arr[0].text, 'Hello world!', 'concatenated in arrival order');
+  assert.equal(arr[0]._seq, 0);
+  assert.equal(d2._seq, undefined, 'folded delta stays seq-less for the live feed');
+  assert.equal(d3._seq, undefined);
+  assert.equal(log.nextSeq, 1, 'only the first delta advanced nextSeq');
+});
+
+test('text_delta coalescing does not span a block change or an interleaved event', () => {
+  const log = new EventLog({ cap: 50 });
+  log.push({ kind: 'text_delta', msgId: 'm1', blockIdx: 0, text: 'a' });
+  // different blockIdx → new slot
+  log.push({ kind: 'text_delta', msgId: 'm1', blockIdx: 1, text: 'b' });
+  // interleaved content → breaks adjacency, next same-block delta opens a slot
+  log.push({ kind: 'thinking_delta', msgId: 'm1', blockIdx: 1, text: 'x' });
+  log.push({ kind: 'text_delta', msgId: 'm1', blockIdx: 1, text: 'c' });
+  const arr = log.toArray();
+  assert.deepEqual(arr.map((e) => e.text), ['a', 'b', 'x', 'c']);
+  arr.forEach((e, i) => assert.equal(e._seq, i));
+});
+
+test('thinking_delta and text_delta never fold into each other', () => {
+  const log = new EventLog({ cap: 50 });
+  // Identical (msgId, blockIdx) and adjacent — ONLY the kind differs, so this
+  // isolates the tail.kind === v.kind guard from the identity comparison.
+  log.push({ kind: 'thinking_delta', msgId: 'm1', blockIdx: 0, text: 'reasoning' });
+  log.push({ kind: 'text_delta', msgId: 'm1', blockIdx: 0, text: 'prose' });
+  const arr = log.toArray();
+  assert.equal(arr.length, 2, 'a text_delta must never merge into a thinking_delta slot');
+  assert.deepEqual(arr.map((e) => [e.kind, e.text]),
+    [['thinking_delta', 'reasoning'], ['text_delta', 'prose']]);
+  assert.equal(log.nextSeq, 2);
+});
+
+test('a giant single prose block cannot overflow the ring (no eviction)', () => {
+  const log = new EventLog({ cap: 10 });
+  log.push({ kind: 'user_echo', text: 'write me an essay' });
+  for (let i = 0; i < 5000; i++) {
+    log.push({ kind: 'text_delta', msgId: 'm1', blockIdx: 0, text: `t${i} ` });
+  }
+  log.push({ kind: 'text_end', msgId: 'm1', blockIdx: 0 });
+  const arr = log.toArray();
+  // user_echo + one coalesced delta + text_end = 3 slots.
+  assert.equal(arr.length, 3, 'turn footprint is O(blocks), not O(tokens)');
+  assert.equal(arr[0].kind, 'user_echo');
+  assert.equal(log.trimmedBefore, 0, 'nothing evicted → the turn boundary survives, no mid-turn gap');
+  assert.equal(arr[1].kind, 'text_delta');
+  assert.ok(arr[1].text.startsWith('t0 ') && arr[1].text.endsWith('t4999 '));
 });

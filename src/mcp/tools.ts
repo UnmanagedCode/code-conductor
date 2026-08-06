@@ -139,8 +139,9 @@ export function buildTools(): Tool[] {
         'ring eviction is invisible to you. Events carry _seq; poll incrementally by passing the returned ' +
         '`nextFrom` back as the next fromSeq (forward paging, oldest-first). Returns {id, status, ' +
         'sessionId, events, lastSeq, trimmedBefore, hasMore, nextFrom}. Event kinds: text_delta, tool_use, ' +
-        'tool_result, turn_end, etc. — same shape as the WebSocket snapshot. (Caveat: a single turn larger ' +
-        'than the ring cap can leave a mid-turn gap; for prose mid-long-turn use get_recent_messages.)',
+        'tool_result, turn_end, etc. — same shape as the WebSocket snapshot. (Caveat: an in-flight block is ' +
+        'served once and then grows in place below nextFrom, so polling never shows it grow — for prose ' +
+        'mid-turn use get_recent_messages.)',
       inputSchema: {
         type: 'object',
         properties: {

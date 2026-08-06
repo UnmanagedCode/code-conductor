@@ -321,21 +321,25 @@ export class EventLog {
   // Retention is storage-only — it never gates what _emitUi emits to the live
   // WS feed. A `v` this method declines to retain simply never receives a
   // `_seq`, so _emitUi still emits it seq-less (the client renders seq-less
-  // events unconditionally — see public/conversation.js). Two live-stream
-  // floods (one system/thinking_tokens per thinking_delta token, emitted by
-  // the Claude CLI as a live progress estimate — docs/protocol.md owns the
-  // observed-emitter list; it is NOT specific to any one backend) are kept OUT of the
-  // ring so a single long reasoning turn can't overflow it and strand the
-  // archive mid-turn (history_gap):
+  // events unconditionally — see public/conversation.js). The per-token
+  // live-stream floods (one system/thinking_tokens per thinking_delta token,
+  // emitted by the Claude CLI as a live progress estimate — docs/protocol.md owns
+  // the observed-emitter list; it is NOT specific to any one backend, and prose
+  // streams one text_delta per token on every backend) are kept OUT of the ring so
+  // a single long turn can't overflow it and strand the archive mid-turn
+  // (history_gap):
   //   - thinking_tokens is a live-only counter (last-value-wins, never
   //     persisted, no-op on replay) → never retained. Its final value is
   //     stamped onto the retained thinking_redacted slot (see _emitUi) —
   //     that block replays no text, so the slot is the only place the
   //     estimate can outlive the block.
-  //   - consecutive thinking_delta of one block fold into ONE slot — the same
-  //     one-delta-per-block shape disk replay produces (src/transcript.ts), so
-  //     ring + jsonl-archive reconstruct identically. The LIVE per-token stream
-  //     is untouched; only the retained representation coalesces.
+  //   - consecutive thinking_delta OR text_delta of one block fold into ONE slot
+  //     — the same one-delta-per-block shape disk replay produces
+  //     (src/transcript.ts), so ring + jsonl-archive reconstruct identically. The
+  //     LIVE per-token stream is untouched; only the retained representation
+  //     coalesces. The two kinds never fold into each other (tail.kind === v.kind),
+  //     and msgId is per-message so a sub-agent block can never fold into an
+  //     outer one.
   // The replay-path `message_start` (`replayed: true`, emitted by loadHistory to
   // seed the ctx readout) is declined for the same storage-only reason: it is
   // synthetic, so it must not become history — see loadHistory for why keeping it
@@ -344,10 +348,11 @@ export class EventLog {
     if (v.kind === 'system' && v.subtype === 'thinking_tokens') return;
     if (v.kind === 'message_start' && v.replayed) return;
     const tail = this.buf[this.buf.length - 1];
-    if (v.kind === 'thinking_delta' && tail && tail.kind === 'thinking_delta'
+    if ((v.kind === 'thinking_delta' || v.kind === 'text_delta')
+        && tail && tail.kind === v.kind
         && tail.msgId === v.msgId && tail.blockIdx === v.blockIdx) {
-      // The parser emits thinking_delta text as a string, so the merge is
-      // string concatenation (the index-signature field is unknown).
+      // The parser emits delta text as a string, so the merge is string
+      // concatenation (the index-signature field is unknown).
       tail.text = (tail.text as string) + (v.text as string);
       return;
     }
@@ -373,12 +378,15 @@ export class EventLog {
     }
     this.buf.splice(0, cut);
   }
-  // INVARIANT: ring elements are not fully immutable — an OPEN thinking_delta
-  // slot's `.text` GROWS in place (push folds later same-block deltas in) until
-  // its block closes; it is never shrunk, replaced, or renumbered. Sync
-  // serialization is sufficient but not required; the only hazard is a consumer
-  // that re-reads the same `_seq` slot later expecting byte-stable text, or that
-  // merges/pages by array position instead of by `_seq`.
+  // INVARIANT: ring elements are not fully immutable — an OPEN thinking_delta or
+  // text_delta slot's `.text` GROWS in place (push folds later same-block deltas
+  // in) until its block closes. Growth is APPEND-ONLY: the slot is never shrunk,
+  // replaced by a new object, or renumbered, so a consumer holding a shallow
+  // snapshot across an `await` (ringSnapshot → pageInstanceEvents, snapshotTail →
+  // wsHub) can only ever observe a longer prefix-extension of the same `_seq`,
+  // never a torn or duplicated one. The only hazard is a consumer that re-reads
+  // the same `_seq` slot later expecting byte-stable text, or that merges/pages
+  // by array position instead of by `_seq`.
   toArray(): Array<UiEvent & { _seq: number }> { return this.buf.slice(); }
   clear(): void { this.buf.length = 0; this.nextSeq = 0; }
 }
@@ -905,10 +913,16 @@ export class Instance extends EventEmitter implements InstanceLike {
   // what keeps NESTED blocks whole; a child with no head at or before it in
   // the array advances the start past that child, since an orphaned
   // child cannot be rendered (lazy paging reunites them only on a page that
-  // holds the head too). INVARIANT (see EventLog.toArray): a still-open thinking_delta slot in
-  // the returned slice keeps growing its `.text` in place until its block closes
-  // — safe to serialize async, only unsafe to re-read a slot expecting byte-stable
-  // text or to page/merge by array position rather than `_seq`.
+  // holds the head too). INVARIANT (see EventLog.toArray): a still-open
+  // thinking_delta or text_delta slot in the returned slice keeps growing its
+  // `.text` in place until its block closes. Safe to serialize async — NOT
+  // because wsHub is synchronous (it subscribes the socket BEFORE calling this
+  // and awaits reconstructActiveTasks before sending), but because growth is
+  // append-only and the client clears before replaying a snapshot
+  // (public/wsRouter.js), so live frames emitted inside that window are
+  // discarded in favour of the grown slot. Only unsafe to re-read a slot
+  // expecting byte-stable text or to page/merge by array position rather than
+  // `_seq`.
   snapshotTail(max?: number): UiEvent[] {
     const envMax = Number(process.env.ORCH_SNAPSHOT_TAIL);
     const cap = (typeof max === 'number' && Number.isInteger(max) && max > 0) ? max

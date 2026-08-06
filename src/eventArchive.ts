@@ -5,11 +5,13 @@
 // src/transcript.ts.
 //
 // Two seq spaces meet here. Live `_seq` values are stamped at emit time and
-// are denser than replay output (one event per streaming delta vs one or
-// two per persisted content block), so a from-scratch replay cannot
-// reproduce evicted events seq-for-seq. Instead the replayed "archive" gets
-// its own dense seqs 0..H-1 (its array indices) and is CUT at a content
-// anchor so it never overlaps the retained ring:
+// are denser than replay output — NOT per-token (the ring coalesces a block's
+// thinking/text deltas into one slot, the same granularity replay produces),
+// but per-turn: the live ring retains `message_start` and `turn_end`, and the
+// CLI persists neither, so replay emits neither (src/transcript.ts) — so a
+// from-scratch replay cannot reproduce evicted events seq-for-seq. Instead the
+// replayed "archive" gets its own dense seqs 0..H-1 (its array indices) and is
+// CUT at a content anchor so it never overlaps the retained ring:
 //
 //   - The ring trims onto turn boundaries when it can (EventLog._trim snaps
 //     the head to an outer user_echo, falling back to a quiescent point),
