@@ -14,6 +14,7 @@ import {
 import {
   renderProjects, renderInstances, renderWorktrees, renderSessions, renderProjectStatus,
 } from '../src/mcp/readRenderers.ts';
+import { CONDUCTOR_VIEW_KEYS, LIST_ONLY_KEYS } from '../src/mcp/handlers.ts';
 
 const SID_A = '3f2a8c11-77b2-4c1e-9a2f-5d6e7f801234';
 const SID_B = '9b41d0e2-1a55-42c7-8f30-cc11ab993d02';
@@ -446,6 +447,12 @@ describe('handles and shas', () => {
     assert.ok(renderInstances([INSTANCE]).includes(SID_A));
   });
 
+  test('an empty baseSha still reads as absent, not as a bare @', () => {
+    const out = renderWorktrees([{ worktree: 'w', parentProject: 'p', parentPath: '/p',
+      worktreePath: '/w', branch: 'b', baseBranch: 'main', baseSha: '', createdAt: 0 }]);
+    assert.match(out, /base main@—/, "'' must fall through to dash(), like every other absent value");
+  });
+
   test('a baseSha is shortened to 12 — informational, not a handle', () => {
     const wt = { ...WORKTREE, baseSha: FULL_SHA };
     for (const out of [
@@ -467,5 +474,78 @@ describe('handles and shas', () => {
       isGitRepo: true, branch: 'b', head: { sha: FULL_SHA, subject: 's' },
       dirty: [], dirtyTruncated: false });
     assert.ok(out.includes(`HEAD ${FULL_SHA} s`));
+  });
+});
+
+// ── allowlist → rendering binding ──────────────────────────────────────────
+//
+// The text is now the ONLY output channel, so the guards that defend the object
+// key set (the doc-drift gate in mcp-conductor-view, the projection checks)
+// defend nothing a caller can see. A field could be added to
+// CONDUCTOR_VIEW_KEYS, to summary(), and to the tool description — passing every
+// one of those — and still never be rendered. This binds the allowlist to the
+// rendering itself, in the direction that now matters.
+//
+// It is deliberately FAIL-BY-DEFAULT: an unrecognised key lands in the
+// sentinel-checked set and must show up in the output. Getting the polarity
+// backwards (an opt-in "check these" list) would rebuild exactly the hole this
+// closes, so the two exemption sets below are small, named, and asserted
+// non-empty.
+
+describe('list_instances renders every allowlisted field', () => {
+  // A value no renderer could produce on its own, unique per key.
+  const sentinel = (k) => `«${k}»`;
+  const ALL_KEYS = [...CONDUCTOR_VIEW_KEYS, ...LIST_ONLY_KEYS];
+
+  // Deliberately dropped — see the header comment of src/mcp/readRenderers.ts.
+  // Each MUST NOT appear; that is the other half of the binding.
+  const DROPPED = ['pid', 'createdAt', 'contextWindowTokens', 'firstPrompt'];
+  // Rendered as a fixed label rather than its value, so a sentinel can't be
+  // looked for. Checked by its own assertion below instead.
+  const LABEL_ONLY = ['hasIdleSubscriber'];
+  // Everything else must appear verbatim. A NEW key falls in here by default.
+  const BY_VALUE = ALL_KEYS.filter(k => !DROPPED.includes(k) && !LABEL_ONLY.includes(k));
+
+  const sentinelRow = (over = {}) => ({
+    ...Object.fromEntries(ALL_KEYS.map(k => [k, sentinel(k)])),
+    hasIdleSubscriber: true,
+    ...over,
+  });
+
+  test('the exemption sets are real, non-empty, and still name live keys', () => {
+    assert.ok(CONDUCTOR_VIEW_KEYS.length > 20, 'vacuity guard: allowlist looks empty');
+    assert.ok(DROPPED.length > 0, 'an empty DROPPED set would make this suite trivially pass');
+    assert.ok(LABEL_ONLY.length > 0);
+    for (const k of [...DROPPED, ...LABEL_ONLY]) {
+      assert.ok(ALL_KEYS.includes(k), `'${k}' is exempted but no longer in the allowlist — stale entry`);
+    }
+    assert.ok(BY_VALUE.length >= 20, `only ${BY_VALUE.length} keys checked by value`);
+  });
+
+  test('every non-exempt allowlisted field reaches the text', () => {
+    const out = renderInstances([sentinelRow()]);
+    const missing = BY_VALUE.filter(k => !out.includes(sentinel(k)));
+    assert.deepEqual(missing, [],
+      'these allowlisted fields are never rendered — add them to renderInstances, '
+      + `or to DROPPED with a justification in readRenderers.ts:\n${out}`);
+  });
+
+  test('every deliberately-dropped field stays out of the text', () => {
+    const out = renderInstances([sentinelRow()]);
+    const leaked = DROPPED.filter(k => out.includes(sentinel(k)));
+    assert.deepEqual(leaked, [], 'a field listed as dropped is being rendered');
+  });
+
+  test('hasIdleSubscriber renders as a label, both ways', () => {
+    assert.match(renderInstances([sentinelRow({ hasIdleSubscriber: true })]), /idle-sub yes/);
+    assert.match(renderInstances([sentinelRow({ hasIdleSubscriber: false })]), /idle-sub no/);
+  });
+
+  test('firstPrompt is dropped only because a title is there to replace it', () => {
+    // The one conditional exemption: with no title it MUST be rendered, so the
+    // fact is never unreachable — it is superseded, not withheld.
+    const out = renderInstances([sentinelRow({ title: null })]);
+    assert.ok(out.includes(sentinel('firstPrompt')),
+      'with no title, firstPrompt must stand in for it');
   });
 });

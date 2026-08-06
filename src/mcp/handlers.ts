@@ -149,6 +149,13 @@ export const CONDUCTOR_VIEW_KEYS = [
   'overageResetsAt',
 ];
 
+// The three fields listInstances attaches on top of the shared projection (see
+// the note in listInstances). Exported so the two tests that bind against the
+// full list_instances key set — the doc-drift gate in
+// tests/mcp-conductor-view.test.mjs and the rendering gate in
+// tests/mcp-text-render.test.mjs — read one definition instead of two copies.
+export const LIST_ONLY_KEYS = ['hasIdleSubscriber', 'playbook', 'stage'];
+
 function toConductorView(summary: InstanceSummary): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const k of CONDUCTOR_VIEW_KEYS) out[k] = summary[k];

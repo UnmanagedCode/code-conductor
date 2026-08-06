@@ -16,7 +16,9 @@
 //                  the project header one line above (list_worktrees, which has
 //                  no such header, does render them).
 //                  worktrees[].sessions.{archivedCount,lastMtime} — per-worktree
-//                  session detail; list_sessions({project, worktree}) has it.
+//                  session detail, a 2-call derivation away via
+//                  list_sessions({project, worktree}). Accepted: a leaner
+//                  default listing is worth the second call.
 //   list_instances pid (no tool takes one — sessionId is the handle);
 //                  createdAt (status + lastResponseAt answer "is it moving?");
 //                  contextWindowTokens (a denominator with no numerator on this
@@ -42,7 +44,9 @@ const asRow = (v: unknown): Row => (v && typeof v === 'object' ? v as Row : {});
 // Enough of a base sha to identify a commit at a glance; `git log` in the same
 // rendering already prints 7.
 const SHA_LEN = 12;
-const shortSha = (v: unknown) => (typeof v === 'string' ? v.slice(0, SHA_LEN) : dash(v));
+// Truncate, but keep dash()'s empty-string sentinel: '' must read as — like
+// every other absent value, not as a bare `base main@`.
+const shortSha = (v: unknown) => (typeof v === 'string' && v ? v.slice(0, SHA_LEN) : dash(v));
 
 // summarizeSessions() shape, reused by list_projects at both project and
 // worktree level.

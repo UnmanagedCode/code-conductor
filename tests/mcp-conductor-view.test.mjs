@@ -16,15 +16,11 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
-import { CONDUCTOR_VIEW_KEYS } from '../src/mcp/handlers.ts';
+import { CONDUCTOR_VIEW_KEYS, LIST_ONLY_KEYS } from '../src/mcp/handlers.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO_INSTANCE = path.join(__dirname, 'fixtures', 'scenario-instance.json');
 const TOOLS_SRC = path.join(__dirname, '..', 'src', 'mcp', 'tools.ts');
-
-// Fields list_instances adds on top of the shared projection, in one place so the
-// three independent `expected` constructions below cannot drift apart.
-const LIST_ONLY_KEYS = ['hasIdleSubscriber', 'playbook', 'stage'];
 
 let ctx, baseUrl, instances, home;
 before(async () => { ctx = await bootServer({ scenarioPath: SCENARIO_INSTANCE }); ({ baseUrl, instances } = ctx); });
@@ -110,10 +106,13 @@ test('every conductor-facing projection emits exactly the allowlist', async () =
   assert.deepEqual(sorted(Object.keys(spawned)), sorted(CONDUCTOR_VIEW_KEYS));
 
   // list_instances is NOT checked here: it returns a plain-text rendering, not
-  // JSON, so its emitted key set is no longer observable over the wire. Its
-  // projection is the same toConductorView() the four tools below exercise, and
-  // its documented key list is pinned to the allowlist by the first test in
-  // this file — so a field added to summary() still cannot slip through.
+  // JSON, so its emitted key set is not observable over the wire. Note this
+  // file's gates — and the projection checks below — only bind the allowlist to
+  // the tool DESCRIPTION and to the four JSON projections. What binds it to the
+  // rendering a caller actually sees is
+  // tests/mcp-text-render.test.mjs → "list_instances renders every allowlisted
+  // field". Both are required: a field can satisfy every check here and still
+  // never be emitted.
 
   // wait_for_idle.summary
   const waited = await callTool('wait_for_idle', { sessionId, timeoutMs: 5000 });
