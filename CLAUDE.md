@@ -11,7 +11,7 @@ When `README.md` doesn't go deep enough, load the relevant detail file:
 - **Subprocess protocol, WebSocket messages, REST endpoints** → `docs/protocol.md`
 - **Component layout, instance lifecycle, on-disk state, migrations, testing** → `docs/architecture.md`
 - **Conductor role prompt / orchestration contract** → `conventions/conductor/core.md` (always-on core) + `conventions/conductor/*.md` (toggleable conventions); composed by `src/conductorConventions.ts` (`composeCurrentConduct`) and injected at conductor spawn via `claude --append-system-prompt` (`Instance.launch`/`spawn` in `src/instances.ts`)
-- **Conventions (three scopes, all on `src/fragmentCatalog.ts`; sources under `conventions/<scope>/`, stores under `<store>/conventions/<scope>.json`)** → Conductor: `conventions/conductor/*` + `src/conductorConventions.ts` (injected at spawn via `--append-system-prompt`). Workspace: `conventions/workspace/core.md` + `conventions/workspace/*.md` + `src/workspaceConventions.ts`, regenerated into the app-owned projects-root `CLAUDE.md` by `src/rootClaudeMd.ts` (`ensureRootClaudeMd`). Project: `conventions/project/*.md` + `src/projectConventions.ts`, snapshotted into each new project's `CLAUDE.md` at creation.
+- **Conventions (three scopes, all on `src/fragmentCatalog.ts`; sources under `conventions/<scope>/`, stores under `<store>/conventions/<scope>.json`)** → Conductor: `conventions/conductor/*` + `src/conductorConventions.ts` (injected at spawn via `--append-system-prompt`). Workspace: `conventions/workspace/core.md` + `conventions/workspace/*.md` + `src/workspaceConventions.ts`, regenerated into the app-owned projects-root `CLAUDE.md` by `src/rootClaudeMd.ts` (`ensureRootClaudeMd`). Project: `conventions/project/*.md` + `src/projectConventions.ts`, regenerated into each project's in-tree `CONVENTIONS.md` by `src/projectClaudeMd.ts` (selection = its line-1 `<!-- cc:conventions … -->` marker) and imported by that project's `CLAUDE.md` via `@CONVENTIONS.md` — as this repo does.
 
 ## Code conventions
 
@@ -24,7 +24,7 @@ Where the `CONVENTIONS.md` rules land in this codebase. Rationale + examples in 
 
 ## Documentation guidelines
 
-`docs/models.md` is a fifth layer alongside the four in `CONVENTIONS.md` — backends/models: the registry, custom models, tier+role bindings, context-window policy.
+`docs/models.md` (see "Exploring this repo" above) is a fifth layer alongside the four in `CONVENTIONS.md`.
 
 ## Testing
 

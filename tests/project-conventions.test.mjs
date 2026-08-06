@@ -155,9 +155,14 @@ test('composeProjectConventionsBlock inserts a blank line + body for one seed co
 
 test('composeProjectConventionsBlock joins multiple conventions with blank line separator', async () => {
   const block = await composeProjectConventionsBlock(['documentation-guidelines', 'design-guidelines']);
-  assert.ok(block.includes('## Documentation guidelines'));
-  assert.ok(block.includes('## Design guidelines'));
+  const doc = block.indexOf('## Documentation guidelines');
+  const design = block.indexOf('## Design guidelines');
+  assert.ok(doc >= 0);
+  assert.ok(design >= 0);
   assert.ok(block.includes('\n\n'));
+  // Bodies follow the caller's slug order (here: NOT catalog order), which is
+  // what makes a committed CONVENTIONS.md byte-stable across regeneration.
+  assert.ok(doc < design, 'bodies must be composed in the requested slug order');
 });
 
 test('composeProjectConventionsBlock throws 400 on unknown slug', async () => {
