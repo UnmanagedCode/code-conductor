@@ -18,6 +18,7 @@
 import type { UiEvent } from './parser.ts';
 import type { TaskRecord } from './taskReconstruct.ts';
 import type { WorktreeMeta } from './worktrees.ts';
+import type { PlaybookEnforcement } from './playbooks.ts';
 import type { Response } from 'express';
 
 export interface InstanceSummary {
@@ -57,6 +58,7 @@ export interface InstanceLike {
   readonly status: string;
   readonly mode: string;
   readonly autoApprovePlan: boolean;
+  readonly playbookEnforcement: PlaybookEnforcement;
   readonly interrupting: boolean;
   readonly liveThinkingTokens: number | null;
   readonly lastContextUsage: unknown;
@@ -75,6 +77,7 @@ export interface InstanceLike {
   interrupt(opts?: { force?: boolean }): Promise<unknown>;
   kill(opts?: { graceMs?: number }): Promise<unknown>;
   setAutoApprovePlan(enabled: boolean): void;
+  setPlaybookEnforcement(mode: PlaybookEnforcement): void;
   resolveHookCallback(toolUseId: unknown, allow: boolean): boolean;
   // MCP handler surface (src/mcp/handlers.ts): the worktree the session is
   // attached to (or null), temp→normal promotion, and the EventEmitter 'event'
@@ -157,6 +160,7 @@ export interface InstanceManagerLike {
     conducted?: boolean;
     debug?: boolean;
     autoApprovePlan?: boolean;
+    playbookEnforcement?: PlaybookEnforcement;
     callerInstanceId?: string | null;
     prefill?: string;
   }): Promise<InstanceLike>;

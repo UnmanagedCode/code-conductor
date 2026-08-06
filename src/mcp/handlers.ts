@@ -46,6 +46,10 @@ import {
   capText, MSG_TEXT_CAP, reconstructMessages, mergeRecentWithDisk, capBlockInput,
   hasPlanOrQuestions, ringTurnIndex, bondTrailingTurn, type ReconMessage,
 } from './messageReconstruction.ts';
+import { loadPlaybooks, isSpawnable, legalMovesFrom, decide, type Playbook } from '../playbooks.ts';
+import { runMembers, type Projection } from '../playbookLedger.ts';
+import { isConductorInstance } from '../conduct.ts';
+import type { PlaybookGate } from './playbookGate.ts';
 import type { InstanceLike, InstanceManagerLike, InstanceSummary } from '../instanceTypes.ts';
 import type { UiEvent } from '../parser.ts';
 
@@ -57,9 +61,13 @@ const DIRTY_CAP = 500;
 // ---------- helpers ----------
 
 // The per-handler call context injected by the MCP server (src/mcp/server.ts).
+// `playbookGate` is the same gate the enforcement checkpoint uses, so the read
+// tools below see the one projection that actually governs — not a second fold.
+// Optional to match the style of its siblings; the transport always supplies it.
 interface McpCtx {
   instances?: InstanceManagerLike | null;
   callerId?: string | null;
+  playbookGate?: PlaybookGate;
 }
 
 // Loose type for handlers that don't destructure their args (schema-validated
@@ -258,15 +266,198 @@ export async function listProjects(_args: McpArgs, { instances }: McpCtx) {
   return enriched;
 }
 
-export async function listInstances(_args: McpArgs, { instances }: McpCtx) {
+export async function listInstances(_args: McpArgs, { instances, playbookGate }: McpCtx) {
   // Project every row to the allowlist (sessionId is the conductor-facing
-  // handle), then re-attach `hasIdleSubscriber`. It is added by list(), not by
-  // Instance.summary(), so it is deliberately NOT in CONDUCTOR_VIEW_KEYS — the
-  // other four projections have no such field and must not emit it as undefined.
-  // This is the one place list_instances' shape differs from the rest.
-  return instances
-    ? instances.list().map(row => ({ ...toConductorView(row), hasIdleSubscriber: row.hasIdleSubscriber }))
-    : [];
+  // handle), then re-attach `hasIdleSubscriber` plus `playbook`/`stage`. All
+  // three are deliberately NOT in CONDUCTOR_VIEW_KEYS: hasIdleSubscriber is added
+  // by list() rather than Instance.summary(), and playbook/stage come from the
+  // sessionId-keyed playbook projection, so none of them exists on the four other
+  // projections — putting them in the allowlist would publish permanently-
+  // undefined fields there. This is the one place list_instances' shape differs.
+  if (!instances) return [];
+  // Read-only, and folds nothing into being: absent ledger ⇒ empty projection.
+  const proj = playbookGate ? await playbookGate.readProjection() : null;
+  return instances.list().map(row => {
+    const tracked = proj && typeof row.sessionId === 'string'
+      ? proj.bySession.get(row.sessionId) : undefined;
+    return {
+      ...toConductorView(row),
+      hasIdleSubscriber: row.hasIdleSubscriber,
+      // null (not absent) for an untracked worker, so a caller can tell "not in a
+      // playbook" from "this build does not report it".
+      playbook: tracked?.playbook ?? null,
+      stage: tracked?.stage ?? null,
+    };
+  });
+}
+
+// ---------- playbooks: the read / introspection surface ----------
+//
+// Playbook definitions are the authority on what the graph IS; the ledger's
+// projection is the authority on where workers ARE. These three tools expose
+// both without ever restating the graph in prose somewhere else.
+//
+// Every one of them is read-only in the strong sense: a fresh install with no
+// ledger answers with empty state and creates no file (see
+// PlaybookGate.readProjection).
+
+export async function listPlaybooks() {
+  const { playbooks, errors } = await loadPlaybooks();
+  return {
+    playbooks: [...playbooks.values()].map(pb => ({
+      id: pb.id,
+      name: pb.name,
+      description: pb.description,
+      entryStages: pb.entryStages,
+      // Derived, because spawn_instance FAILS CLOSED: a stage is spawnable only
+      // if it names spawn_instance explicitly, and a "*" wildcard confers
+      // nothing. Reporting it saves the caller re-deriving a rule it can get
+      // wrong.
+      spawnableStages: Object.keys(pb.stages).filter(s => isSpawnable(pb.stages[s])),
+    })),
+    // Load-time rejections. Without this a hand-authored definition that fails
+    // validation is simply absent, with no way to find out why.
+    errors,
+  };
+}
+
+export async function describePlaybook({ id }: { id: string }) {
+  const { playbooks } = await loadPlaybooks();
+  const pb = playbooks.get(id);
+  if (!pb) {
+    return {
+      ok: false as const,
+      code: 'PLAYBOOK_UNKNOWN',
+      reason: `no playbook '${id}'.`,
+      known: [...playbooks.keys()].sort(),
+    };
+  }
+  return {
+    id: pb.id,
+    name: pb.name,
+    description: pb.description,
+    entryStages: pb.entryStages,
+    stages: Object.fromEntries(Object.entries(pb.stages).map(([name, stage]) => [name, {
+      needs: stage.needs,
+      workers: stage.workers,
+      tools: stage.tools,
+      spawnable: isSpawnable(stage),
+    }])),
+    // `via` is computed: an edge with no `on` is driven by send_prompt, and an
+    // edge WITH one can be driven by that tool only. Both are rules the caller
+    // would otherwise have to know rather than read.
+    transitions: pb.transitions.map(t => ({ from: t.from, to: t.to, via: t.on ?? 'send_prompt' })),
+  };
+}
+
+const HISTORY_CAP = 200;
+
+export async function playbookState({ sessionId }: { sessionId?: string }, ctx: McpCtx) {
+  const gate = ctx.playbookGate;
+  if (!gate) throw new Error('orchestrator has no playbook gate');
+  const proj = await gate.readProjection();
+  // The CALLING conductor's live mode, read off the instance rather than the
+  // ledger: the instance is the runtime authority and the ledger is the audit
+  // trail. Deliberately not the projection's enforcement map — publishing that
+  // could name an instance which is not a conductor and therefore not governed.
+  const caller = ctx.callerId && ctx.instances ? ctx.instances.liveForSession(ctx.callerId) : null;
+  const enforcement = caller && isConductorInstance(caller)
+    ? { conductorSessionId: caller.sessionId, mode: caller.playbookEnforcement }
+    : null;
+
+  // UNTARGETED form: every run at once. Also the form that can never be denied —
+  // it names no worker, so policy has no subject to read a stage from. That makes
+  // it the escape hatch when a stage's `tools` map denies the targeted form.
+  if (typeof sessionId !== 'string' || !sessionId) {
+    const roots = new Set<string>();
+    for (const sid of proj.bySession.keys()) roots.add(runRootFor(proj, sid));
+    return {
+      tracked: false,
+      runs: [...roots].sort().map(root => ({ root, members: membersOf(proj, root) })),
+      enforcement,
+    };
+  }
+
+  const worker = proj.bySession.get(sessionId);
+  if (!worker) {
+    // A normal, empty answer — NOT a refusal. "This worker is not in a playbook"
+    // is a fact about the worker, not a problem with the call.
+    return {
+      tracked: false, worker: null, run: null, nextMoves: [], history: [],
+      historyTruncated: false, enforcement,
+      reason: `worker ${sessionId.slice(0, 8)} is not playbook-tracked (spawned with enforcement off, or not conducted).`,
+    };
+  }
+
+  const { playbooks } = await loadPlaybooks();
+  const pb = playbooks.get(worker.playbook);
+  const members = membersOf(proj, worker.runRoot);
+  const memberIds = new Set(members.map(m => m.sessionId));
+
+  const all = await gate.readHistory();
+  const relevant = all.filter(ev =>
+    ('sessionId' in ev && typeof ev.sessionId === 'string' && memberIds.has(ev.sessionId))
+    // The caller's own enforcement changes: what made an illegal-looking move
+    // legal at a given seq. Scoped to the caller, so no other session's setting
+    // is ever published here.
+    || (ev.kind === 'enforcement' && !!enforcement && ev.conductorSessionId === enforcement.conductorSessionId));
+  const history = relevant.slice(-HISTORY_CAP);
+
+  return {
+    tracked: true,
+    worker: {
+      sessionId: worker.sessionId,
+      playbook: worker.playbook,
+      stage: worker.stage,
+      stageHistory: worker.stageHistory,
+      needs: worker.needs,
+      live: worker.live,
+      runRoot: worker.runRoot,
+      ...(worker.project !== undefined ? { project: worker.project } : {}),
+      ...(worker.worktree !== undefined ? { worktree: worker.worktree } : {}),
+    },
+    run: { root: worker.runRoot, members },
+    nextMoves: pb ? nextMovesFor({ pb, worker: worker.sessionId, stage: worker.stage, proj }) : [],
+    // Definitions are not pinned to a live run (settled), so a worker can outlive
+    // its playbook. Say so rather than returning a bare empty graph.
+    ...(pb ? {} : { playbookMissing: worker.playbook }),
+    history,
+    historyTruncated: relevant.length > history.length,
+    enforcement,
+  };
+}
+
+// Every outgoing edge, each answered by DRY-RUNNING the same decide() the
+// enforcement checkpoint runs — never a second reading of the rules. An edge that
+// would be refused comes back with the gate's own code and reason, which is
+// exactly what the caller needs in order to satisfy it.
+function nextMovesFor(
+  { pb, worker, stage, proj }:
+  { pb: Playbook; worker: string; stage: string; proj: Projection },
+): Array<{ to: string; via: string; ok: boolean; code?: string; reason?: string }> {
+  const playbooks = new Map([[pb.id, pb]]);
+  return legalMovesFrom(pb, stage).transitions.map(({ to, via }) => {
+    // send_prompt carries the destination in `stage`; an `on` tool fires its edge
+    // implicitly, so it must NOT also be handed one.
+    const args: Record<string, unknown> = via === 'send_prompt'
+      ? { sessionId: worker, text: '', stage: to }
+      : { sessionId: worker };
+    const d = decide({ toolName: via, args, projection: proj, playbooks });
+    return d.ok
+      ? { to, via, ok: true }
+      : { to, via, ok: false, code: d.code, reason: d.reason };
+  });
+}
+
+function runRootFor(proj: Projection, sessionId: string): string {
+  return proj.bySession.get(sessionId)?.runRoot ?? sessionId;
+}
+
+function membersOf(proj: Projection, anchor: string) {
+  return runMembers(proj, anchor)
+    .map(sid => proj.bySession.get(sid))
+    .filter((s): s is NonNullable<typeof s> => !!s)
+    .map(s => ({ sessionId: s.sessionId, playbook: s.playbook, stage: s.stage, live: s.live }));
 }
 
 export async function listSessions({ project, worktree, includeArchived = false }: { project: string; worktree?: string; includeArchived?: boolean }) {
@@ -357,14 +548,23 @@ interface SpawnArgs {
   createWorktree?: boolean;
   temp?: boolean;
   debug?: boolean;
+  // Playbook-policy inputs. Declared so the router's unknown-argument rejection
+  // admits them; consumed entirely by src/mcp/playbookGate.ts before this
+  // handler runs, so nothing here reads them.
+  playbook?: string;
+  stage?: string;
+  needs?: Record<string, string>;
 }
 
-export async function spawnInstance(args: SpawnArgs, { instances, callerId }: McpCtx) {
-  if (!instances) throw new Error('orchestrator has no InstanceManager');
-  // callerId is the conductor's stable sessionId (?caller=). Resolve it to the
-  // conductor's live instanceId so callerInstanceId stays an instanceId.
-  const callerInst = callerId ? instances.liveForSession(callerId) : null;
-  // Resolve `args.model` to a concrete {model, backend} pair:
+// Resolve a spawn's `model` name to the concrete {model, backend} pair plus the
+// tier/role it resolved THROUGH. Exported because it is the authority on which
+// model names are spawnable at all: tests/playbook-schema.test.mjs runs every
+// built-in playbook's `require: {model}` through it, so a definition can never
+// ship pinning a model the product cannot resolve.
+export function resolveSpawnModel(input: string | null | undefined): {
+  model: string | null | undefined; backend: string; tier?: string; role?: string;
+} {
+  // Resolve `input` to a concrete {model, backend} pair:
   //   - a capability tier (fast/balanced/powerful/frontier) → its bound
   //     {backend, model} (a Claude version id, or another backend's model id);
   //   - a role → its resolved {backend, model} (built-in, user-custom, or a
@@ -377,7 +577,7 @@ export async function spawnInstance(args: SpawnArgs, { instances, callerId }: Mc
   //     backend (robustness);
   //   - a Claude model id (claude-…, incl. future ones) → pass-through claude;
   //   - anything else → reject, rather than silently spawn a broken claude.
-  let model: string | null | undefined = args.model;
+  let model: string | null | undefined = input;
   let backend = CLAUDE_BACKEND_ID;
   // Which tier/role the model was resolved THROUGH, forwarded to create() so its
   // stored default effort applies when the caller passed no `effort`. Exactly one
@@ -416,6 +616,15 @@ export async function spawnInstance(args: SpawnArgs, { instances, callerId }: Mc
       );
     }
   }
+  return { model, backend, ...(tier ? { tier } : {}), ...(role ? { role } : {}) };
+}
+
+export async function spawnInstance(args: SpawnArgs, { instances, callerId }: McpCtx) {
+  if (!instances) throw new Error('orchestrator has no InstanceManager');
+  // callerId is the conductor's stable sessionId (?caller=). Resolve it to the
+  // conductor's live instanceId so callerInstanceId stays an instanceId.
+  const callerInst = callerId ? instances.liveForSession(callerId) : null;
+  const { model, backend, tier, role } = resolveSpawnModel(args.model);
   // createWorktree:true → create a fresh worktree (passed to create() as the
   // boolean `true`); worktree:"<name>" → attach to an existing one.
   // createWorktree wins if both are given. create() still accepts the
@@ -498,6 +707,12 @@ async function maybeSubscribeIdle({ instances, callerId }: McpCtx, sessionId: st
 export async function sendPrompt(
   { sessionId, text, wait = false, waitTimeoutMs = 600_000, subscribe = true, subscribeTimeoutMs }: {
     sessionId: string; text: string; wait?: boolean; waitTimeoutMs?: number; subscribe?: boolean; subscribeTimeoutMs?: number;
+    // `stage`/`needs` are playbook-policy inputs, consumed by
+    // src/mcp/playbookGate.ts before this handler runs. Declared (and
+    // deliberately not destructured) so the type matches the schema the router
+    // validates against.
+    stage?: string;
+    needs?: Record<string, string>;
   },
   { instances, callerId }: McpCtx,
 ) {
@@ -1020,31 +1235,12 @@ export async function syncWorktree({ sessionId }: { sessionId: string }, { insta
   return result;
 }
 
-export async function mergeWorktree({ sessionId, project, worktree, allowDirty }: { sessionId?: string; project?: string; worktree?: string; allowDirty?: boolean }, { instances }: McpCtx) {
-  let projectName: string;
-  let wtName: string;
-  let meta: WorktreeMeta;
-  if (sessionId) {
-    const r = await getInst(instances, sessionId);
-    if ('soft' in r) return r.soft;
-    const inst = r.inst;
-    if (!inst.worktree) throw new Error(`session ${sessionId} is not attached to a worktree`);
-    projectName = inst.project;
-    wtName = inst.worktree.worktreeName;
-    meta = inst.worktree;
-  } else {
-    if (!project || !worktree) {
-      throw new Error('merge_worktree requires either sessionId or both {project, worktree}');
-    }
-    projectName = project;
-    wtName = worktree;
-    const wt = await getWorktree(projectName, wtName);
-    if (!wt) throw new Error(`worktree '${wtName}' not found under project '${projectName}'`);
-    meta = wt;
-  }
+export async function mergeWorktree({ project, worktree, allowDirty }: { project: string; worktree: string; allowDirty?: boolean }) {
+  const wt = await getWorktree(project, worktree);
+  if (!wt) throw new Error(`worktree '${worktree}' not found under project '${project}'`);
   // The behind-guard now lives inside mergeWorktreeIntoParent (shared with the
   // REST route); map its typed refusal to this surface's exact wording.
-  const result = await mergeWorktreeIntoParent(projectName, wtName, { allowDirty: allowDirty === true });
+  const result = await mergeWorktreeIntoParent(project, worktree, { allowDirty: allowDirty === true });
   if (!result.ok && result.code === 'WORKTREE_BEHIND') {
     return {
       ok: false,

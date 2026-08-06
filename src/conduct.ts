@@ -14,6 +14,14 @@ export function conductProjectPath(): string {
   return path.join(projectsRoot(), CONDUCT_PROJECT_NAME);
 }
 
+// "Is this instance a conductor?" — the one predicate, so every consumer asks
+// the same question. Conductor-ness is a property of the project: `.conduct` is
+// the reserved home of orchestrating sessions and nothing else lives there.
+// (Distinct from `conducted`, which marks a WORKER spawned BY a conductor.)
+export function isConductorInstance(inst: { project: string } | null | undefined): boolean {
+  return !!inst && inst.project === CONDUCT_PROJECT_NAME;
+}
+
 // Idempotent: ensures the `.conduct` dir exists (it is the cwd of every
 // conductor session, so it must be present before spawn).
 //

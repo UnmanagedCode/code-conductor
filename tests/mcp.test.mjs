@@ -139,14 +139,16 @@ test('tools/list returns the full expected tool catalog', async () => {
     'approve_plan',
     'create_project', 'create_workspace', 'create_worktree',
     'delete_workspace', 'delete_worktree',
+    'describe_playbook',
     'get_recent_messages', 'get_transcript',
     'interrupt_turn',
     'kill_instance',
     'list_conductor_conventions',
-    'list_instances', 'list_project_conventions', 'list_projects', 'list_sessions',
+    'list_instances', 'list_playbooks', 'list_project_conventions', 'list_projects', 'list_sessions',
     'list_workspaces', 'list_worktrees',
     'locate_session',
     'merge_worktree',
+    'playbook_state',
     'project_bash', 'project_diff', 'project_read', 'project_status', 'promote_session',
     'reject_plan', 'rename_workspace', 'renew_session', 'respawn_instance',
     'send_prompt', 'set_mode',
@@ -500,19 +502,20 @@ test('merge_worktree refuses with friendly reason when the worktree is behind', 
     project: 'demo', mode: 'bypassPermissions', createWorktree: true,
   }));
   await waitFor(() => instForSession(instances, spawn.sessionId).sessionId);
+  const wtName = instForSession(instances, spawn.sessionId).worktree.worktreeName;
 
   // Move the parent branch forward so the worktree is now "behind".
   await fs.writeFile(path.join(repoPath, 'extra.txt'), 'after\n');
   await git(repoPath, 'add', '.');
   await git(repoPath, 'commit', '-q', '-m', 'second');
 
-  const mergeRes = unwrap(await callTool(baseUrl, 'merge_worktree', { sessionId: spawn.sessionId }));
+  const mergeRes = unwrap(await callTool(baseUrl, 'merge_worktree', { project: 'demo', worktree: wtName }));
   assert.equal(mergeRes.ok, false);
   assert.equal(mergeRes.code, 'WORKTREE_BEHIND');
   assert.match(mergeRes.reason, /behind .* click Sync first|call sync_worktree first/i);
 });
 
-test('merge_worktree accepts {project, worktree} when the instance is gone', async () => {
+test('merge_worktree merges by {project, worktree} after the instance is gone', async () => {
   await makeRealRepo(projectsRoot, 'demo');
   // Create a worktree, attach an instance, kill the instance — the
   // worktree itself stays around.
@@ -545,8 +548,9 @@ test('merge_worktree refuses NOTHING_TO_MERGE when the worktree has no commits a
     project: 'demo', mode: 'bypassPermissions', createWorktree: true,
   }));
   await waitFor(() => instForSession(instances, spawn.sessionId).sessionId);
+  const wtName = instForSession(instances, spawn.sessionId).worktree.worktreeName;
 
-  const mergeRes = unwrap(await callTool(baseUrl, 'merge_worktree', { sessionId: spawn.sessionId }));
+  const mergeRes = unwrap(await callTool(baseUrl, 'merge_worktree', { project: 'demo', worktree: wtName }));
   assert.equal(mergeRes.ok, false);
   assert.equal(mergeRes.code, 'NOTHING_TO_MERGE');
 });
@@ -568,22 +572,32 @@ test('merge_worktree refuses WORKTREE_DIRTY when the worktree has uncommitted ch
   // Additional uncommitted file dirties the tree after the commit.
   await fs.writeFile(path.join(wt.worktreePath, 'scratch.txt'), 'not committed\n');
 
-  const refused = unwrap(await callTool(baseUrl, 'merge_worktree', { sessionId: spawn.sessionId }));
+  const refused = unwrap(await callTool(baseUrl, 'merge_worktree', {
+    project: 'demo', worktree: wt.worktreeName,
+  }));
   assert.equal(refused.ok, false);
   assert.equal(refused.code, 'WORKTREE_DIRTY');
 
   const allowed = unwrap(await callTool(baseUrl, 'merge_worktree', {
-    sessionId: spawn.sessionId, allowDirty: true,
+    project: 'demo', worktree: wt.worktreeName, allowDirty: true,
   }));
   assert.equal(allowed.ok, true, `merge failed: ${allowed.reason}`);
 });
 
-test('merge_worktree rejects calls without sessionId or {project, worktree}', async () => {
-  const { body } = await rpc(baseUrl, 'tools/call', {
+// merge_worktree names the WORKTREE only — there is no {sessionId} form, so
+// project+worktree are schema-required and a sessionId is an unknown argument.
+test('merge_worktree requires project + worktree and rejects a sessionId', async () => {
+  const missing = await rpc(baseUrl, 'tools/call', {
     name: 'merge_worktree', arguments: {},
   });
-  assert.equal(body.result.isError, true);
-  assert.match(body.result.content[0].text, /requires either sessionId or both/);
+  assert.equal(missing.body.result.isError, true);
+  assert.match(missing.body.result.content[0].text, /missing required argument: project/);
+
+  const withSession = await rpc(baseUrl, 'tools/call', {
+    name: 'merge_worktree', arguments: { project: 'demo', worktree: 'wt', sessionId: 'abc' },
+  });
+  assert.equal(withSession.body.result.isError, true);
+  assert.match(withSession.body.result.content[0].text, /unexpected argument 'sessionId'/);
 });
 
 test('create_project creates the directory, seeds CLAUDE.md, and optionally inits git', async () => {

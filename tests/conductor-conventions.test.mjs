@@ -13,6 +13,9 @@ import {
   addCustomConvention, deleteCustomConvention, composeConduct, composeCurrentConduct,
   setPluginConductorConventionsProvider,
 } from '../src/conductorConventions.ts';
+import { loadPlaybooks } from '../src/playbooks.ts';
+
+const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-instance.json');
@@ -34,8 +37,8 @@ afterEach(async () => {
 
 // ── Catalog + compose (unit) ─────────────────────────────────────────────────
 
-test('SEED_CONVENTIONS has 8 built-in conventions with metadata (no inline body)', () => {
-  assert.equal(SEED_CONVENTIONS.length, 8);
+test('SEED_CONVENTIONS has 9 built-in conventions with metadata (no inline body)', () => {
+  assert.equal(SEED_CONVENTIONS.length, 9);
   for (const m of SEED_CONVENTIONS) {
     assert.ok(m.slug && m.name && m.description);
     assert.equal(m.body, undefined);
@@ -44,7 +47,7 @@ test('SEED_CONVENTIONS has 8 built-in conventions with metadata (no inline body)
 
 test('getCatalog loads bodies from conventions/conductor/*.md, builtin:true', async () => {
   const cat = await getCatalog();
-  assert.equal(cat.length, 8);
+  assert.equal(cat.length, 9);
   for (const m of cat) {
     assert.equal(m.builtin, true);
     assert.ok(m.body && m.body.startsWith('## '), `${m.slug} has a heading body`);
@@ -68,6 +71,50 @@ test('composeConduct([]) = core + footer only (no convention headings)', async (
   assert.doesNotMatch(doc, /## Canonical workflow/);
   assert.match(doc, /## Talking to the user/, 'core-hoisted section');
   assert.match(doc, /generated from `conventions\/conductor\/core\.md`/);
+});
+
+// ── The generated playbook listing ───────────────────────────────────────────
+//
+// The listing is GENERATED from the definitions, never hand-written alongside
+// them. These are the only guard on that: fragment bodies are cached and never
+// invalidated, and nothing asserts fragment CONTENT, so a broken prompt section
+// fails silently in the product.
+
+test('the composed prompt lists every built-in playbook by id and description', async () => {
+  const { playbooks } = await loadPlaybooks();
+  assert.ok(playbooks.size >= 4, 'fixture guard: built-ins must have loaded');
+  const doc = await composeConduct(['playbooks']);
+  for (const pb of playbooks.values()) {
+    // The id AND its own description — a listing carrying ids alone would leave
+    // the conductor unable to choose between them without a second call.
+    assert.match(doc, new RegExp(`\`${pb.id}\` — ${escapeRe(pb.description)}`),
+      `${pb.id} must appear with its description`);
+  }
+  assert.match(doc, /describe_playbook/, 'and must point at where the graph lives');
+  // The graph itself must NOT be in the prompt — that is what the tool is for.
+  assert.doesNotMatch(doc, /entryStages|"require"|transitions/);
+});
+
+test('a newly authored playbook reaches the prompt with no second edit', async () => {
+  const before = await composeConduct(['playbooks']);
+  assert.doesNotMatch(before, /house-flow/);
+
+  const dir = path.join(projectsRoot, '.code-conductor', 'playbooks');
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(path.join(dir, 'house-flow.json'), JSON.stringify({
+    id: 'house-flow', name: 'House flow', description: 'the house way of working',
+    entryStages: ['go'], stages: { go: { tools: { spawn_instance: 'allow' } } }, transitions: [],
+  }));
+
+  const after = await composeConduct(['playbooks']);
+  assert.match(after, /`house-flow` — the house way of working/,
+    'the listing follows the definitions; nothing here is hand-maintained');
+});
+
+test('the listing is absent when the playbooks convention is off', async () => {
+  const doc = await composeConduct(['canonical-workflow']);
+  assert.doesNotMatch(doc, /Available playbooks/,
+    'a session with the convention off must not pay for the listing');
 });
 
 // ── Selection (unit) ─────────────────────────────────────────────────────────
@@ -94,7 +141,7 @@ test('setSelection with an unknown slug → 400', async () => {
 test('addCustomConvention appears in catalog; enabling it composes its body', async () => {
   await addCustomConvention({ slug: 'house-style', name: 'House style', description: 'd', body: '## House style\n- be nice' });
   const cat = await getCatalog();
-  assert.equal(cat.length, 9);
+  assert.equal(cat.length, 10);
   assert.equal(cat.find(c => c.slug === 'house-style').builtin, false);
   await setSelection(['house-style']);
   const doc = await composeCurrentConduct();
@@ -134,12 +181,12 @@ test('PUT selection changes what composeCurrentConduct() produces; no file is wr
 
 // ── REST API ───────────────────────────────────────────────────────────────
 
-test('GET /api/settings/conventions/conductor returns core + 8 conventions + enabled', async () => {
+test('GET /api/settings/conventions/conductor returns core + 9 conventions + enabled', async () => {
   const r = await api(baseUrl, 'GET', '/api/settings/conventions/conductor');
   assert.equal(r.status, 200);
   assert.ok(r.body.core && r.body.core.name);
-  assert.equal(r.body.conventions.length, 8);
-  assert.equal(r.body.enabled.length, 8); // default all-on
+  assert.equal(r.body.conventions.length, 9);
+  assert.equal(r.body.enabled.length, 9); // default all-on
   for (const m of r.body.conventions) assert.equal(m.builtin, true);
 });
 
@@ -180,7 +227,7 @@ test('list_conductor_conventions MCP tool returns conventions with enabled flag,
   assert.ok(tool, 'list_conductor_conventions tool registered');
   const result = await tool.handler({}, { instances });
   assert.ok(Array.isArray(result));
-  assert.equal(result.length, 8);
+  assert.equal(result.length, 9);
   for (const m of result) {
     assert.ok(m.slug && m.name && m.description);
     assert.equal(m.builtin, true);

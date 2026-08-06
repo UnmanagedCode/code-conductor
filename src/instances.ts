@@ -12,7 +12,12 @@ import { isConducted, markConducted, unmarkConducted } from './conductedSessions
 import { SessionRenewController, type RenewalOpts } from './sessionRenew.ts';
 import { isTemp, markTemp, unmarkTemp } from './tempSessions.ts';
 import { markArchived } from './archivedSessions.ts';
-import { CONDUCT_PROJECT_NAME } from './conduct.ts';
+import { CONDUCT_PROJECT_NAME, isConductorInstance } from './conduct.ts';
+// TYPE-ONLY, deliberately: verbatimModuleSyntax erases it, so this adds no
+// runtime import edge from instances.ts into the playbook subsystem. The
+// runtime allow-list (PLAYBOOK_ENFORCEMENT_MODES) is validated at the ingress
+// boundaries — the spawn route and the WS toggle — not here.
+import type { PlaybookEnforcement } from './playbooks.ts';
 import { composeCurrentConduct } from './conductorConventions.ts';
 import { buildSettingsJSON, buildMcpConfigJSON, AWAITING_INPUT_MESSAGE } from './settings.ts';
 import { getOnOverageAction, getOverageThreshold, getConductorCompactWindow, resolveContextWindowTokens, getDebugByDefault, getBackend, isKnownBackend, resolveSpawnEffort } from './appSettings.ts';
@@ -135,6 +140,7 @@ interface CreateInstanceInput {
   conducted?: boolean;
   debug?: boolean;
   autoApprovePlan?: boolean;
+  playbookEnforcement?: PlaybookEnforcement;
   callerInstanceId?: string | null;
   prefill?: string;
 }
@@ -422,6 +428,7 @@ export class Instance extends EventEmitter implements InstanceLike {
   firstPrompt: string | null;
   title: string | null;
   autoApprovePlan: boolean;
+  playbookEnforcement: PlaybookEnforcement;
   interrupting: boolean;
   pendingPrefill: string | null;
   _drainTimer: NodeJS.Timeout | null;
@@ -600,6 +607,12 @@ export class Instance extends EventEmitter implements InstanceLike {
     // the auto-approve fires regardless of which tab/session is in
     // focus, or whether any client is even connected.
     this.autoApprovePlan = false;
+    // How hard this session's playbook is enforced at the MCP boundary, read by
+    // src/mcp/playbookGate.ts. Only meaningful on a CONDUCTOR (the gate governs
+    // the conductor's own calls); 'off' is a no-op, so the field is harmless on
+    // every other instance. Defaults to 'off' so an upgrade cannot break a flow
+    // that predates playbooks.
+    this.playbookEnforcement = 'off';
     // Transient flag layered on top of `status: 'turn'`: set true when a
     // SOFT interrupt injects its hidden steering message and the model is
     // winding the turn down; cleared automatically by _setStatus on any
@@ -809,6 +822,7 @@ export class Instance extends EventEmitter implements InstanceLike {
       lastResponseAt: this.lastResponseAt,
       createdAt: this.createdAt,
       autoApprovePlan: this.autoApprovePlan,
+      playbookEnforcement: this.playbookEnforcement,
       interrupting: this.interrupting,
       autoResumeAt: this.autoResumeAt,
       queuedCount: this._overageQueue.length,
@@ -821,6 +835,17 @@ export class Instance extends EventEmitter implements InstanceLike {
     const next = !!enabled;
     if (this.autoApprovePlan === next) return;
     this.autoApprovePlan = next;
+    this.emit('status', this.summary());
+  }
+
+  // Same shape as setAutoApprovePlan: no-op on an unchanged value, otherwise
+  // assign and broadcast. The broadcast is load-bearing beyond the UI — the
+  // playbook gate watches the manager's 'status' stream to ledger the change,
+  // so whichever surface flips the toggle gets recorded without knowing about
+  // the ledger.
+  setPlaybookEnforcement(mode: PlaybookEnforcement): void {
+    if (this.playbookEnforcement === mode) return;
+    this.playbookEnforcement = mode;
     this.emit('status', this.summary());
   }
 
@@ -1444,7 +1469,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     // min(MAX_CONTEXT_TOKENS, AUTO_COMPACT_WINDOW) — the knob wins only when
     // it's smaller than the native window; otherwise the native window still
     // binds, same as docs/protocol.md's "remains the binding minimum".
-    if (this.project === CONDUCT_PROJECT_NAME) {
+    if (isConductorInstance(this)) {
       const cw = getConductorCompactWindow();
       if (cw.enabled) {
         spawnEnv.CLAUDE_CODE_AUTO_COMPACT_WINDOW = String(cw.value * 1000);
@@ -2829,7 +2854,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   // carry a session's last known capacity (fork, restart manifest) pass it so a
   // deleted custom-model row doesn't blank the ctx bar. Live registry
   // resolution wins whenever it succeeds — see finalContextWindowTokens below.
-  async _doCreate({ project, resume, mode, effort, tier, role, thinking, model, contextWindowTokens: carriedContextWindowTokens, backend: explicitBackend, worktree, temp, conducted, callerInstanceId, debug, autoApprovePlan, prefill }: CreateInstanceInput = {}): Promise<Instance> {
+  async _doCreate({ project, resume, mode, effort, tier, role, thinking, model, contextWindowTokens: carriedContextWindowTokens, backend: explicitBackend, worktree, temp, conducted, callerInstanceId, debug, autoApprovePlan, playbookEnforcement, prefill }: CreateInstanceInput = {}): Promise<Instance> {
     // On resume, when the caller didn't pin an explicit worktree, recover the
     // session's recorded project + worktree via findSessionLocation. This is
     // what makes spawn_instance({resume}) "just work" for an MCP conductor
@@ -3153,6 +3178,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
 
     this.byId.set(id, inst);
     if (autoApprovePlan) inst.autoApprovePlan = true;
+    if (playbookEnforcement) inst.playbookEnforcement = playbookEnforcement;
     // Fork prefill: the dropped prompt rides the new instance's first
     // `snapshot` frame (see Instance.consumePrefill / wsHub subscribe).
     if (typeof prefill === 'string') inst.pendingPrefill = prefill;
@@ -3298,7 +3324,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     for (const inst of live) {
       if (steerConductors.has(inst.id) || protectedWorkers.has(inst.id)) continue;
       if (inst.status !== 'turn') continue;
-      if (inst.project === CONDUCT_PROJECT_NAME) {
+      if (isConductorInstance(inst)) {
         this._steerConductor(inst, { resume, resetsAt, hasWorkers: false });
       } else {
         this._directOverageStop(inst, { resume, resetsAt });

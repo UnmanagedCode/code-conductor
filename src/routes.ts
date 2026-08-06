@@ -32,6 +32,7 @@ import { BOOT_ID } from './bootId.ts';
 import { getOrCompute, invalidate, invalidateAll } from './projectsCache.ts';
 import { pageInstanceEvents } from './eventArchive.ts';
 import { ensureConductProject, CONDUCT_PROJECT_NAME } from './conduct.ts';
+import { PLAYBOOK_ENFORCEMENT_MODES, isPlaybookEnforcement } from './playbooks.ts';
 import {
   isAvailable as transcribeAvailable, transcribe, modelPathForName,
 } from './transcribe.ts';
@@ -904,7 +905,15 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
         // {backend, model} (see resolveContextWindowTokens), never accepted
         // from the client.
         const body = jsonBody(req);
-        const { project, resume, mode, effort, tier, role, thinking, model, backend, worktree, temp, debug, autoApprovePlan } = body;
+        const { project, resume, mode, effort, tier, role, thinking, model, backend, worktree, temp, debug, autoApprovePlan, playbookEnforcement } = body;
+        // Ingress validation for the enforcement level — instances.ts stores it
+        // as an already-narrowed type, so the allow-list is checked here.
+        if (playbookEnforcement !== undefined && !isPlaybookEnforcement(playbookEnforcement)) {
+          res.status(400).json({
+            error: `playbookEnforcement must be one of ${PLAYBOOK_ENFORCEMENT_MODES.join(' | ')}`,
+          });
+          return;
+        }
         // UI shortcut: the temp checkbox implies bypassPermissions when no
         // mode is picked (a disposable session is almost always for *doing*,
         // not planning). create() is policy-light and no longer couples
@@ -934,6 +943,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
           temp: temp as boolean | undefined,
           debug: debug as boolean | undefined,
           autoApprovePlan: autoApprovePlan as boolean | undefined,
+          playbookEnforcement,
         });
         res.status(201).json(inst.summary());
       } catch (e) { next(e); }

@@ -4,14 +4,14 @@
 // the cases for the authoritative set.
 //
 // Server → client:
-//   { t: "snapshot",       id, status, mode, sessionId, project, autoApprovePlan,
+//   { t: "snapshot",       id, status, mode, sessionId, project, autoApprovePlan, playbookEnforcement,
 //                          events: [...],            // ring TAIL only (≤ ORCH_SNAPSHOT_TAIL; default DEFAULT_SNAPSHOT_TAIL)
 //                          tailStartSeq, trimmedBefore, // >0 ⇒ older history exists; page it via
 //                                                        // GET /api/instances/:id/events?before=<seq>
 //                          droppedText? }            // present once on a fork's first snapshot ⇒ composer prefill
 //   { t: "reset_snapshot", id, status, mode, sessionId, project, events: [...], droppedText? } // droppedText ⇒ rewind prefill
 //   { t: "event",          id, ev }
-//   { t: "status",         id, status, sessionId, mode, autoApprovePlan }
+//   { t: "status",         id, status, sessionId, mode, autoApprovePlan, playbookEnforcement }
 //   { t: "closed",         id, code, signal }
 //   { t: "projects" }              // hint to re-fetch /api/projects
 //   { t: "instances" }             // hint to re-fetch /api/instances
@@ -21,6 +21,7 @@
 import { WebSocket } from 'ws';
 import type { WebSocketServer } from 'ws';
 import { invalidateAll } from './projectsCache.ts';
+import { PLAYBOOK_ENFORCEMENT_MODES, isPlaybookEnforcement } from './playbooks.ts';
 import type { InstanceManagerLike, InstanceLike, InstanceSummary } from './instanceTypes.ts';
 import type { UiEvent } from './parser.ts';
 
@@ -81,6 +82,7 @@ export function attachWsHub({ wss, instances }: WsHubOptions): void {
       sessionId: summary.sessionId,
       mode: summary.mode,
       autoApprovePlan: !!summary.autoApprovePlan,
+      playbookEnforcement: summary.playbookEnforcement,
       interrupting: !!summary.interrupting,
     });
     if (subs) for (const ws of subs) safeSend(ws, payload);
@@ -173,6 +175,7 @@ export function attachWsHub({ wss, instances }: WsHubOptions): void {
               mode: inst.mode,
               sessionId: inst.sessionId,
               autoApprovePlan: !!inst.autoApprovePlan,
+              playbookEnforcement: inst.playbookEnforcement,
               interrupting: !!inst.interrupting,
               events,
               tailStartSeq,
@@ -238,6 +241,17 @@ export function attachWsHub({ wss, instances }: WsHubOptions): void {
           case 'auto_approve_plan': {
             if (!inst) { reply(false, 'unknown instance'); return; }
             inst.setAutoApprovePlan(!!msg.enabled);
+            reply(true);
+            return;
+          }
+          case 'playbook_enforcement': {
+            if (!inst) { reply(false, 'unknown instance'); return; }
+            // Ingress validation — the setter takes an already-narrowed mode.
+            if (!isPlaybookEnforcement(msg.mode)) {
+              reply(false, `mode must be one of ${PLAYBOOK_ENFORCEMENT_MODES.join(' | ')}`);
+              return;
+            }
+            inst.setPlaybookEnforcement(msg.mode);
             reply(true);
             return;
           }

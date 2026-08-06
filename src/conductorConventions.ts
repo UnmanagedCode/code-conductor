@@ -11,13 +11,19 @@
 //
 // Every enabled convention costs tokens in every conductor session's system
 // prompt — keep the built-in set lean; project-specific detail belongs in
-// .conduct/tasks/*.md playbooks and the wiki, not here.
+// .conduct/tasks/*.md task plans and the wiki, not here. (Those are plan
+// DOCUMENTS; a "playbook" is now the enforced stage graph of src/playbooks.ts.)
 
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { orchStoreRoot } from './projects.ts';
 import { createFragmentCatalog, type ExtraEntry } from './fragmentCatalog.ts';
+// Static import is safe: playbooks.ts reaches the tool registry through a lazy
+// dynamic import precisely so the handlers→conductorConventions edge cannot close
+// a cycle. By the time loadPlaybooks() resolves that registry, this module is
+// fully initialised.
+import { loadPlaybooks } from './playbooks.ts';
 
 const CONVENTIONS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'conventions', 'conductor');
 const CORE_FILE = path.join(CONVENTIONS_DIR, 'core.md');
@@ -49,7 +55,12 @@ export const SEED_CONVENTIONS: Array<{ slug: string; name: string; description: 
     description: 'Shed dead-weight history about landed jobs via renew_session at lifecycle seams' },
   { slug: 'system-prompt-gate', name: 'System-prompt text gate',
     description: 'Audit system-prompt text diffs against the writing principles before approve/merge' },
+  { slug: 'playbooks', name: 'Playbooks',
+    description: 'Enforced stage graphs: read the graph, carry `stage`, diagnose a stuck run' },
 ];
+
+// The slug whose composed body gains the generated playbook listing below.
+const PLAYBOOKS_SLUG = 'playbooks';
 
 // Plugin-contributed conductor-convention fragments join the catalog through
 // this provider, mirroring projectConventions.ts's identical pattern. Injected
@@ -167,11 +178,42 @@ export async function setSelection(enabled: string[]): Promise<string[]> {
 
 // ── Compose ───────────────────────────────────────────────────────────────────
 
+// The available playbooks, GENERATED from the definitions — id + description
+// only, with the graph itself left to `describe_playbook`. Never hand-written
+// alongside the definitions: a built-in whose description changes must move the
+// prompt with no second edit, and a user-authored playbook must appear without
+// touching this file.
+//
+// Empty string when nothing loads, so a broken catalog costs a heading rather
+// than an empty list. Composed per call rather than cached, so it tracks the
+// definitions the way the rest of the read surface does.
+export async function playbookListing(): Promise<string> {
+  let ids: Array<{ id: string; description: string }>;
+  try {
+    const { playbooks } = await loadPlaybooks();
+    ids = [...playbooks.values()].map(pb => ({ id: pb.id, description: pb.description }));
+  } catch (e) {
+    // A definition-catalog failure must never block a conductor spawn.
+    console.warn(`conductorConventions: playbook listing unavailable: ${e instanceof Error ? e.message : String(e)}`);
+    return '';
+  }
+  if (ids.length === 0) return '';
+  ids.sort((a, b) => a.id.localeCompare(b.id));
+  return ['**Available playbooks** — full graph via `describe_playbook({id})`:', '',
+    ...ids.map(p => `- \`${p.id}\` — ${p.description}`)].join('\n');
+}
+
 // core + enabled convention bodies (catalog order) + footer.
 export async function composeConduct(enabledSlugs: string[]): Promise<string> {
   const core = await getCore();
   const footer = await getFooter();
-  const mods = (await catalog.compose(enabledSlugs)).trim();
+  let mods = (await catalog.compose(enabledSlugs)).trim();
+  // The listing rides the playbooks convention, so a session with that
+  // convention off pays nothing for it.
+  if (mods && enabledSlugs.includes(PLAYBOOKS_SLUG)) {
+    const listing = await playbookListing();
+    if (listing) mods = `${mods}\n\n${listing}`;
+  }
   return [core, ...(mods ? [mods] : []), footer].join('\n\n') + '\n';
 }
 
