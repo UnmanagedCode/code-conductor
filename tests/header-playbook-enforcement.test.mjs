@@ -96,7 +96,7 @@ async function setup() {
   });
 
   return {
-    dom, header,
+    dom, header, window,
     show(inst) { instances = [inst]; activeId = inst.id; header.update(); },
   };
 }
@@ -247,12 +247,32 @@ test('the frame targets the active instance and asks for an ack', async () => {
   assert.ok(frame.reqId, 'sent with ack:true, so a rejected flip surfaces instead of failing silently');
 });
 
-test('a click with no active instance sends nothing', async () => {
-  const t = await clickSetup();
+test('a click with no active instance sends nothing AND throws nothing', async () => {
   // The ⋮ menu is hidden in this state, but a stale-clickable button was a real
   // bug for the sibling Change-model item (see tests/header-change-model.test.mjs).
-  t.header.update();
-  t.dom.playbookEnforcementBtn.click();
-  await new Promise(r => setImmediate(r));
-  assert.deepEqual(t.enforcementFrames(), []);
+  //
+  // Asserting only "no frame sent" would NOT pin the guard: without
+  // `if (!currentInst) return` the handler dereferences null and rejects, which
+  // also sends no frame. So the error has to be asserted on too — and it does not
+  // surface as a process unhandledRejection, because happy-dom catches an async
+  // listener's rejection and re-dispatches it as a window 'error' event, leaving
+  // the runner at exit 0. Removing the guard must fail this test.
+  const t = await clickSetup();
+  const escaped = [];
+  const onError = (e) => escaped.push(e.message ?? String(e));
+  const onRejection = (e) => escaped.push(e instanceof Error ? e.message : String(e));
+  t.window.addEventListener('error', onError);
+  process.on('unhandledRejection', onRejection);
+  try {
+    t.header.update();
+    t.dom.playbookEnforcementBtn.click();
+    // A macrotask turn, not setImmediate: the rejection is only observable once
+    // the microtask queue has drained.
+    await new Promise(r => setTimeout(r, 20));
+    assert.deepEqual(t.enforcementFrames(), [], 'no flip is sent with nothing selected');
+    assert.deepEqual(escaped, [], 'the click must return early, not crash on a null instance');
+  } finally {
+    t.window.removeEventListener('error', onError);
+    process.off('unhandledRejection', onRejection);
+  }
 });
