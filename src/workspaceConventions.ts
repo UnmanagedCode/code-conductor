@@ -10,8 +10,9 @@
 //
 // The composed file is fully app-owned: regenerated (overwritten) on boot
 // and after a settings change by ensureRootClaudeMd() in rootClaudeMd.ts.
-// This mirrors src/conductorConventions.ts (which instead injects its
-// composed doc at spawn via --append-system-prompt rather than to a file).
+// This mirrors src/conductorConventions.ts (whose composed doc is instead
+// written to <store>/conductor-prompt.md and passed at spawn via
+// --append-system-prompt-file, rather than @-imported from a project tree).
 
 import { promises as fs } from 'node:fs';
 import path from 'node:path';

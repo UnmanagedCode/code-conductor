@@ -174,8 +174,9 @@ test('PUT selection changes what composeCurrentConduct() produces; no file is wr
   assert.ok(content.startsWith('# Conductor role'));
   assert.match(content, /generated from `conventions\/conductor\/core\.md`/);
 
-  // The selection change never touches disk — the doc reaches the conductor
-  // via --append-system-prompt at spawn, not a regenerated file.
+  // The selection change never touches the PROJECT tree — the doc is written
+  // to <store>/conductor-prompt.md at spawn and passed via
+  // --append-system-prompt-file, so `.conduct/` stays bare.
   await assert.rejects(fs.stat(path.join(projectsRoot, '.conduct', 'CONDUCT.md')));
 });
 

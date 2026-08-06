@@ -12,13 +12,12 @@ import { isConducted, markConducted, unmarkConducted } from './conductedSessions
 import { SessionRenewController, type RenewalOpts } from './sessionRenew.ts';
 import { isTemp, markTemp, unmarkTemp } from './tempSessions.ts';
 import { markArchived } from './archivedSessions.ts';
-import { CONDUCT_PROJECT_NAME, isConductorInstance } from './conduct.ts';
+import { CONDUCT_PROJECT_NAME, isConductorInstance, materializeCurrentConduct } from './conduct.ts';
 // TYPE-ONLY, deliberately: verbatimModuleSyntax erases it, so this adds no
 // runtime import edge from instances.ts into the playbook subsystem. The
 // runtime allow-list (PLAYBOOK_ENFORCEMENT_MODES) is validated at the ingress
 // boundaries — the spawn route and the WS toggle — not here.
 import type { PlaybookEnforcement } from './playbooks.ts';
-import { composeCurrentConduct } from './conductorConventions.ts';
 import { buildSettingsJSON, buildMcpConfigJSON, AWAITING_INPUT_MESSAGE } from './settings.ts';
 import { getOnOverageAction, getOverageThreshold, getConductorCompactWindow, resolveContextWindowTokens, getDebugByDefault, getBackend, isKnownBackend, resolveSpawnEffort } from './appSettings.ts';
 import { HookBroker, type HookEnvelope } from './hookBroker.ts';
@@ -93,9 +92,9 @@ function evData(ev: UiEvent): Record<string, unknown> | null | undefined {
 }
 
 // The Instance constructor's input. `effort` is the RESOLVED level (spawn-time
-// defaulting happens in the manager's _doCreate); `appendSystemPromptProvider`
-// is the role-agnostic seam that composes the conductor doc (null for every
-// non-conductor instance).
+// defaulting happens in the manager's _doCreate); `appendSystemPromptFileProvider`
+// is the role-agnostic seam that materializes the conductor doc and returns its
+// path (null for every non-conductor instance).
 interface InstanceConstructorInput {
   id: string;
   project: string;
@@ -115,7 +114,7 @@ interface InstanceConstructorInput {
   debug?: boolean;
   claudePluginDirs?: string[];
   launcher?: LauncherLike;
-  appendSystemPromptProvider?: (() => Promise<string | null>) | null;
+  appendSystemPromptFileProvider?: (() => Promise<string>) | null;
 }
 
 // InstanceManager.create()/_doCreate() input — the REST/MCP spawn surface.
@@ -413,8 +412,8 @@ export class Instance extends EventEmitter implements InstanceLike {
   conducted: boolean;
   callerInstanceId: string | null;
   debug: boolean;
-  _appendSystemPromptProvider: (() => Promise<string | null>) | null;
-  _appendSystemPrompt: string | null;
+  _appendSystemPromptFileProvider: (() => Promise<string>) | null;
+  _appendSystemPromptFile: string | null;
   debugDir: string | null;
   _debugStreams: { stdin: WriteStream; stdout: WriteStream; stderr: WriteStream } | null;
   sessionId: string | null;
@@ -464,7 +463,7 @@ export class Instance extends EventEmitter implements InstanceLike {
   _spawnArgv: string[] | null;
   _overageGate: (() => { active: boolean; resetsAt: number | null }) | null;
 
-  constructor({ id, project, cwd, mode, effort, thinking, model, contextWindowTokens = null, backend = CLAUDE_BACKEND_ID, hookCallbackUrl = null, mcpServerUrl = null, worktree = null, temp = false, conducted = false, callerInstanceId = null, debug = false, claudePluginDirs = [], launcher = defaultClaudeLauncher, appendSystemPromptProvider = null }: InstanceConstructorInput) {
+  constructor({ id, project, cwd, mode, effort, thinking, model, contextWindowTokens = null, backend = CLAUDE_BACKEND_ID, hookCallbackUrl = null, mcpServerUrl = null, worktree = null, temp = false, conducted = false, callerInstanceId = null, debug = false, claudePluginDirs = [], launcher = defaultClaudeLauncher, appendSystemPromptFileProvider = null }: InstanceConstructorInput) {
     super();
     this.id = id;
     // The ClaudeLauncher used to spawn the subprocess. Defaults to the real
@@ -530,14 +529,16 @@ export class Instance extends EventEmitter implements InstanceLike {
     // central store's debug dir for offline inspection. Streams + the
     // debug dir path are populated at spawn time.
     this.debug = !!debug;
-    // Optional async provider (role-agnostic seam) that composes the text
-    // delivered to the subprocess via `--append-system-prompt`. Injected by
-    // the manager: wired to composeCurrentConduct for the `.conduct`
-    // conductor session, null for every other instance. launch() awaits it
-    // and stashes the result on _appendSystemPrompt so the synchronous
-    // spawn() can read it — recomposing on every fresh spawn AND resume.
-    this._appendSystemPromptProvider = appendSystemPromptProvider;
-    this._appendSystemPrompt = null;
+    // Optional async provider (role-agnostic seam) that writes the appended
+    // system prompt to disk and returns its path, delivered to the subprocess
+    // via `--append-system-prompt-file`. Injected by the manager: wired to
+    // materializeCurrentConduct for the `.conduct` conductor session, null for
+    // every other instance. launch() awaits it and stashes the path on
+    // _appendSystemPromptFile so the synchronous spawn() can read it — so the
+    // file is rewritten on every fresh spawn AND resume, and always exists
+    // before the process starts (the CLI validates the path at arg-parse time).
+    this._appendSystemPromptFileProvider = appendSystemPromptFileProvider;
+    this._appendSystemPromptFile = null;
     this.debugDir = null;
     this._debugStreams = null;
     this.sessionId = null;
@@ -1281,15 +1282,17 @@ export class Instance extends EventEmitter implements InstanceLike {
     }
   }
 
-  // Async pre-spawn seam: recompose the appended system prompt (if a provider
-  // is wired) and stash it, then hand off to the synchronous spawn(). Every
-  // conductor (re)launch entry point routes through here — fresh spawn, resume,
-  // respawn, and rewind — so the doc is always freshly composed. A compose
-  // error propagates (fail loud): a role-less conductor is worse than a
-  // surfaced error, and all callers are async and return errors to REST/MCP.
+  // Async pre-spawn seam: rewrite the appended-system-prompt file (if a
+  // provider is wired) and stash its path, then hand off to the synchronous
+  // spawn(). Every conductor (re)launch entry point routes through here —
+  // fresh spawn, resume, respawn, and rewind — so the doc is always freshly
+  // composed, and the write always completes BEFORE spawn (the CLI errors at
+  // arg-parse time on a missing path). A compose/write error propagates (fail
+  // loud): a role-less conductor is worse than a surfaced error, and all
+  // callers are async and return errors to REST/MCP.
   async launch({ resume }: { resume?: string } = {}): Promise<void> {
-    this._appendSystemPrompt = this._appendSystemPromptProvider
-      ? await this._appendSystemPromptProvider() : null;
+    this._appendSystemPromptFile = this._appendSystemPromptFileProvider
+      ? await this._appendSystemPromptFileProvider() : null;
     this.spawn({ resume });
   }
 
@@ -1490,9 +1493,21 @@ export class Instance extends EventEmitter implements InstanceLike {
       }
     }
     // Deliver the composed role prompt (conductor doc) as an appended system
-    // prompt. Freshly recomposed by launch() before every spawn/resume; null
-    // for instances with no provider wired (see the constructor comment).
-    if (this._appendSystemPrompt) args.push('--append-system-prompt', this._appendSystemPrompt);
+    // prompt, by PATH rather than by value — tens of KB of prompt in argv would
+    // otherwise be world-readable via `ps` / /proc/<pid>/cmdline, and argv
+    // length grows without bound as conventions accumulate. The file is
+    // rewritten by launch() before every spawn/resume (see conduct.ts →
+    // conductPromptPath for why it is one fixed path in the store); null for
+    // instances with no provider wired (see the constructor comment).
+    //
+    // SINGLE-SLOT CHANNEL — do not add a second append-system-prompt flag here.
+    // Verified against CLI 2.1.223: `--append-system-prompt-file` is NOT
+    // repeatable (last occurrence silently wins, earlier ones are ignored) and
+    // combining it with `--append-system-prompt` is a hard startup error
+    // ("Cannot use both ... Please use only one"). Any future feature that
+    // wants to append system-prompt text must compose into the SAME document
+    // upstream of the file write, not add another flag.
+    if (this._appendSystemPromptFile) args.push('--append-system-prompt-file', this._appendSystemPromptFile);
     // Uniform --model append for EVERY backend (no backend check). For a
     // template that names {model} this duplicates the launch-slot --model with
     // the same value — a confirmed no-op for ollama (it consumes its own copy and
@@ -3109,9 +3124,10 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
       claudePluginDirs,
       launcher: this._claudeLauncher,
       // The conductor singleton carries its composed role doc as an appended
-      // system prompt; every other instance gets its guidance from CLAUDE.md
-      // via the ancestor walk-up, so no provider is wired.
-      appendSystemPromptProvider: project === CONDUCT_PROJECT_NAME ? composeCurrentConduct : null,
+      // system prompt, materialized to a file in the store; every other
+      // instance gets its guidance from CLAUDE.md via the ancestor walk-up, so
+      // no provider is wired.
+      appendSystemPromptFileProvider: project === CONDUCT_PROJECT_NAME ? materializeCurrentConduct : null,
     });
     if (recoveredFirstPrompt) inst.firstPrompt = recoveredFirstPrompt;
 

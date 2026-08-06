@@ -9,8 +9,10 @@ import * as m0002 from './0002-rename-group-to-workspace.mjs';
 // 0003-conduct-md-symlink is intentionally NOT registered: it created a
 // .conduct/CONDUCT.md symlink. That path later became a fully-owned generated
 // file (0010) and is now removed entirely (0022) — the conductor role prompt
-// is injected at spawn via --append-system-prompt, no on-disk file. Leaving
-// 0003 in the chain would make it recreate the symlink / warn every boot.
+// lives in the app store at <root>/.code-conductor/conductor-prompt.md and is
+// passed at spawn via --append-system-prompt-file, so nothing conductor-owned
+// belongs in the project tree. Leaving 0003 in the chain would make it
+// recreate the symlink / warn every boot.
 import * as m0004 from './0004-relocate-av-installs.mjs';
 import * as m0005 from './0005-rename-conducted-marker.mjs';
 import * as m0006 from './0006-init-cost-tracking.mjs';
