@@ -46,10 +46,11 @@ export type LedgerEvent =
       via: string; needs?: Record<string, string> }
   | { seq: number; ts: string; kind: 'retire'; sessionId: string; reason: string }
   | { seq: number; ts: string; kind: 'refusal'; sessionId?: string; tool: string; code: string; reason: string }
-  // `from: null` is a BIRTH — a conductor created with a non-'off' mode, which
-  // was never in any prior mode. Distinct from a change, and deliberately an
-  // explicit null rather than an absent key so a reader can tell "born this way"
-  // from "field missing". A conductor created 'off' records nothing at all.
+  // `from: null` is a BIRTH — the conductor was created at this level and was
+  // never in any prior one, so naming the other level would assert a past it
+  // never had. Distinct from a change, and deliberately an explicit null rather
+  // than an absent key so a reader can tell "born this way" from "field missing".
+  // Every conductor records a birth, at either level.
   | { seq: number; ts: string; kind: 'enforcement'; conductorSessionId: string; from: string | null; to: string };
 
 // A ledger event as handed to append() — seq/ts are assigned by the ledger.

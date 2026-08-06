@@ -169,8 +169,8 @@ export function buildTools(): Tool[] {
         'CAUTION: an instance with the code-conductor MCP registered can in turn spawn ' +
         'further instances — guard against runaway recursion by keeping child agents in plan mode. ' +
         'PLAYBOOKS: playbook / stage / needs declare which workflow graph this worker joins and where. ' +
-        'Enforcement is ON by default, so a spawn that starts a new run must name a playbook and a stage; ' +
-        'a refusal names every playbook, where each can be entered, and the legal moves from there.',
+        'A spawn with no `needs` starts a new run and requires playbook + stage; a refusal lists every ' +
+        'playbook with its entry stages and the legal moves from there.',
       inputSchema: {
         type: 'object',
         properties: {

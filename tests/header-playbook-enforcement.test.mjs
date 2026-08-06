@@ -8,8 +8,13 @@
 //
 // Same harness as tests/header-mute.test.mjs — the real index.html into
 // happy-dom so `dom` matches app.js's wiring, then the real installHeader()
-// driven with fake instance state. This file covers the RENDER side only; the
-// `click` listener that forwards to send() lives in app.js.
+// driven with fake instance state.
+//
+// The click listener is covered too, through the REAL ws.js send(): a fake
+// WebSocket global is installed and connect() called, so the frame the button
+// actually puts on the wire is what gets asserted. Nothing here re-implements the
+// flip — a test that recomputed the expected level would pass against a handler
+// that had the same bug.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
@@ -29,6 +34,7 @@ async function setup() {
   globalThis.HTMLElement = window.HTMLElement;
   globalThis.Element = window.Element;
   globalThis.Node = window.Node;
+  globalThis.location = window.location;
   window.document.documentElement.innerHTML = html;
   const document = window.document;
 
@@ -158,7 +164,11 @@ test('the toggle sits in the ⋮ panel directly below Prune', async () => {
 
 test('the retired <select> is gone from index.html', async () => {
   const t = await setup();
-  assert.equal(document.getElementById('playbook-enforcement-select'), null,
+  // assert.ok on a boolean, NOT assert.equal(node, null): handing a happy-dom
+  // node to assert's diff serializer makes it recurse the DOM and the runner dies
+  // with SIGKILL, so a future re-add would crash the suite instead of naming a
+  // failure.
+  assert.ok(!document.getElementById('playbook-enforcement-select'),
     'the three-level dropdown was replaced, not duplicated — two controls would fight over one field');
 });
 
@@ -168,4 +178,81 @@ test('a dead conductor cannot have its enforcement changed', async () => {
     t.show({ ...CONDUCTOR, status, playbookEnforcement: 'enforce' });
     assert.equal(t.dom.playbookEnforcementBtn.hidden, true, `hidden for a ${status} conductor`);
   }
+});
+
+// ── the click: what actually goes on the wire ──────────────────────────────
+
+// Minimal stand-in for the browser's WebSocket, enough for ws.js: connect()
+// constructs it and registers listeners, send() checks readyState against the
+// constructor's OPEN, and an immediate ack resolves the {ack:true} promise so the
+// handler's await settles instead of timing out into an alert().
+function installFakeSocket(sent) {
+  class FakeSocket extends EventTarget {
+    static OPEN = 1;
+    static CLOSED = 3;
+    constructor(url) { super(); this.url = url; this.readyState = FakeSocket.OPEN; }
+    send(raw) {
+      const msg = JSON.parse(raw);
+      sent.push(msg);
+      if (msg.reqId != null) {
+        const ev = new Event('message');
+        ev.data = JSON.stringify({ t: 'ack', reqId: msg.reqId, ok: true });
+        this.dispatchEvent(ev);
+      }
+    }
+    close() { this.readyState = FakeSocket.CLOSED; }
+  }
+  globalThis.WebSocket = FakeSocket;
+}
+
+async function clickSetup() {
+  const sent = [];
+  installFakeSocket(sent);
+  const t = await setup();
+  // ws.js is imported WITHOUT a cache-buster so it is the same module instance
+  // header.js's `import { send } from './ws.js'` resolved to.
+  const { connect } = await import(pathToFileURL(path.join(PUB, 'ws.js')).href);
+  connect();
+  return { ...t, sent, enforcementFrames: () => sent.filter(m => m.t === 'playbook_enforcement') };
+}
+
+test('clicking the toggle sends the OPPOSITE level, in both directions', async () => {
+  const t = await clickSetup();
+
+  // ON -> off. The level sent must be the one NOT currently in effect: sending the
+  // displayed level would be a silent no-op server-side (setPlaybookEnforcement
+  // returns early on an equal mode), so the toggle would appear inert.
+  t.show({ ...CONDUCTOR, playbookEnforcement: 'enforce' });
+  t.dom.playbookEnforcementBtn.click();
+  await new Promise(r => setImmediate(r));
+  assert.deepEqual(t.enforcementFrames().map(m => m.mode), ['warn'],
+    'an enforcing conductor must be sent warn');
+
+  // off -> ON.
+  t.show({ ...CONDUCTOR, playbookEnforcement: 'warn' });
+  t.dom.playbookEnforcementBtn.click();
+  await new Promise(r => setImmediate(r));
+  assert.deepEqual(t.enforcementFrames().map(m => m.mode), ['warn', 'enforce'],
+    'a warn conductor must be sent enforce');
+});
+
+test('the frame targets the active instance and asks for an ack', async () => {
+  const t = await clickSetup();
+  t.show({ ...CONDUCTOR, playbookEnforcement: 'warn' });
+  t.dom.playbookEnforcementBtn.click();
+  await new Promise(r => setImmediate(r));
+
+  const [frame] = t.enforcementFrames();
+  assert.equal(frame.id, CONDUCTOR.id, 'the flip must address the session being viewed');
+  assert.ok(frame.reqId, 'sent with ack:true, so a rejected flip surfaces instead of failing silently');
+});
+
+test('a click with no active instance sends nothing', async () => {
+  const t = await clickSetup();
+  // The ⋮ menu is hidden in this state, but a stale-clickable button was a real
+  // bug for the sibling Change-model item (see tests/header-change-model.test.mjs).
+  t.header.update();
+  t.dom.playbookEnforcementBtn.click();
+  await new Promise(r => setImmediate(r));
+  assert.deepEqual(t.enforcementFrames(), []);
 });

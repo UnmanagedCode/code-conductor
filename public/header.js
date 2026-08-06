@@ -51,6 +51,16 @@ import { isSessionMuted } from './notifications.js';
 // here rather than inlined so the one gate that depends on it is greppable.
 const CONDUCT_PROJECT = '.conduct';
 
+// The two enforcement levels (PLAYBOOK_ENFORCEMENT_MODES in src/playbooks.ts) as
+// one ON/OFF toggle. `warn` is the only off value, so anything else — including a
+// level this client doesn't know — reads as ON, which is the safe way round for a
+// control whose off position stops illegal moves being refused.
+//
+// One mapping, used in both directions: the render reads it, the click inverts it.
+// Two copies would let the label and the frame it sends disagree.
+export function isEnforcing(level) { return level !== 'warn'; }
+export function nextEnforcementLevel(level) { return isEnforcing(level) ? 'warn' : 'enforce'; }
+
 // Combined popover: "Session totals" section above, "Usage limits" section
 // below. ctx data is per-session; usage-limit data is account-wide.
 const OAUTH_BUCKET_LABELS = {
@@ -322,6 +332,22 @@ export function installHeader({
     if (currentInst) toggleModelPopover(dom.overflowToggle, currentInst);
   });
 
+  // Two levels, so the menu item sends the OTHER one. Lives here rather than in
+  // app.js because picking the next level is a decision, and this module already
+  // owns the same mapping in the other direction (the `enforcing` render below).
+  //
+  // Deliberately NOT optimistic (unlike #auto-approve-plan-btn): the label is
+  // rendered from the `status` frame, so what the menu shows is always what the
+  // server is actually enforcing — worth a round-trip for a control that decides
+  // whether illegal moves get refused.
+  dom.playbookEnforcementBtn.addEventListener('click', async () => {
+    if (!currentInst) return;
+    closeOverflow();
+    const mode = nextEnforcementLevel(currentInst.playbookEnforcement);
+    try { await send('playbook_enforcement', { id: currentInst.id, mode }, { ack: true }); }
+    catch (e) { alert(`playbook enforcement change failed: ${e.message}`); }
+  });
+
   // Combined ctx + rl chip. ctx half is per-session; rl half reads from
   // globalRLTracker (account-wide) with accountUsage as a fallback source.
   // Color-graded by the worse of the two fractions so a near-limit rate-limit
@@ -572,13 +598,10 @@ export function installHeader({
     // is worse than an absent one. Rendered from state (never optimistic), like
     // #mode-select: the `status` frame is authoritative.
     //
-    // Two levels only, so `!== 'warn'` IS "enforcing" — that also renders a value
-    // this client doesn't know as on, which is the safe way round for a control
-    // whose off position means illegal moves stop being refused.
     const showEnforcement = canMenu && inst.project === CONDUCT_PROJECT;
     dom.playbookEnforcementBtn.hidden = !showEnforcement;
     dom.playbookEnforcementBtn.disabled = !showEnforcement;
-    const enforcing = inst.playbookEnforcement !== 'warn';
+    const enforcing = isEnforcing(inst.playbookEnforcement);
     dom.playbookEnforcementBtn.textContent = enforcing ? '🔒 Enforce Playbooks' : '⚠️ Enforce Playbooks';
     dom.playbookEnforcementBtn.title = enforcing
       ? 'Illegal playbook moves are refused for this conductor — tap to only record them'

@@ -637,21 +637,6 @@ dom.modeSelect.addEventListener('change', async () => {
   catch (e) { alert(`mode change failed: ${e.message}`); }
 });
 
-// Two levels, so the menu item flips to the other one. Deliberately NOT
-// optimistic (unlike #auto-approve-plan-btn): the label is rendered from the
-// `status` frame in header.js, so what the menu shows is always what the server
-// is actually enforcing — worth a round-trip for a control that decides whether
-// illegal moves get refused.
-dom.playbookEnforcementBtn.addEventListener('click', async () => {
-  if (!state.activeId) return;
-  const inst = state.instances.find(i => i.id === state.activeId);
-  if (!inst) return;
-  closeOverflow();
-  const mode = inst.playbookEnforcement === 'warn' ? 'enforce' : 'warn';
-  try { await send('playbook_enforcement', { id: state.activeId, mode }, { ack: true }); }
-  catch (e) { alert(`playbook enforcement change failed: ${e.message}`); }
-});
-
 dom.killBtn.addEventListener('click', () => {
   if (!state.activeId) return;
   closeOverflow();
