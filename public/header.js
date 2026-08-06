@@ -597,7 +597,6 @@ export function installHeader({
     // meaningless on any other session — and a visible control that does nothing
     // is worse than an absent one. Rendered from state (never optimistic), like
     // #mode-select: the `status` frame is authoritative.
-    //
     const showEnforcement = canMenu && inst.project === CONDUCT_PROJECT;
     dom.playbookEnforcementBtn.hidden = !showEnforcement;
     dom.playbookEnforcementBtn.disabled = !showEnforcement;
