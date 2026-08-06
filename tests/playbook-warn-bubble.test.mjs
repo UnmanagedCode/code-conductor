@@ -61,6 +61,7 @@ test('playbook_warn renders as a warning-styled system block', async () => {
   assert.ok(node, 'renders a system block carrying the warn class');
 
   const text = node.textContent;
+  assert.ok(text.includes('⚠'), 'carries the warning glyph');
   assert.ok(text.includes('would have been refused'),
     'reads as a warning about a move that was let through');
   assert.ok(text.includes('TRANSITION_ILLEGAL'), 'names the refusal code');
@@ -71,6 +72,25 @@ test('playbook_warn renders as a warning-styled system block', async () => {
   // The SystemBlock fallback is JSON.stringify(data), which would also contain
   // every field above — so pin that the dedicated branch is what ran.
   assert.ok(!text.includes('{'), 'rendered as prose, not the raw JSON fallback');
+});
+
+// SystemBlock always prints the subtype label before the detail, so a detail
+// that also says "Playbook (warn)" renders it twice. The label owns the naming.
+test('the playbook naming is not duplicated between label and detail', async () => {
+  setupDOM();
+  const { Conversation } = await importPublic();
+  const root = document.createElement('div');
+  new Conversation(root, {}).apply(WARN_EV);
+  const node = root.querySelector('.block.system.warn');
+
+  assert.equal(node.querySelector('.subtype').textContent, 'playbook_warn',
+    'the label is the subtype, unchanged');
+  // This fixture's tool/code/reason contain no "playbook", so every occurrence
+  // in the bubble comes from the naming itself — and there must be exactly one.
+  assert.equal((node.textContent.match(/playbook/gi) ?? []).length, 1,
+    'the bubble names the playbook exactly once');
+  assert.ok(!/Playbook \(warn\)/.test(node.textContent),
+    'the detail does not restate the label');
 });
 
 test('the warn class is scoped to playbook_warn, not every system block', async () => {

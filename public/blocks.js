@@ -1107,8 +1107,10 @@ export class SystemBlock {
       if (subtype === 'playbook_warn') {
         // Enforcement is `warn`: the call went through anyway. Name the target
         // worker when the refused call had one (spawn/capacity refusals don't).
+        // The `playbook_warn` subtype label is always printed alongside this
+        // detail, so it carries the naming — don't restate it here.
         const target = data?.sessionId ? ` on ${data.sessionId.slice(0, 8)}` : '';
-        return `⚠ Playbook (warn): ${data?.tool ?? '?'}${target} would have been refused — ${data?.code ?? '?'}: ${data?.reason ?? ''}`;
+        return `⚠ ${data?.tool ?? '?'}${target} would have been refused — ${data?.code ?? '?'}: ${data?.reason ?? ''}`;
       }
       if (subtype === 'cache_miss') {
         // Cross-turn path carries prevPrefix — show evicted vs served so a
