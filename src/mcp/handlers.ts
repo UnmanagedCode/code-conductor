@@ -39,7 +39,10 @@ import { composeProjectConventionsDoc } from '../projectClaudeMd.ts';
 import { getCatalog as getConductorConventionsCatalog, getSelection as getConductorSelection } from '../conductorConventions.ts';
 import { isKnownFamily, isKnownTier, defaultVersion, familyOf, CLAUDE_BACKEND_ID } from '../modelVersions.ts';
 import { getTierBackend, resolveRoleBackend, isResolvableRole, backendForModel } from '../appSettings.ts';
-import { textPayload } from './content.ts';
+import { textPayload, textResult } from './content.ts';
+import {
+  renderProjects, renderInstances, renderWorktrees, renderSessions, renderProjectStatus,
+} from './readRenderers.ts';
 import { pageInstanceEvents } from '../eventArchive.ts';
 import { indexDiffLines, paginateDiff } from './diffPaging.ts';
 import {
@@ -145,6 +148,13 @@ export const CONDUCTOR_VIEW_KEYS = [
   'overageActive',
   'overageResetsAt',
 ];
+
+// The three fields listInstances attaches on top of the shared projection (see
+// the note in listInstances). Exported so the two tests that bind against the
+// full list_instances key set — the doc-drift gate in
+// tests/mcp-conductor-view.test.mjs and the rendering gate in
+// tests/mcp-text-render.test.mjs — read one definition instead of two copies.
+export const LIST_ONLY_KEYS = ['hasIdleSubscriber', 'playbook', 'stage'];
 
 function toConductorView(summary: InstanceSummary): Record<string, unknown> {
   const out: Record<string, unknown> = {};
@@ -263,7 +273,7 @@ export async function listProjects(_args: McpArgs, { instances }: McpCtx) {
       sessions: await summarizeSessions(p.path).catch(() => ({ count: 0, lastMtime: 0 })),
     };
   }));
-  return enriched;
+  return textResult(renderProjects(enriched));
 }
 
 export async function listInstances(_args: McpArgs, { instances, playbookGate }: McpCtx) {
@@ -274,10 +284,10 @@ export async function listInstances(_args: McpArgs, { instances, playbookGate }:
   // sessionId-keyed playbook projection, so none of them exists on the four other
   // projections — putting them in the allowlist would publish permanently-
   // undefined fields there. This is the one place list_instances' shape differs.
-  if (!instances) return [];
+  if (!instances) return textResult(renderInstances([]));
   // Read-only, and folds nothing into being: absent ledger ⇒ empty projection.
   const proj = playbookGate ? await playbookGate.readProjection() : null;
-  return instances.list().map(row => {
+  const rows = instances.list().map(row => {
     const tracked = proj && typeof row.sessionId === 'string'
       ? proj.bySession.get(row.sessionId) : undefined;
     return {
@@ -289,6 +299,7 @@ export async function listInstances(_args: McpArgs, { instances, playbookGate }:
       stage: tracked?.stage ?? null,
     };
   });
+  return textResult(renderInstances(rows));
 }
 
 // ---------- playbooks: the read / introspection surface ----------
@@ -469,7 +480,8 @@ export async function listSessions({ project, worktree, includeArchived = false 
   } else {
     sessions = await fsListSessions(project);
   }
-  return includeArchived ? sessions : sessions.filter(s => !s.archived);
+  const rows = includeArchived ? sessions : sessions.filter(s => !s.archived);
+  return textResult(renderSessions(rows));
 }
 
 // Map the shared worktree-metadata shape (whose property is `worktreeName`)
@@ -480,8 +492,8 @@ function toMcpWorktree({ worktreeName, ...rest }: WorktreeMeta) {
 }
 
 export async function listWorktrees({ project }: { project: string }) {
-  const wts = await fsListWorktrees(project);
-  return wts.map(toMcpWorktree);
+  const wts = (await fsListWorktrees(project)).map(toMcpWorktree);
+  return textResult(renderWorktrees(wts));
 }
 
 export async function locateSession({ sessionId }: { sessionId?: string }) {
@@ -1548,7 +1560,7 @@ export async function projectStatus({ project, worktree, logLimit = 20 }: { proj
     isGitRepo: false,
   };
   if (!(await isGitRepo(cwd))) {
-    return out;
+    return textResult(renderProjectStatus(out));
   }
   out.isGitRepo = true;
   // Branch (may be null on detached HEAD).
@@ -1597,7 +1609,7 @@ export async function projectStatus({ project, worktree, logLimit = 20 }: { proj
     const diffR = await runGit(cwd, ['diff', '--stat', `${worktreeMeta.baseBranch}...HEAD`]);
     out.diffStat = diffR.code === 0 ? diffR.stdout.trim() : '';
   }
-  return out;
+  return textResult(renderProjectStatus(out));
 }
 
 // Path-traversal-guarded file read. Path is project-relative; absolute

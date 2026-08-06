@@ -43,8 +43,9 @@ export function buildTools(): Tool[] {
     {
       name: 'list_projects',
       description:
-        'List every project under ~/project/, with each project\'s git status, worktrees, ' +
-        'live session ids, and a session-count summary.',
+        'List every project under ~/project/ as PLAIN TEXT (this tool returns no JSON). ' +
+        'One block per project: its absolute path, workspace when set, session counts, live ' +
+        'sessionIds in full, and each worktree with branch, base, ahead/behind and its path.',
       inputSchema: { type: 'object', properties: {}, required: [] },
       handler: h.listProjects,
       annotations: { readOnlyHint: true },
@@ -52,7 +53,8 @@ export function buildTools(): Tool[] {
     {
       name: 'list_instances',
       description:
-        'List every live or recently-exited orchestrator worker. Each entry carries ' +
+        'List every live or recently-exited orchestrator worker as PLAIN TEXT ' +
+        '(this tool returns no JSON). Each worker summary is ' +
         '{project, cwd, sessionId, status, displayStatus, activeAgentTasks, mode, effort, thinking, ' +
         'backend, model, contextWindowTokens, pid, worktree, temp, conducted, debug, ' +
         'firstPrompt, title, createdAt, lastResponseAt, queuedCount, autoResumeAt, ' +
@@ -65,7 +67,11 @@ export function buildTools(): Tool[] {
         'read it, not `status`, to decide whether work is actually finished. ' +
         '`contextWindowTokens` is the model\'s context capacity in tokens, or null when unknown. ' +
         '`lastResponseAt` separates a long-silent worker from one producing output moments ago. ' +
-        'Every other tool here returning a worker summary returns this same shape minus ' +
+        '`worktree` is the worktree\'s full metadata object (or null); the rendering shows its name. ' +
+        'The rendering omits pid / createdAt / contextWindowTokens, and shows ' +
+        'temp / conducted / debug / overage / auto-resume only when they deviate from their ' +
+        'default — so anything on a worker\'s `flags` line is news. ' +
+        'Every other tool here returning a worker summary returns that shape as JSON, minus ' +
         '`hasIdleSubscriber`, `playbook` and `stage`.',
       inputSchema: { type: 'object', properties: {}, required: [] },
       handler: h.listInstances,
@@ -74,8 +80,9 @@ export function buildTools(): Tool[] {
     {
       name: 'list_sessions',
       description:
-        'List persisted Claude sessions for a project, or for a specific worktree inside it. ' +
-        'Returns [{sessionId, firstPrompt, title, conducted, archived, mtime, size}] newest-first. ' +
+        'List persisted Claude sessions for a project, or for a specific worktree inside it, ' +
+        'as PLAIN TEXT (this tool returns no JSON) — newest-first, one row each: full sessionId, ' +
+        'mtime, size, any of conducted/temp/archived that apply, and the title (or first prompt). ' +
         '`conducted:true` marks a session spawned via the `spawn_instance` tool (orchestrator-driven). ' +
         'Archived sessions (killed and retained but hidden from the active list) are excluded by default. ' +
         'Pass `includeArchived:true` to include them; they will have `archived:true` in the result.',
@@ -111,8 +118,10 @@ export function buildTools(): Tool[] {
     {
       name: 'list_worktrees',
       description:
-        'List orchestrator-owned git worktrees for a project. Each entry includes ' +
-        '{worktree, branch, baseBranch, baseSha, parentPath, createdAt}.',
+        'List orchestrator-owned git worktrees for a project as PLAIN TEXT (this tool returns ' +
+        'no JSON), oldest-first: the parent project and path as a header, then each worktree\'s ' +
+        'name, branch, base branch@sha, creation time and absolute path. The name is the ' +
+        '`worktree` argument every other worktree tool takes.',
       inputSchema: {
         type: 'object',
         properties: { project: { type: 'string' } },
@@ -829,7 +838,9 @@ export function buildTools(): Tool[] {
         'listing, git branch + HEAD subject, uncommitted lines (`git status --porcelain`), ' +
         'recent commits (`git log`), and — for worktrees — mergeStatus (ahead/behind) plus a ' +
         'diff-stat against the base branch. Useful for reviewing what an agent did without ' +
-        'leaving MCP.',
+        'leaving MCP. Returns PLAIN TEXT (no JSON), in sections: header, FILES, DIRTY, ' +
+        'DIFFSTAT, COMMITS. The dirty list is capped; its header reports both counts and says ' +
+        'truncated when it hits the cap.',
       inputSchema: {
         type: 'object',
         properties: {

@@ -48,6 +48,11 @@ function meta(result) {
 }
 // content[1..] are the raw, un-escaped text body block(s).
 function bodies(result) { return result.content.slice(1).map(c => c.text); }
+// The recon read tools' whole result: one plain-text block, no metadata block.
+function text(result) {
+  assert.equal(result.content.length, 1, 'a rendered read result is a single block');
+  return result.content[0].text;
+}
 function errText(result) { return result.content.map(c => c.text).join('\n'); }
 
 function git(cwd, ...args) {
@@ -359,10 +364,64 @@ test('project_status caps the dirty list with dirtyTruncated + dirtyTotal', asyn
   const repoPath = await makeRealRepo('demo');
   await Promise.all(Array.from({ length: 520 }, (_, i) =>
     fs.writeFile(path.join(repoPath, `f${i}.txt`), 'x\n')));
-  const st = meta(await callTool('project_status', { project: 'demo' }));
-  assert.equal(st.dirtyTruncated, true);
-  assert.equal(st.dirty.length, 500);
-  assert.ok(st.dirtyTotal >= 520);
+  const st = text(await callTool('project_status', { project: 'demo' }));
+  // The cap must never read as "only 500 files changed" — both counts, and the
+  // word truncated, are on the section header.
+  const header = st.split('\n').find(l => l.startsWith('DIRTY '));
+  const m = /^DIRTY \((\d+) of (\d+) — truncated\)$/.exec(header ?? '');
+  assert.ok(m, `expected a truncated DIRTY header, got: ${header}`);
+  assert.equal(Number(m[1]), 500);
+  assert.ok(Number(m[2]) >= 520);
+  assert.equal(st.split('\n').filter(l => /^ {2}\?\? f\d+\.txt$/.test(l)).length, 500,
+    'exactly the capped number of porcelain lines is rendered');
+});
+
+// ---------- recon read tools: text-only results ----------
+//
+// These five return a plain-text rendering as their ENTIRE result — no metadata
+// block, no structured channel. The renderings themselves are pinned in
+// tests/mcp-text-render.test.mjs; this checks the wire shape and that real
+// handler output actually reaches the renderer.
+
+const RENDERED_TOOLS = [
+  { name: 'list_projects', args: {}, head: /^PROJECTS \(/ },
+  { name: 'list_instances', args: {}, head: /^INSTANCES \(/ },
+  { name: 'list_worktrees', args: { project: 'demo' }, head: /^WORKTREES \(/ },
+  { name: 'list_sessions', args: { project: 'demo' }, head: /^SESSIONS \(/ },
+  { name: 'project_status', args: { project: 'demo' }, head: /^demo$/m },
+];
+
+test('the five recon read tools return one plain-text block and nothing else', async () => {
+  await makeRealRepo('demo');
+  for (const { name, args, head } of RENDERED_TOOLS) {
+    const r = await callTool(name, args);
+    assert.equal(r.content.length, 1, `${name}: one block, no metadata block`);
+    assert.equal(r.content[0].type, 'text');
+    assert.match(r.content[0].text, head, `${name}: renders its own heading`);
+    assert.equal(r.structuredContent, undefined,
+      `${name}: the structured channel was removed — text is the only output`);
+  }
+});
+
+test('a real worktree reaches the rendering with its branch, base and paths', async () => {
+  // Guards the handler→renderer wiring against live data: the pure tests feed
+  // hand-built rows, so only this notices a payload the renderer mis-reads.
+  const repoPath = await makeRealRepo('demo');
+  const created = JSON.parse((await callTool('create_worktree', { project: 'demo' })).content[0].text);
+  const wtName = created.worktree ?? created.worktreeName;
+  assert.ok(wtName, `create_worktree returned no name: ${JSON.stringify(created)}`);
+
+  const wts = text(await callTool('list_worktrees', { project: 'demo' }));
+  assert.ok(wts.includes(wtName), 'the worktree name is in the rendering');
+  assert.ok(wts.includes(`— demo  ${repoPath}`), 'the parent header carries the project path');
+  assert.match(wts, /br \S+ {2}base \S+@[0-9a-f]{12} {2}created /);
+
+  const projects = text(await callTool('list_projects', {}));
+  assert.ok(projects.includes(wtName), 'the same worktree shows under its project');
+
+  const st = text(await callTool('project_status', { project: 'demo', worktree: wtName }));
+  assert.match(st, /^demo {2}worktree /m);
+  assert.match(st, /^base \S+@[0-9a-f]{12} {3}ahead 0 {2}behind 0$/m);
 });
 
 // ---------- tools/list annotations ----------

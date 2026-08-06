@@ -123,15 +123,16 @@
 ### MCP interface
 Mounted at `POST /mcp` (Streamable HTTP, JSON-RPC 2.0); tools exposed as `mcp__code-conductor__*`. Auto-registered on every spawn via `--mcp-config` (opt out with `ORCH_DISABLE_MCP_AUTOREGISTER=1`). No auth — localhost-only.
 
-**Contract conventions (clean, no legacy aliases).** The worker handle is always `sessionId` (stable across respawn / `--resume` / restart); the per-process `instanceId` is internal and **never** appears on, nor is accepted by, the conductor-facing surface (a legacy `{id}` hard-fails; the REST/browser path keeps `id`). Every worker-addressing tool also accepts an **unambiguous prefix** of the sessionId (e.g. first 8 chars), resolved to the full id at the MCP boundary — exact full-id matches always win, an ambiguous prefix soft-refuses `{ok:false, code:'SESSION_AMBIGUOUS', matches:[…]}` (see [protocol.md → MCP tool protocol](protocol.md#mcp-tool-protocol)). Worktree is always `worktree`. Worker resolution is **strict-live + soft-erroring** — `{ok:false, code:'SESSION_NOT_LIVE'|'SESSION_UNKNOWN', reason}`, never auto-respawns (`respawn_instance` excepted). Inputs are schema-validated (unknown properties rejected); text-payload tools (`project_read`, `project_diff` diff mode, `project_bash`, `get_recent_messages`) append raw un-escaped body blocks after the `content[0]` metadata; `ok:false`+`code` for soft refusals, prose+`statusCode` for errors. Full wire contract: [protocol.md → MCP tool protocol](protocol.md#mcp-tool-protocol).
+**Contract conventions (clean, no legacy aliases).** The worker handle is always `sessionId` (stable across respawn / `--resume` / restart); the per-process `instanceId` is internal and **never** appears on, nor is accepted by, the conductor-facing surface (a legacy `{id}` hard-fails; the REST/browser path keeps `id`). Every worker-addressing tool also accepts an **unambiguous prefix** of the sessionId (e.g. first 8 chars), resolved to the full id at the MCP boundary — exact full-id matches always win, an ambiguous prefix soft-refuses `{ok:false, code:'SESSION_AMBIGUOUS', matches:[…]}` (see [protocol.md → MCP tool protocol](protocol.md#mcp-tool-protocol)). Worktree is always `worktree`. Worker resolution is **strict-live + soft-erroring** — `{ok:false, code:'SESSION_NOT_LIVE'|'SESSION_UNKNOWN', reason}`, never auto-respawns (`respawn_instance` excepted). Inputs are schema-validated (unknown properties rejected); text-payload tools (`project_read`, `project_diff` diff mode, `project_bash`, `get_recent_messages`) append raw un-escaped body blocks after the `content[0]` metadata; the five recon read tools instead return a plain-text rendering as their whole result (no JSON); `ok:false`+`code` for soft refusals, prose+`statusCode` for errors. Full wire contract: [protocol.md → MCP tool protocol](protocol.md#mcp-tool-protocol).
 
 - **Read:**
-  - `list_projects`, `list_workspaces`, `list_worktrees`, `locate_session` — bare listings / lookup.
-  - `list_instances` — each entry carries displayStatus and activeAgentTasks.
-  - `list_sessions` — conducted:bool marker.
+  - `list_projects`, `list_worktrees` — **text-rendered**, no JSON (see [protocol.md → Rendered read results](protocol.md#rendered-read-results)).
+  - `list_workspaces`, `locate_session` — bare listings / lookup.
+  - `list_instances` — **text-rendered**; each entry carries displayStatus and activeAgentTasks.
+  - `list_sessions` — **text-rendered**; conducted:bool marker.
   - `get_transcript` — disk-backed ring-first event stream (forward-paged via `fromSeq`, inclusive).
   - `get_recent_messages` — multi-block (text + tool_use + thinking), default-call bonding, disk-backed ring-first.
-  - `project_status` — dirty-state output capped.
+  - `project_status` — **text-rendered**; dirty-state output capped.
   - `project_read` — path-traversal guarded, multi-block (metadata + body).
   - `project_diff` — unified diff, summary mode, line-index pagination.
   - `list_project_conventions` — hasScaffold flag per convention.

@@ -54,6 +54,13 @@ function unwrapPayload(result) {
   assert.ok(Array.isArray(result.content), 'tool result has content[]');
   return { meta: JSON.parse(result.content[0].text), bodies: result.content.slice(1).map(c => c.text) };
 }
+// The five recon read tools invert that: their whole result is a plain-text
+// rendering, one block, no metadata to parse (src/mcp/content.ts textResult).
+function text(result) {
+  assert.ok(Array.isArray(result.content), 'tool result has content[]');
+  assert.equal(result.content.length, 1, 'a rendered read result is a single block');
+  return result.content[0].text;
+}
 // project_read convenience: merge the body back onto the metadata as `content`.
 function unwrapFile(result) {
   const { meta, bodies } = unwrapPayload(result);
@@ -180,15 +187,17 @@ test('unknown tool returns an isError tool-call result (not a transport error)',
 test('list_projects sees projects created via REST', async () => {
   await api(baseUrl, 'POST', '/api/projects', { name: 'alpha' });
   await api(baseUrl, 'POST', '/api/projects', { name: 'beta' });
-  const result = await callTool(baseUrl, 'list_projects', {});
-  const projects = unwrap(result);
-  const names = projects.map(p => p.name).sort();
-  assert.deepEqual(names, ['alpha', 'beta']);
-  for (const p of projects) {
-    assert.ok('isGitRepo' in p);
-    assert.ok(Array.isArray(p.worktrees));
-    assert.ok(Array.isArray(p.sessionIds));
+  const out = text(await callTool(baseUrl, 'list_projects', {}));
+  assert.match(out, /^PROJECTS \(2\)$/m);
+  for (const name of ['alpha', 'beta']) {
+    assert.match(out, new RegExp(`^▸ ${name} {2}\\S+/${name}$`, 'm'),
+      `${name} is listed with its absolute path`);
   }
+  assert.ok(out.indexOf('▸ alpha') < out.indexOf('▸ beta'), 'stable name order');
+  // Both entries carry the per-project counts, not just the header.
+  assert.equal((out.match(/^ {2}live \d+$/gm) ?? []).length, 2);
+  assert.equal((out.match(/^ {2}worktrees \d+$/gm) ?? []).length, 2);
+  assert.equal((out.match(/^ {2}sessions \d+ {3}last /gm) ?? []).length, 2);
 });
 
 test('spawn_instance + send_prompt(wait:true) + get_transcript round-trip', async () => {
@@ -379,20 +388,20 @@ test('list_sessions marks MCP-spawned sessions conducted:true, HTTP ones false, 
       '{"type":"user","uuid":"u","message":{"role":"user","content":"hi"}}\n');
   }
 
-  const list = unwrap(await callTool(baseUrl, 'list_sessions', { project: 'a' }));
-  const bySid = new Map(list.map(s => [s.sessionId, s]));
-  assert.ok(bySid.has(condSid), 'conducted session is returned (separation, not a filter)');
-  assert.ok(bySid.has(httpSid), 'non-conducted session is returned');
-  assert.equal(bySid.get(condSid).conducted, true, 'MCP session annotated conducted:true');
-  assert.equal(bySid.get(httpSid).conducted, false, 'HTTP session annotated conducted:false');
+  const out = text(await callTool(baseUrl, 'list_sessions', { project: 'a' }));
+  const rowFor = (sid, s = out) => s.split('\n').find(l => l.startsWith(sid));
+  assert.ok(rowFor(condSid), 'conducted session is returned (separation, not a filter)');
+  assert.ok(rowFor(httpSid), 'non-conducted session is returned');
+  assert.match(rowFor(condSid), /\bconducted\b/, 'MCP session marked conducted');
+  assert.doesNotMatch(rowFor(httpSid), /\bconducted\b/, 'HTTP session carries no marker');
 
   // The marker is durable: it survives the live instance going away
   // (simulating restart/resume recognition) because it reads from the
   // on-disk sidecar, not the in-memory instance.
   await callTool(baseUrl, 'kill_instance', { sessionId: cond.sessionId });
-  const list2 = unwrap(await callTool(baseUrl, 'list_sessions', { project: 'a' }));
-  const c2 = list2.find(s => s.sessionId === condSid);
-  assert.ok(c2 && c2.conducted === true, 'conducted marker persists after the instance exits');
+  const out2 = text(await callTool(baseUrl, 'list_sessions', { project: 'a' }));
+  assert.match(rowFor(condSid, out2) ?? '', /\bconducted\b/,
+    'conducted marker persists after the instance exits');
 });
 
 test('temp conducted session persists the conducted marker and recovers it on resume', async () => {
@@ -483,16 +492,16 @@ test('create_worktree + list_worktrees + delete_worktree against a real git repo
   assert.match(createRes.worktree, /^demo_worktree_[a-f0-9]{6}$/);
   assert.equal(createRes.baseBranch, 'main');
 
-  const wts = unwrap(await callTool(baseUrl, 'list_worktrees', { project: 'demo' }));
-  assert.equal(wts.length, 1);
-  assert.equal(wts[0].worktree, createRes.worktree);
+  const wts = text(await callTool(baseUrl, 'list_worktrees', { project: 'demo' }));
+  assert.match(wts, /^WORKTREES \(1\) — demo {2}\S+$/m);
+  assert.ok(wts.includes(createRes.worktree), 'the new worktree is listed');
 
   const del = unwrap(await callTool(baseUrl, 'delete_worktree', {
     project: 'demo', worktree: createRes.worktree,
   }));
   assert.equal(del.worktree, createRes.worktree);
-  const wts2 = unwrap(await callTool(baseUrl, 'list_worktrees', { project: 'demo' }));
-  assert.equal(wts2.length, 0);
+  assert.equal(text(await callTool(baseUrl, 'list_worktrees', { project: 'demo' })),
+    'WORKTREES (none)');
 });
 
 test('merge_worktree refuses with friendly reason when the worktree is behind', async () => {
@@ -859,20 +868,23 @@ test('project_status returns branch + HEAD + recent commits + top-level files', 
   await fs.writeFile(path.join(repoPath, 'untracked.txt'), 'u\n');
   await fs.writeFile(path.join(repoPath, 'README.md'), '# changed\n');
 
-  const st = unwrap(await callTool(baseUrl, 'project_status', { project: 'demo' }));
-  assert.equal(st.project, 'demo');
-  assert.equal(st.worktree, null);
-  assert.equal(st.isGitRepo, true);
-  assert.equal(st.branch, 'main');
-  assert.ok(st.head && st.head.sha && st.head.subject === 'initial');
-  assert.ok(Array.isArray(st.recentCommits) && st.recentCommits[0].includes('initial'));
-  assert.ok(Array.isArray(st.files));
-  const fileNames = st.files.map(f => f.name);
-  assert.ok(fileNames.includes('README.md'));
-  assert.ok(fileNames.includes('untracked.txt'));
+  const st = text(await callTool(baseUrl, 'project_status', { project: 'demo' }));
+  assert.match(st, /^demo$/m, 'no worktree suffix on a project-root status');
+  assert.match(st, /^branch main$/m);
+  assert.match(st, /^HEAD [0-9a-f]{40} initial$/m);
+  assert.match(st, /^COMMITS \(1\)$/m);
+  assert.match(st, /^ {2}[0-9a-f]{7} initial$/m);
+  const section = (name) => {
+    const at = st.indexOf(`${name} (`);
+    assert.ok(at >= 0, `${name} section missing from:\n${st}`);
+    return st.slice(at).split('\n\n')[0];
+  };
+  const files = section('FILES');
+  assert.ok(files.includes('README.md') && files.includes('untracked.txt'));
   // Dirty lines should include both the modified and untracked files.
-  assert.ok(st.dirty.some(l => l.includes('README.md')));
-  assert.ok(st.dirty.some(l => l.includes('untracked.txt')));
+  const dirty = section('DIRTY');
+  assert.ok(dirty.includes('README.md'), `dirty missing README.md:\n${dirty}`);
+  assert.ok(dirty.includes('untracked.txt'), `dirty missing untracked.txt:\n${dirty}`);
 });
 
 test('project_status scoped to a worktree returns mergeStatus + diffStat vs base', async () => {
@@ -884,30 +896,33 @@ test('project_status scoped to a worktree returns mergeStatus + diffStat vs base
   await git(wtPath, 'add', '.');
   await git(wtPath, 'commit', '-q', '-m', 'add new.txt');
 
-  const st = unwrap(await callTool(baseUrl, 'project_status', {
+  const st = text(await callTool(baseUrl, 'project_status', {
     project: 'demo', worktree: wt.worktree,
   }));
-  assert.equal(st.worktree, wt.worktree);
-  assert.equal(st.baseBranch, 'main');
-  assert.equal(st.mergeStatus.ahead, 1);
-  assert.equal(st.mergeStatus.behind, 0);
-  assert.match(st.diffStat, /new\.txt/);
+  assert.match(st, new RegExp(`^demo {2}worktree ${wt.worktree}$`, 'm'));
+  assert.match(st, /^base main@[0-9a-f]{12} {3}ahead 1 {2}behind 0$/m);
+  assert.match(st, /^DIFFSTAT \(vs main\)$/m);
+  assert.match(st, /new\.txt/);
   // logLimit:0 disables recentCommits.
-  const noLog = unwrap(await callTool(baseUrl, 'project_status', {
+  const noLog = text(await callTool(baseUrl, 'project_status', {
     project: 'demo', worktree: wt.worktree, logLimit: 0,
   }));
-  assert.equal(noLog.recentCommits, undefined);
+  assert.ok(!noLog.includes('COMMITS'), 'logLimit:0 omits the commits section entirely');
   // suppress unused warning
   void repoPath;
 });
 
 test('project_status on a non-git project returns isGitRepo:false but still lists files', async () => {
   await api(baseUrl, 'POST', '/api/projects', { name: 'a' });
-  const st = unwrap(await callTool(baseUrl, 'project_status', { project: 'a' }));
-  assert.equal(st.isGitRepo, false);
-  // The CLAUDE.md seeded by createProject should be there.
-  assert.ok(st.files.some(f => f.name === 'CLAUDE.md' && f.kind === 'file'));
-  assert.equal(st.branch, undefined); // git fields omitted on non-repo
+  const st = text(await callTool(baseUrl, 'project_status', { project: 'a' }));
+  assert.match(st, /^! not a git repo$/m);
+  // The CLAUDE.md seeded by createProject should be there, and as a file (no
+  // trailing slash — that is how the rendering encodes files[].kind).
+  assert.match(st, /(^| )CLAUDE\.md( |$)/m);
+  // git sections omitted on a non-repo
+  for (const absent of ['branch ', 'HEAD ', 'DIRTY', 'COMMITS']) {
+    assert.ok(!st.includes(absent), `non-repo status must not render ${absent}`);
+  }
 });
 
 test('project_read reads UTF-8 by relative path, rejects traversal, caps at maxBytes', async () => {
@@ -1241,10 +1256,10 @@ test('sessionId is the only worker handle: returns carry sessionId, never id/cal
   assert.equal(sent.sessionId, spawn.sessionId);
   assert.equal(sent.id, undefined);
 
-  const list = unwrap(await callTool(baseUrl, 'list_instances', {}));
-  assert.ok(list.every(i => i.id === undefined && i.callerInstanceId === undefined),
-    'list_instances rows carry no instanceId/callerInstanceId');
-  assert.ok(list.some(i => i.sessionId === spawn.sessionId), 'worker is listed by sessionId');
+  const out = text(await callTool(baseUrl, 'list_instances', {}));
+  assert.ok(out.includes(spawn.sessionId), 'worker is listed by sessionId');
+  assert.ok(!out.includes(instForSession(instances, spawn.sessionId).id),
+    'the per-process instanceId never reaches this surface');
 });
 
 test('send_prompt on an unknown sessionId soft-refuses SESSION_UNKNOWN', async () => {
