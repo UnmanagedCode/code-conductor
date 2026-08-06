@@ -1,6 +1,7 @@
 // Conductor conventions — the toggleable sections composed alongside the
 // always-on core into the conductor's role prompt, injected at spawn via
-// `--append-system-prompt` (see Instance.launch/spawn in src/instances.ts).
+// `--append-system-prompt-file` (materialized by materializeCurrentConduct in
+// src/conduct.ts; see Instance.launch/spawn in src/instances.ts).
 //
 // CORE (conventions/conductor/core.md) + a footer note
 // (conventions/conductor/footer.md) are always present. The built-in

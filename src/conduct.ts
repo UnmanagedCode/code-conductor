@@ -6,7 +6,8 @@
 
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { projectsRoot } from './projects.ts';
+import { orchStoreRoot, projectsRoot, writeFileAtomic } from './projects.ts';
+import { composeCurrentConduct } from './conductorConventions.ts';
 
 export const CONDUCT_PROJECT_NAME = '.conduct';
 
@@ -25,11 +26,9 @@ export function isConductorInstance(inst: { project: string } | null | undefined
 // Idempotent: ensures the `.conduct` dir exists (it is the cwd of every
 // conductor session, so it must be present before spawn).
 //
-// The conductor's composed role doc is NOT written here — it is composed
-// fresh by composeCurrentConduct() and injected at spawn time via
-// `claude --append-system-prompt` (see Instance.launch/spawn in
-// src/instances.ts), so selection edits take effect on the next spawn/resume
-// with no on-disk artifact to keep in sync. Edit paths for its content are the
+// The conductor's composed role doc is NOT written here — it lives in the
+// app-owned store (see conductPromptPath below) and is delivered at spawn via
+// `claude --append-system-prompt-file`. Edit paths for its content are the
 // `conventions/conductor/*.md` fragments (built-in text) and Settings →
 // Conductor conventions (toggles + custom conventions). Workspace conventions
 // still reach the conductor via Claude Code's ancestor walk-up to the
@@ -46,6 +45,43 @@ export async function ensureConductProject(): Promise<{ path: string; created: b
     if (errCode(e) !== 'EEXIST') throw e;
   }
   return { path: dir, created };
+}
+
+// Where the composed conductor role doc is materialized for the CLI to read.
+//
+// It lives in the app-owned store, NOT in `.conduct/` — that is what keeps
+// this from being a revert of migrations/0022, which deleted the old
+// `.conduct/CONDUCT.md` and its `@CONDUCT.md` seed line. The differences are
+// load-bearing, so don't "restore" the old shape:
+//   - location:  app-owned store, outside every project tree (the old file sat
+//                inside a user-visible project dir with ambiguous ownership);
+//   - delivery:  an explicit `--append-system-prompt-file` argv, not a CLAUDE.md
+//                `@`-import resolved by the CLI's ancestor walk-up — that import
+//                was gated behind the external-includes dialog that never fires
+//                in headless `-p` mode, which was migration 0003's whole problem;
+//   - freshness: rewritten immediately before EVERY spawn and resume, where the
+//                old file was written once at ensure-time and drifted from the
+//                live convention selection.
+// `.conduct` itself stays a bare dir (pinned by tests/conduct.test.mjs).
+//
+// One fixed path, overwritten in place — not a per-spawn or content-addressed
+// name. The conductor is a singleton, and the CLI reads this file exactly once
+// at startup (verified against 2.1.223 by strace: a single openat across a
+// multi-turn session, and a session survives the file being deleted mid-run),
+// so an overwrite cannot disturb an already-running conductor. writeFileAtomic
+// renames into place, so even a hypothetical concurrent reader sees one whole
+// document, never a torn one.
+export function conductPromptPath(): string {
+  return path.join(orchStoreRoot(), 'conductor-prompt.md');
+}
+
+// Compose the current conductor role doc and write it to conductPromptPath(),
+// returning that path for the launch argv. Wired as the Instance
+// appendSystemPromptFileProvider for `.conduct` sessions only.
+export async function materializeCurrentConduct(): Promise<string> {
+  const target = conductPromptPath();
+  await writeFileAtomic(target, await composeCurrentConduct());
+  return target;
 }
 
 // The `code` on a thrown Node error (e.g. 'EEXIST'), or undefined — the

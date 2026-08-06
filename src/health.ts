@@ -12,6 +12,33 @@ import { resolveClaudeBin } from './claudeLauncher.ts';
 
 const DEFAULT_TIMEOUT_MS = 3000;
 
+// Oldest `claude` known to support `--append-system-prompt-file`, which every
+// conductor spawn now requires (src/instances.ts). An older CLI rejects the
+// flag outright, so the conductor would die at startup with an opaque
+// commander error — this probe turns that into a named boot warning. It is an
+// OBSERVED floor, not a bisected one: 2.1.223 is verified to work, so some
+// earlier versions may also be fine and would warn spuriously. Warning only,
+// never fatal. The single place this number lives — docs reference the
+// constant by name rather than restating it.
+export const MIN_CLAUDE_VERSION = '2.1.223';
+
+// Numeric dotted-segment compare. Returns null when either side isn't a plain
+// `N.N.N…` version, which is the signal to SKIP the check entirely — CLAUDE_BIN
+// can point at a wrapper whose --version output we have no business judging.
+function compareVersions(a: string, b: string): number | null {
+  const parse = (v: string) => {
+    if (!/^\d+(\.\d+)*$/.test(v)) return null;
+    return v.split('.').map(Number);
+  };
+  const pa = parse(a), pb = parse(b);
+  if (!pa || !pb) return null;
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const d = (pa[i] ?? 0) - (pb[i] ?? 0);
+    if (d !== 0) return d < 0 ? -1 : 1;
+  }
+  return 0;
+}
+
 export interface ClaudeBinProbe {
   found: boolean;
   command: string;
@@ -108,6 +135,16 @@ export async function checkClaudeReadiness({ home = os.homedir(), timeoutMs = DE
       code: 'claude_bin_missing',
       title: 'The `claude` CLI is not runnable',
       hint: 'Install Claude Code or set `CLAUDE_BIN` to its path.',
+    });
+  }
+  // Only meaningful when the bin ran at all; skipped for an unparseable
+  // version (compareVersions returns null) rather than warned on.
+  if (claudeBin.found && claudeBin.version
+      && (compareVersions(claudeBin.version, MIN_CLAUDE_VERSION) ?? 0) < 0) {
+    issues.push({
+      code: 'claude_version_too_old',
+      title: `The \`claude\` CLI is older than v${MIN_CLAUDE_VERSION} (found v${claudeBin.version})`,
+      hint: 'Conductor sessions need `--append-system-prompt-file` and will fail to spawn. Upgrade Claude Code.',
     });
   }
   if (!claudeDir.exists) {
