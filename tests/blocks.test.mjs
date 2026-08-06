@@ -142,6 +142,37 @@ test('describeToolInput: empty input → empty string', () => {
   assert.equal(describeToolInput('Bash', null), '');
 });
 
+test('describeToolInput: spawn_instance shows playbook + stage', () => {
+  const s = describeToolInput('mcp__code-conductor__spawn_instance', {
+    project: 'code-conductor', model: 'sonnet', playbook: 'feature-loop', stage: 'implement',
+  });
+  assert.match(s, /\[code-conductor\]/);
+  assert.match(s, /model=sonnet/);
+  assert.match(s, /playbook=feature-loop/);
+  assert.match(s, /stage=implement/);
+});
+
+test('describeToolInput: spawn_instance without playbook/stage omits them', () => {
+  const s = describeToolInput('mcp__code-conductor__spawn_instance', { project: 'code-conductor', model: 'sonnet' });
+  assert.match(s, /\[code-conductor\]/);
+  assert.match(s, /model=sonnet/);
+  assert.doesNotMatch(s, /playbook=/);
+  assert.doesNotMatch(s, /stage=/);
+});
+
+test('describeToolInput: send_prompt shows text + stage', () => {
+  const s = describeToolInput('mcp__code-conductor__send_prompt', {
+    sessionId: 'abc', text: 'go ahead', stage: 'review',
+  });
+  assert.match(s, /go ahead/);
+  assert.match(s, /stage=review/);
+});
+
+test('describeToolInput: send_prompt without stage shows only text', () => {
+  const s = describeToolInput('mcp__code-conductor__send_prompt', { sessionId: 'abc', text: 'go ahead' });
+  assert.equal(s, 'go ahead');
+});
+
 test('ToolResultBlock: renders a base64 image content block as <img>', () => {
   setupDOM();
   const block = new ToolResultBlock({

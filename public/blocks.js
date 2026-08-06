@@ -220,6 +220,13 @@ export function describeToolInput(name, input, ctx = {}) {
   if (name === 'mcp__code-conductor__spawn_instance') {
     let out = trunc(`[${input.project}]`);
     if (input.model != null) out += ` model=${input.model}`;
+    if (input.playbook != null) out += ` playbook=${input.playbook}`;
+    if (input.stage != null) out += ` stage=${input.stage}`;
+    return out;
+  }
+  if (name === 'mcp__code-conductor__send_prompt') {
+    let out = trunc(input.text, 100);
+    if (input.stage != null) out += ` stage=${input.stage}`;
     return out;
   }
   switch (renderKindFor(name)) {
