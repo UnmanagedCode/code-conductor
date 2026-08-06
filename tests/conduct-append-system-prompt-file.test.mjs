@@ -7,10 +7,11 @@
 
 import { test, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { promises as fs } from 'node:fs';
+import { promises as fs, existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
+import { InProcessClaudeLauncher } from './inProcessLauncher.mjs';
 import { composeCurrentConduct, setSelection } from '../src/conductorConventions.ts';
 import { conductPromptPath } from '../src/conduct.ts';
 import { orchStoreRoot } from '../src/projects.ts';
@@ -119,25 +120,73 @@ test('resume rewrites the file in place — same path, new content after a selec
   assert.notEqual(secondDoc, firstDoc, 'doc was recomposed on resume');
 });
 
-test('the file exists and is current before the process is spawned', async () => {
-  // Ordering guard: a mutant that materializes AFTER spawn() would leave the
-  // real CLI erroring "Append system prompt file not found" at arg-parse time,
-  // while the in-process launcher ignores the path entirely. Pin it by
-  // checking the file is already on disk and matching the moment the argv is
-  // frozen — _spawnArgv is set inside spawn(), after launch() awaited the
-  // provider, so a readable matching file here means the write preceded spawn.
-  await api(baseUrl, 'POST', '/api/projects/.conduct/ensure');
-  const target = conductPromptPath();
-  await fs.rm(target, { force: true });
+// Records the on-disk state of the prompt file SYNCHRONOUSLY at the instant
+// Instance.spawn() hands the frozen argv to the launcher — i.e. the moment the
+// real CLI process would start and read the file (exactly once, at arg-parse
+// time). Observing after the spawn HTTP response resolves is too late: that is
+// after `await inst.launch()` returns, by which point a write issued after
+// spawn() has already landed and looks identical to a correct one.
+class RecordingLauncher extends InProcessClaudeLauncher {
+  constructor() { super(); this.seen = []; }
+  launch(opts) {
+    const i = opts.args.indexOf('--append-system-prompt-file');
+    const p = i >= 0 ? opts.args[i + 1] : null;
+    this.seen.push({
+      path: p,
+      exists: p ? existsSync(p) : false,
+      content: p && existsSync(p) ? readFileSync(p, 'utf8') : null,
+    });
+    return super.launch(opts);
+  }
+}
 
-  const r = await api(baseUrl, 'POST', '/api/instances', {
-    project: '.conduct', model: 'claude-haiku-4-5', temp: true, mode: 'bypassPermissions',
-  });
-  assert.equal(r.status, 201);
-  const inst = instances.get(r.body.id);
-  // As soon as the argv is frozen the file must already be there.
-  await waitFor(() => inst._spawnArgv !== null);
-  const stat = await fs.stat(target);
-  assert.ok(stat.isFile(), 'prompt file written before the launch argv was frozen');
-  assert.equal(await fs.readFile(target, 'utf8'), await composeCurrentConduct());
+test('the prompt file is on disk and current AT the moment the process is launched', async () => {
+  // Ordering guard. A mutant that keeps a valid path in argv but performs the
+  // write after spawn() — still awaited inside launch() — is invisible to
+  // every other test here, yet in production the CLI would open an absent file
+  // on the first spawn and a stale one on every spawn after, booting a
+  // conductor with the wrong role prompt while looking perfectly healthy.
+  const rec = new RecordingLauncher();
+  const ctx2 = await bootServer({ scenarioPath: SCENARIO_WS, claudeLauncher: rec });
+  try {
+    await api(ctx2.baseUrl, 'POST', '/api/projects/.conduct/ensure');
+    const target = conductPromptPath();
+    // Start from no file at all, so "wrote after spawn" cannot hide behind a
+    // leftover from an earlier run.
+    await fs.rm(target, { force: true });
+
+    const r = await api(ctx2.baseUrl, 'POST', '/api/instances', {
+      project: '.conduct', model: 'claude-haiku-4-5', temp: false, mode: 'bypassPermissions',
+    });
+    assert.equal(r.status, 201);
+    const id = r.body.id;
+    await waitFor(() => ctx2.instances.get(id)?.status === 'idle');
+
+    assert.equal(rec.seen.length, 1, 'one launch observed');
+    assert.equal(rec.seen[0].path, target);
+    assert.equal(rec.seen[0].exists, true,
+      'prompt file must already exist when the process is launched');
+    assert.equal(rec.seen[0].content, await composeCurrentConduct(),
+      'file content at launch time is the freshly composed doc');
+
+    // Second half: the STALE variant. Change the selection and respawn — the
+    // content visible at launch time must be the NEW doc, not the previous
+    // spawn's. A post-spawn write passes the first half on a warm file but
+    // fails here, because at launch time the file still holds the old doc.
+    await ctx2.instances.get(id).kill({ graceMs: 200 });
+    await waitFor(() => !ctx2.instances.get(id)?.proc);
+    await setSelection(['canonical-workflow']);
+    await ctx2.instances.respawn(id);
+    await waitFor(() => ctx2.instances.get(id)?.status === 'idle');
+
+    assert.equal(rec.seen.length, 2, 'relaunch observed');
+    assert.equal(rec.seen[1].exists, true);
+    assert.doesNotMatch(rec.seen[1].content, /## Worker lifecycle/,
+      'at launch time the file already reflects the narrowed selection');
+    assert.match(rec.seen[1].content, /## Canonical workflow/);
+    assert.equal(rec.seen[1].content, await composeCurrentConduct());
+  } finally {
+    await ctx2.instances.shutdown();
+    await ctx2.close();
+  }
 });
