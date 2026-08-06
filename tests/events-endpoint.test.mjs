@@ -197,9 +197,13 @@ test('trimmed ring without a jsonl (nothing to replay): cursor terminates cleanl
     await waitFor(() => ctx.instances.get(id).status === 'idle' && ctx.instances.get(id).sessionId);
 
     // Trim the ring with synthetic events (fake-claude writes no jsonl, so
-    // the archive will come back empty).
+    // the archive will come back empty). A DISTINCT blockIdx per delta: the ring
+    // folds consecutive same-(msgId, blockIdx) deltas into one slot, so a shared
+    // blockIdx would occupy 1 slot and never trim at all. No text_end — every
+    // block stays open, so the ring head stays mid-turn exactly as before and
+    // the gap marker this test is about is still produced.
     const inst = ctx.instances.get(id);
-    for (let i = 0; i < 60; i++) inst._emitUi({ kind: 'text_delta', msgId: 'mX', blockIdx: 0, text: `e${i}` });
+    for (let i = 0; i < 60; i++) inst._emitUi({ kind: 'text_delta', msgId: 'mX', blockIdx: i, text: `e${i}` });
     assert.ok(inst.ring.trimmedBefore > 0);
 
     const { all, last } = await pageAll(ctx, id, { limit: 9 });
@@ -297,8 +301,13 @@ test('group integrity: backward paging never splits a sub-agent tool-call group 
     inst._emitUi({ kind: 'user_echo', text: 'run task' });
     inst._emitUi({ kind: 'tool_use_start', msgId: 'm1', blockIdx: 0, toolUseId: 'tu_task', name: 'Task' });
     inst._emitUi({ kind: 'tool_use', msgId: 'm1', blockIdx: 0, toolUseId: 'tu_task', name: 'Task', input: {} });
+    // Distinct blockIdx per child: the ring coalesces consecutive same-block
+    // deltas, so a shared blockIdx would collapse all 20 into ONE slot and the
+    // "20 children >> the page limit of 5" premise above would silently vanish.
+    // Sub-agent events are invisible to the quiescence scan and the group
+    // resolver keys on parentToolUseId, so nothing else about this setup moves.
     for (let i = 0; i < 20; i++) {
-      inst._emitUi({ kind: 'text_delta', msgId: 'msub', blockIdx: 0, text: `sub ${i}`, parentToolUseId: 'tu_task' });
+      inst._emitUi({ kind: 'text_delta', msgId: 'msub', blockIdx: i, text: `sub ${i}`, parentToolUseId: 'tu_task' });
     }
     inst._emitUi({ kind: 'tool_result', toolUseId: 'tu_task', content: 'done', isError: false });
 
@@ -327,8 +336,11 @@ test('group integrity: snapshotTail never includes orphaned sub-agent children',
     inst._emitUi({ kind: 'user_echo', text: 'run task' });
     inst._emitUi({ kind: 'tool_use_start', msgId: 'm1', blockIdx: 0, toolUseId: 'tu_snap', name: 'Task' });
     inst._emitUi({ kind: 'tool_use', msgId: 'm1', blockIdx: 0, toolUseId: 'tu_snap', name: 'Task', input: {} });
+    // Distinct blockIdx per child — see the paging test above; a shared one
+    // would fold the group to a single slot and the tail of 8 would no longer
+    // start deep inside it.
     for (let i = 0; i < 20; i++) {
-      inst._emitUi({ kind: 'text_delta', msgId: 'msub', blockIdx: 0, text: `sub ${i}`, parentToolUseId: 'tu_snap' });
+      inst._emitUi({ kind: 'text_delta', msgId: 'msub', blockIdx: i, text: `sub ${i}`, parentToolUseId: 'tu_snap' });
     }
     inst._emitUi({ kind: 'tool_result', toolUseId: 'tu_snap', content: 'done', isError: false });
 
@@ -394,14 +406,16 @@ test('archive/ring seam: overlapping groups page whole, cursor progresses, no or
     // Ring turn 1: a group whose head is nowhere at all (never emitted).
     inst._emitUi({ kind: 'user_echo', text: 'headless turn' });
     for (let i = 0; i < 3; i++) {
-      inst._emitUi({ kind: 'text_delta', msgId: 'msG', blockIdx: 0, text: `g${i}`, parentToolUseId: 'GONE' });
+      inst._emitUi({ kind: 'text_delta', msgId: 'msG', blockIdx: i, text: `g${i}`, parentToolUseId: 'GONE' });
     }
     inst._emitUi({ kind: 'turn_end', subtype: 'success' });
     // Ring turn 2: late children of the ARCHIVE-side Agent head.
     inst._emitUi({ kind: 'user_echo', text: 'seam turn' });
     inst._emitUi({ kind: 'text_delta', msgId: 'mz', blockIdx: 0, text: 'outer' });
+    // Distinct blockIdx in both ring turns above: a folded 3-child group would
+    // stop exercising the multi-event headless/seam windows these limits probe.
     for (let i = 0; i < 3; i++) {
-      inst._emitUi({ kind: 'text_delta', msgId: 'msq', blockIdx: 0, text: `q${i}`,
+      inst._emitUi({ kind: 'text_delta', msgId: 'msq', blockIdx: i, text: `q${i}`,
         parentToolUseId: agentToolUseId });
     }
     inst._emitUi({ kind: 'text_end', msgId: 'mz', blockIdx: 0 });

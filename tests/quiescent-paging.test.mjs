@@ -192,13 +192,18 @@ test('snapshotTail opens on a quiescent point; an in-window boundary still snaps
   try {
     const inst = await bootIdle('tailsnap');
 
-    // One giant OPEN text block (a single delta run, no text_end yet): the
-    // only quiescent point below the window is right after the echo — the
-    // tail opens there (whole-block), the prompt bubble itself arrives via
-    // the first lazy page.
+    // One giant OPEN delta run (no text_end yet): the only quiescent point
+    // below the window is right after the echo — the tail opens there
+    // (whole-block), the prompt bubble itself arrives via the first lazy page.
+    // A DISTINCT blockIdx per delta, because the ring folds consecutive
+    // same-(msgId, blockIdx) deltas into one slot and a shared blockIdx would
+    // leave a 1-slot run that the 8-event tail trivially contains. The
+    // quiescence profile is unchanged: text_delta only ADDS to openBlocks and
+    // nothing here closes a block, so every index inside the run is
+    // non-quiescent either way.
     inst._emitUi({ kind: 'user_echo', text: 'giant prompt' });
     for (let i = 0; i < 20; i++) {
-      inst._emitUi({ kind: 'text_delta', msgId: 'mG', blockIdx: 0, text: `g${i}` });
+      inst._emitUi({ kind: 'text_delta', msgId: 'mG', blockIdx: i, text: `g${i}` });
     }
     const snap = inst.snapshotTail();
     assert.equal(snap[0].kind, 'text_delta', 'tail opens at the block run start, not mid-run');
@@ -209,7 +214,7 @@ test('snapshotTail opens on a quiescent point; an in-window boundary still snaps
     // keeps the tail small (no over-extension into the giant turn).
     inst._emitUi({ kind: 'user_echo', text: 'small prompt' });
     for (let i = 0; i < 3; i++) {
-      inst._emitUi({ kind: 'text_delta', msgId: 'mS', blockIdx: 0, text: `s${i}` });
+      inst._emitUi({ kind: 'text_delta', msgId: 'mS', blockIdx: i, text: `s${i}` });
     }
     const snap2 = inst.snapshotTail();
     assert.equal(snap2[0].kind, 'user_echo');
@@ -307,8 +312,13 @@ test('group pull-back drags the window to the head, then re-snaps quiescent', as
   // Turn 2: the background sub-agent's children stream in mid-later-turn.
   inst._emitUi({ kind: 'user_echo', text: 'second' });
   inst._emitUi({ kind: 'text_delta', msgId: 'm2', blockIdx: 0, text: 'working' });
+  // Distinct blockIdx per child: the ring coalesces consecutive same-block
+  // deltas, so a shared blockIdx would collapse the group to ONE slot and the
+  // "6 children, never split across a 5-event window" assertion below would
+  // hold vacuously. Sub-agent events are ignored by the quiescence scan and the
+  // group resolver keys on parentToolUseId, so the setup is otherwise identical.
   for (let i = 0; i < 6; i++) {
-    inst._emitUi({ kind: 'text_delta', msgId: 'msub', blockIdx: 0, text: `bg ${i}`, parentToolUseId: 'tu_bg' });
+    inst._emitUi({ kind: 'text_delta', msgId: 'msub', blockIdx: i, text: `bg ${i}`, parentToolUseId: 'tu_bg' });
   }
   inst._emitUi({ kind: 'text_delta', msgId: 'm2', blockIdx: 1, text: 'still working' });
 

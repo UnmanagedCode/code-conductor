@@ -130,12 +130,17 @@ test('subscribe sends only the ring tail, snapped to a turn boundary', async () 
     const id = created.body.id;
     await waitFor(() => instances.get(id).status === 'idle' && instances.get(id).sessionId);
 
-    // Synthesize a long history: a user_echo every 5th event.
+    // Synthesize a long history: a user_echo every 5th event. A DISTINCT
+    // blockIdx per delta — the ring folds consecutive same-(msgId, blockIdx)
+    // deltas into one slot, so a shared blockIdx would leave 2 slots per turn
+    // instead of 5 and the ring would no longer exceed the cap of 40 that makes
+    // `tailStartSeq > 0` mean anything. Quiescent points are unmoved: they sit
+    // at the outer user_echoes, which force-reset the scan regardless.
     const inst = instances.get(id);
     for (let i = 0; i < 100; i++) {
       inst._emitUi(i % 5 === 0
         ? { kind: 'user_echo', text: `prompt ${i / 5}` }
-        : { kind: 'text_delta', msgId: 'mT', blockIdx: 0, text: `e${i}` });
+        : { kind: 'text_delta', msgId: 'mT', blockIdx: i, text: `e${i}` });
     }
 
     c = await wsClient(wsUrl);
@@ -184,10 +189,12 @@ test('snapshot carries tasksAtTailStart for a batch created below the tail', asy
     inst._emitUi({ kind: 'tool_result', toolUseId: 'tc', content: 'Task #1 created successfully: Big batch', isError: false });
     inst._emitUi({ kind: 'tool_use', name: 'TaskUpdate', toolUseId: 'tu', input: { taskId: '1', status: 'in_progress' } });
     // …then a long tail of unrelated turns that pushes the batch below the tail.
+    // Distinct blockIdx per delta so the ring coalescing doesn't shrink that
+    // tail to 2 slots per turn (see the tail-only snapshot test above).
     for (let i = 0; i < 30; i++) {
       inst._emitUi(i % 5 === 0
         ? { kind: 'user_echo', text: `turn ${i / 5}` }
-        : { kind: 'text_delta', msgId: 'm', blockIdx: 0, text: `e${i}` });
+        : { kind: 'text_delta', msgId: 'm', blockIdx: i, text: `e${i}` });
     }
 
     c = await wsClient(wsUrl);
@@ -213,12 +220,19 @@ test('snapshot carries tasksAtTailStart for a batch created below the tail', asy
 
 test('snapshot carries lastContextUsage when the tail holds no message_start', async () => {
   // The ctx chip is fed ONLY by message_start (public/usage.js) and the client
-  // rebuilds its UsageTracker from the snapshot tail alone. A turn whose final
-  // text block is longer than the tail leaves the tail's quiescent snap with
-  // nowhere to cut but past the whole block — dropping every message_start — so
-  // the reading has to ride the frame as a field instead. This is the shape a
-  // long single-block answer produces in production (observed at 800-2000
-  // consecutive text_deltas on an ollama-backed session).
+  // rebuilds its UsageTracker from the snapshot tail alone. A turn whose content
+  // outruns the tail leaves every message_start below the window, so the reading
+  // has to ride the frame as a field instead.
+  //
+  // The turn below is MULTI-BLOCK on purpose. The original shape — one unbroken
+  // run of 800-2000 consecutive text_deltas, as observed on an ollama-backed
+  // session — no longer reproduces the precondition: the ring now folds a block's
+  // consecutive deltas into ONE slot, so that answer occupies ~3 slots and the
+  // message_start comfortably survives the tail. What still outruns a small tail
+  // is a turn with many BLOCKS (each one slot, each closed by its own text_end),
+  // which is also the shape a tool-heavy or list-heavy answer produces. The field
+  // therefore remains load-bearing, just for the multi-block case rather than the
+  // long-single-block one.
   const prevTail = process.env.ORCH_SNAPSHOT_TAIL;
   const prevCap = process.env.ORCH_EVENT_RING_CAP;
   process.env.ORCH_SNAPSHOT_TAIL = '4';
@@ -234,22 +248,29 @@ test('snapshot carries lastContextUsage when the tail holds no message_start', a
     await waitFor(() => instances.get(id).status === 'idle' && instances.get(id).sessionId);
     const inst = instances.get(id);
 
-    // A turn: message_start carrying the context size, then one unbroken text
-    // block long enough to push it below the tail, then the turn footer.
+    // A turn: message_start carrying the context size, then enough whole text
+    // blocks to push it below the tail, then the turn footer.
     inst._emitUi({ kind: 'user_echo', text: 'write me an essay' });
     inst._emitUi({ kind: 'message_start', msgId: 'm1', model: 'glm-5.2',
       usage: { input_tokens: 79167, output_tokens: 0 } });
     for (let i = 0; i < 20; i++) {
-      inst._emitUi({ kind: 'text_delta', msgId: 'm1', blockIdx: 0, text: `w${i} ` });
+      inst._emitUi({ kind: 'text_delta', msgId: 'm1', blockIdx: i, text: `w${i} ` });
+      inst._emitUi({ kind: 'text_end', msgId: 'm1', blockIdx: i });
     }
-    inst._emitUi({ kind: 'text_end', msgId: 'm1', blockIdx: 0 });
     inst._emitUi({ kind: 'turn_end', subtype: 'success' });
 
     c = await wsClient(wsUrl);
     c.send({ t: 'subscribe', id });
     const snap = await c.wait(m => m.t === 'snapshot' && m.id === id);
 
-    // The bug's precondition: the tail genuinely has no message_start to replay.
+    // The bug's precondition: the tail genuinely has no message_start to replay
+    // — and it is absent because it fell BELOW the window, not because it was
+    // never retained (which would make the assertion below pass vacuously).
+    assert.equal(inst.ring.trimmedBefore, 0, 'precondition: nothing evicted (cap 200)');
+    const msgStarts = inst.ringSnapshot().filter(e => e.kind === 'message_start');
+    assert.equal(msgStarts.length, 1, 'precondition: the message_start IS retained in the ring');
+    assert.ok(snap.tailStartSeq > msgStarts[0]._seq,
+      'precondition: the tail window starts strictly after it');
     assert.ok(!snap.events.some(e => e.kind === 'message_start'),
       'precondition: message_start must be below the tail for this test to mean anything');
     // …so the frame carries the reading instead. Survives turn_end deliberately:

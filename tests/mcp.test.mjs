@@ -248,10 +248,15 @@ test('get_transcript + get_recent_messages survive a trimmed ring', async () => 
     // Force eviction with synthetic history; the newest assistant text
     // must remain reachable for get_recent_messages.
     const inst = instForSession(instances, spawn.sessionId);
+    // A DISTINCT blockIdx per delta: the ring folds consecutive
+    // same-(msgId, blockIdx) deltas into one slot, so a shared blockIdx would
+    // occupy 1 slot and never trim — killing the precondition this test is
+    // named for. reconstructMessages concatenates every block of a msgId, so
+    // 'the latest words' still surfaces through get_recent_messages below.
     for (let i = 0; i < 100; i++) {
-      inst._emitUi({ kind: 'text_delta', msgId: 'mNew', blockIdx: 0, text: i === 99 ? 'the latest words' : `pad ${i} ` });
+      inst._emitUi({ kind: 'text_delta', msgId: 'mNew', blockIdx: i, text: i === 99 ? 'the latest words' : `pad ${i} ` });
     }
-    inst._emitUi({ kind: 'text_end', msgId: 'mNew', blockIdx: 0 });
+    inst._emitUi({ kind: 'text_end', msgId: 'mNew', blockIdx: 99 });
     assert.ok(inst.ring.trimmedBefore > 0, 'ring actually trimmed');
 
     const tx = unwrap(await callTool(baseUrl, 'get_transcript', { sessionId: spawn.sessionId }));
