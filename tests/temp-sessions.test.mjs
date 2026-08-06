@@ -1,12 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
+import { mkdtemp } from './tmpRegistry.mjs';
 
 // Isolate the central store under a tmp PROJECTS_ROOT. projectsRoot()
 // reads the env at call time, so setting it before importing is enough.
-const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-temp-sessions-'));
+const tmp = await mkdtemp('cc-temp-sessions-');
 process.env.PROJECTS_ROOT = path.join(tmp, 'project');
 
 const { markTemp, unmarkTemp, isTemp, loadAllTemps } =

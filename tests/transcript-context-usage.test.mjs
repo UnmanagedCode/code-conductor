@@ -18,8 +18,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
+import { mkdtemp } from './tmpRegistry.mjs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Window } from 'happy-dom';
 import { encodeCwd } from '../src/projects.ts';
@@ -46,7 +46,7 @@ const assistantLine = (uuid, id, model, u, content = [{ type: 'text', text: 'hi'
   ({ type: 'assistant', uuid, message: { id, role: 'assistant', model, content, usage: u } });
 
 async function seed(lines) {
-  const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-ctx-usage-'));
+  const rootDir = await mkdtemp('cc-ctx-usage-');
   process.env.CLAUDE_PROJECTS_ROOT = rootDir;
   const file = path.join(rootDir, encodeCwd(CWD), `${SID}.jsonl`);
   await fs.mkdir(path.dirname(file), { recursive: true });

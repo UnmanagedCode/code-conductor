@@ -1,11 +1,14 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { createServer } from '../server.ts';
 import { _resetForTest as resetProjectsCache } from '../src/projectsCache.ts';
 import { InProcessClaudeLauncher } from './inProcessLauncher.mjs';
 import { ensureSafeStoreEnv } from './safeStoreRoot.mjs';
+import { mkdtemp } from './tmpRegistry.mjs';
+import { rmrf } from './rmrf.mjs';
+
+export { rmrf };
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FAKE_CLAUDE = path.join(__dirname, 'fake-claude.mjs');
@@ -17,19 +20,10 @@ const FAKE_CLAUDE = path.join(__dirname, 'fake-claude.mjs');
 const SAFE = ensureSafeStoreEnv();
 
 export async function makeTmpHome() {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'orch-'));
+  const dir = await mkdtemp('orch-');
   await fs.mkdir(path.join(dir, 'project'), { recursive: true });
   await fs.mkdir(path.join(dir, '.claude', 'projects'), { recursive: true });
   return dir;
-}
-
-export async function rmrf(p) {
-  // The orchestrator does best-effort async writes into <root>/.code-conductor
-  // (session titles, projects cache, …). Under concurrent test load one can land
-  // between fs.rm's readdir and rmdir, throwing ENOTEMPTY (force swallows ENOENT,
-  // not ENOTEMPTY). maxRetries retries exactly that class with linear backoff —
-  // a deterministic wait for the late writer to finish, not a fixed sleep.
-  await fs.rm(p, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
 }
 
 // Launcher selection:

@@ -8,11 +8,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
+import { mkdtemp } from './tmpRegistry.mjs';
 import * as m0024 from '../migrations/0024-drop-managed-backend-env-overrides.mjs';
 
 async function mkTmp() {
-  return fs.mkdtemp(path.join(os.tmpdir(), 'cc-managed-env-'));
+  return mkdtemp('cc-managed-env-');
 }
 
 async function writeSettings(root, models) {

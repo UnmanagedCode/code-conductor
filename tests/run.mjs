@@ -7,7 +7,7 @@ import { promises as fs, readdirSync, readFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createSafeRoot, assertStoreIsolated } from './safeStoreRoot.mjs';
+import { createSafeRoot, assertStoreIsolated, removeSafeRoot } from './safeStoreRoot.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -116,7 +116,7 @@ reporter.pipe(process.stdout);
 await new Promise((resolve) => reporter.on('end', resolve));
 
 clearInterval(procSampler);
-await fs.rm(safeRoot.root, { recursive: true, force: true });
+await removeSafeRoot(safeRoot.root);
 let guardrailFailed = false;
 if (sampledProcs) {
   console.log(`\nguardrail: peak concurrent fake-claude subprocesses = ${peakFakeClaude} (budget ${FAKE_CLAUDE_BUDGET})`);

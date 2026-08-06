@@ -8,11 +8,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
+import { mkdtemp } from './tmpRegistry.mjs';
 import * as m0016 from '../migrations/0016-migrate-family-settings-to-tiers.mjs';
 
 async function mkTmp() {
-  return fs.mkdtemp(path.join(os.tmpdir(), 'cc-family-tier-settings-'));
+  return mkdtemp('cc-family-tier-settings-');
 }
 
 async function writeSettings(root, obj) {

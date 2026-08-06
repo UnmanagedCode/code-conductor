@@ -12,7 +12,7 @@ import { test, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
+import { mkdtemp } from './tmpRegistry.mjs';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
 import { setOnOverageAction, setOverageThreshold } from '../src/appSettings.ts';
 import { AUTO_RESUME_TEXT } from '../src/instances.ts';
@@ -64,7 +64,7 @@ function scenario(turn1emit, extraTurns = 2) {
 }
 
 async function writeScenario(obj) {
-  const p = path.join(await fs.mkdtemp(path.join(os.tmpdir(), 'cc-overage-')), 'scenario.json');
+  const p = path.join(await mkdtemp('cc-overage-'), 'scenario.json');
   await fs.writeFile(p, JSON.stringify(obj));
   return p;
 }

@@ -12,18 +12,14 @@ import { test, after, before } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import { EventEmitter } from 'node:events';
-import { bootServer, api } from './helpers.mjs';
+import { bootServer, api, rmrf } from './helpers.mjs';
+import { mkdtemp } from './tmpRegistry.mjs';
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 async function makeTmpDir() {
-  return fs.mkdtemp(path.join(os.tmpdir(), 'cost-test-'));
-}
-
-async function rmrf(p) {
-  await fs.rm(p, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  return mkdtemp('cost-test-');
 }
 
 // Build a minimal fake instance object.

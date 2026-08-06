@@ -6,15 +6,15 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import { encodeCwd } from '../src/projects.ts';
 import { isPureUserPromptLine } from '../src/transcript.ts';
 import {
   truncateSessionAtUserMessage, forkSessionAtUserMessage,
 } from '../src/sessionEdit.ts';
+import { mkdtemp } from './tmpRegistry.mjs';
 
 async function makeFixture(lines) {
-  const tmpHome = await fs.mkdtemp(path.join(os.tmpdir(), 'orch-edit-'));
+  const tmpHome = await mkdtemp('orch-edit-');
   const projectsRoot = path.join(tmpHome, 'project');
   const claudeProjectsRoot = path.join(tmpHome, '.claude', 'projects');
   await fs.mkdir(claudeProjectsRoot, { recursive: true });

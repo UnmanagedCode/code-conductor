@@ -11,12 +11,12 @@ import assert from 'node:assert/strict';
 import { promises as fsp } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import os from 'node:os';
 import path from 'node:path';
 import { getShellEnvBundlePath, _resetForTest, bundleShellKind } from '../src/claudeShellEnv.ts';
 import { orchStoreRoot } from '../src/projects.ts';
 import { setTierBackend, addBackend, addCustomModel, getBackend } from '../src/appSettings.ts';
 import { resolveBackendLaunch } from '../src/claudeLauncher.ts';
+import { mkdtemp } from './tmpRegistry.mjs';
 
 const execFileP = promisify(execFile);
 
@@ -36,7 +36,7 @@ function withEnv(overrides, fn) {
 }
 
 async function mkTmp(prefix = 'cc-shellenv-') {
-  return fsp.mkdtemp(path.join(os.tmpdir(), prefix));
+  return mkdtemp(prefix);
 }
 
 // Modes (via FAKE_CLAUDE_MODE): happy | empty | nomarker | noshellkind | nonzero | hang | versionfail

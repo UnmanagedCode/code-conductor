@@ -6,11 +6,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
+import { mkdtemp } from './tmpRegistry.mjs';
 import * as m0020 from '../migrations/0020-consolidate-convention-stores.mjs';
 
 async function mkTmp() {
-  return fs.mkdtemp(path.join(os.tmpdir(), 'cc-consolidate-conventions-'));
+  return mkdtemp('cc-consolidate-conventions-');
 }
 
 async function exists(p) {

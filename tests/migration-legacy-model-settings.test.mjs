@@ -7,11 +7,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
+import { mkdtemp } from './tmpRegistry.mjs';
 import * as m0007 from '../migrations/0007-migrate-legacy-model-settings.mjs';
 
 async function mkTmp() {
-  return fs.mkdtemp(path.join(os.tmpdir(), 'cc-legacy-settings-'));
+  return mkdtemp('cc-legacy-settings-');
 }
 
 async function writeSettings(root, obj) {
