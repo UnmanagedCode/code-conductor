@@ -160,17 +160,18 @@ test('describeToolInput: spawn_instance without playbook/stage omits them', () =
   assert.doesNotMatch(s, /stage=/);
 });
 
-test('describeToolInput: send_prompt shows text + stage', () => {
+test('describeToolInput: send_prompt keeps sessionId as the primary summary, appends stage', () => {
   const s = describeToolInput('mcp__code-conductor__send_prompt', {
-    sessionId: 'abc', text: 'go ahead', stage: 'review',
+    sessionId: 'abc123', text: 'go ahead', stage: 'review',
   });
-  assert.match(s, /go ahead/);
+  assert.match(s, /^sessionId=abc123/);
+  assert.doesNotMatch(s, /go ahead/);
   assert.match(s, /stage=review/);
 });
 
-test('describeToolInput: send_prompt without stage shows only text', () => {
-  const s = describeToolInput('mcp__code-conductor__send_prompt', { sessionId: 'abc', text: 'go ahead' });
-  assert.equal(s, 'go ahead');
+test('describeToolInput: send_prompt without stage shows only sessionId', () => {
+  const s = describeToolInput('mcp__code-conductor__send_prompt', { sessionId: 'abc123', text: 'go ahead' });
+  assert.equal(s, 'sessionId=abc123');
 });
 
 test('ToolResultBlock: renders a base64 image content block as <img>', () => {

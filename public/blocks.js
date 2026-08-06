@@ -225,7 +225,7 @@ export function describeToolInput(name, input, ctx = {}) {
     return out;
   }
   if (name === 'mcp__code-conductor__send_prompt') {
-    let out = trunc(input.text, 100);
+    let out = `sessionId=${trunc(input.sessionId, 100)}`;
     if (input.stage != null) out += ` stage=${input.stage}`;
     return out;
   }
