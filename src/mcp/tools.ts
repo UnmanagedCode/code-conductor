@@ -44,7 +44,11 @@ export function buildTools(): Tool[] {
       name: 'list_projects',
       description:
         'List every project under ~/project/, with each project\'s git status, worktrees, ' +
-        'live session ids, and a session-count summary.',
+        'live session ids, and a session-count summary. Renders as plain text; the full object ' +
+        'is in structuredContent.projects as [{name, path, workspace, sessionIds, isGitRepo, ' +
+        'sessions:{count, archivedCount, lastMtime}, worktrees:[{worktreeName, worktreePath, ' +
+        'branch, baseBranch, baseSha, createdAt, parentProject, parentPath, sessions, ' +
+        'mergeStatus:{ahead, behind}}]}].',
       inputSchema: { type: 'object', properties: {}, required: [] },
       handler: h.listProjects,
       annotations: { readOnlyHint: true },
@@ -52,7 +56,8 @@ export function buildTools(): Tool[] {
     {
       name: 'list_instances',
       description:
-        'List every live or recently-exited orchestrator worker. Each entry carries ' +
+        'List every live or recently-exited orchestrator worker. Renders as plain text; ' +
+        'structuredContent.instances carries every entry in full, each as ' +
         '{project, cwd, sessionId, status, displayStatus, activeAgentTasks, mode, effort, thinking, ' +
         'backend, model, contextWindowTokens, pid, worktree, temp, conducted, debug, ' +
         'firstPrompt, title, createdAt, lastResponseAt, queuedCount, autoResumeAt, ' +
@@ -65,8 +70,12 @@ export function buildTools(): Tool[] {
         'read it, not `status`, to decide whether work is actually finished. ' +
         '`contextWindowTokens` is the model\'s context capacity in tokens, or null when unknown. ' +
         '`lastResponseAt` separates a long-silent worker from one producing output moments ago. ' +
+        '`worktree` is the worktree\'s full metadata object (or null), so the text shows its name. ' +
+        'The text shows the fields you act on, plus pid / createdAt / contextWindowTokens only ' +
+        'in structuredContent, and temp / conducted / debug / overage / auto-resume only when they ' +
+        'deviate from their default — so anything on the `flags` line is news. ' +
         'Every other tool here returning a worker summary returns this same shape minus ' +
-        '`hasIdleSubscriber`, `playbook` and `stage`.',
+        '`hasIdleSubscriber`, `playbook` and `stage`, as plain JSON.',
       inputSchema: { type: 'object', properties: {}, required: [] },
       handler: h.listInstances,
       annotations: { readOnlyHint: true },
@@ -75,7 +84,8 @@ export function buildTools(): Tool[] {
       name: 'list_sessions',
       description:
         'List persisted Claude sessions for a project, or for a specific worktree inside it. ' +
-        'Returns [{sessionId, firstPrompt, title, conducted, archived, mtime, size}] newest-first. ' +
+        'Renders as plain text, newest-first; structuredContent.sessions is ' +
+        '[{sessionId, firstPrompt, title, conducted, temp, archived, mtime, size}] in the same order. ' +
         '`conducted:true` marks a session spawned via the `spawn_instance` tool (orchestrator-driven). ' +
         'Archived sessions (killed and retained but hidden from the active list) are excluded by default. ' +
         'Pass `includeArchived:true` to include them; they will have `archived:true` in the result.',
@@ -111,8 +121,9 @@ export function buildTools(): Tool[] {
     {
       name: 'list_worktrees',
       description:
-        'List orchestrator-owned git worktrees for a project. Each entry includes ' +
-        '{worktree, branch, baseBranch, baseSha, parentPath, createdAt}.',
+        'List orchestrator-owned git worktrees for a project, oldest-first. Renders as plain text; ' +
+        'structuredContent.worktrees is [{worktree, worktreePath, branch, baseBranch, baseSha, ' +
+        'createdAt, parentProject, parentPath}].',
       inputSchema: {
         type: 'object',
         properties: { project: { type: 'string' } },
@@ -829,7 +840,8 @@ export function buildTools(): Tool[] {
         'listing, git branch + HEAD subject, uncommitted lines (`git status --porcelain`), ' +
         'recent commits (`git log`), and — for worktrees — mergeStatus (ahead/behind) plus a ' +
         'diff-stat against the base branch. Useful for reviewing what an agent did without ' +
-        'leaving MCP.',
+        'leaving MCP. Renders as plain text; structuredContent carries the same object with ' +
+        'every field (dirty is capped — the text says so when it truncates).',
       inputSchema: {
         type: 'object',
         properties: {

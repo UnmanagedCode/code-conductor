@@ -9,7 +9,7 @@
 
 import express from 'express';
 import { buildTools } from './tools.ts';
-import { isTextPayload, codeForStatus } from './content.ts';
+import { isTextPayload, isRenderedResult, codeForStatus } from './content.ts';
 import { SESSION_PREFIX_MIN } from '../instances.ts';
 import { createPlaybookGate, type PlaybookGate } from './playbookGate.ts';
 import type { InstanceManagerLike } from '../instanceTypes.ts';
@@ -346,6 +346,14 @@ async function dispatch(msg: unknown, ctx: McpCtx): Promise<JsonRpcResponse | nu
         // commit().
         if (gate.commit) await gate.commit(result);
         let content: Array<{ type: 'text'; text: string }>;
+        if (isRenderedResult(result)) {
+          // Text-primary: the rendering IS content[], and the object rides
+          // alongside as structuredContent (src/mcp/content.ts).
+          return rpcResult(id, {
+            content: [{ type: 'text', text: result.text }],
+            structuredContent: result.structured,
+          });
+        }
         if (isTextPayload(result)) {
           // Multi-block: compact-JSON metadata block, then one raw text block
           // per body, in order. Lets the LLM read file/diff/message bodies

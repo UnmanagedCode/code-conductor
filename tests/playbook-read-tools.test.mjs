@@ -70,6 +70,9 @@ async function setup({ enforcement } = {}) {
     assert.ok(body.result, `tools/call ${name} returned no result: ${JSON.stringify(body)}`);
     assert.notEqual(body.result.isError, true,
       `tools/call ${name} hard-errored: ${body.result.content?.[0]?.text}`);
+    // Recon read tools render text into content[] and carry their payload in
+    // structuredContent (src/mcp/content.ts renderedResult).
+    if (body.result.structuredContent) return body.result.structuredContent;
     return JSON.parse(body.result.content[0].text);
   }
 
@@ -379,7 +382,7 @@ test('list_instances carries playbook/stage for a tracked worker and null for an
     const untracked = await t.callAs(workerHandle, 'spawn_instance', { project: 'demo', mode: 'plan' });
     await waitFor(() => instForSession(t.instances, untracked.sessionId)?.sessionId);
 
-    const rows = await t.call('list_instances', {});
+    const { instances: rows } = await t.call('list_instances', {});
     const byId = Object.fromEntries(rows.map(r => [r.sessionId, r]));
     assert.deepEqual(
       { playbook: byId[tracked.sessionId].playbook, stage: byId[tracked.sessionId].stage },

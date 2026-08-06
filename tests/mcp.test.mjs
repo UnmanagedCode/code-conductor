@@ -54,6 +54,20 @@ function unwrapPayload(result) {
   assert.ok(Array.isArray(result.content), 'tool result has content[]');
   return { meta: JSON.parse(result.content[0].text), bodies: result.content.slice(1).map(c => c.text) };
 }
+// The five recon read tools invert that: content[] is a plain-text rendering
+// for the LLM and the object rides in structuredContent, wrapped under a named
+// key (src/mcp/content.ts renderedResult).
+function structured(result, key) {
+  assert.ok(result.structuredContent, 'tool result has structuredContent');
+  const v = result.structuredContent[key];
+  assert.notEqual(v, undefined, `structuredContent.${key} is missing`);
+  return v;
+}
+// project_status already returns an object, so it needs no wrapper key.
+function structuredStatus(result) {
+  assert.ok(result.structuredContent, 'tool result has structuredContent');
+  return result.structuredContent;
+}
 // project_read convenience: merge the body back onto the metadata as `content`.
 function unwrapFile(result) {
   const { meta, bodies } = unwrapPayload(result);
@@ -181,7 +195,7 @@ test('list_projects sees projects created via REST', async () => {
   await api(baseUrl, 'POST', '/api/projects', { name: 'alpha' });
   await api(baseUrl, 'POST', '/api/projects', { name: 'beta' });
   const result = await callTool(baseUrl, 'list_projects', {});
-  const projects = unwrap(result);
+  const projects = structured(result, 'projects');
   const names = projects.map(p => p.name).sort();
   assert.deepEqual(names, ['alpha', 'beta']);
   for (const p of projects) {
@@ -379,7 +393,7 @@ test('list_sessions marks MCP-spawned sessions conducted:true, HTTP ones false, 
       '{"type":"user","uuid":"u","message":{"role":"user","content":"hi"}}\n');
   }
 
-  const list = unwrap(await callTool(baseUrl, 'list_sessions', { project: 'a' }));
+  const list = structured(await callTool(baseUrl, 'list_sessions', { project: 'a' }), 'sessions');
   const bySid = new Map(list.map(s => [s.sessionId, s]));
   assert.ok(bySid.has(condSid), 'conducted session is returned (separation, not a filter)');
   assert.ok(bySid.has(httpSid), 'non-conducted session is returned');
@@ -390,7 +404,7 @@ test('list_sessions marks MCP-spawned sessions conducted:true, HTTP ones false, 
   // (simulating restart/resume recognition) because it reads from the
   // on-disk sidecar, not the in-memory instance.
   await callTool(baseUrl, 'kill_instance', { sessionId: cond.sessionId });
-  const list2 = unwrap(await callTool(baseUrl, 'list_sessions', { project: 'a' }));
+  const list2 = structured(await callTool(baseUrl, 'list_sessions', { project: 'a' }), 'sessions');
   const c2 = list2.find(s => s.sessionId === condSid);
   assert.ok(c2 && c2.conducted === true, 'conducted marker persists after the instance exits');
 });
@@ -483,7 +497,7 @@ test('create_worktree + list_worktrees + delete_worktree against a real git repo
   assert.match(createRes.worktree, /^demo_worktree_[a-f0-9]{6}$/);
   assert.equal(createRes.baseBranch, 'main');
 
-  const wts = unwrap(await callTool(baseUrl, 'list_worktrees', { project: 'demo' }));
+  const wts = structured(await callTool(baseUrl, 'list_worktrees', { project: 'demo' }), 'worktrees');
   assert.equal(wts.length, 1);
   assert.equal(wts[0].worktree, createRes.worktree);
 
@@ -491,7 +505,7 @@ test('create_worktree + list_worktrees + delete_worktree against a real git repo
     project: 'demo', worktree: createRes.worktree,
   }));
   assert.equal(del.worktree, createRes.worktree);
-  const wts2 = unwrap(await callTool(baseUrl, 'list_worktrees', { project: 'demo' }));
+  const wts2 = structured(await callTool(baseUrl, 'list_worktrees', { project: 'demo' }), 'worktrees');
   assert.equal(wts2.length, 0);
 });
 
@@ -859,7 +873,7 @@ test('project_status returns branch + HEAD + recent commits + top-level files', 
   await fs.writeFile(path.join(repoPath, 'untracked.txt'), 'u\n');
   await fs.writeFile(path.join(repoPath, 'README.md'), '# changed\n');
 
-  const st = unwrap(await callTool(baseUrl, 'project_status', { project: 'demo' }));
+  const st = structuredStatus(await callTool(baseUrl, 'project_status', { project: 'demo' }));
   assert.equal(st.project, 'demo');
   assert.equal(st.worktree, null);
   assert.equal(st.isGitRepo, true);
@@ -884,7 +898,7 @@ test('project_status scoped to a worktree returns mergeStatus + diffStat vs base
   await git(wtPath, 'add', '.');
   await git(wtPath, 'commit', '-q', '-m', 'add new.txt');
 
-  const st = unwrap(await callTool(baseUrl, 'project_status', {
+  const st = structuredStatus(await callTool(baseUrl, 'project_status', {
     project: 'demo', worktree: wt.worktree,
   }));
   assert.equal(st.worktree, wt.worktree);
@@ -893,7 +907,7 @@ test('project_status scoped to a worktree returns mergeStatus + diffStat vs base
   assert.equal(st.mergeStatus.behind, 0);
   assert.match(st.diffStat, /new\.txt/);
   // logLimit:0 disables recentCommits.
-  const noLog = unwrap(await callTool(baseUrl, 'project_status', {
+  const noLog = structuredStatus(await callTool(baseUrl, 'project_status', {
     project: 'demo', worktree: wt.worktree, logLimit: 0,
   }));
   assert.equal(noLog.recentCommits, undefined);
@@ -903,7 +917,7 @@ test('project_status scoped to a worktree returns mergeStatus + diffStat vs base
 
 test('project_status on a non-git project returns isGitRepo:false but still lists files', async () => {
   await api(baseUrl, 'POST', '/api/projects', { name: 'a' });
-  const st = unwrap(await callTool(baseUrl, 'project_status', { project: 'a' }));
+  const st = structuredStatus(await callTool(baseUrl, 'project_status', { project: 'a' }));
   assert.equal(st.isGitRepo, false);
   // The CLAUDE.md seeded by createProject should be there.
   assert.ok(st.files.some(f => f.name === 'CLAUDE.md' && f.kind === 'file'));
@@ -1241,7 +1255,7 @@ test('sessionId is the only worker handle: returns carry sessionId, never id/cal
   assert.equal(sent.sessionId, spawn.sessionId);
   assert.equal(sent.id, undefined);
 
-  const list = unwrap(await callTool(baseUrl, 'list_instances', {}));
+  const list = structured(await callTool(baseUrl, 'list_instances', {}), 'instances');
   assert.ok(list.every(i => i.id === undefined && i.callerInstanceId === undefined),
     'list_instances rows carry no instanceId/callerInstanceId');
   assert.ok(list.some(i => i.sessionId === spawn.sessionId), 'worker is listed by sessionId');

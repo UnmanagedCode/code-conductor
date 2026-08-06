@@ -1,6 +1,8 @@
 // MCP tool result shaping. The MCP server wraps every handler return into the
 // JSON-RPC tools/call `content[]` array. Most tools return a plain object that
-// becomes a single compact-JSON block. Tools that carry a large text body
+// becomes a single compact-JSON block. The recon read tools instead return a
+// `renderedResult(text, structured)` — plain text in content[], the object in
+// `structuredContent`. Tools that carry a large text body
 // (file contents, a unified diff, assistant prose) instead return a
 // `textPayload(meta, bodies)` so the server can emit a compact-JSON metadata
 // block PLUS one raw, UNESCAPED text block per body — far cheaper and more
@@ -25,6 +27,28 @@ export function textPayload(meta: unknown, bodies: unknown): TextPayload {
 
 export function isTextPayload(v: unknown): v is TextPayload {
   return !!v && typeof v === 'object' && (v as Partial<TextPayload>)[PAYLOAD] === true;
+}
+
+// The recon read tools' channel — the inverse of textPayload. Their payload is
+// nested JSON an LLM reads badly, so the TEXT is primary (content[0], the whole
+// content[]) and the object moves out of content[] entirely into MCP
+// `structuredContent`, where a programmatic consumer still gets every field.
+// `structured` must be an object: the MCP spec types structuredContent as one,
+// so an array payload is wrapped under a named key by its handler.
+const RENDERED = Symbol('mcpRenderedResult');
+
+export interface RenderedResult {
+  [RENDERED]: true;
+  text: string;
+  structured: Record<string, unknown>;
+}
+
+export function renderedResult(text: string, structured: Record<string, unknown>): RenderedResult {
+  return { [RENDERED]: true, text, structured };
+}
+
+export function isRenderedResult(v: unknown): v is RenderedResult {
+  return !!v && typeof v === 'object' && (v as Partial<RenderedResult>)[RENDERED] === true;
 }
 
 // Flatten a (meta, bodies) payload into the single string an LLM would read off

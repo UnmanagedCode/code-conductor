@@ -42,6 +42,12 @@ function unwrap(result) {
   assert.ok(Array.isArray(result.content));
   return JSON.parse(result.content[0].text);
 }
+// The recon read tools render text into content[] and carry the object in
+// structuredContent, wrapped under a named key (src/mcp/content.ts).
+function structured(result, key) {
+  assert.ok(result.structuredContent, 'tool result has structuredContent');
+  return result.structuredContent[key];
+}
 
 test('tools/list exposes all five workspace tools', async () => {
   const { body } = await rpc('tools/list');
@@ -99,7 +105,7 @@ test('set_project_workspace assigns, clears with null, and auto-registers the ne
     'newly-assigned workspace appears in list_workspaces');
 
   // Reflected in list_projects.
-  const projects = unwrap(await callTool('list_projects', {}));
+  const projects = structured(await callTool('list_projects', {}), 'projects');
   const alpha = projects.find(p => p.name === 'alpha');
   assert.equal(alpha.workspace, 'Side-projects');
 
@@ -108,7 +114,7 @@ test('set_project_workspace assigns, clears with null, and auto-registers the ne
     project: 'alpha', workspace: null,
   }));
   assert.equal(cleared.workspace, null);
-  const after = unwrap(await callTool('list_projects', {}));
+  const after = structured(await callTool('list_projects', {}), 'projects');
   assert.equal(after.find(p => p.name === 'alpha').workspace, null);
 });
 
@@ -134,7 +140,7 @@ test('rename_workspace atomically moves every member project', async () => {
   assert.equal(r.renamed, true);
   assert.deepEqual([...r.movedProjects].sort(), ['alpha', 'beta']);
 
-  const projects = unwrap(await callTool('list_projects', {}));
+  const projects = structured(await callTool('list_projects', {}), 'projects');
   for (const name of ['alpha', 'beta']) {
     assert.equal(projects.find(p => p.name === name).workspace, 'New',
       `${name} now points at New`);
@@ -158,7 +164,7 @@ test('delete_workspace clears member assignments without deleting the projects t
   // Workspace gone; projects survive with workspace:null.
   const list = unwrap(await callTool('list_workspaces', {}));
   assert.ok(!list.some(w => w.name === 'Doomed'));
-  const projects = unwrap(await callTool('list_projects', {}));
+  const projects = structured(await callTool('list_projects', {}), 'projects');
   assert.equal(projects.find(p => p.name === 'alpha').workspace, null);
   assert.equal(projects.find(p => p.name === 'beta').workspace, null);
 });

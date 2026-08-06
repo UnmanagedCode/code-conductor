@@ -359,10 +359,84 @@ test('project_status caps the dirty list with dirtyTruncated + dirtyTotal', asyn
   const repoPath = await makeRealRepo('demo');
   await Promise.all(Array.from({ length: 520 }, (_, i) =>
     fs.writeFile(path.join(repoPath, `f${i}.txt`), 'x\n')));
-  const st = meta(await callTool('project_status', { project: 'demo' }));
+  const st = (await callTool('project_status', { project: 'demo' })).structuredContent;
   assert.equal(st.dirtyTruncated, true);
   assert.equal(st.dirty.length, 500);
   assert.ok(st.dirtyTotal >= 520);
+});
+
+// ---------- recon read tools: text-primary + structuredContent ----------
+//
+// The inverse of the multi-block contract above: content[] is a plain-text
+// rendering for the LLM and the payload rides in structuredContent. The pure
+// rendering tests live in tests/mcp-text-render.test.mjs; these two pin the
+// wire shape and check the field classification against REAL handler output,
+// which the pure tests cannot see.
+
+const RENDERED_TOOLS = [
+  { name: 'list_projects', args: {}, key: 'projects' },
+  { name: 'list_instances', args: {}, key: 'instances' },
+  { name: 'list_worktrees', args: { project: 'demo' }, key: 'worktrees' },
+  { name: 'list_sessions', args: { project: 'demo' }, key: 'sessions' },
+  { name: 'project_status', args: { project: 'demo' }, key: null },
+];
+
+test('the five recon read tools emit one text block plus structuredContent', async () => {
+  await makeRealRepo('demo');
+  for (const { name, args, key } of RENDERED_TOOLS) {
+    const r = await callTool(name, args);
+    assert.equal(r.content.length, 1, `${name}: the rendering is the whole content[]`);
+    assert.equal(r.content[0].type, 'text');
+    assert.throws(() => JSON.parse(r.content[0].text),
+      `${name}: content[0] must be a rendering, not JSON`);
+    assert.equal(typeof r.structuredContent, 'object', `${name}: structuredContent present`);
+    assert.ok(r.structuredContent !== null);
+    assert.ok(!Array.isArray(r.structuredContent),
+      `${name}: structuredContent must be an object (MCP spec), so arrays are wrapped`);
+    if (key) {
+      assert.ok(Array.isArray(r.structuredContent[key]),
+        `${name}: array payload wrapped under '${key}'`);
+    } else {
+      assert.equal(r.structuredContent.project, 'demo');
+    }
+  }
+});
+
+test('every field of a real payload is classified hot, deviant or cold', async () => {
+  // Guards the "no field drops" partition against the LIVE handler output —
+  // tests/mcp-text-render.test.mjs pins the same partition against literal key
+  // lists, but only this one notices a key the handlers actually started
+  // emitting. Both must pass for a new field to be considered classified.
+  const R = await import('../src/mcp/readRenderers.ts');
+  const classified = (hot, dev, cold) => new Set([...hot, ...dev.map(d => d.key), ...cold]);
+  const check = (label, keys, set) => {
+    const missing = [...keys].filter(k => !set.has(k));
+    assert.deepEqual(missing, [], `${label}: unclassified field(s) — add to *_HOT, *_DEVIANT or *_COLD`);
+  };
+
+  await makeRealRepo('demo');
+  await callTool('create_worktree', { project: 'demo' });
+
+  const projects = (await callTool('list_projects', {})).structuredContent.projects;
+  const demo = projects.find(p => p.name === 'demo');
+  assert.ok(demo?.worktrees.length, 'vacuity guard: expected a demo project with a worktree');
+  check('list_projects', Object.keys(demo),
+    classified(R.PROJECT_HOT, R.PROJECT_DEVIANT, R.PROJECT_COLD));
+  check('list_projects.worktrees[]', Object.keys(demo.worktrees[0]),
+    classified(R.PROJECT_WORKTREE_HOT, R.PROJECT_WORKTREE_DEVIANT, R.PROJECT_WORKTREE_COLD));
+
+  const worktrees = (await callTool('list_worktrees', { project: 'demo' })).structuredContent.worktrees;
+  assert.ok(worktrees.length, 'vacuity guard: expected a worktree');
+  check('list_worktrees', Object.keys(worktrees[0]),
+    classified(R.WORKTREE_HOT, R.WORKTREE_DEVIANT, R.WORKTREE_COLD));
+
+  const status = (await callTool('project_status', { project: 'demo' })).structuredContent;
+  check('project_status', Object.keys(status),
+    classified(R.STATUS_HOT, R.STATUS_DEVIANT, R.STATUS_COLD));
+  const wtStatus = (await callTool('project_status',
+    { project: 'demo', worktree: worktrees[0].worktree })).structuredContent;
+  check('project_status (worktree)', Object.keys(wtStatus),
+    classified(R.STATUS_HOT, R.STATUS_DEVIANT, R.STATUS_COLD));
 });
 
 // ---------- tools/list annotations ----------

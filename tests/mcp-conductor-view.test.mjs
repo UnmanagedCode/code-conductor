@@ -41,6 +41,10 @@ async function callTool(name, args) {
   });
   const body = await res.json();
   assert.ok(body?.result, `tools/call ${name} returned no result; body=${JSON.stringify(body)}`);
+  // The recon read tools render text into content[] and carry their payload in
+  // structuredContent (src/mcp/content.ts renderedResult); everything else
+  // still puts compact JSON in content[0].
+  if (body.result.structuredContent) return body.result.structuredContent;
   const raw = body.result.content[0].text;
   try { return JSON.parse(raw); }
   catch { assert.fail(`tools/call ${name} did not return JSON: ${raw}`); }
