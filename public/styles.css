@@ -1003,6 +1003,7 @@ body.lightbox-open { overflow: hidden; }
   word-break: break-word;
 }
 .block.system .subtype { color: var(--amber); margin-right: 4px; }
+.block.system.warn { color: var(--amber); border-left-color: var(--amber); }
 
 /* Ghost bubble: a message queued while overage-paused, not yet delivered. */
 .block.queued {

@@ -237,7 +237,26 @@ export function createPlaybookGate(
         code: decision.code,
         reason: decision.reason,
       });
-      if (mode === 'warn') return pass;
+      if (mode === 'warn') {
+        // warn lets the call through, so the ledger row is its only durable
+        // trace — and nothing reads it back. Put the same fact in front of the
+        // human by pushing a UI-only bubble into the CONDUCTOR's transcript
+        // (it made the call; a refusal may name no worker at all). `_emitUi`
+        // reaches the ring and the WS feed only — it is never model input, so
+        // the conductor agent still sees the call succeed, exactly as before.
+        // Strictly after the append: the audit trail is written first.
+        caller._emitUi({
+          kind: 'system',
+          subtype: 'playbook_warn',
+          data: {
+            tool: name,
+            code: decision.code,
+            reason: decision.reason,
+            ...(typeof args.sessionId === 'string' ? { sessionId: args.sessionId } : {}),
+          },
+        });
+        return pass;
+      }
       return {
         refusal: {
           ok: false,

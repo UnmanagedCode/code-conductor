@@ -128,6 +128,50 @@ async function expectNoMoreEnforcement(t, n) {
     `no enforcement event beyond the expected ${n} may be recorded`);
 }
 
+// Captures every frame so a `t:'event'` push can be awaited by predicate.
+// Same helper as tests/ws.test.mjs.
+function wsClient(url) {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(url);
+    const messages = [];
+    ws.on('message', raw => {
+      try { messages.push(JSON.parse(raw.toString())); } catch { messages.push(raw.toString()); }
+    });
+    ws.once('open', () => resolve({
+      ws,
+      messages,
+      send(obj) { ws.send(JSON.stringify(obj)); },
+      close() { return new Promise(r => { ws.once('close', r); ws.close(); }); },
+      wait(predicate, timeout = 4000) { return waitFor(() => messages.find(predicate), { timeout }); },
+    }));
+    ws.once('error', reject);
+  });
+}
+
+// Subscribe to the conductor's stream and wait until it's live, so no
+// playbook_warn push can race ahead of the subscription.
+async function watchConductor(t) {
+  const c = await wsClient(t.wsUrl);
+  c.send({ t: 'subscribe', id: t.conductorId, reqId: 'sub' });
+  await c.wait(m => m.t === 'ack' && m.reqId === 'sub' && m.ok);
+  const warnings = () => c.messages.filter(m =>
+    m.t === 'event' && m.ev?.kind === 'system' && m.ev?.subtype === 'playbook_warn');
+  return {
+    ...c,
+    warnings,
+    waitForWarning: () => c.wait(m =>
+      m.t === 'event' && m.ev?.kind === 'system' && m.ev?.subtype === 'playbook_warn'),
+    // The emit is synchronous with the refused call, but give it real chances
+    // to land before concluding it never will.
+    async expectNoWarning() {
+      await assert.rejects(
+        () => waitFor(() => warnings().length > 0, { timeout: 1000, interval: 20 }),
+        /timeout/,
+        'no playbook_warn may be pushed');
+    },
+  };
+}
+
 const refused = (res, code) => {
   assert.equal(res.ok, false, `expected a refusal, got ${JSON.stringify(res)}`);
   assert.equal(res.code, code, `expected ${code}, got ${res.code}: ${res.reason}`);
@@ -412,6 +456,97 @@ test('warn: an illegal move proceeds but is recorded as a refusal', async () => 
     // so the worker is still in `plan`.
     assert.equal(foldProjection(await t.events()).bySession.get(impl.sessionId).stage, 'plan');
   } finally { await t.close(); }
+});
+
+// warn's whole point is to warn a human, and the ledger has no reader — so the
+// refusal is also pushed to the CONDUCTOR's own event stream as a UI-only
+// system bubble. It made the call, and a refusal may name no worker at all.
+
+test('warn: an illegal move pushes a playbook_warn event to the conductor\'s stream', async () => {
+  const t = await setup({ enforcement: 'warn' });
+  let c = null;
+  try {
+    const impl = await t.spawnWorker({ project: 'demo', playbook: 'classic', stage: 'plan' });
+    c = await watchConductor(t);
+    assert.equal((await t.call('send_prompt', {
+      sessionId: impl.sessionId, text: 'skip ahead', stage: 'implement', subscribe: false,
+    })).ok, undefined, 'warn still allows the call');
+
+    const m = await c.waitForWarning();
+    // Addressed to the conductor, not the worker it targets.
+    assert.equal(m.id, t.conductorId, 'the bubble lands on the conductor');
+    assert.notEqual(m.id, instForSession(t.instances, impl.sessionId).id);
+    // Every payload field comes from the real decision, not a placeholder.
+    assert.deepEqual(m.ev.data, {
+      tool: 'send_prompt',
+      code: 'TRANSITION_ILLEGAL',
+      reason: m.ev.data.reason,
+      sessionId: impl.sessionId,
+    });
+    assert.match(m.ev.data.reason, /\S/, 'the refusal reason is carried, not blank');
+    assert.equal(m.ev.data.reason,
+      (await t.events()).find(e => e.kind === 'refusal').reason,
+      'the bubble and the ledger row state the same reason');
+
+    // Additive: the ledger row and warn's proceed-anyway semantics are intact.
+    const refusals = (await t.events()).filter(e => e.kind === 'refusal');
+    assert.equal(refusals.length, 1, 'the append is not replaced by the emit');
+    assert.equal(refusals[0].code, 'TRANSITION_ILLEGAL');
+    assert.equal(foldProjection(await t.events()).bySession.get(impl.sessionId).stage, 'plan');
+    assert.equal(c.warnings().length, 1, 'exactly one bubble per refusal');
+  } finally { if (c) await c.close(); await t.close(); }
+});
+
+test('warn: a refusal that names no worker omits sessionId entirely', async () => {
+  const t = await setup({ enforcement: 'warn' });
+  try {
+    // Observed on the instance's own 'event' channel, NOT over the WebSocket:
+    // JSON.stringify drops an undefined value, so the wire cannot tell an
+    // omitted key from `sessionId: undefined` and only the raw object can.
+    const raw = [];
+    t.instances.get(t.conductorId).on('event',
+      ev => { if (ev?.kind === 'system' && ev.subtype === 'playbook_warn') raw.push(ev); });
+
+    // A bare spawn names no playbook — and, being a spawn, no target session.
+    const out = await t.call('spawn_instance', { project: 'demo', mode: 'plan' });
+    assert.ok(out.sessionId, 'warn still allows the spawn');
+
+    await waitFor(() => raw.length > 0);
+    assert.equal(raw[0].data.code, 'PLAYBOOK_UNKNOWN');
+    assert.equal(raw[0].data.tool, 'spawn_instance');
+    assert.ok(!('sessionId' in raw[0].data),
+      'absent rather than undefined — the key must not be emitted at all');
+  } finally { await t.close(); }
+});
+
+test('enforce: a refusal pushes no playbook_warn — the caller already got it', async () => {
+  const t = await setup({ enforcement: 'enforce' });
+  let c = null;
+  try {
+    const impl = await t.spawnWorker({ project: 'demo', playbook: 'classic', stage: 'plan' });
+    c = await watchConductor(t);
+    refused(await t.call('send_prompt', {
+      sessionId: impl.sessionId, text: 'skip ahead', stage: 'implement', subscribe: false,
+    }), 'TRANSITION_ILLEGAL');
+    // The refusal reached the ledger, so the gate ran — the emit is what's
+    // absent, which pins it INSIDE the warn branch rather than above it.
+    assert.equal((await t.events()).filter(e => e.kind === 'refusal').length, 1);
+    await c.expectNoWarning();
+  } finally { if (c) await c.close(); await t.close(); }
+});
+
+test('off: an illegal move pushes no playbook_warn', async () => {
+  const t = await setup();
+  let c = null;
+  try {
+    const impl = await t.spawnWorker({ project: 'demo', playbook: 'classic', stage: 'plan' });
+    c = await watchConductor(t);
+    await t.call('send_prompt', {
+      sessionId: impl.sessionId, text: 'skip ahead', stage: 'implement', subscribe: false,
+    });
+    await c.expectNoWarning();
+    assert.equal(await t.ledgerExists(), false, 'off still writes nothing at all');
+  } finally { if (c) await c.close(); await t.close(); }
 });
 
 test('policy applies only to the conductor: the same calls from a worker or no caller are ungoverned', async () => {
