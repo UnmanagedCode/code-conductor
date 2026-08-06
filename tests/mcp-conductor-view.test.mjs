@@ -62,18 +62,19 @@ export function documentedKeys(toolsSource) {
 test('the documented key list matches what toConductorView emits, one-for-one', async () => {
   const src = await fs.readFile(TOOLS_SRC, 'utf8');
   const documented = documentedKeys(src);
-  // Three fields are appended downstream by listInstances, not by the
-  // projection: `hasIdleSubscriber` (added by list()), and `playbook`/`stage`
-  // (joined from the sessionId-keyed playbook projection). None of them exists on
-  // InstanceSummary, so putting them in the allowlist would publish permanently-
-  // undefined fields on the four other projections — hence list_instances
-  // documents exactly the allowlist plus these three.
+  // LIST_ONLY_KEYS are appended downstream by listInstances, not by the
+  // projection: `hasIdleSubscriber` (added by list()), `playbook`/`stage`
+  // (joined from the sessionId-keyed playbook projection), and `exitedAt` (only
+  // ever set on a tombstone from the exit-retention ring). None of them exists
+  // on InstanceSummary, so putting them in the allowlist would publish
+  // permanently-undefined fields on the four other projections — hence
+  // list_instances documents exactly the allowlist plus those.
   const expected = [...CONDUCTOR_VIEW_KEYS, ...LIST_ONLY_KEYS];
 
   // Non-vacuity: a regex that matched nothing would compare [] to [] under a
   // sloppier assertion. Pin the count first, then the contents.
   assert.ok(documented.length >= 20, `parsed only ${documented.length} keys — the description shape changed`);
-  assert.equal(documented.length, 28);
+  assert.equal(documented.length, 29);
   assert.equal(CONDUCTOR_VIEW_KEYS.length, 25);
   assert.deepEqual(sorted(documented), sorted(expected));
 });

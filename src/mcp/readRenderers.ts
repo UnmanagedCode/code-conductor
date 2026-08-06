@@ -19,6 +19,10 @@
 //                  session detail, a 2-call derivation away via
 //                  list_sessions({project, worktree}). Accepted: a leaner
 //                  default listing is worth the second call.
+//                  The live workers themselves — `live N` is a COUNT. Naming
+//                  them is list_instances' job, and printing both made the two
+//                  tools look like they disagreed whenever a worker exited
+//                  between the calls.
 //   list_instances pid (no tool takes one — sessionId is the handle);
 //                  createdAt (status + lastResponseAt answer "is it moving?");
 //                  contextWindowTokens (a denominator with no numerator on this
@@ -88,12 +92,12 @@ export function renderProjects(projects: unknown): string {
   const parts: Array<string | string[]> = [heading('PROJECTS', rows.length), ''];
   for (const p of rows) {
     const wts = asRows(p.worktrees);
-    const ids = Array.isArray(p.sessionIds) ? p.sessionIds as unknown[] : [];
     const body: Array<string | string[]> = [];
     for (const d of deviations(p, PROJECT_DEVIANT)) body.push(d);
     body.push(sessionSummary(p.sessions));
-    body.push(`live ${ids.length}`);
-    body.push(indent(ids.map(String), 2));
+    // dash(), not `?? 0`: a handler that stopped supplying the count must read
+    // as absent, not as a project nobody is working on.
+    body.push(`live ${dash(p.liveCount)}`);
     body.push(`worktrees ${wts.length}`);
     if (wts.length) {
       const cells = wts.map(w => [
@@ -131,11 +135,14 @@ const INSTANCE_DEVIANT: DeviantSpec[] = [
   { key: 'overageActive', default: false, label: 'OVERAGE' },
   { key: 'overageResetsAt', default: null, label: 'overage-resets', fmt: ts },
   { key: 'autoResumeAt', default: null, label: 'auto-resume', fmt: ts },
+  // When it died. Only ever set on an EXITED row, so it is news by definition —
+  // "gone 2 minutes ago" and "gone 28 minutes ago, about to age out of the
+  // retention window" call for different next moves.
+  { key: 'exitedAt', default: null, label: 'exited', fmt: ts },
 ];
 
-export function renderInstances(instances: unknown): string {
-  const rows = asRows(instances);
-  const parts: Array<string | string[]> = [heading('INSTANCES', rows.length), ''];
+function instanceRows(rows: Row[]): Array<string | string[]> {
+  const parts: Array<string | string[]> = [];
   rows.forEach((r, i) => {
     const lines: string[] = [
       `status ${dash(r.status)}   display ${dash(r.displayStatus)}   agents ${dash(r.activeAgentTasks ?? 0)}   queued ${dash(r.queuedCount ?? 0)}   idle-sub ${r.hasIdleSubscriber ? 'yes' : 'no'}`,
@@ -152,6 +159,29 @@ export function renderInstances(instances: unknown): string {
     parts.push(indent(lines, 4));
     parts.push('');
   });
+  return parts;
+}
+
+// `live` and `exited` arrive already partitioned and ordered — the caller
+// (src/mcp/handlers.ts listInstances) owns both the isDeadStatus() split and the
+// sort, so this stays a pure formatter with no instance-model dependency.
+//
+// The EXITED heading is omitted entirely when nothing has exited, so the common
+// case does not grow a section; and `project` is echoed on the INSTANCES heading
+// whenever the caller filtered, because an empty filtered list otherwise reads
+// as "no workers anywhere" and would send a conductor down the wrong path.
+export function renderInstances(
+  instances: unknown,
+  { project = null, exited = [] }: { project?: string | null; exited?: unknown } = {},
+): string {
+  const rows = asRows(instances);
+  const dead = asRows(exited);
+  const filter = project ? `  project ${project}` : '';
+  const parts: Array<string | string[]> = [
+    `${heading('INSTANCES', rows.length)}${filter}`, '',
+    ...instanceRows(rows),
+  ];
+  if (dead.length) parts.push(heading('EXITED', dead.length), '', ...instanceRows(dead));
   return block(...parts);
 }
 

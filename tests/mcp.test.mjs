@@ -196,6 +196,10 @@ test('list_projects sees projects created via REST', async () => {
   assert.ok(out.indexOf('▸ alpha') < out.indexOf('▸ beta'), 'stable name order');
   // Both entries carry the per-project counts, not just the header.
   assert.equal((out.match(/^ {2}live \d+$/gm) ?? []).length, 2);
+  // `live` is a count and nothing else — naming the workers is list_instances'
+  // job, and printing ids in both places is what made them look inconsistent.
+  assert.equal(out.split('\n').filter(l => /^\s+[0-9a-f-]{36}$/.test(l)).length, 0,
+    `no sessionId may appear in a project block:\n${out}`);
   assert.equal((out.match(/^ {2}worktrees \d+$/gm) ?? []).length, 2);
   assert.equal((out.match(/^ {2}sessions \d+ {3}last /gm) ?? []).length, 2);
 });

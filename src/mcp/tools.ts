@@ -43,9 +43,10 @@ export function buildTools(): Tool[] {
     {
       name: 'list_projects',
       description:
-        'List every project under ~/project/ as PLAIN TEXT (this tool returns no JSON). ' +
-        'One block per project: its absolute path, workspace when set, session counts, live ' +
-        'sessionIds in full, and each worktree with branch, base, ahead/behind and its path.',
+        'List every project under the projects root as PLAIN TEXT (this tool returns no JSON). ' +
+        'One block per project: its absolute path, workspace when set, session counts, a ' +
+        'live-worker count, and each worktree with branch, base, ahead/behind and its path. ' +
+        'list_instances names those workers; this tool only counts them.',
       inputSchema: { type: 'object', properties: {}, required: [] },
       handler: h.listProjects,
       annotations: { readOnlyHint: true },
@@ -58,7 +59,11 @@ export function buildTools(): Tool[] {
         '{project, cwd, sessionId, status, displayStatus, activeAgentTasks, mode, effort, thinking, ' +
         'backend, model, contextWindowTokens, pid, worktree, temp, conducted, debug, ' +
         'firstPrompt, title, createdAt, lastResponseAt, queuedCount, autoResumeAt, ' +
-        'overageActive, overageResetsAt, hasIdleSubscriber, playbook, stage}. ' +
+        'overageActive, overageResetsAt, hasIdleSubscriber, playbook, stage, exitedAt}. ' +
+        'Exited workers render under a separate `EXITED` heading and keep a usable sessionId ' +
+        '(their transcript is archived, not deleted), but they age out — a worker absent from ' +
+        'both sections finished longer ago than the retention window, not never. ' +
+        'Rows are grouped by project, then worktree, then spawn order. ' +
         'sessionId is the stable handle for every worker-addressing tool. ' +
         '`playbook`/`stage` say where the worker sits in its playbook graph, or null when it is not ' +
         'playbook-tracked; playbook_state gives the full run picture. ' +
@@ -72,8 +77,20 @@ export function buildTools(): Tool[] {
         'temp / conducted / debug / overage / auto-resume only when they deviate from their ' +
         'default — so anything on a worker\'s `flags` line is news. ' +
         'Every other tool here returning a worker summary returns that shape as JSON, minus ' +
-        '`hasIdleSubscriber`, `playbook` and `stage`.',
-      inputSchema: { type: 'object', properties: {}, required: [] },
+        '`hasIdleSubscriber`, `playbook`, `stage` and `exitedAt`.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          project: {
+            type: 'string',
+            description: 'Show only workers whose `project` equals this exactly (`.conduct` for '
+              + 'conductors). Omit for the whole fleet. Not validated against the project list — '
+              + 'a name that matches nothing yields an empty list, and the heading echoes the '
+              + 'filter so a typo is visible.',
+          },
+        },
+        required: [],
+      },
       handler: h.listInstances,
       annotations: { readOnlyHint: true },
     },

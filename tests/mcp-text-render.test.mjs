@@ -136,7 +136,7 @@ describe('renderProjects', () => {
         name: 'code-conductor',
         path: '/w/cc-projects/code-conductor',
         workspace: null,
-        sessionIds: [SID_A],
+        liveCount: 1,
         isGitRepo: true,
         worktrees: [WORKTREE],
         sessions: { count: 11, archivedCount: 1, lastMtime: 1786001000000 },
@@ -145,7 +145,7 @@ describe('renderProjects', () => {
         name: 'notes',
         path: '/w/cc-projects/notes',
         workspace: 'personal',
-        sessionIds: [],
+        liveCount: 0,
         isGitRepo: false,
         worktrees: [],
         sessions: { count: 0, archivedCount: 0, lastMtime: 0 },
@@ -157,7 +157,6 @@ describe('renderProjects', () => {
       '▸ code-conductor  /w/cc-projects/code-conductor',
       '  sessions 11 (archived 1)   last 2026-08-06 07:23Z',
       '  live 1',
-      `    ${SID_A}`,
       '  worktrees 1',
       '    code-conductor_worktree_dcd22e  br code-conductor/dcd22e  base main@04746607c1b2  ahead 2  behind 0  sessions 3  created 2026-08-06 09:12Z',
       '      /w/cc-projects/code-conductor_worktree_dcd22e',
@@ -175,7 +174,7 @@ describe('renderProjects', () => {
     // Sentinel parent values that share no substring with any hot field, so a
     // leak of either cold key is unambiguous.
     const out = renderProjects([{
-      name: 'p', path: '/p', workspace: null, sessionIds: [], isGitRepo: true,
+      name: 'p', path: '/p', workspace: null, liveCount: 0, isGitRepo: true,
       worktrees: [{ ...WORKTREE, parentProject: 'COLD_PARENT', parentPath: '/COLD_PARENT_PATH' }],
       sessions: { count: 0, archivedCount: 0, lastMtime: 0 },
     }]);
@@ -188,11 +187,38 @@ describe('renderProjects', () => {
 
   test('an unknown ahead/behind reads as ? rather than a number', () => {
     const out = renderProjects([{
-      name: 'p', path: '/p', workspace: null, sessionIds: [], isGitRepo: true,
+      name: 'p', path: '/p', workspace: null, liveCount: 0, isGitRepo: true,
       worktrees: [{ ...WORKTREE, mergeStatus: { ahead: null, behind: null } }],
       sessions: { count: 0, archivedCount: 0, lastMtime: 0 },
     }]);
     assert.match(out, /ahead \?  behind \?/);
+  });
+
+  test('live is a count — no worker is named here', () => {
+    // The whole point of the split: naming workers is list_instances' job, and
+    // printing ids in both places made them look inconsistent whenever one
+    // exited between the calls. A bare handle on its own line is the shape that
+    // must never come back.
+    const out = renderProjects([{
+      name: 'p', path: '/p', workspace: null, liveCount: 3, isGitRepo: true,
+      worktrees: [], sessions: { count: 0, archivedCount: 0, lastMtime: 0 },
+      // Present in the payload but must not reach the text.
+      sessionIds: [SID_A, SID_B],
+    }]);
+    assert.match(out, /^ {2}live 3$/m);
+    assert.ok(!out.includes(SID_A) && !out.includes(SID_B), 'no sessionId may reach a project block');
+    assert.equal(out.split('\n').filter(l => /^\s+[0-9a-f-]{36}$/.test(l)).length, 0,
+      'a bare-uuid line is the exact shape this change removed');
+  });
+
+  test('a missing liveCount reads as absent, not as a silent zero', () => {
+    // Fail loudly: a handler that stops supplying the count must not look like
+    // a project with nobody working on it.
+    const out = renderProjects([{
+      name: 'p', path: '/p', workspace: null, liveCount: null, isGitRepo: true,
+      worktrees: [], sessions: { count: 0, archivedCount: 0, lastMtime: 0 },
+    }]);
+    assert.match(out, /^ {2}live —$/m);
   });
 });
 
@@ -290,6 +316,58 @@ describe('renderInstances', () => {
 
   test('no live workers', () => {
     assert.equal(renderInstances([]), 'INSTANCES (none)');
+  });
+
+  test('nothing has exited — no EXITED section at all', () => {
+    // The common case must not grow a heading for an empty set.
+    assert.ok(!renderInstances([INSTANCE]).includes('EXITED'));
+    assert.ok(!renderInstances([INSTANCE], { exited: [] }).includes('EXITED'));
+  });
+
+  test('an exited worker gets its own section, with its death time and handle', () => {
+    const dead = {
+      ...INSTANCE, sessionId: SID_B, status: 'exited', displayStatus: 'exited',
+      activeAgentTasks: 0, title: 'finished worker', temp: true, conducted: true,
+      lastResponseAt: 1786001000000, exitedAt: 1786002000000,
+    };
+    assert.equal(renderInstances([INSTANCE], { exited: [dead] }), [
+      'INSTANCES (1)',
+      '',
+      `[1] ${SID_A}`,
+      '    status idle   display running   agents 2   queued 0   idle-sub yes',
+      '    project code-conductor   worktree code-conductor_worktree_dcd22e',
+      '    cwd /w/cc-projects/code-conductor_worktree_dcd22e',
+      '    mode code   effort high   thinking adaptive   model claude/claude-opus-5',
+      '    playbook classic / implement',
+      '    title Recon read tools plain-text rendering',
+      '    last 2026-08-06 07:23Z',
+      '',
+      'EXITED (1)',
+      '',
+      `[1] ${SID_B}`,
+      '    status exited   display exited   agents 0   queued 0   idle-sub yes',
+      '    project code-conductor   worktree code-conductor_worktree_dcd22e',
+      '    cwd /w/cc-projects/code-conductor_worktree_dcd22e',
+      '    mode code   effort high   thinking adaptive   model claude/claude-opus-5',
+      '    playbook classic / implement',
+      '    title finished worker',
+      '    last 2026-08-06 07:23Z',
+      '    flags temp  conducted  exited 2026-08-06 07:40Z',
+    ].join('\n'));
+  });
+
+  test('an all-exited fleet reads as none live, not as a fleet still working', () => {
+    const dead = { ...INSTANCE, status: 'exited', exitedAt: 1786002000000 };
+    const out = renderInstances([], { exited: [dead] });
+    assert.match(out, /^INSTANCES \(none\)$/m);
+    assert.match(out, /^EXITED \(1\)$/m);
+  });
+
+  test('a filter is echoed on the heading, so an empty result is not read as an idle fleet', () => {
+    assert.equal(renderInstances([], { project: 'code-conductor' }), 'INSTANCES (none)  project code-conductor');
+    assert.match(renderInstances([INSTANCE], { project: 'code-conductor' }), /^INSTANCES \(1\) {2}project code-conductor$/m);
+    // Unfiltered stays exactly as it was.
+    assert.match(renderInstances([INSTANCE]), /^INSTANCES \(1\)$/m);
   });
 });
 
@@ -435,10 +513,9 @@ describe('handles and shas', () => {
     // The text is the whole result, so an abbreviated handle is unrecoverable.
     const projects = renderProjects([{
       name: 'p', path: '/very/long/absolute/path/to/a/project/root/p', workspace: null,
-      sessionIds: [SID_A], isGitRepo: true, worktrees: [WORKTREE],
+      liveCount: 1, isGitRepo: true, worktrees: [WORKTREE],
       sessions: { count: 1, archivedCount: 0, lastMtime: 1 },
     }]);
-    assert.ok(projects.includes(SID_A), 'sessionId must not be abbreviated');
     assert.ok(projects.includes('/very/long/absolute/path/to/a/project/root/p'));
     assert.ok(projects.includes(WORKTREE.worktreePath), 'worktree path must not be abbreviated');
     assert.ok(projects.includes(WORKTREE.branch), 'branch name must not be abbreviated');
@@ -456,7 +533,7 @@ describe('handles and shas', () => {
   test('a baseSha is shortened to 12 — informational, not a handle', () => {
     const wt = { ...WORKTREE, baseSha: FULL_SHA };
     for (const out of [
-      renderProjects([{ name: 'p', path: '/p', workspace: null, sessionIds: [], isGitRepo: true,
+      renderProjects([{ name: 'p', path: '/p', workspace: null, liveCount: 0, isGitRepo: true,
         worktrees: [wt], sessions: { count: 0, archivedCount: 0, lastMtime: 0 } }]),
       renderWorktrees([{ worktree: 'w', parentProject: 'p', parentPath: '/p', worktreePath: '/w',
         branch: 'b', baseBranch: 'main', baseSha: FULL_SHA, createdAt: 0 }]),

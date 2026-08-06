@@ -52,6 +52,7 @@ import {
 import { loadPlaybooks, isSpawnable, legalMovesFrom, decide, type Playbook } from '../playbooks.ts';
 import { runMembers, type Projection } from '../playbookLedger.ts';
 import { isConductorInstance } from '../conduct.ts';
+import { isDeadStatus } from '../instances.ts';
 import type { PlaybookGate } from './playbookGate.ts';
 import type { InstanceLike, InstanceManagerLike, InstanceSummary } from '../instanceTypes.ts';
 import type { UiEvent } from '../parser.ts';
@@ -149,12 +150,12 @@ export const CONDUCTOR_VIEW_KEYS = [
   'overageResetsAt',
 ];
 
-// The three fields listInstances attaches on top of the shared projection (see
+// The fields listInstances attaches on top of the shared projection (see
 // the note in listInstances). Exported so the two tests that bind against the
 // full list_instances key set — the doc-drift gate in
 // tests/mcp-conductor-view.test.mjs and the rendering gate in
 // tests/mcp-text-render.test.mjs — read one definition instead of two copies.
-export const LIST_ONLY_KEYS = ['hasIdleSubscriber', 'playbook', 'stage'];
+export const LIST_ONLY_KEYS = ['hasIdleSubscriber', 'playbook', 'stage', 'exitedAt'];
 
 function toConductorView(summary: InstanceSummary): Record<string, unknown> {
   const out: Record<string, unknown> = {};
@@ -267,7 +268,7 @@ export async function listProjects(_args: McpArgs, { instances }: McpCtx) {
     })));
     return {
       ...p,
-      sessionIds: instances ? instances.sessionIdsForProject(p.name) : [],
+      liveCount: instances ? instances.liveCountForProject(p.name) : 0,
       isGitRepo: await isGitRepo(p.path),
       worktrees: worktreesWithSessions,
       sessions: await summarizeSessions(p.path).catch(() => ({ count: 0, lastMtime: 0 })),
@@ -276,30 +277,71 @@ export async function listProjects(_args: McpArgs, { instances }: McpCtx) {
   return textResult(renderProjects(enriched));
 }
 
-export async function listInstances(_args: McpArgs, { instances, playbookGate }: McpCtx) {
+// Row order for list_instances. Map insertion order (what list() hands back) is
+// creation order of the in-process Instance objects — deterministic between two
+// calls, but incidental: it interleaves projects, and boot-restore reshuffles it.
+// This groups a project's workers together, and within a project puts a
+// worktree's workers together in spawn order — so an implementer and the
+// reviewer spawned after it on the same branch read as adjacent rows. createdAt
+// never mutates, so `[n]` numbering is stable across calls unless the fleet
+// actually changed; sessionId is the final tiebreak that makes the order total.
+// Workers with no worktree sort ahead of a project's worktree workers ('' < any
+// name), which also lands the conductor's own `.conduct` row at [1].
+export function compareInstanceRows(a: Record<string, unknown>, b: Record<string, unknown>): number {
+  const s = (v: unknown) => (typeof v === 'string' ? v : '');
+  const wt = (v: unknown) => (v && typeof v === 'object' ? s((v as Record<string, unknown>).worktreeName) : '');
+  const n = (v: unknown) => (typeof v === 'number' ? v : 0);
+  return s(a.project).localeCompare(s(b.project))
+    || wt(a.worktree).localeCompare(wt(b.worktree))
+    || n(a.createdAt) - n(b.createdAt)
+    || s(a.sessionId).localeCompare(s(b.sessionId));
+}
+
+export async function listInstances(args: McpArgs, { instances, playbookGate }: McpCtx) {
   // Project every row to the allowlist (sessionId is the conductor-facing
-  // handle), then re-attach `hasIdleSubscriber` plus `playbook`/`stage`. All
-  // three are deliberately NOT in CONDUCTOR_VIEW_KEYS: hasIdleSubscriber is added
-  // by list() rather than Instance.summary(), and playbook/stage come from the
-  // sessionId-keyed playbook projection, so none of them exists on the four other
-  // projections — putting them in the allowlist would publish permanently-
-  // undefined fields there. This is the one place list_instances' shape differs.
-  if (!instances) return textResult(renderInstances([]));
+  // handle), then re-attach the LIST_ONLY_KEYS. They are deliberately NOT in
+  // CONDUCTOR_VIEW_KEYS: hasIdleSubscriber is added by list() rather than
+  // Instance.summary(), playbook/stage come from the sessionId-keyed playbook
+  // projection, and exitedAt exists only on a tombstone — so none of them exists
+  // on the four other projections, where putting them in the allowlist would
+  // publish permanently-undefined fields. This is the one place list_instances'
+  // shape differs.
+  const project = typeof args?.project === 'string' ? args.project : null;
+  if (!instances) return textResult(renderInstances([], { project }));
   // Read-only, and folds nothing into being: absent ledger ⇒ empty projection.
   const proj = playbookGate ? await playbookGate.readProjection() : null;
-  const rows = instances.list().map(row => {
+  const view = (row: InstanceSummary, exitedAt: number | null): Record<string, unknown> => {
     const tracked = proj && typeof row.sessionId === 'string'
       ? proj.bySession.get(row.sessionId) : undefined;
     return {
       ...toConductorView(row),
-      hasIdleSubscriber: row.hasIdleSubscriber,
+      hasIdleSubscriber: (row as { hasIdleSubscriber?: boolean }).hasIdleSubscriber ?? false,
       // null (not absent) for an untracked worker, so a caller can tell "not in a
       // playbook" from "this build does not report it".
       playbook: tracked?.playbook ?? null,
       stage: tracked?.stage ?? null,
+      exitedAt,
     };
-  });
-  return textResult(renderInstances(rows));
+  };
+  // byId rows and tombstones are disjoint (a worker is dropped from byId at the
+  // same moment it is tombstoned), so concatenating them needs no dedupe. Which
+  // section a row lands in is decided by its STATUS, not by which list it came
+  // out of — that is what also moves a retained non-temp exited instance (byId
+  // keeps those indefinitely) out of the live section.
+  const keep = (r: { project?: unknown }) => project === null || r.project === project;
+  const all = [
+    ...instances.list().map(row => view(row, null)),
+    ...instances.recentExits().map(row => view(row, row.exitedAt)),
+  ].filter(keep);
+  return textResult(renderInstances(
+    all.filter(r => !isDeadStatus(r.status)).sort(compareInstanceRows),
+    {
+      project,
+      // Freshest death first: on this section, recency is the question asked.
+      exited: all.filter(r => isDeadStatus(r.status))
+        .sort((a, b) => (Number(b.exitedAt) || 0) - (Number(a.exitedAt) || 0) || compareInstanceRows(a, b)),
+    },
+  ));
 }
 
 // ---------- playbooks: the read / introspection surface ----------
