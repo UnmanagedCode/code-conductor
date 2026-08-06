@@ -29,10 +29,11 @@ test('ensureConductProject creates a bare .conduct/ dir — no CONDUCT.md, no se
   const stat = await fs.stat(conductDir);
   assert.ok(stat.isDirectory());
 
-  // The role prompt is injected at spawn via --append-system-prompt, so no
-  // on-disk CONDUCT.md and no seeded CLAUDE.md are written. Workspace
-  // conventions still reach the conductor via the ancestor walk-up to the
-  // projects-root CLAUDE.md.
+  // The role prompt is composed fresh per spawn/resume, written to
+  // <store>/conductor-prompt.md, and passed via --append-system-prompt-file —
+  // it never lands in the project tree, so no CONDUCT.md and no seeded
+  // CLAUDE.md are written here. Workspace conventions still reach the
+  // conductor via the ancestor walk-up to the projects-root CLAUDE.md.
   await assert.rejects(fs.stat(path.join(conductDir, 'CONDUCT.md')), 'no CONDUCT.md written');
   await assert.rejects(fs.stat(path.join(conductDir, 'CLAUDE.md')), 'no CLAUDE.md seeded');
 });

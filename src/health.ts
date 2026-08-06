@@ -13,9 +13,10 @@ import { resolveClaudeBin } from './claudeLauncher.ts';
 const DEFAULT_TIMEOUT_MS = 3000;
 
 // Oldest `claude` known to support `--append-system-prompt-file`, which every
-// conductor spawn now requires (src/instances.ts). An older CLI rejects the
-// flag outright, so the conductor would die at startup with an opaque
-// commander error — this probe turns that into a named boot warning. It is an
+// conductor spawn now requires (src/instances.ts). A CLI predating the flag
+// fails the spawn at startup instead of degrading, and the failure surfaces as
+// an unknown-option error far from its cause — this probe turns that into a
+// named boot warning ahead of the first spawn. It is an
 // OBSERVED floor, not a bisected one: 2.1.223 is verified to work, so some
 // earlier versions may also be fine and would warn spuriously. Warning only,
 // never fatal. The single place this number lives — docs reference the

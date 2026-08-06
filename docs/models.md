@@ -17,12 +17,15 @@ then the caller appends the SAME claude args uniformly. Three callers share it:
 `Instance.spawn()`, `generateSummary()` (`src/summarize.ts`), `generateBundle()`
 (`src/claudeShellEnv.ts`).
 
-**A template must share our filesystem view.** Several of the uniformly-appended
-claude args pass *host paths* — `--settings`, `--mcp-config`, `--plugin-dir`, and
-(for conductor sessions) `--append-system-prompt-file` pointing at
-`<store>/conductor-prompt.md`. A template that wraps `claude` in a container or
-over ssh without mounting those paths will fail. Local wrappers such as the
-built-in `ollama launch claude … --` are unaffected.
+**A template that passes host paths must share our filesystem view.** Two of the
+uniformly-appended claude args are *host paths*: `--plugin-dir` (one per entry,
+only when the session has plugin dirs) and, for conductor sessions,
+`--append-system-prompt-file` pointing at `<store>/conductor-prompt.md`.
+(`--settings` and `--mcp-config` are not — they carry inline JSON built by
+`buildSettingsJSON`/`buildMcpConfigJSON` in `src/settings.ts`.) A template that
+wraps `claude` in a container or over ssh without mounting those paths will
+fail. Local wrappers such as the built-in `ollama launch claude … --` are
+unaffected.
 
 Record: `{ id, label, template, env: [{key,value}], managed }`, persisted as
 `models.backends`.
