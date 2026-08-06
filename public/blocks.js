@@ -1067,7 +1067,7 @@ const SHOWN_SYSTEM_SUBTYPES = new Set([
   'init', 'stderr', 'exit', 'spawn_error', 'crashed',
   'permission_denied', 'compacting', 'history_load_error', 'auto_stop_overage',
   'auto_resume', 'auto_resume_skipped', 'soft_interrupted', 'drain_abort',
-  'model_changed', 'cache_miss',
+  'model_changed', 'cache_miss', 'playbook_warn',
 ]);
 
 const OVERAGE_DISABLED_LABEL = { out_of_credits: 'out of credits' };
@@ -1104,6 +1104,12 @@ export class SystemBlock {
       if (subtype === 'soft_interrupted') return data?.text ? `⏸ Turn interrupted: ${data.text}` : '⏸ Turn interrupted';
       if (subtype === 'drain_abort') return `⏹ Drained queued turn after interrupt (${data?.count ?? 1})`;
       if (subtype === 'model_changed') return `Model changed: ${data?.from ?? '?'} → ${data?.to ?? '?'}`;
+      if (subtype === 'playbook_warn') {
+        // Enforcement is `warn`: the call went through anyway. Name the target
+        // worker when the refused call had one (spawn/capacity refusals don't).
+        const target = data?.sessionId ? ` on ${data.sessionId.slice(0, 8)}` : '';
+        return `⚠ Playbook (warn): ${data?.tool ?? '?'}${target} would have been refused — ${data?.code ?? '?'}: ${data?.reason ?? ''}`;
+      }
       if (subtype === 'cache_miss') {
         // Cross-turn path carries prevPrefix — show evicted vs served so a
         // partial eviction reads sensibly. Fallback (turn 1 / re-baseline) has
@@ -1135,7 +1141,7 @@ export class SystemBlock {
       }
       try { return JSON.stringify(data).slice(0, 200); } catch { return ''; }
     })();
-    this.node = el('div', { class: 'block system' },
+    this.node = el('div', { class: subtype === 'playbook_warn' ? 'block system warn' : 'block system' },
       el('span', { class: 'subtype' }, subtype),
       detail ? ` ${detail}` : '',
     );
