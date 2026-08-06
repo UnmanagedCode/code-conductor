@@ -1,8 +1,8 @@
 // MCP tool result shaping. The MCP server wraps every handler return into the
 // JSON-RPC tools/call `content[]` array. Most tools return a plain object that
 // becomes a single compact-JSON block. The recon read tools instead return a
-// `renderedResult(text, structured)` — plain text in content[], the object in
-// `structuredContent`. Tools that carry a large text body
+// `textResult(text)` — one plain-text block, no JSON at all. Tools that carry a
+// large text body
 // (file contents, a unified diff, assistant prose) instead return a
 // `textPayload(meta, bodies)` so the server can emit a compact-JSON metadata
 // block PLUS one raw, UNESCAPED text block per body — far cheaper and more
@@ -29,26 +29,25 @@ export function isTextPayload(v: unknown): v is TextPayload {
   return !!v && typeof v === 'object' && (v as Partial<TextPayload>)[PAYLOAD] === true;
 }
 
-// The recon read tools' channel — the inverse of textPayload. Their payload is
-// nested JSON an LLM reads badly, so the TEXT is primary (content[0], the whole
-// content[]) and the object moves out of content[] entirely into MCP
-// `structuredContent`, where a programmatic consumer still gets every field.
-// `structured` must be an object: the MCP spec types structuredContent as one,
-// so an array payload is wrapped under a named key by its handler.
-const RENDERED = Symbol('mcpRenderedResult');
+// The recon read tools' channel: their whole result IS a plain-text rendering,
+// emitted as one raw block with no metadata block at all. Same Symbol-tag
+// discipline as textPayload, and for the same reason — the default path
+// JSON-stringifies, so a bare string cannot express this, and sniffing
+// `typeof result === 'string'` would silently reshape any plugin that returns a
+// string through the bridge's `result` passthrough (src/plugins/mcpBridge.ts).
+const TEXT_RESULT = Symbol('mcpTextResult');
 
-export interface RenderedResult {
-  [RENDERED]: true;
+export interface TextResult {
+  [TEXT_RESULT]: true;
   text: string;
-  structured: Record<string, unknown>;
 }
 
-export function renderedResult(text: string, structured: Record<string, unknown>): RenderedResult {
-  return { [RENDERED]: true, text, structured };
+export function textResult(text: string): TextResult {
+  return { [TEXT_RESULT]: true, text };
 }
 
-export function isRenderedResult(v: unknown): v is RenderedResult {
-  return !!v && typeof v === 'object' && (v as Partial<RenderedResult>)[RENDERED] === true;
+export function isTextResult(v: unknown): v is TextResult {
+  return !!v && typeof v === 'object' && (v as Partial<TextResult>)[TEXT_RESULT] === true;
 }
 
 // Flatten a (meta, bodies) payload into the single string an LLM would read off

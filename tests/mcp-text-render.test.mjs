@@ -1,12 +1,9 @@
 // Plain-text rendering layer for the five MCP recon read tools.
 //
 // Pure tests — no server boot, no I/O: hand-built payloads in, exact strings
-// out, mirroring tests/mcp-recent-turn-bond.test.mjs. The rendering IS the
-// contract now (content[0] is the text), so pinning it exactly is the point.
-//
-// The field-coverage suite at the bottom is the "no field drops" guarantee.
-// Wire-level coverage (a live payload's keys are all classified) lives in
-// tests/mcp-contract.test.mjs, which has real handler output to check against.
+// out, mirroring tests/mcp-recent-turn-bond.test.mjs. The rendering is the
+// tool's ENTIRE result, so pinning it exactly is the point: anything not
+// asserted here is a fact the conductor cannot get at all.
 
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
@@ -16,14 +13,7 @@ import {
 } from '../src/mcp/textRender.ts';
 import {
   renderProjects, renderInstances, renderWorktrees, renderSessions, renderProjectStatus,
-  PROJECT_HOT, PROJECT_DEVIANT, PROJECT_COLD,
-  PROJECT_WORKTREE_HOT, PROJECT_WORKTREE_DEVIANT, PROJECT_WORKTREE_COLD,
-  INSTANCE_HOT, INSTANCE_DEVIANT, INSTANCE_COLD,
-  WORKTREE_HOT, WORKTREE_DEVIANT, WORKTREE_COLD,
-  SESSION_HOT, SESSION_DEVIANT, SESSION_COLD,
-  STATUS_HOT, STATUS_DEVIANT, STATUS_COLD,
 } from '../src/mcp/readRenderers.ts';
-import { CONDUCTOR_VIEW_KEYS } from '../src/mcp/handlers.ts';
 
 const SID_A = '3f2a8c11-77b2-4c1e-9a2f-5d6e7f801234';
 const SID_B = '9b41d0e2-1a55-42c7-8f30-cc11ab993d02';
@@ -188,7 +178,7 @@ describe('renderProjects', () => {
       worktrees: [{ ...WORKTREE, parentProject: 'COLD_PARENT', parentPath: '/COLD_PARENT_PATH' }],
       sessions: { count: 0, archivedCount: 0, lastMtime: 0 },
     }]);
-    assert.ok(!out.includes('COLD_PARENT'), 'parentProject/parentPath are structuredContent-only here');
+    assert.ok(!out.includes('COLD_PARENT'), 'parentProject/parentPath are dropped here — the project header carries them');
   });
 
   test('an empty root still names itself', () => {
@@ -281,7 +271,7 @@ describe('renderInstances', () => {
     }]);
     assert.match(out, /worktree demo_worktree_ab12$/m);
     assert.ok(!out.includes('[object Object]'));
-    assert.ok(!out.includes('noise'), 'the nested report stays in structuredContent');
+    assert.ok(!out.includes('noise'), 'the nested postWorktreeCreate report is not rendered');
   });
 
   test('an untracked worker reads as not-in-a-playbook, not as missing data', () => {
@@ -435,60 +425,13 @@ describe('renderProjectStatus', () => {
   });
 });
 
-// ── field coverage: the "no field drops" guarantee ─────────────────────────
+// ── handles vs informational values ────────────────────────────────────────
 
-describe('field coverage', () => {
-  const keysOf = (hot, deviant, cold) => [...hot, ...deviant.map(d => d.key), ...cold];
+describe('handles and shas', () => {
+  const FULL_SHA = '047466034cf469b50fa23c2ded41234d058a3c1c';
 
-  function assertPartition(label, hot, deviant, cold, expected) {
-    const all = keysOf(hot, deviant, cold);
-    assert.ok(all.length > 0, `${label}: vacuous — no keys classified`);
-    assert.equal(new Set(all).size, all.length, `${label}: a key is classified twice`);
-    assert.deepEqual(new Set(all), new Set(expected),
-      `${label}: HOT ∪ DEVIANT ∪ COLD must exactly cover the payload keys.\n`
-      + `  unclassified: ${expected.filter(k => !all.includes(k)).join(', ') || '(none)'}\n`
-      + `  not in payload: ${all.filter(k => !expected.includes(k)).join(', ') || '(none)'}`);
-  }
-
-  // list_instances is the one whose key set is owned by code rather than by
-  // this test: CONDUCTOR_VIEW_KEYS plus the three fields listInstances alone
-  // re-attaches (src/mcp/handlers.ts). Adding a key there fails this test until
-  // it is classified — the same pinning discipline as mcp-conductor-view.
-  test('list_instances covers CONDUCTOR_VIEW_KEYS plus the three list-only fields', () => {
-    assert.ok(CONDUCTOR_VIEW_KEYS.length > 20, 'vacuity guard: allowlist looks empty');
-    assertPartition('list_instances', INSTANCE_HOT, INSTANCE_DEVIANT, INSTANCE_COLD,
-      [...CONDUCTOR_VIEW_KEYS, 'hasIdleSubscriber', 'playbook', 'stage']);
-  });
-
-  test('list_projects', () => {
-    assertPartition('list_projects', PROJECT_HOT, PROJECT_DEVIANT, PROJECT_COLD,
-      ['name', 'path', 'workspace', 'sessionIds', 'isGitRepo', 'worktrees', 'sessions']);
-  });
-
-  test('list_projects → nested worktree entry', () => {
-    assertPartition('list_projects.worktrees[]', PROJECT_WORKTREE_HOT, PROJECT_WORKTREE_DEVIANT,
-      PROJECT_WORKTREE_COLD, Object.keys(WORKTREE));
-  });
-
-  test('list_worktrees', () => {
-    assertPartition('list_worktrees', WORKTREE_HOT, WORKTREE_DEVIANT, WORKTREE_COLD,
-      ['worktree', 'parentProject', 'parentPath', 'worktreePath', 'branch', 'baseBranch',
-        'baseSha', 'createdAt']);
-  });
-
-  test('list_sessions', () => {
-    assertPartition('list_sessions', SESSION_HOT, SESSION_DEVIANT, SESSION_COLD,
-      ['sessionId', 'firstPrompt', 'title', 'conducted', 'temp', 'archived', 'mtime', 'size']);
-  });
-
-  test('project_status', () => {
-    assertPartition('project_status', STATUS_HOT, STATUS_DEVIANT, STATUS_COLD,
-      ['project', 'worktree', 'cwd', 'files', 'isGitRepo', 'branch', 'head', 'dirty',
-        'dirtyTotal', 'dirtyTruncated', 'recentCommits', 'baseBranch', 'baseSha',
-        'mergeStatus', 'diffStat']);
-  });
-
-  test('handles survive at full length — they are meant to be copied back', () => {
+  test('sessionIds and absolute paths survive at full length', () => {
+    // The text is the whole result, so an abbreviated handle is unrecoverable.
     const projects = renderProjects([{
       name: 'p', path: '/very/long/absolute/path/to/a/project/root/p', workspace: null,
       sessionIds: [SID_A], isGitRepo: true, worktrees: [WORKTREE],
@@ -497,8 +440,32 @@ describe('field coverage', () => {
     assert.ok(projects.includes(SID_A), 'sessionId must not be abbreviated');
     assert.ok(projects.includes('/very/long/absolute/path/to/a/project/root/p'));
     assert.ok(projects.includes(WORKTREE.worktreePath), 'worktree path must not be abbreviated');
+    assert.ok(projects.includes(WORKTREE.branch), 'branch name must not be abbreviated');
     assert.ok(renderSessions([{ sessionId: SID_A, firstPrompt: null, title: 't', conducted: false,
       temp: false, archived: false, mtime: 1, size: 1 }]).includes(SID_A));
     assert.ok(renderInstances([INSTANCE]).includes(SID_A));
+  });
+
+  test('a baseSha is shortened to 12 — informational, not a handle', () => {
+    const wt = { ...WORKTREE, baseSha: FULL_SHA };
+    for (const out of [
+      renderProjects([{ name: 'p', path: '/p', workspace: null, sessionIds: [], isGitRepo: true,
+        worktrees: [wt], sessions: { count: 0, archivedCount: 0, lastMtime: 0 } }]),
+      renderWorktrees([{ worktree: 'w', parentProject: 'p', parentPath: '/p', worktreePath: '/w',
+        branch: 'b', baseBranch: 'main', baseSha: FULL_SHA, createdAt: 0 }]),
+      renderProjectStatus({ project: 'p', worktree: 'w', cwd: '/w', files: [], isGitRepo: true,
+        branch: 'b', head: { sha: FULL_SHA, subject: 's' }, dirty: [], dirtyTruncated: false,
+        baseBranch: 'main', baseSha: FULL_SHA, mergeStatus: { ahead: 0, behind: 0 }, diffStat: '' }),
+    ]) {
+      assert.match(out, /base main@047466034cf4(\s|$)/m);
+      assert.ok(!out.includes(`main@${FULL_SHA}`), 'the base sha must be shortened');
+    }
+  });
+
+  test('project_status HEAD keeps the full sha — it is what you pass to git', () => {
+    const out = renderProjectStatus({ project: 'p', worktree: null, cwd: '/p', files: [],
+      isGitRepo: true, branch: 'b', head: { sha: FULL_SHA, subject: 's' },
+      dirty: [], dirtyTruncated: false });
+    assert.ok(out.includes(`HEAD ${FULL_SHA} s`));
   });
 });

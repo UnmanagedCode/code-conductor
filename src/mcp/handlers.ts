@@ -39,7 +39,7 @@ import { composeProjectConventionsDoc } from '../projectClaudeMd.ts';
 import { getCatalog as getConductorConventionsCatalog, getSelection as getConductorSelection } from '../conductorConventions.ts';
 import { isKnownFamily, isKnownTier, defaultVersion, familyOf, CLAUDE_BACKEND_ID } from '../modelVersions.ts';
 import { getTierBackend, resolveRoleBackend, isResolvableRole, backendForModel } from '../appSettings.ts';
-import { textPayload, renderedResult } from './content.ts';
+import { textPayload, textResult } from './content.ts';
 import {
   renderProjects, renderInstances, renderWorktrees, renderSessions, renderProjectStatus,
 } from './readRenderers.ts';
@@ -266,7 +266,7 @@ export async function listProjects(_args: McpArgs, { instances }: McpCtx) {
       sessions: await summarizeSessions(p.path).catch(() => ({ count: 0, lastMtime: 0 })),
     };
   }));
-  return renderedResult(renderProjects(enriched), { projects: enriched });
+  return textResult(renderProjects(enriched));
 }
 
 export async function listInstances(_args: McpArgs, { instances, playbookGate }: McpCtx) {
@@ -277,7 +277,7 @@ export async function listInstances(_args: McpArgs, { instances, playbookGate }:
   // sessionId-keyed playbook projection, so none of them exists on the four other
   // projections — putting them in the allowlist would publish permanently-
   // undefined fields there. This is the one place list_instances' shape differs.
-  if (!instances) return renderedResult(renderInstances([]), { instances: [] });
+  if (!instances) return textResult(renderInstances([]));
   // Read-only, and folds nothing into being: absent ledger ⇒ empty projection.
   const proj = playbookGate ? await playbookGate.readProjection() : null;
   const rows = instances.list().map(row => {
@@ -292,7 +292,7 @@ export async function listInstances(_args: McpArgs, { instances, playbookGate }:
       stage: tracked?.stage ?? null,
     };
   });
-  return renderedResult(renderInstances(rows), { instances: rows });
+  return textResult(renderInstances(rows));
 }
 
 // ---------- playbooks: the read / introspection surface ----------
@@ -474,7 +474,7 @@ export async function listSessions({ project, worktree, includeArchived = false 
     sessions = await fsListSessions(project);
   }
   const rows = includeArchived ? sessions : sessions.filter(s => !s.archived);
-  return renderedResult(renderSessions(rows), { sessions: rows });
+  return textResult(renderSessions(rows));
 }
 
 // Map the shared worktree-metadata shape (whose property is `worktreeName`)
@@ -486,7 +486,7 @@ function toMcpWorktree({ worktreeName, ...rest }: WorktreeMeta) {
 
 export async function listWorktrees({ project }: { project: string }) {
   const wts = (await fsListWorktrees(project)).map(toMcpWorktree);
-  return renderedResult(renderWorktrees(wts), { worktrees: wts });
+  return textResult(renderWorktrees(wts));
 }
 
 export async function locateSession({ sessionId }: { sessionId?: string }) {
@@ -1553,7 +1553,7 @@ export async function projectStatus({ project, worktree, logLimit = 20 }: { proj
     isGitRepo: false,
   };
   if (!(await isGitRepo(cwd))) {
-    return renderedResult(renderProjectStatus(out), out);
+    return textResult(renderProjectStatus(out));
   }
   out.isGitRepo = true;
   // Branch (may be null on detached HEAD).
@@ -1602,7 +1602,7 @@ export async function projectStatus({ project, worktree, logLimit = 20 }: { proj
     const diffR = await runGit(cwd, ['diff', '--stat', `${worktreeMeta.baseBranch}...HEAD`]);
     out.diffStat = diffR.code === 0 ? diffR.stdout.trim() : '';
   }
-  return renderedResult(renderProjectStatus(out), out);
+  return textResult(renderProjectStatus(out));
 }
 
 // Path-traversal-guarded file read. Path is project-relative; absolute

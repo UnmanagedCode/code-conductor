@@ -70,10 +70,21 @@ async function setup({ enforcement } = {}) {
     assert.ok(body.result, `tools/call ${name} returned no result: ${JSON.stringify(body)}`);
     assert.notEqual(body.result.isError, true,
       `tools/call ${name} hard-errored: ${body.result.content?.[0]?.text}`);
-    // Recon read tools render text into content[] and carry their payload in
-    // structuredContent (src/mcp/content.ts renderedResult).
-    if (body.result.structuredContent) return body.result.structuredContent;
     return JSON.parse(body.result.content[0].text);
+  }
+
+  // Same call, but hands back the raw single text block instead of parsing it.
+  async function callRawAs(handle, name, args) {
+    const url = ctx.baseUrl + '/mcp' + (handle ? `?caller=${encodeURIComponent(handle)}` : '');
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: nextRpcId++, method: 'tools/call', params: { name, arguments: args } }),
+    });
+    const body = await res.json();
+    assert.ok(body.result, `tools/call ${name} returned no result: ${JSON.stringify(body)}`);
+    assert.equal(body.result.content.length, 1, `${name} should be a single text block`);
+    return body.result.content[0].text;
   }
 
   return {
@@ -81,6 +92,8 @@ async function setup({ enforcement } = {}) {
     conductorId,
     call: (name, args) => callAs(conductorId, name, args),
     callAs,
+    // The recon read tools return a plain-text rendering, not JSON.
+    callText: (name, args) => callRawAs(conductorId, name, args),
     async spawnWorker(args) {
       const out = await callAs(conductorId, 'spawn_instance', args);
       if (out.sessionId) await waitFor(() => instForSession(ctx.instances, out.sessionId)?.sessionId);
@@ -382,17 +395,21 @@ test('list_instances carries playbook/stage for a tracked worker and null for an
     const untracked = await t.callAs(workerHandle, 'spawn_instance', { project: 'demo', mode: 'plan' });
     await waitFor(() => instForSession(t.instances, untracked.sessionId)?.sessionId);
 
-    const { instances: rows } = await t.call('list_instances', {});
-    const byId = Object.fromEntries(rows.map(r => [r.sessionId, r]));
-    assert.deepEqual(
-      { playbook: byId[tracked.sessionId].playbook, stage: byId[tracked.sessionId].stage },
-      { playbook: 'classic', stage: 'plan' });
-    // null, not absent — a caller can tell "not in a playbook" from "this build
-    // does not report it".
-    assert.deepEqual(
-      { playbook: byId[untracked.sessionId].playbook, stage: byId[untracked.sessionId].stage },
-      { playbook: null, stage: null });
-    assert.equal('playbook' in byId[untracked.sessionId], true);
+    // list_instances renders plain text, so read the playbook line off each
+    // worker's block (src/mcp/readRenderers.ts renderInstances).
+    const rendered = await t.callText('list_instances', {});
+    const playbookLineFor = (sid) => {
+      const lines = rendered.split('\n');
+      const at = lines.findIndex(l => l.includes(sid));
+      assert.ok(at >= 0, `worker ${sid} missing from:\n${rendered}`);
+      const line = lines.slice(at + 1).find(l => l.trim().startsWith('playbook '));
+      assert.ok(line, `no playbook line for ${sid}`);
+      return line.trim();
+    };
+    assert.equal(playbookLineFor(tracked.sessionId), 'playbook classic / plan');
+    // A dash, not a blank — "not in a playbook" must be distinguishable from
+    // "this build does not report it".
+    assert.equal(playbookLineFor(untracked.sessionId), 'playbook — / —');
   } finally { await t.close(); }
 });
 

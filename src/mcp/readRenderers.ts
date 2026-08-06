@@ -1,26 +1,31 @@
 // Per-tool plain-text renderers for the five MCP recon read tools:
 // list_projects, list_instances, list_worktrees, list_sessions, project_status.
 //
-// Each tool's result is a text rendering (content[0]) plus the unchanged object
-// as structuredContent — see src/mcp/content.ts renderedResult(). These
-// functions produce the text half; they are pure, so tests pin exact strings.
+// The rendering is the tool's ENTIRE result — there is no JSON channel beside
+// it (src/mcp/content.ts textResult). So the bar is: every fact a conductor acts
+// on must be in the text. These functions are pure, so tests pin exact strings.
 //
-// FIELD CLASSIFICATION. Every payload key belongs to exactly one of three
-// per-tool constants, and tests/mcp-text-render.test.mjs asserts the three cover
-// the key set with no overlap and no gap. That assertion is the "no field drops"
-// guarantee — a key added upstream fails the suite until it is classified.
+// Two ways a field reaches the text. Most are rendered unconditionally. The
+// rest are DEVIANT: declared with a default in a `DeviantSpec[]` and surfaced
+// only when the value leaves it — overage, archived, a non-repo, a truncated
+// dirty list. See src/mcp/textRender.ts deviations(). That is what lets the
+// common case stay short without a conductor ever missing live state.
 //
-//   *_HOT      rendered in the text. Usually unconditionally; a few are rendered
-//              by a rule the renderer owns (firstPrompt shows only when there is
-//              no title to show instead) — the point is the reader can see it.
-//   *_DEVIANT  rendered only when the value differs from the declared default.
-//              For state a conductor must not miss (overage, archived, non-repo).
-//              See src/mcp/textRender.ts deviations().
-//   *_COLD     structuredContent only. Only for a fact that is redundant on
-//              screen or that a conductor does not act on.
+// DELIBERATELY DROPPED — not rendered, and no longer reachable anywhere:
+//   list_projects  worktrees[].parentProject / .parentPath — byte-identical to
+//                  the project header one line above (list_worktrees, which has
+//                  no such header, does render them).
+//                  worktrees[].sessions.{archivedCount,lastMtime} — per-worktree
+//                  session detail; list_sessions({project, worktree}) has it.
+//   list_instances pid (no tool takes one — sessionId is the handle);
+//                  createdAt (status + lastResponseAt answer "is it moving?");
+//                  contextWindowTokens (a denominator with no numerator on this
+//                  surface — the actionable overage signals are DEVIANT).
+//   both           firstPrompt when a title exists — the title supersedes it.
 //
-// Handles — sessionId, absolute paths, branch names, shas — are never truncated
-// anywhere in these renderings; they exist to be copied back into a call.
+// Handles stay full-length: sessionIds, absolute paths, branch names. A baseSha
+// is informational context, not something pasted back into a call, so it is
+// shortened (SHA_LEN).
 
 import {
   DASH, block, bytes, dash, deviations, heading, indent, table, trunc, ts,
@@ -34,9 +39,13 @@ const asRow = (v: unknown): Row => (v && typeof v === 'object' ? v as Row : {});
 
 // ---------- shared fragments ----------
 
+// Enough of a base sha to identify a commit at a glance; `git log` in the same
+// rendering already prints 7.
+const SHA_LEN = 12;
+const shortSha = (v: unknown) => (typeof v === 'string' ? v.slice(0, SHA_LEN) : dash(v));
+
 // summarizeSessions() shape, reused by list_projects at both project and
 // worktree level.
-const SESSION_SUMMARY_HOT = ['count', 'lastMtime'] as const;
 const SESSION_SUMMARY_DEVIANT: DeviantSpec[] = [
   { key: 'archivedCount', default: 0, label: 'archived' },
 ];
@@ -51,7 +60,7 @@ function sessionSummary(v: unknown): string {
 // An instance's `worktree` is the whole WorktreeMeta object (plus a
 // postWorktreeCreate report), not a name — see InstanceSummary in
 // src/instances.ts. The text carries the name, which is the handle every
-// worktree tool takes; the rest of the object stays in structuredContent.
+// worktree tool takes; the rest of the object is not rendered.
 function worktreeName(v: unknown): string {
   if (v && typeof v === 'object') return dash((v as Row).worktreeName);
   return dash(v);
@@ -65,23 +74,10 @@ function aheadBehind(v: unknown): string {
 
 // ---------- list_projects ----------
 
-export const PROJECT_HOT = ['name', 'path', 'sessionIds', 'sessions', 'worktrees'] as const;
-export const PROJECT_DEVIANT: DeviantSpec[] = [
+const PROJECT_DEVIANT: DeviantSpec[] = [
   { key: 'workspace', default: null, label: 'workspace' },
   { key: 'isGitRepo', default: true, label: '! not a git repo' },
 ];
-export const PROJECT_COLD: string[] = [];
-
-// A worktree nested under its project. parentProject/parentPath are cold here
-// and ONLY here: both are byte-identical to the enclosing project's name/path,
-// printed one line above. list_worktrees, which has no such enclosing header,
-// renders them (WORKTREE_HOT).
-export const PROJECT_WORKTREE_HOT = [
-  'worktreeName', 'worktreePath', 'branch', 'baseBranch', 'baseSha', 'createdAt',
-  'mergeStatus', 'sessions',
-] as const;
-export const PROJECT_WORKTREE_DEVIANT: DeviantSpec[] = [];
-export const PROJECT_WORKTREE_COLD = ['parentProject', 'parentPath'] as const;
 
 export function renderProjects(projects: unknown): string {
   const rows = asRows(projects);
@@ -99,7 +95,7 @@ export function renderProjects(projects: unknown): string {
       const cells = wts.map(w => [
         String(dash(w.worktreeName)),
         `br ${dash(w.branch)}`,
-        `base ${dash(w.baseBranch)}@${dash(w.baseSha)}`,
+        `base ${dash(w.baseBranch)}@${shortSha(w.baseSha)}`,
         aheadBehind(w.mergeStatus),
         `sessions ${dash(asRow(w.sessions).count ?? 0)}`,
         `created ${ts(w.createdAt)}`,
@@ -120,17 +116,11 @@ export function renderProjects(projects: unknown): string {
 
 // ---------- list_instances ----------
 //
-// `cwd` is HOT. It is the conductor's self-identification check — "the one whose
-// cwd ends in .conduct" (conventions/conductor/core.md) — so it has to be
-// readable straight off the text, not only via structuredContent.
+// `cwd` is rendered on every row. It is the conductor's self-identification
+// check — "the one whose cwd ends in .conduct" (conventions/conductor/core.md)
+// — so it has to be readable straight off the text.
 
-export const INSTANCE_HOT = [
-  'sessionId', 'project', 'cwd', 'worktree', 'status', 'displayStatus',
-  'activeAgentTasks', 'mode', 'effort', 'thinking', 'backend', 'model',
-  'queuedCount', 'hasIdleSubscriber', 'playbook', 'stage', 'title',
-  'firstPrompt', 'lastResponseAt',
-] as const;
-export const INSTANCE_DEVIANT: DeviantSpec[] = [
+const INSTANCE_DEVIANT: DeviantSpec[] = [
   { key: 'temp', default: false, label: 'temp' },
   { key: 'conducted', default: false, label: 'conducted' },
   { key: 'debug', default: false, label: 'debug' },
@@ -138,7 +128,6 @@ export const INSTANCE_DEVIANT: DeviantSpec[] = [
   { key: 'overageResetsAt', default: null, label: 'overage-resets', fmt: ts },
   { key: 'autoResumeAt', default: null, label: 'auto-resume', fmt: ts },
 ];
-export const INSTANCE_COLD = ['pid', 'createdAt', 'contextWindowTokens'] as const;
 
 export function renderInstances(instances: unknown): string {
   const rows = asRows(instances);
@@ -164,13 +153,6 @@ export function renderInstances(instances: unknown): string {
 
 // ---------- list_worktrees ----------
 
-export const WORKTREE_HOT = [
-  'worktree', 'worktreePath', 'branch', 'baseBranch', 'baseSha', 'createdAt',
-  'parentProject', 'parentPath',
-] as const;
-export const WORKTREE_DEVIANT: DeviantSpec[] = [];
-export const WORKTREE_COLD: string[] = [];
-
 export function renderWorktrees(worktrees: unknown): string {
   const rows = asRows(worktrees);
   const head = heading('WORKTREES', rows.length);
@@ -183,7 +165,7 @@ export function renderWorktrees(worktrees: unknown): string {
   const cells = rows.map(w => [
     String(dash(w.worktree)),
     `br ${dash(w.branch)}`,
-    `base ${dash(w.baseBranch)}@${dash(w.baseSha)}`,
+    `base ${dash(w.baseBranch)}@${shortSha(w.baseSha)}`,
     `created ${ts(w.createdAt)}`,
   ]);
   const lines: string[] = [];
@@ -197,13 +179,11 @@ export function renderWorktrees(worktrees: unknown): string {
 
 // ---------- list_sessions ----------
 
-export const SESSION_HOT = ['sessionId', 'mtime', 'size', 'title', 'firstPrompt'] as const;
-export const SESSION_DEVIANT: DeviantSpec[] = [
+const SESSION_DEVIANT: DeviantSpec[] = [
   { key: 'conducted', default: false, label: 'conducted' },
   { key: 'temp', default: false, label: 'temp' },
   { key: 'archived', default: false, label: 'archived' },
 ];
-export const SESSION_COLD: string[] = [];
 
 export function renderSessions(sessions: unknown): string {
   const rows = asRows(sessions);
@@ -221,16 +201,6 @@ export function renderSessions(sessions: unknown): string {
 
 // ---------- project_status ----------
 
-export const STATUS_HOT = [
-  'project', 'worktree', 'cwd', 'files', 'branch', 'head', 'dirty', 'dirtyTotal',
-  'recentCommits', 'baseBranch', 'baseSha', 'mergeStatus', 'diffStat',
-] as const;
-export const STATUS_DEVIANT: DeviantSpec[] = [
-  { key: 'isGitRepo', default: true, label: '! not a git repo' },
-  { key: 'dirtyTruncated', default: false, label: 'truncated' },
-];
-export const STATUS_COLD: string[] = [];
-
 export function renderProjectStatus(status: unknown): string {
   const s = asRow(status);
   const files = asRows(s.files);
@@ -245,7 +215,7 @@ export function renderProjectStatus(status: unknown): string {
     parts.push(`branch ${dash(s.branch)}`);
     parts.push(`HEAD ${dash(head.sha)} ${trunc(head.subject, 100)}`);
     if (s.baseBranch !== undefined) {
-      parts.push(`base ${dash(s.baseBranch)}@${dash(s.baseSha)}   ${aheadBehind(s.mergeStatus)}`);
+      parts.push(`base ${dash(s.baseBranch)}@${shortSha(s.baseSha)}   ${aheadBehind(s.mergeStatus)}`);
     }
   }
   parts.push('');

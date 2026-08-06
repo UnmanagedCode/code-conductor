@@ -85,15 +85,14 @@ export function block(...parts: Array<string | string[] | null | undefined>): st
 
 // ---------- the cold-when-non-default rule ----------
 //
-// A field classed "cold" is normally reachable only through structuredContent.
-// That is safe for a field the reader can derive or rarely acts on, but NOT for
+// The rendering is a tool's entire result, so a field left out of it is gone.
+// That is fine for a field the reader can derive or never acts on, but NOT for
 // one whose non-default value changes what a conductor should do next — a
 // worker in overage, an archived session, a directory that is not a git repo.
 //
-// deviations() is the one mechanism for that: declare the field's default once,
-// and it surfaces in the text exactly when it deviates. Making it a data table
-// rather than per-renderer `if`s is what keeps the guarantee auditable — the
-// coverage test reads these specs directly.
+// deviations() is the one mechanism for those: declare the field's default once,
+// and it surfaces in the text exactly when it deviates. A data table rather than
+// per-renderer `if`s, so the defaults are auditable in one place.
 
 export interface DeviantSpec {
   key: string;
