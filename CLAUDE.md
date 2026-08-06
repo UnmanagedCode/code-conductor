@@ -1,4 +1,5 @@
 @../CLAUDE.md
+@CONVENTIONS.md
 
 ## Exploring this repo
 
@@ -14,29 +15,19 @@ When `README.md` doesn't go deep enough, load the relevant detail file:
 
 ## Code conventions
 
-Load-bearing rules — stay inside them when writing code. Rationale + examples in `docs/architecture.md` → "Conventions"; don't restate it here.
+Where the `CONVENTIONS.md` rules land in this codebase. Rationale + examples in `docs/architecture.md` → "Conventions".
 
-- **YAGNI** — implement only what a current, concrete requirement needs; no speculative abstractions/config/extension points "for later." If code isn't exercised by a real caller or test, remove it rather than keep it "just in case."
-- Feature logic lives in a `public/` `installX({...})` module (or a stateful class); **app.js is bootstrap/wiring only** — build state + DOM, call each installX once, inject live state via getters. Don't grow app.js with feature logic.
-- **No god-modules** — when a module takes on a second responsibility, extract it as a composed collaborator with a stable delegating surface (cf. InstanceManager→IdleSubscriptionHub/OverageResumeController, handlers.ts→diffPaging/messageReconstruction, whisper/tts→installRunner).
-- **REST and MCP share one service layer** — git/worktree/diff/session logic lives once (`src/worktrees.ts` + siblings), imported by both `routes.ts` and `mcp/handlers.ts`; never reimplement per surface.
-- **Single-source-of-truth catalogs shipped to the client** — `modelVersions`/`whisperModels`/`ttsModels` own the authoritative list + allow-list server-side and are fetched by the client; never hardcode the canonical set as client literals (a first-paint fallback is fine — it's a fallback, not a second source).
-- **No read-time backwards compatibility** — the conductor has no external API clients, so there's no stable-API obligation. When a persisted format or config key changes, ship a one-shot migration in `migrations/` (see `migrations/migrations.md`) and make application code assume the current format; never keep legacy aliases, dual-shape parsing, or "back-compat" defaults on the MCP/REST surface. Exception: read-time tolerance is allowed for formats owned by external tools (e.g. the Claude CLI's session jsonls) that we can't migrate.
+- Thin wiring: feature logic lives in a `public/` `installX({...})` module (or a stateful class); app.js builds state + DOM, calls each installX once, injects live state via getters.
+- One implementation across surfaces: git/worktree/diff/session logic lives once in `src/worktrees.ts` + siblings, imported by both `routes.ts` and `mcp/handlers.ts`.
+- Single-source catalogs: `modelVersions`/`whisperModels`/`ttsModels` own the authoritative list + allow-list server-side; the client fetches them.
+- Migrations go in `migrations/` (see `migrations/migrations.md`). cc has no external API clients, so the whole MCP/REST surface is unstable-by-design; the only read-time-tolerance exception is the Claude CLI's session jsonls.
 
 ## Documentation guidelines
-Layer docs; on any behavior change, update the most specific file(s) — not just the README.
-- `docs/features.md` — user-facing features, UI, new tools.
-- `docs/models.md` — backends/models: the registry, custom models, tier+role bindings, context-window policy.
-- `docs/protocol.md` — interface contracts: endpoints, message types, protocol flags, wire formats.
-- `docs/architecture.md` — internals: components, lifecycle, on-disk state, migrations, test patterns.
-- `README.md` — overview, quick start, key defaults, known limitations; add a one-line note here only when a change adds a new top-level subsystem.
-This overrides the workspace README-maintenance update rule here: README changes only for new top-level subsystems; new commands/flags/endpoints go to the matching `docs/*.md`.
+
+`docs/models.md` is a fifth layer alongside the four in `CONVENTIONS.md` — backends/models: the registry, custom models, tier+role bindings, context-window policy.
 
 ## Testing
 
-Prefer **automated integration tests** over manual verification checklists when shipping a feature. Write runnable proof, not a script for the user to follow by hand.
-
-- In plan files, use an "Integration tests" section listing the actual test files, what they cover, and the command to run them (e.g. `npm test` — the gated command; the bare `node tests/run.mjs` runner skips the `pretest` typecheck) — not a "Manual verification" section.
-- Use Node's built-in `node:test` + `node:assert` runner unless a project already uses another framework — no extra deps on Termux.
-- For tests that would otherwise hit expensive/external systems (e.g. the real `claude` CLI), build a small fake binary (a Node script emitting canned stream-json) and inject it via env var (e.g. `CLAUDE_BIN`). Keep one real-binary smoke test if practical, but gate it behind an env flag (e.g. `RUN_REAL_CLAUDE=1`).
-- Run tests as the last implementation step and report pass/fail, rather than asking the user to click through the UI.
+- `npm test` is the gated command (runs the `pretest` typecheck); bare `node tests/run.mjs` skips it.
+- Built-in runner here is `node:test` + `node:assert`; no extra deps (Termux).
+- Fake-binary env var: `CLAUDE_BIN`. Real-binary smoke gate: `RUN_REAL_CLAUDE=1`.
