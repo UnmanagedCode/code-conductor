@@ -12,6 +12,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Worker } from 'node:worker_threads';
 import {
+  hasHeadlessChildIn,
   snapStartToGroupBoundary,
   snapStartToQuiescent,
   firstQuiescentAtOrAfter,
@@ -187,6 +188,45 @@ test('multiple headless groups are fully excluded together', () => {
   const s = snapStartToGroupBoundary(arr, 1, arr.length);
   assert.equal(s, 4);
   assertWindowIntegrity(arr, s, arr.length, 'multiple headless');
+});
+
+// --- hasHeadlessChildIn: the archive-load predicate (eventArchive.ts) --------
+//
+// Selectivity matters in both directions. Under-firing loses events (the child
+// is served by no page at all — 2026-0037); over-firing replays the jsonl for a
+// window that can resolve itself, which is observable, not merely wasteful —
+// see the paging test 'a window whose sub-agent children all have ring-side
+// heads triggers no archive replay' in tests/events-endpoint.test.mjs.
+
+test('hasHeadlessChildIn: a headless child exactly AT the window start counts', () => {
+  const arr = [
+    /*0*/ echo(),
+    /*1*/ tDelta('m1'),
+    /*2*/ child(asstMsg('x1'), 'X'), // no X head anywhere
+    /*3*/ ({ kind: 'system', subtype: 'safe-tail' }),
+  ];
+  // The boundary is inclusive: index 2 is inside [2, 4), so the window cannot
+  // resolve itself and more history has to be loaded.
+  assert.equal(hasHeadlessChildIn(arr, 2, arr.length), true);
+  // ...and exclusive at the other end: entirely below the window, no reload.
+  assert.equal(hasHeadlessChildIn(arr, 3, arr.length), false);
+  // `end` bounds the scan, so a child at or after it is not seen either.
+  assert.equal(hasHeadlessChildIn(arr, 0, 2), false);
+});
+
+test('hasHeadlessChildIn: a child whose head is present is servable, not headless', () => {
+  const arr = [
+    /*0*/ tu('A', 'ma'),
+    /*1*/ ({ kind: 'system', subtype: 'neutral' }),
+    /*2*/ child(asstMsg('a1'), 'A'),
+    /*3*/ ({ kind: 'system', subtype: 'safe-tail' }),
+  ];
+  // The snap pulls the start BACK to the head for these — no reload needed.
+  assert.equal(hasHeadlessChildIn(arr, 0, arr.length), false);
+  // Also false when the head sits below the window start: headlessness is
+  // judged over [0, end), matching groupBoundaryComponents, so the head is
+  // still reachable and the child still servable.
+  assert.equal(hasHeadlessChildIn(arr, 2, arr.length), false);
 });
 
 test('finalized tool_use is the latest stream head for its group', () => {

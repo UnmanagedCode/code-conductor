@@ -454,17 +454,26 @@ test('archive/ring seam: overlapping groups page whole, cursor progresses, no or
       assert.ok(all.some(e => e.toolUseId === agentToolUseId && e.kind === 'tool_use'),
         `limit=${limit}: the archive-side Agent head is reachable`);
       // Whether ring-side children of the archived head are served at all is
-      // NOT pinned here. Two independent things gate it: the window holding
-      // them has to load the archive (`needArchive`, eventArchive.ts — via
-      // either its seq-extent arm or its headless-child arm), and the cursor
-      // has to actually request that window. In THIS fixture it never does —
-      // the empty GONE page's `nextBefore` drops to `trimmedBefore`, so the
-      // seqs between it and the tail go unrequested. The per-page
-      // assertGroupIntegrity above is what carries the invariant — it holds
-      // however many of them get served, so this test stays green as the
-      // paging seam is fixed. That the children ARE reachable at all is pinned
-      // by the archive-side-head reunion test below (2026-0037), on a fixture
-      // built for it.
+      // NOT pinned here, and the reason is subtler than "the archive never
+      // reaches them". It does reach them: the empty page's window covers two
+      // of the three, `hasHeadlessChildIn` is true there (the GONE children
+      // are in it too), so `needArchive` fires and the archive IS loaded on
+      // that page. It still serves nothing because GONE's head is absent on
+      // BOTH sides, and GONE's component — which starts at index 0, as every
+      // headless component does — merges by adjacency with the Agent
+      // component and carries its `headless` flag onto the merge, so the snap
+      // pushes `start` all the way to `end`. The empty page's `nextBefore`
+      // then drops to `trimmedBefore`, skipping the seqs below it — which is
+      // where the rest of the children live. So: GONE-poisoning first, cursor
+      // collapse second.
+      // Consequence for the cursor fix (2026-0039): once an empty page's
+      // `nextBefore` stops collapsing to `trimmedBefore`, the window just
+      // below this one IS re-requested, and these children become servable
+      // here. The per-page assertGroupIntegrity above is what carries the
+      // invariant either way — it holds however many of them get served, so
+      // this test stays green across that change. That the children are
+      // reachable AT ALL is pinned by the archive-side-head reunion test
+      // below (2026-0037), on a fixture with no headless group to poison it.
     }
   } finally {
     if (prevCap === undefined) delete process.env.ORCH_EVENT_RING_CAP;
@@ -558,6 +567,111 @@ test('archive-side Agent head reunites with its ring-side children on one page',
   assert.ok(reunited,
     'some page serves the archive-side Agent head together with all three of its ring-side children, '
     + `pages: ${JSON.stringify(pages.map(p => p.events.map(e => e._seq)))}`);
+});
+
+// The other half of 2026-0037's predicate: it must fire ONLY for the tentative
+// window, and only for children the ring genuinely cannot resolve. Over-firing
+// is observable, not just wasteful — a replay this page has no reason to do
+// pulls the archive into `reconstructTasks(combined)`, so a batch whose
+// `TaskCreate` is archive-side reconstructs and injects a `task_completion`
+// bubble that a ring-only page never produces. That bubble is the witness used
+// below: its absence means no replay happened.
+test('a window whose sub-agent children all have ring-side heads triggers no archive replay', async () => {
+  const sid = 'b7b7b7b7-1111-2222-3333-444444444444';
+  const TU = 'toolu_arch_agent';
+  const { projectPath } = await seedSession({ ctx, projectName: 'selective', sid, lines: [
+    { type: 'user', uuid: 'u_p0', message: { role: 'user', content: 'prompt p0' } },
+    { type: 'assistant', uuid: 'a_p0', message: { id: 'm_p0', role: 'assistant', content: [
+      { type: 'text', text: 'reply p0' },
+    ] } },
+    // The batch's TaskCreate lives ONLY in the jsonl.
+    { type: 'user', uuid: 'utc', message: { role: 'user', content: 'do the tasks' } },
+    { type: 'assistant', uuid: 'atc', message: { id: 'mtc', role: 'assistant', content: [
+      { type: 'tool_use', id: 'tc1', name: 'TaskCreate', input: { subject: 'Alpha' } },
+    ] } },
+    { type: 'user', uuid: 'urc', message: { role: 'user', content: [
+      { type: 'tool_result', tool_use_id: 'tc1', content: 'Task #1 created successfully: Alpha' },
+    ] } },
+    // ...as does this Agent head, whose children are ring-side and headless.
+    { type: 'user', uuid: 'u_agent', message: { role: 'user', content: 'run the agent' } },
+    { type: 'assistant', uuid: 'a_agent', message: { id: 'm_agent', role: 'assistant', content: [
+      { type: 'tool_use', id: TU, name: 'Agent', input: { description: 'bg' } },
+    ] } },
+    { type: 'user', uuid: 'u_agent_res', message: { role: 'user', content: [
+      { type: 'tool_result', tool_use_id: TU, content: 'started', is_error: false },
+    ] } },
+  ] });
+
+  const probe = await buildArchive({
+    cwd: projectPath, sessionId: sid, ring: [], trimmedBefore: Number.MAX_SAFE_INTEGER, userEchoCount: 3,
+  });
+  assert.ok(probe.events.some(e => e.kind === 'tool_use' && e.name === 'TaskCreate'),
+    'the batch is created archive-side only');
+  const tb = probe.events.length;
+
+  let s = tb;
+  const seq = () => s++;
+  const ring = [
+    { kind: 'user_echo', text: 'prompt 3', userIndex: 3, _seq: seq() },
+    // Headless over the ring (head is the archive-side Agent) — and BELOW the
+    // window probed at the end. Widening the predicate's window start to 0
+    // makes it see these and fire when it must not.
+    { kind: 'text_delta', msgId: 'msq', blockIdx: 0, text: 'q0', parentToolUseId: TU, _seq: seq() },
+    { kind: 'text_delta', msgId: 'msq', blockIdx: 1, text: 'q1', parentToolUseId: TU, _seq: seq() },
+    { kind: 'turn_end', subtype: 'success', _seq: seq() },
+    // The probed turn: a ring-side group that resolves itself, plus the
+    // batch's completing TaskUpdate.
+    { kind: 'user_echo', text: 'finish it', userIndex: 4, _seq: seq() },
+    { kind: 'tool_use', msgId: 'mr', blockIdx: 0, toolUseId: 'tu_R', name: 'Agent', input: {}, _seq: seq() },
+    { kind: 'tool_result', toolUseId: 'tu_R', content: 'ok', isError: false, _seq: seq() },
+    { kind: 'text_delta', msgId: 'mrc', blockIdx: 0, text: 'r0', parentToolUseId: 'tu_R', _seq: seq() },
+    { kind: 'tool_use', msgId: 'mtu', blockIdx: 0, toolUseId: 'tu1', name: 'TaskUpdate',
+      input: { taskId: '1', status: 'completed' }, _seq: seq() },
+    { kind: 'tool_result', toolUseId: 'tu1', content: 'ok', isError: false, _seq: seq() },
+    { kind: 'turn_end', subtype: 'success', _seq: seq() },
+  ];
+  for (let t = 0; t < 3; t++) {
+    ring.push({ kind: 'user_echo', text: `late ${t}`, userIndex: 5 + t, _seq: seq() });
+    ring.push({ kind: 'text_delta', msgId: `ml${t}`, blockIdx: 0, text: `l${t}`, _seq: seq() });
+    ring.push({ kind: 'text_end', msgId: `ml${t}`, blockIdx: 0, _seq: seq() });
+    ring.push({ kind: 'turn_end', subtype: 'success', _seq: seq() });
+  }
+  const stubInst = {
+    cwd: projectPath, sessionId: sid, _userEchoCount: 8,
+    ring: { get trimmedBefore() { return tb; } },
+    ringSnapshot: () => ring.slice(),
+  };
+
+  const LIMIT = 7;
+  const updateSeq = ring.find(e => e.name === 'TaskUpdate')._seq;
+  const servableChildSeq = ring.find(e => e.parentToolUseId === 'tu_R')._seq;
+  const pages = [];
+  let before;
+  for (let i = 0; i < 50; i++) {
+    const page = await pageInstanceEvents(stubInst, { limit: LIMIT, before });
+    pages.push({ before: before ?? null, page });
+    if (!page.hasMore) break;
+    before = page.nextBefore;
+    if (i === 49) throw new Error('cursor never terminated');
+  }
+
+  const probed = pages.find(p => p.page.events.some(e => e._seq === updateSeq));
+  assert.ok(probed, 'some page serves the completing TaskUpdate');
+  // Fixture preconditions, asserted so the test cannot go vacuous: this
+  // window holds a servable child (its head `tu_R` is right there in the
+  // ring), the headless children sit BELOW it, and its seq extent stays
+  // clear of `trimmedBefore` — so nothing about it justifies a replay.
+  assert.ok(probed.page.events.some(e => e._seq === servableChildSeq),
+    'the probed window holds the ring-side-headed child');
+  assert.ok(probed.before - LIMIT >= tb,
+    'the probed window is clear of the seq-extent arm of needArchive');
+  assert.ok(Math.max(...ring.filter(e => e.parentToolUseId === TU).map(e => e._seq)) < probed.before - LIMIT,
+    'the headless children sit strictly below the probed window');
+
+  assert.equal(probed.page.events.filter(e => e.kind === 'task_completion').length, 0,
+    'no archive replay for a self-resolving window (a task_completion bubble here '
+    + 'could only come from the archive-side TaskCreate): '
+    + JSON.stringify(probed.page.events.map(e => e._seq ?? `<${e.kind}>`)));
 });
 
 test('limit is clamped; bad params 400; unknown instance 404', async () => {
