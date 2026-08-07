@@ -68,23 +68,35 @@ function validateForDeletion(recordedPath, prefix) {
   return real;
 }
 
+// An entry is dropped from the registry ONLY once its removal is confirmed
+// (already gone, or rmrf succeeded) — never upfront. A validation refusal or
+// an rmrf failure (EBUSY/EACCES/EMFILE under contention; this codebase does
+// fire-and-forget writes that can make a dir transiently busy) leaves the
+// entry in the registry so the process-exit backstop below still has it to
+// retry, instead of finding an already-emptied map with nothing left to do.
 export async function cleanupAll() {
   assertVerified(); // refuse to run any deletion if the root invariant wasn't established
-  const entries = [...registry.entries()];
-  registry.clear();
+  const attempt = [...registry.entries()]; // snapshot of what to try this pass
   const refused = [];
-  for (const [recordedPath, prefix] of entries) {
+  for (const [recordedPath, prefix] of attempt) {
     let safe;
     try {
       safe = validateForDeletion(recordedPath, prefix);
     } catch (err) {
-      if (err.code === 'ENOENT') continue; // already removed by the test's own cleanup
+      if (err.code === 'ENOENT') { registry.delete(recordedPath); continue; } // genuinely already gone
       // A validation failure on ONE entry must never block cleanup of the rest —
-      // collect it and keep going, then throw loudly once every entry's been tried.
+      // collect it and keep going, then throw loudly once every entry's been
+      // tried. Left in the registry: it never resolved to a safe path to delete.
       refused.push(err);
       continue;
     }
-    await rmrf(safe);
+    try {
+      await rmrf(safe);
+      registry.delete(recordedPath); // only now is it actually gone
+    } catch (err) {
+      // rmrf failed after its own retries — leave it registered for the backstop.
+      refused.push(err);
+    }
   }
   if (refused.length > 0) {
     throw new AggregateError(refused, `tmp cleanup refused ${refused.length} entr${refused.length === 1 ? 'y' : 'ies'}`);
@@ -103,10 +115,15 @@ export const _forTesting = {
 after(async () => { await cleanupAll(); });
 
 // Crash backstop: after() does not run on process.exit()/an uncaught
-// exception. This reuses the IDENTICAL synchronous validation gate above, so
-// it can never delete anything the async path wouldn't also have deleted —
-// a second chance at the same check, not a looser one. Best-effort: logs
-// rather than throws, since an exit handler can't usefully stop the process.
+// exception, and even when after() DOES run, cleanupAll() only drops an
+// entry once its removal is confirmed — so anything a rejected rmrf() left
+// behind is still sitting in the registry for this handler to retry. Reuses
+// the IDENTICAL synchronous validation gate above, so it can never delete
+// anything the async path wouldn't also have deleted — a second chance at
+// the same check, not a looser one. Best-effort: logs rather than throws,
+// since an exit handler can't usefully stop the process. The one path this
+// cannot cover is SIGKILL — no handler runs at all — which only leaks a
+// throwaway /tmp dir, never anything outside it.
 process.on('exit', () => {
   if (registry.size === 0) return;
   try { assertVerified(); } catch { return; }

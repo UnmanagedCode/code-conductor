@@ -71,13 +71,49 @@ test('validateForDeletion refuses a symlink, a non-direct-child, and a wrong-sha
     assert.equal(await exists(shapePath), true, 'the wrong-shape entry must survive');
     assert.equal(await exists(goodDir), false, 'a good entry alongside bad ones must still be removed');
   } finally {
-    // These were seeded straight into the registry, bypassing mkdtemp(), so
-    // cleanupAll's own bookkeeping already dropped them from the map — this
-    // test owns cleaning up the malformed artifacts it created directly.
+    // Refused entries stay registered (see cleanupAll) so the exit backstop
+    // can still retry them — this test owns removing both the malformed
+    // artifacts it created directly AND their now-stale registry entries.
+    _forTesting.registry.delete(symlinkPath);
+    _forTesting.registry.delete(nestedPath);
+    _forTesting.registry.delete(shapePath);
     await fsp.rm(symlinkPath, { force: true });
     await fsp.rm(symlinkTarget, { recursive: true, force: true });
     await fsp.rm(nestOuter, { recursive: true, force: true });
     await fsp.rm(shapePath, { recursive: true, force: true });
+  }
+});
+
+// The one software path a validation refusal doesn't cover: rmrf() itself
+// rejecting (EBUSY/EACCES under contention) on an entry that PASSED
+// validation. That entry must stay in the registry — recoverable by the
+// exit backstop — rather than vanishing into an already-cleared map, and a
+// good entry alongside it must still be removed in the same pass.
+test('an rmrf failure leaves its entry registered for the backstop, without blocking a good entry alongside it', async () => {
+  const busyDir = await mkdtemp('cc-f5-busy-');
+  await fsp.mkdir(path.join(busyDir, 'child'));
+  await fsp.chmod(busyDir, 0o000); // deny read+execute on busyDir itself — fs.rm can't readdir it to remove the child
+
+  const goodDir = await mkdtemp('cc-f5-good-');
+
+  try {
+    await assert.rejects(() => cleanupAll(), (err) => {
+      assert.ok(err instanceof AggregateError, `expected an AggregateError, got ${err}`);
+      assert.equal(err.errors.length, 1);
+      assert.match(err.errors[0].message, /EACCES|EPERM/);
+      return true;
+    });
+
+    assert.equal(await exists(busyDir), true, 'a failed rmrf must leave the dir on disk');
+    assert.ok(
+      _forTesting.registry.has(path.resolve(busyDir)),
+      'a failed rmrf must leave the entry in the registry for the backstop to retry',
+    );
+    assert.equal(await exists(goodDir), false, 'a good entry alongside an rmrf failure must still be removed');
+  } finally {
+    await fsp.chmod(busyDir, 0o700);
+    _forTesting.registry.delete(path.resolve(busyDir));
+    await fsp.rm(busyDir, { recursive: true, force: true });
   }
 });
 
