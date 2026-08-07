@@ -143,6 +143,12 @@ export function ensureSafeStoreEnv() {
   return safe;
 }
 
+// Test-only: reset the verified flag so a test can exercise assertVerified()'s
+// refusal path without faking an entire process. Never used by production code.
+export const _forTesting = {
+  resetVerified() { verified = false; },
+};
+
 // Remove the per-run root minted by createSafeRoot(). Re-validates
 // independently of any prior verification (never trusts a caller-passed path
 // on the strength of module state alone).

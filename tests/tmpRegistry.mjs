@@ -72,17 +72,33 @@ export async function cleanupAll() {
   assertVerified(); // refuse to run any deletion if the root invariant wasn't established
   const entries = [...registry.entries()];
   registry.clear();
+  const refused = [];
   for (const [recordedPath, prefix] of entries) {
     let safe;
     try {
       safe = validateForDeletion(recordedPath, prefix);
     } catch (err) {
       if (err.code === 'ENOENT') continue; // already removed by the test's own cleanup
-      throw err;
+      // A validation failure on ONE entry must never block cleanup of the rest —
+      // collect it and keep going, then throw loudly once every entry's been tried.
+      refused.push(err);
+      continue;
     }
     await rmrf(safe);
   }
+  if (refused.length > 0) {
+    throw new AggregateError(refused, `tmp cleanup refused ${refused.length} entr${refused.length === 1 ? 'y' : 'ies'}`);
+  }
 }
+
+// Test-only: direct access to the registry and the validation gate, so a test
+// can seed a deliberately-malformed entry and assert it's refused (and
+// survives) without weakening the real mkdtemp()-only entry point. Never used
+// by production code.
+export const _forTesting = {
+  registry,
+  validateForDeletion,
+};
 
 after(async () => { await cleanupAll(); });
 

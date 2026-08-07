@@ -2,9 +2,10 @@
 // skips it). Builds a temp PROJECTS_ROOT populated with plugin projects
 // cloned from tests/fixtures/fake-plugin/.
 import { promises as fs } from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { mkdtemp } from './tmpRegistry.mjs';
+import { rmrf } from './rmrf.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const FAKE_PLUGIN_DIR = path.join(__dirname, 'fixtures', 'fake-plugin');
@@ -17,7 +18,7 @@ export async function readFixtureManifest() {
 // restore() in finally. Each test file runs in its own process, so the env
 // mutation cannot leak across files.
 export async function makePluginRoot() {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'plug-root-'));
+  const root = await mkdtemp('plug-root-');
   const prevRoot = process.env.PROJECTS_ROOT;
   process.env.PROJECTS_ROOT = root;
 
@@ -40,7 +41,7 @@ export async function makePluginRoot() {
   async function restore() {
     if (prevRoot === undefined) delete process.env.PROJECTS_ROOT;
     else process.env.PROJECTS_ROOT = prevRoot;
-    await fs.rm(root, { recursive: true, force: true });
+    await rmrf(root);
   }
 
   return { root, addPluginProject, addProject, restore };
