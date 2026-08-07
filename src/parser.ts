@@ -799,6 +799,21 @@ function resolveGroupBoundary(components: BoundaryInterval[], start: number): nu
   return component.headless ? component.right + 1 : component.left - 1;
 }
 
+// Does [start, end) hold a sub-agent child whose owning head is missing from
+// arr[0, end)? Such a child can never be served from `arr` alone — the snap
+// pushes the window start PAST it (see resolveGroupBoundary's headless branch)
+// — so backward paging uses this to decide whether more history has to be
+// loaded before the window is resolved (eventArchive.ts needArchive). Headless-
+// ness is judged over [0, end), exactly as groupBoundaryComponents does, so a
+// child whose head sits below `start` is servable and does NOT count.
+export function hasHeadlessChildIn(arr: UiEvent[], start: number, end: number): boolean {
+  end = Math.max(0, Math.min(end, arr.length));
+  start = Math.max(0, Math.min(start, end));
+  // A component's `right` IS a child index, so right >= start means at least
+  // one of its children lies inside the window.
+  return groupBoundaryComponents(arr, end).some(c => c.headless && c.right >= start);
+}
+
 // Snap a window-start index so no sub-agent child event in [start, end) is
 // orphaned: a child whose head is available pulls the start back to that head,
 // a child with no head at or before it pushes the start past THAT CHILD (and

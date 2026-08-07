@@ -41,7 +41,7 @@
 // trimmed ring with no sessionId to replay from at all.
 
 import { loadPersistedTranscript } from './transcript.ts';
-import { isOuterUserEcho, snapStartToQuiescent, type UiEvent } from './parser.ts';
+import { hasHeadlessChildIn, isOuterUserEcho, snapStartToQuiescent, type UiEvent } from './parser.ts';
 import { reconstructTasks, type TaskCompletion, type TaskRecord } from './taskReconstruct.ts';
 import type { InstanceLike } from './instanceTypes.ts';
 
@@ -177,9 +177,22 @@ export async function pageInstanceEvents(inst: InstanceLike, { before = null, af
   // Load the archive whenever the tentative window itself dips below the
   // ring. The quiescent snap can never reach below the ring head from inside
   // the ring (the trim keeps the head on a boundary, which terminates the
-  // backward search), so no extra reach margin is needed.
+  // backward search), so quiescence needs no extra reach margin.
+  //
+  // Group integrity does, though: heads are resolved over the WHOLE loaded
+  // array, not bounded by the ring head. A ring-side sub-agent child whose
+  // `tool_use` head was evicted reads as headless from inside the ring, so the
+  // snap pushes the window start past it and the child is served by no page at
+  // all — the only page whose window covers it is this one. So a headless
+  // child in the tentative ring window also forces the replay; the head is
+  // usually archive-side and the group then reunites on one page. (Not
+  // guaranteed — a mid-turn `cut` can have sliced the head away too. That
+  // costs one wasted replay in the degenerate case and changes nothing else.)
+  const ringEnd = before != null ? firstIndexAtOrAbove(ring, before) : 0;
   const needArchive = tb > 0 && !!inst.sessionId
-    && (before != null ? before - max < tb : (after ?? 0) < tb);
+    && (before != null
+      ? (before - max < tb || hasHeadlessChildIn(ring, Math.max(0, ringEnd - max), ringEnd))
+      : (after ?? 0) < tb);
 
   let combined: SeqEvent[] = ring;
   let seamIdx = -1; // index of the ring head inside `combined`

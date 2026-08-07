@@ -454,20 +454,110 @@ test('archive/ring seam: overlapping groups page whole, cursor progresses, no or
       assert.ok(all.some(e => e.toolUseId === agentToolUseId && e.kind === 'tool_use'),
         `limit=${limit}: the archive-side Agent head is reachable`);
       // Whether ring-side children of the archived head are served at all is
-      // NOT pinned here: they are servable only on a page whose window dips
-      // below the ring (`needArchive`, eventArchive.ts) — i.e. only when
-      // `child_seq - trimmedBefore < limit`, which no child in THIS fixture
-      // satisfies, though children nearer the ring head would. The per-page
-      // assertGroupIntegrity above is what carries
-      // the invariant — it holds however many of them get served, so this
-      // test keeps passing once the archive-reach limitation (2026-0037) is
-      // fixed. No per-event assertion here would add anything it doesn't
-      // already check.
+      // NOT pinned here. Two independent things gate it: the window holding
+      // them has to load the archive (`needArchive`, eventArchive.ts — via
+      // either its seq-extent arm or its headless-child arm), and the cursor
+      // has to actually request that window. In THIS fixture it never does —
+      // the empty GONE page's `nextBefore` drops to `trimmedBefore`, so the
+      // seqs between it and the tail go unrequested. The per-page
+      // assertGroupIntegrity above is what carries the invariant — it holds
+      // however many of them get served, so this test stays green as the
+      // paging seam is fixed. That the children ARE reachable at all is pinned
+      // by the archive-side-head reunion test below (2026-0037), on a fixture
+      // built for it.
     }
   } finally {
     if (prevCap === undefined) delete process.env.ORCH_EVENT_RING_CAP;
     else process.env.ORCH_EVENT_RING_CAP = prevCap;
   }
+});
+
+// 2026-0037: the ring window that holds a sub-agent child whose `tool_use` head
+// was evicted is the ONLY window that will ever cover that child, so if it
+// resolves without the archive the child is served by no page at all. Driven
+// through pageInstanceEvents with a stub instance (same shape as the T3 tests
+// below) plus a real jsonl, so ring seqs and trimmedBefore are exact.
+test('archive-side Agent head reunites with its ring-side children on one page', async () => {
+  const sid = 'a9a9a9a9-1111-2222-3333-444444444444';
+  const TU = 'toolu_arch_agent';
+  const plainTurn = (tag) => ([
+    { type: 'user', uuid: `u_${tag}`, message: { role: 'user', content: `prompt ${tag}` } },
+    { type: 'assistant', uuid: `a_${tag}`, message: { id: `m_${tag}`, role: 'assistant', content: [
+      { type: 'text', text: `reply ${tag}` },
+    ] } },
+  ]);
+  const { projectPath } = await seedSession({ ctx, projectName: 'archhead', sid, lines: [
+    ...plainTurn('p0'), ...plainTurn('p1'),
+    { type: 'user', uuid: 'u_agent', message: { role: 'user', content: 'run the agent' } },
+    { type: 'assistant', uuid: 'a_agent', message: { id: 'm_agent', role: 'assistant', content: [
+      { type: 'tool_use', id: TU, name: 'Agent', input: { description: 'bg' } },
+    ] } },
+    { type: 'user', uuid: 'u_agent_res', message: { role: 'user', content: [
+      { type: 'tool_result', tool_use_id: TU, content: 'started', is_error: false },
+    ] } },
+    ...plainTurn('p3'), ...plainTurn('p4'),
+  ] });
+
+  // Replay shape, pinned so the seq arithmetic below stays honest: 16 events,
+  // the Agent head at index 8, 5 outer echoes (#0..#4).
+  const probe = await buildArchive({
+    cwd: projectPath, sessionId: sid, ring: [], trimmedBefore: Number.MAX_SAFE_INTEGER, userEchoCount: 5,
+  });
+  assert.equal(probe.events.length, 16);
+  assert.equal(probe.events[8].kind, 'tool_use');
+  assert.equal(probe.events[8].toolUseId, TU);
+
+  // Ring head is echo #5, so the archive cuts at its own length: archive seqs
+  // 0..15, ring seqs 16..26, no gap. The Agent head is archive-side; three of
+  // its children sit ring-side at 22/23/24.
+  const tb = probe.events.length;
+  const ring = [
+    { kind: 'user_echo', text: 'prompt 5', userIndex: 5, _seq: 16 },
+    { kind: 'text_delta', msgId: 'm5', blockIdx: 0, text: 'reply 5', _seq: 17 },
+    { kind: 'text_end', msgId: 'm5', blockIdx: 0, _seq: 18 },
+    { kind: 'turn_end', subtype: 'success', _seq: 19 },
+    { kind: 'user_echo', text: 'seam turn', userIndex: 6, _seq: 20 },
+    { kind: 'text_delta', msgId: 'mz', blockIdx: 0, text: 'outer', _seq: 21 },
+    // Distinct blockIdx: three separate child events, not one folded block.
+    { kind: 'text_delta', msgId: 'msq', blockIdx: 0, text: 'q0', parentToolUseId: TU, _seq: 22 },
+    { kind: 'text_delta', msgId: 'msq', blockIdx: 1, text: 'q1', parentToolUseId: TU, _seq: 23 },
+    { kind: 'text_delta', msgId: 'msq', blockIdx: 2, text: 'q2', parentToolUseId: TU, _seq: 24 },
+    { kind: 'text_end', msgId: 'mz', blockIdx: 0, _seq: 25 },
+    { kind: 'turn_end', subtype: 'success', _seq: 26 },
+  ];
+  const stubInst = {
+    cwd: projectPath, sessionId: sid, _userEchoCount: 7,
+    ring: { get trimmedBefore() { return tb; } },
+    ringSnapshot: () => ring.slice(),
+  };
+
+  const LIMIT = 5;
+  const childSeqs = ring.filter(e => e.parentToolUseId === TU).map(e => e._seq);
+  // What decorrelates this fixture from the pre-fix behaviour: any page whose
+  // window can cover the children requests `before >= min(childSeqs) + 1`, and
+  // that leaves `before - LIMIT >= tb` — so the seq-extent arm of needArchive
+  // can NEVER fire on it. Only the headless-child arm can load the archive
+  // here. (At limit 12 the extent arm fires on its own and the assertions below
+  // pass with or without the fix — the limit is load-bearing, not incidental.)
+  assert.ok(Math.min(...childSeqs) + 1 - LIMIT >= tb,
+    'fixture must sit above the seq-extent reach of needArchive');
+
+  const pages = [];
+  let before;
+  for (let i = 0; i < 50; i++) {
+    const page = await pageInstanceEvents(stubInst, { limit: LIMIT, before });
+    pages.push(page);
+    if (!page.hasMore) break;
+    before = page.nextBefore;
+    if (i === 49) throw new Error('cursor never terminated');
+  }
+
+  const reunited = pages.find(p =>
+    p.events.some(e => e.kind === 'tool_use' && e.toolUseId === TU)
+    && childSeqs.every(seq => p.events.some(e => e._seq === seq)));
+  assert.ok(reunited,
+    'some page serves the archive-side Agent head together with all three of its ring-side children, '
+    + `pages: ${JSON.stringify(pages.map(p => p.events.map(e => e._seq)))}`);
 });
 
 test('limit is clamped; bad params 400; unknown instance 404', async () => {
