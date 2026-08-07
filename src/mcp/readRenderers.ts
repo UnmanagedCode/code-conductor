@@ -19,7 +19,14 @@
 //                  session detail, a 2-call derivation away via
 //                  list_sessions({project, worktree}). Accepted: a leaner
 //                  default listing is worth the second call.
+//                  The live workers themselves — `live N` is a COUNT. Naming
+//                  them is list_instances' job, and printing both made the two
+//                  tools look like they disagreed whenever a worker exited
+//                  between the calls.
 //   list_instances pid (no tool takes one — sessionId is the handle);
+//                  an INACTIVE row's runtime fields — there is no process to
+//                  read a status/mode/model/playbook off, so the row is a short
+//                  session line rather than a worker block full of —;
 //                  createdAt (status + lastResponseAt answer "is it moving?");
 //                  contextWindowTokens (a denominator with no numerator on this
 //                  surface — the actionable overage signals are DEVIANT).
@@ -88,12 +95,12 @@ export function renderProjects(projects: unknown): string {
   const parts: Array<string | string[]> = [heading('PROJECTS', rows.length), ''];
   for (const p of rows) {
     const wts = asRows(p.worktrees);
-    const ids = Array.isArray(p.sessionIds) ? p.sessionIds as unknown[] : [];
     const body: Array<string | string[]> = [];
     for (const d of deviations(p, PROJECT_DEVIANT)) body.push(d);
     body.push(sessionSummary(p.sessions));
-    body.push(`live ${ids.length}`);
-    body.push(indent(ids.map(String), 2));
+    // dash(), not `?? 0`: a handler that stopped supplying the count must read
+    // as absent, not as a project nobody is working on.
+    body.push(`live ${dash(p.liveCount)}`);
     body.push(`worktrees ${wts.length}`);
     if (wts.length) {
       const cells = wts.map(w => [
@@ -133,9 +140,8 @@ const INSTANCE_DEVIANT: DeviantSpec[] = [
   { key: 'autoResumeAt', default: null, label: 'auto-resume', fmt: ts },
 ];
 
-export function renderInstances(instances: unknown): string {
-  const rows = asRows(instances);
-  const parts: Array<string | string[]> = [heading('INSTANCES', rows.length), ''];
+function instanceRows(rows: Row[]): Array<string | string[]> {
+  const parts: Array<string | string[]> = [];
   rows.forEach((r, i) => {
     const lines: string[] = [
       `status ${dash(r.status)}   display ${dash(r.displayStatus)}   agents ${dash(r.activeAgentTasks ?? 0)}   queued ${dash(r.queuedCount ?? 0)}   idle-sub ${r.hasIdleSubscriber ? 'yes' : 'no'}`,
@@ -152,6 +158,50 @@ export function renderInstances(instances: unknown): string {
     parts.push(indent(lines, 4));
     parts.push('');
   });
+  return parts;
+}
+
+// INACTIVE rows are SessionRows (src/projects.ts) — persisted sessions with no
+// live process. They carry none of a worker's runtime facts: no status, mode,
+// effort, model or playbook, because there is no process to have them. So they
+// render as ONE compact line each, in the same column vocabulary as
+// list_sessions (id, mtime, size, deviating flags, title) plus where they live —
+// rather than a 7-line worker block padded with — , which would imply those
+// fields were looked up and came back empty. A reader cannot confuse the two
+// shapes: a live worker is an indented multi-line block, an inactive session is
+// a single table row under its own heading.
+function inactiveRows(rows: Row[]): string[] {
+  return table(rows.map(s => [
+    String(dash(s.sessionId)),
+    ts(s.mtime),
+    bytes(s.size),
+    deviations(s, SESSION_DEVIANT).join(',') || DASH,
+    `${dash(s.project)}${s.worktree ? `/${s.worktree}` : ''}`,
+    trunc(s.title ?? s.firstPrompt, 60),
+  ]), ['l', 'l', 'r', 'l', 'l', 'l']);
+}
+
+// `live` and `inactive` arrive already filtered and ordered — the caller
+// (src/mcp/handlers.ts listInstances) owns the isDeadStatus() split, the session
+// scan and both sorts, so this stays a pure formatter with no instance-model or
+// filesystem dependency.
+//
+// The INACTIVE heading is omitted entirely when there is nothing stopped, so the
+// common case does not grow a section; and `project` is echoed on the INSTANCES
+// heading whenever the caller filtered, because an empty filtered list otherwise
+// reads as "no workers anywhere" and would send a conductor down the wrong path.
+export function renderInstances(
+  instances: unknown,
+  { project = null, inactive = [] }: { project?: string | null; inactive?: unknown } = {},
+): string {
+  const rows = asRows(instances);
+  const stopped = asRows(inactive);
+  const filter = project ? `  project ${project}` : '';
+  const parts: Array<string | string[]> = [
+    `${heading('INSTANCES', rows.length)}${filter}`, '',
+    ...instanceRows(rows),
+  ];
+  if (stopped.length) parts.push(heading('INACTIVE', stopped.length), '', inactiveRows(stopped));
   return block(...parts);
 }
 

@@ -168,6 +168,7 @@ export interface InstanceManagerLike {
   _armRestoredAutoResume(inst: InstanceLike, fireAtMs: number): void;
   // MCP handler surface (src/mcp/handlers.ts).
   sessionIdsForProject(project: string): string[];
+  liveCountForProject(project: string): number;
   // MCP transport surface (src/mcp/server.ts): the sessionId-prefix resolver.
   resolveSessionRef(input: string): { sessionId: string } | { ambiguous: string[]; tooShort: boolean } | null;
   list(): Array<InstanceSummary & { hasIdleSubscriber: boolean }>;

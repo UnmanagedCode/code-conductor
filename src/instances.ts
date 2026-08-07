@@ -201,6 +201,16 @@ const POST_ABORT_DRAIN_WINDOW_MS = 3000;
 // misbehaving subprocess that emits system/init in a tight loop.
 const POST_ABORT_DRAIN_MAX = 20;
 
+// The two terminal statuses. Exported because "is this worker dead?" is asked
+// on two MCP surfaces that MUST agree — list_projects' `live N`
+// (liveCountForProject) and which section a worker lands in on list_instances
+// (src/mcp/handlers.ts) — and a second spelling of the rule is how they would
+// drift apart. A dead instance retained in byId (non-temp exits are kept
+// indefinitely, so respawn can resume them) is NOT a live worker.
+export function isDeadStatus(status: unknown): boolean {
+  return status === 'exited' || status === 'crashed';
+}
+
 // Steering message injected into the CONDUCTOR (never its workers) when an
 // overage auto-stop fires. One frame — why (rate-limit crossed) + when (no new
 // workers until the window resets) — with a single conditional clause: when the
@@ -2758,6 +2768,14 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
       ...i.summary(),
       hasIdleSubscriber: this.isIdleCaller(i.id),
     }));
+  }
+
+  // How many of a project's workers are NOT dead. The number list_projects
+  // prints as `live N`; it reads the same isDeadStatus() rule that decides which
+  // of list_instances' two sections a session lands in, so the two tools cannot
+  // report a different fleet.
+  liveCountForProject(name: string): number {
+    return [...this.byId.values()].filter(i => i.project === name && !isDeadStatus(i.status)).length;
   }
 
   // Which backend each tracked instance is on — the seam appSettings' removeBackend

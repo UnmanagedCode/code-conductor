@@ -43,9 +43,10 @@ export function buildTools(): Tool[] {
     {
       name: 'list_projects',
       description:
-        'List every project under ~/project/ as PLAIN TEXT (this tool returns no JSON). ' +
-        'One block per project: its absolute path, workspace when set, session counts, live ' +
-        'sessionIds in full, and each worktree with branch, base, ahead/behind and its path.',
+        'List every project under the projects root as PLAIN TEXT (this tool returns no JSON). ' +
+        'One block per project: its absolute path, workspace when set, session counts, a ' +
+        'live-worker count, and each worktree with branch, base, ahead/behind and its path. ' +
+        'list_instances names those workers; this tool only counts them.',
       inputSchema: { type: 'object', properties: {}, required: [] },
       handler: h.listProjects,
       annotations: { readOnlyHint: true },
@@ -53,12 +54,16 @@ export function buildTools(): Tool[] {
     {
       name: 'list_instances',
       description:
-        'List every live or recently-exited orchestrator worker as PLAIN TEXT ' +
-        '(this tool returns no JSON). Each worker summary is ' +
+        'List every live orchestrator worker, then every stopped session it could resume, as ' +
+        'PLAIN TEXT (this tool returns no JSON). Each worker summary is ' +
         '{project, cwd, sessionId, status, displayStatus, activeAgentTasks, mode, effort, thinking, ' +
         'backend, model, contextWindowTokens, pid, worktree, temp, conducted, debug, ' +
         'firstPrompt, title, createdAt, lastResponseAt, queuedCount, autoResumeAt, ' +
         'overageActive, overageResetsAt, hasIdleSubscriber, playbook, stage}. ' +
+        'Rows are grouped by project, then worktree, then spawn order. ' +
+        'A second `INACTIVE` heading then lists that scope\'s persisted sessions with no ' +
+        'process, newest first. Their sessionIds still resume. ' +
+        'Archived sessions are never listed by either section, at any argument. ' +
         'sessionId is the stable handle for every worker-addressing tool. ' +
         '`playbook`/`stage` say where the worker sits in its playbook graph, or null when it is not ' +
         'playbook-tracked; playbook_state gives the full run picture. ' +
@@ -73,7 +78,20 @@ export function buildTools(): Tool[] {
         'default — so anything on a worker\'s `flags` line is news. ' +
         'Every other tool here returning a worker summary returns that shape as JSON, minus ' +
         '`hasIdleSubscriber`, `playbook` and `stage`.',
-      inputSchema: { type: 'object', properties: {}, required: [] },
+      inputSchema: {
+        type: 'object',
+        properties: {
+          project: {
+            type: 'string',
+            description: 'Restrict both sections to this project (`.conduct` is legal — it is '
+              + 'where conductors run, though list_projects hides it). A name that is not a '
+              + 'project soft-refuses PROJECT_UNKNOWN. '
+              + 'Omit for everything, which costs a session scan of every project and worktree — '
+              + 'pass it when you know the project.',
+          },
+        },
+        required: [],
+      },
       handler: h.listInstances,
       annotations: { readOnlyHint: true },
     },
