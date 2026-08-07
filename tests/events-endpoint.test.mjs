@@ -456,8 +456,9 @@ test('archive/ring seam: overlapping groups page whole, cursor progresses, no or
       // Whether ring-side children of the archived head are served at all is
       // NOT pinned here, and the reason is subtler than "the archive never
       // reaches them". It does reach them: the empty page's window covers two
-      // of the three, `hasHeadlessChildIn` is true there (the GONE children
-      // are in it too), so `needArchive` fires and the archive IS loaded on
+      // of the three, and `hasHeadlessChildIn` is true there BECAUSE of those
+      // children (GONE's own children sit below the window and do not satisfy
+      // the predicate), so `needArchive` fires and the archive IS loaded on
       // that page. It still serves nothing because GONE's head is absent on
       // BOTH sides, and GONE's component — which starts at index 0, as every
       // headless component does — merges by adjacency with the Agent
@@ -468,8 +469,14 @@ test('archive/ring seam: overlapping groups page whole, cursor progresses, no or
       // collapse second.
       // Consequence for the cursor fix (2026-0039): once an empty page's
       // `nextBefore` stops collapsing to `trimmedBefore`, the window just
-      // below this one IS re-requested, and these children become servable
-      // here. The per-page assertGroupIntegrity above is what carries the
+      // below this one IS re-requested. That is all that follows. Whether the
+      // children become servable there is a separate question — it depends on
+      // GONE, whose component starts at 0 and so merges into EVERY window
+      // covering an agent child, not just this one. Simulating the cursor fix
+      // on this fixture, the re-requested window resolves empty for exactly
+      // the same reason and the cursor walks past all three children. Reaching
+      // them needs the poisoning addressed, not the cursor. The per-page
+      // assertGroupIntegrity above is what carries the
       // invariant either way — it holds however many of them get served, so
       // this test stays green across that change. That the children are
       // reachable AT ALL is pinned by the archive-side-head reunion test
