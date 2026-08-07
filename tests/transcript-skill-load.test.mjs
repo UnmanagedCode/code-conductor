@@ -16,8 +16,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
+import { mkdtemp } from './tmpRegistry.mjs';
 import { fileURLToPath } from 'node:url';
 import { encodeCwd } from '../src/projects.ts';
 import { loadPersistedTranscript, loadSubAgentTranscript } from '../src/transcript.ts';
@@ -50,7 +50,7 @@ function skillSessionLines() {
 }
 
 async function seedTranscript(lines) {
-  const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-skill-load-'));
+  const rootDir = await mkdtemp('cc-skill-load-');
   process.env.CLAUDE_PROJECTS_ROOT = rootDir;
   const file = path.join(rootDir, encodeCwd(CWD), `${SID}.jsonl`);
   await fs.mkdir(path.dirname(file), { recursive: true });
@@ -61,7 +61,7 @@ async function seedTranscript(lines) {
 // Copy a fixture jsonl into the layout the loader expects, so no test reads
 // from the developer's real ~/.claude at run time.
 async function seedFixture(fixtureName, { subagentId = null } = {}) {
-  const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-skill-load-'));
+  const rootDir = await mkdtemp('cc-skill-load-');
   process.env.CLAUDE_PROJECTS_ROOT = rootDir;
   const dest = subagentId
     ? path.join(rootDir, encodeCwd(CWD), SID, 'subagents', `agent-${subagentId}.jsonl`)

@@ -6,11 +6,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
+import { mkdtemp } from './tmpRegistry.mjs';
 import * as m0008 from '../migrations/0008-migrate-tiered-session-summaries.mjs';
 
 async function mkTmp() {
-  return fs.mkdtemp(path.join(os.tmpdir(), 'cc-tiered-summaries-'));
+  return mkdtemp('cc-tiered-summaries-');
 }
 
 async function writeSummaries(root, summaries) {

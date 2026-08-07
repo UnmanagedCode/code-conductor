@@ -6,11 +6,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
+import { mkdtemp } from './tmpRegistry.mjs';
 import * as m0011 from '../migrations/0011-rename-optional-guidelines-store.mjs';
 
 async function mkTmp() {
-  return fs.mkdtemp(path.join(os.tmpdir(), 'cc-rename-conventions-'));
+  return mkdtemp('cc-rename-conventions-');
 }
 
 async function exists(p) {

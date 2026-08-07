@@ -6,12 +6,12 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
+import { mkdtemp } from './tmpRegistry.mjs';
 import * as m0020 from '../migrations/0020-consolidate-convention-stores.mjs';
 import * as m0021 from '../migrations/0021-strip-plugin-slugs-from-conductor-conventions.mjs';
 
 async function mkTmp() {
-  return fs.mkdtemp(path.join(os.tmpdir(), 'cc-mig-strip-slugs-'));
+  return mkdtemp('cc-mig-strip-slugs-');
 }
 
 async function writeStore(root, store) {

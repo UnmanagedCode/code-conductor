@@ -10,8 +10,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
+import { mkdtemp } from './tmpRegistry.mjs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Window } from 'happy-dom';
 import { encodeCwd } from '../src/projects.ts';
@@ -40,7 +40,7 @@ function splitBlockLines() {
 }
 
 async function seedTranscript(lines, relPath) {
-  const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-split-blocks-'));
+  const rootDir = await mkdtemp('cc-split-blocks-');
   process.env.CLAUDE_PROJECTS_ROOT = rootDir;
   const file = path.join(rootDir, encodeCwd(CWD), relPath);
   await fs.mkdir(path.dirname(file), { recursive: true });
