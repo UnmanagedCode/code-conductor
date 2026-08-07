@@ -128,7 +128,7 @@ Mounted at `POST /mcp` (Streamable HTTP, JSON-RPC 2.0); tools exposed as `mcp__c
 - **Read:**
   - `list_projects`, `list_worktrees` — **text-rendered**, no JSON (see [protocol.md → Rendered read results](protocol.md#rendered-read-results)). `list_projects` counts a project's live workers (`live N`) but does not name them — that is `list_instances`' job.
   - `list_workspaces`, `locate_session` — bare listings / lookup.
-  - `list_instances` — **text-rendered**; each entry carries displayStatus and activeAgentTasks. Optional `project` filter; rows grouped by project → worktree → spawn order; recently-exited workers listed under a separate `EXITED` heading until they age out.
+  - `list_instances` — **text-rendered**; each entry carries displayStatus and activeAgentTasks. Optional `project` filter (validated — an unknown name soft-refuses `PROJECT_UNKNOWN`); live rows grouped by project → worktree → spawn order, then an `INACTIVE` heading listing that scope's resumable stopped sessions (newest first, never archived ones).
   - `list_sessions` — **text-rendered**; conducted:bool marker.
   - `get_transcript` — disk-backed ring-first event stream (forward-paged via `fromSeq`, inclusive).
   - `get_recent_messages` — multi-block (text + tool_use + thinking), default-call bonding, disk-backed ring-first.

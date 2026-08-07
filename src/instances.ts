@@ -203,20 +203,13 @@ const POST_ABORT_DRAIN_MAX = 20;
 
 // The two terminal statuses. Exported because "is this worker dead?" is asked
 // on two MCP surfaces that MUST agree — list_projects' `live N`
-// (liveCountForProject) and list_instances' EXITED partition (readRenderers) —
-// and a second spelling of the rule is how they would drift apart.
+// (liveCountForProject) and which section a worker lands in on list_instances
+// (src/mcp/handlers.ts) — and a second spelling of the rule is how they would
+// drift apart. A dead instance retained in byId (non-temp exits are kept
+// indefinitely, so respawn can resume them) is NOT a live worker.
 export function isDeadStatus(status: unknown): boolean {
   return status === 'exited' || status === 'crashed';
 }
-
-// Recently-exited workers (`_recentExits`). A temp instance is dropped from
-// byId the moment it exits (see the status handler in create()), so without a
-// tombstone `list_instances` cannot honour its own "live or recently-exited"
-// contract — a finished worker would simply vanish mid-orchestration. Bounded
-// twice: by age, and by count so a burst inside the window can't grow without
-// limit. Both are pruned lazily on push and on read; no timer.
-const EXITED_RETENTION_MS = 30 * 60_000;
-const EXITED_MAX = 25;
 
 // Steering message injected into the CONDUCTOR (never its workers) when an
 // overage auto-stop fires. One frame — why (rate-limit crossed) + when (no new
@@ -2599,7 +2592,6 @@ export class Instance extends EventEmitter implements InstanceLike {
 
 export class InstanceManager extends EventEmitter implements InstanceManagerLike {
   byId: Map<string, Instance>;
-  _recentExits: Array<InstanceSummary & { exitedAt: number }>;
   _claudeLauncher: LauncherLike;
   _resuming: Map<string, Promise<Instance>>;
   serverPort: number | null;
@@ -2616,7 +2608,6 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   constructor({ claudeLauncher = defaultClaudeLauncher }: { claudeLauncher?: LauncherLike } = {}) {
     super();
     this.byId = new Map<string, Instance>();
-    this._recentExits = [];
     // Injected launcher, passed to every Instance so it spawns through the
     // seam rather than child_process.spawn directly. Production default is the
     // real launcher; tests inject an in-process one via createServer().
@@ -2779,25 +2770,10 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     }));
   }
 
-  // Workers that exited and were dropped from byId, newest first, pruned to the
-  // retention bounds. `now` is a parameter so the age bound is testable without
-  // a real sleep.
-  recentExits(now: number = Date.now()): Array<InstanceSummary & { exitedAt: number }> {
-    this._pruneExits(now);
-    return this._recentExits.slice();
-  }
-
-  _pruneExits(now: number): void {
-    const cutoff = now - EXITED_RETENTION_MS;
-    this._recentExits = this._recentExits
-      .filter(e => e.exitedAt > cutoff)
-      .slice(0, EXITED_MAX);
-  }
-
   // How many of a project's workers are NOT dead. The number list_projects
   // prints as `live N`; it reads the same isDeadStatus() rule that decides which
-  // side of list_instances' EXITED partition a row lands on, so the two tools
-  // cannot report a different fleet.
+  // of list_instances' two sections a session lands in, so the two tools cannot
+  // report a different fleet.
   liveCountForProject(name: string): number {
     return [...this.byId.values()].filter(i => i.project === name && !isDeadStatus(i.status)).length;
   }
@@ -3242,14 +3218,6 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
         // (and the badge would outlive the timer). Done while inst is still in
         // byId so cancel can clear its flags + emit the badge-drop status.
         this._cancelAutoResume(inst.id);
-        // Tombstone before the drop, so list_instances can still show the worker
-        // under EXITED (its jsonl was archived, not deleted, so the sessionId
-        // stays a usable handle). Only THIS path records one: remove() /
-        // removeAllForProject() / shutdown() are deliberate dismissals by a
-        // caller, and re-surfacing those as ghost rows would fight the caller.
-        const now = Date.now();
-        this._recentExits.unshift({ ...summary, exitedAt: now });
-        this._pruneExits(now);
         this.byId.delete(id);
         this._purgeIdleFor(id);
         this.emit('list_changed');
@@ -3585,9 +3553,6 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     this._overageResume.clearAll();
     const all = [...this.byId.values()];
     this.byId.clear();
-    // The tombstone ring is in-memory state of this manager, so it dies with it
-    // — a shutdown must not leave exited workers reportable by the next one.
-    this._recentExits = [];
     await Promise.all(all.map(i => i.kill({ graceMs: 200 }).catch(() => {})));
   }
 

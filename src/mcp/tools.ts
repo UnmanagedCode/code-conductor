@@ -54,16 +54,17 @@ export function buildTools(): Tool[] {
     {
       name: 'list_instances',
       description:
-        'List every live or recently-exited orchestrator worker as PLAIN TEXT ' +
-        '(this tool returns no JSON). Each worker summary is ' +
+        'List every live orchestrator worker, then every stopped session it could resume, as ' +
+        'PLAIN TEXT (this tool returns no JSON). Each worker summary is ' +
         '{project, cwd, sessionId, status, displayStatus, activeAgentTasks, mode, effort, thinking, ' +
         'backend, model, contextWindowTokens, pid, worktree, temp, conducted, debug, ' +
         'firstPrompt, title, createdAt, lastResponseAt, queuedCount, autoResumeAt, ' +
-        'overageActive, overageResetsAt, hasIdleSubscriber, playbook, stage, exitedAt}. ' +
-        'Exited workers render under a separate `EXITED` heading and keep a usable sessionId ' +
-        '(their transcript is archived, not deleted), but they age out — a worker absent from ' +
-        'both sections finished longer ago than the retention window, not never. ' +
+        'overageActive, overageResetsAt, hasIdleSubscriber, playbook, stage}. ' +
         'Rows are grouped by project, then worktree, then spawn order. ' +
+        'A second `INACTIVE` heading then lists that scope\'s persisted sessions with no ' +
+        'process — one line each (sessionId, last-touched, size, flags, where, title), newest ' +
+        'first, because they have no runtime state to report. Their sessionIds still resume. ' +
+        'Archived sessions are never listed by either section, at any argument. ' +
         'sessionId is the stable handle for every worker-addressing tool. ' +
         '`playbook`/`stage` say where the worker sits in its playbook graph, or null when it is not ' +
         'playbook-tracked; playbook_state gives the full run picture. ' +
@@ -77,16 +78,17 @@ export function buildTools(): Tool[] {
         'temp / conducted / debug / overage / auto-resume only when they deviate from their ' +
         'default — so anything on a worker\'s `flags` line is news. ' +
         'Every other tool here returning a worker summary returns that shape as JSON, minus ' +
-        '`hasIdleSubscriber`, `playbook`, `stage` and `exitedAt`.',
+        '`hasIdleSubscriber`, `playbook` and `stage`.',
       inputSchema: {
         type: 'object',
         properties: {
           project: {
             type: 'string',
-            description: 'Show only workers whose `project` equals this exactly (`.conduct` for '
-              + 'conductors). Omit for the whole fleet. Not validated against the project list — '
-              + 'a name that matches nothing yields an empty list, and the heading echoes the '
-              + 'filter so a typo is visible.',
+            description: 'Restrict both sections to this project (`.conduct` is legal — it is '
+              + 'where conductors run, though list_projects hides it). A name that is not a '
+              + 'project soft-refuses PROJECT_UNKNOWN rather than rendering as an empty fleet. '
+              + 'Omit for everything, which costs a session scan of every project and worktree — '
+              + 'pass it when you know the project.',
           },
         },
         required: [],

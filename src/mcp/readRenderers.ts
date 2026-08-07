@@ -24,6 +24,9 @@
 //                  tools look like they disagreed whenever a worker exited
 //                  between the calls.
 //   list_instances pid (no tool takes one — sessionId is the handle);
+//                  an INACTIVE row's runtime fields — there is no process to
+//                  read a status/mode/model/playbook off, so the row is a short
+//                  session line rather than a worker block full of —;
 //                  createdAt (status + lastResponseAt answer "is it moving?");
 //                  contextWindowTokens (a denominator with no numerator on this
 //                  surface — the actionable overage signals are DEVIANT).
@@ -135,10 +138,6 @@ const INSTANCE_DEVIANT: DeviantSpec[] = [
   { key: 'overageActive', default: false, label: 'OVERAGE' },
   { key: 'overageResetsAt', default: null, label: 'overage-resets', fmt: ts },
   { key: 'autoResumeAt', default: null, label: 'auto-resume', fmt: ts },
-  // When it died. Only ever set on an EXITED row, so it is news by definition —
-  // "gone 2 minutes ago" and "gone 28 minutes ago, about to age out of the
-  // retention window" call for different next moves.
-  { key: 'exitedAt', default: null, label: 'exited', fmt: ts },
 ];
 
 function instanceRows(rows: Row[]): Array<string | string[]> {
@@ -162,26 +161,47 @@ function instanceRows(rows: Row[]): Array<string | string[]> {
   return parts;
 }
 
-// `live` and `exited` arrive already partitioned and ordered — the caller
-// (src/mcp/handlers.ts listInstances) owns both the isDeadStatus() split and the
-// sort, so this stays a pure formatter with no instance-model dependency.
+// INACTIVE rows are SessionRows (src/projects.ts) — persisted sessions with no
+// live process. They carry none of a worker's runtime facts: no status, mode,
+// effort, model or playbook, because there is no process to have them. So they
+// render as ONE compact line each, in the same column vocabulary as
+// list_sessions (id, mtime, size, deviating flags, title) plus where they live —
+// rather than a 7-line worker block padded with — , which would imply those
+// fields were looked up and came back empty. A reader cannot confuse the two
+// shapes: a live worker is an indented multi-line block, an inactive session is
+// a single table row under its own heading.
+function inactiveRows(rows: Row[]): string[] {
+  return table(rows.map(s => [
+    String(dash(s.sessionId)),
+    ts(s.mtime),
+    bytes(s.size),
+    deviations(s, SESSION_DEVIANT).join(',') || DASH,
+    `${dash(s.project)}${s.worktree ? `/${s.worktree}` : ''}`,
+    trunc(s.title ?? s.firstPrompt, 60),
+  ]), ['l', 'l', 'r', 'l', 'l', 'l']);
+}
+
+// `live` and `inactive` arrive already filtered and ordered — the caller
+// (src/mcp/handlers.ts listInstances) owns the isDeadStatus() split, the session
+// scan and both sorts, so this stays a pure formatter with no instance-model or
+// filesystem dependency.
 //
-// The EXITED heading is omitted entirely when nothing has exited, so the common
-// case does not grow a section; and `project` is echoed on the INSTANCES heading
-// whenever the caller filtered, because an empty filtered list otherwise reads
-// as "no workers anywhere" and would send a conductor down the wrong path.
+// The INACTIVE heading is omitted entirely when there is nothing stopped, so the
+// common case does not grow a section; and `project` is echoed on the INSTANCES
+// heading whenever the caller filtered, because an empty filtered list otherwise
+// reads as "no workers anywhere" and would send a conductor down the wrong path.
 export function renderInstances(
   instances: unknown,
-  { project = null, exited = [] }: { project?: string | null; exited?: unknown } = {},
+  { project = null, inactive = [] }: { project?: string | null; inactive?: unknown } = {},
 ): string {
   const rows = asRows(instances);
-  const dead = asRows(exited);
+  const stopped = asRows(inactive);
   const filter = project ? `  project ${project}` : '';
   const parts: Array<string | string[]> = [
     `${heading('INSTANCES', rows.length)}${filter}`, '',
     ...instanceRows(rows),
   ];
-  if (dead.length) parts.push(heading('EXITED', dead.length), '', ...instanceRows(dead));
+  if (stopped.length) parts.push(heading('INACTIVE', stopped.length), '', inactiveRows(stopped));
   return block(...parts);
 }
 

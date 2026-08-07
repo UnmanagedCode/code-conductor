@@ -51,7 +51,7 @@ import {
 } from './messageReconstruction.ts';
 import { loadPlaybooks, isSpawnable, legalMovesFrom, decide, type Playbook } from '../playbooks.ts';
 import { runMembers, type Projection } from '../playbookLedger.ts';
-import { isConductorInstance } from '../conduct.ts';
+import { conductProjectPath, isConductorInstance } from '../conduct.ts';
 import { isDeadStatus } from '../instances.ts';
 import type { PlaybookGate } from './playbookGate.ts';
 import type { InstanceLike, InstanceManagerLike, InstanceSummary } from '../instanceTypes.ts';
@@ -150,12 +150,12 @@ export const CONDUCTOR_VIEW_KEYS = [
   'overageResetsAt',
 ];
 
-// The fields listInstances attaches on top of the shared projection (see
+// The three fields listInstances attaches on top of the shared projection (see
 // the note in listInstances). Exported so the two tests that bind against the
 // full list_instances key set — the doc-drift gate in
 // tests/mcp-conductor-view.test.mjs and the rendering gate in
 // tests/mcp-text-render.test.mjs — read one definition instead of two copies.
-export const LIST_ONLY_KEYS = ['hasIdleSubscriber', 'playbook', 'stage', 'exitedAt'];
+export const LIST_ONLY_KEYS = ['hasIdleSubscriber', 'playbook', 'stage'];
 
 function toConductorView(summary: InstanceSummary): Record<string, unknown> {
   const out: Record<string, unknown> = {};
@@ -297,51 +297,80 @@ export function compareInstanceRows(a: Record<string, unknown>, b: Record<string
     || s(a.sessionId).localeCompare(s(b.sessionId));
 }
 
+// Every cwd whose sessions belong to `project` — the project root plus each of
+// its worktrees. One scan target per entry.
+async function sessionCwdsFor(p: { name: string; path: string }) {
+  const wts = await fsListWorktrees(p.name).catch(() => []);
+  return [
+    { project: p.name, worktree: null as string | null, cwd: p.path },
+    ...wts.map(w => ({ project: p.name, worktree: w.worktreeName, cwd: w.worktreePath })),
+  ];
+}
+
 export async function listInstances(args: McpArgs, { instances, playbookGate }: McpCtx) {
-  // Project every row to the allowlist (sessionId is the conductor-facing
-  // handle), then re-attach the LIST_ONLY_KEYS. They are deliberately NOT in
-  // CONDUCTOR_VIEW_KEYS: hasIdleSubscriber is added by list() rather than
-  // Instance.summary(), playbook/stage come from the sessionId-keyed playbook
-  // projection, and exitedAt exists only on a tombstone — so none of them exists
-  // on the four other projections, where putting them in the allowlist would
-  // publish permanently-undefined fields. This is the one place list_instances'
-  // shape differs.
-  const project = typeof args?.project === 'string' ? args.project : null;
+  // The filter is validated, not free-form: a typo'd name would otherwise render
+  // as an empty fleet, which reads as "everything finished". getProject is the
+  // check because it is the same one every project-addressing tool uses — so
+  // `.conduct` stays legal (it is a real directory; only listProjects hides
+  // dotdirs) and '' fails on the name regex rather than filtering to nothing.
+  const project = args?.project === undefined ? null : String(args.project ?? '');
+  let target: { name: string; path: string } | null = null;
+  if (project === CONDUCT_PROJECT_NAME) {
+    // Legal by name, not by directory probe: listProjects hides dotdirs, and the
+    // dir is created lazily at first conductor spawn — but a conductor must be
+    // able to filter to its own project either way. An absent dir just scans to
+    // nothing (listSessionsForCwd returns [] on ENOENT).
+    target = { name: project, path: conductProjectPath() };
+  } else if (project !== null) {
+    try {
+      target = await getProject(project);
+    } catch {
+      return { ok: false, code: 'PROJECT_UNKNOWN', project,
+        reason: `no project '${project}' — call list_projects for the names (its own project is '${CONDUCT_PROJECT_NAME}')` };
+    }
+  }
   if (!instances) return textResult(renderInstances([], { project }));
   // Read-only, and folds nothing into being: absent ledger ⇒ empty projection.
   const proj = playbookGate ? await playbookGate.readProjection() : null;
-  const view = (row: InstanceSummary, exitedAt: number | null): Record<string, unknown> => {
+  const view = (row: InstanceSummary & { hasIdleSubscriber: boolean }): Record<string, unknown> => {
     const tracked = proj && typeof row.sessionId === 'string'
       ? proj.bySession.get(row.sessionId) : undefined;
     return {
       ...toConductorView(row),
-      hasIdleSubscriber: (row as { hasIdleSubscriber?: boolean }).hasIdleSubscriber ?? false,
+      hasIdleSubscriber: row.hasIdleSubscriber,
       // null (not absent) for an untracked worker, so a caller can tell "not in a
       // playbook" from "this build does not report it".
       playbook: tracked?.playbook ?? null,
       stage: tracked?.stage ?? null,
-      exitedAt,
     };
   };
-  // byId rows and tombstones are disjoint (a worker is dropped from byId at the
-  // same moment it is tombstoned), so concatenating them needs no dedupe. Which
-  // section a row lands in is decided by its STATUS, not by which list it came
-  // out of — that is what also moves a retained non-temp exited instance (byId
-  // keeps those indefinitely) out of the live section.
-  const keep = (r: { project?: unknown }) => project === null || r.project === project;
-  const all = [
-    ...instances.list().map(row => view(row, null)),
-    ...instances.recentExits().map(row => view(row, row.exitedAt)),
-  ].filter(keep);
-  return textResult(renderInstances(
-    all.filter(r => !isDeadStatus(r.status)).sort(compareInstanceRows),
-    {
-      project,
-      // Freshest death first: on this section, recency is the question asked.
-      exited: all.filter(r => isDeadStatus(r.status))
-        .sort((a, b) => (Number(b.exitedAt) || 0) - (Number(a.exitedAt) || 0) || compareInstanceRows(a, b)),
-    },
-  ));
+  // A dead instance retained in byId (non-temp exits are never dropped) is not a
+  // live worker: it fails isDeadStatus, so it is excluded here AND left out of
+  // the exclusion set below, which is what lets it reappear as an INACTIVE row
+  // off its own transcript. The two sections are disjoint by construction.
+  const live = instances.list().filter(r => !isDeadStatus(r.status))
+    .filter(r => project === null || r.project === project)
+    .map(view)
+    .sort(compareInstanceRows);
+  const attached = new Set(live.map(r => r.sessionId).filter((s): s is string => typeof s === 'string'));
+
+  // INACTIVE rows come off disk, from the one function that already owns "which
+  // sessions exist for a cwd, and which of them are archived"
+  // (listSessionsForCwd — also behind GET /projects/:name/sessions and
+  // list_sessions). includeArchived:false is not a default we could flip: an
+  // archived session is one a human or a kill deliberately took off the list.
+  const scope = target ? [target] : await fsListProjects();
+  const targets = (await Promise.all(scope.map(sessionCwdsFor))).flat();
+  const inactive = (await Promise.all(targets.map(async t => {
+    const rows = await listSessionsForCwd(t.cwd, attached, { includeArchived: false }).catch(() => []);
+    return rows.map(s => ({ ...s, project: t.project, worktree: t.worktree }));
+  }))).flat()
+    // Newest first: on a list of sessions nobody is working on, "which did I
+    // touch last" is the question. mtime, since a stopped session has no
+    // createdAt on this surface and its transcript's mtime IS its last activity.
+    .sort((a, b) => b.mtime - a.mtime);
+
+  return textResult(renderInstances(live, { project, inactive }));
 }
 
 // ---------- playbooks: the read / introspection surface ----------

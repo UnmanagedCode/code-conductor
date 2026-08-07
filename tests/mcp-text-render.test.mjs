@@ -318,19 +318,23 @@ describe('renderInstances', () => {
     assert.equal(renderInstances([]), 'INSTANCES (none)');
   });
 
-  test('nothing has exited — no EXITED section at all', () => {
+  test('nothing is stopped — no INACTIVE section at all', () => {
     // The common case must not grow a heading for an empty set.
-    assert.ok(!renderInstances([INSTANCE]).includes('EXITED'));
-    assert.ok(!renderInstances([INSTANCE], { exited: [] }).includes('EXITED'));
+    assert.ok(!renderInstances([INSTANCE]).includes('INACTIVE'));
+    assert.ok(!renderInstances([INSTANCE], { inactive: [] }).includes('INACTIVE'));
   });
 
-  test('an exited worker gets its own section, with its death time and handle', () => {
-    const dead = {
-      ...INSTANCE, sessionId: SID_B, status: 'exited', displayStatus: 'exited',
-      activeAgentTasks: 0, title: 'finished worker', temp: true, conducted: true,
-      lastResponseAt: 1786001000000, exitedAt: 1786002000000,
+  test('an inactive session is one short line, not a worker block padded with dashes', () => {
+    // A SessionRow has no status/mode/model/playbook. Rendering it in the live
+    // 7-line shape would claim those were looked up and came back empty; the
+    // reader must be able to tell the two apart at a glance.
+    const stopped = {
+      sessionId: SID_B, firstPrompt: 'Draft release notes', title: null,
+      conducted: true, temp: true, archived: false,
+      mtime: 1786001000000, size: 4300,
+      project: 'code-conductor', worktree: 'code-conductor_worktree_dcd22e',
     };
-    assert.equal(renderInstances([INSTANCE], { exited: [dead] }), [
+    assert.equal(renderInstances([INSTANCE], { inactive: [stopped] }), [
       'INSTANCES (1)',
       '',
       `[1] ${SID_A}`,
@@ -342,25 +346,43 @@ describe('renderInstances', () => {
       '    title Recon read tools plain-text rendering',
       '    last 2026-08-06 07:23Z',
       '',
-      'EXITED (1)',
+      'INACTIVE (1)',
       '',
-      `[1] ${SID_B}`,
-      '    status exited   display exited   agents 0   queued 0   idle-sub yes',
-      '    project code-conductor   worktree code-conductor_worktree_dcd22e',
-      '    cwd /w/cc-projects/code-conductor_worktree_dcd22e',
-      '    mode code   effort high   thinking adaptive   model claude/claude-opus-5',
-      '    playbook classic / implement',
-      '    title finished worker',
-      '    last 2026-08-06 07:23Z',
-      '    flags temp  conducted  exited 2026-08-06 07:40Z',
+      `${SID_B}  2026-08-06 07:23Z  4.2 KB  conducted,temp  code-conductor/code-conductor_worktree_dcd22e  Draft release notes`,
     ].join('\n'));
   });
 
-  test('an all-exited fleet reads as none live, not as a fleet still working', () => {
-    const dead = { ...INSTANCE, status: 'exited', exitedAt: 1786002000000 };
-    const out = renderInstances([], { exited: [dead] });
+  test('an inactive row claims no runtime state', () => {
+    const out = renderInstances([], { inactive: [{
+      sessionId: SID_B, firstPrompt: 'x', title: 'T', conducted: false, temp: false,
+      archived: false, mtime: 1, size: 1, project: 'p', worktree: null,
+    }] });
+    for (const claim of ['status ', 'mode ', 'playbook ', 'display ', 'idle-sub ']) {
+      assert.ok(!out.includes(claim), `an inactive row must not render "${claim}" — there is no process to read it from:\n${out}`);
+    }
+    assert.match(out, /^\S{36}  1970-01-01 00:00Z  1 B  —  p  T$/m, 'a worktree-less row shows the bare project');
+  });
+
+  test('inactive rows render in the order given, and every one of them', () => {
+    // Ordering is the caller's (newest first by mtime); the renderer must not
+    // reorder or drop. Two rows minimum — one row cannot detect either bug.
+    const mk = (sid, mtime, title) => ({ sessionId: sid, firstPrompt: null, title,
+      conducted: false, temp: false, archived: false, mtime, size: 0, project: 'p', worktree: null });
+    const out = renderInstances([], { inactive: [
+      mk(SID_A, 1786001000000, 'newest'), mk(SID_B, 1785900000000, 'older'),
+    ] });
+    assert.match(out, /^INACTIVE \(2\)$/m);
+    const lines = out.split('\n').filter(l => l.includes('newest') || l.includes('older'));
+    assert.equal(lines.length, 2, 'both rows must render');
+    assert.ok(lines[0].includes('newest') && lines[1].includes('older'), `given order must be preserved:\n${out}`);
+  });
+
+  test('an all-stopped scope reads as none live, not as a fleet still working', () => {
+    const out = renderInstances([], { inactive: [{ sessionId: SID_A, firstPrompt: null,
+      title: 'T', conducted: false, temp: false, archived: false, mtime: 1, size: 1,
+      project: 'p', worktree: null }] });
     assert.match(out, /^INSTANCES \(none\)$/m);
-    assert.match(out, /^EXITED \(1\)$/m);
+    assert.match(out, /^INACTIVE \(1\)$/m);
   });
 
   test('a filter is echoed on the heading, so an empty result is not read as an idle fleet', () => {
