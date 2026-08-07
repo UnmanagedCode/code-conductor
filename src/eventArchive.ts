@@ -41,7 +41,7 @@
 // trimmed ring with no sessionId to replay from at all.
 
 import { loadPersistedTranscript } from './transcript.ts';
-import { hasHeadlessChildIn, isOuterUserEcho, snapStartToQuiescent, type UiEvent } from './parser.ts';
+import { hasHeadlessChildIn, isOuterUserEcho, lastQuiescentAtOrBefore, snapStartToQuiescent, type UiEvent } from './parser.ts';
 import { reconstructTasks, type TaskCompletion, type TaskRecord } from './taskReconstruct.ts';
 import type { InstanceLike } from './instanceTypes.ts';
 
@@ -212,9 +212,14 @@ export async function pageInstanceEvents(inst: InstanceLike, { before = null, af
 
   let events: UiEvent[];
   let hasMore: boolean;
+  // The backward window BEFORE the quiescent snap moved its start. When the
+  // snap rejects the whole window the page is empty, and this is the cursor
+  // the next page resumes from — see `nextBefore` below.
+  let rawStart = 0;
   if (before != null) {
     const end = firstIndexAtOrAbove(combined, before);
-    let start = Math.max(0, end - max);
+    rawStart = Math.max(0, end - max);
+    let start = rawStart;
     // Quiescent page seams: open the window where reconstruction has no open
     // block and no unresolved tool — the first quiescent index inside the
     // window when present, else the nearest one below it. Every page then
@@ -241,7 +246,31 @@ export async function pageInstanceEvents(inst: InstanceLike, { before = null, af
     hasMore = start + events.length < combined.length;
   }
 
-  const nextBefore = events.length ? events[0]._seq as number : Math.max(0, Math.min(before ?? 0, tb));
+  // An empty backward page means the snap rejected this whole window (its only
+  // content was sub-agent children with no reachable head). Resume from the
+  // window's own pre-snap start, NOT from `trimmedBefore`: collapsing to the
+  // top of the archive would skip every seq in [trimmedBefore, before), most of
+  // which is ordinary servable content the resolver never rejected.
+  //
+  // The pre-snap start is snapped DOWN to a quiescent cut first, because every
+  // cursor is also the next page's `end`, and a page is self-contained only if
+  // both its ends are quiescent. On a served page that holds for free (the
+  // cursor is the snapped start); an empty page has no snapped start, and
+  // `rawStart` is under no such obligation — handing it out raw yields a next
+  // page ending mid-block or mid-tool-round-trip.
+  //
+  // `cursorIdx <= rawStart < end` whenever `end > 0`, and
+  // `combined[end - 1]._seq < before`, so this is strictly below `before` — a
+  // client can never re-request the cursor it just sent. `end === 0` implies
+  // the archive was loaded (a ring-only window sits above `trimmedBefore` and
+  // so has `end > 0`), hence `hasMore` is false there and the cursor is
+  // terminal, not stalled.
+  const cursorIdx = before != null && !events.length
+    ? lastQuiescentAtOrBefore(combined, rawStart, { resetIdx: seamIdx })
+    : 0;
+  const nextBefore = events.length
+    ? events[0]._seq as number
+    : (before != null ? (combined[cursorIdx]?._seq as number | undefined) ?? 0 : 0);
 
   // Mark the evicted-content seam. When the ring head is mid-turn, the slice
   // that carries the first ring event gets a `{kind:'history_gap'}` marker

@@ -1010,6 +1010,22 @@ export function firstQuiescentAtOrAfter(arr: UiEvent[], from: number, bound: num
   return -1;
 }
 
+// Largest quiescent index at or below `at` (bounded, like every backward
+// quiescent search here, by `at`'s own reset origin), or `at` itself when its
+// turn holds none — the same "raw start stands" degradation quiesceStart
+// documents. eventArchive.ts uses this for an EMPTY backward page's cursor: a
+// page is only self-contained if BOTH its ends are quiescent cuts, and the ends
+// are clean only because every cursor the server hands out is a snap output.
+// An empty page has no snapped start to hand out, and its pre-snap window start
+// is under no obligation to be quiescent, so it has to be snapped here instead.
+export function lastQuiescentAtOrBefore(
+  arr: UiEvent[], at: number, { resetIdx = -1 }: { resetIdx?: number } = {},
+): number {
+  const start = Math.max(0, Math.min(at, arr.length - 1));
+  if (start <= 0) return 0;
+  return quiesceStart(arr, start, start + 1, resetIdx, false);
+}
+
 // Snap a window-start index to a cut that is both quiescent and preserves
 // sub-agent group integrity. `resetIdx` marks the archive→ring seam inside a
 // combined array (see eventArchive.ts): it resets only quiescence state, while
