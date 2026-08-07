@@ -310,17 +310,18 @@ async function sessionCwdsFor(p: { name: string; path: string }) {
 export async function listInstances(args: McpArgs, { instances, playbookGate }: McpCtx) {
   // The filter is validated, not free-form: a typo'd name would otherwise render
   // as an empty fleet, which reads as "everything finished". getProject is the
-  // check because it is the same one every project-addressing tool uses — so
-  // `.conduct` stays legal (it is a real directory; only listProjects hides
-  // dotdirs) and '' fails on the name regex rather than filtering to nothing.
+  // check because it is the same one every project-addressing tool uses, and ''
+  // fails on its name regex rather than filtering to nothing.
+  //
+  // `.conduct` is the exception, and it is handled by NAME rather than by a
+  // directory probe: the dir is created lazily at first conductor spawn, and a
+  // conductor must be able to reach its own sessions either way. An absent dir
+  // just scans to nothing (listSessionsForCwd returns [] on ENOENT).
   const project = args?.project === undefined ? null : String(args.project ?? '');
+  const conductTarget = { name: CONDUCT_PROJECT_NAME, path: conductProjectPath() };
   let target: { name: string; path: string } | null = null;
   if (project === CONDUCT_PROJECT_NAME) {
-    // Legal by name, not by directory probe: listProjects hides dotdirs, and the
-    // dir is created lazily at first conductor spawn — but a conductor must be
-    // able to filter to its own project either way. An absent dir just scans to
-    // nothing (listSessionsForCwd returns [] on ENOENT).
-    target = { name: project, path: conductProjectPath() };
+    target = conductTarget;
   } else if (project !== null) {
     try {
       target = await getProject(project);
@@ -359,7 +360,11 @@ export async function listInstances(args: McpArgs, { instances, playbookGate }: 
   // (listSessionsForCwd — also behind GET /projects/:name/sessions and
   // list_sessions). includeArchived:false is not a default we could flip: an
   // archived session is one a human or a kill deliberately took off the list.
-  const scope = target ? [target] : await fsListProjects();
+  // fsListProjects skips dotdirs, so the unfiltered scope must add `.conduct`
+  // back explicitly. Without it a conductor looking for its own prior session to
+  // resume — after a restart, a /clear, or a crash — gets every other project's
+  // stopped sessions and none of its own.
+  const scope = target ? [target] : [...await fsListProjects(), conductTarget];
   const targets = (await Promise.all(scope.map(sessionCwdsFor))).flat();
   const inactive = (await Promise.all(targets.map(async t => {
     const rows = await listSessionsForCwd(t.cwd, attached, { includeArchived: false }).catch(() => []);

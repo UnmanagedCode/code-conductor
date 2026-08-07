@@ -17,6 +17,7 @@ import { promises as fs } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
 import { encodeCwd } from '../src/projects.ts';
+import { conductProjectPath } from '../src/conduct.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-instance.json');
@@ -198,14 +199,29 @@ test('the project filter is validated, and .conduct stays legal', async () => {
   // under an un-echoed heading — it must refuse like any other non-project.
   assert.equal((await callJson('list_instances', { project: '' })).code, 'PROJECT_UNKNOWN');
 
-  // .conduct is a real directory that list_projects hides; a conductor has to be
-  // able to filter to its own project.
-  const conduct = await call('list_instances', { project: '.conduct' });
-  assert.match(conduct, /^INSTANCES \((none|\d+)\) {2}project \.conduct$/m,
-    `.conduct must be an accepted filter, got: ${conduct}`);
-
   // A real project with nothing in it renders normally — emptiness is not an error.
   assert.equal(await call('list_instances', { project: 'other' }), 'INSTANCES (none)  project other');
+});
+
+test('a conductor session is listed with and WITHOUT the filter', async () => {
+  // listProjects skips dotdirs, so `.conduct` reaches the unfiltered scan only
+  // because listInstances appends it. Without that, a conductor whose own prior
+  // session ended (restart, /clear, crash) calls list_instances() to find
+  // something to resume and sees every project's stopped sessions except its
+  // own. Asserting on a REAL sessionId, not a count: the previous version of
+  // this test matched /INSTANCES \((none|\d+)\)/, which any behaviour satisfies.
+  const sid = '33333333-3333-4333-8333-333333333333';
+  const dir = path.join(claudeProjectsRoot, encodeCwd(conductProjectPath()));
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(path.join(dir, `${sid}.jsonl`), '{"type":"user","uuid":"u1"}\n');
+
+  const filtered = await call('list_instances', { project: '.conduct' });
+  assert.match(filtered, /^INSTANCES \(none\) {2}project \.conduct$/m, '.conduct is an accepted filter');
+  assert.deepEqual(sections(filtered).inactive, [sid], 'filtered: the conductor session is there');
+
+  const unfiltered = await call('list_instances');
+  assert.ok(sections(unfiltered).inactive.includes(sid),
+    `unfiltered list_instances must not hide conductor sessions:\n${unfiltered}`);
 });
 
 test('rows are grouped by project rather than by spawn order', async () => {

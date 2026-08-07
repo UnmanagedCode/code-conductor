@@ -62,8 +62,7 @@ export function buildTools(): Tool[] {
         'overageActive, overageResetsAt, hasIdleSubscriber, playbook, stage}. ' +
         'Rows are grouped by project, then worktree, then spawn order. ' +
         'A second `INACTIVE` heading then lists that scope\'s persisted sessions with no ' +
-        'process — one line each (sessionId, last-touched, size, flags, where, title), newest ' +
-        'first, because they have no runtime state to report. Their sessionIds still resume. ' +
+        'process, newest first. Their sessionIds still resume. ' +
         'Archived sessions are never listed by either section, at any argument. ' +
         'sessionId is the stable handle for every worker-addressing tool. ' +
         '`playbook`/`stage` say where the worker sits in its playbook graph, or null when it is not ' +
@@ -86,7 +85,7 @@ export function buildTools(): Tool[] {
             type: 'string',
             description: 'Restrict both sections to this project (`.conduct` is legal — it is '
               + 'where conductors run, though list_projects hides it). A name that is not a '
-              + 'project soft-refuses PROJECT_UNKNOWN rather than rendering as an empty fleet. '
+              + 'project soft-refuses PROJECT_UNKNOWN. '
               + 'Omit for everything, which costs a session scan of every project and worktree — '
               + 'pass it when you know the project.',
           },

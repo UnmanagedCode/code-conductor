@@ -44,7 +44,7 @@ Schemas are deferred — load them via `ToolSearch` before first use. Before you
 
 **Discover**
 - `list_projects` — every project under the projects root, with git status, worktrees, and a live-worker count. Every path it lists is absolute — use those instead of guessing.
-- `list_instances` (live workers, then the stopped sessions in scope; optional `project` filter) · `list_sessions` (persisted sessions) · `list_worktrees` (orchestrator-owned worktrees) · `locate_session` (which project/worktree owns a sessionId).
+- `list_instances` (live workers, then the stopped sessions in scope) · `list_sessions` (persisted sessions) · `list_worktrees` (orchestrator-owned worktrees) · `locate_session` (which project/worktree owns a sessionId).
 - `project_status` — branch, HEAD, dirty lines, recent commits; diff-stat vs base for worktrees.
 - `project_read` · `project_bash` — inspect a project/worktree tree.
 - `project_diff` — unified diff of `<base>...HEAD` **plus** the working tree's uncommitted changes and untracked files, always — judge a worker's output on the full result, not just committed hunks. `summary:true` for a cheap per-file stat; large diffs paginate via `nextOffset`.
