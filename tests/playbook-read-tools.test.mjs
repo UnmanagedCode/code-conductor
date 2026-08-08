@@ -190,6 +190,65 @@ test('describe_playbook returns the graph the enforcement actually uses', async 
   } finally { await t.close(); }
 });
 
+// The per-stage `description` is where playbook-specific conductor orchestration
+// lives, so `describe_playbook` is the surface that has to carry it. Authored on
+// a USER-OVERLAY definition, not a built-in: the built-ins' own descriptions are
+// a separate editorial card, and a test that depended on their content would
+// fail the moment they are written.
+test('describe_playbook carries stage/transition descriptions, and omits them when unauthored', async () => {
+  const t = await setup();
+  try {
+    const stageText = 'Ground yourself, then hand off.';
+    const edgeText = 'Fresh worker on this edge, not an in-place send.';
+    await t.writeUserPlaybook('described', {
+      id: 'described', name: 'Described', description: 'top-level catalog line',
+      entryStages: ['a'],
+      stages: {
+        a: { description: stageText, tools: { spawn_instance: 'allow' } },
+        b: {},
+        c: {},
+      },
+      transitions: [{ from: 'a', to: 'b', description: edgeText }, { from: 'a', to: 'c' }],
+    });
+
+    const pb = await t.call('describe_playbook', { id: 'described' });
+    assert.equal(pb.stages.a.description, stageText);
+    // Absent, not '' or null — the key is either missing or a non-empty string,
+    // so a consumer tests for it instead of comparing against a sentinel.
+    assert.equal('description' in pb.stages.b, false, 'an unauthored stage description must be absent');
+
+    const byEdge = Object.fromEntries(pb.transitions.map(x => [`${x.from}->${x.to}`, x]));
+    assert.equal(byEdge['a->b'].description, edgeText);
+    assert.equal('description' in byEdge['a->c'], false,
+      'an unauthored transition description must be absent');
+  } finally { await t.close(); }
+});
+
+// `list_playbooks` is the CATALOG: id + the top-level one-liner. Per-stage
+// descriptions belong to `describe_playbook` and (later) the selected default
+// playbook's convention — leaking them here would put every stage of every
+// playbook in front of every caller.
+test('list_playbooks stays a catalog — no per-stage descriptions leak into it', async () => {
+  const t = await setup();
+  try {
+    await t.writeUserPlaybook('described', {
+      id: 'described', name: 'Described', description: 'top-level catalog line',
+      entryStages: ['a'],
+      stages: { a: { description: 'a per-stage line', tools: { spawn_instance: 'allow' } } },
+      transitions: [],
+    });
+    const res = await t.call('list_playbooks', {});
+    const entry = res.playbooks.find(p => p.id === 'described');
+    assert.ok(entry, `'described' must load: ${JSON.stringify(res.errors)}`);
+    assert.deepEqual(Object.keys(entry).sort(),
+      ['description', 'entryStages', 'id', 'name', 'spawnableStages'],
+      'the catalog shape is fixed — a new key here is a leak, not a feature');
+    assert.equal(entry.description, 'top-level catalog line');
+    assert.equal(JSON.stringify(res).includes('a per-stage line'), false,
+      'no per-stage description may appear anywhere in the catalog payload');
+  } finally { await t.close(); }
+});
+
 test('describe_playbook soft-refuses an unknown id and lists the known ones', async () => {
   const t = await setup();
   try {

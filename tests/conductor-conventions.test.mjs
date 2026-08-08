@@ -111,6 +111,29 @@ test('a newly authored playbook reaches the prompt with no second edit', async (
     'the listing follows the definitions; nothing here is hand-maintained');
 });
 
+// The listing is a CATALOG of what exists, not a rendering of any one graph. A
+// stage `description` is per-session prompt cost for a playbook the conductor
+// may never drive; it belongs to the selected default playbook's own convention.
+test('a per-stage description never reaches the composed prompt listing', async () => {
+  const sentinel = 'ZZQX-per-stage-sentinel-never-in-the-prompt-ZZQX';
+  const dir = path.join(projectsRoot, '.code-conductor', 'playbooks');
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(path.join(dir, 'sentinel-flow.json'), JSON.stringify({
+    id: 'sentinel-flow', name: 'Sentinel flow', description: 'the top-level catalog line',
+    entryStages: ['go'],
+    stages: { go: { description: sentinel, tools: { spawn_instance: 'allow' } } },
+    transitions: [],
+  }));
+
+  const doc = await composeConduct(['playbooks']);
+  // Guard: the playbook DID load, so the absence below is a real exclusion and
+  // not just a definition that never made it into the listing at all.
+  assert.match(doc, /`sentinel-flow` — the top-level catalog line/,
+    'fixture guard: the playbook must be in the listing');
+  assert.equal(doc.includes(sentinel), false,
+    'per-stage descriptions are recurring prompt cost — they stay out of the catalog listing');
+});
+
 test('the listing is absent when the playbooks convention is off', async () => {
   const doc = await composeConduct(['canonical-workflow']);
   assert.doesNotMatch(doc, /Available playbooks/,

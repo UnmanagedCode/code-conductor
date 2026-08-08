@@ -134,6 +134,11 @@ export interface Stage {
   needs: NeedsEntry[];
   workers: 'one' | 'many';
   tools: Record<string, ToolPolicy>;
+  // The conductor's MOVE at this stage — what it does and what it expects back.
+  // Never a restatement of `tools`/`needs`/the graph: those are enforced here and
+  // reported by describe_playbook, so a paraphrase is duplication that can drift.
+  // ABSENT unless authored (see readDescription).
+  description?: string;
 }
 
 export interface Transition {
@@ -143,6 +148,10 @@ export interface Transition {
   // so send_prompt cannot sneak a worker past it. An edge with no `on` is driven
   // by send_prompt (which always carries `stage`).
   on?: string;
+  // Reserved for the rare edge whose conductor move is not already implied by the
+  // destination stage's `description` + `needs`. `on`'s semantics arrive via that
+  // tool's own schema, so most edges need nothing here.
+  description?: string;
 }
 
 export interface Playbook {
@@ -154,9 +163,9 @@ export interface Playbook {
   transitions: Transition[];
 }
 
-const STAGE_KEYS = new Set(['needs', 'workers', 'tools']);
+const STAGE_KEYS = new Set(['needs', 'workers', 'tools', 'description']);
 const PLAYBOOK_KEYS = new Set(['id', 'name', 'description', 'entryStages', 'stages', 'transitions']);
-const TRANSITION_KEYS = new Set(['from', 'to', 'on']);
+const TRANSITION_KEYS = new Set(['from', 'to', 'on', 'description']);
 const NEEDS_KEYS = new Set(['stage', 'at']);
 const WORKERS_VALUES = new Set(['one', 'many']);
 const AT_VALUES = new Set(['current', 'ever']);
@@ -259,7 +268,9 @@ export function validatePlaybook(raw: unknown, id: string, index: ToolIndex): Va
       }
     }
 
-    stages[name] = { needs, workers, tools };
+    const description = readDescription(rawStage.description, `stage '${name}'`, err);
+
+    stages[name] = { needs, workers, tools, ...(description !== undefined && { description }) };
   }
 
   // ── spawnability rules ──
@@ -310,6 +321,9 @@ export function validatePlaybook(raw: unknown, id: string, index: ToolIndex): Va
       if (seenEdges.has(edge)) { err(`duplicate transition ${edge}`); continue; }
       seenEdges.add(edge);
       const t: Transition = { from: from as string, to: to as string };
+      // After the from/to check, so the message can name the edge it is about.
+      const description = readDescription(tU.description, `transition ${edge}`, err);
+      if (description !== undefined) t.description = description;
       if (tU.on !== undefined) {
         const on = tU.on;
         if (typeof on !== 'string' || !index.has(on)) {
@@ -355,6 +369,24 @@ export function validatePlaybook(raw: unknown, id: string, index: ToolIndex): Va
       transitions,
     },
   };
+}
+
+// The optional conductor-facing `description` on a stage or a transition.
+//
+// No length limit — the gate on what belongs here is editorial, not mechanical.
+// But a present-and-blank value is rejected like any other malformed one: it
+// would load clean and then render as a dead line wherever descriptions are
+// surfaced. Between that rejection and returning `undefined` for an omitted one,
+// the field is only ever ABSENT or a non-empty string — so a consumer tests for
+// the key rather than comparing against a sentinel, and there is no empty value
+// for a renderer to have to special-case.
+function readDescription(raw: unknown, where: string, err: (m: string) => void): string | undefined {
+  if (raw === undefined) return undefined;
+  if (typeof raw !== 'string' || !raw.trim()) {
+    err(`${where}: description must be a non-empty string (got ${JSON.stringify(raw)})`);
+    return undefined;
+  }
+  return raw;
 }
 
 function validateToolPolicy(
