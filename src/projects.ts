@@ -10,6 +10,7 @@ import { loadAll as loadAllSessionModes, effectiveResumeMode, unmarkSessionMode 
 import { lastActivityOf } from './sessionActivity.ts';
 import type { WorktreeMeta } from './worktrees.ts';
 import { httpError } from './httpError.ts';
+import { isSessionId } from './identifiers.ts';
 
 // Default projects root = parent directory of the code-conductor repo,
 // resolved once at module load. Layout: <parent>/code-conductor/src/
@@ -786,7 +787,7 @@ export async function findSessionLocation(sessionId: string): Promise<{ project:
   // Permissive validation: sessionIds are UUIDs in practice but we accept
   // anything that's safe to interpolate into a filename. The point is to
   // reject path-traversal payloads before they touch the filesystem.
-  if (typeof sessionId !== 'string' || !/^[A-Za-z0-9_-]+$/.test(sessionId)) return null;
+  if (!isSessionId(sessionId)) return null;
   // Resolve ONCE, here, rather than at each of the four call sites — they pass
   // mixed provenance (a conductor's public id, a REST path param, a segment id
   // off an archived row, an already-backing id from _doCreate) and this is the

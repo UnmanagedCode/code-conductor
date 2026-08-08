@@ -110,12 +110,12 @@ import {
 } from './workspaceConventions.ts';
 import type { InstanceLike, InstanceManagerLike } from './instanceTypes.ts';
 import { httpError } from './httpError.ts';
+import { isSessionId } from './identifiers.ts';
 
 // Session ids are user-supplied path params on many routes; this is the single
 // allow-list + rejection (400 "invalid sessionId") they all share.
-const SID_RE = /^[A-Za-z0-9_-]+$/;
 function assertValidSid(sid: string): void {
-  if (!SID_RE.test(sid)) {
+  if (!isSessionId(sid)) {
     throw httpError(400, 'invalid sessionId');
   }
 }

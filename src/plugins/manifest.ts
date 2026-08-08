@@ -1,6 +1,8 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { isKnownTier, isKnownClaudeModel, CLAUDE_BACKEND_ID, type BackendBinding, type TierBinding } from '../modelVersions.ts';
+import { isSlug, SLUG_RE, SLUG_MAX } from '../identifiers.ts';
+import { ALLOWED_PROP_KEYS } from '../mcp/argValidation.ts';
 
 // Plugin manifest: `conductor.plugin.json` at the plugin project root.
 // readManifest(dir) reads + validates; validateManifest(json) normalizes a
@@ -12,9 +14,6 @@ import { isKnownTier, isKnownClaudeModel, CLAUDE_BACKEND_ID, type BackendBinding
 export const MANIFEST_FILENAME = 'conductor.plugin.json';
 export const SUPPORTED_PLUGIN_APIS = [1];
 
-const ID_RE = /^[a-z][a-z0-9-]*$/;
-const SLUG_RE = /^[a-z][a-z0-9-]*$/;
-const SLUG_MAX = 40;
 const TOOL_NAME_RE = /^[a-zA-Z0-9_-]+$/;
 const MCP_TIMEOUT_DEFAULT = 30000;
 const MCP_TIMEOUT_CAP = 120000;
@@ -147,8 +146,8 @@ export function validateManifest(json: unknown): ReadManifestResult {
     if (!KNOWN_TOP_KEYS.has(k)) errors.push(`unknown key '${k}'`);
   }
 
-  if (typeof raw.id !== 'string' || !ID_RE.test(raw.id) || raw.id.length > 40) {
-    errors.push("'id' is required and must match ^[a-z][a-z0-9-]*$ (max 40 chars)");
+  if (!isSlug(raw.id)) {
+    errors.push(`'id' is required and must match ${SLUG_RE.source} (max ${SLUG_MAX} chars)`);
   }
   if (typeof raw.name !== 'string' || raw.name.trim() === '') {
     errors.push("'name' is required (non-empty string)");
@@ -263,7 +262,7 @@ function validateConventions(g: unknown, errors: string[]): ConventionEntry[] | 
     for (const k of Object.keys(e)) {
       if (!['slug', 'name', 'description', 'file', 'scope', 'scaffold'].includes(k)) errors.push(`unknown key '${label}.${k}'`);
     }
-    if (typeof e.slug !== 'string' || !SLUG_RE.test(e.slug) || e.slug.length > SLUG_MAX) {
+    if (!isSlug(e.slug)) {
       errors.push(`'${label}.slug' is required and must match ^[a-z][a-z0-9-]*$ (max 40 chars)`);
     } else if (seen.has(e.slug)) {
       errors.push(`duplicate convention slug '${e.slug}'`);
@@ -362,7 +361,7 @@ function validateRoles(roles: unknown, errors: string[]): PluginRole[] | null {
     for (const k of Object.keys(e)) {
       if (!['slug', 'name', 'binding'].includes(k)) errors.push(`unknown key '${label}.${k}'`);
     }
-    if (typeof e.slug !== 'string' || !SLUG_RE.test(e.slug) || e.slug.length > SLUG_MAX) {
+    if (!isSlug(e.slug)) {
       errors.push(`'${label}.slug' is required and must match ^[a-z][a-z0-9-]*$ (max 40 chars)`);
     } else if (seen.has(e.slug)) {
       errors.push(`duplicate role slug '${e.slug}'`);
@@ -554,7 +553,6 @@ function validateMcp(m: unknown, backend: PluginBackend | null, errors: string[]
 // and ignored (common author idiom; validateArgs rejects unknown args
 // unconditionally anyway).
 const FORBIDDEN_SCHEMA_KEYS = ['$ref', 'oneOf', 'anyOf', 'allOf', 'not'];
-const ALLOWED_PROP_KEYS = new Set(['type', 'description', 'enum', 'minLength', 'maxLength', 'pattern', 'minimum', 'maximum', 'items', 'default']);
 
 function checkSchemaSubset(schema: unknown, label: string, errors: string[]): void {
   if (typeof schema !== 'object' || schema === null || Array.isArray(schema)) {

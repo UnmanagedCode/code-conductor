@@ -20,6 +20,7 @@ import {
 import { OLLAMA_CLOUD_MODELS, isKnownOllamaCloudModel } from './ollamaCloudModels.ts';
 import { DEFAULT_EFFORT, INHERIT_EFFORT, isKnownEffort, type EffortLevel } from './effortLevels.ts';
 import { httpError } from './httpError.ts';
+import { isSlug, SLUG_RE, SLUG_MAX } from './identifiers.ts';
 
 // The on-disk settings document, typed loosely: every leaf is `unknown` because
 // the file is app-owned but pre-dates this module's conversion and can hold
@@ -258,8 +259,6 @@ export async function setDefaultSpawnTier(tier: unknown): Promise<TierName> {
 // come from MANAGED_BACKENDS — nothing on a managed row is read from the store.
 // So the built-in `ollama` template can't drift, `claude` always exists, and a
 // fresh install (no settings.json) still has both rows.
-const BACKEND_ID_RE = /^[a-z][a-z0-9-]*$/;
-const BACKEND_ID_MAX = 40;
 const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 function parseEnv(list: unknown): Array<{ key: string; value: string }> {
@@ -369,8 +368,8 @@ function storedBackends(): Array<Record<string, unknown>> {
 export async function addBackend(input: { id?: unknown; label?: unknown; template?: unknown; env?: unknown } = {}): Promise<BackendRecord> {
   const { id, label, template, env } = input;
   const cleanId = String(id ?? '').trim();
-  if (!BACKEND_ID_RE.test(cleanId) || cleanId.length > BACKEND_ID_MAX) {
-    throw httpError(400, `id must match ${BACKEND_ID_RE.source} (max ${BACKEND_ID_MAX} chars)`);
+  if (!isSlug(cleanId)) {
+    throw httpError(400, `id must match ${SLUG_RE.source} (max ${SLUG_MAX} chars)`);
   }
   if (isKnownBackend(cleanId)) {
     throw httpError(409, `backend '${cleanId}' already exists`);

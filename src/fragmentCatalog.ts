@@ -16,13 +16,11 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { writeFileAtomic } from './projects.ts';
 import { httpError } from './httpError.ts';
-
-const SLUG_RE = /^[a-z][a-z0-9-]*$/;
-const SLUG_MAX = 40;
+import { isSlug, SLUG_RE, SLUG_MAX } from './identifiers.ts';
 
 export function validateSlug(slug: string): string {
-  if (typeof slug !== 'string' || !SLUG_RE.test(slug) || slug.length > SLUG_MAX) {
-    throw httpError(400, 'invalid slug (must match ^[a-z][a-z0-9-]*$, max 40 chars)');
+  if (!isSlug(slug)) {
+    throw httpError(400, `invalid slug (must match ${SLUG_RE.source}, max ${SLUG_MAX} chars)`);
   }
   return slug;
 }
