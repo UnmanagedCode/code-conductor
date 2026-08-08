@@ -501,8 +501,10 @@ test('archive/ring seam: overlapping groups page whole, cursor progresses, no or
       // go. The seam clamp (2026-0054 C1) moves it the other way — when the
       // window straddles the archive/ring seam the cursor stops AT the seam
       // (`arch.cut`), skipping less than the raw window so the next page ends
-      // on the seam and can carry the gap marker. So the cap is the raw window
-      // start, raised to the seam when the seam is inside this window.
+      // on the seam and can carry the gap marker. So the cursor is either at or
+      // below the raw window start, or EXACTLY the seam — equality, not `<= the
+      // seam`, since a clamped cursor can only ever be `seamIdx` itself. That
+      // leaves no band between the two cases for a stray back-off to hide in.
       for (let p = 0; p < responses.length; p++) {
         const body = responses[p];
         if (!body.hasMore || body.events.length > 0 || body._requestedBefore == null) continue;
@@ -513,7 +515,7 @@ test('archive/ring seam: overlapping groups page whole, cursor progresses, no or
         const cursorIdx = universe.findIndex(e => e._seq === body.nextBefore);
         const label = `limit=${limit} page[${p}] (before=${body._requestedBefore} → ${body.nextBefore})`;
         assert.ok(cursorIdx !== -1, `${label}: cursor must name a real event`);
-        assert.ok(cursorIdx <= clampIdx,
+        assert.ok(cursorIdx <= rawStartIdx || cursorIdx === clampIdx,
           `${label}: an empty page must skip at most its own window, not overshoot it`);
         const crossed = universe.slice(cursorIdx, rawStartIdx)
           .filter(e => e.parentToolUseId == null && (e.kind === 'user_echo' || e.kind === 'turn_end'));
