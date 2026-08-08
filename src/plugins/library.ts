@@ -1,10 +1,10 @@
-import { spawn } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { projectsRoot, orchStoreRoot, validateName } from '../projects.ts';
 import { httpError } from '../httpError.ts';
 import { getProjectUpstreamStatus } from '../worktrees.ts';
 import { runGitLive, fetchOriginBounded } from '../gitLive.ts';
+import { runGroupedCommand, GROUP_OUTPUT_CAP } from '../groupedCommand.ts';
 
 // Plugin Library — a catalog of installable plugins (git repo URLs) offered
 // alongside the discovered-plugins list in Settings → Plugins. Installing
@@ -33,7 +33,6 @@ import { runGitLive, fetchOriginBounded } from '../gitLive.ts';
 const ALLOWED_SCHEMES = new Set(['http:', 'https:', 'git:']);
 const CLONE_TIMEOUT_MS = 120_000;
 const POST_HOOK_TIMEOUT_MS = 300_000; // longer than clone — installs pull deps (npm, browser binaries, ...)
-const HOOK_OUTPUT_CAP = 16 * 1024; // mirrors worktrees.ts's HOOK_OUTPUT_CAP / supervisor.ts's OUTPUT_CAP
 
 // A library catalog entry. `description`/`postClone`/`postPull` are optional
 // (a drop-in manifest may omit them).
@@ -212,41 +211,13 @@ function pullRepo(cwd: string, { onChunk }: { onChunk?: (s: string) => void } = 
 // Runs an arbitrary postClone/postPull command via `bash -lc` — the same
 // invocation style manifest `backend.start` and supervisor.ts's spawnChild()
 // already use for plugin-declared shell commands. Detached + process-group
-// kill on timeout (mirrors worktrees.ts's runPostWorktreeHook) rather than
-// execFile's built-in timeout, since a command like `npm install` or a
-// browser-binary downloader can spawn grandchildren that a plain kill of
-// the direct child would orphan. Never rejects.
+// kill on timeout rather than execFile's built-in timeout, since a command like
+// `npm install` or a browser-binary downloader can spawn grandchildren that a
+// plain kill of the direct child would orphan. Never rejects.
 function runHookCommand(command: string, cwd: string, { timeoutMs = POST_HOOK_TIMEOUT_MS, onChunk }: { timeoutMs?: number; onChunk?: (s: string) => void } = {}): Promise<{ code: number; output: string }> {
-  return new Promise((resolve) => {
-    let output = '';
-    const proc = spawn('bash', ['-lc', command], { cwd, env: process.env, detached: true });
-    const onData = (d: Buffer) => {
-      const s = d.toString();
-      output += s;
-      if (output.length > HOOK_OUTPUT_CAP) output = output.slice(-HOOK_OUTPUT_CAP);
-      onChunk?.(s);
-    };
-    proc.stdout?.on('data', onData);
-    proc.stderr?.on('data', onData);
-
-    let timedOut = false;
-    const killGroup = () => {
-      try { process.kill(-proc.pid!, 'SIGTERM'); } catch { proc.kill('SIGTERM'); }
-      setTimeout(() => {
-        try { process.kill(-proc.pid!, 'SIGKILL'); } catch { proc.kill('SIGKILL'); }
-      }, 100).unref();
-    };
-    const timer = setTimeout(() => { timedOut = true; killGroup(); }, timeoutMs);
-
-    proc.on('close', (code) => {
-      clearTimeout(timer);
-      resolve({ code: timedOut ? 124 : (code ?? 1), output: output.trimEnd() });
-    });
-    proc.on('error', (e) => {
-      clearTimeout(timer);
-      resolve({ code: 1, output: e.message });
-    });
-  });
+  return runGroupedCommand({ shell: command }, {
+    cwd, env: process.env, timeoutMs, cap: GROUP_OUTPUT_CAP, onChunk,
+  }).then(r => ({ code: r.code, output: r.output.trimEnd() }));
 }
 
 export function createPluginLibrary({ pluginHost = null, _cloneImpl = null, _pullImpl = null, _runHookImpl = null }: {

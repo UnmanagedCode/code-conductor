@@ -1,10 +1,10 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { spawn } from 'node:child_process';
 import { runGit, getProjectUpstreamStatus } from './worktrees.ts';
 import { runGitLive, fetchOriginBounded } from './gitLive.ts';
 import { httpError } from './httpError.ts';
+import { runGroupedCommand, GROUP_OUTPUT_CAP } from './groupedCommand.ts';
 
 // Conductor self-update — the app's own version of the Plugin Library update
 // path (src/plugins/library.ts). The conductor is distributed as a git clone
@@ -27,7 +27,6 @@ function defaultRepoRoot(): string {
   return process.env.SELF_UPDATE_REPO_ROOT || MODULE_REPO_ROOT;
 }
 
-const NPM_OUTPUT_CAP = 16 * 1024;   // mirrors library.ts's HOOK_OUTPUT_CAP
 const NPM_TIMEOUT_MS = 300_000;     // installs pull deps — same budget as postPull hooks
 const TAIL_CAP = 4000;              // error/result tail length, matching library.ts
 
@@ -48,36 +47,9 @@ async function readVersion(repoRoot: string): Promise<string | null> {
 // detached with a process-group timeout/kill — npm spawns grandchildren a
 // plain kill would orphan. Never rejects; resolves {code, output}.
 function runNpmInstall(cmd: string, cwd: string, { onChunk }: { onChunk?: (s: string) => void } = {}): Promise<{ code: number; output: string }> {
-  return new Promise((resolve) => {
-    let output = '';
-    const proc = spawn('bash', ['-lc', cmd], { cwd, env: process.env, detached: true });
-    const onData = (d: Buffer) => {
-      const s = d.toString();
-      output += s;
-      if (output.length > NPM_OUTPUT_CAP) output = output.slice(-NPM_OUTPUT_CAP);
-      onChunk?.(s);
-    };
-    proc.stdout?.on('data', onData);
-    proc.stderr?.on('data', onData);
-
-    let timedOut = false;
-    const killGroup = () => {
-      try { process.kill(-proc.pid!, 'SIGTERM'); } catch { proc.kill('SIGTERM'); }
-      setTimeout(() => {
-        try { process.kill(-proc.pid!, 'SIGKILL'); } catch { proc.kill('SIGKILL'); }
-      }, 100).unref();
-    };
-    const timer = setTimeout(() => { timedOut = true; killGroup(); }, NPM_TIMEOUT_MS);
-
-    proc.on('close', (code) => {
-      clearTimeout(timer);
-      resolve({ code: timedOut ? 124 : (code ?? 1), output: output.trimEnd() });
-    });
-    proc.on('error', (e) => {
-      clearTimeout(timer);
-      resolve({ code: 1, output: e.message });
-    });
-  });
+  return runGroupedCommand({ shell: cmd }, {
+    cwd, env: process.env, timeoutMs: NPM_TIMEOUT_MS, cap: GROUP_OUTPUT_CAP, onChunk,
+  }).then(r => ({ code: r.code, output: r.output.trimEnd() }));
 }
 
 // { version, upstream, behind, canCheck, updateAvailable }. Mirrors

@@ -5,6 +5,7 @@
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import { spawn } from 'node:child_process';
+import { killProcessGroup } from '../groupedCommand.ts';
 import { getShellEnvBundlePath, bundleShellKind } from '../claudeShellEnv.ts';
 import {
   listProjects as fsListProjects,
@@ -2403,12 +2404,10 @@ export async function bashProject({ project, worktree, command, timeout }: {
       return;
     }
 
-    const killGroup = () => {
-      try { process.kill(-proc.pid!, 'SIGTERM'); } catch { proc.kill('SIGTERM'); }
-      setTimeout(() => {
-        try { process.kill(-proc.pid!, 'SIGKILL'); } catch { proc.kill('SIGKILL'); }
-      }, 100).unref();
-    };
+    const killGroup = (): void => killProcessGroup(proc.pid, {
+      graceMs: 100,
+      fallback: (sig) => proc.kill(sig),
+    });
     // Keep draining both pipes to completion (avoids backpressure stalling
     // the process) but stop RETAINING bytes past the cap — matches the
     // built-in Bash tool's semantics (truncate what's *shown*, let the
