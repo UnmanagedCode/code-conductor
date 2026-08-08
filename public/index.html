@@ -327,6 +327,17 @@
                 next-spawned conductor. Keep the enabled set lean — every convention costs tokens in every
                 conductor session.
               </p>
+              <div class="st-actions">
+                <label for="dp-select">Default playbook</label>
+                <select id="dp-select"></select>
+              </div>
+              <p class="settings-desc">
+                Injects the selected playbook's stages, per-stage intent and policy summary into the
+                conductor's prompt, generated from its definition — so it knows its baseline graph without a
+                tool call. <code>describe_playbook</code> stays the live authority. Selecting <em>None</em>
+                injects nothing.
+              </p>
+              <div id="dp-status" class="st-status" aria-live="polite"></div>
               <div id="cc-status" class="st-status" aria-live="polite">Loading…</div>
               <ul id="cc-convention-list" class="cc-convention-list"></ul>
               <div id="cc-add-form" class="or-add-form" hidden>
