@@ -1,7 +1,7 @@
 {
   "id": "research",
   "name": "Research — investigative fan-out",
-  "description": "Many investigators in parallel, none with a worktree of its own: worktree creation is forced off and sync_worktree is denied.",
+  "description": "Many investigators in parallel, none with a worktree of its own.",
   "entryStages": ["investigate"],
 
   "stages": {
