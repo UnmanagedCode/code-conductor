@@ -67,6 +67,27 @@ test('all four built-in playbooks load and validate clean', async () => {
   assert.equal(playbooks.get('split').transitions.some(t => t.from === 'plan'), false);
 });
 
+// The built-ins are the templates user authors copy, and (per the dynamic
+// default-playbook convention) their stage descriptions land in the conductor's
+// system prompt. This pins the two MECHANICAL halves of that: every stage is
+// described, and the transition surface stays unpopulated — deliberately empty
+// on the built-ins so it is not a surface anyone has to keep trim. It cannot
+// pin WORDING: filler text passes. That gate is editorial, i.e. review.
+test('every built-in stage carries a description and no built-in transition does', async () => {
+  const { playbooks } = await loadPlaybooks();
+  for (const id of SEED_PLAYBOOK_IDS) {
+    const pb = playbooks.get(id);
+    for (const [name, stage] of Object.entries(pb.stages)) {
+      assert.equal(typeof stage.description, 'string', `${id}.${name} has no description`);
+      assert.ok(stage.description.trim().length > 0, `${id}.${name} has an empty description`);
+    }
+    for (const t of pb.transitions) {
+      assert.equal('description' in t, false,
+        `${id}: transition ${t.from}->${t.to} carries a description; built-ins leave that field empty`);
+    }
+  }
+});
+
 // A built-in's `require` values must be resolvable BY THE REAL PRODUCT, not
 // merely well-typed. The validator checks that a `require` key is a genuine
 // argument NAME of its tool; it cannot check that the VALUE means anything —

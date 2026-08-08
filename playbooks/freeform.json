@@ -1,11 +1,12 @@
 {
   "id": "freeform",
   "name": "Freeform — the named escape hatch",
-  "description": "One permissive stage for operational and read-only spawns; forcing createWorktree:false keeps code-writing work from silently routing around the gated playbooks.",
+  "description": "One permissive stage for operational and investigative spawns; the worker never gets a worktree of its own — it works in the live project tree, or in one you attach it to.",
   "entryStages": ["freeform"],
 
   "stages": {
     "freeform": {
+      "description": "For a one-off with nothing to plan or review — answer a question, read a log, run a command. Brief the goal and its sentinel. The worker is in the live project tree, so the moment the job turns into code changes, stop and re-run it under a playbook that reviews and lands.",
       "workers": "many",
       "tools": {
         "spawn_instance": { "require": { "createWorktree": false } }
