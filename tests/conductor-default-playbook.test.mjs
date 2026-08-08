@@ -286,8 +286,13 @@ test('the renderer\'s own prose duplicates nothing in canonical-workflow.md / pl
 // canonical-workflow.md still carried the review→refine mechanics that
 // classic/split's review+refine descriptions also carry; 2026-0068 deleted that
 // prose, so the authored fragments and the built-in descriptions now share no
-// 8-word run at all. A non-empty diff here means a fragment sentence and a stage
-// description have grown a second home — fix the duplication, never the list.
+// 8-word run at all. What a non-empty diff proves is narrower than "one home":
+// only that a fragment and a stage description now share text VERBATIM. The
+// shared-worktree hazard, for one, legitimately appears in both — the doc's
+// universal form and each `review` description's pair form — and passes because
+// it is reworded, not because it is stated once. Verbatim overlap is the
+// mechanical floor; the editorial gate is the grep audit. Fix the duplication
+// the diff names, never the list.
 const KNOWN_OVERLAP = [];
 
 test('the built-ins duplicate nothing in the authored fragments', async () => {

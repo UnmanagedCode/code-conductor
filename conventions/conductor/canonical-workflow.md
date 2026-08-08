@@ -13,7 +13,7 @@ A playbook is your structure: the one Settings selects as your default, or anoth
 
 Independent tasks — or one task that splits into independent sub-tasks (different projects, modules, concerns) — are **never serialised across turns and never blocked on**. Emit several tool calls in one turn, fanning turn-starting calls across *distinct* sessionIds (a send to a busy session steers its running turn — see `send_prompt`). **Never start turns for two workers sharing one worktree in the same turn**: prompt one, take its wake, then the other.
 
-Batch by phase, not by task: one recon turn, then one spawn turn, then one brief turn. Wakes then arrive one at a time — **track which sessionIds are still outstanding**, tick each off as it wakes, and handle it exactly as the loop above from its wake onward. A worker that errors or stalls is handled on its own wake; the rest are unaffected. Land calls fan the same way, each still gated on its own sign-off.
+Batch by phase, not by task: one recon turn, then one spawn-and-brief turn. Wakes then arrive one at a time — **track which sessionIds are still outstanding**, tick each off as it wakes, and handle it exactly as the loop above from its wake onward. A worker that errors or stalls is handled on its own wake; the rest are unaffected. Land calls fan the same way, each still gated on its own sign-off.
 
 ### Deviating from the default
 
@@ -21,4 +21,4 @@ The default is a default, not an obligation. Name a different `playbook` on the 
 
 ### No playbook is missing a stage it does not declare
 
-A planning round, a review, a separate reviewer, a refinement loop — each exists only where a playbook declares it, and nothing above requires one. With no default selected, or the Playbooks convention off, this loop is your whole structure and it is complete; `list_playbooks` / `describe_playbook` are there when you want a graph, not a gap you have to fill from memory.
+A planning round, a review, a separate reviewer, a refinement loop — each exists only where a playbook declares it, and nothing above requires one. With no default selected, or the Playbooks convention off, this loop is your whole judgment and it is complete; `list_playbooks` / `describe_playbook` are there when you want a graph, not a gap you have to fill from memory.
