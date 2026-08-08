@@ -496,15 +496,24 @@ test('archive/ring seam: overlapping groups page whole, cursor progresses, no or
       // reach `quiesceStart` bounds to the SAME turn — so the back-off crosses
       // no outer `user_echo`/`turn_end`. Pre-fix the empty page reported
       // `before=40 → nextBefore=29` at every limit, crossing two turn heads.
+      //
+      // The bound is one-sided on purpose: it caps how FAR DOWN the cursor may
+      // go. The seam clamp (2026-0054 C1) moves it the other way — when the
+      // window straddles the archive/ring seam the cursor stops AT the seam
+      // (`arch.cut`), skipping less than the raw window so the next page ends
+      // on the seam and can carry the gap marker. So the cap is the raw window
+      // start, raised to the seam when the seam is inside this window.
       for (let p = 0; p < responses.length; p++) {
         const body = responses[p];
         if (!body.hasMore || body.events.length > 0 || body._requestedBefore == null) continue;
         const endIdx = universe.findIndex(e => e._seq >= body._requestedBefore);
-        const rawStartIdx = Math.max(0, (endIdx === -1 ? universe.length : endIdx) - limit);
+        const rawEndIdx = endIdx === -1 ? universe.length : endIdx;
+        const rawStartIdx = Math.max(0, rawEndIdx - limit);
+        const clampIdx = arch.cut > rawStartIdx && arch.cut < rawEndIdx ? arch.cut : rawStartIdx;
         const cursorIdx = universe.findIndex(e => e._seq === body.nextBefore);
         const label = `limit=${limit} page[${p}] (before=${body._requestedBefore} → ${body.nextBefore})`;
         assert.ok(cursorIdx !== -1, `${label}: cursor must name a real event`);
-        assert.ok(cursorIdx <= rawStartIdx,
+        assert.ok(cursorIdx <= clampIdx,
           `${label}: an empty page must skip at most its own window, not overshoot it`);
         const crossed = universe.slice(cursorIdx, rawStartIdx)
           .filter(e => e.parentToolUseId == null && (e.kind === 'user_echo' || e.kind === 'turn_end'));
@@ -990,6 +999,180 @@ test('mid-turn ring head on a non-first turn: gap marker sits at the archive/rin
   assert.equal(all[gi + 1]._seq, tb, `marker sits right before the first ring-side event — ${trace()}`);
 });
 
+// 2026-0054 C1 — the composition of the empty-page cursor (slice 2) with the
+// seam-anchored marker (slice 3). The marker rule needs SOME page to end at the
+// seam or straddle it, which holds because backward pages tile — except on an
+// empty page, whose cursor is the pre-snap window start rather than its served
+// start. When that back-off lands strictly BELOW the seam the seam is neither a
+// page boundary nor interior to any served slice, and the marker is dropped on
+// every page of the walk: a silent hole, and a regression against pre-slice-2
+// behaviour. Every other gap fixture in this file has the back-off landing
+// exactly ON the seam (the `resetIdx` fiat cut), which is why they stay green
+// either way; this one is built so it lands below it.
+test('an empty page whose window straddles the seam still yields exactly one gap marker', async () => {
+  const sid = 'c1c1c1c1-1111-2222-3333-444444444444';
+  const { projectPath } = await seedSession({ ctx, projectName: 'straddle', sid, lines: turnLines(5) });
+
+  // Same mid-turn-head shape as the seam test above (5 turns → 15 archive
+  // events, cut 13, gap true), but two of the ring's deltas are children of a
+  // head that exists nowhere — the same truly-headless shape the seam fixture
+  // uses. That is what makes the trailing window unservable, hence empty, hence
+  // routed through the empty-page cursor.
+  const tb = 13;
+  const ring = Array.from({ length: 8 }, (_, i) => {
+    const ev = { kind: 'text_delta', msgId: 'mG', blockIdx: i, text: `g${i}`, _seq: tb + i };
+    if (tb + i === 15 || tb + i === 16) ev.parentToolUseId = 'GONE';
+    return ev;
+  });
+  const stubInst = {
+    cwd: projectPath, sessionId: sid, _userEchoCount: 5,
+    ring: { get trimmedBefore() { return tb; } },
+    ringSnapshot: () => ring.slice(),
+  };
+
+  const arch = await buildArchive({
+    cwd: projectPath, sessionId: sid, ring, trimmedBefore: tb, userEchoCount: 5,
+  });
+  assert.equal(arch.cut, tb);
+  assert.equal(arch.gap, true, 'mid-turn head means a real gap — the fixture is not vacuous');
+  const lastArchiveSeq = arch.events[arch.cut - 1]._seq;
+  assert.equal(lastArchiveSeq, 12);
+
+  // THE fixture property, stated before the walk so it cannot silently rot:
+  // the trailing page's pre-snap window start sits strictly BELOW the seam
+  // while its `end` sits above it — the window straddles the seam, so an empty
+  // page here hands out a cursor that would jump clean over it.
+  const LIMIT = 9;
+  const combinedLen = arch.cut + ring.length;
+  assert.ok(combinedLen - LIMIT < arch.cut && combinedLen > arch.cut,
+    'the trailing window must straddle the seam (pre-snap start below arch.cut, end above it)');
+
+  const pages = [];
+  let before;
+  for (let i = 0; i < 50; i++) {
+    const page = await pageInstanceEvents(stubInst, { limit: LIMIT, before });
+    pages.push({ before: before ?? null, page });
+    if (page.hasMore && before != null) {
+      assert.ok(page.nextBefore < before,
+        `nextBefore must strictly progress (${page.nextBefore} !< ${before})`);
+    }
+    if (!page.hasMore) break;
+    before = page.nextBefore;
+    if (i === 49) throw new Error('cursor never terminated');
+  }
+  const trace = () => JSON.stringify(pages.map(p =>
+    [p.before, p.page.events.map(e => e._seq ?? `<${e.kind}>`), p.page.nextBefore]));
+
+  // Non-vacuity: the empty-page path IS the one under test here.
+  const empty = pages.find(p => p.page.hasMore && p.page.events.length === 0);
+  assert.ok(empty, `the fixture must actually produce an empty page — ${trace()}`);
+
+  // (1) The marker survives the walk. Zero here is the C1 defect.
+  const all = pages.map(p => p.page.events).reverse().flat();
+  assert.equal(all.filter(e => e.kind === 'history_gap').length, 1,
+    `exactly one gap marker across all pages — ${trace()}`);
+
+  // (2) And it is still ON the seam: the last archive event, then the marker.
+  const gi = all.findIndex(e => e.kind === 'history_gap');
+  assert.equal(all[gi - 1]._seq, lastArchiveSeq,
+    `marker follows the last archive event — ${trace()}`);
+  const marked = pages.find(p => p.page.events.some(e => e.kind === 'history_gap')).page.events;
+  assert.equal(marked[marked.length - 1].kind, 'history_gap',
+    `the marker is its page's last event, on the seam — ${trace()}`);
+
+  // (3) The mechanism that gets it there: an empty page whose window straddles
+  // the seam stops AT the seam instead of stepping past it, so the page below
+  // it ends exactly on the seam and has an offset to splice the marker at.
+  assert.equal(empty.page.nextBefore, tb,
+    `the empty page's cursor must stop at the seam, not jump past it — ${trace()}`);
+
+  // (4) The clamp skips LESS than the raw window, so the archive event at the
+  // seam's doorstep is served rather than swallowed by the rejected window.
+  assert.ok(all.some(e => e._seq === lastArchiveSeq),
+    `the event just below the seam is still served — ${trace()}`);
+});
+
+// The other side of that clamp's guard. It may only fire when the seam is
+// STRICTLY inside the window (`seamIdx < end`): a page whose window already
+// ENDS on the seam has nothing to clamp, and clamping it would hand back its
+// own `before` — the 2026-0039 stall, re-introduced. Reachable, not theoretical:
+// this fixture stalls at `before=7` for limits 2 and 3 with the guard relaxed
+// to `<=`. Same jsonl shape as the archive-side-headless test above (kept
+// separate rather than shared so that pinned fixture stays untouched), but with
+// `trimmedBefore` low enough that the cut lands INSIDE the headless component —
+// which is what puts a rejected window directly beneath the seam.
+test('the seam clamp never fires on a window that already ends on the seam', async () => {
+  const sid = 'e7e7e7e7-1111-2222-3333-444444444444';
+  const TU = 'tu_headless_agent';
+  const plainTurn = (tag, i) => ([
+    { type: 'user', uuid: `u_${tag}`, message: { role: 'user', content: `prompt ${i}` } },
+    { type: 'assistant', uuid: `a_${tag}`, message: { id: `m_${tag}`, role: 'assistant', content: [
+      { type: 'text', text: `reply ${i}` },
+    ] } },
+  ]);
+  const { projectPath, sessionDir } = await seedSession({ ctx, projectName: 'seamclamp', sid, lines: [
+    ...plainTurn('p0', 0),
+    { type: 'user', uuid: 'u_p1', message: { role: 'user', content: 'prompt 1' } },
+    { type: 'user', uuid: 'u_res', toolUseResult: { agentId: 'ag1' }, message: { role: 'user', content: [
+      { type: 'tool_result', tool_use_id: TU, content: 'done', is_error: false },
+    ] } },
+    ...plainTurn('p2', 2), ...plainTurn('p3', 3),
+  ] });
+  await fs.mkdir(path.join(sessionDir, sid, 'subagents'), { recursive: true });
+  await fs.writeFile(
+    path.join(sessionDir, sid, 'subagents', 'agent-ag1.jsonl'),
+    Array.from({ length: 3 }, (_, i) => JSON.stringify({
+      type: 'assistant', uuid: `s${i}`, isSidechain: true,
+      message: { id: `ms${i}`, role: 'assistant', content: [{ type: 'text', text: `sub ${i}` }] },
+    })).join('\n') + '\n',
+  );
+
+  // trimmedBefore 7 sits inside the headless component (archive indices 4..9),
+  // so the clamp drops real content: cut === 7 and gap is true.
+  const tb = 7;
+  const ring = [
+    { kind: 'user_echo', text: 'prompt 2', userIndex: 2, _seq: tb },
+    { kind: 'text_delta', msgId: 'm_p2', blockIdx: 0, text: 'reply 2', _seq: tb + 1 },
+    { kind: 'text_end', msgId: 'm_p2', blockIdx: 0, _seq: tb + 2 },
+    { kind: 'user_echo', text: 'prompt 3', userIndex: 3, _seq: tb + 3 },
+    { kind: 'text_delta', msgId: 'm_p3', blockIdx: 0, text: 'reply 3', _seq: tb + 4 },
+    { kind: 'text_end', msgId: 'm_p3', blockIdx: 0, _seq: tb + 5 },
+  ];
+  const stubInst = {
+    cwd: projectPath, sessionId: sid, _userEchoCount: 4,
+    ring: { get trimmedBefore() { return tb; } },
+    ringSnapshot: () => ring.slice(),
+  };
+  const arch = await buildArchive({
+    cwd: projectPath, sessionId: sid, ring, trimmedBefore: tb, userEchoCount: 4,
+  });
+  assert.equal(arch.cut, tb, 'the cut is the trimmedBefore clamp, mid-component');
+  assert.equal(arch.gap, true, 'the clamp discarded archive content — the fixture is not vacuous');
+
+  for (const limit of [2, 3]) {
+    let before;
+    let sawSeamEndedPage = false;
+    const trace = [];
+    let terminated = false;
+    for (let i = 0; i < 40; i++) {
+      const page = await pageInstanceEvents(stubInst, { limit, before });
+      trace.push([before ?? null, page.events.map(e => e._seq ?? `<${e.kind}>`), page.hasMore, page.nextBefore]);
+      // The page under test: its window ends exactly on the seam (`before` is
+      // the ring head's seq) and it serves no real event.
+      if (before === tb && !page.events.some(e => e._seq != null)) sawSeamEndedPage = true;
+      if (page.hasMore && before != null) {
+        assert.ok(page.nextBefore < before,
+          `limit=${limit}: cursor stalled at ${before} — ${JSON.stringify(trace)}`);
+      }
+      if (!page.hasMore) { terminated = true; break; }
+      before = page.nextBefore;
+    }
+    assert.ok(terminated, `limit=${limit}: cursor never terminated — ${JSON.stringify(trace)}`);
+    assert.ok(sawSeamEndedPage,
+      `limit=${limit}: fixture must reach a window that ends on the seam — ${JSON.stringify(trace)}`);
+  }
+});
+
 test('limit is clamped; bad params 400; unknown instance 404', async () => {
   {
     const sid = 'eeeeeeee-2222-3333-4444-555555555555';
@@ -1082,6 +1265,12 @@ test('a terminal forward page above the seam still surfaces the gap marker', asy
     'the served window really is above the seam (no _seq === trimmedBefore in it)');
   assert.equal(page.events.filter(e => e.kind === 'history_gap').length, 1,
     'the evicted span is still marked');
+  // POSITION, not just presence: this page sits above the seam, so the marker
+  // is the APPEND, at the tail. Dropping `servedStart = start` from the forward
+  // branch turns `at` into 0 and routes the marker through the splice instead,
+  // emitting `[GAP, 8, 9, 10]` — same count, same `_seq` list, wrong place.
+  assert.equal(page.events[page.events.length - 1].kind, 'history_gap',
+    'the marker is appended below the served window, not spliced above it');
 });
 
 // A task batch that lives in older history must render its finished-task bubble

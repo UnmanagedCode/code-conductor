@@ -220,8 +220,11 @@ export async function pageInstanceEvents(inst: InstanceLike, { before = null, af
   // snap rejects the whole window the page is empty, and this is the cursor
   // the next page resumes from — see `nextBefore` below.
   let rawStart = 0;
+  // The backward window's end, hoisted for the empty-page cursor's seam clamp.
+  let rawEnd = 0;
   if (before != null) {
     const end = firstIndexAtOrAbove(combined, before);
+    rawEnd = end;
     rawStart = Math.max(0, end - max);
     let start = rawStart;
     // Quiescent page seams: open the window where reconstruction has no open
@@ -265,15 +268,35 @@ export async function pageInstanceEvents(inst: InstanceLike, { before = null, af
   // `rawStart` is under no such obligation — handing it out raw yields a next
   // page ending mid-block or mid-tool-round-trip.
   //
-  // `cursorIdx <= rawStart < end` whenever `end > 0`, and
+  // `cursorIdx < end` whenever `end > 0` (it is at or below `rawStart`, except
+  // for the seam clamp below, which stays under `end` by its own guard), and
   // `combined[end - 1]._seq < before`, so this is strictly below `before` — a
   // client can never re-request the cursor it just sent. `end === 0` implies
   // the archive was loaded (a ring-only window sits above `trimmedBefore` and
   // so has `end > 0`), hence `hasMore` is false there and the cursor is
   // terminal, not stalled.
-  const cursorIdx = before != null && !events.length
-    ? lastQuiescentAtOrBefore(combined, rawStart, { resetIdx: seamIdx })
-    : 0;
+  //
+  // One clamp on top of that back-off: the cursor may not step past the
+  // archive/ring seam in a single jump. Backward pages TILE — the next page's
+  // `end` is this page's cursor — and the gap marker below is anchored to the
+  // seam's position, so it needs some page to end at the seam or straddle it.
+  // Served pages tile for free (their cursor is their own served start); an
+  // empty page is the one that can jump the seam, and when its cursor lands
+  // strictly below `seamIdx` the seam becomes neither a page boundary nor
+  // interior to any served slice, and the marker is dropped on every page of
+  // the walk (2026-0054 C1). Clamping to `seamIdx` re-establishes the tiling
+  // at exactly the index that matters: the next page then ENDS on the seam and
+  // carries the marker. The clamp only ever raises the cursor, so it shrinks
+  // the rejected window rather than widening it — the events between
+  // `rawStart` and the seam get served instead of skipped — and `seamIdx <
+  // rawEnd` keeps it strictly below `before`, so progress and termination are
+  // unaffected. It cannot re-fire on the next page: that page's `end` IS
+  // `seamIdx`, and the guard is strict.
+  let cursorIdx = 0;
+  if (before != null && !events.length) {
+    cursorIdx = lastQuiescentAtOrBefore(combined, rawStart, { resetIdx: seamIdx });
+    if (seamIdx > cursorIdx && seamIdx < rawEnd) cursorIdx = seamIdx;
+  }
   const nextBefore = events.length
     ? events[0]._seq as number
     : (before != null ? (combined[cursorIdx]?._seq as number | undefined) ?? 0 : 0);
