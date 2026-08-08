@@ -212,6 +212,10 @@ export async function pageInstanceEvents(inst: InstanceLike, { before = null, af
 
   let events: UiEvent[];
   let hasMore: boolean;
+  // Index in `combined` of this page's first served event, in BOTH directions
+  // — the served slice is always `combined.slice(servedStart, …)`, so it turns
+  // a `combined` index into an offset inside `events`. Used by the gap marker.
+  let servedStart = 0;
   // The backward window BEFORE the quiescent snap moved its start. When the
   // snap rejects the whole window the page is empty, and this is the cursor
   // the next page resumes from — see `nextBefore` below.
@@ -234,6 +238,7 @@ export async function pageInstanceEvents(inst: InstanceLike, { before = null, af
     // (`resetIdx`) is a scan-opaque boundary: state is never computed across
     // the possibly-missing events.
     start = snapStartToQuiescent(combined, start, end, { resetIdx: seamIdx });
+    servedStart = start;
     events = combined.slice(start, end);
     hasMore = start > 0
       // Served down to the very start of what we have. With the archive
@@ -242,6 +247,7 @@ export async function pageInstanceEvents(inst: InstanceLike, { before = null, af
       || (!needArchive && tb > 0 && !!inst.sessionId);
   } else {
     const start = firstIndexAtOrAbove(combined, (after ?? 0) + 1);
+    servedStart = start;
     events = combined.slice(start, start + max);
     hasMore = start + events.length < combined.length;
   }
@@ -272,20 +278,39 @@ export async function pageInstanceEvents(inst: InstanceLike, { before = null, af
     ? events[0]._seq as number
     : (before != null ? (combined[cursorIdx]?._seq as number | undefined) ?? 0 : 0);
 
-  // Mark the evicted-content seam. When the ring head is mid-turn, the slice
-  // that carries the first ring event gets a `{kind:'history_gap'}` marker
-  // (no `_seq`, matching task_completion's synthesis) spliced right before
-  // it — the client renders an "earlier messages unavailable" divider there
-  // instead of silently gluing the surviving whole blocks together. On a
-  // terminal page (`!hasMore`) whose served window doesn't carry the ring
-  // head at all (e.g. an earlier, wider quiescent-snapped page already
-  // served it, leaving this archive-confirming call with nothing) the
-  // marker still has to surface somewhere, or the eviction goes unmarked —
-  // append it as this page's lone content.
+  // Mark the evicted-content seam with a `{kind:'history_gap'}` event (no
+  // `_seq`, matching task_completion's synthesis), so the client renders an
+  // "earlier messages unavailable" divider instead of silently gluing the
+  // surviving whole blocks together.
+  //
+  // The marker is anchored to the seam's POSITION in `combined`, not to the
+  // ring-head event happening to be inside the served slice. The seam is a
+  // boundary between two pages, and the page that ends exactly on it carries
+  // the last archive event, not the ring head — anchoring on the head put the
+  // marker on whichever page happened to serve `_seq === trimmedBefore`, or,
+  // failing that, on the terminal page far below the real boundary
+  // (2026-0054). `seamAnchor` is the index of the first ring-side event:
+  // `archive.cut` when the archive was loaded, else 0 (combined IS the ring,
+  // so the whole of it is ring-side — that is the no-`sessionId` gap branch).
+  // Deliberately NOT `seamIdx` itself: that doubles as `resetIdx` for both
+  // `snapStartToQuiescent` and `lastQuiescentAtOrBefore`, and its -1 means
+  // "no scan-opaque boundary", not "the seam is at 0".
+  //
+  // `at === events.length` is in range on purpose: it is the common case, the
+  // page whose window ENDS at the seam, where the marker is the last event.
+  //
+  // Backstop: the seam sits strictly BELOW everything this page serves (so no
+  // splice offset exists) and paging ends here, so no lower page will ever
+  // carry it — the eviction would go unmarked. Only forward (`after`) pages
+  // reach this: a backward page with `!hasMore` has `start === 0`, hence
+  // `at >= 0`. Do NOT widen it back to "any page that missed the seam" — in a
+  // mid-turn-head fixture the page above already carried the marker and this
+  // would emit a second one.
   if (gap) {
-    const headIdx = events.length ? events.findIndex(ev => (ev._seq as number) === tb) : -1;
-    if (headIdx !== -1) events.splice(headIdx, 0, { kind: 'history_gap' });
-    else if (!hasMore) events.push({ kind: 'history_gap' });
+    const seamAnchor = needArchive ? seamIdx : 0;
+    const at = seamAnchor - servedStart;
+    if (at >= 0 && at <= events.length) events.splice(at, 0, { kind: 'history_gap' });
+    else if (at < 0 && !hasMore) events.push({ kind: 'history_gap' });
   }
   // Inject synthetic `task_completion` bubbles below the tail. Derived over the
   // full `combined` history (so batches spanning page boundaries are correct),

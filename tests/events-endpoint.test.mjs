@@ -905,6 +905,91 @@ test('an empty archive-side page never returns nextBefore === before', async () 
   }
 });
 
+// 2026-0054 — the gap marker's POSITION. The fixture the card's TEST GAP names
+// and nothing else covered: a mid-turn ring head on a NON-FIRST turn, paged at a
+// `limit` below the ring size. Both are load-bearing. A non-first turn puts real
+// archive content BELOW the seam, so the seam-carrying page and the terminal page
+// are different pages; a limit under the ring size forces the walk to reach the
+// seam on a page of its own rather than serving everything at once. Relax either
+// and the fixture stops distinguishing seam-anchored from head-anchored.
+test('mid-turn ring head on a non-first turn: gap marker sits at the archive/ring seam', async () => {
+  const sid = 'c0c0c0c0-1111-2222-3333-444444444444';
+  const { projectPath } = await seedSession({ ctx, projectName: 'seammarker', sid, lines: turnLines(5) });
+
+  // Replay shape, pinned so the arithmetic below stays honest: 5 plain turns →
+  // 15 events, echo #4 at index 12.
+  const probe = await buildArchive({
+    cwd: projectPath, sessionId: sid, ring: [], trimmedBefore: Number.MAX_SAFE_INTEGER, userEchoCount: 5,
+  });
+  assert.equal(probe.events.length, 15);
+  assert.equal(probe.events[12].kind, 'user_echo');
+  assert.equal(probe.events[12].userIndex, 4);
+
+  // The giant 5th turn: its content overran the ring, so the trim could not
+  // reach turn 4's echo and the head is mid-turn. Distinct blockIdx per delta
+  // (the ring folds same-block deltas) and no text_end — every block stays open,
+  // which is what keeps the head off a turn boundary.
+  const tb = 13;
+  const ring = Array.from({ length: 9 }, (_, i) => (
+    { kind: 'text_delta', msgId: 'mG', blockIdx: i, text: `g${i}`, _seq: tb + i }
+  ));
+  const stubInst = {
+    cwd: projectPath, sessionId: sid, _userEchoCount: 5,
+    ring: { get trimmedBefore() { return tb; } },
+    ringSnapshot: () => ring.slice(),
+  };
+
+  const arch = await buildArchive({
+    cwd: projectPath, sessionId: sid, ring, trimmedBefore: tb, userEchoCount: 5,
+  });
+  assert.equal(arch.cut, tb, 'archive is cut just after turn 4\'s echo, level with the ring head');
+  assert.equal(arch.gap, true, 'mid-turn head means a real gap — the fixture is not vacuous');
+  // The seam, stated in seq terms: the last archive event served, and the first
+  // ring event. Everything below is asserted against THIS boundary, never
+  // against a page index — an off-by-one page would satisfy an index assertion.
+  const lastArchiveSeq = arch.events[arch.cut - 1]._seq;
+  assert.equal(lastArchiveSeq, 12);
+
+  const LIMIT = 7;
+  assert.ok(LIMIT < ring.length, 'limit must sit below the ring size');
+
+  const pages = [];
+  let before;
+  for (let i = 0; i < 50; i++) {
+    const page = await pageInstanceEvents(stubInst, { limit: LIMIT, before });
+    pages.push(page.events);
+    if (!page.hasMore) break;
+    before = page.nextBefore;
+    if (i === 49) throw new Error('cursor never terminated');
+  }
+  const trace = () => JSON.stringify(pages.map(p => p.map(e => e._seq ?? `<${e.kind}>`)));
+
+  // (a) Exactly one marker. Kills a "splice on every page that computes gap"
+  // mutant, and kills leaving the terminal append unnarrowed (the seam page and
+  // the terminal page are distinct here, so both would fire).
+  // Backward paging walks newest-first, so reassembling the stream means
+  // reversing the page order.
+  const all = pages.slice().reverse().flat();
+  assert.equal(all.filter(e => e.kind === 'history_gap').length, 1,
+    `exactly one gap marker across all pages — ${trace()}`);
+
+  // (b) It sits ON the seam within its own page: last event of the page whose
+  // newest served event is the last archive event. Pre-fix the marker is
+  // appended to the terminal page, whose newest event is _seq 5.
+  const marked = pages.find(p => p.some(e => e.kind === 'history_gap'));
+  const real = marked.filter(e => e._seq != null);
+  assert.equal(real[real.length - 1]._seq, lastArchiveSeq,
+    `the marker's page must be the one ending at the archive cut — ${trace()}`);
+  assert.equal(marked[marked.length - 1].kind, 'history_gap',
+    `the marker must be that page's last event, on the seam — ${trace()}`);
+
+  // (c) In the reassembled stream the marker separates the two seq spaces: the
+  // last archive event, the marker, then the ring head.
+  const gi = all.findIndex(e => e.kind === 'history_gap');
+  assert.equal(all[gi - 1]._seq, lastArchiveSeq, `marker follows the last archive event — ${trace()}`);
+  assert.equal(all[gi + 1]._seq, tb, `marker sits right before the first ring-side event — ${trace()}`);
+});
+
 test('limit is clamped; bad params 400; unknown instance 404', async () => {
   {
     const sid = 'eeeeeeee-2222-3333-4444-555555555555';
@@ -970,6 +1055,33 @@ test('T3 (Step 5): pageInstanceEvents marks a gap for a trimmed ring with no ses
   assert.equal(gaps.length, 1, 'exactly one gap marker for the unreplayable evicted span');
   assert.equal(page.events[0].kind, 'history_gap', 'marker sits right before the retained ring head');
   assert.equal(page.events[1]._seq, 5, 'the ring head follows immediately after the marker');
+});
+
+// The narrowed terminal-page backstop (2026-0054, mutant `mutG`). Once the
+// marker is anchored to the seam's position, a page whose window sits above the
+// seam has no offset to splice at — and a BACKWARD such page always has a lower
+// page coming that does (its `!hasMore` implies `start === 0`). Forward paging
+// has no such page: `after` past the ring head serves the top of the stream and
+// stops, so without the append the eviction would go unmarked entirely. Deleting
+// the append must fail here; widening it back to "any page that missed the seam"
+// must fail the mid-turn-head test above with two markers.
+test('a terminal forward page above the seam still surfaces the gap marker', async () => {
+  const ring = Array.from({ length: 6 }, (_, i) => (
+    { kind: 'text_delta', msgId: 'm', blockIdx: i, text: `e${i}`, _seq: 5 + i }
+  ));
+  const stubInst = {
+    cwd: '/fake', sessionId: null, _userEchoCount: 0,
+    ring: { get trimmedBefore() { return 5; } },
+    ringSnapshot: () => ring.slice(),
+  };
+  // after=7 starts the window at _seq 8, strictly above the seam (the ring head
+  // at _seq 5 === trimmedBefore), and the whole remainder fits in one page.
+  const page = await pageInstanceEvents(stubInst, { after: 7, limit: 10 });
+  assert.equal(page.hasMore, false, 'terminal page — nothing below will carry the marker');
+  assert.deepEqual(page.events.map(e => e._seq).filter(s => s != null), [8, 9, 10],
+    'the served window really is above the seam (no _seq === trimmedBefore in it)');
+  assert.equal(page.events.filter(e => e.kind === 'history_gap').length, 1,
+    'the evicted span is still marked');
 });
 
 // A task batch that lives in older history must render its finished-task bubble
