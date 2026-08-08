@@ -136,6 +136,12 @@ test('default selected ⇒ its stages and per-stage descriptions are in the comp
   await setDefaultPlaybook('classic');
   const doc = await composeCurrentConduct();
   assert.ok(doc.includes('## Default playbook — `classic`'), 'section present');
+  // LOAD-BEARING ORDER. The section deliberately omits the playbook's
+  // description and a describe_playbook pointer because the listing above
+  // carries both; met cold, it would cost the conductor the very round-trip this
+  // surface exists to remove.
+  assert.ok(doc.indexOf('**Available playbooks**') < doc.indexOf('## Default playbook'),
+    'the available-playbooks listing precedes the default-playbook section');
   const { playbooks } = await loadPlaybooks();
   const pb = playbooks.get('classic');
   for (const [name, stage] of Object.entries(pb.stages)) {

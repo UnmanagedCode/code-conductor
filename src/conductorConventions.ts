@@ -267,6 +267,11 @@ export async function composeConduct(enabledSlugs: string[]): Promise<string> {
   let mods = (await catalog.compose(enabledSlugs)).trim();
   // Both generated sections ride the playbooks convention, so a session with
   // that convention off pays nothing for them.
+  //
+  // ORDER IS LOAD-BEARING, and pinned by a test: the default-playbook section
+  // omits its playbook's description and a describe_playbook pointer BECAUSE the
+  // listing carries both. Met first, it would cost the conductor the round-trip
+  // that section exists to remove. Don't reorder, and don't insert between them.
   if (mods && enabledSlugs.includes(PLAYBOOKS_SLUG)) {
     for (const section of [await playbookListing(), await defaultPlaybookConvention()]) {
       if (section) mods = `${mods}\n\n${section}`;
