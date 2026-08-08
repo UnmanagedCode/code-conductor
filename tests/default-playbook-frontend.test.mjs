@@ -1,0 +1,150 @@
+// The Settings → Conductor default-playbook picker (public/defaultPlaybook.js)
+// and the seam that feeds it (conventionsPanel's `onData`), driven under
+// happy-dom against a scripted fetch.
+//
+// Server-side tests cannot see these: renaming the payload key or deleting the
+// one-line `onData?.(data)` call leaves every REST test green while the picker
+// permanently shows only "None".
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import path from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { Window } from 'happy-dom';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const PUB = path.resolve(__dirname, '..', 'public');
+
+let counter = 0;
+function freshImport(name) {
+  return import(pathToFileURL(path.join(PUB, name)).href + '?t=' + (++counter));
+}
+
+const BASE = '/api/settings/conventions/conductor';
+
+const PAYLOAD = {
+  core: { name: 'Core', description: 'core' },
+  conventions: [{ slug: 'playbooks', name: 'Playbooks', description: 'p', body: '## Playbooks', builtin: true }],
+  enabled: ['playbooks'],
+  playbooks: [
+    { id: 'classic', name: 'Classic — one worker', description: 'c', entryStages: ['plan'], spawnableStages: ['plan', 'review'] },
+    { id: 'split', name: 'Split — plan and implement are distinct', description: 's', entryStages: ['plan'], spawnableStages: ['plan'] },
+  ],
+  playbookErrors: [],
+  defaultPlaybook: 'split',
+};
+
+// A window with the picker's markup (and the conventions panel's, for the seam
+// test), plus a scripted fetch recording every call.
+function setup({ payload = PAYLOAD } = {}) {
+  const window = new Window({ url: 'http://localhost/', settings: { disableIframePageLoading: true } });
+  globalThis.window = window;
+  globalThis.document = window.document;
+  window.document.body.innerHTML = `
+    <div class="st-actions"><label for="dp-select">Default playbook</label><select id="dp-select"></select></div>
+    <div id="dp-status"></div>
+    <div id="cc-status"></div>
+    <ul id="cc-convention-list"></ul>
+  `;
+  const calls = [];
+  globalThis.fetch = async (url, opts = {}) => {
+    calls.push({ url, method: opts.method || 'GET', body: opts.body ? JSON.parse(opts.body) : undefined });
+    if ((opts.method || 'GET') === 'GET') {
+      return { ok: true, status: 200, json: async () => structuredClone(payload) };
+    }
+    return { ok: true, status: 200, json: async () => ({}) };
+  };
+  return { window, calls };
+}
+
+const optionsOf = (sel) => [...sel.options].map(o => [o.value, o.textContent]);
+
+test('renders one option per playbook plus None, and preselects the stored default', async () => {
+  const { window } = setup();
+  const { installDefaultPlaybook } = await freshImport('defaultPlaybook.js');
+  installDefaultPlaybook({ base: BASE }).render(PAYLOAD);
+
+  const sel = window.document.getElementById('dp-select');
+  assert.deepEqual(optionsOf(sel), [
+    ['', 'None — no playbook convention injected'],
+    ['classic', 'classic — Classic — one worker'],
+    ['split', 'split — Split — plan and implement are distinct'],
+  ]);
+  assert.equal(sel.value, 'split', 'stored default is preselected');
+});
+
+test('no stored default selects None', async () => {
+  const { window } = setup();
+  const { installDefaultPlaybook } = await freshImport('defaultPlaybook.js');
+  installDefaultPlaybook({ base: BASE }).render({ ...PAYLOAD, defaultPlaybook: null });
+  assert.equal(window.document.getElementById('dp-select').value, '');
+});
+
+test('a re-render does not accumulate duplicate options', async () => {
+  const { window } = setup();
+  const { installDefaultPlaybook } = await freshImport('defaultPlaybook.js');
+  const picker = installDefaultPlaybook({ base: BASE });
+  picker.render(PAYLOAD);
+  picker.render(PAYLOAD);
+  assert.equal(window.document.getElementById('dp-select').options.length, 3);
+});
+
+test('choosing a playbook PUTs it; choosing None PUTs an explicit null', async () => {
+  const { window, calls } = setup();
+  const { installDefaultPlaybook } = await freshImport('defaultPlaybook.js');
+  installDefaultPlaybook({ base: BASE }).render(PAYLOAD);
+  const sel = window.document.getElementById('dp-select');
+
+  sel.value = 'classic';
+  sel.dispatchEvent(new window.Event('change'));
+  await window.happyDOM.waitUntilComplete();
+  assert.deepEqual(calls.at(-1), {
+    url: `${BASE}/default-playbook`, method: 'PUT', body: { id: 'classic' },
+  });
+
+  sel.value = '';
+  sel.dispatchEvent(new window.Event('change'));
+  await window.happyDOM.waitUntilComplete();
+  // Explicit null, never an absent key — the server refuses a body with no `id`.
+  assert.deepEqual(calls.at(-1).body, { id: null });
+});
+
+test('a failed save is reported rather than silently swallowed', async () => {
+  const { window } = setup();
+  globalThis.fetch = async () => ({ ok: false, status: 400, json: async () => ({ error: 'unknown playbook id' }) });
+  const { installDefaultPlaybook } = await freshImport('defaultPlaybook.js');
+  installDefaultPlaybook({ base: BASE }).render(PAYLOAD);
+  const sel = window.document.getElementById('dp-select');
+  sel.value = 'classic';
+  sel.dispatchEvent(new window.Event('change'));
+  await window.happyDOM.waitUntilComplete();
+  assert.match(window.document.getElementById('dp-status').textContent, /unknown playbook id/);
+});
+
+test('definitions rejected at load are surfaced, not swallowed into an empty list', async () => {
+  const { window } = setup();
+  const { installDefaultPlaybook } = await freshImport('defaultPlaybook.js');
+  installDefaultPlaybook({ base: BASE }).render({
+    ...PAYLOAD, playbooks: [], playbookErrors: [{ id: 'mine', message: 'stages must be a non-empty object' }],
+  });
+  const status = window.document.getElementById('dp-status').textContent;
+  assert.match(status, /mine: stages must be a non-empty object/);
+  assert.equal(window.document.getElementById('dp-select').options.length, 1, 'only None');
+});
+
+test('conventionsPanel.load() feeds its onData consumer the whole payload', async () => {
+  // The seam: one GET backs both widgets. Deleting `onData?.(data)` leaves every
+  // server test green and the picker permanently empty.
+  const { window } = setup();
+  const [{ installConventionsPanel }, { installDefaultPlaybook }] = await Promise.all([
+    freshImport('conventionsPanel.js'), freshImport('defaultPlaybook.js'),
+  ]);
+  const picker = installDefaultPlaybook({ base: BASE });
+  const panel = installConventionsPanel({
+    prefix: 'cc', base: BASE, hasToggle: true, noun: 'conductor convention', onData: picker.render,
+  });
+  await panel.load();
+  const sel = window.document.getElementById('dp-select');
+  assert.equal(sel.options.length, 3, 'picker populated from the panel load');
+  assert.equal(sel.value, 'split');
+  assert.equal(window.document.getElementById('cc-convention-list').children.length, 1, 'panel still rendered its own list');
+});

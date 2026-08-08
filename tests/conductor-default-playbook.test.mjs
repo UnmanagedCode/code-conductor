@@ -20,7 +20,7 @@ import { fileURLToPath } from 'node:url';
 import { bootServer, api, freshProjectsRoot, rmrf } from './helpers.mjs';
 import {
   SEED_CONVENTIONS, setSelection, composeCurrentConduct,
-  getDefaultPlaybook, setDefaultPlaybook, defaultPlaybookConvention,
+  getDefaultPlaybook, setDefaultPlaybook, defaultPlaybookConvention, playbookListing,
 } from '../src/conductorConventions.ts';
 import { renderPlaybookConvention } from '../src/playbookConvention.ts';
 import { loadPlaybooks } from '../src/playbooks.ts';
@@ -236,14 +236,28 @@ test('the scope and closure lines bound the policy enumeration', async () => {
   // declare no sessionId, so they are ungovernable by construction.
   const out = await renderFixture(fixture({ alphaDesc: 'A.', betaDesc: 'B.' }));
   const scope = 'Policy governs only calls that name a worker, plus `spawn_instance` — it never gates what lands.';
-  const closure = 'Unlisted tools are allowed; `spawn_instance` is denied in any stage that does not name it.';
+  const closure = 'Unlisted tools are allowed unless a stage lists `*`; `spawn_instance` is denied in any stage that does not name it.';
   assert.equal(out.split(scope).length - 1, 1, 'scope line appears exactly once');
   assert.equal(out.split(closure).length - 1, 1, 'closure line appears exactly once');
 });
 
-test('the rendering points at describe_playbook as the live authority', async () => {
+test('the closure line stays TRUE for a stage that denies via the `*` wildcard', async () => {
+  // resolvePolicy is exact-name → `"*"` → default, and `"*": "deny"` loads
+  // clean — so an unconditional "unlisted tools are allowed" would be a false
+  // claim about enforcement, three lines above the `*` entry contradicting it.
+  const def = fixture({ alphaDesc: 'A.', betaDesc: 'B.' });
+  def.stages.alpha.tools = { spawn_instance: 'allow', '*': 'deny' };
+  const out = await renderFixture(def);
+  assert.ok(out.includes('Unlisted tools are allowed unless a stage lists `*`'), 'the claim is conditioned');
+  assert.ok(!out.includes('Unlisted tools are allowed;'), 'never the unconditional form');
+  assert.ok(out.includes('`*` (all other tools) deny'), 'the wildcard policy itself is rendered');
+});
+
+test('the rendering does not echo what the playbooks listing already carries', async () => {
+  // The listing sits directly above this section in the same prompt.
   const out = await renderFixture(fixture({ alphaDesc: 'A.', betaDesc: 'B.' }));
-  assert.ok(out.includes(`\`describe_playbook({id: '${FIXTURE_ID}'})\` is the live authority`));
+  assert.ok(!out.includes('Overlay playbook used by the drift proof.'), 'no top-level description echo');
+  assert.ok(!out.includes('describe_playbook'), 'no second pointer at the authority');
 });
 
 test('a stage with no tools policy renders no policy line', async () => {
@@ -273,10 +287,14 @@ const shingles = (text) => {
   return out;
 };
 
+// Everything else the composed prompt carries about playbooks: the two authored
+// fragments AND the generated available-playbooks listing, which sits directly
+// above this section. Omitting the listing is how a section that echoes it
+// passes a duplication test.
 async function fragmentShingles() {
   const bodies = await Promise.all(['canonical-workflow.md', 'playbooks.md']
     .map(f => fs.readFile(path.join(CONVENTIONS_DIR, f), 'utf8')));
-  return shingles(bodies.join('\n'));
+  return shingles([...bodies, await playbookListing()].join('\n'));
 }
 
 test('the renderer\'s own prose duplicates nothing in canonical-workflow.md / playbooks.md', async () => {
@@ -341,4 +359,13 @@ test('PUT default-playbook persists, clears, and refuses an unknown id', async (
   r = await api(baseUrl, 'PUT', '/api/settings/conventions/conductor/default-playbook', { id: null });
   assert.equal(r.status, 200);
   assert.equal(r.body.defaultPlaybook, null);
+});
+
+test('PUT default-playbook with no `id` key is a 400, not a silent clear', async () => {
+  await api(baseUrl, 'PUT', '/api/settings/conventions/conductor/default-playbook', { id: 'classic' });
+  const r = await api(baseUrl, 'PUT', '/api/settings/conventions/conductor/default-playbook', {});
+  assert.equal(r.status, 400);
+  assert.match(r.body.error, /id is required/);
+  assert.equal((await api(baseUrl, 'GET', '/api/settings/conventions/conductor')).body.defaultPlaybook, 'classic',
+    'the selection survived the malformed request');
 });

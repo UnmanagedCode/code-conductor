@@ -27,22 +27,31 @@ import { type Playbook, type Stage, type ToolPolicy, isSpawnable } from './playb
 // DELTAS off a default, not allow-lists. Stated once here rather than annotated
 // onto every stage.
 //
+// The `*` clause is load-bearing, not hedging: resolvePolicy falls back to the
+// stage's `"*"` entry BEFORE the default, and `"*": "deny"` is a legal policy —
+// so a bare "unlisted tools are allowed" would be a false claim about
+// enforcement in every conductor's system prompt for such a stage.
+//
 // Neither line restates the land-gating rule itself (that lives in
 // conventions/conductor/canonical-workflow.md) — they bound this rendering.
 const SCOPE_LINE =
   'Policy governs only calls that name a worker, plus `spawn_instance` — it never gates what lands.';
 const CLOSURE_LINE =
-  'Unlisted tools are allowed; `spawn_instance` is denied in any stage that does not name it.';
+  'Unlisted tools are allowed unless a stage lists `*`; `spawn_instance` is denied in any stage that does not name it.';
 
 export function renderPlaybookConvention(pb: Playbook): string {
+  // Deliberately NOT repeated here: the playbook's top-level description and a
+  // pointer at describe_playbook. The available-playbooks listing sits directly
+  // above this section in the same prompt and carries both — echoing them is the
+  // duplication this whole surface exists to kill.
+  //
+  // Also not rendered: `entryStages`. A spawn is gated by isSpawnable, not by
+  // entryStages membership, so naming it would state a narrower rule than the
+  // engine enforces. The per-stage `(spawnable)` flags carry the real one.
   const lines: string[] = [
     `## Default playbook — \`${pb.id}\``,
     '',
-    pb.description,
-    '',
-    `Generated from the definition; \`describe_playbook({id: '${pb.id}'})\` is the live authority.`,
-    `Enter at: ${pb.entryStages.map(s => `\`${s}\``).join(', ') || '(no entry stage)'}. ${SCOPE_LINE}`,
-    CLOSURE_LINE,
+    `${SCOPE_LINE} ${CLOSURE_LINE}`,
     '',
   ];
 

@@ -1761,8 +1761,14 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
 
   r.put('/settings/conventions/conductor/default-playbook', async (req, res, next) => {
     try {
-      const id = jsonBody(req).id as string | null;
-      res.json({ defaultPlaybook: await setDefaultPlaybook(id ?? null) });
+      // `id` must be PRESENT — clearing is `{"id": null}`, never an empty body.
+      // A body-less PUT is a malformed request, and treating it as "clear"
+      // discards the selection silently.
+      const body = jsonBody(req);
+      if (!('id' in body)) {
+        throw Object.assign(new Error('id is required (pass null to clear the default playbook)'), { statusCode: 400 });
+      }
+      res.json({ defaultPlaybook: await setDefaultPlaybook(body.id as string | null) });
     } catch (e) { next(e); }
   });
 
