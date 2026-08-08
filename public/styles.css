@@ -1649,7 +1649,9 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
     font-size: 12px;
     color: var(--muted);
   }
-  .sm-field select { flex: 1 1 auto; min-width: 0; }
+  /* Cap the control rather than letting it stretch the full width of a 719px
+     card, where a 600px-wide select for `high` reads as a layout accident. */
+  .sm-field select { flex: 1 1 auto; min-width: 0; max-width: 380px; }
   /* The wide role row pins its selects to content width (and pushes effort right
      with margin-left:auto); restated at matching specificity so a stacked field
      fills its line like the tier rows' do. */

@@ -849,7 +849,10 @@ export function installSettings({
         bindingSel.appendChild(customOpt);
         bindingSel.setAttribute('aria-label', `Binding for ${rowLabel}`);
         bindingSel.addEventListener('change', () => onPickRoleBinding(r.role, bindingSel.value));
-        li.appendChild(labelledField('binding', 'binds to', bindingSel));
+        // Caption is `binding`, not `binds to`: it has to be contained in the
+        // aria-label above (WCAG 2.5.3 Label in Name) or a speech-input user can't
+        // say what they see to target the control.
+        li.appendChild(labelledField('binding', 'binding', bindingSel));
 
         // Custom backend + model pickers, only when Custom is selected.
         if (isCustom) {

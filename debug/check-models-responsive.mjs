@@ -93,6 +93,20 @@ function measure({ TAP_MIN, SELECT_MIN_W, EPS, narrow }) {
   const rowName = (li) =>
     (li.querySelector('.sm-family-label')?.textContent || '?').slice(0, 24);
 
+  // A `display: contents` element generates no box at all, so
+  // getBoundingClientRect() returns zeros for it — which means `li.children` is
+  // NOT a row's list of laid-out boxes. Above the breakpoint every control sits
+  // inside a `display: contents` `label.sm-field` wrapper, so iterating
+  // `li.children` there would silently measure the wrappers (all zero) and skip
+  // every select, checkbox and radio the geometry loops exist to pin. Flatten
+  // through contents-display children and drop `display: none` ones instead.
+  const boxesOf = (el) => [...el.children].flatMap((c) => {
+    const d = getComputedStyle(c).display;
+    if (d === 'contents') return boxesOf(c);
+    if (d === 'none') return [];
+    return [c];
+  });
+
   // 1. Whole-page overflow.
   if (de.scrollWidth > de.clientWidth) {
     fail('doc-overflow', `documentElement scrollWidth ${de.scrollWidth} > clientWidth ${de.clientWidth}`);
@@ -108,7 +122,7 @@ function measure({ TAP_MIN, SELECT_MIN_W, EPS, narrow }) {
   const exempt = (el) => !narrow && el.closest('#sm-role-list') !== null;
   if (!narrow) {
     const over = Math.max(0, ...[...document.querySelectorAll('#sm-role-list .sm-role-row')].map(li =>
-      Math.max(0, ...[...li.children].map(k => rect(k).right)) - rect(li).right));
+      Math.max(0, ...boxesOf(li).map(k => rect(k).right)) - rect(li).right));
     known.push(over > EPS
       ? `wide role row overflows its own box by ${round(over)}px (content column ${content.clientWidth}px)` +
         ` — pre-existing no-wrap flex, not asserted above the breakpoint`
@@ -131,15 +145,18 @@ function measure({ TAP_MIN, SELECT_MIN_W, EPS, narrow }) {
   // 2. The scrolling container. `.settings-content` is `overflow-y: auto`, which
   //    computes to `auto` on both axes — it clips and scrolls sideways rather
   //    than pushing the document out, so check #1 alone cannot see this.
-  //    Above the breakpoint, measure the tier list alone (see `exempt`): 721px is
-  //    the narrowest the six-column grid ever renders and its ~420px min-content
-  //    has to actually fit there.
+  //    Above the breakpoint the role list is exempt (see `exempt`), so measure the
+  //    widest laid-out box in the TIER rows instead of the whole scroller: 721px is
+  //    the narrowest the six-column grid ever renders, and it has to fit in the
+  //    content column there. Measured through `boxesOf`, or the wrappers' zero
+  //    rects would reduce this to the tier label's right edge and never fire.
+  const contentLeft = rect(content).left + content.scrollLeft;
   const scrollW = narrow
     ? content.scrollWidth
     : Math.ceil(Math.max(0, ...[...document.querySelectorAll('#sm-tier-list .sm-family-row')]
-        .flatMap(li => [...li.children].map(k => rect(k).right)))) - Math.floor(rect(content).left);
+        .flatMap(li => boxesOf(li).map(k => rect(k).right))) - contentLeft);
   if (scrollW > content.clientWidth + 1) {
-    fail('container-overflow', `${narrow ? '.settings-content' : '#sm-tier-list'} scrollWidth ${scrollW} > .settings-content clientWidth ${content.clientWidth}`);
+    fail('container-overflow', `${narrow ? '.settings-content scrollWidth' : '#sm-tier-list rightmost box'} ${scrollW} > .settings-content clientWidth ${content.clientWidth}`);
   }
 
   // 3. Containment: nothing in the panel may stick out of the panel box. Catches
@@ -159,9 +176,28 @@ function measure({ TAP_MIN, SELECT_MIN_W, EPS, narrow }) {
   const measured = [];
   for (const li of rows) {
     const r = rect(li);
-    const kids = [...li.children];
+    const kids = boxesOf(li); // laid-out boxes, not the contents-display wrappers
     const controls = [...li.querySelectorAll('select, button, input')];
     measured.push({ row: rowName(li), h: round(r.height), w: round(r.width) });
+
+    // 3b. Self-check on `boxesOf`, because the geometry loops below are only as
+    //     good as the box list they walk. A zero-rect entry means a box that gets
+    //     silently skipped — which is exactly how a `display: contents` wrapper
+    //     once made checks 6 and 8 vacuous — and above the breakpoint every
+    //     control must be a direct box, not buried behind one.
+    for (const k of kids) {
+      const kr = rect(k);
+      if (kr.width === 0 && kr.height === 0) {
+        fail('zero-box', `${rowName(li)}: ${name(k)} has a zero rect — the loops below would skip it (display: contents?)`);
+      }
+    }
+    if (!narrow) {
+      for (const c of controls) {
+        if (!kids.includes(c)) {
+          fail('uncovered-control', `${rowName(li)}: ${name(c)} is not in the row's laid-out box list — the geometry loops would not see it`);
+        }
+      }
+    }
 
     // 4. Non-collapse: a select starved to a stub is unreadable, not merely ugly.
     //    The width floor is narrow-only — the wide grid's backend (88px) and
@@ -197,7 +233,6 @@ function measure({ TAP_MIN, SELECT_MIN_W, EPS, narrow }) {
     for (let i = 0; i < kids.length; i++) {
       for (let j = i + 1; j < kids.length; j++) {
         const a = rect(kids[i]), b = rect(kids[j]);
-        if (a.width === 0 || b.width === 0) continue;
         const ox = Math.min(a.right, b.right) - Math.max(a.left, b.left);
         const oy = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top);
         if (ox > EPS && oy > EPS) {
@@ -223,6 +258,12 @@ function measure({ TAP_MIN, SELECT_MIN_W, EPS, narrow }) {
       } else if (narrow && (getComputedStyle(cap).display === 'none' || rect(cap).width === 0)) {
         fail('no-visible-caption', `${rowName(li)}: caption '${text}' is not visible at this width`);
       }
+      // WCAG 2.5.3 Label in Name (Level A): the visible caption has to appear in
+      // the accessible name, or a speech-input user can't say what they see.
+      const aria = (c.getAttribute('aria-label') || '').trim();
+      if (text && aria && !aria.toLowerCase().includes(text.toLowerCase())) {
+        fail('label-in-name', `${rowName(li)}: caption '${text}' is not contained in aria-label '${aria}' (WCAG 2.5.3)`);
+      }
     }
 
     // 8. Wide layout: the row must still be ONE line, and the mobile rules must
@@ -231,7 +272,6 @@ function measure({ TAP_MIN, SELECT_MIN_W, EPS, narrow }) {
       const mid = r.top + r.height / 2;
       for (const k of kids) {
         const kr = rect(k);
-        if (kr.width === 0 && kr.height === 0) continue;
         if (kr.top > mid || kr.bottom < mid) {
           fail('wide-stacked', `${rowName(li)}: ${name(k)} [${round(kr.top)}..${round(kr.bottom)}] misses the row centre ${round(mid)} — the row has stacked`);
         }
@@ -275,9 +315,38 @@ try {
       await page.goto(orch.url + '#settings', { waitUntil: 'networkidle' });
       await page.selectOption('#settings-group-select', 'models');
       await page.waitForSelector(`#sm-role-list .sm-role-row .sm-field--model select`);
-      const out = path.join(outDir, `models-${width}.png`);
-      await page.screenshot({ path: out, fullPage: true });
       const m = await page.evaluate(measure, { TAP_MIN, SELECT_MIN_W, EPS, narrow });
+
+      // Capture AFTER measuring, and unclip the scroller first. `.settings-content`
+      // is the `overflow-y: auto` scroller, so the document never grows past the
+      // viewport: plain `fullPage` yields a <width>x<viewport-height> crop, and an
+      // element screenshot of the panel yields a full-height PNG whose below-fold
+      // area is blank. Either way the worst-case rows `seed()` exists to render
+      // would be invisible. Letting the page grow instead is layout-neutral on the
+      // horizontal axis, which is what every assertion above measures — but it does
+      // run after them, never before.
+      const out = path.join(outDir, `models-${width}.png`);
+      // Vertical only — the grid columns and the sidebar are left alone so the
+      // content column keeps the exact width that was just measured.
+      await page.addStyleTag({ content: `
+        html, body, #app, #main, #settings-view, .settings-content {
+          height: auto !important; max-height: none !important; overflow: visible !important;
+        }
+      ` });
+      const shot = await page.evaluate(() => ({
+        w: Math.round(document.querySelector('.settings-content').getBoundingClientRect().width),
+        h: document.documentElement.scrollHeight,
+      }));
+      // Clip to the viewport width: unclipping lets the document grow sideways too
+      // (the pre-existing wide role-row overflow does exactly that at 721px), and a
+      // PNG wider than the viewport misrepresents what the layout is.
+      await page.screenshot({ path: out, fullPage: true, clip: { x: 0, y: 0, width, height: shot.h } });
+
+      // The unclip above must not have changed the axis every assertion measures.
+      if (Math.abs(shot.w - m.content.cw) > 1) {
+        m.fails.push({ check: 'capture-perturbed-layout',
+          msg: `.settings-content width changed ${m.content.cw} → ${shot.w} when unclipped for the screenshot; the PNG does not show the measured layout` });
+      }
 
       const tag = narrow ? 'narrow' : 'wide  ';
       const rowH = [...new Set(m.rows.map(r => r.h))].join('/');
