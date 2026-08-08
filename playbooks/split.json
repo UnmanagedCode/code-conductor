@@ -1,7 +1,7 @@
 {
   "id": "split",
   "name": "Split — the planner never implements",
-  "description": "Plan and implement are distinct workers: the plan stage has no outgoing transition, so a planner can only hand off to a freshly spawned implementer.",
+  "description": "Plan and implement are distinct workers.",
   "entryStages": ["plan"],
 
   "stages": {

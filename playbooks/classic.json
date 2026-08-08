@@ -13,7 +13,7 @@
       }
     },
     "implement": {
-      "description": "The planner you approved, now writing code; re-brief it in place if it drifts. Wait for its completion sentinel before reviewing — and its worktree is what the reviewer attaches to and what you land."
+      "description": "Re-brief it in place if it drifts from the plan you approved, and wait for its completion sentinel before treating the work as reviewable. Its worktree is what you land."
     },
     "review": {
       "description": "Spawn an adversarial reviewer onto the implementer's worktree, briefed to inspect only — never edit, stage or commit — to default to skepticism, and to answer `REVIEW_CLEAN` or a findings list. Never prompt it and the implementer in the same turn: they share one worktree.",
