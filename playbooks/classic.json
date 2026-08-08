@@ -1,18 +1,22 @@
 {
   "id": "classic",
   "name": "Classic — one worker plans/implements/refines, separate reviewer",
-  "description": "Today's canonical workflow: one worker plans, implements and refines; a separate reviewer reviews and is re-prompted to re-review.",
+  "description": "One worker plans, implements and refines its own work; a separate reviewer is spawned once an implementation exists and re-prompted each round.",
   "entryStages": ["plan"],
 
   "stages": {
     "plan": {
+      "description": "Spawn and brief a plan worker — scoped goal, constraints, completion sentinel — and end the turn. On its wake: approve, reject with feedback, answer its question, or abandon. It implements what it planned, so pick its model tier for the whole job.",
       "tools": {
         "spawn_instance": { "require": { "mode": "plan", "createWorktree": true } },
         "set_mode": "deny"
       }
     },
-    "implement": {},
+    "implement": {
+      "description": "The planner you approved, now writing code; re-brief it in place if it drifts. Wait for its completion sentinel before reviewing — and its worktree is what the reviewer attaches to and what you land."
+    },
     "review": {
+      "description": "Spawn an adversarial reviewer onto the implementer's worktree, briefed to inspect only — never edit, stage or commit — to default to skepticism, and to answer `REVIEW_CLEAN` or a findings list. Never prompt it and the implementer in the same turn: they share one worktree.",
       "needs": [{ "stage": "implement" }],
       "tools": {
         "spawn_instance": { "require": { "mode": "bypassPermissions", "model": "reviewer" } },
@@ -21,6 +25,7 @@
       }
     },
     "refine": {
+      "description": "Relay only the findings worth fixing to the implementer; on its refined wake send the same reviewer back. You arbitrate each round — worth fixing → refine again, else land; escalate only on a call you cannot resolve.",
       "needs": [{ "stage": "review" }]
     }
   },

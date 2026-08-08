@@ -6,6 +6,7 @@
 
   "stages": {
     "plan": {
+      "description": "Spawn and brief a plan worker; on its wake approve, reject with feedback, answer its question, or abandon. You do **not** approve into implement — this planner never writes code, and the handoff to one that does is yours to make.",
       "tools": {
         "spawn_instance": { "require": { "mode": "plan", "createWorktree": true } },
         "set_mode": "deny",
@@ -13,12 +14,14 @@
       }
     },
     "implement": {
+      "description": "A fresh worker, not the planner — it starts with no context, so its brief carries the plan's substance, not a pointer to it. Put it on the planner's worktree: one branch stays one merge unit, and it inherits the base the plan was written against. Retire the planner (`kill_instance`) once you have the plan — that clears the shared-worktree hazard before it exists.",
       "needs": [{ "stage": "plan", "at": "ever" }],
       "tools": {
         "spawn_instance": { "require": { "mode": "bypassPermissions" } }
       }
     },
     "review": {
+      "description": "Spawn an adversarial reviewer onto the implementer's worktree, briefed to inspect only — never edit, stage or commit — to default to skepticism, and to answer `REVIEW_CLEAN` or a findings list. Never prompt it and the implementer in the same turn: they share one worktree.",
       "needs": [{ "stage": "implement", "at": "ever" }],
       "tools": {
         "spawn_instance": { "require": { "mode": "bypassPermissions", "model": "reviewer" } },
@@ -27,6 +30,7 @@
       }
     },
     "refine": {
+      "description": "Relay only the findings worth fixing to the implementer; on its refined wake send the same reviewer back. You arbitrate each round — worth fixing → refine again, else land; escalate only on a call you cannot resolve.",
       "needs": [{ "stage": "review" }]
     }
   },
