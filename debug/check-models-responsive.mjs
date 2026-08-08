@@ -2,6 +2,10 @@
 // fixed width sweep, run against a sandboxed scratch orchestrator.
 //
 //   node debug/check-models-responsive.mjs [--out DIR]   # default DIR: debug/screenshots
+//   FORCE_SCROLLBAR_GUTTER=1 node debug/check-models-responsive.mjs
+//     Makes the content column reserve a classic scrollbar gutter (this Chromium's
+//     scrollbars are overlay/zero-width). Exercises `capture-perturbed-layout`,
+//     which compares the column width before and after the screenshot unclip.
 //
 // Writes models-<width>.png per width and exits non-zero if any assertion fails.
 // This is the reproducible form of the numbers quoted when the phone layout was
@@ -31,6 +35,7 @@ const TAP_MIN = 44;        // the stylesheet's own floor (#review-header, .commi
 const SELECT_MIN_W = 100;  // a select narrower than this can't show a model name
 const EPS = 0.5;
 
+const FORCE_GUTTER = process.env.FORCE_SCROLLBAR_GUTTER === '1';
 const args = process.argv.slice(2);
 const outDir = (() => {
   const i = args.indexOf('--out');
@@ -150,7 +155,12 @@ function measure({ TAP_MIN, SELECT_MIN_W, EPS, narrow }) {
   //    the narrowest the six-column grid ever renders, and it has to fit in the
   //    content column there. Measured through `boxesOf`, or the wrappers' zero
   //    rects would reduce this to the tier label's right edge and never fire.
-  const contentLeft = rect(content).left + content.scrollLeft;
+  // Scrolling a container right shifts its children's viewport rects LEFT, so the
+  // scroll origin is `rect.left - scrollLeft`. Currently unexercised: nothing
+  // scrolls `.settings-content` horizontally at any width in this sweep, so
+  // scrollLeft is always 0 — the term is here for correctness, not because a test
+  // covers it. Don't read today's passing numbers as evidence it works.
+  const contentLeft = rect(content).left - content.scrollLeft;
   const scrollW = narrow
     ? content.scrollWidth
     : Math.ceil(Math.max(0, ...[...document.querySelectorAll('#sm-tier-list .sm-family-row')]
@@ -315,6 +325,13 @@ try {
       await page.goto(orch.url + '#settings', { waitUntil: 'networkidle' });
       await page.selectOption('#settings-group-select', 'models');
       await page.waitForSelector(`#sm-role-list .sm-role-row .sm-field--model select`);
+      // Opt-in: make `.settings-content` reserve a classic scrollbar gutter, so the
+      // capture guard below can be exercised on a host whose scrollbars are overlay
+      // (zero-width) — this Chromium's are. Injected BEFORE measuring, so the gutter
+      // is part of the layout under test, not a capture-time perturbation.
+      if (FORCE_GUTTER) {
+        await page.addStyleTag({ content: '.settings-content { scrollbar-gutter: stable !important; }' });
+      }
       const m = await page.evaluate(measure, { TAP_MIN, SELECT_MIN_W, EPS, narrow });
 
       // Capture AFTER measuring, and unclip the scroller first. `.settings-content`
@@ -326,15 +343,24 @@ try {
       // horizontal axis, which is what every assertion above measures — but it does
       // run after them, never before.
       const out = path.join(outDir, `models-${width}.png`);
-      // Vertical only — the grid columns and the sidebar are left alone so the
-      // content column keeps the exact width that was just measured.
+      // Vertical only, and on the ANCESTORS only — `.settings-content`'s own box is
+      // left exactly as measured. Freeing its `overflow` too (the obvious thing to
+      // do) is not width-neutral on a host with classic scrollbars: while a scrollbar
+      // is reserved `clientWidth` is the padding box minus the gutter, and
+      // `overflow: visible` reserves no gutter, so the column and every row in it
+      // silently widen by the gutter between the measurement and the PNG. Measured
+      // under FORCE_SCROLLBAR_GUTTER=1: freeing it gave 305 → 320 (rows 273 → 288);
+      // leaving it alone holds 305/273 while the page still grows to full height.
       await page.addStyleTag({ content: `
-        html, body, #app, #main, #settings-view, .settings-content {
+        html, body, #app, #main, #settings-view {
           height: auto !important; max-height: none !important; overflow: visible !important;
         }
       ` });
       const shot = await page.evaluate(() => ({
-        w: Math.round(document.querySelector('.settings-content').getBoundingClientRect().width),
+        // clientWidth on BOTH sides of the comparison — `measure()` reports
+        // clientWidth (padding box), and reading a border-box rect here instead
+        // would make the guard fire on any host that reserves a gutter.
+        w: document.querySelector('.settings-content').clientWidth,
         h: document.documentElement.scrollHeight,
       }));
       // Clip to the viewport width: unclipping lets the document grow sideways too
@@ -345,7 +371,7 @@ try {
       // The unclip above must not have changed the axis every assertion measures.
       if (Math.abs(shot.w - m.content.cw) > 1) {
         m.fails.push({ check: 'capture-perturbed-layout',
-          msg: `.settings-content width changed ${m.content.cw} → ${shot.w} when unclipped for the screenshot; the PNG does not show the measured layout` });
+          msg: `.settings-content clientWidth changed ${m.content.cw} → ${shot.w} when unclipped for the screenshot; the PNG does not show the measured layout` });
       }
 
       const tag = narrow ? 'narrow' : 'wide  ';
