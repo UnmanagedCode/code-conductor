@@ -60,6 +60,20 @@ try {
 
 The sibling harness's "[growing the harness while debugging](../../code-playwright/README.md#growing-the-harness-while-debugging)" guidance applies here too: ephemeral one-off scripts stay in `/tmp/`, only genuinely reusable building blocks earn a place in this directory.
 
+## Committed checks
+
+Runnable, re-runnable, non-zero exit on failure. Not wired into `npm test` (see below).
+
+| Script | What it asserts |
+|---|---|
+| `check-models-responsive.mjs` | **Settings → Models** layout across a width sweep straddling the 720px breakpoint (320 / 360 / 390 / 719 / 721 / 1024 / 1280). Boots a sandboxed orch, seeds worst-case content (a `CUSTOM_ROLE_MAX`-length custom role on a Custom binding + a long model id bound to a tier), then per width: no document or `.settings-content` sideways overflow, every panel descendant contained in the panel box, no collapsed select, ≥44px tap targets, no sibling overlap, an `aria-label` + a visible caption per control, and — at wide widths — that each row is still one line and the mobile rules haven't leaked up. Writes `models-<width>.png` to `--out DIR` (default `debug/screenshots/`, gitignored). Above the breakpoint it also prints `[known]` lines — measurements it deliberately does *not* assert (the wide role row's no-wrap flex, and the `1fr` model column's width) so a pre-existing squeeze can't read as "covered". |
+
+```bash
+node debug/check-models-responsive.mjs
+```
+
 ## Why no Playwright test runner?
 
-Visual-only — eyes on a screenshot / interactive scripting, which the headless `tests/` (node:test) runner can't do. Commit any reusable Playwright assertion into `tests/` rather than growing a second runner here.
+Visual-only — eyes on a screenshot / interactive scripting, which the headless `tests/` (node:test) runner can't do.
+
+A reusable Playwright **assertion** would ideally live in `tests/`, but it can't: `tests/` is the gated, dependency-free suite (`npm test` runs `tsc --noEmit` then `node:test`, no browser), and Chromium reaches this repo only through the sibling `code-playwright`. So browser-dependent checks are committed *here* as standalone scripts (see above) and the deterministic half of the same behaviour goes into `tests/` — e.g. `check-models-responsive.mjs` (geometry, browser) is paired with `tests/settings-models-field-labels.test.mjs` (the DOM contract that layout rests on, happy-dom). Split it that way rather than growing a second runner here.

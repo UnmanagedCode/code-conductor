@@ -366,3 +366,13 @@ namespaced id.
 
 Every mutation is a single POST that returns the full refreshed state, re-rendered
 immediately — no restart. Endpoints: [protocol.md](protocol.md#rest-endpoints).
+
+**Narrow widths.** Under the app's `max-width: 720px` breakpoint each tier/role row
+restacks into a card: an identity line (enable checkbox + name, and for a tier the
+`default` radio) followed by one `caption + control` line per field, every control at
+`min-height: 44px`. The captions come from a `label.sm-field` > `.sm-field-cap` wrapper
+around each control (`labelledField` in `public/settings.js`); above the breakpoint that
+wrapper is `display: contents` — the control itself stays the row's grid/flex item, so the
+wide six-column layout is untouched — and the captions are the `.sm-family-header` row,
+which the mobile block hides. Verified by `debug/check-models-responsive.mjs` (geometry,
+in a browser) + `tests/settings-models-field-labels.test.mjs` (the DOM contract).
