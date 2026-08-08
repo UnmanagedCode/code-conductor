@@ -282,19 +282,15 @@ test('the renderer\'s own prose duplicates nothing in canonical-workflow.md / pl
   assert.deepEqual(overlap, [], 'scaffold shares no 8-word run with the authored fragments');
 });
 
-// The overlap the BUILT-IN definitions have with canonical-workflow.md today.
-// All three come from classic/split's review+refine descriptions colliding with
-// that doc's review→refine mechanics — text card 2026-0068 removes when it slims
-// the doc, which is why this is a frozen ceiling rather than zero. This card must
-// not touch either fragment, so the overlap is reported, not fixed here. Shrink
-// this list deliberately in 2026-0068; never grow it.
-const KNOWN_OVERLAP = [
-  'in the same turn they share one worktree',
-  'its refined wake send the same reviewer back',
-  'on its refined wake send the same reviewer',
-];
+// EMPTY, and it stays empty. It was a frozen ceiling of 3 shingles while
+// canonical-workflow.md still carried the review→refine mechanics that
+// classic/split's review+refine descriptions also carry; 2026-0068 deleted that
+// prose, so the authored fragments and the built-in descriptions now share no
+// 8-word run at all. A non-empty diff here means a fragment sentence and a stage
+// description have grown a second home — fix the duplication, never the list.
+const KNOWN_OVERLAP = [];
 
-test('the built-ins add no NEW duplication beyond the known 2026-0068 overlap', async () => {
+test('the built-ins duplicate nothing in the authored fragments', async () => {
   const frag = await fragmentShingles();
   const { playbooks } = await loadPlaybooks();
   const seen = new Set();

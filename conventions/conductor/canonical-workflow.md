@@ -1,35 +1,24 @@
 ## Canonical workflow
 
-The conductor runs this loop without doing its code work itself — see the conductor role in `core.md`. This is the default flow; when a playbook governs the session its graph is authoritative instead.
+A playbook is your structure: the one Settings selects as your default, or another you name on a run-root spawn. This doc is the conductor judgment that holds across all of them, user-authored ones included. What a given playbook's stages are, and what to do at each, is in its own injected section or `describe_playbook`.
 
-### Single worker
+### The loop
 
-For a typical "implement feature X in project Y":
+1. **Recon — ground only, don't explore.** `list_projects()`, then `project_status({project})` for branch/dirty sanity. Do **not** read project code to understand or scope the change — that is a worker's job. An unclear target or scope is a question for the user (per Intent disambiguation), not a reason to read source.
+2. **Spawn and brief** — compose the brief per Worker prompts; drive the turn per the Core rule.
+3. **On a plan wake, decide** — `approve_plan` (optional `feedback`), `reject_plan({feedback})` to send it back for revision, `answer_question` when the worker asked one, or abandon it: `kill_instance`, then `delete_worktree`.
+4. **Land — sync freely, gate merge and delete on sign-off.** `sync_worktree({sessionId})` is yours to call unprompted, always naming the worker that authored the changes — a worker that only read the tree should not be resolving conflicts in it. But on a **user-initiated** task, never `merge_worktree` or `delete_worktree` unasked: present the ready-to-land state — a `project_status` here also catches a stray write from a worker briefed not to write — and take sign-off via `AskUserQuestion`. Merge and delete unasked only for work you initiated yourself (e.g. an internal sub-task). Afterwards, keep or retire the worker per Worker lifecycle.
 
-1. **Recon — ground only, don't explore.** `list_projects()` and `project_status({project: 'Y'})` (branch / dirty sanity). Do **not** read project code to understand or scope the change — that's the plan worker's job. If the target project or scope is unclear, ask (per Intent disambiguation), don't read source to decide.
-2. **Spawn in plan mode, fresh worktree** — `spawn_instance({project: 'Y', mode: 'plan', createWorktree: true, model: '<tier>'})`, choosing the tier for the task (Worker prompts' model ladder); capture the returned `sessionId` **and worktree name** (the reviewer attaches to it at the 'Spawn an adversarial reviewer' step).
-3. **Brief** — `send_prompt({sessionId, text: "<scoped goal + constraints + completion sentinel>"})`, end your turn.
-4. **[Wake] Read the plan** — from the folded wake output; `get_recent_messages({sessionId})` only for more or an un-folded wake.
-5. **Decide** — **Approve**: `approve_plan({sessionId})` (optional `feedback`) → end turn. **Revise**: `reject_plan({sessionId, feedback})` → end turn, loop to the '[Wake] Read the plan' step. **Answer a question**: on a question wake, `answer_question({sessionId, answers})` → end turn. **Abandon**: `kill_instance({sessionId})`; `delete_worktree(...)`.
-6. **[Wake] Implementation done** — confirm the sentinel from the folded wake output before proceeding to review.
-7. **Spawn an adversarial reviewer** — `spawn_instance({project: 'Y', worktree: '<wtName>', mode: 'bypassPermissions', model: 'reviewer'})`, attached to the implementer's worktree. It reads freely with no approval prompts; brief it to review **strictly and adversarially** — hunt correctness bugs, missed requirements, regressions, and convention violations, defaulting to skepticism rather than approval — to report findings as prose, and to **inspect only: never modify, stage, or commit** (read-only is on the brief, not the mode). Verdict sentinel: `REVIEW_CLEAN` only when it genuinely finds nothing blocking, else a findings list. End turn. **The pair shares one worktree — never let both be mid-turn at once** (prompt one, wake, then the other).
-8. **[Wake] Review → refine loop — you arbitrate every round.** Read the reviewer's findings and decide: worth fixing → relay them to the *implementer* to refine (`send_prompt`, end turn); on its refined wake, send the **same** reviewer back to re-review (end turn), and loop. Not worth fixing, or `REVIEW_CLEAN` → go to Land. No fixed round cap — you make the refine-vs-land call each round from the reviewer's verdict (a `project_diff` spot-check is fair to break a standoff); escalate to the human only on a judgment call you can't resolve.
-9. **Land — sync freely, gate merge + delete on sign-off.** `sync_worktree({sessionId: <implementer>})` is fine on your own (always the implementer's id — the reviewer didn't author the changes and shouldn't resolve conflicts); dispatch-and-wake if it prompts a rebase. But for a **user-initiated** task, do **not** `merge_worktree` or `delete_worktree` unprompted — present the reviewed, ready-to-land state (a `project_status` here also catches a stray reviewer write — implementers commit their work, so the tree should be clean) and get sign-off via `AskUserQuestion`. Merge/delete without sign-off only for work the conductor itself initiated (e.g. an internal sub-task).
-10. **[After sign-off] Continue or retire** — `merge_worktree({project: 'Y', worktree: '<wtName>'})`, then per Worker lifecycle. The deltas this loop adds: a kept pair keeps **both** the implementer and its reviewer for the next round; retiring means `kill_instance` **both** before `delete_worktree({project, worktree})`.
+### Parallel work
 
-### N independent tasks (parallel)
+Independent tasks — or one task that splits into independent sub-tasks (different projects, modules, concerns) — are **never serialised across turns and never blocked on**. Emit several tool calls in one turn, fanning turn-starting calls across *distinct* sessionIds (a send to a busy session steers its running turn — see `send_prompt`). **Never start turns for two workers sharing one worktree in the same turn**: prompt one, take its wake, then the other.
 
-Several independent tasks — or one that splits into independent sub-tasks (different projects, modules, concerns) — are **never serialised across turns and never blocked on**. You can emit several tool calls in one turn; fan turn-starting calls across *distinct* sessionIds (a send to a busy session steers its running turn — see `send_prompt`). **Exception: never prompt both members of an implementer+reviewer pair in the same turn — they share one worktree (the 'Spawn an adversarial reviewer' step).** The flow is Single-worker fanned out — each task runs its own implementer + reviewer pair, so track twice the sessionIds:
+Batch by phase, not by task: one recon turn, then one spawn turn, then one brief turn. Wakes then arrive one at a time — **track which sessionIds are still outstanding**, tick each off as it wakes, and handle it exactly as the loop above from its wake onward. A worker that errors or stalls is handled on its own wake; the rest are unaffected. Land calls fan the same way, each still gated on its own sign-off.
 
-- **Batched turns** — one recon turn (ground-only, per the Recon step), then one spawn turn (N `spawn_instance`, each `mode:'plan'` + own fresh worktree; capture sessionIds + worktree names), then one brief turn (N `send_prompt`, each auto-subscribing), and end the turn.
-- **One wake per worker** — wakes arrive one at a time; **track which sessionIds are still outstanding** (implementers *and* reviewers), tick them off per wake, and handle each exactly as Single-worker from the Decide step onward.
-- **Land calls can be fanned** in one turn — each still waits for the user's sign-off per the Land step. Then `merge_worktree({project, worktree})` and `delete_worktree({project, worktree})` (no `force`) once that thread of work is done.
+### Deviating from the default
 
-If a worker errors or stalls, handle just that sessionId on its wake; the rest are unaffected.
+The default is a default, not an obligation. Name a different `playbook` on the run-root spawn when the task's shape differs from the graph you were given: a task with no plan to approve and no code to review, or a read-only fan-out, both want a lighter graph than a plan-implement-review pipeline. Choosing the default is the user's Settings call; the per-task deviation is yours.
 
-### Choosing the execution mode
+### No playbook is missing a stage it does not declare
 
-- **Plan + manual approval** (default for new work): worker drafts → you read → `approve_plan` / `reject_plan`. Slowest, safest.
-- **Code from the start**: only for trivially scoped tasks with nothing to plan ("rename `foo` to `bar` across the repo").
-
-The review → refine loop runs regardless of the execution mode chosen; skip it only for a change trivial enough to land unreviewed.
+A planning round, a review, a separate reviewer, a refinement loop — each exists only where a playbook declares it, and nothing above requires one. With no default selected, or the Playbooks convention off, this loop is your whole structure and it is complete; `list_playbooks` / `describe_playbook` are there when you want a graph, not a gap you have to fill from memory.
