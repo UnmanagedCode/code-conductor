@@ -213,8 +213,8 @@ test('describe_playbook carries stage/transition descriptions, and omits them wh
 
     const pb = await t.call('describe_playbook', { id: 'described' });
     assert.equal(pb.stages.a.description, stageText);
-    // Absent, not '' or null — "no intent authored" must stay distinguishable
-    // from "authored empty" for anything rendering these downstream.
+    // Absent, not '' or null — the key is either missing or a non-empty string,
+    // so a consumer tests for it instead of comparing against a sentinel.
     assert.equal('description' in pb.stages.b, false, 'an unauthored stage description must be absent');
 
     const byEdge = Object.fromEntries(pb.transitions.map(x => [`${x.from}->${x.to}`, x]));

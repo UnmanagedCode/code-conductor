@@ -430,8 +430,8 @@ export async function describePlaybook({ id }: { id: string }) {
       tools: stage.tools,
       spawnable: isSpawnable(stage),
       // The conductor's move at this stage, when the definition authors one.
-      // OMITTED rather than defaulted, so "no intent authored" stays
-      // distinguishable from an authored-empty one.
+      // OMITTED rather than defaulted, so the key is either absent or a
+      // non-empty string: test for it, never compare against ''/null.
       ...(stage.description !== undefined && { description: stage.description }),
     }])),
     // `via` is computed: an edge with no `on` is driven by send_prompt, and an

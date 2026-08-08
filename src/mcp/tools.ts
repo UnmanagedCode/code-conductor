@@ -758,11 +758,12 @@ export function buildTools(): Tool[] {
       description:
         'The full graph of one playbook — read this rather than guessing what a stage permits. ' +
         'Returns {id, name, description, entryStages, stages, transitions}. Each stage is ' +
-        '{needs, workers, tools, spawnable}: `tools` maps a tool name to "allow" / "deny" / ' +
+        '{needs, workers, tools, spawnable, description?}: `tools` maps a tool name to "allow" / "deny" / ' +
         '{require:{arg:value}} (a "*" key is the fallback for unnamed tools); `needs` is ' +
         '[{stage, at}] naming WORKERS that must exist for this stage to be entered; `workers` is ' +
-        '"one" or "many" per run; `spawnable` is whether a worker can be created directly here. ' +
-        'Each transition is {from, to, via} — `via` is the tool that drives that edge and the ONLY ' +
+        '"one" or "many" per run; `spawnable` is whether a worker can be created directly here; ' +
+        'the optional `description` is the conductor\'s own move at this stage. ' +
+        'Each transition is {from, to, via, description?} — `via` is the tool that drives that edge and the ONLY ' +
         'tool that can. Refuses {ok:false, code:"PLAYBOOK_UNKNOWN", known:[…]} for an unknown id.',
       inputSchema: {
         type: 'object',

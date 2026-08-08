@@ -376,8 +376,10 @@ export function validatePlaybook(raw: unknown, id: string, index: ToolIndex): Va
 // No length limit — the gate on what belongs here is editorial, not mechanical.
 // But a present-and-blank value is rejected like any other malformed one: it
 // would load clean and then render as a dead line wherever descriptions are
-// surfaced, and callers distinguish "no intent authored" from "authored empty"
-// by the key's ABSENCE, so there is no default to fall back to.
+// surfaced. Between that rejection and returning `undefined` for an omitted one,
+// the field is only ever ABSENT or a non-empty string — so a consumer tests for
+// the key rather than comparing against a sentinel, and there is no empty value
+// for a renderer to have to special-case.
 function readDescription(raw: unknown, where: string, err: (m: string) => void): string | undefined {
   if (raw === undefined) return undefined;
   if (typeof raw !== 'string' || !raw.trim()) {

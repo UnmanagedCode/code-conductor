@@ -394,16 +394,20 @@ test('unknown top-level and unknown per-stage keys are rejected', () => {
 //
 // The field exists so playbook-specific orchestration lives ON the playbook
 // rather than in shared prose. It is OPTIONAL, and "present iff authored" is a
-// load-bearing property, not a formatting detail: a `''`/null default would be
-// indistinguishable from an authored-empty description downstream.
+// load-bearing property, not a formatting detail: absent-or-a-non-empty-string
+// is what lets a consumer test the key instead of comparing to a sentinel.
+//
+// The rejected values are enumerated rather than sampled. `null` especially:
+// it is the non-string most likely to slip through a check written as a
+// truthiness or `typeof`-with-an-early-out, and JSON authors reach for it to
+// mean "no description" — which is what OMITTING the key already means.
+const NOT_A_DESCRIPTION = [42, null, false, true, [], {}, '', '   '];
 
 test('a stage description is optional, must be a non-empty string, and survives validation', () => {
-  expectErr(base({ stages: { a: { description: 42, tools: { spawn_instance: 'allow' } } } }),
-    /stage 'a': description must be a non-empty string/);
-  expectErr(base({ stages: { a: { description: '', tools: { spawn_instance: 'allow' } } } }),
-    /stage 'a': description must be a non-empty string/);
-  expectErr(base({ stages: { a: { description: '   ', tools: { spawn_instance: 'allow' } } } }),
-    /stage 'a': description must be a non-empty string/);
+  for (const bad of NOT_A_DESCRIPTION) {
+    expectErr(base({ stages: { a: { description: bad, tools: { spawn_instance: 'allow' } } } }),
+      /stage 'a': description must be a non-empty string/);
+  }
 
   // Omitted ⇒ ABSENT, not defaulted to ''. §3 renders these into the conductor
   // prompt, where a defaulted empty string would become a dead line.
@@ -419,14 +423,14 @@ test('a transition description is optional, must be a non-empty string, and surv
   const stages = { a: { tools: { spawn_instance: 'allow' } }, b: {}, c: {} };
   const withEdges = (edges) => base({ stages, transitions: edges });
 
-  // The message names the EDGE, so a stage-flavoured message copy-pasted onto
-  // this site cannot pass.
-  expectErr(withEdges([{ from: 'a', to: 'b', description: 1 }]),
-    /transition a->b: description must be a non-empty string/);
-  expectErr(withEdges([{ from: 'a', to: 'b', description: '' }]),
-    /transition a->b: description must be a non-empty string/);
-  expectErr(withEdges([{ from: 'a', to: 'b', description: '  ' }]),
-    /transition a->b: description must be a non-empty string/);
+  // Same enumeration as the stage side — the two sites share one check, and a
+  // test that covered only one of them would not notice them diverging. The
+  // message names the EDGE, so a stage-flavoured message copy-pasted onto this
+  // site cannot pass either.
+  for (const bad of NOT_A_DESCRIPTION) {
+    expectErr(withEdges([{ from: 'a', to: 'b', description: bad }]),
+      /transition a->b: description must be a non-empty string/);
+  }
 
   const text = 'This edge needs a fresh spawn, not an in-place send.';
   const pb = expectOk(withEdges([{ from: 'a', to: 'b', description: text }, { from: 'a', to: 'c' }]));
