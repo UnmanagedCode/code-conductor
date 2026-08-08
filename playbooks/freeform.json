@@ -1,7 +1,7 @@
 {
   "id": "freeform",
   "name": "Freeform — the named escape hatch",
-  "description": "One permissive stage for operational and investigative spawns; createWorktree:false gives the worker no worktree, so nothing it writes can be reviewed or landed as a unit.",
+  "description": "One permissive stage for operational and investigative spawns; createWorktree:false means the worker never gets a worktree of its own — it works in the live project tree, or in one you attach it to.",
   "entryStages": ["freeform"],
 
   "stages": {
