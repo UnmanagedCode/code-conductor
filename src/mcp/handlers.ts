@@ -429,11 +429,18 @@ export async function describePlaybook({ id }: { id: string }) {
       workers: stage.workers,
       tools: stage.tools,
       spawnable: isSpawnable(stage),
+      // The conductor's move at this stage, when the definition authors one.
+      // OMITTED rather than defaulted, so "no intent authored" stays
+      // distinguishable from an authored-empty one.
+      ...(stage.description !== undefined && { description: stage.description }),
     }])),
     // `via` is computed: an edge with no `on` is driven by send_prompt, and an
     // edge WITH one can be driven by that tool only. Both are rules the caller
     // would otherwise have to know rather than read.
-    transitions: pb.transitions.map(t => ({ from: t.from, to: t.to, via: t.on ?? 'send_prompt' })),
+    transitions: pb.transitions.map(t => ({
+      from: t.from, to: t.to, via: t.on ?? 'send_prompt',
+      ...(t.description !== undefined && { description: t.description }),
+    })),
   };
 }
 
