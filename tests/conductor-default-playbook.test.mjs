@@ -140,6 +140,9 @@ test('default selected ⇒ its stages and per-stage descriptions are in the comp
   // description and a describe_playbook pointer because the listing above
   // carries both; met cold, it would cost the conductor the very round-trip this
   // surface exists to remove.
+  // Presence FIRST: a bare indexOf comparison passes vacuously when the listing
+  // is absent (-1 < any index) — which is the forbidden state, not the safe one.
+  assert.ok(doc.includes('**Available playbooks**'), 'the listing is present at all');
   assert.ok(doc.indexOf('**Available playbooks**') < doc.indexOf('## Default playbook'),
     'the available-playbooks listing precedes the default-playbook section');
   const { playbooks } = await loadPlaybooks();
