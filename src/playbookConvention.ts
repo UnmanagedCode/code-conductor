@@ -3,69 +3,44 @@
 // playbook). Composed into the role prompt by src/conductorConventions.ts.
 //
 // GENERATED, NEVER HAND-AUTHORED. That is the whole point: the JSON owns the
-// structure and the policy, each stage's `description` owns the conductor's move
-// at that stage, and this file owns the one rendering of both. A hand-maintained
-// copy of the graph in prose is the duplication this surface exists to kill —
-// don't reintroduce it here by paraphrasing what the definition says.
+// structure, each stage's `description` owns the conductor's move at that stage,
+// and this file owns the one rendering. A hand-maintained copy of the graph in
+// prose is the duplication this surface exists to kill.
 //
-// `describe_playbook` remains the live authority; this is a reminder that saves
-// the conductor a round-trip to know its baseline.
+// WHAT BELONGS HERE — exactly the facts with NO CHANNEL THAT FIRES ON ITS OWN.
+// Every fact some refusal or pre-resolved field volunteers unasked stays in the
+// payload, where it arrives at point of use and cannot go stale:
+//   • `tools` policy   → TOOL_DENIED_IN_STAGE ships it with legalMoves.  OUT.
+//   • `needs`          → NEEDS_UNSATISFIED names what to pass.           OUT.
+//   • spawnability     → STAGE_NOT_SPAWNABLE, plus list_playbooks'
+//                        `spawnableStages` and describe_playbook's
+//                        `spawnable`.                                    OUT.
+//   • stage `description` → nothing volunteers it, and it is needed to compose a
+//                        brief BEFORE any call is made; a bad brief yields a
+//                        soft review, never a refusal.                   IN.
+//   • `workers: "many"`  → no refusal until STAGE_AT_CAPACITY has already
+//                        fired, and it shapes a fan-out decision made before any
+//                        call.                                           IN.
+//   • transitions      → a shape error is expensive and non-local, unlike a
+//                        refused call.                                   IN.
 //
-// Authored text (stage/transition `description`) is passed through VERBATIM —
-// never truncated, reflowed or summarised. One home for that text is the
-// definition; a renderer that edited it would become a second one.
+// Authored text is passed through VERBATIM — never truncated, reflowed or
+// summarised. One home for that text is the definition; a renderer that edited
+// it would become a second.
 
-import { type Playbook, type Stage, type ToolPolicy, isSpawnable } from './playbooks.ts';
-
-// ENUMERATION SCOPE. A per-stage policy list reads as a complete fence unless
-// its limits are stated before it — and the strongest bar a reader would infer
-// cannot exist: merge_worktree/delete_worktree declare no `sessionId`, so they
-// are ungovernable by construction and a playbook naming them is rejected at
-// load. Playbook policy gates WHO WORKS, never WHAT LANDS.
-//
-// The closure half is the other inference to block: the per-stage lists are
-// DELTAS off a default, not allow-lists. Stated once here rather than annotated
-// onto every stage.
-//
-// The `*` clause is load-bearing, not hedging: resolvePolicy falls back to the
-// stage's `"*"` entry BEFORE the default, and `"*": "deny"` is a legal policy —
-// so a bare "unlisted tools are allowed" would be a false claim about
-// enforcement in every conductor's system prompt for such a stage.
-//
-// Neither line restates the land-gating rule itself (that lives in
-// conventions/conductor/canonical-workflow.md) — they bound this rendering.
-const SCOPE_LINE =
-  'Policy governs only calls that name a worker, plus `spawn_instance` — it never gates what lands.';
-const CLOSURE_LINE =
-  'Unlisted tools are allowed unless a stage lists `*`; `spawn_instance` is denied in any stage that does not name it.';
+import { type Playbook, type Stage } from './playbooks.ts';
 
 export function renderPlaybookConvention(pb: Playbook): string {
   // Deliberately NOT repeated here: the playbook's top-level description and a
   // pointer at describe_playbook. The available-playbooks listing sits directly
   // above this section in the same prompt and carries both — echoing them is the
   // duplication this whole surface exists to kill.
-  //
-  // Also not rendered: `entryStages`. A spawn is gated by isSpawnable, not by
-  // entryStages membership, so naming it would state a narrower rule than the
-  // engine enforces. The per-stage `(spawnable)` flags carry the real one.
-  const lines: string[] = [
-    `## Default playbook — \`${pb.id}\``,
-    '',
-    `${SCOPE_LINE} ${CLOSURE_LINE}`,
-    '',
-  ];
+  const lines: string[] = [`## Default playbook — \`${pb.id}\``, ''];
 
   for (const [name, stage] of Object.entries(pb.stages)) {
     const flags = stageFlags(stage);
     const head = `- **${name}**${flags ? ` (${flags})` : ''}`;
-    // The authored description, verbatim. Absent unless authored, so the stage
-    // renders as a bare header rather than with a dangling em dash.
     lines.push(stage.description === undefined ? head : `${head} — ${stage.description}`);
-    for (const need of stage.needs) {
-      lines.push(`  - needs: a worker ${need.at === 'ever' ? 'that has passed through' : 'currently in'} \`${need.stage}\``);
-    }
-    const policy = renderTools(stage.tools);
-    if (policy) lines.push(`  - policy: ${policy}`);
   }
 
   if (pb.transitions.length > 0) {
@@ -82,25 +57,8 @@ export function renderPlaybookConvention(pb: Playbook): string {
   return lines.join('\n');
 }
 
-// Only the non-default facts: `workers: "one"` and non-spawnability are the
-// defaults, so naming them would be noise in every stage of every playbook.
+// `workers: "one"` is the default and the common case, so naming it would be
+// noise in nearly every stage of every playbook.
 function stageFlags(stage: Stage): string {
-  const flags: string[] = [];
-  if (isSpawnable(stage)) flags.push('spawnable');
-  if (stage.workers === 'many') flags.push('many workers');
-  return flags.join(', ');
-}
-
-// Sorted by tool name so the rendering is a function of the definition's
-// content, not of its key order.
-function renderTools(tools: Record<string, ToolPolicy>): string {
-  const names = Object.keys(tools).sort();
-  if (names.length === 0) return '';
-  return names.map(n => `${n === '*' ? '`*` (all other tools)' : `\`${n}\``} ${renderPolicy(tools[n])}`).join('; ');
-}
-
-function renderPolicy(policy: ToolPolicy): string {
-  if (typeof policy === 'string') return policy;
-  return `require ${Object.entries(policy.require)
-    .map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(', ')}`;
+  return stage.workers === 'many' ? 'many workers' : '';
 }

@@ -50,10 +50,12 @@ afterEach(async () => {
 
 const FIXTURE_ID = 'driftpb';
 
-// A two-stage overlay playbook exercising every render branch: a `require`
-// policy, a plain deny, needs at:"ever", workers:"many", an `on`-driven edge and
-// a bare (send_prompt-driven) one.
-function fixture({ alphaDesc, betaDesc, alphaTools }) {
+// A two-stage overlay playbook exercising every render branch: authored stage
+// descriptions, workers:"many", an `on`-driven edge and a bare
+// (send_prompt-driven) one. It also carries `tools`/`needs` — not because they
+// are rendered (they are not, deliberately), but so the fixture stays a
+// realistic definition the validator accepts.
+function fixture({ alphaDesc, betaDesc }) {
   return {
     id: FIXTURE_ID,
     name: 'Drift fixture',
@@ -62,7 +64,7 @@ function fixture({ alphaDesc, betaDesc, alphaTools }) {
     stages: {
       alpha: {
         description: alphaDesc,
-        tools: alphaTools ?? { spawn_instance: { require: { mode: 'plan' } } },
+        tools: { spawn_instance: { require: { mode: 'plan' } } },
       },
       beta: {
         description: betaDesc,
@@ -186,19 +188,6 @@ test('drift proof: changing a stage description changes the rendered convention'
   assert.ok(!after.includes('Brief the alpha worker and end the turn.'), 'old text gone');
 });
 
-test('drift proof: changing the enforced tools changes the policy summary', async () => {
-  const before = await renderFixture(fixture({ alphaDesc: 'A.', betaDesc: 'B.' }));
-  assert.ok(before.includes('`spawn_instance` require mode="plan"'), 'require rendered');
-  assert.ok(!before.includes('`sync_worktree` deny'), 'no deny yet');
-
-  const after = await renderFixture(fixture({
-    alphaDesc: 'A.', betaDesc: 'B.',
-    alphaTools: { spawn_instance: { require: { mode: 'bypassPermissions' } }, sync_worktree: 'deny' },
-  }));
-  assert.ok(after.includes('`sync_worktree` deny'), 'added deny rendered');
-  assert.ok(after.includes('`spawn_instance` require mode="bypassPermissions"'), 'changed require value rendered');
-  assert.ok(!after.includes('mode="plan"'), 'old require value gone');
-});
 
 test('drift proof: the composed prompt (not just the renderer) follows a definition edit', async () => {
   await renderFixture(fixture({ alphaDesc: 'First wording.', betaDesc: 'B.' }));
@@ -222,44 +211,27 @@ test('authored descriptions are passed through VERBATIM — never reflowed or tr
   assert.ok(!out.includes('…'), 'nothing was elided');
 });
 
-test('needs, capacity, spawnability and both transition drivers are rendered from the definition', async () => {
+test('capacity and both transition drivers are rendered from the definition', async () => {
   const out = await renderFixture(fixture({ alphaDesc: 'A.', betaDesc: 'B.' }));
-  assert.ok(out.includes('- **alpha** (spawnable) —'), 'spawnable flag');
-  assert.ok(out.includes('- **beta** (spawnable, many workers) —'), 'workers:"many" flag');
-  assert.ok(out.includes('needs: a worker that has passed through `alpha`'), 'at:"ever" wording');
+  assert.ok(out.includes('- **alpha** — A.'), 'workers:"one" carries no flag');
+  assert.ok(out.includes('- **beta** (many workers) — B.'), 'workers:"many" flag');
   assert.ok(out.includes('`alpha → beta` on `approve_plan`'), 'declared driver');
   assert.ok(out.includes('`beta → alpha` on `send_prompt`'), 'bare edge defaults to send_prompt');
 });
 
-test('at:"current" needs render distinctly from at:"ever"', async () => {
-  const def = fixture({ alphaDesc: 'A.', betaDesc: 'B.' });
-  def.stages.beta.needs = [{ stage: 'alpha' }]; // default at:"current"
-  const out = await renderFixture(def);
-  assert.ok(out.includes('needs: a worker currently in `alpha`'));
-  assert.ok(!out.includes('that has passed through'));
-});
 
-test('the scope and closure lines bound the policy enumeration', async () => {
-  // Without these, a stage listing `sync_worktree: deny` reads as a fence over
-  // landing too — which no playbook can express: merge_worktree/delete_worktree
-  // declare no sessionId, so they are ungovernable by construction.
+
+
+test('facts a refusal volunteers are left in the payload, not copied into the prompt', async () => {
+  // tools policy → TOOL_DENIED_IN_STAGE, `needs` → NEEDS_UNSATISFIED,
+  // spawnability → STAGE_NOT_SPAWNABLE (and list_playbooks' spawnableStages).
+  // Each arrives at point of use and cannot go stale under a live worker;
+  // snapshotting them here would be a copy that can.
   const out = await renderFixture(fixture({ alphaDesc: 'A.', betaDesc: 'B.' }));
-  const scope = 'Policy governs only calls that name a worker, plus `spawn_instance` — it never gates what lands.';
-  const closure = 'Unlisted tools are allowed unless a stage lists `*`; `spawn_instance` is denied in any stage that does not name it.';
-  assert.equal(out.split(scope).length - 1, 1, 'scope line appears exactly once');
-  assert.equal(out.split(closure).length - 1, 1, 'closure line appears exactly once');
-});
-
-test('the closure line stays TRUE for a stage that denies via the `*` wildcard', async () => {
-  // resolvePolicy is exact-name → `"*"` → default, and `"*": "deny"` loads
-  // clean — so an unconditional "unlisted tools are allowed" would be a false
-  // claim about enforcement, three lines above the `*` entry contradicting it.
-  const def = fixture({ alphaDesc: 'A.', betaDesc: 'B.' });
-  def.stages.alpha.tools = { spawn_instance: 'allow', '*': 'deny' };
-  const out = await renderFixture(def);
-  assert.ok(out.includes('Unlisted tools are allowed unless a stage lists `*`'), 'the claim is conditioned');
-  assert.ok(!out.includes('Unlisted tools are allowed;'), 'never the unconditional form');
-  assert.ok(out.includes('`*` (all other tools) deny'), 'the wildcard policy itself is rendered');
+  assert.ok(!out.includes('policy:'), 'no tools policy summary');
+  assert.ok(!out.includes('spawn_instance'), 'no policy entries at all');
+  assert.ok(!out.includes('needs:'), 'no needs summary');
+  assert.ok(!out.includes('(spawnable'), 'no spawnability marker');
 });
 
 test('the rendering does not echo what the playbooks listing already carries', async () => {
@@ -269,15 +241,6 @@ test('the rendering does not echo what the playbooks listing already carries', a
   assert.ok(!out.includes('describe_playbook'), 'no second pointer at the authority');
 });
 
-test('a stage with no tools policy renders no policy line', async () => {
-  const def = fixture({ alphaDesc: 'A.', betaDesc: 'B.' });
-  delete def.stages.beta.tools;
-  def.stages.beta.needs = [{ stage: 'alpha', at: 'ever' }];
-  def.transitions = [{ from: 'alpha', to: 'beta', on: 'approve_plan' }];
-  const out = await renderFixture(def);
-  const betaBlock = out.slice(out.indexOf('- **beta**'));
-  assert.ok(!betaBlock.includes('policy:'), 'no empty policy line');
-});
 
 test('transition descriptions are rendered when authored', async () => {
   const def = fixture({ alphaDesc: 'A.', betaDesc: 'B.' });
