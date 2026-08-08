@@ -14,14 +14,14 @@
       }
     },
     "implement": {
-      "description": "A fresh worker, not the planner — it starts with no context, so its brief carries the plan's substance, not a pointer to it. Put it on the planner's worktree: one branch stays one merge unit, and it inherits the base the plan was written against. Retire the planner (`kill_instance`) once you have the plan — that clears the shared-worktree hazard before it exists.",
+      "description": "A fresh worker, not the planner — it starts with no context, so hand it the approved plan itself, never a paraphrase: pass the plan document's path when the plan wake named one, otherwise the plan text verbatim. Put it on the planner's worktree: one branch stays one merge unit, and it inherits the base the plan was written against. Retire the planner (`kill_instance`) once you have the plan — that clears the shared-worktree hazard before it exists.",
       "needs": [{ "stage": "plan", "at": "ever" }],
       "tools": {
         "spawn_instance": { "require": { "mode": "bypassPermissions" } }
       }
     },
     "review": {
-      "description": "Spawn an adversarial reviewer onto the implementer's worktree, briefed to inspect only — never edit, stage or commit — to default to skepticism, and to answer `REVIEW_CLEAN` or a findings list. Never prompt it and the implementer in the same turn: they share one worktree.",
+      "description": "Spawn an adversarial reviewer onto the implementer's worktree, briefed to inspect only — never edit, stage or commit — to default to skepticism, and to answer `REVIEW_CLEAN` or a findings list. Give it the same plan the implementer got: what was approved is the bar, not your brief. Never prompt it and the implementer in the same turn: they share one worktree.",
       "needs": [{ "stage": "implement", "at": "ever" }],
       "tools": {
         "spawn_instance": { "require": { "mode": "bypassPermissions", "model": "reviewer" } },
