@@ -109,13 +109,14 @@ import {
   deleteCustomConvention as deleteWorkspaceConvention,
 } from './workspaceConventions.ts';
 import type { InstanceLike, InstanceManagerLike } from './instanceTypes.ts';
+import { httpError } from './httpError.ts';
 
 // Session ids are user-supplied path params on many routes; this is the single
 // allow-list + rejection (400 "invalid sessionId") they all share.
 const SID_RE = /^[A-Za-z0-9_-]+$/;
 function assertValidSid(sid: string): void {
   if (!SID_RE.test(sid)) {
-    throw Object.assign(new Error('invalid sessionId'), { statusCode: 400 });
+    throw httpError(400, 'invalid sessionId');
   }
 }
 
@@ -231,12 +232,12 @@ function mountInstallableCatalog(r: express.Router, cfg: InstallableCatalogCfg):
     try {
       const name = jsonBody(req)[itemKey];
       if (!isKnown(name)) {
-        throw Object.assign(new Error(`unknown ${itemKey}`), { statusCode: 400 });
+        throw httpError(400, `unknown ${itemKey}`);
       }
       let onDisk = false;
       try { onDisk = (await fs.stat(pathForName(name as string))).isFile(); } catch { /* missing */ }
       if (!onDisk) {
-        throw Object.assign(new Error(`${itemKey} not installed — install it first`), { statusCode: 400 });
+        throw httpError(400, `${itemKey} not installed — install it first`);
       }
       await setActive(name as string);
       res.json(await state());
@@ -444,7 +445,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
         );
       }
       if (conventions !== undefined && !Array.isArray(conventions)) {
-        throw Object.assign(new Error('conventions must be an array of slug strings'), { statusCode: 400 });
+        throw httpError(400, 'conventions must be an array of slug strings');
       }
       const slugs = (conventions ?? []) as string[];
       const conventionsDoc = slugs.length ? await composeProjectConventionsDoc(slugs) : null;
@@ -598,9 +599,9 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
       .filter((i): i is InstanceLike => !!i);
     const running = attached.filter(i => i.proc);
     if (running.length > 0 && !force) {
-      throw Object.assign(new Error(
+      throw httpError(409,
         `session ${sessionId} is attached to a running instance — ${verb} or pass force=1`,
-      ), { statusCode: 409 });
+      );
     }
     if (force) {
       await Promise.all(running.map(i => instances.remove(i.id).catch(() => {})));
@@ -613,7 +614,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
     await detachInstancesForSession({ sessionId, force, verb: 'kill it first' });
     const removed = await deleteSessionForCwd(cwd, sessionId);
     if (!removed) {
-      throw Object.assign(new Error(`session ${sessionId} not found`), { statusCode: 404 });
+      throw httpError(404, `session ${sessionId} not found`);
     }
     // Best-effort — a missing summary never fails a delete.
     deleteSummaries(sessionId).catch(() => {});
@@ -635,7 +636,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
       const sid = String(req.params.sid || '');
       assertValidSid(sid);
       const wt = await getWorktree(req.params.name, req.params.wt);
-      if (!wt) throw Object.assign(new Error('worktree not found'), { statusCode: 404 });
+      if (!wt) throw httpError(404, 'worktree not found');
       const force = req.query.force === '1' || req.query.force === 'true';
       await deleteSessionAtCwd({ cwd: wt.worktreePath, sessionId: sid, force });
       res.json({ ok: true });
@@ -652,7 +653,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
     await detachInstancesForSession({ sessionId, force, verb: 'stop it first' });
     const archived = await archiveSessionForCwd(cwd, sessionId);
     if (!archived) {
-      throw Object.assign(new Error(`session ${sessionId} not found`), { statusCode: 404 });
+      throw httpError(404, `session ${sessionId} not found`);
     }
   }
 
@@ -672,7 +673,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
       const sid = String(req.params.sid || '');
       assertValidSid(sid);
       const wt = await getWorktree(req.params.name, req.params.wt);
-      if (!wt) throw Object.assign(new Error('worktree not found'), { statusCode: 404 });
+      if (!wt) throw httpError(404, 'worktree not found');
       const force = req.query.force === '1' || req.query.force === 'true';
       await archiveSessionAtCwd({ cwd: wt.worktreePath, sessionId: sid, force });
       res.json({ ok: true });
@@ -711,7 +712,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
   r.get('/projects/:name/worktrees/:wt/sessions', async (req, res, next) => {
     try {
       const wt = await getWorktree(req.params.name, req.params.wt);
-      if (!wt) throw Object.assign(new Error('worktree not found'), { statusCode: 404 });
+      if (!wt) throw httpError(404, 'worktree not found');
       const tempSids = instances ? instances.tempSessionIdsForCwd(wt.worktreePath) : null;
       const wtSessions = await listSessionsForCwd(wt.worktreePath, tempSids, { includeArchived: !!req.query.includeArchived });
       res.json(wtSessions);
@@ -787,9 +788,9 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
           .map(id => instances.get(id))
           .filter((i): i is InstanceLike => !!i && !!i.proc);
         if (running.length > 0 && !force) {
-          throw Object.assign(new Error(
+          throw httpError(409,
             `worktree has ${running.length} running instance(s) — kill them first or pass force=1`,
-          ), { statusCode: 409 });
+          );
         }
         // With force, kill any attached instances before removing.
         if (force) {
@@ -818,7 +819,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
       const { sid, backing } = await sidParam(req.params.sessionId);
       const raw = jsonBody(req).title;
       if (raw != null && typeof raw !== 'string') {
-        throw Object.assign(new Error('title must be a string'), { statusCode: 400 });
+        throw httpError(400, 'title must be a string');
       }
       // Keyed to the TRANSCRIPT: listSessionsForCwdWithCounts looks titles up by
       // filename and Instance._hydrateTitle reads the backing id, so a title
@@ -893,12 +894,12 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
       const { sid, backing } = await sidParam(req.params.sessionId);
       const length = String(jsonBody(req).length);
       if (!(SUMMARY_LENGTHS as readonly string[]).includes(length)) {
-        throw Object.assign(new Error(`length must be one of: ${SUMMARY_LENGTHS.join(', ')}`), { statusCode: 400 });
+        throw httpError(400, `length must be one of: ${SUMMARY_LENGTHS.join(', ')}`);
       }
       const hit = await findSessionLocation(sid);
-      if (!hit) throw Object.assign(new Error('session not found'), { statusCode: 404 });
+      if (!hit) throw httpError(404, 'session not found');
       const cwd = await cwdForHit(hit);
-      if (!cwd) throw Object.assign(new Error('session not found'), { statusCode: 404 });
+      if (!cwd) throw httpError(404, 'session not found');
       // The transcript reads take the backing id; the summaries store keeps the
       // caller's id (cc-owned, not filename-keyed — see the GET above).
       const { summary, messageCount, costUsd } = await generateSummary(backing, cwd, length as SummaryLength);
@@ -917,7 +918,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
     try {
       const { sid, backing } = await sidParam(req.params.sessionId);
       const hit = await findSessionLocation(sid);
-      if (!hit) throw Object.assign(new Error('session not found'), { statusCode: 404 });
+      if (!hit) throw httpError(404, 'session not found');
       // Report archived-ness so the client's anchor auto-resume can skip a
       // session that was archived on a plain restart (its jsonl is retained,
       // so locate still 200s) instead of silently resurrecting it. Deliberate
@@ -999,12 +1000,12 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
     r.get('/instances/:id/events', async (req, res, next) => {
       try {
         const inst = instances.get(req.params.id);
-        if (!inst) throw Object.assign(new Error('instance not found'), { statusCode: 404 });
+        if (!inst) throw httpError(404, 'instance not found');
         const parseIntParam = (v: unknown, name: string): number | null => {
           if (v === undefined) return null;
           const n = Number(v);
           if (!Number.isInteger(n)) {
-            throw Object.assign(new Error(`${name} must be an integer`), { statusCode: 400 });
+            throw httpError(400, `${name} must be an integer`);
           }
           return n;
         };
@@ -1025,10 +1026,10 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
     r.post('/instances/:id/rewind', async (req, res, next) => {
       try {
         const inst = instances.get(req.params.id);
-        if (!inst) throw Object.assign(new Error('instance not found'), { statusCode: 404 });
+        if (!inst) throw httpError(404, 'instance not found');
         const idx = Number(jsonBody(req).userMessageIndex);
         if (!Number.isInteger(idx) || idx < 0) {
-          throw Object.assign(new Error('userMessageIndex must be a non-negative integer'), { statusCode: 400 });
+          throw httpError(400, 'userMessageIndex must be a non-negative integer');
         }
         const { droppedText } = await inst.rewindToUserMessage(idx);
         res.json({ ok: true, droppedText });
@@ -1046,14 +1047,14 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
     r.post('/instances/:id/fork', async (req, res, next) => {
       try {
         const inst = instances.get(req.params.id);
-        if (!inst) throw Object.assign(new Error('instance not found'), { statusCode: 404 });
-        if (inst.temp) throw Object.assign(new Error('temp sessions cannot be forked'), { statusCode: 400 });
+        if (!inst) throw httpError(404, 'instance not found');
+        if (inst.temp) throw httpError(400, 'temp sessions cannot be forked');
         if (!inst.backingSessionId) {
-          throw Object.assign(new Error('no sessionId — instance has not yet received a turn'), { statusCode: 400 });
+          throw httpError(400, 'no sessionId — instance has not yet received a turn');
         }
         const idx = Number(jsonBody(req).userMessageIndex);
         if (!Number.isInteger(idx) || idx < 0) {
-          throw Object.assign(new Error('userMessageIndex must be a non-negative integer'), { statusCode: 400 });
+          throw httpError(400, 'userMessageIndex must be a non-negative integer');
         }
         // A rewind/prune on the SAME instance rewrites (or truncates) the very
         // jsonl this fork is about to read. Refuse rather than read a file
@@ -1072,7 +1073,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
         // of the claim below.
         inst._assertNoRotationInFlight();
         if (inst._mutating) {
-          throw Object.assign(new Error('another rewind/fork/prune is in progress'), { statusCode: 409 });
+          throw httpError(409, 'another rewind/fork/prune is in progress');
         }
         inst._mutating = true;
         // Unlike rewind/prune, fork never kills the source subprocess, so
@@ -1138,9 +1139,9 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
     r.get('/instances/:id/prune/analysis', async (req, res, next) => {
       try {
         const inst = instances.get(req.params.id);
-        if (!inst) throw Object.assign(new Error('instance not found'), { statusCode: 404 });
+        if (!inst) throw httpError(404, 'instance not found');
         if (!inst.backingSessionId) {
-          throw Object.assign(new Error('no sessionId — instance has not yet received a turn'), { statusCode: 400 });
+          throw httpError(400, 'no sessionId — instance has not yet received a turn');
         }
         const { analyzeSessionForPrune } = await import('./sessionPrune.ts');
         res.json(await analyzeSessionForPrune({ cwd: inst.cwd, sessionId: inst.backingSessionId }));
@@ -1156,11 +1157,11 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
     r.post('/instances/:id/prune', async (req, res, next) => {
       try {
         const inst = instances.get(req.params.id);
-        if (!inst) throw Object.assign(new Error('instance not found'), { statusCode: 404 });
+        if (!inst) throw httpError(404, 'instance not found');
         const body = jsonBody(req);
         const cutTurnIndex = Number(body.cutTurnIndex);
         if (!Number.isInteger(cutTurnIndex) || cutTurnIndex < 0) {
-          throw Object.assign(new Error('cutTurnIndex must be a non-negative integer'), { statusCode: 400 });
+          throw httpError(400, 'cutTurnIndex must be a non-negative integer');
         }
         const result = await inst.pruneSession({
           cutTurnIndex,
@@ -1186,7 +1187,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
     r.post('/instances/:id/promote', async (req, res, next) => {
       try {
         const inst = instances.get(req.params.id);
-        if (!inst) throw Object.assign(new Error('instance not found'), { statusCode: 404 });
+        if (!inst) throw httpError(404, 'instance not found');
         const summary = await inst.promoteToNormal();
         res.json({ ok: true, instance: summary });
       } catch (e) { next(e); }
@@ -1220,8 +1221,8 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
     r.post('/instances/:id/sync', async (req, res, next) => {
       try {
         const inst = instances.get(req.params.id);
-        if (!inst) throw Object.assign(new Error('instance not found'), { statusCode: 404 });
-        if (!inst.worktree) throw Object.assign(new Error('instance is not attached to a worktree'), { statusCode: 400 });
+        if (!inst) throw httpError(404, 'instance not found');
+        if (!inst.worktree) throw httpError(400, 'instance is not attached to a worktree');
         const result = await syncWorktree(inst.project, inst.worktree.worktreeName);
         if (result.ok && result.action === 'rebase-required') {
           if (!inst.proc) {
@@ -1253,8 +1254,8 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
     r.post('/instances/:id/merge', async (req, res, next) => {
       try {
         const inst = instances.get(req.params.id);
-        if (!inst) throw Object.assign(new Error('instance not found'), { statusCode: 404 });
-        if (!inst.worktree) throw Object.assign(new Error('instance is not attached to a worktree'), { statusCode: 400 });
+        if (!inst) throw httpError(404, 'instance not found');
+        if (!inst.worktree) throw httpError(400, 'instance is not attached to a worktree');
         // The behind-guard now lives inside mergeWorktreeIntoParent (shared with
         // the MCP handler); map its typed refusal to this surface's exact wording
         // + status (HTTP 200, no cache invalidation — nothing changed).
@@ -1289,11 +1290,11 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
     r.get('/instances/:id/attachments/:filename', async (req, res, next) => {
       try {
         const inst = instances.get(req.params.id);
-        if (!inst) throw Object.assign(new Error('instance not found'), { statusCode: 404 });
+        if (!inst) throw httpError(404, 'instance not found');
         const raw = String(req.params.filename || '');
         // Path-traversal guard: reject anything that isn't a plain basename.
         if (!raw || raw.includes('/') || raw.includes('\\') || raw.includes('..') || raw !== path.basename(raw)) {
-          throw Object.assign(new Error('invalid attachment filename'), { statusCode: 400 });
+          throw httpError(400, 'invalid attachment filename');
         }
         const abs = path.join(
           attachmentsDir(inst.project, inst.worktree?.worktreeName ?? null),
@@ -1302,10 +1303,10 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
         let stat: Awaited<ReturnType<typeof fs.stat>>;
         try { stat = await fs.stat(abs); }
         catch (e) {
-          if (errCode(e) === 'ENOENT') throw Object.assign(new Error('attachment not found'), { statusCode: 404 });
+          if (errCode(e) === 'ENOENT') throw httpError(404, 'attachment not found');
           throw e;
         }
-        if (!stat.isFile()) throw Object.assign(new Error('attachment not found'), { statusCode: 404 });
+        if (!stat.isFile()) throw httpError(404, 'attachment not found');
         const ext = (raw.split('.').pop() || '').toLowerCase();
         const ctype = CONTENT_TYPE_BY_EXT[ext] ?? 'application/octet-stream';
         res.setHeader('Content-Type', ctype);
@@ -1353,7 +1354,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
   r.post('/transcribe', express.raw({ type: '*/*', limit: '25mb' }), async (req, res, next) => {
     try {
       if (!(await transcribeAvailable())) {
-        throw Object.assign(new Error('whisper.cpp not installed — run bin/install-whisper.sh'), { statusCode: 503 });
+        throw httpError(503, 'whisper.cpp not installed — run bin/install-whisper.sh');
       }
       const text = await transcribe(req.body as Buffer);
       res.json({ text });
@@ -1613,7 +1614,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
   r.post('/tts', express.text({ type: '*/*', limit: '256kb' }), async (req, res, next) => {
     try {
       if (!(await ttsAvailable())) {
-        throw Object.assign(new Error('piper not installed — run bin/install-piper.sh'), { statusCode: 503 });
+        throw httpError(503, 'piper not installed — run bin/install-piper.sh');
       }
       const text = typeof req.body === 'string' ? req.body : '';
       const child = synthesize(text); // throws 400 on empty text
@@ -1813,10 +1814,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
       // selection silently.
       const body = jsonBody(req);
       if (!('defaultPlaybook' in body)) {
-        throw Object.assign(
-          new Error("defaultPlaybook is required, e.g. {\"defaultPlaybook\":{\"mode\":\"none\"}}"),
-          { statusCode: 400 },
-        );
+        throw httpError(400, "defaultPlaybook is required, e.g. {\"defaultPlaybook\":{\"mode\":\"none\"}}");
       }
       const saved = await setDefaultPlaybook(body.defaultPlaybook as DefaultPlaybookSelection);
       res.json({ defaultPlaybook: saved });

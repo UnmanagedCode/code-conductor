@@ -13,6 +13,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { orchStoreRoot } from './projects.ts';
 import { createFragmentCatalog, type ExtraEntry } from './fragmentCatalog.ts';
+import { httpError } from './httpError.ts';
 
 const CONVENTIONS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'conventions', 'project');
 
@@ -80,6 +81,3 @@ export async function composeProjectScaffold(projectName: string, slugs: string[
   return `Project "${projectName}" was created with these scaffolding steps. Complete them first, before other work:\n\n${numbered}`;
 }
 
-function httpError(statusCode: number, message: string): Error & { statusCode: number } {
-  return Object.assign(new Error(message), { statusCode });
-}

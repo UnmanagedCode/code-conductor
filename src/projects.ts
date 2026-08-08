@@ -9,6 +9,7 @@ import { loadAllArchived, markArchived, unmarkArchived } from './archivedSession
 import { loadAll as loadAllSessionModes, effectiveResumeMode, unmarkSessionMode } from './sessionModes.ts';
 import { lastActivityOf } from './sessionActivity.ts';
 import type { WorktreeMeta } from './worktrees.ts';
+import { httpError } from './httpError.ts';
 
 // Default projects root = parent directory of the code-conductor repo,
 // resolved once at module load. Layout: <parent>/code-conductor/src/
@@ -1007,10 +1008,3 @@ function errMsg(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
-// Throw an Error carrying an HTTP statusCode for the REST layer, using the
-// same Object.assign pattern the routes consume (`err.statusCode`). Typed as
-// `Error & { statusCode: number }` so callers can rely on the code without a
-// cast.
-function httpError(statusCode: number, message: string): Error & { statusCode: number } {
-  return Object.assign(new Error(message), { statusCode });
-}

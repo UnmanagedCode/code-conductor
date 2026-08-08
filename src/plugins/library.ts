@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { projectsRoot, orchStoreRoot, validateName } from '../projects.ts';
-import { httpError } from './registry.ts';
+import { httpError } from '../httpError.ts';
 import { getProjectUpstreamStatus } from '../worktrees.ts';
 import { runGitLive, fetchOriginBounded } from '../gitLive.ts';
 

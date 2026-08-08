@@ -16,6 +16,7 @@
 //
 // Additive to that contract: a success body may use {text, meta?} instead
 // of {result} to get raw, UNESCAPED text blocks (see makeHandler below).
+import { httpError } from '../httpError.ts';
 import { textPayload } from '../mcp/content.ts';
 import type { InstanceManagerLike } from '../instanceTypes.ts';
 import type { PluginMcp } from './manifest.ts';
@@ -65,9 +66,9 @@ export function createMcpBridge({ instances, listMcpPlugins, ensureStarted, port
       // Manifest of the ACTIVE checkout — ensureStarted re-read it.
       const entry = listMcpPlugins().find(e => e.id === pluginId);
       const mcp = entry?.manifest.mcp;
-      if (!mcp) throw withStatus(500, `plugin '${pluginId}' no longer declares mcp`);
+      if (!mcp) throw httpError(500, `plugin '${pluginId}' no longer declares mcp`);
       const port = portFor(pluginId);
-      if (port == null) throw withStatus(500, `plugin '${pluginId}' has no running backend`);
+      if (port == null) throw httpError(500, `plugin '${pluginId}' has no running backend`);
       const caller = {
         sessionId: ctx.callerId ?? null,
         project: ctx.callerId != null ? (callerProject(ctx.callerId) ?? null) : null,
@@ -84,18 +85,18 @@ export function createMcpBridge({ instances, listMcpPlugins, ensureStarted, port
       } catch (e) {
         const err = e as { name?: unknown };
         if (err.name === 'TimeoutError' || err.name === 'AbortError') {
-          throw withStatus(504, `plugin '${pluginId}' tool '${toolName}' timed out after ${mcp.timeoutMs}ms`);
+          throw httpError(504, `plugin '${pluginId}' tool '${toolName}' timed out after ${mcp.timeoutMs}ms`);
         }
         reportUpstreamFailure(pluginId);
-        throw withStatus(502, `plugin '${pluginId}' unreachable: ${(e as Error).message}`);
+        throw httpError(502, `plugin '${pluginId}' unreachable: ${(e as Error).message}`);
       }
       if (!res.ok) {
         const text = await res.text().catch(() => '');
-        throw withStatus(500, `plugin '${pluginId}' MCP endpoint returned HTTP ${res.status}${text ? ` — ${text.slice(0, 300)}` : ''}`);
+        throw httpError(500, `plugin '${pluginId}' MCP endpoint returned HTTP ${res.status}${text ? ` — ${text.slice(0, 300)}` : ''}`);
       }
       let body: unknown;
       try { body = await res.json(); }
-      catch { throw withStatus(500, `plugin '${pluginId}' MCP endpoint returned non-JSON`); }
+      catch { throw httpError(500, `plugin '${pluginId}' MCP endpoint returned non-JSON`); }
       if (body && typeof body === 'object' && (body as { error?: unknown }).error != null) {
         throw new Error(String((body as { error: unknown }).error)); // tool-level failure: no HTTP status
       }
@@ -113,8 +114,4 @@ export function createMcpBridge({ instances, listMcpPlugins, ensureStarted, port
   }
 
   return { toolsFor };
-}
-
-function withStatus(statusCode: number, message: string): Error & { statusCode: number } {
-  return Object.assign(new Error(message), { statusCode });
 }

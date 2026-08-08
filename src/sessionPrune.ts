@@ -50,6 +50,7 @@ import { randomUUID } from 'node:crypto';
 import { sessionFilePath, subAgentDirPath } from './projects.ts';
 import { isPureUserPromptLine, writeSessionMetadata, type PersistedLine } from './transcript.ts';
 import type { WireContentBlock } from './parser.ts';
+import { httpError } from './httpError.ts';
 
 // Stub shape for a pruned Read/Write tool_result. `true` (the default) makes the
 // stub a content-block array instead of a plain string.
@@ -616,6 +617,3 @@ function errCode(e: unknown): string | undefined {
   return typeof code === 'string' ? code : undefined;
 }
 
-function httpError(statusCode: number, message: string): Error & { statusCode: number } {
-  return Object.assign(new Error(message), { statusCode });
-}

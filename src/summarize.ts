@@ -11,6 +11,7 @@ import { resolveClaudeBin, resolveBackendLaunch } from './claudeLauncher.ts';
 import { getTierBackend, getBackend } from './appSettings.ts';
 import { CLAUDE_BACKEND_ID } from './modelVersions.ts';
 import { SUMMARY_LENGTHS, type SummaryLength } from './sessionSummaries.ts';
+import { httpError } from './httpError.ts';
 
 // Dedicated cwd for one-shot summary subprocesses: a subdirectory inside
 // the .code-conductor metadata dir. It is NOT under PROJECTS_ROOT as a
@@ -213,7 +214,7 @@ async function projectNameHint(sessionId: string): Promise<string | null> {
 // one-shot subprocess. Returns { summary, messageCount, durationMs, costUsd }.
 export async function generateSummary(sessionId: string, cwd: string, length: SummaryLength = 'medium'): Promise<{ summary: string; messageCount: number; durationMs: number; costUsd: number | null }> {
   if (!(SUMMARY_LENGTHS as readonly string[]).includes(length)) {
-    throw Object.assign(new Error(`invalid length: ${length}`), { statusCode: 400 });
+    throw httpError(400, `invalid length: ${length}`);
   }
 
   const { conversationText, messageCount } = await flattenTranscript(sessionId, cwd);

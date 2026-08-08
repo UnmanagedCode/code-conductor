@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import { runGit, getProjectUpstreamStatus } from './worktrees.ts';
 import { runGitLive, fetchOriginBounded } from './gitLive.ts';
+import { httpError } from './httpError.ts';
 
 // Conductor self-update — the app's own version of the Plugin Library update
 // path (src/plugins/library.ts). The conductor is distributed as a git clone
@@ -148,7 +149,7 @@ export async function applySelfUpdate({
   const pull = await runGitLive(['pull', '--ff-only'], repoRoot, { onChunk: (t) => onChunk?.('pull', t) });
   if (pull.code !== 0) {
     const tail = (pull.stderr || pull.stdout || '').slice(-TAIL_CAP);
-    throw Object.assign(new Error('git pull --ff-only failed'), { statusCode: 502, tail });
+    throw httpError(502, 'git pull --ff-only failed', { tail });
   }
 
   // Which tracked files did the pull move? If any is a dependency manifest,

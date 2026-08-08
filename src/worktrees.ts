@@ -9,6 +9,7 @@ import { execFile, spawn } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
+import { httpError } from './httpError.ts';
 import {
   projectsRoot, getProject, projectStoreDir, worktreeStoreDir, listProjects,
   type ProjectInfo,
@@ -1057,10 +1058,3 @@ function errCode(e: unknown): string | undefined {
   return typeof code === 'string' ? code : undefined;
 }
 
-// Throw an Error carrying an HTTP statusCode for the REST layer, using the
-// same Object.assign pattern the routes consume (`err.statusCode`). Typed as
-// `Error & { statusCode: number }` so callers can rely on the code without a
-// cast.
-function httpError(statusCode: number, message: string): Error & { statusCode: number } {
-  return Object.assign(new Error(message), { statusCode });
-}

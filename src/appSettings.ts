@@ -19,6 +19,7 @@ import {
 } from './modelVersions.ts';
 import { OLLAMA_CLOUD_MODELS, isKnownOllamaCloudModel } from './ollamaCloudModels.ts';
 import { DEFAULT_EFFORT, INHERIT_EFFORT, isKnownEffort, type EffortLevel } from './effortLevels.ts';
+import { httpError } from './httpError.ts';
 
 // The on-disk settings document, typed loosely: every leaf is `unknown` because
 // the file is app-owned but pre-dates this module's conversion and can hold
@@ -1104,10 +1105,3 @@ export async function setOverageThreshold(input: { enabled: unknown; value: unkn
   return { enabled: !!enabled, value: snapped };
 }
 
-// Throw an Error carrying an HTTP statusCode for the REST layer, using the
-// same Object.assign pattern the routes consume (`err.statusCode`). Typed as
-// `Error & { statusCode: number }` so callers can rely on the code without a
-// cast.
-function httpError(statusCode: number, message: string): Error & { statusCode: number } {
-  return Object.assign(new Error(message), { statusCode });
-}

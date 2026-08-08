@@ -62,6 +62,7 @@ import { buildRenewRequest, renewalDeferredBy } from '../sessionRenew.ts';
 import type { PlaybookGate } from './playbookGate.ts';
 import type { InstanceLike, InstanceManagerLike, InstanceSummary } from '../instanceTypes.ts';
 import type { UiEvent } from '../parser.ts';
+import { httpError } from '../httpError.ts';
 
 // Dirty-line cap for project_status — mirror project_read/project_diff's
 // bounded-output pattern so no tool can emit an unbounded body. (The
@@ -196,7 +197,7 @@ function toConductorView(summary: InstanceSummary): Record<string, unknown> {
 // hot path stays a pure in-memory lookup.
 async function getInst(instances: InstanceManagerLike | null | undefined, sessionId: string): Promise<{ inst: InstanceLike } | { soft: SoftRefusal }> {
   if (!instances) {
-    throw Object.assign(new Error('orchestrator was started without an InstanceManager'), { statusCode: 500 });
+    throw httpError(500, 'orchestrator was started without an InstanceManager');
   }
   if (typeof sessionId !== 'string' || !sessionId) {
     return { soft: { ok: false, code: 'SESSION_UNKNOWN', sessionId: sessionId ?? null,
@@ -746,7 +747,7 @@ export async function locateSession({ sessionId }: { sessionId?: string }) {
   // so this stays a clean 404 rather than surfacing an assertion as a 500.
   const hit = await findSessionLocation(sessionId);
   if (!hit) {
-    throw Object.assign(new Error(`session not found: ${sessionId}`), { statusCode: 404 });
+    throw httpError(404, `session not found: ${sessionId}`);
   }
   // {project, worktreeName} → {project, worktree} (MCP contract).
   return { project: hit.project, worktree: hit.worktreeName ?? null };
@@ -2231,7 +2232,7 @@ export async function projectRead({ project, worktree, relativePath,
   try { stat = await fs.stat(resolved); }
   catch (e) {
     if (errCode(e) === 'ENOENT') {
-      throw Object.assign(new Error(`file not found: ${relativePath}`), { statusCode: 404 });
+      throw httpError(404, `file not found: ${relativePath}`);
     }
     throw e;
   }

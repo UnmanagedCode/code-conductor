@@ -19,6 +19,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { orchStoreRoot } from './projects.ts';
 import { createFragmentCatalog } from './fragmentCatalog.ts';
+import { httpError } from './httpError.ts';
 
 const CONVENTIONS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'conventions', 'workspace');
 const CORE_FILE = path.join(CONVENTIONS_DIR, 'core.md');
@@ -117,6 +118,3 @@ export async function composeCurrentWorkspace(): Promise<string> {
   return composeWorkspace(await getSelection());
 }
 
-function httpError(statusCode: number, message: string): Error & { statusCode: number } {
-  return Object.assign(new Error(message), { statusCode });
-}

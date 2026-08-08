@@ -15,6 +15,7 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { writeFileAtomic } from './projects.ts';
+import { httpError } from './httpError.ts';
 
 const SLUG_RE = /^[a-z][a-z0-9-]*$/;
 const SLUG_MAX = 40;
@@ -297,10 +298,3 @@ function errMsg(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
-// Throw an Error carrying an HTTP statusCode for the REST layer, using the
-// same Object.assign pattern the routes consume (`err.statusCode`). Typed as
-// `Error & { statusCode: number }` so callers can rely on the code without a
-// cast.
-function httpError(statusCode: number, message: string): Error & { statusCode: number } {
-  return Object.assign(new Error(message), { statusCode });
-}

@@ -16,6 +16,7 @@ import { randomUUID } from 'node:crypto';
 import { getTranscribeModel } from './appSettings.ts';
 import { modelFileName, DEFAULT_MODEL } from './whisperModels.ts';
 import { orchStoreRoot } from './projects.ts';
+import { httpError } from './httpError.ts';
 
 // Root of the whisper.cpp install. Defaults to the orchestrator store
 // (<projectsRoot>/.code-conductor/whisper.cpp), the same dir the rest of the
@@ -107,7 +108,7 @@ function run(cmd: string, args: string[], opts: { env?: NodeJS.ProcessEnv } = {}
 
 export async function transcribe(audioBuf: Buffer): Promise<string> {
   if (!Buffer.isBuffer(audioBuf) || audioBuf.length === 0) {
-    throw Object.assign(new Error('empty audio body'), { statusCode: 400 });
+    throw httpError(400, 'empty audio body');
   }
   const { cli, model, ffmpeg } = whisperPaths();
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), `cc-transcribe-${randomUUID()}-`));

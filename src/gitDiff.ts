@@ -10,6 +10,7 @@
 
 import { runGit, getWorktree } from './worktrees.ts';
 import { getProject } from './projects.ts';
+import { httpError } from './httpError.ts';
 
 // Maximum bytes of raw git diff output to keep for a single file's unified
 // diff. Shared by both diff surfaces (REST here + the MCP project_diff
@@ -32,7 +33,7 @@ const BASE_REF_RE = /^[A-Za-z0-9._/-]+$/;
 // the check + the canonical error.
 export function assertValidBaseRef(ref: string): void {
   if (ref.startsWith('-') || !BASE_REF_RE.test(ref)) {
-    throw Object.assign(new Error('invalid baseRef'), { statusCode: 400 });
+    throw httpError(400, 'invalid baseRef');
   }
 }
 
@@ -179,12 +180,6 @@ const NAME_STATUS_STATUS: Record<string, string> = {
 
 function mapStatus(code: string): string {
   return NAME_STATUS_STATUS[code] ?? 'modified';
-}
-
-// Throw an Error carrying an HTTP statusCode for the REST layer, using the
-// same Object.assign pattern the routes consume (`err.statusCode`).
-function httpError(statusCode: number, message: string): Error & { statusCode: number } {
-  return Object.assign(new Error(message), { statusCode });
 }
 
 function clampContext(contextLines: number): number {

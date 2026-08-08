@@ -51,6 +51,7 @@ import type { WorktreeMeta } from './worktrees.ts';
 import type { TaskRecord } from './taskReconstruct.ts';
 import type { Response } from 'express';
 import type { WriteStream } from 'node:fs';
+import { httpError } from './httpError.ts';
 
 // `AUTO_RESUME_TEXT` now lives with the overage timer machine in
 // overageResume.ts; re-export it here so existing importers (and tests) that
@@ -2588,7 +2589,7 @@ export class Instance extends EventEmitter implements InstanceLike {
   // the jsonl. The jsonl itself was already being written by the CLI
   // — only the orchestrator's bookkeeping was opting out.
   async promoteToNormal(): Promise<InstanceSummary> {
-    if (!this.temp) throw Object.assign(new Error('instance is not temp'), { statusCode: 400 });
+    if (!this.temp) throw httpError(400, 'instance is not temp');
     this.temp = false;
     try { if (this.backingSessionId) await unmarkTemp(this.backingSessionId); } catch { /* best-effort */ }
     // Persist last-prompt + permission-mode now, so the standalone
@@ -2796,14 +2797,14 @@ export class Instance extends EventEmitter implements InstanceLike {
     // makes the reseed 409 and loses the handoff summary.
     this._assertNoRotationInFlight();
     if (this._mutating) {
-      throw Object.assign(new Error('another rewind/fork is in progress'), { statusCode: 409 });
+      throw httpError(409, 'another rewind/fork is in progress');
     }
     const backingId = this.backingSessionId;
     if (!backingId) {
-      throw Object.assign(new Error('no sessionId — instance has not yet received a turn'), { statusCode: 400 });
+      throw httpError(400, 'no sessionId — instance has not yet received a turn');
     }
     if (this.status === 'turn') {
-      throw Object.assign(new Error('cannot rewind during a running turn — interrupt first'), { statusCode: 409 });
+      throw httpError(409, 'cannot rewind during a running turn — interrupt first');
     }
     this._mutating = true;
     // Marks the kill→relaunch window for isSessionLive — see the
@@ -2881,14 +2882,14 @@ export class Instance extends EventEmitter implements InstanceLike {
     // here (matching BACKEND_LOCKED in setModel).
     this._assertNoRotationInFlight();
     if (this._mutating) {
-      throw Object.assign(new Error('another rewind/fork/prune is in progress'), { statusCode: 409 });
+      throw httpError(409, 'another rewind/fork/prune is in progress');
     }
     const backingId = this.backingSessionId;
     if (!backingId) {
-      throw Object.assign(new Error('no sessionId — instance has not yet received a turn'), { statusCode: 400 });
+      throw httpError(400, 'no sessionId — instance has not yet received a turn');
     }
     if (this.status === 'turn') {
-      throw Object.assign(new Error('cannot prune during a running turn — interrupt first'), { statusCode: 409 });
+      throw httpError(409, 'cannot prune during a running turn — interrupt first');
     }
     // Validate what can be validated BEFORE the kill — no reason to tear down a
     // live subprocess for a request that was always going to be rejected. The
@@ -3536,7 +3537,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
       }
     }
     if (!project) {
-      throw Object.assign(new Error('project required'), { statusCode: 400 });
+      throw httpError(400, 'project required');
     }
     const proj = await getProject(project);
     // create() is policy-light: mode never depends on temp here. The UI's
@@ -3553,7 +3554,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
       : DEFAULT_MODE;
     const finalMode = mode ?? defaultMode;
     if (!VALID_MODES.has(finalMode)) {
-      throw Object.assign(new Error('invalid mode (must be plan, ask, or bypassPermissions)'), { statusCode: 400 });
+      throw httpError(400, 'invalid mode (must be plan, ask, or bypassPermissions)');
     }
     // `tier`/`role` are carried ONLY to resolve the default effort — the model +
     // backend are already resolved to concrete values by the caller. They are not
@@ -3563,7 +3564,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     const finalEffort = resolveSpawnEffort({ effort, tier, role });
     const finalThinking = thinking ?? DEFAULT_THINKING;
     if (!VALID_THINKING.has(finalThinking)) {
-      throw Object.assign(new Error('invalid thinking'), { statusCode: 400 });
+      throw httpError(400, 'invalid thinking');
     }
     let finalModel = (typeof model === 'string' && model.trim()) ? model.trim() : null;
 
@@ -3646,7 +3647,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     } else if (typeof worktree === 'string' && worktree.trim()) {
       worktreeMeta = await getWorktree(project, worktree.trim());
       if (!worktreeMeta) {
-        throw Object.assign(new Error(`worktree '${worktree}' not found under project '${project}'`), { statusCode: 404 });
+        throw httpError(404, `worktree '${worktree}' not found under project '${project}'`);
       }
       cwd = worktreeMeta.worktreePath;
     }
@@ -4151,16 +4152,16 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   async respawn(id: string): Promise<Instance> {
     const inst = this.byId.get(id);
     if (!inst) {
-      throw Object.assign(new Error('instance not found'), { statusCode: 404 });
+      throw httpError(404, 'instance not found');
     }
     if (inst.proc) {
-      throw Object.assign(new Error('instance still running'), { statusCode: 409 });
+      throw httpError(409, 'instance still running');
     }
     // A manual respawn supersedes any pending auto-resume for this session.
     this._cancelAutoResume(inst.id);
     const sessionId = inst.backingSessionId;
     if (!sessionId) {
-      throw Object.assign(new Error('no sessionId to resume'), { statusCode: 400 });
+      throw httpError(400, 'no sessionId to resume');
     }
     // Drop the prior run's events before loadHistory() replays the persisted
     // transcript into the ring — otherwise the replay piles up on top of the
@@ -4183,7 +4184,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   async remove(id: string): Promise<void> {
     const inst = this.byId.get(id);
     if (!inst) {
-      throw Object.assign(new Error('instance not found'), { statusCode: 404 });
+      throw httpError(404, 'instance not found');
     }
     if (inst.proc) await inst.kill({ graceMs: 500 });
     this.byId.delete(id);
