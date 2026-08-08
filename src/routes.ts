@@ -89,7 +89,12 @@ import {
   addCustomConvention as addConductorConvention,
   updateCustomConvention as updateConductorConvention,
   deleteCustomConvention as deleteConductorConvention,
+  getDefaultPlaybook,
+  setDefaultPlaybook,
 } from './conductorConventions.ts';
+// The catalog read the Settings picker lists — the same one the MCP tool
+// answers with, imported rather than reimplemented per surface.
+import { listPlaybooks } from './mcp/handlers.ts';
 import {
   CORE_META as WORKSPACE_CORE_META,
   getCatalog as getWorkspaceConventionsCatalog,
@@ -1727,20 +1732,37 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
   // <store>/conductor-prompt.md, and injected via `--append-system-prompt-file`
   // on the next conductor spawn/resume (see Instance.launch in
   // src/instances.ts), so there is nothing to regenerate here.
+  //
+  // The response also carries the playbook catalog and the selected default,
+  // which the same page's Default-playbook picker consumes: the selected
+  // playbook is rendered into the conductor's prompt as a generated convention
+  // (src/playbookConvention.ts).
   r.get('/settings/conventions/conductor', async (req, res, next) => {
     try {
-      const [conventions, enabled] = await Promise.all([getConductorConventionsCatalog(), getConductorSelection()]);
-      res.json({ core: CONDUCT_CORE_META, conventions, enabled });
+      const [conventions, enabled, catalog, defaultPlaybook] = await Promise.all([
+        getConductorConventionsCatalog(), getConductorSelection(), listPlaybooks(), getDefaultPlaybook(),
+      ]);
+      res.json({
+        core: CONDUCT_CORE_META, conventions, enabled,
+        playbooks: catalog.playbooks, playbookErrors: catalog.errors, defaultPlaybook,
+      });
     } catch (e) { next(e); }
   });
 
-  // Literal /selection must precede the /:slug route below so it isn't
-  // swallowed as a slug.
+  // Literal /selection and /default-playbook must precede the /:slug route below
+  // so they aren't swallowed as slugs.
   r.put('/settings/conventions/conductor/selection', async (req, res, next) => {
     try {
       const enabled = jsonBody(req).enabled as string[];
       const saved = await setConductorSelection(enabled);
       res.json({ enabled: saved });
+    } catch (e) { next(e); }
+  });
+
+  r.put('/settings/conventions/conductor/default-playbook', async (req, res, next) => {
+    try {
+      const id = jsonBody(req).id as string | null;
+      res.json({ defaultPlaybook: await setDefaultPlaybook(id ?? null) });
     } catch (e) { next(e); }
   });
 

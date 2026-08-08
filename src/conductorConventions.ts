@@ -25,6 +25,7 @@ import { createFragmentCatalog, type ExtraEntry } from './fragmentCatalog.ts';
 // a cycle. By the time loadPlaybooks() resolves that registry, this module is
 // fully initialised.
 import { loadPlaybooks } from './playbooks.ts';
+import { renderPlaybookConvention } from './playbookConvention.ts';
 
 const CONVENTIONS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'conventions', 'conductor');
 const CORE_FILE = path.join(CONVENTIONS_DIR, 'core.md');
@@ -204,16 +205,72 @@ export async function playbookListing(): Promise<string> {
     ...ids.map(p => `- \`${p.id}\` — ${p.description}`)].join('\n');
 }
 
+// ── Default playbook (Settings → Conductor conventions) ─────────────────────
+//
+// GLOBAL, like the convention selection above and for the same reason: the
+// conductor is a singleton, and this value is consumed by composeCurrentConduct()
+// — which takes no instance argument and runs BEFORE the instance exists (see
+// materializeCurrentConduct in conduct.ts). It rides the same store as a sibling
+// key, so there is no second state file and no second Settings surface.
+//
+// null = nothing selected = no convention injected (the conductor falls back to
+// list_playbooks/describe_playbook).
+
+export async function getDefaultPlaybook(): Promise<string | null> {
+  const v = (await catalog.readState()).defaultPlaybook;
+  return typeof v === 'string' && v ? v : null;
+}
+
+// Validated against the LOADED definitions — built-ins plus the user overlay,
+// through the one catalog in playbooks.ts. A selection that no definition backs
+// would silently render nothing.
+export async function setDefaultPlaybook(id: string | null): Promise<string | null> {
+  if (id !== null && typeof id !== 'string') {
+    throw httpError(400, 'id must be a playbook id string, or null to clear');
+  }
+  const value = id ? id : null;
+  if (value) {
+    const { playbooks } = await loadPlaybooks();
+    if (!playbooks.has(value)) {
+      throw httpError(400, `unknown playbook id '${value}' (known: ${[...playbooks.keys()].sort().join(', ') || '(none)'})`);
+    }
+  }
+  await catalog.patchState({ defaultPlaybook: value });
+  return value;
+}
+
+// The selected default playbook, GENERATED from its definition (see
+// playbookConvention.ts). Empty string when nothing is selected, when the
+// selection no longer resolves, or when the catalog fails to load — a spawn must
+// never be blocked by this section.
+export async function defaultPlaybookConvention(): Promise<string> {
+  const id = await getDefaultPlaybook();
+  if (!id) return '';
+  try {
+    const { playbooks } = await loadPlaybooks();
+    const pb = playbooks.get(id);
+    if (!pb) {
+      console.warn(`conductorConventions: default playbook '${id}' is not loaded; omitting its convention`);
+      return '';
+    }
+    return renderPlaybookConvention(pb);
+  } catch (e) {
+    console.warn(`conductorConventions: default playbook unavailable: ${e instanceof Error ? e.message : String(e)}`);
+    return '';
+  }
+}
+
 // core + enabled convention bodies (catalog order) + footer.
 export async function composeConduct(enabledSlugs: string[]): Promise<string> {
   const core = await getCore();
   const footer = await getFooter();
   let mods = (await catalog.compose(enabledSlugs)).trim();
-  // The listing rides the playbooks convention, so a session with that
-  // convention off pays nothing for it.
+  // Both generated sections ride the playbooks convention, so a session with
+  // that convention off pays nothing for them.
   if (mods && enabledSlugs.includes(PLAYBOOKS_SLUG)) {
-    const listing = await playbookListing();
-    if (listing) mods = `${mods}\n\n${listing}`;
+    for (const section of [await playbookListing(), await defaultPlaybookConvention()]) {
+      if (section) mods = `${mods}\n\n${section}`;
+    }
   }
   return [core, ...(mods ? [mods] : []), footer].join('\n\n') + '\n';
 }

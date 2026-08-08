@@ -12,8 +12,12 @@
 //
 // Element ids are derived from `prefix`: <prefix>-status, <prefix>-convention-list,
 // <prefix>-add-btn/-form/-slug/-name/-desc/-body/-save/-cancel/-error.
+//
+// `onData` receives the whole GET payload on every load, so a scope-specific
+// widget in the same block (the conductor scope's default-playbook picker) can
+// share this one fetch without this widget knowing what it is.
 
-export function installConventionsPanel({ prefix, base, hasToggle = false, hasCoreRow = false, noun = 'convention' }) {
+export function installConventionsPanel({ prefix, base, hasToggle = false, hasCoreRow = false, noun = 'convention', onData = null }) {
   const $ = (suffix) => document.getElementById(`${prefix}-${suffix}`);
   const statusEl = $('status');
   const listEl = $('convention-list');
@@ -31,6 +35,7 @@ export function installConventionsPanel({ prefix, base, hasToggle = false, hasCo
   let enabled = new Set();      // enabled slugs (mirrors server selection)
 
   function render(data) {
+    onData?.(data);
     if (statusEl) statusEl.textContent = '';
     if (!listEl) return;
     enabled = new Set(data.enabled || []);

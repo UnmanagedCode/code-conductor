@@ -11,6 +11,7 @@
 import { formatAgo } from './sidebar.js';
 import { installPluginManager } from './pluginManager.js';
 import { installConventionsPanel } from './conventionsPanel.js';
+import { installDefaultPlaybook } from './defaultPlaybook.js';
 import { CLAUDE_BACKEND, backendIdOf } from './models.js';
 
 const POLL_MS = 1500;
@@ -100,9 +101,13 @@ export function installSettings({
   // Conventions group — one reusable widget mounted three times (cascade order
   // Conductor → Workspace → Project). Each owns its own DOM (by id prefix) and
   // its scope's REST endpoints; see public/conventionsPanel.js.
+  // The conductor block also carries the default-playbook picker, fed from the
+  // same GET payload rather than a second fetch.
+  const defaultPlaybook = installDefaultPlaybook({ base: '/api/settings/conventions/conductor' });
   const conductorPanel = installConventionsPanel({
     prefix: 'cc', base: '/api/settings/conventions/conductor',
     hasToggle: true, hasCoreRow: true, noun: 'conductor convention',
+    onData: defaultPlaybook.render,
   });
   const workspacePanel = installConventionsPanel({
     prefix: 'wk', base: '/api/settings/conventions/workspace',
