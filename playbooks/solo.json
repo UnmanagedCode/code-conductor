@@ -8,7 +8,7 @@
     "plan": {
       "description": "Spawn and brief a plan worker — scoped goal, constraints, completion sentinel — and end the turn. On its wake: approve, reject with feedback, answer its question, or abandon. It implements what it planned, so pick its model tier for the whole job.",
       "tools": {
-        "spawn_instance": { "require": { "mode": "plan", "createWorktree": true } },
+        "spawn_instance": { "pin": { "mode": "plan", "createWorktree": true } },
         "set_mode": "deny"
       }
     },
@@ -20,7 +20,7 @@
       "needs": [{ "stage": "implement", "position": ["implement", "refine"] }],
       "workers": "many",
       "tools": {
-        "spawn_instance": { "require": { "mode": "bypassPermissions", "model": "reviewer" } },
+        "spawn_instance": { "pin": { "mode": "bypassPermissions", "model": "reviewer" } },
         "sync_worktree": "deny",
         "approve_plan": "deny"
       }

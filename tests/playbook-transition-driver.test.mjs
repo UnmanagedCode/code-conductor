@@ -33,7 +33,7 @@ test('premise: solo declares plan->implement with on:approve_plan and implement-
 
 test('an edge with NO `on` is driven by send_prompt', () => {
   const res = d('send_prompt',
-    { sessionId: 'w-planner-1', text: 'address the review', stage: 'refine', needs: { review: 'w-review-01' } },
+    { sessionId: 'w-planner-1', text: 'address the review', stage: 'refine', provenance: { review: 'w-review-01' } },
     SOLO_RUN);
   assert.equal(res.ok, true, `expected ok, got ${res.code}: ${res.reason}`);
   assert.deepEqual(res.move, { kind: 'transition', from: 'implement', to: 'refine', via: 'send_prompt' });

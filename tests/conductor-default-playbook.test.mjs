@@ -64,7 +64,7 @@ function fixture({ alphaDesc, betaDesc }) {
     stages: {
       alpha: {
         description: alphaDesc,
-        tools: { spawn_instance: { require: { mode: 'plan' } } },
+        tools: { spawn_instance: { pin: { mode: 'plan' } } },
       },
       beta: {
         description: betaDesc,

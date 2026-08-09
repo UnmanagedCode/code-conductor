@@ -215,7 +215,7 @@ function rpcRequestId(msg: unknown): unknown {
 
 // True when a tool's inputSchema declares `prop` with a truthy value — the
 // schema gate for the prefix-resolution chokepoint below. Driven off the schema
-// so a future tool declaring `needs` is resolved without another edit here.
+// so a future tool declaring `provenance` is resolved without another edit here.
 function hasSchemaProperty(schema: unknown, prop: string): boolean {
   if (!isJsonRecord(schema)) return false;
   const props = schema.properties;
@@ -224,7 +224,7 @@ function hasSchemaProperty(schema: unknown, prop: string): boolean {
 }
 
 // The SESSION_AMBIGUOUS soft refusal, shared by both prefix-resolution sites
-// (the top-level `sessionId` and each `needs` value) so the wording has one
+// (the top-level `sessionId` and each `provenance` value) so the wording has one
 // home. `where` names the argument the ambiguous prefix came from.
 function ambiguousRefusal(
   ref: { ambiguous: string[]; tooShort: boolean }, input: string, where: string,
@@ -308,27 +308,27 @@ async function dispatch(msg: unknown, ctx: McpCtx): Promise<JsonRpcResponse | nu
           args = { ...args, sessionId: ref.sessionId };
         }
       }
-      // `needs` values are sessionIds too (spawn_instance's {stage: sessionId}
-      // provenance map — see src/playbooks.ts), so they get the SAME prefix
-      // treatment. Without this the conductor would have to pass full 36-char
-      // UUIDs in `needs` while every other worker reference takes 8 chars.
+      // `provenance` values are sessionIds too (the {stage: sessionId} map — see
+      // src/playbooks.ts), so they get the SAME prefix treatment. Without this
+      // the conductor would have to pass full 36-char UUIDs there while every
+      // other worker reference takes 8 chars.
       // Ordering is load-bearing: this must run before the policy checkpoint
       // below, which compares these values against the projection's full ids.
       if (ctx.instances?.resolveSessionRef
-          && hasSchemaProperty(tool.inputSchema, 'needs')
-          && isJsonRecord(args) && isJsonRecord(args.needs)) {
-        const resolved: Record<string, unknown> = { ...args.needs };
-        for (const [stage, value] of Object.entries(args.needs)) {
+          && hasSchemaProperty(tool.inputSchema, 'provenance')
+          && isJsonRecord(args) && isJsonRecord(args.provenance)) {
+        const resolved: Record<string, unknown> = { ...args.provenance };
+        for (const [stage, value] of Object.entries(args.provenance)) {
           if (typeof value !== 'string' || !value) continue;
           const ref = ctx.instances.resolveSessionRef(value);
           if (ref && 'ambiguous' in ref) {
             return rpcResult(id, {
-              content: [{ type: 'text', text: JSON.stringify(ambiguousRefusal(ref, value, `needs.${stage}`)) }],
+              content: [{ type: 'text', text: JSON.stringify(ambiguousRefusal(ref, value, `provenance.${stage}`)) }],
             });
           }
           if (ref?.sessionId) resolved[stage] = ref.sessionId;
         }
-        args = { ...args, needs: resolved };
+        args = { ...args, provenance: resolved };
       }
       // Playbook policy — the ONE enforcement point, deliberately AFTER
       // validateArgs and after both prefix-resolution passes, and BEFORE the

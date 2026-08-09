@@ -188,9 +188,9 @@ test('describe_playbook returns the graph the enforcement actually uses', async 
     assert.match(pb, /^PLAYBOOK solo$/m);
     assert.match(pb, /^entry plan$/m);
 
-    // `require` — enforced argument values, reported verbatim so a caller knows
+    // `pin` — enforced argument values, reported verbatim so a caller knows
     // what will be filled in or refused.
-    assert.match(pb, /^ {6}spawn_instance require \{"mode":"plan","createWorktree":true\}$/m);
+    assert.match(pb, /^ {6}spawn_instance pin \{"mode":"plan","createWorktree":true\}$/m);
     assert.match(pb, /^ {6}set_mode deny$/m);
 
     // `needs` — worker provenance, not argument values. Read off `review`'s
@@ -498,17 +498,17 @@ test('every move playbook_state advertises behaves exactly as advertised when pe
     // `reason` is one.
     const rev = await t.spawnWorker({
       project: 'demo', playbook: 'solo', stage: 'review', worktree: wtName,
-      needs: { implement: impl.sessionId },
+      provenance: { implement: impl.sessionId },
     });
     moves = await movesNow();
-    assert.equal(moves[0].ok, false, 'the bare call is still blocked — needs is an argument, not a fact');
-    assert.match(moves[0].reason, /pass needs: \{ "review": "<sessionId>" \}/,
+    assert.equal(moves[0].ok, false, 'the bare call is still blocked — provenance is an argument, not a fact');
+    assert.match(moves[0].reason, /pass provenance: \{ "review": "<sessionId>" \}/,
       'and the reason names exactly what to pass');
 
     // Following that recipe succeeds.
     const ok = await t.call('send_prompt', {
       sessionId: impl.sessionId, text: 'refine', stage: 'refine', subscribe: false,
-      needs: { review: rev.sessionId },
+      provenance: { review: rev.sessionId },
     });
     assert.equal(ok.ok, undefined, 'supplying what the reason asked for makes the move legal');
 
@@ -526,7 +526,7 @@ test('playbook_state derives the run graph and its history, keeping concurrent r
     await t.call('approve_plan', { sessionId: a.sessionId, subscribe: false });
     const aRev = await t.spawnWorker({
       project: 'demo', playbook: 'solo', stage: 'review',
-      worktree: a.worktree.worktreeName, needs: { implement: a.sessionId },
+      worktree: a.worktree.worktreeName, provenance: { implement: a.sessionId },
     });
     // A second, independent run of the same playbook.
     const b = await t.spawnWorker({ project: 'demo', playbook: 'solo', stage: 'plan' });

@@ -57,7 +57,7 @@ test('decide() carries the self-loop through as a from===to move the gate can le
   const events = [
     ...SOLO_RUN,
     { kind: 'transition', sessionId: 'w-planner-1', from: 'implement', to: 'refine', via: 'send_prompt',
-      needs: { review: 'w-review-01' } },
+      provenance: { review: 'w-review-01' } },
   ];
   const res = d('send_prompt', { sessionId: 'w-planner-1', text: 'round 2', stage: 'refine' }, events);
   assert.equal(res.ok, true, `expected ok, got ${res.code}: ${res.reason}`);
@@ -88,7 +88,7 @@ test('a DECLARED self-loop still skips needs and capacity', () => {
   });
   const events = [
     { kind: 'spawn', sessionId: 'w-loop-root', playbook: 'loop', stage: 'root' },
-    { kind: 'spawn', sessionId: 'w-loop-hold', playbook: 'loop', stage: 'hold', needs: { root: 'w-loop-root' } },
+    { kind: 'spawn', sessionId: 'w-loop-hold', playbook: 'loop', stage: 'hold', provenance: { root: 'w-loop-root' } },
     // The need is now unsatisfiable: `hold` requires a LIVE worker in `root`.
     { kind: 'retire', sessionId: 'w-loop-root', reason: 'gone' },
   ];
@@ -101,9 +101,9 @@ test('a DECLARED self-loop still skips needs and capacity', () => {
   // Proof the need really is unsatisfiable — otherwise the case above is vacuous.
   const entering = decide({
     toolName: 'send_prompt',
-    args: { sessionId: 'w-loop-2nd', text: 'in', stage: 'hold', needs: { root: 'w-loop-root' } },
+    args: { sessionId: 'w-loop-2nd', text: 'in', stage: 'hold', provenance: { root: 'w-loop-root' } },
     projection: proj([...events,
-      { kind: 'spawn', sessionId: 'w-loop-2nd', playbook: 'loop', stage: 'root', needs: { root: 'w-loop-root' } }]),
+      { kind: 'spawn', sessionId: 'w-loop-2nd', playbook: 'loop', stage: 'root', provenance: { root: 'w-loop-root' } }]),
     playbooks: pbs(loop),
   });
   assert.equal(entering.ok, false, 'premise: entering `hold` fresh IS refused');
@@ -117,7 +117,7 @@ test('a self-edge does NOT re-run the stage\'s needs', () => {
   const events = [
     ...SOLO_RUN,
     { kind: 'transition', sessionId: 'w-planner-1', from: 'implement', to: 'refine', via: 'send_prompt',
-      needs: { review: 'w-review-01' } },
+      provenance: { review: 'w-review-01' } },
     { kind: 'retire', sessionId: 'w-review-01', reason: 'review done' },
   ];
   assert.deepEqual(PB.get('solo').stages.refine.needs,
@@ -155,7 +155,7 @@ test('a self-edge still honours the current stage\'s tools deny', () => {
 test('a self-edge still honours the current stage\'s `require` (resulting stage IS current)', () => {
   const pinned = pb({
     id: 'pinned', name: 'Pinned', description: 'pinned args', entryStages: ['a'],
-    stages: { a: { tools: { spawn_instance: 'allow', send_prompt: { require: { wait: false } } } } },
+    stages: { a: { tools: { spawn_instance: 'allow', send_prompt: { pin: { wait: false } } } } },
     transitions: [],
   });
   const projection = proj([{ kind: 'spawn', sessionId: 'w-pinned-1', playbook: 'pinned', stage: 'a' }]);
@@ -173,7 +173,7 @@ test('a self-edge still honours the current stage\'s `require` (resulting stage 
     projection, playbooks: pbs(pinned),
   });
   assert.equal(conflict.ok, false);
-  assert.equal(conflict.code, 'ARG_REQUIRE_CONFLICT');
+  assert.equal(conflict.code, 'ARG_PIN_CONFLICT');
 });
 
 test('a send_prompt naming a stage that does not exist is STAGE_UNKNOWN, not a self-edge', () => {

@@ -409,13 +409,13 @@ function yesNo(v: unknown): string {
   return DASH;
 }
 
-// One JSON.stringify of the whole `require` map: lossless by construction, and
+// One JSON.stringify of the whole `pin` map: lossless by construction, and
 // it keeps "plan" distinct from plan, true from "true", and null from absent —
 // distinctions a caller acts on, since these are the argument values the gate
-// enforces (ARG_REQUIRE_CONFLICT).
+// enforces (ARG_PIN_CONFLICT).
 function toolPolicy(policy: unknown): string {
-  if (policy && typeof policy === 'object' && 'require' in (policy as Row)) {
-    return `require ${JSON.stringify((policy as Row).require)}`;
+  if (policy && typeof policy === 'object' && 'pin' in (policy as Row)) {
+    return `pin ${JSON.stringify((policy as Row).pin)}`;
   }
   return dash(policy);
 }

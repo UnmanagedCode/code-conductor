@@ -41,7 +41,7 @@ test('spawn into an entry stage is allowed and `require` FILLS the omitted argum
 test('a supplied argument that contradicts `require` is refused, not overridden', () => {
   const res = refusal(
     d('spawn_instance', { playbook: 'solo', stage: 'plan', mode: 'bypassPermissions' }),
-    'ARG_REQUIRE_CONFLICT');
+    'ARG_PIN_CONFLICT');
   assert.match(res.reason, /requires spawn_instance to be called with mode="plan"/);
   assert.match(res.reason, /hard constraint, not a default/);
 });
@@ -52,8 +52,8 @@ test('`require` is enforced per tool, not once per stage — a second tool has i
     stages: {
       a: {
         tools: {
-          spawn_instance: { require: { createWorktree: false } },
-          set_mode: { require: { mode: 'plan' } },
+          spawn_instance: { pin: { createWorktree: false } },
+          set_mode: { pin: { mode: 'plan' } },
         },
       },
     },
@@ -70,7 +70,7 @@ test('`require` is enforced per tool, not once per stage — a second tool has i
   assert.equal(allowed(filled).patchedArgs.mode, 'plan');
   // tool 2: refused on conflict, and the message names the right tool+arg
   const conflict = decide({ toolName: 'set_mode', args: { sessionId: 'w-two-0001', mode: 'ask' }, projection, playbooks: P });
-  assert.match(refusal(conflict, 'ARG_REQUIRE_CONFLICT').reason, /set_mode to be called with mode="plan"/);
+  assert.match(refusal(conflict, 'ARG_PIN_CONFLICT').reason, /set_mode to be called with mode="plan"/);
 });
 
 test('spawn_instance is DENIED BY DEFAULT on a stage that omits it — no explicit deny needed', () => {
@@ -165,14 +165,28 @@ test('needs is enforced on SPAWN-entry: a reviewer needs an implementer', () => 
   const events = SOLO_RUN.slice(0, 2); // planner in `implement`, no reviewer yet
   const missing = refusal(d('spawn_instance', { playbook: 'solo', stage: 'review' }, events), 'NEEDS_UNSATISFIED');
   assert.match(missing.reason, /requires a live worker that has passed through stage 'implement'/);
-  assert.match(missing.reason, /needs: \{ "implement": "<sessionId>" \}/);
-  // `needs` must not read as if it were `require`.
-  assert.match(missing.reason, /names another WORKER/);
+  // The refusal names the ARGUMENT to pass, which is `provenance` — the stage's
+  // declaration is `needs`, and telling the caller to pass "needs" would name a
+  // key that no tool accepts.
+  assert.match(missing.reason, /pass provenance: \{ "implement": "<sessionId>" \}/);
 
   const ok = allowed(d('spawn_instance',
-    { playbook: 'solo', stage: 'review', needs: { implement: 'w-planner-1' } }, events));
+    { playbook: 'solo', stage: 'review', provenance: { implement: 'w-planner-1' } }, events));
   assert.equal(ok.patchedArgs.model, 'reviewer');
   assert.equal(ok.patchedArgs.mode, 'bypassPermissions');
+});
+
+// Same rename-not-alias rule on the call side: `needs` was the argument's old
+// name. Passing it must NOT satisfy the stage's needs — a silent acceptance
+// would let a spawn skip the provenance edge and land in no run.
+test('the retired `needs` argument does not satisfy a stage\'s needs', () => {
+  const events = SOLO_RUN.slice(0, 2);
+  refusal(d('spawn_instance',
+    { playbook: 'solo', stage: 'review', needs: { implement: 'w-planner-1' } }, events),
+    'NEEDS_UNSATISFIED');
+  // …and the current name does.
+  allowed(d('spawn_instance',
+    { playbook: 'solo', stage: 'review', provenance: { implement: 'w-planner-1' } }, events));
 });
 
 test('needs is enforced on TRANSITION-entry too, not only on spawn', () => {
@@ -182,7 +196,7 @@ test('needs is enforced on TRANSITION-entry too, not only on spawn', () => {
     'NEEDS_UNSATISFIED');
   // With the reviewer spawned, the same call is allowed and IS a transition.
   const res = allowed(d('send_prompt',
-    { sessionId: 'w-planner-1', text: 'go', stage: 'refine', needs: { review: 'w-review-01' } }, SOLO_RUN));
+    { sessionId: 'w-planner-1', text: 'go', stage: 'refine', provenance: { review: 'w-review-01' } }, SOLO_RUN));
   assert.deepEqual(res.move, { kind: 'transition', from: 'implement', to: 'refine', via: 'send_prompt' });
 });
 
@@ -198,14 +212,14 @@ for (const playbook of ['solo', 'relay']) {
   test(`${playbook}: a second reviewer on another lens is spawnable while the implementer is in refine`, () => {
     const events = [
       { kind: 'spawn', sessionId: 'w-imp-0001', playbook, stage: 'implement' },
-      { kind: 'spawn', sessionId: 'w-review-01', playbook, stage: 'review', needs: { implement: 'w-imp-0001' } },
+      { kind: 'spawn', sessionId: 'w-review-01', playbook, stage: 'review', provenance: { implement: 'w-imp-0001' } },
       // Round 1 relayed: the implementer is now in `refine`, not `implement`.
       { kind: 'transition', sessionId: 'w-imp-0001', from: 'implement', to: 'refine', via: 'send_prompt' },
     ];
     // Mutant `workers:"one"`  => STAGE_AT_CAPACITY (the first reviewer holds it).
     // Mutant position ["implement"] => NEEDS_UNSATISFIED (it is in `refine`).
     const ok = allowed(d('spawn_instance',
-      { playbook, stage: 'review', needs: { implement: 'w-imp-0001' } }, events));
+      { playbook, stage: 'review', provenance: { implement: 'w-imp-0001' } }, events));
     assert.equal(ok.patchedArgs.model, 'reviewer');
   });
 }
@@ -230,7 +244,7 @@ const MOVED_OFF = [
 ];
 const mv = (stage, events = MOVED_OFF) => decide({
   toolName: 'spawn_instance',
-  args: { playbook: 'mover', stage, needs: { root: 'w-mover-001' } },
+  args: { playbook: 'mover', stage, provenance: { root: 'w-mover-001' } },
   projection: proj(events), playbooks: pbs(MOVER),
 });
 
@@ -257,7 +271,7 @@ test('liveness:"live" refuses a RETIRED worker with NEEDS_WORKER_GONE, not NEEDS
     { kind: 'retire', sessionId: 'w-cl-imp-1', reason: 'killed' },
   ];
   const res = refusal(d('spawn_instance',
-    { playbook: 'solo', stage: 'review', needs: { implement: 'w-cl-imp-1' } }, cur), 'NEEDS_WORKER_GONE');
+    { playbook: 'solo', stage: 'review', provenance: { implement: 'w-cl-imp-1' } }, cur), 'NEEDS_WORKER_GONE');
   assert.match(res.reason, /to still be running, but it has retired \(last in 'implement'\)/);
   assert.match(res.reason, /not a wiring mistake/);
 });
@@ -279,11 +293,11 @@ test('liveness:"retired" refuses a live worker and names kill_instance; a retire
   // relay's `implement` requires the planner to be GONE — the enforced handoff.
   const live = [{ kind: 'spawn', sessionId: 'w-planner-r1', playbook: 'relay', stage: 'plan' }];
   const res = refusal(d('spawn_instance',
-    { playbook: 'relay', stage: 'implement', needs: { plan: 'w-planner-r1' } }, live), 'NEEDS_UNSATISFIED');
+    { playbook: 'relay', stage: 'implement', provenance: { plan: 'w-planner-r1' } }, live), 'NEEDS_UNSATISFIED');
   assert.match(res.reason, /to be RETIRED before this stage is entered, but it is still running/);
   assert.match(res.reason, /kill_instance/);
   // …and the other half, so a mutant that refuses unconditionally also fails.
-  allowed(d('spawn_instance', { playbook: 'relay', stage: 'implement', needs: { plan: 'w-planner-r1' } },
+  allowed(d('spawn_instance', { playbook: 'relay', stage: 'implement', provenance: { plan: 'w-planner-r1' } },
     [...live, { kind: 'retire', sessionId: 'w-planner-r1', reason: 'planning done' }]));
 });
 
@@ -312,7 +326,7 @@ test('the loose values — liveness:"any" and position:["*"] — are what the bu
   ];
   const at = (events) => decide({
     toolName: 'spawn_instance',
-    args: { playbook: 'loose', stage: 'sink', needs: { root: 'w-root-0001' } },
+    args: { playbook: 'loose', stage: 'sink', provenance: { root: 'w-root-0001' } },
     projection: proj(events), playbooks: pbs2,
   });
   allowed(at(run));
@@ -328,7 +342,7 @@ test('needs is scoped to one run — a worker from another run cannot satisfy it
   ];
   // run B's implementer trying to enter refine on run A's reviewer
   const res = refusal(d('send_prompt',
-    { sessionId: 'w-planner-2', text: 'go', stage: 'refine', needs: { review: 'w-review-01' } }, twoRuns),
+    { sessionId: 'w-planner-2', text: 'go', stage: 'refine', provenance: { review: 'w-review-01' } }, twoRuns),
     'NEEDS_UNSATISFIED');
   assert.match(res.reason, /belongs to a different run/);
 });
@@ -340,7 +354,7 @@ test('needs is scoped to one run — a worker from another run cannot satisfy it
 // it. Both are pinned, or the transition path is covered only by accident.
 test('SPAWN: an unknown needs ancestor is refused during playbook inheritance', () => {
   const res = refusal(d('spawn_instance',
-    { playbook: 'solo', stage: 'review', needs: { implement: 'ghost-000' } }, SOLO_RUN.slice(0, 2)),
+    { playbook: 'solo', stage: 'review', provenance: { implement: 'ghost-000' } }, SOLO_RUN.slice(0, 2)),
     'NEEDS_UNSATISFIED');
   assert.match(res.reason, /is not a playbook-tracked worker/);
   assert.match(res.reason, /its playbook and stage are unknown/);
@@ -348,7 +362,7 @@ test('SPAWN: an unknown needs ancestor is refused during playbook inheritance', 
 
 test('TRANSITION: an unknown needs target is refused by the needs check itself', () => {
   const res = refusal(d('send_prompt',
-    { sessionId: 'w-planner-1', text: 'go', stage: 'refine', needs: { review: 'ghost-000' } },
+    { sessionId: 'w-planner-1', text: 'go', stage: 'refine', provenance: { review: 'ghost-000' } },
     SOLO_RUN.slice(0, 2)), 'NEEDS_UNSATISFIED');
   assert.match(res.reason, /needs\.review names sessionId 'ghost-000', which is not a playbook-tracked worker/);
 });
@@ -366,14 +380,14 @@ test('a non-root spawn inherits its playbook; disagreement is PLAYBOOK_MISMATCH'
   ];
   // ancestors disagree with each other
   assert.match(refusal(d('spawn_instance',
-    { stage: 'implement', needs: { plan: 'w-sp-0001', other: 'w-cl-0001' } }, mixed), 'PLAYBOOK_MISMATCH').reason,
+    { stage: 'implement', provenance: { plan: 'w-sp-0001', other: 'w-cl-0001' } }, mixed), 'PLAYBOOK_MISMATCH').reason,
     /disagree about their playbook \(relay, solo\)/);
   // an explicitly supplied playbook contradicting the inherited one
   assert.match(refusal(d('spawn_instance',
-    { playbook: 'solo', stage: 'implement', needs: { plan: 'w-sp-0001' } }, mixed), 'PLAYBOOK_MISMATCH').reason,
+    { playbook: 'solo', stage: 'implement', provenance: { plan: 'w-sp-0001' } }, mixed), 'PLAYBOOK_MISMATCH').reason,
     /this spawn inherits 'relay'/);
   // naming the inherited playbook is fine
-  allowed(d('spawn_instance', { playbook: 'relay', stage: 'implement', needs: { plan: 'w-sp-0001' } }, mixed));
+  allowed(d('spawn_instance', { playbook: 'relay', stage: 'implement', provenance: { plan: 'w-sp-0001' } }, mixed));
 });
 
 // ── capacity ───────────────────────────────────────────────────────────────
@@ -392,9 +406,9 @@ function capacityPlaybook(workers) {
 test('workers:"one" refuses a second live worker in the stage; "many" does not', () => {
   const events = [
     { kind: 'spawn', sessionId: 'w-cap-root', playbook: 'cap', stage: 'root' },
-    { kind: 'spawn', sessionId: 'w-cap-a001', playbook: 'cap', stage: 'slot', needs: { root: 'w-cap-root' } },
+    { kind: 'spawn', sessionId: 'w-cap-a001', playbook: 'cap', stage: 'slot', provenance: { root: 'w-cap-root' } },
   ];
-  const args = { stage: 'slot', needs: { root: 'w-cap-root' } };
+  const args = { stage: 'slot', provenance: { root: 'w-cap-root' } };
   const one = decide({ toolName: 'spawn_instance', args, projection: proj(events), playbooks: pbs(capacityPlaybook('one')) });
   assert.match(refusal(one, 'STAGE_AT_CAPACITY').reason, /declares workers:"one"/);
   const many = decide({ toolName: 'spawn_instance', args, projection: proj(events), playbooks: pbs(capacityPlaybook('many')) });
@@ -404,12 +418,12 @@ test('workers:"one" refuses a second live worker in the stage; "many" does not',
 test('capacity counts LIVE workers, so a retire frees the slot', () => {
   const events = [
     { kind: 'spawn', sessionId: 'w-cap-root', playbook: 'cap', stage: 'root' },
-    { kind: 'spawn', sessionId: 'w-cap-a001', playbook: 'cap', stage: 'slot', needs: { root: 'w-cap-root' } },
+    { kind: 'spawn', sessionId: 'w-cap-a001', playbook: 'cap', stage: 'slot', provenance: { root: 'w-cap-root' } },
     { kind: 'retire', sessionId: 'w-cap-a001', reason: 'killed' },
   ];
   allowed(decide({
     toolName: 'spawn_instance',
-    args: { stage: 'slot', needs: { root: 'w-cap-root' } },
+    args: { stage: 'slot', provenance: { root: 'w-cap-root' } },
     projection: proj(events), playbooks: pbs(capacityPlaybook('one')),
   }));
 });
@@ -431,8 +445,8 @@ test('TRANSITION: capacity is enforced on the DESTINATION stage of a transition'
   // Two workers of the SAME run sitting in `worker`.
   const twoInWorker = [
     { kind: 'spawn', sessionId: 'w-capt-rt', playbook: 'capt', stage: 'root' },
-    { kind: 'spawn', sessionId: 'w-capt-w1', playbook: 'capt', stage: 'worker', needs: { root: 'w-capt-rt' } },
-    { kind: 'spawn', sessionId: 'w-capt-w2', playbook: 'capt', stage: 'worker', needs: { root: 'w-capt-rt' } },
+    { kind: 'spawn', sessionId: 'w-capt-w1', playbook: 'capt', stage: 'worker', provenance: { root: 'w-capt-rt' } },
+    { kind: 'spawn', sessionId: 'w-capt-w2', playbook: 'capt', stage: 'worker', provenance: { root: 'w-capt-rt' } },
   ];
   const move = { sessionId: 'w-capt-w2', text: 'take the slot', stage: 'hold' };
   // `hold` empty -> the transition is allowed
@@ -461,7 +475,7 @@ test('TRANSITION: a needs target bound to another playbook is PLAYBOOK_MISMATCH'
     { kind: 'spawn', sessionId: 'w-relay-rv', playbook: 'relay', stage: 'plan' },   // a worker on another playbook
   ];
   const res = refusal(d('send_prompt',
-    { sessionId: 'w-planner-1', text: 'go', stage: 'refine', needs: { review: 'w-relay-rv' } }, events),
+    { sessionId: 'w-planner-1', text: 'go', stage: 'refine', provenance: { review: 'w-relay-rv' } }, events),
     'PLAYBOOK_MISMATCH');
   assert.match(res.reason, /names a worker on playbook 'relay', not 'solo'/);
 });
@@ -469,12 +483,12 @@ test('TRANSITION: a needs target bound to another playbook is PLAYBOOK_MISMATCH'
 test('capacity is scoped to the RUN, not globally — a second run gets its own slot', () => {
   const events = [
     { kind: 'spawn', sessionId: 'w-cap-rtA0', playbook: 'cap', stage: 'root' },
-    { kind: 'spawn', sessionId: 'w-cap-a001', playbook: 'cap', stage: 'slot', needs: { root: 'w-cap-rtA0' } },
+    { kind: 'spawn', sessionId: 'w-cap-a001', playbook: 'cap', stage: 'slot', provenance: { root: 'w-cap-rtA0' } },
     { kind: 'spawn', sessionId: 'w-cap-rtB0', playbook: 'cap', stage: 'root' },
   ];
   allowed(decide({
     toolName: 'spawn_instance',
-    args: { stage: 'slot', needs: { root: 'w-cap-rtB0' } },
+    args: { stage: 'slot', provenance: { root: 'w-cap-rtB0' } },
     projection: proj(events), playbooks: pbs(capacityPlaybook('one')),
   }));
 });
@@ -550,8 +564,8 @@ test('SCOPE RULE 2: `require` is read from the RESULTING stage, not the current 
   const scope = pb({
     id: 'scopereq', name: 'ScopeReq', description: 'require scope', entryStages: ['a'],
     stages: {
-      a: { tools: { spawn_instance: 'allow', send_prompt: { require: { wait: false } } } },
-      b: { tools: { send_prompt: { require: { wait: true } } } },
+      a: { tools: { spawn_instance: 'allow', send_prompt: { pin: { wait: false } } } },
+      b: { tools: { send_prompt: { pin: { wait: true } } } },
     },
     transitions: [{ from: 'a', to: 'b' }],
   });
@@ -565,7 +579,7 @@ test('SCOPE RULE 2: `require` is read from the RESULTING stage, not the current 
   refusal(decide({
     toolName: 'send_prompt', args: { sessionId: 'w-scopeq-1', text: 'go', stage: 'b', wait: false },
     projection, playbooks: pbs(scope),
-  }), 'ARG_REQUIRE_CONFLICT');
+  }), 'ARG_PIN_CONFLICT');
 });
 
 // ── definition drift (settled: definitions are NOT pinned to a live run) ────

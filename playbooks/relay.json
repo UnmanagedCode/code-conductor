@@ -8,7 +8,7 @@
     "plan": {
       "description": "Spawn and brief a plan worker; on its wake reject with feedback, answer its question, or abandon. There is no approving it into implement — this planner never writes code, and the handoff to one that does is yours to make.",
       "tools": {
-        "spawn_instance": { "require": { "mode": "plan", "createWorktree": true } },
+        "spawn_instance": { "pin": { "mode": "plan", "createWorktree": true } },
         "set_mode": "deny",
         "approve_plan": "deny",
         "sync_worktree": "deny"
@@ -18,7 +18,7 @@
       "description": "A fresh worker, not the planner — it starts with no context, so hand it the approved plan itself, never a paraphrase: prefer the plan document's path the wake named. Put it on the planner's worktree: one branch stays one merge unit, and it inherits the base the plan was written against. Retiring the planner is the handoff itself, so do that first (`kill_instance`) and spawn against it.",
       "needs": [{ "stage": "plan", "liveness": "retired" }],
       "tools": {
-        "spawn_instance": { "require": { "mode": "bypassPermissions" } }
+        "spawn_instance": { "pin": { "mode": "bypassPermissions" } }
       }
     },
     "review": {
@@ -26,7 +26,7 @@
       "needs": [{ "stage": "implement", "position": ["implement", "refine"] }],
       "workers": "many",
       "tools": {
-        "spawn_instance": { "require": { "mode": "bypassPermissions", "model": "reviewer" } },
+        "spawn_instance": { "pin": { "mode": "bypassPermissions", "model": "reviewer" } },
         "sync_worktree": "deny",
         "approve_plan": "deny"
       }

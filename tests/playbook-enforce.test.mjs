@@ -274,7 +274,7 @@ test('enforce: a full solo run — require fill-in, self-edge, approve_plan gate
     }), 'NEEDS_UNSATISFIED');
     const rev = await t.spawnWorker({
       project: 'demo', playbook: 'solo', stage: 'review', worktree: wtName,
-      needs: { implement: impl.sessionId },
+      provenance: { implement: impl.sessionId },
     });
     assert.ok(rev.sessionId, 'satisfying needs admits the spawn');
     assert.equal(rev.model !== null, true, 'the reviewer role resolved to a model');
@@ -294,7 +294,7 @@ test('enforce: a full solo run — require fill-in, self-edge, approve_plan gate
     // testing a fixture rather than the shipped graph.)
     const secondReviewer = {
       project: 'demo', playbook: 'solo', stage: 'review', worktree: wtName,
-      needs: { implement: impl.sessionId },
+      provenance: { implement: impl.sessionId },
     };
     const rev2 = await t.spawnWorker(secondReviewer);
     assert.ok(rev2.sessionId, 'a second reviewer runs on its own lens, concurrently');
@@ -316,11 +316,11 @@ test('enforce: a full solo run — require fill-in, self-edge, approve_plan gate
     // and the code says "gone" rather than blaming the call.
     refused(await t.call('send_prompt', {
       sessionId: impl.sessionId, text: 'refine', stage: 'refine', subscribe: false,
-      needs: { review: rev.sessionId },
+      provenance: { review: rev.sessionId },
     }), 'NEEDS_WORKER_GONE');
     assert.equal((await t.call('send_prompt', {
       sessionId: impl.sessionId, text: 'refine', stage: 'refine', subscribe: false,
-      needs: { review: rev2.sessionId },
+      provenance: { review: rev2.sessionId },
     })).ok, undefined, 'supplying the destination stage\'s needs admits the transition');
 
     // ROUND 2. The implementer is already in `refine`, so this is a self-edge —
@@ -354,7 +354,7 @@ test('enforce: a full solo run — require fill-in, self-edge, approve_plan gate
   } finally { await t.close(); }
 });
 
-test('enforce: needs accepts a sessionId prefix, and refuses an ambiguous one', async () => {
+test('enforce: provenance accepts a sessionId prefix, and refuses an ambiguous one', async () => {
   const t = await setup({ enforcement: 'enforce' });
   try {
     const impl = await t.spawnWorker({ project: 'demo', playbook: 'solo', stage: 'plan' });
@@ -364,7 +364,7 @@ test('enforce: needs accepts a sessionId prefix, and refuses an ambiguous one', 
     const prefix = impl.sessionId.slice(0, 8);
     const rev = await t.spawnWorker({
       project: 'demo', playbook: 'solo', stage: 'review', worktree: wtName,
-      needs: { implement: prefix },
+      provenance: { implement: prefix },
     });
     assert.ok(rev.sessionId, 'an 8-char needs prefix resolved to the full sessionId');
 
@@ -375,10 +375,10 @@ test('enforce: needs accepts a sessionId prefix, and refuses an ambiguous one', 
     try {
       const res = await t.call('spawn_instance', {
         project: 'demo', playbook: 'solo', stage: 'review', worktree: wtName,
-        needs: { implement: prefix },
+        provenance: { implement: prefix },
       });
       refused(res, 'SESSION_AMBIGUOUS');
-      assert.match(res.reason, /needs\.implement/);
+      assert.match(res.reason, /provenance\.implement/);
     } finally { t.instances.byId.delete('fake-ambig'); }
   } finally { await t.close(); }
 });
@@ -495,7 +495,7 @@ test('enforce: in relay the planner cannot reach implement by any route', async 
     // implementer cannot be spawned onto its worktree at all.
     const handoff = {
       project: 'demo', stage: 'implement', worktree: planner.worktree.worktreeName,
-      needs: { plan: planner.sessionId },
+      provenance: { plan: planner.sessionId },
     };
     const early = refused(await t.call('spawn_instance', handoff), 'NEEDS_UNSATISFIED');
     assert.match(early.reason, /to be RETIRED before this stage is entered/);

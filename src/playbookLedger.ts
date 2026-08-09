@@ -41,9 +41,9 @@ export function ledgerFile(): string {
 
 export type LedgerEvent =
   | { seq: number; ts: string; kind: 'spawn'; sessionId: string; playbook: string; stage: string;
-      needs?: Record<string, string>; project?: string; worktree?: string }
+      provenance?: Record<string, string>; project?: string; worktree?: string }
   | { seq: number; ts: string; kind: 'transition'; sessionId: string; from: string; to: string;
-      via: string; needs?: Record<string, string> }
+      via: string; provenance?: Record<string, string> }
   | { seq: number; ts: string; kind: 'retire'; sessionId: string; reason: string }
   | { seq: number; ts: string; kind: 'refusal'; sessionId?: string; tool: string; code: string; reason: string }
   // `from: null` is a BIRTH — the conductor was created at this level and was
@@ -66,11 +66,11 @@ export interface WorkerState {
   playbook: string;
   stage: string;
   // Every stage this worker has occupied, entry stage first. This is what makes
-  // `needs: [{at: "ever"}]` answerable.
+  // a `needs` entry's provenance half answerable.
   stageHistory: string[];
-  // The `needs` map ({stage: sessionId}) supplied when this worker entered its
-  // current stage — the run-graph edges this worker contributed.
-  needs: Record<string, string>;
+  // The `provenance` map ({stage: sessionId}) supplied when this worker entered
+  // its current stage — the run-graph edges this worker contributed.
+  provenance: Record<string, string>;
   // sessionId of this worker's run root (the connected component's spawn root).
   runRoot: string;
   live: boolean;
@@ -84,7 +84,7 @@ export interface Projection {
   // can explain why an illegal-looking move was allowed (step 4 writes them).
   enforcement: Map<string, string>;
   seq: number;
-  // Union-find parent map over the run graph: `needs` edges ∪ same-worker
+  // Union-find parent map over the run graph: `provenance` edges ∪ same-worker
   // transitions (the latter are same-worker by construction, so they never
   // merge components). Internal — read it through runRootOf/runMembers.
   parent: Map<string, string>;
@@ -126,22 +126,22 @@ export function applyEvent(p: Projection, ev: LedgerEvent): void {
   if (typeof ev.seq === 'number' && ev.seq > p.seq) p.seq = ev.seq;
   switch (ev.kind) {
     case 'spawn': {
-      const needs = ev.needs && typeof ev.needs === 'object' ? { ...ev.needs } : {};
+      const provenance = ev.provenance && typeof ev.provenance === 'object' ? { ...ev.provenance } : {};
       p.bySession.set(ev.sessionId, {
         sessionId: ev.sessionId,
         playbook: ev.playbook,
         stage: ev.stage,
         stageHistory: [ev.stage],
-        needs,
+        provenance,
         runRoot: ev.sessionId, // recomputed below
         live: true,
         ...(ev.project !== undefined ? { project: ev.project } : {}),
         ...(ev.worktree !== undefined ? { worktree: ev.worktree } : {}),
       });
       if (!p.parent.has(ev.sessionId)) p.parent.set(ev.sessionId, ev.sessionId);
-      // A `needs` value is a run-graph edge: the spawned worker joins the
-      // component of every worker it names. No needs ⇒ it is its own run root.
-      for (const target of Object.values(needs)) union(p.parent, target, ev.sessionId);
+      // A `provenance` value is a run-graph edge: the spawned worker joins the
+      // component of every worker it names. None ⇒ it is its own run root.
+      for (const target of Object.values(provenance)) union(p.parent, target, ev.sessionId);
       break;
     }
     case 'transition': {
@@ -149,17 +149,17 @@ export function applyEvent(p: Projection, ev: LedgerEvent): void {
       if (!st) break; // transition for an unknown worker — nothing to fold
       st.stage = ev.to;
       st.stageHistory.push(ev.to);
-      if (ev.needs && typeof ev.needs === 'object') {
-        st.needs = { ...st.needs, ...ev.needs };
-        for (const target of Object.values(ev.needs)) union(p.parent, target, ev.sessionId);
+      if (ev.provenance && typeof ev.provenance === 'object') {
+        st.provenance = { ...st.provenance, ...ev.provenance };
+        for (const target of Object.values(ev.provenance)) union(p.parent, target, ev.sessionId);
       }
       break;
     }
     case 'retire': {
       const st = p.bySession.get(ev.sessionId);
       // `live:false` frees the stage's capacity slot but preserves stageHistory,
-      // so a retired worker still answers `at: "ever"` (history is history) and
-      // never `at: "current"` (it is not in that stage now).
+      // so a retired worker still answers a need's provenance half (history is
+      // history) and never its liveness:"live" half.
       if (st) st.live = false;
       break;
     }

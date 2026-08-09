@@ -82,7 +82,7 @@ test('fold builds the projection across all five event kinds', () => {
     // as a bare string precisely so history stays readable after the live
     // allow-list narrows — nothing rewrites past events.
     { kind: 'enforcement', conductorSessionId: 'c1', from: 'off', to: 'enforce' },
-    { kind: 'spawn', sessionId: 's2', playbook: 'solo', stage: 'review', needs: { implement: 's1' } },
+    { kind: 'spawn', sessionId: 's2', playbook: 'solo', stage: 'review', provenance: { implement: 's1' } },
     { kind: 'retire', sessionId: 's2', reason: 'killed' },
   ]);
   const s1 = p.bySession.get('s1');
@@ -92,7 +92,7 @@ test('fold builds the projection across all five event kinds', () => {
   assert.equal(s1.worktree, 'demo_wt');
   assert.equal(s1.live, true);
   assert.equal(p.bySession.get('s2').live, false, 'retire clears live');
-  assert.deepEqual(p.bySession.get('s2').needs, { implement: 's1' });
+  assert.deepEqual(p.bySession.get('s2').provenance, { implement: 's1' });
   assert.equal(p.enforcement.get('c1'), 'enforce', 'enforcement events fold into the projection');
   assert.equal(p.seq, 6);
   // a refusal is audit-only: it changed no worker state
@@ -124,8 +124,8 @@ test('stageHistory records every entry in order, including a re-entered stage', 
 test('liveInStage counts only live members of the same run, so a retire frees the slot', () => {
   const events = [
     { kind: 'spawn', sessionId: 'root', playbook: 'x', stage: 'a' },
-    { kind: 'spawn', sessionId: 'w1', playbook: 'x', stage: 'b', needs: { a: 'root' } },
-    { kind: 'spawn', sessionId: 'w2', playbook: 'x', stage: 'b', needs: { a: 'root' } },
+    { kind: 'spawn', sessionId: 'w1', playbook: 'x', stage: 'b', provenance: { a: 'root' } },
+    { kind: 'spawn', sessionId: 'w2', playbook: 'x', stage: 'b', provenance: { a: 'root' } },
   ];
   assert.equal(liveInStage(fold(events), 'root', 'b'), 2);
   assert.equal(liveInStage(fold([...events, { kind: 'retire', sessionId: 'w1', reason: 'killed' }]), 'root', 'b'), 1);
@@ -136,9 +136,9 @@ test('liveInStage counts only live members of the same run, so a retire frees th
 test('run membership is the connected component over `needs` edges', () => {
   const p = fold([
     { kind: 'spawn', sessionId: 'A-root', playbook: 'solo', stage: 'plan' },
-    { kind: 'spawn', sessionId: 'A-rev', playbook: 'solo', stage: 'review', needs: { implement: 'A-root' } },
+    { kind: 'spawn', sessionId: 'A-rev', playbook: 'solo', stage: 'review', provenance: { implement: 'A-root' } },
     { kind: 'spawn', sessionId: 'B-root', playbook: 'solo', stage: 'plan' },
-    { kind: 'spawn', sessionId: 'B-rev', playbook: 'solo', stage: 'review', needs: { implement: 'B-root' } },
+    { kind: 'spawn', sessionId: 'B-rev', playbook: 'solo', stage: 'review', provenance: { implement: 'B-root' } },
   ]);
   assert.deepEqual(runMembers(p, 'A-root').sort(), ['A-rev', 'A-root']);
   assert.deepEqual(runMembers(p, 'B-rev').sort(), ['B-rev', 'B-root']);
@@ -154,10 +154,10 @@ test('a transition-carried needs edge also joins the run', () => {
   const p = fold([
     { kind: 'spawn', sessionId: 'root', playbook: 'x', stage: 'a' },
     { kind: 'spawn', sessionId: 'other', playbook: 'x', stage: 'a' },
-    { kind: 'transition', sessionId: 'other', from: 'a', to: 'b', via: 'send_prompt', needs: { a: 'root' } },
+    { kind: 'transition', sessionId: 'other', from: 'a', to: 'b', via: 'send_prompt', provenance: { a: 'root' } },
   ]);
   assert.equal(sameRun(p, 'root', 'other'), true);
-  assert.deepEqual(p.bySession.get('other').needs, { a: 'root' });
+  assert.deepEqual(p.bySession.get('other').provenance, { a: 'root' });
 });
 
 test('a transition for an unknown worker is folded as a no-op rather than throwing', () => {
@@ -174,7 +174,7 @@ test('state survives a restart: a fresh ledger folds the same projection from di
     await first.load();
     await first.append({ kind: 'spawn', sessionId: 's1', playbook: 'solo', stage: 'plan' });
     await first.append({ kind: 'transition', sessionId: 's1', from: 'plan', to: 'implement', via: 'approve_plan' });
-    await first.append({ kind: 'spawn', sessionId: 's2', playbook: 'solo', stage: 'review', needs: { implement: 's1' } });
+    await first.append({ kind: 'spawn', sessionId: 's2', playbook: 'solo', stage: 'review', provenance: { implement: 's1' } });
     await first.append({ kind: 'enforcement', conductorSessionId: 'c1', from: 'warn', to: 'enforce' });
 
     // A new process: nothing in memory, everything folded from the file.

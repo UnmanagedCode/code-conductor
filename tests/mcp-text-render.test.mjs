@@ -724,7 +724,7 @@ describe('list_sessions renders every allowlisted field', () => {
 // bar is the same as for the recon tools: a fact absent here is a fact the
 // conductor cannot get. The fixture below is built branch-by-branch on purpose —
 // stage keys out of alphabetical order, both `at` values, both `workers` values,
-// both `spawnable` values, a "*" entry beside allow/deny/require, an empty
+// both `spawnable` values, a "*" entry beside allow/deny/pin, an empty
 // `tools` map, a multi-line description, an unauthored one, and edges with and
 // without `on`. Every one of those exists to kill a specific mutant; a fixture
 // that exercised only the common shape would let a renderer that hardcodes
@@ -751,7 +751,7 @@ const GRAPH = {
       workers: 'one',
       tools: {
         '*': 'deny',
-        spawn_instance: { require: { mode: 'plan', createWorktree: true, label: null } },
+        spawn_instance: { pin: { mode: 'plan', createWorktree: true, label: null } },
         set_mode: 'allow',
       },
       spawnable: true,
@@ -802,7 +802,7 @@ describe('renderPlaybook', () => {
       '    needs —',
       '    tools (3)',
       '      * deny',
-      '      spawn_instance require {"mode":"plan","createWorktree":true,"label":null}',
+      '      spawn_instance pin {"mode":"plan","createWorktree":true,"label":null}',
       '      set_mode allow',
       '    description',
       '      Brief the worker, then wait for its sentinel before you treat the work as reviewable.',
@@ -847,16 +847,16 @@ describe('renderPlaybook', () => {
     assert.match(out, /^ {4}tools \(3\)$/m, 'the count must match the map size');
     assert.match(out, /^ {6}\* deny$/m);
     assert.match(out, /^ {6}set_mode allow$/m);
-    assert.match(out, /^ {6}spawn_instance require /m);
+    assert.match(out, /^ {6}spawn_instance pin /m);
   });
 
-  test('a require constraint renders every argument name AND value, typed', () => {
+  test('a pin constraint renders every argument name AND value, typed', () => {
     // These are the argument values the gate enforces, so dropping one, or
-    // rendering the map as [object Object]/"require", would advertise a call that
-    // then refuses ARG_REQUIRE_CONFLICT. JSON spelling keeps "plan" distinct from
+    // rendering the map as [object Object]/"pin", would advertise a call that
+    // then refuses ARG_PIN_CONFLICT. JSON spelling keeps "plan" distinct from
     // plan, true from "true", and null from absent.
     assert.match(renderPlaybook(GRAPH),
-      /spawn_instance require \{"mode":"plan","createWorktree":true,"label":null\}/);
+      /spawn_instance pin \{"mode":"plan","createWorktree":true,"label":null\}/);
   });
 
   test('every transition renders its own via', () => {
