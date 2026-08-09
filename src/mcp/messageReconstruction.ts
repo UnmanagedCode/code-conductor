@@ -70,6 +70,7 @@ export interface ReconMessage {
   blocks?: Array<ReconBlockOut>;
   hasToolUse: boolean;
   plan?: string;
+  planPath?: string;
   questions?: unknown;
   textSeq?: number;
   planSeq?: number;
@@ -81,6 +82,23 @@ export interface ReconMessage {
 // msgIds (skipping sub-agent content) then rebuilds each message.
 export function reconstructMessages(events: UiEvent[], includeThinking: boolean): ReconMessage[] {
   const ring = events as ReconEvent[];
+  // The plan file backing an ExitPlanMode is resolved once, upstream, onto the
+  // `plan_request` event (src/planFile.ts) — it is never re-derived here. That
+  // event carries no msgId, so the join key into the owning message is the
+  // toolUseId both the delta-path `tool_use` event and the reconciled
+  // envelope's `block.id` carry. The event's own `plan` rides along: when the
+  // tool input was empty the enrichment read the file, and its contents are
+  // the plan text (the tool_use block has none).
+  const planPaths = new Map<string, { planPath: string; plan?: string }>();
+  for (const ev of ring) {
+    if (ev.parentToolUseId) continue;
+    if (ev.kind !== 'plan_request') continue;
+    const p = (ev as { planPath?: unknown }).planPath;
+    const t = (ev as { plan?: unknown }).plan;
+    if (typeof ev.toolUseId === 'string' && typeof p === 'string' && p) {
+      planPaths.set(ev.toolUseId, { planPath: p, ...(typeof t === 'string' && t ? { plan: t } : {}) });
+    }
+  }
   const seen = new Set<string>();
   const reverseIds: string[] = [];
   for (let i = ring.length - 1; i >= 0; i--) {
@@ -94,7 +112,7 @@ export function reconstructMessages(events: UiEvent[], includeThinking: boolean)
     reverseIds.push(ev.msgId);
   }
   const orderedIds = reverseIds.reverse();
-  return orderedIds.map(msgId => buildMessageFromRing(ring, msgId, includeThinking));
+  return orderedIds.map(msgId => buildMessageFromRing(ring, msgId, includeThinking, planPaths));
 }
 
 // Disk-fallback for getRecentMessages: load the on-disk transcript tail and
@@ -144,7 +162,7 @@ export function capBlockInput(b: ReconBlockOut) {
 // A reconstructed message carries an actionable plan or questions (hoisted from
 // an ExitPlanMode / AskUserQuestion tool_use).
 export function hasPlanOrQuestions(m: ReconMessage): boolean {
-  return !!m.plan || (Array.isArray(m.questions) && m.questions.length > 0);
+  return !!m.plan || !!m.planPath || (Array.isArray(m.questions) && m.questions.length > 0);
 }
 
 // Index the ring for turn-scoped bonding: map each top-level msgId to the _seq
@@ -198,13 +216,14 @@ export function bondTrailingTurn(filtered: ReconMessage[], ringTurn: { firstSeqB
   return filtered.slice(startIdx);
 }
 
-function buildMessageFromRing(ring: ReconEvent[], targetMsgId: string, includeThinking = false): ReconMessage {
+function buildMessageFromRing(ring: ReconEvent[], targetMsgId: string, includeThinking = false, planPaths: Map<string, { planPath: string; plan?: string }> = new Map()): ReconMessage {
   const byBlock = new Map<number, string>();
   const blockOrder: number[] = [];
   const otherBlocks: ReconBlockOut[] = []; // tool_use blocks etc, for context
   let hasToolUse = false;
   let assistantContent: ReconBlock[] | null = null; // content blocks merged across all assistant_message envelopes for this msgId
   let plan: string | null = null;
+  let planPath: string | null = null;
   let questions: unknown = null;
   // seq/*Seq: arrival-order position of each segment within the message, so
   // the body renderer (handlers.ts) can interleave prose/plan/questions in the
@@ -228,13 +247,12 @@ function buildMessageFromRing(ring: ReconEvent[], targetMsgId: string, includeTh
       let hoisted = false;
       if (ev.name === 'ExitPlanMode') {
         const p = ev.input?.plan;
-        if (typeof p === 'string' && p.length > 0) {
-          plan = p;
-          hoisted = true;
-        } else {
-          const fp = ev.input?.planFilePath ?? ev.input?.planPath;
-          if (typeof fp === 'string' && fp.length > 0) { plan = `(plan at ${fp})`; hoisted = true; }
-        }
+        const pathFromEvent = typeof ev.toolUseId === 'string' ? planPaths.get(ev.toolUseId) : undefined;
+        if (typeof p === 'string' && p.length > 0) { plan = p; hoisted = true; }
+        else if (pathFromEvent?.plan) { plan = pathFromEvent.plan; hoisted = true; }
+        // A path with no text still hoists — otherwise an unreadable plan file
+        // leaves a bare tool_use block and the message stops bonding.
+        if (pathFromEvent) { planPath = pathFromEvent.planPath; hoisted = true; }
         if (hoisted && planSeq === null) planSeq = seq++;
       } else if (ev.name === 'AskUserQuestion') {
         const q = ev.input?.questions;
@@ -270,13 +288,10 @@ function buildMessageFromRing(ring: ReconEvent[], targetMsgId: string, includeTh
         let hoisted = false;
         if (block.name === 'ExitPlanMode') {
           const p = block.input?.plan;
-          if (typeof p === 'string' && p.length > 0) {
-            plan = p;
-            hoisted = true;
-          } else {
-            const fp = block.input?.planFilePath ?? block.input?.planPath;
-            if (typeof fp === 'string' && fp.length > 0) { plan = `(plan at ${fp})`; hoisted = true; }
-          }
+          const pathFromEvent = typeof block.id === 'string' ? planPaths.get(block.id) : undefined;
+          if (typeof p === 'string' && p.length > 0) { plan = p; hoisted = true; }
+          else if (pathFromEvent?.plan) { plan = pathFromEvent.plan; hoisted = true; }
+          if (pathFromEvent) { planPath = pathFromEvent.planPath; hoisted = true; }
           if (hoisted && planSeq2 === null) planSeq2 = seq2++;
         } else if (block.name === 'AskUserQuestion') {
           const q = block.input?.questions;
@@ -302,14 +317,14 @@ function buildMessageFromRing(ring: ReconEvent[], targetMsgId: string, includeTh
     // any block a reconciled envelope in THIS pass reports on.
     if (!text) { text = blockOrder.map(idx => byBlock.get(idx) ?? '').join(''); if (text) textSeq2 = -1; }
     return { msgId: targetMsgId, text, ...(blocks.length ? { blocks } : {}), hasToolUse,
-      ...(plan ? { plan } : {}), ...(questions ? { questions } : {}),
+      ...(plan ? { plan } : {}), ...(planPath ? { planPath } : {}), ...(questions ? { questions } : {}),
       ...(textSeq2 !== null ? { textSeq: textSeq2 } : {}),
       ...(planSeq2 !== null ? { planSeq: planSeq2 } : {}),
       ...(questionsSeq2 !== null ? { questionsSeq: questionsSeq2 } : {}) };
   }
   const text = blockOrder.map(idx => byBlock.get(idx) ?? '').join('');
   return { msgId: targetMsgId, text, ...(otherBlocks.length ? { blocks: otherBlocks } : {}), hasToolUse,
-    ...(plan ? { plan } : {}), ...(questions ? { questions } : {}),
+    ...(plan ? { plan } : {}), ...(planPath ? { planPath } : {}), ...(questions ? { questions } : {}),
     ...(textSeq !== null ? { textSeq } : {}),
     ...(planSeq !== null ? { planSeq } : {}),
     ...(questionsSeq !== null ? { questionsSeq } : {}) };

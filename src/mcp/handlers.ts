@@ -1460,7 +1460,12 @@ function renderQuestions(questions: Question[]): string {
 function renderMessageBody(m: ReconMessage, cappedText: string): string {
   const segments: Array<{ pos: number; text: string }> = [];
   if (cappedText) segments.push({ pos: m.textSeq ?? Infinity, text: cappedText });
-  if (m.plan) segments.push({ pos: m.planSeq ?? Infinity, text: `--- plan ---\n${m.plan}` });
+  if (m.plan || m.planPath) {
+    // The header names the plan file when one backs this plan, so a fresh
+    // worker can be handed the document itself rather than a paraphrase.
+    const header = m.planPath ? `--- plan · saved to ${m.planPath} ---` : '--- plan ---';
+    segments.push({ pos: m.planSeq ?? Infinity, text: m.plan ? `${header}\n${m.plan}` : header });
+  }
   if (m.questions) segments.push({ pos: m.questionsSeq ?? Infinity, text: renderQuestions(m.questions as Question[]) });
   segments.sort((a, b) => a.pos - b.pos);
   return segments.map(s => s.text).join('\n');
@@ -1559,7 +1564,8 @@ export async function buildRecentMessages({ sessionId, count, includeToolCalls =
       textChars,
       textTruncated: capped.truncated,
     };
-    if (m.plan) entry.hasPlan = true;
+    if (m.plan || m.planPath) entry.hasPlan = true;
+    if (m.planPath) entry.planPath = m.planPath;
     if (m.questions) entry.questionCount = (m.questions as Question[]).length;
     if (m.blocks) entry.blocks = m.blocks.map(capBlockInput);
     return entry;

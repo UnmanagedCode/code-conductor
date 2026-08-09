@@ -29,6 +29,7 @@
 // (recorded as deliberate edge-tightening in the batch commit).
 
 import { randomUUID } from 'node:crypto';
+import { planPathFromInput } from './planFile.ts';
 
 // UI event shape. `kind` is the discriminator; the per-kind payload fields
 // ride on the index signature (consumers read what they know).
@@ -352,14 +353,15 @@ export class Parser {
           // ("Exit plan mode?"). We surface a plan_request UI event so the
           // user can approve / reject the plan inline. The plan text may be
           // in `input.plan` directly or omitted when the model wrote it to
-          // a file first — Instance enriches the event with the file path
-          // and content in the latter case.
+          // a file first — Instance's PlanFileTracker enriches the event with
+          // the file path and content in the latter case. A path named by the
+          // input itself wins over that enrichment.
           if (block.name === 'ExitPlanMode') {
             out.push({
               kind: 'plan_request',
               toolUseId: block.toolUseId,
               plan: typeof input.plan === 'string' ? input.plan : null,
-              planPath: null,
+              planPath: planPathFromInput(input),
             });
           }
           // Skill invocations are NOT registered here — _handleAssistant is

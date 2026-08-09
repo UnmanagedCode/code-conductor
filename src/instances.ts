@@ -24,6 +24,7 @@ import { buildSettingsJSON, buildMcpConfigJSON, AWAITING_INPUT_MESSAGE } from '.
 import { getOnOverageAction, getOverageThreshold, getConductorCompactWindow, resolveContextWindowTokens, getDebugByDefault, getBackend, isKnownBackend, resolveSpawnEffort } from './appSettings.ts';
 import { HookBroker, type HookEnvelope } from './hookBroker.ts';
 import { loadPersistedTranscript, writeSessionMetadata, readLastSessionModel, hasResumableConversation } from './transcript.ts';
+import { PlanFileTracker } from './planFile.ts';
 import { canonicalizeModel, familyOf, CLAUDE_BACKEND_ID } from './modelVersions.ts';
 import { truncateSessionAtUserMessage } from './sessionEdit.ts';
 import { pruneSessionToNewId, INPUT_MODES } from './sessionPrune.ts';
@@ -443,7 +444,7 @@ export class Instance extends EventEmitter implements InstanceLike {
   _hooks: HookBroker;
   _stderr: string;
   _lastLeafUuid: string | null;
-  _lastPlanFilePath: string | null;
+  _planFiles: PlanFileTracker;
   firstPrompt: string | null;
   title: string | null;
   autoApprovePlan: boolean;
@@ -610,7 +611,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     });
     this._stderr = '';
     this._lastLeafUuid = null;     // for last-prompt jsonl marker
-    this._lastPlanFilePath = null; // last Write to ~/.claude/plans/*.md, used to enrich ExitPlanMode
+    this._planFiles = new PlanFileTracker(); // binds a ~/.claude/plans/*.md Write to an ExitPlanMode
     // Cached first user-prompt text (200-char cap matching readFirstPrompt
     // in projects.ts). Surfaced via summary() so the sidebar can label a
     // live temp session's row — temp rows don't read the jsonl, so without
@@ -1751,6 +1752,11 @@ export class Instance extends EventEmitter implements InstanceLike {
         this.lastResponseAt = Date.now();
         this._setStatus('idle');
         this._idleWindowDirty = false; // fresh idle window starts clean
+        // This turn's plan-file writes stop corroborating the next turn's
+        // inline plans. plan_request and turn_end are distinct events in this
+        // same loop and plan_request arrives first, so a same-turn write is
+        // still latched when the plan above is enriched.
+        this._planFiles.noteTurnBoundary();
         this._writeSessionMetadata().catch(() => {});
       }
       // Agent-tool (subagent) task lifecycle. `task_started` fires the moment
@@ -1815,23 +1821,14 @@ export class Instance extends EventEmitter implements InstanceLike {
       if (ev.kind === 'tool_result' && !ev.parentToolUseId) {
         this._taskNotificationPending = false;
       }
-      // Track the most recent plan file the model wrote, so we can enrich
-      // an upcoming ExitPlanMode plan_request with the saved plan text
-      // when the model omits `plan` from the tool input.
-      if (ev.kind === 'tool_use' && ev.name === 'Write') {
-        const input = ev.input as { file_path?: unknown } | null | undefined;
-        if (typeof input?.file_path === 'string') {
-          const fp = input.file_path;
-          if (fp.includes('/.claude/plans/') && fp.endsWith('.md')) {
-            this._lastPlanFilePath = fp;
-          }
-        }
-      }
-      if (ev.kind === 'plan_request' && !ev.plan && this._lastPlanFilePath) {
-        ev.planPath = this._lastPlanFilePath;
-        try { ev.plan = readFileSync(this._lastPlanFilePath, 'utf8'); }
-        catch { /* best-effort — UI will just show "(no plan content)" */ }
-      }
+      // Track the plan files the model wrote, so an upcoming ExitPlanMode
+      // plan_request can be enriched with the file's path (and, when the tool
+      // input carried no plan text, its contents). The rule lives in
+      // planFile.ts — jsonl replay drives the same tracker.
+      if (ev.kind === 'tool_use') this._planFiles.noteToolUse(ev.name, ev.input);
+      // Must stay above the auto-approve block and the _emitUi below: both
+      // read the event after enrichment.
+      if (ev.kind === 'plan_request') this._planFiles.enrich(ev);
       // Server-side auto-approve. The flag is per-instance and toggled
       // over WS; firing here (not in the client) means it works even
       // when no tab is subscribed to this instance — switching sessions
@@ -2556,7 +2553,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     this._lastContextUsage = null;
     this.parser.reset();
     this._lastLeafUuid = null;
-    this._lastPlanFilePath = null;
+    this._planFiles.reset();
     this._hooks.discardAll();
     // Per-turn cache-miss capture is owned by _setStatus (into-'turn' reset)
     // and the spawn() that always follows a wipe. But a rewind/respawn rewrites

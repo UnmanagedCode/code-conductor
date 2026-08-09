@@ -356,3 +356,49 @@ test('get_transcript: ring-first when fromSeq is at/above trimmedBefore (no out-
     else process.env.ORCH_EVENT_RING_CAP = prevCap;
   }
 });
+
+// A plan handed over as a PATH must survive ring eviction: a path that
+// evaporates on the first disk-fallback read looks like it works right up
+// until a fresh implementer is handed nothing. Replay re-derives it from the
+// same jsonl's Write line (src/planFile.ts, threaded through transcript.ts).
+test('get_recent_messages: a disk-sourced plan message keeps its planPath', async () => {
+  const prevCap = process.env.ORCH_EVENT_RING_CAP;
+  process.env.ORCH_EVENT_RING_CAP = '10';
+  const ctx = await bootServer({ scenarioPath: SCENARIO_RESUME });
+  try {
+    const planFile = path.join(ctx.tmpHome, '.claude', 'plans', 'seeded-plan.md');
+    await fs.mkdir(path.dirname(planFile), { recursive: true });
+    await fs.writeFile(planFile, '# Seeded plan\n- step one\n');
+
+    const lines = [
+      { type: 'user', uuid: 'u0', message: { role: 'user', content: 'plan this' } },
+      { type: 'assistant', uuid: 'a0', message: { id: 'm_write', role: 'assistant', content: [
+        { type: 'tool_use', id: 'tu_w', name: 'Write', input: { file_path: planFile, content: '# Seeded plan\n- step one\n' } },
+      ] } },
+      { type: 'user', uuid: 'u1', message: { role: 'user', content: [
+        { type: 'tool_result', tool_use_id: 'tu_w', content: 'File written', is_error: false },
+      ] } },
+      { type: 'assistant', uuid: 'a1', message: { id: 'm_plan', role: 'assistant', content: [
+        { type: 'tool_use', id: 'tu_exit', name: 'ExitPlanMode', input: {} },
+      ] } },
+      ...textThenToolLines(30).slice(1),
+    ];
+    const sid = 'eeeeeeee-1111-2222-3333-444444444444';
+    const id = await bootResumed({ ctx, projectName: 'planevict', sid, lines });
+    const inst = ctx.instances.get(id);
+    assert.ok(inst.ring.trimmedBefore > 0, 'ring actually trimmed');
+    assert.ok(!inst.ringSnapshot().some(e => e.kind === 'plan_request'),
+      'the plan_request is evicted from the ring (precondition)');
+
+    const res = unwrapMsgs(await callTool(ctx.baseUrl, 'get_recent_messages', { sessionId: sid, count: 20 }));
+    assert.equal(res.meta.source, 'disk', 'served from disk');
+    const planMsg = res.messages.find(m => m.msgId === 'm_plan');
+    assert.ok(planMsg, 'the evicted plan message came back from disk');
+    assert.equal(planMsg.planPath, planFile, 'and it still names the plan document');
+    assert.equal(planMsg.hasPlan, true);
+  } finally {
+    await ctx.close();
+    if (prevCap === undefined) delete process.env.ORCH_EVENT_RING_CAP;
+    else process.env.ORCH_EVENT_RING_CAP = prevCap;
+  }
+});
