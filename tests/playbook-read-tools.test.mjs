@@ -557,9 +557,9 @@ test('playbook_state reports no enforcement block for a non-conductor caller', a
   } finally { await t.close(); }
 });
 
-// ── list_instances join ────────────────────────────────────────────────────
+// ── list_sessions join ────────────────────────────────────────────────────
 
-test('list_instances carries playbook/stage for a tracked worker and null for an untracked one', async () => {
+test('list_sessions carries playbook/stage for a tracked worker and null for an untracked one', async () => {
   const t = await setup({ enforcement: 'enforce' });
   try {
     const tracked = await t.spawnWorker({ project: 'demo', playbook: 'classic', stage: 'plan' });
@@ -568,9 +568,9 @@ test('list_instances carries playbook/stage for a tracked worker and null for an
     const untracked = await t.callAs(workerHandle, 'spawn_instance', { project: 'demo', mode: 'plan' });
     await waitFor(() => instForSession(t.instances, untracked.sessionId)?.sessionId);
 
-    // list_instances renders plain text, so read the playbook line off each
-    // worker's block (src/mcp/readRenderers.ts renderInstances).
-    const rendered = await t.callText('list_instances', {});
+    // list_sessions renders plain text, so read the playbook line off each
+    // worker's block (src/mcp/readRenderers.ts renderSessions).
+    const rendered = await t.callText('list_sessions', {});
     const playbookLineFor = (sid) => {
       const lines = rendered.split('\n');
       const at = lines.findIndex(l => l.includes(sid));

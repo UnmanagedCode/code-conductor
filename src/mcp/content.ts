@@ -29,7 +29,7 @@ export function isTextPayload(v: unknown): v is TextPayload {
   return !!v && typeof v === 'object' && (v as Partial<TextPayload>)[PAYLOAD] === true;
 }
 
-// The rendered read tools' channel — the five recon read tools plus
+// The rendered read tools' channel — the recon read tools plus
 // describe_playbook's success path: the whole result IS a plain-text rendering,
 // emitted as one raw block with no metadata block at all. Same Symbol-tag
 // discipline as textPayload, and for the same reason — the default path

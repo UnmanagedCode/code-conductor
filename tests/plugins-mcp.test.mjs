@@ -74,7 +74,7 @@ test('visibility: every enabled plugin\'s tools are global — conductor, any-pr
     assert.ok(all.includes('fake-plugin__echo'));
     assert.ok(all.includes('fake-plugin__sleep'));
     assert.ok(all.includes('globalplug__echo'));
-    assert.ok(all.includes('list_instances'), 'core tools still present');
+    assert.ok(all.includes('list_sessions'), 'core tools still present');
 
     // Worker in the plugin's own project: everything.
     const inPlug = await spawnWorker(boot, { project: 'fakeplug' });

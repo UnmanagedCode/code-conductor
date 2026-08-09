@@ -143,7 +143,7 @@ test('governable tools are derived from buildTools(): sessionId-taking tools plu
   // so nothing names a worker for policy to be read from. A sample of the class —
   // the authoritative membership is whatever governableToolNames() computes.
   for (const t of ['renew_session', 'delete_worktree', 'merge_worktree', 'project_read',
-                   'project_bash', 'list_projects', 'list_instances', 'create_worktree']) {
+                   'project_bash', 'list_projects', 'list_sessions', 'create_worktree']) {
     assert.ok(!names.includes(t), `${t} must NOT be governable`);
   }
 });

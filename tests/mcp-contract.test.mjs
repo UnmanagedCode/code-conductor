@@ -386,9 +386,11 @@ test('project_status caps the dirty list with dirtyTruncated + dirtyTotal', asyn
 // describe_playbook is here for its SUCCESS path only; its refusal is still a
 // JSON `{ok:false, code}` (pinned in tests/playbook-read-tools.test.mjs).
 
+// One entry per plain-text tool, plus list_sessions twice — its filtered and
+// unfiltered forms render different headings.
 const RENDERED_TOOLS = [
   { name: 'list_projects', args: {}, head: /^PROJECTS \(/ },
-  { name: 'list_instances', args: {}, head: /^INSTANCES \(/ },
+  { name: 'list_sessions', args: {}, head: /^SESSIONS \(/ },
   { name: 'list_worktrees', args: { project: 'demo' }, head: /^WORKTREES \(/ },
   { name: 'list_sessions', args: { project: 'demo' }, head: /^SESSIONS \(/ },
   { name: 'project_status', args: { project: 'demo' }, head: /^demo$/m },

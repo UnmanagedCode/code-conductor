@@ -1255,7 +1255,7 @@ test('turn_end while a backgrounded Agent task is still running: status stays id
     assert.equal(grown.activeAgentTasks, 1, 'task_started was tracked');
     assert.equal(grown.displayStatus, 'running', 'displayStatus overlays running while a background task is active');
 
-    // list_instances / GET /api/instances must carry the same overlay.
+    // list_sessions / GET /api/instances must carry the same overlay.
     // Issued right off the resolved event (no polling delay in between) to
     // minimize any race against the scenario's trailing task_updated.
     const list = await api(baseUrl, 'GET', '/api/instances');
@@ -1396,6 +1396,13 @@ test('sending a prompt emits exactly one user_echo (no duplicate from --replay)'
 test('resume defaults to bypassPermissions (code) mode; fresh spawn still defaults to plan', async () => {
   // A resume is almost always continuing real work, so plan mode would be
   // the wrong starting point. Fresh spawns keep plan as the safer default.
+  //
+  // This session is seeded straight onto disk and so has no session-modes
+  // record — exactly the shape of every session predating that store, which
+  // is never backfilled. It is therefore the no-regression proof that mode
+  // inheritance left legacy resumes alone: unrecorded still means
+  // DEFAULT_RESUME_MODE. Inheritance itself is covered in
+  // tests/resume-mode-inherit.test.mjs.
   const prevScenario = process.env.FAKE_CLAUDE_SCENARIO;
   process.env.FAKE_CLAUDE_SCENARIO = SCENARIO_RESUME;
   const fsp = (await import('node:fs')).promises;

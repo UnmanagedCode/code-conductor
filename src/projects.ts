@@ -6,6 +6,7 @@ import { loadAll as loadAllTitles, deleteTitle as deleteSessionTitle } from './s
 import { loadAll as loadAllConducted, unmarkConducted } from './conductedSessions.ts';
 import { loadAllTemps } from './tempSessions.ts';
 import { loadAllArchived, markArchived, unmarkArchived } from './archivedSessions.ts';
+import { loadAll as loadAllSessionModes, effectiveResumeMode, unmarkSessionMode } from './sessionModes.ts';
 import type { WorktreeMeta } from './worktrees.ts';
 
 // Default projects root = parent directory of the code-conductor repo,
@@ -500,36 +501,59 @@ export interface SessionRow {
   archived: boolean;
   mtime: number;
   size: number;
+  // What `spawn_instance({resume})` would actually come up as — the recorded
+  // mode, or DEFAULT_RESUME_MODE when there is none. Always the EFFECTIVE
+  // value, never the raw record: a consumer that rendered "no record" as "not
+  // hot" would tell a reader a hot resume is safe.
+  resumeMode: string;
 }
 
-export async function listSessionsForCwd(
+// One directory walk answering both "which sessions are here" and "how many of
+// them are archived". A caller that needs the count as well as the rows must
+// use this rather than pairing listSessionsForCwd with summarizeSessions: that
+// pairing costs a second readdir, a second stat of every transcript and a
+// second archived-set load, for a number this walk already has in hand.
+// Archived rows are counted before the includeArchived filter, so the count is
+// the same either way — but their `firstPrompt` is only read when they are
+// actually being listed, which is where the per-transcript cost lives.
+export async function listSessionsForCwdWithCounts(
   absCwd: string,
   excludeSessionIds: Set<string> | null = null,
   { includeArchived = true }: { includeArchived?: boolean } = {},
-): Promise<SessionRow[]> {
+): Promise<{ rows: SessionRow[]; archivedCount: number }> {
   const encoded = encodeCwd(absCwd);
   const dir = path.join(claudeProjectsRoot(), encoded);
   let entries: string[];
   try {
     entries = await fs.readdir(dir);
   } catch (e) {
-    if (errCode(e) === 'ENOENT') return [];
+    if (errCode(e) === 'ENOENT') return { rows: [], archivedCount: 0 };
     throw e;
   }
   const titles = await loadAllTitles();
   const conducted = await loadAllConducted();
   const temps = await loadAllTemps();
   const archived = await loadAllArchived();
+  // One bulk read per scanned cwd, like the four sidecars above — never a file
+  // open per session.
+  const modes = await loadAllSessionModes();
   const out: SessionRow[] = [];
+  let archivedCount = 0;
   for (const name of entries) {
     if (!name.endsWith('.jsonl')) continue;
     const sid = name.replace(/\.jsonl$/, '');
     if (excludeSessionIds && excludeSessionIds.has(sid)) continue;
-    if (!includeArchived && archived.has(sid)) continue;
+    const isArchived = archived.has(sid);
     const full = path.join(dir, name);
+    // Stat before the archived branch: the count must include only real files,
+    // and it is the same stat a listed row needs anyway.
     let stat: Awaited<ReturnType<typeof fs.stat>>;
     try { stat = await fs.stat(full); } catch { continue; }
     if (!stat.isFile()) continue;
+    if (isArchived) {
+      archivedCount++;
+      if (!includeArchived) continue;
+    }
     let firstPrompt: string | null = null;
     try { firstPrompt = await readFirstPrompt(full); } catch { /* ignore */ }
     out.push({
@@ -538,13 +562,22 @@ export async function listSessionsForCwd(
       title: titles.get(sid) ?? null,
       conducted: conducted.has(sid),
       temp: temps.has(sid),
-      archived: archived.has(sid),
+      archived: isArchived,
       mtime: stat.mtimeMs,
       size: stat.size,
+      resumeMode: effectiveResumeMode(modes.get(sid) ?? null),
     });
   }
   out.sort((a, b) => b.mtime - a.mtime);
-  return out;
+  return { rows: out, archivedCount };
+}
+
+export async function listSessionsForCwd(
+  absCwd: string,
+  excludeSessionIds: Set<string> | null = null,
+  opts: { includeArchived?: boolean } = {},
+): Promise<SessionRow[]> {
+  return (await listSessionsForCwdWithCounts(absCwd, excludeSessionIds, opts)).rows;
 }
 
 export async function listSessions(projectName: string, excludeSessionIds: Set<string> | null = null): Promise<SessionRow[]> {
@@ -584,6 +617,7 @@ export async function deleteSessionForCwd(absCwd: string, sessionId: string): Pr
     try { await deleteSessionTitle(sessionId); } catch { /* sidecar cleanup is best-effort */ }
     try { await unmarkConducted(sessionId); } catch { /* sidecar cleanup is best-effort */ }
     try { await unmarkArchived(sessionId); } catch { /* sidecar cleanup is best-effort */ }
+    try { await unmarkSessionMode(sessionId); } catch { /* sidecar cleanup is best-effort */ }
     return true;
   } catch (e) {
     if (errCode(e) === 'ENOENT') return false;

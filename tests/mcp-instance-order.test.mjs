@@ -1,4 +1,4 @@
-// list_instances' live-row order.
+// list_sessions' live-row order.
 //
 // Pure tests — no server boot, no I/O: the comparator is a plain function of its
 // input, so it is exercised directly rather than inferred from rendered text
