@@ -756,8 +756,8 @@ export function buildTools(): Tool[] {
     {
       name: 'describe_playbook',
       description:
-        'The full graph of one playbook — read this rather than guessing what a stage permits. ' +
-        'Returns PLAIN TEXT (no JSON). Per stage, `needs` names WORKERS that must exist for the ' +
+        'The full graph of one playbook. Returns PLAIN TEXT (no JSON). ' +
+        'Per stage, `needs` names WORKERS that must exist for the ' +
         'stage to be entered (as stage@current / stage@ever), and `tools` maps a tool to allow / ' +
         'deny / require {json} of enforced argument values — a `*` entry is the fallback for every ' +
         'tool the stage does not name. Each stage also reports `spawnable`, the per-stage form of ' +
