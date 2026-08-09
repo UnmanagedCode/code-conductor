@@ -53,18 +53,64 @@ test('the base fixture is valid (guards every expectErr below against a broken f
 
 // ── the shipped built-ins ───────────────────────────────────────────────────
 
-test('all four built-in playbooks load and validate clean', async () => {
+test('the built-in playbooks are exactly solo/relay/freeform, and all load clean', async () => {
   const { playbooks, errors } = await loadPlaybooks();
   assert.deepEqual(errors, [], `built-in playbooks must validate: ${JSON.stringify(errors)}`);
+  assert.deepEqual([...playbooks.keys()].sort(), ['freeform', 'relay', 'solo'],
+    'a leftover definition file or a missing one both land here');
   for (const id of SEED_PLAYBOOK_IDS) {
     assert.ok(playbooks.has(id), `missing built-in playbook '${id}'`);
     // name/description come from the JSON body, not from a restated TS list.
     assert.ok(playbooks.get(id).name.length > 0, `${id} has no name`);
     assert.ok(playbooks.get(id).description.length > 0, `${id} has no description`);
   }
-  assert.equal(playbooks.get('classic').entryStages.join(','), 'plan');
-  // split's defining property: the planner has no way out of `plan`.
-  assert.equal(playbooks.get('split').transitions.some(t => t.from === 'plan'), false);
+  assert.equal(playbooks.get('solo').entryStages.join(','), 'plan');
+  // relay's defining property: the planner has no way out of `plan`. Also the
+  // premise relay.implement's DEFAULT position:["plan"] rests on — a planner
+  // that could leave `plan` would make that default silently wrong.
+  assert.equal(playbooks.get('relay').transitions.some(t => t.from === 'plan'), false);
+});
+
+// ── the resolved-needs table ────────────────────────────────────────────────
+//
+// Deliberately a change-detector, and worth the maintenance: `at:"current"`
+// drifting onto relay.review by inheritance (618d62a) is what broke the
+// second-lens reviewer, and nothing else would have caught it. It lists
+// POST-DEFAULT values, so a `needs` that silently inherits the strict position
+// gate is as visible here as one that declares its loosening.
+//
+// Adding a stage to a worker's path changes no list, so this test still passes
+// — what it does is put the new stage in front of whoever added it. Treat a
+// diff here as a prompt to re-read every `position` list against the graph, not
+// as a formality.
+const RESOLVED_NEEDS = {
+  solo: {
+    plan: [],
+    implement: [],
+    // Item C: the implementer has moved to `refine` by round 2, so a
+    // second-lens reviewer must still be spawnable against it.
+    review: [{ stage: 'implement', position: ['implement', 'refine'], liveness: 'live' }],
+    // Strict, and free: with review->review declared, a reviewer never leaves
+    // `review`. `liveness:"live"` is the load-bearing half — refine sends the
+    // same reviewers back.
+    refine: [{ stage: 'review', position: ['review'], liveness: 'live' }],
+  },
+  relay: {
+    plan: [],
+    // Item F: the planner must be GONE. Strict position is right because
+    // relay.plan is a dead end, so a retired planner still stands in `plan`.
+    implement: [{ stage: 'plan', position: ['plan'], liveness: 'retired' }],
+    review: [{ stage: 'implement', position: ['implement', 'refine'], liveness: 'live' }],
+    refine: [{ stage: 'review', position: ['review'], liveness: 'live' }],
+  },
+  freeform: { freeform: [] },
+};
+
+test('every built-in stage\'s resolved `needs` matches the frozen table', async () => {
+  const { playbooks } = await loadPlaybooks();
+  const actual = Object.fromEntries([...playbooks.values()].map(pb =>
+    [pb.id, Object.fromEntries(Object.entries(pb.stages).map(([name, s]) => [name, s.needs]))]));
+  assert.deepEqual(actual, RESOLVED_NEEDS);
 });
 
 // The built-ins are the templates user authors copy, and (per the dynamic
@@ -92,7 +138,7 @@ test('every built-in stage carries a description and no built-in transition does
 // merely well-typed. The validator checks that a `require` key is a genuine
 // argument NAME of its tool; it cannot check that the VALUE means anything —
 // which is how `"model": "planner"` shipped, naming a role that exists nowhere
-// in the registry, making classic and split throw BAD_MODEL on every spawn.
+// in the registry, making solo and relay throw BAD_MODEL on every spawn.
 //
 // So each value is checked against whatever actually owns its domain:
 //   • the tool's own inputSchema, for `enum`/`type` constraints (covers `mode`,
@@ -395,6 +441,28 @@ test('a transition `on` must be a governable tool, and neither send_prompt nor s
   expectOk(base({ stages, transitions: [{ from: 'a', to: 'b', on: 'approve_plan' }] }));
 });
 
+test('a self-loop may be declared, but never with an `on`', () => {
+  const stages = { a: { tools: { spawn_instance: 'allow' } }, b: {} };
+  // The declaration itself is legal — it is the whole mechanism by which a
+  // repeated round becomes countable.
+  expectOk(base({ stages, transitions: [{ from: 'a', to: 'b' }, { from: 'b', to: 'b' }] }));
+  // With an `on` it is not: resolveMove answers a self-edge BEFORE it looks at
+  // drivers, so the driver branch would give one edge a second, gated path.
+  // Without this rule the definition loads and the contradiction is silent.
+  expectErr(base({ stages, transitions: [{ from: 'a', to: 'b' }, { from: 'b', to: 'b', on: 'approve_plan' }] }),
+    /a self-loop cannot declare `on`/);
+});
+
+test('a self-loop does not make an otherwise-unreachable stage reachable', () => {
+  // A self-loop cannot carry a worker INTO a stage, so it must not satisfy the
+  // inbound-edge clause. A mutant that counts it turns this into a silent pass
+  // and lets an orphan stage ship.
+  expectErr(base({
+    stages: { a: { tools: { spawn_instance: 'allow' } }, orphan: {} },
+    transitions: [{ from: 'orphan', to: 'orphan' }],
+  }), /stage 'orphan' is unreachable/);
+});
+
 // ── shape + defaults ───────────────────────────────────────────────────────
 
 test('unknown top-level and unknown per-stage keys are rejected', () => {
@@ -474,23 +542,51 @@ test('name/description/stages shape is enforced', () => {
   assert.equal(validatePlaybook('nope', 'fixture', index).ok, false);
 });
 
-test('needs.at and workers reject unknown values', () => {
+test('needs.liveness and workers reject unknown values', () => {
   expectErr(base({
-    stages: { a: { tools: { spawn_instance: 'allow' } }, b: { needs: [{ stage: 'a', at: 'someday' }] } },
-  }), /needs\.at must be one of current \| ever/);
+    stages: { a: { tools: { spawn_instance: 'allow' } }, b: { needs: [{ stage: 'a', liveness: 'someday' }] } },
+  }), /needs\.liveness must be one of live \| retired \| any/);
   expectErr(base({ stages: { a: { workers: 'three', tools: { spawn_instance: 'allow' } } } }),
     /workers must be one of one \| many/);
+  // The retired vocabulary is gone, not aliased: a definition still saying `at`
+  // must fail loudly at load rather than silently losing its gate.
+  expectErr(base({
+    stages: { a: { tools: { spawn_instance: 'allow' } }, b: { needs: [{ stage: 'a', at: 'ever' }] } },
+  }), /needs entry has unknown key 'at'/);
 });
 
-test('defaults are applied for omitted tools/workers/needs/at', () => {
+// One case per rule the array shape adds. Deliberately NOT one combined assert:
+// a single expectErr would pass while four of the five rules were missing.
+test('needs.position rejects a non-array, an empty list, an unknown stage, a mixed "*", and a duplicate', () => {
+  const withPosition = position => base({
+    stages: { a: { tools: { spawn_instance: 'allow' } }, b: { needs: [{ stage: 'a', position }] } },
+    transitions: [{ from: 'a', to: 'b' }],
+  });
+  expectErr(withPosition('a'), /needs\.position must be an array of stage names/);
+  expectErr(withPosition([]), /needs\.position must name at least one stage/);
+  expectErr(withPosition(['nope']), /needs\.position names unknown stage 'nope'/);
+  expectErr(withPosition(['*', 'a']), /needs\.position cannot mix "\*" with named stages/);
+  expectErr(withPosition(['a', 'a']), /needs\.position lists 'a' twice/);
+  // …and the shapes that must still LOAD, so the rules above cannot be
+  // satisfied by a validator that simply rejects every position.
+  expectOk(withPosition(['a']));
+  expectOk(withPosition(['a', 'b']));
+  expectOk(withPosition(['*']));
+});
+
+test('defaults are applied for omitted tools/workers/needs/position/liveness', () => {
   const pb = expectOk(base({
     stages: {
       a: { tools: { spawn_instance: 'allow' } },
-      b: { needs: [{ stage: 'a' }] },       // at omitted
+      b: { needs: [{ stage: 'a' }] },       // position + liveness omitted
     },
     transitions: [{ from: 'a', to: 'b' }],
   }));
-  assert.deepEqual(pb.stages.b.needs, [{ stage: 'a', at: 'current' }], 'at defaults to "current"');
+  // STRICT BY DEFAULT, both axes. A mutant defaulting position to ["*"] or
+  // liveness to "any" — the loose ends — fails here, which is the point: the
+  // obvious minimal entry must be the strongest gate, never the weakest.
+  assert.deepEqual(pb.stages.b.needs, [{ stage: 'a', position: ['a'], liveness: 'live' }],
+    'position defaults to [stage] and liveness to "live"');
   assert.equal(pb.stages.b.workers, 'one', 'workers defaults to "one"');
   assert.deepEqual(pb.stages.b.tools, {}, 'tools defaults to {}');
   assert.deepEqual(pb.stages.a.needs, [], 'needs defaults to []');

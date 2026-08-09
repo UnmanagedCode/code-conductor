@@ -252,7 +252,7 @@ const INSTANCE = {
   overageActive: false,
   overageResetsAt: null,
   hasIdleSubscriber: true,
-  playbook: 'classic',
+  playbook: 'solo',
   stage: 'implement',
 };
 
@@ -282,7 +282,7 @@ describe('renderSessions — live rows', () => {
       '        project code-conductor   worktree code-conductor_worktree_dcd22e',
       '        cwd /w/cc-projects/code-conductor_worktree_dcd22e',
       '        mode code   effort high   thinking adaptive   model claude/claude-opus-5',
-      '        playbook classic / implement',
+      '        playbook solo / implement',
       '        title Recon read tools plain-text rendering',
       '        last 2026-08-06 07:23Z',
     ].join('\n'));
@@ -362,7 +362,7 @@ describe('renderSessions — inactive rows, grouping and archived', () => {
       '        project code-conductor   worktree code-conductor_worktree_dcd22e',
       '        cwd /w/cc-projects/code-conductor_worktree_dcd22e',
       '        mode code   effort high   thinking adaptive   model claude/claude-opus-5',
-      '        playbook classic / implement',
+      '        playbook solo / implement',
       '        title Recon read tools plain-text rendering',
       '        last 2026-08-06 07:23Z',
       '',
@@ -379,8 +379,8 @@ describe('renderSessions — inactive rows, grouping and archived', () => {
   });
 
   test('a playbook-tracked stopped session shows where it stopped', () => {
-    const out = renderSessions([grp({ inactive: [stoppedRow({ playbook: 'classic', stage: 'review' })] })]);
-    assert.match(out, /classic\/review/);
+    const out = renderSessions([grp({ inactive: [stoppedRow({ playbook: 'solo', stage: 'review' })] })]);
+    assert.match(out, /solo\/review/);
   });
 
   test('inactive rows render in the order given, and every one of them', () => {
@@ -758,13 +758,17 @@ const GRAPH = {
       description: STAGE_PROSE,
     },
     fan: {
-      needs: [{ stage: 'triage', at: 'current' }, { stage: 'triage', at: 'ever' }],
+      needs: [
+        { stage: 'triage', position: ['triage'], liveness: 'live' },
+        { stage: 'triage', position: ['*'], liveness: 'any' },
+      ],
       workers: 'many',
       tools: {},
       spawnable: false,
     },
     sink: {
-      needs: [{ stage: 'fan', at: 'current' }],
+      // A multi-member position list, so the join is exercised too.
+      needs: [{ stage: 'fan', position: ['fan', 'sink'], liveness: 'retired' }],
       workers: 'one',
       tools: { '*': 'allow' },
       spawnable: false,
@@ -805,10 +809,10 @@ describe('renderPlaybook', () => {
       '',
       '      tools deny is not a field here — this is authored prose.',
       '▸ fan   workers many   spawnable no',
-      '    needs triage@current, triage@ever',
+      '    needs triage@live in triage, triage@any in *',
       '    tools (none)',
       '▸ sink   workers one   spawnable no',
-      '    needs fan@current',
+      '    needs fan@retired in fan|sink',
       '    tools (1)',
       '      * allow',
       '',

@@ -348,10 +348,10 @@ A **playbook** is a JSON graph of **stages** a worker is bound to. The conductor
 | `spawn_instance` | `playbook` | Required on a **run root** (a spawn with no `needs`); inherited from the `needs` ancestors otherwise, and a conflicting value is `PLAYBOOK_MISMATCH`. |
 | `spawn_instance` | `stage` | The stage to enter. It must declare `spawn_instance` (else `STAGE_NOT_SPAWNABLE`) — that tool is the one that **fails closed**, and a `"*"` wildcard confers no spawnability. |
 | `spawn_instance` | `needs` | `{"<stage>": "<sessionId>"}` — worker provenance satisfying the entered stage's `needs`. |
-| `send_prompt` | `stage` | **Always** carried. Equal to the worker's current stage ⇒ a **self-edge**: always legal, and never ledgered as a transition. Different ⇒ a transition checked against the edge set. |
+| `send_prompt` | `stage` | **Always** carried. Equal to the worker's current stage ⇒ a **self-edge**: always legal and never subject to the destination's `needs`, and ledgered as a `from===to` transition **iff the playbook declares that self-loop** (which is how a review/refine round becomes countable). Different ⇒ a transition checked against the edge set. |
 | `send_prompt` | `needs` | Satisfies the **destination** stage's `needs`, since a stage's entry conditions apply however it is entered. |
 
-**Optional `description`.** Every **stage** and every **transition** accepts an optional `description` string: conductor-facing intent — the conductor's *move* at that stage and what it expects back. Never a restatement of `tools`/`needs`/the graph, which are enforced and already returned by `describe_playbook`. Rejected at load (`readDescription`, `src/playbooks.ts`) if present and not a non-empty string; **no length limit** — the gate is editorial. Present iff authored: an unauthored description makes `describe_playbook` emit **no line at all** for it (no label, no `—`), so absence is legible in the text rather than signalled by an empty value. Authored text is rendered **verbatim** under a `description` label, indented one level deeper than the stage's own fields — never reflowed or truncated. The label and indent mark where the rendering ends and the author's text begins; they cannot disambiguate prose that is itself indented into a field column, which is contained editorially by the "never a restatement of the graph" rule above, not by the renderer. `list_playbooks` and the composed prompt's playbook listing (`playbookListing`, `src/conductorConventions.ts`) carry the **top-level** playbook description only. A transition `description` is reserved for the rare edge whose move is not already implied by the destination stage's `description` + `needs`. The four built-ins are the templates to copy: **every** stage carries one, **no** transition does (pinned by `tests/playbook-schema.test.mjs`).
+**Optional `description`.** Every **stage** and every **transition** accepts an optional `description` string: conductor-facing intent — the conductor's *move* at that stage and what it expects back. Never a restatement of `tools`/`needs`/the graph, which are enforced and already returned by `describe_playbook`. Rejected at load (`readDescription`, `src/playbooks.ts`) if present and not a non-empty string; **no length limit** — the gate is editorial. Present iff authored: an unauthored description makes `describe_playbook` emit **no line at all** for it (no label, no `—`), so absence is legible in the text rather than signalled by an empty value. Authored text is rendered **verbatim** under a `description` label, indented one level deeper than the stage's own fields — never reflowed or truncated. The label and indent mark where the rendering ends and the author's text begins; they cannot disambiguate prose that is itself indented into a field column, which is contained editorially by the "never a restatement of the graph" rule above, not by the renderer. `list_playbooks` and the composed prompt's playbook listing (`playbookListing`, `src/conductorConventions.ts`) carry the **top-level** playbook description only. A transition `description` is reserved for the rare edge whose move is not already implied by the destination stage's `description` + `needs`. The three built-ins are the templates to copy: **every** stage carries one, **no** transition does (pinned by `tests/playbook-schema.test.mjs`).
 
 **The default-playbook convention.** Settings → Conventions → Conductor selects a **default playbook**, stored **globally** as the `defaultPlaybook` sibling key in `<store>/conventions/conductor.json` (the conductor is a singleton, and `composeCurrentConduct()` takes no instance argument — it runs before the instance exists). At compose time its definition is **rendered** into the role prompt by `renderPlaybookConvention` (`src/playbookConvention.ts`): a `## Default playbook — \`<id>\`` header, one bullet per stage carrying `**<stage>**` + `(many workers)` when `workers:"many"` + the authored `description` **verbatim**, and a closing transition list with `via = on ?? send_prompt`. **Generated, never hand-authored** — that is what makes drift from the enforced graph impossible.
 
@@ -359,17 +359,17 @@ A **playbook** is a JSON graph of **stages** a worker is bound to. The conductor
 
 `needs` values are sessionIds and get the same **prefix resolution** as a top-level `sessionId` (schema-driven, so any tool declaring `needs` is covered); an ambiguous one soft-refuses `SESSION_AMBIGUOUS` naming the `needs.<stage>` entry.
 
-**The policy step in `tools/call`.** One checkpoint in `dispatch()` (`src/mcp/server.ts`), **after** `validateArgs` and after both prefix-resolution passes, **before** `tool.handler`. Refusals use the established soft shape — `{ok:false, code, reason, legalMoves, playbookEnforcement:"enforce"}`, `isError:false`, never thrown — because there is no server→client notification channel, so a conductor's tool list is fetched once and a denied tool cannot be hidden; every refusal therefore carries the way forward. Codes: `PLAYBOOK_UNKNOWN`, `STAGE_UNKNOWN`, `STAGE_NOT_SPAWNABLE`, `TRANSITION_ILLEGAL`, `NEEDS_UNSATISFIED`, `ARG_REQUIRE_CONFLICT`, `TOOL_DENIED_IN_STAGE`, `STAGE_AT_CAPACITY`, `PLAYBOOK_MISMATCH`.
+**The policy step in `tools/call`.** One checkpoint in `dispatch()` (`src/mcp/server.ts`), **after** `validateArgs` and after both prefix-resolution passes, **before** `tool.handler`. Refusals use the established soft shape — `{ok:false, code, reason, legalMoves, playbookEnforcement:"enforce"}`, `isError:false`, never thrown — because there is no server→client notification channel, so a conductor's tool list is fetched once and a denied tool cannot be hidden; every refusal therefore carries the way forward. Codes: `PLAYBOOK_UNKNOWN`, `STAGE_UNKNOWN`, `STAGE_NOT_SPAWNABLE`, `TRANSITION_ILLEGAL`, `NEEDS_UNSATISFIED`, `NEEDS_WORKER_GONE`, `ARG_REQUIRE_CONFLICT`, `TOOL_DENIED_IN_STAGE`, `STAGE_AT_CAPACITY`, `PLAYBOOK_MISMATCH`.
 
 Because a `spawn` ledger event needs the new worker's sessionId — which does not exist until the handler has run — the checkpoint is **check-before / commit-after**: one call decides, a second records. A handler that throws never reaches the commit, and one that soft-refuses is filtered inside it; either way the move did not happen, so the ledger must not claim it did.
 
 **Read tools.** `list_playbooks` (ids, names, descriptions, entry + spawnable stages, plus `errors` for definitions rejected at load — JSON, because `errors` is structured data), `describe_playbook({id})` (the full graph, as **plain text** — see [Rendered read results](#rendered-read-results); rendered by `renderPlaybook`, `src/mcp/readRenderers.ts`), `playbook_state({sessionId?})` (the run graph, legal next moves, and the run's ledger history). All three are read-only in the strong sense: on an install with no ledger they answer with empty state and **create no file**.
 
-`describe_playbook({id:"classic"})`, abridged — `…` marks elided description prose and the two stages left out. The layout is owned by `renderPlaybook`; this sample is here to be compared against it, not to restate it:
+`describe_playbook({id:"solo"})`, abridged — every `…` marks truncated description prose; the `implement` and `refine` stages are left out entirely, with nothing marking where (the `STAGES (4)` count is the real one). The layout is owned by `renderPlaybook`; this sample is here to be compared against it, not to restate it:
 
 ```
-PLAYBOOK classic
-name Classic — one worker plans/implements/refines, separate reviewer
+PLAYBOOK solo
+name Solo — one worker plans/implements/refines, separate reviewers
 entry plan
 
 DESCRIPTION
@@ -382,19 +382,21 @@ STAGES (4)
       spawn_instance require {"mode":"plan","createWorktree":true}
       set_mode deny
     description
-      Spawn and brief a plan worker — scoped goal, constraints, completion sentinel — …
-▸ review   workers one   spawnable yes
-    needs implement@current
+      Spawn and brief a plan worker — …
+▸ review   workers many   spawnable yes
+    needs implement@live in implement|refine
     tools (3)
       spawn_instance require {"mode":"bypassPermissions","model":"reviewer"}
       sync_worktree deny
       approve_plan deny
     description
-      …
+      Spawn an adversarial reviewer onto the implementer's worktree, briefed to inspect only — …
 
-TRANSITIONS (2)
+TRANSITIONS (4)
   plan → implement    via approve_plan
   implement → refine  via send_prompt
+  refine → refine     via send_prompt
+  review → review     via send_prompt
 ```
 
 `playbook_state`'s `nextMoves` is answered by dry-running the same `decide()` that enforces, once per outgoing edge, so what it advertises and what the gate permits cannot diverge. Each move is evaluated as the **bare call**, with no `needs` supplied, so an edge into a stage declaring `needs` reads `ok:false`/`NEEDS_UNSATISFIED` even when a satisfying worker exists — that is "pass the argument", not "impossible", and the `reason` names what to pass. `playbook_state` declares a `sessionId`, so it is governable like any other targeted tool and a stage may deny it; the no-argument form names no worker, so it is never subject to a stage's policy and remains available.
@@ -403,7 +405,7 @@ TRANSITIONS (2)
 
 **Known limitations.**
 - **Definition edits drift under live workers.** Definitions are deliberately not pinned to a run — no snapshot, no hash on the `spawn` event, and a load is never refused for invalidating a live run. A worker whose stage vanished under it gets `STAGE_UNKNOWN`, whose text says the definition changed rather than blaming the call.
-- **`renew_session` orphans a worker's stage state.** It mints a new sessionId, and the projection is sessionId-keyed, so a renewed worker loses its stage binding. This is a *projection* break, distinct from `renew_session` being ungovernable by construction (it acts on the caller, so it carries no `sessionId`) — different mechanisms, different fixes; the propagation belongs to the separate `renew_session` remodel.
+- **`renew_session` orphans a worker's stage state, and its old entry stays STALE-LIVE.** It mints a new sessionId, and the projection is sessionId-keyed, so a renewed worker loses its stage binding — and the old entry never receives a `retire`, so it reads `live: true` forever. A `needs` entry's `liveness` is therefore best-effort in both directions, and they fail differently: `liveness:"retired"` wrongly **refuses** (loud), while `liveness:"live"` wrongly **permits** a worker that is gone by that id (silent). The check is not sound; it is the best answer available from the ledger. The honest fix is to answer liveness from the instance manager rather than the `live` flag, which would also have to move `liveInStage` capacity onto the same source so there are never two liveness authorities — that belongs to the separate `renew_session` remodel, not beside it. Distinct from `renew_session` being ungovernable by construction (it acts on the caller, so it carries no `sessionId`).
 - **A worker spawned illegally under `warn` stays untracked.** The refusal is recorded but the call proceeds, and no binding is written — so flipping to `enforce` mid-run governs new spawns while that worker stays ungoverned (no subject in the projection). A *legal* `warn` spawn is bound normally and becomes governable on the flip.
 
 ## Plugin system

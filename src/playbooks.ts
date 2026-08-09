@@ -40,7 +40,7 @@ const PLAYBOOKS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)),
 // each body owns its own `name`/`description` — restating them here would be a
 // second source that drifts, so the catalog seeds carry the id only and
 // getPlaybooks() reads the metadata from the parsed body.
-export const SEED_PLAYBOOK_IDS = ['classic', 'split', 'research', 'freeform'] as const;
+export const SEED_PLAYBOOK_IDS = ['solo', 'relay', 'freeform'] as const;
 
 export const TOOL_NAME_PREFIX = 'mcp__code-conductor__';
 
@@ -124,10 +124,22 @@ export type RequireLiteral = string | number | boolean | null;
 export type ToolPolicy = 'allow' | 'deny' | { require: Record<string, RequireLiteral> };
 
 export interface NeedsEntry {
+  // ANCHOR. Two jobs, deliberately one field: the stage the named worker must
+  // have PASSED THROUGH (provenance, from stageHistory), and the key the caller
+  // supplies its sessionId under (`needs: {"<stage>": "<sessionId>"}`).
   stage: string;
-  // "current" (default) — the target is in that stage NOW: a handoff.
-  // "ever"              — the target has passed through it: provenance.
-  at: 'current' | 'ever';
+  // Acceptable CURRENT stages, defaulting to [stage] — the strict handoff. A
+  // longer list is the loosening, and it is legible: a reader can check it
+  // against the graph, which a quantifier like "ever" does not allow. ["*"]
+  // drops the check entirely, leaving provenance as the only constraint.
+  position: string[];
+  // "live" (default) — the worker is still running.
+  // "retired"        — it is gone: an enforced handoff, not advice.
+  // "any"            — no liveness check.
+  // Best-effort: `live` is a projection of the manager's status stream, and a
+  // renew_session rotation leaves the old sessionId STALE-LIVE, so "live" can
+  // pass for a worker that is gone by that id. See playbookLedger.ts.
+  liveness: 'live' | 'retired' | 'any';
 }
 
 export interface Stage {
@@ -170,9 +182,12 @@ export interface Playbook {
 export const STAGE_KEYS = new Set(['needs', 'workers', 'tools', 'description']);
 export const PLAYBOOK_KEYS = new Set(['id', 'name', 'description', 'entryStages', 'stages', 'transitions']);
 export const TRANSITION_KEYS = new Set(['from', 'to', 'on', 'description']);
-const NEEDS_KEYS = new Set(['stage', 'at']);
+// Exported for the same reason, and it matters more here: `needs` is rendered as
+// a composed cell rather than field-by-field, so a new axis silently dropping
+// out of describe_playbook's text is exactly the failure that binding catches.
+export const NEEDS_KEYS = new Set(['stage', 'position', 'liveness']);
 const WORKERS_VALUES = new Set(['one', 'many']);
-const AT_VALUES = new Set(['current', 'ever']);
+const LIVENESS_VALUES = new Set(['live', 'retired', 'any']);
 
 // ── validator ───────────────────────────────────────────────────────────────
 
@@ -240,12 +255,18 @@ export function validatePlaybook(raw: unknown, id: string, index: ToolIndex): Va
           err(`stage '${name}': needs names unknown stage '${String(target)}'`);
           continue;
         }
-        const at = nU.at === undefined ? 'current' : nU.at;
-        if (typeof at !== 'string' || !AT_VALUES.has(at)) {
-          err(`stage '${name}': needs.at must be one of ${[...AT_VALUES].join(' | ')} (got ${JSON.stringify(nU.at)})`);
+        const liveness = nU.liveness === undefined ? 'live' : nU.liveness;
+        if (typeof liveness !== 'string' || !LIVENESS_VALUES.has(liveness)) {
+          err(`stage '${name}': needs.liveness must be one of ${[...LIVENESS_VALUES].join(' | ')} ` +
+              `(got ${JSON.stringify(nU.liveness)})`);
           continue;
         }
-        needs.push({ stage: target, at: at as 'current' | 'ever' });
+        // `position` defaults to the anchor alone — the strict handoff. A
+        // loosening must be written out, so the exception is visible where it
+        // applies rather than inherited from a word.
+        const position = validatePosition({ stage: name, raw: nU.position, anchor: target, stageNames, err });
+        if (!position) continue;
+        needs.push({ stage: target, position, liveness: liveness as NeedsEntry['liveness'] });
       }
     }
 
@@ -337,6 +358,13 @@ export function validatePlaybook(raw: unknown, id: string, index: ToolIndex): Va
           err(`transition ${edge}: on cannot be spawn_instance — spawn_instance enters a stage, it does not move a worker between stages`);
         } else if (on === 'send_prompt') {
           err(`transition ${edge}: on cannot be send_prompt — send_prompt is the DEFAULT driver for an edge with no \`on\`, so declaring it is an ambiguous no-op`);
+        } else if (from === to) {
+          // A self-loop exists ONLY to make the move ledgered; resolveMove
+          // answers a self-edge before it ever looks at drivers. An `on` here
+          // would also match the driver branch, giving one edge two
+          // contradictory paths — one gated, one not.
+          err(`transition ${edge}: a self-loop cannot declare \`on\` — it exists only to make the self-edge ` +
+              'ledgered, and a driver would make the same edge resolve two different ways');
         } else if (seenDrivers.has(`${String(from)}:${on}`)) {
           // Two edges out of the same stage driven by the same tool: resolveMove
           // resolves a driver by (from, on) and takes the FIRST match, so the
@@ -357,7 +385,9 @@ export function validatePlaybook(raw: unknown, id: string, index: ToolIndex): Va
   for (const name of stageNames) {
     if (entryStages.includes(name)) continue;
     if (stages[name] && isSpawnable(stages[name])) continue;
-    if (transitions.some(t => t.to === name)) continue;
+    // A self-loop is not an arrival: it cannot carry a worker INTO the stage, so
+    // it must not satisfy reachability the way a real inbound edge does.
+    if (transitions.some(t => t.to === name && t.from !== name)) continue;
     err(`stage '${name}' is unreachable — not an entry stage, does not declare spawn_instance, and has no inbound transition`);
   }
 
@@ -391,6 +421,51 @@ function readDescription(raw: unknown, where: string, err: (m: string) => void):
     return undefined;
   }
   return raw;
+}
+
+// `needs[].position` — the acceptable CURRENT stages. Absent ⇒ [anchor], the
+// strict handoff; every loosening is written out. `["*"]` drops the check.
+//
+// Returns null (after recording an error) rather than a partial list, so a
+// malformed entry never loads as a silently weaker gate than its author wrote.
+function validatePosition(
+  { stage, raw, anchor, stageNames, err }:
+  { stage: string; raw: unknown; anchor: string; stageNames: Set<string>; err: (m: string) => void },
+): string[] | null {
+  if (raw === undefined) return [anchor];
+  if (!Array.isArray(raw)) {
+    err(`stage '${stage}': needs.position must be an array of stage names (got ${JSON.stringify(raw)})`);
+    return null;
+  }
+  if (raw.length === 0) {
+    err(`stage '${stage}': needs.position must name at least one stage — omit it for the default ` +
+        `["${anchor}"], or use ["${WILDCARD}"] to accept any stage`);
+    return null;
+  }
+  const out: string[] = [];
+  for (const m of raw) {
+    if (typeof m !== 'string') {
+      err(`stage '${stage}': needs.position entries must be strings (got ${JSON.stringify(m)})`);
+      return null;
+    }
+    if (m !== WILDCARD && !stageNames.has(m)) {
+      err(`stage '${stage}': needs.position names unknown stage '${m}'`);
+      return null;
+    }
+    if (out.includes(m)) {
+      err(`stage '${stage}': needs.position lists '${m}' twice`);
+      return null;
+    }
+    out.push(m);
+  }
+  // A mixed list reads as if the named stages narrowed something, when "*"
+  // already accepts everything — so which the author meant is unknowable.
+  if (out.includes(WILDCARD) && out.length > 1) {
+    err(`stage '${stage}': needs.position cannot mix "${WILDCARD}" with named stages — "${WILDCARD}" already ` +
+        'accepts any stage, so the named ones would be dead');
+    return null;
+  }
+  return out;
 }
 
 function validateToolPolicy(
@@ -555,7 +630,7 @@ export async function loadPlaybooks(): Promise<LoadResult> {
 
 export type RefusalCode =
   | 'PLAYBOOK_UNKNOWN' | 'STAGE_UNKNOWN' | 'STAGE_NOT_SPAWNABLE' | 'TRANSITION_ILLEGAL'
-  | 'NEEDS_UNSATISFIED' | 'ARG_REQUIRE_CONFLICT' | 'TOOL_DENIED_IN_STAGE' | 'STAGE_AT_CAPACITY'
+  | 'NEEDS_UNSATISFIED' | 'NEEDS_WORKER_GONE' | 'ARG_REQUIRE_CONFLICT' | 'TOOL_DENIED_IN_STAGE' | 'STAGE_AT_CAPACITY'
   | 'PLAYBOOK_MISMATCH';
 
 export interface LegalMoves {
@@ -577,6 +652,9 @@ export interface Move {
   // Carried here so the gate can write the `spawn` ledger event without
   // re-deriving that inheritance.
   playbook?: string;
+  // Set on a 'self' only, when the playbook declares a from===to edge: the gate
+  // ledgers this move. Legality is identical either way.
+  recorded?: true;
 }
 
 export type Decision =
@@ -610,6 +688,9 @@ export interface ResolvedMove {
   resultingStage: string | null;
   kind: Move['kind'];
   via?: string;
+  // Self-edge only: the playbook DECLARES a from===to edge, so the move is
+  // ledgered. Legality is unaffected — see the self-edge branch in resolveMove.
+  recorded?: true;
   // Set when the requested move is not a legal edge.
   illegal?: { code: 'TRANSITION_ILLEGAL' | 'STAGE_UNKNOWN'; reason: string };
 }
@@ -622,13 +703,18 @@ export function resolveMove(
   if (toolName === 'send_prompt' && typeof args.stage === 'string') {
     const target = args.stage;
     if (target === currentStage) {
-      // SELF-EDGE. Implicitly legal and never checked against the edge set, not
-      // ledgered as a transition, and it does NOT re-run the stage's `needs`.
-      // Load-bearing: every ordinary follow-up prompt is a self-edge, so without
-      // this rule every one of them is refused. (The current stage's `tools`
-      // permission and its `require` still apply — the resulting stage IS the
-      // current stage.)
-      return { currentStage, resultingStage: currentStage, kind: 'self' };
+      // SELF-EDGE. Implicitly legal and never checked against the edge set, and
+      // it does NOT re-run the stage's `needs`. Load-bearing: every ordinary
+      // follow-up prompt is a self-edge, so without this rule every one of them
+      // is refused. (The current stage's `tools` permission and its `require`
+      // still apply — the resulting stage IS the current stage.)
+      //
+      // A DECLARED self-loop changes one thing and one thing only: the move is
+      // ledgered, so a review/refine round becomes countable. It is NOT routed
+      // through the transition branch below — gating it would refuse the
+      // follow-up prompts this rule exists to permit.
+      const declared = playbook.transitions.some(t => t.from === currentStage && t.to === currentStage);
+      return { currentStage, resultingStage: currentStage, kind: 'self', ...(declared && { recorded: true }) };
     }
     if (!playbook.stages[target]) {
       return {
@@ -651,8 +737,8 @@ export function resolveMove(
         currentStage, resultingStage: null, kind: 'none',
         illegal: {
           code: 'TRANSITION_ILLEGAL',
-          reason: `the ${currentStage} -> ${target} transition fires on '${edge.on}' only — it cannot be ` +
-                  `driven by send_prompt. Call ${edge.on} instead.`,
+          reason: `the ${currentStage} -> ${target} transition has via:'${edge.on}' — that tool drives it and ` +
+                  `nothing else can, so send_prompt cannot. Call ${edge.on} instead.`,
         },
       };
     }
@@ -824,7 +910,9 @@ function decideTargeted(
   const move: Move =
     moved.kind === 'transition'
       ? { kind: 'transition', from: subject.stage, to: resultingName, via: moved.via }
-      : { kind: moved.kind };
+      : moved.recorded
+        ? { kind: 'self', from: subject.stage, to: resultingName, via: 'send_prompt', recorded: true }
+        : { kind: moved.kind };
 
   // A self-edge does NOT re-run the stage's `needs` (and neither does a call
   // that moves nothing) — only an ENTRY into a stage does.
@@ -849,8 +937,26 @@ function decideTargeted(
 }
 
 // `needs` — WORKER PROVENANCE (not argument values; that is `require`). The
-// caller passes {stage: sessionId}; each named worker must be in the run and in
-// the named stage, per `at`.
+// caller passes {stage: sessionId}; each named worker must be in the run, must
+// have passed through the anchor stage, and must satisfy the entry's `liveness`
+// and `position`.
+//
+// LIVENESS IS CHECKED BEFORE POSITION, deliberately: a worker that is both gone
+// and moved on should report the gone-ness, which is the more actionable fact
+// and the one that subsumes the other. A test pins the order.
+// The prose form of one entry, for the "you did not pass it" refusal. The
+// strict default renders as plainly as it reads in the definition.
+function describeNeed(need: NeedsEntry): string {
+  const who = need.liveness === 'live' ? 'live worker'
+    : need.liveness === 'retired' ? 'RETIRED worker'
+    : 'worker';
+  if (need.position.includes(WILDCARD)) return `${who} that has passed through stage '${need.stage}'`;
+  const where = need.position.map(s => `'${s}'`).join(' or ');
+  return need.position.length === 1 && need.position[0] === need.stage
+    ? `${who} in stage ${where}`
+    : `${who} that has passed through stage '${need.stage}' and is now in ${where}`;
+}
+
 function checkNeeds(
   { playbook, stage, stageName, suppliedNeeds, projection, subject }:
   { playbook: Playbook; stage: Stage; stageName: string; suppliedNeeds: Record<string, string>;
@@ -861,8 +967,8 @@ function checkNeeds(
     const sid = suppliedNeeds[need.stage];
     if (!sid) {
       return refuse('NEEDS_UNSATISFIED',
-        `stage '${stageName}' of playbook '${playbook.id}' requires a worker ${need.at === 'ever' ? 'that has passed through' : 'currently in'} ` +
-        `stage '${need.stage}': pass needs: { "${need.stage}": "<sessionId>" }. ` +
+        `stage '${stageName}' of playbook '${playbook.id}' requires a ${describeNeed(need)}: ` +
+        `pass needs: { "${need.stage}": "<sessionId>" }. ` +
         '(`needs` names another WORKER — it is not the same as `require`, which pins argument values.)',
         moves);
     }
@@ -875,19 +981,33 @@ function checkNeeds(
       return refuse('PLAYBOOK_MISMATCH',
         `needs.${need.stage} names a worker on playbook '${target.playbook}', not '${playbook.id}'.`, moves);
     }
-    if (need.at === 'current') {
-      if (!target.live || target.stage !== need.stage) {
-        return refuse('NEEDS_UNSATISFIED',
-          `needs.${need.stage} requires worker ${short(sid)} to be in stage '${need.stage}' right now, but it is ` +
-          `${target.live ? `in '${target.stage}'` : `retired (last in '${target.stage}')`}. ` +
-          `A stage that should accept a worker which has merely PASSED THROUGH '${need.stage}' must declare ` +
-          'needs.at:"ever".',
-          moves);
-      }
-    } else if (!hasEverBeen(projection, sid, need.stage)) {
+    // PROVENANCE — the anchor. Always required; it is what the `needs` key means.
+    if (!hasEverBeen(projection, sid, need.stage)) {
       return refuse('NEEDS_UNSATISFIED',
         `needs.${need.stage} requires worker ${short(sid)} to have passed through stage '${need.stage}', but its ` +
         `history is: ${target.stageHistory.join(' -> ')}.`, moves);
+    }
+    // LIVENESS — before position (see the header).
+    if (need.liveness === 'live' && !target.live) {
+      return refuse('NEEDS_WORKER_GONE',
+        `needs.${need.stage} requires worker ${short(sid)} to still be running, but it has retired (last in ` +
+        `'${target.stage}'). This is not a wiring mistake: the worker you named is gone. Spawn a replacement ` +
+        `and name that one, or use a stage whose needs declare liveness:"any".`,
+        moves);
+    }
+    if (need.liveness === 'retired' && target.live) {
+      return refuse('NEEDS_UNSATISFIED',
+        `needs.${need.stage} requires worker ${short(sid)} to be RETIRED before this stage is entered, but it is ` +
+        `still running (in '${target.stage}'). Retire it first: kill_instance({sessionId: "${short(sid)}"}).`,
+        moves);
+    }
+    // POSITION — the acceptable current stages.
+    if (!need.position.includes(WILDCARD) && !need.position.includes(target.stage)) {
+      return refuse('NEEDS_UNSATISFIED',
+        `needs.${need.stage} accepts worker ${short(sid)} only in ${need.position.map(s => `'${s}'`).join(' or ')}, ` +
+        `but it is in '${target.stage}'. If '${target.stage}' should be acceptable here, add it to that stage's ` +
+        'needs.position.',
+        moves);
     }
     // Run scoping. On a TRANSITION the subject already belongs to a run, so a
     // worker from another run cannot satisfy its entry conditions — this is what
@@ -938,7 +1058,7 @@ function refuse(code: RefusalCode, reason: string, legalMoves: LegalMoves): Deci
 }
 
 // Every playbook with the stages it can actually be entered at, e.g.
-// "classic (enter at: recon), freeform (enter at: freeform)".
+// "solo (enter at: plan), freeform (enter at: freeform)".
 //
 // Enforcement is on by default, so a conductor's FIRST spawn is refused unless it
 // already names a playbook — and it has no way to know one without asking. Naming

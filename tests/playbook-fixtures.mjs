@@ -31,11 +31,11 @@ export async function builtins() {
   return playbooks;
 }
 
-// A classic run part-way through: the planner has been approved into
+// A solo run part-way through: the planner has been approved into
 // `implement`, and a reviewer has been spawned against it.
-export const CLASSIC_RUN = [
-  { kind: 'spawn', sessionId: 'w-planner-1', playbook: 'classic', stage: 'plan', project: 'demo' },
+export const SOLO_RUN = [
+  { kind: 'spawn', sessionId: 'w-planner-1', playbook: 'solo', stage: 'plan', project: 'demo' },
   { kind: 'transition', sessionId: 'w-planner-1', from: 'plan', to: 'implement', via: 'approve_plan' },
-  { kind: 'spawn', sessionId: 'w-review-01', playbook: 'classic', stage: 'review',
+  { kind: 'spawn', sessionId: 'w-review-01', playbook: 'solo', stage: 'review',
     needs: { implement: 'w-planner-1' }, project: 'demo' },
 ];

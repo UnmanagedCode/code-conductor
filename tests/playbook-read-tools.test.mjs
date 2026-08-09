@@ -131,16 +131,16 @@ test('list_playbooks reports the built-ins with their entry and spawnable stages
   try {
     const res = await t.call('list_playbooks', {});
     const byId = Object.fromEntries(res.playbooks.map(p => [p.id, p]));
-    assert.deepEqual(Object.keys(byId).sort(), ['classic', 'freeform', 'research', 'split']);
+    assert.deepEqual(Object.keys(byId).sort(), ['freeform', 'relay', 'solo']);
     for (const p of res.playbooks) {
       assert.ok(p.name.length > 0, `${p.id} has no name`);
       assert.ok(p.description.length > 0, `${p.id} has no description`);
     }
-    assert.deepEqual(byId.classic.entryStages, ['plan']);
-    // spawn_instance fails closed, so `plan` is the only stage of classic a
+    assert.deepEqual(byId.solo.entryStages, ['plan']);
+    // spawn_instance fails closed, so `plan` is the only stage of solo a
     // worker can be created in — implement/refine are transition-only, and
     // `review` is spawnable but not an entry stage.
-    assert.deepEqual(byId.classic.spawnableStages.sort(), ['plan', 'review']);
+    assert.deepEqual(byId.solo.spawnableStages.sort(), ['plan', 'review']);
     assert.deepEqual(res.errors, []);
   } finally { await t.close(); }
 });
@@ -162,17 +162,30 @@ test('list_playbooks reports a rejected definition in errors instead of silently
   } finally { await t.close(); }
 });
 
+// `on` is the AUTHORING key in playbooks/*.json. No read surface emits it —
+// describe_playbook and playbook_state both report `via` — so a conductor told
+// to look for an edge that "declares an `on` tool" is being pointed at a field
+// it can never see. The vocabulary the caller is given has to be the one the
+// caller is shown.
+test('send_prompt\'s stage description names `via`, never the authoring key `on`', async () => {
+  const { buildTools } = await import('../src/mcp/tools.ts');
+  const sendPrompt = buildTools().find(t => t.name === 'send_prompt');
+  const stageDesc = sendPrompt.inputSchema.properties.stage.description;
+  assert.match(stageDesc, /`via`/, 'the reader-facing field must be named');
+  assert.doesNotMatch(stageDesc, /`on`/, 'the authoring-only key must not appear on a read surface');
+});
+
 // describe_playbook's success path is a plain-text rendering (renderPlaybook,
 // src/mcp/readRenderers.ts), pinned exactly in tests/mcp-text-render.test.mjs
 // against hand-built payloads. This is the WIRE half: it asserts the real
-// `classic` definition reaches that rendering with the derivations intact —
+// `solo` definition reaches that rendering with the derivations intact —
 // which a pure suite cannot see, since `spawnable` and `via` are computed in the
 // handler.
 test('describe_playbook returns the graph the enforcement actually uses', async () => {
   const t = await setup();
   try {
-    const pb = await t.callText('describe_playbook', { id: 'classic' });
-    assert.match(pb, /^PLAYBOOK classic$/m);
+    const pb = await t.callText('describe_playbook', { id: 'solo' });
+    assert.match(pb, /^PLAYBOOK solo$/m);
     assert.match(pb, /^entry plan$/m);
 
     // `require` — enforced argument values, reported verbatim so a caller knows
@@ -189,7 +202,10 @@ test('describe_playbook returns the graph the enforcement actually uses', async 
       const end = rest.indexOf('\n▸ ');
       return rest.slice(0, end === -1 ? rest.indexOf('\nTRANSITIONS') : end);
     };
-    assert.match(stageBlock('review'), /^ {4}needs implement@current$/m);
+    // Both axes reach the text: the anchor stage with its liveness, and the
+    // position list. A renderer that dropped either would still print a cell.
+    assert.match(stageBlock('review'), /^ {4}needs implement@live in implement\|refine$/m);
+    assert.match(stageBlock('refine'), /^ {4}needs review@live in review$/m);
     assert.match(stageBlock('plan'), /workers one/);
 
     // `spawnable` is derived from the fail-closed rule, so the caller does not
@@ -202,6 +218,10 @@ test('describe_playbook returns the graph the enforcement actually uses', async 
     // and the send_prompt default.
     assert.match(pb, /^ {2}plan → implement {2,}via approve_plan$/m);
     assert.match(pb, /^ {2}implement → refine {2,}via send_prompt$/m);
+    // The declared self-loops: ordinary send_prompt edges, and the reason a
+    // repeated round is countable at all.
+    assert.match(pb, /^ {2}refine → refine {2,}via send_prompt$/m);
+    assert.match(pb, /^ {2}review → review {2,}via send_prompt$/m);
   } finally { await t.close(); }
 });
 
@@ -263,7 +283,7 @@ test('describe_playbook carries stage/transition descriptions, and omits them wh
   } finally { await t.close(); }
 });
 
-// Two facts the `classic` wire test above cannot reach: every one of its stages
+// Two facts the `solo` wire test above cannot reach: every one of its stages
 // is `workers: "one"`, so a handler that hardcoded that value would report a
 // fan-out stage as single-worker (a conductor then never fans out) with the whole
 // suite green; and nothing asserted the GRAPH-level description survives the
@@ -326,7 +346,7 @@ test('describe_playbook soft-refuses an unknown id and lists the known ones', as
   const t = await setup();
   try {
     const res = refused(await t.call('describe_playbook', { id: 'nope' }), 'PLAYBOOK_UNKNOWN');
-    assert.deepEqual(res.known, ['classic', 'freeform', 'research', 'split']);
+    assert.deepEqual(res.known, ['freeform', 'relay', 'solo']);
   } finally { await t.close(); }
 });
 
@@ -349,9 +369,9 @@ test('the read tools create no ledger when there is nothing to read', async () =
       return body.result.content[0].text;
     };
     const call = async (name, args) => JSON.parse(await rawCall(name, args));
-    assert.equal((await call('list_playbooks', {})).playbooks.length, 4);
+    assert.equal((await call('list_playbooks', {})).playbooks.length, 3);
     // describe_playbook renders text, so it is read raw rather than parsed.
-    assert.match(await rawCall('describe_playbook', { id: 'classic' }), /^PLAYBOOK classic$/m);
+    assert.match(await rawCall('describe_playbook', { id: 'solo' }), /^PLAYBOOK solo$/m);
     assert.deepEqual((await call('playbook_state', {})).runs, []);
 
     // Give any deferred write real chances to land rather than reading once and
@@ -374,8 +394,8 @@ test('the read tools append no events to a ledger that already exists', async ()
     await waitFor(async () => (await t.eventCount()) > 0);
     const before = await t.eventCount();
 
-    assert.equal((await t.call('list_playbooks', {})).playbooks.length, 4);
-    assert.match(await t.callText('describe_playbook', { id: 'classic' }), /^PLAYBOOK classic$/m);
+    assert.equal((await t.call('list_playbooks', {})).playbooks.length, 3);
+    assert.match(await t.callText('describe_playbook', { id: 'solo' }), /^PLAYBOOK solo$/m);
     assert.deepEqual((await t.call('playbook_state', {})).runs, [],
       'the illegal spawn was refused-but-allowed, so it bound no run');
     assert.equal((await t.call('playbook_state', { sessionId: worker.sessionId })).tracked, false);
@@ -434,14 +454,14 @@ test('a stage that denies playbook_state cannot lock the conductor out of intros
 // ── advertised == enforced ─────────────────────────────────────────────────
 
 // nextMoves is answered by dry-running the enforcing decide(), so this walks a
-// classic run and, at every step, PERFORMS what nextMoves advertises and compares
+// solo run and, at every step, PERFORMS what nextMoves advertises and compares
 // the outcome. Predictions are re-derived after each performed move, because each
 // move changes what is legal next — comparing a stale prediction would degrade
 // this into "the first move matched".
 test('every move playbook_state advertises behaves exactly as advertised when performed', async () => {
   const t = await setup({ enforcement: 'enforce' });
   try {
-    const impl = await t.spawnWorker({ project: 'demo', playbook: 'classic', stage: 'plan' });
+    const impl = await t.spawnWorker({ project: 'demo', playbook: 'solo', stage: 'plan' });
     const wtName = impl.worktree.worktreeName;
 
     const movesNow = async () =>
@@ -477,7 +497,7 @@ test('every move playbook_state advertises behaves exactly as advertised when pe
     // fails. What the prediction owes the caller is an actionable recipe, and its
     // `reason` is one.
     const rev = await t.spawnWorker({
-      project: 'demo', playbook: 'classic', stage: 'review', worktree: wtName,
+      project: 'demo', playbook: 'solo', stage: 'review', worktree: wtName,
       needs: { implement: impl.sessionId },
     });
     moves = await movesNow();
@@ -492,27 +512,28 @@ test('every move playbook_state advertises behaves exactly as advertised when pe
     });
     assert.equal(ok.ok, undefined, 'supplying what the reason asked for makes the move legal');
 
-    // Step 4 — `refine` is terminal in classic, so nothing is advertised and
-    // nothing can be driven.
-    assert.deepEqual(await movesNow(), []);
+    // Step 4 — `refine`'s only outgoing edge is its own self-loop, which is
+    // always legal (a self-edge is never gated) and is what makes each further
+    // round a ledgered event rather than an invisible re-prompt.
+    assert.deepEqual(await movesNow(), [{ to: 'refine', via: 'send_prompt', ok: true }]);
   } finally { await t.close(); }
 });
 
 test('playbook_state derives the run graph and its history, keeping concurrent runs separate', async () => {
   const t = await setup({ enforcement: 'enforce' });
   try {
-    const a = await t.spawnWorker({ project: 'demo', playbook: 'classic', stage: 'plan' });
+    const a = await t.spawnWorker({ project: 'demo', playbook: 'solo', stage: 'plan' });
     await t.call('approve_plan', { sessionId: a.sessionId, subscribe: false });
     const aRev = await t.spawnWorker({
-      project: 'demo', playbook: 'classic', stage: 'review',
+      project: 'demo', playbook: 'solo', stage: 'review',
       worktree: a.worktree.worktreeName, needs: { implement: a.sessionId },
     });
     // A second, independent run of the same playbook.
-    const b = await t.spawnWorker({ project: 'demo', playbook: 'classic', stage: 'plan' });
+    const b = await t.spawnWorker({ project: 'demo', playbook: 'solo', stage: 'plan' });
 
     const stateA = await t.call('playbook_state', { sessionId: a.sessionId });
     assert.deepEqual(stateA.worker.stageHistory, ['plan', 'implement']);
-    assert.equal(stateA.worker.playbook, 'classic');
+    assert.equal(stateA.worker.playbook, 'solo');
     assert.equal(stateA.worker.live, true);
     assert.deepEqual(stateA.run.members.map(m => m.sessionId).sort(),
       [a.sessionId, aRev.sessionId].sort(),
@@ -545,7 +566,7 @@ test('playbook_state derives the run graph and its history, keeping concurrent r
 test('playbook_state reports no enforcement block for a non-conductor caller', async () => {
   const t = await setup({ enforcement: 'enforce' });
   try {
-    const w = await t.spawnWorker({ project: 'demo', playbook: 'classic', stage: 'plan' });
+    const w = await t.spawnWorker({ project: 'demo', playbook: 'solo', stage: 'plan' });
     const workerHandle = instForSession(t.instances, w.sessionId).id;
     // A worker driving the MCP itself is not a conductor, so there is no
     // enforcement level of its own to publish — and nothing here may make a
@@ -562,7 +583,7 @@ test('playbook_state reports no enforcement block for a non-conductor caller', a
 test('list_sessions carries playbook/stage for a tracked worker and null for an untracked one', async () => {
   const t = await setup({ enforcement: 'enforce' });
   try {
-    const tracked = await t.spawnWorker({ project: 'demo', playbook: 'classic', stage: 'plan' });
+    const tracked = await t.spawnWorker({ project: 'demo', playbook: 'solo', stage: 'plan' });
     // Spawned by a NON-conductor caller, so the gate never tracks it.
     const workerHandle = instForSession(t.instances, tracked.sessionId).id;
     const untracked = await t.callAs(workerHandle, 'spawn_instance', { project: 'demo', mode: 'plan' });
@@ -579,7 +600,7 @@ test('list_sessions carries playbook/stage for a tracked worker and null for an 
       assert.ok(line, `no playbook line for ${sid}`);
       return line.trim();
     };
-    assert.equal(playbookLineFor(tracked.sessionId), 'playbook classic / plan');
+    assert.equal(playbookLineFor(tracked.sessionId), 'playbook solo / plan');
     // A dash, not a blank — "not in a playbook" must be distinguishable from
     // "this build does not report it".
     assert.equal(playbookLineFor(untracked.sessionId), 'playbook — / —');

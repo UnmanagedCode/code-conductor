@@ -255,7 +255,7 @@ export function buildTools(): Tool[] {
           },
           stage: {
             type: 'string',
-            description: 'The playbook stage this prompt puts the worker in — always carry it. Equal to the worker\'s current stage ⇒ a self-edge (an ordinary follow-up prompt), always legal. Different ⇒ a transition, checked against the playbook\'s edge set: TRANSITION_ILLEGAL if there is no such edge, or if the edge declares an `on` tool that must drive it instead.',
+            description: 'The playbook stage this prompt puts the worker in — always carry it. Equal to the worker\'s current stage ⇒ a self-edge (an ordinary follow-up prompt), always legal, and ledgered only where the playbook declares that self-loop. Different ⇒ a transition, checked against the playbook\'s edge set: TRANSITION_ILLEGAL if there is no such edge, or if the edge\'s `via` (describe_playbook) names a tool other than send_prompt, which must drive it instead.',
           },
           needs: {
             type: 'object',
@@ -750,8 +750,10 @@ export function buildTools(): Tool[] {
       name: 'describe_playbook',
       description:
         'The full graph of one playbook. Returns PLAIN TEXT (no JSON). ' +
-        'Per stage, `needs` names WORKERS that must exist for the ' +
-        'stage to be entered (as stage@current / stage@ever), and `tools` maps a tool to allow / ' +
+        'Per stage, `needs` names WORKERS that must exist for the stage to be entered, each rendered ' +
+        '`<stage>@<liveness> in <stages>`: the stage that worker must have PASSED THROUGH (and the key you ' +
+        'pass its sessionId under), whether it must still be running (live / retired / any), and which ' +
+        'stages it may be in NOW. `tools` maps a tool to allow / ' +
         'deny / require {json} of enforced argument values — a `*` entry is the fallback for every ' +
         'tool the stage does not name. Each stage also reports `spawnable`, the per-stage form of ' +
         'list_playbooks\' `spawnableStages`. On an edge, `via` is the tool that drives it and the ' +

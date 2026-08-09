@@ -68,7 +68,7 @@ function fixture({ alphaDesc, betaDesc }) {
       },
       beta: {
         description: betaDesc,
-        needs: [{ stage: 'alpha', at: 'ever' }],
+        needs: [{ stage: 'alpha', position: ['*'], liveness: 'any' }],
         workers: 'many',
         tools: { spawn_instance: 'allow' },
       },
@@ -98,20 +98,20 @@ async function renderFixture(def) {
 
 test('default playbook is unset by default; set/clear round-trips', async () => {
   assert.equal(await getDefaultPlaybook(), null);
-  assert.equal(await setDefaultPlaybook('classic'), 'classic');
-  assert.equal(await getDefaultPlaybook(), 'classic');
+  assert.equal(await setDefaultPlaybook('solo'), 'solo');
+  assert.equal(await getDefaultPlaybook(), 'solo');
   assert.equal(await setDefaultPlaybook(null), null);
   assert.equal(await getDefaultPlaybook(), null);
 });
 
 test('an unknown playbook id is refused 400 and does not change the stored value', async () => {
-  await setDefaultPlaybook('classic');
+  await setDefaultPlaybook('solo');
   await assert.rejects(() => setDefaultPlaybook('nope'), e => {
     assert.equal(e.statusCode, 400);
     assert.match(e.message, /unknown playbook id 'nope'/);
     return true;
   });
-  assert.equal(await getDefaultPlaybook(), 'classic');
+  assert.equal(await getDefaultPlaybook(), 'solo');
 });
 
 test('a user-overlay playbook is selectable (one catalog, not a second discovery layer)', async () => {
@@ -121,10 +121,10 @@ test('a user-overlay playbook is selectable (one catalog, not a second discovery
 
 test('setting the default leaves the convention selection untouched', async () => {
   await setSelection(['playbooks']);
-  await setDefaultPlaybook('classic');
+  await setDefaultPlaybook('solo');
   const store = JSON.parse(await fs.readFile(path.join(orchStoreRoot(), 'conventions', 'conductor.json'), 'utf8'));
   assert.deepEqual(store.enabled, ['playbooks']);
-  assert.equal(store.defaultPlaybook, 'classic');
+  assert.equal(store.defaultPlaybook, 'solo');
 });
 
 // ── composition ──────────────────────────────────────────────────────────────
@@ -135,9 +135,9 @@ test('no default selected ⇒ no convention in the composed prompt', async () =>
 });
 
 test('default selected ⇒ its stages and per-stage descriptions are in the composed prompt', async () => {
-  await setDefaultPlaybook('classic');
+  await setDefaultPlaybook('solo');
   const doc = await composeCurrentConduct();
-  assert.ok(doc.includes('## Default playbook — `classic`'), 'section present');
+  assert.ok(doc.includes('## Default playbook — `solo`'), 'section present');
   // LOAD-BEARING ORDER. The section deliberately omits the playbook's
   // description and a describe_playbook pointer because the listing above
   // carries both; met cold, it would cost the conductor the very round-trip this
@@ -148,7 +148,7 @@ test('default selected ⇒ its stages and per-stage descriptions are in the comp
   assert.ok(doc.indexOf('**Available playbooks**') < doc.indexOf('## Default playbook'),
     'the available-playbooks listing precedes the default-playbook section');
   const { playbooks } = await loadPlaybooks();
-  const pb = playbooks.get('classic');
+  const pb = playbooks.get('solo');
   for (const [name, stage] of Object.entries(pb.stages)) {
     assert.ok(doc.includes(`- **${name}**`), `stage ${name} listed`);
     assert.ok(doc.includes(stage.description), `stage ${name} description present`);
@@ -156,7 +156,7 @@ test('default selected ⇒ its stages and per-stage descriptions are in the comp
 });
 
 test('the convention rides the playbooks convention toggle', async () => {
-  await setDefaultPlaybook('classic');
+  await setDefaultPlaybook('solo');
   await setSelection(ALL_SLUGS.filter(s => s !== 'playbooks'));
   assert.ok(!(await composeCurrentConduct()).includes('## Default playbook'), 'absent with playbooks off');
   await setSelection(ALL_SLUGS);
@@ -284,7 +284,7 @@ test('the renderer\'s own prose duplicates nothing in canonical-workflow.md / pl
 
 // EMPTY, and it stays empty. It was a frozen ceiling of 3 shingles while
 // canonical-workflow.md still carried the review→refine mechanics that
-// classic/split's review+refine descriptions also carry; 2026-0068 deleted that
+// solo/relay's review+refine descriptions also carry; 2026-0068 deleted that
 // prose, so the authored fragments and the built-in descriptions now share no
 // 8-word run at all. What a non-empty diff proves is narrower than "one home":
 // only that a fragment and a stage description now share text VERBATIM. The
@@ -312,16 +312,16 @@ test('GET conductor conventions carries the playbook catalog and the selected de
   const r = await api(baseUrl, 'GET', '/api/settings/conventions/conductor');
   assert.equal(r.status, 200);
   assert.ok(Array.isArray(r.body.playbooks) && r.body.playbooks.length > 0, 'catalog listed');
-  assert.ok(r.body.playbooks.some(p => p.id === 'classic'), 'built-ins listed');
+  assert.ok(r.body.playbooks.some(p => p.id === 'solo'), 'built-ins listed');
   assert.deepEqual(r.body.playbookErrors, [], 'load errors reported');
   assert.equal(r.body.defaultPlaybook, null);
 });
 
 test('PUT default-playbook persists, clears, and refuses an unknown id', async () => {
-  let r = await api(baseUrl, 'PUT', '/api/settings/conventions/conductor/default-playbook', { id: 'split' });
+  let r = await api(baseUrl, 'PUT', '/api/settings/conventions/conductor/default-playbook', { id: 'relay' });
   assert.equal(r.status, 200);
-  assert.equal(r.body.defaultPlaybook, 'split');
-  assert.equal((await api(baseUrl, 'GET', '/api/settings/conventions/conductor')).body.defaultPlaybook, 'split');
+  assert.equal(r.body.defaultPlaybook, 'relay');
+  assert.equal((await api(baseUrl, 'GET', '/api/settings/conventions/conductor')).body.defaultPlaybook, 'relay');
 
   // Must not be swallowed by the /:slug route — that would 404 as an unknown
   // convention instead of validating the id.
@@ -335,10 +335,10 @@ test('PUT default-playbook persists, clears, and refuses an unknown id', async (
 });
 
 test('PUT default-playbook with no `id` key is a 400, not a silent clear', async () => {
-  await api(baseUrl, 'PUT', '/api/settings/conventions/conductor/default-playbook', { id: 'classic' });
+  await api(baseUrl, 'PUT', '/api/settings/conventions/conductor/default-playbook', { id: 'solo' });
   const r = await api(baseUrl, 'PUT', '/api/settings/conventions/conductor/default-playbook', {});
   assert.equal(r.status, 400);
   assert.match(r.body.error, /id is required/);
-  assert.equal((await api(baseUrl, 'GET', '/api/settings/conventions/conductor')).body.defaultPlaybook, 'classic',
+  assert.equal((await api(baseUrl, 'GET', '/api/settings/conventions/conductor')).body.defaultPlaybook, 'solo',
     'the selection survived the malformed request');
 });

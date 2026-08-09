@@ -214,36 +214,36 @@ test('warn: a LEGAL spawn is patched by `require` and recorded, exactly as under
   try {
     // Neither mode nor createWorktree is passed; the plan stage pins both. Proof
     // that warn runs the full decide()+patch path rather than passing args through.
-    const w = await t.spawnWorker({ project: 'demo', playbook: 'classic', stage: 'plan' });
+    const w = await t.spawnWorker({ project: 'demo', playbook: 'solo', stage: 'plan' });
     assert.equal(w.mode, 'plan', 'warn applies the stage\'s require');
     assert.ok(w.worktree?.worktreeName, 'require filled in createWorktree under warn');
 
     const spawn = await waitFor(async () =>
       (await t.events()).find(e => e.kind === 'spawn') ?? false);
     assert.deepEqual({ playbook: spawn.playbook, stage: spawn.stage },
-      { playbook: 'classic', stage: 'plan' }, 'the binding is written under warn');
+      { playbook: 'solo', stage: 'plan' }, 'the binding is written under warn');
   } finally { await t.close(); }
 });
 
-// ── a full classic run under `enforce` ──────────────────────────────────────
+// ── a full solo run under `enforce` ──────────────────────────────────────
 
-test('enforce: a full classic run — require fill-in, self-edge, approve_plan gate, needs, capacity', async () => {
+test('enforce: a full solo run — require fill-in, self-edge, approve_plan gate, needs, capacity', async () => {
   const t = await setup({ enforcement: 'enforce' });
   try {
     // `require` FILLS IN omitted arguments: neither mode nor createWorktree is
     // passed, and both come back as the plan stage pins them.
-    const impl = await t.spawnWorker({ project: 'demo', playbook: 'classic', stage: 'plan' });
+    const impl = await t.spawnWorker({ project: 'demo', playbook: 'solo', stage: 'plan' });
     assert.equal(impl.mode, 'plan', 'require filled in mode');
     assert.ok(impl.worktree?.worktreeName, 'require filled in createWorktree');
     const wtName = impl.worktree.worktreeName;
 
     // A SELF-EDGE — every ordinary follow-up prompt is one. Always legal, and
-    // explicitly NOT a transition.
+    // NOT ledgered here, because solo declares no plan->plan loop.
     assert.equal((await t.call('send_prompt', {
       sessionId: impl.sessionId, text: 'plan it', stage: 'plan', subscribe: false,
     })).ok, undefined);
     assert.equal((await t.events()).filter(e => e.kind === 'transition').length, 0,
-      'a self-edge must not be ledgered as a transition');
+      'an UNDECLARED self-edge must not be ledgered as a transition');
 
     // plan -> implement fires on approve_plan ONLY; send_prompt cannot sneak
     // a worker past plan approval.
@@ -263,17 +263,17 @@ test('enforce: a full classic run — require fill-in, self-edge, approve_plan g
 
     // A spawn into a transition-only stage is refused without either stage
     // having to say so — spawn_instance fails closed.
-    refused(await t.call('spawn_instance', { project: 'demo', playbook: 'classic', stage: 'implement' }),
+    refused(await t.call('spawn_instance', { project: 'demo', playbook: 'solo', stage: 'implement' }),
       'STAGE_NOT_SPAWNABLE');
-    refused(await t.call('spawn_instance', { project: 'demo', playbook: 'classic', stage: 'refine' }),
+    refused(await t.call('spawn_instance', { project: 'demo', playbook: 'solo', stage: 'refine' }),
       'STAGE_NOT_SPAWNABLE');
 
     // `needs` on SPAWN-entry: review requires a worker currently in implement.
     refused(await t.call('spawn_instance', {
-      project: 'demo', playbook: 'classic', stage: 'review', worktree: wtName,
+      project: 'demo', playbook: 'solo', stage: 'review', worktree: wtName,
     }), 'NEEDS_UNSATISFIED');
     const rev = await t.spawnWorker({
-      project: 'demo', playbook: 'classic', stage: 'review', worktree: wtName,
+      project: 'demo', playbook: 'solo', stage: 'review', worktree: wtName,
       needs: { implement: impl.sessionId },
     });
     assert.ok(rev.sessionId, 'satisfying needs admits the spawn');
@@ -287,45 +287,67 @@ test('enforce: a full classic run — require fill-in, self-edge, approve_plan g
     assert.notEqual((await t.call('sync_worktree', { sessionId: impl.sessionId })).code,
       'TOOL_DENIED_IN_STAGE');
 
-    // workers:"one" is scoped to the RUN and counts LIVE workers. The three
-    // calls below are the SAME spawn, and only the middle one differs in whether
-    // a live reviewer exists — so capacity, not anything else, is what moves.
+    // `review` is workers:"many": a second lens runs ALONGSIDE the first rather
+    // than waiting for a slot. (The workers:"one" refusal itself is pinned on a
+    // synthetic playbook in playbook-policy.test.mjs — there is no built-in left
+    // that declares it, and inventing one here to keep the assertion would be
+    // testing a fixture rather than the shipped graph.)
     const secondReviewer = {
-      project: 'demo', playbook: 'classic', stage: 'review', worktree: wtName,
+      project: 'demo', playbook: 'solo', stage: 'review', worktree: wtName,
       needs: { implement: impl.sessionId },
     };
-    refused(await t.call('spawn_instance', secondReviewer), 'STAGE_AT_CAPACITY');
-    // A retire frees the slot. kill_instance exits the subprocess, so the retire
-    // arrives on the one status-stream path rather than a separate kill path.
+    const rev2 = await t.spawnWorker(secondReviewer);
+    assert.ok(rev2.sessionId, 'a second reviewer runs on its own lens, concurrently');
+
+    // A retire is still recorded, and still frees whatever it held. kill_instance
+    // exits the subprocess, so the retire arrives on the one status-stream path
+    // rather than a separate kill path.
     await t.call('kill_instance', { sessionId: rev.sessionId });
     await waitFor(async () => (await t.events()).some(e => e.kind === 'retire'));
     const retire = (await t.events()).find(e => e.kind === 'retire');
     assert.equal(retire.sessionId, rev.sessionId);
-    // ...so the identical spawn now succeeds.
-    const rev2 = await t.spawnWorker(secondReviewer);
-    assert.ok(rev2.sessionId, 'killing the occupant freed the workers:"one" slot');
 
     // `needs` on TRANSITION-entry, not just spawn-entry: refine requires the
     // reviewer, and the DESTINATION stage's conditions are what get checked.
     refused(await t.call('send_prompt', {
       sessionId: impl.sessionId, text: 'refine', stage: 'refine', subscribe: false,
     }), 'NEEDS_UNSATISFIED');
-    // The retired reviewer cannot satisfy it either — `at:"current"` means now.
+    // The retired reviewer cannot satisfy it either — liveness:"live" means now,
+    // and the code says "gone" rather than blaming the call.
     refused(await t.call('send_prompt', {
       sessionId: impl.sessionId, text: 'refine', stage: 'refine', subscribe: false,
       needs: { review: rev.sessionId },
-    }), 'NEEDS_UNSATISFIED');
+    }), 'NEEDS_WORKER_GONE');
     assert.equal((await t.call('send_prompt', {
       sessionId: impl.sessionId, text: 'refine', stage: 'refine', subscribe: false,
       needs: { review: rev2.sessionId },
     })).ok, undefined, 'supplying the destination stage\'s needs admits the transition');
 
+    // ROUND 2. The implementer is already in `refine`, so this is a self-edge —
+    // but solo DECLARES refine->refine, so unlike the plan-stage prompt above it
+    // lands in the ledger. This is what makes refine rounds countable, and it is
+    // asserted here rather than only against decide() because the recording
+    // happens in commitMove: a change to resolveMove alone passes the unit test
+    // and fails this one.
+    const before = (await t.events()).filter(e => e.kind === 'transition').length;
+    assert.equal((await t.call('send_prompt', {
+      sessionId: impl.sessionId, text: 'round 2', stage: 'refine', subscribe: false,
+    })).ok, undefined, 'a declared self-loop is still ungated');
+    const loops = (await t.events()).filter(e => e.kind === 'transition' && e.from === 'refine' && e.to === 'refine');
+    assert.equal(loops.length, 1, 'the round was ledgered exactly once');
+    assert.equal(loops[0].sessionId, impl.sessionId);
+    assert.equal(loops[0].via, 'send_prompt');
+    assert.equal((await t.events()).filter(e => e.kind === 'transition').length, before + 1);
+    // …and it shows up where a reader counts rounds.
+    assert.deepEqual(foldProjection(await t.events()).bySession.get(impl.sessionId).stageHistory,
+      ['plan', 'implement', 'refine', 'refine']);
+
     // The projection folded from disk reproduces the run — state survives a
     // restart because the JSONL, not memory, is the source of truth.
     const projection = foldProjection(await t.events());
     const state = projection.bySession.get(impl.sessionId);
-    assert.deepEqual(state.stageHistory, ['plan', 'implement', 'refine']);
-    assert.equal(state.playbook, 'classic');
+    assert.deepEqual(state.stageHistory, ['plan', 'implement', 'refine', 'refine']);
+    assert.equal(state.playbook, 'solo');
     assert.equal(projection.bySession.get(rev.sessionId).live, false);
     assert.equal(projection.bySession.get(rev2.sessionId).runRoot, state.runRoot,
       'the reviewer joined the implementer\'s run via its needs edge');
@@ -335,13 +357,13 @@ test('enforce: a full classic run — require fill-in, self-edge, approve_plan g
 test('enforce: needs accepts a sessionId prefix, and refuses an ambiguous one', async () => {
   const t = await setup({ enforcement: 'enforce' });
   try {
-    const impl = await t.spawnWorker({ project: 'demo', playbook: 'classic', stage: 'plan' });
+    const impl = await t.spawnWorker({ project: 'demo', playbook: 'solo', stage: 'plan' });
     const wtName = impl.worktree.worktreeName;
     await t.call('approve_plan', { sessionId: impl.sessionId, subscribe: false });
 
     const prefix = impl.sessionId.slice(0, 8);
     const rev = await t.spawnWorker({
-      project: 'demo', playbook: 'classic', stage: 'review', worktree: wtName,
+      project: 'demo', playbook: 'solo', stage: 'review', worktree: wtName,
       needs: { implement: prefix },
     });
     assert.ok(rev.sessionId, 'an 8-char needs prefix resolved to the full sessionId');
@@ -352,7 +374,7 @@ test('enforce: needs accepts a sessionId prefix, and refuses an ambiguous one', 
     t.instances.byId.set('fake-ambig', { id: 'fake-ambig', sessionId: fake, kill: async () => {} });
     try {
       const res = await t.call('spawn_instance', {
-        project: 'demo', playbook: 'classic', stage: 'review', worktree: wtName,
+        project: 'demo', playbook: 'solo', stage: 'review', worktree: wtName,
         needs: { implement: prefix },
       });
       refused(res, 'SESSION_AMBIGUOUS');
@@ -364,7 +386,7 @@ test('enforce: needs accepts a sessionId prefix, and refuses an ambiguous one', 
 test('enforce: a worker whose subprocess exits is retired without a kill_instance', async () => {
   const t = await setup({ enforcement: 'enforce' });
   try {
-    const impl = await t.spawnWorker({ project: 'demo', playbook: 'classic', stage: 'plan' });
+    const impl = await t.spawnWorker({ project: 'demo', playbook: 'solo', stage: 'plan' });
     // Kill the subprocess out from under the orchestrator — no MCP call, so the
     // gate learns about it only from the manager's status stream. Without that
     // the worker would hold its stage's capacity slot forever.
@@ -425,7 +447,7 @@ test('a worker bound by a previous run still retires when it exits', async () =>
     await fs.mkdir(path.dirname(ledgerFile()), { recursive: true });
     await fs.writeFile(ledgerFile(), JSON.stringify({
       seq: 1, ts: '2026-08-05T00:00:00Z', kind: 'spawn',
-      sessionId, playbook: 'classic', stage: 'plan', project: 'demo',
+      sessionId, playbook: 'solo', stage: 'plan', project: 'demo',
     }) + '\n');
 
     // Only now does a conductor exist, and it makes no tools/call at all.
@@ -442,35 +464,50 @@ test('a worker bound by a previous run still retires when it exits', async () =>
   } finally { await ctx.close(); }
 });
 
-// ── split: the planner can never implement ─────────────────────────────────
+// ── relay: the planner can never implement ─────────────────────────────────
 
-test('enforce: in split the planner cannot reach implement by any route', async () => {
+test('enforce: in relay the planner cannot reach implement by any route', async () => {
   const t = await setup({ enforcement: 'enforce' });
   try {
-    const planner = await t.spawnWorker({ project: 'demo', playbook: 'split', stage: 'plan' });
+    const planner = await t.spawnWorker({ project: 'demo', playbook: 'relay', stage: 'plan' });
     assert.equal(planner.mode, 'plan');
 
     // No outgoing edge from `plan` at all — not merely the wrong driver.
     const res = refused(await t.call('send_prompt', {
       sessionId: planner.sessionId, text: 'implement it', stage: 'implement', subscribe: false,
     }), 'TRANSITION_ILLEGAL');
-    assert.deepEqual(res.legalMoves.transitions, [], 'split.plan is a dead end by construction');
+    assert.deepEqual(res.legalMoves.transitions, [], 'relay.plan is a dead end by construction');
     // Nor by escalating its permissions.
     refused(await t.call('set_mode', { sessionId: planner.sessionId, mode: 'bypassPermissions' }),
       'TOOL_DENIED_IN_STAGE');
-    // Nor by approving it into place — approve_plan drives no edge here.
-    await t.call('approve_plan', { sessionId: planner.sessionId, subscribe: false });
+    // Nor by approving it. approve_plan drives no edge here, but it was never
+    // the edge that mattered: the handler flips the instance to
+    // bypassPermissions, which is the same write unlock set_mode is denied for.
+    // Asserting the MODE is the point — a refusal code alone would still pass if
+    // the deny were removed and the flip happened before the move was rejected.
+    refused(await t.call('approve_plan', { sessionId: planner.sessionId, subscribe: false }),
+      'TOOL_DENIED_IN_STAGE');
+    assert.equal(instForSession(t.instances, planner.sessionId).mode, 'plan',
+      'the planner must still be in plan mode — approve_plan never ran');
     assert.equal(foldProjection(await t.events()).bySession.get(planner.sessionId).stage, 'plan');
 
-    // The only route is a FRESH worker, which inherits the playbook from its
-    // needs ancestor rather than restating it.
-    const dev = await t.spawnWorker({
+    // The handoff is ENFORCED, not advised: while the planner is live, the
+    // implementer cannot be spawned onto its worktree at all.
+    const handoff = {
       project: 'demo', stage: 'implement', worktree: planner.worktree.worktreeName,
       needs: { plan: planner.sessionId },
-    });
+    };
+    const early = refused(await t.call('spawn_instance', handoff), 'NEEDS_UNSATISFIED');
+    assert.match(early.reason, /to be RETIRED before this stage is entered/);
+    assert.match(early.reason, /kill_instance/, 'the refusal has to name the way forward');
+
+    // Retire the planner — that IS the handoff — and the same spawn goes through.
+    await t.call('kill_instance', { sessionId: planner.sessionId });
+    await waitFor(async () => (await t.events()).some(e => e.kind === 'retire'));
+    const dev = await t.spawnWorker(handoff);
     assert.ok(dev.sessionId);
     const folded = foldProjection(await t.events());
-    assert.equal(folded.bySession.get(dev.sessionId).playbook, 'split', 'playbook inherited via needs');
+    assert.equal(folded.bySession.get(dev.sessionId).playbook, 'relay', 'playbook inherited via needs');
     assert.notEqual(dev.sessionId, planner.sessionId);
   } finally { await t.close(); }
 });
@@ -480,7 +517,7 @@ test('enforce: in split the planner cannot reach implement by any route', async 
 test('warn: an illegal move proceeds but is recorded as a refusal', async () => {
   const t = await setup({ enforcement: 'warn' });
   try {
-    const impl = await t.spawnWorker({ project: 'demo', playbook: 'classic', stage: 'plan' });
+    const impl = await t.spawnWorker({ project: 'demo', playbook: 'solo', stage: 'plan' });
     // The same call that `enforce` refuses TRANSITION_ILLEGAL goes through.
     assert.equal((await t.call('send_prompt', {
       sessionId: impl.sessionId, text: 'skip ahead', stage: 'implement', subscribe: false,
@@ -503,7 +540,7 @@ test('warn: an illegal move pushes a playbook_warn event to the conductor\'s str
   const t = await setup({ enforcement: 'warn' });
   let c = null;
   try {
-    const impl = await t.spawnWorker({ project: 'demo', playbook: 'classic', stage: 'plan' });
+    const impl = await t.spawnWorker({ project: 'demo', playbook: 'solo', stage: 'plan' });
     c = await watchConductor(t);
     assert.equal((await t.call('send_prompt', {
       sessionId: impl.sessionId, text: 'skip ahead', stage: 'implement', subscribe: false,
@@ -560,7 +597,7 @@ test('enforce: a refusal pushes no playbook_warn — the caller already got it',
   const t = await setup({ enforcement: 'enforce' });
   let c = null;
   try {
-    const impl = await t.spawnWorker({ project: 'demo', playbook: 'classic', stage: 'plan' });
+    const impl = await t.spawnWorker({ project: 'demo', playbook: 'solo', stage: 'plan' });
     c = await watchConductor(t);
     refused(await t.call('send_prompt', {
       sessionId: impl.sessionId, text: 'skip ahead', stage: 'implement', subscribe: false,
@@ -580,7 +617,7 @@ test('policy applies only to the conductor: the same calls from a worker or no c
 
     // A NON-conductor caller (an ordinary worker driving the MCP itself) is not
     // governed — worker-side calls keep their existing recursion rules.
-    const worker = await t.spawnWorker({ project: 'demo', playbook: 'classic', stage: 'plan' });
+    const worker = await t.spawnWorker({ project: 'demo', playbook: 'solo', stage: 'plan' });
     const workerHandle = instForSession(t.instances, worker.sessionId).id;
     const asWorker = await t.callAs(workerHandle, 'spawn_instance', { project: 'demo', mode: 'plan' });
     assert.ok(asWorker.sessionId, 'a worker\'s own spawn is ungoverned');

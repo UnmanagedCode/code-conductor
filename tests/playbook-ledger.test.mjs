@@ -43,7 +43,7 @@ test('appends land ONLY in the injected file — nothing is written to the defau
   const { dir, file, ledger } = await tmpLedger();
   try {
     await ledger.load();
-    await ledger.append({ kind: 'spawn', sessionId: 's1', playbook: 'classic', stage: 'plan' });
+    await ledger.append({ kind: 'spawn', sessionId: 's1', playbook: 'solo', stage: 'plan' });
     assert.equal((await fs.readFile(file, 'utf8')).trim().split('\n').length, 1);
     // the real store path must not have been created by this test
     await assert.rejects(() => fs.stat(ledgerFile()), /ENOENT/);
@@ -54,7 +54,7 @@ test('append is append-only JSONL: one line per event, prior lines untouched', a
   const { dir, file, ledger } = await tmpLedger();
   try {
     await ledger.load();
-    const a = await ledger.append({ kind: 'spawn', sessionId: 's1', playbook: 'classic', stage: 'plan' });
+    const a = await ledger.append({ kind: 'spawn', sessionId: 's1', playbook: 'solo', stage: 'plan' });
     const firstLine = (await fs.readFile(file, 'utf8')).split('\n')[0];
     const b = await ledger.append({ kind: 'transition', sessionId: 's1', from: 'plan', to: 'implement', via: 'approve_plan' });
     const lines = (await fs.readFile(file, 'utf8')).trim().split('\n');
@@ -74,7 +74,7 @@ test('append is append-only JSONL: one line per event, prior lines untouched', a
 
 test('fold builds the projection across all five event kinds', () => {
   const p = fold([
-    { kind: 'spawn', sessionId: 's1', playbook: 'classic', stage: 'plan', project: 'demo', worktree: 'demo_wt' },
+    { kind: 'spawn', sessionId: 's1', playbook: 'solo', stage: 'plan', project: 'demo', worktree: 'demo_wt' },
     { kind: 'transition', sessionId: 's1', from: 'plan', to: 'implement', via: 'approve_plan' },
     { kind: 'refusal', sessionId: 's1', tool: 'sync_worktree', code: 'TOOL_DENIED_IN_STAGE', reason: 'nope' },
     // `from: 'off'` on purpose: the ledger is an append-only record of what WAS
@@ -82,7 +82,7 @@ test('fold builds the projection across all five event kinds', () => {
     // as a bare string precisely so history stays readable after the live
     // allow-list narrows — nothing rewrites past events.
     { kind: 'enforcement', conductorSessionId: 'c1', from: 'off', to: 'enforce' },
-    { kind: 'spawn', sessionId: 's2', playbook: 'classic', stage: 'review', needs: { implement: 's1' } },
+    { kind: 'spawn', sessionId: 's2', playbook: 'solo', stage: 'review', needs: { implement: 's1' } },
     { kind: 'retire', sessionId: 's2', reason: 'killed' },
   ]);
   const s1 = p.bySession.get('s1');
@@ -99,9 +99,9 @@ test('fold builds the projection across all five event kinds', () => {
   assert.equal(p.bySession.size, 2);
 });
 
-test('retire preserves stageHistory, so a retired worker still answers at:"ever"', () => {
+test('retire preserves stageHistory, so a retired worker still answers a need\'s provenance half', () => {
   const p = fold([
-    { kind: 'spawn', sessionId: 's1', playbook: 'classic', stage: 'plan' },
+    { kind: 'spawn', sessionId: 's1', playbook: 'solo', stage: 'plan' },
     { kind: 'transition', sessionId: 's1', from: 'plan', to: 'implement', via: 'approve_plan' },
     { kind: 'retire', sessionId: 's1', reason: 'killed' },
   ]);
@@ -135,10 +135,10 @@ test('liveInStage counts only live members of the same run, so a retire frees th
 
 test('run membership is the connected component over `needs` edges', () => {
   const p = fold([
-    { kind: 'spawn', sessionId: 'A-root', playbook: 'classic', stage: 'plan' },
-    { kind: 'spawn', sessionId: 'A-rev', playbook: 'classic', stage: 'review', needs: { implement: 'A-root' } },
-    { kind: 'spawn', sessionId: 'B-root', playbook: 'classic', stage: 'plan' },
-    { kind: 'spawn', sessionId: 'B-rev', playbook: 'classic', stage: 'review', needs: { implement: 'B-root' } },
+    { kind: 'spawn', sessionId: 'A-root', playbook: 'solo', stage: 'plan' },
+    { kind: 'spawn', sessionId: 'A-rev', playbook: 'solo', stage: 'review', needs: { implement: 'A-root' } },
+    { kind: 'spawn', sessionId: 'B-root', playbook: 'solo', stage: 'plan' },
+    { kind: 'spawn', sessionId: 'B-rev', playbook: 'solo', stage: 'review', needs: { implement: 'B-root' } },
   ]);
   assert.deepEqual(runMembers(p, 'A-root').sort(), ['A-rev', 'A-root']);
   assert.deepEqual(runMembers(p, 'B-rev').sort(), ['B-rev', 'B-root']);
@@ -172,9 +172,9 @@ test('state survives a restart: a fresh ledger folds the same projection from di
   try {
     const first = createPlaybookLedger({ file: () => file });
     await first.load();
-    await first.append({ kind: 'spawn', sessionId: 's1', playbook: 'classic', stage: 'plan' });
+    await first.append({ kind: 'spawn', sessionId: 's1', playbook: 'solo', stage: 'plan' });
     await first.append({ kind: 'transition', sessionId: 's1', from: 'plan', to: 'implement', via: 'approve_plan' });
-    await first.append({ kind: 'spawn', sessionId: 's2', playbook: 'classic', stage: 'review', needs: { implement: 's1' } });
+    await first.append({ kind: 'spawn', sessionId: 's2', playbook: 'solo', stage: 'review', needs: { implement: 's1' } });
     await first.append({ kind: 'enforcement', conductorSessionId: 'c1', from: 'warn', to: 'enforce' });
 
     // A new process: nothing in memory, everything folded from the file.
@@ -206,7 +206,7 @@ test('a torn or malformed line is skipped, not thrown — one bad line must not 
   const file = path.join(dir, 'ledger.jsonl');
   try {
     await fs.writeFile(file,
-      JSON.stringify({ seq: 1, ts: 't', kind: 'spawn', sessionId: 's1', playbook: 'classic', stage: 'plan' }) + '\n' +
+      JSON.stringify({ seq: 1, ts: 't', kind: 'spawn', sessionId: 's1', playbook: 'solo', stage: 'plan' }) + '\n' +
       '[1,2,3]\n' +
       JSON.stringify({ seq: 2, ts: 't', noKind: true }) + '\n' +
       JSON.stringify({ seq: 3, ts: 't', kind: 'transition', sessionId: 's1', from: 'plan', to: 'implement', via: 'approve_plan' }) + '\n' +

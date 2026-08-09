@@ -307,6 +307,10 @@ export function createPlaybookGate(
       return;
     }
 
+    // A DECLARED self-loop is ledgered by this same path: the round it closes is
+    // the thing worth counting, and writing it as a transition from===to is what
+    // makes `stageHistory` show `refine -> refine` per round. It carries no
+    // `needs` — a self-edge never re-runs them, so there are none to record.
     if (move.kind === 'transition' && move.from && move.to) {
       const sessionId = typeof args.sessionId === 'string' ? args.sessionId : '';
       if (!sessionId) return;
@@ -321,9 +325,16 @@ export function createPlaybookGate(
       return;
     }
 
-    // Nothing else to record. kind 'self' and 'none' move nothing — a self-edge
-    // is explicitly NOT a transition, and every ordinary follow-up prompt is a
-    // self-edge.
+    if (move.kind === 'self' && move.recorded && move.from && move.to) {
+      const sessionId = typeof args.sessionId === 'string' ? args.sessionId : '';
+      if (!sessionId) return;
+      await append({ kind: 'transition', sessionId, from: move.from, to: move.to, via: move.via ?? toolName });
+      return;
+    }
+
+    // Nothing else to record. An UNDECLARED self-edge and kind 'none' move
+    // nothing — every ordinary follow-up prompt is a self-edge, and a playbook
+    // that has not declared the loop is saying it does not want them counted.
     //
     // `retire` is deliberately NOT written here, including for kill_instance:
     // killing a worker makes its subprocess exit, so the status stream above
