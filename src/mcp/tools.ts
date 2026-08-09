@@ -179,8 +179,8 @@ export function buildTools(): Tool[] {
         'spawn_instance({resume:sessionId}) alone re-attaches the right cwd/branch and its prior history. ' +
         'CAUTION: an instance with the code-conductor MCP registered can in turn spawn ' +
         'further instances — guard against runaway recursion by keeping child agents in plan mode. ' +
-        'PLAYBOOKS: playbook / stage / needs declare which workflow graph this worker joins and where. ' +
-        'A spawn with no `needs` starts a new run and requires playbook + stage; a refusal lists every ' +
+        'PLAYBOOKS: playbook / stage / provenance declare which workflow graph this worker joins and where. ' +
+        'A spawn with no `provenance` starts a new run and requires playbook + stage; a refusal lists every ' +
         'playbook with its entry stages and the legal moves from there.',
       inputSchema: {
         type: 'object',
@@ -214,15 +214,15 @@ export function buildTools(): Tool[] {
           debug: { type: 'boolean', description: 'If true, raw CLI traffic is mirrored to .code-conductor/debug/<id>/.' },
           playbook: {
             type: 'string',
-            description: 'Playbook id (list_playbooks / describe_playbook). REQUIRED on a run root — a spawn with no `needs`. On a non-root spawn it is inherited from the workers named in `needs`; supplying a different one is refused PLAYBOOK_MISMATCH.',
+            description: 'Playbook id (list_playbooks / describe_playbook). REQUIRED on a run root — a spawn with no `provenance`. On a non-root spawn it is inherited from the workers named in `provenance`; supplying a different one is refused PLAYBOOK_MISMATCH.',
           },
           stage: {
             type: 'string',
-            description: 'The playbook stage this worker enters. It must declare spawn_instance in its tools map, else STAGE_NOT_SPAWNABLE — transition-only stages cannot be spawned into. The entered stage supplies both the permission and the entry conditions (`needs`, `require`).',
+            description: 'The playbook stage this worker enters. It must declare spawn_instance in its tools map, else STAGE_NOT_SPAWNABLE — transition-only stages cannot be spawned into. The entered stage supplies both the permission and the entry conditions (`needs`, `pin`).',
           },
-          needs: {
+          provenance: {
             type: 'object',
-            description: 'WORKER PROVENANCE — {"<stage>": "<sessionId>"} naming the workers that satisfy the entered stage\'s `needs`. Not the same as a stage\'s `require`, which pins argument VALUES. Absent ⇒ this spawn starts a new run. sessionId prefixes are accepted, like everywhere else.',
+            description: '{"<stage>": "<sessionId>"} naming the workers that satisfy the entered stage\'s `needs`. Absent ⇒ this spawn starts a new run. sessionId prefixes are accepted, like everywhere else.',
           },
         },
         required: [],
@@ -255,11 +255,11 @@ export function buildTools(): Tool[] {
           },
           stage: {
             type: 'string',
-            description: 'The playbook stage this prompt puts the worker in — always carry it. Equal to the worker\'s current stage ⇒ a self-edge (an ordinary follow-up prompt), always legal. Different ⇒ a transition, checked against the playbook\'s edge set: TRANSITION_ILLEGAL if there is no such edge, or if the edge declares an `on` tool that must drive it instead.',
+            description: 'The playbook stage this prompt puts the worker in — always carry it. Equal to the worker\'s current stage ⇒ a self-edge (an ordinary follow-up prompt), always legal, and ledgered only where the playbook declares that self-loop. Different ⇒ a transition, checked against the playbook\'s edge set: TRANSITION_ILLEGAL if there is no such edge, or if the edge\'s `via` (describe_playbook) names a tool other than send_prompt, which must drive it instead.',
           },
-          needs: {
+          provenance: {
             type: 'object',
-            description: 'WORKER PROVENANCE — {"<stage>": "<sessionId>"} satisfying the DESTINATION stage\'s `needs` when `stage` names a transition. A stage\'s entry conditions apply however it is entered, by spawn or by transition, so a transition into a stage that declares `needs` must supply them here. Ignored on a self-edge (entering the stage you are already in re-checks nothing). sessionId prefixes are accepted.',
+            description: '{"<stage>": "<sessionId>"} satisfying the DESTINATION stage\'s `needs` when `stage` names a transition. A stage\'s entry conditions apply however it is entered, by spawn or by transition, so a transition into a stage that declares `needs` must supply them here. Ignored on a self-edge (entering the stage you are already in re-checks nothing). sessionId prefixes are accepted.',
           },
         },
         required: ['sessionId', 'text'],
@@ -750,9 +750,11 @@ export function buildTools(): Tool[] {
       name: 'describe_playbook',
       description:
         'The full graph of one playbook. Returns PLAIN TEXT (no JSON). ' +
-        'Per stage, `needs` names WORKERS that must exist for the ' +
-        'stage to be entered (as stage@current / stage@ever), and `tools` maps a tool to allow / ' +
-        'deny / require {json} of enforced argument values — a `*` entry is the fallback for every ' +
+        'Per stage, `needs` names WORKERS that must exist for the stage to be entered, each rendered ' +
+        '`<stage>@<liveness> in <stages>`: the stage that worker must have PASSED THROUGH (and the key you ' +
+        'pass its sessionId under), whether it must still be running (live / retired / any), and which ' +
+        'stages it may be in NOW. `tools` maps a tool to allow / ' +
+        'deny / pin {json} of enforced argument values — a `*` entry is the fallback for every ' +
         'tool the stage does not name. Each stage also reports `spawnable`, the per-stage form of ' +
         'list_playbooks\' `spawnableStages`. On an edge, `via` is the tool that drives it and the ' +
         'ONLY tool that can. Refuses {ok:false, code:"PLAYBOOK_UNKNOWN", known:[…]} for an unknown id.',
@@ -770,12 +772,12 @@ export function buildTools(): Tool[] {
         'Where a run actually is, and what it may legally do next — the insight + backtrack surface. ' +
         'Two shapes, chosen by whether you pass sessionId. WITH sessionId: ' +
         '{tracked, worker, run, nextMoves, history, historyTruncated, enforcement}, where `worker` ' +
-        'carries {stage, stageHistory, needs, live, runRoot}, `run` is {root, members} (the connected ' +
-        'component over `needs` edges), `nextMoves` is every outgoing edge as ' +
+        'carries {stage, stageHistory, provenance, live, runRoot}, `run` is {root, members} (the connected ' +
+        'component over `provenance` edges), `nextMoves` is every outgoing edge as ' +
         '{to, via, ok, code?, reason?} — each ANSWERED BY THE SAME CHECK THAT ENFORCES, so a move ' +
         'reported ok:false comes back with the exact code and reason you would get for attempting it — ' +
         'and `history` is the run\'s ledger events oldest-first (capped; see historyTruncated). ' +
-        'Each move is evaluated as the BARE call, with no `needs` supplied, so an edge into a stage ' +
+        'Each move is evaluated as the BARE call, with no `provenance` supplied, so an edge into a stage ' +
         'that declares `needs` reads ok:false (NEEDS_UNSATISFIED) even when a satisfying worker exists ' +
         '— that is not "impossible", it is "pass the argument": the `reason` names exactly what to pass. ' +
         'WITHOUT sessionId: {tracked:false, runs, enforcement} — every run at once. ' +

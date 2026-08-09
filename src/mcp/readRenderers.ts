@@ -409,13 +409,13 @@ function yesNo(v: unknown): string {
   return DASH;
 }
 
-// One JSON.stringify of the whole `require` map: lossless by construction, and
+// One JSON.stringify of the whole `pin` map: lossless by construction, and
 // it keeps "plan" distinct from plan, true from "true", and null from absent —
 // distinctions a caller acts on, since these are the argument values the gate
-// enforces (ARG_REQUIRE_CONFLICT).
+// enforces (ARG_PIN_CONFLICT).
 function toolPolicy(policy: unknown): string {
-  if (policy && typeof policy === 'object' && 'require' in (policy as Row)) {
-    return `require ${JSON.stringify((policy as Row).require)}`;
+  if (policy && typeof policy === 'object' && 'pin' in (policy as Row)) {
+    return `pin ${JSON.stringify((policy as Row).pin)}`;
   }
   return dash(policy);
 }
@@ -424,8 +424,20 @@ function toolPolicy(policy: unknown): string {
 // deviations(): "what does this stage permit?" needs both answers stated. That
 // deliberately differs from renderPlaybookConvention's stageFlags, which
 // suppresses the `workers: "one"` default — different surface, different rule.
+// One cell per need, carrying both axes: `<anchor>@<liveness> in <positions>`.
+// The anchor is doing double duty — the stage the worker must have passed
+// through AND the key its sessionId is passed under — so it leads. Position is
+// rendered even when it is the default [anchor]: a reader checking a list
+// against the graph needs to see the list, and "absent means the anchor alone"
+// is a rule they would have to already know.
+function needCell(n: Row): string {
+  const position = Array.isArray(n.position) ? n.position.map(String) : [];
+  const where = position.length ? position.join('|') : DASH;
+  return `${dash(n.stage)}@${dash(n.liveness)} in ${where}`;
+}
+
 function stageBlock(name: string, stage: Row): string[] {
-  const needs = asRows(stage.needs).map(n => `${dash(n.stage)}@${dash(n.at)}`);
+  const needs = asRows(stage.needs).map(needCell);
   // Definition order, never sorted — the author's reading order IS the graph's.
   const tools = Object.entries(asRow(stage.tools));
   return [

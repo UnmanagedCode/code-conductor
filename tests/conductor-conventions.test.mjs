@@ -13,7 +13,7 @@ import {
   addCustomConvention, deleteCustomConvention, composeConduct, composeCurrentConduct,
   setPluginConductorConventionsProvider,
 } from '../src/conductorConventions.ts';
-import { loadPlaybooks } from '../src/playbooks.ts';
+import { loadPlaybooks, SEED_PLAYBOOK_IDS } from '../src/playbooks.ts';
 
 const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
@@ -82,7 +82,9 @@ test('composeConduct([]) = core + footer only (no convention headings)', async (
 
 test('the composed prompt lists every built-in playbook by id and description', async () => {
   const { playbooks } = await loadPlaybooks();
-  assert.ok(playbooks.size >= 4, 'fixture guard: built-ins must have loaded');
+  // Bound to the code-owned list, not a hardcoded count: the built-in set is
+  // expected to change, and a literal here would just have to be edited again.
+  assert.ok(playbooks.size >= SEED_PLAYBOOK_IDS.length, 'fixture guard: built-ins must have loaded');
   const doc = await composeConduct(['playbooks']);
   for (const pb of playbooks.values()) {
     // The id AND its own description — a listing carrying ids alone would leave

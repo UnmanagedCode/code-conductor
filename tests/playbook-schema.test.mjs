@@ -8,7 +8,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   validatePlaybook, loadPlaybooks, loadToolIndex, governableToolNames,
-  SEED_PLAYBOOK_IDS, REQUIRE_FORBIDDEN_KEYS,
+  SEED_PLAYBOOK_IDS, PIN_FORBIDDEN_KEYS,
 } from '../src/playbooks.ts';
 import { buildTools } from '../src/mcp/tools.ts';
 import { resolveSpawnModel } from '../src/mcp/handlers.ts';
@@ -53,18 +53,64 @@ test('the base fixture is valid (guards every expectErr below against a broken f
 
 // ── the shipped built-ins ───────────────────────────────────────────────────
 
-test('all four built-in playbooks load and validate clean', async () => {
+test('the built-in playbooks are exactly solo/relay/freeform, and all load clean', async () => {
   const { playbooks, errors } = await loadPlaybooks();
   assert.deepEqual(errors, [], `built-in playbooks must validate: ${JSON.stringify(errors)}`);
+  assert.deepEqual([...playbooks.keys()].sort(), ['freeform', 'relay', 'solo'],
+    'a leftover definition file or a missing one both land here');
   for (const id of SEED_PLAYBOOK_IDS) {
     assert.ok(playbooks.has(id), `missing built-in playbook '${id}'`);
     // name/description come from the JSON body, not from a restated TS list.
     assert.ok(playbooks.get(id).name.length > 0, `${id} has no name`);
     assert.ok(playbooks.get(id).description.length > 0, `${id} has no description`);
   }
-  assert.equal(playbooks.get('classic').entryStages.join(','), 'plan');
-  // split's defining property: the planner has no way out of `plan`.
-  assert.equal(playbooks.get('split').transitions.some(t => t.from === 'plan'), false);
+  assert.equal(playbooks.get('solo').entryStages.join(','), 'plan');
+  // relay's defining property: the planner has no way out of `plan`. Also the
+  // premise relay.implement's DEFAULT position:["plan"] rests on — a planner
+  // that could leave `plan` would make that default silently wrong.
+  assert.equal(playbooks.get('relay').transitions.some(t => t.from === 'plan'), false);
+});
+
+// ── the resolved-needs table ────────────────────────────────────────────────
+//
+// Deliberately a change-detector, and worth the maintenance: `at:"current"`
+// drifting onto relay.review by inheritance (618d62a) is what broke the
+// second-lens reviewer, and nothing else would have caught it. It lists
+// POST-DEFAULT values, so a `needs` that silently inherits the strict position
+// gate is as visible here as one that declares its loosening.
+//
+// Adding a stage to a worker's path changes no list, so this test still passes
+// — what it does is put the new stage in front of whoever added it. Treat a
+// diff here as a prompt to re-read every `position` list against the graph, not
+// as a formality.
+const RESOLVED_NEEDS = {
+  solo: {
+    plan: [],
+    implement: [],
+    // Item C: the implementer has moved to `refine` by round 2, so a
+    // second-lens reviewer must still be spawnable against it.
+    review: [{ stage: 'implement', position: ['implement', 'refine'], liveness: 'live' }],
+    // Strict, and free: with review->review declared, a reviewer never leaves
+    // `review`. `liveness:"live"` is the load-bearing half — refine sends the
+    // same reviewers back.
+    refine: [{ stage: 'review', position: ['review'], liveness: 'live' }],
+  },
+  relay: {
+    plan: [],
+    // Item F: the planner must be GONE. Strict position is right because
+    // relay.plan is a dead end, so a retired planner still stands in `plan`.
+    implement: [{ stage: 'plan', position: ['plan'], liveness: 'retired' }],
+    review: [{ stage: 'implement', position: ['implement', 'refine'], liveness: 'live' }],
+    refine: [{ stage: 'review', position: ['review'], liveness: 'live' }],
+  },
+  freeform: { freeform: [] },
+};
+
+test('every built-in stage\'s resolved `needs` matches the frozen table', async () => {
+  const { playbooks } = await loadPlaybooks();
+  const actual = Object.fromEntries([...playbooks.values()].map(pb =>
+    [pb.id, Object.fromEntries(Object.entries(pb.stages).map(([name, s]) => [name, s.needs]))]));
+  assert.deepEqual(actual, RESOLVED_NEEDS);
 });
 
 // The built-ins are the templates user authors copy, and (per the dynamic
@@ -92,14 +138,14 @@ test('every built-in stage carries a description and no built-in transition does
 // merely well-typed. The validator checks that a `require` key is a genuine
 // argument NAME of its tool; it cannot check that the VALUE means anything —
 // which is how `"model": "planner"` shipped, naming a role that exists nowhere
-// in the registry, making classic and split throw BAD_MODEL on every spawn.
+// in the registry, making solo and relay throw BAD_MODEL on every spawn.
 //
 // So each value is checked against whatever actually owns its domain:
 //   • the tool's own inputSchema, for `enum`/`type` constraints (covers `mode`,
 //     `createWorktree`, and any future constrained argument, generically); and
 //   • resolveSpawnModel — the exact ladder spawn_instance itself runs — for
 //     `model`, whose valid values live in the model registry, not the schema.
-test('every built-in `require` value resolves against the real product', async () => {
+test('every built-in `pin` value resolves against the real product', async () => {
   const playbooks = await builtins();
   const schemas = new Map(buildTools().map(t => [t.name, t.inputSchema]));
   let checked = 0;
@@ -108,8 +154,8 @@ test('every built-in `require` value resolves against the real product', async (
       for (const [toolName, policy] of Object.entries(stage.tools)) {
         if (typeof policy === 'string') continue;
         const props = schemas.get(toolName)?.properties ?? {};
-        for (const [arg, value] of Object.entries(policy.require)) {
-          const where = `${pb.id}.${stageName}.tools.${toolName}.require.${arg}`;
+        for (const [arg, value] of Object.entries(policy.pin)) {
+          const where = `${pb.id}.${stageName}.tools.${toolName}.pin.${arg}`;
           const prop = props[arg] ?? {};
           if (Array.isArray(prop.enum)) {
             assert.ok(prop.enum.includes(value),
@@ -128,7 +174,7 @@ test('every built-in `require` value resolves against the real product', async (
   }
   // Guards the loop itself: a refactor that stopped finding `require` entries
   // would otherwise make this test vacuously green.
-  assert.ok(checked >= 4, `expected to check several require values, checked ${checked}`);
+  assert.ok(checked >= 4, `expected to check several pin values, checked ${checked}`);
 });
 
 // ── the governable surface is DERIVED, not a hardcoded list ─────────────────
@@ -198,20 +244,29 @@ test('a spawnable stage must be an entry stage OR declare a non-empty needs', ()
 
 // ── `require` key validation against the tool's REAL inputSchema ────────────
 
-test('a require key that is not an argument of the tool is rejected', () => {
-  expectErr(
-    base({ stages: { a: { tools: { spawn_instance: { require: { moed: 'plan' } } } } } }),
-    /require names 'moed', which is not an argument of spawn_instance/,
-  );
-  // The real argument name passes, proving the check reads the actual schema.
-  expectOk(base({ stages: { a: { tools: { spawn_instance: { require: { mode: 'plan' } } } } } }));
+// `require` was the old spelling of `pin`. It is a RENAME, not an alias: a
+// definition still using it must fail at load rather than quietly lose its
+// constraint, which for solo.plan would mean spawning the planner in
+// bypassPermissions instead of plan mode.
+test('the retired `require` key is rejected, not silently accepted as a pin', () => {
+  expectErr(base({ stages: { a: { tools: { spawn_instance: { require: { mode: 'plan' } } } } } }),
+    /must be "allow", "deny", or \{ "pin": \{\.\.\.\} \}/);
 });
 
-test('require on a policy-layer input is rejected for each of sessionId/stage/playbook/needs', () => {
-  for (const key of REQUIRE_FORBIDDEN_KEYS) {
+test('a pin key that is not an argument of the tool is rejected', () => {
+  expectErr(
+    base({ stages: { a: { tools: { spawn_instance: { pin: { moed: 'plan' } } } } } }),
+    /pin names 'moed', which is not an argument of spawn_instance/,
+  );
+  // The real argument name passes, proving the check reads the actual schema.
+  expectOk(base({ stages: { a: { tools: { spawn_instance: { pin: { mode: 'plan' } } } } } }));
+});
+
+test('pin on a policy-layer input is rejected for each of sessionId/stage/playbook/provenance', () => {
+  for (const key of PIN_FORBIDDEN_KEYS) {
     expectErr(
-      base({ stages: { a: { tools: { spawn_instance: { require: { [key]: 'x' } } } } } }),
-      new RegExp(`require cannot constrain '${key}'`),
+      base({ stages: { a: { tools: { spawn_instance: { pin: { [key]: 'x' } } } } } }),
+      new RegExp(`pin cannot constrain '${key}'`),
     );
   }
 });
@@ -220,13 +275,13 @@ test('require on a policy-layer input is rejected for each of sessionId/stage/pl
 // `stage`/`playbook`/`needs` property today (step 4 adds them), so checking
 // existence-in-inputSchema first would report these as typos now and silently
 // start reporting them as policy-layer inputs later. Pin the order.
-test('the require-forbidden-key check PRECEDES the exists-in-inputSchema check', () => {
-  for (const key of ['stage', 'playbook', 'needs']) {
+test('the pin-forbidden-key check PRECEDES the exists-in-inputSchema check', () => {
+  for (const key of ['stage', 'playbook', 'provenance']) {
     const res = validatePlaybook(
-      base({ stages: { a: { tools: { spawn_instance: { require: { [key]: 'x' } } } } } }), 'fixture', index);
+      base({ stages: { a: { tools: { spawn_instance: { pin: { [key]: 'x' } } } } } }), 'fixture', index);
     assert.equal(res.ok, false);
     const joined = res.errors.join('\n');
-    assert.match(joined, new RegExp(`require cannot constrain '${key}'`),
+    assert.match(joined, new RegExp(`pin cannot constrain '${key}'`),
       `${key} must be reported as a policy-layer input`);
     assert.doesNotMatch(joined, /is not an argument of/,
       `${key} must NOT be reported as a typo — the forbidden-key check has to run first`);
@@ -235,45 +290,36 @@ test('the require-forbidden-key check PRECEDES the exists-in-inputSchema check',
   // them), which is precisely the change the ordering was written to survive: an
   // exists-first check would have reported them as typos before, and would start
   // silently accepting them into the exists-branch now.
-  for (const key of ['stage', 'playbook', 'needs']) {
+  for (const key of ['stage', 'playbook', 'provenance']) {
     assert.ok(index.get('spawn_instance').has(key),
       `spawn_instance must declare '${key}' as an argument — the policy layer passes it`);
   }
   // So the precedence is now observable on a tool that does NOT declare them:
   // reported as a policy-layer input, never as a misspelled argument.
-  for (const key of ['stage', 'playbook', 'needs']) {
+  for (const key of ['stage', 'playbook', 'provenance']) {
     assert.ok(!index.get('set_mode').has(key), `set_mode must not declare '${key}'`);
     const res = validatePlaybook(
-      base({ stages: { a: { tools: { spawn_instance: 'allow', set_mode: { require: { [key]: 'x' } } } } } }),
+      base({ stages: { a: { tools: { spawn_instance: 'allow', set_mode: { pin: { [key]: 'x' } } } } } }),
       'fixture', index);
     assert.equal(res.ok, false);
     const joined = res.errors.join('\n');
-    assert.match(joined, new RegExp(`require cannot constrain '${key}'`));
+    assert.match(joined, new RegExp(`pin cannot constrain '${key}'`));
     assert.doesNotMatch(joined, /is not an argument of/,
       `${key} on set_mode must NOT be reported as a typo — the forbidden-key check has to run first`);
   }
   // sessionId, by contrast, IS a real argument of set_mode and still refused.
   assert.ok(index.get('set_mode').has('sessionId'));
-  expectErr(base({ stages: { a: { tools: { spawn_instance: 'allow', set_mode: { require: { sessionId: 'x' } } } } } }),
-    /require cannot constrain 'sessionId'/);
+  expectErr(base({ stages: { a: { tools: { spawn_instance: 'allow', set_mode: { pin: { sessionId: 'x' } } } } } }),
+    /pin cannot constrain 'sessionId'/);
 });
 
-test('require error text keeps `require` and `needs` distinct', () => {
-  const errs = expectErr(
-    base({ stages: { a: { tools: { spawn_instance: { require: { stage: 'x' } } } } } }),
-    /require cannot constrain 'stage'/);
-  const msg = errs.join('\n');
-  assert.match(msg, /ARGUMENT VALUES/, 'must say require is about argument values');
-  assert.match(msg, /`needs`/, 'must point at needs as the thing for worker provenance');
-});
-
-test('a require value must be a literal — no expression language', () => {
+test('a pin value must be a literal — no expression language', () => {
   expectErr(
-    base({ stages: { a: { tools: { spawn_instance: { require: { mode: { $eq: 'plan' } } } } } } }),
-    /require\.mode must be a literal string, number, boolean or null/,
+    base({ stages: { a: { tools: { spawn_instance: { pin: { mode: { $eq: 'plan' } } } } } } }),
+    /pin\.mode must be a literal string, number, boolean or null/,
   );
   for (const v of ['plan', 3, true, false, null]) {
-    expectOk(base({ stages: { a: { tools: { spawn_instance: 'allow', set_mode: { require: { mode: v } } } } } }));
+    expectOk(base({ stages: { a: { tools: { spawn_instance: 'allow', set_mode: { pin: { mode: v } } } } } }));
   }
 });
 
@@ -315,19 +361,19 @@ test('a "*" wildcard never confers spawnability, and the load-time rules key off
 
 test('an explicit spawn_instance still beats a "*": "deny"', () => {
   expectOk(base({ stages: { a: { tools: { '*': 'deny', spawn_instance: 'allow' } } } }));
-  expectOk(base({ stages: { a: { tools: { '*': 'deny', spawn_instance: { require: { mode: 'plan' } } } } } }));
+  expectOk(base({ stages: { a: { tools: { '*': 'deny', spawn_instance: { pin: { mode: 'plan' } } } } } }));
 });
 
-test("the '*' fallback entry is accepted but cannot carry require", () => {
+test("the '*' fallback entry is accepted but cannot carry pin", () => {
   expectOk(base({ stages: { a: { tools: { '*': 'deny', spawn_instance: 'allow' } } } }));
-  expectErr(base({ stages: { a: { tools: { spawn_instance: 'allow', '*': { require: { mode: 'plan' } } } } } }),
-    /the "\*" fallback entry cannot carry `require`/);
+  expectErr(base({ stages: { a: { tools: { spawn_instance: 'allow', '*': { pin: { mode: 'plan' } } } } } }),
+    /the "\*" fallback entry cannot carry `pin`/);
 });
 
 test('an invalid tools value is rejected', () => {
-  for (const bad of ['allowed', true, 42, null, {}, { require: {} }, { require: { mode: 'plan' }, extra: 1 }]) {
+  for (const bad of ['allowed', true, 42, null, {}, { pin: {} }, { pin: { mode: 'plan' }, extra: 1 }]) {
     expectErr(base({ stages: { a: { tools: { spawn_instance: bad } } } }),
-      /tools\.spawn_instance must be "allow", "deny", or \{ "require": \{\.\.\.\} \}|require must be a non-empty object/);
+      /tools\.spawn_instance must be "allow", "deny", or \{ "pin": \{\.\.\.\} \}|pin must be a non-empty object/);
   }
 });
 
@@ -393,6 +439,28 @@ test('a transition `on` must be a governable tool, and neither send_prompt nor s
   expectErr(base({ stages, transitions: [{ from: 'a', to: 'b', on: 'send_prompt' }] }),
     /on cannot be send_prompt/);
   expectOk(base({ stages, transitions: [{ from: 'a', to: 'b', on: 'approve_plan' }] }));
+});
+
+test('a self-loop may be declared, but never with an `on`', () => {
+  const stages = { a: { tools: { spawn_instance: 'allow' } }, b: {} };
+  // The declaration itself is legal — it is the whole mechanism by which a
+  // repeated round becomes countable.
+  expectOk(base({ stages, transitions: [{ from: 'a', to: 'b' }, { from: 'b', to: 'b' }] }));
+  // With an `on` it is not: resolveMove answers a self-edge BEFORE it looks at
+  // drivers, so the driver branch would give one edge a second, gated path.
+  // Without this rule the definition loads and the contradiction is silent.
+  expectErr(base({ stages, transitions: [{ from: 'a', to: 'b' }, { from: 'b', to: 'b', on: 'approve_plan' }] }),
+    /a self-loop cannot declare `on`/);
+});
+
+test('a self-loop does not make an otherwise-unreachable stage reachable', () => {
+  // A self-loop cannot carry a worker INTO a stage, so it must not satisfy the
+  // inbound-edge clause. A mutant that counts it turns this into a silent pass
+  // and lets an orphan stage ship.
+  expectErr(base({
+    stages: { a: { tools: { spawn_instance: 'allow' } }, orphan: {} },
+    transitions: [{ from: 'orphan', to: 'orphan' }],
+  }), /stage 'orphan' is unreachable/);
 });
 
 // ── shape + defaults ───────────────────────────────────────────────────────
@@ -474,23 +542,51 @@ test('name/description/stages shape is enforced', () => {
   assert.equal(validatePlaybook('nope', 'fixture', index).ok, false);
 });
 
-test('needs.at and workers reject unknown values', () => {
+test('needs.liveness and workers reject unknown values', () => {
   expectErr(base({
-    stages: { a: { tools: { spawn_instance: 'allow' } }, b: { needs: [{ stage: 'a', at: 'someday' }] } },
-  }), /needs\.at must be one of current \| ever/);
+    stages: { a: { tools: { spawn_instance: 'allow' } }, b: { needs: [{ stage: 'a', liveness: 'someday' }] } },
+  }), /needs\.liveness must be one of live \| retired \| any/);
   expectErr(base({ stages: { a: { workers: 'three', tools: { spawn_instance: 'allow' } } } }),
     /workers must be one of one \| many/);
+  // The retired vocabulary is gone, not aliased: a definition still saying `at`
+  // must fail loudly at load rather than silently losing its gate.
+  expectErr(base({
+    stages: { a: { tools: { spawn_instance: 'allow' } }, b: { needs: [{ stage: 'a', at: 'ever' }] } },
+  }), /needs entry has unknown key 'at'/);
 });
 
-test('defaults are applied for omitted tools/workers/needs/at', () => {
+// One case per rule the array shape adds. Deliberately NOT one combined assert:
+// a single expectErr would pass while four of the five rules were missing.
+test('needs.position rejects a non-array, an empty list, an unknown stage, a mixed "*", and a duplicate', () => {
+  const withPosition = position => base({
+    stages: { a: { tools: { spawn_instance: 'allow' } }, b: { needs: [{ stage: 'a', position }] } },
+    transitions: [{ from: 'a', to: 'b' }],
+  });
+  expectErr(withPosition('a'), /needs\.position must be an array of stage names/);
+  expectErr(withPosition([]), /needs\.position must name at least one stage/);
+  expectErr(withPosition(['nope']), /needs\.position names unknown stage 'nope'/);
+  expectErr(withPosition(['*', 'a']), /needs\.position cannot mix "\*" with named stages/);
+  expectErr(withPosition(['a', 'a']), /needs\.position lists 'a' twice/);
+  // …and the shapes that must still LOAD, so the rules above cannot be
+  // satisfied by a validator that simply rejects every position.
+  expectOk(withPosition(['a']));
+  expectOk(withPosition(['a', 'b']));
+  expectOk(withPosition(['*']));
+});
+
+test('defaults are applied for omitted tools/workers/needs/position/liveness', () => {
   const pb = expectOk(base({
     stages: {
       a: { tools: { spawn_instance: 'allow' } },
-      b: { needs: [{ stage: 'a' }] },       // at omitted
+      b: { needs: [{ stage: 'a' }] },       // position + liveness omitted
     },
     transitions: [{ from: 'a', to: 'b' }],
   }));
-  assert.deepEqual(pb.stages.b.needs, [{ stage: 'a', at: 'current' }], 'at defaults to "current"');
+  // STRICT BY DEFAULT, both axes. A mutant defaulting position to ["*"] or
+  // liveness to "any" — the loose ends — fails here, which is the point: the
+  // obvious minimal entry must be the strongest gate, never the weakest.
+  assert.deepEqual(pb.stages.b.needs, [{ stage: 'a', position: ['a'], liveness: 'live' }],
+    'position defaults to [stage] and liveness to "live"');
   assert.equal(pb.stages.b.workers, 'one', 'workers defaults to "one"');
   assert.deepEqual(pb.stages.b.tools, {}, 'tools defaults to {}');
   assert.deepEqual(pb.stages.a.needs, [], 'needs defaults to []');

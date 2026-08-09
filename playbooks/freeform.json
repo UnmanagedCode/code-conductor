@@ -1,15 +1,15 @@
 {
   "id": "freeform",
   "name": "Freeform — the named escape hatch",
-  "description": "One permissive stage for operational and investigative spawns; the worker never gets a worktree of its own — it works in the live project tree, or in one you attach it to.",
+  "description": "One unconstrained stage: any number of workers, with or without a worktree of their own.",
   "entryStages": ["freeform"],
 
   "stages": {
     "freeform": {
-      "description": "For a one-off with nothing to plan or review — answer a question, read a log, run a command. Brief the goal and its sentinel. The worker is in the live project tree, so the moment the job turns into code changes, stop and re-run it under a playbook that reviews and lands.",
+      "description": "For work with nothing to plan or review — answer a question, read a log, run a command, or fan out one investigator per independent question in a single turn. Brief the goal and its sentinel. Nothing here is enforced, so whatever the job must not do belongs in your brief: a worker without its own worktree is in the live project tree, where \"change nothing\" is an instruction rather than a guarantee. Give it `createWorktree: true` when it may write code, and land that worktree as you would any other.",
       "workers": "many",
       "tools": {
-        "spawn_instance": { "require": { "createWorktree": false } }
+        "spawn_instance": "allow"
       }
     }
   },

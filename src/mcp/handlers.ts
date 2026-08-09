@@ -577,7 +577,7 @@ export async function playbookState({ sessionId }: { sessionId?: string }, ctx: 
       playbook: worker.playbook,
       stage: worker.stage,
       stageHistory: worker.stageHistory,
-      needs: worker.needs,
+      provenance: worker.provenance,
       live: worker.live,
       runRoot: worker.runRoot,
       ...(worker.project !== undefined ? { project: worker.project } : {}),
@@ -708,13 +708,13 @@ interface SpawnArgs {
   // handler runs, so nothing here reads them.
   playbook?: string;
   stage?: string;
-  needs?: Record<string, string>;
+  provenance?: Record<string, string>;
 }
 
 // Resolve a spawn's `model` name to the concrete {model, backend} pair plus the
 // tier/role it resolved THROUGH. Exported because it is the authority on which
 // model names are spawnable at all: tests/playbook-schema.test.mjs runs every
-// built-in playbook's `require: {model}` through it, so a definition can never
+// built-in playbook's `pin: {model}` through it, so a definition can never
 // ship pinning a model the product cannot resolve.
 export function resolveSpawnModel(input: string | null | undefined): {
   model: string | null | undefined; backend: string; tier?: string; role?: string;
@@ -862,12 +862,12 @@ async function maybeSubscribeIdle({ instances, callerId }: McpCtx, sessionId: st
 export async function sendPrompt(
   { sessionId, text, wait = false, waitTimeoutMs = 600_000, subscribe = true, subscribeTimeoutMs }: {
     sessionId: string; text: string; wait?: boolean; waitTimeoutMs?: number; subscribe?: boolean; subscribeTimeoutMs?: number;
-    // `stage`/`needs` are playbook-policy inputs, consumed by
+    // `stage`/`provenance` are playbook-policy inputs, consumed by
     // src/mcp/playbookGate.ts before this handler runs. Declared (and
     // deliberately not destructured) so the type matches the schema the router
     // validates against.
     stage?: string;
-    needs?: Record<string, string>;
+    provenance?: Record<string, string>;
   },
   { instances, callerId }: McpCtx,
 ) {

@@ -395,7 +395,7 @@ const RENDERED_TOOLS = [
   { name: 'list_sessions', args: { project: 'demo' }, head: /^SESSIONS \(/ },
   { name: 'project_status', args: { project: 'demo' }, head: /^demo$/m },
   // Loads from playbooks/*.json, so it needs no repo fixture.
-  { name: 'describe_playbook', args: { id: 'classic' }, head: /^PLAYBOOK classic$/m },
+  { name: 'describe_playbook', args: { id: 'solo' }, head: /^PLAYBOOK solo$/m },
 ];
 
 test('every plain-text tool returns one text block and nothing else', async () => {

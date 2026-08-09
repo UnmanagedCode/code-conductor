@@ -26,11 +26,11 @@ const PAYLOAD = {
   conventions: [{ slug: 'playbooks', name: 'Playbooks', description: 'p', body: '## Playbooks', builtin: true }],
   enabled: ['playbooks'],
   playbooks: [
-    { id: 'classic', name: 'Classic — one worker', description: 'c', entryStages: ['plan'], spawnableStages: ['plan', 'review'] },
-    { id: 'split', name: 'Split — plan and implement are distinct', description: 's', entryStages: ['plan'], spawnableStages: ['plan'] },
+    { id: 'solo', name: 'Solo — one worker', description: 'c', entryStages: ['plan'], spawnableStages: ['plan', 'review'] },
+    { id: 'relay', name: 'Relay — plan and implement are distinct', description: 's', entryStages: ['plan'], spawnableStages: ['plan'] },
   ],
   playbookErrors: [],
-  defaultPlaybook: 'split',
+  defaultPlaybook: 'relay',
 };
 
 // A window with the picker's markup (and the conventions panel's, for the seam
@@ -66,10 +66,10 @@ test('renders one option per playbook plus None, and preselects the stored defau
   const sel = window.document.getElementById('dp-select');
   assert.deepEqual(optionsOf(sel), [
     ['', 'None — no playbook convention injected'],
-    ['classic', 'classic — Classic — one worker'],
-    ['split', 'split — Split — plan and implement are distinct'],
+    ['solo', 'solo — Solo — one worker'],
+    ['relay', 'relay — Relay — plan and implement are distinct'],
   ]);
-  assert.equal(sel.value, 'split', 'stored default is preselected');
+  assert.equal(sel.value, 'relay', 'stored default is preselected');
 });
 
 test('no stored default selects None', async () => {
@@ -94,11 +94,11 @@ test('choosing a playbook PUTs it; choosing None PUTs an explicit null', async (
   installDefaultPlaybook({ base: BASE }).render(PAYLOAD);
   const sel = window.document.getElementById('dp-select');
 
-  sel.value = 'classic';
+  sel.value = 'solo';
   sel.dispatchEvent(new window.Event('change'));
   await window.happyDOM.waitUntilComplete();
   assert.deepEqual(calls.at(-1), {
-    url: `${BASE}/default-playbook`, method: 'PUT', body: { id: 'classic' },
+    url: `${BASE}/default-playbook`, method: 'PUT', body: { id: 'solo' },
   });
 
   sel.value = '';
@@ -114,7 +114,7 @@ test('a failed save is reported rather than silently swallowed', async () => {
   const { installDefaultPlaybook } = await freshImport('defaultPlaybook.js');
   installDefaultPlaybook({ base: BASE }).render(PAYLOAD);
   const sel = window.document.getElementById('dp-select');
-  sel.value = 'classic';
+  sel.value = 'solo';
   sel.dispatchEvent(new window.Event('change'));
   await window.happyDOM.waitUntilComplete();
   assert.match(window.document.getElementById('dp-status').textContent, /unknown playbook id/);
@@ -145,6 +145,6 @@ test('conventionsPanel.load() feeds its onData consumer the whole payload', asyn
   await panel.load();
   const sel = window.document.getElementById('dp-select');
   assert.equal(sel.options.length, 3, 'picker populated from the panel load');
-  assert.equal(sel.value, 'split');
+  assert.equal(sel.value, 'relay');
   assert.equal(window.document.getElementById('cc-convention-list').children.length, 1, 'panel still rendered its own list');
 });

@@ -283,7 +283,7 @@ export function createPlaybookGate(
     // A soft refusal from the handler means the call did not do what policy
     // authorised — do not record a move that never happened.
     if (isRecord(result) && result.ok === false) return;
-    const needs = suppliedNeeds(args.needs);
+    const provenance = suppliedProvenance(args.provenance);
 
     if (move.kind === 'spawn' && move.playbook && move.to) {
       // The new worker's identity comes from the RESULT, not the arguments:
@@ -300,13 +300,17 @@ export function createPlaybookGate(
         stage: move.to,
         // Absent `needs` ⇒ a run root. Keep it off the event entirely rather
         // than writing `{}`, so the fold can tell the two apart.
-        ...(Object.keys(needs).length > 0 ? { needs } : {}),
+        ...(Object.keys(provenance).length > 0 ? { provenance } : {}),
         ...(typeof view.project === 'string' ? { project: view.project } : {}),
         ...(typeof worktree === 'string' ? { worktree } : {}),
       });
       return;
     }
 
+    // A DECLARED self-loop is ledgered by this same path: the round it closes is
+    // the thing worth counting, and writing it as a transition from===to is what
+    // makes `stageHistory` show `refine -> refine` per round. It carries no
+    // `provenance` — a self-edge never re-runs `needs`, so there is none.
     if (move.kind === 'transition' && move.from && move.to) {
       const sessionId = typeof args.sessionId === 'string' ? args.sessionId : '';
       if (!sessionId) return;
@@ -316,14 +320,21 @@ export function createPlaybookGate(
         from: move.from,
         to: move.to,
         via: move.via ?? toolName,
-        ...(Object.keys(needs).length > 0 ? { needs } : {}),
+        ...(Object.keys(provenance).length > 0 ? { provenance } : {}),
       });
       return;
     }
 
-    // Nothing else to record. kind 'self' and 'none' move nothing — a self-edge
-    // is explicitly NOT a transition, and every ordinary follow-up prompt is a
-    // self-edge.
+    if (move.kind === 'self' && move.recorded && move.from && move.to) {
+      const sessionId = typeof args.sessionId === 'string' ? args.sessionId : '';
+      if (!sessionId) return;
+      await append({ kind: 'transition', sessionId, from: move.from, to: move.to, via: move.via ?? toolName });
+      return;
+    }
+
+    // Nothing else to record. An UNDECLARED self-edge and kind 'none' move
+    // nothing — every ordinary follow-up prompt is a self-edge, and a playbook
+    // that has not declared the loop is saying it does not want them counted.
     //
     // `retire` is deliberately NOT written here, including for kill_instance:
     // killing a worker makes its subprocess exit, so the status stream above
@@ -353,7 +364,7 @@ export function createPlaybookGate(
 // The caller's `needs` map, narrowed to the {stage: sessionId} string pairs the
 // ledger stores. Prefix values have already been resolved to full sessionIds at
 // the transport's prefix chokepoint.
-function suppliedNeeds(v: unknown): Record<string, string> {
+function suppliedProvenance(v: unknown): Record<string, string> {
   const out: Record<string, string> = {};
   if (!isRecord(v)) return out;
   for (const [stage, sid] of Object.entries(v)) if (typeof sid === 'string') out[stage] = sid;

@@ -1,0 +1,45 @@
+{
+  "id": "relay",
+  "name": "Relay — the planner never implements",
+  "description": "Plan and implement are distinct workers.",
+  "entryStages": ["plan"],
+
+  "stages": {
+    "plan": {
+      "description": "Spawn and brief a plan worker; on its wake reject with feedback, answer its question, or abandon. There is no approving it into implement — this planner never writes code, and the handoff to one that does is yours to make.",
+      "tools": {
+        "spawn_instance": { "pin": { "mode": "plan", "createWorktree": true } },
+        "set_mode": "deny",
+        "approve_plan": "deny",
+        "sync_worktree": "deny"
+      }
+    },
+    "implement": {
+      "description": "A fresh worker, not the planner — it starts with no context, so hand it the approved plan itself, never a paraphrase: prefer the plan document's path the wake named. Put it on the planner's worktree: one branch stays one merge unit, and it inherits the base the plan was written against. Retiring the planner is the handoff itself, so do that first (`kill_instance`) and spawn against it.",
+      "needs": [{ "stage": "plan", "liveness": "retired" }],
+      "tools": {
+        "spawn_instance": { "pin": { "mode": "bypassPermissions" } }
+      }
+    },
+    "review": {
+      "description": "Spawn an adversarial reviewer onto the implementer's worktree, briefed to inspect only — never edit, stage or commit — to default to skepticism, and to answer `REVIEW_CLEAN` or a findings list. Give it the same plan the implementer got: what was approved is the bar, not your brief. Run several at once when the work deserves more than one lens (correctness, security, test coverage), each briefed to its own; give every one of them the same bar. Never prompt a reviewer and the implementer in the same turn: they share one worktree.",
+      "needs": [{ "stage": "implement", "position": ["implement", "refine"] }],
+      "workers": "many",
+      "tools": {
+        "spawn_instance": { "pin": { "mode": "bypassPermissions", "model": "reviewer" } },
+        "sync_worktree": "deny",
+        "approve_plan": "deny"
+      }
+    },
+    "refine": {
+      "description": "Relay only the findings worth fixing to the implementer; on its refined wake send the same reviewers back. You arbitrate each round — worth fixing → refine again, else land; escalate only on a call you cannot resolve.",
+      "needs": [{ "stage": "review" }]
+    }
+  },
+
+  "transitions": [
+    { "from": "implement", "to": "refine" },
+    { "from": "refine", "to": "refine" },
+    { "from": "review", "to": "review" }
+  ]
+}
