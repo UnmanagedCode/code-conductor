@@ -15,6 +15,7 @@ import {
   consolidateUserContent, isSoftInterruptContent, isTaskNotificationContent, attachSkillLoad,
   type UiEvent, type WireEnvelope, type WireContentBlock, type PendingSkillLoad,
 } from './parser.ts';
+import { PlanFileTracker, planPathFromInput } from './planFile.ts';
 
 // A persisted jsonl line is a WireEnvelope plus the fields the CLI writes to
 // disk that the live stream never carries (uuid, isSidechain, attachment,
@@ -91,12 +92,13 @@ export function isPureUserPromptLine(obj: unknown): boolean {
 // reproducible across reruns.
 export function replayPersistedLine(
   obj: unknown,
-  { seqHint = 0, parentToolUseId = null, allowSidechain = false, blockCursor = null, pendingSkillLoads = null }: {
+  { seqHint = 0, parentToolUseId = null, allowSidechain = false, blockCursor = null, pendingSkillLoads = null, planFiles = null }: {
     seqHint?: number;
     parentToolUseId?: string | null;
     allowSidechain?: boolean;
     blockCursor?: Map<string, number> | null;
     pendingSkillLoads?: PendingSkillLoad[] | null;
+    planFiles?: PlanFileTracker | null;
   } = {},
 ): UiEvent[] {
   const events: UiEvent[] = [];
@@ -117,6 +119,15 @@ export function replayPersistedLine(
   // default — callers replaying a sub-agent file explicitly opt in via
   // allowSidechain.
   if (line.isSidechain && !allowSidechain) return events;
+
+  // A turn boundary for plan-file binding is a genuine USER PROMPT, which is
+  // exactly what isPureUserPromptLine decides — in every shape it takes
+  // (string content, text blocks, queued_command attachment). Branching on
+  // "content is an array" instead would fire on the mid-turn tool_result line
+  // the CLI writes right after a plan-file Write, unbinding the file from the
+  // ExitPlanMode two lines later, and would miss a string-content prompt
+  // entirely.
+  if (planFiles && isPureUserPromptLine(line)) planFiles.noteTurnBoundary();
 
   if (line.type === 'user') {
     const msg = line.message ?? {};
@@ -208,6 +219,7 @@ export function replayPersistedLine(
         const name = typeof b.name === 'string' ? b.name : null;
         events.push({ kind: 'tool_use_start', msgId, blockIdx, toolUseId, name });
         events.push({ kind: 'tool_use', msgId, blockIdx, toolUseId, name, input: b.input ?? {} });
+        planFiles?.noteToolUse(name, b.input);
         // Mirror the parser's structured event emission for the live
         // path — a replayed AskUserQuestion / ExitPlanMode should
         // render as a question / plan card, not just a collapsed
@@ -220,12 +232,18 @@ export function replayPersistedLine(
           });
         }
         if (name === 'ExitPlanMode') {
-          events.push({
+          // Same enrichment the live path applies (instances.ts), driven by
+          // the same tracker — the Write that created the plan file is an
+          // earlier line of this very jsonl. Without it a path-based handover
+          // would evaporate the moment the ring evicted the live event.
+          const ev: UiEvent = {
             kind: 'plan_request',
             toolUseId,
             plan: typeof b.input?.plan === 'string' ? b.input.plan : null,
-            planPath: null,
-          });
+            planPath: planPathFromInput(b.input),
+          };
+          planFiles?.enrich(ev);
+          events.push(ev);
         }
         // Track Skill invocations — mirrors parser.ts so the isSynthetic
         // content-injection user line that follows can be identified and
@@ -340,6 +358,9 @@ export async function loadPersistedTranscript(options: {
   let seq = seqHint;
   const blockCursor = new Map<string, number>();
   const pendingSkillLoads: PendingSkillLoad[] = [];
+  // Deliberately NOT threaded into loadSubAgentTranscript below: a sub-agent's
+  // plan file is not the outer session's.
+  const planFiles = new PlanFileTracker();
   for (const raw of text.split('\n')) {
     const trimmed = raw.trim();
     if (!trimmed) continue;
@@ -397,7 +418,7 @@ export async function loadPersistedTranscript(options: {
         seq += subEvents.length;
       }
     }
-    const ownEvents = replayPersistedLine(obj, { seqHint: seq, blockCursor, pendingSkillLoads });
+    const ownEvents = replayPersistedLine(obj, { seqHint: seq, blockCursor, pendingSkillLoads, planFiles });
     for (const ev of ownEvents) events.push(ev);
 
     if (events.length > 0) {

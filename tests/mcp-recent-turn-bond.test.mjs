@@ -84,3 +84,16 @@ test('questions (not just plans) also bond through the end of the turn', () => {
   const out = bondTrailingTurn(filtered, ringTurnIndex(ring));
   assert.deepEqual(out.map(m => m.msgId), ['q1', 'q2']);
 });
+
+test('bonds a plan message that carries only a path', () => {
+  // An unreadable plan file yields a planPath with no text. That message is
+  // still the plan the conductor must act on, so it has to bond.
+  const ring = [
+    { kind: 'tool_use', msgId: 'pp1', _seq: 1 },
+    { kind: 'text_delta', msgId: 'pp2', _seq: 2 },
+    { kind: 'turn_end', _seq: 3 },
+  ];
+  const filtered = [{ msgId: 'pp1', text: '', planPath: '/p.md' }, prose('pp2', 'standing by')];
+  const out = bondTrailingTurn(filtered, ringTurnIndex(ring));
+  assert.deepEqual(out.map(m => m.msgId), ['pp1', 'pp2']);
+});

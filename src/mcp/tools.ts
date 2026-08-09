@@ -808,12 +808,13 @@ export function buildTools(): Tool[] {
       name: 'get_recent_messages',
       description:
         'Return the most recent assistant message(s) from an instance. Each message has: ' +
-        '`text` (full joined prose), `hasToolUse` (boolean), `msgId`, and optionally `blocks`, `hasPlan`, `questionCount`. ' +
+        '`text` (full joined prose), `hasToolUse` (boolean), `msgId`, and optionally `blocks`, `hasPlan`, `planPath`, `questionCount`. ' +
         '`blocks` is present only when non-text blocks exist and contains only `tool_use` and ' +
         '`thinking` entries — text content is fully represented by `text` and is not duplicated ' +
         'in `blocks`; ExitPlanMode and AskUserQuestion tool_use blocks are likewise not duplicated ' +
         'in `blocks[]` when their content is represented in the message body (see OUTPUT). ' +
-        '`hasPlan` (boolean) flags a turn that called ExitPlanMode with an inline plan; `questionCount` (int) ' +
+        '`hasPlan` (boolean) flags a turn that called ExitPlanMode; `planPath` (string) is the plan document\'s path when a ' +
+        'file backs the plan — prefer handing that path on rather than copying the text; `questionCount` (int) ' +
         'flags a turn that called AskUserQuestion, with the number of questions — these are presence markers only, ' +
         'the actual plan text / question list (index-numbered, with options and multiSelect) is in the message body. ' +
         'By default, messages are returned when they have text, a plan, or questions — ' +
@@ -824,9 +825,9 @@ export function buildTools(): Tool[] {
         'tail can\'t satisfy the requested recent TEXT messages (tool-event volume evicted them) it transparently ' +
         'reads back into the on-disk session transcript — so ring eviction never yields a false-empty result. ' +
         'OUTPUT: a compact-JSON metadata block (content[0]) {sessionId, messages:[{index, msgId, hasToolUse, textChars, ' +
-        'textTruncated, hasPlan?, questionCount?, blocks?}], source:"ring"|"disk", omittedToolOnly:int, retained:{firstSeq, ' +
+        'textTruncated, hasPlan?, planPath?, questionCount?, blocks?}], source:"ring"|"disk", omittedToolOnly:int, retained:{firstSeq, ' +
         'lastSeq, trimmed}, hint?} oldest-first, PLUS one raw, un-escaped text block per message (content[k+1] is ' +
-        'messages[k]\'s body: its prose (if any) plus a "--- plan ---" or "--- questions ---" fenced section when the ' +
+        'messages[k]\'s body: its prose (if any) plus a "--- plan ---" (or "--- plan · saved to <path> ---") or "--- questions ---" fenced section when the ' +
         'turn produced one, in the order those blocks actually occurred — UNLESS more than one message is returned, in ' +
         'which case each body is prefixed with "--- message i/N · msgId · textChars chars ---"). `omittedToolOnly` counts ' +
         'recent tool-call-only messages excluded by the default filter (the agent is active even when messages[] is ' +
