@@ -9,7 +9,7 @@ import { getShellEnvBundlePath, bundleShellKind } from '../claudeShellEnv.ts';
 import {
   listProjects as fsListProjects,
   listSessions as fsListSessions,
-  listSessionsForCwd,
+  listSessionsForCwdWithCounts,
   summarizeSessions,
   createProject as fsCreateProject,
   getProject,
@@ -340,7 +340,7 @@ export async function listSessions(args: McpArgs, { instances, playbookGate }: M
   // `.conduct` is the exception, and it is handled by NAME rather than by a
   // directory probe: the dir is created lazily at first conductor spawn, and a
   // conductor must be able to reach its own sessions either way. An absent dir
-  // just scans to nothing (listSessionsForCwd returns [] on ENOENT).
+  // just scans to nothing (the scan returns [] on ENOENT).
   const project = args?.project === undefined ? null : String(args.project ?? '');
   const worktreeArg = args?.worktree === undefined ? null : String(args.worktree ?? '');
   const includeArchived = args?.includeArchived === true;
@@ -386,7 +386,8 @@ export async function listSessions(args: McpArgs, { instances, playbookGate }: M
 
   // Inactive rows come off disk, from the one function that already owns "which
   // sessions exist for a cwd, and which of them are archived"
-  // (listSessionsForCwd — also behind GET /projects/:name/sessions).
+  // (listSessionsForCwdWithCounts, whose row half is also behind
+  // GET /projects/:name/sessions).
   // fsListProjects skips dotdirs, so the unfiltered scope must add `.conduct`
   // back explicitly. Without it a conductor looking for its own prior session to
   // resume — after a restart, a /clear, or a crash — gets every other project's
@@ -399,22 +400,17 @@ export async function listSessions(args: McpArgs, { instances, playbookGate }: M
   }
 
   const groups = await Promise.all(targets.map(async t => {
-    // The archived COUNT comes from summarizeSessions (readdir + stat, no file
-    // opens) rather than from scanning the archived rows themselves: on a busy
-    // project archived outnumbers active ~25:1, and listSessionsForCwd opens
-    // every transcript it returns to read its first prompt. Counting them the
-    // expensive way made an unfiltered scan several times slower for a number
-    // that renders as `+N archived`.
-    const [rows, summary] = await Promise.all([
-      listSessionsForCwd(t.cwd, attached, { includeArchived }).catch(() => []),
-      includeArchived ? null : summarizeSessions(t.cwd, attached).catch(() => ({ archivedCount: 0 })),
-    ]);
+    // One walk yields both the rows and the archived count. On a busy project
+    // archived outnumbers active ~25:1 and the per-transcript cost is the
+    // first-prompt read, which the walk skips for archived rows it is not
+    // listing — so the count for a `+N archived` line is effectively free.
+    const { rows, archivedCount } = await listSessionsForCwdWithCounts(t.cwd, attached, { includeArchived })
+      .catch(() => ({ rows: [], archivedCount: 0 }));
     const liveHere = live.filter(r => r.project === t.project
       && (r.worktree && typeof r.worktree === 'object'
         ? (r.worktree as Record<string, unknown>).worktreeName : null) === t.worktree);
-    const archivedCount = summary ? summary.archivedCount : rows.filter(s => s.archived).length;
     // A group with nothing in it is dropped from an unfiltered listing, and its
-    // branch/ahead-behind is never computed — that header exists to help judge a
+    // branch/divergence is never computed — that header exists to help judge a
     // resume, and there is nothing here to resume. An explicitly named project
     // always renders, so `project foo` with an empty fleet reads as empty rather
     // than as a missing project.

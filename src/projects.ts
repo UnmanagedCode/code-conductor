@@ -508,37 +508,52 @@ export interface SessionRow {
   resumeMode: string;
 }
 
-export async function listSessionsForCwd(
+// One directory walk answering both "which sessions are here" and "how many of
+// them are archived". A caller that needs the count as well as the rows must
+// use this rather than pairing listSessionsForCwd with summarizeSessions: that
+// pairing costs a second readdir, a second stat of every transcript and a
+// second archived-set load, for a number this walk already has in hand.
+// Archived rows are counted before the includeArchived filter, so the count is
+// the same either way — but their `firstPrompt` is only read when they are
+// actually being listed, which is where the per-transcript cost lives.
+export async function listSessionsForCwdWithCounts(
   absCwd: string,
   excludeSessionIds: Set<string> | null = null,
   { includeArchived = true }: { includeArchived?: boolean } = {},
-): Promise<SessionRow[]> {
+): Promise<{ rows: SessionRow[]; archivedCount: number }> {
   const encoded = encodeCwd(absCwd);
   const dir = path.join(claudeProjectsRoot(), encoded);
   let entries: string[];
   try {
     entries = await fs.readdir(dir);
   } catch (e) {
-    if (errCode(e) === 'ENOENT') return [];
+    if (errCode(e) === 'ENOENT') return { rows: [], archivedCount: 0 };
     throw e;
   }
   const titles = await loadAllTitles();
   const conducted = await loadAllConducted();
   const temps = await loadAllTemps();
   const archived = await loadAllArchived();
-  // One bulk read for the whole scan, like the four sidecars above — the mode
-  // must not cost a file open per session.
+  // One bulk read per scanned cwd, like the four sidecars above — never a file
+  // open per session.
   const modes = await loadAllSessionModes();
   const out: SessionRow[] = [];
+  let archivedCount = 0;
   for (const name of entries) {
     if (!name.endsWith('.jsonl')) continue;
     const sid = name.replace(/\.jsonl$/, '');
     if (excludeSessionIds && excludeSessionIds.has(sid)) continue;
-    if (!includeArchived && archived.has(sid)) continue;
+    const isArchived = archived.has(sid);
     const full = path.join(dir, name);
+    // Stat before the archived branch: the count must include only real files,
+    // and it is the same stat a listed row needs anyway.
     let stat: Awaited<ReturnType<typeof fs.stat>>;
     try { stat = await fs.stat(full); } catch { continue; }
     if (!stat.isFile()) continue;
+    if (isArchived) {
+      archivedCount++;
+      if (!includeArchived) continue;
+    }
     let firstPrompt: string | null = null;
     try { firstPrompt = await readFirstPrompt(full); } catch { /* ignore */ }
     out.push({
@@ -547,14 +562,22 @@ export async function listSessionsForCwd(
       title: titles.get(sid) ?? null,
       conducted: conducted.has(sid),
       temp: temps.has(sid),
-      archived: archived.has(sid),
+      archived: isArchived,
       mtime: stat.mtimeMs,
       size: stat.size,
       resumeMode: effectiveResumeMode(modes.get(sid) ?? null),
     });
   }
   out.sort((a, b) => b.mtime - a.mtime);
-  return out;
+  return { rows: out, archivedCount };
+}
+
+export async function listSessionsForCwd(
+  absCwd: string,
+  excludeSessionIds: Set<string> | null = null,
+  opts: { includeArchived?: boolean } = {},
+): Promise<SessionRow[]> {
+  return (await listSessionsForCwdWithCounts(absCwd, excludeSessionIds, opts)).rows;
 }
 
 export async function listSessions(projectName: string, excludeSessionIds: Set<string> | null = null): Promise<SessionRow[]> {

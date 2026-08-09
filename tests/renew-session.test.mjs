@@ -22,6 +22,7 @@ import { isConducted } from '../src/conductedSessions.ts';
 import { isTemp } from '../src/tempSessions.ts';
 import { isArchived } from '../src/archivedSessions.ts';
 import { getTitle } from '../src/sessionTitles.ts';
+import { getSessionMode } from '../src/sessionModes.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-renew.json');
@@ -142,6 +143,11 @@ test('renew_session carries the durable temp + conducted markers onto the rotate
     // there is nothing to assert there.)
     await waitFor(async () => await isArchived(sid1));
     assert.equal(await isTemp(sid1), false, 'stale temp marker on the old id was cleaned');
+
+    // The mode record is NOT asserted here: for a bypassPermissions session the
+    // system/init handler records the rotated id on the reseed turn anyway, so
+    // an assertion here would pass with the carry deleted. `ask` is the mode
+    // the carry actually owns — see the dedicated test at the end of this file.
   } finally {
     await srv.close();
   }
@@ -397,6 +403,46 @@ test('renew_session against the real claude binary rotates the sessionId', { ski
     const rotated = srv.instances.get(spawn.body.id);
     assert.notEqual(rotated.sessionId, sid1, 'real /clear rotated the sessionId');
     assert.equal(rotated.pid, pidBefore, 'same process across the real /clear');
+  } finally {
+    await srv.close();
+  }
+});
+
+test('renew_session carries the mode record for an `ask` session, which nothing else writes', async () => {
+  // The carry at Instance.carryMarkersAcrossRenewal is redundant for `plan` and
+  // `bypassPermissions`: the system/init handler rotates the sessionId and
+  // records the CLI-reported mode in the same breath, and the fork path
+  // relaunches, so spawn() records there. `ask` is the one mode it cannot
+  // cover — `ask` is orchestrator-only, the CLI reports the rotated session as
+  // `bypassPermissions`, and the init handler's anti-clobber guard skips BOTH
+  // the assignment and the record write. Without the carry the rotated id stays
+  // unrecorded, so it resolves to DEFAULT_RESUME_MODE: listed with
+  // `resumes-hot` and resumed ungated, for a worker that was deliberately in
+  // the hook-gated mode. That is this task's footgun on the renewal path.
+  const srv = await bootServer({ scenarioPath: SCENARIO });
+  mgr = srv.instances;
+  try {
+    await api(srv.baseUrl, 'POST', '/api/projects', { name: 'p' });
+    const spawn = await api(srv.baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'ask' });
+    const sid1 = spawn.body.sessionId;
+    await waitFor(() => instForSession(srv.instances, sid1)?.status === 'idle');
+    const inst = instForSession(srv.instances, sid1);
+    assert.equal(inst.mode, 'ask', 'the CLI reports bypassPermissions; the orchestrator keeps `ask`');
+    await waitFor(async () => (await getSessionMode(sid1)) === 'ask');
+
+    await callTool(srv.baseUrl, 'renew_session', { summary: 'carry on' }, { caller: sid1 });
+    await callTool(srv.baseUrl, 'send_prompt', { sessionId: sid1, text: 'go1' });
+    await waitFor(() => instForSession(srv.instances, NEW_SID)?.status === 'idle');
+    assert.equal(instForSession(srv.instances, NEW_SID).mode, 'ask',
+      'the rotated worker is still in ask');
+
+    await waitFor(async () => (await getSessionMode(NEW_SID)) === 'ask');
+    assert.equal(await getSessionMode(NEW_SID), 'ask',
+      'the rotated id must carry `ask` — nothing else writes it');
+    // The old id KEEPS its record: it survives as an archived, still-listable
+    // row whose resumes-hot flag has to stay accurate.
+    assert.equal(await getSessionMode(sid1), 'ask',
+      'the archived pre-clear id keeps its mode record');
   } finally {
     await srv.close();
   }

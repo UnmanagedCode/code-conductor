@@ -569,7 +569,7 @@ test('list_sessions carries playbook/stage for a tracked worker and null for an 
     await waitFor(() => instForSession(t.instances, untracked.sessionId)?.sessionId);
 
     // list_sessions renders plain text, so read the playbook line off each
-    // worker's block (src/mcp/readRenderers.ts renderInstances).
+    // worker's block (src/mcp/readRenderers.ts renderSessions).
     const rendered = await t.callText('list_sessions', {});
     const playbookLineFor = (sid) => {
       const lines = rendered.split('\n');

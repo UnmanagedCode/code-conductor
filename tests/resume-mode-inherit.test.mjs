@@ -127,3 +127,42 @@ test('set_mode updates the record, so a resume follows the latest mode', async (
   assert.equal(await getSessionMode(sid), 'bypassPermissions',
     'a mid-session mode change must be what a later resume inherits');
 });
+
+test('the CLI-reported mode at system/init is recorded, not just the launched one', async () => {
+  // The third write site. The subprocess is authoritative about the mode it
+  // actually came up in, and `_doCreate`'s value is only a request — a resumed
+  // CLI can report something else. Recording only at spawn would leave the
+  // store disagreeing with the live session, so the next resume would inherit
+  // a mode the session was never in.
+  //
+  // This scenario's init hardcodes permissionMode:"plan" while the spawn asks
+  // for bypassPermissions, so the two write sites are distinguishable: the
+  // spawn-time record says bypassPermissions, and only the init sync corrects
+  // it to plan. (The fake CLI holds its startup events until the first stdin
+  // line, so the prompt below is what makes init fire at all.)
+  const srv = await bootServer({
+    scenarioPath: path.join(__dirname, 'fixtures', 'scenario-init-mode-plan.json'),
+  });
+  try {
+    await api(srv.baseUrl, 'POST', '/api/projects', { name: 'init-sync' });
+    const res = await api(srv.baseUrl, 'POST', '/api/instances', {
+      project: 'init-sync', mode: 'bypassPermissions',
+    });
+    assert.equal(res.status, 201);
+    const inst = srv.instances.get(res.body.id);
+    await waitFor(() => inst.status === 'idle' && inst.sessionId);
+    // The spawn-time record is written fire-and-forget, so wait for it.
+    await waitFor(async () => (await getSessionMode(inst.sessionId)) === 'bypassPermissions');
+
+    inst.prompt('go');
+    await waitFor(() => inst.mode === 'plan');
+    assert.equal(inst.mode, 'plan', 'the CLI reported plan, so the instance is in plan');
+
+    await waitFor(async () => (await getSessionMode(inst.sessionId)) === 'plan');
+    assert.equal(await getSessionMode(inst.sessionId), 'plan',
+      'the record must follow the CLI-reported mode, not the mode we asked for');
+  } finally {
+    await srv.instances.shutdown();
+    await srv.close();
+  }
+});

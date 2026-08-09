@@ -220,6 +220,20 @@ const asGroups = (v: unknown): SessionGroup[] => (Array.isArray(v) ? v as Sessio
 const counts = (live: number, inactive: number, archived: number) =>
   `live ${live} · inactive ${inactive} · archived ${archived}`;
 
+// A group header's divergence, LABELLED with what it is measured against.
+// Only a worktree has one: it is commits vs the base branch it will merge back
+// into, which is what decides whether resuming into it is useful. A main
+// checkout's equivalent would be vs its remote upstream — a different question
+// — so it renders nothing here rather than an unlabelled number the reader
+// would take for the same measurement. `vs base` is what makes that silence
+// read as "different question" instead of "not computed"; list_projects still
+// reports upstream status for a project.
+function groupDivergence(v: unknown): string {
+  const m = asRow(v);
+  const n = (x: unknown) => (typeof x === 'number' ? String(x) : '?');
+  return `↑${n(m.ahead)} ↓${n(m.behind)} vs base`;
+}
+
 // Groups arrive already ordered and filtered — the caller (src/mcp/handlers.ts
 // listSessions) owns the isDeadStatus() split, the session scan, the git
 // lookups and every sort, so this stays a pure formatter with no instance-model
@@ -257,7 +271,7 @@ export function renderSessions(
       sum(g => g.live.length, mine), sum(g => g.inactive.length, mine), sum(g => g.archivedCount, mine))}`);
     for (const g of mine) {
       const head = g.worktree === null ? 'main checkout' : `worktree ${g.worktree}`;
-      const ab = g.mergeStatus ? `   ${aheadBehind(g.mergeStatus)}` : '';
+      const ab = g.mergeStatus ? `   ${groupDivergence(g.mergeStatus)}` : '';
       const body: Array<string | string[]> = [
         `${head}  br ${dash(g.branch)}${ab}   ${counts(g.live.length, g.inactive.length, g.archivedCount)}`,
       ];

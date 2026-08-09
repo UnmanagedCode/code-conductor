@@ -415,8 +415,11 @@ describe('renderSessions — inactive rows, grouping and archived', () => {
     ]);
     const heads = out.split('\n').filter(l => /^ {2}(main checkout|worktree )/.test(l));
     assert.equal(heads.length, 2);
+    // The main checkout carries NO divergence: its number would be vs the
+    // remote upstream, a different question from the worktree's vs-base.
     assert.match(heads[0], /^ {2}main checkout {2}br main {3}live 0 · inactive 1 · archived 0$/);
-    assert.match(heads[1], /^ {2}worktree cc_worktree_ab12 {2}br cc\/ab12 {3}ahead 3 {2}behind 0 {3}live 0 · inactive 1 · archived 2$/);
+    assert.ok(!/[↑↓]/.test(heads[0]), 'a main checkout must not show a divergence number');
+    assert.match(heads[1], /^ {2}worktree cc_worktree_ab12 {2}br cc\/ab12 {3}↑3 ↓0 vs base {3}live 0 · inactive 1 · archived 2$/);
     assert.ok(out.indexOf('on main') < out.indexOf('on wt'), 'the main checkout must come first');
     assert.match(out, /^ {4}\/w\/cc-projects\/cc_worktree_ab12$/m, "a worktree's own path must be reachable");
   });

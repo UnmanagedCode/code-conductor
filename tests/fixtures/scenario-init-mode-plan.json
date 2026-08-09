@@ -1,0 +1,19 @@
+{
+  "_comment": "system/init reports permissionMode 'plan' REGARDLESS of what the orchestrator launched with (note: literal, not $MODE). Lets a test tell the spawn-time mode record apart from the system/init sync — see tests/resume-mode-inherit.test.mjs.",
+  "events": [
+    { "type": "system", "subtype": "init", "session_id": "$SID", "cwd": "$CWD", "model": "claude-sonnet-4-6", "permissionMode": "plan", "tools": ["Bash"], "uuid": "init-1" }
+  ],
+  "turns": [
+    {
+      "on": { "type": "prompt" },
+      "emit": [
+        { "type": "stream_event", "event": { "type": "message_start", "message": { "id": "msg_p1", "role": "assistant" } } },
+        { "type": "stream_event", "event": { "type": "content_block_start", "index": 0, "content_block": { "type": "text", "text": "" } } },
+        { "type": "stream_event", "event": { "type": "content_block_delta", "index": 0, "delta": { "type": "text_delta", "text": "ok" } } },
+        { "type": "stream_event", "event": { "type": "content_block_stop", "index": 0 } },
+        { "type": "stream_event", "event": { "type": "message_stop" } },
+        { "type": "result", "subtype": "success", "stop_reason": "end_turn", "duration_ms": 5, "total_cost_usd": 0.0, "is_error": false }
+      ]
+    }
+  ]
+}
