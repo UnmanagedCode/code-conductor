@@ -63,7 +63,15 @@ export function effectiveResumeMode(recorded: string | null | undefined): string
 // can prompt instead. Conflating the two is what made the marker lossy in the
 // unsafe direction; the live wire and the durable record are different
 // questions and must not share a mapping.
+// Throws rather than passing an unknown value through: a record that omits or
+// misstates its own mode is the same defect class as one claiming a gated
+// session ran hot, and both are silent at the point of writing. The callers are
+// all internal (`Instance.mode` and the rewind/fork/prune paths that read it),
+// so anything outside MODES here is a bug in this repo, not user input.
 export function markerPermissionMode(mode: string): string {
+  if (!(MODES as readonly string[]).includes(mode)) {
+    throw new Error(`markerPermissionMode: unknown orchestrator mode ${JSON.stringify(mode)}`);
+  }
   return mode === 'ask' ? 'default' : mode;
 }
 

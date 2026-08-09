@@ -21,7 +21,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
 import { encodeCwd } from '../src/projects.ts';
-import { markerPermissionMode } from '../src/sessionModes.ts';
+import { markerPermissionMode, MODES } from '../src/sessionModes.ts';
 import { writeSessionMetadata } from '../src/transcript.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -130,11 +130,26 @@ test('setMode("ask") sends bypassPermissions on the wire and records default', a
   } finally { restore(); }
 });
 
-// Pins the mapping at the unit level, including that it is total over MODES.
-test('markerPermissionMode maps ask to default and is identity elsewhere', () => {
-  assert.equal(markerPermissionMode('ask'), 'default');
-  assert.equal(markerPermissionMode('plan'), 'plan');
-  assert.equal(markerPermissionMode('bypassPermissions'), 'bypassPermissions');
+// Pins the mapping at the unit level. Iterates MODES rather than listing
+// literals, so a mode added to the vocabulary without a decision about how it
+// is RECORDED fails here instead of silently recording itself raw.
+test('markerPermissionMode is total over MODES, mapping only ask', () => {
+  for (const mode of MODES) {
+    const recorded = markerPermissionMode(mode);
+    assert.equal(recorded, mode === 'ask' ? 'default' : mode, `mode ${mode}`);
+    assert.notEqual(recorded, undefined);
+  }
+  assert.equal(markerPermissionMode('ask'), 'default', 'the one mode that must differ');
+});
+
+// Pins the runtime floor. A value outside MODES must FAIL rather than write a
+// marker with its `permissionMode` field silently absent — an omitted value is
+// the same defect class as a wrong one, and both are invisible at write time.
+test('markerPermissionMode refuses a value outside the vocabulary', () => {
+  for (const bad of [undefined, null, '', 'default', 'acceptEdits', 'nonsense']) {
+    assert.throws(() => markerPermissionMode(bad), /unknown orchestrator mode/,
+      `must refuse ${JSON.stringify(bad)}`);
+  }
 });
 
 // Pins that the mapping lives INSIDE writeSessionMetadata, so the rewind /
@@ -146,12 +161,15 @@ test('writeSessionMetadata maps the orchestrator mode itself', async () => {
   process.env.CLAUDE_PROJECTS_ROOT = root;
   try {
     const cwd = path.join(home, 'proj');
-    const sid = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
-    await writeSessionMetadata({ cwd, sessionId: sid, leafUuid: 'leaf-1', mode: 'ask' });
-    const text = await fs.readFile(path.join(root, encodeCwd(cwd), `${sid}.jsonl`), 'utf8');
-    const marker = text.split('\n').filter(Boolean).map(l => JSON.parse(l))
-      .find(o => o.type === 'permission-mode');
-    assert.equal(marker.permissionMode, 'default');
+    for (const mode of MODES) {
+      const sid = `aaaaaaaa-bbbb-4ccc-8ddd-${mode.slice(0, 12).padEnd(12, '0')}`;
+      await writeSessionMetadata({ cwd, sessionId: sid, leafUuid: 'leaf-1', mode });
+      const text = await fs.readFile(path.join(root, encodeCwd(cwd), `${sid}.jsonl`), 'utf8');
+      const marker = text.split('\n').filter(Boolean).map(l => JSON.parse(l))
+        .find(o => o.type === 'permission-mode');
+      assert.equal(marker.permissionMode, markerPermissionMode(mode), `mode ${mode}`);
+      assert.ok('permissionMode' in marker, 'the marker must carry a value, not omit the field');
+    }
   } finally {
     if (prev === undefined) delete process.env.CLAUDE_PROJECTS_ROOT;
     else process.env.CLAUDE_PROJECTS_ROOT = prev;

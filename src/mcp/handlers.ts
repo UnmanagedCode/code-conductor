@@ -264,7 +264,7 @@ export async function listProjects(_args: McpArgs, { instances }: McpCtx) {
     const worktrees = await fsListWorktrees(p.name).catch(() => []);
     const worktreesWithSessions = await Promise.all(worktrees.map(async (w) => ({
       ...w,
-      sessions: await summarizeSessions(w.worktreePath).catch(() => ({ count: 0, lastActivity: 0 })),
+      sessions: await summarizeSessions(w.worktreePath).catch(() => ({ count: 0, archivedCount: 0, lastActivity: 0 })),
       mergeStatus: await getWorktreeMergeStatus(w).catch(() => ({ ahead: null, behind: null })),
     })));
     return {
@@ -272,7 +272,7 @@ export async function listProjects(_args: McpArgs, { instances }: McpCtx) {
       liveCount: instances ? instances.liveCountForProject(p.name) : 0,
       isGitRepo: await isGitRepo(p.path),
       worktrees: worktreesWithSessions,
-      sessions: await summarizeSessions(p.path).catch(() => ({ count: 0, lastActivity: 0 })),
+      sessions: await summarizeSessions(p.path).catch(() => ({ count: 0, archivedCount: 0, lastActivity: 0 })),
     };
   }));
   return textResult(renderProjects(enriched));

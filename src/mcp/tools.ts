@@ -66,7 +66,8 @@ export function buildTools(): Tool[] {
         'overageActive, overageResetsAt, hasIdleSubscriber, playbook, stage}. ' +
         'Live rows lead their group, marked LIVE; inactive sessions follow as one line each — ' +
         'sessionId, last-activity, playbook/stage, flags, title — newest first. Last-activity is the ' +
-        'session\'s own newest record, so it is when that session actually ran. Their sessionIds still resume. ' +
+        'timestamp on the session\'s own last record, so it is when that session actually ran. ' +
+        'Their sessionIds still resume. ' +
         'sessionId is the stable handle for every worker-addressing tool. ' +
         '`playbook`/`stage` say where the session sits in its playbook graph, or null when it is not ' +
         'playbook-tracked; playbook_state gives the full run picture. ' +

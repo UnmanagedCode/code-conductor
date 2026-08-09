@@ -12,7 +12,7 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createLastActivityCache } from '../src/sessionActivity.ts';
-import { encodeCwd, listSessionsForCwd } from '../src/projects.ts';
+import { encodeCwd, listSessionsForCwd, summarizeSessions } from '../src/projects.ts';
 
 async function withTmp(fn) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'session-activity-'));
@@ -119,17 +119,102 @@ test('an appended record invalidates the memoized value', async () => {
   });
 });
 
-// Pins the dev/ino half of the cache key. This is the fork/prune shape
-// (tmp -> rename), reproduced adversarially: the replacement is the SAME SIZE
-// and has its mtime forced back to the original's, so mtime and size both
-// match and only the inode (and ctime) differ.
+// Pins the PROJECT-LEVEL summary, which feeds the sidebar's per-project
+// "last N ago" and list_projects. Same disagreement as the row-ordering test
+// above: the summary must report the newer ACTIVITY, not the newer mtime.
+// Without this, summarizeSessions can be reverted to stat.mtimeMs and every
+// other test still passes — and the claim that it reports the same recency as
+// the rows underneath it would be unbacked.
+test('summarizeSessions reports real activity, not the newest mtime', async () => {
+  await withTmp(async (tmp) => {
+    const claudeProjects = path.join(tmp, '.claude', 'projects');
+    const prev = process.env.CLAUDE_PROJECTS_ROOT;
+    process.env.CLAUDE_PROJECTS_ROOT = claudeProjects;
+    try {
+      const cwd = path.join(tmp, 'proj');
+      const dir = path.join(claudeProjects, encodeCwd(cwd));
+      await fs.mkdir(dir, { recursive: true });
+
+      const realNewest = Date.parse('2026-08-08T22:27:10.000Z');
+      // The session that actually ran last, but whose file was touched FIRST.
+      await writeTranscript(path.join(dir, '11111111-1111-4111-8111-111111111111.jsonl'), {
+        timestamp: '2026-08-08T22:27:10.000Z', mtimeMs: Date.parse('2026-08-09T09:12:40.700Z'),
+      });
+      // Older session, but its file carries the latest mtime — the mass-exit shape.
+      const bogusNewestMtime = Date.parse('2026-08-09T09:12:40.800Z');
+      await writeTranscript(path.join(dir, '22222222-2222-4222-8222-222222222222.jsonl'), {
+        timestamp: '2026-08-07T06:10:51.000Z', mtimeMs: bogusNewestMtime,
+      });
+
+      const summary = await summarizeSessions(cwd);
+      assert.equal(summary.count, 2);
+      assert.equal(summary.lastActivity, realNewest);
+      assert.notEqual(summary.lastActivity, bogusNewestMtime,
+        'the project number must not be the mass-exit mtime either');
+
+      // And it must agree with the rows the sidebar renders underneath it.
+      const rows = await listSessionsForCwd(cwd);
+      assert.equal(summary.lastActivity, Math.max(...rows.map(r => r.lastActivity)),
+        'project summary and session rows must be one definition of recency');
+    } finally {
+      if (prev === undefined) delete process.env.CLAUDE_PROJECTS_ROOT;
+      else process.env.CLAUDE_PROJECTS_ROOT = prev;
+    }
+  });
+});
+
+// Pins ctimeMs — the field that makes the key SOUND rather than merely
+// convenient. Constructed so mtime, size and the inode are all unchanged and
+// only ctime moves: a same-length write at offset 0, then fs.utimes putting
+// mtime back. A key of (mtimeMs, size) or (dev, ino, mtimeMs, size) reads
+// through to the stale value here.
+test('an in-place rewrite that restores mtime and preserves size still invalidates', async () => {
+  await withTmp(async (dir) => {
+    const file = path.join(dir, 's.jsonl');
+    // Whole-ms, because fs.utimes cannot restore sub-ms precision — otherwise
+    // mtime would differ by accident and mtimeMs alone would catch the rewrite.
+    const frozen = Date.parse('2026-08-09T09:12:40.000Z');
+    await writeTranscript(file, { timestamp: '2026-08-07T06:10:51.000Z', mtimeMs: frozen, tail: false });
+
+    const cache = createLastActivityCache();
+    const before = await fs.stat(file);
+    assert.equal(await cache.lastActivityOf(file, before), Date.parse('2026-08-07T06:10:51.000Z'));
+
+    // Same-length body, different timestamp, written in place through the SAME
+    // inode — no rename, so dev/ino cannot help.
+    const body = await fs.readFile(file, 'utf8');
+    const rewritten = body.replaceAll('2026-08-07T06:10:51.000Z', '2026-08-08T22:27:10.000Z');
+    assert.equal(Buffer.byteLength(rewritten), Buffer.byteLength(body), 'rewrite must be same-length');
+    const fh = await fs.open(file, 'r+');
+    try { await fh.write(Buffer.from(rewritten), 0, Buffer.byteLength(rewritten), 0); }
+    finally { await fh.close(); }
+    await fs.utimes(file, new Date(frozen), new Date(frozen));
+
+    const after = await fs.stat(file);
+    assert.equal(after.ino, before.ino, 'same inode — dev/ino cannot detect this');
+    assert.equal(after.size, before.size, 'same size');
+    assert.equal(after.mtimeMs, frozen, 'mtime restored');
+    assert.notEqual(after.ctimeMs, before.ctimeMs, 'only ctime moved — it cannot be rolled back');
+
+    assert.equal(await cache.lastActivityOf(file, after), Date.parse('2026-08-08T22:27:10.000Z'));
+  });
+});
+
+// Pins the fork/prune shape (tmp -> rename), reproduced adversarially: the
+// replacement is the SAME SIZE with its mtime forced back, so neither mtimeMs
+// nor size can detect the swap.
+//
+// This does NOT isolate dev/ino: fs.utimes after the rename sets a fresh ctime,
+// so ctime alone would also catch it. That case is not constructible — a rename
+// always lands a new inode WITH a new ctime — which is exactly why dev/ino are
+// documented as a redundant guard rather than a load-bearing field.
 test('a rename-over replacement invalidates the memoized value', async () => {
   await withTmp(async (dir) => {
     const file = path.join(dir, 's.jsonl');
     const replacement = path.join(dir, 'replacement.jsonl');
     // Whole-ms so fs.utimes can restore it exactly — sub-ms precision is lost
-    // through utimes, which would otherwise make mtime differ by accident and
-    // let a key WITHOUT dev/ino pass this test for the wrong reason.
+    // through utimes, which would otherwise let mtimeMs catch the swap by
+    // accident and make this test pass for the wrong reason.
     const frozen = Date.parse('2026-08-09T09:12:40.000Z');
 
     await writeTranscript(file, { timestamp: '2026-08-07T06:10:51.000Z', mtimeMs: frozen, tail: false });
@@ -145,7 +230,7 @@ test('a rename-over replacement invalidates the memoized value', async () => {
     await fs.utimes(file, new Date(frozen), new Date(frozen));
 
     const st = await fs.stat(file);
-    assert.equal(st.mtimeMs, frozen, 'mtime is restored, so only inode/ctime can invalidate');
+    assert.equal(st.mtimeMs, frozen, 'mtime is restored, so mtimeMs/size cannot invalidate');
     assert.equal(await cache.lastActivityOf(file, st), Date.parse('2026-08-08T22:27:10.000Z'));
   });
 });

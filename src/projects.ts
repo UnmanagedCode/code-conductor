@@ -500,8 +500,8 @@ export interface SessionRow {
   conducted: boolean;
   temp: boolean;
   archived: boolean;
-  // Epoch ms of the session's newest real record — see sessionActivity.ts for
-  // why this is not the transcript's mtime.
+  // Epoch ms of the timestamp on the session's last timestamped record — see
+  // sessionActivity.ts for why this is not the transcript's mtime.
   lastActivity: number;
   size: number;
   // What `spawn_instance({resume})` would actually come up as — the recorded

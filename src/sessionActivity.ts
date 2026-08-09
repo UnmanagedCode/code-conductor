@@ -1,5 +1,11 @@
-// When a session transcript was last *actually* active — the newest ISO
-// `timestamp` on a real record inside the jsonl, not the file's mtime.
+// When a session transcript was last *actually* active — the `timestamp` on the
+// LAST timestamped record in the jsonl, not the file's mtime.
+//
+// "Last in file order", not "newest by value": records are appended in real
+// time, so the two agree except where interleaved sidechain records land a few
+// ms out of order. Immaterial to ordering between sessions, and reading in file
+// order is what lets the scan stop at the first hit instead of parsing the
+// whole tail.
 //
 // Why mtime is wrong: the Claude CLI appends untimestamped bookkeeping records
 // (`last-prompt`, `mode`, `ai-title`, `queue-operation`) as its process exits,
@@ -31,15 +37,21 @@ const TAIL_BYTES = 64 * 1024;
 export const LAST_ACTIVITY_CACHE_MAX = 5000;
 
 // The identity + change-detection tuple, all read off the stat the caller
-// already has. Correctness argument for each field:
-//   - dev/ino: a file REPLACED at the same path (sessionEdit's fork,
-//     sessionPrune — both tmp+rename) is a different inode, even if the
-//     replacement is byte-identical in length and has its mtime forced back.
-//   - ctimeMs: the only field that cannot be rolled back from userspace (there
-//     is no syscall to set it, and utimes bumps it). This is what makes an
-//     in-place rewrite that preserves mtime AND size still invalidate.
-//   - mtimeMs/size: an append — the only way a live transcript is written —
-//     moves both, so the common case invalidates on two independent fields.
+// already has.
+//
+// `ctimeMs` is what makes the key sound. It cannot be rolled back from
+// userspace — there is no syscall to set it, and utimes bumps it — so it
+// invalidates even an in-place rewrite that restores mtime and preserves size,
+// which `mtimeMs`/`size` alone would miss. `mtimeMs`/`size` are what make the
+// common case (an append) invalidate without depending on ctime semantics.
+//
+// `dev`/`ino` are REDUNDANT against every writer in this repo: the two that
+// replace a transcript (sessionEdit's fork, sessionPrune) go tmp+rename, and a
+// rename-over sets a fresh ctime, so ctime already catches them. They are kept
+// as a cheap guard against a future writer that replaces a file without moving
+// ctime — not because any current path needs them. No test isolates them,
+// because with ctime in the key the case isn't constructible.
+//
 // Together these leave no reachable stale entry, which is why there is no TTL:
 // a TTL would only be a hedge against an unsound key.
 interface Entry {
@@ -56,8 +68,8 @@ function matches(e: Entry, st: Stats): boolean {
     && e.mtimeMs === st.mtimeMs && e.size === st.size;
 }
 
-// Newest `timestamp` in the file's last TAIL_BYTES, as epoch ms, or null when
-// the tail holds no parseable timestamped record.
+// The `timestamp` on the last timestamped record within the file's final
+// TAIL_BYTES, as epoch ms, or null when the tail holds no parseable one.
 async function readTailTimestamp(full: string, size: number): Promise<number | null> {
   const fh = await fs.open(full, 'r');
   try {
