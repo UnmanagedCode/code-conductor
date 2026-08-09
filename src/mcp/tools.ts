@@ -7,7 +7,8 @@ import * as h from './handlers.ts';
 import { EFFORT_LEVELS, DEFAULT_EFFORT } from '../effortLevels.ts';
 import type { InstanceManagerLike } from '../instanceTypes.ts';
 
-const VALID_MODES = ['plan', 'ask', 'bypassPermissions'];
+import { MODES as VALID_MODES } from '../sessionModes.ts';
+
 const VALID_THINKING = ['adaptive', 'enabled', 'disabled'];
 
 // The per-call context the MCP server injects next to the args (mcp/server.ts).
@@ -46,26 +47,27 @@ export function buildTools(): Tool[] {
         'List every project under the projects root as PLAIN TEXT (this tool returns no JSON). ' +
         'One block per project: its absolute path, workspace when set, session counts, a ' +
         'live-worker count, and each worktree with branch, base, ahead/behind and its path. ' +
-        'list_instances names those workers; this tool only counts them.',
+        'list_sessions names those workers; this tool only counts them.',
       inputSchema: { type: 'object', properties: {}, required: [] },
       handler: h.listProjects,
       annotations: { readOnlyHint: true },
     },
     {
-      name: 'list_instances',
+      name: 'list_sessions',
       description:
-        'List every live orchestrator worker, then every stopped session it could resume, as ' +
-        'PLAIN TEXT (this tool returns no JSON). Each worker summary is ' +
+        'Every live orchestrator worker and every stopped session it could resume, as PLAIN TEXT ' +
+        '(this tool returns no JSON), grouped by the directory the sessions live in: each ' +
+        'project\'s main checkout first, then its worktrees. A group header carries its branch, ' +
+        'ahead/behind, and `live N · inactive N · archived N`. ' +
+        'Each LIVE worker summary is ' +
         '{project, cwd, sessionId, status, displayStatus, activeAgentTasks, mode, effort, thinking, ' +
         'backend, model, contextWindowTokens, pid, worktree, temp, conducted, debug, ' +
         'firstPrompt, title, createdAt, lastResponseAt, queuedCount, autoResumeAt, ' +
         'overageActive, overageResetsAt, hasIdleSubscriber, playbook, stage}. ' +
-        'Rows are grouped by project, then worktree, then spawn order. ' +
-        'A second `INACTIVE` heading then lists that scope\'s persisted sessions with no ' +
-        'process, newest first. Their sessionIds still resume. ' +
-        'Archived sessions are never listed by either section, at any argument. ' +
+        'Live rows lead their group, marked LIVE; inactive sessions follow as one line each — ' +
+        'sessionId, mtime, playbook/stage, flags, title — newest first. Their sessionIds still resume. ' +
         'sessionId is the stable handle for every worker-addressing tool. ' +
-        '`playbook`/`stage` say where the worker sits in its playbook graph, or null when it is not ' +
+        '`playbook`/`stage` say where the session sits in its playbook graph, or null when it is not ' +
         'playbook-tracked; playbook_state gives the full run picture. ' +
         '`conducted:true` marks a session spawned via this `spawn_instance` tool. ' +
         '`displayStatus` reads `running` while an idle worker still has background subagents — ' +
@@ -74,8 +76,10 @@ export function buildTools(): Tool[] {
         '`lastResponseAt` separates a long-silent worker from one producing output moments ago. ' +
         '`worktree` is the worktree\'s full metadata object (or null); the rendering shows its name. ' +
         'The rendering omits pid / createdAt / contextWindowTokens, and shows ' +
-        'temp / conducted / debug / overage / auto-resume only when they deviate from their ' +
-        'default — so anything on a worker\'s `flags` line is news. ' +
+        'temp / conducted / debug / overage / auto-resume / resumes-hot only when they deviate from ' +
+        'their default — so anything on a `flags` line is news. ' +
+        '**`resumes-hot` means resuming that session comes up in bypassPermissions** — either it was ' +
+        'recorded in that mode, or it has no recorded mode and therefore falls back to it. ' +
         'Every other tool here returning a worker summary returns that shape as JSON, minus ' +
         '`hasIdleSubscriber`, `playbook` and `stage`.',
       inputSchema: {
@@ -83,35 +87,24 @@ export function buildTools(): Tool[] {
         properties: {
           project: {
             type: 'string',
-            description: 'Restrict both sections to this project (`.conduct` is legal — it is '
+            description: 'Restrict to this project AND its worktrees (`.conduct` is legal — it is '
               + 'where conductors run, though list_projects hides it). A name that is not a '
               + 'project soft-refuses PROJECT_UNKNOWN. '
               + 'Omit for everything, which costs a session scan of every project and worktree — '
               + 'pass it when you know the project.',
           },
+          worktree: {
+            type: 'string',
+            description: 'Narrow to one worktree of `project` (the sibling dir, e.g. '
+              + '"demo_worktree_abc123"). Requires `project`.',
+          },
+          includeArchived: {
+            type: 'boolean',
+            description: 'List archived sessions instead of collapsing them to a per-group '
+              + '`+N archived` count (default false).',
+          },
         },
         required: [],
-      },
-      handler: h.listInstances,
-      annotations: { readOnlyHint: true },
-    },
-    {
-      name: 'list_sessions',
-      description:
-        'List persisted Claude sessions for a project, or for a specific worktree inside it, ' +
-        'as PLAIN TEXT (this tool returns no JSON) — newest-first, one row each: full sessionId, ' +
-        'mtime, size, any of conducted/temp/archived that apply, and the title (or first prompt). ' +
-        '`conducted:true` marks a session spawned via the `spawn_instance` tool (orchestrator-driven). ' +
-        'Archived sessions (killed and retained but hidden from the active list) are excluded by default. ' +
-        'Pass `includeArchived:true` to include them; they will have `archived:true` in the result.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          project: { type: 'string', description: 'Project name under ~/project/.' },
-          worktree: { type: 'string', description: 'Optional worktree name (the sibling dir, e.g. "demo_worktree_abc123").' },
-          includeArchived: { type: 'boolean', description: 'Include archived sessions in the result (default false).' },
-        },
-        required: ['project'],
       },
       handler: h.listSessions,
       annotations: { readOnlyHint: true },
@@ -193,7 +186,7 @@ export function buildTools(): Tool[] {
         type: 'object',
         properties: {
           project: { type: 'string', description: 'Required for a fresh spawn. Optional when resume is given — recovered from the session\'s recorded location if worktree is also omitted.' },
-          mode: { type: 'string', enum: VALID_MODES, description: 'plan / ask / bypassPermissions. Defaults to plan, independent of temp (resume defaults to bypassPermissions).' },
+          mode: { type: 'string', enum: VALID_MODES, description: 'plan / ask / bypassPermissions. Defaults to plan, independent of temp. A `resume` instead inherits the session\'s recorded mode, or bypassPermissions when it has none — list_sessions\' `resumes-hot` flag marks which sessions those are. An explicit value always wins.' },
           effort: {
             type: 'string', enum: EFFORT_LEVELS,
             description:

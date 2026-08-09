@@ -8,6 +8,10 @@ import { getProject, claudeProjectsRoot, encodeCwd, findSessionLocation, readFir
 import { createWorktree, getWorktree, debugBaseDir } from './worktrees.ts';
 import { getTitle as getSessionTitle, setTitle as setSessionTitle, deleteTitle as deleteSessionTitle } from './sessionTitles.ts';
 import { getSessionBackend, markSessionBackend, unmarkSessionBackend, type SessionBackendRecord } from './sessionBackends.ts';
+import {
+  MODES, DEFAULT_MODE, DEFAULT_RESUME_MODE, effectiveResumeMode,
+  getSessionMode, markSessionMode, unmarkSessionMode,
+} from './sessionModes.ts';
 import { isConducted, markConducted, unmarkConducted } from './conductedSessions.ts';
 import { SessionRenewController, type RenewalOpts } from './sessionRenew.ts';
 import { isTemp, markTemp, unmarkTemp } from './tempSessions.ts';
@@ -147,15 +151,10 @@ interface CreateInstanceInput {
   prefill?: string;
 }
 
-// Three user-facing modes:
-//   - `plan`              — read-only planning; CLI is in plan mode
-//   - `ask`               — full power but every destructive tool is gated
-//                           by an interactive PreToolUse hook; CLI is in
-//                           bypassPermissions
-//   - `bypassPermissions` — full power, no gating; CLI is in bypassPermissions
-// The CLI's `default`/`acceptEdits` modes are unusable in stream-json
-// --print (no SDK canUseTool callback), so we don't expose them.
-const VALID_MODES = new Set(['plan', 'ask', 'bypassPermissions']);
+// The mode vocabulary and both defaults live in sessionModes.ts, next to the
+// store that persists a session's mode and the effectiveResumeMode() resolver
+// that reads it — one home for "what modes exist and what does a resume get".
+const VALID_MODES = new Set<string>(MODES);
 
 // `system/task_updated` patch.status values that mean an Agent-tool task is
 // actually done (vs. an in-flight progress patch). Unrecognized statuses are
@@ -204,7 +203,7 @@ const POST_ABORT_DRAIN_MAX = 20;
 
 // The two terminal statuses. Exported because "is this worker dead?" is asked
 // on two MCP surfaces that MUST agree — list_projects' `live N`
-// (liveCountForProject) and which section a worker lands in on list_instances
+// (liveCountForProject) and whether a worker lands in list_sessions' live rows
 // (src/mcp/handlers.ts) — and a second spelling of the rule is how they would
 // drift apart. A dead instance retained in byId (non-temp exits are kept
 // indefinitely, so respawn can resume them) is NOT a live worker.
@@ -219,7 +218,7 @@ export function isDeadStatus(status: unknown): boolean {
 // itself (the orchestrator deliberately does NOT interrupt the workers
 // directly); when it has nothing in flight (it tripped itself, or its workers
 // were momentarily idle) that sentence is dropped so it isn't sent chasing
-// phantom workers (which would waste a list_instances recon round-trip).
+// phantom workers (which would waste a list_sessions recon round-trip).
 // Delivered mid-turn via windDown(), or as a fresh prompt() when the conductor
 // is idle+subscribed.
 function overageConductorSteerText({ hasWorkers }: { hasWorkers: boolean }) {
@@ -269,15 +268,6 @@ export function parseResetEpochSecs(info: unknown): number | null {
   const ms = Date.parse(v as string);                              // ISO-8601 string
   return Number.isFinite(ms) ? Math.floor(ms / 1000) : null;
 }
-// Start fresh instances in read-only plan mode by default. The user can pick
-// `ask` or `code` (= bypassPermissions) in the new-instance dialog, or
-// approve a plan to flip the running instance to bypassPermissions
-// mid-session. **Resumes** default to `bypassPermissions` instead — a
-// resume is almost always continuing real work rather than re-planning,
-// so plan mode would be the wrong starting point.
-const DEFAULT_MODE = 'plan';
-const DEFAULT_RESUME_MODE = 'bypassPermissions';
-
 // `ask` is orchestrator-only — the CLI itself doesn't know about it. At
 // spawn / set_permission_mode time the CLI receives the equivalent
 // bypassPermissions value; the orchestrator tracks `ask` separately and
@@ -1387,6 +1377,10 @@ export class Instance extends EventEmitter implements InstanceLike {
     if (this.backend !== CLAUDE_BACKEND_ID && this.sessionId) {
       markSessionBackend(this.sessionId, this.backend, this.model, this.contextWindowTokens).catch(() => {});
     }
+    // Same reason as the temp marker: this is the first point a fresh spawn has
+    // a sessionId to key the mode record on (the constructor runs before the id
+    // exists). Every later mode change goes through _recordMode.
+    this._recordMode(this.mode);
     this._hydrateTitle().catch(() => {});
     const args = [
       ...launchPrefix,
@@ -1615,6 +1609,7 @@ export class Instance extends EventEmitter implements InstanceLike {
           // CLI-equivalent and we own the higher-level distinction.
           if (!(mode === 'bypassPermissions' && this.mode === 'ask')) {
             this.mode = mode;
+            this._recordMode(mode);
           }
         }
         this._trackModel(data?.model);
@@ -2158,6 +2153,10 @@ export class Instance extends EventEmitter implements InstanceLike {
     try { if (this.temp) await markTemp(newSid); } catch { /* best-effort */ }
     try { if (this.conducted) await markConducted(newSid); } catch { /* best-effort */ }
     try { if (this.title) await setSessionTitle(newSid, this.title); } catch { /* best-effort */ }
+    // Like the conducted/title markers, the old id KEEPS its mode record: the
+    // archived row is still listed under includeArchived, and its resumes-hot
+    // flag should stay accurate rather than degrade to the unrecorded default.
+    try { await markSessionMode(newSid, this.mode); } catch { /* best-effort */ }
     try {
       if (this.backend !== CLAUDE_BACKEND_ID) {
         await markSessionBackend(newSid, this.backend, this.model, this.contextWindowTokens);
@@ -2181,10 +2180,21 @@ export class Instance extends EventEmitter implements InstanceLike {
     return p;
   }
 
+  // Persist the mode a resume should come back up in. Best-effort and
+  // fire-and-forget, like the temp/conducted/backend markers beside it: a
+  // failed write leaves the session unrecorded, which resolves to
+  // DEFAULT_RESUME_MODE — the pre-store behaviour, never a wrong-and-colder
+  // one. Every `this.mode` assignment after the sessionId exists routes here.
+  _recordMode(mode: string): void {
+    if (!this.sessionId) return;
+    markSessionMode(this.sessionId, mode).catch(() => {});
+  }
+
   async setMode(mode: string): Promise<unknown> {
     if (!VALID_MODES.has(mode)) throw new Error('invalid mode');
     await this._controlRequest({ subtype: 'set_permission_mode', mode: cliPermissionMode(mode) });
     this.mode = mode;
+    this._recordMode(mode);
     this.emit('status', this.summary());
     this._writeSessionMetadata().catch(() => {});
     return this.mode;
@@ -2769,7 +2779,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
 
   // How many of a project's workers are NOT dead. The number list_projects
   // prints as `live N`; it reads the same isDeadStatus() rule that decides which
-  // of list_instances' two sections a session lands in, so the two tools cannot
+  // of list_sessions' live/inactive rows a session lands in, so the two tools cannot
   // report a different fleet.
   liveCountForProject(name: string): number {
     return [...this.byId.values()].filter(i => i.project === name && !isDeadStatus(i.status)).length;
@@ -2921,7 +2931,15 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     // create() is policy-light: mode never depends on temp here. The UI's
     // temp⇒bypassPermissions shortcut is applied at the REST route
     // (POST /api/instances), not in this shared path.
-    const defaultMode = resume ? DEFAULT_RESUME_MODE : DEFAULT_MODE;
+    //
+    // A resume inherits the mode the session was recorded in, so bringing a
+    // planning session back doesn't silently hand it full tool access. An
+    // unrecorded session (one that predates the store — there is no backfill)
+    // resolves to DEFAULT_RESUME_MODE, i.e. exactly the previous behaviour.
+    // An explicit `mode` still wins, via the `??` below.
+    const defaultMode = resume
+      ? effectiveResumeMode(await getSessionMode(resume).catch(() => null))
+      : DEFAULT_MODE;
     const finalMode = mode ?? defaultMode;
     if (!VALID_MODES.has(finalMode)) {
       throw Object.assign(new Error('invalid mode (must be plan, ask, or bypassPermissions)'), { statusCode: 400 });

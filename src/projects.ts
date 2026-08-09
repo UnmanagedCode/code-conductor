@@ -6,6 +6,7 @@ import { loadAll as loadAllTitles, deleteTitle as deleteSessionTitle } from './s
 import { loadAll as loadAllConducted, unmarkConducted } from './conductedSessions.ts';
 import { loadAllTemps } from './tempSessions.ts';
 import { loadAllArchived, markArchived, unmarkArchived } from './archivedSessions.ts';
+import { loadAll as loadAllSessionModes, effectiveResumeMode, unmarkSessionMode } from './sessionModes.ts';
 import type { WorktreeMeta } from './worktrees.ts';
 
 // Default projects root = parent directory of the code-conductor repo,
@@ -500,6 +501,11 @@ export interface SessionRow {
   archived: boolean;
   mtime: number;
   size: number;
+  // What `spawn_instance({resume})` would actually come up as — the recorded
+  // mode, or DEFAULT_RESUME_MODE when there is none. Always the EFFECTIVE
+  // value, never the raw record: a consumer that rendered "no record" as "not
+  // hot" would tell a reader a hot resume is safe.
+  resumeMode: string;
 }
 
 export async function listSessionsForCwd(
@@ -520,6 +526,9 @@ export async function listSessionsForCwd(
   const conducted = await loadAllConducted();
   const temps = await loadAllTemps();
   const archived = await loadAllArchived();
+  // One bulk read for the whole scan, like the four sidecars above — the mode
+  // must not cost a file open per session.
+  const modes = await loadAllSessionModes();
   const out: SessionRow[] = [];
   for (const name of entries) {
     if (!name.endsWith('.jsonl')) continue;
@@ -541,6 +550,7 @@ export async function listSessionsForCwd(
       archived: archived.has(sid),
       mtime: stat.mtimeMs,
       size: stat.size,
+      resumeMode: effectiveResumeMode(modes.get(sid) ?? null),
     });
   }
   out.sort((a, b) => b.mtime - a.mtime);
@@ -584,6 +594,7 @@ export async function deleteSessionForCwd(absCwd: string, sessionId: string): Pr
     try { await deleteSessionTitle(sessionId); } catch { /* sidecar cleanup is best-effort */ }
     try { await unmarkConducted(sessionId); } catch { /* sidecar cleanup is best-effort */ }
     try { await unmarkArchived(sessionId); } catch { /* sidecar cleanup is best-effort */ }
+    try { await unmarkSessionMode(sessionId); } catch { /* sidecar cleanup is best-effort */ }
     return true;
   } catch (e) {
     if (errCode(e) === 'ENOENT') return false;

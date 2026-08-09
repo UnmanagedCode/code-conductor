@@ -1,6 +1,6 @@
 // Per-tool plain-text renderers for the MCP tools whose whole result is text:
-// the five recon read tools (list_projects, list_instances, list_worktrees,
-// list_sessions, project_status) plus describe_playbook.
+// the four recon read tools (list_projects, list_worktrees, list_sessions,
+// project_status) plus describe_playbook.
 //
 // The rendering is the tool's ENTIRE result — there is no JSON channel beside
 // it (src/mcp/content.ts textResult). So the bar is: every fact a conductor acts
@@ -21,16 +21,20 @@
 //                  list_sessions({project, worktree}). Accepted: a leaner
 //                  default listing is worth the second call.
 //                  The live workers themselves — `live N` is a COUNT. Naming
-//                  them is list_instances' job, and printing both made the two
+//                  them is list_sessions' job, and printing both made the two
 //                  tools look like they disagreed whenever a worker exited
 //                  between the calls.
-//   list_instances pid (no tool takes one — sessionId is the handle);
-//                  an INACTIVE row's runtime fields — there is no process to
-//                  read a status/mode/model/playbook off, so the row is a short
-//                  session line rather than a worker block full of —;
+//   list_sessions  pid (no tool takes one — sessionId is the handle);
 //                  createdAt (status + lastResponseAt answer "is it moving?");
 //                  contextWindowTokens (a denominator with no numerator on this
-//                  surface — the actionable overage signals are DEVIANT).
+//                  surface — the actionable overage signals are DEVIANT);
+//                  on an INACTIVE row, every runtime field — there is no
+//                  process to read a status/effort/model off, so the row is a
+//                  short session line rather than a worker block full of —,
+//                  and `size`, which identifies nothing a resume needs.
+//                  A recorded `mode` is NOT rendered as a field either; the one
+//                  mode fact that matters off-process is "would resuming this
+//                  come up hot", which is a DEVIANT flag (resumes-hot).
 //   both           firstPrompt when a title exists — the title supersedes it.
 //
 // Handles stay full-length: sessionIds, absolute paths, branch names. A baseSha
@@ -38,9 +42,12 @@
 // shortened (SHA_LEN).
 
 import {
-  DASH, block, bytes, dash, deviations, heading, indent, table, trunc, ts,
+  DASH, block, dash, deviations, heading, indent, table, trunc, ts,
   type DeviantSpec,
 } from './textRender.ts';
+// The one definition of "resuming this lands ungated" — shared with the resume
+// path itself so the flag and the behaviour cannot drift.
+import { resumesHot } from '../sessionModes.ts';
 
 type Row = Record<string, unknown>;
 
@@ -126,11 +133,12 @@ export function renderProjects(projects: unknown): string {
   return block(...parts);
 }
 
-// ---------- list_instances ----------
+// ---------- list_sessions ----------
 //
-// `cwd` is rendered on every row. It is the conductor's self-identification
+// `cwd` is rendered on every LIVE row. It is the conductor's self-identification
 // check — "the one whose cwd ends in .conduct" (conventions/conductor/core.md)
-// — so it has to be readable straight off the text.
+// — so it has to be readable straight off the text. Same for firstPrompt/title,
+// which back "only drive workers you spawned". Neither may be dropped.
 
 const INSTANCE_DEVIANT: DeviantSpec[] = [
   { key: 'temp', default: false, label: 'temp' },
@@ -155,55 +163,115 @@ function instanceRows(rows: Row[]): Array<string | string[]> {
     ];
     const dev = deviations(r, INSTANCE_DEVIANT);
     if (dev.length) lines.push(`flags ${dev.join('  ')}`);
-    parts.push(`[${i + 1}] ${dash(r.sessionId)}`);
+    parts.push(`[${i + 1}] LIVE ${dash(r.sessionId)}`);
     parts.push(indent(lines, 4));
     parts.push('');
   });
   return parts;
 }
 
-// INACTIVE rows are SessionRows (src/projects.ts) — persisted sessions with no
-// live process. They carry none of a worker's runtime facts: no status, mode,
-// effort, model or playbook, because there is no process to have them. So they
-// render as ONE compact line each, in the same column vocabulary as
-// list_sessions (id, mtime, size, deviating flags, title) plus where they live —
-// rather than a 7-line worker block padded with — , which would imply those
-// fields were looked up and came back empty. A reader cannot confuse the two
-// shapes: a live worker is an indented multi-line block, an inactive session is
-// a single table row under its own heading.
+// Inactive rows are SessionRows (src/projects.ts) — persisted sessions with no
+// live process. They carry none of a worker's runtime facts (no status, effort
+// or model) because there is no process to have them, so they render as ONE
+// compact line each rather than a 7-line worker block padded with — , which
+// would imply those fields were looked up and came back empty. A reader cannot
+// confuse the two shapes: a live worker is an indented multi-line block, an
+// inactive session is a single table row.
+//
+// The columns are what identifies a session for a RESUME — id, when, what
+// workflow it is mid-way through, what it would come back as, what it was
+// about. `size` is gone: it identifies nothing and cost a column.
+const SESSION_DEVIANT: DeviantSpec[] = [
+  { key: 'conducted', default: false, label: 'conducted' },
+  { key: 'temp', default: false, label: 'temp' },
+  { key: 'archived', default: false, label: 'archived' },
+  // Safety flag, not a mode column. It reads off SessionRow.resumeMode, which
+  // is the EFFECTIVE mode (recorded, else DEFAULT_RESUME_MODE) — so a session
+  // with no record still flags, because resuming it still comes up hot. The
+  // flag must never be absent on a resume that lands ungated.
+  { key: 'resumesHot', default: false, label: 'resumes-hot' },
+];
+
 function inactiveRows(rows: Row[]): string[] {
-  return table(rows.map(s => [
+  const flagged: Row[] = rows.map(r => ({ ...r, resumesHot: resumesHot(String(r.resumeMode ?? '')) }));
+  return table(flagged.map(s => [
     String(dash(s.sessionId)),
     ts(s.mtime),
-    bytes(s.size),
+    s.playbook ? `${dash(s.playbook)}/${dash(s.stage)}` : DASH,
     deviations(s, SESSION_DEVIANT).join(',') || DASH,
-    `${dash(s.project)}${s.worktree ? `/${s.worktree}` : ''}`,
     trunc(s.title ?? s.firstPrompt, 60),
-  ]), ['l', 'l', 'r', 'l', 'l', 'l']);
+  ]), ['l', 'l', 'l', 'l', 'l']);
 }
 
-// `live` and `inactive` arrive already filtered and ordered — the caller
-// (src/mcp/handlers.ts listInstances) owns the isDeadStatus() split, the session
-// scan and both sorts, so this stays a pure formatter with no instance-model or
-// filesystem dependency.
+// One directory's sessions: the main checkout or a single worktree.
+interface SessionGroup {
+  project: string;
+  worktree: string | null;
+  path: string;
+  branch: string | null;
+  mergeStatus: { ahead: number | null; behind: number | null } | null;
+  live: Row[];
+  inactive: Row[];
+  archivedCount: number;
+}
+
+const asGroups = (v: unknown): SessionGroup[] => (Array.isArray(v) ? v as SessionGroup[] : []);
+
+const counts = (live: number, inactive: number, archived: number) =>
+  `live ${live} · inactive ${inactive} · archived ${archived}`;
+
+// Groups arrive already ordered and filtered — the caller (src/mcp/handlers.ts
+// listSessions) owns the isDeadStatus() split, the session scan, the git
+// lookups and every sort, so this stays a pure formatter with no instance-model
+// or filesystem dependency.
 //
-// The INACTIVE heading is omitted entirely when there is nothing stopped, so the
-// common case does not grow a section; and `project` is echoed on the INSTANCES
-// heading whenever the caller filtered, because an empty filtered list otherwise
-// reads as "no workers anywhere" and would send a conductor down the wrong path.
-export function renderInstances(
-  instances: unknown,
-  { project = null, inactive = [] }: { project?: string | null; inactive?: unknown } = {},
+// Ordering is load-bearing: the main checkout comes first in every project,
+// because it is the one group that always exists, so the top of the output
+// stays put as worktrees come and go. Live rows lead their group.
+//
+// `project` is echoed on the heading whenever the caller filtered, because an
+// empty filtered list otherwise reads as "no sessions anywhere" and would send
+// a conductor down the wrong path.
+export function renderSessions(
+  groups: unknown,
+  { project = null }: { project?: string | null } = {},
 ): string {
-  const rows = asRows(instances);
-  const stopped = asRows(inactive);
+  const all = asGroups(groups);
+  const sum = (pick: (g: SessionGroup) => number, rows: SessionGroup[] = all) =>
+    rows.reduce((n, g) => n + pick(g), 0);
   const filter = project ? `  project ${project}` : '';
   const parts: Array<string | string[]> = [
-    `${heading('INSTANCES', rows.length)}${filter}`, '',
-    ...instanceRows(rows),
+    `SESSIONS (${counts(sum(g => g.live.length), sum(g => g.inactive.length), sum(g => g.archivedCount))})${filter}`,
+    '',
   ];
-  if (stopped.length) parts.push(heading('INACTIVE', stopped.length), '', inactiveRows(stopped));
-  return block(...parts);
+  if (!all.length) return block(...parts).trimEnd();
+
+  // Group headers repeat per project so an unfiltered call stays readable.
+  const projects: string[] = [];
+  for (const g of all) if (!projects.includes(g.project)) projects.push(g.project);
+
+  for (const name of projects) {
+    const mine = all.filter(g => g.project === name);
+    const root = mine.find(g => g.worktree === null);
+    parts.push(`▸ ${name}  ${dash(root?.path)}   ${counts(
+      sum(g => g.live.length, mine), sum(g => g.inactive.length, mine), sum(g => g.archivedCount, mine))}`);
+    for (const g of mine) {
+      const head = g.worktree === null ? 'main checkout' : `worktree ${g.worktree}`;
+      const ab = g.mergeStatus ? `   ${aheadBehind(g.mergeStatus)}` : '';
+      const body: Array<string | string[]> = [
+        `${head}  br ${dash(g.branch)}${ab}   ${counts(g.live.length, g.inactive.length, g.archivedCount)}`,
+      ];
+      // The worktree's own path — the main checkout's is on the project header.
+      if (g.worktree !== null) body.push(indent([dash(g.path)], 2));
+      const inner: Array<string | string[]> = [...instanceRows(g.live)];
+      if (g.inactive.length) inner.push(inactiveRows(g.inactive));
+      if (g.archivedCount) inner.push(`+${g.archivedCount} archived (includeArchived:true to list)`);
+      body.push(indent(block(...inner).split('\n'), 2));
+      parts.push(indent(block(...body).split('\n'), 2));
+      parts.push('');
+    }
+  }
+  return block(...parts).trimEnd();
 }
 
 // ---------- list_worktrees ----------
@@ -230,28 +298,6 @@ export function renderWorktrees(worktrees: unknown): string {
   });
   parts.push(lines);
   return block(...parts);
-}
-
-// ---------- list_sessions ----------
-
-const SESSION_DEVIANT: DeviantSpec[] = [
-  { key: 'conducted', default: false, label: 'conducted' },
-  { key: 'temp', default: false, label: 'temp' },
-  { key: 'archived', default: false, label: 'archived' },
-];
-
-export function renderSessions(sessions: unknown): string {
-  const rows = asRows(sessions);
-  const head = heading('SESSIONS', rows.length);
-  if (!rows.length) return head;
-  const cells = rows.map(s => [
-    String(dash(s.sessionId)),
-    ts(s.mtime),
-    bytes(s.size),
-    deviations(s, SESSION_DEVIANT).join(',') || DASH,
-    trunc(s.title ?? s.firstPrompt, 60),
-  ]);
-  return block(head, '', table(cells, ['l', 'l', 'r', 'l', 'l']));
 }
 
 // ---------- project_status ----------

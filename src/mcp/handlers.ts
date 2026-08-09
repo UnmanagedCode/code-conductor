@@ -41,7 +41,7 @@ import { isKnownFamily, isKnownTier, defaultVersion, familyOf, CLAUDE_BACKEND_ID
 import { getTierBackend, resolveRoleBackend, isResolvableRole, backendForModel } from '../appSettings.ts';
 import { textPayload, textResult } from './content.ts';
 import {
-  renderProjects, renderInstances, renderWorktrees, renderSessions, renderProjectStatus,
+  renderProjects, renderWorktrees, renderSessions, renderProjectStatus,
   renderPlaybook,
 } from './readRenderers.ts';
 import { pageInstanceEvents } from '../eventArchive.ts';
@@ -103,7 +103,7 @@ interface DiffFileRow {
 // An EXPLICIT ALLOWLIST, not a spread with keys deleted. The previous
 // `({id, callerInstanceId, ...rest}) => rest` form silently published every
 // field ever added to summary() — that is how `sonnetWindow` reached
-// list_instances / spawn_instance / wait_for_idle.summary / respawn_instance /
+// list_sessions / spawn_instance / wait_for_idle.summary / respawn_instance /
 // promote_session without ever being documented. Adding a key here is now a
 // deliberate act, and CONDUCTOR_VIEW_KEYS is asserted against the documented
 // list in src/mcp/tools.ts by tests/mcp-conductor-view.test.mjs, so the two
@@ -153,7 +153,7 @@ export const CONDUCTOR_VIEW_KEYS = [
 
 // The three fields listInstances attaches on top of the shared projection (see
 // the note in listInstances). Exported so the two tests that bind against the
-// full list_instances key set — the doc-drift gate in
+// full list_sessions key set — the doc-drift gate in
 // tests/mcp-conductor-view.test.mjs and the rendering gate in
 // tests/mcp-text-render.test.mjs — read one definition instead of two copies.
 export const LIST_ONLY_KEYS = ['hasIdleSubscriber', 'playbook', 'stage'];
@@ -278,7 +278,7 @@ export async function listProjects(_args: McpArgs, { instances }: McpCtx) {
   return textResult(renderProjects(enriched));
 }
 
-// Row order for list_instances. Map insertion order (what list() hands back) is
+// Live-row order within a list_sessions group. Map insertion order (what list() hands back) is
 // creation order of the in-process Instance objects — deterministic between two
 // calls, but incidental: it interleaves projects, and boot-restore reshuffles it.
 // This groups a project's workers together, and within a project puts a
@@ -300,15 +300,38 @@ export function compareInstanceRows(a: Record<string, unknown>, b: Record<string
 
 // Every cwd whose sessions belong to `project` — the project root plus each of
 // its worktrees. One scan target per entry.
+// The WorktreeMeta rides along: it already carries the branch, and enumerating
+// worktrees costs a `git worktree list` per project — doing it a second time to
+// look the metadata back up was the single most expensive thing in an
+// unfiltered scan.
 async function sessionCwdsFor(p: { name: string; path: string }) {
   const wts = await fsListWorktrees(p.name).catch(() => []);
   return [
-    { project: p.name, worktree: null as string | null, cwd: p.path },
-    ...wts.map(w => ({ project: p.name, worktree: w.worktreeName, cwd: w.worktreePath })),
+    { project: p.name, worktree: null as string | null, cwd: p.path, meta: null as WorktreeMeta | null },
+    ...wts.map(w => ({ project: p.name, worktree: w.worktreeName, cwd: w.worktreePath, meta: w })),
   ];
 }
 
-export async function listInstances(args: McpArgs, { instances, playbookGate }: McpCtx) {
+// Branch + divergence for a group header, so a reader can judge whether
+// resuming a session lands somewhere useful without a second list_worktrees
+// call. Best-effort: a non-repo or a detached HEAD renders as — rather than
+// failing the listing.
+//
+// ahead/behind is a WORKTREE fact here — commits vs the base branch it will
+// merge back into, which is what decides whether resuming into it is useful. A
+// main checkout gets its branch only: its equivalent number would be vs the
+// remote upstream, a different question that renders `? ?` on every project
+// without one, and it cost three git subprocesses per project to say nothing.
+// `list_projects` still reports it for projects that do have an upstream.
+async function groupGit(dir: string, meta: WorktreeMeta | null) {
+  // A worktree's branch is already recorded in its metadata — only a main
+  // checkout has to ask git, and only it can be on a branch we don't know.
+  if (meta) return { branch: meta.branch ?? null, mergeStatus: await getWorktreeMergeStatus(meta).catch(() => null) };
+  const headRef = await runGit(dir, ['symbolic-ref', '--quiet', '--short', 'HEAD']).catch(() => null);
+  return { branch: headRef?.code === 0 ? headRef.stdout.trim() || null : null, mergeStatus: null };
+}
+
+export async function listSessions(args: McpArgs, { instances, playbookGate }: McpCtx) {
   // The filter is validated, not free-form: a typo'd name would otherwise render
   // as an empty fleet, which reads as "everything finished". getProject is the
   // check because it is the same one every project-addressing tool uses, and ''
@@ -319,6 +342,8 @@ export async function listInstances(args: McpArgs, { instances, playbookGate }: 
   // conductor must be able to reach its own sessions either way. An absent dir
   // just scans to nothing (listSessionsForCwd returns [] on ENOENT).
   const project = args?.project === undefined ? null : String(args.project ?? '');
+  const worktreeArg = args?.worktree === undefined ? null : String(args.worktree ?? '');
+  const includeArchived = args?.includeArchived === true;
   const conductTarget = { name: CONDUCT_PROJECT_NAME, path: conductProjectPath() };
   let target: { name: string; path: string } | null = null;
   if (project === CONDUCT_PROJECT_NAME) {
@@ -331,7 +356,10 @@ export async function listInstances(args: McpArgs, { instances, playbookGate }: 
         reason: `no project '${project}' — call list_projects for the names (its own project is '${CONDUCT_PROJECT_NAME}')` };
     }
   }
-  if (!instances) return textResult(renderInstances([], { project }));
+  if (worktreeArg !== null && !target) {
+    return { ok: false, code: 'PROJECT_REQUIRED', worktree: worktreeArg,
+      reason: 'worktree narrows a project — pass `project` alongside it' };
+  }
   // Read-only, and folds nothing into being: absent ledger ⇒ empty projection.
   const proj = playbookGate ? await playbookGate.readProjection() : null;
   const view = (row: InstanceSummary & { hasIdleSubscriber: boolean }): Record<string, unknown> => {
@@ -348,35 +376,80 @@ export async function listInstances(args: McpArgs, { instances, playbookGate }: 
   };
   // A dead instance retained in byId (non-temp exits are never dropped) is not a
   // live worker: it fails isDeadStatus, so it is excluded here AND left out of
-  // the exclusion set below, which is what lets it reappear as an INACTIVE row
-  // off its own transcript. The two sections are disjoint by construction.
-  const live = instances.list().filter(r => !isDeadStatus(r.status))
+  // the exclusion set below, which is what lets it reappear as an inactive row
+  // off its own transcript. Live and inactive are disjoint by construction.
+  const live = (instances ? instances.list() : []).filter(r => !isDeadStatus(r.status))
     .filter(r => project === null || r.project === project)
     .map(view)
     .sort(compareInstanceRows);
   const attached = new Set(live.map(r => r.sessionId).filter((s): s is string => typeof s === 'string'));
 
-  // INACTIVE rows come off disk, from the one function that already owns "which
+  // Inactive rows come off disk, from the one function that already owns "which
   // sessions exist for a cwd, and which of them are archived"
-  // (listSessionsForCwd — also behind GET /projects/:name/sessions and
-  // list_sessions). includeArchived:false is not a default we could flip: an
-  // archived session is one a human or a kill deliberately took off the list.
+  // (listSessionsForCwd — also behind GET /projects/:name/sessions).
   // fsListProjects skips dotdirs, so the unfiltered scope must add `.conduct`
   // back explicitly. Without it a conductor looking for its own prior session to
   // resume — after a restart, a /clear, or a crash — gets every other project's
   // stopped sessions and none of its own.
   const scope = target ? [target] : [...await fsListProjects(), conductTarget];
-  const targets = (await Promise.all(scope.map(sessionCwdsFor))).flat();
-  const inactive = (await Promise.all(targets.map(async t => {
-    const rows = await listSessionsForCwd(t.cwd, attached, { includeArchived: false }).catch(() => []);
-    return rows.map(s => ({ ...s, project: t.project, worktree: t.worktree }));
-  }))).flat()
-    // Newest first: on a list of sessions nobody is working on, "which did I
-    // touch last" is the question. mtime, since a stopped session has no
-    // createdAt on this surface and its transcript's mtime IS its last activity.
-    .sort((a, b) => b.mtime - a.mtime);
+  let targets = (await Promise.all(scope.map(sessionCwdsFor))).flat();
+  if (worktreeArg !== null) {
+    targets = targets.filter(t => t.worktree === worktreeArg);
+    if (!targets.length) throw new Error(`worktree '${worktreeArg}' not found under project '${project}'`);
+  }
 
-  return textResult(renderInstances(live, { project, inactive }));
+  const groups = await Promise.all(targets.map(async t => {
+    // The archived COUNT comes from summarizeSessions (readdir + stat, no file
+    // opens) rather than from scanning the archived rows themselves: on a busy
+    // project archived outnumbers active ~25:1, and listSessionsForCwd opens
+    // every transcript it returns to read its first prompt. Counting them the
+    // expensive way made an unfiltered scan several times slower for a number
+    // that renders as `+N archived`.
+    const [rows, summary] = await Promise.all([
+      listSessionsForCwd(t.cwd, attached, { includeArchived }).catch(() => []),
+      includeArchived ? null : summarizeSessions(t.cwd, attached).catch(() => ({ archivedCount: 0 })),
+    ]);
+    const liveHere = live.filter(r => r.project === t.project
+      && (r.worktree && typeof r.worktree === 'object'
+        ? (r.worktree as Record<string, unknown>).worktreeName : null) === t.worktree);
+    const archivedCount = summary ? summary.archivedCount : rows.filter(s => s.archived).length;
+    // A group with nothing in it is dropped from an unfiltered listing, and its
+    // branch/ahead-behind is never computed — that header exists to help judge a
+    // resume, and there is nothing here to resume. An explicitly named project
+    // always renders, so `project foo` with an empty fleet reads as empty rather
+    // than as a missing project.
+    const empty = !liveHere.length && !rows.length && !archivedCount;
+    if (empty && project === null) return null;
+    const { branch, mergeStatus } = await groupGit(t.cwd, t.meta);
+    const tracked = (sid: string) => (proj ? proj.bySession.get(sid) : undefined);
+    return {
+      project: t.project,
+      worktree: t.worktree,
+      path: t.cwd,
+      branch,
+      mergeStatus,
+      live: liveHere,
+      // Newest first: on a list of sessions nobody is working on, "which did I
+      // touch last" is the question. mtime, since a stopped session has no
+      // createdAt on this surface and its transcript's mtime IS its last activity.
+      inactive: [...rows]
+        .sort((a, b) => b.mtime - a.mtime)
+        .map(s => ({
+          ...s,
+          playbook: tracked(s.sessionId)?.playbook ?? null,
+          stage: tracked(s.sessionId)?.stage ?? null,
+        })),
+      archivedCount,
+    };
+  }));
+
+  // Main checkout first within each project — it is the one group that always
+  // exists, so the top of the output stays put as worktrees come and go.
+  const kept = groups.filter((g): g is NonNullable<typeof g> => g !== null);
+  kept.sort((a, b) => a.project.localeCompare(b.project)
+    || (a.worktree === null ? -1 : b.worktree === null ? 1 : a.worktree.localeCompare(b.worktree)));
+
+  return textResult(renderSessions(kept, { project }));
 }
 
 // ---------- playbooks: the read / introspection surface ----------
@@ -556,19 +629,6 @@ function membersOf(proj: Projection, anchor: string) {
     .map(sid => proj.bySession.get(sid))
     .filter((s): s is NonNullable<typeof s> => !!s)
     .map(s => ({ sessionId: s.sessionId, playbook: s.playbook, stage: s.stage, live: s.live }));
-}
-
-export async function listSessions({ project, worktree, includeArchived = false }: { project: string; worktree?: string; includeArchived?: boolean }) {
-  let sessions;
-  if (worktree) {
-    const wt = await getWorktree(project, worktree);
-    if (!wt) throw new Error(`worktree '${worktree}' not found under project '${project}'`);
-    sessions = await listSessionsForCwd(wt.worktreePath);
-  } else {
-    sessions = await fsListSessions(project);
-  }
-  const rows = includeArchived ? sessions : sessions.filter(s => !s.archived);
-  return textResult(renderSessions(rows));
 }
 
 // Map the shared worktree-metadata shape (whose property is `worktreeName`)

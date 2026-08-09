@@ -151,7 +151,7 @@ test('tools/list returns the full expected tool catalog', async () => {
     'interrupt_turn',
     'kill_instance',
     'list_conductor_conventions',
-    'list_instances', 'list_playbooks', 'list_project_conventions', 'list_projects', 'list_sessions',
+    'list_playbooks', 'list_project_conventions', 'list_projects', 'list_sessions',
     'list_workspaces', 'list_worktrees',
     'locate_session',
     'merge_worktree',
@@ -196,7 +196,7 @@ test('list_projects sees projects created via REST', async () => {
   assert.ok(out.indexOf('▸ alpha') < out.indexOf('▸ beta'), 'stable name order');
   // Both entries carry the per-project counts, not just the header.
   assert.equal((out.match(/^ {2}live \d+$/gm) ?? []).length, 2);
-  // `live` is a count and nothing else — naming the workers is list_instances'
+  // `live` is a count and nothing else — naming the workers is list_sessions'
   // job, and printing ids in both places is what made them look inconsistent.
   assert.equal(out.split('\n').filter(l => /^\s+[0-9a-f-]{36}$/.test(l)).length, 0,
     `no sessionId may appear in a project block:\n${out}`);
@@ -397,19 +397,28 @@ test('list_sessions marks MCP-spawned sessions conducted:true, HTTP ones false, 
       '{"type":"user","uuid":"u","message":{"role":"user","content":"hi"}}\n');
   }
 
+  // A session renders either as a multi-line LIVE block or as one inactive
+  // row, so pull the whole entry rather than assuming a single line.
+  const entryFor = (sid, s) => {
+    const lines = s.split('\n').map(l => l.trim());
+    const at = lines.findIndex(l => l === `${sid}` || l.startsWith(`${sid} `) || l.endsWith(`LIVE ${sid}`));
+    if (at < 0) return null;
+    const rest = lines.slice(at + 1);
+    const end = rest.findIndex(l => l === '');
+    return [lines[at], ...(end < 0 ? rest : rest.slice(0, end))].join('\n');
+  };
   const out = text(await callTool(baseUrl, 'list_sessions', { project: 'a' }));
-  const rowFor = (sid, s = out) => s.split('\n').find(l => l.startsWith(sid));
-  assert.ok(rowFor(condSid), 'conducted session is returned (separation, not a filter)');
-  assert.ok(rowFor(httpSid), 'non-conducted session is returned');
-  assert.match(rowFor(condSid), /\bconducted\b/, 'MCP session marked conducted');
-  assert.doesNotMatch(rowFor(httpSid), /\bconducted\b/, 'HTTP session carries no marker');
+  assert.ok(entryFor(condSid, out), `conducted session is returned (separation, not a filter):\n${out}`);
+  assert.ok(entryFor(httpSid, out), 'non-conducted session is returned');
+  assert.match(entryFor(condSid, out), /\bconducted\b/, 'MCP session marked conducted');
+  assert.doesNotMatch(entryFor(httpSid, out), /\bconducted\b/, 'HTTP session carries no marker');
 
   // The marker is durable: it survives the live instance going away
   // (simulating restart/resume recognition) because it reads from the
   // on-disk sidecar, not the in-memory instance.
   await callTool(baseUrl, 'kill_instance', { sessionId: cond.sessionId });
   const out2 = text(await callTool(baseUrl, 'list_sessions', { project: 'a' }));
-  assert.match(rowFor(condSid, out2) ?? '', /\bconducted\b/,
+  assert.match(entryFor(condSid, out2) ?? '', /\bconducted\b/,
     'conducted marker persists after the instance exits');
 });
 
@@ -464,11 +473,19 @@ test('temp conducted session persists the conducted marker and recovers it on re
 });
 
 test('argument validation rejects a missing required field via isError', async () => {
+  // list_sessions takes no required argument any more (omitting `project`
+  // means "everything"), so the machinery is pinned on a tool that does.
   const { body } = await rpc(baseUrl, 'tools/call', {
-    name: 'list_sessions', arguments: {},
+    name: 'locate_session', arguments: {},
   });
   assert.equal(body.result.isError, true);
-  assert.match(body.result.content[0].text, /missing required argument: project/);
+  assert.match(body.result.content[0].text, /missing required argument: sessionId/);
+});
+
+test('list_sessions narrowed to a worktree needs the project it belongs to', async () => {
+  const out = JSON.parse(text(await callTool(baseUrl, 'list_sessions', { worktree: 'demo_worktree_ab12' })));
+  assert.equal(out.ok, false);
+  assert.equal(out.code, 'PROJECT_REQUIRED');
 });
 
 test('locate_session finds an on-disk session by id, 404s when missing', async () => {
@@ -1265,7 +1282,7 @@ test('sessionId is the only worker handle: returns carry sessionId, never id/cal
   assert.equal(sent.sessionId, spawn.sessionId);
   assert.equal(sent.id, undefined);
 
-  const out = text(await callTool(baseUrl, 'list_instances', {}));
+  const out = text(await callTool(baseUrl, 'list_sessions', {}));
   assert.ok(out.includes(spawn.sessionId), 'worker is listed by sessionId');
   assert.ok(!out.includes(instForSession(instances, spawn.sessionId).id),
     'the per-process instanceId never reaches this surface');

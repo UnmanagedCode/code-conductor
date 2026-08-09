@@ -1,5 +1,5 @@
 // Plain-text rendering layer for the MCP tools whose whole result is text: the
-// five recon read tools plus describe_playbook.
+// four recon read tools plus describe_playbook.
 //
 // Pure tests — no server boot, no I/O: hand-built payloads in, exact strings
 // out, mirroring tests/mcp-recent-turn-bond.test.mjs. The rendering is the
@@ -13,7 +13,7 @@ import {
   bytes, dash, deviations, heading, indent, table, trunc, ts, block, DASH,
 } from '../src/mcp/textRender.ts';
 import {
-  renderProjects, renderInstances, renderWorktrees, renderSessions, renderProjectStatus,
+  renderProjects, renderWorktrees, renderSessions, renderProjectStatus,
   renderPlaybook,
 } from '../src/mcp/readRenderers.ts';
 import { CONDUCTOR_VIEW_KEYS, LIST_ONLY_KEYS } from '../src/mcp/handlers.ts';
@@ -198,7 +198,7 @@ describe('renderProjects', () => {
   });
 
   test('live is a count — no worker is named here', () => {
-    // The whole point of the split: naming workers is list_instances' job, and
+    // The whole point of the split: naming workers is list_sessions' job, and
     // printing ids in both places made them look inconsistent whenever one
     // exited between the calls. A bare handle on its own line is the shape that
     // must never come back.
@@ -256,43 +256,57 @@ const INSTANCE = {
   stage: 'implement',
 };
 
-describe('renderInstances', () => {
+// One SessionGroup in the shape renderSessions takes (src/mcp/readRenderers.ts).
+const grp = (over = {}) => ({
+  project: 'code-conductor', worktree: null, path: '/w/cc-projects/code-conductor',
+  branch: 'main', mergeStatus: null, live: [], inactive: [], archivedCount: 0, ...over,
+});
+// A stopped session as the handler hands it over: a SessionRow plus the
+// playbook join and the EFFECTIVE resume mode.
+const stoppedRow = (over = {}) => ({
+  sessionId: SID_B, firstPrompt: 'Draft release notes', title: null,
+  conducted: false, temp: false, archived: false, mtime: 1786001000000, size: 4300,
+  playbook: null, stage: null, resumeMode: 'plan', ...over,
+});
+const liveOnly = (rows, opts) => renderSessions([grp({ live: rows })], opts);
+
+describe('renderSessions — live rows', () => {
   test('a worker at every default renders no flags line', () => {
-    assert.equal(renderInstances([INSTANCE]), [
-      'INSTANCES (1)',
+    assert.equal(liveOnly([INSTANCE]), [
+      'SESSIONS (live 1 · inactive 0 · archived 0)',
       '',
-      `[1] ${SID_A}`,
-      '    status idle   display running   agents 2   queued 0   idle-sub yes',
-      '    project code-conductor   worktree code-conductor_worktree_dcd22e',
-      '    cwd /w/cc-projects/code-conductor_worktree_dcd22e',
-      '    mode code   effort high   thinking adaptive   model claude/claude-opus-5',
-      '    playbook classic / implement',
-      '    title Recon read tools plain-text rendering',
-      '    last 2026-08-06 07:23Z',
+      '▸ code-conductor  /w/cc-projects/code-conductor   live 1 · inactive 0 · archived 0',
+      '  main checkout  br main   live 1 · inactive 0 · archived 0',
+      `    [1] LIVE ${SID_A}`,
+      '        status idle   display running   agents 2   queued 0   idle-sub yes',
+      '        project code-conductor   worktree code-conductor_worktree_dcd22e',
+      '        cwd /w/cc-projects/code-conductor_worktree_dcd22e',
+      '        mode code   effort high   thinking adaptive   model claude/claude-opus-5',
+      '        playbook classic / implement',
+      '        title Recon read tools plain-text rendering',
+      '        last 2026-08-06 07:23Z',
     ].join('\n'));
   });
 
   test('every deviating field surfaces on the flags line', () => {
-    const out = renderInstances([{
+    const out = liveOnly([{
       ...INSTANCE,
       temp: true, conducted: true, debug: true,
       overageActive: true, overageResetsAt: 1786020000000, autoResumeAt: 1786021000000,
     }]);
-    assert.match(out, /^ {4}flags temp {2}conducted {2}debug {2}OVERAGE {2}overage-resets 2026-08-06 12:40Z {2}auto-resume 2026-08-06 12:56Z$/m);
+    assert.match(out, /^ {8}flags temp {2}conducted {2}debug {2}OVERAGE {2}overage-resets 2026-08-06 12:40Z {2}auto-resume 2026-08-06 12:56Z$/m);
   });
 
   test('firstPrompt stands in only when there is no title', () => {
-    const titled = renderInstances([INSTANCE]);
-    assert.ok(!titled.includes('Do the thing'), 'firstPrompt is redundant beside a title');
-    const untitled = renderInstances([{ ...INSTANCE, title: null }]);
-    assert.match(untitled, /title — {3}first Do the thing/);
+    assert.ok(!liveOnly([INSTANCE]).includes('Do the thing'), 'firstPrompt is redundant beside a title');
+    assert.match(liveOnly([{ ...INSTANCE, title: null }]), /title — {3}first Do the thing/);
   });
 
   test('worktree is a WorktreeMeta object — the text shows its name, not [object Object]', () => {
     // InstanceSummary.worktree is the whole meta object plus a
     // postWorktreeCreate report (src/instances.ts), unlike every other tool
     // here where `worktree` is a bare name.
-    const out = renderInstances([{
+    const out = liveOnly([{
       ...INSTANCE,
       worktree: {
         worktreeName: 'demo_worktree_ab12', branch: 'demo/ab12', baseBranch: 'main',
@@ -301,98 +315,154 @@ describe('renderInstances', () => {
     }]);
     assert.match(out, /worktree demo_worktree_ab12$/m);
     assert.ok(!out.includes('[object Object]'));
-    assert.ok(!out.includes('noise'), 'the nested postWorktreeCreate report is not rendered');
   });
 
-  test('an untracked worker reads as not-in-a-playbook, not as missing data', () => {
-    assert.match(renderInstances([{ ...INSTANCE, playbook: null, stage: null }]),
-      /playbook — \/ —/);
+  test('a live row is marked LIVE so it cannot be read as a stopped session', () => {
+    assert.match(liveOnly([INSTANCE]), new RegExp(`^ {4}\\[1\\] LIVE ${SID_A}$`, 'm'));
   });
 
-  test('cwd is readable off the text — the self-identification check', () => {
-    // conventions/conductor/core.md: "yours is the one whose cwd ends in .conduct".
-    const out = renderInstances([{ ...INSTANCE, project: '.conduct', worktree: null, cwd: '/w/cc-projects/.conduct' }]);
-    const line = out.split('\n').find(l => l.trim().startsWith('cwd '));
-    assert.ok(line, 'every worker row must carry a cwd line');
-    assert.ok(line.trim().endsWith('.conduct'), `cwd must be checkable for a .conduct suffix; got "${line}"`);
+  test('an untracked worker still renders the playbook line, as absent', () => {
+    assert.match(liveOnly([{ ...INSTANCE, playbook: null, stage: null }]),
+      /^ {8}playbook — \/ —$/m);
   });
 
-  test('no live workers', () => {
-    assert.equal(renderInstances([]), 'INSTANCES (none)');
+  test('the conductor own-session check reads cwd straight off the text', () => {
+    // conventions/conductor/core.md tells the conductor to identify itself by
+    // the row whose cwd ends in .conduct. Dropping cwd would break it silently.
+    const out = liveOnly([{ ...INSTANCE, project: '.conduct', worktree: null, cwd: '/w/cc-projects/.conduct' }]);
+    assert.match(out, /^ {8}cwd \/w\/cc-projects\/\.conduct$/m);
   });
 
-  test('nothing is stopped — no INACTIVE section at all', () => {
-    // The common case must not grow a heading for an empty set.
-    assert.ok(!renderInstances([INSTANCE]).includes('INACTIVE'));
-    assert.ok(!renderInstances([INSTANCE], { inactive: [] }).includes('INACTIVE'));
+  test('nothing anywhere', () => {
+    assert.equal(renderSessions([]), 'SESSIONS (live 0 · inactive 0 · archived 0)');
   });
 
+  test('a filter is echoed on the heading, so an empty result is not read as an idle fleet', () => {
+    assert.equal(renderSessions([], { project: 'code-conductor' }),
+      'SESSIONS (live 0 · inactive 0 · archived 0)  project code-conductor');
+    assert.match(liveOnly([INSTANCE], { project: 'code-conductor' }),
+      /^SESSIONS \(live 1 · inactive 0 · archived 0\) {2}project code-conductor$/m);
+    // Unfiltered stays exactly as it was.
+    assert.match(liveOnly([INSTANCE]), /^SESSIONS \(live 1 · inactive 0 · archived 0\)$/m);
+  });
+});
+
+describe('renderSessions — inactive rows, grouping and archived', () => {
   test('an inactive session is one short line, not a worker block padded with dashes', () => {
-    // A SessionRow has no status/mode/model/playbook. Rendering it in the live
-    // 7-line shape would claim those were looked up and came back empty; the
-    // reader must be able to tell the two apart at a glance.
-    const stopped = {
-      sessionId: SID_B, firstPrompt: 'Draft release notes', title: null,
-      conducted: true, temp: true, archived: false,
-      mtime: 1786001000000, size: 4300,
-      project: 'code-conductor', worktree: 'code-conductor_worktree_dcd22e',
-    };
-    assert.equal(renderInstances([INSTANCE], { inactive: [stopped] }), [
-      'INSTANCES (1)',
+    // A SessionRow has no status/effort/model. Rendering it in the live 7-line
+    // shape would claim those were looked up and came back empty; the reader
+    // must be able to tell the two apart at a glance.
+    assert.equal(renderSessions([grp({ live: [INSTANCE], inactive: [stoppedRow({ conducted: true, temp: true })] })]), [
+      'SESSIONS (live 1 · inactive 1 · archived 0)',
       '',
-      `[1] ${SID_A}`,
-      '    status idle   display running   agents 2   queued 0   idle-sub yes',
-      '    project code-conductor   worktree code-conductor_worktree_dcd22e',
-      '    cwd /w/cc-projects/code-conductor_worktree_dcd22e',
-      '    mode code   effort high   thinking adaptive   model claude/claude-opus-5',
-      '    playbook classic / implement',
-      '    title Recon read tools plain-text rendering',
-      '    last 2026-08-06 07:23Z',
+      '▸ code-conductor  /w/cc-projects/code-conductor   live 1 · inactive 1 · archived 0',
+      '  main checkout  br main   live 1 · inactive 1 · archived 0',
+      `    [1] LIVE ${SID_A}`,
+      '        status idle   display running   agents 2   queued 0   idle-sub yes',
+      '        project code-conductor   worktree code-conductor_worktree_dcd22e',
+      '        cwd /w/cc-projects/code-conductor_worktree_dcd22e',
+      '        mode code   effort high   thinking adaptive   model claude/claude-opus-5',
+      '        playbook classic / implement',
+      '        title Recon read tools plain-text rendering',
+      '        last 2026-08-06 07:23Z',
       '',
-      'INACTIVE (1)',
-      '',
-      `${SID_B}  2026-08-06 07:23Z  4.2 KB  conducted,temp  code-conductor/code-conductor_worktree_dcd22e  Draft release notes`,
+      `    ${SID_B}  2026-08-06 07:23Z  —  conducted,temp  Draft release notes`,
     ].join('\n'));
   });
 
-  test('an inactive row claims no runtime state', () => {
-    const out = renderInstances([], { inactive: [{
-      sessionId: SID_B, firstPrompt: 'x', title: 'T', conducted: false, temp: false,
-      archived: false, mtime: 1, size: 1, project: 'p', worktree: null,
-    }] });
-    for (const claim of ['status ', 'mode ', 'playbook ', 'display ', 'idle-sub ']) {
+  test('an inactive row claims no runtime state, and no size', () => {
+    const out = renderSessions([grp({ inactive: [stoppedRow({ title: 'T' })] })]);
+    for (const claim of ['status ', 'mode ', 'display ', 'idle-sub ', 'effort ']) {
       assert.ok(!out.includes(claim), `an inactive row must not render "${claim}" — there is no process to read it from:\n${out}`);
     }
-    assert.match(out, /^\S{36}  1970-01-01 00:00Z  1 B  —  p  T$/m, 'a worktree-less row shows the bare project');
+    assert.ok(!/\d+(\.\d+)? (B|KB|MB)/.test(out), `size was dropped from the inactive row:\n${out}`);
+  });
+
+  test('a playbook-tracked stopped session shows where it stopped', () => {
+    const out = renderSessions([grp({ inactive: [stoppedRow({ playbook: 'classic', stage: 'review' })] })]);
+    assert.match(out, /classic\/review/);
   });
 
   test('inactive rows render in the order given, and every one of them', () => {
     // Ordering is the caller's (newest first by mtime); the renderer must not
     // reorder or drop. Two rows minimum — one row cannot detect either bug.
-    const mk = (sid, mtime, title) => ({ sessionId: sid, firstPrompt: null, title,
-      conducted: false, temp: false, archived: false, mtime, size: 0, project: 'p', worktree: null });
-    const out = renderInstances([], { inactive: [
-      mk(SID_A, 1786001000000, 'newest'), mk(SID_B, 1785900000000, 'older'),
-    ] });
-    assert.match(out, /^INACTIVE \(2\)$/m);
+    const out = renderSessions([grp({ inactive: [
+      stoppedRow({ sessionId: SID_A, title: 'newest', mtime: 1786001000000 }),
+      stoppedRow({ sessionId: SID_B, title: 'older', mtime: 1785900000000 }),
+    ] })]);
     const lines = out.split('\n').filter(l => l.includes('newest') || l.includes('older'));
     assert.equal(lines.length, 2, 'both rows must render');
     assert.ok(lines[0].includes('newest') && lines[1].includes('older'), `given order must be preserved:\n${out}`);
   });
 
-  test('an all-stopped scope reads as none live, not as a fleet still working', () => {
-    const out = renderInstances([], { inactive: [{ sessionId: SID_A, firstPrompt: null,
-      title: 'T', conducted: false, temp: false, archived: false, mtime: 1, size: 1,
-      project: 'p', worktree: null }] });
-    assert.match(out, /^INSTANCES \(none\)$/m);
-    assert.match(out, /^INACTIVE \(1\)$/m);
+  test('archived collapses to a per-group count and never silently vanishes', () => {
+    const out = renderSessions([grp({ inactive: [stoppedRow()], archivedCount: 51 })]);
+    assert.match(out, /^ {4}\+51 archived \(includeArchived:true to list\)$/m);
+    assert.match(out, /live 0 · inactive 1 · archived 51/);
   });
 
-  test('a filter is echoed on the heading, so an empty result is not read as an idle fleet', () => {
-    assert.equal(renderInstances([], { project: 'code-conductor' }), 'INSTANCES (none)  project code-conductor');
-    assert.match(renderInstances([INSTANCE], { project: 'code-conductor' }), /^INSTANCES \(1\) {2}project code-conductor$/m);
-    // Unfiltered stays exactly as it was.
-    assert.match(renderInstances([INSTANCE]), /^INSTANCES \(1\)$/m);
+  test('an expanded archived row is flagged as archived', () => {
+    const out = renderSessions([grp({ inactive: [stoppedRow({ archived: true })] })]);
+    assert.match(out, /archived/);
+  });
+
+  test('the main checkout leads its project, then worktrees, each with its own header', () => {
+    const out = renderSessions([
+      grp({ inactive: [stoppedRow({ title: 'on main' })] }),
+      grp({ worktree: 'cc_worktree_ab12', path: '/w/cc-projects/cc_worktree_ab12',
+        branch: 'cc/ab12', mergeStatus: { ahead: 3, behind: 0 },
+        inactive: [stoppedRow({ sessionId: SID_A, title: 'on wt' })], archivedCount: 2 }),
+    ]);
+    const heads = out.split('\n').filter(l => /^ {2}(main checkout|worktree )/.test(l));
+    assert.equal(heads.length, 2);
+    assert.match(heads[0], /^ {2}main checkout {2}br main {3}live 0 · inactive 1 · archived 0$/);
+    assert.match(heads[1], /^ {2}worktree cc_worktree_ab12 {2}br cc\/ab12 {3}ahead 3 {2}behind 0 {3}live 0 · inactive 1 · archived 2$/);
+    assert.ok(out.indexOf('on main') < out.indexOf('on wt'), 'the main checkout must come first');
+    assert.match(out, /^ {4}\/w\/cc-projects\/cc_worktree_ab12$/m, "a worktree's own path must be reachable");
+  });
+
+  test('the project header sums every group under it', () => {
+    const out = renderSessions([
+      grp({ live: [INSTANCE], inactive: [stoppedRow()], archivedCount: 51 }),
+      grp({ worktree: 'w', path: '/w/w', branch: 'b', inactive: [stoppedRow({ sessionId: SID_A })], archivedCount: 2 }),
+    ]);
+    assert.match(out, /^▸ code-conductor {2}\/w\/cc-projects\/code-conductor {3}live 1 · inactive 2 · archived 53$/m);
+    assert.match(out, /^SESSIONS \(live 1 · inactive 2 · archived 53\)$/m);
+  });
+
+  test('two projects each get their own header block', () => {
+    const out = renderSessions([
+      grp({ project: 'aaa', path: '/w/aaa', inactive: [stoppedRow({ title: 'in aaa' })] }),
+      grp({ project: 'zzz', path: '/w/zzz', inactive: [stoppedRow({ sessionId: SID_A, title: 'in zzz' })] }),
+    ]);
+    assert.equal(out.split('\n').filter(l => l.startsWith('▸')).length, 2);
+    assert.ok(out.indexOf('in aaa') < out.indexOf('in zzz'));
+  });
+});
+
+describe('renderSessions — the resumes-hot safety flag', () => {
+  // The flag reads off the EFFECTIVE resume mode, so "no record" must still
+  // flag: an unrecorded session resumes in bypassPermissions. A row that
+  // resumes hot and shows no flag is the defect this pins.
+  test('an unrecorded session — effective bypassPermissions — is flagged', () => {
+    const out = renderSessions([grp({ inactive: [stoppedRow({ resumeMode: 'bypassPermissions' })] })]);
+    assert.match(out, /resumes-hot/,
+      'a session with no recorded mode resumes hot and MUST say so');
+  });
+
+  test('a recorded plan session is not flagged', () => {
+    const out = renderSessions([grp({ inactive: [stoppedRow({ resumeMode: 'plan' })] })]);
+    assert.ok(!out.includes('resumes-hot'), `plan does not resume hot:\n${out}`);
+  });
+
+  test('ask is gated, so it is not hot either', () => {
+    const out = renderSessions([grp({ inactive: [stoppedRow({ resumeMode: 'ask' })] })]);
+    assert.ok(!out.includes('resumes-hot'));
+  });
+
+  test('the flag joins the same flags cell as temp/conducted', () => {
+    const out = renderSessions([grp({ inactive: [stoppedRow({ temp: true, resumeMode: 'bypassPermissions' })] })]);
+    assert.match(out, /temp,resumes-hot/);
   });
 });
 
@@ -420,37 +490,6 @@ describe('renderWorktrees', () => {
   });
 });
 
-describe('renderSessions', () => {
-  test('full sessionIds, aligned columns, deviating flags only', () => {
-    assert.equal(renderSessions([
-      { sessionId: SID_A, firstPrompt: 'hi', title: 'Recon rendering', conducted: true,
-        temp: true, archived: false, mtime: 1786001000000, size: 4300 },
-      { sessionId: SID_B, firstPrompt: 'Draft release notes', title: null, conducted: false,
-        temp: false, archived: false, mtime: 1785900000000, size: 120000 },
-    ]), [
-      'SESSIONS (2)',
-      '',
-      `${SID_A}  2026-08-06 07:23Z    4.2 KB  conducted,temp  Recon rendering`,
-      `${SID_B}  2026-08-05 03:20Z  117.2 KB  —               Draft release notes`,
-    ].join('\n'));
-  });
-
-  test('firstPrompt stands in for a missing title', () => {
-    const out = renderSessions([{ sessionId: SID_B, firstPrompt: 'Draft release notes',
-      title: null, conducted: false, temp: false, archived: false, mtime: 0, size: 0 }]);
-    assert.match(out, /Draft release notes$/);
-  });
-
-  test('archived surfaces when includeArchived brought one back', () => {
-    const out = renderSessions([{ sessionId: SID_B, firstPrompt: 'x', title: 'X', conducted: false,
-      temp: false, archived: true, mtime: 0, size: 0 }]);
-    assert.match(out, /archived/);
-  });
-
-  test('no sessions', () => {
-    assert.equal(renderSessions([]), 'SESSIONS (none)');
-  });
-});
 
 describe('renderProjectStatus', () => {
   test('a worktree carries base, ahead/behind and a diffstat', () => {
@@ -544,9 +583,8 @@ describe('handles and shas', () => {
     assert.ok(projects.includes('/very/long/absolute/path/to/a/project/root/p'));
     assert.ok(projects.includes(WORKTREE.worktreePath), 'worktree path must not be abbreviated');
     assert.ok(projects.includes(WORKTREE.branch), 'branch name must not be abbreviated');
-    assert.ok(renderSessions([{ sessionId: SID_A, firstPrompt: null, title: 't', conducted: false,
-      temp: false, archived: false, mtime: 1, size: 1 }]).includes(SID_A));
-    assert.ok(renderInstances([INSTANCE]).includes(SID_A));
+    assert.ok(renderSessions([grp({ inactive: [stoppedRow({ sessionId: SID_A, title: 't' })] })]).includes(SID_A));
+    assert.ok(liveOnly([INSTANCE]).includes(SID_A));
   });
 
   test('an empty baseSha still reads as absent, not as a bare @', () => {
@@ -594,7 +632,7 @@ describe('handles and shas', () => {
 // closes, so the two exemption sets below are small, named, and asserted
 // non-empty.
 
-describe('list_instances renders every allowlisted field', () => {
+describe('list_sessions renders every allowlisted field', () => {
   // A value no renderer could produce on its own, unique per key.
   const sentinel = (k) => `«${k}»`;
   const ALL_KEYS = [...CONDUCTOR_VIEW_KEYS, ...LIST_ONLY_KEYS];
@@ -625,28 +663,28 @@ describe('list_instances renders every allowlisted field', () => {
   });
 
   test('every non-exempt allowlisted field reaches the text', () => {
-    const out = renderInstances([sentinelRow()]);
+    const out = liveOnly([sentinelRow()]);
     const missing = BY_VALUE.filter(k => !out.includes(sentinel(k)));
     assert.deepEqual(missing, [],
-      'these allowlisted fields are never rendered — add them to renderInstances, '
+      'these allowlisted fields are never rendered — add them to renderSessions, '
       + `or to DROPPED with a justification in readRenderers.ts:\n${out}`);
   });
 
   test('every deliberately-dropped field stays out of the text', () => {
-    const out = renderInstances([sentinelRow()]);
+    const out = liveOnly([sentinelRow()]);
     const leaked = DROPPED.filter(k => out.includes(sentinel(k)));
     assert.deepEqual(leaked, [], 'a field listed as dropped is being rendered');
   });
 
   test('hasIdleSubscriber renders as a label, both ways', () => {
-    assert.match(renderInstances([sentinelRow({ hasIdleSubscriber: true })]), /idle-sub yes/);
-    assert.match(renderInstances([sentinelRow({ hasIdleSubscriber: false })]), /idle-sub no/);
+    assert.match(liveOnly([sentinelRow({ hasIdleSubscriber: true })]), /idle-sub yes/);
+    assert.match(liveOnly([sentinelRow({ hasIdleSubscriber: false })]), /idle-sub no/);
   });
 
   test('firstPrompt is dropped only because a title is there to replace it', () => {
     // The one conditional exemption: with no title it MUST be rendered, so the
     // fact is never unreachable — it is superseded, not withheld.
-    const out = renderInstances([sentinelRow({ title: null })]);
+    const out = liveOnly([sentinelRow({ title: null })]);
     assert.ok(out.includes(sentinel('firstPrompt')),
       'with no title, firstPrompt must stand in for it');
   });

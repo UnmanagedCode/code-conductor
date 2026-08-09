@@ -388,7 +388,7 @@ test('project_status caps the dirty list with dirtyTruncated + dirtyTotal', asyn
 
 const RENDERED_TOOLS = [
   { name: 'list_projects', args: {}, head: /^PROJECTS \(/ },
-  { name: 'list_instances', args: {}, head: /^INSTANCES \(/ },
+  { name: 'list_sessions', args: {}, head: /^SESSIONS \(/ },
   { name: 'list_worktrees', args: { project: 'demo' }, head: /^WORKTREES \(/ },
   { name: 'list_sessions', args: { project: 'demo' }, head: /^SESSIONS \(/ },
   { name: 'project_status', args: { project: 'demo' }, head: /^demo$/m },
