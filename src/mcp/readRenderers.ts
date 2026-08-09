@@ -316,9 +316,17 @@ export function renderProjectStatus(status: unknown): string {
 // reader VERBATIM, never reflowed, truncated or summarised.
 
 // Authored prose goes under its own label, one level deeper than the fields
-// above it. Without the label a description line beginning "tools " or "▸ "
-// would be indistinguishable from the rendering's own field lines — and these
-// descriptions are paragraphs of conductor-facing prose that name tools.
+// above it. The label is what tells a reader where the rendering stops and the
+// author's text begins; the extra indent keeps prose out of the columns the
+// renderer itself emits at (0 for a stage header, 4 for its fields).
+//
+// What that does NOT buy: a prose line indented to match a rendered field —
+// "      set_mode deny" inside a description — is byte-identical to a real tools
+// entry, and no label or indent separates those. Nothing here can fix that, and
+// nothing tries to: the containment is editorial, the rule being that a
+// description states the conductor's MOVE and never restates the graph
+// (docs/protocol.md → Playbooks, "Optional `description`").
+//
 // Absent (unauthored) means NO line at all, not a — : the field is either
 // authored prose or nothing.
 function describedBlock(label: string, description: unknown, at: number): string[] {

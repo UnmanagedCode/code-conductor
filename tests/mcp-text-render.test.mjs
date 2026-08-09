@@ -697,10 +697,20 @@ const GRAPH = {
       tools: {},
       spawnable: false,
     },
+    sink: {
+      needs: [{ stage: 'fan', at: 'current' }],
+      workers: 'one',
+      tools: { '*': 'allow' },
+      spawnable: false,
+    },
   },
+  // Three edges of TWO different widths on purpose: a two-stage graph can only
+  // produce edge labels of equal length, which makes table()'s padding a no-op
+  // and lets a plain join pass for it.
   transitions: [
     { from: 'triage', to: 'fan', via: 'approve_plan', description: 'Edge prose.' },
     { from: 'fan', to: 'triage', via: 'send_prompt' },
+    { from: 'fan', to: 'sink', via: 'send_prompt' },
   ],
 };
 
@@ -717,7 +727,7 @@ describe('renderPlaybook', () => {
       '',
       '  After a blank run.',
       '',
-      'STAGES (2)',
+      'STAGES (3)',
       '▸ triage   workers one   spawnable yes',
       '    needs —',
       '    tools (3)',
@@ -731,13 +741,30 @@ describe('renderPlaybook', () => {
       '▸ fan   workers many   spawnable no',
       '    needs triage@current, triage@ever',
       '    tools (none)',
+      '▸ sink   workers one   spawnable no',
+      '    needs fan@current',
+      '    tools (1)',
+      '      * allow',
       '',
-      'TRANSITIONS (2)',
+      'TRANSITIONS (3)',
       '  triage → fan  via approve_plan',
       '    description',
       '      Edge prose.',
       '  fan → triage  via send_prompt',
+      '  fan → sink    via send_prompt',
     ].join('\n'));
+  });
+
+  test('the via column is aligned across edges of differing width', () => {
+    // table(), not a plain join: a reader scanning the column lands on the
+    // driving tool on every row. `fan → sink` is shorter than the other two, so
+    // its padding is the observable difference.
+    const viaColumns = renderPlaybook(GRAPH).split('\n')
+      .filter(l => / via /.test(l))
+      .map(l => l.indexOf(' via '));
+    assert.equal(viaColumns.length, 3);
+    assert.deepEqual([...new Set(viaColumns)], [viaColumns[0]],
+      'every edge must place `via` at the same column');
   });
 
   test('every tool in a stage policy map reaches the text, including the "*" fallback', () => {
@@ -821,7 +848,12 @@ describe('renderPlaybook', () => {
   // tool's entire output with the suite still green. Reads the validator's own
   // allowlists (src/playbooks.ts) rather than a copy that would drift.
   describe('renderPlaybook renders every field the validator admits', () => {
-    const sentinel = (k) => `«${k}»`;
+    // Namespaced by group, because `description` is a key of all three: one
+    // shared sentinel would let the playbook-level fill satisfy the stage and
+    // transition checks too, and deleting either of those description blocks
+    // from the renderer would leave this suite green — the exact vacuity this
+    // test exists to prevent.
+    const sentinel = (group, k) => `«${group}.${k}»`;
     // Rendered as their own value, so a sentinel can be looked for directly.
     const SCALARS = {
       playbook: ['id', 'name', 'description'],
@@ -850,15 +882,15 @@ describe('renderPlaybook', () => {
     });
 
     test('every by-value schema key reaches the text', () => {
-      const fill = (group) => Object.fromEntries(SCALARS[group].map(k => [k, sentinel(k)]));
+      const fill = (group) => Object.fromEntries(SCALARS[group].map(k => [k, sentinel(group, k)]));
       const out = renderPlaybook({
         ...fill('playbook'),
         entryStages: ['s'],
         stages: { s: { ...fill('stage'), needs: [], tools: {}, spawnable: true } },
         transitions: [{ ...fill('transition'), via: 'send_prompt' }],
       });
-      const all = [...SCALARS.playbook, ...SCALARS.stage, ...SCALARS.transition];
-      const missing = all.filter(k => !out.includes(sentinel(k)));
+      const all = Object.entries(SCALARS).flatMap(([group, keys]) => keys.map(k => [group, k]));
+      const missing = all.filter(([g, k]) => !out.includes(sentinel(g, k))).map(([g, k]) => `${g}.${k}`);
       assert.deepEqual(missing, [],
         `these fields never reach the rendering — add them to renderPlaybook:\n${out}`);
     });

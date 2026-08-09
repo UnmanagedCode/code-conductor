@@ -757,13 +757,12 @@ export function buildTools(): Tool[] {
       name: 'describe_playbook',
       description:
         'The full graph of one playbook — read this rather than guessing what a stage permits. ' +
-        'Returns PLAIN TEXT (no JSON): a PLAYBOOK header (id, name, entry stages, description), ' +
-        'one block per stage, then a TRANSITIONS edge list. Per stage, `needs` names WORKERS that ' +
-        'must exist for the stage to be entered (as stage@current / stage@ever), `spawnable` is ' +
-        'whether a worker can be created directly there, and `tools` maps a tool to allow / deny / ' +
-        'require {json} of enforced argument values — a `*` entry is the fallback for every tool the ' +
-        'stage does not name. On an edge, `via` is the tool that drives it and the ONLY tool that ' +
-        'can. Refuses {ok:false, code:"PLAYBOOK_UNKNOWN", known:[…]} for an unknown id.',
+        'Returns PLAIN TEXT (no JSON). Per stage, `needs` names WORKERS that must exist for the ' +
+        'stage to be entered (as stage@current / stage@ever), and `tools` maps a tool to allow / ' +
+        'deny / require {json} of enforced argument values — a `*` entry is the fallback for every ' +
+        'tool the stage does not name. Each stage also reports `spawnable`, the per-stage form of ' +
+        'list_playbooks\' `spawnableStages`. On an edge, `via` is the tool that drives it and the ' +
+        'ONLY tool that can. Refuses {ok:false, code:"PLAYBOOK_UNKNOWN", known:[…]} for an unknown id.',
       inputSchema: {
         type: 'object',
         properties: { id: { type: 'string', description: 'Playbook id, as listed by list_playbooks.' } },

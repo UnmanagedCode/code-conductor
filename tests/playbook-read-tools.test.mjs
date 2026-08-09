@@ -233,18 +233,63 @@ test('describe_playbook carries stage/transition descriptions, and omits them wh
     assert.match(pb, new RegExp(`^ {6}${edgeText}$`, 'm'));
 
     // An unauthored description emits NO line — not a —, not an empty label.
-    // Stage `b` carries nothing at all, so its block ends at its tools line.
-    const blockFor = (marker, end) => {
-      const at = pb.indexOf(marker);
-      assert.ok(at >= 0, `${marker} missing from:\n${pb}`);
-      const rest = pb.slice(at + marker.length);
-      const stop = rest.indexOf(end);
-      return rest.slice(0, stop === -1 ? undefined : stop);
+    // Each chunk is one item plus everything indented under it: a stage line
+    // starts at column 0 with ▸, an edge line at exactly two spaces, and both
+    // their description labels and bodies are indented deeper. Splitting on the
+    // OWNER's indent (rather than scanning for the next line at any indent) is
+    // what makes the negative assertions below able to fail at all — an end
+    // marker that a description line also matches truncates the chunk before
+    // the very text it is looking for.
+    const chunkFor = (section, ownerPattern, label) => {
+      const body = pb.slice(pb.indexOf(section));
+      const found = body.split(ownerPattern).filter(c => c.includes(label));
+      assert.equal(found.length, 1,
+        `expected exactly one ${label} chunk under ${section} in:\n${body}`);
+      return found[0];
     };
-    assert.equal(/description/.test(blockFor('▸ b ', '\n▸ ')), false,
+    const stageChunk = (name) => chunkFor('STAGES (', /\n(?=▸ )/, `▸ ${name} `);
+    const edgeChunk = (edge) => chunkFor('TRANSITIONS (', /\n(?= {2}\S)/, edge);
+
+    // Positive control first: the chunker really does capture a description that
+    // IS there, so a false negative below cannot be mistaken for a pass.
+    assert.match(stageChunk('a'), /^ {4}description$/m);
+    assert.match(edgeChunk('a → b'), /^ {4}description$/m);
+    assert.match(edgeChunk('a → b'), new RegExp(`^ {6}${edgeText}$`, 'm'));
+
+    assert.equal(/description/.test(stageChunk('b')), false,
       'an unauthored stage description must render no line');
-    assert.equal(/description/.test(blockFor('  a → c ', '\n  ')), false,
+    assert.equal(/description/.test(edgeChunk('a → c')), false,
       'an unauthored transition description must render no line');
+  } finally { await t.close(); }
+});
+
+// Two facts the `classic` wire test above cannot reach: every one of its stages
+// is `workers: "one"`, so a handler that hardcoded that value would report a
+// fan-out stage as single-worker (a conductor then never fans out) with the whole
+// suite green; and nothing asserted the GRAPH-level description survives the
+// payload at all, though docs/protocol.md says the header carries it. Both are
+// pinned on an overlay definition rather than a built-in, so neither depends on
+// the built-ins' editorial content.
+test('describe_playbook renders the graph description and both `workers` values', async () => {
+  const t = await setup();
+  try {
+    const graphText = 'What this graph is for, in one line.';
+    await t.writeUserPlaybook('fanned', {
+      id: 'fanned', name: 'Fanned', description: graphText,
+      entryStages: ['lead'],
+      stages: {
+        lead: { workers: 'one', tools: { spawn_instance: 'allow' } },
+        crowd: { workers: 'many' },
+      },
+      transitions: [{ from: 'lead', to: 'crowd' }],
+    });
+
+    const pb = await t.callText('describe_playbook', { id: 'fanned' });
+    assert.match(pb, new RegExp(`^DESCRIPTION\\n {2}${graphText}$`, 'm'),
+      'the graph-level description must reach the header');
+    assert.match(pb, /^▸ lead .*workers one/m);
+    assert.match(pb, /^▸ crowd .*workers many/m,
+      'a fan-out stage must not be reported as single-worker');
   } finally { await t.close(); }
 });
 

@@ -2,9 +2,8 @@
 // JSON-RPC tools/call `content[]` array. Most tools return a plain object that
 // becomes a single compact-JSON block. The read tools whose whole answer is a
 // rendering instead return a `textResult(text)` — one plain-text block, no JSON
-// at all (see its comment below). Tools that carry a
-// large text body
-// (file contents, a unified diff, assistant prose) instead return a
+// at all (see its comment below). Tools that carry a large text body (file
+// contents, a unified diff, assistant prose) instead return a
 // `textPayload(meta, bodies)` so the server can emit a compact-JSON metadata
 // block PLUS one raw, UNESCAPED text block per body — far cheaper and more
 // legible for the consuming LLM than escaping the body into a JSON string.
