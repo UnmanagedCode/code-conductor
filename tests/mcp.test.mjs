@@ -54,8 +54,8 @@ function unwrapPayload(result) {
   assert.ok(Array.isArray(result.content), 'tool result has content[]');
   return { meta: JSON.parse(result.content[0].text), bodies: result.content.slice(1).map(c => c.text) };
 }
-// The five recon read tools invert that: their whole result is a plain-text
-// rendering, one block, no metadata to parse (src/mcp/content.ts textResult).
+// The plain-text tools invert that: their whole result is a rendering, one
+// block, no metadata to parse (src/mcp/content.ts textResult).
 function text(result) {
   assert.ok(Array.isArray(result.content), 'tool result has content[]');
   assert.equal(result.content.length, 1, 'a rendered read result is a single block');

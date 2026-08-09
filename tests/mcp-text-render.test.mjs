@@ -1,4 +1,5 @@
-// Plain-text rendering layer for the five MCP recon read tools.
+// Plain-text rendering layer for the MCP tools whose whole result is text: the
+// five recon read tools plus describe_playbook.
 //
 // Pure tests — no server boot, no I/O: hand-built payloads in, exact strings
 // out, mirroring tests/mcp-recent-turn-bond.test.mjs. The rendering is the
@@ -13,8 +14,10 @@ import {
 } from '../src/mcp/textRender.ts';
 import {
   renderProjects, renderInstances, renderWorktrees, renderSessions, renderProjectStatus,
+  renderPlaybook,
 } from '../src/mcp/readRenderers.ts';
 import { CONDUCTOR_VIEW_KEYS, LIST_ONLY_KEYS } from '../src/mcp/handlers.ts';
+import { STAGE_KEYS, TRANSITION_KEYS, PLAYBOOK_KEYS } from '../src/playbooks.ts';
 
 const SID_A = '3f2a8c11-77b2-4c1e-9a2f-5d6e7f801234';
 const SID_B = '9b41d0e2-1a55-42c7-8f30-cc11ab993d02';
@@ -646,5 +649,259 @@ describe('list_instances renders every allowlisted field', () => {
     const out = renderInstances([sentinelRow({ title: null })]);
     assert.ok(out.includes(sentinel('firstPrompt')),
       'with no title, firstPrompt must stand in for it');
+  });
+});
+
+// ── renderPlaybook (describe_playbook) ─────────────────────────────────────
+//
+// describe_playbook returns this rendering as its ENTIRE success result, so the
+// bar is the same as for the recon tools: a fact absent here is a fact the
+// conductor cannot get. The fixture below is built branch-by-branch on purpose —
+// stage keys out of alphabetical order, both `at` values, both `workers` values,
+// both `spawnable` values, a "*" entry beside allow/deny/require, an empty
+// `tools` map, a multi-line description, an unauthored one, and edges with and
+// without `on`. Every one of those exists to kill a specific mutant; a fixture
+// that exercised only the common shape would let a renderer that hardcodes
+// `spawnable yes` or drops the "*" entry pass.
+
+// >100 chars, multi-line, and its second paragraph begins with "tools " — the
+// hazard the description label + deeper indent exist to defuse.
+const STAGE_PROSE = 'Brief the worker, then wait for its sentinel before you treat the work as reviewable.\n'
+  + '\n'
+  + 'tools deny is not a field here — this is authored prose.';
+// A run of TWO blank lines: block() would collapse it to one, so this pins that
+// authored text is not routed through it.
+const GRAPH_PROSE = 'Top line.\n\n\nAfter a blank run.';
+
+const GRAPH = {
+  id: 'demo',
+  name: 'Demo — a graph',
+  description: GRAPH_PROSE,
+  entryStages: ['triage', 'fan'],
+  stages: {
+    // 'triage' before 'fan' — insertion order is NOT alphabetical order.
+    triage: {
+      needs: [],
+      workers: 'one',
+      tools: {
+        '*': 'deny',
+        spawn_instance: { require: { mode: 'plan', createWorktree: true, label: null } },
+        set_mode: 'allow',
+      },
+      spawnable: true,
+      description: STAGE_PROSE,
+    },
+    fan: {
+      needs: [{ stage: 'triage', at: 'current' }, { stage: 'triage', at: 'ever' }],
+      workers: 'many',
+      tools: {},
+      spawnable: false,
+    },
+    sink: {
+      needs: [{ stage: 'fan', at: 'current' }],
+      workers: 'one',
+      tools: { '*': 'allow' },
+      spawnable: false,
+    },
+  },
+  // Three edges of TWO different widths on purpose: a two-stage graph can only
+  // produce edge labels of equal length, which makes table()'s padding a no-op
+  // and lets a plain join pass for it.
+  transitions: [
+    { from: 'triage', to: 'fan', via: 'approve_plan', description: 'Edge prose.' },
+    { from: 'fan', to: 'triage', via: 'send_prompt' },
+    { from: 'fan', to: 'sink', via: 'send_prompt' },
+  ],
+};
+
+describe('renderPlaybook', () => {
+  test('renders the whole graph', () => {
+    assert.equal(renderPlaybook(GRAPH), [
+      'PLAYBOOK demo',
+      'name Demo — a graph',
+      'entry triage, fan',
+      '',
+      'DESCRIPTION',
+      '  Top line.',
+      '',
+      '',
+      '  After a blank run.',
+      '',
+      'STAGES (3)',
+      '▸ triage   workers one   spawnable yes',
+      '    needs —',
+      '    tools (3)',
+      '      * deny',
+      '      spawn_instance require {"mode":"plan","createWorktree":true,"label":null}',
+      '      set_mode allow',
+      '    description',
+      '      Brief the worker, then wait for its sentinel before you treat the work as reviewable.',
+      '',
+      '      tools deny is not a field here — this is authored prose.',
+      '▸ fan   workers many   spawnable no',
+      '    needs triage@current, triage@ever',
+      '    tools (none)',
+      '▸ sink   workers one   spawnable no',
+      '    needs fan@current',
+      '    tools (1)',
+      '      * allow',
+      '',
+      'TRANSITIONS (3)',
+      '  triage → fan  via approve_plan',
+      '    description',
+      '      Edge prose.',
+      '  fan → triage  via send_prompt',
+      '  fan → sink    via send_prompt',
+    ].join('\n'));
+  });
+
+  test('the via column is aligned across edges of differing width', () => {
+    // table(), not a plain join: a reader scanning the column lands on the
+    // driving tool on every row. `fan → sink` is shorter than the other two, so
+    // its padding is the observable difference.
+    const viaColumns = renderPlaybook(GRAPH).split('\n')
+      .filter(l => / via /.test(l))
+      .map(l => l.indexOf(' via '));
+    assert.equal(viaColumns.length, 3);
+    assert.deepEqual([...new Set(viaColumns)], [viaColumns[0]],
+      'every edge must place `via` at the same column');
+  });
+
+  test('every tool in a stage policy map reaches the text, including the "*" fallback', () => {
+    // Pins the whole map, not just its first entry: a renderer that dropped
+    // `tools`, sliced it, or sorted away the authored order fails here. The "*"
+    // key is spelled literally because it is the stage's fallback for every tool
+    // it does not name — a reader who cannot see it cannot tell an allowlist
+    // stage from a permissive one.
+    const out = renderPlaybook(GRAPH);
+    assert.match(out, /^ {4}tools \(3\)$/m, 'the count must match the map size');
+    assert.match(out, /^ {6}\* deny$/m);
+    assert.match(out, /^ {6}set_mode allow$/m);
+    assert.match(out, /^ {6}spawn_instance require /m);
+  });
+
+  test('a require constraint renders every argument name AND value, typed', () => {
+    // These are the argument values the gate enforces, so dropping one, or
+    // rendering the map as [object Object]/"require", would advertise a call that
+    // then refuses ARG_REQUIRE_CONFLICT. JSON spelling keeps "plan" distinct from
+    // plan, true from "true", and null from absent.
+    assert.match(renderPlaybook(GRAPH),
+      /spawn_instance require \{"mode":"plan","createWorktree":true,"label":null\}/);
+  });
+
+  test('every transition renders its own via', () => {
+    // Both directions of the mutant: `via` hardcoded to send_prompt, and `via`
+    // taken from a declared `on` only (which would blank the defaulted edge).
+    const out = renderPlaybook(GRAPH);
+    assert.match(out, /^ {2}triage → fan {2}via approve_plan$/m);
+    assert.match(out, /^ {2}fan → triage {2}via send_prompt$/m);
+  });
+
+  test('an empty tools map or needs list renders (none) / —, never a blank', () => {
+    // "this stage declares no policy" must stay distinguishable from "the
+    // renderer dropped the field".
+    const out = renderPlaybook(GRAPH);
+    assert.match(out, /^ {4}tools \(none\)$/m);
+    assert.match(out, /^ {4}needs —$/m);
+  });
+
+  test('an unauthored description emits no line at all', () => {
+    // The absence semantics the JSON shape used to carry as key-absence: no
+    // label, no —, and no "undefined"/"null" leaking into the prose slot.
+    const out = renderPlaybook(GRAPH);
+    const fan = out.slice(out.indexOf('▸ fan'), out.indexOf('TRANSITIONS'));
+    assert.equal(/description/.test(fan), false, `an unauthored stage grew a description:\n${fan}`);
+    const lastEdge = out.slice(out.indexOf('  fan → triage'));
+    assert.equal(/description/.test(lastEdge), false, 'an unauthored edge grew a description');
+    assert.equal(/undefined|null,|: null/.test(out.replace(/"label":null/, '')), false,
+      'no absent field may render as a JS sentinel');
+  });
+
+  test('authored prose passes through verbatim — never truncated or reflowed', () => {
+    // trunc(), a reflow, or block()'s blank-run collapsing would each silently
+    // rewrite the one text a playbook author owns. Asserted on the body with the
+    // rendering's indent removed, so only the author's own line structure is
+    // compared.
+    const out = renderPlaybook(GRAPH);
+    const unindent = (s, n) => s.split('\n').map(l => l.slice(n)).join('\n');
+    const stageBody = out.slice(out.indexOf('      Brief the worker'), out.indexOf('▸ fan') - 1);
+    assert.equal(unindent(stageBody, 6), STAGE_PROSE);
+    const graphBody = out.slice(out.indexOf('  Top line.'), out.indexOf('\n\nSTAGES'));
+    assert.equal(unindent(graphBody, 2), GRAPH_PROSE);
+  });
+
+  test('an empty entryStages or transitions list still renders a readable line', () => {
+    // Both are legal: no stage need declare spawn_instance, and a one-stage graph
+    // has no edges. A bare `entry` line or `TRANSITIONS (0)` would read as a bug.
+    const out = renderPlaybook({
+      id: 'bare', name: 'Bare', description: 'x', entryStages: [],
+      stages: { only: { needs: [], workers: 'one', tools: {}, spawnable: false } },
+      transitions: [],
+    });
+    assert.match(out, /^entry —$/m);
+    assert.match(out, /^TRANSITIONS \(none\)$/m);
+  });
+
+  // The guard that outlives this change. Every assertion above is a claim about
+  // the payload AS IT EXISTS TODAY; this one is a claim about the schema, so a
+  // field added to Stage/Transition/Playbook next month cannot vanish from the
+  // tool's entire output with the suite still green. Reads the validator's own
+  // allowlists (src/playbooks.ts) rather than a copy that would drift.
+  describe('renderPlaybook renders every field the validator admits', () => {
+    // Namespaced by group, because `description` is a key of all three: one
+    // shared sentinel would let the playbook-level fill satisfy the stage and
+    // transition checks too, and deleting either of those description blocks
+    // from the renderer would leave this suite green — the exact vacuity this
+    // test exists to prevent.
+    const sentinel = (group, k) => `«${group}.${k}»`;
+    // Rendered as their own value, so a sentinel can be looked for directly.
+    const SCALARS = {
+      playbook: ['id', 'name', 'description'],
+      stage: ['workers', 'description'],
+      transition: ['from', 'to', 'description'],
+    };
+    // Containers and renamed/derived fields, each covered by a named test above:
+    // entryStages/stages/transitions by the full-graph string, needs by the
+    // needs/— test, tools by the tools-map test, and `on` by the via test (the
+    // payload carries it as the derived `via`, never under its schema name).
+    const BY_DEDICATED_ASSERTION = {
+      playbook: ['entryStages', 'stages', 'transitions'],
+      stage: ['needs', 'tools'],
+      transition: ['on'],
+    };
+    const SETS = { playbook: PLAYBOOK_KEYS, stage: STAGE_KEYS, transition: TRANSITION_KEYS };
+
+    test('every schema key is accounted for as rendered-by-value or covered elsewhere', () => {
+      for (const [group, keys] of Object.entries(SETS)) {
+        assert.deepEqual(
+          [...SCALARS[group], ...BY_DEDICATED_ASSERTION[group]].sort(),
+          [...keys].sort(),
+          `${group}: a schema key is in neither list — add it to renderPlaybook and to `
+          + 'SCALARS, or justify it in BY_DEDICATED_ASSERTION');
+      }
+    });
+
+    test('every by-value schema key reaches the text', () => {
+      const fill = (group) => Object.fromEntries(SCALARS[group].map(k => [k, sentinel(group, k)]));
+      const out = renderPlaybook({
+        ...fill('playbook'),
+        entryStages: ['s'],
+        stages: { s: { ...fill('stage'), needs: [], tools: {}, spawnable: true } },
+        transitions: [{ ...fill('transition'), via: 'send_prompt' }],
+      });
+      const all = Object.entries(SCALARS).flatMap(([group, keys]) => keys.map(k => [group, k]));
+      const missing = all.filter(([g, k]) => !out.includes(sentinel(g, k))).map(([g, k]) => `${g}.${k}`);
+      assert.deepEqual(missing, [],
+        `these fields never reach the rendering — add them to renderPlaybook:\n${out}`);
+    });
+
+    test('the two derived fields the payload adds are rendered too', () => {
+      // `spawnable` and `via` are computed by describePlaybook, so they are in no
+      // schema key set and this suite would otherwise never look at them.
+      const out = renderPlaybook(GRAPH);
+      assert.match(out, /spawnable yes/);
+      assert.match(out, /spawnable no/);
+      assert.match(out, /via approve_plan/);
+    });
   });
 });

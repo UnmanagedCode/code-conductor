@@ -13,8 +13,8 @@
 //   • `tools` policy   → TOOL_DENIED_IN_STAGE ships it with legalMoves.  OUT.
 //   • `needs`          → NEEDS_UNSATISFIED names what to pass.           OUT.
 //   • spawnability     → STAGE_NOT_SPAWNABLE, plus list_playbooks'
-//                        `spawnableStages` and describe_playbook's
-//                        `spawnable`.                                    OUT.
+//                        `spawnableStages` and the `spawnable` describe_playbook
+//                        renders per stage.                              OUT.
 //   • stage `description` → nothing volunteers it, and it is needed to compose a
 //                        brief BEFORE any call is made; a bad brief yields a
 //                        soft review, never a refusal.                   IN.
@@ -27,6 +27,11 @@
 // Authored text is passed through VERBATIM — never truncated, reflowed or
 // summarised. One home for that text is the definition; a renderer that edited
 // it would become a second.
+//
+// The sibling renderer is renderPlaybook (src/mcp/readRenderers.ts), which
+// answers describe_playbook and renders the WHOLE graph. Do not merge the two:
+// the omissions above are the entire reason this one exists, so folding them
+// together would push every stage's tools policy into every conductor's prompt.
 
 import { type Playbook, type Stage } from './playbooks.ts';
 

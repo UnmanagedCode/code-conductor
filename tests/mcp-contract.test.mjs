@@ -48,7 +48,7 @@ function meta(result) {
 }
 // content[1..] are the raw, un-escaped text body block(s).
 function bodies(result) { return result.content.slice(1).map(c => c.text); }
-// The recon read tools' whole result: one plain-text block, no metadata block.
+// A plain-text tool's whole result: one text block, no metadata block.
 function text(result) {
   assert.equal(result.content.length, 1, 'a rendered read result is a single block');
   return result.content[0].text;
@@ -376,12 +376,15 @@ test('project_status caps the dirty list with dirtyTruncated + dirtyTotal', asyn
     'exactly the capped number of porcelain lines is rendered');
 });
 
-// ---------- recon read tools: text-only results ----------
+// ---------- text-only results ----------
 //
-// These five return a plain-text rendering as their ENTIRE result — no metadata
-// block, no structured channel. The renderings themselves are pinned in
+// Each of these returns a plain-text rendering as its ENTIRE result — no
+// metadata block, no structured channel. The renderings themselves are pinned in
 // tests/mcp-text-render.test.mjs; this checks the wire shape and that real
 // handler output actually reaches the renderer.
+//
+// describe_playbook is here for its SUCCESS path only; its refusal is still a
+// JSON `{ok:false, code}` (pinned in tests/playbook-read-tools.test.mjs).
 
 const RENDERED_TOOLS = [
   { name: 'list_projects', args: {}, head: /^PROJECTS \(/ },
@@ -389,9 +392,11 @@ const RENDERED_TOOLS = [
   { name: 'list_worktrees', args: { project: 'demo' }, head: /^WORKTREES \(/ },
   { name: 'list_sessions', args: { project: 'demo' }, head: /^SESSIONS \(/ },
   { name: 'project_status', args: { project: 'demo' }, head: /^demo$/m },
+  // Loads from playbooks/*.json, so it needs no repo fixture.
+  { name: 'describe_playbook', args: { id: 'classic' }, head: /^PLAYBOOK classic$/m },
 ];
 
-test('the five recon read tools return one plain-text block and nothing else', async () => {
+test('every plain-text tool returns one text block and nothing else', async () => {
   await makeRealRepo('demo');
   for (const { name, args, head } of RENDERED_TOOLS) {
     const r = await callTool(name, args);

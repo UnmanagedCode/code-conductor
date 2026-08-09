@@ -163,9 +163,13 @@ export interface Playbook {
   transitions: Transition[];
 }
 
-const STAGE_KEYS = new Set(['needs', 'workers', 'tools', 'description']);
-const PLAYBOOK_KEYS = new Set(['id', 'name', 'description', 'entryStages', 'stages', 'transitions']);
-const TRANSITION_KEYS = new Set(['from', 'to', 'on', 'description']);
+// The validator's allowlists. EXPORTED FOR SCHEMA-BINDING IN TESTS — do not
+// re-privatise them: tests/mcp-text-render.test.mjs reads them to assert that
+// describe_playbook's rendering carries every field the schema admits, so a
+// field added here fails loudly instead of vanishing from that tool's output.
+export const STAGE_KEYS = new Set(['needs', 'workers', 'tools', 'description']);
+export const PLAYBOOK_KEYS = new Set(['id', 'name', 'description', 'entryStages', 'stages', 'transitions']);
+export const TRANSITION_KEYS = new Set(['from', 'to', 'on', 'description']);
 const NEEDS_KEYS = new Set(['stage', 'at']);
 const WORKERS_VALUES = new Set(['one', 'many']);
 const AT_VALUES = new Set(['current', 'ever']);
