@@ -445,7 +445,7 @@ export async function listSessions(args: McpArgs, { instances, playbookGate }: M
   kept.sort((a, b) => a.project.localeCompare(b.project)
     || (a.worktree === null ? -1 : b.worktree === null ? 1 : a.worktree.localeCompare(b.worktree)));
 
-  return textResult(renderSessions(kept, { project }));
+  return textResult(renderSessions(kept, { project, expanded: includeArchived }));
 }
 
 // ---------- playbooks: the read / introspection surface ----------

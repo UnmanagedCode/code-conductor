@@ -246,9 +246,16 @@ function groupDivergence(v: unknown): string {
 // `project` is echoed on the heading whenever the caller filtered, because an
 // empty filtered list otherwise reads as "no sessions anywhere" and would send
 // a conductor down the wrong path.
+//
+// `expanded` says the caller passed includeArchived, i.e. the archived rows are
+// already in `inactive`. It gates the `+N archived` CALL TO ACTION only, never
+// the count: `archivedCount` is deliberately counted before the filter, so the
+// group header's `archived N` is right in both forms. Without this the expanded
+// listing prints every archived row and then invites the reader to pass a flag
+// they already passed, to reveal sessions that are already on screen.
 export function renderSessions(
   groups: unknown,
-  { project = null }: { project?: string | null } = {},
+  { project = null, expanded = false }: { project?: string | null; expanded?: boolean } = {},
 ): string {
   const all = asGroups(groups);
   const sum = (pick: (g: SessionGroup) => number, rows: SessionGroup[] = all) =>
@@ -279,7 +286,7 @@ export function renderSessions(
       if (g.worktree !== null) body.push(indent([dash(g.path)], 2));
       const inner: Array<string | string[]> = [...instanceRows(g.live)];
       if (g.inactive.length) inner.push(inactiveRows(g.inactive));
-      if (g.archivedCount) inner.push(`+${g.archivedCount} archived (includeArchived:true to list)`);
+      if (g.archivedCount && !expanded) inner.push(`+${g.archivedCount} archived (includeArchived:true to list)`);
       body.push(indent(block(...inner).split('\n'), 2));
       parts.push(indent(block(...body).split('\n'), 2));
       parts.push('');

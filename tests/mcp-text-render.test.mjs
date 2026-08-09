@@ -406,6 +406,31 @@ describe('renderSessions — inactive rows, grouping and archived', () => {
     assert.match(out, /archived/);
   });
 
+  test('expanding archived drops the call to action but keeps the count', () => {
+    // The shape the handler actually produces under includeArchived:true —
+    // archived rows present AND archivedCount non-zero, because the count is
+    // taken before the filter. The two states were previously only ever pinned
+    // apart (a count with no rows, or a row with a zero count), so nothing
+    // caught the combination printing "+51 archived (includeArchived:true to
+    // list)" underneath the 51 rows it was offering to reveal.
+    const archivedRows = [
+      stoppedRow({ sessionId: SID_A, title: 'old one', archived: true }),
+      stoppedRow({ sessionId: SID_B, title: 'old two', archived: true }),
+    ];
+    const out = renderSessions([grp({ inactive: archivedRows, archivedCount: 2 })], { expanded: true });
+    assert.ok(!out.includes('includeArchived:true to list'),
+      `the rows are already listed — do not invite a flag the caller already passed:\n${out}`);
+    assert.match(out, /live 0 · inactive 2 · archived 2/,
+      'the header count stays: it is right in both forms');
+    assert.ok(out.includes('old one') && out.includes('old two'), 'the rows themselves still render');
+  });
+
+  test('the call to action still prints when archived is collapsed', () => {
+    // The converse, so the guard cannot degrade into "never show it".
+    const out = renderSessions([grp({ inactive: [stoppedRow()], archivedCount: 2 })], { expanded: false });
+    assert.match(out, /^ {4}\+2 archived \(includeArchived:true to list\)$/m);
+  });
+
   test('the main checkout leads its project, then worktrees, each with its own header', () => {
     const out = renderSessions([
       grp({ inactive: [stoppedRow({ title: 'on main' })] }),
