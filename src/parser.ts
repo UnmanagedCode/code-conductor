@@ -799,6 +799,21 @@ function resolveGroupBoundary(components: BoundaryInterval[], start: number): nu
   return component.headless ? component.right + 1 : component.left - 1;
 }
 
+// Does [start, end) hold a sub-agent child whose owning head is missing from
+// arr[0, end)? Such a child can never be served from `arr` alone — the snap
+// pushes the window start PAST it (see resolveGroupBoundary's headless branch)
+// — so backward paging uses this to decide whether more history has to be
+// loaded before the window is resolved (eventArchive.ts needArchive). Headless-
+// ness is judged over [0, end), exactly as groupBoundaryComponents does, so a
+// child whose head sits below `start` is servable and does NOT count.
+export function hasHeadlessChildIn(arr: UiEvent[], start: number, end: number): boolean {
+  end = Math.max(0, Math.min(end, arr.length));
+  start = Math.max(0, Math.min(start, end));
+  // A component's `right` IS a child index, so right >= start means at least
+  // one of its children lies inside the window.
+  return groupBoundaryComponents(arr, end).some(c => c.headless && c.right >= start);
+}
+
 // Snap a window-start index so no sub-agent child event in [start, end) is
 // orphaned: a child whose head is available pulls the start back to that head,
 // a child with no head at or before it pushes the start past THAT CHILD (and
@@ -993,6 +1008,22 @@ export function firstQuiescentAtOrAfter(arr: UiEvent[], from: number, bound: num
     scan.apply(arr[i]);
   }
   return -1;
+}
+
+// Largest quiescent index at or below `at` (bounded, like every backward
+// quiescent search here, by `at`'s own reset origin), or `at` itself when its
+// turn holds none — the same "raw start stands" degradation quiesceStart
+// documents. eventArchive.ts uses this for an EMPTY backward page's cursor: a
+// page is only self-contained if BOTH its ends are quiescent cuts, and the ends
+// are clean only because every cursor the server hands out is a snap output.
+// An empty page has no snapped start to hand out, and its pre-snap window start
+// is under no obligation to be quiescent, so it has to be snapped here instead.
+export function lastQuiescentAtOrBefore(
+  arr: UiEvent[], at: number, { resetIdx = -1 }: { resetIdx?: number } = {},
+): number {
+  const start = Math.max(0, Math.min(at, arr.length - 1));
+  if (start <= 0) return 0;
+  return quiesceStart(arr, start, start + 1, resetIdx, false);
 }
 
 // Snap a window-start index to a cut that is both quiescent and preserves
